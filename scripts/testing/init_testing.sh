@@ -1,0 +1,429 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2025 John William Creighton (@s243a)
+#
+# init_testing.sh - Initialize UnifyWeaver testing environment
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}==================================="
+echo "UnifyWeaver Testing Environment Setup"
+echo -e "===================================${NC}"
+
+# Get script directory (should be scripts/testing/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Simple config
+CFG="$SCRIPT_DIR/.unifyweaver_test.conf"
+
+# Back up the original config file before sourcing, if it exists
+BACKUP_CFG_FILE=""
+if [[ -f "$SCRIPT_DIR/.unifyweaver.conf" ]]; then
+    BACKUP_CFG_FILE="$(mktemp)"
+    cp "$SCRIPT_DIR/.unifyweaver.conf" "$BACKUP_CFG_FILE"
+fi
+
+if [[ -f "$CFG" ]]; then
+  # shellcheck disable=SC1090
+  source "$CFG"
+fi
+
+FIND_SWIPL_DIR="" #Use relative paths.
+
+# Determine target directory
+if [[ -n "${UNIFYWEAVER_ROOT:-}" ]]; then
+    TARGET_ROOT="$UNIFYWEAVER_ROOT"
+    echo -e "${YELLOW}Using UNIFYWEAVER_ROOT environment variable: $TARGET_ROOT${NC}"
+else
+    TARGET_ROOT="$SCRIPT_DIR/test_env"
+    mkdir -p "$TARGET_ROOT"
+    echo -e "${YELLOW}Using script directory as target: $TARGET_ROOT${NC}"
+fi
+
+# Check if target is empty or non-existent
+if [[ -d "$TARGET_ROOT" ]]; then
+    # Directory exists, check if it's empty or only contains the init script
+    file_count=$(find "$TARGET_ROOT" -mindepth 1 -maxdepth 1 -not -name "init_testing.sh" | wc -l)
+    if [[ $file_count -gt 0 ]]; then
+        echo -e "${YELLOW}Warning: Target directory is not empty.${NC}"
+        echo "Contents:"
+        ls -la "$TARGET_ROOT"
+        echo ""
+        read -p "Continue anyway? This may overwrite files. (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Aborted."
+            exit 0
+        fi
+    fi
+fi
+
+# Find the main project root
+MAIN_PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+echo -e "\n${YELLOW}Configuration:${NC}"
+echo "Main project root: $MAIN_PROJECT_ROOT"
+echo "Target directory: $TARGET_ROOT"
+
+# Verify main project structure
+#if [[ ! -f "$MAIN_PROJECT_ROOT/src/unifyweaver/core/to_lang.pl" ]]; then
+#    echo -e "${RED}Error: Main project structure not found!${NC}"
+#    echo "Expected to find: $MAIN_PROJECT_ROOT/src/unifyweaver/core/to_lang.pl"
+#    echo "Please run this script from scripts/testing/ in a UnifyWeaver project"
+#    exit 1
+#fi
+#set -x
+source "$SCRIPT_DIR/find_swi-prolog.sh"
+#set +x
+
+# Create directory structure
+echo -e "\n${YELLOW}Creating directory structure...${NC}"
+dirs=(
+    "src/unifyweaver/core"
+    "src/unifyweaver/backends/bash"
+    "src/unifyweaver/pipelines"
+    "tests/output"
+    "templates"
+    "scripts"
+    "config"
+)
+
+for dir in "${dirs[@]}"; do
+    mkdir -p "$TARGET_ROOT/$dir"
+    echo -e "${GREEN}✓${NC} Created $dir"
+done
+
+# Define your directories, including the one you want to exclude
+cp_dirs=(
+    "src/unifyweaver/core"
+    "src/unifyweaver/backends/bash"
+    "src/unifyweaver/pipelines"
+    "templates"
+    "scripts"
+    "config"
+)
+
+# (removed hardcoded TARGET_ROOT; keep portable default)
+
+# Create the directories in the target location first
+echo -e "\n${YELLOW}Creating destination directories...${NC}"
+for dir in "${cp_dirs[@]}"; do
+    mkdir -p "$TARGET_ROOT/$dir" || { echo "Failed to create directory $TARGET_ROOT/$dir"; exit 1; }
+done
+
+# Now, copy the contents of each source directory into the destination directories
+echo -e "\n${YELLOW}Installing core modules...${NC}"
+for dir in "${cp_dirs[@]}"; do
+    # Use a case statement to handle the special 'scripts' directory
+    case "$dir" in
+        "scripts")
+            # Copy all files from 'scripts' but exclude 'testing/test_env'
+            # The 'rsync' command is ideal for this kind of selective copying
+            # The --exclude option lets you skip specific directories or files
+            if rsync -av --exclude 'testing/test_env' "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/"; then
+                echo -e "${GREEN}✓${NC} Copied contents of scripts, excluding test_env"
+            else
+                echo -e "${RED}✗${NC} Failed to copy contents of scripts"
+                exit 1
+            fi
+            ;;
+        *)
+            # For all other directories, use the standard 'cp' command
+            if cp -r "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/"; then
+                echo -e "${GREEN}✓${NC} Copied contents of $dir"
+            else
+                echo -e "${RED}✗${NC} Failed to copy contents of $dir"
+                exit 1
+            fi
+            ;;
+    esac
+done
+
+# Optional: move setup_templates.pl if present
+if [[ -f "$TARGET_ROOT/templates/setup_templates.pl" ]]; then
+  mv "$TARGET_ROOT/templates/setup_templates.pl" "$TARGET_ROOT/setup_templates.pl"
+  echo -e "${GREEN}✓${NC} Moved setup_templates.pl to test_env root"
+else
+  echo -e "${YELLOW}i${NC} No setup_templates.pl found in templates; skipping move"
+fi
+
+# Copy backends if they exist
+if [[ -d "$MAIN_PROJECT_ROOT/src/unifyweaver/backends" ]]; then
+    cp -r "$MAIN_PROJECT_ROOT/src/unifyweaver/backends/"* "$TARGET_ROOT/src/unifyweaver/backends/" 2>/dev/null || true
+    echo -e "${GREEN}✓${NC} Copied backends (if any)"
+fi
+
+# Copy pipelines if they exist  
+if [[ -d "$MAIN_PROJECT_ROOT/src/unifyweaver/pipelines" ]]; then
+    cp -r "$MAIN_PROJECT_ROOT/src/unifyweaver/pipelines/"* "$TARGET_ROOT/src/unifyweaver/pipelines/" 2>/dev/null || true
+    echo -e "${GREEN}✓${NC} Copied pipelines (if any)"
+fi
+
+# Copy test files from the main project
+echo -e "\n${YELLOW}Installing test files...${NC}"
+if [[ -d "$MAIN_PROJECT_ROOT/tests" ]]; then
+    cp "$MAIN_PROJECT_ROOT/tests/"*.pl "$TARGET_ROOT/tests/" 2>/dev/null || true
+    echo -e "${GREEN}✓${NC} Copied test files from main project"
+fi
+
+# Create additional test files
+cat > "$TARGET_ROOT/tests/test_basic.pl" << 'EOF'
+% Basic test to verify compilation works
+% Ensure init.pl has run; otherwise consult it
+:- (   current_predicate(unifyweaver_initialized/0)
+   ->  true
+   ;   prolog_load_context(directory, Dir),
+       absolute_file_name('../init.pl', Init, [ relative_to(Dir), file_errors(fail) ]),
+       consult(Init)
+   ).
+
+:- use_module(unifyweaver(core/to_lang)).
+
+
+% Define simple facts
+parent(alice, bob).
+parent(bob, charlie).
+
+% Define simple rule  
+grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+
+test_basic :-
+    format('~n=== Basic Compilation Test ===~n', []),
+    
+    % Register facts from database
+    register_facts_from_db(parent/2),
+    
+    % Test fact compilation
+    format('~nCompiling parent/2 facts to bash...~n', []),
+    to_lang(parent/2, bash, [mode-arrays], BashCode),
+    format('Generated bash code:~n~s~n', [BashCode]),
+    
+    % Save to file
+    open('tests/output/parent_facts.sh', write, Stream),
+    write(Stream, BashCode),
+    close(Stream),
+    format('~nSaved to tests/output/parent_facts.sh~n', []),
+    format('Test completed successfully!~n', []).
+EOF
+
+echo -e "${GREEN}✓${NC} Created test_basic.pl"
+
+# Copy or create init.pl
+if [[ -f "$MAIN_PROJECT_ROOT/init.pl" ]]; then
+    cp "$MAIN_PROJECT_ROOT/init.pl" "$TARGET_ROOT/init.pl"
+    echo -e "${GREEN}✓${NC} Copied init.pl from main project"
+else
+    # Create a testing-specific init.pl
+    cat > "$TARGET_ROOT/init.pl" << 'EOF'
+% UnifyWeaver testing environment initialization
+:- dynamic user:library_directory/1.
+:- dynamic user:file_search_path/2.
+:- dynamic user:unifyweaver_root/1.
+
+% Load necessary library for path manipulation
+:- use_module(library(filesex)).
+
+
+
+unifyweaver_init :-
+    prolog_load_context(directory, Here),
+    format('Here: ~w~n',[Here]),
+    retractall(user:unifyweaver_root(_)),
+    assertz(user:unifyweaver_root(Here)),    
+    directory_file_path(Here, 'src', AbsSrcDir),
+    directory_file_path(AbsSrcDir, 'unifyweaver', AbsUnifyweaverDir),
+    asserta(user:library_directory(AbsSrcDir)),
+    asserta(user:file_search_path(unifyweaver, AbsUnifyweaverDir)),
+    format('[UnifyWeaver] Absolute paths configured:~n', []),
+    format('  src: ~w~n', [AbsSrcDir]),
+    format('  unifyweaver: ~w~n', [AbsUnifyweaverDir]),
+    help.
+
+:- dynamic unifyweaver_initialized/0.
+:- asserta(unifyweaver_initialized).
+
+load_recursive :-
+    ( use_module(unifyweaver(core/recursive_compiler))
+    -> format('recursive_compiler module loaded successfully!~n', [])
+    ; format('Failed to load recursive_compiler~n', [])
+    ).
+load_stream :-
+    ( use_module(unifyweaver(core/stream_compiler))
+    -> format('stream_compiler module loaded successfully!~n', [])
+    ; format('Failed to load stream_compiler~n', [])
+    ).
+load_template :-
+    ( use_module(unifyweaver(core/template_system))
+    -> format('template_system module loaded successfully!~n', [])
+    ; format('Failed to load template_system~n', [])
+    ).    
+load_all_core :-
+    use_module(unifyweaver(core/recursive_compiler)),
+    use_module(unifyweaver(core/stream_compiler)),
+    use_module(unifyweaver(core/template_system)),
+    format('All core modules loaded successfully!~n', []).
+
+run_basic_test :-
+    consult('tests/test_basic'),
+    test_basic.
+
+help :-
+    format('~n=== UnifyWeaver Testing Help ===~n', []),
+    format('Available commands:~n', []),
+    format(' load_recursive. - Load the recursive_compiler module~n', []),
+    format(' load_stream. - Load the stream_compiler module~n', []),
+    format(' load_template. - Load the template_system module~n', []),
+    format(' load_all_core. - Load all core modules~n', []),
+    format(' run_basic_test. - Run basic compilation test~n', []),
+    format(' test_simple. - Run built-in simple test~n', []),
+    format(' help. - Show this help~n', []),
+    format('~n', []).
+    
+:- initialization(unifyweaver_init, now).
+EOF
+    echo -e "${GREEN}✓${NC} Created testing init.pl"
+fi
+
+# Copy config files
+echo -e "\n${YELLOW}Creating configuration files...${NC}"
+
+if [[ -f "$MAIN_PROJECT_ROOT/config/python_paths.txt" ]]; then
+    cp "$MAIN_PROJECT_ROOT/config/python_paths.txt" "$TARGET_ROOT/config/"
+    echo -e "${GREEN}✓${NC} Copied python_paths.txt from main project"
+else
+    cat > "$TARGET_ROOT/config/python_paths.txt" << 'EOF'
+# Additional Python module paths
+# Add your paths here, one per line
+# Example: /path/to/agentRAG/src
+EOF
+    echo -e "${GREEN}✓${NC} Created default python_paths.txt"
+fi
+
+cat > "$TARGET_ROOT/config/assumed_packages.txt" << 'EOF'
+# Packages to assume are available without checking
+# Add package names here, one per line
+# Example: agentRag
+# requests
+EOF
+
+echo -e "${GREEN}✓${NC} Created assumed_packages.txt"
+
+# Create launcher script
+
+FIND_PREFIX="${FIND_SWIPL_DIR%/}${FIND_SWIPL_DIR:+\/}"
+
+cat > "$TARGET_ROOT/unifyweaver.sh" << EOF
+#!/usr/bin/env bash
+set -euo pipefail
+TARGET_ROOT="."
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+FIND_PREFIX=${FIND_PREFIX}
+SCRIPT_DIR="\$(dirname "\$(realpath "\${BASH_SOURCE}")")"
+cd "\$SCRIPT_DIR"
+
+
+
+source "\$SCRIPT_DIR/find_swi-prolog.sh"
+
+echo "Starting UnifyWeaver testing environment..."
+echo "Type 'help.' for available commands"
+echo ""
+SWIPL_CMD="${SWIPL_CMD:-swipl}"
+exec "$SWIPL_CMD" -q -f init.pl
+# exec "\$SWIPL_CMD" -q -g "asserta(user:unifyweaver_root('\$SCRIPT_DIR'))" -f init.pl
+# Note we don't need the -g option above because in:
+# unifyweaver_init
+#
+# we have:
+#
+#    retractall(user:unifyweaver_root(_)),
+#    assertz(user:unifyweaver_root(Here)),
+EOF
+
+chmod +x "$TARGET_ROOT/unifyweaver.sh"
+echo -e "${GREEN}✓${NC} Created launcher script"
+
+# Run initial test
+echo -e "\n${YELLOW}Running initial test...${NC}"
+cd "$TARGET_ROOT"
+
+# Snapshot repo config into the test_env so the launcher is self-contained
+if [[ -f "$SCRIPT_DIR/.unifyweaver.conf" ]]; then
+  cp -f "$SCRIPT_DIR/.unifyweaver.conf" "$TARGET_ROOT/${FIND_PREFIX}.unifyweaver.conf"
+fi
+
+
+
+
+# Ask user about applying settings to the main testing directory
+echo ""
+read -p "Do you want to apply the new settings to the main testing directory? (y/N) " -n 1 -r
+echo ""
+
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo -e "${GREEN}✓${NC} Configuration settings updated."
+    # If a backup exists, delete it.
+    if [[ -n "$BACKUP_CFG_FILE" ]]; then
+      rm "$BACKUP_CFG_FILE"
+    fi
+else
+    echo -e "${YELLOW}i${NC} Configuration settings not applied. Restoring original."
+    # Restore the backup if it exists, otherwise delete the new file.
+    if [[ -n "$BACKUP_CFG_FILE" ]]; then
+        mv "$BACKUP_CFG_FILE" "$SCRIPT_DIR/.unifyweaver.conf"
+    else
+        rm -f "$SCRIPT_DIR/.unifyweaver.conf"
+    fi
+fi
+
+
+
+
+# Optionally snapshot the helper too
+cp -f "$SCRIPT_DIR/find_swi-prolog.sh" "$TARGET_ROOT/find_swi-prolog.sh"
+
+
+
+# Test module loading
+
+SWIPL_CMD=${SWIPL_CMD:-swipl}
+
+if "$SWIPL_CMD" -q -t halt -g "asserta(library_directory('src')), use_module(library(unifyweaver/core/recursive_compiler)), format('Module loaded successfully!~n', [])" 2>/dev/null; then
+    echo -e "${GREEN}✓${NC} Core modules load correctly"
+else
+    echo -e "${RED}✗${NC} Module loading failed"
+    echo "Debug information:"
+    "$SWIPL_CMD" l -q -t halt -g "asserta(library_directory('src')), use_module(library/unifyweaver/core/recursive_compiler))"
+fi
+
+echo -e "\n${GREEN}==================================="
+echo "Setup Complete!"
+echo -e "===================================${NC}"
+
+echo -e "\n${YELLOW}Testing Environment Created:${NC}"
+echo "Location: $TARGET_ROOT"
+echo "Core modules: $(ls -1 "$TARGET_ROOT/src/unifyweaver/core/" | wc -l) files"
+
+echo -e "\n${YELLOW}Next steps:${NC}"
+echo "1. Run the launcher: ./unifyweaver.sh"
+echo "2. In Prolog, type: load_to_lang."
+echo "3. Or load all: load_all_core."
+echo "4. Run tests: run_basic_test."
+
+echo -e "\n${YELLOW}File locations:${NC}"
+echo "Core modules: src/unifyweaver/core/"
+echo "Tests: tests/"
+echo "Examples: examples/"
+echo "Config: config/"
+
+echo -e "\n${YELLOW}Environment variable usage:${NC}"
+echo "UNIFYWEAVER_ROOT=/path/to/testing/dir ./init_testing.sh"

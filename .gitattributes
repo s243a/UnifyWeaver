@@ -1,0 +1,57 @@
+# UnifyWeaver .gitattributes
+# Enforce consistent line endings across platforms
+
+# Default: LF line endings for all text files
+* text=auto eol=lf
+
+# Explicitly mark text files
+*.pl text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Shell scripts must have LF (required for Unix/Linux/macOS)
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Prolog files must have LF (multi-line strings)
+*.pl text eol=lf
+*.pro text eol=lf
+
+# Python files should have LF (PEP 8 standard)
+*.py text eol=lf
+
+# Makefiles require LF
+Makefile text eol=lf
+*.mk text eol=lf
+
+# Documentation
+*.md text eol=lf
+LICENSE* text eol=lf
+CONTRIBUTING* text eol=lf
+
+# Windows-specific files (only if needed in future)
+# *.bat text eol=crlf
+# *.ps1 text eol=crlf
+# *.cmd text eol=crlf
+
+# Binary files (explicitly mark to prevent conversion)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary
+*.beam binary
+
+# Archives
+*.tar binary
+*.gz binary
+*.bz2 binary
+*.7z binary
+*.rar binary

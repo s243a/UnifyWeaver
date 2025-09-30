@@ -1,0 +1,63 @@
+# UnifyWeaver .gitignore
+
+# Test environment (auto-generated)
+scripts/testing/test_env/
+
+# Output directories
+output/
+tests/output/
+
+# Deveopment directories
+patches/
+
+# Python
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+
+# Prolog compiled files
+*.qlf
+
+# Configuration files
+.unifyweaver.conf
+*.conf
+
+# VSCode
+.vscode/
+*.code-workspace
+.history/
+
+# FreeFileSync
+*.ffs_db
+*.ffs_lock
+*.ffs_gui
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# Logs
+*.log
+logs/
+
+# Editor backups
+*~
+*.bak
+*.orig
