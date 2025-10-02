@@ -71,11 +71,11 @@ set PROLOG_GOAL=( working_directory(CWD, CWD), ^
   format('  test_recursive   - Test recursive compiler~~n', []), ^
   format('  test_advanced    - Test advanced recursion~~n~~n', []), ^
   asserta((load_stream :- ^
-    (use_module(unifyweaver(core/stream_compiler)) -^> ^
+    (use_module(unifyweaver(core/stream_compiler)) -> ^
       format('stream_compiler loaded successfully!~~n', []) ^
     ; format('Failed to load stream_compiler~~n', [])))), ^
   asserta((load_recursive :- ^
-    (use_module(unifyweaver(core/recursive_compiler)) -^> ^
+    (use_module(unifyweaver(core/recursive_compiler)) -> ^
       format('recursive_compiler loaded successfully!~~n', []) ^
     ; format('Failed to load recursive_compiler~~n', [])))), ^
   asserta((test_stream :- ^
