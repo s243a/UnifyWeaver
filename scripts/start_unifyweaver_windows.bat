@@ -102,8 +102,9 @@ set "PROLOG_SRC=%PROLOG_ROOT%/src"
 set "PROLOG_UNIFYWEAVER=%PROLOG_ROOT%/src/unifyweaver"
 
 REM --- Build Prolog initialization goal ---
-REM Note: All on one line to avoid issues with line continuation characters
-set PROLOG_GOAL=( working_directory(CWD, CWD), format('[UnifyWeaver] Working directory: ~~w~~n', [CWD]), atom_string('%PROLOG_ROOT%', RootStr), atom_concat(RootStr, '/src', AbsSrcDir), atom_concat(RootStr, '/src/unifyweaver', AbsUnifyweaverDir), asserta(user:library_directory(AbsSrcDir)), asserta(file_search_path(unifyweaver, AbsUnifyweaverDir)), format('[UnifyWeaver] Library paths configured~~n', []), format('[UnifyWeaver] Native Windows environment ready!~~n~~n', []), format('Helper commands:~~n', []), format('  load_stream      - Load stream compiler~~n', []), format('  load_recursive   - Load recursive compiler~~n', []), format('  test_stream      - Test stream compiler~~n', []), format('  test_recursive   - Test recursive compiler~~n', []), format('  test_advanced    - Test advanced recursion~~n~~n', []), asserta((load_stream :- (use_module(unifyweaver(core/stream_compiler)) -> format('stream_compiler loaded successfully!~~n', []) ; format('Failed to load stream_compiler~~n', [])))), asserta((load_recursive :- (use_module(unifyweaver(core/recursive_compiler)) -> format('recursive_compiler loaded successfully!~~n', []) ; format('Failed to load recursive_compiler~~n', [])))), asserta((test_stream :- use_module(unifyweaver(core/stream_compiler)), test_stream_compiler)), asserta((test_recursive :- use_module(unifyweaver(core/recursive_compiler)), test_recursive_compiler)), asserta((test_advanced :- use_module(unifyweaver(core/advanced/test_advanced)), test_all_advanced)) )
+REM Note: All on one line, using double quotes for the entire goal
+REM Single quotes in Prolog strings are escaped by doubling them
+set "PROLOG_GOAL=( working_directory(CWD, CWD), format(""[UnifyWeaver] Working directory: ~~w~~n"", [CWD]), atom_string('%PROLOG_ROOT%', RootStr), atom_concat(RootStr, '/src', AbsSrcDir), atom_concat(RootStr, '/src/unifyweaver', AbsUnifyweaverDir), asserta(user:library_directory(AbsSrcDir)), asserta(file_search_path(unifyweaver, AbsUnifyweaverDir)), format(""[UnifyWeaver] Library paths configured~~n"", []), format(""[UnifyWeaver] Native Windows environment ready!~~n~~n"", []), format(""Helper commands:~~n"", []), format(""  load_stream      - Load stream compiler~~n"", []), format(""  load_recursive   - Load recursive compiler~~n"", []), format(""  test_stream      - Test stream compiler~~n"", []), format(""  test_recursive   - Test recursive compiler~~n"", []), format(""  test_advanced    - Test advanced recursion~~n~~n"", []), asserta((load_stream :- (use_module(unifyweaver(core/stream_compiler)) -> format(""stream_compiler loaded successfully!~~n"", []) ; format(""Failed to load stream_compiler~~n"", [])))), asserta((load_recursive :- (use_module(unifyweaver(core/recursive_compiler)) -> format(""recursive_compiler loaded successfully!~~n"", []) ; format(""Failed to load recursive_compiler~~n"", [])))), asserta((test_stream :- use_module(unifyweaver(core/stream_compiler)), test_stream_compiler)), asserta((test_recursive :- use_module(unifyweaver(core/recursive_compiler)), test_recursive_compiler)), asserta((test_advanced :- use_module(unifyweaver(core/advanced/test_advanced)), test_all_advanced)) )"
 
 REM --- Change to project root ---
 pushd "%PROJECT_ROOT%"
@@ -111,12 +112,12 @@ pushd "%PROJECT_ROOT%"
 REM --- Launch with ConEmu if available, else standard console ---
 if defined CONEMU_EXE (
   echo [UnifyWeaver] Launching in ConEmu terminal...
-  "%CONEMU_EXE%" -Dir "%PROJECT_ROOT%" -run cmd /k ""%SWIPL_EXE%" -q -g "%PROLOG_GOAL%" -t prolog"
+  "%CONEMU_EXE%" -Dir "%PROJECT_ROOT%" -run cmd /k ""%SWIPL_EXE%" -q -g %PROLOG_GOAL% -t prolog"
 ) else (
   echo [UnifyWeaver] ConEmu not found - using standard console
   echo [UnifyWeaver] For better terminal experience, install ConEmu from https://conemu.github.io/
   echo.
-  "%SWIPL_EXE%" -q -g "%PROLOG_GOAL%" -t prolog
+  "%SWIPL_EXE%" -q -g %PROLOG_GOAL% -t prolog
 )
 
 popd
