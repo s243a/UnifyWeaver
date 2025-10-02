@@ -166,7 +166,12 @@ foreach ($Dir in $SourceDirs) {
         }
 
         # Copy with robocopy for better performance
-        $null = robocopy $SourcePath $DestPath /E /NFL /NDL /NJH /NJS /NC /NS /NP
+        # Exclude test_env* directories to prevent recursive copy
+        if ($Dir.Source -eq "scripts") {
+            $null = robocopy $SourcePath $DestPath /E /XD "test_env*" /NFL /NDL /NJH /NJS /NC /NS /NP
+        } else {
+            $null = robocopy $SourcePath $DestPath /E /NFL /NDL /NJH /NJS /NC /NS /NP
+        }
 
         if ($LASTEXITCODE -ge 8) {
             Write-Host "[ERROR] Failed to copy $($Dir.Source)" -ForegroundColor Red
