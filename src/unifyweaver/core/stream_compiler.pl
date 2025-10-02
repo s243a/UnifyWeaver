@@ -14,6 +14,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(constraint_analyzer).
 
 %% Main compilation entry point
 compile_predicate(Pred/Arity, Options) :-
@@ -21,10 +22,17 @@ compile_predicate(Pred/Arity, Options) :-
 
 compile_predicate(Pred/Arity, Options, BashCode) :-
     format('=== Compiling ~w/~w ===~n', [Pred, Arity]),
-    
+
+    % Get constraints for this predicate (from declarations or defaults)
+    get_constraints(Pred/Arity, Constraints),
+    format('  Constraints: ~w~n', [Constraints]),
+
+    % Merge with any runtime options (options take precedence)
+    merge_options(Options, Constraints, MergedOptions),
+
     % Create head with correct arity
     functor(Head, Pred, Arity),
-    
+
     % Get all clauses for this predicate
     findall(Body, clause(Head, Body), Bodies),
     length(Bodies, NumClauses),
@@ -36,18 +44,32 @@ compile_predicate(Pred/Arity, Options, BashCode) :-
     ;   Bodies = [true|Rest], forall(member(B, Rest), B = true) ->
         % All bodies are just 'true' - these are facts
         format('Type: facts (~w clauses)~n', [NumClauses]),
-        compile_facts(Pred, Arity, Options, BashCode)
+        compile_facts(Pred, Arity, MergedOptions, BashCode)
     ;   Bodies = [SingleBody], SingleBody \= true ->
         % Single rule
         format('Type: single_rule (~w clauses)~n', [NumClauses]),
         extract_predicates(SingleBody, Predicates),
         format('  Body predicates: ~w~n', [Predicates]),
-        compile_single_rule(Pred, SingleBody, Options, BashCode)
+        compile_single_rule(Pred, SingleBody, MergedOptions, BashCode)
     ;   % Multiple rules (OR pattern)
         format('Type: multiple_rules (~w clauses)~n', [NumClauses]),
         format('  ~w alternatives~n', [NumClauses]),
-        compile_multiple_rules(Pred, Bodies, Options, BashCode)
+        compile_multiple_rules(Pred, Bodies, MergedOptions, BashCode)
     ).
+
+%% Merge runtime options with constraint-based options
+%  Runtime options take precedence over constraints
+merge_options(RuntimeOpts, Constraints, Merged) :-
+    % Extract unique and unordered from constraints
+    (member(unique(ConstraintUnique), Constraints) -> true ; ConstraintUnique = true),
+    (member(unordered(ConstraintUnordered), Constraints) -> true ; ConstraintUnordered = true),
+
+    % Check if runtime overrides exist, otherwise use constraint values
+    (member(unique(RuntimeUnique), RuntimeOpts) -> FinalUnique = RuntimeUnique ; FinalUnique = ConstraintUnique),
+    (member(unordered(RuntimeUnordered), RuntimeOpts) -> FinalUnordered = RuntimeUnordered ; FinalUnordered = ConstraintUnordered),
+
+    % Build merged list with final values
+    Merged = [unique(FinalUnique), unordered(FinalUnordered)].
 
 %% Extract predicates from a body
 extract_predicates(true, []) :- !.
@@ -166,34 +188,7 @@ compile_single_rule(Pred, Body, Options, BashCode) :-
         % Generate all necessary join functions
         collect_join_functions(Predicates, JoinFunctions),
         atomic_list_concat(JoinFunctions, '\n\n', JoinCode),
-        (   member(unique(true), Options) ->
-            format(string(BashCode), '#!/bin/bash
-# ~s - streaming pipeline with uniqueness
-
-~s
-
-~s() {
-    ~s | sort -u
-}
-
-# Stream function for use in pipelines
-~s_stream() {
-    ~s
-}', [PredStr, JoinCode, PredStr, Pipeline, PredStr, PredStr])
-        ;   format(string(BashCode), '#!/bin/bash
-# ~s - streaming pipeline
-
-~s
-
-~s() {
-    ~s
-}
-
-# Stream function for use in pipelines
-~s_stream() {
-    ~s
-}', [PredStr, JoinCode, PredStr, Pipeline, PredStr, PredStr])
-        )
+        generate_dedup_wrapper(PredStr, JoinCode, Pipeline, Options, BashCode)
     ).
 
 %% Compile multiple rules (OR pattern)
@@ -264,32 +259,10 @@ compile_multiple_rules(Pred, Bodies, Options, BashCode) :-
     % Join with proper formatting
     atomic_list_concat(AltFunctions, '\n\n', FunctionsCode),
     atomic_list_concat(FnCalls, ' ; ', CallsStr),
-    
-    % Generate main function with join functions
-    (   member(unique(true), Options) ->
-        format(string(BashCode), '#!/bin/bash
-# ~s - OR pattern with ~w alternatives
 
-~s
-
-~s
-
-# Main function - combine alternatives with uniqueness
-~s() {
-    ( ~s ) | sort -u
-}', [PredStr, NumAlts, JoinFuncsCode, FunctionsCode, PredStr, CallsStr])
-    ;   format(string(BashCode), '#!/bin/bash
-# ~s - OR pattern with ~w alternatives
-
-~s
-
-~s
-
-# Main function - combine alternatives
-~s() {
-    ( ~s )
-}', [PredStr, NumAlts, JoinFuncsCode, FunctionsCode, PredStr, CallsStr])
-    ).
+    % Generate main function with appropriate deduplication
+    format(string(Pipeline), '( ~s )', [CallsStr]),
+    generate_dedup_wrapper_multi(PredStr, NumAlts, JoinFuncsCode, FunctionsCode, Pipeline, Options, BashCode).
 
 %% Generate streaming pipeline from predicates
 generate_pipeline([], _, "true") :- !.
@@ -457,18 +430,25 @@ test_stream_compiler :-
     assertz((related(X, Y) :- parent(Y, X))),       % Reverse: Y is parent of X (X is child of Y)
     assertz((related(X, Y) :- sibling(X, Y))),
     
-    % Compile predicates
+    % Declare constraints (using defaults: unique=true, unordered=true)
+    % No need to declare for grandparent/sibling/related - they use defaults
+    % But we'll be explicit for documentation
+    declare_constraint(grandparent/2, [unique, unordered]),
+    declare_constraint(sibling/2, [unique, unordered]),
+    declare_constraint(related/2, [unique, unordered]),
+
+    % Compile predicates (constraints come from declarations, not options)
     writeln('--- Compiling predicates ---'),
     compile_predicate(parent/2, [], ParentCode),
     write_bash_file('output/parent.sh', ParentCode),
-    
-    compile_predicate(grandparent/2, [unique(true)], GrandparentCode),
+
+    compile_predicate(grandparent/2, [], GrandparentCode),
     write_bash_file('output/grandparent.sh', GrandparentCode),
-    
-    compile_predicate(sibling/2, [unique(true)], SiblingCode),
+
+    compile_predicate(sibling/2, [], SiblingCode),
     write_bash_file('output/sibling.sh', SiblingCode),
-    
-    compile_predicate(related/2, [unique(true)], RelatedCode),
+
+    compile_predicate(related/2, [], RelatedCode),
     write_bash_file('output/related.sh', RelatedCode),
     
     % Generate test script
@@ -477,6 +457,107 @@ test_stream_compiler :-
     writeln('--- Test Complete ---'),
     writeln('Check files in output/'),
     writeln('Run: bash output/test.sh').
+
+%% Generate deduplication wrapper based on constraints
+%  For single-rule predicates
+generate_dedup_wrapper(PredStr, JoinCode, Pipeline, Options, BashCode) :-
+    (   constraint_implies_sort_u(Options) ->
+        % Use sort -u for unique + unordered
+        format(string(BashCode), '#!/bin/bash
+# ~s - streaming pipeline with uniqueness (sort -u)
+
+~s
+
+~s() {
+    ~s | sort -u
+}
+
+# Stream function for use in pipelines
+~s_stream() {
+    ~s
+}', [PredStr, JoinCode, PredStr, Pipeline, PredStr, PredStr])
+    ;   constraint_implies_hash(Options) ->
+        % Use hash-based dedup for unique + ordered
+        format(string(BashCode), '#!/bin/bash
+# ~s - streaming pipeline with hash-based deduplication (preserves order)
+
+~s
+
+~s() {
+    declare -A seen
+    ~s | while IFS= read -r line; do
+        if [[ -z "${seen[$line]}" ]]; then
+            seen[$line]=1
+            echo "$line"
+        fi
+    done
+}
+
+# Stream function for use in pipelines
+~s_stream() {
+    ~s
+}', [PredStr, JoinCode, PredStr, Pipeline, PredStr, PredStr])
+    ;   % No deduplication
+        format(string(BashCode), '#!/bin/bash
+# ~s - streaming pipeline (no deduplication)
+
+~s
+
+~s() {
+    ~s
+}
+
+# Stream function for use in pipelines
+~s_stream() {
+    ~s
+}', [PredStr, JoinCode, PredStr, Pipeline, PredStr, PredStr])
+    ).
+
+%% Generate deduplication wrapper for multiple-rule predicates
+generate_dedup_wrapper_multi(PredStr, NumAlts, JoinFuncsCode, FunctionsCode, Pipeline, Options, BashCode) :-
+    (   constraint_implies_sort_u(Options) ->
+        format(string(BashCode), '#!/bin/bash
+# ~s - OR pattern with ~w alternatives (sort -u)
+
+~s
+
+~s
+
+# Main function - combine alternatives with uniqueness
+~s() {
+    ~s | sort -u
+}', [PredStr, NumAlts, JoinFuncsCode, FunctionsCode, PredStr, Pipeline])
+    ;   constraint_implies_hash(Options) ->
+        format(string(BashCode), '#!/bin/bash
+# ~s - OR pattern with ~w alternatives (hash dedup, preserves order)
+
+~s
+
+~s
+
+# Main function - combine alternatives preserving order
+~s() {
+    declare -A seen
+    ~s | while IFS= read -r line; do
+        if [[ -z "${seen[$line]}" ]]; then
+            seen[$line]=1
+            echo "$line"
+        fi
+    done
+}', [PredStr, NumAlts, JoinFuncsCode, FunctionsCode, PredStr, Pipeline])
+    ;   % No deduplication
+        format(string(BashCode), '#!/bin/bash
+# ~s - OR pattern with ~w alternatives (no deduplication)
+
+~s
+
+~s
+
+# Main function - combine alternatives
+~s() {
+    ~s
+}', [PredStr, NumAlts, JoinFuncsCode, FunctionsCode, PredStr, Pipeline])
+    ).
 
 %% Generate test script
 generate_test_script :-

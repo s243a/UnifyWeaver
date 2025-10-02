@@ -5,6 +5,10 @@ scripts/testing/test_env/
 
 # Legacy scripts (kept for reference, not for distribution)
 scripts/legacy/
+src/unifyweaver/core/legacy/
+docs/legacy
+Obsidian/
+templates/legacy/
 
 # Output directories
 output/
