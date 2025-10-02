@@ -1,0 +1,213 @@
+================================================================================
+  ADVANCED RECURSION COMPILER - ARCHITECTURE DIAGRAM
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         USER / CLIENT CODE                               │
+│  ?- compile_recursive(pred/2, [], Code).                                │
+└────────────────────────────────┬─────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    recursive_compiler.pl                                 │
+│  - Basic pattern classification                                          │
+│  - Transitive closure detection                                          │
+│  - Delegates to stream_compiler for non-recursive                        │
+└─────────────┬─────────────┬────────────────────────────────┬─────────────┘
+              │             │                                │
+     ┌────────┘             │                                │
+     │                      │                                │
+     │ [Basic]         [Advanced?]                     [Fallback]
+     │                      │                                │
+     ▼                      ▼                                ▼
+ transitive_    ┌────────────────────────────┐      memoized_recursion
+ closure        │ ADVANCED RECURSION MODULES │      (basic memo table)
+                └────────────┬───────────────┘
+                             │
+                             ▼
+        ┌────────────────────────────────────────────────┐
+        │  advanced_recursive_compiler.pl (orchestrator) │
+        │  - Priority-based pattern selection            │
+        │  - Tries: tail → linear → mutual               │
+        └────┬────────┬─────────────────┬────────────────┘
+             │        │                 │
+    ┌────────┘        │                 └─────────┐
+    │                 │                           │
+    ▼                 ▼                           ▼
+┌─────────┐    ┌──────────────┐    ┌──────────────────────┐
+│  TAIL   │    │   LINEAR     │    │  MUTUAL RECURSION    │
+│RECURSION│    │  RECURSION   │    │    (SCC-based)       │
+└─────────┘    └──────────────┘    └──────────┬───────────┘
+    │                 │                        │
+    │                 │                        ├──────┐
+    │                 │                        │      │
+    ▼                 ▼                        ▼      ▼
+pattern_         pattern_              call_graph  scc_detection
+matchers         matchers              (build      (Tarjan's
+(detect          (detect               depend.     algorithm)
+accum.)          single call)          graph)
+    │                 │                        │
+    │                 │                        │
+    ▼                 ▼                        ▼
+template_        template_              template_system
+system           system                 (shared memo)
+(for loop)       (memoization)
+
+
+================================================================================
+  MODULE DEPENDENCY GRAPH
+================================================================================
+
+advanced_recursive_compiler.pl
+    ├─→ call_graph.pl
+    ├─→ scc_detection.pl
+    │       └─→ call_graph.pl
+    ├─→ pattern_matchers.pl
+    ├─→ tail_recursion.pl
+    │       ├─→ pattern_matchers.pl
+    │       └─→ template_system.pl
+    ├─→ linear_recursion.pl
+    │       ├─→ pattern_matchers.pl
+    │       └─→ template_system.pl
+    └─→ mutual_recursion.pl
+            ├─→ call_graph.pl
+            ├─→ scc_detection.pl
+            └─→ template_system.pl
+
+
+================================================================================
+  COMPILATION FLOW (Priority Order)
+================================================================================
+
+    Input: Predicate P/A
+        │
+        ▼
+    ┌───────────────────────────┐
+    │ 1. Check Tail Recursion   │──────────────┐
+    │    (accumulator pattern)  │              │
+    └───────────────────────────┘              │
+                │                               │
+                │ No                            │ Yes
+                ▼                               ▼
+    ┌───────────────────────────┐      Compile to FOR LOOP
+    │ 2. Check Linear Recursion │      (iterative)
+    │    (single recursive call)│
+    └───────────────────────────┘
+                │
+                │ No
+                ▼
+    ┌───────────────────────────┐
+    │ 3. Build Call Graph       │
+    │    Find Dependencies      │
+    └───────────┬───────────────┘
+                │
+                ▼
+    ┌───────────────────────────┐
+    │ 4. SCC Detection          │
+    │    (Tarjan's algorithm)   │
+    └───────────┬───────────────┘
+                │
+                ▼
+        ┌───────┴────────┐
+        │                │
+    Size = 1        Size > 1
+        │                │
+        ▼                ▼
+    Self-Rec       Mutual-Rec
+    (memoize)      (shared memo)
+        │                │
+        └────────┬───────┘
+                 │
+                 ▼
+         BASH CODE OUTPUT
+
+
+================================================================================
+  DATA FLOW (Example: even/odd mutual recursion)
+================================================================================
+
+Input:
+    is_even(0).
+    is_even(N) :- N > 0, N1 is N - 1, is_odd(N1).
+    is_odd(1).
+    is_odd(N) :- N > 1, N1 is N - 1, is_even(N1).
+
+Step 1: Build Call Graph
+    Graph = [is_even/1 -> is_odd/1, is_odd/1 -> is_even/1]
+
+Step 2: SCC Detection (Tarjan's)
+    SCCs = [[is_even/1, is_odd/1]]
+
+Step 3: Classify SCC
+    Size = 2  →  Non-trivial SCC  →  Mutual Recursion
+
+Step 4: Generate Code
+    ┌─────────────────────────────────────────┐
+    │ declare -gA is_even_is_odd_memo         │
+    │                                         │
+    │ is_even() {                             │
+    │   key="is_even:$*"                      │
+    │   [[ -n "${is_even_is_odd_memo[$key]}"]]│
+    │   # ... base + recursive logic ...      │
+    │   is_even_is_odd_memo[$key]=$result     │
+    │ }                                       │
+    │                                         │
+    │ is_odd() {                              │
+    │   key="is_odd:$*"                       │
+    │   [[ -n "${is_even_is_odd_memo[$key]}"]]│
+    │   # ... base + recursive logic ...      │
+    │   is_even_is_odd_memo[$key]=$result     │
+    │ }                                       │
+    └─────────────────────────────────────────┘
+
+
+================================================================================
+  TESTING ARCHITECTURE
+================================================================================
+
+test_advanced.pl
+    ├─→ test_call_graph           (unit test)
+    ├─→ test_scc_detection        (unit test)
+    ├─→ test_pattern_matchers     (unit test)
+    ├─→ test_tail_recursion       (compiler test)
+    ├─→ test_linear_recursion     (compiler test)
+    ├─→ test_mutual_recursion     (compiler test)
+    ├─→ test_advanced_compiler    (integration test)
+    ├─→ test_integration          (full pipeline)
+    ├─→ test_performance          (benchmarks)
+    └─→ test_regression           (compatibility)
+
+Output: bash scripts in output/advanced/
+    ├── count_items.sh      (tail recursion example)
+    ├── list_length.sh      (linear recursion example)
+    └── even_odd.sh         (mutual recursion example)
+
+
+================================================================================
+  FILE STATISTICS
+================================================================================
+
+Prolog Code:
+    call_graph.pl              : 171 lines
+    scc_detection.pl           : 213 lines
+    pattern_matchers.pl        : 253 lines
+    tail_recursion.pl          : 181 lines
+    linear_recursion.pl        : 239 lines
+    mutual_recursion.pl        : 203 lines
+    advanced_recursive_compiler: 208 lines
+    test_advanced.pl           : 134 lines
+    ────────────────────────────────────
+    Total Prolog              : 1,674 lines
+
+Documentation:
+    ADVANCED_RECURSION.md      : 279 lines
+    IMPLEMENTATION_SUMMARY.md  : 193 lines
+    README.md (advanced/)      :  75 lines
+    ARCHITECTURE.txt (this)    : ~200 lines
+    ────────────────────────────────────
+    Total Documentation       : ~750 lines
+
+Modified Existing Code:
+    recursive_compiler.pl      : +9 lines (1 hook added)
+
+================================================================================

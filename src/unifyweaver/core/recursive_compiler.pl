@@ -24,7 +24,7 @@ compile_recursive(Pred/Arity, Options, BashCode) :-
     format('=== Analyzing ~w/~w ===~n', [Pred, Arity]),
     classify_predicate(Pred/Arity, Classification),
     format('Classification: ~w~n', [Classification]),
-    
+
     (   Classification = non_recursive ->
         % Delegate to stream_compiler
         compile_predicate(Pred/Arity, Options, BashCode)
@@ -37,6 +37,15 @@ compile_recursive(Pred/Arity, Options, BashCode) :-
     ;   Classification = tail_recursion ->
         format('Detected tail recursion~n'),
         compile_tail_recursion(Pred, Arity, Options, BashCode)
+    ;   % Try advanced patterns before falling back to memoization
+        catch(
+            advanced_recursive_compiler:compile_advanced_recursive(
+                Pred/Arity, Options, BashCode
+            ),
+            error(existence_error(procedure, _), _),
+            fail
+        ) ->
+        format('Compiled using advanced patterns~n')
     ;   % Unknown pattern - fall back to memoized recursion
         format('Unknown recursion pattern - using memoization~n'),
         compile_memoized_recursion(Pred, Arity, Options, BashCode)

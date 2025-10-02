@@ -6,6 +6,33 @@
 
 set -euo pipefail
 
+# Parse command line options
+FORCE_WINDOWS=0
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --force-windows)
+      FORCE_WINDOWS=1
+      shift
+      ;;
+    --help)
+      echo "Usage: $0 [OPTIONS]"
+      echo ""
+      echo "Options:"
+      echo "  --force-windows    Force use of Windows SWI-Prolog (for testing wrapper logic)"
+      echo "  --help             Show this help message"
+      echo ""
+      echo "Environment Variables:"
+      echo "  UNIFYWEAVER_ROOT   Custom target directory for test environment"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Use --help for usage information"
+      exit 1
+      ;;
+  esac
+done
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,6 +42,10 @@ NC='\033[0m' # No Color
 echo -e "${GREEN}==================================="
 echo "UnifyWeaver Testing Environment Setup"
 echo -e "===================================${NC}"
+
+if [[ $FORCE_WINDOWS -eq 1 ]]; then
+  echo -e "${YELLOW}NOTE: --force-windows enabled (for testing wrapper upgrade logic)${NC}"
+fi
 
 # Get script directory (should be scripts/testing/)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -78,6 +109,9 @@ echo "Target directory: $TARGET_ROOT"
 #    exit 1
 #fi
 #set -x
+if [[ $FORCE_WINDOWS -eq 1 ]]; then
+  export FORCE_WINDOWS_SWIPL=1
+fi
 source "$SCRIPT_DIR/find_swi-prolog.sh"
 #set +x
 

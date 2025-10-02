@@ -113,37 +113,83 @@ find_windows_swipl() {
 
 # Main entry: ensure_SWIPL ready (no module loads here)
 ensure_swipl_ready() {
-  # 1) Honor persisted SWIPL_CMD
-  if [[ -n "${SWIPL_CMD:-}" && -x "$SWIPL_CMD" ]]; then
-    echo "SWIPL_CMD=$SWIPL_CMD"
-    echo "WRAPPER_PATH=$WRAPPER_PATH"
-    
-    if [[ "$SWIPL_CMD" == "$WRAPPER_PATH" ]]; then
-      path_prepend_once "$(dirname "$SWIPL_CMD")"
-      return 0
-    else
-      if [[ -z "${WRAP_SWIPL:-}" ]] || [[ "${WRAP_SWIPL:-}" == "no" ]]; then
-        return 0
-      fi
-    fi  
-    
+  local swipl_native
+
+  # 1) Check if native Linux swipl exists (for potential upgrade offer)
+  swipl_native="$(find_swipl 2>/dev/null)" || swipl_native=""
+
+  # Special case: --force-windows flag for testing
+  if [[ "${FORCE_WINDOWS_SWIPL:-0}" == "1" ]]; then
+    echo "============================================"
+    echo "FORCE_WINDOWS_SWIPL mode enabled"
+    echo "Forcing Windows SWI-Prolog wrapper for testing"
+    echo "============================================"
+    swipl_native=""  # Pretend native doesn't exist
   fi
 
-  # 2) Native swipl first
-  if swipl_native="$(find_swipl 2>/dev/null)"; then
-    set_swipl_cmd "$swipl_native"
+  # 2) Honor persisted SWIPL_CMD if it exists and is valid
+  if [[ -n "${SWIPL_CMD:-}" && -x "$SWIPL_CMD" ]]; then
+
+    # Check if user has wrapper configured but native is available
+    if [[ "$SWIPL_CMD" == "$WRAPPER_PATH" && -n "$swipl_native" && "$PLATFORM" == "wsl" ]]; then
+      echo "============================================"
+      echo "Native Linux SWI-Prolog detected: $swipl_native"
+      echo "Current config uses Windows swipl wrapper."
+      echo ""
+      echo "RECOMMENDATION: Switch to native version."
+      echo "  - Arrow keys will work (readline support)"
+      echo "  - Better terminal integration"
+      echo ""
+      echo "Windows version is fine for Cygwin, but in WSL"
+      echo "you'll likely have no arrow key support."
+      echo "============================================"
+
+      ask_yes_no SWITCH_TO_NATIVE "Switch to native Linux SWI-Prolog now?" "yes"
+
+      if [[ "$SWITCH_TO_NATIVE" == "yes" ]]; then
+        set_swipl_cmd "$swipl_native"
+        echo "Switched to: $swipl_native"
+        return 0
+      fi
+    fi
+
+    # Use the persisted command (user's choice)
+    if [[ "$SWIPL_CMD" == "$WRAPPER_PATH" ]]; then
+      path_prepend_once "$(dirname "$SWIPL_CMD")"
+    fi
     return 0
   fi
 
-  # 3) WSL fallback via wrapper
+  # 3) No persisted command - prefer native swipl if available
+  if [[ -n "$swipl_native" ]]; then
+    set_swipl_cmd "$swipl_native"
+    echo "Using native SWI-Prolog: $swipl_native"
+    return 0
+  fi
+
+  # 4) WSL fallback via wrapper (with warning)
   if [[ "$PLATFORM" == "wsl" ]] && interop_enabled; then
     if is_our_wrapper; then
       path_prepend_once "$TARGET_ROOT/bin"
       set_swipl_cmd "$WRAPPER_PATH"
+      echo "WARNING: Using Windows SWI-Prolog - arrow keys may not work in WSL"
       return 0
     fi
+
+    echo "============================================"
+    echo "No native Linux SWI-Prolog found."
+    echo ""
+    echo "RECOMMENDATION: Install native version:"
+    echo "  sudo apt-add-repository ppa:swi-prolog/stable"
+    echo "  sudo apt update && sudo apt install swi-prolog"
+    echo ""
+    echo "Otherwise, can create wrapper for Windows swipl.exe"
+    echo "  (Warning: arrow keys won't work in WSL)"
+    echo "============================================"
+
     WRAP_SWIPL="${WRAP_SWIPL:-ask}"
-    ask_yes_no WRAP_SWIPL "Create a 'swipl' wrapper that calls swipl.exe for this session?" "yes"
+    ask_yes_no WRAP_SWIPL "Create wrapper for Windows swipl.exe anyway?" "no"
+
     if [[ "$WRAP_SWIPL" == "yes" ]]; then
       local win_swipl
       if [[ -n "${WIN_SWIPL_PATH:-}" && -x "$WIN_SWIPL_PATH" ]]; then
@@ -162,6 +208,7 @@ EOF
         chmod +x "$WRAPPER_PATH"
         path_prepend_once "$TARGET_ROOT/bin"
         set_swipl_cmd "$WRAPPER_PATH"
+        echo "Created wrapper (arrow keys won't work in WSL)"
         return 0
       fi
     fi
