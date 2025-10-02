@@ -3,6 +3,9 @@
 # Test environment (auto-generated)
 scripts/testing/test_env/
 
+# Legacy scripts (kept for reference, not for distribution)
+scripts/legacy/
+
 # Output directories
 output/
 tests/output/
