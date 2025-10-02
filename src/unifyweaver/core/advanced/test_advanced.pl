@@ -5,6 +5,14 @@
 % test_advanced.pl - Comprehensive test suite for advanced recursion modules
 % Tests all modules independently and together
 
+:- module(test_advanced, [
+    test_all_advanced/0,
+    test_integration/0,
+    test_performance/0,
+    test_regression/0,
+    test_all/0
+]).
+
 :- use_module('call_graph').
 :- use_module('scc_detection').
 :- use_module('pattern_matchers').
