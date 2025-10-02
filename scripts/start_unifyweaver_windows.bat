@@ -102,40 +102,8 @@ set "PROLOG_SRC=%PROLOG_ROOT%/src"
 set "PROLOG_UNIFYWEAVER=%PROLOG_ROOT%/src/unifyweaver"
 
 REM --- Build Prolog initialization goal ---
-REM Note: Use \n for newlines in Prolog strings
-set PROLOG_GOAL=( working_directory(CWD, CWD), ^
-  format('[UnifyWeaver] Working directory: ~~w~~n', [CWD]), ^
-  atom_string('%PROLOG_ROOT%', RootStr), ^
-  atom_concat(RootStr, '/src', AbsSrcDir), ^
-  atom_concat(RootStr, '/src/unifyweaver', AbsUnifyweaverDir), ^
-  asserta(user:library_directory(AbsSrcDir)), ^
-  asserta(file_search_path(unifyweaver, AbsUnifyweaverDir)), ^
-  format('[UnifyWeaver] Library paths configured~~n', []), ^
-  format('[UnifyWeaver] Native Windows environment ready!~~n~~n', []), ^
-  format('Helper commands:~~n', []), ^
-  format('  load_stream      - Load stream compiler~~n', []), ^
-  format('  load_recursive   - Load recursive compiler~~n', []), ^
-  format('  test_stream      - Test stream compiler~~n', []), ^
-  format('  test_recursive   - Test recursive compiler~~n', []), ^
-  format('  test_advanced    - Test advanced recursion~~n~~n', []), ^
-  asserta((load_stream :- ^
-    (use_module(unifyweaver(core/stream_compiler)) -> ^
-      format('stream_compiler loaded successfully!~~n', []) ^
-    ; format('Failed to load stream_compiler~~n', [])))), ^
-  asserta((load_recursive :- ^
-    (use_module(unifyweaver(core/recursive_compiler)) -> ^
-      format('recursive_compiler loaded successfully!~~n', []) ^
-    ; format('Failed to load recursive_compiler~~n', [])))), ^
-  asserta((test_stream :- ^
-    use_module(unifyweaver(core/stream_compiler)), ^
-    test_stream_compiler)), ^
-  asserta((test_recursive :- ^
-    use_module(unifyweaver(core/recursive_compiler)), ^
-    test_recursive_compiler)), ^
-  asserta((test_advanced :- ^
-    use_module(unifyweaver(core/advanced/test_advanced)), ^
-    test_all_advanced)) ^
-)
+REM Note: All on one line to avoid issues with line continuation characters
+set PROLOG_GOAL=( working_directory(CWD, CWD), format('[UnifyWeaver] Working directory: ~~w~~n', [CWD]), atom_string('%PROLOG_ROOT%', RootStr), atom_concat(RootStr, '/src', AbsSrcDir), atom_concat(RootStr, '/src/unifyweaver', AbsUnifyweaverDir), asserta(user:library_directory(AbsSrcDir)), asserta(file_search_path(unifyweaver, AbsUnifyweaverDir)), format('[UnifyWeaver] Library paths configured~~n', []), format('[UnifyWeaver] Native Windows environment ready!~~n~~n', []), format('Helper commands:~~n', []), format('  load_stream      - Load stream compiler~~n', []), format('  load_recursive   - Load recursive compiler~~n', []), format('  test_stream      - Test stream compiler~~n', []), format('  test_recursive   - Test recursive compiler~~n', []), format('  test_advanced    - Test advanced recursion~~n~~n', []), asserta((load_stream :- (use_module(unifyweaver(core/stream_compiler)) -> format('stream_compiler loaded successfully!~~n', []) ; format('Failed to load stream_compiler~~n', [])))), asserta((load_recursive :- (use_module(unifyweaver(core/recursive_compiler)) -> format('recursive_compiler loaded successfully!~~n', []) ; format('Failed to load recursive_compiler~~n', [])))), asserta((test_stream :- use_module(unifyweaver(core/stream_compiler)), test_stream_compiler)), asserta((test_recursive :- use_module(unifyweaver(core/recursive_compiler)), test_recursive_compiler)), asserta((test_advanced :- use_module(unifyweaver(core/advanced/test_advanced)), test_all_advanced)) )
 
 REM --- Change to project root ---
 pushd "%PROJECT_ROOT%"
