@@ -139,7 +139,7 @@ pushd "%PROJECT_ROOT%"
 REM --- Launch with ConEmu if available, else standard console ---
 if defined CONEMU_EXE (
   echo [UnifyWeaver] Launching in ConEmu terminal...
-  "%CONEMU_EXE%" -Dir "%PROJECT_ROOT%" -run cmd /k ""%SWIPL_EXE%" -q -l \"%TEMP_INIT%\" -t prolog"
+  "%CONEMU_EXE%" -Dir "%PROJECT_ROOT%" -run cmd /k ""%SWIPL_EXE%" -q -l ^"%TEMP_INIT%^" -t prolog"
 ) else (
   echo [UnifyWeaver] ConEmu not found - using standard console
   echo [UnifyWeaver] For better terminal experience, install ConEmu from https://conemu.github.io/
