@@ -78,8 +78,14 @@ exit /b 1
 :swipl_found
 REM Get SWI-Prolog version for verification
 echo [UnifyWeaver] Using: %SWIPL_EXE%
-for /f "tokens=*" %%V in ('"%SWIPL_EXE%" --version 2^>^&1 ^| findstr /C:"SWI-Prolog"') do (
-  echo [UnifyWeaver] Found: %%V
+REM Skip version check - the for loop has issues with paths containing spaces
+REM Just verify swipl exists and is executable
+if exist "%SWIPL_EXE%" (
+  echo [UnifyWeaver] SWI-Prolog executable found
+) else (
+  echo [ERROR] SWI-Prolog executable not found at: %SWIPL_EXE%
+  pause
+  exit /b 1
 )
 
 REM --- Optional: Check for ConEmu ---
@@ -102,9 +108,30 @@ set "PROLOG_ROOT=%PROJECT_ROOT:\=/%"
 set "PROLOG_SRC=%PROLOG_ROOT%/src"
 set "PROLOG_UNIFYWEAVER=%PROLOG_ROOT%/src/unifyweaver"
 
-REM --- Build Prolog initialization goal ---
-REM Use single quotes for Prolog strings (simpler for batch to handle)
-set PROLOG_GOAL=( working_directory(CWD, CWD), format('[UnifyWeaver] Working directory: ~~w~~n', [CWD]), atom_string('%PROLOG_ROOT%', RootStr), atom_concat(RootStr, '/src', AbsSrcDir), atom_concat(RootStr, '/src/unifyweaver', AbsUnifyweaverDir), asserta(user:library_directory(AbsSrcDir)), asserta(file_search_path(unifyweaver, AbsUnifyweaverDir)), format('[UnifyWeaver] Library paths configured~~n', []), format('[UnifyWeaver] Native Windows environment ready!~~n~~n', []), format('Helper commands:~~n', []), format('  load_stream      - Load stream compiler~~n', []), format('  load_recursive   - Load recursive compiler~~n', []), format('  test_stream      - Test stream compiler~~n', []), format('  test_recursive   - Test recursive compiler~~n', []), format('  test_advanced    - Test advanced recursion~~n~~n', []), asserta((load_stream :- (use_module(unifyweaver(core/stream_compiler)) -> format('stream_compiler loaded successfully!~~n', []) ; format('Failed to load stream_compiler~~n', [])))), asserta((load_recursive :- (use_module(unifyweaver(core/recursive_compiler)) -> format('recursive_compiler loaded successfully!~~n', []) ; format('Failed to load recursive_compiler~~n', [])))), asserta((test_stream :- use_module(unifyweaver(core/stream_compiler)), test_stream_compiler)), asserta((test_recursive :- use_module(unifyweaver(core/recursive_compiler)), test_recursive_compiler)), asserta((test_advanced :- use_module(unifyweaver(core/advanced/test_advanced)), test_all_advanced)) )
+REM --- Create temporary initialization file ---
+set "TEMP_INIT=%TEMP%\unifyweaver_init_%RANDOM%.pl"
+(
+  echo :- working_directory(CWD, CWD^),
+  echo    format('[UnifyWeaver] Working directory: ~~w~~n', [CWD]^),
+  echo    atom_string('%PROLOG_ROOT%', RootStr^),
+  echo    atom_concat(RootStr, '/src', AbsSrcDir^),
+  echo    atom_concat(RootStr, '/src/unifyweaver', AbsUnifyweaverDir^),
+  echo    asserta(user:library_directory(AbsSrcDir^)^),
+  echo    asserta(file_search_path(unifyweaver, AbsUnifyweaverDir^)^),
+  echo    format('[UnifyWeaver] Library paths configured~~n', []^),
+  echo    format('[UnifyWeaver] Native Windows environment ready!~~n~~n', []^),
+  echo    format('Helper commands:~~n', []^),
+  echo    format('  load_stream      - Load stream compiler~~n', []^),
+  echo    format('  load_recursive   - Load recursive compiler~~n', []^),
+  echo    format('  test_stream      - Test stream compiler~~n', []^),
+  echo    format('  test_recursive   - Test recursive compiler~~n', []^),
+  echo    format('  test_advanced    - Test advanced recursion~~n~~n', []^),
+  echo    asserta((load_stream :- (use_module(unifyweaver(core/stream_compiler^)^) -^> format('stream_compiler loaded successfully!~~n', []^) ; format('Failed to load stream_compiler~~n', []^)^)^)^),
+  echo    asserta((load_recursive :- (use_module(unifyweaver(core/recursive_compiler^)^) -^> format('recursive_compiler loaded successfully!~~n', []^) ; format('Failed to load recursive_compiler~~n', []^)^)^)^),
+  echo    asserta((test_stream :- use_module(unifyweaver(core/stream_compiler^)^), test_stream_compiler^)^),
+  echo    asserta((test_recursive :- use_module(unifyweaver(core/recursive_compiler^)^), test_recursive_compiler^)^),
+  echo    asserta((test_advanced :- use_module(unifyweaver(core/advanced/test_advanced^)^), test_all_advanced^)^).
+) > "%TEMP_INIT%"
 
 REM --- Change to project root ---
 pushd "%PROJECT_ROOT%"
@@ -112,13 +139,16 @@ pushd "%PROJECT_ROOT%"
 REM --- Launch with ConEmu if available, else standard console ---
 if defined CONEMU_EXE (
   echo [UnifyWeaver] Launching in ConEmu terminal...
-  "%CONEMU_EXE%" -Dir "%PROJECT_ROOT%" -run cmd /k ""%SWIPL_EXE%" -q -g \"%PROLOG_GOAL%\" -t prolog"
+  "%CONEMU_EXE%" -Dir "%PROJECT_ROOT%" -run cmd /k ""%SWIPL_EXE%" -q -l \"%TEMP_INIT%\" -t prolog"
 ) else (
   echo [UnifyWeaver] ConEmu not found - using standard console
   echo [UnifyWeaver] For better terminal experience, install ConEmu from https://conemu.github.io/
   echo.
-  "%SWIPL_EXE%" -q -g "%PROLOG_GOAL%" -t prolog
+  "%SWIPL_EXE%" -q -l "%TEMP_INIT%" -t prolog
 )
+
+REM Clean up temp file on exit
+if exist "%TEMP_INIT%" del "%TEMP_INIT%"
 
 popd
 endlocal
