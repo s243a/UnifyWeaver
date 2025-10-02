@@ -19,17 +19,65 @@ echo [UnifyWeaver] Starting native Windows environment...
 echo [UnifyWeaver] Project root: %PROJECT_ROOT%
 
 REM --- Check for SWI-Prolog ---
+set "SWIPL_EXE="
+
+REM First check if swipl is on PATH
 where swipl >nul 2>nul
-if errorlevel 1 (
-  echo [ERROR] swipl not found on PATH.
-  echo [ERROR] Please install SWI-Prolog for Windows from https://www.swi-prolog.org/download/stable
-  echo [ERROR] Make sure to add it to your PATH during installation.
-  pause
-  exit /b 1
+if not errorlevel 1 (
+  set "SWIPL_EXE=swipl"
+  goto :swipl_found
 )
 
+REM Not on PATH - check common installation locations
+echo [UnifyWeaver] swipl not on PATH, checking common locations...
+
+REM Check 64-bit Program Files
+if exist "%ProgramFiles%\swipl\bin\swipl.exe" (
+  set "SWIPL_EXE=%ProgramFiles%\swipl\bin\swipl.exe"
+  set "PATH=%ProgramFiles%\swipl\bin;%PATH%"
+  goto :swipl_found
+)
+
+REM Check 32-bit Program Files
+if exist "%ProgramFiles(x86)%\swipl\bin\swipl.exe" (
+  set "SWIPL_EXE=%ProgramFiles(x86)%\swipl\bin\swipl.exe"
+  set "PATH=%ProgramFiles(x86)%\swipl\bin;%PATH%"
+  goto :swipl_found
+)
+
+REM Check C:\Program Files\swipl (alternate location)
+if exist "C:\Program Files\swipl\bin\swipl.exe" (
+  set "SWIPL_EXE=C:\Program Files\swipl\bin\swipl.exe"
+  set "PATH=C:\Program Files\swipl\bin;%PATH%"
+  goto :swipl_found
+)
+
+REM Check user local AppData
+if exist "%LocalAppData%\Programs\swipl\bin\swipl.exe" (
+  set "SWIPL_EXE=%LocalAppData%\Programs\swipl\bin\swipl.exe"
+  set "PATH=%LocalAppData%\Programs\swipl\bin;%PATH%"
+  goto :swipl_found
+)
+
+REM SWI-Prolog not found anywhere
+echo [ERROR] SWI-Prolog not found!
+echo [ERROR]
+echo [ERROR] Checked locations:
+echo [ERROR]   - System PATH
+echo [ERROR]   - %ProgramFiles%\swipl\bin\
+echo [ERROR]   - %ProgramFiles(x86)%\swipl\bin\
+echo [ERROR]   - %LocalAppData%\Programs\swipl\bin\
+echo [ERROR]
+echo [ERROR] Please install SWI-Prolog from:
+echo [ERROR] https://www.swi-prolog.org/download/stable
+echo [ERROR]
+echo [ERROR] Or add swipl to your PATH if already installed.
+pause
+exit /b 1
+
+:swipl_found
 REM Get SWI-Prolog version for verification
-for /f "tokens=*" %%V in ('swipl --version 2^>^&1 ^| findstr /C:"SWI-Prolog"') do (
+for /f "tokens=*" %%V in ('"%SWIPL_EXE%" --version 2^>^&1 ^| findstr /C:"SWI-Prolog"') do (
   echo [UnifyWeaver] Found: %%V
 )
 
@@ -95,12 +143,12 @@ pushd "%PROJECT_ROOT%"
 REM --- Launch with ConEmu if available, else standard console ---
 if defined CONEMU_EXE (
   echo [UnifyWeaver] Launching in ConEmu terminal...
-  "%CONEMU_EXE%" -Dir "%PROJECT_ROOT%" -run cmd /k swipl -q -g "%PROLOG_GOAL%" -t prolog
+  "%CONEMU_EXE%" -Dir "%PROJECT_ROOT%" -run cmd /k "%SWIPL_EXE%" -q -g "%PROLOG_GOAL%" -t prolog
 ) else (
   echo [UnifyWeaver] ConEmu not found - using standard console
   echo [UnifyWeaver] For better terminal experience, install ConEmu from https://conemu.github.io/
   echo.
-  swipl -q -g "%PROLOG_GOAL%" -t prolog
+  "%SWIPL_EXE%" -q -g "%PROLOG_GOAL%" -t prolog
 )
 
 popd
