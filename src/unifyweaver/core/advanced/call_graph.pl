@@ -122,20 +122,20 @@ test_call_graph :-
     catch(abolish(test_even/1), _, true),
     catch(abolish(test_odd/1), _, true),
 
-    % Define test predicates
+    % Define test predicates in user module so user:clause can find them
     % 1. Non-recursive fact
-    assertz(test_fact(a)),
-    assertz(test_fact(b)),
+    assertz(user:test_fact(a)),
+    assertz(user:test_fact(b)),
 
     % 2. Self-recursive (linear)
-    assertz((test_linear([], 0))),
-    assertz((test_linear([_|T], N) :- test_linear(T, N1), N is N1 + 1)),
+    assertz(user:(test_linear([], 0))),
+    assertz(user:(test_linear([_|T], N) :- test_linear(T, N1), N is N1 + 1)),
 
     % 3. Mutually recursive (even/odd)
-    assertz(test_even(0)),
-    assertz((test_even(N) :- N > 0, N1 is N - 1, test_odd(N1))),
-    assertz(test_odd(1)),
-    assertz((test_odd(N) :- N > 1, N1 is N - 1, test_even(N1))),
+    assertz(user:test_even(0)),
+    assertz(user:(test_even(N) :- N > 0, N1 is N - 1, test_odd(N1))),
+    assertz(user:test_odd(1)),
+    assertz(user:(test_odd(N) :- N > 1, N1 is N - 1, test_even(N1))),
 
     % Test 1: Non-recursive has no dependencies
     writeln('Test 1: Non-recursive predicate'),

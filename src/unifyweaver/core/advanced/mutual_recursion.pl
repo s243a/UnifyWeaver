@@ -186,10 +186,10 @@ test_mutual_recursion :-
 
     % Test 1: Classic even/odd mutual recursion
     writeln('Test 1: Compile is_even/1 and is_odd/1 (mutually recursive)'),
-    assertz(is_even(0)),
-    assertz((is_even(N) :- N > 0, N1 is N - 1, is_odd(N1))),
-    assertz(is_odd(1)),
-    assertz((is_odd(N) :- N > 1, N1 is N - 1, is_even(N1))),
+    assertz(user:is_even(0)),
+    assertz(user:(is_even(N) :- N > 0, N1 is N - 1, is_odd(N1))),
+    assertz(user:is_odd(1)),
+    assertz(user:(is_odd(N) :- N > 1, N1 is N - 1, is_even(N1))),
 
     Predicates1 = [is_even/1, is_odd/1],
     (   can_compile_mutual_recursion(Predicates1) ->
@@ -204,8 +204,8 @@ test_mutual_recursion :-
     writeln('Test 2: Verify non-mutual predicates are rejected'),
     catch(abolish(independent1/1), _, true),
     catch(abolish(independent2/1), _, true),
-    assertz(independent1(a)),
-    assertz(independent2(b)),
+    assertz(user:independent1(a)),
+    assertz(user:independent2(b)),
 
     Predicates2 = [independent1/1, independent2/1],
     (   can_compile_mutual_recursion(Predicates2) ->

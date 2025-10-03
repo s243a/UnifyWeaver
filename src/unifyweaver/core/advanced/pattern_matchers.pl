@@ -242,8 +242,8 @@ test_pattern_matchers :-
 
     % Test 1: Tail recursion with accumulator
     writeln('Test 1: Tail recursive accumulator (count)'),
-    assertz((test_count([], Acc, Acc))),
-    assertz((test_count([_|T], Acc, N) :- Acc1 is Acc + 1, test_count(T, Acc1, N))),
+    assertz(user:(test_count([], Acc, Acc))),
+    assertz(user:(test_count([_|T], Acc, N) :- Acc1 is Acc + 1, test_count(T, Acc1, N))),
     (   is_tail_recursive_accumulator(test_count/3, AccInfo1) ->
         format('  ✓ PASS - detected tail recursion with accumulator~n  Info: ~w~n', [AccInfo1])
     ;   writeln('  ✗ FAIL - should detect tail recursive accumulator')
@@ -251,8 +251,8 @@ test_pattern_matchers :-
 
     % Test 2: Linear recursion (not tail recursive)
     writeln('Test 2: Linear recursion (length)'),
-    assertz((test_length([], 0))),
-    assertz((test_length([_|T], N) :- test_length(T, N1), N is N1 + 1)),
+    assertz(user:(test_length([], 0))),
+    assertz(user:(test_length([_|T], N) :- test_length(T, N1), N is N1 + 1)),
     (   is_linear_recursive_streamable(test_length/2) ->
         writeln('  ✓ PASS - detected linear recursion')
     ;   writeln('  ✗ FAIL - should detect linear recursion')
@@ -270,8 +270,8 @@ test_pattern_matchers :-
 
     % Test 4: Extract accumulator pattern
     writeln('Test 4: Extract accumulator pattern (sum)'),
-    assertz((test_sum([], Acc, Acc))),
-    assertz((test_sum([H|T], Acc, Sum) :- Acc1 is Acc + H, test_sum(T, Acc1, Sum))),
+    assertz(user:(test_sum([], Acc, Acc))),
+    assertz(user:(test_sum([H|T], Acc, Sum) :- Acc1 is Acc + H, test_sum(T, Acc1, Sum))),
     (   extract_accumulator_pattern(test_sum/3, Pattern) ->
         format('  ✓ PASS - extracted pattern: ~w~n', [Pattern])
     ;   writeln('  ✗ FAIL - should extract accumulator pattern')

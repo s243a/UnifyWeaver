@@ -204,8 +204,8 @@ test_linear_recursion :-
 
     % Test 1: List length (classic linear recursion)
     writeln('Test 1: Compile list_length/2 (linear recursive)'),
-    assertz((list_length([], 0))),
-    assertz((list_length([_|T], N) :- list_length(T, N1), N is N1 + 1)),
+    assertz(user:(list_length([], 0))),
+    assertz(user:(list_length([_|T], N) :- list_length(T, N1), N is N1 + 1)),
 
     (   can_compile_linear_recursion(list_length/2) ->
         writeln('  ✓ Pattern detected'),
@@ -217,8 +217,8 @@ test_linear_recursion :-
 
     % Test 2: Factorial (linear recursion with arithmetic)
     writeln('Test 2: Compile factorial/2 (linear recursive)'),
-    assertz((factorial(0, 1))),
-    assertz((factorial(N, F) :- N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1)),
+    assertz(user:(factorial(0, 1))),
+    assertz(user:(factorial(N, F) :- N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1)),
 
     (   can_compile_linear_recursion(factorial/2) ->
         writeln('  ✓ Pattern detected'),

@@ -151,8 +151,8 @@ test_tail_recursion :-
 
     % Test 1: Count items with accumulator
     writeln('Test 1: Compile count_items/3 (tail recursive)'),
-    assertz((count_items([], Acc, Acc))),
-    assertz((count_items([_|T], Acc, N) :- Acc1 is Acc + 1, count_items(T, Acc1, N))),
+    assertz(user:(count_items([], Acc, Acc))),
+    assertz(user:(count_items([_|T], Acc, N) :- Acc1 is Acc + 1, count_items(T, Acc1, N))),
 
     (   can_compile_tail_recursion(count_items/3) ->
         writeln('  ✓ Pattern detected'),
@@ -164,8 +164,8 @@ test_tail_recursion :-
 
     % Test 2: Sum list with accumulator
     writeln('Test 2: Compile sum_list/3 (tail recursive)'),
-    assertz((sum_list([], Acc, Acc))),
-    assertz((sum_list([H|T], Acc, Sum) :- Acc1 is Acc + H, sum_list(T, Acc1, Sum))),
+    assertz(user:(sum_list([], Acc, Acc))),
+    assertz(user:(sum_list([H|T], Acc, Sum) :- Acc1 is Acc + H, sum_list(T, Acc1, Sum))),
 
     (   can_compile_tail_recursion(sum_list/3) ->
         writeln('  ✓ Pattern detected'),
