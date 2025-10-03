@@ -21,7 +21,8 @@
 %  AccInfo = acc_pattern(BaseCase, RecCase, AccPos)
 is_tail_recursive_accumulator(Pred/Arity, AccInfo) :-
     functor(Head, Pred, Arity),
-    findall(clause(Head, Body), clause(Head, Body), Clauses),
+    % Use user:clause to access predicates from any module (including test predicates)
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
 
     % Need at least one base case and one recursive case
     partition(is_recursive_for(Pred), Clauses, RecClauses, BaseClauses),
@@ -111,7 +112,8 @@ detect_acc_in_binary(_Pred, BaseClauses, AccPos) :-
 %  Linear recursion: exactly one recursive call per clause
 is_linear_recursive_streamable(Pred/Arity) :-
     functor(Head, Pred, Arity),
-    findall(Body, clause(Head, Body), Bodies),
+    % Use user:clause to access predicates from any module (including test predicates)
+    findall(Body, user:clause(Head, Body), Bodies),
 
     % All recursive clauses must have exactly one recursive call
     forall(
@@ -161,7 +163,8 @@ is_mutual_transitive_closure(Predicates, BasePreds) :-
     findall(BasePred,
         (   member(Pred/Arity, Predicates),
             functor(Head, Pred, Arity),
-            clause(Head, Body),
+            % Use user:clause to access predicates from any module (including test predicates)
+            user:clause(Head, Body),
             \+ contains_call_to_any(Body, Predicates),
             extract_goal(Body, Goal),
             compound(Goal),
@@ -173,7 +176,8 @@ is_mutual_transitive_closure(Predicates, BasePreds) :-
 %% has_closure_pattern(+Pred/Arity, +Group)
 has_closure_pattern(Pred/Arity, _Group) :-
     functor(Head, Pred, Arity),
-    clause(Head, _Body),
+    % Use user:clause to access predicates from any module (including test predicates)
+    user:clause(Head, _Body),
     % Simplified check - more sophisticated logic needed
     true.
 
@@ -189,12 +193,13 @@ extract_accumulator_pattern(Pred/Arity, Pattern) :-
     functor(Head, Pred, Arity),
 
     % Find base case to get initial value
-    clause(Head, BaseBody),
+    % Use user:clause to access predicates from any module (including test predicates)
+    user:clause(Head, BaseBody),
     \+ contains_call_to(BaseBody, Pred),
     extract_base_pattern(Head, BaseBody, InitValue),
 
     % Find recursive case to get step operation
-    clause(Head, RecBody),
+    user:clause(Head, RecBody),
     contains_call_to(RecBody, Pred),
     extract_step_pattern(RecBody, Pred, StepOp),
 

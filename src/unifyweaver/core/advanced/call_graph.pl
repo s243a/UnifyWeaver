@@ -30,7 +30,8 @@ build_call_graph(Predicates, Graph) :-
 %  Find all predicates called by this predicate
 find_predicate_calls(Pred/Arity, CalledPred/CalledArity) :-
     functor(Head, Pred, Arity),
-    clause(Head, Body),
+    % Use user:clause to access predicates from any module (including test predicates)
+    user:clause(Head, Body),
     extract_calls_from_body(Body, CalledPred/CalledArity),
     % Only include user-defined predicates (skip built-ins)
     \+ is_builtin(CalledPred/CalledArity).

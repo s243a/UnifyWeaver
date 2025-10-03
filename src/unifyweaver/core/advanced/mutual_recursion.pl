@@ -87,9 +87,9 @@ generate_mutual_header(GroupName, HeaderCode) :-
 generate_mutual_function(Pred, Arity, GroupName, FuncCode) :-
     atom_string(Pred, PredStr),
 
-    % Get clauses for this predicate
+    % Get clauses for this predicate - use user:clause to access predicates from any module (including test predicates)
     functor(Head, Pred, Arity),
-    findall(clause(Head, Body), clause(Head, Body), Clauses),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
 
     % Separate base and recursive cases
     partition(is_recursive_clause_any(Pred), Clauses, RecClauses, BaseClauses),

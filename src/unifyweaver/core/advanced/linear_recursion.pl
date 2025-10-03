@@ -30,8 +30,8 @@ compile_linear_recursion(Pred/Arity, _Options, BashCode) :-
     atom_string(Pred, PredStr),
     functor(Head, Pred, Arity),
 
-    % Get clauses
-    findall(clause(Head, Body), clause(Head, Body), Clauses),
+    % Get clauses - use user:clause to access predicates from any module (including test predicates)
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
 
     % Separate base and recursive cases
     partition(is_recursive_clause(Pred), Clauses, RecClauses, BaseClauses),
