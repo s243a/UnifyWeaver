@@ -1,13 +1,19 @@
 # UnifyWeaver .gitignore
 
+# Context (user-specific notes, conversations, local project state)
+context/
+
+# Docker environment (optional - keep local)
+docker/
+
 # Test environment (auto-generated)
 scripts/testing/test_env/
+scripts/testing/test_env_ps/
 
 # Legacy scripts (kept for reference, not for distribution)
 scripts/legacy/
 src/unifyweaver/core/legacy/
 docs/legacy
-Obsidian/
 templates/legacy/
 
 # Output directories

@@ -295,27 +295,43 @@ load_template :-
     ( use_module(unifyweaver(core/template_system))
     -> format('template_system module loaded successfully!~n', [])
     ; format('Failed to load template_system~n', [])
-    ).    
+    ).
 load_all_core :-
     use_module(unifyweaver(core/recursive_compiler)),
     use_module(unifyweaver(core/stream_compiler)),
     use_module(unifyweaver(core/template_system)),
     format('All core modules loaded successfully!~n', []).
 
-run_basic_test :-
-    consult('tests/test_basic'),
-    test_basic.
+% Test helpers
+test_stream :-
+    ( use_module(unifyweaver(core/stream_compiler))
+    -> test_stream_compiler
+    ; format('Failed to load stream_compiler~n', [])
+    ).
+
+test_recursive :-
+    ( use_module(unifyweaver(core/recursive_compiler))
+    -> test_recursive_compiler
+    ; format('Failed to load recursive_compiler~n', [])
+    ).
+
+test_advanced :-
+    ( use_module(unifyweaver(core/advanced/test_advanced))
+    -> test_all_advanced
+    ; format('Failed to load advanced tests~n', [])
+    ).
 
 help :-
     format('~n=== UnifyWeaver Testing Help ===~n', []),
     format('Available commands:~n', []),
-    format(' load_recursive. - Load the recursive_compiler module~n', []),
-    format(' load_stream. - Load the stream_compiler module~n', []),
-    format(' load_template. - Load the template_system module~n', []),
-    format(' load_all_core. - Load all core modules~n', []),
-    format(' run_basic_test. - Run basic compilation test~n', []),
-    format(' test_simple. - Run built-in simple test~n', []),
-    format(' help. - Show this help~n', []),
+    format(' load_stream.      - Load stream compiler~n', []),
+    format(' load_recursive.   - Load recursive compiler~n', []),
+    format(' load_template.    - Load template system~n', []),
+    format(' load_all_core.    - Load all core modules~n', []),
+    format(' test_stream.      - Test stream compiler~n', []),
+    format(' test_recursive.   - Test recursive compiler~n', []),
+    format(' test_advanced.    - Test advanced recursion~n', []),
+    format(' help.             - Show this help~n', []),
     format('~n', []).
     
 :- initialization(unifyweaver_init, now).
@@ -449,9 +465,9 @@ echo "Core modules: $(ls -1 "$TARGET_ROOT/src/unifyweaver/core/" | wc -l) files"
 
 echo -e "\n${YELLOW}Next steps:${NC}"
 echo "1. Run the launcher: ./unifyweaver.sh"
-echo "2. In Prolog, type: load_to_lang."
+echo "2. In Prolog, type: load_stream. or load_recursive."
 echo "3. Or load all: load_all_core."
-echo "4. Run tests: run_basic_test."
+echo "4. Run tests: test_stream. or test_advanced."
 
 echo -e "\n${YELLOW}File locations:${NC}"
 echo "Core modules: src/unifyweaver/core/"
