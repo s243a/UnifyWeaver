@@ -10,7 +10,10 @@
     is_linear_recursive_streamable/1,     % +Pred/Arity
     is_mutual_transitive_closure/2,       % +Predicates, -BasePreds
     extract_accumulator_pattern/2,        % +Pred/Arity, -Pattern
+    extract_base_pattern/3,               % +Head, +Body, -InitValue (helper for extract_accumulator_pattern)
+    extract_step_pattern/3,               % +Body, +PredName, -StepOp (helper for extract_accumulator_pattern)
     count_recursive_calls/2,              % +Body, -Count
+    contains_call_to/2,                   % +Body, +Pred (helper for various functions)
     test_pattern_matchers/0         % Test predicate
 ]).
 
@@ -189,19 +192,19 @@ contains_call_to_any(Body, Predicates) :-
 %% extract_accumulator_pattern(+Pred/Arity, -Pattern)
 %  Extract detailed accumulator pattern information
 %  Pattern = pattern(InitValue, StepOp, FinalOp)
-extract_accumulator_pattern(Pred/Arity, Pattern) :-
-    functor(Head, Pred, Arity),
-
+extract_accumulator_pattern(PredName/Arity, Pattern) :-
     % Find base case to get initial value
     % Use user:clause to access predicates from any module (including test predicates)
-    user:clause(Head, BaseBody),
-    \+ contains_call_to(BaseBody, Pred),
-    extract_base_pattern(Head, BaseBody, InitValue),
+    functor(BaseHead, PredName, Arity),
+    user:clause(BaseHead, BaseBody),
+    \+ contains_call_to(BaseBody, PredName),
+    extract_base_pattern(BaseHead, BaseBody, InitValue),
 
-    % Find recursive case to get step operation
-    user:clause(Head, RecBody),
-    contains_call_to(RecBody, Pred),
-    extract_step_pattern(RecBody, Pred, StepOp),
+    % Find recursive case to get step operation (use separate head variable!)
+    functor(RecHead, PredName, Arity),
+    user:clause(RecHead, RecBody),
+    contains_call_to(RecBody, PredName),
+    extract_step_pattern(RecBody, PredName, StepOp),
 
     Pattern = pattern(InitValue, StepOp, unify).
 
@@ -218,12 +221,14 @@ extract_base_pattern(Head, Body, InitValue) :-
         InitValue = unknown
     ).
 
-%% extract_step_pattern(+Body, +Pred, -StepOp)
-extract_step_pattern(Body, Pred, StepOp) :-
+%% extract_step_pattern(+Body, +PredName, -StepOp)
+extract_step_pattern(Body, PredName, StepOp) :-
     % Look for arithmetic operations
+    % Extract all goals and find one that is arithmetic (is/2)
+    % but doesn't call the predicate itself
     (   extract_goal(Body, Goal),
         Goal =.. [is, _, Expr],
-        \+ contains_call_to(Goal, Pred) ->
+        \+ contains_call_to(Goal, PredName) ->  % Check if this goal calls the predicate
         StepOp = arithmetic(Expr)
     ;   StepOp = unknown
     ).
