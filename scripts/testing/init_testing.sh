@@ -8,21 +8,50 @@ set -euo pipefail
 
 # Parse command line options
 FORCE_WINDOWS=0
+CUSTOM_PARENT_DIR=""
+CUSTOM_FULL_PATH=""
+
 while [[ $# -gt 0 ]]; do
   case $1 in
     --force-windows)
       FORCE_WINDOWS=1
       shift
       ;;
+    -d|--dir)
+      if [[ -z "${2:-}" ]]; then
+        echo "Error: --dir requires a directory argument"
+        exit 1
+      fi
+      CUSTOM_PARENT_DIR="$2"
+      shift 2
+      ;;
+    -p|--path)
+      if [[ -z "${2:-}" ]]; then
+        echo "Error: --path requires a path argument"
+        exit 1
+      fi
+      CUSTOM_FULL_PATH="$2"
+      shift 2
+      ;;
     --help)
       echo "Usage: $0 [OPTIONS]"
       echo ""
       echo "Options:"
+      echo "  -d, --dir <dir>    Parent directory where test_env/ will be created"
+      echo "                     Example: --dir /tmp creates /tmp/test_env"
+      echo "  -p, --path <path>  Full path to test environment (allows custom name)"
+      echo "                     Example: --path /tmp/my_test creates /tmp/my_test"
       echo "  --force-windows    Force use of Windows SWI-Prolog (for testing wrapper logic)"
       echo "  --help             Show this help message"
       echo ""
       echo "Environment Variables:"
       echo "  UNIFYWEAVER_ROOT   Custom target directory for test environment"
+      echo "                     (overridden by -p/--path if specified)"
+      echo ""
+      echo "Examples:"
+      echo "  $0                           # Creates test_env in scripts/testing/"
+      echo "  $0 -d /tmp                   # Creates /tmp/test_env"
+      echo "  $0 -p /tmp/my_custom_test    # Creates /tmp/my_custom_test"
       exit 0
       ;;
     *)
@@ -67,8 +96,16 @@ fi
 
 FIND_SWIPL_DIR="" #Use relative paths.
 
-# Determine target directory
-if [[ -n "${UNIFYWEAVER_ROOT:-}" ]]; then
+# Determine target directory (priority: -p > -d > UNIFYWEAVER_ROOT > default)
+if [[ -n "$CUSTOM_FULL_PATH" ]]; then
+    TARGET_ROOT="$CUSTOM_FULL_PATH"
+    mkdir -p "$TARGET_ROOT"
+    echo -e "${YELLOW}Using custom full path: $TARGET_ROOT${NC}"
+elif [[ -n "$CUSTOM_PARENT_DIR" ]]; then
+    TARGET_ROOT="$CUSTOM_PARENT_DIR/test_env"
+    mkdir -p "$TARGET_ROOT"
+    echo -e "${YELLOW}Using custom parent directory: $CUSTOM_PARENT_DIR (creating test_env/)${NC}"
+elif [[ -n "${UNIFYWEAVER_ROOT:-}" ]]; then
     TARGET_ROOT="$UNIFYWEAVER_ROOT"
     echo -e "${YELLOW}Using UNIFYWEAVER_ROOT environment variable: $TARGET_ROOT${NC}"
 else
