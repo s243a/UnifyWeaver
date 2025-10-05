@@ -20,6 +20,7 @@
 :- use_module('linear_recursion').
 :- use_module('mutual_recursion').
 :- use_module('advanced_recursive_compiler').
+:- use_module('test_runner_generator').
 
 %% Main test runner
 test_all_advanced :-
@@ -37,6 +38,16 @@ test_all_advanced :-
     run_module_test('Linear Recursion Compiler', test_linear_recursion),
     run_module_test('Mutual Recursion Compiler', test_mutual_recursion),
     run_module_test('Advanced Compiler Integration', test_advanced_compiler),
+
+    % Generate test runner for compiled scripts
+    writeln(''),
+    writeln('Generating test_runner.sh...'),
+    (   catch(generate_test_runner, Error, (
+            format('Warning: Failed to generate test runner: ~w~n', [Error])
+        )) ->
+        true
+    ;   writeln('Warning: test_runner.sh generation failed')
+    ),
 
     writeln(''),
     writeln('╔════════════════════════════════════════════════════════╗'),
