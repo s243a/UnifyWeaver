@@ -319,16 +319,75 @@ generate_runner(TestConfigs, Mode, OutputPath) :-
 
 %% generate_explicit_runner(+TestConfigs, +OutputPath)
 %  Generate explicit test runner (one test per block)
+%  Groups functions by file to avoid duplicate sourcing
 generate_explicit_runner(TestConfigs, OutputPath) :-
     open(OutputPath, write, Stream),
     write_header(Stream, explicit),
 
-    % Generate tests for each script
-    forall(member(config(function(Name, _Arity, Metadata), Tests), TestConfigs),
-           write_explicit_tests(Stream, Name, Metadata, Tests)),
+    % Group test configs by file
+    group_configs_by_file(TestConfigs, GroupedConfigs),
+
+    % Generate tests for each file (with all its functions)
+    forall(member(file_group(FilePath, FunctionConfigs), GroupedConfigs),
+           write_file_tests(Stream, FilePath, FunctionConfigs)),
 
     write_footer(Stream),
     close(Stream).
+
+%% group_configs_by_file(+TestConfigs, -GroupedConfigs)
+%  Group test configurations by file path to avoid duplicate sourcing
+%  Returns: list of file_group(FilePath, [config(...), config(...)])
+group_configs_by_file(TestConfigs, GroupedConfigs) :-
+    % Extract all unique file paths
+    findall(FilePath,
+            (   member(config(function(_, _, metadata(_, _, file_path(FilePath))), _), TestConfigs)
+            ),
+            AllPaths),
+    list_to_set(AllPaths, UniquePaths),
+
+    % For each unique path, collect all configs for that file
+    findall(file_group(FilePath, Configs),
+            (   member(FilePath, UniquePaths),
+                findall(config(function(Name, Arity, Metadata), Tests),
+                        (   member(config(function(Name, Arity, Metadata), Tests), TestConfigs),
+                            Metadata = metadata(_, _, file_path(FilePath))
+                        ),
+                        Configs),
+                Configs \= []
+            ),
+            GroupedConfigs).
+
+%% write_file_tests(+Stream, +FilePath, +FunctionConfigs)
+%  Write tests for all functions in a file (source file once, test all functions)
+write_file_tests(Stream, FilePath, FunctionConfigs) :-
+    file_base_name(FilePath, FileName),
+
+    format(Stream, '# Test ~w', [FileName]),
+
+    % Add annotation if multiple functions (mutual recursion)
+    (   length(FunctionConfigs, Count),
+        Count > 1 ->
+        format(Stream, ' (multi-function: ~w functions)~n', [Count])
+    ;   format(Stream, '~n', [])
+    ),
+
+    format(Stream, 'if [[ -f ~w ]]; then~n', [FileName]),
+    format(Stream, '    echo "--- Testing ~w ---"~n', [FileName]),
+    format(Stream, '    source ~w~n', [FileName]),
+    format(Stream, '~n', []),
+
+    % Write tests for each function in this file
+    forall(member(config(function(FuncName, _, _), Tests), FunctionConfigs),
+           (   length(FunctionConfigs, FuncCount),
+               (   FuncCount > 1 ->
+                   format(Stream, '    # Function: ~w~n', [FuncName])
+               ;   true
+               ),
+               write_test_list(Stream, FuncName, Tests, 1)
+           )),
+
+    format(Stream, 'fi~n', []),
+    format(Stream, '~n', []).
 
 %% write_explicit_tests(+Stream, +FuncName, +Metadata, +Tests)
 write_explicit_tests(Stream, FuncName, Metadata, Tests) :-
