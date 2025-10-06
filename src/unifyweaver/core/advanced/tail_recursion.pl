@@ -29,16 +29,20 @@ compile_tail_recursion(Pred/Arity, _Options, BashCode) :-
     is_tail_recursive_accumulator(Pred/Arity, AccInfo),
     AccInfo = acc_pattern(BaseClauses, RecClauses, AccPos),
 
+    % Extract the step operation pattern
+    extract_accumulator_pattern(Pred/Arity, Pattern),
+    Pattern = pattern(_InitValue, StepOp, _UnifyType),
+
     % Generate bash code based on pattern
     atom_string(Pred, PredStr),
-    generate_tail_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, AccPos, BashCode).
+    generate_tail_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, BashCode).
 
-%% generate_tail_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, -BashCode)
-generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, BashCode) :-
+%% generate_tail_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, -BashCode)
+generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, BashCode) :-
     % Determine which pattern to use based on arity
     (   Arity =:= 3 ->
         % Standard accumulator pattern: pred(Input, Accumulator, Result)
-        generate_ternary_tail_loop(PredStr, AccPos, BashCode)
+        generate_ternary_tail_loop(PredStr, AccPos, StepOp, BashCode)
     ;   Arity =:= 2 ->
         % Binary pattern: pred(Input, Result) with implicit accumulator
         generate_binary_tail_loop(PredStr, BashCode)
@@ -47,10 +51,44 @@ generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, 
         fail
     ).
 
-%% generate_ternary_tail_loop(+PredStr, +AccPos, -BashCode)
+%% step_op_to_bash(+StepOp, -BashCode)
+%  Convert Prolog step operation to bash arithmetic
+%  StepOp: arithmetic(Expr) where Expr contains variables and operations
+step_op_to_bash(arithmetic(Expr), BashCode) :-
+    % Convert Prolog expression to bash
+    expr_to_bash(Expr, BashExpr),
+    format(atom(BashCode), 'current_acc=$((~w))', [BashExpr]).
+step_op_to_bash(unknown, 'current_acc=$((current_acc + 1))').  % Fallback
+
+%% expr_to_bash(+PrologExpr, -BashExpr)
+%  Convert Prolog arithmetic expression to bash syntax
+expr_to_bash(Acc + H, BashExpr) :-
+    % Acc + H becomes current_acc + item
+    % Check which is the accumulator variable
+    (   var(Acc), \+ var(H) ->
+        % Acc is variable, H is constant
+        format(atom(BashExpr), 'current_acc + ~w', [H])
+    ;   \+ var(Acc), var(H) ->
+        % H is variable (list element), Acc might be variable
+        BashExpr = 'current_acc + item'
+    ;   % Both variables - assume second is list element
+        BashExpr = 'current_acc + item'
+    ).
+expr_to_bash(Acc + Const, BashExpr) :-
+    % Constant addition (like +1)
+    integer(Const),
+    format(atom(BashExpr), 'current_acc + ~w', [Const]).
+expr_to_bash(Acc - H, 'current_acc - item') :- !.
+expr_to_bash(Acc * H, 'current_acc * item') :- !.
+expr_to_bash(_, 'current_acc + 1').  % Fallback
+
+%% generate_ternary_tail_loop(+PredStr, +AccPos, +StepOp, -BashCode)
 %  Generate bash code for arity-3 tail recursive predicates
 %  Pattern: count([H|T], Acc, N) :- Acc1 is Acc + 1, count(T, Acc1, N).
-generate_ternary_tail_loop(PredStr, AccPos, BashCode) :-
+%  StepOp: arithmetic(Expr) where Expr is the step operation
+generate_ternary_tail_loop(PredStr, AccPos, StepOp, BashCode) :-
+    % Convert step operation to bash code
+    step_op_to_bash(StepOp, BashStepOp),
     % Use list-of-strings template style
     TemplateLines = [
         "#!/bin/bash",
@@ -76,8 +114,8 @@ generate_ternary_tail_loop(PredStr, AccPos, BashCode) :-
         "    ",
         "    # Iterative loop (tail recursion optimization)",
         "    for item in \"${items[@]}\"; do",
-        "        # Step operation - increment accumulator",
-        "        current_acc=$((current_acc + 1))",
+        "        # Step operation",
+        "        {{step_op}}",
         "    done",
         "    ",
         "    # Return result",
@@ -97,7 +135,7 @@ generate_ternary_tail_loop(PredStr, AccPos, BashCode) :-
 
     % Join lines and render template
     atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, acc_pos=AccPos], BashCode).
+    render_template(Template, [pred=PredStr, acc_pos=AccPos, step_op=BashStepOp], BashCode).
 
 %% generate_binary_tail_loop(+PredStr, -BashCode)
 %  Generate bash code for arity-2 tail recursive predicates
