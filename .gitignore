@@ -74,3 +74,6 @@ logs/
 *~
 *.bak
 *.orig
+
+# Education
+education/

@@ -120,62 +120,89 @@ extract_all_signatures(Scripts, Signatures) :-
 
 %% extract_function_signature(+FilePath, -Signature)
 %  Parse bash script to extract function name, arity, and metadata
-%  Returns: function(Name, Arity, Metadata)
-extract_function_signature(FilePath, function(Name, Arity, Metadata)) :-
+%  Returns: function(Name, Arity, Metadata) OR list of functions for multi-function scripts
+extract_function_signature(FilePath, Signature) :-
     read_file_to_string(FilePath, Content, []),
 
-    % Extract function name from file header comment
-    % Example: "# list_length - linear recursive pattern with memoization"
+    % Extract header description - try both formats
     (   re_matchsub("^#\\s*(?<name>\\w+)\\s*-\\s*(?<desc>[^\\n]+)",
                      Content, Match, [multiline(true)]) ->
-        get_dict(name, Match, NameAtom),
-        atom_string(NameFromHeader, NameAtom),
         get_dict(desc, Match, DescStr),
         atom_string(Description, DescStr)
-    ;   % Fallback: extract from filename
-        file_base_name(FilePath, FileName),
-        file_name_extension(NameFromHeader, _, FileName),
-        Description = unknown
+    ;   % Try alternate format: "# Mutually recursive group: name"
+        re_matchsub("^#\\s*(?<desc>Mutually recursive[^\\n]+)",
+                     Content, Match2, [multiline(true)]) ->
+        get_dict(desc, Match2, DescStr2),
+        atom_string(Description, DescStr2)
+    ;   Description = unknown
     ),
 
-    % Verify the name matches an actual function, otherwise extract first function
-    (   function_exists_in_content(Content, NameFromHeader) ->
-        Name = NameFromHeader
-    ;   % Extract first actual function name
-        extract_first_function_name(Content, Name)
-    ),
-
-    % Extract arity by counting function parameters
-    % Pattern: local <name>="$N" where N is a number
-    re_foldl(count_match, "local\\s+\\w+=\"\\$\\d+\"", Content, 0, Arity, []),
+    % Extract ALL functions from the script
+    extract_all_functions(Content, Functions),
 
     % Extract pattern type from description
     extract_pattern_type(Description, PatternType),
 
+    % Build metadata
     Metadata = metadata(
         pattern_type(PatternType),
         description(Description),
         file_path(FilePath)
+    ),
+
+    % Return single function or list depending on count
+    (   Functions = [SingleFunc] ->
+        % Single function - return as before
+        extract_function_arity(Content, SingleFunc, Arity),
+        Signature = function(SingleFunc, Arity, Metadata)
+    ;   % Multiple functions - return list with per-function arity
+        maplist(build_function_signature(Content, Metadata), Functions, Signatures),
+        Signature = Signatures
+    ).
+
+%% build_function_signature(+Content, +Metadata, +FuncName, -Signature)
+build_function_signature(Content, Metadata, FuncName, function(FuncName, Arity, Metadata)) :-
+    extract_function_arity(Content, FuncName, Arity).
+
+%% extract_all_functions(+Content, -Functions)
+%  Extract all function definitions from bash script, excluding helpers
+extract_all_functions(Content, Functions) :-
+    % Use re_foldl to find all function definitions
+    re_foldl(collect_function_name, "^(\\w+)\\(\\)\\s*\\{", Content, [], AllFuncs, [multiline(true)]),
+    % Filter out helper functions and remove duplicates
+    include(is_main_function, AllFuncs, FilteredFuncs),
+    list_to_set(FilteredFuncs, Functions).
+
+%% collect_function_name(+Match, +ListIn, -ListOut)
+%  Accumulator for re_foldl to collect function names
+collect_function_name(Match, ListIn, ListOut) :-
+    get_dict(1, Match, FuncNameStr),
+    atom_string(FuncName, FuncNameStr),
+    ListOut = [FuncName | ListIn].
+
+%% is_main_function(+FuncName)
+%  True if function is a main callable function (not a helper)
+is_main_function(FuncName) :-
+    \+ sub_atom(FuncName, _, _, _, '_stream'),
+    \+ sub_atom(FuncName, _, _, _, '_memo').
+
+%% extract_function_arity(+Content, +FuncName, -Arity)
+%  Extract arity for a specific function by finding its body and counting parameters
+extract_function_arity(Content, FuncName, Arity) :-
+    % Find function definition and extract its body
+    format(atom(Pattern), "^~w\\(\\)\\s*\\{([^}]*)", [FuncName]),
+    (   re_matchsub(Pattern, Content, Match, [multiline(true), dotall(true)]) ->
+        get_dict(1, Match, FuncBodyStr),
+        % Count local parameters in function body
+        re_foldl(count_match, "local\\s+\\w+=\"\\$\\d+\"", FuncBodyStr, 0, Arity, [])
+    ;   % If can't extract body, default to 0
+        Arity = 0
     ).
 
 %% count_match(+Match, +CountIn, -CountOut)
 %  Helper for re_foldl to count matches
 count_match(_, CountIn, CountOut) :-
     CountOut is CountIn + 1.
-
-%% function_exists_in_content(+Content, +FuncName)
-%  Check if a function with the given name exists in the script
-function_exists_in_content(Content, FuncName) :-
-    atom(FuncName),
-    format(atom(Pattern), "^~w\\(\\)\\s*\\{", [FuncName]),
-    re_match(Pattern, Content, [multiline(true)]).
-
-%% extract_first_function_name(+Content, -FuncName)
-%  Extract the first function name from script content
-extract_first_function_name(Content, FuncName) :-
-    re_matchsub("^(\\w+)\\(\\)\\s*\\{", Content, Match, [multiline(true)]),
-    get_dict(1, Match, FuncNameStr),
-    atom_string(FuncName, FuncNameStr).
 
 %% extract_pattern_type(+Description, -PatternType)
 %  Infer pattern type from description string
@@ -187,7 +214,8 @@ extract_pattern_type(Desc, linear_recursive) :-
     sub_atom(Desc, _, _, _, 'linear recursive'), !.
 extract_pattern_type(Desc, mutual_recursive) :-
     atom(Desc),
-    sub_atom(Desc, _, _, _, 'mutual'), !.
+    downcase_atom(Desc, DescLower),
+    sub_atom(DescLower, _, _, _, 'mutual'), !.
 extract_pattern_type(Desc, accumulator) :-
     atom(Desc),
     sub_atom(Desc, _, _, _, 'accumulator'), !.
@@ -195,10 +223,19 @@ extract_pattern_type(_, unknown).
 
 %% infer_all_test_cases(+Signatures, -TestConfigs)
 %  Infer test cases for all signatures
+%  Handles both single functions and lists of functions
 infer_all_test_cases(Signatures, TestConfigs) :-
-    findall(config(Sig, Tests),
+    findall(Config,
             (   member(Sig, Signatures),
-                infer_test_cases(Sig, Tests)
+                (   is_list(Sig) ->
+                    % Multi-function script - generate configs for each function
+                    member(FuncSig, Sig),
+                    infer_test_cases(FuncSig, Tests),
+                    Config = config(FuncSig, Tests)
+                ;   % Single function
+                    infer_test_cases(Sig, Tests),
+                    Config = config(Sig, Tests)
+                )
             ),
             TestConfigs).
 
