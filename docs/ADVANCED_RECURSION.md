@@ -100,6 +100,35 @@ advanced_recursive_compiler:compile_advanced_recursive(+Pred/Arity, +Options, -B
 advanced_recursive_compiler:compile_predicate_group(+[Pred/Arity, ...], +Options, -BashCode)
 ```
 
+### Options and Constraints
+
+All advanced compilers accept an `Options` parameter for configuration:
+
+```prolog
+% All compilers support Options
+compile_tail_recursion(Pred/Arity, Options, BashCode).
+compile_linear_recursion(Pred/Arity, Options, BashCode).
+compile_mutual_recursion(Predicates, Options, BashCode).
+```
+
+**Options Format:** List of `Key=Value` pairs
+- Example: `[unique=true, ordered=false, output_lang=bash]`
+
+**Constraint Integration:**
+- Compilers query `constraint_analyzer:get_constraints/2` for predicate constraints
+- Runtime options are merged with constraints
+- Currently, advanced patterns return single values (not sets), so deduplication constraints (`unique`, `unordered`) don't apply
+- Options are reserved for future use (e.g., `output_lang=python`)
+
+**Logging:**
+```prolog
+compile_tail_recursion(sum_list/3, [], Code).
+% Output:
+%   Compiling tail recursion: sum_list/3
+%   Constraints: [unique=true, ordered=true]
+%   Final options: [unique=true, ordered=true]
+```
+
 ### Integration Hook
 
 `recursive_compiler.pl` automatically tries advanced patterns before falling back to basic memoization:

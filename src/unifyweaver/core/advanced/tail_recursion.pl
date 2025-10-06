@@ -13,6 +13,7 @@
 
 :- use_module(library(lists)).
 :- use_module('../template_system').
+:- use_module('../constraint_analyzer').
 :- use_module('pattern_matchers').
 
 %% can_compile_tail_recursion(+Pred/Arity)
@@ -22,8 +23,24 @@ can_compile_tail_recursion(Pred/Arity) :-
 
 %% compile_tail_recursion(+Pred/Arity, +Options, -BashCode)
 %  Compile tail recursive predicate to bash while loop
-compile_tail_recursion(Pred/Arity, _Options, BashCode) :-
+%  Options: List of Key=Value pairs (e.g., [unique=true, ordered=false])
+%  Currently tail recursive predicates return single values (not sets),
+%  so deduplication constraints don't apply. Options are reserved for
+%  future use (e.g., output language selection).
+compile_tail_recursion(Pred/Arity, Options, BashCode) :-
     format('  Compiling tail recursion: ~w/~w~n', [Pred, Arity]),
+
+    % Query constraints (for logging and future use)
+    get_constraints(Pred/Arity, Constraints),
+    format('  Constraints: ~w~n', [Constraints]),
+
+    % Merge runtime options with constraints
+    append(Options, Constraints, AllOptions),
+    format('  Final options: ~w~n', [AllOptions]),
+
+    % TODO: Tail recursive patterns return single values, not sets.
+    % Deduplication constraints (unique, unordered) may not apply here.
+    % Options are kept for future extensibility (e.g., output_lang=python).
 
     % Get accumulator pattern info
     is_tail_recursive_accumulator(Pred/Arity, AccInfo),
@@ -62,24 +79,17 @@ step_op_to_bash(unknown, 'current_acc=$((current_acc + 1))').  % Fallback
 
 %% expr_to_bash(+PrologExpr, -BashExpr)
 %  Convert Prolog arithmetic expression to bash syntax
-expr_to_bash(Acc + H, BashExpr) :-
-    % Acc + H becomes current_acc + item
-    % Check which is the accumulator variable
-    (   var(Acc), \+ var(H) ->
-        % Acc is variable, H is constant
-        format(atom(BashExpr), 'current_acc + ~w', [H])
-    ;   \+ var(Acc), var(H) ->
-        % H is variable (list element), Acc might be variable
-        BashExpr = 'current_acc + item'
-    ;   % Both variables - assume second is list element
-        BashExpr = 'current_acc + item'
-    ).
-expr_to_bash(_Acc + Const, BashExpr) :-
+expr_to_bash(_ + Const, BashExpr) :-
     % Constant addition (like +1)
     integer(Const),
+    !,
     format(atom(BashExpr), 'current_acc + ~w', [Const]).
-expr_to_bash(_Acc - _H, 'current_acc - item') :- !.
-expr_to_bash(_Acc * _H, 'current_acc * item') :- !.
+expr_to_bash(_ + _, BashExpr) :-
+    % Variable + Variable (assume accumulator + list element)
+    !,
+    BashExpr = 'current_acc + item'.
+expr_to_bash(_ - _, 'current_acc - item') :- !.
+expr_to_bash(_ * _, 'current_acc * item') :- !.
 expr_to_bash(_, 'current_acc + 1').  % Fallback
 
 %% generate_ternary_tail_loop(+PredStr, +AccPos, +StepOp, -BashCode)

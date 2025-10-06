@@ -14,6 +14,7 @@
 
 :- use_module(library(lists)).
 :- use_module('../template_system').
+:- use_module('../constraint_analyzer').
 :- use_module('call_graph').
 :- use_module('scc_detection').
 
@@ -38,8 +39,27 @@ can_compile_mutual_recursion(Predicates) :-
 %% compile_mutual_recursion(+Predicates, +Options, -BashCode)
 %  Compile a group of mutually recursive predicates
 %  Generates bash code with shared memoization
-compile_mutual_recursion(Predicates, _Options, BashCode) :-
+%  Options: List of Key=Value pairs (e.g., [unique=true, ordered=false])
+%  Currently mutual recursive predicates return single values (not sets),
+%  so deduplication constraints don't apply. Options are reserved for
+%  future use (e.g., output language selection).
+compile_mutual_recursion(Predicates, Options, BashCode) :-
     format('  Compiling mutual recursion group: ~w~n', [Predicates]),
+
+    % Query constraints for the first predicate (all share same group constraints)
+    (   Predicates = [FirstPred|_] ->
+        get_constraints(FirstPred, Constraints),
+        format('  Constraints: ~w~n', [Constraints]),
+
+        % Merge runtime options with constraints
+        append(Options, Constraints, AllOptions),
+        format('  Final options: ~w~n', [AllOptions])
+    ;   AllOptions = Options
+    ),
+
+    % TODO: Mutually recursive patterns return single values, not sets.
+    % Deduplication constraints (unique, unordered) may not apply here.
+    % Options are kept for future extensibility (e.g., output_lang=python).
 
     % Generate bash code for the group
     generate_mutual_recursion_bash(Predicates, BashCode).

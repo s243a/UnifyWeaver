@@ -14,6 +14,7 @@
 
 :- use_module(library(lists)).
 :- use_module('../template_system').
+:- use_module('../constraint_analyzer').
 :- use_module('pattern_matchers').
 
 %% can_compile_linear_recursion(+Pred/Arity)
@@ -24,8 +25,24 @@ can_compile_linear_recursion(Pred/Arity) :-
 %% compile_linear_recursion(+Pred/Arity, +Options, -BashCode)
 %  Compile linear recursive predicate
 %  Strategy: Use memoization with associative arrays
-compile_linear_recursion(Pred/Arity, _Options, BashCode) :-
+%  Options: List of Key=Value pairs (e.g., [unique=true, ordered=false])
+%  Currently linear recursive predicates return single values (not sets),
+%  so deduplication constraints don't apply. Options are reserved for
+%  future use (e.g., output language selection).
+compile_linear_recursion(Pred/Arity, Options, BashCode) :-
     format('  Compiling linear recursion: ~w/~w~n', [Pred, Arity]),
+
+    % Query constraints (for logging and future use)
+    get_constraints(Pred/Arity, Constraints),
+    format('  Constraints: ~w~n', [Constraints]),
+
+    % Merge runtime options with constraints
+    append(Options, Constraints, AllOptions),
+    format('  Final options: ~w~n', [AllOptions]),
+
+    % TODO: Linear recursive patterns return single values, not sets.
+    % Deduplication constraints (unique, unordered) may not apply here.
+    % Options are kept for future extensibility (e.g., output_lang=python).
 
     atom_string(Pred, PredStr),
     functor(Head, Pred, Arity),
