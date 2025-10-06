@@ -74,12 +74,12 @@ expr_to_bash(Acc + H, BashExpr) :-
     ;   % Both variables - assume second is list element
         BashExpr = 'current_acc + item'
     ).
-expr_to_bash(Acc + Const, BashExpr) :-
+expr_to_bash(_Acc + Const, BashExpr) :-
     % Constant addition (like +1)
     integer(Const),
     format(atom(BashExpr), 'current_acc + ~w', [Const]).
-expr_to_bash(Acc - H, 'current_acc - item') :- !.
-expr_to_bash(Acc * H, 'current_acc * item') :- !.
+expr_to_bash(_Acc - _H, 'current_acc - item') :- !.
+expr_to_bash(_Acc * _H, 'current_acc * item') :- !.
 expr_to_bash(_, 'current_acc + 1').  % Fallback
 
 %% generate_ternary_tail_loop(+PredStr, +AccPos, +StepOp, -BashCode)

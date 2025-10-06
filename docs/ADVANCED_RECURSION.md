@@ -198,6 +198,317 @@ is_odd() {
 }
 ```
 
+## Real-World Examples
+
+### Example 1: Tail Recursion - Summing a List
+
+**Prolog Source:**
+```prolog
+sum_list([], Acc, Acc).
+sum_list([H|T], Acc, Sum) :-
+    Acc1 is Acc + H,
+    sum_list(T, Acc1, Sum).
+```
+
+**Detection:**
+```prolog
+?- is_tail_recursive_accumulator(sum_list/3, Info).
+Info = acc_pattern([clause(sum_list([], Acc, Acc), true)],
+                   [clause(sum_list([H|T], Acc, Sum), (...))],
+                   2).  % Accumulator at position 2
+```
+
+**Generated Bash Code:**
+```bash
+#!/bin/bash
+# sum_list - tail recursive accumulator pattern
+# Compiled to iterative while loop
+
+sum_list() {
+    local input="$1"
+    local acc="$2"
+    local result_var="$3"
+
+    # Convert input to array if it's a list notation
+    if [[ "$input" =~ ^\[.*\]$ ]]; then
+        input="${input#[}"
+        input="${input%]}"
+        IFS=',' read -ra items <<< "$input"
+    else
+        items=()
+    fi
+
+    local current_acc="$acc"
+
+    # Iterative loop (tail recursion optimization)
+    for item in "${items[@]}"; do
+        # Step operation: Acc1 is Acc + H
+        current_acc=$((current_acc + item))
+    done
+
+    # Return result
+    if [[ -n "$result_var" ]]; then
+        eval "$result_var=$current_acc"
+    else
+        echo "$current_acc"
+    fi
+}
+
+# Helper function for common use case
+sum_list_eval() {
+    sum_list "$1" 0 result
+    echo "$result"
+}
+```
+
+**Usage:**
+```bash
+$ source sum_list.sh
+$ sum_list "[1,2,3]" 0 result
+$ echo $result
+6
+$ sum_list_eval "[5,10,15]"
+30
+```
+
+---
+
+### Example 2: Linear Recursion - Factorial
+
+**Prolog Source:**
+```prolog
+factorial(0, 1).
+factorial(N, F) :-
+    N > 0,
+    N1 is N - 1,
+    factorial(N1, F1),
+    F is F1 * N.
+```
+
+**Detection:**
+```prolog
+?- is_linear_recursive_streamable(factorial/2).
+true.  % Exactly one recursive call per clause
+```
+
+**Generated Bash Code:**
+```bash
+#!/bin/bash
+# factorial - linear recursive with memoization
+declare -gA factorial_memo
+
+factorial() {
+    local n="$1"
+    local expected="$2"
+
+    # Memoization check
+    local key="${n}"
+    if [[ -n "${factorial_memo[$key]}" ]]; then
+        local cached="${factorial_memo[$key]}"
+        if [[ -n "$expected" ]]; then
+            [[ "$cached" == "$expected" ]] && echo "true" || echo "false"
+        else
+            echo "$cached"
+        fi
+        return
+    fi
+
+    # Base case: factorial(0, 1)
+    if [[ "$n" == "0" ]]; then
+        factorial_memo["$key"]="1"
+        if [[ -n "$expected" ]]; then
+            [[ "1" == "$expected" ]] && echo "true" || echo "false"
+        else
+            echo "1"
+        fi
+        return
+    fi
+
+    # Recursive case
+    if (( n > 0 )); then
+        local n1=$((n - 1))
+        local f1=$(factorial "$n1" "")
+        local f=$((f1 * n))
+
+        factorial_memo["$key"]="$f"
+        if [[ -n "$expected" ]]; then
+            [[ "$f" == "$expected" ]] && echo "true" || echo "false"
+        else
+            echo "$f"
+        fi
+    fi
+}
+```
+
+**Usage:**
+```bash
+$ source factorial.sh
+$ factorial 5
+120
+$ factorial 10
+3628800
+# Second call uses memoization - instant!
+$ factorial 5
+120
+```
+
+---
+
+### Example 3: Mutual Recursion - Even/Odd
+
+**Prolog Source:**
+```prolog
+is_even(0).
+is_even(N) :- N > 0, N1 is N - 1, is_odd(N1).
+
+is_odd(1).
+is_odd(N) :- N > 1, N1 is N - 1, is_even(N1).
+```
+
+**Detection:**
+```prolog
+?- build_call_graph([is_even/1, is_odd/1], Graph).
+Graph = [(is_even/1 -> is_odd/1), (is_odd/1 -> is_even/1)].
+
+?- find_sccs(Graph, SCCs).
+SCCs = [[is_even/1, is_odd/1]].  % Single SCC = mutual recursion
+```
+
+**Generated Bash Code:**
+```bash
+#!/bin/bash
+# Mutually recursive group: is_even, is_odd
+
+# Shared memoization table for the SCC
+declare -gA even_odd_memo
+
+is_even() {
+    local n="$1"
+    local key="is_even:${n}"
+
+    # Check memo
+    if [[ -n "${even_odd_memo[$key]}" ]]; then
+        echo "${even_odd_memo[$key]}"
+        return
+    fi
+
+    # Base case
+    if [[ "$n" == "0" ]]; then
+        even_odd_memo["$key"]="true"
+        echo "true"
+        return
+    fi
+
+    # Recursive case: call is_odd
+    if (( n > 0 )); then
+        local n1=$((n - 1))
+        local result=$(is_odd "$n1")
+        even_odd_memo["$key"]="$result"
+        echo "$result"
+    else
+        even_odd_memo["$key"]="false"
+        echo "false"
+    fi
+}
+
+is_odd() {
+    local n="$1"
+    local key="is_odd:${n}"
+
+    # Check memo
+    if [[ -n "${even_odd_memo[$key]}" ]]; then
+        echo "${even_odd_memo[$key]}"
+        return
+    fi
+
+    # Base case
+    if [[ "$n" == "1" ]]; then
+        even_odd_memo["$key"]="true"
+        echo "true"
+        return
+    fi
+
+    # Recursive case: call is_even
+    if (( n > 1 )); then
+        local n1=$((n - 1))
+        local result=$(is_even "$n1")
+        even_odd_memo["$key"]="$result"
+        echo "$result"
+    else
+        even_odd_memo["$key"]="false"
+        echo "false"
+    fi
+}
+```
+
+**Usage:**
+```bash
+$ source even_odd.sh
+$ is_even 4
+true
+$ is_even 7
+false
+$ is_odd 3
+true
+$ is_odd 8
+false
+```
+
+---
+
+## Module Visibility Pattern
+
+### The `user:clause` Technique
+
+**Problem:** Pattern matchers in modules can't see predicates defined in other modules or user context.
+
+**Solution:** Use `user:clause/2` instead of `clause/2`:
+
+```prolog
+% ❌ WRONG - Won't see predicates from other modules
+my_pattern_matcher(Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    clause(Head, Body),  % Only sees current module!
+    analyze(Body).
+
+% ✅ CORRECT - Sees predicates in user namespace
+my_pattern_matcher(Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    user:clause(Head, Body),  % Sees user predicates!
+    analyze(Body).
+```
+
+**When to use:**
+- Pattern detection predicates in modules
+- Call graph analysis across modules
+- SCC detection with external predicates
+- Any cross-module predicate introspection
+
+**Example from pattern_matchers.pl:**
+```prolog
+is_tail_recursive_accumulator(Pred/Arity, AccInfo) :-
+    functor(BaseHead, Pred, Arity),
+    user:clause(BaseHead, true),  % ← user: prefix
+
+    functor(RecHead, Pred, Arity),
+    user:clause(RecHead, RecBody),  % ← user: prefix
+    contains_call_to(RecBody, Pred/Arity).
+```
+
+**Test predicates must also use user namespace:**
+```prolog
+% In test code
+test_my_predicate :-
+    % ❌ WRONG
+    assertz(foo(X) :- bar(X)),  % Goes to current module
+
+    % ✅ CORRECT
+    assertz(user:(foo(X) :- bar(X))),  % Goes to user namespace
+    my_pattern_matcher(foo/1).  % Now can see foo/1!
+```
+
+---
+
 ## Testing
 
 ### Run All Tests
@@ -272,8 +583,141 @@ Tests generate bash scripts in `output/advanced/`:
 - Advanced module can be developed independently
 - Easy to disable if issues arise
 
+## Troubleshooting
+
+### Common Issues
+
+#### "Pattern not detected" / Fallback to basic memoization
+
+**Symptom:** Your tail recursive predicate compiles to memoization instead of iterative loop
+
+**Causes:**
+1. Accumulator not detected (position ambiguous)
+2. Not truly tail recursive (operations after recursive call)
+3. Multiple recursive calls
+
+**Solutions:**
+- Ensure accumulator pattern: `pred(..., Acc, Result)` with `Acc = Result` in base case
+- Make sure recursive call is the LAST operation
+- Use `is_tail_recursive_accumulator/2` to debug
+
+**Example:**
+```prolog
+% ❌ NOT tail recursive - multiplication happens after
+length([], 0).
+length([_|T], N) :-
+    length(T, N1),
+    N is N1 + 1.  % ← Not tail recursive!
+
+% ✅ Tail recursive - uses accumulator
+length_acc(List, Len) :- length_acc(List, 0, Len).
+length_acc([], Acc, Acc).
+length_acc([_|T], Acc, Len) :-
+    Acc1 is Acc + 1,
+    length_acc(T, Acc1, Len).  % ← Last operation!
+```
+
+#### "Unknown procedure: user:clause/2"
+
+**Symptom:** Error when loading pattern_matchers.pl
+
+**Solution:** Ensure you're using SWI-Prolog (other Prolog systems may use different module syntax)
+
+#### Generated bash script doesn't work
+
+**Symptom:** Syntax errors or incorrect output from generated scripts
+
+**Debugging:**
+1. Check bash syntax: `bash -n output/advanced/yourscript.sh`
+2. Enable bash debugging: `bash -x output/advanced/yourscript.sh`
+3. Verify Prolog predicate is correct first
+4. Check output/advanced/test_runner.sh for working examples
+
+#### Singleton variable warnings
+
+**Symptom:** `Warning: Singleton variables: [X]`
+
+**Cause:** Variable appears only once in a clause
+
+**Fix:** Prefix unused variables with underscore:
+```prolog
+% ❌ Warning
+expr_to_bash(Acc + Const, Expr) :- ...
+
+% ✅ No warning
+expr_to_bash(_Acc + Const, Expr) :- ...
+```
+
+#### Mutual recursion not detected
+
+**Symptom:** Even/odd style predicates compile separately instead of as a group
+
+**Debugging:**
+```prolog
+?- build_call_graph([is_even/1, is_odd/1], Graph).
+% Should show: [(is_even/1->is_odd/1), (is_odd/1->is_even/1)]
+
+?- find_sccs(Graph, SCCs).
+% Should show: [[is_even/1, is_odd/1]]
+```
+
+**Common cause:** Predicates not asserted to user namespace:
+```prolog
+% ✅ Correct
+assertz(user:(is_even(0))).
+assertz(user:(is_even(N) :- ...)).
+```
+
+---
+
+## Performance Tips
+
+### Tail Recursion vs Linear Recursion
+
+**Tail recursion** (iterative loop):
+- ✅ O(1) space (no call stack)
+- ✅ Fastest for list processing
+- ❌ Requires accumulator pattern
+
+**Linear recursion** (memoization):
+- ✅ Works for any single-recursive pattern
+- ✅ Caches results for reuse
+- ❌ O(n) space for memo table
+
+**When to use which:**
+- List processing → Tail recursion
+- Tree traversal → Linear recursion
+- Fibonacci-style → Linear recursion (memo helps!)
+
+### Memoization Trade-offs
+
+**Benefits:**
+- Avoids recomputation
+- Essential for overlapping subproblems
+- Shared tables for mutual recursion
+
+**Costs:**
+- Memory usage grows with unique inputs
+- Lookup overhead for simple predicates
+
+**Best for:**
+- Expensive computations
+- Repeated queries with same inputs
+- Mutual recursion groups
+
+**Not worth it for:**
+- One-time queries
+- Monotonically increasing inputs
+- Very cheap predicates
+
+---
+
 ## References
 
 - **Tarjan's SCC Algorithm**: R. Tarjan (1972), "Depth-first search and linear graph algorithms"
 - **Call Graphs**: Aho, Sethi, Ullman (1986), "Compilers: Principles, Techniques, and Tools"
 - **Tail Call Optimization**: Steele (1977), "Debunking the 'Expensive Procedure Call' Myth"
+
+---
+
+*Last updated: 2025-10-06*

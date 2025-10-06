@@ -23,6 +23,11 @@ swipl -q -g "use_module('src/unifyweaver/core/advanced/test_advanced'), test_all
 
 # 5. Constraint integration tests
 swipl -q -g "use_module('src/unifyweaver/core/test_constraints'), test_constraints, halt."
+
+# 6. Generate and run inferred test runner (validates generated bash scripts)
+swipl -g "use_module('src/unifyweaver/core/advanced/test_runner_inference'), \
+         generate_test_runner_inferred('output/advanced/inferred_test_runner.sh'), halt."
+bash output/advanced/inferred_test_runner.sh
 ```
 
 ## Test Categories
@@ -150,22 +155,151 @@ swipl -q -g "use_module('src/unifyweaver/core/advanced/test_advanced'), test_all
 ```
 
 **Expected output:**
-- Call Graph: 5/5 tests pass
-- SCC Detection: 5/5 tests pass
-- Pattern Matchers: 3/4 tests pass (1 known issue)
-- Linear Recursion: 2/2 tests pass
-- Integration: Most tests pass
+- Call Graph: 5/5 tests pass ✅
+- SCC Detection: 5/5 tests pass ✅
+- Pattern Matchers: 4/4 tests pass ✅
+- Tail Recursion: 2/2 tests pass ✅
+- Linear Recursion: 2/2 tests pass ✅
+- Mutual Recursion: 2/2 tests pass ✅
+- Integration: 4/4 tests pass ✅
 
-**Known issues:**
-- Tail recursion with accumulator detection needs refinement
-- Mutual recursion requires explicit group compilation
+**Total: 24/24 tests passing (100%)**
 
 **Verify generated code:**
 ```bash
 ls -lh output/advanced/
 head -30 output/advanced/list_length.sh
-bash output/advanced/demo.sh  # If demo script exists
+bash output/advanced/test_runner.sh  # Run all generated scripts
 ```
+
+---
+
+### 4.7 Automatic Test Runner Generation
+
+**Module:** `src/unifyweaver/core/advanced/test_runner_inference.pl`
+
+**What it does:**
+Automatically generates comprehensive test runners by analyzing compiled bash scripts - no manual configuration required!
+
+**Features:**
+- **Automatic Discovery:** Scans `output/advanced/` for all `.sh` files
+- **Script Classification:** Distinguishes between function libraries, demos, and test wrappers
+- **Function Extraction:** Finds all callable functions in each script
+- **Multi-Function Support:** Handles mutual recursion (multiple functions per file)
+- **Smart Deduplication:** Skips test_* wrapper scripts when base script exists
+- **Intelligent Inference:** Generates appropriate test cases based on function arity and pattern type
+
+**How to use:**
+```bash
+# Generate inferred test runner
+swipl -g "use_module('src/unifyweaver/core/advanced/test_runner_inference'), \
+         generate_test_runner_inferred('output/advanced/inferred_test_runner.sh'), \
+         halt."
+
+# Run the generated test runner
+bash output/advanced/inferred_test_runner.sh
+```
+
+**Generated Output Modes:**
+
+1. **Explicit Mode** (default)
+   - One test case per line
+   - Easy to read and debug
+   - Clear error messages with line numbers
+
+2. **Concise Mode**
+   - Compact test definitions
+   - Loops for multiple test cases
+   - Smaller file size
+
+3. **Hybrid Mode**
+   - Mix of explicit and concise styles
+   - Balances readability and size
+
+**Example Generated Test:**
+```bash
+# Test count_items.sh (multi-function: 2 functions)
+if [[ -f count_items.sh ]]; then
+    echo "--- Testing count_items.sh ---"
+    source count_items.sh
+
+    # Function: count_items_eval
+    echo "Test 1: Generic test"
+    count_items_eval
+
+    # Function: count_items
+    echo "Test 1: Empty list with accumulator 0"
+    count_items "[]" "0" ""
+
+    echo "Test 2: List with elements"
+    count_items "[a,b,c]" "0" ""
+fi
+```
+
+**What gets tested:**
+- `count_items.sh` - Tail recursive accumulator pattern
+- `sum_list.sh` - Tail recursive with arithmetic
+- `list_length.sh` - Linear recursion with memoization
+- `factorial.sh` - Linear recursion
+- `even_odd.sh` - Mutual recursion (is_even + is_odd)
+
+**What gets skipped:**
+- `demo.sh` - Demo scripts (inline execution, no functions)
+- `test_*.sh` - Test wrappers (duplicates of base scripts)
+- Helper functions (e.g., `*_stream`, `*_memo`)
+
+**Implementation Details:**
+
+Three-phase implementation:
+
+**Phase 1: Classification & Deduplication** (Commit 0fbf0a0)
+```prolog
+% Classify scripts by type
+classify_script_type(Content, Type) :-
+    % Returns: function_library, demo, test_wrapper, or standalone
+
+% Skip duplicates
+is_test_wrapper_duplicate(FileName) :-
+    atom_concat('test_', _BaseName, FileName).
+```
+
+**Phase 2: Multi-Function Extraction** (Commit ebac072)
+```prolog
+% Extract ALL functions from a script
+extract_all_functions(Content, Functions) :-
+    re_foldl(collect_function, "^(\\w+)\\(\\)\\s*\\{", Content, [], Functions, [...]).
+
+% Get arity for each function
+extract_function_arity(Content, FuncName, Arity) :-
+    % Count "local var=\"$N\"" patterns in function body
+```
+
+**Phase 3: File Grouping** (Commit c1c5e64)
+```prolog
+% Group test configs by source file
+group_configs_by_file(Configs, GroupedConfigs) :-
+    % Source each file only once, test all its functions
+
+% Write tests for multi-function files
+write_file_tests(Stream, FilePath, FunctionConfigs) :-
+    format(Stream, '# Test ~w (multi-function: ~w functions)~n', [...])
+```
+
+**Advantages over manual configuration:**
+- ✅ Zero maintenance - adapts to new scripts automatically
+- ✅ No typos in function names - extracted from actual code
+- ✅ Correct arity detection - parsed from bash parameter usage
+- ✅ Proper multi-function handling - mutual recursion works correctly
+- ✅ Clean output - intelligent deduplication and grouping
+
+**When to use:**
+- **Inference-based:** Quick iteration, exploratory development, changing codebase
+- **Config-based:** Precise control, complex test cases, stable API
+
+**Troubleshooting:**
+- If a script isn't tested: Check if it's classified as `function_library`
+- If wrong function called: Verify header comment matches actual function name
+- If arity is wrong: Check for `local var="$N"` patterns in function body
 
 ---
 
@@ -382,4 +516,4 @@ As features are added, tests should be created for:
 
 ---
 
-*Last updated: 2025-10-02*
+*Last updated: 2025-10-06*
