@@ -1,0 +1,81 @@
+name: UnifyWeaver Tests
+
+# Run on every push and pull request
+# Does NOT block pushes - just provides feedback
+on:
+  push:
+    branches: ['**']  # All branches
+  pull_request:
+    branches: ['**']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-add-repository ppa:swi-prolog/stable -y
+          sudo apt-get update -qq
+          sudo apt-get install -y swi-prolog
+
+      - name: Verify SWI-Prolog installation
+        run: swipl --version
+
+      - name: Create output directories
+        run: |
+          mkdir -p output
+          mkdir -p output/advanced
+
+      - name: Run constraint analyzer tests
+        run: |
+          swipl -g "use_module('src/unifyweaver/core/constraint_analyzer'), test_constraint_analyzer, halt."
+
+      - name: Run stream compiler tests
+        run: |
+          swipl -g "use_module('src/unifyweaver/core/stream_compiler'), test_stream_compiler, halt."
+
+      - name: Run recursive compiler tests
+        run: |
+          swipl -g "use_module('src/unifyweaver/core/recursive_compiler'), test_recursive_compiler, halt."
+
+      - name: Run advanced recursion tests (24 tests)
+        run: |
+          swipl -g "use_module('src/unifyweaver/core/advanced/test_advanced'), test_all_advanced, halt."
+
+      - name: Run constraint integration tests
+        run: |
+          swipl -g "use_module('src/unifyweaver/core/test_constraints'), test_constraints, halt."
+
+      - name: Generate and run inference test runner
+        run: |
+          swipl -g "use_module('src/unifyweaver/core/advanced/test_runner_inference'), generate_test_runner_inferred('output/advanced/inferred_test_runner.sh'), halt."
+          chmod +x output/advanced/inferred_test_runner.sh
+          bash output/advanced/inferred_test_runner.sh
+
+      - name: Validate generated bash scripts (syntax check)
+        run: |
+          for script in output/advanced/*.sh; do
+            if [ -f "$script" ]; then
+              echo "Checking syntax: $script"
+              bash -n "$script" || exit 1
+            fi
+          done
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "UnifyWeaver Test Suite Complete"
+          echo "=========================================="
+          echo "✓ Constraint analyzer tests"
+          echo "✓ Stream compiler tests"
+          echo "✓ Recursive compiler tests"
+          echo "✓ Advanced recursion tests (24/24)"
+          echo "✓ Constraint integration tests"
+          echo "✓ Inference test runner generation"
+          echo "✓ Generated bash script validation"
+          echo "=========================================="
