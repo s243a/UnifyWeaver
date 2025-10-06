@@ -51,18 +51,63 @@ generate_test_runner_inferred(OutputPath, Options) :-
 
 %% scan_output_directory(-Scripts)
 %  Find all .sh files in output/advanced/ directory
+%  Filters out demo scripts, test wrappers, and duplicates
 scan_output_directory(Scripts) :-
     OutputDir = 'output/advanced',
     (   exists_directory(OutputDir) ->
         expand_file_name('output/advanced/*.sh', AllFiles),
         findall(File,
                 (   member(File, AllFiles),
-                    file_base_name(File, FileName),
-                    FileName \= 'test_runner.sh'  % Exclude the test runner itself
+                    should_include_script(File, AllFiles)
                 ),
                 Scripts)
     ;   Scripts = []
     ).
+
+%% should_include_script(+FilePath, +AllFiles)
+%  Determine if script should be included in test generation
+should_include_script(FilePath, AllFiles) :-
+    file_base_name(FilePath, FileName),
+
+    % Exclude test runner scripts
+    \+ atom_concat('test_runner', _, FileName),
+
+    % Exclude test wrappers if production version exists
+    \+ is_test_wrapper_duplicate(FileName, AllFiles),
+
+    % Check if it's a processable script type
+    read_file_to_string(FilePath, Content, []),
+    classify_script_type(Content, ScriptType),
+    ScriptType = function_library.
+
+%% is_test_wrapper_duplicate(+FileName, +AllFiles)
+%  Check if this is a test wrapper - exclude all test_* files
+is_test_wrapper_duplicate(FileName, _AllFiles) :-
+    % Simply exclude any file starting with test_
+    % (they are generated test wrappers, not production scripts)
+    atom_concat('test_', _, FileName),
+    !.
+
+%% classify_script_type(+Content, -ScriptType)
+%  Classify bash script as: function_library, demo, test_wrapper, or standalone
+classify_script_type(Content, demo) :-
+    % Demo scripts have inline execution, typically echo statements for demo
+    sub_string(Content, _, _, _, "Demo"),
+    sub_string(Content, _, _, _, "echo \"╔"),
+    !.
+
+classify_script_type(Content, test_wrapper) :-
+    % Test wrappers source other scripts and typically have "Test" in output
+    sub_string(Content, _, _, _, "source"),
+    sub_string(Content, _, _, _, "Testing"),
+    !.
+
+classify_script_type(Content, function_library) :-
+    % Has callable functions - look for function_name() { pattern
+    re_match("^\\w+\\(\\)\\s*\\{", Content, [multiline(true)]),
+    !.
+
+classify_script_type(_, standalone).
 
 %% extract_all_signatures(+Scripts, -Signatures)
 %  Extract function signatures from all script files
@@ -84,13 +129,20 @@ extract_function_signature(FilePath, function(Name, Arity, Metadata)) :-
     (   re_matchsub("^#\\s*(?<name>\\w+)\\s*-\\s*(?<desc>[^\\n]+)",
                      Content, Match, [multiline(true)]) ->
         get_dict(name, Match, NameAtom),
-        atom_string(Name, NameAtom),
+        atom_string(NameFromHeader, NameAtom),
         get_dict(desc, Match, DescStr),
         atom_string(Description, DescStr)
     ;   % Fallback: extract from filename
         file_base_name(FilePath, FileName),
-        file_name_extension(Name, _, FileName),
+        file_name_extension(NameFromHeader, _, FileName),
         Description = unknown
+    ),
+
+    % Verify the name matches an actual function, otherwise extract first function
+    (   function_exists_in_content(Content, NameFromHeader) ->
+        Name = NameFromHeader
+    ;   % Extract first actual function name
+        extract_first_function_name(Content, Name)
     ),
 
     % Extract arity by counting function parameters
@@ -110,6 +162,20 @@ extract_function_signature(FilePath, function(Name, Arity, Metadata)) :-
 %  Helper for re_foldl to count matches
 count_match(_, CountIn, CountOut) :-
     CountOut is CountIn + 1.
+
+%% function_exists_in_content(+Content, +FuncName)
+%  Check if a function with the given name exists in the script
+function_exists_in_content(Content, FuncName) :-
+    atom(FuncName),
+    format(atom(Pattern), "^~w\\(\\)\\s*\\{", [FuncName]),
+    re_match(Pattern, Content, [multiline(true)]).
+
+%% extract_first_function_name(+Content, -FuncName)
+%  Extract the first function name from script content
+extract_first_function_name(Content, FuncName) :-
+    re_matchsub("^(\\w+)\\(\\)\\s*\\{", Content, Match, [multiline(true)]),
+    get_dict(1, Match, FuncNameStr),
+    atom_string(FuncName, FuncNameStr).
 
 %% extract_pattern_type(+Description, -PatternType)
 %  Infer pattern type from description string
