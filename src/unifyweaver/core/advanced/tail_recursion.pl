@@ -38,9 +38,13 @@ compile_tail_recursion(Pred/Arity, Options, BashCode) :-
     append(Options, Constraints, AllOptions),
     format('  Final options: ~w~n', [AllOptions]),
 
-    % TODO: Tail recursive patterns return single values, not sets.
-    % Deduplication constraints (unique, unordered) may not apply here.
-    % Options are kept for future extensibility (e.g., output_lang=python).
+    % Apply unique constraint optimization
+    % Tail recursive predicates with unique(true) can exit after first result
+    (   member(unique(true), AllOptions) ->
+        format('  Applying unique constraint optimization~n', []),
+        ExitAfterResult = true
+    ;   ExitAfterResult = false
+    ),
 
     % Get accumulator pattern info
     is_tail_recursive_accumulator(Pred/Arity, AccInfo),
@@ -52,17 +56,17 @@ compile_tail_recursion(Pred/Arity, Options, BashCode) :-
 
     % Generate bash code based on pattern
     atom_string(Pred, PredStr),
-    generate_tail_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, BashCode).
+    generate_tail_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, BashCode).
 
-%% generate_tail_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, -BashCode)
-generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, BashCode) :-
+%% generate_tail_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, +ExitAfterResult, -BashCode)
+generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, ExitAfterResult, BashCode) :-
     % Determine which pattern to use based on arity
     (   Arity =:= 3 ->
         % Standard accumulator pattern: pred(Input, Accumulator, Result)
-        generate_ternary_tail_loop(PredStr, AccPos, StepOp, BashCode)
+        generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode)
     ;   Arity =:= 2 ->
         % Binary pattern: pred(Input, Result) with implicit accumulator
-        generate_binary_tail_loop(PredStr, BashCode)
+        generate_binary_tail_loop(PredStr, ExitAfterResult, BashCode)
     ;   % Unsupported arity
         format('Warning: tail recursion with arity ~w not yet supported~n', [Arity]),
         fail
@@ -92,13 +96,21 @@ expr_to_bash(_ - _, 'current_acc - item') :- !.
 expr_to_bash(_ * _, 'current_acc * item') :- !.
 expr_to_bash(_, 'current_acc + 1').  % Fallback
 
-%% generate_ternary_tail_loop(+PredStr, +AccPos, +StepOp, -BashCode)
+%% generate_ternary_tail_loop(+PredStr, +AccPos, +StepOp, +ExitAfterResult, -BashCode)
 %  Generate bash code for arity-3 tail recursive predicates
 %  Pattern: count([H|T], Acc, N) :- Acc1 is Acc + 1, count(T, Acc1, N).
 %  StepOp: arithmetic(Expr) where Expr is the step operation
-generate_ternary_tail_loop(PredStr, AccPos, StepOp, BashCode) :-
+%  ExitAfterResult: true if unique constraint applies (exit after first result)
+generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :-
     % Convert step operation to bash code
     step_op_to_bash(StepOp, BashStepOp),
+
+    % Generate exit statement if unique constraint
+    (   ExitAfterResult = true ->
+        ExitStatement = "        exit 0  # Unique constraint: only one result"
+    ;   ExitStatement = ""
+    ),
+
     % Use list-of-strings template style
     TemplateLines = [
         "#!/bin/bash",
@@ -134,6 +146,7 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, BashCode) :-
         "    else",
         "        echo \"$current_acc\"",
         "    fi",
+        "{{exit_statement}}",
         "}",
         "",
         "# Helper function for common use case",
@@ -145,12 +158,19 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, BashCode) :-
 
     % Join lines and render template
     atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, acc_pos=AccPos, step_op=BashStepOp], BashCode).
+    render_template(Template, [pred=PredStr, acc_pos=AccPos, step_op=BashStepOp, exit_statement=ExitStatement], BashCode).
 
-%% generate_binary_tail_loop(+PredStr, -BashCode)
+%% generate_binary_tail_loop(+PredStr, +ExitAfterResult, -BashCode)
 %  Generate bash code for arity-2 tail recursive predicates
 %  Pattern: length([_|T], N) :- length(T, N1), N is N1 + 1.
-generate_binary_tail_loop(PredStr, BashCode) :-
+%  ExitAfterResult: true if unique constraint applies (exit after first result)
+generate_binary_tail_loop(PredStr, ExitAfterResult, BashCode) :-
+    % Generate exit statement if unique constraint
+    (   ExitAfterResult = true ->
+        ExitStatement = "    exit 0  # Unique constraint: only one result"
+    ;   ExitStatement = ""
+    ),
+
     TemplateLines = [
         "#!/bin/bash",
         "# {{pred}} - tail recursive binary pattern",
@@ -175,11 +195,12 @@ generate_binary_tail_loop(PredStr, BashCode) :-
         "    else",
         "        echo \"$count\"",
         "    fi",
+        "{{exit_statement}}",
         "}"
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr], BashCode).
+    render_template(Template, [pred=PredStr, exit_statement=ExitStatement], BashCode).
 
 %% ============================================
 %% TESTS
