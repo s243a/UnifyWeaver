@@ -38,13 +38,12 @@ compile_tail_recursion(Pred/Arity, Options, BashCode) :-
     append(Options, Constraints, AllOptions),
     format('  Final options: ~w~n', [AllOptions]),
 
-    % Check for 'unique' constraint to modify the bash template.
-    % If a predicate is unique, it will only produce one result, so we can
-    % exit after the first one is found.
+    % Apply unique constraint optimization
+    % Tail recursive predicates with unique(true) can exit after first result
     (   member(unique(true), AllOptions) ->
-        format('  Applying unique constraint optimization~n'),
-        ExitAfterEcho = "exit 0"
-    ;   ExitAfterEcho = ""
+        format('  Applying unique constraint optimization~n', []),
+        ExitAfterResult = true
+    ;   ExitAfterResult = false
     ),
 
     % Get accumulator pattern info
@@ -57,17 +56,17 @@ compile_tail_recursion(Pred/Arity, Options, BashCode) :-
 
     % Generate bash code based on pattern
     atom_string(Pred, PredStr),
-    generate_tail_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterEcho, BashCode).
+    generate_tail_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, AccPos, StepOp, ExitAfterResult, BashCode).
 
-%% generate_tail_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, +ExitAfterEcho, -BashCode)
-generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, ExitAfterEcho, BashCode) :-
+%% generate_tail_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +AccPos, +StepOp, +ExitAfterResult, -BashCode)
+generate_tail_recursion_bash(PredStr, Arity, _BaseClauses, _RecClauses, AccPos, StepOp, ExitAfterResult, BashCode) :-
     % Determine which pattern to use based on arity
     (   Arity =:= 3 ->
         % Standard accumulator pattern: pred(Input, Accumulator, Result)
-        generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterEcho, BashCode)
+        generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode)
     ;   Arity =:= 2 ->
         % Binary pattern: pred(Input, Result) with implicit accumulator
-        generate_binary_tail_loop(PredStr, BashCode)
+        generate_binary_tail_loop(PredStr, ExitAfterResult, BashCode)
     ;   % Unsupported arity
         format('Warning: tail recursion with arity ~w not yet supported~n', [Arity]),
         fail
@@ -97,13 +96,21 @@ expr_to_bash(_ - _, 'current_acc - item') :- !.
 expr_to_bash(_ * _, 'current_acc * item') :- !.
 expr_to_bash(_, 'current_acc + 1').  % Fallback
 
-%% generate_ternary_tail_loop(+PredStr, +AccPos, +StepOp, +ExitAfterEcho, -BashCode)
+%% generate_ternary_tail_loop(+PredStr, +AccPos, +StepOp, +ExitAfterResult, -BashCode)
 %  Generate bash code for arity-3 tail recursive predicates
 %  Pattern: count([H|T], Acc, N) :- Acc1 is Acc + 1, count(T, Acc1, N).
 %  StepOp: arithmetic(Expr) where Expr is the step operation
-generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterEcho, BashCode) :-
+%  ExitAfterResult: true if unique constraint applies (exit after first result)
+generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :-
     % Convert step operation to bash code
     step_op_to_bash(StepOp, BashStepOp),
+
+    % Generate exit statement if unique constraint
+    (   ExitAfterResult = true ->
+        ExitStatement = "        exit 0  # Unique constraint: only one result"
+    ;   ExitStatement = ""
+    ),
+
     % Use list-of-strings template style
     TemplateLines = [
         "#!/bin/bash",
@@ -138,8 +145,8 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterEcho, BashCode) :-
         "        eval \"$result_var=$current_acc\"",
         "    else",
         "        echo \"$current_acc\"",
-        "        {{exit_after_echo}}",
         "    fi",
+        "{{exit_statement}}",
         "}",
         "",
         "# Helper function for common use case",
@@ -151,12 +158,19 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterEcho, BashCode) :-
 
     % Join lines and render template
     atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, acc_pos=AccPos, step_op=BashStepOp, exit_after_echo=ExitAfterEcho], BashCode).
+    render_template(Template, [pred=PredStr, acc_pos=AccPos, step_op=BashStepOp, exit_statement=ExitStatement], BashCode).
 
-%% generate_binary_tail_loop(+PredStr, -BashCode)
+%% generate_binary_tail_loop(+PredStr, +ExitAfterResult, -BashCode)
 %  Generate bash code for arity-2 tail recursive predicates
 %  Pattern: length([_|T], N) :- length(T, N1), N is N1 + 1.
-generate_binary_tail_loop(PredStr, BashCode) :-
+%  ExitAfterResult: true if unique constraint applies (exit after first result)
+generate_binary_tail_loop(PredStr, ExitAfterResult, BashCode) :-
+    % Generate exit statement if unique constraint
+    (   ExitAfterResult = true ->
+        ExitStatement = "    exit 0  # Unique constraint: only one result"
+    ;   ExitStatement = ""
+    ),
+
     TemplateLines = [
         "#!/bin/bash",
         "# {{pred}} - tail recursive binary pattern",
@@ -181,11 +195,12 @@ generate_binary_tail_loop(PredStr, BashCode) :-
         "    else",
         "        echo \"$count\"",
         "    fi",
+        "{{exit_statement}}",
         "}"
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr], BashCode).
+    render_template(Template, [pred=PredStr, exit_statement=ExitStatement], BashCode).
 
 %% ============================================
 %% TESTS
@@ -194,10 +209,9 @@ generate_binary_tail_loop(PredStr, BashCode) :-
 test_tail_recursion :-
     writeln('=== TAIL RECURSION COMPILER TESTS ==='),
 
-    % Setup output directory with absolute path
-    Output_Dir = '/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver/scripts/testing/test_env/output/advanced',
-    (   exists_directory(Output_Dir) -> true
-    ;   make_directory(Output_Dir)
+    % Setup output directory
+    (   exists_directory('output/advanced') -> true
+    ;   make_directory('output/advanced')
     ),
 
     % Clear test predicates
@@ -212,8 +226,8 @@ test_tail_recursion :-
     (   can_compile_tail_recursion(count_items/3) ->
         writeln('  ✓ Pattern detected'),
         compile_tail_recursion(count_items/3, [], Code1),
-        write_bash_file('/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver/scripts/testing/test_env/output/advanced/count_items.sh', Code1),
-        writeln('  ✓ Compiled to .../output/advanced/count_items.sh')
+        write_bash_file('output/advanced/count_items.sh', Code1),
+        writeln('  ✓ Compiled to output/advanced/count_items.sh')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 
@@ -225,8 +239,8 @@ test_tail_recursion :-
     (   can_compile_tail_recursion(sum_list/3) ->
         writeln('  ✓ Pattern detected'),
         compile_tail_recursion(sum_list/3, [], Code2),
-        write_bash_file('/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver/scripts/testing/test_env/output/advanced/sum_list.sh', Code2),
-        writeln('  ✓ Compiled to .../output/advanced/sum_list.sh')
+        write_bash_file('output/advanced/sum_list.sh', Code2),
+        writeln('  ✓ Compiled to output/advanced/sum_list.sh')
     ;   writeln('  ✗ FAIL - should detect tail recursion')
     ),
 
