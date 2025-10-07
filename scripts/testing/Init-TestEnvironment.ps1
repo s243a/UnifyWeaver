@@ -197,6 +197,40 @@ foreach ($Dir in $OutputDirs) {
     }
 }
 
+# Copy init.pl from template
+Write-Host ""
+Write-Host "[COPY] Setting up init.pl..." -ForegroundColor Cyan
+
+$TemplatePath = Join-Path $ProjectRoot "templates\init_template.pl"
+$InitPath = Join-Path $TargetRoot "init.pl"
+
+if (Test-Path $TemplatePath) {
+    Copy-Item $TemplatePath $InitPath -Force
+    Write-Host "[OK] Copied init.pl from template" -ForegroundColor Green
+} else {
+    Write-Host "[WARNING] Template not found: $TemplatePath" -ForegroundColor Yellow
+    Write-Host "[INFO] Creating minimal init.pl..." -ForegroundColor Cyan
+
+    # Fallback: create minimal init.pl
+    $MinimalInit = @"
+% Minimal init.pl (template not found)
+:- dynamic user:library_directory/1.
+:- dynamic user:file_search_path/2.
+
+unifyweaver_init :-
+    prolog_load_context(directory, Here),
+    directory_file_path(Here, 'src', AbsSrcDir),
+    directory_file_path(AbsSrcDir, 'unifyweaver', AbsUnifyweaverDir),
+    asserta(user:library_directory(AbsSrcDir)),
+    asserta(user:file_search_path(unifyweaver, AbsUnifyweaverDir)),
+    format('[UnifyWeaver] Initialized (minimal mode)~n', []).
+
+:- initialization(unifyweaver_init, now).
+"@
+    Set-Content -Path $InitPath -Value $MinimalInit -Encoding UTF8
+    Write-Host "[OK] Created minimal init.pl" -ForegroundColor Yellow
+}
+
 # Check for ConEmu
 Write-Host ""
 Write-Host "[CHECK] Checking for ConEmu terminal..." -ForegroundColor Cyan
@@ -262,48 +296,17 @@ if exist "$ConEmuExe" (
 $LauncherContent += @"
 
 
-REM --- Convert paths for Prolog ---
-set "PROLOG_ROOT=%TEST_ROOT:\=/%"
-
-REM --- Create temporary initialization file ---
-set "TEMP_INIT=%TEMP%\unifyweaver_test_%RANDOM%.pl"
-(
-  echo :- working_directory(CWD, CWD^),
-  echo    format('[UnifyWeaver] Working directory: ~w~n', [CWD]^),
-  echo    atom_string('%PROLOG_ROOT%', RootStr^),
-  echo    atom_concat(RootStr, '/src', AbsSrcDir^),
-  echo    atom_concat(RootStr, '/src/unifyweaver', AbsUnifyweaverDir^),
-  echo    asserta(user:library_directory(AbsSrcDir^)^),
-  echo    asserta(file_search_path(unifyweaver, AbsUnifyweaverDir^)^),
-  echo    format('[UnifyWeaver] Library paths configured~n', []^),
-  echo    format('[UnifyWeaver] Test environment ready!~n~n', []^),
-  echo    format('Helper commands:~n', []^),
-  echo    format('  load_stream      - Load stream compiler~n', []^),
-  echo    format('  load_recursive   - Load recursive compiler~n', []^),
-  echo    format('  test_stream      - Test stream compiler~n', []^),
-  echo    format('  test_recursive   - Test recursive compiler~n', []^),
-  echo    format('  test_advanced    - Test advanced recursion~n~n', []^),
-  echo    asserta((load_stream :- (use_module(unifyweaver(core/stream_compiler^)^) -^> format('stream_compiler loaded successfully~n', []^) ; format('Failed to load stream_compiler~n', []^)^)^)^),
-  echo    asserta((load_recursive :- (use_module(unifyweaver(core/recursive_compiler^)^) -^> format('recursive_compiler loaded successfully~n', []^) ; format('Failed to load recursive_compiler~n', []^)^)^)^),
-  echo    asserta((test_stream :- use_module(unifyweaver(core/stream_compiler^)^), test_stream_compiler^)^),
-  echo    asserta((test_recursive :- use_module(unifyweaver(core/recursive_compiler^)^), test_recursive_compiler^)^),
-  echo    asserta((test_advanced :- use_module(unifyweaver(core/advanced/test_advanced^)^), test_all_advanced^)^).
-) ^> "%TEMP_INIT%"
-
 cd /d "%TEST_ROOT%"
 
 REM --- Launch with ConEmu if available ---
 if defined CONEMU_EXE (
   echo [UnifyWeaver] Launching in ConEmu terminal...
-  "%CONEMU_EXE%" -Dir "%TEST_ROOT%" -run cmd /k ""%SWIPL_EXE%" -q -l ^"%TEMP_INIT%^" -t prolog"
+  "%CONEMU_EXE%" -Dir "%TEST_ROOT%" -run cmd /k ""%SWIPL_EXE%" -q -l init.pl -t prolog"
 ) else (
   echo [UnifyWeaver] ConEmu not found - using standard console
   echo.
-  "%SWIPL_EXE%" -q -l "%TEMP_INIT%" -t prolog
+  "%SWIPL_EXE%" -q -l init.pl -t prolog
 )
-
-REM Clean up temp file on exit
-if exist "%TEMP_INIT%" del "%TEMP_INIT%"
 
 endlocal
 "@

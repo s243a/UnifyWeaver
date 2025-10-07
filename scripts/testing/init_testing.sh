@@ -284,96 +284,30 @@ EOF
 
 echo -e "${GREEN}✓${NC} Created test_basic.pl"
 
-# Copy or create init.pl
-if [[ -f "$MAIN_PROJECT_ROOT/init.pl" ]]; then
-    cp "$MAIN_PROJECT_ROOT/init.pl" "$TARGET_ROOT/init.pl"
-    echo -e "${GREEN}✓${NC} Copied init.pl from main project"
+# Copy init.pl from template
+if [[ -f "$MAIN_PROJECT_ROOT/templates/init_template.pl" ]]; then
+    cp "$MAIN_PROJECT_ROOT/templates/init_template.pl" "$TARGET_ROOT/init.pl"
+    echo -e "${GREEN}✓${NC} Copied init.pl from template"
 else
-    # Create a testing-specific init.pl
+    echo -e "${RED}✗${NC} Template not found: $MAIN_PROJECT_ROOT/templates/init_template.pl"
+    echo -e "${YELLOW}i${NC} Falling back to basic init.pl"
+    # Fallback: create minimal init.pl
     cat > "$TARGET_ROOT/init.pl" << 'EOF'
-% UnifyWeaver testing environment initialization
+% Minimal init.pl (template not found)
 :- dynamic user:library_directory/1.
 :- dynamic user:file_search_path/2.
-:- dynamic user:unifyweaver_root/1.
-
-% Load necessary library for path manipulation
-:- use_module(library(filesex)).
-
-
 
 unifyweaver_init :-
     prolog_load_context(directory, Here),
-    format('Here: ~w~n',[Here]),
-    retractall(user:unifyweaver_root(_)),
-    assertz(user:unifyweaver_root(Here)),    
     directory_file_path(Here, 'src', AbsSrcDir),
     directory_file_path(AbsSrcDir, 'unifyweaver', AbsUnifyweaverDir),
     asserta(user:library_directory(AbsSrcDir)),
     asserta(user:file_search_path(unifyweaver, AbsUnifyweaverDir)),
-    format('[UnifyWeaver] Absolute paths configured:~n', []),
-    format('  src: ~w~n', [AbsSrcDir]),
-    format('  unifyweaver: ~w~n', [AbsUnifyweaverDir]),
-    help.
+    format('[UnifyWeaver] Initialized (minimal mode)~n', []).
 
-:- dynamic unifyweaver_initialized/0.
-:- asserta(unifyweaver_initialized).
-
-load_recursive :-
-    ( use_module(unifyweaver(core/recursive_compiler))
-    -> format('recursive_compiler module loaded successfully!~n', [])
-    ; format('Failed to load recursive_compiler~n', [])
-    ).
-load_stream :-
-    ( use_module(unifyweaver(core/stream_compiler))
-    -> format('stream_compiler module loaded successfully!~n', [])
-    ; format('Failed to load stream_compiler~n', [])
-    ).
-load_template :-
-    ( use_module(unifyweaver(core/template_system))
-    -> format('template_system module loaded successfully!~n', [])
-    ; format('Failed to load template_system~n', [])
-    ).
-load_all_core :-
-    use_module(unifyweaver(core/recursive_compiler)),
-    use_module(unifyweaver(core/stream_compiler)),
-    use_module(unifyweaver(core/template_system)),
-    format('All core modules loaded successfully!~n', []).
-
-% Test helpers
-test_stream :-
-    ( use_module(unifyweaver(core/stream_compiler))
-    -> test_stream_compiler
-    ; format('Failed to load stream_compiler~n', [])
-    ).
-
-test_recursive :-
-    ( use_module(unifyweaver(core/recursive_compiler))
-    -> test_recursive_compiler
-    ; format('Failed to load recursive_compiler~n', [])
-    ).
-
-test_advanced :-
-    ( use_module(unifyweaver(core/advanced/test_advanced))
-    -> test_all_advanced
-    ; format('Failed to load advanced tests~n', [])
-    ).
-
-help :-
-    format('~n=== UnifyWeaver Testing Help ===~n', []),
-    format('Available commands:~n', []),
-    format(' load_stream.      - Load stream compiler~n', []),
-    format(' load_recursive.   - Load recursive compiler~n', []),
-    format(' load_template.    - Load template system~n', []),
-    format(' load_all_core.    - Load all core modules~n', []),
-    format(' test_stream.      - Test stream compiler~n', []),
-    format(' test_recursive.   - Test recursive compiler~n', []),
-    format(' test_advanced.    - Test advanced recursion~n', []),
-    format(' help.             - Show this help~n', []),
-    format('~n', []).
-    
 :- initialization(unifyweaver_init, now).
 EOF
-    echo -e "${GREEN}✓${NC} Created testing init.pl"
+    echo -e "${YELLOW}i${NC} Created minimal init.pl"
 fi
 
 # Copy config files

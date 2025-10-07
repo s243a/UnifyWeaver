@@ -433,6 +433,127 @@ swipl -q -g "use_module('src/unifyweaver/core/new_feature'), test_new_feature, h
 
 ---
 
+## Test Environment (test_env)
+
+UnifyWeaver provides test environment setup scripts that create standalone test directories with auto-discovery:
+
+### Setup
+
+**Bash/Linux:**
+```bash
+cd scripts/testing
+./init_testing.sh           # Creates test_env/ in scripts/testing/
+./init_testing.sh -d /tmp   # Creates /tmp/test_env/
+```
+
+**PowerShell/Windows:**
+```powershell
+cd scripts\testing
+.\Init-TestEnvironment.ps1  # Creates test_env/ in scripts\testing\
+```
+
+### Test Environment Features
+
+**Hybrid Test Discovery:**
+- **Manual tests** (hardcoded): `test_stream`, `test_recursive`, `test_advanced`, `test_constraints` - always available, guaranteed to work
+- **Auto-discovery**: Automatically finds `test_*.pl` files in `src/unifyweaver/core/` and `src/unifyweaver/core/advanced/`
+- **Fallback safe**: If auto-discovery fails, manual tests still work
+
+**Available Commands:**
+
+```prolog
+% Core loaders
+?- load_stream.         % Load stream compiler
+?- load_recursive.      % Load recursive compiler
+?- load_all_core.       % Load all core modules
+
+% Manual tests (reliable fallback)
+?- test_stream.         % Test stream compiler
+?- test_recursive.      % Test recursive compiler
+?- test_advanced.       % Test advanced recursion (24 tests)
+?- test_constraints.    % Test constraint system
+
+% Auto-discovered tests (if available)
+?- test_auto.           % Run all auto-discovered tests
+
+% Run everything
+?- test_all.            % Run ALL tests (manual + auto)
+
+% Help
+?- help.                % Show all available commands
+```
+
+### test_all Command
+
+The `test_all` command runs all tests in sequence:
+
+```prolog
+?- test_all.
+
+╔════════════════════════════════════════╗
+║  Running All UnifyWeaver Tests        ║
+╚════════════════════════════════════════╝
+
+═══ Manual Tests (Core) ═══
+
+┌─ Stream Compiler ────────────────────┐
+=== STREAM COMPILER TESTS ===
+... tests run ...
+└─ Stream Compiler Complete ──────────┘
+
+┌─ Recursive Compiler ─────────────────┐
+... tests run ...
+└─ Recursive Compiler Complete ───────┘
+
+┌─ Advanced Recursion ─────────────────┐
+... 24 tests run ...
+└─ Advanced Recursion Complete ───────┘
+
+┌─ Constraint System ──────────────────┐
+... tests run ...
+└─ Constraint System Complete ────────┘
+
+═══ Auto-Discovered Tests ═══
+(runs any additional test modules found)
+
+╔════════════════════════════════════════╗
+║  All Tests Complete                    ║
+╚════════════════════════════════════════╝
+```
+
+### Adding New Tests
+
+**No configuration needed!** Just create your test file:
+
+1. Create `src/unifyweaver/core/test_myfeature.pl`
+2. Export `test_myfeature/0` predicate
+3. Regenerate test environment or copy to existing one
+4. New test is automatically discovered
+
+Example:
+```prolog
+:- module(test_myfeature, [test_myfeature/0]).
+
+test_myfeature :-
+    writeln('=== MY FEATURE TESTS ==='),
+    % ... your tests ...
+    writeln('=== TESTS COMPLETE ===').
+```
+
+Then in test environment:
+```prolog
+?- help.
+% Shows: test_myfeature.  - Test myfeature module
+
+?- test_myfeature.
+% Runs your tests
+
+?- test_all.
+% Includes your tests automatically
+```
+
+---
+
 ## Continuous Integration Notes
 
 For CI/CD integration, all tests can be run in sequence:
