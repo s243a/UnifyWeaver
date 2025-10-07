@@ -12,6 +12,7 @@
     test_recursive_compiler/0
 ]).
 
+:- use_module('advanced/advanced_recursive_compiler').
 :- use_module(stream_compiler).
 :- use_module(template_system).
 :- use_module(library(lists)).
@@ -34,18 +35,19 @@ compile_recursive(Pred/Arity, Options, BashCode) :-
     ;   Classification = linear_recursion ->
         format('Detected linear recursion~n'),
         compile_linear_recursion(Pred, Arity, Options, BashCode)
-    ;   Classification = tail_recursion ->
-        format('Detected tail recursion~n'),
-        compile_tail_recursion(Pred, Arity, Options, BashCode)
+
     ;   % Try advanced patterns before falling back to memoization
+        % Get constraints for the predicate to pass to advanced compilers
+        constraint_analyzer:get_constraints(Pred/Arity, Constraints),
+        append(Options, Constraints, FinalOptions),
         catch(
             advanced_recursive_compiler:compile_advanced_recursive(
-                Pred/Arity, Options, BashCode
+                Pred/Arity, FinalOptions, BashCode
             ),
             error(existence_error(procedure, _), _),
             fail
         ) ->
-        format('Compiled using advanced patterns~n')
+        format('Compiled using advanced patterns with options: ~w~n', [FinalOptions])
     ;   % Unknown pattern - fall back to memoized recursion
         format('Unknown recursion pattern - using memoization~n'),
         compile_memoized_recursion(Pred, Arity, Options, BashCode)
@@ -148,23 +150,7 @@ compile_transitive_closure(Pred, _Arity, BasePred, _Options, BashCode) :-
     template_system:generate_transitive_closure(Pred, BasePred, BashCode),
     !.
 
-%% Compile tail recursion
-compile_tail_recursion(Pred, _Arity, _Options, BashCode) :-
-    atom_string(Pred, PredStr),
-    
-    % For descendant, we know it's reverse of ancestor pattern
-    % So we can compile it similarly but using parent_reverse_stream
-    (   Pred = descendant ->
-        generate_descendant_template(PredStr, BashCode)
-    ;   % Generic tail recursion - use plain recursion as fallback
-        compile_plain_recursion(Pred, BashCode)
-    ).
 
-%% Compile linear recursion
-compile_linear_recursion(Pred, _Arity, _Options, BashCode) :-
-    % Linear recursion has exactly one recursive call
-    % For now, use plain recursion as fallback
-    compile_plain_recursion(Pred, BashCode).
 
 %% Compile with memoization for unknown patterns
 compile_memoized_recursion(Pred, _Arity, _Options, BashCode) :-
