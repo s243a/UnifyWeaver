@@ -112,13 +112,13 @@ compile_mutual_recursion(Predicates, Options, BashCode).
 ```
 
 **Options Format:** List of `Key=Value` pairs
-- Example: `[unique=true, ordered=false, output_lang=bash]`
+- Example: `[unique(true), ordered=false, output_lang=bash]`
 
 **Constraint Integration:**
-- Compilers query `constraint_analyzer:get_constraints/2` for predicate constraints
-- Runtime options are merged with constraints
-- Currently, advanced patterns return single values (not sets), so deduplication constraints (`unique`, `unordered`) don't apply
-- Options are reserved for future use (e.g., `output_lang=python`)
+- Compilers query `constraint_analyzer:get_constraints/2` for predicate constraints.
+- Runtime options are merged with these constraints.
+- The `tail_recursion` compiler now uses the `unique(true)` constraint to generate more efficient code. When this constraint is present, an `exit 0` is added to the generated bash script, causing it to terminate immediately after producing its single result.
+- Other compilers do not yet act on constraints, but the plumbing is in place for future enhancements.
 
 **Logging:**
 ```prolog

@@ -322,10 +322,10 @@ swipl -q -g "use_module('src/unifyweaver/core/test_constraints'), test_constrain
 **Expected output:** All 4 integration tests pass with ✓ marks
 
 **Constraint Support in Advanced Compilers:**
-- All advanced recursion compilers (tail, linear, mutual) now query constraints via `get_constraints/2`
-- Constraints are logged during compilation but not currently used (advanced patterns return single values, not sets)
-- Options parameter is reserved for future extensibility (e.g., `output_lang=python`)
-- See [ADVANCED_RECURSION.md](ADVANCED_RECURSION.md#options-and-constraints) for details
+- All advanced recursion compilers (tail, linear, mutual) now query constraints via `get_constraints/2`.
+- The `tail_recursion` compiler now actively uses the `unique(true)` constraint to generate optimized code with an early exit.
+- For other advanced compilers, constraints are logged but not yet acted upon. This is reserved for future enhancements.
+- See [ADVANCED_RECURSION.md](ADVANCED_RECURSION.md#options-and-constraints) for details.
 
 ---
 

@@ -12,110 +12,82 @@ UnifyWeaver compiles Prolog predicates into efficient bash scripts, treating Pro
 
 ```
 src/unifyweaver/core/
-├── template_system.pl      # Template rendering engine
-├── stream_compiler.pl      # Non-recursive predicate compiler
-└── recursive_compiler.pl   # Recursive pattern analyzer & compiler
+├── template_system.pl
+├── stream_compiler.pl
+├── recursive_compiler.pl
+├── constraint_analyzer.pl
+└── advanced/
+    ├── advanced_recursive_compiler.pl
+    ├── call_graph.pl
+    ├── scc_detection.pl
+    ├── pattern_matchers.pl
+    ├── tail_recursion.pl
+    ├── linear_recursion.pl
+    └── mutual_recursion.pl
 ```
 
 ### template_system.pl
 
-Provides mustache-style template rendering for bash code generation:
-
-```prolog
-render_template(Template, Dict, Result)
-```
-
-**Features:**
-- Named placeholder substitution (`{{name}}`)
-- Composable template units
-- Pre-defined templates for common bash patterns (BFS, streams, functions)
-
-**Example:**
-```prolog
-Template = 'Hello {{name}}!',
-render_template(Template, [name='World'], Result).
-% Result = 'Hello World!'
-```
+Provides a flexible template rendering engine with file-based, cached, and generated source strategies.
 
 ### stream_compiler.pl
 
-Compiles non-recursive predicates into bash streaming pipelines:
-
-**Handles:**
-- Facts (converted to associative arrays)
-- Single rules (converted to pipelines)
-- Multiple rules (OR patterns with `sort -u`)
-- Inequality constraints (special case handling)
-
-**Pipeline Strategy:**
-```prolog
-grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
-```
-Becomes:
-```bash
-parent_stream | parent_join | sort -u
-```
-
-**Key Functions:**
-- `compile_predicate/3` - Main entry point
-- `classify_predicate/2` - Determines compilation strategy
-- `generate_pipeline/3` - Creates streaming bash code
+Compiles non-recursive predicates into bash streaming pipelines.
 
 ### recursive_compiler.pl
 
-Analyzes and optimizes recursive predicates:
+Acts as the main dispatcher. It analyzes a predicate, classifies its recursion pattern, and delegates compilation to the appropriate module (either `stream_compiler` or `advanced_recursive_compiler`).
 
-**Recursion Patterns Detected:**
+### constraint_analyzer.pl
 
-1. **Transitive Closure** (optimized to BFS)
-   ```prolog
-   ancestor(X, Y) :- parent(X, Y).
-   ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
-   ```
-   
-2. **Tail Recursion** (detected, falls back to memoization)
-   ```prolog
-   count_acc([], Acc, Acc).
-   count_acc([_|T], Acc, N) :- Acc1 is Acc + 1, count_acc(T, Acc1, N).
-   ```
+Manages predicate constraints (e.g., `unique`, `unordered`) and determines the required deduplication strategy.
 
-3. **Linear Recursion** (single recursive call per clause)
+### advanced_recursive_compiler.pl
 
-**Optimization Strategy:**
-- Transitive closures → BFS with visited tracking
-- Work queues in `/tmp/` for iterative processing
-- Cycle detection with associative arrays
-- Process-safe temp file naming
+Orchestrates the compilation of complex recursion patterns. It uses a priority-based strategy, attempting to compile with the most specific pattern first (tail -> linear -> mutual).
 
 ## Compilation Pipeline
 
 ```
-┌─────────────────┐
-│ Prolog Predicate│
-└────────┬────────┘
+┌──────────────────┐
+│ Prolog Predicate │
+└────────┬─────────┘
          │
          ▼
-┌─────────────────┐
-│ Classify Pattern│  (recursive_compiler)
-└────────┬────────┘
+┌──────────────────┐
+│ Classify Pattern │ (recursive_compiler.pl)
+└────────┬─────────┘
          │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
-┌─────────┐ ┌──────────────┐
-│Non-Rec  │ │ Recursive    │
-│(stream) │ │ (BFS/memo)   │
-└────┬────┘ └──────┬───────┘
-     │             │
-     ▼             ▼
-┌─────────────────────┐
-│ Template Rendering  │  (template_system)
-└──────────┬──────────┘
-           │
-           ▼
-    ┌─────────────┐
-    │ Bash Script │
-    └─────────────┘
+         ├────────────────────────┐
+         │                        │
+         ▼                        ▼
+┌──────────────────┐      ┌───────────────────────────┐
+│ Non-Recursive    │      │ Recursive                 │
+│ (stream_compiler)│      │ (advanced_recursive_compiler) │
+└────────┬─────────┘      └───────────┬───────────────┘
+         │                            │
+         │                            ▼
+         │                  ┌───────────────────────────┐
+         │                  │   Try Advanced Patterns   │
+         │                  │  (tail -> linear -> mutual) │
+         │                  └───────────┬───────────────┘
+         │                              │
+         └───────────────┬──────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────┐
+│ Analyze Constraints & Options    │ (constraint_analyzer.pl)
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
+│ Select & Render Template         │ (template_system.pl)
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+        ┌────────────────┐
+        │   Bash Script  │
+        └────────────────┘
 ```
 
 ## Generated Code Structure
