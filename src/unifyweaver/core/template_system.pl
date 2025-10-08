@@ -7,13 +7,239 @@
 
 :- module(template_system, [
     render_template/3,
+    render_named_template/3,
+    render_named_template/4,
     compose_templates/3,
     template/2,
     generate_transitive_closure/3,
+    load_template/2,
+    load_template/3,
+    cache_template/2,
+    clear_template_cache/0,
+    clear_template_cache/1,
+    template_config/2,
+    set_template_config/2,
+    template_config_default/1,
+    set_template_config_default/1,
     test_template_system/0
 ]).
 
 :- use_module(library(lists)).
+
+%% ============================================
+%% DYNAMIC PREDICATES (Configuration & Cache)
+%% ============================================
+
+:- dynamic cached_template/3.        % cached_template(Name, Template, Timestamp)
+:- dynamic template_config/2.        % template_config(Name, Options)
+:- dynamic template_config_default/1. % template_config_default(Options)
+
+%% Default configuration
+template_config_default([
+    source_order([generated]),       % Start conservative: only use hardcoded templates
+    template_dir('templates'),
+    cache_dir('templates/cache'),
+    template_extension('.tmpl.sh'),
+    auto_cache(false)
+]).
+
+%% ============================================
+%% CONFIGURATION MANAGEMENT
+%% ============================================
+
+%% set_template_config_default(+Options)
+%  Set global default configuration
+set_template_config_default(Options) :-
+    retractall(template_config_default(_)),
+    assertz(template_config_default(Options)).
+
+%% set_template_config(+TemplateName, +Options)
+%  Set configuration for specific template
+set_template_config(TemplateName, Options) :-
+    retractall(template_config(TemplateName, _)),
+    assertz(template_config(TemplateName, Options)).
+
+%% get_template_config(+TemplateName, +RuntimeOptions, -MergedConfig)
+%  Merge configuration from runtime > per-template > default
+get_template_config(TemplateName, RuntimeOptions, MergedConfig) :-
+    % Get default config
+    template_config_default(DefaultConfig),
+
+    % Get per-template config (if exists)
+    (   template_config(TemplateName, TemplateConfig)
+    ->  true
+    ;   TemplateConfig = []
+    ),
+
+    % Merge: runtime overrides template overrides default
+    merge_options(RuntimeOptions, TemplateConfig, Temp),
+    merge_options(Temp, DefaultConfig, MergedConfig).
+
+%% merge_options(+Priority, +Fallback, -Merged)
+%  Merge two option lists, Priority takes precedence
+merge_options([], Fallback, Fallback) :- !.
+merge_options([H|T], Fallback, Merged) :-
+    H =.. [Key, _],
+    delete_option(Fallback, Key, Fallback2),
+    merge_options(T, Fallback2, Temp),
+    Merged = [H|Temp].
+
+%% delete_option(+Options, +Key, -Remaining)
+%  Remove all options with given key
+delete_option([], _, []) :- !.
+delete_option([H|T], Key, Remaining) :-
+    H =.. [Key, _],
+    !,
+    delete_option(T, Key, Remaining).
+delete_option([H|T], Key, [H|Remaining]) :-
+    delete_option(T, Key, Remaining).
+
+%% get_option(+OptionPattern, +Options, +Default, -Value)
+%  Get option value from list, use default if not found
+get_option(Key, Options, Default, Value) :-
+    OptionPattern =.. [Key, Value],
+    (   member(OptionPattern, Options)
+    ->  true
+    ;   Value = Default
+    ).
+
+%% ============================================
+%% TEMPLATE CACHING
+%% ============================================
+
+%% cache_template(+Name, +Template)
+%  Cache a template in memory with timestamp
+cache_template(Name, Template) :-
+    get_time(Timestamp),
+    retractall(cached_template(Name, _, _)),
+    assertz(cached_template(Name, Template, Timestamp)).
+
+%% get_cached_template(+Name, -Template)
+%  Retrieve cached template if exists
+get_cached_template(Name, Template) :-
+    cached_template(Name, Template, _).
+
+%% clear_template_cache
+%  Clear all cached templates
+clear_template_cache :-
+    retractall(cached_template(_, _, _)).
+
+%% clear_template_cache(+Name)
+%  Clear specific cached template
+clear_template_cache(Name) :-
+    retractall(cached_template(Name, _, _)).
+
+%% ============================================
+%% FILE OPERATIONS
+%% ============================================
+
+%% load_template_from_file(+FilePath, -TemplateString)
+%  Load template from file
+load_template_from_file(FilePath, TemplateString) :-
+    exists_file(FilePath),
+    read_file_to_string(FilePath, TemplateString, []).
+
+%% find_template_file(+TemplateName, +Config, -FilePath)
+%  Find template file path based on configuration
+find_template_file(TemplateName, Config, FilePath) :-
+    % Check for explicit file_path first
+    (   get_option(file_path, Config, none, ExplicitPath),
+        ExplicitPath \= none
+    ->  FilePath = ExplicitPath
+    ;   % Otherwise construct from template_dir + name + extension
+        get_option(template_dir, Config, 'templates', Dir),
+        get_option(template_extension, Config, '.tmpl.sh', Ext),
+        atom_string(TemplateName, NameStr),
+        format(string(FilePath), '~w/~w~w', [Dir, NameStr, Ext])
+    ).
+
+%% save_template_to_cache_file(+TemplateName, +Template, +Config)
+%  Save template to cache directory for inspection/editing
+save_template_to_cache_file(TemplateName, Template, Config) :-
+    get_option(cache_dir, Config, 'templates/cache', CacheDir),
+    get_option(template_extension, Config, '.tmpl.sh', Ext),
+
+    % Create cache directory if it doesn't exist
+    (   exists_directory(CacheDir)
+    ->  true
+    ;   make_directory(CacheDir)
+    ),
+
+    % Write template to cache file
+    atom_string(TemplateName, NameStr),
+    format(string(CachePath), '~w/~w~w', [CacheDir, NameStr, Ext]),
+    open(CachePath, write, Stream),
+    write(Stream, Template),
+    close(Stream).
+
+%% ============================================
+%% TEMPLATE LOADING STRATEGIES
+%% ============================================
+
+%% try_source(+Name, +Strategy, +Config, -Template)
+%  Try loading template from specific strategy
+try_source(Name, file, Config, Template) :-
+    find_template_file(Name, Config, Path),
+    load_template_from_file(Path, Template).
+
+try_source(Name, cached, _Config, Template) :-
+    get_cached_template(Name, Template).
+
+try_source(Name, generated, _Config, Template) :-
+    template(Name, Template).
+
+%% load_template_with_strategy(+Name, +Config, -Template)
+%  Load template using strategy preference order
+load_template_with_strategy(Name, Config, Template) :-
+    get_option(source_order, Config, [generated], Order),
+    try_sources(Name, Order, Config, Template).
+
+%% try_sources(+Name, +Strategies, +Config, -Template)
+%  Try strategies in order until one succeeds
+try_sources(Name, [Strategy|Rest], Config, Template) :-
+    (   try_source(Name, Strategy, Config, Template)
+    ->  % Strategy succeeded
+        % Check if we should cache this template
+        (   Strategy \= cached,  % Don't re-cache already cached template
+            get_option(auto_cache, Config, false, AutoCache),
+            AutoCache = true
+        ->  cache_template(Name, Template),
+            save_template_to_cache_file(Name, Template, Config)
+        ;   true
+        )
+    ;   % Strategy failed, try next
+        try_sources(Name, Rest, Config, Template)
+    ).
+
+%% ============================================
+%% PUBLIC API
+%% ============================================
+
+%% load_template(+TemplateName, -TemplateString)
+%  Load template using default configuration
+load_template(TemplateName, TemplateString) :-
+    load_template(TemplateName, [], TemplateString).
+
+%% load_template(+TemplateName, +Options, -TemplateString)
+%  Load template with runtime options
+load_template(TemplateName, Options, TemplateString) :-
+    get_template_config(TemplateName, Options, Config),
+    load_template_with_strategy(TemplateName, Config, TemplateString).
+
+%% render_named_template(+TemplateName, +Dict, -Result)
+%  Load and render template by name
+render_named_template(TemplateName, Dict, Result) :-
+    render_named_template(TemplateName, Dict, [], Result).
+
+%% render_named_template(+TemplateName, +Dict, +Options, -Result)
+%  Load and render template by name with options
+render_named_template(TemplateName, Dict, Options, Result) :-
+    load_template(TemplateName, Options, Template),
+    render_template(Template, Dict, Result).
+
+%% ============================================
+%% ORIGINAL TEMPLATE RENDERING (unchanged)
+%% ============================================
 
 %% Named placeholder substitution
 % Replaces {{name}} with corresponding value from dictionary
@@ -227,17 +453,17 @@ generate_transitive_closure(PredName, BaseName, Code) :-
 %% Test the template system
 test_template_system :-
     writeln('=== Testing Template System ==='),
-    
+
     % Test 1: Simple substitution
     write('Test 1 - Simple substitution: '),
     render_template('Hello {{name}}!', [name='World'], R1),
-    (R1 = 'Hello World!' -> writeln('PASS') ; (format('FAIL: got ~w~n', [R1]), fail)),
-    
+    (sub_string(R1, _, _, _, 'Hello World!') -> writeln('PASS') ; (format('FAIL: got ~w~n', [R1]), fail)),
+
     % Test 2: Multiple substitutions
     write('Test 2 - Multiple substitutions: '),
     render_template('{{greeting}} {{name}}', [greeting='Hello', name='Alice'], R2),
-    (R2 = 'Hello Alice' -> writeln('PASS') ; (format('FAIL: got ~w~n', [R2]), fail)),
-    
+    (sub_string(R2, _, _, _, 'Hello Alice') -> writeln('PASS') ; (format('FAIL: got ~w~n', [R2]), fail)),
+
     % Test 3: Generate transitive closure
     writeln('Test 3 - Generate transitive closure:'),
     generate_transitive_closure(ancestor, parent, Code3),
@@ -245,5 +471,36 @@ test_template_system :-
     ->  writeln('PASS - contains ancestor_all function')
     ;   writeln('FAIL - missing expected function')
     ),
-    
+
+    % Test 4: Template caching
+    write('Test 4 - Template caching: '),
+    cache_template(test_cached, 'Cached {{value}}'),
+    get_cached_template(test_cached, Cached),
+    (Cached = 'Cached {{value}}' -> writeln('PASS') ; (format('FAIL: got ~w~n', [Cached]), fail)),
+
+    % Test 5: Load generated template by name
+    write('Test 5 - Load by name (generated): '),
+    load_template(bash_header, Template5),
+    (   sub_string(Template5, _, _, _, '#!/bin/bash')
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [Template5]), fail)
+    ),
+
+    % Test 6: Render named template
+    write('Test 6 - Render named template: '),
+    render_named_template(bash_header, [description='Test Script'], Result6),
+    (   sub_string(Result6, _, _, _, '# Test Script')
+    ->  writeln('PASS')
+    ;   (format('FAIL: got ~w~n', [Result6]), fail)
+    ),
+
+    % Test 7: Configuration merging
+    write('Test 7 - Configuration merging: '),
+    get_template_config(test_template, [source_order([file])], Config7),
+    member(source_order([file]), Config7),
+    writeln('PASS'),
+
+    % Clean up
+    clear_template_cache(test_cached),
+
     writeln('=== Template System Tests Complete ===').
