@@ -52,6 +52,7 @@ swipl -q -g "use_module('src/unifyweaver/core/constraint_analyzer'), test_constr
 
 ---
 
+
 ### 2. Stream Compiler Tests
 
 **Module:** `src/unifyweaver/core/stream_compiler.pl`
@@ -79,7 +80,9 @@ swipl -q -g "use_module('src/unifyweaver/core/stream_compiler'), test_stream_com
 bash output/test.sh  # Run the generated test script
 ```
 
+
 ---
+
 
 ### 3. Recursive Compiler Tests
 
@@ -107,7 +110,9 @@ swipl -q -g "use_module('src/unifyweaver/core/recursive_compiler'), test_recursi
 bash output/test_recursive.sh  # Run the generated test script
 ```
 
+
 ---
+
 
 ### 4. Advanced Recursion Tests
 
@@ -172,7 +177,9 @@ head -30 output/advanced/list_length.sh
 bash output/advanced/test_runner.sh  # Run all generated scripts
 ```
 
+
 ---
+
 
 ### 4.7 Automatic Test Runner Generation
 
@@ -267,7 +274,7 @@ is_test_wrapper_duplicate(FileName) :-
 ```prolog
 % Extract ALL functions from a script
 extract_all_functions(Content, Functions) :-
-    re_foldl(collect_function, "^(\\w+)\\(\\)\\s*\\{", Content, [], Functions, [...]).
+    re_foldl(collect_function, "^(\w+)\(\)\s*\{", Content, [], Functions, [...]).
 
 % Get arity for each function
 extract_function_arity(Content, FuncName, Arity) :-
@@ -299,9 +306,10 @@ write_file_tests(Stream, FilePath, FunctionConfigs) :-
 **Troubleshooting:**
 - If a script isn't tested: Check if it's classified as `function_library`
 - If wrong function called: Verify header comment matches actual function name
-- If arity is wrong: Check for `local var="$N"` patterns in function body
+- If arity is wrong: Check for `local var=\"$N\"` patterns in function body
 
 ---
+
 
 ### 5. Constraint Integration Tests
 
@@ -329,6 +337,7 @@ swipl -q -g "use_module('src/unifyweaver/core/test_constraints'), test_constrain
 
 ---
 
+
 ### 6. Constraint Demo (Visual Verification)
 
 **Module:** `examples/constraints_demo.pl`
@@ -353,6 +362,7 @@ head -20 output/demo_no_dedup.sh  # Should show: no deduplication
 ```
 
 ---
+
 
 ## Testing Checklist
 
@@ -397,6 +407,7 @@ Ensure no breaking changes:
 
 ---
 
+
 ## Adding New Tests
 
 When adding a new feature, update this document with:
@@ -419,19 +430,20 @@ When adding a new feature, update this document with:
 - Feature aspect 2
 
 **Run:**
-\`\`\`bash
+```bash
 swipl -q -g "use_module('src/unifyweaver/core/new_feature'), test_new_feature, halt."
-\`\`\`
+```
 
 **Expected output:** Description of success
 
 **Verify:**
-\`\`\`bash
+```bash
 # Commands to verify functionality
-\`\`\`
+```
 ```
 
 ---
+
 
 ## Test Environment (test_env)
 
@@ -463,24 +475,24 @@ cd scripts\testing
 
 ```prolog
 % Core loaders
-?- load_stream.         % Load stream compiler
-?- load_recursive.      % Load recursive compiler
-?- load_all_core.       % Load all core modules
+?- load_stream.         # Load stream compiler
+?- load_recursive.      # Load recursive compiler
+?- load_all_core.       # Load all core modules
 
 % Manual tests (reliable fallback)
-?- test_stream.         % Test stream compiler
-?- test_recursive.      % Test recursive compiler
-?- test_advanced.       % Test advanced recursion (24 tests)
-?- test_constraints.    % Test constraint system
+?- test_stream.         # Test stream compiler
+?- test_recursive.      # Test recursive compiler
+?- test_advanced.       # Test advanced recursion (24 tests)
+?- test_constraints.    # Test constraint system
 
 % Auto-discovered tests (if available)
-?- test_auto.           % Run all auto-discovered tests
+?- test_auto.           # Run all auto-discovered tests
 
 % Run everything
-?- test_all.            % Run ALL tests (manual + auto)
+?- test_all.            # Run ALL tests (manual + auto)
 
 % Help
-?- help.                % Show all available commands
+?- help.                # Show all available commands
 ```
 
 ### test_all Command
@@ -554,6 +566,7 @@ Then in test environment:
 
 ---
 
+
 ## Continuous Integration Notes
 
 For CI/CD integration, all tests can be run in sequence:
@@ -588,6 +601,7 @@ echo "✓ All tests passed!"
 
 ---
 
+
 ## Test Coverage Goals
 
 - **Unit tests:** Cover all public predicates in each module
@@ -597,6 +611,7 @@ echo "✓ All tests passed!"
 - **Output validation:** Generated bash scripts are syntactically correct and produce expected output
 
 ---
+
 
 ## Troubleshooting Tests
 
@@ -627,6 +642,7 @@ bash: output/test.sh: No such file or directory
 **Solution:** Run the Prolog test first to generate the files
 
 ---
+
 
 ## Future Test Additions
 
