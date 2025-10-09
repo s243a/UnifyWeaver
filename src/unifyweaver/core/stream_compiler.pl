@@ -15,6 +15,7 @@
 
 :- use_module(library(lists)).
 :- use_module(constraint_analyzer).
+:- use_module(library(template_system)).
 
 %% Main compilation entry point
 compile_predicate(Pred/Arity, Options) :-
@@ -91,80 +92,45 @@ extract_predicates(Goal, [Pred]) :-
 %% Compile facts into bash lookup
 compile_facts(Pred, Arity, _Options, BashCode) :-
     atom_string(Pred, PredStr),
-    % Get actual facts from the database
-    functor(Head, Pred, Arity),
-    findall(Head, clause(Head, true), Facts),
-    
-    (   Arity = 1 ->
-        % Generate array entries for unary facts
-        findall(Entry, (
-            member(Fact, Facts),
-            arg(1, Fact, Arg),
-            format(string(Entry), '    "~w"', [Arg])
-        ), Entries),
-        atomic_list_concat(Entries, '\n', EntriesStr),
-        
-        format(string(BashCode), '#!/bin/bash
-# ~s - fact lookup
-
-~s_data=(
-~s
-)
-
-~s() {
-    local query="$1"
-    for item in "${~s_data[@]}"; do
-        [[ "$item" == "$query" ]] && echo "$item"
-    done
-}
-
-~s_stream() {
-    for item in "${~s_data[@]}"; do
-        echo "$item"
-    done
-}', [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr])
-        
-    ;   Arity = 2 ->
-        % Generate associative array entries for binary facts
-        findall(Entry, (
-            member(Fact, Facts),
-            arg(1, Fact, Arg1),
-            arg(2, Fact, Arg2),
-            format(string(Entry), '    ["~w:~w"]=1', [Arg1, Arg2])
-        ), Entries),
-        atomic_list_concat(Entries, '\n', EntriesStr),
-        
-        format(string(BashCode), '#!/bin/bash
-# ~s - fact lookup
-
-declare -A ~s_data=(
-~s
-)
-
-~s() {
-    local key="$1:$2"
-    [[ -n "${~s_data[$key]}" ]] && echo "$key"
-}
-
-~s_stream() {
-    for key in "${!~s_data[@]}"; do
-        echo "$key"
-    done
-}
-
-# Reverse lookup for inverse relationships
-~s_reverse_stream() {
-    for key in "${!~s_data[@]}"; do
-        IFS=":" read -r a b <<< "$key"
-        echo "$b:$a"
-    done
-}', [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr])
-        
-    ;   format(string(BashCode), '#!/bin/bash
-# ~s - fact lookup (arity ~w not fully implemented)
-~s() { echo "TODO: implement arity ~w"; }',
-            [PredStr, Arity, PredStr, Arity])
+    gather_fact_entries(Pred, Arity, EntriesStr),
+    Vars = [pred=PredStr, entries=EntriesStr],
+    (   Arity =:= 1 ->
+        compose_templates(['bash/header','facts/array_unary','facts/lookup_unary','facts/stream_unary'], Vars, BashCode)
+    ;   Arity =:= 2 ->
+        compose_templates(['bash/header','facts/array_binary','facts/lookup_binary','facts/stream_binary', 'facts/reverse_stream_binary'], Vars, BashCode)
+    ;   render_named_template('bash/header', [pred=PredStr, description='fact lookup (arity ~w not fully implemented)'], Header),
+        format(string(Body), '~s() { echo "TODO: implement arity ~w"; }', [PredStr, Arity]),
+        atom_concat(Header, Body, BashCode)
     ).
+
+% Helper: materialize facts into a bash array literal body as lines.
+gather_fact_entries(Pred, 1, EntriesStr) :-
+    functor(Head, Pred, 1),
+    findall(Line, (clause(Head, true),
+                   Head =.. [Pred, A1],
+                   shell_quote(A1, Q1),
+                   format(string(Line), "  \"~w\"", [Q1])),
+            Lines),
+    atomic_list_concat(Lines, "\n", EntriesStr).
+gather_fact_entries(Pred, 2, EntriesStr) :-
+    functor(Head, Pred, 2),
+    findall(Line, (clause(Head, true),
+                   Head =.. [Pred, A1, A2],
+                   shell_quote(A1, Q1),
+                   shell_quote(A2, Q2),
+                   format(string(Line), "  [\"~w:~w\"]=1", [Q1, Q2])),
+            Lines),
+    atomic_list_concat(Lines, "\n", EntriesStr).
+
+% Minimal shell quoting for literals used inside array items.
+shell_quote(Atom, Q) :-
+    atom_string(Atom, S0),
+    replace_in_string(S0, "\"", "\\\"", S1),
+    replace_in_string(S1, "\n", "\\n", Q).
+
+replace_in_string(String, Find, Replace, Result) :-
+    atomic_list_concat(Split, Find, String),
+    atomic_list_concat(Split, Replace, Result).
 
 %% Compile single rule into streaming pipeline
 compile_single_rule(Pred, Body, Options, BashCode) :-
@@ -390,9 +356,7 @@ write_bash_file(File, BashCode) :-
     open(File, write, Stream, [type(binary)]),
     string_codes(UnixStr, Codes),
     maplist(put_byte(Stream), Codes),
-    close(Stream),
-    
-    format('Written to: ~w~n', [File]).
+    close(Stream).
 
 %% Main test
 test_stream_compiler :-
