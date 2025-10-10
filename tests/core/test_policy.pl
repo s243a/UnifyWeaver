@@ -6,6 +6,7 @@
 :- use_module(library(recursive_compiler)).
 :- use_module(library(firewall)).
 :- use_module(library(preferences)).
+:- use_module(library(stream_compiler)).
 
 % --- Test Definitions ---
 
@@ -24,7 +25,27 @@ test_policy :-
     run_test(test_denied_fails),
     run_test(test_rule_preference_overrides_default),
     run_test(test_runtime_overrides_all),
+    run_test(test_compile_facts_direct),
     writeln('\n=== All Policy Tests Complete ===').
+
+%% test_compile_facts_direct
+% Directly calls compile_facts for allowed_pred/1 and checks if BashCode is instantiated.
+test_compile_facts_direct :-
+    format('~n--- Running test_compile_facts_direct ---~n'),
+    
+    % Define a simple test predicate
+    catch(abolish(direct_test_pred/1), _, true),
+    assertz(direct_test_pred(test_value)),
+    
+    % Call compile_facts directly (bypassing policy_validator)
+    % This should work regardless of firewall settings
+    (   stream_compiler:compile_facts(direct_test_pred, 1, [], BashCode),
+        nonvar(BashCode),
+        BashCode \= '' ->
+        format('  ✓ PASS: test_compile_facts_direct~n')
+    ;   format('  ✗ FAIL: test_compile_facts_direct - BashCode not instantiated~n'),
+        fail
+    ).
 
 %% setup_policies is det.
 %  Asserts all firewall and preference rules at runtime.

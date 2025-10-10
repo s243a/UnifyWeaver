@@ -14,25 +14,26 @@
 ]).
 
 :- use_module(library(lists)).
-:- use_module(constraint_analyzer).
+:- use_module(library(constraint_analyzer)).
 :- use_module(library(template_system)).
 
 %% Main compilation entry point
 compile_predicate(Pred/Arity, Options) :-
     compile_predicate(Pred/Arity, Options, _).
 
-compile_predicate(Pred/Arity, Options, BashCode) :-
-    format('=== Compiling ~w/~w ===~n', [Pred, Arity]),
+compile_predicate(PredIndicator, Options, BashCode) :-
+    PredIndicator = PredAtom/Arity,
+    format('=== Compiling ~w/~w ===~n', [PredAtom, Arity]),
 
     % Get constraints for this predicate (from declarations or defaults)
-    get_constraints(Pred/Arity, Constraints),
+    get_constraints(PredAtom/Arity, Constraints),
     format('  Constraints: ~w~n', [Constraints]),
 
     % Merge with any runtime options (options take precedence)
     merge_options(Options, Constraints, MergedOptions),
 
     % Create head with correct arity
-    functor(Head, Pred, Arity),
+    functor(Head, PredAtom, Arity),
 
     % Get all clauses for this predicate
     findall(Body, clause(Head, Body), Bodies),
@@ -40,22 +41,22 @@ compile_predicate(Pred/Arity, Options, BashCode) :-
     
     % Determine compilation strategy
     (   Bodies = [] ->
-        format('ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
+        format('ERROR: No clauses found for ~w/~w~n', [PredAtom, Arity]),
         fail
     ;   Bodies = [true|Rest], forall(member(B, Rest), B = true) ->
         % All bodies are just 'true' - these are facts
         format('Type: facts (~w clauses)~n', [NumClauses]),
-        compile_facts(Pred, Arity, MergedOptions, BashCode)
+        compile_facts(PredAtom, Arity, MergedOptions, BashCode)
     ;   Bodies = [SingleBody], SingleBody \= true ->
         % Single rule
         format('Type: single_rule (~w clauses)~n', [NumClauses]),
         extract_predicates(SingleBody, Predicates),
         format('  Body predicates: ~w~n', [Predicates]),
-        compile_single_rule(Pred, SingleBody, MergedOptions, BashCode)
+        compile_single_rule(PredAtom, SingleBody, MergedOptions, BashCode)
     ;   % Multiple rules (OR pattern)
         format('Type: multiple_rules (~w clauses)~n', [NumClauses]),
         format('  ~w alternatives~n', [NumClauses]),
-        compile_multiple_rules(Pred, Bodies, MergedOptions, BashCode)
+        compile_multiple_rules(PredAtom, Bodies, MergedOptions, BashCode)
     ).
 
 %% Merge runtime options with constraint-based options
@@ -90,18 +91,37 @@ extract_predicates(Goal, [Pred]) :-
     Pred \= true.
 
 %% Compile facts into bash lookup
-compile_facts(Pred, Arity, _Options, BashCode) :-
+compile_facts(Pred, Arity, Options, BashCode) :-
     atom_string(Pred, PredStr),
-    gather_fact_entries(Pred, Arity, EntriesStr),
-    Vars = [pred=PredStr, entries=EntriesStr],
-    (   Arity =:= 1 ->
-        compose_templates(['bash/header','facts/array_unary','facts/lookup_unary','facts/stream_unary'], Vars, BashCode)
-    ;   Arity =:= 2 ->
-        compose_templates(['bash/header','facts/array_binary','facts/lookup_binary','facts/stream_binary', 'facts/reverse_stream_binary'], Vars, BashCode)
-    ;   render_named_template('bash/header', [pred=PredStr, description='fact lookup (arity ~w not fully implemented)'], Header),
-        format(string(Body), '~s() { echo "TODO: implement arity ~w"; }', [PredStr, Arity]),
-        atom_concat(Header, Body, BashCode)
-    ).
+    functor(Head, Pred, Arity),
+    
+    % Collect all facts
+    findall(Head, clause(Head, true), Facts),
+    
+    % Build array entries
+    findall(Entry,
+        (   member(Fact, Facts),
+            Fact =.. [_|Args],
+            format_fact_entry(Args, Entry)
+        ),
+        Entries),
+    atomic_list_concat(Entries, '\n    ', EntriesStr),
+    
+    % Get deduplication strategy from options
+    get_dedup_strategy(Options, Strategy),
+    
+    % Render template - THIS IS THE CRITICAL FIX
+    compose_templates(
+        ['bash/header','facts/array_binary','facts/lookup_binary','facts/stream_binary', 'facts/reverse_stream_binary'],
+        [pred=PredStr, entries=EntriesStr, strategy=Strategy],
+        BashCode
+    ),
+    !.
+
+%% format_fact_entry(+Args, -Entry)
+format_fact_entry(Args, Entry) :-
+    atomic_list_concat(Args, ':', Key),
+    format(string(Entry), '[~w]=1', [Key]).
 
 % Helper: materialize facts into a bash array literal body as lines.
 gather_fact_entries(Pred, 1, EntriesStr) :-
@@ -131,6 +151,33 @@ shell_quote(Atom, Q) :-
 replace_in_string(String, Find, Replace, Result) :-
     atomic_list_concat(Split, Find, String),
     atomic_list_concat(Split, Replace, Result).
+
+%% compile_facts_debug(+Pred, +Arity, +MergedOptions, -BashCode)
+%  Debug version of compile_facts with extensive logging.
+compile_facts_debug(Pred, Arity, MergedOptions, BashCode) :-
+    format('DEBUG: Starting compile_facts for ~w/~w~n', [Pred, Arity]),
+    atom_string(Pred, PredStr),
+    format('DEBUG: PredStr = ~w~n', [PredStr]),
+    
+    functor(Head, Pred, Arity),
+    findall(Head, clause(Head, true), Facts),
+    format('DEBUG: Found ~w facts~n', [length(Facts, _)]),
+    
+    % Try template rendering with explicit error handling
+    (   catch(
+            compose_templates(
+                ['bash/header','facts/array_binary','facts/lookup_binary','facts/stream_binary','facts/reverse_stream_binary'],
+                [pred=PredStr, entries='[test]=1', strategy=sort_u],
+                BashCode
+            ),
+            Error,
+            (format(user_error, 'DEBUG: Template rendering error: ~w~n', [Error]), fail)
+        ) ->
+        format('DEBUG: Template rendered successfully~n'),
+        format('DEBUG: BashCode length: ~w~n', [string_length(BashCode, _)])
+    ;   format('DEBUG: Template rendering failed~n'),
+        fail
+    ).
 
 %% Compile single rule into streaming pipeline
 compile_single_rule(Pred, Body, Options, BashCode) :-
