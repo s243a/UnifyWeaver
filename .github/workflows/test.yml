@@ -36,11 +36,11 @@ jobs:
 
       - name: Run stream compiler tests
         run: |
-          swipl -g "use_module('src/unifyweaver/core/stream_compiler'), test_stream_compiler, halt."
+          swipl -g "asserta(user:file_search_path(library, 'src/unifyweaver/core')), use_module('src/unifyweaver/core/stream_compiler'), test_stream_compiler, halt."
 
       - name: Run recursive compiler tests
         run: |
-          swipl -g "use_module('src/unifyweaver/core/recursive_compiler'), test_recursive_compiler, halt."
+          swipl -g "asserta(user:file_search_path(library, 'src/unifyweaver/core')), use_module('src/unifyweaver/core/recursive_compiler'), test_recursive_compiler, halt."
 
       - name: Run advanced recursion tests (24 tests)
         run: |
@@ -49,6 +49,10 @@ jobs:
       - name: Run constraint integration tests
         run: |
           swipl -g "use_module('src/unifyweaver/core/test_constraints'), test_constraints, halt."
+
+      - name: Run control plane tests
+        run: |
+          swipl -g "asserta(user:file_search_path(library, 'src/unifyweaver/core')), asserta(user:file_search_path(library, 'tests/core')), use_module(library(test_policy)), test_policy, halt."
 
       - name: Generate and run inference test runner
         run: |
@@ -76,6 +80,7 @@ jobs:
           echo "✓ Recursive compiler tests"
           echo "✓ Advanced recursion tests (24/24)"
           echo "✓ Constraint integration tests"
+          echo "✓ Control plane tests (5/5)"
           echo "✓ Inference test runner generation"
           echo "✓ Generated bash script validation"
           echo "=========================================="
