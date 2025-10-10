@@ -52,6 +52,13 @@
 get_default_constraints(Constraints) :-
     findall(C, default_constraint(C), Constraints).
 
+%% set_default_constraints(+NewConstraints:list) is det.
+%
+%  Sets the global default constraints for all predicates.
+%  These defaults are used for any predicate that does not have its
+%  own constraints explicitly declared.
+%
+%  @param NewConstraints A list of constraint terms, e.g., `[unique(true), unordered(false)]`.
 set_default_constraints(NewConstraints) :-
     retractall(default_constraint(_)),
     forall(member(C, NewConstraints), assertz(default_constraint(C))).
@@ -71,13 +78,25 @@ set_default_constraints(NewConstraints) :-
 
 :- dynamic predicate_constraint/2.
 
-% Declare constraints for a specific predicate
+%% declare_constraint(+Pred:pred_indicator, +Constraints:list) is det.
+%
+%  Declares constraints for a specific predicate. This overrides the
+%  global defaults for that predicate.
+%
+%  @param Pred The predicate indicator, e.g., `my_pred/2`.
+%  @param Constraints A list of constraint terms. Shorthands like `unique`
+%         and `ordered` are normalized.
 declare_constraint(Pred, Constraints) :-
     retractall(predicate_constraint(Pred, _)),
     normalize_constraints(Constraints, Normalized),
     assertz(predicate_constraint(Pred, Normalized)).
 
-% Clear all constraints for a predicate (reverts to defaults)
+%% clear_constraints(+Pred:pred_indicator) is det.
+%
+%  Removes any specific constraints for a predicate, causing it to
+%  revert to using the global defaults.
+%
+%  @param Pred The predicate indicator, e.g., `my_pred/2`.
 clear_constraints(Pred) :-
     retractall(predicate_constraint(Pred, _)).
 
@@ -100,7 +119,16 @@ normalize_constraints([Invalid|_], _) :-
 % CONSTRAINT QUERIES
 % ============================================================================
 
-% Get effective constraints for a predicate (declared or defaults)
+%% get_constraints(+Pred:pred_indicator, -Constraints:list) is det.
+%
+%  Gets the effective constraints for a given predicate. This is the main
+%  query predicate used by the compilers.
+%
+%  It merges the globally defined defaults with any predicate-specific
+%  declarations, with the predicate-specific constraints taking precedence.
+%
+%  @param Pred The predicate indicator, e.g., `my_pred/2`.
+%  @param Constraints The resulting list of effective constraint terms.
 get_constraints(Pred, Constraints) :-
     (   predicate_constraint(Pred, DeclaredConstraints) ->
         get_default_constraints(Defaults),
