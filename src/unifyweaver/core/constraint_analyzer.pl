@@ -9,6 +9,7 @@
     get_constraints/2,              % get_constraints(+Pred, -Constraints)
     constraint_implies_sort_u/1,    % constraint_implies_sort_u(+Constraints)
     constraint_implies_hash/1,      % constraint_implies_hash(+Constraints)
+    get_dedup_strategy/2,           % get_dedup_strategy(+Constraints, -Strategy)
 
     % Declaration API
     declare_constraint/2,           % declare_constraint(+Pred, +Constraints)

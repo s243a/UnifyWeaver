@@ -12,6 +12,8 @@
     test_recursive_compiler/0
 ]).
 
+:- dynamic control_plane_warning_shown/0.
+
 :- use_module(library('advanced/advanced_recursive_compiler')).
 :- use_module(library(stream_compiler)).
 :- use_module(library(template_system)).
@@ -32,12 +34,24 @@ compile_recursive(Pred/Arity, RuntimeOptions, BashCode) :-
     ->  true
     ;   firewall:firewall_default(Firewall)
     ->  true
-    ;   Firewall = [] % Default to implicit allow if no rules are found
+    ;   (   Firewall = [], % Default to implicit allow if no rules are found
+            % Show one-time warning about implicit allow
+            (   control_plane_warning_shown -> true
+            ;   format(user_error, '~nINFO: No firewall rules defined. Using implicit allow.~n', []),
+                format(user_error, 'Set firewall:firewall_default([...]) to configure security policy.~n~n', []),
+                assertz(control_plane_warning_shown)
+            )
+        )
     ),
 
-    % 3. Validate the request against the firewall.
-    % The compilation target is hardcoded to 'bash' for now.
-    (   firewall:validate_against_firewall(bash, FinalOptions, Firewall)
+    % 3. Determine target backend (default: bash)
+    (   member(target(Target), FinalOptions) ->
+        true
+    ;   Target = bash  % Default target
+    ),
+
+    % 4. Validate the request against the firewall.
+    (   firewall:validate_against_firewall(Target, FinalOptions, Firewall)
     ->  % Validation passed, proceed with compilation.
         format('--- Firewall validation passed for ~w. Proceeding with compilation. ---\n', [Pred/Arity]),
         compile_dispatch(Pred/Arity, FinalOptions, BashCode)

@@ -10,6 +10,7 @@
 :- module(stream_compiler, [
     compile_predicate/3,
     compile_predicate/2,
+    compile_facts/4,         % Export for testing
     test_stream_compiler/0
 ]).
 
