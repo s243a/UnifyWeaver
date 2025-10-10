@@ -12,111 +12,150 @@ UnifyWeaver compiles Prolog predicates into efficient bash scripts, treating Pro
 
 ```
 src/unifyweaver/core/
-├── template_system.pl      # Template rendering engine
-├── stream_compiler.pl      # Non-recursive predicate compiler
-└── recursive_compiler.pl   # Recursive pattern analyzer & compiler
+├── template_system.pl
+├── stream_compiler.pl
+├── recursive_compiler.pl
+├── constraint_analyzer.pl
+├── firewall.pl
+├── preferences.pl
+└── advanced/
+    ├── advanced_recursive_compiler.pl
+    ├── call_graph.pl
+    ├── scc_detection.pl
+    ├── pattern_matchers.pl
+    ├── tail_recursion.pl
+    ├── linear_recursion.pl
+    └── mutual_recursion.pl
 ```
 
 ### template_system.pl
 
-Provides mustache-style template rendering for bash code generation:
-
-```prolog
-render_template(Template, Dict, Result)
-```
-
-**Features:**
-- Named placeholder substitution (`{{name}}`)
-- Composable template units
-- Pre-defined templates for common bash patterns (BFS, streams, functions)
-
-**Example:**
-```prolog
-Template = 'Hello {{name}}!',
-render_template(Template, [name='World'], Result).
-% Result = 'Hello World!'
-```
+Provides a flexible template rendering engine with file-based, cached, and generated source strategies.
 
 ### stream_compiler.pl
 
-Compiles non-recursive predicates into bash streaming pipelines:
-
-**Handles:**
-- Facts (converted to associative arrays)
-- Single rules (converted to pipelines)
-- Multiple rules (OR patterns with `sort -u`)
-- Inequality constraints (special case handling)
-
-**Pipeline Strategy:**
-```prolog
-grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
-```
-Becomes:
-```bash
-parent_stream | parent_join | sort -u
-```
-
-**Key Functions:**
-- `compile_predicate/3` - Main entry point
-- `classify_predicate/2` - Determines compilation strategy
-- `generate_pipeline/3` - Creates streaming bash code
+Compiles non-recursive predicates into bash streaming pipelines.
 
 ### recursive_compiler.pl
 
-Analyzes and optimizes recursive predicates:
+Acts as the main dispatcher. It analyzes a predicate, classifies its recursion pattern, and delegates compilation to the appropriate module (either `stream_compiler` or `advanced_recursive_compiler`). It also orchestrates the control plane logic.
 
-**Recursion Patterns Detected:**
+### constraint_analyzer.pl
 
-1. **Transitive Closure** (optimized to BFS)
-   ```prolog
-   ancestor(X, Y) :- parent(X, Y).
-   ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
-   ```
-   
-2. **Tail Recursion** (detected, falls back to memoization)
-   ```prolog
-   count_acc([], Acc, Acc).
-   count_acc([_|T], Acc, N) :- Acc1 is Acc + 1, count_acc(T, Acc1, N).
-   ```
+Manages predicate constraints (e.g., `unique`, `unordered`) and determines the required deduplication strategy.
 
-3. **Linear Recursion** (single recursive call per clause)
+### firewall.pl
 
-**Optimization Strategy:**
-- Transitive closures → BFS with visited tracking
-- Work queues in `/tmp/` for iterative processing
-- Cycle detection with associative arrays
-- Process-safe temp file naming
+Enforces security policies for backend and service usage. It validates compilation requests against defined rules.
+
+### preferences.pl
+
+Manages layered configuration preferences, guiding the compiler on which implementation to choose from permitted options.
+
+### advanced_recursive_compiler.pl
+
+Orchestrates the compilation of complex recursion patterns. It uses a priority-based strategy, attempting to compile with the most specific pattern first (tail -> linear -> mutual).
 
 ## Compilation Pipeline
 
 ```
-┌─────────────────┐
-│ Prolog Predicate│
-└────────┬────────┘
+┌──────────────────┐
+│ Prolog Predicate │
+└────────┬─────────┘
          │
          ▼
-┌─────────────────┐
-│ Classify Pattern│  (recursive_compiler)
-└────────┬────────┘
+┌──────────────────┐
+│ Get Preferences  │ (preferences.pl)
+└────────┬─────────┘
          │
-    ┌────┴────┐
-    │         │
-    ▼         ▼
-┌─────────┐ ┌──────────────┐
-│Non-Rec  │ │ Recursive    │
-│(stream) │ │ (BFS/memo)   │
-└────┬────┘ └──────┬───────┘
-     │             │
-     ▼             ▼
-┌─────────────────────┐
-│ Template Rendering  │  (template_system)
-└──────────┬──────────┘
-           │
-           ▼
-    ┌─────────────┐
-    │ Bash Script │
-    └─────────────┘
+         ▼
+┌──────────────────┐
+│ Get Firewall     │ (firewall.pl)
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Validate Request │ (firewall.pl)
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Classify Pattern │ (recursive_compiler.pl)
+└────────┬─────────┘
+         │
+         ├────────────────────────┐
+         │                        │
+         ▼                        ▼
+┌──────────────────┐      ┌───────────────────────────┐
+│ Non-Recursive    │      │ Recursive                 │
+│ (stream_compiler)│      │ (advanced_recursive_compiler) │
+└────────┬─────────┘      └───────────┬───────────────┘
+         │                            │
+         │                            ▼
+         │                  ┌───────────────────────────┐
+         │                  │   Try Advanced Patterns   │
+         │                  │  (tail -> linear -> mutual) │
+         │                  └───────────┬───────────────┘
+         │                              │
+         └───────────────┬──────────────┘
+                         │
+                         ▼
+┌──────────────────────────────────┐
+│ Analyze Constraints & Options    │ (constraint_analyzer.pl)
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
+│ Select & Render Template         │ (template_system.pl)
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+        ┌────────────────┐
+        │   Bash Script  │
+        └────────────────┘
 ```
+
+1.  **Prolog Predicate:** The process starts with the Prolog predicate you want to compile (e.g., `ancestor/2`).
+
+2.  **Get Preferences:** The system retrieves and merges preferences (runtime, rule-specific, global defaults) to determine the desired compilation strategy.
+
+3.  **Get Firewall:** The system retrieves the firewall policy for the specific predicate.
+
+4.  **Validate Request:** The compilation request (target backend, services, options) is validated against the firewall policy. If validation fails, compilation is halted.
+
+5.  **Pattern Analysis:** The main `recursive_compiler` inspects the predicate to classify its pattern (non-recursive, simple recursion, or a candidate for advanced compilation).
+
+6.  **Strategy Selection & Dispatch:**
+    *   If the predicate is **non-recursive**, it is handed off to the `stream_compiler`.
+    *   If the predicate is **recursive**, it is passed to the `advanced_recursive_compiler`.
+
+7.  **Advanced Pattern Matching:** The advanced compiler attempts to match the predicate against its known patterns in order of specificity: tail recursion, then linear recursion, then mutual recursion (by detecting Strongly Connected Components).
+
+8.  **Constraint Analysis:** The compiler queries the `constraint_analyzer` to fetch any constraints for the predicate (e.g. `unique(true)`).
+
+9.  **Template Rendering:** Based on the analysis, the compiler selects an appropriate Bash code template and uses the `template_system` to generate the final script.
+
+10. **Bash Script:** The final output is a complete, executable Bash script or function.
+
+## Control Plane
+
+The Control Plane is a new architectural layer that provides declarative control over the compiler's behavior, separating critical security policy from flexible implementation choice.
+
+### Firewall
+
+The Firewall enforces hard security and policy boundaries. It uses rules to define:
+*   **Allowed Execution Backends:** Which primary target languages (e.g., `bash`, `python`) can be used.
+*   **Allowed Services:** Which external services (e.g., `sql`, `llm`) can be invoked.
+*   **Denied Backends/Services:** Explicitly forbidden options.
+
+### Preferences
+
+The Preference system guides the compiler on which implementation to choose from the options permitted by the Firewall. It allows developers to specify:
+*   **Preferred Order:** The order in which to try different backends or services.
+*   **Optimization Goals:** Hints like `speed` or `memory` to influence code generation.
+*   **Service Mode:** Whether to use `embedded` or `remote` services.
+
+For more detailed information, refer to the [CONTROL_PLANE.md](CONTROL_PLANE.md) document.
 
 ## Generated Code Structure
 
