@@ -24,6 +24,9 @@
     test_template_system/0
 ]).
 
+% Templates are defined throughout the file
+:- discontiguous template/2.
+
 :- use_module(library(lists)).
 
 %% ============================================
@@ -185,8 +188,12 @@ try_source(Name, file, Config, Template) :-
 try_source(Name, cached, _Config, Template) :-
     get_cached_template(Name, Template).
 
-try_source(Name, generated, _Config, Template) :-
-    template(Name, Template).
+try_source(Name, generated, _Config, TemplateString) :-
+    template(Name, TemplateList),
+    (   is_list(TemplateList) ->
+        atomic_list_concat(TemplateList, '\n', TemplateString)
+    ;   TemplateString = TemplateList
+    ).
 
 %% load_template_with_strategy(+Name, +Config, -Template)
 %  Load template using strategy preference order
@@ -272,10 +279,11 @@ replace_substring(String, Find, Replace, Result) :-
 
 %% Compose multiple templates into one
 compose_templates([], _, "") :- !.
-compose_templates([T|Ts], Dict, Result) :-
-    render_template(T, Dict, R1),
-    compose_templates(Ts, Dict, Rs),
-    format(string(Result), '~s~s', [R1, Rs]).
+compose_templates([Name|Rest], Dict, Result) :-
+    % Name is a template name (atom); render with default options
+    render_named_template(Name, Dict, [source_order([generated, file])], R1),
+    compose_templates(Rest, Dict, Rs),
+    string_concat(R1, Rs, Result).
 
 %% ============================================
 %% BASH CODE GENERATION TEMPLATES
@@ -449,6 +457,81 @@ generate_transitive_closure(PredName, BaseName, Code) :-
         pred = PredStr,
         base = BaseStr
     ], Code).
+
+%% ============================================
+%% FACTS TEMPLATES (non-recursive predicates)
+%% ============================================
+
+% Common header
+template('bash/header', [
+"#!/bin/bash",
+"# {{pred}} - fact lookup",
+""
+]).
+
+% Data arrays
+template('facts/array_unary', [
+"{{pred}}_data=(",
+"{{entries}}",
+")",
+""
+]).
+
+template('facts/array_binary', [
+"declare -A {{pred}}_data=(",
+"{{entries}}",
+")",
+""
+]).
+
+% Lookup functions
+template('facts/lookup_unary', [
+"{{pred}}() {",
+"  local query=\"$1\"",
+"  for item in \"${{pred}}_data[@]}\"; do",
+"    [[ \"$item\" == \"$query\" ]] && echo \"$item\"",
+"  done",
+"}",
+""
+]).
+
+template('facts/lookup_binary', [
+"{{pred}}() {",
+"  local key=\"$1:$2\"",
+"  [[ -n \"${{pred}}_data[$key]}\" ]] && echo \"$key\"",
+"}",
+""
+]).
+
+% Stream functions
+template('facts/stream_unary', [
+"{{pred}}_stream() {",
+"  for item in \"${{pred}}_data[@]}\"; do",
+"    echo \"$item\"",
+"  done",
+"}",
+""
+]).
+
+template('facts/stream_binary', [
+"{{pred}}_stream() {",
+"  for key in \"${!{{pred}}_data[@]}\"; do",
+"    echo \"$key\"",
+"  done",
+"}",
+""
+]).
+
+% Reverse stream for binary facts
+template('facts/reverse_stream_binary', [
+"{{pred}}_reverse_stream() {",
+"  for key in \"${!{{pred}}_data[@]}\"; do",
+"    IFS=\":\" read -r a b <<< \"$key\"",
+"    echo \"$b:$a\"",
+"  done",
+"}",
+""
+]).
 
 %% Test the template system
 test_template_system :-

@@ -10,28 +10,31 @@
 :- module(stream_compiler, [
     compile_predicate/3,
     compile_predicate/2,
+    compile_facts/4,         % Export for testing
     test_stream_compiler/0
 ]).
 
 :- use_module(library(lists)).
-:- use_module(constraint_analyzer).
+:- use_module(library(constraint_analyzer)).
+:- use_module(library(template_system)).
 
 %% Main compilation entry point
 compile_predicate(Pred/Arity, Options) :-
     compile_predicate(Pred/Arity, Options, _).
 
-compile_predicate(Pred/Arity, Options, BashCode) :-
-    format('=== Compiling ~w/~w ===~n', [Pred, Arity]),
+compile_predicate(PredIndicator, Options, BashCode) :-
+    PredIndicator = PredAtom/Arity,
+    format('=== Compiling ~w/~w ===~n', [PredAtom, Arity]),
 
     % Get constraints for this predicate (from declarations or defaults)
-    get_constraints(Pred/Arity, Constraints),
+    get_constraints(PredAtom/Arity, Constraints),
     format('  Constraints: ~w~n', [Constraints]),
 
     % Merge with any runtime options (options take precedence)
     merge_options(Options, Constraints, MergedOptions),
 
     % Create head with correct arity
-    functor(Head, Pred, Arity),
+    functor(Head, PredAtom, Arity),
 
     % Get all clauses for this predicate
     findall(Body, clause(Head, Body), Bodies),
@@ -39,22 +42,22 @@ compile_predicate(Pred/Arity, Options, BashCode) :-
     
     % Determine compilation strategy
     (   Bodies = [] ->
-        format('ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
+        format('ERROR: No clauses found for ~w/~w~n', [PredAtom, Arity]),
         fail
     ;   Bodies = [true|Rest], forall(member(B, Rest), B = true) ->
         % All bodies are just 'true' - these are facts
         format('Type: facts (~w clauses)~n', [NumClauses]),
-        compile_facts(Pred, Arity, MergedOptions, BashCode)
+        compile_facts(PredAtom, Arity, MergedOptions, BashCode)
     ;   Bodies = [SingleBody], SingleBody \= true ->
         % Single rule
         format('Type: single_rule (~w clauses)~n', [NumClauses]),
         extract_predicates(SingleBody, Predicates),
         format('  Body predicates: ~w~n', [Predicates]),
-        compile_single_rule(Pred, SingleBody, MergedOptions, BashCode)
+        compile_single_rule(PredAtom, SingleBody, MergedOptions, BashCode)
     ;   % Multiple rules (OR pattern)
         format('Type: multiple_rules (~w clauses)~n', [NumClauses]),
         format('  ~w alternatives~n', [NumClauses]),
-        compile_multiple_rules(Pred, Bodies, MergedOptions, BashCode)
+        compile_multiple_rules(PredAtom, Bodies, MergedOptions, BashCode)
     ).
 
 %% Merge runtime options with constraint-based options
@@ -89,81 +92,92 @@ extract_predicates(Goal, [Pred]) :-
     Pred \= true.
 
 %% Compile facts into bash lookup
-compile_facts(Pred, Arity, _Options, BashCode) :-
+compile_facts(Pred, Arity, Options, BashCode) :-
     atom_string(Pred, PredStr),
-    % Get actual facts from the database
     functor(Head, Pred, Arity),
+    
+    % Collect all facts
     findall(Head, clause(Head, true), Facts),
     
-    (   Arity = 1 ->
-        % Generate array entries for unary facts
-        findall(Entry, (
-            member(Fact, Facts),
-            arg(1, Fact, Arg),
-            format(string(Entry), '    "~w"', [Arg])
-        ), Entries),
-        atomic_list_concat(Entries, '\n', EntriesStr),
-        
-        format(string(BashCode), '#!/bin/bash
-# ~s - fact lookup
+    % Build array entries
+    findall(Entry,
+        (   member(Fact, Facts),
+            Fact =.. [_|Args],
+            format_fact_entry(Args, Entry)
+        ),
+        Entries),
+    atomic_list_concat(Entries, '\n    ', EntriesStr),
+    
+    % Get deduplication strategy from options
+    get_dedup_strategy(Options, Strategy),
+    
+    % Render template - THIS IS THE CRITICAL FIX
+    compose_templates(
+        ['bash/header','facts/array_binary','facts/lookup_binary','facts/stream_binary', 'facts/reverse_stream_binary'],
+        [pred=PredStr, entries=EntriesStr, strategy=Strategy],
+        BashCode
+    ),
+    !.
 
-~s_data=(
-~s
-)
+%% format_fact_entry(+Args, -Entry)
+format_fact_entry(Args, Entry) :-
+    atomic_list_concat(Args, ':', Key),
+    format(string(Entry), '[~w]=1', [Key]).
 
-~s() {
-    local query="$1"
-    for item in "${~s_data[@]}"; do
-        [[ "$item" == "$query" ]] && echo "$item"
-    done
-}
+% Helper: materialize facts into a bash array literal body as lines.
+gather_fact_entries(Pred, 1, EntriesStr) :-
+    functor(Head, Pred, 1),
+    findall(Line, (clause(Head, true),
+                   Head =.. [Pred, A1],
+                   shell_quote(A1, Q1),
+                   format(string(Line), "  \"~w\"", [Q1])),
+            Lines),
+    atomic_list_concat(Lines, "\n", EntriesStr).
+gather_fact_entries(Pred, 2, EntriesStr) :-
+    functor(Head, Pred, 2),
+    findall(Line, (clause(Head, true),
+                   Head =.. [Pred, A1, A2],
+                   shell_quote(A1, Q1),
+                   shell_quote(A2, Q2),
+                   format(string(Line), "  [\"~w:~w\"]=1", [Q1, Q2])),
+            Lines),
+    atomic_list_concat(Lines, "\n", EntriesStr).
 
-~s_stream() {
-    for item in "${~s_data[@]}"; do
-        echo "$item"
-    done
-}', [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr])
-        
-    ;   Arity = 2 ->
-        % Generate associative array entries for binary facts
-        findall(Entry, (
-            member(Fact, Facts),
-            arg(1, Fact, Arg1),
-            arg(2, Fact, Arg2),
-            format(string(Entry), '    ["~w:~w"]=1', [Arg1, Arg2])
-        ), Entries),
-        atomic_list_concat(Entries, '\n', EntriesStr),
-        
-        format(string(BashCode), '#!/bin/bash
-# ~s - fact lookup
+% Minimal shell quoting for literals used inside array items.
+shell_quote(Atom, Q) :-
+    atom_string(Atom, S0),
+    replace_in_string(S0, "\"", "\\\"", S1),
+    replace_in_string(S1, "\n", "\\n", Q).
 
-declare -A ~s_data=(
-~s
-)
+replace_in_string(String, Find, Replace, Result) :-
+    atomic_list_concat(Split, Find, String),
+    atomic_list_concat(Split, Replace, Result).
 
-~s() {
-    local key="$1:$2"
-    [[ -n "${~s_data[$key]}" ]] && echo "$key"
-}
-
-~s_stream() {
-    for key in "${!~s_data[@]}"; do
-        echo "$key"
-    done
-}
-
-# Reverse lookup for inverse relationships
-~s_reverse_stream() {
-    for key in "${!~s_data[@]}"; do
-        IFS=":" read -r a b <<< "$key"
-        echo "$b:$a"
-    done
-}', [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr])
-        
-    ;   format(string(BashCode), '#!/bin/bash
-# ~s - fact lookup (arity ~w not fully implemented)
-~s() { echo "TODO: implement arity ~w"; }',
-            [PredStr, Arity, PredStr, Arity])
+%% compile_facts_debug(+Pred, +Arity, +MergedOptions, -BashCode)
+%  Debug version of compile_facts with extensive logging.
+compile_facts_debug(Pred, Arity, MergedOptions, BashCode) :-
+    format('DEBUG: Starting compile_facts for ~w/~w~n', [Pred, Arity]),
+    atom_string(Pred, PredStr),
+    format('DEBUG: PredStr = ~w~n', [PredStr]),
+    
+    functor(Head, Pred, Arity),
+    findall(Head, clause(Head, true), Facts),
+    format('DEBUG: Found ~w facts~n', [length(Facts, _)]),
+    
+    % Try template rendering with explicit error handling
+    (   catch(
+            compose_templates(
+                ['bash/header','facts/array_binary','facts/lookup_binary','facts/stream_binary','facts/reverse_stream_binary'],
+                [pred=PredStr, entries='[test]=1', strategy=sort_u],
+                BashCode
+            ),
+            Error,
+            (format(user_error, 'DEBUG: Template rendering error: ~w~n', [Error]), fail)
+        ) ->
+        format('DEBUG: Template rendered successfully~n'),
+        format('DEBUG: BashCode length: ~w~n', [string_length(BashCode, _)])
+    ;   format('DEBUG: Template rendering failed~n'),
+        fail
     ).
 
 %% Compile single rule into streaming pipeline
@@ -390,9 +404,7 @@ write_bash_file(File, BashCode) :-
     open(File, write, Stream, [type(binary)]),
     string_codes(UnixStr, Codes),
     maplist(put_byte(Stream), Codes),
-    close(Stream),
-    
-    format('Written to: ~w~n', [File]).
+    close(Stream).
 
 %% Main test
 test_stream_compiler :-

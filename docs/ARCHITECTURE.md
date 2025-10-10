@@ -16,6 +16,8 @@ src/unifyweaver/core/
 ├── stream_compiler.pl
 ├── recursive_compiler.pl
 ├── constraint_analyzer.pl
+├── firewall.pl
+├── preferences.pl
 └── advanced/
     ├── advanced_recursive_compiler.pl
     ├── call_graph.pl
@@ -36,11 +38,19 @@ Compiles non-recursive predicates into bash streaming pipelines.
 
 ### recursive_compiler.pl
 
-Acts as the main dispatcher. It analyzes a predicate, classifies its recursion pattern, and delegates compilation to the appropriate module (either `stream_compiler` or `advanced_recursive_compiler`).
+Acts as the main dispatcher. It analyzes a predicate, classifies its recursion pattern, and delegates compilation to the appropriate module (either `stream_compiler` or `advanced_recursive_compiler`). It also orchestrates the control plane logic.
 
 ### constraint_analyzer.pl
 
 Manages predicate constraints (e.g., `unique`, `unordered`) and determines the required deduplication strategy.
+
+### firewall.pl
+
+Enforces security policies for backend and service usage. It validates compilation requests against defined rules.
+
+### preferences.pl
+
+Manages layered configuration preferences, guiding the compiler on which implementation to choose from permitted options.
 
 ### advanced_recursive_compiler.pl
 
@@ -51,6 +61,21 @@ Orchestrates the compilation of complex recursion patterns. It uses a priority-b
 ```
 ┌──────────────────┐
 │ Prolog Predicate │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Get Preferences  │ (preferences.pl)
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Get Firewall     │ (firewall.pl)
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ Validate Request │ (firewall.pl)
 └────────┬─────────┘
          │
          ▼
@@ -89,6 +114,48 @@ Orchestrates the compilation of complex recursion patterns. It uses a priority-b
         │   Bash Script  │
         └────────────────┘
 ```
+
+1.  **Prolog Predicate:** The process starts with the Prolog predicate you want to compile (e.g., `ancestor/2`).
+
+2.  **Get Preferences:** The system retrieves and merges preferences (runtime, rule-specific, global defaults) to determine the desired compilation strategy.
+
+3.  **Get Firewall:** The system retrieves the firewall policy for the specific predicate.
+
+4.  **Validate Request:** The compilation request (target backend, services, options) is validated against the firewall policy. If validation fails, compilation is halted.
+
+5.  **Pattern Analysis:** The main `recursive_compiler` inspects the predicate to classify its pattern (non-recursive, simple recursion, or a candidate for advanced compilation).
+
+6.  **Strategy Selection & Dispatch:**
+    *   If the predicate is **non-recursive**, it is handed off to the `stream_compiler`.
+    *   If the predicate is **recursive**, it is passed to the `advanced_recursive_compiler`.
+
+7.  **Advanced Pattern Matching:** The advanced compiler attempts to match the predicate against its known patterns in order of specificity: tail recursion, then linear recursion, then mutual recursion (by detecting Strongly Connected Components).
+
+8.  **Constraint Analysis:** The compiler queries the `constraint_analyzer` to fetch any constraints for the predicate (e.g. `unique(true)`).
+
+9.  **Template Rendering:** Based on the analysis, the compiler selects an appropriate Bash code template and uses the `template_system` to generate the final script.
+
+10. **Bash Script:** The final output is a complete, executable Bash script or function.
+
+## Control Plane
+
+The Control Plane is a new architectural layer that provides declarative control over the compiler's behavior, separating critical security policy from flexible implementation choice.
+
+### Firewall
+
+The Firewall enforces hard security and policy boundaries. It uses rules to define:
+*   **Allowed Execution Backends:** Which primary target languages (e.g., `bash`, `python`) can be used.
+*   **Allowed Services:** Which external services (e.g., `sql`, `llm`) can be invoked.
+*   **Denied Backends/Services:** Explicitly forbidden options.
+
+### Preferences
+
+The Preference system guides the compiler on which implementation to choose from the options permitted by the Firewall. It allows developers to specify:
+*   **Preferred Order:** The order in which to try different backends or services.
+*   **Optimization Goals:** Hints like `speed` or `memory` to influence code generation.
+*   **Service Mode:** Whether to use `embedded` or `remote` services.
+
+For more detailed information, refer to the [CONTROL_PLANE.md](CONTROL_PLANE.md) document.
 
 ## Generated Code Structure
 

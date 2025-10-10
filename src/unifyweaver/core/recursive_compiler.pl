@@ -12,34 +12,68 @@
     test_recursive_compiler/0
 ]).
 
-:- use_module('advanced/advanced_recursive_compiler').
-:- use_module(stream_compiler).
-:- use_module(template_system).
+:- dynamic control_plane_warning_shown/0.
+
+:- use_module(library('advanced/advanced_recursive_compiler')).
+:- use_module(library(stream_compiler)).
+:- use_module(library(template_system)).
 :- use_module(library(lists)).
+:- use_module(library(firewall)).
+:- use_module(library(preferences)).
 
 %% Main entry point - analyze and compile
 compile_recursive(Pred/Arity, Options) :-
     compile_recursive(Pred/Arity, Options, _).
 
-compile_recursive(Pred/Arity, Options, BashCode) :-
+compile_recursive(Pred/Arity, RuntimeOptions, BashCode) :-
+    % 1. Get the final, merged options from all configuration layers.
+    preferences:get_final_options(Pred/Arity, RuntimeOptions, FinalOptions),
+
+    % 2. Get the firewall policy for the predicate.
+    (   firewall:rule_firewall(Pred/Arity, Firewall)
+    ->  true
+    ;   firewall:firewall_default(Firewall)
+    ->  true
+    ;   (   Firewall = [], % Default to implicit allow if no rules are found
+            % Show one-time warning about implicit allow
+            (   control_plane_warning_shown -> true
+            ;   format(user_error, '~nINFO: No firewall rules defined. Using implicit allow.~n', []),
+                format(user_error, 'Set firewall:firewall_default([...]) to configure security policy.~n~n', []),
+                assertz(control_plane_warning_shown)
+            )
+        )
+    ),
+
+    % 3. Determine target backend (default: bash)
+    (   member(target(Target), FinalOptions) ->
+        true
+    ;   Target = bash  % Default target
+    ),
+
+    % 4. Validate the request against the firewall.
+    (   firewall:validate_against_firewall(Target, FinalOptions, Firewall)
+    ->  % Validation passed, proceed with compilation.
+        format('--- Firewall validation passed for ~w. Proceeding with compilation. ---\n', [Pred/Arity]),
+        compile_dispatch(Pred/Arity, FinalOptions, BashCode)
+    ;   % Validation failed, stop.
+        format(user_error, 'Compilation of ~w halted due to firewall policy violation.~n', [Pred/Arity]),
+        !, fail
+    ).
+
+%% compile_dispatch(+Pred/Arity, +FinalOptions, -BashCode)
+%  The original compilation logic, now called after validation.
+compile_dispatch(Pred/Arity, FinalOptions, BashCode) :-
     format('=== Analyzing ~w/~w ===~n', [Pred, Arity]),
     classify_predicate(Pred/Arity, Classification),
     format('Classification: ~w~n', [Classification]),
 
     (   Classification = non_recursive ->
         % Delegate to stream_compiler
-        compile_predicate(Pred/Arity, Options, BashCode)
+        stream_compiler:compile_predicate(Pred/Arity, FinalOptions, BashCode)
     ;   Classification = transitive_closure(BasePred) ->
         format('Detected transitive closure over ~w~n', [BasePred]),
-        compile_transitive_closure(Pred, Arity, BasePred, Options, BashCode)
-    ;   Classification = linear_recursion ->
-        format('Detected linear recursion~n'),
-        compile_linear_recursion(Pred, Arity, Options, BashCode)
-
+        compile_transitive_closure(Pred, Arity, BasePred, FinalOptions, BashCode)
     ;   % Try advanced patterns before falling back to memoization
-        % Get constraints for the predicate to pass to advanced compilers
-        constraint_analyzer:get_constraints(Pred/Arity, Constraints),
-        append(Options, Constraints, FinalOptions),
         catch(
             advanced_recursive_compiler:compile_advanced_recursive(
                 Pred/Arity, FinalOptions, BashCode
@@ -49,8 +83,8 @@ compile_recursive(Pred/Arity, Options, BashCode) :-
         ) ->
         format('Compiled using advanced patterns with options: ~w~n', [FinalOptions])
     ;   % Unknown pattern - fall back to memoized recursion
-        format('Unknown recursion pattern - using memoization~n'),
-        compile_memoized_recursion(Pred, Arity, Options, BashCode)
+        format('Unknown recursion pattern - using memoization~n', []),
+        compile_memoized_recursion(Pred, Arity, FinalOptions, BashCode)
     ).
 
 %% Classify predicate recursion pattern

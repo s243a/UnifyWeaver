@@ -19,6 +19,11 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Constraint awareness** - Unique and ordering constraints optimize generated code
 - **Pattern detection** - Automatic classification of recursion patterns
 
+### Control Plane
+- **Firewall** - Enforces security policies for backend and service usage
+- **Preferences** - Guides implementation choices within policy boundaries
+- **Layered Configuration** - Supports global, rule-specific, and runtime overrides
+
 ## Installation
 
 Requirements:
@@ -153,6 +158,8 @@ test_recursive_compiler
 - **stream_compiler.pl** - Handles non-recursive predicates
 - **recursive_compiler.pl** - Analyzes basic recursion patterns and generates optimized code
 - **constraint_analyzer.pl** - Constraint detection and analysis system
+- **firewall.pl** - Policy enforcement for backend and service usage
+- **preferences.pl** - Manages layered configuration preferences
 
 **Advanced Recursion Modules** (`src/unifyweaver/core/advanced/`):
 - **advanced_recursive_compiler.pl** - Orchestrator for advanced patterns
