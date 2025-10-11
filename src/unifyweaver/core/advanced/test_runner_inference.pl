@@ -184,7 +184,8 @@ collect_function_name(Match, ListIn, ListOut) :-
 %  True if function is a main callable function (not a helper)
 is_main_function(FuncName) :-
     \+ sub_atom(FuncName, _, _, _, '_stream'),
-    \+ sub_atom(FuncName, _, _, _, '_memo').
+    \+ sub_atom(FuncName, _, _, _, '_memo'),
+    FuncName \= parse_tree.  % Helper function for tree recursion
 
 %% extract_function_arity(+Content, +FuncName, -Arity)
 %  Extract arity for a specific function by finding its body and counting parameters
