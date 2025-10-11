@@ -14,8 +14,9 @@ The `advanced/` module extends UnifyWeaver's basic recursion support with sophis
 
 **Priority-Based Compilation**: Try simpler patterns before complex ones
 1. **Tail recursion** → Compile to iterative loops
-2. **Linear recursion** → Compile with memoization
-3. **Mutual recursion** → Detect via SCC, compile with shared memo tables
+2. **Linear recursion** → Compile with memoization (handles 1+ independent calls)
+3. **Tree recursion** → Compile structural decomposition patterns
+4. **Mutual recursion** → Detect via SCC, compile with shared memo tables
 
 **Separation of Concerns**: Advanced patterns isolated from basic compiler
 - Basic recursion (transitive closures) stays in `recursive_compiler.pl`
@@ -32,6 +33,7 @@ src/unifyweaver/core/advanced/
 ├── pattern_matchers.pl             # Pattern detection utilities
 ├── tail_recursion.pl               # Tail recursion → loop compiler
 ├── linear_recursion.pl             # Linear recursion → memoized compiler
+├── tree_recursion.pl               # Tree recursion → structural compiler
 ├── mutual_recursion.pl             # Mutual recursion → joint memo compiler
 └── test_advanced.pl                # Comprehensive test suite
 ```
@@ -56,8 +58,17 @@ count([_|T], Acc, N) :-
 
 ### Linear Recursion
 
-**Pattern**: Exactly one recursive call per clause
+**Pattern**: One OR MORE recursive calls per clause, with independent calls
 
+**Key Requirements:**
+1. Recursive calls are independent (no inter-call data flow)
+2. Arguments are pre-computed (order independent)
+3. No structural decomposition in head (not `[V,L,R]` patterns)
+4. Pure computation (no side effects)
+
+**Examples:**
+
+*Single recursive call (classic linear):*
 ```prolog
 length([], 0).
 length([_|T], N) :-
@@ -65,9 +76,48 @@ length([_|T], N) :-
     N is N1 + 1.
 ```
 
+*Multiple recursive calls (fibonacci-style):*
+```prolog
+fib(0, 0).
+fib(1, 1).
+fib(N, F) :-
+    N > 1,
+    N1 is N - 1,      % Pre-computed
+    N2 is N - 2,      % Pre-computed
+    fib(N1, F1),      % Independent call
+    fib(N2, F2),      % Independent call
+    F is F1 + F2.     % Aggregation
+```
+
 **Compilation Strategy**: Memoization with associative arrays
 
 **Detected by**: `pattern_matchers:is_linear_recursive_streamable/1`
+
+**See also**: `docs/RECURSION_PATTERN_THEORY.md` for detailed theory on variable independence
+
+### Tree Recursion
+
+**Pattern**: Structural decomposition with recursive calls on structure parts
+
+**Key Requirements:**
+1. Head uses structural pattern (e.g., `[V,L,R]` for trees)
+2. Recursive calls on decomposed parts (L and R)
+3. Natural independence (different subtrees)
+
+**Example:**
+```prolog
+tree_sum([], 0).
+tree_sum([V, L, R], Sum) :-
+    tree_sum(L, LS),      % Recurse on left subtree
+    tree_sum(R, RS),      % Recurse on right subtree
+    Sum is V + LS + RS.   % Combine
+```
+
+**Compilation Strategy**: Generate tree parser and recursive structure handling
+
+**Detected by**: `tree_recursion:is_tree_recursive/1`
+
+**Note:** Tree recursion is for STRUCTURAL patterns. Fibonacci-style patterns with multiple calls on SCALARS compile as linear recursion with aggregation (see above).
 
 ### Mutual Recursion
 
@@ -309,7 +359,7 @@ factorial(N, F) :-
 **Detection:**
 ```prolog
 ?- is_linear_recursive_streamable(factorial/2).
-true.  % Exactly one recursive call per clause
+true.  % Single recursive call (classic linear recursion)
 ```
 
 **Generated Bash Code:**
@@ -701,14 +751,15 @@ assertz(user:(is_even(N) :- ...)).
 - ❌ Requires accumulator pattern
 
 **Linear recursion** (memoization):
-- ✅ Works for any single-recursive pattern
+- ✅ Works for 1+ recursive calls with independence
 - ✅ Caches results for reuse
+- ✅ Excellent for fibonacci-style patterns with multiple calls
 - ❌ O(n) space for memo table
 
 **When to use which:**
 - List processing → Tail recursion
-- Tree traversal → Linear recursion
-- Fibonacci-style → Linear recursion (memo helps!)
+- Scalar computations (fibonacci, etc.) → Linear recursion (memo helps!)
+- Tree/structural recursion → Tree recursion compiler
 
 ### Memoization Trade-offs
 
@@ -741,4 +792,4 @@ assertz(user:(is_even(N) :- ...)).
 
 ---
 
-*Last updated: 2025-10-06*
+*Last updated: 2025-10-11*
