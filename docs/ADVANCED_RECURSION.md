@@ -95,6 +95,33 @@ fib(N, F) :-
 
 **See also**: `docs/RECURSION_PATTERN_THEORY.md` for detailed theory on variable independence
 
+**Excluding Predicates from Linear Recursion:**
+
+Sometimes you want to prevent a predicate from being compiled as linear recursion:
+
+```prolog
+% Mark predicate as forbidden for linear recursion
+forbid_linear_recursion(my_pred/2).
+
+% Check if forbidden
+is_forbidden_linear_recursion(my_pred/2).  % true
+
+% Remove forbid
+clear_linear_recursion_forbid(my_pred/2).
+```
+
+**Automatic exclusion via constraints:**
+- Predicates with `ordered` constraint are automatically forbidden
+- Ordered predicates require sequential processing (incompatible with memoization)
+
+**Use cases:**
+- Force graph recursion compilation (build structure, fold to value)
+- Ensure order preservation for temporal queries
+- Mark predicates with side effects
+- Test alternative compilation strategies
+
+See `docs/RECURSION_PATTERN_THEORY.md` for detailed examples.
+
 ### Tree Recursion
 
 **Pattern**: Structural decomposition with recursive calls on structure parts

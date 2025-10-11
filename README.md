@@ -249,6 +249,7 @@ is_even(N), is_odd(N)  % Mutual recursion with shared memo
 - **Mutual recursion** - Predicates calling each other in cycles (e.g., `even(N) :- N > 0, N1 is N-1, odd(N1)` with `odd(N) :- N > 0, N1 is N-1, even(N1)`)
 - **SCC detection** - Automatic detection of mutually recursive predicate groups
 - **Constraint optimization** - Unique constraints enable early exit in generated code
+- **Pattern exclusion** - `forbid_linear_recursion/1` to force alternative compilation strategies
 
 ### ⚠️ Current Limitations
 
