@@ -80,10 +80,10 @@ test_integration :-
     catch(abolish(fib/2), _, true),
     catch(abolish(tree_sum/2), _, true),
 
-    % Define fibonacci (tree recursion)
-    assertz((fib(0, 0))),
-    assertz((fib(1, 1))),
-    assertz((fib(N, F) :- N > 1, N1 is N - 1, N2 is N - 2, fib(N1, F1), fib(N2, F2), F is F1 + F2)),
+    % Define fibonacci (now linear recursion with aggregation!)
+    assertz(user:(fib(0, 0))),
+    assertz(user:(fib(1, 1))),
+    assertz(user:(fib(N, F) :- N > 1, N1 is N - 1, N2 is N - 2, fib(N1, F1), fib(N2, F2), F is F1 + F2)),
 
     % Try to compile fibonacci
     (   catch(
@@ -91,13 +91,13 @@ test_integration :-
             _,
             fail
         ) ->
-        format('✓ Fibonacci compiled successfully as tree recursion~n')
+        format('✓ Fibonacci compiled successfully as linear recursion~n')
     ;   writeln('⚠ Fibonacci not compiled')
     ),
 
     % Define tree_sum (tree recursion)
-    assertz((tree_sum([], 0))),
-    assertz((tree_sum([V, L, R], Sum) :- tree_sum(L, LS), tree_sum(R, RS), Sum is V + LS + RS)),
+    assertz(user:(tree_sum([], 0))),
+    assertz(user:(tree_sum([V, L, R], Sum) :- tree_sum(L, LS), tree_sum(R, RS), Sum is V + LS + RS)),
 
     % Try to compile tree_sum
     (   catch(
