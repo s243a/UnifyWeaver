@@ -14,8 +14,8 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 
 ### Advanced Recursion
 - **Tail recursion optimization** - Converts tail-recursive predicates to iterative bash loops
-- **Linear recursion** - Memoized compilation for single-recursive-call patterns
-- **Tree recursion** - Handles multiple recursive calls (fibonacci, binary tree operations)
+- **Linear recursion** - Memoized compilation for 1+ independent recursive calls (fibonacci, factorial)
+- **Tree recursion** - Structural decomposition with recursive calls on parts (binary tree operations)
 - **Mutual recursion** - Handles predicates that call each other cyclically via SCC detection
 - **Constraint awareness** - Unique and ordering constraints optimize generated code
 - **Pattern detection** - Automatic classification of recursion patterns

@@ -5,6 +5,25 @@ All notable changes to UnifyWeaver will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Linear recursion pattern** - Now handles 1+ independent recursive calls (not just single calls)
+  - Fibonacci now compiles as linear recursion with aggregation (not tree recursion)
+  - Added independence checks: arguments must be pre-computed, no inter-call data flow
+  - Added structural pattern detection to distinguish tree recursion (pattern matching) from linear with aggregation (computed scalars)
+  - Tests: `fibonacci/2` now uses linear recursion, `tree_sum/2` correctly identified as tree recursion
+
+### Fixed
+- **Test runner inference** - Excluded `parse_tree` helper from being tested directly
+- **Integration tests** - Fixed module context for test predicates (use `user:` prefix)
+- **Pattern detection** - Tree recursion properly distinguished from linear with multiple calls
+
+### Documentation
+- Added `RECURSION_PATTERN_THEORY.md` - Comprehensive theory document explaining pattern distinctions
+- Updated `ADVANCED_RECURSION.md` - Reflects new linear recursion behavior with examples
+- Updated `README.md` - Corrected fibonacci classification
+
 ## [1.0.0] - 2025-10-11
 
 ### Added
