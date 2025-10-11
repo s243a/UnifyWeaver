@@ -856,6 +856,158 @@ recursive_args_precomputed(Body, Pred) :-
 
 This extends linear recursion to handle **multiple recursive calls** when they meet the independence criteria!
 
+## Forbidding Linear Recursion Compilation
+
+### Use Case: Graph Recursion with Helper Functions
+
+Sometimes a predicate matches the linear recursion pattern (independent calls, computed scalars) but should be compiled differently for other reasons:
+
+1. **Ordered Constraints**: Predicate has `unordered=false` (results must maintain order)
+2. **Graph Recursion**: Need structural traversal with fold helper
+3. **Side Effects**: Predicate has I/O or state modification
+4. **Testing**: Want to force a specific compilation strategy
+
+### The `forbid_linear_recursion` System
+
+**API:**
+```prolog
+% Mark predicate as forbidden for linear recursion
+forbid_linear_recursion(fibonacci/2).
+
+% Check if predicate is forbidden
+is_forbidden_linear_recursion(fibonacci/2).
+
+% Remove forbid (allow linear recursion again)
+clear_linear_recursion_forbid(fibonacci/2).
+```
+
+**Automatic Forbidding via Constraints:**
+```prolog
+% Declare constraint
+:- constraint(my_pred/2, [unique, ordered]).
+
+% This automatically forbids linear recursion because:
+% - ordered=true means unordered=false
+% - unordered=false means order matters
+% - Linear recursion with memoization may not preserve order
+```
+
+**Integration with Pattern Detection:**
+```prolog
+is_linear_recursive_streamable(Pred/Arity) :-
+    % Check if forbidden FIRST (fast fail)
+    \+ is_forbidden_linear_recursion(Pred/Arity),
+
+    % Then check pattern criteria...
+    ...
+```
+
+### Example: Fibonacci with Graph Recursion
+
+**Scenario:** You want fibonacci to use graph recursion (building dependency graph) instead of linear recursion (memoization).
+
+**Approach:**
+```prolog
+% 1. Define fibonacci normally
+fib(0, 0).
+fib(1, 1).
+fib(N, F) :-
+    N > 1,
+    N1 is N - 1,
+    N2 is N - 2,
+    fib(N1, F1),
+    fib(N2, F2),
+    F is F1 + F2.
+
+% 2. Forbid linear recursion for fibonacci
+:- forbid_linear_recursion(fib/2).
+
+% 3. Now fibonacci won't match linear pattern
+% It will fall through to tree or mutual recursion
+
+% 4. Create wrapper that folds graph results
+fib_folded(N, F) :-
+    fib_graph(N, Graph),  % Graph recursion builds structure
+    fold_graph(Graph, F).  % Fold helper aggregates to value
+```
+
+**Why This Works:**
+- Graph recursion builds the dependency structure
+- Fold helper traverses structure and aggregates
+- Main function provides clean interface
+- Forbid ensures correct compilation strategy
+
+### Constraint-Based Forbidding
+
+**Ordered predicates are automatically forbidden:**
+```prolog
+% This declaration automatically forbids linear recursion
+:- constraint(temporal_query/2, [unique, ordered]).
+
+% Because:
+is_forbidden_linear_recursion(temporal_query/2) :-
+    get_constraints(temporal_query/2, Constraints),
+    member(unordered(false), Constraints).  % ordered=true
+```
+
+**Rationale:**
+- Linear recursion with memoization doesn't guarantee order
+- Memoization returns cached results in arbitrary order
+- Ordered constraints require sequential processing
+- Therefore: ordered → forbid linear
+
+### Testing the Forbid System
+
+**Test case from `pattern_matchers.pl`:**
+```prolog
+% Fibonacci normally matches linear pattern
+?- is_linear_recursive_streamable(fib/2).
+true.
+
+% Forbid it
+?- forbid_linear_recursion(fib/2).
+true.
+
+% Now it doesn't match
+?- is_linear_recursive_streamable(fib/2).
+false.
+
+% Check forbid status
+?- is_forbidden_linear_recursion(fib/2).
+true.
+
+% Unforbid
+?- clear_linear_recursion_forbid(fib/2).
+true.
+
+% Matches again
+?- is_linear_recursive_streamable(fib/2).
+true.
+```
+
+### Use Cases Summary
+
+**1. Graph Recursion Pattern:**
+- Forbid linear recursion for predicates that should use graph traversal
+- Main predicate builds dependency graph
+- Helper predicate folds graph to value
+- Clean separation of concerns
+
+**2. Ordered Results:**
+- Automatically forbidden via constraint system
+- Ensures sequential processing preserves order
+- No manual forbid needed
+
+**3. Side Effects:**
+- Manual forbid for predicates with I/O or state
+- Forces basic recursion (no memoization assumptions)
+- Explicit marking makes intent clear
+
+**4. Testing Different Strategies:**
+- Temporarily forbid to test alternative compilation
+- Compare performance of different strategies
+- Easy to toggle for benchmarking
+
 ## Final Implementation Plan
 
 **Phase 1: Extend Linear Recursion Pattern Matcher**

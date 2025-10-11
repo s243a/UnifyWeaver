@@ -14,6 +14,10 @@
     extract_step_pattern/3,               % +Body, +PredName, -StepOp (helper for extract_accumulator_pattern)
     count_recursive_calls/2,              % +Body, -Count
     contains_call_to/2,                   % +Body, +Pred (helper for various functions)
+    % Linear recursion exclusion predicates
+    forbid_linear_recursion/1,            % +Pred/Arity - Mark as not linear
+    is_forbidden_linear_recursion/1,      % +Pred/Arity - Check if forbidden
+    clear_linear_recursion_forbid/1,      % +Pred/Arity - Clear forbid
     test_pattern_matchers/0         % Test predicate
 ]).
 
@@ -119,7 +123,11 @@ detect_acc_in_binary(_Pred, BaseClauses, AccPos) :-
 %  3. Recursive call arguments are pre-computed (order independent)
 %  4. No side effects (assumed for now)
 %  5. NOT structural decomposition (no compound patterns in head)
+%  6. NOT forbidden (via forbid_linear_recursion or ordered constraint)
 is_linear_recursive_streamable(Pred/Arity) :-
+    % Check if forbidden first (fast fail)
+    \+ is_forbidden_linear_recursion(Pred/Arity),
+
     functor(Head, Pred, Arity),
     % Use user:clause to access predicates from any module (including test predicates)
     findall(clause(Head, Body), user:clause(Head, Body), Clauses),
@@ -301,6 +309,66 @@ extract_step_pattern(Body, PredName, StepOp) :-
     ).
 
 %% ============================================
+%% LINEAR RECURSION EXCLUSION
+%% ============================================
+%
+% This system allows marking predicates that should NOT be compiled
+% as linear recursion, even if they match the linear pattern.
+%
+% Use cases:
+% 1. Predicates with ordered constraints (order dependencies)
+% 2. Predicates requiring graph recursion (structural traversal)
+% 3. Predicates with side effects
+%
+% Integration with constraint system:
+% - Predicates with ordered=true are automatically forbidden
+% - Manual forbid/unforbid available for other cases
+
+:- dynamic forbidden_linear_recursion/1.
+
+%% forbid_linear_recursion(+Pred/Arity)
+%  Mark a predicate as forbidden for linear recursion compilation
+%  This predicate will NOT match is_linear_recursive_streamable/1
+%  even if it otherwise meets the criteria.
+%
+%  Example:
+%    forbid_linear_recursion(my_ordered_pred/2)
+%
+forbid_linear_recursion(Pred/Arity) :-
+    retractall(forbidden_linear_recursion(Pred/Arity)),
+    assertz(forbidden_linear_recursion(Pred/Arity)).
+
+%% is_forbidden_linear_recursion(+Pred/Arity)
+%  Check if a predicate is forbidden for linear recursion compilation
+%  Returns true if:
+%  1. Explicitly forbidden via forbid_linear_recursion/1
+%  2. Has ordered constraint (unordered=false)
+%
+is_forbidden_linear_recursion(Pred/Arity) :-
+    (   % Check explicit forbid
+        forbidden_linear_recursion(Pred/Arity) ->
+        true
+    ;   % Check if predicate has ordered constraint
+        % Try to load constraint_analyzer if available
+        catch(
+            (   current_module(constraint_analyzer) ->
+                constraint_analyzer:get_constraints(Pred/Arity, Constraints),
+                member(unordered(false), Constraints)
+            ;   fail  % Module not loaded
+            ),
+            _,
+            fail  % Error loading - assume not forbidden
+        )
+    ).
+
+%% clear_linear_recursion_forbid(+Pred/Arity)
+%  Remove forbid marking from a predicate
+%  Note: This does NOT override constraint-based forbidding
+%
+clear_linear_recursion_forbid(Pred/Arity) :-
+    retractall(forbidden_linear_recursion(Pred/Arity)).
+
+%% ============================================
 %% TESTS
 %% ============================================
 
@@ -347,6 +415,39 @@ test_pattern_matchers :-
     (   extract_accumulator_pattern(test_sum/3, Pattern) ->
         format('  ✓ PASS - extracted pattern: ~w~n', [Pattern])
     ;   writeln('  ✗ FAIL - should extract accumulator pattern')
+    ),
+
+    % Test 5: Linear recursion forbid/unforbid
+    writeln('Test 5: Forbid linear recursion'),
+    catch(abolish(test_fib/2), _, true),
+    assertz(user:(test_fib(0, 0))),
+    assertz(user:(test_fib(1, 1))),
+    assertz(user:(test_fib(N, F) :- N > 1, N1 is N - 1, N2 is N - 2, test_fib(N1, F1), test_fib(N2, F2), F is F1 + F2)),
+
+    % Should match linear pattern initially
+    (   is_linear_recursive_streamable(test_fib/2) ->
+        writeln('  ✓ PASS - fibonacci matches linear pattern')
+    ;   writeln('  ✗ FAIL - fibonacci should match linear')
+    ),
+
+    % Forbid it
+    forbid_linear_recursion(test_fib/2),
+    (   \+ is_linear_recursive_streamable(test_fib/2) ->
+        writeln('  ✓ PASS - forbidden fibonacci does not match linear')
+    ;   writeln('  ✗ FAIL - forbidden should not match')
+    ),
+
+    % Check is_forbidden works
+    (   is_forbidden_linear_recursion(test_fib/2) ->
+        writeln('  ✓ PASS - is_forbidden detects forbid')
+    ;   writeln('  ✗ FAIL - is_forbidden should return true')
+    ),
+
+    % Unforbid it
+    clear_linear_recursion_forbid(test_fib/2),
+    (   is_linear_recursive_streamable(test_fib/2) ->
+        writeln('  ✓ PASS - unforbidden fibonacci matches linear again')
+    ;   writeln('  ✗ FAIL - unforbidden should match again')
     ),
 
     writeln('=== PATTERN MATCHERS TESTS COMPLETE ===').
