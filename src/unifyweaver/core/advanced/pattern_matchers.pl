@@ -123,7 +123,8 @@ is_linear_recursive_streamable(Pred/Arity) :-
         (   member(Body, Bodies),
             contains_call_to(Body, Pred)
         ),
-        (   count_recursive_calls(Body, Pred, 1)
+        (   count_recursive_calls(Body, Pred, Count),
+            Count =:= 1
         )
     ),
 

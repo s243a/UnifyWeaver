@@ -18,6 +18,7 @@
 :- use_module('pattern_matchers').
 :- use_module('tail_recursion').
 :- use_module('linear_recursion').
+:- use_module('tree_recursion').
 :- use_module('mutual_recursion').
 
 %% compile_advanced_recursive(+Pred/Arity, +Options, -BashCode)
@@ -25,7 +26,8 @@
 %  Uses priority-based pattern matching:
 %  1. Tail recursion (simplest optimization)
 %  2. Linear recursion (single recursive call)
-%  3. Mutual recursion detection (most complex)
+%  3. Tree recursion (multiple recursive calls)
+%  4. Mutual recursion detection (most complex)
 compile_advanced_recursive(Pred/Arity, Options, BashCode) :-
     format('~n=== Advanced Recursive Compilation: ~w/~w ===~n', [Pred, Arity]),
 
@@ -34,6 +36,8 @@ compile_advanced_recursive(Pred/Arity, Options, BashCode) :-
         format('✓ Compiled as tail recursion~n')
     ;   try_linear_recursion(Pred/Arity, Options, BashCode) ->
         format('✓ Compiled as linear recursion~n')
+    ;   try_tree_recursion(Pred/Arity, Options, BashCode) ->
+        format('✓ Compiled as tree recursion~n')
     ;   try_mutual_recursion_detection(Pred/Arity, Options, BashCode) ->
         format('✓ Compiled as part of mutual recursion group~n')
     ;   % No pattern matched - fail back to caller
@@ -56,6 +60,14 @@ try_linear_recursion(Pred/Arity, Options, BashCode) :-
     can_compile_linear_recursion(Pred/Arity),
     !,
     compile_linear_recursion(Pred/Arity, Options, BashCode).
+
+%% try_tree_recursion(+Pred/Arity, +Options, -BashCode)
+%  Attempt to compile as tree recursion
+try_tree_recursion(Pred/Arity, Options, BashCode) :-
+    format('  Trying tree recursion pattern...~n'),
+    can_compile_tree_recursion(Pred/Arity),
+    !,
+    compile_tree_recursion(Pred/Arity, Options, BashCode).
 
 %% try_mutual_recursion_detection(+Pred/Arity, +Options, -BashCode)
 %  Detect if predicate is part of mutual recursion group

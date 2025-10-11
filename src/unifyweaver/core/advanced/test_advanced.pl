@@ -18,6 +18,7 @@
 :- use_module('pattern_matchers').
 :- use_module('tail_recursion').
 :- use_module('linear_recursion').
+:- use_module('tree_recursion').
 :- use_module('mutual_recursion').
 :- use_module('advanced_recursive_compiler').
 :- use_module('test_runner_generator').
@@ -36,6 +37,7 @@ test_all_advanced :-
     run_module_test('Pattern Matchers', test_pattern_matchers),
     run_module_test('Tail Recursion Compiler', test_tail_recursion),
     run_module_test('Linear Recursion Compiler', test_linear_recursion),
+    run_module_test('Tree Recursion Compiler', test_tree_recursion),
     run_module_test('Mutual Recursion Compiler', test_mutual_recursion),
     run_module_test('Advanced Compiler Integration', test_advanced_compiler),
 
@@ -76,21 +78,35 @@ test_integration :-
 
     % Clear predicates
     catch(abolish(fib/2), _, true),
+    catch(abolish(tree_sum/2), _, true),
 
-    % Define fibonacci (linear recursion)
+    % Define fibonacci (tree recursion)
     assertz((fib(0, 0))),
     assertz((fib(1, 1))),
     assertz((fib(N, F) :- N > 1, N1 is N - 1, N2 is N - 2, fib(N1, F1), fib(N2, F2), F is F1 + F2)),
 
-    % Try to compile
+    % Try to compile fibonacci
     (   catch(
-            advanced_recursive_compiler:compile_advanced_recursive(fib/2, [], Code),
+            advanced_recursive_compiler:compile_advanced_recursive(fib/2, [], FibCode),
             _,
             fail
         ) ->
-        format('✓ Fibonacci compiled successfully~n'),
-        format('Code length: ~w characters~n', [string_length(Code, _)])
-    ;   writeln('⚠ Fibonacci not compiled (expected - complex pattern)')
+        format('✓ Fibonacci compiled successfully as tree recursion~n')
+    ;   writeln('⚠ Fibonacci not compiled')
+    ),
+
+    % Define tree_sum (tree recursion)
+    assertz((tree_sum([], 0))),
+    assertz((tree_sum([V, L, R], Sum) :- tree_sum(L, LS), tree_sum(R, RS), Sum is V + LS + RS)),
+
+    % Try to compile tree_sum
+    (   catch(
+            advanced_recursive_compiler:compile_advanced_recursive(tree_sum/2, [], TreeCode),
+            _,
+            fail
+        ) ->
+        format('✓ Tree sum compiled successfully as tree recursion~n')
+    ;   writeln('⚠ Tree sum not compiled')
     ),
 
     writeln('=== INTEGRATION TESTS COMPLETE ===').
