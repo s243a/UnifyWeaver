@@ -105,9 +105,9 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :
     % Convert step operation to bash code
     step_op_to_bash(StepOp, BashStepOp),
 
-    % Generate exit statement if unique constraint
+    % Generate return statement if unique constraint
     (   ExitAfterResult = true ->
-        ExitStatement = "        exit 0  # Unique constraint: only one result"
+        ExitStatement = "        return 0  # Unique constraint: only one result"
     ;   ExitStatement = ""
     ),
 
@@ -165,9 +165,9 @@ generate_ternary_tail_loop(PredStr, AccPos, StepOp, ExitAfterResult, BashCode) :
 %  Pattern: length([_|T], N) :- length(T, N1), N is N1 + 1.
 %  ExitAfterResult: true if unique constraint applies (exit after first result)
 generate_binary_tail_loop(PredStr, ExitAfterResult, BashCode) :-
-    % Generate exit statement if unique constraint
+    % Generate return statement if unique constraint
     (   ExitAfterResult = true ->
-        ExitStatement = "    exit 0  # Unique constraint: only one result"
+        ExitStatement = "    return 0  # Unique constraint: only one result"
     ;   ExitStatement = ""
     ),
 

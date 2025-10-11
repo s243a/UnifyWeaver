@@ -58,7 +58,7 @@ jobs:
         run: |
           swipl -g "use_module('src/unifyweaver/core/advanced/test_runner_inference'), generate_test_runner_inferred('output/advanced/inferred_test_runner.sh'), halt."
           chmod +x output/advanced/inferred_test_runner.sh
-          bash output/advanced/inferred_test_runner.sh
+          cd output/advanced && bash inferred_test_runner.sh
 
       - name: Validate generated bash scripts (syntax check)
         run: |
