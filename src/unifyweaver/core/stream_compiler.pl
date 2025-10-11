@@ -15,8 +15,8 @@
 ]).
 
 :- use_module(library(lists)).
-:- use_module(library(constraint_analyzer)).
-:- use_module(library(template_system)).
+:- use_module('constraint_analyzer').
+:- use_module('template_system').
 
 %% Main compilation entry point
 compile_predicate(Pred/Arity, Options) :-
@@ -153,9 +153,9 @@ replace_in_string(String, Find, Replace, Result) :-
     atomic_list_concat(Split, Find, String),
     atomic_list_concat(Split, Replace, Result).
 
-%% compile_facts_debug(+Pred, +Arity, +MergedOptions, -BashCode)
+%% compile_facts_debug(+Pred, +Arity, +_MergedOptions, -BashCode)
 %  Debug version of compile_facts with extensive logging.
-compile_facts_debug(Pred, Arity, MergedOptions, BashCode) :-
+compile_facts_debug(Pred, Arity, _MergedOptions, BashCode) :-
     format('DEBUG: Starting compile_facts for ~w/~w~n', [Pred, Arity]),
     atom_string(Pred, PredStr),
     format('DEBUG: PredStr = ~w~n', [PredStr]),
