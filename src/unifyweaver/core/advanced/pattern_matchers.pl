@@ -111,26 +111,92 @@ detect_acc_in_binary(_Pred, BaseClauses, AccPos) :-
     ).
 
 %% is_linear_recursive_streamable(+Pred/Arity)
-%  Check if linear recursion can be compiled to stream processing
-%  Linear recursion: exactly one recursive call per clause
+%  Check if linear recursion can be compiled with memoization
+%  Linear recursion: one OR MORE recursive calls per clause, with independent calls
+%  Key criteria:
+%  1. Body is conjunction (AND chain)
+%  2. Variables are unique (no inter-call data flow)
+%  3. Recursive call arguments are pre-computed (order independent)
+%  4. No side effects (assumed for now)
+%  5. NOT structural decomposition (no compound patterns in head)
 is_linear_recursive_streamable(Pred/Arity) :-
     functor(Head, Pred, Arity),
     % Use user:clause to access predicates from any module (including test predicates)
-    findall(Body, user:clause(Head, Body), Bodies),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
 
-    % All recursive clauses must have exactly one recursive call
+    % Must have at least one recursive clause
+    member(clause(_, SomeBody), Clauses),
+    contains_call_to(SomeBody, Pred),
+
+    % Check that head doesn't use structural decomposition (like [V,L,R])
+    forall(member(clause(RecHead, RecBody), Clauses), (
+        \+ contains_call_to(RecBody, Pred)  % Skip non-recursive clauses
+        ;
+        (   contains_call_to(RecBody, Pred),
+            \+ has_structural_head_pattern(RecHead)
+        )
+    )),
+
+    % For each recursive clause, verify linear pattern with independent calls
     forall(
-        (   member(Body, Bodies),
-            contains_call_to(Body, Pred)
+        (   member(clause(_, RecBody), Clauses),
+            contains_call_to(RecBody, Pred)
         ),
-        (   count_recursive_calls(Body, Pred, Count),
-            Count =:= 1
+        (   % Check that recursive call arguments are pre-computed (order independent)
+            recursive_args_are_precomputed(RecBody, Pred)
         )
     ),
 
     % Additional check: should operate on structured data (lists, trees, etc.)
     % For now, we check arity and assume binary predicates aren't streamable this way
     Arity > 1.
+
+%% has_structural_head_pattern(+Head)
+%  Check if head uses structural decomposition (lists, compound terms)
+%  e.g., tree_sum([V,L,R], Sum) has structural pattern [V,L,R]
+has_structural_head_pattern(Head) :-
+    Head =.. [_|Args],
+    member(Arg, Args),
+    compound(Arg),
+    Arg \= (_ is _),  % Not an 'is' expression
+    Arg \= (_ =.. _). % Not univ
+
+%% recursive_args_are_precomputed(+Body, +Pred)
+%  Check that all recursive call arguments are computed/bound before any recursive calls
+%  This ensures order independence - all arguments are "pre-computed" scalars/values
+%  NOT structural parts from pattern matching
+recursive_args_are_precomputed(Body, Pred) :-
+    % Extract all goals in order (approximate - good enough for conjunction chains)
+    findall(Goal, extract_goal(Body, Goal), Goals),
+
+    % Find all recursive calls
+    findall(RecCall, (
+        member(RecCall, Goals),
+        functor(RecCall, Pred, _)
+    ), RecCalls),
+
+    % Find all 'is' expressions (these compute values)
+    findall(Var, (
+        member(Goal, Goals),
+        Goal =.. [is, Var, _]
+    ), ComputedVars),
+
+    % For each recursive call, check that INPUT arguments (typically first arg) are computed
+    % Output arguments are allowed to be free variables
+    forall(member(RecCall, RecCalls), (
+        RecCall =.. [_|Args],
+        % Get first argument (input position)
+        (   Args = [FirstArg|_] ->
+            % First arg should be computed (from 'is') or a constant
+            % NOT a variable from head pattern matching
+            (   var(FirstArg) ->
+                % Variable - must be in ComputedVars (from 'is' expression)
+                member(FirstArg, ComputedVars)
+            ;   true  % Ground term/constant is OK
+            )
+        ;   true  % No arguments
+        )
+    )).
 
 %% count_recursive_calls(+Body, +Pred, -Count)
 count_recursive_calls(Body, Pred, Count) :-
