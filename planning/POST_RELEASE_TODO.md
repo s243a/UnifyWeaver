@@ -254,17 +254,19 @@ See `context/FUTURE_WORK.md` for:
 
 ## Tracking
 
-- [ ] Priority 1, Item 1: Fix list_length pattern detection
-- [ ] Priority 1, Item 2: Fix descendant classification
-- [ ] Priority 2, Item 3: Complete linear recursion bash generation
+- [x] Priority 1, Item 1: Fix list_length pattern detection ✅ (feat/fold-based-linear-recursion PR)
+- [x] Priority 1, Item 2: Fix descendant classification ✅ (feat/fold-based-linear-recursion PR)
+- [x] Priority 2, Item 3: Complete linear recursion bash generation ✅ (feat/fold-based-linear-recursion PR)
 - [ ] Priority 2, Item 4: Complete mutual recursion bash generation
-- [ ] Priority 3, Item 5: Fix singleton warnings
-- [ ] Priority 3, Item 6: ✅ Already fixed (init_template.pl)
-- [ ] Priority 4, Item 7: Update test plan docs
-- [ ] Priority 4, Item 8: Update README limitations
-- [ ] Priority 5, Item 9: Add regression tests
+- [x] Priority 3, Item 5: Fix singleton warnings ✅ (feat/fold-based-linear-recursion PR)
+- [x] Priority 3, Item 6: ✅ Already fixed (init_template.pl)
+- [x] Priority 4, Item 7: Update test plan docs ✅ (docs commits on main)
+- [x] Priority 4, Item 8: Update README limitations ✅ (docs commits on main)
+- [x] Priority 5, Item 9: Add regression tests ✅ (test_regressions.pl on main)
 
-**Total Estimated Effort:** 20-26 hours
+**Completed:** 8/9 items
+**Remaining:** Item 4 only (mutual recursion bash generation)
+**Total Estimated Effort Remaining:** 4-6 hours
 
 ---
 
