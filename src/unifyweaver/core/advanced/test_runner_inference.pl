@@ -301,6 +301,26 @@ infer_test_cases(function(Name, 1, metadata(pattern_type(mutual_recursive), _, _
         test('Even (should fail): 6', ['6'])
     ].
 
+% Rule 5: Arity 1, Tree recursion pattern (tree_sum, tree_height, etc.)
+infer_test_cases(function(Name, 1, metadata(pattern_type(tree_recursive), _, _)),
+                 TestCases) :-
+    (sub_atom(Name, _, _, _, tree) ; sub_atom(Name, _, _, _, binary)), !,
+    TestCases = [
+        test('Empty tree', ['[]']),
+        test('Single node', ['[5,[],[]]']),
+        test('Small tree', ['[10,[5,[],[3,[],[]]],[7,[],[]]]'])
+    ].
+
+% Rule 6: Arity 1, Any tree-related function (inferred from name)
+infer_test_cases(function(Name, 1, _),
+                 TestCases) :-
+    (sub_atom(Name, _, _, _, tree) ; sub_atom(Name, _, _, _, binary)), !,
+    TestCases = [
+        test('Empty tree', ['[]']),
+        test('Single node', ['[5,[],[]]']),
+        test('Small tree', ['[10,[5,[],[3,[],[]]],[7,[],[]]]'])
+    ].
+
 % Fallback: Generic test cases based on arity
 infer_test_cases(function(_Name, Arity, _), TestCases) :-
     length(Args, Arity),

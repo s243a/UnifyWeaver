@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1-alpha] - 2025-10-12
+
+### Added
+- **Pattern exclusion system** - `forbid_linear_recursion/1` to force alternative compilation strategies
+  - Manual forbidding: `forbid_linear_recursion(pred/arity)`
+  - Automatic forbidding for ordered constraints (`unordered=false`)
+  - Check if forbidden: `is_forbidden_linear_recursion/1`
+  - Clear forbid: `clear_linear_recursion_forbid/1`
+  - Enables graph recursion with fold helpers for predicates like fibonacci
+- **Educational materials workflow** - Support for Chapter 4 tutorial
+  - `test_runner_inference.pl` accepts `output_dir(Dir)` option
+  - Fixed module imports in `recursive_compiler.pl` for education library alias
+
 ### Changed
 - **Linear recursion pattern** - Now handles 1+ independent recursive calls (not just single calls)
   - Fibonacci now compiles as linear recursion with aggregation (not tree recursion)
@@ -15,14 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tests: `fibonacci/2` now uses linear recursion, `tree_sum/2` correctly identified as tree recursion
 
 ### Fixed
+- **Fibonacci test isolation** - Removed from tree_recursion tests (belongs in linear_recursion)
 - **Test runner inference** - Excluded `parse_tree` helper from being tested directly
 - **Integration tests** - Fixed module context for test predicates (use `user:` prefix)
 - **Pattern detection** - Tree recursion properly distinguished from linear with multiple calls
 
 ### Documentation
 - Added `RECURSION_PATTERN_THEORY.md` - Comprehensive theory document explaining pattern distinctions
+  - Detailed `forbid_linear_recursion` system documentation
+  - Graph recursion with fold helper pattern
 - Updated `ADVANCED_RECURSION.md` - Reflects new linear recursion behavior with examples
-- Updated `README.md` - Corrected fibonacci classification
+  - Pattern exclusion documentation
+- Updated `README.md` - Corrected fibonacci classification and added pattern exclusion feature
 
 ## [1.0.0] - 2025-10-11
 
