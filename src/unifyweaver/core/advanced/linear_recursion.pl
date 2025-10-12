@@ -97,17 +97,53 @@ detect_input_type(BaseInput, Type) :-
 %% extract_fold_operation(+RecClauses, -FoldExpr)
 %  Extract the fold operation from the recursive case
 %  Example: F is N * F1 → FoldExpr = N * F1
+%  We want the LAST 'is' expression (the output computation), not intermediate ones
 extract_fold_operation([clause(_Head, Body)|_], FoldExpr) :-
-    find_is_expression(Body, _ is FoldExpr).
+    find_last_is_expression(Body, _ is FoldExpr).
 
-%% find_is_expression(+Body, -IsGoal)
-%  Find the 'is' expression in the body
-find_is_expression(Goal, Goal) :-
-    Goal = (_ is _), !.
-find_is_expression((A, _), IsGoal) :-
-    find_is_expression(A, IsGoal), !.
-find_is_expression((_, B), IsGoal) :-
-    find_is_expression(B, IsGoal).
+%% find_last_is_expression(+Body, -IsGoal)
+%  Find the LAST 'is' expression in the body (without creating fresh variables)
+find_last_is_expression((A, B), IsGoal) :- !,
+    (   find_last_is_expression(B, IsGoal) ->
+        true
+    ;   find_last_is_expression(A, IsGoal)
+    ).
+find_last_is_expression(Goal, Goal) :-
+    Goal = (_ is _).
+
+%% analyze_clause_structure(+RecClauses, -InputVar, -AccVar)
+%  Analyze the recursive clause structure to identify variable roles
+%  For factorial(N, F) :- ..., factorial(N1, F1), F is N * F1:
+%    - InputVar is the first argument of the head (N)
+%    - AccVar is the result variable from the recursive call (F1)
+analyze_clause_structure([clause(Head, Body)|_], InputVar, AccVar) :-
+    % Extract first argument from head (input variable)
+    Head =.. [_Pred, InputVar, _OutputVar],
+
+    % Find the recursive call in the body
+    find_recursive_call(Body, RecCall),
+
+    % Extract accumulator variable (second argument of recursive call)
+    RecCall =.. [_RecPred, _RecInput, AccVar].
+
+%% find_recursive_call(+Body, -RecCall)
+%  Find the recursive call in the body
+find_recursive_call(Body, RecCall) :-
+    extract_goal_from_body(Body, Goal),
+    compound(Goal),
+    Goal \= (_ is _),
+    Goal \= (_ > _),
+    Goal \= (_ < _),
+    Goal \= (_ =< _),
+    Goal \= (_ >= _),
+    % Find a goal that's a compound term with 2 args (likely the recursive call)
+    functor(Goal, _, 2),
+    RecCall = Goal,
+    !.
+find_recursive_call((A, _B), RecCall) :-
+    find_recursive_call(A, RecCall), !.
+find_recursive_call((_A, B), RecCall) :-
+    find_recursive_call(B, RecCall).
 
 %% ============================================
 %% FOLD-BASED CODE GENERATION (Phase 3 & 4)
@@ -142,9 +178,23 @@ generate_fold_based_recursion(PredStr, BaseClauses, RecClauses, BashCode) :-
 
 %% generate_numeric_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, -BashCode)
 %  Generate fold-based code for numeric linear recursion (e.g., factorial)
+%  NOTE: FoldExpr was already extracted in generate_fold_based_recursion
 generate_numeric_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode) :-
-    % Translate Prolog fold expression to bash
-    translate_fold_expr(FoldExpr, BashFoldOp),
+    % Get the recursive clauses to analyze variable roles AND extract fold expr in ONE pass
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, 2),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    partition(is_recursive_clause(Pred), Clauses, RecClauses, _BaseClauses),
+
+    % Analyze the SAME clause instance to maintain variable identity
+    RecClauses = [clause(RHead, RBody)|_],
+    RHead =.. [_Pred, InputVar, _OutputVar],
+    find_recursive_call(RBody, RecCall),
+    RecCall =.. [_RecPred, _RecInput, AccVar],
+    find_last_is_expression(RBody, _ is ActualFoldExpr),
+
+    % Translate Prolog fold expression to bash using variable mapping
+    translate_fold_expr(ActualFoldExpr, InputVar, AccVar, BashFoldOp),
 
     % Generate fold helper library + predicate wrapper
     format(string(BashCode), '#!/bin/bash
@@ -227,53 +277,157 @@ declare -gA ~w_memo
 ~w_stream() {
     ~w "$@"
 }
-', [PredStr, PredStr, PredStr, BashFoldOp, PredStr, PredStr, PredStr, BaseInput, BaseOutput, PredStr, BaseOutput, PredStr, PredStr, PredStr, PredStr, PredStr]).
+', [PredStr, PredStr, PredStr, BashFoldOp, PredStr, PredStr, PredStr, PredStr, BaseInput, BaseOutput, PredStr, BaseOutput, PredStr, PredStr, PredStr, PredStr]).
 
-%% translate_fold_expr(+PrologExpr, -BashExpr)
-%  Translate Prolog arithmetic expression to bash
-%  Example: N * F1 → current * acc
-translate_fold_expr(Expr, BashExpr) :-
-    translate_expr(Expr, BashExpr).
+%% translate_fold_expr(+PrologExpr, +InputVar, +AccVar, -BashExpr)
+%  Translate Prolog arithmetic expression to bash using clause structure mapping
+%  Example: N * F1 with InputVar=N, AccVar=F1 → current * acc
+translate_fold_expr(Expr, InputVar, AccVar, BashExpr) :-
+    translate_expr(Expr, InputVar, AccVar, BashExpr).
 
-translate_expr(A * B, BashExpr) :-
-    translate_term(A, AT),
-    translate_term(B, BT),
+translate_expr(A * B, InputVar, AccVar, BashExpr) :-
+    translate_term(A, InputVar, AccVar, AT),
+    translate_term(B, InputVar, AccVar, BT),
     format(string(BashExpr), '~w * ~w', [AT, BT]).
-translate_expr(A + B, BashExpr) :-
-    translate_term(A, AT),
-    translate_term(B, BT),
+translate_expr(A + B, InputVar, AccVar, BashExpr) :-
+    translate_term(A, InputVar, AccVar, AT),
+    translate_term(B, InputVar, AccVar, BT),
     format(string(BashExpr), '~w + ~w', [AT, BT]).
-translate_expr(A - B, BashExpr) :-
-    translate_term(A, AT),
-    translate_term(B, BT),
+translate_expr(A - B, InputVar, AccVar, BashExpr) :-
+    translate_term(A, InputVar, AccVar, AT),
+    translate_term(B, InputVar, AccVar, BT),
     format(string(BashExpr), '~w - ~w', [AT, BT]).
-translate_expr(A / B, BashExpr) :-
-    translate_term(A, AT),
-    translate_term(B, BT),
+translate_expr(A / B, InputVar, AccVar, BashExpr) :-
+    translate_term(A, InputVar, AccVar, AT),
+    translate_term(B, InputVar, AccVar, BT),
     format(string(BashExpr), '~w / ~w', [AT, BT]).
-translate_expr(Term, BashExpr) :-
-    translate_term(Term, BashExpr).
+translate_expr(Term, InputVar, AccVar, BashExpr) :-
+    translate_term(Term, InputVar, AccVar, BashExpr).
 
-%% translate_term(+PrologTerm, -BashTerm)
-%  Map Prolog variable names to bash variable names
-translate_term(N, 'current') :- atom(N), atom_chars(N, [FirstChar|_]), char_type(FirstChar, upper), !.
-translate_term(Var, 'acc') :- atom(Var), member(Var, [f1, n1, result, r1]), !.
-translate_term(Number, BashTerm) :- integer(Number), !, format(string(BashTerm), '~w', [Number]).
-translate_term(Atom, BashTerm) :- format(string(BashTerm), '~w', [Atom]).
+%% translate_term(+PrologTerm, +InputVar, +AccVar, -BashTerm)
+%  Map Prolog variables to bash variables using structural analysis
+%  If the term unifies with InputVar → 'current'
+%  If the term unifies with AccVar → 'acc'
+%  Otherwise → literal value
+translate_term(Term, InputVar, _AccVar, 'current') :-
+    Term == InputVar, !.
+translate_term(Term, _InputVar, AccVar, 'acc') :-
+    Term == AccVar, !.
+translate_term(Number, _InputVar, _AccVar, BashTerm) :-
+    integer(Number), !,
+    format(string(BashTerm), '~w', [Number]).
+translate_term(Atom, _InputVar, _AccVar, BashTerm) :-
+    format(string(BashTerm), '~w', [Atom]).
 
 %% generate_list_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, -BashCode)
 %  Generate fold-based code for list linear recursion (e.g., list_length)
-%  TODO: Implement list fold pattern
-generate_list_fold(PredStr, _BaseInput, _BaseOutput, _FoldExpr, BashCode) :-
+generate_list_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode) :-
+    % Get the recursive clauses to analyze variable roles
+    atom_string(Pred, PredStr),
+    functor(Head, Pred, 2),
+    findall(clause(Head, Body), user:clause(Head, Body), Clauses),
+    partition(is_recursive_clause(Pred), Clauses, RecClauses, _BaseClauses),
+
+    % Analyze the SAME clause instance to maintain variable identity
+    RecClauses = [clause(RHead, RBody)|_],
+    RHead =.. [_Pred, _InputVar, _OutputVar],
+    find_recursive_call(RBody, RecCall),
+    RecCall =.. [_RecPred, _RecInput, AccVar],
+    find_last_is_expression(RBody, _ is ActualFoldExpr),
+
+    % For list patterns, the fold expression is typically N1 + 1 (increment)
+    % We'll treat this as a constant increment fold
+    translate_fold_expr(ActualFoldExpr, _DummyInput, AccVar, BashFoldOp),
+
+    % Generate fold helper library + predicate wrapper
     format(string(BashCode), '#!/bin/bash
-# ~w - list fold pattern (NOT YET IMPLEMENTED)
-# TODO: Implement list-based fold
+# ~w - fold-based linear recursion (list)
+# Pattern: fold over list elements, combining with operation
+
+# Fold helper: fold_left accumulator operation values...
+fold_left() {
+    local acc="$1"
+    local op_func="$2"
+    shift 2
+    for item in "$@"; do
+        acc=$("$op_func" "$item" "$acc")
+    done
+    echo "$acc"
+}
+
+# Parse list into elements
+parse_list() {
+    local list="$1"
+    # Remove brackets
+    list="${list#[}"
+    list="${list%]}"
+    # Split on commas (simplified - doesn\'t handle nested lists)
+    if [[ -n "$list" ]]; then
+        echo "$list" | tr \',\' \' \'
+    fi
+}
+
+# Fold operation for ~w
+~w_op() {
+    local current="$1"
+    local acc="$2"
+    # For list_length, we just increment (ignore current element)
+    echo $((~w))
+}
+
+# Main predicate with memoization
+declare -gA ~w_memo
 
 ~w() {
-    echo "List fold not yet implemented" >&2
-    return 1
+    local list="$1"
+    local expected="$2"
+
+    # Check memo
+    if [[ -n "${~w_memo[$list]}" ]]; then
+        local cached="${~w_memo[$list]}"
+        if [[ -n "$expected" ]]; then
+            [[ "$cached" == "$expected" ]] && echo "$list:$expected" && return 0
+            return 1
+        else
+            echo "$list:$cached"
+            return 0
+        fi
+    fi
+
+    # Base case
+    if [[ "$list" == "~w" || -z "$list" ]]; then
+        local result="~w"
+        ~w_memo["$list"]="$result"
+        if [[ -n "$expected" ]]; then
+            [[ "$result" == "$expected" ]] && echo "$list:$expected" && return 0
+            return 1
+        else
+            echo "$list:$result"
+            return 0
+        fi
+    fi
+
+    # Recursive case using fold
+    local elements=$(parse_list "$list")
+    local result=$(fold_left ~w "~w_op" $elements)
+
+    # Memoize
+    ~w_memo["$list"]="$result"
+
+    if [[ -n "$expected" ]]; then
+        [[ "$result" == "$expected" ]] && echo "$list:$expected" && return 0
+        return 1
+    else
+        echo "$list:$result"
+        return 0
+    fi
 }
-', [PredStr, PredStr]).
+
+# Stream wrapper
+~w_stream() {
+    ~w "$@"
+}
+', [PredStr, PredStr, PredStr, BashFoldOp, PredStr, PredStr, PredStr, PredStr, BaseInput, BaseOutput, PredStr, BaseOutput, PredStr, PredStr, PredStr, PredStr]).
 
 %% generate_binary_linear_recursion_old(+PredStr, +BaseClauses, +RecClauses, -BashCode)
 %  OLD IMPLEMENTATION - kept as fallback
