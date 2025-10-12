@@ -256,11 +256,16 @@ is_even(N), is_odd(N)  % Mutual recursion with shared memo
 **Recursion Patterns:**
 - Divide-and-conquer patterns (quicksort, mergesort) - not yet supported
 - Recursive aggregation with complex accumulation - partial support
+- Mutual recursion bash code generation - scaffold complete, logic implementation in progress
 
 **Tree Recursion:**
 - List-based tree representation only (e.g., `[value, [left], [right]]`)
 - Simple parser with limitations on deeply nested structures
 - Memoization disabled by default in v1.0
+
+**Code Generation:**
+- Mutual recursion generates scaffold with TODO placeholders (tracked in POST_RELEASE_TODO.md)
+- Even/odd example: pattern detected correctly, but generated code needs implementation
 
 ### Known Issues
 
