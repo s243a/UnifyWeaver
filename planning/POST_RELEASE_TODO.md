@@ -1,0 +1,271 @@
+# Post-Release TODO List
+
+**Created:** 2025-10-12
+**Target Release:** v0.0.2 or later
+
+This tracks work to be done after v0.0.1-alpha release.
+
+---
+
+## Priority 1: Known Limitations (Fix These First)
+
+### 1. Fix `list_length/2` Linear Recursion Detection
+
+**Status:** ❌ FAILING TEST
+**Location:** `test_advanced.pl` - Linear Recursion Compiler, Test 1
+**Current Behavior:** Pattern matcher fails to detect `list_length/2` as linear recursion
+
+**Predicate:**
+```prolog
+list_length([], 0).
+list_length([_|T], N) :-
+    list_length(T, N1),
+    N is N1 + 1.
+```
+
+**Issue:** The linear recursion pattern matcher doesn't recognize this pattern, even though:
+- It has exactly 1 recursive call per clause
+- The recursive call is independent (no data flow between calls)
+- It computes a scalar result via arithmetic
+
+**Why It Fails:**
+- Pattern detection in `pattern_matchers.pl:is_linear_recursive_streamable/1` may be too strict
+- Possible issue with how arithmetic operations are analyzed
+- May need to relax independence checks for post-computation patterns
+
+**Fix Strategy:**
+1. Debug pattern matcher with `list_length/2` specifically
+2. Compare with working `factorial/2` pattern detection
+3. Adjust independence or pattern matching rules
+4. Add regression test to ensure fix doesn't break other patterns
+
+**Estimated Effort:** 2-3 hours
+
+---
+
+### 2. Fix `descendant/2` Advanced Pattern Detection
+
+**Status:** ✗ No advanced pattern matched (falls back to basic recursion)
+**Location:** `test_recursive.pl` - Recursive Predicates Test
+**Current Behavior:** Classified as `tail_recursion` but fails all advanced pattern matchers
+
+**Predicate:**
+```prolog
+descendant(X, Y) :- parent(X, Y).
+descendant(X, Z) :- parent(X, Y), descendant(Y, Z).
+```
+
+**Issue:** This is a classic transitive closure pattern but in reverse order:
+- `ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z)` ✅ Works (forward chaining)
+- `descendant(X, Z) :- parent(X, Y), descendant(Y, Z)` ❌ Fails (same structure!)
+
+**Current Classification:** `tail_recursion` (incorrect)
+
+**Why It Fails:**
+- Tail recursion detector: Not actually tail recursive (recursive call in body, not tail position)
+- Linear recursion detector: Multiple calls (base case + recursive case)
+- Tree recursion detector: Not a tree structure pattern
+- Mutual recursion detector: Only calls itself, not mutual
+
+**The Real Pattern:** This is a **basic recursion** case that should use BFS optimization (transitive closure), but the classifier marks it as `tail_recursion` incorrectly.
+
+**Fix Strategy:**
+1. Improve transitive closure detection in `recursive_compiler.pl`
+2. Check if predicate matches `P(X, Z) :- Q(X, Y), P(Y, Z)` pattern
+3. Mark as transitive closure even when Q is different from P
+4. Apply BFS optimization for this pattern
+5. Consider it a variant of ancestor/descendant symmetry
+
+**Estimated Effort:** 3-4 hours
+
+---
+
+## Priority 2: Bash Code Generation Completion
+
+### 3. Complete Linear Recursion Bash Generation
+
+**Status:** ⚠️ Scaffold generated, logic incomplete
+**Location:** `src/unifyweaver/core/advanced/linear_recursion.pl`
+
+**Current Behavior:**
+- Pattern detection works correctly
+- Bash scaffolding with memoization structure is generated
+- Actual recursive logic has TODO placeholders
+
+**Example:** `factorial.sh` generates but doesn't compute results
+- Expected: `factorial("5", "")` → `5:120`
+- Actual: No output (base case logic incomplete)
+
+**Fix Strategy:**
+1. Implement bash code generation for arithmetic operations in recursive case
+2. Handle `N is N1 * F1` style operations
+3. Generate proper base case handling for numeric predicates
+4. Test with factorial, fibonacci examples
+
+**Estimated Effort:** 4-6 hours
+
+---
+
+### 4. Complete Mutual Recursion Bash Generation
+
+**Status:** ⚠️ Scaffold generated, logic incomplete
+**Location:** `src/unifyweaver/core/advanced/mutual_recursion.pl`
+
+**Current Behavior:**
+- Mutual recursion groups detected correctly via SCC
+- Shared memoization table structure generated
+- Base and recursive cases have TODO placeholders
+
+**Example:** `even_odd.sh` generates but just echoes input
+- Expected: `is_even("4")` → `4` (success), `is_even("3")` → (failure)
+- Actual: `is_even("4")` → `4` (placeholder, no logic)
+
+**Fix Strategy:**
+1. Implement base case code generation from Prolog clauses
+2. Generate mutual call logic (`is_even` → `is_odd`)
+3. Handle arithmetic in guards (`N > 0`, `N1 is N - 1`)
+4. Test with even/odd example
+
+**Estimated Effort:** 4-6 hours
+
+---
+
+## Priority 3: Code Quality Improvements
+
+### 5. Fix Singleton Variable Warnings
+
+**Status:** ⚠️ Warnings during test runs
+
+**Locations:**
+- `tree_recursion.pl:179` - Singleton variables: `MemoCheck`, `MemoStore`
+- `tree_recursion.pl:227` - Singleton variables: `Arity`, `Operation`
+- `mutual_recursion.pl:46` - Singleton variable: `AllOptions`
+- `test_advanced.pl:73` - Singleton variables: `FibCode`, `TreeCode`
+
+**Fix Strategy:**
+- Use underscore prefix for intentionally unused variables: `_MemoCheck`
+- Or remove unused variables from patterns
+- Verify logic is correct (not masking real bugs)
+
+**Estimated Effort:** 30 minutes
+
+---
+
+### 4. Update init_template.pl to Working Pattern
+
+**Status:** ✅ FIXED in templates/, but working pattern documented
+
+**Current Working Pattern:**
+```prolog
+unifyweaver_init :-
+    % ... setup code ...
+    help.
+
+:- dynamic unifyweaver_initialized/0.
+:- asserta(unifyweaver_initialized).
+
+% ... rest of predicates ...
+
+:- initialization(unifyweaver_init, now).
+```
+
+**Note:** This pattern works and is committed. Keeping here for reference.
+
+---
+
+## Priority 3: Documentation Updates
+
+### 5. Update Test Plan with Known Failures
+
+**Location:** `planning/PRE_RELEASE_TEST_PLAN.md`
+
+**Add Section:**
+```markdown
+## Known Test Failures
+
+### Expected Failures (Do Not Block Release)
+
+1. **list_length/2** - Linear recursion pattern not detected
+   - Test: Advanced Recursion → Linear Recursion Compiler → Test 1
+   - Workaround: Falls back to basic recursion with memoization
+   - Tracked in: POST_RELEASE_TODO.md #1
+
+2. **descendant/2** - Misclassified as tail_recursion, fails all patterns
+   - Test: Recursive Compiler → test_recursive
+   - Workaround: Falls back to basic recursion (no BFS optimization)
+   - Tracked in: POST_RELEASE_TODO.md #2
+```
+
+**Estimated Effort:** 15 minutes
+
+---
+
+### 6. Add Known Limitations to README.md
+
+**Location:** `README.md` - Current Limitations section (lines 254-275)
+
+**Add to Limitations:**
+```markdown
+**Pattern Detection:**
+- `list_length/2` pattern not detected by linear recursion matcher (issue #1)
+- `descendant/2` misclassified as tail recursion, should be transitive closure (issue #2)
+- Some arithmetic post-computation patterns may not be recognized
+```
+
+**Estimated Effort:** 10 minutes
+
+---
+
+## Priority 4: Testing Infrastructure
+
+### 7. Add Regression Tests for Fixes
+
+**When fixing #1 and #2 above:**
+
+Add tests to prevent regressions:
+```prolog
+% In test_advanced.pl or new test_regressions.pl
+
+test_list_length_pattern :-
+    % Verify list_length is detected as linear recursion
+    is_linear_recursive_streamable(list_length/2),
+    writeln('✓ list_length pattern detected').
+
+test_descendant_classification :-
+    % Verify descendant gets transitive closure optimization
+    classify_recursion(descendant/2, Classification),
+    Classification = transitive_closure(_),
+    writeln('✓ descendant classified correctly').
+```
+
+**Estimated Effort:** 1 hour
+
+---
+
+## Priority 5: Future Enhancements (Post v0.0.2)
+
+See `context/FUTURE_WORK.md` for:
+- Tree recursion with fold helper pattern (fibonacci, binomial coefficients)
+- Constraint system integration with advanced recursion
+- Education materials completion
+- Additional recursion patterns
+
+---
+
+## Tracking
+
+- [ ] Priority 1, Item 1: Fix list_length pattern detection
+- [ ] Priority 1, Item 2: Fix descendant classification
+- [ ] Priority 2, Item 3: Complete linear recursion bash generation
+- [ ] Priority 2, Item 4: Complete mutual recursion bash generation
+- [ ] Priority 3, Item 5: Fix singleton warnings
+- [ ] Priority 3, Item 6: ✅ Already fixed (init_template.pl)
+- [ ] Priority 4, Item 7: Update test plan docs
+- [ ] Priority 4, Item 8: Update README limitations
+- [ ] Priority 5, Item 9: Add regression tests
+
+**Total Estimated Effort:** 20-26 hours
+
+---
+
+*This document will be updated as items are completed and new issues are discovered.*

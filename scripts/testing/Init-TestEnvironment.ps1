@@ -16,8 +16,13 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(HelpMessage="Target directory for test environment")]
-    [string]$TargetDir = "",
+    [Parameter(HelpMessage="Parent directory where test_env/ will be created")]
+    [Alias("d")]
+    [string]$ParentDir = "",
+
+    [Parameter(HelpMessage="Full path to test environment (custom name allowed)")]
+    [Alias("p")]
+    [string]$TargetPath = "",
 
     [Parameter(HelpMessage="Show help message")]
     [switch]$Help
@@ -29,16 +34,19 @@ if ($Help) {
 UnifyWeaver Testing Environment Setup (PowerShell)
 
 Usage:
-  .\Init-TestEnvironment.ps1 [-TargetDir <path>]
+  .\Init-TestEnvironment.ps1 [-d <dir>] [-p <path>]
 
 Parameters:
-  -TargetDir    Custom target directory for test environment
-                Default: .\test_env
-  -Help         Show this help message
+  -d, -ParentDir    Parent directory where test_env/ will be created
+                    Example: -d C:\temp creates C:\temp\test_env
+  -p, -TargetPath   Full path to test environment (allows custom name)
+                    Example: -p C:\temp\my_test creates C:\temp\my_test
+  -Help             Show this help message
 
 Examples:
-  .\Init-TestEnvironment.ps1
-  .\Init-TestEnvironment.ps1 -TargetDir "C:\UnifyWeaver\test"
+  .\Init-TestEnvironment.ps1                    # Creates test_env in scripts\testing\
+  .\Init-TestEnvironment.ps1 -d test_env_ps     # Creates scripts\testing\test_env_ps\test_env
+  .\Init-TestEnvironment.ps1 -p test_env_ps     # Creates scripts\testing\test_env_ps (custom name)
 
 Environment Variables:
   UNIFYWEAVER_ROOT   Alternative way to specify target directory
@@ -62,10 +70,21 @@ $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 Write-Host "[INFO] Script directory: $ScriptDir" -ForegroundColor Cyan
 Write-Host "[INFO] Project root: $ProjectRoot" -ForegroundColor Cyan
 
-# Determine target directory
-if ($TargetDir) {
-    $TargetRoot = $TargetDir
-    Write-Host "[INFO] Using specified target: $TargetRoot" -ForegroundColor Yellow
+# Determine target directory (priority: -p > -d > UNIFYWEAVER_ROOT > default)
+if ($TargetPath) {
+    if ([System.IO.Path]::IsPathRooted($TargetPath)) {
+        $TargetRoot = $TargetPath
+    } else {
+        $TargetRoot = Join-Path $ScriptDir $TargetPath
+    }
+    Write-Host "[INFO] Using custom full path: $TargetRoot" -ForegroundColor Yellow
+} elseif ($ParentDir) {
+    if ([System.IO.Path]::IsPathRooted($ParentDir)) {
+        $TargetRoot = Join-Path $ParentDir "test_env"
+    } else {
+        $TargetRoot = Join-Path $ScriptDir (Join-Path $ParentDir "test_env")
+    }
+    Write-Host "[INFO] Using parent directory: $ParentDir (creating test_env/)" -ForegroundColor Yellow
 } elseif ($env:UNIFYWEAVER_ROOT) {
     $TargetRoot = $env:UNIFYWEAVER_ROOT
     Write-Host "[INFO] Using UNIFYWEAVER_ROOT: $TargetRoot" -ForegroundColor Yellow

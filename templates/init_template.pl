@@ -1,3 +1,4 @@
+:- encoding(utf8).
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2025 John William Creighton (@s243a)
 %
@@ -33,23 +34,23 @@ unifyweaver_init :-
     format('  src: ~w~n', [AbsSrcDir]),
     format('  unifyweaver: ~w~n', [AbsUnifyweaverDir]),
 
-    % Auto-discover tests (but don't fail if it doesn't work)
-    catch(
-        auto_discover_tests,
-        Error,
-        format('[UnifyWeaver] Auto-discovery failed (using manual tests only): ~w~n', [Error])
-    ),
-
     help.
 
 :- dynamic unifyweaver_initialized/0.
 :- asserta(unifyweaver_initialized).
 
+% Run auto-discovery after all predicates defined
+% Wrapped in catch so initialization doesn't fail if discovery fails
+:- catch(
+    auto_discover_tests,
+    Error,
+    format('[UnifyWeaver] Auto-discovery failed (using manual tests only): ~w~n', [Error])
+).
+
 %% ============================================================================
-%% MANUAL TEST HELPERS (Hardcoded - Always Available)
+%% CORE MODULE LOADERS
 %% ============================================================================
 
-% Core module loaders
 load_recursive :-
     ( use_module(unifyweaver(core/recursive_compiler))
     -> format('recursive_compiler module loaded successfully!~n', [])
@@ -74,7 +75,10 @@ load_all_core :-
     use_module(unifyweaver(core/template_system)),
     format('All core modules loaded successfully!~n', []).
 
-% Manual test helpers (guaranteed to work)
+%% ============================================================================
+%% MANUAL TEST HELPERS (Always Available)
+%% ============================================================================
+
 test_stream :-
     ( use_module(unifyweaver(core/stream_compiler))
     -> test_stream_compiler
@@ -95,7 +99,7 @@ test_advanced :-
 
 test_constraints :-
     ( use_module(unifyweaver(core/test_constraints))
-    -> test_constraints
+    -> test_constraints:test_constraints
     ; format('Failed to load constraint tests~n', [])
     ).
 
@@ -107,6 +111,7 @@ test_constraints :-
 
 %% auto_discover_tests
 %  Scan directories for test_*.pl files and create helpers
+%  Called during initialization - wrapped in catch at call site
 auto_discover_tests :-
     file_search_path(unifyweaver, UnifyweaverDir),
     atom_concat(UnifyweaverDir, '/core', CoreDir),
