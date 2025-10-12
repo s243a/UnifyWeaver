@@ -67,7 +67,13 @@ cd scripts/testing
 - ✅ Basic recursion tests pass
 - ✅ Advanced recursion tests pass (24 tests)
 - ✅ Constraint system tests pass (6 tests)
-- ⚠️  1 known failure: `list_length` (documented limitation)
+- ✅ All pattern detection tests pass (6/6)
+
+**Fixed in recent releases:**
+- ✅ `list_length/2` - Now correctly detected as linear recursion (fixed in fold-based PR)
+- ✅ `descendant/2` - Now correctly classified as transitive closure (fixed in fold-based PR)
+- ✅ `factorial/2` - Now compiles with working fold-based code generation
+- ✅ Fibonacci exclusion - Now correctly excluded from linear recursion (2+ calls)
 
 **If fails:** Check error messages, verify module paths, check for syntax errors
 
@@ -90,10 +96,10 @@ cd scripts/testing
 
 **Specific Checks:**
 ```prolog
-% Verify fibonacci uses linear recursion (not tree)
+% Verify fibonacci does NOT match linear recursion (has 2 recursive calls)
 ?- use_module('src/unifyweaver/core/advanced/pattern_matchers').
-?- is_linear_recursive_streamable(fibonacci/2).
-% Should succeed
+?- \+ is_linear_recursive_streamable(fibonacci/2).
+% Should succeed (fibonacci has 2 calls, not linear)
 
 % Verify tree_sum uses tree recursion
 ?- is_tree_recursive(tree_sum/2).
