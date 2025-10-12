@@ -178,24 +178,8 @@ is_list_tree_argument([_|_], _, _) :- !.  % Could be tree structure
 %  Generate bash code for fibonacci-like predicates
 generate_fibonacci_code(PredStr, UseMemo, BashCode) :-
     (   UseMemo = true ->
-        MemoDecl = "declare -gA _MEMO_TABLE",
-        MemoCheck = [
-            "    # Check memo table",
-            "    local key=\"", PredStr, ":$n\"",
-            "    if [[ -n \"${_MEMO_TABLE[$key]}\" ]]; then",
-            "        echo \"${_MEMO_TABLE[$key]}\"",
-            "        return 0",
-            "    fi",
-            ""
-        ],
-        MemoStore = [
-            "    # Store in memo table",
-            "    _MEMO_TABLE[\"$key\"]=\"$result\"",
-            ""
-        ]
-    ;   MemoDecl = "",
-        MemoCheck = [],
-        MemoStore = []
+        MemoDecl = "declare -gA _MEMO_TABLE"
+    ;   MemoDecl = ""
     ),
 
     % Build template - flatten all nested structures
@@ -224,24 +208,20 @@ generate_fibonacci_code(PredStr, UseMemo, BashCode) :-
 %% generate_binary_tree_code(+Pred, +Arity, +UseMemo, -BashCode)
 %  Generate bash code for binary tree operations
 %  Trees represented as: [value, [left], [right]] or []
-generate_binary_tree_code(Pred, Arity, UseMemo, BashCode) :-
+generate_binary_tree_code(Pred, _Arity, UseMemo, BashCode) :-
     atom_string(Pred, PredStr),
 
     % Determine what operation (sum, height, count, etc.)
     (   sub_atom(Pred, _, _, _, sum) ->
-        Operation = sum,
         BaseValue = "0",
         CombineOp = "$value + $left_result + $right_result"
     ;   sub_atom(Pred, _, _, _, height) ->
-        Operation = height,
         BaseValue = "0",
         CombineOp = "1 + ($left_result > $right_result ? $left_result : $right_result)"
     ;   sub_atom(Pred, _, _, _, count) ->
-        Operation = count,
         BaseValue = "0",
         CombineOp = "1 + $left_result + $right_result"
     ;   % Generic: just return value
-        Operation = generic,
         BaseValue = "0",
         CombineOp = "$value"
     ),

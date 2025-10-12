@@ -52,9 +52,9 @@ compile_mutual_recursion(Predicates, Options, BashCode) :-
         format('  Constraints: ~w~n', [Constraints]),
 
         % Merge runtime options with constraints
-        append(Options, Constraints, AllOptions),
-        format('  Final options: ~w~n', [AllOptions])
-    ;   AllOptions = Options
+        append(Options, Constraints, _AllOptions),
+        format('  Final options: ~w~n', [Options])
+    ;   true
     ),
 
     % TODO: Mutually recursive patterns return single values, not sets.

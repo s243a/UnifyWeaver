@@ -87,7 +87,7 @@ test_integration :-
 
     % Try to compile fibonacci
     (   catch(
-            advanced_recursive_compiler:compile_advanced_recursive(fib/2, [], FibCode),
+            advanced_recursive_compiler:compile_advanced_recursive(fib/2, [], _FibCode),
             _,
             fail
         ) ->
@@ -101,7 +101,7 @@ test_integration :-
 
     % Try to compile tree_sum
     (   catch(
-            advanced_recursive_compiler:compile_advanced_recursive(tree_sum/2, [], TreeCode),
+            advanced_recursive_compiler:compile_advanced_recursive(tree_sum/2, [], _TreeCode),
             _,
             fail
         ) ->
