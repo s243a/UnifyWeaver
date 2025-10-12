@@ -102,9 +102,12 @@ extract_fold_operation([clause(_Head, Body)|_], FoldExpr) :-
 
 %% find_is_expression(+Body, -IsGoal)
 %  Find the 'is' expression in the body
-find_is_expression((_ is _) = Goal, Goal) :- !.
-find_is_expression((A, _), IsGoal) :- find_is_expression(A, IsGoal), !.
-find_is_expression((_, B), IsGoal) :- find_is_expression(B, IsGoal).
+find_is_expression(Goal, Goal) :-
+    Goal = (_ is _), !.
+find_is_expression((A, _), IsGoal) :-
+    find_is_expression(A, IsGoal), !.
+find_is_expression((_, B), IsGoal) :-
+    find_is_expression(B, IsGoal).
 
 %% ============================================
 %% FOLD-BASED CODE GENERATION (Phase 3 & 4)
