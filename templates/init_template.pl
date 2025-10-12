@@ -40,6 +40,9 @@ unifyweaver_init :-
         format('[UnifyWeaver] Auto-discovery failed (using manual tests only): ~w~n', [Error])
     ),
 
+    % Mark as initialized
+    assertz(unifyweaver_initialized),
+
     help.
 
 %% ============================================================================
@@ -285,6 +288,4 @@ help :-
 %% ============================================================================
 
 :- dynamic unifyweaver_initialized/0.
-:- asserta(unifyweaver_initialized).
-
 :- initialization(unifyweaver_init, now).
