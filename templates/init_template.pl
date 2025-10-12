@@ -42,9 +42,6 @@ unifyweaver_init :-
 
     help.
 
-:- dynamic unifyweaver_initialized/0.
-:- asserta(unifyweaver_initialized).
-
 %% ============================================================================
 %% MANUAL TEST HELPERS (Hardcoded - Always Available)
 %% ============================================================================
@@ -282,5 +279,12 @@ help :-
     format('~nOther:~n', []),
     format(' help.             - Show this help~n', []),
     format('~n', []).
+
+%% ============================================================================
+%% INITIALIZATION (Must be at end after all predicates defined)
+%% ============================================================================
+
+:- dynamic unifyweaver_initialized/0.
+:- asserta(unifyweaver_initialized).
 
 :- initialization(unifyweaver_init, now).
