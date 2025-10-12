@@ -160,14 +160,41 @@ is_linear_recursive_streamable(Pred/Arity) :-
     Arity > 1.
 
 %% has_structural_head_pattern(+Head)
-%  Check if head uses structural decomposition (lists, compound terms)
+%  Check if head uses tree-like structural decomposition
 %  e.g., tree_sum([V,L,R], Sum) has structural pattern [V,L,R]
+%  BUT list_length([H|T], N) is NOT tree-like - it's linear list decomposition
+%
+%  Key distinction:
+%  - Tree pattern: [V, L, R] - multi-element list (3+ elements representing a tree node)
+%  - List pattern: [H|T] or [_|T] - simple cons cell (standard list decomposition)
+%
+%  Strategy: Only reject multi-element list patterns like [V,L,R] (tree nodes)
+%  Allow simple cons patterns [H|T] (linear list decomposition)
 has_structural_head_pattern(Head) :-
     Head =.. [_|Args],
     member(Arg, Args),
+    is_tree_node_pattern(Arg).
+
+%% is_tree_node_pattern(+Term)
+%  Check if a term is a tree node pattern (multi-element list, not cons)
+is_tree_node_pattern(Arg) :-
     compound(Arg),
-    Arg \= (_ is _),  % Not an 'is' expression
-    Arg \= (_ =.. _). % Not univ
+    Arg \= (_ is _),        % Not an 'is' expression
+    Arg \= (_ =.. _),       % Not univ
+    \+ is_simple_cons(Arg), % Not a simple cons pattern
+    !.
+
+%% is_simple_cons(+Term)
+%  Check if term is a simple cons pattern: [H|T]
+%  Returns true for patterns like [_|T], [H|_], [H|T]
+%  Returns false for [V,L,R] or other compound terms
+is_simple_cons([_|Tail]) :-
+    % Must be a cons with tail as a variable (not multi-element list)
+    (   var(Tail) -> true          % [H|T] where T is variable
+    ;   Tail = [] -> true          % [H] - single element list (edge case)
+    ;   Tail = [_|_] -> fail       % [H,X,...] - multi-element, NOT simple cons
+    ;   fail                       % Other structure
+    ).
 
 %% recursive_args_are_precomputed(+Body, +Pred)
 %  Check that all recursive call arguments are computed/bound before any recursive calls
