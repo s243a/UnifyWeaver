@@ -32,11 +32,13 @@ generate_test_runner_inferred(OutputPath) :-
 %  Generate test runner with specified options
 %  Options:
 %    - mode(explicit|concise|hybrid) - output format (default: explicit)
+%    - output_dir(Dir) - directory to scan for scripts (default: 'output/advanced')
 generate_test_runner_inferred(OutputPath, Options) :-
     option(mode(Mode), Options, explicit),
+    option(output_dir(OutputDir), Options, 'output/advanced'),
 
     % Scan output directory for scripts
-    scan_output_directory(Scripts),
+    scan_output_directory(OutputDir, Scripts),
 
     % Extract signatures from all scripts
     extract_all_signatures(Scripts, Signatures),
@@ -49,13 +51,13 @@ generate_test_runner_inferred(OutputPath, Options) :-
 
     format('Generated test runner (inferred, ~w mode): ~w~n', [Mode, OutputPath]).
 
-%% scan_output_directory(-Scripts)
-%  Find all .sh files in output/advanced/ directory
+%% scan_output_directory(+OutputDir, -Scripts)
+%  Find all .sh files in the specified directory
 %  Filters out demo scripts, test wrappers, and duplicates
-scan_output_directory(Scripts) :-
-    OutputDir = 'output/advanced',
+scan_output_directory(OutputDir, Scripts) :-
     (   exists_directory(OutputDir) ->
-        expand_file_name('output/advanced/*.sh', AllFiles),
+        atomic_list_concat([OutputDir, '/*.sh'], Pattern),
+        expand_file_name(Pattern, AllFiles),
         findall(File,
                 (   member(File, AllFiles),
                     should_include_script(File, AllFiles)

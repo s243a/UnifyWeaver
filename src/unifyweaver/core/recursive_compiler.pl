@@ -14,12 +14,12 @@
 
 :- dynamic control_plane_warning_shown/0.
 
-:- use_module(library('advanced/advanced_recursive_compiler')).
-:- use_module(library(stream_compiler)).
-:- use_module(library(template_system)).
+:- use_module('advanced/advanced_recursive_compiler').
+:- use_module(stream_compiler).
+:- use_module(template_system).
 :- use_module(library(lists)).
-:- use_module(library(firewall)).
-:- use_module(library(preferences)).
+:- use_module(firewall).
+:- use_module(preferences).
 
 %% Main entry point - analyze and compile
 compile_recursive(Pred/Arity, Options) :-
