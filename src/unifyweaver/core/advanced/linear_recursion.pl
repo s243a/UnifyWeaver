@@ -75,19 +75,206 @@ extract_goal_from_body((_, B), Goal) :- extract_goal_from_body(B, Goal).
 extract_goal_from_body((A; _), Goal) :- extract_goal_from_body(A, Goal).
 extract_goal_from_body((_;B), Goal) :- extract_goal_from_body(B, Goal).
 
+%% ============================================
+%% CLAUSE INTROSPECTION (Phase 2)
+%% ============================================
+
+%% extract_base_case_info(+BaseClauses, -BaseInput, -BaseOutput)
+%  Extract input/output pattern from base case
+extract_base_case_info([clause(Head, _Body)|_], BaseInput, BaseOutput) :-
+    Head =.. [_Pred, BaseInput, BaseOutput].
+
+%% detect_input_type(+BaseInput, -Type)
+%  Determine if input is numeric, list, or other
+detect_input_type(BaseInput, Type) :-
+    (   BaseInput = [] ->
+        Type = list
+    ;   integer(BaseInput) ->
+        Type = numeric
+    ;   Type = unknown
+    ).
+
+%% extract_fold_operation(+RecClauses, -FoldExpr)
+%  Extract the fold operation from the recursive case
+%  Example: F is N * F1 → FoldExpr = N * F1
+extract_fold_operation([clause(_Head, Body)|_], FoldExpr) :-
+    find_is_expression(Body, _ is FoldExpr).
+
+%% find_is_expression(+Body, -IsGoal)
+%  Find the 'is' expression in the body
+find_is_expression((_ is _) = Goal, Goal) :- !.
+find_is_expression((A, _), IsGoal) :- find_is_expression(A, IsGoal), !.
+find_is_expression((_, B), IsGoal) :- find_is_expression(B, IsGoal).
+
+%% ============================================
+%% FOLD-BASED CODE GENERATION (Phase 3 & 4)
+%% ============================================
+
 %% generate_linear_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, -BashCode)
 generate_linear_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, BashCode) :-
-    % For arity 2, assume pattern: pred(Input, Output)
+    % For arity 2, use fold-based approach
     (   Arity =:= 2 ->
-        generate_binary_linear_recursion(PredStr, BaseClauses, RecClauses, BashCode)
+        generate_fold_based_recursion(PredStr, BaseClauses, RecClauses, BashCode)
     ;   % Other arities - use generic memoization
         generate_generic_linear_recursion(PredStr, Arity, BaseClauses, RecClauses, BashCode)
     ).
 
-%% generate_binary_linear_recursion(+PredStr, +BaseClauses, +RecClauses, -BashCode)
-%  Generate code for binary linear recursion (most common case)
-%  Example: length([], 0). length([_|T], N) :- length(T, N1), N is N1 + 1.
-generate_binary_linear_recursion(PredStr, _BaseClauses, _RecClauses, BashCode) :-
+%% generate_fold_based_recursion(+PredStr, +BaseClauses, +RecClauses, -BashCode)
+%  Generate fold-based linear recursion code
+%  Works for both numeric (factorial) and list (list_length) patterns
+generate_fold_based_recursion(PredStr, BaseClauses, RecClauses, BashCode) :-
+    % Extract pattern information
+    extract_base_case_info(BaseClauses, BaseInput, BaseOutput),
+    detect_input_type(BaseInput, InputType),
+    extract_fold_operation(RecClauses, FoldExpr),
+
+    % Generate based on input type
+    (   InputType = numeric ->
+        generate_numeric_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode)
+    ;   InputType = list ->
+        generate_list_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode)
+    ;   % Fallback to old template if unknown
+        generate_binary_linear_recursion_old(PredStr, BaseClauses, RecClauses, BashCode)
+    ).
+
+%% generate_numeric_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, -BashCode)
+%  Generate fold-based code for numeric linear recursion (e.g., factorial)
+generate_numeric_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode) :-
+    % Translate Prolog fold expression to bash
+    translate_fold_expr(FoldExpr, BashFoldOp),
+
+    % Generate fold helper library + predicate wrapper
+    format(string(BashCode), '#!/bin/bash
+# ~w - fold-based linear recursion (numeric)
+# Pattern: fold down from N to 1, combining with operation
+
+# Fold helper: fold_left accumulator operation values...
+fold_left() {
+    local acc="$1"
+    local op_func="$2"
+    shift 2
+    for item in "$@"; do
+        acc=$("$op_func" "$item" "$acc")
+    done
+    echo "$acc"
+}
+
+# Range builder: generates N, N-1, ..., 1
+build_range_down() {
+    local n="$1"
+    seq "$n" -1 1
+}
+
+# Fold operation for ~w
+~w_op() {
+    local current="$1"
+    local acc="$2"
+    echo $((~w))
+}
+
+# Main predicate with memoization
+declare -gA ~w_memo
+
+~w() {
+    local n="$1"
+    local expected="$2"
+
+    # Check memo
+    if [[ -n "${~w_memo[$n]}" ]]; then
+        local cached="${~w_memo[$n]}"
+        if [[ -n "$expected" ]]; then
+            [[ "$cached" == "$expected" ]] && echo "$n:$expected" && return 0
+            return 1
+        else
+            echo "$n:$cached"
+            return 0
+        fi
+    fi
+
+    # Base case
+    if [[ "$n" -eq ~w ]]; then
+        local result="~w"
+        ~w_memo["$n"]="$result"
+        if [[ -n "$expected" ]]; then
+            [[ "$result" == "$expected" ]] && echo "$n:$expected" && return 0
+            return 1
+        else
+            echo "$n:$result"
+            return 0
+        fi
+    fi
+
+    # Recursive case using fold
+    local range=$(build_range_down "$n")
+    local result=$(fold_left ~w "~w_op" $range)
+
+    # Memoize
+    ~w_memo["$n"]="$result"
+
+    if [[ -n "$expected" ]]; then
+        [[ "$result" == "$expected" ]] && echo "$n:$expected" && return 0
+        return 1
+    else
+        echo "$n:$result"
+        return 0
+    fi
+}
+
+# Stream wrapper
+~w_stream() {
+    ~w "$@"
+}
+', [PredStr, PredStr, PredStr, BashFoldOp, PredStr, PredStr, PredStr, BaseInput, BaseOutput, PredStr, BaseOutput, PredStr, PredStr, PredStr, PredStr, PredStr]).
+
+%% translate_fold_expr(+PrologExpr, -BashExpr)
+%  Translate Prolog arithmetic expression to bash
+%  Example: N * F1 → current * acc
+translate_fold_expr(Expr, BashExpr) :-
+    translate_expr(Expr, BashExpr).
+
+translate_expr(A * B, BashExpr) :-
+    translate_term(A, AT),
+    translate_term(B, BT),
+    format(string(BashExpr), '~w * ~w', [AT, BT]).
+translate_expr(A + B, BashExpr) :-
+    translate_term(A, AT),
+    translate_term(B, BT),
+    format(string(BashExpr), '~w + ~w', [AT, BT]).
+translate_expr(A - B, BashExpr) :-
+    translate_term(A, AT),
+    translate_term(B, BT),
+    format(string(BashExpr), '~w - ~w', [AT, BT]).
+translate_expr(A / B, BashExpr) :-
+    translate_term(A, AT),
+    translate_term(B, BT),
+    format(string(BashExpr), '~w / ~w', [AT, BT]).
+translate_expr(Term, BashExpr) :-
+    translate_term(Term, BashExpr).
+
+%% translate_term(+PrologTerm, -BashTerm)
+%  Map Prolog variable names to bash variable names
+translate_term(N, 'current') :- atom(N), atom_chars(N, [FirstChar|_]), char_type(FirstChar, upper), !.
+translate_term(Var, 'acc') :- atom(Var), member(Var, [f1, n1, result, r1]), !.
+translate_term(Number, BashTerm) :- integer(Number), !, format(string(BashTerm), '~w', [Number]).
+translate_term(Atom, BashTerm) :- format(string(BashTerm), '~w', [Atom]).
+
+%% generate_list_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, -BashCode)
+%  Generate fold-based code for list linear recursion (e.g., list_length)
+%  TODO: Implement list fold pattern
+generate_list_fold(PredStr, _BaseInput, _BaseOutput, _FoldExpr, BashCode) :-
+    format(string(BashCode), '#!/bin/bash
+# ~w - list fold pattern (NOT YET IMPLEMENTED)
+# TODO: Implement list-based fold
+
+~w() {
+    echo "List fold not yet implemented" >&2
+    return 1
+}
+', [PredStr, PredStr]).
+
+%% generate_binary_linear_recursion_old(+PredStr, +BaseClauses, +RecClauses, -BashCode)
+%  OLD IMPLEMENTATION - kept as fallback
+generate_binary_linear_recursion_old(PredStr, _BaseClauses, _RecClauses, BashCode) :-
     TemplateLines = [
         "#!/bin/bash",
         "# {{pred}} - linear recursive pattern with memoization",
