@@ -116,14 +116,15 @@ detect_acc_in_binary(_Pred, BaseClauses, AccPos) :-
 
 %% is_linear_recursive_streamable(+Pred/Arity)
 %  Check if linear recursion can be compiled with memoization
-%  Linear recursion: one OR MORE recursive calls per clause, with independent calls
+%  Linear recursion: EXACTLY ONE recursive call per clause
 %  Key criteria:
-%  1. Body is conjunction (AND chain)
-%  2. Variables are unique (no inter-call data flow)
-%  3. Recursive call arguments are pre-computed (order independent)
-%  4. No side effects (assumed for now)
-%  5. NOT structural decomposition (no compound patterns in head)
-%  6. NOT forbidden (via forbid_linear_recursion or ordered constraint)
+%  1. Exactly one recursive call per recursive clause
+%  2. Body is conjunction (AND chain)
+%  3. Variables are unique (no inter-call data flow)
+%  4. Recursive call arguments are pre-computed (order independent)
+%  5. No side effects (assumed for now)
+%  6. NOT structural decomposition (no compound patterns in head)
+%  7. NOT forbidden (via forbid_linear_recursion or ordered constraint)
 is_linear_recursive_streamable(Pred/Arity) :-
     % Check if forbidden first (fast fail)
     \+ is_forbidden_linear_recursion(Pred/Arity),
@@ -145,12 +146,15 @@ is_linear_recursive_streamable(Pred/Arity) :-
         )
     )),
 
-    % For each recursive clause, verify linear pattern with independent calls
+    % For each recursive clause, verify exactly ONE recursive call
     forall(
         (   member(clause(_, RecBody), Clauses),
             contains_call_to(RecBody, Pred)
         ),
-        (   % Check that recursive call arguments are pre-computed (order independent)
+        (   % Count recursive calls - must be exactly 1
+            count_recursive_calls(RecBody, Pred, Count),
+            Count =:= 1,
+            % Check that recursive call arguments are pre-computed (order independent)
             recursive_args_are_precomputed(RecBody, Pred)
         )
     ),
@@ -444,37 +448,47 @@ test_pattern_matchers :-
     ;   writeln('  ✗ FAIL - should extract accumulator pattern')
     ),
 
-    % Test 5: Linear recursion forbid/unforbid
+    % Test 5: Linear recursion forbid/unforbid (using test_length which IS linear)
     writeln('Test 5: Forbid linear recursion'),
-    catch(abolish(test_fib/2), _, true),
-    assertz(user:(test_fib(0, 0))),
-    assertz(user:(test_fib(1, 1))),
-    assertz(user:(test_fib(N, F) :- N > 1, N1 is N - 1, N2 is N - 2, test_fib(N1, F1), test_fib(N2, F2), F is F1 + F2)),
 
+    % Use test_length from Test 2 (which IS linear - one recursive call)
     % Should match linear pattern initially
-    (   is_linear_recursive_streamable(test_fib/2) ->
-        writeln('  ✓ PASS - fibonacci matches linear pattern')
-    ;   writeln('  ✗ FAIL - fibonacci should match linear')
+    (   is_linear_recursive_streamable(test_length/2) ->
+        writeln('  ✓ PASS - test_length matches linear pattern')
+    ;   writeln('  ✗ FAIL - test_length should match linear')
     ),
 
     % Forbid it
-    forbid_linear_recursion(test_fib/2),
-    (   \+ is_linear_recursive_streamable(test_fib/2) ->
-        writeln('  ✓ PASS - forbidden fibonacci does not match linear')
+    forbid_linear_recursion(test_length/2),
+    (   \+ is_linear_recursive_streamable(test_length/2) ->
+        writeln('  ✓ PASS - forbidden test_length does not match linear')
     ;   writeln('  ✗ FAIL - forbidden should not match')
     ),
 
     % Check is_forbidden works
-    (   is_forbidden_linear_recursion(test_fib/2) ->
+    (   is_forbidden_linear_recursion(test_length/2) ->
         writeln('  ✓ PASS - is_forbidden detects forbid')
     ;   writeln('  ✗ FAIL - is_forbidden should return true')
     ),
 
     % Unforbid it
-    clear_linear_recursion_forbid(test_fib/2),
-    (   is_linear_recursive_streamable(test_fib/2) ->
-        writeln('  ✓ PASS - unforbidden fibonacci matches linear again')
+    clear_linear_recursion_forbid(test_length/2),
+    (   is_linear_recursive_streamable(test_length/2) ->
+        writeln('  ✓ PASS - unforbidden test_length matches linear again')
     ;   writeln('  ✗ FAIL - unforbidden should match again')
+    ),
+
+    % Test 6: Verify fibonacci (2 recursive calls) is NOT linear
+    writeln('Test 6: Multiple recursive calls (fibonacci)'),
+    catch(abolish(test_fib/2), _, true),
+    assertz(user:(test_fib(0, 0))),
+    assertz(user:(test_fib(1, 1))),
+    assertz(user:(test_fib(N, F) :- N > 1, N1 is N - 1, N2 is N - 2, test_fib(N1, F1), test_fib(N2, F2), F is F1 + F2)),
+
+    % Should NOT match linear pattern (has 2 recursive calls)
+    (   \+ is_linear_recursive_streamable(test_fib/2) ->
+        writeln('  ✓ PASS - fibonacci does NOT match linear (2 calls)')
+    ;   writeln('  ✗ FAIL - fibonacci should NOT match linear (has 2 recursive calls)')
     ),
 
     writeln('=== PATTERN MATCHERS TESTS COMPLETE ===').
