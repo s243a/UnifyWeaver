@@ -410,7 +410,7 @@ fi
 
 
 # Optionally snapshot the helper too
-cp -f "$SCRIPT_DIR/find_swi-prolog.sh" "$TARGET_ROOT/find_swi-prolog.sh"
+cp -f "$SCRIPT_DIR/find_swi-prolog.sh" "./find_swi-prolog.sh"
 
 
 
