@@ -137,25 +137,34 @@ is_recursive_clause(Pred, Body) :-
     functor(Goal, Pred, _).
 
 %% Check for transitive closure pattern
-% Base: pred(X,Y) :- base_pred(X,Y).
-% Recursive: pred(X,Z) :- base_pred(X,Y), pred(Y,Z).
+% Two patterns supported:
+% 1. Forward: pred(X,Z) :- base(X,Y), pred(Y,Z).  [e.g., ancestor]
+% 2. Reverse: pred(X,Z) :- base(Y,X), pred(Y,Z).  [e.g., descendant]
 is_transitive_closure(Pred, 2, BaseClauses, RecClauses, BasePred) :-
     % Check base case is a single predicate call
     member(BaseBody, BaseClauses),
     BaseBody \= true,
     functor(BaseBody, BasePred, 2),
     BasePred \= Pred,
-    
+
     % Check recursive case matches pattern
     member(RecBody, RecClauses),
     RecBody = (BaseCall, RecCall),
     functor(BaseCall, BasePred, 2),
     functor(RecCall, Pred, 2),
-    
-    % Verify argument flow: base(X,Y), recursive(Y,Z)
-    BaseCall =.. [BasePred, _X, Y],
-    RecCall =.. [Pred, Y2, _],
-    Y == Y2.
+
+    % Try both forward and reverse patterns
+    (   % Pattern 1: Forward transitive closure
+        % base(X,Y), recursive(Y,Z) - Y flows from base to recursive
+        BaseCall =.. [BasePred, _X, Y],
+        RecCall =.. [Pred, Y2, _Z],
+        Y == Y2
+    ;   % Pattern 2: Reverse transitive closure
+        % base(Y,X), recursive(Y,Z) - Y flows from base to recursive (reversed args)
+        BaseCall =.. [BasePred, Y, _X],
+        RecCall =.. [Pred, Y2, _Z],
+        Y == Y2
+    ).
 
 is_transitive_closure(_, _, _, _, _) :- fail.
 
