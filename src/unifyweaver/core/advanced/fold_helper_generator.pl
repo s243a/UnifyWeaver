@@ -236,23 +236,23 @@ apply_var_mapping_to_arg(VarMap, Arg) :-
 rename_goal_vars_with_map(VarMap, Goal, RenamedGoal) :-
     rename_goal_vars(Goal, VarMap, RenamedGoal).
 
-%% transform_body_for_graph(+Body, +Pred, +GraphPred, -TransformedBody, -GraphVars)
+%% transform_body_for_graph(+Body, +Pred, +GraphPred, +Arity, -TransformedBody, -GraphVars)
 %  Transform clause body for graph generation:
-%  - Replace recursive calls: pred(Arg, Res) => pred_graph(Arg, GraphVar)
+%  - Replace recursive calls: pred(Args..., Res) => pred_graph(Args..., GraphVar)
 %  - Remove final result computation (the 'is' that computes output)
 %  - Keep guards and argument computations
 %  - Collect GraphVars from transformed recursive calls
 %
-transform_body_for_graph(Body, Pred, GraphPred, TransformedBody, GraphVars) :-
-    transform_body_goals(Body, Pred, GraphPred, [], TransformedBody, GraphVars).
+transform_body_for_graph(Body, Pred, GraphPred, Arity, TransformedBody, GraphVars) :-
+    transform_body_goals(Body, Pred, GraphPred, Arity, [], TransformedBody, GraphVars).
 
-%% transform_body_goals(+Body, +Pred, +GraphPred, +Seen, -Transformed, -GraphVars)
+%% transform_body_goals(+Body, +Pred, +GraphPred, +Arity, +Seen, -Transformed, -GraphVars)
 %  Recursively transform body goals and collect graph variables
 %  Seen contains seen goals in reverse order (most recent first)
 %
-transform_body_goals((A, B), Pred, GraphPred, Seen, Transformed, GraphVars) :- !,
-    transform_body_goals(A, Pred, GraphPred, Seen, TransA, GVarsA),
-    transform_body_goals(B, Pred, GraphPred, [A|Seen], TransB, GVarsB),
+transform_body_goals((A, B), Pred, GraphPred, Arity, Seen, Transformed, GraphVars) :- !,
+    transform_body_goals(A, Pred, GraphPred, Arity, Seen, TransA, GVarsA),
+    transform_body_goals(B, Pred, GraphPred, Arity, [A|Seen], TransB, GVarsB),
     append(GVarsA, GVarsB, GraphVars),
     (   TransA = true ->
         Transformed = TransB
@@ -260,18 +260,22 @@ transform_body_goals((A, B), Pred, GraphPred, Seen, Transformed, GraphVars) :- !
         Transformed = TransA
     ;   Transformed = (TransA, TransB)
     ).
-transform_body_goals(Goal, Pred, GraphPred, _Seen, TransformedGoal, [GraphVar]) :-
+transform_body_goals(Goal, Pred, GraphPred, Arity, _Seen, TransformedGoal, [GraphVar]) :-
     % Check if this is a recursive call
-    functor(Goal, Pred, _), !,
-    % Transform: pred(Arg, _) => pred_graph(Arg, GraphVar)
-    Goal =.. [Pred, Arg, _Res],
-    TransformedGoal =.. [GraphPred, Arg, GraphVar].
-transform_body_goals(Goal, Pred, _GraphPred, Seen, true, []) :-
+    functor(Goal, Pred, Arity), !,
+    % Transform: pred(Args..., _Res) => pred_graph(Args..., GraphVar)
+    % Extract all args, split into inputs and output
+    Goal =.. [Pred|Args],
+    append(InputArgs, [_Res], Args),
+    % Build new call with inputs + graph var
+    append(InputArgs, [GraphVar], GraphCallArgs),
+    TransformedGoal =.. [GraphPred|GraphCallArgs].
+transform_body_goals(Goal, Pred, _GraphPred, _Arity, Seen, true, []) :-
     % Check if this is the final result computation (should be removed)
     % It's an 'is' goal that comes AFTER recursive calls
     Goal =.. [is, _Var, _Expr],
     has_seen_recursive_call(Seen, Pred), !.
-transform_body_goals(Goal, _Pred, _GraphPred, _Seen, Goal, []).
+transform_body_goals(Goal, _Pred, _GraphPred, _Arity, _Seen, Goal, []).
 
 %% has_seen_recursive_call(+Seen, +Pred)
 %  Check if we've seen a recursive call in the Seen list
@@ -294,7 +298,7 @@ member_goal_with_var([_|Rest], Var) :-
 %% generate_from_template(+TemplateType, +Pred/Arity, +Params, -AllClauses)
 %  Generate all clauses from template
 %
-generate_from_template(binary_tree, Pred/_Arity, Params, AllClauses) :-
+generate_from_template(binary_tree, Pred/Arity, Params, AllClauses) :-
     atom_concat(Pred, '_graph', GraphPred),
     atom_concat('fold_', Pred, FoldPred),
     atom_concat(Pred, '_fold', WrapperPred),
@@ -309,8 +313,12 @@ generate_from_template(binary_tree, Pred/_Arity, Params, AllClauses) :-
     % Generate graph builder base clauses
     findall(GraphBaseClause, (
         member(clause(BaseHead, BaseBody), BaseClauses),
-        BaseHead =.. [Pred, BaseInput, BaseOutput],
-        GraphBaseHead =.. [GraphPred, BaseInput, leaf(BaseOutput)],
+        BaseHead =.. [Pred|BaseArgs],
+        % Split: all args but last are inputs, last is output
+        append(BaseInputs, [BaseOutput], BaseArgs),
+        % Graph head: pred_graph(Inputs..., leaf(Output))
+        append(BaseInputs, [leaf(BaseOutput)], GraphHeadArgs),
+        GraphBaseHead =.. [GraphPred|GraphHeadArgs],
         GraphBaseClause = clause(GraphBaseHead, BaseBody)
     ), GraphBaseClauses),
 
@@ -319,13 +327,17 @@ generate_from_template(binary_tree, Pred/_Arity, Params, AllClauses) :-
     RecClause = clause(RecHead, RecBody),
     copy_term(clause(RecHead, RecBody), clause(NewRecHead, NewRecBody)),
 
-    % Extract InputVar from the copied head
-    NewRecHead =.. [Pred, InputVar, _OutputVar],
+    % Extract input args and output arg from the copied head
+    NewRecHead =.. [Pred|NewArgs],
+    append(InputVars, [_OutputVar], NewArgs),
 
     % Transform the body and collect graph variables
-    transform_body_for_graph(NewRecBody, Pred, GraphPred, TransformedBody, GraphVars),
+    transform_body_for_graph(NewRecBody, Pred, GraphPred, Arity, TransformedBody, GraphVars),
 
-    GraphRecHead =.. [GraphPred, InputVar, node(InputVar, GraphVars)],
+    % Build graph head: pred_graph(Inputs..., node(_, GraphVars))
+    % Keep the node with 2 args for compatibility with fold template
+    append(InputVars, [node(_, GraphVars)], GraphRecHeadArgs),
+    GraphRecHead =.. [GraphPred|GraphRecHeadArgs],
     GraphRecClause = clause(GraphRecHead, TransformedBody),
 
     % Generate fold computer leaf clause
@@ -344,11 +356,18 @@ generate_from_template(binary_tree, Pred/_Arity, Params, AllClauses) :-
     FoldRecClause = clause(FoldRecHead, FoldRecBody),
 
     % Generate wrapper clause
-    % Use fresh variables
-    WrapperGraphCall =.. [GraphPred, _WInputVar, _Graph],
+    % Wrapper takes all input args plus output arg
+    length(InputVars, NumInputs),
+    length(WrapperInputVars, NumInputs),
+    % Build wrapper head: pred_fold(Inputs..., Output)
+    append(WrapperInputVars, [_WOutputVar], WrapperHeadArgs),
+    WrapperHead =.. [WrapperPred|WrapperHeadArgs],
+    % Build graph call: pred_graph(Inputs..., Graph)
+    append(WrapperInputVars, [_Graph], GraphCallArgs),
+    WrapperGraphCall =.. [GraphPred|GraphCallArgs],
+    % Build fold call: fold_pred(Graph, Output)
     WrapperFoldCall =.. [FoldPred, _Graph, _WOutputVar],
     WrapperBody = (WrapperGraphCall, WrapperFoldCall),
-    WrapperHead =.. [WrapperPred, _WInputVar, _WOutputVar],
     WrapperClause = clause(WrapperHead, WrapperBody),
 
     % Combine all clauses
