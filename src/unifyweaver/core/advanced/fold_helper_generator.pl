@@ -64,31 +64,23 @@ generate_fold_helpers(Pred/Arity, AllClauses) :-
 %% extract_template_params(+Pred/Arity, +OrigClauses, -Params)
 %  Extract parameters needed for template instantiation
 %
-%  Params = params(base_cases, guards, computations, rec_args, operator)
+%  Params = params(base_cases, operator, rec_clause)
 %
 extract_template_params(Pred/Arity, OrigClauses, Params) :-
     % Separate base and recursive clauses
     partition_clauses(Pred, OrigClauses, BaseClauses, RecClauses),
 
-    % Extract from recursive clause
-    RecClauses = [clause(RecHead, RecBody)|_],
-    RecHead =.. [Pred, _InputArg, _OutputArg],
+    % Get first recursive clause
+    RecClauses = [RecClause|_],
+    RecClause = clause(RecHead, RecBody),
 
-    % Extract guards (non-arithmetic, non-recursive goals before first 'is')
-    extract_guards(RecBody, Pred, Guards),
-
-    % Extract computations (arithmetic 'is' goals before recursive calls)
-    extract_computations(RecBody, Pred, Computations, RecArgs),
-
-    % Extract combination operator (use fresh variables)
+    % Extract combination operator (can be done on original clause)
     extract_operator(RecBody, _, Operator),
 
     Params = params(
         base_clauses(BaseClauses),
-        guards(Guards),
-        computations(Computations),
-        rec_args(RecArgs),
-        operator(Operator)
+        operator(Operator),
+        rec_clause(RecClause)
     ).
 
 %% partition_clauses(+Pred, +Clauses, -BaseClauses, -RecClauses)
@@ -98,15 +90,27 @@ partition_clauses(Pred, Clauses, BaseClauses, RecClauses) :-
 is_recursive_clause(Pred, clause(_Head, Body)) :-
     contains_call_to(Body, Pred).
 
-%% extract_guards(+Body, +Pred, -Guards)
-%  Extract guard conditions (goals before computations, not recursive)
+%% extract_guards(+Body, +Pred, +OrigHead, +NewArgs, -Guards)
+%  Extract guard conditions and rename variables to match new clause
 %
-extract_guards(Body, Pred, Guards) :-
-    findall(Goal, (
+%  Args:
+%    Body: Original clause body
+%    Pred: Predicate name (to filter out recursive calls)
+%    OrigHead: Original clause head (for variable mapping)
+%    NewArgs: New arguments to use in generated clause
+%    Guards: List of guard goals with renamed variables
+%
+extract_guards(Body, Pred, OrigHead, NewArgs, Guards) :-
+    % Build variable mapping from original to new variables
+    build_var_mapping(OrigHead, NewArgs, VarMap),
+
+    % Extract and rename guards
+    findall(RenamedGoal, (
         extract_goal(Body, Goal),
         \+ functor(Goal, is, 2),
         \+ functor(Goal, Pred, _),
-        is_before_computations(Goal, Body)
+        is_before_computations(Goal, Body),
+        rename_goal_vars(Goal, VarMap, RenamedGoal)
     ), Guards).
 
 is_before_computations(Goal, Body) :-
@@ -114,28 +118,41 @@ is_before_computations(Goal, Body) :-
     % More sophisticated: check position in conjunction
     true.
 
-%% extract_computations(+Body, +Pred, -Computations, -RecArgs)
-%  Extract arithmetic computations and the arguments they compute
+%% extract_computations(+Body, +Pred, +OrigHead, +NewArgs, -Computations, -RecArgs)
+%  Extract arithmetic computations and rename variables to match new clause
 %
-extract_computations(RecBody, Pred, Computations, RecArgs) :-
+%  Args:
+%    Body: Original clause body
+%    Pred: Predicate name
+%    OrigHead: Original clause head (for variable mapping)
+%    NewArgs: New arguments to use in generated clause
+%    Computations: List of computation goals with renamed variables
+%    RecArgs: Arguments used in recursive calls (with renamed variables)
+%
+extract_computations(RecBody, Pred, OrigHead, NewArgs, Computations, RecArgs) :-
+    % Build variable mapping
+    build_var_mapping(OrigHead, NewArgs, VarMap),
+
     % Find all 'is' expressions that compute inputs for recursive calls
     % (not the final result computation)
-    findall(Comp, (
+    findall(RenamedComp, (
         extract_goal(RecBody, Comp),
         Comp =.. [is, Var, _],
         % Check if this variable is used in a recursive call as input
         extract_goal(RecBody, RecCall),
         functor(RecCall, Pred, _),
         RecCall =.. [Pred, Arg, _],
-        Arg == Var  % Variable is used as input to recursive call
+        Arg == Var,  % Variable is used as input to recursive call
+        rename_goal_vars(Comp, VarMap, RenamedComp)
     ), ComputationsWithDups),
     sort(ComputationsWithDups, Computations),
 
-    % Extract arguments used in recursive calls
-    findall(Arg, (
+    % Extract arguments used in recursive calls (renamed)
+    findall(RenamedArg, (
         extract_goal(RecBody, RecCall),
         functor(RecCall, Pred, _),
-        RecCall =.. [Pred, Arg, _]
+        RecCall =.. [Pred, Arg, _],
+        rename_goal_vars(Arg, VarMap, RenamedArg)
     ), RecArgs).
 
 %% extract_operator(+Body, +OutputVar, -Operator)
@@ -152,6 +169,128 @@ extract_operator(Body, OutputVar, Operator) :-
     ;   Operator = unknown
     ).
 
+%% ============================================
+%% VARIABLE MAPPING HELPERS
+%% ============================================
+% These helpers solve the variable binding problem when extracting goals
+% from original clauses. Variables in extracted goals are bound to the
+% original clause's scope. We need to rename them to match the new clause.
+
+%% build_var_mapping(+OrigHead, +NewArgs, -VarMap)
+%  Create a mapping from original clause variables to new clause variables
+%
+%  Args:
+%    OrigHead: Original clause head (e.g., fib(N, F))
+%    NewArgs: List of new variables to use (e.g., [_InputVar, _OutputVar])
+%    VarMap: List of pairs mapping old vars to new vars (e.g., [N-_InputVar, F-_OutputVar])
+%
+build_var_mapping(OrigHead, NewArgs, VarMap) :-
+    OrigHead =.. [_Pred|OrigArgs],
+    pairs_keys_values(VarMap, OrigArgs, NewArgs).
+
+%% rename_goal_vars(+Goal, +VarMap, -RenamedGoal)
+%  Rename variables in a goal using the variable mapping
+%
+%  Args:
+%    Goal: Original goal with old variables (e.g., N > 1)
+%    VarMap: Mapping from old to new variables (e.g., [N-_InputVar, ...])
+%    RenamedGoal: Goal with renamed variables (e.g., _InputVar > 1)
+%
+rename_goal_vars(Goal, VarMap, RenamedGoal) :-
+    copy_term(Goal, RenamedGoal),
+    apply_var_mapping(RenamedGoal, VarMap).
+
+%% apply_var_mapping(+Term, +VarMap)
+%  Recursively apply variable mapping to a term (modifies term in place via unification)
+%
+%  Args:
+%    Term: The term to modify
+%    VarMap: List of OldVar-NewVar pairs
+%
+apply_var_mapping(Term, VarMap) :-
+    (   var(Term) ->
+        % If Term is a variable, try to find it in the mapping
+        (   member(OldVar-NewVar, VarMap),
+            OldVar == Term  % Use == to check if same variable
+        ->  Term = NewVar   % Unify with new variable
+        ;   true            % Not in mapping, leave as is
+        )
+    ;   compound(Term) ->
+        % Recursively process compound terms
+        Term =.. [_Functor|Args],
+        maplist(apply_var_mapping_to_arg(VarMap), Args)
+    ;   % Atomic term (number, atom), leave as is
+        true
+    ).
+
+%% apply_var_mapping_to_arg(+VarMap, +Arg)
+%  Helper to apply mapping to a single argument
+%
+apply_var_mapping_to_arg(VarMap, Arg) :-
+    apply_var_mapping(Arg, VarMap).
+
+%% rename_goal_vars_with_map(+VarMap, +Goal, -RenamedGoal)
+%  Helper for maplist to rename goal variables
+%  (maplist expects the predicate argument to come first)
+%
+rename_goal_vars_with_map(VarMap, Goal, RenamedGoal) :-
+    rename_goal_vars(Goal, VarMap, RenamedGoal).
+
+%% transform_body_for_graph(+Body, +Pred, +GraphPred, -TransformedBody, -GraphVars)
+%  Transform clause body for graph generation:
+%  - Replace recursive calls: pred(Arg, Res) => pred_graph(Arg, GraphVar)
+%  - Remove final result computation (the 'is' that computes output)
+%  - Keep guards and argument computations
+%  - Collect GraphVars from transformed recursive calls
+%
+transform_body_for_graph(Body, Pred, GraphPred, TransformedBody, GraphVars) :-
+    transform_body_goals(Body, Pred, GraphPred, [], TransformedBody, GraphVars).
+
+%% transform_body_goals(+Body, +Pred, +GraphPred, +Seen, -Transformed, -GraphVars)
+%  Recursively transform body goals and collect graph variables
+%  Seen contains seen goals in reverse order (most recent first)
+%
+transform_body_goals((A, B), Pred, GraphPred, Seen, Transformed, GraphVars) :- !,
+    transform_body_goals(A, Pred, GraphPred, Seen, TransA, GVarsA),
+    transform_body_goals(B, Pred, GraphPred, [A|Seen], TransB, GVarsB),
+    append(GVarsA, GVarsB, GraphVars),
+    (   TransA = true ->
+        Transformed = TransB
+    ;   TransB = true ->
+        Transformed = TransA
+    ;   Transformed = (TransA, TransB)
+    ).
+transform_body_goals(Goal, Pred, GraphPred, _Seen, TransformedGoal, [GraphVar]) :-
+    % Check if this is a recursive call
+    functor(Goal, Pred, _), !,
+    % Transform: pred(Arg, _) => pred_graph(Arg, GraphVar)
+    Goal =.. [Pred, Arg, _Res],
+    TransformedGoal =.. [GraphPred, Arg, GraphVar].
+transform_body_goals(Goal, Pred, _GraphPred, Seen, true, []) :-
+    % Check if this is the final result computation (should be removed)
+    % It's an 'is' goal that comes AFTER recursive calls
+    Goal =.. [is, _Var, _Expr],
+    has_seen_recursive_call(Seen, Pred), !.
+transform_body_goals(Goal, _Pred, _GraphPred, _Seen, Goal, []).
+
+%% has_seen_recursive_call(+Seen, +Pred)
+%  Check if we've seen a recursive call in the Seen list
+%
+has_seen_recursive_call([Goal|_], Pred) :-
+    functor(Goal, Pred, _), !.
+has_seen_recursive_call([_|Rest], Pred) :-
+    has_seen_recursive_call(Rest, Pred).
+
+%% member_goal_with_var(+Goals, +Var)
+%  Check if Var appears in any of the goals
+%
+member_goal_with_var([Goal|_], Var) :-
+    term_variables(Goal, Vars),
+    member(V, Vars),
+    V == Var, !.
+member_goal_with_var([_|Rest], Var) :-
+    member_goal_with_var(Rest, Var).
+
 %% generate_from_template(+TemplateType, +Pred/Arity, +Params, -AllClauses)
 %  Generate all clauses from template
 %
@@ -163,10 +302,8 @@ generate_from_template(binary_tree, Pred/_Arity, Params, AllClauses) :-
     % Extract parameters
     Params = params(
         base_clauses(BaseClauses),
-        guards(Guards),
-        computations(Computations),
-        rec_args([Arg1, Arg2]),  % Binary tree has 2 recursive calls
-        operator(Operator)
+        operator(Operator),
+        rec_clause(RecClause)
     ),
 
     % Generate graph builder base clauses
@@ -178,14 +315,18 @@ generate_from_template(binary_tree, Pred/_Arity, Params, AllClauses) :-
     ), GraphBaseClauses),
 
     % Generate graph builder recursive clause
-    % Use fresh variables throughout
-    build_conjunction(Guards, GuardConj),
-    build_conjunction(Computations, CompConj),
-    GraphRecCall1 =.. [GraphPred, Arg1, _L],
-    GraphRecCall2 =.. [GraphPred, Arg2, _R],
-    GraphRecBody = (GuardConj, CompConj, GraphRecCall1, GraphRecCall2),
-    GraphRecHead =.. [GraphPred, _InputVar, node(_InputVar, [_L, _R])],
-    GraphRecClause = clause(GraphRecHead, GraphRecBody),
+    % Copy the entire recursive clause to get fresh variables with correct sharing
+    RecClause = clause(RecHead, RecBody),
+    copy_term(clause(RecHead, RecBody), clause(NewRecHead, NewRecBody)),
+
+    % Extract InputVar from the copied head
+    NewRecHead =.. [Pred, InputVar, _OutputVar],
+
+    % Transform the body and collect graph variables
+    transform_body_for_graph(NewRecBody, Pred, GraphPred, TransformedBody, GraphVars),
+
+    GraphRecHead =.. [GraphPred, InputVar, node(InputVar, GraphVars)],
+    GraphRecClause = clause(GraphRecHead, TransformedBody),
 
     % Generate fold computer leaf clause
     % Use fresh variable for leaf value
