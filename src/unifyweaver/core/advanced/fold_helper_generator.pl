@@ -23,6 +23,13 @@
 %
 % This module automatically generates fold helper predicates for tree recursion.
 %
+% IMPLEMENTATION: Template-based approach (v0.2)
+% See docs/FOLD_GENERATOR_DESIGN.md for design rationale and future work.
+%
+% This implementation uses templates for common patterns rather than general
+% term transformation. This is simpler, more maintainable, and produces
+% cleaner code for 80% of use cases.
+%
 % Given a predicate like:
 %   fib(0, 0).
 %   fib(1, 1).
@@ -39,7 +46,7 @@
 %   fib_fold(N, F) :- fib_graph(N, Graph), fold_fib(Graph, F).
 
 %% generate_fold_helpers(+Pred/Arity, -Clauses)
-%  Generate all fold helper clauses for a predicate
+%  Generate all fold helper clauses for a predicate using templates
 %
 %  Returns: List of clauses for _graph, fold_, and _fold predicates
 %
@@ -48,28 +55,217 @@ generate_fold_helpers(Pred/Arity, AllClauses) :-
     functor(Head, Pred, Arity),
     findall(clause(Head, Body), user:clause(Head, Body), OrigClauses),
 
-    % Generate graph builder clauses
-    generate_graph_builder(Pred/Arity, OrigClauses, GraphClauses),
+    % Extract template parameters from original predicate
+    extract_template_params(Pred/Arity, OrigClauses, Params),
 
-    % Generate fold computer clauses
-    generate_fold_computer(Pred/Arity, OrigClauses, FoldClauses),
+    % Generate clauses using binary tree template
+    generate_from_template(binary_tree, Pred/Arity, Params, AllClauses).
+
+%% extract_template_params(+Pred/Arity, +OrigClauses, -Params)
+%  Extract parameters needed for template instantiation
+%
+%  Params = params(base_cases, guards, computations, rec_args, operator)
+%
+extract_template_params(Pred/Arity, OrigClauses, Params) :-
+    % Separate base and recursive clauses
+    partition_clauses(Pred, OrigClauses, BaseClauses, RecClauses),
+
+    % Extract from recursive clause
+    RecClauses = [clause(RecHead, RecBody)|_],
+    RecHead =.. [Pred, _InputArg, _OutputArg],
+
+    % Extract guards (non-arithmetic, non-recursive goals before first 'is')
+    extract_guards(RecBody, Pred, Guards),
+
+    % Extract computations (arithmetic 'is' goals before recursive calls)
+    extract_computations(RecBody, Pred, Computations, RecArgs),
+
+    % Extract combination operator (use fresh variables)
+    extract_operator(RecBody, _, Operator),
+
+    Params = params(
+        base_clauses(BaseClauses),
+        guards(Guards),
+        computations(Computations),
+        rec_args(RecArgs),
+        operator(Operator)
+    ).
+
+%% partition_clauses(+Pred, +Clauses, -BaseClauses, -RecClauses)
+partition_clauses(Pred, Clauses, BaseClauses, RecClauses) :-
+    partition(is_recursive_clause(Pred), Clauses, RecClauses, BaseClauses).
+
+is_recursive_clause(Pred, clause(_Head, Body)) :-
+    contains_call_to(Body, Pred).
+
+%% extract_guards(+Body, +Pred, -Guards)
+%  Extract guard conditions (goals before computations, not recursive)
+%
+extract_guards(Body, Pred, Guards) :-
+    findall(Goal, (
+        extract_goal(Body, Goal),
+        \+ functor(Goal, is, 2),
+        \+ functor(Goal, Pred, _),
+        is_before_computations(Goal, Body)
+    ), Guards).
+
+is_before_computations(Goal, Body) :-
+    % Simplified: assume guards come first
+    % More sophisticated: check position in conjunction
+    true.
+
+%% extract_computations(+Body, +Pred, -Computations, -RecArgs)
+%  Extract arithmetic computations and the arguments they compute
+%
+extract_computations(RecBody, Pred, Computations, RecArgs) :-
+    % Find all 'is' expressions that compute inputs for recursive calls
+    % (not the final result computation)
+    findall(Comp, (
+        extract_goal(RecBody, Comp),
+        Comp =.. [is, Var, _],
+        % Check if this variable is used in a recursive call as input
+        extract_goal(RecBody, RecCall),
+        functor(RecCall, Pred, _),
+        RecCall =.. [Pred, Arg, _],
+        Arg == Var  % Variable is used as input to recursive call
+    ), ComputationsWithDups),
+    sort(ComputationsWithDups, Computations),
+
+    % Extract arguments used in recursive calls
+    findall(Arg, (
+        extract_goal(RecBody, RecCall),
+        functor(RecCall, Pred, _),
+        RecCall =.. [Pred, Arg, _]
+    ), RecArgs).
+
+%% extract_operator(+Body, +OutputVar, -Operator)
+%  Extract the binary operator used to combine results
+%
+extract_operator(Body, OutputVar, Operator) :-
+    % Find the 'is' expression that computes the output
+    extract_goal(Body, Goal),
+    Goal =.. [is, OutputVar, Expr],
+    % Extract operator from expression (e.g., +(F1, F2) -> '+')
+    (   Expr =.. [Operator, _, _],
+        member(Operator, [+, -, *, /, max, min])
+    ->  true
+    ;   Operator = unknown
+    ).
+
+%% generate_from_template(+TemplateType, +Pred/Arity, +Params, -AllClauses)
+%  Generate all clauses from template
+%
+generate_from_template(binary_tree, Pred/_Arity, Params, AllClauses) :-
+    atom_concat(Pred, '_graph', GraphPred),
+    atom_concat('fold_', Pred, FoldPred),
+    atom_concat(Pred, '_fold', WrapperPred),
+
+    % Extract parameters
+    Params = params(
+        base_clauses(BaseClauses),
+        guards(Guards),
+        computations(Computations),
+        rec_args([Arg1, Arg2]),  % Binary tree has 2 recursive calls
+        operator(Operator)
+    ),
+
+    % Generate graph builder base clauses
+    findall(GraphBaseClause, (
+        member(clause(BaseHead, BaseBody), BaseClauses),
+        BaseHead =.. [Pred, BaseInput, BaseOutput],
+        GraphBaseHead =.. [GraphPred, BaseInput, leaf(BaseOutput)],
+        GraphBaseClause = clause(GraphBaseHead, BaseBody)
+    ), GraphBaseClauses),
+
+    % Generate graph builder recursive clause
+    % Use fresh variables throughout
+    build_conjunction(Guards, GuardConj),
+    build_conjunction(Computations, CompConj),
+    GraphRecCall1 =.. [GraphPred, Arg1, _L],
+    GraphRecCall2 =.. [GraphPred, Arg2, _R],
+    GraphRecBody = (GuardConj, CompConj, GraphRecCall1, GraphRecCall2),
+    GraphRecHead =.. [GraphPred, _InputVar, node(_InputVar, [_L, _R])],
+    GraphRecClause = clause(GraphRecHead, GraphRecBody),
+
+    % Generate fold computer leaf clause
+    % Use fresh variable for leaf value
+    FoldLeafHead =.. [FoldPred, leaf(_V), _V],
+    FoldLeafClause = clause(FoldLeafHead, true),
+
+    % Generate fold computer node clause
+    % Use fresh variables for children and their values
+    FoldRecCall1 =.. [FoldPred, _FL, _VL],
+    FoldRecCall2 =.. [FoldPred, _FR, _VR],
+    CombineExpr =.. [Operator, _VL, _VR],
+    FoldCombine = (_OutputVar is CombineExpr),
+    FoldRecBody = (FoldRecCall1, FoldRecCall2, FoldCombine),
+    FoldRecHead =.. [FoldPred, node(_, [_FL, _FR]), _OutputVar],
+    FoldRecClause = clause(FoldRecHead, FoldRecBody),
 
     % Generate wrapper clause
-    generate_wrapper(Pred/Arity, WrapperClause),
+    % Use fresh variables
+    WrapperGraphCall =.. [GraphPred, _WInputVar, _Graph],
+    WrapperFoldCall =.. [FoldPred, _Graph, _WOutputVar],
+    WrapperBody = (WrapperGraphCall, WrapperFoldCall),
+    WrapperHead =.. [WrapperPred, _WInputVar, _WOutputVar],
+    WrapperClause = clause(WrapperHead, WrapperBody),
 
     % Combine all clauses
-    append([GraphClauses, FoldClauses, [WrapperClause]], AllClauses).
+    append([GraphBaseClauses, [GraphRecClause], [FoldLeafClause, FoldRecClause], [WrapperClause]], AllClauses).
+
+%% build_conjunction(+Goals, -Conjunction)
+%  Build conjunction from list of goals
+%
+build_conjunction([], true) :- !.
+build_conjunction([Goal], Goal) :- !.
+build_conjunction([Goal|Goals], (Goal, Rest)) :-
+    build_conjunction(Goals, Rest).
+
+%% ============================================
+%% COMPATIBILITY STUBS
+%% ============================================
+% These predicates are exported for backwards compatibility
+% They delegate to the new template-based implementation
 
 %% generate_graph_builder(+Pred/Arity, +OrigClauses, -GraphClauses)
+%  Extract only graph builder clauses from full generation
+%
+generate_graph_builder(Pred/Arity, _OrigClauses, GraphClauses) :-
+    generate_fold_helpers(Pred/Arity, AllClauses),
+    atom_concat(Pred, '_graph', GraphPred),
+    include(is_clause_for_pred(GraphPred), AllClauses, GraphClauses).
+
+%% generate_fold_computer(+Pred/Arity, +OrigClauses, -FoldClauses)
+%  Extract only fold computer clauses from full generation
+%
+generate_fold_computer(Pred/Arity, _OrigClauses, FoldClauses) :-
+    generate_fold_helpers(Pred/Arity, AllClauses),
+    atom_concat('fold_', Pred, FoldPred),
+    include(is_clause_for_pred(FoldPred), AllClauses, FoldClauses).
+
+%% generate_wrapper(+Pred/Arity, -WrapperClause)
+%  Extract only wrapper clause from full generation
+%
+generate_wrapper(Pred/Arity, WrapperClause) :-
+    generate_fold_helpers(Pred/Arity, AllClauses),
+    atom_concat(Pred, '_fold', WrapperPred),
+    include(is_clause_for_pred(WrapperPred), AllClauses, [WrapperClause]).
+
+is_clause_for_pred(Pred, clause(Head, _Body)) :-
+    functor(Head, Pred, _).
+
+%% ============================================
+%% OLD IMPLEMENTATION (KEPT FOR REFERENCE)
+%% ============================================
+% The following predicates implement the general term transformation approach.
+% See docs/FOLD_GENERATOR_DESIGN.md for details.
+% This code is kept for future reference but not currently used.
+
+%% generate_graph_builder_old(+Pred/Arity, +OrigClauses, -GraphClauses)
+%  [OLD IMPLEMENTATION - NOT USED]
 %  Generate _graph/2 predicate that builds dependency tree structure
 %
-%  Strategy:
-%  1. Base cases: pred(X, Value) => pred_graph(X, leaf(Value))
-%  2. Recursive cases: pred(...) :- ..., pred(A1, R1), pred(A2, R2), ...
-%                   => pred_graph(...) :- ..., pred_graph(A1, G1), pred_graph(A2, G2), ...
-%                      with result node(Input, [G1, G2, ...])
-%
-generate_graph_builder(Pred/Arity, OrigClauses, GraphClauses) :-
+generate_graph_builder_old(Pred/Arity, OrigClauses, GraphClauses) :-
     atom_concat(Pred, '_graph', GraphPred),
 
     % Process each clause
