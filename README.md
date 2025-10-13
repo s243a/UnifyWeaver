@@ -244,9 +244,9 @@ is_even(N), is_odd(N)  % Mutual recursion with shared memo
 
 **Advanced Recursion:**
 - **Tail recursion** - Compiled to iterative loops (e.g., `count([], Acc, Acc). count([_|T], A, N) :- A1 is A+1, count(T, A1, N).`)
-- **Linear recursion** - Compiled with memoization (e.g., `length([], 0). length([_|T], N) :- length(T, N1), N is N1+1.`)
+- **Linear recursion** - Fold-based compilation with memoization for numeric and list patterns (e.g., `length([], 0). length([_|T], N) :- length(T, N1), N is N1+1.`)
 - **Tree recursion** - Multiple recursive calls with list-based trees (e.g., `tree_sum([], 0). tree_sum([V,L,R], Sum) :- tree_sum(L, LS), tree_sum(R, RS), Sum is V+LS+RS.`)
-- **Mutual recursion** - Predicates calling each other in cycles (e.g., `even(N) :- N > 0, N1 is N-1, odd(N1)` with `odd(N) :- N > 0, N1 is N-1, even(N1)`)
+- **Mutual recursion** - Full code generation for predicates calling each other in cycles with shared memoization (e.g., `even(N) :- N > 0, N1 is N-1, odd(N1)` with `odd(N) :- N > 0, N1 is N-1, even(N1)`)
 - **SCC detection** - Automatic detection of mutually recursive predicate groups
 - **Constraint optimization** - Unique constraints enable early exit in generated code
 - **Pattern exclusion** - `forbid_linear_recursion/1` to force alternative compilation strategies
@@ -256,16 +256,15 @@ is_even(N), is_odd(N)  % Mutual recursion with shared memo
 **Recursion Patterns:**
 - Divide-and-conquer patterns (quicksort, mergesort) - not yet supported
 - Recursive aggregation with complex accumulation - partial support
-- Mutual recursion bash code generation - scaffold complete, logic implementation in progress
 
 **Tree Recursion:**
 - List-based tree representation only (e.g., `[value, [left], [right]]`)
 - Simple parser with limitations on deeply nested structures
 - Memoization disabled by default in v1.0
 
-**Code Generation:**
-- Mutual recursion generates scaffold with TODO placeholders (tracked in POST_RELEASE_TODO.md)
-- Even/odd example: pattern detected correctly, but generated code needs implementation
+**Linear Recursion:**
+- Uses fold-based approach that works well for numeric and list patterns
+- Variable translation relies on structural analysis of clause patterns
 
 ### Known Issues
 

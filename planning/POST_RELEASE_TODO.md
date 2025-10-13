@@ -108,25 +108,34 @@ descendant(X, Z) :- parent(X, Y), descendant(Y, Z).
 
 ### 4. Complete Mutual Recursion Bash Generation
 
-**Status:** ⚠️ Scaffold generated, logic incomplete
+**Status:** ✅ COMPLETE
 **Location:** `src/unifyweaver/core/advanced/mutual_recursion.pl`
+**Branch:** `feat/mutual-recursion-codegen` (merged to main)
 
-**Current Behavior:**
-- Mutual recursion groups detected correctly via SCC
-- Shared memoization table structure generated
-- Base and recursive cases have TODO placeholders
+**Completed Work:**
+- ✅ Implemented base case code generation from Prolog facts
+- ✅ Implemented recursive case generation with variable translation
+- ✅ Proper head variable tracking (maps to `$arg1` in bash)
+- ✅ Arithmetic expression translation (`N - 1` to bash `$(( $arg1 - 1 ))`)
+- ✅ Condition generation (`N > 0` to bash `[[ $arg1 -gt 0 ]]`)
+- ✅ Recursive call generation with proper argument passing
+- ✅ Shared memoization table correctly expanded in templates
+- ✅ All tests passing
 
-**Example:** `even_odd.sh` generates but just echoes input
-- Expected: `is_even("4")` → `4` (success), `is_even("3")` → (failure)
-- Actual: `is_even("4")` → `4` (placeholder, no logic)
+**Generated Code Works:**
+- `is_even(0)` → true (base case)
+- `is_even(2)` → true (via mutual recursion through is_odd)
+- `is_odd(3)` → true (via mutual recursion through is_even)
+- `is_even(5)` → false (correctly fails)
 
-**Fix Strategy:**
-1. Implement base case code generation from Prolog clauses
-2. Generate mutual call logic (`is_even` → `is_odd`)
-3. Handle arithmetic in guards (`N > 0`, `N1 is N - 1`)
-4. Test with even/odd example
+**Implementation Details:**
+- Added `is_mutual_recursive_clause/2` for proper clause classification
+- Implemented `contains_goal/2` to search clause bodies
+- Created `*_with_var` family of functions for variable translation
+- Fixed infinite loop in expression translation by checking var() first
+- Handled negative numbers in expressions (N + -1 → N - 1)
 
-**Estimated Effort:** 4-6 hours
+**Effort:** 6 hours (completed 2025-10-12)
 
 ---
 
@@ -257,16 +266,17 @@ See `context/FUTURE_WORK.md` for:
 - [x] Priority 1, Item 1: Fix list_length pattern detection ✅ (feat/fold-based-linear-recursion PR)
 - [x] Priority 1, Item 2: Fix descendant classification ✅ (feat/fold-based-linear-recursion PR)
 - [x] Priority 2, Item 3: Complete linear recursion bash generation ✅ (feat/fold-based-linear-recursion PR)
-- [ ] Priority 2, Item 4: Complete mutual recursion bash generation
+- [x] Priority 2, Item 4: Complete mutual recursion bash generation ✅ (feat/mutual-recursion-codegen PR)
 - [x] Priority 3, Item 5: Fix singleton warnings ✅ (feat/fold-based-linear-recursion PR)
 - [x] Priority 3, Item 6: ✅ Already fixed (init_template.pl)
 - [x] Priority 4, Item 7: Update test plan docs ✅ (docs commits on main)
 - [x] Priority 4, Item 8: Update README limitations ✅ (docs commits on main)
 - [x] Priority 5, Item 9: Add regression tests ✅ (test_regressions.pl on main)
+- [x] Priority 6, Item 10: Update documentation ✅ (README.md, POST_RELEASE_TODO.md updated)
 
-**Completed:** 8/9 items
-**Remaining:** Item 4 only (mutual recursion bash generation)
-**Total Estimated Effort Remaining:** 4-6 hours
+**Completed:** 10/10 items ✅
+**Remaining:** None - All POST_RELEASE_TODO items complete!
+**Total Effort:** ~20 hours across two feature branches
 
 ---
 
