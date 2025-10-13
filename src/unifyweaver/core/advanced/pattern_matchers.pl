@@ -14,10 +14,14 @@
     extract_step_pattern/3,               % +Body, +PredName, -StepOp (helper for extract_accumulator_pattern)
     count_recursive_calls/2,              % +Body, -Count
     contains_call_to/2,                   % +Body, +Pred (helper for various functions)
+    extract_goal/2,                       % +Body, -Goal (helper for extracting goals)
     % Linear recursion exclusion predicates
     forbid_linear_recursion/1,            % +Pred/Arity - Mark as not linear
     is_forbidden_linear_recursion/1,      % +Pred/Arity - Check if forbidden
     clear_linear_recursion_forbid/1,      % +Pred/Arity - Clear forbid
+    % Tree fold pattern detection
+    is_tree_fold_pattern/1,               % +Pred/Arity - Check if should use fold
+    should_use_fold_helper/1,             % +Pred/Arity - Alias for is_tree_fold_pattern
     test_pattern_matchers/0         % Test predicate
 ]).
 
@@ -400,6 +404,87 @@ clear_linear_recursion_forbid(Pred/Arity) :-
     retractall(forbidden_linear_recursion(Pred/Arity)).
 
 %% ============================================
+%% TREE FOLD PATTERN DETECTION
+%% ============================================
+%
+% Detect when predicates should use the two-phase fold pattern:
+% 1. Build dependency tree/graph structure
+% 2. Fold over structure to compute result
+%
+% This pattern is useful when:
+% - Predicate uses tree recursion (multiple recursive calls)
+% - Forbidden from linear recursion (via forbid_linear_recursion/1)
+% - Returns numeric or aggregatable result
+% - Structure visualization would be beneficial
+
+%% is_tree_fold_pattern(+Pred/Arity)
+%  Detect if predicate should use tree recursion with fold helper pattern
+%
+%  Criteria:
+%  1. Forbidden from linear recursion (via forbid_linear_recursion/1)
+%  2. Has multiple (2+) recursive calls per clause (tree pattern)
+%  3. Returns numeric or aggregatable result (arity 2 typical)
+%  4. All recursive calls are in conjunction (AND chain)
+%
+%  Returns true if predicate matches fold pattern criteria
+%
+is_tree_fold_pattern(Pred/Arity) :-
+    % Check if forbidden from linear recursion
+    is_forbidden_linear_recursion(Pred/Arity),
+
+    % Check arity suitable for fold (typically 2: input, output)
+    Arity =:= 2,
+
+    % Check for multiple recursive calls (tree pattern)
+    functor(Head, Pred, Arity),
+    user:clause(Head, Body),
+    contains_call_to(Body, Pred),
+    count_recursive_calls(Body, Pred, Count),
+    Count >= 2,
+
+    % Check that recursive calls are independent (conjunction, not disjunction)
+    % All recursive calls should be in AND chain for fold pattern
+    recursive_calls_independent(Body, Pred).
+
+%% recursive_calls_independent(+Body, +Pred)
+%  Check that all recursive calls are in conjunction (AND chain)
+%  Not in disjunction or if-then-else (which would make them dependent)
+%
+recursive_calls_independent(Body, Pred) :-
+    % Extract all recursive calls
+    findall(RecCall, (
+        extract_goal(Body, RecCall),
+        functor(RecCall, Pred, _)
+    ), RecCalls),
+
+    % Must have at least 2 calls for tree pattern
+    length(RecCalls, NumCalls),
+    NumCalls >= 2,
+
+    % Check that body is primarily conjunction (not disjunction)
+    \+ body_has_disjunction_with_recursion(Body, Pred).
+
+%% body_has_disjunction_with_recursion(+Body, +Pred)
+%  Check if body has disjunction (;) containing recursive calls
+%  This would indicate branching logic, not simple tree fold
+%
+body_has_disjunction_with_recursion((A ; _), Pred) :-
+    contains_call_to(A, Pred), !.
+body_has_disjunction_with_recursion((_ ; B), Pred) :-
+    contains_call_to(B, Pred), !.
+body_has_disjunction_with_recursion((A, B), Pred) :-
+    (   body_has_disjunction_with_recursion(A, Pred)
+    ;   body_has_disjunction_with_recursion(B, Pred)
+    ), !.
+
+%% should_use_fold_helper(+Pred/Arity)
+%  Alias for is_tree_fold_pattern/1
+%  More descriptive name for use in code generation
+%
+should_use_fold_helper(Pred/Arity) :-
+    is_tree_fold_pattern(Pred/Arity).
+
+%% ============================================
 %% TESTS
 %% ============================================
 
@@ -490,5 +575,32 @@ test_pattern_matchers :-
         writeln('  ✓ PASS - fibonacci does NOT match linear (2 calls)')
     ;   writeln('  ✗ FAIL - fibonacci should NOT match linear (has 2 recursive calls)')
     ),
+
+    % Test 7: Tree fold pattern detection
+    writeln('Test 7: Tree fold pattern (fibonacci with forbid)'),
+
+    % Fibonacci has 2 recursive calls, so should NOT match fold pattern yet
+    (   \+ is_tree_fold_pattern(test_fib/2) ->
+        writeln('  ✓ PASS - test_fib without forbid does NOT match fold pattern')
+    ;   writeln('  ✗ FAIL - test_fib needs forbid to match fold pattern')
+    ),
+
+    % Forbid linear recursion for fibonacci
+    forbid_linear_recursion(test_fib/2),
+
+    % Now should match tree fold pattern (forbidden + 2 calls + arity 2)
+    (   is_tree_fold_pattern(test_fib/2) ->
+        writeln('  ✓ PASS - forbidden test_fib matches tree fold pattern')
+    ;   writeln('  ✗ FAIL - forbidden test_fib with 2 calls should match fold')
+    ),
+
+    % Test should_use_fold_helper alias
+    (   should_use_fold_helper(test_fib/2) ->
+        writeln('  ✓ PASS - should_use_fold_helper alias works')
+    ;   writeln('  ✗ FAIL - should_use_fold_helper should work as alias')
+    ),
+
+    % Clean up
+    clear_linear_recursion_forbid(test_fib/2),
 
     writeln('=== PATTERN MATCHERS TESTS COMPLETE ===').
