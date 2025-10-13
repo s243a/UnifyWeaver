@@ -26,23 +26,35 @@ can_compile_linear_recursion(Pred/Arity) :-
 %  Compile linear recursive predicate
 %  Strategy: Use memoization with associative arrays
 %  Options: List of Key=Value pairs (e.g., [unique=true, ordered=false])
-%  Currently linear recursive predicates return single values (not sets),
-%  so deduplication constraints don't apply. Options are reserved for
-%  future use (e.g., output language selection).
+%
+%  Constraint effects for linear recursion:
+%  - unique(false): Allow duplicate memoization (though unusual for linear recursion)
+%  - ordered(true): Use hash-based memoization (faster lookup, preserves order)
+%  - ordered(false): Use standard memoization (default)
 compile_linear_recursion(Pred/Arity, Options, BashCode) :-
     format('  Compiling linear recursion: ~w/~w~n', [Pred, Arity]),
 
-    % Query constraints (for logging and future use)
+    % Query constraints
     get_constraints(Pred/Arity, Constraints),
     format('  Constraints: ~w~n', [Constraints]),
 
-    % Merge runtime options with constraints
+    % Merge runtime options with constraints (runtime options override)
     append(Options, Constraints, AllOptions),
     format('  Final options: ~w~n', [AllOptions]),
 
-    % TODO: Linear recursive patterns return single values, not sets.
-    % Deduplication constraints (unique, unordered) may not apply here.
-    % Options are kept for future extensibility (e.g., output_lang=python).
+    % Determine memoization strategy based on constraints
+    (   member(unique(false), AllOptions) ->
+        format('  Applying unique(false): Memo disabled~n', []),
+        MemoEnabled = false
+    ;   MemoEnabled = true
+    ),
+
+    % Determine memo lookup strategy
+    (   member(unordered(false), AllOptions) ->  % ordered = true
+        format('  Applying ordered constraint: Using hash-based memo~n', []),
+        MemoStrategy = hash
+    ;   MemoStrategy = standard
+    ),
 
     atom_string(Pred, PredStr),
     functor(Head, Pred, Arity),
@@ -53,8 +65,8 @@ compile_linear_recursion(Pred/Arity, Options, BashCode) :-
     % Separate base and recursive cases
     partition(is_recursive_clause(Pred), Clauses, RecClauses, BaseClauses),
 
-    % Generate bash code
-    generate_linear_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, BashCode).
+    % Generate bash code with constraint info
+    generate_linear_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, BashCode).
 
 %% is_recursive_clause(+Pred, +Clause)
 is_recursive_clause(Pred, clause(_Head, Body)) :-
@@ -149,19 +161,19 @@ find_recursive_call((_A, B), RecCall) :-
 %% FOLD-BASED CODE GENERATION (Phase 3 & 4)
 %% ============================================
 
-%% generate_linear_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, -BashCode)
-generate_linear_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, BashCode) :-
+%% generate_linear_recursion_bash(+PredStr, +Arity, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -BashCode)
+generate_linear_recursion_bash(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, BashCode) :-
     % For arity 2, use fold-based approach
     (   Arity =:= 2 ->
-        generate_fold_based_recursion(PredStr, BaseClauses, RecClauses, BashCode)
+        generate_fold_based_recursion(PredStr, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, BashCode)
     ;   % Other arities - use generic memoization
-        generate_generic_linear_recursion(PredStr, Arity, BaseClauses, RecClauses, BashCode)
+        generate_generic_linear_recursion(PredStr, Arity, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, BashCode)
     ).
 
-%% generate_fold_based_recursion(+PredStr, +BaseClauses, +RecClauses, -BashCode)
+%% generate_fold_based_recursion(+PredStr, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -BashCode)
 %  Generate fold-based linear recursion code
 %  Works for both numeric (factorial) and list (list_length) patterns
-generate_fold_based_recursion(PredStr, BaseClauses, RecClauses, BashCode) :-
+generate_fold_based_recursion(PredStr, BaseClauses, RecClauses, MemoEnabled, MemoStrategy, BashCode) :-
     % Extract pattern information
     extract_base_case_info(BaseClauses, BaseInput, BaseOutput),
     detect_input_type(BaseInput, InputType),
@@ -169,17 +181,19 @@ generate_fold_based_recursion(PredStr, BaseClauses, RecClauses, BashCode) :-
 
     % Generate based on input type
     (   InputType = numeric ->
-        generate_numeric_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode)
+        generate_numeric_fold(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, BashCode)
     ;   InputType = list ->
-        generate_list_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode)
+        generate_list_fold(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, BashCode)
     ;   % Fallback to old template if unknown
         generate_binary_linear_recursion_old(PredStr, BaseClauses, RecClauses, BashCode)
     ).
 
-%% generate_numeric_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, -BashCode)
+%% generate_numeric_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, +MemoEnabled, +MemoStrategy, -BashCode)
 %  Generate fold-based code for numeric linear recursion (e.g., factorial)
 %  NOTE: FoldExpr was already extracted in generate_fold_based_recursion
-generate_numeric_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode) :-
+%  MemoEnabled: true/false - whether to use memoization
+%  MemoStrategy: standard/hash - memoization lookup strategy
+generate_numeric_fold(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, BashCode) :-
     % Get the recursive clauses to analyze variable roles AND extract fold expr in ONE pass
     atom_string(Pred, PredStr),
     functor(Head, Pred, 2),
@@ -195,6 +209,16 @@ generate_numeric_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode) :-
 
     % Translate Prolog fold expression to bash using variable mapping
     translate_fold_expr(ActualFoldExpr, InputVar, AccVar, BashFoldOp),
+
+    % Generate memo declaration (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), '# Memoization table (~w strategy)~ndeclare -gA ~w_memo~n', [MemoStrategy, PredStr]),
+        format(string(MemoCheckCode), '    # Check memo~n    if [[ -n "${~w_memo[$n]}" ]]; then~n        local cached="${~w_memo[$n]}"~n        if [[ -n "$expected" ]]; then~n            [[ "$cached" == "$expected" ]] && echo "$n:$expected" && return 0~n            return 1~n        else~n            echo "$n:$cached"~n            return 0~n        fi~n    fi~n', [PredStr, PredStr]),
+        format(string(MemoStoreCode), '    # Memoize~n    ~w_memo["$n"]="$result"~n', [PredStr])
+    ;   MemoDecl = '# Memoization disabled (unique=false constraint)\n',
+        MemoCheckCode = '',
+        MemoStoreCode = ''
+    ),
 
     % Generate fold helper library + predicate wrapper
     format(string(BashCode), '#!/bin/bash
@@ -225,29 +249,18 @@ build_range_down() {
     echo $((~w))
 }
 
-# Main predicate with memoization
-declare -gA ~w_memo
+# Main predicate
+~w
 
 ~w() {
     local n="$1"
     local expected="$2"
 
-    # Check memo
-    if [[ -n "${~w_memo[$n]}" ]]; then
-        local cached="${~w_memo[$n]}"
-        if [[ -n "$expected" ]]; then
-            [[ "$cached" == "$expected" ]] && echo "$n:$expected" && return 0
-            return 1
-        else
-            echo "$n:$cached"
-            return 0
-        fi
-    fi
-
+~w
     # Base case
     if [[ "$n" -eq ~w ]]; then
         local result="~w"
-        ~w_memo["$n"]="$result"
+~w
         if [[ -n "$expected" ]]; then
             [[ "$result" == "$expected" ]] && echo "$n:$expected" && return 0
             return 1
@@ -261,9 +274,7 @@ declare -gA ~w_memo
     local range=$(build_range_down "$n")
     local result=$(fold_left ~w "~w_op" $range)
 
-    # Memoize
-    ~w_memo["$n"]="$result"
-
+~w
     if [[ -n "$expected" ]]; then
         [[ "$result" == "$expected" ]] && echo "$n:$expected" && return 0
         return 1
@@ -277,7 +288,8 @@ declare -gA ~w_memo
 ~w_stream() {
     ~w "$@"
 }
-', [PredStr, PredStr, PredStr, BashFoldOp, PredStr, PredStr, PredStr, PredStr, BaseInput, BaseOutput, PredStr, BaseOutput, PredStr, PredStr, PredStr, PredStr]).
+', [PredStr, PredStr, PredStr, BashFoldOp, MemoDecl, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, BaseOutput, PredStr, MemoStoreCode, PredStr, PredStr]).
+
 
 %% translate_fold_expr(+PrologExpr, +InputVar, +AccVar, -BashExpr)
 %  Translate Prolog arithmetic expression to bash using clause structure mapping
@@ -319,9 +331,9 @@ translate_term(Number, _InputVar, _AccVar, BashTerm) :-
 translate_term(Atom, _InputVar, _AccVar, BashTerm) :-
     format(string(BashTerm), '~w', [Atom]).
 
-%% generate_list_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, -BashCode)
+%% generate_list_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, +MemoEnabled, +MemoStrategy, -BashCode)
 %  Generate fold-based code for list linear recursion (e.g., list_length)
-generate_list_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode) :-
+generate_list_fold(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, BashCode) :-
     % Get the recursive clauses to analyze variable roles
     atom_string(Pred, PredStr),
     functor(Head, Pred, 2),
@@ -338,6 +350,16 @@ generate_list_fold(PredStr, BaseInput, BaseOutput, FoldExpr, BashCode) :-
     % For list patterns, the fold expression is typically N1 + 1 (increment)
     % We'll treat this as a constant increment fold
     translate_fold_expr(ActualFoldExpr, _DummyInput, AccVar, BashFoldOp),
+
+    % Generate memo declaration (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), '# Memoization table (~w strategy)~ndeclare -gA ~w_memo~n', [MemoStrategy, PredStr]),
+        format(string(MemoCheckCode), '    # Check memo~n    if [[ -n "${~w_memo[$list]}" ]]; then~n        local cached="${~w_memo[$list]}"~n        if [[ -n "$expected" ]]; then~n            [[ "$cached" == "$expected" ]] && echo "$list:$expected" && return 0~n            return 1~n        else~n            echo "$list:$cached"~n            return 0~n        fi~n    fi~n', [PredStr, PredStr]),
+        format(string(MemoStoreCode), '    # Memoize~n    ~w_memo["$list"]="$result"~n', [PredStr])
+    ;   MemoDecl = '# Memoization disabled (unique=false constraint)\n',
+        MemoCheckCode = '',
+        MemoStoreCode = ''
+    ),
 
     % Generate fold helper library + predicate wrapper
     format(string(BashCode), '#!/bin/bash
@@ -375,29 +397,18 @@ parse_list() {
     echo $((~w))
 }
 
-# Main predicate with memoization
-declare -gA ~w_memo
+# Main predicate
+~w
 
 ~w() {
     local list="$1"
     local expected="$2"
 
-    # Check memo
-    if [[ -n "${~w_memo[$list]}" ]]; then
-        local cached="${~w_memo[$list]}"
-        if [[ -n "$expected" ]]; then
-            [[ "$cached" == "$expected" ]] && echo "$list:$expected" && return 0
-            return 1
-        else
-            echo "$list:$cached"
-            return 0
-        fi
-    fi
-
+~w
     # Base case
     if [[ "$list" == "~w" || -z "$list" ]]; then
         local result="~w"
-        ~w_memo["$list"]="$result"
+~w
         if [[ -n "$expected" ]]; then
             [[ "$result" == "$expected" ]] && echo "$list:$expected" && return 0
             return 1
@@ -411,9 +422,7 @@ declare -gA ~w_memo
     local elements=$(parse_list "$list")
     local result=$(fold_left ~w "~w_op" $elements)
 
-    # Memoize
-    ~w_memo["$list"]="$result"
-
+~w
     if [[ -n "$expected" ]]; then
         [[ "$result" == "$expected" ]] && echo "$list:$expected" && return 0
         return 1
@@ -427,7 +436,7 @@ declare -gA ~w_memo
 ~w_stream() {
     ~w "$@"
 }
-', [PredStr, PredStr, PredStr, BashFoldOp, PredStr, PredStr, PredStr, PredStr, BaseInput, BaseOutput, PredStr, BaseOutput, PredStr, PredStr, PredStr, PredStr]).
+', [PredStr, PredStr, PredStr, BashFoldOp, MemoDecl, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, BaseOutput, PredStr, MemoStoreCode, PredStr, PredStr]).
 
 %% generate_binary_linear_recursion_old(+PredStr, +BaseClauses, +RecClauses, -BashCode)
 %  OLD IMPLEMENTATION - kept as fallback
@@ -516,15 +525,20 @@ generate_binary_linear_recursion_old(PredStr, _BaseClauses, _RecClauses, BashCod
     atomic_list_concat(TemplateLines, '\n', Template),
     render_template(Template, [pred=PredStr], BashCode).
 
-%% generate_generic_linear_recursion(+PredStr, +Arity, +BaseClauses, +RecClauses, -BashCode)
+%% generate_generic_linear_recursion(+PredStr, +Arity, +BaseClauses, +RecClauses, +MemoEnabled, +MemoStrategy, -BashCode)
 %  Generic linear recursion for any arity
-generate_generic_linear_recursion(PredStr, Arity, _BaseClauses, _RecClauses, BashCode) :-
+generate_generic_linear_recursion(PredStr, Arity, _BaseClauses, _RecClauses, MemoEnabled, _MemoStrategy, BashCode) :-
+    % Generate memo declaration (if enabled)
+    (   MemoEnabled = true ->
+        MemoDecl = 'declare -gA {{pred}}_memo'
+    ;   MemoDecl = '# Memoization disabled (unique=false constraint)'
+    ),
     TemplateLines = [
         "#!/bin/bash",
         "# {{pred}}/{{arity}} - linear recursive pattern (generic)",
         "",
-        "# Memoization table",
-        "declare -gA {{pred}}_memo",
+        "# Memoization",
+        "{{memo_decl}}",
         "",
         "{{pred}}() {",
         "    # Build key from all arguments",
@@ -545,7 +559,7 @@ generate_generic_linear_recursion(PredStr, Arity, _BaseClauses, _RecClauses, Bas
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [pred=PredStr, arity=Arity], BashCode).
+    render_template(Template, [pred=PredStr, arity=Arity, memo_decl=MemoDecl], BashCode).
 
 %% ============================================
 %% TESTS

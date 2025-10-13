@@ -36,36 +36,80 @@ can_compile_mutual_recursion(Predicates) :-
     \+ is_trivial_scc(SCC),
     forall(member(Pred, Predicates), member(Pred, SCC)).
 
+%% merge_scc_constraints(+Predicates, -MergedConstraints)
+%  Merge constraints from all predicates in an SCC
+%  Strategy: Most restrictive wins
+%  - If ANY predicate has unique(false), result is unique(false)
+%  - If ANY predicate has unordered(false) (ordered), result is unordered(false)
+merge_scc_constraints(Predicates, MergedConstraints) :-
+    % Get constraints for each predicate
+    findall(Constraints,
+        (   member(Pred, Predicates),
+            get_constraints(Pred, Constraints)
+        ),
+        AllConstraints),
+
+    % Flatten and merge
+    append(AllConstraints, FlatConstraints),
+
+    % Determine unique constraint (if any has false, use false)
+    (   member(unique(false), FlatConstraints) ->
+        UniqueConstraint = unique(false)
+    ;   UniqueConstraint = unique(true)
+    ),
+
+    % Determine unordered constraint (if any has false, use false)
+    (   member(unordered(false), FlatConstraints) ->
+        UnorderedConstraint = unordered(false)
+    ;   UnorderedConstraint = unordered(true)
+    ),
+
+    MergedConstraints = [UniqueConstraint, UnorderedConstraint].
+
 %% compile_mutual_recursion(+Predicates, +Options, -BashCode)
 %  Compile a group of mutually recursive predicates
 %  Generates bash code with shared memoization
 %  Options: List of Key=Value pairs (e.g., [unique=true, ordered=false])
-%  Currently mutual recursive predicates return single values (not sets),
-%  so deduplication constraints don't apply. Options are reserved for
-%  future use (e.g., output language selection).
+%
+%  Constraint effects for mutual recursion:
+%  - unique(false): Disable shared memoization for the entire SCC
+%  - ordered(true): Use hash-based shared memoization (preserves order)
+%  - ordered(false): Use standard shared memoization (default)
+%
+%  NOTE: When predicates in an SCC have different constraints, we take the
+%  intersection of constraints (most restrictive wins):
+%  - If ANY predicate has unique(false), memoization is disabled for all
+%  - If ANY predicate requires ordered, hash-based memo is used for all
 compile_mutual_recursion(Predicates, Options, BashCode) :-
     format('  Compiling mutual recursion group: ~w~n', [Predicates]),
 
-    % Query constraints for the first predicate (all share same group constraints)
-    (   Predicates = [FirstPred|_] ->
-        get_constraints(FirstPred, Constraints),
-        format('  Constraints: ~w~n', [Constraints]),
+    % Merge constraints from all predicates in the SCC
+    merge_scc_constraints(Predicates, SCCConstraints),
+    format('  Merged SCC constraints: ~w~n', [SCCConstraints]),
 
-        % Merge runtime options with constraints
-        append(Options, Constraints, _AllOptions),
-        format('  Final options: ~w~n', [Options])
-    ;   true
+    % Merge runtime options with merged constraints (runtime options override)
+    append(Options, SCCConstraints, AllOptions),
+    format('  Final options: ~w~n', [AllOptions]),
+
+    % Determine memoization strategy based on constraints
+    (   member(unique(false), AllOptions) ->
+        format('  Applying unique(false): Shared memo disabled~n', []),
+        MemoEnabled = false
+    ;   MemoEnabled = true
     ),
 
-    % TODO: Mutually recursive patterns return single values, not sets.
-    % Deduplication constraints (unique, unordered) may not apply here.
-    % Options are kept for future extensibility (e.g., output_lang=python).
+    % Determine memo lookup strategy
+    (   member(unordered(false), AllOptions) ->  % ordered = true
+        format('  Applying ordered constraint: Using hash-based shared memo~n', []),
+        MemoStrategy = hash
+    ;   MemoStrategy = standard
+    ),
 
     % Generate bash code for the group
-    generate_mutual_recursion_bash(Predicates, BashCode).
+    generate_mutual_recursion_bash(Predicates, MemoEnabled, MemoStrategy, BashCode).
 
-%% generate_mutual_recursion_bash(+Predicates, -BashCode)
-generate_mutual_recursion_bash(Predicates, BashCode) :-
+%% generate_mutual_recursion_bash(+Predicates, +MemoEnabled, +MemoStrategy, -BashCode)
+generate_mutual_recursion_bash(Predicates, MemoEnabled, MemoStrategy, BashCode) :-
     % Extract predicate names
     findall(PredStr,
         (   member(Pred/_Arity, Predicates),
@@ -74,13 +118,13 @@ generate_mutual_recursion_bash(Predicates, BashCode) :-
         PredStrs),
     atomic_list_concat(PredStrs, '_', GroupName),
 
-    % Generate header
-    generate_mutual_header(GroupName, HeaderCode),
+    % Generate header with constraint info
+    generate_mutual_header(GroupName, MemoEnabled, MemoStrategy, HeaderCode),
 
     % Generate function for each predicate
     findall(FuncCode,
         (   member(Pred/Arity, Predicates),
-            generate_mutual_function(Pred, Arity, GroupName, Predicates, FuncCode)
+            generate_mutual_function(Pred, Arity, GroupName, Predicates, MemoEnabled, FuncCode)
         ),
         FuncCodes),
     atomic_list_concat(FuncCodes, '\n\n', FunctionsCode),
@@ -88,23 +132,31 @@ generate_mutual_recursion_bash(Predicates, BashCode) :-
     % Combine
     atomic_list_concat([HeaderCode, FunctionsCode], '\n\n', BashCode).
 
-%% generate_mutual_header(+GroupName, -HeaderCode)
-generate_mutual_header(GroupName, HeaderCode) :-
+%% generate_mutual_header(+GroupName, +MemoEnabled, +MemoStrategy, -HeaderCode)
+generate_mutual_header(GroupName, MemoEnabled, MemoStrategy, HeaderCode) :-
+    % Generate memo declaration (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoDecl), 'declare -gA ~w_memo', [GroupName]),
+        format(string(MemoComment), 'Shared memoization for mutual recursion (~w strategy)', [MemoStrategy])
+    ;   MemoDecl = '# Shared memoization disabled (unique=false constraint)',
+        MemoComment = 'Shared memoization disabled'
+    ),
+
     TemplateLines = [
         "#!/bin/bash",
         "# Mutually recursive group: {{group}}",
-        "# Shared memoization for mutual recursion",
+        "# {{memo_comment}}",
         "",
         "# Shared memo table for all predicates in this group",
-        "declare -gA {{group}}_memo"
+        "{{memo_decl}}"
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),
-    render_template(Template, [group=GroupName], HeaderCode).
+    render_template(Template, [group=GroupName, memo_decl=MemoDecl, memo_comment=MemoComment], HeaderCode).
 
-%% generate_mutual_function(+Pred, +Arity, +GroupName, +AllPredicates, -FuncCode)
+%% generate_mutual_function(+Pred, +Arity, +GroupName, +AllPredicates, +MemoEnabled, -FuncCode)
 %  Generate bash function for one predicate in mutual group
-generate_mutual_function(Pred, Arity, GroupName, AllPredicates, FuncCode) :-
+generate_mutual_function(Pred, Arity, GroupName, AllPredicates, MemoEnabled, FuncCode) :-
     atom_string(Pred, PredStr),
 
     % Get clauses for this predicate - use user:clause to access predicates from any module (including test predicates)
@@ -115,13 +167,13 @@ generate_mutual_function(Pred, Arity, GroupName, AllPredicates, FuncCode) :-
     partition(is_mutual_recursive_clause(AllPredicates), Clauses, RecClauses, BaseClauses),
 
     % Generate base case code
-    generate_base_cases_code(GroupName, BaseClauses, BaseCode),
+    generate_base_cases_code(GroupName, BaseClauses, MemoEnabled, BaseCode),
 
     % Generate recursive case code
-    generate_recursive_cases_code(GroupName, RecClauses, RecCode),
+    generate_recursive_cases_code(GroupName, RecClauses, MemoEnabled, RecCode),
 
     % Generate function template
-    generate_function_template(PredStr, Arity, GroupName, BaseCode, RecCode, FuncCode).
+    generate_function_template(PredStr, Arity, GroupName, MemoEnabled, BaseCode, RecCode, FuncCode).
 
 %% is_mutual_recursive_clause(+AllPredicates, +Clause)
 %  Check if clause contains a call to any predicate in the mutual group
@@ -159,26 +211,30 @@ extract_goal_simple(Goal, Goal) :-
 extract_goal_simple((A, _), Goal) :- extract_goal_simple(A, Goal).
 extract_goal_simple((_, B), Goal) :- extract_goal_simple(B, Goal).
 
-%% generate_base_cases_code(+GroupName, +BaseClauses, -BaseCode)
-generate_base_cases_code(GroupName, BaseClauses, BaseCode) :-
+%% generate_base_cases_code(+GroupName, +BaseClauses, +MemoEnabled, -BaseCode)
+generate_base_cases_code(GroupName, BaseClauses, MemoEnabled, BaseCode) :-
     length(BaseClauses, NumBase),
     format(string(Header), '# ~w base case(s)', [NumBase]),
     (   BaseClauses = [] ->
         BaseCode = Header
     ;   findall(Code,
             (   member(Clause, BaseClauses),
-                generate_base_case_code(GroupName, Clause, Code)
+                generate_base_case_code(GroupName, Clause, MemoEnabled, Code)
             ),
             BaseCodes),
         atomic_list_concat([Header|BaseCodes], '\n    ', BaseCode)
     ).
 
-%% generate_base_case_code(+GroupName, +Clause, -Code)
-generate_base_case_code(GroupName, clause(Head, true), Code) :-
+%% generate_base_case_code(+GroupName, +Clause, +MemoEnabled, -Code)
+generate_base_case_code(GroupName, clause(Head, true), MemoEnabled, Code) :-
     % Simple fact: pred(Value)
     Head =.. [_Pred, Value],
-    format(string(CodeTemplate), 'if [[ \"$arg1\" == \"~w\" ]]; then\n        local result=\"true\"\n        {{group}}_memo[\"$key\"]=\"$result\"\n        echo \"$result\"\n        return 0\n    fi', [Value]),
-    render_template(CodeTemplate, [group=GroupName], Code).
+    % Generate memo store code (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoStore), '~w_memo[\"$key\"]=\"$result\"~n        ', [GroupName])
+    ;   MemoStore = ''
+    ),
+    format(string(Code), 'if [[ \"$arg1\" == \"~w\" ]]; then\n        local result=\"true\"\n        ~wecho \"$result\"\n        return 0\n    fi', [Value, MemoStore]).
 
 
 %% generate_condition_code(+Body, -CondCode)
@@ -227,22 +283,22 @@ translate_comparison_term(Term, BashTerm) :-
     atomic(Term),
     format(string(BashTerm), '~w', [Term]).
 
-%% generate_recursive_cases_code(+GroupName, +RecClauses, -RecCode)
-generate_recursive_cases_code(GroupName, RecClauses, RecCode) :-
+%% generate_recursive_cases_code(+GroupName, +RecClauses, +MemoEnabled, -RecCode)
+generate_recursive_cases_code(GroupName, RecClauses, MemoEnabled, RecCode) :-
     length(RecClauses, NumRec),
     format(string(Header), '# ~w recursive case(s)', [NumRec]),
     (   RecClauses = [] ->
         RecCode = Header
     ;   findall(Code,
             (   member(Clause, RecClauses),
-                generate_recursive_case_code(GroupName, Clause, Code)
+                generate_recursive_case_code(GroupName, Clause, MemoEnabled, Code)
             ),
             RecCodes),
         atomic_list_concat([Header|RecCodes], '\n    ', RecCode)
     ).
 
-%% generate_recursive_case_code(+GroupName, +Clause, -Code)
-generate_recursive_case_code(GroupName, clause(Head, Body), Code) :-
+%% generate_recursive_case_code(+GroupName, +Clause, +MemoEnabled, -Code)
+generate_recursive_case_code(GroupName, clause(Head, Body), MemoEnabled, Code) :-
     % Extract head argument to identify the variable
     Head =.. [_Pred, HeadVar],
 
@@ -250,7 +306,7 @@ generate_recursive_case_code(GroupName, clause(Head, Body), Code) :-
     parse_recursive_body(Body, HeadVar, Conditions, Computations, RecCall),
 
     % Generate bash code with head variable mapping
-    generate_recursive_bash(GroupName, HeadVar, Conditions, Computations, RecCall, Code).
+    generate_recursive_bash(GroupName, HeadVar, Conditions, Computations, RecCall, MemoEnabled, Code).
 
 %% parse_recursive_body(+Body, +HeadVar, -Conditions, -Computations, -RecCall)
 parse_recursive_body(Body, HeadVar, Conditions, Computations, RecCall) :-
@@ -287,8 +343,8 @@ is_condition_goal(HeadVar, Goal) :-
 is_computation_goal(Goal) :-
     Goal = (_ is _).
 
-%% generate_recursive_bash(+GroupName, +HeadVar, +Conditions, +Computations, +RecCall, -Code)
-generate_recursive_bash(GroupName, HeadVar, Conditions, Computations, RecCall, Code) :-
+%% generate_recursive_bash(+GroupName, +HeadVar, +Conditions, +Computations, +RecCall, +MemoEnabled, -Code)
+generate_recursive_bash(GroupName, HeadVar, Conditions, Computations, RecCall, MemoEnabled, Code) :-
     % Generate condition check
     (   Conditions = [] ->
         CondCode = ''
@@ -307,13 +363,18 @@ generate_recursive_bash(GroupName, HeadVar, Conditions, Computations, RecCall, C
     ;   generate_rec_call_code_with_var(HeadVar, RecCall, RecCode)
     ),
 
+    % Generate memo store code (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoStore), '~w_memo[\"$key\"]=\"$result\"~n    ', [GroupName])
+    ;   MemoStore = ''
+    ),
+
     % Assemble the if-block
     (   CondCode = '' ->
         % No condition - always execute
-        format(string(CodeTemplate), '# Recursive case\n    ~w\n    ~w\n    local result=\"true\"\n    {{group}}_memo[\"$key\"]=\"$result\"\n    echo \"$result\"\n    return 0', [CompCode, RecCode])
-    ;   format(string(CodeTemplate), 'if ~w; then\n        ~w\n        ~w\n        local result=\"true\"\n        {{group}}_memo[\"$key\"]=\"$result\"\n        echo \"$result\"\n        return 0\n    fi', [CondCode, CompCode, RecCode])
-    ),
-    render_template(CodeTemplate, [group=GroupName], Code).
+        format(string(Code), '# Recursive case\n    ~w\n    ~w\n    local result=\"true\"\n    ~wecho \"$result\"\n    return 0', [CompCode, RecCode, MemoStore])
+    ;   format(string(Code), 'if ~w; then\n        ~w\n        ~w\n        local result=\"true\"\n        ~wecho \"$result\"\n        return 0\n    fi', [CondCode, CompCode, RecCode, MemoStore])
+    ).
 
 %% generate_condition_code_with_var(+HeadVar, +Goal, -Code)
 generate_condition_code_with_var(HeadVar, Goal, Code) :-
@@ -472,20 +533,21 @@ translate_call_arg(Atom, BashArg) :-
     !,
     format(string(BashArg), '~w', [Atom]).
 
-%% generate_function_template(+PredStr, +Arity, +GroupName, +BaseCode, +RecCode, -FuncCode)
-generate_function_template(PredStr, Arity, GroupName, BaseCode, RecCode, FuncCode) :-
+%% generate_function_template(+PredStr, +Arity, +GroupName, +MemoEnabled, +BaseCode, +RecCode, -FuncCode)
+generate_function_template(PredStr, Arity, GroupName, MemoEnabled, BaseCode, RecCode, FuncCode) :-
+    % Generate memo check code (if enabled)
+    (   MemoEnabled = true ->
+        format(string(MemoCheckCode1), '    # Check shared memo table~n    if [[ -n \"${~w_memo[$key]}\" ]]; then~n        echo \"${~w_memo[$key]}\"~n        return 0~n    fi~n    ', [GroupName, GroupName])
+    ;   MemoCheckCode1 = '    # Memoization disabled (unique=false constraint)\n    '
+    ),
+
     TemplateLines = [
         "# {{pred}}/{{arity}} - part of mutual recursion group",
         "{{pred}}() {",
         "    local arg1=\"$1\"",
         "    local key=\"{{pred}}:$*\"",
         "    ",
-        "    # Check shared memo table",
-        "    if [[ -n \"${{{group}}_memo[$key]}\" ]]; then",
-        "        echo \"${{{group}}_memo[$key]}\"",
-        "        return 0",
-        "    fi",
-        "    ",
+        "{{memo_check}}",
         "    {{base_code}}",
         "    ",
         "    {{rec_code}}",
@@ -505,7 +567,8 @@ generate_function_template(PredStr, Arity, GroupName, BaseCode, RecCode, FuncCod
         arity=Arity,
         group=GroupName,
         base_code=BaseCode,
-        rec_code=RecCode
+        rec_code=RecCode,
+        memo_check=MemoCheckCode1
     ], FuncCode).
 
 %% ============================================
