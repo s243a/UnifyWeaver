@@ -18,7 +18,7 @@
 :- use_module(stream_compiler).
 :- use_module(template_system).
 :- use_module(library(lists)).
-:- use_module(library(constraint_analyzer)).
+:- use_module(constraint_analyzer).
 :- use_module(firewall).
 :- use_module(preferences).
 
