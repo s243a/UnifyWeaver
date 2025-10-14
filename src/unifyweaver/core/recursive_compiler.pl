@@ -449,7 +449,21 @@ generate_descendant_template(PredStr, BashCode) :-
 {{pred}}_check() {
     local start="$1"
     local target="$2"
-    {{pred}}_all "$start" | grep -q "^$start:$target$" && echo "$start:$target"
+    local tmpflag="/tmp/{{pred}}_found_$$"
+    local timeout_duration="5s"
+    
+    # Timeout prevents infinite execution, tee prevents SIGPIPE
+    timeout "$timeout_duration" {{pred}}_all "$start" | 
+    tee >(grep -q "^$start:$target$" && touch "$tmpflag") >/dev/null
+    
+    if [[ -f "$tmpflag" ]]; then
+        echo "$start:$target"
+        rm -f "$tmpflag"
+        return 0
+    else
+        rm -f "$tmpflag"
+        return 1
+    fi
 }
 
 # Stream function
