@@ -18,6 +18,7 @@
 :- use_module(stream_compiler).
 :- use_module(template_system).
 :- use_module(library(lists)).
+:- use_module(library(constraint_analyzer)).
 :- use_module(firewall).
 :- use_module(preferences).
 
@@ -26,8 +27,10 @@ compile_recursive(Pred/Arity, Options) :-
     compile_recursive(Pred/Arity, Options, _).
 
 compile_recursive(Pred/Arity, RuntimeOptions, BashCode) :-
-    % 1. Get the final, merged options from all configuration layers.
+    % 1. Get constraints and merge with runtime options
+    get_constraints(Pred/Arity, DeclaredConstraints),
     preferences:get_final_options(Pred/Arity, RuntimeOptions, FinalOptions),
+    merge_options(FinalOptions, DeclaredConstraints, MergedOptions),
 
     % 2. Get the firewall policy for the predicate.
     (   firewall:rule_firewall(Pred/Arity, Firewall)
@@ -45,20 +48,29 @@ compile_recursive(Pred/Arity, RuntimeOptions, BashCode) :-
     ),
 
     % 3. Determine target backend (default: bash)
-    (   member(target(Target), FinalOptions) ->
+    (   member(target(Target), MergedOptions) ->
         true
     ;   Target = bash  % Default target
     ),
 
     % 4. Validate the request against the firewall.
-    (   firewall:validate_against_firewall(Target, FinalOptions, Firewall)
+    (   firewall:validate_against_firewall(Target, MergedOptions, Firewall)
     ->  % Validation passed, proceed with compilation.
         format('--- Firewall validation passed for ~w. Proceeding with compilation. ---\n', [Pred/Arity]),
-        compile_dispatch(Pred/Arity, FinalOptions, BashCode)
+        compile_dispatch(Pred/Arity, MergedOptions, BashCode)
     ;   % Validation failed, stop.
         format(user_error, 'Compilation of ~w halted due to firewall policy violation.~n', [Pred/Arity]),
         !, fail
     ).
+
+%% merge_options(RuntimeOpts, Constraints, Merged)
+%  Merges runtime options with declared constraints.
+merge_options(RuntimeOpts, Constraints, Merged) :-
+    (   member(unique(U), RuntimeOpts) -> MergedUnique = [unique(U)] ; MergedUnique = [] ),
+    (   member(unordered(O), RuntimeOpts) -> MergedUnordered = [unordered(O)] ; MergedUnordered = [] ),
+    append(MergedUnique, MergedUnordered, RuntimeConstraints),
+    append(RuntimeConstraints, Constraints, AllConstraints),
+    list_to_set(AllConstraints, Merged).
 
 %% compile_dispatch(+Pred/Arity, +FinalOptions, -BashCode)
 %  The original compilation logic, now called after validation.
@@ -188,19 +200,19 @@ is_linear_recursive(Pred, RecClauses) :-
     length(RecGoals, 1).  % Exactly one recursive call
 
 %% Compile transitive closure pattern
-compile_transitive_closure(Pred, _Arity, BasePred, _Options, BashCode) :-
-    % Use the template_system's existing generate_transitive_closure
-    template_system:generate_transitive_closure(Pred, BasePred, BashCode),
+compile_transitive_closure(Pred, _Arity, BasePred, Options, BashCode) :-
+    % Use the template_system's new constraint-aware predicate
+    template_system:generate_transitive_closure(Pred, BasePred, Options, BashCode),
     !.
 
 
 
 %% Compile with memoization for unknown patterns
-compile_memoized_recursion(Pred, _Arity, _Options, BashCode) :-
-    compile_plain_recursion(Pred, BashCode).
+compile_memoized_recursion(Pred, _Arity, Options, BashCode) :-
+    compile_plain_recursion(Pred, Options, BashCode).
 
 %% Compile plain recursion as final fallback
-compile_plain_recursion(Pred, BashCode) :-
+compile_plain_recursion(Pred, Options, BashCode) :-
     atom_string(Pred, PredStr),
     functor(Head, Pred, 2),  % Assuming arity 2 for now
     
@@ -224,7 +236,7 @@ compile_plain_recursion(Pred, BashCode) :-
     ), RecCodes),
     atomic_list_concat(RecCodes, '\n    ', RecCodeStr),
     
-    generate_plain_recursion_template(PredStr, BaseCodeStr, RecCodeStr, BashCode).
+    generate_plain_recursion_template(PredStr, BaseCodeStr, RecCodeStr, Options, BashCode).
 
 %% Generate base case code
 generate_base_case(Pred, Body, Code) :-
@@ -236,7 +248,7 @@ generate_base_case(Pred, Body, Code) :-
         echo "$key"
         return
     }', [PredStr, PredStr, PredStr])
-    ;   functor(Body, BasePred, 2) ->
+    ;   ( functor(Body, BasePred, 2), atom(BasePred), is_alpha(BasePred) ) ->
         atom_string(BasePred, BaseStr),
         format(string(Code), '# Base: check ~s
     if ~s "$arg1" "$arg2" >/dev/null 2>&1; then
@@ -246,6 +258,10 @@ generate_base_case(Pred, Body, Code) :-
     fi', [BaseStr, BaseStr, PredStr])
     ;   format(string(Code), '# Complex base case - not implemented', [])
     ).
+
+is_alpha(Atom) :-
+    atom_codes(Atom, Codes),
+    forall(member(Code, Codes), code_type(Code, alpha)).
 
 %% Generate recursive case code
 generate_recursive_case(Pred, Body, Code) :-
@@ -443,24 +459,25 @@ generate_descendant_template(PredStr, BashCode) :-
     template_system:render_template(Template, [pred=PredStr], BashCode).
 
 %% Generate plain recursion template
-generate_plain_recursion_template(PredStr, BaseCodeStr, RecCodeStr, BashCode) :-
-    Template = '#!/bin/bash
-# {{pred}} - plain recursive implementation
-
-# Memoization table
-declare -gA {{pred}}_memo
+generate_plain_recursion_template(PredStr, BaseCodeStr, RecCodeStr, Options, BashCode) :-
+    constraint_analyzer:get_dedup_strategy(Options, Strategy),
+    (   Strategy == no_dedup ->
+        MemoSetup = "",
+        MemoCheck = ""
+    ;   MemoSetup = "declare -gA {{pred}}_memo",
+        MemoCheck = 'if [[ -n "${{{pred}}_memo[$key]}" ]]; then echo "${{{pred}}_memo[$key]}"; return; fi'
+    ),
+    Template = '# Memoization table
+{{memo_setup}}
 
 # Main recursive function
-{{pred}}() {
+{{pred}}_all() {
     local arg1="$1"
     local arg2="$2"
     local key="$arg1:$arg2"
     
     # Check memoization
-    if [[ -n "${{{pred}}_memo[$key]}" ]]; then
-        echo "${{{pred}}_memo[$key]}"
-        return
-    fi
+    {{memo_check}}
     
     # Try base cases first
     {{base_cases}}
@@ -478,22 +495,21 @@ declare -gA {{pred}}_memo
     mkfifo "$pipe" 2>/dev/null || true
     
     # Start recursive computation in background
-    {{pred}} "$@" > "$pipe" &
+    {{pred}}_all "$@" > "$pipe" &
     
     # Read results from pipe
     cat "$pipe"
     rm -f "$pipe"
-}
-
-# Find all solutions
-{{pred}}_all() {
-    local start="$1"
-    # Generate all possible pairs starting with $start
-    # This is a simplified implementation
-    {{pred}} "$start" ""
 }',
-    template_system:render_template(Template, [
+    render_template(Template, [
         pred=PredStr,
         base_cases=BaseCodeStr,
-        rec_cases=RecCodeStr
+        rec_cases=RecCodeStr,
+        memo_setup=MemoSetup,
+        memo_check=MemoCheck
+    ], MainCode),
+    render_named_template('dedup_wrapper', [
+        pred = PredStr,
+        strategy = Strategy,
+        main_code = MainCode
     ], BashCode).
