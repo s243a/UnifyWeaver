@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swipl:*)",
+      "Bash(bash:*)",
+      "Bash(timeout 5 bash count_items.sh)",
+      "Bash(source:*)",
+      "Bash(count_items_eval)",
+      "Bash(fib:*)",
+      "Bash(tree_sum \"[5,[3,[1,[],[]]],[2,[],[]]],\")",
+      "Bash(tree_sum \"[10,[5,[2,[],[3,[],[]]]],[7,[],[]]]]\")",
+      "Bash(timeout:*)",
+      "Bash(is_odd:*)",
+      "Bash(is_even:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
