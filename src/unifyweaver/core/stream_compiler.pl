@@ -99,25 +99,105 @@ compile_facts(Pred, Arity, Options, BashCode) :-
     % Collect all facts
     findall(Head, clause(Head, true), Facts),
     
-    % Build array entries
-    findall(Entry,
-        (   member(Fact, Facts),
-            Fact =.. [_|Args],
-            format_fact_entry(Args, Entry)
-        ),
-        Entries),
-    atomic_list_concat(Entries, '\n    ', EntriesStr),
-    
     % Get deduplication strategy from options
     get_dedup_strategy(Options, Strategy),
     
-    % Render template - THIS IS THE CRITICAL FIX
-    compose_templates(
-        ['bash/header','facts/array_binary','facts/lookup_binary','facts/stream_binary', 'facts/reverse_stream_binary'],
-        [pred=PredStr, entries=EntriesStr, strategy=Strategy],
-        BashCode
+    % Handle different strategies
+    (   Strategy = no_dedup ->
+        % For no_dedup, use regular array to preserve duplicates
+        compile_facts_no_dedup(Pred, Arity, Facts, PredStr, BashCode)
+    ;   % For other strategies, use associative array
+        % Build array entries
+        findall(Entry,
+            (   member(Fact, Facts),
+                Fact =.. [_|Args],
+                format_fact_entry(Args, Entry)
+            ),
+            Entries),
+        atomic_list_concat(Entries, '\n    ', EntriesStr),
+        
+        % Render template with associative array
+        compose_templates(
+            ['bash/header','facts/array_binary','facts/lookup_binary','facts/stream_binary', 'facts/reverse_stream_binary'],
+            [pred=PredStr, entries=EntriesStr, strategy=Strategy],
+            BashCode
+        )
     ),
     !.
+
+%% compile_facts_no_dedup(+Pred, +Arity, +Facts, +PredStr, -BashCode)
+%  Compile facts without deduplication using regular array
+compile_facts_no_dedup(Pred, Arity, Facts, PredStr, BashCode) :-
+    % Build array entries as strings (not key=value pairs)
+    findall(Entry,
+        (   member(Fact, Facts),
+            Fact =.. [_|Args],
+            atomic_list_concat(Args, ':', Entry)
+        ),
+        Entries),
+    atomic_list_concat(Entries, '"\n    "', EntriesStr),
+    
+    % Generate bash code with regular array
+    (   Arity = 1 ->
+        format(string(BashCode), '#!/bin/bash
+# ~s - fact lookup (no deduplication)
+~s_data=(
+    "~s"
+)
+~s() {
+  local query="$1"
+  for item in "${~s_data[@]}"; do
+    [[ "$item" == "$query" ]] && echo "$item"
+  done
+}
+~s_stream() {
+  for item in "${~s_data[@]}"; do
+    echo "$item"
+  done
+}
+# Execute stream function when script is run directly
+~s_stream', [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr])
+    ;   Arity = 2 ->
+        format(string(BashCode), '#!/bin/bash
+# ~s - fact lookup (no deduplication)
+~s_data=(
+    "~s"
+)
+~s() {
+  local key="$1:$2"
+  for item in "${~s_data[@]}"; do
+    [[ "$item" == "$key" ]] && echo "$item"
+  done
+}
+~s_stream() {
+  for item in "${~s_data[@]}"; do
+    echo "$item"
+  done
+}
+~s_reverse_stream() {
+  for item in "${~s_data[@]}"; do
+    IFS=":" read -r a b <<< "$item"
+    echo "$b:$a"
+  done
+}
+# Execute stream function when script is run directly
+~s_stream', [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr])
+    ;   % For higher arities, use a generic approach
+        format(string(BashCode), '#!/bin/bash
+# ~s - fact lookup (no deduplication)
+~s_data=(
+    "~s"
+)
+~s() {
+  echo "Error: ~s with arity ~w not yet supported for no_dedup" >&2
+  return 1
+}
+~s_stream() {
+  for item in "${~s_data[@]}"; do
+    echo "$item"
+  done
+}', [PredStr, PredStr, EntriesStr, PredStr, PredStr, Arity, PredStr, PredStr])
+    ).
 
 %% format_fact_entry(+Args, -Entry)
 format_fact_entry(Args, Entry) :-

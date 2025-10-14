@@ -11,7 +11,7 @@
     render_named_template/4,
     compose_templates/3,
     template/2,
-    generate_transitive_closure/3,
+    generate_transitive_closure/4,
     load_template/2,
     load_template/3,
     cache_template/2,
@@ -376,11 +376,11 @@ template(stream_wrapper, '
 }').
 
 %% Generate complete transitive closure implementation
-generate_transitive_closure(PredName, BaseName, Code) :-
+generate_transitive_closure(PredName, BaseName, Options, Code) :-
     atom_string(PredName, PredStr),
     atom_string(BaseName, BaseStr),
+    constraint_analyzer:get_dedup_strategy(Options, Strategy),
     
-    % Simple template with named placeholders
     Template = '#!/bin/bash
 # {{pred}} - transitive closure of {{base}}
 
@@ -396,19 +396,7 @@ generate_transitive_closure(PredName, BaseName, Code) :-
     fi
 }
 
-# Main function
-{{pred}}() {
-    local start="$1"
-    local target="$2"
-    
-    if [[ -z "$target" ]]; then
-        {{pred}}_all "$start"
-    else
-        {{pred}}_check "$start" "$target"
-    fi
-}
-
-# Find all reachable using BFS
+# Main logic to find all descendants
 {{pred}}_all() {
     local start="$1"
     declare -A visited
@@ -424,7 +412,6 @@ generate_transitive_closure(PredName, BaseName, Code) :-
         > "$next_queue"
         
         while IFS= read -r current; do
-            # Use process substitution to keep while loop in current shell
             while IFS=":" read -r from to; do
                 if [[ "$from" == "$current" && -z "${visited[$to]}" ]]; then
                     visited["$to"]=1
@@ -444,19 +431,72 @@ generate_transitive_closure(PredName, BaseName, Code) :-
 {{pred}}_check() {
     local start="$1"
     local target="$2"
-    {{pred}}_all "$start" | grep -q "^$start:$target$" && echo "$start:$target"
+    {{pred}}_all "$start" | grep -q "^$start:$target$"
 }
 
-# Stream function
-{{pred}}_stream() {
-    {{pred}}_all "$1"
+# Main entry point
+{{pred}}() {
+    local start="$1"
+    local target="$2"
+
+    if [[ -z "$target" ]]; then
+        # One-argument call: find all descendants
+        if [[ "{{strategy}}" == "sort_u" ]]; then
+            {{pred}}_all "$start" | sort -u
+        elif [[ "{{strategy}}" == "hash_dedup" ]]; then
+            declare -A seen
+            {{pred}}_all "$start" | while IFS= read -r line; do
+                if [[ -z "${seen[$line]}" ]]; then
+                    seen[$line]=1
+                    echo "$line"
+                fi
+            done
+        else
+            {{pred}}_all "$start"
+        fi
+    else
+        # Two-argument call: check relationship
+        if {{pred}}_check "$start" "$target"; then
+            echo "$start:$target"
+            return 0
+        else
+            return 1
+        fi
+    fi
 }',
-    
-    % Render with simple dictionary
+
     render_template(Template, [
         pred = PredStr,
-        base = BaseStr
+        base = BaseStr,
+        strategy = Strategy
     ], Code).
+
+%% Deduplication wrapper template
+template(dedup_wrapper, [
+'#!/bin/bash
+# {{pred}} - generated with {{strategy}} deduplication
+
+{{main_code}}
+
+# Main entry point with deduplication
+{{pred}}() {
+    if [[ "{{strategy}}" == "sort_u" ]]; then
+        {{pred}}_all "$@" | sort -u
+    fi
+    if [[ "{{strategy}}" == "hash_dedup" ]]; then
+        declare -A seen
+        {{pred}}_all "$@" | while IFS= read -r line; do
+            if [[ -z "${seen[$line]}" ]]; then
+                seen[$line]=1
+                echo "$line"
+            fi
+        done
+    fi
+    if [[ "{{strategy}}" != "sort_u" && "{{strategy}}" != "hash_dedup" ]]; then
+        {{pred}}_all "$@"
+    fi
+}'
+]).
 
 %% ============================================
 %% FACTS TEMPLATES (non-recursive predicates)
