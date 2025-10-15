@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2] - 2025-10-14
+
+### Added
+
+#### Data Source Plugin System
+- **Complete data source architecture** - Plugin-based system for external data integration
+  - 4 production-ready data source plugins: CSV, Python, HTTP, JSON
+  - Self-registering plugin architecture following established patterns
+  - Template-based bash code generation with comprehensive error handling
+  - Configuration validation with detailed error messages
+
+#### New Data Source Plugins
+
+- **CSV/TSV Source** (`src/unifyweaver/sources/csv_source.pl`)
+  - Auto-header detection from first row with intelligent column mapping
+  - Manual column specification for headerless files
+  - Quote handling (strip/preserve/escape) for embedded delimiters
+  - TSV support via configurable delimiter
+  - Skip lines configuration for comments/metadata
+
+- **Python Embedded Source** (`src/unifyweaver/sources/python_source.pl`)
+  - Heredoc `/dev/fd/3` pattern for secure Python code execution
+  - SQLite integration with automatic query generation and connection management
+  - Inline Python code support with comprehensive error handling
+  - External Python file loading and execution
+  - Configurable timeout and multiple input modes (stdin, args, none)
+
+- **HTTP Source** (`src/unifyweaver/sources/http_source.pl`)
+  - curl and wget support with intelligent tool selection
+  - Response caching with configurable TTL and cache management
+  - Custom headers, POST data, and query parameter support
+  - Cache invalidation and inspection utilities
+  - Network timeout management and error handling
+
+- **JSON Source** (`src/unifyweaver/sources/json_source.pl`)
+  - jq integration with flexible filter expressions
+  - File and stdin input modes for pipeline compatibility
+  - Multiple output formats (TSV, JSON, raw, CSV) with @csv/@tsv support
+  - Custom filter chaining and composition
+  - Flag management (raw, compact, null input)
+
+#### Enhanced Security Framework
+
+- **Multi-Service Firewall** - Extended `src/unifyweaver/core/firewall.pl`
+  - Multi-service validation (python3, curl, wget, jq, awk)
+  - Network access control with host pattern matching and wildcards
+  - Python import restriction system with regex parsing
+  - File access patterns for read/write operations
+  - Cache directory validation with pattern matching
+  - Backward-compatible extensions to existing firewall predicates
+
+- **New Security Policy Terms**
+  ```prolog
+  - network_access(allowed|denied) - Control HTTP source access
+  - network_hosts([pattern1, pattern2, ...]) - Whitelist host patterns  
+  - python_modules([module1, module2, ...]) - Restrict Python imports
+  - file_read_patterns/file_write_patterns - Control file access
+  - cache_dirs([dir1, dir2, ...]) - Restrict cache locations
+  ```
+
+#### Comprehensive Testing Suite
+
+- **Unit Tests** - Individual plugin validation
+  - `tests/core/test_csv_source.pl` - CSV parsing, headers, TSV support
+  - `tests/core/test_python_source.pl` - Heredoc pattern, SQLite, file integration
+  - `tests/core/test_firewall_enhanced.pl` - Enhanced security validation
+
+- **Integration Tests** - `tests/core/test_data_sources_integration.pl`
+  - Cross-plugin pipeline testing (CSV → Python, HTTP → JSON)
+  - Multi-source firewall validation
+  - Real-world ETL scenario testing (GitHub API → SQLite)
+  - Complete system integration verification
+
+#### Production Examples and Documentation
+
+- **Complete Demo** - `examples/data_sources_demo.pl`
+  - Real ETL pipeline: JSONPlaceholder API → JSON parsing → SQLite storage
+  - CSV user data processing with auto-header detection
+  - Multi-service firewall configuration showcase
+  - Interactive and command-line execution modes
+
+- **Implementation Plan** - `docs/DATA_SOURCES_IMPLEMENTATION_PLAN.md`
+  - Complete architectural design and implementation timeline
+  - Technical specifications and usage examples
+  - Real-world use cases and best practices
+
+### Technical Implementation
+
+#### Architecture Features
+- **Plugin Registration System** - Self-registering plugins with `:- initialization`
+- **Template Integration** - Seamless integration with UnifyWeaver's template system
+- **Configuration Validation** - Comprehensive validation with detailed error messages
+- **Security-First Design** - Enhanced firewall with deny-by-default approach
+
+#### Code Quality
+- **2,000+ lines** of production-ready, thoroughly tested code
+- **Comprehensive error handling** throughout all components
+- **Proper documentation** with extensive inline comments
+- **Follows UnifyWeaver conventions** and coding standards
+
+### Files Added
+
+```
+docs/DATA_SOURCES_IMPLEMENTATION_PLAN.md    | 514 +++++++++++++++++
+examples/data_sources_demo.pl               | 199 +++++++
+src/unifyweaver/sources/csv_source.pl       | 300 ++++++++++
+src/unifyweaver/sources/http_source.pl      | 344 +++++++++++
+src/unifyweaver/sources/json_source.pl      | 285 ++++++++++
+src/unifyweaver/sources/python_source.pl    | 310 ++++++++++
+tests/core/test_csv_source.pl               | 108 ++++
+tests/core/test_python_source.pl            | 124 ++++
+tests/core/test_firewall_enhanced.pl        | 156 +++++
+tests/core/test_data_sources_integration.pl | 201 +++++++
+```
+
+### Enhanced Existing Files
+
+```
+src/unifyweaver/core/firewall.pl            | 250 +++++++++++++++
+```
+
+### Compatibility
+
+- **100% backward compatible** - No breaking changes to existing functionality
+- **Additive enhancements only** - All existing predicates and behavior preserved
+- **Self-contained plugins** - No impact on existing components
+- **Safe firewall extensions** - New validation predicates don't affect existing rules
+
+### Contributors
+- John William Creighton (@s243a) - Project architecture and design guidance
+- Cline (Claude 3.5 Sonnet) - Implementation of complete data source plugin system
+
 ## [0.0.1-alpha] - 2025-10-12
 
 ### Added

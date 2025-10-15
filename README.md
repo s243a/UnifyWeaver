@@ -20,8 +20,19 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Constraint awareness** - Unique and ordering constraints optimize generated code
 - **Pattern detection** - Automatic classification of recursion patterns
 
+### Data Source Plugin System (v0.0.2)
+- **4 Production-Ready Plugins** - CSV/TSV, Python, HTTP, JSON data sources
+- **Self-Registering Architecture** - Plugin-based system with automatic discovery
+- **Template Integration** - Seamless bash code generation with comprehensive error handling
+- **Enterprise Security** - Enhanced firewall with multi-service validation
+- **Real-World ETL** - Complete pipelines for data transformation and storage
+- **SQLite Integration** - Python source with automatic database operations
+
 ### Control Plane
-- **Firewall** - Enforces security policies for backend and service usage
+- **Enhanced Firewall** - Multi-service security for external tools (python3, curl, wget, jq)
+- **Network Access Control** - Host pattern matching and access restrictions
+- **Import Restrictions** - Python module whitelisting and validation
+- **File Access Patterns** - Read/write permission management
 - **Preferences** - Guides implementation choices within policy boundaries
 - **Layered Configuration** - Supports global, rule-specific, and runtime overrides
 
@@ -231,6 +242,109 @@ factorial(N, Result)  % Linear recursion with memoization
 count_items(List, Count)  % Tail recursion optimized to loop
 tree_sum([V,L,R], Sum)  % Tree recursion for binary trees
 is_even(N), is_odd(N)  % Mutual recursion with shared memo
+```
+
+### Data Source Integration (v0.0.2)
+
+#### CSV/TSV Data Processing
+```prolog
+% Auto-detect headers and process CSV data
+:- source(csv, users, [
+    csv_file('data/users.csv'),
+    has_header(true)
+]).
+
+% Manual column specification for headerless files
+:- source(csv, logs, [
+    csv_file('data/access.log'),
+    delimiter('\t'),
+    columns([timestamp, ip, method, path, status])
+]).
+
+% Usage: users(alice, 25, nyc) - find user data
+```
+
+#### Python Integration with SQLite
+```prolog
+% Inline Python with SQLite operations
+:- source(python, store_data, [
+    python_inline('
+import sqlite3
+import sys
+conn = sqlite3.connect("app.db")
+conn.execute("CREATE TABLE IF NOT EXISTS results (key, value)")
+for line in sys.stdin:
+    key, value = line.strip().split(":")
+    conn.execute("INSERT INTO results VALUES (?, ?)", (key, value))
+conn.commit()
+print("Data stored successfully")
+'),
+    timeout(30)
+]).
+
+% Direct SQLite queries
+:- source(python, get_users, [
+    sqlite_query('SELECT name, age FROM users WHERE active = 1'),
+    database('app.db')
+]).
+```
+
+#### HTTP API Integration
+```prolog
+% Fetch data from REST APIs with caching
+:- source(http, github_repos, [
+    url('https://api.github.com/users/octocat/repos'),
+    headers(['User-Agent: UnifyWeaver/0.0.2']),
+    cache_duration(3600),  % 1 hour cache
+    cache_file('cache/github_repos.json')
+]).
+
+% POST data to APIs
+:- source(http, webhook, [
+    url('https://hooks.example.com/notify'),
+    method(post),
+    headers(['Content-Type: application/json']),
+    post_data('{"status": "completed"}')
+]).
+```
+
+#### JSON Processing with jq
+```prolog
+% Parse JSON with jq filters
+:- source(json, extract_names, [
+    jq_filter('.users[] | {name: .name, email: .email} | @tsv'),
+    json_stdin(true),
+    raw_output(true)
+]).
+
+% Process JSON files
+:- source(json, config_values, [
+    json_file('config.json'),
+    jq_filter('.database | {host, port, name}')
+]).
+```
+
+#### Complete ETL Pipeline
+```prolog
+% Configure firewall for data processing
+:- assertz(firewall:firewall_default([
+    services([awk, python3, curl, jq]),
+    network_access(allowed),
+    network_hosts(['*.github.com', '*.typicode.com']),
+    python_modules([sys, json, sqlite3, csv]),
+    file_read_patterns(['data/*', 'config/*']),
+    cache_dirs(['/tmp/*', 'cache/*'])
+])).
+
+% API → JSON → Python → SQLite pipeline
+etl_pipeline :-
+    % Fetch from API, parse JSON, store in database
+    github_repos | extract_names | store_data.
+
+% Usage examples:
+% ?- github_repos.                    % Fetch API data
+% ?- extract_names.                   % Parse JSON from stdin  
+% ?- etl_pipeline.                    % Complete pipeline
 ```
 
 ## Recursion Support
