@@ -28,7 +28,7 @@ test_python_inline :-
     
     % Test basic inline Python
     catch(
-        (   compile_source(python, hello/1, [
+        (   python_source:compile_source(hello/1, [
                 python_inline('print("hello:world")')
             ], [], Code),
             
@@ -48,7 +48,7 @@ test_python_inline :-
     
     % Test Python with stdin processing
     catch(
-        (   compile_source(python, transform/2, [
+        (   python_source:compile_source(transform/2, [
                 python_inline('
 import sys
 for line in sys.stdin:
@@ -77,7 +77,7 @@ test_sqlite_integration :-
     
     % Test SQLite query compilation
     catch(
-        (   compile_source(python, test_users/3, [
+        (   python_source:compile_source(test_users/3, [
                 sqlite_query('SELECT name, email, age FROM users WHERE active = 1'),
                 database('test.db')
             ], [], Code),
@@ -111,7 +111,7 @@ test_python_file :-
     
     % Test compilation
     catch(
-        (   compile_source(python, script_runner/2, [
+        (   python_source:compile_source(script_runner/2, [
                 python_file(TestFile)
             ], [], Code),
             
