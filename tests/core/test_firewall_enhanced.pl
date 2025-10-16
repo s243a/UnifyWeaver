@@ -41,14 +41,13 @@ test_service_validation :-
         )
     ),
     
-    % Test denied service (should fail)
-    catch(
-        (   validate_service(dangerous_tool, [services([python3, curl]), denied([dangerous_tool])]),
-            format('    ❌ Denied service should have failed~n', []),
-            fail
-        ),
-        error(_, _),
-        format('    ✅ Denied service properly blocked~n', [])
+    % Test denied service (should fail validation)
+    % Note: Current firewall prints message but doesn't throw exception
+    % See context/firewall_behavior_design.md for future enhancement
+    (   \+ validate_service(dangerous_tool, [services([python3, curl]), denied([dangerous_tool])])
+    ->  format('    ✅ Denied service properly blocked~n', [])
+    ;   format('    ❌ Denied service validation failed~n', []),
+        fail
     ),
     
     % Test service not in allowlist (should fail silently in this implementation)

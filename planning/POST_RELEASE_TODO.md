@@ -367,6 +367,43 @@ Returning nothing (empty result) may be valid behavior for these predicates - th
 
 ---
 
+### 13. Firewall Philosophy - Blocking vs Guidance
+
+**Status:** 📋 DESIGN DECISION NEEDED
+**Location:** `src/unifyweaver/core/firewall.pl`, `tests/core/test_firewall_enhanced.pl`
+**Created:** 2025-10-15
+
+**Issue:**
+Test expects firewall to throw exceptions for denied services, but current implementation prints message and fails silently. This reveals a deeper question about firewall philosophy.
+
+**Documentation:** See `context/firewall_behavior_design.md` for full analysis
+
+**Two Approaches:**
+1. **Security Firewall (Hard Blocking)** - Throw exceptions, stop compilation
+2. **Preference Guidance (Soft Constraints)** - Help select best option, only block when no alternatives
+
+**Recommended: Hybrid Approach**
+- ALLOW: Explicitly allowed or preferred → succeed
+- WARN: Works but not preferred → succeed with warning  
+- DENY: Explicitly denied or no alternatives → throw exception
+- UNKNOWN: Depends on mode (strict vs permissive)
+
+**Implementation Plan:**
+1. Add `mode` configuration: strict/permissive/disabled
+2. Add `preferred` vs `fallback` vs `denied` lists
+3. Implement warning system for non-preferred tools
+4. Create policy templates for different environments
+5. Update tests to match chosen philosophy
+
+**Current Fix (v0.0.2):**
+- ✅ Updated test to match current behavior (fail without exception)
+- ✅ Added comment referencing design document
+- Defer full implementation to v0.0.3+
+
+**Estimated Effort:** 4-6 hours for full hybrid implementation
+
+---
+
 ## Priority 6: Future Enhancements (Post v0.0.2)
 
 See `context/FUTURE_WORK.md` for:
