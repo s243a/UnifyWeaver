@@ -12,10 +12,11 @@
     test_real_world_scenario/0
 ]).
 
-:- use_module('../../src/unifyweaver/sources/csv_source').
-:- use_module('../../src/unifyweaver/sources/python_source').
-:- use_module('../../src/unifyweaver/sources/http_source').
-:- use_module('../../src/unifyweaver/sources/json_source').
+% Load source modules without importing their predicates (to avoid conflicts)
+:- use_module('../../src/unifyweaver/sources/csv_source', []).
+:- use_module('../../src/unifyweaver/sources/python_source', []).
+:- use_module('../../src/unifyweaver/sources/http_source', []).
+:- use_module('../../src/unifyweaver/sources/json_source', []).
 :- use_module('../../src/unifyweaver/core/firewall').
 :- use_module(library(lists)).
 
