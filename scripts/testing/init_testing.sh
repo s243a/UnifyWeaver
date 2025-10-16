@@ -325,6 +325,17 @@ EOF
     echo -e "${GREEN}✓${NC} Created default python_paths.txt"
 fi
 
+# Copy find_swi-prolog.sh helper script early (before any interactive prompts)
+echo -e "\n${YELLOW}Installing helper scripts...${NC}"
+if [[ -f "$SCRIPT_DIR/find_swi-prolog.sh" ]]; then
+    cp -f "$SCRIPT_DIR/find_swi-prolog.sh" "$TARGET_ROOT/find_swi-prolog.sh"
+    chmod +x "$TARGET_ROOT/find_swi-prolog.sh"
+    echo -e "${GREEN}✓${NC} Copied find_swi-prolog.sh helper script"
+else
+    echo -e "${RED}✗${NC} Warning: find_swi-prolog.sh not found in $SCRIPT_DIR"
+    echo -e "${YELLOW}i${NC} The launcher may not work correctly without this file"
+fi
+
 cat > "$TARGET_ROOT/config/assumed_packages.txt" << 'EOF'
 # Packages to assume are available without checking
 # Add package names here, one per line
@@ -380,10 +391,8 @@ cd "$TARGET_ROOT"
 # Snapshot repo config into the test_env so the launcher is self-contained
 if [[ -f "$SCRIPT_DIR/.unifyweaver.conf" ]]; then
   cp -f "$SCRIPT_DIR/.unifyweaver.conf" "$TARGET_ROOT/${FIND_PREFIX}.unifyweaver.conf"
+  echo -e "${GREEN}✓${NC} Copied .unifyweaver.conf to test environment"
 fi
-
-
-
 
 # Ask user about applying settings to the main testing directory
 echo ""
@@ -409,8 +418,6 @@ fi
 
 
 
-# Optionally snapshot the helper too
-cp -f "$SCRIPT_DIR/find_swi-prolog.sh" "./find_swi-prolog.sh"
 
 
 
