@@ -253,7 +253,58 @@ test_descendant_classification :-
 
 ## Priority 5: Post v0.0.2 Improvements
 
-### 10. Add Negative Test Cases for Mutual Recursion
+### 10. Clean Up Singleton Variable and Code Quality Warnings
+
+**Status:** 📋 IDENTIFIED - Code quality cleanup needed
+**Location:** Multiple files across core and advanced modules
+**Created:** 2025-10-15
+
+**Warnings Identified During Testing:**
+
+**Singleton Variable Warnings:**
+- `stream_compiler.pl:130` - Singleton: `[Pred]`
+- `linear_recursion.pl:196, 336` - Singleton: `[FoldExpr]`
+- `fold_helper_generator.pl:69` - Singleton: `[Arity,RecHead]`
+- `fold_helper_generator.pl:116` - Singleton: `[Goal,Body]`
+- `fold_helper_generator.pl:532` - Singleton: `[Arity]`
+- `advanced_recursive_compiler.pl:195` - Singleton: `[PredStr]`
+- `advanced_recursive_compiler.pl:220` - Singleton: `[Arity,Options]`
+- `advanced_recursive_compiler.pl:259` - Singleton: `[GraphClauses]`
+- `advanced_recursive_compiler.pl:288` - Singleton: `[FoldClauses]`
+- `advanced_recursive_compiler.pl:323` - Singleton: `[BasePredStr]`
+- `firewall.pl:198` - Singleton: `[P,Ps]`
+- `firewall.pl:223` - Singleton: `[M,Ms]`
+- `firewall.pl:268` - Singleton: `[D,Ds]`
+
+**Singleton-Marked Variable Warnings:**
+- `fold_helper_generator.pl:301` - Variables marked as singleton but used multiple times:
+  - `_OutputVar`, `_V`, `_FL`, `_VL`, `_FR`, `_VR`, `_WOutputVar`, `_Graph`
+
+**Code Organization Warnings:**
+- `fold_helper_generator.pl:532` - Clauses not together: `generate_fold_computer/3`
+- `fold_helper_generator.pl:633` - Clauses not together: `generate_wrapper/2`
+
+**Import Override Warning:**
+- `advanced_recursive_compiler.pl:352` - Local definition overrides weak import: `extract_goal/2`
+
+**Impact:**
+- No functional issues - all tests pass
+- Code quality and maintainability issue
+- Could mask real bugs if not addressed
+
+**Fix Strategy:**
+1. **Singleton variables:** Prefix with underscore (`_Pred`) or remove if truly unused
+2. **Singleton-marked but used:** Remove underscore prefix (these are actual variables)
+3. **Discontiguous clauses:** Add `:- discontiguous` directives or reorganize code
+4. **Import overrides:** Either rename local predicate or explicitly handle the override
+
+**Estimated Effort:** 2-3 hours for thorough cleanup
+
+**Priority:** Medium - doesn't block release but improves code quality
+
+---
+
+### 11. Add Negative Test Cases for Mutual Recursion
 
 **Status:** 📋 IDENTIFIED - Needs review and implementation
 **Location:** `src/unifyweaver/core/advanced/test_advanced.pl` or test runner
@@ -287,6 +338,32 @@ Returning nothing (empty result) may be valid behavior for these predicates - th
 4. Consider adding assertion-based tests if needed
 
 **Estimated Effort:** 1-2 hours (depends on semantic decisions)
+
+---
+
+### 12. Review test_auto Auto-Discovery Behavior
+
+**Status:** 📋 IDENTIFIED - Needs investigation
+**Location:** `templates/init_template.pl` auto-discovery system
+**Created:** 2025-10-15
+
+**Current Behavior:**
+- `test_auto.` reports: `[INFO] No auto-discovered tests available`
+- Falls back to manual tests (test_stream, test_recursive, etc.)
+- Auto-discovery appears to be failing in test environments
+
+**Expected Behavior:**
+- Should auto-discover test files in `tests/` and `tests/core/`
+- Should find predicates matching test patterns
+- Should provide list of discovered tests
+
+**Investigation Needed:**
+1. Check if `auto_discover_tests/0` predicate exists and is callable
+2. Verify test file pattern matching is working
+3. Review directory scanning in test environments
+4. Check if initialization properly sets up auto-discovery
+
+**Estimated Effort:** 1-2 hours
 
 ---
 

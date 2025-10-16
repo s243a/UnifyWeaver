@@ -158,6 +158,7 @@ dirs=(
     "src/unifyweaver/core"
     "src/unifyweaver/backends/bash"
     "src/unifyweaver/pipelines"
+    "src/unifyweaver/sources"
     "tests/output"
     "templates"
     "scripts"
@@ -174,6 +175,7 @@ cp_dirs=(
     "src/unifyweaver/core"
     "src/unifyweaver/backends/bash"
     "src/unifyweaver/pipelines"
+    "src/unifyweaver/sources"
     "templates"
     "scripts"
     "config"
@@ -238,8 +240,19 @@ fi
 # Copy test files from the main project
 echo -e "\n${YELLOW}Installing test files...${NC}"
 if [[ -d "$MAIN_PROJECT_ROOT/tests" ]]; then
+    # Copy top-level test files
     cp "$MAIN_PROJECT_ROOT/tests/"*.pl "$TARGET_ROOT/tests/" 2>/dev/null || true
-    echo -e "${GREEN}✓${NC} Copied test files from main project"
+    
+    # Copy test files from tests/core/ if it exists
+    if [[ -d "$MAIN_PROJECT_ROOT/tests/core" ]]; then
+        mkdir -p "$TARGET_ROOT/tests/core"
+        cp "$MAIN_PROJECT_ROOT/tests/core/"*.pl "$TARGET_ROOT/tests/core/" 2>/dev/null || true
+        echo -e "${GREEN}✓${NC} Copied test files from main project (including tests/core/)"
+    else
+        echo -e "${GREEN}✓${NC} Copied test files from main project"
+    fi
+else
+    echo -e "${YELLOW}i${NC} No tests directory found in main project"
 fi
 
 # Create additional test files
