@@ -197,11 +197,11 @@ for dir in "${cp_dirs[@]}"; do
     # Use a case statement to handle the special 'scripts' directory
     case "$dir" in
         "scripts")
-            # Copy all files from 'scripts' but exclude 'testing/test_env'
+            # Copy all files from 'scripts' but exclude all 'testing/test_env*' directories
             # The 'rsync' command is ideal for this kind of selective copying
             # The --exclude option lets you skip specific directories or files
-            if rsync -av --exclude 'testing/test_env' "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/"; then
-                echo -e "${GREEN}✓${NC} Copied contents of scripts, excluding test_env"
+            if rsync -av --exclude 'testing/test_env*' "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/"; then
+                echo -e "${GREEN}✓${NC} Copied contents of scripts, excluding test_env*"
             else
                 echo -e "${RED}✗${NC} Failed to copy contents of scripts"
                 exit 1
