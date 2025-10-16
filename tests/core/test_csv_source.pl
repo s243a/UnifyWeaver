@@ -33,7 +33,7 @@ test_csv_with_headers :-
     
     % Test compilation
     catch(
-        (   compile_source(csv, users/3, [
+        (   csv_source:compile_source(users/3, [
                 csv_file(TestFile), 
                 has_header(true)
             ], [], Code),
@@ -65,7 +65,7 @@ test_csv_manual_columns :-
     
     % Test compilation
     catch(
-        (   compile_source(csv, people/3, [
+        (   csv_source:compile_source(people/3, [
                 csv_file(TestFile),
                 columns([name, age, city])
             ], [], Code),
@@ -97,7 +97,7 @@ test_tsv_support :-
     
     % Test compilation
     catch(
-        (   compile_source(csv, tsv_data/3, [
+        (   csv_source:compile_source(tsv_data/3, [
                 csv_file(TestFile),
                 delimiter('\t'),
                 has_header(true)
