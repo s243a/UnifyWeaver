@@ -163,6 +163,7 @@ dirs=(
     "templates"
     "scripts"
     "config"
+    "examples"
 )
 
 for dir in "${dirs[@]}"; do
@@ -179,6 +180,7 @@ cp_dirs=(
     "templates"
     "scripts"
     "config"
+    "examples"
 )
 
 # (removed hardcoded TARGET_ROOT; keep portable default)
