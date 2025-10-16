@@ -251,7 +251,46 @@ test_descendant_classification :-
 
 ---
 
-## Priority 5: Future Enhancements (Post v0.0.2)
+## Priority 5: Post v0.0.2 Improvements
+
+### 10. Add Negative Test Cases for Mutual Recursion
+
+**Status:** 📋 IDENTIFIED - Needs review and implementation
+**Location:** `src/unifyweaver/core/advanced/test_advanced.pl` or test runner
+**Created:** 2025-10-15
+
+**Current Test Coverage:**
+- ✅ `is_even(0)` → true (base case)
+- ✅ `is_even(4)` → true (positive case)
+- ✅ `is_odd(3)` → true (positive case)
+- ✅ `is_odd(6)` → empty (correctly fails)
+
+**Missing Negative Test Cases:**
+- ❌ `is_even(3)` → should fail/return nothing
+- ❌ `is_even(5)` → should fail/return nothing
+- ❌ `is_odd(2)` → should fail/return nothing
+- ❌ `is_odd(4)` → should fail/return nothing
+
+**Discussion:**
+Returning nothing (empty result) may be valid behavior for these predicates - they succeed for valid cases and fail silently for invalid cases. This follows Prolog semantics where predicates can succeed (with bindings), fail (no results), or error.
+
+**Review Needed:**
+1. Verify empty result is correct/expected behavior
+2. Consider if we want explicit false/failure indicators
+3. Evaluate if bash exit codes should indicate success/failure
+4. Decide if documentation should clarify this behavior
+
+**Fix Strategy (If Needed):**
+1. Add negative test cases to test_runner.sh
+2. Verify expected behavior (empty vs false vs error)
+3. Document the mutual recursion failure semantics
+4. Consider adding assertion-based tests if needed
+
+**Estimated Effort:** 1-2 hours (depends on semantic decisions)
+
+---
+
+## Priority 6: Future Enhancements (Post v0.0.2)
 
 See `context/FUTURE_WORK.md` for:
 - Tree recursion with fold helper pattern (fibonacci, binomial coefficients)
@@ -274,9 +313,9 @@ See `context/FUTURE_WORK.md` for:
 - [x] Priority 5, Item 9: Add regression tests ✅ (test_regressions.pl on main)
 - [x] Priority 6, Item 10: Update documentation ✅ (README.md, POST_RELEASE_TODO.md updated)
 
-**Completed:** 10/10 items ✅
-**Remaining:** None - All POST_RELEASE_TODO items complete!
-**Total Effort:** ~20 hours across two feature branches
+**Completed (v0.0.1 cycle):** 10/10 items ✅
+**New Items (v0.0.2+):** 1 item identified for review
+**Total Effort (v0.0.1):** ~20 hours across two feature branches
 
 ---
 
