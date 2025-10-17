@@ -263,6 +263,10 @@ template_system:template(http_basic_source, '#!/bin/bash
     # Raw output without any processing
     {{pred}} "$@"
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
 
 % Cached HTTP template - with caching support
@@ -341,4 +345,8 @@ template_system:template(http_cached_source, '#!/bin/bash
         echo "No cache file found"
     fi
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
