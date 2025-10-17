@@ -72,18 +72,18 @@ setup_cache :-
 
 compile_http_sources :-
     % Compile api_posts
-    format('   Compiling api_posts/1...~n', []),
-    dynamic_source_compiler:compile_dynamic_source(api_posts/1, [], BashCode1),
+    format('   Compiling api_posts/2...~n', []),
+    dynamic_source_compiler:compile_dynamic_source(api_posts/2, [], BashCode1),
     open('output/api_posts.sh', write, S1),
-    write(S1, BashCode1),
+    format(S1, '~s', [BashCode1]),
     close(S1),
     shell('chmod +x output/api_posts.sh', _),
     
     % Compile api_user
-    format('   Compiling api_user/1...~n', []),
-    dynamic_source_compiler:compile_dynamic_source(api_user/1, [], BashCode2),
+    format('   Compiling api_user/2...~n', []),
+    dynamic_source_compiler:compile_dynamic_source(api_user/2, [], BashCode2),
     open('output/api_user.sh', write, S2),
-    write(S2, BashCode2),
+    format(S2, '~s', [BashCode2]),
     close(S2),
     shell('chmod +x output/api_user.sh', _),
     
