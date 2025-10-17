@@ -126,7 +126,13 @@ template_system:template(awk_source_unary, '#!/bin/bash
 # {{pred}} - AWK source (arity 1)
 
 {{pred}}() {
-    awk -F"{{sep}}" ''{{awk_cmd}}''{{input_file}}
+    if [[ -z "{{input_file}}" ]]; then
+        # Read from stdin
+        awk -F"{{sep}}" ''{{awk_cmd}}''
+    else
+        # Read from file
+        awk -F"{{sep}}" ''{{awk_cmd}}'' {{input_file}}
+    fi
 }
 
 {{pred}}_stream() {
@@ -148,17 +154,29 @@ template_system:template(awk_source_binary, '#!/bin/bash
 
     if [[ -z "$key" ]]; then
         # No key provided, stream all
-        awk -F"{{sep}}" ''{{awk_cmd}}''{{input_file}}
+        if [[ -z "{{input_file}}" ]]; then
+            awk -F"{{sep}}" ''{{awk_cmd}}''
+        else
+            awk -F"{{sep}}" ''{{awk_cmd}}'' {{input_file}}
+        fi
     elif [[ -n "$value_var" ]]; then
         # Lookup mode: find value for key
-        local result=$(awk -F"{{sep}}" -v k="$key" ''{{awk_cmd}} { if ($1 == k) print $2 }''{{input_file}})
+        if [[ -z "{{input_file}}" ]]; then
+            local result=$(awk -F"{{sep}}" -v k="$key" ''{{awk_cmd}} { if ($1 == k) print $2 }'')
+        else
+            local result=$(awk -F"{{sep}}" -v k="$key" ''{{awk_cmd}} { if ($1 == k) print $2 }'' {{input_file}})
+        fi
         if [[ -n "$result" ]]; then
             eval "$value_var=\"$result\""
             echo "$key:$result"
         fi
     else
         # Check mode: does key exist?
-        awk -F"{{sep}}" -v k="$key" ''{{awk_cmd}} { if ($1 == k) { print $0; exit 0 } }''{{input_file}}
+        if [[ -z "{{input_file}}" ]]; then
+            awk -F"{{sep}}" -v k="$key" ''{{awk_cmd}} { if ($1 == k) { print $0; exit 0 } }''
+        else
+            awk -F"{{sep}}" -v k="$key" ''{{awk_cmd}} { if ($1 == k) { print $0; exit 0 } }'' {{input_file}}
+        fi
     fi
 }
 
