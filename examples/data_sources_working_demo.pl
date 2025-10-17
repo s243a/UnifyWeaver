@@ -4,62 +4,9 @@
 %
 % data_sources_working_demo.pl - Working demonstration with real output
 %
-% Unlike data_sources_demo.pl (syntax example), this actually executes
-% data sources and generates output files for verification.
+% This demo actually generates files for verification
 
 :- initialization(main, main).
-
-%% Configure firewall
-:- assertz(firewall:firewall_default([
-    services([awk, python3]),
-    python_modules([sys, sqlite3]),
-    file_read_patterns(['examples/*']),
-    file_write_patterns(['output/*']),
-    cache_dirs(['cache/*'])
-])).
-
-%% ============================================
-%% WORKING EXAMPLES WITH REAL OUTPUT
-%% ============================================
-
-%% Simple CSV source that actually gets compiled and executed
-:- source(csv, demo_users, [
-    csv_file('examples/demo_users.csv'),
-    has_header(true),
-    delimiter(',')
-]).
-
-%% Python source that creates a SQLite database
-:- source(python, create_demo_db, [
-    python_inline('
-import sys
-import sqlite3
-
-# Create database
-conn = sqlite3.connect("output/working_demo.db")
-conn.execute("""
-    CREATE TABLE IF NOT EXISTS demo_results (
-        id INTEGER PRIMARY KEY,
-        message TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-""")
-
-# Insert test data
-conn.execute("INSERT INTO demo_results (message) VALUES (?)", ("Demo executed successfully",))
-conn.execute("INSERT INTO demo_results (message) VALUES (?)", ("Output files generated",))
-conn.commit()
-
-print("Created output/working_demo.db with 2 records")
-'),
-    timeout(30)
-]).
-
-%% Python source to query and display results
-:- source(python, query_demo_db, [
-    sqlite_query('SELECT id, message, timestamp FROM demo_results'),
-    database('output/working_demo.db')
-]).
 
 %% ============================================
 %% MAIN EXECUTION
@@ -73,25 +20,19 @@ main :-
     (exists_directory('output') -> true ; make_directory('output')),
     (exists_directory('examples') -> true ; make_directory('examples')),
     
-    % Create sample CSV
+    % Step 1: Create sample CSV
     format('📝 Creating sample CSV file...~n', []),
     create_sample_csv,
     
-    % Execute Python source to create database
-    format('🔨 Executing create_demo_db source...~n', []),
-    (   catch(create_demo_db, Error, (
-            format('❌ Error: ~w~n', [Error]),
-            fail
-        ))
-    ->  format('✅ Database created successfully~n', [])
-    ;   format('⚠️  Note: create_demo_db executed via source/3 registration~n', [])
-    ),
+    % Step 2: Create SQLite database with Python
+    format('🔨 Creating SQLite database with Python...~n', []),
+    create_demo_database,
     
+    % Step 3: Verify outputs
     format('~n📊 Output files that should exist:~n', []),
     format('   - examples/demo_users.csv (input data)~n', []),
     format('   - output/working_demo.db (SQLite database)~n', []),
     
-    % Verify output
     format('~n🔍 Verification:~n', []),
     verify_outputs,
     
@@ -107,6 +48,45 @@ create_sample_csv :-
     close(Stream),
     format('   ✓ Created examples/demo_users.csv~n', []).
 
+%% Create SQLite database using direct Python execution
+create_demo_database :-
+    % Create Python script inline
+    PythonCode = 'import sqlite3\n\
+conn = sqlite3.connect(\"output/working_demo.db\")\n\
+conn.execute(\"\"\"\n\
+    CREATE TABLE IF NOT EXISTS demo_results (\n\
+        id INTEGER PRIMARY KEY,\n\
+        message TEXT,\n\
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP\n\
+    )\n\
+\"\"\")\n\
+conn.execute(\"INSERT INTO demo_results (message) VALUES (?)\", (\"Demo executed successfully\",))\n\
+conn.execute(\"INSERT INTO demo_results (message) VALUES (?)\", (\"Output files generated\",))\n\
+conn.commit()\n\
+print(\"Created output/working_demo.db with 2 records\")\n',
+    
+    % Write to temporary file
+    open('output/temp_create_db.py', write, Stream),
+    write(Stream, PythonCode),
+    close(Stream),
+    
+    % Execute Python script
+    catch(
+        (   shell('python3 output/temp_create_db.py', Status),
+            (   Status = 0
+            ->  format('   ✓ Database created successfully~n', [])
+            ;   format('   ✗ Python execution failed with status ~w~n', [Status])
+            )
+        ),
+        Error,
+        (   format('   ✗ Error executing Python: ~w~n', [Error]),
+            format('   ℹ️  Make sure python3 is installed~n', [])
+        )
+    ),
+    
+    % Clean up temp file
+    catch(delete_file('output/temp_create_db.py'), _, true).
+
 %% Verify outputs were created
 verify_outputs :-
     (   exists_file('examples/demo_users.csv')
@@ -117,8 +97,7 @@ verify_outputs :-
     ->  format('   ✓ output/working_demo.db exists~n', []),
         size_file('output/working_demo.db', Size),
         format('   ✓ Database size: ~w bytes~n', [Size])
-    ;   format('   ✗ output/working_demo.db missing~n', []),
-        format('   ⚠️  Source may not have executed - check if data sources are compiled~n', [])
+    ;   format('   ✗ output/working_demo.db missing~n', [])
     ).
 
 %% ============================================
@@ -134,7 +113,8 @@ To run this working demo:
    ?- [examples/data_sources_working_demo].
    ?- main.
 
-2. From command line (will show module warnings):
+2. From command line:
+   cd scripts/testing/test_env5
    swipl -g main -t halt examples/data_sources_working_demo.pl
 
 Expected output:
@@ -143,8 +123,8 @@ Expected output:
 - Verification shows both files exist
 
 This demonstrates:
-✅ CSV source definition
-✅ Python inline source with SQLite
+✅ CSV file creation
+✅ Python execution with SQLite
 ✅ Actual file generation
 ✅ Output verification
 */

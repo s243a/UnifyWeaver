@@ -1,11 +1,15 @@
 % Helper script to load data sources and demo
 % Usage: ?- [examples/load_demo].
 
-% Load modules only if not already loaded
-:- (current_module(csv_source) -> true ; use_module('src/unifyweaver/sources/csv_source')).
-:- (current_module(http_source) -> true ; use_module('src/unifyweaver/sources/http_source')).
-:- (current_module(json_source) -> true ; use_module('src/unifyweaver/sources/json_source')).
-:- (current_module(python_source) -> true ; use_module('src/unifyweaver/sources/python_source')).
+% Load the public sources interface (provides source/3)
+:- use_module('src/unifyweaver/sources').
+
+% Load plugin modules for side-effects only (no imports)
+% Using load_files/2 with imports([]) to explicitly prevent imports
+:- load_files('src/unifyweaver/sources/csv_source', [imports([])]).
+:- load_files('src/unifyweaver/sources/http_source', [imports([])]).
+:- load_files('src/unifyweaver/sources/json_source', [imports([])]).
+:- load_files('src/unifyweaver/sources/python_source', [imports([])]).
 
 % Load the demo
 :- [examples/data_sources_demo].
