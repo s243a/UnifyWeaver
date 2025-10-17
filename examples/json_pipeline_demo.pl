@@ -90,15 +90,15 @@ compile_json_sources :-
     format('   Compiling extract_users/2...~n', []),
     dynamic_source_compiler:compile_dynamic_source(extract_users/2, [], BashCode1),
     open('output/extract_users.sh', write, S1),
-    write(S1, BashCode1),
+    format(S1, '~s', [BashCode1]),
     close(S1),
     shell('chmod +x output/extract_users.sh', _),
     
     % Compile parse_data
-    format('   Compiling parse_data/1...~n', []),
-    dynamic_source_compiler:compile_dynamic_source(parse_data/1, [], BashCode2),
+    format('   Compiling parse_data/2...~n', []),
+    dynamic_source_compiler:compile_dynamic_source(parse_data/2, [], BashCode2),
     open('output/parse_data.sh', write, S2),
-    write(S2, BashCode2),
+    format(S2, '~s', [BashCode2]),
     close(S2),
     shell('chmod +x output/parse_data.sh', _),
     

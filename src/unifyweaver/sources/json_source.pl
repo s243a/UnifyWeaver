@@ -253,6 +253,10 @@ template_system:template(json_file_source, '#!/bin/bash
     shift
     jq {{jq_flags}} "$custom_filter" "{{json_file}}" "$@"
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
 
 % JSON stdin template - reads from stdin
@@ -295,4 +299,8 @@ template_system:template(json_stdin_source, '#!/bin/bash
     shift
     jq {{jq_flags}} "$custom_filter" "$@"
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
