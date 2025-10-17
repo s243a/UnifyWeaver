@@ -103,26 +103,26 @@ create_sample_data :-
 
 compile_awk_sources :-
     % Compile extract_errors
-    format('   Compiling extract_errors/3...~n', []),
-    dynamic_source_compiler:compile_dynamic_source(extract_errors/3, [], BashCode1),
+    format('   Compiling extract_errors/2...~n', []),
+    dynamic_source_compiler:compile_dynamic_source(extract_errors/2, [], BashCode1),
     open('output/extract_errors.sh', write, S1),
-    write(S1, BashCode1),
+    format(S1, '~s', [BashCode1]),
     close(S1),
     shell('chmod +x output/extract_errors.sh', _),
     
     % Compile calc_stats
-    format('   Compiling calc_stats/1...~n', []),
-    dynamic_source_compiler:compile_dynamic_source(calc_stats/1, [], BashCode2),
+    format('   Compiling calc_stats/2...~n', []),
+    dynamic_source_compiler:compile_dynamic_source(calc_stats/2, [], BashCode2),
     open('output/calc_stats.sh', write, S2),
-    write(S2, BashCode2),
+    format(S2, '~s', [BashCode2]),
     close(S2),
     shell('chmod +x output/calc_stats.sh', _),
     
     % Compile transform_data
-    format('   Compiling transform_data/3...~n', []),
-    dynamic_source_compiler:compile_dynamic_source(transform_data/3, [], BashCode3),
+    format('   Compiling transform_data/2...~n', []),
+    dynamic_source_compiler:compile_dynamic_source(transform_data/2, [], BashCode3),
     open('output/transform_data.sh', write, S3),
-    write(S3, BashCode3),
+    format(S3, '~s', [BashCode3]),
     close(S3),
     shell('chmod +x output/transform_data.sh', _),
     

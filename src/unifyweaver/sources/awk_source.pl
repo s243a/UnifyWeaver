@@ -132,6 +132,10 @@ template_system:template(awk_source_unary, '#!/bin/bash
 {{pred}}_stream() {
     {{pred}}
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
 
 % Arity 2 template: pred(Key, Value) - lookup or stream
@@ -166,4 +170,8 @@ template_system:template(awk_source_binary, '#!/bin/bash
     local key="$1"
     [[ -n $({{pred}} "$key") ]] && echo "$key exists"
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
