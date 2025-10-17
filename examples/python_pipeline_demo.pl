@@ -93,16 +93,16 @@ create_sample_data :-
 
 compile_python_sources :-
     % Compile store_data
-    format('   Compiling store_data/1...~n', []),
-    dynamic_source_compiler:compile_dynamic_source(store_data/1, [], BashCode1),
+    format('   Compiling store_data/2...~n', []),
+    dynamic_source_compiler:compile_dynamic_source(store_data/2, [], BashCode1),
     open('output/store_data.sh', write, S1),
     write(S1, BashCode1),
     close(S1),
     shell('chmod +x output/store_data.sh', _),
     
     % Compile query_data
-    format('   Compiling query_data/3...~n', []),
-    dynamic_source_compiler:compile_dynamic_source(query_data/3, [], BashCode2),
+    format('   Compiling query_data/2...~n', []),
+    dynamic_source_compiler:compile_dynamic_source(query_data/2, [], BashCode2),
     open('output/query_data.sh', write, S2),
     write(S2, BashCode2),
     close(S2),
