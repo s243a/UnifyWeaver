@@ -347,6 +347,40 @@ etl_pipeline :-
 % ?- etl_pipeline.                    % Complete pipeline
 ```
 
+#### End-to-End Pipeline Demo 🆕
+
+See the complete working pipeline in action:
+
+```bash
+cd scripts/testing/test_env5
+swipl -g main -t halt examples/pipeline_demo.pl
+```
+
+This demonstrates:
+1. **Source Definition** - Define CSV source with `source/3`
+2. **Compilation** - Compile to bash with `compile_dynamic_source/3`
+3. **Pipeline Execution** - Stream data through transformations
+4. **Output Generation** - Results written to files
+
+The pipeline:
+- Reads CSV data (4 users)
+- Streams all records
+- Filters by role (developers)
+- Aggregates by department
+- Outputs to `output/pipeline_results.txt`
+
+Generated files:
+- `output/users.sh` - Compiled bash functions
+- `output/run_pipeline.sh` - Pipeline script
+- `output/pipeline_results.txt` - Results
+
+**Key Features Demonstrated:**
+- ✅ No module import conflicts (fixed in v0.0.2)
+- ✅ source/3 predicate works seamlessly
+- ✅ Automatic bash compilation
+- ✅ Data streaming and filtering
+- ✅ Aggregation operations
+
 ## Recursion Support
 
 ### ✅ What Works
