@@ -96,7 +96,7 @@ compile_python_sources :-
     format('   Compiling store_data/2...~n', []),
     dynamic_source_compiler:compile_dynamic_source(store_data/2, [], BashCode1),
     open('output/store_data.sh', write, S1),
-    write(S1, BashCode1),
+    format(S1, '~s', [BashCode1]),
     close(S1),
     shell('chmod +x output/store_data.sh', _),
     
@@ -104,7 +104,7 @@ compile_python_sources :-
     format('   Compiling query_data/2...~n', []),
     dynamic_source_compiler:compile_dynamic_source(query_data/2, [], BashCode2),
     open('output/query_data.sh', write, S2),
-    write(S2, BashCode2),
+    format(S2, '~s', [BashCode2]),
     close(S2),
     shell('chmod +x output/query_data.sh', _),
     
