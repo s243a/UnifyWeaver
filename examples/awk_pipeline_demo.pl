@@ -17,13 +17,13 @@
 % AWK source 1: Parse log file and extract errors
 :- source(awk, extract_errors, [
     awk_command('$3 == "ERROR" { print $1, $2, $4 }'),
-    delimiter(' ')
+    field_separator(' ')
 ]).
 
 % AWK source 2: Calculate statistics from data
 :- source(awk, calc_stats, [
     awk_command('{ sum += $2; count++ } END { print "Total:", sum, "Average:", sum/count }'),
-    delimiter(':')
+    field_separator(':')
 ]).
 
 % AWK source 3: Transform CSV to different format
