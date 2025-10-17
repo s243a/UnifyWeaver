@@ -17,7 +17,7 @@
 % JSON source 1: Extract user names from JSON file
 :- source(json, extract_users, [
     json_file('output/sample.json'),
-    jq_filter('.users[] | {name: .name, role: .role} | @tsv'),
+    jq_filter('.users[] | [.name, .role] | @tsv'),
     raw_output(true)
 ]).
 
