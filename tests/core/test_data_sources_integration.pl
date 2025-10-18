@@ -12,10 +12,11 @@
     test_real_world_scenario/0
 ]).
 
-:- use_module('../../src/unifyweaver/sources/csv_source').
-:- use_module('../../src/unifyweaver/sources/python_source').
-:- use_module('../../src/unifyweaver/sources/http_source').
-:- use_module('../../src/unifyweaver/sources/json_source').
+% Load source modules without importing their predicates (to avoid conflicts)
+:- use_module('../../src/unifyweaver/sources/csv_source', []).
+:- use_module('../../src/unifyweaver/sources/python_source', []).
+:- use_module('../../src/unifyweaver/sources/http_source', []).
+:- use_module('../../src/unifyweaver/sources/json_source', []).
 :- use_module('../../src/unifyweaver/core/firewall').
 :- use_module(library(lists)).
 
@@ -38,7 +39,7 @@ test_csv_to_python_pipeline :-
     
     % Compile CSV source
     catch(
-        (   compile_source(csv, users/3, [
+        (   csv_source:compile_source(users/3, [
                 csv_file('test_users.csv'),
                 has_header(true)
             ], [], CsvCode),
@@ -57,7 +58,7 @@ test_csv_to_python_pipeline :-
     
     % Compile Python source to process CSV data
     catch(
-        (   compile_source(python, process_users/2, [
+        (   python_source:compile_source(process_users/2, [
                 python_inline('
 import sys
 for line in sys.stdin:
@@ -90,7 +91,7 @@ test_http_to_json_pipeline :-
     
     % Compile HTTP source (mock API endpoint)
     catch(
-        (   compile_source(http, api_users/1, [
+        (   http_source:compile_source(api_users/1, [
                 url('https://jsonplaceholder.typicode.com/users'),
                 method(get),
                 cache_duration(300)
@@ -112,7 +113,7 @@ test_http_to_json_pipeline :-
     
     % Compile JSON source to parse HTTP response
     catch(
-        (   compile_source(json, parse_api_users/2, [
+        (   json_source:compile_source(parse_api_users/2, [
                 jq_filter('.[] | {name: .name, email: .email}'),
                 json_stdin(true),
                 output_format(tsv)
@@ -189,7 +190,7 @@ test_real_world_scenario :-
     
     % 1. HTTP Source: Fetch GitHub API data
     catch(
-        (   compile_source(http, github_repos/1, [
+        (   http_source:compile_source(github_repos/1, [
                 url('https://api.github.com/users/octocat/repos'),
                 headers(['User-Agent: UnifyWeaver/0.0.2']),
                 cache_duration(3600)
@@ -208,7 +209,7 @@ test_real_world_scenario :-
     
     % 2. JSON Source: Parse repository data
     catch(
-        (   compile_source(json, extract_repo_info/3, [
+        (   json_source:compile_source(extract_repo_info/3, [
                 jq_filter('.[] | [.name, .description, .stargazers_count] | @tsv'),
                 json_stdin(true),
                 raw_output(true)
@@ -227,7 +228,7 @@ test_real_world_scenario :-
     
     % 3. Python Source: Store in SQLite database
     catch(
-        (   compile_source(python, store_repos/3, [
+        (   python_source:compile_source(store_repos/3, [
                 sqlite_query('INSERT INTO repos (name, description, stars) VALUES (?, ?, ?)'),
                 database('github_repos.db')
             ], [], SqliteCode),

@@ -19,6 +19,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(uri)).
 
 %% rule_firewall(?PredicateIndicator, ?PolicyTerms) is nondet.
 %
@@ -204,7 +205,7 @@ validate_network_access(URL, Firewall) :-
     ),
     
     % Check host patterns (if present)
-    findall(P, member(network_hosts(Ps), Firewall), Patterns),
+    findall(Ps, member(network_hosts(Ps), Firewall), Patterns),
     flatten(Patterns, FlatPatterns),
     (   FlatPatterns == []
     ->  true  % No host restrictions
@@ -221,13 +222,17 @@ validate_network_access(URL, Firewall) :-
 % @arg Code The Python code to validate
 % @arg Firewall The firewall policy terms
 validate_python_imports(Code, Firewall) :-
-    findall(M, member(python_modules(Ms), Firewall), Modules),
+    findall(Ms, member(python_modules(Ms), Firewall), Modules),
     flatten(Modules, AllowedModules),
     (   AllowedModules == []
     ->  true  % No import restrictions
     ;   extract_python_imports(Code, ImportedModules),
         forall(member(Module, ImportedModules), 
-               (   member(Module, AllowedModules)
+               (   % Normalize both to atoms for comparison
+                   (atom(Module) -> ModuleAtom = Module ; atom_string(ModuleAtom, Module)),
+                   (   member(ModuleAtom, AllowedModules)
+                   ;   member(ModuleStr, AllowedModules), atom_string(ModuleAtom, ModuleStr)
+                   )
                ->  true
                ;   format(user_error, 'Firewall blocks Python import: ~w~n', [Module]),
                    fail
@@ -266,7 +271,7 @@ validate_file_access(File, Mode, Firewall) :-
 % @arg CacheFile The cache file path
 % @arg Firewall The firewall policy terms
 validate_cache_directory(CacheFile, Firewall) :-
-    findall(D, member(cache_dirs(Ds), Firewall), Dirs),
+    findall(Ds, member(cache_dirs(Ds), Firewall), Dirs),
     flatten(Dirs, AllowedDirs),
     (   AllowedDirs == []
     ->  true  % No cache restrictions
@@ -285,8 +290,16 @@ validate_cache_directory(CacheFile, Firewall) :-
 %
 % Check if URL matches any of the allowed host patterns.
 validate_url_against_patterns(URL, Patterns) :-
-    uri_parse(URL, uri(_, _, Host, _, _)),
-    member_pattern(Host, Patterns).
+    uri_components(URL, uri_components(_, Authority, _, _, _)),
+    (   var(Authority)
+    ->  fail  % No authority in URL
+    ;   uri_authority_components(Authority, uri_authority(_, _, Host, _)),
+        (   var(Host)
+        ->  fail  % No host in authority
+        ;   atom_string(Host, HostStr),
+            member_pattern(HostStr, Patterns)
+        )
+    ).
 
 %% validate_file_against_patterns(+File, +Patterns) is semidet.
 %
@@ -298,34 +311,63 @@ validate_file_against_patterns(File, Patterns) :-
 %
 % Check if Item matches any pattern in Patterns (supports wildcards).
 member_pattern(Item, Patterns) :-
+    % Convert Item to string for consistent matching
+    (   var(Item) -> fail  % Fail if Item is unbound
+    ;   atom(Item) -> atom_string(Item, ItemStr)
+    ;   string(Item) -> ItemStr = Item
+    ;   format(atom(ItemStr), '~w', [Item])  % Fallback conversion
+    ),
     member(Pattern, Patterns),
-    (   sub_atom(Pattern, _, _, _, '*')
-    ->  wildcard_match(Pattern, Item)
-    ;   Item = Pattern
+    % Convert Pattern to string
+    (   var(Pattern) -> fail  % Fail if Pattern is unbound
+    ;   atom(Pattern) -> atom_string(Pattern, PatternStr)
+    ;   string(Pattern) -> PatternStr = Pattern
+    ;   format(atom(PatternAtom), '~w', [Pattern]), atom_string(PatternAtom, PatternStr)
+    ),
+    (   sub_string(PatternStr, _, _, _, "*")
+    ->  wildcard_match(PatternStr, ItemStr)
+    ;   ItemStr = PatternStr
     ).
 
 %% wildcard_match(+Pattern, +String) is semidet.
 %
 % Simple wildcard matching (supports * as wildcard).
+% Both Pattern and String should be strings.
 wildcard_match(Pattern, String) :-
-    split_string(Pattern, '*', '', Parts),
-    wildcard_match_parts(Parts, String, 0).
+    % Ensure both are strings
+    (   string(Pattern) -> PatternStr = Pattern
+    ;   atom(Pattern) -> atom_string(Pattern, PatternStr)
+    ;   PatternStr = Pattern
+    ),
+    (   string(String) -> StringStr = String
+    ;   atom(String) -> atom_string(String, StringStr)
+    ;   StringStr = String
+    ),
+    split_string(PatternStr, '*', '', Parts),
+    wildcard_match_parts(Parts, StringStr, 0).
 
 wildcard_match_parts([], _, _) :- !.
-wildcard_match_parts([Part], String, Offset) :-
-    !,
-    string_length(Part, PartLen),
-    string_length(String, StringLen),
-    StartPos is StringLen - PartLen,
-    StartPos >= Offset,
-    sub_string(String, StartPos, PartLen, 0, Part).
 wildcard_match_parts([Part|Rest], String, Offset) :-
     string_length(Part, PartLen),
-    sub_string(String, Offset, PartLen, _, Part),
-    !,
-    NewOffset is Offset + PartLen,
-    wildcard_match_parts(Rest, String, NewOffset).
+    (   PartLen =:= 0
+    ->  % Empty part means wildcard matched zero or more chars, continue with rest
+        wildcard_match_parts(Rest, String, Offset)
+    ;   Rest == []
+    ->  % Last part must match at end
+        string_length(String, StringLen),
+        StartPos is StringLen - PartLen,
+        StartPos >= Offset,
+        sub_string(String, StartPos, PartLen, 0, Part)
+    ;   % Middle part - find it and continue
+        sub_string(String, Offset, PartLen, _, Part),
+        !,
+        NewOffset is Offset + PartLen,
+        wildcard_match_parts(Rest, String, NewOffset)
+    ).
 wildcard_match_parts([Part|Rest], String, Offset) :-
+    % Try next position if current doesn't match
+    string_length(Part, PartLen),
+    PartLen > 0,  % Only advance if part is non-empty
     string_length(String, StringLen),
     Offset < StringLen,
     NextOffset is Offset + 1,
@@ -345,14 +387,14 @@ extract_python_imports(Code, Modules) :-
 %
 % Extract module name from a Python import line.
 extract_import_from_line(Line, Module) :-
-    % Handle "import module" statements
-    (   re_matchsub('import\\s+([a-zA-Z_][a-zA-Z0-9_]*)', Line, Sub, [])
-    ->  get_dict(1, Sub, Module)
-    ;   % Handle "from module import ..." statements
-        re_matchsub('from\\s+([a-zA-Z_][a-zA-Z0-9_.]*)\\s+import', Line, Sub, [])
+    % Handle "from module import ..." statements first (more specific)
+    (   re_matchsub('^\\s*from\\s+([a-zA-Z_][a-zA-Z0-9_.]*)\\s+import', Line, Sub, [])
     ->  get_dict(1, Sub, ModuleAtom),
         atom_string(ModuleAtom, ModuleString),
         split_string(ModuleString, '.', '', [FirstPart|_]),
         atom_string(Module, FirstPart)
+    ;   % Handle "import module" statements
+        re_matchsub('^\\s*import\\s+([a-zA-Z_][a-zA-Z0-9_]*)', Line, Sub, [])
+    ->  get_dict(1, Sub, Module)
     ;   fail
     ).

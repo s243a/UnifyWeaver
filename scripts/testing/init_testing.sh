@@ -158,10 +158,12 @@ dirs=(
     "src/unifyweaver/core"
     "src/unifyweaver/backends/bash"
     "src/unifyweaver/pipelines"
+    "src/unifyweaver/sources"
     "tests/output"
     "templates"
     "scripts"
     "config"
+    "examples"
 )
 
 for dir in "${dirs[@]}"; do
@@ -174,9 +176,11 @@ cp_dirs=(
     "src/unifyweaver/core"
     "src/unifyweaver/backends/bash"
     "src/unifyweaver/pipelines"
+    "src/unifyweaver/sources"
     "templates"
     "scripts"
     "config"
+    "examples"
 )
 
 # (removed hardcoded TARGET_ROOT; keep portable default)
@@ -193,11 +197,11 @@ for dir in "${cp_dirs[@]}"; do
     # Use a case statement to handle the special 'scripts' directory
     case "$dir" in
         "scripts")
-            # Copy all files from 'scripts' but exclude 'testing/test_env'
+            # Copy all files from 'scripts' but exclude all 'testing/test_env*' directories
             # The 'rsync' command is ideal for this kind of selective copying
             # The --exclude option lets you skip specific directories or files
-            if rsync -av --exclude 'testing/test_env' "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/"; then
-                echo -e "${GREEN}✓${NC} Copied contents of scripts, excluding test_env"
+            if rsync -av --exclude 'testing/test_env*' "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/"; then
+                echo -e "${GREEN}✓${NC} Copied contents of scripts, excluding test_env*"
             else
                 echo -e "${RED}✗${NC} Failed to copy contents of scripts"
                 exit 1
@@ -238,8 +242,19 @@ fi
 # Copy test files from the main project
 echo -e "\n${YELLOW}Installing test files...${NC}"
 if [[ -d "$MAIN_PROJECT_ROOT/tests" ]]; then
+    # Copy top-level test files
     cp "$MAIN_PROJECT_ROOT/tests/"*.pl "$TARGET_ROOT/tests/" 2>/dev/null || true
-    echo -e "${GREEN}✓${NC} Copied test files from main project"
+    
+    # Copy test files from tests/core/ if it exists
+    if [[ -d "$MAIN_PROJECT_ROOT/tests/core" ]]; then
+        mkdir -p "$TARGET_ROOT/tests/core"
+        cp "$MAIN_PROJECT_ROOT/tests/core/"*.pl "$TARGET_ROOT/tests/core/" 2>/dev/null || true
+        echo -e "${GREEN}✓${NC} Copied test files from main project (including tests/core/)"
+    else
+        echo -e "${GREEN}✓${NC} Copied test files from main project"
+    fi
+else
+    echo -e "${YELLOW}i${NC} No tests directory found in main project"
 fi
 
 # Create additional test files
@@ -325,6 +340,17 @@ EOF
     echo -e "${GREEN}✓${NC} Created default python_paths.txt"
 fi
 
+# Copy find_swi-prolog.sh helper script early (before any interactive prompts)
+echo -e "\n${YELLOW}Installing helper scripts...${NC}"
+if [[ -f "$SCRIPT_DIR/find_swi-prolog.sh" ]]; then
+    cp -f "$SCRIPT_DIR/find_swi-prolog.sh" "$TARGET_ROOT/find_swi-prolog.sh"
+    chmod +x "$TARGET_ROOT/find_swi-prolog.sh"
+    echo -e "${GREEN}✓${NC} Copied find_swi-prolog.sh helper script"
+else
+    echo -e "${RED}✗${NC} Warning: find_swi-prolog.sh not found in $SCRIPT_DIR"
+    echo -e "${YELLOW}i${NC} The launcher may not work correctly without this file"
+fi
+
 cat > "$TARGET_ROOT/config/assumed_packages.txt" << 'EOF'
 # Packages to assume are available without checking
 # Add package names here, one per line
@@ -380,10 +406,8 @@ cd "$TARGET_ROOT"
 # Snapshot repo config into the test_env so the launcher is self-contained
 if [[ -f "$SCRIPT_DIR/.unifyweaver.conf" ]]; then
   cp -f "$SCRIPT_DIR/.unifyweaver.conf" "$TARGET_ROOT/${FIND_PREFIX}.unifyweaver.conf"
+  echo -e "${GREEN}✓${NC} Copied .unifyweaver.conf to test environment"
 fi
-
-
-
 
 # Ask user about applying settings to the main testing directory
 echo ""
@@ -409,8 +433,6 @@ fi
 
 
 
-# Optionally snapshot the helper too
-cp -f "$SCRIPT_DIR/find_swi-prolog.sh" "./find_swi-prolog.sh"
 
 
 

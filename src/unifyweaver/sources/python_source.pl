@@ -259,6 +259,10 @@ PYTHON
 {{pred}}_stream() {
     {{pred}}
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
 
 % Python stdin template - handles stdin input
@@ -286,6 +290,10 @@ PYTHON
     # Transform stdin through Python code
     {{pred}}
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
 
 % Specialized SQLite template
@@ -318,4 +326,8 @@ PYTHON
     # Direct query interface
     {{pred}} "$@"
 }
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').

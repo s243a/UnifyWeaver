@@ -41,14 +41,13 @@ test_service_validation :-
         )
     ),
     
-    % Test denied service (should fail)
-    catch(
-        (   validate_service(dangerous_tool, [services([python3, curl]), denied([dangerous_tool])]),
-            format('    ❌ Denied service should have failed~n', []),
-            fail
-        ),
-        error(_, _),
-        format('    ✅ Denied service properly blocked~n', [])
+    % Test denied service (should fail validation)
+    % Note: Current firewall prints message but doesn't throw exception
+    % See context/firewall_behavior_design.md for future enhancement
+    (   \+ validate_service(dangerous_tool, [services([python3, curl]), denied([dangerous_tool])])
+    ->  format('    ✅ Denied service properly blocked~n', [])
+    ;   format('    ❌ Denied service validation failed~n', []),
+        fail
     ),
     
     % Test service not in allowlist (should fail silently in this implementation)
@@ -81,13 +80,10 @@ test_network_validation :-
     ),
     
     % Test denied network access (should fail)
-    catch(
-        (   validate_network_access('https://malicious.com', [network_access(denied)]),
-            format('    ❌ Network access should have been denied~n', []),
-            fail
-        ),
-        error(_, _),
-        format('    ✅ Network access properly denied~n', [])
+    (   \+ validate_network_access('https://malicious.com', [network_access(denied)])
+    ->  format('    ✅ Network access properly denied~n', [])
+    ;   format('    ❌ Network access should have been denied~n', []),
+        fail
     ).
 
 %% Test Python import validation
@@ -108,13 +104,10 @@ test_python_import_validation :-
     
     % Test blocked import (should fail)  
     TestCode2 = 'import os\nimport sys',
-    catch(
-        (   validate_python_imports(TestCode2, [python_modules([sys, json])]),
-            format('    ❌ Blocked import should have failed~n', []),
-            fail
-        ),
-        error(_, _),
-        format('    ✅ Blocked Python import properly denied~n', [])
+    (   \+ validate_python_imports(TestCode2, [python_modules([sys, json])])
+    ->  format('    ✅ Blocked Python import properly denied~n', [])
+    ;   format('    ❌ Blocked import should have failed~n', []),
+        fail
     ).
 
 %% Test file access validation
@@ -135,15 +128,12 @@ test_file_access_validation :-
     ),
     
     % Test blocked file access (should fail)
-    catch(
-        (   validate_file_access('/etc/passwd', read, [
+    (   \+ validate_file_access('/etc/passwd', read, [
                 file_read_patterns(['data/*', 'config/*'])
-            ]),
-            format('    ❌ Blocked file access should have failed~n', []),
-            fail
-        ),
-        error(_, _),
-        format('    ✅ Blocked file access properly denied~n', [])
+            ])
+    ->  format('    ✅ Blocked file access properly denied~n', [])
+    ;   format('    ❌ Blocked file access should have failed~n', []),
+        fail
     ).
 
 %% Test cache directory validation
@@ -164,13 +154,10 @@ test_cache_validation :-
     ),
     
     % Test blocked cache directory (should fail)
-    catch(
-        (   validate_cache_directory('/root/secret_cache', [
+    (   \+ validate_cache_directory('/root/secret_cache', [
                 cache_dirs(['/tmp/*', '/var/cache/*'])
-            ]),
-            format('    ❌ Blocked cache access should have failed~n', []),
-            fail
-        ),
-        error(_, _),
-        format('    ✅ Blocked cache access properly denied~n', [])
+            ])
+    ->  format('    ✅ Blocked cache access properly denied~n', [])
+    ;   format('    ❌ Blocked cache access should have failed~n', []),
+        fail
     ).
