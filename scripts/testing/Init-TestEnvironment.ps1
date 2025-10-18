@@ -203,6 +203,40 @@ foreach ($Dir in $SourceDirs) {
 
 Write-Host "[OK] All modules copied" -ForegroundColor Green
 
+# Copy PowerShell compatibility layer
+Write-Host ""
+Write-Host "[COPY] Setting up PowerShell compatibility layer..." -ForegroundColor Cyan
+
+$PSCompatSource = Join-Path $ProjectRoot "scripts\powershell-compat"
+if (Test-Path $PSCompatSource) {
+    # Copy init_unify_compat.ps1 to scripts/
+    $InitCompatSource = Join-Path $PSCompatSource "init_unify_compat.ps1"
+    $InitCompatDest = Join-Path $TargetRoot "scripts\init_unify_compat.ps1"
+
+    if (Test-Path $InitCompatSource) {
+        Copy-Item $InitCompatSource $InitCompatDest -Force
+        Write-Host "  Copied: init_unify_compat.ps1 -> scripts/" -ForegroundColor Gray
+    } else {
+        Write-Host "[WARNING] init_unify_compat.ps1 not found in powershell-compat/" -ForegroundColor Yellow
+    }
+
+    # Copy test_compat_layer.ps1 to root
+    $TestCompatSource = Join-Path $PSCompatSource "test_compat_layer.ps1"
+    $TestCompatDest = Join-Path $TargetRoot "test_compat_layer.ps1"
+
+    if (Test-Path $TestCompatSource) {
+        Copy-Item $TestCompatSource $TestCompatDest -Force
+        Write-Host "  Copied: test_compat_layer.ps1 -> root/" -ForegroundColor Gray
+    } else {
+        Write-Host "[WARNING] test_compat_layer.ps1 not found in powershell-compat/" -ForegroundColor Yellow
+    }
+
+    Write-Host "[OK] PowerShell compatibility layer installed" -ForegroundColor Green
+} else {
+    Write-Host "[WARNING] PowerShell compatibility layer not found at: $PSCompatSource" -ForegroundColor Yellow
+    Write-Host "[INFO] Skipping PowerShell compatibility setup" -ForegroundColor Yellow
+}
+
 # Create output directories
 Write-Host ""
 Write-Host "[CREATE] Creating output directories..." -ForegroundColor Cyan
