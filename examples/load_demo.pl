@@ -1,3 +1,5 @@
+:- encoding(utf8).
+
 % Helper script to load data sources and demo
 % Usage: ?- [examples/load_demo].
 
@@ -14,4 +16,4 @@
 % Load the demo
 :- [examples/data_sources_demo].
 
-:- format('~n✅ Demo loaded! Run: ?- main.~n~n', []).
+:- format('~n[OK] Demo loaded! Run: ?- main.~n~n', []).
