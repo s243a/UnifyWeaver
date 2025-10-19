@@ -9,6 +9,9 @@
 
 :- initialization(main, main).
 
+%% Load platform compatibility for safe emoji output
+:- use_module(unifyweaver(core/platform_compat)).
+
 %% Configure firewall for multi-service security
 :- assertz(firewall:firewall_default([
     services([awk, python3, curl, jq]),
@@ -102,31 +105,31 @@ print(f"Processed {len(user_posts)} posts from {len(user_counts)} users")
 
 %% ETL Pipeline: API → JSON → Python → SQLite
 etl_pipeline :-
-    format('🚀 Starting ETL Pipeline...~n', []),
-    
+    safe_format('📡 Starting ETL Pipeline...~n', []),
+
     % Step 1: Fetch data from API
-    format('📡 Fetching posts from API...~n', []),
+    safe_format('🚀 Fetching posts from API...~n', []),
     % api_posts/1 would be called here in actual execution
-    
-    % Step 2: Parse JSON and transform data  
-    format('📊 Parsing JSON data...~n', []),
+
+    % Step 2: Parse JSON and transform data
+    safe_format('📊 Parsing JSON data...~n', []),
     % api_posts | parse_posts | analyze_data pipeline would run here
-    
+
     % Step 3: Generate report
-    format('📈 Generating report...~n', []),
+    safe_format('📈 Generating report...~n', []),
     % user_report would be called here
-    
-    format('✅ ETL Pipeline completed successfully!~n', []).
+
+    safe_format('✅ ETL Pipeline completed successfully!~n', []).
 
 %% Demo user validation using CSV data
 validate_users :-
-    format('👥 Validating user data...~n', []),
+    safe_format('👥 Validating user data...~n', []),
     % users/3 would be called to stream user data for validation
-    format('✅ User validation completed!~n', []).
+    safe_format('✅ User validation completed!~n', []).
 
 %% Main demo entry point
 main :-
-    format('🎯 UnifyWeaver v0.0.2 Data Sources Demo~n', []),
+    format('UnifyWeaver v0.0.2 Data Sources Demo~n', []),
     format('==========================================~n', []),
     
     % Ensure output directory exists
@@ -140,7 +143,7 @@ main :-
     etl_pipeline,
     validate_users,
     
-    format('~n🎉 Demo completed! Check output/ directory for results.~n', []).
+    format('~nDemo completed! Check output/ directory for results.~n', []).
 
 %% Create sample data files for demo
 create_sample_data :-
@@ -153,7 +156,7 @@ create_sample_data :-
     write(Stream, 'diana,28,chicago,true\n'),
     close(Stream),
     
-    format('📝 Created sample data files~n', []).
+    format('Created sample data files~n', []).
 
 %% ============================================
 %% USAGE EXAMPLES

@@ -404,6 +404,40 @@ Test expects firewall to throw exceptions for denied services, but current imple
 
 ---
 
+### 14. Fix PowerShell Compatibility Layer WSL Backend Invocation from Bash
+
+**Status:** 📋 IDENTIFIED - Known limitation
+**Location:** `scripts/powershell-compat/test_compat_layer.ps1`
+**Created:** 2025-10-17
+
+**Current Behavior:**
+- ✅ Works perfectly when called from PowerShell directly
+- ✅ Default Cygwin backend works from both PowerShell and WSL/Bash
+- ❌ Setting WSL backend via env var fails when invoked from WSL/Bash
+
+**Error When Called from WSL:**
+```bash
+powershell.exe -Command "$env:UNIFYWEAVER_EXEC_MODE='wsl'; .\test_compat_layer.ps1"
+# Error: The term ':UNIFYWEAVER_EXEC_MODE=wsl' is not recognized...
+```
+
+**Root Cause:**
+Bash shell escaping adds a `:` prefix when parsing the PowerShell command string, causing PowerShell to interpret it as a malformed command.
+
+**Workaround (Current):**
+Set environment variable in Windows before calling, or use PowerShell directly.
+
+**Proposed Fix:**
+1. Create a wrapper script approach using `-File` parameter
+2. Use a temporary PowerShell script to set env var and invoke test
+3. Or document as limitation with recommended usage patterns
+
+**Estimated Effort:** 1-2 hours
+
+**Priority:** Low - The primary use case (running from PowerShell) works correctly. Cross-environment invocation is edge case.
+
+---
+
 ## Priority 6: Future Enhancements (Post v0.0.2)
 
 See `context/FUTURE_WORK.md` for:
