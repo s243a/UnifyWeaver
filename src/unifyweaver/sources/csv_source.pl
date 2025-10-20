@@ -113,8 +113,8 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     ;   member(columns(ManualColumns), AllOptions)
     ->  HeaderMode = manual,
         Columns = ManualColumns,
-        (   length(Columns, ManualArity),
-            ManualArity =:= Arity
+        length(Columns, ManualArity),
+        (   ManualArity =:= Arity
         ->  true
         ;   format('Error: columns list length (~w) does not match arity (~w)~n', [ManualArity, Arity]),
             fail
@@ -215,7 +215,7 @@ field_reference(N, Field) :-
 %  Generate awk code for quote handling
 generate_quote_handling_code(QuoteChar, strip, Code) :-
     format(atom(Code), 'gsub(/~w/, "", $0)', [QuoteChar]).
-generate_quote_handling_code(QuoteChar, preserve, '') :-
+generate_quote_handling_code(_QuoteChar, preserve, '') :-
     % No quote handling - preserve as-is
     true.
 generate_quote_handling_code(QuoteChar, escape, Code) :-

@@ -170,6 +170,31 @@ New-UWCommand -Name 'uw-rm'      -CmdName 'rm'
 New-UWCommand -Name 'uw-mkdir'   -CmdName 'mkdir'
 New-UWCommand -Name 'uw-rmdir'   -CmdName 'rmdir'
 
+function uw-bash {
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$CommandArgs
+    )
+
+    if ($CommandArgs.Length -gt 0 -and $CommandArgs[0] -eq '-c' -and $CommandArgs.Length -ge 2) {
+        $scriptContent = $CommandArgs[1]
+        $extraArgs = if ($CommandArgs.Length -gt 2) {
+            ' ' + ($CommandArgs[2..($CommandArgs.Length - 1)] | ForEach-Object { _PosixQuote $_ } -join ' ')
+        } else {
+            ''
+        }
+        Invoke-UnifyCommand -Command ("bash$extraArgs") -Stdin $scriptContent
+    } elseif ($CommandArgs.Length -gt 0) {
+        $quotedArgs = $CommandArgs | ForEach-Object { _PosixQuote $_ }
+        Invoke-UnifyCommand -Command ("bash " + ($quotedArgs -join ' '))
+    } else {
+        Invoke-UnifyCommand -Command 'bash'
+    }
+}
+
+New-Item -Path Function:\global:uw-bash -Value (Get-Item Function:\uw-bash).ScriptBlock -Force | Out-Null
+
 # Deterministic listing for pipelines
 New-UWCommand -Name 'uw-ls' -CmdName 'ls -1'
 

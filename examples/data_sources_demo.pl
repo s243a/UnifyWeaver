@@ -12,6 +12,9 @@
 %% Load platform compatibility for safe emoji output
 :- use_module(unifyweaver(core/platform_compat)).
 
+%% Load data sources system
+:- use_module(unifyweaver(sources)).
+
 %% Configure firewall for multi-service security
 :- assertz(firewall:firewall_default([
     services([awk, python3, curl, jq]),
@@ -29,7 +32,7 @@
 
 %% 1. CSV Source - User data with header auto-detection
 :- source(csv, users, [
-    csv_file('examples/sample_users.csv'),
+    csv_file('input/sample_users.csv'),
     has_header(true),
     delimiter(',')
 ]).
@@ -105,45 +108,48 @@ print(f"Processed {len(user_posts)} posts from {len(user_counts)} users")
 
 %% ETL Pipeline: API → JSON → Python → SQLite
 etl_pipeline :-
-    safe_format('📡 Starting ETL Pipeline...~n', []),
+    safe_format('\U0001F4E1 Starting ETL Pipeline...~n', []),  % 📡
 
     % Step 1: Fetch data from API
-    safe_format('🚀 Fetching posts from API...~n', []),
+    safe_format('\U0001F680 Fetching posts from API...~n', []),  % 🚀
     % api_posts/1 would be called here in actual execution
 
     % Step 2: Parse JSON and transform data
-    safe_format('📊 Parsing JSON data...~n', []),
+    safe_format('\U0001F4CA Parsing JSON data...~n', []),  % 📊
     % api_posts | parse_posts | analyze_data pipeline would run here
 
     % Step 3: Generate report
-    safe_format('📈 Generating report...~n', []),
+    safe_format('\U0001F4C8 Generating report...~n', []),  % 📈
     % user_report would be called here
 
-    safe_format('✅ ETL Pipeline completed successfully!~n', []).
+    safe_format('\u2705 ETL Pipeline completed successfully!~n', []).  % ✅
 
 %% Demo user validation using CSV data
 validate_users :-
-    safe_format('👥 Validating user data...~n', []),
+    safe_format('\U0001F465 Validating user data...~n', []),  % 👥
     % users/3 would be called to stream user data for validation
-    safe_format('✅ User validation completed!~n', []).
+    safe_format('\u2705 User validation completed!~n', []).  % ✅
 
 %% Main demo entry point
 main :-
     format('UnifyWeaver v0.0.2 Data Sources Demo~n', []),
     format('==========================================~n', []),
-    
-    % Ensure output directory exists
+
+    % Ensure directories exist
+    (   exists_directory('input') -> true ; make_directory('input')),
     (   exists_directory('output') -> true ; make_directory('output')),
     (   exists_directory('cache') -> true ; make_directory('cache')),
-    
+
     % Create sample CSV data
     create_sample_data,
-    
+
     % Run demo scenarios
     etl_pipeline,
     validate_users,
-    
-    format('~nDemo completed! Check output/ directory for results.~n', []).
+
+    format('~nDemo completed!~n', []),
+    format('  Input data: input/sample_users.csv~n', []),
+    format('  (Output would be in output/ if sources were compiled and executed)~n', []).
 
 %% Create sample data files for demo
 create_sample_data :-

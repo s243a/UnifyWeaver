@@ -93,37 +93,34 @@ emoji_to_bmp('🏗️', '🏗').  % U+1F3D7 U+FE0F → U+1F3D7
 %  Used when emoji_level is 'ascii' or when 'bmp' mode encounters non-BMP emoji.
 
 % Status indicators (BMP range U+2000-U+27FF)
-emoji_fallback('✅', '[OK]').      % U+2705
-emoji_fallback('❌', '[FAIL]').    % U+274C
-emoji_fallback('⚠️', '[WARN]').    % U+26A0 U+FE0F
-emoji_fallback('⚠', '[WARN]').     % U+26A0 (BMP version)
-emoji_fallback('ℹ️', '[INFO]').    % U+2139 U+FE0F
-emoji_fallback('ℹ', '[INFO]').     % U+2139 (BMP version)
+emoji_fallback('\u2705', '[OK]').      % ✅ U+2705
+emoji_fallback('\u274C', '[FAIL]').    % ❌ U+274C
+emoji_fallback('\u26A0', '[WARN]').    % ⚠ U+26A0 (BMP version)
+emoji_fallback('\u2139', '[INFO]').    % ℹ U+2139 (BMP version)
 
 % Progress indicators (non-BMP range U+1F300-U+1F9FF)
-emoji_fallback('🚀', '[STEP]').    % U+1F680
-emoji_fallback('📡', '[LOAD]').    % U+1F4E1
-emoji_fallback('📊', '[DATA]').    % U+1F4CA
-emoji_fallback('📈', '[PROC]').    % U+1F4C8
-emoji_fallback('💾', '[SAVE]').    % U+1F4BE
-emoji_fallback('🔄', '[SYNC]').    % U+1F504
+emoji_fallback('\U0001F680', '[STEP]').    % 🚀 U+1F680
+emoji_fallback('\U0001F4E1', '[LOAD]').    % 📡 U+1F4E1
+emoji_fallback('\U0001F4CA', '[DATA]').    % 📊 U+1F4CA
+emoji_fallback('\U0001F4C8', '[PROC]').    % 📈 U+1F4C8
+emoji_fallback('\U0001F4BE', '[SAVE]').    % 💾 U+1F4BE
+emoji_fallback('\U0001F504', '[SYNC]').    % 🔄 U+1F504
 
 % Task indicators (non-BMP range)
-emoji_fallback('👥', '[USER]').    % U+1F465
-emoji_fallback('🎯', '[GOAL]').    % U+1F3AF
-emoji_fallback('🎉', '[DONE]').    % U+1F389
-emoji_fallback('🔧', '[TOOL]').    % U+1F527
-emoji_fallback('🔍', '[FIND]').    % U+1F50D
-emoji_fallback('📝', '[NOTE]').    % U+1F4DD
+emoji_fallback('\U0001F465', '[USER]').    % 👥 U+1F465
+emoji_fallback('\U0001F3AF', '[GOAL]').    % 🎯 U+1F3AF
+emoji_fallback('\U0001F389', '[DONE]').    % 🎉 U+1F389
+emoji_fallback('\U0001F527', '[TOOL]').    % 🔧 U+1F527
+emoji_fallback('\U0001F50D', '[FIND]').    % 🔍 U+1F50D
+emoji_fallback('\U0001F4DD', '[NOTE]').    % 📝 U+1F4DD
 
 % Category indicators (mixed BMP and non-BMP)
-emoji_fallback('🏗️', '[BUILD]').  % U+1F3D7 U+FE0F
-emoji_fallback('🏗', '[BUILD]').   % U+1F3D7 (without variation selector)
-emoji_fallback('🧪', '[TEST]').    % U+1F9EA
-emoji_fallback('📦', '[PKG]').     % U+1F4E6
-emoji_fallback('🌐', '[WEB]').     % U+1F310
-emoji_fallback('🔐', '[SEC]').     % U+1F510
-emoji_fallback('⚡', '[FAST]').    % U+26A1 (BMP)
+emoji_fallback('\U0001F3D7', '[BUILD]').   % 🏗 U+1F3D7
+emoji_fallback('\U0001F9EA', '[TEST]').    % 🧪 U+1F9EA
+emoji_fallback('\U0001F4E6', '[PKG]').     % 📦 U+1F4E6
+emoji_fallback('\U0001F310', '[WEB]').     % 🌐 U+1F310
+emoji_fallback('\U0001F510', '[SEC]').     % 🔐 U+1F510
+emoji_fallback('\u26A1', '[FAST]').        % ⚡ U+26A1 (BMP)
 
 %% ============================================================================
 %% SAFE FORMAT PREDICATES
@@ -150,8 +147,16 @@ safe_format(Format, Args) :-
 
 safe_format(Stream, Format, Args) :-
     get_emoji_level(Level),
-    adapt_format(Level, Format, AdaptedFormat),
-    format(Stream, AdaptedFormat, Args).
+    (   Level = full
+    ->  % On Windows, format/3 mangles emoji in format strings
+        % So we extract emoji and pass them as arguments via ~w
+        extract_emoji_to_args(Format, AdaptedFormat, EmojiArgs),
+        append(EmojiArgs, Args, AllArgs),
+        format(Stream, AdaptedFormat, AllArgs)
+    ;   % For ascii/bmp modes, use character replacement
+        adapt_format(Level, Format, AdaptedFormat),
+        format(Stream, AdaptedFormat, Args)
+    ).
 
 %! adapt_format(+Level:atom, +Format:atom, -AdaptedFormat:atom) is det.
 %
@@ -211,6 +216,33 @@ char_is_bmp(Char) :-
     char_code(Char, Code),
     Code >= 0x0000,
     Code =< 0xFFFF.
+
+%! extract_emoji_to_args(+Format:atom, -NewFormat:atom, -EmojiArgs:list) is det.
+%
+%  Extract emoji characters from format string and replace with ~w placeholders.
+%  This works around Windows SWI-Prolog's format/3 mangling emoji in format strings.
+%
+%  @arg Format Original format string with embedded emoji
+%  @arg NewFormat Format string with emoji replaced by ~w
+%  @arg EmojiArgs List of extracted emoji characters to pass as format arguments
+
+extract_emoji_to_args(Format, NewFormat, EmojiArgs) :-
+    atom_chars(Format, Chars),
+    extract_emoji_chars(Chars, NewChars, EmojiArgs),
+    atom_chars(NewFormat, NewChars).
+
+extract_emoji_chars([], [], []).
+extract_emoji_chars([Char|Rest], NewChars, EmojiArgs) :-
+    char_code(Char, Code),
+    (   Code > 0xFFFF  % Non-BMP character (likely emoji)
+    ->  % Replace with ~w and add to emoji args
+        NewChars = ['~', w | RestNew],
+        EmojiArgs = [Char | RestEmoji],
+        extract_emoji_chars(Rest, RestNew, RestEmoji)
+    ;   % Keep regular character as-is
+        NewChars = [Char | RestNew],
+        extract_emoji_chars(Rest, RestNew, EmojiArgs)
+    ).
 
 %% ============================================================================
 %% TERMINAL DETECTION
