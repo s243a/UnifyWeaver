@@ -440,7 +440,209 @@ Set environment variable in Windows before calling, or use PowerShell directly.
 
 ## Priority 6: Future Enhancements (Post v0.0.2)
 
-See `context/FUTURE_WORK.md` for:
+### 15. Implement firewall_implies - Higher-Order Firewall Policies
+
+**Status:** 📋 DESIGN PROPOSAL - Showcase Prolog's Unique Advantages
+**Location:** `src/unifyweaver/core/firewall.pl`
+**Documentation:** `docs/FIREWALL_GUIDE.md` (Future Enhancements section)
+**Created:** 2025-10-19
+
+**Concept:**
+Higher-order firewall rules that derive security policies from other policies using Prolog's logical inference capabilities. This would be **extremely difficult or impossible** to implement cleanly in traditional imperative languages, making it a compelling showcase for why Prolog was chosen for UnifyWeaver.
+
+**Example Usage:**
+```prolog
+% If python3 is denied, automatically deny any source type that uses python3
+firewall_implies(denied(python3), denied_source_type(python)).
+
+% If network access is denied, block all HTTP sources
+firewall_implies(network_access(denied), denied_source_type(http)).
+
+% If a Python module is blocked, deny any code that imports it
+firewall_implies(denied_python_module(requests),
+                 block_python_imports_matching('import requests')).
+
+% Transitive implications: If requests is blocked, block urllib3 too (dependency)
+firewall_implies(denied_python_module(requests),
+                 denied_python_module(urllib3)).
+```
+
+**Why This Showcases Prolog's Power:**
+
+1. **Declarative Security Policies** - Express "what" not "how"
+   ```prolog
+   % In Prolog (elegant):
+   firewall_implies(denied(X), denied_source_type(Type)) :-
+       source_uses_service(Type, X).
+
+   % In Python (imperative mess):
+   def check_firewall(source_type, denied_services):
+       for service in denied_services:
+           if source_type_uses_service(source_type, service):
+               for rule in firewall_rules:
+                   if rule.matches(source_type):
+                       return DENIED
+       return ALLOWED
+   ```
+
+2. **Logical Inference** - Prolog automatically derives policies
+   ```prolog
+   % Define one rule about Python
+   firewall_implies(denied(python3), denied_source_type(python)).
+
+   % Prolog automatically knows:
+   % - If python3 is denied
+   % - Then python source type is denied
+   % - Therefore any source(python, ...) should be blocked
+
+   % No manual checking needed!
+   ```
+
+3. **Transitive Reasoning** - Automatically handles chains
+   ```prolog
+   firewall_implies(A, B).
+   firewall_implies(B, C).
+   % Prolog can infer: A implies C (if we want transitivity)
+   ```
+
+4. **Pattern Matching** - Natural syntax for security rules
+   ```prolog
+   % Block any network access to certain TLDs
+   firewall_implies(
+       network_hosts(Hosts),
+       denied_url_pattern(Pattern)
+   ) :-
+       member('*.cn', Hosts),
+       Pattern = '*.cn'.
+   ```
+
+**Design Questions to Address:**
+
+1. **Evaluation Strategy:**
+   - Eager (at policy definition time)?
+   - Lazy (at validation time)?
+   - Trade-offs: Performance vs flexibility
+
+2. **Transitivity:**
+   - Should `firewall_implies` be transitive automatically?
+   - How to prevent circular implications?
+   - Example: A→B, B→C, should A→C be automatic?
+
+3. **Scope:**
+   - Apply to `rule_firewall` only?
+   - Apply to `firewall_default` only?
+   - Apply globally across all policies?
+
+4. **Conflict Resolution:**
+   - What if `firewall_implies` creates contradictions?
+   - Example: One rule allows, one denies via implication
+   - Use "deny always wins" principle?
+
+**Implementation Plan:**
+
+**Phase 1: Basic Implementation (2-3 hours)**
+```prolog
+% In firewall.pl
+:- dynamic firewall_implies/2.
+
+% Expand implications when validating
+validate_against_firewall(Target, Options, Firewall) :-
+    % Expand firewall with implied rules
+    expand_firewall_implications(Firewall, ExpandedFirewall),
+    % ... existing validation logic ...
+
+expand_firewall_implications(Firewall, Expanded) :-
+    findall(Implied,
+        (member(Rule, Firewall),
+         firewall_implies(Rule, Implied)),
+        ImpliedRules),
+    append(Firewall, ImpliedRules, Expanded).
+```
+
+**Phase 2: Transitive Closure (1-2 hours)**
+```prolog
+% Compute transitive closure of implications
+expand_firewall_implications_transitive(Firewall, Expanded) :-
+    % Iteratively expand until fixed point
+    expand_once(Firewall, Step1),
+    (   Firewall = Step1
+    ->  Expanded = Firewall  % Fixed point reached
+    ;   expand_firewall_implications_transitive(Step1, Expanded)
+    ).
+```
+
+**Phase 3: Cycle Detection (1-2 hours)**
+```prolog
+% Detect circular implications
+check_firewall_implies_cycles :-
+    findall(A-B, firewall_implies(A, B), Edges),
+    (   has_cycle(Edges)
+    ->  format(user_error, 'Warning: Circular firewall implications detected~n', [])
+    ;   true
+    ).
+```
+
+**Testing Strategy:**
+```prolog
+% In test_firewall_implies.pl
+
+test_basic_implication :-
+    assertz(firewall_implies(denied(python3), denied_source_type(python))),
+    assertz(firewall_default([denied([python3])])),
+
+    % Should block Python sources due to implication
+    source(python, test_source, [python_inline('print("test")')]),
+    \+ compile_dynamic_source(test_source/2, [], _),
+
+    writeln('✅ Basic implication works').
+
+test_transitive_implication :-
+    assertz(firewall_implies(denied(A), denied_module(A))),
+    assertz(firewall_implies(denied_module(M), block_import(M))),
+    assertz(firewall_default([denied([requests])])),
+
+    % Should block imports due to transitive implication
+    Python = 'import requests',
+    \+ validate_python_imports(Python, [denied([requests])]),
+
+    writeln('✅ Transitive implication works').
+
+test_no_circular_implications :-
+    assertz(firewall_implies(denied(A), denied(B))),
+    assertz(firewall_implies(denied(B), denied(A))),
+
+    % Should detect and warn about cycle
+    check_firewall_implies_cycles,
+
+    writeln('✅ Cycle detection works').
+```
+
+**Documentation Updates:**
+- Update `docs/FIREWALL_GUIDE.md` with `firewall_implies` examples
+- Add to README.md as "Why Prolog?" showcase
+- Create blog post/article: "Security Policies as Logic Programs"
+
+**Marketing Value:**
+This feature directly addresses "Why not just use Python/JavaScript?" by showing:
+- Prolog does this **elegantly** in a few lines
+- Imperative languages would need complex rule engines
+- **Logical inference is Prolog's superpower**
+- **Declarative security > imperative security checks**
+
+**Estimated Effort:** 6-10 hours total
+- Basic implementation: 2-3 hours
+- Transitive closure: 1-2 hours
+- Cycle detection: 1-2 hours
+- Testing: 2 hours
+- Documentation: 2 hours
+
+**Priority:** High - Excellent showcase of Prolog's unique advantages
+
+**Dependencies:** None - can be implemented independently
+
+---
+
+See also `context/FUTURE_WORK.md` for:
 - Tree recursion with fold helper pattern (fibonacci, binomial coefficients)
 - Constraint system integration with advanced recursion
 - Education materials completion
@@ -468,3 +670,41 @@ See `context/FUTURE_WORK.md` for:
 ---
 
 *This document will be updated as items are completed and new issues are discovered.*
+
+## Priority 7: Research & Improvement
+
+### 16. Research Pure Prolog Alternatives to External Tool Calls
+
+**Status:** 📋 Research Task  
+**Reference:** `docs/development/LANGUAGE_IDIOSYNCRASIES.md` - Anti-Declarative Patterns section  
+**Current Situation:** We use external tools (bash, cygpath, etc.) to work around Prolog's automatic cleanup
+
+**Context:**
+Currently in `bash_executor.pl`, we bypass Prolog's file I/O and use external bash to create temporary scripts. See the Anti-Declarative Patterns section in LANGUAGE_IDIOSYNCRASIES.md for full details.
+
+**Why We Do This:**
+- Prolog's `tmp_file/2` and `open/3` trigger automatic cleanup
+- External processes can't access files that Prolog manages internally  
+- Path namespace issues between Windows and Cygwin filesystems
+
+**Research Goal:** Investigate pure Prolog alternatives to understand:
+1. Can we control Prolog's cleanup behavior?
+2. Can we prevent file locking issues?
+3. Can we handle paths without external tools like `cygpath`?
+4. Are there alternative file creation methods that avoid cleanup hooks?
+
+**Benefits of Pure Prolog Solutions:**
+- **Cross-Platform Robustness** - Less dependence on bash/cygpath availability
+- **Simpler Architecture** - Fewer subprocess invocations, easier debugging
+- **Better Understanding** - Learn Prolog's file system model, document best practices
+
+**Important:** This is research, not a mandate. If external tools work better, we keep them. Don't sacrifice reliability for "purity."
+
+**Estimated Effort:** 10-15 hours (investigation + testing + documentation)
+
+**Priority:** Medium-Low - Current solution works; research valuable for future multiplatform work
+
+**Deliverables:**
+- Updated LANGUAGE_IDIOSYNCRASIES.md with research findings
+- Test suite comparing different approaches
+- Decision matrix: when to use Prolog vs external tools
