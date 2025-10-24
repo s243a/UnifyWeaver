@@ -122,6 +122,13 @@ emoji_fallback('\U0001F310', '[WEB]').     % 🌐 U+1F310
 emoji_fallback('\U0001F510', '[SEC]').     % 🔐 U+1F510
 emoji_fallback('\u26A1', '[FAST]').        % ⚡ U+26A1 (BMP)
 
+% Additional fallbacks for integration test
+emoji_fallback('\U0001F3A8', '[ART]').     % 🎨 U+1F3A8 (palette/art)
+emoji_fallback('\U0001F40D', '[CODE]').    % 🐍 U+1F40D (snake/Python)
+emoji_fallback('\U0001F4C1', '[DIR]').     % 📁 U+1F4C1 (folder)
+emoji_fallback('\U0001F4C4', '[FILE]').    % 📄 U+1F4C4 (document)
+emoji_fallback('\U0001F9F9', '[CLEAN]').   % 🧹 U+1F9F9 (broom/cleanup)
+
 %% ============================================================================
 %% SAFE FORMAT PREDICATES
 %% ============================================================================
@@ -262,7 +269,29 @@ detect_terminal(Terminal) :-
     ->  Terminal = conemu
     ;   getenv('WSL_DISTRO_NAME', _)
     ->  Terminal = wsl
+    ;   is_wsl_kernel
+    ->  Terminal = wsl
     ;   Terminal = unknown
+    ).
+
+%! is_wsl_kernel is semidet.
+%
+%  Check if running under WSL by examining kernel version.
+%  WSL kernels contain 'microsoft' or 'WSL' in the version string.
+
+is_wsl_kernel :-
+    catch(
+        (   setup_call_cleanup(
+                process_create(path(uname), ['-r'], [stdout(pipe(Out))]),
+                read_string(Out, _, KernelVersion),
+                close(Out)
+            ),
+            (   sub_string(KernelVersion, _, _, _, "microsoft")
+            ;   sub_string(KernelVersion, _, _, _, "WSL")
+            )
+        ),
+        _,
+        fail
     ).
 
 %! terminal_emoji_level(+Terminal:atom, -Level:atom) is det.
@@ -281,12 +310,22 @@ terminal_emoji_level(unknown, bmp).  % Conservative default
 %
 %  Automatically detect terminal and set appropriate emoji level.
 %  Call this during initialization for automatic configuration.
+%  Checks UNIFYWEAVER_EMOJI_LEVEL environment variable first.
 
 auto_detect_and_set_emoji_level :-
-    detect_terminal(Terminal),
-    terminal_emoji_level(Terminal, Level),
-    set_emoji_level(Level),
-    format('[Platform Compat] Detected terminal: ~w, emoji level: ~w~n', [Terminal, Level]).
+    % Check if user set emoji level via environment variable
+    (   getenv('UNIFYWEAVER_EMOJI_LEVEL', EnvLevel),
+        atom_string(Level, EnvLevel),
+        memberchk(Level, [ascii, bmp, full])
+    ->  % User-specified level via environment
+        set_emoji_level(Level),
+        format('[Platform Compat] Emoji level set from environment: ~w~n', [Level])
+    ;   % Auto-detect from terminal
+        detect_terminal(Terminal),
+        terminal_emoji_level(Terminal, Level),
+        set_emoji_level(Level),
+        format('[Platform Compat] Detected terminal: ~w, emoji level: ~w~n', [Terminal, Level])
+    ).
 
 %! replace_emoji(+Format:atom, -SafeFormat:atom) is det.
 %

@@ -156,8 +156,6 @@ source "$SCRIPT_DIR/find_swi-prolog.sh"
 echo -e "\n${YELLOW}Creating directory structure...${NC}"
 dirs=(
     "src/unifyweaver/core"
-    "src/unifyweaver/backends/bash"
-    "src/unifyweaver/pipelines"
     "src/unifyweaver/sources"
     "tests/output"
     "templates"
@@ -174,8 +172,6 @@ done
 # Define your directories, including the one you want to exclude
 cp_dirs=(
     "src/unifyweaver/core"
-    "src/unifyweaver/backends/bash"
-    "src/unifyweaver/pipelines"
     "src/unifyweaver/sources"
     "templates"
     "scripts"
@@ -188,32 +184,51 @@ cp_dirs=(
 # Create the directories in the target location first
 echo -e "\n${YELLOW}Creating destination directories...${NC}"
 for dir in "${cp_dirs[@]}"; do
-    mkdir -p "$TARGET_ROOT/$dir" || { echo "Failed to create directory $TARGET_ROOT/$dir"; exit 1; }
+    if mkdir -p "$TARGET_ROOT/$dir" 2>/dev/null; then
+        # Silent success
+        :
+    else
+        echo -e "${YELLOW}⚠${NC} Warning: Could not create directory $TARGET_ROOT/$dir"
+    fi
 done
 
 # Now, copy the contents of each source directory into the destination directories
 echo -e "\n${YELLOW}Installing core modules...${NC}"
+
+# Track skipped/failed directories for summary
+declare -a SKIPPED_DIRS
+declare -a FAILED_DIRS
+SKIPPED_DIRS=()
+FAILED_DIRS=()
+
 for dir in "${cp_dirs[@]}"; do
+    # Skip if source directory doesn't exist
+    if [[ ! -d "$MAIN_PROJECT_ROOT/$dir" ]]; then
+        echo -e "${YELLOW}⚠${NC} Skipping $dir (not found in main project)"
+        SKIPPED_DIRS+=("$dir")
+        continue
+    fi
+
     # Use a case statement to handle the special 'scripts' directory
     case "$dir" in
         "scripts")
             # Copy all files from 'scripts' but exclude all 'testing/test_env*' directories
             # The 'rsync' command is ideal for this kind of selective copying
             # The --exclude option lets you skip specific directories or files
-            if rsync -av --exclude 'testing/test_env*' "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/"; then
+            if rsync -av --exclude 'testing/test_env*' "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/" 2>/dev/null; then
                 echo -e "${GREEN}✓${NC} Copied contents of scripts, excluding test_env*"
             else
-                echo -e "${RED}✗${NC} Failed to copy contents of scripts"
-                exit 1
+                echo -e "${YELLOW}⚠${NC} Warning: Failed to copy contents of scripts (continuing anyway)"
+                FAILED_DIRS+=("$dir")
             fi
             ;;
         *)
             # For all other directories, use the standard 'cp' command
-            if cp -r "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/"; then
+            if cp -r "$MAIN_PROJECT_ROOT/$dir/." "$TARGET_ROOT/$dir/" 2>/dev/null; then
                 echo -e "${GREEN}✓${NC} Copied contents of $dir"
             else
-                echo -e "${RED}✗${NC} Failed to copy contents of $dir"
-                exit 1
+                echo -e "${YELLOW}⚠${NC} Warning: Failed to copy contents of $dir (continuing anyway)"
+                FAILED_DIRS+=("$dir")
             fi
             ;;
     esac
@@ -227,16 +242,23 @@ else
   echo -e "${YELLOW}i${NC} No setup_templates.pl found in templates; skipping move"
 fi
 
-# Copy backends if they exist
-if [[ -d "$MAIN_PROJECT_ROOT/src/unifyweaver/backends" ]]; then
-    cp -r "$MAIN_PROJECT_ROOT/src/unifyweaver/backends/"* "$TARGET_ROOT/src/unifyweaver/backends/" 2>/dev/null || true
-    echo -e "${GREEN}✓${NC} Copied backends (if any)"
+# Optional: move test_generated_scripts.sh to test_env root if present
+if [[ -f "$TARGET_ROOT/examples/test_generated_scripts.sh" ]]; then
+  cp "$TARGET_ROOT/examples/test_generated_scripts.sh" "$TARGET_ROOT/test_generated_scripts.sh"
+  chmod +x "$TARGET_ROOT/test_generated_scripts.sh"
+  echo -e "${GREEN}✓${NC} Copied test_generated_scripts.sh to test_env root"
+else
+  echo -e "${YELLOW}i${NC} No test_generated_scripts.sh found in examples; skipping"
 fi
 
-# Copy pipelines if they exist  
-if [[ -d "$MAIN_PROJECT_ROOT/src/unifyweaver/pipelines" ]]; then
-    cp -r "$MAIN_PROJECT_ROOT/src/unifyweaver/pipelines/"* "$TARGET_ROOT/src/unifyweaver/pipelines/" 2>/dev/null || true
-    echo -e "${GREEN}✓${NC} Copied pipelines (if any)"
+# Note: backends and pipelines directories are no longer used in v0.0.2
+
+# Copy the main sources.pl facade file
+if [[ -f "$MAIN_PROJECT_ROOT/src/unifyweaver/sources.pl" ]]; then
+    cp "$MAIN_PROJECT_ROOT/src/unifyweaver/sources.pl" "$TARGET_ROOT/src/unifyweaver/sources.pl"
+    echo -e "${GREEN}✓${NC} Copied sources.pl facade module"
+else
+    echo -e "${YELLOW}i${NC} No sources.pl found in main project"
 fi
 
 # Copy test files from the main project
@@ -405,8 +427,16 @@ cd "$TARGET_ROOT"
 
 # Snapshot repo config into the test_env so the launcher is self-contained
 if [[ -f "$SCRIPT_DIR/.unifyweaver.conf" ]]; then
-  cp -f "$SCRIPT_DIR/.unifyweaver.conf" "$TARGET_ROOT/${FIND_PREFIX}.unifyweaver.conf"
-  echo -e "${GREEN}✓${NC} Copied .unifyweaver.conf to test environment"
+  if [[ -n "$FIND_PREFIX" ]]; then
+    cp -f "$SCRIPT_DIR/.unifyweaver.conf" "${FIND_PREFIX}.unifyweaver.conf" 2>/dev/null || \
+      echo -e "${YELLOW}⚠${NC} Warning: Could not copy .unifyweaver.conf with prefix"
+  else
+    cp -f "$SCRIPT_DIR/.unifyweaver.conf" ".unifyweaver.conf" 2>/dev/null || \
+      echo -e "${YELLOW}⚠${NC} Warning: Could not copy .unifyweaver.conf"
+  fi
+  if [[ -f ".unifyweaver.conf" ]] || [[ -f "${FIND_PREFIX}.unifyweaver.conf" ]]; then
+    echo -e "${GREEN}✓${NC} Copied .unifyweaver.conf to test environment"
+  fi
 fi
 
 # Ask user about applying settings to the main testing directory
@@ -452,9 +482,27 @@ echo -e "\n${GREEN}==================================="
 echo "Setup Complete!"
 echo -e "===================================${NC}"
 
+# Show warnings summary if there were issues
+if [[ ${#SKIPPED_DIRS[@]} -gt 0 ]] || [[ ${#FAILED_DIRS[@]} -gt 0 ]]; then
+    echo -e "\n${YELLOW}⚠ Warnings Summary:${NC}"
+    if [[ ${#SKIPPED_DIRS[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Skipped directories (not found):${NC}"
+        for dir in "${SKIPPED_DIRS[@]}"; do
+            echo "  - $dir"
+        done
+    fi
+    if [[ ${#FAILED_DIRS[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Failed to copy:${NC}"
+        for dir in "${FAILED_DIRS[@]}"; do
+            echo "  - $dir"
+        done
+    fi
+    echo -e "${YELLOW}Note: The test environment may still be functional.${NC}"
+fi
+
 echo -e "\n${YELLOW}Testing Environment Created:${NC}"
 echo "Location: $TARGET_ROOT"
-echo "Core modules: $(ls -1 "$TARGET_ROOT/src/unifyweaver/core/" | wc -l) files"
+echo "Core modules: $(ls -1 "$TARGET_ROOT/src/unifyweaver/core/" 2>/dev/null | wc -l) files"
 
 echo -e "\n${YELLOW}Next steps:${NC}"
 echo "1. Run the launcher: ./unifyweaver.sh"

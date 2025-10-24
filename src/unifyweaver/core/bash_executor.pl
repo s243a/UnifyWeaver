@@ -21,6 +21,25 @@
 :- use_module('platform_detection').
 
 %% ============================================
+%% DEBUG CONTROL
+%% ============================================
+
+%% debug_bash_executor/0
+%  Check if debug output is enabled
+%  Set environment variable DEBUG_BASH_EXECUTOR=true to enable
+debug_bash_executor :-
+    getenv('DEBUG_BASH_EXECUTOR', 'true'),
+    !.
+
+%% debug_format/2
+%  Print debug message only if debugging is enabled
+debug_format(Format, Args) :-
+    (   debug_bash_executor
+    ->  format(Format, Args)
+    ;   true
+    ).
+
+%% ============================================
 %% CAPABILITY CHECK
 %% ============================================
 
@@ -159,30 +178,30 @@ write_and_execute_bash(BashCode, Input, Output) :-
     detect_execution_mode(ExecMode),
     build_temp_paths(ExecMode, TimeStamp, temp_paths(TmpFileWin, TmpFileBash)),
 
-    format('DEBUG write_and_execute: Creating file: ~q~n', [TmpFileWin]),
+    debug_format('DEBUG write_and_execute: Creating file: ~q~n', [TmpFileWin]),
 
     create_temp_script(ExecMode, TmpFileWin, TmpFileBash, BashCode),
 
     % Give Windows/filesystem a moment to sync
     sleep(0.1),
 
-    format('DEBUG write_and_execute: File written, checking existence...~n', []),
+    debug_format('DEBUG write_and_execute: File written, checking existence...~n', []),
     (   exists_file(TmpFileWin)
-    ->  format('DEBUG write_and_execute: File EXISTS after write~n', [])
-    ;   format('DEBUG write_and_execute: File DOES NOT EXIST after write!~n', [])
+    ->  debug_format('DEBUG write_and_execute: File EXISTS after write~n', [])
+    ;   debug_format('DEBUG write_and_execute: File DOES NOT EXIST after write!~n', [])
     ),
 
     % Test if bash can see and read the file before trying to execute
-    format('DEBUG: Testing bash access to file...~n', []),
+    debug_format('DEBUG: Testing bash access to file...~n', []),
     (   nonvar(TmpFileBash),
         TmpFileBash \= none
     ->  BashTestPath = TmpFileBash
     ;   convert_to_cygwin_path(TmpFileWin, BashTestPath)
     ),
-    format('DEBUG: Bash test path (atom): ~q~n', [BashTestPath]),
+    debug_format('DEBUG: Bash test path (atom): ~q~n', [BashTestPath]),
 
     % Test 1: Can bash cat the file?
-    format('DEBUG: Running: bash -c "cat "$1"" -- bash_executor ~q~n', [BashTestPath]),
+    debug_format('DEBUG: Running: bash -c "cat "$1"" -- bash_executor ~q~n', [BashTestPath]),
     catch(
         (setup_call_cleanup(
             process_create(path(bash), ['-c', 'cat "$1"', 'bash_executor', BashTestPath],
@@ -194,11 +213,11 @@ write_and_execute_bash(BashCode, Input, Output) :-
              process_wait(CatPID, exit(CatExit))),
             true
          ),
-         format('DEBUG: Cat exit code: ~w~n', [CatExit]),
-         format('DEBUG: Cat stdout: ~q~n', [CatResult]),
-         (CatError \= '' -> format('DEBUG: Cat stderr: ~q~n', [CatError]) ; true)),
+         debug_format('DEBUG: Cat exit code: ~w~n', [CatExit]),
+         debug_format('DEBUG: Cat stdout: ~q~n', [CatResult]),
+         (CatError \= '' -> debug_format('DEBUG: Cat stderr: ~q~n', [CatError]) ; true)),
         CatErr,
-        format('DEBUG: Cat command error: ~w~n', [CatErr])
+        debug_format('DEBUG: Cat command error: ~w~n', [CatErr])
     ),
 
     % Execute and clean up (use special version for temp files)
@@ -222,7 +241,7 @@ execute_bash_tempfile(TempSpec, Input, Output) :-
                           'Cannot execute bash natively on this platform')))
     ),
     resolve_temp_spec(TempSpec, _TmpFileWin, BashPath),
-    format('DEBUG: Bash execution path: ~q~n', [BashPath]),
+    debug_format('DEBUG: Bash execution path: ~q~n', [BashPath]),
     catch(
         process_create(path(chmod), ['+x', BashPath], [stderr(null)]),
         _,

@@ -132,6 +132,14 @@ validate_users :-
 
 %% Main demo entry point
 main :-
+    % Auto-detect terminal and set appropriate emoji level
+    (   getenv('UNIFYWEAVER_EMOJI_LEVEL', EnvLevel),
+        atom_string(EmojiLevel, EnvLevel),
+        memberchk(EmojiLevel, [ascii, bmp, full])
+    ->  set_emoji_level(EmojiLevel)
+    ;   auto_detect_and_set_emoji_level
+    ),
+
     format('UnifyWeaver v0.0.2 Data Sources Demo~n', []),
     format('==========================================~n', []),
 
@@ -154,14 +162,14 @@ main :-
 %% Create sample data files for demo
 create_sample_data :-
     % Create sample CSV file
-    open('examples/sample_users.csv', write, Stream),
+    open('input/sample_users.csv', write, Stream),
     write(Stream, 'name,age,city,active\n'),
     write(Stream, 'alice,25,nyc,true\n'),
     write(Stream, 'bob,30,sf,true\n'),
     write(Stream, 'charlie,35,la,false\n'),
     write(Stream, 'diana,28,chicago,true\n'),
     close(Stream),
-    
+
     format('Created sample data files~n', []).
 
 %% ============================================

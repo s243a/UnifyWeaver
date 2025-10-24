@@ -708,3 +708,259 @@ Currently in `bash_executor.pl`, we bypass Prolog's file I/O and use external ba
 - Updated LANGUAGE_IDIOSYNCRASIES.md with research findings
 - Test suite comparing different approaches
 - Decision matrix: when to use Prolog vs external tools
+
+---
+
+## Priority 8: Testing Infrastructure Enhancement
+
+### 17. Implement Data Source Test Runner Generator
+
+**Status:** 📋 DESIGN NEEDED - Post-Release Enhancement
+**Location:** New module `src/unifyweaver/core/data_sources/test_generator.pl` (proposed)
+**Reference:** `examples/test_generated_scripts.sh` (current ad-hoc implementation)
+**Created:** 2025-10-23
+
+**Current Situation:**
+We have an ad-hoc test script (`examples/test_generated_scripts.sh`) that tests the integration test's generated bash scripts:
+- `test_output/products.sh` (CSV source)
+- `test_output/orders.sh` (JSON source)
+- `test_output/analyze_orders.sh` (Python ETL)
+- `test_output/top_products.sh` (SQLite query)
+
+This works but is not automatically generated like advanced recursion tests.
+
+**Why This Is Different from test_runner_generator.pl:**
+
+The existing `test_runner_generator.pl` is designed for **unit testing recursive predicates**:
+- Tests pure predicates with specific arguments: `factorial "5" ""`
+- Multiple test cases per function (0, 1, 5, etc.)
+- Self-contained (no external data dependencies)
+- Uses `source script.sh` pattern
+
+Data source testing requires **integration testing pipelines**:
+- Tests end-to-end data flows: `orders.sh | analyze.sh`
+- Single execution per pipeline (with test data)
+- Requires test data files (CSV, JSON)
+- Uses `bash script.sh` and pipe patterns
+- Validates output correctness
+
+**Architectural Considerations:**
+
+Before implementing, these architectural decisions must be addressed:
+
+1. **Module Organization & Responsibility:**
+   - Where does this fit in the module hierarchy?
+   - Should it be `core/data_sources/test_generator.pl` or `core/testing/data_source_generator.pl`?
+   - Who owns test generation: the data source system or the testing system?
+   - How does this interact with the existing `core/advanced/test_runner_generator.pl`?
+
+2. **Abstraction Level:**
+   - Should the generator be **data-source-aware** (knows about CSV, JSON, Python)?
+   - Or should it be **generic** (just generates bash script tests from metadata)?
+   - Trade-off: Specific knowledge vs flexibility for future source types
+
+3. **Test Discovery vs Configuration:**
+   - **Configuration-based** (current test_runner_generator.pl approach):
+     - Hardcoded test cases for known scripts
+     - Pro: Explicit control, predictable
+     - Con: Manual updates needed for new sources
+   - **Discovery-based** (scan generated_file/2 facts):
+     - Automatically detect all generated scripts
+     - Pro: Adapts to new sources automatically
+     - Con: May need heuristics for pipeline ordering
+   - **Hybrid** (discover + annotate):
+     - Discover scripts but allow metadata annotations
+     - Pro: Best of both worlds
+     - Con: More complex
+
+4. **Metadata Storage:**
+   - Where to store test metadata (expected outputs, pipeline dependencies)?
+   - Options:
+     - In source definitions (`source(csv, products, [..., test_cases([...])])`)
+     - In separate test spec file (`test_specs.pl`)
+     - In `generated_file/2` with extended format
+     - In comments/annotations in integration_test.pl
+   - Trade-off: Colocation vs separation of concerns
+
+5. **Test Execution Model:**
+   - **Self-contained bash script** (current approach):
+     - Pro: Runs independently, easy to distribute
+     - Con: No feedback to Prolog, hard to validate programmatically
+   - **Prolog test runner**:
+     - Pro: Can validate outputs, integrate with test framework
+     - Con: Requires Prolog to run tests, more complex
+   - **Hybrid** (bash script that reports to Prolog):
+     - Pro: Portable but validatable
+     - Con: Complex inter-process communication
+
+6. **Reusability Across Test Types:**
+   - Can the same generator support:
+     - Unit tests (single source execution)?
+     - Integration tests (multi-source pipelines)?
+     - Regression tests (compare with expected outputs)?
+   - Or should we have specialized generators for each?
+   - Trade-off: One flexible generator vs multiple focused generators
+
+7. **Relationship to Dynamic Source Compiler:**
+   - The `dynamic_source_compiler.pl` generates bash scripts
+   - Should the test generator be part of that workflow?
+   - Should script generation automatically trigger test generation?
+   - Or keep them completely separate?
+   - Trade-off: Tight coupling vs loose coupling
+
+8. **Extensibility for Future Source Types:**
+   - How does the generator handle new source types (e.g., future SQL, XML, YAML sources)?
+   - Should the generator use a plugin architecture?
+   - Should each source type provide its own test generation logic?
+   - Or should there be a common test generation interface?
+
+**Design Questions to Answer:**
+
+1. **Architecture:**
+   - Should this be a separate module (`data_source_test_generator.pl`)?
+   - Or extend `test_runner_generator.pl` with pipeline support?
+   - Or integrate with `integration_test.pl` to auto-generate its own test runner?
+
+2. **Pipeline Representation:**
+   - How to specify multi-stage pipelines in Prolog?
+   - Example: Need to represent `orders.sh | analyze_orders.sh`
+   ```prolog
+   % Possible syntax:
+   test_pipeline(etl_demo, [
+       stage(extract, 'test_output/orders.sh', []),
+       stage(transform, 'test_output/analyze_orders.sh', [stdin]),
+       expected_output_contains('Mouse')
+   ]).
+   ```
+
+3. **Test Data Management:**
+   - Should the generator create test data files?
+   - Or assume `integration_test.pl` has already created them?
+   - How to handle setup/teardown?
+
+4. **Output Validation:**
+   - Current ad-hoc script just runs and shows output
+   - Should generated tests validate output programmatically?
+   - How to specify expected results?
+
+5. **Integration Points:**
+   - Should `integration_test.pl` call the generator at the end?
+   - Or is test generation a separate workflow?
+   - How does this fit into the overall test plan?
+
+**Proposed Implementation Approach:**
+
+**Option A: Separate Module (Recommended)**
+```prolog
+% src/unifyweaver/core/data_sources/test_generator.pl
+:- module(data_source_test_generator, [
+    generate_integration_test_runner/0,
+    generate_integration_test_runner/1
+]).
+
+% Generate test runner from integration_test.pl's generated_file/2 facts
+generate_integration_test_runner(OutputPath) :-
+    findall(Type-Path, generated_file(Type, Path), Files),
+    open(OutputPath, write, Stream),
+    write_test_header(Stream),
+    write_data_source_tests(Stream, Files),
+    write_test_footer(Stream),
+    close(Stream).
+
+% Generate individual tests based on source type
+write_data_source_tests(Stream, Files) :-
+    % CSV sources: source script && call function
+    % JSON sources: bash script
+    % Python pipelines: bash a.sh | bash b.sh
+    % SQLite queries: bash script
+    ...
+```
+
+**Option B: Extend test_runner_generator.pl**
+- Add `generate_integration_tests/1` predicate
+- Add pipeline support to existing generator
+- Risk: Mixing unit tests and integration tests in one module
+
+**Option C: Integration Test Self-Generation**
+- Modify `integration_test.pl` to generate its own test runner
+- Uses `generated_file/2` facts it already tracks
+- Simplest but least reusable
+
+**Recommended: Option A** - Separate module for clarity and extensibility
+
+**Example Generated Output:**
+```bash
+#!/bin/bash
+# AUTO-GENERATED by data_source_test_generator.pl
+# DO NOT EDIT MANUALLY
+
+echo "=== Data Source Integration Tests ==="
+
+echo "1. CSV Source (Products):"
+source test_output/products.sh && products
+echo
+
+echo "2. JSON Source (Orders):"
+bash test_output/orders.sh
+echo
+
+echo "3. Python ETL Pipeline:"
+bash test_output/orders.sh | bash test_output/analyze_orders.sh
+echo
+
+echo "4. SQLite Query (Top Products):"
+bash test_output/top_products.sh
+echo
+
+echo "✅ All integration tests complete"
+```
+
+**Testing the Generator:**
+```prolog
+% After running integration_test.pl:
+?- use_module(data_source_test_generator).
+?- generate_integration_test_runner('test_output/test_runner.sh').
+% Generated test runner: test_output/test_runner.sh
+
+% Then in bash:
+$ bash test_output/test_runner.sh
+```
+
+**Implementation Plan:**
+
+**Phase 1: Basic Generation (3-4 hours)**
+- Create `data_source_test_generator.pl` module
+- Query `generated_file/2` facts
+- Generate simple test runner (like current ad-hoc)
+- Write tests for the generator itself
+
+**Phase 2: Pipeline Support (2-3 hours)**
+- Add pipeline specification format
+- Handle multi-stage data flows
+- Support stdin piping between stages
+
+**Phase 3: Validation (2-3 hours)**
+- Add expected output specifications
+- Generate assertions in test runner
+- Report pass/fail instead of just showing output
+
+**Phase 4: Integration (1-2 hours)**
+- Integrate with `integration_test.pl`
+- Optionally auto-generate runner at end of test
+- Update test plans to reference generated runner
+
+**Current Workaround:**
+✅ Ad-hoc `test_generated_scripts.sh` works and is documented
+✅ Script is copied to test environments by `init_testing.sh`
+✅ Comments clearly mark it as temporary and reference this TODO
+
+**Estimated Total Effort:** 8-12 hours
+
+**Priority:** Medium - Improves testing infrastructure but not blocking release
+
+**Dependencies:** None - can be implemented independently after v0.0.2
+
+**See Also:**
+- `src/unifyweaver/core/advanced/test_runner_generator.pl` - Existing generator for recursion tests
+- `examples/test_generated_scripts.sh` - Current ad-hoc implementation
+- `examples/integration_test.pl` - Uses `generated_file/2` tracking

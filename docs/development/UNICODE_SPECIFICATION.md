@@ -269,12 +269,25 @@ safe_format('\u2705 test~n', []).
 
 ### Windows SWI-Prolog
 
+#### Version Requirements
+
+**Minimum Version:** SWI-Prolog 9.2.9 (or later)
+
+Older versions of SWI-Prolog on Windows have limited Unicode support:
+- **Pre-9.2.x**: No UTF-16 surrogate pair support, non-BMP emoji will not work at all
+- **9.2.0-9.2.8**: Partial support, but format/3 still mangles non-BMP characters
+- **9.2.9+**: Full internal representation, but format/3 still has issues (workaround implemented)
+
+**Recommendation:** Use SWI-Prolog 9.2.9 or later on Windows for best Unicode/emoji support.
+
 #### Issue: format/3 Unicode Mangling
 
-On Windows, SWI-Prolog's `format/3` mangles non-BMP characters embedded in format strings, even when:
+On Windows, even with SWI-Prolog 9.2.9+, `format/3` mangles non-BMP characters embedded in format strings, even when:
 - Unicode escapes are used correctly
 - Internal representation is correct (verified via `char_code/2`)
 - The terminal supports emoji rendering
+
+This is a **known limitation** of SWI-Prolog's Windows console I/O. The file reading and internal representation work fine, but the format string processing specifically has this issue.
 
 #### Workaround: Extract-and-Pass
 
