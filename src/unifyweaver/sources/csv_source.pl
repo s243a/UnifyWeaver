@@ -256,6 +256,11 @@ template_system:template(csv_source_unary, '#!/bin/bash
     local value="$1"
     [[ -n $({{pred}} | grep -F "$value") ]] && echo "$value exists"
 }
+
+# Auto-execute when run directly (not when sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
 
 % Arity 2+ template: pred(Col1, Col2, ...) - return all columns  
@@ -297,4 +302,9 @@ template_system:template(csv_source_binary_plus, '#!/bin/bash
     local key="$1"
     [[ -n $({{pred}} "$key") ]] && echo "$key exists"
 }
+
+# Auto-execute when run directly (not when sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
