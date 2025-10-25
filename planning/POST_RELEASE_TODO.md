@@ -160,6 +160,85 @@ descendant(X, Z) :- parent(X, Y), descendant(Y, Z).
 
 ---
 
+### 5a. Fix Module Import Conflicts in Source Plugins
+
+**Status:** ⚠️ Warnings when using multiple source types together
+**Discovered:** WSL test plan, Test 4d (ETL Pipeline inline test)
+
+**Issue:**
+When using both `json_source` and `python_source` in the same user module, import conflicts occur:
+```
+ERROR: No permission to import python_source:validate_config/1 into user
+       (already imported from json_source)
+ERROR: No permission to import python_source:source_info/1 into user
+       (already imported from json_source)
+ERROR: No permission to import python_source:compile_source/4 into user
+       (already imported from json_source)
+```
+
+**Current Behavior:**
+- All source plugins export the same predicate names: `validate_config/1`, `source_info/1`, `compile_source/4`
+- When importing multiple source plugins, Prolog raises permission errors
+- **Workaround:** Use `except([...])` clause in `use_module` directives
+- Functionality still works despite warnings
+
+**Example Workaround (from integration_test.pl):**
+```prolog
+:- use_module(unifyweaver(sources/json_source),
+    except([validate_config/1, source_info/1, compile_source/4])).
+:- use_module(unifyweaver(sources/python_source),
+    except([validate_config/1, source_info/1, compile_source/4])).
+```
+
+**Root Cause:**
+All source plugins implement the same interface predicates with identical names. The plugin system uses `register_source_type/2` to dispatch to the correct implementation, but the exported predicates still conflict at module import time.
+
+**Fix Strategy:**
+1. **Option A:** Make interface predicates module-private (not exported)
+   - Only export `register_source_type/2` initialization
+   - Plugins register themselves on load
+   - Core system calls predicates via module qualification: `json_source:compile_source/4`
+
+2. **Option B:** Namespace the exports with plugin name
+   - Export: `json_compile_source/4`, `python_compile_source/4`, etc.
+   - Update plugin registration to use namespaced names
+   - More verbose but explicit
+
+3. **Option C (Recommended):** Don't export interface predicates at all
+   - Source plugins only need to register themselves via `:- initialization`
+   - All calls go through the dynamic dispatch system
+   - Users never directly import source plugins (only `sources.pl`)
+
+**Recommended Implementation:**
+```prolog
+% In csv_source.pl, json_source.pl, python_source.pl, etc.
+:- module(csv_source, []).  % Export nothing
+
+% Interface predicates remain but not exported
+validate_config(Config) :- ...
+compile_source(Pred, Config, Options, Code) :- ...
+source_info(Info) :- ...
+
+% Registration happens automatically
+:- initialization(
+    register_source_type(csv, csv_source),
+    now
+).
+```
+
+**Impact:** Low - users should only interact with `sources.pl`, not individual plugins
+**Estimated Effort:** 1-2 hours
+
+**Test Case:**
+```prolog
+% Should work without warnings
+:- use_module(unifyweaver(sources/json_source)).
+:- use_module(unifyweaver(sources/python_source)).
+:- use_module(unifyweaver(sources/csv_source)).
+```
+
+---
+
 ### 4. Update init_template.pl to Working Pattern
 
 **Status:** ✅ FIXED in templates/, but working pattern documented
