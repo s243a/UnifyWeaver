@@ -248,6 +248,15 @@ if [[ -f "$TARGET_ROOT/examples/test_generated_scripts.sh" ]]; then
   chmod +x "$TARGET_ROOT/test_generated_scripts.sh"
   echo -e "${GREEN}✓${NC} Copied test_generated_scripts.sh to test_env root"
 else
+  echo -e "${YELLOW}i${NC} No test_generated_scripts.sh found; skipping"
+fi
+
+# Optional: copy init_swipl_env.sh to test_env scripts/ if present
+if [[ -f "$SCRIPT_DIR/init_swipl_env.sh" ]]; then
+  cp "$SCRIPT_DIR/init_swipl_env.sh" "$TARGET_ROOT/scripts/init_swipl_env.sh"
+  chmod +x "$TARGET_ROOT/scripts/init_swipl_env.sh"
+  echo -e "${GREEN}✓${NC} Copied init_swipl_env.sh to test_env scripts/"
+else
   echo -e "${YELLOW}i${NC} No test_generated_scripts.sh found in examples; skipping"
 fi
 

@@ -124,10 +124,15 @@ platform_execution_mode(windows, powershell_wsl).  % Default to WSL on Windows
 platform_execution_mode(unknown, unknown).
 
 %% can_execute_bash_directly/0
-%  True if we can execute bash scripts directly without wrappers
+%  True if we can execute bash scripts (either natively or via WSL/Cygwin)
 can_execute_bash_directly :-
     detect_execution_mode(Mode),
-    Mode = direct_bash.
+    bash_available_mode(Mode).
+
+% Modes where bash execution is available
+bash_available_mode(direct_bash).
+bash_available_mode(powershell_wsl).    % Bash available via WSL
+bash_available_mode(powershell_cygwin).  % Bash available via Cygwin
 
 %% ============================================
 %% UTILITY PREDICATES

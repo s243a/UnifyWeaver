@@ -39,14 +39,81 @@ which jq sqlite3 python3 awk curl
 
 ### **2. Test Environment Setup**
 
-Navigate to the project root directory and ensure you're in the correct location:
+#### **2.1. Create Test Environment**
+
+Generate a fresh test environment for isolated testing:
 
 ```bash
-# Check you're in the project root
-ls -la | grep -E "(src|examples|init.pl)"
+cd scripts/testing
+./init_testing.sh test_env7
+cd test_env7
+```
 
-# If running in WSL, verify the path
-pwd
+This creates a complete copy of UnifyWeaver with:
+- ✅ All source modules
+- ✅ Documentation
+- ✅ Example files
+- ✅ Test scripts
+- ✅ Output directories
+
+> **Note:** Test environments in `scripts/testing/test_env*` are not tracked in git (see `.gitignore`)
+
+#### **2.2. SWI-Prolog PATH Configuration**
+
+After creating the test environment, you need to ensure `swipl` is available on your PATH. There are **two methods** to do this:
+
+##### **Method 1: Comprehensive Setup (Recommended)**
+
+Use `find_swi-prolog.sh` for full configuration with persistence:
+
+```bash
+source ./scripts/testing/find_swi-prolog.sh
+```
+
+This provides:
+- ✅ SWI-Prolog auto-detection (native Linux or Windows via WSL)
+- ✅ Interactive prompts for configuration choices
+- ✅ Config persistence to `.unifyweaver.conf`
+- ✅ Wrapper creation for cross-platform scenarios
+- ✅ UTF-8 locale configuration
+
+First-time setup will prompt you to:
+- Choose between native Linux swipl vs Windows swipl.exe (on WSL)
+- Create PATH wrappers if needed
+- Save preferences for future sessions
+
+##### **Method 2: Quick Setup**
+
+Use `init_swipl_env.sh` for simple PATH setup without persistence:
+
+```bash
+source ./scripts/init_swipl_env.sh
+```
+
+This provides:
+- ✅ SWI-Prolog auto-detection and PATH setup
+- ✅ UTF-8 locale configuration
+- ✅ Faster, lighter (no interactive prompts)
+- ❌ No config persistence
+- ❌ No wrapper creation
+
+**Use Method 1 for:** Initial setup, persistent configuration
+**Use Method 2 for:** Quick sessions, automation, CI/CD
+
+> **Note:** See `scripts/testing/README_SWIPL_ENV.md` for detailed documentation on environment setup scripts.
+
+#### **2.3. Verify SWI-Prolog**
+
+Check that swipl is available:
+
+```bash
+which swipl
+swipl --version
+```
+
+Expected output:
+```
+SWI-Prolog version 9.2.9 for x86_64-linux
 ```
 
 ### **3. Platform Detection**

@@ -172,6 +172,8 @@ save_template_to_cache_file(TemplateName, Template, Config) :-
     atom_string(TemplateName, NameStr),
     format(string(CachePath), '~w/~w~w', [CacheDir, NameStr, Ext]),
     open(CachePath, write, Stream),
+    % Force Unix line endings (LF only) for bash scripts
+    set_stream(Stream, newline(posix)),
     write(Stream, Template),
     close(Stream).
 

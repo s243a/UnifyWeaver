@@ -32,6 +32,29 @@
 % Track generated files globally
 :- dynamic generated_file/2.  % generated_file(Type, Path)
 
+%% ============================================
+%% HELPER UTILITIES
+%% ============================================
+
+normalize_bash_code(BashCode, UnixCode) :-
+    (   atom(BashCode)
+    ->  atom_string(BashCode, CodeStr)
+    ;   CodeStr = BashCode
+    ),
+    split_string(CodeStr, "\r", "", Parts),
+    atomics_to_string(Parts, "", UnixCode).
+
+write_bash_script(Path, BashCode) :-
+    normalize_bash_code(BashCode, UnixCode),
+    setup_call_cleanup(
+        open(Path, write, Stream, [encoding(utf8)]),
+        (   set_stream(Stream, newline(posix)),
+            format(Stream, '~s', [UnixCode]),
+            flush_output(Stream)
+        ),
+        close(Stream)
+    ).
+
 setup_test_data :-
     safe_format('~n\U0001F4BE Setting up test data...~n', []),
 
@@ -173,9 +196,7 @@ test_csv_source :-
     % Compile and save to file
     compile_dynamic_source(products/4, [], BashCode),
     ScriptPath = 'test_output/products.sh',
-    open(ScriptPath, write, Stream),
-    write(Stream, BashCode),
-    close(Stream),
+    write_bash_script(ScriptPath, BashCode),
     assertz(generated_file(csv, ScriptPath)),
     safe_format('  \u2713 Generated: ~w~n', [ScriptPath]),
 
@@ -198,9 +219,7 @@ test_json_source :-
     % Compile and save to file
     compile_dynamic_source(orders/4, [], BashCode),
     ScriptPath = 'test_output/orders.sh',
-    open(ScriptPath, write, Stream),
-    write(Stream, BashCode),
-    close(Stream),
+    write_bash_script(ScriptPath, BashCode),
     assertz(generated_file(json, ScriptPath)),
     safe_format('  \u2713 Generated: ~w~n', [ScriptPath]),
 
@@ -227,9 +246,7 @@ test_python_source :-
     % Compile and save Python analyzer
     compile_dynamic_source(analyze_orders/3, [], AnalyzeCode),
     ScriptPath = 'test_output/analyze_orders.sh',
-    open(ScriptPath, write, Stream),
-    write(Stream, AnalyzeCode),
-    close(Stream),
+    write_bash_script(ScriptPath, AnalyzeCode),
     assertz(generated_file(python, ScriptPath)),
     safe_format('  \u2713 Generated: ~w~n', [ScriptPath]),
 
@@ -250,9 +267,7 @@ test_sqlite_source :-
     % Compile and save SQLite query
     compile_dynamic_source(top_products/3, [], QueryCode),
     ScriptPath = 'test_output/top_products.sh',
-    open(ScriptPath, write, Stream),
-    write(Stream, QueryCode),
-    close(Stream),
+    write_bash_script(ScriptPath, QueryCode),
     assertz(generated_file(sqlite, ScriptPath)),
     safe_format('  \u2713 Generated: ~w~n', [ScriptPath]),
 

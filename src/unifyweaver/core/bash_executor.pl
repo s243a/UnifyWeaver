@@ -21,25 +21,6 @@
 :- use_module('platform_detection').
 
 %% ============================================
-%% DEBUG CONTROL
-%% ============================================
-
-%% debug_bash_executor/0
-%  Check if debug output is enabled
-%  Set environment variable DEBUG_BASH_EXECUTOR=true to enable
-debug_bash_executor :-
-    getenv('DEBUG_BASH_EXECUTOR', 'true'),
-    !.
-
-%% debug_format/2
-%  Print debug message only if debugging is enabled
-debug_format(Format, Args) :-
-    (   debug_bash_executor
-    ->  format(Format, Args)
-    ;   true
-    ).
-
-%% ============================================
 %% CAPABILITY CHECK
 %% ============================================
 
@@ -178,30 +159,30 @@ write_and_execute_bash(BashCode, Input, Output) :-
     detect_execution_mode(ExecMode),
     build_temp_paths(ExecMode, TimeStamp, temp_paths(TmpFileWin, TmpFileBash)),
 
-    debug_format('DEBUG write_and_execute: Creating file: ~q~n', [TmpFileWin]),
+    format('DEBUG write_and_execute: Creating file: ~q~n', [TmpFileWin]),
 
     create_temp_script(ExecMode, TmpFileWin, TmpFileBash, BashCode),
 
     % Give Windows/filesystem a moment to sync
     sleep(0.1),
 
-    debug_format('DEBUG write_and_execute: File written, checking existence...~n', []),
+    format('DEBUG write_and_execute: File written, checking existence...~n', []),
     (   exists_file(TmpFileWin)
-    ->  debug_format('DEBUG write_and_execute: File EXISTS after write~n', [])
-    ;   debug_format('DEBUG write_and_execute: File DOES NOT EXIST after write!~n', [])
+    ->  format('DEBUG write_and_execute: File EXISTS after write~n', [])
+    ;   format('DEBUG write_and_execute: File DOES NOT EXIST after write!~n', [])
     ),
 
     % Test if bash can see and read the file before trying to execute
-    debug_format('DEBUG: Testing bash access to file...~n', []),
+    format('DEBUG: Testing bash access to file...~n', []),
     (   nonvar(TmpFileBash),
         TmpFileBash \= none
     ->  BashTestPath = TmpFileBash
     ;   convert_to_cygwin_path(TmpFileWin, BashTestPath)
     ),
-    debug_format('DEBUG: Bash test path (atom): ~q~n', [BashTestPath]),
+    format('DEBUG: Bash test path (atom): ~q~n', [BashTestPath]),
 
     % Test 1: Can bash cat the file?
-    debug_format('DEBUG: Running: bash -c "cat "$1"" -- bash_executor ~q~n', [BashTestPath]),
+    format('DEBUG: Running: bash -c "cat "$1"" -- bash_executor ~q~n', [BashTestPath]),
     catch(
         (setup_call_cleanup(
             process_create(path(bash), ['-c', 'cat "$1"', 'bash_executor', BashTestPath],
@@ -213,11 +194,11 @@ write_and_execute_bash(BashCode, Input, Output) :-
              process_wait(CatPID, exit(CatExit))),
             true
          ),
-         debug_format('DEBUG: Cat exit code: ~w~n', [CatExit]),
-         debug_format('DEBUG: Cat stdout: ~q~n', [CatResult]),
-         (CatError \= '' -> debug_format('DEBUG: Cat stderr: ~q~n', [CatError]) ; true)),
+         format('DEBUG: Cat exit code: ~w~n', [CatExit]),
+         format('DEBUG: Cat stdout: ~q~n', [CatResult]),
+         (CatError \= '' -> format('DEBUG: Cat stderr: ~q~n', [CatError]) ; true)),
         CatErr,
-        debug_format('DEBUG: Cat command error: ~w~n', [CatErr])
+        format('DEBUG: Cat command error: ~w~n', [CatErr])
     ),
 
     % Execute and clean up (use special version for temp files)
@@ -241,7 +222,7 @@ execute_bash_tempfile(TempSpec, Input, Output) :-
                           'Cannot execute bash natively on this platform')))
     ),
     resolve_temp_spec(TempSpec, _TmpFileWin, BashPath),
-    debug_format('DEBUG: Bash execution path: ~q~n', [BashPath]),
+    format('DEBUG: Bash execution path: ~q~n', [BashPath]),
     catch(
         process_create(path(chmod), ['+x', BashPath], [stderr(null)]),
         _,
@@ -269,6 +250,19 @@ execute_bash_tempfile(TempSpec, Input, Output) :-
                     context(execute_bash_tempfile/3, Msg)))
     ).
 
+% WSL mode: write via WSL bash
+create_temp_script(powershell_wsl, TmpFileWin, TmpFileBash, BashCode) :-
+    normalize_path_atom(TmpFileWin, WinTarget),
+    ensure_parent_directory(WinTarget),
+    (   nonvar(TmpFileBash),
+        TmpFileBash \= none
+    ->  normalize_path_atom(TmpFileBash, BashTarget),
+        write_script_via_wsl(BashTarget, BashCode)
+    ;   write_script_via_windows(WinTarget, BashCode)
+    ),
+    !.
+
+% Cygwin mode: write via Cygwin bash
 create_temp_script(powershell_cygwin, TmpFileWin, TmpFileBash, BashCode) :-
     normalize_path_atom(TmpFileWin, WinTarget),
     ensure_parent_directory(WinTarget),
@@ -279,22 +273,57 @@ create_temp_script(powershell_cygwin, TmpFileWin, TmpFileBash, BashCode) :-
     ;   write_script_via_windows(WinTarget, BashCode)
     ),
     !.
+
+% Default: write directly via Windows
 create_temp_script(_ExecMode, TmpFileWin, _TmpFileBash, BashCode) :-
     normalize_path_atom(TmpFileWin, Target),
     ensure_parent_directory(Target),
     write_script_via_windows(Target, BashCode).
 
 write_script_via_windows(Target, BashCode) :-
-    open(Target, write, Stream, [encoding(utf8)]),
-    write(Stream, BashCode),
-    flush_output(Stream),
-    close(Stream).
+    convert_to_unix_line_endings(BashCode, UnixCode0),
+    (   atom(UnixCode0)
+    ->  atom_string(UnixCode0, UnixCode)
+    ;   UnixCode = UnixCode0
+    ),
+    setup_call_cleanup(
+        open(Target, write, Stream, [encoding(utf8)]),
+        (   set_stream(Stream, newline(posix)),
+            format(Stream, '~s', [UnixCode]),
+            flush_output(Stream)
+        ),
+        close(Stream)
+    ).
+
+write_script_via_wsl(BashTarget, BashCode) :-
+    % Convert to Unix line endings (LF only, not CRLF)
+    convert_to_unix_line_endings(BashCode, UnixCode),
+    setup_call_cleanup(
+        process_create(path(wsl), ['bash', '-c', 'cat > "$1"', 'bash_executor', BashTarget],
+                      [stdin(pipe(In)), stdout(null), stderr(pipe(Err)), process(PID)]),
+        (   set_stream(In, newline(posix)),
+            write(In, UnixCode),
+            close(In),
+            read_string(Err, _, ErrMsg),
+            close(Err),
+            process_wait(PID, exit(ExitCode))
+        ),
+        true
+    ),
+    (   ExitCode = 0
+    ->  true
+    ;   format(atom(Msg), 'Failed to write temp script via WSL (exit ~w): ~s', [ExitCode, ErrMsg]),
+        throw(error(execution_error(ExitCode), context(write_script_via_wsl/2, Msg)))
+    ).
 
 write_script_via_cygwin(BashTarget, BashCode) :-
+    % Convert to Unix line endings (LF only, not CRLF)
+    convert_to_unix_line_endings(BashCode, UnixCode),
     setup_call_cleanup(
         process_create(path(bash), ['-lc', 'cat > "$1"', 'bash_executor', BashTarget],
                       [stdin(pipe(In)), stdout(null), stderr(pipe(Err)), process(PID)]),
-        (   write(In, BashCode),
+        (   set_stream(In, newline(posix)),
+            write(In, UnixCode),
             close(In),
             read_string(Err, _, ErrMsg),
             close(Err),
@@ -307,6 +336,18 @@ write_script_via_cygwin(BashTarget, BashCode) :-
     ;   format(atom(Msg), 'Failed to write temp script via bash (exit ~w): ~s', [ExitCode, ErrMsg]),
         throw(error(execution_error(ExitCode), context(write_script_via_cygwin/2, Msg)))
     ).
+
+%% convert_to_unix_line_endings(+Input, -Output)
+%  Convert Windows CRLF line endings to Unix LF line endings
+%  This is critical when writing bash scripts from Windows to WSL/Cygwin
+convert_to_unix_line_endings(Input, Output) :-
+    (   atom(Input)
+    ->  atom_string(Input, InputStr)
+    ;   InputStr = Input
+    ),
+    % Simply remove all \r characters (works for both CRLF and standalone CR)
+    split_string(InputStr, "\r", "", Parts),
+    atomics_to_string(Parts, "", Output).
 
 delete_temp_file(temp_paths(TmpFileWin, _)) :-
     delete_temp_file_path(TmpFileWin).
@@ -345,6 +386,35 @@ normalize_path_atom(Path, Atom) :-
 
 %% convert_to_cygwin_path(+WindowsPath, -CygwinPath)
 %  Convert Windows path to Cygwin-compatible path using cygpath
+%% wsl_tmp_directory(-WindowsPath)
+%  Find WSL's /tmp directory as a Windows path
+%  Returns something like \\wsl$\Ubuntu\tmp or C:/Users/.../AppData/Local/Temp
+wsl_tmp_directory(WindowsPath) :-
+    % Try to get WSL distribution name from environment
+    (   getenv('WSL_DISTRO_NAME', DistroName)
+    ->  format(atom(WindowsPath), '\\\\wsl$\\~w\\tmp', [DistroName])
+    ;   % Fallback: use wslpath to convert /tmp to Windows path
+        catch(
+            (   setup_call_cleanup(
+                    process_create(path(wsl), ['wslpath', '-w', '/tmp'],
+                                  [stdout(pipe(Out)), stderr(null), process(PID)]),
+                    (   read_string(Out, _, PathStr),
+                        close(Out),
+                        process_wait(PID, exit(ExitCode))
+                    ),
+                    true
+                ),
+                ExitCode = 0,
+                split_string(PathStr, "\n\r", " \t", [WslTmpStr|_]),
+                WslTmpStr \= '',
+                normalize_windows_path(WslTmpStr, WindowsPath)
+            ),
+            _,
+            fail
+        )
+    ),
+    !.
+
 cygwin_tmp_directory(WindowsPath) :-
     find_cygpath(CygpathExe),
     catch(
@@ -434,6 +504,17 @@ get_temp_env_directory(TempDirStr) :-
     ),
     normalize_windows_path(TempStr0, TempDirStr).
 
+% WSL mode: use WSL's /tmp which is accessible from Windows
+select_temp_paths(powershell_wsl, TimeStamp, TmpFileWin, TmpFileBash) :-
+    (   wsl_tmp_directory(WslTmpDir)
+    ->  WinDir = WslTmpDir,
+        BashDir = '/tmp'
+    ;   get_temp_env_directory(WinDir),
+        BashDir = none
+    ),
+    build_temp_paths(WinDir, BashDir, TimeStamp, TmpFileWin, TmpFileBash).
+
+% Cygwin mode: use Cygwin's /tmp
 select_temp_paths(powershell_cygwin, TimeStamp, TmpFileWin, TmpFileBash) :-
     get_temp_env_directory(EnvDir),
     (   cygwin_tmp_directory(CygTmpDir)
@@ -443,6 +524,8 @@ select_temp_paths(powershell_cygwin, TimeStamp, TmpFileWin, TmpFileBash) :-
         BashDir = none
     ),
     build_temp_paths(WinDir, BashDir, TimeStamp, TmpFileWin, TmpFileBash).
+
+% Default: use Windows temp
 select_temp_paths(_, TimeStamp, TmpFileWin, TmpFileBash) :-
     get_temp_env_directory(EnvDir),
     build_temp_paths(EnvDir, none, TimeStamp, TmpFileWin, TmpFileBash).

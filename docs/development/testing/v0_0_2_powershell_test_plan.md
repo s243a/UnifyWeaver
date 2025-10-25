@@ -17,53 +17,117 @@ This approach allows us to follow the main WSL test plan almost identically, ens
 
 ---
 
-## **2. Setup and Configuration**
+## **2. Environment Setup**
 
-Before running any tests, configure the environment in your PowerShell terminal:
+### **2.1. Create Test Environment**
 
-1.a.  **Navigate to the project directory in Windows Explorer**
+Before running any tests, create a fresh test environment:
+
+1.a. **Navigate to the project directory in Windows Explorer**
 
 1.b. **Open PowerShell at this location**
-
-- In Windows Explorer click the file menu
-- Click the button that says "Open PowerShell window>"
+   - In Windows Explorer, click the file menu
+   - Click the button that says "Open PowerShell window>"
 
 1.c. **Navigate to the testing directory**
- ```POWERSHELL
-    cd scripts/testing
-    ```
-1.d. **Generate a new test environment** - it will be located at the path specified after the -p option.
+```POWERSHELL
+cd scripts/testing
+```
 
+1.d. **Generate a new test environment** - it will be located at the path specified after the -p option
 ```POWERSHELL
 ./Init-TestEnvironment.ps1 -p test_env_ps1
 ```
-* Directories in scripts/testing/test_env* are not tracked in git. In the root project directory see ".gitignore"
-* The default name for the test environment is test_env. The -p option lets you specify the full path to the test environment, whereas alternatively the -d option lets you specify the directory containing the test environment.
+* Directories in `scripts/testing/test_env*` are not tracked in git (see `.gitignore`)
+* The `-p` option lets you specify the full path to the test environment
+* The `-d` option lets you specify the directory containing the test environment (default name: `test_env`)
 
+### **2.2. SWI-Prolog PATH Configuration**
 
-2.  **Source the Compatibility Layer:**
-    ```powershell
-    . .\scripts\init_unify_compat.ps1
-    ```
-    *You should see “UnifyWeaver compatibility layer loaded…” with the current backend.*
+After creating the test environment, you need to ensure `swipl` is available on your PATH. There are **three methods** to do this:
 
-3.  **Run the Compatibility Layer Smoke Test (recommended):**
-    ```powershell
-    .\test_compat_layer.ps1
-    ```
-    *This verifies both backends and basic pipeline support (`uw-ls | uw-grep`).*
+#### **Method 1: Use the Launcher Script (Recommended)**
+The launcher script automatically sets up SWI-Prolog PATH and opens an enhanced terminal:
 
-4.  **Choose Your Backend:** Optionally, set the environment variable to select your execution engine. **This only needs to be done once per session.** The default, is cygwin, because the powershell test plan is primarily intended for windows testing and arrow keys don't work in the WSL version of swpil, due to it not being compiled with linux terminal libraries (e.g. readline)
+```POWERSHELL
+cd test_env_ps1
+.\start_test_env.bat
+```
 
-    **For WSL (Recommended):**
-    ```powershell
-    $env:UNIFYWEAVER_EXEC_MODE = 'wsl'
-    ```
+This opens a terminal with:
+- ✅ SWI-Prolog on PATH (session only)
+- ✅ UTF-8 encoding configured
+- ✅ Compatibility layer ready to load
 
-    **For Cygwin:**
-    ```powershell
-    $env:UNIFYWEAVER_EXEC_MODE = 'cygwin'
-    ```
+**Proceed to step 2.3** after the terminal opens.
+
+#### **Method 2: Source the Compatibility Layer**
+The compatibility layer automatically loads the SWI-Prolog environment:
+
+```powershell
+cd test_env_ps1
+. .\scripts\init_unify_compat.ps1
+```
+
+This provides:
+- ✅ SWI-Prolog on PATH (via `init_swipl_env.ps1`)
+- ✅ Unix command wrappers (`uw-ls`, `uw-grep`, etc.)
+- ✅ UTF-8 encoding
+
+**Skip to step 3** - the compatibility layer is already loaded.
+
+#### **Method 3: Manual Environment Setup**
+Source the SWI-Prolog environment script directly:
+
+```powershell
+cd test_env_ps1
+. .\scripts\init_swipl_env.ps1
+```
+
+This provides:
+- ✅ SWI-Prolog on PATH (session only)
+- ✅ UTF-8 encoding configured
+- ❌ No Unix command wrappers (use Method 2 if you need them)
+
+**Proceed to step 2.3** to load the compatibility layer if needed.
+
+> **Note:** See `scripts/testing/README_SWIPL_ENV.md` for detailed documentation on the environment setup scripts.
+
+### **2.3. Load Compatibility Layer (If Not Already Loaded)**
+
+If you used Method 1 or Method 3, load the compatibility layer now:
+
+```powershell
+. .\scripts\init_unify_compat.ps1
+```
+
+You should see: `"UnifyWeaver compatibility layer loaded. Backend mode: cygwin"`
+
+### **2.4. Verify Setup**
+
+Run the compatibility layer smoke test:
+
+```powershell
+.\test_compat_layer.ps1
+```
+
+This verifies:
+- Both backends (WSL and Cygwin) are accessible
+- Basic pipeline support (`uw-ls | uw-grep`) works
+
+### **2.5. Choose Your Backend (Optional)**
+
+Set the environment variable to select your execution engine. **This only needs to be done once per session.** The default is `cygwin` because the PowerShell test plan is primarily intended for Windows testing, and arrow keys don't work in the WSL version of swipl (due to it not being compiled with Linux terminal libraries like readline).
+
+**For WSL:**
+```powershell
+$env:UNIFYWEAVER_EXEC_MODE = 'wsl'
+```
+
+**For Cygwin (Default):**
+```powershell
+$env:UNIFYWEAVER_EXEC_MODE = 'cygwin'
+```
 
 ---
 
@@ -105,51 +169,47 @@ swipl -g "use_module('src/unifyweaver/sources/json_source')" -t halt
 # ✅ FIXED: No more deprecation warnings
 ```
 
-#### **Test B: Full Demo Execution**
-*This corresponds to Test 4a & 4b in the main plan. It verifies the end-to-end functionality.*
+#### **Test B: Integration Test Execution**
+*Runs the comprehensive integration test that verifies all data sources and creates a SQLite database.*
+
+**Note:** This test now works on PowerShell with WSL/Cygwin! The platform detection has been fixed to properly execute bash scripts via WSL.
+
 ```powershell
-# Ensure you have sourced the compatibility layer first!
-
-# Start the SWI-Prolog REPL with init.pl to set up paths
-swipl -l init.pl
-
-# --- Inside the SWI-Prolog REPL ---
-
-# Load the demo (this should now be clean and error-free)
-?- [examples/load_demo].
-
-# Run the main predicate
-?- main.
-
-# Exit the REPL
-?- halt.
-
-# --- End of REPL session ---
+# Run the integration test (requires init.pl for module paths)
+$env:KEEP_TEST_DATA = 'true'
+swipl -l init.pl -g main -t halt examples/integration_test.pl
 ```
+
 **Expected Behavior:**
-- The `load_demo` command completes with **no import conflict errors**. This is the primary fix.
-- The `main` command runs the full demo, printing success messages for each stage.
-- Emoji display correctly in PowerShell (✅ FIXED: Windows emoji rendering issue resolved)
-- The `output` directory within `test_env_ps1` is populated with results (e.g., `demo.db`).
+- Platform detection shows `windows` with `powershell_wsl` execution mode
+- CSV, JSON, and Python sources compile successfully
+- Bash scripts execute via WSL automatically
+- Python source creates and populates `test_output/analysis.db`
+- Generated bash scripts are created in `test_output/`
+- Emoji display correctly in PowerShell
+- Test completes with all checkmarks ✅
 
-**Note:** Emoji rendering now works correctly on Windows thanks to the Unicode escape fix in platform_compat.pl.
+**Note:** The integration test will automatically use WSL to execute bash scripts. If you have Cygwin instead, set `$env:UNIFYWEAVER_EXEC_MODE = 'cygwin'` before running.
 
-#### **Test C: Verify Demo Output**
-*Uses the compatibility layer to inspect the files generated by the demo.*
+#### **Test C: Verify Integration Test Output**
+*Uses the compatibility layer to inspect the database created by Test B.*
+
 ```powershell
 # Make sure the PowerShell compatibility layer is sourced
 . .\scripts\init_unify_compat.ps1
 
 # List the generated files
-uw-ls output
+uw-ls test_output
 
-# Expected: Should list `demo.db` and other artifacts.
+# Expected: Should list analysis.db and generated .sh scripts
 
 # Query the database
-"SELECT * FROM user_posts;" | uw-sqlite3 output/demo.db
+"SELECT * FROM order_summary ORDER BY total_quantity DESC;" | uw-sqlite3 test_output/analysis.db
 
-# Expected: A list of users and their post counts from the demo.
+# Expected: Product order summaries (e.g., Laptop: 2, Mouse: 5, Desk: 1)
 ```
+
+**Note:** This test verifies that the SQLite database was created correctly by the integration test in Test B.
 
 #### **Test D: Compatibility Layer Flexibility**
 *Verify the backend toggle using the provided wrappers.*

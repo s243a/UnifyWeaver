@@ -7,6 +7,32 @@
 
 Set-StrictMode -Version Latest
 
+# --- Auto-load SWI-Prolog environment ---
+# Look for init_swipl_env.ps1 in common locations
+$SwiplEnvScript = $null
+$SearchPaths = @(
+    (Join-Path $PSScriptRoot '..' 'testing' 'init_swipl_env.ps1'),  # From scripts/powershell-compat/
+    (Join-Path $PSScriptRoot 'init_swipl_env.ps1'),                  # From scripts/testing/
+    (Join-Path $PSScriptRoot '..' 'init_swipl_env.ps1')              # From test environment scripts/
+)
+
+foreach ($Path in $SearchPaths) {
+    if (Test-Path $Path) {
+        $SwiplEnvScript = $Path
+        break
+    }
+}
+
+if ($SwiplEnvScript) {
+    # Source SWI-Prolog environment (quiet mode to avoid noise)
+    . $SwiplEnvScript -Quiet
+} else {
+    # Only warn if swipl is not already available
+    if (-not (Get-Command swipl.exe -ErrorAction SilentlyContinue)) {
+        Write-Host "[⚠] SWI-Prolog environment script not found. Run: . .\scripts\testing\init_swipl_env.ps1" -ForegroundColor Yellow
+    }
+}
+
 function _PosixQuote {
     param([Parameter(Mandatory)][string]$s)
     return "'" + ($s -replace "'", "'\\''") + "'"
