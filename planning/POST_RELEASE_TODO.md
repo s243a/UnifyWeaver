@@ -451,6 +451,8 @@ Set environment variable in Windows before calling, or use PowerShell directly.
 Higher-order firewall rules that derive security policies from other policies using Prolog's logical inference capabilities. This would be **extremely difficult or impossible** to implement cleanly in traditional imperative languages, making it a compelling showcase for why Prolog was chosen for UnifyWeaver.
 
 **Example Usage:**
+
+**Basic Implications:**
 ```prolog
 % If python3 is denied, automatically deny any source type that uses python3
 firewall_implies(denied(python3), denied_source_type(python)).
@@ -465,6 +467,70 @@ firewall_implies(denied_python_module(requests),
 % Transitive implications: If requests is blocked, block urllib3 too (dependency)
 firewall_implies(denied_python_module(requests),
                  denied_python_module(urllib3)).
+```
+
+**Preference Chains with Fallback Modes:**
+```prolog
+% Tool selection - graceful degradation across platforms
+firewall_default([
+    tool_preferences([
+        preferred([jq, python3], mode(fallback)),
+        fallback([awk, sed], mode(fallback)),
+        denied([bash_eval], mode(exception))  % Never use this
+    ])
+]).
+
+% When jq is blocked/unavailable, system automatically tries:
+% 1. jq (preferred) - fail → fallback
+% 2. python3 (preferred) - fail → fallback
+% 3. awk (fallback) - fail → fallback
+% 4. sed (fallback) - fail → exception (all options exhausted)
+% 5. bash_eval - immediate exception (explicitly denied)
+```
+
+**Network Rules with Different Modes:**
+```prolog
+firewall_default([
+    % URL blocking - strict security (throw exception)
+    network_hosts(['*.typicode.com', '*.github.com'], mode(exception)),
+
+    % SSH port preferences - try alternatives (Termux use case)
+    ssh_ports([
+        preferred(22, mode(fallback)),      % Standard port
+        fallback(2222, mode(fallback)),     % Termux default (non-root accessible)
+        fallback(8022, mode(fallback))      % Alternative
+    ], mode(exception_if_all_fail))
+]).
+
+% Real-world scenario: Termux on Android
+% Port 22 blocked (requires root) → try 2222 (Termux default)
+% Port 2222 blocked → try 8022
+% All ports blocked → throw exception
+firewall_implies(
+    ssh_connection(Host),
+    try_ports([22, 2222, 8022])
+) :-
+    detect_platform(android).
+```
+
+**Tool Selection Across Platforms:**
+```prolog
+% Minimal systems - degrade gracefully
+firewall_default([
+    json_processing([
+        preferred(jq, mode(fallback)),      % Fast, clean
+        fallback(python3, mode(fallback)),  % More powerful
+        fallback(awk, mode(warn))           % Always available but warn
+    ])
+]).
+
+% Air-gapped environments - prefer local/cached
+firewall_default([
+    data_source([
+        preferred(local_cache, mode(fallback)),
+        fallback(network, mode(exception))  % Block network in air-gapped
+    ])
+]).
 ```
 
 **Why This Showcases Prolog's Power:**
@@ -537,6 +603,47 @@ firewall_implies(denied_python_module(requests),
    - What if `firewall_implies` creates contradictions?
    - Example: One rule allows, one denies via implication
    - Use "deny always wins" principle?
+
+5. **Rule-Level Modes (NEW - 2025-10-24):**
+   - Each rule should support its own failure mode
+   - Different behaviors for different rule types:
+     - **Security rules** (URLs, file access): `mode(exception)` - throw error
+     - **Tool preferences**: `mode(fallback)` - try next option
+     - **Platform adaptation**: `mode(warn)` - succeed with warning
+   - Examples:
+     ```prolog
+     firewall_default([
+         % URL blocking - strict security
+         network_hosts(['*.typicode.com', '*.github.com'], mode(exception)),
+
+         % Tool selection - graceful fallback
+         tools([
+             preferred(jq, mode(fallback)),
+             fallback(python3, mode(fallback)),
+             denied(eval, mode(exception))
+         ]),
+
+         % SSH port selection - try alternatives (Termux use case)
+         ssh_ports([
+             preferred(22, mode(fallback)),      % Standard port
+             fallback(2222, mode(fallback)),     % Termux default (non-root)
+             fallback(8022, mode(fallback))      % Alternative
+         ], mode(exception_if_all_fail))
+     ]).
+     ```
+
+6. **Preference Chains vs Hard Blocking:**
+   - Most rules should support **preference/fallback chains**
+   - System tries options in order until one succeeds
+   - Only throw exception when:
+     - Explicit `mode(exception)` on the rule
+     - All fallback options exhausted
+     - Security-critical violation (URL blocking, etc.)
+   - This allows graceful degradation across platforms
+   - Example use cases:
+     - **Android/Termux**: Standard ports blocked → try high-numbered ports
+     - **Minimal systems**: `jq` not available → fall back to `python3` → fall back to `awk`
+     - **Air-gapped environments**: Network access denied → use cached/local alternatives
 
 **Implementation Plan:**
 
@@ -629,14 +736,20 @@ This feature directly addresses "Why not just use Python/JavaScript?" by showing
 - **Logical inference is Prolog's superpower**
 - **Declarative security > imperative security checks**
 
-**Estimated Effort:** 6-10 hours total
+**Estimated Effort:** 10-15 hours total (updated 2025-10-24)
 - Basic implementation: 2-3 hours
+- Rule-level modes: 3-4 hours (NEW)
+- Preference chain logic: 2-3 hours (NEW)
 - Transitive closure: 1-2 hours
 - Cycle detection: 1-2 hours
-- Testing: 2 hours
-- Documentation: 2 hours
+- Testing: 3 hours (expanded for modes)
+- Documentation: 3 hours (expanded for preference examples)
 
 **Priority:** High - Excellent showcase of Prolog's unique advantages
+- Demonstrates declarative security policies
+- Shows graceful cross-platform degradation
+- Highlights logical inference capabilities
+- Solves real-world problems (Termux SSH ports, minimal systems, air-gapped)
 
 **Dependencies:** None - can be implemented independently
 
