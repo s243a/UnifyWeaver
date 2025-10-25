@@ -44,6 +44,17 @@ The agent's knowledge of its environment (the codebase, file system, etc.) shoul
 *   **Smart Updates:** The agent should not blindly re-index everything. It should have strategies for updating its knowledge based on what has changed (e.g., re-indexing only modified files).
 *   **Strategic Indexing:** If a large number of files have changed, the agent might even decide to only re-index a "promising subset" to save time, making a tactical decision about the trade-off between the completeness of its knowledge and the cost of updating it.
 
+### Principle 6: Compilation and Instrumentation
+
+The economic agent model relies on concrete, measurable resource metrics to make informed decisions. These metrics are not hardcoded but are injected through a **compilation process** that transforms abstract playbooks into executable artifacts. This principle includes:
+
+*   **Tool Compilation:** Tools are defined using a standardized format (e.g., shell scripts with embedded LLM instructions) that can be compiled into executable packages. The compilation process assembles the natural language program specification with concrete tool implementations.
+*   **Metric Injection:** Resource metrics (API costs, latency, computational requirements) are measured through profiling and injected as template variables during compilation. For example, `{{ GEMINI_FLASH_COST | default: 0.002 }}` or `{{ LOCAL_INDEX_LATENCY | default: 500 }}`.
+*   **Dynamic Profiling:** When metrics are unknown, the compilation system can automatically profile tools by running them with sample inputs and measuring their resource consumption.
+*   **Interface Contracts:** Each tool must specify its interface contract (input parameters, output format, error codes) so that agents can invoke them correctly and handle failures gracefully.
+
+This principle bridges the gap between high-level strategic reasoning and concrete execution, ensuring that agents have access to the real-world data needed to make economic decisions.
+
 ## 3. Conclusion
 
 By following these principles, we aim to create not just AI tools, but true AI **collaborators**. These agents will be able to reason about their own actions, manage resources effectively, and engage in sophisticated, goal-oriented problem-solving, making them powerful partners in any complex task.
