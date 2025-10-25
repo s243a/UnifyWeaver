@@ -261,6 +261,81 @@ unifyweaver_init :-
 
 ---
 
+### 5b. Fix PowerShell Integration Test Sequential Execution Hang
+
+**Status:** ❌ BLOCKING in PowerShell environments
+**Discovered:** PowerShell test plan, full integration test
+**Priority:** Medium (workaround exists)
+
+**Issue:**
+The full integration test (`examples/integration_test.pl`) hangs when running in PowerShell/Windows environments. The test crashes consistently at the Python Source Test stage after successfully completing CSV and JSON tests.
+
+**Current Behavior:**
+- ✅ Individual tests pass when run in isolation
+- ✅ All generated scripts are correct and execute properly
+- ✅ WSL/Linux environment passes complete integration test
+- ❌ PowerShell environment hangs during 3rd sequential bash execution
+
+**Crash Point:**
+```prolog
+test_python_source :-
+    % ...
+    compile_dynamic_source(orders/4, [], OrdersCode),  % Compiles successfully
+    write_and_execute_bash(OrdersCode, '', OrdersOutput),  % ← HANGS HERE
+```
+
+This is the **third call** to `write_and_execute_bash` in sequence (after CSV and JSON tests).
+
+**Investigation Performed:**
+1. ❌ Not console buffer overflow - redirecting to file doesn't fix it
+2. ❌ Not debug output - disabling all DEBUG statements doesn't fix it
+3. ❌ Not temp file accumulation - only 2 temp files exist
+4. ❌ Not PowerShell compatibility layer - hangs even without `init_unify_compat.ps1`
+5. ✅ Specific to sequential execution - individual tests work fine
+
+**Root Cause (Suspected):**
+SWI-Prolog's `process_create/3` on Windows appears to have a resource leak or deadlock issue when called multiple times in rapid succession. This is likely a limitation of SWI-Prolog's Windows process management, not UnifyWeaver code.
+
+**Workaround (v0.0.2):**
+Run integration tests individually in PowerShell:
+```powershell
+swipl -l init.pl -l examples/integration_test.pl -g "test_csv_source, halt" -t halt
+swipl -l init.pl -l examples/integration_test.pl -g "test_json_source, halt" -t halt
+swipl -l init.pl -l examples/integration_test.pl -g "test_python_source, halt" -t halt
+swipl -l init.pl -l examples/integration_test.pl -g "test_sqlite_source, halt" -t halt
+```
+
+**Fix Strategy (v0.0.3+):**
+1. **Option A:** Add delays between `write_and_execute_bash` calls
+   - Try `sleep(0.5)` between test stages
+   - May help Windows process cleanup
+
+2. **Option B:** Use alternative process execution method
+   - Investigate SWI-Prolog's `process_which/2` and `process_id/1`
+   - Check for leaked process handles
+
+3. **Option C:** Refactor integration test for PowerShell
+   - Save all scripts first, then execute in batch
+   - Avoid mixing compilation and execution
+
+4. **Option D:** Report to SWI-Prolog community
+   - This may be a known Windows limitation
+   - Check SWI-Prolog bug tracker
+
+**Impact:**
+- Low for end users (core functionality works)
+- Medium for development (integration test can't run full suite on Windows)
+- Workaround is simple and documented
+
+**Estimated Effort:** 4-6 hours investigation + potential upstream bug report
+
+**Related Files:**
+- `src/unifyweaver/core/bash_executor.pl` - `write_and_execute_bash/3`
+- `examples/integration_test.pl` - Full test suite
+- `docs/development/testing/v0_0_2_powershell_test_plan.md`
+
+---
+
 ## Priority 3: Documentation Updates
 
 ### 5. Update Test Plan with Known Failures
