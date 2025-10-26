@@ -40,6 +40,18 @@
     check_tool_availability/3,
     derive_compilation_mode_with_tools/3,
 
+    % Network access predicates
+    network_access_policy/1,
+    allowed_url_pattern/1,
+    denied_url_pattern/1,
+    allowed_domain/1,
+    denied_domain/1,
+    check_url_access/2,
+    check_domain_access/2,
+    extract_domain/2,
+    url_matches_pattern/2,
+    domain_matches_pattern/2,
+
     % Policy templates
     load_firewall_policy/1
 ]).
@@ -70,6 +82,13 @@
 :- dynamic prefer_available_tools/1.     % prefer_available_tools(true|false)
 :- dynamic allowed_tool/1.               % allowed_tool(ToolName)
 :- dynamic denied_tool/1.                % denied_tool(ToolName)
+
+%% Network access policies
+:- dynamic network_access_policy/1.      % allow_all | deny_all | whitelist | blacklist
+:- dynamic allowed_url_pattern/1.        % allowed_url_pattern(Pattern)
+:- dynamic denied_url_pattern/1.         % denied_url_pattern(Pattern)
+:- dynamic allowed_domain/1.             % allowed_domain(Domain)
+:- dynamic denied_domain/1.              % denied_domain(Domain)
 
 %% ============================================
 %% DEFAULT CONFIGURATION
@@ -292,10 +311,23 @@ load_firewall_policy(pure_powershell) :-
 load_firewall_policy(no_network) :-
     format('[Firewall] Loading no_network policy~n', []),
     set_firewall_mode(permissive),
-    % Deny all network services
+    % Deny all network access
+    assertz(network_access_policy(deny_all)),
     assertz(denied_service(_, network_access(_))),
     assertz(denied_service(_, executable(curl))),
+    assertz(denied_service(_, executable(wget))),
     format('[Firewall] Network access blocked~n', []),
+    !.
+
+load_firewall_policy(whitelist_domains(Domains)) :-
+    format('[Firewall] Loading whitelist_domains policy~n', []),
+    set_firewall_mode(permissive),
+    % Set whitelist mode
+    assertz(network_access_policy(whitelist)),
+    % Add allowed domains
+    forall(member(Domain, Domains),
+           assertz(allowed_domain(Domain))),
+    format('[Firewall] Only domains ~w are allowed~n', [Domains]),
     !.
 
 load_firewall_policy(PolicyName) :-
@@ -384,6 +416,126 @@ derive_mode_with_alternatives(SourceType, MissingTools, Mode) :-
 
     % Otherwise use standard derivation
     ;   derive_powershell_mode(SourceType, Mode)
+    ).
+
+%% ============================================
+%% NETWORK ACCESS CONTROL
+%% ============================================
+
+%% check_url_access(+URL, -Result)
+%  Check if a URL is allowed by firewall policies.
+%  Result: allow | deny(Reason) | warn(Reason)
+%
+%  Checks in this order:
+%  1. Global network policy (deny_all, allow_all)
+%  2. Specific URL patterns (denied_url_pattern, allowed_url_pattern)
+%  3. Domain patterns (denied_domain, allowed_domain)
+%  4. Firewall mode (strict/permissive)
+
+check_url_access(URL, Result) :-
+    % Check global network policy first
+    (   network_access_policy(deny_all)
+    ->  Result = deny(network_access_denied)
+
+    ;   network_access_policy(allow_all)
+    ->  Result = allow
+
+    % Check denied URL patterns
+    ;   denied_url_pattern(Pattern),
+        url_matches_pattern(URL, Pattern)
+    ->  Result = deny(url_pattern_denied(Pattern))
+
+    % Check allowed URL patterns in whitelist mode (only if URL patterns are defined)
+    ;   network_access_policy(whitelist),
+        allowed_url_pattern(_),  % Only check if we have URL patterns
+        \+ (allowed_url_pattern(Pattern),
+            url_matches_pattern(URL, Pattern))
+    ->  Result = deny(not_in_whitelist)
+
+    % Check domain-based rules
+    ;   extract_domain(URL, Domain),
+        check_domain_access(Domain, DomainResult)
+    ->  Result = DomainResult
+
+    % Check firewall mode
+    ;   firewall_mode(strict)
+    ->  Result = deny(strict_mode_requires_explicit_allow)
+
+    ;   firewall_mode(permissive)
+    ->  Result = allow
+
+    ;   firewall_mode(disabled)
+    ->  Result = allow
+    ).
+
+%% check_domain_access(+Domain, -Result)
+%  Check if a domain is allowed.
+
+check_domain_access(Domain, Result) :-
+    % Check denied domains
+    (   denied_domain(DeniedPattern),
+        domain_matches_pattern(Domain, DeniedPattern)
+    ->  Result = deny(domain_denied(DeniedPattern))
+
+    % Check allowed domains (whitelist mode)
+    ;   network_access_policy(whitelist),
+        \+ (allowed_domain(AllowedPattern),
+            domain_matches_pattern(Domain, AllowedPattern))
+    ->  Result = deny(domain_not_in_whitelist)
+
+    % Check if specific domain is allowed
+    ;   allowed_domain(AllowedPattern),
+        domain_matches_pattern(Domain, AllowedPattern)
+    ->  Result = allow
+
+    % Default: check firewall mode
+    ;   firewall_mode(strict)
+    ->  Result = deny(strict_mode_requires_explicit_allow)
+
+    ;   Result = allow
+    ).
+
+%% url_matches_pattern(+URL, +Pattern)
+%  Check if URL matches a pattern (supports wildcards and regex)
+
+url_matches_pattern(URL, Pattern) :-
+    % Simple substring match for now
+    (   atom(Pattern)
+    ->  sub_atom(URL, _, _, _, Pattern)
+    ;   % Pattern could be more complex (regex, etc.)
+        sub_string(URL, _, _, _, Pattern)
+    ).
+
+%% domain_matches_pattern(+Domain, +Pattern)
+%  Check if domain matches a pattern
+
+domain_matches_pattern(Domain, Pattern) :-
+    % Exact match
+    (   Domain = Pattern
+    ->  true
+    % Subdomain match (e.g., Pattern = 'example.com', Domain = 'api.example.com')
+    ;   atom_concat(_, Pattern, Domain)
+    % Pattern with wildcard (e.g., '*.example.com')
+    ;   sub_atom(Pattern, 0, 1, _, '*'),
+        sub_atom(Pattern, 1, _, 0, BaseDomain),
+        atom_concat(_, BaseDomain, Domain)
+    ).
+
+%% extract_domain(+URL, -Domain)
+%  Extract domain from URL
+
+extract_domain(URL, Domain) :-
+    % Remove protocol (http://, https://)
+    (   sub_atom(URL, Before, 3, _, '://')
+    ->  Start is Before + 3,
+        sub_atom(URL, Start, _, 0, URLNoProt)
+    ;   URLNoProt = URL
+    ),
+
+    % Extract domain (everything before first '/')
+    (   sub_atom(URLNoProt, DomainEnd, _, _, '/')
+    ->  sub_atom(URLNoProt, 0, DomainEnd, _, Domain)
+    ;   Domain = URLNoProt
     ).
 
 %% ============================================
