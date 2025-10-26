@@ -18,9 +18,10 @@
 :- use_module(library(lists)).
 :- use_module('stream_compiler').
 :- use_module('recursive_compiler').
-:- use_module('../sources/csv_source').
-:- use_module('../sources/json_source').
-:- use_module('../sources/http_source').
+% Load source modules without importing predicates (we call them with module qualification)
+:- use_module('../sources/csv_source', []).
+:- use_module('../sources/json_source', []).
+:- use_module('../sources/http_source', []).
 
 %% compile_to_powershell(+Predicate, -PowerShellCode)
 %  Simplified interface with default options
