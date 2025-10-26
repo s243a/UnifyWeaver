@@ -371,7 +371,7 @@ template_system:template(csv_source_binary_plus_powershell_pure, '# {{pred}} - C
 function {{pred}} {
     param([string]$Key)
 
-    $data = Import-Csv -Path ''''{{file}}''''{{#delimiter_param}} -Delimiter ''''{{delimiter}}''''{{/delimiter_param}}
+    $data = Import-Csv -Path ''{{file}}''
 
     if ($Key) {
         # Lookup mode: find rows where first column matches key

@@ -118,8 +118,8 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     % Generate bash code using template
     atom_string(Pred, PredStr),
     generate_json_bash(PredStr, Arity, Filter, JsonFile, InputMode,
-                      OutputFormat, RawOutput, CompactOutput, NullInput, 
-                      ErrorHandling, BashCode).
+                      OutputFormat, RawOutput, CompactOutput, NullInput,
+                      ErrorHandling, AllOptions, BashCode).
 
 %% ============================================
 %% BASH CODE GENERATION
@@ -127,34 +127,40 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
 
 %% generate_json_bash(+PredStr, +Arity, +Filter, +JsonFile, +InputMode,
 %%                    +OutputFormat, +RawOutput, +CompactOutput, +NullInput,
-%%                    +ErrorHandling, -BashCode)
+%%                    +ErrorHandling, +Options, -BashCode)
 %  Generate bash code for JSON source
 generate_json_bash(PredStr, Arity, Filter, JsonFile, InputMode,
-                  OutputFormat, RawOutput, CompactOutput, NullInput, 
-                  ErrorHandling, BashCode) :-
-    
+                  OutputFormat, RawOutput, CompactOutput, NullInput,
+                  ErrorHandling, Options, BashCode) :-
+
     % Generate jq flags
     generate_jq_flags(RawOutput, CompactOutput, NullInput, JqFlags),
-    
+
     % Generate error handling code
     generate_json_error_handling(ErrorHandling, ErrorCode),
-    
+
     % Escape filter for bash (handle single quotes)
     escape_jq_filter(Filter, EscapedFilter),
-    
+
     % Generate output processing based on format
     generate_output_processing(OutputFormat, OutputProcessing),
-    
-    % Select template based on input mode
+
+    % Select template based on input mode and template_suffix option
     (   InputMode = file ->
-        TemplateName = json_file_source
-    ;   TemplateName = json_stdin_source
+        BaseTemplate = json_file_source
+    ;   BaseTemplate = json_stdin_source
     ),
-    
+
+    % Check for template_suffix option (for PowerShell, etc.)
+    (   member(template_suffix(Suffix), Options)
+    ->  atom_concat(BaseTemplate, Suffix, TemplateName)
+    ;   TemplateName = BaseTemplate
+    ),
+
     % Render template
     render_named_template(TemplateName,
         [pred=PredStr, filter=EscapedFilter, json_file=JsonFile,
-         jq_flags=JqFlags, error_code=ErrorCode, 
+         jq_flags=JqFlags, error_code=ErrorCode,
          output_processing=OutputProcessing, output_format=OutputFormat,
          arity=Arity, input_mode=InputMode],
         [source_order([file, generated])],
@@ -316,30 +322,17 @@ template_system:template(json_file_source_powershell_pure, '# {{pred}} - JSON fi
 function {{pred}} {
     param([string]$Key)
 
-    $jsonContent = Get-Content ''{{json_file}}'' -Raw | ConvertFrom-Json
+    try {
+        $jsonContent = Get-Content ''{{json_file}}'' -Raw | ConvertFrom-Json
 
-    # Apply filter logic based on arity
-    {{#has_key_filter}}
-    if ($Key) {
-        # Filter by key
-        $results = $jsonContent | Where-Object { $_.{{key_field}} -eq $Key }
-    } else {
-        $results = $jsonContent
-    }
-    {{/has_key_filter}}
-    {{^has_key_filter}}
-    $results = $jsonContent
-    {{/has_key_filter}}
-
-    # Format output
-    foreach ($item in $results) {
-        {{#arity_1}}
-        $item.{{field_0}}
-        {{/arity_1}}
-        {{#arity_2plus}}
-        $values = @({{#fields}}$item.{{field}}{{^last}}, {{/last}}{{/fields}})
-        $values -join ":"
-        {{/arity_2plus}}
+        # Output each item in the JSON array
+        foreach ($item in $jsonContent) {
+            # Get all property values and join with colon
+            $values = $item.PSObject.Properties | ForEach-Object { $_.Value }
+            $values -join ":"
+        }
+    } catch {
+        Write-Error "JSON processing failed: $_"
     }
 }
 
@@ -352,6 +345,16 @@ function {{pred}}_check {
     $result = {{pred}} $Key
     if ($result) {
         return "$Key exists"
+    }
+}
+
+function {{pred}}_filter {
+    param([string]$Filter)
+    # Apply custom PowerShell filter expression
+    $jsonContent = Get-Content ''{{json_file}}'' -Raw | ConvertFrom-Json
+    $jsonContent | Where-Object $Filter | ForEach-Object {
+        $values = $_.PSObject.Properties | ForEach-Object { $_.Value }
+        $values -join ":"
     }
 }
 
