@@ -7,6 +7,32 @@
 
 Set-StrictMode -Version Latest
 
+# --- Auto-load SWI-Prolog environment ---
+# Look for init_swipl_env.ps1 in common locations
+$SwiplEnvScript = $null
+$SearchPaths = @(
+    (Join-Path $PSScriptRoot '..' 'testing' 'init_swipl_env.ps1'),  # From scripts/powershell-compat/
+    (Join-Path $PSScriptRoot 'init_swipl_env.ps1'),                  # From scripts/testing/
+    (Join-Path $PSScriptRoot '..' 'init_swipl_env.ps1')              # From test environment scripts/
+)
+
+foreach ($Path in $SearchPaths) {
+    if (Test-Path $Path) {
+        $SwiplEnvScript = $Path
+        break
+    }
+}
+
+if ($SwiplEnvScript) {
+    # Source SWI-Prolog environment (quiet mode to avoid noise)
+    . $SwiplEnvScript -Quiet
+} else {
+    # Only warn if swipl is not already available
+    if (-not (Get-Command swipl.exe -ErrorAction SilentlyContinue)) {
+        Write-Host "[⚠] SWI-Prolog environment script not found. Run: . .\scripts\testing\init_swipl_env.ps1" -ForegroundColor Yellow
+    }
+}
+
 function _PosixQuote {
     param([Parameter(Mandatory)][string]$s)
     return "'" + ($s -replace "'", "'\\''") + "'"
@@ -163,12 +189,38 @@ New-UWCommand -Name 'uw-date'    -CmdName 'date'
 New-UWCommand -Name 'uw-find'    -CmdName 'find'
 New-UWCommand -Name 'uw-curl'    -CmdName 'curl'
 New-UWCommand -Name 'uw-wget'    -CmdName 'wget'
-New-UWCommand -Name 'uw-sqlite3' -CmdName 'sqlite3'
+# SQLite needs to accept piped SQL queries, so use filter instead of command
+New-UWFilter -Name 'uw-sqlite3' -CmdName 'sqlite3'
 New-UWCommand -Name 'uw-cp'      -CmdName 'cp'
 New-UWCommand -Name 'uw-mv'      -CmdName 'mv'
 New-UWCommand -Name 'uw-rm'      -CmdName 'rm'
 New-UWCommand -Name 'uw-mkdir'   -CmdName 'mkdir'
 New-UWCommand -Name 'uw-rmdir'   -CmdName 'rmdir'
+
+function uw-bash {
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$CommandArgs
+    )
+
+    if ($CommandArgs.Length -gt 0 -and $CommandArgs[0] -eq '-c' -and $CommandArgs.Length -ge 2) {
+        $scriptContent = $CommandArgs[1]
+        $extraArgs = if ($CommandArgs.Length -gt 2) {
+            ' ' + ($CommandArgs[2..($CommandArgs.Length - 1)] | ForEach-Object { _PosixQuote $_ } -join ' ')
+        } else {
+            ''
+        }
+        Invoke-UnifyCommand -Command ("bash$extraArgs") -Stdin $scriptContent
+    } elseif ($CommandArgs.Length -gt 0) {
+        $quotedArgs = $CommandArgs | ForEach-Object { _PosixQuote $_ }
+        Invoke-UnifyCommand -Command ("bash " + ($quotedArgs -join ' '))
+    } else {
+        Invoke-UnifyCommand -Command 'bash'
+    }
+}
+
+New-Item -Path Function:\global:uw-bash -Value (Get-Item Function:\uw-bash).ScriptBlock -Force | Out-Null
 
 # Deterministic listing for pipelines
 New-UWCommand -Name 'uw-ls' -CmdName 'ls -1'

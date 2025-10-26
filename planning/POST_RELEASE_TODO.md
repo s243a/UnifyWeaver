@@ -160,6 +160,85 @@ descendant(X, Z) :- parent(X, Y), descendant(Y, Z).
 
 ---
 
+### 5a. Fix Module Import Conflicts in Source Plugins
+
+**Status:** ⚠️ Warnings when using multiple source types together
+**Discovered:** WSL test plan, Test 4d (ETL Pipeline inline test)
+
+**Issue:**
+When using both `json_source` and `python_source` in the same user module, import conflicts occur:
+```
+ERROR: No permission to import python_source:validate_config/1 into user
+       (already imported from json_source)
+ERROR: No permission to import python_source:source_info/1 into user
+       (already imported from json_source)
+ERROR: No permission to import python_source:compile_source/4 into user
+       (already imported from json_source)
+```
+
+**Current Behavior:**
+- All source plugins export the same predicate names: `validate_config/1`, `source_info/1`, `compile_source/4`
+- When importing multiple source plugins, Prolog raises permission errors
+- **Workaround:** Use `except([...])` clause in `use_module` directives
+- Functionality still works despite warnings
+
+**Example Workaround (from integration_test.pl):**
+```prolog
+:- use_module(unifyweaver(sources/json_source),
+    except([validate_config/1, source_info/1, compile_source/4])).
+:- use_module(unifyweaver(sources/python_source),
+    except([validate_config/1, source_info/1, compile_source/4])).
+```
+
+**Root Cause:**
+All source plugins implement the same interface predicates with identical names. The plugin system uses `register_source_type/2` to dispatch to the correct implementation, but the exported predicates still conflict at module import time.
+
+**Fix Strategy:**
+1. **Option A:** Make interface predicates module-private (not exported)
+   - Only export `register_source_type/2` initialization
+   - Plugins register themselves on load
+   - Core system calls predicates via module qualification: `json_source:compile_source/4`
+
+2. **Option B:** Namespace the exports with plugin name
+   - Export: `json_compile_source/4`, `python_compile_source/4`, etc.
+   - Update plugin registration to use namespaced names
+   - More verbose but explicit
+
+3. **Option C (Recommended):** Don't export interface predicates at all
+   - Source plugins only need to register themselves via `:- initialization`
+   - All calls go through the dynamic dispatch system
+   - Users never directly import source plugins (only `sources.pl`)
+
+**Recommended Implementation:**
+```prolog
+% In csv_source.pl, json_source.pl, python_source.pl, etc.
+:- module(csv_source, []).  % Export nothing
+
+% Interface predicates remain but not exported
+validate_config(Config) :- ...
+compile_source(Pred, Config, Options, Code) :- ...
+source_info(Info) :- ...
+
+% Registration happens automatically
+:- initialization(
+    register_source_type(csv, csv_source),
+    now
+).
+```
+
+**Impact:** Low - users should only interact with `sources.pl`, not individual plugins
+**Estimated Effort:** 1-2 hours
+
+**Test Case:**
+```prolog
+% Should work without warnings
+:- use_module(unifyweaver(sources/json_source)).
+:- use_module(unifyweaver(sources/python_source)).
+:- use_module(unifyweaver(sources/csv_source)).
+```
+
+---
+
 ### 4. Update init_template.pl to Working Pattern
 
 **Status:** ✅ FIXED in templates/, but working pattern documented
@@ -179,6 +258,81 @@ unifyweaver_init :-
 ```
 
 **Note:** This pattern works and is committed. Keeping here for reference.
+
+---
+
+### 5b. Fix PowerShell Integration Test Sequential Execution Hang
+
+**Status:** ❌ BLOCKING in PowerShell environments
+**Discovered:** PowerShell test plan, full integration test
+**Priority:** Medium (workaround exists)
+
+**Issue:**
+The full integration test (`examples/integration_test.pl`) hangs when running in PowerShell/Windows environments. The test crashes consistently at the Python Source Test stage after successfully completing CSV and JSON tests.
+
+**Current Behavior:**
+- ✅ Individual tests pass when run in isolation
+- ✅ All generated scripts are correct and execute properly
+- ✅ WSL/Linux environment passes complete integration test
+- ❌ PowerShell environment hangs during 3rd sequential bash execution
+
+**Crash Point:**
+```prolog
+test_python_source :-
+    % ...
+    compile_dynamic_source(orders/4, [], OrdersCode),  % Compiles successfully
+    write_and_execute_bash(OrdersCode, '', OrdersOutput),  % ← HANGS HERE
+```
+
+This is the **third call** to `write_and_execute_bash` in sequence (after CSV and JSON tests).
+
+**Investigation Performed:**
+1. ❌ Not console buffer overflow - redirecting to file doesn't fix it
+2. ❌ Not debug output - disabling all DEBUG statements doesn't fix it
+3. ❌ Not temp file accumulation - only 2 temp files exist
+4. ❌ Not PowerShell compatibility layer - hangs even without `init_unify_compat.ps1`
+5. ✅ Specific to sequential execution - individual tests work fine
+
+**Root Cause (Suspected):**
+SWI-Prolog's `process_create/3` on Windows appears to have a resource leak or deadlock issue when called multiple times in rapid succession. This is likely a limitation of SWI-Prolog's Windows process management, not UnifyWeaver code.
+
+**Workaround (v0.0.2):**
+Run integration tests individually in PowerShell:
+```powershell
+swipl -l init.pl -l examples/integration_test.pl -g "test_csv_source, halt" -t halt
+swipl -l init.pl -l examples/integration_test.pl -g "test_json_source, halt" -t halt
+swipl -l init.pl -l examples/integration_test.pl -g "test_python_source, halt" -t halt
+swipl -l init.pl -l examples/integration_test.pl -g "test_sqlite_source, halt" -t halt
+```
+
+**Fix Strategy (v0.0.3+):**
+1. **Option A:** Add delays between `write_and_execute_bash` calls
+   - Try `sleep(0.5)` between test stages
+   - May help Windows process cleanup
+
+2. **Option B:** Use alternative process execution method
+   - Investigate SWI-Prolog's `process_which/2` and `process_id/1`
+   - Check for leaked process handles
+
+3. **Option C:** Refactor integration test for PowerShell
+   - Save all scripts first, then execute in batch
+   - Avoid mixing compilation and execution
+
+4. **Option D:** Report to SWI-Prolog community
+   - This may be a known Windows limitation
+   - Check SWI-Prolog bug tracker
+
+**Impact:**
+- Low for end users (core functionality works)
+- Medium for development (integration test can't run full suite on Windows)
+- Workaround is simple and documented
+
+**Estimated Effort:** 4-6 hours investigation + potential upstream bug report
+
+**Related Files:**
+- `src/unifyweaver/core/bash_executor.pl` - `write_and_execute_bash/3`
+- `examples/integration_test.pl` - Full test suite
+- `docs/development/testing/v0_0_2_powershell_test_plan.md`
 
 ---
 
@@ -440,7 +594,322 @@ Set environment variable in Windows before calling, or use PowerShell directly.
 
 ## Priority 6: Future Enhancements (Post v0.0.2)
 
-See `context/FUTURE_WORK.md` for:
+### 15. Implement firewall_implies - Higher-Order Firewall Policies
+
+**Status:** 📋 DESIGN PROPOSAL - Showcase Prolog's Unique Advantages
+**Location:** `src/unifyweaver/core/firewall.pl`
+**Documentation:** `docs/FIREWALL_GUIDE.md` (Future Enhancements section)
+**Created:** 2025-10-19
+
+**Concept:**
+Higher-order firewall rules that derive security policies from other policies using Prolog's logical inference capabilities. This would be **extremely difficult or impossible** to implement cleanly in traditional imperative languages, making it a compelling showcase for why Prolog was chosen for UnifyWeaver.
+
+**Example Usage:**
+
+**Basic Implications:**
+```prolog
+% If python3 is denied, automatically deny any source type that uses python3
+firewall_implies(denied(python3), denied_source_type(python)).
+
+% If network access is denied, block all HTTP sources
+firewall_implies(network_access(denied), denied_source_type(http)).
+
+% If a Python module is blocked, deny any code that imports it
+firewall_implies(denied_python_module(requests),
+                 block_python_imports_matching('import requests')).
+
+% Transitive implications: If requests is blocked, block urllib3 too (dependency)
+firewall_implies(denied_python_module(requests),
+                 denied_python_module(urllib3)).
+```
+
+**Preference Chains with Fallback Modes:**
+```prolog
+% Tool selection - graceful degradation across platforms
+firewall_default([
+    tool_preferences([
+        preferred([jq, python3], mode(fallback)),
+        fallback([awk, sed], mode(fallback)),
+        denied([bash_eval], mode(exception))  % Never use this
+    ])
+]).
+
+% When jq is blocked/unavailable, system automatically tries:
+% 1. jq (preferred) - fail → fallback
+% 2. python3 (preferred) - fail → fallback
+% 3. awk (fallback) - fail → fallback
+% 4. sed (fallback) - fail → exception (all options exhausted)
+% 5. bash_eval - immediate exception (explicitly denied)
+```
+
+**Network Rules with Different Modes:**
+```prolog
+firewall_default([
+    % URL blocking - strict security (throw exception)
+    network_hosts(['*.typicode.com', '*.github.com'], mode(exception)),
+
+    % SSH port preferences - try alternatives (Termux use case)
+    ssh_ports([
+        preferred(22, mode(fallback)),      % Standard port
+        fallback(2222, mode(fallback)),     % Termux default (non-root accessible)
+        fallback(8022, mode(fallback))      % Alternative
+    ], mode(exception_if_all_fail))
+]).
+
+% Real-world scenario: Termux on Android
+% Port 22 blocked (requires root) → try 2222 (Termux default)
+% Port 2222 blocked → try 8022
+% All ports blocked → throw exception
+firewall_implies(
+    ssh_connection(Host),
+    try_ports([22, 2222, 8022])
+) :-
+    detect_platform(android).
+```
+
+**Tool Selection Across Platforms:**
+```prolog
+% Minimal systems - degrade gracefully
+firewall_default([
+    json_processing([
+        preferred(jq, mode(fallback)),      % Fast, clean
+        fallback(python3, mode(fallback)),  % More powerful
+        fallback(awk, mode(warn))           % Always available but warn
+    ])
+]).
+
+% Air-gapped environments - prefer local/cached
+firewall_default([
+    data_source([
+        preferred(local_cache, mode(fallback)),
+        fallback(network, mode(exception))  % Block network in air-gapped
+    ])
+]).
+```
+
+**Why This Showcases Prolog's Power:**
+
+1. **Declarative Security Policies** - Express "what" not "how"
+   ```prolog
+   % In Prolog (elegant):
+   firewall_implies(denied(X), denied_source_type(Type)) :-
+       source_uses_service(Type, X).
+
+   % In Python (imperative mess):
+   def check_firewall(source_type, denied_services):
+       for service in denied_services:
+           if source_type_uses_service(source_type, service):
+               for rule in firewall_rules:
+                   if rule.matches(source_type):
+                       return DENIED
+       return ALLOWED
+   ```
+
+2. **Logical Inference** - Prolog automatically derives policies
+   ```prolog
+   % Define one rule about Python
+   firewall_implies(denied(python3), denied_source_type(python)).
+
+   % Prolog automatically knows:
+   % - If python3 is denied
+   % - Then python source type is denied
+   % - Therefore any source(python, ...) should be blocked
+
+   % No manual checking needed!
+   ```
+
+3. **Transitive Reasoning** - Automatically handles chains
+   ```prolog
+   firewall_implies(A, B).
+   firewall_implies(B, C).
+   % Prolog can infer: A implies C (if we want transitivity)
+   ```
+
+4. **Pattern Matching** - Natural syntax for security rules
+   ```prolog
+   % Block any network access to certain TLDs
+   firewall_implies(
+       network_hosts(Hosts),
+       denied_url_pattern(Pattern)
+   ) :-
+       member('*.cn', Hosts),
+       Pattern = '*.cn'.
+   ```
+
+**Design Questions to Address:**
+
+1. **Evaluation Strategy:**
+   - Eager (at policy definition time)?
+   - Lazy (at validation time)?
+   - Trade-offs: Performance vs flexibility
+
+2. **Transitivity:**
+   - Should `firewall_implies` be transitive automatically?
+   - How to prevent circular implications?
+   - Example: A→B, B→C, should A→C be automatic?
+
+3. **Scope:**
+   - Apply to `rule_firewall` only?
+   - Apply to `firewall_default` only?
+   - Apply globally across all policies?
+
+4. **Conflict Resolution:**
+   - What if `firewall_implies` creates contradictions?
+   - Example: One rule allows, one denies via implication
+   - Use "deny always wins" principle?
+
+5. **Rule-Level Modes (NEW - 2025-10-24):**
+   - Each rule should support its own failure mode
+   - Different behaviors for different rule types:
+     - **Security rules** (URLs, file access): `mode(exception)` - throw error
+     - **Tool preferences**: `mode(fallback)` - try next option
+     - **Platform adaptation**: `mode(warn)` - succeed with warning
+   - Examples:
+     ```prolog
+     firewall_default([
+         % URL blocking - strict security
+         network_hosts(['*.typicode.com', '*.github.com'], mode(exception)),
+
+         % Tool selection - graceful fallback
+         tools([
+             preferred(jq, mode(fallback)),
+             fallback(python3, mode(fallback)),
+             denied(eval, mode(exception))
+         ]),
+
+         % SSH port selection - try alternatives (Termux use case)
+         ssh_ports([
+             preferred(22, mode(fallback)),      % Standard port
+             fallback(2222, mode(fallback)),     % Termux default (non-root)
+             fallback(8022, mode(fallback))      % Alternative
+         ], mode(exception_if_all_fail))
+     ]).
+     ```
+
+6. **Preference Chains vs Hard Blocking:**
+   - Most rules should support **preference/fallback chains**
+   - System tries options in order until one succeeds
+   - Only throw exception when:
+     - Explicit `mode(exception)` on the rule
+     - All fallback options exhausted
+     - Security-critical violation (URL blocking, etc.)
+   - This allows graceful degradation across platforms
+   - Example use cases:
+     - **Android/Termux**: Standard ports blocked → try high-numbered ports
+     - **Minimal systems**: `jq` not available → fall back to `python3` → fall back to `awk`
+     - **Air-gapped environments**: Network access denied → use cached/local alternatives
+
+**Implementation Plan:**
+
+**Phase 1: Basic Implementation (2-3 hours)**
+```prolog
+% In firewall.pl
+:- dynamic firewall_implies/2.
+
+% Expand implications when validating
+validate_against_firewall(Target, Options, Firewall) :-
+    % Expand firewall with implied rules
+    expand_firewall_implications(Firewall, ExpandedFirewall),
+    % ... existing validation logic ...
+
+expand_firewall_implications(Firewall, Expanded) :-
+    findall(Implied,
+        (member(Rule, Firewall),
+         firewall_implies(Rule, Implied)),
+        ImpliedRules),
+    append(Firewall, ImpliedRules, Expanded).
+```
+
+**Phase 2: Transitive Closure (1-2 hours)**
+```prolog
+% Compute transitive closure of implications
+expand_firewall_implications_transitive(Firewall, Expanded) :-
+    % Iteratively expand until fixed point
+    expand_once(Firewall, Step1),
+    (   Firewall = Step1
+    ->  Expanded = Firewall  % Fixed point reached
+    ;   expand_firewall_implications_transitive(Step1, Expanded)
+    ).
+```
+
+**Phase 3: Cycle Detection (1-2 hours)**
+```prolog
+% Detect circular implications
+check_firewall_implies_cycles :-
+    findall(A-B, firewall_implies(A, B), Edges),
+    (   has_cycle(Edges)
+    ->  format(user_error, 'Warning: Circular firewall implications detected~n', [])
+    ;   true
+    ).
+```
+
+**Testing Strategy:**
+```prolog
+% In test_firewall_implies.pl
+
+test_basic_implication :-
+    assertz(firewall_implies(denied(python3), denied_source_type(python))),
+    assertz(firewall_default([denied([python3])])),
+
+    % Should block Python sources due to implication
+    source(python, test_source, [python_inline('print("test")')]),
+    \+ compile_dynamic_source(test_source/2, [], _),
+
+    writeln('✅ Basic implication works').
+
+test_transitive_implication :-
+    assertz(firewall_implies(denied(A), denied_module(A))),
+    assertz(firewall_implies(denied_module(M), block_import(M))),
+    assertz(firewall_default([denied([requests])])),
+
+    % Should block imports due to transitive implication
+    Python = 'import requests',
+    \+ validate_python_imports(Python, [denied([requests])]),
+
+    writeln('✅ Transitive implication works').
+
+test_no_circular_implications :-
+    assertz(firewall_implies(denied(A), denied(B))),
+    assertz(firewall_implies(denied(B), denied(A))),
+
+    % Should detect and warn about cycle
+    check_firewall_implies_cycles,
+
+    writeln('✅ Cycle detection works').
+```
+
+**Documentation Updates:**
+- Update `docs/FIREWALL_GUIDE.md` with `firewall_implies` examples
+- Add to README.md as "Why Prolog?" showcase
+- Create blog post/article: "Security Policies as Logic Programs"
+
+**Marketing Value:**
+This feature directly addresses "Why not just use Python/JavaScript?" by showing:
+- Prolog does this **elegantly** in a few lines
+- Imperative languages would need complex rule engines
+- **Logical inference is Prolog's superpower**
+- **Declarative security > imperative security checks**
+
+**Estimated Effort:** 10-15 hours total (updated 2025-10-24)
+- Basic implementation: 2-3 hours
+- Rule-level modes: 3-4 hours (NEW)
+- Preference chain logic: 2-3 hours (NEW)
+- Transitive closure: 1-2 hours
+- Cycle detection: 1-2 hours
+- Testing: 3 hours (expanded for modes)
+- Documentation: 3 hours (expanded for preference examples)
+
+**Priority:** High - Excellent showcase of Prolog's unique advantages
+- Demonstrates declarative security policies
+- Shows graceful cross-platform degradation
+- Highlights logical inference capabilities
+- Solves real-world problems (Termux SSH ports, minimal systems, air-gapped)
+
+**Dependencies:** None - can be implemented independently
+
+---
+
+See also `context/FUTURE_WORK.md` for:
 - Tree recursion with fold helper pattern (fibonacci, binomial coefficients)
 - Constraint system integration with advanced recursion
 - Education materials completion
@@ -468,3 +937,297 @@ See `context/FUTURE_WORK.md` for:
 ---
 
 *This document will be updated as items are completed and new issues are discovered.*
+
+## Priority 7: Research & Improvement
+
+### 16. Research Pure Prolog Alternatives to External Tool Calls
+
+**Status:** 📋 Research Task  
+**Reference:** `docs/development/LANGUAGE_IDIOSYNCRASIES.md` - Anti-Declarative Patterns section  
+**Current Situation:** We use external tools (bash, cygpath, etc.) to work around Prolog's automatic cleanup
+
+**Context:**
+Currently in `bash_executor.pl`, we bypass Prolog's file I/O and use external bash to create temporary scripts. See the Anti-Declarative Patterns section in LANGUAGE_IDIOSYNCRASIES.md for full details.
+
+**Why We Do This:**
+- Prolog's `tmp_file/2` and `open/3` trigger automatic cleanup
+- External processes can't access files that Prolog manages internally  
+- Path namespace issues between Windows and Cygwin filesystems
+
+**Research Goal:** Investigate pure Prolog alternatives to understand:
+1. Can we control Prolog's cleanup behavior?
+2. Can we prevent file locking issues?
+3. Can we handle paths without external tools like `cygpath`?
+4. Are there alternative file creation methods that avoid cleanup hooks?
+
+**Benefits of Pure Prolog Solutions:**
+- **Cross-Platform Robustness** - Less dependence on bash/cygpath availability
+- **Simpler Architecture** - Fewer subprocess invocations, easier debugging
+- **Better Understanding** - Learn Prolog's file system model, document best practices
+
+**Important:** This is research, not a mandate. If external tools work better, we keep them. Don't sacrifice reliability for "purity."
+
+**Estimated Effort:** 10-15 hours (investigation + testing + documentation)
+
+**Priority:** Medium-Low - Current solution works; research valuable for future multiplatform work
+
+**Deliverables:**
+- Updated LANGUAGE_IDIOSYNCRASIES.md with research findings
+- Test suite comparing different approaches
+- Decision matrix: when to use Prolog vs external tools
+
+---
+
+## Priority 8: Testing Infrastructure Enhancement
+
+### 17. Implement Data Source Test Runner Generator
+
+**Status:** 📋 DESIGN NEEDED - Post-Release Enhancement
+**Location:** New module `src/unifyweaver/core/data_sources/test_generator.pl` (proposed)
+**Reference:** `examples/test_generated_scripts.sh` (current ad-hoc implementation)
+**Created:** 2025-10-23
+
+**Current Situation:**
+We have an ad-hoc test script (`examples/test_generated_scripts.sh`) that tests the integration test's generated bash scripts:
+- `test_output/products.sh` (CSV source)
+- `test_output/orders.sh` (JSON source)
+- `test_output/analyze_orders.sh` (Python ETL)
+- `test_output/top_products.sh` (SQLite query)
+
+This works but is not automatically generated like advanced recursion tests.
+
+**Why This Is Different from test_runner_generator.pl:**
+
+The existing `test_runner_generator.pl` is designed for **unit testing recursive predicates**:
+- Tests pure predicates with specific arguments: `factorial "5" ""`
+- Multiple test cases per function (0, 1, 5, etc.)
+- Self-contained (no external data dependencies)
+- Uses `source script.sh` pattern
+
+Data source testing requires **integration testing pipelines**:
+- Tests end-to-end data flows: `orders.sh | analyze.sh`
+- Single execution per pipeline (with test data)
+- Requires test data files (CSV, JSON)
+- Uses `bash script.sh` and pipe patterns
+- Validates output correctness
+
+**Architectural Considerations:**
+
+Before implementing, these architectural decisions must be addressed:
+
+1. **Module Organization & Responsibility:**
+   - Where does this fit in the module hierarchy?
+   - Should it be `core/data_sources/test_generator.pl` or `core/testing/data_source_generator.pl`?
+   - Who owns test generation: the data source system or the testing system?
+   - How does this interact with the existing `core/advanced/test_runner_generator.pl`?
+
+2. **Abstraction Level:**
+   - Should the generator be **data-source-aware** (knows about CSV, JSON, Python)?
+   - Or should it be **generic** (just generates bash script tests from metadata)?
+   - Trade-off: Specific knowledge vs flexibility for future source types
+
+3. **Test Discovery vs Configuration:**
+   - **Configuration-based** (current test_runner_generator.pl approach):
+     - Hardcoded test cases for known scripts
+     - Pro: Explicit control, predictable
+     - Con: Manual updates needed for new sources
+   - **Discovery-based** (scan generated_file/2 facts):
+     - Automatically detect all generated scripts
+     - Pro: Adapts to new sources automatically
+     - Con: May need heuristics for pipeline ordering
+   - **Hybrid** (discover + annotate):
+     - Discover scripts but allow metadata annotations
+     - Pro: Best of both worlds
+     - Con: More complex
+
+4. **Metadata Storage:**
+   - Where to store test metadata (expected outputs, pipeline dependencies)?
+   - Options:
+     - In source definitions (`source(csv, products, [..., test_cases([...])])`)
+     - In separate test spec file (`test_specs.pl`)
+     - In `generated_file/2` with extended format
+     - In comments/annotations in integration_test.pl
+   - Trade-off: Colocation vs separation of concerns
+
+5. **Test Execution Model:**
+   - **Self-contained bash script** (current approach):
+     - Pro: Runs independently, easy to distribute
+     - Con: No feedback to Prolog, hard to validate programmatically
+   - **Prolog test runner**:
+     - Pro: Can validate outputs, integrate with test framework
+     - Con: Requires Prolog to run tests, more complex
+   - **Hybrid** (bash script that reports to Prolog):
+     - Pro: Portable but validatable
+     - Con: Complex inter-process communication
+
+6. **Reusability Across Test Types:**
+   - Can the same generator support:
+     - Unit tests (single source execution)?
+     - Integration tests (multi-source pipelines)?
+     - Regression tests (compare with expected outputs)?
+   - Or should we have specialized generators for each?
+   - Trade-off: One flexible generator vs multiple focused generators
+
+7. **Relationship to Dynamic Source Compiler:**
+   - The `dynamic_source_compiler.pl` generates bash scripts
+   - Should the test generator be part of that workflow?
+   - Should script generation automatically trigger test generation?
+   - Or keep them completely separate?
+   - Trade-off: Tight coupling vs loose coupling
+
+8. **Extensibility for Future Source Types:**
+   - How does the generator handle new source types (e.g., future SQL, XML, YAML sources)?
+   - Should the generator use a plugin architecture?
+   - Should each source type provide its own test generation logic?
+   - Or should there be a common test generation interface?
+
+**Design Questions to Answer:**
+
+1. **Architecture:**
+   - Should this be a separate module (`data_source_test_generator.pl`)?
+   - Or extend `test_runner_generator.pl` with pipeline support?
+   - Or integrate with `integration_test.pl` to auto-generate its own test runner?
+
+2. **Pipeline Representation:**
+   - How to specify multi-stage pipelines in Prolog?
+   - Example: Need to represent `orders.sh | analyze_orders.sh`
+   ```prolog
+   % Possible syntax:
+   test_pipeline(etl_demo, [
+       stage(extract, 'test_output/orders.sh', []),
+       stage(transform, 'test_output/analyze_orders.sh', [stdin]),
+       expected_output_contains('Mouse')
+   ]).
+   ```
+
+3. **Test Data Management:**
+   - Should the generator create test data files?
+   - Or assume `integration_test.pl` has already created them?
+   - How to handle setup/teardown?
+
+4. **Output Validation:**
+   - Current ad-hoc script just runs and shows output
+   - Should generated tests validate output programmatically?
+   - How to specify expected results?
+
+5. **Integration Points:**
+   - Should `integration_test.pl` call the generator at the end?
+   - Or is test generation a separate workflow?
+   - How does this fit into the overall test plan?
+
+**Proposed Implementation Approach:**
+
+**Option A: Separate Module (Recommended)**
+```prolog
+% src/unifyweaver/core/data_sources/test_generator.pl
+:- module(data_source_test_generator, [
+    generate_integration_test_runner/0,
+    generate_integration_test_runner/1
+]).
+
+% Generate test runner from integration_test.pl's generated_file/2 facts
+generate_integration_test_runner(OutputPath) :-
+    findall(Type-Path, generated_file(Type, Path), Files),
+    open(OutputPath, write, Stream),
+    write_test_header(Stream),
+    write_data_source_tests(Stream, Files),
+    write_test_footer(Stream),
+    close(Stream).
+
+% Generate individual tests based on source type
+write_data_source_tests(Stream, Files) :-
+    % CSV sources: source script && call function
+    % JSON sources: bash script
+    % Python pipelines: bash a.sh | bash b.sh
+    % SQLite queries: bash script
+    ...
+```
+
+**Option B: Extend test_runner_generator.pl**
+- Add `generate_integration_tests/1` predicate
+- Add pipeline support to existing generator
+- Risk: Mixing unit tests and integration tests in one module
+
+**Option C: Integration Test Self-Generation**
+- Modify `integration_test.pl` to generate its own test runner
+- Uses `generated_file/2` facts it already tracks
+- Simplest but least reusable
+
+**Recommended: Option A** - Separate module for clarity and extensibility
+
+**Example Generated Output:**
+```bash
+#!/bin/bash
+# AUTO-GENERATED by data_source_test_generator.pl
+# DO NOT EDIT MANUALLY
+
+echo "=== Data Source Integration Tests ==="
+
+echo "1. CSV Source (Products):"
+source test_output/products.sh && products
+echo
+
+echo "2. JSON Source (Orders):"
+bash test_output/orders.sh
+echo
+
+echo "3. Python ETL Pipeline:"
+bash test_output/orders.sh | bash test_output/analyze_orders.sh
+echo
+
+echo "4. SQLite Query (Top Products):"
+bash test_output/top_products.sh
+echo
+
+echo "✅ All integration tests complete"
+```
+
+**Testing the Generator:**
+```prolog
+% After running integration_test.pl:
+?- use_module(data_source_test_generator).
+?- generate_integration_test_runner('test_output/test_runner.sh').
+% Generated test runner: test_output/test_runner.sh
+
+% Then in bash:
+$ bash test_output/test_runner.sh
+```
+
+**Implementation Plan:**
+
+**Phase 1: Basic Generation (3-4 hours)**
+- Create `data_source_test_generator.pl` module
+- Query `generated_file/2` facts
+- Generate simple test runner (like current ad-hoc)
+- Write tests for the generator itself
+
+**Phase 2: Pipeline Support (2-3 hours)**
+- Add pipeline specification format
+- Handle multi-stage data flows
+- Support stdin piping between stages
+
+**Phase 3: Validation (2-3 hours)**
+- Add expected output specifications
+- Generate assertions in test runner
+- Report pass/fail instead of just showing output
+
+**Phase 4: Integration (1-2 hours)**
+- Integrate with `integration_test.pl`
+- Optionally auto-generate runner at end of test
+- Update test plans to reference generated runner
+
+**Current Workaround:**
+✅ Ad-hoc `test_generated_scripts.sh` works and is documented
+✅ Script is copied to test environments by `init_testing.sh`
+✅ Comments clearly mark it as temporary and reference this TODO
+
+**Estimated Total Effort:** 8-12 hours
+
+**Priority:** Medium - Improves testing infrastructure but not blocking release
+
+**Dependencies:** None - can be implemented independently after v0.0.2
+
+**See Also:**
+- `src/unifyweaver/core/advanced/test_runner_generator.pl` - Existing generator for recursion tests
+- `examples/test_generated_scripts.sh` - Current ad-hoc implementation
+- `examples/integration_test.pl` - Uses `generated_file/2` tracking

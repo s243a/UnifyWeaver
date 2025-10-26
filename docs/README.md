@@ -35,11 +35,26 @@ This applies to:
   - When to add headers
   - Examples for each file type
   - Special cases (papers, generated code)
-  
+
 - **[LINE_ENDINGS.md](LINE_ENDINGS.md)** - Line ending conventions
   - Why Unix (LF) line endings
   - Git configuration
   - Platform-specific issues
+
+- **[development/ai-skills/](development/ai-skills/)** - AI assistant skills and workflows
+  - Structured prompts for common development tasks
+  - Cross-compatible with Claude Code, Copilot, Cursor, and other AI tools
+  - Testing patterns and project-specific workflows
+
+- **[development/STDIN_LOADING.md](development/STDIN_LOADING.md)** - Loading Prolog code from stdin
+  - Using `consult(user)` for quick experiments
+  - Testing without temporary files
+  - Command-line patterns and examples
+
+- **[development/UNICODE_SPECIFICATION.md](development/UNICODE_SPECIFICATION.md)** - Unicode and emoji handling
+  - Cross-platform emoji support
+  - Terminal detection and compatibility
+  - SWI-Prolog version requirements
 
 ### Administration
 

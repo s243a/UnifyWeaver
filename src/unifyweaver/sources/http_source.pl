@@ -184,9 +184,9 @@ generate_http_bash(PredStr, Arity, URL, Method, Tool, Timeout,
 
 %% generate_http_command(+Tool, +Method, +URL, +Timeout, +Headers, +PostData, +UserAgent, -Command)
 %  Generate the appropriate HTTP command for curl or wget
-generate_http_command(curl, Method, URL, Timeout, Headers, PostData, UserAgent, Command) :-
+generate_http_command(curl, Method, _URL, Timeout, _Headers, _PostData, UserAgent, Command) :-
     format(atom(Command), 'curl -s -X ~w --max-time ~w -A "~w"', [Method, Timeout, UserAgent]).
-generate_http_command(wget, Method, URL, Timeout, Headers, PostData, UserAgent, Command) :-
+generate_http_command(wget, Method, _URL, Timeout, _Headers, _PostData, UserAgent, Command) :-
     format(atom(Command), 'wget -qO- --method=~w --timeout=~w --user-agent="~w"', [Method, Timeout, UserAgent]).
 
 %% generate_header_options(+Headers, +Tool, -Options)
@@ -243,9 +243,9 @@ template_system:template(http_basic_source, '#!/bin/bash
     fi
     
     # Make HTTP request
-    {{http_command}} \
-        {{header_options}} \
-        {{post_options}} \
+    {{http_command}} \c
+        {{header_options}} \c
+        {{post_options}} \c
         "$url"
     
     local exit_code=$?
@@ -301,9 +301,9 @@ template_system:template(http_cached_source, '#!/bin/bash
     
     # Make HTTP request and cache result
     local temp_file="${cache_file}.tmp"
-    {{http_command}} \
-        {{header_options}} \
-        {{post_options}} \
+    {{http_command}} \c
+        {{header_options}} \c
+        {{post_options}} \c
         "$url" > "$temp_file"
     
     local exit_code=$?

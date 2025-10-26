@@ -39,6 +39,10 @@ __pycache__/
 .unifyweaver.conf
 *.conf
 
+# Claude Code
+.claude/skills/           # Auto-generated from docs/development/ai-skills/
+.claude/settings.local.json  # Local settings
+
 # VSCode
 .vscode/
 *.code-workspace

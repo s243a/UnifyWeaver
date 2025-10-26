@@ -113,8 +113,8 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     ;   member(columns(ManualColumns), AllOptions)
     ->  HeaderMode = manual,
         Columns = ManualColumns,
-        (   length(Columns, ManualArity),
-            ManualArity =:= Arity
+        length(Columns, ManualArity),
+        (   ManualArity =:= Arity
         ->  true
         ;   format('Error: columns list length (~w) does not match arity (~w)~n', [ManualArity, Arity]),
             fail
@@ -215,7 +215,7 @@ field_reference(N, Field) :-
 %  Generate awk code for quote handling
 generate_quote_handling_code(QuoteChar, strip, Code) :-
     format(atom(Code), 'gsub(/~w/, "", $0)', [QuoteChar]).
-generate_quote_handling_code(QuoteChar, preserve, '') :-
+generate_quote_handling_code(_QuoteChar, preserve, '') :-
     % No quote handling - preserve as-is
     true.
 generate_quote_handling_code(QuoteChar, escape, Code) :-
@@ -256,6 +256,11 @@ template_system:template(csv_source_unary, '#!/bin/bash
     local value="$1"
     [[ -n $({{pred}} | grep -F "$value") ]] && echo "$value exists"
 }
+
+# Auto-execute when run directly (not when sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').
 
 % Arity 2+ template: pred(Col1, Col2, ...) - return all columns  
@@ -297,4 +302,9 @@ template_system:template(csv_source_binary_plus, '#!/bin/bash
     local key="$1"
     [[ -n $({{pred}} "$key") ]] && echo "$key exists"
 }
+
+# Auto-execute when run directly (not when sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
 ').

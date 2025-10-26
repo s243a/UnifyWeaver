@@ -370,6 +370,17 @@ if (Test-Path $DiagnosticsSource) {
     Write-Host "[OK] Diagnostic tools installed" -ForegroundColor Green
 }
 
+# Copy init_swipl_env.ps1 to test environment
+$SwiplEnvSource = Join-Path $ScriptDir "init_swipl_env.ps1"
+if (Test-Path $SwiplEnvSource) {
+    Write-Host ""
+    Write-Host "[COPY] Installing SWI-Prolog environment script..." -ForegroundColor Cyan
+
+    $SwiplEnvDest = Join-Path $TargetRoot "scripts\init_swipl_env.ps1"
+    Copy-Item $SwiplEnvSource $SwiplEnvDest -Force
+    Write-Host "[OK] Copied init_swipl_env.ps1 to scripts/" -ForegroundColor Green
+}
+
 # Create README
 $ReadmePath = Join-Path $TargetRoot "README.txt"
 $ReadmeContent = @"

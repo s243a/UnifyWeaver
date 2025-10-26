@@ -93,37 +93,41 @@ emoji_to_bmp('🏗️', '🏗').  % U+1F3D7 U+FE0F → U+1F3D7
 %  Used when emoji_level is 'ascii' or when 'bmp' mode encounters non-BMP emoji.
 
 % Status indicators (BMP range U+2000-U+27FF)
-emoji_fallback('✅', '[OK]').      % U+2705
-emoji_fallback('❌', '[FAIL]').    % U+274C
-emoji_fallback('⚠️', '[WARN]').    % U+26A0 U+FE0F
-emoji_fallback('⚠', '[WARN]').     % U+26A0 (BMP version)
-emoji_fallback('ℹ️', '[INFO]').    % U+2139 U+FE0F
-emoji_fallback('ℹ', '[INFO]').     % U+2139 (BMP version)
+emoji_fallback('\u2705', '[OK]').      % ✅ U+2705
+emoji_fallback('\u274C', '[FAIL]').    % ❌ U+274C
+emoji_fallback('\u26A0', '[WARN]').    % ⚠ U+26A0 (BMP version)
+emoji_fallback('\u2139', '[INFO]').    % ℹ U+2139 (BMP version)
 
 % Progress indicators (non-BMP range U+1F300-U+1F9FF)
-emoji_fallback('🚀', '[STEP]').    % U+1F680
-emoji_fallback('📡', '[LOAD]').    % U+1F4E1
-emoji_fallback('📊', '[DATA]').    % U+1F4CA
-emoji_fallback('📈', '[PROC]').    % U+1F4C8
-emoji_fallback('💾', '[SAVE]').    % U+1F4BE
-emoji_fallback('🔄', '[SYNC]').    % U+1F504
+emoji_fallback('\U0001F680', '[STEP]').    % 🚀 U+1F680
+emoji_fallback('\U0001F4E1', '[LOAD]').    % 📡 U+1F4E1
+emoji_fallback('\U0001F4CA', '[DATA]').    % 📊 U+1F4CA
+emoji_fallback('\U0001F4C8', '[PROC]').    % 📈 U+1F4C8
+emoji_fallback('\U0001F4BE', '[SAVE]').    % 💾 U+1F4BE
+emoji_fallback('\U0001F504', '[SYNC]').    % 🔄 U+1F504
 
 % Task indicators (non-BMP range)
-emoji_fallback('👥', '[USER]').    % U+1F465
-emoji_fallback('🎯', '[GOAL]').    % U+1F3AF
-emoji_fallback('🎉', '[DONE]').    % U+1F389
-emoji_fallback('🔧', '[TOOL]').    % U+1F527
-emoji_fallback('🔍', '[FIND]').    % U+1F50D
-emoji_fallback('📝', '[NOTE]').    % U+1F4DD
+emoji_fallback('\U0001F465', '[USER]').    % 👥 U+1F465
+emoji_fallback('\U0001F3AF', '[GOAL]').    % 🎯 U+1F3AF
+emoji_fallback('\U0001F389', '[DONE]').    % 🎉 U+1F389
+emoji_fallback('\U0001F527', '[TOOL]').    % 🔧 U+1F527
+emoji_fallback('\U0001F50D', '[FIND]').    % 🔍 U+1F50D
+emoji_fallback('\U0001F4DD', '[NOTE]').    % 📝 U+1F4DD
 
 % Category indicators (mixed BMP and non-BMP)
-emoji_fallback('🏗️', '[BUILD]').  % U+1F3D7 U+FE0F
-emoji_fallback('🏗', '[BUILD]').   % U+1F3D7 (without variation selector)
-emoji_fallback('🧪', '[TEST]').    % U+1F9EA
-emoji_fallback('📦', '[PKG]').     % U+1F4E6
-emoji_fallback('🌐', '[WEB]').     % U+1F310
-emoji_fallback('🔐', '[SEC]').     % U+1F510
-emoji_fallback('⚡', '[FAST]').    % U+26A1 (BMP)
+emoji_fallback('\U0001F3D7', '[BUILD]').   % 🏗 U+1F3D7
+emoji_fallback('\U0001F9EA', '[TEST]').    % 🧪 U+1F9EA
+emoji_fallback('\U0001F4E6', '[PKG]').     % 📦 U+1F4E6
+emoji_fallback('\U0001F310', '[WEB]').     % 🌐 U+1F310
+emoji_fallback('\U0001F510', '[SEC]').     % 🔐 U+1F510
+emoji_fallback('\u26A1', '[FAST]').        % ⚡ U+26A1 (BMP)
+
+% Additional fallbacks for integration test
+emoji_fallback('\U0001F3A8', '[ART]').     % 🎨 U+1F3A8 (palette/art)
+emoji_fallback('\U0001F40D', '[CODE]').    % 🐍 U+1F40D (snake/Python)
+emoji_fallback('\U0001F4C1', '[DIR]').     % 📁 U+1F4C1 (folder)
+emoji_fallback('\U0001F4C4', '[FILE]').    % 📄 U+1F4C4 (document)
+emoji_fallback('\U0001F9F9', '[CLEAN]').   % 🧹 U+1F9F9 (broom/cleanup)
 
 %% ============================================================================
 %% SAFE FORMAT PREDICATES
@@ -150,8 +154,16 @@ safe_format(Format, Args) :-
 
 safe_format(Stream, Format, Args) :-
     get_emoji_level(Level),
-    adapt_format(Level, Format, AdaptedFormat),
-    format(Stream, AdaptedFormat, Args).
+    (   Level = full
+    ->  % On Windows, format/3 mangles emoji in format strings
+        % So we extract emoji and pass them as arguments via ~w
+        extract_emoji_to_args(Format, AdaptedFormat, EmojiArgs),
+        append(EmojiArgs, Args, AllArgs),
+        format(Stream, AdaptedFormat, AllArgs)
+    ;   % For ascii/bmp modes, use character replacement
+        adapt_format(Level, Format, AdaptedFormat),
+        format(Stream, AdaptedFormat, Args)
+    ).
 
 %! adapt_format(+Level:atom, +Format:atom, -AdaptedFormat:atom) is det.
 %
@@ -212,6 +224,33 @@ char_is_bmp(Char) :-
     Code >= 0x0000,
     Code =< 0xFFFF.
 
+%! extract_emoji_to_args(+Format:atom, -NewFormat:atom, -EmojiArgs:list) is det.
+%
+%  Extract emoji characters from format string and replace with ~w placeholders.
+%  This works around Windows SWI-Prolog's format/3 mangling emoji in format strings.
+%
+%  @arg Format Original format string with embedded emoji
+%  @arg NewFormat Format string with emoji replaced by ~w
+%  @arg EmojiArgs List of extracted emoji characters to pass as format arguments
+
+extract_emoji_to_args(Format, NewFormat, EmojiArgs) :-
+    atom_chars(Format, Chars),
+    extract_emoji_chars(Chars, NewChars, EmojiArgs),
+    atom_chars(NewFormat, NewChars).
+
+extract_emoji_chars([], [], []).
+extract_emoji_chars([Char|Rest], NewChars, EmojiArgs) :-
+    char_code(Char, Code),
+    (   Code > 0xFFFF  % Non-BMP character (likely emoji)
+    ->  % Replace with ~w and add to emoji args
+        NewChars = ['~', w | RestNew],
+        EmojiArgs = [Char | RestEmoji],
+        extract_emoji_chars(Rest, RestNew, RestEmoji)
+    ;   % Keep regular character as-is
+        NewChars = [Char | RestNew],
+        extract_emoji_chars(Rest, RestNew, EmojiArgs)
+    ).
+
 %% ============================================================================
 %% TERMINAL DETECTION
 %% ============================================================================
@@ -230,7 +269,29 @@ detect_terminal(Terminal) :-
     ->  Terminal = conemu
     ;   getenv('WSL_DISTRO_NAME', _)
     ->  Terminal = wsl
+    ;   is_wsl_kernel
+    ->  Terminal = wsl
     ;   Terminal = unknown
+    ).
+
+%! is_wsl_kernel is semidet.
+%
+%  Check if running under WSL by examining kernel version.
+%  WSL kernels contain 'microsoft' or 'WSL' in the version string.
+
+is_wsl_kernel :-
+    catch(
+        (   setup_call_cleanup(
+                process_create(path(uname), ['-r'], [stdout(pipe(Out))]),
+                read_string(Out, _, KernelVersion),
+                close(Out)
+            ),
+            (   sub_string(KernelVersion, _, _, _, "microsoft")
+            ;   sub_string(KernelVersion, _, _, _, "WSL")
+            )
+        ),
+        _,
+        fail
     ).
 
 %! terminal_emoji_level(+Terminal:atom, -Level:atom) is det.
@@ -249,12 +310,22 @@ terminal_emoji_level(unknown, bmp).  % Conservative default
 %
 %  Automatically detect terminal and set appropriate emoji level.
 %  Call this during initialization for automatic configuration.
+%  Checks UNIFYWEAVER_EMOJI_LEVEL environment variable first.
 
 auto_detect_and_set_emoji_level :-
-    detect_terminal(Terminal),
-    terminal_emoji_level(Terminal, Level),
-    set_emoji_level(Level),
-    format('[Platform Compat] Detected terminal: ~w, emoji level: ~w~n', [Terminal, Level]).
+    % Check if user set emoji level via environment variable
+    (   getenv('UNIFYWEAVER_EMOJI_LEVEL', EnvLevel),
+        atom_string(Level, EnvLevel),
+        memberchk(Level, [ascii, bmp, full])
+    ->  % User-specified level via environment
+        set_emoji_level(Level),
+        format('[Platform Compat] Emoji level set from environment: ~w~n', [Level])
+    ;   % Auto-detect from terminal
+        detect_terminal(Terminal),
+        terminal_emoji_level(Terminal, Level),
+        set_emoji_level(Level),
+        format('[Platform Compat] Detected terminal: ~w, emoji level: ~w~n', [Terminal, Level])
+    ).
 
 %! replace_emoji(+Format:atom, -SafeFormat:atom) is det.
 %
