@@ -18,6 +18,7 @@
 :- use_module(library(lists)).
 :- use_module('stream_compiler').
 :- use_module('recursive_compiler').
+:- use_module('firewall_v2').
 % Load source modules without importing predicates (we call them with module qualification)
 :- use_module('../sources/csv_source', []).
 :- use_module('../sources/json_source', []).
@@ -45,12 +46,21 @@ compile_to_powershell(Predicate, Options, PowerShellCode) :-
     Predicate = PredAtom/Arity,
     format('[PowerShell Compiler] Compiling ~w/~w to PowerShell~n', [PredAtom, Arity]),
 
-    % Determine PowerShell compilation mode
-    option(powershell_mode(Mode), Options, auto),
-    format('[PowerShell Compiler] PowerShell mode: ~w~n', [Mode]),
+    % Determine PowerShell compilation mode (consult firewall if auto)
+    option(powershell_mode(UserMode), Options, auto),
+
+    % Get source type for firewall consultation
+    (   member(source_type(SourceType), Options)
+    ->  true
+    ;   SourceType = unknown
+    ),
+
+    % Resolve mode (may consult firewall)
+    resolve_powershell_mode(UserMode, SourceType, ResolvedMode),
+    format('[PowerShell Compiler] PowerShell mode: ~w (resolved from ~w)~n', [ResolvedMode, UserMode]),
 
     % Check if pure mode and predicate supports it
-    (   (Mode = pure ; Mode = auto),
+    (   (ResolvedMode = pure ; ResolvedMode = auto ; ResolvedMode = auto_with_preference(pure)),
         supports_pure_powershell(Predicate, Options)
     ->  % Use pure PowerShell template
         format('[PowerShell Compiler] Using pure PowerShell templates~n', []),
@@ -65,6 +75,25 @@ compile_to_powershell(Predicate, Options, PowerShellCode) :-
     ->  write_powershell_file(OutputFile, PowerShellCode),
         format('[PowerShell Compiler] Written to: ~w~n', [OutputFile])
     ;   true
+    ).
+
+%% resolve_powershell_mode(+UserMode, +SourceType, -ResolvedMode)
+%  Resolve PowerShell mode based on user preference and firewall policies.
+%
+%  UserMode: pure | baas | auto (from user options)
+%  SourceType: csv | json | http | awk | python | unknown
+%  ResolvedMode: pure | baas | auto | auto_with_preference(Mode)
+resolve_powershell_mode(UserMode, SourceType, ResolvedMode) :-
+    (   UserMode = auto
+    ->  % Auto mode: consult firewall
+        (   catch(firewall_v2:derive_powershell_mode(SourceType, FirewallMode), _, fail)
+        ->  ResolvedMode = FirewallMode,
+            format('[Firewall] Derived mode: ~w for source type: ~w~n', [FirewallMode, SourceType])
+        ;   % Firewall not available or failed, use default auto
+            ResolvedMode = auto
+        )
+    ;   % User explicitly specified mode, respect it
+        ResolvedMode = UserMode
     ).
 
 %% supports_pure_powershell(+Predicate, +Options)
