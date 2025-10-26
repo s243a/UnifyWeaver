@@ -34,12 +34,57 @@ compile_to_powershell(Predicate, PowerShellCode) :-
 %    - compat_check(true|false) - add compatibility layer check (default: true)
 %    - output_file(Path) - write to file instead of returning code
 %    - script_name(Name) - name for generated script (default: derived from predicate)
+%    - powershell_mode(baas|pure|auto) - pure PowerShell or bash-as-a-service (default: auto)
 %    ... other options passed to bash compiler
 %
 compile_to_powershell(Predicate, Options, PowerShellCode) :-
     Predicate = PredAtom/Arity,
     format('[PowerShell Compiler] Compiling ~w/~w to PowerShell~n', [PredAtom, Arity]),
 
+    % Determine PowerShell compilation mode
+    option(powershell_mode(Mode), Options, auto),
+    format('[PowerShell Compiler] PowerShell mode: ~w~n', [Mode]),
+
+    % Check if pure mode and predicate supports it
+    (   (Mode = pure ; Mode = auto),
+        supports_pure_powershell(Predicate, Options)
+    ->  % Use pure PowerShell template
+        format('[PowerShell Compiler] Using pure PowerShell templates~n', []),
+        compile_to_pure_powershell(Predicate, Options, PowerShellCode)
+    ;   % Fall back to bash-as-a-service
+        format('[PowerShell Compiler] Using bash-as-a-service (BaaS) mode~n', []),
+        compile_to_baas_powershell(Predicate, Options, PowerShellCode)
+    ),
+
+    % Optionally write to file
+    (   option(output_file(OutputFile), Options)
+    ->  write_powershell_file(OutputFile, PowerShellCode),
+        format('[PowerShell Compiler] Written to: ~w~n', [OutputFile])
+    ;   true
+    ).
+
+%% supports_pure_powershell(+Predicate, +Options)
+%  Check if predicate can be compiled to pure PowerShell
+supports_pure_powershell(_Predicate, Options) :-
+    % Check if it's a dynamic source with pure PowerShell support
+    (   member(source_type(csv), Options) -> true
+    ;   member(source_type(json), Options) -> true
+    ;   member(source_type(http), Options) -> true
+    ;   fail  % Other source types don't support pure mode yet
+    ).
+
+%% compile_to_pure_powershell(+Predicate, +Options, -PowerShellCode)
+%  Compile using pure PowerShell templates (no bash dependency)
+compile_to_pure_powershell(Predicate, Options, PowerShellCode) :-
+    % Add template_suffix to request _powershell_pure templates
+    append(Options, [template_suffix('_powershell_pure')], PureOptions),
+
+    % Use dynamic source compiler with pure templates
+    dynamic_source_compiler:compile_dynamic_source(Predicate, PureOptions, PowerShellCode).
+
+%% compile_to_baas_powershell(+Predicate, +Options, -PowerShellCode)
+%  Compile using bash-as-a-service approach (original implementation)
+compile_to_baas_powershell(Predicate, Options, PowerShellCode) :-
     % Determine which bash compiler to use
     option(compiler(Compiler), Options, stream),
     format('[PowerShell Compiler] Using ~w compiler~n', [Compiler]),
@@ -48,14 +93,7 @@ compile_to_powershell(Predicate, Options, PowerShellCode) :-
     compile_to_bash(Compiler, Predicate, Options, BashCode),
 
     % Wrap bash code in PowerShell compatibility layer invocation
-    powershell_wrapper(BashCode, Options, PowerShellCode),
-
-    % Optionally write to file
-    (   option(output_file(OutputFile), Options)
-    ->  write_powershell_file(OutputFile, PowerShellCode),
-        format('[PowerShell Compiler] Written to: ~w~n', [OutputFile])
-    ;   true
-    ).
+    powershell_wrapper(BashCode, Options, PowerShellCode).
 
 %% compile_to_bash(+Compiler, +Predicate, +Options, -BashCode)
 %  Internal: dispatch to appropriate bash compiler
