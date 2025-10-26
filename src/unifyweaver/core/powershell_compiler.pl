@@ -18,6 +18,9 @@
 :- use_module(library(lists)).
 :- use_module('stream_compiler').
 :- use_module('recursive_compiler').
+:- use_module('../sources/csv_source').
+:- use_module('../sources/json_source').
+:- use_module('../sources/http_source').
 
 %% compile_to_powershell(+Predicate, -PowerShellCode)
 %  Simplified interface with default options
@@ -79,8 +82,16 @@ compile_to_pure_powershell(Predicate, Options, PowerShellCode) :-
     % Add template_suffix to request _powershell_pure templates
     append(Options, [template_suffix('_powershell_pure')], PureOptions),
 
-    % Use dynamic source compiler with pure templates
-    dynamic_source_compiler:compile_dynamic_source(Predicate, PureOptions, PowerShellCode).
+    % Dispatch to appropriate source compiler based on source_type
+    (   member(source_type(csv), PureOptions)
+    ->  csv_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
+    ;   member(source_type(json), PureOptions)
+    ->  json_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
+    ;   member(source_type(http), PureOptions)
+    ->  http_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
+    ;   format('[PowerShell Compiler] Error: No pure PowerShell support for this source type~n', []),
+        fail
+    ).
 
 %% compile_to_baas_powershell(+Predicate, +Options, -PowerShellCode)
 %  Compile using bash-as-a-service approach (original implementation)
