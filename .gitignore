@@ -21,6 +21,7 @@ templates/legacy/
 # Output directories
 output/
 tests/output/
+test_output/
 
 # Deveopment directories
 patches/
@@ -39,9 +40,8 @@ __pycache__/
 .unifyweaver.conf
 *.conf
 
-# Claude Code
-.claude/skills/           # Auto-generated from docs/development/ai-skills/
-.claude/settings.local.json  # Local settings
+# Claude Code (entire directory - user-specific)
+.claude/
 
 # VSCode
 .vscode/
