@@ -31,11 +31,21 @@
     check_service/3,
     derive_powershell_mode/2,
 
+    % Tool availability predicates
+    tool_availability_policy/1,
+    require_tool/1,
+    prefer_available_tools/1,
+    allowed_tool/1,
+    denied_tool/1,
+    check_tool_availability/3,
+    derive_compilation_mode_with_tools/3,
+
     % Policy templates
     load_firewall_policy/1
 ]).
 
 :- use_module(library(lists)).
+:- use_module('tool_detection').
 
 %% ============================================
 %% DYNAMIC PREDICATES
@@ -53,6 +63,13 @@
 
 %% Implication system
 :- dynamic firewall_implies_disabled/2.  % User overrides
+
+%% Tool availability policies
+:- dynamic tool_availability_policy/1.   % warn | forbid | ignore | list_required
+:- dynamic require_tool/1.               % require_tool(ToolName)
+:- dynamic prefer_available_tools/1.     % prefer_available_tools(true|false)
+:- dynamic allowed_tool/1.               % allowed_tool(ToolName)
+:- dynamic denied_tool/1.                % denied_tool(ToolName)
 
 %% ============================================
 %% DEFAULT CONFIGURATION
@@ -284,6 +301,90 @@ load_firewall_policy(no_network) :-
 load_firewall_policy(PolicyName) :-
     format('[Firewall Error] Unknown policy: ~w~n', [PolicyName]),
     fail.
+
+%% ============================================
+%% TOOL AVAILABILITY INTEGRATION
+%% ============================================
+
+%% check_tool_availability(+Tool, +TargetLanguage, -Result)
+%  Check if a tool is available, considering firewall policies.
+%  This integrates tool_detection with firewall rules.
+%
+%  Tool: Tool name (e.g., bash, jq, import_csv)
+%  TargetLanguage: Target language (e.g., bash, powershell)
+%  Result: available | unavailable(Reason) | denied(Reason)
+
+check_tool_availability(Tool, TargetLanguage, Result) :-
+    % Check firewall policy first
+    (   denied_tool(Tool)
+    ->  Result = denied(tool_denied_by_firewall)
+
+    % Check if tool is denied for this target language
+    ;   tool_detection:tool_executable(Tool, _),
+        denied_service(TargetLanguage, executable(Tool))
+    ->  Result = denied(service_denied)
+
+    % Check actual availability
+    ;   tool_detection:detect_tool_availability(Tool, Status),
+        (   Status = available
+        ->  Result = available
+        ;   Status = unavailable(Reason)
+        ->  Result = unavailable(Reason)
+        )
+    ).
+
+%% derive_compilation_mode_with_tools(+SourceType, +RequiredTools, -Mode)
+%  Derive compilation mode considering both firewall policies
+%  and tool availability.
+%
+%  This extends derive_powershell_mode/2 with tool availability checking.
+
+derive_compilation_mode_with_tools(SourceType, RequiredTools, Mode) :-
+    % Check if all required tools are available
+    tool_detection:check_all_tools(RequiredTools, ToolStatus),
+
+    % Get preference for available tools
+    (   prefer_available_tools(true)
+    ->  PreferAvailable = true
+    ;   PreferAvailable = false
+    ),
+
+    % Derive mode based on tool availability and preferences
+    (   ToolStatus = all_available
+    ->  % All tools available, use normal derivation
+        derive_powershell_mode(SourceType, Mode)
+
+    ;   ToolStatus = missing(MissingTools),
+        PreferAvailable = true
+    ->  % Some tools missing, prefer alternatives
+        derive_mode_with_alternatives(SourceType, MissingTools, Mode)
+
+    ;   ToolStatus = missing(MissingTools)
+    ->  % Tools missing, check policy
+        (   tool_availability_policy(forbid)
+        ->  format('[Firewall Error] Required tools missing: ~w~n', [MissingTools]),
+            fail
+        ;   tool_availability_policy(warn)
+        ->  format('[Firewall Warning] Missing tools: ~w~n', [MissingTools]),
+            derive_powershell_mode(SourceType, Mode)
+        ;   % Default: list required
+            derive_powershell_mode(SourceType, Mode)
+        )
+    ).
+
+%% derive_mode_with_alternatives(+SourceType, +MissingTools, -Mode)
+%  Derive compilation mode preferring available alternatives
+
+derive_mode_with_alternatives(SourceType, MissingTools, Mode) :-
+    % If bash is missing and source supports pure PowerShell
+    (   memberchk(bash, MissingTools),
+        supports_pure_powershell(SourceType)
+    ->  Mode = pure,
+        format('[Firewall] Bash unavailable, using pure PowerShell mode~n', [])
+
+    % Otherwise use standard derivation
+    ;   derive_powershell_mode(SourceType, Mode)
+    ).
 
 %% ============================================
 %% INITIALIZATION

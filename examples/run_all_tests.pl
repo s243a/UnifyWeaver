@@ -12,6 +12,7 @@
 :- use_module('../src/unifyweaver/core/recursive_compiler').
 :- use_module('../src/unifyweaver/core/powershell_compiler').
 :- use_module('../src/unifyweaver/core/firewall_v2').
+:- use_module('../src/unifyweaver/core/tool_detection').
 
 %% Test state tracking
 :- dynamic test_passed/1.
@@ -55,6 +56,11 @@ main :-
     run_test_category('Firewall Integration', [
         test_firewall_permissive,
         test_firewall_pure_powershell_policy
+    ]),
+
+    run_test_category('Tool Detection', [
+        test_tool_detection_basic,
+        test_tool_availability_with_firewall
     ]),
 
     get_time(EndTime),
@@ -263,6 +269,41 @@ test_firewall_pure_powershell_policy :-
     % Check that bash service is denied for PowerShell
     check_service(powershell, executable(bash), Result),
     Result = deny(_).
+
+%% ============================================
+%% TOOL DETECTION TESTS
+%% ============================================
+
+test_tool_detection_basic :-
+    % Test basic tool detection
+    detect_tool_availability(bash, Status),
+    Status = available.
+
+test_tool_availability_with_firewall :-
+    % Clean state thoroughly
+    retractall(firewall_v2:denied_tool(_)),
+    retractall(firewall_v2:denied_service(_, _)),
+
+    % Test that bash is available
+    firewall_v2:check_tool_availability(bash, powershell, Result1),
+    (   Result1 = available
+    ->  true
+    ;   format('[Debug] Unexpected result for bash: ~w~n', [Result1]),
+        fail
+    ),
+
+    % Deny bash and test again
+    assertz(firewall_v2:denied_tool(bash)),
+    firewall_v2:check_tool_availability(bash, powershell, Result2),
+    (   Result2 = denied(_)
+    ->  true
+    ;   format('[Debug] Expected denied, got: ~w~n', [Result2]),
+        fail
+    ),
+
+    % Clean up
+    retractall(firewall_v2:denied_tool(_)),
+    retractall(firewall_v2:denied_service(_, _)).
 
 %% ============================================
 %% INITIALIZATION
