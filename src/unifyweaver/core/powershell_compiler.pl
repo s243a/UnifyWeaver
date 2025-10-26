@@ -18,6 +18,11 @@
 :- use_module(library(lists)).
 :- use_module('stream_compiler').
 :- use_module('recursive_compiler').
+:- use_module('firewall_v2').
+% Load source modules without importing predicates (we call them with module qualification)
+:- use_module('../sources/csv_source', []).
+:- use_module('../sources/json_source', []).
+:- use_module('../sources/http_source', []).
 
 %% compile_to_powershell(+Predicate, -PowerShellCode)
 %  Simplified interface with default options
@@ -34,12 +39,93 @@ compile_to_powershell(Predicate, PowerShellCode) :-
 %    - compat_check(true|false) - add compatibility layer check (default: true)
 %    - output_file(Path) - write to file instead of returning code
 %    - script_name(Name) - name for generated script (default: derived from predicate)
+%    - powershell_mode(baas|pure|auto) - pure PowerShell or bash-as-a-service (default: auto)
 %    ... other options passed to bash compiler
 %
 compile_to_powershell(Predicate, Options, PowerShellCode) :-
     Predicate = PredAtom/Arity,
     format('[PowerShell Compiler] Compiling ~w/~w to PowerShell~n', [PredAtom, Arity]),
 
+    % Determine PowerShell compilation mode (consult firewall if auto)
+    option(powershell_mode(UserMode), Options, auto),
+
+    % Get source type for firewall consultation
+    (   member(source_type(SourceType), Options)
+    ->  true
+    ;   SourceType = unknown
+    ),
+
+    % Resolve mode (may consult firewall)
+    resolve_powershell_mode(UserMode, SourceType, ResolvedMode),
+    format('[PowerShell Compiler] PowerShell mode: ~w (resolved from ~w)~n', [ResolvedMode, UserMode]),
+
+    % Check if pure mode and predicate supports it
+    (   (ResolvedMode = pure ; ResolvedMode = auto ; ResolvedMode = auto_with_preference(pure)),
+        supports_pure_powershell(Predicate, Options)
+    ->  % Use pure PowerShell template
+        format('[PowerShell Compiler] Using pure PowerShell templates~n', []),
+        compile_to_pure_powershell(Predicate, Options, PowerShellCode)
+    ;   % Fall back to bash-as-a-service
+        format('[PowerShell Compiler] Using bash-as-a-service (BaaS) mode~n', []),
+        compile_to_baas_powershell(Predicate, Options, PowerShellCode)
+    ),
+
+    % Optionally write to file
+    (   option(output_file(OutputFile), Options)
+    ->  write_powershell_file(OutputFile, PowerShellCode),
+        format('[PowerShell Compiler] Written to: ~w~n', [OutputFile])
+    ;   true
+    ).
+
+%% resolve_powershell_mode(+UserMode, +SourceType, -ResolvedMode)
+%  Resolve PowerShell mode based on user preference and firewall policies.
+%
+%  UserMode: pure | baas | auto (from user options)
+%  SourceType: csv | json | http | awk | python | unknown
+%  ResolvedMode: pure | baas | auto | auto_with_preference(Mode)
+resolve_powershell_mode(UserMode, SourceType, ResolvedMode) :-
+    (   UserMode = auto
+    ->  % Auto mode: consult firewall
+        (   catch(firewall_v2:derive_powershell_mode(SourceType, FirewallMode), _, fail)
+        ->  ResolvedMode = FirewallMode,
+            format('[Firewall] Derived mode: ~w for source type: ~w~n', [FirewallMode, SourceType])
+        ;   % Firewall not available or failed, use default auto
+            ResolvedMode = auto
+        )
+    ;   % User explicitly specified mode, respect it
+        ResolvedMode = UserMode
+    ).
+
+%% supports_pure_powershell(+Predicate, +Options)
+%  Check if predicate can be compiled to pure PowerShell
+supports_pure_powershell(_Predicate, Options) :-
+    % Check if it's a dynamic source with pure PowerShell support
+    (   member(source_type(csv), Options) -> true
+    ;   member(source_type(json), Options) -> true
+    ;   member(source_type(http), Options) -> true
+    ;   fail  % Other source types don't support pure mode yet
+    ).
+
+%% compile_to_pure_powershell(+Predicate, +Options, -PowerShellCode)
+%  Compile using pure PowerShell templates (no bash dependency)
+compile_to_pure_powershell(Predicate, Options, PowerShellCode) :-
+    % Add template_suffix to request _powershell_pure templates
+    append(Options, [template_suffix('_powershell_pure')], PureOptions),
+
+    % Dispatch to appropriate source compiler based on source_type
+    (   member(source_type(csv), PureOptions)
+    ->  csv_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
+    ;   member(source_type(json), PureOptions)
+    ->  json_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
+    ;   member(source_type(http), PureOptions)
+    ->  http_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
+    ;   format('[PowerShell Compiler] Error: No pure PowerShell support for this source type~n', []),
+        fail
+    ).
+
+%% compile_to_baas_powershell(+Predicate, +Options, -PowerShellCode)
+%  Compile using bash-as-a-service approach (original implementation)
+compile_to_baas_powershell(Predicate, Options, PowerShellCode) :-
     % Determine which bash compiler to use
     option(compiler(Compiler), Options, stream),
     format('[PowerShell Compiler] Using ~w compiler~n', [Compiler]),
@@ -48,14 +134,7 @@ compile_to_powershell(Predicate, Options, PowerShellCode) :-
     compile_to_bash(Compiler, Predicate, Options, BashCode),
 
     % Wrap bash code in PowerShell compatibility layer invocation
-    powershell_wrapper(BashCode, Options, PowerShellCode),
-
-    % Optionally write to file
-    (   option(output_file(OutputFile), Options)
-    ->  write_powershell_file(OutputFile, PowerShellCode),
-        format('[PowerShell Compiler] Written to: ~w~n', [OutputFile])
-    ;   true
-    ).
+    powershell_wrapper(BashCode, Options, PowerShellCode).
 
 %% compile_to_bash(+Compiler, +Predicate, +Options, -BashCode)
 %  Internal: dispatch to appropriate bash compiler
