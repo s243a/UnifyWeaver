@@ -39,6 +39,7 @@ __pycache__/
 # Configuration files
 .unifyweaver.conf
 *.conf
+.env
 
 # Claude Code (entire directory - user-specific)
 .claude/
