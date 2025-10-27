@@ -322,34 +322,34 @@ swipl -l init.pl -l examples/integration_test.pl -g "test_sqlite_source, halt" -
 
 ## Priority 4: Testing Infrastructure
 
-### 7. Add Regression Tests for Pattern Detection Verification
+### 7. ✅ COMPLETE: Add Regression Tests for Pattern Detection Verification
 
-**Status:** 🔄 IN PROGRESS (2025-10-26)
+**Status:** ✅ COMPLETE (2025-10-26)
+**Location:** `examples/test_pattern_detection_regression.pl`
 
-Add tests to verify pattern detection continues working correctly:
-```prolog
-% examples/test_pattern_detection_regression.pl
+**Tests Implemented:**
 
-test_list_length_pattern :-
-    % Verify list_length is detected as linear recursion
-    is_linear_recursive_streamable(list_length/2),
-    writeln('✓ list_length pattern detected').
+1. **test_list_length_pattern** - Verifies list_length/2 linear recursion detection
+   - ✓ Pattern detection works (is_linear_recursive_streamable)
+   - ✓ Compilation succeeds
+   - ✓ Generated code includes memoization
 
-test_descendant_classification :-
-    % Verify descendant gets transitive closure optimization
-    compile_recursive(descendant/2, [], Code),
-    % Check for BFS optimization markers
-    sub_string(Code, _, _, _, 'queue'),
-    writeln('✓ descendant uses BFS optimization').
+2. **test_descendant_classification** - Verifies descendant/2 transitive closure
+   - ✓ Compilation succeeds
+   - ✓ Generated code uses BFS optimization (queue-based)
+   - ✓ Includes visited tracking for cycle prevention
 
-test_factorial_linear :-
-    % Verify factorial compiles and executes correctly
-    compile_advanced_recursive(factorial/2, [], Code),
-    % Test execution produces correct results
-    writeln('✓ factorial compiles as linear recursion').
+3. **test_factorial_linear_recursion** - Verifies factorial compilation and execution
+   - ✓ Compiles as linear recursion
+   - ✓ Generated bash script executes correctly
+   - ✓ Produces correct results (5! = 120)
+
+**Usage:**
+```bash
+swipl -g main -t halt examples/test_pattern_detection_regression.pl
 ```
 
-**Estimated Effort:** 1 hour
+**Result:** All tests pass ✓
 
 ---
 
