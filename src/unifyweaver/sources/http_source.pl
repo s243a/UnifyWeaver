@@ -5,11 +5,8 @@
 % http_source.pl - HTTP source plugin for dynamic sources
 % Compiles predicates that fetch data from HTTP endpoints with caching
 
-:- module(http_source, [
-    compile_source/4,          % +Pred/Arity, +Config, +Options, -BashCode
-    validate_config/1,         % +Config
-    source_info/1              % -Info
-]).
+% Export nothing - all access goes through plugin registry
+:- module(http_source, []).
 
 :- use_module(library(lists)).
 :- use_module('../core/template_system').

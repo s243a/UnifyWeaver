@@ -141,82 +141,57 @@ compile_recursive(descendant/2, [], Code).
 
 ---
 
-### 5a. Fix Module Import Conflicts in Source Plugins
+### 5a. ✅ RESOLVED: Fix Module Import Conflicts in Source Plugins
 
-**Status:** ⚠️ Warnings when using multiple source types together
-**Discovered:** WSL test plan, Test 4d (ETL Pipeline inline test)
+**Status:** ✅ FIXED (Completed 2025-10-26)
+**Solution:** Implemented Option C - source plugins export nothing
 
-**Issue:**
-When using both `json_source` and `python_source` in the same user module, import conflicts occur:
-```
-ERROR: No permission to import python_source:validate_config/1 into user
-       (already imported from json_source)
-ERROR: No permission to import python_source:source_info/1 into user
-       (already imported from json_source)
-ERROR: No permission to import python_source:compile_source/4 into user
-       (already imported from json_source)
-```
+**Changes Made:**
+All source plugins updated to export empty list:
+- ✅ csv_source.pl
+- ✅ json_source.pl
+- ✅ http_source.pl
+- ✅ python_source.pl
+- ✅ awk_source.pl
 
-**Current Behavior:**
-- All source plugins export the same predicate names: `validate_config/1`, `source_info/1`, `compile_source/4`
-- When importing multiple source plugins, Prolog raises permission errors
-- **Workaround:** Use `except([...])` clause in `use_module` directives
-- Functionality still works despite warnings
-
-**Example Workaround (from integration_test.pl):**
+**Implementation:**
 ```prolog
-:- use_module(unifyweaver(sources/json_source),
-    except([validate_config/1, source_info/1, compile_source/4])).
-:- use_module(unifyweaver(sources/python_source),
-    except([validate_config/1, source_info/1, compile_source/4])).
+% Before (caused conflicts):
+:- module(csv_source, [
+    compile_source/4,
+    validate_config/1,
+    source_info/1
+]).
+
+% After (no conflicts):
+% Export nothing - all access goes through plugin registry
+:- module(csv_source, []).
 ```
 
-**Root Cause:**
-All source plugins implement the same interface predicates with identical names. The plugin system uses `register_source_type/2` to dispatch to the correct implementation, but the exported predicates still conflict at module import time.
-
-**Fix Strategy:**
-1. **Option A:** Make interface predicates module-private (not exported)
-   - Only export `register_source_type/2` initialization
-   - Plugins register themselves on load
-   - Core system calls predicates via module qualification: `json_source:compile_source/4`
-
-2. **Option B:** Namespace the exports with plugin name
-   - Export: `json_compile_source/4`, `python_compile_source/4`, etc.
-   - Update plugin registration to use namespaced names
-   - More verbose but explicit
-
-3. **Option C (Recommended):** Don't export interface predicates at all
-   - Source plugins only need to register themselves via `:- initialization`
-   - All calls go through the dynamic dispatch system
-   - Users never directly import source plugins (only `sources.pl`)
-
-**Recommended Implementation:**
+**Verification:**
 ```prolog
-% In csv_source.pl, json_source.pl, python_source.pl, etc.
-:- module(csv_source, []).  % Export nothing
+% Test: Load all plugins without conflicts
+:- use_module(sources/csv_source).
+:- use_module(sources/json_source).
+:- use_module(sources/python_source).
+:- use_module(sources/http_source).
+:- use_module(sources/awk_source).
 
-% Interface predicates remain but not exported
-validate_config(Config) :- ...
-compile_source(Pred, Config, Options, Code) :- ...
-source_info(Info) :- ...
-
-% Registration happens automatically
-:- initialization(
-    register_source_type(csv, csv_source),
-    now
-).
+% Result: ✓ All plugins load without errors or warnings
+% See: examples/test_source_plugins_no_conflict.pl
 ```
 
-**Impact:** Low - users should only interact with `sources.pl`, not individual plugins
-**Estimated Effort:** 1-2 hours
+**How It Works:**
+- Interface predicates (`compile_source/4`, `validate_config/1`, `source_info/1`) remain in each plugin but are not exported
+- Plugin system uses dynamic dispatch via `register_source_type/2`
+- Core system calls predicates via module qualification: `csv_source:compile_source/4`
+- Users only need to import `sources.pl`, never individual plugins directly
 
-**Test Case:**
-```prolog
-% Should work without warnings
-:- use_module(unifyweaver(sources/json_source)).
-:- use_module(unifyweaver(sources/python_source)).
-:- use_module(unifyweaver(sources/csv_source)).
-```
+**Benefits:**
+- ✅ No import conflicts when using multiple source types
+- ✅ Cleaner API - users interact only with `sources.pl`
+- ✅ Plugins remain self-contained and testable
+- ✅ No breaking changes to existing functionality
 
 ---
 

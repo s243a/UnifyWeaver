@@ -5,11 +5,8 @@
 % csv_source.pl - CSV/TSV source plugin for dynamic sources
 % Compiles predicates that read data from CSV/TSV files
 
-:- module(csv_source, [
-    compile_source/4,          % +Pred/Arity, +Config, +Options, -BashCode
-    validate_config/1,         % +Config
-    source_info/1              % -Info
-]).
+% Export nothing - all access goes through plugin registry
+:- module(csv_source, []).
 
 :- use_module(library(lists)).
 :- use_module('../core/template_system').
