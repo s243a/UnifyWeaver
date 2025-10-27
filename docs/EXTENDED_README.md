@@ -52,6 +52,7 @@ UnifyWeaver is a Prolog-to-Bash compiler that transforms declarative logic progr
 - **SWI-Prolog** 8.0 or higher
 - **Bash** 4.0+ (for associative arrays)
 - **Optional Tools**:
+  - `awk` for text processing and field extraction
   - `jq` for JSON processing
   - `curl` or `wget` for HTTP sources
   - `python3` for Python integration
@@ -371,6 +372,7 @@ UnifyWeaver v0.0.2 introduces a powerful plugin system for integrating external 
 ┌─────────────────────────────────────────────┐
 │  Plugin Registry (Auto-Discovery)          │
 │  - CSV Plugin                              │
+│  - AWK Plugin                              │
 │  - JSON Plugin                             │
 │  - HTTP Plugin                             │
 │  - Python Plugin                           │
@@ -425,6 +427,40 @@ users() {
 ```prolog
 ?- users(Name, Age, City).
 Name = alice, Age = 25, City = nyc.
+```
+
+### AWK Plugin
+
+Process text files with AWK pattern matching and field extraction:
+
+**Pattern matching with field extraction:**
+```prolog
+:- source(awk, high_scorers, [
+    awk_program('$3 > 100 { print $1, $2, $3 }'),
+    input_file('scores.txt'),
+    field_separator(' ')
+]).
+```
+
+**Complex AWK scripts:**
+```prolog
+:- source(awk, sales_summary, [
+    awk_program('BEGIN { total = 0 } { total += $2 } END { print total }'),
+    input_file('sales.txt')
+]).
+```
+
+**Generated bash:**
+```bash
+high_scorers() {
+    awk -F' ' '$3 > 100 { print $1, $2, $3 }' scores.txt
+}
+```
+
+**Usage:**
+```prolog
+?- high_scorers(Name, Score, Rank).
+Name = alice, Score = 150, Rank = 1.
 ```
 
 ### JSON Plugin

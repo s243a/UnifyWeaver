@@ -23,12 +23,20 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Pattern detection** - Automatic classification of recursion patterns
 
 ### Data Source Plugin System (v0.0.2)
-- **4 Production-Ready Plugins** - CSV/TSV, Python, HTTP, JSON data sources
+- **5 Production-Ready Plugins** - CSV/TSV, AWK, Python, HTTP, JSON data sources
 - **Self-Registering Architecture** - Plugin-based system with automatic discovery
 - **Template Integration** - Seamless bash code generation with comprehensive error handling
 - **Enterprise Security** - Enhanced firewall with multi-service validation
 - **Real-World ETL** - Complete pipelines for data transformation and storage
 - **SQLite Integration** - Python source with automatic database operations
+
+### PowerShell Target Support (v0.0.2)
+- **Dual-Mode Compilation** - BaaS (Bash-as-a-Service) or pure PowerShell code generation
+- **Automatic Mode Detection** - Firewall-aware mode selection based on environment
+- **Cross-Platform Support** - Windows, Linux (WSL), macOS PowerShell Core
+- **Pure PowerShell** - Native implementations for CSV/JSON without external tools
+- **BaaS Mode** - Reuse bash templates via WSL/Git Bash for complex sources (AWK, etc.)
+- **Platform Compatibility** - Automatic detection and adaptation to available tools
 
 ### Control Plane
 - **Enhanced Firewall** - Multi-service security for external tools (python3, curl, wget, jq)
@@ -146,6 +154,12 @@ sibling(X, Y)     % Same parent, different children
 % CSV/TSV data processing
 :- source(csv, users, [csv_file('data/users.csv'), has_header(true)]).
 
+% AWK text processing
+:- source(awk, extract_fields, [
+    awk_program('$3 > 100 { print $1, $2 }'),
+    input_file('data.txt')
+]).
+
 % HTTP API integration with caching
 :- source(http, github_repos, [
     url('https://api.github.com/users/octocat/repos'),
@@ -191,6 +205,7 @@ swipl -g main -t halt examples/pipeline_demo.pl
 ### ✅ Data Sources (v0.0.2)
 
 - **CSV/TSV** - Auto-header detection, custom delimiters
+- **AWK** - Pattern matching, field extraction, text processing pipelines
 - **JSON** - jq integration for filtering and transformation
 - **HTTP** - REST APIs with caching and custom headers
 - **Python** - Inline scripts and SQLite queries
@@ -225,6 +240,7 @@ In SWI-Prolog:
 - **[Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive guide with tutorials and examples
 - [TESTING_GUIDE.md](docs/TESTING_GUIDE.md) - Testing infrastructure
 - [ADVANCED_RECURSION.md](docs/ADVANCED_RECURSION.md) - Recursion patterns deep dive
+- [POWERSHELL_TARGET.md](docs/POWERSHELL_TARGET.md) - PowerShell compilation guide
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
 - [docs/](docs/) - Full documentation index
 
@@ -236,7 +252,7 @@ Key areas:
 - Additional recursion patterns (divide-and-conquer, N-ary trees)
 - Performance optimizations
 - Additional data source plugins
-- PowerShell target enhancements
+- Native PowerShell code generation (pure mode enhancements)
 
 ## License
 
