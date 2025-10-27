@@ -2,6 +2,8 @@
 
 A Prolog-to-Bash compiler that transforms declarative logic programs into efficient streaming bash scripts. UnifyWeaver specializes in compiling data relationships and queries into executable bash code with optimized handling of transitive closures and advanced recursion patterns.
 
+**📚 [Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive tutorials, examples, and advanced usage
+
 ## Features
 
 ### Core Compilation
@@ -115,111 +117,19 @@ ancestor_all alice  # Find all descendants of alice
 ancestor_check alice charlie && echo "Yes" || echo "No"  # Check specific relationship
 ```
 
-### Advanced Recursion Examples
-
-#### Tail Recursion (Optimized to Loop)
-```prolog
-% Count list items with accumulator
-count_items([], Acc, Acc).
-count_items([_|T], Acc, N) :-
-    Acc1 is Acc + 1,
-    count_items(T, Acc1, N).
-
-% Compile with unique constraint
-?- compile_advanced_recursive(count_items/3, [unique(true)], BashCode).
-```
-
-#### Tree Recursion (Binary Tree Sum)
-```prolog
-% Binary tree using list representation: [value, [left], [right]]
-tree_sum([], 0).
-tree_sum([V, L, R], Sum) :-
-    tree_sum(L, LS),
-    tree_sum(R, RS),
-    Sum is V + LS + RS.
-
-% Compile with tree recursion pattern
-?- compile_advanced_recursive(tree_sum/2, [], BashCode).
-```
-
-Generated bash handles nested tree parsing automatically:
-```bash
-source tree_sum.sh
-tree_sum "[10,[5,[],[3,[],[]]],[7,[],[]]]"  # Returns: 25
-```
-
-#### Mutual Recursion (Even/Odd)
-```prolog
-is_even(0).
-is_even(N) :- N > 0, N1 is N - 1, is_odd(N1).
-
-is_odd(1).
-is_odd(N) :- N > 1, N1 is N - 1, is_even(N1).
-
-% Compile predicate group together
-?- compile_predicate_group([is_even/1, is_odd/1], [unique(true)], BashCode).
-```
-
-### Compilation Options
-
-```prolog
-% Basic recursion
-compile_recursive(Pred/Arity, Options, BashCode)
-
-% Advanced recursion (tail, linear, mutual)
-compile_advanced_recursive(Pred/Arity, Options, BashCode)
-
-% Explicit predicate groups (for mutual recursion)
-compile_predicate_group([Pred1/Arity1, Pred2/Arity2, ...], Options, BashCode)
-
-% Options:
-%   unique(true)     - Only one result expected (enables early exit optimization)
-%   unordered(true)  - Results can be in any order (enables optimizations)
-
-% Run full test suite
-test_recursive_compiler
-```
+**See [Extended Documentation](docs/EXTENDED_README.md) for advanced recursion patterns, data sources, and complete examples.**
 
 ## Architecture
 
-### Module Structure
-
-**Core Modules:**
-- **template_system.pl** - Template rendering engine with mustache-style placeholders
-- **stream_compiler.pl** - Handles non-recursive predicates
-- **recursive_compiler.pl** - Analyzes basic recursion patterns and generates optimized code
-- **constraint_analyzer.pl** - Constraint detection and analysis system
-- **firewall.pl** - Policy enforcement for backend and service usage
-- **preferences.pl** - Manages layered configuration preferences
-
-**Advanced Recursion Modules** (`src/unifyweaver/core/advanced/`):
-- **advanced_recursive_compiler.pl** - Orchestrator for advanced patterns
-- **call_graph.pl** - Build predicate dependency graphs
-- **scc_detection.pl** - Tarjan's algorithm for strongly connected components
-- **pattern_matchers.pl** - Pattern detection utilities
-- **tail_recursion.pl** - Tail recursion → iterative loop compiler
-- **linear_recursion.pl** - Linear recursion → memoized compiler
-- **tree_recursion.pl** - Tree recursion → multi-call pattern compiler
-- **mutual_recursion.pl** - Mutual recursion → joint memo table compiler
-
-### Compilation Pipeline
+UnifyWeaver follows a modular compilation pipeline:
 
 1. **Classification** - Analyzes predicate to determine recursion pattern
 2. **Constraint Analysis** - Detects unique/ordering constraints
 3. **Pattern Matching** - Tries tail → linear → tree → mutual → basic recursion
 4. **Optimization** - Applies pattern-specific optimizations (BFS, loops, memoization)
-5. **Template Selection** - Chooses appropriate bash template
-6. **Code Generation** - Renders template with predicate-specific values
+5. **Code Generation** - Renders bash templates with predicate-specific values
 
-### Generated Code Features
-
-- Associative arrays for O(1) lookups
-- Work queues for BFS traversal
-- Duplicate detection
-- Process-specific temp files
-- Stream functions for composition
-- Memoization tables for linear/mutual recursion
-- Iterative loops for tail recursion
+**See [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [Extended Documentation](docs/EXTENDED_README.md) for detailed architecture.**
 
 ## Examples
 
@@ -230,271 +140,103 @@ descendant(X, Y)  % Reverse of ancestor
 sibling(X, Y)     % Same parent, different children
 ```
 
-### Graph Reachability
-```prolog
-connected(X, Y)   % Direct connection
-reachable(X, Y)   % Transitive closure of connected
-```
-
-### Recursive Computations
-```prolog
-factorial(N, Result)  % Linear recursion with memoization
-count_items(List, Count)  % Tail recursion optimized to loop
-tree_sum([V,L,R], Sum)  % Tree recursion for binary trees
-is_even(N), is_odd(N)  % Mutual recursion with shared memo
-```
-
 ### Data Source Integration (v0.0.2)
 
-#### CSV/TSV Data Processing
 ```prolog
-% Auto-detect headers and process CSV data
-:- source(csv, users, [
-    csv_file('data/users.csv'),
-    has_header(true)
+% CSV/TSV data processing
+:- source(csv, users, [csv_file('data/users.csv'), has_header(true)]).
+
+% HTTP API integration with caching
+:- source(http, github_repos, [
+    url('https://api.github.com/users/octocat/repos'),
+    cache_duration(3600)
 ]).
 
-% Manual column specification for headerless files
-:- source(csv, logs, [
-    csv_file('data/access.log'),
-    delimiter('\t'),
-    columns([timestamp, ip, method, path, status])
-]).
-
-% Usage: users(alice, 25, nyc) - find user data
-```
-
-#### Python Integration with SQLite
-```prolog
-% Inline Python with SQLite operations
-:- source(python, store_data, [
-    python_inline('
-import sqlite3
-import sys
-conn = sqlite3.connect("app.db")
-conn.execute("CREATE TABLE IF NOT EXISTS results (key, value)")
-for line in sys.stdin:
-    key, value = line.strip().split(":")
-    conn.execute("INSERT INTO results VALUES (?, ?)", (key, value))
-conn.commit()
-print("Data stored successfully")
-'),
-    timeout(30)
-]).
-
-% Direct SQLite queries
+% Python with SQLite
 :- source(python, get_users, [
     sqlite_query('SELECT name, age FROM users WHERE active = 1'),
     database('app.db')
 ]).
-```
 
-#### HTTP API Integration
-```prolog
-% Fetch data from REST APIs with caching
-:- source(http, github_repos, [
-    url('https://api.github.com/users/octocat/repos'),
-    headers(['User-Agent: UnifyWeaver/0.0.2']),
-    cache_duration(3600),  % 1 hour cache
-    cache_file('cache/github_repos.json')
-]).
-
-% POST data to APIs
-:- source(http, webhook, [
-    url('https://hooks.example.com/notify'),
-    method(post),
-    headers(['Content-Type: application/json']),
-    post_data('{"status": "completed"}')
-]).
-```
-
-#### JSON Processing with jq
-```prolog
-% Parse JSON with jq filters
+% JSON processing with jq
 :- source(json, extract_names, [
-    jq_filter('.users[] | {name: .name, email: .email} | @tsv'),
-    json_stdin(true),
-    raw_output(true)
-]).
-
-% Process JSON files
-:- source(json, config_values, [
-    json_file('config.json'),
-    jq_filter('.database | {host, port, name}')
+    jq_filter('.users[] | {name, email} | @tsv'),
+    json_file('data.json')
 ]).
 ```
 
-#### Complete ETL Pipeline
-```prolog
-% Configure firewall for data processing
-:- assertz(firewall:firewall_default([
-    services([awk, python3, curl, jq]),
-    network_access(allowed),
-    network_hosts(['*.github.com', '*.typicode.com']),
-    python_modules([sys, json, sqlite3, csv]),
-    file_read_patterns(['data/*', 'config/*']),
-    cache_dirs(['/tmp/*', 'cache/*'])
-])).
-
-% API → JSON → Python → SQLite pipeline
-etl_pipeline :-
-    % Fetch from API, parse JSON, store in database
-    github_repos | extract_names | store_data.
-
-% Usage examples:
-% ?- github_repos.                    % Fetch API data
-% ?- extract_names.                   % Parse JSON from stdin  
-% ?- etl_pipeline.                    % Complete pipeline
-```
-
-#### End-to-End Pipeline Demo 🆕
-
-See the complete working pipeline in action:
+### Complete ETL Pipeline Demo
 
 ```bash
 cd scripts/testing/test_env5
 swipl -g main -t halt examples/pipeline_demo.pl
 ```
 
-This demonstrates:
-1. **Source Definition** - Define CSV source with `source/3`
-2. **Compilation** - Compile to bash with `compile_dynamic_source/3`
-3. **Pipeline Execution** - Stream data through transformations
-4. **Output Generation** - Results written to files
+**See [Extended Documentation](docs/EXTENDED_README.md) for complete examples including:**
+- Advanced recursion patterns (tail, linear, tree, mutual)
+- Graph reachability with cycles
+- Recursive computations (factorial, fibonacci)
+- Complete ETL pipelines with multiple sources
 
-The pipeline:
-- Reads CSV data (4 users)
-- Streams all records
-- Filters by role (developers)
-- Aggregates by department
-- Outputs to `output/pipeline_results.txt`
+## What's Supported
 
-Generated files:
-- `output/users.sh` - Compiled bash functions
-- `output/run_pipeline.sh` - Pipeline script
-- `output/pipeline_results.txt` - Results
+### ✅ Recursion Patterns
 
-**Key Features Demonstrated:**
-- ✅ No module import conflicts (fixed in v0.0.2)
-- ✅ source/3 predicate works seamlessly
-- ✅ Automatic bash compilation
-- ✅ Data streaming and filtering
-- ✅ Aggregation operations
+- **Basic Recursion** - Transitive closures with BFS optimization
+- **Tail Recursion** - Converted to iterative loops
+- **Linear Recursion** - Memoization for fibonacci, factorial, etc.
+- **Tree Recursion** - Structural processing of binary trees
+- **Mutual Recursion** - Predicates calling each other with shared memoization
 
-## Recursion Support
+### ✅ Data Sources (v0.0.2)
 
-### ✅ What Works
-
-**Basic Recursion:**
-- Simple self-recursion with base cases (e.g., `ancestor(X,Z) :- parent(X,Y), ancestor(Y,Z)`)
-- Transitive closure patterns (optimized to BFS)
-- Non-recursive predicates that call each other
-
-**Advanced Recursion:**
-- **Tail recursion** - Compiled to iterative loops (e.g., `count([], Acc, Acc). count([_|T], A, N) :- A1 is A+1, count(T, A1, N).`)
-- **Linear recursion** - Fold-based compilation with memoization for numeric and list patterns (e.g., `length([], 0). length([_|T], N) :- length(T, N1), N is N1+1.`)
-- **Tree recursion** - Multiple recursive calls with list-based trees (e.g., `tree_sum([], 0). tree_sum([V,L,R], Sum) :- tree_sum(L, LS), tree_sum(R, RS), Sum is V+LS+RS.`)
-- **Mutual recursion** - Full code generation for predicates calling each other in cycles with shared memoization (e.g., `even(N) :- N > 0, N1 is N-1, odd(N1)` with `odd(N) :- N > 0, N1 is N-1, even(N1)`)
-- **SCC detection** - Automatic detection of mutually recursive predicate groups
-- **Constraint optimization** - Unique constraints enable early exit in generated code
-- **Pattern exclusion** - `forbid_linear_recursion/1` to force alternative compilation strategies
+- **CSV/TSV** - Auto-header detection, custom delimiters
+- **JSON** - jq integration for filtering and transformation
+- **HTTP** - REST APIs with caching and custom headers
+- **Python** - Inline scripts and SQLite queries
 
 ### ⚠️ Current Limitations
 
-**Recursion Patterns:**
-- Divide-and-conquer patterns (quicksort, mergesort) - not yet supported
-- Recursive aggregation with complex accumulation - partial support
+- Divide-and-conquer patterns (quicksort, mergesort) not yet supported
+- Requires Bash 4.0+ for associative arrays
+- Tree recursion uses list representation only
 
-**Tree Recursion:**
-- List-based tree representation only (e.g., `[value, [left], [right]]`)
-- Simple parser with limitations on deeply nested structures
-- Memoization disabled by default in v1.0
-
-**Linear Recursion:**
-- Uses fold-based approach that works well for numeric and list patterns
-- Variable translation relies on structural analysis of clause patterns
-
-### Known Issues
-
-1. **Process ID in Templates**: Some older generated scripts may have `$` instead of `$$` for process IDs, potentially causing temp file collisions in parallel executions. (Recent templates fixed)
-
-2. **SIGPIPE Handling**: When piping output to commands like `head`, you may see "permission denied" errors after the pipe closes. Workaround: use `2>/dev/null` or write to temp file first.
-
-3. **Dependency Ordering**: Related predicates that depend on each other must be sourced in the correct order in test scripts.
-
-4. **Variable Scoping**: The system requires bash 4+ with associative arrays. Earlier bash versions will not work.
-
-### Scope
-
-This compiler focuses on transforming Prolog predicates that represent data relationships and queries into efficient bash scripts. It is not intended for:
-- Arithmetic-heavy computations (though basic arithmetic is supported)
-- General-purpose Prolog execution
-- Complex constraint solving
-- Meta-predicates or higher-order logic
+**See [Extended Documentation](docs/EXTENDED_README.md) for complete details and troubleshooting.**
 
 ## Testing
-
-### Test Environment
-
-The test environment provides automatic test discovery:
 
 ```bash
 cd scripts/testing
 ./init_testing.sh  # or Init-TestEnvironment.ps1 on Windows
-
-# In SWI-Prolog:
-?- test_all.          % All tests (manual + auto-discovered)
-?- test_stream.       % Stream compilation tests
-?- test_recursive.    % Basic recursion tests
-?- test_advanced.     % Advanced recursion tests
-?- test_constraints.  % Constraint system tests
-?- test_auto.         % Auto-discovered tests only
 ```
 
-### Manual Testing
-
-Run individual test suites:
+In SWI-Prolog:
 ```prolog
-?- test_template_system.      % Test template rendering
-?- test_stream_compiler.      % Test non-recursive compilation
-?- test_recursive_compiler.   % Test recursive predicate compilation
+?- test_all.          % Run all tests
+?- test_stream.       % Stream compilation
+?- test_recursive.    % Basic recursion
+?- test_advanced.     % Advanced patterns
 ```
 
-Verify generated scripts:
-```bash
-cd output
-bash test.sh           # Test non-recursive predicates
-bash test_recursive.sh  # Test recursive predicates
-cd advanced
-bash test_runner.sh    # Test advanced recursion patterns
-```
+**See [TESTING_GUIDE.md](docs/TESTING_GUIDE.md) for adding tests.**
 
 ## Documentation
 
-- [TESTING.md](docs/TESTING.md) - Test environment and adding tests
-- [ADVANCED_RECURSION.md](docs/ADVANCED_RECURSION.md) - Advanced recursion patterns
-- [PROJECT_STATUS.md](context/PROJECT_STATUS.md) - Current status and roadmap
+- **[Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive guide with tutorials and examples
+- [TESTING_GUIDE.md](docs/TESTING_GUIDE.md) - Testing infrastructure
+- [ADVANCED_RECURSION.md](docs/ADVANCED_RECURSION.md) - Recursion patterns deep dive
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
+- [docs/](docs/) - Full documentation index
 
 ## Contributing
 
 Issues and pull requests welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
-Key areas for contribution:
+Key areas:
 - Additional recursion patterns (divide-and-conquer, N-ary trees)
-- Improved tree recursion (better parser, memoization by default)
-- Enhanced arithmetic operation support
-- Additional graph algorithms
 - Performance optimizations
-- External data source integration (AWK, SQL)
-
-## Future Enhancements
-
-- **Dynamic sources** - Plugin system for AWK, SQL, and other data sources
-- **External optimization** - GNU Parallel and Hadoop Streaming integration
-- **Automatic dependency ordering** in generated scripts
-- **Enhanced arithmetic** - More complex mathematical operations
-- **Parallel execution** support
-- **Incremental compilation**
+- Additional data source plugins
+- PowerShell target enhancements
 
 ## License
 
