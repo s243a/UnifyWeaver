@@ -68,27 +68,26 @@ compile_recursive(descendant/2, [], Code).
 
 ## Priority 2: Bash Code Generation Completion
 
-### 3. Complete Linear Recursion Bash Generation
+### 3. ✅ RESOLVED: Linear Recursion Bash Generation
 
-**Status:** ⚠️ Scaffold generated, logic incomplete
+**Status:** ✅ WORKING CORRECTLY (Verified 2025-10-26)
 **Location:** `src/unifyweaver/core/advanced/linear_recursion.pl`
+**Resolution:** Testing confirmed linear recursion works correctly. Issue was incorrectly documented.
 
-**Current Behavior:**
-- Pattern detection works correctly
-- Bash scaffolding with memoization structure is generated
-- Actual recursive logic has TODO placeholders
+**Verification:**
+```bash
+# factorial(5) = 120 ✓
+# factorial(6) = 720 ✓
+# All test cases pass
+```
 
-**Example:** `factorial.sh` generates but doesn't compute results
-- Expected: `factorial("5", "")` → `5:120`
-- Actual: No output (base case logic incomplete)
+**What Actually Works:**
+- ✅ Pattern detection correctly identifies linear recursion (exactly 1 recursive call)
+- ✅ Bash code generation complete with memoization
+- ✅ Factorial compiles and executes correctly
+- ✅ All arithmetic operations handled properly
 
-**Fix Strategy:**
-1. Implement bash code generation for arithmetic operations in recursive case
-2. Handle `N is N1 * F1` style operations
-3. Generate proper base case handling for numeric predicates
-4. Test with factorial, fibonacci examples
-
-**Estimated Effort:** 4-6 hours
+**Note:** Fibonacci was incorrectly thought to be linear recursion, but it has 2 recursive calls, making it tree/fold recursion. The confusion arose from a misleading test comment.
 
 ---
 
@@ -658,7 +657,108 @@ During investigation of Issues #1 and #2, we examined fibonacci compilation with
 
 ---
 
-### 16. Implement firewall_implies - Higher-Order Firewall Policies
+### 16. Multi-Call Linear Recursion with Independent Arguments
+
+**Status:** 📋 FUTURE ENHANCEMENT
+**Created:** 2025-10-26
+**Priority:** Medium (optimization opportunity, not a bug)
+**Documentation:** `docs/RECURSION_PATTERN_THEORY.md` (theory exists)
+
+**Concept:**
+Extend linear recursion detection to handle multiple recursive calls when the calls are **independent**. Currently, fibonacci and similar patterns compile as "fold pattern" but could use simpler linear recursion with memoization.
+
+**Theory - Independence Criteria:**
+
+A predicate with 2+ recursive calls can use linear recursion + memoization when ALL of:
+
+1. **Scalar Arguments** - Recursive call arguments are computed values, NOT structural parts
+   - ✓ `N1 is N - 1, fib(N1, F1)` - computed via `is`
+   - ✗ `tree_sum([V,L,R], S) :- tree_sum(L, ...)` - L from pattern matching
+
+2. **Arguments Computed Before Calls** - All recursive call arguments determined before any call
+   - ✓ `N1 is N-1, N2 is N-2, fib(N1, F1), fib(N2, F2)` - N1, N2 computed first
+   - ✗ `bad(N, R1), X is R1+1, bad(X, R2)` - X depends on R1's output
+
+3. **No Variable Dependencies Across Calls** - Each recursive call argument is a **single variable** not shared with other calls
+   - ✓ `fib(N1, F1), fib(N2, F2)` - N1 and N2 are distinct variables
+   - ✗ `bad(X, R1), bad(X, R2)` - both calls use same variable X (potential dependency)
+
+4. **Pure Aggregation** - Results only combined AFTER all calls complete
+   - ✓ `fib(N1, F1), fib(N2, F2), F is F1 + F2` - aggregation after both calls
+   - ✗ `bad(N, R1), X is R1 + 1, ...` - uses R1 before second call
+
+**Proof Sketch:**
+
+Independence follows from single-variable arguments:
+- Each recursive call receives a **distinct computed variable** (N1, N2, N3, ...)
+- No variable appears in multiple recursive calls as an argument
+- Therefore: No data flow between calls → calls are independent
+- Memoization works: Each call can be cached separately by its unique argument
+
+**Examples:**
+
+```prolog
+% Should use linear + memo (currently uses fold)
+fib(N, F) :-
+    N1 is N - 1, N2 is N - 2,      % Computed scalars
+    fib(N1, F1), fib(N2, F2),      % Distinct variables: N1 ≠ N2
+    F is F1 + F2.                  % Pure aggregation
+
+% Tribonacci - 3 independent calls
+trib(N, T) :-
+    N1 is N - 1, N2 is N - 2, N3 is N - 3,  % All distinct
+    trib(N1, T1), trib(N2, T2), trib(N3, T3),
+    T is T1 + T2 + T3.
+
+% Tree recursion - structural arguments (NOT linear)
+tree_sum([V,L,R], S) :-
+    tree_sum(L, LS),               % L from pattern match (structural)
+    tree_sum(R, RS),               % R from pattern match (structural)
+    S is V + LS + RS.
+```
+
+**Detection Algorithm:**
+
+```prolog
+is_multi_call_linear_recursion(Pred/Arity) :-
+    % Has 2+ recursive calls
+    count_recursive_calls(Pred/Arity, Count),
+    Count >= 2,
+
+    % All recursive call arguments are:
+    % 1. Computed via 'is' expressions (scalar, not structural)
+    % 2. Single distinct variables (no shared variables across calls)
+    all_recursive_args_are_computed_scalars(Pred/Arity),
+    all_recursive_args_are_distinct_variables(Pred/Arity),
+
+    % Results aggregated after all calls
+    has_pure_aggregation(Pred/Arity).
+```
+
+**Benefits:**
+- Simpler code generation (reuse existing linear recursion compiler)
+- Same or better performance (memoization vs fold)
+- More intuitive mapping to mathematical pattern
+
+**Current Workaround:**
+Fold pattern works correctly but is more complex than needed.
+
+**Implementation Tasks:**
+1. Extend `is_linear_recursive_streamable` to allow 2+ calls
+2. Add `has_structural_arguments` check (distinguish from tree recursion)
+3. Add `args_are_distinct_variables` check (prove independence)
+4. Update tests to verify fibonacci/tribonacci use linear + memo
+5. Document the extended pattern in ADVANCED_RECURSION.md
+
+**Estimated Effort:** 8-12 hours
+
+**References:**
+- Theory: `docs/RECURSION_PATTERN_THEORY.md`
+- Current code: `src/unifyweaver/core/advanced/pattern_matchers.pl`
+
+---
+
+### 17. Implement firewall_implies - Higher-Order Firewall Policies
 
 **Status:** 📋 DESIGN PROPOSAL - Showcase Prolog's Unique Advantages
 **Location:** `src/unifyweaver/core/firewall.pl`
