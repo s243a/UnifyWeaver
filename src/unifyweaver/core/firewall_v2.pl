@@ -30,6 +30,7 @@
     check_target_language/2,
     check_service/3,
     derive_powershell_mode/2,
+    supports_pure_powershell/1,
 
     % Tool availability predicates
     tool_availability_policy/1,
@@ -39,6 +40,9 @@
     denied_tool/1,
     check_tool_availability/3,
     derive_compilation_mode_with_tools/3,
+    derive_mode_with_alternatives/3,
+    detect_and_configure_bash_availability/0,
+    auto_configure_firewall_for_missing_tools/1,
 
     % Network access predicates
     network_access_policy/1,
@@ -330,6 +334,12 @@ load_firewall_policy(whitelist_domains(Domains)) :-
     format('[Firewall] Only domains ~w are allowed~n', [Domains]),
     !.
 
+load_firewall_policy(auto_detect_environment) :-
+    format('[Firewall] Auto-detecting environment~n', []),
+    set_firewall_mode(permissive),
+    detect_and_configure_bash_availability,
+    !.
+
 load_firewall_policy(PolicyName) :-
     format('[Firewall Error] Unknown policy: ~w~n', [PolicyName]),
     fail.
@@ -337,6 +347,47 @@ load_firewall_policy(PolicyName) :-
 %% ============================================
 %% TOOL AVAILABILITY INTEGRATION
 %% ============================================
+
+%% detect_and_configure_bash_availability
+%  Detect if bash is available and configure firewall accordingly.
+%  This is useful for auto-detecting restricted environments (e.g., Windows without WSL).
+%
+%  Detection checks:
+%  1. Standard bash in PATH
+%  2. WSL bash (wsl.exe --version)
+%  3. Git Bash (common Windows install location)
+%  4. Cygwin bash (common Windows install location)
+%
+%  If bash is unavailable, optionally adds firewall rule to deny bash for PowerShell.
+
+detect_and_configure_bash_availability :-
+    % Check if bash is available
+    tool_detection:detect_tool_availability(bash, BashStatus),
+
+    (   BashStatus = available
+    ->  % Bash is available
+        format('[Firewall] Bash detected - available~n', []),
+        % Don't add any firewall rules (allow bash)
+        true
+
+    ;   BashStatus = unavailable(_)
+    ->  % Bash not available
+        format('[Firewall] Bash not detected - unavailable~n', []),
+
+        % Check if we should auto-configure firewall
+        (   auto_configure_firewall_for_missing_tools(true)
+        ->  % Add firewall rule to deny bash for PowerShell
+            assertz(denied_service(powershell, executable(bash))),
+            format('[Firewall] Added rule: deny bash for PowerShell (not available)~n', [])
+        ;   % Just inform, don't add rule
+            format('[Firewall] Note: bash unavailable but no auto-configuration~n', [])
+        )
+    ).
+
+% Helper predicate - can be overridden by user
+:- dynamic auto_configure_firewall_for_missing_tools/1.
+% Default: don't auto-configure (let user decide)
+% User can enable with: assertz(auto_configure_firewall_for_missing_tools(true)).
 
 %% check_tool_availability(+Tool, +TargetLanguage, -Result)
 %  Check if a tool is available, considering firewall policies.
