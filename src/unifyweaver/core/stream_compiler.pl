@@ -127,7 +127,7 @@ compile_facts(Pred, Arity, Options, BashCode) :-
 
 %% compile_facts_no_dedup(+Pred, +Arity, +Facts, +PredStr, -BashCode)
 %  Compile facts without deduplication using regular array
-compile_facts_no_dedup(Pred, Arity, Facts, PredStr, BashCode) :-
+compile_facts_no_dedup(_Pred, Arity, Facts, PredStr, BashCode) :-
     % Build array entries as strings (not key=value pairs)
     findall(Entry,
         (   member(Fact, Facts),

@@ -188,12 +188,13 @@ generate_fold_based_recursion(PredStr, BaseClauses, RecClauses, MemoEnabled, Mem
         generate_binary_linear_recursion_old(PredStr, BaseClauses, RecClauses, BashCode)
     ).
 
-%% generate_numeric_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, +MemoEnabled, +MemoStrategy, -BashCode)
+%% generate_numeric_fold(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -BashCode)
 %  Generate fold-based code for numeric linear recursion (e.g., factorial)
-%  NOTE: FoldExpr was already extracted in generate_fold_based_recursion
+%  NOTE: _FoldExpr was already extracted in generate_fold_based_recursion but we re-extract it here
+%  to maintain variable identity with the clause analysis
 %  MemoEnabled: true/false - whether to use memoization
 %  MemoStrategy: standard/hash - memoization lookup strategy
-generate_numeric_fold(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, BashCode) :-
+generate_numeric_fold(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, BashCode) :-
     % Get the recursive clauses to analyze variable roles AND extract fold expr in ONE pass
     atom_string(Pred, PredStr),
     functor(Head, Pred, 2),
@@ -331,9 +332,9 @@ translate_term(Number, _InputVar, _AccVar, BashTerm) :-
 translate_term(Atom, _InputVar, _AccVar, BashTerm) :-
     format(string(BashTerm), '~w', [Atom]).
 
-%% generate_list_fold(+PredStr, +BaseInput, +BaseOutput, +FoldExpr, +MemoEnabled, +MemoStrategy, -BashCode)
+%% generate_list_fold(+PredStr, +BaseInput, +BaseOutput, +_FoldExpr, +MemoEnabled, +MemoStrategy, -BashCode)
 %  Generate fold-based code for list linear recursion (e.g., list_length)
-generate_list_fold(PredStr, BaseInput, BaseOutput, FoldExpr, MemoEnabled, MemoStrategy, BashCode) :-
+generate_list_fold(PredStr, BaseInput, BaseOutput, _FoldExpr, MemoEnabled, MemoStrategy, BashCode) :-
     % Get the recursive clauses to analyze variable roles
     atom_string(Pred, PredStr),
     functor(Head, Pred, 2),

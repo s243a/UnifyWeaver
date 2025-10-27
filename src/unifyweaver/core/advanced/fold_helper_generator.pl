@@ -66,13 +66,13 @@ generate_fold_helpers(Pred/Arity, AllClauses) :-
 %
 %  Params = params(base_cases, operator, rec_clause)
 %
-extract_template_params(Pred/Arity, OrigClauses, Params) :-
+extract_template_params(Pred/_Arity, OrigClauses, Params) :-
     % Separate base and recursive clauses
     partition_clauses(Pred, OrigClauses, BaseClauses, RecClauses),
 
     % Get first recursive clause
     RecClauses = [RecClause|_],
-    RecClause = clause(RecHead, RecBody),
+    RecClause = clause(_RecHead, RecBody),
 
     % Extract combination operator (can be done on original clause)
     extract_operator(RecBody, _, Operator),
@@ -113,7 +113,7 @@ extract_guards(Body, Pred, OrigHead, NewArgs, Guards) :-
         rename_goal_vars(Goal, VarMap, RenamedGoal)
     ), Guards).
 
-is_before_computations(Goal, Body) :-
+is_before_computations(_Goal, _Body) :-
     % Simplified: assume guards come first
     % More sophisticated: check position in conjunction
     true.
@@ -342,17 +342,17 @@ generate_from_template(binary_tree, Pred/Arity, Params, AllClauses) :-
 
     % Generate fold computer leaf clause
     % Use fresh variable for leaf value
-    FoldLeafHead =.. [FoldPred, leaf(_V), _V],
+    FoldLeafHead =.. [FoldPred, leaf(V), V],
     FoldLeafClause = clause(FoldLeafHead, true),
 
     % Generate fold computer node clause
     % Use fresh variables for children and their values
-    FoldRecCall1 =.. [FoldPred, _FL, _VL],
-    FoldRecCall2 =.. [FoldPred, _FR, _VR],
-    CombineExpr =.. [Operator, _VL, _VR],
-    FoldCombine = (_OutputVar is CombineExpr),
+    FoldRecCall1 =.. [FoldPred, FL, VL],
+    FoldRecCall2 =.. [FoldPred, FR, VR],
+    CombineExpr =.. [Operator, VL, VR],
+    FoldCombine = (OutputVar is CombineExpr),
     FoldRecBody = (FoldRecCall1, FoldRecCall2, FoldCombine),
-    FoldRecHead =.. [FoldPred, node(_, [_FL, _FR]), _OutputVar],
+    FoldRecHead =.. [FoldPred, node(_, [FL, FR]), OutputVar],
     FoldRecClause = clause(FoldRecHead, FoldRecBody),
 
     % Generate wrapper clause
@@ -360,13 +360,13 @@ generate_from_template(binary_tree, Pred/Arity, Params, AllClauses) :-
     length(InputVars, NumInputs),
     length(WrapperInputVars, NumInputs),
     % Build wrapper head: pred_fold(Inputs..., Output)
-    append(WrapperInputVars, [_WOutputVar], WrapperHeadArgs),
+    append(WrapperInputVars, [WOutputVar], WrapperHeadArgs),
     WrapperHead =.. [WrapperPred|WrapperHeadArgs],
     % Build graph call: pred_graph(Inputs..., Graph)
-    append(WrapperInputVars, [_Graph], GraphCallArgs),
+    append(WrapperInputVars, [Graph], GraphCallArgs),
     WrapperGraphCall =.. [GraphPred|GraphCallArgs],
     % Build fold call: fold_pred(Graph, Output)
-    WrapperFoldCall =.. [FoldPred, _Graph, _WOutputVar],
+    WrapperFoldCall =.. [FoldPred, Graph, WOutputVar],
     WrapperBody = (WrapperGraphCall, WrapperFoldCall),
     WrapperClause = clause(WrapperHead, WrapperBody),
 
@@ -520,7 +520,8 @@ count_rec_in_goal(Goal, Pred, Count) :-
     ), Ones),
     length(Ones, Count).
 
-%% generate_fold_computer(+Pred/Arity, +OrigClauses, -FoldClauses)
+%% generate_fold_computer_old(+Pred/Arity, +OrigClauses, -FoldClauses)
+%  [OLD IMPLEMENTATION - NOT USED]
 %  Generate fold_pred/2 predicate that computes values from structure
 %
 %  Strategy:
@@ -529,7 +530,7 @@ count_rec_in_goal(Goal, Pred, Count) :-
 %                   maplist(fold_pred, Children, Values),
 %                   combine_values(Values, Result).
 %
-generate_fold_computer(Pred/Arity, OrigClauses, FoldClauses) :-
+generate_fold_computer_old(Pred/_Arity, OrigClauses, FoldClauses) :-
     atom_concat('fold_', Pred, FoldPred),
 
     % Generate leaf clause: fold_pred(leaf(V), V).
@@ -625,12 +626,13 @@ replace_vars_list([Old|Olds], [New|News], Term) :-
     ; true ),
     replace_vars_list(Olds, News, Term).
 
-%% generate_wrapper(+Pred/Arity, -WrapperClause)
+%% generate_wrapper_old(+Pred/Arity, -WrapperClause)
+%  [OLD IMPLEMENTATION - NOT USED]
 %  Generate wrapper predicate that combines graph building and folding
 %
 %  pred_fold(Input, Result) :- pred_graph(Input, Graph), fold_pred(Graph, Result).
 %
-generate_wrapper(Pred/Arity, WrapperClause) :-
+generate_wrapper_old(Pred/Arity, WrapperClause) :-
     Arity =:= 2,
     atom_concat(Pred, '_fold', WrapperPred),
     atom_concat(Pred, '_graph', GraphPred),

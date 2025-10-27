@@ -16,7 +16,11 @@
 :- use_module(library(lists)).
 :- use_module('call_graph').
 :- use_module('scc_detection').
-:- use_module('pattern_matchers').
+:- use_module('pattern_matchers', [
+    contains_call_to/2,
+    is_linear_recursive_streamable/1
+    % Note: We define our own extract_goal/2 to avoid importing the one from pattern_matchers
+]).
 :- use_module('tail_recursion').
 :- use_module('linear_recursion').
 :- use_module('tree_recursion').
@@ -206,7 +210,6 @@ compile_fold_pattern(Pred/Arity, Options, BashCode) :-
     
     % Convert Prolog clauses to bash code
     format('    Converting to bash code...~n'),
-    atom_string(Pred, PredStr),
     catch(
         generate_bash_from_fold_clauses(Pred/Arity, Clauses, Options, BashCode),
         BashError,
@@ -217,7 +220,7 @@ compile_fold_pattern(Pred/Arity, Options, BashCode) :-
 
 %% generate_bash_from_fold_clauses(+Pred/Arity, +Clauses, +Options, -BashCode)
 %  Convert fold helper Prolog clauses to executable bash code
-generate_bash_from_fold_clauses(Pred/Arity, Clauses, Options, BashCode) :-
+generate_bash_from_fold_clauses(Pred/_Arity, Clauses, _Options, BashCode) :-
     atom_string(Pred, PredStr),
     
     % Separate clauses by type
@@ -256,7 +259,7 @@ generate_bash_from_fold_clauses(Pred/Arity, Clauses, Options, BashCode) :-
 
 %% generate_graph_bash(+GraphPred, +GraphClauses, -GraphCode)
 %  Generate bash code for graph building functions
-generate_graph_bash(GraphPred, GraphClauses, GraphCode) :-
+generate_graph_bash(GraphPred, _GraphClauses, GraphCode) :-
     atom_string(GraphPred, GraphPredStr),
     
     % For now, generate a simple implementation
@@ -285,7 +288,7 @@ generate_graph_bash(GraphPred, GraphClauses, GraphCode) :-
 
 %% generate_fold_bash(+FoldPred, +FoldClauses, -FoldCode)
 %  Generate bash code for fold computation
-generate_fold_bash(FoldPred, FoldClauses, FoldCode) :-
+generate_fold_bash(FoldPred, _FoldClauses, FoldCode) :-
     atom_string(FoldPred, FoldPredStr),
     
     format(string(FoldCode), '# Fold computer for ~s
@@ -325,7 +328,6 @@ generate_wrapper_bash(WrapperPred, _WrapperClause, WrapperCode) :-
     
     % Extract base predicate name
     atom_concat(BasePred, '_fold', WrapperPred),
-    atom_string(BasePred, BasePredStr),
     atom_concat(BasePred, '_graph', GraphPred),
     atom_string(GraphPred, GraphPredStr),
     atom_concat('fold_', BasePred, FoldPred),
