@@ -132,6 +132,123 @@ build_temp_paths(powershell_cygwin, TimeStamp, temp_paths(TmpFileWin, TmpFileBas
 - `HANDOFF_BASH_EXECUTOR_FIX.md` - Solution implementation details
 - `bash_executor.pl` - Implementation of dual-path file management
 
+## Bash Pipeline Patterns and SIGPIPE Handling
+
+### The SIGPIPE Problem
+
+When bash pipelines terminate early (e.g., `grep -q` exits after first match), they can generate SIGPIPE errors that break the pipeline and produce unwanted error messages.
+
+**Example Problem**:
+```bash
+# This can generate "Broken pipe" errors
+ancestor_all "$start" | grep -q "^$start:$target$"
+```
+
+**Why**: When `grep -q` finds a match, it exits immediately. If `ancestor_all` tries to write more data to the closed pipe, the kernel sends SIGPIPE, causing:
+- Error message: `bash: echo: write error: Broken pipe`
+- Possible pipeline failure
+- Confusing output for users
+
+### Solution: Use tee to Prevent SIGPIPE
+
+The `tee` command acts as a buffer that consumes all input, even if downstream processes exit early:
+
+```bash
+# Correct pattern - tee prevents SIGPIPE
+ancestor_all "$start" 2>/dev/null | 
+tee >(grep -q "^$start:$target$" && touch "$tmpflag") >/dev/null 2>&1
+```
+
+**How This Works**:
+1. `tee` reads all input from `ancestor_all` (prevents SIGPIPE)
+2. Process substitution `>(grep -q ...)` can exit early without breaking the pipeline
+3. `2>/dev/null` suppresses errors from `ancestor_all`
+4. `2>&1` suppresses errors from the tee/process substitution
+5. `>/dev/null` discards main tee output (we only care about the flag file)
+
+**Key Points**:
+- ✅ `tee` always consumes its input completely
+- ✅ Process substitution allows early exit without breaking pipeline
+- ✅ Error redirection keeps output clean
+- ✅ Flag file communicates result between processes
+
+### Timeout and Subshell Scope Issues
+
+**Problem**: Using `timeout` with `bash -c` to run functions creates a subshell that doesn't inherit:
+- Bash associative arrays (like `parent_data`)
+- Function definitions (unless explicitly exported)
+- Local variables from parent scope
+
+**Failed Attempt**:
+```bash
+# This FAILS - subshell doesn't have access to parent_data array
+timeout "5s" bash -c "$(declare -f ancestor_all); ancestor_all \"$start\""
+# Error: parent not found (can't access parent_data array)
+```
+
+**Why It Fails**:
+1. `bash -c` creates a new shell process
+2. `declare -f` exports function code, but NOT the arrays it references
+3. Associative arrays (`declare -A`) cannot be easily exported to subshells
+4. The new shell has no access to `parent_data`, causing failures
+
+**Solution**: Don't Use timeout - Let tee Handle Early Exit
+
+```bash
+# Correct - run in current shell with tee for safety
+ancestor_all "$start" 2>/dev/null | 
+tee >(grep -q "^$start:$target$" && touch "$tmpflag") >/dev/null 2>&1
+```
+
+**Why This Works**:
+- ✅ Runs in current shell - has access to all arrays and functions
+- ✅ `tee` provides the same SIGPIPE protection as timeout would provide process isolation
+- ✅ Much simpler - no complex subshell export gymnastics
+- ✅ Process substitution `>()` runs in a subshell but only needs to write a flag file
+
+### Best Practices for Bash Pipelines
+
+1. **Use tee for early-exit pipelines**: When downstream commands may exit before consuming all input
+
+2. **Avoid timeout with bash -c for functions**: Unless you can guarantee the function doesn't need parent shell state
+
+3. **Suppress expected errors**: Use `2>/dev/null` and `2>&1` to keep output clean when errors are expected
+
+4. **Use flag files for inter-process communication**: Simple and reliable way to pass success/failure between process substitutions
+
+5. **Test in parent shell first**: If a function works without timeout/bash -c, consider if you really need them
+
+### Example: Complete Pattern
+
+```bash
+# Check if target is descendant of start
+ancestor_check() {
+    local start="$1"
+    local target="$2"
+    local tmpflag="/tmp/ancestor_found_$$"
+    
+    # Use tee to prevent SIGPIPE when grep exits early (suppress all errors)
+    ancestor_all "$start" 2>/dev/null | 
+    tee >(grep -q "^$start:$target$" && touch "$tmpflag") >/dev/null 2>&1
+    
+    # Check flag file for result (no echo - just return code)
+    if [[ -f "$tmpflag" ]]; then
+        rm -f "$tmpflag"
+        return 0
+    else
+        rm -f "$tmpflag"
+        return 1
+    fi
+}
+```
+
+**Key Features**:
+- `2>/dev/null` after ancestor_all - suppress errors from BFS traversal
+- `2>&1` after tee - suppress process substitution errors  
+- `>/dev/null` - discard main tee output
+- Flag file - communicate grep result
+- Return code only - let caller decide what to echo
+
 ## Summary
 
 Prolog's declarative nature is powerful, but when interfacing with imperative external tools, we sometimes need to:
@@ -141,3 +258,9 @@ Prolog's declarative nature is powerful, but when interfacing with imperative ex
 4. **Document the impedance mismatch** so future developers understand the tradeoffs
 
 The key insight: **Prolog is declarative, but we can embed imperative operations by delegating to external processes.**
+
+Similarly, bash pipeline patterns require understanding:
+1. **SIGPIPE prevention** using tee for early-exit scenarios
+2. **Subshell scope limitations** when using timeout/bash -c
+3. **Error suppression strategies** for clean user-facing output
+4. **Inter-process communication** via flag files and return codes
