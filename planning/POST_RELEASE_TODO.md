@@ -469,40 +469,67 @@ Returning nothing (empty result) may be valid behavior for these predicates - th
 
 ---
 
-### 13. Firewall Philosophy - Blocking vs Guidance
+### 13. ✅ REVIEWED: Firewall Philosophy - Blocking vs Guidance
 
-**Status:** 📋 DESIGN DECISION NEEDED
+**Status:** ✅ DESIGN REVIEW COMPLETE (2025-10-26)
 **Location:** `src/unifyweaver/core/firewall.pl`, `tests/core/test_firewall_enhanced.pl`
 **Created:** 2025-10-15
+**Review Document:** `context/firewall_philosophy_review.md` (comprehensive analysis)
 
 **Issue:**
 Test expects firewall to throw exceptions for denied services, but current implementation prints message and fails silently. This reveals a deeper question about firewall philosophy.
 
-**Documentation:** See `context/firewall_behavior_design.md` for full analysis
+**Review Findings:**
+✅ Current implementation is **consistent and correct** within its design
+✅ Operates on **fundamental security policies** (not derived predicates)
+✅ Validation behavior well-documented: print error, fail silently
+✅ Test expectations were incorrect (have been fixed in v0.0.2)
+✅ Architecture supports future hybrid approach
 
-**Two Approaches:**
-1. **Security Firewall (Hard Blocking)** - Throw exceptions, stop compilation
-2. **Preference Guidance (Soft Constraints)** - Help select best option, only block when no alternatives
+**Current Behavior (v0.0.2):**
+- Fundamental rules: allowed/denied services, network, file access
+- Allowlist/denylist validation
+- Print error message to stderr
+- Fail silently (returns `false`, no exceptions)
+- Separation of fundamental rules from derived preferences
 
-**Recommended: Hybrid Approach**
-- ALLOW: Explicitly allowed or preferred → succeed
-- WARN: Works but not preferred → succeed with warning  
-- DENY: Explicitly denied or no alternatives → throw exception
-- UNKNOWN: Depends on mode (strict vs permissive)
+**Recommended Future Approach: Hybrid (3-Level Response)**
+- **ALLOW:** Explicitly allowed or preferred → succeed
+- **WARN:** Works but not preferred → succeed with warning
+- **DENY:** Explicitly denied or no alternatives → fail/throw (mode-dependent)
+- **UNKNOWN:** Depends on mode (strict vs permissive)
 
-**Implementation Plan:**
+**Implementation Roadmap:**
+- **Phase 1 (v0.0.2):** ✅ COMPLETE - Clarify current behavior, fix tests
+- **Phase 2 (v0.0.3):** Implement hybrid design (allow/warn/deny + modes)
+- **Phase 3 (v0.0.4):** Preference chains with fallback logic
+- **Phase 4 (v0.1.0):** Higher-order firewall policies (showcase feature)
+
+**Key Documentation:**
+- `context/firewall_philosophy_review.md` - Comprehensive analysis (new)
+- `context/firewall_behavior_design.md` - Original design analysis
+- `docs/FIREWALL_GUIDE.md` - User guide
+- `planning/FIREWALL_TODO.md` - Implementation plan
+
+**Implementation Plan (Phase 2 - v0.0.3):**
 1. Add `mode` configuration: strict/permissive/disabled
 2. Add `preferred` vs `fallback` vs `denied` lists
 3. Implement warning system for non-preferred tools
 4. Create policy templates for different environments
-5. Update tests to match chosen philosophy
+5. Update tests to match new three-level system
 
-**Current Fix (v0.0.2):**
-- ✅ Updated test to match current behavior (fail without exception)
-- ✅ Added comment referencing design document
-- Defer full implementation to v0.0.3+
+**Estimated Effort:**
+- Phase 2 (hybrid): 4-6 hours
+- Phase 3 (preferences): 6-8 hours
+- Phase 4 (higher-order): 10-15 hours
+- **Total:** 20-29 hours across v0.0.3 to v0.1.0
 
-**Estimated Effort:** 4-6 hours for full hybrid implementation
+**Why This Showcases Prolog:**
+- Declarative security policies
+- Logical inference (automatic derivation from fundamental rules)
+- Transitive reasoning (A→B, B→C ⟹ A→C)
+- Pattern matching for complex security rules
+- Difficult to implement cleanly in imperative languages
 
 ---
 
