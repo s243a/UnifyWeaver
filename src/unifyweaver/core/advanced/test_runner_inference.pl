@@ -321,6 +321,26 @@ infer_test_cases(function(Name, 1, _),
         test('Small tree', ['[10,[5,[],[3,[],[]]],[7,[],[]]]'])
     ].
 
+% Rule 7: Transitive closure patterns (ancestor, reachable, etc.)
+infer_test_cases(function(Name, Arity, metadata(pattern_type(PatternType), _, _)),
+                 TestCases) :-
+    member(PatternType, [transitive_closure, unknown]),
+    member(Arity, [1, 2]),
+    (sub_atom(Name, _, _, _, ancestor) ; sub_atom(Name, _, _, _, reachable) ; sub_atom(Name, _, _, _, descendant)), !,
+    (   Arity = 1 ->
+        TestCases = [
+            test('Find all descendants of abraham', ['abraham']),
+            test('Find all descendants of isaac', ['isaac']),
+            test('Find all descendants of jacob', ['jacob'])
+        ]
+    ;   % Arity = 2
+        TestCases = [
+            test('Check isaac is ancestor of judah', ['isaac', 'judah']),
+            test('Check sarah is ancestor of esau', ['sarah', 'esau']),
+            test('Check ishmael is NOT ancestor of jacob (should fail)', ['ishmael', 'jacob'])
+        ]
+    ).
+
 % Fallback: Generic test cases based on arity
 infer_test_cases(function(_Name, Arity, _), TestCases) :-
     length(Args, Arity),
@@ -350,9 +370,14 @@ generate_explicit_runner(TestConfigs, OutputPath) :-
     % Group test configs by file
     group_configs_by_file(TestConfigs, GroupedConfigs),
 
+    % Preload all discovered scripts so shared dependencies are available
+    extract_group_file_names(GroupedConfigs, FileNamesUnsorted),
+    sort(FileNamesUnsorted, FileNames),
+    write_global_source_block(Stream, FileNames),
+
     % Generate tests for each file (with all its functions)
     forall(member(file_group(FilePath, FunctionConfigs), GroupedConfigs),
-           write_file_tests(Stream, FilePath, FunctionConfigs)),
+           write_file_tests(Stream, FilePath, FunctionConfigs, FileNames)),
 
     write_footer(Stream),
     close(Stream).
@@ -380,10 +405,92 @@ group_configs_by_file(TestConfigs, GroupedConfigs) :-
             ),
             GroupedConfigs).
 
+%% extract_group_file_names(+GroupedConfigs, -FileNames)
+extract_group_file_names(GroupedConfigs, FileNames) :-
+    findall(FileName,
+            (   member(file_group(FilePath, _), GroupedConfigs),
+                file_base_name(FilePath, FileName)
+            ),
+            Names),
+    list_to_set(Names, FileNames).
+
+%% write_global_source_block(+Stream, +FileNames)
+write_global_source_block(_, []) :- !.
+write_global_source_block(Stream, FileNames) :-
+    format(Stream, '# Preloading all discovered scripts to satisfy dependencies~n', []),
+    forall(member(FileName, FileNames),
+           (   format(Stream, 'if [[ -f ~w ]]; then~n', [FileName]),
+               format(Stream, '    source ~w~n', [FileName]),
+               format(Stream, 'fi~n', []),
+               format(Stream, '~n', [])
+           )),
+    format(Stream, '~n', []).
+
+%% extract_script_dependencies(+FilePath, -Dependencies)
+extract_script_dependencies(FilePath, Dependencies) :-
+    catch(read_file_to_string(FilePath, Content, []), _, Content = ""),
+    re_foldl(collect_dependency_path,
+             "^[ \\t]*(?:source|\\.)\\s+['\"]?(?<dep>[^'\"\\s;]+)['\"]?",
+             Content,
+             [],
+             RawDeps,
+             [multiline(true), capture_type(atom)]),
+    maplist(normalize_dependency_path, RawDeps, NormalizedDeps),
+    list_to_set(NormalizedDeps, Dependencies).
+
+%% collect_dependency_path(+Match, +AccIn, -AccOut)
+collect_dependency_path(Match, AccIn, [Dep|AccIn]) :-
+    get_dict(dep, Match, Dep).
+
+%% normalize_dependency_path(+Raw, -Normalized)
+normalize_dependency_path(Raw, Normalized) :-
+    (   atom(Raw) ->
+        DepAtom = Raw
+    ;   string(Raw) ->
+        atom_string(DepAtom, Raw)
+    ;   term_to_atom(Raw, DepAtom)
+    ),
+    file_base_name(DepAtom, BaseName),
+    Normalized = BaseName.
+
+%% exclude_self_dependency(+Dependencies, +FileName, -Filtered)
+exclude_self_dependency([], _, []).
+exclude_self_dependency([FileName|Rest], FileName, FilteredRest) :-
+    !,
+    exclude_self_dependency(Rest, FileName, FilteredRest).
+exclude_self_dependency([Dep|Rest], FileName, [Dep|FilteredRest]) :-
+    exclude_self_dependency(Rest, FileName, FilteredRest).
+
+%% write_dependency_sources(+Stream, +Dependencies)
+write_dependency_sources(Stream, Dependencies) :-
+    forall(member(Dep, Dependencies),
+           (   format(Stream, '    if [[ -f ~w ]]; then~n', [Dep]),
+               format(Stream, '        source ~w~n', [Dep]),
+               format(Stream, '    fi~n', [])
+           )),
+    (   Dependencies \= [] ->
+        format(Stream, '~n', [])
+    ;   true
+    ).
+
 %% write_file_tests(+Stream, +FilePath, +FunctionConfigs)
-%  Write tests for all functions in a file (source file once, test all functions)
 write_file_tests(Stream, FilePath, FunctionConfigs) :-
+    write_file_tests(Stream, FilePath, FunctionConfigs, []).
+
+%% write_file_tests(+Stream, +FilePath, +FunctionConfigs, +AllScripts)
+%  Write tests for all functions in a file (source all other scripts first, then target last)
+write_file_tests(Stream, FilePath, FunctionConfigs, AllScripts) :-
     file_base_name(FilePath, FileName),
+    
+    % Source all OTHER scripts before the target script to ensure dependencies are available
+    (   AllScripts \= [] ->
+        findall(Other,
+                (   member(Other, AllScripts),
+                    Other \= FileName
+                ),
+                OtherScripts)
+    ;   OtherScripts = []
+    ),
 
     format(Stream, '# Test ~w', [FileName]),
 
@@ -396,6 +503,18 @@ write_file_tests(Stream, FilePath, FunctionConfigs) :-
 
     format(Stream, 'if [[ -f ~w ]]; then~n', [FileName]),
     format(Stream, '    echo "--- Testing ~w ---"~n', [FileName]),
+
+    % Source all other scripts first (dependencies)
+    (   OtherScripts \= [] ->
+        forall(member(OtherScript, OtherScripts),
+               (   format(Stream, '    if [[ -f ~w ]]; then~n', [OtherScript]),
+                   format(Stream, '        source ~w~n', [OtherScript]),
+                   format(Stream, '    fi~n', [])
+               ))
+    ;   true
+    ),
+
+    % Source target script last so it takes precedence
     format(Stream, '    source ~w~n', [FileName]),
     format(Stream, '~n', []),
 
@@ -438,7 +557,46 @@ write_test_list(Stream, FuncName, [test(Description, Args)|Rest], Num) :-
     maplist(quote_arg, Args, QuotedArgs),
     atomic_list_concat(QuotedArgs, ' ', ArgsStr),
 
-    format(Stream, '    ~w ~w~n', [FuncName, ArgsStr]),
+    % Determine if this test expects failure based on description
+    (   sub_atom(Description, _, _, _, 'should fail')
+    ->  ExpectFailure = true
+    ;   sub_atom(Description, _, _, _, 'NOT')
+    ->  ExpectFailure = true
+    ;   ExpectFailure = false
+    ),
+
+    % Check if function name ends with _check (these return exit codes, not output)
+    (   sub_atom(FuncName, _, _, 0, '_check')
+    ->  % Function returns exit code - test it directly
+        format(Stream, '    if ~w ~w; then~n', [FuncName, ArgsStr]),
+        (   ExpectFailure = true
+        ->  format(Stream, '        echo "    Result: FAIL (expected failure but succeeded)"~n', [])
+        ;   format(Stream, '        echo "    Result: PASS"~n', [])
+        ),
+        format(Stream, '    else~n', []),
+        (   ExpectFailure = true
+        ->  format(Stream, '        echo "    Result: PASS (correctly failed)"~n', [])
+        ;   format(Stream, '        echo "    Result: FAIL"~n', [])
+        ),
+        format(Stream, '    fi~n', [])
+    ;   % Regular function - capture output and check exit code
+        format(Stream, '    output=$( ~w ~w 2>&1 )~n', [FuncName, ArgsStr]),
+        format(Stream, '    exit_code=$?~n', []),
+        format(Stream, '    if [[ -n "$output" ]]; then~n', []),
+        format(Stream, '        echo "$output"~n', []),
+        format(Stream, '    fi~n', []),
+        format(Stream, '    if [[ $exit_code -eq 0 ]]; then~n', []),
+        (   ExpectFailure = true
+        ->  format(Stream, '        echo "    Result: FAIL (expected failure but succeeded)"~n', [])
+        ;   format(Stream, '        echo "    Result: PASS"~n', [])
+        ),
+        format(Stream, '    else~n', []),
+        (   ExpectFailure = true
+        ->  format(Stream, '        echo "    Result: PASS (correctly failed)"~n', [])
+        ;   format(Stream, '        echo "    Result: FAIL"~n', [])
+        ),
+        format(Stream, '    fi~n', [])
+    ),
     format(Stream, '~n', []),
     format(Stream, '    echo ""~n', []),
 
