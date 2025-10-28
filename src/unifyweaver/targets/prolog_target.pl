@@ -127,14 +127,17 @@ generate_module_imports(Dependencies, Options, Code) :-
 %% generate_import_statements(+Dependencies, -Statements)
 %  Convert dependency list to import statements
 generate_import_statements(Dependencies, Statements) :-
-    % Add search path setup
+    % Add search path setup - use multifile to make it work before module loads
     SearchPathSetup = [
         '% Set up UnifyWeaver runtime library search path',
-        ':- ( getenv(\'UNIFYWEAVER_HOME\', Home)',
-        '   -> asserta(file_search_path(unifyweaver, Home))',
-        '   ;  % Assume installed as SWI-Prolog pack',
-        '      true',
-        '   ).'
+        ':- multifile user:file_search_path/2.',
+        ':- dynamic user:file_search_path/2.',
+        '',
+        '% Check for UNIFYWEAVER_HOME environment variable',
+        'setup_unifyweaver_path :- getenv(\'UNIFYWEAVER_HOME\', Home), !, asserta(user:file_search_path(unifyweaver, Home)).',
+        'setup_unifyweaver_path.  % Assume installed as pack if UNIFYWEAVER_HOME not set',
+        '',
+        ':- setup_unifyweaver_path.'
     ],
 
     % Convert dependencies to use_module statements
