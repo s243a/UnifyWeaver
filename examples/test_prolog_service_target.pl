@@ -96,10 +96,11 @@ test_generate_bash_script :-
         fail
     ),
 
-    % Verify contains heredoc
-    (   sub_atom(BashCode, _, _, _, '<< \'PROLOG\'')
+    % Verify contains heredoc (either fd3 or tempfile style)
+    (   (sub_atom(BashCode, _, _, _, '<<\'PROLOG\'') ; sub_atom(BashCode, _, _, _, '<< \'PROLOG\''))
     ->  format('  ✓ Contains heredoc pattern~n', [])
     ;   format('  ✗ FAIL: Missing heredoc~n', []),
+        format('~nCode snippet:~n~w~n', [BashCode]),
         fail
     ),
 
