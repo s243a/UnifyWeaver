@@ -18,6 +18,10 @@ main :-
     test_generate_row_partitioner,
     test_generate_byte_partitioner,
     test_execute_row_partitioner,
+    test_generate_hash_partitioner,
+    test_execute_hash_partitioner,
+    test_generate_key_partitioner,
+    test_execute_key_partitioner,
 
     format('~n╔════════════════════════════════════════════════════════╗~n', []),
     format('║  All Tests Passed ✓                                   ║~n', []),
@@ -176,6 +180,190 @@ test_execute_row_partitioner :-
     format('~n  ✓ Cleanup complete~n', []),
 
     format('[✓] Test 3 Passed~n', []),
+    !.
+
+%% ============================================
+%% TEST 4: GENERATE HASH PARTITIONER
+%% ============================================
+
+test_generate_hash_partitioner :-
+    format('~n[Test 4] Generate bash script for hash partitioning~n', []),
+    format('────────────────────────────────────────────────────────~n', []),
+
+    % Generate bash code for hash-based partitioning
+    generate_bash_partitioner(
+        hash_based([column(1), num_partitions(4), delimiter(',')]),
+        [function_name(partition_by_hash)],
+        BashCode
+    ),
+
+    % Verify contains AWK command
+    (   sub_atom(BashCode, _, _, _, 'awk -F')
+    ->  format('  ✓ Contains AWK command~n', [])
+    ;   format('  ✗ FAIL: Missing AWK command~n', []),
+        fail
+    ),
+
+    % Verify contains hash logic
+    (   sub_atom(BashCode, _, _, _, 'hash =')
+    ->  format('  ✓ Contains hash calculation~n', [])
+    ;   format('  ✗ FAIL: Missing hash calculation~n', []),
+        fail
+    ),
+
+    % Write to file
+    ScriptPath = '/tmp/partition_by_hash.sh',
+    write_bash_partitioner(BashCode, ScriptPath),
+    format('  ✓ Generated bash script: ~w~n', [ScriptPath]),
+
+    format('[✓] Test 4 Passed~n', []),
+    !.
+
+%% ============================================
+%% TEST 5: EXECUTE HASH PARTITIONER
+%% ============================================
+
+test_execute_hash_partitioner :-
+    format('~n[Test 5] Execute bash hash partitioner with test data~n', []),
+    format('────────────────────────────────────────────────────────~n', []),
+
+    % Create test data file with CSV data
+    TestDataPath = '/tmp/test_data_hash.csv',
+    open(TestDataPath, write, Stream),
+    % Create data with different keys in first column
+    forall(member(Key-Value, ['A'-10, 'B'-20, 'C'-30, 'A'-15, 'B'-25, 'D'-40, 'A'-12, 'C'-35]), (
+        format(Stream, '~w,~w~n', [Key, Value])
+    )),
+    close(Stream),
+    format('  ✓ Created test CSV file with 8 lines~n', []),
+
+    % Execute partition script
+    ScriptPath = '/tmp/partition_by_hash.sh',
+    PartitionDir = '/tmp/test_partitions_hash',
+    format(atom(Cmd), 'PARTITION_DIR=~w bash ~w ~w', [PartitionDir, ScriptPath, TestDataPath]),
+    shell(Cmd, Status),
+
+    % Verify execution succeeded
+    (   Status = 0
+    ->  format('  ✓ Script executed successfully~n', [])
+    ;   format('  ✗ FAIL: Script failed with status ~w~n', [Status]),
+        fail
+    ),
+
+    % Verify at least one partition was created
+    format(atom(PartitionPattern), '~w/partition_*.txt', [PartitionDir]),
+    expand_file_name(PartitionPattern, PartitionFiles),
+    length(PartitionFiles, PartitionCount),
+    (   PartitionCount > 0
+    ->  format('  ✓ Created ~w partitions (hash-based)~n', [PartitionCount])
+    ;   format('  ✗ FAIL: No partitions found~n', []),
+        fail
+    ),
+
+    % Cleanup
+    format(atom(CleanupCmd), 'rm -rf ~w', [PartitionDir]),
+    shell(CleanupCmd),
+    delete_file(TestDataPath),
+    format('  ✓ Cleanup complete~n', []),
+
+    format('[✓] Test 5 Passed~n', []),
+    !.
+
+%% ============================================
+%% TEST 6: GENERATE KEY PARTITIONER
+%% ============================================
+
+test_generate_key_partitioner :-
+    format('~n[Test 6] Generate bash script for key-based partitioning~n', []),
+    format('────────────────────────────────────────────────────────~n', []),
+
+    % Generate bash code for key-based partitioning
+    generate_bash_partitioner(
+        key_based([column(1), delimiter(',')]),
+        [function_name(partition_by_key)],
+        BashCode
+    ),
+
+    % Verify contains AWK command
+    (   sub_atom(BashCode, _, _, _, 'awk -F')
+    ->  format('  ✓ Contains AWK command~n', [])
+    ;   format('  ✗ FAIL: Missing AWK command~n', []),
+        fail
+    ),
+
+    % Verify contains partition_map logic
+    (   sub_atom(BashCode, _, _, _, 'partition_map')
+    ->  format('  ✓ Contains partition mapping logic~n', [])
+    ;   format('  ✗ FAIL: Missing partition mapping~n', []),
+        fail
+    ),
+
+    % Write to file
+    ScriptPath = '/tmp/partition_by_key.sh',
+    write_bash_partitioner(BashCode, ScriptPath),
+    format('  ✓ Generated bash script: ~w~n', [ScriptPath]),
+
+    format('[✓] Test 6 Passed~n', []),
+    !.
+
+%% ============================================
+%% TEST 7: EXECUTE KEY PARTITIONER
+%% ============================================
+
+test_execute_key_partitioner :-
+    format('~n[Test 7] Execute bash key-based partitioner with test data~n', []),
+    format('────────────────────────────────────────────────────────~n', []),
+
+    % Create test data file with CSV data
+    TestDataPath = '/tmp/test_data_key.csv',
+    open(TestDataPath, write, Stream),
+    % Create data with distinct keys (should create one partition per key)
+    forall(member(Key-Values, ['Red'-[10,15,20], 'Blue'-[30,35], 'Green'-[40]]), (
+        forall(member(Value, Values), (
+            format(Stream, '~w,~w~n', [Key, Value])
+        ))
+    )),
+    close(Stream),
+    format('  ✓ Created test CSV file with 6 lines, 3 unique keys~n', []),
+
+    % Execute partition script
+    ScriptPath = '/tmp/partition_by_key.sh',
+    PartitionDir = '/tmp/test_partitions_key',
+    format(atom(Cmd), 'PARTITION_DIR=~w bash ~w ~w', [PartitionDir, ScriptPath, TestDataPath]),
+    shell(Cmd, Status),
+
+    % Verify execution succeeded
+    (   Status = 0
+    ->  format('  ✓ Script executed successfully~n', [])
+    ;   format('  ✗ FAIL: Script failed with status ~w~n', [Status]),
+        fail
+    ),
+
+    % Verify exactly 3 partitions were created (one per unique key)
+    format(atom(PartitionPattern), '~w/partition_[0-9]*.txt', [PartitionDir]),
+    expand_file_name(PartitionPattern, PartitionFiles),
+    length(PartitionFiles, PartitionCount),
+    (   PartitionCount = 3
+    ->  format('  ✓ Created exactly 3 partitions (one per unique key)~n', [])
+    ;   format('  ✗ FAIL: Expected 3 partitions, got ~w~n', [PartitionCount]),
+        fail
+    ),
+
+    % Verify metadata contains key mappings
+    format(atom(MetadataPath), '~w/metadata.json', [PartitionDir]),
+    (   exists_file(MetadataPath)
+    ->  format('  ✓ Metadata file created with key mappings~n', [])
+    ;   format('  ✗ FAIL: Metadata file not found~n', []),
+        fail
+    ),
+
+    % Cleanup
+    format(atom(CleanupCmd), 'rm -rf ~w', [PartitionDir]),
+    shell(CleanupCmd),
+    delete_file(TestDataPath),
+    format('  ✓ Cleanup complete~n', []),
+
+    format('[✓] Test 7 Passed~n', []),
     !.
 
 :- initialization(main, main).

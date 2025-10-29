@@ -99,8 +99,22 @@ strategy_description(fixed_size(rows(N)), Desc) :-
     format(atom(Desc), 'Fixed-size partitioning (~w rows per partition)', [N]).
 strategy_description(fixed_size(bytes(N)), Desc) :-
     format(atom(Desc), 'Fixed-size partitioning (~w bytes per partition)', [N]).
-strategy_description(hash_based(_), 'Hash-based partitioning').
-strategy_description(key_based(_), 'Key-based (GROUP BY) partitioning').
+strategy_description(hash_based(Args), Desc) :-
+    (   member(column(Col), Args)
+    ->  true
+    ;   Col = 1
+    ),
+    (   member(num_partitions(N), Args)
+    ->  true
+    ;   N = 8
+    ),
+    format(atom(Desc), 'Hash-based partitioning (column ~w, ~w partitions)', [Col, N]).
+strategy_description(key_based(Args), Desc) :-
+    (   member(column(Col), Args)
+    ->  true
+    ;   Col = 1
+    ),
+    format(atom(Desc), 'Key-based (GROUP BY) partitioning (column ~w)', [Col]).
 
 %% ============================================
 %% STRATEGY CODE GENERATION
@@ -220,12 +234,211 @@ generate_strategy_code(fixed_size(bytes(BytesPerPartition)), FuncName, DirVar, C
         '}'
     ], '\n', Code).
 
-%% Placeholder for future strategies
-generate_strategy_code(hash_based(_), _, _, _) :-
-    throw(error(not_implemented, 'Hash-based partitioning not yet implemented for bash target')).
+%% Hash-Based Partitioning
+generate_strategy_code(hash_based(Args), FuncName, DirVar, Code) :-
+    % Extract configuration
+    (   member(column(ColNum), Args)
+    ->  true
+    ;   ColNum = 1  % Default: first column
+    ),
+    (   member(num_partitions(NumPartitions), Args)
+    ->  true
+    ;   NumPartitions = 8  % Default: 8 partitions
+    ),
+    (   member(delimiter(Delim), Args)
+    ->  true
+    ;   Delim = '\t'  % Default: tab-delimited
+    ),
 
-generate_strategy_code(key_based(_), _, _, _) :-
-    throw(error(not_implemented, 'Key-based partitioning not yet implemented for bash target')).
+    format(atom(FuncDef), '~w() {', [FuncName]),
+    format(atom(OutputDirLine), '    local output_dir="${~w:-/tmp/partitions_$$}"', [DirVar]),
+    format(atom(ColNumStr), '~w', [ColNum]),
+    format(atom(NumPartitionsStr), '~w', [NumPartitions]),
+    format(atom(ColumnLine), '    local column=~w', [ColNum]),
+    format(atom(PartitionsLine), '    local num_partitions=~w', [NumPartitions]),
+    format(atom(DelimLine), '    local delimiter="~w"', [Delim]),
+
+    atomic_list_concat([
+        '# Partition data by hash of column using AWK',
+        FuncDef,
+        '    local input_file="$1"',
+        OutputDirLine,
+        ColumnLine,
+        PartitionsLine,
+        DelimLine,
+        '',
+        '    # Create output directory',
+        '    mkdir -p "$output_dir"',
+        '',
+        '    # Partition using AWK hash function',
+        '    awk -F"$delimiter" -v col="$column" -v n="$num_partitions" -v outdir="$output_dir" \'',
+        '    {',
+        '        # Extract key from specified column',
+        '        key = $col',
+        '        ',
+        '        # Simple hash: sum of character codes modulo n',
+        '        hash = 0',
+        '        for (i = 1; i <= length(key); i++) {',
+        '            hash += int(index("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", substr(key, i, 1)))',
+        '        }',
+        '        partition_id = hash % n',
+        '        ',
+        '        # Write to partition file',
+        '        printf "%s\\n", $0 > (outdir "/partition_" sprintf("%02d", partition_id) ".txt")',
+        '    }',
+        '    \' "$input_file"',
+        '',
+        '    # Close all partition files',
+        '    wait',
+        '',
+        '    # Count partitions',
+        '    local partition_count=$(ls "$output_dir"/partition_* 2>/dev/null | wc -l)',
+        '',
+        '    # Generate metadata',
+        '    cat > "$output_dir/metadata.json" <<EOF',
+        '{',
+        '  "strategy": "hash_based",',
+        '  "column": ', ColNumStr, ',',
+        '  "num_partitions": ', NumPartitionsStr, ',',
+        '  "delimiter": "', Delim, '",',
+        '  "partition_count": $partition_count,',
+        '  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
+        '}',
+        'EOF',
+        '',
+        '    # Export partition info',
+        '    export PARTITION_COUNT=$partition_count',
+        '    export PARTITION_DIR="$output_dir"',
+        '',
+        '    echo "[Partitioner] Created $partition_count partitions in $output_dir (hash-based on column ', ColNumStr, ')"',
+        '}',
+        '',
+        '# Helper: List all partition files',
+        'list_partitions() {',
+        '    local dir="${1:-$PARTITION_DIR}"',
+        '    ls "$dir"/partition_* 2>/dev/null | sort',
+        '}',
+        '',
+        '# Helper: Get partition count',
+        'get_partition_count() {',
+        '    local dir="${1:-$PARTITION_DIR}"',
+        '    ls "$dir"/partition_* 2>/dev/null | wc -l',
+        '}'
+    ], '\n', Code).
+
+%% Key-Based (GROUP BY) Partitioning
+generate_strategy_code(key_based(Args), FuncName, DirVar, Code) :-
+    % Extract configuration
+    (   member(column(ColNum), Args)
+    ->  true
+    ;   ColNum = 1  % Default: first column
+    ),
+    (   member(delimiter(Delim), Args)
+    ->  true
+    ;   Delim = '\t'  % Default: tab-delimited
+    ),
+
+    format(atom(FuncDef), '~w() {', [FuncName]),
+    format(atom(OutputDirLine), '    local output_dir="${~w:-/tmp/partitions_$$}"', [DirVar]),
+    format(atom(ColNumStr), '~w', [ColNum]),
+    format(atom(ColumnLine), '    local column=~w', [ColNum]),
+    format(atom(DelimLine), '    local delimiter="~w"', [Delim]),
+
+    atomic_list_concat([
+        '# Partition data by grouping on column value (GROUP BY)',
+        FuncDef,
+        '    local input_file="$1"',
+        OutputDirLine,
+        ColumnLine,
+        DelimLine,
+        '',
+        '    # Create output directory',
+        '    mkdir -p "$output_dir"',
+        '',
+        '    # First pass: collect unique keys and assign partition IDs',
+        '    awk -F"$delimiter" -v col="$column" -v outdir="$output_dir" \'',
+        '    {',
+        '        key = $col',
+        '        if (!(key in partition_map)) {',
+        '            partition_id = partition_count++',
+        '            partition_map[key] = partition_id',
+        '            # Store key in metadata file',
+        '            print key > (outdir "/key_" sprintf("%03d", partition_id) ".txt")',
+        '        }',
+        '        # Write record to appropriate partition',
+        '        pid = partition_map[key]',
+        '        print $0 > (outdir "/partition_" sprintf("%03d", pid) ".txt")',
+        '    }',
+        '    END {',
+        '        # Write partition count',
+        '        print partition_count > (outdir "/partition_count.txt")',
+        '    }',
+        '    \' "$input_file"',
+        '',
+        '    # Close all files',
+        '    wait',
+        '',
+        '    # Read partition count',
+        '    local partition_count=$(cat "$output_dir/partition_count.txt" 2>/dev/null || echo 0)',
+        '',
+        '    # Generate metadata with key mappings',
+        '    cat > "$output_dir/metadata.json" <<EOF',
+        '{',
+        '  "strategy": "key_based",',
+        '  "column": ', ColNumStr, ',',
+        '  "delimiter": "', Delim, '",',
+        '  "partition_count": $partition_count,',
+        '  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",',
+        '  "key_mappings": [',
+        'EOF',
+        '',
+        '    # Add key mappings to metadata',
+        '    local first=true',
+        '    for key_file in "$output_dir"/key_*.txt; do',
+        '        if [ -f "$key_file" ]; then',
+        '            key=$(cat "$key_file")',
+        '            pid=$(basename "$key_file" | sed \'s/key_\\([0-9]*\\).txt/\\1/\')',
+        '            if [ "$first" = true ]; then',
+        '                first=false',
+        '            else',
+        '                echo "," >> "$output_dir/metadata.json"',
+        '            fi',
+        '            echo "    {\"partition_id\": $pid, \"key\": \"$key\"}" >> "$output_dir/metadata.json"',
+        '        fi',
+        '    done',
+        '',
+        '    # Close metadata',
+        '    cat >> "$output_dir/metadata.json" <<EOF',
+        '  ]',
+        '}',
+        'EOF',
+        '',
+        '    # Export partition info',
+        '    export PARTITION_COUNT=$partition_count',
+        '    export PARTITION_DIR="$output_dir"',
+        '',
+        '    echo "[Partitioner] Created $partition_count partitions in $output_dir (grouped by column ', ColNumStr, ')"',
+        '}',
+        '',
+        '# Helper: List all partition files',
+        'list_partitions() {',
+        '    local dir="${1:-$PARTITION_DIR}"',
+        '    ls "$dir"/partition_* 2>/dev/null | sort',
+        '}',
+        '',
+        '# Helper: Get partition count',
+        'get_partition_count() {',
+        '    local dir="${1:-$PARTITION_DIR}"',
+        '    cat "$dir/partition_count.txt" 2>/dev/null || echo 0',
+        '}',
+        '',
+        '# Helper: Get key for partition ID',
+        'get_partition_key() {',
+        '    local dir="${1:-$PARTITION_DIR}"',
+        '    local pid="$2"',
+        '    cat "$dir/key_$(printf "%03d" $pid).txt" 2>/dev/null',
+        '}'
+    ], '\n', Code).
 
 %% Helper to get option with default
 option(Option, Options, Default) :-
