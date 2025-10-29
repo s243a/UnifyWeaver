@@ -1,0 +1,276 @@
+:- encoding(utf8).
+% SPDX-License-Identifier: MIT OR Apache-2.0
+% Copyright (c) 2025 John William Creighton (@s243a)
+%
+% csharp_stream_target.pl - C# streaming target for UnifyWeaver
+% Generates LINQ-based streaming code for non-recursive predicates.
+
+:- module(csharp_stream_target, [
+    compile_predicate_to_csharp/3,   % +PredIndicator, +Options, -CSharpCode
+    write_csharp_streamer/2,         % +CSharpCode, +FilePath
+    test_csharp_stream_target/0
+]).
+
+:- use_module(library(lists)).
+:- use_module(library(apply)).
+:- use_module(library(date)).
+
+%% ============================================
+%% PUBLIC API
+%% ============================================
+
+%% compile_predicate_to_csharp(+Pred/Arity, +Options, -Code)
+%  Compile a non-recursive predicate to C# streaming code.
+%  Currently supports single-clause streaming rules composed from binary relations.
+compile_predicate_to_csharp(PredIndicator, Options, Code) :-
+    PredIndicator = Pred/Arity,
+    functor(Head, Pred, Arity),
+    findall(Body, clause(Head, Body), Bodies),
+    classify_predicate(Bodies, Type),
+    compile_by_type(Type, Pred, Arity, Bodies, Options, Code).
+
+%% write_csharp_streamer(+Code, +FilePath)
+%  Persist generated C# code to disk.
+write_csharp_streamer(Code, FilePath) :-
+    setup_call_cleanup(
+        open(FilePath, write, Stream),
+        write(Stream, Code),
+        close(Stream)
+    ),
+    format('[CSharpTarget] Generated C# streamer: ~w~n', [FilePath]).
+
+%% ============================================
+%% PREDICATE CLASSIFICATION
+%% ============================================
+
+classify_predicate([], none).
+classify_predicate([true|Rest], facts) :-
+    forall(member(Body, Rest), Body == true), !.
+classify_predicate([Body], single_rule) :-
+    Body \= true, !.
+classify_predicate(_Bodies, unsupported).
+
+compile_by_type(none, Pred, Arity, _Bodies, _Options, _) :-
+    format('[CSharpTarget] ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
+    fail.
+compile_by_type(facts, Pred, Arity, _Bodies, _Options, _) :-
+    format('[CSharpTarget] ERROR: Fact-only predicates not yet supported for C# target (~w/~w)~n', [Pred, Arity]),
+    fail.
+compile_by_type(unsupported, Pred, Arity, _Bodies, _Options, _) :-
+    format('[CSharpTarget] ERROR: Multi-clause predicates not yet supported for C# target (~w/~w)~n', [Pred, Arity]),
+    fail.
+compile_by_type(single_rule, Pred, Arity, [Body], Options, Code) :-
+    compile_single_rule_to_csharp(Pred, Arity, Body, Options, Code).
+
+%% ============================================
+%% SINGLE RULE COMPILATION
+%% ============================================
+
+compile_single_rule_to_csharp(Pred, Arity, Body, Options, Code) :-
+    collect_predicate_terms(Body, Terms),
+    Terms \= [],
+    maplist(term_signature, Terms, Signatures),
+    list_to_set(Signatures, UniqueSigs),
+    ensure_binary_relations(UniqueSigs, Pred/Arity),
+    maplist(gather_fact_entries, UniqueSigs, FactEntries),
+    maplist(data_section_for_signature, FactEntries, DataSections),
+    maplist(stream_helper_for_signature, UniqueSigs, StreamHelpers),
+    predicate_name_pascal(Pred, ModuleName),
+    predicate_name_pascal(Pred, TargetName),
+    maplist(predicate_name_pascal_signature, Signatures, PredicateOrder),
+    generate_linq_pipeline(PredicateOrder, PipelineCode),
+    maybe_distinct(PipelineCode, Options, PipelineWithDedup),
+    compose_csharp_program(ModuleName, DataSections, StreamHelpers,
+        TargetName, PipelineWithDedup, Code).
+
+%% Ensure we only handle binary relations for now
+ensure_binary_relations([], _).
+ensure_binary_relations([_Name/2|Rest], Target) :-
+    ensure_binary_relations(Rest, Target).
+ensure_binary_relations([Name/Arity|_], Target) :-
+    Arity \= 2,
+    format('[CSharpTarget] ERROR: Unsupported arity (~w) for predicate ~w when compiling ~w~n',
+           [Arity, Name, Target]),
+    fail.
+
+%% ============================================
+%% DATA COLLECTION HELPERS
+%% ============================================
+
+collect_predicate_terms(true, []) :- !.
+collect_predicate_terms((A, B), Terms) :- !,
+    collect_predicate_terms(A, TermsA),
+    collect_predicate_terms(B, TermsB),
+    append(TermsA, TermsB, Terms).
+collect_predicate_terms(Goal, []) :-
+    var(Goal), !.
+collect_predicate_terms(_ \= _, []) :- !.
+collect_predicate_terms(\=(_, _), []) :- !.
+collect_predicate_terms(Goal, [Goal]).
+
+term_signature(Goal, Name/Arity) :-
+    functor(Goal, Name, Arity).
+
+gather_fact_entries(Name/Arity, fact_info(Name, Arity, Entries)) :-
+    functor(Head, Name, Arity),
+    findall(Args,
+        ( clause(Head, true),
+          Head =.. [_|Args]),
+        Entries).
+
+%% ============================================
+%% CODE GENERATION HELPERS
+%% ============================================
+
+predicate_name_pascal(Pred, Pascal) :-
+    atom_string(Pred, PredStr),
+    split_string(PredStr, '_', '_', Parts),
+    maplist(capitalize_first, Parts, Caps),
+    atomic_list_concat(Caps, '', Pascal).
+
+predicate_name_pascal_signature(Name/_, Pascal) :-
+    predicate_name_pascal(Name, Pascal).
+
+capitalize_first(Part, Capitalized) :-
+    (   Part == ""
+    ->  Capitalized = ""
+    ;   sub_string(Part, 0, 1, RestLen, First),
+        sub_string(Part, 1, RestLen, 0, Rest),
+        string_upper(First, UpperFirst),
+        string_concat(UpperFirst, Rest, Capitalized)
+    ).
+
+data_section_for_signature(fact_info(Name, 2, Entries), Section) :-
+    predicate_name_pascal(Name, Pascal),
+    format(atom(DataName), '~wData', [Pascal]),
+    with_output_to(atom(Section),
+        ( format('        private static readonly (string, string)[] ~w = new[] {~n', [DataName]),
+          (   Entries = []
+          ->  true
+          ;   maplist(tuple_literal, Entries, LiteralTuples),
+              emit_literal_block(LiteralTuples, "            ")
+          ),
+          format('        };', [])
+        )).
+
+data_section_for_signature(fact_info(Name, Arity, _), _) :-
+    Arity \= 2,
+    format('[CSharpTarget] ERROR: data emission for arity ~w of predicate ~w is unimplemented~n', [Arity, Name]),
+    fail.
+
+emit_literal_block([], _).
+emit_literal_block([First|Rest], Indent) :-
+    format('~s~w', [Indent, First]),
+    forall(member(Literal, Rest),
+           format(',~n~s~w', [Indent, Literal])),
+    format('~n', []).
+
+stream_helper_for_signature(Name/2, HelperCode) :-
+    predicate_name_pascal(Name, Pascal),
+    format(atom(DataName), '~wData', [Pascal]),
+    format(atom(HelperCode),
+'        public static IEnumerable<(string, string)> ~wStream()
+        {
+            return ~w;
+        }', [Pascal, DataName]).
+
+stream_helper_for_signature(Name/Arity, _) :-
+    Arity \= 2,
+    format('[CSharpTarget] ERROR: stream helper for arity ~w of predicate ~w is unimplemented~n', [Arity, Name]),
+    fail.
+
+tuple_literal([A, B], Literal) :-
+    escape_csharp_string(A, AEsc),
+    escape_csharp_string(B, BEsc),
+    format(atom(Literal), '("~w", "~w")', [AEsc, BEsc]).
+
+escape_csharp_string(Atom, Escaped) :-
+    atom_string(Atom, String),
+    replace_substring(String, "\\", "\\\\", Step1),
+    replace_substring(Step1, "\"", "\\\"", Step2),
+    replace_substring(Step2, "\n", "\\n", Escaped).
+
+replace_substring(String, Pattern, Replacement, Result) :-
+    split_string(String, Pattern, Pattern, Parts),
+    atomic_list_concat(Parts, Replacement, Result).
+
+generate_linq_pipeline([First|Rest], Pipeline) :-
+    format(atom(Start), '~wStream()', [First]),
+    foldl(linq_join_step, Rest, Start, Pipeline).
+
+generate_linq_pipeline([], 'Enumerable.Empty<(string, string)>()').
+
+linq_join_step(PredName, Acc, Out) :-
+    format(atom(Out),
+'~w
+            .Join(~wStream(),
+                  left => left.Item2,
+                  right => right.Item1,
+                  (left, right) => (left.Item1, right.Item2))', [Acc, PredName]).
+
+maybe_distinct(Pipeline, Options, PipelineWithDistinct) :-
+    (   member(unique(UniqueFlag), Options),
+        UniqueFlag == true
+    ->  format(atom(PipelineWithDistinct), '~w~n            .Distinct()', [Pipeline])
+    ;   PipelineWithDistinct = Pipeline
+    ).
+
+compose_csharp_program(ModuleName, DataSections, StreamHelpers,
+        TargetName, Pipeline, Code) :-
+    get_time(Timestamp),
+    format_time(atom(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+    format(atom(HeaderComment),
+'// Generated by UnifyWeaver v0.0.3
+// Target: C# Streaming (LINQ)
+// Generated: ~w
+', [DateStr]),
+    (   DataSections = []
+    ->  DataBlock = ''
+    ;   atomic_list_concat(DataSections, '\n\n', DataConcat),
+        format(atom(DataBlock), '~w\n\n', [DataConcat])
+    ),
+    (   StreamHelpers = []
+    ->  HelperBlock = ''
+    ;   atomic_list_concat(StreamHelpers, '\n\n', HelperConcat),
+        format(atom(HelperBlock), '~w\n\n', [HelperConcat])
+    ),
+    format(atom(Code),
+'~wusing System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace UnifyWeaver.Generated
+{
+    public static class ~wModule
+    {
+~w~w        public static IEnumerable<(string, string)> ~wStream()
+        {
+            return
+                ~w;
+        }
+
+        public static void Main(string[] args)
+        {
+            foreach (var tuple in ~wStream())
+            {
+                Console.WriteLine($"{tuple.Item1}:{tuple.Item2}");
+            }
+        }
+    }
+}', [HeaderComment, ModuleName, DataBlock, HelperBlock, TargetName, Pipeline, TargetName]).
+
+%% ============================================
+%% TEST SUPPORT
+%% ============================================
+
+test_csharp_stream_target :-
+    retractall(parent(_, _)),
+    retractall(grandparent(_, _)),
+    assertz(parent(alice, bob)),
+    assertz(parent(bob, charlie)),
+    assertz((grandparent(X, Z) :- parent(X, Y), parent(Y, Z))),
+    compile_predicate_to_csharp(grandparent/2, [unique(true)], Code),
+    sub_string(Code, _, _, _, '.Join(ParentStream()'),
+    sub_string(Code, _, _, _, '.Distinct()'),
+    retractall(parent(_, _)),
+    retractall(grandparent(_, _)).
