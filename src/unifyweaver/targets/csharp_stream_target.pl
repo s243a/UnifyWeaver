@@ -53,9 +53,8 @@ classify_predicate(_Bodies, unsupported).
 compile_by_type(none, Pred, Arity, _Bodies, _Options, _) :-
     format('[CSharpTarget] ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
     fail.
-compile_by_type(facts, Pred, Arity, _Bodies, _Options, _) :-
-    format('[CSharpTarget] ERROR: Fact-only predicates not yet supported for C# target (~w/~w)~n', [Pred, Arity]),
-    fail.
+compile_by_type(facts, Pred, Arity, _Bodies, Options, Code) :-
+    compile_facts_to_csharp(Pred, Arity, Options, Code).
 compile_by_type(unsupported, Pred, Arity, _Bodies, _Options, _) :-
     format('[CSharpTarget] ERROR: Multi-clause predicates not yet supported for C# target (~w/~w)~n', [Pred, Arity]),
     fail.
@@ -80,8 +79,31 @@ compile_single_rule_to_csharp(Pred, Arity, Body, Options, Code) :-
     maplist(predicate_name_pascal_signature, Signatures, PredicateOrder),
     generate_linq_pipeline(PredicateOrder, PipelineCode),
     maybe_distinct(PipelineCode, Options, PipelineWithDedup),
+    ResultType = '(string, string)',
+    PrintExpr = 'Console.WriteLine("${item.Item1}:{item.Item2}");',
     compose_csharp_program(ModuleName, DataSections, StreamHelpers,
-        TargetName, PipelineWithDedup, Code).
+        TargetName, ResultType, PipelineWithDedup, PrintExpr, Code).
+
+%% Compile fact-only predicates into simple stream emitters
+compile_facts_to_csharp(Pred, Arity, Options, Code) :-
+    gather_fact_entries(Pred/Arity, FactInfo),
+    FactInfo = fact_info(_, Arity, Entries),
+    Entries \= [],
+    fact_result_type(Arity, ResultType),
+    fact_print_expression(Arity, PrintExpr),
+    predicate_name_pascal(Pred, ModuleName),
+    predicate_name_pascal(Pred, TargetName),
+    fact_data_section(FactInfo, DataSection),
+    fact_stream_helper(FactInfo, ResultType, HelperName, HelperSection),
+    format(atom(PipelineBase), '~w()', [HelperName]),
+    maybe_distinct(PipelineBase, Options, PipelineWithDedup),
+    compose_csharp_program(ModuleName, [DataSection], [HelperSection],
+        TargetName, ResultType, PipelineWithDedup, PrintExpr, Code).
+compile_facts_to_csharp(Pred, Arity, _Options, _) :-
+    format('[CSharpTarget] ERROR: Fact-only predicates of arity ~w are not supported for ~w/~w in the C# target.~n',
+           [Arity, Pred, Arity]),
+    fail.
+
 
 %% Ensure we only handle binary relations for now
 ensure_binary_relations([], _).
@@ -140,6 +162,19 @@ capitalize_first(Part, Capitalized) :-
         string_concat(UpperFirst, Rest, Capitalized)
     ).
 
+data_section_for_signature(fact_info(Name, 1, Entries), Section) :-
+    predicate_name_pascal(Name, Pascal),
+    format(atom(DataName), '~wData', [Pascal]),
+    with_output_to(atom(Section),
+        ( format('        private static readonly string[] ~w = new[] {~n', [DataName]),
+          (   Entries = []
+          ->  true
+          ;   maplist(unary_literal, Entries, LiteralTuples),
+              emit_literal_block(LiteralTuples, "            ")
+          ),
+          format('        };', [])
+        )).
+
 data_section_for_signature(fact_info(Name, 2, Entries), Section) :-
     predicate_name_pascal(Name, Pascal),
     format(atom(DataName), '~wData', [Pascal]),
@@ -154,7 +189,7 @@ data_section_for_signature(fact_info(Name, 2, Entries), Section) :-
         )).
 
 data_section_for_signature(fact_info(Name, Arity, _), _) :-
-    Arity \= 2,
+    \+ member(Arity, [1, 2]),
     format('[CSharpTarget] ERROR: data emission for arity ~w of predicate ~w is unimplemented~n', [Arity, Name]),
     fail.
 
@@ -164,6 +199,15 @@ emit_literal_block([First|Rest], Indent) :-
     forall(member(Literal, Rest),
            format(',~n~s~w', [Indent, Literal])),
     format('~n', []).
+
+stream_helper_for_signature(Name/1, HelperCode) :-
+    predicate_name_pascal(Name, Pascal),
+    format(atom(DataName), '~wData', [Pascal]),
+    format(atom(HelperCode),
+'        public static IEnumerable<string> ~wStream()
+        {
+            return ~w;
+        }', [Pascal, DataName]).
 
 stream_helper_for_signature(Name/2, HelperCode) :-
     predicate_name_pascal(Name, Pascal),
@@ -175,14 +219,38 @@ stream_helper_for_signature(Name/2, HelperCode) :-
         }', [Pascal, DataName]).
 
 stream_helper_for_signature(Name/Arity, _) :-
-    Arity \= 2,
+    \+ member(Arity, [1, 2]),
     format('[CSharpTarget] ERROR: stream helper for arity ~w of predicate ~w is unimplemented~n', [Arity, Name]),
     fail.
+
+
+fact_result_type(1, 'string').
+fact_result_type(2, '(string, string)').
+
+fact_print_expression(1, 'Console.WriteLine(item);').
+fact_print_expression(2, 'Console.WriteLine("${item.Item1}:{item.Item2}");').
+
+fact_data_section(FactInfo, Section) :-
+    data_section_for_signature(FactInfo, Section).
+
+fact_stream_helper(fact_info(Name, _Arity, _Entries), ResultType, HelperName, HelperCode) :-
+    predicate_name_pascal(Name, Pascal),
+    format(atom(DataName), '~wData', [Pascal]),
+    format(atom(HelperName), '~wFactStream', [Pascal]),
+    format(atom(HelperCode),
+'        public static IEnumerable<~w> ~w()
+        {
+            return ~w;
+        }', [ResultType, HelperName, DataName]).
 
 tuple_literal([A, B], Literal) :-
     escape_csharp_string(A, AEsc),
     escape_csharp_string(B, BEsc),
     format(atom(Literal), '("~w", "~w")', [AEsc, BEsc]).
+
+unary_literal([A], Literal) :-
+    escape_csharp_string(A, Esc),
+    format(atom(Literal), '"~w"', [Esc]).
 
 escape_csharp_string(Atom, Escaped) :-
     atom_string(Atom, String),
@@ -216,7 +284,7 @@ maybe_distinct(Pipeline, Options, PipelineWithDistinct) :-
     ).
 
 compose_csharp_program(ModuleName, DataSections, StreamHelpers,
-        TargetName, Pipeline, Code) :-
+        TargetName, ResultType, Pipeline, PrintExpr, Code) :-
     get_time(Timestamp),
     format_time(atom(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
     format(atom(HeaderComment),
@@ -234,7 +302,7 @@ compose_csharp_program(ModuleName, DataSections, StreamHelpers,
     ;   atomic_list_concat(StreamHelpers, '\n\n', HelperConcat),
         format(atom(HelperBlock), '~w\n\n', [HelperConcat])
     ),
-    format(atom(Code),
+    format(atom(Program),
 '~wusing System;
 using System.Collections.Generic;
 using System.Linq;
@@ -243,7 +311,7 @@ namespace UnifyWeaver.Generated
 {
     public static class ~wModule
     {
-~w~w        public static IEnumerable<(string, string)> ~wStream()
+~w~w        public static IEnumerable<~w> ~wStream()
         {
             return
                 ~w;
@@ -251,13 +319,23 @@ namespace UnifyWeaver.Generated
 
         public static void Main(string[] args)
         {
-            foreach (var tuple in ~wStream())
+            foreach (var item in ~wStream())
             {
-                Console.WriteLine($"{tuple.Item1}:{tuple.Item2}");
+                ~w
             }
         }
     }
-}', [HeaderComment, ModuleName, DataBlock, HelperBlock, TargetName, Pipeline, TargetName]).
+}', [HeaderComment, ModuleName, DataBlock, HelperBlock, ResultType, TargetName, Pipeline, TargetName, PrintExpr]),
+    normalize_whitespace(Program, Code).
+
+normalize_whitespace(Input, Output) :-
+    split_string(Input, '\n', '\n', Lines),
+    maplist(trim_trailing_spaces, Lines, Trimmed),
+    atomic_list_concat(Trimmed, '\n', Output).
+
+trim_trailing_spaces(Line, Trimmed) :-
+    re_replace("\\s+$"/a, "", Line, Trimmed).
+
 
 %% ============================================
 %% TEST SUPPORT
@@ -272,5 +350,16 @@ test_csharp_stream_target :-
     compile_predicate_to_csharp(grandparent/2, [unique(true)], Code),
     sub_string(Code, _, _, _, '.Join(ParentStream()'),
     sub_string(Code, _, _, _, '.Distinct()'),
+    compile_predicate_to_csharp(parent/2, [unique(true)], FactCode),
+    sub_string(FactCode, _, _, _, 'ParentFactStream()'),
+    sub_string(FactCode, _, _, _, 'Console.WriteLine("${item.Item1}:{item.Item2}");'),
+    sub_string(FactCode, _, _, _, '.Distinct()'),
+    assertz(color(red)),
+    assertz(color(blue)),
+    compile_predicate_to_csharp(color/1, [], ColorCode),
+    sub_string(ColorCode, _, _, _, 'IEnumerable<string> ColorStream'),
+    sub_string(ColorCode, _, _, _, 'Console.WriteLine(item);'),
+    \+ sub_string(ColorCode, _, _, _, '.Distinct()'),
+    retractall(color(_)),
     retractall(parent(_, _)),
     retractall(grandparent(_, _)).
