@@ -15,7 +15,13 @@
     validate_network_access/2,
     validate_python_imports/2,
     validate_file_access/3,
-    validate_cache_directory/2
+    validate_cache_directory/2,
+    % Higher-order firewall implications
+    firewall_implies/2,
+    firewall_implies_default/2,
+    firewall_implies_disabled/2,
+    derive_policy/2,
+    check_derived_policy/3
 ]).
 
 :- use_module(library(lists)).
@@ -398,3 +404,298 @@ extract_import_from_line(Line, Module) :-
     ->  get_dict(1, Sub, Module)
     ;   fail
     ).
+
+%% ============================================
+%% HIGHER-ORDER FIREWALL IMPLICATIONS
+%% ============================================
+%
+% This system provides logical inference for deriving firewall policies from
+% fundamental rules. It demonstrates Prolog's strength in declarative reasoning
+% while remaining practical and user-controllable.
+%
+% Architecture:
+% 1. firewall_implies_default/2 - Built-in default implications (overridable)
+% 2. firewall_implies/2 - User-defined implications (can override defaults)
+% 3. firewall_implies_disabled/2 - Explicit disabling of implications
+%
+% Users can:
+% - Use default implications as-is
+% - Disable specific default implications
+% - Add custom implications that extend or replace defaults
+
+%% firewall_implies(+Condition, -Consequence) is nondet.
+%
+% Derives firewall consequences from conditions using logical inference.
+% This is the main entry point that combines default and user-defined implications.
+%
+% First checks user-defined implications, then falls back to defaults if not disabled.
+%
+% @arg Condition The triggering condition (e.g., no_bash_available)
+% @arg Consequence The derived policy (e.g., denied_service(powershell, executable(bash)))
+%
+% @example Derive that no bash means pure PowerShell required
+%   ?- firewall_implies(no_bash_available, Consequence).
+%   Consequence = denied_service(powershell, executable(bash)).
+:- dynamic firewall_implies/2.
+
+%% firewall_implies_default(+Condition, -Consequence) is nondet.
+%
+% Default built-in implications that can be overridden by users.
+% These represent sensible defaults for common security scenarios.
+%
+% @arg Condition The triggering condition
+% @arg Consequence The derived policy consequence
+:- dynamic firewall_implies_default/2.
+
+%% firewall_implies_disabled(+Condition, +Consequence) is nondet.
+%
+% Explicitly disabled implications. Users can assert these to prevent
+% specific default implications from taking effect.
+%
+% @arg Condition The condition to disable
+% @arg Consequence The consequence to disable
+%
+% @example Disable the default "no bash → deny bash service" implication
+%   :- assertz(firewall:firewall_implies_disabled(no_bash_available,
+%                                                  denied_service(powershell, executable(bash)))).
+:- dynamic firewall_implies_disabled/2.
+
+%% derive_policy(+Condition, -Policies) is det.
+%
+% Derives all firewall policies from a given condition.
+% Collects both user-defined and default implications (unless disabled).
+%
+% @arg Condition The triggering condition
+% @arg Policies List of derived policy consequences
+%
+% @example Derive all policies from no_bash_available
+%   ?- derive_policy(no_bash_available, Policies).
+%   Policies = [denied_service(powershell, executable(bash))].
+derive_policy(Condition, Policies) :-
+    findall(Policy, (
+        % User-defined implications take precedence
+        (   firewall_implies(Condition, Policy)
+        ;   % Fall back to defaults if not disabled
+            firewall_implies_default(Condition, Policy),
+            \+ firewall_implies_disabled(Condition, Policy)
+        )
+    ), Policies).
+
+%% check_derived_policy(+Condition, +ExpectedPolicies, -Result) is det.
+%
+% Check if a condition derives expected policies. Useful for testing.
+%
+% @arg Condition The triggering condition
+% @arg ExpectedPolicies List of expected policy consequences
+% @arg Result true if all expected policies are derived, false otherwise
+%
+% @example Check if no_bash_available denies bash service
+%   ?- check_derived_policy(no_bash_available,
+%                          [denied_service(powershell, executable(bash))],
+%                          Result).
+%   Result = true.
+check_derived_policy(Condition, ExpectedPolicies, Result) :-
+    derive_policy(Condition, DerivedPolicies),
+    (   subset(ExpectedPolicies, DerivedPolicies)
+    ->  Result = true
+    ;   Result = false
+    ).
+
+%% ============================================
+%% DEFAULT IMPLICATIONS
+%% ============================================
+%
+% Built-in default implications for common security scenarios.
+% Users can disable these by asserting firewall_implies_disabled/2.
+
+%% 1. No bash available → Deny bash service for PowerShell
+%
+% If bash is not available on the system, PowerShell targets cannot use
+% Bash-as-a-Service mode and must use pure PowerShell implementations.
+firewall_implies_default(no_bash_available,
+                        denied(service(powershell, executable(bash)))).
+
+%% 2. Bash target denied → Deny bash service for all targets
+%
+% If bash itself is denied as a target, then no other target can use
+% bash as a service either.
+firewall_implies_default(denied_target_language(bash),
+                        denied(service(_, executable(bash)))).
+
+%% 3. Network access denied → Deny all network services
+%
+% If network access is globally denied, block all services that require
+% network connectivity.
+firewall_implies_default(network_access(denied),
+                        denied(service(_, network_access(_)))).
+
+firewall_implies_default(network_access(denied),
+                        network_access(denied)).
+
+%% 4. Specific executable denied → Deny as service
+%
+% If a specific executable is denied (e.g., python), deny it as a service
+% for all targets.
+firewall_implies_default(denied_executable(Tool),
+                        denied(service(_, executable(Tool)))).
+
+%% 5. Strict security policy → Prefer built-in features over executables
+%
+% In strict security mode, prefer language built-ins (cmdlets, built-in modules)
+% over external executable invocations.
+firewall_implies_default(security_policy(strict),
+                        prefer(service(powershell, cmdlet(_)),
+                               service(powershell, executable(_)))).
+
+firewall_implies_default(security_policy(strict),
+                        prefer(service(python, builtin(_)),
+                               service(python, executable(_)))).
+
+%% 6. Restricted environment → Deny external service calls
+%
+% In restricted/sandboxed environments, deny all external service invocations
+% and only allow language built-ins.
+firewall_implies_default(environment(restricted),
+                        denied(service(_, executable(_)))).
+
+firewall_implies_default(environment(restricted),
+                        denied(service(_, network_access(_)))).
+
+%% 7. Target language not allowed → Deny all services for that target
+%
+% If a target language is not in the allowed list, deny all services for it.
+firewall_implies_default(denied_target_language(Target),
+                        denied(execution(Target))).
+
+%% 8. Pure mode preference → Prefer pure implementations
+%
+% When pure mode is preferred (no external dependencies), prefer native
+% implementations over Bash-as-a-Service or other external tools.
+firewall_implies_default(prefer_pure_mode(powershell),
+                        prefer(service(powershell, cmdlet(_)),
+                               service(powershell, executable(bash)))).
+
+firewall_implies_default(prefer_pure_mode(python),
+                        prefer(service(python, library(_)),
+                               service(python, executable(_)))).
+
+%% 9. Offline mode → Deny network access
+%
+% In offline mode, deny all network-based services.
+firewall_implies_default(mode(offline),
+                        network_access(denied)).
+
+firewall_implies_default(mode(offline),
+                        denied(service(_, http(_)))).
+
+%% 10. Portable/cross-platform requirement → Prefer portable tools
+%
+% When portability is required, prefer tools available on all platforms.
+firewall_implies_default(require_portable,
+                        prefer(service(_, cmdlet(_)),
+                               service(_, executable(awk)))).  % AWK not always available
+
+firewall_implies_default(require_portable,
+                        prefer(service(_, builtin(_)),
+                               service(_, executable(_)))).
+
+%% ============================================
+%% NETWORK ACCESS IMPLICATIONS
+%% ============================================
+%
+% Higher-order implications for network access control based on
+% security contexts and environmental constraints.
+
+%% 11. External network denied → Restrict to internal hosts only
+%
+% When external network access is denied, only allow connections
+% to internal/localhost addresses.
+firewall_implies_default(deny_external_network,
+                        denied(service(_, network_access(external)))).
+
+firewall_implies_default(deny_external_network,
+                        network_hosts(['localhost', '127.0.0.1', '*.local', '*.internal.*'])).
+
+%% 12. Corporate environment → Whitelist internal domains
+%
+% In corporate environments, typically only allow connections to
+% company-internal domains and trusted external APIs.
+firewall_implies_default(environment(corporate),
+                        network_hosts(['*.internal.company.com', 'localhost'])).
+
+firewall_implies_default(environment(corporate),
+                        denied(service(_, network_access(untrusted)))).
+
+%% 13. Sandboxed/restricted environment → Deny external network
+%
+% Restricted environments should not access external networks.
+firewall_implies_default(environment(restricted),
+                        denied(service(_, network_access(external)))).
+
+%% 14. Development environment → Allow localhost only
+%
+% Development environments typically only need localhost access.
+firewall_implies_default(environment(development),
+                        network_hosts(['localhost', '127.0.0.1', '*.local'])).
+
+%% 15. Production environment → Require explicit whitelisting
+%
+% Production should only access pre-approved external services.
+firewall_implies_default(environment(production),
+                        require_network_whitelist).
+
+%% 16. Offline mode → Deny all network access
+%
+% Offline mode extends to HTTP sources and any network-based data access.
+firewall_implies_default(mode(offline),
+                        denied(service(_, source(http)))).
+
+%% 17. Privacy-sensitive mode → Block external tracking/analytics
+%
+% When privacy is a concern, block common analytics and tracking domains.
+firewall_implies_default(privacy_mode(enabled),
+                        denied(network_hosts(['*analytics*', '*tracking*', '*doubleclick*']))).
+
+%% 18. Testing/CI environment → Allow test APIs only
+%
+% CI/CD environments should only access test/mock APIs.
+firewall_implies_default(environment(ci),
+                        network_hosts(['*.test.*', 'localhost', 'mock.*'])).
+
+%% 19. Air-gapped system → Complete network denial
+%
+% Air-gapped systems have no network access whatsoever.
+firewall_implies_default(system_type(air_gapped),
+                        network_access(denied)).
+
+firewall_implies_default(system_type(air_gapped),
+                        denied(service(_, network_access(_)))).
+
+%% 20. VPN-required policy → Enforce VPN for external access
+%
+% Some organizations require VPN for any external network access.
+% This is informational - actual VPN enforcement is outside firewall scope.
+firewall_implies_default(network_policy(vpn_required),
+                        require_vpn_for_external).
+
+%% 21. Termux/Mobile environment → Alternative SSH port (8022)
+%
+% Termux on Android uses port 8022 for SSH instead of standard port 22,
+% which is typically blocked on mobile devices for security reasons.
+% This allows SSH-based services to work in Termux environments.
+firewall_implies_default(environment(termux),
+                        network_hosts(['localhost:8022', '127.0.0.1:8022', 'localhost', '127.0.0.1'])).
+
+firewall_implies_default(environment(termux),
+                        prefer(service(_, port(8022)), service(_, port(22)))).
+
+%% 22. Mobile/restricted port environment → Prefer alternative ports
+%
+% Some mobile or restricted environments block standard service ports.
+% Allow common alternative ports (8080 for HTTP, 8443 for HTTPS, 8022 for SSH).
+firewall_implies_default(environment(mobile_restricted_ports),
+                        network_hosts(['*:8080', '*:8443', '*:8022', '*:3000'])).
+
+firewall_implies_default(environment(mobile_restricted_ports),
+                        prefer(service(_, port(Alternative)), service(_, port(Standard)))) :-
+    member(Alternative-Standard, [8022-22, 8080-80, 8443-443, 3000-80]).

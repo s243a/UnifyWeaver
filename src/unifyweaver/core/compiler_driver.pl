@@ -39,7 +39,7 @@ compile_dependencies([Dep|Rest], Options, GeneratedScripts) :-
     append(DepScripts, RestScripts, GeneratedScripts).
 
 compile_current(Predicate, Options, GeneratedScript) :-
-    Predicate = Functor/Arity,
+    Predicate = Functor/_Arity,
     classify_predicate(Predicate, Classification),
     (   Classification = non_recursive ->
         stream_compiler:compile_predicate(Predicate, Options, BashCode)

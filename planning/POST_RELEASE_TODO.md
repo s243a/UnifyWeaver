@@ -443,29 +443,38 @@ Returning nothing (empty result) may be valid behavior for these predicates - th
 
 ---
 
-### 12. Review test_auto Auto-Discovery Behavior
+### 12. ✅ RESOLVED: Review test_auto Auto-Discovery Behavior
 
-**Status:** 📋 IDENTIFIED - Needs investigation
+**Status:** ✅ NOT APPLICABLE - Template no longer used (Resolved 2025-10-29)
 **Location:** `templates/init_template.pl` auto-discovery system
 **Created:** 2025-10-15
 
-**Current Behavior:**
-- `test_auto.` reports: `[INFO] No auto-discovered tests available`
-- Falls back to manual tests (test_stream, test_recursive, etc.)
-- Auto-discovery appears to be failing in test environments
+**Investigation Results:**
+- `test_auto` and `auto_discover_tests` are defined in `templates/init_template.pl`
+- **No `init.pl` exists in project root** - template is not actively used
+- Current test architecture uses individual test files in `examples/` directory
+- Each test is run independently (e.g., `swipl -l test_firewall.pl -g main -t halt`)
 
-**Expected Behavior:**
-- Should auto-discover test files in `tests/` and `tests/core/`
-- Should find predicates matching test patterns
-- Should provide list of discovered tests
+**Current Architecture (Working):**
+```
+examples/
+├── test_firewall_implies.pl          (278 lines, 6 tests)
+├── test_firewall_network_access.pl   (449 lines, 8 tests)
+├── test_firewall_powershell.pl       (4 tests)
+├── test_firewall_tools.pl            (5 tests)
+└── ... (30+ individual test files)
+```
 
-**Investigation Needed:**
-1. Check if `auto_discover_tests/0` predicate exists and is callable
-2. Verify test file pattern matching is working
-3. Review directory scanning in test environments
-4. Check if initialization properly sets up auto-discovery
+**Conclusion:**
+The `test_auto` auto-discovery system is an **obsolete template** from an earlier design iteration. The current approach of individual test files in `examples/` is:
+- ✅ Simpler and more maintainable
+- ✅ Better for CI/CD (run specific tests)
+- ✅ Easier to debug (isolated failures)
+- ✅ Already working well
 
-**Estimated Effort:** 1-2 hours
+**Resolution:** No action needed. The template can remain for reference but is not part of the active codebase.
+
+**Recommendation:** If auto-discovery is desired in the future, implement it as a test runner script rather than initialization-time discovery.
 
 ---
 
