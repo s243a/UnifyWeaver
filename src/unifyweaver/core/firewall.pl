@@ -677,3 +677,25 @@ firewall_implies_default(system_type(air_gapped),
 % This is informational - actual VPN enforcement is outside firewall scope.
 firewall_implies_default(network_policy(vpn_required),
                         require_vpn_for_external).
+
+%% 21. Termux/Mobile environment → Alternative SSH port (8022)
+%
+% Termux on Android uses port 8022 for SSH instead of standard port 22,
+% which is typically blocked on mobile devices for security reasons.
+% This allows SSH-based services to work in Termux environments.
+firewall_implies_default(environment(termux),
+                        network_hosts(['localhost:8022', '127.0.0.1:8022', 'localhost', '127.0.0.1'])).
+
+firewall_implies_default(environment(termux),
+                        prefer(service(_, port(8022)), service(_, port(22)))).
+
+%% 22. Mobile/restricted port environment → Prefer alternative ports
+%
+% Some mobile or restricted environments block standard service ports.
+% Allow common alternative ports (8080 for HTTP, 8443 for HTTPS, 8022 for SSH).
+firewall_implies_default(environment(mobile_restricted_ports),
+                        network_hosts(['*:8080', '*:8443', '*:8022', '*:3000'])).
+
+firewall_implies_default(environment(mobile_restricted_ports),
+                        prefer(service(_, port(Alternative)), service(_, port(Standard)))) :-
+    member(Alternative-Standard, [8022-22, 8080-80, 8443-443, 3000-80]).

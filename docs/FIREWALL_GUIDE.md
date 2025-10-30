@@ -576,6 +576,36 @@ When a URL is accessed, the firewall validates it in this order:
 ])).
 ```
 
+**Scenario 5: Termux/Mobile Environment (Alternative SSH Port)**
+```prolog
+% Termux uses port 8022 for SSH instead of standard port 22
+% Standard port 22 is blocked on Android for security
+:- assertz(firewall:firewall_default([
+    environment(termux)  % Automatically derives port 8022 policy
+])).
+
+% Or explicitly specify alternative ports:
+:- assertz(firewall:firewall_default([
+    network_hosts(['localhost:8022', '127.0.0.1:8022', 'localhost', '127.0.0.1']),
+    prefer(service(_, port(8022)), service(_, port(22)))
+])).
+```
+
+This demonstrates how the firewall can adapt to mobile/restricted environments where standard service ports are blocked. The implication system automatically derives the appropriate policies:
+
+```prolog
+% Query what policies Termux environment implies
+?- derive_policy(environment(termux), Policies).
+Policies = [
+    network_hosts(['localhost:8022', '127.0.0.1:8022', 'localhost', '127.0.0.1']),
+    prefer(service(_, port(8022)), service(_, port(22))),
+    ...
+].
+```
+
+**Note on Port-Specific Matching:**
+The current implementation extracts hosts from URLs without port information. Port-specific patterns like `localhost:8022` in `network_hosts` are stored but not yet matched against URLs. This is a known enhancement opportunity for future versions. The preference system (`prefer(...)`) provides the workaround for port selection logic.
+
 ---
 
 ## Service Control

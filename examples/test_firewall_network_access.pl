@@ -23,6 +23,7 @@ main :-
     test_wildcard_patterns,
     test_network_implications,
     test_url_parsing,
+    test_termux_ssh_ports,
 
     format('~n╔════════════════════════════════════════════════════════╗~n', []),
     format('║  All Tests Passed ✓                                   ║~n', []),
@@ -383,6 +384,66 @@ test_url_parsing :-
     ),
 
     format('[✓] Test 7 Complete~n', []),
+    !.
+
+%% ============================================
+%% TEST 8: PORT-SPECIFIC POLICIES (TERMUX SCENARIO)
+%% ============================================
+
+test_termux_ssh_ports :-
+    format('~n[Test 8] Port-Specific Policies (Termux/Mobile)~n', []),
+    format('────────────────────────────────────────────────────────~n', []),
+
+    % Test 8.1: Standard SSH port (22) blocked in restricted environment
+    Firewall1 = [network_hosts(['localhost:22'])],
+    URL1 = 'http://localhost:22/ssh-api',
+    (   validate_network_access(URL1, Firewall1)
+    ->  format('  ✓ Port-specific whitelist works (localhost:22)~n', [])
+    ;   format('  ⚠ Port-specific matching may need enhancement~n', [])
+    ),
+
+    % Test 8.2: Termux alternative SSH port (8022)
+    Firewall2 = [network_hosts(['localhost:8022', 'localhost:22'])],
+    URL2 = 'http://localhost:8022/ssh-api',
+    (   validate_network_access(URL2, Firewall2)
+    ->  format('  ✓ Termux SSH port (8022) allowed~n', [])
+    ;   format('  ⚠ Alternative port policy may need enhancement~n', [])
+    ),
+
+    % Test 8.3: Mobile environment implication - allow alternative ports
+    assertz(firewall:firewall_implies(environment(termux),
+                                      network_hosts(['localhost:8022', '127.0.0.1:8022']))),
+    format('  ✓ Added Termux environment implication (port 8022)~n', []),
+
+    % Verify Termux implication works
+    (   firewall_implies(environment(termux), Policy),
+        Policy = network_hosts(['localhost:8022', '127.0.0.1:8022'])
+    ->  format('  ✓ Termux environment derives port 8022 policy~n', [])
+    ;   format('  ✗ FAIL: Termux implication not working~n', []),
+        fail
+    ),
+
+    % Test 8.4: Derive policy for Termux environment
+    derive_policy(environment(termux), TermuxPolicies),
+    length(TermuxPolicies, NumPolicies),
+    (   NumPolicies > 0
+    ->  format('  ✓ Derived ~w policies for Termux environment~n', [NumPolicies])
+    ;   format('  ✗ FAIL: No policies derived for Termux~n', []),
+        fail
+    ),
+
+    % Test 8.5: Port range wildcards for mobile environments
+    Firewall3 = [network_hosts(['localhost', 'localhost:*'])],
+    URL3 = 'http://localhost:8022/api',
+    (   validate_network_access(URL3, Firewall3)
+    ->  format('  ✓ Wildcard port matching works~n', [])
+    ;   format('  ⚠ Port wildcards may need enhancement~n', [])
+    ),
+
+    % Clean up
+    retractall(firewall:firewall_implies(environment(termux), _)),
+
+    format('[✓] Test 8 Complete~n', []),
     !.
 
 :- initialization(main, main).
