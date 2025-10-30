@@ -16,6 +16,7 @@
 
 :- use_module('advanced/advanced_recursive_compiler').
 :- use_module(stream_compiler).
+:- use_module('../targets/csharp_stream_target').
 :- use_module(template_system).
 :- use_module(library(lists)).
 :- use_module(constraint_analyzer).
@@ -26,7 +27,7 @@
 compile_recursive(Pred/Arity, Options) :-
     compile_recursive(Pred/Arity, Options, _).
 
-compile_recursive(Pred/Arity, RuntimeOptions, BashCode) :-
+compile_recursive(Pred/Arity, RuntimeOptions, GeneratedCode) :-
     % 1. Get constraints and merge with runtime options
     get_constraints(Pred/Arity, DeclaredConstraints),
     preferences:get_final_options(Pred/Arity, RuntimeOptions, FinalOptions),
@@ -57,7 +58,7 @@ compile_recursive(Pred/Arity, RuntimeOptions, BashCode) :-
     (   firewall:validate_against_firewall(Target, MergedOptions, Firewall)
     ->  % Validation passed, proceed with compilation.
         format('--- Firewall validation passed for ~w. Proceeding with compilation. ---\n', [Pred/Arity]),
-        compile_dispatch(Pred/Arity, MergedOptions, BashCode)
+        compile_dispatch(Pred/Arity, MergedOptions, Target, GeneratedCode)
     ;   % Validation failed, stop.
         format(user_error, 'Compilation of ~w halted due to firewall policy violation.~n', [Pred/Arity]),
         !, fail
@@ -69,35 +70,55 @@ merge_options(RuntimeOpts, Constraints, Merged) :-
     (   member(unique(U), RuntimeOpts) -> MergedUnique = [unique(U)] ; MergedUnique = [] ),
     (   member(unordered(O), RuntimeOpts) -> MergedUnordered = [unordered(O)] ; MergedUnordered = [] ),
     append(MergedUnique, MergedUnordered, RuntimeConstraints),
-    append(RuntimeConstraints, Constraints, AllConstraints),
+    append(RuntimeConstraints, Constraints, AllConstraints0),
+    findall(Opt,
+        (   member(Opt, RuntimeOpts),
+            functor(Opt, FunctorName, _),
+            FunctorName \= unique,
+            FunctorName \= unordered
+        ),
+        OtherRuntimeOpts),
+    append(AllConstraints0, OtherRuntimeOpts, AllConstraints),
     list_to_set(AllConstraints, Merged).
 
-%% compile_dispatch(+Pred/Arity, +FinalOptions, -BashCode)
-%  The original compilation logic, now called after validation.
-compile_dispatch(Pred/Arity, FinalOptions, BashCode) :-
+%% compile_dispatch(+Pred/Arity, +FinalOptions, +Target, -GeneratedCode)
+%  Target-aware compilation logic, now called after validation.
+compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
     format('=== Analyzing ~w/~w ===~n', [Pred, Arity]),
     classify_predicate(Pred/Arity, Classification),
     format('Classification: ~w~n', [Classification]),
 
     (   Classification = non_recursive ->
-        % Delegate to stream_compiler
-        stream_compiler:compile_predicate(Pred/Arity, FinalOptions, BashCode)
+        compile_non_recursive(Target, Pred/Arity, FinalOptions, GeneratedCode)
     ;   Classification = transitive_closure(BasePred) ->
         format('Detected transitive closure over ~w~n', [BasePred]),
-        compile_transitive_closure(Pred, Arity, BasePred, FinalOptions, BashCode)
-    ;   % Try advanced patterns before falling back to memoization
-        catch(
-            advanced_recursive_compiler:compile_advanced_recursive(
-                Pred/Arity, FinalOptions, BashCode
-            ),
+        compile_transitive_closure(Target, Pred, Arity, BasePred, FinalOptions, GeneratedCode)
+    ;   catch(
+            compile_advanced(Target, Pred/Arity, FinalOptions, GeneratedCode),
             error(existence_error(procedure, _), _),
             fail
         ) ->
         format('Compiled using advanced patterns with options: ~w~n', [FinalOptions])
-    ;   % Unknown pattern - fall back to memoized recursion
-        format('Unknown recursion pattern - using memoization~n', []),
-        compile_memoized_recursion(Pred, Arity, FinalOptions, BashCode)
+    ;   format('Unknown recursion pattern - using memoization~n', []),
+        compile_memoized_recursion(Target, Pred, Arity, FinalOptions, GeneratedCode)
     ).
+
+compile_non_recursive(bash, Pred/Arity, FinalOptions, GeneratedCode) :-
+    stream_compiler:compile_predicate(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(csharp, Pred/Arity, FinalOptions, GeneratedCode) :-
+    csharp_stream_target:compile_predicate_to_csharp(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(Target, Pred/Arity, _Options, _GeneratedCode) :-
+    format(user_error, 'Target ~w not supported for non-recursive predicate ~w.~n', [Target, Pred/Arity]),
+    fail.
+
+compile_advanced(bash, Pred/Arity, FinalOptions, GeneratedCode) :-
+    advanced_recursive_compiler:compile_advanced_recursive(
+        Pred/Arity, FinalOptions, GeneratedCode
+    ).
+compile_advanced(Target, Pred/Arity, _FinalOptions, _GeneratedCode) :-
+    format(user_error, 'Advanced recursive compilation for target ~w not implemented (~w).~n',
+           [Target, Pred/Arity]),
+    fail.
 
 %% Classify predicate recursion pattern
 classify_predicate(Pred/Arity, Classification) :-
@@ -200,21 +221,29 @@ is_linear_recursive(Pred, RecClauses) :-
     length(RecGoals, 1).  % Exactly one recursive call
 
 %% Compile transitive closure pattern
-compile_transitive_closure(Pred, _Arity, BasePred, Options, BashCode) :-
+compile_transitive_closure(bash, Pred, _Arity, BasePred, Options, GeneratedCode) :-
     % Use the template_system's new constraint-aware predicate
-    template_system:generate_transitive_closure(Pred, BasePred, Options, BashCode),
+    template_system:generate_transitive_closure(Pred, BasePred, Options, GeneratedCode),
     !.
-
-
+compile_transitive_closure(Target, Pred, Arity, BasePred, _Options, _GeneratedCode) :-
+    format(user_error,
+           'Transitive closure for target ~w not yet supported (~w/~w via ~w).~n',
+           [Target, Pred, Arity, BasePred]),
+    fail.
 
 %% Compile with memoization for unknown patterns
-compile_memoized_recursion(Pred, _Arity, Options, BashCode) :-
-    compile_plain_recursion(Pred, Options, BashCode).
+compile_memoized_recursion(bash, Pred, Arity, Options, GeneratedCode) :-
+    compile_plain_recursion(Pred, Arity, Options, GeneratedCode).
+compile_memoized_recursion(Target, Pred, Arity, _Options, _GeneratedCode) :-
+    format(user_error,
+           'Memoized recursion not implemented for target ~w (~w/~w).~n',
+           [Target, Pred, Arity]),
+    fail.
 
 %% Compile plain recursion as final fallback
-compile_plain_recursion(Pred, Options, BashCode) :-
+compile_plain_recursion(Pred, Arity, Options, GeneratedCode) :-
     atom_string(Pred, PredStr),
-    functor(Head, Pred, 2),  % Assuming arity 2 for now
+    functor(Head, Pred, Arity),  % Currently assumes arity 2 semantics
     
     % Get all clauses
     findall(Body, clause(Head, Body), Bodies),
@@ -236,7 +265,7 @@ compile_plain_recursion(Pred, Options, BashCode) :-
     ), RecCodes),
     atomic_list_concat(RecCodes, '\n    ', RecCodeStr),
     
-    generate_plain_recursion_template(PredStr, BaseCodeStr, RecCodeStr, Options, BashCode).
+    generate_plain_recursion_template(PredStr, BaseCodeStr, RecCodeStr, Options, GeneratedCode).
 
 %% Generate base case code
 generate_base_case(Pred, Body, Code) :-

@@ -8,10 +8,12 @@
 :- use_module(library(test_data)).
 :- use_module(library(test_compiler_driver)).
 :- use_module(library(test_recursive_constraints)).
+:- use_module(library(test_recursive_csharp_target)).
 
 main :-
     writeln('--- Starting Control Plane Test Suite ---'),
     test_policy,
     test_compiler_driver,
     test_recursive_constraints,
+    test_recursive_csharp_target,
     writeln('--- Control Plane Test Suite Finished ---').
