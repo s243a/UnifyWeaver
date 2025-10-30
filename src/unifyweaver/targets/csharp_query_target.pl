@@ -218,7 +218,11 @@ roles_for_nonrecursive_terms_([Term|Rest], Pred, Arity, [Role|Roles]) :-
 constraint_goal(Goal) :-
     functor(Goal, Functor, Arity),
     Arity =:= 2,
-    memberchk(Functor, [=, ==, (\=), dif]).
+    (   Functor == '='
+    ;   Functor == '=='
+    ;   Functor == dif
+    ;   atom_codes(Functor, [92, 61])
+    ).
 
 %% Clause helpers -----------------------------------------------------------
 
@@ -332,13 +336,16 @@ build_constraint_node(Term, InputNode, VarMap, Width, selection{type:selection, 
     constraint_condition(Term, VarMap, Condition).
 
 constraint_condition(Goal, VarMap, Condition) :-
-    (   Goal =.. ['=', Left, Right]
+    functor(Goal, Functor, 2),
+    arg(1, Goal, Left),
+    arg(2, Goal, Right),
+    (   Functor == '='
     ->  build_condition(eq, Left, Right, VarMap, Condition)
-    ;   Goal =.. ['==', Left, Right]
+    ;   Functor == '=='
     ->  build_condition(eq, Left, Right, VarMap, Condition)
-    ;   Goal =.. ['\=', Left, Right]
+    ;   Functor == dif
     ->  build_condition(neq, Left, Right, VarMap, Condition)
-    ;   Goal =.. [dif, Left, Right]
+    ;   atom_codes(Functor, [92, 61])
     ->  build_condition(neq, Left, Right, VarMap, Condition)
     ;   format(user_error, 'C# query target: unsupported constraint goal ~q.~n', [Goal]),
         fail
@@ -661,11 +668,11 @@ escape_csharp_string(Input, Escaped) :-
     maplist(escape_code, Codes, Parts),
     atomic_list_concat(Parts, '', Escaped).
 
-escape_code(0'\\, Atom) :- atom_codes(Atom, [0'\\, 0'\\]).
-escape_code(0'\\, Atom) :- atom_codes(Atom, [0'\\, 0'"]).
-escape_code(10, Atom) :- atom_codes(Atom, [0'\, 0'n]).
-escape_code(13, Atom) :- atom_codes(Atom, [0'\, 0'r]).
-escape_code(9, Atom)  :- atom_codes(Atom, [0'\, 0't]).
+escape_code(92, Atom) :- atom_codes(Atom, [92, 92]).
+escape_code(34, Atom) :- atom_codes(Atom, [92, 34]).
+escape_code(10, Atom) :- atom_codes(Atom, [92, 110]).
+escape_code(13, Atom) :- atom_codes(Atom, [92, 114]).
+escape_code(9, Atom)  :- atom_codes(Atom, [92, 116]).
 escape_code(Code, Atom) :- atom_codes(Atom, [Code]).
 
 plan_module_name(Plan, ModuleName) :-
