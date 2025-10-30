@@ -44,10 +44,15 @@ write_csharp_streamer(Code, FilePath) :-
 %% ============================================
 
 classify_predicate([], none).
-classify_predicate([true|Rest], facts) :-
-    forall(member(Body, Rest), Body == true), !.
+classify_predicate(Bodies, facts) :-
+    Bodies \= [],
+    forall(member(Body, Bodies), Body == true), !.
 classify_predicate([Body], single_rule) :-
     Body \= true, !.
+classify_predicate(Bodies, multiple_rules) :-
+    Bodies \= [],
+    Bodies \= [true],
+    Bodies \= [_], !.
 classify_predicate(_Bodies, unsupported).
 
 compile_by_type(none, Pred, Arity, _Bodies, _Options, _) :-
@@ -55,8 +60,10 @@ compile_by_type(none, Pred, Arity, _Bodies, _Options, _) :-
     fail.
 compile_by_type(facts, Pred, Arity, _Bodies, Options, Code) :-
     compile_facts_to_csharp(Pred, Arity, Options, Code).
+compile_by_type(multiple_rules, Pred, Arity, Bodies, Options, Code) :-
+    compile_multiple_rules_to_csharp(Pred, Arity, Bodies, Options, Code).
 compile_by_type(unsupported, Pred, Arity, _Bodies, _Options, _) :-
-    format('[CSharpTarget] ERROR: Multi-clause predicates not yet supported for C# target (~w/~w)~n', [Pred, Arity]),
+    format('[CSharpTarget] ERROR: Unsupported predicate form for C# target (~w/~w)~n', [Pred, Arity]),
     fail.
 compile_by_type(single_rule, Pred, Arity, [Body], Options, Code) :-
     compile_single_rule_to_csharp(Pred, Arity, Body, Options, Code).
@@ -79,8 +86,8 @@ compile_single_rule_to_csharp(Pred, Arity, Body, Options, Code) :-
     maplist(predicate_name_pascal_signature, Signatures, PredicateOrder),
     generate_linq_pipeline(PredicateOrder, PipelineCode),
     maybe_distinct(PipelineCode, Options, PipelineWithDedup),
-    ResultType = '(string, string)',
-    PrintExpr = 'Console.WriteLine("${item.Item1}:{item.Item2}");',
+    fact_result_type(Arity, ResultType),
+    fact_print_expression(Arity, PrintExpr),
     compose_csharp_program(ModuleName, DataSections, StreamHelpers,
         TargetName, ResultType, PipelineWithDedup, PrintExpr, Code).
 
@@ -100,9 +107,108 @@ compile_facts_to_csharp(Pred, Arity, Options, Code) :-
     compose_csharp_program(ModuleName, [DataSection], [HelperSection],
         TargetName, ResultType, PipelineWithDedup, PrintExpr, Code).
 compile_facts_to_csharp(Pred, Arity, _Options, _) :-
+    \+ member(Arity, [1, 2]),
     format('[CSharpTarget] ERROR: Fact-only predicates of arity ~w are not supported for ~w/~w in the C# target.~n',
            [Arity, Pred, Arity]),
     fail.
+
+%% Compile multi-clause predicates (OR combinations)
+compile_multiple_rules_to_csharp(Pred, Arity, Bodies, Options, Code) :-
+    predicate_name_pascal(Pred, ModuleName),
+    predicate_name_pascal(Pred, TargetName),
+    fact_result_type(Arity, ResultType),
+    fact_print_expression(Arity, PrintExpr),
+    process_clause_bodies(Bodies, Pred, Arity, Options, TargetName, 1, false,
+        [], [], [], DataSections0, StreamHelpers0, ClauseCalls),
+    (   ClauseCalls = []
+    ->  format('[CSharpTarget] ERROR: Unable to generate C# stream for ~w/~w (no valid clauses).~n', [Pred, Arity]),
+        fail
+    ;   true
+    ),
+    list_to_set(DataSections0, DataSections),
+    list_to_set(StreamHelpers0, StreamHelpers),
+    build_concat_pipeline(ClauseCalls, CombinedPipeline0),
+    maybe_distinct(CombinedPipeline0, Options, CombinedPipeline),
+    compose_csharp_program(ModuleName, DataSections, StreamHelpers,
+        TargetName, ResultType, CombinedPipeline, PrintExpr, Code).
+
+process_clause_bodies([], _Pred, _Arity, _Options, _TargetName, _Index, _FactIncluded,
+        DataAcc, HelperAcc, ClauseAcc, DataAcc, HelperAcc, ClauseAcc).
+process_clause_bodies([Body|Rest], Pred, Arity, Options, TargetName, Index, FactIncluded,
+        DataAcc, HelperAcc, ClauseAcc, DataOut, HelperOut, ClauseOut) :-
+    (   Body == true
+    ->  (   FactIncluded
+        ->  NextIndex is Index + 1,
+            process_clause_bodies(Rest, Pred, Arity, Options, TargetName, NextIndex,
+                FactIncluded, DataAcc, HelperAcc, ClauseAcc, DataOut, HelperOut, ClauseOut)
+        ;   build_fact_clause_components(Pred, Arity, TargetName, Index,
+                ClauseData, ClauseHelpers, ClauseCall),
+            append(DataAcc, ClauseData, DataAcc1),
+            append(HelperAcc, ClauseHelpers, HelperAcc1),
+            append(ClauseAcc, [ClauseCall], ClauseAcc1),
+            NextIndex is Index + 1,
+            process_clause_bodies(Rest, Pred, Arity, Options, TargetName, NextIndex,
+                true, DataAcc1, HelperAcc1, ClauseAcc1, DataOut, HelperOut, ClauseOut)
+        )
+    ;   build_rule_clause_components(Pred, Arity, Body, TargetName, Index,
+            ClauseData, ClauseHelpers, ClauseCall),
+        append(DataAcc, ClauseData, DataAcc1),
+        append(HelperAcc, ClauseHelpers, HelperAcc1),
+        append(ClauseAcc, [ClauseCall], ClauseAcc1),
+        NextIndex is Index + 1,
+        process_clause_bodies(Rest, Pred, Arity, Options, TargetName, NextIndex,
+            FactIncluded, DataAcc1, HelperAcc1, ClauseAcc1, DataOut, HelperOut, ClauseOut)
+    ).
+
+build_rule_clause_components(Pred, Arity, Body, TargetName, Index,
+        DataSections, Helpers, ClauseCall) :-
+    collect_predicate_terms(Body, Terms),
+    Terms \= [],
+    maplist(term_signature, Terms, Signatures),
+    list_to_set(Signatures, UniqueSigs),
+    ensure_binary_relations(UniqueSigs, Pred/Arity),
+    maplist(gather_fact_entries, UniqueSigs, FactEntries),
+    maplist(data_section_for_signature, FactEntries, DataSections0),
+    maplist(stream_helper_for_signature, UniqueSigs, StreamHelpers0),
+    maplist(predicate_name_pascal_signature, Signatures, PredicateOrder),
+    generate_linq_pipeline(PredicateOrder, PipelineCode),
+    format(atom(ClauseName), '~wAlt~wStream', [TargetName, Index]),
+    fact_result_type(Arity, ResultType),
+    format(atom(ClauseMethod),
+'        public static IEnumerable<~w> ~w()
+        {
+            return
+                ~w;
+        }', [ResultType, ClauseName, PipelineCode]),
+    append(StreamHelpers0, [ClauseMethod], Helpers),
+    DataSections = DataSections0,
+    format(atom(ClauseCall), '~w()', [ClauseName]).
+
+build_fact_clause_components(Pred, Arity, TargetName, Index,
+        DataSections, Helpers, ClauseCall) :-
+    gather_fact_entries(Pred/Arity, FactInfo),
+    FactInfo = fact_info(_, Arity, Entries),
+    Entries \= [],
+    fact_result_type(Arity, ResultType),
+    fact_data_section(FactInfo, DataSection),
+    fact_stream_helper(FactInfo, ResultType, HelperName, HelperCode),
+    format(atom(ClauseName), '~wAlt~wStream', [TargetName, Index]),
+    format(atom(ClauseMethod),
+'        public static IEnumerable<~w> ~w()
+        {
+            return
+                ~w();
+        }', [ResultType, ClauseName, HelperName]),
+    DataSections = [DataSection],
+    Helpers = [HelperCode, ClauseMethod],
+    format(atom(ClauseCall), '~w()', [ClauseName]).
+
+build_concat_pipeline([First|Rest], Pipeline) :-
+    foldl(concat_pipeline_expr, Rest, First, Pipeline).
+
+concat_pipeline_expr(ClauseCall, Acc, Combined) :-
+    format(atom(Combined), '~w\n            .Concat(~w)', [Acc, ClauseCall]).
+
 
 
 %% Ensure we only handle binary relations for now
@@ -344,16 +450,23 @@ trim_trailing_spaces(Line, Trimmed) :-
 test_csharp_stream_target :-
     retractall(parent(_, _)),
     retractall(grandparent(_, _)),
+    retractall(related(_, _)),
+    retractall(color(_)),
     assertz(parent(alice, bob)),
     assertz(parent(bob, charlie)),
     assertz((grandparent(X, Z) :- parent(X, Y), parent(Y, Z))),
-    compile_predicate_to_csharp(grandparent/2, [unique(true)], Code),
-    sub_string(Code, _, _, _, '.Join(ParentStream()'),
-    sub_string(Code, _, _, _, '.Distinct()'),
-    compile_predicate_to_csharp(parent/2, [unique(true)], FactCode),
-    sub_string(FactCode, _, _, _, 'ParentFactStream()'),
-    sub_string(FactCode, _, _, _, 'Console.WriteLine("${item.Item1}:{item.Item2}");'),
-    sub_string(FactCode, _, _, _, '.Distinct()'),
+    compile_predicate_to_csharp(grandparent/2, [unique(true)], GrandCode),
+    sub_string(GrandCode, _, _, _, '.Join(ParentStream()'),
+    sub_string(GrandCode, _, _, _, '.Distinct()'),
+    compile_predicate_to_csharp(parent/2, [unique(true)], ParentCode),
+    sub_string(ParentCode, _, _, _, 'ParentFactStream()'),
+    sub_string(ParentCode, _, _, _, 'Console.WriteLine("${item.Item1}:{item.Item2}");'),
+    sub_string(ParentCode, _, _, _, '.Distinct()'),
+    assertz((related(X, Y) :- parent(X, Y))),
+    assertz((related(X, Y) :- parent(Y, X))),
+    compile_predicate_to_csharp(related/2, [unique(true)], RelatedCode),
+    sub_string(RelatedCode, _, _, _, '.Concat('),
+    sub_string(RelatedCode, _, _, _, '.Distinct()'),
     assertz(color(red)),
     assertz(color(blue)),
     compile_predicate_to_csharp(color/1, [], ColorCode),
@@ -361,5 +474,6 @@ test_csharp_stream_target :-
     sub_string(ColorCode, _, _, _, 'Console.WriteLine(item);'),
     \+ sub_string(ColorCode, _, _, _, '.Distinct()'),
     retractall(color(_)),
+    retractall(related(_, _)),
     retractall(parent(_, _)),
     retractall(grandparent(_, _)).
