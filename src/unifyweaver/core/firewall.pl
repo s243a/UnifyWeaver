@@ -598,3 +598,104 @@ firewall_implies_default(require_portable,
 firewall_implies_default(require_portable,
                         prefer(service(_, builtin(_)),
                                service(_, executable(_)))).
+
+%% ============================================
+%% NETWORK ACCESS IMPLICATIONS
+%% ============================================
+%
+% Higher-order implications for network access control based on
+% security contexts and environmental constraints.
+
+%% 11. External network denied → Restrict to internal hosts only
+%
+% When external network access is denied, only allow connections
+% to internal/localhost addresses.
+firewall_implies_default(deny_external_network,
+                        denied(service(_, network_access(external)))).
+
+firewall_implies_default(deny_external_network,
+                        network_hosts(['localhost', '127.0.0.1', '*.local', '*.internal.*'])).
+
+%% 12. Corporate environment → Whitelist internal domains
+%
+% In corporate environments, typically only allow connections to
+% company-internal domains and trusted external APIs.
+firewall_implies_default(environment(corporate),
+                        network_hosts(['*.internal.company.com', 'localhost'])).
+
+firewall_implies_default(environment(corporate),
+                        denied(service(_, network_access(untrusted)))).
+
+%% 13. Sandboxed/restricted environment → Deny external network
+%
+% Restricted environments should not access external networks.
+firewall_implies_default(environment(restricted),
+                        denied(service(_, network_access(external)))).
+
+%% 14. Development environment → Allow localhost only
+%
+% Development environments typically only need localhost access.
+firewall_implies_default(environment(development),
+                        network_hosts(['localhost', '127.0.0.1', '*.local'])).
+
+%% 15. Production environment → Require explicit whitelisting
+%
+% Production should only access pre-approved external services.
+firewall_implies_default(environment(production),
+                        require_network_whitelist).
+
+%% 16. Offline mode → Deny all network access
+%
+% Offline mode extends to HTTP sources and any network-based data access.
+firewall_implies_default(mode(offline),
+                        denied(service(_, source(http)))).
+
+%% 17. Privacy-sensitive mode → Block external tracking/analytics
+%
+% When privacy is a concern, block common analytics and tracking domains.
+firewall_implies_default(privacy_mode(enabled),
+                        denied(network_hosts(['*analytics*', '*tracking*', '*doubleclick*']))).
+
+%% 18. Testing/CI environment → Allow test APIs only
+%
+% CI/CD environments should only access test/mock APIs.
+firewall_implies_default(environment(ci),
+                        network_hosts(['*.test.*', 'localhost', 'mock.*'])).
+
+%% 19. Air-gapped system → Complete network denial
+%
+% Air-gapped systems have no network access whatsoever.
+firewall_implies_default(system_type(air_gapped),
+                        network_access(denied)).
+
+firewall_implies_default(system_type(air_gapped),
+                        denied(service(_, network_access(_)))).
+
+%% 20. VPN-required policy → Enforce VPN for external access
+%
+% Some organizations require VPN for any external network access.
+% This is informational - actual VPN enforcement is outside firewall scope.
+firewall_implies_default(network_policy(vpn_required),
+                        require_vpn_for_external).
+
+%% 21. Termux/Mobile environment → Alternative SSH port (8022)
+%
+% Termux on Android uses port 8022 for SSH instead of standard port 22,
+% which is typically blocked on mobile devices for security reasons.
+% This allows SSH-based services to work in Termux environments.
+firewall_implies_default(environment(termux),
+                        network_hosts(['localhost:8022', '127.0.0.1:8022', 'localhost', '127.0.0.1'])).
+
+firewall_implies_default(environment(termux),
+                        prefer(service(_, port(8022)), service(_, port(22)))).
+
+%% 22. Mobile/restricted port environment → Prefer alternative ports
+%
+% Some mobile or restricted environments block standard service ports.
+% Allow common alternative ports (8080 for HTTP, 8443 for HTTPS, 8022 for SSH).
+firewall_implies_default(environment(mobile_restricted_ports),
+                        network_hosts(['*:8080', '*:8443', '*:8022', '*:3000'])).
+
+firewall_implies_default(environment(mobile_restricted_ports),
+                        prefer(service(_, port(Alternative)), service(_, port(Standard)))) :-
+    member(Alternative-Standard, [8022-22, 8080-80, 8443-443, 3000-80]).
