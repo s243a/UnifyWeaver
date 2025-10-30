@@ -11,12 +11,13 @@ The UnifyWeaver firewall system provides security and preference guidance for co
 
 1. [Overview](#overview)
 2. [Philosophy](#philosophy)
-3. [Multi-Level Configuration](#multi-level-configuration)
-4. [Network Access Control](#network-access-control)
-5. [Service Control](#service-control)
-6. [Policy Templates](#policy-templates)
-7. [Tool Detection](#tool-detection)
-8. [Examples](#examples)
+3. [Higher-Order Firewall Implications](#higher-order-firewall-implications)
+4. [Multi-Level Configuration](#multi-level-configuration)
+5. [Network Access Control](#network-access-control)
+6. [Service Control](#service-control)
+7. [Policy Templates](#policy-templates)
+8. [Tool Detection](#tool-detection)
+9. [Examples](#examples)
 
 ---
 
@@ -92,6 +93,155 @@ firewall_check(Action, Result) :-
 - `warn(Reason)` - Permitted with warning
 - `deny(Reason)` - Operation blocked
 - `mode_dependent` - Depends on firewall mode (strict/permissive)
+
+---
+
+## Higher-Order Firewall Implications
+
+The `firewall_implies` system demonstrates Prolog's strength in logical inference by deriving complex policies from simple fundamental conditions. This powerful feature allows security policies to be composed declaratively with full user control.
+
+### Architecture
+
+The system provides three levels of implication rules:
+
+1. **Default Implications** (`firewall_implies_default/2`) - Built-in sensible defaults
+2. **User-Defined Implications** (`firewall_implies/2`) - Custom rules that extend or override defaults
+3. **Disabled Implications** (`firewall_implies_disabled/2`) - Explicit blocking of unwanted implications
+
+### How It Works
+
+When a condition is detected (e.g., `no_bash_available`), the firewall can automatically derive appropriate policies:
+
+```prolog
+% Default implication (built-in)
+firewall_implies_default(no_bash_available,
+                        denied(service(powershell, executable(bash)))).
+
+% Derive all policies from a condition
+?- derive_policy(no_bash_available, Policies).
+Policies = [denied(service(powershell, executable(bash)))].
+```
+
+### Default Implications
+
+UnifyWeaver includes 10 default implications covering common scenarios:
+
+1. **No Bash Available** → Deny bash service for PowerShell
+2. **Bash Target Denied** → Deny bash service for all targets
+3. **Network Denied** → Deny all network services
+4. **Executable Denied** → Deny specific tool as service
+5. **Strict Security** → Prefer built-ins over executables
+6. **Restricted Environment** → Deny external services
+7. **Language Denied** → Deny target execution
+8. **Pure Mode Preferred** → Prefer native implementations
+9. **Offline Mode** → Deny network access
+10. **Portable Required** → Prefer cross-platform tools
+
+### User Control
+
+Users have full control over implications:
+
+**Override Defaults:**
+```prolog
+% Add custom implication (coexists with default)
+:- assertz(firewall:firewall_implies(no_bash_available,
+                                     allowed(service(powershell, executable(wsl))))).
+```
+
+**Disable Defaults:**
+```prolog
+% Disable specific default implication
+:- assertz(firewall:firewall_implies_disabled(no_bash_available,
+                                              denied(service(powershell, executable(bash))))).
+```
+
+**Replace Completely:**
+```prolog
+% Disable default and add custom rule
+:- assertz(firewall:firewall_implies_disabled(no_bash_available, _)).
+:- assertz(firewall:firewall_implies(no_bash_available,
+                                     allowed(service(powershell, executable(wsl))))).
+```
+
+### Deriving Policies
+
+The `derive_policy/2` predicate collects all applicable policies from a condition:
+
+```prolog
+% Get all policies derived from offline mode
+?- derive_policy(mode(offline), Policies).
+Policies = [
+    network_access(denied),
+    denied(service(_, http(_)))
+].
+
+% Check if condition implies expected policy
+?- check_derived_policy(security_policy(strict),
+                       [prefer(service(powershell, cmdlet(_)),
+                               service(powershell, executable(_)))],
+                       Result).
+Result = true.
+```
+
+### Complex Scenarios
+
+Implications can be combined to handle complex environments:
+
+```prolog
+% Corporate banking policy
+:- assertz(firewall:firewall_implies(corporate_policy(banking),
+                                     denied(service(_, network_access(external))))).
+
+% Restricted offline environment
+derive_policy(environment(restricted), RestrictedPolicies),
+derive_policy(mode(offline), OfflinePolicies),
+% Combine both sets of policies for complete restrictions
+```
+
+### Why This Matters
+
+This feature showcases Prolog's unique strengths:
+
+- **Declarative Reasoning** - Policies derived through logical inference, not imperative code
+- **Composability** - Simple rules combine to express complex security policies
+- **User Control** - Defaults can be overridden without modifying core code
+- **Testability** - `check_derived_policy/3` enables policy verification
+- **Elegance** - What would require complex inheritance hierarchies in OOP is expressed concisely in Prolog
+
+### Example: Pure PowerShell Environment
+
+When bash is unavailable (common in restricted Windows environments):
+
+```prolog
+% System detects condition
+Condition = no_bash_available,
+
+% Firewall automatically derives policy
+derive_policy(Condition, Policies),
+% Policies = [denied(service(powershell, executable(bash)))]
+
+% Compiler queries firewall
+PowerShellMode = (
+    firewall_implies(no_bash_available, denied(service(powershell, executable(bash))))
+    -> pure  % Must use pure PowerShell
+    ;  auto  % Can choose
+).
+```
+
+### Testing
+
+The firewall includes comprehensive tests for the implication system:
+
+```bash
+$ swipl -q -l examples/test_firewall_implies.pl -g main -t halt
+```
+
+Tests verify:
+- ✅ Default implications work correctly
+- ✅ User-defined implications override defaults
+- ✅ Disabling defaults works as expected
+- ✅ `derive_policy/2` aggregates policies correctly
+- ✅ Complex multi-condition scenarios handled properly
 
 ---
 
