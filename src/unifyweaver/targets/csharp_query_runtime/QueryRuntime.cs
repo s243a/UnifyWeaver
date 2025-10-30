@@ -66,6 +66,34 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record DistinctNode(PlanNode Input, IEqualityComparer<object[]>? Comparer = null) : PlanNode;
 
     /// <summary>
+    /// Represents a fixpoint evaluation consisting of base and recursive plans.
+    /// </summary>
+    public sealed record FixpointNode(
+        PlanNode BasePlan,
+        IReadOnlyList<PlanNode> RecursivePlans,
+        PredicateId Predicate
+    ) : PlanNode;
+
+    /// <summary>
+    /// Indicates which relation a recursive reference should read from.
+    /// </summary>
+    public enum RecursiveRefKind
+    {
+        Total,
+        Delta
+    }
+
+    /// <summary>
+    /// References the evolving total or delta relation during fixpoint execution.
+    /// </summary>
+    public sealed record RecursiveRefNode(PredicateId Predicate, RecursiveRefKind Kind) : PlanNode;
+
+    /// <summary>
+    /// Produces no tuples; used when a plan lacks base clauses.
+    /// </summary>
+    public sealed record EmptyNode(int Width) : PlanNode;
+
+    /// <summary>
     /// Query metadata used by the engine.
     /// </summary>
     public sealed record QueryPlan(
@@ -135,15 +163,10 @@ namespace UnifyWeaver.QueryRuntime
         public IEnumerable<object[]> Execute(QueryPlan plan)
         {
             if (plan is null) throw new ArgumentNullException(nameof(plan));
-            if (plan.IsRecursive)
-            {
-                throw new NotSupportedException("Recursive plans are not yet supported by QueryExecutor.");
-            }
-
             return Evaluate(plan.Root);
         }
 
-        private IEnumerable<object[]> Evaluate(PlanNode node)
+        private IEnumerable<object[]> Evaluate(PlanNode node, EvaluationContext? context = null)
         {
             switch (node)
             {
@@ -151,29 +174,38 @@ namespace UnifyWeaver.QueryRuntime
                     return _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>();
 
                 case SelectionNode selection:
-                    return Evaluate(selection.Input).Where(tuple => selection.Predicate(tuple));
+                    return Evaluate(selection.Input, context).Where(tuple => selection.Predicate(tuple));
 
                 case ProjectionNode projection:
-                    return Evaluate(projection.Input).Select(tuple => projection.Project(tuple));
+                    return Evaluate(projection.Input, context).Select(tuple => projection.Project(tuple));
 
                 case JoinNode join:
-                    return ExecuteJoin(join);
+                    return ExecuteJoin(join, context);
 
                 case UnionNode union:
-                    return ExecuteUnion(union);
+                    return ExecuteUnion(union, context);
 
                 case DistinctNode distinct:
-                    return ExecuteDistinct(distinct);
+                    return ExecuteDistinct(distinct, context);
+
+                case FixpointNode fixpoint:
+                    return ExecuteFixpoint(fixpoint);
+
+                case RecursiveRefNode recursiveRef:
+                    return EvaluateRecursiveReference(recursiveRef, context);
+
+                case EmptyNode:
+                    return Enumerable.Empty<object[]>();
 
                 default:
                     throw new NotSupportedException($"Unsupported plan node: {node.GetType().Name}");
             }
         }
 
-        private IEnumerable<object[]> ExecuteJoin(JoinNode join)
+        private IEnumerable<object[]> ExecuteJoin(JoinNode join, EvaluationContext? context)
         {
-            var left = Evaluate(join.Left);
-            var rightMaterialised = Evaluate(join.Right).ToList();
+            var left = Evaluate(join.Left, context);
+            var rightMaterialised = Evaluate(join.Right, context).ToList();
 
             foreach (var leftTuple in left)
             {
@@ -187,21 +219,105 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
-        private IEnumerable<object[]> ExecuteUnion(UnionNode union) =>
-            union.Sources.SelectMany(Evaluate);
+        private IEnumerable<object[]> ExecuteUnion(UnionNode union, EvaluationContext? context) =>
+            union.Sources.SelectMany(node => Evaluate(node, context));
 
-        private IEnumerable<object[]> ExecuteDistinct(DistinctNode distinct)
+        private IEnumerable<object[]> ExecuteDistinct(DistinctNode distinct, EvaluationContext? context)
         {
             var comparer = distinct.Comparer ?? StructuralArrayComparer.Instance;
             var seen = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
 
-            foreach (var tuple in Evaluate(distinct.Input))
+            foreach (var tuple in Evaluate(distinct.Input, context))
             {
                 if (seen.Add(new RowWrapper(tuple)))
                 {
                     yield return tuple;
                 }
             }
+        }
+
+        private IEnumerable<object[]> ExecuteFixpoint(FixpointNode fixpoint)
+        {
+            if (fixpoint is null) throw new ArgumentNullException(nameof(fixpoint));
+
+            var comparer = StructuralArrayComparer.Instance;
+            var totalSet = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
+            var totalRows = new List<object[]>();
+
+            // Seed with base clauses
+            var baseRows = Evaluate(fixpoint.BasePlan).ToList();
+            var deltaRows = new List<object[]>();
+            foreach (var tuple in baseRows)
+            {
+                if (TryAddRow(totalSet, tuple))
+                {
+                    totalRows.Add(tuple);
+                    deltaRows.Add(tuple);
+                }
+            }
+
+            var context = new EvaluationContext(fixpoint.Predicate)
+            {
+                Total = totalRows,
+                Delta = deltaRows
+            };
+
+            while (context.Delta.Count > 0)
+            {
+                var nextDelta = new List<object[]>();
+                foreach (var recursivePlan in fixpoint.RecursivePlans)
+                {
+                    foreach (var tuple in Evaluate(recursivePlan, context))
+                    {
+                        if (TryAddRow(totalSet, tuple))
+                        {
+                            totalRows.Add(tuple);
+                            nextDelta.Add(tuple);
+                        }
+                    }
+                }
+                context.Delta = nextDelta;
+            }
+
+            return totalRows;
+        }
+
+        private IEnumerable<object[]> EvaluateRecursiveReference(RecursiveRefNode node, EvaluationContext? context)
+        {
+            if (context is null)
+            {
+                throw new InvalidOperationException("Recursive reference evaluated without an execution context.");
+            }
+
+            if (!node.Predicate.Equals(context.Head))
+            {
+                throw new NotSupportedException($"Cross-predicate recursion is not supported (referenced {node.Predicate} within {context.Head}).");
+            }
+
+            return node.Kind switch
+            {
+                RecursiveRefKind.Total => context.Total,
+                RecursiveRefKind.Delta => context.Delta,
+                _ => throw new ArgumentOutOfRangeException(nameof(node.Kind), node.Kind, "Unknown recursive reference kind.")
+            };
+        }
+
+        private static bool TryAddRow(HashSet<RowWrapper> set, object[] tuple)
+        {
+            if (tuple is null) throw new ArgumentNullException(nameof(tuple));
+            return set.Add(new RowWrapper(tuple));
+        }
+
+        private sealed class EvaluationContext
+        {
+            public EvaluationContext(PredicateId head)
+            {
+                Head = head;
+            }
+
+            public PredicateId Head { get; }
+            public IReadOnlyList<object[]> Total { get; set; } = Array.Empty<object[]>();
+            public IReadOnlyList<object[]> Delta { get; set; } = Array.Empty<object[]>();
         }
 
         private sealed record RowWrapper(object[] Row);
