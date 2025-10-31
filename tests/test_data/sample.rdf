@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:pt="http://www.pearltrees.com/xmlns/pearl-trees#"
+         xmlns:dcterms="http://purl.org/dc/terms/">
+  <pt:Tree rdf:about="https://www.pearltrees.com/t/test1/id1">
+    <dcterms:title><![CDATA[Test Tree 1]]></dcterms:title>
+    <pt:treeId>1</pt:treeId>
+  </pt:Tree>
+  <pt:Page rdf:about="https://www.pearltrees.com/p/test/id2">
+    <dcterms:title><![CDATA[Test Page]]></dcterms:title>
+  </pt:Page>
+  <pt:Tree rdf:about="https://www.pearltrees.com/t/test2/id3">
+    <dcterms:title><![CDATA[Test Tree 2]]></dcterms:title>
+    <pt:treeId>3</pt:treeId>
+  </pt:Tree>
+</rdf:RDF>
