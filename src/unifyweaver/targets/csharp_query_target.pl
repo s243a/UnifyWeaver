@@ -620,13 +620,15 @@ join_predicate_expression(LeftKeys, RightKeys, Expr) :-
     ).
 
 join_projection_expression(LeftWidth, RightWidth, Expr) :-
+    LeftMax is LeftWidth - 1,
     findall(Item,
-        (   between(0, LeftWidth-1, LIdx),
+        (   between(0, LeftMax, LIdx),
             format(atom(Item), 'left[~w]', [LIdx])
         ),
         LeftItems),
+    RightMax is RightWidth - 1,
     findall(Item,
-        (   between(0, RightWidth-1, RIdx),
+        (   between(0, RightMax, RIdx),
             format(atom(Item), 'right[~w]', [RIdx])
         ),
         RightItems),

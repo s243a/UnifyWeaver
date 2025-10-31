@@ -3,6 +3,8 @@
     test_csharp_query_target/0
 ]).
 
+:- asserta(user:file_search_path(library, 'src/unifyweaver/targets')).
+
 :- use_module(library(apply)).
 :- use_module(library(filesex)).
 :- use_module(library(lists)).
@@ -12,9 +14,8 @@
 
 :- dynamic cqt_option/2.
 
-:- initialization(configure_csharp_query_options, now).
-
 test_csharp_query_target :-
+    configure_csharp_query_options,
     writeln('=== Testing C# query target ==='),
     setup_test_data,
     verify_fact_plan,
@@ -140,7 +141,7 @@ finalize_temp_dir(Dir) :-
     ).
 
 run_dotnet_plan(Dotnet, Plan, ExpectedRows, Dir) :-
-    dotnet_command(Dotnet, ['new','console','--force','--framework','net6.0'], Dir, StatusNew, _),
+    dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
     (   StatusNew =:= 0
     ->  true
     ;   writeln('  (dotnet new console failed; skipping runtime execution test)'), fail
@@ -189,8 +190,10 @@ write_string(Path, String) :-
                        close(Stream)).
 
 dotnet_command(Dotnet, Args, Dir, Status, Output) :-
+    dotnet_env(Dir, Env),
     process_create(Dotnet, Args,
                    [ cwd(Dir),
+                     env(Env),
                      stdout(pipe(Out)),
                      stderr(pipe(Err)),
                      process(PID)
@@ -202,15 +205,26 @@ dotnet_command(Dotnet, Args, Dir, Status, Output) :-
     process_wait(PID, exit(Status)),
     string_concat(Stdout, Stderr, Output).
 
+dotnet_env(Dir, Env) :-
+    environ(RawEnv),
+    exclude(is_dotnet_env, RawEnv, BaseEnv),
+    Env = ['DOTNET_CLI_HOME'=Dir,
+           'DOTNET_CLI_TELEMETRY_OPTOUT'='1',
+           'DOTNET_NOLOGO'='1'
+           | BaseEnv].
+
+is_dotnet_env('DOTNET_CLI_HOME'=_).
+is_dotnet_env('DOTNET_CLI_TELEMETRY_OPTOUT'=_).
+is_dotnet_env('DOTNET_NOLOGO'=_).
+
 extract_result_rows(Output, Rows) :-
     split_string(Output, "\n", "\r", Lines0),
-    include(non_empty_result_line, Lines0, Candidate),
-    maplist(normalize_space_string, Candidate, Normalized),
-    maplist(to_atom, Normalized, Rows).
+    maplist(normalize_space_string, Lines0, NormalizedLines),
+    include(non_empty_line, NormalizedLines, Candidate),
+    maplist(to_atom, Candidate, Rows).
 
-non_empty_result_line(Line) :-
-    sub_string(Line, _, _, _, ','), !.
-non_empty_result_line(_).
+non_empty_line(Line) :-
+    Line \= ''.
 
 normalize_space_string(Line, Normalized) :-
     normalize_space(string(Normalized), Line).
@@ -260,26 +274,25 @@ capture_cli_overrides :-
 apply_cli_overrides([]).
 apply_cli_overrides([Arg|Rest]) :-
     (   atom(Arg),
-        sub_atom(Arg, 0, _, _, '--csharp-query-output=')
-    ->  sub_atom(Arg, _, 0, After, '='),
-        sub_atom(Arg, After, _, 0, Dir),
-        retractall(cqt_option(output_dir, _)),
-        assertz(cqt_option(output_dir, Dir))
+        atom_concat('--csharp-query-output=', DirAtom, Arg)
+    ->  set_cqt_option(output_dir, DirAtom),
+        apply_cli_overrides(Rest)
     ;   Arg == '--csharp-query-output',
         Rest = [Dir|Tail]
-    ->  retractall(cqt_option(output_dir, _)),
-        assertz(cqt_option(output_dir, Dir)),
-        apply_cli_overrides(Tail),
-        !
+    ->  set_cqt_option(output_dir, Dir),
+        apply_cli_overrides(Tail)
     ;   Arg == '--csharp-query-keep'
-    ->  retractall(cqt_option(keep_artifacts, _)),
-        assertz(cqt_option(keep_artifacts, true))
+    ->  set_cqt_option(keep_artifacts, true),
+        apply_cli_overrides(Rest)
     ;   Arg == '--csharp-query-autodelete'
-    ->  retractall(cqt_option(keep_artifacts, _)),
-        assertz(cqt_option(keep_artifacts, false))
-    ;   true
-    ),
-    apply_cli_overrides(Rest).
+    ->  set_cqt_option(keep_artifacts, false),
+        apply_cli_overrides(Rest)
+    ;   apply_cli_overrides(Rest)
+    ).
+
+set_cqt_option(Key, Value) :-
+    retractall(cqt_option(Key, _)),
+    assertz(cqt_option(Key, Value)).
 
 normalize_yes_no(Value0, Bool) :-
     (   atom(Value0) -> atom_string(Value0, Value)
