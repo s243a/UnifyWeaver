@@ -87,11 +87,11 @@ detect_available_engine(Engine) :-
     %% check_lxml_available
     %  Check if lxml is available.
     check_lxml_available :-
+        writeln('Checking for lxml...'),
         python_lxml_candidates(Candidates),
         member(Exec-Args, Candidates),
         python_lxml_check(Exec, Args),
-        !.
-    
+        !.    
     check_lxml_available :-
         format('lxml check failed using all configured interpreters.~n', []),
         fail.
@@ -102,47 +102,90 @@ detect_available_engine(Engine) :-
     ]).
     
     python_lxml_check(Exec, Args) :-
+    
+        format('Checking lxml with Exec: ~q, Args: ~q~n', [Exec, Args]),
+    
+        writeln('Before process_create for lxml check'),
+    
         catch(
+    
             setup_call_cleanup(
+    
                 process_create(Exec, Args, [stdout(pipe(Out)), stderr(pipe(Err)), process(Process)]),
+    
                 (
+    
+                    writeln('After process_create for lxml check'),
+    
                     read_stream_to_codes(Out, OutCodes),
+    
                     read_stream_to_codes(Err, ErrCodes),
+    
                     process_wait(Process, ExitStatus),
-                    (
-                        ExitStatus = exit(0)
-                    ->  true
+    
+                    (   ExitStatus = exit(0)
+    
+                    ->  writeln('lxml check succeeded'),
+    
+                        true
+    
                     ;   format('lxml check via ~q failed (status ~w). stdout: ~s, stderr: ~s~n',
+    
                                [Exec, ExitStatus, OutCodes, ErrCodes]),
+    
                         fail
+    
                     )
+    
                 ),
+    
                 (
+    
                     close(Out),
+    
                     close(Err)
+    
                 )
+    
             ),
+    
             Error,
+    
             (
+    
+                writeln(format('lxml check via ~q raised exception: ~q', [Exec, Error])),
+    
                 (   Error = error(existence_error(_, _), _)
-                ->  fail
-                ;   format('lxml check via ~q raised exception: ~q~n', [Exec, Error]),
+    
+                ->  format('lxml check via ~q failed (executable not found)~n', [Exec]),
+    
                     fail
+    
+                ;   format('lxml check via ~q raised exception: ~q~n', [Exec, Error]),
+    
+                    fail
+    
                 )
+    
             )
+    
         ).
     
     %% check_xmlstarlet_available
     %  Check if xmlstarlet is available.
     check_xmlstarlet_available :-
+        writeln('Checking for xmlstarlet...'),
         catch(
             process_create(path(xmlstarlet),
                           ['--version'],
-                          [stdout(null), stderr(null)]),
-            _, 
-            fail
-        ).
-%% ============================================ 
+                          [stdout(pipe(Out)), stderr(pipe(Err))]),
+            _,
+            (   read_stream_to_codes(Out, OutCodes),
+                read_stream_to_codes(Err, ErrCodes),
+                format('xmlstarlet check failed. stdout: ~s, stderr: ~s~n', [OutCodes, ErrCodes]),
+                fail
+            )
+        ).%% ============================================ 
 %% COMPILATION
 %% ============================================ 
 
@@ -281,7 +324,7 @@ template_system:template(xml_xmlstarlet_source, '#!/bin/bash
 # {{pred}} - XML source (xmlstarlet)
 
 {{pred}}() {
-    xmlstarlet sel -t -c "{{xpath}}" "{{file}}" | awk \'{printf "%s\0", $0}\'
+    xmlstarlet sel -N pt="http://www.pearltrees.com/xmlns/pearl-trees#" -t -c "{{xpath}}" "{{file}}" | awk \'{printf "%s\0", $0}\'
 }
 
 {{pred}}_stream() {
