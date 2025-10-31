@@ -135,12 +135,17 @@ python_lxml_check(Exec, Args) :-
 %% check_xmlstarlet_available
 %  Check if xmlstarlet is available.
 check_xmlstarlet_available :-
+    writeln('Checking for xmlstarlet...'),
     catch(
         process_create(path(xmlstarlet),
                       ['--version'],
-                      [stdout(null), stderr(null)]),
+                      [stdout(pipe(Out)), stderr(pipe(Err))]),
         _,
-        fail
+        (   read_stream_to_codes(Out, OutCodes),
+            read_stream_to_codes(Err, ErrCodes),
+            format('xmlstarlet check failed. stdout: ~s, stderr: ~s~n', [OutCodes, ErrCodes]),
+            fail
+        )
     ).
 
 %% ============================================ 
