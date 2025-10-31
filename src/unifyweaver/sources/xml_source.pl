@@ -177,7 +177,7 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
             [source_order([file, generated])],
             BashCode)
     ;   Engine == xmlstarlet
-    ->  generate_xmllint_bash(Pred, File, Tags, BashCode)
+    ->  generate_xmlstarlet_bash(Pred, File, Tags, BashCode)
     ).
 
 %% ============================================ 
@@ -231,12 +231,12 @@ tags_to_python_set(Tags, Set) :-
 quote_atom(Atom, Quoted) :-
     format(atom(Quoted), '\'~w\'', [Atom]).
 
-%% generate_xmllint_bash(+Pred, +File, +Tags, -BashCode)
-%  Generate bash code for xmllint engine
-generate_xmllint_bash(Pred, File, Tags, BashCode) :-
+%% generate_xmlstarlet_bash(+Pred, +File, +Tags, -BashCode)
+%  Generate bash code for xmlstarlet engine
+generate_xmlstarlet_bash(Pred, File, Tags, BashCode) :-
     tags_to_xpath(Tags, XPath),
     atom_string(Pred, PredStr),
-    render_named_template(xml_xmllint_source,
+    render_named_template(xml_xmlstarlet_source,
         [pred=PredStr, file=File, xpath=XPath],
         [source_order([file, generated])],
         BashCode).
@@ -277,11 +277,11 @@ fi
 ').
 
 % Template for xmllint engine
-template_system:template(xml_xmllint_source, '#!/bin/bash
-# {{pred}} - XML source (xmllint)
+template_system:template(xml_xmlstarlet_source, '#!/bin/bash
+# {{pred}} - XML source (xmlstarlet)
 
 {{pred}}() {
-    xmllint --xpath "{{xpath}}" "{{file}}" | awk \'{printf "%s\0", $0}\'
+    xmlstarlet sel -t -c "{{xpath}}" "{{file}}" | awk \'{printf "%s\0", $0}\'
 }
 
 {{pred}}_stream() {
