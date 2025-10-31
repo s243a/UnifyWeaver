@@ -287,7 +287,7 @@ template_system:template(xml_xmlstarlet_source, '#!/bin/bash
 # {{pred}} - XML source (xmlstarlet)
 
 {{pred}}() {
-    xmlstarlet sel -N pt="http://www.pearltrees.com/xmlns/pearl-trees#" -t -c "{{xpath}}" "{{file}}" | awk \'{printf "%s\0", $0}\'
+    /usr/bin/xmlstarlet sel -N pt="http://www.pearltrees.com/xmlns/pearl-trees#" -t -c "{{xpath}}" "{{file}}" | awk \'{printf "%s\0", $0}\'
 }
 
 {{pred}}_stream() {
