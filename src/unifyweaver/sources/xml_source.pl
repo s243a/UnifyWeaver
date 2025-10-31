@@ -84,108 +84,66 @@ detect_available_engine(Engine) :-
         fail
     ).
     
-    %% check_lxml_available
-    %  Check if lxml is available.
-    check_lxml_available :-
-        writeln('Checking for lxml...'),
-        python_lxml_candidates(Candidates),
-        member(Exec-Args, Candidates),
-        python_lxml_check(Exec, Args),
-        !.    
-    check_lxml_available :-
-        format('lxml check failed using all configured interpreters.~n', []),
-        fail.
-    
-    python_lxml_candidates([
-        path(python3)-['-c', 'import lxml'],
-        path(py)-['-3', '-c', 'import lxml']
-    ]).
-    
-    python_lxml_check(Exec, Args) :-
-    
-        format('Checking lxml with Exec: ~q, Args: ~q~n', [Exec, Args]),
-    
-        writeln('Before process_create for lxml check'),
-    
-        catch(
-    
-            setup_call_cleanup(
-    
-                process_create(Exec, Args, [stdout(pipe(Out)), stderr(pipe(Err)), process(Process)]),
-    
-                (
-    
-                    writeln('After process_create for lxml check'),
-    
-                    read_stream_to_codes(Out, OutCodes),
-    
-                    read_stream_to_codes(Err, ErrCodes),
-    
-                    process_wait(Process, ExitStatus),
-    
-                    (   ExitStatus = exit(0)
-    
-                    ->  writeln('lxml check succeeded'),
-    
-                        true
-    
-                    ;   format('lxml check via ~q failed (status ~w). stdout: ~s, stderr: ~s~n',
-    
-                               [Exec, ExitStatus, OutCodes, ErrCodes]),
-    
-                        fail
-    
-                    )
-    
-                ),
-    
-                (
-    
-                    close(Out),
-    
-                    close(Err)
-    
-                )
-    
-            ),
-    
-            Error,
-    
+%% check_lxml_available
+%  Check if lxml is available.
+check_lxml_available :-
+    python_lxml_candidates(Candidates),
+    member(Exec-Args, Candidates),
+    python_lxml_check(Exec, Args),
+    !.
+check_lxml_available :-
+    format('lxml check failed using all configured interpreters.~n', []),
+    fail.
+
+python_lxml_candidates([
+    path(python3)-['-c', 'import lxml'],
+    path(py)-['-3', '-c', 'import lxml']
+]).
+
+python_lxml_check(Exec, Args) :-
+    catch(
+        setup_call_cleanup(
+            process_create(Exec, Args, [stdout(pipe(Out)), stderr(pipe(Err)), process(Process)]),
             (
-    
-                writeln(format('lxml check via ~q raised exception: ~q', [Exec, Error])),
-    
-                (   Error = error(existence_error(_, _), _)
-    
-                ->  format('lxml check via ~q failed (executable not found)~n', [Exec]),
-    
-                    fail
-    
-                ;   format('lxml check via ~q raised exception: ~q~n', [Exec, Error]),
-    
-                    fail
-    
-                )
-    
-            )
-    
-        ).
-    
-    %% check_xmlstarlet_available
-    %  Check if xmlstarlet is available.
-    check_xmlstarlet_available :-
-        writeln('Checking for xmlstarlet...'),
-        catch(
-            process_create(path(xmlstarlet),
-                          ['--version'],
-                          [stdout(pipe(Out)), stderr(pipe(Err))]),
-            _,
-            (   read_stream_to_codes(Out, OutCodes),
+                read_stream_to_codes(Out, OutCodes),
                 read_stream_to_codes(Err, ErrCodes),
-                format('xmlstarlet check failed. stdout: ~s, stderr: ~s~n', [OutCodes, ErrCodes]),
+                process_wait(Process, ExitStatus),
+                (
+                    ExitStatus = exit(0)
+                ->  true
+                ;   format('lxml check via ~q failed (status ~w). stdout: ~s, stderr: ~s~n',
+                           [Exec, ExitStatus, OutCodes, ErrCodes]),
+                    fail
+                )
+            ),
+            (
+                close(Out),
+                close(Err)
+            )
+        ),
+        Error,
+        (
+            (   Error = error(existence_error(_, _), _)
+            ->  format('lxml check via ~q failed (executable not found)~n', [Exec]),
+                fail
+            ;   format('lxml check via ~q raised exception: ~q~n', [Exec, Error]),
                 fail
             )
-        ).%% ============================================ 
+        )
+    ).
+
+%% check_xmlstarlet_available
+%  Check if xmlstarlet is available.
+check_xmlstarlet_available :-
+    catch(
+        process_create(path(xmlstarlet),
+                      ['--version'],
+                      [stdout(null), stderr(null)]),
+        _,
+        fail
+    ).
+
+%% ============================================ 
 %% COMPILATION
 %% ============================================ 
 
@@ -236,7 +194,7 @@ generate_lxml_python_code(File, Tags, PythonCode) :-
         "from lxml import etree\n\n",
         "file = \"", File, "\"\n",
         "tags = {", TagsSet, "}\n",
-        "null = b'\0'\n\n",
+        "null = b'\\0'\n\n",
         "# Parse with namespace handling\n",
         "context = etree.iterparse(file, events=('start', 'end'), recover=True)\n",
         "event, root = next(context)\n",
