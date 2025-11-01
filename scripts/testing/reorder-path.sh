@@ -27,7 +27,7 @@ remove_from_path() {
     if [[ "$p" != "$target" ]]; then
       out="${out:+$out:}$p"
     fi
-  done
+done
   PATH="$out"
 }
 
@@ -55,7 +55,7 @@ dedup() {
       seen[$p]=1
       out="${out:+$out:}$p"
     fi
-  done
+done
   PATH="$out"
 }
 dedup
