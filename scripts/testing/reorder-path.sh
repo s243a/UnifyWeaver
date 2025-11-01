@@ -13,8 +13,11 @@ fi
 
 # Strip leading PATH= and surrounding quotes if present
 etc_env_path="${etc_env_line#*=}"
-etc_env_path="${etc_env_path%"}"
-etc_env_path="${etc_env_path#"}"
+if [[ ${etc_env_path} == \"*\" ]]; then
+  etc_env_path="${etc_env_path:1:-1}"
+elif [[ ${etc_env_path} == \'*\' ]]; then
+  etc_env_path="${etc_env_path:1:-1}"
+fi
 
 # Helper: remove exact directory matches from PATH
 remove_from_path() {
