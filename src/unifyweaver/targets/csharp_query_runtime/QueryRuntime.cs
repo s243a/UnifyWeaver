@@ -89,6 +89,44 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record RecursiveRefNode(PredicateId Predicate, RecursiveRefKind Kind) : PlanNode;
 
     /// <summary>
+    /// Base type for arithmetic expressions.
+    /// </summary>
+    public abstract record ArithmeticExpression;
+
+    public sealed record ColumnExpression(int Index) : ArithmeticExpression;
+
+    public sealed record ConstantExpression(object Value) : ArithmeticExpression;
+
+    public sealed record UnaryArithmeticExpression(ArithmeticUnaryOperator Operator, ArithmeticExpression Operand) : ArithmeticExpression;
+
+    public sealed record BinaryArithmeticExpression(ArithmeticBinaryOperator Operator, ArithmeticExpression Left, ArithmeticExpression Right) : ArithmeticExpression;
+
+    public enum ArithmeticUnaryOperator
+    {
+        Negate
+    }
+
+    public enum ArithmeticBinaryOperator
+    {
+        Add,
+        Subtract,
+        Multiply,
+        Divide,
+        IntegerDivide,
+        Modulo
+    }
+
+    /// <summary>
+    /// Extends each tuple with the result of an arithmetic expression.
+    /// </summary>
+    public sealed record ArithmeticNode(
+        PlanNode Input,
+        ArithmeticExpression Expression,
+        int ResultIndex,
+        int Width
+    ) : PlanNode;
+
+    /// <summary>
     /// Produces no tuples; used when a plan lacks base clauses.
     /// </summary>
     public sealed record EmptyNode(int Width) : PlanNode;
@@ -172,6 +210,9 @@ namespace UnifyWeaver.QueryRuntime
                 case SelectionNode selection:
                     return Evaluate(selection.Input, context).Where(tuple => selection.Predicate(tuple));
 
+                case ArithmeticNode arithmetic:
+                    return ExecuteArithmetic(arithmetic, context);
+
                 case ProjectionNode projection:
                     return Evaluate(projection.Input, context).Select(tuple => projection.Project(tuple));
 
@@ -217,6 +258,18 @@ namespace UnifyWeaver.QueryRuntime
 
         private IEnumerable<object[]> ExecuteUnion(UnionNode union, EvaluationContext? context) =>
             union.Sources.SelectMany(node => Evaluate(node, context));
+
+        private IEnumerable<object[]> ExecuteArithmetic(ArithmeticNode arithmetic, EvaluationContext? context)
+        {
+            var input = Evaluate(arithmetic.Input, context);
+            foreach (var tuple in input)
+            {
+                var result = new object[arithmetic.Width];
+                Array.Copy(tuple, result, Math.Min(tuple.Length, arithmetic.Width));
+                result[arithmetic.ResultIndex] = EvaluateArithmeticExpression(arithmetic.Expression, tuple);
+                yield return result;
+            }
+        }
 
         private IEnumerable<object[]> ExecuteDistinct(DistinctNode distinct, EvaluationContext? context)
         {
@@ -297,6 +350,146 @@ namespace UnifyWeaver.QueryRuntime
                 _ => throw new ArgumentOutOfRangeException(nameof(node.Kind), node.Kind, "Unknown recursive reference kind.")
             };
         }
+
+        private object EvaluateArithmeticExpression(ArithmeticExpression expression, object[] tuple) =>
+            expression switch
+            {
+                ColumnExpression column => tuple[column.Index],
+                ConstantExpression constant => constant.Value,
+                UnaryArithmeticExpression unary => ApplyUnary(unary.Operator, EvaluateArithmeticExpression(unary.Operand, tuple)),
+                BinaryArithmeticExpression binary => ApplyBinary(binary.Operator,
+                    EvaluateArithmeticExpression(binary.Left, tuple),
+                    EvaluateArithmeticExpression(binary.Right, tuple)),
+                _ => throw new NotSupportedException($"Unsupported arithmetic expression: {expression?.GetType().Name}")
+            };
+
+        private object ApplyUnary(ArithmeticUnaryOperator op, object operand) =>
+            op switch
+            {
+                ArithmeticUnaryOperator.Negate => NegateValue(operand),
+                _ => throw new ArgumentOutOfRangeException(nameof(op), op, "Unknown arithmetic unary operator.")
+            };
+
+        private object ApplyBinary(ArithmeticBinaryOperator op, object left, object right) =>
+            op switch
+            {
+                ArithmeticBinaryOperator.Add => AddValues(left, right),
+                ArithmeticBinaryOperator.Subtract => SubtractValues(left, right),
+                ArithmeticBinaryOperator.Multiply => MultiplyValues(left, right),
+                ArithmeticBinaryOperator.Divide => DivideValues(left, right),
+                ArithmeticBinaryOperator.IntegerDivide => IntegerDivideValues(left, right),
+                ArithmeticBinaryOperator.Modulo => ModuloValues(left, right),
+                _ => throw new ArgumentOutOfRangeException(nameof(op), op, "Unknown arithmetic binary operator.")
+            };
+
+        private object NegateValue(object value)
+        {
+            if (IsIntegral(value))
+            {
+                var operand = ToInt64(value);
+                var result = checked(-operand);
+                return CreateIntegralResult(result);
+            }
+
+            var numeric = ToDouble(value);
+            return -numeric;
+        }
+
+        private object AddValues(object left, object right)
+        {
+            if (IsIntegral(left) && IsIntegral(right))
+            {
+                var a = ToInt64(left);
+                var b = ToInt64(right);
+                var result = checked(a + b);
+                return CreateIntegralResult(result);
+            }
+
+            return ToDouble(left) + ToDouble(right);
+        }
+
+        private object SubtractValues(object left, object right)
+        {
+            if (IsIntegral(left) && IsIntegral(right))
+            {
+                var a = ToInt64(left);
+                var b = ToInt64(right);
+                var result = checked(a - b);
+                return CreateIntegralResult(result);
+            }
+
+            return ToDouble(left) - ToDouble(right);
+        }
+
+        private object MultiplyValues(object left, object right)
+        {
+            if (IsIntegral(left) && IsIntegral(right))
+            {
+                var a = ToInt64(left);
+                var b = ToInt64(right);
+                var result = checked(a * b);
+                return CreateIntegralResult(result);
+            }
+
+            return ToDouble(left) * ToDouble(right);
+        }
+
+        private object DivideValues(object left, object right)
+        {
+            var divisor = ToDouble(right);
+            if (Math.Abs(divisor) < double.Epsilon)
+            {
+                throw new DivideByZeroException("Division by zero in arithmetic expression.");
+            }
+
+            return ToDouble(left) / divisor;
+        }
+
+        private object IntegerDivideValues(object left, object right)
+        {
+            if (!(IsIntegral(left) && IsIntegral(right)))
+            {
+                throw new InvalidOperationException("Integer division requires integral operands.");
+            }
+
+            var divisor = ToInt64(right);
+            if (divisor == 0)
+            {
+                throw new DivideByZeroException("Integer division by zero in arithmetic expression.");
+            }
+
+            var dividend = ToInt64(left);
+            var result = dividend / divisor;
+            return CreateIntegralResult(result);
+        }
+
+        private object ModuloValues(object left, object right)
+        {
+            if (!(IsIntegral(left) && IsIntegral(right)))
+            {
+                throw new InvalidOperationException("Modulo requires integral operands.");
+            }
+
+            var divisor = ToInt64(right);
+            if (divisor == 0)
+            {
+                throw new DivideByZeroException("Modulo division by zero in arithmetic expression.");
+            }
+
+            var dividend = ToInt64(left);
+            var result = dividend % divisor;
+            return CreateIntegralResult(result);
+        }
+
+        private static bool IsIntegral(object value) =>
+            value is sbyte or byte or short or ushort or int or uint or long or ulong;
+
+        private static long ToInt64(object value) => Convert.ToInt64(value);
+
+        private static double ToDouble(object value) => Convert.ToDouble(value);
+
+        private static object CreateIntegralResult(long value) =>
+            value is >= int.MinValue and <= int.MaxValue ? (object)(int)value : value;
 
         private static bool TryAddRow(HashSet<RowWrapper> set, object[] tuple)
         {

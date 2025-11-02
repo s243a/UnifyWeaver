@@ -216,6 +216,8 @@ roles_for_nonrecursive_terms_([Term|Rest], Pred, Arity, [Role|Roles]) :-
     roles_for_nonrecursive_terms_(Rest, Pred, Arity, Roles).
 
 constraint_goal(Goal) :-
+    arithmetic_goal(Goal), !.
+constraint_goal(Goal) :-
     functor(Goal, Functor, Arity),
     Arity =:= 2,
     (   Functor == '='
@@ -223,6 +225,9 @@ constraint_goal(Goal) :-
     ;   Functor == dif
     ;   atom_codes(Functor, [92, 61])
     ).
+
+arithmetic_goal(Goal) :-
+    functor(Goal, is, 2).
 
 %% Clause helpers -----------------------------------------------------------
 
@@ -292,8 +297,9 @@ fold_terms([], [], _HeadSpec, Node, VarMap, Width, Relations, Node, VarMap, Widt
 fold_terms([Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, WidthIn, RelationsIn,
            NodeOut, VarMapOut, WidthOut, RelationsOut) :-
     (   Role = constraint
-    ->  build_constraint_node(Term, AccNode, VarMapIn, WidthIn, ConstraintNode),
-        fold_terms(Rest, Roles, HeadSpec, ConstraintNode, VarMapIn, WidthIn, RelationsIn,
+    ->  build_constraint_node(Term, AccNode, VarMapIn, WidthIn,
+                               ConstraintNode, VarMapMid, WidthMid),
+        fold_terms(Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsIn,
                    NodeOut, VarMapOut, WidthOut, RelationsOut)
     ;   Role = relation
     ->  Term =.. [Pred|Args],
@@ -332,8 +338,93 @@ build_join_node(LeftNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapOut, 
         width:WidthOut
     }.
 
-build_constraint_node(Term, InputNode, VarMap, Width, selection{type:selection, input:InputNode, predicate:Condition, width:Width}) :-
-    constraint_condition(Term, VarMap, Condition).
+build_constraint_node(Term, InputNode, VarMapIn, WidthIn,
+        NodeOut, VarMapOut, WidthOut) :-
+    (   arithmetic_goal(Term)
+    ->  build_arithmetic_node(Term, InputNode, VarMapIn, WidthIn,
+            NodeOut, VarMapOut, WidthOut)
+    ;   constraint_condition(Term, VarMapIn, Condition),
+        NodeOut = selection{
+            type:selection,
+            input:InputNode,
+            predicate:Condition,
+            width:WidthIn
+        },
+        VarMapOut = VarMapIn,
+        WidthOut = WidthIn
+    ).
+
+build_arithmetic_node(Goal, InputNode, VarMapIn, WidthIn,
+        arithmetic{
+            type:arithmetic,
+            input:InputNode,
+            expression:Expression,
+            result_index:ResultIndex,
+            width:WidthOut
+        },
+        VarMapOut, WidthOut) :-
+    Goal =.. [is, Left, ExprTerm],
+    (   var(Left)
+    ->  true
+    ;   format(user_error, 'C# query target: left operand of is/2 must be an unbound variable (~q).~n', [Goal]),
+        fail
+    ),
+    (   lookup_var_index(VarMapIn, Left, _Existing)
+    ->  format(user_error, 'C# query target: variable ~w already bound before is/2 evaluation.~n', [Left]),
+        fail
+    ;   true
+    ),
+    arithmetic_expression(ExprTerm, VarMapIn, Expression),
+    ResultIndex is WidthIn,
+    WidthOut is WidthIn + 1,
+    replace_var_index(VarMapIn, Left, ResultIndex, VarMapOut).
+
+replace_var_index(VarMap, Var, Index, [Var-Index|Trimmed]) :-
+    remove_var_mapping(VarMap, Var, Trimmed).
+
+remove_var_mapping([], _Var, []).
+remove_var_mapping([Var0-Idx|Rest], Var, Result) :-
+    (   Var0 == Var
+    ->  remove_var_mapping(Rest, Var, Result)
+    ;   remove_var_mapping(Rest, Var, Tail),
+        Result = [Var0-Idx|Tail]
+    ).
+
+arithmetic_expression(Term, _VarMap, expr{type:value, value:Term}) :-
+    number(Term), !.
+arithmetic_expression(Term, VarMap, expr{type:column, index:Index}) :-
+    var(Term), !,
+    (   lookup_var_index(VarMap, Term, Index)
+    ->  true
+    ;   format(user_error, 'C# query target: variable ~w not bound before arithmetic evaluation.~n', [Term]),
+        fail
+    ).
+arithmetic_expression(Term, VarMap, Expr) :-
+    Term =.. [Op, Arg],
+    arithmetic_unary_operator(Op, Operator), !,
+    arithmetic_expression(Arg, VarMap, SubExpr),
+    (   Operator == identity
+    ->  Expr = SubExpr
+    ;   Expr = expr{type:unary, op:Operator, expr:SubExpr}
+    ).
+arithmetic_expression(Term, VarMap, expr{type:binary, op:Operator, left:LeftExpr, right:RightExpr}) :-
+    Term =.. [Op, Left, Right],
+    arithmetic_binary_operator(Op, Operator), !,
+    arithmetic_expression(Left, VarMap, LeftExpr),
+    arithmetic_expression(Right, VarMap, RightExpr).
+arithmetic_expression(Term, _VarMap, _Expr) :-
+    format(user_error, 'C# query target: unsupported arithmetic expression ~q.~n', [Term]),
+    fail.
+
+arithmetic_unary_operator(+, identity).
+arithmetic_unary_operator(-, negate).
+
+arithmetic_binary_operator(+, add).
+arithmetic_binary_operator(-, subtract).
+arithmetic_binary_operator(*, multiply).
+arithmetic_binary_operator(/, divide).
+arithmetic_binary_operator('//', int_divide).
+arithmetic_binary_operator(mod, modulo).
 
 constraint_condition(Goal, VarMap, Condition) :-
     functor(Goal, Functor, 2),
@@ -538,6 +629,16 @@ emit_plan_expression(Node, Expr) :-
     selection_condition_expression(Condition, tuple, ConditionExpr),
     format(atom(Expr), 'new SelectionNode(~w, tuple => ~w)', [InputExpr, ConditionExpr]).
 emit_plan_expression(Node, Expr) :-
+    is_dict(Node, arithmetic), !,
+    get_dict(input, Node, Input),
+    get_dict(expression, Node, Expression),
+    get_dict(result_index, Node, ResultIndex),
+    get_dict(width, Node, Width),
+    emit_plan_expression(Input, InputExpr),
+    emit_arithmetic_expression(Expression, ExpressionExpr),
+    format(atom(Expr), 'new ArithmeticNode(~w, ~w, ~w, ~w)',
+        [InputExpr, ExpressionExpr, ResultIndex, Width]).
+emit_plan_expression(Node, Expr) :-
     is_dict(Node, join), !,
     get_dict(left, Node, Left),
     get_dict(right, Node, Right),
@@ -597,6 +698,32 @@ equality_condition_expression(Left, Right, TupleVar, Expr) :-
     operand_expression(Left, TupleVar, LeftExpr),
     operand_expression(Right, TupleVar, RightExpr),
     format(atom(Expr), 'Equals(~w, ~w)', [LeftExpr, RightExpr]).
+
+emit_arithmetic_expression(expr{type:column, index:Index}, Expr) :-
+    format(atom(Expr), 'new ColumnExpression(~w)', [Index]).
+emit_arithmetic_expression(expr{type:value, value:Value}, Expr) :-
+    csharp_literal(Value, Literal),
+    format(atom(Expr), 'new ConstantExpression(~w)', [Literal]).
+emit_arithmetic_expression(expr{type:unary, op:Operator, expr:SubExpr}, Expr) :-
+    emit_arithmetic_expression(SubExpr, SubCode),
+    arithmetic_unary_operator_atom(Operator, OperatorAtom),
+    format(atom(Expr), 'new UnaryArithmeticExpression(ArithmeticUnaryOperator.~w, ~w)',
+        [OperatorAtom, SubCode]).
+emit_arithmetic_expression(expr{type:binary, op:Operator, left:Left, right:Right}, Expr) :-
+    emit_arithmetic_expression(Left, LeftCode),
+    emit_arithmetic_expression(Right, RightCode),
+    arithmetic_binary_operator_atom(Operator, OperatorAtom),
+    format(atom(Expr), 'new BinaryArithmeticExpression(ArithmeticBinaryOperator.~w, ~w, ~w)',
+        [OperatorAtom, LeftCode, RightCode]).
+
+arithmetic_unary_operator_atom(negate, 'Negate').
+
+arithmetic_binary_operator_atom(add, 'Add').
+arithmetic_binary_operator_atom(subtract, 'Subtract').
+arithmetic_binary_operator_atom(multiply, 'Multiply').
+arithmetic_binary_operator_atom(divide, 'Divide').
+arithmetic_binary_operator_atom(int_divide, 'IntegerDivide').
+arithmetic_binary_operator_atom(modulo, 'Modulo').
 
 operand_expression(operand{kind:column, index:Index}, TupleVar, Expr) :-
     format(atom(Expr), '~w[~w]', [TupleVar, Index]).

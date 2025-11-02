@@ -21,6 +21,7 @@ test_csharp_query_target :-
     verify_fact_plan,
     verify_join_plan,
     verify_selection_plan,
+    verify_arithmetic_plan,
     verify_recursive_plan,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
@@ -31,6 +32,9 @@ setup_test_data :-
     assertz(user:test_fact(bob, charlie)),
     assertz(user:(test_link(X, Z) :- test_fact(X, Y), test_fact(Y, Z))),
     assertz(user:(test_filtered(X) :- test_fact(X, _), X = alice)),
+    assertz(user:test_val(item1, 5)),
+    assertz(user:test_val(item2, 2)),
+    assertz(user:(test_increment(Id, Result) :- test_val(Id, Value), Result is Value + 1)),
     assertz(user:(test_reachable(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable(X, Z) :- test_fact(X, Y), test_reachable(Y, Z))).
 
@@ -38,6 +42,8 @@ cleanup_test_data :-
     retractall(user:test_fact(_, _)),
     retractall(user:test_link(_, _)),
     retractall(user:test_filtered(_)),
+    retractall(user:test_val(_, _)),
+    retractall(user:test_increment(_, _)),
     retractall(user:test_reachable(_, _)).
 
 verify_fact_plan :-
@@ -76,6 +82,25 @@ verify_selection_plan :-
     },
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:_}]),
     maybe_run_query_runtime(Plan, ['alice']).
+
+verify_arithmetic_plan :-
+    csharp_query_target:build_query_plan(test_increment/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:ArithmeticNode, columns:[0, 2], width:2}),
+    ArithmeticNode = arithmetic{
+        type:arithmetic,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        expression:Expression,
+        result_index:2,
+        width:3
+    },
+    Expression = expr{
+        type:binary,
+        op:add,
+        left:expr{type:column, index:1},
+        right:expr{type:value, value:1}
+    },
+    get_dict(relations, Plan, [relation{predicate:predicate{name:test_val, arity:2}, facts:_}]),
+    maybe_run_query_runtime(Plan, ['item1,6', 'item2,3']).
 
 verify_recursive_plan :-
     csharp_query_target:build_query_plan(test_reachable/2, [target(csharp_query)], Plan),
