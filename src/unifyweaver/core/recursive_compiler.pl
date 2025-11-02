@@ -16,6 +16,7 @@
 
 :- use_module('advanced/advanced_recursive_compiler').
 :- use_module(stream_compiler).
+:- use_module('../targets/csharp_query_target').
 :- use_module('../targets/csharp_stream_target').
 :- use_module(template_system).
 :- use_module(library(lists)).
@@ -90,6 +91,8 @@ compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
 
     (   Classification = non_recursive ->
         compile_non_recursive(Target, Pred/Arity, FinalOptions, GeneratedCode)
+    ;   Target == csharp ->
+        compile_recursive_csharp_query(Pred/Arity, FinalOptions, GeneratedCode)
     ;   Classification = transitive_closure(BasePred) ->
         format('Detected transitive closure over ~w~n', [BasePred]),
         compile_transitive_closure(Target, Pred, Arity, BasePred, FinalOptions, GeneratedCode)
@@ -119,6 +122,20 @@ compile_advanced(Target, Pred/Arity, _FinalOptions, _GeneratedCode) :-
     format(user_error, 'Advanced recursive compilation for target ~w not implemented (~w).~n',
            [Target, Pred/Arity]),
     fail.
+
+compile_recursive_csharp_query(Pred/Arity, Options, Code) :-
+    prepare_csharp_query_options(Options, QueryOptions),
+    (   csharp_query_target:build_query_plan(Pred/Arity, QueryOptions, Plan)
+    ->  csharp_query_target:render_plan_to_csharp(Plan, Code)
+    ;   format(user_error, 'C# query target failed to build plan for ~w.~n', [Pred/Arity]),
+        fail
+    ).
+
+prepare_csharp_query_options(Options, QueryOptions) :-
+    exclude(is_target_option, Options, Rest),
+    QueryOptions = [target(csharp_query)|Rest].
+
+is_target_option(target(_)).
 
 %% Classify predicate recursion pattern
 classify_predicate(Pred/Arity, Classification) :-

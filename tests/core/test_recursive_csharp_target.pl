@@ -10,7 +10,7 @@ test_recursive_csharp_target :-
     format('~n=== Testing recursive compiler C# target integration ===~n'),
     setup_test_data,
     test_non_recursive_facts_to_csharp,
-    test_recursive_guard_for_csharp,
+    test_recursive_tail_to_csharp,
     cleanup_test_data,
     format('~n=== C# target recursive compiler tests complete ===~n').
 
@@ -36,9 +36,12 @@ test_non_recursive_facts_to_csharp :-
         fail
     ).
 
-test_recursive_guard_for_csharp :-
-    (   compile_recursive(test_cf_rec/2, [target(csharp)], _)
-    ->  format('  ✗ FAILED: Expected unsupported recursion to fail~n'),
+test_recursive_tail_to_csharp :-
+    compile_recursive(test_cf_rec/2, [target(csharp)], Code),
+    (   sub_string(Code, _, _, _, "FixpointNode"),
+        sub_string(Code, _, _, _, "RecursiveRefNode"),
+        sub_string(Code, _, _, _, "RecursiveRefKind.Delta") ->
+        format('  ✓ Tail recursion compiled to C# query plan~n')
+    ;   format('  ✗ FAILED: Expected C# fixpoint plan output~n'),
         fail
-    ;   format('  ✓ Unsupported recursion correctly rejected for C# target~n')
     ).
