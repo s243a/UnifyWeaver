@@ -9,7 +9,23 @@
   - Fact arrays (`(string,string)[]` or similar).
   - Helper methods (`PredicateFactStream`, `PredicateStream`, `PredicateReverseStream`).
   - An optional `Main` for command-line execution.
+  - Inline XML summary and usage comment ahead of the primary stream method for quick reference.
 - Configuration: `compile_predicate_to_csharp/3` accepts options such as dedup strategy and will soon recognise `target(csharp_codegen)` explicitly.
+
+## Tuple Representation & Arity Limits
+- Rows are emitted as C# `ValueTuple` instances. This keeps generated code idiomatic and avoids custom record types while still enabling deconstruction.
+- The current backend supports predicate arities 1–3 end-to-end (fact arrays, helpers, and joins). The design scales to 7 columns, which is the practical limit for `ValueTuple` before nesting or custom structs become necessary.
+- Predicates that exceed this limit—or that require sparse/cached representations—should fall back to the C# query runtime target (or another backend) where we can swap in alternative storage strategies.
+
+## Pipeline Semantics
+- Clause compilation tracks each logical variable through the join plan. After every join we immediately project down to the minimal set of variables required by remaining joins and by the clause head. This prevents the `(X,Y,Y,Z)`-style blow-up that naïve joins can create.
+- Because the generated code uses LINQ iterators, evaluation stays lazy: projections run before the next element is requested, so intermediate tuples are never materialised as large buffers.
+- Variable reuse in heads (e.g. `p(X,Y,X)`) is handled by a final projection that reorders and duplicates fields as needed before results are returned or printed.
+
+## Performance Characteristics
+- **Memory:** O(1) for streaming execution. LINQ iterators only keep the current tuple from each source Enumerable.
+- **Time:** Each join is currently a nested-loop join (`Join` over the in-memory arrays). This is adequate for modest data sets and mirrors the Bash target; larger workloads should migrate to the query runtime for hash/semi-naive evaluation.
+- **Optimisations:** Because joins drop unused variables immediately, the tuple width stays bounded by the clause head and upcoming join keys. No sparse representation is required in this layer; more advanced layouts can be introduced in the query runtime if needed.
 
 ## Strengths
 - Developer tooling: Outputs standard C# source compatible with IDEs, analyzers, and debuggers.
