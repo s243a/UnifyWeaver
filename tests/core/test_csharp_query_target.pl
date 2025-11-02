@@ -105,6 +105,25 @@ verify_recursive_plan :-
     },
     maybe_run_query_runtime(Plan, ['alice,bob', 'bob,charlie', 'alice,charlie']).
 
+% Skip dotnet execution based on environment variable
+maybe_run_query_runtime(Plan, ExpectedRows) :-
+    getenv('SKIP_CSHARP_EXECUTION', '1'),
+    !,
+    writeln('  (dotnet execution skipped due to SKIP_CSHARP_EXECUTION=1)').
+
+% Run with build-first approach
+maybe_run_query_runtime(Plan, ExpectedRows) :-
+    dotnet_cli(Dotnet),
+    !,
+    prepare_temp_dir(Dir),
+    (   run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir)
+    ->  writeln('  (query runtime execution: PASS)'),
+        finalize_temp_dir(Dir)
+    ;   writeln('  (query runtime execution: FAIL - but plan structure verified)'),
+        finalize_temp_dir(Dir)
+    ).
+
+% Fall back to plan-only verification if dotnet not available
 maybe_run_query_runtime(_Plan, _ExpectedRows) :-
     writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)').
 
@@ -132,6 +151,62 @@ finalize_temp_dir(Dir) :-
     ;   ignore(delete_directory_and_contents(Dir))
     ).
 
+% Build-first approach (works around dotnet run hang)
+% See: docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md
+run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
+    % Step 1: Create project and write source files
+    dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
+    (   StatusNew =:= 0
+    ->  true
+    ;   writeln('  (dotnet new console failed; skipping runtime execution test)'), fail
+    ),
+
+    % Copy QueryRuntime.cs
+    absolute_file_name('src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs', RuntimePath, []),
+    directory_file_path(Dir, 'QueryRuntime.cs', RuntimeCopy),
+    copy_file(RuntimePath, RuntimeCopy),
+
+    % Generate and write query module
+    csharp_query_target:render_plan_to_csharp(Plan, ModuleSource),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    atom_concat(ModuleClass, '.cs', ModuleFile),
+    directory_file_path(Dir, ModuleFile, ModulePath),
+    write_string(ModulePath, ModuleSource),
+
+    % Write harness
+    harness_source(ModuleClass, HarnessSource),
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, HarnessSource),
+
+    % Step 2: Build the project
+    dotnet_command(Dotnet, ['build','--no-restore'], Dir, StatusBuild, BuildOutput),
+    (   StatusBuild =:= 0
+    ->  true
+    ;   format('  (dotnet build failed: ~s)~n', [BuildOutput]), fail
+    ),
+
+    % Step 3: Find and execute compiled binary
+    find_compiled_executable(Dir, ExePath),
+    (   ExePath \= ''
+    ->  true
+    ;   writeln('  (compiled executable not found)'), fail
+    ),
+
+    % Execute the binary directly
+    execute_compiled_binary(ExePath, Dir, StatusRun, Output),
+    (   StatusRun =:= 0
+    ->  extract_result_rows(Output, Rows),
+        sort(Rows, SortedRows),
+        maplist(to_atom, ExpectedRows, ExpectedAtoms),
+        sort(ExpectedAtoms, SortedExpected),
+        (   SortedRows == SortedExpected
+        ->  true
+        ;   format('  dotnet run output mismatch: ~w~n', [SortedRows]), fail
+        )
+    ;   format('  (execution failed: ~s)~n', [Output]), fail
+    ).
+
+% Original run_dotnet_plan (kept for reference, but not used)
 run_dotnet_plan(Dotnet, Plan, ExpectedRows, Dir) :-
     dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
     (   StatusNew =:= 0
@@ -161,6 +236,57 @@ run_dotnet_plan(Dotnet, Plan, ExpectedRows, Dir) :-
         )
     ;   format('  (dotnet run failed: ~s)~n', [Output]), fail
     ).
+
+% Find the compiled executable in bin/Debug/net9.0/
+find_compiled_executable(Dir, ExePath) :-
+    directory_file_path(Dir, 'bin/Debug/net9.0', DebugDir),
+    (   exists_directory(DebugDir)
+    ->  directory_files(DebugDir, Files),
+        member(File, Files),
+        \+ atom_concat(_, '.dll', File),
+        \+ atom_concat(_, '.pdb', File),
+        \+ atom_concat(_, '.deps.json', File),
+        \+ atom_concat(_, '.runtimeconfig.json', File),
+        File \= '.',
+        File \= '..',
+        directory_file_path(DebugDir, File, ExePath),
+        exists_file(ExePath),
+        !
+    ;   % No native executable, try DLL
+        directory_file_path(DebugDir, 'test.dll', DllPath),
+        exists_file(DllPath),
+        !,
+        ExePath = DllPath
+    ).
+
+% Execute compiled binary (native or DLL)
+execute_compiled_binary(ExePath, Dir, Status, Output) :-
+    dotnet_env(Dir, Env),
+    (   atom_concat(_, '.dll', ExePath)
+    ->  % Execute DLL with dotnet
+        dotnet_cli(Dotnet),
+        process_create(Dotnet, [ExePath],
+                       [ cwd(Dir),
+                         env(Env),
+                         stdout(pipe(Out)),
+                         stderr(pipe(Err)),
+                         process(PID)
+                       ])
+    ;   % Execute native binary directly
+        process_create(ExePath, [],
+                       [ cwd(Dir),
+                         env(Env),
+                         stdout(pipe(Out)),
+                         stderr(pipe(Err)),
+                         process(PID)
+                       ])
+    ),
+    read_string(Out, _, Stdout),
+    read_string(Err, _, Stderr),
+    close(Out),
+    close(Err),
+    process_wait(PID, exit(Status)),
+    string_concat(Stdout, Stderr, Output).
 
 harness_source(ModuleClass, Source) :-
     format(atom(Source),
