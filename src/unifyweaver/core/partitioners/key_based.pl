@@ -131,7 +131,7 @@ extract_key(Item, field(N), Key) :-
     !,
     extract_column(Item, N, Key).
 
-extract_key(Item, KeySpec, _) :-
+extract_key(_Item, KeySpec, _) :-
     throw(error(domain_error(key_spec, KeySpec),
                 context(extract_key/3, 'Unknown key specification'))).
 
