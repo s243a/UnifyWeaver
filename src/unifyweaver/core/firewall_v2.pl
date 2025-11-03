@@ -1,3 +1,9 @@
+% SPDX-License-Identifier: MIT OR Apache-2.0
+% Copyright (c) 2025 John William Creighton (s243a)
+%
+% This file is part of UnifyWeaver.
+% Licensed under either MIT or Apache-2.0 at your option.
+
 :- encoding(utf8).
 %% firewall_v2.pl - Fundamental Rules Firewall Architecture
 %
