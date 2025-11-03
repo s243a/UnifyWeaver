@@ -491,6 +491,21 @@ namespace UnifyWeaver.QueryRuntime
         private static object CreateIntegralResult(long value) =>
             value is >= int.MinValue and <= int.MaxValue ? (object)(int)value : value;
 
+        public static int CompareValues(object left, object right)
+        {
+            if (left is IComparable comparableLeft && right is IComparable comparableRight)
+            {
+                if (left.GetType() == right.GetType())
+                {
+                    return comparableLeft.CompareTo(right);
+                }
+            }
+
+            var leftNumeric = Convert.ToDouble(left);
+            var rightNumeric = Convert.ToDouble(right);
+            return leftNumeric.CompareTo(rightNumeric);
+        }
+
         private static bool TryAddRow(HashSet<RowWrapper> set, object[] tuple)
         {
             if (tuple is null) throw new ArgumentNullException(nameof(tuple));

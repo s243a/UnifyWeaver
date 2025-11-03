@@ -215,18 +215,26 @@ roles_for_nonrecursive_terms_([Term|Rest], Pred, Arity, [Role|Roles]) :-
     ),
     roles_for_nonrecursive_terms_(Rest, Pred, Arity, Roles).
 
-constraint_goal(Goal) :-
-    arithmetic_goal(Goal), !.
-constraint_goal(Goal) :-
-    functor(Goal, Functor, Arity),
-    Arity =:= 2,
-    (   Functor == '='
-    ;   Functor == '=='
-    ;   Functor == dif
-    ;   atom_codes(Functor, [92, 61])
+constraint_goal(Goal0) :-
+    strip_module(Goal0, _, Goal),
+    (   arithmetic_goal(Goal)
+    ->  true
+    ;   functor(Goal, Functor, Arity),
+        Arity =:= 2,
+        (   Functor == '='
+        ;   Functor == '=='
+        ;   Functor == dif
+        ;   Functor == >
+        ;   Functor == <
+        ;   Functor == >=
+        ;   Functor == =<
+        ;   Functor == =:=
+        ;   atom_codes(Functor, [92, 61])
+        )
     ).
 
-arithmetic_goal(Goal) :-
+arithmetic_goal(Goal0) :-
+    strip_module(Goal0, _, Goal),
     functor(Goal, is, 2).
 
 %% Clause helpers -----------------------------------------------------------
@@ -426,7 +434,8 @@ arithmetic_binary_operator(/, divide).
 arithmetic_binary_operator('//', int_divide).
 arithmetic_binary_operator(mod, modulo).
 
-constraint_condition(Goal, VarMap, Condition) :-
+constraint_condition(Goal0, VarMap, Condition) :-
+    strip_module(Goal0, _, Goal),
     functor(Goal, Functor, 2),
     arg(1, Goal, Left),
     arg(2, Goal, Right),
@@ -438,6 +447,16 @@ constraint_condition(Goal, VarMap, Condition) :-
     ->  build_condition(neq, Left, Right, VarMap, Condition)
     ;   atom_codes(Functor, [92, 61])
     ->  build_condition(neq, Left, Right, VarMap, Condition)
+    ;   Functor == >
+    ->  build_condition(gt, Left, Right, VarMap, Condition)
+    ;   Functor == <
+    ->  build_condition(lt, Left, Right, VarMap, Condition)
+    ;   Functor == >=
+    ->  build_condition(ge, Left, Right, VarMap, Condition)
+    ;   Functor == =<
+    ->  build_condition(le, Left, Right, VarMap, Condition)
+    ;   Functor == =:=
+    ->  build_condition(eq, Left, Right, VarMap, Condition)
     ;   format(user_error, 'C# query target: unsupported constraint goal ~q.~n', [Goal]),
         fail
     ).
@@ -457,8 +476,7 @@ constraint_operand(_VarMap, Term, operand{kind:value, value:Term}) :-
     atomic(Term), !.
 constraint_operand(_VarMap, Term, operand{kind:value, value:Term}) :-
     string(Term), !.
-constraint_operand(_VarMap, Term, _Operand) :-
-    format(user_error, 'C# query target: unsupported constraint operand ~q.~n', [Term]),
+constraint_operand(_VarMap, _Term, _Operand) :-
     fail.
 
 init_var_map(Args, Offset, VarMapOut) :-
@@ -559,7 +577,8 @@ gather_fact_rows(Pred, Arity, Rows) :-
         Rows).
 
 copy_term_value(Term, Copy) :-
-    (   atomic(Term) -> Copy = Term
+    (   var(Term) -> Copy = Term
+    ;   atomic(Term) -> Copy = Term
     ;   Term =.. [Functor|Args],
         maplist(copy_term_value, Args, CopyArgs),
         Copy =.. [Functor|CopyArgs]
@@ -689,15 +708,26 @@ recursive_role_atom(delta, 'Delta').
 recursive_role_atom(total, 'Total').
 
 selection_condition_expression(condition{type:eq, left:Left, right:Right}, TupleVar, Expr) :-
-    equality_condition_expression(Left, Right, TupleVar, Expr).
-selection_condition_expression(condition{type:neq, left:Left, right:Right}, TupleVar, Expr) :-
-    equality_condition_expression(Left, Right, TupleVar, EqExpr),
-    format(atom(Expr), '!(~w)', [EqExpr]).
-
-equality_condition_expression(Left, Right, TupleVar, Expr) :-
     operand_expression(Left, TupleVar, LeftExpr),
     operand_expression(Right, TupleVar, RightExpr),
     format(atom(Expr), 'Equals(~w, ~w)', [LeftExpr, RightExpr]).
+selection_condition_expression(condition{type:neq, left:Left, right:Right}, TupleVar, Expr) :-
+    operand_expression(Left, TupleVar, LeftExpr),
+    operand_expression(Right, TupleVar, RightExpr),
+    format(atom(Expr), '!(Equals(~w, ~w))', [LeftExpr, RightExpr]).
+selection_condition_expression(condition{type:gt, left:Left, right:Right}, TupleVar, Expr) :-
+    comparison_condition_expression(Left, Right, TupleVar, ' > 0', Expr).
+selection_condition_expression(condition{type:ge, left:Left, right:Right}, TupleVar, Expr) :-
+    comparison_condition_expression(Left, Right, TupleVar, ' >= 0', Expr).
+selection_condition_expression(condition{type:lt, left:Left, right:Right}, TupleVar, Expr) :-
+    comparison_condition_expression(Left, Right, TupleVar, ' < 0', Expr).
+selection_condition_expression(condition{type:le, left:Left, right:Right}, TupleVar, Expr) :-
+    comparison_condition_expression(Left, Right, TupleVar, ' <= 0', Expr).
+
+comparison_condition_expression(Left, Right, TupleVar, Suffix, Expr) :-
+    operand_expression(Left, TupleVar, LeftExpr),
+    operand_expression(Right, TupleVar, RightExpr),
+    format(atom(Expr), 'QueryExecutor.CompareValues(~w, ~w)~w', [LeftExpr, RightExpr, Suffix]).
 
 emit_arithmetic_expression(expr{type:column, index:Index}, Expr) :-
     format(atom(Expr), 'new ColumnExpression(~w)', [Index]).
