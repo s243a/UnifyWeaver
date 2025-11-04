@@ -1176,21 +1176,67 @@ Currently in `bash_executor.pl`, we bypass Prolog's file I/O and use external ba
 
 ## Priority 8: Testing Infrastructure Enhancement
 
-### 17. Implement Data Source Test Runner Generator
+### 17. ✅ COMPLETE: Implement Data Source Test Runner Generator
 
-**Status:** 📋 DESIGN NEEDED - Post-Release Enhancement
-**Location:** New module `src/unifyweaver/core/data_sources/test_generator.pl` (proposed)
-**Reference:** `examples/test_generated_scripts.sh` (current ad-hoc implementation)
+**Status:** ✅ IMPLEMENTED (2025-11-03)
+**Location:** `src/unifyweaver/core/advanced/data_source_test_runner.pl`
+**Reference:** `examples/test_data_sources.sh` (auto-generated)
 **Created:** 2025-10-23
+**Completed:** 2025-11-03
 
-**Current Situation:**
-We have an ad-hoc test script (`examples/test_generated_scripts.sh`) that tests the integration test's generated bash scripts:
-- `test_output/products.sh` (CSV source)
-- `test_output/orders.sh` (JSON source)
-- `test_output/analyze_orders.sh` (Python ETL)
-- `test_output/top_products.sh` (SQLite query)
+**Implementation Summary:**
 
-This works but is not automatically generated like advanced recursion tests.
+Implemented a declarative test runner generator for data sources, following the pattern of `test_runner_inference.pl` but adapted for integration testing pipelines.
+
+**Features Implemented:**
+1. **Automatic Source Discovery**: Scans `examples/` directory for `.pl` files containing `:- source(...)` declarations
+2. **Accurate Prolog Term Reading**: Uses Prolog's term reading instead of regex for robust parsing
+3. **Source Type Detection**: Supports CSV, JSON, Python (inline/SQLite), HTTP, and AWK sources
+4. **Arity Extraction**: Correctly extracts arity from config (`arity(N)`)
+5. **Test Case Inference**: Generates appropriate test cases based on source type
+6. **Pipeline Detection**: Identifies multi-stage data pipelines
+7. **Test Data Setup**: Auto-generates sample CSV and JSON test data
+8. **HTTP Filtering**: Excludes HTTP sources by default (use `include_http(true)` to enable)
+9. **Clean Code**: No singleton warnings, deterministic clause matching
+
+**Generated Output:**
+- `examples/test_data_sources.sh` - 367 line auto-generated test runner
+- Scans 7 example files, found 19 source declarations
+- Excludes 3 HTTP sources by default
+- Detects 6 pipelines for integration testing
+
+**Usage:**
+```prolog
+?- use_module(unifyweaver(core/advanced/data_source_test_runner)).
+?- generate_data_source_test_runner.
+% Generates examples/test_data_sources.sh
+
+% Or with options:
+?- generate_data_source_test_runner('custom_path.sh', [
+    examples_dir('examples'),
+    include_http(true),
+    test_data_dir('test_input'),
+    output_dir('test_output')
+]).
+```
+
+```bash
+# Run the generated test runner
+bash examples/test_data_sources.sh
+
+# With test data preservation
+KEEP_TEST_DATA=true bash examples/test_data_sources.sh
+```
+
+**Architectural Decisions (from original design questions):**
+1. **Module Organization**: `core/advanced/data_source_test_runner.pl` (alongside `test_runner_inference.pl`)
+2. **Abstraction Level**: Data-source-aware with extensible clause-based dispatch
+3. **Test Discovery**: Hybrid - discovers sources via Prolog term reading, annotates with inferred tests
+4. **Metadata Storage**: Extracted from source declarations at generation time
+5. **Test Execution Model**: Self-contained bash script (portable, independent)
+6. **Reusability**: Specialized for integration tests (complementary to unit test generator)
+7. **Relationship to Compiler**: Separate workflow, invoked independently
+8. **Extensibility**: Simple - add new `infer_data_source_tests/2` clause for new source types
 
 **Why This Is Different from test_runner_generator.pl:**
 
