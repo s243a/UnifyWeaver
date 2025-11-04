@@ -612,6 +612,32 @@ echo "✓ All tests passed!"
 
 ---
 
+## 5. C# Query Runtime Tests
+
+See the dedicated plan at [`docs/development/testing/v0_1_csharp_test_plan.md`](development/testing/v0_1_csharp_test_plan.md) for full details.
+
+### 5.1 Automated regression (skip dotnet execution)
+```bash
+SKIP_CSHARP_EXECUTION=1 \
+swipl -q \
+     -f tests/core/test_csharp_query_target.pl \
+     -g test_csharp_query_target:test_csharp_query_target \
+     -t halt
+```
+
+### 5.2 Optional full-suite check
+```bash
+SKIP_CSHARP_EXECUTION=1 swipl -q -f run_all_tests.pl -g main -t halt
+```
+
+### 5.3 Manual runtime validation (optional)
+Follow the “Manual Runtime Validation” section in the plan to:
+1. Generate a C# project under `output/csharp/<uuid>/`.
+2. Run `dotnet build --no-restore`.
+3. Execute the compiled binary or DLL (`dotnet bin/Debug/net9.0/<module>.dll` or the self-contained executable) and verify outputs (`alice,charlie`, `0`, `2`, `4`).
+
+---
+
 
 ## Troubleshooting Tests
 
