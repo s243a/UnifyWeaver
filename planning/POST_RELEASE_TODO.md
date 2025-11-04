@@ -217,11 +217,12 @@ unifyweaver_init :-
 
 ---
 
-### 5b. Fix PowerShell Integration Test Sequential Execution Hang
+### 5b. ✅ RESOLVED: Fix PowerShell Integration Test Sequential Execution Hang
 
-**Status:** ❌ BLOCKING in PowerShell environments
+**Status:** ✅ FIXED (Completed 2025-11-03)
 **Discovered:** PowerShell test plan, full integration test
 **Priority:** Medium (workaround exists)
+**Solution:** Added 0.5s delays between test stages (Commit 7348270)
 
 **Issue:**
 The full integration test (`examples/integration_test.pl`) hangs when running in PowerShell/Windows environments. The test crashes consistently at the Python Source Test stage after successfully completing CSV and JSON tests.
@@ -261,29 +262,30 @@ swipl -l init.pl -l examples/integration_test.pl -g "test_python_source, halt" -
 swipl -l init.pl -l examples/integration_test.pl -g "test_sqlite_source, halt" -t halt
 ```
 
-**Fix Strategy (v0.0.3+):**
-1. **Option A:** Add delays between `write_and_execute_bash` calls
-   - Try `sleep(0.5)` between test stages
-   - May help Windows process cleanup
+**Fix Applied (2025-11-03):**
+✅ **Option A:** Added 0.5s delays between `write_and_execute_bash` calls
+   - Implemented `sleep(0.5)` after each test stage
+   - Gives Windows process cleanup time between bash executions
+   - Total overhead: ~2 seconds for full integration test
+   - Solution is simple, effective, and harmless on all platforms
 
-2. **Option B:** Use alternative process execution method
-   - Investigate SWI-Prolog's `process_which/2` and `process_id/1`
-   - Check for leaked process handles
+**Changes Made:**
+- `examples/integration_test.pl`: Added `sleep(0.5)` after each of 4 test stages
+  - After test_csv_source (line 217)
+  - After test_json_source (line 243)
+  - After test_python_source (line 271)
+  - After test_sqlite_source (line 295)
 
-3. **Option C:** Refactor integration test for PowerShell
-   - Save all scripts first, then execute in batch
-   - Avoid mixing compilation and execution
+**Result:**
+- ✅ Full integration test now runs successfully on PowerShell/Windows
+- ✅ No functional changes (delays are harmless on Linux/macOS)
+- ✅ Simple, maintainable solution
+- ✅ No need for upstream bug report or complex refactoring
 
-4. **Option D:** Report to SWI-Prolog community
-   - This may be a known Windows limitation
-   - Check SWI-Prolog bug tracker
-
-**Impact:**
-- Low for end users (core functionality works)
-- Medium for development (integration test can't run full suite on Windows)
-- Workaround is simple and documented
-
-**Estimated Effort:** 4-6 hours investigation + potential upstream bug report
+**Remaining Options (not needed but documented for reference):**
+- Option B: Alternative process execution - not needed
+- Option C: Refactor test architecture - not needed
+- Option D: Report to SWI-Prolog - may still be useful for upstream awareness
 
 **Related Files:**
 - `src/unifyweaver/core/bash_executor.pl` - `write_and_execute_bash/3`
@@ -521,37 +523,54 @@ Test expects firewall to throw exceptions for denied services, but current imple
 
 ---
 
-### 14. Fix PowerShell Compatibility Layer WSL Backend Invocation from Bash
+### 14. ✅ RESOLVED: Fix PowerShell Compatibility Layer WSL Backend Invocation from Bash
 
-**Status:** 📋 IDENTIFIED - Known limitation
-**Location:** `scripts/powershell-compat/test_compat_layer.ps1`
+**Status:** ✅ FIXED (Already implemented in commit ce324e3, verified 2025-11-03)
+**Location:** `scripts/powershell-compat/`
 **Created:** 2025-10-17
+**Solution:** Wrapper script approach using `-File` parameter
 
-**Current Behavior:**
+**Original Issue:**
 - ✅ Works perfectly when called from PowerShell directly
 - ✅ Default Cygwin backend works from both PowerShell and WSL/Bash
 - ❌ Setting WSL backend via env var fails when invoked from WSL/Bash
 
-**Error When Called from WSL:**
+**Error When Called from WSL (before fix):**
 ```bash
 powershell.exe -Command "$env:UNIFYWEAVER_EXEC_MODE='wsl'; .\test_compat_layer.ps1"
 # Error: The term ':UNIFYWEAVER_EXEC_MODE=wsl' is not recognized...
 ```
 
 **Root Cause:**
-Bash shell escaping adds a `:` prefix when parsing the PowerShell command string, causing PowerShell to interpret it as a malformed command.
+Bash shell escaping adds a `:` prefix when parsing the PowerShell command string.
 
-**Workaround (Current):**
-Set environment variable in Windows before calling, or use PowerShell directly.
+**Fix Implemented:**
+✅ Created wrapper scripts using `-File` parameter approach:
+- `test_compat_layer_wsl.ps1` - Sets WSL backend and runs test
+- `test_compat_layer_cygwin.ps1` - Sets Cygwin backend and runs test
+- `test_from_bash.sh` - Bash script that invokes wrapper via `-File`
 
-**Proposed Fix:**
-1. Create a wrapper script approach using `-File` parameter
-2. Use a temporary PowerShell script to set env var and invoke test
-3. Or document as limitation with recommended usage patterns
+**Usage:**
+```bash
+# From Bash/WSL - now works correctly
+./scripts/powershell-compat/test_from_bash.sh wsl
+./scripts/powershell-compat/test_from_bash.sh cygwin
 
-**Estimated Effort:** 1-2 hours
+# Or directly with PowerShell -File
+powershell.exe -File ./scripts/powershell-compat/test_compat_layer_wsl.ps1
+```
 
-**Priority:** Low - The primary use case (running from PowerShell) works correctly. Cross-environment invocation is edge case.
+**Benefits:**
+1. ✅ Avoids shell escaping issues
+2. ✅ Clean cross-environment invocation
+3. ✅ Easy to test different backends
+4. ✅ Well-documented in README.md
+
+**Files:**
+- `scripts/powershell-compat/test_compat_layer_wsl.ps1` (wrapper)
+- `scripts/powershell-compat/test_compat_layer_cygwin.ps1` (wrapper)
+- `scripts/powershell-compat/test_from_bash.sh` (bash invoker)
+- `scripts/powershell-compat/README.md` (documentation)
 
 ---
 
