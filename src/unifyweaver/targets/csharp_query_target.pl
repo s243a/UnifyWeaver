@@ -16,6 +16,83 @@
 :- use_module(library(apply)).
 :- use_module(library(error)).
 :- use_module(library(lists)).
+:- use_module(library(ugraphs), [vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3]).
+
+spec_signature(predicate{name:Name, arity:Arity}, Name/Arity).
+
+term_signature(Term0, Name/Arity) :-
+    strip_module(Term0, _, Term),
+    nonvar(Term),
+    Term =.. [Name|Args],
+    length(Args, Arity).
+
+gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses) :-
+    findall(Head-Body,
+        (   functor(Head, Pred, Arity),
+            clause(user:Head, Body)
+        ),
+        ClausePairs),
+    (   ClausePairs == []
+    ->  format(user_error, 'C# query target: no clauses defined for ~w/~w.~n', [Pred, Arity]),
+        fail
+    ;   Clauses = ClausePairs
+    ).
+
+predicate_defined(Name/Arity) :-
+    current_predicate(user:Name/Arity).
+
+predicate_dependencies(Name/Arity, Dependencies) :-
+    Spec = predicate{name:Name, arity:Arity},
+    (   gather_predicate_clauses(Spec, Clauses)
+    ->  findall(Dep,
+            (   member(_-Body, Clauses),
+                body_to_list(Body, Terms),
+                member(Term, Terms),
+                \+ constraint_goal(Term),
+                term_signature(Term, Dep),
+                predicate_defined(Dep)
+            ),
+            RawDeps),
+        sort(RawDeps, Dependencies)
+    ;   Dependencies = []
+    ).
+
+compute_dependency_group(Pred/Arity, GroupSpecs) :-
+    build_dependency_graph([Pred/Arity], [], [], Vertices, [], Edges),
+    sort(Vertices, SortedVertices),
+    vertices_edges_to_ugraph(SortedVertices, Edges, Graph),
+    reachable(Pred/Arity, Graph, Forward),
+    transpose_ugraph(Graph, Transposed),
+    reachable(Pred/Arity, Transposed, Backward),
+    intersection(Forward, Backward, Component),
+    Component \= [],
+    maplist(vertex_to_spec, Component, Specs0),
+    sort_components(Pred/Arity, Specs0, GroupSpecs),
+    !.
+compute_dependency_group(Pred/Arity, [predicate{name:Pred, arity:Arity}]).
+
+build_dependency_graph([], _Visited, Vertices, Vertices, Edges, Edges).
+build_dependency_graph([Vertex|Queue], Visited, VertAccIn, VerticesOut, EdgeAccIn, EdgesOut) :-
+    (   memberchk(Vertex, Visited)
+    ->  build_dependency_graph(Queue, Visited, VertAccIn, VerticesOut, EdgeAccIn, EdgesOut)
+    ;   predicate_dependencies(Vertex, Deps),
+        append(Deps, Queue, QueueNext),
+        findall(Vertex-Dep, member(Dep, Deps), NewEdges),
+        append(NewEdges, EdgeAccIn, EdgeAccMid),
+        append([Vertex|Deps], VertAccIn, VertAccMid),
+        build_dependency_graph(QueueNext, [Vertex|Visited], VertAccMid, VerticesOut, EdgeAccMid, EdgesOut)
+    ).
+
+vertex_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
+
+sort_components(Pred/Arity, Specs, [HeadSpec|RestSpecs]) :-
+    HeadSpec = predicate{name:Pred, arity:Arity},
+    include(\=(HeadSpec), Specs, Others),
+    maplist(spec_signature, Others, Signatures),
+    sort(Signatures, SortedSigs),
+    maplist(signature_to_spec, SortedSigs, RestSpecs).
+
+signature_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
 
 %% build_query_plan(+PredIndicator, +Options, -PlanDict) is semidet.
 %  Produce a declarative plan describing how to evaluate the requested
@@ -25,14 +102,17 @@ build_query_plan(Pred/Arity, Options, Plan) :-
     must_be(atom, Pred),
     must_be(integer, Arity),
     Arity >= 0,
-
-    functor(HeadPattern, Pred, Arity),
-    findall(HeadPattern-Body, clause(user:HeadPattern, Body), Clauses),
-    partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
-    (   RecClauses == []
-    ->  classify_clauses(BaseClauses, Classification),
-        build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Plan)
-    ;   build_recursive_plan(Pred, Arity, BaseClauses, RecClauses, Options, Plan)
+    HeadSpec = predicate{name:Pred, arity:Arity},
+    compute_dependency_group(Pred/Arity, GroupSpecs),
+    (   GroupSpecs = [HeadSpec]
+    ->  gather_predicate_clauses(HeadSpec, Clauses),
+        partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
+        (   RecClauses == []
+        ->  classify_clauses(BaseClauses, Classification),
+            build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Plan)
+        ;   build_recursive_plan(HeadSpec, [HeadSpec], BaseClauses, RecClauses, Options, Plan)
+        )
+    ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Plan)
     ).
 
 partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses) :-
@@ -80,7 +160,7 @@ build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Plan) :-
     Head =.. [Pred|HeadArgs],
     length(HeadArgs, Arity),
     HeadSpec = predicate{name:Pred, arity:Arity},
-    build_rule_clause(HeadSpec, HeadArgs, Body, Node, Relations),
+    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Node, Relations),
     dedup_relations(Relations, UniqueRelations),
     Plan = plan{
         head:HeadSpec,
@@ -108,10 +188,10 @@ build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _) :-
 
 %% Recursive plan construction ----------------------------------------------
 
-build_recursive_plan(Pred, Arity, BaseClauses, RecClauses, Options, Plan) :-
-    HeadSpec = predicate{name:Pred, arity:Arity},
-    build_base_root(Pred, Arity, BaseClauses, Options, BaseRoot, BaseRelations),
-    build_recursive_variants(HeadSpec, RecClauses, RecursiveNodes, RecursiveRelations),
+build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Plan) :-
+    get_dict(arity, HeadSpec, Arity),
+    build_base_root(HeadSpec, BaseClauses, Options, BaseRoot, BaseRelations),
+    build_recursive_variants(HeadSpec, GroupSpecs, RecClauses, RecursiveNodes, RecursiveRelations),
     append(BaseRelations, RecursiveRelations, CombinedRelations0),
     dedup_relations(CombinedRelations0, CombinedRelations),
     Root = fixpoint{
@@ -129,19 +209,64 @@ build_recursive_plan(Pred, Arity, BaseClauses, RecClauses, Options, Plan) :-
         is_recursive:true
     }.
 
-build_base_root(_Pred, Arity, [], _Options, empty{type:empty, width:Arity}, []).
-build_base_root(Pred, Arity, Clauses, Options, BaseRoot, Relations) :-
+build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Plan) :-
+    maplist(build_member_plan(GroupSpecs, Options), GroupSpecs, MemberStructs, RelationLists),
+    append(RelationLists, RelationsFlat),
+    dedup_relations(RelationsFlat, CombinedRelations),
+    Root = mutual_fixpoint{
+        type:mutual_fixpoint,
+        head:HeadSpec,
+        members:MemberStructs
+    },
+    Plan = plan{
+        head:HeadSpec,
+        root:Root,
+        relations:CombinedRelations,
+        metadata:_{classification:mutual_recursive, options:Options},
+        is_recursive:true
+    }.
+
+build_member_plan(GroupSpecs, Options, PredSpec, member{
+        type:member,
+        predicate:PredSpec,
+        base:BaseRoot,
+        recursive:RecursiveNodes,
+        width:Arity
+    }, Relations) :-
+    get_dict(arity, PredSpec, Arity),
+    gather_predicate_clauses(PredSpec, Clauses),
+    partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses),
+    build_base_root(PredSpec, BaseClauses, Options, BaseRoot, BaseRelations),
+    build_recursive_variants(PredSpec, GroupSpecs, RecClauses, RecursiveNodes, RecursiveRelations),
+    append(BaseRelations, RecursiveRelations, Relations).
+
+partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses) :-
+    partition(clause_has_group_literal(GroupSpecs), Clauses, RecClauses, BaseClauses).
+
+clause_has_group_literal(GroupSpecs, _Head-Body) :-
+    body_to_list(Body, Terms),
+    member(Term, Terms),
+    group_literal_spec(Term, GroupSpecs, _).
+
+build_base_root(_HeadSpec, [], _Options, empty{type:empty, width:Arity}, []) :-
+    Arity = 0.
+build_base_root(HeadSpec, [], _Options, empty{type:empty, width:Arity}, []) :-
+    get_dict(arity, HeadSpec, Arity).
+build_base_root(HeadSpec, Clauses, Options, BaseRoot, Relations) :-
+    get_dict(name, HeadSpec, Pred),
+    get_dict(arity, HeadSpec, Arity),
     classify_clauses(Clauses, Class),
     build_plan_by_class(Class, Pred, Arity, Clauses, Options, BasePlan),
     get_dict(root, BasePlan, BaseRoot),
     get_dict(relations, BasePlan, Relations).
 
-build_recursive_variants(HeadSpec, Clauses, Variants, Relations) :-
+build_recursive_variants(_HeadSpec, _GroupSpecs, [], [], []) :- !.
+build_recursive_variants(HeadSpec, GroupSpecs, Clauses, Variants, Relations) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
     findall(variant(Node, RelList),
         (   member(Head-Body, Clauses),
-            build_recursive_clause_variants(HeadSpec, Head-Body, VariantStructs),
+            build_recursive_clause_variants(HeadSpec, GroupSpecs, Head-Body, VariantStructs),
             member(variant(Node, RelList), VariantStructs)
         ),
         VariantPairs),
@@ -154,48 +279,58 @@ build_recursive_variants(HeadSpec, Clauses, Variants, Relations) :-
         dedup_relations(RelationsFlat, Relations)
     ).
 
-build_recursive_clause_variants(HeadSpec, Head-Body, Variants) :-
+build_recursive_clause_variants(HeadSpec, GroupSpecs, Head-Body, Variants) :-
     Head =.. [_|HeadArgs],
     body_to_list(Body, Terms),
-    recursive_occurrence_indices(HeadSpec, Terms, Occurrences),
-    Occurrences \= [],
-    findall(variant(Node, RelList),
-        (   member(DeltaIndex, Occurrences),
-            assign_roles_for_variant(HeadSpec, Terms, DeltaIndex, Roles),
-            build_pipeline(HeadSpec, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
+    group_occurrence_positions(GroupSpecs, Terms, Occurrences),
+    (   Occurrences = []
+    ->  assign_roles_for_variant(HeadSpec, GroupSpecs, Terms, none, Roles),
+        build_pipeline(HeadSpec, GroupSpecs, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
+        project_to_head(HeadArgs, PipelineNode, VarMap, Node),
+        Variants = [variant(Node, RelList)]
+    ;   findall(variant(Node, RelList),
+        (   member(occurrence(Index, PredSpec), Occurrences),
+            assign_roles_for_variant(HeadSpec, GroupSpecs, Terms, delta(Index, PredSpec), Roles),
+            build_pipeline(HeadSpec, GroupSpecs, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
             project_to_head(HeadArgs, PipelineNode, VarMap, Node)
         ),
-        Variants).
+        Variants)
+    ).
 
-recursive_occurrence_indices(HeadSpec, Terms, Indices) :-
-    get_dict(name, HeadSpec, Pred),
-    get_dict(arity, HeadSpec, Arity),
-    findall(Index,
+group_occurrence_positions(GroupSpecs, Terms, Occurrences) :-
+    findall(occurrence(Index, PredSpec),
         (   nth0(Index, Terms, Term),
-            functor(Term, Pred, TermArity),
-            TermArity =:= Arity
+            group_literal_spec(Term, GroupSpecs, PredSpec)
         ),
-        Indices).
+        Occurrences).
 
-assign_roles_for_variant(HeadSpec, Terms, DeltaIndex, Roles) :-
+assign_roles_for_variant(HeadSpec, GroupSpecs, Terms, DeltaSpec, Roles) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
     same_length(Terms, Roles),
-    assign_roles_for_variant_(Terms, Pred, Arity, DeltaIndex, 0, Roles).
+    assign_roles_for_variant_(Terms, GroupSpecs, Pred, Arity, DeltaSpec, 0, Roles).
 
-assign_roles_for_variant_([], _Pred, _Arity, _DeltaIndex, _Pos, []).
-assign_roles_for_variant_([Term|Rest], Pred, Arity, DeltaIndex, Pos, [Role|Roles]) :-
+assign_roles_for_variant_([], _GroupSpecs, _Pred, _Arity, _DeltaSpec, _Pos, []).
+assign_roles_for_variant_([Term|Rest], GroupSpecs, Pred, Arity, DeltaSpec, Pos, [Role|Roles]) :-
     (   constraint_goal(Term)
     ->  Role = constraint
-    ;   functor(Term, Pred, TermArity),
-        TermArity =:= Arity
-    ->  (   Pos =:= DeltaIndex -> Role = recursive(delta)
+    ;   term_signature(Term, Name/TermArity),
+        TermArity =:= Arity,
+        Pred == Name
+    ->  (   DeltaSpec = delta(Pos, _)
+        ->  Role = recursive(delta)
         ;   Role = recursive(total)
         )
+    ;   group_literal_spec(Term, GroupSpecs, PredSpec)
+    ->  (   DeltaSpec = delta(Pos, PredSpec)
+        ->  RoleKind = delta
+        ;   RoleKind = total
+        ),
+        Role = mutual(PredSpec, RoleKind)
     ;   Role = relation
     ),
     Pos1 is Pos + 1,
-    assign_roles_for_variant_(Rest, Pred, Arity, DeltaIndex, Pos1, Roles).
+    assign_roles_for_variant_(Rest, GroupSpecs, Pred, Arity, DeltaSpec, Pos1, Roles).
 
 roles_for_nonrecursive_terms(HeadSpec, Terms, Roles) :-
     get_dict(name, HeadSpec, Pred),
@@ -214,6 +349,11 @@ roles_for_nonrecursive_terms_([Term|Rest], Pred, Arity, [Role|Roles]) :-
     ;   Role = relation
     ),
     roles_for_nonrecursive_terms_(Rest, Pred, Arity, Roles).
+
+group_literal_spec(Term, GroupSpecs, PredSpec) :-
+    term_signature(Term, Name/Arity),
+    member(PredSpec, GroupSpecs),
+    spec_signature(PredSpec, Name/Arity).
 
 constraint_goal(Goal0) :-
     strip_module(Goal0, _, Goal),
@@ -249,15 +389,15 @@ build_clause_node(HeadSig, Head-Body, Node, Relations) :-
     HeadSig = Pred/Arity,
     Head =.. [Pred|HeadArgs],
     HeadSpec = predicate{name:Pred, arity:Arity},
-    build_rule_clause(HeadSpec, HeadArgs, Body, Node, ClauseRelations),
+    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Node, ClauseRelations),
     Relations = ClauseRelations.
 
-build_rule_clause(HeadSpec, HeadArgs, Body, Root, Relations) :-
+build_rule_clause(GroupSpecs, HeadSpec, HeadArgs, Body, Root, Relations) :-
     Body \= true,
     body_to_list(Body, Terms),
     Terms \= [],
     roles_for_nonrecursive_terms(HeadSpec, Terms, Roles),
-    build_pipeline(HeadSpec, Terms, Roles, PipelineNode, Relations, VarMap, Width),
+    build_pipeline(HeadSpec, GroupSpecs, Terms, Roles, PipelineNode, Relations, VarMap, Width),
     project_to_head(HeadArgs, PipelineNode, VarMap, Root),
     length(HeadArgs, WidthHead),
     Width >= WidthHead.
@@ -269,24 +409,24 @@ body_to_list((A, B), Terms) :- !,
     append(TA, TB, Terms).
 body_to_list(Goal, [Goal]).
 
-build_pipeline(HeadSpec, [Term|Rest], [Role|Roles], FinalNode, FinalRelations, FinalVarMap, FinalWidth) :-
-    build_initial_node(HeadSpec, Term, Role, Node0, Relations0, VarMap0, Width0),
-    fold_terms(Rest, Roles, HeadSpec, Node0, VarMap0, Width0, Relations0,
+build_pipeline(HeadSpec, GroupSpecs, [Term|Rest], [Role|Roles], FinalNode, FinalRelations, FinalVarMap, FinalWidth) :-
+    build_initial_node(HeadSpec, GroupSpecs, Term, Role, Node0, Relations0, VarMap0, Width0),
+    fold_terms(GroupSpecs, Rest, Roles, HeadSpec, Node0, VarMap0, Width0, Relations0,
                FinalNode, FinalVarMap, FinalWidth, FinalRelations).
 
-build_initial_node(HeadSpec, _Term, constraint, _Node, _Relations, _VarMap, _Width) :-
+build_initial_node(HeadSpec, _GroupSpecs, _Term, constraint, _Node, _Relations, _VarMap, _Width) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
     format(user_error, 'C# query target: clause for ~w/~w begins with a constraint; reorder body literals.~n', [Pred, Arity]),
     fail.
-build_initial_node(_HeadSpec, Term, relation, Node, Relations, VarMap, Width) :-
+build_initial_node(_HeadSpec, _GroupSpecs, Term, relation, Node, Relations, VarMap, Width) :-
     Term =.. [Pred|Args],
     length(Args, Arity),
     ensure_relation(Pred, Arity, [], Relations),
     relation_scan_node(Pred, Arity, Node),
     init_var_map(Args, 0, VarMap),
     Width = Arity.
-build_initial_node(HeadSpec, Term, recursive(RoleKind), Node, Relations, VarMap, Width) :-
+build_initial_node(HeadSpec, _GroupSpecs, Term, recursive(RoleKind), Node, Relations, VarMap, Width) :-
     get_dict(arity, HeadSpec, Arity),
     Term =.. [_|Args],
     length(Args, TermArity),
@@ -300,14 +440,21 @@ build_initial_node(HeadSpec, Term, recursive(RoleKind), Node, Relations, VarMap,
     init_var_map(Args, 0, VarMap),
     Width = Arity,
     Relations = [].
+build_initial_node(_HeadSpec, _GroupSpecs, Term, mutual(PredSpec, RoleKind), Node, Relations, VarMap, Width) :-
+    spec_signature(PredSpec, _Name/Arity),
+    Term =.. [_|Args],
+    cross_ref_node(PredSpec, RoleKind, Node),
+    init_var_map(Args, 0, VarMap),
+    Width = Arity,
+    Relations = [].
 
-fold_terms([], [], _HeadSpec, Node, VarMap, Width, Relations, Node, VarMap, Width, Relations).
-fold_terms([Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, WidthIn, RelationsIn,
+fold_terms(_GroupSpecs, [], [], _HeadSpec, Node, VarMap, Width, Relations, Node, VarMap, Width, Relations).
+fold_terms(GroupSpecs, [Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, WidthIn, RelationsIn,
            NodeOut, VarMapOut, WidthOut, RelationsOut) :-
     (   Role = constraint
     ->  build_constraint_node(Term, AccNode, VarMapIn, WidthIn,
                                ConstraintNode, VarMapMid, WidthMid),
-        fold_terms(Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsIn,
+        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsIn,
                    NodeOut, VarMapOut, WidthOut, RelationsOut)
     ;   Role = relation
     ->  Term =.. [Pred|Args],
@@ -315,14 +462,21 @@ fold_terms([Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, WidthIn, Rela
         ensure_relation(Pred, Arity, RelationsIn, RelationsNext),
         relation_scan_node(Pred, Arity, RightNode),
         build_join_node(AccNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapMid, WidthMid, JoinNode),
-        fold_terms(Rest, Roles, HeadSpec, JoinNode, VarMapMid, WidthMid, RelationsNext,
+        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, JoinNode, VarMapMid, WidthMid, RelationsNext,
                    NodeOut, VarMapOut, WidthOut, RelationsOut)
     ;   Role = recursive(RoleKind)
     ->  get_dict(arity, HeadSpec, Arity),
         Term =.. [_|Args],
         recursive_ref_node(HeadSpec, RoleKind, RightNode),
         build_join_node(AccNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapMid, WidthMid, JoinNode),
-        fold_terms(Rest, Roles, HeadSpec, JoinNode, VarMapMid, WidthMid, RelationsIn,
+        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, JoinNode, VarMapMid, WidthMid, RelationsIn,
+                   NodeOut, VarMapOut, WidthOut, RelationsOut)
+    ;   Role = mutual(PredSpec, RoleKind)
+    ->  spec_signature(PredSpec, _Name/Arity),
+        Term =.. [_|Args],
+        cross_ref_node(PredSpec, RoleKind, RightNode),
+        build_join_node(AccNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapMid, WidthMid, JoinNode),
+        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, JoinNode, VarMapMid, WidthMid, RelationsIn,
                    NodeOut, VarMapOut, WidthOut, RelationsOut)
     ).
 
@@ -330,6 +484,9 @@ relation_scan_node(Pred, Arity, relation_scan{type:relation_scan, predicate:pred
 
 recursive_ref_node(HeadSpec, RoleKind, recursive_ref{type:recursive_ref, predicate:HeadSpec, role:RoleKind, width:Arity}) :-
     get_dict(arity, HeadSpec, Arity).
+
+cross_ref_node(PredSpec, RoleKind, cross_ref{type:cross_ref, predicate:PredSpec, role:RoleKind, width:Arity}) :-
+    get_dict(arity, PredSpec, Arity).
 
 build_join_node(LeftNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapOut, WidthOut, JoinNode) :-
     shared_variable_keys(Args, VarMapIn, 0, LeftKeys, RightKeys),
@@ -697,6 +854,23 @@ emit_plan_expression(Node, Expr) :-
     format(atom(Expr), 'new RecursiveRefNode(new PredicateId("~w", ~w), RecursiveRefKind.~w)',
         [NameStr, Arity, RoleAtom]).
 emit_plan_expression(Node, Expr) :-
+    is_dict(Node, cross_ref), !,
+    get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
+    get_dict(role, Node, Role),
+    recursive_role_atom(Role, RoleAtom),
+    atom_string(Name, NameStr),
+    format(atom(Expr), 'new CrossRefNode(new PredicateId("~w", ~w), RecursiveRefKind.~w)',
+        [NameStr, Arity, RoleAtom]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, mutual_fixpoint), !,
+    get_dict(head, Node, predicate{name:Name, arity:Arity}),
+    get_dict(members, Node, Members),
+    maplist(emit_mutual_member_expression, Members, MemberExprs),
+    atomic_list_concat(MemberExprs, ', ', MemberList),
+    atom_string(Name, NameStr),
+    format(atom(Expr), 'new MutualFixpointNode(new MutualMember[]{ ~w }, new PredicateId("~w", ~w))',
+        [MemberList, NameStr, Arity]).
+emit_plan_expression(Node, Expr) :-
     is_dict(Node, empty), !,
     get_dict(width, Node, Width),
     format(atom(Expr), 'new EmptyNode(~w)', [Width]).
@@ -706,6 +880,17 @@ emit_plan_expression(Node, _Expr) :-
 
 recursive_role_atom(delta, 'Delta').
 recursive_role_atom(total, 'Total').
+
+emit_mutual_member_expression(Member, Expr) :-
+    get_dict(predicate, Member, predicate{name:Name, arity:Arity}),
+    get_dict(base, Member, BasePlan),
+    get_dict(recursive, Member, RecursivePlans),
+    emit_plan_expression(BasePlan, BaseExpr),
+    maplist(emit_plan_expression, RecursivePlans, RecursiveExprs),
+    atomic_list_concat(RecursiveExprs, ', ', RecursiveList),
+    atom_string(Name, NameStr),
+    format(atom(Expr), 'new MutualMember(new PredicateId("~w", ~w), ~w, new PlanNode[]{ ~w })',
+        [NameStr, Arity, BaseExpr, RecursiveList]).
 
 selection_condition_expression(condition{type:eq, left:Left, right:Right}, TupleVar, Expr) :-
     operand_expression(Left, TupleVar, LeftExpr),

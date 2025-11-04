@@ -89,6 +89,21 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record RecursiveRefNode(PredicateId Predicate, RecursiveRefKind Kind) : PlanNode;
 
     /// <summary>
+    /// References another predicate participating in a mutual fixpoint.
+    /// </summary>
+    public sealed record CrossRefNode(PredicateId Predicate, RecursiveRefKind Kind) : PlanNode;
+
+    /// <summary>
+    /// Represents the base and recursive plans for a predicate inside a mutual fixpoint.
+    /// </summary>
+    public sealed record MutualMember(PredicateId Predicate, PlanNode BasePlan, IReadOnlyList<PlanNode> RecursivePlans);
+
+    /// <summary>
+    /// Executes a set of predicates that depend on one another recursively.
+    /// </summary>
+    public sealed record MutualFixpointNode(IReadOnlyList<MutualMember> Members, PredicateId Head) : PlanNode;
+
+    /// <summary>
     /// Base type for arithmetic expressions.
     /// </summary>
     public abstract record ArithmeticExpression;
@@ -228,8 +243,14 @@ namespace UnifyWeaver.QueryRuntime
                 case FixpointNode fixpoint:
                     return ExecuteFixpoint(fixpoint);
 
+                case MutualFixpointNode mutualFixpoint:
+                    return ExecuteMutualFixpoint(mutualFixpoint);
+
                 case RecursiveRefNode recursiveRef:
                     return EvaluateRecursiveReference(recursiveRef, context);
+
+                case CrossRefNode crossRef:
+                    return EvaluateCrossReference(crossRef, context);
 
                 case EmptyNode:
                     return Enumerable.Empty<object[]>();
@@ -290,12 +311,12 @@ namespace UnifyWeaver.QueryRuntime
             if (fixpoint is null) throw new ArgumentNullException(nameof(fixpoint));
 
             var comparer = StructuralArrayComparer.Instance;
+            var predicate = fixpoint.Predicate;
             var totalSet = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
             var totalRows = new List<object[]>();
-
-            // Seed with base clauses
             var baseRows = Evaluate(fixpoint.BasePlan).ToList();
             var deltaRows = new List<object[]>();
+
             foreach (var tuple in baseRows)
             {
                 if (TryAddRow(totalSet, tuple))
@@ -305,13 +326,14 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
-            var context = new EvaluationContext(fixpoint.Predicate)
+            var context = new EvaluationContext
             {
-                Total = totalRows,
-                Delta = deltaRows
+                Current = predicate
             };
+            context.Totals[predicate] = totalRows;
+            context.Deltas[predicate] = deltaRows;
 
-            while (context.Delta.Count > 0)
+            while (context.Deltas.TryGetValue(predicate, out var delta) && delta.Count > 0)
             {
                 var nextDelta = new List<object[]>();
                 foreach (var recursivePlan in fixpoint.RecursivePlans)
@@ -325,10 +347,76 @@ namespace UnifyWeaver.QueryRuntime
                         }
                     }
                 }
-                context.Delta = nextDelta;
+                context.Deltas[predicate] = nextDelta;
             }
 
             return totalRows;
+        }
+
+        private IEnumerable<object[]> ExecuteMutualFixpoint(MutualFixpointNode node)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+
+            var comparer = StructuralArrayComparer.Instance;
+            var totalSets = new Dictionary<PredicateId, HashSet<RowWrapper>>();
+            var context = new EvaluationContext();
+
+            foreach (var member in node.Members)
+            {
+                var predicate = member.Predicate;
+                var totalList = new List<object[]>();
+                var deltaList = new List<object[]>();
+                context.Totals[predicate] = totalList;
+                context.Deltas[predicate] = deltaList;
+
+                var set = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
+                totalSets[predicate] = set;
+
+                var baseRows = Evaluate(member.BasePlan).ToList();
+                foreach (var tuple in baseRows)
+                {
+                    if (TryAddRow(set, tuple))
+                    {
+                        totalList.Add(tuple);
+                        deltaList.Add(tuple);
+                    }
+                }
+            }
+
+            while (context.Deltas.Values.Any(delta => delta.Count > 0))
+            {
+                var nextDeltas = node.Members.ToDictionary(member => member.Predicate, _ => new List<object[]>());
+
+                foreach (var member in node.Members)
+                {
+                    context.Current = member.Predicate;
+                    var predicate = member.Predicate;
+                    var totalList = context.Totals[predicate];
+                    var totalSet = totalSets[predicate];
+                    var memberNext = nextDeltas[predicate];
+
+                    foreach (var recursivePlan in member.RecursivePlans)
+                    {
+                        foreach (var tuple in Evaluate(recursivePlan, context))
+                        {
+                            if (TryAddRow(totalSet, tuple))
+                            {
+                                totalList.Add(tuple);
+                                memberNext.Add(tuple);
+                            }
+                        }
+                    }
+                }
+
+                foreach (var pair in nextDeltas)
+                {
+                    context.Deltas[pair.Key] = pair.Value;
+                }
+            }
+
+            return context.Totals.TryGetValue(node.Head, out var headRows)
+                ? headRows
+                : Array.Empty<object[]>();
         }
 
         private IEnumerable<object[]> EvaluateRecursiveReference(RecursiveRefNode node, EvaluationContext? context)
@@ -338,17 +426,36 @@ namespace UnifyWeaver.QueryRuntime
                 throw new InvalidOperationException("Recursive reference evaluated without an execution context.");
             }
 
-            if (!node.Predicate.Equals(context.Head))
+            if (!node.Predicate.Equals(context.Current))
             {
-                throw new NotSupportedException($"Cross-predicate recursion is not supported (referenced {node.Predicate} within {context.Head}).");
+                throw new NotSupportedException($"Cross-predicate recursion is not supported (referenced {node.Predicate} while evaluating {context.Current}).");
             }
 
-            return node.Kind switch
+            return ResolveReference(node.Predicate, node.Kind, context);
+        }
+
+        private IEnumerable<object[]> EvaluateCrossReference(CrossRefNode node, EvaluationContext? context)
+        {
+            if (context is null)
             {
-                RecursiveRefKind.Total => context.Total,
-                RecursiveRefKind.Delta => context.Delta,
-                _ => throw new ArgumentOutOfRangeException(nameof(node.Kind), node.Kind, "Unknown recursive reference kind.")
+                throw new InvalidOperationException("Mutual recursion reference evaluated without an execution context.");
+            }
+
+            return ResolveReference(node.Predicate, node.Kind, context);
+        }
+
+        private static IEnumerable<object[]> ResolveReference(PredicateId predicate, RecursiveRefKind kind, EvaluationContext context)
+        {
+            var map = kind switch
+            {
+                RecursiveRefKind.Total => context.Totals,
+                RecursiveRefKind.Delta => context.Deltas,
+                _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown recursive reference kind.")
             };
+
+            return map.TryGetValue(predicate, out var rows)
+                ? rows
+                : Array.Empty<object[]>();
         }
 
         private object EvaluateArithmeticExpression(ArithmeticExpression expression, object[] tuple) =>
@@ -514,14 +621,12 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class EvaluationContext
         {
-            public EvaluationContext(PredicateId head)
-            {
-                Head = head;
-            }
+            public PredicateId Current { get; set; }
+            = new PredicateId("", 0);
 
-            public PredicateId Head { get; }
-            public IReadOnlyList<object[]> Total { get; set; } = Array.Empty<object[]>();
-            public IReadOnlyList<object[]> Delta { get; set; } = Array.Empty<object[]>();
+            public Dictionary<PredicateId, List<object[]>> Totals { get; } = new();
+
+            public Dictionary<PredicateId, List<object[]>> Deltas { get; } = new();
         }
 
         private sealed record RowWrapper(object[] Row);

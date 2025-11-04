@@ -15,6 +15,9 @@
 :- dynamic cqt_option/2.
 :- dynamic user:test_factorial/2.
 :- dynamic user:test_factorial_input/1.
+:- dynamic user:test_even/1.
+:- dynamic user:test_odd/1.
+:- dynamic user:test_parity_input/1.
 
 test_csharp_query_target :-
     configure_csharp_query_options,
@@ -27,6 +30,7 @@ test_csharp_query_target :-
     verify_recursive_arithmetic_plan,
     verify_comparison_plan,
     verify_recursive_plan,
+    verify_mutual_recursion_plan,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
 
@@ -53,6 +57,25 @@ setup_test_data :-
         test_factorial(N1, Prev),
         Result is Prev * N
     )),
+    assertz(user:test_parity_input(0)),
+    assertz(user:test_parity_input(1)),
+    assertz(user:test_parity_input(2)),
+    assertz(user:test_parity_input(3)),
+    assertz(user:test_parity_input(4)),
+    assertz(user:test_even(0)),
+    assertz(user:test_odd(1)),
+    assertz(user:(test_even(N) :-
+        test_parity_input(N),
+        N > 0,
+        N1 is N - 1,
+        test_odd(N1)
+    )),
+    assertz(user:(test_odd(N) :-
+        test_parity_input(N),
+        N > 1,
+        N1 is N - 1,
+        test_even(N1)
+    )),
     assertz(user:(test_reachable(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable(X, Z) :- test_fact(X, Y), test_reachable(Y, Z))).
 
@@ -66,6 +89,9 @@ cleanup_test_data :-
     retractall(user:test_positive(_)),
     retractall(user:test_factorial_input(_)),
     retractall(user:test_factorial(_, _)),
+    retractall(user:test_parity_input(_)),
+    retractall(user:test_even(_)),
+    retractall(user:test_odd(_)),
     retractall(user:test_reachable(_, _)).
 
 verify_fact_plan :-
@@ -214,6 +240,27 @@ verify_recursive_plan :-
         width:_
     },
     maybe_run_query_runtime(Plan, ['alice,bob', 'bob,charlie', 'alice,charlie']).
+
+verify_mutual_recursion_plan :-
+    csharp_query_target:build_query_plan(test_even/1, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even, arity:1}, members:Members}),
+    length(Members, 2),
+    member(EvenMember, Members),
+    get_dict(predicate, EvenMember, predicate{name:test_even, arity:1}),
+    get_dict(base, EvenMember, EvenBase),
+    get_dict(recursive, EvenMember, EvenVariants),
+    EvenBase = relation_scan{predicate:predicate{name:test_even, arity:1}, type:relation_scan, width:_},
+    member(EvenRecursive, EvenVariants),
+    sub_term(cross_ref{predicate:predicate{name:test_odd, arity:1}, role:delta, type:cross_ref, width:_}, EvenRecursive),
+    member(OddMember, Members),
+    get_dict(predicate, OddMember, predicate{name:test_odd, arity:1}),
+    get_dict(base, OddMember, OddBase),
+    get_dict(recursive, OddMember, OddVariants),
+    OddBase = relation_scan{predicate:predicate{name:test_odd, arity:1}, type:relation_scan, width:_},
+    member(OddRecursive, OddVariants),
+    sub_term(cross_ref{predicate:predicate{name:test_even, arity:1}, role:delta, type:cross_ref, width:_}, OddRecursive),
+    maybe_run_query_runtime(Plan, ['0', '2', '4']).
 
 % Skip dotnet execution based on environment variable
 maybe_run_query_runtime(_Plan, _ExpectedRows) :-
