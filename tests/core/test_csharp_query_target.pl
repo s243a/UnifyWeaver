@@ -13,6 +13,8 @@
 :- use_module(library(csharp_query_target)).
 
 :- dynamic cqt_option/2.
+:- dynamic user:test_factorial/2.
+:- dynamic user:test_factorial_input/1.
 
 test_csharp_query_target :-
     configure_csharp_query_options,
@@ -22,6 +24,7 @@ test_csharp_query_target :-
     verify_join_plan,
     verify_selection_plan,
     verify_arithmetic_plan,
+    verify_recursive_arithmetic_plan,
     verify_comparison_plan,
     verify_recursive_plan,
     cleanup_test_data,
@@ -39,6 +42,17 @@ setup_test_data :-
     assertz(user:test_num(item1, 5)),
     assertz(user:test_num(item2, -3)),
     assertz(user:(test_positive(Id) :- test_num(Id, Value), Value > 0)),
+    assertz(user:test_factorial_input(1)),
+    assertz(user:test_factorial_input(2)),
+    assertz(user:test_factorial_input(3)),
+    assertz(user:test_factorial(0, 1)),
+    assertz(user:(test_factorial(N, Result) :-
+        test_factorial_input(N),
+        N > 0,
+        N1 is N - 1,
+        test_factorial(N1, Prev),
+        Result is Prev * N
+    )),
     assertz(user:(test_reachable(X, Y) :- test_fact(X, Y))),
     assertz(user:(test_reachable(X, Z) :- test_fact(X, Y), test_reachable(Y, Z))).
 
@@ -50,6 +64,8 @@ cleanup_test_data :-
     retractall(user:test_increment(_, _)),
     retractall(user:test_num(_, _)),
     retractall(user:test_positive(_)),
+    retractall(user:test_factorial_input(_)),
+    retractall(user:test_factorial(_, _)),
     retractall(user:test_reachable(_, _)).
 
 verify_fact_plan :-
@@ -118,6 +134,58 @@ verify_comparison_plan :-
         width:_
     },
     maybe_run_query_runtime(Plan, ['item1']).
+
+verify_recursive_arithmetic_plan :-
+    csharp_query_target:build_query_plan(test_factorial/2, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, fixpoint{type:fixpoint, head:_, base:Base, recursive:[RecursiveClause], width:2}),
+    Base = relation_scan{predicate:predicate{name:test_factorial, arity:2}, type:relation_scan, width:2},
+    RecursiveClause = projection{
+        type:projection,
+        input:OuterArithmetic,
+        columns:[0, 4],
+        width:2
+    },
+    OuterArithmetic = arithmetic{
+        type:arithmetic,
+        input:JoinNode,
+        expression:OuterExpr,
+        result_index:4,
+        width:5
+    },
+    is_dict(OuterExpr, expr),
+    get_dict(op, OuterExpr, multiply),
+    get_dict(left, OuterExpr, expr{type:column, index:3}),
+    get_dict(right, OuterExpr, expr{type:column, index:0}),
+    JoinNode = join{
+        type:join,
+        left:InnerArithmetic,
+        right:recursive_ref{predicate:predicate{name:test_factorial, arity:2}, role:delta, type:recursive_ref, width:_},
+        left_keys:[1],
+        right_keys:[0],
+        left_width:_,
+        right_width:_,
+        width:_
+    },
+    InnerArithmetic = arithmetic{
+        type:arithmetic,
+        input:Selection,
+        expression:InnerExpr,
+        result_index:1,
+        width:2
+    },
+    is_dict(InnerExpr, expr),
+    get_dict(op, InnerExpr, add),
+    get_dict(left, InnerExpr, expr{type:column, index:0}),
+    get_dict(right, InnerExpr, expr{type:value, value:Neg1}),
+    Neg1 = -1,
+    Selection = selection{
+        type:selection,
+        input:relation_scan{predicate:predicate{name:test_factorial_input, arity:1}, type:relation_scan, width:_},
+        predicate:condition{type:gt, left:operand{kind:column, index:0}, right:operand{kind:value, value:0}},
+        width:1
+    },
+    maybe_run_query_runtime(Plan, ['0,1', '1,1', '2,2', '3,6']).
 
 verify_recursive_plan :-
     csharp_query_target:build_query_plan(test_reachable/2, [target(csharp_query)], Plan),
