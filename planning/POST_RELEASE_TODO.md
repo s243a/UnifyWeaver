@@ -387,40 +387,50 @@ The warnings listed in this item were already fixed during prior development. Th
 
 ---
 
-### 11. Add Negative Test Cases for Mutual Recursion
+### 11. ✅ RESOLVED: Add Negative Test Cases for Mutual Recursion
 
-**Status:** 📋 IDENTIFIED - Needs review and implementation
-**Location:** `src/unifyweaver/core/advanced/test_advanced.pl` or test runner
+**Status:** ✅ COMPLETE (Already implemented, verified 2025-11-03)
+**Location:** `examples/test_mutual_recursion_negative.pl`
 **Created:** 2025-10-15
+**Completed:** Added SPDX header (commit effc273)
 
-**Current Test Coverage:**
-- ✅ `is_even(0)` → true (base case)
-- ✅ `is_even(4)` → true (positive case)
-- ✅ `is_odd(3)` → true (positive case)
-- ✅ `is_odd(6)` → empty (correctly fails)
+**Test Coverage (All Implemented):**
 
-**Missing Negative Test Cases:**
-- ❌ `is_even(3)` → should fail/return nothing
-- ❌ `is_even(5)` → should fail/return nothing
-- ❌ `is_odd(2)` → should fail/return nothing
-- ❌ `is_odd(4)` → should fail/return nothing
+**Positive Cases:**
+- ✅ `is_even(0)` → succeeds (base case)
+- ✅ `is_even(2)` → succeeds
+- ✅ `is_even(4)` → succeeds
+- ✅ `is_odd(1)` → succeeds (base case)
+- ✅ `is_odd(3)` → succeeds
+- ✅ `is_odd(5)` → succeeds
 
-**Discussion:**
-Returning nothing (empty result) may be valid behavior for these predicates - they succeed for valid cases and fail silently for invalid cases. This follows Prolog semantics where predicates can succeed (with bindings), fail (no results), or error.
+**Negative Cases (All Implemented):**
+- ✅ `is_even(1)` → correctly fails
+- ✅ `is_even(3)` → correctly fails
+- ✅ `is_even(5)` → correctly fails
+- ✅ `is_odd(0)` → correctly fails
+- ✅ `is_odd(2)` → correctly fails
+- ✅ `is_odd(4)` → correctly fails
+- ✅ `is_odd(6)` → correctly fails
 
-**Review Needed:**
-1. Verify empty result is correct/expected behavior
-2. Consider if we want explicit false/failure indicators
-3. Evaluate if bash exit codes should indicate success/failure
-4. Decide if documentation should clarify this behavior
+**Edge Cases:**
+- ✅ Large numbers: `is_even(100)`, `is_odd(99)`
+- ✅ Negative inputs: `is_even(-2)`, `is_odd(-3)` (correctly fail)
 
-**Fix Strategy (If Needed):**
-1. Add negative test cases to test_runner.sh
-2. Verify expected behavior (empty vs false vs error)
-3. Document the mutual recursion failure semantics
-4. Consider adding assertion-based tests if needed
+**Bash Execution Tests:**
+- ✅ Compiles to bash correctly
+- ✅ Positive cases exit with code 0
+- ✅ Negative cases fail appropriately
 
-**Estimated Effort:** 1-2 hours (depends on semantic decisions)
+**Behavior Documented:**
+The file confirms that returning nothing (failing) is correct Prolog semantics:
+- Predicates succeed with bindings for valid inputs
+- Predicates fail (no results) for invalid inputs
+- This matches expected Prolog behavior
+
+**Test File:**
+- `examples/test_mutual_recursion_negative.pl` - Complete test suite (262 lines)
+- Run with: `swipl -q -l examples/test_mutual_recursion_negative.pl -g main -t halt`
 
 ---
 
