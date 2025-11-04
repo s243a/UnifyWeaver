@@ -211,7 +211,10 @@ test_csv_source :-
     ->  safe_format('  \u2705 CSV source working~n', [])
     ;   safe_format('  \u274C CSV source failed~n', [])
     ),
-    safe_format('~n', []).
+    safe_format('~n', []),
+
+    % Give Windows process cleanup time between tests
+    sleep(0.5).
 
 test_json_source :-
     safe_format('\U0001F4C4 === JSON Source Test ===~n', []),
@@ -234,7 +237,10 @@ test_json_source :-
     ->  safe_format('  \u2705 JSON source working~n', [])
     ;   safe_format('  \u274C JSON source failed~n', [])
     ),
-    safe_format('~n', []).
+    safe_format('~n', []),
+
+    % Give Windows process cleanup time between tests
+    sleep(0.5).
 
 test_python_source :-
     safe_format('\U0001F40D === Python Source Test ===~n', []),
@@ -259,7 +265,10 @@ test_python_source :-
     ->  safe_format('  \u2705 Python processing working~n', [])
     ;   safe_format('  \u274C Python processing failed~n', [])
     ),
-    safe_format('~n', []).
+    safe_format('~n', []),
+
+    % Give Windows process cleanup time between tests
+    sleep(0.5).
 
 test_sqlite_source :-
     safe_format('\U0001F4BE === SQLite Source Test ===~n', []),
@@ -280,7 +289,10 @@ test_sqlite_source :-
     ->  safe_format('  \u2705 SQLite query working~n', [])
     ;   safe_format('  \u274C SQLite query failed~n', [])
     ),
-    safe_format('~n', []).
+    safe_format('~n', []),
+
+    % Give Windows process cleanup time between tests
+    sleep(0.5).
 
 %% ============================================
 %% FULL ETL PIPELINE TEST

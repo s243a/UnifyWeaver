@@ -3,6 +3,7 @@
 A Prolog-to-Bash compiler that transforms declarative logic programs into efficient streaming bash scripts. UnifyWeaver specializes in compiling data relationships and queries into executable bash code with optimized handling of transitive closures and advanced recursion patterns.
 
 **📚 [Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive tutorials, examples, and advanced usage
+**🎓 [Educational Materials](https://github.com/s243a/UnifyWeaver_Education)** - Learn UnifyWeaver with hands-on tutorials and examples
 
 ## Features
 
@@ -237,6 +238,7 @@ In SWI-Prolog:
 
 ## Documentation
 
+- **[🎓 Educational Materials](https://github.com/s243a/UnifyWeaver_Education)** - Learn UnifyWeaver with comprehensive tutorials
 - **[Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive guide with tutorials and examples
 - [TESTING_GUIDE.md](docs/TESTING_GUIDE.md) - Testing infrastructure
 - [ADVANCED_RECURSION.md](docs/ADVANCED_RECURSION.md) - Recursion patterns deep dive

@@ -1,3 +1,9 @@
+% SPDX-License-Identifier: MIT OR Apache-2.0
+% Copyright (c) 2025 John William Creighton (s243a)
+%
+% This file is part of UnifyWeaver.
+% Licensed under either MIT or Apache-2.0 at your option.
+
 :- module(compiler_driver, [
     compile/2,
     compile/3

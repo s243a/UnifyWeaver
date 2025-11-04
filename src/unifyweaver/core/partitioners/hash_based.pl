@@ -165,7 +165,7 @@ extract_key(Item, field(N), Key) :-
     !,
     extract_column(Item, N, Key).
 
-extract_key(Item, KeySpec, _) :-
+extract_key(_Item, KeySpec, _) :-
     throw(error(domain_error(key_spec, KeySpec),
                 context(extract_key/3, 'Unknown key specification'))).
 
@@ -207,7 +207,7 @@ compute_hash_partition(Key, NumPartitions, atom_hash, PartitionID) :-
     atom_hash_impl(Key, Hash),
     PartitionID is Hash mod NumPartitions.
 
-compute_hash_partition(Key, NumPartitions, HashFunc, _) :-
+compute_hash_partition(_Key, _NumPartitions, HashFunc, _) :-
     throw(error(domain_error(hash_function, HashFunc),
                 context(compute_hash_partition/4,
                        'Unknown hash function'))).

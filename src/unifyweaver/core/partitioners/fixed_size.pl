@@ -98,7 +98,7 @@ partition_by_rows_helper(DataStream, RowsPerPartition, PartitionID, [partition(P
 partition_by_bytes(DataStream, BytesPerPartition, Partitions) :-
     partition_by_bytes_helper(DataStream, BytesPerPartition, 0, 0, [], Partitions).
 
-partition_by_bytes_helper([], _, PartitionID, CurrentSize, CurrentChunk, Partitions) :-
+partition_by_bytes_helper([], _, PartitionID, _CurrentSize, CurrentChunk, Partitions) :-
     (   CurrentChunk = []
     ->  Partitions = []
     ;   % Final partition with remaining data
