@@ -1,4 +1,7 @@
 :- encoding(utf8).
+% SPDX-License-Identifier: MIT OR Apache-2.0
+% Copyright (c) 2025 John William Creighton (@s243a)
+%
 % test_mutual_recursion_negative.pl - Negative Test Cases for Mutual Recursion
 %
 % Tests that mutually recursive predicates (is_even/is_odd) correctly fail
