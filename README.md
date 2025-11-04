@@ -23,6 +23,13 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Constraint awareness** - Unique and ordering constraints optimize generated code
 - **Pattern detection** - Automatic classification of recursion patterns
 
+### C# Target Family (v0.1)
+- **Query Runtime (`target(csharp_query)`)** - Generates relational plans executed by a shared .NET engine with semi-naive fixpoint evaluation.
+- **Mutual recursion support** - Even/odd style dependencies now run entirely inside the C# runtime, matching Bash behaviour for SCC groups.
+- **Arithmetic & constraints** - LINQ-based pipelines honour `is/2`, comparisons, and deduplication semantics (`HashSet<T>` distinct).
+- **Streaming codegen (`target(csharp_codegen)`)** - Emit standalone C# projects that mirror the Bash streaming templates for simple predicates.
+- **Configurable artefacts** - Choose between direct C# emission, reusable plans, or let `target(csharp)` select the best backend automatically.
+
 ### Data Source Plugin System (v0.0.2)
 - **5 Production-Ready Plugins** - CSV/TSV, AWK, Python, HTTP, JSON data sources
 - **Self-Registering Architecture** - Plugin-based system with automatic discovery
@@ -136,7 +143,8 @@ UnifyWeaver follows a modular compilation pipeline:
 2. **Constraint Analysis** - Detects unique/ordering constraints
 3. **Pattern Matching** - Tries tail → linear → tree → mutual → basic recursion
 4. **Optimization** - Applies pattern-specific optimizations (BFS, loops, memoization)
-5. **Code Generation** - Renders bash templates with predicate-specific values
+5. **Target Selection** - Chooses Bash, PowerShell, or C# backend based on requested `target/1` preference
+6. **Code Generation / Plan Emission** - Renders shell templates, C# source, or query plans for the selected backend
 
 **See [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [Extended Documentation](docs/EXTENDED_README.md) for detailed architecture.**
 
