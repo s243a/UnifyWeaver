@@ -1,6 +1,6 @@
 # UnifyWeaver Testing Guide
 
-**Last Updated:** 2025-10-26
+**Last Updated:** 2025-11-05
 **Status:** Active
 
 ---
@@ -12,6 +12,10 @@ UnifyWeaver has a multi-tiered testing strategy:
 2. **Feature-Specific Tests** - Deep dive into specific features
 3. **Integration Tests** - End-to-end workflows
 4. **Demo/Example Files** - Educational and manual testing
+
+**Note:** Some tests require additional tools:
+- **XML tests** require xmllint, lxml, and/or xmlstarlet (see `docs/XML_PARSING_TOOLS_INSTALLATION.md`)
+- **Perl tests** require perl interpreter (usually pre-installed)
 
 ---
 
@@ -102,6 +106,7 @@ pwsh test_output/json_pure.ps1
 
 **Files:**
 - `examples/data_sources_demo.pl` - Comprehensive data source demos
+- `tests/core/test_xml_source.pl` - XML source tests (NEW)
 - Individual pipeline demos (awk, json, http, python)
 
 **What they test:**
@@ -110,6 +115,9 @@ pwsh test_output/json_pure.ps1
 - HTTP source with APIs
 - AWK pipeline integration
 - Python pipeline integration
+- **XML source with multiple engines** (lxml, xmllint, xmlstarlet)
+- **XML namespace repair**
+- **Perl-backed xmllint splitter**
 
 **Usage:**
 ```bash
@@ -119,6 +127,9 @@ swipl examples/data_sources_demo.pl
 # Individual source tests
 swipl examples/json_pipeline_demo.pl
 swipl examples/http_pipeline_demo.pl
+
+# XML source tests (requires xmllint/lxml/perl)
+swipl -s tests/core/test_xml_source.pl -g run_tests -t halt
 ```
 
 #### C. Compiler Tests
@@ -153,6 +164,41 @@ swipl examples/integration_test.pl
 **Usage:**
 ```bash
 swipl examples/test_firewall_powershell.pl
+```
+
+#### E. Core Module Tests
+
+**Files:**
+- `tests/core/test_perl_service.pl` - Perl service generation tests (NEW)
+- `tests/core/test_xml_source.pl` - XML source integration tests (NEW)
+
+**What they test:**
+- **Perl Service:**
+  - Inline Perl bash call generation
+  - Heredoc label collision avoidance
+  - Shell argument quoting
+  - DCG-based code generation
+
+- **XML Source:**
+  - lxml/iterparse engine
+  - xmllint engine (Python splitter)
+  - xmllint engine (Perl splitter)
+  - xmlstarlet engine
+  - Namespace repair functionality
+
+**Usage:**
+```bash
+# Perl service tests (always available)
+swipl -s tests/core/test_perl_service.pl -g run_tests -t halt
+
+# XML source tests (requires XML tools)
+# See docs/XML_PARSING_TOOLS_INSTALLATION.md for setup
+swipl -s tests/core/test_xml_source.pl -g run_tests -t halt
+
+# Run specific XML engine test
+swipl -s tests/core/test_xml_source.pl \
+  -g "run_tests([xml_source:xmllint_extraction_perl_splitter])" \
+  -t halt
 ```
 
 ---
@@ -258,6 +304,10 @@ main :-
         test_http_source,
         test_awk_source,
         test_python_source,
+        test_xml_source,           % NEW: XML engines (lxml, xmllint, xmlstarlet)
+
+        % Core modules
+        test_perl_service,          % NEW: Perl code generation
 
         % PowerShell
         test_powershell_pure_mode,
