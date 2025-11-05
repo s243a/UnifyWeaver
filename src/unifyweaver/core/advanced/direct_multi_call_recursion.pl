@@ -191,9 +191,25 @@ generate_computations_bash(Computations, BashCode) :-
 
 translate_computation(Var, Expr, Code) :-
     translate_expr_to_bash(Expr, BashExpr),
-    atom_string(Var, VarStr),
-    downcase_atom(VarStr, VarLower),
+    var_to_bash_name(Var, VarLower),
     format(string(Code), '    local ~w=~w', [VarLower, BashExpr]).
+
+%% var_to_bash_name(+Var, -BashName)
+%  Convert a Prolog variable to a bash variable name
+var_to_bash_name(Var, BashName) :-
+    (   var(Var) ->
+        % Variable - get its name and lowercase it
+        term_string(Var, VarStr),
+        atom_string(VarAtom, VarStr),
+        downcase_atom(VarAtom, BashName)
+    ;   atom(Var) ->
+        % Already an atom - just lowercase it
+        downcase_atom(Var, BashName)
+    ;   % Other type - convert to atom and lowercase
+        term_string(Var, VarStr),
+        atom_string(VarAtom, VarStr),
+        downcase_atom(VarAtom, BashName)
+    ).
 
 translate_expr_to_bash(N - 1, '$(($input - 1))') :- var(N), !.
 translate_expr_to_bash(N - 2, '$(($input - 2))') :- var(N), !.
@@ -208,10 +224,8 @@ generate_recursive_calls_bash(RecCalls, PredStr, BashCode) :-
     findall(Code, (
         member(RecCall, RecCalls),
         RecCall =.. [_Pred, ArgVar, ResultVar],
-        atom_string(ArgVar, ArgStr),
-        downcase_atom(ArgStr, ArgLower),
-        atom_string(ResultVar, ResStr),
-        downcase_atom(ResStr, ResLower),
+        var_to_bash_name(ArgVar, ArgLower),
+        var_to_bash_name(ResultVar, ResLower),
         format(string(Code), '    local ~w=$(~w "$~w" | cut -d: -f2)', [ResLower, PredStr, ArgLower])
     ), Codes),
     atomic_list_concat(Codes, '\n', BashCode).
@@ -223,19 +237,14 @@ generate_aggregation_bash(_Result is Expr, BashCode) :-
     format(string(BashCode), '    local result=~w', [BashExpr]).
 
 translate_aggregation_expr(A + B, BashExpr) :-
-    atom_string(A, AStr),
-    downcase_atom(AStr, ALower),
-    atom_string(B, BStr),
-    downcase_atom(BStr, BLower),
+    var_to_bash_name(A, ALower),
+    var_to_bash_name(B, BLower),
     format(string(BashExpr), '$(($~w + $~w))', [ALower, BLower]).
 
 translate_aggregation_expr(A + B + C, BashExpr) :-
-    atom_string(A, AStr),
-    downcase_atom(AStr, ALower),
-    atom_string(B, BStr),
-    downcase_atom(BStr, BLower),
-    atom_string(C, CStr),
-    downcase_atom(CStr, CLower),
+    var_to_bash_name(A, ALower),
+    var_to_bash_name(B, BLower),
+    var_to_bash_name(C, CLower),
     format(string(BashExpr), '$(($~w + $~w + $~w))', [ALower, BLower, CLower]).
 
 %% Test predicate
