@@ -52,6 +52,7 @@ tool_executable(curl, 'curl').
 tool_executable(wget, 'wget').
 tool_executable(python3, 'python3').
 tool_executable(python, 'python').
+tool_executable(perl, 'perl').
 tool_executable(sqlite3, 'sqlite3').
 tool_executable(powershell, 'pwsh').      % PowerShell Core (cross-platform)
 tool_executable(powershell_legacy, 'powershell.exe').  % Windows PowerShell
