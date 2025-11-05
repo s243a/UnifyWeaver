@@ -839,62 +839,36 @@ template_system:template(xml_xmlstarlet_source, Template) :-
         '#!/bin/bash\n',
         '# {{pred}} - XML source (xmlstarlet)\n',
         '\n',
-        '{{pred}}() {
-',
-        '    local resolved=""
-',
+        '{{pred}}() {\n',
+        '    local resolved=""\n',
         '    local -a cmd=()\n',
         '\n',
-        '    if resolved=$(command -v xmlstarlet 2>/dev/null); then
-',
-        '        cmd=($resolved)
-',
-        '    elif [[ -x /usr/bin/xmlstarlet ]]; then
-',
-        '        cmd=("/usr/bin/xmlstarlet")
-',
-        '    elif resolved=$(command -v wsl 2>/dev/null); then
-',
-        '        cmd=($resolved "xmlstarlet")
-',
-        '    elif [[ -x /mnt/c/Windows/System32/wsl.exe ]]; then
-',
-        '        cmd=("/mnt/c/Windows/System32/wsl.exe" "xmlstarlet")
-',
-        '    elif [[ -x /c/Windows/System32/wsl.exe ]]; then
-',
-        '        cmd=("/c/Windows/System32/wsl.exe" "xmlstarlet")
-',
-        '    else
-',
-        '        echo "xmlstarlet not found; install xmlstarlet or switch to the iterparse engine." >&2
-',
-        '        return 127
-',
-        '    fi
-',
+        '    if resolved=$(command -v xmlstarlet 2>/dev/null); then\n',
+        '        cmd=($resolved)\n',
+        '    elif [[ -x /usr/bin/xmlstarlet ]]; then\n',
+        '        cmd=("/usr/bin/xmlstarlet")\n',
+        '    elif resolved=$(command -v wsl 2>/dev/null); then\n',
+        '        cmd=($resolved "xmlstarlet")\n',
+        '    elif [[ -x /mnt/c/Windows/System32/wsl.exe ]]; then\n',
+        '        cmd=("/mnt/c/Windows/System32/wsl.exe" "xmlstarlet")\n',
+        '    elif [[ -x /c/Windows/System32/wsl.exe ]]; then\n',
+        '        cmd=("/c/Windows/System32/wsl.exe" "xmlstarlet")\n',
+        '    else\n',
+        '        echo "xmlstarlet not found; install xmlstarlet or switch to the iterparse engine." >&2\n',
+        '        return 127\n',
+        '    fi\n',
         '\n',
-        '    local sentinel="__XMLSTARLET_RECORD__"
-',
+        '    local sentinel="__XMLSTARLET_RECORD__"\n',
         '\n',
-        '    "${cmd[@]}" sel -N pt="http://www.pearltrees.com/xmlns/pearl-trees#" -t -m "{{xpath}}" -c "." -o "${sentinel}" -n "{{file}}" |\
-',
-        '        awk -v RS="${sentinel}\n" -v ORS="" ''length($0) {printf "%s%c", $0, 0}''
-',
-        '}
-',
+        '    "${cmd[@]}" sel -N pt="http://www.pearltrees.com/xmlns/pearl-trees#" -t -m "{{xpath}}" -c "." -o "${sentinel}" -n "{{file}}" |\\\n',
+        '        awk -v RS="${sentinel}\\n" -v ORS="" ''length($0) {printf "%s%c", $0, 0}''\n',
+        '}\n',
         '\n',
-        '{{pred}}_stream() {
-',
-        '    {{pred}}
-',
-        '}
-',
+        '{{pred}}_stream() {\n',
+        '    {{pred}}\n',
+        '}\n',
         '\n',
-        'if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-',
-        '    {{pred}} "$@"
-',
-        'fi
-'
+        'if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then\n',
+        '    {{pred}} "$@"\n',
+        'fi\n'
     ], Template).
