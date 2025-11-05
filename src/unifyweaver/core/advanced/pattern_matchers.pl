@@ -19,6 +19,14 @@
     forbid_linear_recursion/1,            % +Pred/Arity - Mark as not linear
     is_forbidden_linear_recursion/1,      % +Pred/Arity - Check if forbidden
     clear_linear_recursion_forbid/1,      % +Pred/Arity - Clear forbid
+    % Recursion strategy selection
+    recursion_strategy/2,                 % +Pred/Arity, +Strategy - Set strategy (fold/direct/auto)
+    get_recursion_strategy/2,             % +Pred/Arity, -Strategy - Get strategy
+    clear_recursion_strategy/1,           % +Pred/Arity - Clear strategy
+    % Multi-call linear recursion helpers
+    recursive_calls_have_distinct_args/2, % +Body, +Pred - Check arg independence
+    get_recursive_call_count/2,           % +Pred/Arity, -Count - Get number of recursive calls
+    get_multi_call_info/2,                % +Pred/Arity, -Info - Get detailed multi-call information
     % Tree fold pattern detection
     is_tree_fold_pattern/1,               % +Pred/Arity - Check if should use fold
     should_use_fold_helper/1,             % +Pred/Arity - Alias for is_tree_fold_pattern
@@ -150,16 +158,21 @@ is_linear_recursive_streamable(Pred/Arity) :-
         )
     )),
 
-    % For each recursive clause, verify exactly ONE recursive call
+    % For each recursive clause, verify ONE OR MORE independent recursive calls
     forall(
         (   member(clause(_, RecBody), Clauses),
             contains_call_to(RecBody, Pred)
         ),
-        (   % Count recursive calls - must be exactly 1
+        (   % Count recursive calls - must be at least 1
             count_recursive_calls(RecBody, Pred, Count),
-            Count =:= 1,
+            Count >= 1,
             % Check that recursive call arguments are pre-computed (order independent)
-            recursive_args_are_precomputed(RecBody, Pred)
+            recursive_args_are_precomputed(RecBody, Pred),
+            % If multiple calls (Count > 1), verify they use distinct argument variables
+            (   Count =:= 1
+            ->  true  % Single call - no independence check needed
+            ;   recursive_calls_have_distinct_args(RecBody, Pred)
+            )
         )
     ),
 
@@ -240,6 +253,142 @@ recursive_args_are_precomputed(Body, Pred) :-
         ;   true  % No arguments
         )
     )).
+
+%% recursive_calls_have_distinct_args(+Body, +Pred)
+%  Check that multiple recursive calls use distinct argument variables
+%  This ensures independence - no shared variables across calls
+%
+%  Independence Criteria:
+%  - Each recursive call's input arguments must be distinct variables
+%  - Example: fib(N1, F1), fib(N2, F2) where N1 ≠ N2 (distinct)
+%  - Counter: bad(X, R1), bad(X, R2) where both use X (NOT distinct)
+%
+%  This predicate verifies that for fibonacci-style patterns:
+%    N1 is N - 1, N2 is N - 2, fib(N1, F1), fib(N2, F2)
+%  The variables N1 and N2 are different, proving the calls are independent.
+%
+%  IMPORTANT: We collect recursive calls directly from the body structure
+%  to preserve variable identity (not through extract_goal which creates fresh vars)
+recursive_calls_have_distinct_args(Body, Pred) :-
+    % Collect all recursive calls preserving variable identity
+    findall(RecCall, collect_recursive_call(Body, Pred, RecCall), RecCalls),
+
+    % Extract the first argument (input position) from each recursive call
+    findall(FirstArg, (
+        member(RecCall, RecCalls),
+        RecCall =.. [_|Args],
+        Args = [FirstArg|_]
+    ), RecCallArgs),
+
+    % Verify all arguments are distinct variables
+    % Method: Check that the list has no duplicate variables
+    all_distinct_variables(RecCallArgs).
+
+%% collect_recursive_call(+Body, +Pred, -RecCall)
+%  Collect recursive calls directly from body, preserving variable identity
+%  This is different from extract_goal which may create fresh variables
+collect_recursive_call(Goal, Pred, Goal) :-
+    compound(Goal),
+    \+ Goal = (_,_),
+    \+ Goal = (_;_),
+    \+ Goal = (_->_),
+    \+ Goal = (_->_;_),
+    functor(Goal, Pred, _).
+collect_recursive_call((A, B), Pred, RecCall) :-
+    (   collect_recursive_call(A, Pred, RecCall)
+    ;   collect_recursive_call(B, Pred, RecCall)
+    ).
+collect_recursive_call((A; B), Pred, RecCall) :-
+    (   collect_recursive_call(A, Pred, RecCall)
+    ;   collect_recursive_call(B, Pred, RecCall)
+    ).
+collect_recursive_call((A -> B), Pred, RecCall) :-
+    (   collect_recursive_call(A, Pred, RecCall)
+    ;   collect_recursive_call(B, Pred, RecCall)
+    ).
+collect_recursive_call((A -> B; C), Pred, RecCall) :-
+    (   collect_recursive_call(A, Pred, RecCall)
+    ;   collect_recursive_call(B, Pred, RecCall)
+    ;   collect_recursive_call(C, Pred, RecCall)
+    ).
+
+%% all_distinct_variables(+Vars)
+%  Check that all variables in the list are distinct (no shared variables)
+%  For ground terms, they can be equal - we only care about variable identity
+all_distinct_variables([]).
+all_distinct_variables([Var|Rest]) :-
+    % If Var is a variable, check it doesn't appear (by identity) in Rest
+    (   var(Var)
+    ->  \+ member_by_identity(Var, Rest)
+    ;   true  % Ground term - OK
+    ),
+    all_distinct_variables(Rest).
+
+%% member_by_identity(+Var, +List)
+%  Check if Var appears in List by variable identity (not unification)
+%  Uses == instead of = to check for same variable, not just unifiable
+member_by_identity(Var, [H|_]) :-
+    Var == H, !.
+member_by_identity(Var, [_|T]) :-
+    member_by_identity(Var, T).
+
+%% get_recursive_call_count(+Pred/Arity, -Count)
+%  Get the number of recursive calls in a predicate
+%  Returns the maximum count across all recursive clauses
+get_recursive_call_count(Pred/Arity, Count) :-
+    functor(Head, Pred, Arity),
+    findall(ClauseCount,
+        (   user:clause(Head, Body),
+            contains_call_to(Body, Pred),
+            count_recursive_calls(Body, Pred, ClauseCount)
+        ),
+        Counts),
+    (   Counts = [] ->
+        Count = 0
+    ;   max_list(Counts, Count)
+    ).
+
+%% get_multi_call_info(+Pred/Arity, -Info)
+%  Get detailed information about multi-call linear recursion
+%  Info is a structure: multi_call(Count, IsLinear, HasDistinctArgs, IsPrecomputed)
+get_multi_call_info(Pred/Arity, multi_call(Count, IsLinear, HasDistinctArgs, IsPrecomputed)) :-
+    % Get call count
+    get_recursive_call_count(Pred/Arity, Count),
+
+    % Check if it's linear recursive
+    (   is_linear_recursive_streamable(Pred/Arity) ->
+        IsLinear = true
+    ;   IsLinear = false
+    ),
+
+    % Check if arguments are distinct (only meaningful if Count > 1)
+    (   Count > 1 ->
+        functor(Head, Pred, Arity),
+        (   user:clause(Head, Body),
+            contains_call_to(Body, Pred),
+            recursive_calls_have_distinct_args(Body, Pred) ->
+            HasDistinctArgs = true
+        ;   HasDistinctArgs = false
+        )
+    ;   HasDistinctArgs = not_applicable
+    ),
+
+    % Check if arguments are precomputed
+    (   Count >= 1 ->
+        (   recursive_args_are_precomputed_check(Pred/Arity) ->
+            IsPrecomputed = true
+        ;   IsPrecomputed = false
+        )
+    ;   IsPrecomputed = not_applicable
+    ).
+
+%% recursive_args_are_precomputed_check(+Pred/Arity)
+%  Helper to check if recursive arguments are precomputed (extracted for get_multi_call_info)
+recursive_args_are_precomputed_check(Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    user:clause(Head, Body),
+    contains_call_to(Body, Pred),
+    recursive_args_are_precomputed(Body, Pred).
 
 %% count_recursive_calls(+Body, +Pred, -Count)
 count_recursive_calls(Body, Pred, Count) :-
@@ -402,6 +551,49 @@ is_forbidden_linear_recursion(Pred/Arity) :-
 %
 clear_linear_recursion_forbid(Pred/Arity) :-
     retractall(forbidden_linear_recursion(Pred/Arity)).
+
+%% ============================================
+%% RECURSION STRATEGY SELECTION
+%% ============================================
+%
+% Allow explicit control over which recursion strategy to use
+% for multi-call linear recursion patterns.
+%
+% Strategies:
+% - fold: Use fold-based approach (build range, fold with operation)
+% - direct: Use direct recursive calls with memoization
+% - auto: Let compiler choose based on heuristics (default)
+
+:- dynamic preferred_recursion_strategy/2.
+
+%% recursion_strategy(+Pred/Arity, +Strategy)
+%  Set the preferred recursion strategy for a predicate
+%  Strategy must be one of: fold, direct, auto
+%
+%  Example:
+%    :- recursion_strategy(fib/2, direct).
+%    :- recursion_strategy(factorial/2, fold).
+%
+recursion_strategy(Pred/Arity, Strategy) :-
+    % Validate strategy
+    must_be(oneof([fold, direct, auto]), Strategy),
+    % Store preference
+    retractall(preferred_recursion_strategy(Pred/Arity, _)),
+    assertz(preferred_recursion_strategy(Pred/Arity, Strategy)).
+
+%% get_recursion_strategy(+Pred/Arity, -Strategy)
+%  Get the preferred recursion strategy for a predicate
+%  Returns 'auto' if no strategy is explicitly set
+get_recursion_strategy(Pred/Arity, Strategy) :-
+    (   preferred_recursion_strategy(Pred/Arity, Strategy) ->
+        true
+    ;   Strategy = auto
+    ).
+
+%% clear_recursion_strategy(+Pred/Arity)
+%  Remove strategy preference for a predicate (revert to auto)
+clear_recursion_strategy(Pred/Arity) :-
+    retractall(preferred_recursion_strategy(Pred/Arity, _)).
 
 %% ============================================
 %% TREE FOLD PATTERN DETECTION

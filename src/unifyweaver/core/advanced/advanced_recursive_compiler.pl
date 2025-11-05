@@ -18,11 +18,14 @@
 :- use_module('scc_detection').
 :- use_module('pattern_matchers', [
     contains_call_to/2,
-    is_linear_recursive_streamable/1
+    is_linear_recursive_streamable/1,
+    get_recursion_strategy/2,
+    get_recursive_call_count/2
     % Note: We define our own extract_goal/2 to avoid importing the one from pattern_matchers
 ]).
 :- use_module('tail_recursion').
 :- use_module('linear_recursion').
+:- use_module('direct_multi_call_recursion').
 :- use_module('tree_recursion').
 :- use_module('mutual_recursion').
 :- use_module('fold_helper_generator').
@@ -63,11 +66,27 @@ try_tail_recursion(Pred/Arity, Options, BashCode) :-
 
 %% try_linear_recursion(+Pred/Arity, +Options, -BashCode)
 %  Attempt to compile as linear recursion
+%  For multi-call predicates, check strategy preference (fold vs direct)
 try_linear_recursion(Pred/Arity, Options, BashCode) :-
     format('  Trying linear recursion pattern...~n'),
     can_compile_linear_recursion(Pred/Arity),
     !,
-    compile_linear_recursion(Pred/Arity, Options, BashCode).
+    % Check if this is multi-call and has strategy preference
+    get_recursive_call_count(Pred/Arity, CallCount),
+    get_recursion_strategy(Pred/Arity, Strategy),
+    (   CallCount >= 2, Strategy = direct ->
+        format('  Using direct multi-call strategy~n'),
+        compile_direct_multi_call(Pred/Arity, Options, BashCode)
+    ;   CallCount >= 2, Strategy = fold ->
+        format('  Using fold-based strategy (explicit)~n'),
+        compile_linear_recursion(Pred/Arity, Options, BashCode)
+    ;   CallCount >= 2 ->
+        % Auto strategy - use fold by default (existing behavior)
+        format('  Using fold-based strategy (auto, ~w calls)~n', [CallCount]),
+        compile_linear_recursion(Pred/Arity, Options, BashCode)
+    ;   % Single call - use standard linear recursion
+        compile_linear_recursion(Pred/Arity, Options, BashCode)
+    ).
 
 %% try_fold_pattern(+Pred/Arity, +Options, -BashCode)
 %  Attempt to compile as fold pattern (tree recursion with fold helpers)
