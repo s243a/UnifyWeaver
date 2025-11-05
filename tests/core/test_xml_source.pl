@@ -140,6 +140,44 @@ test(xmllint_extraction) :-
     % Clean up
     delete_file('test_xml_xmllint.sh').
 
+test(xmllint_extraction_perl_splitter) :-
+    % Compile the source with xmllint engine using the Perl splitter
+    once(xml_source:compile_source(test_xml/1, [
+        xml_file('tests/test_data/sample.rdf'),
+        tags(['pt:Tree']),
+        engine(xmllint),
+        xmllint_splitter(perl)
+    ], [], BashCode)),
+
+    setup_call_cleanup(
+        open('test_xml_xmllint_perl.sh', write, Stream, [newline(posix)]),
+        write(Stream, BashCode),
+        close(Stream)
+    ),
+
+    setup_call_cleanup(
+        process_create(path(bash), ['test_xml_xmllint_perl.sh'], [stdout(pipe(Out)), process(PID)]),
+        (
+            read_stream_to_codes(Out, Codes),
+            process_wait(PID, ExitStatus),
+            assertion(ExitStatus == exit(0))
+        ),
+        close(Out)
+    ),
+
+    include(=(0), Codes, Nulls),
+    length(Nulls, 2),
+
+    codes_to_records(Codes, Records),
+    length(Records, 2),
+    report_records(xmllint_perl, Records),
+
+    forall(member(R, Records), sub_string(R, _, _, _, "<pt:Tree")),
+    records_contains(Records, "Test Tree 1"),
+    records_contains(Records, "Test Tree 2"),
+
+    delete_file('test_xml_xmllint_perl.sh').
+
 test(xmllint_extraction_without_namespace_fix) :-
     % Compile the source with xmllint engine but disable namespace repair
     once(xml_source:compile_source(test_xml_ns/1, [

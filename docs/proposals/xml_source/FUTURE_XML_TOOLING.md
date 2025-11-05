@@ -16,7 +16,7 @@ This note captures ideas for building out UnifyWeaver’s XML capabilities beyon
 ## 2. Short-Term Ideas
 
 1. **Python-free xmllint splitter**  
-   Prototype a bash/awk (or Perl) pipeline to segment `xmllint --xpath` output into null-delimited records. If feasible, make namespace repair opt-in without pulling Python.
+   ✅ A Perl-based splitter now ships with `xml_source`. Select it via `xmllint_splitter(perl)`; the default remains the inline Python splitter. Preference rules can hint an order (e.g. `prefer([xmllint_splitter(perl)])`), and the firewall tooling automatically skips any splitter whose executable is denied or missing. Namespace repair still behaves the same, and this path keeps the xmllint engine usable on hosts without Python extras.
 
 2. **XPath helper library**  
    Create a small Prolog helper that builds XPath expressions (including namespace bindings) to avoid hand-rolled strings in multiple places. Could support `descendant::`, attribute filters, etc.
@@ -30,6 +30,9 @@ This note captures ideas for building out UnifyWeaver’s XML capabilities beyon
    - multiple prefixes referencing the same URI,
    - large CDATA sections and mixed content,
    to ensure each engine emits the expected fragments.
+
+5. **Namespace defaults audit**  
+   Decide whether `namespace_fix/1` should default to `false` (preserve original prefixes) and document best practices for RDF-oriented pipelines. Update tests and docs accordingly.
 
 ## 3. Medium-Term Opportunities
 
