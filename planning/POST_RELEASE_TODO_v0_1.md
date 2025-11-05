@@ -46,4 +46,52 @@ This document tracks follow-up work identified after the v0.1.0 release.
 
 ---
 
+## Priority 4: Multi-Call Linear Recursion Completion
+
+**Status:** Pattern detection complete, strategy selection working, direct code generation WIP
+
+**Completed:**
+- ✅ Extended `is_linear_recursive_streamable/1` to detect 2+ independent recursive calls
+- ✅ Added `recursive_calls_have_distinct_args/2` for independence verification
+- ✅ Implemented `get_recursive_call_count/2` and `get_multi_call_info/2` query API
+- ✅ Added `recursion_strategy/2` directive for choosing fold vs direct strategies
+- ✅ Integrated strategy selection into `advanced_recursive_compiler.pl`
+- ✅ Created comprehensive test suite (10 tests passing)
+- ✅ Fold-based approach working correctly with memoization
+
+**Remaining Work:**
+
+- [ ] **Debug direct_multi_call_recursion.pl**
+  Currently falls back to fold pattern due to silent failures. Need to:
+  - Add better error messages to identify where compilation fails
+  - Debug `compile_direct_binary_recursion/3` execution path
+  - Fix `partition(is_recursive_clause(...))` - predicate not exported
+  - Verify base case and recursive case extraction logic
+
+- [ ] **Performance comparison tests**
+  Create benchmarks comparing fold-based vs direct recursive strategies:
+  - Fibonacci with different input sizes
+  - Tribonacci performance characteristics
+  - Memory usage comparison
+  - Identify which strategy is better for which cases
+
+- [ ] **Documentation updates**
+  - Update `ADVANCED_RECURSION.md` with multi-call pattern
+  - Document strategy selection mechanism
+  - Add examples of when to use fold vs direct
+  - Update POST_RELEASE_TODO.md (mark item 16 as complete)
+
+- [ ] **Edge case handling**
+  - Test with predicates that have >3 recursive calls
+  - Test with mixed scalar/structural arguments
+  - Verify behavior with non-numeric base cases
+
+**Reference Files:**
+- `src/unifyweaver/core/advanced/pattern_matchers.pl` (lines 155-387)
+- `src/unifyweaver/core/advanced/direct_multi_call_recursion.pl` (WIP)
+- `examples/test_multicall_fibonacci.pl` (test suite)
+- `examples/fibonacci_direct.pl` (example with strategy directive)
+
+---
+
 Feel free to add new sections as follow-up items are discovered.
