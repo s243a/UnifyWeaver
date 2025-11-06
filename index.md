@@ -30,13 +30,13 @@ UnifyWeaver is a Prolog-to-Code compiler that generates optimized streaming code
 
 ## Key Features
 
-✅ **Multiple Targets** - Compile to Bash, C#, PowerShell, or Prolog services
-✅ **Streaming Processing** - Memory-efficient data pipelines
-✅ **Data Source Plugins** - CSV, JSON, XML, HTTP, AWK, Python integration
-✅ **Advanced Recursion** - Fibonacci, binomial, tree patterns with memoization
-✅ **Parallel Execution** - Automatic partitioning and parallel processing
-✅ **Firewall System** - Security-aware compilation with tool restrictions
-✅ **Template System** - Flexible code generation with fallback strategies
+✅ **Multiple Targets** - Compile to Bash, C#, PowerShell, or Prolog services  
+✅ **Streaming Processing** - Memory-efficient data pipelines  
+✅ **Data Source Plugins** - CSV, JSON, XML, HTTP, AWK, Python integration  
+✅ **Advanced Recursion** - Fibonacci, binomial, tree patterns with memoization  
+✅ **Parallel Execution** - Automatic partitioning and parallel processing  
+✅ **Firewall System** - Security-aware compilation with tool restrictions  
+✅ **Template System** - Flexible code generation with fallback strategies  
 
 ---
 
