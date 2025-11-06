@@ -1,3 +1,9 @@
+---
+layout: default
+title: Book 2 - C# Target Language
+description: Multi-target compilation from Prolog to C# / .NET
+---
+
 <!--
 SPDX-License-Identifier: MIT AND CC-BY-4.0
 Copyright (c) 2025 John William Creighton (s243a)
