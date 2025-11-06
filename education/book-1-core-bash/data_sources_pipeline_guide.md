@@ -509,3 +509,10 @@ awk -F"," 'NR > 1 {print}' examples/demo_users.csv
 ---
 
 **Questions or issues?** Check the troubleshooting section or examine the working pipeline demo for reference.
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 14: XML Source Plugin](14_xml_source_plugin.md) | [📖 Back to Book 1](README.md) | [Next: Appendix A: Recursion Patterns →](A_appendix_recursion_patterns.md)
+

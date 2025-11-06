@@ -367,3 +367,10 @@ This enables UnifyWeaver deployment in restricted environments while maintaining
 
 **Authors:** John William Creighton (@s243a), Claude Code (Sonnet 4.5)
 **Last Updated:** 2025-11-05
+
+---
+
+## Navigation
+
+[📖 Back to Book-Misc](README.md) | [Next: Chapter 3: Prolog as Target Language →](03_prolog_target.md)
+

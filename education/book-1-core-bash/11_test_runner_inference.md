@@ -812,3 +812,10 @@ This closes the loop on UnifyWeaver's automated workflow: write declarative Prol
 - `output/advanced/inferred_test_runner.sh` - Example generated test runner
 - Chapter 9: Advanced Recursion Patterns - Understanding what patterns to test
 - Chapter 10: Prolog Introspection - Understanding how code analysis works
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 10: Prolog Introspection](10_prolog_introspection.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 12: Recursive Compilation →](12_recursive_compilation.md)
+

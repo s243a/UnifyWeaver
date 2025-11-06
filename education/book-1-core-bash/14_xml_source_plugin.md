@@ -363,3 +363,10 @@ engine(iterparse)  % Force lxml
 - Chapter 13: Partitioning and Parallel Execution
 - Data Sources Pipeline Guide
 - Example: `examples/xml_source_demo.pl` (if available)
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 13: Partitioning and Parallel Execution](13_partitioning_and_parallel_execution.md) | [📖 Back to Book 1](README.md) | [Next: Data Sources and ETL Pipelines →](data_sources_pipeline_guide.md)
+

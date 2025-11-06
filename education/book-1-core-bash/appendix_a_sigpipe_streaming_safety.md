@@ -438,3 +438,10 @@ The lesson: When building production systems, prioritize reliability and safety 
 ---
 
 *This appendix documents a real production issue encountered October 14, 2025, and the engineering solution developed to address streaming safety concerns in CLI applications.*
+
+---
+
+## Navigation
+
+**←** [Previous: Appendix A: Recursion Patterns](A_appendix_recursion_patterns.md) | [📖 Back to Book 1](README.md) | [Next: Appendix C: Fold Pattern Deep Dive →](appendix_b_fold_pattern_deep_dive.md)
+

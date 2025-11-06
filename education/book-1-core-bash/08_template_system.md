@@ -145,3 +145,9 @@ The modern template system is a significant enhancement that gives you fine-grai
 -   This provides a powerful mechanism for **customization and theming** without altering the core compiler logic.
 
 ```
+---
+
+## Navigation
+
+**←** [Previous: Chapter 7: Variable Scope and Process Substitution](07_variable_scope_and_process_substitution.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 9: Advanced Recursion →](09_advanced_recursion.md)
+

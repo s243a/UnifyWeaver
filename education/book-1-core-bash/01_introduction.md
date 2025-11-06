@@ -75,3 +75,10 @@ Over the next chapters, we will explore:
 5.  **Advanced Topics:** A deep dive into how UnifyWeaver handles complex recursion, constraints, and optimizations.
 
 Let's begin our journey by diving into the fundamentals of Prolog.
+
+---
+
+## Navigation
+
+[📖 Back to Book 1](README.md) | [Next: Chapter 2: Prolog Fundamentals →](02_prolog_fundamentals.md)
+

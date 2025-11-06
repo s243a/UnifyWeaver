@@ -143,3 +143,10 @@ This is the recommended way to compile predicates unless you have a specific rea
 We have now covered both recursive and non-recursive compilation, the two main pillars of UnifyWeaver. You should now have a good understanding of how your Prolog rules, whether simple or complex, are transformed into executable scripts.
 
 In the next chapter, we will explore some more advanced topics, including the constraint system that lets you control aspects of the compilation, such as ordering and uniqueness.
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 4: Your First Program](04_your_first_program.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 6: Advanced Constraints →](06_advanced_constraints.md)
+

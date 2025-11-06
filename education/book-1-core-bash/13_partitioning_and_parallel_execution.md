@@ -971,3 +971,10 @@ partitioner_init(my_strategy(custom_config), [], Handle).
 **License**: CC BY 4.0 (same as other UnifyWeaver education materials)
 **Last Updated**: 2025-10-27
 **Version**: 1.0
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 12: Recursive Compilation](12_recursive_compilation.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 14: XML Source Plugin →](14_xml_source_plugin.md)
+

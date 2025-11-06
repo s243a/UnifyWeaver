@@ -206,3 +206,10 @@ Generated bash:
 
 **Authors:** John William Creighton (@s243a), Claude Code (Sonnet 4.5)
 **Last Updated:** 2025-11-05
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 3: Prolog as Target Language](03_prolog_target.md) | [📖 Back to Book-Misc](README.md)
+

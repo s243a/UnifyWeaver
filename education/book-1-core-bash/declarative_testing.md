@@ -101,3 +101,10 @@ This advanced system provides a powerful and elegant workflow:
 4.  It inspects your compiled code, declaratively infers the correct way to test it, and generates a complete, ready-to-run test suite.
 
 This is a perfect example of the UnifyWeaver philosophy: using a high-level, declarative language (Prolog) to automate and manage the complexity of a low-level, imperative environment (Bash).
+
+---
+
+## Navigation
+
+**←** [Previous: Case Study: Production Pipeline](case_study_production_pipeline.md) | [📖 Back to Book 1](README.md)
+

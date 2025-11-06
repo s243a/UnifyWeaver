@@ -160,3 +160,10 @@ This concludes the main educational series on UnifyWeaver. You have learned abou
 *   How to use the constraint system to fine-tune the output.
 
 From here, you are well-equipped to start writing your own declarative programs and compiling them into powerful Bash scripts. I encourage you to explore the `examples/` directory in the project to see more complex use cases and to experiment with different kinds of predicates and constraints.
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 5: Stream Compilation](05_stream_compilation.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 7: Variable Scope and Process Substitution →](07_variable_scope_and_process_substitution.md)
+

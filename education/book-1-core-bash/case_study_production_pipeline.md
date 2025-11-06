@@ -799,3 +799,10 @@ The system successfully transforms high-level declarative specifications (Prolog
 ---
 
 *This case study documents UnifyWeaver's production pipeline as implemented October 14, 2025, demonstrating integration patterns and system architecture in real production systems.*
+
+---
+
+## Navigation
+
+**←** [Previous: Appendix C: Fold Pattern Deep Dive](appendix_b_fold_pattern_deep_dive.md) | [📖 Back to Book 1](README.md) | [Next: Case Study: Declarative Testing →](declarative_testing.md)
+

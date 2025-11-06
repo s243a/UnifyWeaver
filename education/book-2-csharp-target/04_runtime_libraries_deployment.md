@@ -796,3 +796,10 @@ Document your results (e.g., include command transcripts in release notes) so fu
 **Congratulations!** You've completed Book 2: C# Target Language.
 
 Return to Book 1 for Bash-specific topics or explore the appendices for advanced patterns.
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 3: C# Query Runtime](03_query_engine_deep_dive.md) | [📖 Back to Book 2](README.md)
+

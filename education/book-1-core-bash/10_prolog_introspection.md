@@ -633,3 +633,10 @@ These techniques enable UnifyWeaver to automatically select the optimal compilat
 - `src/unifyweaver/core/advanced/call_graph.pl` - Call graph construction
 - `src/unifyweaver/core/advanced/scc_detection.pl` - Tarjan's algorithm implementation
 - `src/unifyweaver/core/advanced/pattern_matchers.pl` - Pattern detection heuristics
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 9: Advanced Recursion](09_advanced_recursion.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 11: Test Runner Inference →](11_test_runner_inference.md)
+

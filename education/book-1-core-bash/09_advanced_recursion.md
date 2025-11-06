@@ -629,3 +629,10 @@ All code examples in this chapter are from actual working implementations in `ou
 - **Chapter 10:** Learn about Prolog introspection and how UnifyWeaver analyzes your code
 - **Chapter 11:** Explore test runner inference and automatic test discovery
 - **Appendix A:** Detailed recursion pattern theory and classification algorithms
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 8: Template System](08_template_system.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 10: Prolog Introspection →](10_prolog_introspection.md)
+

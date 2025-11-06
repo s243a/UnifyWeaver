@@ -144,3 +144,10 @@ Unification is the process that drives the search for answers in a Prolog progra
 This chapter has covered the absolute essentials: facts, rules, queries, and the terms they are built from. With this foundation, you are ready to understand the architecture of UnifyWeaver and how it translates these Prolog constructs into executable Bash scripts.
 
 In the next chapter, we will look at the high-level architecture of the UnifyWeaver compiler itself.
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 1: Introduction](01_introduction.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 3: UnifyWeaver Architecture →](03_unifyweaver_architecture.md)
+

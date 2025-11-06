@@ -302,3 +302,10 @@ In the following chapters, you'll learn:
 - Both targets share the same Prolog source
 
 Next: **Chapter 2 - C# Stream Target** →
+
+---
+
+## Navigation
+
+[📖 Back to Book 2](README.md) | [Next: Chapter 2: C# Stream Target →](02_csharp_stream_target.md)
+

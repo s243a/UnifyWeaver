@@ -678,3 +678,10 @@ generate_fold_bash(Pred/Arity, BashCode) :-
 ---
 
 *This appendix documents the fold pattern implementation completed October 14, 2025, demonstrating advanced recursion compilation techniques and automatic code generation in production systems.*
+
+---
+
+## Navigation
+
+**←** [Previous: Appendix B: SIGPIPE and Streaming Safety](appendix_a_sigpipe_streaming_safety.md) | [📖 Back to Book 1](README.md) | [Next: Case Study: Production Pipeline →](case_study_production_pipeline.md)
+

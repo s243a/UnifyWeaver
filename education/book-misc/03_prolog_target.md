@@ -115,3 +115,10 @@ Translate SWI-Prolog to other dialects:
 
 **Authors:** John William Creighton (@s243a), Claude Code (Sonnet 4.5)
 **Last Updated:** 2025-11-05
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 1: Perl Service Infrastructure](01_perl_service_infrastructure.md) | [📖 Back to Book-Misc](README.md) | [Next: Chapter 4: Prolog Service →](04_prolog_bash_service.md)
+

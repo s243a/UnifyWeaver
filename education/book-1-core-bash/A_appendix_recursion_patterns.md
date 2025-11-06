@@ -107,3 +107,9 @@ is_odd(N) :- N > 1, N1 is N - 1, is_even(N1).
 ```
 
 **UnifyWeaver Optimization:** UnifyWeaver detects mutually recursive predicates by finding **Strongly Connected Components (SCCs)** in the call graph. It then generates a **shared memoization table** for all predicates in the SCC, ensuring that results are cached and shared correctly across the entire group of functions.
+---
+
+## Navigation
+
+**←** [Previous: Data Sources and ETL Pipelines](data_sources_pipeline_guide.md) | [📖 Back to Book 1](README.md) | [Next: Appendix B: SIGPIPE and Streaming Safety →](appendix_a_sigpipe_streaming_safety.md)
+

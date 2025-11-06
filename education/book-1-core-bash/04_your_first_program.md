@@ -282,3 +282,10 @@ You have successfully created a Prolog program, compiled it with UnifyWeaver, an
 ## Next Steps
 
 In the next chapter, we will delve deeper into the compilation process, exploring the different options and how UnifyWeaver handles non-recursive predicates with the `stream_compiler`.
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 3: UnifyWeaver Architecture](03_unifyweaver_architecture.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 5: Stream Compilation →](05_stream_compilation.md)
+

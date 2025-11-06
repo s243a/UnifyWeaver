@@ -951,3 +951,10 @@ friend_circle(User1, User2) :-
 4. Compare semi-naive vs naive performance with larger datasets
 
 Next: **Chapter 4 - Runtime Libraries and Deployment** →
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 2: C# Stream Target](02_csharp_stream_target.md) | [📖 Back to Book 2](README.md) | [Next: Chapter 4: Runtime Libraries and Deployment →](04_runtime_libraries_deployment.md)
+
