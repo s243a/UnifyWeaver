@@ -36,9 +36,9 @@ Run **all** steps in order. Use `SKIP_CSHARP_EXECUTION=1` to avoid the known `do
 
 ### 3.1 C# Query Target Regression
 ```bash
-SKIP_CSHARP_EXECUTION=1 \
-swipl -q \
-     -f tests/core/test_csharp_query_target.pl \
+SKIP_CSHARP_EXECUTION=1 swipl -q \
+     -f init.pl \
+     tests/core/test_csharp_query_target.pl \
      -g test_csharp_query_target:test_csharp_query_target \
      -t halt
 ```
@@ -53,10 +53,43 @@ swipl -q \
 
 Expected output shows “dotnet execution skipped” for each block followed by `=== C# query target tests complete ===`.
 
+#### 3.1b Running the Generated C# Code
+
+  **Note:** The test above with `SKIP_CSHARP_EXECUTION=1` only validates that C# code generation succeeds. To verify the
+  generated code actually compiles and produces correct results, follow these steps:
+
+  1. **Navigate to the generated C# project directory:**
+
+```bash
+
+
+# Assuming you are in the root folder of your test environment
+# We navigate to the most newly created output folder.
+$ cd $(ls -td tmp/csharp_query_* /tmp/csharp_query_* 2>/dev/null | head -1)
+```
+  2. Run the generated C# project:
+ ```bash
+$  dotnet run
+
+alice,charlie
+```
+**Note:** `dotnet run` automatically builds the project. To do this in two steps see section 4.
+
+
+  3. This confirms that the grandparent/2 predicate correctly finds Alice as Charlie's grandparent through the parent/2
+  facts.
+
+  Troubleshooting:
+  - If dotnet build fails, check that .NET SDK 6.0+ is installed: dotnet --version
+  - If you get "No such file or directory" errors, verify the test created a `csharp_query_*` directory during executio
+  - If the output is empty or incorrect, the query runtime may have issues with the fixpoint evaluation
+
+  This text includes everything needed: context that the SKIP flag only validates generation, the actual build/run commands
+ 
 ### 3.2 full control-plane suite (optional but recommended)
 ```bash
 SKIP_CSHARP_EXECUTION=1 \
-swipl -q -f run_all_tests.pl -g main -t halt
+swipl -q -f init.pl -g "test_all" -t halt
 ```
 Confirms that integrating the C# target does not regress other subsystems (firewall, data sources, bash targets).
 
@@ -68,34 +101,80 @@ Run these only if you have `.NET` available and want to verify end-to-end execut
 
 ### 4.1 Generate artefacts and run compiled binary
 ```bash
-SKIP_CSHARP_EXECUTION=1 \
-swipl -q \
-     -f tests/core/test_csharp_query_target.pl \
-     -g "test_csharp_query_target:configure_csharp_query_options, \
-         test_csharp_query_target:setup_test_data, \
-         test_csharp_query_target:build_manual_plan(test_even/1, Dir), \
-         halt."
+swipl -q -f init.pl generate_csharp_manual.pl
 ```
-> Produces a project under `output/csharp/<uuid>/`.
+> Produces a project under /tmp/test_even_manual
 
-From that directory:
+Navigate to this directory:
+
+```bash
+cd /tmp/test_even_manual
+```
+
+then build the project
+
 ```bash
 dotnet build --no-restore
-dotnet bin/Debug/net9.0/<generated>.dll   # if DLL produced
-# or
-./bin/Debug/net9.0/<generated>            # if self-contained binary produced
 ```
-Expected output: `0`, `2`, `4` (mutual recursion parity).
 
-*(If you prefer, run `dotnet run --no-restore` after reading the hang workaround.)*
 
+#### Running the Compiled Code
+
+**Option 1: Run with dotnet command (recommended)**
+```bash
+dotnet bin/Debug/net9.0/test_even_manual.dll
+```
+
+**Expected output:**
+```
+0
+2
+4
+```
+
+**Option 2: Build self-contained executable**
+
+If you want a native binary that can be executed directly (e.g., `./test_even_manual`):
+```bash
+dotnet publish -c Release --self-contained -r linux-x64
+./bin/Release/net9.0/linux-x64/publish/test_even_manual
+```
+
+This bundles the .NET runtime with your application, resulting in a larger file but no runtime dependency.
+
+**Option 3: Configure binfmt_misc handler (advanced)**
+
+On Linux, you can configure the kernel to automatically invoke dotnet for .dll files:
+```bash
+# Register .NET DLL handler (requires root)
+echo ':dotnet:M::MZ::/usr/bin/dotnet:' | sudo tee /proc/sys/fs/binfmt_misc/register
+
+# Then you can run DLLs directly
+chmod +x bin/Debug/net9.0/test_even_manual.dll
+./bin/Debug/net9.0/test_even_manual.dll
+```
+
+**Note:** This configuration is not standard and may not persist across reboots.
+
+#### About Mono
+
+**Note:** Some older Linux systems allowed double-clicking `.exe` files built with **Mono** (an older .NET Framework implementation). However:
+- Modern .NET (net9.0) is a different runtime from Mono
+- Mono cannot run modern .NET Core/5+/9 assemblies
+- The `binfmt_misc` handlers configured for Mono do not work with modern .NET DLLs
+
+For maximum compatibility across systems, **use Option 1** (`dotnet <path-to-dll>`).
+
+---
+
+**Validation:** All three options should produce the same output: `0`, `2`, `4` (the even numbers from the mutual recursion test).
 ### 4.2 Bash parity spot-check (optional)
 Run the equivalent Bash test to compare results:
 ```bash
-swipl -q \
-     -g "use_module('tests/core/test_recursive_csharp_target'), \
-         test_recursive_csharp_target:test_cf_fact, \
-         halt."
+swipl -q -f init.pl \
+       -g "use_module('tests/core/test_recursive_csharp_target'), \
+           test_recursive_csharp_target:test_recursive_csharp_target, \
+           halt."
 ```
 Ensure C# and Bash outputs match for the same predicates (focus on mutual recursion and arithmetic cases).
 
@@ -121,7 +200,7 @@ Ensure C# and Bash outputs match for the same predicates (focus on mutual recurs
 
 ## 7. Summary Checklist
 - [ ] `tests/core/test_csharp_query_target.pl` passes with skip flag.
-- [ ] Optional: `run_all_tests.pl` passes with skip flag.
+- [ ] Optional: full control-plane suite (`init.pl` with `test_all`) passes with skip flag.
 - [ ] Optional: manual build-first project executes and outputs `alice,charlie` (join) and `0/2/4` (mutual recursion).
 - [ ] No unexpected files remain in `tmp/` unless intentionally kept (`--csharp-query-keep`).
 - [ ] Results recorded in release notes or PR checklist.

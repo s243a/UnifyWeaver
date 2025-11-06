@@ -2,9 +2,9 @@
     test_recursive_csharp_target/0
 ]).
 
-:- use_module(library(recursive_compiler)).
-:- use_module(library(stream_compiler)).
-:- use_module(library(constraint_analyzer)).
+:- use_module(unifyweaver(core/recursive_compiler)).
+:- use_module(unifyweaver(core/stream_compiler)).
+:- use_module(unifyweaver(core/constraint_analyzer)).
 
 test_recursive_csharp_target :-
     format('~n=== Testing recursive compiler C# target integration ===~n'),
