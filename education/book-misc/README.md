@@ -29,9 +29,8 @@ Content here may eventually be:
 
 ## Current Topics
 
-### 1. **Perl Service Infrastructure** ✅ Implemented
+### 1. **[Perl Service Infrastructure](01_perl_service_infrastructure.md)** ✅ Implemented
 - **Status:** Merged to main (2025-11-05)
-- **Files:** `01_perl_service_infrastructure.md` (planned)
 - **Coverage:**
   - `perl_service.pl` module architecture
   - Inline Perl bash call generation
@@ -54,9 +53,8 @@ Content here may eventually be:
 
 **Why Here:** Recent enhancement to existing XML chapter. Should be merged back into Book 1, Chapter 14.
 
-### 3. **Prolog as Target Language** 🚧 Limited Implementation
+### 3. **[Prolog as Target Language](03_prolog_target.md)** 🚧 Limited Implementation
 - **Status:** Partially implemented, no templates
-- **Files:** `03_prolog_target.md` (planned)
 - **Coverage:**
   - Prolog query generation
   - Integration with SWI-Prolog
@@ -65,9 +63,8 @@ Content here may eventually be:
 
 **Why Here:** Incomplete feature that could become a fallback strategy when patterns don't match or firewall rules forbid other approaches. May evolve into its own book if expanded.
 
-### 4. **Prolog Service (Bash-as-a-Service alternative)** 🚧 Partial Implementation
+### 4. **[Prolog Service (Bash-as-a-Service alternative)](04_prolog_bash_service.md)** 🚧 Partial Implementation
 - **Status:** Infrastructure exists (`prolog_service_target.pl`), limited testing
-- **Files:** `04_prolog_bash_service.md` (planned)
 - **Coverage:**
   - Inline Prolog execution in bash
   - Comparison to BaaS (Bash-as-a-Service)
