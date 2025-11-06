@@ -4,7 +4,9 @@
 #
 # init_testing.sh - Initialize UnifyWeaver testing environment
 
-set -euo pipefail
+# Use safer error handling that doesn't exit the parent shell
+set -uo pipefail
+# Removed -e flag to prevent exiting on errors - allows troubleshooting
 
 # Parse command line options
 FORCE_WINDOWS=0
@@ -20,7 +22,7 @@ while [[ $# -gt 0 ]]; do
     -d|--dir)
       if [[ -z "${2:-}" ]]; then
         echo "Error: --dir requires a directory argument"
-        exit 1
+        return 1 2>/dev/null || exit 1
       fi
       CUSTOM_PARENT_DIR="$2"
       shift 2
@@ -28,7 +30,7 @@ while [[ $# -gt 0 ]]; do
     -p|--path)
       if [[ -z "${2:-}" ]]; then
         echo "Error: --path requires a path argument"
-        exit 1
+        return 1 2>/dev/null || exit 1
       fi
       CUSTOM_FULL_PATH="$2"
       shift 2
@@ -57,7 +59,7 @@ while [[ $# -gt 0 ]]; do
     *)
       echo "Unknown option: $1"
       echo "Use --help for usage information"
-      exit 1
+      return 1 2>/dev/null || exit 1
       ;;
   esac
 done
