@@ -233,7 +233,8 @@ execute_bash_tempfile(TempSpec, Input, Output) :-
                       [stdin(pipe(In)), stdout(pipe(Out)), stderr(std),
                        process(PID)]),
         (   (   Input \= ''
-            ->  write(In, Input)
+            ->  write(In, Input),
+                flush_output(In)
             ;   true
             ),
             close(In),
