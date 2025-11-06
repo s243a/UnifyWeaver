@@ -1,3 +1,9 @@
+---
+layout: default
+title: UnifyWeaver Education
+description: Comprehensive educational materials for learning UnifyWeaver
+---
+
 <!--
 SPDX-License-Identifier: MIT AND CC-BY-4.0
 Copyright (c) 2025 John William Creighton (s243a)

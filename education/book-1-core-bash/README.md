@@ -1,3 +1,9 @@
+---
+layout: default
+title: Book 1 - Core UnifyWeaver & Bash Target
+description: Learning path for UnifyWeaver's core features and Bash code generation
+---
+
 <!--
 SPDX-License-Identifier: MIT AND CC-BY-4.0
 Copyright (c) 2025 John William Creighton (s243a)
