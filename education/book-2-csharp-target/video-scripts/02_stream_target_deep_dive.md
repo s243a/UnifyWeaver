@@ -1,0 +1,313 @@
+<!--
+SPDX-License-Identifier: MIT AND CC-BY-4.0
+Copyright (c) 2025 John William Creighton (s243a)
+
+This documentation is dual-licensed under MIT and CC-BY-4.0.
+-->
+
+# Video Script: Stream Target Deep Dive
+
+**Duration:** 8-10 minutes
+**Target Audience:** Developers ready to use Stream Target in production
+**Goal:** Understand LINQ translation, performance characteristics, and best practices
+
+---
+
+## Opening (30 seconds)
+
+**[Screen: Split view - Prolog query on left, C# LINQ on right]**
+
+> "The Stream Target translates Prolog into LINQ.
+> Let's understand exactly how it works."
+
+**Show title card:** "Stream Target Deep Dive"
+
+---
+
+## Section 1: Translation Patterns (2 minutes)
+
+**[Screen: Side-by-side comparison]**
+
+### Pattern 1: Facts → Arrays
+
+**Prolog:**
+```prolog
+color(red).
+color(blue).
+```
+
+**C#:**
+```csharp
+static readonly string[] ColorData = { "red", "blue" };
+```
+
+> "Facts become arrays. Simple and fast."
+
+### Pattern 2: Selection → Where
+
+**Prolog:**
+```prolog
+primary(Color) :- color(Color), Color = red.
+```
+
+**C#:**
+```csharp
+ColorData.Where(c => c == "red")
+```
+
+> "Selection becomes Where clause."
+
+### Pattern 3: Join → SelectMany
+
+**Prolog:**
+```prolog
+mix(C1, C2, Result) :- color(C1), color(C2), blend(C1, C2, Result).
+```
+
+**C#:**
+```csharp
+ColorData.SelectMany(c1 =>
+    ColorData.Where(c2 => ...).Select(c2 => ...))
+```
+
+> "Joins become SelectMany with nested queries."
+
+---
+
+## Section 2: Performance Deep Dive (2 minutes)
+
+**[Screen: Performance comparison chart]**
+
+### Lazy Evaluation
+
+**Demonstrate:**
+```csharp
+var query = ParentData.SelectMany(...);  // No execution yet
+foreach (var item in query) { ... }      // Executes here
+```
+
+> "LINQ is lazy.
+> No computation until you iterate."
+
+**Benefits:**
+- Memory: O(1) per item
+- Can short-circuit (Take, First)
+- Composable pipelines
+
+### When Materialization Happens
+
+**Show examples:**
+```csharp
+query.ToList()      // Materializes everything
+query.ToArray()     // Materializes everything
+query.Count()       // Iterates through all
+query.First()       // Stops after first match
+```
+
+> "Be careful with ToList and Count.
+> They force full evaluation."
+
+### Performance Characteristics
+
+**[Screen: Complexity table]**
+
+| Operation | Complexity | Notes |
+|-----------|-----------|-------|
+| Facts only | O(n) | Array iteration |
+| Single join | O(n × m) | Nested loop |
+| Multiple joins | O(n × m × k) | Can get expensive |
+| Distinct | O(n) + hash | Uses HashSet internally |
+
+---
+
+## Section 3: Real Example Walkthrough (2.5 minutes)
+
+**[Screen: Code editor with example]**
+
+> "Let's trace exactly what happens in a join query."
+
+### The Query
+
+**Prolog:**
+```prolog
+grandparent(GP, GC) :- parent(GP, P), parent(P, GC).
+```
+
+**Data:**
+```prolog
+parent(alice, bob).
+parent(bob, charlie).
+parent(alice, diane).
+parent(diane, eve).
+```
+
+### Step-by-Step Execution
+
+**[Animate execution with data flowing]**
+
+**Step 1: Outer SelectMany**
+```
+alice:bob    → Look for children of bob
+bob:charlie  → Look for children of charlie
+alice:diane  → Look for children of diane
+diane:eve    → Look for children of eve
+```
+
+**Step 2: Inner Where**
+```
+For (alice, bob): Find where parent = bob
+  Found: bob:charlie
+  Result: (alice, charlie)
+
+For (bob, charlie): Find where parent = charlie
+  No matches
+
+For (alice, diane): Find where parent = diane
+  Found: diane:eve
+  Result: (alice, eve)
+
+For (diane, eve): Find where parent = eve
+  No matches
+```
+
+**Step 3: Select Projection**
+```
+(alice, bob, charlie) → (alice, charlie)
+(alice, diane, eve)   → (alice, eve)
+```
+
+**Final Output:**
+```
+alice:charlie
+alice:eve
+```
+
+> "Total iterations: 8 outer × up to 4 inner = ~32 comparisons.
+> This is why large datasets need Query Runtime."
+
+---
+
+## Section 4: Best Practices (2 minutes)
+
+### ✅ Good Use Cases
+
+**1. Stable Business Rules**
+```prolog
+discount_eligible(Customer) :-
+    customer(Customer, gold),
+    purchase_history(Customer, Count),
+    Count > 10.
+```
+
+> "Rules that don't change often.
+> Compile once, use everywhere."
+
+**2. Data Validation**
+```prolog
+valid_order(Order) :-
+    order(Order, Product, Qty),
+    in_stock(Product, Available),
+    Qty =< Available.
+```
+
+> "Fast validation pipelines."
+
+**3. Small to Medium Datasets**
+
+> "Sweet spot: 100-10,000 records.
+> Beyond that, consider Query Runtime."
+
+### ❌ When NOT to Use Stream Target
+
+**1. Recursive Queries**
+```prolog
+ancestor(X, Y) :- parent(X, Y).
+ancestor(X, Z) :- parent(X, Y), ancestor(Y, Z).
+```
+
+> "Error: Cannot compile recursive predicate.
+> Use Query Runtime instead."
+
+**2. Very Large Data**
+
+> "If n × m > 1 million operations,
+> Query Runtime's hash joins are faster."
+
+**3. Dynamic Rules**
+
+> "If rules change frequently,
+> consider keeping Prolog at runtime."
+
+---
+
+## Section 5: Advanced Integration (1 minute)
+
+**[Screen: Code example]**
+
+### Mixing Generated and Hand-Written Code
+
+```csharp
+// Generated by UnifyWeaver
+var engineers = Engineer.Stream();
+
+// Your C# code
+var seniorEngineers = engineers
+    .Where(name => database.GetYearsExperience(name) > 5)
+    .OrderBy(name => name);
+
+// Combine with other LINQ sources
+var report = seniorEngineers
+    .Join(salaryDatabase,
+          eng => eng,
+          sal => sal.Name,
+          (eng, sal) => new { eng, sal.Amount });
+```
+
+> "Generated code is just IEnumerable.
+> Compose with any LINQ operation."
+
+---
+
+## Closing (30 seconds)
+
+**[Screen: Key takeaways]**
+
+**Show bullet points:**
+- ✓ Lazy evaluation = efficient
+- ✓ O(n × m) for joins
+- ✓ Best for < 10k records
+- ✓ Use Query Runtime for recursion
+- ✓ Fully composable with LINQ
+
+> "Now you understand how Stream Target works under the hood.
+> Next: Query Runtime for recursive queries."
+
+**[Screen: Next video preview]**
+
+---
+
+## Notes for Recording
+
+**Visual Aids:**
+- Animated data flow diagrams for join execution
+- Performance charts comparing dataset sizes
+- Split-screen for Prolog ↔ C# comparison
+
+**Code Examples to Prepare:**
+- Simple facts example (ready to run)
+- Join example with breakpoints
+- Performance test harness showing timing
+
+**Interactive Elements:**
+- Pause after complex examples: "Take a moment to understand this"
+- Challenge prompts: "Predict the output before running"
+
+**Common Questions:**
+- Q: "Why SelectMany not Join?" → A: "Join requires matching keys upfront, SelectMany more flexible"
+- Q: "Can I optimize the generated code?" → A: "Usually not needed, but yes - it's just C#"
+- Q: "Thread-safe?" → A: "Yes, facts are readonly arrays"
+
+**Mistakes to Avoid:**
+- Don't skip the execution trace - it's the most valuable part
+- Don't assume viewers know LINQ well - explain SelectMany
+- Show actual performance numbers, not just complexity notation

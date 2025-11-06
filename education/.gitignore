@@ -1,0 +1,311 @@
+# UnifyWeaver Education - Git Ignore File
+
+# =============================================================================
+# Project Structure - Only Track Specific Folders
+# =============================================================================
+# We only track these folders:
+# - book-1-core-bash/
+# - book-2-csharp-target/
+# - docs/
+# - notebooks/
+#
+# Everything else at root level is ignored by default below
+
+# Specific directories to ignore
+/output/
+/drafts/
+
+# Also track root-level files
+!*.md
+!LICENSE-*
+!CONTRIBUTING.md
+!CHANGELOG.md
+
+# =============================================================================
+# Python
+# =============================================================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# =============================================================================
+# LLM Settings and AI Tools
+# =============================================================================
+.claude/
+.claude-code/
+.cursor/
+.aider/
+.copilot/
+.env
+.env.local
+.env.*.local
+*.secret
+*.secrets
+
+# =============================================================================
+# IDE and Editor Settings
+# =============================================================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (IntelliJ, PyCharm, etc.)
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Eclipse
+.project
+.classpath
+.settings/
+.metadata
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# Emacs
+*~
+\#*\#
+.\#*
+.dir-locals.el
+
+# Atom
+.atom/
+
+# TextMate
+*.tmproj
+*.tmproject
+tmtags
+
+# NetBeans
+nbproject/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# =============================================================================
+# Operating System Files
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# Build and Generated Files
+# =============================================================================
+
+# Compiled output
+*.out
+*.o
+*.a
+*.lib
+*.dll
+*.exe
+*.so
+*.dylib
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+.#*
+
+# Generated documentation
+_build/
+_site/
+.docusaurus/
+.cache/
+
+# =============================================================================
+# Project-Specific
+# =============================================================================
+
+# Note: output/ and drafts/ already defined at top of file
+
+# Temporary test data
+test_data/
+tmp/
+temp/
+
+# Node modules (if any JavaScript tooling)
+node_modules/
+
+# Package manager files (optional, can un-comment if needed)
+# package-lock.json
+# yarn.lock
+# Gemfile.lock
+
+# =============================================================================
+# Prolog-Specific
+# =============================================================================
+*.qlf
+*.qly
+
+# =============================================================================
+# C# / .NET (for Book 2 generated files)
+# =============================================================================
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio cache/options
+.vs/
+
+# NuGet
+*.nupkg
+*.snupkg
+**/packages/*
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# =============================================================================
+# Archives
+# =============================================================================
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# =============================================================================
+# Security
+# =============================================================================
+# Never commit private keys or credentials
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa
+credentials.json
+secrets.yaml
+auth_token
+.netrc
