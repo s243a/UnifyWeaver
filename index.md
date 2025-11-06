@@ -16,6 +16,7 @@ UnifyWeaver is a Prolog-to-Code compiler that generates optimized streaming code
 
 ### 📦 Project Documentation
 - **[Project README](project/README.md)** - Overview, installation, and quick start
+- **[Extended README](project/docs/EXTENDED_README.md)** - Comprehensive tutorials and examples
 - **[Documentation](project/docs/README.md)** - Complete technical documentation
 - **[GitHub Repository](https://github.com/s243a/UnifyWeaver)** - Source code and issues
 
