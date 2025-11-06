@@ -53,26 +53,26 @@ UnifyWeaver provides two C# compilation targets:
 
 ## Book Structure
 
-### Chapter 1: Introduction to Multi-Target Compilation
+### Chapter 1: [Introduction to Multi-Target Compilation](01_introduction_multi_target)
 - Why compile to C#?
 - When to use C# vs Bash
 - Target selection strategies
 - Installation and setup
 
-### Chapter 2: C# Stream Target
+### Chapter 2: [C# Stream Target](02_csharp_stream_target)
 - Compiling facts to C# arrays
 - LINQ-based query translation
 - Deduplication with `Distinct()`
 - Building and running generated code
 
-### Chapter 3: C# Query Runtime
+### Chapter 3: [C# Query Runtime](03_query_engine_deep_dive)
 - IR (Intermediate Representation) concept
 - Query engine architecture
 - Fixpoint iteration for recursion (semi-naive + mutual SCC groups)
 - Plan nodes: `FixpointNode`, `MutualFixpointNode`, `CrossRefNode`
 - Testing with `SKIP_CSHARP_EXECUTION` and manual dotnet builds
 
-### Chapter 4: Runtime Libraries and Deployment
+### Chapter 4: [Runtime Libraries and Deployment](04_runtime_libraries_deployment)
 - Shared runtime components
 - Packaging C# projects
 - Cross-platform deployment (.NET 6+)
