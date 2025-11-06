@@ -501,7 +501,7 @@ SKIP_CSHARP_EXECUTION=1 swipl -q \
     -t halt
 ```
 
-This covers facts, joins, selections, arithmetic, linear recursion, and mutual recursion (even/odd). For end-to-end verification, follow the build-first workflow from [the test plan](https://github.com/s243a/UnifyWeaver/blob/main/docs/development/testing/v0_1_csharp_test_plan.md) to generate a project under `output/csharp/<uuid>/`, run `dotnet build --no-restore`, and execute the compiled binary/DLL (`0`, `2`, `4` should appear for the mutual recursion example).
+This covers facts, joins, selections, arithmetic, linear recursion, and mutual recursion (even/odd). For end-to-end verification, follow the build-first workflow from [the test plan](https://github.com/s243a/UnifyWeaver/blob/main/docs/development/testing/v0_1_csharp_test_plan) to generate a project under `output/csharp/<uuid>/`, run `dotnet build --no-restore`, and execute the compiled binary/DLL (`0`, `2`, `4` should appear for the mutual recursion example).
 
 ---
 
@@ -956,5 +956,5 @@ Next: **Chapter 4 - Runtime Libraries and Deployment** →
 
 ## Navigation
 
-**←** [Previous: Chapter 2: C# Stream Target](02_csharp_stream_target.md) | [📖 Back to Book 2](README.md) | [Next: Chapter 4: Runtime Libraries and Deployment →](04_runtime_libraries_deployment.md)
+**←** [Previous: Chapter 2: C# Stream Target](02_csharp_stream_target) | [📖 Back to Book 2](README) | [Next: Chapter 4: Runtime Libraries and Deployment →](04_runtime_libraries_deployment)
 

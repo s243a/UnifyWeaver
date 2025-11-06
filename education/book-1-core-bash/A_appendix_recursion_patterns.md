@@ -111,5 +111,5 @@ is_odd(N) :- N > 1, N1 is N - 1, is_even(N1).
 
 ## Navigation
 
-**←** [Previous: Data Sources and ETL Pipelines](data_sources_pipeline_guide.md) | [📖 Back to Book 1](README.md) | [Next: Appendix B: SIGPIPE and Streaming Safety →](appendix_a_sigpipe_streaming_safety.md)
+**←** [Previous: Data Sources and ETL Pipelines](data_sources_pipeline_guide) | [📖 Back to Book 1](README) | [Next: Appendix B: SIGPIPE and Streaming Safety →](appendix_a_sigpipe_streaming_safety)
 

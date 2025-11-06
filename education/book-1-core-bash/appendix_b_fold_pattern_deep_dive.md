@@ -683,5 +683,5 @@ generate_fold_bash(Pred/Arity, BashCode) :-
 
 ## Navigation
 
-**←** [Previous: Appendix B: SIGPIPE and Streaming Safety](appendix_a_sigpipe_streaming_safety.md) | [📖 Back to Book 1](README.md) | [Next: Case Study: Production Pipeline →](case_study_production_pipeline.md)
+**←** [Previous: Appendix B: SIGPIPE and Streaming Safety](appendix_a_sigpipe_streaming_safety) | [📖 Back to Book 1](README) | [Next: Case Study: Production Pipeline →](case_study_production_pipeline)
 

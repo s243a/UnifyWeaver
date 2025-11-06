@@ -976,5 +976,5 @@ partitioner_init(my_strategy(custom_config), [], Handle).
 
 ## Navigation
 
-**←** [Previous: Chapter 12: Recursive Compilation](12_recursive_compilation.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 14: XML Source Plugin →](14_xml_source_plugin.md)
+**←** [Previous: Chapter 12: Recursive Compilation](12_recursive_compilation) | [📖 Back to Book 1](README) | [Next: Chapter 14: XML Source Plugin →](14_xml_source_plugin)
 

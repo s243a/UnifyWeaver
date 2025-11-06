@@ -634,5 +634,5 @@ All code examples in this chapter are from actual working implementations in `ou
 
 ## Navigation
 
-**←** [Previous: Chapter 8: Template System](08_template_system.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 10: Prolog Introspection →](10_prolog_introspection.md)
+**←** [Previous: Chapter 8: Template System](08_template_system) | [📖 Back to Book 1](README) | [Next: Chapter 10: Prolog Introspection →](10_prolog_introspection)
 

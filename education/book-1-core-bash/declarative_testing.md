@@ -106,5 +106,5 @@ This is a perfect example of the UnifyWeaver philosophy: using a high-level, dec
 
 ## Navigation
 
-**←** [Previous: Case Study: Production Pipeline](case_study_production_pipeline.md) | [📖 Back to Book 1](README.md)
+**←** [Previous: Case Study: Production Pipeline](case_study_production_pipeline) | [📖 Back to Book 1](README)
 

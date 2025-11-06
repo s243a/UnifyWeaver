@@ -120,5 +120,5 @@ Translate SWI-Prolog to other dialects:
 
 ## Navigation
 
-**←** [Previous: Chapter 1: Perl Service Infrastructure](01_perl_service_infrastructure.md) | [📖 Back to Book-Misc](README.md) | [Next: Chapter 4: Prolog Service →](04_prolog_bash_service.md)
+**←** [Previous: Chapter 1: Perl Service Infrastructure](01_perl_service_infrastructure) | [📖 Back to Book-Misc](README) | [Next: Chapter 4: Prolog Service →](04_prolog_bash_service)
 

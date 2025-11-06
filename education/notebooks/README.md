@@ -256,10 +256,10 @@ generate_dot(Graph, DotCode).
 
 ## Additional Resources
 
-- [UnifyWeaver Documentation](../README.md)
-- [Chapter 4: Your First Program](../04_your_first_program.md)
-- [Chapter 9: Advanced Recursion Patterns](../09_advanced_recursion.md)
-- [Chapter 10: Prolog Introspection](../10_prolog_introspection.md)
+- [UnifyWeaver Documentation](../README)
+- [Chapter 4: Your First Program](../04_your_first_program)
+- [Chapter 9: Advanced Recursion Patterns](../09_advanced_recursion)
+- [Chapter 10: Prolog Introspection](../10_prolog_introspection)
 - [SWI-Prolog Documentation](https://www.swi-prolog.org/pldoc/doc_for?object=manual)
 - [Prolog Jupyter Kernel GitHub](https://github.com/hhu-stups/prolog-jupyter-kernel)
 

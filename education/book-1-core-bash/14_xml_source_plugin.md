@@ -368,5 +368,5 @@ engine(iterparse)  % Force lxml
 
 ## Navigation
 
-**←** [Previous: Chapter 13: Partitioning and Parallel Execution](13_partitioning_and_parallel_execution.md) | [📖 Back to Book 1](README.md) | [Next: Data Sources and ETL Pipelines →](data_sources_pipeline_guide.md)
+**←** [Previous: Chapter 13: Partitioning and Parallel Execution](13_partitioning_and_parallel_execution) | [📖 Back to Book 1](README) | [Next: Data Sources and ETL Pipelines →](data_sources_pipeline_guide)
 

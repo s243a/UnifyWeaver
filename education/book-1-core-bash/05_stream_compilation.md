@@ -148,5 +148,5 @@ In the next chapter, we will explore some more advanced topics, including the co
 
 ## Navigation
 
-**←** [Previous: Chapter 4: Your First Program](04_your_first_program.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 6: Advanced Constraints →](06_advanced_constraints.md)
+**←** [Previous: Chapter 4: Your First Program](04_your_first_program) | [📖 Back to Book 1](README) | [Next: Chapter 6: Advanced Constraints →](06_advanced_constraints)
 

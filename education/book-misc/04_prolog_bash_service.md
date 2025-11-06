@@ -211,5 +211,5 @@ Generated bash:
 
 ## Navigation
 
-**←** [Previous: Chapter 3: Prolog as Target Language](03_prolog_target.md) | [📖 Back to Book-Misc](README.md)
+**←** [Previous: Chapter 3: Prolog as Target Language](03_prolog_target) | [📖 Back to Book-Misc](README)
 

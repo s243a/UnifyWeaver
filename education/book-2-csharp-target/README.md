@@ -120,7 +120,7 @@ namespace UnifyWeaver.Generated {
 - Query runtime now handles mutual recursion through `MutualFixpointNode` and `CrossRefNode` plan nodes.
 - Distinct semantics align with Bash via per-predicate `HashSet<object[]>` collections.
 - Updated documentation walks through semi-naive and mutual fixpoint evaluation.
-- Recommended regression workflow: [`C# Query Target Test Plan`](https://github.com/s243a/UnifyWeaver/blob/main/docs/development/testing/v0_1_csharp_test_plan.md) (skip dotnet execution by default, build-first for manual validation).
+- Recommended regression workflow: [`C# Query Target Test Plan`](https://github.com/s243a/UnifyWeaver/blob/main/docs/development/testing/v0_1_csharp_test_plan) (skip dotnet execution by default, build-first for manual validation).
 - Education examples include parity checks between Bash and C# pipelines.
 
 ## Comparison: Bash vs C# Targets

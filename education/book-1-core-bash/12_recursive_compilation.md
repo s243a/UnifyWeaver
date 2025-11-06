@@ -106,5 +106,5 @@ The compiler driver represents a significant step forward in the usability of Un
 
 ## Navigation
 
-**←** [Previous: Chapter 11: Test Runner Inference](11_test_runner_inference.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 13: Partitioning and Parallel Execution →](13_partitioning_and_parallel_execution.md)
+**←** [Previous: Chapter 11: Test Runner Inference](11_test_runner_inference) | [📖 Back to Book 1](README) | [Next: Chapter 13: Partitioning and Parallel Execution →](13_partitioning_and_parallel_execution)
 

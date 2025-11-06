@@ -80,5 +80,5 @@ Let's begin our journey by diving into the fundamentals of Prolog.
 
 ## Navigation
 
-[📖 Back to Book 1](README.md) | [Next: Chapter 2: Prolog Fundamentals →](02_prolog_fundamentals.md)
+[📖 Back to Book 1](README) | [Next: Chapter 2: Prolog Fundamentals →](02_prolog_fundamentals)
 

@@ -20,7 +20,7 @@ This project contains comprehensive educational materials for learning UnifyWeav
 ## Book Structure
 
 ### 📘 Book 1: Core UnifyWeaver & Bash Target
-**[📖 Read Book 1](book-1-core-bash/README.md)** | **Location:** `book-1-core-bash/`
+**[📖 Read Book 1](book-1-core-bash/README)** | **Location:** `book-1-core-bash/`
 
 Covers fundamental concepts and Bash code generation:
 - Prolog basics and UnifyWeaver architecture
@@ -33,7 +33,7 @@ Covers fundamental concepts and Bash code generation:
 **Start here if you're new to UnifyWeaver.**
 
 ### 📗 Book 2: C# Target Language
-**[📖 Read Book 2](book-2-csharp-target/README.md)** | **Location:** `book-2-csharp-target/`
+**[📖 Read Book 2](book-2-csharp-target/README)** | **Location:** `book-2-csharp-target/`
 
 Covers multi-target compilation and C# / .NET:
 - C# Stream Target (direct source generation)
@@ -45,7 +45,7 @@ Covers multi-target compilation and C# / .NET:
 **Complete Book 1 before starting Book 2.**
 
 ### 📙 Book-Misc: Emerging Features & Advanced Topics
-**[📖 Read Book-Misc](book-misc/README.md)** | **Location:** `book-misc/`
+**[📖 Read Book-Misc](book-misc/README)** | **Location:** `book-misc/`
 
 Documentation for newly implemented or experimental features:
 - **Perl Service Infrastructure** ✅ - Python-free data processing
@@ -57,7 +57,7 @@ Documentation for newly implemented or experimental features:
 **Status:** Work in Progress - Content may be merged into main books or expanded into Book 3.
 
 ### 📓 Jupyter Notebooks
-**[📖 View Notebooks](notebooks/README.md)** | **Location:** `notebooks/`
+**[📖 View Notebooks](notebooks/README)** | **Location:** `notebooks/`
 
 Interactive notebooks for hands-on experimentation with UnifyWeaver concepts.
 
@@ -234,8 +234,8 @@ Found an error or want to improve the content?
 3. See `CONTRIBUTING.md` for guidelines
 
 ### For Content Developers
-- **[Content Planning](docs/development/PLANNING.md)** - Roadmap for future educational content additions
-- **[License Guide](docs/development/LICENSE_GUIDE.md)** - Detailed licensing guide for contributors and users
+- **[Content Planning](docs/development/PLANNING)** - Roadmap for future educational content additions
+- **[License Guide](docs/development/LICENSE_GUIDE)** - Detailed licensing guide for contributors and users
 
 ## Acknowledgments
 

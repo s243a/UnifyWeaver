@@ -287,5 +287,5 @@ In the next chapter, we will delve deeper into the compilation process, explorin
 
 ## Navigation
 
-**←** [Previous: Chapter 3: UnifyWeaver Architecture](03_unifyweaver_architecture.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 5: Stream Compilation →](05_stream_compilation.md)
+**←** [Previous: Chapter 3: UnifyWeaver Architecture](03_unifyweaver_architecture) | [📖 Back to Book 1](README) | [Next: Chapter 5: Stream Compilation →](05_stream_compilation)
 

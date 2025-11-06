@@ -134,5 +134,5 @@ With an understanding of the architecture, we are now ready to get our hands dir
 
 ## Navigation
 
-**←** [Previous: Chapter 2: Prolog Fundamentals](02_prolog_fundamentals.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 4: Your First Program →](04_your_first_program.md)
+**←** [Previous: Chapter 2: Prolog Fundamentals](02_prolog_fundamentals) | [📖 Back to Book 1](README) | [Next: Chapter 4: Your First Program →](04_your_first_program)
 

@@ -761,7 +761,7 @@ This chapter covered:
       -t halt
   ```
 - Optionally execute the full suite `run_all_tests.pl` the same way.
-- For end-to-end verification, follow the build-first flow described in the [C# Query Target Test Plan](https://github.com/s243a/UnifyWeaver/blob/main/docs/development/testing/v0_1_csharp_test_plan.md) to emit a project under `output/csharp/<uuid>/`, run `dotnet build --no-restore`, and execute the compiled binary/DLL.
+- For end-to-end verification, follow the build-first flow described in the [C# Query Target Test Plan](https://github.com/s243a/UnifyWeaver/blob/main/docs/development/testing/v0_1_csharp_test_plan) to emit a project under `output/csharp/<uuid>/`, run `dotnet build --no-restore`, and execute the compiled binary/DLL.
 
 Document your results (e.g., include command transcripts in release notes) so future releases can reproduce the validation steps.
 
@@ -801,5 +801,5 @@ Return to Book 1 for Bash-specific topics or explore the appendices for advanced
 
 ## Navigation
 
-**←** [Previous: Chapter 3: C# Query Runtime](03_query_engine_deep_dive.md) | [📖 Back to Book 2](README.md)
+**←** [Previous: Chapter 3: C# Query Runtime](03_query_engine_deep_dive) | [📖 Back to Book 2](README)
 

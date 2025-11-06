@@ -149,5 +149,5 @@ In the next chapter, we will look at the high-level architecture of the UnifyWea
 
 ## Navigation
 
-**←** [Previous: Chapter 1: Introduction](01_introduction.md) | [📖 Back to Book 1](README.md) | [Next: Chapter 3: UnifyWeaver Architecture →](03_unifyweaver_architecture.md)
+**←** [Previous: Chapter 1: Introduction](01_introduction) | [📖 Back to Book 1](README) | [Next: Chapter 3: UnifyWeaver Architecture →](03_unifyweaver_architecture)
 

@@ -804,5 +804,5 @@ The system successfully transforms high-level declarative specifications (Prolog
 
 ## Navigation
 
-**←** [Previous: Appendix C: Fold Pattern Deep Dive](appendix_b_fold_pattern_deep_dive.md) | [📖 Back to Book 1](README.md) | [Next: Case Study: Declarative Testing →](declarative_testing.md)
+**←** [Previous: Appendix C: Fold Pattern Deep Dive](appendix_b_fold_pattern_deep_dive) | [📖 Back to Book 1](README) | [Next: Case Study: Declarative Testing →](declarative_testing)
 

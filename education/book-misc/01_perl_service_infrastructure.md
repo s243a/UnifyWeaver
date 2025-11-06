@@ -361,7 +361,7 @@ This enables UnifyWeaver deployment in restricted environments while maintaining
 
 ---
 
-**Next Chapter:** [02: XML Perl Splitter](02_xml_perl_splitter.md)
+**Next Chapter:** [02: XML Perl Splitter](02_xml_perl_splitter)
 
 ---
 
@@ -372,5 +372,5 @@ This enables UnifyWeaver deployment in restricted environments while maintaining
 
 ## Navigation
 
-[📖 Back to Book-Misc](README.md) | [Next: Chapter 3: Prolog as Target Language →](03_prolog_target.md)
+[📖 Back to Book-Misc](README) | [Next: Chapter 3: Prolog as Target Language →](03_prolog_target)
 
