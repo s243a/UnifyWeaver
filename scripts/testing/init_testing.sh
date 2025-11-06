@@ -159,6 +159,7 @@ echo -e "\n${YELLOW}Creating directory structure...${NC}"
 dirs=(
     "src/unifyweaver/core"
     "src/unifyweaver/sources"
+    "src/unifyweaver/targets"
     "tests/output"
     "templates"
     "scripts"
@@ -175,6 +176,7 @@ done
 cp_dirs=(
     "src/unifyweaver/core"
     "src/unifyweaver/sources"
+    "src/unifyweaver/targets"
     "templates"
     "scripts"
     "config"
