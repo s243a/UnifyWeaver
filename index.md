@@ -15,16 +15,16 @@ UnifyWeaver is a Prolog-to-Code compiler that generates optimized streaming code
 ## Quick Links
 
 ### 📦 Project Documentation
-- **[Project README](project/README.md)** - Overview, installation, and quick start
-- **[Extended README](project/docs/EXTENDED_README.md)** - Comprehensive tutorials and examples
-- **[Documentation](project/docs/README.md)** - Complete technical documentation
+- **[Project README](project/README)** - Overview, installation, and quick start
+- **[Extended README](project/docs/EXTENDED_README)** - Comprehensive tutorials and examples
+- **[Documentation](project/docs/README)** - Complete technical documentation
 - **[GitHub Repository](https://github.com/s243a/UnifyWeaver)** - Source code and issues
 
 ### 📚 Educational Materials
-- **[Education Project Home](education/README.md)** - Learning resources overview
-- **[Book 1: Core Bash Target](education/book-1-core-bash/README.md)** - Fundamentals and Bash compilation
-- **[Book 2: C# Target](education/book-2-csharp-target/README.md)** - Multi-target and .NET
-- **[Book-Misc: Emerging Features](education/book-misc/README.md)** - New and experimental features
+- **[Education Project Home](education/README)** - Learning resources overview
+- **[Book 1: Core Bash Target](education/book-1-core-bash/README)** - Fundamentals and Bash compilation
+- **[Book 2: C# Target](education/book-2-csharp-target/README)** - Multi-target and .NET
+- **[Book-Misc: Emerging Features](education/book-misc/README)** - New and experimental features
 
 ---
 
