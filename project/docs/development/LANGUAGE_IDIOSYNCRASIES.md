@@ -4,7 +4,7 @@ This document captures non-obvious behaviors, design patterns, and workarounds f
 
 ## Unicode Handling
 
-See [UNICODE_SPECIFICATION.md](../UNICODE_SPECIFICATION.md) for comprehensive documentation on:
+See [UNICODE_SPECIFICATION.md](../UNICODE_SPECIFICATION) for comprehensive documentation on:
 - Terminal emoji support detection
 - BMP vs non-BMP character handling
 - Platform-specific unicode rendering behavior

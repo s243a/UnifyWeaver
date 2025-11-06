@@ -8,8 +8,8 @@ description: Overview, installation, and quick start guide
 
 A Prolog-to-Bash compiler that transforms declarative logic programs into efficient streaming bash scripts. UnifyWeaver specializes in compiling data relationships and queries into executable bash code with optimized handling of transitive closures and advanced recursion patterns.
 
-**📚 [Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive tutorials, examples, and advanced usage
-**🎓 [Educational Materials](https://github.com/s243a/UnifyWeaver_Education)** - Learn UnifyWeaver with hands-on tutorials and examples
+**📚 [Extended Documentation](docs/EXTENDED_README)** - Comprehensive tutorials, examples, and advanced usage
+**🎓 [Educational Materials](../education/README)** - Learn UnifyWeaver with hands-on tutorials and examples
 
 ## Features
 
@@ -139,7 +139,7 @@ ancestor_all alice  # Find all descendants of alice
 ancestor_check alice charlie && echo "Yes" || echo "No"  # Check specific relationship
 ```
 
-**See [Extended Documentation](docs/EXTENDED_README.md) for advanced recursion patterns, data sources, and complete examples.**
+**See [Extended Documentation](docs/EXTENDED_README) for advanced recursion patterns, data sources, and complete examples.**
 
 ## Architecture
 
@@ -152,7 +152,7 @@ UnifyWeaver follows a modular compilation pipeline:
 5. **Target Selection** - Chooses Bash, PowerShell, or C# backend based on requested `target/1` preference
 6. **Code Generation / Plan Emission** - Renders shell templates, C# source, or query plans for the selected backend
 
-**See [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [Extended Documentation](docs/EXTENDED_README.md) for detailed architecture.**
+**See [ARCHITECTURE.md](docs/ARCHITECTURE) and [Extended Documentation](docs/EXTENDED_README) for detailed architecture.**
 
 ## Examples
 
@@ -201,7 +201,7 @@ cd scripts/testing/test_env5
 swipl -g main -t halt examples/pipeline_demo.pl
 ```
 
-**See [Extended Documentation](docs/EXTENDED_README.md) for complete examples including:**
+**See [Extended Documentation](docs/EXTENDED_README) for complete examples including:**
 - Advanced recursion patterns (tail, linear, tree, mutual)
 - Graph reachability with cycles
 - Recursive computations (factorial, fibonacci)
@@ -231,7 +231,7 @@ swipl -g main -t halt examples/pipeline_demo.pl
 - Requires Bash 4.0+ for associative arrays
 - Tree recursion uses list representation only
 
-**See [Extended Documentation](docs/EXTENDED_README.md) for complete details and troubleshooting.**
+**See [Extended Documentation](docs/EXTENDED_README) for complete details and troubleshooting.**
 
 ## Testing
 
@@ -248,21 +248,21 @@ In SWI-Prolog:
 ?- test_advanced.     % Advanced patterns
 ```
 
-**See [TESTING_GUIDE.md](docs/TESTING_GUIDE.md) for adding tests.**
+**See [TESTING_GUIDE.md](docs/TESTING_GUIDE) for adding tests.**
 
 ## Documentation
 
 - **[🎓 Educational Materials](https://github.com/s243a/UnifyWeaver_Education)** - Learn UnifyWeaver with comprehensive tutorials
-- **[Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive guide with tutorials and examples
-- [TESTING_GUIDE.md](docs/TESTING_GUIDE.md) - Testing infrastructure
-- [ADVANCED_RECURSION.md](docs/ADVANCED_RECURSION.md) - Recursion patterns deep dive
-- [POWERSHELL_TARGET.md](docs/POWERSHELL_TARGET.md) - PowerShell compilation guide
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
+- **[Extended Documentation](docs/EXTENDED_README)** - Comprehensive guide with tutorials and examples
+- [TESTING_GUIDE.md](docs/TESTING_GUIDE) - Testing infrastructure
+- [ADVANCED_RECURSION.md](docs/ADVANCED_RECURSION) - Recursion patterns deep dive
+- [POWERSHELL_TARGET.md](docs/POWERSHELL_TARGET) - PowerShell compilation guide
+- [ARCHITECTURE.md](docs/ARCHITECTURE) - System architecture
 - [docs/](docs/) - Full documentation index
 
 ## Contributing
 
-Issues and pull requests welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Issues and pull requests welcome! See [CONTRIBUTING.md](CONTRIBUTING) for details.
 
 Key areas:
 - Additional recursion patterns (divide-and-conquer, N-ary trees)

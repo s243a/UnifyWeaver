@@ -155,7 +155,7 @@ The Preference system guides the compiler on which implementation to choose from
 *   **Optimization Goals:** Hints like `speed` or `memory` to influence code generation.
 *   **Service Mode:** Whether to use `embedded` or `remote` services.
 
-For more detailed information, refer to the [CONTROL_PLANE.md](CONTROL_PLANE.md) document.
+For more detailed information, refer to the [CONTROL_PLANE.md](CONTROL_PLANE) document.
 
 ## Generated Code Structure
 
