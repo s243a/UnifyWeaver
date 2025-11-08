@@ -2,11 +2,15 @@
 
 **Status:** Design Document
 **Version:** 1.0
-**Date:** 2025-10-26
+**Date:** 2025-11-08
 
 ## 1. Definition and Purpose
 
 The `compiler_driver.pl` is the central orchestrator or "brain" of the UnifyWeaver transpilation process. It is not a compiler itself, but a manager of the compilation pipeline. Its primary responsibility is to take a target Prolog predicate and guide it through the necessary steps to produce an executable script in a target language (e.g., Bash, PowerShell, C#).
+
+### Entry Points
+- `compile/2`: `compile(Predicate, GeneratedScripts)` - Compiles a predicate with default options
+- `compile/3`: `compile(Predicate, Options, GeneratedScripts)` - Compiles with custom options (e.g., target language selection)
 
 ## 2. Core Workflow
 
@@ -15,7 +19,7 @@ The driver operates via a multi-stage pipeline:
 ### Step 1: Dependency Analysis
 The driver's first task is to understand the predicate's dependencies. It calls the `dependency_analyzer.pl` to build a tree of all other user-defined predicates that the target predicate relies on. For example, compiling `grandparent/2` would identify a dependency on `parent/2`.
 
-**Note on Built-in Predicates:** The dependency analyzer correctly identifies built-in predicates (e.g., `>/2`, `is/2`, `write/1`) as dependencies. This is by design. If the compilation target is not Prolog, these built-ins must be translated into the target language's equivalent constructs. The responsibility for this translation lies with the backend compilers, not the analyzer.
+**Note on Built-in Predicates:** The dependency analyzer explicitly **excludes** built-in predicates (e.g., `>/2`, `is/2`, `write/1`) from the dependency list. This is by design. Built-ins are handled directly by the backend compilers during code generation, not as separate compilation units. Each backend compiler is responsible for translating built-in operations into the target language's equivalent constructs (e.g., `is/2` becomes bash arithmetic `$((...))` expressions).
 
 ### Step 2: Compilation Planning
 Based on the dependency tree, the driver creates a compilation plan. It ensures that dependencies are compiled before the predicates that rely on them. This guarantees that when, for example, the `grandparent` bash script is generated, the `parent` bash functions it needs to call are already defined and available.
@@ -40,3 +44,26 @@ The driver gathers the string of generated code returned by each backend compile
 The `compiler_driver` acts as a "general contractor." It decouples the high-level orchestration of the compilation process from the low-level, target-specific details of code generation. It reads the blueprint (the Prolog code) and directs the appropriate specialists (the backend compilers) to build the final product.
 
 This modular design allows the UnifyWeaver system to be extended with new recursion patterns, new optimization techniques, or even entirely new target languages simply by adding new backend compilers for the driver to dispatch to.
+
+## 4. Concrete Example
+
+Given these Prolog predicates:
+```prolog
+parent(alice, bob).
+parent(bob, charlie).
+grandparent(X, Z) :- parent(X, Y), parent(Y, Z).
+```
+
+When `compile(grandparent/2, [], Scripts)` is called:
+
+1. **Dependency Analysis**: Identifies `parent/2` as a dependency
+2. **Compilation Planning**: Plans to compile `parent/2` first, then `grandparent/2`
+3. **Classification**:
+   - `parent/2` → Facts (pure data)
+   - `grandparent/2` → Non-recursive rule (joins two predicates)
+4. **Dispatch**:
+   - `parent/2` → `stream_compiler.pl` generates bash script with data
+   - `grandparent/2` → `stream_compiler.pl` generates bash pipeline joining results
+5. **Assembly**: Returns `['parent.sh', 'grandparent.sh']`
+
+The resulting `grandparent.sh` can be executed as a standalone bash script, piping data through the compilation pipeline.
