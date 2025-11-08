@@ -80,12 +80,20 @@ extract_predicates((A, B), Predicates) :- !,
     extract_predicates(A, P1),
     extract_predicates(B, P2),
     append(P1, P2, Predicates).
+extract_predicates(\+ A, Predicates) :- !,
+    % For negation, we still need to know about the predicates inside.
+    extract_predicates(A, Predicates).
 % Guard against variables in Goal - treat as producing no predicates
 extract_predicates(Goal, []) :-
     var(Goal), !.
-% Skip inequality operators - they're constraints, not predicates
+% Skip inequality and other arithmetic operators - they are handled by the shell.
 extract_predicates(_ \= _, []) :- !.
 extract_predicates(\=(_, _), []) :- !.
+extract_predicates(_ > _, []) :- !.
+extract_predicates(_ < _, []) :- !.
+extract_predicates(_ >= _, []) :- !.
+extract_predicates(_ =< _, []) :- !.
+extract_predicates(is(_, _), []) :- !.
 extract_predicates(Goal, [Pred]) :-
     functor(Goal, Pred, _),
     Pred \= ',',
