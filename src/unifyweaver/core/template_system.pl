@@ -402,8 +402,8 @@ generate_transitive_closure(PredName, BaseName, Options, Code) :-
 {{pred}}_all() {
     local start="$1"
     declare -A visited
-    local queue_file="/tmp/{{pred}}_queue_$"
-    local next_queue="/tmp/{{pred}}_next_$"
+    local queue_file="/tmp/{{pred}}_queue_$$"
+    local next_queue="/tmp/{{pred}}_next_$$"
     
     trap "rm -f $queue_file $next_queue" EXIT PIPE
     
@@ -434,14 +434,12 @@ generate_transitive_closure(PredName, BaseName, Options, Code) :-
     local start="$1"
     local target="$2"
     local tmpflag="/tmp/{{pred}}_found_$$"
-    local timeout_duration="5s"
     
-    # Timeout prevents infinite execution, tee prevents SIGPIPE
-    timeout "$timeout_duration" {{pred}}_all "$start" | 
-    tee >(grep -q "^$start:$target$" && touch "$tmpflag") >/dev/null
+    # Use tee to prevent SIGPIPE when grep exits early (suppress all errors)
+    {{pred}}_all "$start" 2>/dev/null | 
+    tee >(grep -q "^$start:$target$" && touch "$tmpflag") >/dev/null 2>&1
     
     if [[ -f "$tmpflag" ]]; then
-        echo "$start:$target"
         rm -f "$tmpflag"
         return 0
     else

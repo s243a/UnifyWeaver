@@ -1,3 +1,9 @@
+% SPDX-License-Identifier: MIT OR Apache-2.0
+% Copyright (c) 2025 John William Creighton (s243a)
+%
+% This file is part of UnifyWeaver.
+% Licensed under either MIT or Apache-2.0 at your option.
+
 :- module(compiler_driver, [
     compile/2,
     compile/3
@@ -39,7 +45,7 @@ compile_dependencies([Dep|Rest], Options, GeneratedScripts) :-
     append(DepScripts, RestScripts, GeneratedScripts).
 
 compile_current(Predicate, Options, GeneratedScript) :-
-    Predicate = Functor/Arity,
+    Predicate = Functor/_Arity,
     classify_predicate(Predicate, Classification),
     (   Classification = non_recursive ->
         stream_compiler:compile_predicate(Predicate, Options, BashCode)

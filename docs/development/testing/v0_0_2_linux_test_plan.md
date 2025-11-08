@@ -302,7 +302,8 @@ KEEP_TEST_DATA=true swipl -l init.pl -g main -t halt examples/integration_test.p
 
 ```SHELL
 # Test 3b: Verify generated bash scripts work correctly
-bash test_output/test_generated_scripts.sh
+# Note: init_testing.sh copies this to test_env root
+bash ./test_generated_scripts.sh
 ```
 
 **Expected output:**

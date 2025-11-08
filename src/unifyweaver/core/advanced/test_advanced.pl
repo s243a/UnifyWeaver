@@ -80,7 +80,8 @@ test_integration :-
     catch(abolish(fib/2), _, true),
     catch(abolish(tree_sum/2), _, true),
 
-    % Define fibonacci (now linear recursion with aggregation!)
+    % Define fibonacci (currently compiles as fold pattern - has 2 recursive calls)
+    % Future: Could use linear recursion with memoization (multi-call independent pattern)
     assertz(user:(fib(0, 0))),
     assertz(user:(fib(1, 1))),
     assertz(user:(fib(N, F) :- N > 1, N1 is N - 1, N2 is N - 2, fib(N1, F1), fib(N2, F2), F is F1 + F2)),
@@ -91,7 +92,7 @@ test_integration :-
             _,
             fail
         ) ->
-        format('✓ Fibonacci compiled successfully as linear recursion~n')
+        format('✓ Fibonacci compiled successfully (fold pattern)~n')
     ;   writeln('⚠ Fibonacci not compiled')
     ),
 

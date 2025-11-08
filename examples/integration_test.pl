@@ -211,7 +211,10 @@ test_csv_source :-
     ->  safe_format('  \u2705 CSV source working~n', [])
     ;   safe_format('  \u274C CSV source failed~n', [])
     ),
-    safe_format('~n', []).
+    safe_format('~n', []),
+
+    % Give Windows process cleanup time between tests
+    sleep(0.5).
 
 test_json_source :-
     safe_format('\U0001F4C4 === JSON Source Test ===~n', []),
@@ -234,14 +237,21 @@ test_json_source :-
     ->  safe_format('  \u2705 JSON source working~n', [])
     ;   safe_format('  \u274C JSON source failed~n', [])
     ),
-    safe_format('~n', []).
+    safe_format('~n', []),
+
+    % Give Windows process cleanup time between tests
+    sleep(0.5).
 
 test_python_source :-
     safe_format('\U0001F40D === Python Source Test ===~n', []),
 
-    % Get order data for processing (reuse already compiled orders)
-    compile_dynamic_source(orders/4, [], OrdersCode),
-    write_and_execute_bash(OrdersCode, '', OrdersOutput),
+    % Get order data by running the saved script instead of re-compiling
+    % (avoids re-creating temp files that can cause issues in PowerShell/WSL)
+    process_create(path(bash), ['test_output/orders.sh'],
+                  [stdout(pipe(Out)), stderr(null), process(PID)]),
+    read_string(Out, _, OrdersOutput),
+    close(Out),
+    process_wait(PID, exit(_)),
 
     % Compile and save Python analyzer
     compile_dynamic_source(analyze_orders/3, [], AnalyzeCode),
@@ -250,8 +260,19 @@ test_python_source :-
     assertz(generated_file(python, ScriptPath)),
     safe_format('  \u2713 Generated: ~w~n', [ScriptPath]),
 
-    % Execute analysis
-    write_and_execute_bash(AnalyzeCode, OrdersOutput, AnalysisOutput),
+    % Execute analysis using file-based input instead of stdin piping
+    % (avoids PowerShell->WSL buffering deadlocks when piping data)
+    TempOrders = 'test_output/temp_orders.txt',
+    open(TempOrders, write, TempStream),
+    write(TempStream, OrdersOutput),
+    close(TempStream),
+
+    format(atom(BashCmd), 'bash ~w < ~w', [ScriptPath, TempOrders]),
+    process_create(path(bash), ['-c', BashCmd],
+                  [stdout(pipe(AnalOut)), stderr(null), process(AnalPID)]),
+    read_string(AnalOut, _, AnalysisOutput),
+    close(AnalOut),
+    process_wait(AnalPID, exit(_)),
 
     safe_format('  Analysis Results:~n~w', [AnalysisOutput]),
 
@@ -259,7 +280,10 @@ test_python_source :-
     ->  safe_format('  \u2705 Python processing working~n', [])
     ;   safe_format('  \u274C Python processing failed~n', [])
     ),
-    safe_format('~n', []).
+    safe_format('~n', []),
+
+    % Give Windows process cleanup time between tests
+    sleep(0.5).
 
 test_sqlite_source :-
     safe_format('\U0001F4BE === SQLite Source Test ===~n', []),
@@ -280,7 +304,10 @@ test_sqlite_source :-
     ->  safe_format('  \u2705 SQLite query working~n', [])
     ;   safe_format('  \u274C SQLite query failed~n', [])
     ),
-    safe_format('~n', []).
+    safe_format('~n', []),
+
+    % Give Windows process cleanup time between tests
+    sleep(0.5).
 
 %% ============================================
 %% FULL ETL PIPELINE TEST

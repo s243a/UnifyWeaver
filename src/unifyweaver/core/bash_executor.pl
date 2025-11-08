@@ -159,47 +159,47 @@ write_and_execute_bash(BashCode, Input, Output) :-
     detect_execution_mode(ExecMode),
     build_temp_paths(ExecMode, TimeStamp, temp_paths(TmpFileWin, TmpFileBash)),
 
-    format('DEBUG write_and_execute: Creating file: ~q~n', [TmpFileWin]),
+    % format('DEBUG write_and_execute: Creating file: ~q~n', [TmpFileWin]),
 
     create_temp_script(ExecMode, TmpFileWin, TmpFileBash, BashCode),
 
     % Give Windows/filesystem a moment to sync
     sleep(0.1),
 
-    format('DEBUG write_and_execute: File written, checking existence...~n', []),
-    (   exists_file(TmpFileWin)
-    ->  format('DEBUG write_and_execute: File EXISTS after write~n', [])
-    ;   format('DEBUG write_and_execute: File DOES NOT EXIST after write!~n', [])
-    ),
+    % format('DEBUG write_and_execute: File written, checking existence...~n', []),
+    % (   exists_file(TmpFileWin)
+    % ->  format('DEBUG write_and_execute: File EXISTS after write~n', [])
+    % ;   format('DEBUG write_and_execute: File DOES NOT EXIST after write!~n', [])
+    % ),
 
     % Test if bash can see and read the file before trying to execute
-    format('DEBUG: Testing bash access to file...~n', []),
-    (   nonvar(TmpFileBash),
-        TmpFileBash \= none
-    ->  BashTestPath = TmpFileBash
-    ;   convert_to_cygwin_path(TmpFileWin, BashTestPath)
-    ),
-    format('DEBUG: Bash test path (atom): ~q~n', [BashTestPath]),
+    % format('DEBUG: Testing bash access to file...~n', []),
+    % (   nonvar(TmpFileBash),
+    %     TmpFileBash \= none
+    % ->  BashTestPath = TmpFileBash
+    % ;   convert_to_cygwin_path(TmpFileWin, BashTestPath)
+    % ),
+    % format('DEBUG: Bash test path (atom): ~q~n', [BashTestPath]),
 
     % Test 1: Can bash cat the file?
-    format('DEBUG: Running: bash -c "cat "$1"" -- bash_executor ~q~n', [BashTestPath]),
-    catch(
-        (setup_call_cleanup(
-            process_create(path(bash), ['-c', 'cat "$1"', 'bash_executor', BashTestPath],
-                          [stdout(pipe(CatOut)), stderr(pipe(CatErr)), process(CatPID)]),
-            (read_string(CatOut, _, CatResult),
-             read_string(CatErr, _, CatError),
-             close(CatOut),
-             close(CatErr),
-             process_wait(CatPID, exit(CatExit))),
-            true
-         ),
-         format('DEBUG: Cat exit code: ~w~n', [CatExit]),
-         format('DEBUG: Cat stdout: ~q~n', [CatResult]),
-         (CatError \= '' -> format('DEBUG: Cat stderr: ~q~n', [CatError]) ; true)),
-        CatErr,
-        format('DEBUG: Cat command error: ~w~n', [CatErr])
-    ),
+    % format('DEBUG: Running: bash -c "cat "$1"" -- bash_executor ~q~n', [BashTestPath]),
+    % catch(
+    %     (setup_call_cleanup(
+    %         process_create(path(bash), ['-c', 'cat "$1"', 'bash_executor', BashTestPath],
+    %                       [stdout(pipe(CatOut)), stderr(pipe(CatErr)), process(CatPID)]),
+    %         (read_string(CatOut, _, CatResult),
+    %          read_string(CatErr, _, CatError),
+    %          close(CatOut),
+    %          close(CatErr),
+    %          process_wait(CatPID, exit(CatExit))),
+    %         true
+    %      ),
+    %      format('DEBUG: Cat exit code: ~w~n', [CatExit]),
+    %      format('DEBUG: Cat stdout: ~q~n', [CatResult]),
+    %      (CatError \= '' -> format('DEBUG: Cat stderr: ~q~n', [CatError]) ; true)),
+    %     CatErr,
+    %     format('DEBUG: Cat command error: ~w~n', [CatErr])
+    % ),
 
     % Execute and clean up (use special version for temp files)
     TempSpec = temp_paths(TmpFileWin, TmpFileBash),
@@ -222,7 +222,7 @@ execute_bash_tempfile(TempSpec, Input, Output) :-
                           'Cannot execute bash natively on this platform')))
     ),
     resolve_temp_spec(TempSpec, _TmpFileWin, BashPath),
-    format('DEBUG: Bash execution path: ~q~n', [BashPath]),
+    % format('DEBUG: Bash execution path: ~q~n', [BashPath]),
     catch(
         process_create(path(chmod), ['+x', BashPath], [stderr(null)]),
         _,
@@ -233,7 +233,8 @@ execute_bash_tempfile(TempSpec, Input, Output) :-
                       [stdin(pipe(In)), stdout(pipe(Out)), stderr(std),
                        process(PID)]),
         (   (   Input \= ''
-            ->  write(In, Input)
+            ->  write(In, Input),
+                flush_output(In)
             ;   true
             ),
             close(In),

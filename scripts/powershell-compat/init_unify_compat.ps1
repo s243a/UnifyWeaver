@@ -60,7 +60,14 @@ function Invoke-UnifyCommand {
     )
 
     $mode = $env:UNIFYWEAVER_EXEC_MODE
-    if (-not $mode) { $mode = 'cygwin' }
+    if (-not $mode) {
+        # Auto-detect: native on Linux/macOS, cygwin on Windows
+        if ($IsLinux -or $IsMacOS) {
+            $mode = 'native'
+        } else {
+            $mode = 'cygwin'
+        }
+    }
 
     $pwdWin = (Get-Location).Path
 
@@ -100,8 +107,25 @@ function Invoke-UnifyCommand {
         }
         return $out
     }
+    elseif ($mode -ieq 'native') {
+        # Native mode: PowerShell Core on Linux/macOS - call bash directly
+        # No path conversion needed, already in Unix paths
+        $cwd = (Get-Location).Path
+        $cmdFull = "cd $(_PosixQuote $cwd) && $Command"
+
+        if ($PSBoundParameters.ContainsKey('Stdin')) {
+            $out = $Stdin | bash -c $cmdFull 2>&1
+        } else {
+            $out = bash -c $cmdFull 2>&1
+        }
+        $code = $LASTEXITCODE
+        if ($code -ne 0 -and (-not $AcceptExitCodes -or -not ($AcceptExitCodes -contains $code))) {
+            throw ("Bash exit {0}: {1}" -f $code, $out)
+        }
+        return $out
+    }
     else {
-        throw ("Unknown UNIFYWEAVER_EXEC_MODE: {0}" -f $mode)
+        throw ("Unknown UNIFYWEAVER_EXEC_MODE: {0}. Valid modes: wsl, cygwin, native" -f $mode)
     }
 }
 
@@ -189,7 +213,8 @@ New-UWCommand -Name 'uw-date'    -CmdName 'date'
 New-UWCommand -Name 'uw-find'    -CmdName 'find'
 New-UWCommand -Name 'uw-curl'    -CmdName 'curl'
 New-UWCommand -Name 'uw-wget'    -CmdName 'wget'
-New-UWCommand -Name 'uw-sqlite3' -CmdName 'sqlite3'
+# SQLite needs to accept piped SQL queries, so use filter instead of command
+New-UWFilter -Name 'uw-sqlite3' -CmdName 'sqlite3'
 New-UWCommand -Name 'uw-cp'      -CmdName 'cp'
 New-UWCommand -Name 'uw-mv'      -CmdName 'mv'
 New-UWCommand -Name 'uw-rm'      -CmdName 'rm'

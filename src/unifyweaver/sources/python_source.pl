@@ -5,11 +5,8 @@
 % python_source.pl - Python embedded source plugin for dynamic sources
 % Compiles predicates that execute embedded Python code with SQLite support
 
-:- module(python_source, [
-    compile_source/4,          % +Pred/Arity, +Config, +Options, -BashCode
-    validate_config/1,         % +Config
-    source_info/1              % -Info
-]).
+% Export nothing - all access goes through plugin registry
+:- module(python_source, []).
 
 :- use_module(library(lists)).
 :- use_module('../core/template_system').
