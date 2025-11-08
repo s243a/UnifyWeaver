@@ -268,155 +268,78 @@ compile_facts_debug(Pred, Arity, _MergedOptions, BashCode) :-
         fail
     ).
 
-%% Compile single rule into streaming pipeline
+%% compile_single_rule(+Pred, +Body, +Options, -BashCode)
+%  Compile single rule into a bash function that evaluates the rule's body.
 compile_single_rule(Pred, Body, Options, BashCode) :-
-    extract_predicates(Body, Predicates),
     atom_string(Pred, PredStr),
+    functor(Head, Pred, _),
+    arg(1, Head, A), % Assume variables are named A, B, C...
+    arg(2, Head, B),
     
-    % Check for inequality constraints
-    (   has_inequality(Body) ->
-        compile_with_inequality(Pred, Body, BashCode)
-    ;   Predicates = [] ->
-        format(string(BashCode), '#!/bin/bash
-# ~s - no predicates
-~s() { true; }
-
-# Stream function for use in pipelines
-~s_stream() {
-    ~s
-}', [PredStr, PredStr, PredStr, PredStr])
-    ;   % Standard streaming pipeline
-        generate_pipeline(Predicates, Options, Pipeline),
-        % Generate all necessary join functions
-        collect_join_functions(Predicates, JoinFunctions),
-        atomic_list_concat(JoinFunctions, '\n\n', JoinCode),
-        generate_dedup_wrapper(PredStr, JoinCode, Pipeline, Options, BashCode)
-    ).
-
-%% Compile multiple rules (OR pattern)
-compile_multiple_rules(Pred, Bodies, Options, BashCode) :-
-    atom_string(Pred, PredStr),
-    length(Bodies, NumAlts),
+    % Translate the body of the rule to a bash script
+    translate_body_to_bash(Body, BashBody),
     
-    % Collect all join functions needed
-    findall(JoinFunc, (
-        member(Body, Bodies),
-        extract_predicates(Body, Preds),
-        collect_join_functions(Preds, Funcs),
-        member(JoinFunc, Funcs)
-    ), AllJoinFuncs),
-    list_to_set(AllJoinFuncs, UniqueJoinFuncs),  % Remove duplicates
-    atomic_list_concat(UniqueJoinFuncs, '\n\n', JoinFuncsCode),
-    
-    % Generate alternative functions - need to check actual clause order
-    % For related/2, we know the pattern from how we defined it:
-    % 1. parent(X,Y) - forward
-    % 2. parent(Y,X) - reverse  
-    % 3. sibling(X,Y)
-    findall(FnCode, (
-        nth1(I, Bodies, Body),
-        format(atom(FnName), '~s_alt~w', [PredStr, I]),
-        
-        % Check the specific pattern for related/2
-        (   Pred = related, I = 1 ->
-            % First alternative: parent(X,Y) - forward relationship
-            format(string(FnCode), '~s() {
-    parent_stream
-}', [FnName])
-        ;   Pred = related, I = 2 ->
-            % Second alternative: parent(Y,X) - reverse relationship
-            format(string(FnCode), '~s() {
-    parent_reverse_stream
-}', [FnName])
-        ;   Pred = related, I = 3 ->
-            % Third alternative: sibling(X,Y)
-            format(string(FnCode), '~s() {
-    sibling
-}', [FnName])
-        ;   % General case for other predicates
-            extract_predicates(Body, Preds),
-            (   Preds = [] ->
-                format(string(FnCode), '~s() {
-    true
-}', [FnName])
-            ;   Preds = [SinglePred] ->
-                atom_string(SinglePred, SPredStr),
-                format(string(FnCode), '~s() {
-    ~s_stream
-}', [FnName, SPredStr])
-            ;   generate_pipeline(Preds, Options, Pipeline),
-                format(string(FnCode), '~s() {
-    ~s
-}', [FnName, Pipeline])
-            )
-        )
-    ), AltFunctions),
-    
-    % Generate function names
-    findall(FnCall, (
-        between(1, NumAlts, I),
-        format(atom(FnCall), '~s_alt~w', [PredStr, I])
-    ), FnCalls),
-    
-    % Join with proper formatting
-    atomic_list_concat(AltFunctions, '\n\n', FunctionsCode),
-    atomic_list_concat(FnCalls, ' ; ', CallsStr),
+    % For now, we assume a simple structure with 2 variables.
+    % This needs to be generalized.
+    format(string(Pipeline), 'local A="$1"
+    local B="$2"
+    ~w', [BashBody]),
 
-    % Generate main function with appropriate deduplication
-    format(string(Pipeline), '( ~s )', [CallsStr]),
-    generate_dedup_wrapper_multi(PredStr, NumAlts, JoinFuncsCode, FunctionsCode, Pipeline, Options, BashCode).
+    generate_dedup_wrapper(PredStr, "", Pipeline, Options, BashCode).
 
-%% Generate streaming pipeline from predicates
-generate_pipeline([], _, "true") :- !.
-generate_pipeline([Pred|Rest], Options, Pipeline) :-
-    atom_string(Pred, PredStr),
-    format(string(StreamFn), '~s_stream', [PredStr]),
-    (   Rest = [] ->
-        Pipeline = StreamFn
-    ;   generate_join_chain([Pred|Rest], Options, JoinChain),
-        format(string(Pipeline), '~s | ~s', [StreamFn, JoinChain])
-    ).
+%% translate_body_to_bash(+Goal, -Bash)
+%  Translates a Prolog goal or a conjunction of goals into bash code.
+translate_body_to_bash((A, B), Bash) :- !,
+    translate_body_to_bash(A, BashA),
+    translate_body_to_bash(B, BashB),
+    format(string(Bash), '~w &&\n    ~w', [BashA, BashB]).
+translate_body_to_bash(\+ Goal, Bash) :- !,
+    translate_body_to_bash(Goal, BashGoal),
+    format(string(Bash), '! { ~w }', [BashGoal]).
+translate_body_to_bash(is(Var, Expr), Bash) :- !,
+    translate_expr(Expr, BashExpr),
+    format(string(Bash), '~w=$((~s))', [Var, BashExpr]).
+translate_body_to_bash(Goal, Bash) :-
+    goal_to_bash_operator(Goal, Op), !,
+    Goal =.. [_, A, B],
+    format(string(Bash), '[[ "$~w" -~w "$~w" ]]', [A, Op, B]).
+translate_body_to_bash(Goal, Bash) :-
+    % Default case for calling another predicate
+    functor(Goal, Functor, _),
+    atom_string(Functor, FuncStr),
+    Goal =.. [_|Args],
+    maplist(format_arg, Args, BashArgs),
+    atomic_list_concat(BashArgs, " ", BashArgsStr),
+    format(string(Bash), '~w ~w', [FuncStr, BashArgsStr]).
 
-%% Generate join chain for predicates
-generate_join_chain([_], _, "") :- !.
-generate_join_chain([_P1, P2|Rest], Options, Chain) :-
-    atom_string(P2, P2Str),
-    format(string(JoinFn), '~s_join', [P2Str]),
-    (   Rest = [] ->
-        Chain = JoinFn
-    ;   generate_join_chain([P2|Rest], Options, RestChain),
-        format(string(Chain), '~s | ~s', [JoinFn, RestChain])
-    ).
+%% format_arg(+Arg, -BashArg)
+%  Formats a Prolog term as a bash argument.
+format_arg(Var, BashArg) :- var(Var), !, format(string(BashArg), '"$~w"', [Var]).
+format_arg(Atom, BashArg) :- atom(Atom), !, format(string(BashArg), '"~w"', [Atom]).
+format_arg(Number, BashArg) :- number(Number), !, format(string(BashArg), '~w', [Number]).
 
-%% Collect all join functions needed for a pipeline
-% Tail-recursive with accumulator to prevent infinite loops
-collect_join_functions(Preds, Funcs) :-
-    collect_join_functions_(Preds, [], Rev), !,
-    reverse(Rev, Funcs).
+%% goal_to_bash_operator(+Goal, -BashOperator)
+%  Maps Prolog comparison operators to bash test operators.
+goal_to_bash_operator(_ > _, 'gt').
+goal_to_bash_operator(_ < _, 'lt').
+goal_to_bash_operator(_ >= _, 'ge').
+goal_to_bash_operator(_ =< _, 'le').
+goal_to_bash_operator(_ =:= _, 'eq').
+goal_to_bash_operator(_ =\= _, 'ne').
 
-% Helper predicate with accumulator
-collect_join_functions_(Preds, Acc, Acc) :-
-    var(Preds), !.                         % Guard against variable lists
-collect_join_functions_([], Acc, Acc) :- !.
-collect_join_functions_([_], Acc, Acc) :- !.
-collect_join_functions_([_, P2|Rest], Acc, Out) :-
-    generate_join_function(P2, JoinFunc), !,
-    collect_join_functions_([P2|Rest], [JoinFunc|Acc], Out).
-% Catch-all for improper lists (e.g., dotted tails)
-collect_join_functions_(_, Acc, Acc) :- !.
+%% translate_expr(+PrologExpr, -BashExpr)
+%  Translates a Prolog arithmetic expression to a bash one.
+translate_expr(A + B, BashExpr) :- !,
+    translate_expr(A, BashA),
+    translate_expr(B, BashB),
+    format(string(BashExpr), '~w + ~w', [BashA, BashB]).
+translate_expr(A - B, BashExpr) :- !,
+    translate_expr(A, BashA),
+    translate_expr(B, BashB),
+    format(string(BashExpr), '~w - ~w', [BashA, BashB]).
+translate_expr(Var, BashExpr) :- var(Var), !, format(string(BashExpr), '$~w', [Var]).
+translate_expr(Number, BashExpr) :- number(Number), !, format(string(BashExpr), '~w', [Number]).
 
-%% Helper for join functions
-generate_join_function(Pred2, JoinCode) :-
-    atom_string(Pred2, P2Str),
-    format(string(JoinCode), '~s_join() {
-    while IFS= read -r input; do
-        IFS=":" read -r a b <<< "$input"
-        for key in "${!~s_data[@]}"; do
-            IFS=":" read -r c d <<< "$key"
-            [[ "$b" == "$c" ]] && echo "$a:$d"
-        done
-    done
-}', [P2Str, P2Str]).
 
 %% Check for inequality constraints (cut-safe, terminating)
 has_inequality((A, B)) :- !,
