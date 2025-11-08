@@ -52,6 +52,9 @@ compile_playbook(PlaybookIn, Options, BashScriptOut) :-
     % Step 1: Parse the playbook to extract its structure and logic.
     parse_playbook(PlaybookIn, Options, Playbook),
 
+    % Step 1.5: Load the extracted Prolog rules into the database.
+    load_prolog_from_playbook(Playbook),
+
     % Step 2: Profile the tools defined in the playbook to get real metrics (optional).
     (   memberchk(profile_tools(true), Options)
     ->  profile_tools(Playbook, Options, ProfiledPlaybook)
@@ -62,6 +65,41 @@ compile_playbook(PlaybookIn, Options, BashScriptOut) :-
     generate_output(ProfiledPlaybook, Options, BashScriptOut),
 
     format('~`=t Compilation Complete ~72|~n', []).
+
+
+% =============================================================================
+% Step 1.5: Load Prolog Rules
+% =============================================================================
+
+%% load_prolog_from_playbook(+Playbook)
+%  Extracts Prolog code from the playbook, saves it to a temp file,
+%  and consults it into the database for introspection.
+load_prolog_from_playbook(playbook(_, PlaybookData)) :-
+    memberchk(code_blocks(CodeBlocks), PlaybookData),
+
+    % Filter for prolog and pseudocode_prolog blocks
+    include(is_prolog_block, CodeBlocks, PrologBlocks),
+    (   PrologBlocks = []
+    ->  format('~`│t [Prolog] No Prolog blocks found to load.~n', [])
+    ;   % Concatenate all prolog code into a single string
+        maplist(block_content, PrologBlocks, PrologCodeStrings),
+        atomics_to_string(PrologCodeStrings, "\n\n", AllPrologCode),
+
+        % Write to a temporary file
+        tmp_file_stream(text, TmpFile, Stream),
+        write(Stream, AllPrologCode),
+        close(Stream),
+
+        % Consult the temporary file to load the rules
+        consult(TmpFile),
+        format('~`│t [Prolog] Loaded ~w Prolog blocks from ~w.~n', [PrologBlocks, TmpFile])
+    ).
+
+is_prolog_block(block("prolog", _)).
+is_prolog_block(block("pseudocode_prolog", _)).
+
+block_content(block(_, Content), Content).
+
 
 
 % =============================================================================
@@ -306,6 +344,35 @@ generate_markdown_output(playbook(_Path, PlaybookData), _Options, ResolvedMarkdo
 
     memberchk(content(Content), PlaybookData),
 
-    % For now, just return content as-is
-    % TODO: Substitute template variables using metrics
-    ResolvedMarkdown = Content.
+    % Build a dictionary for substitution from metrics and defaults
+    (   memberchk(metrics(Metrics), PlaybookData)
+    ->  build_substitution_dict(Metrics, SubstDict)
+    ;   % No profiling was run, use an empty dict
+        SubstDict = []
+    ),
+
+    % Use the template_system to substitute all {{VAR}} placeholders
+    render_template(Content, SubstDict, ResolvedMarkdown),
+    format('~`│t   Substituted ~w variables in markdown output~n', [SubstDict]).
+
+
+%% build_substitution_dict(+Metrics, -SubstDict)
+%  Builds a key-value list for template substitution from a list of metrics.
+%
+%  Example:
+%  Metrics = [metric(local_indexer, latency(50), cost(0))]
+%  SubstDict = ['LOCAL_INDEXER_LATENCY_MS'=50, 'LOCAL_INDEXER_COST'=0]
+
+build_substitution_dict(Metrics, SubstDict) :-
+    maplist(metric_to_pairs, Metrics, PairLists),
+    flatten(PairLists, SubstDict).
+
+metric_to_pairs(metric(ToolName, latency(Ms), cost(USD)), Pairs) :-
+    % Create latency variable name, e.g., local_indexer -> LOCAL_INDEXER_LATENCY_MS
+    upcase_atom(ToolName, UpperToolName),
+    atom_concat(UpperToolName, '_LATENCY_MS', LatencyVar),
+
+    % Create cost variable name, e.g., local_indexer -> LOCAL_INDEXER_COST
+    atom_concat(UpperToolName, '_COST', CostVar),
+
+    Pairs = [LatencyVar=Ms, CostVar=USD].
