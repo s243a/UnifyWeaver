@@ -53,7 +53,12 @@ body_dependencies(\+ A, Deps) :-
     body_dependencies(A, Deps).
 body_dependencies(Goal, [Functor/Arity]) :-
     compound(Goal),
-    functor(Goal, Functor, Arity).
+    functor(Goal, Functor, Arity),
+    \+ predicate_property(Goal, built_in),
+    !.
+body_dependencies(Goal, []) :-
+    compound(Goal),
+    predicate_property(Goal, built_in).
 
 %% exclude_original(+AllDeps, +OriginalFunctor, -FilteredDeps)
 %  Remove the original predicate from the list of dependencies to avoid self-recursion.
