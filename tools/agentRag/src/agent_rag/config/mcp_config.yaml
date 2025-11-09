@@ -1,0 +1,256 @@
+# MCP (Model Context Protocol) Configuration
+# For orchestrating the multi-agent RAG system
+
+agents:
+  # Shard Retrieval Agents - Gemini Flash
+  shard_retriever:
+    type: http
+    endpoint: http://localhost:8000/gemini-flash-retrieve
+    method: POST
+    timeout: 30
+    retry_attempts: 3
+    input_schema:
+      type: object
+      required: [query, shard_name, shard_docs]
+      properties:
+        query: 
+          type: string
+          description: "Search query"
+        shard_name: 
+          type: string
+          description: "Name of the shard being searched"
+        shard_docs:
+          type: array
+          items:
+            type: string
+          description: "Document chunks in this shard"
+    output_schema:
+      type: object
+      properties:
+        shard: 
+          type: string
+        context: 
+          type: array
+          items:
+            type: string
+        confidence: 
+          type: number
+          minimum: 0
+          maximum: 1
+        reasoning:
+          type: string
+
+  # Global RAG Agent - Perplexity
+  global_rag:
+    type: perplexity
+    model: llama-3.1-sonar-large-128k-online
+    mode: search
+    temperature: 0.7
+    max_tokens: 2000
+    output_schema:
+      type: object
+      properties:
+        shard: 
+          type: string
+          const: "global_rag"
+        context: 
+          type: array
+          items:
+            type: string
+        confidence: 
+          type: number
+
+  # Synthesis Agent - Perplexity/GPT-5
+  synthesis:
+    type: perplexity
+    model: llama-3.1-sonar-large-128k-online
+    mode: merge
+    temperature: 0.3
+    max_tokens: 4000
+    system_prompt: |
+      You are a synthesis agent that merges multiple retrieval outputs.
+      Your task is to:
+      1. Merge all contexts into a single coherent narrative
+      2. Remove duplicates and redundant information
+      3. Preserve all critical technical details
+      4. Compress the output to be concise but complete
+    output_schema:
+      type: object
+      properties:
+        master_prompt: 
+          type: string
+
+  # Reasoning Agent - Claude
+  reasoning:
+    type: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.5
+    max_tokens: 2000
+    system_prompt: |
+      You are a reasoning and implementation agent with deep expertise.
+      Based on the provided context, answer questions thoroughly and accurately.
+      Include code examples where relevant.
+      Structure your response clearly with headings when appropriate.
+    output_schema:
+      type: object
+      properties:
+        reasoning_steps: 
+          type: array
+          items:
+            type: string
+        final_output: 
+          type: string
+
+# Pipeline Configuration
+pipeline:
+  stages:
+    - name: shard_retrieval
+      agent: shard_retriever
+      parallel: true
+      optional: false
+      
+    - name: global_search
+      agent: global_rag
+      parallel: false
+      optional: true
+      
+    - name: synthesis
+      agent: synthesis
+      parallel: false
+      optional: false
+      depends_on: [shard_retrieval, global_search]
+      
+    - name: reasoning
+      agent: reasoning
+      parallel: false
+      optional: false
+      depends_on: [synthesis]
+
+  # Context limits for each stage
+  context_limits:
+    shard_retrieval: 10000  # tokens per shard
+    global_search: 5000     # tokens for global context
+    synthesis: 15000        # combined input limit
+    reasoning: 4000         # final context limit
+
+# Chunking Configuration
+chunking:
+  macro_chunks:
+    size: 1500              # tokens
+    overlap: 500            # tokens
+    metadata_fields:
+      - source_file
+      - section
+      - timestamp
+      
+  micro_chunks:
+    size: 300               # tokens
+    overlap: 100            # tokens
+    metadata_fields:
+      - parent_macro_id
+      - source_file
+      - line_range
+
+# Embedding Configuration (optional)
+embeddings:
+  enabled: true
+  model: nomic-ai/modernbert-base
+  dimensions: 768
+  normalize: true
+  batch_size: 32
+  cache_embeddings: true
+
+# Database Configuration
+database:
+  type: sqlite
+  path: ./rag_index.db
+  tables:
+    - answers
+    - chunks
+    - embeddings
+    - metadata
+  
+  indexes:
+    - table: chunks
+      columns: [parent_macro_id, chunk_type]
+    - table: answers
+      columns: [timestamp, model]
+
+# Obsidian Integration
+obsidian:
+  vault_path: ${OBSIDIAN_VAULT}
+  watch_folders:
+    - chats
+  artifact_folder_pattern: "{prefix} artifacts"
+  prompt_pattern: ">[!PROMPT]"
+  answer_pattern: ">[!ANSWER META]"
+  
+  metadata_fields:
+    - answer_id
+    - model
+    - timestamp
+    - tokens_in
+    - tokens_out
+    - confidence
+
+# Service Endpoints
+services:
+  gemini_retriever:
+    host: localhost
+    port: 8000
+    health_check: /health
+    
+  orchestrator:
+    host: localhost
+    port: 8001
+    health_check: /health
+    
+  embedding_service:
+    host: localhost
+    port: 8002
+    health_check: /health
+
+# Logging Configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: ./logs/rag_system.log
+  max_size: 10485760  # 10MB
+  backup_count: 5
+
+# Performance Tuning
+performance:
+  cache_ttl: 3600           # seconds
+  max_parallel_shards: 5
+  request_timeout: 30       # seconds
+  retry_on_failure: true
+  retry_attempts: 3
+  retry_delay: 2            # seconds
+
+# Cost Management
+cost_management:
+  max_cost_per_query: 0.10  # USD
+  alert_threshold: 0.08     # USD
+  
+  model_costs:  # per 1M tokens
+    gemini_flash:
+      input: 0.30
+      output: 2.50
+    perplexity_sonar:
+      input: 1.00
+      output: 1.00
+    claude_sonnet:
+      input: 3.00
+      output: 15.00
+
+# Monitoring
+monitoring:
+  metrics:
+    - query_latency
+    - token_usage
+    - cost_per_query
+    - retrieval_precision
+    - cache_hit_rate
+  
+  export_interval: 60  # seconds
+  export_format: prometheus
