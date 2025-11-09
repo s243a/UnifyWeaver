@@ -96,6 +96,8 @@ compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
     ;   Classification = transitive_closure(BasePred) ->
         format('Detected transitive closure over ~w~n', [BasePred]),
         compile_transitive_closure(Target, Pred, Arity, BasePred, FinalOptions, GeneratedCode)
+    ;   Classification = mutual_recursion -> % Handle mutual recursion
+        advanced_recursive_compiler:compile_mutual_recursion(Pred/Arity, FinalOptions, GeneratedCode)
     ;   catch(
             compile_advanced(Target, Pred/Arity, FinalOptions, GeneratedCode),
             error(existence_error(procedure, _), _),

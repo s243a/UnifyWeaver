@@ -2,9 +2,46 @@
 
 This directory contains skill definitions and workflow guides designed to help AI assistants work more effectively with the UnifyWeaver codebase.
 
+## LLM Workflow System: Current State & Vision
+
+### Current State (v0.1 - Automated Testing via Playbooks)
+
+The LLM workflow infrastructure is **functional for automated testing**:
+
+✅ **What Works Now:**
+- **Playbooks as Test Specifications**: Playbooks (e.g., `examples/prolog_generation_playbook.md`, `examples/mutual_recursion_playbook.md`) serve as executable test specifications
+- **Automated Test Generation**: `test_runner_inference.pl` automatically generates tests from compiled scripts
+- **End-to-End Workflow**: Complete pipeline from Prolog → Compilation → Testing
+- **Robust Test Execution**: Path-independent test runners with dependency resolution
+- **Workflow Documentation**: Philosophy, environment setup, and roadmap documents in place
+
+📋 **Current Use Case:**
+AI agents can follow playbooks to:
+1. Generate Prolog code
+2. Compile via `compiler_driver.pl`
+3. Auto-generate and execute tests via `test_runner_inference.pl`
+4. Verify correctness
+
+### Future Vision (v1.0 - Literate Programming)
+
+🔮 **Not Yet Implemented:**
+- **Fully Executable Playbooks**: Playbooks as complete, self-executing literate programs
+- **Interactive Notebooks**: Jupyter-style notebooks with embedded Prolog/Bash execution
+- **Dynamic Code Generation**: Real-time code synthesis from natural language
+- **Advanced Orchestration**: Complex multi-agent workflows with tool composition
+
+📖 **Literate Programming Goal:**
+Transform playbooks into executable narratives where documentation, code generation, compilation, and testing are seamlessly integrated into a single, runnable document.
+
+**See Also:**
+- `workflow_roadmap.md` - Development roadmap for future features
+- `workflow_todo.md` - Specific next steps and enhancements
+- `workflow_philosophy.md` - Core principles guiding development
+
 ## Directory Structure
 
 - **`*.md`** - Stable, reviewed AI skills ready for use
+- **`workflow_*.md`** - Workflow system documentation
 - **`README.md`** - This file
 
 **Note:** For educational material and tutorials, see `education/drafts/` in the main project.

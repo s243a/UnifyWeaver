@@ -14,6 +14,7 @@
 :- use_module(dependency_analyzer).
 :- use_module(recursive_compiler).
 :- use_module(stream_compiler).
+:- use_module('advanced/advanced_recursive_compiler'). % Added for mutual recursion classification
 
 :- dynamic compiled/1.
 
