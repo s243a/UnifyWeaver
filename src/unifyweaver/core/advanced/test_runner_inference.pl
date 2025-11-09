@@ -228,29 +228,29 @@ extract_pattern_type(Desc, accumulator) :-
 extract_pattern_type(_, unknown).
 
 %% infer_all_test_cases(+Signatures, -TestConfigs)
-%  Infer test cases for all signatures
-%  Handles both single functions and lists of functions
+%  Infer test cases for all signatures, filtering out generic-only tests for helpers
 infer_all_test_cases(Signatures, TestConfigs) :-
     findall(Config,
             (   member(Sig, Signatures),
                 (   is_list(Sig) ->
                     % Multi-function script - generate configs for each function
                     member(FuncSig, Sig),
-                    infer_test_cases(FuncSig, Tests),
-                    Config = config(FuncSig, Tests)
+                    infer_test_cases(FuncSig, Tests, TestType),
+                    (TestType = specific -> Config = config(FuncSig, Tests) ; fail) % Only include specific tests
                 ;   % Single function
-                    infer_test_cases(Sig, Tests),
-                    Config = config(Sig, Tests)
+                    infer_test_cases(Sig, Tests, TestType),
+                    (TestType = specific -> Config = config(Sig, Tests) ; fail) % Only include specific tests
                 )
             ),
             TestConfigs).
 
-%% infer_test_cases(+Signature, -TestCases)
+%% infer_test_cases(+Signature, -TestCases, -TestType)
 %  Infer appropriate test cases based on signature and pattern type
+%  TestType will be 'specific' or 'generic'
 
 % Rule 1: Arity 2, Linear recursion, List-related predicate
 infer_test_cases(function(Name, 2, metadata(pattern_type(linear_recursive), _, _)),
-                 TestCases) :-
+                 TestCases, specific) :-
     (sub_atom(Name, _, _, _, length) ; sub_atom(Name, _, _, _, list)), !,
     TestCases = [
         test('Empty list', ['[]', '']),
@@ -260,7 +260,7 @@ infer_test_cases(function(Name, 2, metadata(pattern_type(linear_recursive), _, _
 
 % Rule 2: Arity 2, Linear recursion, Numeric predicate
 infer_test_cases(function(Name, 2, metadata(pattern_type(linear_recursive), _, _)),
-                 TestCases) :-
+                 TestCases, specific) :-
     member(Name, [factorial, fib, power]), !,
     TestCases = [
         test('Base case 0', ['0', '']),
@@ -270,7 +270,7 @@ infer_test_cases(function(Name, 2, metadata(pattern_type(linear_recursive), _, _
 
 % Rule 3: Arity 3, Tail recursive or accumulator pattern
 infer_test_cases(function(Name, 3, metadata(pattern_type(PatternType), _, _)),
-                 TestCases) :-
+                 TestCases, specific) :-
     member(PatternType, [tail_recursive, accumulator]), !,
     (   (sub_atom(Name, _, _, _, sum) ; sub_atom(Name, _, _, _, add)) ->
         TestCases = [
@@ -287,7 +287,7 @@ infer_test_cases(function(Name, 3, metadata(pattern_type(PatternType), _, _)),
 
 % Rule 4: Arity 1, Mutual recursion (even/odd pattern)
 infer_test_cases(function(Name, 1, metadata(pattern_type(mutual_recursive), _, _)),
-                 TestCases) :-
+                 TestCases, specific) :-
     (sub_atom(Name, 0, _, _, is_even) ; sub_atom(Name, 0, _, _, even)), !,
     TestCases = [
         test('Even: 0', ['0']),
@@ -296,7 +296,7 @@ infer_test_cases(function(Name, 1, metadata(pattern_type(mutual_recursive), _, _
     ].
 
 infer_test_cases(function(Name, 1, metadata(pattern_type(mutual_recursive), _, _)),
-                 TestCases) :-
+                 TestCases, specific) :-
     (sub_atom(Name, 0, _, _, is_odd) ; sub_atom(Name, 0, _, _, odd)), !,
     TestCases = [
         test('Odd: 3', ['3']),
@@ -306,7 +306,7 @@ infer_test_cases(function(Name, 1, metadata(pattern_type(mutual_recursive), _, _
 
 % Rule 5: Arity 1, Tree recursion pattern (tree_sum, tree_height, etc.)
 infer_test_cases(function(Name, 1, metadata(pattern_type(tree_recursive), _, _)),
-                 TestCases) :-
+                 TestCases, specific) :-
     (sub_atom(Name, _, _, _, tree) ; sub_atom(Name, _, _, _, binary)), !,
     TestCases = [
         test('Empty tree', ['[]']),
@@ -316,7 +316,7 @@ infer_test_cases(function(Name, 1, metadata(pattern_type(tree_recursive), _, _))
 
 % Rule 6: Arity 1, Any tree-related function (inferred from name)
 infer_test_cases(function(Name, 1, _),
-                 TestCases) :-
+                 TestCases, specific) :-
     (sub_atom(Name, _, _, _, tree) ; sub_atom(Name, _, _, _, binary)), !,
     TestCases = [
         test('Empty tree', ['[]']),
@@ -326,7 +326,7 @@ infer_test_cases(function(Name, 1, _),
 
 % Rule 7: Transitive closure patterns (ancestor, reachable, etc.)
 infer_test_cases(function(Name, Arity, metadata(pattern_type(PatternType), _, _)),
-                 TestCases) :-
+                 TestCases, specific) :-
     member(PatternType, [transitive_closure, unknown]),
     member(Arity, [1, 2]),
     (sub_atom(Name, _, _, _, ancestor) ; sub_atom(Name, _, _, _, reachable) ; sub_atom(Name, _, _, _, descendant)), !,
@@ -345,7 +345,7 @@ infer_test_cases(function(Name, Arity, metadata(pattern_type(PatternType), _, _)
     ).
 
 % Fallback: Generic test cases based on arity
-infer_test_cases(function(_Name, Arity, _), TestCases) :-
+infer_test_cases(function(_Name, Arity, _), TestCases, generic) :-
     length(Args, Arity),
     maplist(=('test_value'), Args),
     TestCases = [test('Generic test', Args)].
