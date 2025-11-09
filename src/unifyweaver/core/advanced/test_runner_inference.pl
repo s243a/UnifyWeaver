@@ -286,7 +286,7 @@ infer_test_cases(function(Name, 3, metadata(pattern_type(PatternType), _, _)),
     ).
 
 % Rule 4: Arity 1, Mutual recursion (even/odd pattern)
-infer_test_cases(function(Name, 1, metadata(pattern_type(mutual_recursive), _, _)),
+infer_test_cases(function(Name, 1, _),
                  TestCases, specific) :-
     (sub_atom(Name, 0, _, _, is_even) ; sub_atom(Name, 0, _, _, even)), !,
     TestCases = [
@@ -295,7 +295,7 @@ infer_test_cases(function(Name, 1, metadata(pattern_type(mutual_recursive), _, _
         test('Odd (should fail): 3', ['3'])
     ].
 
-infer_test_cases(function(Name, 1, metadata(pattern_type(mutual_recursive), _, _)),
+infer_test_cases(function(Name, 1, _),
                  TestCases, specific) :-
     (sub_atom(Name, 0, _, _, is_odd) ; sub_atom(Name, 0, _, _, odd)), !,
     TestCases = [
