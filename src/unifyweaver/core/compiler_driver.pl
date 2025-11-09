@@ -32,11 +32,17 @@ compile_entry(Predicate, Options, GeneratedScripts) :-
     (   compiled(Predicate) ->
         GeneratedScripts = []
     ;   assertz(compiled(Predicate)),
-        find_dependencies(Predicate, Dependencies),
-        compile_dependencies(Dependencies, Options, DepScripts),
+        find_dependencies(Predicate, AllDependencies),
+        % Filter out built-in predicates so we don't try to compile them
+        exclude(is_builtin, AllDependencies, UserDependencies),
+        compile_dependencies(UserDependencies, Options, DepScripts),
         compile_current(Predicate, Options, CurrentScript),
         append(DepScripts, [CurrentScript], GeneratedScripts)
     ).
+
+is_builtin(Functor/Arity) :-
+    functor(Head, Functor, Arity),
+    predicate_property(Head, built_in).
 
 compile_dependencies([], _, []).
 compile_dependencies([Dep|Rest], Options, GeneratedScripts) :-
