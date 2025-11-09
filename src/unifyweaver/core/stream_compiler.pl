@@ -615,6 +615,10 @@ translate_body_to_bash(is(Var, Expr), VarMap, Bash) :- !,
     translate_expr(Expr, VarMap, BashExpr),
     format(string(VarName), '~w', [Var]),
     format(string(Bash), '~w=$(( ~s ))', [VarName, BashExpr]).
+translate_body_to_bash(=(Var, Value), VarMap, Bash) :- !,
+    format(string(VarName), '~w', [Var]),
+    translate_expr(Value, VarMap, BashValue),
+    format(string(Bash), '~w=~s', [VarName, BashValue]).
 translate_body_to_bash(Goal, VarMap, Bash) :-
     goal_to_bash_operator(Goal, Op), !,
     Goal =.. [_, A, B],
