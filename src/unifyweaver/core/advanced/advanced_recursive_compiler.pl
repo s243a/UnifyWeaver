@@ -9,7 +9,8 @@
 :- module(advanced_recursive_compiler, [
     compile_advanced_recursive/3,   % +Pred/Arity, +Options, -BashCode
     compile_predicate_group/3,      % +Predicates, +Options, -BashCode
-    try_fold_pattern/3,            % +Pred/Arity, +Options, -BashCode  
+    compile_mutual_recursion/3,     % +Group, +Options, -BashCode
+    try_fold_pattern/3,            % +Pred/Arity, +Options, -BashCode
     test_advanced_compiler/0
 ]).
 

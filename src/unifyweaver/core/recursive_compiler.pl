@@ -15,6 +15,7 @@
 :- dynamic control_plane_warning_shown/0.
 
 :- use_module('advanced/advanced_recursive_compiler').
+:- use_module('advanced/call_graph').
 :- use_module(stream_compiler).
 :- use_module('../targets/csharp_query_target').
 :- use_module('../targets/csharp_stream_target').
@@ -143,9 +144,14 @@ is_target_option(target(_)).
 classify_predicate(Pred/Arity, Classification) :-
     functor(Head, Pred, Arity),
     findall(Body, clause(Head, Body), Bodies),
-    
-    % Check if recursive
-    (   contains_recursive_call(Pred, Bodies) ->
+
+    % Check for mutual recursion FIRST (before self-recursion check)
+    (   call_graph:predicates_in_group(Pred/Arity, Group),
+        length(Group, GroupSize),
+        GroupSize > 1 ->
+        Classification = mutual_recursion
+    ;   % Check if self-recursive
+        contains_recursive_call(Pred, Bodies) ->
         analyze_recursion_pattern(Pred, Arity, Bodies, Classification)
     ;   Classification = non_recursive
     ).
