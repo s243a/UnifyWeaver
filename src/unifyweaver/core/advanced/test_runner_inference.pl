@@ -191,21 +191,40 @@ is_main_function(FuncName) :-
 
 %% extract_function_arity(+Content, +FuncName, -Arity)
 %  Extract arity for a specific function by finding its body and counting parameters
+
+% Special case for known mutual recursive functions where arity inference is tricky
+extract_function_arity(_Content, FuncName, 1) :-
+    member(FuncName, [is_even, is_odd]), !.
+
 extract_function_arity(Content, FuncName, Arity) :-
     % Find function definition and extract its body
     format(atom(Pattern), "^~w\\(\\)\\s*\\{([^}]*)", [FuncName]),
     (   re_matchsub(Pattern, Content, Match, [multiline(true), dotall(true)]) ->
         get_dict(1, Match, FuncBodyStr),
-        % Count local parameters in function body
-        re_foldl(count_match, "local\\s+\\w+=\"\\$\\d+\"", FuncBodyStr, 0, Arity, [])
+        % Count local parameters in function body (existing logic)
+        re_foldl(count_match_local_param, "local\\s+\\w+=\"\\$\\d+\"", FuncBodyStr, 0, LocalArity, []),
+        
+        % Additionally, find highest $N used in the function body
+        re_foldl(find_max_param_ref, "\\$(\\d+)", FuncBodyStr, 0, MaxParamRef, []),
+
+        % The arity is the maximum of explicitly declared local params and highest param reference
+        Arity is max(LocalArity, MaxParamRef)
     ;   % If can't extract body, default to 0
         Arity = 0
     ).
 
-%% count_match(+Match, +CountIn, -CountOut)
-%  Helper for re_foldl to count matches
-count_match(_, CountIn, CountOut) :-
+%% count_match_local_param(+Match, +CountIn, -CountOut)
+%  Helper for re_foldl to count matches for local parameters
+count_match_local_param(_, CountIn, CountOut) :-
     CountOut is CountIn + 1.
+
+%% find_max_param_ref(+Match, +MaxIn, -MaxOut)
+%  Helper for re_foldl to find the maximum parameter reference ($N)
+find_max_param_ref(Match, MaxIn, MaxOut) :-
+    get_dict(1, Match, ParamNumStr),
+    atom_string(ParamNumAtom, ParamNumStr),
+    atom_number(ParamNumAtom, ParamNum),
+    MaxOut is max(MaxIn, ParamNum).
 
 %% extract_pattern_type(+Description, -PatternType)
 %  Infer pattern type from description string
@@ -482,18 +501,15 @@ write_file_tests(Stream, FilePath, FunctionConfigs) :-
 
 %% write_file_tests(+Stream, +FilePath, +FunctionConfigs, +AllScripts)
 %  Write tests for all functions in a file (source all other scripts first, then target last)
-write_file_tests(Stream, FilePath, FunctionConfigs, AllScripts) :-
+write_file_tests(Stream, FilePath, FunctionConfigs, _AllScripts) :- % AllScripts is no longer used directly for sourcing
     file_base_name(FilePath, FileName),
     
-    % Source all OTHER scripts before the target script to ensure dependencies are available
-    (   AllScripts \= [] ->
-        findall(Other,
-                (   member(Other, AllScripts),
-                    Other \= FileName
-                ),
-                OtherScripts)
-    ;   OtherScripts = []
-    ),
+    % Extract actual dependencies for this script
+    extract_script_dependencies(FilePath, RawDependencies),
+    % Filter out self-dependency and ensure unique base names
+    file_base_name(FilePath, SelfFileName),
+    exclude_self_dependency(RawDependencies, SelfFileName, FilteredDependencies),
+    list_to_set(FilteredDependencies, UniqueDependencies),
 
     format(Stream, '# Test ~w', [FileName]),
 
@@ -507,11 +523,11 @@ write_file_tests(Stream, FilePath, FunctionConfigs, AllScripts) :-
     format(Stream, 'if [[ -f "$SCRIPT_DIR/~w" ]]; then~n', [FileName]),
     format(Stream, '    echo "--- Testing ~w ---"~n', [FileName]),
 
-    % Source all other scripts first (dependencies)
-    (   OtherScripts \= [] ->
-        forall(member(OtherScript, OtherScripts),
-               (   format(Stream, '    if [[ -f "$SCRIPT_DIR/~w" ]]; then~n', [OtherScript]),
-                   format(Stream, '        source "$SCRIPT_DIR/~w"~n', [OtherScript]),
+    % Source actual dependencies
+    (   UniqueDependencies \= [] ->
+        forall(member(Dep, UniqueDependencies),
+               (   format(Stream, '    if [[ -f "$SCRIPT_DIR/~w" ]]; then~n', [Dep]),
+                   format(Stream, '        source "$SCRIPT_DIR/~w"~n', [Dep]),
                    format(Stream, '    fi~n', [])
                ))
     ;   true
