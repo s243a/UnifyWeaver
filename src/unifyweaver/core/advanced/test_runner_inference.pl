@@ -10,7 +10,7 @@
     generate_test_runner_inferred/1,
     generate_test_runner_inferred/2,
     extract_function_signature/2,
-    infer_test_cases/2
+    infer_test_cases/3 % Updated arity
 ]).
 
 :- use_module(library(filesex)).
