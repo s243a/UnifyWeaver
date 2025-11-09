@@ -36,29 +36,32 @@ compile_predicate(PredIndicator, Options, BashCode) :-
     % Create head with correct arity
     functor(Head, PredAtom, Arity),
 
-    % Get all clauses for this predicate
-    findall(Body, clause(Head, Body), Bodies),
-    length(Bodies, NumClauses),
-    
+    % Get all clauses for this predicate (as head-body pairs)
+    findall(H-B, (clause(Head, B), Head = H), Clauses),
+    length(Clauses, NumClauses),
+
     % Determine compilation strategy
-    (   Bodies = [] ->
+    (   Clauses = [] ->
         format('ERROR: No clauses found for ~w/~w~n', [PredAtom, Arity]),
         fail
-    ;   Bodies = [true|Rest], forall(member(B, Rest), B = true) ->
+    ;   maplist(is_fact_clause, Clauses) ->
         % All bodies are just 'true' - these are facts
         format('Type: facts (~w clauses)~n', [NumClauses]),
         compile_facts(PredAtom, Arity, MergedOptions, BashCode)
-    ;   Bodies = [SingleBody], SingleBody \= true ->
+    ;   Clauses = [_-SingleBody], SingleBody \= true ->
         % Single rule
         format('Type: single_rule (~w clauses)~n', [NumClauses]),
         extract_predicates(SingleBody, Predicates),
         format('  Body predicates: ~w~n', [Predicates]),
-        compile_single_rule(PredAtom, SingleBody, MergedOptions, BashCode)
+        compile_single_rule(PredAtom, Arity, SingleBody, MergedOptions, BashCode)
     ;   % Multiple rules (OR pattern)
         format('Type: multiple_rules (~w clauses)~n', [NumClauses]),
         format('  ~w alternatives~n', [NumClauses]),
-        compile_multiple_rules(PredAtom, Bodies, MergedOptions, BashCode)
+        compile_multiple_rules(PredAtom, Clauses, MergedOptions, BashCode)
     ).
+
+%% Helper to check if a clause is a fact (body is just 'true')
+is_fact_clause(_-true).
 
 %% Merge runtime options with constraint-based options
 %  Runtime options take precedence over constraints
@@ -272,7 +275,7 @@ compile_facts_debug(Pred, Arity, _MergedOptions, BashCode) :-
     ).
 
 %% Compile single rule into streaming pipeline
-compile_single_rule(Pred, Body, Options, BashCode) :-
+compile_single_rule(Pred, Arity, Body, Options, BashCode) :-
     extract_predicates(Body, Predicates),
     atom_string(Pred, PredStr),
 
@@ -282,7 +285,7 @@ compile_single_rule(Pred, Body, Options, BashCode) :-
         compile_with_inequality(Pred, Body, BashCode)
     % 2. General fallback: arithmetic operations
     ;   has_arithmetic(Body) ->
-        compile_with_arithmetic(Pred, Body, Options, BashCode)
+        compile_with_arithmetic(Pred, Arity, Body, Options, BashCode)
     % 3. No predicates at all
     ;   Predicates = [] ->
         format(string(BashCode), '#!/bin/bash
@@ -303,13 +306,13 @@ compile_single_rule(Pred, Body, Options, BashCode) :-
     ).
 
 %% Compile multiple rules (OR pattern)
-compile_multiple_rules(Pred, Bodies, Options, BashCode) :-
+compile_multiple_rules(Pred, Clauses, Options, BashCode) :-
     atom_string(Pred, PredStr),
-    length(Bodies, NumAlts),
-    
+    length(Clauses, NumAlts),
+
     % Collect all join functions needed
     findall(JoinFunc, (
-        member(Body, Bodies),
+        member(_-Body, Clauses),
         extract_predicates(Body, Preds),
         collect_join_functions(Preds, Funcs),
         member(JoinFunc, Funcs)
@@ -317,15 +320,11 @@ compile_multiple_rules(Pred, Bodies, Options, BashCode) :-
     list_to_set(AllJoinFuncs, UniqueJoinFuncs),  % Remove duplicates
     atomic_list_concat(UniqueJoinFuncs, '\n\n', JoinFuncsCode),
     
-    % Generate alternative functions - need to check actual clause order
-    % For related/2, we know the pattern from how we defined it:
-    % 1. parent(X,Y) - forward
-    % 2. parent(Y,X) - reverse  
-    % 3. sibling(X,Y)
+    % Generate alternative functions - iterate through clause pairs
     findall(FnCode, (
-        nth1(I, Bodies, Body),
+        nth1(I, Clauses, Head-Body),
         format(atom(FnName), '~s_alt~w', [PredStr, I]),
-        
+
         % Check the specific pattern for related/2
         (   Pred = related, I = 1 ->
             % First alternative: parent(X,Y) - forward relationship
@@ -342,21 +341,38 @@ compile_multiple_rules(Pred, Bodies, Options, BashCode) :-
             format(string(FnCode), '~s() {
     sibling
 }', [FnName])
-        ;   % General case for other predicates
-            extract_predicates(Body, Preds),
-            (   Preds = [] ->
-                format(string(FnCode), '~s() {
-    true
-}', [FnName])
-            ;   Preds = [SinglePred] ->
-                atom_string(SinglePred, SPredStr),
-                format(string(FnCode), '~s() {
-    ~s_stream
-}', [FnName, SPredStr])
-            ;   generate_pipeline(Preds, Options, Pipeline),
+        ;   % General case: use hybrid dispatch
+            % Build variable map from the head
+            Head =.. [_|Args],
+            build_var_map(Args, 1, VarMap),
+            (   has_inequality(Body) ->
+                % High-level pattern: inequality
+                translate_body_to_bash(Body, VarMap, BodyCode),
                 format(string(FnCode), '~s() {
     ~s
+}', [FnName, BodyCode])
+            ;   has_arithmetic(Body) ->
+                % Arithmetic operations
+                translate_body_to_bash(Body, VarMap, BodyCode),
+                format(string(FnCode), '~s() {
+    ~s
+}', [FnName, BodyCode])
+            ;   % Standard streaming pipeline
+                extract_predicates(Body, Preds),
+                (   Preds = [] ->
+                    format(string(FnCode), '~s() {
+    true
+}', [FnName])
+                ;   Preds = [SinglePred] ->
+                    atom_string(SinglePred, SPredStr),
+                    format(string(FnCode), '~s() {
+    ~s_stream
+}', [FnName, SPredStr])
+                ;   generate_pipeline(Preds, Options, Pipeline),
+                    format(string(FnCode), '~s() {
+    ~s
 }', [FnName, Pipeline])
+                )
             )
         )
     ), AltFunctions),
@@ -504,38 +520,179 @@ has_arithmetic(Body) :-
     nonvar(Body), !,
     fail.
 
-%% compile_with_arithmetic(+Pred, +Body, +Options, -BashCode)
+%% compile_with_inequality_body(+Pred, +Arity, +Body, -BashBody)
+%  Generate just the body code for inequality patterns (for use in alternatives)
+compile_with_inequality_body(Pred, Arity, Body, BashBody) :-
+    % Get the clause head to build variable map
+    functor(Head, Pred, Arity),
+    clause(Head, Body),
+    Head =.. [_|Args],
+    build_var_map(Args, 1, VarMap),
+    translate_body_to_bash(Body, VarMap, BashBody).
+
+%% compile_arithmetic_body(+Pred, +Arity, +Body, -BashBody)
+%  Generate just the body code for arithmetic patterns (for use in alternatives)
+compile_arithmetic_body(Pred, Arity, Body, BashBody) :-
+    % Get the clause head to build variable map
+    functor(Head, Pred, Arity),
+    clause(Head, Body),
+    Head =.. [_|Args],
+    build_var_map(Args, 1, VarMap),
+    translate_body_to_bash(Body, VarMap, BashBody).
+
+%% compile_with_arithmetic(+Pred, +Arity, +Body, +Options, -BashCode)
 %  General arithmetic translation fallback
 %  Handles predicates with arithmetic but no known high-level pattern
-%  NOTE: Full implementation pending - currently generates informative error
-compile_with_arithmetic(Pred, Body, _Options, BashCode) :-
+compile_with_arithmetic(Pred, Arity, Body, _Options, BashCode) :-
     atom_string(Pred, PredStr),
-    % Generate informative error message showing what's not yet supported
-    format(string(BodyStr), '~w', [Body]),
+
+    % Extract variables from the clause head
+    % Get the actual clause to determine variables
+    functor(Head, Pred, Arity),
+    clause(Head, Body),
+    Head =.. [_|Args],
+
+    % Build variable mapping: Prolog vars -> bash positional params
+    build_var_map(Args, 1, VarMap),
+
+    % Translate the body to bash
+    translate_body_to_bash(Body, VarMap, BashBody),
+
+    % Generate parameter declarations
+    generate_param_decls(Args, 1, ParamDecls),
+
+    % Build complete bash script
     format(string(BashCode), '#!/bin/bash
-# ~s - WITH ARITHMETIC OPERATIONS
-#
-# This predicate contains arithmetic operations which require general translation.
-# The hybrid pattern matcher correctly detected arithmetic in the body, but
-# full low-level translation is not yet implemented.
-#
-# Body: ~s
-#
-# To compile this predicate, you can:
-# 1. Rewrite using supported high-level patterns (e.g., facts, simple joins)
-# 2. Wait for full arithmetic translation support (tracked in POST_RELEASE_TODO)
-# 3. Manually write the bash equivalent
-#
+# ~s - with arithmetic operations
+
 ~s() {
-    echo "ERROR: Arithmetic translation not yet implemented for ~s" >&2
-    echo "Body contains: ~s" >&2
-    return 1
+~s
+    ~s
 }
 
 # Stream function for use in pipelines
 ~s_stream() {
-    ~s
-}', [PredStr, BodyStr, PredStr, PredStr, BodyStr, PredStr, PredStr]).
+    ~s "$@"
+}', [PredStr, PredStr, ParamDecls, BashBody, PredStr, PredStr]).
+
+%% build_var_map(+Args, +Index, -VarMap)
+%  Build mapping from Prolog variables to bash positional parameters
+build_var_map([], _, []).
+build_var_map([Var|Rest], Index, [Var-Index|RestMap]) :-
+    Index1 is Index + 1,
+    build_var_map(Rest, Index1, RestMap).
+
+%% lookup_var(+Var, +VarMap, -Index)
+%  Look up a variable in the VarMap using structural equality (==)
+lookup_var(Var, [V-I|_], I) :-
+    Var == V, !.
+lookup_var(Var, [_|Rest], I) :-
+    lookup_var(Var, Rest, I).
+
+%% generate_param_decls(+Args, +Index, -Decls)
+%  Generate local variable declarations from positional parameters
+generate_param_decls([], _, '').
+generate_param_decls([Var|Rest], Index, Decls) :-
+    format(string(VarName), '~w', [Var]),
+    format(string(Line), '    local ~w="$~w"', [VarName, Index]),
+    Index1 is Index + 1,
+    generate_param_decls(Rest, Index1, RestDecls),
+    (   RestDecls = '' ->
+        Decls = Line
+    ;   format(string(Decls), '~s~n~s', [Line, RestDecls])
+    ).
+
+%% translate_body_to_bash(+Goal, +VarMap, -Bash)
+%  Translates a Prolog goal (or conjunction) into bash code
+translate_body_to_bash((A, B), VarMap, Bash) :- !,
+    translate_body_to_bash(A, VarMap, BashA),
+    translate_body_to_bash(B, VarMap, BashB),
+    format(string(Bash), '~w && ~w', [BashA, BashB]).
+translate_body_to_bash(\+ Goal, VarMap, Bash) :- !,
+    translate_body_to_bash(Goal, VarMap, BashGoal),
+    format(string(Bash), '! (~w)', [BashGoal]).
+translate_body_to_bash(is(Var, Expr), VarMap, Bash) :- !,
+    translate_expr(Expr, VarMap, BashExpr),
+    format(string(VarName), '~w', [Var]),
+    format(string(Bash), '~w=$(( ~s ))', [VarName, BashExpr]).
+translate_body_to_bash(Goal, VarMap, Bash) :-
+    goal_to_bash_operator(Goal, Op), !,
+    Goal =.. [_, A, B],
+    translate_expr(A, VarMap, BashA),
+    translate_expr(B, VarMap, BashB),
+    format(string(Bash), '[[ ~s -~w ~s ]]', [BashA, Op, BashB]).
+translate_body_to_bash(Goal, VarMap, Bash) :-
+    % Default: call to another predicate
+    functor(Goal, Functor, _),
+    atom_string(Functor, FuncStr),
+    Goal =.. [_|Args],
+    maplist(translate_arg(VarMap), Args, BashArgs),
+    atomic_list_concat(BashArgs, ' ', BashArgsStr),
+    format(string(Bash), '~w ~w', [FuncStr, BashArgsStr]).
+
+%% goal_to_bash_operator(+Goal, -BashOperator)
+%  Maps Prolog comparison operators to bash test operators
+goal_to_bash_operator(_ > _, 'gt').
+goal_to_bash_operator(_ < _, 'lt').
+goal_to_bash_operator(_ >= _, 'ge').
+goal_to_bash_operator(_ =< _, 'le').
+goal_to_bash_operator(_ =:= _, 'eq').
+goal_to_bash_operator(_ =\= _, 'ne').
+
+%% translate_expr(+PrologExpr, +VarMap, -BashExpr)
+%  Translates a Prolog arithmetic expression to bash
+translate_expr(Number, _VarMap, BashExpr) :-
+    number(Number), !,
+    format(string(BashExpr), '~w', [Number]).
+translate_expr(Expr, VarMap, BashExpr) :-
+    nonvar(Expr),
+    Expr = A + B, !,
+    translate_expr(A, VarMap, BashA),
+    translate_expr(B, VarMap, BashB),
+    format(string(BashExpr), '~w + ~w', [BashA, BashB]).
+translate_expr(Expr, VarMap, BashExpr) :-
+    nonvar(Expr),
+    Expr = A - B, !,
+    translate_expr(A, VarMap, BashA),
+    translate_expr(B, VarMap, BashB),
+    format(string(BashExpr), '~w - ~w', [BashA, BashB]).
+translate_expr(Expr, VarMap, BashExpr) :-
+    nonvar(Expr),
+    Expr = A * B, !,
+    translate_expr(A, VarMap, BashA),
+    translate_expr(B, VarMap, BashB),
+    format(string(BashExpr), '~w * ~w', [BashA, BashB]).
+translate_expr(Expr, VarMap, BashExpr) :-
+    nonvar(Expr),
+    Expr = A / B, !,
+    translate_expr(A, VarMap, BashA),
+    translate_expr(B, VarMap, BashB),
+    format(string(BashExpr), '~w / ~w', [BashA, BashB]).
+translate_expr(Var, VarMap, BashExpr) :-
+    var(Var), !,
+    % Look up variable in VarMap to get its parameter number
+    (   lookup_var(Var, VarMap, Index) ->
+        format(string(BashExpr), '$~w', [Index])
+    ;   % Fallback: use variable's print name
+        format(string(VarName), '~w', [Var]),
+        format(string(BashExpr), '$~w', [VarName])
+    ).
+translate_expr(Atom, _VarMap, BashExpr) :-
+    atom(Atom), !,
+    atom_string(Atom, BashExpr).
+
+%% translate_arg(+VarMap, +Arg, -BashArg)
+%  Formats a Prolog term as a bash function argument
+translate_arg(_VarMap, Var, BashArg) :-
+    var(Var), !,
+    format(string(VarName), '~w', [Var]),
+    format(string(BashArg), '"$~w"', [VarName]).
+translate_arg(_VarMap, Atom, BashArg) :-
+    atom(Atom), !,
+    format(string(BashArg), '"~w"', [Atom]).
+translate_arg(_VarMap, Number, BashArg) :-
+    number(Number), !,
+    format(string(BashArg), '~w', [Number]).
 
 %% Write bash code to file with Unix line endings
 write_bash_file(File, BashCode) :-
