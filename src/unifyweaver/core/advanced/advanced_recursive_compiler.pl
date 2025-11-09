@@ -14,7 +14,7 @@
 ]).
 
 :- use_module(library(lists)).
-:- use_module('call_graph').
+:- use_module('call_graph', [predicates_in_group/2]).
 :- use_module('scc_detection').
 :- use_module('pattern_matchers', [
     contains_call_to/2,
