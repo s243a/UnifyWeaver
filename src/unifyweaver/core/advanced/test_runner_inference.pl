@@ -215,6 +215,9 @@ extract_pattern_type(Desc, tail_recursive) :-
 extract_pattern_type(Desc, linear_recursive) :-
     atom(Desc),
     sub_atom(Desc, _, _, _, 'linear recursive'), !.
+extract_pattern_type(Desc, linear_recursive) :-
+    atom(Desc),
+    sub_atom(Desc, _, _, _, 'linear recursion'), !.
 extract_pattern_type(Desc, mutual_recursive) :-
     atom(Desc),
     downcase_atom(Desc, DescLower),
