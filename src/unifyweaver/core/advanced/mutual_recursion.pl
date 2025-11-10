@@ -360,20 +360,14 @@ generate_recursive_bash(GroupName, HeadVar, Conditions, Computations, RecCall, M
     % Generate recursive call
     (   RecCall = none ->
         RecCode = ''
-    ;   generate_rec_call_code_with_var(HeadVar, RecCall, RecCode)
-    ),
-
-    % Generate memo store code (if enabled)
-    (   MemoEnabled = true ->
-        format(string(MemoStore), '~w_memo[\"$key\"]=\"$result\"~n    ', [GroupName])
-    ;   MemoStore = ''
+    ;   generate_rec_call_code_with_var(HeadVar, RecCall, GroupName, MemoEnabled, RecCode)
     ),
 
     % Assemble the if-block
     (   CondCode = '' ->
         % No condition - always execute
-        format(string(Code), '# Recursive case\n    ~w\n    ~w\n    local result=\"true\"\n    ~wecho \"$result\"\n    return 0', [CompCode, RecCode, MemoStore])
-    ;   format(string(Code), 'if ~w; then\n        ~w\n        ~w\n        local result=\"true\"\n        ~wecho \"$result\"\n        return 0\n    fi', [CondCode, CompCode, RecCode, MemoStore])
+        format(string(Code), '# Recursive case\n    ~w\n    ~w', [CompCode, RecCode])
+    ;   format(string(Code), 'if ~w; then\n        ~w\n        ~w\n    fi', [CondCode, CompCode, RecCode])
     ).
 
 %% generate_condition_code_with_var(+HeadVar, +Goal, -Code)
@@ -389,12 +383,18 @@ generate_computation_code_with_var(HeadVar, VarOut is Expr, Code) :-
     format(string(Code), 'local ~w=$(( ~w ))', [VarOutLower, BashExpr]).
 
 %% generate_rec_call_code_with_var(+HeadVar, +RecCall, -Code)
-generate_rec_call_code_with_var(HeadVar, RecCall, Code) :-
+generate_rec_call_code_with_var(HeadVar, RecCall, GroupName, MemoEnabled, Code) :-
     RecCall =.. [Pred|Args],
     atom_string(Pred, PredStr),
     maplist(translate_call_arg_with_var(HeadVar), Args, BashArgs),
     atomic_list_concat(BashArgs, ' ', ArgsStr),
-    format(string(Code), 'local rec_result=$(~w ~w)\n        if [[ $? -eq 0 && \"$rec_result\" == \"true\" ]]; then\n            result=\"true\"\n        else\n            return 1\n        fi', [PredStr, ArgsStr]).
+    (   MemoEnabled = true ->
+        format(string(MemoStore), '            ~w_memo[\"$key\"]=\"$result\"~n', [GroupName])
+    ;   MemoStore = ''
+    ),
+    format(string(Code),
+           'local rec_result=$(~w ~w)\n        if [[ $? -eq 0 && \"$rec_result\" == \"true\" ]]; then\n            local result=\"true\"\n~w            echo \"$result\"\n            return 0\n        else\n            return 1\n        fi',
+           [PredStr, ArgsStr, MemoStore]).
 
 %% translate_goal_with_var(+HeadVar, +Goal, -Code)
 translate_goal_with_var(HeadVar, Goal, Code) :-
