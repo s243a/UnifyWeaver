@@ -171,14 +171,16 @@ compile_single_predicate(Pred/Arity, Options, Code) :-
 
 %% can_compile_fold_pattern(+Pred/Arity)
 %  Check if predicate can be compiled as fold pattern
+%  Fold pattern is for NUMERIC recursion (like fibonacci)
+%  NOT for structural recursion (like tree_sum)
 can_compile_fold_pattern(Pred/Arity) :-
     % Must be binary (input/output pattern)
     Arity =:= 2,
-    
+
     % Check if it has tree recursion structure (multiple recursive calls)
     functor(Head, Pred, Arity),
-    findall(Body, clause(Head, Body), Bodies),
-    
+    findall(Body, user:clause(Head, Body), Bodies),  % Use user:clause
+
     % Must have at least one recursive case with multiple recursive calls
     member(RecBody, Bodies),
     findall(RecCall, (
@@ -187,13 +189,51 @@ can_compile_fold_pattern(Pred/Arity) :-
     ), RecCalls),
     length(RecCalls, NumCalls),
     NumCalls >= 2,
-    
+
+    % NEW: Reject if recursive clauses use structural decomposition
+    % (e.g., tree_sum([V,L,R], Sum) has structural pattern)
+    \+ has_structural_head_in_recursive_clauses(Pred/Arity),
+
     % Optional: Check if forbid_linear_recursion/1 is declared
     % This indicates user intention to use fold pattern
     (   clause(forbid_linear_recursion(Pred/Arity), true) ->
         format('    Found forbid_linear_recursion directive~n')
     ;   true
     ).
+
+%% has_structural_head_in_recursive_clauses(+Pred/Arity)
+%  Check if any recursive clause uses structural decomposition in head
+%  Returns true for patterns like tree_sum([V,L,R], Sum)
+%  Returns false for numeric patterns like fib(N, F)
+has_structural_head_in_recursive_clauses(Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    user:clause(Head, Body),  % Use user:clause to find test predicates
+    % Check if this clause is recursive
+    extract_goal(Body, Goal),
+    functor(Goal, Pred, Arity),
+    % Check if head uses structural pattern
+    has_structural_pattern_in_head(Head).
+
+%% has_structural_pattern_in_head(+Head)
+%  Check if head uses structural decomposition (like [V,L,R])
+%  Returns true for: tree_sum([V,L,R], Sum) - INPUT arg is structural
+%  Returns false for: fib(N, F) - INPUT arg is a variable
+has_structural_pattern_in_head(Head) :-
+    Head =.. [_Pred|Args],
+    % Check FIRST argument (input) for structural pattern
+    Args = [FirstArg|_],
+    is_structural_pattern(FirstArg).
+
+%% is_structural_pattern(+Term)
+%  Check if term is a structural pattern (list with multiple elements)
+%  [V,L,R] is structural (tree node decomposition)
+%  [H|T] is NOT structural (simple list cons - for linear recursion)
+%  N or _ is NOT structural (simple variable)
+is_structural_pattern([_,_,_|_]) :- !.  % 3+ element list is structural
+is_structural_pattern([_,_]) :- !.      % 2 element list is structural
+is_structural_pattern([_|T]) :-         % [H|T] is only structural if T is not a var
+    nonvar(T),
+    T \= [].
 
 %% compile_fold_pattern(+Pred/Arity, +Options, -BashCode)
 %  Compile predicate using fold pattern with bash code generation
