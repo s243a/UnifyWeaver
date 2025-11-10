@@ -15,6 +15,7 @@
 :- dynamic control_plane_warning_shown/0.
 
 :- use_module('advanced/advanced_recursive_compiler').
+:- use_module('advanced/call_graph').
 :- use_module(stream_compiler).
 :- use_module('../targets/csharp_query_target').
 :- use_module('../targets/csharp_stream_target').
@@ -96,6 +97,8 @@ compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
     ;   Classification = transitive_closure(BasePred) ->
         format('Detected transitive closure over ~w~n', [BasePred]),
         compile_transitive_closure(Target, Pred, Arity, BasePred, FinalOptions, GeneratedCode)
+    ;   Classification = mutual_recursion -> % Handle mutual recursion
+        advanced_recursive_compiler:compile_mutual_recursion(Pred/Arity, FinalOptions, GeneratedCode)
     ;   catch(
             compile_advanced(Target, Pred/Arity, FinalOptions, GeneratedCode),
             error(existence_error(procedure, _), _),
@@ -141,9 +144,14 @@ is_target_option(target(_)).
 classify_predicate(Pred/Arity, Classification) :-
     functor(Head, Pred, Arity),
     findall(Body, clause(Head, Body), Bodies),
-    
-    % Check if recursive
-    (   contains_recursive_call(Pred, Bodies) ->
+
+    % Check for mutual recursion FIRST (before self-recursion check)
+    (   call_graph:predicates_in_group(Pred/Arity, Group),
+        length(Group, GroupSize),
+        GroupSize > 1 ->
+        Classification = mutual_recursion
+    ;   % Check if self-recursive
+        contains_recursive_call(Pred, Bodies) ->
         analyze_recursion_pattern(Pred, Arity, Bodies, Classification)
     ;   Classification = non_recursive
     ).

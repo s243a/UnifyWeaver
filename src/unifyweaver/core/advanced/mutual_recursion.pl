@@ -9,6 +9,7 @@
 :- module(mutual_recursion, [
     compile_mutual_recursion/3,     % +Predicates, +Options, -BashCode
     can_compile_mutual_recursion/1,  % +Predicates
+    find_mutual_group/2,            % +Predicate, -Group
     test_mutual_recursion/0        % Test predicate
 ]).
 
@@ -17,6 +18,14 @@
 :- use_module('../constraint_analyzer').
 :- use_module('call_graph').
 :- use_module('scc_detection').
+
+%% find_mutual_group(+Predicate, -Group)
+%  Find the mutual recursion group that a predicate belongs to
+%  Returns the full SCC (strongly connected component) containing the predicate
+find_mutual_group(Predicate, Group) :-
+    call_graph:predicates_in_group(Predicate, Group),
+    length(Group, Len),
+    Len > 1.  % Must be mutually recursive (not just self-recursive)
 
 %% can_compile_mutual_recursion(+Predicates)
 %  Check if predicates form a mutually recursive group
@@ -129,8 +138,11 @@ generate_mutual_recursion_bash(Predicates, MemoEnabled, MemoStrategy, BashCode) 
         FuncCodes),
     atomic_list_concat(FuncCodes, '\n\n', FunctionsCode),
 
+    % Generate main dispatch section
+    generate_main_dispatch(Predicates, DispatchCode),
+
     % Combine
-    atomic_list_concat([HeaderCode, FunctionsCode], '\n\n', BashCode).
+    atomic_list_concat([HeaderCode, FunctionsCode, DispatchCode], '\n\n', BashCode).
 
 %% generate_mutual_header(+GroupName, +MemoEnabled, +MemoStrategy, -HeaderCode)
 generate_mutual_header(GroupName, MemoEnabled, MemoStrategy, HeaderCode) :-
@@ -153,6 +165,46 @@ generate_mutual_header(GroupName, MemoEnabled, MemoStrategy, HeaderCode) :-
 
     atomic_list_concat(TemplateLines, '\n', Template),
     render_template(Template, [group=GroupName, memo_decl=MemoDecl, memo_comment=MemoComment], HeaderCode).
+
+%% generate_main_dispatch(+Predicates, -DispatchCode)
+%  Generate main dispatch section to call functions from command line
+generate_main_dispatch(Predicates, DispatchCode) :-
+    % Build case statements for each predicate
+    findall(CaseCode,
+        (   member(Pred/Arity, Predicates),
+            atom_string(Pred, PredStr),
+            % Generate argument list based on arity: $2, $3, ..., $(Arity+1)
+            EndArg is Arity + 1,
+            (   Arity > 0 ->
+                numlist(2, EndArg, ArgNums),
+                findall(ArgRef, (member(N, ArgNums), format(string(ArgRef), '"$~w"', [N])), ArgRefs),
+                atomic_list_concat(ArgRefs, ' ', ArgsStr)
+            ;   ArgsStr = ''
+            ),
+            format(string(CaseCode), '    ~w)\n        ~w ~w\n        ;;', [PredStr, PredStr, ArgsStr])
+        ),
+        CaseCodes),
+    atomic_list_concat(CaseCodes, '\n', CasesStr),
+
+    % Generate dispatch template
+    DispatchTemplate =
+"# Main dispatch: route command line calls to functions
+if [[ \"${BASH_SOURCE[0]}\" == \"${0}\" ]]; then
+    if [[ $# -lt 1 ]]; then
+        echo \"Usage: $0 <function_name> [args...]\" >&2
+        exit 1
+    fi
+
+    case \"$1\" in
+{{cases}}
+        *)
+            echo \"Unknown function: $1\" >&2
+            exit 1
+            ;;
+    esac
+fi",
+
+    render_template(DispatchTemplate, [cases=CasesStr], DispatchCode).
 
 %% generate_mutual_function(+Pred, +Arity, +GroupName, +AllPredicates, +MemoEnabled, -FuncCode)
 %  Generate bash function for one predicate in mutual group
@@ -360,20 +412,14 @@ generate_recursive_bash(GroupName, HeadVar, Conditions, Computations, RecCall, M
     % Generate recursive call
     (   RecCall = none ->
         RecCode = ''
-    ;   generate_rec_call_code_with_var(HeadVar, RecCall, RecCode)
-    ),
-
-    % Generate memo store code (if enabled)
-    (   MemoEnabled = true ->
-        format(string(MemoStore), '~w_memo[\"$key\"]=\"$result\"~n    ', [GroupName])
-    ;   MemoStore = ''
+    ;   generate_rec_call_code_with_var(HeadVar, RecCall, GroupName, MemoEnabled, RecCode)
     ),
 
     % Assemble the if-block
     (   CondCode = '' ->
         % No condition - always execute
-        format(string(Code), '# Recursive case\n    ~w\n    ~w\n    local result=\"true\"\n    ~wecho \"$result\"\n    return 0', [CompCode, RecCode, MemoStore])
-    ;   format(string(Code), 'if ~w; then\n        ~w\n        ~w\n        local result=\"true\"\n        ~wecho \"$result\"\n        return 0\n    fi', [CondCode, CompCode, RecCode, MemoStore])
+        format(string(Code), '# Recursive case\n    ~w\n    ~w', [CompCode, RecCode])
+    ;   format(string(Code), 'if ~w; then\n        ~w\n        ~w\n    fi', [CondCode, CompCode, RecCode])
     ).
 
 %% generate_condition_code_with_var(+HeadVar, +Goal, -Code)
@@ -389,12 +435,18 @@ generate_computation_code_with_var(HeadVar, VarOut is Expr, Code) :-
     format(string(Code), 'local ~w=$(( ~w ))', [VarOutLower, BashExpr]).
 
 %% generate_rec_call_code_with_var(+HeadVar, +RecCall, -Code)
-generate_rec_call_code_with_var(HeadVar, RecCall, Code) :-
+generate_rec_call_code_with_var(HeadVar, RecCall, GroupName, MemoEnabled, Code) :-
     RecCall =.. [Pred|Args],
     atom_string(Pred, PredStr),
     maplist(translate_call_arg_with_var(HeadVar), Args, BashArgs),
     atomic_list_concat(BashArgs, ' ', ArgsStr),
-    format(string(Code), 'local rec_result=$(~w ~w)\n        if [[ $? -eq 0 && \"$rec_result\" == \"true\" ]]; then\n            result=\"true\"\n        else\n            return 1\n        fi', [PredStr, ArgsStr]).
+    (   MemoEnabled = true ->
+        format(string(MemoStore), '            ~w_memo[\"$key\"]=\"$result\"~n', [GroupName])
+    ;   MemoStore = ''
+    ),
+    format(string(Code),
+           'local rec_result=$(~w ~w)\n        if [[ $? -eq 0 && \"$rec_result\" == \"true\" ]]; then\n            local result=\"true\"\n~w            echo \"$result\"\n            return 0\n        else\n            return 1\n        fi',
+           [PredStr, ArgsStr, MemoStore]).
 
 %% translate_goal_with_var(+HeadVar, +Goal, -Code)
 translate_goal_with_var(HeadVar, Goal, Code) :-

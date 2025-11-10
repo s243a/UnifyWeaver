@@ -90,9 +90,10 @@ get_dependencies(Pred/Arity, Dependencies) :-
     sort(DepsWithDups, Dependencies).
 
 %% is_self_recursive(+Pred/Arity)
-%  Check if predicate calls itself (directly)
+%  Check if a predicate is self-recursive (calls itself)
 is_self_recursive(Pred/Arity) :-
-    find_predicate_calls(Pred/Arity, Pred/Arity).
+    get_dependencies(Pred/Arity, Deps),
+    member(Pred/Arity, Deps).
 
 %% predicates_in_group(+RootPred, -AllPredicates)
 %  Find all predicates reachable from a root predicate
