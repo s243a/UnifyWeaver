@@ -9,6 +9,7 @@
 :- module(mutual_recursion, [
     compile_mutual_recursion/3,     % +Predicates, +Options, -BashCode
     can_compile_mutual_recursion/1,  % +Predicates
+    find_mutual_group/2,            % +Predicate, -Group
     test_mutual_recursion/0        % Test predicate
 ]).
 
@@ -17,6 +18,14 @@
 :- use_module('../constraint_analyzer').
 :- use_module('call_graph').
 :- use_module('scc_detection').
+
+%% find_mutual_group(+Predicate, -Group)
+%  Find the mutual recursion group that a predicate belongs to
+%  Returns the full SCC (strongly connected component) containing the predicate
+find_mutual_group(Predicate, Group) :-
+    call_graph:predicates_in_group(Predicate, Group),
+    length(Group, Len),
+    Len > 1.  % Must be mutually recursive (not just self-recursive)
 
 %% can_compile_mutual_recursion(+Predicates)
 %  Check if predicates form a mutually recursive group
@@ -129,8 +138,11 @@ generate_mutual_recursion_bash(Predicates, MemoEnabled, MemoStrategy, BashCode) 
         FuncCodes),
     atomic_list_concat(FuncCodes, '\n\n', FunctionsCode),
 
+    % Generate main dispatch section
+    generate_main_dispatch(Predicates, DispatchCode),
+
     % Combine
-    atomic_list_concat([HeaderCode, FunctionsCode], '\n\n', BashCode).
+    atomic_list_concat([HeaderCode, FunctionsCode, DispatchCode], '\n\n', BashCode).
 
 %% generate_mutual_header(+GroupName, +MemoEnabled, +MemoStrategy, -HeaderCode)
 generate_mutual_header(GroupName, MemoEnabled, MemoStrategy, HeaderCode) :-
@@ -153,6 +165,46 @@ generate_mutual_header(GroupName, MemoEnabled, MemoStrategy, HeaderCode) :-
 
     atomic_list_concat(TemplateLines, '\n', Template),
     render_template(Template, [group=GroupName, memo_decl=MemoDecl, memo_comment=MemoComment], HeaderCode).
+
+%% generate_main_dispatch(+Predicates, -DispatchCode)
+%  Generate main dispatch section to call functions from command line
+generate_main_dispatch(Predicates, DispatchCode) :-
+    % Build case statements for each predicate
+    findall(CaseCode,
+        (   member(Pred/Arity, Predicates),
+            atom_string(Pred, PredStr),
+            % Generate argument list based on arity: $2, $3, ..., $(Arity+1)
+            EndArg is Arity + 1,
+            (   Arity > 0 ->
+                numlist(2, EndArg, ArgNums),
+                findall(ArgRef, (member(N, ArgNums), format(string(ArgRef), '"$~w"', [N])), ArgRefs),
+                atomic_list_concat(ArgRefs, ' ', ArgsStr)
+            ;   ArgsStr = ''
+            ),
+            format(string(CaseCode), '    ~w)\n        ~w ~w\n        ;;', [PredStr, PredStr, ArgsStr])
+        ),
+        CaseCodes),
+    atomic_list_concat(CaseCodes, '\n', CasesStr),
+
+    % Generate dispatch template
+    DispatchTemplate =
+"# Main dispatch: route command line calls to functions
+if [[ \"${BASH_SOURCE[0]}\" == \"${0}\" ]]; then
+    if [[ $# -lt 1 ]]; then
+        echo \"Usage: $0 <function_name> [args...]\" >&2
+        exit 1
+    fi
+
+    case \"$1\" in
+{{cases}}
+        *)
+            echo \"Unknown function: $1\" >&2
+            exit 1
+            ;;
+    esac
+fi",
+
+    render_template(DispatchTemplate, [cases=CasesStr], DispatchCode).
 
 %% generate_mutual_function(+Pred, +Arity, +GroupName, +AllPredicates, +MemoEnabled, -FuncCode)
 %  Generate bash function for one predicate in mutual group
