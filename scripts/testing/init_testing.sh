@@ -500,7 +500,7 @@ fi
 
 SWIPL_CMD=${SWIPL_CMD:-swipl}
 
-if "$SWIPL_CMD" -q -t halt -g "asserta(library_directory('src')), use_module(library(unifyweaver/core/recursive_compiler)), format('Module loaded successfully!~n', [])" 2>/dev/null; then
+if "$SWIPL_CMD" -q -t halt -g "asserta(library_directory('src')), use_module(library(unifyweaver/core/recursive_compiler)), format('Module loaded successfully~n', [])" 2>/dev/null; then
     echo -e "${GREEN}✓${NC} Core modules load correctly"
 else
     echo -e "${RED}✗${NC} Module loading failed"
@@ -549,3 +549,6 @@ echo "Config: config/"
 
 echo -e "\n${YELLOW}Environment variable usage:${NC}"
 echo "UNIFYWEAVER_ROOT=/path/to/testing/dir ./init_testing.sh"
+
+# Exit successfully - environment created
+exit 0
