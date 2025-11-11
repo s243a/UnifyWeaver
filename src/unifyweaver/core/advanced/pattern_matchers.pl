@@ -13,6 +13,7 @@
     extract_base_pattern/3,               % +Head, +Body, -InitValue (helper for extract_accumulator_pattern)
     extract_step_pattern/3,               % +Body, +PredName, -StepOp (helper for extract_accumulator_pattern)
     count_recursive_calls/2,              % +Body, -Count
+    count_recursive_calls/3,              % +Body, +Pred, -Count
     contains_call_to/2,                   % +Body, +Pred (helper for various functions)
     extract_goal/2,                       % +Body, -Goal (helper for extracting goals)
     % Linear recursion exclusion predicates

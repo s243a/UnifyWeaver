@@ -24,6 +24,7 @@
 ]).
 :- use_module('tail_recursion').
 :- use_module('linear_recursion').
+:- use_module('multicall_linear_recursion').
 :- use_module('tree_recursion').
 :- use_module('mutual_recursion').
 :- use_module('fold_helper_generator').
@@ -43,6 +44,8 @@ compile_advanced_recursive(Pred/Arity, Options, BashCode) :-
         format('✓ Compiled as tail recursion~n')
     ;   try_linear_recursion(Pred/Arity, Options, BashCode) ->
         format('✓ Compiled as linear recursion~n')
+    ;   try_multicall_linear_recursion(Pred/Arity, Options, BashCode) ->
+        format('✓ Compiled as multi-call linear recursion~n')
     ;   try_fold_pattern(Pred/Arity, Options, BashCode) ->
         format('✓ Compiled as fold pattern~n')
     ;   try_tree_recursion(Pred/Arity, Options, BashCode) ->
@@ -69,6 +72,14 @@ try_linear_recursion(Pred/Arity, Options, BashCode) :-
     can_compile_linear_recursion(Pred/Arity),
     !,
     compile_linear_recursion(Pred/Arity, Options, BashCode).
+
+%% try_multicall_linear_recursion(+Pred/Arity, +Options, -BashCode)
+%  Attempt to compile as multi-call linear recursion
+try_multicall_linear_recursion(Pred/Arity, Options, BashCode) :-
+    format('  Trying multi-call linear recursion pattern...~n'),
+    can_compile_multicall_linear(Pred/Arity),
+    !,
+    compile_multicall_linear_recursion(Pred/Arity, Options, BashCode).
 
 %% try_fold_pattern(+Pred/Arity, +Options, -BashCode)
 %  Attempt to compile as fold pattern (tree recursion with fold helpers)
