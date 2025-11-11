@@ -12,8 +12,6 @@
     test_recursive_compiler/0
 ]).
 
-:- dynamic control_plane_warning_shown/0.
-
 :- use_module('advanced/advanced_recursive_compiler').
 :- use_module('advanced/call_graph').
 :- use_module(stream_compiler).
@@ -36,19 +34,7 @@ compile_recursive(Pred/Arity, RuntimeOptions, GeneratedCode) :-
     merge_options(FinalOptions, DeclaredConstraints, MergedOptions),
 
     % 2. Get the firewall policy for the predicate.
-    (   firewall:rule_firewall(Pred/Arity, Firewall)
-    ->  true
-    ;   firewall:firewall_default(Firewall)
-    ->  true
-    ;   (   Firewall = [], % Default to implicit allow if no rules are found
-            % Show one-time warning about implicit allow
-            (   control_plane_warning_shown -> true
-            ;   format(user_error, '~nINFO: No firewall rules defined. Using implicit allow.~n', []),
-                format(user_error, 'Set firewall:firewall_default([...]) to configure security policy.~n~n', []),
-                assertz(control_plane_warning_shown)
-            )
-        )
-    ),
+    firewall:get_firewall_policy(Pred/Arity, Firewall),
 
     % 3. Determine target backend (default: bash)
     (   member(target(Target), MergedOptions) ->
@@ -57,7 +43,7 @@ compile_recursive(Pred/Arity, RuntimeOptions, GeneratedCode) :-
     ),
 
     % 4. Validate the request against the firewall.
-    (   firewall:validate_against_firewall(Target, MergedOptions, Firewall)
+    (   firewall:enforce_firewall(Pred/Arity, Target, MergedOptions, Firewall)
     ->  % Validation passed, proceed with compilation.
         format('--- Firewall validation passed for ~w. Proceeding with compilation. ---\n', [Pred/Arity]),
         compile_dispatch(Pred/Arity, MergedOptions, Target, GeneratedCode)

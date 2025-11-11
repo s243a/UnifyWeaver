@@ -16,6 +16,10 @@
 :- module(firewall, [
     rule_firewall/2,
     firewall_default/1,
+    get_firewall_policy/2,
+    set_firewall_mode/1,
+    current_firewall_mode/1,
+    enforce_firewall/4,
     validate_against_firewall/3,
     validate_service/2,
     validate_network_access/2,
@@ -74,6 +78,28 @@
 % @example Allow only bash by default
 %   :- assertz(firewall:firewall_default([execution([bash])])).
 :- dynamic firewall_default/1.
+:- dynamic firewall_policy_warning_shown/0.
+:- dynamic firewall_runtime_mode/1.
+
+%% get_firewall_policy(+PredicateIndicator, -Firewall) is det.
+%
+% Resolves the applicable firewall policy for a predicate by checking
+% rule-specific policies first, then falling back to the global default.
+% If no policies are defined, returns [] and prints a one-time reminder.
+get_firewall_policy(PredIndicator, Firewall) :-
+    (   rule_firewall(PredIndicator, Firewall)
+    ->  true
+    ;   firewall_default(Firewall)
+    ->  true
+    ;   Firewall = [],
+        (   firewall_policy_warning_shown
+        ->  true
+        ;   format(user_error, '~nINFO: No firewall rules defined. Using implicit allow.~n', []),
+            format(user_error,
+                   'Set firewall:firewall_default([...]) to configure security policy.~n~n', []),
+            assertz(firewall_policy_warning_shown)
+        )
+    ).
 
 %% validate_against_firewall(+Target, +FinalOptions, +Firewall) is semidet.
 %
@@ -166,6 +192,34 @@ validate_against_firewall(Target, FinalOptions, Firewall) :-
     ->  validate_cache_directory(CacheFile, Firewall)
     ;   true
     ).
+
+%% enforce_firewall(+Context, +Target, +FinalOptions, +Firewall) is semidet.
+%
+% Wrapper around validate_against_firewall/3 that respects firewall modes.
+% Context is an atom or predicate indicator used in warning messages.
+enforce_firewall(Context, Target, FinalOptions, Firewall) :-
+    (   validate_against_firewall(Target, FinalOptions, Firewall)
+    ->  true
+    ;   handle_firewall_mode(Context)
+    ).
+
+handle_firewall_mode(Context) :-
+    current_firewall_mode(Mode),
+    violation_action(Mode, Action),
+    (   Action = deny
+    ->  fail
+    ;   Action = warn
+    ->  format(user_error,
+               'Firewall warning (mode ~w): continuing with ~w despite violation.~n',
+               [Mode, Context])
+    ;   true  % allow
+    ).
+
+violation_action(strict, deny).
+violation_action(warn, warn).
+violation_action(permissive, allow).
+violation_action(disabled, allow).
+violation_action(_, deny).
 
 %% ============================================
 %% ENHANCED VALIDATION PREDICATES
@@ -705,3 +759,27 @@ firewall_implies_default(environment(mobile_restricted_ports),
 firewall_implies_default(environment(mobile_restricted_ports),
                         prefer(service(_, port(Alternative)), service(_, port(Standard)))) :-
     member(Alternative-Standard, [8022-22, 8080-80, 8443-443, 3000-80]).
+%% set_firewall_mode(+Mode) is det.
+%
+% Sets the firewall enforcement mode.
+% Supported modes:
+% - strict     : Violations block compilation (default)
+% - warn       : Allow compilation but emit warning message
+% - permissive : Allow compilation, no extra warning beyond failure reason
+% - disabled   : Skip enforcement (firewall checks still run for logging)
+set_firewall_mode(Mode) :-
+    retractall(firewall_runtime_mode(_)),
+    assertz(firewall_runtime_mode(Mode)).
+
+%% current_firewall_mode(-Mode) is det.
+%
+% Retrieves the current firewall mode. Falls back to strict if undefined.
+% If firewall_v2 is loaded, uses its mode setting unless overridden locally.
+current_firewall_mode(Mode) :-
+    (   firewall_runtime_mode(Mode)
+    ->  true
+    ;   current_module(firewall_v2),
+        catch(firewall_v2:firewall_mode(Mode), _, fail)
+    ->  true
+    ;   Mode = strict
+    ).
