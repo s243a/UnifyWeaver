@@ -179,8 +179,8 @@ csharp_root() {
     cd "$CSHARP_TEST_ROOT"
 }
 
-# Auto-scan on source
-csharp_scan_tests
+# Auto-scan on source (ignore return value to prevent shell exit when sourcing)
+csharp_scan_tests || true
 
 # Print usage hint
 if [[ ${#test[@]} -gt 0 ]]; then
