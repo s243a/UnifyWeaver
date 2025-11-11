@@ -59,12 +59,15 @@ compile_current(Predicate, Options, GeneratedScript) :-
     % Check if this is a dynamic source FIRST (before classification)
     (   dynamic_source_compiler:is_dynamic_source(Predicate) ->
         % Compile as dynamic source via appropriate plugin
-        dynamic_source_compiler:compile_dynamic_source(Predicate, Options, BashCode)
+        dynamic_source_compiler:compile_dynamic_source(Predicate, Options, BashCode),
+        !  % Cut to prevent backtracking into static predicate path
     ;   % Original logic: classify and compile as static predicate
         classify_predicate(Predicate, Classification),
         (   Classification = non_recursive ->
-            stream_compiler:compile_predicate(Predicate, Options, BashCode)
-        ;   recursive_compiler:compile_recursive(Predicate, Options, BashCode)
+            stream_compiler:compile_predicate(Predicate, Options, BashCode),
+            !  % Cut after successful compilation
+        ;   recursive_compiler:compile_recursive(Predicate, Options, BashCode),
+            !  % Cut after successful compilation
         )
     ),
 
