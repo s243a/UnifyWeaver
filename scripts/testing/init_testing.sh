@@ -386,6 +386,23 @@ else
     echo -e "${YELLOW}i${NC} The launcher may not work correctly without this file"
 fi
 
+# Copy csharp_test_nav.sh navigation helper
+if [[ -f "$SCRIPT_DIR/csharp_test_nav.sh" ]]; then
+    cp -f "$SCRIPT_DIR/csharp_test_nav.sh" "$TARGET_ROOT/csharp_test_nav.sh"
+    chmod +x "$TARGET_ROOT/csharp_test_nav.sh"
+    echo -e "${GREEN}✓${NC} Copied csharp_test_nav.sh navigation helper"
+else
+    echo -e "${YELLOW}i${NC} csharp_test_nav.sh not found (C# test navigation will not be available)"
+fi
+
+# Copy csharp_test_nav.sh README
+if [[ -f "$SCRIPT_DIR/README_csharp_nav.md" ]]; then
+    cp -f "$SCRIPT_DIR/README_csharp_nav.md" "$TARGET_ROOT/README_csharp_nav.md"
+    echo -e "${GREEN}✓${NC} Copied README_csharp_nav.md documentation"
+else
+    echo -e "${YELLOW}i${NC} README_csharp_nav.md not found"
+fi
+
 cat > "$TARGET_ROOT/config/assumed_packages.txt" << 'EOF'
 # Packages to assume are available without checking
 # Add package names here, one per line
@@ -522,6 +539,7 @@ echo "1. Run the launcher: ./unifyweaver.sh"
 echo "2. In Prolog, type: load_stream. or load_recursive."
 echo "3. Or load all: load_all_core."
 echo "4. Run tests: test_stream. or test_advanced."
+echo "5. For C# testing: source csharp_test_nav.sh (see README_csharp_nav.md)"
 
 echo -e "\n${YELLOW}File locations:${NC}"
 echo "Core modules: src/unifyweaver/core/"

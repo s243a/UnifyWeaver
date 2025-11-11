@@ -35,12 +35,21 @@
 Run **all** steps in order. Use `SKIP_CSHARP_EXECUTION=1` to avoid the known `dotnet run` pipe deadlock (see `docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md`).
 
 ### 3.1 C# Query Target Regression
+
+**Quick validation (code generation only):**
 ```bash
 SKIP_CSHARP_EXECUTION=1 swipl -q \
-     -f init.pl \
-     tests/core/test_csharp_query_target.pl \
-     -g test_csharp_query_target:test_csharp_query_target \
+     -f init.pl -s tests/core/test_csharp_query_target.pl \
+     -g 'test_csharp_query_target:test_csharp_query_target' \
      -t halt
+```
+
+**Keep generated files for inspection:**
+```bash
+SKIP_CSHARP_EXECUTION=1 swipl -q \
+     -f init.pl -s tests/core/test_csharp_query_target.pl \
+     -g 'test_csharp_query_target:test_csharp_query_target' \
+     -t halt -- --csharp-query-keep
 ```
 
 **Validates:**
@@ -51,41 +60,228 @@ SKIP_CSHARP_EXECUTION=1 swipl -q \
 - Linear recursion (`test_reachable/2`)
 - Mutual recursion (`test_even/1`, `test_odd/1`)
 
-Expected output shows “dotnet execution skipped” for each block followed by `=== C# query target tests complete ===`.
+Expected output shows "dotnet execution skipped" and "(C# code generation: PASS)" for each test, followed by `=== C# query target tests complete ===`.
+
+#### Test Coverage and Expected Results
+
+The regression suite includes the following tests:
+
+| Test Name | Predicate | Validates | Expected Output | Notes |
+|-----------|-----------|-----------|-----------------|-------|
+| `link` | `test_link/2` | Joins (grandparent query) | `alice,charlie` | Tests join operations through `parent/2` facts |
+| `filtered` | `test_filtered/1` | Selection with string constraints | `alice` | Tests filtering based on name equality |
+| `increment` | `test_increment/2` | Arithmetic operations | `item1,6`<br>`item2,3` | Tests `is/2` with addition (input + 1) |
+| `factorial` | `test_factorial/2` | Recursive arithmetic | `1,1`<br>`2,2`<br>`3,6` | Tests linear recursion with multiplication |
+| `positive` | `test_positive/1` | Comparison constraints | `item1` | Tests numeric comparison (value > 0) |
+| `reachable` | `test_reachable/2` | Linear recursion | `alice,bob`<br>`alice,charlie`<br>`bob,charlie` | Tests transitive closure through `edge/2` facts |
+| `even` | `test_even/1` | Mutual recursion | `0`<br>`2`<br>`4` | Tests mutual recursion between `test_even/1` and `test_odd/1` |
+
+**All tests validate:**
+- Correct C# code generation from Prolog query plans
+- Fixpoint evaluation semantics
+- Distinct row handling (no duplicates)
+- SCC (Strongly Connected Component) evaluation for mutual recursion
+- Parity with Bash target semantics
+
+**Command Line Options:**
+- `--csharp-query-keep` - Keep generated C# files in `tmp/csharp_query_*` directories
+- `--csharp-query-autodelete` - Auto-delete artifacts after test (default behavior)
+- `--csharp-query-dir <path>` - Set custom output directory (default: `tmp`)
 
 #### 3.1b Running the Generated C# Code
 
-  **Note:** The test above with `SKIP_CSHARP_EXECUTION=1` only validates that C# code generation succeeds. To verify the
-  generated code actually compiles and produces correct results, follow these steps:
+**Note:** The test above with `SKIP_CSHARP_EXECUTION=1` only validates that C# code generation succeeds. To verify the generated code actually compiles and produces correct results, follow these steps:
 
-  1. **Navigate to the generated C# project directory:**
+1. **Run tests with `--csharp-query-keep` to preserve artifacts:**
 
 ```bash
-
-
-# Assuming you are in the root folder of your test environment
-# We navigate to the most newly created output folder.
-$ cd $(ls -td tmp/csharp_query_* /tmp/csharp_query_* 2>/dev/null | head -1)
+SKIP_CSHARP_EXECUTION=1 swipl -q \
+     -f init.pl -s tests/core/test_csharp_query_target.pl \
+     -g 'test_csharp_query_target:test_csharp_query_target' \
+     -t halt -- --csharp-query-keep
 ```
-  2. Run the generated C# project:
- ```bash
-$  dotnet run
 
-alice,charlie
+2. **Navigate to a specific test's C# project directory:**
+
+```bash
+# Navigate to specific test by name (recommended)
+cd tmp/csharp_query_test_link_*/      # Grandparent/join test
+cd tmp/csharp_query_test_even_*/      # Mutual recursion test
+cd tmp/csharp_query_test_increment_*/ # Arithmetic test
+
+# Or navigate to most recent test
+cd $(ls -td tmp/csharp_query_* /tmp/csharp_query_* 2>/dev/null | head -1)
 ```
+
+3. **Run the generated C# project:**
+
+```bash
+dotnet run
+```
+
+**Expected output (varies by test):**
+```
+# test_link → alice,charlie
+# test_even → 0, 2, 4
+# test_increment → item1,6 and item2,3
+```
+
 **Note:** `dotnet run` automatically builds the project. To do this in two steps see section 4.
 
+This confirms that the grandparent/2 predicate correctly finds Alice as Charlie's grandparent through the parent/2 facts.
 
-  3. This confirms that the grandparent/2 predicate correctly finds Alice as Charlie's grandparent through the parent/2
-  facts.
+**Troubleshooting:**
+- If dotnet build fails, check that .NET SDK 9.0+ is installed: `dotnet --version`
+- If you get "No such file or directory" errors, verify the test created a `csharp_query_*` directory during execution
+- If the output is empty or incorrect, the query runtime may have issues with the fixpoint evaluation
+- Check that `.csproj` file exists in the directory (created manually by code generation mode)
 
-  Troubleshooting:
-  - If dotnet build fails, check that .NET SDK 6.0+ is installed: dotnet --version
-  - If you get "No such file or directory" errors, verify the test created a `csharp_query_*` directory during executio
-  - If the output is empty or incorrect, the query runtime may have issues with the fixpoint evaluation
+#### 3.1c Using the Navigation Helper Script (Recommended)
 
-  This text includes everything needed: context that the SKIP flag only validates generation, the actual build/run commands
- 
+For easier navigation between test directories, use the included `csharp_test_nav.sh` helper:
+
+```bash
+# Source the navigation helper (automatically included in test environments)
+source csharp_test_nav.sh
+```
+
+The script provides:
+- **Associative array** `test[]` mapping test names to directories
+- **Functions** for running, building, and inspecting tests
+- **Variable** `$CSHARP_TEST_ROOT` for project root
+
+**Quick commands:**
+```bash
+# List available tests
+csharp_list
+```
+
+**Expected output:**
+```
+Available C# tests:
+  even            → tmp/csharp_query_test_even_7d4f6198-bdf7-11f0-aeb5-00155db51a74
+  factorial       → tmp/csharp_query_test_factorial_7d47787a-bdf7-11f0-8ffe-00155db51a74
+  filtered        → tmp/csharp_query_test_filtered_7d412cc2-bdf7-11f0-bf91-00155db51a74
+  increment       → tmp/csharp_query_test_increment_7d43e34a-bdf7-11f0-ac36-00155db51a74
+  link            → tmp/csharp_query_test_link_7d3e6c4e-bdf7-11f0-a806-00155db51a74
+  positive        → tmp/csharp_query_test_positive_7d4a0c84-bdf7-11f0-bcf1-00155db51a74
+  reachable       → tmp/csharp_query_test_reachable_7d4c8a90-bdf7-11f0-85a6-00155db51a74
+```
+
+**Run a specific test:**
+```bash
+csharp_run even
+```
+
+**Expected output:**
+```
+Running test: even (from tmp/csharp_query_test_even_7d4f6198-bdf7-11f0-aeb5-00155db51a74)
+0
+2
+4
+```
+
+```bash
+csharp_run link
+```
+
+**Expected output:**
+```
+Running test: link (from tmp/csharp_query_test_link_7d3e6c4e-bdf7-11f0-a806-00155db51a74)
+alice,charlie
+```
+
+**Navigate using associative array:**
+```bash
+cd "${test[even]}"
+pwd
+```
+
+**Expected output:**
+```
+/path/to/test_env/tmp/csharp_query_test_even_7d4f6198-bdf7-11f0-aeb5-00155db51a74
+```
+
+**Return to project root:**
+```bash
+csharp_root
+pwd
+```
+
+**Expected output:**
+```
+/path/to/test_env
+```
+
+**Benefits:**
+- No need to remember full directory paths with UUIDs
+- Quick access to any test by name
+- Automatic scanning of generated directories
+- Easy iteration over all tests
+
+**Example workflow:**
+```bash
+source csharp_test_nav.sh
+
+# Run all tests
+for test_name in "${!test[@]}"; do
+    echo "=== Testing $test_name ==="
+    csharp_run "$test_name"
+done
+```
+
+**Expected output:**
+```
+=== Testing even ===
+Running test: even (from tmp/csharp_query_test_even_...)
+0
+2
+4
+=== Testing factorial ===
+Running test: factorial (from tmp/csharp_query_test_factorial_...)
+1
+1
+2
+6
+=== Testing filtered ===
+Running test: filtered (from tmp/csharp_query_test_filtered_...)
+alice
+=== Testing increment ===
+Running test: increment (from tmp/csharp_query_test_increment_...)
+item1,6
+item2,3
+=== Testing link ===
+Running test: link (from tmp/csharp_query_test_link_...)
+alice,charlie
+=== Testing positive ===
+Running test: positive (from tmp/csharp_query_test_positive_...)
+item1
+=== Testing reachable ===
+Running test: reachable (from tmp/csharp_query_test_reachable_...)
+alice,bob
+alice,charlie
+bob,charlie
+```
+
+**Navigate to inspect a specific test:**
+```bash
+cd "${test[even]}"
+ls -la
+```
+
+**Expected output:**
+```
+total 32
+drwxrwxrwx 1 user user  4096 Nov  9 22:00 .
+drwxrwxrwx 1 user user  4096 Nov  9 22:00 ..
+-rwxrwxrwx 1 user user   325 Nov  9 22:00 Program.cs
+-rwxrwxrwx 1 user user 24616 Nov  9 22:00 QueryRuntime.cs
+-rwxrwxrwx 1 user user  1453 Nov  9 22:00 TestEvenQueryModule.cs
+-rwxrwxrwx 1 user user   192 Nov  9 22:00 csharp_query_test_even_....csproj
+```
+
+See `README_csharp_nav.md` in the test environment for complete documentation.
+
 ### 3.2 full control-plane suite (optional but recommended)
 ```bash
 SKIP_CSHARP_EXECUTION=1 \
@@ -202,6 +398,9 @@ Ensure C# and Bash outputs match for the same predicates (focus on mutual recurs
 - [ ] `tests/core/test_csharp_query_target.pl` passes with skip flag.
 - [ ] Optional: full control-plane suite (`init.pl` with `test_all`) passes with skip flag.
 - [ ] Optional: manual build-first project executes and outputs `alice,charlie` (join) and `0/2/4` (mutual recursion).
+- [ ] Test directories are named with test names (e.g., `csharp_query_test_even_<uuid>`).
+- [ ] Navigation helper (`csharp_test_nav.sh`) is available and functional.
+- [ ] Can navigate to specific tests using `cd "${test[even]}"` or `csharp_run even`.
 - [ ] No unexpected files remain in `tmp/` unless intentionally kept (`--csharp-query-keep`).
 - [ ] Results recorded in release notes or PR checklist.
 
@@ -212,5 +411,7 @@ Ensure C# and Bash outputs match for the same predicates (focus on mutual recurs
 - `docs/targets/csharp-query-runtime.md` – architectural details of the query runtime.
 - `docs/targets/comparison.md` – backend capabilities comparison.
 - `tests/core/test_csharp_query_target.pl` – source for helper predicates referenced above.
+- `README_csharp_nav.md` – complete navigation helper documentation (in test environment).
+- `csharp_test_nav.sh` – bash navigation helper script (auto-installed in test environments).
 
 This plan will evolve alongside the C# targets. Update it whenever the runtime gains new features (ordered dedup, memoisation, distributed execution, etc.).

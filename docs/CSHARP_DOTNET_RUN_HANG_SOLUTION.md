@@ -162,7 +162,66 @@ call_with_time_limit(30.0, read_string(Out, _, Output))
 
 ✅ **Working:** Build+execute strategy completely eliminates the hang
 ✅ **Suitable for:** Automated testing (fast, reliable)
-⚠️ **Limitation:** `dotnet run` still doesn't work from Prolog
+✅ **Code Generation Mode:** Skip execution entirely and just generate C# code
+⚠️ **Limitation:** `dotnet run` still doesn't work from Prolog when called via process_create
+
+## Code Generation Mode (SKIP_CSHARP_EXECUTION)
+
+For faster testing and code inspection, you can skip all dotnet execution and just generate C# source files:
+
+### Environment Variable
+
+Set `SKIP_CSHARP_EXECUTION=1` to generate C# code without building or running:
+
+```bash
+SKIP_CSHARP_EXECUTION=1 swipl -q -f init.pl -s tests/core/test_csharp_query_target.pl \
+  -g 'test_csharp_query_target:test_csharp_query_target' -t halt
+```
+
+This mode:
+- ✅ Generates all C# source files (`.cs` files)
+- ✅ Creates `.csproj` project file manually (no `dotnet new console` call)
+- ✅ Copies `QueryRuntime.cs` to each test directory
+- ✅ Writes `Program.cs` harness
+- ❌ Skips `dotnet build` (avoids build overhead)
+- ❌ Skips `dotnet run` (avoids hang issue)
+
+### Command Line Options
+
+Keep generated artifacts for manual inspection:
+
+```bash
+SKIP_CSHARP_EXECUTION=1 swipl ... -- --csharp-query-keep
+```
+
+Options:
+- `--csharp-query-keep` - Keep generated C# files in `tmp/csharp_query_*` directories
+- `--csharp-query-autodelete` - Auto-delete artifacts after test (default)
+- `--csharp-query-dir <path>` - Set custom output directory (default: `tmp`)
+
+### Manual Testing of Generated Code
+
+After running with `--csharp-query-keep`, you can manually build and run:
+
+```bash
+# Navigate to a specific test by name (recommended)
+cd tmp/csharp_query_test_even_*/    # Mutual recursion test → outputs 0, 2, 4
+cd tmp/csharp_query_test_link_*/    # Join test → outputs alice,charlie
+cd tmp/csharp_query_test_increment_*/ # Arithmetic test → outputs item1,6 / item2,3
+
+# Or navigate to most recent test directory
+cd $(ls -td tmp/csharp_query_* | head -1)
+
+# Build the project
+dotnet build
+
+# Run the compiled code
+dotnet run
+```
+
+**Directory Naming:** Test directories are now named `csharp_query_<testname>_<uuid>` to make it easy to navigate to specific tests.
+
+This works because the `.csproj` file is created manually without calling `dotnet new console`.
 
 ## Future Work / TODO
 

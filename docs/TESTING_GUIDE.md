@@ -102,7 +102,69 @@ pwsh test_output/csv_pure.ps1
 pwsh test_output/json_pure.ps1
 ```
 
-#### B. Data Source Tests
+#### B. C# Query Target Tests
+
+**Files:**
+- `scripts/testing/test_env10/tests/core/test_csharp_query_target.pl` - C# query runtime tests
+
+**What they test:**
+- Facts, joins, selection/constraints
+- Arithmetic operations
+- Linear and mutual recursion
+- C# code generation from query plans
+- Optional: dotnet build and execution
+
+**Quick validation (code generation only):**
+```bash
+cd scripts/testing/test_env10
+SKIP_CSHARP_EXECUTION=1 swipl -q \
+     -f init.pl -s tests/core/test_csharp_query_target.pl \
+     -g 'test_csharp_query_target:test_csharp_query_target' \
+     -t halt
+```
+
+**Keep generated files for manual inspection:**
+```bash
+SKIP_CSHARP_EXECUTION=1 swipl -q \
+     -f init.pl -s tests/core/test_csharp_query_target.pl \
+     -g 'test_csharp_query_target:test_csharp_query_target' \
+     -t halt -- --csharp-query-keep
+```
+
+**Test a specific generated project:**
+```bash
+# Navigate to a specific test by name (recommended)
+cd tmp/csharp_query_test_even_*/    # Mutual recursion test
+cd tmp/csharp_query_test_link_*/    # Join test
+cd tmp/csharp_query_test_filtered_*/ # Selection test
+
+# Or navigate to most recent test
+cd $(ls -td tmp/csharp_query_* 2>/dev/null | head -1)
+
+# Build and run
+dotnet run
+
+# Expected outputs (by test):
+# test_link       → alice,charlie         (join test)
+# test_filtered   → alice                 (selection test)
+# test_even       → 0, 2, 4              (mutual recursion)
+# test_increment  → item1,6 / item2,3    (arithmetic)
+# test_factorial  → factorial results
+# test_positive   → positive number filtering
+# test_reachable  → reachability query
+```
+
+**Environment variables:**
+- `SKIP_CSHARP_EXECUTION=1` - Generate C# code without building/running (avoids dotnet hang)
+
+**Command line options:**
+- `--csharp-query-keep` - Keep generated C# files in `tmp/csharp_query_*`
+- `--csharp-query-autodelete` - Auto-delete artifacts (default)
+- `--csharp-query-dir <path>` - Custom output directory (default: `tmp`)
+
+**See also:** `docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md`, `docs/development/testing/v0_1_csharp_test_plan.md`
+
+#### C. Data Source Tests
 
 **Files:**
 - `examples/data_sources_demo.pl` - Comprehensive data source demos
