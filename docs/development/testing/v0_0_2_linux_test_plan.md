@@ -413,6 +413,7 @@ PROLOG
 
 # Create test database
 sqlite3 /tmp/test.db << 'SQL'
+DROP TABLE IF EXISTS employees;
 CREATE TABLE employees (
     id INTEGER PRIMARY KEY,
     name TEXT,
