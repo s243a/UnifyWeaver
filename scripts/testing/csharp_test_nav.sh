@@ -41,14 +41,14 @@ csharp_scan_tests() {
             if [[ "$basename" =~ ^csharp_query_test_([^_]+)_.* ]]; then
                 local testname="${BASH_REMATCH[1]}"
                 # Get most recent directory for this test name
-                if [[ -z "${test[$testname]}" ]] || [[ "$dir" -nt "${test[$testname]}" ]]; then
+                if [[ -z "${test[$testname]:-}" ]] || [[ "$dir" -nt "${test[$testname]:-}" ]]; then
                     test["$testname"]="$dir"
                     ((found++))
                 fi
             elif [[ "$basename" =~ ^csharp_query_([^_]+)_.* ]]; then
                 # Legacy format without "test_" prefix
                 local testname="${BASH_REMATCH[1]}"
-                if [[ -z "${test[$testname]}" ]] || [[ "$dir" -nt "${test[$testname]}" ]]; then
+                if [[ -z "${test[$testname]:-}" ]] || [[ "$dir" -nt "${test[$testname]:-}" ]]; then
                     test["$testname"]="$dir"
                     ((found++))
                 fi
@@ -98,7 +98,7 @@ csharp_run() {
         csharp_scan_tests
     fi
 
-    if [[ -z "${test[$testname]}" ]]; then
+    if [[ -z "${test[$testname]:-}" ]]; then
         echo "Error: Test '$testname' not found." >&2
         echo "Available tests:" >&2
         csharp_list >&2
@@ -125,7 +125,7 @@ csharp_build() {
         csharp_scan_tests
     fi
 
-    if [[ -z "${test[$testname]}" ]]; then
+    if [[ -z "${test[$testname]:-}" ]]; then
         echo "Error: Test '$testname' not found." >&2
         echo "Available tests:" >&2
         csharp_list >&2
@@ -152,7 +152,7 @@ csharp_cat() {
         csharp_scan_tests
     fi
 
-    if [[ -z "${test[$testname]}" ]]; then
+    if [[ -z "${test[$testname]:-}" ]]; then
         echo "Error: Test '$testname' not found." >&2
         return 1
     fi
