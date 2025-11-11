@@ -14,6 +14,7 @@
 :- use_module(dependency_analyzer).
 :- use_module(recursive_compiler).
 :- use_module(stream_compiler).
+:- use_module(dynamic_source_compiler). % Support for dynamic data sources
 :- use_module('advanced/advanced_recursive_compiler'). % Added for mutual recursion classification
 :- use_module('advanced/call_graph'). % Added for mutual recursion classification
 
@@ -54,11 +55,20 @@ compile_dependencies([Dep|Rest], Options, GeneratedScripts) :-
 
 compile_current(Predicate, Options, GeneratedScript) :-
     Predicate = Functor/_Arity,
-    classify_predicate(Predicate, Classification),
-    (   Classification = non_recursive ->
-        stream_compiler:compile_predicate(Predicate, Options, BashCode)
-    ;   recursive_compiler:compile_recursive(Predicate, Options, BashCode)
+
+    % Check if this is a dynamic source FIRST (before classification)
+    (   dynamic_source_compiler:is_dynamic_source(Predicate) ->
+        % Compile as dynamic source via appropriate plugin
+        dynamic_source_compiler:compile_dynamic_source(Predicate, Options, BashCode)
+    ;   % Original logic: classify and compile as static predicate
+        classify_predicate(Predicate, Classification),
+        (   Classification = non_recursive ->
+            stream_compiler:compile_predicate(Predicate, Options, BashCode)
+        ;   recursive_compiler:compile_recursive(Predicate, Options, BashCode)
+        )
     ),
+
+    % Write generated code to file
     option(output_dir(OutputDir), Options, 'education/output/advanced'),
     atomic_list_concat([OutputDir, '/', Functor, '.sh'], GeneratedScript),
     open(GeneratedScript, write, Stream),
@@ -73,8 +83,11 @@ classify_predicate(Pred/Arity, Classification) :-
     findall(Body, clause(Head, Body), Bodies),
 
     % Check for mutual recursion FIRST (before self-recursion check)
+    % BUT: exclude dynamic sources from the group - they're not part of mutual recursion
     (   call_graph:predicates_in_group(Pred/Arity, Group),
-        length(Group, GroupSize),
+        % Filter out dynamic sources from group
+        exclude(dynamic_source_compiler:is_dynamic_source, Group, StaticGroup),
+        length(StaticGroup, GroupSize),
         GroupSize > 1 ->
         Classification = mutual_recursion
     ;   % Check if self-recursive
