@@ -29,8 +29,12 @@ This playbook demonstrates the agent's ability to generate declarative Prolog co
     *   See documentation: `docs/TEST_RUNNER_INFERENCE.md`
 
 *   **Example Database:** `../UnifyWeaver_Education-sandbox/book-workflow/examples_library/`
-    *   Compilation examples: `compilation_examples.md`
-    *   Testing examples: `testing_examples.md`
+    *   Contains structured examples for compilation and testing.
+    *   **Skill for extraction:** `skills/skill_extract_records.md`
+        *   Note: This tool is provided to make extracting UnifyWeaver examples more efficient.
+
+*   **Compilation examples:** `compilation_examples.md`
+*   **Testing examples:** `testing_examples.md`
 
 ## Expected Output (Prolog Generation)
 

@@ -41,6 +41,12 @@ extract_records [OPTIONS] [PATH...]
 - **`content`:** Outputs only the raw content of the record's code block.
 - **`json`:** Outputs a stream of JSON objects, one for each record.
 
-## 4. Full Specification
+## 4. Examples
 
-For the complete specification of the record format that this tool parses, please refer to the document: `docs/development/EXAMPLE_RECORD_FORMAT.md`.
+For concrete usage patterns, an agent should query the example library.
+
+**Example Query:**
+To find examples of how to use this tool, run the following command:
+```bash
+scripts/utils/extract_records.pl --query "unifyweaver.tool_usage.extract_*" "education/UnifyWeaver_Education/book-workflow/examples_library/tool_usage_examples.md"
+```
