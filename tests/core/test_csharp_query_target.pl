@@ -262,22 +262,27 @@ verify_mutual_recursion_plan :-
     sub_term(cross_ref{predicate:predicate{name:test_even, arity:1}, role:delta, type:cross_ref, width:_}, OddRecursive),
     maybe_run_query_runtime(Plan, ['0', '2', '4']).
 
-% Skip dotnet execution based on environment variable
-maybe_run_query_runtime(_Plan, _ExpectedRows) :-
-    getenv('SKIP_CSHARP_EXECUTION', '1'),
-    !,
-    writeln('  (dotnet execution skipped due to SKIP_CSHARP_EXECUTION=1)').
-
-% Run with build-first approach
+% Run with build-first approach, optionally skipping execution
 maybe_run_query_runtime(Plan, ExpectedRows) :-
     dotnet_cli(Dotnet),
     !,
-    prepare_temp_dir(Dir),
-    (   run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir)
-    ->  writeln('  (query runtime execution: PASS)'),
-        finalize_temp_dir(Dir)
-    ;   writeln('  (query runtime execution: FAIL - but plan structure verified)'),
-        finalize_temp_dir(Dir)
+    prepare_temp_dir(Plan, Dir),
+    (   getenv('SKIP_CSHARP_EXECUTION', '1')
+    ->  % Generate code but skip execution
+        (   generate_csharp_code_only(Dotnet, Plan, Dir)
+        ->  writeln('  (dotnet execution skipped due to SKIP_CSHARP_EXECUTION=1)'),
+            writeln('  (C# code generation: PASS)'),
+            finalize_temp_dir(Dir)
+        ;   writeln('  (C# code generation: FAIL)'),
+            finalize_temp_dir(Dir)
+        )
+    ;   % Full execution
+        (   run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir)
+        ->  writeln('  (query runtime execution: PASS)'),
+            finalize_temp_dir(Dir)
+        ;   writeln('  (query runtime execution: FAIL - but plan structure verified)'),
+            finalize_temp_dir(Dir)
+        )
     ).
 
 % Fall back to plan-only verification if dotnet not available
@@ -287,6 +292,18 @@ maybe_run_query_runtime(_Plan, _ExpectedRows) :-
 dotnet_cli(Path) :-
     catch(absolute_file_name(path(dotnet), Path, [access(execute)]), _, fail).
 
+% Create temp directory with test name from Plan
+prepare_temp_dir(Plan, Dir) :-
+    get_dict(head, Plan, predicate{name:PredName, arity:_}),
+    !,
+    uuid(UUID),
+    atomic_list_concat(['csharp_query_', PredName, '_', UUID], Sub),
+    cqt_option(output_dir, Base),
+    make_directory_path(Base),
+    directory_file_path(Base, Sub, Dir),
+    make_directory_path(Dir).
+
+% Fallback for backwards compatibility
 prepare_temp_dir(Dir) :-
     uuid(UUID),
     atomic_list_concat(['csharp_query_', UUID], Sub),
@@ -304,8 +321,12 @@ run_dotnet_plan_verbose(Dotnet, Plan, ExpectedRows, Dir) :-
 
 finalize_temp_dir(Dir) :-
     (   cqt_option(keep_artifacts, true)
-    ->  true
-    ;   ignore(delete_directory_and_contents(Dir))
+    ->  format('  (kept C# artifacts in ~w)~n', [Dir])
+    ;   catch(
+            delete_directory_and_contents(Dir),
+            Error,
+            format('  (warning: could not cleanup ~w: ~w)~n', [Dir, Error])
+        )
     ).
 
 % Build-first approach (works around dotnet run hang)
@@ -362,6 +383,46 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
         )
     ;   format('  (execution failed: ~s)~n', [Output]), fail
     ).
+
+% Generate C# code without execution (for SKIP_CSHARP_EXECUTION mode)
+% Skips all dotnet commands - just generates and writes C# source files
+generate_csharp_code_only(_Dotnet, Plan, Dir) :-
+    % Create .csproj file manually (without calling dotnet new console)
+    file_base_name(Dir, ProjectName),
+    create_minimal_csproj(Dir, ProjectName),
+
+    % Copy QueryRuntime.cs
+    absolute_file_name('src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs', RuntimePath, []),
+    directory_file_path(Dir, 'QueryRuntime.cs', RuntimeCopy),
+    copy_file(RuntimePath, RuntimeCopy),
+
+    % Generate and write query module
+    csharp_query_target:render_plan_to_csharp(Plan, ModuleSource),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    atom_concat(ModuleClass, '.cs', ModuleFile),
+    directory_file_path(Dir, ModuleFile, ModulePath),
+    write_string(ModulePath, ModuleSource),
+
+    % Write harness
+    harness_source(ModuleClass, HarnessSource),
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, HarnessSource).
+    % Note: dotnet execution commands (build, run) still skipped in this mode
+
+% Create a minimal .csproj file manually
+create_minimal_csproj(Dir, ProjectName) :-
+    atom_concat(ProjectName, '.csproj', CsprojFile),
+    directory_file_path(Dir, CsprojFile, CsprojPath),
+    CsprojContent = '<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>',
+    open(CsprojPath, write, Stream),
+    write(Stream, CsprojContent),
+    close(Stream).
 
 % Original run_dotnet_plan (kept for reference, but not used)
 run_dotnet_plan(Dotnet, Plan, ExpectedRows, Dir) :-
