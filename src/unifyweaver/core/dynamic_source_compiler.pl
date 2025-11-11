@@ -16,6 +16,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(firewall).
 
 %% ============================================
 %% DYNAMIC PREDICATES
@@ -79,6 +80,9 @@ register_dynamic_source(Pred/Arity, SourceSpec, Options) :-
     % Merge config with options
     append(Config, Options, MergedConfig),
 
+    % Enforce firewall policy at declaration time
+    enforce_firewall_policy(Pred/Arity, MergedConfig),
+
     % Store definition
     retractall(dynamic_source_def(Pred/Arity, _, _)),
     assertz(dynamic_source_def(Pred/Arity, Type, MergedConfig)),
@@ -106,11 +110,29 @@ compile_dynamic_source(Pred/Arity, RuntimeOptions, BashCode) :-
     % Merge runtime options with stored config
     append(RuntimeOptions, Config, AllOptions),
 
+    % Re-validate against firewall in case runtime options add new capabilities
+    enforce_firewall_policy(Pred/Arity, AllOptions),
+
     format('Compiling dynamic source: ~w/~w using ~w~n', [Pred, Arity, Type]),
 
     % Call plugin's compile predicate
     % Plugin interface: compile_source(+Pred/Arity, +Config, +Options, -BashCode)
     Module:compile_source(Pred/Arity, Config, AllOptions, BashCode).
+
+%% ============================================
+%% FIREWALL ENFORCEMENT
+%% ============================================
+
+enforce_firewall_policy(PredIndicator, Options) :-
+    firewall:get_firewall_policy(PredIndicator, Firewall),
+    resolve_target(Options, Target),
+    firewall:enforce_firewall(PredIndicator, Target, Options, Firewall).
+
+resolve_target(Options, Target) :-
+    (   member(target(TargetOption), Options)
+    ->  Target = TargetOption
+    ;   Target = bash
+    ).
 
 %% ============================================
 %% TESTS

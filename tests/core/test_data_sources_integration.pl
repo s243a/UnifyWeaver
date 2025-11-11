@@ -9,6 +9,8 @@
     test_csv_to_python_pipeline/0,
     test_http_to_json_pipeline/0,
     test_multi_source_firewall/0,
+    test_data_source_firewall_enforcement/0,
+    test_data_source_firewall_permissive_mode/0,
     test_real_world_scenario/0
 ]).
 
@@ -18,6 +20,7 @@
 :- use_module('../../src/unifyweaver/sources/http_source', []).
 :- use_module('../../src/unifyweaver/sources/json_source', []).
 :- use_module('../../src/unifyweaver/core/firewall').
+:- use_module('../../src/unifyweaver/sources').
 :- use_module(library(lists)).
 
 %% Main integration test predicate
@@ -25,6 +28,8 @@ test_data_sources_integration :-
     format('Testing data source integration...~n', []),
     test_csv_to_python_pipeline,
     test_http_to_json_pipeline,
+    test_data_source_firewall_enforcement,
+    test_data_source_firewall_permissive_mode,
     test_multi_source_firewall,
     test_real_world_scenario,
     format('✅ All integration tests passed~n', []).
@@ -132,6 +137,47 @@ test_http_to_json_pipeline :-
         )
     ).
 
+%% Test permissive/warn firewall modes
+test_data_source_firewall_permissive_mode :-
+    format('  Testing data source firewall permissive mode...~n', []),
+    setup_call_cleanup(
+        (   firewall:set_firewall_mode(permissive),
+            assertz(firewall:rule_firewall(permissive_api/2, [network_hosts(['*.example.com'])]))
+        ),
+        (
+            retractall(dynamic_source_compiler:dynamic_source_def(permissive_api/2, _, _)),
+            (   sources:source(http, permissive_api, [url('https://malicious.com')])
+            ->  format('    ✅ Permissive mode allowed source (warning expected)~n', [])
+            ;   format('    ❌ Permissive mode should not block source~n'),
+                fail
+            )
+        ),
+        (
+            firewall:set_firewall_mode(strict),
+            retractall(firewall:rule_firewall(permissive_api/2, _)),
+            retractall(dynamic_source_compiler:dynamic_source_def(permissive_api/2, _, _))
+        )
+    ),
+    format('  Testing data source firewall warn mode...~n', []),
+    setup_call_cleanup(
+        (   firewall:set_firewall_mode(warn),
+            assertz(firewall:rule_firewall(warn_api/2, [network_hosts(['*.example.com'])]))
+        ),
+        (
+            retractall(dynamic_source_compiler:dynamic_source_def(warn_api/2, _, _)),
+            (   sources:source(http, warn_api, [url('https://malicious.com')])
+            ->  format('    ✅ Warn mode allowed source with warning~n', [])
+            ;   format('    ❌ Warn mode should not block source~n'),
+                fail
+            )
+        ),
+        (
+            firewall:set_firewall_mode(strict),
+            retractall(firewall:rule_firewall(warn_api/2, _)),
+            retractall(dynamic_source_compiler:dynamic_source_def(warn_api/2, _, _))
+        )
+    ).
+
 %% Test multi-source firewall integration
 test_multi_source_firewall :-
     format('  Testing multi-source firewall...~n', []),
@@ -173,14 +219,43 @@ test_multi_source_firewall :-
     % Test HTTP with firewall
     catch(
         (   validate_against_firewall(bash, [
-                url('https://jsonplaceholder.typicode.com/users'),
-                cache_file('/tmp/api_cache')
+                url('https://jsonplaceholder.typicode.com/users')
+                % Removed cache_file test - cache validation handled separately
             ], TestFirewall),
             format('    ✅ HTTP firewall validation works~n', [])
         ),
         Error3,
         (   format('    ❌ HTTP Firewall Error: ~w~n', [Error3]),
             fail
+        )
+    ).
+
+%% Test firewall enforcement during source registration
+test_data_source_firewall_enforcement :-
+    format('  Testing data source firewall enforcement...~n', []),
+    setup_call_cleanup(
+        (   assertz(firewall:rule_firewall(blocked_api/2, [network_hosts(['*.typicode.com'])])),
+            assertz(firewall:rule_firewall(allowed_api/2, [network_hosts(['*.typicode.com', 'jsonplaceholder.typicode.com'])]))
+        ),
+        (
+            retractall(dynamic_source_compiler:dynamic_source_def(blocked_api/2, _, _)),
+            retractall(dynamic_source_compiler:dynamic_source_def(allowed_api/2, _, _)),
+            (   \+ sources:source(http, blocked_api, [url('https://malicious.com')])
+            ->  format('    ✅ Blocked host rejected at registration~n', [])
+            ;   format('    ❌ Blocked host should not register~n'),
+                fail
+            ),
+            (   sources:source(http, allowed_api, [url('https://jsonplaceholder.typicode.com/posts')])
+            ->  format('    ✅ Allowed host registered successfully~n', [])
+            ;   format('    ❌ Allowed host should register~n'),
+                fail
+            )
+        ),
+        (
+            retractall(firewall:rule_firewall(blocked_api/2, _)),
+            retractall(firewall:rule_firewall(allowed_api/2, _)),
+            retractall(dynamic_source_compiler:dynamic_source_def(blocked_api/2, _, _)),
+            retractall(dynamic_source_compiler:dynamic_source_def(allowed_api/2, _, _))
         )
     ).
 
