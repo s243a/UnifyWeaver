@@ -454,6 +454,9 @@ PROLOG
 # Test multi-stage ETL pipeline: JSON → Python → SQLite → Query
 # Requires: jq and sqlite3 installed
 
+# Clean up old database to avoid duplicate data
+rm -f /tmp/etl_test.db
+
 # Run the ETL test (creates temporary test data)
 cat << 'PROLOG' | swipl -q -g "consult(user), test, halt" -t halt
 :- use_module('src/unifyweaver/sources').
