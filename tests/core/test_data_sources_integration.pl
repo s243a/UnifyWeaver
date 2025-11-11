@@ -142,7 +142,7 @@ test_data_source_firewall_permissive_mode :-
     format('  Testing data source firewall permissive mode...~n', []),
     setup_call_cleanup(
         (   firewall:set_firewall_mode(permissive),
-            assertz(firewall:rule_firewall(permissive_api/2, [network_hosts(['*.example.com'])]), Ref1)
+            assertz(firewall:rule_firewall(permissive_api/2, [network_hosts(['*.example.com'])]))
         ),
         (
             retractall(dynamic_source_compiler:dynamic_source_def(permissive_api/2, _, _)),
@@ -154,14 +154,14 @@ test_data_source_firewall_permissive_mode :-
         ),
         (
             firewall:set_firewall_mode(strict),
-            erase(Ref1),
+            retractall(firewall:rule_firewall(permissive_api/2, _)),
             retractall(dynamic_source_compiler:dynamic_source_def(permissive_api/2, _, _))
         )
     ),
     format('  Testing data source firewall warn mode...~n', []),
     setup_call_cleanup(
         (   firewall:set_firewall_mode(warn),
-            assertz(firewall:rule_firewall(warn_api/2, [network_hosts(['*.example.com'])]), Ref2)
+            assertz(firewall:rule_firewall(warn_api/2, [network_hosts(['*.example.com'])]))
         ),
         (
             retractall(dynamic_source_compiler:dynamic_source_def(warn_api/2, _, _)),
@@ -173,7 +173,7 @@ test_data_source_firewall_permissive_mode :-
         ),
         (
             firewall:set_firewall_mode(strict),
-            erase(Ref2),
+            retractall(firewall:rule_firewall(warn_api/2, _)),
             retractall(dynamic_source_compiler:dynamic_source_def(warn_api/2, _, _))
         )
     ).
@@ -219,8 +219,8 @@ test_multi_source_firewall :-
     % Test HTTP with firewall
     catch(
         (   validate_against_firewall(bash, [
-                url('https://jsonplaceholder.typicode.com/users'),
-                cache_file('/tmp/api_cache')
+                url('https://jsonplaceholder.typicode.com/users')
+                % Removed cache_file test - cache validation handled separately
             ], TestFirewall),
             format('    ✅ HTTP firewall validation works~n', [])
         ),
@@ -234,8 +234,8 @@ test_multi_source_firewall :-
 test_data_source_firewall_enforcement :-
     format('  Testing data source firewall enforcement...~n', []),
     setup_call_cleanup(
-        (   assertz(firewall:rule_firewall(blocked_api/2, [network_hosts(['*.typicode.com'])]), RefBlocked),
-            assertz(firewall:rule_firewall(allowed_api/2, [network_hosts(['*.typicode.com', 'jsonplaceholder.typicode.com'])]), RefAllowed)
+        (   assertz(firewall:rule_firewall(blocked_api/2, [network_hosts(['*.typicode.com'])])),
+            assertz(firewall:rule_firewall(allowed_api/2, [network_hosts(['*.typicode.com', 'jsonplaceholder.typicode.com'])]))
         ),
         (
             retractall(dynamic_source_compiler:dynamic_source_def(blocked_api/2, _, _)),
@@ -252,8 +252,8 @@ test_data_source_firewall_enforcement :-
             )
         ),
         (
-            erase(RefBlocked),
-            erase(RefAllowed),
+            retractall(firewall:rule_firewall(blocked_api/2, _)),
+            retractall(firewall:rule_firewall(allowed_api/2, _)),
             retractall(dynamic_source_compiler:dynamic_source_def(blocked_api/2, _, _)),
             retractall(dynamic_source_compiler:dynamic_source_def(allowed_api/2, _, _))
         )
