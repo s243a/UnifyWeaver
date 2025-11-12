@@ -3,6 +3,7 @@
 ]).
 
 :- use_module(library(compiler_driver)).
+:- use_module(library(bash_executor)).
 :- use_module(library(lists)).
 :- use_module(test_data). % Load the test data
 
@@ -26,17 +27,17 @@ test_compiler_driver :-
     
     % 4. Run the test runner
     writeln('--- Running Generated Test Runner ---'),
-    shell('bash output/core_tests/test_runner.sh', ExitCode),
-    (   ExitCode == 0 ->
-        writeln('  ✅ PASS: Test runner executed successfully.')
-    ;   writeln('  ❌ FAIL: Test runner failed.'),
-        halt(1)
+    (   catch(bash_executor:execute_bash_file('output/core_tests/test_runner.sh', _Output),
+              Error,
+              (format('  ❌ FAIL: Test runner failed with error: ~w~n', [Error]), fail))
+    ->  writeln('  ✅ PASS: Test runner executed successfully.')
+    ;   halt(1)
     ),
     
     writeln('--- Recursive Compiler Test Complete ---').
 
 generate_test_runner(GeneratedScripts, TestRunnerPath) :-
-    open(TestRunnerPath, write, Stream),
+    open(TestRunnerPath, write, Stream, [newline(posix)]),
     write(Stream, '#!/bin/bash\n'),
     write(Stream, 'set -e\n'), % Exit on error
     

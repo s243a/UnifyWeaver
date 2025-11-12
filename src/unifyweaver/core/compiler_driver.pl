@@ -89,7 +89,15 @@ compile_current(Predicate, Options, GeneratedScript) :-
     % Write generated code to file
     option(output_dir(OutputDir), Options, 'education/output/advanced'),
     atomic_list_concat([OutputDir, '/', Functor, '.sh'], GeneratedScript),
-    open(GeneratedScript, write, Stream),
+
+    % Ensure the output directory exists before writing
+    file_directory_name(GeneratedScript, Dir),
+    (   exists_directory(Dir) ->
+        true
+    ;   make_directory_path(Dir)
+    ),
+
+    open(GeneratedScript, write, Stream, [newline(posix)]),
     write(Stream, BashCode),
     close(Stream).
 

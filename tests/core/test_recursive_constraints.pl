@@ -78,7 +78,7 @@ test_no_deduplication :-
 
     
 
-    open('output/core_tests/test_no_dedup.sh', write, Stream),
+    open('output/core_tests/test_no_dedup.sh', write, Stream, [newline(posix)]),
 
     write(Stream, Code),
 

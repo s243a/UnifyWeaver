@@ -95,20 +95,33 @@ is_self_recursive(Pred/Arity) :-
     get_dependencies(Pred/Arity, Deps),
     member(Pred/Arity, Deps).
 
-%% predicates_in_group(+RootPred, -AllPredicates)
-%  Find all predicates reachable from a root predicate
-%  (transitive closure of the call graph)
-predicates_in_group(Root, AllPredicates) :-
-    predicates_in_group_acc([Root], [Root], AllPredicates).
+%% predicates_in_group(+RootPred, -SCC)
+%  Finds the Strongly Connected Component (SCC) containing the RootPred.
+%  This correctly identifies mutually recursive predicates.
+predicates_in_group(Root, SCC) :-
+    % 1. Find all predicates reachable from the Root.
+    find_reachable(Root, Reachable),
+    % 2. From that reachable set, include only those that can in turn reach the Root.
+    include(can_reach(Root), Reachable, SCC).
 
-predicates_in_group_acc([], Acc, Acc).
-predicates_in_group_acc([Pred|Queue], Visited, AllPredicates) :-
+%% can_reach(+Target, +Start)
+%  Succeeds if Target is reachable from Start in the call graph.
+can_reach(Target, Start) :-
+    find_reachable(Start, ReachableFromStart),
+    member(Target, ReachableFromStart).
+
+%% find_reachable(+Root, -Reachable)
+%  Helper to find all predicates reachable from a root predicate (transitive closure).
+find_reachable(Root, Reachable) :-
+    find_reachable_acc([Root], [Root], Reachable).
+
+find_reachable_acc([], Acc, Acc).
+find_reachable_acc([Pred|Queue], Visited, Reachable) :-
     get_dependencies(Pred, Deps),
-    % Find new dependencies not yet visited
     subtract(Deps, Visited, NewDeps),
     append(Queue, NewDeps, NewQueue),
     append(Visited, NewDeps, NewVisited),
-    predicates_in_group_acc(NewQueue, NewVisited, AllPredicates).
+    find_reachable_acc(NewQueue, NewVisited, Reachable).
 
 %% ============================================
 %% TESTS
