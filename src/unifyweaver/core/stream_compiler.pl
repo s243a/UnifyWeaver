@@ -738,29 +738,29 @@ test_stream_compiler :-
     writeln('Output directory: output/'),
     
     % Clear any existing predicates
-    abolish(parent/2),
-    abolish(grandparent/2),
-    abolish(sibling/2),
-    abolish(related/2),
+    abolish(user:parent/2),
+    abolish(user:grandparent/2),
+    abolish(user:sibling/2),
+    abolish(user:related/2),
     
     % Define test predicates (facts) - with siblings
-    assertz(parent(alice, bob)),
-    assertz(parent(alice, barbara)),     % alice has two children
-    assertz(parent(bob, charlie)),
-    assertz(parent(bob, cathy)),         % bob has two children  
-    assertz(parent(charlie, diana)),
-    assertz(parent(diana, eve)),
-    assertz(parent(diana, emily)),       % diana has two children
-    assertz(parent(eve, frank)),
+    assertz(user:parent(alice, bob)),
+    assertz(user:parent(alice, barbara)),     % alice has two children
+    assertz(user:parent(bob, charlie)),
+    assertz(user:parent(bob, cathy)),         % bob has two children  
+    assertz(user:parent(charlie, diana)),
+    assertz(user:parent(diana, eve)),
+    assertz(user:parent(diana, emily)),       % diana has two children
+    assertz(user:parent(eve, frank)),
     
     % Define test predicates (rules)
-    assertz((grandparent(X, Z) :- parent(X, Y), parent(Y, Z))),
-    assertz((sibling(X, Y) :- parent(P, X), parent(P, Y), X \= Y)),
+    assertz(user:(grandparent(X, Z) :- parent(X, Y), parent(Y, Z))),
+    assertz(user:(sibling(X, Y) :- parent(P, X), parent(P, Y), X \= Y)),
     
     % OR pattern - multiple ways to be related
-    assertz((related(X, Y) :- parent(X, Y))),       % Forward: X is parent of Y
-    assertz((related(X, Y) :- parent(Y, X))),       % Reverse: Y is parent of X (X is child of Y)
-    assertz((related(X, Y) :- sibling(X, Y))),
+    assertz(user:(related(X, Y) :- parent(X, Y))),       % Forward: X is parent of Y
+    assertz(user:(related(X, Y) :- parent(Y, X))),       % Reverse: Y is parent of X (X is child of Y)
+    assertz(user:(related(X, Y) :- sibling(X, Y))),
     
     % Declare constraints (using defaults: unique=true, unordered=true)
     % No need to declare for grandparent/sibling/related - they use defaults
