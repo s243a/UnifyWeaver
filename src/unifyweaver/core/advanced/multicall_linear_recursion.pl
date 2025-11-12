@@ -118,9 +118,8 @@ is_recursive_for_pred(Pred, clause(_, Body)) :-
 %% generate_multicall_bash(+PredStr, +BaseClauses, +RecClauses, +MemoEnabled, -BashCode)
 %  Generate bash code for multi-call linear recursion
 generate_multicall_bash(PredStr, BaseClauses, RecClauses, MemoEnabled, BashCode) :-
-    % Extract base case info
-    BaseClauses = [clause(BaseHead, _)|_],
-    BaseHead =.. [_Pred, BaseInput, BaseOutput],
+    % Ensure we have at least one base clause (structure validated later)
+    BaseClauses = [clause(_BaseHead, _)|_],
 
     % Extract recursive case info
     RecClauses = [clause(RecHead, RecBody)|_],
@@ -245,7 +244,6 @@ test_multicall_linear :-
     writeln('=== TESTS COMPLETE ===').
 
 abolish_if_exists(Pred/Arity) :-
-    functor(Head, Pred, Arity),
     (   current_predicate(Pred/Arity) ->
         abolish(Pred/Arity)
     ;   true

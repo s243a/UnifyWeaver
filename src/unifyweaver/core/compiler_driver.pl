@@ -5,6 +5,7 @@
 % Licensed under either MIT or Apache-2.0 at your option.
 
 :- module(compiler_driver, [
+    compile/1,
     compile/2,
     compile/3
 ]).
@@ -14,21 +15,36 @@
 :- use_module(dependency_analyzer).
 :- use_module(recursive_compiler).
 :- use_module(stream_compiler).
+:- use_module(dynamic_source_compiler). % Support for dynamic data sources
 :- use_module('advanced/advanced_recursive_compiler'). % Added for mutual recursion classification
 :- use_module('advanced/call_graph'). % Added for mutual recursion classification
 
 :- dynamic compiled/1.
 
-%% compile(+Predicate, -GeneratedScripts)
-compile(Predicate, GeneratedScripts) :-
-    compile(Predicate, [], GeneratedScripts).
+%% compile(+Predicate)
+%  Compile predicate with default options, discarding output list
+compile(Predicate) :-
+    compile(Predicate, [], _).
+
+%% compile(+Predicate, +OptionsOrScripts)
+%  Disambiguate between Options (list of option/1 terms) and Scripts (output variable)
+%  This is tricky because both are lists. We check if it's a list of options.
+compile(Predicate, Arg2) :-
+    (   is_list(Arg2),
+        (Arg2 = [] ; Arg2 = [First|_], functor(First, _, _), First =.. [OptionName|_], atom(OptionName)) ->
+        % Arg2 looks like options (empty list or list of compound terms)
+        compile(Predicate, Arg2, _)
+    ;   % Arg2 is an unbound variable or doesn't look like options, treat as GeneratedScripts
+        compile(Predicate, [], Arg2)
+    ).
 
 %% compile(+Predicate, +Options, -GeneratedScripts)
 %  Recursively compiles a predicate and its dependencies.
 compile(Predicate, Options, GeneratedScripts) :-
     retractall(compiled(_)),
     compile_entry(Predicate, Options, GeneratedScriptsUnsorted),
-    list_to_set(GeneratedScriptsUnsorted, GeneratedScripts).
+    list_to_set(GeneratedScriptsUnsorted, GeneratedScripts),
+    !.  % Cut to prevent backtracking after successful compilation
 
 compile_entry(Predicate, Options, GeneratedScripts) :-
     (   compiled(Predicate) ->
@@ -54,14 +70,34 @@ compile_dependencies([Dep|Rest], Options, GeneratedScripts) :-
 
 compile_current(Predicate, Options, GeneratedScript) :-
     Predicate = Functor/_Arity,
-    classify_predicate(Predicate, Classification),
-    (   Classification = non_recursive ->
-        stream_compiler:compile_predicate(Predicate, Options, BashCode)
-    ;   recursive_compiler:compile_recursive(Predicate, Options, BashCode)
+
+    % Check if this is a dynamic source FIRST (before classification)
+    (   dynamic_source_compiler:is_dynamic_source(Predicate) ->
+        % Compile as dynamic source via appropriate plugin
+        dynamic_source_compiler:compile_dynamic_source(Predicate, Options, BashCode),
+        !  % Cut to prevent backtracking into static predicate path
+    ;   % Original logic: classify and compile as static predicate
+        classify_predicate(Predicate, Classification),
+        (   Classification = non_recursive ->
+            stream_compiler:compile_predicate(Predicate, Options, BashCode),
+            !  % Cut after successful compilation
+        ;   recursive_compiler:compile_recursive(Predicate, Options, BashCode),
+            !  % Cut after successful compilation
+        )
     ),
+
+    % Write generated code to file
     option(output_dir(OutputDir), Options, 'education/output/advanced'),
     atomic_list_concat([OutputDir, '/', Functor, '.sh'], GeneratedScript),
-    open(GeneratedScript, write, Stream),
+
+    % Ensure the output directory exists before writing
+    file_directory_name(GeneratedScript, Dir),
+    (   exists_directory(Dir) ->
+        true
+    ;   make_directory_path(Dir)
+    ),
+
+    open(GeneratedScript, write, Stream, [newline(posix)]),
     write(Stream, BashCode),
     close(Stream).
 
@@ -73,8 +109,11 @@ classify_predicate(Pred/Arity, Classification) :-
     findall(Body, clause(Head, Body), Bodies),
 
     % Check for mutual recursion FIRST (before self-recursion check)
+    % BUT: exclude dynamic sources from the group - they're not part of mutual recursion
     (   call_graph:predicates_in_group(Pred/Arity, Group),
-        length(Group, GroupSize),
+        % Filter out dynamic sources from group
+        exclude(dynamic_source_compiler:is_dynamic_source, Group, StaticGroup),
+        length(StaticGroup, GroupSize),
         GroupSize > 1 ->
         Classification = mutual_recursion
     ;   % Check if self-recursive

@@ -37,7 +37,7 @@ compile_predicate(PredIndicator, Options, BashCode) :-
     functor(Head, PredAtom, Arity),
 
     % Get all clauses for this predicate (as head-body pairs)
-    findall(H-B, (clause(Head, B), Head = H), Clauses),
+    findall(H-B, (user:clause(Head, B), Head = H), Clauses),
     length(Clauses, NumClauses),
 
     % Determine compilation strategy
@@ -111,7 +111,7 @@ compile_facts(Pred, Arity, Options, BashCode) :-
     functor(Head, Pred, Arity),
     
     % Collect all facts
-    findall(Head, clause(Head, true), Facts),
+    findall(Head, user:clause(Head, true), Facts),
     
     % Get deduplication strategy from options
     get_dedup_strategy(Options, Strategy),
@@ -150,67 +150,79 @@ compile_facts_no_dedup(_Pred, Arity, Facts, PredStr, BashCode) :-
         ),
         Entries),
     atomic_list_concat(Entries, '"\n    "', EntriesStr),
-    
-    % Generate bash code with regular array
+
+    % Generate bash code with regular array using atomic_list_concat to ensure LF endings
     (   Arity = 1 ->
-        format(string(BashCode), '#!/bin/bash
-# ~s - fact lookup (no deduplication)
-~s_data=(
-    "~s"
-)
-~s() {
-  local query="$1"
-  for item in "${~s_data[@]}"; do
-    [[ "$item" == "$query" ]] && echo "$item"
-  done
-}
-~s_stream() {
-  for item in "${~s_data[@]}"; do
-    echo "$item"
-  done
-}
-# Execute stream function when script is run directly
-~s_stream', [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr])
+        Template = [
+            '#!/bin/bash',
+            '# ~s - fact lookup (no deduplication)',
+            '~s_data=(',
+            '    "~s"',
+            ')',
+            '~s() {',
+            '  local query="$1"',
+            '  for item in "${~s_data[@]}"; do',
+            '    [[ "$item" == "$query" ]] && echo "$item"',
+            '  done',
+            '}',
+            '~s_stream() {',
+            '  for item in "${~s_data[@]}"; do',
+            '    echo "$item"',
+            '  done',
+            '}',
+            '# Execute stream function when script is run directly',
+            '~s_stream'
+        ],
+        atomic_list_concat(Template, '\n', TemplateStr),
+        format(string(BashCode), TemplateStr, [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr])
     ;   Arity = 2 ->
-        format(string(BashCode), '#!/bin/bash
-# ~s - fact lookup (no deduplication)
-~s_data=(
-    "~s"
-)
-~s() {
-  local key="$1:$2"
-  for item in "${~s_data[@]}"; do
-    [[ "$item" == "$key" ]] && echo "$item"
-  done
-}
-~s_stream() {
-  for item in "${~s_data[@]}"; do
-    echo "$item"
-  done
-}
-~s_reverse_stream() {
-  for item in "${~s_data[@]}"; do
-    IFS=":" read -r a b <<< "$item"
-    echo "$b:$a"
-  done
-}
-# Execute stream function when script is run directly
-~s_stream', [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr])
+        Template = [
+            '#!/bin/bash',
+            '# ~s - fact lookup (no deduplication)',
+            '~s_data=(',
+            '    "~s"',
+            ')',
+            '~s() {',
+            '  local key="$1:$2"',
+            '  for item in "${~s_data[@]}"; do',
+            '    [[ "$item" == "$key" ]] && echo "$item"',
+            '  done',
+            '}',
+            '~s_stream() {',
+            '  for item in "${~s_data[@]}"; do',
+            '    echo "$item"',
+            '  done',
+            '}',
+            '~s_reverse_stream() {',
+            '  for item in "${~s_data[@]}"; do',
+            '    IFS=":" read -r a b <<< "$item"',
+            '    echo "$b:$a"',
+            '  done',
+            '}',
+            '# Execute stream function when script is run directly',
+            '~s_stream'
+        ],
+        atomic_list_concat(Template, '\n', TemplateStr),
+        format(string(BashCode), TemplateStr, [PredStr, PredStr, EntriesStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr, PredStr])
     ;   % For higher arities, use a generic approach
-        format(string(BashCode), '#!/bin/bash
-# ~s - fact lookup (no deduplication)
-~s_data=(
-    "~s"
-)
-~s() {
-  echo "Error: ~s with arity ~w not yet supported for no_dedup" >&2
-  return 1
-}
-~s_stream() {
-  for item in "${~s_data[@]}"; do
-    echo "$item"
-  done
-}', [PredStr, PredStr, EntriesStr, PredStr, PredStr, Arity, PredStr, PredStr])
+        Template = [
+            '#!/bin/bash',
+            '# ~s - fact lookup (no deduplication)',
+            '~s_data=(',
+            '    "~s"',
+            ')',
+            '~s() {',
+            '  echo "Error: ~s with arity ~w not yet supported for no_dedup" >&2',
+            '  return 1',
+            '}',
+            '~s_stream() {',
+            '  for item in "${~s_data[@]}"; do',
+            '    echo "$item"',
+            '  done',
+            '}'
+        ],
+        atomic_list_concat(Template, '\n', TemplateStr),
+        format(string(BashCode), TemplateStr, [PredStr, PredStr, EntriesStr, PredStr, PredStr, Arity, PredStr])
     ).
 
 %% format_fact_entry(+Args, -Entry)
@@ -726,29 +738,29 @@ test_stream_compiler :-
     writeln('Output directory: output/'),
     
     % Clear any existing predicates
-    abolish(parent/2),
-    abolish(grandparent/2),
-    abolish(sibling/2),
-    abolish(related/2),
+    abolish(user:parent/2),
+    abolish(user:grandparent/2),
+    abolish(user:sibling/2),
+    abolish(user:related/2),
     
     % Define test predicates (facts) - with siblings
-    assertz(parent(alice, bob)),
-    assertz(parent(alice, barbara)),     % alice has two children
-    assertz(parent(bob, charlie)),
-    assertz(parent(bob, cathy)),         % bob has two children  
-    assertz(parent(charlie, diana)),
-    assertz(parent(diana, eve)),
-    assertz(parent(diana, emily)),       % diana has two children
-    assertz(parent(eve, frank)),
+    assertz(user:parent(alice, bob)),
+    assertz(user:parent(alice, barbara)),     % alice has two children
+    assertz(user:parent(bob, charlie)),
+    assertz(user:parent(bob, cathy)),         % bob has two children  
+    assertz(user:parent(charlie, diana)),
+    assertz(user:parent(diana, eve)),
+    assertz(user:parent(diana, emily)),       % diana has two children
+    assertz(user:parent(eve, frank)),
     
     % Define test predicates (rules)
-    assertz((grandparent(X, Z) :- parent(X, Y), parent(Y, Z))),
-    assertz((sibling(X, Y) :- parent(P, X), parent(P, Y), X \= Y)),
+    assertz(user:(grandparent(X, Z) :- parent(X, Y), parent(Y, Z))),
+    assertz(user:(sibling(X, Y) :- parent(P, X), parent(P, Y), X \= Y)),
     
     % OR pattern - multiple ways to be related
-    assertz((related(X, Y) :- parent(X, Y))),       % Forward: X is parent of Y
-    assertz((related(X, Y) :- parent(Y, X))),       % Reverse: Y is parent of X (X is child of Y)
-    assertz((related(X, Y) :- sibling(X, Y))),
+    assertz(user:(related(X, Y) :- parent(X, Y))),       % Forward: X is parent of Y
+    assertz(user:(related(X, Y) :- parent(Y, X))),       % Reverse: Y is parent of X (X is child of Y)
+    assertz(user:(related(X, Y) :- sibling(X, Y))),
     
     % Declare constraints (using defaults: unique=true, unordered=true)
     % No need to declare for grandparent/sibling/related - they use defaults
