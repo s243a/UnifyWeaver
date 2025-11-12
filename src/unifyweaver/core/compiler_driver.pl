@@ -5,6 +5,7 @@
 % Licensed under either MIT or Apache-2.0 at your option.
 
 :- module(compiler_driver, [
+    compile/1,
     compile/2,
     compile/3
 ]).
@@ -20,16 +21,30 @@
 
 :- dynamic compiled/1.
 
-%% compile(+Predicate, -GeneratedScripts)
-compile(Predicate, GeneratedScripts) :-
-    compile(Predicate, [], GeneratedScripts).
+%% compile(+Predicate)
+%  Compile predicate with default options, discarding output list
+compile(Predicate) :-
+    compile(Predicate, [], _).
+
+%% compile(+Predicate, +OptionsOrScripts)
+%  Disambiguate between Options (list of option/1 terms) and Scripts (output variable)
+%  This is tricky because both are lists. We check if it's a list of options.
+compile(Predicate, Arg2) :-
+    (   is_list(Arg2),
+        (Arg2 = [] ; Arg2 = [First|_], functor(First, _, _), First =.. [OptionName|_], atom(OptionName)) ->
+        % Arg2 looks like options (empty list or list of compound terms)
+        compile(Predicate, Arg2, _)
+    ;   % Arg2 is an unbound variable or doesn't look like options, treat as GeneratedScripts
+        compile(Predicate, [], Arg2)
+    ).
 
 %% compile(+Predicate, +Options, -GeneratedScripts)
 %  Recursively compiles a predicate and its dependencies.
 compile(Predicate, Options, GeneratedScripts) :-
     retractall(compiled(_)),
     compile_entry(Predicate, Options, GeneratedScriptsUnsorted),
-    list_to_set(GeneratedScriptsUnsorted, GeneratedScripts).
+    list_to_set(GeneratedScriptsUnsorted, GeneratedScripts),
+    !.  % Cut to prevent backtracking after successful compilation
 
 compile_entry(Predicate, Options, GeneratedScripts) :-
     (   compiled(Predicate) ->
