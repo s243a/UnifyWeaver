@@ -1,7 +1,21 @@
-# CSV Data Source Playbook (Reference)
+# CSV Data Source Playbook — Reviewer Reference
+
+## Overview
+This document serves as a reviewer's guide and validation checklist for the agent-facing playbook found at:
+[`examples/csv_data_source_playbook.md`](../../examples/csv_data_source_playbook.md).
+
+- **The executable playbook for agents and LLMs is located in the examples folder.**
+- This reference offers context, test conventions, manual validation steps, and expected outputs when the playbook is run by an agent.
+
+## Agent Execution Example
+
+You (or an LLM agent) can execute the workflow using a prompt like:
+```
+Pretend you have fresh context and run the playbook at examples/csv_data_source_playbook.md
+```
 
 ## Purpose
-Validate that UnifyWeaver can ingest a CSV file as a declarative source, expose it as a predicate, and compile downstream logic into runnable Bash scripts. This is the reviewer-oriented reference; the agent-facing playbook lives at [`examples/csv_data_source_playbook.md`](../../examples/csv_data_source_playbook.md) and should be given to the Gemini CLI (or another coding agent) when you want the workflow executed.
+The purpose of this document is to validate that UnifyWeaver ingests a CSV file as a declarative source, exposes it as a predicate, and compiles downstream logic into runnable Bash scripts.
 
 ## Inputs & Artifacts
 - Source definition: `csv_pipeline.pl`
