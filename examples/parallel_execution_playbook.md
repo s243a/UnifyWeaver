@@ -8,6 +8,8 @@ Demonstrate UnifyWeaver's MapReduce-style parallel execution capabilities by par
 
 This playbook tests the project's advanced parallel execution features. UnifyWeaver provides modules for declaratively partitioning data and executing worker scripts across these partitions using different parallel backends. This is a powerful pattern for high-performance data processing.
 
+> NOTE: All temporary artifacts live under `${TMP_FOLDER:-tmp}`. Run the playbook from the repo root and follow the TMP guidance in `docs/development/ai-skills/workflow_environment.md`.
+
 This playbook is based on **Demo 1** from `examples/demo_partition_parallel.pl`.
 
 ## Strategy
@@ -30,7 +32,9 @@ Create a simple bash script that reads numbers from standard input and prints th
 
 **Save to file:**
 ```bash
-cat > /tmp/sum_worker.sh <<'EOF'
+TMP_FOLDER="${TMP_FOLDER:-tmp}"
+mkdir -p "$TMP_FOLDER"
+cat > "$TMP_FOLDER/sum_worker.sh" <<'EOF'
 #!/bin/bash
 # Sum all numbers from stdin
 sum=0
@@ -49,8 +53,8 @@ chmod +x /tmp/sum_worker.sh
 Create a Prolog script that defines and runs the entire pipeline.
 
 **Save to file:**
-```prolog
-cat > /tmp/parallel_pipeline.pl <<'EOF'
+```bash
+cat > "$TMP_FOLDER/parallel_pipeline.pl" <<'EOF'
 :- use_module('src/unifyweaver/core/partitioner').
 :- use_module('src/unifyweaver/core/partitioners/fixed_size').
 :- use_module('src/unifyweaver/core/parallel_backend').
@@ -109,7 +113,7 @@ EOF
 Run the Prolog orchestration script.
 
 ```bash
-swipl -g "consult('tmp/parallel_pipeline.pl'), run_pipeline, halt"
+swipl -g "consult('${TMP_FOLDER:-tmp}/parallel_pipeline.pl'), run_pipeline, halt"
 ```
 
 ## Verification
