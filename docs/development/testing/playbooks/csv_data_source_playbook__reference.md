@@ -2,7 +2,7 @@
 
 ## Overview
 This document serves as a reviewer's guide and validation checklist for the agent-facing playbook found at:
-[`examples/csv_data_source_playbook.md`](../../examples/csv_data_source_playbook.md).
+[examples/csv_data_source_playbook.md](../../../../examples/csv_data_source_playbook.md).
 
 - **The executable playbook for agents and LLMs is located in the examples folder.**
 - This reference offers context, test conventions, manual validation steps, and expected outputs when the playbook is run by an agent.
