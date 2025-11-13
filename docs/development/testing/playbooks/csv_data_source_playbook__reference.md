@@ -1,7 +1,7 @@
-# CSV Data Source Playbook
+# CSV Data Source Playbook (Reference)
 
 ## Purpose
-Validate that UnifyWeaver can ingest a CSV file as a declarative source, expose it as a predicate, and compile downstream logic into runnable Bash scripts. This playbook doubles as a regression test for dynamic sources (e.g., CSV plugins) and the compiler driver’s ability to mix dynamic and static predicates.
+Validate that UnifyWeaver can ingest a CSV file as a declarative source, expose it as a predicate, and compile downstream logic into runnable Bash scripts. This is the reviewer-oriented reference; the agent-facing playbook lives at [`examples/csv_data_source_playbook.md`](../../examples/csv_data_source_playbook.md) and should be given to the Gemini CLI (or another coding agent) when you want the workflow executed.
 
 ## Inputs & Artifacts
 - Source definition: `csv_pipeline.pl`
@@ -50,5 +50,5 @@ Validate that UnifyWeaver can ingest a CSV file as a declarative source, expose 
 | Empty output | `sort -u` deduped everything or CSV data missing | Inspect `test_data/test_users.csv`; ensure duplicates exist if you expect multiples. |
 
 ## Related Material
-- Human-readable playbook narrative: `examples/csv_data_source_playbook.md`
+- Agent-facing playbook: `examples/csv_data_source_playbook.md`
 - Principles and workflow guidance: `education/book-workflow/examples_library/data_source_playbooks.md`
