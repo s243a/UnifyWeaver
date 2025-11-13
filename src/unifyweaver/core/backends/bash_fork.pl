@@ -84,7 +84,7 @@ backend_execute_impl(State, Partitions, ScriptPath, Results) :-
     write_file(ParallelScriptPath, ParallelScript),
 
     % Make script executable
-    process_create('/bin/chmod', ['+x', ParallelScriptPath], []),
+    process_create(path(chmod), ['+x', ParallelScriptPath], []),
 
     % Execute parallel script
     format('[BashFork] Executing parallel script~n', []),
@@ -118,7 +118,7 @@ backend_cleanup_impl(state(_, temp_dir(TempDir))) :-
 create_temp_directory(TempDir) :-
     % Generate unique directory name
     get_time(Timestamp),
-    format(atom(TempDir), '/tmp/unifyweaver_bashfork_~w', [Timestamp]),
+    format(atom(TempDir), 'tmp/unifyweaver_bashfork_~w', [Timestamp]),
     make_directory(TempDir).
 
 %% write_batch_files(+Partitions, +TempDir, -BatchFiles)
@@ -283,7 +283,7 @@ write_file(FilePath, Content) :-
 %% execute_parallel_script(+ScriptPath, -ExitCode)
 %  Execute the parallel bash script
 execute_parallel_script(ScriptPath, ExitCode) :-
-    process_create('/bin/bash', [ScriptPath],
+    process_create(path(bash), [ScriptPath],
                    [stdout(pipe(OutStream)),
                     stderr(pipe(ErrStream)),
                     process(PID)]),
