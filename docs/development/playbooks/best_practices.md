@@ -7,7 +7,8 @@
 - Reference external code samples, databases, or docs
 - Use troubleshooting and validation tables
 - Limit inline code to essentials; link out for details
-- Encourage peer or agent review for clarity
+- **Reference, Don't Repeat**: Link to external documentation, skill definitions, or example records instead of embedding large blocks of code or explanation. Keep the playbook as a concise guide.
+- **Encapsulate Complex Execution**: For any execution sequence that involves more than one or two simple commands, encapsulate the entire workflow into a single, executable script within the example library. The playbook's execution direction should then be a single step: "Extract and execute record X". This makes the agent's job trivial and the process far more robust.
 
 ## Don'ts
 - Embed extensive code or scripts in playbook files

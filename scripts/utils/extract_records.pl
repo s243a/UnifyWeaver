@@ -67,12 +67,9 @@ if (@files_to_process) {
 
 sub process_file {
     my ($filepath) = @_;
-    # TODO:
-    # 1. Read file content
-    # 2. Check for YAML frontmatter
-    # 3. Apply --file-filter
-    # 4. If valid, call parse_and_print_records()
-    print "# Processing file: $filepath\n"; # Placeholder
+    my $content = path($filepath)->slurp_utf8;
+    # TODO: Implement YAML frontmatter filtering based on --file-filter
+    parse_and_print_records($content, $filepath);
 }
 
 sub process_stdin {
@@ -84,14 +81,72 @@ sub process_stdin {
 
 sub parse_and_print_records {
     my ($content, $filepath) = @_;
-    # TODO:
-    # 1. Find all record headers (###)
-    # 2. For each record:
-    #    a. Parse metadata callout
-    #    b. Apply --query filter to 'name'
-    #    c. Extract content block
-    #    d. Format output based on --format
-    #    e. Print formatted output followed by separator
+    my @lines = split /\n/, $content;
+
+    my $in_record = 0;
+    my $in_metadata = 0;
+    my $in_code = 0;
+    my $record_content = '';
+    my %metadata = ();
+    my $code_content = '';
+    my $header = '';
+
+    for my $line (@lines) {
+        if ($line =~ /^###\s*(.*)/) {
+            # We found a new record header, process the previous one if it exists
+            if ($in_record) {
+                process_found_record(\%metadata, $header, $code_content, $record_content);
+            }
+            # Reset for the new record
+            $in_record = 1;
+            $in_metadata = 0;
+            $in_code = 0;
+            $record_content = "$line\n";
+            %metadata = ();
+            $code_content = '';
+            $header = $1;
+        } elsif ($in_record) {
+            $record_content .= "$line\n";
+            if ($line =~ /^>\s*\[!example-record\]/) {
+                $in_metadata = 1;
+            } elsif ($in_metadata && $line =~ /^>\s*(\w+):\s*(.*)/) {
+                $metadata{$1} = $2;
+            } elsif ($in_metadata && $line !~ /^>/) {
+                $in_metadata = 0; # End of metadata block
+            } elsif ($line =~ /^```/) {
+                $in_code = !$in_code; # Toggle in/out of code block
+            } elsif ($in_code) {
+                $code_content .= "$line\n";
+            }
+        }
+    }
+    # Process the last record if it exists
+    if ($in_record) {
+        process_found_record(\%metadata, $header, $code_content, $record_content);
+    }
+}
+
+sub process_found_record {
+    my ($metadata_ref, $header, $code, $full_content) = @_;
+    my %metadata = %{$metadata_ref};
+    $metadata{'header'} = $header;
+
+    # Apply query filter
+    if ($query) {
+        return unless $metadata{'name'} && $metadata{'name'} =~ /$query/;
+    }
+
+    # Format and print
+    if ($format eq 'content') {
+        print $code;
+    } elsif ($format eq 'json') {
+        require JSON::PP;
+        $metadata{'content'} = $code;
+        print JSON::PP->new->pretty->encode(\%metadata);
+    } else { # 'full'
+        print $full_content;
+    }
+    print $separator;
 }
 
 exit 0;
