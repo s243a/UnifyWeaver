@@ -30,7 +30,7 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Streaming codegen (`target(csharp_codegen)`)** - Emit standalone C# projects that mirror the Bash streaming templates for simple predicates.
 - **Configurable artefacts** - Choose between direct C# emission, reusable plans, or let `target(csharp)` select the best backend automatically.
 
-### Data Source Plugin System (v0.0.2)
+### Data Source Plugin System (v0.1)
 - **5 Production-Ready Plugins** - CSV/TSV, AWK, Python, HTTP, JSON data sources
 - **Self-Registering Architecture** - Plugin-based system with automatic discovery
 - **Template Integration** - Seamless bash code generation with comprehensive error handling
@@ -38,7 +38,7 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Real-World ETL** - Complete pipelines for data transformation and storage
 - **SQLite Integration** - Python source with automatic database operations
 
-### PowerShell Target Support (v0.0.2)
+### PowerShell Target Support (v0.1)
 - **Dual-Mode Compilation** - BaaS (Bash-as-a-Service) or pure PowerShell code generation
 - **Automatic Mode Detection** - Firewall-aware mode selection based on environment
 - **Cross-Platform Support** - Windows, Linux (WSL), macOS PowerShell Core
@@ -157,7 +157,7 @@ descendant(X, Y)  % Reverse of ancestor
 sibling(X, Y)     % Same parent, different children
 ```
 
-### Data Source Integration (v0.0.2)
+### Data Source Integration (v0.1)
 
 ```prolog
 % CSV/TSV data processing
@@ -211,7 +211,7 @@ swipl -g main -t halt examples/pipeline_demo.pl
 - **Tree Recursion** - Structural processing of binary trees
 - **Mutual Recursion** - Predicates calling each other with shared memoization
 
-### ✅ Data Sources (v0.0.2)
+### ✅ Data Sources (v0.1)
 
 - **CSV/TSV** - Auto-header detection, custom delimiters
 - **AWK** - Pattern matching, field extraction, text processing pipelines

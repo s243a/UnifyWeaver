@@ -2,7 +2,7 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2025 John William Creighton (@s243a)
 %
-% data_sources_demo.pl - Complete demo of UnifyWeaver v0.0.2 data sources
+% data_sources_demo.pl - Complete demo of UnifyWeaver v0.1 data sources
 %
 % This example demonstrates all 4 new data source types working together
 % in a real ETL pipeline scenario.
@@ -140,7 +140,7 @@ main :-
     ;   auto_detect_and_set_emoji_level
     ),
 
-    format('UnifyWeaver v0.0.2 Data Sources Demo~n', []),
+    format('UnifyWeaver v0.1 Data Sources Demo~n', []),
     format('==========================================~n', []),
 
     % Ensure directories exist

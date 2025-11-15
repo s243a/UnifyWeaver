@@ -1,9 +1,9 @@
 # Post-Release TODO List
 
 **Created:** 2025-10-12
-**Target Release:** v0.0.2 or later
+**Target Release:** v0.2 or later
 
-This tracks work to be done after v0.0.1-alpha release.
+This tracks work to be done after v0.1 release.
 
 ---
 

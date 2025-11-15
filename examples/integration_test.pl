@@ -2,7 +2,7 @@
 % SPDX-License-Identifier: MIT OR Apache-2.0
 % Copyright (c) 2025 John William Creighton (@s243a)
 %
-% integration_test.pl - Comprehensive integration test for UnifyWeaver v0.0.2
+% integration_test.pl - Comprehensive integration test for UnifyWeaver v0.1
 %
 % This test demonstrates:
 % - Platform detection and native execution
@@ -423,7 +423,7 @@ main :-
 
     safe_format('~n', []),
     safe_format('\U0001F9EA ========================================~n', []),
-    safe_format('  UnifyWeaver v0.0.2 Integration Test~n', []),
+    safe_format('  UnifyWeaver v0.1 Integration Test~n', []),
     safe_format('========================================~n', []),
     safe_format('~n', []),
 
