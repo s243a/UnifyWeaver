@@ -16,9 +16,9 @@
 :- use_module(library(filesex)).
 :- use_module(library(lists)).
 
-%% ============================================
+%% ============================================ 
 %% BACKEND IMPLEMENTATION
-%% ============================================
+%% ============================================ 
 
 %% backend_init_impl(+Config, -State)
 %  Initialize bash fork backend
@@ -57,7 +57,7 @@ backend_init_impl(Config, State) :-
         temp_dir(TempDir)
     ),
 
-    format('[BashFork] Initialized: workers=~w, temp_dir=~w~n',
+    format('[BashFork] Initialized: workers=~w, temp_dir=~w~n', 
            [NumWorkers, TempDir]).
 
 %% backend_execute_impl(+State, +Partitions, +ScriptPath, -Results)
@@ -71,7 +71,7 @@ backend_execute_impl(State, Partitions, ScriptPath, Results) :-
     State = state(num_workers(NumWorkers), temp_dir(TempDir)),
 
     length(Partitions, NumPartitions),
-    format('[BashFork] Executing ~w partitions with ~w workers~n',
+    format('[BashFork] Executing ~w partitions with ~w workers~n', 
            [NumPartitions, NumWorkers]),
 
     % Write partition data to batch files
@@ -109,9 +109,9 @@ backend_cleanup_impl(state(_, temp_dir(TempDir))) :-
     ;   format('[BashFork] Temp directory already removed~n', [])
     ).
 
-%% ============================================
+%% ============================================ 
 %% HELPER PREDICATES
-%% ============================================
+%% ============================================ 
 
 %% create_temp_directory(-TempDir)
 %  Create temporary directory for batch files
@@ -119,7 +119,8 @@ create_temp_directory(TempDir) :-
     % Generate unique directory name
     get_time(Timestamp),
     format(atom(TempDir), 'tmp/unifyweaver_bashfork_~w', [Timestamp]),
-    make_directory(TempDir).
+    make_directory(TempDir),
+    chmod(TempDir, 0o777).
 
 %% write_batch_files(+Partitions, +TempDir, -BatchFiles)
 %  Write partition data to batch files
@@ -148,8 +149,7 @@ generate_parallel_script(BatchFiles, NumWorkers, ScriptPath, TempDir, Script) :-
     atomic_list_concat(BatchEntries, '\n', BatchFilesList),
 
     % Generate script
-    format(string(Script),
-'#!/bin/bash
+    format(string(Script), '#!/bin/bash
 # Auto-generated parallel execution script using pure bash fork
 # No external dependencies (no GNU Parallel required)
 
@@ -192,6 +192,7 @@ spawn_worker() {
 
     # Execute in background
     bash "$SCRIPT_PATH" < "$batch_file" > "$output_file" 2>&1 &
+    chmod 666 "$output_file" 2>/dev/null || true
     local pid=$!
 
     # Track worker
@@ -225,7 +226,8 @@ handle_worker_completion() {
     local exit_code="$2"
     local batch_id="${worker_pids[$pid]}"
 
-    if [ "$exit_code" -eq 0 ] 2>/dev/null; then
+    if [ "$exit_code" -eq 0 ] 2>/dev/null;
+    then
         worker_status[$pid]="completed"
         echo "[BashFork] Batch $batch_id completed (PID=$pid)" >&2
     else
@@ -257,7 +259,8 @@ done
 echo "[BashFork] Waiting for remaining workers to complete..." >&2
 while [ $active_workers -gt 0 ]; do
     for pid in "${!worker_pids[@]}"; do
-        if ! kill -0 $pid 2>/dev/null; then
+        if ! kill -0 $pid 2>/dev/null;
+        then
             wait $pid
             exit_code=$?
             handle_worker_completion $pid $exit_code
