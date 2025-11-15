@@ -444,7 +444,7 @@ main :-
     % WORKAROUND: Skip test_sqlite_source on PowerShell/Windows due to state corruption bug
     % See: POST_RELEASE_TODO.md - PowerShell integration test hangs after 3rd test
     % The test works fine in isolation and on Linux/WSL
-    (   get_platform(Platform),
+    (   platform_detection:detect_platform(Platform),
         Platform = windows
     ->  safe_format('\U0001F4BE === SQLite Source Test ===~n', []),
         safe_format('  \u26A0 Skipped on Windows (known issue - works on Linux)~n', []),
