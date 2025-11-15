@@ -200,8 +200,13 @@ test_csv_source :-
     assertz(generated_file(csv, ScriptPath)),
     safe_format('  \u2713 Generated: ~w~n', [ScriptPath]),
 
-    % Execute the saved script
-    write_and_execute_bash(BashCode, '', Output),
+    % Execute the saved script instead of using write_and_execute_bash
+    % (avoids re-creating temp files that can cause issues in PowerShell/WSL)
+    process_create(path(bash), [ScriptPath],
+                  [stdout(pipe(Out)), stderr(null), process(PID)]),
+    read_string(Out, _, Output),
+    close(Out),
+    process_wait(PID, exit(_)),
 
     split_string(Output, "\n", "\n", Lines),
     length(Lines, Count),
@@ -226,8 +231,13 @@ test_json_source :-
     assertz(generated_file(json, ScriptPath)),
     safe_format('  \u2713 Generated: ~w~n', [ScriptPath]),
 
-    % Execute the saved script
-    write_and_execute_bash(BashCode, '', Output),
+    % Execute the saved script instead of using write_and_execute_bash
+    % (avoids re-creating temp files that can cause issues in PowerShell/WSL)
+    process_create(path(bash), [ScriptPath],
+                  [stdout(pipe(Out)), stderr(null), process(PID)]),
+    read_string(Out, _, Output),
+    close(Out),
+    process_wait(PID, exit(_)),
 
     split_string(Output, "\n", "\n", Lines),
     length(Lines, Count),
@@ -295,8 +305,13 @@ test_sqlite_source :-
     assertz(generated_file(sqlite, ScriptPath)),
     safe_format('  \u2713 Generated: ~w~n', [ScriptPath]),
 
-    % Execute query
-    write_and_execute_bash(QueryCode, '', QueryOutput),
+    % Execute the saved script instead of using write_and_execute_bash
+    % (avoids re-creating temp files that can cause issues in PowerShell/WSL)
+    process_create(path(bash), [ScriptPath],
+                  [stdout(pipe(Out)), stderr(null), process(PID)]),
+    read_string(Out, _, QueryOutput),
+    close(Out),
+    process_wait(PID, exit(_)),
 
     safe_format('  Top Products:~n~w', [QueryOutput]),
 
@@ -316,24 +331,38 @@ test_sqlite_source :-
 test_etl_pipeline :-
     safe_format('\U0001F680 === Complete ETL Pipeline Test ===~n', []),
 
-    % Extract
+    % Extract - use saved script
     safe_format('~n  \U0001F4E1 Stage 1: Extract (JSON)~n', []),
-    compile_dynamic_source(orders/4, [], ExtractCode),
-    write_and_execute_bash(ExtractCode, '', ExtractOutput),
+    process_create(path(bash), ['test_output/orders.sh'],
+                  [stdout(pipe(ExtractOut)), stderr(null), process(ExtractPID)]),
+    read_string(ExtractOut, _, ExtractOutput),
+    close(ExtractOut),
+    process_wait(ExtractPID, exit(_)),
     split_string(ExtractOutput, "\n", "\n", Lines),
     length(Lines, ExtractCount),
     safe_format('    Extracted ~w records~n', [ExtractCount]),
 
-    % Transform & Load
+    % Transform & Load - use bash with stdin redirect
     safe_format('~n  \U0001F4CA Stage 2: Transform & Load (Python)~n', []),
-    compile_dynamic_source(analyze_orders/3, [], TransformCode),
-    write_and_execute_bash(TransformCode, ExtractOutput, TransformOutput),
+    TempExtract = 'test_output/temp_extract.txt',
+    open(TempExtract, write, TempStream),
+    write(TempStream, ExtractOutput),
+    close(TempStream),
+    format(atom(TransformCmd), 'bash test_output/analyze_orders.sh < ~w', [TempExtract]),
+    process_create(path(bash), ['-c', TransformCmd],
+                  [stdout(pipe(TransformOut)), stderr(null), process(TransformPID)]),
+    read_string(TransformOut, _, TransformOutput),
+    close(TransformOut),
+    process_wait(TransformPID, exit(_)),
     safe_format('    ~w', [TransformOutput]),
 
-    % Query
+    % Query - use saved script
     safe_format('~n  \U0001F4C8 Stage 3: Query (SQLite)~n', []),
-    compile_dynamic_source(top_products/3, [], QueryCode),
-    write_and_execute_bash(QueryCode, '', QueryOutput),
+    process_create(path(bash), ['test_output/top_products.sh'],
+                  [stdout(pipe(QueryOut)), stderr(null), process(QueryPID)]),
+    read_string(QueryOut, _, QueryOutput),
+    close(QueryOut),
+    process_wait(QueryPID, exit(_)),
     safe_format('    Results:~n~w~n', [QueryOutput]),
 
     % Verify end-to-end
