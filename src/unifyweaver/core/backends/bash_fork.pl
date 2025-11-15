@@ -13,7 +13,7 @@
 ]).
 
 :- use_module(library(process)).
-:- use_module(library(filesex), [chmod/2]).
+:- use_module(library(filesex)).
 :- use_module(library(lists)).
 
 %% ============================================ 
@@ -192,7 +192,7 @@ spawn_worker() {
 
     # Execute in background
     bash "$SCRIPT_PATH" < "$batch_file" > "$output_file" 2>&1 &
-    chmod 666 "$output_file"
+    chmod 666 "$output_file" 2>/dev/null || true
     local pid=$!
 
     # Track worker
