@@ -586,6 +586,67 @@ powershell.exe -File ./scripts/powershell-compat/test_compat_layer_wsl.ps1
 
 ## Priority 6: Future Enhancements (Post v0.0.2)
 
+### 14a. Investigate C# Test Cleanup Permission Error on WSL/Dropbox
+
+**Status:** 📋 INVESTIGATION NEEDED
+**Created:** 2025-11-15
+**Priority:** Low (doesn't affect test results, just cleanup)
+**Platform:** WSL + Dropbox sync
+
+**Issue:**
+During C# query target tests, cleanup occasionally fails with permission errors:
+```
+warning: could not cleanup tmp/csharp_query_test_reachable_8b6ea072-c24d-11f0-aac7-00155d6d13b7:
+error(permission_error(delete,directory,tmp/csharp_query_test_reachable_8b6ea072-c24d-11f0-aac7-00155d6d13b7),
+context(system:delete_directory/1,Permission denied))
+```
+
+**Observed During:**
+- `test_csharp_query_target.pl` execution
+- Specifically on `reachable` test case
+- Only affects cleanup, not test execution or results
+- All tests pass successfully despite cleanup warning
+
+**Possible Causes:**
+1. **Dropbox Sync Conflict** - Dropbox holding file handles during sync
+2. **WSL File System Timing** - Windows/Linux file system sync delay
+3. **dotnet Process Cleanup** - .NET runtime still holding files
+4. **Prolog Cleanup Bug** - SWI-Prolog's `delete_directory/1` issue on WSL
+
+**Current Impact:**
+- ✅ Tests pass correctly
+- ✅ C# code generation works
+- ✅ C# execution works
+- ⚠️ Temporary directories not cleaned up (minor disk space issue)
+- ⚠️ Warning message in test output (cosmetic)
+
+**Investigation Steps:**
+1. Check if issue is specific to Dropbox-synced directories
+2. Test with `--csharp-query-keep` flag (intentionally preserve dirs)
+3. Add delay before cleanup to allow Windows/WSL sync
+4. Check if dotnet process cleanup is complete before directory deletion
+5. Test on native Linux (non-WSL) to isolate WSL-specific issues
+6. Test on non-Dropbox directory to isolate sync issues
+
+**Potential Solutions:**
+- Add retry logic with delay for directory cleanup
+- Skip cleanup on WSL + Dropbox (log warning instead)
+- Use different temp directory location (outside Dropbox)
+- Improve process cleanup sequencing
+
+**Workaround:**
+- Use `--csharp-query-keep` flag to intentionally preserve directories
+- Manual cleanup: `rm -rf tmp/csharp_query_test_*`
+
+**Estimated Effort:** 3-5 hours (investigation + fix + testing)
+
+**Related:**
+- `tests/core/test_csharp_query_target.pl` - Test file with cleanup code
+- WSL + Dropbox sync behavior
+- SWI-Prolog's `delete_directory/1` implementation
+
+---
+
 ### 15. Optimization Strategy Predicates
 
 **Status:** 📋 FUTURE ENHANCEMENT
