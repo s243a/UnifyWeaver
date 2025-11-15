@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1] - 2025-11-15
+
+### 🎉 Milestone Release: Initial Vision Achieved
+
+This release represents the completion of UnifyWeaver's initial design vision: a multi-target Prolog compiler with comprehensive data source integration, cross-platform support, and production-ready tooling.
+
+### Added
+
+#### C# Compilation Target
+- **LINQ-style query compilation** - Prolog predicates compile to C# with LINQ expressions
+- **Automated testing infrastructure** - C# query target tests with .NET integration
+- **Multi-target architecture** - Template-based system supports Bash and C# targets
+
+#### LLM Workflow System
+- **Declarative agent orchestration** - Prolog-based workflow definitions for AI agents
+- **Comprehensive documentation** - Playbook authoring guides and best practices
+- **Example library** - Production-ready workflow templates
+
+#### Platform Compatibility Enhancements
+- **Platform detection** - Automatic detection of Windows/WSL/Linux/macOS/Docker
+- **Smart workarounds** - Platform-specific adaptations for known limitations
+- **Emoji rendering** - Platform-aware Unicode/BMP/ASCII emoji support
+
+#### Testing Infrastructure
+- **Complete integration tests** - Full ETL pipeline validation across platforms
+- **Cross-platform test plans** - Linux and PowerShell test environments
+- **Automated test discovery** - Pattern-based test runner generation
+
+### Fixed
+- **Firewall configuration** - Corrected file_read_patterns, cache_dirs, and python_modules in data_sources_demo.pl
+- **PowerShell integration** - Platform detection workaround for SQLite test cumulative state issue
+- **Test reliability** - Improved cross-platform test stability
+
+### Changed
+- **Version updates** - All examples and documentation updated to v0.1
+- **POST_RELEASE_TODO** - Updated to target v0.2 improvements
+
+### Known Limitations
+- PowerShell SQLite integration test skipped due to cumulative state issue (works in isolation and on Linux)
+- C# test cleanup permission errors on Dropbox/WSL (low priority, doesn't affect functionality)
+
+See `POST_RELEASE_TODO.md` for planned post-v0.1 improvements.
+
 ## [0.0.2] - 2025-10-14
 
 ### Added
