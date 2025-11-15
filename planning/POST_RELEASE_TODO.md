@@ -586,7 +586,87 @@ powershell.exe -File ./scripts/powershell-compat/test_compat_layer_wsl.ps1
 
 ## Priority 6: Future Enhancements (Post v0.0.2)
 
-### 14a. Investigate C# Test Cleanup Permission Error on WSL/Dropbox
+### 14a. Fix PowerShell Integration Test Hang After 3rd Data Source Test
+
+**Status:** 📋 CRITICAL BUG - WORKAROUND IN PLACE
+**Created:** 2025-11-15
+**Priority:** High (blocks full integration testing on Windows)
+**Platform:** PowerShell/Windows only (works fine on Linux/WSL bash)
+
+**Issue:**
+Integration test hangs during SQLite source compilation after running CSV, JSON, and Python tests. The compilation starts but never completes, causing the entire test suite to hang.
+
+**Symptoms:**
+```
+[CODE] === Python Source Test ===
+  ✅ Python processing working
+
+[SAVE] === SQLite Source Test ===
+DEBUG: About to compile top_products/3
+Compiling dynamic source: top_products/3 using python
+  Compiling Python source: top_products/3
+<HANGS HERE - never returns>
+```
+
+**What Works:**
+- ✅ SQLite test runs successfully in ISOLATION
+- ✅ SQLite test runs successfully on LINUX
+- ✅ All previous tests (CSV, JSON, Python) pass on PowerShell
+- ✅ Sequential compilation works in isolation
+- ✅ Database operations work in isolation
+- ✅ Mode switching (inline → sqlite) works in isolation
+
+**What Fails:**
+- ❌ SQLite compilation ONLY when run after CSV + JSON + Python tests on PowerShell
+- ❌ Hangs inside `compile_source/4` in `python_source.pl`
+- ❌ Never reaches the end of compilation
+- ❌ No error message - just silent hang
+
+**Investigation Performed:**
+1. ✅ Ruled out timing issues (increasing sleep didn't help)
+2. ✅ Ruled out mode switching (inline→sqlite works in isolation)
+3. ✅ Ruled out database locking (DB operations work in sequence)
+4. ✅ Ruled out process execution issues (works with execution in isolation)
+5. ✅ Confirmed compilation starts but doesn't complete
+6. ✅ Confirmed it's a cumulative state issue (only after 3 previous tests)
+
+**Root Cause (Suspected):**
+State corruption in python_source.pl or template system after multiple compilations on PowerShell/Windows. The exact failure point is inside `compile_source/4` after printing "Compiling Python source: top_products/3" but before returning.
+
+**Workaround (v0.0.2):**
+Skip `test_sqlite_source` on Windows platform in integration test:
+```prolog
+(   get_platform(Platform),
+    Platform = windows
+->  safe_format('  ⚠ Skipped on Windows (known issue - works on Linux)~n', [])
+;   test_sqlite_source
+)
+```
+
+**Files Affected:**
+- `examples/integration_test.pl` - Contains workaround
+- `src/unifyweaver/sources/python_source.pl` - Suspected location of bug
+
+**Next Steps:**
+1. Add extensive debug logging inside `python_source.pl:compile_source/4`
+2. Check for global state or caching issues in template system
+3. Check for resource leaks after multiple `render_named_template` calls
+4. Test with different PowerShell versions
+5. Compare SWI-Prolog behavior on Windows vs Linux
+6. Potentially refactor to avoid state accumulation
+
+**Estimated Effort:** 6-10 hours
+- Investigation: 4-6 hours (trace execution, add logging)
+- Fix: 2-3 hours (once root cause found)
+- Testing: 1 hour (verify on both platforms)
+
+**Related:**
+- All isolated test files in `test_env_ps9/test_*.pl` work correctly
+- Linux integration test passes completely (test_env14)
+
+---
+
+### 14b. Investigate C# Test Cleanup Permission Error on WSL/Dropbox
 
 **Status:** 📋 INVESTIGATION NEEDED
 **Created:** 2025-11-15
