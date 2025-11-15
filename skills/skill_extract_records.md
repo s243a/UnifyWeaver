@@ -15,27 +15,36 @@ Use this tool when you are given a path to a Markdown file or directory and your
 *   You need to handle multi-line content blocks reliably.
 *   You need the output in a structured format like JSON.
 
-## 3. Tool: `extract_records.pl`
+## 3. Tooling Options
+
+Preferred parser order (see [docs/playbooks/parsing/README.md](../docs/playbooks/parsing/README.md) for details):
+1. `scripts/utils/extract_records.pl` (Perl, built-in)
+2. Python extractor (future, documented in the parser README)
+3. External `parsc` CLI (when Perl/Python are unavailable)
+
+The remainder of this skill covers option #1, which ships with the repo.
+
+### 3.1. Tool: `extract_records.pl`
 
 The implementation of this skill is the Perl script `scripts/utils/extract_records.pl`.
 
-### 3.1. Command-Line Interface
+#### Command-Line Interface
 
 ```
 extract_records [OPTIONS] [PATH...]
 ```
 
-### 3.2. Options
+#### Options
 
 | Flag | Argument | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `-s`, `--separator` | `<char>` | `\0` | The character for separating output records. |
 | `-f`, `--format` | `full`\|`content`\|`json` | `full` | The output format for each record. |
 | `-q`, `--query` | `<pattern>` | (none) | A regex pattern to filter records by their `name` metadata. |
-| `--file-filter` | `<key=value>` | `file_type=UnifyWeaver Example Library` | Filters files based on their YAML frontmatter. Use `"all"` to disable. |
+| `--file-filter` | `<key=value>` | `file_type=UnifyWeaver Example Library` | Filters files based on their YAML frontmatter. Use `all` (or empty) to disable. |
 | `-h`, `--help` | | | Display the help message. |
 
-### 3.3. Output Formats
+#### Output Formats
 
 - **`full`:** Outputs the entire original Markdown block for each matching record.
 - **`content`:** Outputs only the raw content of the record's code block.
@@ -45,8 +54,4 @@ extract_records [OPTIONS] [PATH...]
 
 For concrete usage patterns, an agent should query the example library.
 
-**Example Query:**
-To find examples of how to use this tool, run the following command:
-```bash
-scripts/utils/extract_records.pl --query "unifyweaver.tool_usage.extract_*" "education/UnifyWeaver_Education/book-workflow/examples_library/tool_usage_examples.md"
-```
+**Example Query:** see the parser README and the playbook example library for concrete invocations tied to current playbooks.

@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Getopt::Long qw(GetOptions);
 use File::Find;
-use Path::Tiny;
+use JSON::PP ();
 
 # =============================================================================
 # Tool: extract_records.pl
@@ -67,16 +67,17 @@ if (@files_to_process) {
 
 sub process_file {
     my ($filepath) = @_;
-    my $content = path($filepath)->slurp_utf8;
-    # TODO: Implement YAML frontmatter filtering based on --file-filter
-    parse_and_print_records($content, $filepath);
+    my $content = slurp_file($filepath);
+    my ($front_matter, $body) = split_front_matter($content);
+    return unless front_matter_matches($front_matter);
+    parse_and_print_records($body, $filepath);
 }
 
 sub process_stdin {
-    # TODO:
-    # 1. Read content from STDIN
-    # 2. Call parse_and_print_records()
-    print "# Processing STDIN\n"; # Placeholder
+    my $content = do { local $/; <STDIN> };
+    my ($front_matter, $body) = split_front_matter($content // '');
+    return unless front_matter_matches($front_matter);
+    parse_and_print_records($body, 'STDIN');
 }
 
 sub parse_and_print_records {
@@ -140,13 +141,62 @@ sub process_found_record {
     if ($format eq 'content') {
         print $code;
     } elsif ($format eq 'json') {
-        require JSON::PP;
         $metadata{'content'} = $code;
         print JSON::PP->new->pretty->encode(\%metadata);
     } else { # 'full'
         print $full_content;
     }
     print $separator;
+}
+
+sub split_front_matter {
+    my ($content) = @_;
+    my @lines = split /\n/, $content, -1;
+    return ({}, $content) unless @lines && $lines[0] =~ /^---\s*$/;
+
+    shift @lines; # drop opening ---
+    my @front_lines;
+    while (@lines) {
+        my $line = shift @lines;
+        last if $line =~ /^---\s*$/;
+        push @front_lines, $line;
+    }
+    my $body = join("\n", @lines);
+
+    my %front;
+    for my $line (@front_lines) {
+        $line =~ s/\r$//;
+        next unless $line =~ /\S/;
+        my ($k, $v) = split /:\s*/, $line, 2;
+        $k =~ s/\s+$// if defined $k;
+        $v =~ s/\s+$// if defined $v;
+        $front{$k} = defined $v ? $v : '';
+    }
+
+    return (\%front, $body);
+}
+
+sub front_matter_matches {
+    my ($front) = @_;
+    return 1 unless defined $file_filter && length $file_filter && $file_filter ne 'all';
+    my @clauses = split /\s*,\s*/, $file_filter;
+    foreach my $clause (@clauses) {
+        next unless length $clause;
+        my ($k, $v) = split /=/, $clause, 2;
+        for ($k, $v) { $_ = '' unless defined $_; s/^\s+|\s+$//g; }
+        return 0 unless exists $front->{$k} && $front->{$k} eq $v;
+    }
+    return 1;
+}
+
+sub slurp_file {
+    my ($filepath) = @_;
+    open my $fh, '<:encoding(UTF-8)', $filepath
+        or die "Cannot open $filepath: $!";
+    local $/;
+    my $content = <$fh>;
+    close $fh;
+    return $content;
 }
 
 exit 0;
