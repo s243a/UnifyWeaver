@@ -15,6 +15,7 @@ Set standards for authoring agent-friendly, concise, and adaptable playbooks acr
 - Favor readable Markdown sections and clear headers.
 - Minimize embedded code; link to the example database or project docs when possible.
 - Use bullet points and tables for comparisons, when appropriate.
+- For complex, multi-step `Execution Directions`, prefer creating a single, machine-readable script in the example database. The playbook should then simply instruct the agent to extract and execute that record. This keeps the playbook high-level while providing unambiguous, testable implementation details.
 
 ## Example Template
 ```

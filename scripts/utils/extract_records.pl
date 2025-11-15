@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Getopt::Long qw(GetOptions);
 use File::Find;
-use Path::Tiny;
+use JSON::PP ();
 
 # =============================================================================
 # Tool: extract_records.pl
@@ -67,31 +67,136 @@ if (@files_to_process) {
 
 sub process_file {
     my ($filepath) = @_;
-    # TODO:
-    # 1. Read file content
-    # 2. Check for YAML frontmatter
-    # 3. Apply --file-filter
-    # 4. If valid, call parse_and_print_records()
-    print "# Processing file: $filepath\n"; # Placeholder
+    my $content = slurp_file($filepath);
+    my ($front_matter, $body) = split_front_matter($content);
+    return unless front_matter_matches($front_matter);
+    parse_and_print_records($body, $filepath);
 }
 
 sub process_stdin {
-    # TODO:
-    # 1. Read content from STDIN
-    # 2. Call parse_and_print_records()
-    print "# Processing STDIN\n"; # Placeholder
+    my $content = do { local $/; <STDIN> };
+    my ($front_matter, $body) = split_front_matter($content // '');
+    return unless front_matter_matches($front_matter);
+    parse_and_print_records($body, 'STDIN');
 }
 
 sub parse_and_print_records {
     my ($content, $filepath) = @_;
-    # TODO:
-    # 1. Find all record headers (###)
-    # 2. For each record:
-    #    a. Parse metadata callout
-    #    b. Apply --query filter to 'name'
-    #    c. Extract content block
-    #    d. Format output based on --format
-    #    e. Print formatted output followed by separator
+    my @lines = split /\n/, $content;
+
+    my $in_record = 0;
+    my $in_metadata = 0;
+    my $in_code = 0;
+    my $record_content = '';
+    my %metadata = ();
+    my $code_content = '';
+    my $header = '';
+
+    for my $line (@lines) {
+        if ($line =~ /^###\s*(.*)/) {
+            # We found a new record header, process the previous one if it exists
+            if ($in_record) {
+                process_found_record(\%metadata, $header, $code_content, $record_content);
+            }
+            # Reset for the new record
+            $in_record = 1;
+            $in_metadata = 0;
+            $in_code = 0;
+            $record_content = "$line\n";
+            %metadata = ();
+            $code_content = '';
+            $header = $1;
+        } elsif ($in_record) {
+            $record_content .= "$line\n";
+            if ($line =~ /^>\s*\[!example-record\]/) {
+                $in_metadata = 1;
+            } elsif ($in_metadata && $line =~ /^>\s*(\w+):\s*(.*)/) {
+                $metadata{$1} = $2;
+            } elsif ($in_metadata && $line !~ /^>/) {
+                $in_metadata = 0; # End of metadata block
+            } elsif ($line =~ /^```/) {
+                $in_code = !$in_code; # Toggle in/out of code block
+            } elsif ($in_code) {
+                $code_content .= "$line\n";
+            }
+        }
+    }
+    # Process the last record if it exists
+    if ($in_record) {
+        process_found_record(\%metadata, $header, $code_content, $record_content);
+    }
+}
+
+sub process_found_record {
+    my ($metadata_ref, $header, $code, $full_content) = @_;
+    my %metadata = %{$metadata_ref};
+    $metadata{'header'} = $header;
+
+    # Apply query filter
+    if ($query) {
+        return unless $metadata{'name'} && $metadata{'name'} =~ /$query/;
+    }
+
+    # Format and print
+    if ($format eq 'content') {
+        print $code;
+    } elsif ($format eq 'json') {
+        $metadata{'content'} = $code;
+        print JSON::PP->new->pretty->encode(\%metadata);
+    } else { # 'full'
+        print $full_content;
+    }
+    print $separator;
+}
+
+sub split_front_matter {
+    my ($content) = @_;
+    my @lines = split /\n/, $content, -1;
+    return ({}, $content) unless @lines && $lines[0] =~ /^---\s*$/;
+
+    shift @lines; # drop opening ---
+    my @front_lines;
+    while (@lines) {
+        my $line = shift @lines;
+        last if $line =~ /^---\s*$/;
+        push @front_lines, $line;
+    }
+    my $body = join("\n", @lines);
+
+    my %front;
+    for my $line (@front_lines) {
+        $line =~ s/\r$//;
+        next unless $line =~ /\S/;
+        my ($k, $v) = split /:\s*/, $line, 2;
+        $k =~ s/\s+$// if defined $k;
+        $v =~ s/\s+$// if defined $v;
+        $front{$k} = defined $v ? $v : '';
+    }
+
+    return (\%front, $body);
+}
+
+sub front_matter_matches {
+    my ($front) = @_;
+    return 1 unless defined $file_filter && length $file_filter && $file_filter ne 'all';
+    my @clauses = split /\s*,\s*/, $file_filter;
+    foreach my $clause (@clauses) {
+        next unless length $clause;
+        my ($k, $v) = split /=/, $clause, 2;
+        for ($k, $v) { $_ = '' unless defined $_; s/^\s+|\s+$//g; }
+        return 0 unless exists $front->{$k} && $front->{$k} eq $v;
+    }
+    return 1;
+}
+
+sub slurp_file {
+    my ($filepath) = @_;
+    open my $fh, '<:encoding(UTF-8)', $filepath
+        or die "Cannot open $filepath: $!";
+    local $/;
+    my $content = <$fh>;
+    close $fh;
+    return $content;
 }
 
 exit 0;

@@ -1,127 +1,33 @@
-# Playbook: Parallel Execution Pipeline (MapReduce Style)
+# Playbook: Parallel Execution Pipeline
 
-## Goal
+## Audience
+This playbook is a high-level guide for coding agents (Gemini CLI, Claude Code, etc.). Agents do not handwrite scripts here—they orchestrate UnifyWeaver to generate and run the MapReduce pipeline by referencing example records and skills.
 
-Demonstrate UnifyWeaver's MapReduce-style parallel execution capabilities by partitioning a dataset, processing the partitions in parallel, and aggregating the results.
+## Workflow Overview
+Use UnifyWeaver to synthesize the entire MapReduce flow:
+1. Partition the logical input stream (1..1000) into fixed-size chunks; each chunk becomes one worker invocation.
+2. Declare the worker (“map”) component once; UnifyWeaver emits the bash script that sums integers from STDIN.
+3. In Prolog, register the `fixed_size` partitioner and the `bash_fork` backend, then call `backend_execute/4` so UnifyWeaver forks bash jobs for every partition.
+4. Reduce by iterating over the `result(PartitionID, Output)` terms and summing their payloads. Compare the aggregate with the arithmetic-series expectation (see [4]).
 
-## Context
+## Agent Inputs
+Reference the following artifacts instead of embedding raw commands:
+1. **Executable Record** – `unifyweaver.execution.parallel_sum_pipeline` in `playbooks/examples_library/parallel_examples.md`.
+2. **Parser Catalog** – `docs/playbooks/parsing/README.md` lists the available extractors (Perl, Python, `parsc`) and usage order.
+3. **Extraction Skill** – `skills/skill_extract_records.md` documents CLI flags and environment notes.
+4. **Reviewer Reference** – `docs/development/testing/playbooks/parallel_execution_playbook__reference.md` for validation details.
 
-This playbook tests the project's advanced parallel execution features. UnifyWeaver provides modules for declaratively partitioning data and executing worker scripts across these partitions using different parallel backends. This is a powerful pattern for high-performance data processing.
+## Execution Guidance
+1. Choose a parser per [2] (preferred order: Perl script `scripts/utils/extract_records.pl`, Python implementation, then `parsc`). Extract record [1] into a temporary bash file.
+2. Ensure `TMP_FOLDER` (and optional `WORKER_SCRIPT`) resolve to a writable directory. Execute the extracted script; it materializes the worker, generates the Prolog orchestrator, and drives `backend_execute/4` to launch the parallel run.
+3. Confirm the final log matches the expectation in [4]. For failures, inspect the generated script or the `bash_fork` logs; parser-specific troubleshooting lives in [2] and [3].
 
-> NOTE: All temporary artifacts live under `${TMP_FOLDER:-tmp}`. Run the playbook from the repo root and follow the TMP guidance in `docs/development/ai-skills/workflow_environment.md`.
+## Expected Outcome
+- Successful runs print `SUCCESS: ...` with the arithmetic sum and exit 0 (see [4] for exact wording).
+- Errors typically stem from TMP misconfiguration or unsupported parser choice; reconsult [2]/[3].
 
-This playbook is based on **Demo 1** from `examples/demo_partition_parallel.pl`.
-
-## Strategy
-
-1.  **Setup:** Create a temporary Prolog file and ensure all necessary modules (`partitioner`, `parallel_backend`, etc.) are loaded.
-2.  **Define Worker Logic:** Create a simple bash "worker" script that can process one partition of data (e.g., sum a list of numbers).
-3.  **Orchestrate Pipeline:** Write a main Prolog predicate that:
-    a.  Generates a dataset.
-    b.  Uses the `partitioner` module to split the data into chunks.
-    c.  Uses the `parallel_backend` module to execute the worker script on each chunk in parallel.
-    d.  Uses an `aggregator` predicate to sum the results from the parallel workers.
-    e.  Verifies the final result.
-4.  **Execute and Verify:** Run the main Prolog script and confirm the final output is correct.
-
-## Detailed Execution Steps (for Agent)
-
-### Step 1: Create the Worker Script
-
-Create a simple bash script that reads numbers from standard input and prints their sum.
-
-**Save to file:**
-```bash
-TMP_FOLDER="${TMP_FOLDER:-tmp}"
-mkdir -p "$TMP_FOLDER"
-cat > "$TMP_FOLDER/sum_worker.sh" <<'EOF'
-#!/bin/bash
-# Sum all numbers from stdin
-sum=0
-while IFS= read -r line; do
-    if [[ "$line" =~ ^[0-9]+$ ]]; then
-        sum=$((sum + line))
-    fi
-done
-echo "$sum"
-EOF
-chmod +x /tmp/sum_worker.sh
-```
-
-### Step 2: Create the Prolog Orchestration Script
-
-Create a Prolog script that defines and runs the entire pipeline.
-
-**Save to file:**
-```bash
-cat > "$TMP_FOLDER/parallel_pipeline.pl" <<'EOF'
-:- use_module('src/unifyweaver/core/partitioner').
-:- use_module('src/unifyweaver/core/partitioners/fixed_size').
-:- use_module('src/unifyweaver/core/parallel_backend').
-:- use_module('src/unifyweaver/core/backends/bash_fork').
-
-% aggregate_sums(+Results, -TotalSum)
-% Sums the integer results from the parallel workers.
-aggregate_sums(Results, TotalSum) :-
-    findall(Sum,
-            (   member(result(_, Output), Results),
-                atom_string(Output, OutputStr),
-                split_string(OutputStr, "\n", " \t\r", [SumStr|_]),
-                number_string(Sum, SumStr)
-            ),
-            Sums),
-    sum_list(Sums, TotalSum).
-
-% setup_system/0
-% Registers the required backends and partitioners.
-setup_system :-
-    register_backend(bash_fork, bash_fork_backend),
-    register_partitioner(fixed_size, fixed_size_partitioner).
-
-% run_pipeline/0
-% The main predicate that orchestrates the parallel execution.
-run_pipeline :-
-    % 0. Register components
-    setup_system,
-
-    % 1. Generate Data
-    numlist(1, 1000, Numbers),
-
-    % 2. Partition Data
-    partitioner_init(fixed_size(rows(100)), [], PHandle),
-    partitioner_partition(PHandle, Numbers, Partitions),
-    partitioner_cleanup(PHandle),
-
-    % 3. Execute in Parallel
-    backend_init(bash_fork(workers(4)), BHandle),
-    backend_execute(BHandle, Partitions, 'tmp/sum_worker.sh', Results),
-    backend_cleanup(BHandle),
-
-    % 4. Aggregate and Verify
-    aggregate_sums(Results, TotalSum),
-    ExpectedSum is 1000 * 1001 / 2,
-    (   TotalSum =:= ExpectedSum ->
-        format('SUCCESS: Final sum is ~w~n', [TotalSum])
-    ;   format('FAILURE: Expected ~w but got ~w~n', [ExpectedSum, TotalSum]),
-        halt(1)
-    ).
-EOF
-```
-
-### Step 3: Execute the Pipeline
-
-Run the Prolog orchestration script.
-
-```bash
-swipl -g "consult('${TMP_FOLDER:-tmp}/parallel_pipeline.pl'), run_pipeline, halt"
-```
-
-## Verification
-
-**Expected output:**
-The command should execute without errors and print the following line to standard output:
-```
-SUCCESS: Final sum is 500500
-```
-
-The script should exit with status code 0.
+## Citations
+[1] playbooks/examples_library/parallel_examples.md (`unifyweaver.execution.parallel_sum_pipeline`)  
+[2] docs/playbooks/parsing/README.md  
+[3] skills/skill_extract_records.md  
+[4] docs/development/testing/playbooks/parallel_execution_playbook__reference.md
