@@ -20,10 +20,10 @@
     services([awk, python3, curl, jq]),
     network_access(allowed),
     network_hosts(['*.typicode.com', '*.github.com', 'api.example.com']),
-    python_modules([sys, json, sqlite3, csv, re]),
-    file_read_patterns(['data/*', 'examples/*']),
+    python_modules([sys, json, sqlite3, csv, re, collections]),
+    file_read_patterns(['data/*', 'examples/*', 'input/*']),
     file_write_patterns(['output/*', 'tmp/*']),
-    cache_dirs(['/tmp/*', 'cache/*'])
+    cache_dirs(['/tmp', 'cache'])
 ])).
 
 %% ============================================
