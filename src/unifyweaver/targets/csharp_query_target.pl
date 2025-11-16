@@ -61,6 +61,11 @@ predicate_dependencies(Name/Arity, Dependencies) :-
     ).
 
 compute_dependency_group(Pred/Arity, GroupSpecs) :-
+    (   is_dynamic_source(Pred/Arity)
+    ->  dynamic_source_error('C# query target', Pred, Arity),
+        fail
+    ;   true
+    ),
     build_dependency_graph([Pred/Arity], [], [], Vertices, [], Edges),
     sort(Vertices, SortedVertices),
     vertices_edges_to_ugraph(SortedVertices, Edges, Graph),

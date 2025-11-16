@@ -11,6 +11,8 @@
 :- use_module(library(process)).
 :- use_module(library(uuid)).
 :- use_module(library(csharp_query_target)).
+:- use_module(library(csharp_stream_target)).
+:- use_module('src/unifyweaver/core/dynamic_source_compiler').
 
 :- dynamic cqt_option/2.
 :- dynamic user:test_factorial/2.
@@ -31,6 +33,7 @@ test_csharp_query_target :-
     verify_comparison_plan,
     verify_recursive_plan,
     verify_mutual_recursion_plan,
+    verify_dynamic_source_rejection,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
 
@@ -261,6 +264,29 @@ verify_mutual_recursion_plan :-
     member(OddRecursive, OddVariants),
     sub_term(cross_ref{predicate:predicate{name:test_even, arity:1}, role:delta, type:cross_ref, width:_}, OddRecursive),
     maybe_run_query_runtime(Plan, ['0', '2', '4']).
+
+verify_dynamic_source_rejection :-
+    setup_dynamic_source_stub(PredIndicator),
+    \+ csharp_query_target:build_query_plan(PredIndicator, [target(csharp_query)], _),
+    \+ csharp_stream_target:compile_predicate_to_csharp(PredIndicator, [], _),
+    teardown_dynamic_source_stub(PredIndicator).
+
+setup_dynamic_source_stub(Pred/Arity) :-
+    Pred = test_dynamic_source_rows,
+    Arity = 2,
+    dynamic_source_compiler:register_source_type(test_dynamic_source, test_dynamic_source_plugin),
+    dynamic_source_compiler:register_dynamic_source(Pred/Arity, test_dynamic_source,
+        [ record_separator(nul),
+          field_separator(':'),
+          record_format(text_line),
+          quote_style(none),
+          input(file('tests/data/fake_dynamic.csv'))
+        ]).
+
+teardown_dynamic_source_stub(Pred/Arity) :-
+    retractall(dynamic_source_compiler:dynamic_source_def(Pred/Arity, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(Pred/Arity, _)),
+    retractall(dynamic_source_compiler:source_type_registry(test_dynamic_source, _)).
 
 % Run with build-first approach, optionally skipping execution
 maybe_run_query_runtime(Plan, ExpectedRows) :-
