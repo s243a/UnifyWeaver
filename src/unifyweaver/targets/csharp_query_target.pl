@@ -17,6 +17,9 @@
 :- use_module(library(error)).
 :- use_module(library(lists)).
 :- use_module(library(ugraphs), [vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3]).
+:- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1]).
+
+:- dynamic reported_dynamic_source/3.
 
 spec_signature(predicate{name:Name, arity:Arity}, Name/Arity).
 
@@ -50,7 +53,7 @@ predicate_dependencies(Name/Arity, Dependencies) :-
                 member(Term, Terms),
                 \+ constraint_goal(Term),
                 term_signature(Term, Dep),
-                predicate_defined(Dep)
+                require_defined_non_dynamic(Dep)
             ),
             RawDeps),
         sort(RawDeps, Dependencies)
@@ -94,16 +97,46 @@ sort_components(Pred/Arity, Specs, [HeadSpec|RestSpecs]) :-
 
 signature_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
 
+ensure_no_dynamic_sources(_, []).
+ensure_no_dynamic_sources(TargetLabel, [Pred/Arity|Rest]) :-
+    (   is_dynamic_source(Pred/Arity)
+    ->  dynamic_source_error(TargetLabel, Pred, Arity)
+    ;   ensure_no_dynamic_sources(TargetLabel, Rest)
+    ).
+
+require_defined_non_dynamic(Pred/Arity) :-
+    (   predicate_defined(Pred/Arity)
+    ->  true
+    ;   (   is_dynamic_source(Pred/Arity)
+        ->  dynamic_source_error('C# query target', Pred, Arity)
+        ;   fail
+        )
+    ).
+
+dynamic_source_error(TargetLabel, Pred, Arity) :-
+    (   reported_dynamic_source(TargetLabel, Pred, Arity)
+    ->  fail
+    ;   assertz(reported_dynamic_source(TargetLabel, Pred, Arity)),
+        format('[~w] ERROR: ~w/~w is defined via source/3. Dynamic sources are not yet supported by this C# target.~n',
+               [TargetLabel, Pred, Arity]),
+        format('[~w] HINT: Compile this predicate via compiler_driver with a bash target or dynamic_source_compiler:compile_dynamic_source/3.~n',
+               [TargetLabel]),
+        fail
+    ).
+
 %% build_query_plan(+PredIndicator, +Options, -PlanDict) is semidet.
 %  Produce a declarative plan describing how to evaluate the requested
 %  predicate. Plans are represented as dicts containing the head descriptor,
 %  root operator, materialised fact tables, and metadata.
 build_query_plan(Pred/Arity, Options, Plan) :-
+    retractall(reported_dynamic_source(_, _, _)),
     must_be(atom, Pred),
     must_be(integer, Arity),
     Arity >= 0,
     HeadSpec = predicate{name:Pred, arity:Arity},
     compute_dependency_group(Pred/Arity, GroupSpecs),
+    maplist(spec_signature, GroupSpecs, GroupIndicators),
+    ensure_no_dynamic_sources('C# query target', GroupIndicators),
     (   GroupSpecs = [HeadSpec]
     ->  gather_predicate_clauses(HeadSpec, Clauses),
         partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
@@ -713,8 +746,11 @@ ensure_relation(Pred, Arity, RelationsIn, RelationsOut) :-
     ->  RelationsOut = RelationsIn
     ;   gather_fact_rows(Pred, Arity, Rows),
         (   Rows == []
-        ->  format(user_error, 'C# query target: no facts available for ~w/~w.~n', [Pred, Arity]),
-            fail
+        ->  (   is_dynamic_source(Pred/Arity)
+            ->  dynamic_source_error('C# query target', Pred, Arity)
+            ;   format(user_error, 'C# query target: no facts available for ~w/~w.~n', [Pred, Arity]),
+                fail
+            )
         ;   Relation = relation{predicate:predicate{name:Pred, arity:Arity}, facts:Rows},
             RelationsOut = [Relation|RelationsIn]
         )
