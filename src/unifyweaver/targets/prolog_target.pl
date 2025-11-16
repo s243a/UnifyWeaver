@@ -20,11 +20,15 @@
 :- module(prolog_target, [
     generate_prolog_script/3,     % +UserPredicates, +Options, -ScriptCode
     analyze_dependencies/2,       % +UserPredicates, -RequiredModules
-    write_prolog_script/2         % +ScriptCode, +OutputPath
+    write_prolog_script/2,        % +ScriptCode, +OutputPath
+    write_prolog_script/3         % +ScriptCode, +OutputPath, +Options
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(apply)).
+:- use_module(library(option)).
+:- use_module(prolog_dialects).
+:- use_module(prolog_constraints).
 
 %% ============================================
 %% MAIN ENTRY POINT
@@ -35,24 +39,51 @@
 %
 %  @arg UserPredicates List of predicate indicators (Pred/Arity)
 %  @arg Options Compilation options:
+%       - dialect(Dialect) - Target Prolog dialect (swi, gnu) default: swi
 %       - entry_point(Goal) - Main goal to execute (default: main)
 %       - inline_runtime(true/false) - Inline runtime library vs reference
 %       - arguments(ArgSpec) - Command-line argument parsing
 %       - output_mode(Mode) - stdout, file, return
+%       - compile(true/false) - Generate compilation command for dialect
 %  @arg ScriptCode Generated script as atom
 %
 %  @example Generate script for user predicates
-%    ?- generate_prolog_script([process_data/2, helper/1], [], Code).
+%    ?- generate_prolog_script([process_data/2, helper/1], [dialect(gnu)], Code).
 generate_prolog_script(UserPredicates, Options, ScriptCode) :-
+    % 0. Determine target dialect
+    option(dialect(Dialect), Options, swi),
+
+    % Validate dialect support
+    (   supported_dialect(Dialect)
+    ->  true
+    ;   format(atom(Error), 'Unsupported dialect: ~w', [Dialect]),
+        throw(error(unsupported_dialect(Dialect), Error))
+    ),
+
+    % Validate predicates for dialect
+    validate_for_dialect(Dialect, UserPredicates, Issues),
+    (   Issues = []
+    ->  true
+    ;   format('[Warning] Compatibility issues for ~w: ~w~n', [Dialect, Issues])
+    ),
+
     % 1. Analyze what user code needs
     analyze_dependencies(UserPredicates, Dependencies),
 
-    % 2. Generate script components
-    generate_shebang(ShebangCode),
-    generate_header(UserPredicates, Options, HeaderCode),
-    generate_module_imports(Dependencies, Options, ImportsCode),
+    % 2. Generate dialect-specific script components
+    dialect_shebang(Dialect, ShebangCode),
+
+    EnhancedOptions = [predicates(UserPredicates)|Options],
+    dialect_header(Dialect, EnhancedOptions, HeaderCode),
+
+    dialect_imports(Dialect, Dependencies, ImportsCode),
+
     generate_user_code(UserPredicates, Options, UserCode),
-    generate_entry_point(Options, EntryCode),
+
+    option(entry_point(EntryGoal), Options, main),
+    dialect_initialization(Dialect, EntryGoal, InitCode),
+
+    generate_main_predicate(Options, MainCode),
 
     % 3. Assemble complete script
     atomic_list_concat([
@@ -60,7 +91,9 @@ generate_prolog_script(UserPredicates, Options, ScriptCode) :-
         HeaderCode,
         ImportsCode,
         UserCode,
-        EntryCode
+        '\n% === Entry Point ===',
+        MainCode,
+        InitCode
     ], '\n\n', ScriptCode).
 
 %% ============================================
@@ -179,11 +212,19 @@ generate_user_code(UserPredicates, Options, Code) :-
     atomic_list_concat([Header|PredCodes], '\n\n', Code).
 
 %% generate_predicate_code(+Pred/Arity, +Options, -Code)
-%  Generate code for a single predicate
-generate_predicate_code(Pred/Arity, _Options, Code) :-
-    % For now, use verbatim copying
-    % TODO: Add template-based generation for configured predicates
-    copy_predicate_clauses(Pred/Arity, Code).
+%  Generate code for a single predicate with constraint handling
+generate_predicate_code(Pred/Arity, Options, Code) :-
+    % Get dialect for constraint handling
+    option(dialect(Dialect), Options, swi),
+
+    % Copy predicate clauses verbatim
+    copy_predicate_clauses(Pred/Arity, BaseCode),
+
+    % Apply constraints if specified
+    (   option(constraints(Constraints), Options)
+    ->  handle_constraints(Constraints, Dialect, Pred/Arity, BaseCode, Code)
+    ;   Code = BaseCode  % No constraints, use verbatim copy
+    ).
 
 %% copy_predicate_clauses(+Pred/Arity, -Code)
 %  Copy predicate clauses verbatim using introspection
@@ -226,8 +267,7 @@ generate_entry_point(Options, Code) :-
     ),
 
     % Build entry goal line
-    atom_concat('    ', EntryGoalStr, EntryGoalIndented),
-    atom_concat(EntryGoalIndented, ',', EntryGoalLine),
+    format(atom(EntryGoalLine), '    ~w,', [EntryGoalStr]),
 
     % Build lines
     atomic_list_concat([
@@ -374,9 +414,39 @@ backend_requires_module(gnu_parallel, plugin_registration(backend, gnu_parallel,
 %% OUTPUT GENERATION
 %% ============================================
 
+%%generate_main_predicate(+Options, -MainPred)
+%  Generate main/0 predicate from options
+generate_main_predicate(Options, MainPred) :-
+    option(entry_point(EntryGoal), Options, main),
+    option(arguments(ArgSpec), Options, none),
+
+    (   ArgSpec = none
+    ->  ArgParseCode = ''
+    ;   generate_argument_parsing(ArgSpec, ArgParseCode)
+    ),
+
+    format(atom(EntryGoalStr), '~w', [EntryGoal]),
+    format(atom(EntryGoalLine), '    ~w,', [EntryGoalStr]),
+
+    atomic_list_concat([
+        'main :-',
+        ArgParseCode,
+        EntryGoalLine,
+        '    halt(0).',
+        '',
+        'main :-',
+        '    format(user_error, \'Error: Execution failed~n\', []),',
+        '    halt(1).'
+    ], '\n', MainPred).
+
 %% write_prolog_script(+ScriptCode, +OutputPath)
 %  Write generated script to file and make executable
 write_prolog_script(ScriptCode, OutputPath) :-
+    write_prolog_script(ScriptCode, OutputPath, []).
+
+%% write_prolog_script(+ScriptCode, +OutputPath, +Options)
+%  Write script with compilation support
+write_prolog_script(ScriptCode, OutputPath, Options) :-
     % Write script
     open(OutputPath, write, Stream, [encoding(utf8)]),
     write(Stream, ScriptCode),
@@ -387,7 +457,24 @@ write_prolog_script(ScriptCode, OutputPath) :-
     format(atom(ChmodCmd), 'chmod +x ~w', [OutputPath]),
     shell(ChmodCmd),
 
-    format('[PrologTarget] Generated executable script: ~w~n', [OutputPath]).
+    format('[PrologTarget] Generated script: ~w~n', [OutputPath]),
+
+    % Optionally compile for dialects that support it
+    (   option(compile(true), Options),
+        option(dialect(Dialect), Options)
+    ->  compile_script(Dialect, OutputPath)
+    ;   true
+    ).
+
+%% compile_script(+Dialect, +ScriptPath)
+%  Compile script using dialect-specific compiler
+compile_script(Dialect, ScriptPath) :-
+    (   dialect_compile_command(Dialect, ScriptPath, CompileCmd)
+    ->  format('[PrologTarget] Compiling with ~w: ~w~n', [Dialect, CompileCmd]),
+        shell(CompileCmd),
+        format('[PrologTarget] Compilation complete~n')
+    ;   format('[PrologTarget] Dialect ~w does not support compilation~n', [Dialect])
+    ).
 
 %% ============================================
 %% UTILITY PREDICATES
