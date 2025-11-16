@@ -73,6 +73,9 @@ This applies to:
   - Tool detection
   - Examples and best practices
 
+- **[playbooks/xml_data_source_playbook.md](../playbooks/xml_data_source_playbook.md)** - XML Data Source Playbook
+  - Processing XML data using Python.
+
 ### Testing
 
 - **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Testing infrastructure
