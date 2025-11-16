@@ -5,7 +5,7 @@ Validate that UnifyWeaver can ingest a CSV file as a declarative source, expose 
 
 ## Inputs & Artifacts
 - Source definition: `csv_pipeline.pl`
-- Example documentation: `examples/csv_data_source_playbook.md`
+- Example documentation: `playbooks/csv_data_source_playbook.md`
 - Test data: `test_data/test_users.csv`
 - Output directory (configurable): `output/csv_playbook`
 
@@ -50,5 +50,5 @@ Validate that UnifyWeaver can ingest a CSV file as a declarative source, expose 
 | Empty output | `sort -u` deduped everything or CSV data missing | Inspect `test_data/test_users.csv`; ensure duplicates exist if you expect multiples. |
 
 ## Related Material
-- Human-readable playbook narrative: `examples/csv_data_source_playbook.md`
+- Human-readable playbook narrative: `playbooks/csv_data_source_playbook.md`
 - Principles and workflow guidance: `education/book-workflow/examples_library/data_source_playbooks.md`
