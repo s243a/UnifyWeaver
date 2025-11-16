@@ -2,16 +2,16 @@
 
 ## Overview
 This document is a reviewer’s guide and checklist for validating the agent-facing parallel execution playbook:
-[examples/parallel_execution_playbook.md](../../../../examples/parallel_execution_playbook.md).
+[playbooks/parallel_execution_playbook.md](../../../../playbooks/parallel_execution_playbook.md).
 
-- **The executable playbook designed for agents and LLMs resides in the examples folder.**
+- **The executable playbook designed for agents and LLMs resides in the playbooks folder.**
 - This guide provides context, test conventions, validation steps, and expected behaviors when the playbook is run by an agent.
 
 ## Agent Execution Example
 
 An AI coding agent (e.g., Gemini, Claude) can be prompted with:
 ```
-Pretend you have fresh context and run the playbook at examples/parallel_execution_playbook.md
+Pretend you have fresh context and run the playbook at playbooks/parallel_execution_playbook.md
 ```
 
 ## Purpose
@@ -19,7 +19,7 @@ Pretend you have fresh context and run the playbook at examples/parallel_executi
 This document validates UnifyWeaver's ability to perform MapReduce-style parallel data processing. The aim is to ensure partitioning, worker execution, aggregation, and verification all function correctly when orchestrated by an agent using the playbook.
 
 ## Inputs & Artifacts
-- Playbook file: `examples/parallel_execution_playbook.md`
+- Playbook file: `playbooks/parallel_execution_playbook.md`
 - Worker script: `${TMP_FOLDER:-tmp}/sum_worker.sh`
 - Orchestration script: `${TMP_FOLDER:-tmp}/parallel_pipeline.pl`
 - Temporary directory for artifacts: `${TMP_FOLDER:-tmp}`
@@ -66,6 +66,6 @@ This document validates UnifyWeaver's ability to perform MapReduce-style paralle
 
 ## Related Material
 
-- Agent-facing playbook: [examples/parallel_execution_playbook.md](../../../../examples/parallel_execution_playbook.md)
+- Agent-facing playbook: [playbooks/parallel_execution_playbook.md](../../../../playbooks/parallel_execution_playbook.md)
 - Workflow environment guidance: `docs/development/ai-skills/workflow_environment.md`
 - Demo script: `examples/demo_partition_parallel.pl`
