@@ -13,6 +13,8 @@
 :- use_module(library(csharp_query_target)).
 :- use_module(library(csharp_stream_target)).
 :- use_module('src/unifyweaver/core/dynamic_source_compiler').
+:- use_module('src/unifyweaver/sources').
+:- use_module('src/unifyweaver/sources/csv_source').
 
 :- dynamic cqt_option/2.
 :- dynamic user:test_factorial/2.
@@ -33,7 +35,7 @@ test_csharp_query_target :-
     verify_comparison_plan,
     verify_recursive_plan,
     verify_mutual_recursion_plan,
-    verify_dynamic_source_rejection,
+    verify_dynamic_source_plan,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
 
@@ -95,7 +97,8 @@ cleanup_test_data :-
     retractall(user:test_parity_input(_)),
     retractall(user:test_even(_)),
     retractall(user:test_odd(_)),
-    retractall(user:test_reachable(_, _)).
+    retractall(user:test_reachable(_, _)),
+    cleanup_csv_dynamic_source.
 
 verify_fact_plan :-
     csharp_query_target:build_query_plan(test_fact/2, [target(csharp_query)], Plan),
@@ -265,28 +268,22 @@ verify_mutual_recursion_plan :-
     sub_term(cross_ref{predicate:predicate{name:test_even, arity:1}, role:delta, type:cross_ref, width:_}, OddRecursive),
     maybe_run_query_runtime(Plan, ['0', '2', '4']).
 
-verify_dynamic_source_rejection :-
-    setup_dynamic_source_stub(PredIndicator),
-    \+ csharp_query_target:build_query_plan(PredIndicator, [target(csharp_query)], _),
-    \+ csharp_stream_target:compile_predicate_to_csharp(PredIndicator, [], _),
-    teardown_dynamic_source_stub(PredIndicator).
+verify_dynamic_source_plan :-
+    setup_csv_dynamic_source,
+    csharp_query_target:build_query_plan(test_user_age/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'DelimitedTextReader'),
+    sub_string(Source, _, _, _, 'test_users.csv'),
+    cleanup_csv_dynamic_source.
 
-setup_dynamic_source_stub(Pred/Arity) :-
-    Pred = test_dynamic_source_rows,
-    Arity = 2,
-    dynamic_source_compiler:register_source_type(test_dynamic_source, test_dynamic_source_plugin),
-    dynamic_source_compiler:register_dynamic_source(Pred/Arity, test_dynamic_source,
-        [ record_separator(nul),
-          field_separator(':'),
-          record_format(text_line),
-          quote_style(none),
-          input(file('tests/data/fake_dynamic.csv'))
-        ]).
+setup_csv_dynamic_source :-
+    source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),
+    assertz(user:(test_user_age(Name, Age) :- test_users(_, Name, Age))).
 
-teardown_dynamic_source_stub(Pred/Arity) :-
-    retractall(dynamic_source_compiler:dynamic_source_def(Pred/Arity, _, _)),
-    retractall(dynamic_source_compiler:dynamic_source_metadata(Pred/Arity, _)),
-    retractall(dynamic_source_compiler:source_type_registry(test_dynamic_source, _)).
+cleanup_csv_dynamic_source :-
+    retractall(user:test_user_age(_, _)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_users/3, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_users/3, _)).
 
 % Run with build-first approach, optionally skipping execution
 maybe_run_query_runtime(Plan, ExpectedRows) :-

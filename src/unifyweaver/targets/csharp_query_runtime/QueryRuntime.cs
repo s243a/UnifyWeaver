@@ -6,6 +6,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
+using System.Text;
 
 namespace UnifyWeaver.QueryRuntime
 {
@@ -681,6 +683,175 @@ namespace UnifyWeaver.QueryRuntime
                     return hash;
                 }
             }
+        }
+    }
+}
+
+namespace UnifyWeaver.QueryRuntime.Dynamic
+{
+    public enum RecordSeparatorKind
+    {
+        LineFeed,
+        Null
+    }
+
+    public enum QuoteStyle
+    {
+        None,
+        DoubleQuote,
+        SingleQuote,
+        Json
+    }
+
+    public sealed record DynamicSourceConfig
+    {
+        public string InputPath { get; init; } = string.Empty;
+        public string FieldSeparator { get; init; } = ",";
+        public RecordSeparatorKind RecordSeparator { get; init; } = RecordSeparatorKind.LineFeed;
+        public QuoteStyle QuoteStyle { get; init; } = QuoteStyle.None;
+        public int SkipRows { get; init; } = 0;
+        public int ExpectedWidth { get; init; } = 0;
+    }
+
+    public sealed class DelimitedTextReader
+    {
+        private readonly DynamicSourceConfig _config;
+
+        public DelimitedTextReader(DynamicSourceConfig config)
+        {
+            _config = config ?? throw new ArgumentNullException(nameof(config));
+            if (string.IsNullOrWhiteSpace(_config.InputPath))
+                throw new ArgumentException("InputPath is required", nameof(config));
+            if (string.IsNullOrEmpty(_config.FieldSeparator))
+                throw new ArgumentException("FieldSeparator is required", nameof(config));
+            if (_config.ExpectedWidth <= 0)
+                throw new ArgumentException("ExpectedWidth must be positive", nameof(config));
+        }
+
+        public IEnumerable<object[]> Read()
+        {
+            return _config.RecordSeparator == RecordSeparatorKind.Null
+                ? ReadNullSeparated()
+                : ReadLineSeparated();
+        }
+
+        private IEnumerable<object[]> ReadLineSeparated()
+        {
+            using var reader = new StreamReader(_config.InputPath, Encoding.UTF8);
+            SkipRows(reader);
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+                yield return ParseRecord(line);
+            }
+        }
+
+        private IEnumerable<object[]> ReadNullSeparated()
+        {
+            using var stream = File.OpenRead(_config.InputPath);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var text = reader.ReadToEnd();
+            var parts = text.Split('\0');
+            for (int i = _config.SkipRows; i < parts.Length; i++)
+            {
+                var record = parts[i];
+                if (record.Length == 0)
+                {
+                    continue;
+                }
+                yield return ParseRecord(record);
+            }
+        }
+
+        private void SkipRows(StreamReader reader)
+        {
+            for (int i = 0; i < _config.SkipRows; i++)
+            {
+                if (reader.ReadLine() is null)
+                {
+                    break;
+                }
+            }
+        }
+
+        private object[] ParseRecord(string record)
+        {
+            List<string> fields = _config.QuoteStyle == QuoteStyle.None
+                ? ParseWithoutQuotes(record)
+                : ParseWithQuotes(record);
+
+            if (fields.Count != _config.ExpectedWidth)
+            {
+                throw new InvalidDataException($"Expected {_config.ExpectedWidth} columns but found {fields.Count} in record: {record}");
+            }
+            return fields.Select(f => (object)f).ToArray();
+        }
+
+        private List<string> ParseWithoutQuotes(string record)
+        {
+            var parts = record.Split(_config.FieldSeparator, StringSplitOptions.None);
+            return parts.ToList();
+        }
+
+        private List<string> ParseWithQuotes(string record)
+        {
+            var values = new List<string>();
+            var builder = new StringBuilder();
+            bool inQuotes = false;
+            char quoteChar = _config.QuoteStyle switch
+            {
+                QuoteStyle.DoubleQuote => '"',
+                QuoteStyle.SingleQuote => '\'',
+                _ => '"'
+            };
+            var separator = _config.FieldSeparator;
+
+            for (int i = 0; i < record.Length; i++)
+            {
+                var c = record[i];
+                if (c == quoteChar)
+                {
+                    if (inQuotes && i + 1 < record.Length && record[i + 1] == quoteChar)
+                    {
+                        builder.Append(c);
+                        i++;
+                    }
+                    else
+                    {
+                        inQuotes = !inQuotes;
+                    }
+                }
+                else if (!inQuotes && MatchesSeparator(record, i, separator))
+                {
+                    values.Add(builder.ToString());
+                    builder.Clear();
+                    i += separator.Length - 1;
+                }
+                else
+                {
+                    builder.Append(c);
+                }
+            }
+
+            values.Add(builder.ToString());
+            return values;
+        }
+
+        private static bool MatchesSeparator(string record, int index, string separator)
+        {
+            if (separator.Length == 1)
+            {
+                return record[index] == separator[0];
+            }
+            if (index + separator.Length > record.Length)
+            {
+                return false;
+            }
+            return string.CompareOrdinal(record, index, separator, 0, separator.Length) == 0;
         }
     }
 }

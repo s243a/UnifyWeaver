@@ -17,9 +17,7 @@
 :- use_module(library(error)).
 :- use_module(library(lists)).
 :- use_module(library(ugraphs), [vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3]).
-:- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1]).
-
-:- dynamic reported_dynamic_source/3.
+:- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1, dynamic_source_metadata/2]).
 
 spec_signature(predicate{name:Name, arity:Arity}, Name/Arity).
 
@@ -36,8 +34,11 @@ gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses) :-
         ),
         ClausePairs),
     (   ClausePairs == []
-    ->  format(user_error, 'C# query target: no clauses defined for ~w/~w.~n', [Pred, Arity]),
-        fail
+    ->  (   dynamic_source_metadata(Pred/Arity, _)
+        ->  Clauses = []
+        ;   format(user_error, 'C# query target: no clauses defined for ~w/~w.~n', [Pred, Arity]),
+            fail
+        )
     ;   Clauses = ClausePairs
     ).
 
@@ -53,7 +54,9 @@ predicate_dependencies(Name/Arity, Dependencies) :-
                 member(Term, Terms),
                 \+ constraint_goal(Term),
                 term_signature(Term, Dep),
-                require_defined_non_dynamic(Dep)
+                (   predicate_defined(Dep)
+                ;   dynamic_source_metadata(Dep, _)
+                )
             ),
             RawDeps),
         sort(RawDeps, Dependencies)
@@ -61,11 +64,6 @@ predicate_dependencies(Name/Arity, Dependencies) :-
     ).
 
 compute_dependency_group(Pred/Arity, GroupSpecs) :-
-    (   is_dynamic_source(Pred/Arity)
-    ->  dynamic_source_error('C# query target', Pred, Arity),
-        fail
-    ;   true
-    ),
     build_dependency_graph([Pred/Arity], [], [], Vertices, [], Edges),
     sort(Vertices, SortedVertices),
     vertices_edges_to_ugraph(SortedVertices, Edges, Graph),
@@ -102,46 +100,16 @@ sort_components(Pred/Arity, Specs, [HeadSpec|RestSpecs]) :-
 
 signature_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
 
-ensure_no_dynamic_sources(_, []).
-ensure_no_dynamic_sources(TargetLabel, [Pred/Arity|Rest]) :-
-    (   is_dynamic_source(Pred/Arity)
-    ->  dynamic_source_error(TargetLabel, Pred, Arity)
-    ;   ensure_no_dynamic_sources(TargetLabel, Rest)
-    ).
-
-require_defined_non_dynamic(Pred/Arity) :-
-    (   predicate_defined(Pred/Arity)
-    ->  true
-    ;   (   is_dynamic_source(Pred/Arity)
-        ->  dynamic_source_error('C# query target', Pred, Arity)
-        ;   fail
-        )
-    ).
-
-dynamic_source_error(TargetLabel, Pred, Arity) :-
-    (   reported_dynamic_source(TargetLabel, Pred, Arity)
-    ->  fail
-    ;   assertz(reported_dynamic_source(TargetLabel, Pred, Arity)),
-        format('[~w] ERROR: ~w/~w is defined via source/3. Dynamic sources are not yet supported by this C# target.~n',
-               [TargetLabel, Pred, Arity]),
-        format('[~w] HINT: Compile this predicate via compiler_driver with a bash target or dynamic_source_compiler:compile_dynamic_source/3.~n',
-               [TargetLabel]),
-        fail
-    ).
-
 %% build_query_plan(+PredIndicator, +Options, -PlanDict) is semidet.
 %  Produce a declarative plan describing how to evaluate the requested
 %  predicate. Plans are represented as dicts containing the head descriptor,
 %  root operator, materialised fact tables, and metadata.
 build_query_plan(Pred/Arity, Options, Plan) :-
-    retractall(reported_dynamic_source(_, _, _)),
     must_be(atom, Pred),
     must_be(integer, Arity),
     Arity >= 0,
     HeadSpec = predicate{name:Pred, arity:Arity},
     compute_dependency_group(Pred/Arity, GroupSpecs),
-    maplist(spec_signature, GroupSpecs, GroupIndicators),
-    ensure_no_dynamic_sources('C# query target', GroupIndicators),
     (   GroupSpecs = [HeadSpec]
     ->  gather_predicate_clauses(HeadSpec, Clauses),
         partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
@@ -749,13 +717,13 @@ dedup_relations([Relation|Rest], Seen, Acc, Unique) :-
 ensure_relation(Pred, Arity, RelationsIn, RelationsOut) :-
     (   relation_present(RelationsIn, Pred, Arity)
     ->  RelationsOut = RelationsIn
+    ;   dynamic_source_metadata(Pred/Arity, Metadata)
+    ->  Relation = relation{predicate:predicate{name:Pred, arity:Arity}, facts:dynamic(Metadata)},
+        RelationsOut = [Relation|RelationsIn]
     ;   gather_fact_rows(Pred, Arity, Rows),
         (   Rows == []
-        ->  (   is_dynamic_source(Pred/Arity)
-            ->  dynamic_source_error('C# query target', Pred, Arity)
-            ;   format(user_error, 'C# query target: no facts available for ~w/~w.~n', [Pred, Arity]),
-                fail
-            )
+        ->  format(user_error, 'C# query target: no facts available for ~w/~w.~n', [Pred, Arity]),
+            fail
         ;   Relation = relation{predicate:predicate{name:Pred, arity:Arity}, facts:Rows},
             RelationsOut = [Relation|RelationsIn]
         )
@@ -789,7 +757,7 @@ render_plan_to_csharp(Plan, Code) :-
     get_dict(root, Plan, Root),
     get_dict(relations, Plan, Relations),
     get_dict(is_recursive, Plan, IsRecursive),
-    relation_blocks(Relations, ProviderBody),
+    relation_blocks(Relations, ProviderBody, UsesDynamic),
     (   ProviderBody == ''
     ->  ProviderSection = ''
     ;   format(atom(ProviderSection), '~w~n', [ProviderBody])
@@ -801,11 +769,17 @@ render_plan_to_csharp(Plan, Code) :-
     ->  RecLiteral = 'true'
     ;   RecLiteral = 'false'
     ),
+    (   UsesDynamic == true
+    ->  DynamicUsing = 'using UnifyWeaver.QueryRuntime.Dynamic;
+'
+    ;   DynamicUsing = ''
+    ),
     format(atom(Code),
 '// Auto-generated by UnifyWeaver
 using System;
 using System.Linq;
 using UnifyWeaver.QueryRuntime;
+~w
 
 namespace UnifyWeaver.Generated
 {
@@ -823,7 +797,7 @@ namespace UnifyWeaver.Generated
         }
     }
 }
-', [ModuleClass, ProviderSection, PredStr, Arity, PlanExpr, RecLiteral]).
+', [DynamicUsing, ModuleClass, ProviderSection, PredStr, Arity, PlanExpr, RecLiteral]).
 
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, relation_scan), !,
@@ -1018,20 +992,94 @@ join_projection_expression(LeftWidth, RightWidth, Expr) :-
     append(LeftItems, RightItems, Items),
     atomic_list_concat(Items, ', ', Expr).
 
-relation_blocks(Relations, ProviderStatements) :-
+relation_blocks(Relations, ProviderStatements, UsesDynamic) :-
     findall(Line,
         (   member(relation{predicate:predicate{name:Name, arity:Arity}, facts:Rows}, Relations),
+            Rows \= dynamic(_),
             member(Row, Rows),
             atom_string(Name, NameStr),
             maplist(csharp_literal, Row, ArgLiterals),
             atomic_list_concat(ArgLiterals, ', ', ArgList),
             format(atom(Line), '            provider.AddFact(new PredicateId("~w", ~w), ~w);', [NameStr, Arity, ArgList])
         ),
-        Lines),
-    (   Lines == []
-    ->  ProviderStatements = ''
-    ;   atomic_list_concat(Lines, '\n', ProviderStatements)
+        FactLines),
+    findall(Block,
+        (   member(relation{predicate:predicate{name:Name, arity:Arity}, facts:dynamic(Metadata)}, Relations),
+            dynamic_relation_block(Name, Arity, Metadata, Block)
+        ),
+        DynamicBlocks),
+    append(FactLines, DynamicBlocks, AllLines),
+    (   AllLines == []
+    ->  ProviderStatements = '',
+        UsesDynamic = false
+    ;   atomic_list_concat(AllLines, '\n', ProviderStatements),
+        (   DynamicBlocks == []
+        ->  UsesDynamic = false
+        ;   UsesDynamic = true
+        )
     ).
+
+dynamic_relation_block(Name, Arity, Metadata, Block) :-
+    atom_string(Name, NameStr),
+    get_dict(field_separator, Metadata, FieldSep0),
+    field_separator_literal(FieldSep0, FieldSepLiteral),
+    get_dict(record_separator, Metadata, RecSep0),
+    record_separator_literal(RecSep0, RecSepLiteral),
+    get_dict(quote_style, Metadata, QuoteStyle0),
+    quote_style_literal(QuoteStyle0, QuoteLiteral),
+    (   get_dict(skip_rows, Metadata, SkipRows)
+    ->  true
+    ;   SkipRows = 0
+    ),
+    get_dict(input, Metadata, InputSpec),
+    input_literal(InputSpec, InputLiteral),
+    format(atom(Block),
+'            foreach (var row in new DelimitedTextReader(new DynamicSourceConfig
+            {
+                InputPath = ~w,
+                FieldSeparator = ~w,
+                RecordSeparator = RecordSeparatorKind.~w,
+                QuoteStyle = QuoteStyle.~w,
+                SkipRows = ~w,
+                ExpectedWidth = ~w
+            }).Read())
+            {
+                provider.AddFact(new PredicateId(\"~w\", ~w), row);
+            }',
+        [InputLiteral, FieldSepLiteral, RecSepLiteral, QuoteLiteral, SkipRows, Arity, NameStr, Arity]).
+
+field_separator_literal(Value, Literal) :-
+    (   atom(Value)
+    ->  atom_string(Value, Str)
+    ;   string(Value)
+    ->  Str = Value
+    ;   term_string(Value, Str)
+    ),
+    escape_csharp_string(Str, Escaped),
+    format(atom(Literal), '@"~w"', [Escaped]).
+
+record_separator_literal(line_feed, 'LineFeed').
+record_separator_literal(nul, 'Null').
+record_separator_literal(json, 'Json').
+record_separator_literal(Value, Name) :-
+    atom_string(Value, Str),
+    capitalise_string(Str, Name).
+
+quote_style_literal(none, 'None').
+quote_style_literal(double_quote, 'DoubleQuote').
+quote_style_literal(single_quote, 'SingleQuote').
+quote_style_literal(json_escape, 'Json').
+quote_style_literal(Value, Name) :-
+    atom_string(Value, Str),
+    capitalise_string(Str, Name).
+
+input_literal(file(Path), Literal) :-
+    csharp_literal(Path, Literal).
+input_literal(stdin, Literal) :-
+    csharp_literal('stdin', Literal).
+input_literal(pipe(Command), Literal) :-
+    term_string(Command, String),
+    csharp_literal(String, Literal).
 
 csharp_literal(Value, Literal) :-
     (   number(Value)

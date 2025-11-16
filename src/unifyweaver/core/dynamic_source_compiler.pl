@@ -214,6 +214,7 @@ extract_io_metadata(Options, Meta) :-
     normalize_record_format(RawFormat, RecordFormat),
     option(input(RawInput), Options, stdin),
     normalize_input(RawInput, Input),
+    option(skip_lines(SkipRows), Options, 0),
     option(quote_style(RawQuote), Options, none),
     normalize_quote_style(RawQuote, QuoteStyle),
     Meta = metadata{
@@ -221,6 +222,7 @@ extract_io_metadata(Options, Meta) :-
         field_separator:FieldSep,
         record_format:RecordFormat,
         input:Input,
+        skip_rows:SkipRows,
         quote_style:QuoteStyle
     }.
 
@@ -239,7 +241,8 @@ normalize_record_format(json, json) :- !.
 normalize_record_format(Format, Format).
 
 normalize_input(stdin, stdin) :- !.
-normalize_input(file(Path), file(Path)) :- !.
+normalize_input(file(Path0), file(Path)) :- !,
+    expand_file_name(Path0, [Path|_]).
 normalize_input(pipe(Command), pipe(Command)) :- !.
 normalize_input(Value, Value).
 
