@@ -219,7 +219,7 @@ field_reference(N, Field) :-
 %% generate_quote_handling_code(+QuoteChar, +Handling, -Code)
 %  Generate awk code for quote handling
 generate_quote_handling_code(QuoteChar, strip, Code) :-
-    format(atom(Code), 'gsub(/~w/, "", $0)', [QuoteChar]).
+    format(atom(Code), 'gsub(/\\~w/, "", $0)', [QuoteChar]).
 generate_quote_handling_code(_QuoteChar, preserve, '') :-
     % No quote handling - preserve as-is
     true.
