@@ -539,7 +539,9 @@ var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(result.Provider);
 foreach (var row in executor.Execute(result.Plan))
 {
-    Console.WriteLine(string.Join(",", row.Select(v => v?.ToString() ?? string.Empty)));
+    var escaped = row.Select(v => v?.ToString() ?? string.Empty)
+                     .Select(value => value.Contains(\",\") ? $\"\\\"{value.Replace(\"\\\"\", \"\\\"\\\"\")}\\\"\" : value);
+    Console.WriteLine(string.Join(\",\", escaped));
 }
 ', [ModuleClass]).
 
