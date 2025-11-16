@@ -2,16 +2,16 @@
 
 ## Overview
 This document serves as a reviewer's guide and validation checklist for the agent-facing playbook found at:
-[examples/csv_data_source_playbook.md](../../../../examples/csv_data_source_playbook.md).
+[playbooks/csv_data_source_playbook.md](../../../../playbooks/csv_data_source_playbook.md).
 
-- **The executable playbook for agents and LLMs is located in the examples folder.**
+- **The executable playbook for agents and LLMs is located in the playbooks folder.**
 - This reference offers context, test conventions, manual validation steps, and expected outputs when the playbook is run by an agent.
 
 ## Agent Execution Example
 
 You (or an LLM agent) can execute the workflow using a prompt like:
 ```
-Pretend you have fresh context and run the playbook at examples/csv_data_source_playbook.md
+Pretend you have fresh context and run the playbook at playbooks/csv_data_source_playbook.md
 ```
 
 ## Purpose
@@ -19,7 +19,7 @@ The purpose of this document is to validate that UnifyWeaver ingests a CSV file 
 
 ## Inputs & Artifacts
 - Source definition: `csv_pipeline.pl`
-- Example documentation: `examples/csv_data_source_playbook.md`
+- Example documentation: `playbooks/csv_data_source_playbook.md`
 - Test data: `test_data/test_users.csv`
 - Output directory (configurable): `output/csv_playbook`
 
@@ -64,5 +64,5 @@ The purpose of this document is to validate that UnifyWeaver ingests a CSV file 
 | Empty output | `sort -u` deduped everything or CSV data missing | Inspect `test_data/test_users.csv`; ensure duplicates exist if you expect multiples. |
 
 ## Related Material
-- Agent-facing playbook: `examples/csv_data_source_playbook.md`
+- Agent-facing playbook: `playbooks/csv_data_source_playbook.md`
 - Principles and workflow guidance: `education/book-workflow/examples_library/data_source_playbooks.md`
