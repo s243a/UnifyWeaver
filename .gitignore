@@ -44,7 +44,7 @@ __pycache__/
 
 # Claude Code (entire directory - user-specific)
 .claude/
-
+coro.json
 # VSCode
 .vscode/
 *.code-workspace
