@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **XML Data Source Playbook** - A new playbook for processing XML data.
+  - `playbooks/xml_data_source_playbook.md` - The playbook itself.
+  - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
+  - `docs/development/testing/playbooks/xml_data_source_playbook__reference.md` - The reference document for reviewers.
+  - Updated `docs/EXTENDED_README.md` to include the new playbook.
+
 ## [0.1] - 2025-11-15
 
 ### 🎉 Milestone Release: Initial Vision Achieved
