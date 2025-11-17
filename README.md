@@ -186,6 +186,10 @@ sibling(X, Y)     % Same parent, different children
     jq_filter('.users[] | {name, email} | @tsv'),
     json_file('data.json')
 ]).
+
+% XML processing with Python
+:- data_source_driver(python).
+:- data_source_work_fn(sum_prices).
 ```
 
 ### Complete ETL Pipeline Demo
@@ -218,6 +222,7 @@ swipl -g main -t halt examples/pipeline_demo.pl
 - **JSON** - jq integration for filtering and transformation
 - **HTTP** - REST APIs with caching and custom headers
 - **Python** - Inline scripts and SQLite queries
+- **XML** - XML processing via Python
 
 ### ⚠️ Current Limitations
 

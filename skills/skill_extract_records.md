@@ -50,8 +50,67 @@ extract_records [OPTIONS] [PATH...]
 - **`content`:** Outputs only the raw content of the record's code block.
 - **`json`:** Outputs a stream of JSON objects, one for each record.
 
-## 4. Examples
+## 4. Record Types and How to Use Them
 
-For concrete usage patterns, an agent should query the example library.
+**CRITICAL**: Records can contain different types of code. You must run them appropriately based on their type.
 
-**Example Query:** see the parser README and the playbook example library for concrete invocations tied to current playbooks.
+### 4.1. Bash Script Records
+
+Many records contain **bash scripts** (marked with ` ```bash `). These must be:
+1. Extracted with `-f content` flag
+2. Saved to a `.sh` file
+3. **Run with `bash`**, NOT with `swipl`
+
+**Example**:
+```bash
+# Extract the bash script
+perl scripts/utils/extract_records.pl \
+  -f content \
+  -q "unifyweaver.execution.xml_data_source" \
+  playbooks/examples_library/xml_examples.md \
+  > tmp/script.sh
+
+# Run it with bash (NOT swipl!)
+bash tmp/script.sh
+```
+
+### 4.2. Prolog Code Records
+
+Some records contain **Prolog code** (marked with ` ```prolog `). These can be:
+1. Extracted with `-f content` flag
+2. Saved to a `.pl` file
+3. Loaded with `swipl`
+
+**Example**:
+```bash
+# Extract Prolog code
+perl scripts/utils/extract_records.pl \
+  -f content \
+  -q "some.prolog.record" \
+  path/to/file.md \
+  > tmp/code.pl
+
+# Use with swipl
+swipl -f init.pl -g "consult('tmp/code.pl'), goal, halt"
+```
+
+### 4.3. Common Mistake: Wrong Interpreter
+
+❌ **WRONG** - Running bash script with swipl:
+```bash
+perl scripts/utils/extract_records.pl -f content ... > tmp/script.sh
+swipl -g "consult('tmp/script.sh'), ..."  # FAILS!
+```
+
+✅ **CORRECT** - Check the code fence language:
+```bash
+# If record has ```bash -> use bash
+bash tmp/script.sh
+
+# If record has ```prolog -> use swipl
+swipl -f init.pl -g "consult('tmp/code.pl'), ..."
+```
+
+## 5. Examples
+
+For concrete usage patterns, see the playbook example library and parser README.

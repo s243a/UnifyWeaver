@@ -491,6 +491,30 @@ extract_names() {
 }
 ```
 
+### XML Plugin
+
+Process XML data using Python:
+
+**Parse XML with Python:**
+```prolog
+:- data_source_driver(python).
+:- data_source_work_fn(sum_prices).
+
+:- data_source_schema([
+    string(name),
+    number(price)
+]).
+
+:- data_source_prolog_fn(xml_prolog_data_source).
+
+data_source_definition(xml_data_source, _{
+    driver: python,
+    work_fn: sum_prices,
+    schema: [string(name), number(price)],
+    prolog_fn: xml_prolog_data_source
+}).
+```
+
 ### HTTP Plugin
 
 Fetch data from REST APIs with caching:
@@ -945,6 +969,15 @@ fib 10
 # Output:
 # 55
 ```
+
+### Example 5: XML Data Source
+
+See the complete working example in the playbook: `playbooks/xml_data_source_playbook.md`.
+
+This demonstrates:
+- Defining a data source using Python to parse XML.
+- Extracting data from the XML.
+- Executing the data source.
 
 ---
 
