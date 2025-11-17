@@ -93,8 +93,8 @@ sub parse_and_print_records {
     my $header = '';
 
     for my $line (@lines) {
-        if ($line =~ /^###\s*(.*)/) {
-            # We found a new record header, process the previous one if it exists
+        if ($line =~ /^###?\s*(.*)/) {
+            # We found a new record header (## or ###), process the previous one if it exists
             if ($in_record) {
                 process_found_record(\%metadata, $header, $code_content, $record_content);
             }
@@ -132,9 +132,12 @@ sub process_found_record {
     my %metadata = %{$metadata_ref};
     $metadata{'header'} = $header;
 
-    # Apply query filter
+    # Apply query filter (check both 'id' and 'name' fields)
     if ($query) {
-        return unless $metadata{'name'} && $metadata{'name'} =~ /$query/;
+        my $matches = 0;
+        $matches = 1 if $metadata{'id'} && $metadata{'id'} =~ /$query/;
+        $matches = 1 if $metadata{'name'} && $metadata{'name'} =~ /$query/;
+        return unless $matches;
     }
 
     # Format and print
