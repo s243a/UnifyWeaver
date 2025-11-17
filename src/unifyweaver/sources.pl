@@ -83,7 +83,7 @@ augment_csv_options(Options0, Options) :-
     ;   Options5 = Options4
     ),
     (   option(csv_file(File), Options0)
-    ->  expand_file_name(File, [Abs|_]),
+    ->  absolute_file_name(File, Abs),
         ensure_option(input(file(Abs)), Options5, Options6)
     ;   Options6 = Options5
     ),

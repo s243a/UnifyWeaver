@@ -269,12 +269,18 @@ verify_mutual_recursion_plan :-
     maybe_run_query_runtime(Plan, ['0', '2', '4']).
 
 verify_dynamic_source_plan :-
-    setup_csv_dynamic_source,
+    setup_call_cleanup(
+        setup_csv_dynamic_source,
+        verify_dynamic_source_plan_(),
+        cleanup_csv_dynamic_source
+    ).
+
+verify_dynamic_source_plan_ :-
     csharp_query_target:build_query_plan(test_user_age/2, [target(csharp_query)], Plan),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'DelimitedTextReader'),
     sub_string(Source, _, _, _, 'test_users.csv'),
-    cleanup_csv_dynamic_source.
+    maybe_run_query_runtime(Plan, ['Alice,30', 'Bob,25', 'Charlie,35']).
 
 setup_csv_dynamic_source :-
     source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),
@@ -539,8 +545,18 @@ var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(result.Provider);
 foreach (var row in executor.Execute(result.Plan))
 {
-    var escaped = row.Select(v => v?.ToString() ?? string.Empty)
-                     .Select(value => value.Contains(\",\") ? $\"\\\"{value.Replace(\"\\\"\", \"\\\"\\\"\")}\\\"\" : value);
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(v => v?.ToString() ?? string.Empty)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+    var escaped = projected.Select(value => value.Contains(\",\") ? $\"\\\"{value.Replace(\"\\\"\", \"\\\"\\\"\")}\\\"\" : value)
+                            .ToArray();
+
     Console.WriteLine(string.Join(\",\", escaped));
 }
 ', [ModuleClass]).
@@ -585,7 +601,8 @@ extract_result_rows(Output, Rows) :-
     maplist(to_atom, Candidate, Rows).
 
 non_empty_line(Line) :-
-    Line \= ''.
+    Line \== '',
+    Line \== "".
 
 normalize_space_string(Line, Normalized) :-
     normalize_space(string(Normalized), Line).

@@ -1058,20 +1058,18 @@ field_separator_literal(Value, Literal) :-
     escape_csharp_string(Str, Escaped),
     format(atom(Literal), '@"~w"', [Escaped]).
 
-record_separator_literal(line_feed, 'LineFeed').
-record_separator_literal(nul, 'Null').
-record_separator_literal(json, 'Json').
+record_separator_literal(line_feed, 'LineFeed') :- !.
+record_separator_literal(nul, 'Null') :- !.
+record_separator_literal(json, 'Json') :- !.
 record_separator_literal(Value, Name) :-
-    atom_string(Value, Str),
-    capitalise_string(Str, Name).
+    literal_pascal_name(Value, Name).
 
-quote_style_literal(none, 'None').
-quote_style_literal(double_quote, 'DoubleQuote').
-quote_style_literal(single_quote, 'SingleQuote').
-quote_style_literal(json_escape, 'Json').
+quote_style_literal(none, 'None') :- !.
+quote_style_literal(double_quote, 'DoubleQuote') :- !.
+quote_style_literal(single_quote, 'SingleQuote') :- !.
+quote_style_literal(json_escape, 'Json') :- !.
 quote_style_literal(Value, Name) :-
-    atom_string(Value, Str),
-    capitalise_string(Str, Name).
+    literal_pascal_name(Value, Name).
 
 input_literal(file(Path), Literal) :-
     csharp_literal(Path, Literal).
@@ -1115,10 +1113,20 @@ plan_module_name(Plan, ModuleName) :-
 
 predicate_pascal(Atom, Pascal) :-
     atom_string(Atom, Text),
+    snake_case_to_pascal(Text, PascalString),
+    atom_string(Pascal, PascalString).
+
+literal_pascal_name(Value, Name) :-
+    (   atom(Value) -> atom_string(Value, String)
+    ;   string(Value) -> String = Value
+    ;   term_string(Value, String)
+    ),
+    snake_case_to_pascal(String, Name).
+
+snake_case_to_pascal(Text, Pascal) :-
     split_string(Text, '_', '_', Parts),
     maplist(capitalise_string, Parts, Caps),
-    atomic_list_concat(Caps, '', PascalString),
-    atom_string(Pascal, PascalString).
+    atomic_list_concat(Caps, '', Pascal).
 
 capitalise_string(Input, Output) :-
     (   Input = ''
