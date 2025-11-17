@@ -18,10 +18,64 @@ Reference the following artifacts instead of embedding raw commands:
 5. **Reviewer Reference** – `docs/development/testing/playbooks/xml_data_source_playbook__reference.md` for validation details.
 
 ## Execution Guidance
-1. **Setup environment**: Read [2] (`skills/skill_unifyweaver_environment.md`) to understand environment requirements. Ensure you are in the project root directory.
-2. **Extract record**: Choose a parser per [3] (preferred order: Perl script `scripts/utils/extract_records.pl`, Python implementation, then `parsc`). Extract record [1] into a temporary bash file.
-3. **Execute script**: Run the extracted script. It will generate the necessary Prolog and Python code to run the XML data source.
-4. **Verify output**: Confirm the final log matches the expectation in [5]. For failures, inspect the generated script and check environment setup per [2].
+
+**IMPORTANT**: The record in [1] contains a **BASH SCRIPT**, not Prolog code. You must extract it and run it with `bash`, not with `swipl`.
+
+### Step-by-Step Instructions
+
+**Step 1: Navigate to project root**
+```bash
+cd /path/to/UnifyWeaver
+```
+
+**Step 2: Extract the bash script**
+```bash
+perl scripts/utils/extract_records.pl \
+  -f content \
+  -q "unifyweaver.execution.xml_data_source" \
+  playbooks/examples_library/xml_examples.md \
+  > tmp/run_xml_example.sh
+```
+
+**Step 3: Make it executable**
+```bash
+chmod +x tmp/run_xml_example.sh
+```
+
+**Step 4: Run the bash script**
+```bash
+bash tmp/run_xml_example.sh
+```
+
+**Expected Output**:
+```
+Creating Prolog script...
+Compiling Python source to bash...
+...
+Total price: 1300
+```
+
+### What the Script Does
+
+The bash script you extracted will:
+1. Create a Prolog script in `tmp/xml_example.pl`
+2. Run SWI-Prolog to compile the Python source to bash
+3. Execute the generated bash script
+4. Output the result: "Total price: 1300"
+
+### Common Mistakes to Avoid
+
+❌ **DO NOT** try to consult the extracted file as Prolog:
+```bash
+# WRONG - This will fail!
+swipl -g "consult('tmp/run_xml_example.sh'), ..."
+```
+
+✅ **DO** run it as a bash script:
+```bash
+# CORRECT
+bash tmp/run_xml_example.sh
+```
 
 ## Expected Outcome
 - Successful runs print `Total price: 1300` and exit 0.
