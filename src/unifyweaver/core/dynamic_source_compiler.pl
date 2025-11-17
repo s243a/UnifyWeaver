@@ -12,10 +12,12 @@
     list_source_types/1,            % -Types
     register_dynamic_source/3,      % +Pred/Arity, +SourceSpec, +Options
     dynamic_source_def/3,           % +Pred/Arity, -Type, -Config (multifile)
+    dynamic_source_metadata/2,      % +Pred/Arity, -Metadata dict
     test_dynamic_source_compiler/0
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(option)).
 :- use_module(firewall).
 
 %% ============================================
@@ -25,6 +27,7 @@
 :- dynamic source_type_registry/2.  % source_type_registry(Type, Module)
 :- dynamic dynamic_source_def/3.     % dynamic_source_def(Pred/Arity, Type, Config)
 :- multifile dynamic_source_def/3.   % Allow plugins to add facts
+:- dynamic dynamic_source_metadata/2. % dynamic_source_metadata(Pred/Arity, MetaDict)
 
 %% ============================================
 %% SOURCE TYPE REGISTRATION
@@ -86,6 +89,11 @@ register_dynamic_source(Pred/Arity, SourceSpec, Options) :-
     % Store definition
     retractall(dynamic_source_def(Pred/Arity, _, _)),
     assertz(dynamic_source_def(Pred/Arity, Type, MergedConfig)),
+
+    % Store normalized IO metadata
+    extract_io_metadata(MergedConfig, Metadata),
+    retractall(dynamic_source_metadata(Pred/Arity, _)),
+    assertz(dynamic_source_metadata(Pred/Arity, Metadata)),
 
     format('Registered dynamic source: ~w/~w using ~w~n', [Pred, Arity, Type]).
 
@@ -159,7 +167,12 @@ test_dynamic_source_compiler :-
 
     % Test 3: Register dynamic source
     write('Test 3 - Register dynamic source: '),
-    register_dynamic_source(my_data/2, test_source, [option1=value1]),
+    register_dynamic_source(my_data/2, test_source,
+        [ option1=value1,
+          record_separator(nul),
+          field_separator(','),
+          input(file('data.csv'))
+        ]),
     (   is_dynamic_source(my_data/2)
     ->  writeln('PASS')
     ;   writeln('FAIL')
@@ -173,8 +186,68 @@ test_dynamic_source_compiler :-
     ;   writeln('FAIL')
     ),
 
+    write('Test 5 - Metadata extraction: '),
+    (   dynamic_source_metadata(my_data/2, Meta),
+        Meta.record_separator == nul,
+        Meta.field_separator == ',',
+        Meta.input == file('data.csv')
+    ->  writeln('PASS')
+    ;   writeln('FAIL')
+    ),
+
     % Clean up
     retractall(source_type_registry(test_source, _)),
     retractall(dynamic_source_def(my_data/2, _, _)),
+    retractall(dynamic_source_metadata(my_data/2, _)),
 
     writeln('=== Dynamic Source Compiler Tests Complete ===').
+
+%% extract_io_metadata(+Options, -Metadata:dict)
+%  Normalizes commonly-used IO descriptors so downstream targets
+%  understand how records are streamed into the predicate.
+extract_io_metadata(Options, Meta) :-
+    option(record_separator(RawRecordSep), Options, nul),
+    normalize_record_separator(RawRecordSep, RecordSep),
+    option(field_separator(RawFieldSep), Options, ':'),
+    normalize_field_separator(RawFieldSep, FieldSep),
+    option(record_format(RawFormat), Options, text),
+    normalize_record_format(RawFormat, RecordFormat),
+    option(input(RawInput), Options, stdin),
+    normalize_input(RawInput, Input),
+    option(skip_lines(SkipRows), Options, 0),
+    option(quote_style(RawQuote), Options, none),
+    normalize_quote_style(RawQuote, QuoteStyle),
+    Meta = metadata{
+        record_separator:RecordSep,
+        field_separator:FieldSep,
+        record_format:RecordFormat,
+        input:Input,
+        skip_rows:SkipRows,
+        quote_style:QuoteStyle
+    }.
+
+normalize_record_separator(line_feed, line_feed) :- !.
+normalize_record_separator(nul, nul) :- !.
+normalize_record_separator(json, json) :- !.
+normalize_record_separator(Atom, Atom).
+
+normalize_field_separator(none, none) :- !.
+normalize_field_separator(comma, ',') :- !.
+normalize_field_separator(tab, '\t') :- !.
+normalize_field_separator(Value, Value).
+
+normalize_record_format(text, text_line) :- !.
+normalize_record_format(json, json) :- !.
+normalize_record_format(Format, Format).
+
+normalize_input(stdin, stdin) :- !.
+normalize_input(file(Path0), file(Path)) :- !,
+    expand_file_name(Path0, [Path|_]).
+normalize_input(pipe(Command), pipe(Command)) :- !.
+normalize_input(Value, Value).
+
+normalize_quote_style(none, none) :- !.
+normalize_quote_style(double_quote, double_quote) :- !.
+normalize_quote_style(single_quote, single_quote) :- !.
+normalize_quote_style(json, json_escape) :- !.
+normalize_quote_style(Value, Value).

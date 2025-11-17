@@ -11,6 +11,10 @@
 :- use_module(library(process)).
 :- use_module(library(uuid)).
 :- use_module(library(csharp_query_target)).
+:- use_module(library(csharp_stream_target)).
+:- use_module('src/unifyweaver/core/dynamic_source_compiler').
+:- use_module('src/unifyweaver/sources').
+:- use_module('src/unifyweaver/sources/csv_source').
 
 :- dynamic cqt_option/2.
 :- dynamic user:test_factorial/2.
@@ -31,6 +35,7 @@ test_csharp_query_target :-
     verify_comparison_plan,
     verify_recursive_plan,
     verify_mutual_recursion_plan,
+    verify_dynamic_source_plan,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
 
@@ -92,7 +97,8 @@ cleanup_test_data :-
     retractall(user:test_parity_input(_)),
     retractall(user:test_even(_)),
     retractall(user:test_odd(_)),
-    retractall(user:test_reachable(_, _)).
+    retractall(user:test_reachable(_, _)),
+    cleanup_csv_dynamic_source.
 
 verify_fact_plan :-
     csharp_query_target:build_query_plan(test_fact/2, [target(csharp_query)], Plan),
@@ -261,6 +267,29 @@ verify_mutual_recursion_plan :-
     member(OddRecursive, OddVariants),
     sub_term(cross_ref{predicate:predicate{name:test_even, arity:1}, role:delta, type:cross_ref, width:_}, OddRecursive),
     maybe_run_query_runtime(Plan, ['0', '2', '4']).
+
+verify_dynamic_source_plan :-
+    setup_call_cleanup(
+        setup_csv_dynamic_source,
+        verify_dynamic_source_plan_(),
+        cleanup_csv_dynamic_source
+    ).
+
+verify_dynamic_source_plan_ :-
+    csharp_query_target:build_query_plan(test_user_age/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'DelimitedTextReader'),
+    sub_string(Source, _, _, _, 'test_users.csv'),
+    maybe_run_query_runtime(Plan, ['Alice,30', 'Bob,25', 'Charlie,35']).
+
+setup_csv_dynamic_source :-
+    source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),
+    assertz(user:(test_user_age(Name, Age) :- test_users(_, Name, Age))).
+
+cleanup_csv_dynamic_source :-
+    retractall(user:test_user_age(_, _)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_users/3, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_users/3, _)).
 
 % Run with build-first approach, optionally skipping execution
 maybe_run_query_runtime(Plan, ExpectedRows) :-
@@ -516,7 +545,19 @@ var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(result.Provider);
 foreach (var row in executor.Execute(result.Plan))
 {
-    Console.WriteLine(string.Join(",", row.Select(v => v?.ToString() ?? string.Empty)));
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(v => v?.ToString() ?? string.Empty)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+    var escaped = projected.Select(value => value.Contains(\",\") ? $\"\\\"{value.Replace(\"\\\"\", \"\\\"\\\"\")}\\\"\" : value)
+                            .ToArray();
+
+    Console.WriteLine(string.Join(\",\", escaped));
 }
 ', [ModuleClass]).
 
@@ -560,7 +601,8 @@ extract_result_rows(Output, Rows) :-
     maplist(to_atom, Candidate, Rows).
 
 non_empty_line(Line) :-
-    Line \= ''.
+    Line \== '',
+    Line \== "".
 
 normalize_space_string(Line, Normalized) :-
     normalize_space(string(Normalized), Line).

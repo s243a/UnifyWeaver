@@ -14,6 +14,9 @@
 :- use_module(library(lists)).
 :- use_module(library(apply)).
 :- use_module(library(date)).
+:- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1]).
+
+:- dynamic reported_dynamic_source/3.
 
 %% ============================================
 %% PUBLIC API
@@ -23,7 +26,9 @@
 %  Compile a non-recursive predicate to C# streaming code.
 %  Currently supports single-clause streaming rules composed from binary relations.
 compile_predicate_to_csharp(PredIndicator, Options, Code) :-
+    retractall(reported_dynamic_source(_, _, _)),
     PredIndicator = Pred/Arity,
+    ensure_not_dynamic_source('C# stream target', PredIndicator),
     functor(Head, Pred, Arity),
     findall(HeadCopy-BodyCopy,
             ( clause(Head, Body),
@@ -135,8 +140,25 @@ compile_multiple_rules_to_csharp(Pred, Arity, Clauses, Options, Code) :-
     list_to_set(StreamHelpers0, StreamHelpers),
     build_concat_pipeline(ClauseCalls, CombinedPipeline0),
     maybe_distinct(CombinedPipeline0, Options, CombinedPipeline),
-    compose_csharp_program(ModuleName, DataSections, StreamHelpers,
+compose_csharp_program(ModuleName, DataSections, StreamHelpers,
         TargetName, ResultType, CombinedPipeline, PrintExpr, Code).
+
+ensure_not_dynamic_source(TargetLabel, Pred/Arity) :-
+    (   is_dynamic_source(Pred/Arity)
+    ->  dynamic_source_error(TargetLabel, Pred, Arity)
+    ;   true
+    ).
+
+dynamic_source_error(TargetLabel, Pred, Arity) :-
+    (   reported_dynamic_source(TargetLabel, Pred, Arity)
+    ->  fail
+    ;   assertz(reported_dynamic_source(TargetLabel, Pred, Arity)),
+        format('[~w] ERROR: ~w/~w is defined via source/3. Dynamic sources are not yet supported by the C# stream target.~n',
+               [TargetLabel, Pred, Arity]),
+        format('[~w] HINT: Compile this predicate via compiler_driver with a bash target or dynamic_source_compiler:compile_dynamic_source/3.~n',
+               [TargetLabel]),
+        fail
+    ).
 
 process_clause_bodies([], _Pred, _Arity, _Options, _TargetName, _Index, _FactIncluded,
         DataAcc, HelperAcc, ClauseAcc, DataAcc, HelperAcc, ClauseAcc).
