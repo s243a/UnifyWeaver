@@ -1,28 +1,94 @@
-# Playbook: Data Source Integration
+# Playbook: CSV Data Source
 
-## Goal
+## Audience
+This playbook is a high-level guide for coding agents (Gemini CLI, Claude Code, etc.). Agents do not handwrite scripts here—they orchestrate UnifyWeaver to generate and run the CSV processing pipeline by referencing example records and skills.
 
-Define a CSV data source, write a Prolog predicate to process it, transpile the predicate using UnifyWeaver, and verify the resulting data pipeline.
+## Workflow Overview
+Use UnifyWeaver to synthesize the entire CSV processing flow:
+1. Define a data source that reads CSV data using the csv_source plugin.
+2. The CSV source will parse the file with headers and make data available as Prolog predicates.
+3. UnifyWeaver will compile the CSV source to bash and execute it.
 
-## Context
+## Agent Inputs
+Reference the following artifacts instead of embedding raw commands:
+1. **Executable Record** – `unifyweaver.execution.csv_data_source` in `playbooks/examples_library/csv_examples.md`.
+2. **Environment Setup Skill** – `skills/skill_unifyweaver_environment.md` explains how to set up the Prolog environment and run scripts from the project root.
+3. **Parser Catalog** – `docs/playbooks/parsing/README.md` lists the available extractors (Perl, Python, `parsc`) and usage order.
+4. **Extraction Skill** – `skills/skill_extract_records.md` documents CLI flags and environment notes.
+5. **Reviewer Reference** – `docs/development/testing/playbooks/csv_data_source_playbook__reference.md` for validation details.
 
-This playbook demonstrates an agent's ability to work with one of UnifyWeaver's core features: declarative data sources. It shows how to define a source, process it with Prolog logic, and compile it into an efficient data processing script.
+## Execution Guidance
 
-**Key Insight:** UnifyWeaver allows you to treat external data sources (like CSV, JSON, etc.) as if they were native Prolog predicates, and the compiler will generate the necessary code to read and parse them.
+**IMPORTANT**: The record in [1] contains a **BASH SCRIPT**, not Prolog code. You must extract it and run it with `bash`, not with `swipl`.
 
-## Strategy
+### Step-by-Step Instructions
 
-1.  **Define Data Source:** Create a Prolog file that uses the `:- source(...)` directive to define a predicate that reads from `test_data/test_users.csv`.
-2.  **Define Processing Logic:** In the same file, define a predicate that calls the data source predicate and processes the data (e.g., filters for a specific user).
-3.  **Transpile:** Use the `unifyweaver.compile` skill to transpile the processing predicate.
-4.  **Execute and Verify:** Run the generated script and check that the output is correct.
+**Step 1: Navigate to project root**
+```bash
+cd /path/to/UnifyWeaver
+```
 
-## Tools and Infrastructure
+**Step 2: Extract the bash script**
+```bash
+perl scripts/utils/extract_records.pl \
+  -f content \
+  -q "unifyweaver.execution.csv_data_source" \
+  playbooks/examples_library/csv_examples.md \
+  > tmp/run_csv_example.sh
+```
 
-*   **Compiler Driver:** `src/unifyweaver/core/compiler_driver.pl`
-    *   **Skill:** `skills/skill_unifyweaver_compile.md`
-*   **CSV Source Module:** `src/unifyweaver/sources/csv_source.pl`
-*   **Test Data:** `test_data/test_users.csv`
+**Step 3: Make it executable**
+```bash
+chmod +x tmp/run_csv_example.sh
+```
 
----
-*This playbook is under development.*
+**Step 4: Run the bash script**
+```bash
+bash tmp/run_csv_example.sh
+```
+
+**Expected Output**:
+```
+Creating Prolog script...
+Compiling CSV source to bash...
+...
+Calling users() to get all records:
+1 Alice 30
+2 Bob 25
+3 Charlie 35
+Success: CSV source compiled and executed
+```
+
+### What the Script Does
+
+The bash script you extracted will:
+1. Create a Prolog script in `tmp/csv_example.pl`
+2. Run SWI-Prolog to compile the CSV source to bash
+3. Execute the generated bash function
+4. Output the CSV data records
+
+### Common Mistakes to Avoid
+
+❌ **DO NOT** try to consult the extracted file as Prolog:
+```bash
+# WRONG - This will fail!
+swipl -g "consult('tmp/run_csv_example.sh'), ..."
+```
+
+✅ **DO** run it as a bash script:
+```bash
+# CORRECT
+bash tmp/run_csv_example.sh
+```
+
+## Expected Outcome
+- Successful runs print the CSV records and "Success: CSV source compiled and executed"
+- Exit code 0
+- Errors typically stem from misconfiguration or missing test data; reconsult [2]/[3]
+
+## Citations
+[1] playbooks/examples_library/csv_examples.md (`unifyweaver.execution.csv_data_source`)
+[2] skills/skill_unifyweaver_environment.md
+[3] docs/playbooks/parsing/README.md
+[4] skills/skill_extract_records.md
+[5] docs/development/testing/playbooks/csv_data_source_playbook__reference.md
