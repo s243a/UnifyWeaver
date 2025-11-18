@@ -20,7 +20,7 @@
     dialect_shebang/2,             % +Dialect, -ShebangLine
     dialect_header/3,              % +Dialect, +Options, -HeaderCode
     dialect_imports/3,             % +Dialect, +Dependencies, -ImportCode
-    dialect_initialization/3,      % +Dialect, +EntryGoal, -InitCode
+    dialect_initialization/4,      % +Dialect, +EntryGoal, +Options, -InitCode
     dialect_compile_command/3,     % +Dialect, +ScriptPath, -CompileCmd
     validate_for_dialect/3,        % +Dialect, +Predicates, -Issues
     % Dialect alias configuration
@@ -228,23 +228,28 @@ module_to_file_path(Path, FilePath) :-
 %% INITIALIZATION
 %% ============================================
 
-%% dialect_initialization(+Dialect, +EntryGoal, -InitCode)
+%% dialect_initialization(+Dialect, +EntryGoal, +Options, -InitCode)
 %  Generate dialect-specific initialization code
-dialect_initialization(swi, EntryGoal, InitCode) :-
+%
+%  For GNU Prolog:
+%  - Compiled mode (--no-top-level): use :- initialization(Goal)
+%  - Interpreted mode: use :- Goal
+dialect_initialization(swi, EntryGoal, _Options, InitCode) :-
     % SWI-Prolog uses initialization/2 directive
     format(atom(GoalStr), '~w', [EntryGoal]),
     format(atom(InitCode), ':- initialization(~w, main).', [GoalStr]).
 
-dialect_initialization(gnu, EntryGoal, InitCode) :-
-    % GNU Prolog uses :- goal syntax
-    % For interpreted mode, goal executes on load
-    % For compiled mode, main/0 is entry point
+dialect_initialization(gnu, EntryGoal, Options, InitCode) :-
     format(atom(GoalStr), '~w', [EntryGoal]),
-    format(atom(InitLine), ':- ~w.', [GoalStr]),
-    atomic_list_concat([
-        '% Entry point (called on load or execution)',
-        InitLine
-    ], '\n', InitCode).
+    (   option(compile(true), Options)
+    ->  % Compiled mode: use initialization/1 for --no-top-level compatibility
+        format(atom(InitLine), ':- initialization(~w).', [GoalStr]),
+        Comment = '% Entry point (for compiled binary)'
+    ;   % Interpreted mode: execute on load
+        format(atom(InitLine), ':- ~w.', [GoalStr]),
+        Comment = '% Entry point (called on load)'
+    ),
+    atomic_list_concat([Comment, InitLine], '\n', InitCode).
 
 %% ============================================
 %% COMPILATION SUPPORT

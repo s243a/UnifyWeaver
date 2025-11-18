@@ -81,7 +81,7 @@ generate_prolog_script(UserPredicates, Options, ScriptCode) :-
     generate_user_code(UserPredicates, Options, UserCode),
 
     option(entry_point(EntryGoal), Options, main),
-    dialect_initialization(Dialect, EntryGoal, InitCode),
+    dialect_initialization(Dialect, EntryGoal, Options, InitCode),
 
     generate_main_predicate(Options, MainCode),
 
@@ -462,7 +462,7 @@ write_prolog_script(ScriptCode, OutputPath, Options) :-
     % Optionally compile for dialects that support it
     (   option(compile(true), Options),
         option(dialect(Dialect), Options)
-    ->  compile_script(Dialect, OutputPath)
+    ->  compile_script_safe(Dialect, OutputPath, Options)
     ;   true
     ).
 
@@ -471,9 +471,41 @@ write_prolog_script(ScriptCode, OutputPath, Options) :-
 compile_script(Dialect, ScriptPath) :-
     (   dialect_compile_command(Dialect, ScriptPath, CompileCmd)
     ->  format('[PrologTarget] Compiling with ~w: ~w~n', [Dialect, CompileCmd]),
-        shell(CompileCmd),
-        format('[PrologTarget] Compilation complete~n')
+        shell(CompileCmd, ExitCode),
+        (   ExitCode = 0
+        ->  format('[PrologTarget] Compilation complete~n')
+        ;   format('[PrologTarget] ERROR: Compilation failed with exit code ~w~n', [ExitCode]),
+            throw(error(compilation_failed(Dialect, ExitCode),
+                       context(compile_script/2, 'Compiler returned non-zero exit code')))
+        )
     ;   format('[PrologTarget] Dialect ~w does not support compilation~n', [Dialect])
+    ).
+
+%% compile_script_safe(+Dialect, +ScriptPath, +Options)
+%  Compile script with graceful failure handling
+%
+%  If compilation fails, checks if fallback is enabled and attempts
+%  alternative dialects. For v0.1, logs warnings but continues.
+%
+%  TODO (v0.2): Implement full multi-dialect fallback that regenerates
+%  code for alternative dialects when compilation fails.
+compile_script_safe(Dialect, ScriptPath, Options) :-
+    catch(
+        compile_script(Dialect, ScriptPath),
+        error(compilation_failed(FailedDialect, ExitCode), Context),
+        (   % Compilation failed - handle gracefully
+            format('[PrologTarget] WARNING: ~w compilation failed (exit ~w)~n',
+                   [FailedDialect, ExitCode]),
+
+            % Check if we should fail or continue
+            (   option(fail_on_compile_error(true), Options)
+            ->  % Propagate error if strict mode
+                throw(error(compilation_failed(FailedDialect, ExitCode), Context))
+            ;   % Otherwise continue with interpreted script
+                format('[PrologTarget] Continuing with interpreted script: ~w~n', [ScriptPath]),
+                format('[PrologTarget] NOTE: Full multi-dialect fallback planned for v0.2~n')
+            )
+        )
     ).
 
 %% ============================================
