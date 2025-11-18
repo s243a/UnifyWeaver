@@ -1049,13 +1049,8 @@ dynamic_relation_block(Name, Arity, Metadata, Block) :-
         [InputLiteral, FieldSepLiteral, RecSepLiteral, QuoteLiteral, SkipRows, Arity, NameStr, Arity]).
 
 field_separator_literal(Value, Literal) :-
-    (   atom(Value)
-    ->  atom_string(Value, Str)
-    ;   string(Value)
-    ->  Str = Value
-    ;   term_string(Value, Str)
-    ),
-    escape_csharp_string(Str, Escaped),
+    literal_string(Value, Str),
+    escape_verbatim_string(Str, Escaped),
     format(atom(Literal), '@"~w"', [Escaped]).
 
 record_separator_literal(line_feed, 'LineFeed') :- !.
@@ -1080,31 +1075,55 @@ input_literal(pipe(Command), Literal) :-
     csharp_literal(String, Literal).
 
 csharp_literal(Value, Literal) :-
-    (   number(Value)
-    ->  format(atom(Literal), '~w', [Value])
-    ;   atom(Value)
-    ->  atom_string(Value, String),
-        escape_csharp_string(String, Escaped),
-        format(atom(Literal), '"~w"', [Escaped])
-    ;   string(Value)
-    ->  escape_csharp_string(Value, Escaped),
-        format(atom(Literal), '"~w"', [Escaped])
-    ;   term_string(Value, String),
-        escape_csharp_string(String, Escaped),
-        format(atom(Literal), '"~w"', [Escaped])
-    ).
+    number(Value),
+    !,
+    format(atom(Literal), '~w', [Value]).
+csharp_literal(Value, Literal) :-
+    atom(Value),
+    !,
+    atom_string(Value, String),
+    escape_csharp_string(String, Escaped),
+    format(atom(Literal), '"~w"', [Escaped]).
+csharp_literal(Value, Literal) :-
+    string(Value),
+    !,
+    escape_csharp_string(Value, Escaped),
+    format(atom(Literal), '"~w"', [Escaped]).
+csharp_literal(Value, Literal) :-
+    term_string(Value, String),
+    escape_csharp_string(String, Escaped),
+    format(atom(Literal), '"~w"', [Escaped]).
+
+literal_string(Value, String) :-
+    atom(Value),
+    !,
+    atom_string(Value, String).
+literal_string(Value, String) :-
+    string(Value),
+    !,
+    String = Value.
+literal_string(Value, String) :-
+    term_string(Value, String).
 
 escape_csharp_string(Input, Escaped) :-
     string_codes(Input, Codes),
     maplist(escape_code, Codes, Parts),
     atomic_list_concat(Parts, '', Escaped).
 
-escape_code(92, Atom) :- atom_codes(Atom, [92, 92]).
-escape_code(34, Atom) :- atom_codes(Atom, [92, 34]).
-escape_code(10, Atom) :- atom_codes(Atom, [92, 110]).
-escape_code(13, Atom) :- atom_codes(Atom, [92, 114]).
-escape_code(9, Atom)  :- atom_codes(Atom, [92, 116]).
+escape_code(92, Atom) :- !, atom_codes(Atom, [92, 92]).
+escape_code(34, Atom) :- !, atom_codes(Atom, [92, 34]).
+escape_code(10, Atom) :- !, atom_codes(Atom, [92, 110]).
+escape_code(13, Atom) :- !, atom_codes(Atom, [92, 114]).
+escape_code(9, Atom)  :- !, atom_codes(Atom, [92, 116]).
 escape_code(Code, Atom) :- atom_codes(Atom, [Code]).
+
+escape_verbatim_string(Input, Escaped) :-
+    string_codes(Input, Codes),
+    maplist(escape_verbatim_code, Codes, Parts),
+    atomic_list_concat(Parts, '', Escaped).
+
+escape_verbatim_code(34, '""') :- !.
+escape_verbatim_code(Code, Atom) :- atom_codes(Atom, [Code]).
 
 plan_module_name(Plan, ModuleName) :-
     get_dict(head, Plan, predicate{name:Pred, arity:_}),
