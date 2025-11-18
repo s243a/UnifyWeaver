@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 
 namespace UnifyWeaver.QueryRuntime
 {
@@ -852,6 +853,207 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                 return false;
             }
             return string.CompareOrdinal(record, index, separator, 0, separator.Length) == 0;
+        }
+    }
+
+    public sealed record JsonSourceConfig
+    {
+        public string InputPath { get; init; } = string.Empty;
+        public string[] Columns { get; init; } = Array.Empty<string>();
+        public RecordSeparatorKind RecordSeparator { get; init; } = RecordSeparatorKind.LineFeed;
+        public int SkipRows { get; init; } = 0;
+        public int ExpectedWidth { get; init; } = 0;
+        public bool TreatArrayAsStream { get; init; } = true;
+    }
+
+    public sealed class JsonStreamReader
+    {
+        private readonly JsonSourceConfig _config;
+
+        public JsonStreamReader(JsonSourceConfig config)
+        {
+            _config = config ?? throw new ArgumentNullException(nameof(config));
+            if (string.IsNullOrWhiteSpace(_config.InputPath))
+                throw new ArgumentException("InputPath is required", nameof(config));
+            if (_config.Columns is null || _config.Columns.Length == 0)
+                throw new ArgumentException("Columns must be provided for JSON sources", nameof(config));
+        }
+
+        public IEnumerable<object[]> Read()
+        {
+            if (!File.Exists(_config.InputPath))
+            {
+                throw new FileNotFoundException("JSON input not found", _config.InputPath);
+            }
+
+            var text = File.ReadAllText(_config.InputPath, Encoding.UTF8);
+            var trimmed = text.TrimStart();
+            var width = Math.Max(_config.ExpectedWidth, _config.Columns.Length);
+            if (width <= 0)
+            {
+                width = _config.Columns.Length;
+            }
+            if (_config.TreatArrayAsStream && trimmed.StartsWith("[", StringComparison.Ordinal))
+            {
+                foreach (var row in ReadFromArray(text, width))
+                {
+                    yield return row;
+                }
+                yield break;
+            }
+
+            if (_config.RecordSeparator == RecordSeparatorKind.Null)
+            {
+                foreach (var row in ReadNullSeparated(trimmed, width))
+                {
+                    yield return row;
+                }
+            }
+            else
+            {
+                foreach (var row in ReadLineSeparated(trimmed, width))
+                {
+                    yield return row;
+                }
+            }
+        }
+
+        private IEnumerable<object[]> ReadFromArray(string text, int width)
+        {
+            using var document = JsonDocument.Parse(text);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidDataException("JSON input expected an array or stream of objects.");
+            }
+
+            var index = 0;
+            foreach (var element in root.EnumerateArray())
+            {
+                if (index++ < _config.SkipRows)
+                {
+                    continue;
+                }
+                yield return ProjectRow(element, width);
+            }
+        }
+
+        private IEnumerable<object[]> ReadLineSeparated(string text, int width)
+        {
+            using var reader = new StringReader(text);
+            string? line;
+            var skipped = 0;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                line = line.Trim();
+                if (line.Length == 0)
+                {
+                    continue;
+                }
+                if (line == "[" || line == "]")
+                {
+                    continue;
+                }
+                if (skipped < _config.SkipRows)
+                {
+                    skipped++;
+                    continue;
+                }
+                yield return ParseRecord(line, width);
+            }
+        }
+
+        private IEnumerable<object[]> ReadNullSeparated(string text, int width)
+        {
+            var records = text.Split('\0');
+            var skipped = 0;
+            foreach (var record in records)
+            {
+                if (record.Length == 0)
+                {
+                    continue;
+                }
+                if (skipped < _config.SkipRows)
+                {
+                    skipped++;
+                    continue;
+                }
+                yield return ParseRecord(record, width);
+            }
+        }
+
+        private object[] ParseRecord(string record, int width)
+        {
+            using var document = JsonDocument.Parse(record);
+            var element = document.RootElement;
+            if (element.ValueKind == JsonValueKind.Array && _config.TreatArrayAsStream)
+            {
+                // Treat array as stream of objects (rare, but handle gracefully)
+                foreach (var item in element.EnumerateArray())
+                {
+                    return ProjectRow(item, width);
+                }
+            }
+            return ProjectRow(element, width);
+        }
+
+        private object[] ProjectRow(JsonElement element, int width)
+        {
+            if (element.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException("Expected JSON object for projection.");
+            }
+            if (_config.Columns.Length != 0 && _config.ExpectedWidth > 0 && _config.Columns.Length != _config.ExpectedWidth)
+            {
+                throw new InvalidDataException("JSON column count does not match expected width.");
+            }
+
+            var result = new object[width];
+            for (var i = 0; i < _config.Columns.Length && i < width; i++)
+            {
+                result[i] = ExtractColumnValue(element, _config.Columns[i]);
+            }
+            return result;
+        }
+
+        private static object? ExtractColumnValue(JsonElement element, string column)
+        {
+            if (string.IsNullOrEmpty(column))
+            {
+                return null;
+            }
+            var parts = column.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            var current = element;
+            foreach (var part in parts)
+            {
+                if (current.ValueKind == JsonValueKind.Object && current.TryGetProperty(part, out var next))
+                {
+                    current = next;
+                }
+                else
+                {
+                    return null;
+                }
+            }
+            return ConvertJsonValue(current);
+        }
+
+        private static object? ConvertJsonValue(JsonElement value)
+        {
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number => value.TryGetInt64(out var number)
+                    ? number
+                    : value.TryGetDouble(out var dbl) ? dbl : value.GetRawText(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null => null,
+                JsonValueKind.Undefined => null,
+                JsonValueKind.Object => value.GetRawText(),
+                JsonValueKind.Array => value.GetRawText(),
+                _ => value.GetRawText()
+            };
         }
     }
 }

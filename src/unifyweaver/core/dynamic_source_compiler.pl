@@ -217,13 +217,19 @@ extract_io_metadata(Options, Meta) :-
     option(skip_lines(SkipRows), Options, 0),
     option(quote_style(RawQuote), Options, none),
     normalize_quote_style(RawQuote, QuoteStyle),
+    (   option(columns(RawColumns), Options)
+    ->  ColumnsInput = RawColumns
+    ;   ColumnsInput = []
+    ),
+    normalize_columns(ColumnsInput, Columns),
     Meta = metadata{
         record_separator:RecordSep,
         field_separator:FieldSep,
         record_format:RecordFormat,
         input:Input,
         skip_rows:SkipRows,
-        quote_style:QuoteStyle
+        quote_style:QuoteStyle,
+        columns:Columns
     }.
 
 normalize_record_separator(line_feed, line_feed) :- !.
@@ -251,3 +257,19 @@ normalize_quote_style(double_quote, double_quote) :- !.
 normalize_quote_style(single_quote, single_quote) :- !.
 normalize_quote_style(json, json_escape) :- !.
 normalize_quote_style(Value, Value).
+
+normalize_columns([], []) :- !.
+normalize_columns(Columns0, Columns) :-
+    is_list(Columns0),
+    !,
+    maplist(normalize_column_name, Columns0, Columns).
+normalize_columns(Column, [Normalized]) :-
+    normalize_column_name(Column, Normalized).
+
+normalize_column_name(Value, Normalized) :-
+    (   atom(Value)
+    ->  Normalized = Value
+    ;   string(Value)
+    ->  atom_string(Normalized, Value)
+    ;   term_to_atom(Value, Normalized)
+    ).
