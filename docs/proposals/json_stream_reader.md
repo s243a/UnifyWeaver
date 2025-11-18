@@ -23,3 +23,9 @@
 - Support simple JSONPath-style selectors for deeply nested fields.
 - Provide streaming PowerShell example where the generated assembly is loaded and queried interactively.
 
+## Next Steps
+
+1. Extend column selectors so dotted paths and array indices can be projected directly.
+2. Implement an optional POCO deserialization pathway (e.g., `type_hint('Namespace.Product')`).
+3. Tighten validation/error handling for JSON metadata (missing columns, mismatched arity).
+4. Document agent-facing usage in skills/playbooks once runtime behavior is stable.
