@@ -39,6 +39,7 @@ test_csharp_query_target :-
     verify_dynamic_source_plan,
     verify_tsv_dynamic_source_plan,
     verify_json_dynamic_source_plan,
+    verify_json_nested_source_plan,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
 
@@ -314,6 +315,20 @@ verify_json_dynamic_source_plan_ :-
     sub_string(Source, _, _, _, 'test_products.json'),
     maybe_run_query_runtime(Plan, ['Laptop,999', 'Mouse,25', 'Keyboard,75']).
 
+verify_json_nested_source_plan :-
+    setup_call_cleanup(
+        setup_json_orders_source,
+        verify_json_nested_source_plan_(),
+        cleanup_json_orders_source
+    ).
+
+verify_json_nested_source_plan_ :-
+    csharp_query_target:build_query_plan(test_order_first_item/3, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'test_orders.json'),
+    sub_string(Source, _, _, _, 'items[0].product'),
+    maybe_run_query_runtime(Plan, ['Alice,Laptop,1200', 'Bob,Mouse,25', 'Charlie,Keyboard,75']).
+
 setup_csv_dynamic_source :-
     source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),
     assertz(user:(test_user_age(Name, Age) :- test_users(_, Name, Age))).
@@ -349,6 +364,20 @@ cleanup_json_dynamic_source :-
     retractall(user:test_product_price(_, _)),
     retractall(dynamic_source_compiler:dynamic_source_def(test_products/3, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_products/3, _)).
+
+setup_json_orders_source :-
+    source(json, test_orders, [
+        json_file('test_data/test_orders.json'),
+        record_format(json),
+        columns(['order.customer.name', 'items[0].product', 'items[0].total'])
+    ]),
+    assertz(user:(test_order_first_item(Customer, Product, Total) :-
+        test_orders(Customer, Product, Total))).
+
+cleanup_json_orders_source :-
+    retractall(user:test_order_first_item(_, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_orders/3, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_orders/3, _)).
 
 % Run with build-first approach, optionally skipping execution
 maybe_run_query_runtime(Plan, ExpectedRows) :-

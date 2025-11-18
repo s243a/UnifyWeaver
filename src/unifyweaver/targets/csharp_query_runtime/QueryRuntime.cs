@@ -869,6 +869,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
     public sealed class JsonStreamReader
     {
         private readonly JsonSourceConfig _config;
+        private readonly ColumnPath[] _paths;
 
         public JsonStreamReader(JsonSourceConfig config)
         {
@@ -877,6 +878,9 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                 throw new ArgumentException("InputPath is required", nameof(config));
             if (_config.Columns is null || _config.Columns.Length == 0)
                 throw new ArgumentException("Columns must be provided for JSON sources", nameof(config));
+            _paths = _config.Columns
+                .Select(column => new ColumnPath(column))
+                .ToArray();
         }
 
         public IEnumerable<object[]> Read()
@@ -888,10 +892,10 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
             var text = File.ReadAllText(_config.InputPath, Encoding.UTF8);
             var trimmed = text.TrimStart();
-            var width = Math.Max(_config.ExpectedWidth, _config.Columns.Length);
+            var width = Math.Max(_config.ExpectedWidth, _paths.Length);
             if (width <= 0)
             {
-                width = _config.Columns.Length;
+                width = _paths.Length;
             }
             if (_config.TreatArrayAsStream && trimmed.StartsWith("[", StringComparison.Ordinal))
             {
@@ -999,43 +1003,17 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
         private object[] ProjectRow(JsonElement element, int width)
         {
-            if (element.ValueKind != JsonValueKind.Object)
+            if (_paths.Length == 0)
             {
-                throw new InvalidDataException("Expected JSON object for projection.");
-            }
-            if (_config.Columns.Length != 0 && _config.ExpectedWidth > 0 && _config.Columns.Length != _config.ExpectedWidth)
-            {
-                throw new InvalidDataException("JSON column count does not match expected width.");
+                throw new InvalidDataException("JSON columns must be specified.");
             }
 
             var result = new object[width];
-            for (var i = 0; i < _config.Columns.Length && i < width; i++)
+            for (var i = 0; i < _paths.Length && i < width; i++)
             {
-                result[i] = ExtractColumnValue(element, _config.Columns[i]);
+                result[i] = _paths[i].Evaluate(element);
             }
             return result;
-        }
-
-        private static object? ExtractColumnValue(JsonElement element, string column)
-        {
-            if (string.IsNullOrEmpty(column))
-            {
-                return null;
-            }
-            var parts = column.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            var current = element;
-            foreach (var part in parts)
-            {
-                if (current.ValueKind == JsonValueKind.Object && current.TryGetProperty(part, out var next))
-                {
-                    current = next;
-                }
-                else
-                {
-                    return null;
-                }
-            }
-            return ConvertJsonValue(current);
         }
 
         private static object? ConvertJsonValue(JsonElement value)
@@ -1054,6 +1032,155 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                 JsonValueKind.Array => value.GetRawText(),
                 _ => value.GetRawText()
             };
+        }
+
+        private sealed class ColumnPath
+        {
+            private readonly PathStep[] _steps;
+
+            public ColumnPath(string raw)
+            {
+                _steps = Parse(raw ?? string.Empty);
+            }
+
+            public object? Evaluate(JsonElement element)
+            {
+                if (_steps.Length == 0)
+                {
+                    return JsonStreamReader.ConvertJsonValue(element);
+                }
+
+                var current = element;
+                foreach (var step in _steps)
+                {
+                    switch (step.Kind)
+                    {
+                        case PathStepKind.Property:
+                            if (current.ValueKind == JsonValueKind.Object &&
+                                current.TryGetProperty(step.Property!, out var next))
+                            {
+                                current = next;
+                            }
+                            else
+                            {
+                                return null;
+                            }
+                            break;
+                        case PathStepKind.Index:
+                            if (current.ValueKind == JsonValueKind.Array &&
+                                TryGetArrayElement(current, step.Index, out var elementAtIndex))
+                            {
+                                current = elementAtIndex;
+                            }
+                            else
+                            {
+                                return null;
+                            }
+                            break;
+                        default:
+                            return null;
+                    }
+                }
+
+                return JsonStreamReader.ConvertJsonValue(current);
+            }
+
+            private static bool TryGetArrayElement(JsonElement arrayElement, int index, out JsonElement value)
+            {
+                if (index < 0)
+                {
+                    value = default;
+                    return false;
+                }
+
+                var i = 0;
+                foreach (var item in arrayElement.EnumerateArray())
+                {
+                    if (i++ == index)
+                    {
+                        value = item;
+                        return true;
+                    }
+                }
+
+                value = default;
+                return false;
+            }
+
+            private static PathStep[] Parse(string path)
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    return Array.Empty<PathStep>();
+                }
+
+                var steps = new List<PathStep>();
+                var span = path.AsSpan();
+                var i = 0;
+                while (i < span.Length)
+                {
+                    if (span[i] == '.')
+                    {
+                        i++;
+                        continue;
+                    }
+
+                    if (span[i] == '[')
+                    {
+                        var end = path.IndexOf(']', i + 1);
+                        if (end < 0)
+                        {
+                            break;
+                        }
+                        var slice = path.Substring(i + 1, end - i - 1).Trim();
+                        if (int.TryParse(slice, out var idx))
+                        {
+                            steps.Add(PathStep.ForIndex(idx));
+                        }
+                        i = end + 1;
+                        continue;
+                    }
+
+                    var start = i;
+                    while (i < span.Length && span[i] != '.' && span[i] != '[')
+                    {
+                        i++;
+                    }
+                    var name = path.Substring(start, i - start).Trim();
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        steps.Add(PathStep.ForProperty(name));
+                    }
+                }
+
+                return steps.ToArray();
+            }
+        }
+
+        private enum PathStepKind
+        {
+            Property,
+            Index
+        }
+
+        private readonly struct PathStep
+        {
+            private PathStep(PathStepKind kind, string? property, int index)
+            {
+                Kind = kind;
+                Property = property;
+                Index = index;
+            }
+
+            public PathStepKind Kind { get; }
+            public string? Property { get; }
+            public int Index { get; }
+
+            public static PathStep ForProperty(string name) =>
+                new PathStep(PathStepKind.Property, name, -1);
+
+            public static PathStep ForIndex(int index) =>
+                new PathStep(PathStepKind.Index, null, index);
         }
     }
 }
