@@ -36,6 +36,7 @@ test_csharp_query_target :-
     verify_recursive_plan,
     verify_mutual_recursion_plan,
     verify_dynamic_source_plan,
+    verify_tsv_dynamic_source_plan,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
 
@@ -282,6 +283,21 @@ verify_dynamic_source_plan_ :-
     sub_string(Source, _, _, _, 'test_users.csv'),
     maybe_run_query_runtime(Plan, ['Alice,30', 'Bob,25', 'Charlie,35']).
 
+verify_tsv_dynamic_source_plan :-
+    setup_call_cleanup(
+        setup_tsv_dynamic_source,
+        verify_tsv_dynamic_source_plan_(),
+        cleanup_tsv_dynamic_source
+    ).
+
+verify_tsv_dynamic_source_plan_ :-
+    csharp_query_target:build_query_plan(test_sales_total/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'test_sales.tsv'),
+    string_codes(TabLiteral, [0'@, 34, 9, 34]),
+    sub_string(Source, _, _, _, TabLiteral),
+    maybe_run_query_runtime(Plan, ['Laptop,1200', 'Mouse,25', 'Keyboard,75']).
+
 setup_csv_dynamic_source :-
     source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),
     assertz(user:(test_user_age(Name, Age) :- test_users(_, Name, Age))).
@@ -290,6 +306,20 @@ cleanup_csv_dynamic_source :-
     retractall(user:test_user_age(_, _)),
     retractall(dynamic_source_compiler:dynamic_source_def(test_users/3, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_users/3, _)).
+
+setup_tsv_dynamic_source :-
+    source(csv, test_sales, [
+        csv_file('test_data/test_sales.tsv'),
+        delimiter('\t'),
+        has_header(true),
+        quote_style(none)
+    ]),
+    assertz(user:(test_sales_total(Product, Total) :- test_sales(_, Product, Total))).
+
+cleanup_tsv_dynamic_source :-
+    retractall(user:test_sales_total(_, _)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_sales/3, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_sales/3, _)).
 
 % Run with build-first approach, optionally skipping execution
 maybe_run_query_runtime(Plan, ExpectedRows) :-
