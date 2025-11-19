@@ -35,10 +35,7 @@ echo ":- asserta(user:file_search_path(library, 'src/unifyweaver/targets'))." > 
 echo ":- asserta(user:file_search_path(library, 'src/unifyweaver/core'))." >> tmp/swipl_goal.pl
 echo ":- consult('tmp/grandparent_csharp.pl')." >> tmp/swipl_goal.pl
 echo ":- use_module(library(csharp_stream_target))." >> tmp/swipl_goal.pl
-echo ":- compile_predicate_to_csharp(grandparent/2, [unique(true)], CSharpCode)." >> tmp/swipl_goal.pl
-echo ":- open('tmp/csharp_grandparent_project/grandparent.cs', write, Stream)." >> tmp/swipl_goal.pl
-echo ":- write(Stream, CSharpCode)." >> tmp/swipl_goal.pl
-echo ":- close(Stream)." >> tmp/swipl_goal.pl
+echo ":- compile_predicate_to_csharp(grandparent/2, [unique(true)], CSharpCode), open('tmp/csharp_grandparent_project/grandparent.cs', write, Stream), write(Stream, CSharpCode), close(Stream)." >> tmp/swipl_goal.pl
 echo ":- halt." >> tmp/swipl_goal.pl
 
 swipl -l tmp/swipl_goal.pl
@@ -49,33 +46,26 @@ echo "Executing C# program..."
   # The generated file is named after the predicate
   CS_FILE="grandparent.cs"
 
-  # Detect available .NET runtime
-  if dotnet --list-sdks | grep -q "8.0"; then
-    DOTNET_VERSION="net8.0"
-  elif dotnet --list-sdks | grep -q "7.0"; then
-    DOTNET_VERSION="net7.0"
-  elif dotnet --list-sdks | grep -q "6.0"; then
-    DOTNET_VERSION="net6.0"
-  else
-    echo "ERROR: No compatible .NET SDK found (requires 6.0, 7.0, or 8.0)"
+  # Detect latest available .NET runtime
+  LATEST_SDK=$(dotnet --list-sdks | awk '{print $1}' | sort -V | tail -n 1)
+  if [ -z "$LATEST_SDK" ]; then
+    echo "ERROR: No .NET SDK found."
     exit 1
   fi
-  echo "Using .NET runtime: $DOTNET_VERSION"
+  DOTNET_VERSION="net${LATEST_SDK%%.*}.0"
+  echo "Using .NET runtime: $DOTNET_VERSION (derived from SDK $LATEST_SDK)"
 
   # Create .csproj file using here-document
-  cat > grandparent.csproj <<'EOF'
+  cat > grandparent.csproj <<EOF
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>$DOTNET_VERSION</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
 </Project>
 EOF
-
-  # Update the target framework to match detected version
-  sed -i "s/net8.0/$DOTNET_VERSION/g" grandparent.csproj
 
   # Build and run the C# project
   echo "Building C# project..."
@@ -173,23 +163,15 @@ if (-not (Test-Path -Path $csFile)) {
 Write-Host "Executing C# program..."
 Push-Location $tmpDir
 
-# Detect available .NET runtime
-$dotnetSdks = dotnet --list-sdks
-$dotnetVersion = $null
-if ($dotnetSdks -match "8\.0") {
-    $dotnetVersion = "net8.0"
-} elseif ($dotnetSdks -match "7\.0") {
-    $dotnetVersion = "net7.0"
-} elseif ($dotnetSdks -match "6\.0") {
-    $dotnetVersion = "net6.0"
-} else {
-    Write-Host "ERROR: No compatible .NET SDK found (requires 6.0, 7.0, or 8.0)"
-    Write-Host "Installed SDKs:"
-    dotnet --list-sdks
+# Detect latest available .NET runtime
+$latestSdk = dotnet --list-sdks | ForEach-Object { $_.Split(' ')[0] } | Sort-Object -Descending | Select-Object -First 1
+if (-not $latestSdk) {
+    Write-Host "ERROR: No .NET SDK found."
     Pop-Location
     exit 1
 }
-Write-Host "Using .NET runtime: $dotnetVersion"
+$dotnetVersion = "net$($latestSdk.Split('.')[0]).0"
+Write-Host "Using .NET runtime: $dotnetVersion (derived from SDK $latestSdk)"
 
 # Create .csproj file
 $csproj_content = @"

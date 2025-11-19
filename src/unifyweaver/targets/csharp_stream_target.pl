@@ -399,7 +399,7 @@ fact_result_type(2, '(string, string)').
 fact_result_type(3, '(string, string, string)').
 
 fact_print_expression(1, 'Console.WriteLine(item);').
-fact_print_expression(2, 'Console.WriteLine("${item.Item1}:{item.Item2}");').
+fact_print_expression(2, 'Console.WriteLine($"{item.Item1}:{item.Item2}");').
 fact_print_expression(3, 'Console.WriteLine("${item.Item1}:{item.Item2}:{item.Item3}");').
 
 fact_data_section(FactInfo, Section) :-
