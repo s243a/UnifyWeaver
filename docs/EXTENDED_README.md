@@ -480,8 +480,23 @@ Process JSON data with jq filters:
 ```prolog
 :- source(json, config_values, [
     json_file('config.json'),
-    jq_filter('.database | {host, port, name}')
+    columns(['database.host', 'database.port', 'database.name'])
 ]).
+
+?- config_values(Host, Port, Name).
+```
+
+Returning full JSON objects instead of individual fields:
+
+```prolog
+:- source(json, raw_products, [
+    json_file('test_data/test_products.json'),
+    arity(1),
+    return_object(true),
+    type_hint('System.Text.Json.Nodes.JsonObject, System.Text.Json')
+]).
+
+?- raw_products(ProductJson).
 ```
 
 **Generated bash:**
