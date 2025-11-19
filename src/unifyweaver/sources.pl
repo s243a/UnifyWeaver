@@ -68,6 +68,8 @@ detect_csv_arity(File, Options, Arity) :-
 augment_source_options(Type, Options, Augmented) :-
     (   Type = csv
     ->  augment_csv_options(Options, Augmented)
+    ;   Type = json
+    ->  augment_json_options(Options, Augmented)
     ;   Augmented = Options
     ).
 
@@ -88,6 +90,16 @@ augment_csv_options(Options0, Options) :-
     ;   Options6 = Options5
     ),
     Options = Options6.
+
+augment_json_options(Options0, Options) :-
+    ensure_option(record_format(json), Options0, Options1),
+    ensure_option(record_separator(line_feed), Options1, Options2),
+    (   option(json_file(File), Options0)
+    ->  absolute_file_name(File, Abs),
+        ensure_option(input(file(Abs)), Options2, Options3)
+    ;   Options3 = Options2
+    ),
+    Options = Options3.
 
 ensure_option(Term, Options0, Options) :-
     functor(Term, Name, Arity),

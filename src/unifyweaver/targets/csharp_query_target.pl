@@ -1021,20 +1021,35 @@ relation_blocks(Relations, ProviderStatements, UsesDynamic) :-
 
 dynamic_relation_block(Name, Arity, Metadata, Block) :-
     atom_string(Name, NameStr),
+    dynamic_reader_literal(Metadata, Arity, ReaderLiteral),
+    format(atom(Block),
+'            foreach (var row in ~w.Read())
+            {
+                provider.AddFact(new PredicateId(\"~w\", ~w), row);
+            }',
+        [ReaderLiteral, NameStr, Arity]).
+
+dynamic_reader_literal(Metadata, Arity, Literal) :-
+    (   get_dict(record_format, Metadata, Format)
+    ->  true
+    ;   Format = text_line
+    ),
+    (   Format == json
+    ->  json_reader_literal(Metadata, Arity, Literal)
+    ;   delimited_reader_literal(Metadata, Arity, Literal)
+    ).
+
+delimited_reader_literal(Metadata, Arity, Literal) :-
     get_dict(field_separator, Metadata, FieldSep0),
     field_separator_literal(FieldSep0, FieldSepLiteral),
     get_dict(record_separator, Metadata, RecSep0),
     record_separator_literal(RecSep0, RecSepLiteral),
     get_dict(quote_style, Metadata, QuoteStyle0),
     quote_style_literal(QuoteStyle0, QuoteLiteral),
-    (   get_dict(skip_rows, Metadata, SkipRows)
-    ->  true
-    ;   SkipRows = 0
-    ),
-    get_dict(input, Metadata, InputSpec),
-    input_literal(InputSpec, InputLiteral),
-    format(atom(Block),
-'            foreach (var row in new DelimitedTextReader(new DynamicSourceConfig
+    metadata_skip_rows(Metadata, SkipRows),
+    metadata_input_literal(Metadata, InputLiteral),
+    format(atom(Literal),
+'new DelimitedTextReader(new DynamicSourceConfig
             {
                 InputPath = ~w,
                 FieldSeparator = ~w,
@@ -1042,11 +1057,50 @@ dynamic_relation_block(Name, Arity, Metadata, Block) :-
                 QuoteStyle = QuoteStyle.~w,
                 SkipRows = ~w,
                 ExpectedWidth = ~w
-            }).Read())
+            })',
+        [InputLiteral, FieldSepLiteral, RecSepLiteral, QuoteLiteral, SkipRows, Arity]).
+
+json_reader_literal(Metadata, Arity, Literal) :-
+    metadata_input_literal(Metadata, InputLiteral),
+    metadata_skip_rows(Metadata, SkipRows),
+    (   get_dict(record_separator, Metadata, RecSep0)
+    ->  true
+    ;   RecSep0 = line_feed
+    ),
+    record_separator_literal(RecSep0, RecSepLiteral),
+    metadata_columns_literal(Metadata, Arity, ColumnLiteral),
+    format(atom(Literal),
+'new JsonStreamReader(new JsonSourceConfig
             {
-                provider.AddFact(new PredicateId(\"~w\", ~w), row);
-            }',
-        [InputLiteral, FieldSepLiteral, RecSepLiteral, QuoteLiteral, SkipRows, Arity, NameStr, Arity]).
+                InputPath = ~w,
+                Columns = ~w,
+                RecordSeparator = RecordSeparatorKind.~w,
+                SkipRows = ~w,
+                ExpectedWidth = ~w
+            })',
+        [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity]).
+
+metadata_columns_literal(Metadata, Arity, Literal) :-
+    (   get_dict(columns, Metadata, Columns),
+        Columns \= []
+    ->  maplist(atom_string, Columns, ColumnStrings)
+    ;   numlist(1, Arity, Indexes),
+        maplist(default_column_name, Indexes, ColumnStrings)
+    ),
+    string_array_literal(ColumnStrings, Literal).
+
+default_column_name(Index, Name) :-
+    format(string(Name), 'col~w', [Index]).
+
+metadata_skip_rows(Metadata, SkipRows) :-
+    (   get_dict(skip_rows, Metadata, SkipRows0)
+    ->  SkipRows = SkipRows0
+    ;   SkipRows = 0
+    ).
+
+metadata_input_literal(Metadata, Literal) :-
+    get_dict(input, Metadata, InputSpec),
+    input_literal(InputSpec, Literal).
 
 field_separator_literal(Value, Literal) :-
     literal_string(Value, Str),
@@ -1123,7 +1177,19 @@ escape_verbatim_string(Input, Escaped) :-
     atomic_list_concat(Parts, '', Escaped).
 
 escape_verbatim_code(34, '""') :- !.
-escape_verbatim_code(Code, Atom) :- atom_codes(Atom, [Code]).
+escape_verbatim_code(Code, Atom) :-
+    atom_codes(Atom, [Code]).
+
+string_array_literal([], 'Array.Empty<string>()') :- !.
+string_array_literal(Items, Literal) :-
+    findall(Quoted,
+        (   member(Item, Items),
+            escape_csharp_string(Item, Escaped),
+            format(atom(Quoted), '"~w"', [Escaped])
+        ),
+        QuotedItems),
+    atomic_list_concat(QuotedItems, ', ', Inner),
+    format(atom(Literal), 'new[]{ ~w }', [Inner]).
 
 plan_module_name(Plan, ModuleName) :-
     get_dict(head, Plan, predicate{name:Pred, arity:_}),
