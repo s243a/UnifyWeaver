@@ -21,10 +21,9 @@ source(Type, Name, Options0) :-
     augment_source_options(Type, Options0, Options),
     % Determine arity from options or use defaults
     determine_arity(Options, Arity),
-    
+    validate_source_options(Type, Options, Arity),
     % Register this as a dynamic source
     register_dynamic_source(Name/Arity, Type, Options),
-    
     format('Defined source: ~w/~w using ~w~n', [Name, Arity, Type]).
 
 %% determine_arity(+Options, -Arity)
@@ -94,12 +93,20 @@ augment_csv_options(Options0, Options) :-
 augment_json_options(Options0, Options) :-
     ensure_option(record_format(json), Options0, Options1),
     ensure_option(record_separator(line_feed), Options1, Options2),
-    (   option(json_file(File), Options0)
-    ->  absolute_file_name(File, Abs),
-        ensure_option(input(file(Abs)), Options2, Options3)
+    (   option(type_hint(TypeHint), Options0)
+    ->  ensure_option(type_hint(TypeHint), Options2, Options3)
     ;   Options3 = Options2
     ),
-    Options = Options3.
+    (   option(return_object(Return), Options0)
+    ->  ensure_option(return_object(Return), Options3, Options4)
+    ;   Options4 = Options3
+    ),
+    (   option(json_file(File), Options0)
+    ->  absolute_file_name(File, Abs),
+        ensure_option(input(file(Abs)), Options4, Options5)
+    ;   Options5 = Options4
+    ),
+    Options = Options5.
 
 ensure_option(Term, Options0, Options) :-
     functor(Term, Name, Arity),
@@ -107,4 +114,59 @@ ensure_option(Term, Options0, Options) :-
         functor(Existing, Name, Arity)
     ->  Options = Options0
     ;   Options = [Term|Options0]
+    ).
+
+validate_source_options(json, Options, Arity) :-
+    !,
+    validate_json_source_options(Options, Arity).
+validate_source_options(_, _, _).
+
+validate_json_source_options(Options, Arity) :-
+    (   option(return_object(true), Options)
+    ->  validate_json_return_object(Options, Arity)
+    ;   validate_json_columns(Options, Arity)
+    ).
+
+validate_json_return_object(Options, Arity) :-
+    (   option(type_hint(Type), Options),
+        Type \= ''
+    ->  true
+    ;   throw(error(domain_error(json_type_hint, Options), _))
+    ),
+    (   Arity =:= 1
+    ->  true
+    ;   throw(error(domain_error(json_return_object_arity, Arity), _))
+    ),
+    (   option(columns(Cols), Options),
+        Cols \= []
+    ->  throw(error(domain_error(json_return_object_columns, Cols), _))
+    ;   true
+    ).
+
+validate_json_columns(Options, Arity) :-
+    (   option(columns(Columns), Options),
+        is_list(Columns),
+        Columns \= []
+    ->  validate_column_entries(Columns),
+        length(Columns, Count),
+        (   Count =:= Arity
+        ->  true
+        ;   throw(error(domain_error(json_columns_arity, json{columns:Columns, arity:Arity}), _))
+        )
+    ;   throw(error(domain_error(json_columns, Options), _))
+    ).
+
+validate_column_entries(Columns) :-
+    maplist(validate_column_entry, Columns).
+
+validate_column_entry(Column) :-
+    (   atom(Column)
+    ->  atom_string(Column, String)
+    ;   string(Column)
+    ->  String = Column
+    ;   throw(error(domain_error(json_column_entry, Column), _))
+    ),
+    (   String == ""
+    ->  throw(error(domain_error(json_column_entry, Column), _))
+    ;   true
     ).

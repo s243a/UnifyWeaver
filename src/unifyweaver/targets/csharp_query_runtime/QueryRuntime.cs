@@ -864,23 +864,47 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
         public int SkipRows { get; init; } = 0;
         public int ExpectedWidth { get; init; } = 0;
         public bool TreatArrayAsStream { get; init; } = true;
+        public string? TargetTypeName { get; init; }
+        public bool ReturnObject { get; init; } = false;
     }
 
     public sealed class JsonStreamReader
     {
         private readonly JsonSourceConfig _config;
         private readonly ColumnPath[] _paths;
+        private readonly bool _returnObject;
+        private readonly Type? _targetType;
+        private readonly JsonSerializerOptions _serializerOptions = new()
+        {
+            PropertyNameCaseInsensitive = true
+        };
 
         public JsonStreamReader(JsonSourceConfig config)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
             if (string.IsNullOrWhiteSpace(_config.InputPath))
                 throw new ArgumentException("InputPath is required", nameof(config));
-            if (_config.Columns is null || _config.Columns.Length == 0)
-                throw new ArgumentException("Columns must be provided for JSON sources", nameof(config));
-            _paths = _config.Columns
-                .Select(column => new ColumnPath(column))
-                .ToArray();
+            _returnObject = _config.ReturnObject;
+
+            if (_returnObject)
+            {
+                if (string.IsNullOrWhiteSpace(_config.TargetTypeName))
+                {
+                    throw new ArgumentException("TargetTypeName is required when ReturnObject is true.", nameof(config));
+                }
+                _targetType = ResolveTargetType(_config.TargetTypeName!);
+                _paths = Array.Empty<ColumnPath>();
+            }
+            else
+            {
+                if (_config.Columns is null || _config.Columns.Length == 0)
+                {
+                    throw new ArgumentException("Columns must be provided for JSON sources when ReturnObject is false.", nameof(config));
+                }
+                _paths = _config.Columns
+                    .Select(column => new ColumnPath(column))
+                    .ToArray();
+            }
         }
 
         public IEnumerable<object[]> Read()
@@ -892,10 +916,12 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
             var text = File.ReadAllText(_config.InputPath, Encoding.UTF8);
             var trimmed = text.TrimStart();
-            var width = Math.Max(_config.ExpectedWidth, _paths.Length);
+            var width = _returnObject
+                ? Math.Max(_config.ExpectedWidth, 1)
+                : Math.Max(_config.ExpectedWidth, _paths.Length);
             if (width <= 0)
             {
-                width = _paths.Length;
+                width = _returnObject ? 1 : _paths.Length;
             }
             if (_config.TreatArrayAsStream && trimmed.StartsWith("[", StringComparison.Ordinal))
             {
@@ -938,7 +964,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                 {
                     continue;
                 }
-                yield return ProjectRow(element, width);
+                yield return BuildRow(element, width);
             }
         }
 
@@ -995,8 +1021,17 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                 // Treat array as stream of objects (rare, but handle gracefully)
                 foreach (var item in element.EnumerateArray())
                 {
-                    return ProjectRow(item, width);
+                    return BuildRow(item, width);
                 }
+            }
+            return BuildRow(element, width);
+        }
+
+        private object[] BuildRow(JsonElement element, int width)
+        {
+            if (_returnObject)
+            {
+                return new[] { DeserializeToObject(element) };
             }
             return ProjectRow(element, width);
         }
@@ -1014,6 +1049,17 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                 result[i] = _paths[i].Evaluate(element);
             }
             return result;
+        }
+
+        private object? DeserializeToObject(JsonElement element)
+        {
+            if (_targetType is null)
+            {
+                throw new InvalidOperationException("Target type not resolved for object deserialization.");
+            }
+
+            var json = element.GetRawText();
+            return JsonSerializer.Deserialize(json, _targetType, _serializerOptions);
         }
 
         private static object? ConvertJsonValue(JsonElement value)
@@ -1181,6 +1227,26 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
             public static PathStep ForIndex(int index) =>
                 new PathStep(PathStepKind.Index, null, index);
+        }
+
+        private static Type ResolveTargetType(string typeName)
+        {
+            var target = Type.GetType(typeName, throwOnError: false, ignoreCase: false);
+            if (target is not null)
+            {
+                return target;
+            }
+
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                target = assembly.GetType(typeName, throwOnError: false, ignoreCase: false);
+                if (target is not null)
+                {
+                    return target;
+                }
+            }
+
+            throw new InvalidOperationException($"Unable to resolve target type '{typeName}'.");
         }
     }
 }
