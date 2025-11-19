@@ -109,17 +109,21 @@ compile_source(Pred/Arity, Config, Options, PowerShellCode) :-
     % Extract optional parameters with defaults
     (   member(namespace(Namespace), AllOptions)
     ->  true
-    ;   atom_concat('UnifyWeaver.Generated.', Pred, Namespace)
+    ;   % Generate PascalCase namespace from predicate name
+        capitalize_atom(Pred, PascalPred),
+        atom_concat('UnifyWeaver.Generated.', PascalPred, Namespace)
     ),
     (   member(class_name(ClassName), AllOptions)
     ->  true
-    ;   upcase_atom(Pred, Upper),
-        atom_concat(Upper, 'Handler', ClassName)
+    ;   % Generate PascalCase class name
+        capitalize_atom(Pred, PascalPred),
+        atom_concat(PascalPred, 'Handler', ClassName)
     ),
     (   member(method_name(MethodName), AllOptions)
     ->  true
-    ;   atom_concat('Process', Pred, TempMethod),
-        upcase_atom(TempMethod, MethodName)
+    ;   % Generate PascalCase method name
+        capitalize_atom(Pred, PascalPred),
+        atom_concat('Process', PascalPred, MethodName)
     ),
     (   member(pre_compile(PreCompile), AllOptions)
     ->  true
@@ -222,6 +226,26 @@ generate_references_string(References, String) :-
 quote_reference(Ref, Quoted) :-
     format(atom(Quoted), '''~w''', [Ref]).
 
+%% capitalize_atom(+Atom, -Capitalized)
+%  Convert atom to PascalCase (capitalize first letter of each word)
+%  Examples: test_string_reverser -> TestStringReverser
+%            my_handler -> MyHandler
+capitalize_atom(Atom, Capitalized) :-
+    atom_string(Atom, String),
+    % Split by underscore
+    split_string(String, "_", "", Parts),
+    % Capitalize each part
+    maplist(capitalize_string, Parts, CapitalizedParts),
+    % Join without separator
+    atomic_list_concat(CapitalizedParts, Capitalized).
+
+%% capitalize_string(+String, -Capitalized)
+%  Capitalize first letter of a string
+capitalize_string(String, Capitalized) :-
+    string_chars(String, [First|Rest]),
+    upcase_atom(First, UpperFirst),
+    atomic_list_concat([UpperFirst|Rest], Capitalized).
+
 %% ============================================
 %% POWERSHELL TEMPLATES
 %% ============================================
@@ -305,7 +329,7 @@ function {{pred}} {
 
     begin {
         # Setup cache directory
-        $cacheDir = "{{cache_dir}}"
+        $cacheDir = Join-Path $env:TEMP "unifyweaver_dotnet_cache"
         if (-not (Test-Path $cacheDir)) {
             New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
         }
@@ -375,7 +399,7 @@ function {{pred}}_stream {
 
 function {{pred}}_clear_cache {
     # Clear the cached DLL to force recompilation
-    $cacheDir = "{{cache_dir}}"
+    $cacheDir = Join-Path $env:TEMP "unifyweaver_dotnet_cache"
     $cacheKey = "{{cache_key}}"
     $dllPath = Join-Path $cacheDir "$cacheKey.dll"
 
