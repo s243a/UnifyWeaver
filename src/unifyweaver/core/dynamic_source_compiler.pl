@@ -222,6 +222,10 @@ extract_io_metadata(Options, Meta) :-
     ;   ColumnsInput = []
     ),
     normalize_columns(ColumnsInput, Columns),
+    option(type_hint(TypeHint0), Options, none),
+    normalize_type_hint(TypeHint0, TypeHint),
+    option(return_object(ReturnObject0), Options, false),
+    normalize_boolean(ReturnObject0, ReturnObject),
     Meta = metadata{
         record_separator:RecordSep,
         field_separator:FieldSep,
@@ -229,7 +233,9 @@ extract_io_metadata(Options, Meta) :-
         input:Input,
         skip_rows:SkipRows,
         quote_style:QuoteStyle,
-        columns:Columns
+        columns:Columns,
+        type_hint:TypeHint,
+        return_object:ReturnObject
     }.
 
 normalize_record_separator(line_feed, line_feed) :- !.
@@ -257,6 +263,25 @@ normalize_quote_style(double_quote, double_quote) :- !.
 normalize_quote_style(single_quote, single_quote) :- !.
 normalize_quote_style(json, json_escape) :- !.
 normalize_quote_style(Value, Value).
+
+normalize_type_hint(none, none) :- !.
+normalize_type_hint(Type, Normalized) :-
+    (   atom(Type)
+    ->  Normalized = Type
+    ;   string(Type)
+    ->  atom_string(Normalized, Type)
+    ;   term_to_atom(Type, Normalized)
+    ).
+
+normalize_boolean(true, true) :- !.
+normalize_boolean(false, false) :- !.
+normalize_boolean(1, true) :- !.
+normalize_boolean(0, false) :- !.
+normalize_boolean(yes, true) :- !.
+normalize_boolean(no, false) :- !.
+normalize_boolean(on, true) :- !.
+normalize_boolean(off, false) :- !.
+normalize_boolean(Value, Value).
 
 normalize_columns([], []) :- !.
 normalize_columns(Columns0, Columns) :-

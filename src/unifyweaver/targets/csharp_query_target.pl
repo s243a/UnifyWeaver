@@ -1069,6 +1069,12 @@ json_reader_literal(Metadata, Arity, Literal) :-
     ),
     record_separator_literal(RecSep0, RecSepLiteral),
     metadata_columns_literal(Metadata, Arity, ColumnLiteral),
+    metadata_type_literal(Metadata, TypeLiteral),
+    (   get_dict(return_object, Metadata, ReturnObject),
+        ReturnObject == true
+    ->  ReturnLiteral = 'true'
+    ;   ReturnLiteral = 'false'
+    ),
     format(atom(Literal),
 'new JsonStreamReader(new JsonSourceConfig
             {
@@ -1076,9 +1082,11 @@ json_reader_literal(Metadata, Arity, Literal) :-
                 Columns = ~w,
                 RecordSeparator = RecordSeparatorKind.~w,
                 SkipRows = ~w,
-                ExpectedWidth = ~w
+                ExpectedWidth = ~w,
+                TargetTypeName = ~w,
+                ReturnObject = ~w
             })',
-        [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity]).
+        [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity, TypeLiteral, ReturnLiteral]).
 
 metadata_columns_literal(Metadata, Arity, Literal) :-
     (   get_dict(columns, Metadata, Columns),
@@ -1088,6 +1096,13 @@ metadata_columns_literal(Metadata, Arity, Literal) :-
         maplist(default_column_name, Indexes, ColumnStrings)
     ),
     string_array_literal(ColumnStrings, Literal).
+
+metadata_type_literal(Metadata, Literal) :-
+    (   get_dict(type_hint, Metadata, TypeHint),
+        TypeHint \= none
+    ->  csharp_literal(TypeHint, Literal)
+    ;   Literal = 'null'
+    ).
 
 default_column_name(Index, Name) :-
     format(string(Name), 'col~w', [Index]).

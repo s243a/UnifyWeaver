@@ -22,10 +22,8 @@ source(Type, Name, Options0) :-
     % Determine arity from options or use defaults
     determine_arity(Options, Arity),
     validate_source_options(Type, Options, Arity),
-    
     % Register this as a dynamic source
     register_dynamic_source(Name/Arity, Type, Options),
-    
     format('Defined source: ~w/~w using ~w~n', [Name, Arity, Type]).
 
 %% determine_arity(+Options, -Arity)
@@ -149,10 +147,26 @@ validate_json_columns(Options, Arity) :-
     (   option(columns(Columns), Options),
         is_list(Columns),
         Columns \= []
-    ->  length(Columns, ColumnsArity),
-        (   ColumnsArity =:= Arity
+    ->  validate_column_entries(Columns),
+        length(Columns, Count),
+        (   Count =:= Arity
         ->  true
         ;   throw(error(domain_error(json_columns_arity, json{columns:Columns, arity:Arity}), _))
         )
     ;   throw(error(domain_error(json_columns, Options), _))
+    ).
+
+validate_column_entries(Columns) :-
+    maplist(validate_column_entry, Columns).
+
+validate_column_entry(Column) :-
+    (   atom(Column)
+    ->  atom_string(Column, String)
+    ;   string(Column)
+    ->  String = Column
+    ;   throw(error(domain_error(json_column_entry, Column), _))
+    ),
+    (   String == ""
+    ->  throw(error(domain_error(json_column_entry, Column), _))
+    ;   true
     ).

@@ -40,6 +40,7 @@ test_csharp_query_target :-
     verify_tsv_dynamic_source_plan,
     verify_json_dynamic_source_plan,
     verify_json_nested_source_plan,
+    verify_json_object_source_plan,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
 
@@ -329,6 +330,24 @@ verify_json_nested_source_plan_ :-
     sub_string(Source, _, _, _, 'items[0].product'),
     maybe_run_query_runtime(Plan, ['Alice,Laptop,1200', 'Bob,Mouse,25', 'Charlie,Keyboard,75']).
 
+verify_json_object_source_plan :-
+    setup_call_cleanup(
+        setup_json_object_source,
+        verify_json_object_source_plan_(),
+        cleanup_json_object_source
+    ).
+
+verify_json_object_source_plan_ :-
+    csharp_query_target:build_query_plan(test_product_object/1, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'JsonStreamReader'),
+    sub_string(Source, _, _, _, 'ReturnObject = true'),
+    maybe_run_query_runtime(Plan, [
+        '{"id":"P001","name":"Laptop","price":999}',
+        '{"id":"P002","name":"Mouse","price":25}',
+        '{"id":"P003","name":"Keyboard","price":75}'
+    ]).
+
 setup_csv_dynamic_source :-
     source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),
     assertz(user:(test_user_age(Name, Age) :- test_users(_, Name, Age))).
@@ -378,6 +397,22 @@ cleanup_json_orders_source :-
     retractall(user:test_order_first_item(_, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_def(test_orders/3, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_orders/3, _)).
+
+setup_json_object_source :-
+    source(json, test_products_object, [
+        json_file('test_data/test_products.json'),
+        record_format(json),
+        arity(1),
+        type_hint('System.Text.Json.Nodes.JsonObject, System.Text.Json'),
+        return_object(true)
+    ]),
+    assertz(user:(test_product_object(ProductJson) :-
+        test_products_object(ProductJson))).
+
+cleanup_json_object_source :-
+    retractall(user:test_product_object(_)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_products_object/1, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_products_object/1, _)).
 
 % Run with build-first approach, optionally skipping execution
 maybe_run_query_runtime(Plan, ExpectedRows) :-
@@ -628,13 +663,23 @@ harness_source(ModuleClass, Source) :-
 'using System;
 using System.Linq;
 using UnifyWeaver.QueryRuntime;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(result.Provider);
+var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+string FormatValue(object? value) => value switch
+{
+    JsonNode node => node.ToJsonString(jsonOptions),
+    JsonElement element => element.GetRawText(),
+    _ => value?.ToString() ?? string.Empty
+};
 foreach (var row in executor.Execute(result.Plan))
 {
     var projected = row.Take(result.Plan.Head.Arity)
-                       .Select(v => v?.ToString() ?? string.Empty)
+                       .Select(FormatValue)
                        .ToArray();
 
     if (projected.Length == 0)
@@ -642,10 +687,7 @@ foreach (var row in executor.Execute(result.Plan))
         continue;
     }
 
-    var escaped = projected.Select(value => value.Contains(\",\") ? $\"\\\"{value.Replace(\"\\\"\", \"\\\"\\\"\")}\\\"\" : value)
-                            .ToArray();
-
-    Console.WriteLine(string.Join(\",\", escaped));
+    Console.WriteLine(string.Join(\",\", projected));
 }
 ', [ModuleClass]).
 
