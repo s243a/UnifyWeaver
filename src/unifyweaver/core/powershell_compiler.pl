@@ -23,6 +23,8 @@
 :- use_module('../sources/csv_source', []).
 :- use_module('../sources/json_source', []).
 :- use_module('../sources/http_source', []).
+:- use_module('../sources/xml_source', []).
+:- use_module('../sources/dotnet_source', []).
 
 %% compile_to_powershell(+Predicate, -PowerShellCode)
 %  Simplified interface with default options
@@ -103,6 +105,8 @@ supports_pure_powershell(_Predicate, Options) :-
     (   member(source_type(csv), Options) -> true
     ;   member(source_type(json), Options) -> true
     ;   member(source_type(http), Options) -> true
+    ;   member(source_type(xml), Options) -> true
+    ;   member(source_type(dotnet), Options) -> true
     ;   fail  % Other source types don't support pure mode yet
     ).
 
@@ -119,6 +123,10 @@ compile_to_pure_powershell(Predicate, Options, PowerShellCode) :-
     ->  json_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
     ;   member(source_type(http), PureOptions)
     ->  http_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
+    ;   member(source_type(xml), PureOptions)
+    ->  xml_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
+    ;   member(source_type(dotnet), PureOptions)
+    ->  dotnet_source:compile_source(Predicate, PureOptions, [], PowerShellCode)
     ;   format('[PowerShell Compiler] Error: No pure PowerShell support for this source type~n', []),
         fail
     ).
