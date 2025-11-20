@@ -226,6 +226,10 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
     normalize_type_hint(TypeHint0, TypeHintRaw),
     option(return_object(ReturnObject0), Options, false),
     normalize_boolean(ReturnObject0, ReturnObject),
+    option(treat_array_as_stream(TreatArrayRaw), Options, default),
+    normalize_treat_array(RecordFormat, TreatArrayRaw, TreatArray),
+    option(null_policy(NullPolicyRaw), Options, allow),
+    normalize_null_policy(NullPolicyRaw, NullPolicy, NullDefault),
     (   option(schema(SchemaRaw), Options)
     ->  schema_record_name(Pred/Arity, Options, RecordType),
         normalize_schema_structure(SchemaRaw, RecordType, SchemaFields, SchemaRecords),
@@ -249,6 +253,9 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
         quote_style:QuoteStyle,
         columns:Columns,
         column_selectors:ColumnSelectors,
+        treat_array_stream:TreatArray,
+        null_policy:NullPolicy,
+        null_default:NullDefault,
         type_hint:TypeHint,
         return_object:ReturnObject,
         schema_fields:SchemaFields,
@@ -268,6 +275,7 @@ normalize_field_separator(Value, Value).
 
 normalize_record_format(text, text_line) :- !.
 normalize_record_format(json, json) :- !.
+normalize_record_format(jsonl, jsonl) :- !.
 normalize_record_format(Format, Format).
 
 normalize_input(stdin, stdin) :- !.
@@ -300,6 +308,27 @@ normalize_boolean(no, false) :- !.
 normalize_boolean(on, true) :- !.
 normalize_boolean(off, false) :- !.
 normalize_boolean(Value, Value).
+
+normalize_treat_array(_, true, true) :- !.
+normalize_treat_array(_, false, false) :- !.
+normalize_treat_array(jsonl, default, false) :- !.
+normalize_treat_array(_, default, true) :- !.
+normalize_treat_array(_, Value, Value).
+
+normalize_null_policy(allow, allow, none) :- !.
+normalize_null_policy(fail, fail, none) :- !.
+normalize_null_policy(skip, skip, none) :- !.
+normalize_null_policy(default(Value), default, DefaultAtom) :-
+    !,
+    (   atom(Value)
+    ->  atom_string(Value, DefaultAtom)
+    ;   string(Value)
+    ->  DefaultAtom = Value
+    ;   number(Value)
+    ->  number_string(Value, DefaultAtom)
+    ;   term_to_atom(Value, DefaultAtom)
+    ).
+normalize_null_policy(Value, Value, none).
 
 normalize_columns([], [], []) :- !.
 normalize_columns(Columns0, Columns, Selectors) :-

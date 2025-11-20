@@ -13,6 +13,8 @@
 - Validation rules for JSON sources live in `src/unifyweaver/sources.pl`, with coverage in `tests/core/test_json_source_validation.pl`.
 - Column and schema selectors now accept `jsonpath/1` expressions (root, wildcards, recursive descent); generators emit `JsonColumnSelectorConfig` so the runtime evaluates JSONPath selectors directly.
 - Nested records are available via `field(Name, Path, record(Type, Fields))`; code generation emits every record type, and the runtime instantiates sub-records recursively (see `tests/core/test_csharp_query_target.pl:verify_json_nested_schema_record_plan/0`).
+- JSON Lines streams are supported via `record_format(jsonl)`, which disables array parsing and reads one JSON object per line.
+- Null-handling policies (`null_policy(fail|skip|default(Value))`) apply to column projections so runtime callers can reject, drop, or replace incomplete rows.
 
 ## Requirements (Completed)
 
@@ -35,11 +37,10 @@
 ## Roadmap
 
 1. **Reader-level resilience**
-   - Null-handling policy (`null_policy(fail|skip|default(Value))`) and string-to-number coercion toggles.
-   - Support JSON Lines streams explicitly via `record_format=jsonl` with configurable separators.
+   - String-to-number coercion toggles.
    - Better diagnostics surfaced through `test_json_source_validation.pl` for malformed metadata.
+   - Provide per-column null overrides (e.g., allow nulls for selected selectors only).
 
 2. **Documentation & skills**
-   - Update `skills/skill_json_sources.md` once JSONPath/nested schemas land.
-   - Add agent guidance for selecting temp locations + schema best practices.
+   - Extend playbooks with full JSON-to-target walkthroughs (PowerShell, LiteDB, etc.).
    - Keep this proposal in sync with implementation details so Claude/Codex agents can reason about capabilities quickly.

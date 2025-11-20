@@ -1135,6 +1135,8 @@ json_reader_literal(Metadata, Arity, Literal) :-
     metadata_column_selectors_literal(Metadata, Arity, ColumnLiteral),
     metadata_type_literal(Metadata, TypeLiteral),
     metadata_schema_literal(Metadata, SchemaLiteral),
+    metadata_treat_array_literal(Metadata, TreatArrayLiteral),
+    metadata_null_policy_literals(Metadata, NullPolicyLiteral, NullDefaultLiteral),
     (   get_dict(return_object, Metadata, ReturnObject),
         ReturnObject == true
     ->  ReturnLiteral = 'true'
@@ -1148,11 +1150,14 @@ json_reader_literal(Metadata, Arity, Literal) :-
                 RecordSeparator = RecordSeparatorKind.~w,
                 SkipRows = ~w,
                 ExpectedWidth = ~w,
+                TreatArrayAsStream = ~w,
                 TargetTypeName = ~w,
                 ReturnObject = ~w,
-                SchemaFields = ~w
+                SchemaFields = ~w,
+                NullPolicy = JsonNullPolicy.~w,
+                NullReplacement = ~w
             })',
-        [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity, TypeLiteral, ReturnLiteral, SchemaLiteral]).
+        [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity, TreatArrayLiteral, TypeLiteral, ReturnLiteral, SchemaLiteral, NullPolicyLiteral, NullDefaultLiteral]).
 
 metadata_column_selectors_literal(Metadata, _Arity, Literal) :-
     (   get_dict(column_selectors, Metadata, Selectors),
@@ -1262,6 +1267,31 @@ schema_column_type_enum(json, 'Json').
 schema_column_type_enum(Type, Enum) :-
     atom_string(Type, TypeStr),
     capitalise_string(TypeStr, Enum).
+
+metadata_treat_array_literal(Metadata, Literal) :-
+    (   get_dict(treat_array_stream, Metadata, Flag)
+    ->  (Flag == true -> Literal = 'true' ; Literal = 'false')
+    ;   Literal = 'true'
+    ).
+
+metadata_null_policy_literals(Metadata, PolicyLiteral, DefaultLiteral) :-
+    (   get_dict(null_policy, Metadata, Policy)
+    ->  null_policy_enum(Policy, PolicyLiteral)
+    ;   PolicyLiteral = 'Allow'
+    ),
+    (   get_dict(null_default, Metadata, Default),
+        Default \= none
+    ->  csharp_literal(Default, DefaultLiteral)
+    ;   DefaultLiteral = 'null'
+    ).
+
+null_policy_enum(allow, 'Allow').
+null_policy_enum(fail, 'Fail').
+null_policy_enum(skip, 'Skip').
+null_policy_enum(default, 'Default').
+null_policy_enum(Value, Enum) :-
+    atom_string(Value, ValueStr),
+    capitalise_string(ValueStr, Enum).
 
 default_column_name(Index, Name) :-
     format(string(Name), 'col~w', [Index]).

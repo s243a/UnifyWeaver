@@ -922,6 +922,8 @@ public sealed record JsonSourceConfig
     public string? TargetTypeName { get; init; }
     public bool ReturnObject { get; init; } = false;
     public JsonSchemaFieldConfig[] SchemaFields { get; init; } = Array.Empty<JsonSchemaFieldConfig>();
+    public JsonNullPolicy NullPolicy { get; init; } = JsonNullPolicy.Allow;
+    public string? NullReplacement { get; init; }
 }
 
     public sealed class JsonStreamReader
@@ -931,6 +933,9 @@ public sealed record JsonSourceConfig
         private readonly SchemaFieldRuntime[] _schemaFields;
         private readonly bool _returnObject;
         private readonly Type? _targetType;
+        private readonly bool _treatArrayAsStream;
+        private readonly JsonNullPolicy _nullPolicy;
+        private readonly string? _nullReplacement;
         private readonly JsonSerializerOptions _serializerOptions = new()
         {
             PropertyNameCaseInsensitive = true
@@ -963,6 +968,10 @@ public sealed record JsonSourceConfig
                 _targetType = null;
             }
 
+            _treatArrayAsStream = _config.TreatArrayAsStream;
+            _nullPolicy = _config.NullPolicy;
+            _nullReplacement = _config.NullReplacement;
+
             if (_schemaFields.Length > 0 && !_returnObject)
             {
                 throw new ArgumentException("SchemaFields require ReturnObject=true.", nameof(config));
@@ -990,7 +999,7 @@ public sealed record JsonSourceConfig
             {
                 width = _returnObject ? 1 : _selectors.Length;
             }
-            if (_config.TreatArrayAsStream && trimmed.StartsWith("[", StringComparison.Ordinal))
+            if (_treatArrayAsStream && trimmed.StartsWith("[", StringComparison.Ordinal))
             {
                 foreach (var row in ReadFromArray(text, width))
                 {
@@ -1031,7 +1040,11 @@ public sealed record JsonSourceConfig
                 {
                     continue;
                 }
-                yield return BuildRow(element, width);
+                var row = BuildRow(element, width);
+                if (TryProcessRow(row, out var processed))
+                {
+                    yield return processed;
+                }
             }
         }
 
@@ -1056,7 +1069,11 @@ public sealed record JsonSourceConfig
                     skipped++;
                     continue;
                 }
-                yield return ParseRecord(line, width);
+                var row = ParseRecord(line, width);
+                if (TryProcessRow(row, out var processed))
+                {
+                    yield return processed;
+                }
             }
         }
 
@@ -1075,7 +1092,11 @@ public sealed record JsonSourceConfig
                     skipped++;
                     continue;
                 }
-                yield return ParseRecord(record, width);
+                var row = ParseRecord(record, width);
+                if (TryProcessRow(row, out var processed))
+                {
+                    yield return processed;
+                }
             }
         }
 
@@ -1083,7 +1104,7 @@ public sealed record JsonSourceConfig
         {
             using var document = JsonDocument.Parse(record);
             var element = document.RootElement;
-            if (element.ValueKind == JsonValueKind.Array && _config.TreatArrayAsStream)
+            if (element.ValueKind == JsonValueKind.Array && _treatArrayAsStream)
             {
                 // Treat array as stream of objects (rare, but handle gracefully)
                 foreach (var item in element.EnumerateArray())
@@ -1127,6 +1148,36 @@ public sealed record JsonSourceConfig
                 }
             }
             return result;
+        }
+
+        private bool TryProcessRow(object[] row, out object[] processed)
+        {
+            processed = row;
+            if (_nullPolicy == JsonNullPolicy.Allow)
+            {
+                return true;
+            }
+
+            var hasNull = false;
+            for (var i = 0; i < row.Length; i++)
+            {
+                if (row[i] is null)
+                {
+                    hasNull = true;
+                    switch (_nullPolicy)
+                    {
+                        case JsonNullPolicy.Fail:
+                            throw new InvalidDataException($"Null value encountered while reading '{_config.InputPath}'.");
+                        case JsonNullPolicy.Skip:
+                            return false;
+                        case JsonNullPolicy.Default:
+                            row[i] = _nullReplacement ?? string.Empty;
+                            break;
+                    }
+                }
+            }
+
+            return true;
         }
 
         private object? DeserializeToObject(JsonElement element)

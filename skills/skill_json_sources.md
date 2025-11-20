@@ -79,6 +79,25 @@ Use this skill whenever a playbook instructs you to read JSON data via `source/3
   ```
 - Generated C# includes `OrderRecord`, `LineItemRecord`, and `OrderSummaryRecord`; runtime instantiates nested POCOs automatically.
 
+## JSON Lines + null policies
+- Use `record_format(jsonl)` when streaming newline-delimited JSON (`*.jsonl`). This disables automatic array parsing so each line is treated as an independent object.
+- `null_policy/1` controls how missing projections behave:
+  - `null_policy(fail)` → throw immediately when a column evaluates to null.
+  - `null_policy(skip)` → skip any row containing null projections.
+  - `null_policy(default(Value))` → substitute `Value` (stored as a string) whenever null appears; useful for placeholders like `"N/A"` or `"0"`.
+- Example:
+  ```prolog
+  :- source(json, order_second_items, [
+      json_file('test_data/test_orders.jsonl'),
+      record_format(jsonl),
+      columns([
+          jsonpath('$.order.customer.name'),
+          jsonpath('$.items[1].product')
+      ]),
+      null_policy(default('N/A'))
+  ]).
+  ```
+
 ## Validation expectations
 - Missing `columns/1` (when `return_object(false)`) causes a `domain_error(json_columns, _)`.
 - Column count must equal predicate arity.
