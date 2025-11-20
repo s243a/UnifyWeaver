@@ -12,6 +12,7 @@
 - `csharp_query_target` inspects the metadata and emits either column-oriented projections or schema-generated POCO records (see `schema/1` + `record_type/1` in `src/unifyweaver/sources.pl`).
 - Validation rules for JSON sources live in `src/unifyweaver/sources.pl`, with coverage in `tests/core/test_json_source_validation.pl`.
 - Column and schema selectors now accept `jsonpath/1` expressions (root, wildcards, recursive descent); generators emit `JsonColumnSelectorConfig` so the runtime evaluates JSONPath selectors directly.
+- Nested records are available via `field(Name, Path, record(Type, Fields))`; code generation emits every record type, and the runtime instantiates sub-records recursively (see `tests/core/test_csharp_query_target.pl:verify_json_nested_schema_record_plan/0`).
 
 ## Requirements (Completed)
 
@@ -33,18 +34,12 @@
 
 ## Roadmap
 
-1. **Nested POCO schemas**
-   - Extend `schema/1` to allow references to sub-records, e.g., `field(address, '$.address', record('AddressRecord'))`.
-   - `csharp_query_target` should emit multiple record declarations plus factory helpers, wiring parent/child construction logic.
-   - Add `record_namespace/1` so playbooks can isolate generated types.
-   - Tests + docs demonstrating multi-level objects flowing through dotnet execution.
-
-2. **Reader-level resilience**
+1. **Reader-level resilience**
    - Null-handling policy (`null_policy(fail|skip|default(Value))`) and string-to-number coercion toggles.
    - Support JSON Lines streams explicitly via `record_format=jsonl` with configurable separators.
    - Better diagnostics surfaced through `test_json_source_validation.pl` for malformed metadata.
 
-3. **Documentation & skills**
+2. **Documentation & skills**
    - Update `skills/skill_json_sources.md` once JSONPath/nested schemas land.
    - Add agent guidance for selecting temp locations + schema best practices.
    - Keep this proposal in sync with implementation details so Claude/Codex agents can reason about capabilities quickly.

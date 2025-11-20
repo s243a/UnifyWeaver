@@ -51,11 +51,33 @@ Use this skill whenever a playbook instructs you to read JSON data via `source/3
           field(price, 'price', double)
       ]),
       record_type('ProductRecord')
-  ]).
+  ]). 
 
   ?- product_rows(Row).
   % yields ProductRecord { Id = P001, Name = Laptop, Price = 999 }
   ```
+
+## Nested schema records
+- Return structured sub-objects by using `record(TypeName, Fields)` (or `record(Fields)` to auto-name from the field).
+- Nested selectors are evaluated relative to the selected sub-object; JSONPath and dot notation both work.
+- Example:
+  ```prolog
+  :- source(json, order_rows, [
+      json_file('test_data/test_orders.json'),
+      schema([
+          field(order, 'order', record('OrderRecord', [
+              field(id, 'id', string),
+              field(customer, 'customer.name', string)
+          ])),
+          field(first_item, 'items[0]', record('LineItemRecord', [
+              field(product, 'product', string),
+              field(total, 'total', double)
+          ]))
+      ]),
+      record_type('OrderSummaryRecord')
+  ]).
+  ```
+- Generated C# includes `OrderRecord`, `LineItemRecord`, and `OrderSummaryRecord`; runtime instantiates nested POCOs automatically.
 
 ## Validation expectations
 - Missing `columns/1` (when `return_object(false)`) causes a `domain_error(json_columns, _)`.

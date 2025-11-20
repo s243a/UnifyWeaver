@@ -200,7 +200,9 @@ validate_schema_field(field(Name, Path, Type)) :-
     ->  true
     ;   throw(error(domain_error(json_schema_field_path, Path), _))
     ),
-    (   validate_schema_type(Type)
+    (   validate_schema_record_type(Type)
+    ->  true
+    ;   validate_schema_type(Type)
     ->  true
     ;   throw(error(domain_error(json_schema_field_type, Type), _))
     ).
@@ -225,6 +227,20 @@ validate_schema_type(double).
 validate_schema_type(number).
 validate_schema_type(boolean).
 validate_schema_type(json).
+
+validate_schema_record_type(record(Fields)) :-
+    !,
+    validate_nested_schema_fields(Fields).
+validate_schema_record_type(record(_Name, Fields)) :-
+    !,
+    validate_nested_schema_fields(Fields).
+validate_schema_record_type(_).
+
+validate_nested_schema_fields(Fields) :-
+    (   is_list(Fields)
+    ->  maplist(validate_schema_field, Fields)
+    ;   throw(error(domain_error(json_schema_record_fields, Fields), _))
+    ).
 
 validate_column_entries(Columns) :-
     maplist(validate_column_entry, Columns).
