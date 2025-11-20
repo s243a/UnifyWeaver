@@ -23,6 +23,7 @@
 :- dynamic user:test_even/1.
 :- dynamic user:test_odd/1.
 :- dynamic user:test_parity_input/1.
+:- dynamic user:test_product_record/1.
 
 test_csharp_query_target :-
     configure_csharp_query_options,
@@ -40,6 +41,7 @@ test_csharp_query_target :-
     verify_tsv_dynamic_source_plan,
     verify_json_dynamic_source_plan,
     verify_json_nested_source_plan,
+    verify_json_schema_source_plan,
     verify_json_object_source_plan,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
@@ -330,6 +332,23 @@ verify_json_nested_source_plan_ :-
     sub_string(Source, _, _, _, 'items[0].product'),
     maybe_run_query_runtime(Plan, ['Alice,Laptop,1200', 'Bob,Mouse,25', 'Charlie,Keyboard,75']).
 
+verify_json_schema_source_plan :-
+    setup_call_cleanup(
+        setup_json_schema_source,
+        verify_json_schema_source_plan_(),
+        cleanup_json_schema_source
+    ).
+
+verify_json_schema_source_plan_ :-
+    csharp_query_target:build_query_plan(test_product_record/1, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'ProductRecord'),
+    maybe_run_query_runtime(Plan, [
+        'ProductRecord { Id = P001, Name = Laptop, Price = 999 }',
+        'ProductRecord { Id = P002, Name = Mouse, Price = 25 }',
+        'ProductRecord { Id = P003, Name = Keyboard, Price = 75 }'
+    ]).
+
 verify_json_object_source_plan :-
     setup_call_cleanup(
         setup_json_object_source,
@@ -383,6 +402,23 @@ cleanup_json_dynamic_source :-
     retractall(user:test_product_price(_, _)),
     retractall(dynamic_source_compiler:dynamic_source_def(test_products/3, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_products/3, _)).
+
+setup_json_schema_source :-
+    source(json, test_product_record_source, [
+        json_file('test_data/test_products.json'),
+        schema([
+            field(id, 'id', string),
+            field(name, 'name', string),
+            field(price, 'price', double)
+        ]),
+        record_type('ProductRecord')
+    ]),
+    assertz(user:(test_product_record(Row) :- test_product_record_source(Row))).
+
+cleanup_json_schema_source :-
+    retractall(user:test_product_record(_)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_product_record_source/1, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_product_record_source/1, _)).
 
 setup_json_orders_source :-
     source(json, test_orders, [

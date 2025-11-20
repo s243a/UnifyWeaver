@@ -758,6 +758,7 @@ render_plan_to_csharp(Plan, Code) :-
     get_dict(relations, Plan, Relations),
     get_dict(is_recursive, Plan, IsRecursive),
     relation_blocks(Relations, ProviderBody, UsesDynamic),
+    schema_declarations(Relations, SchemaDeclarations),
     (   ProviderBody == ''
     ->  ProviderSection = ''
     ;   format(atom(ProviderSection), '~w~n', [ProviderBody])
@@ -783,7 +784,7 @@ using UnifyWeaver.QueryRuntime;
 
 namespace UnifyWeaver.Generated
 {
-    public static class ~w
+~w    public static class ~w
     {
         public static (InMemoryRelationProvider Provider, QueryPlan Plan) Build()
         {
@@ -797,7 +798,7 @@ namespace UnifyWeaver.Generated
         }
     }
 }
-', [DynamicUsing, ModuleClass, ProviderSection, PredStr, Arity, PlanExpr, RecLiteral]).
+', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderSection, PredStr, Arity, PlanExpr, RecLiteral]).
 
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, relation_scan), !,
@@ -1019,6 +1020,58 @@ relation_blocks(Relations, ProviderStatements, UsesDynamic) :-
         )
     ).
 
+schema_declarations(Relations, SchemaCode) :-
+    findall(TypeName-Code,
+        (   member(relation{facts:dynamic(Metadata)}, Relations),
+            schema_declaration(Metadata, Code, TypeName)
+        ),
+        Pairs),
+    sort(Pairs, Sorted),
+    findall(Code, member(_-Code, Sorted), Codes),
+    (   Codes == []
+    ->  SchemaCode = ''
+    ;   atomic_list_concat(Codes, '\n', Joined),
+        format(atom(SchemaCode), '~w~n', [Joined])
+    ).
+
+schema_declaration(Metadata, Code, TypeName) :-
+    get_dict(schema_fields, Metadata, Fields),
+    Fields \= [],
+    get_dict(schema_type, Metadata, TypeAtom),
+    TypeAtom \= none,
+    atom_string(TypeAtom, TypeName),
+    findall(Param,
+        (   member(Field, Fields),
+            schema_field_param(Field, Param)
+        ),
+        Params),
+    atomic_list_concat(Params, ', ', ParamList),
+    format(atom(Code), '    public sealed record ~w(~w);', [TypeName, ParamList]).
+
+schema_field_param(Field, Param) :-
+    get_dict(name, Field, NameAtom),
+    get_dict(type, Field, TypeAtom),
+    schema_field_type_literal(TypeAtom, TypeLiteral),
+    schema_field_property_name(NameAtom, PropertyName),
+    format(atom(Param), '~w ~w', [TypeLiteral, PropertyName]).
+
+schema_field_type_literal(string, 'string').
+schema_field_type_literal(integer, 'int').
+schema_field_type_literal(long, 'long').
+schema_field_type_literal(float, 'double').
+schema_field_type_literal(double, 'double').
+schema_field_type_literal(number, 'double').
+schema_field_type_literal(boolean, 'bool').
+schema_field_type_literal(json, 'string').
+schema_field_type_literal(Type, Literal) :-
+    atom_string(Type, Literal).
+
+schema_field_property_name(NameAtom, PropertyName) :-
+    atom_string(NameAtom, NameStr),
+    split_string(NameStr, '_', '_', Parts),
+    maplist(capitalise_string, Parts, Caps),
+    atomic_list_concat(Caps, '', PropertyName).
+
 dynamic_relation_block(Name, Arity, Metadata, Block) :-
     atom_string(Name, NameStr),
     dynamic_reader_literal(Metadata, Arity, ReaderLiteral),
@@ -1070,6 +1123,7 @@ json_reader_literal(Metadata, Arity, Literal) :-
     record_separator_literal(RecSep0, RecSepLiteral),
     metadata_columns_literal(Metadata, Arity, ColumnLiteral),
     metadata_type_literal(Metadata, TypeLiteral),
+    metadata_schema_literal(Metadata, SchemaLiteral),
     (   get_dict(return_object, Metadata, ReturnObject),
         ReturnObject == true
     ->  ReturnLiteral = 'true'
@@ -1084,9 +1138,10 @@ json_reader_literal(Metadata, Arity, Literal) :-
                 SkipRows = ~w,
                 ExpectedWidth = ~w,
                 TargetTypeName = ~w,
-                ReturnObject = ~w
+                ReturnObject = ~w,
+                SchemaFields = ~w
             })',
-        [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity, TypeLiteral, ReturnLiteral]).
+        [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity, TypeLiteral, ReturnLiteral, SchemaLiteral]).
 
 metadata_columns_literal(Metadata, Arity, Literal) :-
     (   get_dict(columns, Metadata, Columns),
@@ -1103,6 +1158,41 @@ metadata_type_literal(Metadata, Literal) :-
     ->  csharp_literal(TypeHint, Literal)
     ;   Literal = 'null'
     ).
+
+metadata_schema_literal(Metadata, Literal) :-
+    (   get_dict(schema_fields, Metadata, Fields),
+        Fields \= []
+    ->  findall(Item,
+            (   member(Field, Fields),
+                schema_field_literal(Field, Item)
+            ),
+            Items),
+        atomic_list_concat(Items, '\n', Joined),
+        format(atom(Literal), 'new JsonSchemaFieldConfig[]{\n~w\n            }', [Joined])
+    ;   Literal = 'Array.Empty<JsonSchemaFieldConfig>()'
+    ).
+
+schema_field_literal(Field, Literal) :-
+    get_dict(name, Field, NameAtom),
+    get_dict(path, Field, PathString),
+    get_dict(type, Field, TypeAtom),
+    schema_field_property_name(NameAtom, PropertyName),
+    schema_column_type_enum(TypeAtom, EnumLiteral),
+    csharp_literal(PathString, PathLiteral),
+    format(atom(Literal), '                new JsonSchemaFieldConfig("~w", ~w, JsonColumnType.~w)',
+        [PropertyName, PathLiteral, EnumLiteral]).
+
+schema_column_type_enum(string, 'String').
+schema_column_type_enum(integer, 'Integer').
+schema_column_type_enum(long, 'Long').
+schema_column_type_enum(float, 'Double').
+schema_column_type_enum(double, 'Double').
+schema_column_type_enum(number, 'Double').
+schema_column_type_enum(boolean, 'Boolean').
+schema_column_type_enum(json, 'Json').
+schema_column_type_enum(Type, Enum) :-
+    atom_string(Type, TypeStr),
+    capitalise_string(TypeStr, Enum).
 
 default_column_name(Index, Name) :-
     format(string(Name), 'col~w', [Index]).

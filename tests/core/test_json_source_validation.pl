@@ -47,6 +47,22 @@ test(return_object_with_columns,
           columns([id])
         ]).
 
+test(schema_requires_arity_one,
+     [error(domain_error(json_schema_arity, _))]) :-
+    source(json, schema_wrong_arity,
+        [ json_file('test_data/test_products.json'),
+          schema([field(id, 'id', string)]),
+          arity(2)
+        ]).
+
+test(schema_conflicts_with_columns,
+     [error(domain_error(json_schema_columns_conflict, _))]) :-
+    source(json, schema_columns_conflict,
+        [ json_file('test_data/test_products.json'),
+          schema([field(id, 'id', string)]),
+          columns([id])
+        ]).
+
 :- end_tests(json_source_validation).
 
 :- initialization(main).

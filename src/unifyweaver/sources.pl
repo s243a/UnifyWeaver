@@ -29,6 +29,10 @@ source(Type, Name, Options0) :-
 %% determine_arity(+Options, -Arity)
 %  Determine predicate arity from options
 determine_arity(Options, Arity) :-
+    member(schema(_), Options),
+    !,
+    Arity = 1.
+determine_arity(Options, Arity) :-
     % Check if arity is explicitly specified
     (   member(arity(Arity), Options)
     ->  true
@@ -106,7 +110,12 @@ augment_json_options(Options0, Options) :-
         ensure_option(input(file(Abs)), Options4, Options5)
     ;   Options5 = Options4
     ),
-    Options = Options5.
+    (   option(schema(Schema), Options0)
+    ->  ensure_option(schema(Schema), Options5, Options6),
+        ensure_option(return_object(true), Options6, Options7)
+    ;   Options7 = Options5
+    ),
+    Options = Options7.
 
 ensure_option(Term, Options0, Options) :-
     functor(Term, Name, Arity),
@@ -122,7 +131,9 @@ validate_source_options(json, Options, Arity) :-
 validate_source_options(_, _, _).
 
 validate_json_source_options(Options, Arity) :-
-    (   option(return_object(true), Options)
+    (   option(schema(Schema), Options)
+    ->  validate_json_schema(Options, Schema, Arity)
+    ;   option(return_object(true), Options)
     ->  validate_json_return_object(Options, Arity)
     ;   validate_json_columns(Options, Arity)
     ).
@@ -155,6 +166,57 @@ validate_json_columns(Options, Arity) :-
         )
     ;   throw(error(domain_error(json_columns, Options), _))
     ).
+
+validate_json_schema(Options, Schema, Arity) :-
+    (   Arity =:= 1
+    ->  true
+    ;   throw(error(domain_error(json_schema_arity, Arity), _))
+    ),
+    (   member(arity(Declared), Options),
+        Declared \= 1
+    ->  throw(error(domain_error(json_schema_arity, Declared), _))
+    ;   true
+    ),
+    validate_schema_fields(Schema),
+    (   option(columns(_), Options)
+    ->  throw(error(domain_error(json_schema_columns_conflict, Options), _))
+    ;   true
+    ).
+
+validate_schema_fields(Schema) :-
+    (   is_list(Schema)
+    ->  maplist(validate_schema_field, Schema)
+    ;   throw(error(domain_error(json_schema, Schema), _))
+    ).
+
+validate_schema_field(field(Name, Path, Type)) :-
+    (   atom(Name)
+    ->  true
+    ;   string(Name)
+    ->  true
+    ;   throw(error(domain_error(json_schema_field_name, Name), _))
+    ),
+    (   atom(Path)
+    ->  true
+    ;   string(Path)
+    ->  true
+    ;   throw(error(domain_error(json_schema_field_path, Path), _))
+    ),
+    (   validate_schema_type(Type)
+    ->  true
+    ;   throw(error(domain_error(json_schema_field_type, Type), _))
+    ).
+validate_schema_field(Term) :-
+    throw(error(domain_error(json_schema_field, Term), _)).
+
+validate_schema_type(string).
+validate_schema_type(integer).
+validate_schema_type(long).
+validate_schema_type(float).
+validate_schema_type(double).
+validate_schema_type(number).
+validate_schema_type(boolean).
+validate_schema_type(json).
 
 validate_column_entries(Columns) :-
     maplist(validate_column_entry, Columns).

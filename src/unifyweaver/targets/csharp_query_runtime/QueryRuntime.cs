@@ -9,6 +9,7 @@ using System.Linq;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 
 namespace UnifyWeaver.QueryRuntime
 {
@@ -856,22 +857,36 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
         }
     }
 
-    public sealed record JsonSourceConfig
-    {
-        public string InputPath { get; init; } = string.Empty;
-        public string[] Columns { get; init; } = Array.Empty<string>();
-        public RecordSeparatorKind RecordSeparator { get; init; } = RecordSeparatorKind.LineFeed;
-        public int SkipRows { get; init; } = 0;
-        public int ExpectedWidth { get; init; } = 0;
-        public bool TreatArrayAsStream { get; init; } = true;
-        public string? TargetTypeName { get; init; }
-        public bool ReturnObject { get; init; } = false;
-    }
+public enum JsonColumnType
+{
+    String,
+    Integer,
+    Long,
+    Double,
+    Boolean,
+    Json
+}
+
+public sealed record JsonSchemaFieldConfig(string PropertyName, string Path, JsonColumnType ColumnType);
+
+public sealed record JsonSourceConfig
+{
+    public string InputPath { get; init; } = string.Empty;
+    public string[] Columns { get; init; } = Array.Empty<string>();
+    public RecordSeparatorKind RecordSeparator { get; init; } = RecordSeparatorKind.LineFeed;
+    public int SkipRows { get; init; } = 0;
+    public int ExpectedWidth { get; init; } = 0;
+    public bool TreatArrayAsStream { get; init; } = true;
+    public string? TargetTypeName { get; init; }
+    public bool ReturnObject { get; init; } = false;
+    public JsonSchemaFieldConfig[] SchemaFields { get; init; } = Array.Empty<JsonSchemaFieldConfig>();
+}
 
     public sealed class JsonStreamReader
     {
         private readonly JsonSourceConfig _config;
         private readonly ColumnPath[] _paths;
+        private readonly SchemaFieldRuntime[] _schemaFields;
         private readonly bool _returnObject;
         private readonly Type? _targetType;
         private readonly JsonSerializerOptions _serializerOptions = new()
@@ -886,6 +901,10 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                 throw new ArgumentException("InputPath is required", nameof(config));
             _returnObject = _config.ReturnObject;
 
+            _schemaFields = _config.SchemaFields?
+                .Select(field => new SchemaFieldRuntime(field.PropertyName, new ColumnPath(field.Path), field.ColumnType))
+                .ToArray() ?? Array.Empty<SchemaFieldRuntime>();
+
             if (_returnObject)
             {
                 if (string.IsNullOrWhiteSpace(_config.TargetTypeName))
@@ -893,6 +912,22 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                     throw new ArgumentException("TargetTypeName is required when ReturnObject is true.", nameof(config));
                 }
                 _targetType = ResolveTargetType(_config.TargetTypeName!);
+            }
+            else
+            {
+                _targetType = null;
+            }
+
+            if (_schemaFields.Length > 0)
+            {
+                if (!_returnObject)
+                {
+                    throw new ArgumentException("SchemaFields require ReturnObject=true.", nameof(config));
+                }
+                _paths = Array.Empty<ColumnPath>();
+            }
+            else if (_returnObject)
+            {
                 _paths = Array.Empty<ColumnPath>();
             }
             else
@@ -1029,6 +1064,10 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
         private object[] BuildRow(JsonElement element, int width)
         {
+            if (_schemaFields.Length > 0)
+            {
+                return new[] { BuildSchemaObject(element) };
+            }
             if (_returnObject)
             {
                 return new[] { DeserializeToObject(element) };
@@ -1059,7 +1098,36 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             }
 
             var json = element.GetRawText();
-            return JsonSerializer.Deserialize(json, _targetType, _serializerOptions);
+            try
+            {
+                return JsonSerializer.Deserialize(json, _targetType, _serializerOptions)
+                    ?? throw new InvalidDataException($"Deserialization returned null for type '{_targetType.FullName}'.");
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidDataException($"Failed to deserialize JSON into '{_targetType.FullName}': {ex.Message}", ex);
+            }
+        }
+
+        private object BuildSchemaObject(JsonElement element)
+        {
+            if (_targetType is null)
+            {
+                throw new InvalidOperationException("Target type not resolved for schema deserialization.");
+            }
+
+            var values = new object?[_schemaFields.Length];
+            for (var i = 0; i < _schemaFields.Length; i++)
+            {
+                values[i] = _schemaFields[i].GetValue(element);
+            }
+
+            var instance = Activator.CreateInstance(_targetType, values);
+            if (instance is null)
+            {
+                throw new InvalidDataException($"Activator could not instantiate '{_targetType.FullName}'.");
+            }
+            return instance;
         }
 
         private static object? ConvertJsonValue(JsonElement value)
@@ -1080,55 +1148,122 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             };
         }
 
+        private sealed class SchemaFieldRuntime
+        {
+            private readonly string _name;
+            private readonly ColumnPath _path;
+            private readonly JsonColumnType _columnType;
+
+            public SchemaFieldRuntime(string name, ColumnPath path, JsonColumnType columnType)
+            {
+                _name = name;
+                _path = path;
+                _columnType = columnType;
+            }
+
+            public object? GetValue(JsonElement element)
+            {
+                return _path.TryEvaluateElement(element, out var result)
+                    ? ConvertValue(result)
+                    : null;
+            }
+
+            private object? ConvertValue(JsonElement element)
+            {
+                if (element.ValueKind == JsonValueKind.Null || element.ValueKind == JsonValueKind.Undefined)
+                {
+                    return null;
+                }
+
+                try
+                {
+                    return _columnType switch
+                    {
+                        JsonColumnType.String => element.ToString(),
+                        JsonColumnType.Boolean => element.ValueKind == JsonValueKind.True || element.ValueKind == JsonValueKind.False
+                            ? element.GetBoolean()
+                            : Convert.ToBoolean(JsonStreamReader.ConvertJsonValue(element) ?? false, CultureInfo.InvariantCulture),
+                        JsonColumnType.Integer => element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out var intValue)
+                            ? intValue
+                            : Convert.ToInt32(JsonStreamReader.ConvertJsonValue(element)!, CultureInfo.InvariantCulture),
+                        JsonColumnType.Long => element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out var longValue)
+                            ? longValue
+                            : Convert.ToInt64(JsonStreamReader.ConvertJsonValue(element)!, CultureInfo.InvariantCulture),
+                        JsonColumnType.Double => element.ValueKind == JsonValueKind.Number && element.TryGetDouble(out var doubleValue)
+                            ? doubleValue
+                            : Convert.ToDouble(JsonStreamReader.ConvertJsonValue(element)!, CultureInfo.InvariantCulture),
+                        JsonColumnType.Json => element.GetRawText(),
+                        _ => element.ToString()
+                    };
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidDataException($"Unable to convert JSON column '{_name}' to {_columnType}: {ex.Message}", ex);
+                }
+            }
+        }
+
         private sealed class ColumnPath
         {
             private readonly PathStep[] _steps;
+            private readonly string _raw;
 
             public ColumnPath(string raw)
             {
-                _steps = Parse(raw ?? string.Empty);
+                _raw = raw ?? string.Empty;
+                _steps = Parse(_raw);
             }
 
             public object? Evaluate(JsonElement element)
             {
+                return TryEvaluateElement(element, out var result)
+                    ? JsonStreamReader.ConvertJsonValue(result)
+                    : null;
+            }
+
+            public bool TryEvaluateElement(JsonElement element, out JsonElement result)
+            {
+                result = element;
                 if (_steps.Length == 0)
                 {
-                    return JsonStreamReader.ConvertJsonValue(element);
+                    return true;
                 }
 
-                var current = element;
                 foreach (var step in _steps)
                 {
                     switch (step.Kind)
                     {
                         case PathStepKind.Property:
-                            if (current.ValueKind == JsonValueKind.Object &&
-                                current.TryGetProperty(step.Property!, out var next))
+                            if (result.ValueKind == JsonValueKind.Object &&
+                                result.TryGetProperty(step.Property!, out var next))
                             {
-                                current = next;
+                                result = next;
                             }
                             else
                             {
-                                return null;
+                                result = default;
+                                return false;
                             }
                             break;
                         case PathStepKind.Index:
-                            if (current.ValueKind == JsonValueKind.Array &&
-                                TryGetArrayElement(current, step.Index, out var elementAtIndex))
+                            if (result.ValueKind == JsonValueKind.Array &&
+                                TryGetArrayElement(result, step.Index, out var elementAtIndex))
                             {
-                                current = elementAtIndex;
+                                result = elementAtIndex;
                             }
                             else
                             {
-                                return null;
+                                result = default;
+                                return false;
                             }
                             break;
                         default:
-                            return null;
+                            result = default;
+                            return false;
                     }
                 }
 
-                return JsonStreamReader.ConvertJsonValue(current);
+                return true;
             }
 
             private static bool TryGetArrayElement(JsonElement arrayElement, int index, out JsonElement value)
@@ -1173,6 +1308,29 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
                     if (span[i] == '[')
                     {
+                        if (i + 1 < span.Length && (span[i + 1] == '"' || span[i + 1] == '\''))
+                        {
+                            var quote = span[i + 1];
+                            var j = i + 2;
+                            var builder = new StringBuilder();
+                            while (j < span.Length && span[j] != quote)
+                            {
+                                builder.Append(span[j]);
+                                j++;
+                            }
+                            if (j >= span.Length)
+                            {
+                                throw new InvalidDataException($"Unterminated quoted property in column path '{path}'.");
+                            }
+                            if (j + 1 >= span.Length || span[j + 1] != ']')
+                            {
+                                throw new InvalidDataException($"Missing closing ] in column path '{path}'.");
+                            }
+                            steps.Add(PathStep.ForProperty(builder.ToString()));
+                            i = j + 2;
+                            continue;
+                        }
+
                         var end = path.IndexOf(']', i + 1);
                         if (end < 0)
                         {
