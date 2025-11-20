@@ -2,6 +2,7 @@
 
 :- use_module(library(plunit)).
 :- use_module('src/unifyweaver/sources').
+:- use_module('src/unifyweaver/core/dynamic_source_compiler').
 
 :- begin_tests(json_source_validation).
 
@@ -63,6 +64,27 @@ test(schema_conflicts_with_columns,
           columns([id])
         ]).
 
+test(columns_allow_jsonpath, []) :-
+    setup_call_cleanup(
+        true,
+        once(source(json, jsonpath_columns,
+            [ json_file('test_data/test_orders.json'),
+              columns([jsonpath('$.order.customer.name')])
+            ])),
+        cleanup_dynamic_source(jsonpath_columns/1)
+    ).
+
+test(schema_allows_jsonpath_paths, []) :-
+    setup_call_cleanup(
+        true,
+        once(source(json, jsonpath_schema,
+            [ json_file('test_data/test_orders.json'),
+              schema([field(first_product, jsonpath('$.items[*].product'), string)]),
+              record_type('FirstProductRow')
+            ])),
+        cleanup_dynamic_source(jsonpath_schema/1)
+    ).
+
 :- end_tests(json_source_validation).
 
 :- initialization(main).
@@ -70,3 +92,7 @@ test(schema_conflicts_with_columns,
 main :-
     run_tests,
     halt.
+
+cleanup_dynamic_source(Pred/Arity) :-
+    retractall(dynamic_source_compiler:dynamic_source_def(Pred/Arity, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(Pred/Arity, _)).

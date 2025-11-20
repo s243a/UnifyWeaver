@@ -13,6 +13,12 @@ Use this skill whenever a playbook instructs you to read JSON data via `source/3
   ]).
   ```
 
+## JSONPath selectors
+- Use `jsonpath('$.orders[*].total')` to select data when simple dot paths are insufficient.
+- Supported features: root `$`, dotted properties, bracket properties (`['foo']`), array indices `[0]`, wildcards `[*]`, and recursive descent `..name`.
+- Works in both `columns/1` and `schema/1`. Wildcards currently return the first matching value.
+- Strings that already begin with `$` are automatically treated as JSONPath selectors, so `columns(['$.orders[0].id'])` also works.
+
 ## Return-object mode
 - Use when you want full JSON objects as rows.
 - Requirements:

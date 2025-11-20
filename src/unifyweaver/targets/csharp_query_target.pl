@@ -1121,7 +1121,7 @@ json_reader_literal(Metadata, Arity, Literal) :-
     ;   RecSep0 = line_feed
     ),
     record_separator_literal(RecSep0, RecSepLiteral),
-    metadata_columns_literal(Metadata, Arity, ColumnLiteral),
+    metadata_column_selectors_literal(Metadata, Arity, ColumnLiteral),
     metadata_type_literal(Metadata, TypeLiteral),
     metadata_schema_literal(Metadata, SchemaLiteral),
     (   get_dict(return_object, Metadata, ReturnObject),
@@ -1133,7 +1133,7 @@ json_reader_literal(Metadata, Arity, Literal) :-
 'new JsonStreamReader(new JsonSourceConfig
             {
                 InputPath = ~w,
-                Columns = ~w,
+                ColumnSelectors = ~w,
                 RecordSeparator = RecordSeparatorKind.~w,
                 SkipRows = ~w,
                 ExpectedWidth = ~w,
@@ -1143,14 +1143,24 @@ json_reader_literal(Metadata, Arity, Literal) :-
             })',
         [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity, TypeLiteral, ReturnLiteral, SchemaLiteral]).
 
-metadata_columns_literal(Metadata, Arity, Literal) :-
-    (   get_dict(columns, Metadata, Columns),
-        Columns \= []
-    ->  maplist(atom_string, Columns, ColumnStrings)
-    ;   numlist(1, Arity, Indexes),
-        maplist(default_column_name, Indexes, ColumnStrings)
+metadata_column_selectors_literal(Metadata, _Arity, Literal) :-
+    (   get_dict(column_selectors, Metadata, Selectors),
+        Selectors \= []
+    ->  true
+    ;   Selectors = []
     ),
-    string_array_literal(ColumnStrings, Literal).
+    (   Selectors == []
+    ->  format(atom(Literal), 'Array.Empty<JsonColumnSelectorConfig>()', [])
+    ;   findall(Item,
+            (   member(column_selector{path:Path, kind:Kind}, Selectors),
+                csharp_literal(Path, PathLiteral),
+                selector_kind_enum(Kind, Enum),
+                format(atom(Item), '                new JsonColumnSelectorConfig(~w, JsonColumnSelectorKind.~w)', [PathLiteral, Enum])
+            ),
+            Items),
+        atomic_list_concat(Items, '\n', Joined),
+        format(atom(Literal), 'new JsonColumnSelectorConfig[]{\n~w\n            }', [Joined])
+    ).
 
 metadata_type_literal(Metadata, Literal) :-
     (   get_dict(type_hint, Metadata, TypeHint),
@@ -1176,11 +1186,19 @@ schema_field_literal(Field, Literal) :-
     get_dict(name, Field, NameAtom),
     get_dict(path, Field, PathString),
     get_dict(type, Field, TypeAtom),
+    get_dict(selector_kind, Field, KindAtom),
     schema_field_property_name(NameAtom, PropertyName),
     schema_column_type_enum(TypeAtom, EnumLiteral),
+    selector_kind_enum(KindAtom, SelectorEnum),
     csharp_literal(PathString, PathLiteral),
-    format(atom(Literal), '                new JsonSchemaFieldConfig("~w", ~w, JsonColumnType.~w)',
-        [PropertyName, PathLiteral, EnumLiteral]).
+    format(atom(Literal), '                new JsonSchemaFieldConfig("~w", ~w, JsonColumnSelectorKind.~w, JsonColumnType.~w)',
+        [PropertyName, PathLiteral, SelectorEnum, EnumLiteral]).
+
+selector_kind_enum(jsonpath, 'JsonPath').
+selector_kind_enum(column_path, 'Path').
+selector_kind_enum(Kind, Enum) :-
+    atom_string(Kind, KindStr),
+    capitalise_string(KindStr, Enum).
 
 schema_column_type_enum(string, 'String').
 schema_column_type_enum(integer, 'Integer').

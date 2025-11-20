@@ -516,6 +516,21 @@ Generating a typed record via `schema/1`:
 % Row = ProductRecord { Id = P001, Name = Laptop, Price = 999 }
 ```
 
+Selecting via JSONPath (using wildcards and recursive descent):
+
+```prolog
+:- source(json, order_first_items, [
+    json_file('test_data/test_orders.json'),
+    columns([
+        jsonpath('$.order.customer.name'),
+        jsonpath('$.items[*].product')
+    ])
+]).
+
+?- order_first_items(Customer, Product).
+% Customer = Alice,  Product = Laptop
+```
+
 **Generated bash:**
 ```bash
 extract_names() {

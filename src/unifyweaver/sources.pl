@@ -196,9 +196,7 @@ validate_schema_field(field(Name, Path, Type)) :-
     ->  true
     ;   throw(error(domain_error(json_schema_field_name, Name), _))
     ),
-    (   atom(Path)
-    ->  true
-    ;   string(Path)
+    (   validate_schema_path(Path)
     ->  true
     ;   throw(error(domain_error(json_schema_field_path, Path), _))
     ),
@@ -208,6 +206,16 @@ validate_schema_field(field(Name, Path, Type)) :-
     ).
 validate_schema_field(Term) :-
     throw(error(domain_error(json_schema_field, Term), _)).
+
+validate_schema_path(jsonpath(Path)) :-
+    !,
+    validate_schema_path(Path).
+validate_schema_path(Path) :-
+    (   atom(Path)
+    ->  true
+    ;   string(Path)
+    ->  true
+    ).
 
 validate_schema_type(string).
 validate_schema_type(integer).
@@ -221,6 +229,9 @@ validate_schema_type(json).
 validate_column_entries(Columns) :-
     maplist(validate_column_entry, Columns).
 
+validate_column_entry(jsonpath(Path)) :-
+    !,
+    validate_column_entry(Path).
 validate_column_entry(Column) :-
     (   atom(Column)
     ->  atom_string(Column, String)
