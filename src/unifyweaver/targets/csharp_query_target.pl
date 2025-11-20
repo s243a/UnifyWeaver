@@ -1035,9 +1035,15 @@ schema_declarations(Relations, SchemaCode) :-
     ).
 
 schema_declaration(Metadata, Code, TypeName) :-
-    get_dict(schema_fields, Metadata, Fields),
-    Fields \= [],
-    get_dict(schema_type, Metadata, TypeAtom),
+    (   get_dict(schema_records, Metadata, Records)
+    ->  true
+    ;   Records = []
+    ),
+    Records \= [],
+    member(schema_record{type:TypeAtom, fields:Fields}, Records),
+    schema_declaration(schema_record{type:TypeAtom, fields:Fields}, Code, TypeName).
+
+schema_declaration(schema_record{type:TypeAtom, fields:Fields}, Code, TypeName) :-
     TypeAtom \= none,
     atom_string(TypeAtom, TypeName),
     findall(Param,
@@ -1050,8 +1056,13 @@ schema_declaration(Metadata, Code, TypeName) :-
 
 schema_field_param(Field, Param) :-
     get_dict(name, Field, NameAtom),
-    get_dict(type, Field, TypeAtom),
-    schema_field_type_literal(TypeAtom, TypeLiteral),
+    (   get_dict(field_kind, Field, record),
+        get_dict(record_type, Field, RecordType),
+        RecordType \= none
+    ->  atom_string(RecordType, TypeLiteral)
+    ;   get_dict(column_type, Field, TypeAtom),
+        schema_field_type_literal(TypeAtom, TypeLiteral)
+    ),
     schema_field_property_name(NameAtom, PropertyName),
     format(atom(Param), '~w ~w', [TypeLiteral, PropertyName]).
 
@@ -1174,7 +1185,7 @@ metadata_schema_literal(Metadata, Literal) :-
         Fields \= []
     ->  findall(Item,
             (   member(Field, Fields),
-                schema_field_literal(Field, Item)
+                schema_field_literal(Field, Item, '                ')
             ),
             Items),
         atomic_list_concat(Items, '\n', Joined),
@@ -1182,17 +1193,57 @@ metadata_schema_literal(Metadata, Literal) :-
     ;   Literal = 'Array.Empty<JsonSchemaFieldConfig>()'
     ).
 
-schema_field_literal(Field, Literal) :-
+schema_field_literal(Field, Literal, Indent) :-
     get_dict(name, Field, NameAtom),
     get_dict(path, Field, PathString),
-    get_dict(type, Field, TypeAtom),
     get_dict(selector_kind, Field, KindAtom),
     schema_field_property_name(NameAtom, PropertyName),
-    schema_column_type_enum(TypeAtom, EnumLiteral),
+    schema_column_type_enum_field(Field, EnumLiteral),
     selector_kind_enum(KindAtom, SelectorEnum),
     csharp_literal(PathString, PathLiteral),
-    format(atom(Literal), '                new JsonSchemaFieldConfig("~w", ~w, JsonColumnSelectorKind.~w, JsonColumnType.~w)',
-        [PropertyName, PathLiteral, SelectorEnum, EnumLiteral]).
+    (   get_dict(field_kind, Field, FieldKind),
+        FieldKind = record,
+        get_dict(record_type, Field, RecordType),
+        RecordType \= none
+    ->  schema_record_type_literal(RecordType, RecordLiteral),
+        get_dict(nested_fields, Field, NestedFields),
+        schema_field_kind_enum(record, FieldKindLiteral),
+        schema_nested_literal(NestedFields, NestedLiteral, Indent)
+    ;   RecordLiteral = 'null',
+        schema_field_kind_enum(value, FieldKindLiteral),
+        NestedLiteral = 'null'
+    ),
+    format(atom(Literal),
+'~wnew JsonSchemaFieldConfig("~w", ~w, JsonColumnSelectorKind.~w, JsonColumnType.~w, JsonSchemaFieldKind.~w, ~w, ~w)',
+        [Indent, PropertyName, PathLiteral, SelectorEnum, EnumLiteral, FieldKindLiteral, RecordLiteral, NestedLiteral]).
+
+schema_nested_literal([], 'null', _) :- !.
+schema_nested_literal(Fields, Literal, Indent) :-
+    atom_concat(Indent, '    ', NextIndent),
+    findall(Item,
+        (   member(Field, Fields),
+            schema_field_literal(Field, Item, NextIndent)
+        ),
+        Items),
+    atomic_list_concat(Items, '\n', Joined),
+    format(atom(Literal), 'new JsonSchemaFieldConfig[]{\n~w\n~w    }', [Joined, Indent]).
+
+schema_column_type_enum_field(Field, EnumLiteral) :-
+    (   get_dict(column_type, Field, TypeAtom),
+        schema_column_type_enum(TypeAtom, EnumLiteral)
+    ->  true
+    ;   EnumLiteral = 'Json'
+    ).
+
+schema_record_type_literal(TypeAtom, Literal) :-
+    format(atom(FullName), 'UnifyWeaver.Generated.~w', [TypeAtom]),
+    csharp_literal(FullName, Literal).
+
+schema_field_kind_enum(value, 'Value').
+schema_field_kind_enum(record, 'Record').
+schema_field_kind_enum(Kind, Literal) :-
+    atom_string(Kind, KindStr),
+    capitalise_string(KindStr, Literal).
 
 selector_kind_enum(jsonpath, 'JsonPath').
 selector_kind_enum(column_path, 'Path').

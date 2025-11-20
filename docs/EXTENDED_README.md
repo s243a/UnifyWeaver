@@ -531,6 +531,29 @@ Selecting via JSONPath (using wildcards and recursive descent):
 % Customer = Alice,  Product = Laptop
 ```
 
+Combining schema + nested records:
+
+```prolog
+:- source(json, order_summaries, [
+    json_file('test_data/test_orders.json'),
+    schema([
+        field(order, 'order', record('OrderRecord', [
+            field(id, 'id', string),
+            field(customer, 'customer.name', string)
+        ])),
+        field(first_item, 'items[0]', record('LineItemRecord', [
+            field(product, 'product', string),
+            field(total, 'total', double)
+        ]))
+    ]),
+    record_type('OrderSummaryRecord')
+]).
+
+?- order_summaries(Row).
+% Row = OrderSummaryRecord { Order = OrderRecord { Id = SO1, Customer = Alice },
+%                            FirstItem = LineItemRecord { Product = Laptop, Total = 1200 } }
+```
+
 **Generated bash:**
 ```bash
 extract_names() {

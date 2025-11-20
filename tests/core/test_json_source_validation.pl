@@ -85,6 +85,22 @@ test(schema_allows_jsonpath_paths, []) :-
         cleanup_dynamic_source(jsonpath_schema/1)
     ).
 
+test(schema_supports_nested_records, []) :-
+    setup_call_cleanup(
+        true,
+        once(source(json, nested_schema_source,
+            [ json_file('test_data/test_orders.json'),
+              schema([
+                  field(order, 'order', record('OrderRecord', [
+                      field(id, 'id', string),
+                      field(customer, 'customer.name', string)
+                  ]))
+              ]),
+              record_type('OrderWrapper')
+            ])),
+        cleanup_dynamic_source(nested_schema_source/1)
+    ).
+
 :- end_tests(json_source_validation).
 
 :- initialization(main).

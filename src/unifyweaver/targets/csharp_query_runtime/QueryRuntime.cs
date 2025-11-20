@@ -888,6 +888,12 @@ public enum JsonColumnType
     Json
 }
 
+public enum JsonSchemaFieldKind
+{
+    Value,
+    Record
+}
+
 public enum JsonColumnSelectorKind
 {
     Path,
@@ -896,7 +902,14 @@ public enum JsonColumnSelectorKind
 
 public sealed record JsonColumnSelectorConfig(string Selector, JsonColumnSelectorKind Kind);
 
-public sealed record JsonSchemaFieldConfig(string PropertyName, string Path, JsonColumnSelectorKind SelectorKind, JsonColumnType ColumnType);
+public sealed record JsonSchemaFieldConfig(
+    string PropertyName,
+    string Path,
+    JsonColumnSelectorKind SelectorKind,
+    JsonColumnType ColumnType,
+    JsonSchemaFieldKind FieldKind = JsonSchemaFieldKind.Value,
+    string? RecordTypeName = null,
+    JsonSchemaFieldConfig[]? NestedFields = null);
 
 public sealed record JsonSourceConfig
 {
@@ -931,10 +944,7 @@ public sealed record JsonSourceConfig
             _returnObject = _config.ReturnObject;
 
             _schemaFields = _config.SchemaFields?
-                .Select(field => new SchemaFieldRuntime(
-                    field.PropertyName,
-                    JsonSelectorFactory.Create(field.Path, field.SelectorKind),
-                    field.ColumnType))
+                .Select(SchemaFieldRuntime.Create)
                 .ToArray() ?? Array.Empty<SchemaFieldRuntime>();
             _selectors = _config.ColumnSelectors?
                 .Select(selector => JsonSelectorFactory.Create(selector.Selector, selector.Kind))
@@ -960,7 +970,7 @@ public sealed record JsonSourceConfig
 
             if (!_returnObject && _selectors.Length == 0)
             {
-                throw new ArgumentException("Columns must be provided for JSON sources when ReturnObject is false.", nameof(config));
+                throw new ArgumentException("ColumnSelectors must be provided for JSON sources when ReturnObject is false.", nameof(config));
             }
         }
 
@@ -1180,21 +1190,91 @@ public sealed record JsonSourceConfig
         private sealed class SchemaFieldRuntime
         {
             private readonly string _name;
-            private readonly ColumnPath _path;
+            private readonly IJsonSelector _selector;
             private readonly JsonColumnType _columnType;
+            private readonly JsonSchemaFieldKind _fieldKind;
+            private readonly Type? _recordType;
+            private readonly SchemaFieldRuntime[] _nestedFields;
 
-            public SchemaFieldRuntime(string name, ColumnPath path, JsonColumnType columnType)
+            private SchemaFieldRuntime(
+                string name,
+                IJsonSelector selector,
+                JsonColumnType columnType,
+                JsonSchemaFieldKind fieldKind,
+                Type? recordType,
+                SchemaFieldRuntime[] nestedFields)
             {
                 _name = name;
-                _path = path;
+                _selector = selector;
                 _columnType = columnType;
+                _fieldKind = fieldKind;
+                _recordType = recordType;
+                _nestedFields = nestedFields;
+            }
+
+            public static SchemaFieldRuntime Create(JsonSchemaFieldConfig config)
+            {
+                if (config is null) throw new ArgumentNullException(nameof(config));
+                var selector = JsonSelectorFactory.Create(config.Path, config.SelectorKind);
+                var nested = config.NestedFields?
+                    .Select(Create)
+                    .ToArray() ?? Array.Empty<SchemaFieldRuntime>();
+
+                Type? recordType = null;
+                if (config.FieldKind == JsonSchemaFieldKind.Record)
+                {
+                    if (string.IsNullOrWhiteSpace(config.RecordTypeName))
+                    {
+                        throw new InvalidDataException($"Schema field '{config.PropertyName}' is a record but RecordTypeName is missing.");
+                    }
+                    recordType = ResolveTargetType(config.RecordTypeName);
+                }
+
+                return new SchemaFieldRuntime(
+                    config.PropertyName,
+                    selector,
+                    config.ColumnType,
+                    config.FieldKind,
+                    recordType,
+                    nested);
             }
 
             public object? GetValue(JsonElement element)
             {
-                return _path.TryEvaluateElement(element, out var result)
+                if (_fieldKind == JsonSchemaFieldKind.Record)
+                {
+                    return TryBuildRecord(element);
+                }
+
+                return _selector.TryEvaluateElement(element, out var result)
                     ? ConvertValue(result)
                     : null;
+            }
+
+            private object? TryBuildRecord(JsonElement element)
+            {
+                if (_recordType is null)
+                {
+                    throw new InvalidDataException($"Schema field '{_name}' is a record but no target type was resolved.");
+                }
+
+                if (!_selector.TryEvaluateElement(element, out var subElement))
+                {
+                    return null;
+                }
+
+                var values = new object?[_nestedFields.Length];
+                for (var i = 0; i < _nestedFields.Length; i++)
+                {
+                    values[i] = _nestedFields[i].GetValue(subElement);
+                }
+
+                var instance = Activator.CreateInstance(_recordType, values);
+                if (instance is null)
+                {
+                    throw new InvalidDataException($"Activator could not instantiate '{_recordType.FullName}'.");
+                }
+                return instance;
             }
 
             private object? ConvertValue(JsonElement element)

@@ -37,6 +37,7 @@ Claude can read those files (or their documentation in `skills/skill_json_source
 - `schema/1` produces a typed record, so downstream C# already has strongly typed fields.
 - For column-based projections, use `columns/1` instead of `schema/1`.
 - Complex selectors are available via `jsonpath('$.orders[*].total')`; strings beginning with `$` are treated as JSONPath automatically.
+- Nested data can be modeled inline with `record(Type, Fields)` so LiteDB insert scripts receive fully materialised child objects (helpful for documents like orders → line items).
 - Additional options: `record_separator/1`, `field_separator/1`, `return_object(true)` if you want raw `JsonObject` rows.
 
 ## Streaming into LiteDB (conceptual pipeline)
