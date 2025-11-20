@@ -87,4 +87,8 @@ logs/
 education/
 packages-microsoft-prod.deb
 
+# Temporary directories
 tmp/
+
+# Downloaded libraries (use setup scripts to install)
+lib/
