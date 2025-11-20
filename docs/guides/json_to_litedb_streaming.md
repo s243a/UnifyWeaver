@@ -38,6 +38,8 @@ Claude can read those files (or their documentation in `skills/skill_json_source
 - For column-based projections, use `columns/1` instead of `schema/1`.
 - Complex selectors are available via `jsonpath('$.orders[*].total')`; strings beginning with `$` are treated as JSONPath automatically.
 - Nested data can be modeled inline with `record(Type, Fields)` so LiteDB insert scripts receive fully materialised child objects (helpful for documents like orders → line items).
+- For newline-delimited feeds, set `record_format(jsonl)` so UnifyWeaver treats each line as a JSON object.
+- Handle partial data via `null_policy/1` (e.g., `null_policy(skip)` to drop incomplete rows, or `null_policy(default('N/A'))` when placeholders are acceptable before inserting into LiteDB).
 - Additional options: `record_separator/1`, `field_separator/1`, `return_object(true)` if you want raw `JsonObject` rows.
 
 ## Streaming into LiteDB (conceptual pipeline)

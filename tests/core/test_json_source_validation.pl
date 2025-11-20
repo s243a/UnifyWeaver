@@ -101,6 +101,33 @@ test(schema_supports_nested_records, []) :-
         cleanup_dynamic_source(nested_schema_source/1)
     ).
 
+test(jsonl_record_format, []) :-
+    setup_call_cleanup(
+        true,
+        once(source(json, jsonl_source,
+            [ json_file('test_data/test_orders.jsonl'),
+              record_format(jsonl),
+              columns([jsonpath('$.order.customer.name')])
+            ])),
+        cleanup_dynamic_source(jsonl_source/1)
+    ).
+
+test(invalid_null_policy,
+     [error(domain_error(json_null_policy, invalid))]) :-
+    source(json, bad_null_policy,
+        [ json_file('test_data/test_products.json'),
+          columns([id]),
+          null_policy(invalid)
+        ]).
+
+test(invalid_null_policy_value,
+     [error(domain_error(json_null_policy_value, _))]) :-
+    source(json, bad_null_policy_value,
+        [ json_file('test_data/test_products.json'),
+          columns([id]),
+          null_policy(default([bad]))
+        ]).
+
 :- end_tests(json_source_validation).
 
 :- initialization(main).

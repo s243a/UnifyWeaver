@@ -1,0 +1,3 @@
+{"order":{"id":"SO1","customer":{"name":"Alice"}},"items":[{"product":"Laptop","total":1200},{"product":"Mouse","total":25}]}
+{"order":{"id":"SO2","customer":{"name":"Bob"}},"items":[{"product":"Mouse","total":25}]}
+{"order":{"id":"SO3","customer":{"name":"Charlie"}},"items":[{"product":"Keyboard","total":75}]}

@@ -115,7 +115,18 @@ augment_json_options(Options0, Options) :-
         ensure_option(return_object(true), Options6, Options7)
     ;   Options7 = Options5
     ),
-    Options = Options7.
+    (   option(null_policy(Policy), Options0)
+    ->  ensure_option(null_policy(Policy), Options7, Options8)
+    ;   ensure_option(null_policy(allow), Options7, Options8)
+    ),
+    (   option(treat_array_as_stream(_), Options8)
+    ->  Options9 = Options8
+    ;   (   option(record_format(jsonl), Options8)
+        ->  ensure_option(treat_array_as_stream(false), Options8, Options9)
+        ;   ensure_option(treat_array_as_stream(true), Options8, Options9)
+        )
+    ),
+    Options = Options9.
 
 ensure_option(Term, Options0, Options) :-
     functor(Term, Name, Arity),
@@ -131,6 +142,7 @@ validate_source_options(json, Options, Arity) :-
 validate_source_options(_, _, _).
 
 validate_json_source_options(Options, Arity) :-
+    validate_null_policy(Options),
     (   option(schema(Schema), Options)
     ->  validate_json_schema(Options, Schema, Arity)
     ;   option(return_object(true), Options)
@@ -257,5 +269,27 @@ validate_column_entry(Column) :-
     ),
     (   String == ""
     ->  throw(error(domain_error(json_column_entry, Column), _))
+    ;   true
+    ).
+
+validate_null_policy(Options) :-
+    (   option(null_policy(Policy), Options)
+    ->  (   Policy = allow
+        ->  true
+        ;   Policy = fail
+        ->  true
+        ;   Policy = skip
+        ->  true
+        ;   Policy = default(Value)
+        ->  (   atom(Value)
+            ->  true
+            ;   string(Value)
+            ->  true
+            ;   number(Value)
+            ->  true
+            ;   throw(error(domain_error(json_null_policy_value, Value), _))
+            )
+        ;   throw(error(domain_error(json_null_policy, Policy), _))
+        )
     ;   true
     ).

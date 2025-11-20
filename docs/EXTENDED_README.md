@@ -554,6 +554,27 @@ Combining schema + nested records:
 %                            FirstItem = LineItemRecord { Product = Laptop, Total = 1200 } }
 ```
 
+Streaming JSON Lines (`record_format(jsonl)`) with null-handling policy:
+
+```prolog
+:- source(json, order_second_items, [
+    json_file('test_data/test_orders.jsonl'),
+    record_format(jsonl),
+    columns([
+        jsonpath('$.order.customer.name'),
+        jsonpath('$.items[1].product')
+    ]),
+    null_policy(default('N/A'))
+]).
+
+?- order_second_items(Customer, SecondProduct).
+% Customer = Alice, SecondProduct = Mouse
+% Customer = Bob,   SecondProduct = 'N/A'
+% Customer = Charlie, SecondProduct = 'N/A'
+```
+
+`null_policy(fail|skip|default(Value))` controls how missing fields behave: fail immediately, skip the row, or substitute the provided default string.
+
 **Generated bash:**
 ```bash
 extract_names() {
