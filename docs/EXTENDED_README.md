@@ -499,6 +499,23 @@ Returning full JSON objects instead of individual fields:
 ?- raw_products(ProductJson).
 ```
 
+Generating a typed record via `schema/1`:
+
+```prolog
+:- source(json, product_rows, [
+    json_file('test_data/test_products.json'),
+    schema([
+        field(id, 'id', string),
+        field(name, 'name', string),
+        field(price, 'price', double)
+    ]),
+    record_type('ProductRecord')
+]).
+
+?- product_rows(Row).
+% Row = ProductRecord { Id = P001, Name = Laptop, Price = 999 }
+```
+
 **Generated bash:**
 ```bash
 extract_names() {

@@ -91,7 +91,7 @@ register_dynamic_source(Pred/Arity, SourceSpec, Options) :-
     assertz(dynamic_source_def(Pred/Arity, Type, MergedConfig)),
 
     % Store normalized IO metadata
-    extract_io_metadata(MergedConfig, Metadata),
+    extract_io_metadata(Pred/Arity, MergedConfig, Metadata),
     retractall(dynamic_source_metadata(Pred/Arity, _)),
     assertz(dynamic_source_metadata(Pred/Arity, Metadata)),
 
@@ -205,7 +205,7 @@ test_dynamic_source_compiler :-
 %% extract_io_metadata(+Options, -Metadata:dict)
 %  Normalizes commonly-used IO descriptors so downstream targets
 %  understand how records are streamed into the predicate.
-extract_io_metadata(Options, Meta) :-
+extract_io_metadata(Pred/Arity, Options, Meta) :-
     option(record_separator(RawRecordSep), Options, nul),
     normalize_record_separator(RawRecordSep, RecordSep),
     option(field_separator(RawFieldSep), Options, ':'),
@@ -223,9 +223,22 @@ extract_io_metadata(Options, Meta) :-
     ),
     normalize_columns(ColumnsInput, Columns),
     option(type_hint(TypeHint0), Options, none),
-    normalize_type_hint(TypeHint0, TypeHint),
+    normalize_type_hint(TypeHint0, TypeHintRaw),
     option(return_object(ReturnObject0), Options, false),
     normalize_boolean(ReturnObject0, ReturnObject),
+    (   option(schema(SchemaRaw), Options)
+    ->  normalize_schema_fields(SchemaRaw, SchemaFields),
+        schema_record_name(Pred/Arity, Options, RecordType),
+        format(atom(SchemaFullName), 'UnifyWeaver.Generated.~w', [RecordType])
+    ;   SchemaFields = [],
+        RecordType = none,
+        SchemaFullName = none
+    ),
+    (   TypeHintRaw = none,
+        SchemaFullName \= none
+    ->  TypeHint = SchemaFullName
+    ;   TypeHint = TypeHintRaw
+    ),
     Meta = metadata{
         record_separator:RecordSep,
         field_separator:FieldSep,
@@ -235,7 +248,9 @@ extract_io_metadata(Options, Meta) :-
         quote_style:QuoteStyle,
         columns:Columns,
         type_hint:TypeHint,
-        return_object:ReturnObject
+        return_object:ReturnObject,
+        schema_fields:SchemaFields,
+        schema_type:RecordType
     }.
 
 normalize_record_separator(line_feed, line_feed) :- !.
@@ -297,4 +312,60 @@ normalize_column_name(Value, Normalized) :-
     ;   string(Value)
     ->  atom_string(Normalized, Value)
     ;   term_to_atom(Value, Normalized)
+    ).
+
+normalize_schema_fields([], []) :- !.
+normalize_schema_fields([field(Name, Path, Type)|Rest], [schema_field{name:NameAtom, path:PathString, type:TypeAtom}|Tail]) :-
+    normalize_schema_name(Name, NameAtom),
+    normalize_schema_path(Path, PathString),
+    normalize_schema_type(Type, TypeAtom),
+    normalize_schema_fields(Rest, Tail).
+normalize_schema_fields([Invalid|_], _) :-
+    throw(error(domain_error(json_schema_field, Invalid), _)).
+
+normalize_schema_name(Name, Atom) :-
+    (   atom(Name)
+    ->  Atom = Name
+    ;   string(Name)
+    ->  atom_string(Atom, Name)
+    ).
+
+normalize_schema_path(Path, String) :-
+    (   atom(Path)
+    ->  atom_string(Path, String)
+    ;   string(Path)
+    ->  String = Path
+    ).
+
+normalize_schema_type(Type, Normalized) :-
+    (   atom(Type)
+    ->  atom_string(Type, String)
+    ;   string(Type)
+    ->  String = Type
+    ),
+    string_lower(String, Lower),
+    atom_string(Normalized, Lower).
+
+schema_record_name(Pred/_, Options, RecordType) :-
+    (   option(record_type(Type), Options)
+    ->  RecordType = Type
+    ;   default_record_type(Pred, RecordType)
+    ).
+
+default_record_type(Pred, RecordType) :-
+    atom_string(Pred, PredStr),
+    split_string(PredStr, '_', '_', Parts),
+    maplist(capitalise_string, Parts, Caps),
+    atomic_list_concat(Caps, '', Base),
+    atom_concat(Base, 'Row', Temp),
+    atom_string(RecordType, Temp).
+
+capitalise_string(Input, Output) :-
+    (   Input = ''
+    ->  Output = ''
+    ;   string_lower(Input, Lower),
+        sub_string(Lower, 0, 1, _, First),
+        sub_string(Lower, 1, _, 0, Rest),
+        string_upper(First, Upper),
+        string_concat(Upper, Rest, Output)
     ).

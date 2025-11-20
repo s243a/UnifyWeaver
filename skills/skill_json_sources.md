@@ -29,6 +29,28 @@ Use this skill whenever a playbook instructs you to read JSON data via `source/3
   ]).
   ```
 
+## Schema-generated records
+- Use `schema/1` to declare a typed record and have the C# backend generate a POCO.
+- Requirements:
+  - `schema([field(Name, Path, Type), ...])`
+  - Optional `record_type('ProductRecord')` to name the generated record.
+  - Predicate arity must be `1`; `return_object(true)` is implied.
+- Example:
+  ```prolog
+  :- source(json, product_rows, [
+      json_file('test_data/test_products.json'),
+      schema([
+          field(id, 'id', string),
+          field(name, 'name', string),
+          field(price, 'price', double)
+      ]),
+      record_type('ProductRecord')
+  ]).
+
+  ?- product_rows(Row).
+  % yields ProductRecord { Id = P001, Name = Laptop, Price = 999 }
+  ```
+
 ## Validation expectations
 - Missing `columns/1` (when `return_object(false)`) causes a `domain_error(json_columns, _)`.
 - Column count must equal predicate arity.
