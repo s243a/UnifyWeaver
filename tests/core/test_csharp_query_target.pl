@@ -24,6 +24,7 @@
 :- dynamic user:test_odd/1.
 :- dynamic user:test_parity_input/1.
 :- dynamic user:test_product_record/1.
+:- dynamic user:test_jsonpath_projection/2.
 
 test_csharp_query_target :-
     configure_csharp_query_options,
@@ -41,6 +42,7 @@ test_csharp_query_target :-
     verify_tsv_dynamic_source_plan,
     verify_json_dynamic_source_plan,
     verify_json_nested_source_plan,
+    verify_json_jsonpath_source_plan,
     verify_json_schema_source_plan,
     verify_json_object_source_plan,
     cleanup_test_data,
@@ -332,6 +334,23 @@ verify_json_nested_source_plan_ :-
     sub_string(Source, _, _, _, 'items[0].product'),
     maybe_run_query_runtime(Plan, ['Alice,Laptop,1200', 'Bob,Mouse,25', 'Charlie,Keyboard,75']).
 
+verify_json_jsonpath_source_plan :-
+    setup_call_cleanup(
+        setup_json_jsonpath_source,
+        verify_json_jsonpath_source_plan_(),
+        cleanup_json_jsonpath_source
+    ).
+
+verify_json_jsonpath_source_plan_ :-
+    csharp_query_target:build_query_plan(test_jsonpath_projection/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'JsonColumnSelectorKind.JsonPath'),
+    maybe_run_query_runtime(Plan, [
+        'Alice,Laptop',
+        'Bob,Mouse',
+        'Charlie,Keyboard'
+    ]).
+
 verify_json_schema_source_plan :-
     setup_call_cleanup(
         setup_json_schema_source,
@@ -433,6 +452,22 @@ cleanup_json_orders_source :-
     retractall(user:test_order_first_item(_, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_def(test_orders/3, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_orders/3, _)).
+
+setup_json_jsonpath_source :-
+    source(json, test_jsonpath_projection_source, [
+        json_file('test_data/test_orders.json'),
+        columns([
+            jsonpath('$.order.customer.name'),
+            jsonpath('$.items[*].product')
+        ])
+    ]),
+    assertz(user:(test_jsonpath_projection(Customer, Product) :-
+        test_jsonpath_projection_source(Customer, Product))).
+
+cleanup_json_jsonpath_source :-
+    retractall(user:test_jsonpath_projection(_, _)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_jsonpath_projection_source/2, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_jsonpath_projection_source/2, _)).
 
 setup_json_object_source :-
     source(json, test_products_object, [

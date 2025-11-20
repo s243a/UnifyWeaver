@@ -221,7 +221,7 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
     ->  ColumnsInput = RawColumns
     ;   ColumnsInput = []
     ),
-    normalize_columns(ColumnsInput, Columns),
+    normalize_columns(ColumnsInput, Columns, ColumnSelectors),
     option(type_hint(TypeHint0), Options, none),
     normalize_type_hint(TypeHint0, TypeHintRaw),
     option(return_object(ReturnObject0), Options, false),
@@ -247,6 +247,7 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
         skip_rows:SkipRows,
         quote_style:QuoteStyle,
         columns:Columns,
+        column_selectors:ColumnSelectors,
         type_hint:TypeHint,
         return_object:ReturnObject,
         schema_fields:SchemaFields,
@@ -298,26 +299,41 @@ normalize_boolean(on, true) :- !.
 normalize_boolean(off, false) :- !.
 normalize_boolean(Value, Value).
 
-normalize_columns([], []) :- !.
-normalize_columns(Columns0, Columns) :-
+normalize_columns([], [], []) :- !.
+normalize_columns(Columns0, Columns, Selectors) :-
     is_list(Columns0),
     !,
-    maplist(normalize_column_name, Columns0, Columns).
-normalize_columns(Column, [Normalized]) :-
-    normalize_column_name(Column, Normalized).
+    maplist(normalize_column_selector, Columns0, Columns, Selectors).
+normalize_columns(Column, [Name], [Selector]) :-
+    normalize_column_selector(Column, Name, Selector).
 
-normalize_column_name(Value, Normalized) :-
+normalize_column_selector(Value, NameAtom, Selector) :-
+    normalize_selector_entry(Value, PathString, Kind),
+    atom_string(NameAtom, PathString),
+    Selector = column_selector{path:PathString, kind:Kind}.
+
+normalize_selector_entry(jsonpath(PathTerm), PathString, jsonpath) :-
+    !,
+    normalize_selector_path(PathTerm, PathString).
+normalize_selector_entry(Value, PathString, Kind) :-
+    normalize_selector_path(Value, PathString),
+    (   sub_string(PathString, 0, 1, _, "$")
+    ->  Kind = jsonpath
+    ;   Kind = column_path
+    ).
+
+normalize_selector_path(Value, String) :-
     (   atom(Value)
-    ->  Normalized = Value
+    ->  atom_string(Value, String)
     ;   string(Value)
-    ->  atom_string(Normalized, Value)
-    ;   term_to_atom(Value, Normalized)
+    ->  String = Value
+    ;   throw(error(domain_error(json_column_entry, Value), _))
     ).
 
 normalize_schema_fields([], []) :- !.
-normalize_schema_fields([field(Name, Path, Type)|Rest], [schema_field{name:NameAtom, path:PathString, type:TypeAtom}|Tail]) :-
+normalize_schema_fields([field(Name, Path, Type)|Rest], [schema_field{name:NameAtom, path:PathString, selector_kind:Kind, type:TypeAtom}|Tail]) :-
     normalize_schema_name(Name, NameAtom),
-    normalize_schema_path(Path, PathString),
+    normalize_schema_path(Path, PathString, Kind),
     normalize_schema_type(Type, TypeAtom),
     normalize_schema_fields(Rest, Tail).
 normalize_schema_fields([Invalid|_], _) :-
@@ -330,11 +346,14 @@ normalize_schema_name(Name, Atom) :-
     ->  atom_string(Atom, Name)
     ).
 
-normalize_schema_path(Path, String) :-
-    (   atom(Path)
-    ->  atom_string(Path, String)
-    ;   string(Path)
-    ->  String = Path
+normalize_schema_path(jsonpath(Value), String, jsonpath) :-
+    !,
+    normalize_selector_path(Value, String).
+normalize_schema_path(Path, String, Kind) :-
+    normalize_selector_path(Path, String),
+    (   sub_string(String, 0, 1, _, "$")
+    ->  Kind = jsonpath
+    ;   Kind = column_path
     ).
 
 normalize_schema_type(Type, Normalized) :-
