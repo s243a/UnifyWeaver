@@ -185,6 +185,10 @@ generate_dotnet_powershell(PredStr, Arity, CSharpCode, Namespace, ClassName,
     % Generate reference assemblies string
     generate_references_string(References, ReferencesStr),
 
+    % Extract DLL file references for dependency loading
+    extract_dll_references(References, DllRefs),
+    format_dll_references_for_powershell(DllRefs, DllRefsStr),
+
     % Determine compilation mode
     (   PreCompile = true
     ->  CompileMode = precompiled,
@@ -203,7 +207,8 @@ generate_dotnet_powershell(PredStr, Arity, CSharpCode, Namespace, ClassName,
     render_named_template(TemplateName,
         [pred=PredStr, arity=Arity, csharp_code=EscapedCode,
          namespace=Namespace, class_name=ClassName, method_name=MethodName,
-         references=ReferencesStr, cache_dir=CacheDir, cache_key=CacheKey,
+         references=ReferencesStr, dll_references=DllRefsStr,
+         cache_dir=CacheDir, cache_key=CacheKey,
          output_format=OutputFormat, source_mode=SourceMode],
         [source_order([file, generated])],
         PowerShellCode).
@@ -217,14 +222,56 @@ escape_csharp_for_powershell(Code, Escaped) :-
 
 %% generate_references_string(+References, -String)
 %  Generate PowerShell Add-Type -ReferencedAssemblies parameter
+%  Automatically adds 'netstandard' when DLL files are referenced
 generate_references_string([], '') :- !.
 generate_references_string(References, String) :-
-    maplist(quote_reference, References, Quoted),
+    % Check if any references are DLL files (indicating .NET Standard libraries)
+    (   member(Ref, References),
+        atom(Ref),
+        atom_concat(_, '.dll', Ref)
+    ->  NeedsNetStandard = true
+    ;   NeedsNetStandard = false
+    ),
+
+    % Add netstandard, System.Linq, and System.Linq.Expressions if needed and not already present
+    (   NeedsNetStandard = true
+    ->  (   \+ member(netstandard, References)
+        ->  TempRefs1 = [netstandard|References]
+        ;   TempRefs1 = References
+        ),
+        (   \+ member('System.Linq', TempRefs1)
+        ->  TempRefs2 = ['System.Linq'|TempRefs1]
+        ;   TempRefs2 = TempRefs1
+        ),
+        (   \+ member('System.Linq.Expressions', TempRefs2)
+        ->  AllReferences = ['System.Linq.Expressions'|TempRefs2]
+        ;   AllReferences = TempRefs2
+        )
+    ;   AllReferences = References
+    ),
+
+    maplist(quote_reference, AllReferences, Quoted),
     atomic_list_concat(Quoted, ',', RefList),
     format(atom(String), ' -ReferencedAssemblies @(~w)', [RefList]).
 
 quote_reference(Ref, Quoted) :-
     format(atom(Quoted), '''~w''', [Ref]).
+
+%% extract_dll_references(+References, -DllRefs)
+%  Extract only .dll file references from the references list
+extract_dll_references(References, DllRefs) :-
+    include(is_dll_reference, References, DllRefs).
+
+is_dll_reference(Ref) :-
+    atom(Ref),
+    atom_concat(_, '.dll', Ref).
+
+%% format_dll_references_for_powershell(+DllRefs, -FormattedString)
+%  Format DLL references as PowerShell array elements
+format_dll_references_for_powershell([], '') :- !.
+format_dll_references_for_powershell(DllRefs, FormattedString) :-
+    maplist(quote_reference, DllRefs, Quoted),
+    atomic_list_concat(Quoted, ',', FormattedString).
 
 %% capitalize_atom(+Atom, -Capitalized)
 %  Convert atom to PascalCase (capitalize first letter of each word)
@@ -328,8 +375,15 @@ function {{pred}} {
     param([Parameter(ValueFromPipeline=$true)]$InputData)
 
     begin {
-        # Setup cache directory
-        $cacheDir = Join-Path $env:TEMP "unifyweaver_dotnet_cache"
+        # Setup cache directory (cross-platform)
+        $tempBase = if ($env:TEMP) {
+            $env:TEMP
+        } elseif ($env:TMPDIR) {
+            $env:TMPDIR
+        } else {
+            "/tmp"
+        }
+        $cacheDir = Join-Path $tempBase "unifyweaver_dotnet_cache"
         if (-not (Test-Path $cacheDir)) {
             New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
         }
@@ -341,8 +395,16 @@ function {{pred}} {
         # Check if DLL exists and is valid
         if (Test-Path $dllPath) {
             try {
+                # Load DLL dependencies first
+                $dllRefs = @({{dll_references}})
+                foreach ($dllRef in $dllRefs) {
+                    if (Test-Path $dllRef) {
+                        Add-Type -Path $dllRef -ErrorAction SilentlyContinue
+                    }
+                }
+
                 # Load pre-compiled assembly
-                [System.Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
+                Add-Type -Path $dllPath -ErrorAction Stop
                 Write-Verbose "[{{pred}}] Loaded pre-compiled assembly from cache"
             } catch {
                 Write-Warning "Cached DLL invalid, recompiling: $_"
@@ -361,6 +423,16 @@ function {{pred}} {
                 # Compile to DLL
                 Add-Type -TypeDefinition $csharpCode{{references}} -OutputAssembly $dllPath -Language CSharp -ErrorAction Stop
                 Write-Verbose "[{{pred}}] C# code compiled and cached to $dllPath"
+
+                # Load the compiled DLL into the session
+                # Load dependencies first
+                $dllRefs = @({{dll_references}})
+                foreach ($dllRef in $dllRefs) {
+                    if (Test-Path $dllRef) {
+                        Add-Type -Path $dllRef -ErrorAction SilentlyContinue
+                    }
+                }
+                Add-Type -Path $dllPath -ErrorAction Stop
             } catch {
                 Write-Error "Failed to compile C# code: $_"
                 throw
@@ -399,7 +471,8 @@ function {{pred}}_stream {
 
 function {{pred}}_clear_cache {
     # Clear the cached DLL to force recompilation
-    $cacheDir = Join-Path $env:TEMP "unifyweaver_dotnet_cache"
+    $tempBase = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+    $cacheDir = Join-Path $tempBase "unifyweaver_dotnet_cache"
     $cacheKey = "{{cache_key}}"
     $dllPath = Join-Path $cacheDir "$cacheKey.dll"
 
