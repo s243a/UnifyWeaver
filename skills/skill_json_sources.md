@@ -13,6 +13,12 @@ Use this skill whenever a playbook instructs you to read JSON data via `source/3
   ]).
   ```
 
+## JSONPath selectors
+- Use `jsonpath('$.orders[*].total')` to select data when simple dot paths are insufficient.
+- Supported features: root `$`, dotted properties, bracket properties (`['foo']`), array indices `[0]`, wildcards `[*]`, and recursive descent `..name`.
+- Works in both `columns/1` and `schema/1`. Wildcards currently return the first matching value.
+- Strings that already begin with `$` are automatically treated as JSONPath selectors, so `columns(['$.orders[0].id'])` also works.
+
 ## Return-object mode
 - Use when you want full JSON objects as rows.
 - Requirements:
@@ -45,10 +51,51 @@ Use this skill whenever a playbook instructs you to read JSON data via `source/3
           field(price, 'price', double)
       ]),
       record_type('ProductRecord')
-  ]).
+  ]). 
 
   ?- product_rows(Row).
   % yields ProductRecord { Id = P001, Name = Laptop, Price = 999 }
+  ```
+
+## Nested schema records
+- Return structured sub-objects by using `record(TypeName, Fields)` (or `record(Fields)` to auto-name from the field).
+- Nested selectors are evaluated relative to the selected sub-object; JSONPath and dot notation both work.
+- Example:
+  ```prolog
+  :- source(json, order_rows, [
+      json_file('test_data/test_orders.json'),
+      schema([
+          field(order, 'order', record('OrderRecord', [
+              field(id, 'id', string),
+              field(customer, 'customer.name', string)
+          ])),
+          field(first_item, 'items[0]', record('LineItemRecord', [
+              field(product, 'product', string),
+              field(total, 'total', double)
+          ]))
+      ]),
+      record_type('OrderSummaryRecord')
+  ]).
+  ```
+- Generated C# includes `OrderRecord`, `LineItemRecord`, and `OrderSummaryRecord`; runtime instantiates nested POCOs automatically.
+
+## JSON Lines + null policies
+- Use `record_format(jsonl)` when streaming newline-delimited JSON (`*.jsonl`). This disables automatic array parsing so each line is treated as an independent object.
+- `null_policy/1` controls how missing projections behave:
+  - `null_policy(fail)` → throw immediately when a column evaluates to null.
+  - `null_policy(skip)` → skip any row containing null projections.
+  - `null_policy(default(Value))` → substitute `Value` (stored as a string) whenever null appears; useful for placeholders like `"N/A"` or `"0"`.
+- Example:
+  ```prolog
+  :- source(json, order_second_items, [
+      json_file('test_data/test_orders.jsonl'),
+      record_format(jsonl),
+      columns([
+          jsonpath('$.order.customer.name'),
+          jsonpath('$.items[1].product')
+      ]),
+      null_policy(default('N/A'))
+  ]).
   ```
 
 ## Validation expectations

@@ -686,6 +686,27 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
         }
+
+        private static bool TryGetArrayElement(JsonElement arrayElement, int index, out JsonElement value)
+        {
+            if (index < 0)
+            {
+                value = default;
+                return false;
+            }
+            var currentIndex = 0;
+            foreach (var child in arrayElement.EnumerateArray())
+            {
+                if (currentIndex == index)
+                {
+                    value = child;
+                    return true;
+                }
+                currentIndex++;
+            }
+            value = default;
+            return false;
+        }
     }
 }
 
@@ -867,12 +888,33 @@ public enum JsonColumnType
     Json
 }
 
-public sealed record JsonSchemaFieldConfig(string PropertyName, string Path, JsonColumnType ColumnType);
+public enum JsonSchemaFieldKind
+{
+    Value,
+    Record
+}
+
+public enum JsonColumnSelectorKind
+{
+    Path,
+    JsonPath
+}
+
+public sealed record JsonColumnSelectorConfig(string Selector, JsonColumnSelectorKind Kind);
+
+public sealed record JsonSchemaFieldConfig(
+    string PropertyName,
+    string Path,
+    JsonColumnSelectorKind SelectorKind,
+    JsonColumnType ColumnType,
+    JsonSchemaFieldKind FieldKind = JsonSchemaFieldKind.Value,
+    string? RecordTypeName = null,
+    JsonSchemaFieldConfig[]? NestedFields = null);
 
 public sealed record JsonSourceConfig
 {
     public string InputPath { get; init; } = string.Empty;
-    public string[] Columns { get; init; } = Array.Empty<string>();
+    public JsonColumnSelectorConfig[] ColumnSelectors { get; init; } = Array.Empty<JsonColumnSelectorConfig>();
     public RecordSeparatorKind RecordSeparator { get; init; } = RecordSeparatorKind.LineFeed;
     public int SkipRows { get; init; } = 0;
     public int ExpectedWidth { get; init; } = 0;
@@ -880,15 +922,20 @@ public sealed record JsonSourceConfig
     public string? TargetTypeName { get; init; }
     public bool ReturnObject { get; init; } = false;
     public JsonSchemaFieldConfig[] SchemaFields { get; init; } = Array.Empty<JsonSchemaFieldConfig>();
+    public JsonNullPolicy NullPolicy { get; init; } = JsonNullPolicy.Allow;
+    public string? NullReplacement { get; init; }
 }
 
     public sealed class JsonStreamReader
     {
         private readonly JsonSourceConfig _config;
-        private readonly ColumnPath[] _paths;
+        private readonly IJsonSelector[] _selectors;
         private readonly SchemaFieldRuntime[] _schemaFields;
         private readonly bool _returnObject;
         private readonly Type? _targetType;
+        private readonly bool _treatArrayAsStream;
+        private readonly JsonNullPolicy _nullPolicy;
+        private readonly string? _nullReplacement;
         private readonly JsonSerializerOptions _serializerOptions = new()
         {
             PropertyNameCaseInsensitive = true
@@ -902,8 +949,11 @@ public sealed record JsonSourceConfig
             _returnObject = _config.ReturnObject;
 
             _schemaFields = _config.SchemaFields?
-                .Select(field => new SchemaFieldRuntime(field.PropertyName, new ColumnPath(field.Path), field.ColumnType))
+                .Select(SchemaFieldRuntime.Create)
                 .ToArray() ?? Array.Empty<SchemaFieldRuntime>();
+            _selectors = _config.ColumnSelectors?
+                .Select(selector => JsonSelectorFactory.Create(selector.Selector, selector.Kind))
+                .ToArray() ?? Array.Empty<IJsonSelector>();
 
             if (_returnObject)
             {
@@ -918,27 +968,18 @@ public sealed record JsonSourceConfig
                 _targetType = null;
             }
 
-            if (_schemaFields.Length > 0)
+            _treatArrayAsStream = _config.TreatArrayAsStream;
+            _nullPolicy = _config.NullPolicy;
+            _nullReplacement = _config.NullReplacement;
+
+            if (_schemaFields.Length > 0 && !_returnObject)
             {
-                if (!_returnObject)
-                {
-                    throw new ArgumentException("SchemaFields require ReturnObject=true.", nameof(config));
-                }
-                _paths = Array.Empty<ColumnPath>();
+                throw new ArgumentException("SchemaFields require ReturnObject=true.", nameof(config));
             }
-            else if (_returnObject)
+
+            if (!_returnObject && _selectors.Length == 0)
             {
-                _paths = Array.Empty<ColumnPath>();
-            }
-            else
-            {
-                if (_config.Columns is null || _config.Columns.Length == 0)
-                {
-                    throw new ArgumentException("Columns must be provided for JSON sources when ReturnObject is false.", nameof(config));
-                }
-                _paths = _config.Columns
-                    .Select(column => new ColumnPath(column))
-                    .ToArray();
+                throw new ArgumentException("ColumnSelectors must be provided for JSON sources when ReturnObject is false.", nameof(config));
             }
         }
 
@@ -953,12 +994,12 @@ public sealed record JsonSourceConfig
             var trimmed = text.TrimStart();
             var width = _returnObject
                 ? Math.Max(_config.ExpectedWidth, 1)
-                : Math.Max(_config.ExpectedWidth, _paths.Length);
+                : Math.Max(_config.ExpectedWidth, _selectors.Length);
             if (width <= 0)
             {
-                width = _returnObject ? 1 : _paths.Length;
+                width = _returnObject ? 1 : _selectors.Length;
             }
-            if (_config.TreatArrayAsStream && trimmed.StartsWith("[", StringComparison.Ordinal))
+            if (_treatArrayAsStream && trimmed.StartsWith("[", StringComparison.Ordinal))
             {
                 foreach (var row in ReadFromArray(text, width))
                 {
@@ -999,7 +1040,11 @@ public sealed record JsonSourceConfig
                 {
                     continue;
                 }
-                yield return BuildRow(element, width);
+                var row = BuildRow(element, width);
+                if (TryProcessRow(row, out var processed))
+                {
+                    yield return processed;
+                }
             }
         }
 
@@ -1024,7 +1069,11 @@ public sealed record JsonSourceConfig
                     skipped++;
                     continue;
                 }
-                yield return ParseRecord(line, width);
+                var row = ParseRecord(line, width);
+                if (TryProcessRow(row, out var processed))
+                {
+                    yield return processed;
+                }
             }
         }
 
@@ -1043,7 +1092,11 @@ public sealed record JsonSourceConfig
                     skipped++;
                     continue;
                 }
-                yield return ParseRecord(record, width);
+                var row = ParseRecord(record, width);
+                if (TryProcessRow(row, out var processed))
+                {
+                    yield return processed;
+                }
             }
         }
 
@@ -1051,7 +1104,7 @@ public sealed record JsonSourceConfig
         {
             using var document = JsonDocument.Parse(record);
             var element = document.RootElement;
-            if (element.ValueKind == JsonValueKind.Array && _config.TreatArrayAsStream)
+            if (element.ValueKind == JsonValueKind.Array && _treatArrayAsStream)
             {
                 // Treat array as stream of objects (rare, but handle gracefully)
                 foreach (var item in element.EnumerateArray())
@@ -1077,17 +1130,54 @@ public sealed record JsonSourceConfig
 
         private object[] ProjectRow(JsonElement element, int width)
         {
-            if (_paths.Length == 0)
+            if (_selectors.Length == 0)
             {
                 throw new InvalidDataException("JSON columns must be specified.");
             }
 
             var result = new object[width];
-            for (var i = 0; i < _paths.Length && i < width; i++)
+            for (var i = 0; i < _selectors.Length && i < width; i++)
             {
-                result[i] = _paths[i].Evaluate(element);
+                if (_selectors[i].TryEvaluateElement(element, out var selected))
+                {
+                    result[i] = ConvertJsonValue(selected);
+                }
+                else
+                {
+                    result[i] = null;
+                }
             }
             return result;
+        }
+
+        private bool TryProcessRow(object[] row, out object[] processed)
+        {
+            processed = row;
+            if (_nullPolicy == JsonNullPolicy.Allow)
+            {
+                return true;
+            }
+
+            var hasNull = false;
+            for (var i = 0; i < row.Length; i++)
+            {
+                if (row[i] is null)
+                {
+                    hasNull = true;
+                    switch (_nullPolicy)
+                    {
+                        case JsonNullPolicy.Fail:
+                            throw new InvalidDataException($"Null value encountered while reading '{_config.InputPath}'.");
+                        case JsonNullPolicy.Skip:
+                            return false;
+                        case JsonNullPolicy.Default:
+                            row[i] = _nullReplacement ?? string.Empty;
+                            break;
+                    }
+                }
+            }
+
+            return true;
         }
 
         private object? DeserializeToObject(JsonElement element)
@@ -1151,21 +1241,91 @@ public sealed record JsonSourceConfig
         private sealed class SchemaFieldRuntime
         {
             private readonly string _name;
-            private readonly ColumnPath _path;
+            private readonly IJsonSelector _selector;
             private readonly JsonColumnType _columnType;
+            private readonly JsonSchemaFieldKind _fieldKind;
+            private readonly Type? _recordType;
+            private readonly SchemaFieldRuntime[] _nestedFields;
 
-            public SchemaFieldRuntime(string name, ColumnPath path, JsonColumnType columnType)
+            private SchemaFieldRuntime(
+                string name,
+                IJsonSelector selector,
+                JsonColumnType columnType,
+                JsonSchemaFieldKind fieldKind,
+                Type? recordType,
+                SchemaFieldRuntime[] nestedFields)
             {
                 _name = name;
-                _path = path;
+                _selector = selector;
                 _columnType = columnType;
+                _fieldKind = fieldKind;
+                _recordType = recordType;
+                _nestedFields = nestedFields;
+            }
+
+            public static SchemaFieldRuntime Create(JsonSchemaFieldConfig config)
+            {
+                if (config is null) throw new ArgumentNullException(nameof(config));
+                var selector = JsonSelectorFactory.Create(config.Path, config.SelectorKind);
+                var nested = config.NestedFields?
+                    .Select(Create)
+                    .ToArray() ?? Array.Empty<SchemaFieldRuntime>();
+
+                Type? recordType = null;
+                if (config.FieldKind == JsonSchemaFieldKind.Record)
+                {
+                    if (string.IsNullOrWhiteSpace(config.RecordTypeName))
+                    {
+                        throw new InvalidDataException($"Schema field '{config.PropertyName}' is a record but RecordTypeName is missing.");
+                    }
+                    recordType = ResolveTargetType(config.RecordTypeName);
+                }
+
+                return new SchemaFieldRuntime(
+                    config.PropertyName,
+                    selector,
+                    config.ColumnType,
+                    config.FieldKind,
+                    recordType,
+                    nested);
             }
 
             public object? GetValue(JsonElement element)
             {
-                return _path.TryEvaluateElement(element, out var result)
+                if (_fieldKind == JsonSchemaFieldKind.Record)
+                {
+                    return TryBuildRecord(element);
+                }
+
+                return _selector.TryEvaluateElement(element, out var result)
                     ? ConvertValue(result)
                     : null;
+            }
+
+            private object? TryBuildRecord(JsonElement element)
+            {
+                if (_recordType is null)
+                {
+                    throw new InvalidDataException($"Schema field '{_name}' is a record but no target type was resolved.");
+                }
+
+                if (!_selector.TryEvaluateElement(element, out var subElement))
+                {
+                    return null;
+                }
+
+                var values = new object?[_nestedFields.Length];
+                for (var i = 0; i < _nestedFields.Length; i++)
+                {
+                    values[i] = _nestedFields[i].GetValue(subElement);
+                }
+
+                var instance = Activator.CreateInstance(_recordType, values);
+                if (instance is null)
+                {
+                    throw new InvalidDataException($"Activator could not instantiate '{_recordType.FullName}'.");
+                }
+                return instance;
             }
 
             private object? ConvertValue(JsonElement element)
@@ -1203,7 +1363,24 @@ public sealed record JsonSourceConfig
             }
         }
 
-        private sealed class ColumnPath
+        private interface IJsonSelector
+        {
+            bool TryEvaluateElement(JsonElement element, out JsonElement result);
+        }
+
+        private static class JsonSelectorFactory
+        {
+            public static IJsonSelector Create(string selector, JsonColumnSelectorKind kind)
+            {
+                return kind switch
+                {
+                    JsonColumnSelectorKind.JsonPath => new JsonPathExpression(selector),
+                    _ => new ColumnPath(selector)
+                };
+            }
+        }
+
+        private sealed class ColumnPath : IJsonSelector
         {
             private readonly PathStep[] _steps;
             private readonly string _raw;
@@ -1386,6 +1563,307 @@ public sealed record JsonSourceConfig
             public static PathStep ForIndex(int index) =>
                 new PathStep(PathStepKind.Index, null, index);
         }
+
+        private sealed class JsonPathExpression : IJsonSelector
+        {
+            private readonly JsonPathToken[] _tokens;
+
+            public JsonPathExpression(string expression)
+            {
+                if (string.IsNullOrWhiteSpace(expression))
+                {
+                    throw new ArgumentException("JSONPath selector cannot be empty.", nameof(expression));
+                }
+                _tokens = JsonPathParser.Parse(expression);
+            }
+
+            public bool TryEvaluateElement(JsonElement element, out JsonElement result)
+            {
+                var matches = JsonPathEvaluator.Evaluate(element, _tokens);
+                if (matches.Count > 0)
+                {
+                    result = matches[0];
+                    return true;
+                }
+                result = default;
+                return false;
+            }
+        }
+
+        private readonly record struct JsonPathToken(JsonPathTokenKind Kind, string? Text = null, int Index = -1);
+
+        private enum JsonPathTokenKind
+        {
+            Root,
+            Property,
+            WildcardProperty,
+            RecursiveProperty,
+            AnyRecursive,
+            Index,
+            WildcardIndex
+        }
+
+        private static class JsonPathParser
+        {
+            public static JsonPathToken[] Parse(string expression)
+            {
+                var tokens = new List<JsonPathToken>();
+                var span = expression.AsSpan();
+                var i = 0;
+                while (i < span.Length)
+                {
+                    var ch = span[i];
+                    if (char.IsWhiteSpace(ch))
+                    {
+                        i++;
+                        continue;
+                    }
+
+                    if (ch == '$')
+                    {
+                        tokens.Add(new JsonPathToken(JsonPathTokenKind.Root));
+                        i++;
+                        continue;
+                    }
+
+                    if (ch == '.')
+                    {
+                        if (i + 1 < span.Length && span[i + 1] == '.')
+                        {
+                            i += 2;
+                            if (i < span.Length && span[i] == '*')
+                            {
+                                tokens.Add(new JsonPathToken(JsonPathTokenKind.AnyRecursive));
+                                i++;
+                                continue;
+                            }
+                            var recursiveName = ReadName(span, ref i);
+                            tokens.Add(new JsonPathToken(JsonPathTokenKind.RecursiveProperty, recursiveName));
+                        }
+                        else
+                        {
+                            i++;
+                            if (i < span.Length && span[i] == '*')
+                            {
+                                tokens.Add(new JsonPathToken(JsonPathTokenKind.WildcardProperty));
+                                i++;
+                                continue;
+                            }
+                            var name = ReadName(span, ref i);
+                            tokens.Add(new JsonPathToken(JsonPathTokenKind.Property, name));
+                        }
+                        continue;
+                    }
+
+                    if (ch == '[')
+                    {
+                        i++;
+                        if (i < span.Length && (span[i] == '"' || span[i] == '\''))
+                        {
+                            var quote = span[i++];
+                            var builder = new StringBuilder();
+                            while (i < span.Length && span[i] != quote)
+                            {
+                                builder.Append(span[i]);
+                                i++;
+                            }
+                            if (i >= span.Length)
+                            {
+                                throw new InvalidDataException($"Unterminated quoted token in JSONPath '{expression}'.");
+                            }
+                            i++; // skip quote
+                            if (i >= span.Length || span[i] != ']')
+                            {
+                                throw new InvalidDataException($"Missing closing ] in JSONPath '{expression}'.");
+                            }
+                            i++;
+                            tokens.Add(new JsonPathToken(JsonPathTokenKind.Property, builder.ToString()));
+                            continue;
+                        }
+                        var end = expression.IndexOf(']', i);
+                        if (end < 0)
+                        {
+                            throw new InvalidDataException($"Missing closing ] in JSONPath '{expression}'.");
+                        }
+                        var slice = expression.Substring(i, end - i).Trim();
+                        if (slice == "*")
+                        {
+                            tokens.Add(new JsonPathToken(JsonPathTokenKind.WildcardIndex));
+                        }
+                        else if (int.TryParse(slice, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx))
+                        {
+                            tokens.Add(new JsonPathToken(JsonPathTokenKind.Index, null, idx));
+                        }
+                        else
+                        {
+                            tokens.Add(new JsonPathToken(JsonPathTokenKind.Property, slice));
+                        }
+                        i = end + 1;
+                        continue;
+                    }
+
+                    var fallback = ReadName(span, ref i);
+                    if (!string.IsNullOrEmpty(fallback))
+                    {
+                        tokens.Add(new JsonPathToken(JsonPathTokenKind.Property, fallback));
+                    }
+                }
+
+                return tokens.ToArray();
+            }
+
+            private static string ReadName(ReadOnlySpan<char> span, ref int index)
+            {
+                var start = index;
+                while (index < span.Length && IsNameChar(span[index]))
+                {
+                    index++;
+                }
+                return span.Slice(start, index - start).ToString();
+            }
+
+            private static bool IsNameChar(char ch) =>
+                char.IsLetterOrDigit(ch) || ch == '_' || ch == '-';
+        }
+
+        private static class JsonPathEvaluator
+        {
+            public static List<JsonElement> Evaluate(JsonElement root, JsonPathToken[] tokens)
+            {
+                var current = new List<JsonElement> { root };
+                foreach (var token in tokens)
+                {
+                    var next = new List<JsonElement>();
+                    foreach (var element in current)
+                    {
+                        ApplyToken(element, token, next);
+                    }
+                    current = next;
+                    if (current.Count == 0)
+                    {
+                        break;
+                    }
+                }
+                return current;
+            }
+
+            private static void ApplyToken(JsonElement element, JsonPathToken token, List<JsonElement> output)
+            {
+                switch (token.Kind)
+                {
+                    case JsonPathTokenKind.Root:
+                        output.Add(element);
+                        break;
+                    case JsonPathTokenKind.Property:
+                        if (element.ValueKind == JsonValueKind.Object &&
+                            token.Text is not null &&
+                            element.TryGetProperty(token.Text, out var property))
+                        {
+                            output.Add(property);
+                        }
+                        break;
+                    case JsonPathTokenKind.WildcardProperty:
+                        if (element.ValueKind == JsonValueKind.Object)
+                        {
+                            foreach (var property in element.EnumerateObject())
+                            {
+                                output.Add(property.Value);
+                            }
+                        }
+                        break;
+                    case JsonPathTokenKind.RecursiveProperty:
+                        if (token.Text is not null)
+                        {
+                            CollectRecursiveProperties(element, token.Text, output);
+                        }
+                        break;
+                    case JsonPathTokenKind.AnyRecursive:
+                        CollectAllDescendants(element, output);
+                        break;
+                case JsonPathTokenKind.Index:
+                    if (element.ValueKind == JsonValueKind.Array &&
+                        token.Index >= 0 &&
+                        TryGetArrayElement(element, token.Index, out var selected))
+                    {
+                        output.Add(selected);
+                    }
+                    break;
+                    case JsonPathTokenKind.WildcardIndex:
+                        if (element.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var child in element.EnumerateArray())
+                            {
+                                output.Add(child);
+                            }
+                        }
+                        break;
+                }
+            }
+
+            private static void CollectRecursiveProperties(JsonElement element, string name, List<JsonElement> output)
+            {
+                if (element.ValueKind == JsonValueKind.Object)
+                {
+                    if (element.TryGetProperty(name, out var property))
+                    {
+                        output.Add(property);
+                    }
+                    foreach (var child in element.EnumerateObject())
+                    {
+                        CollectRecursiveProperties(child.Value, name, output);
+                    }
+                }
+                else if (element.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var child in element.EnumerateArray())
+                    {
+                        CollectRecursiveProperties(child, name, output);
+                    }
+                }
+            }
+
+        private static void CollectAllDescendants(JsonElement element, List<JsonElement> output)
+        {
+            output.Add(element);
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in element.EnumerateObject())
+                {
+                    CollectAllDescendants(property.Value, output);
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var child in element.EnumerateArray())
+                {
+                    CollectAllDescendants(child, output);
+                }
+            }
+        }
+
+        private static bool TryGetArrayElement(JsonElement arrayElement, int index, out JsonElement value)
+        {
+            if (index < 0)
+            {
+                value = default;
+                return false;
+            }
+
+            var currentIndex = 0;
+            foreach (var child in arrayElement.EnumerateArray())
+            {
+                if (currentIndex == index)
+                {
+                    value = child;
+                    return true;
+                }
+                currentIndex++;
+            }
+
+            value = default;
+            return false;
+        }
+    }
 
         private static Type ResolveTargetType(string typeName)
         {

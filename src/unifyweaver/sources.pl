@@ -115,7 +115,18 @@ augment_json_options(Options0, Options) :-
         ensure_option(return_object(true), Options6, Options7)
     ;   Options7 = Options5
     ),
-    Options = Options7.
+    (   option(null_policy(Policy), Options0)
+    ->  ensure_option(null_policy(Policy), Options7, Options8)
+    ;   ensure_option(null_policy(allow), Options7, Options8)
+    ),
+    (   option(treat_array_as_stream(_), Options8)
+    ->  Options9 = Options8
+    ;   (   option(record_format(jsonl), Options8)
+        ->  ensure_option(treat_array_as_stream(false), Options8, Options9)
+        ;   ensure_option(treat_array_as_stream(true), Options8, Options9)
+        )
+    ),
+    Options = Options9.
 
 ensure_option(Term, Options0, Options) :-
     functor(Term, Name, Arity),
@@ -131,6 +142,7 @@ validate_source_options(json, Options, Arity) :-
 validate_source_options(_, _, _).
 
 validate_json_source_options(Options, Arity) :-
+    validate_null_policy(Options),
     (   option(schema(Schema), Options)
     ->  validate_json_schema(Options, Schema, Arity)
     ;   option(return_object(true), Options)
@@ -196,18 +208,28 @@ validate_schema_field(field(Name, Path, Type)) :-
     ->  true
     ;   throw(error(domain_error(json_schema_field_name, Name), _))
     ),
-    (   atom(Path)
-    ->  true
-    ;   string(Path)
+    (   validate_schema_path(Path)
     ->  true
     ;   throw(error(domain_error(json_schema_field_path, Path), _))
     ),
-    (   validate_schema_type(Type)
+    (   validate_schema_record_type(Type)
+    ->  true
+    ;   validate_schema_type(Type)
     ->  true
     ;   throw(error(domain_error(json_schema_field_type, Type), _))
     ).
 validate_schema_field(Term) :-
     throw(error(domain_error(json_schema_field, Term), _)).
+
+validate_schema_path(jsonpath(Path)) :-
+    !,
+    validate_schema_path(Path).
+validate_schema_path(Path) :-
+    (   atom(Path)
+    ->  true
+    ;   string(Path)
+    ->  true
+    ).
 
 validate_schema_type(string).
 validate_schema_type(integer).
@@ -218,9 +240,26 @@ validate_schema_type(number).
 validate_schema_type(boolean).
 validate_schema_type(json).
 
+validate_schema_record_type(record(Fields)) :-
+    !,
+    validate_nested_schema_fields(Fields).
+validate_schema_record_type(record(_Name, Fields)) :-
+    !,
+    validate_nested_schema_fields(Fields).
+validate_schema_record_type(_).
+
+validate_nested_schema_fields(Fields) :-
+    (   is_list(Fields)
+    ->  maplist(validate_schema_field, Fields)
+    ;   throw(error(domain_error(json_schema_record_fields, Fields), _))
+    ).
+
 validate_column_entries(Columns) :-
     maplist(validate_column_entry, Columns).
 
+validate_column_entry(jsonpath(Path)) :-
+    !,
+    validate_column_entry(Path).
 validate_column_entry(Column) :-
     (   atom(Column)
     ->  atom_string(Column, String)
@@ -230,5 +269,27 @@ validate_column_entry(Column) :-
     ),
     (   String == ""
     ->  throw(error(domain_error(json_column_entry, Column), _))
+    ;   true
+    ).
+
+validate_null_policy(Options) :-
+    (   option(null_policy(Policy), Options)
+    ->  (   Policy = allow
+        ->  true
+        ;   Policy = fail
+        ->  true
+        ;   Policy = skip
+        ->  true
+        ;   Policy = default(Value)
+        ->  (   atom(Value)
+            ->  true
+            ;   string(Value)
+            ->  true
+            ;   number(Value)
+            ->  true
+            ;   throw(error(domain_error(json_null_policy_value, Value), _))
+            )
+        ;   throw(error(domain_error(json_null_policy, Policy), _))
+        )
     ;   true
     ).

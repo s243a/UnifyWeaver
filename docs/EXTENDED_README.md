@@ -516,6 +516,65 @@ Generating a typed record via `schema/1`:
 % Row = ProductRecord { Id = P001, Name = Laptop, Price = 999 }
 ```
 
+Selecting via JSONPath (using wildcards and recursive descent):
+
+```prolog
+:- source(json, order_first_items, [
+    json_file('test_data/test_orders.json'),
+    columns([
+        jsonpath('$.order.customer.name'),
+        jsonpath('$.items[*].product')
+    ])
+]).
+
+?- order_first_items(Customer, Product).
+% Customer = Alice,  Product = Laptop
+```
+
+Combining schema + nested records:
+
+```prolog
+:- source(json, order_summaries, [
+    json_file('test_data/test_orders.json'),
+    schema([
+        field(order, 'order', record('OrderRecord', [
+            field(id, 'id', string),
+            field(customer, 'customer.name', string)
+        ])),
+        field(first_item, 'items[0]', record('LineItemRecord', [
+            field(product, 'product', string),
+            field(total, 'total', double)
+        ]))
+    ]),
+    record_type('OrderSummaryRecord')
+]).
+
+?- order_summaries(Row).
+% Row = OrderSummaryRecord { Order = OrderRecord { Id = SO1, Customer = Alice },
+%                            FirstItem = LineItemRecord { Product = Laptop, Total = 1200 } }
+```
+
+Streaming JSON Lines (`record_format(jsonl)`) with null-handling policy:
+
+```prolog
+:- source(json, order_second_items, [
+    json_file('test_data/test_orders.jsonl'),
+    record_format(jsonl),
+    columns([
+        jsonpath('$.order.customer.name'),
+        jsonpath('$.items[1].product')
+    ]),
+    null_policy(default('N/A'))
+]).
+
+?- order_second_items(Customer, SecondProduct).
+% Customer = Alice, SecondProduct = Mouse
+% Customer = Bob,   SecondProduct = 'N/A'
+% Customer = Charlie, SecondProduct = 'N/A'
+```
+
+`null_policy(fail|skip|default(Value))` controls how missing fields behave: fail immediately, skip the row, or substitute the provided default string.
+
 **Generated bash:**
 ```bash
 extract_names() {

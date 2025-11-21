@@ -221,16 +221,21 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
     ->  ColumnsInput = RawColumns
     ;   ColumnsInput = []
     ),
-    normalize_columns(ColumnsInput, Columns),
+    normalize_columns(ColumnsInput, Columns, ColumnSelectors),
     option(type_hint(TypeHint0), Options, none),
     normalize_type_hint(TypeHint0, TypeHintRaw),
     option(return_object(ReturnObject0), Options, false),
     normalize_boolean(ReturnObject0, ReturnObject),
+    option(treat_array_as_stream(TreatArrayRaw), Options, default),
+    normalize_treat_array(RecordFormat, TreatArrayRaw, TreatArray),
+    option(null_policy(NullPolicyRaw), Options, allow),
+    normalize_null_policy(NullPolicyRaw, NullPolicy, NullDefault),
     (   option(schema(SchemaRaw), Options)
-    ->  normalize_schema_fields(SchemaRaw, SchemaFields),
-        schema_record_name(Pred/Arity, Options, RecordType),
+    ->  schema_record_name(Pred/Arity, Options, RecordType),
+        normalize_schema_structure(SchemaRaw, RecordType, SchemaFields, SchemaRecords),
         format(atom(SchemaFullName), 'UnifyWeaver.Generated.~w', [RecordType])
     ;   SchemaFields = [],
+        SchemaRecords = [],
         RecordType = none,
         SchemaFullName = none
     ),
@@ -247,9 +252,14 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
         skip_rows:SkipRows,
         quote_style:QuoteStyle,
         columns:Columns,
+        column_selectors:ColumnSelectors,
+        treat_array_stream:TreatArray,
+        null_policy:NullPolicy,
+        null_default:NullDefault,
         type_hint:TypeHint,
         return_object:ReturnObject,
         schema_fields:SchemaFields,
+        schema_records:SchemaRecords,
         schema_type:RecordType
     }.
 
@@ -265,6 +275,7 @@ normalize_field_separator(Value, Value).
 
 normalize_record_format(text, text_line) :- !.
 normalize_record_format(json, json) :- !.
+normalize_record_format(jsonl, jsonl) :- !.
 normalize_record_format(Format, Format).
 
 normalize_input(stdin, stdin) :- !.
@@ -298,29 +309,73 @@ normalize_boolean(on, true) :- !.
 normalize_boolean(off, false) :- !.
 normalize_boolean(Value, Value).
 
-normalize_columns([], []) :- !.
-normalize_columns(Columns0, Columns) :-
+normalize_treat_array(_, true, true) :- !.
+normalize_treat_array(_, false, false) :- !.
+normalize_treat_array(jsonl, default, false) :- !.
+normalize_treat_array(_, default, true) :- !.
+normalize_treat_array(_, Value, Value).
+
+normalize_null_policy(allow, allow, none) :- !.
+normalize_null_policy(fail, fail, none) :- !.
+normalize_null_policy(skip, skip, none) :- !.
+normalize_null_policy(default(Value), default, DefaultAtom) :-
+    !,
+    (   atom(Value)
+    ->  atom_string(Value, DefaultAtom)
+    ;   string(Value)
+    ->  DefaultAtom = Value
+    ;   number(Value)
+    ->  number_string(Value, DefaultAtom)
+    ;   term_to_atom(Value, DefaultAtom)
+    ).
+normalize_null_policy(Value, Value, none).
+
+normalize_columns([], [], []) :- !.
+normalize_columns(Columns0, Columns, Selectors) :-
     is_list(Columns0),
     !,
-    maplist(normalize_column_name, Columns0, Columns).
-normalize_columns(Column, [Normalized]) :-
-    normalize_column_name(Column, Normalized).
+    maplist(normalize_column_selector, Columns0, Columns, Selectors).
+normalize_columns(Column, [Name], [Selector]) :-
+    normalize_column_selector(Column, Name, Selector).
 
-normalize_column_name(Value, Normalized) :-
-    (   atom(Value)
-    ->  Normalized = Value
-    ;   string(Value)
-    ->  atom_string(Normalized, Value)
-    ;   term_to_atom(Value, Normalized)
+normalize_column_selector(Value, NameAtom, Selector) :-
+    normalize_selector_entry(Value, PathString, Kind),
+    atom_string(NameAtom, PathString),
+    Selector = column_selector{path:PathString, kind:Kind}.
+
+normalize_selector_entry(jsonpath(PathTerm), PathString, jsonpath) :-
+    !,
+    normalize_selector_path(PathTerm, PathString).
+normalize_selector_entry(Value, PathString, Kind) :-
+    normalize_selector_path(Value, PathString),
+    (   sub_string(PathString, 0, 1, _, "$")
+    ->  Kind = jsonpath
+    ;   Kind = column_path
     ).
 
-normalize_schema_fields([], []) :- !.
-normalize_schema_fields([field(Name, Path, Type)|Rest], [schema_field{name:NameAtom, path:PathString, type:TypeAtom}|Tail]) :-
+normalize_selector_path(Value, String) :-
+    (   atom(Value)
+    ->  atom_string(Value, String)
+    ;   string(Value)
+    ->  String = Value
+    ;   throw(error(domain_error(json_column_entry, Value), _))
+    ).
+
+normalize_schema_structure(SchemaRaw, RootType, Fields, [schema_record{type:RootType, fields:Fields}|NestedRecords]) :-
+    normalize_schema_fields(SchemaRaw, Fields, [], NestedRecords).
+
+normalize_schema_fields([], [], Acc, Acc) :- !.
+normalize_schema_fields([field(Name, Path, Type)|Rest], [FieldDict|Tail], AccIn, AccOut) :-
     normalize_schema_name(Name, NameAtom),
-    normalize_schema_path(Path, PathString),
-    normalize_schema_type(Type, TypeAtom),
-    normalize_schema_fields(Rest, Tail).
-normalize_schema_fields([Invalid|_], _) :-
+    normalize_schema_path(Path, PathString, Kind),
+    normalize_schema_type(Type, NameAtom, FieldMeta, AccIn, AccNext),
+    FieldDict = FieldMeta.put(_{
+        name:NameAtom,
+        path:PathString,
+        selector_kind:Kind
+    }),
+    normalize_schema_fields(Rest, Tail, AccNext, AccOut).
+normalize_schema_fields([Invalid|_], _, _, _) :-
     throw(error(domain_error(json_schema_field, Invalid), _)).
 
 normalize_schema_name(Name, Atom) :-
@@ -330,21 +385,46 @@ normalize_schema_name(Name, Atom) :-
     ->  atom_string(Atom, Name)
     ).
 
-normalize_schema_path(Path, String) :-
-    (   atom(Path)
-    ->  atom_string(Path, String)
-    ;   string(Path)
-    ->  String = Path
+normalize_schema_path(jsonpath(Value), String, jsonpath) :-
+    !,
+    normalize_selector_path(Value, String).
+normalize_schema_path(Path, String, Kind) :-
+    normalize_selector_path(Path, String),
+    (   sub_string(String, 0, 1, _, "$")
+    ->  Kind = jsonpath
+    ;   Kind = column_path
     ).
 
-normalize_schema_type(Type, Normalized) :-
+normalize_schema_type(record(Fields), FieldName, FieldDict, AccIn, AccOut) :-
+    default_nested_record_type(FieldName, RecordType),
+    normalize_schema_type(record(RecordType, Fields), FieldName, FieldDict, AccIn, AccOut).
+normalize_schema_type(record(RecordType, Fields), _FieldName, FieldDict, AccIn, AccOut) :-
+    (   is_list(Fields),
+        Fields \= []
+    ->  normalize_schema_fields(Fields, NestedFields, AccIn, NestedRecords),
+        FieldDict = schema_field{
+            column_type:json,
+            field_kind:record,
+            record_type:RecordType,
+            nested_fields:NestedFields
+        },
+        AccOut = [schema_record{type:RecordType, fields:NestedFields}|NestedRecords]
+    ;   throw(error(domain_error(json_schema_record_fields, Fields), _))
+    ).
+normalize_schema_type(Type, _FieldName, FieldDict, Records, Records) :-
     (   atom(Type)
     ->  atom_string(Type, String)
     ;   string(Type)
     ->  String = Type
     ),
     string_lower(String, Lower),
-    atom_string(Normalized, Lower).
+    atom_string(Normalized, Lower),
+    FieldDict = schema_field{
+        column_type:Normalized,
+        field_kind:value,
+        record_type:none,
+        nested_fields:[]
+    }.
 
 schema_record_name(Pred/_, Options, RecordType) :-
     (   option(record_type(Type), Options)
@@ -358,6 +438,14 @@ default_record_type(Pred, RecordType) :-
     maplist(capitalise_string, Parts, Caps),
     atomic_list_concat(Caps, '', Base),
     atom_concat(Base, 'Row', Temp),
+    atom_string(RecordType, Temp).
+
+default_nested_record_type(FieldName, RecordType) :-
+    atom_string(FieldName, NameStr),
+    split_string(NameStr, '_', '_', Parts),
+    maplist(capitalise_string, Parts, Caps),
+    atomic_list_concat(Caps, '', Base),
+    atom_concat(Base, 'Record', Temp),
     atom_string(RecordType, Temp).
 
 capitalise_string(Input, Output) :-

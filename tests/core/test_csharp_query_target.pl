@@ -24,6 +24,11 @@
 :- dynamic user:test_odd/1.
 :- dynamic user:test_parity_input/1.
 :- dynamic user:test_product_record/1.
+:- dynamic user:test_jsonpath_projection/2.
+:- dynamic user:test_order_summary/1.
+:- dynamic user:test_orders_jsonl/3.
+:- dynamic user:test_json_null_skip/2.
+:- dynamic user:test_json_null_default/2.
 
 test_csharp_query_target :-
     configure_csharp_query_options,
@@ -41,7 +46,12 @@ test_csharp_query_target :-
     verify_tsv_dynamic_source_plan,
     verify_json_dynamic_source_plan,
     verify_json_nested_source_plan,
+    verify_json_jsonpath_source_plan,
     verify_json_schema_source_plan,
+    verify_json_nested_schema_record_plan,
+    verify_json_jsonl_source_plan,
+    verify_json_null_policy_skip_plan,
+    verify_json_null_policy_default_plan,
     verify_json_object_source_plan,
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
@@ -332,6 +342,23 @@ verify_json_nested_source_plan_ :-
     sub_string(Source, _, _, _, 'items[0].product'),
     maybe_run_query_runtime(Plan, ['Alice,Laptop,1200', 'Bob,Mouse,25', 'Charlie,Keyboard,75']).
 
+verify_json_jsonpath_source_plan :-
+    setup_call_cleanup(
+        setup_json_jsonpath_source,
+        verify_json_jsonpath_source_plan_(),
+        cleanup_json_jsonpath_source
+    ).
+
+verify_json_jsonpath_source_plan_ :-
+    csharp_query_target:build_query_plan(test_jsonpath_projection/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'JsonColumnSelectorKind.JsonPath'),
+    maybe_run_query_runtime(Plan, [
+        'Alice,Laptop',
+        'Bob,Mouse',
+        'Charlie,Keyboard'
+    ]).
+
 verify_json_schema_source_plan :-
     setup_call_cleanup(
         setup_json_schema_source,
@@ -348,6 +375,65 @@ verify_json_schema_source_plan_ :-
         'ProductRecord { Id = P002, Name = Mouse, Price = 25 }',
         'ProductRecord { Id = P003, Name = Keyboard, Price = 75 }'
     ]).
+
+verify_json_nested_schema_record_plan :-
+    setup_call_cleanup(
+        setup_json_nested_schema_source,
+        verify_json_nested_schema_record_plan_(),
+        cleanup_json_nested_schema_source
+    ).
+
+verify_json_nested_schema_record_plan_ :-
+    csharp_query_target:build_query_plan(test_order_summary/1, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'OrderRecord'),
+    sub_string(Source, _, _, _, 'LineItemRecord'),
+    maybe_run_query_runtime(Plan, [
+        'OrderSummaryRecord { Order = OrderRecord { Id = SO1, Customer = Alice }, FirstItem = LineItemRecord { Product = Laptop, Total = 1200 } }',
+        'OrderSummaryRecord { Order = OrderRecord { Id = SO2, Customer = Bob }, FirstItem = LineItemRecord { Product = Mouse, Total = 25 } }',
+        'OrderSummaryRecord { Order = OrderRecord { Id = SO3, Customer = Charlie }, FirstItem = LineItemRecord { Product = Keyboard, Total = 75 } }'
+    ]).
+
+verify_json_jsonl_source_plan :-
+    setup_call_cleanup(
+        setup_json_jsonl_source,
+        verify_json_jsonl_source_plan_(),
+        cleanup_json_jsonl_source
+    ).
+
+verify_json_jsonl_source_plan_ :-
+    csharp_query_target:build_query_plan(test_orders_jsonl/3, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'test_orders.jsonl'),
+    sub_string(Source, _, _, _, 'TreatArrayAsStream = false'),
+    maybe_run_query_runtime(Plan, ['Alice,Laptop,1200', 'Bob,Mouse,25', 'Charlie,Keyboard,75']).
+
+verify_json_null_policy_skip_plan :-
+    setup_call_cleanup(
+        setup_json_null_skip_source,
+        verify_json_null_policy_skip_plan_(),
+        cleanup_json_null_skip_source
+    ).
+
+verify_json_null_policy_skip_plan_ :-
+    csharp_query_target:build_query_plan(test_json_null_skip/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'JsonNullPolicy.Skip'),
+    maybe_run_query_runtime(Plan, ['Alice,Mouse']).
+
+verify_json_null_policy_default_plan :-
+    setup_call_cleanup(
+        setup_json_null_default_source,
+        verify_json_null_policy_default_plan_(),
+        cleanup_json_null_default_source
+    ).
+
+verify_json_null_policy_default_plan_ :-
+    csharp_query_target:build_query_plan(test_json_null_default/2, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'JsonNullPolicy.Default'),
+    sub_string(Source, _, _, _, 'NullReplacement = "N/A"'),
+    maybe_run_query_runtime(Plan, ['Alice,Mouse', 'Bob,N/A', 'Charlie,N/A']).
 
 verify_json_object_source_plan :-
     setup_call_cleanup(
@@ -420,6 +506,76 @@ cleanup_json_schema_source :-
     retractall(dynamic_source_compiler:dynamic_source_def(test_product_record_source/1, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_product_record_source/1, _)).
 
+setup_json_nested_schema_source :-
+    source(json, test_order_summary_source, [
+        json_file('test_data/test_orders.json'),
+        schema([
+            field(order, 'order', record('OrderRecord', [
+                field(id, 'id', string),
+                field(customer, 'customer.name', string)
+            ])),
+            field(first_item, 'items[0]', record('LineItemRecord', [
+                field(product, 'product', string),
+                field(total, 'total', double)
+            ]))
+        ]),
+        record_type('OrderSummaryRecord')
+    ]),
+    assertz(user:(test_order_summary(Row) :- test_order_summary_source(Row))).
+
+cleanup_json_nested_schema_source :-
+    retractall(user:test_order_summary(_)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_order_summary_source/1, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_order_summary_source/1, _)).
+
+setup_json_jsonl_source :-
+    source(json, test_orders_jsonl_source, [
+        json_file('test_data/test_orders.jsonl'),
+        record_format(jsonl),
+        columns(['order.customer.name', 'items[0].product', 'items[0].total'])
+    ]),
+    assertz(user:(test_orders_jsonl(Customer, Product, Total) :-
+        test_orders_jsonl_source(Customer, Product, Total))).
+
+cleanup_json_jsonl_source :-
+    retractall(user:test_orders_jsonl(_, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_orders_jsonl_source/3, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_orders_jsonl_source/3, _)).
+
+setup_json_null_skip_source :-
+    source(json, test_json_null_skip_source, [
+        json_file('test_data/test_orders.json'),
+        columns([
+            jsonpath('$.order.customer.name'),
+            jsonpath('$.items[1].product')
+        ]),
+        null_policy(skip)
+    ]),
+    assertz(user:(test_json_null_skip(Customer, Product) :-
+        test_json_null_skip_source(Customer, Product))).
+
+cleanup_json_null_skip_source :-
+    retractall(user:test_json_null_skip(_, _)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_json_null_skip_source/2, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_json_null_skip_source/2, _)).
+
+setup_json_null_default_source :-
+    source(json, test_json_null_default_source, [
+        json_file('test_data/test_orders.json'),
+        columns([
+            jsonpath('$.order.customer.name'),
+            jsonpath('$.items[1].product')
+        ]),
+        null_policy(default('N/A'))
+    ]),
+    assertz(user:(test_json_null_default(Customer, Product) :-
+        test_json_null_default_source(Customer, Product))).
+
+cleanup_json_null_default_source :-
+    retractall(user:test_json_null_default(_, _)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_json_null_default_source/2, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_json_null_default_source/2, _)).
+
 setup_json_orders_source :-
     source(json, test_orders, [
         json_file('test_data/test_orders.json'),
@@ -433,6 +589,22 @@ cleanup_json_orders_source :-
     retractall(user:test_order_first_item(_, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_def(test_orders/3, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_orders/3, _)).
+
+setup_json_jsonpath_source :-
+    source(json, test_jsonpath_projection_source, [
+        json_file('test_data/test_orders.json'),
+        columns([
+            jsonpath('$.order.customer.name'),
+            jsonpath('$.items[*].product')
+        ])
+    ]),
+    assertz(user:(test_jsonpath_projection(Customer, Product) :-
+        test_jsonpath_projection_source(Customer, Product))).
+
+cleanup_json_jsonpath_source :-
+    retractall(user:test_jsonpath_projection(_, _)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_jsonpath_projection_source/2, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_jsonpath_projection_source/2, _)).
 
 setup_json_object_source :-
     source(json, test_products_object, [

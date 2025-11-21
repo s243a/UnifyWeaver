@@ -2,6 +2,7 @@
 
 :- use_module(library(plunit)).
 :- use_module('src/unifyweaver/sources').
+:- use_module('src/unifyweaver/core/dynamic_source_compiler').
 
 :- begin_tests(json_source_validation).
 
@@ -63,6 +64,70 @@ test(schema_conflicts_with_columns,
           columns([id])
         ]).
 
+test(columns_allow_jsonpath, []) :-
+    setup_call_cleanup(
+        true,
+        once(source(json, jsonpath_columns,
+            [ json_file('test_data/test_orders.json'),
+              columns([jsonpath('$.order.customer.name')])
+            ])),
+        cleanup_dynamic_source(jsonpath_columns/1)
+    ).
+
+test(schema_allows_jsonpath_paths, []) :-
+    setup_call_cleanup(
+        true,
+        once(source(json, jsonpath_schema,
+            [ json_file('test_data/test_orders.json'),
+              schema([field(first_product, jsonpath('$.items[*].product'), string)]),
+              record_type('FirstProductRow')
+            ])),
+        cleanup_dynamic_source(jsonpath_schema/1)
+    ).
+
+test(schema_supports_nested_records, []) :-
+    setup_call_cleanup(
+        true,
+        once(source(json, nested_schema_source,
+            [ json_file('test_data/test_orders.json'),
+              schema([
+                  field(order, 'order', record('OrderRecord', [
+                      field(id, 'id', string),
+                      field(customer, 'customer.name', string)
+                  ]))
+              ]),
+              record_type('OrderWrapper')
+            ])),
+        cleanup_dynamic_source(nested_schema_source/1)
+    ).
+
+test(jsonl_record_format, []) :-
+    setup_call_cleanup(
+        true,
+        once(source(json, jsonl_source,
+            [ json_file('test_data/test_orders.jsonl'),
+              record_format(jsonl),
+              columns([jsonpath('$.order.customer.name')])
+            ])),
+        cleanup_dynamic_source(jsonl_source/1)
+    ).
+
+test(invalid_null_policy,
+     [error(domain_error(json_null_policy, invalid))]) :-
+    source(json, bad_null_policy,
+        [ json_file('test_data/test_products.json'),
+          columns([id]),
+          null_policy(invalid)
+        ]).
+
+test(invalid_null_policy_value,
+     [error(domain_error(json_null_policy_value, _))]) :-
+    source(json, bad_null_policy_value,
+        [ json_file('test_data/test_products.json'),
+          columns([id]),
+          null_policy(default([bad]))
+        ]).
+
 :- end_tests(json_source_validation).
 
 :- initialization(main).
@@ -70,3 +135,7 @@ test(schema_conflicts_with_columns,
 main :-
     run_tests,
     halt.
+
+cleanup_dynamic_source(Pred/Arity) :-
+    retractall(dynamic_source_compiler:dynamic_source_def(Pred/Arity, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(Pred/Arity, _)).

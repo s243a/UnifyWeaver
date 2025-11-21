@@ -1035,9 +1035,15 @@ schema_declarations(Relations, SchemaCode) :-
     ).
 
 schema_declaration(Metadata, Code, TypeName) :-
-    get_dict(schema_fields, Metadata, Fields),
-    Fields \= [],
-    get_dict(schema_type, Metadata, TypeAtom),
+    (   get_dict(schema_records, Metadata, Records)
+    ->  true
+    ;   Records = []
+    ),
+    Records \= [],
+    member(schema_record{type:TypeAtom, fields:Fields}, Records),
+    schema_declaration(schema_record{type:TypeAtom, fields:Fields}, Code, TypeName).
+
+schema_declaration(schema_record{type:TypeAtom, fields:Fields}, Code, TypeName) :-
     TypeAtom \= none,
     atom_string(TypeAtom, TypeName),
     findall(Param,
@@ -1050,8 +1056,13 @@ schema_declaration(Metadata, Code, TypeName) :-
 
 schema_field_param(Field, Param) :-
     get_dict(name, Field, NameAtom),
-    get_dict(type, Field, TypeAtom),
-    schema_field_type_literal(TypeAtom, TypeLiteral),
+    (   get_dict(field_kind, Field, record),
+        get_dict(record_type, Field, RecordType),
+        RecordType \= none
+    ->  atom_string(RecordType, TypeLiteral)
+    ;   get_dict(column_type, Field, TypeAtom),
+        schema_field_type_literal(TypeAtom, TypeLiteral)
+    ),
     schema_field_property_name(NameAtom, PropertyName),
     format(atom(Param), '~w ~w', [TypeLiteral, PropertyName]).
 
@@ -1121,9 +1132,11 @@ json_reader_literal(Metadata, Arity, Literal) :-
     ;   RecSep0 = line_feed
     ),
     record_separator_literal(RecSep0, RecSepLiteral),
-    metadata_columns_literal(Metadata, Arity, ColumnLiteral),
+    metadata_column_selectors_literal(Metadata, Arity, ColumnLiteral),
     metadata_type_literal(Metadata, TypeLiteral),
     metadata_schema_literal(Metadata, SchemaLiteral),
+    metadata_treat_array_literal(Metadata, TreatArrayLiteral),
+    metadata_null_policy_literals(Metadata, NullPolicyLiteral, NullDefaultLiteral),
     (   get_dict(return_object, Metadata, ReturnObject),
         ReturnObject == true
     ->  ReturnLiteral = 'true'
@@ -1133,24 +1146,37 @@ json_reader_literal(Metadata, Arity, Literal) :-
 'new JsonStreamReader(new JsonSourceConfig
             {
                 InputPath = ~w,
-                Columns = ~w,
+                ColumnSelectors = ~w,
                 RecordSeparator = RecordSeparatorKind.~w,
                 SkipRows = ~w,
                 ExpectedWidth = ~w,
+                TreatArrayAsStream = ~w,
                 TargetTypeName = ~w,
                 ReturnObject = ~w,
-                SchemaFields = ~w
+                SchemaFields = ~w,
+                NullPolicy = JsonNullPolicy.~w,
+                NullReplacement = ~w
             })',
-        [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity, TypeLiteral, ReturnLiteral, SchemaLiteral]).
+        [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity, TreatArrayLiteral, TypeLiteral, ReturnLiteral, SchemaLiteral, NullPolicyLiteral, NullDefaultLiteral]).
 
-metadata_columns_literal(Metadata, Arity, Literal) :-
-    (   get_dict(columns, Metadata, Columns),
-        Columns \= []
-    ->  maplist(atom_string, Columns, ColumnStrings)
-    ;   numlist(1, Arity, Indexes),
-        maplist(default_column_name, Indexes, ColumnStrings)
+metadata_column_selectors_literal(Metadata, _Arity, Literal) :-
+    (   get_dict(column_selectors, Metadata, Selectors),
+        Selectors \= []
+    ->  true
+    ;   Selectors = []
     ),
-    string_array_literal(ColumnStrings, Literal).
+    (   Selectors == []
+    ->  format(atom(Literal), 'Array.Empty<JsonColumnSelectorConfig>()', [])
+    ;   findall(Item,
+            (   member(column_selector{path:Path, kind:Kind}, Selectors),
+                csharp_literal(Path, PathLiteral),
+                selector_kind_enum(Kind, Enum),
+                format(atom(Item), '                new JsonColumnSelectorConfig(~w, JsonColumnSelectorKind.~w)', [PathLiteral, Enum])
+            ),
+            Items),
+        atomic_list_concat(Items, '\n', Joined),
+        format(atom(Literal), 'new JsonColumnSelectorConfig[]{\n~w\n            }', [Joined])
+    ).
 
 metadata_type_literal(Metadata, Literal) :-
     (   get_dict(type_hint, Metadata, TypeHint),
@@ -1164,7 +1190,7 @@ metadata_schema_literal(Metadata, Literal) :-
         Fields \= []
     ->  findall(Item,
             (   member(Field, Fields),
-                schema_field_literal(Field, Item)
+                schema_field_literal(Field, Item, '                ')
             ),
             Items),
         atomic_list_concat(Items, '\n', Joined),
@@ -1172,15 +1198,63 @@ metadata_schema_literal(Metadata, Literal) :-
     ;   Literal = 'Array.Empty<JsonSchemaFieldConfig>()'
     ).
 
-schema_field_literal(Field, Literal) :-
+schema_field_literal(Field, Literal, Indent) :-
     get_dict(name, Field, NameAtom),
     get_dict(path, Field, PathString),
-    get_dict(type, Field, TypeAtom),
+    get_dict(selector_kind, Field, KindAtom),
     schema_field_property_name(NameAtom, PropertyName),
-    schema_column_type_enum(TypeAtom, EnumLiteral),
+    schema_column_type_enum_field(Field, EnumLiteral),
+    selector_kind_enum(KindAtom, SelectorEnum),
     csharp_literal(PathString, PathLiteral),
-    format(atom(Literal), '                new JsonSchemaFieldConfig("~w", ~w, JsonColumnType.~w)',
-        [PropertyName, PathLiteral, EnumLiteral]).
+    (   get_dict(field_kind, Field, FieldKind),
+        FieldKind = record,
+        get_dict(record_type, Field, RecordType),
+        RecordType \= none
+    ->  schema_record_type_literal(RecordType, RecordLiteral),
+        get_dict(nested_fields, Field, NestedFields),
+        schema_field_kind_enum(record, FieldKindLiteral),
+        schema_nested_literal(NestedFields, NestedLiteral, Indent)
+    ;   RecordLiteral = 'null',
+        schema_field_kind_enum(value, FieldKindLiteral),
+        NestedLiteral = 'null'
+    ),
+    format(atom(Literal),
+'~wnew JsonSchemaFieldConfig("~w", ~w, JsonColumnSelectorKind.~w, JsonColumnType.~w, JsonSchemaFieldKind.~w, ~w, ~w)',
+        [Indent, PropertyName, PathLiteral, SelectorEnum, EnumLiteral, FieldKindLiteral, RecordLiteral, NestedLiteral]).
+
+schema_nested_literal([], 'null', _) :- !.
+schema_nested_literal(Fields, Literal, Indent) :-
+    atom_concat(Indent, '    ', NextIndent),
+    findall(Item,
+        (   member(Field, Fields),
+            schema_field_literal(Field, Item, NextIndent)
+        ),
+        Items),
+    atomic_list_concat(Items, '\n', Joined),
+    format(atom(Literal), 'new JsonSchemaFieldConfig[]{\n~w\n~w    }', [Joined, Indent]).
+
+schema_column_type_enum_field(Field, EnumLiteral) :-
+    (   get_dict(column_type, Field, TypeAtom),
+        schema_column_type_enum(TypeAtom, EnumLiteral)
+    ->  true
+    ;   EnumLiteral = 'Json'
+    ).
+
+schema_record_type_literal(TypeAtom, Literal) :-
+    format(atom(FullName), 'UnifyWeaver.Generated.~w', [TypeAtom]),
+    csharp_literal(FullName, Literal).
+
+schema_field_kind_enum(value, 'Value').
+schema_field_kind_enum(record, 'Record').
+schema_field_kind_enum(Kind, Literal) :-
+    atom_string(Kind, KindStr),
+    capitalise_string(KindStr, Literal).
+
+selector_kind_enum(jsonpath, 'JsonPath').
+selector_kind_enum(column_path, 'Path').
+selector_kind_enum(Kind, Enum) :-
+    atom_string(Kind, KindStr),
+    capitalise_string(KindStr, Enum).
 
 schema_column_type_enum(string, 'String').
 schema_column_type_enum(integer, 'Integer').
@@ -1193,6 +1267,31 @@ schema_column_type_enum(json, 'Json').
 schema_column_type_enum(Type, Enum) :-
     atom_string(Type, TypeStr),
     capitalise_string(TypeStr, Enum).
+
+metadata_treat_array_literal(Metadata, Literal) :-
+    (   get_dict(treat_array_stream, Metadata, Flag)
+    ->  (Flag == true -> Literal = 'true' ; Literal = 'false')
+    ;   Literal = 'true'
+    ).
+
+metadata_null_policy_literals(Metadata, PolicyLiteral, DefaultLiteral) :-
+    (   get_dict(null_policy, Metadata, Policy)
+    ->  null_policy_enum(Policy, PolicyLiteral)
+    ;   PolicyLiteral = 'Allow'
+    ),
+    (   get_dict(null_default, Metadata, Default),
+        Default \= none
+    ->  csharp_literal(Default, DefaultLiteral)
+    ;   DefaultLiteral = 'null'
+    ).
+
+null_policy_enum(allow, 'Allow').
+null_policy_enum(fail, 'Fail').
+null_policy_enum(skip, 'Skip').
+null_policy_enum(default, 'Default').
+null_policy_enum(Value, Enum) :-
+    atom_string(Value, ValueStr),
+    capitalise_string(ValueStr, Enum).
 
 default_column_name(Index, Name) :-
     format(string(Name), 'col~w', [Index]).
