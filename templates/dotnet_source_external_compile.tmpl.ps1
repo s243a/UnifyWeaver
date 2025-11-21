@@ -9,7 +9,25 @@ function {{pred}} {
 
     begin {
         $projectName = "{{pred}}_{{class_name}}"
-        $projectDir = Join-Path $PSScriptRoot "tmp/$projectName"
+
+        # Build outside the repository so worktrees stay clean
+        $tempBase = if ($env:TEMP) {
+            $env:TEMP
+        } elseif ($env:TMPDIR) {
+            $env:TMPDIR
+        } else {
+            "/tmp"
+        }
+        $buildRoot = Join-Path $tempBase "unifyweaver_dotnet_build"
+        if (-not (Test-Path $buildRoot)) {
+            New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
+        }
+
+        $projectDir = Join-Path $buildRoot $projectName
+        if (Test-Path $projectDir) {
+            Remove-Item -Recurse -Force $projectDir -ErrorAction SilentlyContinue
+        }
+        New-Item -ItemType Directory -Path $projectDir -Force | Out-Null
         $csFile = Join-Path $projectDir "{{class_name}}.cs"
         $csprojFile = Join-Path $projectDir "$projectName.csproj"
         $outputDir = Join-Path $projectDir "bin/Debug/net8.0"
@@ -101,6 +119,11 @@ function {{pred}} {
     end {
         # Cleanup if needed
         $handler = $null
+
+        # Remove temporary build artifacts
+        if (Test-Path $projectDir) {
+            Remove-Item -Recurse -Force $projectDir -ErrorAction SilentlyContinue
+        }
     }
 }
 

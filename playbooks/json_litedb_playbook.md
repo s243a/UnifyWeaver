@@ -14,8 +14,38 @@ This playbook demonstrates:
 ## Prerequisites
 
 - .NET SDK 6.0+ installed
-- LiteDB library available (use `scripts/setup/setup_litedb.sh` or `.ps1`)
+- LiteDB library available
 - PowerShell 7+ (for cross-platform support)
+
+### Installing LiteDB
+
+**For LLMs/Automated Execution:**
+```bash
+# Bash - automatically installs locally, skips if already installed
+bash scripts/setup/setup_litedb.sh -y
+
+# PowerShell - automatically installs locally, skips if already installed
+.\scripts\setup\setup_litedb.ps1 -Yes
+```
+
+**For Interactive Use:**
+```bash
+# Prompts for installation location (local or global)
+bash scripts/setup/setup_litedb.sh
+
+# PowerShell version
+.\scripts\setup\setup_litedb.ps1
+```
+
+**Options:**
+- `-y` / `-Yes`: Non-interactive mode, defaults to local installation
+- `-l` / `-Local`: Install to project `lib/` directory
+- `-g` / `-Global`: Install to `~/.local/lib/unifyweaver/` (creates symlink in `lib/`)
+- `-h` / `-Help`: Show usage information
+
+### Temporary Directories
+- Generated scripts default to building inside your OS temp folder (e.g., `%TEMP%` or `/tmp`) so the repository stays clean and Dropbox syncs faster.
+- If an agent is restricted from writing outside the checkout, using the repo’s `tmp/` directory is acceptable because it is gitignored—just remove artifacts when possible.
 
 ## Workflow
 
@@ -90,8 +120,8 @@ namespace UnifyWeaver.Generated.InsertProduct {
     }
 }
 '),
-    pre_compile(true),  // Enable DLL caching for performance
-    references(['lib/LiteDB.dll'])
+    % Auto-selects external_compile if dotnet SDK available, else pre_compile
+    references(['lib/LiteDB.dll'])  // Loads LiteDB assembly
     ]
 ).
 ```
@@ -124,8 +154,8 @@ namespace UnifyWeaver.Generated.QueryProductsByCategory {
     }
 }
 '),
-    pre_compile(true),
-    dll_references(['lib/LiteDB.dll'])
+    % Auto-selects external_compile if dotnet SDK available, else pre_compile
+    references(['lib/LiteDB.dll'])  // Loads LiteDB assembly
     ]
 ).
 ```
