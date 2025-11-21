@@ -84,7 +84,7 @@ namespace UnifyWeaver.Generated.LoadProducts {
     }
 }
 '),
-    pre_compile(true),
+    % Auto-selects external_compile if dotnet SDK available, otherwise pre_compile
     references(['System.Text.Json', 'lib/LiteDB.dll'])
 ]).
 
@@ -114,7 +114,7 @@ namespace UnifyWeaver.Generated.QueryByCategory {
     }
 }
 '),
-    pre_compile(true),
+    % Auto-selects external_compile if dotnet SDK available, otherwise pre_compile
     references(['lib/LiteDB.dll'])
 ]).
 
@@ -212,7 +212,7 @@ $prologCode = @'
 :- source(dotnet, load_products, [
     arity(0),
     target(powershell),
-    external_compile(true),
+    % Auto-selects external_compile if dotnet SDK available, otherwise pre_compile
     csharp_inline('
 using LiteDB;
 using System;
@@ -255,7 +255,7 @@ namespace UnifyWeaver.Generated.LoadProducts {
 :- source(dotnet, query_by_category, [
     arity(1),
     target(powershell),
-    external_compile(true),
+    % Auto-selects external_compile if dotnet SDK available, otherwise pre_compile
     csharp_inline('
 using LiteDB;
 using System;

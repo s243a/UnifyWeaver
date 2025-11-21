@@ -147,9 +147,28 @@ compile_source(Pred/Arity, Config, Options, PowerShellCode) :-
     ->  true
     ;   References = []
     ),
-    (   member(external_compile(ExternalCompile), AllOptions)
-    ->  true
-    ;   ExternalCompile = false % Default to false
+
+    % Determine compilation mode with .NET SDK detection and fallback
+    (   member(external_compile(UserExternalCompile), AllOptions)
+    ->  % User explicitly requested external_compile
+        (   UserExternalCompile = true
+        ->  check_dotnet_sdk_available(DotnetAvailable),
+            (   DotnetAvailable = true
+            ->  ExternalCompile = true
+            ;   format('Warning: .NET SDK not available, falling back to pre_compile mode for ~w~n', [Pred]),
+                ExternalCompile = false
+            )
+        ;   ExternalCompile = false
+        )
+    ;   member(pre_compile(true), AllOptions)
+    ->  % User explicitly requested pre_compile
+        ExternalCompile = false
+    ;   % No explicit choice - auto-detect and prefer external_compile if available
+        check_dotnet_sdk_available(DotnetAvailable),
+        (   DotnetAvailable = true
+        ->  ExternalCompile = true
+        ;   ExternalCompile = false
+        )
     ),
 
     % Generate PowerShell code using template
@@ -183,6 +202,22 @@ read_csharp_file(File, Code) :-
     ).
 
 %% ============================================
+%% .NET SDK DETECTION
+%% ============================================
+
+%% check_dotnet_sdk_available(-Available)
+%  Check if dotnet SDK is available on the system
+check_dotnet_sdk_available(true) :-
+    catch(
+        (process_create(path(dotnet), ['--version'], [stdout(null), stderr(null), process(PID)]),
+         process_wait(PID, exit(0))),
+        _,
+        fail
+    ),
+    !.
+check_dotnet_sdk_available(false).
+
+%% ============================================
 %% POWERSHELL CODE GENERATION
 %% ============================================
 
@@ -210,15 +245,12 @@ generate_dotnet_powershell(PredStr, Arity, CSharpCode, Namespace, ClassName,
         generate_package_references_string(References, PackageRefsStr),
         generate_assembly_references_string(References, AssemblyRefsStr),
         ExtraParams = [package_references=PackageRefsStr, assembly_references=AssemblyRefsStr],
-        CompileMode = external,
         CacheKey = ''
     ;   PreCompile = true
-    ->  CompileMode = precompiled,
-        format(atom(CacheKey), '~w_~w_~w', [PredStr, ClassName, MethodName]),
+    ->  format(atom(CacheKey), '~w_~w_~w', [PredStr, ClassName, MethodName]),
         TemplateName = dotnet_source_precompiled,
         ExtraParams = []
-    ;   CompileMode = inline,
-        CacheKey = '',
+    ;   CacheKey = '',
         TemplateName = dotnet_source_inline,
         ExtraParams = []
     ),
@@ -309,7 +341,7 @@ generate_package_references_string(References, String) :-
 generate_single_package_reference(Ref, '') :-
     atom(Ref),
     atom_concat(_, '.dll', Ref), !. % Skip DLLs
-generate_single_package_reference('System.Text.Json', '<PackageReference Include="System.Text.Json" Version="8.0.0" />') :- !.
+generate_single_package_reference('System.Text.Json', '<PackageReference Include="System.Text.Json" Version="9.0.0" />') :- !.
 generate_single_package_reference(Ref, Xml) :-
     % Default fallback for other packages - assume version *
     format(atom(Xml), '    <PackageReference Include="~w" Version="*" />', [Ref]).
@@ -415,11 +447,7 @@ function {{pred}}_stream {
 
 # Auto-execute when run directly (not when dot-sourced)
 if ($MyInvocation.InvocationName -ne ''.'') {
-    if ($input) {
-        $input | {{pred}} @args
-    } else {
-        {{pred}} @args
-    }
+    {{pred}} @args
 }
 ').
 
@@ -547,11 +575,7 @@ function {{pred}}_clear_cache {
 
 # Auto-execute when run directly (not when dot-sourced)
 if ($MyInvocation.InvocationName -ne ''.'') {
-    if ($input) {
-        $input | {{pred}} @args
-    } else {
-        {{pred}} @args
-    }
+    {{pred}} @args
 }
 ').
 

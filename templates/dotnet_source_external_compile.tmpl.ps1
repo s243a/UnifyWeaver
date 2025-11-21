@@ -110,9 +110,5 @@ function {{pred}}_stream {
 
 # Auto-execute when run directly (not when dot-sourced)
 if ($MyInvocation.InvocationName -ne '.') {
-    if ($input) {
-        $input | {{pred}} @args
-    } else {
-        {{pred}} @args
-    }
+    {{pred}} @args
 }
