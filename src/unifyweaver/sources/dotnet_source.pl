@@ -269,7 +269,7 @@ generate_dotnet_powershell(PredStr, Arity, CSharpCode, Namespace, ClassName,
         [source_order([file, generated]), template_extension('.tmpl.ps1')],
         PowerShellCode).
 
-%% escape_cs harp_for_powershell(+Code, -Escaped)
+%% escape_csharp_for_powershell(+Code, -Escaped)
 %  Escape C# code for safe usage in PowerShell here-string
 %  PowerShell here-strings preserve literal content, but Prolog's atom/string
 %  conversion interprets escape sequences like \n as newlines.
