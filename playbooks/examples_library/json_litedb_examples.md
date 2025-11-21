@@ -204,14 +204,15 @@ Set-Content -Path "tmp/products.json" -Value $sampleData
 
 # Create Prolog program (same as bash version)
 $prologCode = @'
-:- use_module('src/unifyweaver/core/powershell_compiler').
+:- use_module('src/unifyweaver/sources').
 :- use_module('src/unifyweaver/core/dynamic_source_compiler').
+:- use_module('src/unifyweaver/sources/dotnet_source').
 
 % Define LiteDB inserter as dynamic source
-:- dynamic_source(
-    load_products/0,
-    [source_type(dotnet), target(powershell)],
-    [csharp_inline('
+:- source(dotnet, load_products, [
+    arity(0),
+    target(powershell),
+    csharp_inline('
 using LiteDB;
 using System;
 using System.IO;
@@ -280,8 +281,15 @@ namespace UnifyWeaver.Generated.QueryByCategory {
     references(['lib/LiteDB.dll'])
 ]).
 
-:- compile_to_powershell(load_products/0, 'tmp/load_products.ps1').
-:- compile_to_powershell(query_by_category/2, 'tmp/query_products.ps1').
+:- compile_dynamic_source(load_products/0, [], Code1),
+   open('tmp/load_products.ps1', write, Stream1),
+   write(Stream1, Code1),
+   close(Stream1).
+
+:- compile_dynamic_source(query_by_category/1, [], Code2),
+   open('tmp/query_products.ps1', write, Stream2),
+   write(Stream2, Code2),
+   close(Stream2).
 '@
 
 Set-Content -Path "tmp/json_to_litedb.pl" -Value $prologCode

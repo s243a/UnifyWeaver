@@ -91,7 +91,7 @@ namespace UnifyWeaver.Generated.InsertProduct {
 }
 '),
     pre_compile(true),  // Enable DLL caching for performance
-    dll_references(['lib/LiteDB.dll'])
+    references(['lib/LiteDB.dll'])
     ]
 ).
 ```
