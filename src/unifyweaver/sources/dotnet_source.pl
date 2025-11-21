@@ -82,6 +82,16 @@ validate_config(Config) :-
     ),
 
     % Validate references if specified
+    (   member(external_compile(Value), Config)
+    ->  (   memberchk(Value, [true, false])
+        ->  true
+        ;   format('Error: external_compile must be true or false, got ~w~n', [Value]),
+            fail
+        )
+    ;   true
+    ),
+
+    % Validate references if specified
     (   member(references(Refs), Config)
     ->  is_list(Refs)
     ;   true
@@ -137,9 +147,9 @@ compile_source(Pred/Arity, Config, Options, PowerShellCode) :-
     ->  true
     ;   References = []
     ),
-    (   member(output_format(OutputFormat), AllOptions)
+    (   member(external_compile(ExternalCompile), AllOptions)
     ->  true
-    ;   OutputFormat = text
+    ;   ExternalCompile = false % Default to false
     ),
 
     % Generate PowerShell code using template
@@ -148,9 +158,14 @@ compile_source(Pred/Arity, Config, Options, PowerShellCode) :-
     atom_string(ClassName, ClassNameStr),
     atom_string(MethodName, MethodNameStr),
 
+    (   member(output_format(OutputFormat), AllOptions)
+    ->  true
+    ;   OutputFormat = text % Default
+    ),
+
     generate_dotnet_powershell(PredStr, Arity, CSharpCode, NamespaceStr, ClassNameStr,
                                MethodNameStr, PreCompile, CacheDir, References,
-                               OutputFormat, SourceMode, AllOptions, PowerShellCode).
+                               OutputFormat, SourceMode, ExternalCompile, AllOptions, PowerShellCode).
 
 %% ============================================
 %% C# CODE READING
@@ -173,11 +188,11 @@ read_csharp_file(File, Code) :-
 
 %% generate_dotnet_powershell(+PredStr, +Arity, +CSharpCode, +Namespace, +ClassName,
 %%                            +MethodName, +PreCompile, +CacheDir, +References,
-%%                            +OutputFormat, +SourceMode, +Options, -PowerShellCode)
+%%                            +OutputFormat, +SourceMode, +ExternalCompile, +Options, -PowerShellCode)
 %  Generate PowerShell code for .NET source
 generate_dotnet_powershell(PredStr, Arity, CSharpCode, Namespace, ClassName,
                           MethodName, PreCompile, CacheDir, References,
-                          OutputFormat, SourceMode, _Options, PowerShellCode) :-
+                          OutputFormat, SourceMode, ExternalCompile, _Options, PowerShellCode) :-
 
     % Escape C# code for PowerShell here-string
     escape_csharp_for_powershell(CSharpCode, EscapedCode),
@@ -190,27 +205,36 @@ generate_dotnet_powershell(PredStr, Arity, CSharpCode, Namespace, ClassName,
     format_dll_references_for_powershell(DllRefs, DllRefsStr),
 
     % Determine compilation mode
-    (   PreCompile = true
-    ->  CompileMode = precompiled,
-        format(atom(CacheKey), '~w_~w_~w', [PredStr, ClassName, MethodName])
-    ;   CompileMode = inline,
+    (   ExternalCompile = true
+    ->  TemplateName = dotnet_source_external_compile,
+        generate_package_references_string(References, PackageRefsStr),
+        generate_assembly_references_string(References, AssemblyRefsStr),
+        ExtraParams = [package_references=PackageRefsStr, assembly_references=AssemblyRefsStr],
+        CompileMode = external,
         CacheKey = ''
+    ;   PreCompile = true
+    ->  CompileMode = precompiled,
+        format(atom(CacheKey), '~w_~w_~w', [PredStr, ClassName, MethodName]),
+        TemplateName = dotnet_source_precompiled,
+        ExtraParams = []
+    ;   CompileMode = inline,
+        CacheKey = '',
+        TemplateName = dotnet_source_inline,
+        ExtraParams = []
     ),
 
-    % Select template based on compilation mode
-    (   CompileMode = precompiled
-    ->  TemplateName = dotnet_source_precompiled
-    ;   TemplateName = dotnet_source_inline
-    ),
+    % Prepare template parameters
+    BaseParams = [pred=PredStr, arity=Arity, csharp_code=EscapedCode,
+                  namespace=Namespace, class_name=ClassName, method_name=MethodName,
+                  references=ReferencesStr, dll_references=DllRefsStr,
+                  cache_dir=CacheDir, cache_key=CacheKey,
+                  output_format=OutputFormat, source_mode=SourceMode],
+    
+    append(BaseParams, ExtraParams, AllParams),
 
     % Render template
-    render_named_template(TemplateName,
-        [pred=PredStr, arity=Arity, csharp_code=EscapedCode,
-         namespace=Namespace, class_name=ClassName, method_name=MethodName,
-         references=ReferencesStr, dll_references=DllRefsStr,
-         cache_dir=CacheDir, cache_key=CacheKey,
-         output_format=OutputFormat, source_mode=SourceMode],
-        [source_order([file, generated])],
+    render_named_template(TemplateName, AllParams,
+        [source_order([file, generated]), template_extension('.tmpl.ps1')],
         PowerShellCode).
 
 %% escape_csharp_for_powershell(+Code, -Escaped)
@@ -272,6 +296,42 @@ format_dll_references_for_powershell([], '') :- !.
 format_dll_references_for_powershell(DllRefs, FormattedString) :-
     maplist(quote_reference, DllRefs, Quoted),
     atomic_list_concat(Quoted, ',', FormattedString).
+
+%% generate_package_references_string(+References, -String)
+%  Generate XML for PackageReference items in .csproj
+generate_package_references_string(References, String) :-
+    findall(Xml,
+        (member(Ref, References),
+         generate_single_package_reference(Ref, Xml)),
+        XmlList),
+    atomic_list_concat(XmlList, '\n', String).
+
+generate_single_package_reference(Ref, '') :-
+    atom(Ref),
+    atom_concat(_, '.dll', Ref), !. % Skip DLLs
+generate_single_package_reference('System.Text.Json', '<PackageReference Include="System.Text.Json" Version="8.0.0" />') :- !.
+generate_single_package_reference(Ref, Xml) :-
+    % Default fallback for other packages - assume version *
+    format(atom(Xml), '    <PackageReference Include="~w" Version="*" />', [Ref]).
+
+%% generate_assembly_references_string(+References, -String)
+%  Generate XML for Reference items (DLLs) in .csproj
+generate_assembly_references_string(References, String) :-
+    findall(Xml,
+        (member(Ref, References),
+         generate_single_assembly_reference(Ref, Xml)),
+        XmlList),
+    atomic_list_concat(XmlList, '\n', String).
+
+generate_single_assembly_reference(Ref, Xml) :-
+    atom(Ref),
+    atom_concat(_, '.dll', Ref),
+    !,
+    absolute_file_name(Ref, AbsPath),
+    file_base_name(Ref, BaseName),
+    file_name_extension(Name, _, BaseName),
+    format(atom(Xml), '    <Reference Include="~w"><HintPath>~w</HintPath></Reference>', [Name, AbsPath]).
+generate_single_assembly_reference(_, '').
 
 %% capitalize_atom(+Atom, -Capitalized)
 %  Convert atom to PascalCase (capitalize first letter of each word)
@@ -362,6 +422,7 @@ if ($MyInvocation.InvocationName -ne ''.'') {
     }
 }
 ').
+
 
 % Template for pre-compiled DLL mode (compile once, cache, and load from DLL)
 template_system:template(dotnet_source_precompiled, '# {{pred}} - .NET pre-compiled source
@@ -493,3 +554,4 @@ if ($MyInvocation.InvocationName -ne ''.'') {
     }
 }
 ').
+

@@ -212,6 +212,7 @@ $prologCode = @'
 :- source(dotnet, load_products, [
     arity(0),
     target(powershell),
+    external_compile(true),
     csharp_inline('
 using LiteDB;
 using System;
@@ -247,7 +248,6 @@ namespace UnifyWeaver.Generated.LoadProducts {
     }
 }
 '),
-    pre_compile(true),
     references(['System.Text.Json', 'lib/LiteDB.dll'])
 ]).
 
@@ -255,6 +255,7 @@ namespace UnifyWeaver.Generated.LoadProducts {
 :- source(dotnet, query_by_category, [
     arity(1),
     target(powershell),
+    external_compile(true),
     csharp_inline('
 using LiteDB;
 using System;
@@ -267,7 +268,7 @@ namespace UnifyWeaver.Generated.QueryByCategory {
                 var products = db.GetCollection("products");
                 var results = products.Find(x => x["category"] == category);
 
-                var output = string.Join("\n",
+                var output = string.Join("\\n",
                     results.Select(doc =>
                         $"  {doc["name"],-20} ${doc["price"]:F2}"));
 
@@ -277,7 +278,6 @@ namespace UnifyWeaver.Generated.QueryByCategory {
     }
 }
 '),
-    pre_compile(true),
     references(['lib/LiteDB.dll'])
 ]).
 
@@ -318,7 +318,7 @@ Write-Host "Loading JSON data into LiteDB..." -ForegroundColor Yellow
 # Execute: Query data
 Write-Host ""
 Write-Host "Querying products by category 'Electronics'..." -ForegroundColor Yellow
-& "tmp/query_products.ps1" -Key "Electronics"
+& "tmp/query_products.ps1" "Electronics"
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
