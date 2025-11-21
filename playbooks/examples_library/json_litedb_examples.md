@@ -18,10 +18,11 @@ echo "JSON to LiteDB Streaming Demo"
 echo "=========================================="
 
 # Ensure LiteDB is installed
+# For LLMs: Use -y flag for non-interactive installation
+# This checks if already installed and skips if so
 if [ ! -f "lib/LiteDB.dll" ]; then
-    echo "❌ Error: LiteDB.dll not found in lib/"
-    echo "Run: bash scripts/setup/setup_litedb.sh"
-    exit 1
+    echo "Installing LiteDB..."
+    bash scripts/setup/setup_litedb.sh -y
 fi
 
 # Create sample JSON data
@@ -104,7 +105,7 @@ namespace UnifyWeaver.Generated.QueryByCategory {
                 var products = db.GetCollection("products");
                 var results = products.Find(x => x["category"] == category);
 
-                var output = string.Join("\\n",
+                var output = string.Join(Environment.NewLine,
                     results.Select(doc =>
                         $"  {doc["name"],-20} ${doc["price"]:F2}"));
 
@@ -182,10 +183,11 @@ Write-Host "JSON to LiteDB Streaming Demo" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
 # Ensure LiteDB is installed
+# For LLMs: Use -Yes flag for non-interactive installation
+# This checks if already installed and skips if so
 if (-not (Test-Path "lib/LiteDB.dll")) {
-    Write-Host "❌ Error: LiteDB.dll not found in lib/" -ForegroundColor Red
-    Write-Host "Run: .\scripts\setup\setup_litedb.ps1"
-    exit 1
+    Write-Host "Installing LiteDB..." -ForegroundColor Yellow
+    & ".\scripts\setup\setup_litedb.ps1" -Yes
 }
 
 # Create sample JSON data
@@ -268,7 +270,7 @@ namespace UnifyWeaver.Generated.QueryByCategory {
                 var products = db.GetCollection("products");
                 var results = products.Find(x => x["category"] == category);
 
-                var output = string.Join("\\n",
+                var output = string.Join(Environment.NewLine,
                     results.Select(doc =>
                         $"  {doc["name"],-20} ${doc["price"]:F2}"));
 

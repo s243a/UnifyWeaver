@@ -269,12 +269,16 @@ generate_dotnet_powershell(PredStr, Arity, CSharpCode, Namespace, ClassName,
         [source_order([file, generated]), template_extension('.tmpl.ps1')],
         PowerShellCode).
 
-%% escape_csharp_for_powershell(+Code, -Escaped)
+%% escape_cs harp_for_powershell(+Code, -Escaped)
 %  Escape C# code for safe usage in PowerShell here-string
+%  PowerShell here-strings preserve literal content, but Prolog's atom/string
+%  conversion interprets escape sequences like \n as newlines.
+%  We need to double backslashes so C# escape sequences are preserved.
 escape_csharp_for_powershell(Code, Escaped) :-
-    % For now, simple pass-through - PowerShell here-strings handle most escaping
-    % The @' '@ syntax preserves everything except the closing '@
-    Escaped = Code.
+    atom_string(Code, CodeStr),
+    % Replace single backslash with double backslash to preserve C# escape sequences
+    split_string(CodeStr, "\\", "", Parts),
+    atomic_list_concat(Parts, "\\\\", Escaped).
 
 %% generate_references_string(+References, -String)
 %  Generate PowerShell Add-Type -ReferencedAssemblies parameter

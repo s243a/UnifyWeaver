@@ -9,6 +9,7 @@ function {{pred}} {
 
     begin {
         $projectName = "{{pred}}_{{class_name}}"
+        $uniqueId = [DateTime]::Now.ToString('yyyyMMdd_HHmmss_fff')
 
         # Build outside the repository so worktrees stay clean
         $tempBase = if ($env:TEMP) {
@@ -23,7 +24,7 @@ function {{pred}} {
             New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
         }
 
-        $projectDir = Join-Path $buildRoot $projectName
+        $projectDir = Join-Path $buildRoot "${projectName}_${uniqueId}"
         if (Test-Path $projectDir) {
             Remove-Item -Recurse -Force $projectDir -ErrorAction SilentlyContinue
         }
