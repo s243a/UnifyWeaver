@@ -18,10 +18,11 @@ This document provides comprehensive documentation for UnifyWeaver, including de
 5. [Data Source Plugin System](#data-source-plugin-system)
 6. [Firewall and Security](#firewall-and-security)
 7. [PowerShell Target](#powershell-target)
-8. [Complete Examples](#complete-examples)
-9. [Architecture Deep Dive](#architecture-deep-dive)
-10. [Testing Guide](#testing-guide)
-11. [Troubleshooting](#troubleshooting)
+8. [C# Target Family](#c-target-family)
+9. [Complete Examples](#complete-examples)
+10. [Architecture Deep Dive](#architecture-deep-dive)
+11. [Testing Guide](#testing-guide)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -376,6 +377,7 @@ UnifyWeaver v0.0.2 introduces a powerful plugin system for integrating external 
 │  - JSON Plugin                             │
 │  - HTTP Plugin                             │
 │  - Python Plugin                           │
+│  - C# Plugin (LiteDB)                      │
 └────────────────┬────────────────────────────┘
                  │
                  ↓
@@ -684,6 +686,25 @@ PYTHON_EOF
 }
 ```
 
+### C# Plugin (LiteDB Integration)
+
+UnifyWeaver supports C# data sources with automatic compilation and LiteDB integration.
+
+**LiteDB Inserter:**
+```prolog
+:- source(dotnet, load_products, [
+    arity(0),
+    target(powershell),
+    csharp_inline('
+using LiteDB;
+// ... C# code ...
+'),
+    references(['lib/LiteDB.dll'])
+]).
+```
+
+**See [C# Compilation Guide](DOTNET_COMPILATION.md) for full details.**
+
 ### Complete ETL Pipeline Example
 
 ```prolog
@@ -929,6 +950,23 @@ For complete PowerShell documentation, see:
 - [POWERSHELL_PURE_VS_BAAS.md](POWERSHELL_PURE_VS_BAAS.md)
 
 ---
+
+## C# Target Family
+
+UnifyWeaver provides a robust C# compilation system that integrates seamlessly with PowerShell.
+
+### Features
+
+- **External Compilation**: Uses `dotnet build` for robust dependency management and isolation.
+- **Pre-Compilation**: Fallback to `Add-Type` for simple scripts.
+- **File Locking Solution**: Unique build directories prevent DLL locking issues.
+- **LiteDB Support**: Built-in integration for NoSQL document storage.
+
+**See [DOTNET_COMPILATION.md](DOTNET_COMPILATION.md) for the complete guide.**
+
+---
+
+
 
 ## Complete Examples
 

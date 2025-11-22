@@ -25,10 +25,13 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 
 ### C# Target Family (v0.1)
 - **Query Runtime (`target(csharp_query)`)** - Generates relational plans executed by a shared .NET engine with semi-naive fixpoint evaluation.
-- **Mutual recursion support** - Even/odd style dependencies now run entirely inside the C# runtime, matching Bash behaviour for SCC groups.
-- **Arithmetic & constraints** - LINQ-based pipelines honour `is/2`, comparisons, and deduplication semantics (`HashSet<T>` distinct).
-- **Streaming codegen (`target(csharp_codegen)`)** - Emit standalone C# projects that mirror the Bash streaming templates for simple predicates.
-- **Configurable artefacts** - Choose between direct C# emission, reusable plans, or let `target(csharp)` select the best backend automatically.
+- **External Compilation** - Robust `dotnet build` integration with dependency support and file locking prevention.
+- **LiteDB Integration** - Built-in support for NoSQL document storage.
+- **Mutual recursion support** - Even/odd style dependencies now run entirely inside the C# runtime.
+- **Arithmetic & constraints** - LINQ-based pipelines honour `is/2`, comparisons, and deduplication.
+- **Streaming codegen (`target(csharp_codegen)`)** - Emit standalone C# projects that mirror Bash streaming templates.
+
+**See [C# Compilation Guide](docs/DOTNET_COMPILATION.md) for details.**
 
 ### Data Source Plugin System (v0.1)
 - **5 Production-Ready Plugins** - CSV/TSV, AWK, Python, HTTP, JSON data sources
