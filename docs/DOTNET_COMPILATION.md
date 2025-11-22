@@ -19,7 +19,7 @@ This is the **recommended** strategy for robust development. It uses the .NET SD
 - .NET SDK installed (`dotnet` command available).
 
 **How it works:**
-1. UnifyWeaver generates a unique build directory (e.g., `tmp/Build_MySource_123456`).
+1. UnifyWeaver generates a unique build directory in your OS temp folder (for example `%TEMP%/unifyweaver_dotnet_build/Build_MySource_123456`).
 2. It generates a `.csproj` file with necessary references.
 3. It runs `dotnet build` to produce a DLL.
 4. The generated PowerShell script loads this DLL using `Add-Type -Path ...`.
@@ -48,12 +48,16 @@ UnifyWeaver's `dotnet_source` module automatically selects the best strategy:
 2. If available, defaults to `external_compile`.
 3. If not available, falls back to `pre_compile`.
 
-You can force a specific strategy in your source definition (though usually not necessary):
+You can override the default selection when necessary:
 
 ```prolog
 :- source(dotnet, my_predicate, [
-    compilation_strategy(pre_compile),  % Force Add-Type
-    ...
+    external_compile(false),  % Force Add-Type even if dotnet is available
+    pre_compile(true)
+]).
+
+:- source(dotnet, other_predicate, [
+    external_compile(true)     % Force dotnet build even if auto-detect fails
 ]).
 ```
 
