@@ -27,31 +27,30 @@ compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     ),
     
     functor(Head, Name, Arity),
-    (   clause(Module:Head, Body)
-    ->  true
-    ;   throw(error(clause_not_found(Module:Head), _))
+    findall((Head, Body), clause(Module:Head, Body), Clauses),
+    (   Clauses == []
+    ->  throw(error(clause_not_found(Module:Head), _))
+    ;   true
     ),
     
-    % Instanciate variables to $VAR(N)
-    numbervars((Head, Body), 0, _),
+    % Generate clause functions
+    findall(ClauseCode, (
+        nth0(Index, Clauses, (ClauseHead, ClauseBody)),
+        translate_clause(ClauseHead, ClauseBody, Index, Arity, ClauseCode)
+    ), ClauseCodes),
+    atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
     
-    % Assume first argument is the input record
-    arg(1, Head, RecordVar),
-    var_to_python(RecordVar, PyRecordVar),
-    
-    % Determine output variable (Last argument if Arity > 1, else Input)
-    (   Arity > 1
-    ->  arg(Arity, Head, OutputVar)
-    ;   OutputVar = RecordVar
-    ),
-    var_to_python(OutputVar, PyOutputVar),
-    
-    translate_body(Body, BodyCode),
+    % Generate process_stream calls
+    findall(Call, (
+        nth0(Index, Clauses, _),
+        format(string(Call), "        yield from _clause_~d(record)", [Index])
+    ), Calls),
+    atomic_list_concat(Calls, "\n", CallsCode),
     
     header(Header),
     helpers(Helpers),
     
-    % Determine output variable (Last argument if Arity > 1, else Input)
+    % Select format
     option(record_format(Format), Options, jsonl),
     (   Format == nul_json
     ->  Reader = "read_nul_json", Writer = "write_nul_json"
@@ -71,14 +70,38 @@ if __name__ == '__main__':
     
     format(string(Logic), 
 "
+~s
+
 def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
     \"\"\"Generated predicate logic.\"\"\"
-    for ~w in records:
+    for record in records:
 ~s
-        yield ~w
-\n", [PyRecordVar, BodyCode, PyOutputVar]),
+\n", [AllClausesCode, CallsCode]),
 
     format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
+translate_clause(Head, Body, Index, Arity, Code) :-
+    % Instanciate variables
+    numbervars((Head, Body), 0, _),
+    
+    % Assume first argument is the input record
+    arg(1, Head, RecordVar),
+    var_to_python(RecordVar, PyRecordVar),
+    
+    % Determine output variable (Last argument if Arity > 1, else Input)
+    (   Arity > 1
+    ->  arg(Arity, Head, OutputVar)
+    ;   OutputVar = RecordVar
+    ),
+    var_to_python(OutputVar, PyOutputVar),
+    
+    translate_body(Body, BodyCode),
+    
+    format(string(Code),
+"def _clause_~d(~w: Dict) -> Iterator[Dict]:
+~s
+    yield ~w
+", [Index, PyRecordVar, BodyCode, PyOutputVar]).
 
 translate_body((Goal, Rest), Code) :-
     !,
@@ -88,11 +111,17 @@ translate_body((Goal, Rest), Code) :-
 translate_body(Goal, Code) :-
     translate_goal(Goal, Code).
 
-translate_goal(get_dict(Key, Record, Var), Code) :-
+translate_goal(get_dict(Key, Record, Value), Code) :-
     !,
     var_to_python(Record, PyRecord),
-    var_to_python(Var, PyVar),
-    format(string(Code), "        ~w = ~w.get('~w')\n", [PyVar, PyRecord, Key]).
+    (   var(Value)
+    ->  var_to_python(Value, PyValue),
+        format(string(Code), "    ~w = ~w.get('~w')\n", [PyValue, PyRecord, Key])
+    ;   % Value is a constant/bound
+        var_to_python(Value, PyValue),
+        % Check if key exists and equals value
+        format(string(Code), "    if ~w.get('~w') != ~w: return\n", [PyRecord, Key, PyValue])
+    ).
 
 translate_goal(=(Var, Dict), Code) :-
     is_dict(Dict),
@@ -101,13 +130,17 @@ translate_goal(=(Var, Dict), Code) :-
     dict_pairs(Dict, _Tag, Pairs),
     maplist(pair_to_python, Pairs, PyPairList),
     atomic_list_concat(PyPairList, ', ', PairsStr),
-    format(string(Code), "        ~w = {~s}\n", [PyVar, PairsStr]).
+    format(string(Code), "    ~w = {~s}\n", [PyVar, PairsStr]).
 
 translate_goal(>(Var, Value), Code) :-
     !,
     var_to_python(Var, PyVar),
     var_to_python(Value, PyValue),
-    format(string(Code), "        if not (~w > ~w): continue\n", [PyVar, PyValue]).
+    format(string(Code), "    if not (~w > ~w): return\n", [PyVar, PyValue]).
+
+translate_goal(true, Code) :-
+    !,
+    Code = "    pass\n".
 
 translate_goal(Goal, "") :-
     format(string(Msg), "Warning: Unsupported goal ~w", [Goal]),
@@ -120,9 +153,10 @@ pair_to_python(Key-Value, Str) :-
 var_to_python('$VAR'(I), PyVar) :- 
     !, 
     format(string(PyVar), "v_~d", [I]).
-var_to_python(Atom, Atom) :- 
+var_to_python(Atom, Quoted) :- 
     atom(Atom), 
-    !.
+    !,
+    format(string(Quoted), "\"~w\"", [Atom]).
 var_to_python(Number, Number) :- 
     number(Number), 
     !.

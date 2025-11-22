@@ -53,4 +53,28 @@ test(compile_projection) :-
     
     retract((project_fields(R, Out) :- get_dict(name, R, N), Out = _{name: N})).
 
+test(compile_multiple_clauses) :-
+    % parent(p1, c1).
+    % parent(p1, c2).
+    % This is a fact, which is a clause with body 'true'.
+    assertz(parent(p1, c1)),
+    assertz(parent(p1, c2)),
+    
+    compile_predicate_to_python(parent/2, [], Code),
+    
+    % We expect code that yields both c1 and c2 for input p1.
+    % Currently, the compiler might only pick one.
+    % Let's check if it generates code for both.
+    % Since we don't know the exact python representation of facts yet,
+    % we just check if it handles multiple clauses.
+    % For facts: parent(X, Y) :- X=p1, Y=c1.
+    % The compiler should translate unification.
+    
+    % Check for structure implying multiple paths
+    % e.g. multiple 'yield' statements or a loop over clauses?
+    % For now, just print the code to see what happens.
+    format(user_error, "Generated Multi-Clause Code:\n~s\n", [Code]),
+    
+    retractall(parent(_, _)).
+
 :- end_tests(python_target).
