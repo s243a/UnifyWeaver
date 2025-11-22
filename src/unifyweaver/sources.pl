@@ -24,7 +24,10 @@ source(Type, Name, Options0) :-
     validate_source_options(Type, Options, Arity),
     % Register this as a dynamic source
     register_dynamic_source(Name/Arity, Type, Options),
-    format('Defined source: ~w/~w using ~w~n', [Name, Arity, Type]).
+    (   getenv('UNIFYWEAVER_LOG_SOURCES', Val), Val \= '', Val \= '0'
+    ->  format('Defined source: ~w/~w using ~w~n', [Name, Arity, Type])
+    ;   true
+    ).
 
 %% determine_arity(+Options, -Arity)
 %  Determine predicate arity from options

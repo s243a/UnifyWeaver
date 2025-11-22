@@ -30,29 +30,42 @@
 :- dynamic user:test_json_null_skip/2.
 :- dynamic user:test_json_null_default/2.
 
+:- dynamic progress_last_report/1.
+:- dynamic progress_count/1.
+:- dynamic progress_total/1.
+
 test_csharp_query_target :-
+    set_prolog_flag(verbose, silent),
     configure_csharp_query_options,
     writeln('=== Testing C# query target ==='),
     setup_test_data,
-    verify_fact_plan,
-    verify_join_plan,
-    verify_selection_plan,
-    verify_arithmetic_plan,
-    verify_recursive_arithmetic_plan,
-    verify_comparison_plan,
-    verify_recursive_plan,
-    verify_mutual_recursion_plan,
-    verify_dynamic_source_plan,
-    verify_tsv_dynamic_source_plan,
-    verify_json_dynamic_source_plan,
-    verify_json_nested_source_plan,
-    verify_json_jsonpath_source_plan,
-    verify_json_schema_source_plan,
-    verify_json_nested_schema_record_plan,
-    verify_json_jsonl_source_plan,
-    verify_json_null_policy_skip_plan,
-    verify_json_null_policy_default_plan,
-    verify_json_object_source_plan,
+    progress_init,
+    Tests = [
+        verify_fact_plan,
+        verify_join_plan,
+        verify_selection_plan,
+        verify_arithmetic_plan,
+        verify_recursive_arithmetic_plan,
+        verify_comparison_plan,
+        verify_recursive_plan,
+        verify_mutual_recursion_plan,
+        verify_dynamic_source_plan,
+        verify_tsv_dynamic_source_plan,
+        verify_json_dynamic_source_plan,
+        verify_json_nested_source_plan,
+        verify_json_jsonpath_source_plan,
+        verify_json_schema_source_plan,
+        verify_json_nested_schema_record_plan,
+        verify_json_jsonl_source_plan,
+        verify_json_null_policy_skip_plan,
+        verify_json_null_policy_default_plan,
+        verify_json_object_source_plan
+    ],
+    length(Tests, Total),
+    retractall(progress_total(_)),
+    asserta(progress_total(Total)),
+    maplist(run_with_progress, Tests),
+    progress_maybe_report(force),
     cleanup_test_data,
     writeln('=== C# query target tests complete ===').
 
@@ -628,14 +641,14 @@ maybe_run_query_runtime(Plan, ExpectedRows) :-
     !,
     prepare_temp_dir(Plan, Dir),
     (   getenv('SKIP_CSHARP_EXECUTION', '1')
-    ->  % Generate code but skip execution
+    ->  % Generate code but skip execution (quiet)
         (   generate_csharp_code_only(Dotnet, Plan, Dir)
-        ->  writeln('  (dotnet execution skipped due to SKIP_CSHARP_EXECUTION=1)'),
-            writeln('  (C# code generation: PASS)'),
-            finalize_temp_dir(Dir)
+        ->  true
         ;   writeln('  (C# code generation: FAIL)'),
-            finalize_temp_dir(Dir)
-        )
+            finalize_temp_dir(Dir),
+            fail
+        ),
+        finalize_temp_dir(Dir)
     ;   % Full execution
         (   run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir)
         ->  writeln('  (query runtime execution: PASS)'),
@@ -968,6 +981,47 @@ default_cqt_options([
     cqt_option(output_dir, 'tmp'),
     cqt_option(keep_artifacts, false)
 ]).
+
+%% progress reporting helpers --------------------------------------------------
+
+progress_init :-
+    get_time(Now),
+    retractall(progress_last_report(_)),
+    retractall(progress_count(_)),
+    asserta(progress_last_report(Now)),
+    asserta(progress_count(0)).
+
+progress_interval_seconds(10).
+
+run_with_progress(Goal) :-
+    (   catch(once(call(Goal)), E, (print_message(error, E), fail))
+    ->  true
+    ;   format('  FAILED: ~w~n', [Goal]),
+        fail
+    ),
+    retract(progress_count(C0)),
+    C is C0 + 1,
+    asserta(progress_count(C)),
+    progress_maybe_report(normal).
+
+progress_maybe_report(force) :-
+    !,
+    progress_count(C),
+    progress_total(T),
+    format('  Progress: ~w/~w tests complete.~n', [C, T]).
+progress_maybe_report(normal) :-
+    progress_interval_seconds(Interval),
+    get_time(Now),
+    (   progress_last_report(Last),
+        Delta is Now - Last,
+        Delta >= Interval
+    ->  retract(progress_last_report(_)),
+        asserta(progress_last_report(Now)),
+        progress_count(C),
+        progress_total(T),
+        format('  Progress: ~w/~w tests complete.~n', [C, T])
+    ;   true
+    ).
 
 capture_env_overrides :-
     (   getenv('CSHARP_QUERY_OUTPUT_DIR', Dir),

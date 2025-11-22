@@ -1098,7 +1098,7 @@ dynamic_reader_literal(Metadata, Arity, Literal) :-
     ->  true
     ;   Format = text_line
     ),
-    (   Format == json
+    (   (Format == json ; Format == jsonl)
     ->  json_reader_literal(Metadata, Arity, Literal)
     ;   delimited_reader_literal(Metadata, Arity, Literal)
     ).

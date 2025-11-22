@@ -94,8 +94,10 @@ register_dynamic_source(Pred/Arity, SourceSpec, Options) :-
     extract_io_metadata(Pred/Arity, MergedConfig, Metadata),
     retractall(dynamic_source_metadata(Pred/Arity, _)),
     assertz(dynamic_source_metadata(Pred/Arity, Metadata)),
-
-    format('Registered dynamic source: ~w/~w using ~w~n', [Pred, Arity, Type]).
+    (   getenv('UNIFYWEAVER_LOG_SOURCES', Val), Val \= '', Val \= '0'
+    ->  format('Registered dynamic source: ~w/~w using ~w~n', [Pred, Arity, Type])
+    ;   true
+    ).
 
 %% is_dynamic_source(+Pred/Arity)
 %  Check if predicate is registered as dynamic source
@@ -206,12 +208,13 @@ test_dynamic_source_compiler :-
 %  Normalizes commonly-used IO descriptors so downstream targets
 %  understand how records are streamed into the predicate.
 extract_io_metadata(Pred/Arity, Options, Meta) :-
-    option(record_separator(RawRecordSep), Options, nul),
+    option(record_format(RawFormat), Options, text),
+    normalize_record_format(RawFormat, RecordFormat),
+    default_record_separator(RecordFormat, RecordSepDefault),
+    option(record_separator(RawRecordSep), Options, RecordSepDefault),
     normalize_record_separator(RawRecordSep, RecordSep),
     option(field_separator(RawFieldSep), Options, ':'),
     normalize_field_separator(RawFieldSep, FieldSep),
-    option(record_format(RawFormat), Options, text),
-    normalize_record_format(RawFormat, RecordFormat),
     option(input(RawInput), Options, stdin),
     normalize_input(RawInput, Input),
     option(skip_lines(SkipRows), Options, 0),
@@ -267,6 +270,10 @@ normalize_record_separator(line_feed, line_feed) :- !.
 normalize_record_separator(nul, nul) :- !.
 normalize_record_separator(json, json) :- !.
 normalize_record_separator(Atom, Atom).
+
+default_record_separator(json, json).
+default_record_separator(jsonl, line_feed).
+default_record_separator(_, nul).
 
 normalize_field_separator(none, none) :- !.
 normalize_field_separator(comma, ',') :- !.
