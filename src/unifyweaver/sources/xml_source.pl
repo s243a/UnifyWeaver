@@ -15,6 +15,7 @@
 :- use_module('../core/perl_service').
 :- use_module('../core/firewall_v2').
 :- use_module('../core/tool_detection').
+:- use_module('xml_field_compiler').
 
 %% Register this plugin on load
 :- initialization(
@@ -294,6 +295,31 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     ;   member(tag(SingleTag), AllOptions)
     ->  Tags = [SingleTag]
     ),
+
+    % Check for field extraction
+    (   member(fields(FieldSpec), AllOptions)
+    ->  % Delegate to field compiler
+        (   Tags = [SingleTag]
+        ->  true
+        ;   format('Error: Field extraction requires exactly one tag, got: ~w~n', [Tags]),
+            fail
+        ),
+        format('  Using field extraction compiler~n', []),
+        xml_field_compiler:compile_field_extraction(
+            Pred/Arity,
+            File,
+            SingleTag,
+            FieldSpec,
+            AllOptions,
+            BashCode
+        )
+    ;   % No fields() - use standard element extraction
+        compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode)
+    ).
+
+%% compile_element_extraction(+Pred/Arity, +File, +Tags, +Options, -BashCode)
+%  Compile standard element extraction (without field extraction)
+compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode) :-
 
     namespace_fix_option(AllOptions, NamespaceFix),
     xmllint_splitter_option(AllOptions, Splitter),
