@@ -191,7 +191,7 @@ ID = '123'.
 
 ## Implementation Strategies
 
-UnifyWeaver provides two implementation approaches:
+UnifyWeaver provides three implementation approaches:
 
 ### Option B: Modular (Default)
 
@@ -206,6 +206,7 @@ UnifyWeaver provides two implementation approaches:
 
 **Characteristics:**
 - Delegates to `xml_field_compiler` module
+- Uses AWK for streaming extraction
 - Separation of concerns
 - Easier to extend
 - **Default if not specified**
@@ -223,14 +224,35 @@ UnifyWeaver provides two implementation approaches:
 
 **Characteristics:**
 - Self-contained in `xml_source.pl`
-- No external dependencies
+- Uses AWK for streaming extraction
+- No external module dependencies
 - Slightly smaller (333 vs 335 bytes)
-- Same functionality
+- Same functionality as modular
+
+### Option C: Pure Prolog
+
+```prolog
+:- source(xml, trees, [
+    file('data.xml'),
+    tag('Tree'),
+    fields([id: 'treeId']),
+    field_compiler(prolog)
+]).
+```
+
+**Characteristics:**
+- Pure Prolog using `library(sgml)`
+- No AWK dependency
+- Loads XML into memory (DOM parsing)
+- Ideal for educational purposes and debugging
+- Slower for large files
+- Useful when AWK is not available
 
 **Which to choose?**
-- Use **modular** (default) unless you have a specific reason
+- Use **modular** (default) for most use cases - best performance and maintainability
 - Use **inline** if you want zero external module dependencies
-- Performance is identical (both use AWK pipeline)
+- Use **prolog** for educational purposes, debugging, or pure Prolog environments
+- AWK strategies (modular/inline) are identical in performance (both use streaming)
 
 ---
 
@@ -481,14 +503,27 @@ This tutorial covers the **current implementation** (Phase 1). See design propos
 
 **Decision tree:**
 ```
-Need zero external module dependencies?
-├─ Yes → field_compiler(inline)
-└─ No  → field_compiler(modular) [default]
+What's your priority?
 
-Both have identical:
-- Performance (same AWK pipeline)
+Educational/Debugging/No AWK?
+└─ field_compiler(prolog) - Pure Prolog, library(sgml)
+
+Need zero external module dependencies (but have AWK)?
+└─ field_compiler(inline) - Self-contained AWK
+
+Default (best for production)?
+└─ field_compiler(modular) - Modular AWK [default]
+
+AWK strategies (modular/inline) have identical:
+- Performance (streaming AWK pipeline)
 - Features (CDATA, output formats)
 - Memory usage (constant ~20KB)
+
+Prolog strategy:
+- Slower (DOM parsing, not streaming)
+- Higher memory (loads full XML)
+- No AWK dependency
+- Great for learning/debugging
 ```
 
 ---
@@ -547,9 +582,10 @@ get_electronics(Electronics) :-
 2. `fields([...])` option - Specify which fields to extract
 3. Output format - Choose dict/list/compound
 
-**Two implementations:**
-- `field_compiler(modular)` - Default, delegates to xml_field_compiler
-- `field_compiler(inline)` - Self-contained in xml_source.pl
+**Three implementations:**
+- `field_compiler(modular)` - Default, AWK via xml_field_compiler module (best for production)
+- `field_compiler(inline)` - Self-contained AWK in xml_source.pl (no external modules)
+- `field_compiler(prolog)` - Pure Prolog using library(sgml) (educational/debugging)
 
 **Typical workflow:**
 ```prolog
