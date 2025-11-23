@@ -68,23 +68,27 @@ swipl -g "use_module('tests/core/test_python_source'), test_python_source" -t ha
 
 ## C# Query Tests
 
+Full run (executes dotnet; quiet, minimal logging):
+
+```bash
+UNIFYWEAVER_LOG_SOURCES=0 \
+SKIP_CSHARP_EXECUTION=0 \
+swipl -g "use_module('tests/core/test_csharp_query_target'), test_csharp_query_target" -t halt
+```
+
 Fast verification (code generation only, skip execution):
 
 ```bash
-SKIP_CSHARP_EXECUTION=1 swipl -q -f init.pl \
-  -s tests/core/test_csharp_query_target.pl \
-  -g 'test_csharp_query_target:test_csharp_query_target' \
-  -t halt -- --csharp-query-keep
+UNIFYWEAVER_LOG_SOURCES=0 \
+SKIP_CSHARP_EXECUTION=1 \
+swipl -g "use_module('tests/core/test_csharp_query_target'), test_csharp_query_target" -t halt
 ```
 
-Full test with execution:
-
-```bash
-swipl -q -f init.pl \
-  -s tests/core/test_csharp_query_target.pl \
-  -g 'test_csharp_query_target:test_csharp_query_target' \
-  -t halt
-```
+Flags:
+- `UNIFYWEAVER_LOG_SOURCES=0` silences per-source registration noise.
+- `SKIP_CSHARP_EXECUTION=1` skips dotnet execution (codegen only).
+- `CSHARP_QUERY_KEEP_ARTIFACTS=1` keeps generated C# projects under `tmp/` for inspection.
+- `CSHARP_QUERY_OUTPUT_DIR=/path` overrides the temp output directory.
 
 ## Platform-Specific Tests
 
