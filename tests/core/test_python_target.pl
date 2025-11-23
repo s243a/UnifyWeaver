@@ -77,4 +77,36 @@ test(compile_multiple_clauses) :-
     
     retractall(parent(_, _)).
 
+test(recursive_factorial) :-
+    % factorial(0, 1).
+    % factorial(N, F) :- N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1.
+    assertz((factorial(0, 1))),
+    assertz((factorial(N, F) :- N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1)),
+    
+    compile_predicate_to_python(factorial/2, [], Code),
+    
+    % Check for worker function with memoization
+    sub_string(Code, _, _, _, "@functools.cache"),
+    sub_string(Code, _, _, _, "def _factorial_worker"),
+    
+    % Check for base case
+    sub_string(Code, _, _, _, "if "),
+    
+    retractall(factorial(_,_)).
+
+test(tail_recursive_sum) :-
+    % sum(0, Acc, Acc).
+    % sum(N, Acc, S) :- N > 0, N1 is N - 1, Acc1 is Acc + N, sum(N1, Acc1, S).
+    % Note: This is arity 3, which is not yet supported for tail recursion optimization
+    % So it should fall back to ERROR message for now
+    assertz((sum(0, Acc, Acc))),
+    assertz((sum(N, Acc, S) :- N > 0, N1 is N - 1, Acc1 is Acc + N, sum(N1, Acc1, S))),
+    
+    compile_predicate_to_python(sum/3, [], Code),
+    
+    % Should contain ERROR message since arity 3 not supported yet
+    sub_string(Code, _, _, _, "ERROR"),
+    
+    retractall(sum(_,_,_)).
+
 :- end_tests(python_target).
