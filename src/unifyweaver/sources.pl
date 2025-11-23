@@ -76,6 +76,8 @@ augment_source_options(Type, Options, Augmented) :-
     ->  augment_csv_options(Options, Augmented)
     ;   Type = json
     ->  augment_json_options(Options, Augmented)
+    ;   Type = xml
+    ->  augment_xml_options(Options, Augmented)
     ;   Augmented = Options
     ).
 
@@ -130,6 +132,14 @@ augment_json_options(Options0, Options) :-
         )
     ),
     Options = Options9.
+
+augment_xml_options(Options0, Options) :-
+    % XML sources with fields() should have arity 1 (return single list)
+    (   member(fields(_), Options0),
+        \+ member(arity(_), Options0)
+    ->  ensure_option(arity(1), Options0, Options)
+    ;   Options = Options0
+    ).
 
 ensure_option(Term, Options0, Options) :-
     functor(Term, Name, Arity),

@@ -335,6 +335,16 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
                 AllOptions,
                 BashCode
             )
+        ;   Strategy = prolog
+        ->  format('  Using field extraction (pure Prolog/SGML)~n', []),
+            compile_field_extraction_prolog(
+                Pred/Arity,
+                File,
+                SingleTag,
+                FieldSpec,
+                AllOptions,
+                BashCode
+            )
         )
     ;   % No fields() - use standard element extraction
         compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode)
@@ -342,10 +352,13 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
 
 %% field_extraction_strategy(+Options, -Strategy)
 %  Determine which field extraction strategy to use.
-%  Strategies: modular (delegate to xml_field_compiler) or inline (self-contained)
+%  Strategies:
+%    - modular: Delegate to xml_field_compiler (Option B)
+%    - inline: Self-contained AWK in xml_source.pl (Option A)
+%    - prolog: Pure Prolog using library(sgml) (Option C)
 field_extraction_strategy(Options, Strategy) :-
     (   member(field_compiler(StrategySpec), Options)
-    ->  (   memberchk(StrategySpec, [modular, inline])
+    ->  (   memberchk(StrategySpec, [modular, inline, prolog])
         ->  Strategy = StrategySpec
         ;   format('Warning: Invalid field_compiler option ~w, using default (modular)~n', [StrategySpec]),
             Strategy = modular
@@ -483,6 +496,174 @@ tmp_file_inline(Prefix, Path) :-
     ),
     get_time(Time),
     format(atom(Path), '~w/~w_~w.awk', [TmpDir, Prefix, Time]).
+
+%% ============================================
+%% PURE PROLOG FIELD EXTRACTION (Option C)
+%% ============================================
+
+%% compile_field_extraction_prolog(+Pred/Arity, +File, +Tag, +FieldSpec, +Options, -BashCode)
+%  Pure Prolog implementation using library(sgml)
+compile_field_extraction_prolog(Pred/Arity, File, Tag, FieldSpec, Options, BashCode) :-
+    format('  Compiling field extraction (prolog/sgml): ~w/~w~n', [Pred, Arity]),
+
+    % Validate
+    validate_field_spec_prolog(FieldSpec),
+
+    % Extract configuration
+    (   member(output(OutputFormat), Options)
+    ->  true
+    ;   OutputFormat = dict
+    ),
+
+    % Generate Prolog extraction code
+    generate_prolog_field_extractor(File, Tag, FieldSpec, OutputFormat, PrologCode),
+
+    % Create temporary Prolog script
+    tmp_file_prolog(Pred, PrologScriptPath),
+
+    % Write script
+    setup_call_cleanup(
+        open(PrologScriptPath, write, Stream),
+        write(Stream, PrologCode),
+        close(Stream)
+    ),
+
+    % Generate bash wrapper
+    atom_string(Pred, PredStr),
+    atom_string(PrologScriptPath, ScriptPathStr),
+    format(atom(BashCode), '~w() {\n    swipl -q -g main -t halt ~w\n}\n',
+           [PredStr, ScriptPathStr]).
+
+%% validate_field_spec_prolog(+FieldSpec)
+validate_field_spec_prolog(FieldSpec) :-
+    (   FieldSpec = []
+    ->  throw(error(invalid_field_spec, 'Field specification cannot be empty'))
+    ;   validate_field_spec_prolog_items(FieldSpec)
+    ).
+
+validate_field_spec_prolog_items([]).
+validate_field_spec_prolog_items([_:_|Rest]) :-
+    !,
+    validate_field_spec_prolog_items(Rest).
+validate_field_spec_prolog_items([H|_]) :-
+    throw(error(invalid_field_spec,
+                context(_, format('Invalid field spec: ~w (expected FieldName:TagName)', [H])))).
+
+%% generate_prolog_field_extractor(+File, +Tag, +FieldSpec, +OutputFormat, -Code)
+generate_prolog_field_extractor(File, Tag, FieldSpec, OutputFormat, Code) :-
+    % Generate field extraction predicates
+    generate_field_extractors(FieldSpec, ExtractorClauses),
+
+    % Generate output formatter
+    generate_prolog_output_formatter(FieldSpec, OutputFormat, FormatterClause),
+
+    % Generate main predicate
+    findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
+    generate_prolog_main(File, Tag, FieldNames, MainClause),
+
+    % Combine all parts
+    format(atom(Code), ':- encoding(utf8).\n:- use_module(library(sgml)).\n\n~w\n\n~w\n\n~w\n',
+           [ExtractorClauses, FormatterClause, MainClause]).
+
+%% generate_field_extractors(+FieldSpec, -Code)
+generate_field_extractors(FieldSpec, Code) :-
+    findall(Clause,
+        (   member(FieldName:TagName, FieldSpec),
+            format(atom(Clause),
+                'extract_field(Element, ~q, Value) :-\n    member(element(~q, _, Content), Element),\n    extract_text_content(Content, Value).',
+                [FieldName, TagName])
+        ),
+        Clauses),
+    atomic_list_concat(Clauses, '\n\n', ClausesStr),
+    format(atom(Code),
+        '%% Field extractors\n~w\n\nextract_text_content([CDATA], Text) :-\n    atom(CDATA), !, Text = CDATA.\nextract_text_content([element(_, _, Content)], Text) :-\n    !, extract_text_content(Content, Text).\nextract_text_content([H|_], Text) :-\n    atom(H), !, Text = H.\nextract_text_content([], \'\').',
+        [ClausesStr]).
+
+%% generate_prolog_output_formatter(+FieldSpec, +OutputFormat, -Code)
+generate_prolog_output_formatter(FieldSpec, dict, Code) :-
+    !,
+    findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
+    % Generate variable names
+    findall(VarName,
+        (   member(Field, FieldNames),
+            upcase_atom(Field, Upper),
+            atom_concat(Upper, '_val', VarName)
+        ),
+        VarNames),
+    % Generate dict pairs like "id:'~w', title:'~w'"
+    findall(Pair,
+        (   member(Field, FieldNames),
+            format(atom(Pair), '~w:\'~~w\'', [Field])
+        ),
+        Pairs),
+    atomic_list_concat(Pairs, ', ', PairsStr),
+    atomic_list_concat(VarNames, ', ', VarsStr),
+    format(string(Code),
+        'format_output([~w], Output) :-~n    format(atom(Output), \'_{~w}\', [~w]).',
+        [VarsStr, PairsStr, VarsStr]).
+generate_prolog_output_formatter(FieldSpec, list, Code) :-
+    !,
+    findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
+    % Generate variable names
+    findall(VarName,
+        (   member(Field, FieldNames),
+            upcase_atom(Field, Upper),
+            atom_concat(Upper, '_val', VarName)
+        ),
+        VarNames),
+    length(FieldNames, N),
+    length(Formats, N),
+    maplist(=('\'~w\''), Formats),
+    atomic_list_concat(Formats, ', ', FormatStr),
+    atomic_list_concat(VarNames, ', ', VarsStr),
+    format(string(Code),
+        'format_output([~w], Output) :-~n    format(atom(Output), \'[~w]\', [~w]).',
+        [VarsStr, FormatStr, VarsStr]).
+generate_prolog_output_formatter(FieldSpec, compound(Functor), Code) :-
+    !,
+    findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
+    % Generate variable names
+    findall(VarName,
+        (   member(Field, FieldNames),
+            upcase_atom(Field, Upper),
+            atom_concat(Upper, '_val', VarName)
+        ),
+        VarNames),
+    length(FieldNames, N),
+    length(Formats, N),
+    maplist(=('\'~w\''), Formats),
+    atomic_list_concat(Formats, ', ', FormatStr),
+    atomic_list_concat(VarNames, ', ', VarsStr),
+    format(string(Code),
+        'format_output([~w], Output) :-~n    format(atom(Output), \'~w(~w)\', [~w]).',
+        [VarsStr, Functor, FormatStr, VarsStr]).
+
+%% generate_prolog_main(+File, +Tag, +FieldNames, -Code)
+generate_prolog_main(File, Tag, FieldNames, Code) :-
+    % Generate extraction calls with proper variable names (capitalize first letter)
+    findall(Call-VarName,
+        (   member(Field, FieldNames),
+            upcase_atom(Field, Upper),
+            atom_concat(Upper, '_val', VarName),
+            format(atom(Call), '        extract_field(Children, ~q, ~w)', [Field, VarName])
+        ),
+        CallsWithVars),
+    pairs_keys_values(CallsWithVars, Calls, VarNames),
+    atomic_list_concat(Calls, ',\n', CallsStr),
+    atomic_list_concat(VarNames, ', ', VarsStr),
+
+    format(atom(Code),
+'main :-\n    load_xml(\'~w\', DOM),\n    process_elements(DOM).\n\nload_xml(File, DOM) :-\n    load_structure(File, DOM, [dialect(xmlns)]).\n\nprocess_elements(DOM) :-\n    find_elements(DOM, \'~w\', Elements),\n    maplist(process_element, Elements).\n\nfind_elements([], _, []).\nfind_elements([element(Tag, Attrs, Children)|Rest], TargetTag, [element(Tag, Attrs, Children)|Found]) :-\n    Tag = TargetTag,\n    !,\n    find_elements(Rest, TargetTag, Found).\nfind_elements([element(_, _, Children)|Rest], TargetTag, Found) :-\n    !,\n    find_elements(Children, TargetTag, ChildFound),\n    find_elements(Rest, TargetTag, RestFound),\n    append(ChildFound, RestFound, Found).\nfind_elements([_|Rest], TargetTag, Found) :-\n    find_elements(Rest, TargetTag, Found).\n\nprocess_element(element(_, _, Children)) :-\n~w,\n        format_output([~w], Output),\n        writeln(Output).',
+        [File, Tag, CallsStr, VarsStr]).
+
+%% tmp_file_prolog(+Prefix, -Path)
+tmp_file_prolog(Prefix, Path) :-
+    (   getenv('TMPDIR', TmpDir)
+    ->  true
+    ;   TmpDir = '/tmp'
+    ),
+    get_time(Time),
+    format(atom(Path), '~w/~w_~w.pl', [TmpDir, Prefix, Time]).
 
 %% ============================================
 %% STANDARD ELEMENT EXTRACTION
