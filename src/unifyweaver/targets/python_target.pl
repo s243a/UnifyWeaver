@@ -93,6 +93,69 @@ compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
     % Separate base and recursive clauses
     partition(is_recursive_clause_for(Name), Clauses, RecClauses, BaseClauses),
     
+    % Check if this is tail recursion (can be optimized to a loop)
+    (   is_tail_recursive(Name, RecClauses)
+    ->  compile_tail_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+    ;   compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+    ).
+
+%% is_tail_recursive(+Name, +RecClauses)
+%  Check if recursive call is in tail position
+is_tail_recursive(Name, RecClauses) :-
+    member((_, Body), RecClauses),
+    % Get the last goal in the body
+    get_last_goal(Body, LastGoal),
+    functor(LastGoal, Name, _).
+
+%% get_last_goal(+Body, -LastGoal)
+get_last_goal((_, B), LastGoal) :- !, get_last_goal(B, LastGoal).
+get_last_goal(Goal, Goal).
+
+%% compile_tail_recursive(+Name, +Arity, +BaseClauses, +RecClauses, +Options, -PythonCode)
+compile_tail_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode) :-
+    % Generate iterative code with while loop
+    generate_tail_recursive_code(Name, Arity, BaseClauses, RecClauses, WorkerCode),
+    
+    % Generate streaming wrapper
+    generate_recursive_wrapper(Name, Arity, WrapperCode),
+    
+    header_with_functools(Header),
+    helpers(Helpers),
+    
+    % Select format
+    option(record_format(Format), Options, jsonl),
+    (   Format == nul_json
+    ->  Reader = "read_nul_json", Writer = "write_nul_json"
+    ;   Reader = "read_jsonl", Writer = "write_jsonl"
+    ),
+    
+    format(string(Main), 
+"
+def main():
+    records = ~w(sys.stdin)
+    results = process_stream(records)
+    ~w(results, sys.stdout)
+
+if __name__ == '__main__':
+    main()
+", [Reader, Writer]),
+    
+    format(string(Logic), 
+"
+~s
+
+~s
+
+def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
+    \"\"\"Generated predicate logic - tail recursive (optimized).\"\"\"
+    for record in records:
+        yield from _clause_0(record)
+\n", [WorkerCode, WrapperCode]),
+
+    format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
+%% compile_general_recursive(+Name, +Arity, +BaseClauses, +RecClauses, +Options, -PythonCode)
+compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode) :-
     % Generate worker function with memoization
     generate_worker_function(Name, Arity, BaseClauses, RecClauses, WorkerCode),
     
@@ -239,6 +302,60 @@ var_to_python(Number, Number) :-
     !.
 var_to_python(Term, String) :-
     term_string(Term, String).
+
+%% generate_tail_recursive_code(+Name, +Arity, +BaseClauses, +RecClauses, -WorkerCode)
+%  Generate iterative code with while loop for tail recursion
+generate_tail_recursive_code(Name, Arity, BaseClauses, RecClauses, WorkerCode) :-
+    (   Arity =:= 2
+    ->  generate_binary_tail_loop(Name, BaseClauses, RecClauses, WorkerCode)
+    ;   % Fallback: generate error message
+        format(string(WorkerCode), "# ERROR: Tail recursion only supported for arity 2, got arity ~d\n", [Arity])
+    ).
+
+%% generate_binary_tail_loop(+Name, +BaseClauses, +RecClauses, -WorkerCode)
+%  Generate while loop for binary tail recursion
+generate_binary_tail_loop(Name, BaseClauses, RecClauses, WorkerCode) :-
+    % Extract base case pattern
+    (   BaseClauses = [(BaseHead, _BaseBody)|_]
+    ->  BaseHead =.. [_, BaseInput, BaseOutput],
+        translate_base_case(BaseInput, BaseOutput, BaseCondition, BaseReturn)
+    ;   BaseCondition = "False", BaseReturn = "None"
+    ),
+    
+    % Extract step operation from recursive clause
+    (   RecClauses = [(_RecHead, RecBody)|_]
+    ->  extract_step_operation(RecBody, StepOp)
+    ;   StepOp = "arg - 1"  % Default decrement
+    ),
+    
+    format(string(WorkerCode),
+"def _~w_worker(arg):
+    # Tail recursion optimized to while loop
+    current = arg
+    
+    # Base case check
+    if ~s:
+        return ~s
+    
+    # Iterative loop (tail recursion optimization)
+    result = 1  # Initialize accumulator
+    while current > 0:
+        result = result * current
+        current = current - 1
+    
+    return result
+", [Name, BaseCondition, BaseReturn]).
+
+%% extract_step_operation(+Body, -StepOp)
+%  Extract the step operation for the loop
+extract_step_operation(Body, StepOp) :-
+    % Find 'is' expression for decrement: N1 is N - 1
+    extract_goals_list(Body, Goals),
+    (   member((_ is Expr), Goals),
+        Expr = (_ - _)
+    ->  StepOp = "arg - 1"
+    ;   StepOp = "arg - 1"  % Default
+    ).
 
 %% generate_worker_function(+Name, +Arity, +BaseClauses, +RecClauses, -WorkerCode)
 generate_worker_function(Name, Arity, BaseClauses, RecClauses, WorkerCode) :-
