@@ -29,6 +29,7 @@
 | `engine(Engine)` | `awk_pipeline`, `iterparse`, `xmllint`, `xmlstarlet` | `awk_pipeline` | Extraction engine |
 | `output(Format)` | `dict`, `list`, `compound(F)` | `dict` | Output format |
 | `field_compiler(Strategy)` | `modular`, `inline` | `modular` | Implementation strategy |
+| `case_insensitive(Bool)` | `true`, `false` | `false` | Case-insensitive tag match (awk_pipeline) |
 
 ---
 
@@ -72,6 +73,17 @@ output(compound(item))
 
 ?- products(Items).
 Items = [_{id: '123', name: 'Laptop'}, ...].
+```
+
+### Case-insensitive Tag Match (awk)
+```prolog
+:- source(xml, products_ci, [
+    file('products.xml'),
+    tag('product'),
+    fields([id: 'productId', name: 'productName']),
+    engine(awk_pipeline),
+    case_insensitive(true)
+]).
 ```
 
 ### With Custom Output

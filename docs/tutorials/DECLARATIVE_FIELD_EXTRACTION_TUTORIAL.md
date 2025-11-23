@@ -23,6 +23,7 @@ UnifyWeaver now supports **declarative field extraction** - you specify WHAT fie
 ```prolog
 % Extract whole elements
 extract_elements('data.xml', 'product', awk_pipeline, Products),
+extract_elements('data.xml', 'product', awk_pipeline, [case_insensitive(true)], Products),
 
 % Manually parse each one (imperative!)
 maplist(parse_product_xml, Products, ParsedProducts).
