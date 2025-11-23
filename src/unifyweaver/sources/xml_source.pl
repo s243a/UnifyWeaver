@@ -298,24 +298,186 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
 
     % Check for field extraction
     (   member(fields(FieldSpec), AllOptions)
-    ->  % Delegate to field compiler
+    ->  % Field extraction requested
         (   Tags = [SingleTag]
         ->  true
         ;   format('Error: Field extraction requires exactly one tag, got: ~w~n', [Tags]),
             fail
         ),
-        format('  Using field extraction compiler~n', []),
-        xml_field_compiler:compile_field_extraction(
-            Pred/Arity,
-            File,
-            SingleTag,
-            FieldSpec,
-            AllOptions,
-            BashCode
+        % Choose implementation based on configuration
+        field_extraction_strategy(AllOptions, Strategy),
+        (   Strategy = modular
+        ->  format('  Using field extraction compiler (modular)~n', []),
+            xml_field_compiler:compile_field_extraction(
+                Pred/Arity,
+                File,
+                SingleTag,
+                FieldSpec,
+                AllOptions,
+                BashCode
+            )
+        ;   Strategy = inline
+        ->  format('  Using field extraction (inline)~n', []),
+            compile_field_extraction_inline(
+                Pred/Arity,
+                File,
+                SingleTag,
+                FieldSpec,
+                AllOptions,
+                BashCode
+            )
         )
     ;   % No fields() - use standard element extraction
         compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode)
     ).
+
+%% field_extraction_strategy(+Options, -Strategy)
+%  Determine which field extraction strategy to use.
+%  Strategies: modular (delegate to xml_field_compiler) or inline (self-contained)
+field_extraction_strategy(Options, Strategy) :-
+    (   member(field_compiler(StrategySpec), Options)
+    ->  (   memberchk(StrategySpec, [modular, inline])
+        ->  Strategy = StrategySpec
+        ;   format('Warning: Invalid field_compiler option ~w, using default (modular)~n', [StrategySpec]),
+            Strategy = modular
+        )
+    ;   % Default: use modular approach (Option B)
+        Strategy = modular
+    ).
+
+%% ============================================
+%% INLINE FIELD EXTRACTION (Option A)
+%% ============================================
+
+%% compile_field_extraction_inline(+Pred/Arity, +File, +Tag, +FieldSpec, +Options, -BashCode)
+%  Inline implementation of field extraction (self-contained in xml_source.pl)
+compile_field_extraction_inline(Pred/Arity, File, Tag, FieldSpec, Options, BashCode) :-
+    format('  Compiling field extraction (inline): ~w/~w~n', [Pred, Arity]),
+
+    % Validate field specification
+    validate_field_spec_inline(FieldSpec),
+
+    % Select output format
+    (   member(output(OutputFormat), Options)
+    ->  true
+    ;   OutputFormat = dict
+    ),
+
+    % Generate AWK field extraction script
+    generate_awk_field_script_inline(Tag, FieldSpec, OutputFormat, AwkScript),
+
+    % Save AWK script to temp file
+    tmp_file_inline('xml_field', TmpAwkFile),
+    setup_call_cleanup(
+        open(TmpAwkFile, write, AwkStream),
+        format(AwkStream, '~w', [AwkScript]),
+        close(AwkStream)
+    ),
+
+    % Generate bash wrapper using template
+    atom_string(Pred, PredStr),
+    atom_string(Tag, TagStr),
+    render_named_template(xml_awk_field_extraction,
+        [
+            pred=PredStr,
+            file=File,
+            tag=TagStr,
+            awk_script=TmpAwkFile
+        ],
+        [source_order([file, generated])],
+        BashCode).
+
+%% validate_field_spec_inline(+FieldSpec)
+validate_field_spec_inline(FieldSpec) :-
+    is_list(FieldSpec),
+    !,
+    maplist(validate_field_entry_inline, FieldSpec).
+validate_field_spec_inline(Other) :-
+    format('Error: fields() must be a list, got: ~w~n', [Other]),
+    fail.
+
+validate_field_entry_inline(FieldName:Selector) :-
+    !,
+    atom(FieldName),
+    atom(Selector).
+validate_field_entry_inline(Other) :-
+    format('Error: field entry must be FieldName:Selector, got: ~w~n', [Other]),
+    fail.
+
+%% generate_awk_field_script_inline(+Tag, +FieldSpec, +OutputFormat, -AwkScript)
+generate_awk_field_script_inline(Tag, FieldSpec, OutputFormat, AwkScript) :-
+    % Extract field names and selectors
+    findall(Name-Selector, member(Name:Selector, FieldSpec), Pairs),
+    findall(Name, member(Name:_, FieldSpec), FieldNames),
+
+    % Generate AWK extraction code for each field
+    maplist(generate_awk_extractor_inline, Pairs, Extractors),
+    atomic_list_concat(Extractors, '\n', ExtractorCode),
+
+    % Generate output formatting code
+    generate_awk_output_inline(FieldNames, OutputFormat, OutputCode),
+
+    % Combine into complete AWK script
+    format(atom(AwkScript),
+'BEGIN {
+    RS = "\\0"  # Null-delimited input
+    ORS = "\\0" # Null-delimited output
+}
+
+/<~w[> ]/ {
+    # Extract fields
+~w
+
+    # Output formatted result
+~w
+}
+', [Tag, ExtractorCode, OutputCode]).
+
+%% generate_awk_extractor_inline(+FieldName-TagName, -ExtractorCode)
+generate_awk_extractor_inline(FieldName-TagName, Code) :-
+    % Handles both CDATA and regular content
+    format(atom(Code), '    if (match($0, /<~w><!\\[CDATA\\[([^\\]]+)\\]\\]><\\/~w>/, arr)) { ~w = arr[1] } else { match($0, /<~w>([^<]+)<\\/~w>/, arr); ~w = arr[1] }',
+           [TagName, TagName, FieldName, TagName, TagName, FieldName]).
+
+%% generate_awk_output_inline(+FieldNames, +OutputFormat, -OutputCode)
+generate_awk_output_inline(FieldNames, dict, Code) :-
+    !,
+    maplist(dict_field_format_inline, FieldNames, FieldFormats),
+    atomic_list_concat(FieldFormats, ', ', FormatStr),
+    atomic_list_concat(FieldNames, ', ', VarsStr),
+    format(atom(Code), '    printf "_{~w}\\n", ~w', [FormatStr, VarsStr]).
+generate_awk_output_inline(FieldNames, list, Code) :-
+    !,
+    length(FieldNames, N),
+    length(Formats, N),
+    maplist(=('%s'), Formats),
+    atomic_list_concat(Formats, ', ', FormatStr),
+    atomic_list_concat(FieldNames, ', ', VarsStr),
+    format(atom(Code), '    printf "[~w]\\n", ~w', [FormatStr, VarsStr]).
+generate_awk_output_inline(FieldNames, compound(Functor), Code) :-
+    !,
+    length(FieldNames, N),
+    length(Formats, N),
+    maplist(=('%s'), Formats),
+    atomic_list_concat(Formats, ', ', FormatStr),
+    atomic_list_concat(FieldNames, ', ', VarsStr),
+    format(atom(Code), '    printf "~w(~w)\\n", ~w', [Functor, FormatStr, VarsStr]).
+
+dict_field_format_inline(FieldName, Format) :-
+    format(atom(Format), '~w:%s', [FieldName]).
+
+%% tmp_file_inline(+Prefix, -Path)
+tmp_file_inline(Prefix, Path) :-
+    (   getenv('TMPDIR', TmpDir)
+    ->  true
+    ;   TmpDir = '.'
+    ),
+    get_time(Time),
+    format(atom(Path), '~w/~w_~w.awk', [TmpDir, Prefix, Time]).
+
+%% ============================================
+%% STANDARD ELEMENT EXTRACTION
+%% ============================================
 
 %% compile_element_extraction(+Pred/Arity, +File, +Tags, +Options, -BashCode)
 %  Compile standard element extraction (without field extraction)
