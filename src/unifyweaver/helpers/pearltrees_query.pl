@@ -5,7 +5,13 @@
     get_tree_by_id/3,
     count_trees/1,
     count_trees/2,
-    extract_tree_info/2
+    extract_tree_info/2,
+    get_child_pearls/2,
+    get_child_pearls/3,
+    get_child_trees/2,
+    get_child_trees/3,
+    get_tree_hierarchy/3,
+    get_tree_hierarchy/4
 ]).
 
 :- use_module('xml_query').
@@ -54,6 +60,70 @@ count_trees(Count) :-
 %  Count total trees in File.
 count_trees(File, Count) :-
     xml_query:count_elements(File, 'pt:Tree', awk_pipeline, Count).
+
+%% get_child_pearls(+TreeId, -Pearls)
+%  Get all pearls (AliasPearl elements) that belong to a tree.
+%  Uses default file: context/PT/pearltrees_export.rdf
+%
+%  Example:
+%    get_child_pearls(10647426, Pearls).
+get_child_pearls(TreeId, Pearls) :-
+    get_child_pearls('context/PT/pearltrees_export.rdf', TreeId, Pearls).
+
+%% get_child_pearls(+File, +TreeId, -Pearls)
+%  Get all pearls that belong to tree TreeId in File.
+get_child_pearls(File, TreeId, Pearls) :-
+    format(atom(TreePattern), 'id~w', [TreeId]),
+    xml_query:extract_elements(File, 'pt:AliasPearl', awk_pipeline, AllPearls),
+    include(belongs_to_tree(TreePattern), AllPearls, Pearls).
+
+%% get_child_trees(+TreeId, -ChildTrees)
+%  Get all child trees of a given tree (trees referenced by its pearls).
+%  Returns list of child_tree(ChildId, Title, URL) dicts.
+%  Uses default file: context/PT/pearltrees_export.rdf
+%
+%  Example:
+%    get_child_trees(10647426, Children).
+%    % Children = [child_tree{id:14682380, title:'Physics Education', ...}, ...]
+get_child_trees(TreeId, ChildTrees) :-
+    get_child_trees('context/PT/pearltrees_export.rdf', TreeId, ChildTrees).
+
+%% get_child_trees(+File, +TreeId, -ChildTrees)
+%  Get all child trees of TreeId from File.
+get_child_trees(File, TreeId, ChildTrees) :-
+    get_child_pearls(File, TreeId, Pearls),
+    maplist(extract_child_tree_info, Pearls, ChildInfos),
+    include(is_tree_reference, ChildInfos, ChildTrees).
+
+%% get_tree_hierarchy(+TreeId, +MaxDepth, -Hierarchy)
+%  Recursively build tree hierarchy up to MaxDepth levels.
+%  Uses default file: context/PT/pearltrees_export.rdf
+%
+%  Hierarchy is: tree(Id, Title, Children) where Children is a list
+%  of tree(...) structures.
+%
+%  Example:
+%    get_tree_hierarchy(10647426, 2, Hierarchy).
+%    % Hierarchy = tree(10647426, 'Physics', [
+%    %   tree(14682380, 'Physics Education', [...]),
+%    %   tree(14682381, 'Quantum Physics', [...]),
+%    %   ...
+%    % ])
+get_tree_hierarchy(TreeId, MaxDepth, Hierarchy) :-
+    get_tree_hierarchy('context/PT/pearltrees_export.rdf', TreeId, MaxDepth, Hierarchy).
+
+%% get_tree_hierarchy(+File, +TreeId, +MaxDepth, -Hierarchy)
+%  Recursively build tree hierarchy from File.
+get_tree_hierarchy(File, TreeId, MaxDepth, tree(TreeId, Title, Children)) :-
+    get_tree_by_id(File, TreeId, TreeXML),
+    extract_tree_info(TreeXML, Info),
+    Title = Info.title,
+    (   MaxDepth > 0
+    ->  get_child_trees(File, TreeId, ChildInfos),
+        NextDepth is MaxDepth - 1,
+        maplist(build_child_hierarchy(File, NextDepth), ChildInfos, Children)
+    ;   Children = []
+    ).
 
 %% extract_tree_info(+TreeXML, -Info)
 %  Extract structured information from a tree XML element.
@@ -108,6 +178,104 @@ extract_tree_info(TreeXML, info{
 %% ============================================
 %% HELPER PREDICATES
 %% ============================================
+
+belongs_to_tree(TreePattern, Pearl) :-
+    % Find <pt:parentTree, then extract everything until its closing />
+    sub_atom(Pearl, ParentStart, _, _, '<pt:parentTree'),
+    sub_atom(Pearl, ParentStart, _, 0, ParentSection),
+    sub_atom(ParentSection, CloseStart, 2, _, '/>'),
+    !,  % Take first match
+    sub_atom(ParentSection, 0, CloseStart, _, ParentTag),
+    % Now extract rdf:resource from this tag only
+    sub_atom(ParentTag, ResStart, _, _, 'rdf:resource="'),
+    AfterRes is ResStart + 14,
+    sub_atom(ParentTag, AfterRes, _, 0, ResRest),
+    sub_atom(ResRest, URLEnd, 1, _, '"'),
+    sub_atom(ResRest, 0, URLEnd, _, ParentURL),
+    sub_atom(ParentURL, _, _, _, TreePattern).
+
+extract_child_tree_info(PearlXML, child_tree{id: ChildId, title: Title, url: URL}) :-
+    % Extract title using sub_atom
+    (   sub_atom(PearlXML, _, _, _, '<dcterms:title>'),
+        sub_atom(PearlXML, TitleStart, _, _, '<dcterms:title>'),
+        TAfter is TitleStart + 15,
+        sub_atom(PearlXML, TAfter, _, 0, TRest),
+        sub_atom(TRest, 0, TEnd, _, '</dcterms:title>'),
+        sub_atom(TRest, 0, TEnd, _, RawTitle),
+        strip_cdata_atom(RawTitle, Title)
+    ->  true
+    ;   Title = unknown
+    ),
+
+    % Extract rdfs:seeAlso URL (look for <rdfs:seeAlso rdf:resource="...")
+    (   sub_atom(PearlXML, _, _, _, '<rdfs:seeAlso'),
+        sub_atom(PearlXML, SeeAlsoStart, _, _, '<rdfs:seeAlso'),
+        sub_atom(PearlXML, SeeAlsoStart, _, 0, SeeSection),
+        sub_atom(SeeSection, 0, SeeClose, _, '/>'),
+        sub_atom(SeeSection, 0, SeeClose, _, SeeTag),
+        sub_atom(SeeTag, ResStart, _, _, 'rdf:resource="'),
+        AfterRes is ResStart + 14,
+        sub_atom(SeeTag, AfterRes, _, 0, ResRest),
+        sub_atom(ResRest, URLEnd, 1, _, '"'),
+        sub_atom(ResRest, 0, URLEnd, _, URL)
+    ->  true
+    ;   URL = unknown
+    ),
+
+    % Extract tree ID from URL (pattern: .../id[0-9]+)
+    (   URL \= unknown,
+        sub_atom(URL, IDPos, _, _, '/id'),
+        AfterID is IDPos + 3,
+        sub_atom(URL, AfterID, _, _, IDRest),
+        extract_number_atom(IDRest, IDAtom),
+        IDAtom \= '',
+        atom_number(IDAtom, ChildId)
+    ->  true
+    ;   ChildId = unknown
+    ).
+
+is_tree_reference(child_tree{id: Id}) :-
+    Id \= unknown.
+
+build_child_hierarchy(File, MaxDepth, child_tree{id: ChildId}, Hierarchy) :-
+    get_tree_hierarchy(File, ChildId, MaxDepth, Hierarchy).
+
+extract_number_codes([], []).
+extract_number_codes([C|Rest], [C|NumRest]) :-
+    C >= 48, C =< 57,  % 0-9
+    !,
+    extract_number_codes(Rest, NumRest).
+extract_number_codes(_, []).
+
+strip_cdata_atom(Text, Stripped) :-
+    (   sub_atom(Text, 0, 9, _, '<![CDATA['),
+        sub_atom(Text, 9, _, 3, Content),
+        Stripped = Content
+    ->  true
+    ;   Stripped = Text
+    ).
+
+extract_number_atom(Atom, NumberAtom) :-
+    atom_chars(Atom, Chars),
+    extract_number_chars(Chars, NumChars),
+    atom_chars(NumberAtom, NumChars).
+
+extract_number_chars([], []).
+extract_number_chars([C|Rest], [C|NumRest]) :-
+    char_type(C, digit),
+    !,
+    extract_number_chars(Rest, NumRest).
+extract_number_chars(_, []).
+
+extract_resource_url(Codes, _TagName, URL) :-
+    % Find rdf:resource="URL" and extract URL
+    atom_codes(Atom, Codes),
+    sub_atom(Atom, Before, 14, _, 'rdf:resource="'),
+    AfterPrefix is Before + 14,
+    sub_atom(Atom, AfterPrefix, _, _, Rest),
+    sub_atom(Rest, 0, End, _, '"'),
+    !,
+    sub_atom(Rest, 0, End, _, URL).
 
 extract_attribute(Codes, AttrName, Value) :-
     atom_codes(AttrName, AttrCodes),
