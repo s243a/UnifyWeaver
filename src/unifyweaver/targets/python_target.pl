@@ -93,11 +93,36 @@ compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
     % Separate base and recursive clauses
     partition(is_recursive_clause_for(Name), Clauses, RecClauses, BaseClauses),
     
-    % Check if this is tail recursion (can be optimized to a loop)
-    (   is_tail_recursive(Name, RecClauses)
-    ->  compile_tail_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
-    ;   compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+    % Check if part of mutual recursion group
+    (   is_mutually_recursive(Name/Arity, MutualGroup),
+        length(MutualGroup, GroupSize),
+        GroupSize > 1
+    ->  % Mutual recursion - compile entire group together
+        compile_mutual_recursive_group(MutualGroup, Options, PythonCode)
+    ;   % Single predicate recursion
+        % Check if this is tail recursion (can be optimized to a loop)
+        (   is_tail_recursive(Name, RecClauses)
+        ->  compile_tail_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+        ;   compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode)
+        )
     ).
+
+%% is_mutually_recursive(+Pred, -MutualGroup)
+%  Check if predicate is part of a mutual recursion group
+%  Uses call graph analysis from advanced recursion modules
+is_mutually_recursive(Pred, MutualGroup) :-
+    % Check if the call_graph module is available
+    catch(
+        use_module(library('../core/advanced/call_graph')),
+        _,
+        fail
+    ),
+    % Find predicates in the same strongly connected component
+    call_graph:predicates_in_group(Pred, Group),
+    % Must be mutually recursive (more than just self)
+    length(Group, Len),
+    Len > 1,
+    MutualGroup = Group.
 
 %% is_tail_recursive(+Name, +RecClauses)
 %  Check if recursive call is in tail position
@@ -110,6 +135,170 @@ is_tail_recursive(Name, RecClauses) :-
 %% get_last_goal(+Body, -LastGoal)
 get_last_goal((_, B), LastGoal) :- !, get_last_goal(B, LastGoal).
 get_last_goal(Goal, Goal).
+
+%% get_last_goal(+Body, -LastGoal)
+get_last_goal((_, B), LastGoal) :- !, get_last_goal(B, LastGoal).
+get_last_goal(Goal, Goal).
+
+%% compile_mutual_recursive_group(+Predicates, +Options, -PythonCode)
+%  Compile a group of mutually recursive predicates together
+%  Example: [is_even/1, is_odd/1]
+compile_mutual_recursive_group(Predicates, Options, PythonCode) :-
+    % Generate worker functions for each predicate in the group
+    findall(WorkerCode,
+        (   member(Pred/Arity, Predicates),
+            atom_string(Pred, PredStr),
+            functor(Head, Pred, Arity),
+            findall((Head, Body), clause(Head, Body), Clauses),
+            partition(is_recursive_clause_for(Pred), Clauses, RecClauses, BaseClauses),
+            generate_mutual_worker(PredStr, Arity, BaseClauses, RecClauses, Predicates, WorkerCode)
+        ),
+        WorkerCodes
+    ),
+    atomic_list_concat(WorkerCodes, "\n\n", AllWorkersCode),
+    
+    % Generate wrappers for each predicate
+    findall(WrapperCode,
+        (   member(Pred/Arity, Predicates),
+            atom_string(Pred, PredStr),
+            generate_mutual_wrapper(PredStr, Arity, WrapperCode)
+        ),
+        WrapperCodes
+    ),
+    atomic_list_concat(WrapperCodes, "\n\n", AllWrappersCode),
+    
+    header_with_functools(Header),
+    helpers(Helpers),
+    
+    % Select format
+    option(record_format(Format), Options, jsonl),
+    (   Format == nul_json
+    ->  Reader = "read_nul_json", Writer = "write_nul_json"
+    ;   Reader = "read_jsonl", Writer = "write_jsonl"
+    ),
+    
+    % For mutual recursion, generate a dispatcher that handles all predicates
+    findall(Pred/Arity, member(Pred/Arity, Predicates), PredList),
+    generate_mutual_dispatcher(PredList, DispatcherCode),
+    
+    format(string(Main), 
+"
+def main():
+    records = ~w(sys.stdin)
+    results = process_stream(records)
+    ~w(results, sys.stdout)
+
+if __name__ == '__main__':
+    main()
+", [Reader, Writer]),
+    
+    format(string(Logic), 
+"
+~s
+
+~s
+
+~s
+", [AllWorkersCode, AllWrappersCode, DispatcherCode]),
+
+    format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
+%% generate_mutual_worker(+PredStr, +Arity, +BaseClauses, +RecClauses, +AllPredicates, -WorkerCode)
+%  Generate worker function for one predicate in mutual group
+generate_mutual_worker(PredStr, Arity, BaseClauses, RecClauses, _AllPredicates, WorkerCode) :-
+    (   Arity =:= 1
+    ->  % Binary predicate with single argument
+        (   BaseClauses = [(BaseHead, _BaseBody)|_]
+        ->  BaseHead =.. [_, BaseValue],
+            (   number(BaseValue)
+            ->  format(string(BaseCondition), "arg == ~w", [BaseValue])
+            ;   BaseCondition = "False"
+            ),
+            BaseReturn = "True"
+        ;   BaseCondition = "False", BaseReturn = "False"
+        ),
+        
+        % Extract recursive case - find which function it calls
+        (   RecClauses = [(_RecHead, RecBody)|_]
+        ->  extract_mutual_call(RecBody, CalledPred, CalledArg),
+            atom_string(CalledPred, CalledPredStr),
+            translate_call_arg_simple(CalledArg, PyArg)
+        ;   CalledPredStr = "unknown", PyArg = "arg"
+        ),
+        
+        format(string(WorkerCode),
+"@functools.cache
+def _~w_worker(arg):
+    # Base case
+    if ~s:
+        return ~s
+    
+    # Mutual recursive case
+    return _~w_worker(~s)
+", [PredStr, BaseCondition, BaseReturn, CalledPredStr, PyArg])
+    ;   % Unsupported arity
+        format(string(WorkerCode), "# ERROR: Mutual recursion only supports arity 1, got arity ~d\n", [Arity])
+    ).
+
+%% extract_mutual_call(+Body, -CalledPred, -CalledArg)
+%  Extract the predicate call and its argument from recursive clause
+extract_mutual_call(Body, CalledPred, CalledArg) :-
+    extract_goals_list(Body, Goals),
+    member(Call, Goals),
+    compound(Call),
+    Call =.. [CalledPred, CalledArg],
+    \+ member(CalledPred, [is, '>', '<', '>=', '=<', '=:=', '==']).
+
+%% translate_call_arg_simple(+Arg, -PyArg)
+translate_call_arg_simple(Expr, PyArg) :-
+    (   Expr = (_ - Const),
+        number(Const)
+    ->  format(string(PyArg), "arg - ~w", [Const])
+    ;   Expr = (_ + Const),
+        number(Const)
+    ->  format(string(PyArg), "arg + ~w", [Const])
+    ;   PyArg = "arg"
+    ).
+
+%% generate_mutual_wrapper(+PredStr, +Arity, -WrapperCode)
+generate_mutual_wrapper(PredStr, Arity, WrapperCode) :-
+    (   Arity =:= 1
+    ->  format(string(WrapperCode),
+"def _~w_clause(v_0: Dict) -> Iterator[Dict]:
+    # Extract input
+    keys = list(v_0.keys())
+    if not keys:
+        return
+    input_key = keys[0]
+    input_val = v_0[input_key]
+    
+    # Call worker
+    result = _~w_worker(input_val)
+    
+    # Yield result dict
+    output_key = 'result'
+    yield {input_key: input_val, output_key: result}
+", [PredStr, PredStr])
+    ;   WrapperCode = "# ERROR: Unsupported arity for mutual recursion wrapper"
+    ).
+
+%% generate_mutual_dispatcher(+Predicates, -DispatcherCode)
+%  Generate process_stream that dispatches to appropriate predicate
+generate_mutual_dispatcher(Predicates, DispatcherCode) :-
+    findall(Case,
+        (   member(Pred/_Arity, Predicates),
+            atom_string(Pred, PredStr),
+            format(string(Case), "    if 'predicate' in record and record['predicate'] == '~w':\n        yield from _~w_clause(record)", [PredStr, PredStr])
+        ),
+        Cases
+    ),
+    atomic_list_concat(Cases, "\n", CasesCode),
+    format(string(DispatcherCode),
+"def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
+    \"\"\"Generated mutual recursion dispatcher.\"\"\"
+    for record in records:
+~s
+", [CasesCode]).
 
 %% compile_tail_recursive(+Name, +Arity, +BaseClauses, +RecClauses, +Options, -PythonCode)
 compile_tail_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode) :-

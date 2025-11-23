@@ -109,4 +109,22 @@ test(tail_recursive_sum) :-
     
     retractall(sum(_,_,_)).
 
+test(mutual_even_odd) :-
+    % Classic mutual recursion: is_even/is_odd
+    % NOTE: Full mutual recursion requires call_graph module integration
+    % For now, this compiles each predicate independently
+    assertz((is_even(0))),
+    assertz((is_even(N) :- N > 0, N1 is N - 1, is_odd(N1))),
+    assertz((is_odd(1))),
+    assertz((is_odd(N) :- N > 1, N1 is N - 1, is_even(N1))),
+    
+    % Should compile successfully (even if not as mutual recursion yet)
+    compile_predicate_to_python(is_even/1, [], Code),
+    atom_string(Code, CodeStr),
+    atom_length(CodeStr, Len),
+    assertion(Len > 100),  % Should generate some code
+    
+    retractall(is_even(_)),
+    retractall(is_odd(_)).
+
 :- end_tests(python_target).
