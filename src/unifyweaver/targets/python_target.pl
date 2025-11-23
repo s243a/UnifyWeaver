@@ -308,8 +308,10 @@ var_to_python(Term, String) :-
 generate_tail_recursive_code(Name, Arity, BaseClauses, RecClauses, WorkerCode) :-
     (   Arity =:= 2
     ->  generate_binary_tail_loop(Name, BaseClauses, RecClauses, WorkerCode)
+    ;   Arity =:= 3
+    ->  generate_ternary_tail_loop(Name, BaseClauses, RecClauses, WorkerCode)
     ;   % Fallback: generate error message
-        format(string(WorkerCode), "# ERROR: Tail recursion only supported for arity 2, got arity ~d\n", [Arity])
+        format(string(WorkerCode), "# ERROR: Tail recursion only supported for arity 2-3, got arity ~d\n", [Arity])
     ).
 
 %% generate_binary_tail_loop(+Name, +BaseClauses, +RecClauses, -WorkerCode)
@@ -355,6 +357,86 @@ extract_step_operation(Body, StepOp) :-
         Expr = (_ - _)
     ->  StepOp = "arg - 1"
     ;   StepOp = "arg - 1"  % Default
+    ).
+
+%% generate_ternary_tail_loop(+Name, +BaseClauses, +RecClauses, -WorkerCode)
+%  Generate while loop for ternary tail recursion with accumulator
+%  Pattern: sum(0, Acc, Acc). sum(N, Acc, S) :- N > 0, ..., sum(N1, Acc1, S).
+generate_ternary_tail_loop(Name, BaseClauses, RecClauses, WorkerCode) :-
+    % Extract base case: pred(BaseInput, Acc, Acc)
+    (   BaseClauses = [(BaseHead, _BaseBody)|_]
+    ->  BaseHead =.. [_, BaseInput, _Acc, _Result],
+        translate_base_case_ternary(BaseInput, BaseCondition)
+    ;   BaseCondition = "False"
+    ),
+    
+    % Extract accumulator update from recursive clause
+    % sum(N, Acc, S) :- N > 0, N1 is N - 1, Acc1 is Acc + N, sum(N1, Acc1, S)
+    (   RecClauses = [(_RecHead, RecBody)|_]
+    ->  extract_accumulator_update(RecBody, AccUpdate)
+    ;   AccUpdate = "acc + n"  % Default
+    ),
+    
+    format(string(WorkerCode),
+"def _~w_worker(n, acc):
+    # Tail recursion (arity 3) optimized to while loop
+    current = n
+    result = acc
+    
+    # Base case check
+    if ~s:
+        return result
+    
+    # Iterative loop (tail recursion optimization)
+    while current > 0:
+        result = ~s
+        current = current - 1
+    
+    return result
+", [Name, BaseCondition, AccUpdate]).
+
+%% translate_base_case_ternary(+Input, -Condition)
+translate_base_case_ternary(Input, Condition) :-
+    (   Input == []
+    ->  Condition = "not current or current == []"
+    ;   number(Input)
+    ->  format(string(Condition), "current == ~w", [Input])
+    ;   Condition = "False"
+    ).
+
+%% extract_accumulator_update(+Body, -Update)
+%  Extract accumulator update expression
+%  From: Acc1 is Acc + N → "result + current"
+extract_accumulator_update(Body, Update) :-
+    extract_goals_list(Body, Goals),
+    % Find the accumulator update: Acc1 is Acc + N (or Acc * N, etc.)
+    findall(Expr, member((_ is Expr), Goals), Exprs),
+    % The second 'is' expression (if present) is usually the accumulator update
+    (   length(Exprs, Len), Len >= 2,
+        nth1(2, Exprs, AccExpr)
+    ->  translate_acc_expr(AccExpr, Update)
+    ;   Update = "result + current"  % Default
+    ).
+
+%% translate_acc_expr(+Expr, -PyExpr)
+translate_acc_expr(Expr, PyExpr) :-
+    functor(Expr, Op, 2),
+    (   Op = '+'
+    ->  PyOp = "+", Order = normal
+    ;   Op = '*'
+    ->  PyOp = "*", Order = normal
+    ;   Op = '-'
+    ->  PyOp = "-", Order = normal
+    ;   PyOp = "+", Order = normal
+    ),
+    % Determine order: is it Acc + N or N + Acc?
+    Expr =.. [_, Arg1, Arg2],
+    (   var(Arg1), \+ var(Arg2)  % Acc + N
+    ->  format(string(PyExpr), "result ~s current", [PyOp])
+    ;   var(Arg2), \+ var(Arg1)  % N + Acc (reverse)
+    ->  format(string(PyExpr), "current ~s result", [PyOp])
+    ;   % Both vars or both ground, default
+        format(string(PyExpr), "result ~s current", [PyOp])
     ).
 
 %% generate_worker_function(+Name, +Arity, +BaseClauses, +RecClauses, -WorkerCode)
@@ -470,7 +552,26 @@ generate_recursive_wrapper(Name, Arity, WrapperCode) :-
     output_key = keys[1] if len(keys) > 1 else 'result'
     yield {input_key: input_val, output_key: result}
 ", [Name])
-    ;   WrapperCode = "# ERROR: Unsupported arity for recursion"
+    ;   Arity =:= 3
+    ->  format(string(WrapperCode),
+"def _clause_0(v_0: Dict) -> Iterator[Dict]:
+    # Extract input and accumulator from dict
+    keys = list(v_0.keys())
+    if len(keys) < 2:
+        return
+    input_key = keys[0]
+    acc_key = keys[1]
+    input_val = v_0[input_key]
+    acc_val = v_0.get(acc_key, 0)  # Default accumulator to 0
+    
+    # Call worker
+    result = _~w_worker(input_val, acc_val)
+    
+    # Yield result dict
+    output_key = keys[2] if len(keys) > 2 else 'result'
+    yield {input_key: input_val, acc_key: acc_val, output_key: result}
+", [Name])
+    ;   WrapperCode = "# ERROR: Unsupported arity for recursion wrapper"
     ).
 
 header("import sys\nimport json\nfrom typing import Iterator, Dict, Any\n\n").
