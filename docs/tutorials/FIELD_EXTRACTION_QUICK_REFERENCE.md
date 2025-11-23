@@ -31,6 +31,16 @@
 | `field_compiler(Strategy)` | `modular`, `inline`, `prolog` | `modular` | Implementation strategy |
 | `case_insensitive(Bool)` | `true`, `false` | `false` | Case-insensitive tag match (awk_pipeline) |
 
+### Engine applicability (field extraction)
+- **awk_pipeline (inline/modular)**: fast, regex-based; limited namespace handling; respects `case_insensitive/1`; uses awk/bash (firewall: system tools).
+- **prolog (sgml)**: pure Prolog parsing; more robust namespaces; slower; avoids external tools.
+- **iterparse/xmllint/xmlstarlet**: streaming/parsing alternatives (availability/constraints may vary; verify before use).
+
+### Preference & sandbox notes
+- Default engine is `awk_pipeline`; override with `engine/1` if you need Prolog/SGML or other parsers.
+- awk_pipeline invokes system awk/bash; ensure firewall/sandbox policies allow these tools.
+- Prolog/SGML stays in-process (no external binaries) but may be slower.
+
 ---
 
 ## Output Formats
