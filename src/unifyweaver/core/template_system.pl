@@ -513,6 +513,23 @@ template(dedup_wrapper, [
 ]).
 
 %% ============================================
+%% XML FIELD EXTRACTION TEMPLATES
+%% ============================================
+
+%% AWK field extraction template
+template(xml_awk_field_extraction, [
+"#!/bin/bash",
+"# {{pred}} - Field extraction from {{file}}",
+"",
+"{{pred}}() {",
+"    # Extract XML elements, then extract fields",
+"    awk -f scripts/utils/select_xml_elements.awk -v tag=\"{{tag}}\" {{file}} | \\",
+"    awk -f {{awk_script}}",
+"}",
+""
+]).
+
+%% ============================================
 %% FACTS TEMPLATES (non-recursive predicates)
 %% ============================================
 
