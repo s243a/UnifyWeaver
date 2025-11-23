@@ -50,7 +50,8 @@ parse_product_xml(XML, product(ID, Name)) :-
     fields([
         id: 'productId',
         name: 'productName'
-    ])
+    ]),
+    field_compiler(modular)  % modular (default), inline (fast regex), prolog (sgml)
 ]).
 
 % Use directly!

@@ -31,6 +31,11 @@
 | `field_compiler(Strategy)` | `modular`, `inline`, `prolog` | `modular` | Implementation strategy |
 | `case_insensitive(Bool)` | `true`, `false` | `false` | Case-insensitive tag match (awk_pipeline) |
 
+### Field compilers (naming)
+- `modular` (AWK via `xml_field_compiler`): faster, external awk/bash; better for larger files; limited namespace handling.
+- `inline` (AWK regex in `xml_source.pl`): self-contained awk script; very fast but brittle (regex-based, minimal namespace support).
+- `prolog` (library(sgml)): pure Prolog parsing; more robust for namespaces/structure; slower; no external tools.
+
 ### Engine applicability (field extraction)
 - **awk_pipeline (inline/modular)**: fast, regex-based; limited namespace handling; respects `case_insensitive/1`; uses awk/bash (firewall: system tools).
 - **prolog (sgml)**: pure Prolog parsing; more robust namespaces; slower; avoids external tools.
