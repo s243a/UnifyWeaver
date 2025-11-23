@@ -33,6 +33,14 @@ compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     ;   true
     ),
     
+    % Check if predicate is recursive
+    (   is_recursive_predicate(Name, Clauses)
+    ->  compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode)
+    ;   compile_non_recursive_predicate(Name, Arity, Clauses, Options, PythonCode)
+    ).
+
+%% compile_non_recursive_predicate(+Name, +Arity, +Clauses, +Options, -PythonCode)
+compile_non_recursive_predicate(_Name, Arity, Clauses, Options, PythonCode) :-
     % Generate clause functions
     findall(ClauseCode, (
         nth0(Index, Clauses, (ClauseHead, ClauseBody)),
@@ -79,6 +87,75 @@ def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
 \n", [AllClausesCode, CallsCode]),
 
     format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
+%% compile_recursive_predicate(+Name, +Arity, +Clauses, +Options, -PythonCode)
+compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
+    % Separate base and recursive clauses
+    partition(is_recursive_clause_for(Name), Clauses, RecClauses, BaseClauses),
+    
+    % Generate worker function with memoization
+    generate_worker_function(Name, Arity, BaseClauses, RecClauses, WorkerCode),
+    
+    % Generate streaming wrapper
+    generate_recursive_wrapper(Name, Arity, WrapperCode),
+    
+    header_with_functools(Header),
+    helpers(Helpers),
+    
+    % Select format
+    option(record_format(Format), Options, jsonl),
+    (   Format == nul_json
+    ->  Reader = "read_nul_json", Writer = "write_nul_json"
+    ;   Reader = "read_jsonl", Writer = "write_jsonl"
+    ),
+    
+    format(string(Main), 
+"
+def main():
+    records = ~w(sys.stdin)
+    results = process_stream(records)
+    ~w(results, sys.stdout)
+
+if __name__ == '__main__':
+    main()
+", [Reader, Writer]),
+    
+    format(string(Logic), 
+"
+~s
+
+~s
+
+def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
+    \"\"\"Generated predicate logic - recursive wrapper.\"\"\"
+    for record in records:
+        yield from _clause_0(record)
+\n", [WorkerCode, WrapperCode]),
+
+    format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
+%% is_recursive_predicate(+Name, +Clauses)
+is_recursive_predicate(Name, Clauses) :-
+    member((_, Body), Clauses),
+    contains_recursive_call(Body, Name).
+
+%% is_recursive_clause_for(+Name, +Clause)
+is_recursive_clause_for(Name, (_, Body)) :-
+    contains_recursive_call(Body, Name).
+
+%% contains_recursive_call(+Body, +Name)
+contains_recursive_call(Body, Name) :-
+    extract_goal(Body, Goal),
+    functor(Goal, Name, _),
+    !.
+
+%% extract_goal(+Body, -Goal)
+extract_goal(Goal, Goal) :-
+    compound(Goal),
+    \+ Goal = (_,_),
+    \+ Goal = (_;_).
+extract_goal((A, _), Goal) :- extract_goal(A, Goal).
+extract_goal((_, B), Goal) :- extract_goal(B, Goal).
 
 translate_clause(Head, Body, Index, Arity, Code) :-
     % Instanciate variables
@@ -163,7 +240,125 @@ var_to_python(Number, Number) :-
 var_to_python(Term, String) :-
     term_string(Term, String).
 
+%% generate_worker_function(+Name, +Arity, +BaseClauses, +RecClauses, -WorkerCode)
+generate_worker_function(Name, Arity, BaseClauses, RecClauses, WorkerCode) :-
+    % For now, only support binary recursion (Input, Output)
+    (   Arity =:= 2
+    ->  generate_binary_worker(Name, BaseClauses, RecClauses, WorkerCode)
+    ;   % Fallback: generate error message
+        format(string(WorkerCode), "# ERROR: Recursion only supported for arity 2, got arity ~d\n", [Arity])
+    ).
+
+%% generate_binary_worker(+Name, +BaseClauses, +RecClauses, -WorkerCode)
+generate_binary_worker(Name, BaseClauses, RecClauses, WorkerCode) :-
+    % Extract base case pattern
+    (   BaseClauses = [(BaseHead, _BaseBody)|_]
+    ->  BaseHead =.. [_, BaseInput, BaseOutput],
+        translate_base_case(BaseInput, BaseOutput, BaseCondition, BaseReturn)
+    ;   BaseCondition = "False", BaseReturn = "None"
+    ),
+    
+    % Extract recursive case
+    (   RecClauses = [(RecHead, RecBody)|_]
+    ->  RecHead =.. [_, RecInput, RecOutput],
+        translate_recursive_case(Name, RecInput, RecOutput, RecBody, RecCode)
+    ;   RecCode = "    pass"
+    ),
+    
+    format(string(WorkerCode),
+"@functools.cache
+def _~w_worker(arg):
+    # Base case
+    if ~s:
+        return ~s
+    
+    # Recursive case
+~s
+", [Name, BaseCondition, BaseReturn, RecCode]).
+
+%% translate_base_case(+Input, +Output, -Condition, -Return)
+translate_base_case(Input, Output, Condition, Return) :-
+    (   Input == []
+    ->  Condition = "not arg or arg == []"
+    ;   number(Input)
+    ->  format(string(Condition), "arg == ~w", [Input])
+    ;   Condition = "False"  % Unknown pattern
+    ),
+    (   number(Output)
+    ->  format(string(Return), "~w", [Output])
+    ;   atom(Output)
+    ->  format(string(Return), "\"~w\"", [Output])
+    ;   var_to_python(Output, Return)
+    ).
+
+%% translate_recursive_case(+Name, +Input, +Output, +Body, -Code)
+translate_recursive_case(Name, _Input, _Output, Body, Code) :-
+    % Find the recursive call and arithmetic operations
+    extract_recursive_pattern(Body, Name, Pattern),
+    translate_pattern_to_python(Name, Pattern, Code).
+
+%% extract_recursive_pattern(+Body, +Name, -Pattern)
+extract_recursive_pattern(Body, Name, Pattern) :-
+    % factorial: N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1
+    % The LAST 'is' expression is the one that computes the result
+    extract_goals_list(Body, Goals),
+    findall(Expr, member((_ is Expr), Goals), Exprs),
+    % Take the last expression (the result computation)
+    (   Exprs \= [],
+        last(Exprs, RecExpr),
+        functor(RecExpr, Op, 2),
+        member(Op, ['*', '+', '-', '/'])
+    ->  member(RecCall, Goals),
+        functor(RecCall, Name, _),
+        Pattern = arithmetic(RecExpr, RecCall)
+    ;   Pattern = unknown
+    ).
+
+extract_goals_list((A, B), [A|Rest]) :- !, extract_goals_list(B, Rest).
+extract_goals_list(Goal, [Goal]).
+
+%% translate_pattern_to_python(+Name, +Pattern, -Code)
+translate_pattern_to_python(Name, arithmetic(Expr, _RecCall), Code) :-
+    % For factorial: F is N * F1 → return arg * _factorial_worker(arg - 1)
+    % Extract operator using functor
+    functor(Expr, Op, _),
+    (   Op = '*'
+    ->  PyOp = "*"
+    ;   Op = '+'
+    ->  PyOp = "+"
+    ;   Op = '-'
+    ->  PyOp = "-"
+    ;   PyOp = "*"  % Default to multiplication
+    ),
+    format(string(Code), "    return arg ~s _~w_worker(arg - 1)", [PyOp, Name]).
+translate_pattern_to_python(_, unknown, "    pass  # Unknown recursion pattern").
+
+%% generate_recursive_wrapper(+Name, +Arity, -WrapperCode)
+generate_recursive_wrapper(Name, Arity, WrapperCode) :-
+    % Generate _clause_0 that extracts input from dict, calls worker, yields result
+    (   Arity =:= 2
+    ->  format(string(WrapperCode),
+"def _clause_0(v_0: Dict) -> Iterator[Dict]:
+    # Extract input
+    keys = list(v_0.keys())
+    if not keys:
+        return
+    input_key = keys[0]
+    input_val = v_0[input_key]
+    
+    # Call worker
+    result = _~w_worker(input_val)
+    
+    # Yield result dict
+    output_key = keys[1] if len(keys) > 1 else 'result'
+    yield {input_key: input_val, output_key: result}
+", [Name])
+    ;   WrapperCode = "# ERROR: Unsupported arity for recursion"
+    ).
+
 header("import sys\nimport json\nfrom typing import Iterator, Dict, Any\n\n").
+
+header_with_functools("import sys\nimport json\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
 
 helpers("
 def read_jsonl(stream) -> Iterator[Dict[str, Any]]:

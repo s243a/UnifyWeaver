@@ -102,4 +102,37 @@ test(multi_clause_execution, [setup(setup_python_script(ScriptFile)), cleanup(de
     close(In),
     close(Out).
 
+test(factorial_execution, [setup(setup_python_script(ScriptFile)), cleanup(delete_file(ScriptFile))]) :-
+    % Define factorial
+    assertz((factorial(0, 1))),
+    assertz((factorial(N, F) :- N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1)),
+    
+    compile_predicate_to_python(factorial/2, [], Code),
+    retractall(factorial(_,_)),
+    
+    % Save and run
+    open(ScriptFile, write, Stream),
+    write(Stream, Code),
+    close(Stream),
+    
+    % Find python
+    (   catch(process_create(path(python), ['--version'], [stdout(null)]), _, fail)
+    ->  Python = path(python)
+    ;   Python = path(python3)
+    ),
+    
+    process_create(Python, ['-u', ScriptFile], [stdin(pipe(In)), stdout(pipe(Out))]),
+    
+    % Test factorial(5) = 120
+    format(In, '{"n": 5}\n', []),
+    flush_output(In),
+    
+    read_line_to_string(Out, Line1),
+    assertion(Line1 \== end_of_file),
+    atom_json_dict(Line1, Json1, []),
+    assertion(Json1.get(result) == 120),
+    
+    close(In),
+    close(Out).
+
 :- end_tests(python_execution).
