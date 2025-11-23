@@ -148,8 +148,9 @@ extract_elements('large_file.xml', 'record', awk_pipeline, Records).
 ```
 
 - **Best for:** Large files (>10MB), streaming data
-- **Speed:** Fastest (processes 19MB in ~0.2s)
+- **Speed:** Fastest (processes 19MB in ~0.2s *on Android phone/Termux*)
 - **Memory:** Constant (~20KB)
+- **Platform:** Runs efficiently even on mobile hardware
 
 ### 2. iterparse (Most Robust)
 

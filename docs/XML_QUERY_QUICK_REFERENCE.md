@@ -177,6 +177,8 @@ include(contains_text('physics'), AllTrees, PhysicsTrees),
 include(contains_text('quantum'), AllTrees, QuantumTrees).
 ```
 
+**Note:** The performance metrics documented here (0.166s to extract 5,002 trees from 19MB) were measured on an Android phone running Termux, demonstrating exceptional efficiency even on mobile hardware!
+
 ---
 
 ## Troubleshooting

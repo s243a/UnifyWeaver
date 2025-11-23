@@ -117,6 +117,8 @@ xml_query:count_elements(
 
 **Memory:** Constant ~20KB (streams data, doesn't load into memory)
 
+**Platform:** Android phone running Termux - These impressive speeds demonstrate the efficiency of the streaming awk_pipeline approach even on mobile hardware!
+
 ---
 
 ## Advanced: Engine Selection
