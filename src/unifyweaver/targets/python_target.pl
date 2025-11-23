@@ -822,19 +822,193 @@ def write_nul_json(records: Iterator[Dict], stream) -> None:
 %% compile_generator_mode(+Name, +Arity, +Module, +Options, -PythonCode)
 %  Compile using generator-based semi-naive fixpoint iteration
 %  Similar to C# query engine approach
-compile_generator_mode(_Name, _Arity, _Module, _Options, PythonCode) :-
-    % TODO: Implement full generator mode
-    % For now, return a minimal stub
-    PythonCode = "# Generator mode - Under construction
-# See docs/proposals/python_generator_mode.md for design
+compile_generator_mode(Name, Arity, Module, Options, PythonCode) :-
+    functor(Head, Name, Arity),
+    findall((Head, Body), clause(Module:Head, Body), Clauses),
+    (   Clauses == []
+    ->  format(string(PythonCode), "# ERROR: No clauses found for ~w/~w\n", [Name, Arity])
+    ;   generate_generator_code(Name, Arity, Clauses, Options, PythonCode)
+    ).
 
-import sys
-import json
-
-def main():
-    print('Generator mode coming soon!', file=sys.stderr)
-    print('Use mode=procedural for now.')
+%% generate_generator_code(+Name, +Arity, +Clauses, +Options, -PythonCode)
+generate_generator_code(Name, Arity, Clauses, Options, PythonCode) :-
+    % Generate components
+    generator_header(Header),
+    generator_helpers(Options, Helpers),
+    generate_rule_functions(Name, Clauses, RuleFunctions),
+    generate_fixpoint_loop(Name, Clauses, FixpointLoop),
     
+    % Main function
+    option(record_format(Format), Options, jsonl),
+    (   Format == nul_json
+    ->  Reader = "read_nul_json", Writer = "write_nul_json"
+    ;   Reader = "read_jsonl", Writer = "write_jsonl"
+    ),
+    
+    format(string(Main),
+"
+def main():
+    records = ~w(sys.stdin)
+    results = process_stream_generator(records)
+    ~w(results, sys.stdout)
+
 if __name__ == '__main__':
     main()
+", [Reader, Writer]),
+    
+    atomic_list_concat([Header, Helpers, RuleFunctions, FixpointLoop, Main], "\n", PythonCode).
+
+%% generator_header(-Header)
+generator_header(Header) :-
+    Header = "import sys
+import json
+from typing import Iterator, Dict, Any, Set
+from dataclasses import dataclass
+
+# FrozenDict - hashable dictionary for use in sets
+@dataclass(frozen=True)
+class FrozenDict:
+    '''Immutable dictionary that can be used in sets.'''
+    items: tuple
+    
+    @staticmethod
+    def from_dict(d: Dict) -> 'FrozenDict':
+        return FrozenDict(tuple(sorted(d.items())))
+    
+    def to_dict(self) -> Dict:
+        return dict(self.items)
+    
+    def get(self, key, default=None):
+        for k, v in self.items:
+            if k == key:
+                return v
+        return default
+    
+    def __contains__(self, key):
+        return any(k == key for k, _ in self.items)
+    
+    def __repr__(self):
+        return f'FrozenDict({dict(self.items)})'
 ".
+
+%% generator_helpers(+Options, -Helpers)
+generator_helpers(Options, Helpers) :-
+    option(record_format(Format), Options, jsonl),
+    (   Format == nul_json
+    ->  NulReader = "
+def read_nul_json(stream: Any) -> Iterator[Dict]:
+    '''Read NUL-separated JSON records.'''
+    buffer = ''
+    while True:
+        char = stream.read(1)
+        if not char:
+            if buffer.strip():
+                yield json.loads(buffer)
+            break
+        if char == '\\0':
+            if buffer.strip():
+                yield json.loads(buffer)
+                buffer = ''
+        else:
+            buffer += char
+
+def write_nul_json(records: Iterator[Dict], stream: Any):
+    '''Write NUL-separated JSON records.'''
+    for record in records:
+        stream.write(json.dumps(record) + '\\0')
+",
+        JsonlReader = ""
+    ;   JsonlReader = "
+def read_jsonl(stream: Any) -> Iterator[Dict]:
+    '''Read JSONL records.'''
+    for line in stream:
+        line = line.strip()
+        if line:
+            yield json.loads(line)
+
+def write_jsonl(records: Iterator[Dict], stream: Any):
+    '''Write JSONL records.'''
+    for record in records:
+        stream.write(json.dumps(record) + '\\n')
+",
+        NulReader = ""
+    ),
+    atomic_list_concat([JsonlReader, NulReader], "", Helpers).
+
+%% generate_rule_functions(+Name, +Clauses, -RuleFunctions)
+generate_rule_functions(Name, Clauses, RuleFunctions) :-
+    findall(RuleFunc,
+        (   nth1(RuleNum, Clauses, (Head, Body)),
+            generate_rule_function(Name, RuleNum, Head, Body, RuleFunc)
+        ),
+        RuleFuncs),
+    atomic_list_concat(RuleFuncs, "\n\n", RuleFunctions).
+
+%% generate_rule_function(+Name, +RuleNum, +Head, +Body, -RuleFunc)
+generate_rule_function(Name, RuleNum, Head, Body, RuleFunc) :-
+    % For now, simple stub that yields input unchanged
+    % TODO: Implement actual rule translation with pattern matching and joins
+    format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Rule ~w for ~w - TODO: implement pattern matching'''
+    # Placeholder: just return the fact unchanged
+    yield fact
+", [RuleNum, RuleNum, Name]).
+
+%% generate_fixpoint_loop(+Name, +Clauses, -FixpointLoop)
+generate_fixpoint_loop(Name, Clauses, FixpointLoop) :-
+    length(Clauses, NumRules),
+    findall(RuleCall,
+        (   between(1, NumRules, RuleNum),
+            format(string(RuleCall), "            for new_fact in _apply_rule_~w(fact, total):", [RuleNum])
+        ),
+        RuleCalls),
+    
+    % Build nested rule application
+    findall(IndentedCall,
+        (   nth1(Idx, RuleCalls, Call),
+            Indent is Idx * 4,
+            format(string(Spaces), "~*c", [Indent, 32]),  % 32 = space
+            format(string(IndentedCall), "~w~w", [Spaces, Call])
+        ),
+        IndentedCalls),
+    atomic_list_concat(IndentedCalls, "\n", RuleCallsStr),
+    
+    format(string(FixpointLoop),
+"
+def process_stream_generator(records: Iterator[Dict]) -> Iterator[Dict]:
+    '''Semi-naive fixpoint evaluation.
+    
+    Maintains two sets:
+    - total: All facts discovered so far
+    - delta: New facts from last iteration
+    
+    Iterates until no new facts are discovered (fixpoint reached).
+    '''
+    total: Set[FrozenDict] = set()
+    delta: Set[FrozenDict] = set()
+    
+    # Initialize delta with input records
+    for record in records:
+        frozen = FrozenDict.from_dict(record)
+        delta.add(frozen)
+        total.add(frozen)
+        yield record  # Yield initial facts
+    
+    # Fixpoint iteration (semi-naive evaluation)
+    iteration = 0
+    while delta:
+        iteration += 1
+        new_delta: Set[FrozenDict] = set()
+        
+        # Apply rules to facts in delta
+        for fact in delta:
+~w
+                if new_fact not in total:
+                    total.add(new_fact)
+                    new_delta.add(new_fact)
+                    yield new_fact.to_dict()
+        
+        delta = new_delta
+", [RuleCallsStr]).
+
