@@ -97,15 +97,15 @@ test(recursive_factorial) :-
 test(tail_recursive_sum) :-
     % sum(0, Acc, Acc).
     % sum(N, Acc, S) :- N > 0, N1 is N - 1, Acc1 is Acc + N, sum(N1, Acc1, S).
-    % Note: This is arity 3, which is not yet supported for tail recursion optimization
-    % So it should fall back to ERROR message for now
     assertz((sum(0, Acc, Acc))),
     assertz((sum(N, Acc, S) :- N > 0, N1 is N - 1, Acc1 is Acc + N, sum(N1, Acc1, S))),
     
     compile_predicate_to_python(sum/3, [], Code),
     
-    % Should contain ERROR message since arity 3 not supported yet
-    sub_string(Code, _, _, _, "ERROR"),
+    % Should detect tail recursion and generate while loop
+    sub_string(Code, _, _, _, "while"),
+    sub_string(Code, _, _, _, "# Tail recursion (arity 3)"),
+    \+ sub_string(Code, _, _, _, "ERROR"),
     
     retractall(sum(_,_,_)).
 

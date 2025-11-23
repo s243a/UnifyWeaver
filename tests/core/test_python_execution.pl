@@ -135,4 +135,37 @@ test(factorial_execution, [setup(setup_python_script(ScriptFile)), cleanup(delet
     close(In),
     close(Out).
 
+test(sum_execution, [setup(setup_python_script(ScriptFile)), cleanup(delete_file(ScriptFile))]) :-
+    % Define sum with accumulator (tail recursive, arity 3)
+    assertz((sum(0, Acc, Acc))),
+    assertz((sum(N, Acc, S) :- N > 0, N1 is N - 1, Acc1 is Acc + N, sum(N1, Acc1, S))),
+    
+    compile_predicate_to_python(sum/3, [], Code),
+    retractall(sum(_,_,_)),
+    
+    % Save and run
+    open(ScriptFile, write, Stream),
+    write(Stream, Code),
+    close(Stream),
+    
+    % Find python
+    (   catch(process_create(path(python), ['--version'], [stdout(null)]), _, fail)
+    ->  Python = path(python)
+    ;   Python = path(python3)
+    ),
+    
+    process_create(Python, ['-u', ScriptFile], [stdin(pipe(In)), stdout(pipe(Out))]),
+    
+    % Test sum(5, 0) = 15 (5+4+3+2+1 = 15)
+    format(In, '{"n": 5, "acc": 0}\n', []),
+    flush_output(In),
+    
+    read_line_to_string(Out, Line1),
+    assertion(Line1 \== end_of_file),
+    atom_json_dict(Line1, Json1, []),
+    assertion(Json1.get(result) == 15),
+    
+    close(In),
+    close(Out).
+
 :- end_tests(python_execution).
