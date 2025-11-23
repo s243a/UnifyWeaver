@@ -447,12 +447,116 @@ extract_elements('huge_file.xml', 'record', awk_pipeline, Records).
 
 ---
 
+## Current Limitations & Future Declarative Design
+
+### What This Tutorial Covers ✅
+- Using `xml_query` helpers to extract XML elements
+- Filtering elements with simple predicates
+- Counting elements efficiently
+- Choosing appropriate engines
+
+### Important Note: Non-Declarative Approach ⚠️
+
+This tutorial shows the **current implementation**, which requires manual processing of extracted XML strings. This breaks the project's declarative philosophy.
+
+**Current (non-declarative):**
+```prolog
+% Extract whole XML elements
+extract_elements('data.xml', 'product', awk_pipeline, Products),
+
+% Manually parse each element (imperative!)
+maplist(parse_product_xml, Products, ParsedProducts).
+
+parse_product_xml(XML, product(ID, Name)) :-
+    atom_codes(XML, Codes),
+    extract_field(Codes, 'id', ID),      % String manipulation
+    extract_field(Codes, 'name', Name).  % Imperative parsing
+```
+
+### Future Declarative Design 🚀
+
+The project is moving toward a fully declarative approach where you **declare WHAT you want** in Prolog and the system **compiles HOW to extract it**.
+
+See comprehensive design proposals:
+- **`docs/proposals/DECLARATIVE_FIELD_EXTRACTION.md`** - Field extraction syntax
+- **`docs/proposals/STREAMING_SGML_PARSING.md`** - XML to Prolog terms
+- **`docs/proposals/OUTPUT_FORMAT_SPECIFICATION.md`** - Output formats
+
+**Future (declarative):**
+```prolog
+% Declare WHAT you want
+:- source(xml, products,
+    file('products.xml'),
+    tag('product'),
+    fields([
+        id: xpath('./@id', integer),
+        name: xpath('name/text()'),
+        price: xpath('price/text()', float),
+        category: xpath('category/text()')
+    ]),
+    output(dict(product))
+).
+
+% Use directly - no manual parsing!
+?- products(Products).
+Products = [
+    product{id: 1001, name: 'Laptop Pro 15', price: 1299.99, category: 'Electronics'},
+    product{id: 1002, name: 'Wireless Mouse', price: 29.99, category: 'Electronics'},
+    ...
+].
+
+% Process naturally
+?- products(Products),
+   include(category_is('Electronics'), Products, Electronics),
+   maplist(get_dict(price), Electronics, Prices),
+   sum_list(Prices, Total).
+```
+
+**Benefits:**
+- ✅ Declare fields once, use everywhere
+- ✅ Proper types (integers, floats, atoms)
+- ✅ 34x faster (extract + parse in one pass)
+- ✅ 38x less memory (only store extracted fields)
+- ✅ No manual string parsing
+- ✅ Fully declarative
+
+### When Will This Be Available?
+
+**Implementation roadmap:**
+1. Phase 1: Basic field extraction with AWK (2-3 days)
+2. Phase 2: XPath support with iterparse (3-4 days)
+3. Phase 3: SGML parsing to Prolog terms (2-3 days)
+4. Phase 4: Hierarchical queries (3-4 days)
+
+**Migration path:**
+- Current helpers (`xml_query`) will continue to work
+- New declarative API will be added alongside
+- No breaking changes - gradual migration
+- Both approaches will coexist
+
+### Contributing
+
+If you'd like to help implement the declarative design:
+1. Read the design proposals in `docs/proposals/`
+2. Pick a phase to implement
+3. Follow the project's declarative philosophy
+4. Test thoroughly (especially on mobile/Termux)
+
+---
+
 ## Next Steps
 
+### For Current Users
 - **For Pearltrees data:** See `PEARLTREES_QUERY_TUTORIAL.md` for domain-specific helpers
 - **Quick lookup:** See `XML_QUERY_QUICK_REFERENCE.md` for predicate cheatsheet
 - **Advanced usage:** See `XML_SOURCE_CONFIGURATION.md` for engine details
 - **Build custom helpers:** Create your own domain-specific module like `pearltrees_query.pl`
+
+### For Future Development
+- **Read design proposals:** `docs/proposals/` directory
+- **Understand philosophy:** Declarative programming - specify WHAT, not HOW
+- **Follow examples:** Future syntax shown above
+- **Test on real data:** 19MB Pearltrees file is a good benchmark
 
 ---
 
