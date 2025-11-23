@@ -28,7 +28,7 @@
 | `fields([...])` | List | Required for field extraction | Field specifications |
 | `engine(Engine)` | `awk_pipeline`, `iterparse`, `xmllint`, `xmlstarlet` | `awk_pipeline` | Extraction engine |
 | `output(Format)` | `dict`, `list`, `compound(F)` | `dict` | Output format |
-| `field_compiler(Strategy)` | `modular`, `inline` | `modular` | Implementation strategy |
+| `field_compiler(Strategy)` | `modular`, `inline`, `prolog` | `modular` | Implementation strategy |
 | `case_insensitive(Bool)` | `true`, `false` | `false` | Case-insensitive tag match (awk_pipeline) |
 
 ---
@@ -101,7 +101,7 @@ Items = [product('123', 'Laptop'), ...].
 
 ### Choose Implementation
 ```prolog
-% Modular (default)
+% Modular (default) - AWK via xml_field_compiler module
 :- source(xml, products_mod, [
     file('products.xml'),
     tag('product'),
@@ -109,12 +109,20 @@ Items = [product('123', 'Laptop'), ...].
     field_compiler(modular)
 ]).
 
-% Inline
+% Inline - AWK self-contained in xml_source.pl
 :- source(xml, products_inline, [
     file('products.xml'),
     tag('product'),
     fields([id: 'productId']),
     field_compiler(inline)
+]).
+
+% Prolog - Pure Prolog using library(sgml)
+:- source(xml, products_prolog, [
+    file('products.xml'),
+    tag('product'),
+    fields([id: 'productId']),
+    field_compiler(prolog)
 ]).
 ```
 
@@ -242,16 +250,21 @@ maplist(manual_parse, All, Parsed).
 
 ## Implementation Comparison
 
-| Feature | Modular | Inline |
-|---------|---------|--------|
-| Location | `xml_field_compiler` module | `xml_source.pl` |
-| Dependencies | External module | Self-contained |
-| Code size | 335 bytes | 333 bytes |
-| Performance | Identical | Identical |
-| Features | Identical | Identical |
-| Default | Yes | No |
+| Feature | Modular | Inline | Prolog |
+|---------|---------|--------|--------|
+| Location | `xml_field_compiler` module | `xml_source.pl` | `xml_source.pl` |
+| Engine | AWK | AWK | library(sgml) |
+| Dependencies | External module | Self-contained (AWK) | SWI-Prolog SGML |
+| Code size | 335 bytes | 333 bytes | ~105 bytes bash wrapper |
+| Performance | Fast (streaming) | Fast (streaming) | Slower (DOM parsing) |
+| Memory | Constant (~20KB) | Constant (~20KB) | Loads full XML to memory |
+| Features | Full | Full | Full |
+| Default | Yes | No | No |
 
-**Recommendation:** Use default (modular) unless you specifically need zero external dependencies.
+**Recommendations:**
+- **modular** (default): Best for most use cases - clean separation, easy to maintain
+- **inline**: Use if you need zero external module dependencies
+- **prolog**: Use for educational purposes, debugging, or when you need pure Prolog (no AWK dependency)
 
 ---
 
