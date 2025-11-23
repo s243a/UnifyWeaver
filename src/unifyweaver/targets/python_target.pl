@@ -22,6 +22,7 @@
 %
 % Options:
 %   * record_format(Format) - 'jsonl' (default) or 'nul_json'
+%   * mode(Mode) - 'procedural' (default) or 'generator'
 %
 compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     % Handle module expansion (meta_predicate ensures M:Name/Arity)
@@ -30,6 +31,18 @@ compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     ;   PredicateIndicator = Name/Arity, Module = user
     ),
     
+    % Determine evaluation mode
+    option(mode(Mode), Options, procedural),
+    
+    % Dispatch to appropriate compiler
+    (   Mode == generator
+    ->  compile_generator_mode(Name, Arity, Module, Options, PythonCode)
+    ;   compile_procedural_mode(Name, Arity, Module, Options, PythonCode)
+    ).
+
+%% compile_procedural_mode(+Name, +Arity, +Module, +Options, -PythonCode)
+%  Current implementation (renamed for clarity)
+compile_procedural_mode(Name, Arity, Module, Options, PythonCode) :-
     functor(Head, Name, Arity),
     findall((Head, Body), clause(Module:Head, Body), Clauses),
     (   Clauses == []
@@ -801,3 +814,27 @@ def write_nul_json(records: Iterator[Dict], stream) -> None:
     for record in records:
         stream.write(json.dumps(record) + '\\0')
 \n").
+
+%% ============================================
+%% GENERATOR MODE (Semi-Naive Evaluation)
+%% ============================================
+
+%% compile_generator_mode(+Name, +Arity, +Module, +Options, -PythonCode)
+%  Compile using generator-based semi-naive fixpoint iteration
+%  Similar to C# query engine approach
+compile_generator_mode(_Name, _Arity, _Module, _Options, PythonCode) :-
+    % TODO: Implement full generator mode
+    % For now, return a minimal stub
+    PythonCode = "# Generator mode - Under construction
+# See docs/proposals/python_generator_mode.md for design
+
+import sys
+import json
+
+def main():
+    print('Generator mode coming soon!', file=sys.stderr)
+    print('Use mode=procedural for now.')
+    
+if __name__ == '__main__':
+    main()
+".
