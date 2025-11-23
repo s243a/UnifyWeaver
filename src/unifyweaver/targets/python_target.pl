@@ -22,6 +22,7 @@
 %
 % Options:
 %   * record_format(Format) - 'jsonl' (default) or 'nul_json'
+%   * mode(Mode) - 'procedural' (default) or 'generator'
 %
 compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     % Handle module expansion (meta_predicate ensures M:Name/Arity)
@@ -30,6 +31,18 @@ compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     ;   PredicateIndicator = Name/Arity, Module = user
     ),
     
+    % Determine evaluation mode
+    option(mode(Mode), Options, procedural),
+    
+    % Dispatch to appropriate compiler
+    (   Mode == generator
+    ->  compile_generator_mode(Name, Arity, Module, Options, PythonCode)
+    ;   compile_procedural_mode(Name, Arity, Module, Options, PythonCode)
+    ).
+
+%% compile_procedural_mode(+Name, +Arity, +Module, +Options, -PythonCode)
+%  Current implementation (renamed for clarity)
+compile_procedural_mode(Name, Arity, Module, Options, PythonCode) :-
     functor(Head, Name, Arity),
     findall((Head, Body), clause(Module:Head, Body), Clauses),
     (   Clauses == []
@@ -801,3 +814,351 @@ def write_nul_json(records: Iterator[Dict], stream) -> None:
     for record in records:
         stream.write(json.dumps(record) + '\\0')
 \n").
+
+%% ============================================
+%% GENERATOR MODE (Semi-Naive Evaluation)
+%% ============================================
+
+%% compile_generator_mode(+Name, +Arity, +Module, +Options, -PythonCode)
+%  Compile using generator-based semi-naive fixpoint iteration
+%  Similar to C# query engine approach
+compile_generator_mode(Name, Arity, Module, Options, PythonCode) :-
+    functor(Head, Name, Arity),
+    findall((Head, Body), clause(Module:Head, Body), Clauses),
+    (   Clauses == []
+    ->  format(string(PythonCode), "# ERROR: No clauses found for ~w/~w\n", [Name, Arity])
+    ;   generate_generator_code(Name, Arity, Clauses, Options, PythonCode)
+    ).
+
+%% generate_generator_code(+Name, +Arity, +Clauses, +Options, -PythonCode)
+generate_generator_code(Name, Arity, Clauses, Options, PythonCode) :-
+    % Generate components
+    generator_header(Header),
+    generator_helpers(Options, Helpers),
+    generate_rule_functions(Name, Clauses, RuleFunctions),
+    generate_fixpoint_loop(Name, Clauses, FixpointLoop),
+    
+    % Main function
+    option(record_format(Format), Options, jsonl),
+    (   Format == nul_json
+    ->  Reader = "read_nul_json", Writer = "write_nul_json"
+    ;   Reader = "read_jsonl", Writer = "write_jsonl"
+    ),
+    
+    format(string(Main),
+"
+def main():
+    records = ~w(sys.stdin)
+    results = process_stream_generator(records)
+    ~w(results, sys.stdout)
+
+if __name__ == '__main__':
+    main()
+", [Reader, Writer]),
+    
+    atomic_list_concat([Header, Helpers, RuleFunctions, FixpointLoop, Main], "\n", PythonCode).
+
+%% generator_header(-Header)
+generator_header(Header) :-
+    Header = "import sys
+import json
+from typing import Iterator, Dict, Any, Set
+from dataclasses import dataclass
+
+# FrozenDict - hashable dictionary for use in sets
+@dataclass(frozen=True)
+class FrozenDict:
+    '''Immutable dictionary that can be used in sets.'''
+    items: tuple
+    
+    @staticmethod
+    def from_dict(d: Dict) -> 'FrozenDict':
+        return FrozenDict(tuple(sorted(d.items())))
+    
+    def to_dict(self) -> Dict:
+        return dict(self.items)
+    
+    def get(self, key, default=None):
+        for k, v in self.items:
+            if k == key:
+                return v
+        return default
+    
+    def __contains__(self, key):
+        return any(k == key for k, _ in self.items)
+    
+    def __repr__(self):
+        return f'FrozenDict({dict(self.items)})'
+".
+
+%% generator_helpers(+Options, -Helpers)
+generator_helpers(Options, Helpers) :-
+    option(record_format(Format), Options, jsonl),
+    (   Format == nul_json
+    ->  NulReader = "
+def read_nul_json(stream: Any) -> Iterator[Dict]:
+    '''Read NUL-separated JSON records.'''
+    buffer = ''
+    while True:
+        char = stream.read(1)
+        if not char:
+            if buffer.strip():
+                yield json.loads(buffer)
+            break
+        if char == '\\0':
+            if buffer.strip():
+                yield json.loads(buffer)
+                buffer = ''
+        else:
+            buffer += char
+
+def write_nul_json(records: Iterator[Dict], stream: Any):
+    '''Write NUL-separated JSON records.'''
+    for record in records:
+        stream.write(json.dumps(record) + '\\0')
+",
+        JsonlReader = ""
+    ;   JsonlReader = "
+def read_jsonl(stream: Any) -> Iterator[Dict]:
+    '''Read JSONL records.'''
+    for line in stream:
+        line = line.strip()
+        if line:
+            yield json.loads(line)
+
+def write_jsonl(records: Iterator[Dict], stream: Any):
+    '''Write JSONL records.'''
+    for record in records:
+        stream.write(json.dumps(record) + '\\n')
+",
+        NulReader = ""
+    ),
+    atomic_list_concat([JsonlReader, NulReader], "", Helpers).
+
+%% generate_rule_functions(+Name, +Clauses, -RuleFunctions)
+generate_rule_functions(Name, Clauses, RuleFunctions) :-
+    findall(RuleFunc,
+        (   nth1(RuleNum, Clauses, (Head, Body)),
+            generate_rule_function(Name, RuleNum, Head, Body, RuleFunc)
+        ),
+        RuleFuncs),
+    atomic_list_concat(RuleFuncs, "\n\n", RuleFunctions).
+
+%% generate_rule_function(+Name, +RuleNum, +Head, +Body, -RuleFunc)
+generate_rule_function(Name, RuleNum, Head, Body, RuleFunc) :-
+    (   Body == true
+    ->  % Fact (no body) - emit constant
+        translate_fact_rule(Name, RuleNum, Head, RuleFunc)
+    ;   extract_goals_list(Body, Goals),
+        length(Goals, NumGoals),
+        (   NumGoals == 1
+        ->  % Single goal - copy/transform rule
+            Goals = [SingleGoal],
+            translate_copy_rule(Name, RuleNum, Head, SingleGoal, RuleFunc)
+        ;   % Multiple goals - join rule
+            translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc)
+        )
+    ).
+
+%% translate_fact_rule(+Name, +RuleNum, +Head, -RuleFunc)
+%  Translate a fact (constant) into a rule that emits it once
+translate_fact_rule(_Name, RuleNum, Head, RuleFunc) :-
+    Head =.. [_Pred | Args],
+    extract_constants(Args, ConstPairs),
+    format_dict_pairs(ConstPairs, DictStr),
+    format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Fact: ~w'''
+    # Emit constant fact once (only if not already in total)
+    result = FrozenDict.from_dict({~w})
+    if result not in total:
+        yield result
+", [RuleNum, Head, DictStr]).
+
+%% extract_constants(+Args, -Pairs)
+%  Extract constant values from arguments
+extract_constants(Args, Pairs) :-
+    findall(Key-Value,
+        (   nth1(Idx, Args, Arg),
+            atom(Arg),
+            \+ var(Arg),
+            Key is Idx - 1,  % 0-indexed
+            atom_string(Arg, Value)
+        ),
+        Pairs).
+
+%% format_dict_pairs(+Pairs, -DictStr)
+format_dict_pairs(Pairs, DictStr) :-
+    findall(Pair,
+        (   member(Key-Value, Pairs),
+            format(string(Pair), "'arg~w': '~w'", [Key, Value])
+        ),
+        PairStrs),
+    atomic_list_concat(PairStrs, ", ", DictStr).
+
+%% translate_copy_rule(+Name, +RuleNum, +Head, +Goal, -RuleFunc)
+%  Translate a simple copy/transform rule (single goal in body)
+translate_copy_rule(_Name, RuleNum, Head, Goal, RuleFunc) :-
+    % Extract variable mappings
+    Head =.. [_HeadPred | HeadArgs],
+    Goal =.. [GoalPred | GoalArgs],
+    
+    % Build pattern match condition
+    length(GoalArgs, GoalArity),
+    findall(Check,
+        (   between(0, GoalArity, Idx),
+            Idx < GoalArity,
+            format(string(Check), "'arg~w' in fact", [Idx])
+        ),
+        Checks),
+    atomic_list_concat(Checks, " and ", ConditionStr),
+    
+    % Build output dict
+    findall(Assign,
+        (   nth0(HeadIdx, HeadArgs, HeadArg),
+            nth0(GoalIdx, GoalArgs, GoalArg),
+            HeadArg == GoalArg,  % Same variable
+            format(string(Assign), "'arg~w': fact.get('arg~w')", [HeadIdx, GoalIdx])
+        ),
+        Assigns),
+    atomic_list_concat(Assigns, ", ", OutputStr),
+    
+    atom_string(GoalPred, _GoalPredStr),
+    format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Copy rule: ~w -> ~w'''
+    # Match pattern and copy variables
+    if ~w:
+        yield FrozenDict.from_dict({~w})
+", [RuleNum, Goal, Name, ConditionStr, OutputStr]).
+
+%% translate_join_rule(+Name, +RuleNum, +Head, +Goals, -RuleFunc)
+%  Translate a join rule (multiple goals in body)
+translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc) :-
+    % For now, handle the common case: 2 goals with a join variable
+    (   Goals = [Goal1, Goal2]
+    ->  translate_binary_join(Name, RuleNum, Head, Goal1, Goal2, RuleFunc)
+    ;   % Fallback for complex cases
+        format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Complex rule: ~w - TODO: implement multi-goal joins'''
+    return iter([])
+", [RuleNum, Head])
+    ).
+
+%% translate_binary_join(+Name, +RuleNum, +Head, +Goal1, +Goal2, -RuleFunc)
+translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc) :-
+    % Extract predicates and arguments
+    Goal1 =.. [Pred1 | Args1],
+    Goal2 =.. [Pred2 | Args2],
+    Head =.. [_HeadPred | HeadArgs],
+    
+    % Find join variable (appears in both goals)
+    findall(Var-Idx1-Idx2,
+        (   nth0(Idx1, Args1, Var),
+            nth0(Idx2, Args2, Var),
+            \+ atom(Var)  % Variable, not constant
+        ),
+        JoinVars),
+    
+    % Build join condition
+    (   JoinVars = [_Var-JIdx1-JIdx2|_]
+    ->  format(string(JoinCond), "other.get('arg~w') == fact.get('arg~w')", [JIdx2, JIdx1])
+    ;   JoinCond = "True"  % No explicit join
+    ),
+    
+    % Build output mapping
+    findall(OutAssign,
+        (   nth0(HIdx, HeadArgs, HVar),
+            (   nth0(G1Idx, Args1, HVar)
+            ->  format(string(OutAssign), "'arg~w': fact.get('arg~w')", [HIdx, G1Idx])
+            ;   nth0(G2Idx, Args2, HVar),
+                format(string(OutAssign), "'arg~w': other.get('arg~w')", [HIdx, G2Idx])
+            )
+        ),
+        OutAssigns),
+    atomic_list_concat(OutAssigns, ", ", OutputMapping),
+    
+    % Pattern match for first goal
+    length(Args1, Arity1),
+    findall(PatCheck,
+        (   between(0, Arity1, Idx),
+            Idx < Arity1,
+            format(string(PatCheck), "'arg~w' in fact", [Idx])
+        ),
+        PatChecks),
+    atomic_list_concat(PatChecks, " and ", Pattern1),
+    
+    atom_string(Pred1, _Pred1Str),
+    atom_string(Pred2, _Pred2Str),
+    
+    format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Join rule: ~w :- ~w, ~w'''
+    # Match first goal pattern
+    if ~w:
+        # Join with second predicate facts
+        for other in total:
+            # Check join condition
+            if ~w:
+                yield FrozenDict.from_dict({~w})
+", [RuleNum, Head, Goal1, Goal2, Pattern1, JoinCond, OutputMapping]).
+
+
+%% generate_fixpoint_loop(+Name, +Clauses, -FixpointLoop)
+generate_fixpoint_loop(_Name, Clauses, FixpointLoop) :-
+    length(Clauses, NumRules),
+    findall(RuleCall,
+        (   between(1, NumRules, RuleNum),
+            format(string(RuleCall), "            for new_fact in _apply_rule_~w(fact, total):", [RuleNum])
+        ),
+        RuleCalls),
+    
+    % Build nested rule application
+    findall(IndentedCall,
+        (   nth1(Idx, RuleCalls, Call),
+            Indent is Idx * 4,
+            format(string(Spaces), "~*c", [Indent, 32]),  % 32 = space
+            format(string(IndentedCall), "~w~w", [Spaces, Call])
+        ),
+        IndentedCalls),
+    atomic_list_concat(IndentedCalls, "\n", RuleCallsStr),
+    
+    format(string(FixpointLoop),
+"
+def process_stream_generator(records: Iterator[Dict]) -> Iterator[Dict]:
+    '''Semi-naive fixpoint evaluation.
+    
+    Maintains two sets:
+    - total: All facts discovered so far
+    - delta: New facts from last iteration
+    
+    Iterates until no new facts are discovered (fixpoint reached).
+    '''
+    total: Set[FrozenDict] = set()
+    delta: Set[FrozenDict] = set()
+    
+    # Initialize delta with input records
+    for record in records:
+        frozen = FrozenDict.from_dict(record)
+        delta.add(frozen)
+        total.add(frozen)
+        yield record  # Yield initial facts
+    
+    # Fixpoint iteration (semi-naive evaluation)
+    iteration = 0
+    while delta:
+        iteration += 1
+        new_delta: Set[FrozenDict] = set()
+        
+        # Apply rules to facts in delta
+        for fact in delta:
+~w
+                if new_fact not in total:
+                    total.add(new_fact)
+                    new_delta.add(new_fact)
+                    yield new_fact.to_dict()
+        
+        delta = new_delta
+", [RuleCallsStr]).
+
