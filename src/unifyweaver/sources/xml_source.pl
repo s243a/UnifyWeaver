@@ -64,9 +64,9 @@ validate_config(Config) :-
     % Validate engine if specified
     (   member(engine(Engine), Config)
     ->  (
-            memberchk(Engine, [iterparse, xmllint, xmlstarlet, awk_pipeline])
+            memberchk(Engine, [iterparse, xmllint, xmlstarlet, awk_pipeline, prolog_sgml])
         ->  true
-        ;   format('Error: invalid engine ~w. Must be one of [iterparse, xmllint, xmlstarlet, awk_pipeline]~n', [Engine]),
+        ;   format('Error: invalid engine ~w. Must be one of [iterparse, xmllint, xmlstarlet, awk_pipeline, prolog_sgml]~n', [Engine]),
             fail
         )
     ;   true
@@ -94,6 +94,15 @@ validate_config(Config) :-
     ->  (   memberchk(Value, [true, false])
         ->  true
         ;   format('Error: case_insensitive(~w) must be true or false~n', [Value]),
+            fail
+        )
+    ;   true
+    ),
+    % Optional field implementation selector (awk variants)
+    (   member(field_impl(Impl), Config)
+    ->  (   memberchk(Impl, [modular, inline])
+        ->  true
+        ;   format('Error: field_impl(~w) must be modular or inline~n', [Impl]),
             fail
         )
     ;   true
@@ -305,6 +314,18 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     ->  Tags = [SingleTag]
     ),
 
+    % Determine engine (default: awk_pipeline)
+    (   member(engine(EngineOpt), AllOptions)
+    ->  Engine = EngineOpt
+    ;   Engine = awk_pipeline
+    ),
+
+    % Backward compatibility: field_compiler(prolog) implies engine prolog_sgml
+    (   member(field_compiler(prolog), AllOptions)
+    ->  EngineAdj = prolog_sgml
+    ;   EngineAdj = Engine
+    ),
+
     % Check for field extraction
     (   member(fields(FieldSpec), AllOptions)
     ->  % Field extraction requested
@@ -313,29 +334,8 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
         ;   format('Error: Field extraction requires exactly one tag, got: ~w~n', [Tags]),
             fail
         ),
-        % Choose implementation based on configuration
-        field_extraction_strategy(AllOptions, Strategy),
-        (   Strategy = modular
-        ->  format('  Using field extraction compiler (modular)~n', []),
-            xml_field_compiler:compile_field_extraction(
-                Pred/Arity,
-                File,
-                SingleTag,
-                FieldSpec,
-                AllOptions,
-                BashCode
-            )
-        ;   Strategy = inline
-        ->  format('  Using field extraction (inline)~n', []),
-            compile_field_extraction_inline(
-                Pred/Arity,
-                File,
-                SingleTag,
-                FieldSpec,
-                AllOptions,
-                BashCode
-            )
-        ;   Strategy = prolog
+        % Choose implementation/engine based on configuration
+        (   EngineAdj == prolog_sgml
         ->  format('  Using field extraction (pure Prolog/SGML)~n', []),
             compile_field_extraction_prolog(
                 Pred/Arity,
@@ -345,6 +345,31 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
                 AllOptions,
                 BashCode
             )
+        ;   EngineAdj == awk_pipeline
+        ->  field_impl_choice(AllOptions, Impl),
+            (   Impl = modular
+            ->  format('  Using field extraction compiler (modular AWK)~n', []),
+                xml_field_compiler:compile_field_extraction(
+                    Pred/Arity,
+                    File,
+                    SingleTag,
+                    FieldSpec,
+                    AllOptions,
+                    BashCode
+                )
+            ;   Impl = inline
+            ->  format('  Using field extraction (inline AWK)~n', []),
+                compile_field_extraction_inline(
+                    Pred/Arity,
+                    File,
+                    SingleTag,
+                    FieldSpec,
+                    AllOptions,
+                    BashCode
+                )
+            )
+        ;   format('Error: Field extraction engine ~w not supported~n', [EngineAdj]),
+            fail
         )
     ;   % No fields() - use standard element extraction
         compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode)
@@ -356,15 +381,17 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
 %    - modular: Delegate to xml_field_compiler (Option B)
 %    - inline: Self-contained AWK in xml_source.pl (Option A)
 %    - prolog: Pure Prolog using library(sgml) (Option C)
-field_extraction_strategy(Options, Strategy) :-
-    (   member(field_compiler(StrategySpec), Options)
-    ->  (   memberchk(StrategySpec, [modular, inline, prolog])
-        ->  Strategy = StrategySpec
-        ;   format('Warning: Invalid field_compiler option ~w, using default (modular)~n', [StrategySpec]),
-            Strategy = modular
+field_impl_choice(Options, Impl) :-
+    (   member(field_impl(ImplSpec), Options)
+    ->  (   memberchk(ImplSpec, [modular, inline])
+        ->  Impl = ImplSpec
+        ;   format('Warning: Invalid field_impl option ~w, using default (modular)~n', [ImplSpec]),
+            Impl = modular
         )
-    ;   % Default: use modular approach (Option B)
-        Strategy = modular
+    ;   member(field_compiler(Old), Options),
+        memberchk(Old, [modular, inline])
+    ->  Impl = Old
+    ;   Impl = modular
     ).
 
 %% ============================================

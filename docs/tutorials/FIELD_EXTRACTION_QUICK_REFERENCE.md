@@ -28,7 +28,8 @@
 | `fields([...])` | List | Required for field extraction | Field specifications |
 | `engine(Engine)` | `awk_pipeline`, `iterparse`, `xmllint`, `xmlstarlet` | `awk_pipeline` | Extraction engine |
 | `output(Format)` | `dict`, `list`, `compound(F)` | `dict` | Output format |
-| `field_compiler(Strategy)` | `modular`, `inline`, `prolog` | `modular` | Implementation strategy |
+| `field_impl(Strategy)` | `modular`, `inline` | `modular` | AWK implementation (use with `engine(awk_pipeline)`) |
+| `field_compiler(Strategy)` | `modular`, `inline`, `prolog` | `modular` | Legacy selector (prolog -> engine(prolog_sgml)) |
 | `case_insensitive(Bool)` | `true`, `false` | `false` | Case-insensitive tag match (awk_pipeline) |
 
 ### Field compilers (naming)
