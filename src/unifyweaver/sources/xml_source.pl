@@ -38,31 +38,34 @@ source_info(info(
 %% validate_config(+Config)
 %  Validate configuration for XML source
 validate_config(Config) :-
-    % Must have xml_file
-    (   member(xml_file(File), Config),
+    % Must have xml_file or file (support both interfaces)
+    (   (member(xml_file(File), Config) ; member(file(File), Config)),
         (
             exists_file(File)
         ->  true
         ;   format('Warning: XML file ~w does not exist~n', [File])
         )
     ->  true
-    ;   format('Error: XML source requires xml_file(File)~n', []),
+    ;   format('Error: XML source requires xml_file(File) or file(File)~n', []),
         fail
     ),
-    % Must have tags
+    % Must have tags or tag (support both interfaces)
     (   member(tags(Tags), Config),
         is_list(Tags),
         Tags \= []
     ->  true
-    ;   format('Error: XML source requires non-empty tags(List)~n', []),
+    ;   member(tag(Tag), Config),
+        atom(Tag)
+    ->  true
+    ;   format('Error: XML source requires tags(List) or tag(Atom)~n', []),
         fail
     ),
     % Validate engine if specified
     (   member(engine(Engine), Config)
     ->  (
-            memberchk(Engine, [iterparse, xmllint, xmlstarlet])
+            memberchk(Engine, [iterparse, xmllint, xmlstarlet, awk_pipeline])
         ->  true
-        ;   format('Error: invalid engine ~w. Must be one of [iterparse, xmllint, xmlstarlet]~n', [Engine]),
+        ;   format('Error: invalid engine ~w. Must be one of [iterparse, xmllint, xmlstarlet, awk_pipeline]~n', [Engine]),
             fail
         )
     ;   true
@@ -279,9 +282,19 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     % Merge config and options
     append(Config, Options, AllOptions),
 
-    % Extract required parameters
-    member(xml_file(File), AllOptions),
-    member(tags(Tags), AllOptions),
+    % Extract file (support both interfaces)
+    (   member(xml_file(File), AllOptions)
+    ->  true
+    ;   member(file(File), AllOptions)
+    ),
+
+    % Extract tags (support both interfaces)
+    (   member(tags(TagList), AllOptions)
+    ->  Tags = TagList
+    ;   member(tag(SingleTag), AllOptions)
+    ->  Tags = [SingleTag]
+    ),
+
     namespace_fix_option(AllOptions, NamespaceFix),
     xmllint_splitter_option(AllOptions, Splitter),
 
@@ -297,30 +310,21 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     ;   true
     ),
 
-    % Check if we should use pure PowerShell template
-    (   member(template_suffix('_powershell_pure'), AllOptions)
-    ->  % Use pure PowerShell template
-        tags_to_xpath(Tags, XPathExpr),
-        tags_to_list_str(Tags, TagsList),
+    % Generate code based on engine
+    (
+        Engine == iterparse
+    ->  generate_lxml_python_code(File, Tags, PythonCode),
         atom_string(Pred, PredStr),
-        render_named_template(xml_source_powershell_pure,
-            [pred=PredStr, file=File, xpath_ps=XPathExpr, tags=TagsList],
+        render_named_template(xml_iterparse_source,
+            [pred=PredStr, python_code=PythonCode],
             [source_order([file, generated])],
             BashCode)
-    ;   % Generate code based on engine (original bash templates)
-        (
-            Engine == iterparse
-        ->  generate_lxml_python_code(File, Tags, PythonCode),
-            atom_string(Pred, PredStr),
-            render_named_template(xml_iterparse_source,
-                [pred=PredStr, python_code=PythonCode],
-                [source_order([file, generated])],
-                BashCode)
-        ;   Engine == xmllint
-        ->  generate_xmllint_bash(Pred, File, Tags, NamespaceFix, Splitter, BashCode)
-        ;   Engine == xmlstarlet
-        ->  generate_xmlstarlet_bash(Pred, File, Tags, BashCode)
-        )
+    ;   Engine == xmllint
+    ->  generate_xmllint_bash(Pred, File, Tags, NamespaceFix, Splitter, BashCode)
+    ;   Engine == xmlstarlet
+    ->  generate_xmlstarlet_bash(Pred, File, Tags, BashCode)
+    ;   Engine == awk_pipeline
+    ->  generate_awk_pipeline_bash(Pred, File, Tags, AllOptions, BashCode)
     ).
 
 %% namespace_fix_option(+Options, -FixBool)
@@ -488,11 +492,6 @@ tags_to_python_list(Tags, List) :-
 quote_atom(Atom, Quoted) :-
     format(atom(Quoted), '\'~w\'', [Atom]).
 
-%% tags_to_list_str(+Tags, -ListStr)
-%  Convert a list of tags to a comma-separated string for display.
-tags_to_list_str(Tags, ListStr) :-
-    atomic_list_concat(Tags, ', ', ListStr).
-
 %% generate_xmlstarlet_bash(+Pred, +File, +Tags, -BashCode)
 %  Generate bash code for xmlstarlet engine
 generate_xmlstarlet_bash(Pred, File, Tags, BashCode) :-
@@ -630,6 +629,35 @@ indent_line(_, "", "") :- !.
 indent_line(Indent, Line, IndentedLine) :-
     atomic_list_concat([Indent, Line], IndentedLine).
 
+
+%% generate_awk_pipeline_bash(+Pred, +File, +Tags, +AllOptions, -BashCode)
+%  Generate bash code for awk_pipeline engine (uses awk + Python streaming)
+generate_awk_pipeline_bash(Pred, File, Tags, AllOptions, BashCode) :-
+    % Convert tags list to single tag pattern for awk
+    % For now, use first tag (TODO: support multiple tags)
+    (   Tags = [FirstTag|_]
+    ->  TagPattern = FirstTag
+    ;   Tags = []
+    ->  TagPattern = ''
+    ),
+
+    % Check for parallel mode
+    (   member(parallel(true), AllOptions)
+    ->  (   member(workers(Workers), AllOptions)
+        ->  true
+        ;   Workers = 4  % Default workers
+        ),
+        atom_string(Pred, PredStr),
+        render_named_template(xml_awk_pipeline_parallel_source,
+            [pred=PredStr, file=File, tag=TagPattern, workers=Workers],
+            [source_order([file, generated])],
+            BashCode)
+    ;   atom_string(Pred, PredStr),
+        render_named_template(xml_awk_pipeline_source,
+            [pred=PredStr, file=File, tag=TagPattern],
+            [source_order([file, generated])],
+            BashCode)
+    ).
 
 %% known_namespace(+Prefix, -URI)
 known_namespace(pt, 'http://www.pearltrees.com/xmlns/pearl-trees#').
@@ -849,52 +877,6 @@ template_system:template(xml_xmllint_perl_source, Template) :-
         'fi\n'
     ], Template).
 
-%% ============================================
-%% PURE POWERSHELL TEMPLATES
-%% ============================================
-
-% Pure PowerShell template using Select-Xml
-template_system:template(xml_source_powershell_pure, '# {{pred}} - XML source - Pure PowerShell
-# Tags: {{tags}}
-# Generated by UnifyWeaver - Pure PowerShell mode (no bash dependency)
-
-function {{pred}} {
-    param([string]$Key)
-
-    try {
-        # Load XML file
-        [xml]$xmlDoc = Get-Content ''{{file}}'' -Raw
-
-        # Build XPath expression for multiple tags
-        $xpath = "{{xpath_ps}}"
-
-        # Select matching elements
-        $elements = Select-Xml -Xml $xmlDoc -XPath $xpath | ForEach-Object { $_.Node }
-
-        # Output each element as XML string with null byte delimiter
-        foreach ($elem in $elements) {
-            # Convert element to outer XML
-            $xmlString = $elem.OuterXml
-            # Output with null byte delimiter (for compatibility with bash version)
-            [System.Console]::Out.Write($xmlString)
-            [System.Console]::Out.Write([char]0)
-        }
-    } catch {
-        Write-Error "XML processing failed: $_"
-        exit 1
-    }
-}
-
-function {{pred}}_stream {
-    {{pred}}
-}
-
-# Auto-execute when run directly (not when dot-sourced)
-if ($MyInvocation.InvocationName -ne ''.'') {
-    {{pred}} @args
-}
-').
-
 % Template for xmlstarlet engine
 template_system:template(xml_xmlstarlet_source, Template) :-
     atomic_list_concat([
@@ -934,3 +916,37 @@ template_system:template(xml_xmlstarlet_source, Template) :-
         '    {{pred}} "$@"\n',
         'fi\n'
     ], Template).
+
+% Template for awk_pipeline engine (sequential)
+template_system:template(xml_awk_pipeline_source, '#!/bin/bash
+# {{pred}} - XML source (awk pipeline)
+
+{{pred}}() {
+    awk -f scripts/utils/select_xml_elements.awk -v tag="{{tag}}" "{{file}}"
+}
+
+{{pred}}_stream() {
+    {{pred}}
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
+').
+
+% Template for awk_pipeline engine (parallel)
+template_system:template(xml_awk_pipeline_parallel_source, '#!/bin/bash
+# {{pred}} - XML source (awk pipeline parallel)
+
+{{pred}}() {
+    bash scripts/extract_pearltrees_parallel.sh "{{file}}" "$@" --workers={{workers}}
+}
+
+{{pred}}_stream() {
+    {{pred}}
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
+').
