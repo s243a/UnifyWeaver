@@ -900,6 +900,14 @@ public enum JsonColumnSelectorKind
     JsonPath
 }
 
+public enum JsonNullPolicy
+{
+    Allow,
+    Fail,
+    Skip,
+    Default
+}
+
 public sealed record JsonColumnSelectorConfig(string Selector, JsonColumnSelectorKind Kind);
 
 public sealed record JsonSchemaFieldConfig(
@@ -1765,9 +1773,9 @@ public sealed record JsonSourceConfig
                     case JsonPathTokenKind.WildcardProperty:
                         if (element.ValueKind == JsonValueKind.Object)
                         {
-                            foreach (var property in element.EnumerateObject())
+                            foreach (var prop in element.EnumerateObject())
                             {
-                                output.Add(property.Value);
+                                output.Add(prop.Value);
                             }
                         }
                         break;

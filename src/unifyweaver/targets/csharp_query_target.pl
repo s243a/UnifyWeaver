@@ -1022,7 +1022,9 @@ relation_blocks(Relations, ProviderStatements, UsesDynamic) :-
 
 schema_declarations(Relations, SchemaCode) :-
     findall(TypeName-Code,
-        (   member(relation{facts:dynamic(Metadata)}, Relations),
+        (   member(Rel, Relations),
+            get_dict(facts, Rel, Facts),
+            Facts = dynamic(Metadata),
             schema_declaration(Metadata, Code, TypeName)
         ),
         Pairs),
@@ -1035,12 +1037,15 @@ schema_declarations(Relations, SchemaCode) :-
     ).
 
 schema_declaration(Metadata, Code, TypeName) :-
-    (   get_dict(schema_records, Metadata, Records)
-    ->  true
-    ;   Records = []
+    (   get_dict(schema_records, Metadata, Records),
+        Records \= [],
+        member(schema_record{type:TypeAtom, fields:Fields}, Records)
+    ;   % Fallback: synthesize from schema_fields/schema_type if records are absent
+        get_dict(schema_fields, Metadata, Fields),
+        Fields \= [],
+        get_dict(schema_type, Metadata, TypeAtom),
+        TypeAtom \= none
     ),
-    Records \= [],
-    member(schema_record{type:TypeAtom, fields:Fields}, Records),
     schema_declaration(schema_record{type:TypeAtom, fields:Fields}, Code, TypeName).
 
 schema_declaration(schema_record{type:TypeAtom, fields:Fields}, Code, TypeName) :-
@@ -1066,14 +1071,14 @@ schema_field_param(Field, Param) :-
     schema_field_property_name(NameAtom, PropertyName),
     format(atom(Param), '~w ~w', [TypeLiteral, PropertyName]).
 
-schema_field_type_literal(string, 'string').
-schema_field_type_literal(integer, 'int').
-schema_field_type_literal(long, 'long').
-schema_field_type_literal(float, 'double').
-schema_field_type_literal(double, 'double').
-schema_field_type_literal(number, 'double').
-schema_field_type_literal(boolean, 'bool').
-schema_field_type_literal(json, 'string').
+schema_field_type_literal(string, 'string') :- !.
+schema_field_type_literal(integer, 'int') :- !.
+schema_field_type_literal(long, 'long') :- !.
+schema_field_type_literal(float, 'double') :- !.
+schema_field_type_literal(double, 'double') :- !.
+schema_field_type_literal(number, 'double') :- !.
+schema_field_type_literal(boolean, 'bool') :- !.
+schema_field_type_literal(json, 'string') :- !.
 schema_field_type_literal(Type, Literal) :-
     atom_string(Type, Literal).
 
@@ -1174,7 +1179,7 @@ metadata_column_selectors_literal(Metadata, _Arity, Literal) :-
                 format(atom(Item), '                new JsonColumnSelectorConfig(~w, JsonColumnSelectorKind.~w)', [PathLiteral, Enum])
             ),
             Items),
-        atomic_list_concat(Items, '\n', Joined),
+        atomic_list_concat(Items, ',\n', Joined),
         format(atom(Literal), 'new JsonColumnSelectorConfig[]{\n~w\n            }', [Joined])
     ).
 
@@ -1188,17 +1193,17 @@ metadata_type_literal(Metadata, Literal) :-
 metadata_schema_literal(Metadata, Literal) :-
     (   get_dict(schema_fields, Metadata, Fields),
         Fields \= []
-    ->  findall(Item,
-            (   member(Field, Fields),
-                schema_field_literal(Field, Item, '                ')
-            ),
-            Items),
-        atomic_list_concat(Items, '\n', Joined),
+    ->  maplist(schema_field_literal_with_indent('                '), Fields, Items),
+        atomic_list_concat(Items, ',\n', Joined),
         format(atom(Literal), 'new JsonSchemaFieldConfig[]{\n~w\n            }', [Joined])
     ;   Literal = 'Array.Empty<JsonSchemaFieldConfig>()'
     ).
 
+schema_field_literal_with_indent(Indent, Field, Literal) :-
+    once(schema_field_literal(Field, Literal, Indent)).
+
 schema_field_literal(Field, Literal, Indent) :-
+    !,
     get_dict(name, Field, NameAtom),
     get_dict(path, Field, PathString),
     get_dict(selector_kind, Field, KindAtom),
@@ -1225,12 +1230,8 @@ schema_field_literal(Field, Literal, Indent) :-
 schema_nested_literal([], 'null', _) :- !.
 schema_nested_literal(Fields, Literal, Indent) :-
     atom_concat(Indent, '    ', NextIndent),
-    findall(Item,
-        (   member(Field, Fields),
-            schema_field_literal(Field, Item, NextIndent)
-        ),
-        Items),
-    atomic_list_concat(Items, '\n', Joined),
+    maplist(schema_field_literal_with_indent(NextIndent), Fields, Items),
+    atomic_list_concat(Items, ',\n', Joined),
     format(atom(Literal), 'new JsonSchemaFieldConfig[]{\n~w\n~w    }', [Joined, Indent]).
 
 schema_column_type_enum_field(Field, EnumLiteral) :-
@@ -1248,22 +1249,27 @@ schema_field_kind_enum(value, 'Value').
 schema_field_kind_enum(record, 'Record').
 schema_field_kind_enum(Kind, Literal) :-
     atom_string(Kind, KindStr),
-    capitalise_string(KindStr, Literal).
+    capitalise_string(KindStr, Literal),
+    !.
 
-selector_kind_enum(jsonpath, 'JsonPath').
-selector_kind_enum(column_path, 'Path').
-selector_kind_enum(Kind, Enum) :-
-    atom_string(Kind, KindStr),
-    capitalise_string(KindStr, Enum).
+selector_kind_enum(jsonpath, 'JsonPath') :- !.
+selector_kind_enum(column_path, 'Path') :- !.
+selector_kind_enum(path, 'Path') :- !.
+selector_kind_enum(Kind, 'Path') :-
+    string(Kind),
+    !.
+selector_kind_enum(Kind, 'Path') :-
+    atom(Kind),
+    !.
 
-schema_column_type_enum(string, 'String').
-schema_column_type_enum(integer, 'Integer').
-schema_column_type_enum(long, 'Long').
-schema_column_type_enum(float, 'Double').
-schema_column_type_enum(double, 'Double').
-schema_column_type_enum(number, 'Double').
-schema_column_type_enum(boolean, 'Boolean').
-schema_column_type_enum(json, 'Json').
+schema_column_type_enum(string, 'String') :- !.
+schema_column_type_enum(integer, 'Integer') :- !.
+schema_column_type_enum(long, 'Long') :- !.
+schema_column_type_enum(float, 'Double') :- !.
+schema_column_type_enum(double, 'Double') :- !.
+schema_column_type_enum(number, 'Double') :- !.
+schema_column_type_enum(boolean, 'Boolean') :- !.
+schema_column_type_enum(json, 'Json') :- !.
 schema_column_type_enum(Type, Enum) :-
     atom_string(Type, TypeStr),
     capitalise_string(TypeStr, Enum).
