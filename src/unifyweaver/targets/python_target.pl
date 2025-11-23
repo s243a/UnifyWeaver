@@ -4,6 +4,10 @@
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
 
+% Conditional import of call_graph for mutual recursion detection
+% Falls back gracefully if module not available
+:- catch(use_module('../core/advanced/call_graph'), _, true).
+
 /** <module> Python Target Compiler
  *
  * Compiles Prolog predicates to Python scripts using a generator-based pipeline.
@@ -111,18 +115,16 @@ compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
 %  Check if predicate is part of a mutual recursion group
 %  Uses call graph analysis from advanced recursion modules
 is_mutually_recursive(Pred, MutualGroup) :-
-    % Check if the call_graph module is available
+    % Try to use call_graph:predicates_in_group if module is loaded
     catch(
-        use_module(library('../core/advanced/call_graph')),
-        _,
-        fail
-    ),
-    % Find predicates in the same strongly connected component
-    call_graph:predicates_in_group(Pred, Group),
-    % Must be mutually recursive (more than just self)
-    length(Group, Len),
-    Len > 1,
-    MutualGroup = Group.
+        (   call_graph:predicates_in_group(Pred, Group),
+            length(Group, Len),
+            Len > 1,
+            MutualGroup = Group
+        ),
+        _Error,
+        fail  % Silently fail if module not available or predicates not found
+    ).
 
 %% is_tail_recursive(+Name, +RecClauses)
 %  Check if recursive call is in tail position
