@@ -1,5 +1,6 @@
 :- module(xml_query, [
     extract_elements/4,
+    extract_elements/5,
     find_elements/5,
     count_elements/3,
     count_elements/4
@@ -16,12 +17,15 @@
 %  Example:
 %    extract_elements('data.rdf', 'pt:Tree', awk_pipeline, Trees).
 extract_elements(File, Tag, Engine, Elements) :-
+    extract_elements(File, Tag, Engine, [], Elements).
+
+%% extract_elements(+File, +Tag, +Engine, +Options, -Elements)
+%  Options may include:
+%    - case_insensitive(true|false) : pass to awk (IGNORECASE)
+extract_elements(File, Tag, Engine, Options, Elements) :-
     % Compile the xml_source
-    xml_source:compile_source(extract/1, [
-        file(File),
-        tag(Tag),
-        engine(Engine)
-    ], [], BashCode),
+    append([file(File), tag(Tag), engine(Engine)], Options, Config),
+    xml_source:compile_source(extract/1, Config, [], BashCode),
 
     % Save to temp file and execute
     tmp_file('xml_extract', TmpScript),

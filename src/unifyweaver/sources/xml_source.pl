@@ -88,6 +88,15 @@ validate_config(Config) :-
             fail
         )
     ;   true
+    ),
+    % Optional case-insensitive tag matching (bool)
+    (   member(case_insensitive(Value), Config)
+    ->  (   memberchk(Value, [true, false])
+        ->  true
+        ;   format('Error: case_insensitive(~w) must be true or false~n', [Value]),
+            fail
+        )
+    ;   true
     ).
 
 %% ============================================ 
@@ -841,8 +850,12 @@ generate_awk_pipeline_bash(Pred, File, Tags, AllOptions, BashCode) :-
             [source_order([file, generated])],
             BashCode)
     ;   atom_string(Pred, PredStr),
+        (   member(case_insensitive(true), AllOptions)
+        ->  Icase = 1
+        ;   Icase = 0
+        ),
         render_named_template(xml_awk_pipeline_source,
-            [pred=PredStr, file=File, tag=TagPattern],
+            [pred=PredStr, file=File, tag=TagPattern, icase=Icase],
             [source_order([file, generated])],
             BashCode)
     ).
@@ -1110,7 +1123,7 @@ template_system:template(xml_awk_pipeline_source, '#!/bin/bash
 # {{pred}} - XML source (awk pipeline)
 
 {{pred}}() {
-    awk -f scripts/utils/select_xml_elements.awk -v tag="{{tag}}" "{{file}}"
+    awk -f scripts/utils/select_xml_elements.awk -v tag="{{tag}}" -v icase={{icase}} "{{file}}"
 }
 
 {{pred}}_stream() {

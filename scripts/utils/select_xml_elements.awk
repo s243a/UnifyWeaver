@@ -16,6 +16,7 @@
 #   -v tag="PATTERN"      - Tag pattern to match (regex)
 #   -v delimiter="\0"     - Output delimiter (default: null character)
 #   -v include_empty=0    - Include empty elements (default: no)
+#   -v icase=0            - Case-insensitive match (default: 0)
 #
 # Examples:
 #   # Extract all Pearltrees trees
@@ -40,6 +41,12 @@ BEGIN {
     # Set defaults
     if (delimiter == "") delimiter = "\0"
     if (include_empty == "") include_empty = 0
+    if (icase == "") icase = 0
+
+    # Case-insensitive option
+    if (icase != 0) {
+        IGNORECASE = 1
+    }
 
     # State variables
     in_element = 0
@@ -50,6 +57,9 @@ BEGIN {
     if (debug) {
         print "# Selecting elements matching: " tag > "/dev/stderr"
         print "# Delimiter: " (delimiter == "\0" ? "\\0 (null)" : delimiter) > "/dev/stderr"
+        if (icase != 0) {
+            print "# Case-insensitive match enabled" > "/dev/stderr"
+        }
     }
 }
 
