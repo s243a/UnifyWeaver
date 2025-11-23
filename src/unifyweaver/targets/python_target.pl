@@ -946,17 +946,167 @@ generate_rule_functions(Name, Clauses, RuleFunctions) :-
 
 %% generate_rule_function(+Name, +RuleNum, +Head, +Body, -RuleFunc)
 generate_rule_function(Name, RuleNum, Head, Body, RuleFunc) :-
-    % For now, simple stub that yields input unchanged
-    % TODO: Implement actual rule translation with pattern matching and joins
+    (   Body == true
+    ->  % Fact (no body) - emit constant
+        translate_fact_rule(Name, RuleNum, Head, RuleFunc)
+    ;   extract_goals_list(Body, Goals),
+        length(Goals, NumGoals),
+        (   NumGoals == 1
+        ->  % Single goal - copy/transform rule
+            Goals = [SingleGoal],
+            translate_copy_rule(Name, RuleNum, Head, SingleGoal, RuleFunc)
+        ;   % Multiple goals - join rule
+            translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc)
+        )
+    ).
+
+%% translate_fact_rule(+Name, +RuleNum, +Head, -RuleFunc)
+%  Translate a fact (constant) into a rule that emits it once
+translate_fact_rule(_Name, RuleNum, Head, RuleFunc) :-
+    Head =.. [_Pred | Args],
+    extract_constants(Args, ConstPairs),
+    format_dict_pairs(ConstPairs, DictStr),
     format(string(RuleFunc),
 "def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
-    '''Rule ~w for ~w - TODO: implement pattern matching'''
-    # Placeholder: just return the fact unchanged
-    yield fact
-", [RuleNum, RuleNum, Name]).
+    '''Fact: ~w'''
+    # Emit constant fact once (only if not already in total)
+    result = FrozenDict.from_dict({~w})
+    if result not in total:
+        yield result
+", [RuleNum, Head, DictStr]).
+
+%% extract_constants(+Args, -Pairs)
+%  Extract constant values from arguments
+extract_constants(Args, Pairs) :-
+    findall(Key-Value,
+        (   nth1(Idx, Args, Arg),
+            atom(Arg),
+            \+ var(Arg),
+            Key is Idx - 1,  % 0-indexed
+            atom_string(Arg, Value)
+        ),
+        Pairs).
+
+%% format_dict_pairs(+Pairs, -DictStr)
+format_dict_pairs(Pairs, DictStr) :-
+    findall(Pair,
+        (   member(Key-Value, Pairs),
+            format(string(Pair), "'arg~w': '~w'", [Key, Value])
+        ),
+        PairStrs),
+    atomic_list_concat(PairStrs, ", ", DictStr).
+
+%% translate_copy_rule(+Name, +RuleNum, +Head, +Goal, -RuleFunc)
+%  Translate a simple copy/transform rule (single goal in body)
+translate_copy_rule(_Name, RuleNum, Head, Goal, RuleFunc) :-
+    % Extract variable mappings
+    Head =.. [_HeadPred | HeadArgs],
+    Goal =.. [GoalPred | GoalArgs],
+    
+    % Build pattern match condition
+    length(GoalArgs, GoalArity),
+    findall(Check,
+        (   between(0, GoalArity, Idx),
+            Idx < GoalArity,
+            format(string(Check), "'arg~w' in fact", [Idx])
+        ),
+        Checks),
+    atomic_list_concat(Checks, " and ", ConditionStr),
+    
+    % Build output dict
+    findall(Assign,
+        (   nth0(HeadIdx, HeadArgs, HeadArg),
+            nth0(GoalIdx, GoalArgs, GoalArg),
+            HeadArg == GoalArg,  % Same variable
+            format(string(Assign), "'arg~w': fact.get('arg~w')", [HeadIdx, GoalIdx])
+        ),
+        Assigns),
+    atomic_list_concat(Assigns, ", ", OutputStr),
+    
+    atom_string(GoalPred, _GoalPredStr),
+    format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Copy rule: ~w -> ~w'''
+    # Match pattern and copy variables
+    if ~w:
+        yield FrozenDict.from_dict({~w})
+", [RuleNum, Goal, Name, ConditionStr, OutputStr]).
+
+%% translate_join_rule(+Name, +RuleNum, +Head, +Goals, -RuleFunc)
+%  Translate a join rule (multiple goals in body)
+translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc) :-
+    % For now, handle the common case: 2 goals with a join variable
+    (   Goals = [Goal1, Goal2]
+    ->  translate_binary_join(Name, RuleNum, Head, Goal1, Goal2, RuleFunc)
+    ;   % Fallback for complex cases
+        format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Complex rule: ~w - TODO: implement multi-goal joins'''
+    return iter([])
+", [RuleNum, Head])
+    ).
+
+%% translate_binary_join(+Name, +RuleNum, +Head, +Goal1, +Goal2, -RuleFunc)
+translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc) :-
+    % Extract predicates and arguments
+    Goal1 =.. [Pred1 | Args1],
+    Goal2 =.. [Pred2 | Args2],
+    Head =.. [_HeadPred | HeadArgs],
+    
+    % Find join variable (appears in both goals)
+    findall(Var-Idx1-Idx2,
+        (   nth0(Idx1, Args1, Var),
+            nth0(Idx2, Args2, Var),
+            \+ atom(Var)  % Variable, not constant
+        ),
+        JoinVars),
+    
+    % Build join condition
+    (   JoinVars = [_Var-JIdx1-JIdx2|_]
+    ->  format(string(JoinCond), "other.get('arg~w') == fact.get('arg~w')", [JIdx2, JIdx1])
+    ;   JoinCond = "True"  % No explicit join
+    ),
+    
+    % Build output mapping
+    findall(OutAssign,
+        (   nth0(HIdx, HeadArgs, HVar),
+            (   nth0(G1Idx, Args1, HVar)
+            ->  format(string(OutAssign), "'arg~w': fact.get('arg~w')", [HIdx, G1Idx])
+            ;   nth0(G2Idx, Args2, HVar),
+                format(string(OutAssign), "'arg~w': other.get('arg~w')", [HIdx, G2Idx])
+            )
+        ),
+        OutAssigns),
+    atomic_list_concat(OutAssigns, ", ", OutputMapping),
+    
+    % Pattern match for first goal
+    length(Args1, Arity1),
+    findall(PatCheck,
+        (   between(0, Arity1, Idx),
+            Idx < Arity1,
+            format(string(PatCheck), "'arg~w' in fact", [Idx])
+        ),
+        PatChecks),
+    atomic_list_concat(PatChecks, " and ", Pattern1),
+    
+    atom_string(Pred1, _Pred1Str),
+    atom_string(Pred2, _Pred2Str),
+    
+    format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Join rule: ~w :- ~w, ~w'''
+    # Match first goal pattern
+    if ~w:
+        # Join with second predicate facts
+        for other in total:
+            # Check join condition
+            if ~w:
+                yield FrozenDict.from_dict({~w})
+", [RuleNum, Head, Goal1, Goal2, Pattern1, JoinCond, OutputMapping]).
+
 
 %% generate_fixpoint_loop(+Name, +Clauses, -FixpointLoop)
-generate_fixpoint_loop(Name, Clauses, FixpointLoop) :-
+generate_fixpoint_loop(_Name, Clauses, FixpointLoop) :-
     length(Clauses, NumRules),
     findall(RuleCall,
         (   between(1, NumRules, RuleNum),
