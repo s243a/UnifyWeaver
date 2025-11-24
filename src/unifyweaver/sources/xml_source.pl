@@ -417,8 +417,10 @@ compile_field_extraction_inline(Pred/Arity, File, Tag, FieldSpec, Options, BashC
 
     % Save AWK script to temp file
     tmp_file_inline('xml_field', TmpAwkFile),
+    % Resolve to absolute path so the bash wrapper can find it
+    absolute_file_name(TmpAwkFile, AbsAwkFile),
     setup_call_cleanup(
-        open(TmpAwkFile, write, AwkStream),
+        open(AbsAwkFile, write, AwkStream),
         format(AwkStream, '~w', [AwkScript]),
         close(AwkStream)
     ),
@@ -431,7 +433,7 @@ compile_field_extraction_inline(Pred/Arity, File, Tag, FieldSpec, Options, BashC
             pred=PredStr,
             file=File,
             tag=TagStr,
-            awk_script=TmpAwkFile
+            awk_script=AbsAwkFile
         ],
         [source_order([file, generated])],
         BashCode).
@@ -519,7 +521,9 @@ dict_field_format_inline(FieldName, Format) :-
 tmp_file_inline(Prefix, Path) :-
     (   getenv('TMPDIR', TmpDir)
     ->  true
-    ;   TmpDir = '.'
+    ;   getenv('CSHARP_QUERY_OUTPUT_DIR', TmpDir)  % reuse output_dir if set
+    ->  true
+    ;   TmpDir = 'tmp'
     ),
     get_time(Time),
     format(atom(Path), '~w/~w_~w.awk', [TmpDir, Prefix, Time]).
