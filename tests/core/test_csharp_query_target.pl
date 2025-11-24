@@ -485,6 +485,20 @@ verify_xml_dynamic_source_plan_ :-
         "_{id:3, name:Gamma}"
     ]).
 
+verify_xml_nested_projection_plan :-
+    setup_call_cleanup(
+        setup_xml_dynamic_source_nested,
+        verify_xml_nested_projection_plan_(),
+        cleanup_xml_dynamic_source_nested
+    ).
+
+verify_xml_nested_projection_plan_ :-
+    csharp_query_target:build_query_plan(test_xml_item_nested/1, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'XmlStreamReader'),
+    sub_string(Source, _, _, _, 'NestedProjection = true'),
+    sub_string(Source, _, _, _, 'test_xml_fragments.txt').
+
 setup_csv_dynamic_source :-
     source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),
     assertz(user:(test_user_age(Name, Age) :- test_users(_, Name, Age))).
@@ -545,6 +559,20 @@ setup_json_schema_source :-
         record_type('ProductRecord')
     ]),
     assertz(user:(test_product_record(Row) :- test_product_record_source(Row))).
+
+setup_xml_dynamic_source_nested :-
+    source(xml, test_xml_items_nested, [
+        file('test_data/test_xml_fragments.txt'),
+        record_format(xml),
+        record_separator(line_feed),
+        nested_projection(true)
+    ]),
+    assertz(user:(test_xml_item_nested(Row) :- test_xml_items_nested(Row))).
+
+cleanup_xml_dynamic_source_nested :-
+    retractall(user:test_xml_item_nested(_)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_xml_items_nested/1, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_xml_items_nested/1, _)).
 
 cleanup_json_schema_source :-
     retractall(user:test_product_record(_)),

@@ -744,6 +744,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
         public int ExpectedWidth { get; init; } = 1;
         public IReadOnlyDictionary<string, string>? NamespacePrefixes { get; init; } = BuiltinNamespacePrefixes;
         public bool TreatPearltreesCDataAsText { get; init; } = true;
+        public bool NestedProjection { get; init; } = false;
     }
 
     public sealed class DelimitedTextReader
@@ -1001,11 +1002,24 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
             var content = ExtractElementText(element);
 
-            map[local] = content;
-            map[qualified] = content;
-            if (!string.IsNullOrEmpty(prefix))
+            if (_config.NestedProjection)
             {
-                map[$"{prefix}:{local}"] = content;
+                var nested = BuildNested(element);
+                map[local] = nested;
+                map[qualified] = nested;
+                if (!string.IsNullOrEmpty(prefix))
+                {
+                    map[$"{prefix}:{local}"] = nested;
+                }
+            }
+            else
+            {
+                map[local] = content;
+                map[qualified] = content;
+                if (!string.IsNullOrEmpty(prefix))
+                {
+                    map[$"{prefix}:{local}"] = content;
+                }
             }
 
             foreach (var attr in element.Attributes())
@@ -1026,6 +1040,41 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             {
                 AddElement(map, child);
             }
+        }
+
+        private object BuildNested(XElement element)
+        {
+            if (!element.HasElements)
+            {
+                return ExtractElementText(element);
+            }
+            var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var child in element.Elements())
+            {
+                var key = child.Name.LocalName;
+                var value = BuildNested(child);
+                if (dict.ContainsKey(key))
+                {
+                    // If multiple children with same name, store as list
+                    if (dict[key] is List<object?> list)
+                    {
+                        list.Add(value);
+                    }
+                    else
+                    {
+                        dict[key] = new List<object?> { dict[key], value };
+                    }
+                }
+                else
+                {
+                    dict[key] = value;
+                }
+            }
+            foreach (var attr in element.Attributes())
+            {
+                dict[$"@{attr.Name.LocalName}"] = attr.Value;
+            }
+            return dict;
         }
 
         private string ExtractElementText(XElement element)

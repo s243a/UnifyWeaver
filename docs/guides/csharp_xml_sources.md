@@ -29,6 +29,7 @@ The generated plan uses `XmlStreamReader` which:
 - CDATA content is preserved as text (e.g., `<![CDATA[Hacktivism]]>` → `Hacktivism`).
 - If your fragments carry namespaces (Pearltrees uses `pt:`), both local and `prefix:local` keys are emitted.
 - For stream-friendly files, keep one fragment per delimiter (NUL or newline). Avoid multi-line fragments when using `record_separator(line_feed)`.
+- Optional `NestedProjection=true` builds a nested dictionary (children grouped under parent keys) instead of a flat map.
 
 ## Future: Pearltrees helper
 Pearltrees RDF exports use `pt:` plus CDATA-wrapped titles. A specialized helper could subclass the XML reader to apply Pearltrees defaults (prefix map, CDATA handling) automatically. For now, the generic reader already preserves CDATA and injects a `pt` prefix for Pearltrees namespaces; set `record_format(xml)` and a suitable delimiter. 
