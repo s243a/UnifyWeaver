@@ -526,6 +526,11 @@ template(xml_awk_field_extraction, [
 "    awk -f scripts/utils/select_xml_elements.awk -v tag=\"{{tag}}\" {{file}} | \\",
 "    awk -f {{awk_script}}",
 "}",
+"",
+"# Invoke if executed directly",
+"if [[ \"${BASH_SOURCE[0]}\" == \"${0}\" ]]; then",
+"    {{pred}} \"$@\"",
+"fi",
 ""
 ]).
 
