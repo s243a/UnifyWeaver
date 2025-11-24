@@ -1105,6 +1105,8 @@ dynamic_reader_literal(Metadata, Arity, Literal) :-
     ),
     (   (Format == json ; Format == jsonl)
     ->  json_reader_literal(Metadata, Arity, Literal)
+    ;   Format == xml
+    ->  xml_reader_literal(Metadata, Arity, Literal)
     ;   delimited_reader_literal(Metadata, Arity, Literal)
     ).
 
@@ -1163,6 +1165,26 @@ json_reader_literal(Metadata, Arity, Literal) :-
                 NullReplacement = ~w
             })',
         [InputLiteral, ColumnLiteral, RecSepLiteral, SkipRows, Arity, TreatArrayLiteral, TypeLiteral, ReturnLiteral, SchemaLiteral, NullPolicyLiteral, NullDefaultLiteral]).
+
+xml_reader_literal(Metadata, Arity, Literal) :-
+    metadata_input_literal(Metadata, InputLiteral),
+    (   get_dict(record_separator, Metadata, RecSep0)
+    ->  true
+    ;   RecSep0 = nul
+    ),
+    record_separator_literal(RecSep0, RecSepLiteral),
+    (   get_dict(expected_width, Metadata, Width0)
+    ->  Width = Width0
+    ;   Width = Arity
+    ),
+    format(atom(Literal),
+'new XmlStreamReader(new XmlSourceConfig
+            {
+                InputPath = ~w,
+                RecordSeparator = RecordSeparatorKind.~w,
+                ExpectedWidth = ~w
+            })',
+        [InputLiteral, RecSepLiteral, Width]).
 
 metadata_column_selectors_literal(Metadata, _Arity, Literal) :-
     (   get_dict(column_selectors, Metadata, Selectors),

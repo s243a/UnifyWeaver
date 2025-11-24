@@ -273,6 +273,7 @@ normalize_record_separator(Atom, Atom).
 
 default_record_separator(json, json).
 default_record_separator(jsonl, line_feed).
+default_record_separator(xml, nul).
 default_record_separator(_, nul).
 
 normalize_field_separator(none, none) :- !.
@@ -283,6 +284,8 @@ normalize_field_separator(Value, Value).
 normalize_record_format(text, text_line) :- !.
 normalize_record_format(json, json) :- !.
 normalize_record_format(jsonl, jsonl) :- !.
+normalize_record_format(xml, xml) :- !.
+normalize_record_format(xml_fragment, xml) :- !.
 normalize_record_format(Format, Format).
 
 normalize_input(stdin, stdin) :- !.

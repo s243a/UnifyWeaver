@@ -466,6 +466,19 @@ verify_json_object_source_plan_ :-
         '{"id":"P003","name":"Keyboard","price":75}'
     ]).
 
+verify_xml_dynamic_source_plan :-
+    setup_call_cleanup(
+        setup_xml_dynamic_source,
+        verify_xml_dynamic_source_plan_(),
+        cleanup_xml_dynamic_source
+    ).
+
+verify_xml_dynamic_source_plan_ :-
+    csharp_query_target:build_query_plan(test_xml_item/1, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'XmlStreamReader'),
+    sub_string(Source, _, _, _, 'test_xml_fragments.txt').
+
 setup_csv_dynamic_source :-
     source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),
     assertz(user:(test_user_age(Name, Age) :- test_users(_, Name, Age))).
@@ -501,6 +514,19 @@ cleanup_json_dynamic_source :-
     retractall(user:test_product_price(_, _)),
     retractall(dynamic_source_compiler:dynamic_source_def(test_products/3, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_products/3, _)).
+
+setup_xml_dynamic_source :-
+    source(xml, test_xml_items, [
+        file('test_data/test_xml_fragments.txt'),
+        record_format(xml),
+        record_separator(line_feed)
+    ]),
+    assertz(user:(test_xml_item(Row) :- test_xml_items(Row))).
+
+cleanup_xml_dynamic_source :-
+    retractall(user:test_xml_item(_)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_xml_items/1, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_xml_items/1, _)).
 
 setup_json_schema_source :-
     source(json, test_product_record_source, [

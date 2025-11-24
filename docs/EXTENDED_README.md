@@ -961,6 +961,10 @@ UnifyWeaver provides a robust C# compilation system that integrates seamlessly w
 - **Pre-Compilation**: Fallback to `Add-Type` for simple scripts.
 - **File Locking Solution**: Unique build directories prevent DLL locking issues.
 - **LiteDB Support**: Built-in integration for NoSQL document storage.
+- **Dynamic Sources (CSV/JSON/XML)**:
+  - `DelimitedTextReader` for CSV/TSV (NUL- or LF-delimited)
+  - `JsonStreamReader` for JSON/JSONL with schema/type hints and null policy
+  - `XmlStreamReader` for NUL- or LF-delimited XML fragments; matches both prefixes and fully-qualified names and projects elements/attributes into a dictionary per record.
 
 **See [DOTNET_COMPILATION.md](DOTNET_COMPILATION.md) for the complete guide.**
 

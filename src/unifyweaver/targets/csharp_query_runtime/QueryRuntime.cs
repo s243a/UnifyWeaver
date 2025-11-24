@@ -10,6 +10,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Globalization;
+using System.Xml.Linq;
 
 namespace UnifyWeaver.QueryRuntime
 {
@@ -736,6 +737,13 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
         public int ExpectedWidth { get; init; } = 0;
     }
 
+    public sealed record XmlSourceConfig
+    {
+        public string InputPath { get; init; } = string.Empty;
+        public RecordSeparatorKind RecordSeparator { get; init; } = RecordSeparatorKind.Null;
+        public int ExpectedWidth { get; init; } = 1;
+    }
+
     public sealed class DelimitedTextReader
     {
         private readonly DynamicSourceConfig _config;
@@ -875,6 +883,141 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                 return false;
             }
             return string.CompareOrdinal(record, index, separator, 0, separator.Length) == 0;
+        }
+    }
+
+    public sealed class XmlStreamReader
+    {
+        private readonly XmlSourceConfig _config;
+
+        public XmlStreamReader(XmlSourceConfig config)
+        {
+            _config = config ?? throw new ArgumentNullException(nameof(config));
+            if (string.IsNullOrWhiteSpace(_config.InputPath))
+                throw new ArgumentException("InputPath is required", nameof(config));
+            if (_config.ExpectedWidth <= 0)
+                throw new ArgumentException("ExpectedWidth must be positive", nameof(config));
+        }
+
+        public IEnumerable<object[]> Read()
+        {
+            return _config.RecordSeparator == RecordSeparatorKind.Null
+                ? ReadNullSeparated()
+                : ReadLineSeparated();
+        }
+
+        private IEnumerable<object[]> ReadLineSeparated()
+        {
+            foreach (var fragment in SplitFragments(File.ReadLines(_config.InputPath), '\n'))
+            {
+                var row = ParseFragment(fragment);
+                if (row is not null)
+                {
+                    yield return row;
+                }
+            }
+        }
+
+        private IEnumerable<object[]> ReadNullSeparated()
+        {
+            var text = File.ReadAllText(_config.InputPath, Encoding.UTF8);
+            var parts = text.Split('\0');
+            foreach (var fragment in parts)
+            {
+                var row = ParseFragment(fragment);
+                if (row is not null)
+                {
+                    yield return row;
+                }
+            }
+        }
+
+        private static IEnumerable<string> SplitFragments(IEnumerable<string> lines, char delimiter)
+        {
+            var buffer = new StringBuilder();
+            foreach (var line in lines)
+            {
+                if (line.Length == 1 && line[0] == delimiter)
+                {
+                    yield return buffer.ToString();
+                    buffer.Clear();
+                }
+                else
+                {
+                    buffer.AppendLine(line);
+                }
+            }
+            if (buffer.Length > 0)
+            {
+                yield return buffer.ToString();
+            }
+        }
+
+        private object[]? ParseFragment(string fragment)
+        {
+            if (string.IsNullOrWhiteSpace(fragment))
+            {
+                return null;
+            }
+
+            try
+            {
+                var doc = XDocument.Parse(fragment, LoadOptions.PreserveWhitespace | LoadOptions.SetLineInfo);
+                var map = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                if (doc.Root is XElement root)
+                {
+                    AddElement(map, root);
+                }
+                if (_config.ExpectedWidth <= 1)
+                {
+                    return new object[] { map };
+                }
+                var values = map.Values.Take(_config.ExpectedWidth).ToList();
+                while (values.Count < _config.ExpectedWidth)
+                {
+                    values.Add(null);
+                }
+                return values.ToArray();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException($"Failed to parse XML fragment: {ex.Message}", ex);
+            }
+        }
+
+        private static void AddElement(IDictionary<string, object?> map, XElement element)
+        {
+            var local = element.Name.LocalName;
+            var qualified = element.Name.ToString();
+            var prefix = element.GetPrefixOfNamespace(element.Name.Namespace);
+
+            var content = element.Value;
+
+            map[local] = content;
+            map[qualified] = content;
+            if (!string.IsNullOrEmpty(prefix))
+            {
+                map[$"{prefix}:{local}"] = content;
+            }
+
+            foreach (var attr in element.Attributes())
+            {
+                var attrLocal = attr.Name.LocalName;
+                var attrQualified = attr.Name.ToString();
+                var attrPrefix = element.GetPrefixOfNamespace(attr.Name.Namespace);
+
+                map[$"@{attrLocal}"] = attr.Value;
+                map[$"@{attrQualified}"] = attr.Value;
+                if (!string.IsNullOrEmpty(attrPrefix))
+                {
+                    map[$"@{attrPrefix}:{attrLocal}"] = attr.Value;
+                }
+            }
+
+            foreach (var child in element.Elements())
+            {
+                AddElement(map, child);
+            }
         }
     }
 
