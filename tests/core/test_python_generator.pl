@@ -61,6 +61,25 @@ test(generator_execution, [condition(python_available)]) :-
     retractall(edge(_,_)),
     retractall(path(_,_)),
     !.
+test(disjunction_generator) :-
+    % Test disjunction (OR) in generator mode
+    assertz(young(alice)),
+    assertz(senior(bob)),
+    assertz((valid(X) :- (young(X) ; senior(X)))),
+    
+    compile_predicate_to_python(valid/1, [mode(generator)], Code),
+    
+    % Should generate disjunctive rule
+    sub_string(Code, _, _, _, "Disjunctive rule"),
+    % Should have fixpoint loop
+    sub_string(Code, _, _, _, "process_stream_generator"),
+    % Should generate rule function
+    sub_string(Code, _, _, _, "_apply_rule_"),
+    
+    retractall(young(_)),
+    retractall(senior(_)),
+    retractall(valid(_)),
+    !.
 
 python_available :-
     catch(process_create(path(python), ['--version'], [stderr(null)]), _, fail).
