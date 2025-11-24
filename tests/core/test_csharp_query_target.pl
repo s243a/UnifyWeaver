@@ -477,7 +477,13 @@ verify_xml_dynamic_source_plan_ :-
     csharp_query_target:build_query_plan(test_xml_item/1, [target(csharp_query)], Plan),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'XmlStreamReader'),
-    sub_string(Source, _, _, _, 'test_xml_fragments.txt').
+    sub_string(Source, _, _, _, 'test_xml_fragments.txt'),
+    % Validate dictionary projection picks up local + qualified keys
+    maybe_run_query_runtime(Plan, [
+        "_{id:1, name:Alpha, '@lang':en}",
+        "_{id:2, title:Hacktivism, 'pt:item':Hacktivism, '@code':X, '@pt:id':2, '@pt:code':A1}",
+        "_{id:3, name:Gamma}"
+    ]).
 
 setup_csv_dynamic_source :-
     source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),

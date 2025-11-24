@@ -1,3 +1,3 @@
-<item><id>1</id><name>Alpha</name></item>
-<item><id>2</id><name>Beta</name></item>
+<item><id>1</id><name lang="en">Alpha</name></item>
+<pt:item xmlns:pt="http://www.pearltrees.com/rdf/0.1/#" code="X"><pt:id code="A1"><![CDATA[2]]></pt:id><title><![CDATA[Hacktivism]]></title></pt:item>
 <item><id>3</id><name>Gamma</name></item>
