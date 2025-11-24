@@ -742,6 +742,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
         public string InputPath { get; init; } = string.Empty;
         public RecordSeparatorKind RecordSeparator { get; init; } = RecordSeparatorKind.Null;
         public int ExpectedWidth { get; init; } = 1;
+        public IReadOnlyDictionary<string, string>? NamespacePrefixes { get; init; } = BuiltinNamespacePrefixes;
     }
 
     public sealed class DelimitedTextReader
@@ -889,6 +890,12 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
     public sealed class XmlStreamReader
     {
         private readonly XmlSourceConfig _config;
+        private static readonly IReadOnlyDictionary<string, string> BuiltinNamespacePrefixes =
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                { "http://www.pearltrees.com/rdf/0.1/#", "pt" },
+                { "http://purl.org/dc/elements/1.1/", "dcterms" }
+            };
 
         public XmlStreamReader(XmlSourceConfig config)
         {
@@ -989,7 +996,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
         {
             var local = element.Name.LocalName;
             var qualified = element.Name.ToString();
-            var prefix = element.GetPrefixOfNamespace(element.Name.Namespace);
+            var prefix = ResolvePrefix(element.Name);
 
             var content = element.Value;
 
@@ -1004,7 +1011,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             {
                 var attrLocal = attr.Name.LocalName;
                 var attrQualified = attr.Name.ToString();
-                var attrPrefix = element.GetPrefixOfNamespace(attr.Name.Namespace);
+                var attrPrefix = ResolvePrefix(attr.Name);
 
                 map[$"@{attrLocal}"] = attr.Value;
                 map[$"@{attrQualified}"] = attr.Value;
@@ -1018,6 +1025,35 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             {
                 AddElement(map, child);
             }
+        }
+
+        private string? ResolvePrefix(XName name)
+        {
+            var direct = name.NamespaceName.Length > 0
+                ? name.GetPrefixOfNamespace(name.Namespace)
+                : null;
+            if (!string.IsNullOrEmpty(direct))
+            {
+                return direct;
+            }
+
+            var ns = name.NamespaceName;
+            if (string.IsNullOrEmpty(ns))
+            {
+                return null;
+            }
+
+            if (_config.NamespacePrefixes is { } map && map.TryGetValue(ns, out var mapped))
+            {
+                return mapped;
+            }
+
+            if (BuiltinNamespacePrefixes.TryGetValue(ns, out var builtin))
+            {
+                return builtin;
+            }
+
+            return null;
         }
     }
 
