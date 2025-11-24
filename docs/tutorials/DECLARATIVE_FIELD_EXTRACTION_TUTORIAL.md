@@ -50,7 +50,9 @@ parse_product_xml(XML, product(ID, Name)) :-
     fields([
         id: 'productId',
         name: 'productName'
-    ])
+    ]),
+    engine(awk_pipeline),    % or engine(prolog_sgml)
+    field_impl(modular)      % AWK impl: modular (default) or inline; legacy: field_compiler/1
 ]).
 
 % Use directly!

@@ -18,7 +18,7 @@
 
 % Strategy 1: Modular (Option B - AWK via xml_field_compiler)
 :- source(xml, trees_modular, [
-    file('../context/PT/pearltrees_export.rdf'),
+    file('context/PT/pearltrees_export.rdf'),
     tag('pt:Tree'),
     fields([
         id: 'pt:treeId',
@@ -30,7 +30,7 @@
 
 % Strategy 2: Inline (Option A - AWK in xml_source.pl)
 :- source(xml, trees_inline, [
-    file('../context/PT/pearltrees_export.rdf'),
+    file('context/PT/pearltrees_export.rdf'),
     tag('pt:Tree'),
     fields([
         id: 'pt:treeId',
@@ -42,7 +42,7 @@
 
 % Strategy 3: Pure Prolog (Option C - library(sgml))
 :- source(xml, trees_prolog, [
-    file('../context/PT/pearltrees_export.rdf'),
+    file('context/PT/pearltrees_export.rdf'),
     tag('pt:Tree'),
     fields([
         id: 'pt:treeId',
@@ -64,7 +64,7 @@ compile_and_execute(SourceName, Results) :-
     % Get temp directory
     (   getenv('TMPDIR', TmpDir)
     ->  true
-    ;   TmpDir = '/data/data/com.termux/files/usr/tmp'
+    ;   TmpDir = 'tmp'
     ),
 
     % Save to temp file
@@ -77,14 +77,15 @@ compile_and_execute(SourceName, Results) :-
         close(Stream)
     ),
 
-    % Execute
+    % Execute (keep helper scripts alive; rely on absolute paths)
     format(atom(Command), 'bash ~w > ~w 2>&1', [ScriptFile, OutputFile]),
     shell(Command),
 
-    % Read results
+    % Read results (handle NUL- or newline-delimited output)
     read_file_to_string(OutputFile, ResultsText, []),
-    split_string(ResultsText, "\n", "\n\0", Lines),
-    delete(Lines, "", Results).
+    % Split on newlines; treat NUL/CR as padding to drop
+    split_string(ResultsText, "\n", "\r\0", Raw0),
+    exclude(=("") , Raw0, Results).
 
 %% test_strategy(+Name, +SourceName)
 test_strategy(Name, SourceName) :-
@@ -142,9 +143,9 @@ main :-
     format('╚══════════════════════════════════════════════════╝~n', []),
 
     % Check if data file exists
-    (   exists_file('../context/PT/pearltrees_export.rdf')
+    (   exists_file('context/PT/pearltrees_export.rdf')
     ->  format('~n✓ Data file found~n', [])
-    ;   format('~n✗ Data file not found: ../context/PT/pearltrees_export.rdf~n', []),
+    ;   format('~n✗ Data file not found: context/PT/pearltrees_export.rdf~n', []),
         format('  Please ensure the file exists before running this test.~n', []),
         halt(1)
     ),

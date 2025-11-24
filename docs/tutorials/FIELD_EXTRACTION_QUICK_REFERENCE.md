@@ -28,8 +28,24 @@
 | `fields([...])` | List | Required for field extraction | Field specifications |
 | `engine(Engine)` | `awk_pipeline`, `iterparse`, `xmllint`, `xmlstarlet` | `awk_pipeline` | Extraction engine |
 | `output(Format)` | `dict`, `list`, `compound(F)` | `dict` | Output format |
-| `field_compiler(Strategy)` | `modular`, `inline`, `prolog` | `modular` | Implementation strategy |
+| `field_impl(Strategy)` | `modular`, `inline` | `modular` | AWK implementation (use with `engine(awk_pipeline)`) |
+| `field_compiler(Strategy)` | `modular`, `inline`, `prolog` | `modular` | Legacy selector (prolog -> engine(prolog_sgml)) |
 | `case_insensitive(Bool)` | `true`, `false` | `false` | Case-insensitive tag match (awk_pipeline) |
+
+### Field compilers (naming)
+- `modular` (AWK via `xml_field_compiler`): faster, external awk/bash; better for larger files; limited namespace handling.
+- `inline` (AWK regex in `xml_source.pl`): self-contained awk script; very fast but brittle (regex-based, minimal namespace support).
+- `prolog` (library(sgml)): pure Prolog parsing; more robust for namespaces/structure; slower; no external tools.
+
+### Engine applicability (field extraction)
+- **awk_pipeline (inline/modular)**: fast, regex-based; limited namespace handling; respects `case_insensitive/1`; uses awk/bash (firewall: system tools).
+- **prolog (sgml)**: pure Prolog parsing; more robust namespaces; slower; avoids external tools.
+- **iterparse/xmllint/xmlstarlet**: streaming/parsing alternatives (availability/constraints may vary; verify before use).
+
+### Preference & sandbox notes
+- Default engine is `awk_pipeline`; override with `engine/1` if you need Prolog/SGML or other parsers.
+- awk_pipeline invokes system awk/bash; ensure firewall/sandbox policies allow these tools.
+- Prolog/SGML stays in-process (no external binaries) but may be slower.
 
 ---
 

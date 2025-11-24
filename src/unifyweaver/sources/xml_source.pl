@@ -64,9 +64,9 @@ validate_config(Config) :-
     % Validate engine if specified
     (   member(engine(Engine), Config)
     ->  (
-            memberchk(Engine, [iterparse, xmllint, xmlstarlet, awk_pipeline])
+            memberchk(Engine, [iterparse, xmllint, xmlstarlet, awk_pipeline, prolog_sgml])
         ->  true
-        ;   format('Error: invalid engine ~w. Must be one of [iterparse, xmllint, xmlstarlet, awk_pipeline]~n', [Engine]),
+        ;   format('Error: invalid engine ~w. Must be one of [iterparse, xmllint, xmlstarlet, awk_pipeline, prolog_sgml]~n', [Engine]),
             fail
         )
     ;   true
@@ -94,6 +94,15 @@ validate_config(Config) :-
     ->  (   memberchk(Value, [true, false])
         ->  true
         ;   format('Error: case_insensitive(~w) must be true or false~n', [Value]),
+            fail
+        )
+    ;   true
+    ),
+    % Optional field implementation selector (awk variants)
+    (   member(field_impl(Impl), Config)
+    ->  (   memberchk(Impl, [modular, inline])
+        ->  true
+        ;   format('Error: field_impl(~w) must be modular or inline~n', [Impl]),
             fail
         )
     ;   true
@@ -305,6 +314,18 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     ->  Tags = [SingleTag]
     ),
 
+    % Determine engine (default: awk_pipeline)
+    (   member(engine(EngineOpt), AllOptions)
+    ->  Engine = EngineOpt
+    ;   Engine = awk_pipeline
+    ),
+
+    % Backward compatibility: field_compiler(prolog) implies engine prolog_sgml
+    (   member(field_compiler(prolog), AllOptions)
+    ->  EngineAdj = prolog_sgml
+    ;   EngineAdj = Engine
+    ),
+
     % Check for field extraction
     (   member(fields(FieldSpec), AllOptions)
     ->  % Field extraction requested
@@ -313,30 +334,9 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
         ;   format('Error: Field extraction requires exactly one tag, got: ~w~n', [Tags]),
             fail
         ),
-        % Choose implementation based on configuration
-        field_extraction_strategy(AllOptions, Strategy),
-        (   Strategy = modular
-        ->  format('  Using field extraction compiler (modular)~n', []),
-            xml_field_compiler:compile_field_extraction(
-                Pred/Arity,
-                File,
-                SingleTag,
-                FieldSpec,
-                AllOptions,
-                BashCode
-            )
-        ;   Strategy = inline
-        ->  format('  Using field extraction (inline)~n', []),
-            compile_field_extraction_inline(
-                Pred/Arity,
-                File,
-                SingleTag,
-                FieldSpec,
-                AllOptions,
-                BashCode
-            )
-        ;   Strategy = prolog
-        ->  format('  Using field extraction (pure Prolog/SGML)~n', []),
+        % Choose implementation/engine based on configuration
+        (   EngineAdj == prolog_sgml
+        ->  true,  % silent
             compile_field_extraction_prolog(
                 Pred/Arity,
                 File,
@@ -345,6 +345,31 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
                 AllOptions,
                 BashCode
             )
+        ;   EngineAdj == awk_pipeline
+        ->  field_impl_choice(AllOptions, Impl),
+            (   Impl = modular
+            ->  true,  % silent
+                xml_field_compiler:compile_field_extraction(
+                    Pred/Arity,
+                    File,
+                    SingleTag,
+                    FieldSpec,
+                    AllOptions,
+                    BashCode
+                )
+            ;   Impl = inline
+            ->  true,  % silent
+                compile_field_extraction_inline(
+                    Pred/Arity,
+                    File,
+                    SingleTag,
+                    FieldSpec,
+                    AllOptions,
+                    BashCode
+                )
+            )
+        ;   format('Error: Field extraction engine ~w not supported~n', [EngineAdj]),
+            fail
         )
     ;   % No fields() - use standard element extraction
         compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode)
@@ -356,15 +381,17 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
 %    - modular: Delegate to xml_field_compiler (Option B)
 %    - inline: Self-contained AWK in xml_source.pl (Option A)
 %    - prolog: Pure Prolog using library(sgml) (Option C)
-field_extraction_strategy(Options, Strategy) :-
-    (   member(field_compiler(StrategySpec), Options)
-    ->  (   memberchk(StrategySpec, [modular, inline, prolog])
-        ->  Strategy = StrategySpec
-        ;   format('Warning: Invalid field_compiler option ~w, using default (modular)~n', [StrategySpec]),
-            Strategy = modular
+field_impl_choice(Options, Impl) :-
+    (   member(field_impl(ImplSpec), Options)
+    ->  (   memberchk(ImplSpec, [modular, inline])
+        ->  Impl = ImplSpec
+        ;   format('Warning: Invalid field_impl option ~w, using default (modular)~n', [ImplSpec]),
+            Impl = modular
         )
-    ;   % Default: use modular approach (Option B)
-        Strategy = modular
+    ;   member(field_compiler(Old), Options),
+        memberchk(Old, [modular, inline])
+    ->  Impl = Old
+    ;   Impl = modular
     ).
 
 %% ============================================
@@ -390,8 +417,10 @@ compile_field_extraction_inline(Pred/Arity, File, Tag, FieldSpec, Options, BashC
 
     % Save AWK script to temp file
     tmp_file_inline('xml_field', TmpAwkFile),
+    % Resolve to absolute path so the bash wrapper can find it
+    absolute_file_name(TmpAwkFile, AbsAwkFile),
     setup_call_cleanup(
-        open(TmpAwkFile, write, AwkStream),
+        open(AbsAwkFile, write, AwkStream),
         format(AwkStream, '~w', [AwkScript]),
         close(AwkStream)
     ),
@@ -404,7 +433,7 @@ compile_field_extraction_inline(Pred/Arity, File, Tag, FieldSpec, Options, BashC
             pred=PredStr,
             file=File,
             tag=TagStr,
-            awk_script=TmpAwkFile
+            awk_script=AbsAwkFile
         ],
         [source_order([file, generated])],
         BashCode).
@@ -467,7 +496,7 @@ generate_awk_output_inline(FieldNames, dict, Code) :-
     maplist(dict_field_format_inline, FieldNames, FieldFormats),
     atomic_list_concat(FieldFormats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "_{~w}\\n", ~w', [FormatStr, VarsStr]).
+    format(atom(Code), '    printf "_{~w}%s", ~w, ORS', [FormatStr, VarsStr]).
 generate_awk_output_inline(FieldNames, list, Code) :-
     !,
     length(FieldNames, N),
@@ -475,7 +504,7 @@ generate_awk_output_inline(FieldNames, list, Code) :-
     maplist(=('%s'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "[~w]\\n", ~w', [FormatStr, VarsStr]).
+    format(atom(Code), '    printf "[~w]%s", ~w, ORS', [FormatStr, VarsStr]).
 generate_awk_output_inline(FieldNames, compound(Functor), Code) :-
     !,
     length(FieldNames, N),
@@ -483,7 +512,7 @@ generate_awk_output_inline(FieldNames, compound(Functor), Code) :-
     maplist(=('%s'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "~w(~w)\\n", ~w', [Functor, FormatStr, VarsStr]).
+    format(atom(Code), '    printf "~w(~w)%s", ~w, ORS', [Functor, FormatStr, VarsStr]).
 
 dict_field_format_inline(FieldName, Format) :-
     format(atom(Format), '~w:%s', [FieldName]).
@@ -492,7 +521,9 @@ dict_field_format_inline(FieldName, Format) :-
 tmp_file_inline(Prefix, Path) :-
     (   getenv('TMPDIR', TmpDir)
     ->  true
-    ;   TmpDir = '.'
+    ;   getenv('CSHARP_QUERY_OUTPUT_DIR', TmpDir)  % reuse output_dir if set
+    ->  true
+    ;   TmpDir = 'tmp'
     ),
     get_time(Time),
     format(atom(Path), '~w/~w_~w.awk', [TmpDir, Prefix, Time]).
@@ -531,8 +562,8 @@ compile_field_extraction_prolog(Pred/Arity, File, Tag, FieldSpec, Options, BashC
     % Generate bash wrapper
     atom_string(Pred, PredStr),
     atom_string(PrologScriptPath, ScriptPathStr),
-    format(atom(BashCode), '~w() {\n    swipl -q -g main -t halt ~w\n}\n',
-           [PredStr, ScriptPathStr]).
+    format(atom(BashCode), '#!/bin/bash\n# ~w - Prolog (sgml) field extraction\n\n~w() {\n    swipl -q -g main -t halt ~w\n}\n\n~w \"$@\"\n',
+           [PredStr, PredStr, ScriptPathStr, PredStr]).
 
 %% validate_field_spec_prolog(+FieldSpec)
 validate_field_spec_prolog(FieldSpec) :-
@@ -570,37 +601,31 @@ generate_field_extractors(FieldSpec, Code) :-
     findall(Clause,
         (   member(FieldName:TagName, FieldSpec),
             format(atom(Clause),
-                'extract_field(Element, ~q, Value) :-\n    member(element(~q, _, Content), Element),\n    extract_text_content(Content, Value).',
+                'extract_field(Element, ~q, Value) :-\n    member(element(ChildTag, _, Content), Element),\n    tag_matches(ChildTag, ~q),\n    extract_text_content(Content, Value).',
                 [FieldName, TagName])
         ),
         Clauses),
     atomic_list_concat(Clauses, '\n\n', ClausesStr),
     format(atom(Code),
-        '%% Field extractors\n~w\n\nextract_text_content([CDATA], Text) :-\n    atom(CDATA), !, Text = CDATA.\nextract_text_content([element(_, _, Content)], Text) :-\n    !, extract_text_content(Content, Text).\nextract_text_content([H|_], Text) :-\n    atom(H), !, Text = H.\nextract_text_content([], \'\').',
+        '%% Field extractors\n~w\n\ntag_matches(Tag, Target) :-\n    tag_local(Tag, Local),\n    tag_local(Target, Local).\n\ntag_local(Tag, Local) :-\n    compound(Tag),\n    Tag =.. [(:), _, Inner],\n    !,\n    tag_local(Inner, Local).\ntag_local(Tag, Local) :-\n    atom(Tag),\n    (   sub_atom(Tag, _, _, After, \' : \')\n    ->  sub_atom(Tag, _, After, 0, Raw)\n    ;   sub_atom(Tag, _, _, After2, \':\')\n    ->  sub_atom(Tag, _, After2, 0, Raw)\n    ;   Raw = Tag\n    ),\n    trim_atom(Raw, Local).\n\ntrim_atom(Raw, Local) :-\n    atom_codes(Raw, Codes0),\n    ltrim(Codes0, Codes1),\n    rtrim(Codes1, Codes2),\n    atom_codes(Local, Codes2).\n\nltrim([C|Rest], Trimmed) :-\n    code_type(C, space),\n    !,\n    ltrim(Rest, Trimmed).\nltrim(Codes, Codes).\n\nrtrim(Codes, Trimmed) :-\n    reverse(Codes, Rev),\n    ltrim(Rev, RevTrim),\n    reverse(RevTrim, Trimmed).\n\nextract_text_content([CDATA], Text) :-\n    atom(CDATA), !, Text = CDATA.\nextract_text_content([element(_, _, Content)], Text) :-\n    !, extract_text_content(Content, Text).\nextract_text_content([H|_], Text) :-\n    atom(H), !, Text = H.\nextract_text_content([], \'\').',
         [ClausesStr]).
 
 %% generate_prolog_output_formatter(+FieldSpec, +OutputFormat, -Code)
 generate_prolog_output_formatter(FieldSpec, dict, Code) :-
     !,
     findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
-    % Generate variable names
     findall(VarName,
         (   member(Field, FieldNames),
             upcase_atom(Field, Upper),
             atom_concat(Upper, '_val', VarName)
         ),
         VarNames),
-    % Generate dict pairs like "id:'~w', title:'~w'"
-    findall(Pair,
-        (   member(Field, FieldNames),
-            format(atom(Pair), '~w:\'~~w\'', [Field])
-        ),
-        Pairs),
-    atomic_list_concat(Pairs, ', ', PairsStr),
+    maplist(dict_field_placeholder, FieldNames, Placeholders),
+    atomic_list_concat(Placeholders, ', ', FormatPairs),
     atomic_list_concat(VarNames, ', ', VarsStr),
     format(string(Code),
         'format_output([~w], Output) :-~n    format(atom(Output), \'_{~w}\', [~w]).',
-        [VarsStr, PairsStr, VarsStr]).
+        [VarsStr, FormatPairs, VarsStr]).
 generate_prolog_output_formatter(FieldSpec, list, Code) :-
     !,
     findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
@@ -611,9 +636,9 @@ generate_prolog_output_formatter(FieldSpec, list, Code) :-
             atom_concat(Upper, '_val', VarName)
         ),
         VarNames),
-    length(FieldNames, N),
+    length(VarNames, N),
     length(Formats, N),
-    maplist(=('\'~w\''), Formats),
+    maplist(=('~w'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(VarNames, ', ', VarsStr),
     format(string(Code),
@@ -629,14 +654,16 @@ generate_prolog_output_formatter(FieldSpec, compound(Functor), Code) :-
             atom_concat(Upper, '_val', VarName)
         ),
         VarNames),
-    length(FieldNames, N),
+    length(VarNames, N),
     length(Formats, N),
-    maplist(=('\'~w\''), Formats),
+    maplist(=('~w'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(VarNames, ', ', VarsStr),
     format(string(Code),
         'format_output([~w], Output) :-~n    format(atom(Output), \'~w(~w)\', [~w]).',
         [VarsStr, Functor, FormatStr, VarsStr]).
+dict_field_placeholder(Field, Placeholder) :-
+    format(atom(Placeholder), '~w:~w', [Field, '~w']).
 
 %% generate_prolog_main(+File, +Tag, +FieldNames, -Code)
 generate_prolog_main(File, Tag, FieldNames, Code) :-
@@ -653,7 +680,7 @@ generate_prolog_main(File, Tag, FieldNames, Code) :-
     atomic_list_concat(VarNames, ', ', VarsStr),
 
     format(atom(Code),
-'main :-\n    load_xml(\'~w\', DOM),\n    process_elements(DOM).\n\nload_xml(File, DOM) :-\n    load_structure(File, DOM, [dialect(xmlns)]).\n\nprocess_elements(DOM) :-\n    find_elements(DOM, \'~w\', Elements),\n    maplist(process_element, Elements).\n\nfind_elements([], _, []).\nfind_elements([element(Tag, Attrs, Children)|Rest], TargetTag, [element(Tag, Attrs, Children)|Found]) :-\n    Tag = TargetTag,\n    !,\n    find_elements(Rest, TargetTag, Found).\nfind_elements([element(_, _, Children)|Rest], TargetTag, Found) :-\n    !,\n    find_elements(Children, TargetTag, ChildFound),\n    find_elements(Rest, TargetTag, RestFound),\n    append(ChildFound, RestFound, Found).\nfind_elements([_|Rest], TargetTag, Found) :-\n    find_elements(Rest, TargetTag, Found).\n\nprocess_element(element(_, _, Children)) :-\n~w,\n        format_output([~w], Output),\n        writeln(Output).',
+'main :-\n    load_xml(\'~w\', DOM),\n    process_elements(DOM).\n\nload_xml(File, DOM) :-\n    load_structure(File, DOM, [dialect(xmlns)]).\n\nprocess_elements(DOM) :-\n    find_elements(DOM, \'~w\', Elements),\n    maplist(process_element, Elements).\n\nfind_elements([], _, []).\nfind_elements([element(Tag, Attrs, Children)|Rest], TargetTag, [element(Tag, Attrs, Children)|Found]) :-\n    tag_matches(Tag, TargetTag),\n    !,\n    find_elements(Rest, TargetTag, Found).\nfind_elements([element(_, _, Children)|Rest], TargetTag, Found) :-\n    !,\n    find_elements(Children, TargetTag, ChildFound),\n    find_elements(Rest, TargetTag, RestFound),\n    append(ChildFound, RestFound, Found).\nfind_elements([_|Rest], TargetTag, Found) :-\n    find_elements(Rest, TargetTag, Found).\n\nprocess_element(element(_, _, Children)) :-\n~w,\n        format_output([~w], Output),\n        writeln(Output).',
         [File, Tag, CallsStr, VarsStr]).
 
 %% tmp_file_prolog(+Prefix, -Path)

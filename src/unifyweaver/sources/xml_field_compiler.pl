@@ -31,7 +31,7 @@
 %    - engine(Engine): awk_pipeline, iterparse, xmllint
 %    - output(Format): dict, list, compound(Functor)
 compile_field_extraction(Pred/Arity, File, Tag, FieldSpec, Options, BashCode) :-
-    format('  Compiling field extraction: ~w/~w~n', [Pred, Arity]),
+    true,
 
     % Validate field specification
     validate_field_spec(FieldSpec),
@@ -181,7 +181,7 @@ generate_awk_output(FieldNames, dict, Code) :-
     maplist(dict_field_format, FieldNames, FieldFormats),
     atomic_list_concat(FieldFormats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "_{~w}\\n", ~w', [FormatStr, VarsStr]).
+    format(atom(Code), '    printf "_{~w}%s", ~w, ORS', [FormatStr, VarsStr]).
 generate_awk_output(FieldNames, list, Code) :-
     !,
     % Generate list output: [val1, val2, ...]
@@ -190,7 +190,7 @@ generate_awk_output(FieldNames, list, Code) :-
     maplist(=('%s'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "[~w]\\n", ~w', [FormatStr, VarsStr]).
+    format(atom(Code), '    printf "[~w]%s", ~w, ORS', [FormatStr, VarsStr]).
 generate_awk_output(FieldNames, compound(Functor), Code) :-
     !,
     % Generate compound output: functor(val1, val2, ...)
@@ -199,7 +199,7 @@ generate_awk_output(FieldNames, compound(Functor), Code) :-
     maplist(=('%s'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "~w(~w)\\n", ~w', [Functor, FormatStr, VarsStr]).
+    format(atom(Code), '    printf "~w(~w)%s", ~w, ORS', [Functor, FormatStr, VarsStr]).
 
 dict_field_format(FieldName, Format) :-
     format(atom(Format), '~w:%s', [FieldName]).
