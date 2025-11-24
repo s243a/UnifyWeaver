@@ -955,7 +955,13 @@ generate_rule_function(_Name, RuleNum, Head, Body, RuleFunc) :-
     (   Body == true
     ->  % Fact (no body) - emit constant
         translate_fact_rule(_Name, RuleNum, Head, RuleFunc)
-    ;   extract_goals_list(Body, Goals),
+    ;   % Check for disjunction (;) in body
+        contains_disjunction(Body)
+    ->  % Handle disjunctive rule
+        extract_disjuncts(Body, Disjuncts),
+        translate_disjunctive_rule(RuleNum, Head, Disjuncts, RuleFunc)
+    ;   % Normal conjunctive rule
+        extract_goals_list(Body, Goals),
         % Separate builtin goals from relational goals
         partition(is_builtin_goal, Goals, BuiltinGoals, RelGoals),
         length(RelGoals, NumRelGoals),
@@ -974,6 +980,127 @@ generate_rule_function(_Name, RuleNum, Head, Body, RuleFunc) :-
             translate_join_rule_with_builtins(_Name, RuleNum, Head, RelGoals, BuiltinGoals, RuleFunc)
         )
     ).
+
+%% contains_disjunction(+Body)
+%  Check if body contains disjunction (;)
+contains_disjunction((_;_)) :- !.
+contains_disjunction((A,B)) :- 
+    !,
+    (contains_disjunction(A) ; contains_disjunction(B)).
+contains_disjunction(_) :- fail.
+
+%% extract_disjuncts(+Body, -Disjuncts)
+%  Extract all disjuncts from a disjunctive body
+extract_disjuncts((A;B), Disjuncts) :-
+    !,
+    extract_disjuncts(A, DisjunctsA),
+    extract_disjuncts(B, DisjunctsB),
+    append(DisjunctsA, DisjunctsB, Disjuncts).
+extract_disjuncts(Goal, [Goal]).
+
+%% translate_disjunctive_rule(+RuleNum, +Head, +Disjuncts, -RuleFunc)
+%  Translate a rule with disjunction to Python
+translate_disjunctive_rule(RuleNum, Head, Disjuncts, RuleFunc) :-
+    % Generate code for each disjunct
+    findall(DisjunctCode,
+        (   member(Disjunct, Disjuncts),
+            translate_disjunct(Head, Disjunct, DisjunctCode)
+        ),
+        DisjunctCodes),
+    atomic_list_concat(DisjunctCodes, "\n    # Try next disjunct\n    ", CombinedCode),
+    
+    format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Disjunctive rule: ~w'''
+    # Try each disjunct
+    ~w
+", [RuleNum, Head, CombinedCode]).
+
+%% translate_disjunct(+Head, +Disjunct, -Code)
+%  Translate a single disjunct to Python code
+translate_disjunct(Head, Disjunct, Code) :-
+    % Extract goals from this disjunct
+    extract_goals_list(Disjunct, Goals),
+    partition(is_builtin_goal, Goals, Builtins, RelGoals),
+    
+    length(RelGoals, NumRelGoals),
+    (   NumRelGoals == 0
+    ->  % Only builtins - just check constraints
+        translate_builtins(Builtins, ConstraintChecks),
+        (   ConstraintChecks == ""
+        ->  Code = "pass  # Empty disjunct"
+        ;   Head =.. [_Pred|HeadArgs],
+            build_constant_output(HeadArgs, OutputStr),
+            format(string(Code),
+"if ~w:
+        yield FrozenDict.from_dict({~w})",
+                [ConstraintChecks, OutputStr])
+        )
+    ;   NumRelGoals == 1
+    ->  % Single goal + optional constraints
+        RelGoals = [Goal],
+        translate_disjunct_copy(Head, Goal, Builtins, Code)
+    ;   % Multiple goals - join
+        translate_disjunct_join(Head, RelGoals, Builtins, Code)
+    ).
+
+%% translate_disjunct_copy(+Head, +Goal, +Builtins, -Code)
+translate_disjunct_copy(Head, Goal, Builtins, Code) :-
+    Head =.. [_HeadPred | HeadArgs],
+    Goal =.. [_GoalPred | GoalArgs],
+    
+    % Pattern match
+    length(GoalArgs, GoalArity),
+    findall(Check,
+        (   between(0, GoalArity, Idx),
+            Idx < GoalArity,
+            format(string(Check), "'arg~w' in fact", [Idx])
+        ),
+        Checks),
+    atomic_list_concat(Checks, " and ", ConditionStr),
+    
+    % Constraints
+    translate_builtins(Builtins, ConstraintChecks),
+    (   ConstraintChecks == ""
+    ->  FinalCondition = ConditionStr
+    ;   format(string(FinalCondition), "~w and ~w", [ConditionStr, ConstraintChecks])
+    ),
+    
+    % Output
+    findall(Assign,
+        (   nth0(HIdx, HeadArgs, HVar),
+            nth0(GIdx, GoalArgs, HVar),
+            format(string(Assign), "'arg~w': fact.get('arg~w')", [HIdx, GIdx])
+        ),
+        Assigns),
+    atomic_list_concat(Assigns, ", ", OutputStr),
+    
+    format(string(Code),
+"if ~w:
+        yield FrozenDict.from_dict({~w})",
+        [FinalCondition, OutputStr]).
+
+%% translate_disjunct_join(+Head, +Goals, +Builtins, -Code)
+translate_disjunct_join(Head, Goals, _Builtins, Code) :-
+    % Simplified: use basic join logic for disjuncts
+    % For now, just indicate it's a join within a disjunct
+    format(string(Code),
+"# Join in disjunct: ~w
+    pass  # TODO: Full join implementation in disjunct",
+        [Head]).
+
+%% build_constant_output(+HeadArgs, -OutputStr)
+build_constant_output(HeadArgs, OutputStr) :-
+    findall(Assign,
+        (   nth0(Idx, HeadArgs, Arg),
+            (   atom(Arg)
+            ->  format(string(Assign), "'arg~w': '~w'", [Idx, Arg])
+            ;   format(string(Assign), "'arg~w': None", [Idx])
+            )
+        ),
+        Assigns),
+    atomic_list_concat(Assigns, ", ", OutputStr).
+
 
 %% is_builtin_goal(+Goal)
 %  Check if goal is a built-in (is, >, <, etc.)
