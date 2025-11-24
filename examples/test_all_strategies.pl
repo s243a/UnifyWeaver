@@ -83,7 +83,8 @@ compile_and_execute(SourceName, Results) :-
 
     % Read results (handle NUL- or newline-delimited output)
     read_file_to_string(OutputFile, ResultsText, []),
-    split_string(ResultsText, "\0\n", "\r", Raw0),
+    % Split on newlines; treat NUL/CR as padding to drop
+    split_string(ResultsText, "\n", "\r\0", Raw0),
     exclude(=("") , Raw0, Results).
 
 %% test_strategy(+Name, +SourceName)

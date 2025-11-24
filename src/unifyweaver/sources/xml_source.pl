@@ -496,7 +496,7 @@ generate_awk_output_inline(FieldNames, dict, Code) :-
     maplist(dict_field_format_inline, FieldNames, FieldFormats),
     atomic_list_concat(FieldFormats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "_{~w}\\n", ~w; printf ORS', [FormatStr, VarsStr]).
+    format(atom(Code), '    printf "_{~w}%s", ~w, ORS', [FormatStr, VarsStr]).
 generate_awk_output_inline(FieldNames, list, Code) :-
     !,
     length(FieldNames, N),
@@ -504,7 +504,7 @@ generate_awk_output_inline(FieldNames, list, Code) :-
     maplist(=('%s'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "[~w]\\n", ~w; printf ORS', [FormatStr, VarsStr]).
+    format(atom(Code), '    printf "[~w]%s", ~w, ORS', [FormatStr, VarsStr]).
 generate_awk_output_inline(FieldNames, compound(Functor), Code) :-
     !,
     length(FieldNames, N),
@@ -512,7 +512,7 @@ generate_awk_output_inline(FieldNames, compound(Functor), Code) :-
     maplist(=('%s'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "~w(~w)\\n", ~w; printf ORS', [Functor, FormatStr, VarsStr]).
+    format(atom(Code), '    printf "~w(~w)%s", ~w, ORS', [Functor, FormatStr, VarsStr]).
 
 dict_field_format_inline(FieldName, Format) :-
     format(atom(Format), '~w:%s', [FieldName]).
@@ -562,8 +562,8 @@ compile_field_extraction_prolog(Pred/Arity, File, Tag, FieldSpec, Options, BashC
     % Generate bash wrapper
     atom_string(Pred, PredStr),
     atom_string(PrologScriptPath, ScriptPathStr),
-    format(atom(BashCode), '~w() {\n    swipl -q -g main -t halt ~w\n}\n',
-           [PredStr, ScriptPathStr]).
+    format(atom(BashCode), '#!/bin/bash\n# ~w - Prolog (sgml) field extraction\n\n~w() {\n    swipl -q -g main -t halt ~w\n}\n\n~w \"$@\"\n',
+           [PredStr, PredStr, ScriptPathStr, PredStr]).
 
 %% validate_field_spec_prolog(+FieldSpec)
 validate_field_spec_prolog(FieldSpec) :-
@@ -601,37 +601,31 @@ generate_field_extractors(FieldSpec, Code) :-
     findall(Clause,
         (   member(FieldName:TagName, FieldSpec),
             format(atom(Clause),
-                'extract_field(Element, ~q, Value) :-\n    member(element(~q, _, Content), Element),\n    extract_text_content(Content, Value).',
+                'extract_field(Element, ~q, Value) :-\n    member(element(ChildTag, _, Content), Element),\n    tag_matches(ChildTag, ~q),\n    extract_text_content(Content, Value).',
                 [FieldName, TagName])
         ),
         Clauses),
     atomic_list_concat(Clauses, '\n\n', ClausesStr),
     format(atom(Code),
-        '%% Field extractors\n~w\n\nextract_text_content([CDATA], Text) :-\n    atom(CDATA), !, Text = CDATA.\nextract_text_content([element(_, _, Content)], Text) :-\n    !, extract_text_content(Content, Text).\nextract_text_content([H|_], Text) :-\n    atom(H), !, Text = H.\nextract_text_content([], \'\').',
+        '%% Field extractors\n~w\n\ntag_matches(Tag, Target) :-\n    tag_local(Tag, Local),\n    tag_local(Target, Local).\n\ntag_local(Tag, Local) :-\n    compound(Tag),\n    Tag =.. [(:), _, Inner],\n    !,\n    tag_local(Inner, Local).\ntag_local(Tag, Local) :-\n    atom(Tag),\n    (   sub_atom(Tag, _, _, After, \' : \')\n    ->  sub_atom(Tag, _, After, 0, Raw)\n    ;   sub_atom(Tag, _, _, After2, \':\')\n    ->  sub_atom(Tag, _, After2, 0, Raw)\n    ;   Raw = Tag\n    ),\n    trim_atom(Raw, Local).\n\ntrim_atom(Raw, Local) :-\n    atom_codes(Raw, Codes0),\n    ltrim(Codes0, Codes1),\n    rtrim(Codes1, Codes2),\n    atom_codes(Local, Codes2).\n\nltrim([C|Rest], Trimmed) :-\n    code_type(C, space),\n    !,\n    ltrim(Rest, Trimmed).\nltrim(Codes, Codes).\n\nrtrim(Codes, Trimmed) :-\n    reverse(Codes, Rev),\n    ltrim(Rev, RevTrim),\n    reverse(RevTrim, Trimmed).\n\nextract_text_content([CDATA], Text) :-\n    atom(CDATA), !, Text = CDATA.\nextract_text_content([element(_, _, Content)], Text) :-\n    !, extract_text_content(Content, Text).\nextract_text_content([H|_], Text) :-\n    atom(H), !, Text = H.\nextract_text_content([], \'\').',
         [ClausesStr]).
 
 %% generate_prolog_output_formatter(+FieldSpec, +OutputFormat, -Code)
 generate_prolog_output_formatter(FieldSpec, dict, Code) :-
     !,
     findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
-    % Generate variable names
     findall(VarName,
         (   member(Field, FieldNames),
             upcase_atom(Field, Upper),
             atom_concat(Upper, '_val', VarName)
         ),
         VarNames),
-    % Generate dict pairs like "id:'~w', title:'~w'"
-    findall(Pair,
-        (   member(Field, FieldNames),
-            format(atom(Pair), '~w:\'~~w\'', [Field])
-        ),
-        Pairs),
-    atomic_list_concat(Pairs, ', ', PairsStr),
+    maplist(dict_field_placeholder, FieldNames, Placeholders),
+    atomic_list_concat(Placeholders, ', ', FormatPairs),
     atomic_list_concat(VarNames, ', ', VarsStr),
     format(string(Code),
         'format_output([~w], Output) :-~n    format(atom(Output), \'_{~w}\', [~w]).',
-        [VarsStr, PairsStr, VarsStr]).
+        [VarsStr, FormatPairs, VarsStr]).
 generate_prolog_output_formatter(FieldSpec, list, Code) :-
     !,
     findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
@@ -642,9 +636,9 @@ generate_prolog_output_formatter(FieldSpec, list, Code) :-
             atom_concat(Upper, '_val', VarName)
         ),
         VarNames),
-    length(FieldNames, N),
+    length(VarNames, N),
     length(Formats, N),
-    maplist(=('\'~w\''), Formats),
+    maplist(=('~w'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(VarNames, ', ', VarsStr),
     format(string(Code),
@@ -660,14 +654,16 @@ generate_prolog_output_formatter(FieldSpec, compound(Functor), Code) :-
             atom_concat(Upper, '_val', VarName)
         ),
         VarNames),
-    length(FieldNames, N),
+    length(VarNames, N),
     length(Formats, N),
-    maplist(=('\'~w\''), Formats),
+    maplist(=('~w'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(VarNames, ', ', VarsStr),
     format(string(Code),
         'format_output([~w], Output) :-~n    format(atom(Output), \'~w(~w)\', [~w]).',
         [VarsStr, Functor, FormatStr, VarsStr]).
+dict_field_placeholder(Field, Placeholder) :-
+    format(atom(Placeholder), '~w:~w', [Field, '~w']).
 
 %% generate_prolog_main(+File, +Tag, +FieldNames, -Code)
 generate_prolog_main(File, Tag, FieldNames, Code) :-
@@ -684,7 +680,7 @@ generate_prolog_main(File, Tag, FieldNames, Code) :-
     atomic_list_concat(VarNames, ', ', VarsStr),
 
     format(atom(Code),
-'main :-\n    load_xml(\'~w\', DOM),\n    process_elements(DOM).\n\nload_xml(File, DOM) :-\n    load_structure(File, DOM, [dialect(xmlns)]).\n\nprocess_elements(DOM) :-\n    find_elements(DOM, \'~w\', Elements),\n    maplist(process_element, Elements).\n\nfind_elements([], _, []).\nfind_elements([element(Tag, Attrs, Children)|Rest], TargetTag, [element(Tag, Attrs, Children)|Found]) :-\n    Tag = TargetTag,\n    !,\n    find_elements(Rest, TargetTag, Found).\nfind_elements([element(_, _, Children)|Rest], TargetTag, Found) :-\n    !,\n    find_elements(Children, TargetTag, ChildFound),\n    find_elements(Rest, TargetTag, RestFound),\n    append(ChildFound, RestFound, Found).\nfind_elements([_|Rest], TargetTag, Found) :-\n    find_elements(Rest, TargetTag, Found).\n\nprocess_element(element(_, _, Children)) :-\n~w,\n        format_output([~w], Output),\n        writeln(Output).',
+'main :-\n    load_xml(\'~w\', DOM),\n    process_elements(DOM).\n\nload_xml(File, DOM) :-\n    load_structure(File, DOM, [dialect(xmlns)]).\n\nprocess_elements(DOM) :-\n    find_elements(DOM, \'~w\', Elements),\n    maplist(process_element, Elements).\n\nfind_elements([], _, []).\nfind_elements([element(Tag, Attrs, Children)|Rest], TargetTag, [element(Tag, Attrs, Children)|Found]) :-\n    tag_matches(Tag, TargetTag),\n    !,\n    find_elements(Rest, TargetTag, Found).\nfind_elements([element(_, _, Children)|Rest], TargetTag, Found) :-\n    !,\n    find_elements(Children, TargetTag, ChildFound),\n    find_elements(Rest, TargetTag, RestFound),\n    append(ChildFound, RestFound, Found).\nfind_elements([_|Rest], TargetTag, Found) :-\n    find_elements(Rest, TargetTag, Found).\n\nprocess_element(element(_, _, Children)) :-\n~w,\n        format_output([~w], Output),\n        writeln(Output).',
         [File, Tag, CallsStr, VarsStr]).
 
 %% tmp_file_prolog(+Prefix, -Path)
