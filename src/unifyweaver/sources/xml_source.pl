@@ -306,28 +306,37 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     ->  true
     ;   member(file(File), AllOptions)
     ),
+    % Ensure record format/separator defaults for downstream metadata
+    (   member(record_format(_), AllOptions)
+    ->  Options1 = AllOptions
+    ;   Options1 = [record_format(xml)|AllOptions]
+    ),
+    (   member(record_separator(_), Options1)
+    ->  Options2 = Options1
+    ;   Options2 = [record_separator(nul)|Options1]
+    ),
 
     % Extract tags (support both interfaces)
-    (   member(tags(TagList), AllOptions)
+    (   member(tags(TagList), Options2)
     ->  Tags = TagList
-    ;   member(tag(SingleTag), AllOptions)
+    ;   member(tag(SingleTag), Options2)
     ->  Tags = [SingleTag]
     ),
 
     % Determine engine (default: awk_pipeline)
-    (   member(engine(EngineOpt), AllOptions)
+    (   member(engine(EngineOpt), Options2)
     ->  Engine = EngineOpt
     ;   Engine = awk_pipeline
     ),
 
     % Backward compatibility: field_compiler(prolog) implies engine prolog_sgml
-    (   member(field_compiler(prolog), AllOptions)
+    (   member(field_compiler(prolog), Options2)
     ->  EngineAdj = prolog_sgml
     ;   EngineAdj = Engine
     ),
 
     % Check for field extraction
-    (   member(fields(FieldSpec), AllOptions)
+    (   member(fields(FieldSpec), Options2)
     ->  % Field extraction requested
         (   Tags = [SingleTag]
         ->  true
@@ -342,11 +351,11 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
                 File,
                 SingleTag,
                 FieldSpec,
-                AllOptions,
+                Options2,
                 BashCode
             )
         ;   EngineAdj == awk_pipeline
-        ->  field_impl_choice(AllOptions, Impl),
+        ->  field_impl_choice(Options2, Impl),
             (   Impl = modular
             ->  true,  % silent
                 xml_field_compiler:compile_field_extraction(
@@ -354,7 +363,7 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
                     File,
                     SingleTag,
                     FieldSpec,
-                    AllOptions,
+                    Options2,
                     BashCode
                 )
             ;   Impl = inline
@@ -364,7 +373,7 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
                     File,
                     SingleTag,
                     FieldSpec,
-                    AllOptions,
+                    Options2,
                     BashCode
                 )
             )
@@ -372,7 +381,7 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
             fail
         )
     ;   % No fields() - use standard element extraction
-        compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode)
+        compile_element_extraction(Pred/Arity, File, Tags, Options2, BashCode)
     ).
 
 %% field_extraction_strategy(+Options, -Strategy)
