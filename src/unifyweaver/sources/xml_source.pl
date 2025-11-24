@@ -496,7 +496,7 @@ generate_awk_output_inline(FieldNames, dict, Code) :-
     maplist(dict_field_format_inline, FieldNames, FieldFormats),
     atomic_list_concat(FieldFormats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "_{~w}\\n", ~w', [FormatStr, VarsStr]).
+    format(atom(Code), '    printf "_{~w}\\n", ~w; printf ORS', [FormatStr, VarsStr]).
 generate_awk_output_inline(FieldNames, list, Code) :-
     !,
     length(FieldNames, N),
@@ -504,7 +504,7 @@ generate_awk_output_inline(FieldNames, list, Code) :-
     maplist(=('%s'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "[~w]\\n", ~w', [FormatStr, VarsStr]).
+    format(atom(Code), '    printf "[~w]\\n", ~w; printf ORS', [FormatStr, VarsStr]).
 generate_awk_output_inline(FieldNames, compound(Functor), Code) :-
     !,
     length(FieldNames, N),
@@ -512,7 +512,7 @@ generate_awk_output_inline(FieldNames, compound(Functor), Code) :-
     maplist(=('%s'), Formats),
     atomic_list_concat(Formats, ', ', FormatStr),
     atomic_list_concat(FieldNames, ', ', VarsStr),
-    format(atom(Code), '    printf "~w(~w)\\n", ~w', [Functor, FormatStr, VarsStr]).
+    format(atom(Code), '    printf "~w(~w)\\n", ~w; printf ORS', [Functor, FormatStr, VarsStr]).
 
 dict_field_format_inline(FieldName, Format) :-
     format(atom(Format), '~w:%s', [FieldName]).
