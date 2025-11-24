@@ -31,7 +31,7 @@
 %    - engine(Engine): awk_pipeline, iterparse, xmllint
 %    - output(Format): dict, list, compound(Functor)
 compile_field_extraction(Pred/Arity, File, Tag, FieldSpec, Options, BashCode) :-
-    format('  Compiling field extraction: ~w/~w~n', [Pred, Arity]),
+    true,
 
     % Validate field specification
     validate_field_spec(FieldSpec),

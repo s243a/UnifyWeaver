@@ -336,7 +336,7 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
         ),
         % Choose implementation/engine based on configuration
         (   EngineAdj == prolog_sgml
-        ->  format('  Using field extraction (pure Prolog/SGML)~n', []),
+        ->  true,  % silent
             compile_field_extraction_prolog(
                 Pred/Arity,
                 File,
@@ -348,7 +348,7 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
         ;   EngineAdj == awk_pipeline
         ->  field_impl_choice(AllOptions, Impl),
             (   Impl = modular
-            ->  format('  Using field extraction compiler (modular AWK)~n', []),
+            ->  true,  % silent
                 xml_field_compiler:compile_field_extraction(
                     Pred/Arity,
                     File,
@@ -358,7 +358,7 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
                     BashCode
                 )
             ;   Impl = inline
-            ->  format('  Using field extraction (inline AWK)~n', []),
+            ->  true,  % silent
                 compile_field_extraction_inline(
                     Pred/Arity,
                     File,
