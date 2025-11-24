@@ -100,8 +100,9 @@ class FrozenDict:
 ```python
 def _apply_rule_1(fact, total):
     '''ancestor(X,Y) :- parent(X,Y)'''
-    if 'arg0' in fact and 'arg1' in fact:
+    if fact.get('relation') == 'parent' and 'arg0' in fact and 'arg1' in fact:
         yield FrozenDict.from_dict({
+            'relation': 'ancestor',
             'arg0': fact.get('arg0'),
             'arg1': fact.get('arg1')
         })
@@ -111,10 +112,11 @@ def _apply_rule_1(fact, total):
 ```python
 def _apply_rule_2(fact, total):
     '''ancestor(X,Z) :- parent(X,Y), ancestor(Y,Z)'''
-    if 'arg0' in fact and 'arg1' in fact:
+    if fact.get('relation') == 'parent' and 'arg0' in fact and 'arg1' in fact:
         for other in total:
-            if other.get('arg0') == fact.get('arg1'):  # Join on Y
+            if other.get('relation') == 'ancestor' and other.get('arg0') == fact.get('arg1'):  # Join on Y
                 yield FrozenDict.from_dict({
+                    'relation': 'ancestor',
                     'arg0': fact.get('arg0'),
                     'arg1': other.get('arg1')
                 })
@@ -142,10 +144,10 @@ def process_stream_generator(records):
 
 Create `parents.jsonl` (parent facts):
 ```json
-{"arg0": "john", "arg1": "mary"}
-{"arg0": "mary", "arg1": "sue"}
-{"arg0": "sue", "arg1": "alice"}
-{"arg0": "john", "arg1": "bob"}
+{"relation": "parent", "arg0": "john", "arg1": "mary"}
+{"relation": "parent", "arg0": "mary", "arg1": "sue"}
+{"relation": "parent", "arg0": "sue", "arg1": "alice"}
+{"relation": "parent", "arg0": "john", "arg1": "bob"}
 ```
 
 ## Step 5: Run the Python Code
@@ -156,13 +158,13 @@ python3 ancestor.py < parents.jsonl
 
 **Output:**
 ```json
-{"arg0": "john", "arg1": "mary"}
-{"arg0": "mary", "arg1": "sue"}
-{"arg0": "sue", "arg1": "alice"}
-{"arg0": "john", "arg1": "bob"}
-{"arg0": "john", "arg1": "sue"}
-{"arg0": "mary", "arg1": "alice"}
-{"arg0": "john", "arg1": "alice"}
+{"relation": "parent", "arg0": "john", "arg1": "mary"}
+{"relation": "parent", "arg0": "mary", "arg1": "sue"}
+{"relation": "parent", "arg0": "sue", "arg1": "alice"}
+{"relation": "parent", "arg0": "john", "arg1": "bob"}
+{"relation": "ancestor", "arg0": "john", "arg1": "sue"}
+{"relation": "ancestor", "arg0": "mary", "arg1": "alice"}
+{"relation": "ancestor", "arg0": "john", "arg1": "alice"}
 ```
 
 **Interpretation:**
@@ -270,18 +272,18 @@ Want only john's descendants?
 
 **Filter input:**
 ```bash
-echo '{"arg0": "john", "arg1": "mary"}
-{"arg0": "mary", "arg1": "sue"}
-{"arg0": "sue", "arg1": "alice"}
-{"arg0": "john", "arg1": "bob"}' | python3 ancestor.py | jq 'select(.arg0 == "john")'
+echo '{"relation": "parent", "arg0": "john", "arg1": "mary"}
+{"relation": "parent", "arg0": "mary", "arg1": "sue"}
+{"relation": "parent", "arg0": "sue", "arg1": "alice"}
+{"relation": "parent", "arg0": "john", "arg1": "bob"}' | python3 ancestor.py | jq 'select(.arg0 == "john")'
 ```
 
 **Output:**
 ```json
-{"arg0": "john", "arg1": "mary"}
-{"arg0": "john", "arg1": "bob"}
-{"arg0": "john", "arg1": "sue"}
-{"arg0": "john", "arg1": "alice"}
+{"relation": "parent", "arg0": "john", "arg1": "mary"}
+{"relation": "parent", "arg0": "john", "arg1": "bob"}
+{"relation": "ancestor", "arg0": "john", "arg1": "sue"}
+{"relation": "ancestor", "arg0": "john", "arg1": "alice"}
 ```
 
 **john's descendants: mary, bob, sue, alice** ✓
