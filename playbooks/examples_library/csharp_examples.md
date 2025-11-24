@@ -117,3 +117,5 @@ Write-Host "Success: C# program compiled and executed successfully."
 # Remove-Item -Recurse -Force $tmpDir
 # Remove-Item -Force "tmp/fib_csharp.pl"
 ```
+- `unifyweaver.execution.csharp_json_schema` — Generate typed JSON queries from schema hints.
+- `unifyweaver.execution.csharp_xml_fragments` — Read NUL/LF-delimited XML fragments via XmlStreamReader, projecting elements/attributes (prefix + qualified keys) into rows.
