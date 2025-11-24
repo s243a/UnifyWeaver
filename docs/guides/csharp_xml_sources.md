@@ -23,6 +23,7 @@ The generated plan uses `XmlStreamReader` which:
 - Splits on `\n` or `\0`
 - Projects each fragment into a dictionary keyed by local name, fully-qualified name, and prefix form (e.g., `pt:id`)
 - Includes attributes with an `@` prefix (e.g., `@lang`, `@pt:code`)
+- Built-in namespace fallbacks: Pearltrees (`http://www.pearltrees.com/rdf/0.1/#` → `pt`) and Dublin Core terms (`http://purl.org/dc/elements/1.1/` → `dcterms`) get a prefix even if the fragment omits one.
 
 ## Notes and quirks
 - CDATA content is preserved as text (e.g., `<![CDATA[Hacktivism]]>` → `Hacktivism`).
@@ -30,4 +31,4 @@ The generated plan uses `XmlStreamReader` which:
 - For stream-friendly files, keep one fragment per delimiter (NUL or newline). Avoid multi-line fragments when using `record_separator(line_feed)`.
 
 ## Future: Pearltrees helper
-Pearltrees RDF exports use `pt:` plus CDATA-wrapped titles. A specialized helper could subclass the XML reader to apply Pearltrees defaults (prefix map, CDATA handling) automatically. For now, the generic reader already preserves CDATA and prefix keys; set `record_format(xml)` and a suitable delimiter. 
+Pearltrees RDF exports use `pt:` plus CDATA-wrapped titles. A specialized helper could subclass the XML reader to apply Pearltrees defaults (prefix map, CDATA handling) automatically. For now, the generic reader already preserves CDATA and injects a `pt` prefix for Pearltrees namespaces; set `record_format(xml)` and a suitable delimiter. 
