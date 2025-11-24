@@ -1041,16 +1041,21 @@ translate_copy_rule(_Name, RuleNum, Head, Goal, RuleFunc) :-
 
 %% translate_join_rule(+Name, +RuleNum, +Head, +Goals, -RuleFunc)
 %  Translate a join rule (multiple goals in body)
-translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc) :-
-    % For now, handle the common case: 2 goals with a join variable
-    (   Goals = [Goal1, Goal2]
-    ->  translate_binary_join(Name, RuleNum, Head, Goal1, Goal2, RuleFunc)
-    ;   % Fallback for complex cases
+translate_join_rule(_Name, RuleNum, Head, Goals, RuleFunc) :-
+    length(Goals, NumGoals),
+    (   NumGoals == 2
+    ->  % Binary join (existing fast path)
+        Goals = [Goal1, Goal2],
+        translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc)
+    ;   NumGoals >= 3
+    ->  % N-way join (new!)
+        translate_nway_join(RuleNum, Head, Goals, RuleFunc)
+    ;   % Single goal shouldn't reach here
         format(string(RuleFunc),
 "def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
-    '''Complex rule: ~w - TODO: implement multi-goal joins'''
+    '''ERROR: Invalid join - single goal should use copy rule'''
     return iter([])
-", [RuleNum, Head])
+", [RuleNum])
     ).
 
 %% translate_binary_join(+Name, +RuleNum, +Head, +Goal1, +Goal2, -RuleFunc)
@@ -1110,6 +1115,92 @@ translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc) :-
             if ~w:
                 yield FrozenDict.from_dict({~w})
 ", [RuleNum, Head, Goal1, Goal2, Pattern1, JoinCond, OutputMapping]).
+
+%% translate_nway_join(+RuleNum, +Head, +Goals, -RuleFunc)
+%  Translate N-way join (3+ goals)
+translate_nway_join(RuleNum, Head, Goals, RuleFunc) :-
+    % Strategy: First goal from fact, rest joined from total
+    Goals = [FirstGoal | RestGoals],
+    
+    % Build pattern match for first goal
+    FirstGoal =.. [_Pred1 | Args1],
+    length(Args1, Arity1),
+    findall(Check,
+        (   between(0, Arity1, Idx),
+            Idx < Arity1,
+            format(string(Check), "'arg~w' in fact", [Idx])
+        ),
+        Checks),
+    atomic_list_concat(Checks, " and ", Pattern1),
+    
+    % Build nested joins for remaining goals
+    build_nested_joins(RestGoals, 1, JoinCode, _FinalIdx),
+    
+    % Build output mapping from head
+    Head =.. [_HeadPred | HeadArgs],
+    collect_all_goal_args([FirstGoal | RestGoals], AllGoalArgs),
+    build_output_mapping(HeadArgs, FirstGoal, RestGoals, AllGoalArgs, OutputMapping),
+    
+    format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''N-way join: ~w'''
+    # Match first goal
+    if ~w:
+~w
+                yield FrozenDict.from_dict({~w})
+", [RuleNum, Head, Pattern1, JoinCode, OutputMapping]).
+
+%%build_nested_joins(+Goals, +StartIdx, -JoinCode, -FinalIdx)
+%  Build nested for loops for N-way joins
+build_nested_joins([], Idx, "", Idx) :- !.
+build_nested_joins([Goal | RestGoals], Idx, JoinCode, FinalIdx) :-
+    Indent is (Idx + 1) * 4,
+    format(string(Spaces), "~*c", [Indent, 32]),  % 32 = space char
+    
+    % Detect join conditions with previous goals
+    detect_join_condition(Goal, Idx, JoinCond),
+    
+    format(string(ThisJoin),
+"~wfor join_~w in total:
+~w    if ~w:",
+        [Spaces, Idx, Spaces, JoinCond]),
+    
+    NextIdx is Idx + 1,
+    build_nested_joins(RestGoals, NextIdx, RestCode, FinalIdx),
+    
+    (   RestCode == ""
+    ->  JoinCode = ThisJoin
+    ;   format(string(JoinCode), "~w\n~w", [ThisJoin, RestCode])
+    ).
+
+%% detect_join_condition(+Goal, +Idx, -JoinCond)
+%  Find variables that join with previous goals
+detect_join_condition(_Goal, Idx, JoinCond) :-
+    % Simplified: assume join on matching arg indices
+    % TODO: Smarter variable tracking
+    _PrevIdx is Idx - 1,
+    format(string(JoinCond), "join_~w.get('arg0') == fact.get('arg1')", [Idx]).
+
+%% collect_all_goal_args(+Goals, -AllArgs)
+collect_all_goal_args(Goals, AllArgs) :-
+    findall(Args,
+        (   member(Goal, Goals),
+            Goal =.. [_ | Args]
+        ),
+        ArgLists),
+    append(ArgLists, AllArgs).
+
+%% build_output_mapping(+HeadArgs, +FirstGoal, +RestGoals, +AllGoalArgs, -Mapping)
+build_output_mapping(HeadArgs, FirstGoal, _RestGoals, _AllGoalArgs, Mapping) :-
+    % Simplified: map from first goal args
+    FirstGoal =.. [_ | FirstArgs],
+    findall(Assign,
+        (   nth0(HIdx, HeadArgs, HVar),
+            nth0(GIdx, FirstArgs, HVar),
+            format(string(Assign), "'arg~w': fact.get('arg~w')", [HIdx, GIdx])
+        ),
+        Assigns),
+    atomic_list_concat(Assigns, ", ", Mapping).
 
 
 %% generate_fixpoint_loop(+Name, +Clauses, -FixpointLoop)
