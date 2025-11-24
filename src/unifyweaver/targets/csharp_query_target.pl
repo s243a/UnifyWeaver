@@ -1177,14 +1177,25 @@ xml_reader_literal(Metadata, Arity, Literal) :-
     ->  Width = Width0
     ;   Width = Arity
     ),
+    (   get_dict(namespace_prefixes, Metadata, NsList),
+        NsList \= []
+    ->  namespace_map_literal(NsList, NsLiteral),
+        NsLine = format('                NamespacePrefixes = ~w,~n', [NsLiteral])
+    ;   NsLine = ''
+    ),
+    (   get_dict(treat_cdata, Metadata, TreatCdata)
+    ->  treat_boolean_literal(TreatCdata, TreatCdataLit)
+    ;   treat_boolean_literal(true, TreatCdataLit)
+    ),
     format(atom(Literal),
 'new XmlStreamReader(new XmlSourceConfig
             {
                 InputPath = ~w,
                 RecordSeparator = RecordSeparatorKind.~w,
-                ExpectedWidth = ~w
+                ExpectedWidth = ~w,
+~w                TreatPearltreesCDataAsText = ~w
             })',
-        [InputLiteral, RecSepLiteral, Width]).
+        [InputLiteral, RecSepLiteral, Width, NsLine, TreatCdataLit]).
 
 metadata_column_selectors_literal(Metadata, _Arity, Literal) :-
     (   get_dict(column_selectors, Metadata, Selectors),
@@ -1344,6 +1355,17 @@ record_separator_literal(nul, 'Null') :- !.
 record_separator_literal(json, 'Json') :- !.
 record_separator_literal(Value, Name) :-
     literal_pascal_name(Value, Name).
+
+namespace_map_literal(List, Literal) :-
+    findall(Item,
+        (   member(Uri-Prefix, List),
+            csharp_literal(Uri, UriLit),
+            csharp_literal(Prefix, PrefLit),
+            format(atom(Item), '                    { ~w, ~w }', [UriLit, PrefLit])
+        ),
+        Items),
+    atomic_list_concat(Items, ',\n', Joined),
+    format(atom(Literal), 'new Dictionary<string, string>\n                {\n~w\n                }', [Joined]).
 
 quote_style_literal(none, 'None') :- !.
 quote_style_literal(double_quote, 'DoubleQuote') :- !.
