@@ -951,10 +951,10 @@ generate_rule_functions(Name, Clauses, RuleFunctions) :-
     atomic_list_concat(RuleFuncs, "\n\n", RuleFunctions).
 
 %% generate_rule_function(+Name, +RuleNum, +Head, +Body, -RuleFunc)
-generate_rule_function(_Name, RuleNum, Head, Body, RuleFunc) :-
+generate_rule_function(Name, RuleNum, Head, Body, RuleFunc) :-
     (   Body == true
     ->  % Fact (no body) - emit constant
-        translate_fact_rule(_Name, RuleNum, Head, RuleFunc)
+        translate_fact_rule(Name, RuleNum, Head, RuleFunc)
     ;   % Check for disjunction (;) in body
         contains_disjunction(Body)
     ->  % Handle disjunctive rule
@@ -975,9 +975,9 @@ generate_rule_function(_Name, RuleNum, Head, Body, RuleFunc) :-
         ;   NumRelGoals == 1
         ->  % Single relational goal + optionally builtins
             RelGoals = [SingleGoal],
-            translate_copy_rule_with_builtins(_Name, RuleNum, Head, SingleGoal, BuiltinGoals, RuleFunc)
+            translate_copy_rule_with_builtins(Name, RuleNum, Head, SingleGoal, BuiltinGoals, RuleFunc)
         ;   % Multiple relational goals + optionally builtins
-            translate_join_rule_with_builtins(_Name, RuleNum, Head, RelGoals, BuiltinGoals, RuleFunc)
+            translate_join_rule_with_builtins(Name, RuleNum, Head, RelGoals, BuiltinGoals, RuleFunc)
         )
     ).
 
@@ -1046,8 +1046,8 @@ translate_disjunct(Head, Disjunct, Code) :-
 
 %% translate_disjunct_copy(+Head, +Goal, +Builtins, -Code)
 translate_disjunct_copy(Head, Goal, Builtins, Code) :-
-    Head =.. [_HeadPred | HeadArgs],
-    Goal =.. [_GoalPred | GoalArgs],
+    Head =.. [HeadPred | HeadArgs],
+    Goal =.. [GoalPred | GoalArgs],
     
     % Pattern match
     length(GoalArgs, GoalArity),
@@ -1057,10 +1057,14 @@ translate_disjunct_copy(Head, Goal, Builtins, Code) :-
             format(string(Check), "'arg~w' in fact", [Idx])
         ),
         Checks),
-    atomic_list_concat(Checks, " and ", ConditionStr),
+    % Add relation check
+    format(string(RelCheck), "fact.get('relation') == '~w'", [GoalPred]),
+    AllChecks = [RelCheck | Checks],
+    atomic_list_concat(AllChecks, " and ", ConditionStr),
     
     % Constraints
-    translate_builtins(Builtins, ConstraintChecks),
+    build_variable_map([Goal-"fact"], VarMap),
+    translate_builtins(Builtins, VarMap, ConstraintChecks),
     (   ConstraintChecks == ""
     ->  FinalCondition = ConditionStr
     ;   format(string(FinalCondition), "~w and ~w", [ConditionStr, ConstraintChecks])
@@ -1073,7 +1077,10 @@ translate_disjunct_copy(Head, Goal, Builtins, Code) :-
             format(string(Assign), "'arg~w': fact.get('arg~w')", [HIdx, GIdx])
         ),
         Assigns),
-    atomic_list_concat(Assigns, ", ", OutputStr),
+    % Add relation to output
+    format(string(RelAssign), "'relation': '~w'", [HeadPred]),
+    AllAssigns = [RelAssign | Assigns],
+    atomic_list_concat(AllAssigns, ", ", OutputStr),
     
     format(string(Code),
 "if ~w:
@@ -1081,13 +1088,142 @@ translate_disjunct_copy(Head, Goal, Builtins, Code) :-
         [FinalCondition, OutputStr]).
 
 %% translate_disjunct_join(+Head, +Goals, +Builtins, -Code)
-translate_disjunct_join(Head, Goals, _Builtins, Code) :-
-    % Simplified: use basic join logic for disjuncts
-    % For now, just indicate it's a join within a disjunct
+translate_disjunct_join(Head, Goals, Builtins, Code) :-
+    length(Goals, NumGoals),
+    (   NumGoals == 2
+    ->  % Binary join within disjunct
+        Goals = [Goal1, Goal2],
+        translate_disjunct_binary_join(Head, Goal1, Goal2, Builtins, Code)
+    ;   % N-way join within disjunct - use simplified approach
+        translate_disjunct_nway_join(Head, Goals, Builtins, Code)
+    ).
+
+%% translate_disjunct_binary_join(+Head, +Goal1, +Goal2, +Builtins, -Code)
+translate_disjunct_binary_join(Head, Goal1, Goal2, Builtins, Code) :-
+    Goal1 =.. [Pred1 | Args1],
+    Goal2 =.. [Pred2 | Args2],
+    Head =.. [HeadPred | HeadArgs],
+    
+    % Find join variable
+    findall(Var-Idx1-Idx2,
+        (   nth0(Idx1, Args1, Var),
+            nth0(Idx2, Args2, Var),
+            \+ atom(Var)
+        ),
+        JoinVars),
+    
+    % Build join condition
+    (   JoinVars = [_Var-JIdx1-JIdx2|_]
+    ->  format(string(JoinCond), "other.get('arg~w') == fact.get('arg~w')", [JIdx2, JIdx1])
+    ;   JoinCond = "True"
+    ),
+    
+    % Add relation check for other (Goal2)
+    format(string(RelCheck2), "other.get('relation') == '~w'", [Pred2]),
+    (   JoinCond == "True"
+    ->  JoinCondWithRel = RelCheck2
+    ;   format(string(JoinCondWithRel), "~w and ~w", [JoinCond, RelCheck2])
+    ),
+    
+    % Build constraint checks
+    build_variable_map([Goal1-"fact", Goal2-"other"], VarMap),
+    translate_builtins(Builtins, VarMap, ConstraintChecks),
+    (   ConstraintChecks == ""
+    ->  FinalJoinCond = JoinCondWithRel
+    ;   format(string(FinalJoinCond), "~w and ~w", [JoinCondWithRel, ConstraintChecks])
+    ),
+    
+    % Build output mapping
+    findall(OutAssign,
+        (   nth0(HIdx, HeadArgs, HVar),
+            (   nth0(G1Idx, Args1, HVar)
+            ->  format(string(OutAssign), "'arg~w': fact.get('arg~w')", [HIdx, G1Idx])
+            ;   nth0(G2Idx, Args2, HVar),
+                format(string(OutAssign), "'arg~w': other.get('arg~w')", [HIdx, G2Idx])
+            )
+        ),
+        OutAssigns),
+    % Add relation to output
+    format(string(RelAssign), "'relation': '~w'", [HeadPred]),
+    AllAssigns = [RelAssign | OutAssigns],
+    atomic_list_concat(AllAssigns, ", ", OutputMapping),
+    
+    % Pattern match for first goal
+    length(Args1, Arity1),
+    findall(PatCheck,
+        (   between(0, Arity1, Idx),
+            Idx < Arity1,
+            format(string(PatCheck), "'arg~w' in fact", [Idx])
+        ),
+        PatChecks),
+    % Add relation check for fact (Goal1)
+    format(string(RelCheck1), "fact.get('relation') == '~w'", [Pred1]),
+    AllPatChecks = [RelCheck1 | PatChecks],
+    atomic_list_concat(AllPatChecks, " and ", Pattern1),
+    
     format(string(Code),
-"# Join in disjunct: ~w
-    pass  # TODO: Full join implementation in disjunct",
-        [Head]).
+"if ~w:
+        for other in total:
+            if ~w:
+                yield FrozenDict.from_dict({~w})",
+        [Pattern1, FinalJoinCond, OutputMapping]).
+
+%% translate_disjunct_nway_join(+Head, +Goals, +Builtins, -Code)
+translate_disjunct_nway_join(Head, Goals, Builtins, Code) :-
+    Goals = [FirstGoal | RestGoals],
+    
+    % Pattern match first goal
+    FirstGoal =.. [Pred1 | Args1],
+    length(Args1, Arity1),
+    findall(Check, (between(0, Arity1, Idx), Idx < Arity1, format(string(Check), "'arg~w' in fact", [Idx])), Checks),
+    % Add relation check
+    format(string(RelCheck), "fact.get('relation') == '~w'", [Pred1]),
+    AllChecks = [RelCheck | Checks],
+    atomic_list_concat(AllChecks, " and ", Pattern1),
+    
+    % Nested joins
+    build_nested_joins(RestGoals, 1, JoinCode, FinalIdx),
+    
+    % Output mapping
+    Head =.. [HeadPred | HeadArgs],
+    collect_all_goal_args([FirstGoal | RestGoals], AllGoalArgs),
+    build_output_mapping(HeadArgs, FirstGoal, RestGoals, AllGoalArgs, OutputMapping),
+    format(string(FullOutputMapping), "'relation': '~w', ~w", [HeadPred, OutputMapping]),
+    
+    % Constraints
+    findall(G-S,
+        (   nth1(I, RestGoals, G),
+            format(string(S), "join_~w", [I])
+        ),
+        RestPairs),
+    Pairs = [FirstGoal-"fact" | RestPairs],
+    build_variable_map(Pairs, VarMap),
+    translate_builtins(Builtins, VarMap, ConstraintChecks),
+    
+    % Calculate indentation for innermost block
+    % Base indent is 4 (inside if Pattern1).
+    % Each nested join adds 4 (for loop) + 4 (if condition) = 8?
+    % build_nested_joins: Idx=1 -> Indent=8 (for loop). If=12.
+    % So innermost body is at (FinalIdx + 2) * 4?
+    % Let's verify:
+    % RestGoals=[G1]. Idx=1. Loop at 8. If at 12. Body at 16.
+    % FinalIdx=2. (2+2)*4 = 16. Correct.
+    Indent is (FinalIdx + 2) * 4,
+    format(string(Spaces), "~*c", [Indent, 32]),
+    
+    (   ConstraintChecks == ""
+    ->  format(string(YieldBlock),
+"~wyield FrozenDict.from_dict({~w})", [Spaces, FullOutputMapping])
+    ;   format(string(YieldBlock),
+"~wif ~w:
+~w    yield FrozenDict.from_dict({~w})", [Spaces, ConstraintChecks, Spaces, FullOutputMapping])
+    ),
+
+    format(string(Code),
+"if ~w:
+~w
+~w", [Pattern1, JoinCode, YieldBlock]).
+
 
 %% build_constant_output(+HeadArgs, -OutputStr)
 build_constant_output(HeadArgs, OutputStr) :-
@@ -1105,21 +1241,19 @@ build_constant_output(HeadArgs, OutputStr) :-
 %% is_builtin_goal(+Goal)
 %  Check if goal is a built-in (is, >, <, etc.)
 is_builtin_goal(Goal) :-
-    (   Goal = (_ is _)
-    ;   Goal = (_ > _)
-    ;   Goal = (_ < _)
-    ;   Goal = (_ >= _)
-    ;   Goal = (_ =< _)
-    ;   Goal = (_ =:= _)
-    ;   Goal = (_ =\= _)
-    ).
+    Goal =.. [Pred | _],
+    member(Pred, [is, >, <, >=, =<, =:=, =\=, \+, not]).
 
 %% translate_fact_rule(+Name, +RuleNum, +Head, -RuleFunc)
 %  Translate a fact (constant) into a rule that emits it once
 translate_fact_rule(_Name, RuleNum, Head, RuleFunc) :-
-    Head =.. [_Pred | Args],
+    Head =.. [Pred | Args],
     extract_constants(Args, ConstPairs),
-    format_dict_pairs(ConstPairs, DictStr),
+    format_dict_pairs(ConstPairs, ArgsStr),
+    (   ArgsStr == ""
+    ->  format(string(DictStr), "'relation': '~w'", [Pred])
+    ;   format(string(DictStr), "'relation': '~w', ~w", [Pred, ArgsStr])
+    ),
     format(string(RuleFunc),
 "def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
     '''Fact: ~w'''
@@ -1150,11 +1284,10 @@ format_dict_pairs(Pairs, DictStr) :-
         PairStrs),
     atomic_list_concat(PairStrs, ", ", DictStr).
 
-%% translate_copy_rule(+Name, +RuleNum, +Head, +Goal, -RuleFunc)
-%  Translate a simple copy/transform rule (single goal in body)
-translate_copy_rule(_Name, RuleNum, Head, Goal, RuleFunc) :-
-    % Extract variable mappings
-    Head =.. [_HeadPred | HeadArgs],
+%% translate_copy_rule_with_builtins(+Name, +RuleNum, +Head, +Goal, +Builtins, -RuleFunc)
+%  Copy rule with built-in constraints and relation check
+translate_copy_rule_with_builtins(_Name, RuleNum, Head, Goal, Builtins, RuleFunc) :-
+    Head =.. [HeadPred | HeadArgs],
     Goal =.. [GoalPred | GoalArgs],
     
     % Build pattern match condition
@@ -1165,152 +1298,160 @@ translate_copy_rule(_Name, RuleNum, Head, Goal, RuleFunc) :-
             format(string(Check), "'arg~w' in fact", [Idx])
         ),
         Checks),
-    atomic_list_concat(Checks, " and ", ConditionStr),
+    % Add relation check
+    format(string(RelCheck), "fact.get('relation') == '~w'", [GoalPred]),
+    AllChecks = [RelCheck | Checks],
+    atomic_list_concat(AllChecks, " and ", ConditionStr),
+    
+    % Constraints
+    build_variable_map([Goal-"fact"], VarMap),
+    translate_builtins(Builtins, VarMap, ConstraintChecks),
     
     % Build output dict
     findall(Assign,
-        (   nth0(HeadIdx, HeadArgs, HeadArg),
-            nth0(GoalIdx, GoalArgs, GoalArg),
-            HeadArg == GoalArg,  % Same variable
-            format(string(Assign), "'arg~w': fact.get('arg~w')", [HeadIdx, GoalIdx])
+        (   nth0(HIdx, HeadArgs, HeadArg),
+            nth0(GIdx, GoalArgs, GoalArg),
+            HeadArg == GoalArg,
+            format(string(Assign), "'arg~w': fact.get('arg~w')", [HIdx, GIdx])
         ),
         Assigns),
-    atomic_list_concat(Assigns, ", ", OutputStr),
+    % Add relation to output
+    format(string(RelAssign), "'relation': '~w'", [HeadPred]),
+    AllAssigns = [RelAssign | Assigns],
+    atomic_list_concat(AllAssigns, ", ", OutputStr),
     
-    % GoalPred not currently used but keep for future reference
-    atom_string(GoalPred, _GoalPredStr),
+    % Combine pattern and constraints
+    (   ConstraintChecks == ""
+    ->  FinalCondition = ConditionStr
+    ;   format(string(FinalCondition), "~w and ~w", [ConditionStr, ConstraintChecks])
+    ),
+    
     format(string(RuleFunc),
 "def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
-    '''Copy rule: ~w -> ~w'''
-    # Match pattern and copy variables
+    '''Copy rule: ~w'''
     if ~w:
         yield FrozenDict.from_dict({~w})
-", [RuleNum, Goal, Name, ConditionStr, OutputStr]).
+", [RuleNum, Head, FinalCondition, OutputStr]).
 
-%% translate_copy_rule_with_builtins(+Name, +RuleNum, +Head, +Goal, +Builtins, -RuleFunc)
-%  Copy rule with built-in constraints
-translate_copy_rule_with_builtins(_Name, RuleNum, Head, Goal, Builtins, RuleFunc) :-
-    (   Builtins == []
-    ->  % No builtins, use regular copy rule
-        translate_copy_rule(_Name, RuleNum, Head, Goal, RuleFunc)
-    ;   % Generate copy rule with constraint checks
-        Head =.. [_HeadPred | HeadArgs],
-        Goal =.. [GoalPred | GoalArgs],
-        
-        % Build pattern match condition
-        length(GoalArgs, GoalArity),
-        findall(Check,
-            (   between(0, GoalArity, Idx),
-                Idx < GoalArity,
-                format(string(Check), "'arg~w' in fact", [Idx])
-            ),
-            Checks),
-        atomic_list_concat(Checks, " and ", ConditionStr),
-        
-        % Build constraint checks from built-ins
-        translate_builtins(Builtins, ConstraintChecks),
-        
-        % Build output dict
-        findall(Assign,
-            (   nth0(HeadIdx, HeadArgs, HeadArg),
-                nth0(GoalIdx, GoalArgs, GoalArg),
-                HeadArg == GoalArg,
-                format(string(Assign), "'arg~w': fact.get('arg~w')", [HeadIdx, GoalIdx])
-            ),
-            Assigns),
-        atomic_list_concat(Assigns, ", ", OutputStr),
-        
-        % Combine pattern and constraints
-        (   ConstraintChecks == ""
-        ->  FinalCondition = ConditionStr
-        ;   format(string(FinalCondition), "~w and ~w", [ConditionStr, ConstraintChecks])
-        ),
-        
-        format(string(RuleFunc),
-"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
-    '''Copy rule with constraints: ~w'''
-    if ~w:
-        yield FrozenDict.from_dict({~w})
-", [RuleNum, Goal, FinalCondition, OutputStr])
-    ).
-
-%% translate_builtins(+Builtins, -ConstraintChecks)
+%% translate_builtins(+Builtins, +VarMap, -ConstraintChecks)
 %  Translate built-in predicates to Python expressions
-translate_builtins([], "").
-translate_builtins(Builtins, ConstraintChecks) :-
+translate_builtins([], _VarMap, "").
+translate_builtins(Builtins, VarMap, ConstraintChecks) :-
     Builtins \= [],
     findall(Check,
         (   member(Builtin, Builtins),
-            translate_builtin(Builtin, Check)
+            translate_builtin(Builtin, VarMap, Check)
         ),
         Checks),
     atomic_list_concat(Checks, " and ", ConstraintChecks).
 
-%% translate_builtin(+Builtin, -PythonExpr)
+%% translate_builtin(+Builtin, +VarMap, -PythonExpr)
 %  Translate a single built-in to Python
-translate_builtin(Left is Right, PythonExpr) :-
+translate_builtin(Left is Right, VarMap, PythonExpr) :-
     !, % is/2
-    translate_expr(Left, LeftPy),
-    translate_expr(Right, RightPy),
+    translate_expr(Left, VarMap, LeftPy),
+    translate_expr(Right, VarMap, RightPy),
     format(string(PythonExpr), "~w == ~w", [LeftPy, RightPy]).
-translate_builtin(Left > Right, PythonExpr) :-
+translate_builtin(Left > Right, VarMap, PythonExpr) :-
     !,
-    translate_expr(Left, LeftPy),
-    translate_expr(Right, RightPy),
+    translate_expr(Left, VarMap, LeftPy),
+    translate_expr(Right, VarMap, RightPy),
     format(string(PythonExpr), "~w > ~w", [LeftPy, RightPy]).
-translate_builtin(Left < Right, PythonExpr) :-
+translate_builtin(Left < Right, VarMap, PythonExpr) :-
     !,
-    translate_expr(Left, LeftPy),
-    translate_expr(Right, RightPy),
+    translate_expr(Left, VarMap, LeftPy),
+    translate_expr(Right, VarMap, RightPy),
     format(string(PythonExpr), "~w < ~w", [LeftPy, RightPy]).
-translate_builtin(Left >= Right, PythonExpr) :-
+translate_builtin(Left >= Right, VarMap, PythonExpr) :-
     !,
-    translate_expr(Left, LeftPy),
-    translate_expr(Right, RightPy),
+    translate_expr(Left, VarMap, LeftPy),
+    translate_expr(Right, VarMap, RightPy),
     format(string(PythonExpr), "~w >= ~w", [LeftPy, RightPy]).
-translate_builtin(Left =< Right, PythonExpr) :-
+translate_builtin(Left =< Right, VarMap, PythonExpr) :-
     !,
-    translate_expr(Left, LeftPy),
-    translate_expr(Right, RightPy),
+    translate_expr(Left, VarMap, LeftPy),
+    translate_expr(Right, VarMap, RightPy),
     format(string(PythonExpr), "~w <= ~w", [LeftPy, RightPy]).
-translate_builtin(Left =:= Right, PythonExpr) :-
+translate_builtin(Left =:= Right, VarMap, PythonExpr) :-
     !,
-    translate_expr(Left, LeftPy),
-    translate_expr(Right, RightPy),
+    translate_expr(Left, VarMap, LeftPy),
+    translate_expr(Right, VarMap, RightPy),
     format(string(PythonExpr), "~w == ~w", [LeftPy, RightPy]).
-translate_builtin(Left =\= Right, PythonExpr) :-
+translate_builtin(Left =\= Right, VarMap, PythonExpr) :-
     !,
-    translate_expr(Left, LeftPy),
-    translate_expr(Right, RightPy),
+    translate_expr(Left, VarMap, LeftPy),
+    translate_expr(Right, VarMap, RightPy),
     format(string(PythonExpr), "~w != ~w", [LeftPy, RightPy]).
-translate_builtin(_, "True").  % Fallback
+translate_builtin(\+ Goal, VarMap, PythonExpr) :-
+    !,
+    translate_negation(Goal, VarMap, PythonExpr).
+translate_builtin(not(Goal), VarMap, PythonExpr) :-
+    !,
+    translate_negation(Goal, VarMap, PythonExpr).
+translate_builtin(_, _VarMap, "True").  % Fallback
 
-%% translate_expr(+PrologExpr, -PythonExpr)
-%  Translate Prolog expression to Python
-translate_expr(Var, PythonExpr) :-
+%% translate_negation(+Goal, +VarMap, -PythonExpr)
+translate_negation(Goal, VarMap, PythonExpr) :-
+    Goal =.. [Pred | Args],
+    findall(Pair,
+        (   nth0(Idx, Args, Arg),
+            (   var(Arg)
+            ->  translate_expr(Arg, VarMap, ValExpr)
+            ;   atom(Arg)
+            ->  format(string(ValExpr), "'~w'", [Arg])
+            ;   number(Arg)
+            ->  format(string(ValExpr), "~w", [Arg])
+            ;   ValExpr = "None"
+            ),
+            format(string(Pair), "'arg~w': ~w", [Idx, ValExpr])
+        ),
+        Pairs),
+    format(string(RelPair), "'relation': '~w'", [Pred]),
+    AllPairs = [RelPair | Pairs],
+    atomic_list_concat(AllPairs, ", ", DictContent),
+    format(string(PythonExpr), "FrozenDict.from_dict({~w}) not in total", [DictContent]).
+
+%% build_variable_map(+GoalSourcePairs, -VarMap)
+%  Build map from variables to Python access strings
+build_variable_map(GoalSourcePairs, VarMap) :-
+    findall(Var-Access,
+        (   member(Goal-Source, GoalSourcePairs),
+            Goal =.. [_ | Args],
+            nth0(Idx, Args, Var),
+            var(Var),
+            format(string(Access), "~w.get('arg~w')", [Source, Idx])
+        ),
+        VarMap).
+
+%% translate_expr(+PrologExpr, +VarMap, -PythonExpr)
+%  Translate Prolog expression to Python, mapping variables
+translate_expr(Var, VarMap, PythonExpr) :-
     var(Var),
     !,
-    % Variable - look up in fact dict
-    % Simplified: assume it's arg0, arg1, etc.
-    PythonExpr = "fact.get('arg0')".
-translate_expr(Num, PythonExpr) :-
+    (   memberchk(Var-Access, VarMap)
+    ->  PythonExpr = Access
+    ;   % Variable not found - assume it's a singleton or error
+        % For now return None, but this indicates unsafe usage
+        PythonExpr = "None"
+    ).
+translate_expr(Num, _VarMap, PythonExpr) :-
     number(Num),
     !,
     format(string(PythonExpr), "~w", [Num]).
-translate_expr(Expr, PythonExpr) :-
+translate_expr(Expr, VarMap, PythonExpr) :-
     compound(Expr),
     Expr =.. [Op, Left, Right],
-    member(Op, [+, -, *, /, mod]),
+    member(Op, [+, -, *, /, mod]), % Ensure this is handled
     !,
-    translate_expr(Left, LeftPy),
-    translate_expr(Right, RightPy),
+    translate_expr(Left, VarMap, LeftPy),
+    translate_expr(Right, VarMap, RightPy),
     python_operator(Op, PyOp),
     format(string(PythonExpr), "(~w ~w ~w)", [LeftPy, PyOp, RightPy]).
-translate_expr(Atom, PythonExpr) :-
+translate_expr(Atom, _VarMap, PythonExpr) :-
     atom(Atom),
     !,
     format(string(PythonExpr), "'~w'", [Atom]).
-translate_expr(_, "None").  % Fallback
+translate_expr(_, _VarMap, "None").  % Fallback
 
 %% python_operator(+PrologOp, -PythonOp)
 python_operator(+, '+').
@@ -1322,15 +1463,15 @@ python_operator(mod, '%').
 
 %% translate_join_rule(+Name, +RuleNum, +Head, +Goals, -RuleFunc)
 %  Translate a join rule (multiple goals in body)
-translate_join_rule(_Name, RuleNum, Head, Goals, RuleFunc) :-
+translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc) :-
     length(Goals, NumGoals),
     (   NumGoals == 2
     ->  % Binary join (existing fast path)
         Goals = [Goal1, Goal2],
-        translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc)
+        translate_binary_join(Name, RuleNum, Head, Goal1, Goal2, RuleFunc)
     ;   NumGoals >= 3
     ->  % N-way join (new!)
-        translate_nway_join(RuleNum, Head, Goals, RuleFunc)
+        translate_nway_join(RuleNum, Head, Goals, [], RuleFunc)
     ;   % Single goal shouldn't reach here
         format(string(RuleFunc),
 "def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
@@ -1341,28 +1482,28 @@ translate_join_rule(_Name, RuleNum, Head, Goals, RuleFunc) :-
 
 %% translate_join_rule_with_builtins(+Name, +RuleNum, +Head, +Goals, +Builtins, -RuleFunc)
 %  Join rule with built-in constraints
-translate_join_rule_with_builtins(_Name, RuleNum, Head, Goals, Builtins, RuleFunc) :-
+translate_join_rule_with_builtins(Name, RuleNum, Head, Goals, Builtins, RuleFunc) :-
     (   Builtins == []
     ->  % No builtins, use regular join rule
-        translate_join_rule(_Name, RuleNum, Head, Goals, RuleFunc)
+        translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc)
     ;   % Generate join with constraints
         % For binary joins, add constraints  to the existing logic
         length(Goals, NumGoals),
         (   NumGoals == 2
         ->  Goals = [Goal1, Goal2],
             translate_binary_join_with_constraints(RuleNum, Head, Goal1, Goal2, Builtins, RuleFunc)
-        ;   % N-way joins with constraints - use base for now
-            % TODO: Add constraint support to N-way joins
-            translate_nway_join(RuleNum, Head, Goals, RuleFunc)
+        ;   % N-way joins with constraints
+            translate_nway_join(RuleNum, Head, Goals, Builtins, RuleFunc)
         )
     ).
 
 %% translate_binary_join_with_constraints(+RuleNum, +Head, +Goal1, +Goal2, +Builtins, -RuleFunc)
+%% translate_binary_join_with_constraints(+RuleNum, +Head, +Goal1, +Goal2, +Builtins, -RuleFunc)
 translate_binary_join_with_constraints(RuleNum, Head, Goal1, Goal2, Builtins, RuleFunc) :-
     % Similar to translate_binary_join but with constraint checks
-    Goal1 =.. [_Pred1 | Args1],
-    Goal2 =.. [_Pred2 | Args2],
-    Head =.. [_HeadPred | HeadArgs],
+    Goal1 =.. [Pred1 | Args1],
+    Goal2 =.. [Pred2 | Args2],
+    Head =.. [HeadPred | HeadArgs],
     
     % Find join variable
     findall(Var-Idx1-Idx2,
@@ -1378,13 +1519,21 @@ translate_binary_join_with_constraints(RuleNum, Head, Goal1, Goal2, Builtins, Ru
     ;   JoinCond = "True"
     ),
     
+    % Add relation check for other (Goal2)
+    format(string(RelCheck2), "other.get('relation') == '~w'", [Pred2]),
+    (   JoinCond == "True"
+    ->  JoinCondWithRel = RelCheck2
+    ;   format(string(JoinCondWithRel), "~w and ~w", [JoinCond, RelCheck2])
+    ),
+    
     % Build constraint checks
-    translate_builtins(Builtins, ConstraintChecks),
+    build_variable_map([Goal1-"fact", Goal2-"other"], VarMap),
+    translate_builtins(Builtins, VarMap, ConstraintChecks),
     
     % Combine join and constraints
     (   ConstraintChecks == ""
-    ->  FinalJoinCond = JoinCond
-    ;   format(string(FinalJoinCond), "~w and ~w", [JoinCond, ConstraintChecks])
+    ->  FinalJoinCond = JoinCondWithRel
+    ;   format(string(FinalJoinCond), "~w and ~w", [JoinCondWithRel, ConstraintChecks])
     ),
     
     % Build output mapping
@@ -1397,7 +1546,10 @@ translate_binary_join_with_constraints(RuleNum, Head, Goal1, Goal2, Builtins, Ru
             )
         ),
         OutAssigns),
-    atomic_list_concat(OutAssigns, ", ", OutputMapping),
+    % Add relation to output
+    format(string(RelAssign), "'relation': '~w'", [HeadPred]),
+    AllAssigns = [RelAssign | OutAssigns],
+    atomic_list_concat(AllAssigns, ", ", OutputMapping),
     
     % Pattern match for first goal
     length(Args1, Arity1),
@@ -1407,7 +1559,10 @@ translate_binary_join_with_constraints(RuleNum, Head, Goal1, Goal2, Builtins, Ru
             format(string(PatCheck), "'arg~w' in fact", [Idx])
         ),
         PatChecks),
-    atomic_list_concat(PatChecks, " and ", Pattern1),
+    % Add relation check for fact (Goal1)
+    format(string(RelCheck1), "fact.get('relation') == '~w'", [Pred1]),
+    AllPatChecks = [RelCheck1 | PatChecks],
+    atomic_list_concat(AllPatChecks, " and ", Pattern1),
     
     format(string(RuleFunc),
 "def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
@@ -1425,12 +1580,14 @@ translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc) :-
     % Extract predicates and arguments
     Goal1 =.. [Pred1 | Args1],
     Goal2 =.. [Pred2 | Args2],
-    Head =.. [_HeadPred | HeadArgs],
+    Head =.. [HeadPred | HeadArgs],
     
     % Find join variable (appears in both goals)
     findall(Var-Idx1-Idx2,
-        (   nth0(Idx1, Args1, Var),
-            nth0(Idx2, Args2, Var),
+        (   nth0(Idx1, Args1, V1),
+            nth0(Idx2, Args2, V2),
+            V1 == V2,
+            Var = V1,
             \+ atom(Var)  % Variable, not constant
         ),
         JoinVars),
@@ -1441,17 +1598,27 @@ translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc) :-
     ;   JoinCond = "True"  % No explicit join
     ),
     
+    % Add relation check for other (Goal2)
+    format(string(RelCheck2), "other.get('relation') == '~w'", [Pred2]),
+    (   JoinCond == "True"
+    ->  JoinCondWithRel = RelCheck2
+    ;   format(string(JoinCondWithRel), "~w and ~w", [JoinCond, RelCheck2])
+    ),
+    
     % Build output mapping
     findall(OutAssign,
         (   nth0(HIdx, HeadArgs, HVar),
-            (   nth0(G1Idx, Args1, HVar)
+            (   nth0(G1Idx, Args1, V1), V1 == HVar
             ->  format(string(OutAssign), "'arg~w': fact.get('arg~w')", [HIdx, G1Idx])
-            ;   nth0(G2Idx, Args2, HVar),
+            ;   nth0(G2Idx, Args2, V2), V2 == HVar,
                 format(string(OutAssign), "'arg~w': other.get('arg~w')", [HIdx, G2Idx])
             )
         ),
         OutAssigns),
-    atomic_list_concat(OutAssigns, ", ", OutputMapping),
+    % Add relation to output
+    format(string(RelAssign), "'relation': '~w'", [HeadPred]),
+    AllOutAssigns = [RelAssign | OutAssigns],
+    atomic_list_concat(AllOutAssigns, ", ", OutputMapping),
     
     % Pattern match for first goal
     length(Args1, Arity1),
@@ -1461,10 +1628,10 @@ translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc) :-
             format(string(PatCheck), "'arg~w' in fact", [Idx])
         ),
         PatChecks),
-    atomic_list_concat(PatChecks, " and ", Pattern1),
-    
-    atom_string(Pred1, _Pred1Str),
-    atom_string(Pred2, _Pred2Str),
+    % Add relation check for fact
+    format(string(RelCheck1), "fact.get('relation') == '~w'", [Pred1]),
+    AllPatChecks = [RelCheck1 | PatChecks],
+    atomic_list_concat(AllPatChecks, " and ", Pattern1),
     
     format(string(RuleFunc),
 "def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
@@ -1476,16 +1643,17 @@ translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc) :-
             # Check join condition
             if ~w:
                 yield FrozenDict.from_dict({~w})
-", [RuleNum, Head, Goal1, Goal2, Pattern1, JoinCond, OutputMapping]).
+", [RuleNum, Head, Goal1, Goal2, Pattern1, JoinCondWithRel, OutputMapping]).
 
 %% translate_nway_join(+RuleNum, +Head, +Goals, -RuleFunc)
 %  Translate N-way join (3+ goals)
-translate_nway_join(RuleNum, Head, Goals, RuleFunc) :-
+%% translate_nway_join(+RuleNum, +Head, +Goals, +Builtins, -RuleFunc)
+translate_nway_join(RuleNum, Head, Goals, Builtins, RuleFunc) :-
     % Strategy: First goal from fact, rest joined from total
     Goals = [FirstGoal | RestGoals],
     
     % Build pattern match for first goal
-    FirstGoal =.. [_Pred1 | Args1],
+    FirstGoal =.. [Pred1 | Args1],
     length(Args1, Arity1),
     findall(Check,
         (   between(0, Arity1, Idx),
@@ -1493,15 +1661,38 @@ translate_nway_join(RuleNum, Head, Goals, RuleFunc) :-
             format(string(Check), "'arg~w' in fact", [Idx])
         ),
         Checks),
-    atomic_list_concat(Checks, " and ", Pattern1),
+    % Add relation check
+    format(string(RelCheck), "fact.get('relation') == '~w'", [Pred1]),
+    AllChecks = [RelCheck | Checks],
+    atomic_list_concat(AllChecks, " and ", Pattern1),
     
     % Build nested joins for remaining goals
-    build_nested_joins(RestGoals, 1, JoinCode, _FinalIdx),
+    build_nested_joins(RestGoals, 1, JoinCode, FinalIdx),
     
     % Build output mapping from head
-    Head =.. [_HeadPred | HeadArgs],
+    Head =.. [HeadPred | HeadArgs],
     collect_all_goal_args([FirstGoal | RestGoals], AllGoalArgs),
     build_output_mapping(HeadArgs, FirstGoal, RestGoals, AllGoalArgs, OutputMapping),
+    format(string(FullOutputMapping), "'relation': '~w', ~w", [HeadPred, OutputMapping]),
+    
+    % Constraints
+    findall(G-S,
+        (   nth1(I, RestGoals, G),
+            format(string(S), "join_~w", [I])
+        ),
+        RestPairs),
+    Pairs = [FirstGoal-"fact" | RestPairs],
+    build_variable_map(Pairs, VarMap),
+    translate_builtins(Builtins, VarMap, ConstraintChecks),
+    
+    % Calculate indentation for yield block
+    Indent is (FinalIdx + 2) * 4,
+    format(string(Spaces), "~*c", [Indent, 32]),
+    
+    (   ConstraintChecks == ""
+    ->  format(string(YieldBlock), "~wyield FrozenDict.from_dict({~w})", [Spaces, FullOutputMapping])
+    ;   format(string(YieldBlock), "~wif ~w:\n~w    yield FrozenDict.from_dict({~w})", [Spaces, ConstraintChecks, Spaces, FullOutputMapping])
+    ),
     
     format(string(RuleFunc),
 "def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
@@ -1509,23 +1700,31 @@ translate_nway_join(RuleNum, Head, Goals, RuleFunc) :-
     # Match first goal
     if ~w:
 ~w
-                yield FrozenDict.from_dict({~w})
-", [RuleNum, Head, Pattern1, JoinCode, OutputMapping]).
+~w
+", [RuleNum, Head, Pattern1, JoinCode, YieldBlock]).
 
 %%build_nested_joins(+Goals, +StartIdx, -JoinCode, -FinalIdx)
 %  Build nested for loops for N-way joins
 build_nested_joins([], Idx, "", Idx) :- !.
 build_nested_joins([Goal | RestGoals], Idx, JoinCode, FinalIdx) :-
+    Goal =.. [Pred | _],
     Indent is (Idx + 1) * 4,
     format(string(Spaces), "~*c", [Indent, 32]),  % 32 = space char
     
     % Detect join conditions with previous goals
     detect_join_condition(Goal, Idx, JoinCond),
     
+    % Add relation check
+    format(string(RelCheck), "join_~w.get('relation') == '~w'", [Idx, Pred]),
+    (   JoinCond == "True"
+    ->  FullCond = RelCheck
+    ;   format(string(FullCond), "~w and ~w", [RelCheck, JoinCond])
+    ),
+    
     format(string(ThisJoin),
 "~wfor join_~w in total:
 ~w    if ~w:",
-        [Spaces, Idx, Spaces, JoinCond]),
+        [Spaces, Idx, Spaces, FullCond]),
     
     NextIdx is Idx + 1,
     build_nested_joins(RestGoals, NextIdx, RestCode, FinalIdx),
@@ -1570,7 +1769,8 @@ build_output_mapping(HeadArgs, FirstGoal, _RestGoals, _AllGoalArgs, Mapping) :-
     FirstGoal =.. [_ | FirstArgs],
     findall(Assign,
         (   nth0(HIdx, HeadArgs, HVar),
-            nth0(GIdx, FirstArgs, HVar),
+            nth0(GIdx, FirstArgs, GVar),
+            GVar == HVar,
             format(string(Assign), "'arg~w': fact.get('arg~w')", [HIdx, GIdx])
         ),
         Assigns),

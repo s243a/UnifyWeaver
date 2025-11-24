@@ -81,8 +81,45 @@ test(disjunction_generator) :-
     retractall(valid(_)),
     !.
 
+test(complex_disjunction_generator) :-
+    % Test disjunction with N-way joins
+    % path(X,Z) :- (edge(X,Z) ; (edge(X,A), edge(A,B), edge(B,Z))).
+    assertz(edge(1,2)),
+    assertz(edge(2,3)),
+    assertz(edge(3,4)),
+    assertz((path(X,Z) :- (edge(X,Z) ; (edge(X,A), edge(A,B), edge(B,Z))))),
+    
+    compile_predicate_to_python(path/2, [mode(generator)], Code),
+    
+    % Should contain nested loops for the 3-way join part
+    sub_string(Code, _, _, _, "for join_1 in total"),
+    sub_string(Code, _, _, _, "for join_2 in total"),
+    
+    retractall(edge(_,_)),
+    retractall(path(_,_)),
+    !.
+
 python_available :-
     catch(process_create(path(python), ['--version'], [stderr(null)]), _, fail).
 
+
+test(negation_generator) :-
+    assertz(p(a)),
+    assertz(q(a)),
+    assertz(s(b)),
+    assertz((r(X) :- p(X), \+ q(X))),
+    assertz((t(X) :- s(X), \+ q(X))),
+    
+    compile_predicate_to_python(r/1, [mode(generator)], CodeR),
+    compile_predicate_to_python(t/1, [mode(generator)], CodeT),
+    
+    % Verify CodeR checks for q
+    sub_string(CodeR, _, _, _, "FrozenDict.from_dict"),
+    sub_string(CodeR, _, _, _, "'relation': 'q'"),
+    sub_string(CodeR, _, _, _, "not in total"),
+    
+    % Verify CodeT checks for q
+    sub_string(CodeT, _, _, _, "'relation': 'q'"),
+    sub_string(CodeT, _, _, _, "not in total").
 
 :- end_tests(python_generator).
