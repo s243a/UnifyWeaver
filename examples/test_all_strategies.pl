@@ -77,7 +77,7 @@ compile_and_execute(SourceName, Results) :-
         close(Stream)
     ),
 
-    % Execute
+    % Execute (keep helper scripts alive; rely on absolute paths)
     format(atom(Command), 'bash ~w > ~w 2>&1', [ScriptFile, OutputFile]),
     shell(Command),
 
