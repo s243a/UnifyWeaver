@@ -743,6 +743,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
         public RecordSeparatorKind RecordSeparator { get; init; } = RecordSeparatorKind.Null;
         public int ExpectedWidth { get; init; } = 1;
         public IReadOnlyDictionary<string, string>? NamespacePrefixes { get; init; } = BuiltinNamespacePrefixes;
+        public bool TreatPearltreesCDataAsText { get; init; } = true;
     }
 
     public sealed class DelimitedTextReader
@@ -992,13 +993,13 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             }
         }
 
-        private static void AddElement(IDictionary<string, object?> map, XElement element)
+        private void AddElement(IDictionary<string, object?> map, XElement element)
         {
             var local = element.Name.LocalName;
             var qualified = element.Name.ToString();
             var prefix = ResolvePrefix(element.Name);
 
-            var content = element.Value;
+            var content = ExtractElementText(element);
 
             map[local] = content;
             map[qualified] = content;
@@ -1025,6 +1026,20 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             {
                 AddElement(map, child);
             }
+        }
+
+        private string ExtractElementText(XElement element)
+        {
+            // If it's Pearltrees and we see CDATA, keep the CDATA text verbatim
+            if (_config.TreatPearltreesCDataAsText)
+            {
+                var cdata = element.Nodes().OfType<XCData>().FirstOrDefault();
+                if (cdata is not null)
+                {
+                    return cdata.Value;
+                }
+            }
+            return element.Value;
         }
 
         private string? ResolvePrefix(XName name)
