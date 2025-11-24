@@ -31,6 +31,12 @@ compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     ;   PredicateIndicator = Name/Arity, Module = user
     ),
     
+    % Determine ordering constraint
+    (   member(ordered(_Order), Options) % Changed AllOptions to Options
+    ->  true
+    ;   _Order = true  % Default: ordered
+    ),
+    
     % Determine evaluation mode
     option(mode(Mode), Options, procedural),
     
@@ -530,8 +536,8 @@ generate_binary_tail_loop(Name, BaseClauses, RecClauses, WorkerCode) :-
     
     % Extract step operation from recursive clause
     (   RecClauses = [(_RecHead, RecBody)|_]
-    ->  extract_step_operation(RecBody, StepOp)
-    ;   StepOp = "arg - 1"  % Default decrement
+    ->  extract_step_operation(RecBody, _StepOp)
+    ;   _StepOp = "arg - 1"  % Default decrement
     ),
     
     format(string(WorkerCode),
@@ -626,12 +632,12 @@ extract_accumulator_update(Body, Update) :-
 translate_acc_expr(Expr, PyExpr) :-
     functor(Expr, Op, 2),
     (   Op = '+'
-    ->  PyOp = "+", Order = normal
+    ->  PyOp = "+", _Order = normal
     ;   Op = '*'
-    ->  PyOp = "*", Order = normal
+    ->  PyOp = "*", _Order = normal
     ;   Op = '-'
-    ->  PyOp = "-", Order = normal
-    ;   PyOp = "+", Order = normal
+    ->  PyOp = "-", _Order = normal
+    ;   PyOp = "+", _Order = normal
     ),
     % Determine order: is it Acc + N or N + Acc?
     Expr =.. [_, Arg1, Arg2],
@@ -831,7 +837,7 @@ compile_generator_mode(Name, Arity, Module, Options, PythonCode) :-
     ).
 
 %% generate_generator_code(+Name, +Arity, +Clauses, +Options, -PythonCode)
-generate_generator_code(Name, Arity, Clauses, Options, PythonCode) :-
+generate_generator_code(_Name, _Arity, Clauses, Options, PythonCode) :-
     % Generate components
     generator_header(Header),
     generator_helpers(Options, Helpers),
@@ -945,18 +951,18 @@ generate_rule_functions(Name, Clauses, RuleFunctions) :-
     atomic_list_concat(RuleFuncs, "\n\n", RuleFunctions).
 
 %% generate_rule_function(+Name, +RuleNum, +Head, +Body, -RuleFunc)
-generate_rule_function(Name, RuleNum, Head, Body, RuleFunc) :-
+generate_rule_function(_Name, RuleNum, Head, Body, RuleFunc) :-
     (   Body == true
     ->  % Fact (no body) - emit constant
-        translate_fact_rule(Name, RuleNum, Head, RuleFunc)
+        translate_fact_rule(_Name, RuleNum, Head, RuleFunc)
     ;   extract_goals_list(Body, Goals),
         length(Goals, NumGoals),
         (   NumGoals == 1
         ->  % Single goal - copy/transform rule
             Goals = [SingleGoal],
-            translate_copy_rule(Name, RuleNum, Head, SingleGoal, RuleFunc)
+            translate_copy_rule(_Name, RuleNum, Head, SingleGoal, RuleFunc)
         ;   % Multiple goals - join rule
-            translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc)
+            translate_join_rule(_Name, RuleNum, Head, Goals, RuleFunc)
         )
     ).
 
@@ -1023,6 +1029,7 @@ translate_copy_rule(_Name, RuleNum, Head, Goal, RuleFunc) :-
         Assigns),
     atomic_list_concat(Assigns, ", ", OutputStr),
     
+    % GoalPred not currently used but keep for future reference
     atom_string(GoalPred, _GoalPredStr),
     format(string(RuleFunc),
 "def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
