@@ -956,14 +956,35 @@ generate_rule_function(_Name, RuleNum, Head, Body, RuleFunc) :-
     ->  % Fact (no body) - emit constant
         translate_fact_rule(_Name, RuleNum, Head, RuleFunc)
     ;   extract_goals_list(Body, Goals),
-        length(Goals, NumGoals),
-        (   NumGoals == 1
-        ->  % Single goal - copy/transform rule
-            Goals = [SingleGoal],
-            translate_copy_rule(_Name, RuleNum, Head, SingleGoal, RuleFunc)
-        ;   % Multiple goals - join rule
-            translate_join_rule(_Name, RuleNum, Head, Goals, RuleFunc)
+        % Separate builtin goals from relational goals
+        partition(is_builtin_goal, Goals, BuiltinGoals, RelGoals),
+        length(RelGoals, NumRelGoals),
+        (   NumRelGoals == 0
+        ->  % Only builtins → constraint, not a generator rule
+            format(string(RuleFunc),
+"def _apply_rule_~w(fact: FrozenDict, total: Set[FrozenDict]) -> Iterator[FrozenDict]:
+    '''Constraint-only rule (no generator)'''
+    return iter([])
+", [RuleNum])
+        ;   NumRelGoals == 1
+        ->  % Single relational goal + optionally builtins
+            RelGoals = [SingleGoal],
+            translate_copy_rule_with_builtins(_Name, RuleNum, Head, SingleGoal, BuiltinGoals, RuleFunc)
+        ;   % Multiple relational goals + optionally builtins
+            translate_join_rule_with_builtins(_Name, RuleNum, Head, RelGoals, BuiltinGoals, RuleFunc)
         )
+    ).
+
+%% is_builtin_goal(+Goal)
+%  Check if goal is a built-in (is, >, <, etc.)
+is_builtin_goal(Goal) :-
+    (   Goal = (_ is _)
+    ;   Goal = (_ > _)
+    ;   Goal = (_ < _)
+    ;   Goal = (_ >= _)
+    ;   Goal = (_ =< _)
+    ;   Goal = (_ =:= _)
+    ;   Goal = (_ =\= _)
     ).
 
 %% translate_fact_rule(+Name, +RuleNum, +Head, -RuleFunc)
@@ -1039,6 +1060,17 @@ translate_copy_rule(_Name, RuleNum, Head, Goal, RuleFunc) :-
         yield FrozenDict.from_dict({~w})
 ", [RuleNum, Goal, Name, ConditionStr, OutputStr]).
 
+%% translate_copy_rule_with_builtins(+Name, +RuleNum, +Head, +Goal, +Builtins, -RuleFunc)
+%  Copy rule with built-in constraints
+translate_copy_rule_with_builtins(Name, RuleNum, Head, Goal, Builtins, RuleFunc) :-
+    (   Builtins == []
+    ->  % No builtins, use regular copy rule
+        translate_copy_rule(Name, RuleNum, Head, Goal, RuleFunc)
+    ;   % TODO: Generate constraint checks for builtins
+        % For now, delegate to regular (ignores constraints)
+        translate_copy_rule(Name, RuleNum, Head, Goal, RuleFunc)
+    ).
+
 %% translate_join_rule(+Name, +RuleNum, +Head, +Goals, -RuleFunc)
 %  Translate a join rule (multiple goals in body)
 translate_join_rule(_Name, RuleNum, Head, Goals, RuleFunc) :-
@@ -1057,6 +1089,17 @@ translate_join_rule(_Name, RuleNum, Head, Goals, RuleFunc) :-
     return iter([])
 ", [RuleNum])
     ).
+
+%% translate_join_rule_with_builtins(+Name, +RuleNum, +Head, +Goals, +Builtins, -RuleFunc)
+%  Join rule with built-in constraints
+translate_join_rule_with_builtins(Name, RuleNum, Head, Goals, Builtins, RuleFunc) :-
+    (   Builtins == []
+    ->  % No builtins, use regular join rule
+        translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc)
+    ;   % TODO: Add built-in constraint checks in joins
+        translate_join_rule(Name, RuleNum, Head, Goals, RuleFunc)
+    ).
+
 
 %% translate_binary_join(+Name, +RuleNum, +Head, +Goal1, +Goal2, -RuleFunc)
 translate_binary_join(_Name, RuleNum, Head, Goal1, Goal2, RuleFunc) :-
