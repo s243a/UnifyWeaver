@@ -46,7 +46,23 @@ crawler.IngestOnce(); // single pass over the fragments
 // crawler.FixedPoint(seeds, id => BuildConfigForId(id), maxDepth: 5); // future: iterative child expansion
 ```
 
+### Testing
+A working test harness is available in `tests/core/test_pearltrees_csharp.pl` that:
+- Runs a console app (`tmp/pt_ingest_test/`) to test ingestion
+- Verifies correct type detection (pt:Tree vs pt:RefPearl)
+- Checks that documents are properly inserted into LiteDB collections
+
+Run the test with:
+```bash
+swipl -q -g "run_tests([pearltrees_csharp])" -t halt tests/core/test_pearltrees_csharp.pl
+```
+
+The test successfully ingests the scrubbed sample (`test_data/scrubbed_pearltrees.xml`):
+- 2 trees with Type: `pt:Tree`
+- 1 pearl with Type: `pt:RefPearl`
+
 ### Notes
 - `Raw` can capture the full dictionary projection for unmapped fields.
-- `Embedding` (not shown here) can be stored as `double[]` for later similarity search; LiteDB doesn’t have native vector search.
+- `Embedding` (not shown here) can be stored as `double[]` for later similarity search; LiteDB doesn't have native vector search.
 - A future enhancement could replace title search with embeddings (e.g., BERT) but is out of scope here.
+- The XML parser recognizes empty lines as fragment delimiters and automatically sets the Type field from the root element name.
