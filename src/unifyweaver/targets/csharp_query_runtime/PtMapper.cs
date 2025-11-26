@@ -11,7 +11,9 @@ namespace UnifyWeaver.QueryRuntime
     {
         public static PtEntity Map(IDictionary<string, object?> row)
         {
-            var type = GetString(row, "pt:item") ?? GetString(row, "pt:Tree") ?? GetString(row, "Type") ?? GuessType(row);
+            // Get type - prefer explicit Type field over guessing
+            var typeField = GetString(row, "Type");
+            var type = !string.IsNullOrWhiteSpace(typeField) ? typeField : GuessType(row) ?? string.Empty;
             var about = GetString(row, "@about") ?? GetString(row, "about") ?? string.Empty;
             var id = ExtractId(row, about);
             var title = GetString(row, "title") ?? GetString(row, "dcterms:title");

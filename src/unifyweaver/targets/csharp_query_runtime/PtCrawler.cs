@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using UnifyWeaver.QueryRuntime.Dynamic;
 using UnifyWeaver.QueryRuntime.Pearltrees;
 
 namespace UnifyWeaver.QueryRuntime
@@ -45,7 +46,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     var id = frontier.Dequeue();
                     var cfg = fetchConfig(id);
-                    using var reader = new XmlStreamReader(cfg);
+                    var reader = new XmlStreamReader(cfg);
                     foreach (var row in reader.Read())
                     {
                         var map = ToDict(row);
