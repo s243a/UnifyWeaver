@@ -19,7 +19,7 @@
 ]).
 
 :- use_module(library(apply)).
-:- use_module('../../src/unifyweaver/targets/csharp_query_target').
+:- use_module('../../src/unifyweaver/targets/csharp_target').
 
 % =====================================================================
 % Test Data

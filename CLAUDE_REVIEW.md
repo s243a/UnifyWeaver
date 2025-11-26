@@ -119,6 +119,37 @@ foreach ($loc in $swiplLocations) {
 
 ### Documentation Enhancements
 
+# Claude Review: Generator-Mode Unification Branch (feature/generator-mode-unified-api)
+
+**Date**: 2025-02-05  
+**Reviewer**: Claude (AI Assistant)  
+**Original Work By**: antigravity  
+**Status**: ⚠️ Changes needed before merge
+
+## Summary
+The branch introduces a unified generator helper (`common_generator`) and folds the C# query target into `csharp_target`, aiming for shared logic across targets. The direction is good, but generator-mode correctness and compatibility regressions block merging.
+
+## Findings (blocking)
+- `src/unifyweaver/targets/csharp_target.pl:1481-1490` – `access_fmt-"~w[\"~w\"]"` yields lookups like `fact.Args["0"]`, but facts are keyed `arg0`. All builtins/outputs will miss. **Fix**: `access_fmt-"~w[\"arg~w\"]"`.
+- `src/unifyweaver/targets/csharp_target.pl:1667-1718` – `compile_joins/5` only handles a single additional relation; bodies with 3+ relational goals are truncated. Needs a recursive/nested join loop akin to Python target: iterate over remaining goals, extend VarMap with each source, and emit nested foreach/if blocks.
+- `src/unifyweaver/targets/csharp_target.pl` – No negation handling in generator mode. `not/1` and `\+/1` are recognized but never translated. Use `prepare_negation_data/4` to build a Fact/dict and guard with `!total.Contains(...)`.
+- API break: `src/unifyweaver/targets/csharp_query_target.pl` removed, but runners/docs still import it (`run_all_tests.pl:8-21`, `tests/integration/test_csharp_targets.sh:232`, multiple docs). Current branch will fail harness. Add a shim re-exporting the old API or update all imports/scripts.
+- `tests/core/test_csharp_target.pl:1139-1144` – Generator test only checks substrings; doesn’t build/run emitted C#. Wouldn’t catch the key bug. Add an execution test (compile `test_link/2`, `dotnet build`, run, assert facts).
+
+## Findings (follow-up)
+- `tests/core/test_common_generator.pl` exists but isn’t wired into any runner; add to `run_all_tests.pl` or CI.
+- Audit docs/scripts for lingering `csharp_query_target` references (e.g., docs/TESTING*.md, integration scripts).
+
+## Suggested changes
+1) **Accessor format**: In `csharp_config/1`, set `access_fmt-"~w[\"arg~w\"]"`.
+2) **Joins**: Refactor generator join expansion to handle arbitrary relation goals. Pattern: for each remaining goal, `foreach (var gN in total) { if (relation+join cond) { ... } }`, extending VarMap with `Goal-"gN.Args"` and recursing until all goals consumed, then emit head construction.
+3) **Negation**: When a builtin is `not(G)`/`\+(G)`, use `prepare_negation_data/4` with the current VarMap to build a dict initializer and emit `if (!total.Contains(new Fact(...)))`.
+4) **Tests**: In `verify_generator_mode`, write emitted C# to temp, `dotnet build`, run, and assert expected facts/negation. Wire `test_common_generator` into the suite.
+5) **Compatibility**: Add `src/unifyweaver/targets/csharp_query_target.pl` shim delegating to `csharp_target`’s `build_query_plan/3`, `render_plan_to_csharp/2`, `plan_module_name/2`, or update all callers and docs to the new module name.
+
+## Assessment
+The shared generator core is the right direction, but generator-mode correctness and test harness breakage are blocking. Apply the fixes above before merging. Afterward, rerun C# query+generator tests and the integration script.
+
 Added to `csharp_codegen_playbook.md`:
 - **Platform-Specific Notes** section
 - **Improvements Over Original** section

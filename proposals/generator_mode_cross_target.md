@@ -1,5 +1,9 @@
 # Proposal: Extend Generator‑Mode Capabilities to All UnifyWeaver Targets
 
+## Motivation
+
+We aim to create a **language‑agnostic code‑generation core** that centralises variable‑mapping, relation tracking, and negation handling. This removes duplication across targets (Python, C#, Bash) and ensures that any bug‑fix (e.g., the variable‑identity `==` fix) automatically benefits every target. The result is a cleaner code base, easier maintenance, and a solid foundation for adding future targets.
+
 ## 1. Goal
 Provide **feature parity** between the Python generator target and all other UnifyWeaver code‑generation targets (C# Query Target, Bash Target, and future language targets). The new capabilities will include:
 

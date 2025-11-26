@@ -7,6 +7,7 @@
 % Conditional import of call_graph for mutual recursion detection
 % Falls back gracefully if module not available
 :- catch(use_module('../core/advanced/call_graph'), _, true).
+:- use_module(common_generator).
 
 /** <module> Python Target Compiler
  *
@@ -1347,118 +1348,44 @@ translate_builtins(Builtins, VarMap, ConstraintChecks) :-
 
 %% translate_builtin(+Builtin, +VarMap, -PythonExpr)
 %  Translate a single built-in to Python
-translate_builtin(Left is Right, VarMap, PythonExpr) :-
-    !, % is/2
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w == ~w", [LeftPy, RightPy]).
-translate_builtin(Left > Right, VarMap, PythonExpr) :-
+python_config(Config) :-
+    Config = [
+        access_fmt-"~w.get('arg~w')",
+        atom_fmt-"'~w'",
+        null_val-"None",
+        ops-[
+            + - "+", - - "-", * - "*", / - "/", mod - "%",
+            > - ">", < - "<", >= - ">=", =< - "<=", =:= - "==", =\= - "!=",
+            is - "=="
+        ]
+    ].
+
+translate_builtin(Goal, VarMap, PythonExpr) :-
+    Goal =.. [Op | _],
+    python_config(Config),
+    memberchk(ops-Ops, Config),
+    memberchk(Op-_, Ops),
     !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w > ~w", [LeftPy, RightPy]).
-translate_builtin(Left < Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w < ~w", [LeftPy, RightPy]).
-translate_builtin(Left >= Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w >= ~w", [LeftPy, RightPy]).
-translate_builtin(Left =< Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w <= ~w", [LeftPy, RightPy]).
-translate_builtin(Left =:= Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w == ~w", [LeftPy, RightPy]).
-translate_builtin(Left =\= Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w != ~w", [LeftPy, RightPy]).
+    translate_builtin_common(Goal, VarMap, Config, PythonExpr).
+
 translate_builtin(\+ Goal, VarMap, PythonExpr) :-
     !,
     translate_negation(Goal, VarMap, PythonExpr).
 translate_builtin(not(Goal), VarMap, PythonExpr) :-
     !,
     translate_negation(Goal, VarMap, PythonExpr).
-translate_builtin(_, _VarMap, "True").  % Fallback
+translate_builtin(_, _, "True").
 
-%% translate_negation(+Goal, +VarMap, -PythonExpr)
 translate_negation(Goal, VarMap, PythonExpr) :-
-    Goal =.. [Pred | Args],
-    findall(Pair,
-        (   nth0(Idx, Args, Arg),
-            (   var(Arg)
-            ->  translate_expr(Arg, VarMap, ValExpr)
-            ;   atom(Arg)
-            ->  format(string(ValExpr), "'~w'", [Arg])
-            ;   number(Arg)
-            ->  format(string(ValExpr), "~w", [Arg])
-            ;   ValExpr = "None"
-            ),
-            format(string(Pair), "'arg~w': ~w", [Idx, ValExpr])
+    python_config(Config),
+    prepare_negation_data(Goal, VarMap, Config, Pairs),
+    findall(PairStr,
+        (   member(Key-Val, Pairs),
+            format(string(PairStr), "'~w': ~w", [Key, Val])
         ),
-        Pairs),
-    format(string(RelPair), "'relation': '~w'", [Pred]),
-    AllPairs = [RelPair | Pairs],
-    atomic_list_concat(AllPairs, ", ", DictContent),
+        PairStrings),
+    atomic_list_concat(PairStrings, ", ", DictContent),
     format(string(PythonExpr), "FrozenDict.from_dict({~w}) not in total", [DictContent]).
-
-%% build_variable_map(+GoalSourcePairs, -VarMap)
-%  Build map from variables to Python access strings
-build_variable_map(GoalSourcePairs, VarMap) :-
-    findall(Var-Access,
-        (   member(Goal-Source, GoalSourcePairs),
-            Goal =.. [_ | Args],
-            nth0(Idx, Args, Var),
-            var(Var),
-            format(string(Access), "~w.get('arg~w')", [Source, Idx])
-        ),
-        VarMap).
-
-%% translate_expr(+PrologExpr, +VarMap, -PythonExpr)
-%  Translate Prolog expression to Python, mapping variables
-translate_expr(Var, VarMap, PythonExpr) :-
-    var(Var),
-    !,
-    (   memberchk(Var-Access, VarMap)
-    ->  PythonExpr = Access
-    ;   % Variable not found - assume it's a singleton or error
-        % For now return None, but this indicates unsafe usage
-        PythonExpr = "None"
-    ).
-translate_expr(Num, _VarMap, PythonExpr) :-
-    number(Num),
-    !,
-    format(string(PythonExpr), "~w", [Num]).
-translate_expr(Expr, VarMap, PythonExpr) :-
-    compound(Expr),
-    Expr =.. [Op, Left, Right],
-    member(Op, [+, -, *, /, mod]), % Ensure this is handled
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    python_operator(Op, PyOp),
-    format(string(PythonExpr), "(~w ~w ~w)", [LeftPy, PyOp, RightPy]).
-translate_expr(Atom, _VarMap, PythonExpr) :-
-    atom(Atom),
-    !,
-    format(string(PythonExpr), "'~w'", [Atom]).
-translate_expr(_, _VarMap, "None").  % Fallback
-
-%% python_operator(+PrologOp, -PythonOp)
-python_operator(+, '+').
-python_operator(-, '-').
-python_operator(*, '*').
-python_operator(/, '/').
-python_operator(mod, '%').
 
 
 %% translate_join_rule(+Name, +RuleNum, +Head, +Goals, -RuleFunc)
