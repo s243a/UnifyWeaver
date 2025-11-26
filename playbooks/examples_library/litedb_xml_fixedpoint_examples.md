@@ -27,7 +27,7 @@ This example shows how to:
 2. Project to a row dictionary with keys: `id`, `title`, `privacy`, `parentTree`, `children[]`, plus `Raw` for the whole map.
 3. Upsert into LiteDB (`_id = id`).
 4. Query LiteDB for next-hop child tree IDs (from `children` or `parentTree`).
-5. Repeat for a bounded number of iterations.
+5. Repeat for a bounded number of iterations (crawler supports `FixedPoint(seeds, configForId, maxDepth)`; demo uses 2 hops).
 
 ### Minimal C# harness (conceptual)
 ```csharp
@@ -43,7 +43,8 @@ var xmlConfig = new XmlSourceConfig {
 
 using var crawler = new PtCrawler("pearltrees.db", xmlConfig);
 crawler.IngestOnce(emitEmbeddings: true); // single pass + dummy embeddings
-// crawler.FixedPoint(seeds, id => BuildConfigForId(id), maxDepth: 5); // future: iterative child expansion
+// Example fixed-point crawl (demo): seeds = ["physics-001"], config always same XML, maxDepth=2
+// crawler.FixedPoint(seeds, id => BuildConfigForId(id), maxDepth: 2);
 ```
 
 ### Testing
