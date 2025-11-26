@@ -42,7 +42,7 @@ var xmlConfig = new XmlSourceConfig {
 };
 
 using var crawler = new PtCrawler("pearltrees.db", xmlConfig);
-crawler.IngestOnce(); // single pass over the fragments
+crawler.IngestOnce(emitEmbeddings: true); // single pass + dummy embeddings
 // crawler.FixedPoint(seeds, id => BuildConfigForId(id), maxDepth: 5); // future: iterative child expansion
 ```
 
@@ -63,6 +63,6 @@ The test successfully ingests the scrubbed sample (`test_data/scrubbed_pearltree
 
 ### Notes
 - `Raw` can capture the full dictionary projection for unmapped fields.
-- `Embedding` (not shown here) can be stored as `double[]` for later similarity search; LiteDB doesn't have native vector search.
+- `Embedding` (currently a dummy vector `{0,0,0}` in the harness) can be stored as `double[]` for later similarity search; LiteDB doesn’t have native vector search.
 - A future enhancement could replace title search with embeddings (e.g., BERT) but is out of scope here.
 - The XML parser recognizes empty lines as fragment delimiters and automatically sets the Type field from the root element name.

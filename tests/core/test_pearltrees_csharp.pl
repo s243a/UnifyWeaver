@@ -28,6 +28,7 @@ test(litedb_ingestion, []) :-
 
     % Verify the output contains success indicators
     sub_string(Output, _, _, _, "INGEST_OK"),
+    sub_string(Output, _, _, _, "embeddings="),
     sub_string(Output, _, _, _, "SUCCESS"),
     !.  % Cut to make deterministic
 
