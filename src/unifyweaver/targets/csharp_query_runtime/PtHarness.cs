@@ -10,6 +10,11 @@ namespace UnifyWeaver.QueryRuntime
     {
         public static void RunIngest(string xmlPath, string dbPath)
         {
+            RunIngest(xmlPath, dbPath, emitEmbeddings: false);
+        }
+
+        public static void RunIngest(string xmlPath, string dbPath, bool emitEmbeddings)
+        {
             var config = new XmlSourceConfig
             {
                 InputPath = xmlPath,
@@ -23,7 +28,7 @@ namespace UnifyWeaver.QueryRuntime
             };
 
             using var crawler = new PtCrawler(dbPath, config);
-            crawler.IngestOnce();
+            crawler.IngestOnce(emitEmbeddings);
         }
     }
 }

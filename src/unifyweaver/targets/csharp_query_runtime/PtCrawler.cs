@@ -20,7 +20,7 @@ namespace UnifyWeaver.QueryRuntime
 
         public void Dispose() => _importer.Dispose();
 
-        public void IngestOnce()
+        public void IngestOnce(bool emitEmbeddings = false)
         {
             foreach (var row in _reader.Read())
             {
@@ -31,6 +31,10 @@ namespace UnifyWeaver.QueryRuntime
                     continue; // skip private
                 }
                 _importer.Upsert(entity);
+                if (emitEmbeddings)
+                {
+                    _importer.UpsertEmbedding(entity.Id, DummyEmbedding());
+                }
             }
         }
 
@@ -84,6 +88,12 @@ namespace UnifyWeaver.QueryRuntime
                 map[$"col{i}"] = row[i];
             }
             return map;
+        }
+
+        private static IEnumerable<double> DummyEmbedding()
+        {
+            // Placeholder embedding; replace with real vector later.
+            return new double[] { 0.0, 0.0, 0.0 };
         }
     }
 }

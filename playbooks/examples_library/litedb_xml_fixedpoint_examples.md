@@ -27,7 +27,7 @@ This example shows how to:
 2. Project to a row dictionary with keys: `id`, `title`, `privacy`, `parentTree`, `children[]`, plus `Raw` for the whole map.
 3. Upsert into LiteDB (`_id = id`).
 4. Query LiteDB for next-hop child tree IDs (from `children` or `parentTree`).
-5. Repeat for a bounded number of iterations.
+5. Repeat for a bounded number of iterations (crawler supports `FixedPoint(seeds, configForId, maxDepth)`; demo uses 2 hops).
 
 ### Minimal C# harness (conceptual)
 ```csharp
@@ -42,8 +42,9 @@ var xmlConfig = new XmlSourceConfig {
 };
 
 using var crawler = new PtCrawler("pearltrees.db", xmlConfig);
-crawler.IngestOnce(); // single pass over the fragments
-// crawler.FixedPoint(seeds, id => BuildConfigForId(id), maxDepth: 5); // future: iterative child expansion
+crawler.IngestOnce(emitEmbeddings: true); // single pass + dummy embeddings
+// Example fixed-point crawl (demo): seeds = ["physics-001"], config always same XML, maxDepth=2
+// crawler.FixedPoint(seeds, id => BuildConfigForId(id), maxDepth: 2);
 ```
 
 ### Testing
@@ -63,6 +64,6 @@ The test successfully ingests the scrubbed sample (`test_data/scrubbed_pearltree
 
 ### Notes
 - `Raw` can capture the full dictionary projection for unmapped fields.
-- `Embedding` (not shown here) can be stored as `double[]` for later similarity search; LiteDB doesn't have native vector search.
+- `Embedding` (currently a dummy vector `{0,0,0}` in the harness) can be stored as `double[]` for later similarity search; LiteDB doesn’t have native vector search.
 - A future enhancement could replace title search with embeddings (e.g., BERT) but is out of scope here.
 - The XML parser recognizes empty lines as fragment delimiters and automatically sets the Type field from the root element name.
