@@ -725,6 +725,15 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
         Fields),
     atomic_list_concat(Fields, ' ":" ', FieldsConcat),
 
+    % Check if we have capture groups to extract
+    (   has_capture_groups(Constraints, NumCaptures),
+        NumCaptures > 0
+    ->  % Generate print statement for captured values
+        generate_capture_print(NumCaptures, PrintStmt)
+    ;   % No captures - print the whole line
+        PrintStmt = 'print $0'
+    ),
+
     (   Unique ->
         format(atom(MainBlock),
 '{
@@ -732,17 +741,17 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
     if (key in ~w_data~w) {
         if (!(key in seen)) {
             seen[key] = 1
-            print $0
+            ~w
         }
     }
-}', [FieldsConcat, PredLookupStr, ConstraintCheck])
+}', [FieldsConcat, PredLookupStr, ConstraintCheck, PrintStmt])
     ;   format(atom(MainBlock),
 '{
     key = ~w
     if (key in ~w_data~w) {
-        print $0
+        ~w
     }
-}', [FieldsConcat, PredLookupStr, ConstraintCheck])
+}', [FieldsConcat, PredLookupStr, ConstraintCheck, PrintStmt])
     ),
 
     format(atom(BeginBlock),
@@ -835,15 +844,24 @@ constraint_to_awk(is(A, B), VarMap, AwkCode) :-
     term_to_awk_expr(A, VarMap, AwkA),
     term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '((~w = ~w), 1)', [AwkA, AwkB]).
-constraint_to_awk(match(Var, Pattern, Type), VarMap, AwkCode) :-
+constraint_to_awk(match(Var, Pattern, Type, Groups), VarMap, AwkCode) :-
     % Validate regex type for AWK target
     validate_regex_type_for_awk(Type),
     % Convert variable to AWK expression
     term_to_awk_expr(Var, VarMap, AwkVar),
     % Escape pattern for AWK
     escape_awk_pattern(Pattern, EscapedPattern),
-    % Generate AWK match expression (use ~~ to escape the ~ in format string)
-    format(atom(AwkCode), '(~w ~~ /~w/)', [AwkVar, EscapedPattern]).
+    % Check if we have capture groups
+    (   Groups = []
+    ->  % No capture groups - use simple boolean match
+        format(atom(AwkCode), '(~w ~~ /~w/)', [AwkVar, EscapedPattern])
+    ;   % Has capture groups - use match() function with capture array
+        % Generate AWK match() call with captures
+        % AWK syntax: match(string, regex, array)
+        % Note: This generates a boolean check; actual capture extraction
+        % would need to be in a separate statement
+        format(atom(AwkCode), 'match(~w, /~w/, __captures__)', [AwkVar, EscapedPattern])
+    ).
 
 %% term_to_awk_expr(+Term, +VarMap, -AwkExpr)
 %  Convert a Prolog term to an AWK expression using variable mapping
@@ -1117,9 +1135,9 @@ extract_constraints(A =:= B, [eq(A, B)]) :- !.
 extract_constraints(A =\= B, [neq(A, B)]) :- !.
 extract_constraints(is(A, B), [is(A, B)]) :- !.
 % Capture match predicates (regex pattern matching)
-extract_constraints(match(Var, Pattern), [match(Var, Pattern, auto)]) :- !.
-extract_constraints(match(Var, Pattern, Type), [match(Var, Pattern, Type)]) :- !.
-extract_constraints(match(Var, Pattern, Type, _Groups), [match(Var, Pattern, Type)]) :- !.
+extract_constraints(match(Var, Pattern), [match(Var, Pattern, auto, [])]) :- !.
+extract_constraints(match(Var, Pattern, Type), [match(Var, Pattern, Type, [])]) :- !.
+extract_constraints(match(Var, Pattern, Type, Groups), [match(Var, Pattern, Type, Groups)]) :- !.
 % Skip predicates
 extract_constraints(Goal, []) :-
     functor(Goal, Pred, _),
@@ -1167,6 +1185,28 @@ escape_pattern_codes([47|Rest], [92, 47|EscapedRest]) :- !,  % 47 = '/', 92 = '\
     escape_pattern_codes(Rest, EscapedRest).
 escape_pattern_codes([C|Rest], [C|EscapedRest]) :-
     escape_pattern_codes(Rest, EscapedRest).
+
+%% has_capture_groups(+Constraints, -NumCaptures)
+%  Check if constraints include match with capture groups
+%  Returns the number of capture groups if found
+%
+has_capture_groups(Constraints, NumCaptures) :-
+    member(match(_Var, _Pattern, _Type, Groups), Constraints),
+    Groups \= [],
+    length(Groups, NumCaptures),
+    NumCaptures > 0.
+
+%% generate_capture_print(+NumCaptures, -PrintStmt)
+%  Generate AWK print statement for captured groups
+%  AWK stores captures in array starting at index 1
+%
+generate_capture_print(NumCaptures, PrintStmt) :-
+    numlist(1, NumCaptures, CaptureNums),
+    findall(Cap,
+        (member(N, CaptureNums), format(atom(Cap), '__captures__[~w]', [N])),
+        Captures),
+    atomic_list_concat(Captures, ', ', CapturesStr),
+    format(atom(PrintStmt), 'print ~w', [CapturesStr]).
 
 %% ============================================
 %% OPTIONS
