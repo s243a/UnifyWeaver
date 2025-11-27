@@ -491,14 +491,13 @@ translate_goal(>(Var, Value), Code) :-
 % Match predicate support for procedural mode
 translate_goal(match(Var, Pattern), Code) :-
     !,
-    translate_match_goal(Var, Pattern, auto, Code).
+    translate_match_goal(Var, Pattern, auto, [], Code).
 translate_goal(match(Var, Pattern, Type), Code) :-
     !,
-    translate_match_goal(Var, Pattern, Type, Code).
-translate_goal(match(Var, Pattern, Type, _Groups), Code) :-
+    translate_match_goal(Var, Pattern, Type, [], Code).
+translate_goal(match(Var, Pattern, Type, Groups), Code) :-
     !,
-    % TODO: Handle capture groups
-    translate_match_goal(Var, Pattern, Type, Code).
+    translate_match_goal(Var, Pattern, Type, Groups, Code).
 
 translate_goal(true, Code) :-
     !,
@@ -508,9 +507,9 @@ translate_goal(Goal, "") :-
     format(string(Msg), "Warning: Unsupported goal ~w", [Goal]),
     print_message(warning, Msg).
 
-%% translate_match_goal(+Var, +Pattern, +Type, -Code)
+%% translate_match_goal(+Var, +Pattern, +Type, +Groups, -Code)
 %  Translate match predicate to Python code for procedural mode
-translate_match_goal(Var, Pattern, Type, Code) :-
+translate_match_goal(Var, Pattern, Type, Groups, Code) :-
     % Validate regex type
     validate_regex_type_for_python(Type),
     % Convert variable to Python
@@ -521,8 +520,33 @@ translate_match_goal(Var, Pattern, Type, Code) :-
     ;   PatternStr = Pattern
     ),
     escape_python_string(PatternStr, EscapedPattern),
-    % Generate Python code with early return if no match
-    format(string(Code), "    if not re.search(r'~w', str(~w)): return\n", [EscapedPattern, PyVar]).
+    % Check if we have capture groups
+    (   Groups = [], !
+    ->  % No capture groups - simple boolean match
+        format(string(Code), "    if not re.search(r'~w', str(~w)): return\n", [EscapedPattern, PyVar])
+    ;   % Has capture groups - extract them
+        length(Groups, NumGroups),
+        % Generate Python code to capture and store groups
+        generate_python_capture_code(PyVar, EscapedPattern, Groups, NumGroups, Code)
+    ).
+
+%% generate_python_capture_code(+PyVar, +Pattern, +Groups, +NumGroups, -Code)
+%  Generate Python code to perform match with capture group extraction
+generate_python_capture_code(PyVar, Pattern, Groups, NumGroups, Code) :-
+    % Generate match object assignment
+    format(string(MatchLine), "    __match__ = re.search(r'~w', str(~w))\n", [Pattern, PyVar]),
+    % Generate check for match success
+    CheckLine = "    if not __match__: return\n",
+    % Generate capture variable assignments
+    findall(CaptureLine,
+        (   between(1, NumGroups, N),
+            nth1(N, Groups, GroupVar),
+            var_to_python(GroupVar, PyGroupVar),
+            format(string(CaptureLine), "    ~w = __match__.group(~w)\n", [PyGroupVar, N])
+        ),
+        CaptureLines),
+    % Combine all lines
+    atomic_list_concat([MatchLine, CheckLine | CaptureLines], '', Code).
 
 pair_to_python(Key-Value, Str) :-
     var_to_python(Value, PyValue),
