@@ -206,45 +206,291 @@ generate_unique_end_block('').
 %
 compile_single_rule_to_awk(Pred, Arity, Body, _RecordFormat, FieldSep,
                           Unique, _Unordered, AwkCode) :-
-    atom_string(Pred, _PredStr),
+    atom_string(Pred, PredStr),
 
-    % Extract predicates from body
+    % Extract predicates and constraints from body
     extract_predicates(Body, Predicates),
+    extract_constraints(Body, Constraints),
     format('  Body predicates: ~w~n', [Predicates]),
+    format('  Constraints: ~w~n', [Constraints]),
 
-    % Generate BEGIN block
+    % Determine compilation strategy
+    (   Predicates = [] ->
+        % No predicates - just constraints or empty body
+        compile_constraint_only_rule(PredStr, Arity, Constraints, FieldSep, Unique, AwkCode)
+    ;   Predicates = [SinglePred] ->
+        % Single predicate - simple lookup with optional constraints
+        compile_single_predicate_rule(PredStr, Arity, SinglePred, Constraints,
+                                     FieldSep, Unique, AwkCode)
+    ;   % Multiple predicates - hash join pipeline
+        compile_multi_predicate_rule(PredStr, Arity, Predicates, Constraints,
+                                    FieldSep, Unique, AwkCode)
+    ).
+
+%% compile_constraint_only_rule(+PredStr, +Arity, +Constraints, +FieldSep, +Unique, -AwkCode)
+%  Compile a rule with no predicates (just constraints or empty body)
+%
+compile_constraint_only_rule(_PredStr, Arity, Constraints, FieldSep, Unique, AwkCode) :-
+    (   Constraints = [] ->
+        % No constraints - just pass through (always true)
+        MainBlock = '{ print $0 }'
+    ;   % Has constraints - generate AWK condition
+        generate_constraint_code(Constraints, Arity, ConstraintCode),
+        (   Unique ->
+            format(atom(MainBlock),
+'{
+    if (~w) {
+        key = $0
+        if (!(key in seen)) {
+            seen[key] = 1
+            print $0
+        }
+    }
+}', [ConstraintCode])
+        ;   format(atom(MainBlock),
+'{
+    if (~w) {
+        print $0
+    }
+}', [ConstraintCode])
+        )
+    ),
     format(atom(BeginBlock), 'BEGIN { FS = "~w" }', [FieldSep]),
-
-    % Generate main block for rule matching
-    generate_rule_main_block(Arity, Body, Predicates, Unique, MainBlock),
-
-    % Assemble script
     atomic_list_concat([BeginBlock, '\n', MainBlock], AwkCode).
 
-%% generate_rule_main_block(+Arity, +Body, +Predicates, +Unique, -MainBlock)
-%  Generate main block for rule evaluation
+%% compile_single_predicate_rule(+PredStr, +Arity, +Predicate, +Constraints,
+%%                                +FieldSep, +Unique, -AwkCode)
+%  Compile a rule with a single predicate (simple lookup)
 %
-generate_rule_main_block(_Arity, Body, _Predicates, Unique, MainBlock) :-
-    % For now, generate a simple pass-through with comment
-    % In future, this can analyze the body and generate AWK conditions
+compile_single_predicate_rule(_PredStr, Arity, Predicate, Constraints, FieldSep, Unique, AwkCode) :-
+    % Need to load the predicate's facts
+    atom_string(Predicate, PredLookupStr),
+
+    % Get the predicate's arity by finding first clause
+    current_predicate(Predicate/PredArity),
+    functor(PredGoal, Predicate, PredArity),
+    findall(PredGoal, user:clause(PredGoal, true), PredFacts),
+
+    % Generate fact loading in BEGIN block
+    findall(InitStmt,
+        (   member(Fact, PredFacts),
+            Fact =.. [_|Args],
+            atomic_list_concat(Args, ':', Key),
+            format(atom(InitStmt), '    ~w_data["~w"] = 1', [PredLookupStr, Key])
+        ),
+        InitStmts),
+    atomic_list_concat(InitStmts, '\n', InitStmtsStr),
+
+    % Generate main lookup logic
+    % This depends on how the input maps to the predicate arguments
+    % For now, assume direct mapping
+    (   Constraints = [] ->
+        ConstraintCheck = ''
+    ;   generate_constraint_code(Constraints, Arity, ConstraintCode),
+        format(atom(ConstraintCheck), ' && ~w', [ConstraintCode])
+    ),
+
+    % Build field concatenation based on predicate arity
+    numlist(1, PredArity, FieldNums),
+    findall(Field,
+        (member(N, FieldNums), format(atom(Field), '$~w', [N])),
+        Fields),
+    atomic_list_concat(Fields, ' ":" ', FieldsConcat),
+
     (   Unique ->
         format(atom(MainBlock),
 '{
-    # Rule body: ~w
-    # TODO: Implement rule body compilation
-    # For now, pass through input
-    key = $0
-    if (!(key in seen)) {
-        seen[key] = 1
-        print $0
+    key = ~w
+    if (key in ~w_data~w) {
+        if (!(key in seen)) {
+            seen[key] = 1
+            print $0
+        }
     }
-}', [Body])
+}', [FieldsConcat, PredLookupStr, ConstraintCheck])
     ;   format(atom(MainBlock),
 '{
-    # Rule body: ~w
-    # TODO: Implement rule body compilation
-    print $0
-}', [Body])
+    key = ~w
+    if (key in ~w_data~w) {
+        print $0
+    }
+}', [FieldsConcat, PredLookupStr, ConstraintCheck])
+    ),
+
+    format(atom(BeginBlock),
+'BEGIN {
+    FS = "~w"
+~w
+}', [FieldSep, InitStmtsStr]),
+    atomic_list_concat([BeginBlock, '\n', MainBlock], AwkCode).
+
+%% compile_multi_predicate_rule(+PredStr, +Arity, +Predicates, +Constraints,
+%%                              +FieldSep, +Unique, -AwkCode)
+%  Compile a rule with multiple predicates (hash join)
+%
+compile_multi_predicate_rule(_PredStr, _Arity, Predicates, Constraints, FieldSep, Unique, AwkCode) :-
+    % For multiple predicates, we need to implement a hash join
+    % Strategy: Load all predicate facts, then perform nested joins
+
+    % Load all predicates' facts into arrays
+    findall(LoadCode,
+        (   member(Pred, Predicates),
+            generate_predicate_loader(Pred, LoadCode)
+        ),
+        LoadCodes),
+    atomic_list_concat(LoadCodes, '\n', AllLoadCode),
+
+    % Generate join logic
+    generate_join_logic(Predicates, Constraints, Unique, JoinLogic),
+
+    format(atom(BeginBlock),
+'BEGIN {
+    FS = "~w"
+~w
+}', [FieldSep, AllLoadCode]),
+
+    format(atom(EndBlock),
+'END {
+~w
+}', [JoinLogic]),
+
+    atomic_list_concat([BeginBlock, '\n# No input processing needed\n', EndBlock], AwkCode).
+
+%% ============================================
+%% HELPER FUNCTIONS FOR SINGLE RULE COMPILATION
+%% ============================================
+
+%% generate_constraint_code(+Constraints, +Arity, -AwkCode)
+%  Generate AWK code for constraint checking
+%
+generate_constraint_code([], _, 'true') :- !.
+generate_constraint_code(Constraints, Arity, AwkCode) :-
+    findall(ConstraintCode,
+        (   member(Constraint, Constraints),
+            constraint_to_awk(Constraint, Arity, ConstraintCode)
+        ),
+        ConstraintCodes),
+    atomic_list_concat(ConstraintCodes, ' && ', AwkCode).
+
+%% constraint_to_awk(+Constraint, +Arity, -AwkCode)
+%  Convert a single constraint to AWK code
+%
+constraint_to_awk(inequality(A, B), Arity, AwkCode) :-
+    term_to_awk_expr(A, Arity, AwkA),
+    term_to_awk_expr(B, Arity, AwkB),
+    format(atom(AwkCode), '(~w != ~w)', [AwkA, AwkB]).
+constraint_to_awk(gt(A, B), Arity, AwkCode) :-
+    term_to_awk_expr(A, Arity, AwkA),
+    term_to_awk_expr(B, Arity, AwkB),
+    format(atom(AwkCode), '(~w > ~w)', [AwkA, AwkB]).
+constraint_to_awk(lt(A, B), Arity, AwkCode) :-
+    term_to_awk_expr(A, Arity, AwkA),
+    term_to_awk_expr(B, Arity, AwkB),
+    format(atom(AwkCode), '(~w < ~w)', [AwkA, AwkB]).
+constraint_to_awk(gte(A, B), Arity, AwkCode) :-
+    term_to_awk_expr(A, Arity, AwkA),
+    term_to_awk_expr(B, Arity, AwkB),
+    format(atom(AwkCode), '(~w >= ~w)', [AwkA, AwkB]).
+constraint_to_awk(lte(A, B), Arity, AwkCode) :-
+    term_to_awk_expr(A, Arity, AwkA),
+    term_to_awk_expr(B, Arity, AwkB),
+    format(atom(AwkCode), '(~w <= ~w)', [AwkA, AwkB]).
+constraint_to_awk(eq(A, B), Arity, AwkCode) :-
+    term_to_awk_expr(A, Arity, AwkA),
+    term_to_awk_expr(B, Arity, AwkB),
+    format(atom(AwkCode), '(~w == ~w)', [AwkA, AwkB]).
+constraint_to_awk(neq(A, B), Arity, AwkCode) :-
+    term_to_awk_expr(A, Arity, AwkA),
+    term_to_awk_expr(B, Arity, AwkB),
+    format(atom(AwkCode), '(~w != ~w)', [AwkA, AwkB]).
+constraint_to_awk(is(A, B), Arity, AwkCode) :-
+    term_to_awk_expr(A, Arity, AwkA),
+    term_to_awk_expr(B, Arity, AwkB),
+    format(atom(AwkCode), '((~w = ~w), 1)', [AwkA, AwkB]).
+
+%% term_to_awk_expr(+Term, +Arity, -AwkExpr)
+%  Convert a Prolog term to an AWK expression
+%
+term_to_awk_expr(Term, _Arity, AwkExpr) :-
+    atom(Term), !,
+    % Check if it's a variable (starts with uppercase)
+    atom_chars(Term, [First|_]),
+    char_type(First, upper), !,
+    % Map variable to field number (simplified - assumes positional mapping)
+    atom_codes(Term, [FirstCode|_]),
+    FieldNum is FirstCode - 64,  % A=1, B=2, C=3, etc.
+    format(atom(AwkExpr), '$~w', [FieldNum]).
+term_to_awk_expr(Term, _Arity, Term) :-
+    number(Term), !.
+term_to_awk_expr(Term, Arity, AwkExpr) :-
+    compound(Term), !,
+    Term =.. [Op, Left, Right],
+    term_to_awk_expr(Left, Arity, AwkLeft),
+    term_to_awk_expr(Right, Arity, AwkRight),
+    format(atom(AwkExpr), '(~w ~w ~w)', [AwkLeft, Op, AwkRight]).
+term_to_awk_expr(Term, _Arity, Term).
+
+%% generate_predicate_loader(+Predicate, -LoadCode)
+%  Generate AWK code to load a predicate's facts into an array
+%
+generate_predicate_loader(Predicate, LoadCode) :-
+    atom_string(Predicate, PredStr),
+    current_predicate(Predicate/PredArity),
+    functor(PredGoal, Predicate, PredArity),
+    findall(PredGoal, user:clause(PredGoal, true), PredFacts),
+    findall(InitStmt,
+        (   member(Fact, PredFacts),
+            Fact =.. [_|Args],
+            atomic_list_concat(Args, ':', Key),
+            format(atom(InitStmt), '    ~w_data["~w"] = 1', [PredStr, Key])
+        ),
+        InitStmts),
+    atomic_list_concat(InitStmts, '\n', LoadCode).
+
+%% generate_join_logic(+Predicates, +Constraints, +Unique, -JoinLogic)
+%  Generate AWK code for hash join of multiple predicates
+%
+generate_join_logic([Pred1, Pred2|_Rest], _Constraints, Unique, JoinLogic) :-
+    % Simple two-way join for now
+    % More complex joins would require analyzing variable bindings
+    atom_string(Pred1, Pred1Str),
+    atom_string(Pred2, Pred2Str),
+
+    % Generate nested loop join (simple but works)
+    (   Unique ->
+        format(atom(JoinLogic),
+'    for (key1 in ~w_data) {
+        split(key1, a, ":")
+        for (key2 in ~w_data) {
+            split(key2, b, ":")
+            # Simple join condition: last field of first matches first field of second
+            if (a[length(a)] == b[1]) {
+                # Build result
+                result = a[1]
+                for (i = 2; i <= length(a); i++) result = result ":" a[i]
+                for (i = 2; i <= length(b); i++) result = result ":" b[i]
+                if (!(result in seen)) {
+                    seen[result] = 1
+                    print result
+                }
+            }
+        }
+    }', [Pred1Str, Pred2Str])
+    ;   format(atom(JoinLogic),
+'    for (key1 in ~w_data) {
+        split(key1, a, ":")
+        for (key2 in ~w_data) {
+            split(key2, b, ":")
+            # Simple join condition: last field of first matches first field of second
+            if (a[length(a)] == b[1]) {
+                # Build result
+                result = a[1]
+                for (i = 2; i <= length(a); i++) result = result ":" a[i]
+                for (i = 2; i <= length(b); i++) result = result ":" b[i]
+                print result
+            }
+        }
+    }', [Pred1Str, Pred2Str])
     ).
 
 %% ============================================
@@ -328,6 +574,33 @@ extract_predicates(is(_, _), []) :- !.
 extract_predicates(\+ A, Predicates) :- !,
     extract_predicates(A, Predicates).
 extract_predicates(Goal, [Pred]) :-
+    functor(Goal, Pred, _),
+    Pred \= ',',
+    Pred \= true.
+
+%% extract_constraints(+Body, -Constraints)
+%  Extract constraints (inequalities, arithmetic) from body
+%
+extract_constraints(true, []) :- !.
+extract_constraints((A, B), Constraints) :- !,
+    extract_constraints(A, C1),
+    extract_constraints(B, C2),
+    append(C1, C2, Constraints).
+extract_constraints(Goal, []) :-
+    var(Goal), !.
+% Capture inequality constraints
+extract_constraints(A \= B, [inequality(A, B)]) :- !.
+extract_constraints(\=(A, B), [inequality(A, B)]) :- !.
+% Capture arithmetic constraints
+extract_constraints(A > B, [gt(A, B)]) :- !.
+extract_constraints(A < B, [lt(A, B)]) :- !.
+extract_constraints(A >= B, [gte(A, B)]) :- !.
+extract_constraints(A =< B, [lte(A, B)]) :- !.
+extract_constraints(A =:= B, [eq(A, B)]) :- !.
+extract_constraints(A =\= B, [neq(A, B)]) :- !.
+extract_constraints(is(A, B), [is(A, B)]) :- !.
+% Skip predicates
+extract_constraints(Goal, []) :-
     functor(Goal, Pred, _),
     Pred \= ',',
     Pred \= true.
