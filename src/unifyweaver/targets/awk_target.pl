@@ -57,10 +57,10 @@ compile_predicate_to_awk(PredIndicator, Options, AwkCode) :-
         format('Type: facts (~w clauses)~n', [length(Clauses)]),
         compile_facts_to_awk(Pred, Arity, Clauses, RecordFormat, FieldSep,
                             Unique, Unordered, ScriptBody)
-    ;   Clauses = [_-SingleBody], SingleBody \= true ->
+    ;   Clauses = [SingleHead-SingleBody], SingleBody \= true ->
         % Single rule
         format('Type: single_rule~n'),
-        compile_single_rule_to_awk(Pred, Arity, SingleBody, RecordFormat,
+        compile_single_rule_to_awk(Pred, Arity, SingleHead, SingleBody, RecordFormat,
                                   FieldSep, Unique, Unordered, ScriptBody)
     ;   % Multiple rules (OR pattern)
         format('Type: multiple_rules (~w clauses)~n', [length(Clauses)]),
@@ -200,13 +200,18 @@ generate_unique_end_block('').
 %% SINGLE RULE COMPILATION
 %% ============================================
 
-%% compile_single_rule_to_awk(+Pred, +Arity, +Body, +RecordFormat,
+%% compile_single_rule_to_awk(+Pred, +Arity, +Head, +Body, +RecordFormat,
 %%                            +FieldSep, +Unique, +Unordered, -AwkCode)
 %  Compile a single rule to AWK
 %
-compile_single_rule_to_awk(Pred, Arity, Body, _RecordFormat, FieldSep,
+compile_single_rule_to_awk(Pred, Arity, Head, Body, _RecordFormat, FieldSep,
                           Unique, _Unordered, AwkCode) :-
     atom_string(Pred, PredStr),
+
+    % Build variable mapping from head arguments to field positions
+    Head =.. [_|HeadArgs],
+    build_var_map(HeadArgs, VarMap),
+    format('  Variable map: ~w~n', [VarMap]),
 
     % Extract predicates and constraints from body
     extract_predicates(Body, Predicates),
@@ -217,25 +222,37 @@ compile_single_rule_to_awk(Pred, Arity, Body, _RecordFormat, FieldSep,
     % Determine compilation strategy
     (   Predicates = [] ->
         % No predicates - just constraints or empty body
-        compile_constraint_only_rule(PredStr, Arity, Constraints, FieldSep, Unique, AwkCode)
+        compile_constraint_only_rule(PredStr, Arity, Constraints, VarMap, FieldSep, Unique, AwkCode)
     ;   Predicates = [SinglePred] ->
         % Single predicate - simple lookup with optional constraints
-        compile_single_predicate_rule(PredStr, Arity, SinglePred, Constraints,
+        compile_single_predicate_rule(PredStr, Arity, SinglePred, Constraints, VarMap,
                                      FieldSep, Unique, AwkCode)
     ;   % Multiple predicates - hash join pipeline
-        compile_multi_predicate_rule(PredStr, Arity, Predicates, Constraints,
+        compile_multi_predicate_rule(PredStr, Arity, Predicates, Constraints, VarMap,
                                     FieldSep, Unique, AwkCode)
     ).
 
-%% compile_constraint_only_rule(+PredStr, +Arity, +Constraints, +FieldSep, +Unique, -AwkCode)
+%% build_var_map(+HeadArgs, -VarMap)
+%  Build a mapping from variables to field positions
+%  e.g., [X, Y, Z] -> [(X, 1), (Y, 2), (Z, 3)]
+%
+build_var_map(HeadArgs, VarMap) :-
+    build_var_map_(HeadArgs, 1, VarMap).
+
+build_var_map_([], _, []).
+build_var_map_([Arg|Rest], Pos, [(Arg, Pos)|RestMap]) :-
+    NextPos is Pos + 1,
+    build_var_map_(Rest, NextPos, RestMap).
+
+%% compile_constraint_only_rule(+PredStr, +Arity, +Constraints, +VarMap, +FieldSep, +Unique, -AwkCode)
 %  Compile a rule with no predicates (just constraints or empty body)
 %
-compile_constraint_only_rule(_PredStr, Arity, Constraints, FieldSep, Unique, AwkCode) :-
+compile_constraint_only_rule(_PredStr, _Arity, Constraints, VarMap, FieldSep, Unique, AwkCode) :-
     (   Constraints = [] ->
         % No constraints - just pass through (always true)
         MainBlock = '{ print $0 }'
     ;   % Has constraints - generate AWK condition
-        generate_constraint_code(Constraints, Arity, ConstraintCode),
+        generate_constraint_code(Constraints, VarMap, ConstraintCode),
         (   Unique ->
             format(atom(MainBlock),
 '{
@@ -259,10 +276,10 @@ compile_constraint_only_rule(_PredStr, Arity, Constraints, FieldSep, Unique, Awk
     atomic_list_concat([BeginBlock, '\n', MainBlock], AwkCode).
 
 %% compile_single_predicate_rule(+PredStr, +Arity, +Predicate, +Constraints,
-%%                                +FieldSep, +Unique, -AwkCode)
+%%                                +VarMap, +FieldSep, +Unique, -AwkCode)
 %  Compile a rule with a single predicate (simple lookup)
 %
-compile_single_predicate_rule(_PredStr, Arity, Predicate, Constraints, FieldSep, Unique, AwkCode) :-
+compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, FieldSep, Unique, AwkCode) :-
     % Need to load the predicate's facts
     atom_string(Predicate, PredLookupStr),
 
@@ -286,7 +303,7 @@ compile_single_predicate_rule(_PredStr, Arity, Predicate, Constraints, FieldSep,
     % For now, assume direct mapping
     (   Constraints = [] ->
         ConstraintCheck = ''
-    ;   generate_constraint_code(Constraints, Arity, ConstraintCode),
+    ;   generate_constraint_code(Constraints, VarMap, ConstraintCode),
         format(atom(ConstraintCheck), ' && ~w', [ConstraintCode])
     ),
 
@@ -325,10 +342,10 @@ compile_single_predicate_rule(_PredStr, Arity, Predicate, Constraints, FieldSep,
     atomic_list_concat([BeginBlock, '\n', MainBlock], AwkCode).
 
 %% compile_multi_predicate_rule(+PredStr, +Arity, +Predicates, +Constraints,
-%%                              +FieldSep, +Unique, -AwkCode)
+%%                              +VarMap, +FieldSep, +Unique, -AwkCode)
 %  Compile a rule with multiple predicates (hash join)
 %
-compile_multi_predicate_rule(_PredStr, _Arity, Predicates, Constraints, FieldSep, Unique, AwkCode) :-
+compile_multi_predicate_rule(_PredStr, _Arity, Predicates, Constraints, _VarMap, FieldSep, Unique, AwkCode) :-
     % For multiple predicates, we need to implement a hash join
     % Strategy: Load all predicate facts, then perform nested joins
 
@@ -360,75 +377,78 @@ compile_multi_predicate_rule(_PredStr, _Arity, Predicates, Constraints, FieldSep
 %% HELPER FUNCTIONS FOR SINGLE RULE COMPILATION
 %% ============================================
 
-%% generate_constraint_code(+Constraints, +Arity, -AwkCode)
+%% generate_constraint_code(+Constraints, +VarMap, -AwkCode)
 %  Generate AWK code for constraint checking
 %
 generate_constraint_code([], _, 'true') :- !.
-generate_constraint_code(Constraints, Arity, AwkCode) :-
+generate_constraint_code(Constraints, VarMap, AwkCode) :-
     findall(ConstraintCode,
         (   member(Constraint, Constraints),
-            constraint_to_awk(Constraint, Arity, ConstraintCode)
+            constraint_to_awk(Constraint, VarMap, ConstraintCode)
         ),
         ConstraintCodes),
     atomic_list_concat(ConstraintCodes, ' && ', AwkCode).
 
-%% constraint_to_awk(+Constraint, +Arity, -AwkCode)
+%% constraint_to_awk(+Constraint, +VarMap, -AwkCode)
 %  Convert a single constraint to AWK code
 %
-constraint_to_awk(inequality(A, B), Arity, AwkCode) :-
-    term_to_awk_expr(A, Arity, AwkA),
-    term_to_awk_expr(B, Arity, AwkB),
+constraint_to_awk(inequality(A, B), VarMap, AwkCode) :-
+    term_to_awk_expr(A, VarMap, AwkA),
+    term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '(~w != ~w)', [AwkA, AwkB]).
-constraint_to_awk(gt(A, B), Arity, AwkCode) :-
-    term_to_awk_expr(A, Arity, AwkA),
-    term_to_awk_expr(B, Arity, AwkB),
+constraint_to_awk(gt(A, B), VarMap, AwkCode) :-
+    term_to_awk_expr(A, VarMap, AwkA),
+    term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '(~w > ~w)', [AwkA, AwkB]).
-constraint_to_awk(lt(A, B), Arity, AwkCode) :-
-    term_to_awk_expr(A, Arity, AwkA),
-    term_to_awk_expr(B, Arity, AwkB),
+constraint_to_awk(lt(A, B), VarMap, AwkCode) :-
+    term_to_awk_expr(A, VarMap, AwkA),
+    term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '(~w < ~w)', [AwkA, AwkB]).
-constraint_to_awk(gte(A, B), Arity, AwkCode) :-
-    term_to_awk_expr(A, Arity, AwkA),
-    term_to_awk_expr(B, Arity, AwkB),
+constraint_to_awk(gte(A, B), VarMap, AwkCode) :-
+    term_to_awk_expr(A, VarMap, AwkA),
+    term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '(~w >= ~w)', [AwkA, AwkB]).
-constraint_to_awk(lte(A, B), Arity, AwkCode) :-
-    term_to_awk_expr(A, Arity, AwkA),
-    term_to_awk_expr(B, Arity, AwkB),
+constraint_to_awk(lte(A, B), VarMap, AwkCode) :-
+    term_to_awk_expr(A, VarMap, AwkA),
+    term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '(~w <= ~w)', [AwkA, AwkB]).
-constraint_to_awk(eq(A, B), Arity, AwkCode) :-
-    term_to_awk_expr(A, Arity, AwkA),
-    term_to_awk_expr(B, Arity, AwkB),
+constraint_to_awk(eq(A, B), VarMap, AwkCode) :-
+    term_to_awk_expr(A, VarMap, AwkA),
+    term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '(~w == ~w)', [AwkA, AwkB]).
-constraint_to_awk(neq(A, B), Arity, AwkCode) :-
-    term_to_awk_expr(A, Arity, AwkA),
-    term_to_awk_expr(B, Arity, AwkB),
+constraint_to_awk(neq(A, B), VarMap, AwkCode) :-
+    term_to_awk_expr(A, VarMap, AwkA),
+    term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '(~w != ~w)', [AwkA, AwkB]).
-constraint_to_awk(is(A, B), Arity, AwkCode) :-
-    term_to_awk_expr(A, Arity, AwkA),
-    term_to_awk_expr(B, Arity, AwkB),
+constraint_to_awk(is(A, B), VarMap, AwkCode) :-
+    term_to_awk_expr(A, VarMap, AwkA),
+    term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '((~w = ~w), 1)', [AwkA, AwkB]).
 
-%% term_to_awk_expr(+Term, +Arity, -AwkExpr)
-%  Convert a Prolog term to an AWK expression
+%% term_to_awk_expr(+Term, +VarMap, -AwkExpr)
+%  Convert a Prolog term to an AWK expression using variable mapping
 %
-term_to_awk_expr(Term, _Arity, AwkExpr) :-
+term_to_awk_expr(Term, VarMap, AwkExpr) :-
+    var(Term), !,
+    % It's a Prolog variable - look it up in VarMap
+    (   member((Term, Pos), VarMap) ->
+        format(atom(AwkExpr), '$~w', [Pos])
+    ;   % Variable not in map - might be from nested term
+        AwkExpr = Term
+    ).
+term_to_awk_expr(Term, _, AwkExpr) :-
     atom(Term), !,
-    % Check if it's a variable (starts with uppercase)
-    atom_chars(Term, [First|_]),
-    char_type(First, upper), !,
-    % Map variable to field number (simplified - assumes positional mapping)
-    atom_codes(Term, [FirstCode|_]),
-    FieldNum is FirstCode - 64,  % A=1, B=2, C=3, etc.
-    format(atom(AwkExpr), '$~w', [FieldNum]).
-term_to_awk_expr(Term, _Arity, Term) :-
+    % Atom constant - quote it for AWK
+    format(atom(AwkExpr), '"~w"', [Term]).
+term_to_awk_expr(Term, _, Term) :-
     number(Term), !.
-term_to_awk_expr(Term, Arity, AwkExpr) :-
+term_to_awk_expr(Term, VarMap, AwkExpr) :-
     compound(Term), !,
     Term =.. [Op, Left, Right],
-    term_to_awk_expr(Left, Arity, AwkLeft),
-    term_to_awk_expr(Right, Arity, AwkRight),
+    term_to_awk_expr(Left, VarMap, AwkLeft),
+    term_to_awk_expr(Right, VarMap, AwkRight),
     format(atom(AwkExpr), '(~w ~w ~w)', [AwkLeft, Op, AwkRight]).
-term_to_awk_expr(Term, _Arity, Term).
+term_to_awk_expr(Term, _, Term).
 
 %% generate_predicate_loader(+Predicate, -LoadCode)
 %  Generate AWK code to load a predicate's facts into an array
@@ -536,11 +556,13 @@ compile_multiple_rules_to_awk(Pred, Arity, Clauses, _RecordFormat, FieldSep,
 %% generate_multi_rules_main_block(+Arity, +Clauses, +LoadedPreds, +Unique, -MainBlock)
 %  Generate main block for multiple rules (OR pattern)
 %
-generate_multi_rules_main_block(Arity, Clauses, LoadedPreds, Unique, MainBlock) :-
+generate_multi_rules_main_block(_Arity, Clauses, LoadedPreds, Unique, MainBlock) :-
     % Generate condition for each rule alternative
     findall(RuleCondition,
-        (   member(_Head-Body, Clauses),
-            generate_rule_condition(Body, Arity, LoadedPreds, RuleCondition)
+        (   member(Head-Body, Clauses),
+            Head =.. [_|HeadArgs],
+            build_var_map(HeadArgs, VarMap),
+            generate_rule_condition(Body, VarMap, LoadedPreds, RuleCondition)
         ),
         RuleConditions),
 
@@ -568,10 +590,10 @@ generate_multi_rules_main_block(Arity, Clauses, LoadedPreds, Unique, MainBlock) 
 }', [CombinedCondition])
     ).
 
-%% generate_rule_condition(+Body, +Arity, +LoadedPreds, -Condition)
+%% generate_rule_condition(+Body, +VarMap, +LoadedPreds, -Condition)
 %  Generate AWK condition for a single rule body
 %
-generate_rule_condition(Body, Arity, _LoadedPreds, Condition) :-
+generate_rule_condition(Body, VarMap, _LoadedPreds, Condition) :-
     extract_predicates(Body, Predicates),
     extract_constraints(Body, Constraints),
 
@@ -604,7 +626,7 @@ generate_rule_condition(Body, Arity, _LoadedPreds, Condition) :-
     % Generate constraint checks
     (   Constraints = [] ->
         ConstraintCheck = ''
-    ;   generate_constraint_code(Constraints, Arity, ConstraintCode),
+    ;   generate_constraint_code(Constraints, VarMap, ConstraintCode),
         format(atom(ConstraintCheck), ' && ~w', [ConstraintCode])
     ),
 
