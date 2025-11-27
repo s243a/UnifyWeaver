@@ -116,9 +116,9 @@ get_unifyweaver_version('v0.0.3').
 %%                      +Unique, +Unordered, -AwkCode)
 %  Compile facts to AWK using associative arrays
 %
-compile_facts_to_awk(Pred, Arity, Clauses, RecordFormat, FieldSep,
-                     Unique, Unordered, AwkCode) :-
-    atom_string(Pred, PredStr),
+compile_facts_to_awk(Pred, Arity, Clauses, _RecordFormat, FieldSep,
+                     Unique, _Unordered, AwkCode) :-
+    atom_string(Pred, _PredStr),
 
     % Extract facts from clauses
     findall(Args,
@@ -204,9 +204,9 @@ generate_unique_end_block('').
 %%                            +FieldSep, +Unique, +Unordered, -AwkCode)
 %  Compile a single rule to AWK
 %
-compile_single_rule_to_awk(Pred, Arity, Body, RecordFormat, FieldSep,
-                          Unique, Unordered, AwkCode) :-
-    atom_string(Pred, PredStr),
+compile_single_rule_to_awk(Pred, Arity, Body, _RecordFormat, FieldSep,
+                          Unique, _Unordered, AwkCode) :-
+    atom_string(Pred, _PredStr),
 
     % Extract predicates from body
     extract_predicates(Body, Predicates),
@@ -224,7 +224,7 @@ compile_single_rule_to_awk(Pred, Arity, Body, RecordFormat, FieldSep,
 %% generate_rule_main_block(+Arity, +Body, +Predicates, +Unique, -MainBlock)
 %  Generate main block for rule evaluation
 %
-generate_rule_main_block(Arity, Body, Predicates, Unique, MainBlock) :-
+generate_rule_main_block(_Arity, Body, _Predicates, Unique, MainBlock) :-
     % For now, generate a simple pass-through with comment
     % In future, this can analyze the body and generate AWK conditions
     (   Unique ->
@@ -255,9 +255,9 @@ generate_rule_main_block(Arity, Body, Predicates, Unique, MainBlock) :-
 %%                               +FieldSep, +Unique, +Unordered, -AwkCode)
 %  Compile multiple rules (OR pattern) to AWK
 %
-compile_multiple_rules_to_awk(Pred, Arity, Clauses, RecordFormat, FieldSep,
-                             Unique, Unordered, AwkCode) :-
-    atom_string(Pred, PredStr),
+compile_multiple_rules_to_awk(Pred, Arity, Clauses, _RecordFormat, FieldSep,
+                             Unique, _Unordered, AwkCode) :-
+    atom_string(Pred, _PredStr),
 
     % Generate BEGIN block
     format(atom(BeginBlock), 'BEGIN { FS = "~w" }', [FieldSep]),
@@ -271,7 +271,7 @@ compile_multiple_rules_to_awk(Pred, Arity, Clauses, RecordFormat, FieldSep,
 %% generate_multi_rules_main_block(+Arity, +Clauses, +Unique, -MainBlock)
 %  Generate main block for multiple rules (OR pattern)
 %
-generate_multi_rules_main_block(Arity, Clauses, Unique, MainBlock) :-
+generate_multi_rules_main_block(_Arity, Clauses, Unique, MainBlock) :-
     % For now, treat multiple rules as alternative patterns
     length(Clauses, NumRules),
     (   Unique ->
