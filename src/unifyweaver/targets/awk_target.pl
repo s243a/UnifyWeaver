@@ -505,40 +505,111 @@ compile_multiple_rules_to_awk(Pred, Arity, Clauses, _RecordFormat, FieldSep,
                              Unique, _Unordered, AwkCode) :-
     atom_string(Pred, _PredStr),
 
-    % Generate BEGIN block
-    format(atom(BeginBlock), 'BEGIN { FS = "~w" }', [FieldSep]),
+    % Collect all predicates used across all rule bodies
+    findall(BodyPred,
+        (   member(_Head-Body, Clauses),
+            extract_predicates(Body, BodyPreds),
+            member(BodyPred, BodyPreds)
+        ),
+        AllBodyPreds),
+    list_to_set(AllBodyPreds, UniqueBodyPreds),
 
-    % Generate main block with multiple rule checks
-    generate_multi_rules_main_block(Arity, Clauses, Unique, MainBlock),
+    % Load all predicate facts in BEGIN block
+    findall(LoadCode,
+        (   member(BodyPred, UniqueBodyPreds),
+            generate_predicate_loader(BodyPred, LoadCode)
+        ),
+        LoadCodes),
+    atomic_list_concat(LoadCodes, '\n', AllLoadCode),
 
-    % Assemble script
+    % Generate main block with OR logic for all alternatives
+    generate_multi_rules_main_block(Arity, Clauses, UniqueBodyPreds, Unique, MainBlock),
+
+    % Assemble complete script
+    format(atom(BeginBlock),
+'BEGIN {
+    FS = "~w"
+~w
+}', [FieldSep, AllLoadCode]),
     atomic_list_concat([BeginBlock, '\n', MainBlock], AwkCode).
 
-%% generate_multi_rules_main_block(+Arity, +Clauses, +Unique, -MainBlock)
+%% generate_multi_rules_main_block(+Arity, +Clauses, +LoadedPreds, +Unique, -MainBlock)
 %  Generate main block for multiple rules (OR pattern)
 %
-generate_multi_rules_main_block(_Arity, Clauses, Unique, MainBlock) :-
-    % For now, treat multiple rules as alternative patterns
-    length(Clauses, NumRules),
+generate_multi_rules_main_block(Arity, Clauses, LoadedPreds, Unique, MainBlock) :-
+    % Generate condition for each rule alternative
+    findall(RuleCondition,
+        (   member(_Head-Body, Clauses),
+            generate_rule_condition(Body, Arity, LoadedPreds, RuleCondition)
+        ),
+        RuleConditions),
+
+    % Combine all conditions with OR logic
     (   Unique ->
+        atomic_list_concat(RuleConditions, ' || ', CombinedCondition),
         format(atom(MainBlock),
 '{
-    # Multiple rules: ~w alternatives (OR pattern)
-    # TODO: Implement multi-rule compilation
-    # For now, pass through input
-    key = $0
-    if (!(key in seen)) {
-        seen[key] = 1
+    # Multiple rules (OR pattern)
+    if (~w) {
+        key = $0
+        if (!(key in seen)) {
+            seen[key] = 1
+            print $0
+        }
+    }
+}', [CombinedCondition])
+    ;   atomic_list_concat(RuleConditions, ' || ', CombinedCondition),
+        format(atom(MainBlock),
+'{
+    # Multiple rules (OR pattern)
+    if (~w) {
         print $0
     }
-}', [NumRules])
-    ;   format(atom(MainBlock),
-'{
-    # Multiple rules: ~w alternatives (OR pattern)
-    # TODO: Implement multi-rule compilation
-    print $0
-}', [NumRules])
+}', [CombinedCondition])
     ).
+
+%% generate_rule_condition(+Body, +Arity, +LoadedPreds, -Condition)
+%  Generate AWK condition for a single rule body
+%
+generate_rule_condition(Body, Arity, _LoadedPreds, Condition) :-
+    extract_predicates(Body, Predicates),
+    extract_constraints(Body, Constraints),
+
+    % Generate predicate checks
+    (   Predicates = [] ->
+        PredicateCheck = '1'  % Always true if no predicates
+    ;   Predicates = [SinglePred] ->
+        % Single predicate lookup
+        atom_string(SinglePred, PredStr),
+        current_predicate(SinglePred/PredArity),
+        numlist(1, PredArity, FieldNums),
+        findall(Field,
+            (member(N, FieldNums), format(atom(Field), '$~w', [N])),
+            Fields),
+        atomic_list_concat(Fields, ' ":" ', FieldsConcat),
+        format(atom(PredicateCheck), '(~w in ~w_data)', [FieldsConcat, PredStr])
+    ;   % Multiple predicates - for now, just check first one
+        % TODO: Implement proper join logic
+        Predicates = [FirstPred|_],
+        atom_string(FirstPred, PredStr),
+        current_predicate(FirstPred/PredArity),
+        numlist(1, PredArity, FieldNums),
+        findall(Field,
+            (member(N, FieldNums), format(atom(Field), '$~w', [N])),
+            Fields),
+        atomic_list_concat(Fields, ' ":" ', FieldsConcat),
+        format(atom(PredicateCheck), '(~w in ~w_data)', [FieldsConcat, PredStr])
+    ),
+
+    % Generate constraint checks
+    (   Constraints = [] ->
+        ConstraintCheck = ''
+    ;   generate_constraint_code(Constraints, Arity, ConstraintCode),
+        format(atom(ConstraintCheck), ' && ~w', [ConstraintCode])
+    ),
+
+    % Combine checks
+    format(atom(Condition), '(~w~w)', [PredicateCheck, ConstraintCheck]).
 
 %% ============================================
 %% HELPER PREDICATES
