@@ -488,6 +488,18 @@ translate_goal(>(Var, Value), Code) :-
     var_to_python(Value, PyValue),
     format(string(Code), "    if not (~w > ~w): return\n", [PyVar, PyValue]).
 
+% Match predicate support for procedural mode
+translate_goal(match(Var, Pattern), Code) :-
+    !,
+    translate_match_goal(Var, Pattern, auto, Code).
+translate_goal(match(Var, Pattern, Type), Code) :-
+    !,
+    translate_match_goal(Var, Pattern, Type, Code).
+translate_goal(match(Var, Pattern, Type, _Groups), Code) :-
+    !,
+    % TODO: Handle capture groups
+    translate_match_goal(Var, Pattern, Type, Code).
+
 translate_goal(true, Code) :-
     !,
     Code = "    pass\n".
@@ -495,6 +507,22 @@ translate_goal(true, Code) :-
 translate_goal(Goal, "") :-
     format(string(Msg), "Warning: Unsupported goal ~w", [Goal]),
     print_message(warning, Msg).
+
+%% translate_match_goal(+Var, +Pattern, +Type, -Code)
+%  Translate match predicate to Python code for procedural mode
+translate_match_goal(Var, Pattern, Type, Code) :-
+    % Validate regex type
+    validate_regex_type_for_python(Type),
+    % Convert variable to Python
+    var_to_python(Var, PyVar),
+    % Escape pattern
+    (   atom(Pattern)
+    ->  atom_string(Pattern, PatternStr)
+    ;   PatternStr = Pattern
+    ),
+    escape_python_string(PatternStr, EscapedPattern),
+    % Generate Python code with early return if no match
+    format(string(Code), "    if not re.search(r'~w', str(~w)): return\n", [EscapedPattern, PyVar]).
 
 pair_to_python(Key-Value, Str) :-
     var_to_python(Value, PyValue),
@@ -784,9 +812,9 @@ generate_recursive_wrapper(Name, Arity, WrapperCode) :-
     ;   WrapperCode = "# ERROR: Unsupported arity for recursion wrapper"
     ).
 
-header("import sys\nimport json\nfrom typing import Iterator, Dict, Any\n\n").
+header("import sys\nimport json\nimport re\nfrom typing import Iterator, Dict, Any\n\n").
 
-header_with_functools("import sys\nimport json\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
+header_with_functools("import sys\nimport json\nimport re\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
 
 helpers("
 def read_jsonl(stream) -> Iterator[Dict[str, Any]]:
@@ -868,6 +896,7 @@ if __name__ == '__main__':
 generator_header(Header) :-
     Header = "import sys
 import json
+import re
 from typing import Iterator, Dict, Any, Set
 from dataclasses import dataclass
 
@@ -1242,7 +1271,7 @@ build_constant_output(HeadArgs, OutputStr) :-
 %  Check if goal is a built-in (is, >, <, etc.)
 is_builtin_goal(Goal) :-
     Goal =.. [Pred | _],
-    member(Pred, [is, >, <, >=, =<, =:=, =\=, \+, not]).
+    member(Pred, [is, >, <, >=, =<, =:=, =\=, \+, not, match]).
 
 %% translate_fact_rule(+Name, +RuleNum, +Head, -RuleFunc)
 %  Translate a fact (constant) into a rule that emits it once
@@ -1388,6 +1417,18 @@ translate_builtin(\+ Goal, VarMap, PythonExpr) :-
 translate_builtin(not(Goal), VarMap, PythonExpr) :-
     !,
     translate_negation(Goal, VarMap, PythonExpr).
+% Match predicate support (regex pattern matching)
+translate_builtin(match(Var, Pattern), VarMap, PythonExpr) :-
+    !,
+    translate_match(Var, Pattern, auto, [], VarMap, PythonExpr).
+translate_builtin(match(Var, Pattern, Type), VarMap, PythonExpr) :-
+    !,
+    translate_match(Var, Pattern, Type, [], VarMap, PythonExpr).
+translate_builtin(match(Var, Pattern, Type, _Groups), VarMap, PythonExpr) :-
+    !,
+    % For now, capture groups are handled similarly to boolean match
+    % TODO: Extract and use captured values
+    translate_match(Var, Pattern, Type, [], VarMap, PythonExpr).
 translate_builtin(_, _VarMap, "True").  % Fallback
 
 %% translate_negation(+Goal, +VarMap, -PythonExpr)
@@ -1410,6 +1451,45 @@ translate_negation(Goal, VarMap, PythonExpr) :-
     AllPairs = [RelPair | Pairs],
     atomic_list_concat(AllPairs, ", ", DictContent),
     format(string(PythonExpr), "FrozenDict.from_dict({~w}) not in total", [DictContent]).
+
+%% translate_match(+Var, +Pattern, +Type, +Groups, +VarMap, -PythonExpr)
+%  Translate match predicate to Python re module call
+translate_match(Var, Pattern, Type, _Groups, VarMap, PythonExpr) :-
+    % Validate regex type for Python target
+    validate_regex_type_for_python(Type),
+    % Convert variable to Python expression
+    translate_expr(Var, VarMap, PyVar),
+    % Convert pattern to Python string
+    (   atom(Pattern)
+    ->  atom_string(Pattern, PatternStr)
+    ;   PatternStr = Pattern
+    ),
+    % Escape pattern for Python (escape backslashes and quotes)
+    escape_python_string(PatternStr, EscapedPattern),
+    % Generate Python regex match expression
+    % For now, use re.search for boolean match
+    % TODO: Handle capture groups with re.search().groups()
+    format(string(PythonExpr), "re.search(r'~w', str(~w))", [EscapedPattern, PyVar]).
+
+%% validate_regex_type_for_python(+Type)
+%  Validate that the regex type is supported by Python
+validate_regex_type_for_python(auto) :- !.
+validate_regex_type_for_python(python) :- !.
+validate_regex_type_for_python(pcre) :- !.  % Python re is PCRE-like
+validate_regex_type_for_python(ere) :- !.   % Can be supported with minor translation
+validate_regex_type_for_python(Type) :-
+    format('ERROR: Python target does not support regex type ~q~n', [Type]),
+    format('  Supported types: auto, python, pcre, ere~n', []),
+    format('  Note: BRE, AWK-specific, and .NET regex are not supported by Python~n', []),
+    fail.
+
+%% escape_python_string(+Str, -EscapedStr)
+%  Escape special characters for Python string literals
+escape_python_string(Str, EscapedStr) :-
+    atom_string(Str, String),
+    % For raw strings (r'...'), we mainly need to escape quotes
+    % Backslashes are literal in raw strings
+    re_replace("'"/g, "\\\\'", String, EscapedStr).
 
 %% build_variable_map(+GoalSourcePairs, -VarMap)
 %  Build map from variables to Python access strings
