@@ -45,8 +45,8 @@ compile_predicate_to_awk(PredIndicator, Options, AwkCode) :-
     % Create head with correct arity
     functor(Head, Pred, Arity),
 
-    % Get all clauses for this predicate
-    findall(H-B, (user:clause(Head, B), Head = H), Clauses),
+    % Get all clauses for this predicate (preserving variable sharing)
+    findall(Head-Body, user:clause(Head, Body), Clauses),
 
     % Determine compilation strategy
     (   Clauses = [] ->
@@ -244,6 +244,14 @@ build_var_map_([Arg|Rest], Pos, [(Arg, Pos)|RestMap]) :-
     NextPos is Pos + 1,
     build_var_map_(Rest, NextPos, RestMap).
 
+%% var_map_lookup(+Var, +VarMap, -Pos)
+%  Look up a variable in VarMap using identity (==) not unification (=)
+%
+var_map_lookup(Var, [(MapVar, Pos)|_], Pos) :-
+    Var == MapVar, !.
+var_map_lookup(Var, [_|Rest], Pos) :-
+    var_map_lookup(Var, Rest, Pos).
+
 %% compile_constraint_only_rule(+PredStr, +Arity, +Constraints, +VarMap, +FieldSep, +Unique, -AwkCode)
 %  Compile a rule with no predicates (just constraints or empty body)
 %
@@ -430,8 +438,8 @@ constraint_to_awk(is(A, B), VarMap, AwkCode) :-
 %
 term_to_awk_expr(Term, VarMap, AwkExpr) :-
     var(Term), !,
-    % It's a Prolog variable - look it up in VarMap
-    (   member((Term, Pos), VarMap) ->
+    % It's a Prolog variable - look it up in VarMap using identity check
+    (   var_map_lookup(Term, VarMap, Pos) ->
         format(atom(AwkExpr), '$~w', [Pos])
     ;   % Variable not in map - might be from nested term
         AwkExpr = Term
