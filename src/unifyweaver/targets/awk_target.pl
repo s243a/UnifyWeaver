@@ -30,10 +30,31 @@
 %  - include_header(true|false) - Include shebang (default: true)
 %  - unique(true|false) - Deduplicate results (default: true)
 %  - unordered(true|false) - Allow unordered output (default: true)
+%  - aggregation(sum|count|max|min|avg) - Aggregation operation
 %
 compile_predicate_to_awk(PredIndicator, Options, AwkCode) :-
     PredIndicator = Pred/Arity,
     format('=== Compiling ~w/~w to AWK ===~n', [Pred, Arity]),
+
+    % Check if this is an aggregation operation
+    (   option(aggregation(AggOp), Options, none),
+        AggOp \= none
+    ->  % Compile as aggregation
+        compile_aggregation_to_awk(Pred, Arity, AggOp, Options, AwkCode)
+    ;   % Check if this is a tail-recursive pattern
+        functor(Head, Pred, Arity),
+        findall(Head-Body, user:clause(Head, Body), Clauses),
+        is_tail_recursive_pattern(Pred, Clauses)
+    ->  % Compile as tail recursion (while loop)
+        compile_tail_recursion_to_awk(Pred, Arity, Clauses, Options, AwkCode)
+    ;   % Continue with normal compilation
+        compile_predicate_to_awk_normal(Pred, Arity, Options, AwkCode)
+    ).
+
+%% compile_predicate_to_awk_normal(+Pred, +Arity, +Options, -AwkCode)
+%  Normal (non-aggregation) compilation path
+%
+compile_predicate_to_awk_normal(Pred, Arity, Options, AwkCode) :-
 
     % Get options
     option(record_format(RecordFormat), Options, tsv),
@@ -87,6 +108,388 @@ write_awk_script(AwkCode, FilePath) :-
     format(atom(ChmodCmd), 'chmod +x ~w', [FilePath]),
     shell(ChmodCmd),
     format('[AwkTarget] Generated executable AWK script: ~w~n', [FilePath]).
+
+%% ============================================
+%% AGGREGATION PATTERN COMPILATION
+%% ============================================
+
+%% compile_aggregation_to_awk(+Pred, +Arity, +AggOp, +Options, -AwkCode)
+%  Compile aggregation operations (sum, count, max, min, avg)
+%
+compile_aggregation_to_awk(Pred, Arity, AggOp, Options, AwkCode) :-
+    atom_string(Pred, _PredStr),
+    option(field_separator(FieldSep), Options, '\t'),
+    option(include_header(IncludeHeader), Options, true),
+
+    format('  Aggregation type: ~w~n', [AggOp]),
+
+    % Generate aggregation AWK code based on operation
+    generate_aggregation_awk(AggOp, Arity, FieldSep, ScriptBody),
+
+    % Optionally add shebang header
+    (   IncludeHeader ->
+        generate_awk_header(Pred, Arity, tsv, Header),
+        atomic_list_concat([Header, '\n', ScriptBody], AwkCode)
+    ;   AwkCode = ScriptBody
+    ).
+
+%% generate_aggregation_awk(+AggOp, +Arity, +FieldSep, -AwkCode)
+%  Generate AWK code for specific aggregation operations
+%
+generate_aggregation_awk(sum, _Arity, FieldSep, AwkCode) :-
+    format(atom(AwkCode),
+'BEGIN { FS = "~w" }
+{ sum += $1 }
+END { print sum }', [FieldSep]).
+
+generate_aggregation_awk(count, _Arity, FieldSep, AwkCode) :-
+    format(atom(AwkCode),
+'BEGIN { FS = "~w" }
+{ count++ }
+END { print count }', [FieldSep]).
+
+generate_aggregation_awk(max, _Arity, FieldSep, AwkCode) :-
+    format(atom(AwkCode),
+'BEGIN { FS = "~w"; max = -999999999 }
+{ if ($1 > max) max = $1 }
+END { print max }', [FieldSep]).
+
+generate_aggregation_awk(min, _Arity, FieldSep, AwkCode) :-
+    format(atom(AwkCode),
+'BEGIN { FS = "~w"; min = 999999999 }
+{ if (NR == 1 || $1 < min) min = $1 }
+END { print min }', [FieldSep]).
+
+generate_aggregation_awk(avg, _Arity, FieldSep, AwkCode) :-
+    format(atom(AwkCode),
+'BEGIN { FS = "~w"; sum = 0; count = 0 }
+{ sum += $1; count++ }
+END { if (count > 0) print sum/count; else print 0 }', [FieldSep]).
+
+%% ============================================
+%% TAIL RECURSION → WHILE LOOP COMPILATION
+%% ============================================
+
+%% is_tail_recursive_pattern(+Pred, +Clauses)
+%  Detect if clauses form a tail-recursive pattern
+%  Pattern: base case + recursive case with self-call at end
+%
+is_tail_recursive_pattern(Pred, Clauses) :-
+    length(Clauses, Len),
+    Len >= 2,  % Need at least base case + recursive case
+    % Check for base case (no body or simple body)
+    member(_Head1-Body1, Clauses),
+    is_base_case(Body1),
+    % Check for recursive case
+    member(_Head2-Body2, Clauses),
+    is_tail_recursive_body(Pred, Body2).
+
+%% is_base_case(+Body)
+%  Check if body is a base case (true or simple unification)
+%
+is_base_case(true) :- !.
+is_base_case(_A = _B) :- !.  % Simple unification
+
+%% is_tail_recursive_body(+Pred, +Body)
+%  Check if body ends with recursive call to Pred
+%
+is_tail_recursive_body(Pred, Body) :-
+    extract_last_goal(Body, LastGoal),
+    functor(LastGoal, Pred, _).
+
+%% extract_last_goal(+Body, -LastGoal)
+%  Extract the last goal from a body
+%
+extract_last_goal((_, B), LastGoal) :- !,
+    extract_last_goal(B, LastGoal).
+extract_last_goal(Goal, Goal).
+
+%% compile_tail_recursion_to_awk(+Pred, +Arity, +Clauses, +Options, -AwkCode)
+%  Compile tail-recursive pattern as AWK while loop
+%
+compile_tail_recursion_to_awk(Pred, Arity, Clauses, Options, AwkCode) :-
+    format('  Type: tail_recursion~n'),
+
+    option(field_separator(FieldSep), Options, '\t'),
+    option(include_header(IncludeHeader), Options, true),
+
+    % Separate base case and recursive case
+    separate_tail_rec_clauses(Pred, Clauses, BaseClause, RecClause),
+
+    % Extract loop components
+    BaseClause = BaseHead-_BaseBody,
+    RecClause = RecHead-RecBody,
+
+    BaseHead =.. [_|BaseArgs],
+    RecHead =.. [_|RecArgs],
+
+    % Analyze the pattern
+    analyze_tail_recursion(BaseArgs, RecArgs, RecBody, LoopInfo),
+
+    % Generate AWK while loop
+    generate_tail_rec_awk(Pred, Arity, LoopInfo, FieldSep, ScriptBody),
+
+    % Optionally add shebang header
+    (   IncludeHeader ->
+        generate_awk_header(Pred, Arity, tsv, Header),
+        atomic_list_concat([Header, '\n', ScriptBody], AwkCode)
+    ;   AwkCode = ScriptBody
+    ).
+
+%% separate_tail_rec_clauses(+Pred, +Clauses, -BaseClause, -RecClause)
+%  Separate base case from recursive case
+%
+separate_tail_rec_clauses(Pred, Clauses, BaseClause, RecClause) :-
+    % Find base case
+    member(BaseClause, Clauses),
+    BaseClause = _-Body1,
+    is_base_case(Body1),
+    % Find recursive case
+    member(RecClause, Clauses),
+    RecClause = _-Body2,
+    is_tail_recursive_body(Pred, Body2),
+    BaseClause \= RecClause.
+
+%% analyze_tail_recursion(+BaseArgs, +RecArgs, +RecBody, -LoopInfo)
+%  Analyze tail recursion to extract loop components
+%
+%  For factorial(N, Acc, Result):
+%  - Base: factorial(0, Acc, Acc)
+%  - Rec:  factorial(N, Acc, F) :- N > 0, N1 is N-1, Acc1 is Acc*N, factorial(N1, Acc1, F)
+%
+%  Extract:
+%  - Loop variable (N) and condition (N > 0)
+%  - Accumulator updates (Acc1 is Acc*N)
+%  - Loop variable update (N1 is N-1)
+%
+analyze_tail_recursion(BaseArgs, RecArgs, RecBody, LoopInfo) :-
+    % Extract constraints and updates from recursive body
+    extract_loop_components(RecBody, Constraints, Updates, RecCall),
+
+    % Build loop info using functor (now including RecCall)
+    LoopInfo = loop_info(BaseArgs, RecArgs, Constraints, Updates, RecCall).
+
+%% extract_loop_components(+Body, -Constraints, -Updates, -RecCall)
+%  Extract constraints, updates, and recursive call from body
+%
+extract_loop_components(Body, Constraints, Updates, RecCall) :-
+    body_to_list(Body, Goals),
+    partition_goals(Goals, Constraints, Updates, RecCall).
+
+%% body_to_list(+Body, -Goals)
+%  Convert body to list of goals
+%
+body_to_list((A, B), Goals) :- !,
+    body_to_list(A, G1),
+    body_to_list(B, G2),
+    append(G1, G2, Goals).
+body_to_list(Goal, [Goal]).
+
+%% partition_goals(+Goals, -Constraints, -Updates, -RecCall)
+%  Partition goals into constraints, updates, and recursive call
+%
+partition_goals([], [], [], none).
+partition_goals([Goal|Rest], [Goal|RestC], Updates, RecCall) :-
+    is_constraint_goal(Goal), !,
+    partition_goals(Rest, RestC, Updates, RecCall).
+partition_goals([Goal|Rest], Constraints, [Goal|RestU], RecCall) :-
+    is_update_goal(Goal), !,
+    partition_goals(Rest, Constraints, RestU, RecCall).
+partition_goals([Goal|Rest], Constraints, Updates, Goal) :-
+    % Last goal should be recursive call
+    Rest = [], !,
+    partition_goals(Rest, Constraints, Updates, _).
+partition_goals([_|Rest], Constraints, Updates, RecCall) :-
+    % Skip other goals
+    partition_goals(Rest, Constraints, Updates, RecCall).
+
+%% is_constraint_goal(+Goal)
+%  Check if goal is a constraint (comparison)
+%
+is_constraint_goal(_ > _).
+is_constraint_goal(_ < _).
+is_constraint_goal(_ >= _).
+is_constraint_goal(_ =< _).
+is_constraint_goal(_ =:= _).
+is_constraint_goal(_ =\= _).
+is_constraint_goal(_ \= _).
+
+%% is_update_goal(+Goal)
+%  Check if goal is an update (is/2)
+%
+is_update_goal(is(_, _)).
+
+%% generate_tail_rec_awk(+Pred, +Arity, +LoopInfo, +FieldSep, -AwkCode)
+%  Generate AWK while loop from tail recursion pattern
+%
+%  Example: factorial(N, Acc, Result)
+%  Base: factorial(0, Acc, Acc)
+%  Rec:  factorial(N, Acc, F) :- N > 0, N1 is N-1, Acc1 is Acc*N, factorial(N1, Acc1, F)
+%
+%  AWK:
+%  BEGIN { FS = "\t" }
+%  {
+%      n = $1; acc = $2
+%      while (n > 0) {
+%          new_acc = acc * n
+%          new_n = n - 1
+%          acc = new_acc
+%          n = new_n
+%      }
+%      print acc
+%  }
+%
+generate_tail_rec_awk(_Pred, Arity, LoopInfo, FieldSep, AwkCode) :-
+    % Extract from functor-based structure
+    LoopInfo = loop_info(BaseArgs, RecArgs, Constraints, Updates, RecCall),
+
+    % Build variable initializations from input fields
+    length(RecArgs, NumArgs),
+    NumArgs =:= Arity,
+    findall(Init,
+        (   between(1, Arity, I),
+            nth1(I, RecArgs, Arg),
+            var_to_awk_name(Arg, VarName),
+            format(atom(Init), '    ~w = $~w', [VarName, I])
+        ),
+        Inits),
+    atomic_list_concat(Inits, '\n', InitCode),
+
+    % Build loop condition
+    (   Constraints = [Constraint|_] ->
+        constraint_to_awk_simple(Constraint, CondCode)
+    ;   CondCode = '1'  % Default: always loop once
+    ),
+
+    % Extract recursive call arguments to map temp vars to loop vars
+    RecCall =.. [_|RecCallArgs],
+
+    % Build loop body: compute new values, then update loop variables
+    findall(UpdateStmt,
+        (   member(is(Var, Expr), Updates),
+            var_to_awk_name(Var, VarName),
+            expr_to_awk_simple(Expr, ExprCode),
+            format(atom(UpdateStmt), '        ~w = ~w', [VarName, ExprCode])
+        ),
+        TempUpdates),
+
+    % Add statements to copy temp vars back to loop vars
+    findall(CopyStmt,
+        (   between(1, Arity, I),
+            nth1(I, RecCallArgs, RecArg),
+            nth1(I, RecArgs, OrigArg),
+            % Only copy if the recursive call uses a different variable
+            RecArg \== OrigArg,
+            var_to_awk_name(OrigArg, OrigName),
+            var_to_awk_name(RecArg, RecName),
+            format(atom(CopyStmt), '        ~w = ~w', [OrigName, RecName])
+        ),
+        CopyStmts),
+
+    append(TempUpdates, CopyStmts, AllUpdates),
+    atomic_list_concat(AllUpdates, '\n', UpdateCode),
+
+    % Find result variable from base case
+    % In base case like factorial(0, Acc, Acc), the result (last arg)
+    % is unified with another variable. Find which one.
+    nth1(Arity, BaseArgs, BaseResultArg),
+    % Check if the last base arg is the same variable as an earlier position
+    (   findall(Pos,
+            (   between(1, Arity, Pos),
+                Pos < Arity,
+                nth1(Pos, BaseArgs, BaseVar),
+                BaseVar == BaseResultArg
+            ),
+            [ResultPos|_])
+    ->  % Found earlier position with same variable
+        nth1(ResultPos, RecArgs, ResultVar)
+    ;   % No match, use last argument
+        nth1(Arity, RecArgs, ResultVar)
+    ),
+    var_to_awk_name(ResultVar, ResultName),
+
+    format(atom(AwkCode),
+'BEGIN { FS = "~w" }
+{
+~w
+    while (~w) {
+~w
+    }
+    print ~w
+}', [FieldSep, InitCode, CondCode, UpdateCode, ResultName]).
+
+%% var_to_awk_name(+Var, -AwkName)
+%  Convert Prolog variable to AWK variable name
+%
+var_to_awk_name(Var, AwkName) :-
+    var(Var), !,
+    term_to_atom(Var, VarAtom),
+    downcase_atom(VarAtom, Lower),
+    atom_string(Lower, AwkName).
+var_to_awk_name(Atom, AwkName) :-
+    atom(Atom), !,
+    downcase_atom(Atom, Lower),
+    atom_string(Lower, AwkName).
+var_to_awk_name(Term, AwkName) :-
+    term_to_atom(Term, Atom),
+    downcase_atom(Atom, Lower),
+    atom_string(Lower, AwkName).
+
+%% constraint_to_awk_simple(+Constraint, -AwkCode)
+%  Convert simple constraint to AWK condition
+%
+constraint_to_awk_simple(A > B, AwkCode) :-
+    expr_to_awk_simple(A, AwkA),
+    expr_to_awk_simple(B, AwkB),
+    format(atom(AwkCode), '~w > ~w', [AwkA, AwkB]).
+constraint_to_awk_simple(A < B, AwkCode) :-
+    expr_to_awk_simple(A, AwkA),
+    expr_to_awk_simple(B, AwkB),
+    format(atom(AwkCode), '~w < ~w', [AwkA, AwkB]).
+constraint_to_awk_simple(A >= B, AwkCode) :-
+    expr_to_awk_simple(A, AwkA),
+    expr_to_awk_simple(B, AwkB),
+    format(atom(AwkCode), '~w >= ~w', [AwkA, AwkB]).
+constraint_to_awk_simple(A =< B, AwkCode) :-
+    expr_to_awk_simple(A, AwkA),
+    expr_to_awk_simple(B, AwkB),
+    format(atom(AwkCode), '~w =< ~w', [AwkA, AwkB]).
+
+%% expr_to_awk_simple(+Expr, -AwkExpr)
+%  Convert simple expression to AWK
+%
+expr_to_awk_simple(Var, AwkVar) :-
+    var(Var), !,
+    var_to_awk_name(Var, AwkVar).
+expr_to_awk_simple(Atom, AwkAtom) :-
+    atom(Atom), !,
+    downcase_atom(Atom, Lower),
+    atom_string(Lower, AwkAtom).
+expr_to_awk_simple(Num, Num) :-
+    number(Num), !.
+% Handle A + (-N) as A - N
+expr_to_awk_simple(A + B, AwkExpr) :-
+    number(B),
+    B < 0, !,
+    PosB is -B,
+    expr_to_awk_simple(A, AwkA),
+    format(atom(AwkExpr), '(~w - ~w)', [AwkA, PosB]).
+expr_to_awk_simple(A + B, AwkExpr) :- !,
+    expr_to_awk_simple(A, AwkA),
+    expr_to_awk_simple(B, AwkB),
+    format(atom(AwkExpr), '(~w + ~w)', [AwkA, AwkB]).
+expr_to_awk_simple(A - B, AwkExpr) :- !,
+    expr_to_awk_simple(A, AwkA),
+    expr_to_awk_simple(B, AwkB),
+    format(atom(AwkExpr), '(~w - ~w)', [AwkA, AwkB]).
+expr_to_awk_simple(A * B, AwkExpr) :- !,
+    expr_to_awk_simple(A, AwkA),
+    expr_to_awk_simple(B, AwkB),
+    format(atom(AwkExpr), '(~w * ~w)', [AwkA, AwkB]).
+expr_to_awk_simple(A / B, AwkExpr) :- !,
+    expr_to_awk_simple(A, AwkA),
+    expr_to_awk_simple(B, AwkB),
+    format(atom(AwkExpr), '(~w / ~w)', [AwkA, AwkB]).
 
 %% ============================================
 %% HEADER GENERATION
