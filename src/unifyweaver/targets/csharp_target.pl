@@ -1666,14 +1666,15 @@ compile_joins([], Builtins, Head, FirstGoal, Config, Code) :-
 
 compile_joins([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Code) :-
     % Handle join with one or more additional goals
-    compile_nway_join([Goal|RestGoals], Builtins, Head, FirstGoal, Config, 2, Code).
+    % Start with FirstGoal in accumulator
+    compile_nway_join([Goal|RestGoals], Builtins, Head, [FirstGoal-"fact.Args"], Config, 2, Code).
 
-%% compile_nway_join(+Goals, +Builtins, +Head, +FirstGoal, +Config, +Index, -Code)
-%  Recursively build N-way joins
-compile_nway_join([], Builtins, Head, FirstGoal, Config, _, Code) :-
-    % Base case: no more goals to join, just emit the output
+%% compile_nway_join(+Goals, +Builtins, +Head, +AccumPairs, +Config, +Index, -Code)
+%  Recursively build N-way joins, threading Goal-Access pairs through
+compile_nway_join([], Builtins, Head, AccumPairs, Config, _, Code) :-
+    % Base case: no more goals to join, use ALL accumulated pairs for VarMap
     Head =.. [HeadPred|HeadArgs],
-    build_variable_map([FirstGoal-"fact.Args"], VarMap),
+    build_variable_map(AccumPairs, VarMap),
     translate_builtins(Builtins, VarMap, Config, ConstraintChecks),
     
     % Build output
@@ -1696,25 +1697,25 @@ compile_nway_join([], Builtins, Head, FirstGoal, Config, _, Code) :-
                 }", [ConstraintChecks, HeadPred, OutputStr])
     ).
 
-compile_nway_join([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Index, Code) :-
-    % Recursive case: join with current goal, then recurse
+compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, Code) :-
+    % Recursive case: join with current goal, then recurse with extended accumulator
     Goal =.. [Pred|Args],
-    FirstGoal =.. [_|Args1],
     
-    % Build VarMap for all goals so far
+    % Build access for this join variable
     format(atom(VarName), 'join~w', [Index]),
     format(string(VarAccess), '~w.Args', [VarName]),
     
-    % Collect all previous goals for VarMap
-    collect_previous_goals(FirstGoal, Index, PrevGoalPairs),
-    append(PrevGoalPairs, [Goal-VarAccess], AllGoalPairs),
-    build_variable_map(AllGoalPairs, VarMap),
+    % Extend accumulator with current goal
+    append(AccumPairs, [Goal-VarAccess], NewAccumPairs),
     
-    % Find join condition
-    findall(Var-PrevIdx-CurrIdx,
+    % Build VarMap from all goals so far
+    build_variable_map(NewAccumPairs, VarMap),
+    
+    % Find join conditions by checking current goal args against all previous goals
+    findall(Var-PrevAccess-PrevIdx-CurrIdx,
         (   nth0(CurrIdx, Args, Var),
             var(Var),
-            member(PrevGoal-_, PrevGoalPairs),
+            member(PrevGoal-PrevAccess, AccumPairs),
             PrevGoal =.. [_|PrevArgs],
             nth0(PrevIdx, PrevArgs, PrevVar),
             Var == PrevVar
@@ -1725,8 +1726,7 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Index, Co
     (   JoinVars = []
     ->  JoinCond = "true"
     ;   findall(Cond,
-            (   member(_-PrevIdx-CurrIdx, JoinVars),
-                get_source_for_index(PrevIdx, PrevGoalPairs, SrcAccess),
+            (   member(_-SrcAccess-PrevIdx-CurrIdx, JoinVars),
                 format(string(Cond), '~w[\"arg~w\"].Equals(~w[\"arg~w\"])', 
                        [VarName, CurrIdx, SrcAccess, PrevIdx])
             ),
@@ -1737,9 +1737,9 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Index, Co
     % Relation check
     format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
     
-    % Recurse for remaining goals
+    % Recurse for remaining goals with extended accumulator
     NextIndex is Index + 1,
-    compile_nway_join(RestGoals, Builtins, Head, FirstGoal, Config, NextIndex, InnerCode),
+    compile_nway_join(RestGoals, Builtins, Head, NewAccumPairs, Config, NextIndex, InnerCode),
     
     % Generate nested foreach
     format(string(Code),
@@ -1750,31 +1750,6 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Index, Co
 ~w
                     }
                 }', [VarName, RelCheck, JoinCond, InnerCode]).
-
-%% collect_previous_goals(+FirstGoal, +CurrentIndex, -GoalPairs)
-%  Build list of Goal-Access pairs for all previous goals
-collect_previous_goals(FirstGoal, CurrentIndex, Pairs) :-
-    findall(Goal-Access,
-        (   between(1, CurrentIndex, I),
-            I < CurrentIndex,
-            (   I =:= 1
-            ->  Goal = FirstGoal, Access = "fact.Args"
-            ;   PrevI is I - 1,
-                format(atom(JoinVar), 'join~w', [PrevI]),
-                format(string(Access), '~w.Args', [JoinVar]),
-                Goal = FirstGoal  % Placeholder - should track actual goals
-            )
-        ),
-        Pairs).
-
-%% get_source_for_index(+ArgIndex, +GoalPairs, -SourceAccess)
-%  Find which source contains the argument at ArgIndex
-get_source_for_index(_, [Goal-Access|_], Access) :-
-    Goal =.. [_|Args],
-    length(Args, Len),
-    Len > 0.
-get_source_for_index(Idx, [_|Rest], Access) :-
-    get_source_for_index(Idx, Rest, Access).
 
 translate_builtins([], _, _, "true").
 translate_builtins(Builtins, VarMap, Config, Code) :-

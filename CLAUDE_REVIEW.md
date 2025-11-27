@@ -150,6 +150,37 @@ The branch introduces a unified generator helper (`common_generator`) and folds 
 ## Assessment
 The shared generator core is the right direction, but generator-mode correctness and test harness breakage are blocking. Apply the fixes above before merging. Afterward, rerun C# query+generator tests and the integration script.
 
+# Claude Review #2: Follow-up on antigravity changes (feature/generator-mode-unified-api)
+
+**Date**: 2025-02-05  
+**Reviewer**: Claude (AI Assistant)  
+**Status**: ⚠️ Changes still needed before merge
+
+## Summary
+Antigravity addressed some prior items (accessor format, shim module, negation handler, added execution test scaffold). Generator-mode correctness for multi-join bodies is still broken, the new test file doesn’t load, and the harness still points at removed test modules.
+
+## Findings (blocking)
+- `src/unifyweaver/targets/csharp_target.pl:1637-1645` – Base-case VarMap only includes `FirstGoal-"fact.Args"`. For any rule with >1 relation, builtins/outputs referencing later goals resolve to `null`/missing. VarMap must include all joined goals/sources.
+- `src/unifyweaver/targets/csharp_target.pl:1715-1765` – N-way join scaffolding is incomplete. `collect_previous_goals/3` always returns `Goal = FirstGoal` (placeholder comment remains), so join conditions/VarMap reuse the first goal for all sources. `get_source_for_index/3` then always picks the first pair. Multi-way joins emit incorrect lookups/constraints.
+- `tests/core/test_csharp_target.pl:1148-1167` – Generator execution test is syntactically broken: after `dotnet new` it drops raw C# lines (`.ToArray(); … Console.WriteLine(...)`) outside any quoted string/Prolog term. The file won’t load. Rewrite the test to build the C# harness string, write files, `dotnet build/run`, and assert output.
+- `run_all_tests.pl:8-21` – Still imports `test_csharp_query_target`, which no longer exists (renamed). Suite load will fail. Either add a shim test file or switch to `test_csharp_target` (or preferred name).
+- Negation for later joins is effectively blocked by the VarMap issue above (VarMap missing later goals).
+
+## Findings (follow-up)
+- `tests/core/test_common_generator.pl` still isn’t wired into the suite; shared helper coverage is offline.
+- Docs/scripts still reference `test_csharp_query_target.pl` and the old module name (e.g., `tests/README_CSHARP_TESTING.md`, testing guides); instructions are stale.
+
+## Suggested fixes
+1) Thread full goal/source pairs through generator joins: carry an accumulator like `PairsSoFar` into `compile_nway_join`, append `Goal-VarAccess` each step, and use that for `build_variable_map/2` and join-condition construction. Base case should build VarMap from all pairs, not just the first goal.
+2) Replace `collect_previous_goals/3` with a real accumulator; remove the placeholder. `get_source_for_index/3` can then locate the correct source from the actual goal list.
+3) Fix `verify_generator_execution/2`: create project, write generated C# + harness string, `dotnet build/run`, assert expected facts (including negation if possible). Remove stray raw C# lines.
+4) Harness compatibility: update `run_all_tests.pl` (and any automation) to load the new test module, or add a shim `tests/core/test_csharp_query_target.pl` that re-exports from `test_csharp_target`.
+5) Wire `tests/core/test_common_generator.pl` into the runner.
+6) Refresh docs/scripts referencing `csharp_query_target`/old test paths; keep the name “C# query target” in docs for clarity but note the module rename/shim.
+
+## Note on naming/back-compat docs
+It’s fine to keep the term “C# query target” in docs (it describes the feature), but explicitly note the module rename and the compatibility shim. Update code snippets/imports to `csharp_target` (or the shim) so users don’t hit missing-module errors.
+
 Added to `csharp_codegen_playbook.md`:
 - **Platform-Specific Notes** section
 - **Improvements Over Original** section
