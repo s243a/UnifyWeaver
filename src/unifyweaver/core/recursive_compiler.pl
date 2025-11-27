@@ -15,6 +15,7 @@
 :- use_module('advanced/advanced_recursive_compiler').
 :- use_module('advanced/call_graph').
 :- use_module(stream_compiler).
+:- use_module('../targets/awk_target').
 :- use_module('../targets/csharp_query_target').
 :- use_module('../targets/csharp_stream_target').
 :- use_module(template_system).
@@ -97,6 +98,8 @@ compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
 
 compile_non_recursive(bash, Pred/Arity, FinalOptions, GeneratedCode) :-
     stream_compiler:compile_predicate(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(awk, Pred/Arity, FinalOptions, GeneratedCode) :-
+    awk_target:compile_predicate_to_awk(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(csharp, Pred/Arity, FinalOptions, GeneratedCode) :-
     csharp_stream_target:compile_predicate_to_csharp(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(Target, Pred/Arity, _Options, _GeneratedCode) :-
