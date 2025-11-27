@@ -835,6 +835,15 @@ constraint_to_awk(is(A, B), VarMap, AwkCode) :-
     term_to_awk_expr(A, VarMap, AwkA),
     term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '((~w = ~w), 1)', [AwkA, AwkB]).
+constraint_to_awk(match(Var, Pattern, Type), VarMap, AwkCode) :-
+    % Validate regex type for AWK target
+    validate_regex_type_for_awk(Type),
+    % Convert variable to AWK expression
+    term_to_awk_expr(Var, VarMap, AwkVar),
+    % Escape pattern for AWK
+    escape_awk_pattern(Pattern, EscapedPattern),
+    % Generate AWK match expression (use ~~ to escape the ~ in format string)
+    format(atom(AwkCode), '(~w ~~ /~w/)', [AwkVar, EscapedPattern]).
 
 %% term_to_awk_expr(+Term, +VarMap, -AwkExpr)
 %  Convert a Prolog term to an AWK expression using variable mapping
@@ -1074,6 +1083,10 @@ extract_predicates(_ =< _, []) :- !.
 extract_predicates(_ =:= _, []) :- !.
 extract_predicates(_ =\= _, []) :- !.
 extract_predicates(is(_, _), []) :- !.
+% Skip match predicates (they're constraints)
+extract_predicates(match(_, _), []) :- !.
+extract_predicates(match(_, _, _), []) :- !.
+extract_predicates(match(_, _, _, _), []) :- !.
 % Skip negation wrapper
 extract_predicates(\+ A, Predicates) :- !,
     extract_predicates(A, Predicates).
@@ -1103,11 +1116,61 @@ extract_constraints(A =< B, [lte(A, B)]) :- !.
 extract_constraints(A =:= B, [eq(A, B)]) :- !.
 extract_constraints(A =\= B, [neq(A, B)]) :- !.
 extract_constraints(is(A, B), [is(A, B)]) :- !.
+% Capture match predicates (regex pattern matching)
+extract_constraints(match(Var, Pattern), [match(Var, Pattern, auto)]) :- !.
+extract_constraints(match(Var, Pattern, Type), [match(Var, Pattern, Type)]) :- !.
+extract_constraints(match(Var, Pattern, Type, _Groups), [match(Var, Pattern, Type)]) :- !.
 % Skip predicates
 extract_constraints(Goal, []) :-
     functor(Goal, Pred, _),
     Pred \= ',',
     Pred \= true.
+
+%% ============================================
+%% REGEX SUPPORT
+%% ============================================
+
+%% validate_regex_type_for_awk(+Type)
+%  Validate that AWK supports the given regex type
+%
+validate_regex_type_for_awk(auto) :- !.
+validate_regex_type_for_awk(ere) :- !.
+validate_regex_type_for_awk(bre) :- !.
+validate_regex_type_for_awk(awk) :- !.
+validate_regex_type_for_awk(Type) :-
+    format('ERROR: AWK target does not support regex type ~q~n', [Type]),
+    format('  Supported types: auto, ere, bre, awk~n', []),
+    format('  Note: PCRE, Python, and .NET regex are not supported by AWK~n', []),
+    fail.
+
+%% escape_awk_pattern(+Pattern, -EscapedPattern)
+%  Escape special characters in regex pattern for AWK
+%  AWK regex uses / as delimiter, so we need to escape it
+%
+escape_awk_pattern(Pattern, EscapedPattern) :-
+    atom(Pattern), !,
+    atom_codes(Pattern, Codes),
+    escape_pattern_codes(Codes, EscapedCodes),
+    atom_codes(EscapedPattern, EscapedCodes).
+escape_awk_pattern(Pattern, EscapedPattern) :-
+    string(Pattern), !,
+    string_codes(Pattern, Codes),
+    escape_pattern_codes(Codes, EscapedCodes),
+    string_codes(EscapedPattern, EscapedCodes).
+escape_awk_pattern(Pattern, Pattern).
+
+%% escape_pattern_codes(+Codes, -EscapedCodes)
+%  Escape forward slashes in pattern
+%
+escape_pattern_codes([], []).
+escape_pattern_codes([47|Rest], [92, 47|EscapedRest]) :- !,  % 47 = '/', 92 = '\'
+    escape_pattern_codes(Rest, EscapedRest).
+escape_pattern_codes([C|Rest], [C|EscapedRest]) :-
+    escape_pattern_codes(Rest, EscapedRest).
+
+%% ============================================
+%% OPTIONS
+%% ============================================
 
 %% option(+Option, +Options, +Default)
 %  Get option value with default fallback
