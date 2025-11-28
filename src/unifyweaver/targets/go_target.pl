@@ -109,17 +109,24 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
     ;   NeedsRegexp = false
     ),
 
-    % Determine if we need strings import (only for multi-field records that are not match-only)
-    % For rules, check if any clause has arity > 1 AND has predicates (not match-only)
+    % Determine if we need strings import
+    % Need strings if:
+    % 1. Multi-field records with predicates (not match-only), OR
+    % 2. Multiple rules (we use strings.Split to try each pattern)
     (   NeedsStdin,
-        member(Head-Body, Clauses),
-        \+ is_fact_clause(Head-Body),
-        Head =.. [_|Args],
-        length(Args, ArgCount),
-        ArgCount > 1,
-        % Check if it has predicates (not just match constraints)
-        extract_predicates(Body, Preds),
-        Preds \= []
+        (   % Multiple rules case
+            length(Clauses, NumClauses),
+            NumClauses > 1,
+            \+ maplist(is_fact_clause, Clauses)
+        ;   % Multi-field with predicates case
+            member(Head-Body, Clauses),
+            \+ is_fact_clause(Head-Body),
+            Head =.. [_|Args],
+            length(Args, ArgCount),
+            ArgCount > 1,
+            extract_predicates(Body, Preds),
+            Preds \= []
+        )
     ->  NeedsStrings = true
     ;   NeedsStrings = false
     ),
@@ -976,8 +983,9 @@ compile_multiple_rules_to_go(Pred, Arity, Clauses, _RecordDelim, FieldDelim, Uni
         ;   % No match constraints - just multiple rules with same body
             GoCode = '\t// TODO: Multiple rules without match constraints not yet implemented\n'
         )
-    ;   % Rules not compatible for simple merging
-        GoCode = '\t// TODO: Multiple rules with different body predicates not yet implemented\n'
+    ;   % Rules not compatible for simple merging - different body predicates
+        format('  Rules have different body predicates - compiling separately~n'),
+        compile_different_body_rules_to_go(PredStr, Clauses, FieldDelim, Unique, GoCode)
     ).
 
 %% all_rules_compatible(+Clauses, -BodyPredFunctor, -BodyArity)
@@ -992,6 +1000,133 @@ all_rules_compatible(Clauses, BodyPredFunctor, BodyArity) :-
 get_body_predicate_info(_Head-Body, BodyPredFunctor/BodyArity) :-
     extract_predicates(Body, [BodyPred|_]),
     functor(BodyPred, BodyPredFunctor, BodyArity).
+
+%% compile_different_body_rules_to_go(+PredStr, +Clauses, +FieldDelim, +Unique, -GoCode)
+%  Compile multiple rules with different body predicates
+%  Generates code that tries each rule pattern sequentially
+compile_different_body_rules_to_go(PredStr, Clauses, FieldDelim, Unique, GoCode) :-
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % For each clause, generate the code to try that rule
+    findall(RuleCode,
+        (   member(Head-Body, Clauses),
+            compile_single_rule_attempt(Head, Body, DelimChar, RuleCode)
+        ),
+        RuleCodes),
+
+    % Combine all rule attempts
+    atomic_list_concat(RuleCodes, '\n', AllRuleAttempts),
+
+    % Build the complete Go code
+    (   Unique = true ->
+        SeenDecl = '\tseen := make(map[string]bool)\n',
+        UniqueCheck = '\t\t\tif !seen[result] {\n\t\t\t\tseen[result] = true\n\t\t\t\tfmt.Println(result)\n\t\t\t}\n'
+    ;   SeenDecl = '',
+        UniqueCheck = '\t\t\tfmt.Println(result)\n'
+    ),
+
+    format(string(GoCode), '
+\t// Read from stdin and try each rule pattern
+\tscanner := bufio.NewScanner(os.Stdin)
+~w\t
+\tfor scanner.Scan() {
+\t\tline := scanner.Text()
+\t\tparts := strings.Split(line, "~s")
+\t\t
+~s\t}
+', [SeenDecl, DelimChar, AllRuleAttempts]).
+
+%% compile_single_rule_attempt(+Head, +Body, +DelimChar, -RuleCode)
+%  Generate Go code to try matching and transforming a single rule
+compile_single_rule_attempt(Head, Body, DelimChar, RuleCode) :-
+    % Extract head arguments
+    Head =.. [_|HeadArgs],
+
+    % Extract body predicate and constraints
+    extract_predicates(Body, Predicates),
+    extract_match_constraints(Body, MatchConstraints),
+    extract_constraints(Body, Constraints),
+
+    % Get body predicate info
+    (   Predicates = [BodyPred] ->
+        BodyPred =.. [BodyPredName|BodyArgs],
+        length(BodyArgs, NumFields),
+        atom_string(BodyPredName, BodyPredStr),
+
+        % Build variable map
+        build_var_map(HeadArgs, VarMap),
+
+        % Build capture mapping
+        findall((HeadPos, CapIdx),
+            (   nth1(HeadPos, HeadArgs, HeadArg),
+                var(HeadArg),
+                member(match(_, _, _, Groups), MatchConstraints),
+                Groups \= [],
+                nth1(CapIdx, Groups, GroupVar),
+                HeadArg == GroupVar
+            ),
+            CaptureMapping),
+
+        % Build output expression
+        findall(OutputPart,
+            (   nth1(HeadPos, HeadArgs, HeadArg),
+                (   var(HeadArg) ->
+                    (   nth1(BodyPos, BodyArgs, BodyArg),
+                        HeadArg == BodyArg
+                    ->  format(atom(OutputPart), 'field~w', [BodyPos])
+                    ;   member((HeadPos, CapIdx), CaptureMapping)
+                    ->  format(atom(OutputPart), 'cap~w', [CapIdx])
+                    ;   fail
+                    )
+                ;   atom_string(HeadArg, HeadArgStr),
+                    format(atom(OutputPart), '"~s"', [HeadArgStr])
+                )
+            ),
+            OutputParts),
+        build_go_concat_expr(OutputParts, DelimChar, OutputExpr),
+
+        % Determine which fields are actually used
+        findall(UsedFieldNum,
+            (   member(OutputPart, OutputParts),
+                atom(OutputPart),
+                atom_concat('field', NumAtom, OutputPart),
+                atom_number(NumAtom, UsedFieldNum)
+            ),
+            UsedFields),
+
+        % Generate field assignments only for used fields
+        findall(Assignment,
+            (   nth1(N, BodyArgs, _),
+                member(N, UsedFields),
+                I is N - 1,
+                format(atom(Assignment), 'field~w := parts[~w]', [N, I])
+            ),
+            Assignments),
+        atomic_list_concat(Assignments, '\n\t\t\t', FieldAssignments),
+
+        % Generate match and constraint checks
+        generate_go_match_code(MatchConstraints, HeadArgs, BodyArgs, MatchRegexDecls, MatchChecks, MatchCaptureCode),
+        generate_go_constraint_code(Constraints, VarMap, ConstraintChecks),
+
+        % Combine checks
+        findall(CheckPart,
+            (   MatchChecks \= '', member(CheckPart, [MatchChecks])
+            ;   MatchCaptureCode \= '', member(CheckPart, [MatchCaptureCode])
+            ;   ConstraintChecks \= '', member(CheckPart, [ConstraintChecks])
+            ),
+            CheckParts),
+        atomic_list_concat(CheckParts, '\n', AllChecks),
+
+        % Generate the rule attempt code
+        (   AllChecks = '' ->
+            format(string(RuleCode), '\t\t// Try rule: ~s/~w~n\t\tif len(parts) == ~w {~n\t\t\t~s~n\t\t\tresult := ~s~n\t\t\tif !seen[result] {~n\t\t\t\tseen[result] = true~n\t\t\t\tfmt.Println(result)~n\t\t\t}~n\t\t\tcontinue~n\t\t}~n',
+                   [BodyPredStr, NumFields, NumFields, FieldAssignments, OutputExpr])
+        ;   format(string(RuleCode), '\t\t// Try rule: ~s/~w~n\t\tif len(parts) == ~w {~n\t\t\t~s~n~s~n\t\t\tresult := ~s~n\t\t\tif !seen[result] {~n\t\t\t\tseen[result] = true~n\t\t\t\tfmt.Println(result)~n\t\t\t}~n\t\t\tcontinue~n\t\t}~n',
+                   [BodyPredStr, NumFields, NumFields, FieldAssignments, AllChecks, OutputExpr])
+        )
+    ;   % No body predicate or multiple body predicates - skip
+        RuleCode = '\t\t// Skipping rule without single body predicate\n'
+    ).
 
 %% ============================================
 %% TAIL RECURSION COMPILATION
