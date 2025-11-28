@@ -67,6 +67,65 @@ Bob:30
 - Auto-generated default names (Field1, Field2, ...)
 - Reads any delimiter format (colon, tab, comma, etc.)
 
+### ✅ Phase 3: Nested Field Access (NEW!)
+
+Access nested JSON structures with path-based extraction.
+
+**Prolog Syntax:**
+```prolog
+% Simple nested (2 levels)
+city(City) :- json_get([user, city], City).
+
+% Deep nested (3+ levels)
+location(City) :- json_get([user, address, city], City).
+
+% Multiple nested fields
+user_info(Name, City) :-
+    json_get([user, name], Name),
+    json_get([user, address, city], City).
+
+% Mixed flat and nested
+data(Id, City) :-
+    json_record([id-Id]),
+    json_get([location, city], City).
+```
+
+**Input:**
+```json
+{"user": {"address": {"city": "NYC", "zip": "10001"}}}
+```
+
+**Output:**
+```
+NYC
+```
+
+**Key Features:**
+- Path-based access with `json_get([path, to, field], Var)`
+- Supports arbitrary nesting depth (2, 3, 4+ levels)
+- Mix flat (`json_record`) and nested (`json_get`) in same predicate
+- Automatic helper function generation
+- Type-safe traversal with existence checking
+
+**Generated Helper:**
+```go
+func getNestedField(data map[string]interface{}, path []string) (interface{}, bool) {
+    current := interface{}(data)
+    for _, key := range path {
+        currentMap, ok := current.(map[string]interface{})
+        if !ok {
+            return nil, false
+        }
+        value, exists := currentMap[key]
+        if !exists {
+            return nil, false
+        }
+        current = value
+    }
+    return current, true
+}
+```
+
 ## Usage Examples
 
 ### Example 1: JSON Transformation Pipeline
@@ -195,13 +254,7 @@ jsonBytes, _ := json.Marshal(record)
 fmt.Println(string(jsonBytes))
 ```
 
-## Future Enhancements (Phase 3+)
-
-### Nested Field Access (Planned)
-
-```prolog
-city(City) :- json_get([user, address, city], City).
-```
+## Future Enhancements (Phase 4+)
 
 ### Array Support (Planned)
 
