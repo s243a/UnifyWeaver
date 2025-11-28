@@ -489,6 +489,17 @@ translate_goal(>(Var, Value), Code) :-
     var_to_python(Value, PyValue),
     format(string(Code), "    if not (~w > ~w): return\n", [PyVar, PyValue]).
 
+% Match predicate support for procedural mode
+translate_goal(match(Var, Pattern), Code) :-
+    !,
+    translate_match_goal(Var, Pattern, auto, [], Code).
+translate_goal(match(Var, Pattern, Type), Code) :-
+    !,
+    translate_match_goal(Var, Pattern, Type, [], Code).
+translate_goal(match(Var, Pattern, Type, Groups), Code) :-
+    !,
+    translate_match_goal(Var, Pattern, Type, Groups, Code).
+
 translate_goal(true, Code) :-
     !,
     Code = "    pass\n".
@@ -496,6 +507,47 @@ translate_goal(true, Code) :-
 translate_goal(Goal, "") :-
     format(string(Msg), "Warning: Unsupported goal ~w", [Goal]),
     print_message(warning, Msg).
+
+%% translate_match_goal(+Var, +Pattern, +Type, +Groups, -Code)
+%  Translate match predicate to Python code for procedural mode
+translate_match_goal(Var, Pattern, Type, Groups, Code) :-
+    % Validate regex type
+    validate_regex_type_for_python(Type),
+    % Convert variable to Python
+    var_to_python(Var, PyVar),
+    % Escape pattern
+    (   atom(Pattern)
+    ->  atom_string(Pattern, PatternStr)
+    ;   PatternStr = Pattern
+    ),
+    escape_python_string(PatternStr, EscapedPattern),
+    % Check if we have capture groups
+    (   Groups = [], !
+    ->  % No capture groups - simple boolean match
+        format(string(Code), "    if not re.search(r'~w', str(~w)): return\n", [EscapedPattern, PyVar])
+    ;   % Has capture groups - extract them
+        length(Groups, NumGroups),
+        % Generate Python code to capture and store groups
+        generate_python_capture_code(PyVar, EscapedPattern, Groups, NumGroups, Code)
+    ).
+
+%% generate_python_capture_code(+PyVar, +Pattern, +Groups, +NumGroups, -Code)
+%  Generate Python code to perform match with capture group extraction
+generate_python_capture_code(PyVar, Pattern, Groups, NumGroups, Code) :-
+    % Generate match object assignment
+    format(string(MatchLine), "    __match__ = re.search(r'~w', str(~w))\n", [Pattern, PyVar]),
+    % Generate check for match success
+    CheckLine = "    if not __match__: return\n",
+    % Generate capture variable assignments
+    findall(CaptureLine,
+        (   between(1, NumGroups, N),
+            nth1(N, Groups, GroupVar),
+            var_to_python(GroupVar, PyGroupVar),
+            format(string(CaptureLine), "    ~w = __match__.group(~w)\n", [PyGroupVar, N])
+        ),
+        CaptureLines),
+    % Combine all lines
+    atomic_list_concat([MatchLine, CheckLine | CaptureLines], '', Code).
 
 pair_to_python(Key-Value, Str) :-
     var_to_python(Value, PyValue),
@@ -785,9 +837,9 @@ generate_recursive_wrapper(Name, Arity, WrapperCode) :-
     ;   WrapperCode = "# ERROR: Unsupported arity for recursion wrapper"
     ).
 
-header("import sys\nimport json\nfrom typing import Iterator, Dict, Any\n\n").
+header("import sys\nimport json\nimport re\nfrom typing import Iterator, Dict, Any\n\n").
 
-header_with_functools("import sys\nimport json\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
+header_with_functools("import sys\nimport json\nimport re\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
 
 helpers("
 def read_jsonl(stream) -> Iterator[Dict[str, Any]]:
@@ -869,6 +921,7 @@ if __name__ == '__main__':
 generator_header(Header) :-
     Header = "import sys
 import json
+import re
 from typing import Iterator, Dict, Any, Set
 from dataclasses import dataclass
 
@@ -1243,7 +1296,7 @@ build_constant_output(HeadArgs, OutputStr) :-
 %  Check if goal is a built-in (is, >, <, etc.)
 is_builtin_goal(Goal) :-
     Goal =.. [Pred | _],
-    member(Pred, [is, >, <, >=, =<, =:=, =\=, \+, not]).
+    member(Pred, [is, >, <, >=, =<, =:=, =\=, \+, not, match]).
 
 %% translate_fact_rule(+Name, +RuleNum, +Head, -RuleFunc)
 %  Translate a fact (constant) into a rule that emits it once
@@ -1374,7 +1427,19 @@ translate_builtin(\+ Goal, VarMap, PythonExpr) :-
 translate_builtin(not(Goal), VarMap, PythonExpr) :-
     !,
     translate_negation(Goal, VarMap, PythonExpr).
-translate_builtin(_, _, "True").
+% Match predicate support (regex pattern matching)
+translate_builtin(match(Var, Pattern), VarMap, PythonExpr) :-
+    !,
+    translate_match(Var, Pattern, auto, [], VarMap, PythonExpr).
+translate_builtin(match(Var, Pattern, Type), VarMap, PythonExpr) :-
+    !,
+    translate_match(Var, Pattern, Type, [], VarMap, PythonExpr).
+translate_builtin(match(Var, Pattern, Type, _Groups), VarMap, PythonExpr) :-
+    !,
+    % For now, capture groups are handled similarly to boolean match
+    % TODO: Extract and use captured values
+    translate_match(Var, Pattern, Type, [], VarMap, PythonExpr).
+translate_builtin(_, _VarMap, "True").  % Fallback
 
 translate_negation(Goal, VarMap, PythonExpr) :-
     python_config(Config),
@@ -1387,6 +1452,94 @@ translate_negation(Goal, VarMap, PythonExpr) :-
     atomic_list_concat(PairStrings, ", ", DictContent),
     format(string(PythonExpr), "FrozenDict.from_dict({~w}) not in total", [DictContent]).
 
+%% translate_match(+Var, +Pattern, +Type, +Groups, +VarMap, -PythonExpr)
+%  Translate match predicate to Python re module call
+translate_match(Var, Pattern, Type, _Groups, VarMap, PythonExpr) :-
+    % Validate regex type for Python target
+    validate_regex_type_for_python(Type),
+    % Convert variable to Python expression
+    translate_expr(Var, VarMap, PyVar),
+    % Convert pattern to Python string
+    (   atom(Pattern)
+    ->  atom_string(Pattern, PatternStr)
+    ;   PatternStr = Pattern
+    ),
+    % Escape pattern for Python (escape backslashes and quotes)
+    escape_python_string(PatternStr, EscapedPattern),
+    % Generate Python regex match expression
+    % For now, use re.search for boolean match
+    % TODO: Handle capture groups with re.search().groups()
+    format(string(PythonExpr), "re.search(r'~w', str(~w))", [EscapedPattern, PyVar]).
+
+%% validate_regex_type_for_python(+Type)
+%  Validate that the regex type is supported by Python
+validate_regex_type_for_python(auto) :- !.
+validate_regex_type_for_python(python) :- !.
+validate_regex_type_for_python(pcre) :- !.  % Python re is PCRE-like
+validate_regex_type_for_python(ere) :- !.   % Can be supported with minor translation
+validate_regex_type_for_python(Type) :-
+    format('ERROR: Python target does not support regex type ~q~n', [Type]),
+    format('  Supported types: auto, python, pcre, ere~n', []),
+    format('  Note: BRE, AWK-specific, and .NET regex are not supported by Python~n', []),
+    fail.
+
+%% escape_python_string(+Str, -EscapedStr)
+%  Escape special characters for Python string literals
+escape_python_string(Str, EscapedStr) :-
+    atom_string(Str, String),
+    % For raw strings (r'...'), we mainly need to escape quotes
+    % Backslashes are literal in raw strings
+    re_replace("'"/g, "\\\\'", String, EscapedStr).
+
+%% build_variable_map(+GoalSourcePairs, -VarMap)
+%  Build map from variables to Python access strings
+build_variable_map(GoalSourcePairs, VarMap) :-
+    findall(Var-Access,
+        (   member(Goal-Source, GoalSourcePairs),
+            Goal =.. [_ | Args],
+            nth0(Idx, Args, Var),
+            var(Var),
+            format(string(Access), "~w.get('arg~w')", [Source, Idx])
+        ),
+        VarMap).
+
+%% translate_expr(+PrologExpr, +VarMap, -PythonExpr)
+%  Translate Prolog expression to Python, mapping variables
+translate_expr(Var, VarMap, PythonExpr) :-
+    var(Var),
+    !,
+    (   memberchk(Var-Access, VarMap)
+    ->  PythonExpr = Access
+    ;   % Variable not found - assume it's a singleton or error
+        % For now return None, but this indicates unsafe usage
+        % For now return None, but this indicates unsafe usage
+        PythonExpr = "None"
+    ).
+translate_expr(Num, _VarMap, PythonExpr) :-
+    number(Num),
+    !,
+    format(string(PythonExpr), "~w", [Num]).
+translate_expr(Expr, VarMap, PythonExpr) :-
+    compound(Expr),
+    Expr =.. [Op, Left, Right],
+    member(Op, [+, -, *, /, mod]), % Ensure this is handled
+    !,
+    translate_expr(Left, VarMap, LeftPy),
+    translate_expr(Right, VarMap, RightPy),
+    python_operator(Op, PyOp),
+    format(string(PythonExpr), "(~w ~w ~w)", [LeftPy, PyOp, RightPy]).
+translate_expr(Atom, _VarMap, PythonExpr) :-
+    atom(Atom),
+    !,
+    format(string(PythonExpr), "'~w'", [Atom]).
+translate_expr(_, _VarMap, "None").  % Fallback
+
+%% python_operator(+PrologOp, -PythonOp)
+python_operator(+, '+').
+python_operator(-, '-').
+python_operator(*, '*').
+python_operator(/, '/').
+python_operator(mod, '%').
 
 %% translate_join_rule(+Name, +RuleNum, +Head, +Goals, -RuleFunc)
 %  Translate a join rule (multiple goals in body)

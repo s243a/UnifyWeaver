@@ -233,6 +233,24 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
     normalize_treat_array(RecordFormat, TreatArrayRaw, TreatArray),
     option(null_policy(NullPolicyRaw), Options, allow),
     normalize_null_policy(NullPolicyRaw, NullPolicy, NullDefault),
+    (   option(pearltrees(true), Options)
+    ->  NamespaceMap = [
+            'http://www.pearltrees.com/rdf/0.1/#'-'pt',
+            'http://purl.org/dc/elements/1.1/'-'dcterms'
+        ],
+        option(treat_cdata(TreatCdata0), Options, true),
+        normalize_boolean(TreatCdata0, TreatCdata),
+        Pearltrees = true
+    ;   option(namespace_prefixes(NamespaceRaw), Options)
+    ->  normalize_namespace_map(NamespaceRaw, NamespaceMap),
+        option(treat_cdata(TreatCdata0), Options, false),
+        normalize_boolean(TreatCdata0, TreatCdata),
+        Pearltrees = false
+    ;   NamespaceMap = [],
+        option(treat_cdata(TreatCdata0), Options, false),
+        normalize_boolean(TreatCdata0, TreatCdata),
+        Pearltrees = false
+    ),
     (   option(schema(SchemaRaw), Options)
     ->  schema_record_name(Pred/Arity, Options, RecordType),
         normalize_schema_structure(SchemaRaw, RecordType, SchemaFields, SchemaRecords),
@@ -263,7 +281,10 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
         return_object:ReturnObject,
         schema_fields:SchemaFields,
         schema_records:SchemaRecords,
-        schema_type:RecordType
+        schema_type:RecordType,
+        namespace_prefixes:NamespaceMap,
+        treat_cdata:TreatCdata,
+        pearltrees:Pearltrees
     }.
 
 normalize_record_separator(line_feed, line_feed) :- !.
@@ -339,6 +360,13 @@ normalize_null_policy(default(Value), default, DefaultAtom) :-
     ;   term_to_atom(Value, DefaultAtom)
     ).
 normalize_null_policy(Value, Value, none).
+
+normalize_namespace_map([], []) :- !.
+normalize_namespace_map([Uri-Prefix|Rest], [Uri-Prefix|RestNorm]) :-
+    atom(Uri), atom(Prefix),
+    normalize_namespace_map(Rest, RestNorm).
+normalize_namespace_map(Other, []) :-
+    format('Warning: invalid namespace_prefixes option: ~w~n', [Other]).
 
 normalize_columns([], [], []) :- !.
 normalize_columns(Columns0, Columns, Selectors) :-

@@ -65,9 +65,10 @@ BEGIN {
 
 # Match opening tag
 # Note: This regex handles both self-closing and regular opening tags
-$0 ~ "<" tag {
+# Properly group tag pattern for alternation (e.g., "pt:Tree|pt:RefPearl" -> "<(pt:Tree|pt:RefPearl)")
+$0 ~ "<(" tag ")" {
     # Handle self-closing tags like <pt:Tree ... />
-    if ($0 ~ "<" tag "[^>]*/>") {
+    if ($0 ~ "<(" tag ")[^>]*/>") {
         # Self-closing tag - emit immediately
         if (include_empty || $0 !~ /<[^>]*\/>[ \t]*$/) {
             printf "%s%s", $0 "\n", delimiter
@@ -88,7 +89,7 @@ in_element {
 
     # Match closing tag
     # Extract tag name from opening tag for precise matching
-    if ($0 ~ "</" tag ">") {
+    if ($0 ~ "</(" tag ")>") {
         # Emit complete element
         printf "%s%s", element_content, delimiter
         element_count++

@@ -1,3 +1,10 @@
+:- module(test_common_generator, [
+    test_common_generator/0
+]).
+
+test_common_generator :-
+    run_tests(common_generator).
+
 :- begin_tests(common_generator).
 :- use_module('../../src/unifyweaver/targets/common_generator').
 

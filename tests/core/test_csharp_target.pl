@@ -479,6 +479,7 @@ verify_xml_dynamic_source_plan_ :-
     csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'XmlStreamReader'),
     sub_string(Source, _, _, _, 'test_xml_fragments.txt'),
+    sub_string(Source, _, _, _, 'TreatPearltreesCDataAsText = true'),
     % Validate dictionary projection picks up local + qualified keys
     maybe_run_query_runtime(Plan, [
         "_{id:1, name:Alpha, '@lang':en}",
@@ -499,6 +500,20 @@ verify_xml_nested_projection_plan_ :-
     sub_string(Source, _, _, _, 'XmlStreamReader'),
     sub_string(Source, _, _, _, 'NestedProjection = true'),
     sub_string(Source, _, _, _, 'test_xml_fragments.txt').
+
+verify_xml_pearltrees_preset_plan :-
+    setup_call_cleanup(
+        setup_xml_pearltrees_source,
+        verify_xml_pearltrees_preset_plan_(),
+        cleanup_xml_pearltrees_source
+    ).
+
+verify_xml_pearltrees_preset_plan_ :-
+    csharp_query_target:build_query_plan(test_pt_item/1, [target(csharp_query)], Plan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'XmlStreamReader'),
+    sub_string(Source, _, _, _, 'NamespacePrefixes'),
+    sub_string(Source, _, _, _, 'TreatPearltreesCDataAsText = true').
 
 setup_csv_dynamic_source :-
     source(csv, test_users, [csv_file('test_data/test_users.csv'), has_header(true)]),
@@ -574,6 +589,20 @@ cleanup_xml_dynamic_source_nested :-
     retractall(user:test_xml_item_nested(_)),
     retractall(dynamic_source_compiler:dynamic_source_def(test_xml_items_nested/1, _, _)),
     retractall(dynamic_source_compiler:dynamic_source_metadata(test_xml_items_nested/1, _)).
+
+setup_xml_pearltrees_source :-
+    source(xml, test_pt_items, [
+        file('test_data/test_xml_fragments.txt'),
+        record_format(xml),
+        record_separator(line_feed),
+        pearltrees(true)
+    ]),
+    assertz(user:(test_pt_item(Row) :- test_pt_items(Row))).
+
+cleanup_xml_pearltrees_source :-
+    retractall(user:test_pt_item(_)),
+    retractall(dynamic_source_compiler:dynamic_source_def(test_pt_items/1, _, _)),
+    retractall(dynamic_source_compiler:dynamic_source_metadata(test_pt_items/1, _)).
 
 cleanup_json_schema_source :-
     retractall(user:test_product_record(_)),

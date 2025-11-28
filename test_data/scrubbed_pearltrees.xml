@@ -1,0 +1,20 @@
+<pt:Tree xmlns:pt="http://www.pearltrees.com/rdf/0.1/#" xmlns:dcterms="http://purl.org/dc/elements/1.1/">
+  <pt:treeId>physics-001</pt:treeId>
+  <pt:privacy>0</pt:privacy>
+  <dcterms:title><![CDATA[Physics Topics]]></dcterms:title>
+  <pt:parentTree>root-physics</pt:parentTree>
+</pt:Tree>
+
+<pt:Tree xmlns:pt="http://www.pearltrees.com/rdf/0.1/#" xmlns:dcterms="http://purl.org/dc/elements/1.1/">
+  <pt:treeId>physics-002</pt:treeId>
+  <pt:privacy>0</pt:privacy>
+  <dcterms:title><![CDATA[Quantum Mechanics]]></dcterms:title>
+  <pt:parentTree>physics-001</pt:parentTree>
+</pt:Tree>
+
+<pt:RefPearl xmlns:pt="http://www.pearltrees.com/rdf/0.1/#" xmlns:dcterms="http://purl.org/dc/elements/1.1/">
+  <pt:refId>ref-physics-003</pt:refId>
+  <pt:privacy>0</pt:privacy>
+  <dcterms:title><![CDATA[Particle Physics Basics]]></dcterms:title>
+  <pt:seeAlso>physics-002</pt:seeAlso>
+</pt:RefPearl>
