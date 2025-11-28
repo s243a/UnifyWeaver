@@ -97,6 +97,10 @@ extract_predicates(_ =< _, []) :- !.
 extract_predicates(_ =:= _, []) :- !.
 extract_predicates(_ =\= _, []) :- !.
 extract_predicates(is(_, _), []) :- !.
+% Skip match predicates - they're constraints for regex pattern matching
+extract_predicates(match(_, _), []) :- !.
+extract_predicates(match(_, _, _), []) :- !.
+extract_predicates(match(_, _, _, _), []) :- !.
 % Skip negation wrapper - extract predicates inside
 extract_predicates(\+ A, Predicates) :- !,
     extract_predicates(A, Predicates).
@@ -298,7 +302,10 @@ compile_single_rule(Pred, Arity, Body, Options, BashCode) :-
     % 2. General fallback: arithmetic operations
     ;   has_arithmetic(Body) ->
         compile_with_arithmetic(Pred, Arity, Body, Options, BashCode)
-    % 3. No predicates at all
+    % 3. Match predicate (regex pattern matching)
+    ;   has_match(Body) ->
+        compile_with_match(Pred, Arity, Body, Options, BashCode)
+    % 4. No predicates at all
     ;   Predicates = [] ->
         format(string(BashCode), '#!/bin/bash
 # ~s - no predicates
@@ -308,7 +315,7 @@ compile_single_rule(Pred, Arity, Body, Options, BashCode) :-
 ~s_stream() {
     ~s
 }', [PredStr, PredStr, PredStr, PredStr])
-    % 4. Standard streaming pipeline (existing high-level pattern)
+    % 5. Standard streaming pipeline (existing high-level pattern)
     ;   % Standard streaming pipeline
         generate_pipeline(Predicates, Options, Pipeline),
         % Generate all necessary join functions
@@ -464,6 +471,16 @@ has_inequality(Body) :-
     nonvar(Body), !,
     fail.
 
+%% Check for match constraints (regex pattern matching)
+has_match((A, B)) :- !,
+    (has_match(A) ; has_match(B)).
+has_match(match(_, _)) :- !.
+has_match(match(_, _, _)) :- !.
+has_match(match(_, _, _, _)) :- !.
+has_match(Body) :-
+    nonvar(Body), !,
+    fail.
+
 % Keep helper for compatibility; add cuts to avoid fallback loops
 has_inequality_in_conjunction((A, B)) :- !,
     (has_inequality(A) ; has_inequality(B)).
@@ -587,6 +604,111 @@ compile_with_arithmetic(Pred, Arity, Body, _Options, BashCode) :-
     ~s "$@"
 }', [PredStr, PredStr, ParamDecls, BashBody, PredStr, PredStr]).
 
+%% compile_with_match(+Pred, +Arity, +Body, +Options, -BashCode)
+%  Compile predicates with match constraints (regex filtering)
+%  Handles streaming pipeline with integrated match filters
+compile_with_match(Pred, Arity, Body, Options, BashCode) :-
+    atom_string(Pred, PredStr),
+
+    % Extract predicates and match constraints separately
+    extract_predicates(Body, Predicates),
+    extract_match_constraints(Body, MatchConstraints),
+
+    % Get the actual clause head to determine variables
+    functor(Head, Pred, Arity),
+    clause(Head, Body),
+    Head =.. [_|Args],
+
+    % Build variable mapping
+    build_var_map(Args, 1, VarMap),
+
+    % Generate base pipeline from predicates
+    (   Predicates = [] ->
+        % No predicates, just match constraints - use stdin
+        BasePipeline = "cat"
+    ;   Predicates = [SinglePred] ->
+        % Single predicate source
+        atom_string(SinglePred, SPredStr),
+        format(string(BasePipeline), '~s_stream', [SPredStr])
+    ;   % Multiple predicates - generate join chain
+        generate_pipeline(Predicates, Options, BasePipeline)
+    ),
+
+    % Add match filters to the pipeline
+    generate_match_filters(MatchConstraints, VarMap, Args, MatchFilters),
+
+    % Get deduplication strategy
+    get_dedup_strategy(Options, Strategy),
+
+    % Build final pipeline with filters and deduplication
+    (   MatchFilters = "" ->
+        FinalPipeline = BasePipeline
+    ;   format(string(FinalPipeline), '~s | ~s', [BasePipeline, MatchFilters])
+    ),
+
+    % Add deduplication if needed
+    (   Strategy = sort_u ->
+        format(string(CompletePipeline), '~s | sort -u', [FinalPipeline])
+    ;   Strategy = hash ->
+        format(string(CompletePipeline), '~s | awk \'!seen[$0]++\'', [FinalPipeline])
+    ;   % no_dedup
+        CompletePipeline = FinalPipeline
+    ),
+
+    % Generate complete bash script
+    format(string(BashCode), '#!/bin/bash
+# ~s - streaming pipeline with match filtering
+
+~s() {
+    ~s
+}
+
+# Stream function for use in pipelines
+~s_stream() {
+    ~s
+}', [PredStr, PredStr, CompletePipeline, PredStr, PredStr]).
+
+%% extract_match_constraints(+Body, -Constraints)
+%  Extract all match/2, match/3, match/4 constraints from body
+extract_match_constraints(true, []) :- !.
+extract_match_constraints((A, B), Constraints) :- !,
+    extract_match_constraints(A, C1),
+    extract_match_constraints(B, C2),
+    append(C1, C2, Constraints).
+extract_match_constraints(match(Var, Pattern), [match(Var, Pattern, auto, [])]) :- !.
+extract_match_constraints(match(Var, Pattern, Type), [match(Var, Pattern, Type, [])]) :- !.
+extract_match_constraints(match(Var, Pattern, Type, Groups), [match(Var, Pattern, Type, Groups)]) :- !.
+extract_match_constraints(_, []).
+
+%% generate_match_filters(+Constraints, +VarMap, +Args, -FilterCode)
+%  Generate bash filter code for match constraints
+generate_match_filters([], _, _, "") :- !.
+generate_match_filters([Match|Rest], VarMap, Args, FilterCode) :-
+    Match = match(_Var, Pattern, _Type, Groups),
+
+    % Convert pattern to string
+    (   atom(Pattern) ->
+        atom_string(Pattern, PatternStr)
+    ;   PatternStr = Pattern
+    ),
+
+    % Generate filter code based on whether there are capture groups
+    (   Groups = [] ->
+        % Boolean match - simple grep filter
+        format(string(ThisFilter), 'grep ''~s''', [PatternStr])
+    ;   % With capture groups - use bash while loop with BASH_REMATCH
+        % TODO: implement capture group extraction
+        % For now, just use grep without captures
+        format(string(ThisFilter), 'grep ''~s''', [PatternStr])
+    ),
+
+    % Recursively process remaining constraints
+    (   Rest = [] ->
+        FilterCode = ThisFilter
+    ;   generate_match_filters(Rest, VarMap, Args, RestFilters),
+        format(string(FilterCode), '~s | ~s', [ThisFilter, RestFilters])
+    ).
+
 %% build_var_map(+Args, +Index, -VarMap)
 %  Build mapping from Prolog variables to bash positional parameters
 build_var_map([], _, []).
@@ -637,6 +759,20 @@ translate_body_to_bash(Goal, VarMap, Bash) :-
     translate_expr(A, VarMap, BashA),
     translate_expr(B, VarMap, BashB),
     format(string(Bash), '[[ ~s -~w ~s ]]', [BashA, Op, BashB]).
+% Match predicate (regex pattern matching)
+translate_body_to_bash(match(Var, Pattern), VarMap, Bash) :- !,
+    translate_body_to_bash(match(Var, Pattern, auto, []), VarMap, Bash).
+translate_body_to_bash(match(Var, Pattern, _Type), VarMap, Bash) :- !,
+    translate_body_to_bash(match(Var, Pattern, auto, []), VarMap, Bash).
+translate_body_to_bash(match(Var, Pattern, _Type, _Groups), VarMap, Bash) :- !,
+    % For bash, use =~ operator for regex matching
+    translate_expr(Var, VarMap, BashVar),
+    % Escape pattern if needed (for now, use as-is)
+    (   atom(Pattern)
+    ->  atom_string(Pattern, PatternStr)
+    ;   PatternStr = Pattern
+    ),
+    format(string(Bash), '[[ ~s =~ ~s ]]', [BashVar, PatternStr]).
 translate_body_to_bash(Goal, VarMap, Bash) :-
     % Default: call to another predicate
     functor(Goal, Functor, _),

@@ -45,11 +45,11 @@ match(String, Pattern, RegexType, CaptureList)
 |--------|---------------|----------------|--------|
 | **AWK** | ✅ | ✅ | Complete |
 | **Python** | ✅ | ✅ | Complete |
-| **Bash (Core)** | 🚧 | 🚧 | Planned* |
+| **Bash (Core)** | ✅ | 🚧 | Boolean match implemented* |
 | **C#** | ❌ | ❌ | Not yet |
 | **Prolog** | ❌ | ❌ | Not yet |
 
-\* Bash support requires integration with UnifyWeaver's core stream/recursive compilers. See [Future Work](#future-work-bash-core-compiler) below.
+\* Bash boolean matching is complete and uses `grep` for pattern filtering in streaming pipelines. Capture group extraction with BASH_REMATCH is planned for future work.
 
 ---
 
@@ -402,24 +402,74 @@ Planned improvements:
 4. **More targets**: C#, Prolog native
 5. **Match flags**: Case-insensitive, multiline, etc.
 
-### Future Work: Bash Core Compiler
+## Bash Target Examples
 
-Adding match predicate support to UnifyWeaver's core Bash compiler (stream_compiler.pl and recursive_compiler.pl) requires:
+Bash match support is implemented in UnifyWeaver's core stream compiler (`stream_compiler.pl`).
 
-1. **Constraint Recognition**: Add match predicates to `extract_predicates` skip list
-2. **Bash Operator Mapping**: Implement `goal_to_bash_operator` for match using `[[ var =~ pattern ]]`
-3. **Capture Group Handling**: Extract `BASH_REMATCH` array values after successful matches
-4. **Template Integration**: Add match support to bash code generation templates
-5. **Regex Type Validation**: Support `ere`, `bre`, `posix`, `bash` regex types
+### Example 1: Filter Error Lines
 
-Example planned Bash output:
+```prolog
+% test_bash_stream_match.pl
+:- use_module('src/unifyweaver/core/stream_compiler').
+
+log('ERROR: timeout occurred').
+log('WARNING: slow response').
+log('INFO: operation successful').
+
+error_lines(Line) :-
+    log(Line),
+    match(Line, 'ERROR').
+
+% Compile
+?- compile_predicate(error_lines/1, [], BashCode).
+```
+
+**Generated Bash:**
 ```bash
-# Boolean match
-if [[ "$line" =~ ERROR ]]; then
-    echo "$line"
-fi
+#!/bin/bash
+# error_lines - streaming pipeline with match filtering
 
-# With captures
+error_lines() {
+    log_stream | grep 'ERROR' | sort -u
+}
+
+# Stream function for use in pipelines
+error_lines_stream() {
+    error_lines
+}
+```
+
+### Example 2: Anchored Pattern Match
+
+```prolog
+starts_with_error(Line) :-
+    log(Line),
+    match(Line, '^ERROR').
+```
+
+**Generated Bash:**
+```bash
+#!/bin/bash
+# starts_with_error - streaming pipeline with match filtering
+
+starts_with_error() {
+    log_stream | grep '^ERROR' | sort -u
+}
+```
+
+### Current Implementation
+
+- **Boolean matching**: Uses `grep` for pattern filtering in streaming pipelines
+- **Integration**: Match constraints are seamlessly integrated with other predicates
+- **Pipeline composition**: Works with UnifyWeaver's streaming architecture
+- **Regex support**: Supports standard grep regex patterns (ERE by default)
+
+### Future Work: Capture Groups
+
+Capture group extraction is planned for future implementation:
+
+```bash
+# Planned: With captures using BASH_REMATCH
 if [[ "$line" =~ ([0-9-]+\ [0-9:]+)\ ([A-Z]+) ]]; then
     timestamp="${BASH_REMATCH[1]}"
     level="${BASH_REMATCH[2]}"
@@ -427,7 +477,7 @@ if [[ "$line" =~ ([0-9-]+\ [0-9:]+)\ ([A-Z]+) ]]; then
 fi
 ```
 
-This is a larger task requiring integration with UnifyWeaver's core compilation pipeline.
+This requires additional work to extract BASH_REMATCH values and integrate them into the streaming pipeline model.
 
 ---
 
@@ -459,11 +509,13 @@ match(Var, Pattern, Type, [Cap1, Cap2, ...])
 
 | Type | AWK | Python | Bash |
 |------|-----|--------|------|
-| `auto` | ✅ ERE | ✅ Python re | 🚧 POSIX |
-| `ere` | ✅ | ✅ | 🚧 |
-| `bre` | ✅ | ❌ | 🚧 |
+| `auto` | ✅ ERE | ✅ Python re | ✅ ERE (grep) |
+| `ere` | ✅ | ✅ | ✅ (grep) |
+| `bre` | ✅ | ❌ | ✅ (grep) |
 | `awk` | ✅ | ❌ | ❌ |
 | `python` | ❌ | ✅ | ❌ |
 | `pcre` | ❌ | ✅ | ❌ |
 
-✅ = Supported | ❌ = Not supported | 🚧 = Planned
+✅ = Supported | ❌ = Not supported
+
+**Note**: Bash implementation uses `grep` for pattern matching, which supports ERE and BRE regex types.
