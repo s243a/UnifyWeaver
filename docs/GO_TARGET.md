@@ -32,14 +32,17 @@ The Go target generates standalone Go executables from Prolog predicates, provid
 
 - **Facts compilation**: Generates map-based lookups for fact predicates
 - **Single rule compilation**: Compiles simple transformations with stdin I/O
+- **Match predicate support**: Regex filtering with boolean matching
+- **Multiple rules compilation**: OR patterns with combined regex matching
 - **Configurable delimiters**: Support for colon, tab, comma, and custom field delimiters
 - **Automatic deduplication**: Built-in `map[string]bool` for unique results
 - **Field reordering**: Correctly maps variables between head and body arguments
+- **Smart imports**: Only includes necessary Go packages (regexp, strings) when needed
 
 ### Planned Features
 
-- Match predicate support (regex filtering)
-- Multiple rules compilation (OR patterns)
+- Match predicate capture groups
+- Multiple rules with different body predicates
 - Constraints and arithmetic
 - JSON input/output
 - Aggregations (count, sum, etc.)
@@ -272,6 +275,73 @@ echo -e "john:25\njane:30" | ./user_name
 # jane
 ```
 
+### Example 4: Match Predicate - Filter Logs
+
+Use regex patterns to filter records:
+
+**Prolog:**
+```prolog
+log('ERROR: timeout occurred').
+log('WARNING: slow response').
+log('INFO: operation successful').
+log('ERROR: connection failed').
+
+% Filter error logs
+error_log(Line) :-
+    log(Line),
+    match(Line, 'ERROR').
+
+% Filter specific errors with pattern
+timeout_error(Line) :-
+    log(Line),
+    match(Line, 'ERROR.*timeout').
+
+test :-
+    compile_predicate_to_go(error_log/1, [], Code),
+    write_go_program(Code, 'error_log.go').
+```
+
+**Usage:**
+```bash
+go build error_log.go
+echo -e "ERROR: timeout occurred\nWARNING: slow response\nERROR: connection failed" | ./error_log
+# Output:
+# ERROR: timeout occurred
+# ERROR: connection failed
+```
+
+### Example 5: Multiple Rules - Combined Filters
+
+Compile multiple rules with different match patterns into a single OR regex:
+
+**Prolog:**
+```prolog
+log('ERROR: connection timeout').
+log('WARNING: slow response').
+log('CRITICAL: database down').
+
+% Multiple rules for different alert levels
+alert(Line) :- log(Line), match(Line, 'ERROR').
+alert(Line) :- log(Line), match(Line, 'WARNING').
+alert(Line) :- log(Line), match(Line, 'CRITICAL').
+
+test :-
+    compile_predicate_to_go(alert/1, [], Code),
+    write_go_program(Code, 'alert.go').
+```
+
+**Generated Regex:** `ERROR|WARNING|CRITICAL`
+
+**Usage:**
+```bash
+go build alert.go
+echo -e "ERROR: timeout\nWARNING: slow\nINFO: ok\nCRITICAL: down" | ./alert
+# Output:
+# ERROR: timeout
+# WARNING: slow
+# CRITICAL: down
+```
+
 ---
 
 ## Options
@@ -319,15 +389,17 @@ Deduplicate results using a seen map (default: `true`).
 
 ### Current Limitations
 
-1. **Single rule only**: Only handles predicates with one rule in the body
-   - ✅ Works: `child(C, P) :- parent(P, C).`
-   - ❌ Not yet: Multiple rules (OR patterns)
+1. **Multiple rules**: Supports OR patterns with same body predicate and match constraints
+   - ✅ Works: Multiple rules with different match patterns (combined into OR regex)
+   - ⏳ Partial: Multiple rules with different body predicates (not yet supported)
 
 2. **No constraints**: Arithmetic and comparison not yet supported
    - ❌ Not yet: `adult(Name) :- user(Name, Age), Age >= 18.`
 
-3. **No match predicate**: Regex filtering not yet implemented
-   - ❌ Not yet: `error_log(Line) :- log(Line), match(Line, 'ERROR').`
+3. **Match predicate**: Boolean matching supported, capture groups partial
+   - ✅ Works: `error_log(Line) :- log(Line), match(Line, 'ERROR').`
+   - ✅ Works: `timeout(Line) :- log(Line), match(Line, 'ERROR.*timeout').`
+   - ⏳ Partial: Capture groups detected but not extracted to variables
 
 4. **No aggregations**: Count, sum, etc. not yet supported
    - ❌ Not yet: `total(Sum) :- aggregation(sum), values(X).`
@@ -345,10 +417,10 @@ Compile each rule separately and combine externally:
 ./rule2 < intermediate.txt > output.txt
 ```
 
-**For filtering:**
-Use grep before/after processing:
+**For capture groups:**
+Use match/2 or match/3 for boolean filtering, then process matches with additional rules or external tools:
 ```bash
-grep "ERROR" input.txt | ./process > output.txt
+./filter_errors < input.txt | cut -d: -f2 > error_codes.txt
 ```
 
 ---
@@ -387,7 +459,7 @@ Planned additions (in priority order):
 | No runtime needed | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Low memory | ✅ | ✅ | ⚠️ | ❌ | ❌ |
 | Fast compilation | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Match predicate | ⏳ | ✅ | ✅ | ✅ | ❌ |
+| Match predicate | ⚠️ | ✅ | ✅ | ✅ | ❌ |
 
 ✅ = Full support | ⚠️ = Partial support | ❌ = Not supported | ⏳ = Planned
 
@@ -443,4 +515,14 @@ head(X, Y) :- body(Y, X).
 
 % Single rules (projection)
 head(X) :- body(X, _).
+
+% Match predicates (boolean filtering)
+filtered(X) :- source(X), match(X, 'pattern').
+
+% Match predicates (with options)
+filtered(X) :- source(X), match(X, 'pattern', auto).
+
+% Multiple rules (OR pattern with match)
+result(X) :- source(X), match(X, 'pattern1').
+result(X) :- source(X), match(X, 'pattern2').
 ```
