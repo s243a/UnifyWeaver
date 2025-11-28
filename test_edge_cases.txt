@@ -1,0 +1,10 @@
+alice:25
+bob:17
+charlie:45
+david:exactly18
+eve:invalid
+frank:66
+grace:18
+henry:65
+iris:
+:70

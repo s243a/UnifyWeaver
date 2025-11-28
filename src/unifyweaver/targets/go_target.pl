@@ -358,15 +358,38 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
     atom_string(BodyPredName, BodyPredStr),
     map_field_delimiter(FieldDelim, DelimChar),
 
-    % Build output format by mapping body args to field positions
-    % For each arg in head, find which position in body has the identical variable
+    % Build capture mapping from match constraints
+    % Map head argument positions to capture group positions
+    % For each head arg, check if it appears in any capture group
+    findall((HeadPos, CapIdx),
+        (   nth1(HeadPos, HeadArgs, HeadArg),
+            var(HeadArg),
+            member(match(_, _, _, Groups), MatchConstraints),
+            Groups \= [],
+            nth1(CapIdx, Groups, GroupVar),
+            HeadArg == GroupVar
+        ),
+        CaptureMapping),
+    format('  Capture mapping (HeadPos -> CapIdx): ~w~n', [CaptureMapping]),
+
+    % Build output format by checking three sources:
+    % 1. Variables from BodyArgs -> field{pos}
+    % 2. Variables from capture groups (via position mapping) -> cap{idx}
+    % 3. Constants -> literal value
     findall(OutputPart,
         (   nth1(HeadPos, HeadArgs, HeadArg),
-            (   var(HeadArg),
-                % Find which position in BodyArgs has the same variable
-                nth1(BodyPos, BodyArgs, BodyArg),
-                HeadArg == BodyArg
-            ->  format(atom(OutputPart), 'field~w', [BodyPos])
+            (   var(HeadArg) ->
+                (   % Check if it's from body args
+                    nth1(BodyPos, BodyArgs, BodyArg),
+                    HeadArg == BodyArg
+                ->  format(atom(OutputPart), 'field~w', [BodyPos])
+                ;   % Check if it's from capture groups (using position mapping)
+                    member((HeadPos, CapIdx), CaptureMapping)
+                ->  format(atom(OutputPart), 'cap~w', [CapIdx])
+                ;   % Variable not found - should not happen
+                    format('WARNING: Variable at position ~w not found in body or captures~n', [HeadPos]),
+                    fail
+                )
             ;   % Constant in head
                 atom_string(HeadArg, HeadArgStr),
                 format(atom(OutputPart), '"~s"', [HeadArgStr])
@@ -392,7 +415,7 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
     ),
 
     % Generate match constraint code if present
-    generate_go_match_code(MatchConstraints, HeadArgs, MatchRegexDecls, MatchChecks),
+    generate_go_match_code(MatchConstraints, HeadArgs, BodyArgs, MatchRegexDecls, MatchChecks, MatchCaptureCode),
 
     % Generate arithmetic constraint checks if present
     generate_go_constraint_code(Constraints, VarMap, ConstraintChecks),
@@ -407,10 +430,18 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
     ;   atomic_list_concat([MatchChecks, '\n', ConstraintChecks], AllChecks)
     ),
 
+    % Add capture extraction after checks if present
+    (   MatchCaptureCode = '' ->
+        AllChecksAndCaptures = AllChecks
+    ;   AllChecks = '' ->
+        AllChecksAndCaptures = MatchCaptureCode
+    ;   atomic_list_concat([AllChecks, '\n', MatchCaptureCode], AllChecksAndCaptures)
+    ),
+
     % Build complete Go code with optional constraints
     (   NumFields = 1 ->
         % Single field - no splitting needed
-        (   AllChecks = '' ->
+        (   AllChecksAndCaptures = '' ->
             format(string(GoCode), '
 \t// Read from stdin and process ~s records
 \tscanner := bufio.NewScanner(os.Stdin)
@@ -443,10 +474,10 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 \t\t\tfmt.Println(result)
 \t\t}
 \t}
-', [BodyPredStr, MatchRegexDecls, FieldAssignments, AllChecks, OutputExpr])
+', [BodyPredStr, MatchRegexDecls, FieldAssignments, AllChecksAndCaptures, OutputExpr])
         )
     ;   % Multi-field - needs splitting and length check
-        (   AllChecks = '' ->
+        (   AllChecksAndCaptures = '' ->
             format(string(GoCode), '
 \t// Read from stdin and process ~s records
 \tscanner := bufio.NewScanner(os.Stdin)
@@ -485,7 +516,7 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 \t\t\t}
 \t\t}
 \t}
-', [BodyPredStr, MatchRegexDecls, DelimChar, NumFields, FieldAssignments, AllChecks, OutputExpr])
+', [BodyPredStr, MatchRegexDecls, DelimChar, NumFields, FieldAssignments, AllChecksAndCaptures, OutputExpr])
         )
     ).
 
@@ -500,23 +531,30 @@ generate_field_assignments(Args, Code) :-
         Assignments),
     atomic_list_concat(Assignments, '\n\t\t\t', Code).
 
-%% generate_go_match_code(+MatchConstraints, +HeadArgs, -RegexDecls, -MatchChecks)
-%  Generate Go regex declarations and match checks
-generate_go_match_code([], _, "", "") :- !.
-generate_go_match_code(MatchConstraints, HeadArgs, RegexDecls, MatchChecks) :-
-    findall(Decl-Check,
+%% generate_go_match_code(+MatchConstraints, +HeadArgs, +BodyArgs, -RegexDecls, -MatchChecks, -CaptureCode)
+%  Generate Go regex declarations, match checks, and capture extractions
+generate_go_match_code([], _, _, "", "", "") :- !.
+generate_go_match_code(MatchConstraints, HeadArgs, BodyArgs, RegexDecls, MatchChecks, CaptureCode) :-
+    findall(Decl-Check-Capture,
         (   member(match(Var, Pattern, _Type, Groups), MatchConstraints),
-            generate_single_match_code(Var, Pattern, Groups, HeadArgs, Decl, Check)
+            generate_single_match_code(Var, Pattern, Groups, HeadArgs, BodyArgs, Decl, Check, Capture)
         ),
-        DeclsChecks),
-    findall(D, member(D-_, DeclsChecks), Decls),
-    findall(C, member(_-C, DeclsChecks), Checks),
+        DeclsChecksCaps),
+    findall(D, member(D-_-_, DeclsChecksCaps), Decls),
+    findall(C, member(_-C-_, DeclsChecksCaps), Checks),
+    findall(Cap, member(_-_-Cap, DeclsChecksCaps), Captures),
     atomic_list_concat(Decls, '\n', RegexDecls),
-    atomic_list_concat(Checks, '\n', MatchChecks).
+    atomic_list_concat(Checks, '\n', MatchChecks),
+    % Filter out empty captures and join with newlines
+    exclude(=(''), Captures, NonEmptyCaptures),
+    (   NonEmptyCaptures = [] ->
+        CaptureCode = ""
+    ;   atomic_list_concat(NonEmptyCaptures, '\n', CaptureCode)
+    ).
 
-%% generate_single_match_code(+Var, +Pattern, +Groups, +HeadArgs, -Decl, -Check)
-%  Generate regex declaration and check for a single match constraint
-generate_single_match_code(Var, Pattern, Groups, HeadArgs, Decl, Check) :-
+%% generate_single_match_code(+Var, +Pattern, +Groups, +HeadArgs, +BodyArgs, -Decl, -Check, -CaptureExtraction)
+%  Generate regex declaration, check, and capture extraction for a single match constraint
+generate_single_match_code(Var, Pattern, Groups, HeadArgs, BodyArgs, Decl, Check, CaptureExtraction) :-
     % Convert pattern to string
     (   atom(Pattern) ->
         atom_string(Pattern, PatternStr)
@@ -524,10 +562,14 @@ generate_single_match_code(Var, Pattern, Groups, HeadArgs, Decl, Check) :-
     ),
 
     % Find which field variable contains Var
+    % Check HeadArgs first, then BodyArgs
     (   nth1(FieldPos, HeadArgs, HeadVar),
         Var == HeadVar
     ->  format(atom(FieldVar), 'field~w', [FieldPos])
-    ;   FieldVar = 'line'  % If not in head args, match against the whole line
+    ;   nth1(FieldPos, BodyArgs, BodyVar),
+        Var == BodyVar
+    ->  format(atom(FieldVar), 'field~w', [FieldPos])
+    ;   FieldVar = 'line'  % If not in head or body args, match against the whole line
     ),
 
     % Generate unique regex variable name
@@ -538,15 +580,22 @@ generate_single_match_code(Var, Pattern, Groups, HeadArgs, Decl, Check) :-
 
     % Generate match check code
     (   Groups = [] ->
-        % Boolean match
+        % Boolean match - no captures
         format(string(Check), '\t\t\tif !~w.MatchString(~w) {\n\t\t\t\tcontinue\n\t\t\t}',
-               [RegexVar, FieldVar])
+               [RegexVar, FieldVar]),
+        CaptureExtraction = ""
     ;   % Match with capture groups
         length(Groups, NumGroups),
         NumGroups1 is NumGroups + 1,  % +1 for full match
         format(string(Check), '\t\t\tmatches := ~w.FindStringSubmatch(~w)\n\t\t\tif matches == nil || len(matches) != ~w {\n\t\t\t\tcontinue\n\t\t\t}',
-               [RegexVar, FieldVar, NumGroups1])
-        % TODO: Extract capture groups to variables
+               [RegexVar, FieldVar, NumGroups1]),
+        % Generate capture extraction code: cap1 := matches[1], cap2 := matches[2], etc.
+        findall(CapAssignment,
+            (   between(1, NumGroups, CapIdx),
+                format(atom(CapAssignment), '\t\t\tcap~w := matches[~w]', [CapIdx, CapIdx])
+            ),
+            CapAssignments),
+        atomic_list_concat(CapAssignments, '\n', CaptureExtraction)
     ).
 
 %% generate_go_constraint_code(+Constraints, +VarMap, -ConstraintChecks)
