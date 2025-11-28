@@ -45,11 +45,11 @@ match(String, Pattern, RegexType, CaptureList)
 |--------|---------------|----------------|--------|
 | **AWK** | ✅ | ✅ | Complete |
 | **Python** | ✅ | ✅ | Complete |
-| **Bash (Core)** | ✅ | 🚧 | Boolean match implemented* |
+| **Bash (Core)** | ✅ | ✅ | Complete* |
 | **C#** | ❌ | ❌ | Not yet |
 | **Prolog** | ❌ | ❌ | Not yet |
 
-\* Bash boolean matching is complete and uses `grep` for pattern filtering in streaming pipelines. Capture group extraction with BASH_REMATCH is planned for future work.
+\* Bash uses efficient `grep` for boolean matching and native `[[ =~ ]]` with BASH_REMATCH for capture groups.
 
 ---
 
@@ -464,20 +464,34 @@ starts_with_error() {
 - **Pipeline composition**: Works with UnifyWeaver's streaming architecture
 - **Regex support**: Supports standard grep regex patterns (ERE by default)
 
-### Future Work: Capture Groups
+### Example 3: Capture Groups with BASH_REMATCH
 
-Capture group extraction is planned for future implementation:
-
-```bash
-# Planned: With captures using BASH_REMATCH
-if [[ "$line" =~ ([0-9-]+\ [0-9:]+)\ ([A-Z]+) ]]; then
-    timestamp="${BASH_REMATCH[1]}"
-    level="${BASH_REMATCH[2]}"
-    echo "$timestamp $level"
-fi
+```prolog
+% Extract timestamp and level from log lines
+parse_log(Line, Time, Level) :-
+    log_line(Line),
+    match(Line, '([0-9-]+ [0-9:]+) ([A-Z]+)', auto, [Time, Level]).
 ```
 
-This requires additional work to extract BASH_REMATCH values and integrate them into the streaming pipeline model.
+**Generated Bash:**
+```bash
+#!/bin/bash
+# parse_log - streaming pipeline with match filtering
+
+parse_log() {
+    log_line_stream | while IFS= read -r line; do
+        if [[ "$line" =~ ([0-9-]+ [0-9:]+) ([A-Z]+) ]]; then
+            echo "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+        fi
+    done | sort -u
+}
+```
+
+The implementation uses:
+- `while IFS= read -r line` for efficient line-by-line processing
+- Native `[[ =~ ]]` operator for regex matching
+- `${BASH_REMATCH[n]}` array for capture group extraction
+- Colon-separated output format for multiple captures
 
 ---
 
