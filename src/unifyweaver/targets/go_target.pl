@@ -1371,14 +1371,22 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
 
         % Generate Go code for JSON input
         SingleHead =.. [_|HeadArgs],
-        compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, ScriptBody)
+        compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, ScriptBody),
+
+        % Check if helpers are needed (for the package wrapping)
+        (   member(nested(_, _), FieldMappings)
+        ->  generate_nested_helper(HelperFunc),
+            HelperSection = HelperFunc
+        ;   HelperSection = ''
+        )
     ;   format('ERROR: Multiple clauses not yet supported for JSON input mode~n'),
         fail
     ),
 
     % Wrap in package if requested
     (   IncludePackage ->
-        format(string(GoCode), 'package main
+        (   HelperSection = '' ->
+            format(string(GoCode), 'package main
 
 import (
 \t"bufio"
@@ -1390,6 +1398,21 @@ import (
 func main() {
 ~s}
 ', [ScriptBody])
+        ;   format(string(GoCode), 'package main
+
+import (
+\t"bufio"
+\t"encoding/json"
+\t"fmt"
+\t"os"
+)
+
+~s
+
+func main() {
+~s}
+', [HelperSection, ScriptBody])
+        )
     ;   GoCode = ScriptBody
     ).
 
@@ -1552,12 +1575,27 @@ generate_struct_init(StructName, FieldNames, StructInit) :-
     format(atom(StructInit), '~wRecord{~w}', [StructName, FieldsStr]).
 
 %% extract_json_field_mappings(+Body, -FieldMappings)
-%  Extract field-to-variable mappings from json_record([field-Var, ...])
+%  Extract field-to-variable mappings from json_record([field-Var, ...]) and json_get(Path, Var)
 %
-extract_json_field_mappings(json_record(Fields), FieldMappings) :- !,
-    extract_field_list(Fields, FieldMappings).
-extract_json_field_mappings(Body, []) :-
-    format('WARNING: Body does not contain json_record/1: ~w~n', [Body]).
+extract_json_field_mappings(Body, FieldMappings) :-
+    extract_json_operations(Body, Operations),
+    (   Operations = [] ->
+        format('WARNING: Body does not contain json_record/1 or json_get/2: ~w~n', [Body]),
+        FieldMappings = []
+    ;   FieldMappings = Operations
+    ).
+
+%% extract_json_operations(+Body, -Operations)
+%  Extract all JSON operations from body (handles conjunction)
+%
+extract_json_operations((A, B), Ops) :- !,
+    extract_json_operations(A, OpsA),
+    extract_json_operations(B, OpsB),
+    append(OpsA, OpsB, Ops).
+extract_json_operations(json_record(Fields), RecordOps) :- !,
+    extract_field_list(Fields, RecordOps).
+extract_json_operations(json_get(Path, Var), [nested(Path, Var)]) :- !.
+extract_json_operations(_, []).
 
 extract_field_list([], []).
 extract_field_list([Field-Var|Rest], [Field-Var|Mappings]) :- !,
@@ -1587,6 +1625,7 @@ compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
         UniqueCheck = '\t\tfmt.Println(result)\n'
     ),
 
+    % Build the loop code (helper function is added at package level, not here)
     format(string(GoCode), '
 \tscanner := bufio.NewScanner(os.Stdin)
 ~w
@@ -1602,27 +1641,71 @@ compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
 ~s\t}
 ', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
 
+%% generate_nested_helper(-HelperCode)
+%  Generate the getNestedField helper function for traversing nested JSON
+%
+generate_nested_helper(HelperCode) :-
+    HelperCode = 'func getNestedField(data map[string]interface{}, path []string) (interface{}, bool) {
+\tcurrent := interface{}(data)
+\t
+\tfor _, key := range path {
+\t\tcurrentMap, ok := current.(map[string]interface{})
+\t\tif !ok {
+\t\t\treturn nil, false
+\t\t}
+\t\t
+\t\tvalue, exists := currentMap[key]
+\t\tif !exists {
+\t\t\treturn nil, false
+\t\t}
+\t\t
+\t\tcurrent = value
+\t}
+\t
+\treturn current, true
+}'.
+
 %% generate_json_field_extractions(+FieldMappings, +HeadArgs, -ExtractCode)
-%  Generate Go code to extract and type-assert JSON fields
+%  Generate Go code to extract and type-assert JSON fields (flat and nested)
 %
 generate_json_field_extractions(FieldMappings, HeadArgs, ExtractCode) :-
     % Generate extractions by pairing field mappings with positions
     findall(ExtractLine,
-        (   nth1(Pos, FieldMappings, Field-_Var),
-            atom_string(Field, FieldStr),
+        (   nth1(Pos, FieldMappings, Mapping),
             format(atom(VarName), 'field~w', [Pos]),
-            generate_field_extraction(FieldStr, VarName, ExtractLine)
+            generate_field_extraction_dispatch(Mapping, VarName, ExtractLine)
         ),
         ExtractLines),
     atomic_list_concat(ExtractLines, '\n', ExtractCode).
 
-%% generate_field_extraction(+FieldName, +VarName, -ExtractCode)
-%  Generate extraction code for a single field
+%% generate_field_extraction_dispatch(+Mapping, +VarName, -ExtractCode)
+%  Dispatch to appropriate extraction based on mapping type
+%
+generate_field_extraction_dispatch(Field-_Var, VarName, ExtractCode) :- !,
+    % Flat field extraction
+    atom_string(Field, FieldStr),
+    generate_flat_field_extraction(FieldStr, VarName, ExtractCode).
+generate_field_extraction_dispatch(nested(Path, _Var), VarName, ExtractCode) :- !,
+    % Nested field extraction
+    generate_nested_field_extraction(Path, VarName, ExtractCode).
+
+%% generate_flat_field_extraction(+FieldName, +VarName, -ExtractCode)
+%  Generate extraction code for a flat field
 %  Extract as interface{} to support any JSON type (string, number, bool, etc.)
 %
-generate_field_extraction(FieldName, VarName, ExtractCode) :-
+generate_flat_field_extraction(FieldName, VarName, ExtractCode) :-
     format(atom(ExtractCode), '\t\t~w, ~wOk := data["~s"]\n\t\tif !~wOk {\n\t\t\tcontinue\n\t\t}',
         [VarName, VarName, FieldName, VarName]).
+
+%% generate_nested_field_extraction(+Path, +VarName, -ExtractCode)
+%  Generate extraction code for a nested field using getNestedField helper
+%
+generate_nested_field_extraction(Path, VarName, ExtractCode) :-
+    % Convert path atoms to Go string slice
+    maplist(atom_string, Path, PathStrs),
+    atomic_list_concat(PathStrs, '", "', PathStr),
+    format(atom(ExtractCode), '\t\t~w, ~wOk := getNestedField(data, []string{"~s"})\n\t\tif !~wOk {\n\t\t\tcontinue\n\t\t}',
+        [VarName, VarName, PathStr, VarName]).
 
 %% generate_json_output_expr(+HeadArgs, +DelimChar, -OutputExpr)
 %  Generate Go fmt.Sprintf expression for output
