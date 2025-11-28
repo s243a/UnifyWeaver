@@ -109,22 +109,33 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
     ;   NeedsRegexp = false
     ),
 
-    % Determine if we need strings import (only for multi-field records)
-    % For rules, check if any clause has arity > 1
+    % Determine if we need strings import (only for multi-field records that are not match-only)
+    % For rules, check if any clause has arity > 1 AND has predicates (not match-only)
     (   NeedsStdin,
-        member(Head-_Body, Clauses),
-        \+ is_fact_clause(Head-_Body),
+        member(Head-Body, Clauses),
+        \+ is_fact_clause(Head-Body),
         Head =.. [_|Args],
         length(Args, ArgCount),
-        ArgCount > 1
+        ArgCount > 1,
+        % Check if it has predicates (not just match constraints)
+        extract_predicates(Body, Preds),
+        Preds \= []
     ->  NeedsStrings = true
     ;   NeedsStrings = false
+    ),
+
+    % Determine if we need strconv import (for numeric constraints)
+    (   member(_Head-Body, Clauses),
+        extract_constraints(Body, Cs),
+        Cs \= []
+    ->  NeedsStrconv = true
+    ;   NeedsStrconv = false
     ),
 
     % Generate complete Go program
     (   IncludePackage ->
         generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting,
-                           EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, ScriptBody, GoCode)
+                           EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, ScriptBody, GoCode)
     ;   GoCode = ScriptBody
     ),
     !.
@@ -317,16 +328,18 @@ compile_single_rule_to_go(Pred, Arity, Head, Body, RecordDelim, FieldDelim, Uniq
     build_var_map(HeadArgs, VarMap),
     format('  Variable map: ~w~n', [VarMap]),
 
-    % Extract predicates and match constraints from body
+    % Extract predicates, match constraints, and arithmetic constraints from body
     extract_predicates(Body, Predicates),
     extract_match_constraints(Body, MatchConstraints),
+    extract_constraints(Body, Constraints),
     format('  Body predicates: ~w~n', [Predicates]),
     format('  Match constraints: ~w~n', [MatchConstraints]),
+    format('  Arithmetic constraints: ~w~n', [Constraints]),
 
-    % Handle simple case: single predicate in body (with optional match constraints)
+    % Handle simple case: single predicate in body (with optional constraints)
     (   Predicates = [SinglePred] ->
         compile_single_predicate_rule_go(PredStr, HeadArgs, SinglePred, VarMap,
-                                        FieldDelim, Unique, MatchConstraints, GoCode)
+                                        FieldDelim, Unique, MatchConstraints, Constraints, GoCode)
     ;   Predicates = [], MatchConstraints \= [] ->
         % No predicates, just match constraints - read from stdin and filter
         compile_match_only_rule_go(PredStr, HeadArgs, VarMap, FieldDelim,
@@ -335,11 +348,11 @@ compile_single_rule_to_go(Pred, Arity, Head, Body, RecordDelim, FieldDelim, Uniq
         GoCode = '\t// TODO: Multi-predicate or constraint-only rules not yet implemented\n'
     ).
 
-%% compile_single_predicate_rule_go(+PredStr, +HeadArgs, +BodyPred, +VarMap, +FieldDelim, +Unique, +MatchConstraints, -GoCode)
+%% compile_single_predicate_rule_go(+PredStr, +HeadArgs, +BodyPred, +VarMap, +FieldDelim, +Unique, +MatchConstraints, +Constraints, -GoCode)
 %  Compile a rule with single predicate in body (e.g., child(C,P) :- parent(P,C))
-%  Optional match constraints for regex filtering
+%  Optional match constraints for regex filtering and arithmetic constraints
 %
-compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim, Unique, MatchConstraints, GoCode) :-
+compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim, Unique, MatchConstraints, Constraints, GoCode) :-
     % Get the body predicate name and args
     BodyPred =.. [BodyPredName|BodyArgs],
     atom_string(BodyPredName, BodyPredStr),
@@ -381,10 +394,23 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
     % Generate match constraint code if present
     generate_go_match_code(MatchConstraints, HeadArgs, MatchRegexDecls, MatchChecks),
 
-    % Build complete Go code with optional match constraints
+    % Generate arithmetic constraint checks if present
+    generate_go_constraint_code(Constraints, VarMap, ConstraintChecks),
+
+    % Combine all checks (match + arithmetic)
+    (   MatchChecks = '', ConstraintChecks = '' ->
+        AllChecks = ''
+    ;   MatchChecks = '' ->
+        AllChecks = ConstraintChecks
+    ;   ConstraintChecks = '' ->
+        AllChecks = MatchChecks
+    ;   atomic_list_concat([MatchChecks, '\n', ConstraintChecks], AllChecks)
+    ),
+
+    % Build complete Go code with optional constraints
     (   NumFields = 1 ->
         % Single field - no splitting needed
-        (   MatchConstraints = [] ->
+        (   AllChecks = '' ->
             format(string(GoCode), '
 \t// Read from stdin and process ~s records
 \tscanner := bufio.NewScanner(os.Stdin)
@@ -400,9 +426,9 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 \t\t}
 \t}
 ', [BodyPredStr, FieldAssignments, OutputExpr])
-        ;   % With match constraints
+        ;   % With constraints (match and/or arithmetic)
             format(string(GoCode), '
-\t// Read from stdin and process ~s records with regex filtering
+\t// Read from stdin and process ~s records with filtering
 ~s
 \tscanner := bufio.NewScanner(os.Stdin)
 \tseen := make(map[string]bool)
@@ -417,10 +443,10 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 \t\t\tfmt.Println(result)
 \t\t}
 \t}
-', [BodyPredStr, MatchRegexDecls, FieldAssignments, MatchChecks, OutputExpr])
+', [BodyPredStr, MatchRegexDecls, FieldAssignments, AllChecks, OutputExpr])
         )
     ;   % Multi-field - needs splitting and length check
-        (   MatchConstraints = [] ->
+        (   AllChecks = '' ->
             format(string(GoCode), '
 \t// Read from stdin and process ~s records
 \tscanner := bufio.NewScanner(os.Stdin)
@@ -439,9 +465,9 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 \t\t}
 \t}
 ', [BodyPredStr, DelimChar, NumFields, FieldAssignments, OutputExpr])
-        ;   % With match constraints
+        ;   % With constraints (match and/or arithmetic)
             format(string(GoCode), '
-\t// Read from stdin and process ~s records with regex filtering
+\t// Read from stdin and process ~s records with filtering
 ~s
 \tscanner := bufio.NewScanner(os.Stdin)
 \tseen := make(map[string]bool)
@@ -459,7 +485,7 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 \t\t\t}
 \t\t}
 \t}
-', [BodyPredStr, MatchRegexDecls, DelimChar, NumFields, FieldAssignments, MatchChecks, OutputExpr])
+', [BodyPredStr, MatchRegexDecls, DelimChar, NumFields, FieldAssignments, AllChecks, OutputExpr])
         )
     ).
 
@@ -523,12 +549,139 @@ generate_single_match_code(Var, Pattern, Groups, HeadArgs, Decl, Check) :-
         % TODO: Extract capture groups to variables
     ).
 
+%% generate_go_constraint_code(+Constraints, +VarMap, -ConstraintChecks)
+%  Generate Go code for arithmetic and comparison constraints
+%  Includes type conversion from string fields to ints
+generate_go_constraint_code([], _, "") :- !.
+generate_go_constraint_code(Constraints, VarMap, ConstraintChecks) :-
+    % First, collect which fields need int conversion
+    findall(Pos,
+        (   member(Constraint, Constraints),
+            constraint_uses_field(Constraint, VarMap, Pos)
+        ),
+        FieldPoss),
+    list_to_set(FieldPoss, UniqueFieldPoss),
+
+    % Generate int conversion declarations
+    findall(Decl,
+        (   member(Pos, UniqueFieldPoss),
+            format(atom(FieldName), 'field~w', [Pos]),
+            format(atom(IntName), 'int~w', [Pos]),
+            format(atom(Decl), '\t\t\t~w, err := strconv.Atoi(~w)\n\t\t\tif err != nil {\n\t\t\t\tcontinue\n\t\t\t}',
+                   [IntName, FieldName])
+        ),
+        IntDecls),
+
+    % Generate constraint checks
+    findall(Check,
+        (   member(Constraint, Constraints),
+            constraint_to_go(Constraint, VarMap, GoConstraint),
+            % Handle is/2 as assignment, others as conditions
+            (   Constraint = is(_, _) ->
+                % is/2 is an assignment
+                format(atom(Check), '\t\t\t~w', [GoConstraint])
+            ;   % Other constraints are conditions
+                format(atom(Check), '\t\t\tif !(~w) {\n\t\t\t\tcontinue\n\t\t\t}', [GoConstraint])
+            )
+        ),
+        Checks),
+
+    % Combine declarations and checks
+    append(IntDecls, Checks, AllParts),
+    atomic_list_concat(AllParts, '\n', ConstraintChecks).
+
+%% constraint_uses_field(+Constraint, +VarMap, -Pos)
+%  Check if a constraint uses a field variable and return its position
+constraint_uses_field(gt(A, _), VarMap, Pos) :- var(A), member((Var, Pos), VarMap), A == Var, !.
+constraint_uses_field(gt(_, B), VarMap, Pos) :- var(B), member((Var, Pos), VarMap), B == Var, !.
+constraint_uses_field(lt(A, _), VarMap, Pos) :- var(A), member((Var, Pos), VarMap), A == Var, !.
+constraint_uses_field(lt(_, B), VarMap, Pos) :- var(B), member((Var, Pos), VarMap), B == Var, !.
+constraint_uses_field(gte(A, _), VarMap, Pos) :- var(A), member((Var, Pos), VarMap), A == Var, !.
+constraint_uses_field(gte(_, B), VarMap, Pos) :- var(B), member((Var, Pos), VarMap), B == Var, !.
+constraint_uses_field(lte(A, _), VarMap, Pos) :- var(A), member((Var, Pos), VarMap), A == Var, !.
+constraint_uses_field(lte(_, B), VarMap, Pos) :- var(B), member((Var, Pos), VarMap), B == Var, !.
+constraint_uses_field(eq(A, _), VarMap, Pos) :- var(A), member((Var, Pos), VarMap), A == Var, !.
+constraint_uses_field(eq(_, B), VarMap, Pos) :- var(B), member((Var, Pos), VarMap), B == Var, !.
+constraint_uses_field(neq(A, _), VarMap, Pos) :- var(A), member((Var, Pos), VarMap), A == Var, !.
+constraint_uses_field(neq(_, B), VarMap, Pos) :- var(B), member((Var, Pos), VarMap), B == Var, !.
+constraint_uses_field(inequality(A, _), VarMap, Pos) :- var(A), member((Var, Pos), VarMap), A == Var, !.
+constraint_uses_field(inequality(_, B), VarMap, Pos) :- var(B), member((Var, Pos), VarMap), B == Var, !.
+
+%% ==============================================
+%% MATCH CONSTRAINTS (REGEX WITH CAPTURES)
+%% ==============================================
+
+%% extract_match_constraints(+Body, -MatchConstraints)
+%  Extract match/3 or match/4 predicates from rule body
+%  match/3: match(Field, Pattern, Type)
+%  match/4: match(Field, Pattern, Type, Captures)
+extract_match_constraints(true, []) :- !.
+extract_match_constraints((A, B), Constraints) :- !,
+    extract_match_constraints(A, C1),
+    extract_match_constraints(B, C2),
+    append(C1, C2, Constraints).
+% match/4 with capture groups
+extract_match_constraints(match(Field, Pattern, Type, Captures), [match(Field, Pattern, Type, Captures)]) :- !.
+% match/3 without captures
+extract_match_constraints(match(Field, Pattern, Type), [match(Field, Pattern, Type, [])]) :- !.
+extract_match_constraints(_, []).
+
 %% compile_match_only_rule_go(+PredStr, +HeadArgs, +VarMap, +FieldDelim, +Unique, +MatchConstraints, -GoCode)
 %  Compile rules with only match constraints (no body predicates)
-%  Reads from stdin and filters based on regex patterns
+%  Reads from stdin and filters based on regex patterns with capture groups
 compile_match_only_rule_go(PredStr, HeadArgs, VarMap, FieldDelim, Unique, MatchConstraints, GoCode) :-
-    % TODO: Implement match-only rules
-    GoCode = '\t// TODO: Match-only rules not yet implemented\n'.
+    % Get the first match constraint (for now, we support single match)
+    (   MatchConstraints = [match(MatchField, Pattern, _Type, Captures)] ->
+        % Generate code for regex matching with captures
+        map_field_delimiter(FieldDelim, DelimChar),
+
+        % Build capture variable assignments
+        % FindStringSubmatch returns [fullMatch, group1, group2, ...]
+        % So we need to map Captures list to matches[1], matches[2], etc.
+        length(Captures, NumCaptures),
+        findall(Assignment,
+            (   between(1, NumCaptures, Idx),
+                nth1(Idx, Captures, CaptureVar),
+                member((Var, Pos), VarMap),
+                CaptureVar == Var,
+                format(atom(Assignment), '\t\t\tcap~w := matches[~w]', [Pos, Idx])
+            ),
+            CaptureAssignments),
+        atomic_list_concat(CaptureAssignments, '\n', CaptureCode),
+
+        % Build output expression using head args
+        % Map each head arg to either original line or captured value
+        findall(OutputPart,
+            (   member(Arg, HeadArgs),
+                (   % Check if this arg is the matched field
+                    Arg == MatchField ->
+                    OutputPart = 'line'
+                ;   % Check if this arg is a captured variable
+                    member((Var, Pos), VarMap),
+                    Arg == Var,
+                    member(Arg, Captures) ->
+                    format(atom(OutputPart), 'cap~w', [Pos])
+                ;   OutputPart = 'line'
+                )
+            ),
+            OutputParts),
+        build_go_concat_expr(OutputParts, DelimChar, OutputExpr),
+
+        % Generate uniqueness check if needed
+        (   Unique = true ->
+            SeenMapCode = '\n\tseen := make(map[string]bool)',
+            UniqueCode = '\n\t\t\tif !seen[result] {\n\t\t\t\tseen[result] = true\n\t\t\t\tfmt.Println(result)\n\t\t\t}'
+        ;   SeenMapCode = '',
+            UniqueCode = '\n\t\t\tfmt.Println(result)'
+        ),
+
+        % Generate the complete Go code
+        format(atom(GoCode),
+'\n\t// Read from stdin and process with regex pattern matching\n\n\tpattern := regexp.MustCompile(`~w`)\n\tscanner := bufio.NewScanner(os.Stdin)~w\n\t\n\tfor scanner.Scan() {\n\t\tline := scanner.Text()\n\t\tmatches := pattern.FindStringSubmatch(line)\n\t\tif matches != nil {\n~w\n\t\t\tresult := ~w~w\n\t\t}\n\t}\n',
+            [Pattern, SeenMapCode, CaptureCode, OutputExpr, UniqueCode])
+    ;   % Multiple or no match constraints
+        GoCode = '\t// TODO: Multiple or no match constraints not yet supported\n'
+    ).
 
 %% build_go_concat_expr(+Parts, +Delimiter, -Expression)
 %  Build a Go string concatenation expression with delimiters
@@ -558,6 +711,17 @@ extract_predicates(match(_, _), []) :- !.
 extract_predicates(match(_, _, _), []) :- !.
 extract_predicates(match(_, _, _, _), []) :- !.
 
+%% Skip constraint operators
+extract_predicates(_ > _, []) :- !.
+extract_predicates(_ < _, []) :- !.
+extract_predicates(_ >= _, []) :- !.
+extract_predicates(_ =< _, []) :- !.
+extract_predicates(_ =:= _, []) :- !.
+extract_predicates(_ =\= _, []) :- !.
+extract_predicates(_ \= _, []) :- !.
+extract_predicates(\=(_,  _), []) :- !.
+extract_predicates(is(_, _), []) :- !.
+
 extract_predicates(true, []) :- !.
 extract_predicates((A, B), Predicates) :- !,
     extract_predicates(A, P1),
@@ -580,6 +744,144 @@ extract_match_constraints(match(Var, Pattern), [match(Var, Pattern, auto, [])]) 
 extract_match_constraints(match(Var, Pattern, Type), [match(Var, Pattern, Type, [])]) :- !.
 extract_match_constraints(match(Var, Pattern, Type, Groups), [match(Var, Pattern, Type, Groups)]) :- !.
 extract_match_constraints(_, []).
+
+%% extract_constraints(+Body, -Constraints)
+%  Extract all arithmetic and comparison constraints from body
+%  Similar to extract_match_constraints but for operators like >, <, is/2, etc.
+extract_constraints(true, []) :- !.
+extract_constraints((A, B), Constraints) :- !,
+    extract_constraints(A, C1),
+    extract_constraints(B, C2),
+    append(C1, C2, Constraints).
+extract_constraints(Goal, []) :-
+    var(Goal), !.
+% Capture inequality constraints
+extract_constraints(A \= B, [inequality(A, B)]) :- !.
+extract_constraints(\=(A, B), [inequality(A, B)]) :- !.
+% Capture arithmetic comparison constraints
+extract_constraints(A > B, [gt(A, B)]) :- !.
+extract_constraints(A < B, [lt(A, B)]) :- !.
+extract_constraints(A >= B, [gte(A, B)]) :- !.
+extract_constraints(A =< B, [lte(A, B)]) :- !.
+extract_constraints(A =:= B, [eq(A, B)]) :- !.
+extract_constraints(A =\= B, [neq(A, B)]) :- !.
+extract_constraints(is(A, B), [is(A, B)]) :- !.
+% Skip match predicates (handled separately)
+extract_constraints(match(_, _), []) :- !.
+extract_constraints(match(_, _, _), []) :- !.
+extract_constraints(match(_, _, _, _), []) :- !.
+% Skip other predicates
+extract_constraints(Goal, []) :-
+    functor(Goal, Pred, _),
+    Pred \= ',',
+    Pred \= true.
+
+%% constraint_to_go(+Constraint, +VarMap, -GoCode)
+%  Convert a constraint to Go code
+%  VarMap maps Prolog variables to field positions for Go
+%  Numeric comparisons need strconv.Atoi for string-to-int conversion
+constraint_to_go(inequality(A, B), VarMap, GoCode) :-
+    term_to_go_expr_numeric(A, VarMap, GoA),
+    term_to_go_expr_numeric(B, VarMap, GoB),
+    format(atom(GoCode), '~w != ~w', [GoA, GoB]).
+constraint_to_go(gt(A, B), VarMap, GoCode) :-
+    term_to_go_expr_numeric(A, VarMap, GoA),
+    term_to_go_expr_numeric(B, VarMap, GoB),
+    format(atom(GoCode), '~w > ~w', [GoA, GoB]).
+constraint_to_go(lt(A, B), VarMap, GoCode) :-
+    term_to_go_expr_numeric(A, VarMap, GoA),
+    term_to_go_expr_numeric(B, VarMap, GoB),
+    format(atom(GoCode), '~w < ~w', [GoA, GoB]).
+constraint_to_go(gte(A, B), VarMap, GoCode) :-
+    term_to_go_expr_numeric(A, VarMap, GoA),
+    term_to_go_expr_numeric(B, VarMap, GoB),
+    format(atom(GoCode), '~w >= ~w', [GoA, GoB]).
+constraint_to_go(lte(A, B), VarMap, GoCode) :-
+    term_to_go_expr_numeric(A, VarMap, GoA),
+    term_to_go_expr_numeric(B, VarMap, GoB),
+    format(atom(GoCode), '~w <= ~w', [GoA, GoB]).
+constraint_to_go(eq(A, B), VarMap, GoCode) :-
+    term_to_go_expr_numeric(A, VarMap, GoA),
+    term_to_go_expr_numeric(B, VarMap, GoB),
+    format(atom(GoCode), '~w == ~w', [GoA, GoB]).
+constraint_to_go(neq(A, B), VarMap, GoCode) :-
+    term_to_go_expr_numeric(A, VarMap, GoA),
+    term_to_go_expr_numeric(B, VarMap, GoB),
+    format(atom(GoCode), '~w != ~w', [GoA, GoB]).
+constraint_to_go(is(A, B), VarMap, GoCode) :-
+    % For is/2, we need to assign the result
+    % e.g., Double is Age * 2 becomes: double := age * 2
+    term_to_go_expr(A, VarMap, GoA),
+    term_to_go_expr(B, VarMap, GoB),
+    format(atom(GoCode), '~w := ~w', [GoA, GoB]).
+
+%% term_to_go_expr_numeric(+Term, +VarMap, -GoExpr)
+%  Convert a Prolog term to a Go expression for numeric contexts
+%  Wraps field references with strconv.Atoi for type conversion
+%
+term_to_go_expr_numeric(Term, VarMap, GoExpr) :-
+    var(Term), !,
+    % It's a Prolog variable - convert to int
+    (   member((Var, Pos), VarMap),
+        Term == Var
+    ->  % Need to convert string field to int
+        format(atom(FieldName), 'field~w', [Pos]),
+        format(atom(IntName), 'int~w', [Pos]),
+        % We'll define intN variables in the constraint check code
+        GoExpr = IntName
+    ;   GoExpr = 'unknown'
+    ).
+term_to_go_expr_numeric(Term, _, Term) :-
+    number(Term), !.
+term_to_go_expr_numeric(Term, VarMap, GoExpr) :-
+    compound(Term), !,
+    Term =.. [Op, Left, Right],
+    term_to_go_expr_numeric(Left, VarMap, GoLeft),
+    term_to_go_expr_numeric(Right, VarMap, GoRight),
+    go_operator(Op, GoOp),
+    format(atom(GoExpr), '(~w ~w ~w)', [GoLeft, GoOp, GoRight]).
+term_to_go_expr_numeric(Term, _, GoExpr) :-
+    atom(Term), !,
+    format(atom(GoExpr), '"~w"', [Term]).
+
+%% term_to_go_expr(+Term, +VarMap, -GoExpr)
+%  Convert a Prolog term to a Go expression using variable mapping
+%  For string contexts (no type conversion)
+%
+term_to_go_expr(Term, VarMap, GoExpr) :-
+    var(Term), !,
+    % It's a Prolog variable - look it up in VarMap using identity check
+    (   member((Var, Pos), VarMap),
+        Term == Var
+    ->  % Use field reference - will add type conversion in constraint_to_go if needed
+        format(atom(GoExpr), 'field~w', [Pos])
+    ;   % Variable not in map - use placeholder
+        GoExpr = 'unknown'
+    ).
+term_to_go_expr(Term, _, GoExpr) :-
+    atom(Term), !,
+    % Atom constant - quote it for Go
+    format(atom(GoExpr), '"~w"', [Term]).
+term_to_go_expr(Term, _, Term) :-
+    number(Term), !.
+term_to_go_expr(Term, VarMap, GoExpr) :-
+    compound(Term), !,
+    Term =.. [Op, Left, Right],
+    term_to_go_expr(Left, VarMap, GoLeft),
+    term_to_go_expr(Right, VarMap, GoRight),
+    % Map Prolog operators to Go operators
+    go_operator(Op, GoOp),
+    format(atom(GoExpr), '(~w ~w ~w)', [GoLeft, GoOp, GoRight]).
+term_to_go_expr(Term, _, Term).
+
+%% go_operator(+PrologOp, -GoOp)
+%  Map Prolog operators to Go operators
+go_operator(+, '+') :- !.
+go_operator(-, '-') :- !.
+go_operator(*, '*') :- !.
+go_operator(/, '/') :- !.
+go_operator(mod, '%') :- !.
+go_operator(Op, Op).  % Default: use as-is
 
 %% ============================================
 %% MULTIPLE RULES COMPILATION
@@ -804,10 +1106,10 @@ step_op_to_go(_, 'currentAcc += 1').  % Fallback
 %% GO PROGRAM GENERATION
 %% ============================================
 
-%% generate_go_program(+Pred, +Arity, +RecordDelim, +FieldDelim, +Quoting, +EscapeChar, +NeedsStdin, +NeedsRegexp, +Body, -GoCode)
+%% generate_go_program(+Pred, +Arity, +RecordDelim, +FieldDelim, +Quoting, +EscapeChar, +NeedsStdin, +NeedsRegexp, +NeedsStrings, +NeedsStrconv, +Body, -GoCode)
 %  Generate complete Go program with imports and main function
 %
-generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, Body, GoCode) :-
+generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, Body, GoCode) :-
     atom_string(Pred, PredStr),
 
     % Generate imports based on what's needed
@@ -820,6 +1122,8 @@ generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, N
                 format(atom(Import), '\t"regexp"', [])
             ;   NeedsStrings,
                 format(atom(Import), '\t"strings"', [])
+            ;   NeedsStrconv,
+                format(atom(Import), '\t"strconv"', [])
             ),
             ImportList),
         list_to_set(ImportList, UniqueImports),  % Remove duplicates

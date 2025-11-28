@@ -33,19 +33,21 @@ The Go target generates standalone Go executables from Prolog predicates, provid
 - **Facts compilation**: Generates map-based lookups for fact predicates
 - **Single rule compilation**: Compiles simple transformations with stdin I/O
 - **Match predicate support**: Regex filtering with boolean matching
+- **Match predicate capture groups**: Extract substrings using regex capture groups
 - **Multiple rules compilation**: OR patterns with combined regex matching
 - **Configurable delimiters**: Support for colon, tab, comma, and custom field delimiters
 - **Automatic deduplication**: Built-in `map[string]bool` for unique results
 - **Field reordering**: Correctly maps variables between head and body arguments
-- **Smart imports**: Only includes necessary Go packages (regexp, strings) when needed
+- **Constraints and arithmetic**: Support for >, <, >=, =<, ==, !=, and is/2
+- **Aggregations**: sum, count, max, min, avg operations on numeric fields
+- **Smart imports**: Only includes necessary Go packages (regexp, strings, strconv) when needed
 
 ### Planned Features
 
-- Match predicate capture groups
 - Multiple rules with different body predicates
-- Constraints and arithmetic
 - JSON input/output
-- Aggregations (count, sum, etc.)
+- Nested data structures
+- Custom Go functions
 
 ---
 
@@ -342,6 +344,107 @@ echo -e "ERROR: timeout\nWARNING: slow\nINFO: ok\nCRITICAL: down" | ./alert
 # CRITICAL: down
 ```
 
+### Example 6: Capture Groups - Extract Log Components
+
+Extract specific parts of log messages using regex capture groups:
+
+**Prolog:**
+```prolog
+:- use_module('src/unifyweaver/targets/go_target').
+
+% Extract timestamp and log level from log lines
+parse_log(Line, Time, Level) :-
+    match(Line, '([0-9-]+ [0-9:]+) ([A-Z]+)', auto, [Time, Level]).
+
+% Extract date, time, and level separately
+parse_detailed(Line, Date, Time, Level) :-
+    match(Line, '([0-9-]+) ([0-9:]+) ([A-Z]+)', auto, [Date, Time, Level]).
+
+test :-
+    compile_predicate_to_go(parse_log/3, [], Code),
+    write_go_program(Code, 'parse_log.go').
+```
+
+**Usage:**
+```bash
+go build parse_log.go
+cat logs.txt | ./parse_log
+# Input: 2025-01-15 10:30:45 ERROR timeout occurred
+# Output: 2025-01-15 10:30:45 ERROR timeout occurred:2025-01-15 10:30:45:ERROR
+```
+
+### Example 7: Constraints - Filter by Numeric Conditions
+
+Use constraints to filter records based on numeric comparisons:
+
+**Prolog:**
+```prolog
+:- use_module('src/unifyweaver/targets/go_target').
+
+person(alice, 25).
+person(bob, 17).
+person(charlie, 45).
+
+% Filter adults (age > 18)
+adult(Name, Age) :- person(Name, Age), Age > 18.
+
+% Filter working age (18 <= age <= 65)
+working_age(Name, Age) :- person(Name, Age), Age >= 18, Age =< 65.
+
+test :-
+    compile_predicate_to_go(adult/2, [], Code),
+    write_go_program(Code, 'adult.go').
+```
+
+**Usage:**
+```bash
+go build adult.go
+echo -e "alice:25\nbob:17\ncharlie:45" | ./adult
+# Output:
+# alice:25
+# charlie:45
+```
+
+### Example 8: Aggregations - Sum, Count, Average
+
+Perform aggregation operations on numeric fields:
+
+**Prolog:**
+```prolog
+:- use_module('src/unifyweaver/targets/go_target').
+
+value(10).
+value(20).
+value(30).
+value(40).
+value(50).
+
+% Compute sum of all values
+total(Sum) :- aggregation(sum), value(Sum).
+
+% Count number of values
+num_values(Count) :- aggregation(count), value(Count).
+
+% Compute average
+average(Avg) :- aggregation(avg), value(Avg).
+
+test :-
+    compile_predicate_to_go(total/1, [], SumCode),
+    write_go_program(SumCode, 'sum.go'),
+    compile_predicate_to_go(average/1, [], AvgCode),
+    write_go_program(AvgCode, 'avg.go').
+```
+
+**Usage:**
+```bash
+go build sum.go && go build avg.go
+echo -e "10\n20\n30\n40\n50" | ./sum
+# Output: 150
+
+echo -e "10\n20\n30\n40\n50" | ./avg
+# Output: 30
+```
+
 ---
 
 ## Options
@@ -393,19 +496,16 @@ Deduplicate results using a seen map (default: `true`).
    - ✅ Works: Multiple rules with different match patterns (combined into OR regex)
    - ⏳ Partial: Multiple rules with different body predicates (not yet supported)
 
-2. **No constraints**: Arithmetic and comparison not yet supported
-   - ❌ Not yet: `adult(Name) :- user(Name, Age), Age >= 18.`
-
-3. **Match predicate**: Boolean matching supported, capture groups partial
+2. **Match predicate**: Match-only rules supported with capture groups
    - ✅ Works: `error_log(Line) :- log(Line), match(Line, 'ERROR').`
    - ✅ Works: `timeout(Line) :- log(Line), match(Line, 'ERROR.*timeout').`
-   - ⏳ Partial: Capture groups detected but not extracted to variables
+   - ✅ Works: `parse(Line, Time, Level) :- match(Line, '([0-9:]+) ([A-Z]+)', auto, [Time, Level]).`
+   - ⏳ Partial: Match predicates combined with body predicates (not yet supported)
 
-4. **No aggregations**: Count, sum, etc. not yet supported
-   - ❌ Not yet: `total(Sum) :- aggregation(sum), values(X).`
-
-5. **Simple variable mapping only**: Complex unification not supported
+3. **Simple variable mapping only**: Complex unification not supported
    - ✅ Works: Variable reordering
+   - ✅ Works: Constraints with type conversion (strconv.Atoi)
+   - ✅ Works: Aggregations on numeric fields
    - ❌ Not yet: Nested structures, partial instantiation
 
 ### Workarounds
@@ -427,16 +527,19 @@ Use match/2 or match/3 for boolean filtering, then process matches with addition
 
 ## Future Enhancements
 
+Completed features (moved to Current Features):
+- ✅ Match predicate capture groups
+- ✅ Constraints (arithmetic and comparison)
+- ✅ Aggregations (count, sum, avg, min, max)
+
 Planned additions (in priority order):
 
-1. **Match predicate support** - Regex filtering with capture groups
-2. **Multiple rules compilation** - OR patterns
-3. **Constraints** - Arithmetic and comparison operators
-4. **Record structures** - Nested field access
-5. **Aggregations** - count, sum, avg, min, max
-6. **JSON I/O** - Parse and generate JSON
-7. **Custom functions** - User-defined Go helpers
-8. **Optimizations** - Eliminate unnecessary allocations
+1. **Match predicates with body predicates** - Combine match/4 with rule bodies
+2. **Multiple rules with different bodies** - Different body predicates per rule
+3. **Record structures** - Nested field access
+4. **JSON I/O** - Parse and generate JSON
+5. **Custom functions** - User-defined Go helpers
+6. **Optimizations** - Eliminate unnecessary allocations
 
 ---
 
@@ -521,6 +624,20 @@ filtered(X) :- source(X), match(X, 'pattern').
 
 % Match predicates (with options)
 filtered(X) :- source(X), match(X, 'pattern', auto).
+
+% Match predicates (with capture groups)
+parsed(Line, Field1, Field2) :- match(Line, '(\\w+) (\\d+)', auto, [Field1, Field2]).
+
+% Constraints (numeric comparisons)
+adult(Name, Age) :- person(Name, Age), Age > 18.
+working_age(Name, Age) :- person(Name, Age), Age >= 18, Age =< 65.
+
+% Aggregations
+total(Sum) :- aggregation(sum), value(Sum).
+count_records(N) :- aggregation(count), value(N).
+average_value(Avg) :- aggregation(avg), value(Avg).
+maximum(Max) :- aggregation(max), value(Max).
+minimum(Min) :- aggregation(min), value(Min).
 
 % Multiple rules (OR pattern with match)
 result(X) :- source(X), match(X, 'pattern1').
