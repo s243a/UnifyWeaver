@@ -70,10 +70,18 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
                                     FieldDelim, Unique, ScriptBody)
     ),
 
+    % Determine if we need stdin I/O imports
+    (   maplist(is_fact_clause, Clauses) ->
+        % Facts only - no stdin needed
+        NeedsStdin = false
+    ;   % Rules - needs stdin
+        NeedsStdin = true
+    ),
+
     % Generate complete Go program
     (   IncludePackage ->
         generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting,
-                           EscapeChar, ScriptBody, GoCode)
+                           EscapeChar, NeedsStdin, ScriptBody, GoCode)
     ;   GoCode = ScriptBody
     ),
     !.
@@ -255,26 +263,29 @@ compile_multiple_rules_to_go(_Pred, _Arity, _Clauses, _RecordDelim, _FieldDelim,
 %% GO PROGRAM GENERATION
 %% ============================================
 
-%% generate_go_program(+Pred, +Arity, +RecordDelim, +FieldDelim, +Quoting, +EscapeChar, +Body, -GoCode)
+%% generate_go_program(+Pred, +Arity, +RecordDelim, +FieldDelim, +Quoting, +EscapeChar, +NeedsStdin, +Body, -GoCode)
 %  Generate complete Go program with imports and main function
 %
-generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, Body, GoCode) :-
+generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting, EscapeChar, NeedsStdin, Body, GoCode) :-
     atom_string(Pred, PredStr),
 
+    % Generate imports based on what's needed
+    (   NeedsStdin ->
+        Imports = '\t"bufio"\n\t"fmt"\n\t"os"\n\t"strings"'
+    ;   % Facts only need fmt
+        Imports = '\t"fmt"'
+    ),
+
     % Generate program template
-    % TODO: Dynamically include only needed imports based on Body content
     format(string(GoCode), 'package main
 
 import (
-\t"bufio"
-\t"fmt"
-\t"os"
-\t"strings"
+~s
 )
 
 func main() {
 ~s}
-', [Body]).
+', [Imports, Body]).
 
 %% ============================================
 %% UTILITY FUNCTIONS
