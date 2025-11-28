@@ -783,7 +783,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
         private IEnumerable<object[]> ReadLineSeparated()
         {
-            using var reader = new StreamReader(_config.InputPath, Encoding.UTF8);
+            using var reader = OpenReader();
             SkipRows(reader);
             string? line;
             while ((line = reader.ReadLine()) is not null)
@@ -798,8 +798,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
         private IEnumerable<object[]> ReadNullSeparated()
         {
-            using var stream = File.OpenRead(_config.InputPath);
-            using var reader = new StreamReader(stream, Encoding.UTF8);
+            using var reader = OpenReader();
             var text = reader.ReadToEnd();
             var parts = text.Split('\0');
             for (int i = _config.SkipRows; i < parts.Length; i++)
@@ -899,6 +898,16 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             }
             return string.CompareOrdinal(record, index, separator, 0, separator.Length) == 0;
         }
+
+        private StreamReader OpenReader()
+        {
+            if (_config.InputPath == "-")
+            {
+                return new StreamReader(Console.OpenStandardInput(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
+            }
+            var stream = File.OpenRead(_config.InputPath);
+            return new StreamReader(stream, Encoding.UTF8);
+        }
     }
 
     public sealed class XmlStreamReader
@@ -923,7 +932,9 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
         private IEnumerable<object[]> ReadLineSeparated()
         {
-            foreach (var fragment in SplitFragments(File.ReadLines(_config.InputPath), '\n'))
+            using var reader = OpenReader();
+            var lines = ReadAllLines(reader);
+            foreach (var fragment in SplitFragments(lines, '\n'))
             {
                 var row = ParseFragment(fragment);
                 if (row is not null)
@@ -933,9 +944,19 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             }
         }
 
+        private static IEnumerable<string> ReadAllLines(StreamReader reader)
+        {
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                yield return line;
+            }
+        }
+
         private IEnumerable<object[]> ReadNullSeparated()
         {
-            var text = File.ReadAllText(_config.InputPath, Encoding.UTF8);
+            using var reader = OpenReader();
+            var text = reader.ReadToEnd();
             var parts = text.Split('\0');
             foreach (var fragment in parts)
             {
@@ -1128,6 +1149,16 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             }
 
             return null;
+        }
+
+        private StreamReader OpenReader()
+        {
+            if (_config.InputPath == "-")
+            {
+                return new StreamReader(Console.OpenStandardInput(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
+            }
+            var stream = File.OpenRead(_config.InputPath);
+            return new StreamReader(stream, Encoding.UTF8);
         }
     }
 
