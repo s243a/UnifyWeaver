@@ -34,17 +34,19 @@ The Go target generates standalone Go executables from Prolog predicates, provid
 - **Single rule compilation**: Compiles simple transformations with stdin I/O
 - **Match predicate support**: Regex filtering with boolean matching
 - **Match predicate capture groups**: Extract substrings using regex capture groups
+- **Match predicates with body predicates**: Combine regex captures with source predicates
 - **Multiple rules compilation**: OR patterns with combined regex matching
+- **Multiple rules with different bodies**: Sequential rule matching for different source arities
 - **Configurable delimiters**: Support for colon, tab, comma, and custom field delimiters
 - **Automatic deduplication**: Built-in `map[string]bool` for unique results
 - **Field reordering**: Correctly maps variables between head and body arguments
+- **Selective field assignment**: Only assigns fields actually used in output (avoids "declared and not used" errors)
 - **Constraints and arithmetic**: Support for >, <, >=, =<, ==, !=, and is/2
 - **Aggregations**: sum, count, max, min, avg operations on numeric fields
 - **Smart imports**: Only includes necessary Go packages (regexp, strings, strconv) when needed
 
 ### Planned Features
 
-- Multiple rules with different body predicates
 - JSON input/output
 - Nested data structures
 - Custom Go functions
@@ -445,6 +447,80 @@ echo -e "10\n20\n30\n40\n50" | ./avg
 # Output: 30
 ```
 
+### Example 9: Match + Body Predicates - Parse Log Entries
+
+Combine regex pattern matching with source predicates to extract structured data:
+
+**Prolog:**
+```prolog
+:- use_module('src/unifyweaver/targets/go_target').
+
+% Source predicate with log entries
+log_entry(alice, '2025-01-15 ERROR: timeout occurred').
+log_entry(bob, '2025-01-15 INFO: operation successful').
+log_entry(charlie, '2025-01-15 WARNING: slow response').
+
+% Extract name, level, and message using match + body
+parsed(Name, Level, Message) :-
+    log_entry(Name, Line),
+    match(Line, '([A-Z]+): (.+)', auto, [Level, Message]).
+
+test :-
+    compile_predicate_to_go(parsed/3, [field_delimiter(tab)], Code),
+    write_go_program(Code, 'parsed.go').
+```
+
+**Usage:**
+```bash
+go build parsed.go
+cat log_entries.txt | ./parsed
+# Input: alice	2025-01-15 ERROR: timeout occurred
+# Output: alice	ERROR	timeout occurred
+```
+
+### Example 10: Multiple Rules with Different Bodies - Unified Person View
+
+Compile multiple rules with different source predicates into a single program:
+
+**Prolog:**
+```prolog
+:- use_module('src/unifyweaver/targets/go_target').
+
+% Different source predicates with different arities
+user(alice).
+employee(bob, engineering).
+contractor(charlie, design, hourly).
+
+% Unify them into a single person/1 predicate
+person(Name) :- user(Name).
+person(Name) :- employee(Name, _).
+person(Name) :- contractor(Name, _, _).
+
+test :-
+    compile_predicate_to_go(person/1, [], Code),
+    write_go_program(Code, 'person.go').
+```
+
+**Generated Strategy:**
+The compiler generates sequential if-continue blocks that try each rule pattern based on field count:
+- If 1 field → try user/1
+- If 2 fields → try employee/2
+- If 3 fields → try contractor/3
+
+**Usage:**
+```bash
+go build person.go
+cat input.txt | ./person
+# Input:
+# alice
+# bob:engineering
+# charlie:design:hourly
+# Output:
+# alice
+# bob
+# charlie
+```
+
 ---
 
 ## Options
@@ -492,15 +568,15 @@ Deduplicate results using a seen map (default: `true`).
 
 ### Current Limitations
 
-1. **Multiple rules**: Supports OR patterns with same body predicate and match constraints
+1. **Multiple rules**: Full support for OR patterns and different body predicates
    - ✅ Works: Multiple rules with different match patterns (combined into OR regex)
-   - ⏳ Partial: Multiple rules with different body predicates (not yet supported)
+   - ✅ Works: Multiple rules with different body predicates (sequential matching)
 
-2. **Match predicate**: Match-only rules supported with capture groups
+2. **Match predicate**: Fully supported with capture groups and body predicates
    - ✅ Works: `error_log(Line) :- log(Line), match(Line, 'ERROR').`
    - ✅ Works: `timeout(Line) :- log(Line), match(Line, 'ERROR.*timeout').`
    - ✅ Works: `parse(Line, Time, Level) :- match(Line, '([0-9:]+) ([A-Z]+)', auto, [Time, Level]).`
-   - ⏳ Partial: Match predicates combined with body predicates (not yet supported)
+   - ✅ Works: `parsed(Name, Level, Msg) :- log_entry(Name, Line), match(Line, '([A-Z]+): (.+)', auto, [Level, Msg]).`
 
 3. **Simple variable mapping only**: Complex unification not supported
    - ✅ Works: Variable reordering
@@ -531,15 +607,16 @@ Completed features (moved to Current Features):
 - ✅ Match predicate capture groups
 - ✅ Constraints (arithmetic and comparison)
 - ✅ Aggregations (count, sum, avg, min, max)
+- ✅ Match predicates with body predicates
+- ✅ Multiple rules with different bodies
 
 Planned additions (in priority order):
 
-1. **Match predicates with body predicates** - Combine match/4 with rule bodies
-2. **Multiple rules with different bodies** - Different body predicates per rule
-3. **Record structures** - Nested field access
-4. **JSON I/O** - Parse and generate JSON
-5. **Custom functions** - User-defined Go helpers
-6. **Optimizations** - Eliminate unnecessary allocations
+1. **Record structures** - Nested field access
+2. **JSON I/O** - Parse and generate JSON
+3. **Custom functions** - User-defined Go helpers
+4. **Optimizations** - Eliminate unnecessary allocations
+5. **Deduplication by key rules** - Support for detecting duplicate rule patterns
 
 ---
 
@@ -642,4 +719,12 @@ minimum(Min) :- aggregation(min), value(Min).
 % Multiple rules (OR pattern with match)
 result(X) :- source(X), match(X, 'pattern1').
 result(X) :- source(X), match(X, 'pattern2').
+
+% Match + body predicates (capture with source)
+parsed(Name, Level, Msg) :- log_entry(Name, Line), match(Line, '([A-Z]+): (.+)', auto, [Level, Msg]).
+
+% Multiple rules with different bodies (sequential matching)
+person(Name) :- user(Name).
+person(Name) :- employee(Name, _).
+person(Name) :- contractor(Name, _, _).
 ```

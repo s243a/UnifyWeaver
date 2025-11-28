@@ -23,6 +23,17 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Constraint awareness** - Unique and ordering constraints optimize generated code
 - **Pattern detection** - Automatic classification of recursion patterns
 
+### Go Target (v0.1)
+- **Standalone Executables** - Compiles Prolog predicates to single-binary Go programs
+- **Cross-Platform** - Runs on any platform with Go support, no runtime dependencies
+- **Stream Processing** - Efficient stdin/stdout pipeline integration for record processing
+- **Match Predicates** - Regex filtering with capture groups for data extraction
+- **Multiple Rules** - OR patterns and different body predicates with sequential matching
+- **Constraints & Aggregations** - Numeric comparisons (>, <, >=, =<) and sum/count/avg/min/max
+- **Smart Compilation** - Selective field assignment and automatic package imports
+
+**See [Go Target Guide](docs/GO_TARGET.md) for details.**
+
 ### C# Target Family (v0.1)
 - **Query Runtime (`target(csharp_query)`)** - Generates relational plans executed by a shared .NET engine with semi-naive fixpoint evaluation.
 - **External Compilation** - Robust `dotnet build` integration with dependency support and file locking prevention.
