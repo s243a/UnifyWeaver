@@ -45,9 +45,11 @@ match(String, Pattern, RegexType, CaptureList)
 |--------|---------------|----------------|--------|
 | **AWK** | ✅ | ✅ | Complete |
 | **Python** | ✅ | ✅ | Complete |
-| **Bash** | 🚧 | 🚧 | Planned |
+| **Bash (Core)** | 🚧 | 🚧 | Planned* |
 | **C#** | ❌ | ❌ | Not yet |
 | **Prolog** | ❌ | ❌ | Not yet |
+
+\* Bash support requires integration with UnifyWeaver's core stream/recursive compilers. See [Future Work](#future-work-bash-core-compiler) below.
 
 ---
 
@@ -397,8 +399,35 @@ Planned improvements:
 1. **Use captures in constraints**: Allow arithmetic/comparison on captured values
 2. **Named captures**: Support for named capture groups
 3. **Regex translation**: Auto-translate between compatible types
-4. **More targets**: C#, Bash, Prolog native
+4. **More targets**: C#, Prolog native
 5. **Match flags**: Case-insensitive, multiline, etc.
+
+### Future Work: Bash Core Compiler
+
+Adding match predicate support to UnifyWeaver's core Bash compiler (stream_compiler.pl and recursive_compiler.pl) requires:
+
+1. **Constraint Recognition**: Add match predicates to `extract_predicates` skip list
+2. **Bash Operator Mapping**: Implement `goal_to_bash_operator` for match using `[[ var =~ pattern ]]`
+3. **Capture Group Handling**: Extract `BASH_REMATCH` array values after successful matches
+4. **Template Integration**: Add match support to bash code generation templates
+5. **Regex Type Validation**: Support `ere`, `bre`, `posix`, `bash` regex types
+
+Example planned Bash output:
+```bash
+# Boolean match
+if [[ "$line" =~ ERROR ]]; then
+    echo "$line"
+fi
+
+# With captures
+if [[ "$line" =~ ([0-9-]+\ [0-9:]+)\ ([A-Z]+) ]]; then
+    timestamp="${BASH_REMATCH[1]}"
+    level="${BASH_REMATCH[2]}"
+    echo "$timestamp $level"
+fi
+```
+
+This is a larger task requiring integration with UnifyWeaver's core compilation pipeline.
 
 ---
 
