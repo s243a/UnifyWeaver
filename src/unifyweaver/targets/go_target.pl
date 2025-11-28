@@ -31,11 +31,27 @@
 %  - escape_char(Char) - Escape character (default: backslash)
 %  - include_package(true|false) - Include package main (default: true)
 %  - unique(true|false) - Deduplicate results (default: true)
+%  - aggregation(sum|count|max|min|avg) - Aggregation operation
 %
 compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     PredIndicator = Pred/Arity,
     format('=== Compiling ~w/~w to Go ===~n', [Pred, Arity]),
 
+    % Check if this is an aggregation operation
+    (   option(aggregation(AggOp), Options, none),
+        AggOp \= none
+    ->  % Compile as aggregation
+        option(field_delimiter(FieldDelim), Options, colon),
+        option(include_package(IncludePackage), Options, true),
+        compile_aggregation_to_go(Pred, Arity, AggOp, FieldDelim, IncludePackage, GoCode)
+    ;   % Continue with normal compilation
+        compile_predicate_to_go_normal(Pred, Arity, Options, GoCode)
+    ).
+
+%% compile_predicate_to_go_normal(+Pred, +Arity, +Options, -GoCode)
+%  Normal (non-aggregation) compilation path
+%
+compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
     % Get options
     option(record_delimiter(RecordDelim), Options, newline),
     option(field_delimiter(FieldDelim), Options, colon),
@@ -115,6 +131,138 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
 
 %% Helper to check if a clause is a fact (body is just 'true')
 is_fact_clause(_-true).
+
+%% ============================================
+%% AGGREGATION PATTERN COMPILATION
+%% ============================================
+
+%% compile_aggregation_to_go(+Pred, +Arity, +AggOp, +FieldDelim, +IncludePackage, -GoCode)
+%  Compile aggregation operations (sum, count, max, min, avg)
+%
+compile_aggregation_to_go(Pred, Arity, AggOp, FieldDelim, IncludePackage, GoCode) :-
+    atom_string(Pred, PredStr),
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    format('  Aggregation type: ~w~n', [AggOp]),
+
+    % Generate aggregation Go code based on operation
+    generate_aggregation_go(AggOp, Arity, DelimChar, ScriptBody),
+
+    % Determine imports based on aggregation type
+    %  count doesn't need strconv, others do
+    (   AggOp = count ->
+        Imports = '\t"bufio"\n\t"fmt"\n\t"os"'
+    ;   Imports = '\t"bufio"\n\t"fmt"\n\t"os"\n\t"strconv"'
+    ),
+
+    % Wrap in package main if requested
+    (   IncludePackage ->
+        format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+func main() {
+~s}
+', [Imports, ScriptBody])
+    ;   GoCode = ScriptBody
+    ).
+
+%% generate_aggregation_go(+AggOp, +Arity, +DelimChar, -GoCode)
+%  Generate Go code for specific aggregation operations
+%
+generate_aggregation_go(sum, _Arity, _DelimChar, GoCode) :-
+    format(atom(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+\tsum := 0.0
+\t
+\tfor scanner.Scan() {
+\t\tline := scanner.Text()
+\t\tval, err := strconv.ParseFloat(line, 64)
+\t\tif err == nil {
+\t\t\tsum += val
+\t\t}
+\t}
+\t
+\tfmt.Println(sum)
+', []).
+
+generate_aggregation_go(count, _Arity, _DelimChar, GoCode) :-
+    format(atom(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+\tcount := 0
+\t
+\tfor scanner.Scan() {
+\t\tcount++
+\t}
+\t
+\tfmt.Println(count)
+', []).
+
+generate_aggregation_go(max, _Arity, _DelimChar, GoCode) :-
+    format(atom(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+\tvar max float64
+\tfirst := true
+\t
+\tfor scanner.Scan() {
+\t\tline := scanner.Text()
+\t\tval, err := strconv.ParseFloat(line, 64)
+\t\tif err == nil {
+\t\t\tif first || val > max {
+\t\t\t\tmax = val
+\t\t\t\tfirst = false
+\t\t\t}
+\t\t}
+\t}
+\t
+\tif !first {
+\t\tfmt.Println(max)
+\t}
+', []).
+
+generate_aggregation_go(min, _Arity, _DelimChar, GoCode) :-
+    format(atom(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+\tvar min float64
+\tfirst := true
+\t
+\tfor scanner.Scan() {
+\t\tline := scanner.Text()
+\t\tval, err := strconv.ParseFloat(line, 64)
+\t\tif err == nil {
+\t\t\tif first || val < min {
+\t\t\t\tmin = val
+\t\t\t\tfirst = false
+\t\t\t}
+\t\t}
+\t}
+\t
+\tif !first {
+\t\tfmt.Println(min)
+\t}
+', []).
+
+generate_aggregation_go(avg, _Arity, _DelimChar, GoCode) :-
+    format(atom(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+\tsum := 0.0
+\tcount := 0
+\t
+\tfor scanner.Scan() {
+\t\tline := scanner.Text()
+\t\tval, err := strconv.ParseFloat(line, 64)
+\t\tif err == nil {
+\t\t\tsum += val
+\t\t\tcount++
+\t\t}
+\t}
+\t
+\tif count > 0 {
+\t\tfmt.Println(sum / float64(count))
+\t}
+', []).
 
 %% ============================================
 %% FACTS COMPILATION
