@@ -680,6 +680,31 @@ extract_match_constraints(match(Var, Pattern, Type), [match(Var, Pattern, Type, 
 extract_match_constraints(match(Var, Pattern, Type, Groups), [match(Var, Pattern, Type, Groups)]) :- !.
 extract_match_constraints(_, []).
 
+%% generate_bash_capture_filter(+Pattern, +Groups, -FilterCode)
+%  Generate bash while loop with [[ =~ ]] for capture group extraction
+%  Uses BASH_REMATCH array to extract matched groups
+generate_bash_capture_filter(Pattern, Groups, FilterCode) :-
+    length(Groups, NumGroups),
+
+    % Build the BASH_REMATCH extraction: "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}..."
+    findall(Index, between(1, NumGroups, Index), Indices),
+    findall(RematchRef,
+        (   member(I, Indices),
+            atom_concat('${BASH_REMATCH[', I, Tmp),
+            atom_concat(Tmp, ']}', RematchRef)
+        ),
+        RematchRefs),
+    atomic_list_concat(RematchRefs, ':', RematchOutput),
+
+    % Generate the while loop with regex matching
+    atomic_list_concat([
+        'while IFS= read -r line; do if [[ "$line" =~ ',
+        Pattern,
+        ' ]]; then echo "',
+        RematchOutput,
+        '"; fi; done'
+    ], '', FilterCode).
+
 %% generate_match_filters(+Constraints, +VarMap, +Args, -FilterCode)
 %  Generate bash filter code for match constraints
 generate_match_filters([], _, _, "") :- !.
@@ -694,12 +719,10 @@ generate_match_filters([Match|Rest], VarMap, Args, FilterCode) :-
 
     % Generate filter code based on whether there are capture groups
     (   Groups = [] ->
-        % Boolean match - simple grep filter
-        format(string(ThisFilter), 'grep ''~s''', [PatternStr])
+        % Boolean match - efficient grep filter
+        format(string(ThisFilter), 'grep ~q', [PatternStr])
     ;   % With capture groups - use bash while loop with BASH_REMATCH
-        % TODO: implement capture group extraction
-        % For now, just use grep without captures
-        format(string(ThisFilter), 'grep ''~s''', [PatternStr])
+        generate_bash_capture_filter(PatternStr, Groups, ThisFilter)
     ),
 
     % Recursively process remaining constraints
