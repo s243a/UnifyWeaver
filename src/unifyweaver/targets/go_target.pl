@@ -42,6 +42,11 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     ->  % Compile for JSON input
         format('  Mode: JSON input (JSONL)~n'),
         compile_json_input_mode(Pred, Arity, Options, GoCode)
+    % Check if this is JSON output mode
+    ;   option(json_output(true), Options)
+    ->  % Compile for JSON output
+        format('  Mode: JSON output~n'),
+        compile_json_output_mode(Pred, Arity, Options, GoCode)
     % Check if this is an aggregation operation
     ;   option(aggregation(AggOp), Options, none),
         AggOp \= none
@@ -1387,6 +1392,164 @@ func main() {
 ', [ScriptBody])
     ;   GoCode = ScriptBody
     ).
+
+%% ============================================
+%% JSON OUTPUT MODE
+%% ============================================
+
+%% compile_json_output_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile a predicate to generate JSON output
+%  Reads delimiter-based input and generates JSON
+%
+compile_json_output_mode(Pred, Arity, Options, GoCode) :-
+    % Get options
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(include_package(IncludePackage), Options, true),
+
+    % Get field names from options or generate defaults
+    (   option(json_fields(FieldNames), Options)
+    ->  true
+    ;   % Generate default field names from predicate
+        functor(Head, Pred, Arity),
+        Head =.. [_|Args],
+        generate_default_field_names(Args, 1, FieldNames)
+    ),
+
+    % Generate struct definition
+    atom_string(Pred, PredStr),
+    upcase_atom(Pred, UpperPred),
+    generate_json_struct(UpperPred, FieldNames, StructDef),
+
+    % Generate parsing and output code
+    compile_json_output_to_go(UpperPred, FieldNames, FieldDelim, OutputBody),
+
+    % Wrap in package if requested
+    (   IncludePackage ->
+        format(string(GoCode), 'package main
+
+import (
+\t"bufio"
+\t"encoding/json"
+\t"fmt"
+\t"os"
+\t"strings"
+\t"strconv"
+)
+
+~s
+
+func main() {
+~s}
+', [StructDef, OutputBody])
+    ;   format(string(GoCode), '~s~n~s', [StructDef, OutputBody])
+    ).
+
+%% generate_default_field_names(+Args, +StartNum, -FieldNames)
+%  Generate default field names (Field1, Field2, ...)
+%
+generate_default_field_names([], _, []).
+generate_default_field_names([_|Args], N, [FieldName|Rest]) :-
+    format(atom(FieldName), 'Field~w', [N]),
+    N1 is N + 1,
+    generate_default_field_names(Args, N1, Rest).
+
+%% generate_json_struct(+StructName, +FieldNames, -StructDef)
+%  Generate Go struct definition with JSON tags
+%
+generate_json_struct(StructName, FieldNames, StructDef) :-
+    findall(FieldLine,
+        (   nth1(Pos, FieldNames, FieldName),
+            upcase_atom(FieldName, UpperField),
+            downcase_atom(FieldName, LowerField),
+            format(atom(FieldLine), '\t~w interface{} `json:"~w"`', [UpperField, LowerField])
+        ),
+        FieldLines),
+    atomic_list_concat(FieldLines, '\n', FieldsStr),
+    format(atom(StructDef), 'type ~wRecord struct {\n~w\n}', [StructName, FieldsStr]).
+
+%% compile_json_output_to_go(+StructName, +FieldNames, +FieldDelim, -GoCode)
+%  Generate Go code to read delimited input and output JSON
+%
+compile_json_output_to_go(StructName, FieldNames, FieldDelim, GoCode) :-
+    % Map delimiter
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % Generate field count and parsing code
+    length(FieldNames, NumFields),
+    generate_field_parsing(FieldNames, 1, ParseCode),
+
+    % Generate struct initialization
+    generate_struct_init(StructName, FieldNames, StructInit),
+
+    format(string(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+\t
+\tfor scanner.Scan() {
+\t\tparts := strings.Split(scanner.Text(), "~s")
+\t\tif len(parts) != ~w {
+\t\t\tcontinue
+\t\t}
+\t\t
+~s
+\t\t
+\t\trecord := ~s
+\t\t
+\t\tjsonBytes, err := json.Marshal(record)
+\t\tif err != nil {
+\t\t\tcontinue
+\t\t}
+\t\tfmt.Println(string(jsonBytes))
+\t}
+', [DelimChar, NumFields, ParseCode, StructInit]).
+
+%% generate_field_parsing(+FieldNames, +StartPos, -ParseCode)
+%  Generate code to parse fields from split parts
+%  Tries to convert to numbers if possible, otherwise uses string
+%
+generate_field_parsing([], _, '').
+generate_field_parsing([FieldName|Rest], Pos, ParseCode) :-
+    Pos0 is Pos - 1,
+    upcase_atom(FieldName, UpperField),
+    downcase_atom(FieldName, LowerField),
+
+    % Generate parsing code that tries numeric conversion
+    format(atom(FieldParse), '\t\t// Parse ~w
+\t\t~w := parts[~w]
+\t\tvar ~wValue interface{}
+\t\tif intVal, err := strconv.Atoi(~w); err == nil {
+\t\t\t~wValue = intVal
+\t\t} else if floatVal, err := strconv.ParseFloat(~w, 64); err == nil {
+\t\t\t~wValue = floatVal
+\t\t} else if boolVal, err := strconv.ParseBool(~w); err == nil {
+\t\t\t~wValue = boolVal
+\t\t} else {
+\t\t\t~wValue = ~w
+\t\t}',
+        [LowerField, LowerField, Pos0, LowerField, LowerField,
+         LowerField, LowerField, LowerField, LowerField, LowerField,
+         LowerField, LowerField]),
+
+    Pos1 is Pos + 1,
+    generate_field_parsing(Rest, Pos1, RestParse),
+
+    (   RestParse = ''
+    ->  ParseCode = FieldParse
+    ;   format(atom(ParseCode), '~s~n~s', [FieldParse, RestParse])
+    ).
+
+%% generate_struct_init(+StructName, +FieldNames, -StructInit)
+%  Generate struct initialization code
+%
+generate_struct_init(StructName, FieldNames, StructInit) :-
+    findall(FieldInit,
+        (   member(FieldName, FieldNames),
+            upcase_atom(FieldName, UpperField),
+            downcase_atom(FieldName, LowerField),
+            format(atom(FieldInit), '~w: ~wValue', [UpperField, LowerField])
+        ),
+        FieldInits),
+    atomic_list_concat(FieldInits, ', ', FieldsStr),
+    format(atom(StructInit), '~wRecord{~w}', [StructName, FieldsStr]).
 
 %% extract_json_field_mappings(+Body, -FieldMappings)
 %  Extract field-to-variable mappings from json_record([field-Var, ...])
