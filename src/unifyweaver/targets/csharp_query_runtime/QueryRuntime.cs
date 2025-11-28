@@ -752,6 +752,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
     public sealed record XmlSourceConfig
     {
         public string InputPath { get; init; } = string.Empty;
+        public Stream? InputStream { get; init; } = null;
         public RecordSeparatorKind RecordSeparator { get; init; } = RecordSeparatorKind.Null;
         public int ExpectedWidth { get; init; } = 1;
         public IReadOnlyDictionary<string, string>? NamespacePrefixes { get; init; } = XmlDefaults.BuiltinNamespacePrefixes;
@@ -783,7 +784,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
         private IEnumerable<object[]> ReadLineSeparated()
         {
-            using var reader = new StreamReader(_config.InputPath, Encoding.UTF8);
+            using var reader = OpenReader();
             SkipRows(reader);
             string? line;
             while ((line = reader.ReadLine()) is not null)
@@ -798,8 +799,7 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
         private IEnumerable<object[]> ReadNullSeparated()
         {
-            using var stream = File.OpenRead(_config.InputPath);
-            using var reader = new StreamReader(stream, Encoding.UTF8);
+            using var reader = OpenReader();
             var text = reader.ReadToEnd();
             var parts = text.Split('\0');
             for (int i = _config.SkipRows; i < parts.Length; i++)
@@ -899,6 +899,16 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             }
             return string.CompareOrdinal(record, index, separator, 0, separator.Length) == 0;
         }
+
+        private StreamReader OpenReader()
+        {
+            if (_config.InputPath == "-")
+            {
+                return new StreamReader(Console.OpenStandardInput(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
+            }
+            var stream = File.OpenRead(_config.InputPath);
+            return new StreamReader(stream, Encoding.UTF8);
+        }
     }
 
     public sealed class XmlStreamReader
@@ -908,8 +918,8 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
         public XmlStreamReader(XmlSourceConfig config)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
-            if (string.IsNullOrWhiteSpace(_config.InputPath))
-                throw new ArgumentException("InputPath is required", nameof(config));
+            if (string.IsNullOrWhiteSpace(_config.InputPath) && _config.InputStream is null)
+                throw new ArgumentException("Either InputPath or InputStream is required", nameof(config));
             if (_config.ExpectedWidth <= 0)
                 throw new ArgumentException("ExpectedWidth must be positive", nameof(config));
         }
@@ -923,7 +933,9 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
         private IEnumerable<object[]> ReadLineSeparated()
         {
-            foreach (var fragment in SplitFragments(File.ReadLines(_config.InputPath), '\n'))
+            using var reader = OpenReader();
+            var lines = ReadAllLines(reader);
+            foreach (var fragment in SplitFragments(lines, '\n'))
             {
                 var row = ParseFragment(fragment);
                 if (row is not null)
@@ -933,9 +945,19 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             }
         }
 
+        private static IEnumerable<string> ReadAllLines(StreamReader reader)
+        {
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                yield return line;
+            }
+        }
+
         private IEnumerable<object[]> ReadNullSeparated()
         {
-            var text = File.ReadAllText(_config.InputPath, Encoding.UTF8);
+            using var reader = OpenReader();
+            var text = reader.ReadToEnd();
             var parts = text.Split('\0');
             foreach (var fragment in parts)
             {
@@ -981,6 +1003,9 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
 
             try
             {
+                // Inject namespace declarations if needed
+                fragment = InjectNamespaces(fragment);
+
                 var doc = XDocument.Parse(fragment, LoadOptions.PreserveWhitespace | LoadOptions.SetLineInfo);
                 var map = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
                 if (doc.Root is XElement root)
@@ -1010,6 +1035,48 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             {
                 throw new InvalidDataException($"Failed to parse XML fragment: {ex.Message}", ex);
             }
+        }
+
+        private string InjectNamespaces(string fragment)
+        {
+            if (_config.NamespacePrefixes == null || _config.NamespacePrefixes.Count == 0)
+            {
+                return fragment;
+            }
+
+            // Find the first opening tag and inject xmlns declarations
+            var tagStart = fragment.IndexOf('<');
+            if (tagStart < 0) return fragment;
+
+            var tagEnd = fragment.IndexOf('>', tagStart);
+            if (tagEnd < 0) return fragment;
+
+            // Check if this is a self-closing tag
+            var isSelfClosing = fragment[tagEnd - 1] == '/';
+            var insertPos = isSelfClosing ? tagEnd - 1 : tagEnd;
+
+            // Get the opening tag content to check for existing xmlns declarations
+            var tagContent = fragment.Substring(tagStart, tagEnd - tagStart + 1);
+
+            // Build xmlns declarations, skipping ones that already exist
+            var xmlnsDecls = new StringBuilder();
+            foreach (var kvp in _config.NamespacePrefixes)
+            {
+                var xmlnsAttr = $"xmlns:{kvp.Value}=";
+                if (!tagContent.Contains(xmlnsAttr))
+                {
+                    xmlnsDecls.Append($" xmlns:{kvp.Value}=\"{kvp.Key}\"");
+                }
+            }
+
+            // Only insert if we have declarations to add
+            if (xmlnsDecls.Length == 0)
+            {
+                return fragment;
+            }
+
+            // Insert the declarations
+            return fragment.Insert(insertPos, xmlnsDecls.ToString());
         }
 
         private void AddElement(IDictionary<string, object?> map, XElement element)
@@ -1128,6 +1195,20 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
             }
 
             return null;
+        }
+
+        private StreamReader OpenReader()
+        {
+            if (_config.InputStream is not null)
+            {
+                return new StreamReader(_config.InputStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
+            }
+            if (_config.InputPath == "-")
+            {
+                return new StreamReader(Console.OpenStandardInput(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
+            }
+            var stream = File.OpenRead(_config.InputPath);
+            return new StreamReader(stream, Encoding.UTF8);
         }
     }
 
