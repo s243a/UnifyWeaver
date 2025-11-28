@@ -37,8 +37,13 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     PredIndicator = Pred/Arity,
     format('=== Compiling ~w/~w to Go ===~n', [Pred, Arity]),
 
+    % Check if this is JSON input mode
+    (   option(json_input(true), Options)
+    ->  % Compile for JSON input
+        format('  Mode: JSON input (JSONL)~n'),
+        compile_json_input_mode(Pred, Arity, Options, GoCode)
     % Check if this is an aggregation operation
-    (   option(aggregation(AggOp), Options, none),
+    ;   option(aggregation(AggOp), Options, none),
         AggOp \= none
     ->  % Compile as aggregation
         option(field_delimiter(FieldDelim), Options, colon),
@@ -1328,6 +1333,151 @@ import (
 func main() {
 ~s}
 ', [Imports, Body]).
+
+%% ============================================
+%% UTILITY FUNCTIONS
+%% ============================================
+%% ============================================
+%% JSON INPUT MODE COMPILATION
+%% ============================================
+
+%% compile_json_input_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate with JSON input (JSONL format)
+%  Reads JSON lines from stdin, extracts fields, outputs in configured format
+%
+compile_json_input_mode(Pred, Arity, Options, GoCode) :-
+    % Get options
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(include_package(IncludePackage), Options, true),
+    option(unique(Unique), Options, true),
+
+    % Get predicate clauses
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+
+    (   Clauses = [] ->
+        format('ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
+        fail
+    ;   Clauses = [SingleHead-SingleBody] ->
+        % Single clause - extract JSON field mappings
+        format('  Clause: ~w~n', [SingleHead-SingleBody]),
+        extract_json_field_mappings(SingleBody, FieldMappings),
+        format('  Field mappings: ~w~n', [FieldMappings]),
+
+        % Generate Go code for JSON input
+        SingleHead =.. [_|HeadArgs],
+        compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, ScriptBody)
+    ;   format('ERROR: Multiple clauses not yet supported for JSON input mode~n'),
+        fail
+    ),
+
+    % Wrap in package if requested
+    (   IncludePackage ->
+        format(string(GoCode), 'package main
+
+import (
+\t"bufio"
+\t"encoding/json"
+\t"fmt"
+\t"os"
+)
+
+func main() {
+~s}
+', [ScriptBody])
+    ;   GoCode = ScriptBody
+    ).
+
+%% extract_json_field_mappings(+Body, -FieldMappings)
+%  Extract field-to-variable mappings from json_record([field-Var, ...])
+%
+extract_json_field_mappings(json_record(Fields), FieldMappings) :- !,
+    extract_field_list(Fields, FieldMappings).
+extract_json_field_mappings(Body, []) :-
+    format('WARNING: Body does not contain json_record/1: ~w~n', [Body]).
+
+extract_field_list([], []).
+extract_field_list([Field-Var|Rest], [Field-Var|Mappings]) :- !,
+    extract_field_list(Rest, Mappings).
+extract_field_list([Other|Rest], Mappings) :-
+    format('WARNING: Unexpected field format: ~w~n', [Other]),
+    extract_field_list(Rest, Mappings).
+
+%% compile_json_to_go(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, -GoCode)
+%  Generate Go code for JSON input mode
+%
+compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
+    % Map delimiter
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % Generate field extraction code
+    generate_json_field_extractions(FieldMappings, HeadArgs, ExtractCode),
+
+    % Generate output expression
+    generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
+
+    % Build main loop
+    (   Unique = true ->
+        SeenDecl = '\tseen := make(map[string]bool)\n\t',
+        UniqueCheck = '\t\tif !seen[result] {\n\t\t\tseen[result] = true\n\t\t\tfmt.Println(result)\n\t\t}\n'
+    ;   SeenDecl = '\t',
+        UniqueCheck = '\t\tfmt.Println(result)\n'
+    ),
+
+    format(string(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+~w
+\tfor scanner.Scan() {
+\t\tvar data map[string]interface{}
+\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+\t\t\tcontinue
+\t\t}
+\t\t
+~s
+\t\t
+\t\tresult := ~s
+~s\t}
+', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
+
+%% generate_json_field_extractions(+FieldMappings, +HeadArgs, -ExtractCode)
+%  Generate Go code to extract and type-assert JSON fields
+%
+generate_json_field_extractions(FieldMappings, HeadArgs, ExtractCode) :-
+    % Generate extractions by pairing field mappings with positions
+    findall(ExtractLine,
+        (   nth1(Pos, FieldMappings, Field-_Var),
+            atom_string(Field, FieldStr),
+            format(atom(VarName), 'field~w', [Pos]),
+            generate_field_extraction(FieldStr, VarName, ExtractLine)
+        ),
+        ExtractLines),
+    atomic_list_concat(ExtractLines, '\n', ExtractCode).
+
+%% generate_field_extraction(+FieldName, +VarName, -ExtractCode)
+%  Generate extraction code for a single field
+%  Extract as interface{} to support any JSON type (string, number, bool, etc.)
+%
+generate_field_extraction(FieldName, VarName, ExtractCode) :-
+    format(atom(ExtractCode), '\t\t~w, ~wOk := data["~s"]\n\t\tif !~wOk {\n\t\t\tcontinue\n\t\t}',
+        [VarName, VarName, FieldName, VarName]).
+
+%% generate_json_output_expr(+HeadArgs, +DelimChar, -OutputExpr)
+%  Generate Go fmt.Sprintf expression for output
+%  Use %v to handle any JSON type (string, number, bool, etc.)
+%
+generate_json_output_expr(HeadArgs, DelimChar, OutputExpr) :-
+    length(HeadArgs, NumArgs),
+    findall('%v', between(1, NumArgs, _), FormatParts),  % %v instead of %s
+    atomic_list_concat(FormatParts, DelimChar, FormatStr),
+
+    findall(VarName,
+        (   nth1(Pos, HeadArgs, _),
+            format(atom(VarName), 'field~w', [Pos])
+        ),
+        VarNames),
+    atomic_list_concat(VarNames, ', ', VarList),
+
+    format(atom(OutputExpr), 'fmt.Sprintf("~s", ~s)', [FormatStr, VarList]).
 
 %% ============================================
 %% UTILITY FUNCTIONS
