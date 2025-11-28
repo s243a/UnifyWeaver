@@ -725,6 +725,15 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
         Fields),
     atomic_list_concat(Fields, ' ":" ', FieldsConcat),
 
+    % Check if we have capture groups to extract
+    (   has_capture_groups(Constraints, NumCaptures),
+        NumCaptures > 0
+    ->  % Generate print statement for captured values
+        generate_capture_print(NumCaptures, PrintStmt)
+    ;   % No captures - print the whole line
+        PrintStmt = 'print $0'
+    ),
+
     (   Unique ->
         format(atom(MainBlock),
 '{
@@ -732,17 +741,17 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
     if (key in ~w_data~w) {
         if (!(key in seen)) {
             seen[key] = 1
-            print $0
+            ~w
         }
     }
-}', [FieldsConcat, PredLookupStr, ConstraintCheck])
+}', [FieldsConcat, PredLookupStr, ConstraintCheck, PrintStmt])
     ;   format(atom(MainBlock),
 '{
     key = ~w
     if (key in ~w_data~w) {
-        print $0
+        ~w
     }
-}', [FieldsConcat, PredLookupStr, ConstraintCheck])
+}', [FieldsConcat, PredLookupStr, ConstraintCheck, PrintStmt])
     ),
 
     format(atom(BeginBlock),
@@ -835,6 +844,24 @@ constraint_to_awk(is(A, B), VarMap, AwkCode) :-
     term_to_awk_expr(A, VarMap, AwkA),
     term_to_awk_expr(B, VarMap, AwkB),
     format(atom(AwkCode), '((~w = ~w), 1)', [AwkA, AwkB]).
+constraint_to_awk(match(Var, Pattern, Type, Groups), VarMap, AwkCode) :-
+    % Validate regex type for AWK target
+    validate_regex_type_for_awk(Type),
+    % Convert variable to AWK expression
+    term_to_awk_expr(Var, VarMap, AwkVar),
+    % Escape pattern for AWK
+    escape_awk_pattern(Pattern, EscapedPattern),
+    % Check if we have capture groups
+    (   Groups = []
+    ->  % No capture groups - use simple boolean match
+        format(atom(AwkCode), '(~w ~~ /~w/)', [AwkVar, EscapedPattern])
+    ;   % Has capture groups - use match() function with capture array
+        % Generate AWK match() call with captures
+        % AWK syntax: match(string, regex, array)
+        % Note: This generates a boolean check; actual capture extraction
+        % would need to be in a separate statement
+        format(atom(AwkCode), 'match(~w, /~w/, __captures__)', [AwkVar, EscapedPattern])
+    ).
 
 %% term_to_awk_expr(+Term, +VarMap, -AwkExpr)
 %  Convert a Prolog term to an AWK expression using variable mapping
@@ -1074,6 +1101,10 @@ extract_predicates(_ =< _, []) :- !.
 extract_predicates(_ =:= _, []) :- !.
 extract_predicates(_ =\= _, []) :- !.
 extract_predicates(is(_, _), []) :- !.
+% Skip match predicates (they're constraints)
+extract_predicates(match(_, _), []) :- !.
+extract_predicates(match(_, _, _), []) :- !.
+extract_predicates(match(_, _, _, _), []) :- !.
 % Skip negation wrapper
 extract_predicates(\+ A, Predicates) :- !,
     extract_predicates(A, Predicates).
@@ -1103,11 +1134,83 @@ extract_constraints(A =< B, [lte(A, B)]) :- !.
 extract_constraints(A =:= B, [eq(A, B)]) :- !.
 extract_constraints(A =\= B, [neq(A, B)]) :- !.
 extract_constraints(is(A, B), [is(A, B)]) :- !.
+% Capture match predicates (regex pattern matching)
+extract_constraints(match(Var, Pattern), [match(Var, Pattern, auto, [])]) :- !.
+extract_constraints(match(Var, Pattern, Type), [match(Var, Pattern, Type, [])]) :- !.
+extract_constraints(match(Var, Pattern, Type, Groups), [match(Var, Pattern, Type, Groups)]) :- !.
 % Skip predicates
 extract_constraints(Goal, []) :-
     functor(Goal, Pred, _),
     Pred \= ',',
     Pred \= true.
+
+%% ============================================
+%% REGEX SUPPORT
+%% ============================================
+
+%% validate_regex_type_for_awk(+Type)
+%  Validate that AWK supports the given regex type
+%
+validate_regex_type_for_awk(auto) :- !.
+validate_regex_type_for_awk(ere) :- !.
+validate_regex_type_for_awk(bre) :- !.
+validate_regex_type_for_awk(awk) :- !.
+validate_regex_type_for_awk(Type) :-
+    format('ERROR: AWK target does not support regex type ~q~n', [Type]),
+    format('  Supported types: auto, ere, bre, awk~n', []),
+    format('  Note: PCRE, Python, and .NET regex are not supported by AWK~n', []),
+    fail.
+
+%% escape_awk_pattern(+Pattern, -EscapedPattern)
+%  Escape special characters in regex pattern for AWK
+%  AWK regex uses / as delimiter, so we need to escape it
+%
+escape_awk_pattern(Pattern, EscapedPattern) :-
+    atom(Pattern), !,
+    atom_codes(Pattern, Codes),
+    escape_pattern_codes(Codes, EscapedCodes),
+    atom_codes(EscapedPattern, EscapedCodes).
+escape_awk_pattern(Pattern, EscapedPattern) :-
+    string(Pattern), !,
+    string_codes(Pattern, Codes),
+    escape_pattern_codes(Codes, EscapedCodes),
+    string_codes(EscapedPattern, EscapedCodes).
+escape_awk_pattern(Pattern, Pattern).
+
+%% escape_pattern_codes(+Codes, -EscapedCodes)
+%  Escape forward slashes in pattern
+%
+escape_pattern_codes([], []).
+escape_pattern_codes([47|Rest], [92, 47|EscapedRest]) :- !,  % 47 = '/', 92 = '\'
+    escape_pattern_codes(Rest, EscapedRest).
+escape_pattern_codes([C|Rest], [C|EscapedRest]) :-
+    escape_pattern_codes(Rest, EscapedRest).
+
+%% has_capture_groups(+Constraints, -NumCaptures)
+%  Check if constraints include match with capture groups
+%  Returns the number of capture groups if found
+%
+has_capture_groups(Constraints, NumCaptures) :-
+    member(match(_Var, _Pattern, _Type, Groups), Constraints),
+    Groups \= [],
+    length(Groups, NumCaptures),
+    NumCaptures > 0.
+
+%% generate_capture_print(+NumCaptures, -PrintStmt)
+%  Generate AWK print statement for captured groups
+%  AWK stores captures in array starting at index 1
+%
+generate_capture_print(NumCaptures, PrintStmt) :-
+    numlist(1, NumCaptures, CaptureNums),
+    findall(Cap,
+        (member(N, CaptureNums), format(atom(Cap), '__captures__[~w]', [N])),
+        Captures),
+    atomic_list_concat(Captures, ', ', CapturesStr),
+    format(atom(PrintStmt), 'print ~w', [CapturesStr]).
+
+%% ============================================
+%% OPTIONS
+%% ============================================
 
 %% option(+Option, +Options, +Default)
 %  Get option value with default fallback
