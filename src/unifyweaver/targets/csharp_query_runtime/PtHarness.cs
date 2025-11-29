@@ -10,10 +10,15 @@ namespace UnifyWeaver.QueryRuntime
     {
         public static void RunIngest(string xmlPath, string dbPath)
         {
-            RunIngest(xmlPath, dbPath, emitEmbeddings: false);
+            RunIngest(xmlPath, dbPath, embeddingProvider: null, emitEmbeddings: false);
         }
 
         public static void RunIngest(string xmlPath, string dbPath, bool emitEmbeddings)
+        {
+            RunIngest(xmlPath, dbPath, embeddingProvider: null, emitEmbeddings: emitEmbeddings);
+        }
+
+        public static void RunIngest(string xmlPath, string dbPath, IEmbeddingProvider? embeddingProvider, bool emitEmbeddings)
         {
             var config = new XmlSourceConfig
             {
@@ -27,7 +32,7 @@ namespace UnifyWeaver.QueryRuntime
                 TreatPearltreesCDataAsText = true
             };
 
-            using var crawler = new PtCrawler(dbPath, config);
+            using var crawler = new PtCrawler(dbPath, config, embeddingProvider);
             crawler.IngestOnce(emitEmbeddings);
         }
     }
