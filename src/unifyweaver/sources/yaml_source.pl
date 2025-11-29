@@ -189,7 +189,7 @@ template_system:template(yaml_file_source, '#!/bin/bash
         return 1
     fi
 
-    {{interpreter}} - 3<<''PYTHON''
+    {{interpreter}} /dev/fd/3 3<<''PYTHON''
 {{python_code}}
 PYTHON
 }
@@ -214,7 +214,7 @@ template_system:template(yaml_stdin_source, '#!/bin/bash
     fi
 
     # Pass stdin to python
-    {{interpreter}} - 3<<''PYTHON''
+    {{interpreter}} /dev/fd/3 3<<''PYTHON''
 {{python_code}}
 PYTHON
 }

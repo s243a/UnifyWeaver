@@ -1,0 +1,10 @@
+users:
+  - name: alice
+    age: 30
+    roles: [admin, editor]
+  - name: bob
+    age: 25
+    roles: [viewer]
+config:
+  debug: true
+  timeout: 50
