@@ -35,5 +35,49 @@ namespace UnifyWeaver.QueryRuntime
             using var crawler = new PtCrawler(dbPath, config, embeddingProvider);
             crawler.IngestOnce(emitEmbeddings);
         }
+
+        /// <summary>
+        /// Perform semantic-driven fixed-point crawl: use semantic search to find relevant starting points,
+        /// then crawl through their children to build a focused subset of the knowledge graph.
+        /// </summary>
+        /// <param name="seedQuery">Semantic query to find starting points (e.g., "physics quantum mechanics")</param>
+        /// <param name="sourceDb">Database path containing indexed documents with embeddings</param>
+        /// <param name="targetDb">Database path for the crawled subset</param>
+        /// <param name="embeddingProvider">Embedding provider for semantic search</param>
+        /// <param name="fetchConfig">Function to create XmlSourceConfig for fetching document by ID</param>
+        /// <param name="topSeeds">Number of seed documents to start from (default 100)</param>
+        /// <param name="minScore">Minimum similarity score for seeds (default 0.5)</param>
+        /// <param name="maxDepth">Maximum crawl depth from seeds (default 3)</param>
+        public static void RunSemanticCrawl(
+            string seedQuery,
+            string sourceDb,
+            string targetDb,
+            IEmbeddingProvider embeddingProvider,
+            Func<string, XmlSourceConfig> fetchConfig,
+            int topSeeds = 100,
+            double minScore = 0.5,
+            int maxDepth = 3)
+        {
+            // Use semantic search to find seed IDs
+            List<string> seeds;
+            using (var searcher = new PtSearcher(sourceDb, embeddingProvider))
+            {
+                Console.WriteLine($"Finding seeds via semantic search: \"{seedQuery}\"");
+                seeds = searcher.GetSeedIds(seedQuery, topSeeds, minScore);
+                Console.WriteLine($"Found {seeds.Count} seed documents (minScore >= {minScore})");
+            }
+
+            if (seeds.Count == 0)
+            {
+                Console.WriteLine("No seeds found - try lowering minScore or using a different query");
+                return;
+            }
+
+            // Crawl from the semantic seeds
+            Console.WriteLine($"Starting fixed-point crawl from {seeds.Count} seeds (maxDepth={maxDepth})...");
+            using var crawler = new PtCrawler(targetDb, fetchConfig(seeds[0]), embeddingProvider);
+            crawler.FixedPoint(seeds, fetchConfig, maxDepth);
+            Console.WriteLine("Semantic crawl complete");
+        }
     }
 }

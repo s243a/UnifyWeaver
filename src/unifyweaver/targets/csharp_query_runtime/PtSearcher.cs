@@ -30,6 +30,21 @@ namespace UnifyWeaver.QueryRuntime
         public void Dispose() => _db?.Dispose();
 
         /// <summary>
+        /// Get document IDs for use as crawler seeds based on semantic search.
+        /// Useful for focused crawling: find relevant starting points, then crawl their children.
+        /// Example: GetSeedIds("physics quantum mechanics", 100) → Top 100 physics-related IDs
+        /// </summary>
+        /// <param name="query">Semantic query describing desired topic</param>
+        /// <param name="topK">Number of seed IDs to return (default 100)</param>
+        /// <param name="minScore">Minimum similarity score (0-1, default 0.5 for quality seeds)</param>
+        /// <returns>List of document IDs ranked by relevance</returns>
+        public List<string> GetSeedIds(string query, int topK = 100, double minScore = 0.5)
+        {
+            var results = SearchSimilar(query, topK, minScore);
+            return results.Select(r => r.Id).ToList();
+        }
+
+        /// <summary>
         /// Search for documents similar to the query text.
         /// </summary>
         /// <param name="query">Search query text</param>
