@@ -285,11 +285,19 @@ The `PtSearcher.GetSeedIds()` method returns document IDs ranked by semantic rel
 ```csharp
 using var searcher = new PtSearcher("full_database.db", embeddingProvider);
 
-// Find top 100 physics-related documents
+// Find top 100 physics-related documents (all types)
 var seedIds = searcher.GetSeedIds(
     query: "quantum mechanics physics",
     topK: 100,           // Return top 100 matches
     minScore: 0.5        // Minimum similarity threshold (0-1)
+);
+
+// Find top 100 physics trees only (more diverse coverage)
+var treeSeedIds = searcher.GetSeedIds(
+    query: "quantum mechanics physics",
+    topK: 100,
+    minScore: 0.5,
+    typeFilter: "pt:Tree"  // Only return trees, exclude pearls
 );
 
 Console.WriteLine($"Found {seedIds.Count} seed documents");
@@ -300,8 +308,15 @@ Console.WriteLine($"Found {seedIds.Count} seed documents");
 - `query`: Natural language description of desired topic
 - `topK`: Maximum number of seeds to return (default 100)
 - `minScore`: Minimum similarity score 0-1 (default 0.5 for quality seeds)
+- `typeFilter`: Optional type filter (e.g., "pt:Tree" for trees only, null for all types)
 
 **Returns**: List of document IDs sorted by relevance (highest scores first)
+
+**Why Filter by Type?**
+
+Filtering to trees only (`typeFilter: "pt:Tree"`) provides **more diverse coverage** of the knowledge graph:
+- ✅ **Without filter**: May return many pearls from the same tree (redundant starting points)
+- ✅ **With tree filter**: Each seed is a distinct organizational node, ensuring broad graph coverage
 
 ### API: RunSemanticCrawl
 
@@ -316,18 +331,22 @@ PtHarness.RunSemanticCrawl(
     fetchConfig: id => new XmlSourceConfig { /* config for fetching by ID */ },
     topSeeds: 100,       // Find top 100 physics documents
     minScore: 0.5,       // Minimum similarity for seeds
-    maxDepth: 3          // Crawl 3 hops from seeds
+    maxDepth: 3,         // Crawl 3 hops from seeds
+    typeFilter: "pt:Tree"  // Only use trees as seeds (recommended for diversity)
 );
 ```
 
 **Workflow**:
 1. Search `sourceDb` for documents matching `seedQuery`
-2. Select top `topSeeds` documents with `score >= minScore`
-3. Start fixed-point crawl from those seeds
-4. Traverse up to `maxDepth` hops following children/parent relationships
-5. Write focused subset to `targetDb`
+2. Apply `typeFilter` if specified (e.g., only trees)
+3. Select top `topSeeds` documents with `score >= minScore`
+4. Start fixed-point crawl from those seeds
+5. Traverse up to `maxDepth` hops following children/parent relationships
+6. Write focused subset to `targetDb`
 
 **Result**: A new database containing only the semantically-relevant subset of your knowledge graph.
+
+**Recommended**: Use `typeFilter: "pt:Tree"` to ensure diverse starting points and avoid clustering seeds within the same organizational node.
 
 ### Example: Building a Physics-Focused Subset
 
@@ -352,13 +371,15 @@ PtHarness.RunSemanticCrawl(
         },
         TreatPearltreesCDataAsText: true
     },
-    topSeeds: 100,       // Start from top 100 physics docs
+    topSeeds: 100,       // Start from top 100 physics trees
     minScore: 0.5,       // High quality threshold
-    maxDepth: 3          // Crawl 3 hops deep
+    maxDepth: 3,         // Crawl 3 hops deep
+    typeFilter: "pt:Tree"  // Only trees as seeds (avoids pearl clustering)
 );
 
 // Result: pearltrees_physics.db contains ~500-2000 physics documents
-// (depends on graph connectivity from those 100 seeds)
+// (depends on graph connectivity from those 100 tree seeds)
+// Using tree filter ensures diverse starting points across different topics
 ```
 
 ### Comparison: Manual vs Semantic Seeds
@@ -400,12 +421,14 @@ Example from `tmp/pt_ingest_test/Program.cs`:
 
 ```
 === Semantic Crawl Demo ===
-Finding seeds via semantic search: "quantum mechanics physics"
-Found 3 seed documents (minScore >= 0.3)
-Starting fixed-point crawl from 3 seeds (maxDepth=2)...
+Finding seeds via semantic search: "quantum mechanics physics" (type: pt:Tree)
+Found 2 seed documents (minScore >= 0.3)
+Starting fixed-point crawl from 2 seeds (maxDepth=2)...
 Semantic crawl complete
 Semantic crawl result: 3 documents in physics-focused subset
 SEMANTIC_CRAWL_OK
 ```
 
-This demonstrates the full workflow: semantic search → seed selection → focused crawl → subset creation.
+**Note**: With `typeFilter: "pt:Tree"`, only 2 trees were selected as seeds (excluding 1 pearl), ensuring diverse organizational coverage. The crawl then expanded from those 2 tree nodes to capture their children, resulting in a focused physics subset.
+
+This demonstrates the full workflow: semantic search → type filtering → seed selection → focused crawl → subset creation.

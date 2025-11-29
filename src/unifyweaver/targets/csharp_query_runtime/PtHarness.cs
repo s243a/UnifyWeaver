@@ -48,6 +48,7 @@ namespace UnifyWeaver.QueryRuntime
         /// <param name="topSeeds">Number of seed documents to start from (default 100)</param>
         /// <param name="minScore">Minimum similarity score for seeds (default 0.5)</param>
         /// <param name="maxDepth">Maximum crawl depth from seeds (default 3)</param>
+        /// <param name="typeFilter">Optional type filter for seeds (e.g., "pt:Tree" for trees only, null for all types)</param>
         public static void RunSemanticCrawl(
             string seedQuery,
             string sourceDb,
@@ -56,14 +57,16 @@ namespace UnifyWeaver.QueryRuntime
             Func<string, XmlSourceConfig> fetchConfig,
             int topSeeds = 100,
             double minScore = 0.5,
-            int maxDepth = 3)
+            int maxDepth = 3,
+            string? typeFilter = null)
         {
             // Use semantic search to find seed IDs
             List<string> seeds;
             using (var searcher = new PtSearcher(sourceDb, embeddingProvider))
             {
-                Console.WriteLine($"Finding seeds via semantic search: \"{seedQuery}\"");
-                seeds = searcher.GetSeedIds(seedQuery, topSeeds, minScore);
+                var filterDesc = typeFilter != null ? $" (type: {typeFilter})" : "";
+                Console.WriteLine($"Finding seeds via semantic search: \"{seedQuery}\"{filterDesc}");
+                seeds = searcher.GetSeedIds(seedQuery, topSeeds, minScore, typeFilter);
                 Console.WriteLine($"Found {seeds.Count} seed documents (minScore >= {minScore})");
             }
 

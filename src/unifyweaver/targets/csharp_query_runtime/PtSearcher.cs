@@ -37,10 +37,11 @@ namespace UnifyWeaver.QueryRuntime
         /// <param name="query">Semantic query describing desired topic</param>
         /// <param name="topK">Number of seed IDs to return (default 100)</param>
         /// <param name="minScore">Minimum similarity score (0-1, default 0.5 for quality seeds)</param>
+        /// <param name="typeFilter">Optional type filter (e.g., "pt:Tree" for trees only, null for all types)</param>
         /// <returns>List of document IDs ranked by relevance</returns>
-        public List<string> GetSeedIds(string query, int topK = 100, double minScore = 0.5)
+        public List<string> GetSeedIds(string query, int topK = 100, double minScore = 0.5, string? typeFilter = null)
         {
-            var results = SearchSimilar(query, topK, minScore);
+            var results = SearchSimilar(query, topK, minScore, typeFilter);
             return results.Select(r => r.Id).ToList();
         }
 
@@ -50,8 +51,9 @@ namespace UnifyWeaver.QueryRuntime
         /// <param name="query">Search query text</param>
         /// <param name="topK">Number of results to return (default 10)</param>
         /// <param name="minScore">Minimum similarity score (0-1, default 0.0)</param>
+        /// <param name="typeFilter">Optional type filter (e.g., "pt:Tree" to return only trees, null for all types)</param>
         /// <returns>List of search results with scores</returns>
-        public List<SearchResult> SearchSimilar(string query, int topK = 10, double minScore = 0.0)
+        public List<SearchResult> SearchSimilar(string query, int topK = 10, double minScore = 0.0, string? typeFilter = null)
         {
             if (string.IsNullOrWhiteSpace(query))
             {
@@ -76,6 +78,13 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     // Look up the actual document
                     var entity = GetEntity(id);
+
+                    // Apply type filter if specified
+                    if (typeFilter != null && entity?.Type != typeFilter)
+                    {
+                        continue;
+                    }
+
                     results.Add(new SearchResult
                     {
                         Id = id,
