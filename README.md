@@ -23,13 +23,14 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Constraint awareness** - Unique and ordering constraints optimize generated code
 - **Pattern detection** - Automatic classification of recursion patterns
 
-### Go Target (v0.4)
+### Go Target (v0.5)
 - **Standalone Executables** - Compiles Prolog predicates to single-binary Go programs
 - **Cross-Platform** - Runs on any platform with Go support, no runtime dependencies
 - **Stream Processing** - Efficient stdin/stdout pipeline integration for record processing
 - **JSON I/O** - Native JSONL parsing and JSON generation with automatic type conversion
 - **Nested JSON** - Access deeply nested structures with path-based extraction (`json_get`)
 - **JSON Schemas** - Type-safe field extraction with runtime validation (`json_schema`)
+- **Database Storage** - Embedded bbolt database for persistent storage with ACID transactions
 - **Match Predicates** - Regex filtering with capture groups for data extraction
 - **Multiple Rules** - OR patterns and different body predicates with sequential matching
 - **Constraints & Aggregations** - Numeric comparisons (>, <, >=, =<) and sum/count/avg/min/max

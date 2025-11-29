@@ -350,6 +350,132 @@ user_name(Name) :-
 ]).
 ```
 
+### ✅ Phase 5: Database Integration (bbolt) (NEW!)
+
+Store validated JSON records in embedded bbolt database.
+
+**Prolog Syntax:**
+```prolog
+:- json_schema(user, [
+    field(name, string),
+    field(age, integer),
+    field(email, string)
+]).
+
+user(Name, Age, Email) :-
+    json_record([name-Name, age-Age, email-Email]).
+
+compile_predicate_to_go(user/3, [
+    json_input(true),
+    json_schema(user),
+    db_backend(bbolt),
+    db_file('users.db'),
+    db_bucket(users),
+    db_key_field(name)
+], Code).
+```
+
+**Input:**
+```json
+{"name": "Alice", "age": 30, "email": "alice@example.com"}
+{"name": "Bob", "age": "invalid", "email": "bob@example.com"}
+{"name": "Charlie", "age": 35, "email": "charlie@example.com"}
+```
+
+**Output (stderr):**
+```
+Error: field 'age' is not a number
+Stored 2 records, 0 errors
+```
+
+**Database Contents:**
+```
+Key: Alice   → Value: {"name":"Alice","age":30,"email":"alice@example.com"}
+Key: Charlie → Value: {"name":"Charlie","age":35,"email":"charlie@example.com"}
+```
+
+**Key Features:**
+- Embedded database (bbolt) - no external dependencies
+- ACID transactions with B+tree storage
+- Schema validation before storage
+- Configurable key field selection
+- Full JSON record storage as values
+- Error tracking and summary reporting
+- Continues processing on validation errors
+
+**Database Options:**
+- `db_backend(bbolt)` - Database backend (only bbolt currently supported)
+- `db_file(Path)` - Database file path (default: `'data.db'`)
+- `db_bucket(Name)` - Bucket name like table/collection (default: predicate name)
+- `db_key_field(Field)` - Which field to use as key (default: first field)
+- `db_mode(read|write)` - Operation mode (default: write with json_input)
+
+**Use Cases:**
+1. **JSON Data Ingestion**: `cat users.jsonl | ./ingest_users`
+2. **Data Validation + Storage**: Invalid records rejected, valid stored
+3. **ETL Pipelines**: JSON → Validate → Transform → Store
+4. **Persistent Storage**: Alternative to file-based output
+
+**Complete Pipeline:**
+```prolog
+% JSON Input → Schema Validation → Database Storage
+:- json_schema(user, [
+    field(name, string),
+    field(age, integer)
+]).
+
+ingest_user(Name, Age) :-
+    json_record([name-Name, age-Age]).
+
+:- compile_predicate_to_go(ingest_user/2, [
+    json_input(true),      % Parse JSONL
+    json_schema(user),     % Validate types
+    db_backend(bbolt),     % Store in bbolt
+    db_file('users.db'),
+    db_bucket(users),
+    db_key_field(name)
+], Code).
+```
+
+**Generated Code Pattern:**
+```go
+import bolt "go.etcd.io/bbolt"
+
+db, _ := bolt.Open("users.db", 0600, nil)
+defer db.Close()
+
+// Create bucket
+db.Update(func(tx *bolt.Tx) error {
+    _, err := tx.CreateBucketIfNotExists([]byte("users"))
+    return err
+})
+
+// Process JSON input
+for scanner.Scan() {
+    var data map[string]interface{}
+    json.Unmarshal(scanner.Bytes(), &data)
+
+    // Type-safe extraction with schema
+    name, nameOk := data["name"].(string)
+    ageFloat, ageOk := data["age"].(float64)
+    age := int(ageFloat)
+
+    // Store in database
+    db.Update(func(tx *bolt.Tx) error {
+        bucket := tx.Bucket([]byte("users"))
+        key := []byte(name)
+        value, _ := json.Marshal(data)
+        return bucket.Put(key, value)
+    })
+}
+```
+
+**Integration with Existing Features:**
+- ✅ Works with JSON input (Phase 1)
+- ✅ Works with schema validation (Phase 4)
+- ✅ Works with nested field extraction (Phase 3)
+- ✅ No stdout output in database mode (only stderr for errors/summary)
+
 ## Comparison with Other Targets
 
 | Feature | Python | C# | Go |
@@ -359,6 +485,7 @@ user_name(Name) :-
 | **Type System** | Dynamic | Static (tuples) | Hybrid |
 | **Nested Access** | ✅ Yes | ❌ Flat only | ✅ Yes |
 | **Schema Validation** | ⏳ Planned | ❌ No | ✅ Yes |
+| **Database Storage** | ✅ SQLite | ✅ LiteDB | ✅ bbolt |
 | **Arrays** | ✅ Yes | ❌ No | ⏳ Planned |
 | **Performance** | Medium | Fast | Fast |
 
@@ -368,5 +495,6 @@ user_name(Name) :-
 - Implementation Plan: `GO_JSON_IMPL_PLAN.md`
 - Comparison: `GO_JSON_COMPARISON.md`
 - Schema Design: `JSON_SCHEMA_DESIGN.md`
-- Tests: `test_json_input.pl`, `test_json_output.pl`, `test_json_nested.pl`, `test_schema_*.pl`
-- Test Runners: `run_json_tests.sh`, `run_json_output_tests.sh`, `run_nested_tests.sh`, `run_schema_tests.sh`
+- Database Design: `BBOLT_INTEGRATION_DESIGN.md`
+- Tests: `test_json_input.pl`, `test_json_output.pl`, `test_json_nested.pl`, `test_schema_*.pl`, `test_bbolt_*.pl`
+- Test Runners: `run_json_tests.sh`, `run_json_output_tests.sh`, `run_nested_tests.sh`, `run_schema_tests.sh`, `run_bbolt_tests.sh`
