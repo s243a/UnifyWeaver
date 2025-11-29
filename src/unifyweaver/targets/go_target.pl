@@ -8,10 +8,74 @@
 
 :- module(go_target, [
     compile_predicate_to_go/3,      % +Predicate, +Options, -GoCode
-    write_go_program/2              % +GoCode, +FilePath
+    write_go_program/2,             % +GoCode, +FilePath
+    json_schema/2,                  % +SchemaName, +Fields (directive)
+    get_json_schema/2,              % +SchemaName, -Fields (lookup)
+    get_field_type/3                % +SchemaName, +FieldName, -Type (lookup)
 ]).
 
 :- use_module(library(lists)).
+
+%% ============================================
+%% JSON SCHEMA SUPPORT
+%% ============================================
+
+:- dynamic json_schema_def/2.
+
+%% json_schema(+SchemaName, +Fields)
+%  Define a JSON schema with typed fields
+%  Used as a directive: :- json_schema(person, [field(name, string), field(age, integer)]).
+%
+json_schema(SchemaName, Fields) :-
+    % Validate schema fields
+    (   validate_schema_fields(Fields)
+    ->  % Store schema definition
+        retractall(json_schema_def(SchemaName, _)),
+        assertz(json_schema_def(SchemaName, Fields)),
+        format('Schema defined: ~w with ~w fields~n', [SchemaName, Fields])
+    ;   format('ERROR: Invalid schema definition for ~w: ~w~n', [SchemaName, Fields]),
+        fail
+    ).
+
+%% validate_schema_fields(+Fields)
+%  Validate that all fields have correct format: field(Name, Type)
+%
+validate_schema_fields([]).
+validate_schema_fields([field(Name, Type)|Rest]) :-
+    atom(Name),
+    valid_json_type(Type),
+    validate_schema_fields(Rest).
+validate_schema_fields([Invalid|_]) :-
+    format('ERROR: Invalid field specification: ~w~n', [Invalid]),
+    fail.
+
+%% valid_json_type(+Type)
+%  Check if a type is valid for JSON schemas
+%
+valid_json_type(string).
+valid_json_type(integer).
+valid_json_type(float).
+valid_json_type(boolean).
+valid_json_type(any).  % Fallback to interface{}
+
+%% get_json_schema(+SchemaName, -Fields)
+%  Retrieve a schema definition by name
+%
+get_json_schema(SchemaName, Fields) :-
+    json_schema_def(SchemaName, Fields), !.
+get_json_schema(SchemaName, _) :-
+    format('ERROR: Schema not found: ~w~n', [SchemaName]),
+    fail.
+
+%% get_field_type(+SchemaName, +FieldName, -Type)
+%  Get the type of a specific field from a schema
+%
+get_field_type(SchemaName, FieldName, Type) :-
+    get_json_schema(SchemaName, Fields),
+    member(field(FieldName, Type), Fields), !.
+get_field_type(SchemaName, FieldName, any) :-
+    % Field not in schema - default to 'any' (interface{})
+    format('WARNING: Field ~w not in schema ~w, defaulting to type ''any''~n', [FieldName, SchemaName]).
 
 %% ============================================
 %% PUBLIC API
@@ -1369,9 +1433,15 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         extract_json_field_mappings(SingleBody, FieldMappings),
         format('  Field mappings: ~w~n', [FieldMappings]),
 
-        % Generate Go code for JSON input
+        % Check for schema option
         SingleHead =.. [_|HeadArgs],
-        compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, ScriptBody),
+        (   option(json_schema(SchemaName), Options)
+        ->  % Typed compilation with schema
+            format('  Using schema: ~w~n', [SchemaName]),
+            compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, ScriptBody)
+        ;   % Untyped compilation (current behavior)
+            compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, ScriptBody)
+        ),
 
         % Check if helpers are needed (for the package wrapping)
         (   member(nested(_, _), FieldMappings)
@@ -1640,6 +1710,114 @@ compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
 \t\tresult := ~s
 ~s\t}
 ', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
+
+%% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +FieldDelim, +Unique, -GoCode)
+%  Generate Go code for JSON input mode with type safety from schema
+%
+compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, GoCode) :-
+    % Map delimiter
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % Generate typed field extraction code
+    generate_typed_field_extractions(FieldMappings, SchemaName, HeadArgs, ExtractCode),
+
+    % Generate output expression (same as untyped)
+    generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
+
+    % Build main loop
+    (   Unique = true ->
+        SeenDecl = '\tseen := make(map[string]bool)\n\t',
+        UniqueCheck = '\t\tif !seen[result] {\n\t\t\tseen[result] = true\n\t\t\tfmt.Println(result)\n\t\t}\n'
+    ;   SeenDecl = '\t',
+        UniqueCheck = '\t\tfmt.Println(result)\n'
+    ),
+
+    % Build the loop code
+    format(string(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+~w
+\tfor scanner.Scan() {
+\t\tvar data map[string]interface{}
+\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+\t\t\tcontinue
+\t\t}
+\t\t
+~s
+\t\t
+\t\tresult := ~s
+~s\t}
+', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
+
+%% generate_typed_field_extractions(+FieldMappings, +SchemaName, +HeadArgs, -ExtractCode)
+%  Generate typed field extraction code based on schema
+%
+generate_typed_field_extractions(FieldMappings, SchemaName, _HeadArgs, ExtractCode) :-
+    findall(ExtractLine,
+        (   nth1(Pos, FieldMappings, Mapping),
+            format(atom(VarName), 'field~w', [Pos]),
+            % Dispatch based on mapping type
+            (   Mapping = Field-_Var
+            ->  % Flat field - get type from schema
+                get_field_type(SchemaName, Field, Type),
+                atom_string(Field, FieldStr),
+                generate_typed_flat_field_extraction(FieldStr, VarName, Type, ExtractLine)
+            ;   Mapping = nested(Path, _Var)
+            ->  % Nested field - get type from last element of path
+                last(Path, LastField),
+                get_field_type(SchemaName, LastField, Type),
+                generate_typed_nested_field_extraction(Path, VarName, Type, ExtractLine)
+            )
+        ),
+        ExtractLines),
+    atomic_list_concat(ExtractLines, '\n', ExtractCode).
+
+%% generate_typed_flat_field_extraction(+FieldName, +VarName, +Type, -ExtractCode)
+%  Generate type-safe extraction code for a flat field
+%
+generate_typed_flat_field_extraction(FieldName, VarName, Type, ExtractCode) :-
+    % Generate extraction based on type
+    (   Type = string ->
+        format(atom(ExtractCode), '\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif !~wRawOk {\n\t\t\tcontinue\n\t\t}\n\t\t~w, ~wIsString := ~wRaw.(string)\n\t\tif !~wIsString {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a string\\n")\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName])
+    ;   Type = integer ->
+        format(atom(ExtractCode), '\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif !~wRawOk {\n\t\t\tcontinue\n\t\t}\n\t\t~wFloat, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a number\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w := int(~wFloat)',
+            [VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName, VarName, VarName])
+    ;   Type = float ->
+        format(atom(ExtractCode), '\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif !~wRawOk {\n\t\t\tcontinue\n\t\t}\n\t\t~w, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a number\\n")\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName])
+    ;   Type = boolean ->
+        format(atom(ExtractCode), '\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif !~wRawOk {\n\t\t\tcontinue\n\t\t}\n\t\t~w, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a boolean\\n")\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName])
+    ;   % Fallback to untyped for 'any' type
+        generate_flat_field_extraction(FieldName, VarName, ExtractCode)
+    ).
+
+%% generate_typed_nested_field_extraction(+Path, +VarName, +Type, -ExtractCode)
+%  Generate type-safe extraction code for a nested field
+%
+generate_typed_nested_field_extraction(Path, VarName, Type, ExtractCode) :-
+    % Convert path to Go string slice
+    maplist(atom_string, Path, PathStrs),
+    atomic_list_concat(PathStrs, '", "', PathStr),
+    last(Path, LastField),
+    atom_string(LastField, LastFieldStr),
+
+    % Generate extraction with type assertion based on type
+    (   Type = string ->
+        format(atom(ExtractCode), '\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif !~wRawOk {\n\t\t\tcontinue\n\t\t}\n\t\t~w, ~wIsString := ~wRaw.(string)\n\t\tif !~wIsString {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a string\\n")\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, VarName, LastFieldStr])
+    ;   Type = integer ->
+        format(atom(ExtractCode), '\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif !~wRawOk {\n\t\t\tcontinue\n\t\t}\n\t\t~wFloat, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a number\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w := int(~wFloat)',
+            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, VarName, LastFieldStr, VarName, VarName])
+    ;   Type = float ->
+        format(atom(ExtractCode), '\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif !~wRawOk {\n\t\t\tcontinue\n\t\t}\n\t\t~w, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a number\\n")\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, VarName, LastFieldStr])
+    ;   Type = boolean ->
+        format(atom(ExtractCode), '\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif !~wRawOk {\n\t\t\tcontinue\n\t\t}\n\t\t~w, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a boolean\\n")\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, VarName, LastFieldStr])
+    ;   % Fallback to untyped
+        generate_nested_field_extraction(Path, VarName, ExtractCode)
+    ).
 
 %% generate_nested_helper(-HelperCode)
 %  Generate the getNestedField helper function for traversing nested JSON
