@@ -11,14 +11,20 @@ namespace UnifyWeaver.QueryRuntime
     {
         private readonly PtImporter _importer;
         private readonly XmlStreamReader _reader;
+        private readonly IEmbeddingProvider? _embeddingProvider;
 
-        public PtCrawler(string dbPath, XmlSourceConfig config)
+        public PtCrawler(string dbPath, XmlSourceConfig config, IEmbeddingProvider? embeddingProvider = null)
         {
             _importer = new PtImporter(dbPath);
             _reader = new XmlStreamReader(config);
+            _embeddingProvider = embeddingProvider;
         }
 
-        public void Dispose() => _importer.Dispose();
+        public void Dispose()
+        {
+            _importer.Dispose();
+            // Don't dispose embedding provider - we don't own it
+        }
 
         public void IngestOnce(bool emitEmbeddings = false)
         {
@@ -31,9 +37,11 @@ namespace UnifyWeaver.QueryRuntime
                     continue; // skip private
                 }
                 _importer.Upsert(entity);
-                if (emitEmbeddings)
+                if (emitEmbeddings && _embeddingProvider is not null)
                 {
-                    _importer.UpsertEmbedding(entity.Id, DummyEmbedding());
+                    var text = entity.Title ?? entity.About ?? entity.Id;
+                    var embedding = _embeddingProvider.GetEmbedding(text);
+                    _importer.UpsertEmbedding(entity.Id, embedding);
                 }
             }
         }
@@ -90,10 +98,5 @@ namespace UnifyWeaver.QueryRuntime
             return map;
         }
 
-        private static IEnumerable<double> DummyEmbedding()
-        {
-            // Placeholder embedding; replace with real vector later.
-            return new double[] { 0.0, 0.0, 0.0 };
-        }
     }
 }
