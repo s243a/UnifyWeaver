@@ -96,15 +96,30 @@ get_field_type(SchemaName, FieldName, any) :-
 %  - include_package(true|false) - Include package main (default: true)
 %  - unique(true|false) - Deduplicate results (default: true)
 %  - aggregation(sum|count|max|min|avg) - Aggregation operation
+%  - db_backend(bbolt) - Database backend (bbolt only for now)
+%  - db_file(Path) - Database file path (default: 'data.db')
+%  - db_bucket(Name) - Bucket name (default: predicate name)
+%  - db_key_field(Field) - Field to use as key
+%  - db_mode(read|write) - Database operation mode (default: write with json_input, read otherwise)
 %
 compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     PredIndicator = Pred/Arity,
     format('=== Compiling ~w/~w to Go ===~n', [Pred, Arity]),
 
+    % Check if this is database read mode
+    (   option(db_backend(bbolt), Options),
+        (option(db_mode(read), Options) ; \+ option(json_input(true), Options)),
+        \+ option(json_output(true), Options)
+    ->  % Compile for database read
+        format('  Mode: Database read (bbolt)~n'),
+        compile_database_read_mode(Pred, Arity, Options, GoCode)
     % Check if this is JSON input mode
-    (   option(json_input(true), Options)
-    ->  % Compile for JSON input
-        format('  Mode: JSON input (JSONL)~n'),
+    ;   option(json_input(true), Options)
+    ->  % Compile for JSON input (may include database write)
+        (   option(db_backend(bbolt), Options)
+        ->  format('  Mode: JSON input (JSONL) with database storage~n')
+        ;   format('  Mode: JSON input (JSONL)~n')
+        ),
         compile_json_input_mode(Pred, Arity, Options, GoCode)
     % Check if this is JSON output mode
     ;   option(json_output(true), Options)
@@ -1438,9 +1453,19 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         (   option(json_schema(SchemaName), Options)
         ->  % Typed compilation with schema
             format('  Using schema: ~w~n', [SchemaName]),
-            compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, ScriptBody)
+            compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, CoreBody)
         ;   % Untyped compilation (current behavior)
-            compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, ScriptBody)
+            compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
+        ),
+
+        % Check if database backend is specified
+        (   option(db_backend(bbolt), Options)
+        ->  % Wrap core body with database operations
+            format('  Database: bbolt~n'),
+            wrap_with_database(CoreBody, FieldMappings, Pred, Options, ScriptBody),
+            NeedsDatabase = true
+        ;   ScriptBody = CoreBody,
+            NeedsDatabase = false
         ),
 
         % Check if helpers are needed (for the package wrapping)
@@ -1455,36 +1480,180 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
 
     % Wrap in package if requested
     (   IncludePackage ->
+        % Generate imports based on what's needed
+        (   NeedsDatabase = true
+        ->  Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"\n\n\tbolt "go.etcd.io/bbolt"'
+        ;   Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"'
+        ),
+
         (   HelperSection = '' ->
             format(string(GoCode), 'package main
 
 import (
-\t"bufio"
-\t"encoding/json"
-\t"fmt"
-\t"os"
+~s
 )
 
 func main() {
 ~s}
-', [ScriptBody])
+', [Imports, ScriptBody])
         ;   format(string(GoCode), 'package main
 
 import (
-\t"bufio"
-\t"encoding/json"
-\t"fmt"
-\t"os"
+~s
 )
 
 ~s
 
 func main() {
 ~s}
-', [HelperSection, ScriptBody])
+', [Imports, HelperSection, ScriptBody])
         )
     ;   GoCode = ScriptBody
     ).
+
+%% wrap_with_database(+CoreBody, +FieldMappings, +Pred, +Options, -WrappedBody)
+%  Wrap core extraction code with database operations
+%
+wrap_with_database(CoreBody, FieldMappings, Pred, Options, WrappedBody) :-
+    % Get database options
+    option(db_file(DbFile), Options, 'data.db'),
+    option(db_bucket(BucketName), Options, Pred),
+    atom_string(BucketName, BucketStr),
+
+    % Determine key field (use first field by default)
+    (   option(db_key_field(KeyField), Options)
+    ->  true
+    ;   FieldMappings = [KeyField-_|_]
+    ->  true
+    ;   FieldMappings = [nested(Path, _)|_],
+        last(Path, KeyField)
+    ),
+
+    % Find which field position is the key
+    (   nth1(KeyPos, FieldMappings, KeyField-_)
+    ->  true
+    ;   nth1(KeyPos, FieldMappings, nested(KeyPath, _)),
+        last(KeyPath, KeyField)
+    ->  true
+    ;   KeyPos = 1  % Default to first field
+    ),
+
+    format(atom(KeyVar), 'field~w', [KeyPos]),
+
+    % Create storage code block
+    format(string(StorageCode), '\t\t// Store in database
+\t\terr = db.Update(func(tx *bolt.Tx) error {
+\t\t\tbucket := tx.Bucket([]byte("~s"))
+\t\t\tkey := []byte(fmt.Sprintf("%v", ~s))
+\t\t\t
+\t\t\t// Store full JSON record
+\t\t\tvalue, err := json.Marshal(data)
+\t\t\tif err != nil {
+\t\t\t\treturn err
+\t\t\t}
+\t\t\t
+\t\t\treturn bucket.Put(key, value)
+\t\t})
+\t\t
+\t\tif err != nil {
+\t\t\terrorCount++
+\t\t\tfmt.Fprintf(os.Stderr, "Database error: %v\\n", err)
+\t\t\tcontinue
+\t\t}
+\t\t
+\t\trecordCount++', [BucketStr, KeyVar]),
+
+    % Remove output block and inject storage code
+    split_string(CoreBody, "\n", "", Lines),
+    filter_and_replace_lines(Lines, StorageCode, KeyPos, FilteredLines),
+    atomics_to_string(FilteredLines, "\n", CleanedCore),
+
+    % Generate wrapped code with storage inside loop
+    format(string(WrappedBody), '\t// Open database
+\tdb, err := bolt.Open("~s", 0600, nil)
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Create bucket
+\terr = db.Update(func(tx *bolt.Tx) error {
+\t\t_, err := tx.CreateBucketIfNotExists([]byte("~s"))
+\t\treturn err
+\t})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error creating bucket: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Process records
+\trecordCount := 0
+\terrorCount := 0
+
+~s
+
+\t// Summary
+\tfmt.Fprintf(os.Stderr, "Stored %d records, %d errors\\n", recordCount, errorCount)
+', [DbFile, BucketStr, CleanedCore]).
+
+% Helper to filter output lines and inject storage code
+filter_and_replace_lines(Lines, StorageCode, KeyPos, Result) :-
+    filter_and_replace_lines(Lines, StorageCode, KeyPos, [], Result).
+
+filter_and_replace_lines([], _StorageCode, _KeyPos, Acc, Result) :-
+    reverse(Acc, Result).
+filter_and_replace_lines([Line|Rest], StorageCode, KeyPos, Acc, Result) :-
+    (   % Skip seen map declaration
+        sub_string(Line, _, _, _, "seen := make(map[string]bool)")
+    ->  filter_and_replace_lines(Rest, StorageCode, KeyPos, Acc, Result)
+    ;   % Skip result formatting
+        sub_string(Line, _, _, _, "result := fmt.Sprintf")
+    ->  filter_and_replace_lines(Rest, StorageCode, KeyPos, Acc, Result)
+    ;   % Skip seen check and inject storage code instead
+        sub_string(Line, _, _, _, "if !seen[result]")
+    ->  % Skip the entire if block (this line + seen[result]=true + println + closing brace)
+        Rest = [_SeenTrue, _Println, _CloseBrace|RestAfterBlock],
+        % Inject storage code
+        filter_and_replace_lines(RestAfterBlock, StorageCode, KeyPos, [StorageCode|Acc], Result)
+    ;   % Replace non-key field variables with _ (blank identifier)
+        % Match lines like: "\t\tfieldN, fieldNOk := data[...]"
+        sub_string(Line, _, _, _, "field"),
+        replace_unused_field_var(Line, KeyPos, NewLine),
+        NewLine \= Line  % Only if replacement was made
+    ->  filter_and_replace_lines(Rest, StorageCode, KeyPos, [NewLine|Acc], Result)
+    ;   % Keep all other lines
+        filter_and_replace_lines(Rest, StorageCode, KeyPos, [Line|Acc], Result)
+    ).
+
+% Replace fieldN with _ if N != KeyPos
+replace_unused_field_var(Line, KeyPos, NewLine) :-
+    % Try to replace field1, field2, field3, etc. up to field9
+    between(1, 9, N),
+    N \= KeyPos,
+    (   % Pattern 1: "fieldN," for untyped extraction
+        format(atom(FieldVar), 'field~w,', [N]),
+        sub_string(Line, Before, Len, After, FieldVar)
+    ->  % Replace with "_,"
+        sub_string(Line, 0, Before, _, Prefix),
+        string_concat(Prefix, "_,", NewPrefix),
+        Skip is Before + Len,
+        sub_string(Line, Skip, _, 0, Suffix),
+        string_concat(NewPrefix, Suffix, NewLine),
+        !
+    ;   % Pattern 2: "fieldN := " for typed final assignment
+        format(atom(FieldAssign), 'field~w := ', [N]),
+        sub_string(Line, Before2, Len2, After2, FieldAssign),
+        % Replace entire line with "_ = " version
+        sub_string(Line, 0, Before2, _, Prefix2),
+        string_concat(Prefix2, "_ = ", NewPrefix2),
+        Skip2 is Before2 + Len2,
+        sub_string(Line, Skip2, _, 0, Suffix2),
+        string_concat(NewPrefix2, Suffix2, NewLine),
+        !
+    ;   fail
+    ).
+replace_unused_field_var(Line, _, Line).  % No replacement needed
 
 %% ============================================
 %% JSON OUTPUT MODE
