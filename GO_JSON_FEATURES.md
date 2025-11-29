@@ -254,7 +254,82 @@ jsonBytes, _ := json.Marshal(record)
 fmt.Println(string(jsonBytes))
 ```
 
-## Future Enhancements (Phase 4+)
+### ✅ Phase 4: Schema Support (NEW!)
+
+Define JSON schemas for type-safe field extraction and validation.
+
+**Prolog Syntax:**
+```prolog
+% Define schema with typed fields
+:- json_schema(user, [
+    field(name, string),
+    field(age, integer)
+]).
+
+% Use schema in predicates
+user(Name, Age) :- json_record([name-Name, age-Age]).
+
+% Compile with schema
+compile_predicate_to_go(user/2, [
+    json_input(true),
+    json_schema(user)
+], Code).
+```
+
+**Generated Go (Type-Safe):**
+```go
+// String field - type validated
+field1Raw, field1RawOk := data["name"]
+if !field1RawOk {
+    continue
+}
+field1, field1IsString := field1Raw.(string)
+if !field1IsString {
+    fmt.Fprintf(os.Stderr, "Error: field 'name' is not a string\n")
+    continue
+}
+
+// Integer field - type validated with conversion
+field2Raw, field2RawOk := data["age"]
+if !field2RawOk {
+    continue
+}
+field2Float, field2FloatOk := field2Raw.(float64)
+if !field2FloatOk {
+    fmt.Fprintf(os.Stderr, "Error: field 'age' is not a number\n")
+    continue
+}
+field2 := int(field2Float)
+```
+
+**Input:**
+```json
+{"name": "Alice", "age": 25}
+{"name": "Bob", "age": "thirty"}
+```
+
+**Output:**
+```
+Alice:25
+Error: field 'age' is not a number
+```
+
+**Supported Types:**
+- `string` - String values
+- `integer` - Integer numbers (auto-converts from JSON float64)
+- `float` - Float64 numbers
+- `boolean` - Boolean values
+- `any` - Untyped (interface{}, fallback)
+
+**Key Features:**
+- Type-safe field extraction at compile time
+- Runtime type validation with clear error messages
+- Works with both flat (`json_record`) and nested (`json_get`) fields
+- Optional - existing code without schemas continues to work
+- Error messages to stderr, invalid records skipped
+- Zero performance overhead for valid data
+
+## Future Enhancements (Phase 5+)
 
 ### Array Support (Planned)
 
@@ -265,12 +340,13 @@ user_name(Name) :-
     json_get(User, [name], Name).
 ```
 
-### Schema Support (Planned)
+### Advanced Schema Features (Planned)
 
 ```prolog
-:- json_schema(person, [
-    field(name, string),
-    field(age, int)
+:- json_schema(user, [
+    field(age, integer, [min(0), max(150)]),
+    field(email, string, [format(email)]),
+    field(tags, array(string))
 ]).
 ```
 
@@ -281,7 +357,8 @@ user_name(Name) :-
 | **JSON Input** | ✅ JSONL | ❌ Manual | ✅ JSONL |
 | **JSON Output** | ✅ Native | ❌ Manual | ✅ Native |
 | **Type System** | Dynamic | Static (tuples) | Hybrid |
-| **Nested Access** | ✅ Yes | ❌ Flat only | ⏳ Planned |
+| **Nested Access** | ✅ Yes | ❌ Flat only | ✅ Yes |
+| **Schema Validation** | ⏳ Planned | ❌ No | ✅ Yes |
 | **Arrays** | ✅ Yes | ❌ No | ⏳ Planned |
 | **Performance** | Medium | Fast | Fast |
 
@@ -290,4 +367,6 @@ user_name(Name) :-
 - Design: `GO_JSON_DESIGN.md`
 - Implementation Plan: `GO_JSON_IMPL_PLAN.md`
 - Comparison: `GO_JSON_COMPARISON.md`
-- Tests: `test_json_input.pl`, `test_json_output.pl`
+- Schema Design: `JSON_SCHEMA_DESIGN.md`
+- Tests: `test_json_input.pl`, `test_json_output.pl`, `test_json_nested.pl`, `test_schema_*.pl`
+- Test Runners: `run_json_tests.sh`, `run_json_output_tests.sh`, `run_nested_tests.sh`, `run_schema_tests.sh`
