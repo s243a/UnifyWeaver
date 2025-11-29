@@ -199,14 +199,19 @@ sibling(X, Y)     % Same parent, different children
     database('app.db')
 ]).
 
-% JSON processing with jq
-:- source(json, extract_names, [
+% JSON processing with jq                        
+:- source(json, extract_names, [                 
     jq_filter('.users[] | {name, email} | @tsv'),
-    json_file('data.json')
+    json_file('data.json')                       
+]).                                              
+
+% YAML processing with PyYAML (v0.2)
+:- source(yaml, config_users, [
+    yaml_filter('data["users"]'),
+    yaml_file('config.yaml')
 ]).
 
-% XML processing with Python
-:- data_source_driver(python).
+% XML processing with Python:- data_source_driver(python).
 :- data_source_work_fn(sum_prices).
 ```
 

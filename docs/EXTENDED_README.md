@@ -584,6 +584,35 @@ extract_names() {
 }
 ```
 
+### YAML Plugin
+
+Process YAML data using Python (PyYAML):
+
+**Read YAML files with filters:**
+```prolog
+:- source(yaml, config_users, [
+    yaml_filter('data["users"]'),
+    yaml_file('config.yaml')
+]).
+```
+
+**Process YAML from stdin:**
+```prolog
+:- source(yaml, stream_data, [
+    yaml_stdin(true)
+]).
+```
+
+**Generated bash:**
+```bash
+config_users() {
+    python3 << 'PYTHON'
+    import yaml
+    # ... (embedded python script)
+PYTHON
+}
+```
+
 ### XML Plugin
 
 Process XML data using Python:
