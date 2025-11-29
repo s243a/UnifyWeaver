@@ -93,3 +93,11 @@ tmp/
 
 # Downloaded libraries (use setup scripts to install)
 lib/
+
+# ONNX models (download locally, too large for git)
+models/
+
+# LiteDB databases (test artifacts)
+*.db
+*.db-shm
+*.db-wal
