@@ -330,28 +330,108 @@ if len(batch) > 0 {
 - Single transaction per batch
 - Progress reporting option
 
-### Phase 3: Read Operations
+### Phase 3: Read Operations ✅ COMPLETE
 
 **Goal:** Query data from database
 
+**Status:** Implemented and tested
+
 **Features:**
-- `db_backend(bbolt)` with `db_mode(read)`
-- Iterate over bucket contents
-- Output as JSON or delimited format
-- Optional filtering
+- ✅ `db_backend(bbolt)` with `db_mode(read)`
+- ✅ Iterate over bucket contents with `bucket.ForEach()`
+- ✅ Output as JSONL to stdout
+- ✅ Read-only database access (`&bolt.Options{ReadOnly: true}`)
+- ✅ Error recovery (continues on individual record failures)
+
+**Implementation:**
 
 ```prolog
-% Read from database and output as JSON
-read_users(Name, Age, Email) :-
-    db_read(users, Name, [name-Name, age-Age, email-Email]).
+% Simple read predicate - outputs all records from database
+read_users :-
+    true.  % No body needed for read mode
 
-compile_predicate_to_go(read_users/3, [
-    json_output(true),
+compile_predicate_to_go(read_users/0, [
     db_backend(bbolt),
-    db_file('users.db'),
+    db_file('test_users.db'),
     db_bucket(users),
-    db_mode(read)
+    db_mode(read),
+    package(main)
 ], Code).
+```
+
+**Generated Code:**
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+
+    bolt "go.etcd.io/bbolt"
+)
+
+func main() {
+    // Open database (read-only)
+    db, err := bolt.Open("test_users.db", 0600, &bolt.Options{ReadOnly: true})
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+        os.Exit(1)
+    }
+    defer db.Close()
+
+    // Read all records from bucket
+    err = db.View(func(tx *bolt.Tx) error {
+        bucket := tx.Bucket([]byte("users"))
+        if bucket == nil {
+            return fmt.Errorf("bucket 'users' not found")
+        }
+
+        return bucket.ForEach(func(k, v []byte) error {
+            // Deserialize JSON record
+            var data map[string]interface{}
+            if err := json.Unmarshal(v, &data); err != nil {
+                fmt.Fprintf(os.Stderr, "Error unmarshaling record: %v\n", err)
+                return nil // Continue with next record
+            }
+
+            // Output as JSON
+            output, err := json.Marshal(data)
+            if err != nil {
+                fmt.Fprintf(os.Stderr, "Error marshaling output: %v\n", err)
+                return nil // Continue with next record
+            }
+
+            fmt.Println(string(output))
+            return nil
+        })
+    })
+
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Error reading database: %v\n", err)
+        os.Exit(1)
+    }
+}
+```
+
+**Test Results:**
+- ✅ All 3 test records successfully read from database
+- ✅ Correct JSONL output format
+- ✅ Record verification passed (names: Alice, Bob, Charlie)
+- ✅ Record count validation passed (3 records)
+
+**Complete Pipeline:**
+```bash
+# Write mode: JSON → Database
+echo '{"name": "Alice", "age": 30}' > test_input.jsonl
+echo '{"name": "Bob", "age": 25}' >> test_input.jsonl
+./user_store < test_input.jsonl
+
+# Read mode: Database → JSON
+./read_users > output.jsonl
+cat output.jsonl
+# {"age":30,"name":"Alice"}
+# {"age":25,"name":"Bob"}
 ```
 
 ### Phase 4: Advanced Features

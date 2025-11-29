@@ -1421,6 +1421,81 @@ func main() {
 %% ============================================
 %% UTILITY FUNCTIONS
 %% ============================================
+
+%% ============================================
+%% DATABASE READ MODE COMPILATION
+%% ============================================
+
+%% compile_database_read_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate to read from bbolt database and output as JSON
+%
+compile_database_read_mode(Pred, Arity, Options, GoCode) :-
+    % Get database options
+    option(db_file(DbFile), Options, 'data.db'),
+    option(db_bucket(BucketName), Options, Pred),
+    atom_string(BucketName, BucketStr),
+    option(include_package(IncludePackage), Options, true),
+
+    % Generate database read code
+    format(string(Body), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Read all records from bucket
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\t// Deserialize JSON record
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\tfmt.Fprintf(os.Stderr, "Error unmarshaling record: %v\\n", err)
+\t\t\t\treturn nil // Continue with next record
+\t\t\t}
+
+\t\t\t// Output as JSON
+\t\t\toutput, err := json.Marshal(data)
+\t\t\tif err != nil {
+\t\t\t\tfmt.Fprintf(os.Stderr, "Error marshaling output: %v\\n", err)
+\t\t\t\treturn nil // Continue with next record
+\t\t\t}
+
+\t\t\tfmt.Println(string(output))
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+', [DbFile, BucketStr, BucketStr]),
+
+    % Wrap in package if requested
+    (   IncludePackage = true
+    ->  format(string(GoCode), 'package main
+
+import (
+\t"encoding/json"
+\t"fmt"
+\t"os"
+
+\tbolt "go.etcd.io/bbolt"
+)
+
+func main() {
+~s}
+', [Body])
+    ;   GoCode = Body
+    ).
+
 %% ============================================
 %% JSON INPUT MODE COMPILATION
 %% ============================================

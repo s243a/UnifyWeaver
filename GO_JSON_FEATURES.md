@@ -476,6 +476,118 @@ for scanner.Scan() {
 - ✅ Works with nested field extraction (Phase 3)
 - ✅ No stdout output in database mode (only stderr for errors/summary)
 
+### ✅ Phase 6: Database Read Mode (NEW!)
+
+Read all records from bbolt database and output as JSON.
+
+**Prolog Syntax:**
+```prolog
+% Simple read predicate - outputs all records from database
+read_users :-
+    true.  % No body needed for read mode
+
+compile_predicate_to_go(read_users/0, [
+    db_backend(bbolt),
+    db_file('test_users.db'),
+    db_bucket(users),
+    db_mode(read),
+    package(main)
+], Code).
+```
+
+**Database Contents:**
+```
+Key: Alice   → Value: {"name":"Alice","age":30}
+Key: Bob     → Value: {"name":"Bob","age":25}
+Key: Charlie → Value: {"name":"Charlie","age":35}
+```
+
+**Output (JSONL):**
+```json
+{"age":30,"name":"Alice"}
+{"age":25,"name":"Bob"}
+{"age":35,"name":"Charlie"}
+```
+
+**Key Features:**
+- Read-only database access (`&bolt.Options{ReadOnly: true}`)
+- Iterates all records in bucket with `bucket.ForEach()`
+- Deserializes stored JSON values
+- Outputs each record as JSONL to stdout
+- Error recovery (continues on individual record failures)
+- No modifications to database (safe concurrent reads)
+
+**Generated Code Pattern:**
+```go
+import bolt "go.etcd.io/bbolt"
+
+// Open database in read-only mode
+db, err := bolt.Open("test_users.db", 0600, &bolt.Options{ReadOnly: true})
+if err != nil {
+    fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+    os.Exit(1)
+}
+defer db.Close()
+
+// Read all records from bucket
+err = db.View(func(tx *bolt.Tx) error {
+    bucket := tx.Bucket([]byte("users"))
+    if bucket == nil {
+        return fmt.Errorf("bucket 'users' not found")
+    }
+
+    return bucket.ForEach(func(k, v []byte) error {
+        // Deserialize JSON record
+        var data map[string]interface{}
+        if err := json.Unmarshal(v, &data); err != nil {
+            fmt.Fprintf(os.Stderr, "Error unmarshaling record: %v\n", err)
+            return nil // Continue with next record
+        }
+
+        // Output as JSON
+        output, err := json.Marshal(data)
+        if err != nil {
+            fmt.Fprintf(os.Stderr, "Error marshaling output: %v\n", err)
+            return nil // Continue with next record
+        }
+
+        fmt.Println(string(output))
+        return nil
+    })
+})
+```
+
+**Complete Pipeline (Write + Read):**
+```bash
+# Write: JSON → Schema Validation → Database
+echo '{"name": "Alice", "age": 30}' | ./user_store
+echo '{"name": "Bob", "age": 25}' | ./user_store
+
+# Read: Database → JSON
+./read_users > users.jsonl
+cat users.jsonl
+# {"age":30,"name":"Alice"}
+# {"age":25,"name":"Bob"}
+```
+
+**Use Cases:**
+1. **Data Export**: Extract all records from database as JSONL
+2. **Database Backup**: Export to JSON for archival or migration
+3. **Data Transformation**: Read from DB, pipe to another tool
+4. **Debugging**: Inspect database contents in human-readable format
+
+**Read vs Write Mode:**
+
+| Feature | Write Mode (`db_mode(write)`) | Read Mode (`db_mode(read)`) |
+|---------|------------------------------|----------------------------|
+| **Input** | stdin (JSONL) | Database file |
+| **Output** | Database file | stdout (JSONL) |
+| **Transaction** | `db.Update()` | `db.View()` |
+| **Database Access** | Read-write | Read-only |
+| **Bucket Creation** | Creates if missing | Fails if missing |
+| **Error Handling** | Skip invalid, continue | Skip invalid, continue |
+| **Summary** | Reports stored/errors | None (silent on success) |
+
 ## Comparison with Other Targets
 
 | Feature | Python | C# | Go |
