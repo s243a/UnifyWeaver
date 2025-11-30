@@ -81,23 +81,7 @@ compile_non_recursive_predicate(_Name, Arity, Clauses, Options, PythonCode) :-
     header(Header),
     helpers(Helpers),
     
-    % Select format
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
-    format(string(Main), 
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     format(string(Logic), 
 "
@@ -191,27 +175,11 @@ compile_mutual_recursive_group(Predicates, Options, PythonCode) :-
     header_with_functools(Header),
     helpers(Helpers),
     
-    % Select format
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
     % For mutual recursion, generate a dispatcher that handles all predicates
     findall(Pred/Arity, member(Pred/Arity, Predicates), PredList),
     generate_mutual_dispatcher(PredList, DispatcherCode),
     
-    format(string(Main), 
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     format(string(Logic), 
 "
@@ -332,23 +300,7 @@ compile_tail_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode
     header_with_functools(Header),
     helpers(Helpers),
     
-    % Select format
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
-    format(string(Main), 
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     format(string(Logic), 
 "
@@ -375,23 +327,7 @@ compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonC
     header_with_functools(Header),
     helpers(Helpers),
     
-    % Select format
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
-    format(string(Main), 
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     format(string(Logic), 
 "
@@ -871,6 +807,53 @@ def write_nul_json(records: Iterator[Dict], stream) -> None:
     \"\"\"Write NUL-delimited JSON to stream.\"\"\"
     for record in records:
         stream.write(json.dumps(record) + '\\0')
+
+def read_xml_lxml(file_path: str, tags: set) -> Iterator[Dict[str, Any]]:
+    \"\"\"Read and flatten XML using lxml.\"\"\"
+    try:
+        from lxml import etree
+    except ImportError:
+        sys.stderr.write('Error: lxml required for XML source\\n')
+        sys.exit(1)
+    
+    context = etree.iterparse(file_path, events=('start', 'end'), recover=True)
+    context = iter(context)
+    _, root = next(context) # Get root start
+    
+    def expand(tag, nsmap):
+        if ':' in tag:
+            pfx, local = tag.split(':', 1)
+            uri = nsmap.get(pfx)
+            if uri:
+                return '{' + uri + '}' + local
+        return tag
+
+    # Pre-calculate wanted tags (assuming passed tags are QNames if needed, or local names)
+    # For simplicity, we match suffix or exact
+    
+    for event, elem in context:
+        if event == 'end' and (elem.tag in tags or elem.tag.split('}')[-1] in tags):
+            data = {}
+            # Attributes
+            for k, v in elem.attrib.items():
+                data['@' + k] = v
+            # Text
+            if elem.text and elem.text.strip():
+                data['text'] = elem.text.strip()
+            # Children (simple flattening)
+            for child in elem:
+                tag = child.tag.split('}')[-1]
+                if not len(child) and child.text:
+                    data[tag] = child.text.strip()
+            
+            yield data
+            
+            # Memory cleanup
+            elem.clear()
+            while elem.getprevious() is not None:
+                del elem.getparent()[0]
+    del context
+    root.clear()
 \n").
 
 %% ============================================
@@ -896,23 +879,7 @@ generate_generator_code(_Name, _Arity, Clauses, Options, PythonCode) :-
     generate_rule_functions(Name, Clauses, RuleFunctions),
     generate_fixpoint_loop(Name, Clauses, FixpointLoop),
     
-    % Main function
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
-    format(string(Main),
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream_generator(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     atomic_list_concat([Header, Helpers, RuleFunctions, FixpointLoop, Main], "\n", PythonCode).
 
@@ -1937,4 +1904,44 @@ def process_stream_generator(records: Iterator[Dict]) -> Iterator[Dict]:
         
         delta = new_delta
 ", [RuleCallsStr]).
+
+%% generate_python_main(+Options, -MainCode)
+%  Generate the main entry point with appropriate reader/writer
+generate_python_main(Options, MainCode) :-
+    option(record_format(Format), Options, jsonl),
+    (   Format == nul_json
+    ->  Writer = "write_nul_json"
+    ;   Writer = "write_jsonl"
+    ),
+    
+    (   option(input_source(xml(File, Tags)), Options)
+    ->  % XML Source
+        maplist(atom_string, Tags, TagStrs),
+        maplist(quote_py_string, TagStrs, QuotedTags),
+        atomic_list_concat(QuotedTags, ", ", TagsInner),
+        format(string(ReaderCall), "read_xml_lxml('~w', {~w})", [File, TagsInner])
+    ;   Format == nul_json
+    ->  ReaderCall = "read_nul_json(sys.stdin)"
+    ;   ReaderCall = "read_jsonl(sys.stdin)"
+    ),
+    
+    % Handle generator mode vs procedural mode function name
+    (   option(mode(generator), Options)
+    ->  ProcessFunc = "process_stream_generator"
+    ;   ProcessFunc = "process_stream"
+    ),
+    
+    format(string(MainCode), 
+"
+def main():
+    records = ~w
+    results = ~w(records)
+    ~w(results, sys.stdout)
+
+if __name__ == '__main__':
+    main()
+", [ReaderCall, ProcessFunc, Writer]).
+
+quote_py_string(Str, Quoted) :-
+    format(string(Quoted), "'~w'", [Str]).
 
