@@ -2263,7 +2263,19 @@ compile_xml_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Options, GoCode) 
     generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
     
     % Get XML file and tags
-    option(xml_file(XmlFile), Options, 'data.xml'),
+    option(xml_file(XmlFile), Options, stdin),
+    
+    (   XmlFile == stdin
+    ->  FileOpenCode = '\tf := os.Stdin'
+    ;   format(string(FileOpenCode), '
+\tf, err := os.Open("~w")
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening file: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer f.Close()', [XmlFile])
+    ),
+
     (   option(tags(Tags), Options)
     ->  true
     ;   option(tag(Tag), Options)
@@ -2287,12 +2299,7 @@ compile_xml_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Options, GoCode) 
     ),
     
     format(string(GoCode), '
-\tf, err := os.Open("~w")
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error opening file: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-\tdefer f.Close()
+~s
 
 \tdecoder := xml.NewDecoder(f)
 ~w
@@ -2322,7 +2329,7 @@ compile_xml_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Options, GoCode) 
 \t\t\t}
 \t\t}
 \t}
-', [XmlFile, SeenDecl, TagCheck, ExtractCode, OutputExpr, UniqueCheck]).
+', [FileOpenCode, SeenDecl, TagCheck, ExtractCode, OutputExpr, UniqueCheck]).
 
 tag_to_go_cond(Tag, Cond) :-
     format(string(Cond), 'se.Name.Local == "~w"', [Tag]).

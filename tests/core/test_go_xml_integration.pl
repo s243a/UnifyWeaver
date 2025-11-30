@@ -4,42 +4,49 @@
 :- use_module(src/unifyweaver/targets/go_target).
 :- use_module(library(process)).
 
-run_tests :- 
+run_tests :-
     run_tests([go_xml_integration]).
 
 :- begin_tests(go_xml_integration).
 
-test(go_xml_streaming) :-
+test(go_xml_file) :-
+    run_go_xml_test(file, []).
+
+test(go_xml_stdin) :-
+    run_go_xml_test(stdin, []).
+
+run_go_xml_test(Mode, ExtraOptions) :-
     (   path_to_go(GoPath)
     ->  true
-    ;   format('Skipping go_xml_streaming: go not found~n', []),
+    ;   format('Skipping go_xml test: go not found~n', []),
         true
     ),
     
     (   nonvar(GoPath)
     ->
-        XmlFile = 'test_go.xml',
         GoFile = 'test_xml.go',
+        XmlContent = '<root><item id="1">A</item><item id="2">B</item></root>',
         
-        setup_call_cleanup(
-            open(XmlFile, write, Stream),
-            write(Stream, '<root><item id="1">A</item><item id="2">B</item></root>'),
-            close(Stream)
-        ),
-        
-        % Define predicate to map XML fields
-        % item(Id, Text) :- json_get('@id', Id), json_get('text', Text).
-        % We simulate this by creating a dummy clause structure without asserting it,
-        % or asserting it. go_target expects user:clause.
-        
+        % Define dummy predicate
+        retractall(user:test_xml_go(_, _)),
         assertz((user:test_xml_go(Id, Text) :- json_get('@id', Id), json_get('text', Text))),
         
-        Options = [
+        (   Mode == file
+        ->  XmlFile = 'test_go.xml',
+            setup_call_cleanup(
+                open(XmlFile, write, Stream),
+                write(Stream, XmlContent),
+                close(Stream)
+            ),
+            BaseOptions = [xml_file(XmlFile)]
+        ;   BaseOptions = [xml_file(stdin)]
+        ),
+        
+        append(BaseOptions, [
             xml_input(true),
-            xml_file(XmlFile),
             tags(['item']),
             field_delimiter(colon)
-        ],
+        | ExtraOptions], Options),
         
         compile_predicate_to_go(test_xml_go/2, Options, GoCode),
         
@@ -50,23 +57,39 @@ test(go_xml_streaming) :-
         ),
         
         % Run Go program
-        setup_call_cleanup(
-            process_create(GoPath, ['run', GoFile], [stdout(pipe(Out)), process(PID)]),
-            (
-                read_string(Out, _, Output),
-                process_wait(PID, ExitStatus),
-                assertion(ExitStatus == exit(0))
-            ),
-            close(Out)
+        (
+            Mode == file
+        ->  setup_call_cleanup(
+                process_create(GoPath, ['run', GoFile], [stdout(pipe(Out)), process(PID)]),
+                (
+                    read_string(Out, _, Output),
+                    process_wait(PID, ExitStatus),
+                    assertion(ExitStatus == exit(0))
+                ),
+                close(Out)
+            )
+        ;   Mode == stdin
+        ->  setup_call_cleanup(
+                process_create(GoPath, ['run', GoFile], [stdin(pipe(In)), stdout(pipe(Out)), process(PID)]),
+                (
+                    write(In, XmlContent),
+                    close(In),
+                    read_string(Out, _, Output),
+                    process_wait(PID, ExitStatus),
+                    assertion(ExitStatus == exit(0))
+                ),
+                close(Out)
+            )
         ),
         
+        % Verify output
         split_string(Output, "\n", "", Lines),
         assertion(member("1:A", Lines)),
         assertion(member("2:B", Lines)),
         
         % Cleanup
         retractall(user:test_xml_go(_, _)),
-        delete_file(XmlFile),
+        (Mode == file -> delete_file(XmlFile) ; true),
         delete_file(GoFile)
     ;   true
     ).
