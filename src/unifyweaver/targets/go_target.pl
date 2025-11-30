@@ -2208,7 +2208,16 @@ compile_xml_input_mode(Pred, Arity, Options, GoCode) :-
         
         % Generate XML loop
         SingleHead =.. [_|HeadArgs],
-        compile_xml_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Options, CoreBody)
+        compile_xml_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Options, CoreBody),
+        
+        % Check if database backend is specified
+        (   option(db_backend(bbolt), Options)
+        ->  format('  Database: bbolt~n'),
+            wrap_with_database(CoreBody, FieldMappings, Pred, Options, ScriptBody),
+            NeedsDatabase = true
+        ;   ScriptBody = CoreBody,
+            NeedsDatabase = false
+        )
     ;   format('ERROR: XML mode supports single clause only~n'),
         fail
     ),
@@ -2225,22 +2234,23 @@ compile_xml_input_mode(Pred, Arity, Options, GoCode) :-
     
     % Wrap in package
     (   IncludePackage ->
+        (   NeedsDatabase = true
+        ->  Imports = '\t"encoding/xml"\n\t"fmt"\n\t"os"\n\t"strings"\n\t"io"\n\n\tbolt "go.etcd.io/bbolt"'
+        ;   Imports = '\t"encoding/xml"\n\t"fmt"\n\t"os"\n\t"strings"\n\t"io"'
+        ),
+        
         format(string(GoCode), 'package main
 
 import (
-\t"encoding/xml"
-\t"fmt"
-\t"os"
-\t"strings"
-\t"io"
+~s
 )
 
 ~s
 
 func main() {
 ~s}
-', [Helpers, CoreBody])
-    ;   GoCode = CoreBody
+', [Imports, Helpers, ScriptBody])
+    ;   GoCode = ScriptBody
     ).
 
 %% compile_xml_to_go(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, +Options, -GoCode)
