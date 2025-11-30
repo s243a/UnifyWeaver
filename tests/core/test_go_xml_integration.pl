@@ -15,6 +15,9 @@ test(go_xml_file) :-
 test(go_xml_stdin) :-
     run_go_xml_test(stdin, []).
 
+test(go_xml_fragments) :-
+    run_go_xml_test(stdin_fragments, []).
+
 run_go_xml_test(Mode, ExtraOptions) :-
     (   path_to_go(GoPath)
     ->  true
@@ -25,7 +28,10 @@ run_go_xml_test(Mode, ExtraOptions) :-
     (   nonvar(GoPath)
     ->
         GoFile = 'test_xml.go',
-        XmlContent = '<root><item id="1">A</item><item id="2">B</item></root>',
+        (   Mode == stdin_fragments
+        ->  XmlContent = '<item id="1">A</item><item id="2">B</item>'
+        ;   XmlContent = '<root><item id="1">A</item><item id="2">B</item></root>'
+        ),
         
         % Define dummy predicate
         retractall(user:test_xml_go(_, _)),
@@ -57,30 +63,29 @@ run_go_xml_test(Mode, ExtraOptions) :-
         ),
         
         % Run Go program
-        (
-            Mode == file
-        ->  setup_call_cleanup(
-                process_create(GoPath, ['run', GoFile], [stdout(pipe(Out)), process(PID)]),
-                (
-                    read_string(Out, _, Output),
-                    process_wait(PID, ExitStatus),
-                    assertion(ExitStatus == exit(0))
+                (   Mode == file
+                ->  setup_call_cleanup(
+                        process_create(GoPath, ['run', GoFile], [stdout(pipe(Out)), process(PID)]),
+                        (
+                            read_string(Out, _, Output),
+                            process_wait(PID, ExitStatus),
+                            assertion(ExitStatus == exit(0))
+                        ),
+                        close(Out)
+                    )
+                ;   (Mode == stdin ; Mode == stdin_fragments)
+                ->  setup_call_cleanup(
+                        process_create(GoPath, ['run', GoFile], [stdin(pipe(In)), stdout(pipe(Out)), process(PID)]),
+                        (
+                            write(In, XmlContent),
+                            close(In),
+                            read_string(Out, _, Output),
+                            process_wait(PID, ExitStatus),
+                            assertion(ExitStatus == exit(0))
+                        ),
+                        close(Out)
+                    )
                 ),
-                close(Out)
-            )
-        ;   Mode == stdin
-        ->  setup_call_cleanup(
-                process_create(GoPath, ['run', GoFile], [stdin(pipe(In)), stdout(pipe(Out)), process(PID)]),
-                (
-                    write(In, XmlContent),
-                    close(In),
-                    read_string(Out, _, Output),
-                    process_wait(PID, ExitStatus),
-                    assertion(ExitStatus == exit(0))
-                ),
-                close(Out)
-            )
-        ),
         
         % Verify output
         split_string(Output, "\n", "", Lines),
