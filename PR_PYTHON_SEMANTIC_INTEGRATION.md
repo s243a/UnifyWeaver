@@ -13,6 +13,8 @@ This PR completes the Python Semantic capability by updating the `python_target`
     - Updated `helpers/1` to inject this runtime code into generated scripts.
 - **Tests**:
     - Added `tests/core/test_python_semantic_compilation.pl` verifying that semantic predicates are correctly compiled into Python code that invokes the runtime components.
+- **Documentation**:
+    - Updated `docs/PYTHON_TARGET.md` with "Semantic Predicates" section.
 
 ## Usage
 ```prolog
