@@ -753,9 +753,24 @@ maybe_run_query_runtime(_Plan, _ExpectedRows) :-
     writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)').
 
 dotnet_cli(Path) :-
-    catch(absolute_file_name(path(dotnet), Path, [access(execute)]), _, fail).
+    (   catch(absolute_file_name(path(dotnet), Path, [access(execute)]), _, fail)
+    ->  true
+    ;   exists_file('C:/Program Files/dotnet/dotnet.exe')
+    ->  Path = 'C:/Program Files/dotnet/dotnet.exe'
+    ;   Path = dotnet
+    ).
 
 % Create temp directory with test name from Plan
+prepare_temp_dir(PredName, Dir) :-
+    atom(PredName),
+    !,
+    uuid(UUID),
+    atomic_list_concat(['csharp_gen_', PredName, '_', UUID], Sub),
+    (   cqt_option(output_dir, Base) -> true ; Base = 'tmp'),
+    make_directory_path(Base),
+    directory_file_path(Base, Sub, Dir),
+    make_directory_path(Dir).
+
 prepare_temp_dir(Plan, Dir) :-
     is_dict(Plan),
     get_dict(head, Plan, predicate{name:PredName, arity:_}),
@@ -943,13 +958,13 @@ find_compiled_executable(Dir, ExePath) :-
 
 % Execute compiled binary (native or DLL)
 execute_compiled_binary(ExePath, Dir, Status, Output) :-
-    dotnet_env(Dir, Env),
+    % dotnet_env(Dir, Env),
     (   atom_concat(_, '.dll', ExePath)
     ->  % Execute DLL with dotnet
         dotnet_cli(Dotnet),
         process_create(Dotnet, [ExePath],
                        [ cwd(Dir),
-                         env(Env),
+                         % env(Env),
                          stdout(pipe(Out)),
                          stderr(pipe(Err)),
                          process(PID)
@@ -957,7 +972,7 @@ execute_compiled_binary(ExePath, Dir, Status, Output) :-
     ;   % Execute native binary directly
         process_create(ExePath, [],
                        [ cwd(Dir),
-                         env(Env),
+                         % env(Env),
                          stdout(pipe(Out)),
                          stderr(pipe(Err)),
                          process(PID)
@@ -1009,10 +1024,10 @@ write_string(Path, String) :-
                        close(Stream)).
 
 dotnet_command(Dotnet, Args, Dir, Status, Output) :-
-    dotnet_env(Dir, Env),
+    % dotnet_env(Dir, Env), % environ/1 not available
     process_create(Dotnet, Args,
                    [ cwd(Dir),
-                     env(Env),
+                     % env(Env),
                      stdout(pipe(Out)),
                      stderr(pipe(Err)),
                      process(PID)
@@ -1204,11 +1219,13 @@ verify_generator_execution_(Code, Dotnet, Dir) :-
     directory_file_path(Dir, 'Generated.cs', GeneratedPath),
     write_string(GeneratedPath, Code),
     % Derive module class from generated code
-    (   sub_string(Code, Pos, _, _, "public static class ")
-    ->  Start is Pos + 21, % length("public static class ")
-        sub_string(Code, Start, _, _, AfterClass),
-        split_string(AfterClass, " {", " {;\n\r\t", [ModuleClassStr|_]),
-        atom_string(ModuleClass, ModuleClassStr)
+    (   sub_string(Code, _, _, _, "public static class "),
+        split_string(Code, "\n", "\r", Lines),
+        member(Line, Lines),
+        sub_string(Line, _, _, _, "public static class "),
+        split_string(Line, " {", " \t", Tokens),
+        append(_, ["class", ClassNameStr|_], Tokens)
+    ->  atom_string(ModuleClass, ClassNameStr)
     ;   ModuleClass = 'TestLink_Module'  % fallback for this test
     ),
     % Harness to execute Solve and print facts
