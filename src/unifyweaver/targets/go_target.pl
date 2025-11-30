@@ -127,6 +127,11 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
         ;   format('  Mode: JSON input (JSONL)~n')
         ),
         compile_json_input_mode(Pred, Arity, Options, GoCode)
+    % Check if this is XML input mode
+    ;   option(xml_input(true), Options)
+    ->  % Compile for XML input
+        format('  Mode: XML input (streaming + flattening)~n'),
+        compile_xml_input_mode(Pred, Arity, Options, GoCode)
     % Check if this is JSON output mode
     ;   option(json_output(true), Options)
     ->  % Compile for JSON output
@@ -1924,6 +1929,8 @@ extract_json_field_mappings(Body, FieldMappings) :-
 %% extract_json_operations(+Body, -Operations)
 %  Extract all JSON operations from body (handles conjunction)
 %
+extract_json_operations(_:Goal, Ops) :- !,
+    extract_json_operations(Goal, Ops).
 extract_json_operations((A, B), Ops) :- !,
     extract_json_operations(A, OpsA),
     extract_json_operations(B, OpsB),
@@ -2145,8 +2152,13 @@ generate_flat_field_extraction(FieldName, VarName, ExtractCode) :-
 %  Generate extraction code for a nested field using getNestedField helper
 %
 generate_nested_field_extraction(Path, VarName, ExtractCode) :-
+    % Ensure path is a list
+    (   is_list(Path)
+    ->  PathList = Path
+    ;   PathList = [Path]
+    ),
     % Convert path atoms to Go string slice
-    maplist(atom_string, Path, PathStrs),
+    maplist(atom_string, PathList, PathStrs),
     atomic_list_concat(PathStrs, '", "', PathStr),
     format(atom(ExtractCode), '\t\t~w, ~wOk := getNestedField(data, []string{"~s"})\n\t\tif !~wOk {\n\t\t\tcontinue\n\t\t}',
         [VarName, VarName, PathStr, VarName]).
@@ -2172,6 +2184,191 @@ generate_json_output_expr(HeadArgs, DelimChar, OutputExpr) :-
 %% ============================================
 %% UTILITY FUNCTIONS
 %% ============================================
+
+%% ============================================
+%% XML INPUT MODE COMPILATION
+%% ============================================
+
+%% compile_xml_input_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate for XML input (streaming + flattening)
+compile_xml_input_mode(Pred, Arity, Options, GoCode) :-
+    % Get options
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(include_package(IncludePackage), Options, true),
+    option(unique(Unique), Options, true),
+    
+    % Get predicate clauses
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    
+    (   Clauses = [SingleHead-SingleBody] ->
+        % Extract mappings (same as JSON)
+        extract_json_field_mappings(SingleBody, FieldMappings),
+        format('DEBUG: FieldMappings = ~w~n', [FieldMappings]),
+        
+        % Generate XML loop
+        SingleHead =.. [_|HeadArgs],
+        compile_xml_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Options, CoreBody),
+        
+        % Check if database backend is specified
+        (   option(db_backend(bbolt), Options)
+        ->  format('  Database: bbolt~n'),
+            wrap_with_database(CoreBody, FieldMappings, Pred, Options, ScriptBody),
+            NeedsDatabase = true
+        ;   ScriptBody = CoreBody,
+            NeedsDatabase = false
+        )
+    ;   format('ERROR: XML mode supports single clause only~n'),
+        fail
+    ),
+    
+    % Generate XML helpers
+    generate_xml_helpers(XmlHelpers),
+    
+    % Check if nested helper is needed
+    (   member(nested(_, _), FieldMappings)
+    ->  generate_nested_helper(NestedHelper),
+        format(string(Helpers), "~s\n~s", [XmlHelpers, NestedHelper])
+    ;   Helpers = XmlHelpers
+    ),
+    
+    % Wrap in package
+    (   IncludePackage ->
+        (   NeedsDatabase = true
+        ->  Imports = '\t"encoding/xml"\n\t"fmt"\n\t"os"\n\t"strings"\n\t"io"\n\n\tbolt "go.etcd.io/bbolt"'
+        ;   Imports = '\t"encoding/xml"\n\t"fmt"\n\t"os"\n\t"strings"\n\t"io"'
+        ),
+        
+        format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+~s
+
+func main() {
+~s}
+', [Imports, Helpers, ScriptBody])
+    ;   GoCode = ScriptBody
+    ).
+
+%% compile_xml_to_go(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, +Options, -GoCode)
+compile_xml_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Options, GoCode) :-
+    % Map delimiter
+    map_field_delimiter(FieldDelim, DelimChar),
+    
+    % Generate field extraction code (resusing JSON logic as data is map[string]interface{})
+    generate_json_field_extractions(FieldMappings, HeadArgs, ExtractCode),
+    generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
+    
+    % Get XML file and tags
+    option(xml_file(XmlFile), Options, stdin),
+    
+    (   XmlFile == stdin
+    ->  FileOpenCode = '\tf := os.Stdin'
+    ;   format(string(FileOpenCode), '
+\tf, err := os.Open("~w")
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening file: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer f.Close()', [XmlFile])
+    ),
+
+    (   option(tags(Tags), Options)
+    ->  true
+    ;   option(tag(Tag), Options)
+    ->  Tags = [Tag]
+    ;   Tags = []
+    ),
+    
+    % Build tag check
+    (   Tags = []
+    ->  TagCheck = 'true'
+    ;   maplist(tag_to_go_cond, Tags, Conds),
+        atomic_list_concat(Conds, " || ", TagCheck)
+    ),
+    
+    % Build main loop
+    (   Unique = true ->
+        SeenDecl = '\tseen := make(map[string]bool)\n\t',
+        UniqueCheck = '\t\tif !seen[result] {\n\t\t\tseen[result] = true\n\t\t\tfmt.Println(result)\n\t\t}\n'
+    ;   SeenDecl = '\t',
+        UniqueCheck = '\t\tfmt.Println(result)\n'
+    ),
+    
+    format(string(GoCode), '
+~s
+
+\tdecoder := xml.NewDecoder(f)
+~w
+\tfor {
+\t\tt, err := decoder.Token()
+\t\tif err == io.EOF {
+\t\t\tbreak
+\t\t}
+\t\tif err != nil {
+\t\t\tcontinue
+\t\t}
+\t\t
+\t\tswitch se := t.(type) {
+\t\tcase xml.StartElement:
+\t\t\tif ~w {
+\t\t\t\tvar node XmlNode
+\t\t\t\tif err := decoder.DecodeElement(&node, &se); err != nil {
+\t\t\t\t\tcontinue
+\t\t\t\t}
+\t\t\t\t
+\t\t\t\tdata := FlattenXML(node)
+\t\t\t\t
+~s
+\t\t\t\t
+\t\t\t\tresult := ~s
+~s
+\t\t\t}
+\t\t}
+\t}
+', [FileOpenCode, SeenDecl, TagCheck, ExtractCode, OutputExpr, UniqueCheck]).
+
+tag_to_go_cond(Tag, Cond) :-
+    format(string(Cond), 'se.Name.Local == "~w"', [Tag]).
+
+generate_xml_helpers(Code) :-
+    Code = '
+type XmlNode struct {
+	XMLName xml.Name
+	Attrs   []xml.Attr `xml:",any,attr"`
+	Content string     `xml:",chardata"`
+	Nodes   []XmlNode  `xml:",any"`
+}
+
+func FlattenXML(n XmlNode) map[string]interface{} {
+	m := make(map[string]interface{})
+	for _, a := range n.Attrs {
+		m["@"+a.Name.Local] = a.Value
+	}
+	trim := strings.TrimSpace(n.Content)
+	if trim != "" {
+		m["text"] = trim
+	}
+	for _, child := range n.Nodes {
+        tag := child.XMLName.Local
+        flatChild := FlattenXML(child)
+        
+        if existing, ok := m[tag]; ok {
+            if list, isList := existing.([]interface{}); isList {
+                m[tag] = append(list, flatChild)
+            } else {
+                m[tag] = []interface{}{existing, flatChild}
+            }
+        } else {
+		    m[tag] = flatChild
+        }
+	}
+	return m
+}
+'.
 
 %% map_field_delimiter(+Delimiter, -String)
 %  Map delimiter atom to string
