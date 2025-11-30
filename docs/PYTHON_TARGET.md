@@ -67,6 +67,31 @@ By default (if no `input_source` is given), the generated script reads from **st
 
 This allows Python compiled predicates to be composed in standard Unix pipes.
 
+## Semantic Predicates
+
+The Python target supports high-level semantic operations backed by the embedded runtime library (SQLite, ONNX, lxml).
+
+### `semantic_search(Query, TopK, Results)`
+Performs vector similarity search against stored embeddings.
+
+```prolog
+search_physics(Results) :-
+    semantic_search('quantum physics', 10, Results).
+```
+
+### `crawler_run(SeedIds, MaxDepth)`
+Starts a focused crawl from the given seed IDs (URLs or paths), fetching, flattening, and embedding content.
+
+```prolog
+crawl_data(Seeds) :-
+    crawler_run(Seeds, 3).
+```
+
+### `upsert_object(Id, Type, Data)`
+Manually inserts or updates an object in the local SQLite database.
+
+---
+
 ## Example: Factorial
 
 ```prolog
