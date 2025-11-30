@@ -46,9 +46,28 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Arithmetic & constraints** - LINQ-based pipelines honour `is/2`, comparisons, and deduplication.
 - **Streaming codegen (`target(csharp_codegen)`)** - Emit standalone C# projects that mirror Bash streaming templates.
 
-**See [C# Compilation Guide](docs/DOTNET_COMPILATION.md) for details.**
+**See [C# Compilation Guide](docs/DOTNET_COMPILATION.md) for details.**                           
 
-### Data Source Plugin System (v0.1)
+                                                 
+
+### Python Target (v0.2)                         
+
+- **Procedural & Generator Modes** - streaming pipelines or Datalog-style fixpoint evaluation.
+
+- **Native XML Integration** - In-process `lxml` reading and flattening for high-performance ETL.
+
+- **Advanced Recursion** - Tail loop optimization and memoization.
+
+- **Standard I/O** - JSONL/NUL-JSON piping support.
+
+
+
+**See [Python Target Guide](docs/PYTHON_TARGET.md) for details.**
+
+
+
+### Data Source Plugin System (v0.1)             
+
 - **5 Production-Ready Plugins** - CSV/TSV, AWK, Python, HTTP, JSON data sources
 - **Self-Registering Architecture** - Plugin-based system with automatic discovery
 - **Template Integration** - Seamless bash code generation with comprehensive error handling
