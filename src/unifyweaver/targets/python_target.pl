@@ -398,6 +398,10 @@ translate_body((Goal, Rest), Code) :-
 translate_body(Goal, Code) :-
     translate_goal(Goal, Code).
 
+translate_goal(_:Goal, Code) :-
+    !,
+    translate_goal(Goal, Code).
+
 translate_goal(get_dict(Key, Record, Value), Code) :-
     !,
     var_to_python(Record, PyRecord),
@@ -435,6 +439,26 @@ translate_goal(match(Var, Pattern, Type), Code) :-
 translate_goal(match(Var, Pattern, Type, Groups), Code) :-
     !,
     translate_match_goal(Var, Pattern, Type, Groups, Code).
+
+translate_goal(semantic_search(Query, TopK, Results), Code) :-
+    !,
+    var_to_python(Query, PyQuery),
+    var_to_python(TopK, PyTopK),
+    var_to_python(Results, PyResults),
+    format(string(Code), "    ~w = _get_runtime().searcher.search(~w, top_k=~w)\n", [PyResults, PyQuery, PyTopK]).
+
+translate_goal(crawler_run(SeedIds, MaxDepth), Code) :-
+    !,
+    var_to_python(SeedIds, PySeeds),
+    var_to_python(MaxDepth, PyDepth),
+    format(string(Code), "    _get_runtime().crawler.crawl(~w, fetch_xml_func, max_depth=~w)\n", [PySeeds, PyDepth]).
+
+translate_goal(upsert_object(Id, Type, Data), Code) :-
+    !,
+    var_to_python(Id, PyId),
+    var_to_python(Type, PyType),
+    var_to_python(Data, PyData),
+    format(string(Code), "    _get_runtime().importer.upsert_object(~w, ~w, ~w)\n", [PyId, PyType, PyData]).
 
 translate_goal(true, Code) :-
     !,
@@ -777,7 +801,12 @@ header("import sys\nimport json\nimport re\nfrom typing import Iterator, Dict, A
 
 header_with_functools("import sys\nimport json\nimport re\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
 
-helpers("
+helpers(Helpers) :-
+    helpers_base(Base),
+    semantic_runtime_helpers(Runtime),
+    format(string(Helpers), "~s\n~s", [Base, Runtime]).
+
+helpers_base("
 def read_jsonl(stream) -> Iterator[Dict[str, Any]]:
     \"\"\"Read JSONL from stream.\"\"\"
     for line in stream:
@@ -960,7 +989,8 @@ def write_jsonl(records: Iterator[Dict], stream: Any):
 ",
         NulReader = ""
     ),
-    atomic_list_concat([JsonlReader, NulReader], "", Helpers).
+    semantic_runtime_helpers(Runtime),
+    atomic_list_concat([JsonlReader, NulReader, Runtime], "", Helpers).
 
 %% generate_rule_functions(+Name, +Clauses, -RuleFunctions)
 generate_rule_functions(Name, Clauses, RuleFunctions) :-
@@ -1920,3 +1950,54 @@ if __name__ == '__main__':
 
 quote_py_string(Str, Quoted) :-
     format(string(Quoted), "'~w'", [Str]).
+
+%% semantic_runtime_helpers(-Code)
+%  Inject the Semantic Runtime library (Importer, Crawler, etc.) into the script
+semantic_runtime_helpers(Code) :-
+    % List of runtime files to inline
+    Files = [
+        'src/unifyweaver/targets/python_runtime/embedding.py',
+        'src/unifyweaver/targets/python_runtime/importer.py',
+        'src/unifyweaver/targets/python_runtime/onnx_embedding.py',
+        'src/unifyweaver/targets/python_runtime/searcher.py',
+        'src/unifyweaver/targets/python_runtime/crawler.py'
+    ],
+    
+    findall(Content, (
+        member(File, Files),
+        (   exists_file(File)
+        ->  read_file_to_string(File, Raw, []),
+            % Remove relative imports 'from .embedding import'
+            re_replace("from \\\\.embedding import.*", "", Raw, Content)
+        ;   format(string(Content), "# ERROR: Runtime file ~w not found\\n", [File])
+        )
+    ), Contents),
+    
+    Wrapper = "
+class SemanticRuntime:
+    def __init__(self, db_path='data.db', model_path='models/model.onnx', vocab_path='models/vocab.txt'):
+        self.importer = PtImporter(db_path)
+        if os.path.exists(model_path):
+            self.embedder = OnnxEmbeddingProvider(model_path, vocab_path)
+        else:
+            sys.stderr.write(f'Warning: Model {model_path} not found, embeddings disabled\\\\n')
+            self.embedder = None
+            
+        self.crawler = PtCrawler(self.importer, self.embedder)
+        self.searcher = PtSearcher(db_path, self.embedder)
+
+_runtime_instance = None
+def _get_runtime():
+    global _runtime_instance
+    if _runtime_instance is None:
+        _runtime_instance = SemanticRuntime()
+    return _runtime_instance
+
+def fetch_xml_func(url):
+    if os.path.exists(url):
+        return open(url, 'rb')
+    return None
+",
+    
+    atomic_list_concat(Contents, "\n", LibCode),
+    string_concat(LibCode, Wrapper, Code).
