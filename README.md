@@ -60,9 +60,11 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 
 - **Standard I/O** - JSONL/NUL-JSON piping support.
 
+- **Semantic Runtime** - Built-in support for crawling, SQLite storage, and vector search.
 
 
-**See [Python Target Guide](docs/PYTHON_TARGET.md) for details.**
+
+**See [Python Target Guide](docs/PYTHON_TARGET.md) and [Semantic Runtime](docs/PYTHON_RUNTIME.md) for details.**
 
 
 
