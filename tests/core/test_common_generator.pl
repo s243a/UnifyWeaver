@@ -14,7 +14,8 @@ test(build_variable_map) :-
     build_variable_map([Goal1-"fact", Goal2-"other"], VarMap),
     member(X-source("fact", 0), VarMap),
     member(Y-source("fact", 1), VarMap),
-    member(Z-source("other", 1), VarMap).
+    member(Z-source("other", 1), VarMap),
+    !.
 
 test(translate_expr_python) :-
     Config = [
@@ -31,7 +32,8 @@ test(translate_expr_python) :-
     translate_expr_common(foo, VarMap, Config, ResAtom),
     assertion(ResAtom == "'foo'"),
     translate_expr_common(plus(X, 10), VarMap, Config, ResCompound),
-    assertion(ResCompound == "(fact.get('arg0') + 10)").
+    assertion(ResCompound == "(fact.get('arg0') + 10)"),
+    !.
 
 test(translate_builtin_csharp) :-
     Config = [
@@ -42,7 +44,8 @@ test(translate_builtin_csharp) :-
     ],
     VarMap = [A-source("fact", 0)],
     translate_builtin_common(A > 10, VarMap, Config, Res),
-    assertion(Res == "fact[\"arg0\"] > 10").
+    assertion(Res == "fact[\"arg0\"] > 10"),
+    !.
 
 test(prepare_negation) :-
     Config = [
@@ -58,6 +61,7 @@ test(prepare_negation) :-
     member(arg0-Arg0, Pairs),
     assertion(Arg0 == "fact.get('arg0')"),
     member(arg1-Arg1, Pairs),
-    assertion(Arg1 == "'yes'").
+    assertion(Arg1 == "'yes'"),
+    !.
 
 :- end_tests(common_generator).

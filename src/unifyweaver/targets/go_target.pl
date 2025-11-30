@@ -17,6 +17,11 @@
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
 
+% Suppress singleton warnings in this experimental generator target.
+:- style_check(-singleton).
+:- discontiguous extract_match_constraints/2.
+:- use_module(library(filesex)).
+
 %% ============================================
 %% JSON SCHEMA SUPPORT
 %% ============================================
