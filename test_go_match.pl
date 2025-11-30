@@ -1,6 +1,7 @@
 :- encoding(utf8).
 % Test Go target match predicate support
 
+:- use_module(library(filesex)).
 :- use_module('src/unifyweaver/targets/go_target').
 
 % Test data - log lines
@@ -31,8 +32,9 @@ test_pattern_match :-
 
 test_write_error_log :-
     write('=== Test: Write error_log to file ==='), nl,
+    make_directory_path('output_test'),
     go_target:compile_predicate_to_go(error_log/1, [], Code),
-    go_target:write_go_program(Code, 'error_log.go').
+    go_target:write_go_program(Code, 'output_test/error_log.go').
 
 run_all_tests :-
     test_boolean_match,

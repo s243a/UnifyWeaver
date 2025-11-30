@@ -15,6 +15,12 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(filesex)).
+
+% Suppress singleton warnings in this experimental generator target.
+:- style_check(-singleton).
+:- discontiguous extract_match_constraints/2.
+:- use_module(library(filesex)).
 
 %% ============================================
 %% JSON SCHEMA SUPPORT
@@ -441,7 +447,10 @@ compile_single_rule_to_go(Pred, Arity, Head, Body, RecordDelim, FieldDelim, Uniq
         compile_match_only_rule_go(PredStr, HeadArgs, VarMap, FieldDelim,
                                    Unique, MatchConstraints, GoCode)
     ;   % Multiple predicates or unsupported pattern
-        GoCode = '\t// TODO: Multi-predicate or constraint-only rules not yet implemented\n'
+        format(user_error,
+               'Go target: multi-predicate or constraint-only rules not supported (yet) for ~w/~w~n',
+               [Pred, Arity]),
+        fail
     ).
 
 %% compile_single_predicate_rule_go(+PredStr, +HeadArgs, +BodyPred, +VarMap, +FieldDelim, +Unique, +MatchConstraints, +Constraints, -GoCode)
@@ -825,7 +834,11 @@ compile_match_only_rule_go(PredStr, HeadArgs, VarMap, FieldDelim, Unique, MatchC
 '\n\t// Read from stdin and process with regex pattern matching\n\n\tpattern := regexp.MustCompile(`~w`)\n\tscanner := bufio.NewScanner(os.Stdin)~w\n\t\n\tfor scanner.Scan() {\n\t\tline := scanner.Text()\n\t\tmatches := pattern.FindStringSubmatch(line)\n\t\tif matches != nil {\n~w\n\t\t\tresult := ~w~w\n\t\t}\n\t}\n',
             [Pattern, SeenMapCode, CaptureCode, OutputExpr, UniqueCode])
     ;   % Multiple or no match constraints
-        GoCode = '\t// TODO: Multiple or no match constraints not yet supported\n'
+        length(HeadArgs, Arity),
+        format(user_error,
+               'Go target: multiple/no match constraints not supported for ~w/~w~n',
+               [PredStr, Arity]),
+        fail
     ).
 
 %% build_go_concat_expr(+Parts, +Delimiter, -Expression)
@@ -1070,7 +1083,10 @@ compile_multiple_rules_to_go(Pred, Arity, Clauses, _RecordDelim, FieldDelim, Uni
             compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap,
                                             FieldDelim, Unique, CombinedConstraint, GoCode)
         ;   % No match constraints - just multiple rules with same body
-            GoCode = '\t// TODO: Multiple rules without match constraints not yet implemented\n'
+            format(user_error,
+                   'Go target: multiple rules without match constraints not supported for ~w~n',
+                   [PredStr]),
+            fail
         )
     ;   % Rules not compatible for simple merging - different body predicates
         format('  Rules have different body predicates - compiling separately~n'),
@@ -1289,7 +1305,10 @@ compile_tail_recursive_to_go(Pred, Arity, Clauses, GoCode) :-
     ;   Arity =:= 2 ->
         generate_binary_tail_recursion_go(PredStr, BaseArgs, RecArgs, RecBody, GoCode)
     ;   % Unsupported arity
-        format(atom(GoCode), '// TODO: Tail recursion for arity ~w not yet supported~n', [Arity])
+        format(user_error,
+               'Go target: tail recursion for arity ~w not supported for ~w~n',
+               [Arity, PredStr]),
+        fail
     ).
 
 %% generate_ternary_tail_recursion_go(+PredStr, +BaseArgs, +RecArgs, +RecBody, -GoCode)
@@ -1333,8 +1352,11 @@ func ~w(n int, acc int) int {
 
 %% generate_binary_tail_recursion_go(+PredStr, +BaseArgs, +RecArgs, +RecBody, -GoCode)
 %  Generate Go code for arity-2 tail recursion
-generate_binary_tail_recursion_go(PredStr, _BaseArgs, _RecArgs, _RecBody, GoCode) :-
-    format(atom(GoCode), '// TODO: Binary tail recursion for ~w not yet implemented~n', [PredStr]).
+generate_binary_tail_recursion_go(PredStr, _BaseArgs, _RecArgs, _RecBody, _GoCode) :-
+    format(user_error,
+           'Go target: binary tail recursion not supported for ~w~n',
+           [PredStr]),
+    fail.
 
 %% extract_step_operation(+Body, -StepOp)
 %  Extract the accumulator step operation from recursive body
@@ -2163,6 +2185,8 @@ map_field_delimiter(Char, Char) :- atom(Char), atom_length(Char, 1), !.
 %  Write Go code to file
 %
 write_go_program(GoCode, FilePath) :-
+    file_directory_name(FilePath, Dir),
+    (   Dir \= '.' -> make_directory_path(Dir) ; true ),
     open(FilePath, write, Stream),
     write(Stream, GoCode),
     close(Stream),

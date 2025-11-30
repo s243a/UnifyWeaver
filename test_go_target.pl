@@ -1,7 +1,11 @@
 :- encoding(utf8).
 % Test Go target - basic facts compilation
 
+:- use_module(library(filesex)).
 :- use_module('src/unifyweaver/targets/go_target').
+
+ensure_output_dir :-
+    make_directory_path('output_test').
 
 % Test facts
 parent(alice, bob).
@@ -24,13 +28,15 @@ test_single_rule :-
 
 test_write_file :-
     write('=== Test: Write Go Program to File ==='), nl,
+    ensure_output_dir,
     go_target:compile_predicate_to_go(parent/2, [], GoCode),
-    go_target:write_go_program(GoCode, 'test_parent.go').
+    go_target:write_go_program(GoCode, 'output_test/test_parent.go').
 
 test_write_child :-
     write('=== Test: Write Child Program to File ==='), nl,
+    ensure_output_dir,
     go_target:compile_predicate_to_go(child/2, [], GoCode),
-    go_target:write_go_program(GoCode, 'test_child.go').
+    go_target:write_go_program(GoCode, 'output_test/test_child.go').
 
 run_all :-
     test_facts,
