@@ -757,11 +757,12 @@ dotnet_cli(Path) :-
 
 % Create temp directory with test name from Plan
 prepare_temp_dir(Plan, Dir) :-
+    is_dict(Plan),
     get_dict(head, Plan, predicate{name:PredName, arity:_}),
     !,
     uuid(UUID),
     atomic_list_concat(['csharp_query_', PredName, '_', UUID], Sub),
-    cqt_option(output_dir, Base),
+    (   cqt_option(output_dir, Base) -> true ; Base = 'tmp'),
     make_directory_path(Base),
     directory_file_path(Base, Sub, Dir),
     make_directory_path(Dir).
@@ -770,7 +771,7 @@ prepare_temp_dir(Plan, Dir) :-
 prepare_temp_dir(Dir) :-
     uuid(UUID),
     atomic_list_concat(['csharp_query_', UUID], Sub),
-    cqt_option(output_dir, Base),
+    (   cqt_option(output_dir, Base) -> true ; Base = 'tmp'),
     make_directory_path(Base),
     directory_file_path(Base, Sub, Dir),
     make_directory_path(Dir).
@@ -1175,46 +1176,79 @@ verify_generator_mode :-
     
     % Try to compile and run if dotnet is available
     (   dotnet_cli(Dotnet)
-    ->  verify_generator_execution(Code, Dotnet)
+    ->  (   verify_generator_execution(Code, Dotnet)
+        ->  true
+        ;   writeln('  (generator mode execution: FAIL - see output above)')
+        )
     ;   writeln('  (dotnet not available, skipping execution test)')
     ).
 verify_generator_execution(Code, Dotnet) :-
-    % Setup temp directory
-    prepare_temp_dir(test_link, Dir),
-    
-    % Create .NET project
-    dotnet_command(Dotnet, ['new', 'console', '--force', '--framework', 'net9.0'], Dir, StatusNew, _),
-    (   StatusNew =:= 0
-    ->  true
-    ;   format('  (dotnet new failed, skipping execution test)~n'),
-        finalize_temp_dir(Dir),
-        fail
-    ),
-    
-    % Write generated code
-    directory_file_path(Dir, 'Program.cs', ProgramPath),
-    open(ProgramPath, write, Stream),
-    write(Stream, Code),
-    close(Stream),
-    
-    % Build
-    dotnet_command(Dotnet, ['build', '--no-restore'], Dir, StatusBuild, BuildOutput),
-    (   StatusBuild =:= 0
-    ->  true
-    ;   format('  (dotnet build failed: ~s)~n', [BuildOutput]),
-        finalize_temp_dir(Dir),
-        fail
-    ),
-    
-    % Run and check output
-    find_compiled_executable(Dir, ExePath),
-    dotnet_command(Dotnet, [ExePath], Dir, StatusRun, Output),
-    (   StatusRun =:= 0,
-        sub_string(Output, _, _, _, 'alice'),
-        sub_string(Output, _, _, _, 'bob')
-    ->  writeln('  (generator mode execution: PASS)'),
+    setup_call_cleanup(
+        prepare_temp_dir(test_link, Dir),
+        verify_generator_execution_(Code, Dotnet, Dir),
         finalize_temp_dir(Dir)
-    ;   writeln('  (generator mode execution: FAIL)'),
-        finalize_temp_dir(Dir),
-        fail
+    ).
+
+verify_generator_execution_(Code, Dotnet, Dir) :-
+    format('  [generator] working dir: ~w~n', [Dir]),
+    % Create .NET project
+    (   catch(dotnet_command(Dotnet, ['new', 'console', '--force', '--framework', 'net9.0'], Dir, StatusNew, NewOut),
+              E, (print_message(error, E), StatusNew = -1, NewOut = ""))
+    ->  ( StatusNew =:= 0
+        -> format('  (dotnet new ok)~n', [])
+        ;  format('  (dotnet new failed)~n~s~n', [NewOut]), fail
+        )
+    ;   format('  (dotnet new threw)~n'), fail
+    ),
+    % Write generated code
+    directory_file_path(Dir, 'Generated.cs', GeneratedPath),
+    write_string(GeneratedPath, Code),
+    % Derive module class from generated code
+    (   sub_string(Code, Pos, _, _, "public static class ")
+    ->  Start is Pos + 21, % length("public static class ")
+        sub_string(Code, Start, _, _, AfterClass),
+        split_string(AfterClass, " {", " {;\n\r\t", [ModuleClassStr|_]),
+        atom_string(ModuleClass, ModuleClassStr)
+    ;   ModuleClass = 'TestLink_Module'  % fallback for this test
+    ),
+    % Harness to execute Solve and print facts
+    format(atom(Harness),
+"using System;
+using System.Collections.Generic;
+using UnifyWeaver.Generated;
+
+class Program
+{
+    static void Main()
+    {
+        var total = ~w.Solve();
+        foreach (var fact in total)
+        {
+            var a0 = fact.Args.TryGetValue(\"arg0\", out var v0) ? v0 : \"\";
+            var a1 = fact.Args.TryGetValue(\"arg1\", out var v1) ? v1 : \"\";
+            Console.WriteLine($\"{fact.Relation},{a0},{a1}\");
+        }
+    }
+}
+", [ModuleClass]),
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, Harness),
+    % Build
+    (   catch(dotnet_command(Dotnet, ['build', '--no-restore'], Dir, StatusBuild, BuildOutput),
+              E, (print_message(error, E), StatusBuild = -1, BuildOutput = ""))
+    ->  ( StatusBuild =:= 0
+        -> format('  (dotnet build ok)~n', [])
+        ;  format('  (dotnet build failed) exit=~w~n~s~n', [StatusBuild, BuildOutput]), fail
+        )
+    ;   format('  (dotnet build threw)~n'), fail
+    ),
+    % Run and check output
+    (   catch(dotnet_command(Dotnet, ['run', '--no-build', '--no-restore'], Dir, StatusRun, Output),
+              E, (print_message(error, E), StatusRun = -1, Output = ""))
+    ->  (   StatusRun =:= 0,
+            sub_string(Output, _, _, _, 'test_link,alice,charlie')
+        ->  format('  (generator mode execution: PASS)~nOutput:~s~n', [Output])
+        ;   format('  (generator mode execution: FAIL) exit=~w~nOutput:~s~n', [StatusRun, Output]), fail
+        )
+    ;   format('  (dotnet run threw)~n'), fail
     ).

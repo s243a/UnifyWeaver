@@ -1497,7 +1497,8 @@ compile_generator_mode(Pred/Arity, _Options, Code) :-
     csharp_config(Config),
     
     csharp_generator_header(Pred, Header),
-    compile_generator_facts(Pred, BaseClauses, Config, FactsCode),
+    collect_fact_heads(BaseClauses, FactHeads),
+    compile_generator_facts(FactHeads, Config, FactsCode),
     
     append(BaseClauses, RecClauses, AllClauses),
     compile_generator_rules(Pred, AllClauses, Config, RulesCode, RuleNames),
@@ -1551,11 +1552,29 @@ namespace UnifyWeaver.Generated
     public static class ~w_Module
     {", [DateStr, PredClass]).
 
-compile_generator_facts(Pred, Clauses, Config, Code) :-
+collect_fact_heads(Clauses, FactHeads) :-
+    findall(Head,
+        member(Head-true, Clauses),
+        HeadFacts),
+    findall(SupportHead,
+        (   member(_-Body, Clauses),
+            Body \= true,
+            body_to_list(Body, Goals),
+            member(G, Goals),
+            G =.. [Pred|Args],
+            length(Args, Arity),
+            gather_predicate_clauses(predicate{name:Pred, arity:Arity}, SupportClauses),
+            member(SupportHead-true, SupportClauses)
+        ),
+        SupportFacts),
+    append(HeadFacts, SupportFacts, RawFacts),
+    sort(RawFacts, FactHeads).
+
+compile_generator_facts(FactHeads, _Config, Code) :-
     findall(FactCode,
-        (   member(Head-true, Clauses),
+        (   member(Head, FactHeads),
             Head =.. [Pred|Args],
-            generate_fact_creation(Pred, Args, Config, FactCode)
+            generate_fact_creation(Pred, Args, FactCode)
         ),
         FactCodes),
     (   FactCodes == []
@@ -1570,7 +1589,7 @@ compile_generator_facts(Pred, Clauses, Config, Code) :-
             return facts;
         }", [FactsBody]).
 
-generate_fact_creation(Pred, Args, _Config, Code) :-
+generate_fact_creation(Pred, Args, Code) :-
     findall(ArgCode,
         (   nth0(I, Args, Arg),
             format(string(ArgCode), "{ \"arg~w\", \"~w\" }", [I, Arg])
@@ -1584,7 +1603,7 @@ compile_generator_rules(_Pred, Clauses, Config, Code, RuleNames) :-
         (   nth1(I, Clauses, Clause),
             Clause = Head-Body,
             Body \= true,
-            compile_rule(I, Head, Body, Config, RuleCode, RuleName)
+            once(compile_rule(I, Head, Body, Config, RuleCode, RuleName))
         ),
         Pairs),
     pairs_keys_values(Pairs, RuleCodes, RuleNames),
@@ -1647,7 +1666,14 @@ compile_joins([], Builtins, Head, FirstGoal, Config, Code) :-
     % Build output
     findall(Assign,
         (   nth0(I, HeadArgs, Arg),
-            (   translate_expr_common(Arg, VarMap, Config, Expr)
+            (   var(Arg),
+                (   find_var_access(Arg, AccumPairs, Src, SrcIdx)
+                ->  format(user_output, 'DEBUG output arg ~w uses ~w arg~w~n', [Arg, Src, SrcIdx]),
+                    format(string(Assign), "{ \"arg~w\", ~w[\"arg~w\"] }", [I, Src, SrcIdx])
+                ;   format(user_output, 'DEBUG output arg ~w has no access~n', [Arg]),
+                    fail
+                )
+            ;   translate_expr_common(Arg, VarMap, Config, Expr)
             ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
             ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
             )
@@ -1680,7 +1706,10 @@ compile_nway_join([], Builtins, Head, AccumPairs, Config, _, Code) :-
     % Build output
     findall(Assign,
         (   nth0(I, HeadArgs, Arg),
-            (   translate_expr_common(Arg, VarMap, Config, Expr)
+            (   var(Arg),
+                find_var_access(Arg, AccumPairs, Src, SrcIdx)
+            ->  format(string(Assign), "{ \"arg~w\", ~w[\"arg~w\"] }", [I, Src, SrcIdx])
+            ;   translate_expr_common(Arg, VarMap, Config, Expr)
             ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
             ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
             )
@@ -1712,7 +1741,7 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
     build_variable_map(NewAccumPairs, VarMap),
     
     % Find join conditions by checking current goal args against all previous goals
-    findall(Var-PrevAccess-PrevIdx-CurrIdx,
+    findall(Var-PrevAccess-PrevIdx-CurrIdx-VarAccess,
         (   nth0(CurrIdx, Args, Var),
             var(Var),
             member(PrevGoal-PrevAccess, AccumPairs),
@@ -1726,9 +1755,9 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
     (   JoinVars = []
     ->  JoinCond = "true"
     ;   findall(Cond,
-            (   member(_-SrcAccess-PrevIdx-CurrIdx, JoinVars),
+            (   member(_-SrcAccess-PrevIdx-CurrIdx-CurrAccess, JoinVars),
                 format(string(Cond), '~w[\"arg~w\"].Equals(~w[\"arg~w\"])', 
-                       [VarName, CurrIdx, SrcAccess, PrevIdx])
+                       [CurrAccess, CurrIdx, SrcAccess, PrevIdx])
             ),
             Conds),
         atomic_list_concat(Conds, " && ", JoinCond)
@@ -1750,6 +1779,15 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
 ~w
                     }
                 }', [VarName, RelCheck, JoinCond, InnerCode]).
+
+% Find the most recent access path for a variable across accumulated goals
+find_var_access(Var, AccumPairs, Source, Idx) :-
+    reverse(AccumPairs, Rev),
+    member(Goal-Source, Rev),
+    Goal =.. [_|Args],
+    nth0(Idx, Args, Var0),
+    Var == Var0,
+    !.
 
 translate_builtins([], _, _, "true").
 translate_builtins(Builtins, VarMap, Config, Code) :-
