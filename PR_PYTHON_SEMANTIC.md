@@ -9,14 +9,12 @@ This PR introduces a Python Runtime Library (`src/unifyweaver/targets/python_run
 - **`onnx_embedding.py`**: Provides an ONNX-based embedding generator compatible with sentence-transformers models (e.g., `all-MiniLM-L6-v2`).
 - **`searcher.py`**: Performs in-memory cosine similarity search over vectors stored in SQLite.
 
-## Usage (Future Integration)
-These modules are designed to be embedded or imported by the `python_target` compiler to support high-level predicates like:
+## Documentation
+- Added `docs/PYTHON_RUNTIME.md` detailing the runtime components.
+- Updated `README.md` to link to the new documentation.
 
-```prolog
-crawl_topic(Topic) :-
-    semantic_search(Topic, 10, Seeds),
-    crawler_run(Seeds, 3).
-```
+## Tests
+- Added `tests/core/test_python_runtime_manual.py` to verify the components (requires `numpy`).
 
 ## Dependencies
 - `lxml`
