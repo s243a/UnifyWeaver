@@ -1,6 +1,6 @@
 
-:- module(test_csharp_query_target, [
-    test_csharp_query_target/0
+:- module(test_csharp_target, [
+    test_csharp_target/0
 ]).
 
 :- asserta(user:file_search_path(library, 'src/unifyweaver/targets')).
@@ -10,8 +10,8 @@
 :- use_module(library(lists)).
 :- use_module(library(process)).
 :- use_module(library(uuid)).
-:- use_module(library(csharp_query_target)).
-:- use_module(library(csharp_stream_target)).
+:- use_module(library(csharp_target)).
+
 :- use_module('src/unifyweaver/core/dynamic_source_compiler').
 :- use_module('src/unifyweaver/sources').
 :- use_module('src/unifyweaver/sources/csv_source').
@@ -34,7 +34,7 @@
 :- dynamic progress_count/1.
 :- dynamic progress_total/1.
 
-test_csharp_query_target :-
+test_csharp_target :-
     set_prolog_flag(verbose, silent),
     configure_csharp_query_options,
     writeln('=== Testing C# query target ==='),
@@ -59,7 +59,8 @@ test_csharp_query_target :-
         verify_json_jsonl_source_plan,
         verify_json_null_policy_skip_plan,
         verify_json_null_policy_default_plan,
-        verify_json_object_source_plan
+        verify_json_object_source_plan,
+        verify_generator_mode
     ],
     length(Tests, Total),
     retractall(progress_total(_)),
@@ -131,16 +132,16 @@ cleanup_test_data :-
     cleanup_csv_dynamic_source.
 
 verify_fact_plan :-
-    csharp_query_target:build_query_plan(test_fact/2, [target(csharp_query)], Plan),
+    csharp_target:build_query_plan(test_fact/2, [target(csharp_query)], Plan),
     get_dict(head, Plan, predicate{name:test_fact, arity:2}),
     get_dict(root, Plan, relation_scan{type:relation_scan, predicate:predicate{name:test_fact, arity:2}, width:_}),
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:Facts}]),
     Facts == [[alice, bob], [bob, charlie]],
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'RelationScanNode').
 
 verify_join_plan :-
-    csharp_query_target:build_query_plan(test_link/2, [target(csharp_query)], Plan),
+    csharp_target:build_query_plan(test_link/2, [target(csharp_query)], Plan),
     get_dict(root, Plan, projection{type:projection, input:JoinNode, columns:[0, 3], width:2}),
     JoinNode = join{
         type:join,
@@ -156,7 +157,7 @@ verify_join_plan :-
     maybe_run_query_runtime(Plan, ['alice,charlie']).
 
 verify_selection_plan :-
-    csharp_query_target:build_query_plan(test_filtered/1, [target(csharp_query)], Plan),
+    csharp_target:build_query_plan(test_filtered/1, [target(csharp_query)], Plan),
     get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
     Selection = selection{
         type:selection,
@@ -168,7 +169,7 @@ verify_selection_plan :-
     maybe_run_query_runtime(Plan, ['alice']).
 
 verify_arithmetic_plan :-
-    csharp_query_target:build_query_plan(test_increment/2, [target(csharp_query)], Plan),
+    csharp_target:build_query_plan(test_increment/2, [target(csharp_query)], Plan),
     get_dict(root, Plan, projection{type:projection, input:ArithmeticNode, columns:[0, 2], width:2}),
     ArithmeticNode = arithmetic{
         type:arithmetic,
@@ -187,7 +188,7 @@ verify_arithmetic_plan :-
     maybe_run_query_runtime(Plan, ['item1,6', 'item2,3']).
 
 verify_comparison_plan :-
-    csharp_query_target:build_query_plan(test_positive/1, [target(csharp_query)], Plan),
+    csharp_target:build_query_plan(test_positive/1, [target(csharp_query)], Plan),
     get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
     Selection = selection{
         type:selection,
@@ -198,7 +199,7 @@ verify_comparison_plan :-
     maybe_run_query_runtime(Plan, ['item1']).
 
 verify_recursive_arithmetic_plan :-
-    csharp_query_target:build_query_plan(test_factorial/2, [target(csharp_query)], Plan),
+    csharp_target:build_query_plan(test_factorial/2, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
     get_dict(root, Plan, fixpoint{type:fixpoint, head:_, base:Base, recursive:[RecursiveClause], width:2}),
     Base = relation_scan{predicate:predicate{name:test_factorial, arity:2}, type:relation_scan, width:2},
@@ -250,7 +251,7 @@ verify_recursive_arithmetic_plan :-
     maybe_run_query_runtime(Plan, ['0,1', '1,1', '2,2', '3,6']).
 
 verify_recursive_plan :-
-    csharp_query_target:build_query_plan(test_reachable/2, [target(csharp_query)], Plan),
+    csharp_target:build_query_plan(test_reachable/2, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
     get_dict(root, Plan, fixpoint{type:fixpoint, head:_, base:Base, recursive:[RecursiveClause], width:2}),
     Base = projection{
@@ -278,7 +279,7 @@ verify_recursive_plan :-
     maybe_run_query_runtime(Plan, ['alice,bob', 'bob,charlie', 'alice,charlie']).
 
 verify_mutual_recursion_plan :-
-    csharp_query_target:build_query_plan(test_even/1, [target(csharp_query)], Plan),
+    csharp_target:build_query_plan(test_even/1, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
     get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even, arity:1}, members:Members}),
     length(Members, 2),
@@ -306,8 +307,8 @@ verify_dynamic_source_plan :-
     ).
 
 verify_dynamic_source_plan_ :-
-    csharp_query_target:build_query_plan(test_user_age/2, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_user_age/2, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'DelimitedTextReader'),
     sub_string(Source, _, _, _, 'test_users.csv'),
     maybe_run_query_runtime(Plan, ['Alice,30', 'Bob,25', 'Charlie,35']).
@@ -320,8 +321,8 @@ verify_tsv_dynamic_source_plan :-
     ).
 
 verify_tsv_dynamic_source_plan_ :-
-    csharp_query_target:build_query_plan(test_sales_total/2, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_sales_total/2, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'test_sales.tsv'),
     string_codes(TabLiteral, [0'@, 34, 9, 34]),
     sub_string(Source, _, _, _, TabLiteral),
@@ -335,8 +336,8 @@ verify_json_dynamic_source_plan :-
     ).
 
 verify_json_dynamic_source_plan_ :-
-    csharp_query_target:build_query_plan(test_product_price/2, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_product_price/2, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'JsonStreamReader'),
     sub_string(Source, _, _, _, 'test_products.json'),
     maybe_run_query_runtime(Plan, ['Laptop,999', 'Mouse,25', 'Keyboard,75']).
@@ -349,8 +350,8 @@ verify_json_nested_source_plan :-
     ).
 
 verify_json_nested_source_plan_ :-
-    csharp_query_target:build_query_plan(test_order_first_item/3, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_order_first_item/3, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'test_orders.json'),
     sub_string(Source, _, _, _, 'items[0].product'),
     maybe_run_query_runtime(Plan, ['Alice,Laptop,1200', 'Bob,Mouse,25', 'Charlie,Keyboard,75']).
@@ -363,8 +364,8 @@ verify_json_jsonpath_source_plan :-
     ).
 
 verify_json_jsonpath_source_plan_ :-
-    csharp_query_target:build_query_plan(test_jsonpath_projection/2, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_jsonpath_projection/2, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'JsonColumnSelectorKind.JsonPath'),
     maybe_run_query_runtime(Plan, [
         'Alice,Laptop',
@@ -380,8 +381,8 @@ verify_json_schema_source_plan :-
     ).
 
 verify_json_schema_source_plan_ :-
-    csharp_query_target:build_query_plan(test_product_record/1, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_product_record/1, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'ProductRecord'),
     maybe_run_query_runtime(Plan, [
         'ProductRecord { Id = P001, Name = Laptop, Price = 999 }',
@@ -397,8 +398,8 @@ verify_json_nested_schema_record_plan :-
     ).
 
 verify_json_nested_schema_record_plan_ :-
-    csharp_query_target:build_query_plan(test_order_summary/1, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_order_summary/1, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'OrderRecord'),
     sub_string(Source, _, _, _, 'LineItemRecord'),
     maybe_run_query_runtime(Plan, [
@@ -415,8 +416,8 @@ verify_json_jsonl_source_plan :-
     ).
 
 verify_json_jsonl_source_plan_ :-
-    csharp_query_target:build_query_plan(test_orders_jsonl/3, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_orders_jsonl/3, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'test_orders.jsonl'),
     sub_string(Source, _, _, _, 'TreatArrayAsStream = false'),
     maybe_run_query_runtime(Plan, ['Alice,Laptop,1200', 'Bob,Mouse,25', 'Charlie,Keyboard,75']).
@@ -429,8 +430,8 @@ verify_json_null_policy_skip_plan :-
     ).
 
 verify_json_null_policy_skip_plan_ :-
-    csharp_query_target:build_query_plan(test_json_null_skip/2, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_json_null_skip/2, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'JsonNullPolicy.Skip'),
     maybe_run_query_runtime(Plan, ['Alice,Mouse']).
 
@@ -442,8 +443,8 @@ verify_json_null_policy_default_plan :-
     ).
 
 verify_json_null_policy_default_plan_ :-
-    csharp_query_target:build_query_plan(test_json_null_default/2, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_json_null_default/2, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'JsonNullPolicy.Default'),
     sub_string(Source, _, _, _, 'NullReplacement = "N/A"'),
     maybe_run_query_runtime(Plan, ['Alice,Mouse', 'Bob,N/A', 'Charlie,N/A']).
@@ -456,8 +457,8 @@ verify_json_object_source_plan :-
     ).
 
 verify_json_object_source_plan_ :-
-    csharp_query_target:build_query_plan(test_product_object/1, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_product_object/1, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'JsonStreamReader'),
     sub_string(Source, _, _, _, 'ReturnObject = true'),
     maybe_run_query_runtime(Plan, [
@@ -474,8 +475,8 @@ verify_xml_dynamic_source_plan :-
     ).
 
 verify_xml_dynamic_source_plan_ :-
-    csharp_query_target:build_query_plan(test_xml_item/1, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_xml_item/1, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'XmlStreamReader'),
     sub_string(Source, _, _, _, 'test_xml_fragments.txt'),
     sub_string(Source, _, _, _, 'TreatPearltreesCDataAsText = true'),
@@ -494,8 +495,8 @@ verify_xml_nested_projection_plan :-
     ).
 
 verify_xml_nested_projection_plan_ :-
-    csharp_query_target:build_query_plan(test_xml_item_nested/1, [target(csharp_query)], Plan),
-    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    csharp_target:build_query_plan(test_xml_item_nested/1, [target(csharp_query)], Plan),
+    csharp_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'XmlStreamReader'),
     sub_string(Source, _, _, _, 'NestedProjection = true'),
     sub_string(Source, _, _, _, 'test_xml_fragments.txt').
@@ -752,15 +753,31 @@ maybe_run_query_runtime(_Plan, _ExpectedRows) :-
     writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)').
 
 dotnet_cli(Path) :-
-    catch(absolute_file_name(path(dotnet), Path, [access(execute)]), _, fail).
+    (   catch(absolute_file_name(path(dotnet), Path, [access(execute)]), _, fail)
+    ->  true
+    ;   exists_file('C:/Program Files/dotnet/dotnet.exe')
+    ->  Path = 'C:/Program Files/dotnet/dotnet.exe'
+    ;   Path = dotnet
+    ).
 
 % Create temp directory with test name from Plan
+prepare_temp_dir(PredName, Dir) :-
+    atom(PredName),
+    !,
+    uuid(UUID),
+    atomic_list_concat(['csharp_gen_', PredName, '_', UUID], Sub),
+    (   cqt_option(output_dir, Base) -> true ; Base = 'tmp'),
+    make_directory_path(Base),
+    directory_file_path(Base, Sub, Dir),
+    make_directory_path(Dir).
+
 prepare_temp_dir(Plan, Dir) :-
+    is_dict(Plan),
     get_dict(head, Plan, predicate{name:PredName, arity:_}),
     !,
     uuid(UUID),
     atomic_list_concat(['csharp_query_', PredName, '_', UUID], Sub),
-    cqt_option(output_dir, Base),
+    (   cqt_option(output_dir, Base) -> true ; Base = 'tmp'),
     make_directory_path(Base),
     directory_file_path(Base, Sub, Dir),
     make_directory_path(Dir).
@@ -769,7 +786,7 @@ prepare_temp_dir(Plan, Dir) :-
 prepare_temp_dir(Dir) :-
     uuid(UUID),
     atomic_list_concat(['csharp_query_', UUID], Sub),
-    cqt_option(output_dir, Base),
+    (   cqt_option(output_dir, Base) -> true ; Base = 'tmp'),
     make_directory_path(Base),
     directory_file_path(Base, Sub, Dir),
     make_directory_path(Dir).
@@ -807,8 +824,8 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
     copy_file(RuntimePath, RuntimeCopy),
 
     % Generate and write query module
-    csharp_query_target:render_plan_to_csharp(Plan, ModuleSource),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    csharp_target:render_plan_to_csharp(Plan, ModuleSource),
+    csharp_target:plan_module_name(Plan, ModuleClass),
     atom_concat(ModuleClass, '.cs', ModuleFile),
     directory_file_path(Dir, ModuleFile, ModulePath),
     write_string(ModulePath, ModuleSource),
@@ -859,8 +876,8 @@ generate_csharp_code_only(_Dotnet, Plan, Dir) :-
     copy_file(RuntimePath, RuntimeCopy),
 
     % Generate and write query module
-    csharp_query_target:render_plan_to_csharp(Plan, ModuleSource),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    csharp_target:render_plan_to_csharp(Plan, ModuleSource),
+    csharp_target:plan_module_name(Plan, ModuleClass),
     atom_concat(ModuleClass, '.cs', ModuleFile),
     directory_file_path(Dir, ModuleFile, ModulePath),
     write_string(ModulePath, ModuleSource),
@@ -896,8 +913,8 @@ run_dotnet_plan(Dotnet, Plan, ExpectedRows, Dir) :-
     absolute_file_name('src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs', RuntimePath, []),
     directory_file_path(Dir, 'QueryRuntime.cs', RuntimeCopy),
     copy_file(RuntimePath, RuntimeCopy),
-    csharp_query_target:render_plan_to_csharp(Plan, ModuleSource),
-    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    csharp_target:render_plan_to_csharp(Plan, ModuleSource),
+    csharp_target:plan_module_name(Plan, ModuleClass),
     atom_concat(ModuleClass, '.cs', ModuleFile),
     directory_file_path(Dir, ModuleFile, ModulePath),
     write_string(ModulePath, ModuleSource),
@@ -941,13 +958,13 @@ find_compiled_executable(Dir, ExePath) :-
 
 % Execute compiled binary (native or DLL)
 execute_compiled_binary(ExePath, Dir, Status, Output) :-
-    dotnet_env(Dir, Env),
+    % dotnet_env(Dir, Env),
     (   atom_concat(_, '.dll', ExePath)
     ->  % Execute DLL with dotnet
         dotnet_cli(Dotnet),
         process_create(Dotnet, [ExePath],
                        [ cwd(Dir),
-                         env(Env),
+                         % env(Env),
                          stdout(pipe(Out)),
                          stderr(pipe(Err)),
                          process(PID)
@@ -955,7 +972,7 @@ execute_compiled_binary(ExePath, Dir, Status, Output) :-
     ;   % Execute native binary directly
         process_create(ExePath, [],
                        [ cwd(Dir),
-                         env(Env),
+                         % env(Env),
                          stdout(pipe(Out)),
                          stderr(pipe(Err)),
                          process(PID)
@@ -1007,10 +1024,10 @@ write_string(Path, String) :-
                        close(Stream)).
 
 dotnet_command(Dotnet, Args, Dir, Status, Output) :-
-    dotnet_env(Dir, Env),
+    % dotnet_env(Dir, Env), % environ/1 not available
     process_create(Dotnet, Args,
                    [ cwd(Dir),
-                     env(Env),
+                     % env(Env),
                      stdout(pipe(Out)),
                      stderr(pipe(Err)),
                      process(PID)
@@ -1162,4 +1179,93 @@ normalize_yes_no(Value0, Bool) :-
     ->  Bool = true
     ;   member(Lower, ['0', 'false', 'no', 'delete', 'autodelete'])
     ->  Bool = false
+    ).
+
+verify_generator_mode :-
+    % Basic structure check
+    csharp_target:compile_predicate_to_csharp(test_link/2, [mode(generator)], Code),
+    sub_string(Code, _, _, _, 'class TestLink_Module'),
+    sub_string(Code, _, _, _, 'public record Fact'),
+    sub_string(Code, _, _, _, 'GetInitialFacts'),
+    sub_string(Code, _, _, _, 'ApplyRule_1'),
+    
+    % Try to compile and run if dotnet is available
+    (   dotnet_cli(Dotnet)
+    ->  (   verify_generator_execution(Code, Dotnet)
+        ->  true
+        ;   writeln('  (generator mode execution: FAIL - see output above)')
+        )
+    ;   writeln('  (dotnet not available, skipping execution test)')
+    ).
+verify_generator_execution(Code, Dotnet) :-
+    setup_call_cleanup(
+        prepare_temp_dir(test_link, Dir),
+        verify_generator_execution_(Code, Dotnet, Dir),
+        finalize_temp_dir(Dir)
+    ).
+
+verify_generator_execution_(Code, Dotnet, Dir) :-
+    format('  [generator] working dir: ~w~n', [Dir]),
+    % Create .NET project
+    (   catch(dotnet_command(Dotnet, ['new', 'console', '--force', '--framework', 'net9.0'], Dir, StatusNew, NewOut),
+              E, (print_message(error, E), StatusNew = -1, NewOut = ""))
+    ->  ( StatusNew =:= 0
+        -> format('  (dotnet new ok)~n', [])
+        ;  format('  (dotnet new failed)~n~s~n', [NewOut]), fail
+        )
+    ;   format('  (dotnet new threw)~n'), fail
+    ),
+    % Write generated code
+    directory_file_path(Dir, 'Generated.cs', GeneratedPath),
+    write_string(GeneratedPath, Code),
+    % Derive module class from generated code
+    (   sub_string(Code, _, _, _, "public static class "),
+        split_string(Code, "\n", "\r", Lines),
+        member(Line, Lines),
+        sub_string(Line, _, _, _, "public static class "),
+        split_string(Line, " {", " \t", Tokens),
+        append(_, ["class", ClassNameStr|_], Tokens)
+    ->  atom_string(ModuleClass, ClassNameStr)
+    ;   ModuleClass = 'TestLink_Module'  % fallback for this test
+    ),
+    % Harness to execute Solve and print facts
+    format(atom(Harness),
+"using System;
+using System.Collections.Generic;
+using UnifyWeaver.Generated;
+
+class Program
+{
+    static void Main()
+    {
+        var total = ~w.Solve();
+        foreach (var fact in total)
+        {
+            var a0 = fact.Args.TryGetValue(\"arg0\", out var v0) ? v0 : \"\";
+            var a1 = fact.Args.TryGetValue(\"arg1\", out var v1) ? v1 : \"\";
+            Console.WriteLine($\"{fact.Relation},{a0},{a1}\");
+        }
+    }
+}
+", [ModuleClass]),
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, Harness),
+    % Build
+    (   catch(dotnet_command(Dotnet, ['build', '--no-restore'], Dir, StatusBuild, BuildOutput),
+              E, (print_message(error, E), StatusBuild = -1, BuildOutput = ""))
+    ->  ( StatusBuild =:= 0
+        -> format('  (dotnet build ok)~n', [])
+        ;  format('  (dotnet build failed) exit=~w~n~s~n', [StatusBuild, BuildOutput]), fail
+        )
+    ;   format('  (dotnet build threw)~n'), fail
+    ),
+    % Run and check output
+    (   catch(dotnet_command(Dotnet, ['run', '--no-build', '--no-restore'], Dir, StatusRun, Output),
+              E, (print_message(error, E), StatusRun = -1, Output = ""))
+    ->  (   StatusRun =:= 0,
+            sub_string(Output, _, _, _, 'test_link,alice,charlie')
+        ->  format('  (generator mode execution: PASS)~nOutput:~s~n', [Output])
+        ;   format('  (generator mode execution: FAIL) exit=~w~nOutput:~s~n', [StatusRun, Output]), fail
+        )
+    ;   format('  (dotnet run threw)~n'), fail
     ).

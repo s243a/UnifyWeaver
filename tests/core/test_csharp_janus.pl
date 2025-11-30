@@ -148,7 +148,7 @@ test(query_runtime_basic_recursion, [
     assertz((test_path2(X, Z) :- test_link2(X, Y), test_path2(Y, Z))),
 
     % Compile with Query Runtime
-    use_module('../../src/unifyweaver/targets/csharp_query_target'),
+    use_module('../../src/unifyweaver/targets/csharp_target'),
     compile_predicate_to_csharp(test_path2/2, [target(csharp_query)], Code),
 
     % Test using Python helper

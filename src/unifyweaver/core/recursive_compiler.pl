@@ -16,8 +16,8 @@
 :- use_module('advanced/call_graph').
 :- use_module(stream_compiler).
 :- use_module('../targets/awk_target').
-:- use_module('../targets/csharp_query_target').
-:- use_module('../targets/csharp_stream_target').
+:- use_module('../targets/csharp_target', []).
+:- use_module('../targets/csharp_stream_target', []).
 :- use_module(template_system).
 :- use_module(library(lists)).
 :- use_module(constraint_analyzer).
@@ -117,8 +117,8 @@ compile_advanced(Target, Pred/Arity, _FinalOptions, _GeneratedCode) :-
 
 compile_recursive_csharp_query(Pred/Arity, Options, Code) :-
     prepare_csharp_query_options(Options, QueryOptions),
-    (   csharp_query_target:build_query_plan(Pred/Arity, QueryOptions, Plan)
-    ->  csharp_query_target:render_plan_to_csharp(Plan, Code)
+    (   csharp_target:build_query_plan(Pred/Arity, QueryOptions, Plan)
+    ->  csharp_target:render_plan_to_csharp(Plan, Code)
     ;   format(user_error, 'C# query target failed to build plan for ~w.~n', [Pred/Arity]),
         fail
     ).
