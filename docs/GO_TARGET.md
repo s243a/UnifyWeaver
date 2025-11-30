@@ -204,6 +204,39 @@ func main() {
 		}
 	}
 }
+
+### XML Input Mode
+
+Compiles a predicate to read and flatten XML data.
+
+**Prolog:**
+```prolog
+compile_predicate_to_go(item/2, [
+    xml_input(true),
+    xml_file('data.xml'), % or stdin
+    tags(['item'])
+], Code).
+```
+
+**Features:**
+- Streams XML using `encoding/xml`
+- Flattens elements into a map (Attributes -> `@attr`, Text -> `text`)
+- Supports `bbolt` database storage via `db_backend(bbolt)`
+- Compatible with existing field extraction (`json_get`)
+
+**Generated Go:**
+```go
+// ... imports encoding/xml ...
+decoder := xml.NewDecoder(f)
+for {
+    t, _ := decoder.Token()
+    // ... match start element ...
+    var node XmlNode
+    decoder.DecodeElement(&node, &se)
+    data := FlattenXML(node)
+    // ... process data map ...
+}
+```
 ```
 
 ---
@@ -609,14 +642,16 @@ Completed features (moved to Current Features):
 - ✅ Aggregations (count, sum, avg, min, max)
 - ✅ Match predicates with body predicates
 - ✅ Multiple rules with different bodies
+- ✅ JSON Input/Output (JSONL)
+- ✅ XML Input (Streaming/Flattening)
+- ✅ Bbolt Database Support
 
 Planned additions (in priority order):
 
-1. **Record structures** - Nested field access
-2. **JSON I/O** - Parse and generate JSON
-3. **Custom functions** - User-defined Go helpers
-4. **Optimizations** - Eliminate unnecessary allocations
-5. **Deduplication by key rules** - Support for detecting duplicate rule patterns
+1. **Custom functions** - User-defined Go helpers
+2. **Optimizations** - Eliminate unnecessary allocations
+3. **Deduplication by key rules** - Support for detecting duplicate rule patterns
+4. **Semantic Runtime** - Vector embeddings and search (ONNX integration)
 
 ---
 
