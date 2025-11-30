@@ -1,0 +1,3 @@
+alice:25
+bob:17
+charlie:45

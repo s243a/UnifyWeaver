@@ -23,6 +23,21 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Constraint awareness** - Unique and ordering constraints optimize generated code
 - **Pattern detection** - Automatic classification of recursion patterns
 
+### Go Target (v0.5)
+- **Standalone Executables** - Compiles Prolog predicates to single-binary Go programs
+- **Cross-Platform** - Runs on any platform with Go support, no runtime dependencies
+- **Stream Processing** - Efficient stdin/stdout pipeline integration for record processing
+- **JSON I/O** - Native JSONL parsing and JSON generation with automatic type conversion
+- **Nested JSON** - Access deeply nested structures with path-based extraction (`json_get`)
+- **JSON Schemas** - Type-safe field extraction with runtime validation (`json_schema`)
+- **Database Storage** - Embedded bbolt database for persistent storage with ACID transactions
+- **Match Predicates** - Regex filtering with capture groups for data extraction
+- **Multiple Rules** - OR patterns and different body predicates with sequential matching
+- **Constraints & Aggregations** - Numeric comparisons (>, <, >=, =<) and sum/count/avg/min/max
+- **Smart Compilation** - Selective field assignment and automatic package imports
+
+**See [Go Target Guide](docs/GO_TARGET.md) and [JSON Features](GO_JSON_FEATURES.md) for details.**
+
 ### C# Target Family (v0.1)
 - **Query Runtime (`target(csharp_query)`)** - Generates relational plans executed by a shared .NET engine with semi-naive fixpoint evaluation.
 - **External Compilation** - Robust `dotnet build` integration with dependency support and file locking prevention.
@@ -184,14 +199,19 @@ sibling(X, Y)     % Same parent, different children
     database('app.db')
 ]).
 
-% JSON processing with jq
-:- source(json, extract_names, [
+% JSON processing with jq                        
+:- source(json, extract_names, [                 
     jq_filter('.users[] | {name, email} | @tsv'),
-    json_file('data.json')
+    json_file('data.json')                       
+]).                                              
+
+% YAML processing with PyYAML (v0.2)
+:- source(yaml, config_users, [
+    yaml_filter('data["users"]'),
+    yaml_file('config.yaml')
 ]).
 
-% XML processing with Python
-:- data_source_driver(python).
+% XML processing with Python:- data_source_driver(python).
 :- data_source_work_fn(sum_prices).
 ```
 

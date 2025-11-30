@@ -106,6 +106,29 @@ validate_config(Config) :-
             fail
         )
     ;   true
+    ),
+    % Optional flatten flag (bool)
+    (   member(flatten(FlattenVal), Config)
+    ->  (   memberchk(FlattenVal, [true, false])
+        ->  true
+        ;   format('Error: flatten(~w) must be true or false~n', [FlattenVal]),
+            fail
+        )
+    ;   true
+    ),
+    % Optional SQLite integration
+    (   member(sqlite_table(Table), Config)
+    ->  (   atom(Table)
+        ->  true
+        ;   format('Error: sqlite_table(~w) must be an atom~n', [Table]),
+            fail
+        ),
+        (   member(database(Db), Config)
+        ->  true
+        ;   format('Error: sqlite_table requires database(File)~n', []),
+            fail
+        )
+    ;   true
     ).
 
 %% ============================================ 
@@ -712,12 +735,19 @@ compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode) :-
     namespace_fix_option(AllOptions, NamespaceFix),
     xmllint_splitter_option(AllOptions, Splitter),
 
-    % Detect or use specified engine
-    (
-        member(engine(Engine), AllOptions)
+    % Determine engine
+    (   (member(flatten(true), AllOptions) ; member(sqlite_table(_), AllOptions))
+    ->  Engine = iterparse,
+        (   check_lxml_available
+        ->  true
+        ;   format('Error: XML flattening/SQLite requires lxml (pip install lxml)~n', []),
+            fail
+        )
+    ;   member(engine(Engine), AllOptions)
     ->  true
     ;   detect_available_engine(Engine)
     ),
+    
     (   Engine == xmllint
     ->  check_xmllint_available,
         (Splitter == perl -> check_perl_available ; true)
@@ -727,7 +757,7 @@ compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode) :-
     % Generate code based on engine
     (
         Engine == iterparse
-    ->  generate_lxml_python_code(File, Tags, PythonCode),
+    ->  generate_lxml_python_code(File, Tags, AllOptions, PythonCode),
         atom_string(Pred, PredStr),
         render_named_template(xml_iterparse_source,
             [pred=PredStr, python_code=PythonCode],
@@ -852,41 +882,139 @@ report_splitter_error(Splitter, Status) :-
 %% PYTHON CODE GENERATION
 %% ============================================ 
 
-%% generate_lxml_python_code(+File, +Tags, -PythonCode)
-%  Generate Python code for lxml iterparse
-generate_lxml_python_code(File, Tags, PythonCode) :-
+%% generate_lxml_python_code(+File, +Tags, +Options, -PythonCode)
+%  Generate Python code for lxml iterparse with optional flattening and SQLite support
+generate_lxml_python_code(File, Tags, Options, PythonCode) :-
     tags_to_python_set(Tags, TagsSet),
+    
+    (   member(flatten(true), Options)
+    ->  Flatten = true, FlattenPy = 'True'
+    ;   Flatten = false, FlattenPy = 'False'
+    ),
+    
+    (   member(sqlite_table(Table), Options),
+        member(database(Db), Options)
+    ->  Sqlite = true,
+        format(atom(SqliteSetup), '
+con = sqlite3.connect("~w")
+cur = con.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS ~w (id INTEGER PRIMARY KEY, data JSON)")
+table_name = "~w"
+batch = []
+BATCH_SIZE = 1000
+', [Db, Table, Table]),
+        SqliteCommit = '
+        if len(batch) >= BATCH_SIZE:
+            cur.executemany(f"INSERT INTO {table_name} (data) VALUES (?)", batch)
+            con.commit()
+            batch = []
+',
+        SqliteFinish = '
+if batch:
+    cur.executemany(f"INSERT INTO {table_name} (data) VALUES (?)", batch)
+    con.commit()
+con.close()
+'
+    ;   Sqlite = false,
+        SqliteSetup = '',
+        SqliteCommit = '',
+        SqliteFinish = ''
+    ),
+
+    % Construct Python script parts
+    (   Flatten == true
+    ->  ProcessElem = '
+        record = flatten_element(elem)
+        json_str = json.dumps(record)
+        '
+    ;   ProcessElem = '
+        # Raw output
+        sys.stdout.buffer.write(etree.tostring(elem))
+        sys.stdout.buffer.write(null)
+        '
+    ),
+    
+    (   Flatten == true, Sqlite == true
+    ->  Action = '
+        batch.append((json_str,))
+        ' 
+    ;   Flatten == true, Sqlite == false
+    ->  Action = '
+        print(json_str)
+        '
+    ;   Action = '' % Already handled in ProcessElem for raw mode
+    ),
+    
     atomic_list_concat([
-        "import sys\n",
-        "from lxml import etree\n\n",
-        "file = \"", File, "\"\n",
-        "tags = {", TagsSet, "}\n",
-        "null = b'\\0'\n\n",
-        "# Parse with namespace handling\n",
-        "context = etree.iterparse(file, events=('start', 'end'), recover=True)\n",
-        "event, root = next(context)\n",
-        "nsmap = root.nsmap or {}\n\n",
-        "def expand(tag):\n",
-        "    if ':' in tag:\n",
-        "        pfx, local = tag.split(':', 1)\n",
-        "        uri = nsmap.get(pfx)\n",
-        "        if uri:\n",
-        "            return '{' + uri + '}' + local\n",
-        "        else:\n",
-        "            return tag\n",
-        "    return tag\n\n",
-        "want = {expand(t) for t in tags}\n\n",
-        "# Stream with memory release\n",
-        "for event, elem in context:\n",
-        "    if event == 'end' and elem.tag in want:\n",
-        "        sys.stdout.buffer.write(etree.tostring(elem))\n",
-        "        sys.stdout.buffer.write(null)\n",
-        "        # Release memory immediately\n",
-        "        elem.clear()\n",
-        "        while elem.getprevious() is not None:\n",
-        "            del elem.getparent()[0]\n",
-        "        root.clear()\n"
-    ], PythonCode).
+        SqliteCommit,
+        Action
+    ], LoopBody),
+
+    format(atom(PythonCode), 'import sys
+import json
+import sqlite3
+from lxml import etree
+
+file = "~w"
+tags = {~w}
+null = b"\\0"
+flatten = ~w
+
+# SQLite Setup
+~w
+
+# Flattening logic
+def flatten_element(elem):
+    data = {}
+    # Attributes
+    for k, v in elem.attrib.items():
+        data["@" + k] = v
+    # Text content
+    if elem.text and elem.text.strip():
+        data["text"] = elem.text.strip()
+    # Children
+    for child in elem:
+        # Simple flattening: key = tag, value = text (if leaf) or recursive dict?
+        # We stick to simple text extraction for leaves, or nested dict for structure
+        # For this version: simplified
+        tag = child.tag.split("}")[-1] # strip namespace for simplicity in keys
+        if not len(child) and child.text:
+            data[tag] = child.text.strip()
+        # TODO: Handle complex children or lists
+    return data
+
+# Parse with namespace handling
+context = etree.iterparse(file, events=("start", "end"), recover=True)
+event, root = next(context)
+nsmap = root.nsmap or {}
+
+def expand(tag):
+    if ":" in tag:
+        pfx, local = tag.split(":", 1)
+        uri = nsmap.get(pfx)
+        if uri:
+            return "{" + uri + "}" + local
+        else:
+            return tag
+    return tag
+
+want = {expand(t) for t in tags}
+
+# Stream with memory release
+for event, elem in context:
+    if event == "end" and elem.tag in want:
+        ~w
+        ~w
+        
+        # Release memory immediately
+        elem.clear()
+        while elem.getprevious() is not None:
+            del elem.getparent()[0]
+        root.clear()
+
+~w
+', [File, TagsSet, FlattenPy, SqliteSetup, ProcessElem, LoopBody, SqliteFinish]).
+
 
 %% tags_to_python_set(+Tags, -Set)
 %  Convert a list of Prolog atoms to a Python set string.
