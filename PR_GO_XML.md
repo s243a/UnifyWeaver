@@ -10,6 +10,7 @@ This PR brings the Go target closer to parity with Python and C# by adding nativ
         - `XmlNode` struct for recursive decoding.
         - `FlattenXML` function to convert `XmlNode` to `map[string]interface{}` (attributes -> `@attr`, text -> `text`, children -> `tag`).
     - Updated `compile_predicate_to_go` to dispatch to XML mode.
+    - **Added `bbolt` support:** XML mode now supports `db_backend(bbolt)` option to store flattened records in a local key-value store.
 - **Tests**:
     - Added `tests/core/test_go_xml_integration.pl` verifying end-to-end XML streaming, flattening, and field extraction in Go.
 
@@ -18,7 +19,9 @@ This PR brings the Go target closer to parity with Python and C# by adding nativ
 compile_predicate_to_go(my_pred/2, [
     xml_input(true),
     xml_file('data.xml'),
-    tags(['item'])
+    tags(['item']),
+    db_backend(bbolt),  % Optional: Store to DB
+    db_file('data.db')
 ], Code).
 ```
 
