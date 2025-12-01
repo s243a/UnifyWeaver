@@ -7,6 +7,7 @@ This PR adds a new `source(sqlite, ...)` plugin that enables UnifyWeaver to quer
 - **`sqlite_source.pl`**: Implements the source compiler. Generates Bash code that invokes `sqlite3`.
 - **`sources.pl`**: Registers the `sqlite` source type and validates options.
 - **Tests**: Added `tests/core/test_sqlite_source.pl`.
+- **Documentation**: Updated `README.md` and `docs/EXTENDED_README.md`.
 
 ## Usage
 ```prolog
