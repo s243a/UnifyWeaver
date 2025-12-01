@@ -214,11 +214,31 @@ sibling(X, Y)     % Same parent, different children
     cache_duration(3600)
 ]).
 
-% Python with SQLite
-:- source(python, get_users, [
-    sqlite_query('SELECT name, age FROM users WHERE active = 1'),
-    database('app.db')
+% Python with SQLite                             
+
+:- source(python, get_users, [                   
+
+    sqlite_query('SELECT name, age FROM users WHE
+
+RE active = 1'),                                 
+
+    database('app.db')                           
+
+]).                                              
+
+
+
+% Native SQLite (v0.2)
+
+:- source(sqlite, active_users, [
+
+    sqlite_file('app.db'),
+
+    query('SELECT name, age FROM users WHERE active = 1')
+
 ]).
+
+
 
 % JSON processing with jq                        
 :- source(json, extract_names, [                 
