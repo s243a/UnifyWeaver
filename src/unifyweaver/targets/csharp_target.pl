@@ -96,6 +96,21 @@ compute_dependency_group(Pred/Arity, GroupSpecs) :-
     !.
 compute_dependency_group(Pred/Arity, [predicate{name:Pred, arity:Arity}]).
 
+compute_generator_dependency_closure(Pred/Arity, GroupSpecs) :-
+    build_dependency_graph([Pred/Arity], [], [], Vertices, [], _),
+    sort(Vertices, Sorted),
+    maplist(vertex_to_spec, Sorted, GroupSpecs),
+    !.
+compute_generator_dependency_closure(Pred/Arity, [predicate{name:Pred, arity:Arity}]).
+
+gather_group_clauses(GroupSpecs, AllClauses) :-
+    findall(Head-Body,
+        (   member(Spec, GroupSpecs),
+            gather_predicate_clauses(Spec, Clauses),
+            member(Head-Body, Clauses)
+        ),
+        AllClauses).
+
 build_dependency_graph([], _Visited, Vertices, Vertices, Edges, Edges).
 build_dependency_graph([Vertex|Queue], Visited, VertAccIn, VerticesOut, EdgeAccIn, EdgesOut) :-
     (   memberchk(Vertex, Visited)
@@ -1491,29 +1506,23 @@ csharp_config(Config) :-
     ].
 
 compile_generator_mode(Pred/Arity, _Options, Code) :-
-    % Generator mode currently supports only single-predicate dependency groups.
-    (   compute_dependency_group(Pred/Arity, Group),
-        Group \= [predicate{name:Pred, arity:Arity}]
-    ->  format(user_error,
-               'C# generator mode: predicate ~w/~w has supporting predicates (~w); generator mode currently handles single-predicate groups only.~n',
-               [Pred, Arity, Group]),
-        fail
-    ;   true
-    ),
-    gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses),
-    partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
-    
+    compute_generator_dependency_closure(Pred/Arity, GroupSpecs),
     csharp_config(Config),
-    
-    csharp_generator_header(Pred, Header),
-    collect_fact_heads(BaseClauses, FactHeads),
+
+    gather_group_clauses(GroupSpecs, AllClauses),
+    collect_fact_heads(AllClauses, FactHeads),
     compile_generator_facts(FactHeads, Config, FactsCode),
-    
-    append(BaseClauses, RecClauses, AllClauses),
-    compile_generator_rules(Pred, AllClauses, Config, RulesCode, RuleNames),
-    
+
+    findall(Head-Body,
+        (   member(Head-Body, AllClauses),
+            Body \= true
+        ),
+        RuleClauses),
+    compile_generator_rules(GroupSpecs, RuleClauses, Config, RulesCode, RuleNames),
+
     compile_generator_execution(Pred, RuleNames, ExecutionCode),
-    
+
+    csharp_generator_header(Pred, Header),
     format(string(Code), "~w\n~w\n~w\n~w\n    }\n}\n", [Header, FactsCode, RulesCode, ExecutionCode]).
 
 csharp_generator_header(Pred, Header) :-
@@ -1564,19 +1573,7 @@ namespace UnifyWeaver.Generated
 collect_fact_heads(Clauses, FactHeads) :-
     findall(Head,
         member(Head-true, Clauses),
-        HeadFacts),
-    findall(SupportHead,
-        (   member(_-Body, Clauses),
-            Body \= true,
-            body_to_list(Body, Goals),
-            member(G, Goals),
-            G =.. [Pred|Args],
-            length(Args, Arity),
-            gather_predicate_clauses(predicate{name:Pred, arity:Arity}, SupportClauses),
-            member(SupportHead-true, SupportClauses)
-        ),
-        SupportFacts),
-    append(HeadFacts, SupportFacts, RawFacts),
+        RawFacts),
     sort(RawFacts, FactHeads).
 
 compile_generator_facts(FactHeads, _Config, Code) :-
@@ -1607,7 +1604,7 @@ generate_fact_creation(Pred, Args, Code) :-
     atomic_list_concat(ArgCodes, ", ", ArgsStr),
     format(string(Code), "facts.Add(new Fact(\"~w\", new Dictionary<string, object> { ~w }));", [Pred, ArgsStr]).
 
-compile_generator_rules(_Pred, Clauses, Config, Code, RuleNames) :-
+compile_generator_rules(_GroupSpecs, Clauses, Config, Code, RuleNames) :-
     findall(RuleCode-RuleName,
         (   nth1(I, Clauses, Clause),
             Clause = Head-Body,
@@ -1667,7 +1664,8 @@ compile_joins([], Builtins, Head, FirstGoal, Config, Code) :-
     Head =.. [HeadPred|HeadArgs],
     
     % Build variable map
-    build_variable_map([FirstGoal-"fact.Args"], VarMap),
+    AccumPairs = [FirstGoal-"fact.Args"],
+    build_variable_map(AccumPairs, VarMap),
     
     % Translate builtins
     translate_builtins(Builtins, VarMap, Config, ConstraintChecks),
@@ -1864,4 +1862,3 @@ compile_generator_execution(_Pred, RuleNames, Code) :-
             }
             return total;
         }", [CallsStr]).
-
