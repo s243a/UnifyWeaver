@@ -109,7 +109,10 @@ get_field_type(SchemaName, FieldName, any) :-
 %  - db_mode(read|write) - Database operation mode (default: write with json_input, read otherwise)
 %
 compile_predicate_to_go(PredIndicator, Options, GoCode) :-
-    PredIndicator = Pred/Arity,
+    (   PredIndicator = _Module:Pred/Arity
+    ->  true
+    ;   PredIndicator = Pred/Arity
+    ),
     format('=== Compiling ~w/~w to Go ===~n', [Pred, Arity]),
 
     % Check if this is database read mode
@@ -170,80 +173,80 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
     (   Clauses = [] ->
         format('ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
         fail
+    
+    % Semantic Rule Check
+    ;   Clauses = [Head-Body], Body \= true,
+        extract_predicates(Body, [SinglePred]),
+        is_semantic_predicate(SinglePred)
+    ->  Head =.. [_|HeadArgs],
+        compile_semantic_rule_go(Pred, HeadArgs, SinglePred, GoCode)
+
     ;   maplist(is_fact_clause, Clauses) ->
         % All bodies are 'true' - these are facts
         format('Type: facts (~w clauses)~n', [length(Clauses, _)]),
         compile_facts_to_go(Pred, Arity, Clauses, RecordDelim, FieldDelim,
-                           Unique, ScriptBody)
+                           Unique, ScriptBody),
+        GenerateProgram = true
     ;   is_tail_recursive_pattern(Pred, Clauses) ->
         % Tail recursive pattern - compile to iterative loop
         format('Type: tail_recursion~n'),
-        compile_tail_recursive_to_go(Pred, Arity, Clauses, ScriptBody)
+        compile_tail_recursive_to_go(Pred, Arity, Clauses, ScriptBody),
+        GenerateProgram = true
     ;   Clauses = [SingleHead-SingleBody], SingleBody \= true ->
         % Single rule
         format('Type: single_rule~n'),
         compile_single_rule_to_go(Pred, Arity, SingleHead, SingleBody, RecordDelim,
-                                 FieldDelim, Unique, ScriptBody)
+                                 FieldDelim, Unique, ScriptBody),
+        GenerateProgram = true
     ;   % Multiple rules (OR pattern)
         format('Type: multiple_rules (~w clauses)~n', [length(Clauses, _)]),
         compile_multiple_rules_to_go(Pred, Arity, Clauses, RecordDelim,
-                                    FieldDelim, Unique, ScriptBody)
+                                    FieldDelim, Unique, ScriptBody),
+        GenerateProgram = true
     ),
 
-    % Determine if we need stdin I/O imports
-    (   maplist(is_fact_clause, Clauses) ->
-        % Facts only - no stdin needed
-        NeedsStdin = false
-    ;   is_tail_recursive_pattern(Pred, Clauses) ->
-        % Tail recursion - standalone function, no stdin
-        NeedsStdin = false
-    ;   % Rules - needs stdin
-        NeedsStdin = true
-    ),
+    % Determine if we need imports (only if GenerateProgram is true)
+    (   var(GenerateProgram) -> true
+    ;   (   maplist(is_fact_clause, Clauses) ->
+            NeedsStdin = false
+        ;   is_tail_recursive_pattern(Pred, Clauses) ->
+            NeedsStdin = false
+        ;   NeedsStdin = true
+        ),
 
-    % Determine if we need regexp imports (check if any clause has match constraints)
-    (   member(_Head-Body, Clauses),
-        extract_match_constraints(Body, MatchCs),
-        MatchCs \= []
-    ->  NeedsRegexp = true
-    ;   NeedsRegexp = false
-    ),
+        % Determine if we need regexp imports
+        (   member(_Head-Body, Clauses),
+            extract_match_constraints(Body, MatchCs),
+            MatchCs \= []
+        ->  NeedsRegexp = true
+        ;   NeedsRegexp = false
+        ),
 
-    % Determine if we need strings import
-    % Need strings if:
-    % 1. Multi-field records with predicates (not match-only), OR
-    % 2. Multiple rules (we use strings.Split to try each pattern)
-    (   NeedsStdin,
-        (   % Multiple rules case
-            length(Clauses, NumClauses),
-            NumClauses > 1,
-            \+ maplist(is_fact_clause, Clauses)
-        ;   % Multi-field with predicates case
-            member(Head-Body, Clauses),
-            \+ is_fact_clause(Head-Body),
-            Head =.. [_|Args],
-            length(Args, ArgCount),
-            ArgCount > 1,
-            extract_predicates(Body, Preds),
-            Preds \= []
+        % Determine if we need strings import
+        (   NeedsStdin,
+            (   length(Clauses, NumClauses), NumClauses > 1, \+ maplist(is_fact_clause, Clauses)
+            ;   member(Head-Body, Clauses), \+ is_fact_clause(Head-Body),
+                Head =.. [_|Args], length(Args, ArgCount), ArgCount > 1,
+                extract_predicates(Body, Preds), Preds \= []
+            )
+        ->  NeedsStrings = true
+        ;   NeedsStrings = false
+        ),
+
+        % Determine if we need strconv import
+        (   member(_Head-Body, Clauses),
+            extract_constraints(Body, Cs),
+            Cs \= []
+        ->  NeedsStrconv = true
+        ;   NeedsStrconv = false
+        ),
+
+        % Generate complete Go program
+        (   IncludePackage ->
+            generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting,
+                               EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, ScriptBody, GoCode)
+        ;   GoCode = ScriptBody
         )
-    ->  NeedsStrings = true
-    ;   NeedsStrings = false
-    ),
-
-    % Determine if we need strconv import (for numeric constraints)
-    (   member(_Head-Body, Clauses),
-        extract_constraints(Body, Cs),
-        Cs \= []
-    ->  NeedsStrconv = true
-    ;   NeedsStrconv = false
-    ),
-
-    % Generate complete Go program
-    (   IncludePackage ->
-        generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting,
-                           EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, ScriptBody, GoCode)
-    ;   GoCode = ScriptBody
     ),
     !.
 
@@ -445,8 +448,11 @@ compile_single_rule_to_go(Pred, Arity, Head, Body, RecordDelim, FieldDelim, Uniq
 
     % Handle simple case: single predicate in body (with optional constraints)
     (   Predicates = [SinglePred] ->
-        compile_single_predicate_rule_go(PredStr, HeadArgs, SinglePred, VarMap,
-                                        FieldDelim, Unique, MatchConstraints, Constraints, GoCode)
+        (   is_semantic_predicate(SinglePred)
+        ->  compile_semantic_rule_go(PredStr, HeadArgs, SinglePred, GoCode)
+        ;   compile_single_predicate_rule_go(PredStr, HeadArgs, SinglePred, VarMap,
+                                            FieldDelim, Unique, MatchConstraints, Constraints, GoCode)
+        )
     ;   Predicates = [], MatchConstraints \= [] ->
         % No predicates, just match constraints - read from stdin and filter
         compile_match_only_rule_go(PredStr, HeadArgs, VarMap, FieldDelim,
@@ -629,6 +635,56 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 ', [BodyPredStr, MatchRegexDecls, DelimChar, NumFields, FieldAssignments, AllChecksAndCaptures, OutputExpr])
         )
     ).
+
+%% is_semantic_predicate(+Goal)
+is_semantic_predicate(semantic_search(_, _, _)).
+is_semantic_predicate(crawler_run(_, _)).
+
+%% compile_semantic_rule_go(+PredStr, +HeadArgs, +Goal, -GoCode)
+compile_semantic_rule_go(_PredStr, _HeadArgs, Goal, GoCode) :-
+    Goal =.. [GoalName | GoalArgs],
+    
+    Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"',
+    
+    (   GoalName == semantic_search
+    ->  GoalArgs = [Query, TopK, _Results],
+        (atom(Query) -> format(string(QueryExpr), "\"~w\"", [Query]) ; QueryExpr = "query"),
+        (number(TopK) -> format(string(TopKExpr), "~w", [TopK]) ; TopKExpr = "10"),
+        
+        format(string(Body), '
+\t// Initialize runtime
+\tstore, err := storage.NewStore("data.db")
+\tif err != nil { log.Fatal(err) }
+\tdefer store.Close()
+
+\temb, err := embedder.NewHugotEmbedder("models/model.onnx", "all-MiniLM-L6-v2")
+\tif err != nil { log.Fatal(err) }
+\tdefer emb.Close()
+
+\t// Embed query
+\tqVec, err := emb.Embed(~s)
+\tif err != nil { log.Fatal(err) }
+\t
+\t// Search
+\tresults, err := search.Search(store, qVec, ~s)
+\tif err != nil { log.Fatal(err) }
+
+\tfor _, res := range results {
+\t\tfmt.Printf("Result: %%s (Score: %%f)\\n", res.ID, res.Score)
+\t}
+', [QueryExpr, TopKExpr])
+    ;   Body = '\tfmt.Println("Semantic predicate not fully implemented")'
+    ),
+    
+    format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+func main() {
+~s}
+', [Imports, Body]).
 
 %% generate_field_assignments(+Args, -Code)
 %  Generate field assignment statements
@@ -870,6 +926,7 @@ build_var_map_([Arg|Rest], Pos, [(Arg, Pos)|RestMap]) :-
     build_var_map_(Rest, NextPos, RestMap).
 
 %% Skip match predicates when extracting regular predicates
+extract_predicates(_:Goal, Preds) :- !, extract_predicates(Goal, Preds).
 extract_predicates(match(_, _), []) :- !.
 extract_predicates(match(_, _, _), []) :- !.
 extract_predicates(match(_, _, _, _), []) :- !.
