@@ -641,15 +641,16 @@ is_semantic_predicate(semantic_search(_, _, _)).
 is_semantic_predicate(crawler_run(_, _)).
 
 %% compile_semantic_rule_go(+PredStr, +HeadArgs, +Goal, -GoCode)
-compile_semantic_rule_go(_PredStr, _HeadArgs, Goal, GoCode) :-
+compile_semantic_rule_go(_PredStr, HeadArgs, Goal, GoCode) :-
+    build_var_map(HeadArgs, VarMap),
     Goal =.. [GoalName | GoalArgs],
     
-    Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"',
+    Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"\n\t"unifyweaver/targets/go_runtime/crawler"',
     
     (   GoalName == semantic_search
     ->  GoalArgs = [Query, TopK, _Results],
-        (atom(Query) -> format(string(QueryExpr), "\"~w\"", [Query]) ; QueryExpr = "query"),
-        (number(TopK) -> format(string(TopKExpr), "~w", [TopK]) ; TopKExpr = "10"),
+        term_to_go_expr(Query, VarMap, QueryExpr),
+        term_to_go_expr(TopK, VarMap, TopKExpr),
         
         format(string(Body), '
 \t// Initialize runtime
@@ -666,14 +667,42 @@ compile_semantic_rule_go(_PredStr, _HeadArgs, Goal, GoCode) :-
 \tif err != nil { log.Fatal(err) }
 \t
 \t// Search
-\tresults, err := search.Search(store, qVec, ~s)
+\tresults, err := search.Search(store, qVec, ~w)
 \tif err != nil { log.Fatal(err) }
 
 \tfor _, res := range results {
 \t\tfmt.Printf("Result: %%s (Score: %%f)\\n", res.ID, res.Score)
 \t}
 ', [QueryExpr, TopKExpr])
-    ;   Body = '\tfmt.Println("Semantic predicate not fully implemented")'
+    ;   GoalName == crawler_run
+    ->  GoalArgs = [Seeds, MaxDepth],
+        term_to_go_expr(MaxDepth, VarMap, DepthExpr),
+        
+        (   is_list(Seeds)
+        ->  maplist(atom_string, Seeds, SeedStrs),
+            atomic_list_concat(SeedStrs, '", "', Inner),
+            format(string(SeedsGo), '[]string{"~w"}', [Inner])
+        ;   term_to_go_expr(Seeds, VarMap, SeedsExpr),
+            SeedsGo = SeedsExpr
+        ),
+
+        format(string(Body), '
+\t// Initialize runtime
+\tstore, err := storage.NewStore("data.db")
+\tif err != nil { log.Fatal(err) }
+\tdefer store.Close()
+
+\temb, err := embedder.NewHugotEmbedder("models/model.onnx", "all-MiniLM-L6-v2")
+\tif err != nil { 
+\t\tlog.Printf("Warning: Embeddings disabled: %%v\\n", err) 
+\t\temb = nil
+\t} else {
+\t\tdefer emb.Close()
+\t}
+
+\tcraw := crawler.NewCrawler(store, emb)
+\tcraw.Crawl(~w, int(~w))
+', [SeedsGo, DepthExpr])
     ),
     
     format(string(GoCode), 'package main
@@ -683,6 +712,8 @@ import (
 )
 
 func main() {
+\t// Parse input arguments if needed (e.g. if HeadArgs are used)
+\t// For now, we assume simple stdin/args or constants
 ~s}
 ', [Imports, Body]).
 
