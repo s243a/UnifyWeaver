@@ -1,0 +1,133 @@
+# UnifyWeaver Development Environment with Wine
+# Ubuntu-based container with Wine for Windows testing capabilities
+
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/New_York
+
+# Enable 32-bit architecture for Wine
+RUN dpkg --add-architecture i386
+
+# Install system dependencies and common utilities
+RUN apt-get update && apt-get install -y \
+    # Core utilities
+    curl \
+    wget \
+    git \
+    vim \
+    nano \
+    unzip \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    # Build tools
+    build-essential \
+    cmake \
+    # Text processing utilities
+    grep \
+    sed \
+    gawk \
+    ripgrep \
+    # Shell
+    bash \
+    bash-completion \
+    # Python
+    python3 \
+    python3-pip \
+    python3-venv \
+    # SWI-Prolog dependencies
+    software-properties-common \
+    # Wine dependencies
+    xvfb \
+    cabextract \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Wine
+RUN mkdir -pm755 /etc/apt/keyrings && \
+    wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
+    wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources && \
+    apt-get update && \
+    apt-get install -y --install-recommends winehq-stable && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install winetricks for easier Wine configuration
+RUN wget https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks && \
+    chmod +x winetricks && \
+    mv winetricks /usr/local/bin/
+
+# Install SWI-Prolog (Linux version)
+RUN apt-add-repository ppa:swi-prolog/stable && \
+    apt-get update && \
+    apt-get install -y swi-prolog && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20.x (LTS)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI and Gemini CLI globally
+RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli
+
+# Create working directory matching WSL path structure
+RUN mkdir -p /mnt/c/Users/johnc/Dropbox/projects
+
+# Set working directory
+WORKDIR /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+
+# Set up Wine prefix directory
+ENV WINEPREFIX=/root/.wine
+ENV WINEARCH=win64
+
+# Initialize Wine (this creates the wine prefix)
+RUN wine wineboot --init && \
+    wineserver -w
+
+# Install PowerShell for Wine using winetricks
+# Note: This installs the Windows version of PowerShell via Wine/Mono
+RUN winetricks -q dotnet48 && \
+    wineserver -w
+
+# Download and install PowerShell 7 for Windows in Wine
+RUN wget -O /tmp/PowerShell-7.4.0-win-x64.msi https://github.com/PowerShell/PowerShell/releases/download/v7.4.0/PowerShell-7.4.0-win-x64.msi && \
+    wine msiexec /i /tmp/PowerShell-7.4.0-win-x64.msi /quiet /qn /norestart && \
+    wineserver -w && \
+    rm /tmp/PowerShell-7.4.0-win-x64.msi
+
+# Set up bash as default shell with better prompt
+RUN echo 'PS1="\[\033[01;32m\]\u@unifyweaver-wine\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ "' >> /root/.bashrc
+
+# Install useful bash aliases
+RUN echo 'alias ll="ls -lah"' >> /root/.bashrc && \
+    echo 'alias swipl="swipl -q"' >> /root/.bashrc && \
+    echo 'alias test-stream="swipl -g \"use_module(src/unifyweaver/core/stream_compiler), test_stream_compiler, halt.\""' >> /root/.bashrc && \
+    echo 'alias test-recursive="swipl -g \"use_module(src/unifyweaver/core/recursive_compiler), test_recursive_compiler, halt.\""' >> /root/.bashrc && \
+    echo 'alias test-advanced="swipl -g \"use_module(src/unifyweaver/core/advanced/test_advanced), test_all_advanced, halt.\""' >> /root/.bashrc && \
+    echo 'alias wine-cmd="wine cmd"' >> /root/.bashrc && \
+    echo 'alias wine-powershell="wine pwsh"' >> /root/.bashrc && \
+    echo 'alias pwsh-wine="wine pwsh"' >> /root/.bashrc
+
+# Set up git configuration to match host
+RUN git config --global --add safe.directory '*'
+
+# Create a helper script for downloading Windows SWI-Prolog (optional)
+RUN echo '#!/bin/bash\n\
+echo "Downloading SWI-Prolog for Windows..."\n\
+wget -O /tmp/swipl-win.exe https://www.swi-prolog.org/download/stable/bin/swipl-9.2.9-1.x64.exe\n\
+echo "Installing SWI-Prolog in Wine..."\n\
+wine /tmp/swipl-win.exe /S\n\
+echo "SWI-Prolog for Windows installed in Wine"\n\
+' > /usr/local/bin/install-swipl-windows.sh && \
+    chmod +x /usr/local/bin/install-swipl-windows.sh
+
+# Expose any ports that might be needed
+EXPOSE 3000 8080
+
+# Default command - start bash
+CMD ["/bin/bash"]

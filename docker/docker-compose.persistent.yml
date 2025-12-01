@@ -1,0 +1,53 @@
+# Docker Compose override for persistent system mode
+# This adds volumes for system directories to persist installed packages
+#
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.persistent.yml up
+
+version: '3.3'
+
+services:
+  unifyweaver-dev:
+    volumes:
+      # Re-declare base volumes (docker-compose overrides don't merge volumes)
+      - /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver:/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+      - unifyweaver-home:/root
+      # Additional persistent system volumes
+      - unifyweaver-dev-usr-local:/usr/local
+      - unifyweaver-dev-opt:/opt
+
+  unifyweaver-pwsh:
+    volumes:
+      # Re-declare base volumes (docker-compose overrides don't merge volumes)
+      - /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver:/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+      - unifyweaver-pwsh-home:/root
+      # Additional persistent system volumes
+      - unifyweaver-pwsh-usr-local:/usr/local
+      - unifyweaver-pwsh-opt:/opt
+
+  unifyweaver-wine:
+    volumes:
+      # Re-declare base volumes (docker-compose overrides don't merge volumes)
+      - /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver:/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+      - unifyweaver-wine-home:/root
+      # Additional persistent system volumes
+      - unifyweaver-wine-usr-local:/usr/local
+      - unifyweaver-wine-opt:/opt
+
+volumes:
+  # Development container persistent volumes
+  unifyweaver-dev-usr-local:
+    driver: local
+  unifyweaver-dev-opt:
+    driver: local
+
+  # PowerShell container persistent volumes
+  unifyweaver-pwsh-usr-local:
+    driver: local
+  unifyweaver-pwsh-opt:
+    driver: local
+
+  # Wine container persistent volumes
+  unifyweaver-wine-usr-local:
+    driver: local
+  unifyweaver-wine-opt:
+    driver: local

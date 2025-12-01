@@ -1,0 +1,83 @@
+version: '3.3'
+
+services:
+  # Main development environment
+  unifyweaver-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: unifyweaver-dev:latest
+    container_name: unifyweaver-dev
+    volumes:
+      # Mount the entire project maintaining WSL path structure
+      - /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver:/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+      # Optional: Mount home directory for persistent config
+      - unifyweaver-home:/root
+    working_dir: /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+    environment:
+      - TERM=xterm-256color
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+    stdin_open: true
+    tty: true
+    networks:
+      - unifyweaver-net
+
+  # PowerShell environment (native Linux, no Wine)
+  unifyweaver-pwsh:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.pwsh
+    image: unifyweaver-pwsh:latest
+    container_name: unifyweaver-pwsh
+    volumes:
+      # Mount the entire project maintaining WSL path structure
+      - /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver:/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+      # Optional: Mount home directory for persistent config
+      - unifyweaver-pwsh-home:/root
+    working_dir: /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+    environment:
+      - TERM=xterm-256color
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+    stdin_open: true
+    tty: true
+    networks:
+      - unifyweaver-net
+
+  # Wine-enabled environment for Windows testing
+  unifyweaver-wine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.wine
+    image: unifyweaver-wine:latest
+    container_name: unifyweaver-wine
+    volumes:
+      # Mount the entire project maintaining WSL path structure
+      - /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver:/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+      # Optional: Mount home directory for persistent Wine config
+      - unifyweaver-wine-home:/root
+    working_dir: /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+    environment:
+      - TERM=xterm-256color
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+      - DISPLAY=:99
+      - WINEPREFIX=/root/.wine
+      - WINEARCH=win64
+    stdin_open: true
+    tty: true
+    networks:
+      - unifyweaver-net
+
+volumes:
+  unifyweaver-home:
+    driver: local
+  unifyweaver-pwsh-home:
+    driver: local
+  unifyweaver-wine-home:
+    driver: local
+
+networks:
+  unifyweaver-net:
+    driver: bridge
