@@ -12,12 +12,14 @@ This PR enhances the `sqlite` source plugin to support parameterized queries, pr
     - Fixed template syntax errors.
 - **Tests**:
     - Updated `tests/core/test_sqlite_source.pl` to verify parameter binding (e.g., `WHERE age > ?`).
+- **Documentation**:
+    - Updated `docs/EXTENDED_README.md` with parameter usage example.
 
 ## Usage
 ```prolog
-:- source(sqlite, user_by_age, [
+:- source(sqlite, user_by_id, [
     sqlite_file('data.db'),
-    query('SELECT name FROM users WHERE age > ?'),
+    query('SELECT name FROM users WHERE id = ?'),
     parameters(['$1'])  % Maps script argument $1 to ?
 ]).
 ```
