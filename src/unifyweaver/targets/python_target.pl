@@ -7,6 +7,7 @@
 % Conditional import of call_graph for mutual recursion detection
 % Falls back gracefully if module not available
 :- catch(use_module('../core/advanced/call_graph'), _, true).
+:- use_module(common_generator).
 
 /** <module> Python Target Compiler
  *
@@ -1365,43 +1366,27 @@ translate_builtins(Builtins, VarMap, ConstraintChecks) :-
         Checks),
     atomic_list_concat(Checks, " and ", ConstraintChecks).
 
+python_config(Config) :-
+    Config = [
+        access_fmt-"~w.get('arg~w')",
+        atom_fmt-"'~w'",
+        null_val-"None",
+        ops-[
+            + - "+", - - "-", * - "*", / - "/", mod - "%",
+            > - ">", < - "<", >= - ">=", =< - "<=", =:= - "==", =\= - "!=",
+            is - "=="
+        ]
+    ].
+
 %% translate_builtin(+Builtin, +VarMap, -PythonExpr)
 %  Translate a single built-in to Python
-translate_builtin(Left is Right, VarMap, PythonExpr) :-
-    !, % is/2
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w == ~w", [LeftPy, RightPy]).
-translate_builtin(Left > Right, VarMap, PythonExpr) :-
+translate_builtin(Goal, VarMap, PythonExpr) :-
+    Goal =.. [Op | _],
+    python_config(Config),
+    memberchk(ops-Ops, Config),
+    memberchk(Op-_, Ops),
     !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w > ~w", [LeftPy, RightPy]).
-translate_builtin(Left < Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w < ~w", [LeftPy, RightPy]).
-translate_builtin(Left >= Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w >= ~w", [LeftPy, RightPy]).
-translate_builtin(Left =< Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w <= ~w", [LeftPy, RightPy]).
-translate_builtin(Left =:= Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w == ~w", [LeftPy, RightPy]).
-translate_builtin(Left =\= Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w != ~w", [LeftPy, RightPy]).
+    translate_builtin_common(Goal, VarMap, Config, PythonExpr).
 translate_builtin(\+ Goal, VarMap, PythonExpr) :-
     !,
     translate_negation(Goal, VarMap, PythonExpr).
@@ -1424,23 +1409,14 @@ translate_builtin(_, _VarMap, "True").  % Fallback
 
 %% translate_negation(+Goal, +VarMap, -PythonExpr)
 translate_negation(Goal, VarMap, PythonExpr) :-
-    Goal =.. [Pred | Args],
-    findall(Pair,
-        (   nth0(Idx, Args, Arg),
-            (   var(Arg)
-            ->  translate_expr(Arg, VarMap, ValExpr)
-            ;   atom(Arg)
-            ->  format(string(ValExpr), "'~w'", [Arg])
-            ;   number(Arg)
-            ->  format(string(ValExpr), "~w", [Arg])
-            ;   ValExpr = "None"
-            ),
-            format(string(Pair), "'arg~w': ~w", [Idx, ValExpr])
+    python_config(Config),
+    prepare_negation_data(Goal, VarMap, Config, Pairs),
+    findall(PairStr,
+        (   member(Key-Val, Pairs),
+            format(string(PairStr), "'~w': ~w", [Key, Val])
         ),
-        Pairs),
-    format(string(RelPair), "'relation': '~w'", [Pred]),
-    AllPairs = [RelPair | Pairs],
-    atomic_list_concat(AllPairs, ", ", DictContent),
+        PairStrings),
+    atomic_list_concat(PairStrings, ", ", DictContent),
     format(string(PythonExpr), "FrozenDict.from_dict({~w}) not in total", [DictContent]).
 
 %% translate_match(+Var, +Pattern, +Type, +Groups, +VarMap, -PythonExpr)
@@ -1944,4 +1920,3 @@ if __name__ == '__main__':
 
 quote_py_string(Str, Quoted) :-
     format(string(Quoted), "'~w'", [Str]).
-

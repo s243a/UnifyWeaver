@@ -18,6 +18,8 @@
 :- use_module('../targets/awk_target').
 :- use_module('../targets/csharp_query_target').
 :- use_module('../targets/csharp_stream_target').
+:- use_module('../targets/go_target', [compile_predicate_to_go/3]).
+:- use_module('../targets/rust_target', [compile_predicate_to_rust/3]).
 :- use_module(template_system).
 :- use_module(library(lists)).
 :- use_module(constraint_analyzer).
@@ -102,6 +104,10 @@ compile_non_recursive(awk, Pred/Arity, FinalOptions, GeneratedCode) :-
     awk_target:compile_predicate_to_awk(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(csharp, Pred/Arity, FinalOptions, GeneratedCode) :-
     csharp_stream_target:compile_predicate_to_csharp(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(go, Pred/Arity, FinalOptions, GeneratedCode) :-
+    compile_predicate_to_go(Pred/Arity, FinalOptions, GeneratedCode).
+compile_non_recursive(rust, Pred/Arity, FinalOptions, GeneratedCode) :-
+    compile_predicate_to_rust(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(Target, Pred/Arity, _Options, _GeneratedCode) :-
     format(user_error, 'Target ~w not supported for non-recursive predicate ~w.~n', [Target, Pred/Arity]),
     fail.
@@ -110,6 +116,14 @@ compile_advanced(bash, Pred/Arity, FinalOptions, GeneratedCode) :-
     advanced_recursive_compiler:compile_advanced_recursive(
         Pred/Arity, FinalOptions, GeneratedCode
     ).
+compile_advanced(go, Pred/Arity, _FinalOptions, _GeneratedCode) :-
+    format(user_error, 'Advanced recursive compilation for target go not yet implemented (~w).~n',
+           [Pred/Arity]),
+    fail.
+compile_advanced(rust, Pred/Arity, _FinalOptions, _GeneratedCode) :-
+    format(user_error, 'Advanced recursive compilation for target rust not yet implemented (~w).~n',
+           [Pred/Arity]),
+    fail.
 compile_advanced(Target, Pred/Arity, _FinalOptions, _GeneratedCode) :-
     format(user_error, 'Advanced recursive compilation for target ~w not implemented (~w).~n',
            [Target, Pred/Arity]),

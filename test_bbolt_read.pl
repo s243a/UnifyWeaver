@@ -2,6 +2,7 @@
 
 % Test bbolt database read mode
 
+:- use_module(library(filesex)).
 :- use_module('src/unifyweaver/targets/go_target').
 
 % Simple read predicate - outputs all records from database
@@ -19,6 +20,7 @@ test_read_bbolt :-
     ], Code),
 
     % Write generated code
+    make_directory_path('output_bbolt_read'),
     open('output_bbolt_read/read_users.go', write, Stream),
     write(Stream, Code),
     close(Stream),

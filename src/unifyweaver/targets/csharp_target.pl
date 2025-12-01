@@ -1491,20 +1491,29 @@ csharp_config(Config) :-
     ].
 
 compile_generator_mode(Pred/Arity, _Options, Code) :-
+    % Generator mode currently supports only single-predicate dependency groups.
+    (   compute_dependency_group(Pred/Arity, Group),
+        Group \= [predicate{name:Pred, arity:Arity}]
+    ->  format(user_error,
+               'C# generator mode: predicate ~w/~w has supporting predicates (~w); generator mode currently handles single-predicate groups only.~n',
+               [Pred, Arity, Group]),
+        fail
+    ;   true
+    ),
     gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses),
     partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
-
+    
     csharp_config(Config),
-
+    
     csharp_generator_header(Pred, Header),
     collect_fact_heads(BaseClauses, FactHeads),
     compile_generator_facts(FactHeads, Config, FactsCode),
-
+    
     append(BaseClauses, RecClauses, AllClauses),
     compile_generator_rules(Pred, AllClauses, Config, RulesCode, RuleNames),
-
+    
     compile_generator_execution(Pred, RuleNames, ExecutionCode),
-
+    
     format(string(Code), "~w\n~w\n~w\n~w\n    }\n}\n", [Header, FactsCode, RulesCode, ExecutionCode]).
 
 csharp_generator_header(Pred, Header) :-
