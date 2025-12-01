@@ -4,7 +4,7 @@
 context/
 
 # Docker environment (optional - keep local)
-docker/
+# docker/
 
 # Test environment (auto-generated)
 scripts/testing/test_env/
