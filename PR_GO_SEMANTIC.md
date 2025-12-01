@@ -1,20 +1,27 @@
 # feat(go): Semantic Runtime with Hugot & Bbolt
 
 ## Summary
-This PR introduces the **Go Semantic Runtime Library**, providing the foundation for building semantic agents in Go. It mirrors the Python runtime architecture but leverages Go-native (or CGO-wrapped) tools for high performance.
+This PR introduces the **Go Semantic Runtime Library** and integrates it into the `go_target` compiler. This enables Go-based agents to perform semantic crawling, embedding generation, and vector similarity search using high-performance native tools.
 
-## Components
-- **Embeddings**: Uses [`knights-analytics/hugot`](https://github.com/knights-analytics/hugot) to run ONNX transformer models (e.g., `all-MiniLM-L6-v2`) locally for generating vector embeddings.
-- **Storage**: Uses [`bbolt`](https://github.com/etcd-io/bbolt) for pure Go key-value storage of objects and vectors.
-- **Search**: Implements in-memory cosine similarity search over vectors loaded from `bbolt`.
-- **Crawler**: Implements a concurrent-ready crawler using `net/http` and `encoding/xml` with flattening support.
+## Runtime Components
+- **Embeddings**: [`knights-analytics/hugot`](https://github.com/knights-analytics/hugot) wrapper for ONNX transformer models.
+- **Storage**: [`bbolt`](https://github.com/etcd-io/bbolt) wrapper for key-value storage of objects and vectors.
+- **Search**: In-memory cosine similarity search over vectors loaded from `bbolt`.
+- **Crawler**: Concurrent-ready crawler using `net/http` and `encoding/xml`.
 
-## Architecture
-The runtime is structured as a library in `src/unifyweaver/targets/go_runtime/`:
-- `embedder/`: Hugot wrapper.
-- `storage/`: Bbolt wrapper.
-- `search/`: Vector operations.
-- `crawler/`: Crawling logic.
+## Compiler Integration
+- **`go_target.pl`**: Updated to recognize semantic predicates:
+    - `semantic_search(Query, TopK, Results)`
+    - `crawler_run(Seeds, MaxDepth)`
+- **Code Generation**: Generates Go code that imports the runtime library (`unifyweaver/targets/go_runtime/...`) and orchestrates the semantic pipeline.
+
+## Usage
+```prolog
+% Search and crawl
+search_and_crawl(Topic) :-
+    semantic_search(Topic, 10, Seeds),
+    crawler_run(Seeds, 2).
+```
 
 ## Next Steps
-- Integrate this runtime into `go_target.pl` to allow compiling predicates like `semantic_search/3` into Go code that imports these modules.
+- Ensure the generated Go code can resolve the local runtime module (e.g., via `go.mod` replace directive or by publishing the runtime).
