@@ -26,5 +26,20 @@ test(go_semantic_search) :-
     
     retractall(user:search_go(_)).
 
+test(go_crawler_run) :-
+    retractall(user:run_crawl_const),
+    assertz((user:run_crawl_const :- crawler_run(['http://example.com'], 3))),
+    
+    compile_predicate_to_go(user:run_crawl_const/0, [], Code),
+    
+    % Check imports
+    sub_string(Code, _, _, _, "unifyweaver/targets/go_runtime/crawler"),
+    
+    % Check logic
+    sub_string(Code, _, _, _, "crawler.NewCrawler"),
+    sub_string(Code, _, _, _, "craw.Crawl([]string{\"http://example.com\"}, int(3))"),
+    
+    retractall(user:run_crawl_const).
+
 :- end_tests(go_semantic_compilation).
 
