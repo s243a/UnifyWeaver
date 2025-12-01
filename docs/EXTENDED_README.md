@@ -734,6 +734,18 @@ high_value_orders() {
 }
 ```
 
+**Safe Parameter Binding (v1.1):**
+
+To prevent SQL injection when using dynamic inputs, use `parameters/1`. This automatically switches to a safer Python-based execution mode:
+
+```prolog
+:- source(sqlite, user_by_id, [
+    sqlite_file('data/users.db'),
+    query('SELECT name, email FROM users WHERE id = ?'),
+    parameters(['$1'])  % Binds first script argument to ?
+]).
+```
+
 ### C# Plugin (LiteDB Integration)
 
 UnifyWeaver supports C# data sources with automatic compilation and LiteDB integration.
