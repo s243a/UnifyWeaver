@@ -423,6 +423,13 @@ translate_goal(=(Var, Dict), Code) :-
     atomic_list_concat(PyPairList, ', ', PairsStr),
     format(string(Code), "    ~w = {~s}\n", [PyVar, PairsStr]).
 
+translate_goal(=(Var, Value), Code) :-
+    atomic(Value),
+    !,
+    var_to_python(Var, PyVar),
+    var_to_python(Value, PyVal),
+    format(string(Code), "    ~w = ~w\n", [PyVar, PyVal]).
+
 translate_goal(>(Var, Value), Code) :-
     !,
     var_to_python(Var, PyVar),
@@ -523,6 +530,12 @@ var_to_python(Atom, Quoted) :-
 var_to_python(Number, Number) :- 
     number(Number), 
     !.
+var_to_python(List, PyList) :-
+    is_list(List),
+    !,
+    maplist(var_to_python, List, Elems),
+    atomic_list_concat(Elems, ', ', Inner),
+    format(string(PyList), "[~w]", [Inner]).
 var_to_python(Term, String) :-
     term_string(Term, String).
 
@@ -1968,7 +1981,7 @@ semantic_runtime_helpers(Code) :-
         (   exists_file(File)
         ->  read_file_to_string(File, Raw, []),
             % Remove relative imports 'from .embedding import'
-            re_replace("from \\\\.embedding import.*", "", Raw, Content)
+            re_replace("from \\.embedding import.*", "", Raw, Content)
         ;   format(string(Content), "# ERROR: Runtime file ~w not found\\n", [File])
         )
     ), Contents),

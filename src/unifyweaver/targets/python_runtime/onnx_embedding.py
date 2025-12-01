@@ -12,7 +12,12 @@ class OnnxEmbeddingProvider(IEmbeddingProvider):
     def __init__(self, model_path, vocab_path):
         if not ort:
             raise ImportError("onnxruntime not installed")
-        self.sess = ort.InferenceSession(model_path)
+        try:
+            self.sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        except Exception:
+            # Fallback if specific provider fails or API differs
+            self.sess = ort.InferenceSession(model_path)
+            
         self.vocab = self._load_vocab(vocab_path)
         self.cls_token_id = 101
         self.sep_token_id = 102

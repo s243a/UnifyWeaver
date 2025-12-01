@@ -39,13 +39,22 @@ class PtCrawler:
 
     def _process_stream(self, xml_stream, next_batch):
         context = etree.iterparse(xml_stream, events=('end',), recover=True)
+        count = 0
         for event, elem in context:
             # Simple flattening (similar to read_xml_lxml)
             data = {}
             for k, v in elem.attrib.items():
-                data['@' + k] = v
+                local_k = k.split('}')[-1] if '}' in k else k
+                data['@' + local_k] = v
             
             tag = elem.tag.split('}')[-1] # Local name
+            
+            # Flatten children (text only)
+            for child in elem:
+                child_tag = child.tag.split('}')[-1]
+                if not len(child) and child.text:
+                    data[child_tag] = child.text.strip()
+
             obj_id = data.get('@id') or data.get('@rdf:about') or data.get('@about')
             
             # If no ID, maybe generate one or skip? C# PtMapper extracts IDs.
@@ -60,6 +69,7 @@ class PtCrawler:
                 if self.embedder:
                     text = data.get('title') or data.get('text') or ""
                     if text:
+                        # print(f"DEBUG: Embedding {obj_id}: {text[:50]}...", file=sys.stderr)
                         vec = self.embedder.get_embedding(text)
                         self.importer.upsert_embedding(obj_id, vec)
                 
@@ -71,6 +81,10 @@ class PtCrawler:
                 # Assume specific link logic (e.g. pt:seeAlso) or generic.
                 pass
             
-            elem.clear()
-            while elem.getprevious() is not None:
-                del elem.getparent()[0]
+                elem.clear()
+                while elem.getprevious() is not None:
+                    parent = elem.getparent()
+                    if parent is not None:
+                        del parent[0]
+                    else:
+                        break
