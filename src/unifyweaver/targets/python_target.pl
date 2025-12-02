@@ -447,6 +447,14 @@ translate_goal(match(Var, Pattern, Type, Groups), Code) :-
     !,
     translate_match_goal(Var, Pattern, Type, Groups, Code).
 
+translate_goal(graph_search(Query, TopK, Hops, Results), Code) :-
+    !,
+    var_to_python(Query, PyQuery),
+    var_to_python(TopK, PyTopK),
+    var_to_python(Hops, PyHops),
+    var_to_python(Results, PyResults),
+    format(string(Code), "    ~w = _get_runtime().searcher.graph_search(~w, top_k=~w, hops=~w)\n", [PyResults, PyQuery, PyTopK, PyHops]).
+
 translate_goal(semantic_search(Query, TopK, Results), Code) :-
     !,
     var_to_python(Query, PyQuery),
