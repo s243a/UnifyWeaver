@@ -1515,6 +1515,7 @@ compile_generator_mode(Pred/Arity, _Options, Code) :-
     csharp_config(Config),
 
     gather_group_clauses(GroupSpecs, AllClauses),
+    \+ clauses_contain_aggregate(AllClauses), % fail with message if aggregates present
     collect_fact_heads(AllClauses, FactHeads),
     compile_generator_facts(FactHeads, Config, FactsCode),
 
@@ -1529,6 +1530,23 @@ compile_generator_mode(Pred/Arity, _Options, Code) :-
 
     csharp_generator_header(Pred, Header),
     format(string(Code), "~w\n~w\n~w\n~w\n    }\n}\n", [Header, FactsCode, RulesCode, ExecutionCode]).
+
+clauses_contain_aggregate(Clauses) :-
+    member(_Head-Body, Clauses),
+    Body \= true,
+    body_to_list(Body, Goals),
+    member(G, Goals),
+    aggregate_goal(G),
+    format(user_error,
+           'C# generator mode does not yet support aggregate goals (~w).~n',
+           [G]),
+    fail.
+clauses_contain_aggregate(_).
+
+aggregate_goal(G) :-
+    compound(G),
+    functor(G, Fun, Arity),
+    member(Fun/Arity, [aggregate_all/3, aggregate/4]).
 
 csharp_generator_header(Pred, Header) :-
     get_time(Timestamp),
