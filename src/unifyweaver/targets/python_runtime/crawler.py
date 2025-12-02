@@ -40,7 +40,14 @@ class PtCrawler:
     def _process_stream(self, xml_stream, next_batch):
         context = etree.iterparse(xml_stream, events=('end',), recover=True)
         count = 0
+        limit = 50 # Safety limit for testing
+        
         for event, elem in context:
+            count += 1
+            if count > limit:
+                print(f"DEBUG: Reached limit of {limit} items. Stopping stream processing.", file=sys.stderr)
+                break
+                
             # Simple flattening (similar to read_xml_lxml)
             data = {}
             for k, v in elem.attrib.items():
@@ -49,13 +56,27 @@ class PtCrawler:
             
             tag = elem.tag.split('}')[-1] # Local name
             
+            obj_id = data.get('@id') or data.get('@rdf:about') or data.get('@about')
+
             # Flatten children (text only)
             for child in elem:
                 child_tag = child.tag.split('}')[-1]
                 if not len(child) and child.text:
                     data[child_tag] = child.text.strip()
-
-            obj_id = data.get('@id') or data.get('@rdf:about') or data.get('@about')
+                
+                # Link extraction
+                # Look for rdf:resource attribute
+                resource = None
+                for k, v in child.attrib.items():
+                    # Check for }resource or just resource
+                    if k.endswith('}resource') or k == 'resource':
+                        resource = v
+                        break
+                
+                if resource and obj_id:
+                    # Store link: source=obj_id, target=resource
+                    # This captures parentTree (Child->Parent) and seeAlso
+                    self.importer.upsert_link(obj_id, resource)
             
             # If no ID, maybe generate one or skip? C# PtMapper extracts IDs.
             # For now, assume @id exists or skip.

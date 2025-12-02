@@ -13,8 +13,8 @@ search_topic(Results) :-
 
 % Define RAG logic
 summarize_topic(Topic, Summary) :-
-    semantic_search(Topic, 3, Results),
-    Prompt = 'Summarize the following search results regarding the topic.',
+    graph_search(Topic, 3, 1, Results),
+    Prompt = 'Summarize the following search results (including context from parents/children) regarding the topic.',
     llm_ask(Prompt, Results, Summary).
 
 % Helper to compile the indexer
@@ -46,8 +46,8 @@ compile_searcher(Topic) :-
 compile_summarizer(Topic) :-
     format('Compiling summarizer for "~w"...~n', [Topic]),
     % Inline the logic
-    Prompt = 'Summarize the following search results regarding the topic.',
-    Body = (semantic_search(Topic, 3, Results), llm_ask(Prompt, Results, S)),
+    Prompt = 'Summarize the following search results (including context from parents/children) regarding the topic.',
+    Body = (graph_search(Topic, 3, 1, Results), llm_ask(Prompt, Results, S)),
     
     Term = (gen_summary(S) :- Body),
     assertz(user:Term),
@@ -62,5 +62,5 @@ compile_summarizer(Topic) :-
 
 main :-
     compile_indexer,
-    compile_searcher('physics'),
-    compile_summarizer('physics').
+    compile_searcher('hacktivism'),
+    compile_summarizer('hacktivism').

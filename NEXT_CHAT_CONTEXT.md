@@ -1,38 +1,32 @@
 # UnifyWeaver Context for Next Session
 
 ## Project State (Dec 2025)
-We have achieved **Semantic Capability Parity** across the core targets (Python, Go, C#). The system can now:
-1.  **Crawl**: Fetch and parse XML/HTML/RDF (`PtCrawler`, `xml_source`).
-2.  **Embed**: Generate vector embeddings using local ONNX models (`all-MiniLM-L6-v2`) on CPU/GPU.
-3.  **Store**: Index objects and vectors in local databases (`sqlite` for Python, `bbolt` for Go, `litedb` for C#).
-4.  **Search**: Perform cosine similarity searches (`semantic_search/3`).
-5.  **Generate**: (Python only) Summarize/Answer using LLMs via `gemini` CLI (`llm_ask/3`).
+- **Core Targets**: Semantic Capability Parity achieved (Python, Go, C#).
+- **Graph RAG**: **Successfully Verified** on Python target (`feat/rag-integration` branch).
+    - Implemented `graph_search/3` (Vector Search + Graph Traversal).
+    - Validated with `examples/semantic_playbook.pl` on `context/PT` data.
+    - Link extraction added to `PtCrawler`.
+- **Environment**: `gemini` CLI v0.18.4 installed. `pwsh` NOT available.
 
 ## Key Architectures
+### Python Semantic Runtime (`src/unifyweaver/targets/python_runtime/`)
+- **`crawler.py`**: Now extracts `rdf:resource` links and stores them in the `links` table.
+- **`searcher.py`**: Added `graph_search` method for 1-hop neighborhood retrieval (Parents/Children).
+- **`python_target.pl`**: Updated to compile `graph_search/4` predicates.
 
-### Python Target (`python_target.pl`)
-- **Runtime**: `src/unifyweaver/targets/python_runtime/`
-    - `crawler.py`: XML stream processor with flattening (namespace stripping logic).
-    - `onnx_embedding.py`: Wraps `onnxruntime` (defaults to CPU provider).
-    - `chunker.py`: Hierarchical chunking (Macro/Micro) with configurable sizes (defaults to safe 250 tokens).
-    - `llm.py`: Wraps `gemini` CLI for `llm_ask`.
-- **Compilation**: Inlines runtime code into generated scripts. Supports procedural mode for side-effects.
+### Validated Flow (RAG)
+1.  **Index**: `PtCrawler` -> `PtImporter` (SQLite `objects`, `links`, `embeddings`).
+2.  **Search**: `PtSearcher.graph_search` (Vector -> Graph Expansion).
+3.  **Answer**: `LLMProvider` (Gemini CLI) summarizes the graph context.
 
-### Go Target (`go_target.pl`)
-- **Runtime**: `src/unifyweaver/targets/go_runtime/` (uses `hugot`, `bbolt`).
-- **Compilation**: Generates `main.go` that imports the local runtime module.
-
-### Data Sources
-- **SQLite**: Native `source(sqlite)` plugin with parameter binding via embedded Python.
-- **XML**: Native streaming support in all targets.
-
-## Recent Changes
-- **LLM Integration**: Added `llm_ask` and `chunk_text` predicates to Python target. Defaults to `gemini-2.5-flash`.
-- **Playbook**: `examples/semantic_playbook.pl` demonstrates end-to-end Index -> Search -> Summarize flow on `context/PT` data.
-- **Docker**: Added `docker/` directory with full environment (though running in PRoot is limited).
+## Active Proposals
+### PowerShell Semantic Target (`POWERSHELL_SEMANTIC_PROPOSAL.md`)
+- **Goal**: Achieve parity (XML Source, Vector Search) via pure PowerShell code generation.
+- **Plan**:
+    - XML: `[System.Xml.XmlReader]` for streaming.
+    - Vectors: `[Reflection.Assembly]::LoadFile` for ONNX, or pure PS math for small scale.
+    - **Next Step**: Implement `src/unifyweaver/targets/powershell_target.pl` to emit this code.
 
 ## Next Steps
-1.  **PowerShell**: Implement Semantic Parity (XmlReader, Vector Search).
-2.  **Graph RAG**: Add predicates for traversing the link graph stored in DB.
-3.  **Interactive Shell**: Create a swipl shell extension for running agent commands.
-4.  **Testing**: Ensure `gemini` CLI is configured in the environment for the RAG tests to fully pass.
+1.  **Merge `feat/rag-integration`**: The RAG features are tested and working.
+2.  **Start PowerShell Implementation**: Create the compiler infrastructure for the proposed PowerShell semantic features.
