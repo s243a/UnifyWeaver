@@ -59,15 +59,19 @@ setup_test_data :-
     cleanup_test_data,
     assertz(user:cg_edge(a, b)),
     assertz(user:cg_edge(b, c)),
-    assertz(user:(cg_path(X, Y) :- cg_edge(X, Y))),
-    assertz(user:(cg_path(X, Y) :- cg_edge(X, Z), cg_path(Z, Y))).
+    assertz(user:cg_edge(b, d)),
+    assertz(user:cg_blocked(a, b)),
+    assertz(user:(cg_path(X, Y) :- cg_edge(X, Y), \+ cg_blocked(X, Y))),
+    assertz(user:(cg_path(X, Y) :- cg_edge(X, Z), \+ cg_blocked(X, Z), cg_path(Z, Y))).
 
 cleanup_test_data :-
     maplist(retractall, [
         user:cg_edge(_, _),
+        user:cg_blocked(_, _),
         user:cg_path(_, _)
     ]),
     catch(abolish(user:cg_edge/2), _, true),
+    catch(abolish(user:cg_blocked/2), _, true),
     catch(abolish(user:cg_path/2), _, true).
 
 build_program_stub(Stub) :-
@@ -86,7 +90,7 @@ test(generator_dependency_group, [
     csharp_target:compile_predicate_to_csharp(cg_path/2, [mode(generator)], GenCode),
     build_program_stub(Stub),
     atom_concat(GenCode, Stub, FullCode),
-    py_call(csharp_test_helper:assert_output_contains(FullCode, "cg_path:a:c", 'csharp_dep_group'),
+    py_call(csharp_test_helper:assert_output_contains(FullCode, "cg_path:b:c", 'csharp_dep_group_pos'),
             Result),
     (   Result.success == @(true),
         Result.assertion_passed == @(true)
@@ -95,6 +99,22 @@ test(generator_dependency_group, [
         assertion(Result.success == @(true)),
         assertion(Result.assertion_passed == @(true))
     ).
+
+test(generator_dependency_group_negation, [
+    setup(setup_test_data),
+    cleanup(cleanup_test_data),
+    condition(check_dotnet_available)
+]) :-
+    csharp_target:compile_predicate_to_csharp(cg_path/2, [mode(generator)], GenCode),
+    build_program_stub(Stub),
+    atom_concat(GenCode, Stub, FullCode),
+    py_call(csharp_test_helper:compile_and_run(FullCode, 'csharp_dep_group_neg'), Result),
+    get_dict(success, Result, @(true)),
+    get_dict(stdout, Result, Stdout),
+    once(sub_string(Stdout, _, _, _, "cg_path:b:c")),
+    once(sub_string(Stdout, _, _, _, "cg_path:b:d")),
+    \+ sub_string(Stdout, _, _, _, "cg_path:a:b"),
+    \+ sub_string(Stdout, _, _, _, "cg_path:a:c").
 
 :- end_tests(csharp_generator_janus).
 

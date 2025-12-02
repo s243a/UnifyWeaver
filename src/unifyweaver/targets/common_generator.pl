@@ -9,13 +9,21 @@
 %  GoalSourcePairs is list of Goal-SourceString
 %  VarMap is list of Var-source(SourceString, ArgIndex)
 build_variable_map(GoalSourcePairs, VarMap) :-
-    findall(Var-source(Source, Idx),
-        (   member(Goal-Source, GoalSourcePairs),
-            Goal =.. [_ | Args],
-            nth0(Idx, Args, Var),
-            var(Var)
-        ),
-        VarMap).
+    maplist(goal_var_pairs, GoalSourcePairs, PairLists),
+    append(PairLists, VarMap).
+
+goal_var_pairs(Goal-Source, Pairs) :-
+    Goal =.. [_|Args],
+    goal_vars(Args, 0, Source, Pairs).
+
+goal_vars([], _, _, []).
+goal_vars([A|Rest], Idx, Source, Pairs) :-
+    (   var(A)
+    ->  Pairs = [A-source(Source, Idx)|Tail]
+    ;   Pairs = Tail
+    ),
+    Next is Idx + 1,
+    goal_vars(Rest, Next, Source, Tail).
 
 %% translate_expr_common(+Expr, +VarMap, +Config, -Result)
 %  Config is a list of options:
@@ -25,7 +33,8 @@ build_variable_map(GoalSourcePairs, VarMap) :-
 %    ops: List of Op-String pairs for operators
 translate_expr_common(Var, VarMap, Config, Result) :-
     var(Var), !,
-    (   memberchk(Var-source(Source, Idx), VarMap)
+    (   member(Var0-source(Source, Idx), VarMap),
+        Var == Var0
     ->  get_option(access_fmt, Config, Fmt),
         format(string(Result), Fmt, [Source, Idx])
     ;   get_option(null_val, Config, Result)

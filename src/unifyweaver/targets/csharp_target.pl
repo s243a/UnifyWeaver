@@ -72,7 +72,12 @@ predicate_dependencies(Name/Arity, Dependencies) :-
                 body_to_list(Body, Terms),
                 member(Term, Terms),
                 \+ constraint_goal(Term),
-                term_signature(Term, Dep),
+                (   Term =.. ['\\+', Inner]
+                ->  term_signature(Inner, Dep)
+                ;   Term =.. [not, Inner]
+                ->  term_signature(Inner, Dep)
+                ;   term_signature(Term, Dep)
+                ),
                 (   predicate_defined(Dep)
                 ;   dynamic_source_metadata(Dep, _)
                 )
