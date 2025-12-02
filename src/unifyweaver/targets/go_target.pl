@@ -129,7 +129,12 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
         ->  format('  Mode: JSON input (JSONL) with database storage~n')
         ;   format('  Mode: JSON input (JSONL)~n')
         ),
-        compile_json_input_mode(Pred, Arity, Options, GoCode)
+        % Check for parallel execution
+        (   option(workers(Workers), Options), Workers > 1
+        ->  format('  Parallel execution: ~w workers~n', [Workers]),
+            compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode)
+        ;   compile_json_input_mode(Pred, Arity, Options, GoCode)
+        )
     % Check if this is XML input mode
     ;   option(xml_input(true), Options)
     ->  % Compile for XML input
@@ -1701,6 +1706,183 @@ func main() {
     ;   GoCode = ScriptBody
     ).
 
+%% compile_parallel_json_input_mode(+Pred, +Arity, +Options, +Workers, -GoCode)
+%  Compile predicate with JSON input for parallel execution
+compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
+    % Get options
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(include_package(IncludePackage), Options, true),
+    option(unique(Unique), Options, true),
+
+    % Get predicate clauses
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+
+    (   Clauses = [SingleHead-SingleBody] ->
+        % Single clause - extract JSON field mappings
+        extract_json_field_mappings(SingleBody, FieldMappings),
+        
+        SingleHead =.. [_|HeadArgs],
+        compile_parallel_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Workers, ScriptBody),
+
+        % Check if helpers are needed
+        (   member(nested(_, _), FieldMappings)
+        ->  generate_nested_helper(HelperFunc),
+            HelperSection = HelperFunc
+        ;   HelperSection = ''
+        )
+    ;   format('ERROR: Multiple clauses not yet supported for parallel JSON input mode~n'),
+        fail
+    ),
+
+    % Wrap in package if requested
+    (   IncludePackage ->
+        Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"\n\t"sync"',
+        (   HelperSection = '' ->
+            format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+func main() {
+~s}
+', [Imports, ScriptBody])
+        ;   format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+~s
+
+func main() {
+~s}
+', [Imports, HelperSection, ScriptBody])
+        )
+    ;   GoCode = ScriptBody
+    ).
+
+%% compile_parallel_json_to_go(+HeadArgs, +Operations, +FieldDelim, +Unique, +Workers, -GoCode)
+%  Generate Go code for parallel JSON processing
+compile_parallel_json_to_go(HeadArgs, Operations, FieldDelim, Unique, Workers, GoCode) :-
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % Generate processing code (recursive)
+    generate_parallel_json_processing(Operations, HeadArgs, DelimChar, Unique, 1, [], ProcessingCode),
+
+    (   Unique = true 
+    ->  UniqueVars = "var seenMutex sync.Mutex\n\tseen := make(map[string]bool)" 
+    ;   UniqueVars = ""
+    ),
+
+    format(string(GoCode), '
+	// Parallel execution with ~w workers
+	jobs := make(chan []byte, 100)
+	var wg sync.WaitGroup
+	var outputMutex sync.Mutex
+	~s
+
+	// Start workers
+	for i := 0; i < ~w; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for lineBytes := range jobs {
+				var data map[string]interface{}
+				if err := json.Unmarshal(lineBytes, &data); err != nil {
+					continue
+				}
+				
+				~s
+			}
+		}()
+	}
+
+	// Scanner loop
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		// Copy bytes because scanner.Bytes() is reused
+		b := make([]byte, len(scanner.Bytes()))
+		copy(b, scanner.Bytes())
+		jobs <- b
+	}
+	close(jobs)
+	wg.Wait()
+', [Workers, UniqueVars, Workers, ProcessingCode]).
+
+%% generate_parallel_json_processing(+Operations, +HeadArgs, +Delim, +Unique, +VIdx, +VarMap, -Code)
+generate_parallel_json_processing([], HeadArgs, Delim, Unique, _, VarMap, Code) :-
+    !,
+    generate_json_output_from_map(HeadArgs, VarMap, Delim, OutputExpr),
+    (   Unique = true ->
+        format(string(Code), '
+				result := ~s
+				seenMutex.Lock()
+				if !seen[result] {
+					seen[result] = true
+					outputMutex.Lock()
+					fmt.Println(result)
+					outputMutex.Unlock()
+				}
+				seenMutex.Unlock()', [OutputExpr])
+    ;   format(string(Code), '
+				result := ~s
+				outputMutex.Lock()
+				fmt.Println(result)
+				outputMutex.Unlock()', [OutputExpr])
+    ).
+
+generate_parallel_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarMap, Code) :-
+    % Reuse existing logic for extraction, just recurse to parallel version
+    NextVIdx is VIdx + 1,
+    (   Op = nested(Path, Var) ->
+        format(atom(GoVar), 'v~w', [VIdx]),
+        generate_nested_extraction_code(Path, 'data', GoVar, ExtractCode),
+        generate_parallel_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = Field-Var ->
+        format(atom(GoVar), 'v~w', [VIdx]),
+        atom_string(Field, FieldStr),
+        generate_flat_field_extraction(FieldStr, GoVar, ExtractCode),
+        generate_parallel_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = extract(SourceVar, Path, Var) ->
+        (   lookup_var_identity(SourceVar, VarMap, SourceGoVar) -> true
+        ;   format('ERROR: Source variable not found in map: ~w~n', [SourceVar]), fail
+        ),
+        format(atom(GoVar), 'v~w', [VIdx]),
+        format(string(ExtractCode), '
+				var ~w interface{}
+				if val, ok := ~w.(map[string]interface{}); ok {
+					if v, ok := val["~w"]; ok {
+						~w = v
+					} else {
+						continue
+					}
+				} else {
+					continue
+				}', [GoVar, SourceGoVar, Path, GoVar]),
+        generate_parallel_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = iterate(ListVar, ItemVar) ->
+        (   lookup_var_identity(ListVar, VarMap, ListGoVar) -> true
+        ;   format('ERROR: List variable not found in map: ~w~n', [ListVar]), fail
+        ),
+        format(atom(ItemGoVar), 'v~w', [VIdx]),
+        generate_parallel_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(ItemVar, ItemGoVar)|VarMap], LoopBody),
+        format(string(Code), '
+				if listVal, ok := ~w.([]interface{}); ok {
+					for _, itemVal := range listVal {
+						~w := itemVal
+						~s
+					}
+				}', [ListGoVar, ItemGoVar, LoopBody])
+    ).
+
 %% wrap_with_database(+CoreBody, +FieldMappings, +Pred, +Options, -WrappedBody)
 %  Wrap core extraction code with database operations
 %
@@ -2088,6 +2270,12 @@ generate_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarMap, Code)
     (   Op = nested(Path, Var) ->
         format(atom(GoVar), 'v~w', [VIdx]),
         generate_nested_extraction_code(Path, 'data', GoVar, ExtractCode),
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = Field-Var ->
+        format(atom(GoVar), 'v~w', [VIdx]),
+        generate_nested_extraction_code(Field, 'data', GoVar, ExtractCode),
         generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
         format(string(Code), '~s\n~s', [ExtractCode, RestCode])
 
