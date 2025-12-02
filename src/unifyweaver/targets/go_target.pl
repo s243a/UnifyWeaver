@@ -2026,7 +2026,11 @@ extract_json_operations((A, B), Ops) :- !,
 extract_json_operations(json_record(Fields), RecordOps) :- !,
     extract_field_list(Fields, RecordOps).
 extract_json_operations(json_get(Path, Var), [nested(Path, Var)]) :- !.
+extract_json_operations(json_get(Source, Path, Var), [extract(Source, Path, Var)]) :- !,
+    var(Source).
+extract_json_operations(json_array_member(List, Item), [iterate(List, Item)]) :- !.
 extract_json_operations(_, []).
+
 
 extract_field_list([], []).
 extract_field_list([Field-Var|Rest], [Field-Var|Mappings]) :- !,
@@ -2035,31 +2039,22 @@ extract_field_list([Other|Rest], Mappings) :-
     format('WARNING: Unexpected field format: ~w~n', [Other]),
     extract_field_list(Rest, Mappings).
 
-%% compile_json_to_go(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, -GoCode)
-%  Generate Go code for JSON input mode
+%% compile_json_to_go(+HeadArgs, +Operations, +FieldDelim, +Unique, -GoCode)
+%  Generate Go code for JSON input mode (recursive for arrays)
 %
-compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
+compile_json_to_go(HeadArgs, Operations, FieldDelim, Unique, GoCode) :-
     % Map delimiter
     map_field_delimiter(FieldDelim, DelimChar),
 
-    % Generate field extraction code
-    generate_json_field_extractions(FieldMappings, HeadArgs, ExtractCode),
+    % Generate processing code (recursive)
+    % Initial VarMap contains 'data' -> 'data'
+    generate_json_processing(Operations, HeadArgs, DelimChar, Unique, 1, [], ProcessingCode),
 
-    % Generate output expression
-    generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
-
-    % Build main loop
-    (   Unique = true ->
-        SeenDecl = '\tseen := make(map[string]bool)\n\t',
-        UniqueCheck = '\t\tif !seen[result] {\n\t\t\tseen[result] = true\n\t\t\tfmt.Println(result)\n\t\t}\n'
-    ;   SeenDecl = '\t',
-        UniqueCheck = '\t\tfmt.Println(result)\n'
-    ),
-
-    % Build the loop code (helper function is added at package level, not here)
+    % Build the loop code
     format(string(GoCode), '
 \tscanner := bufio.NewScanner(os.Stdin)
-~w
+\tseen := make(map[string]bool)
+\t
 \tfor scanner.Scan() {
 \t\tvar data map[string]interface{}
 \t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
@@ -2067,10 +2062,107 @@ compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
 \t\t}
 \t\t
 ~s
-\t\t
+\t}
+', [ProcessingCode]).
+
+%% generate_json_processing(+Operations, +HeadArgs, +Delim, +Unique, +VIdx, +VarMap, -Code)
+%  Generate nested Go code for JSON operations
+generate_json_processing([], HeadArgs, Delim, Unique, _, VarMap, Code) :-
+    !,
+    % No more operations - generate output
+    generate_json_output_from_map(HeadArgs, VarMap, Delim, OutputExpr),
+    (   Unique = true ->
+        format(string(Code), '
 \t\tresult := ~s
-~s\t}
-', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
+\t\tif !seen[result] {
+\t\t\tseen[result] = true
+\t\t\tfmt.Println(result)
+\t\t}', [OutputExpr])
+    ;   format(string(Code), '
+\t\tresult := ~s
+\t\tfmt.Println(result)', [OutputExpr])
+    ).
+
+generate_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarMap, Code) :-
+    NextVIdx is VIdx + 1,
+    (   Op = nested(Path, Var) ->
+        format(atom(GoVar), 'v~w', [VIdx]),
+        generate_nested_extraction_code(Path, 'data', GoVar, ExtractCode),
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = extract(SourceVar, Path, Var) ->
+        (   lookup_var_identity(SourceVar, VarMap, SourceGoVar) -> true
+        ;   format('ERROR: Source variable not found in map: ~w~n', [SourceVar]), fail
+        ),
+        format(atom(GoVar), 'v~w', [VIdx]),
+        % Source must be a map
+        format(string(ExtractCode), '
+\t\tsourceMap~w, ok := ~w.(map[string]interface{})
+\t\tif !ok { continue }', [VIdx, SourceGoVar]),
+        
+        format(atom(SourceMapVar), 'sourceMap~w', [VIdx]),
+        generate_nested_extraction_code(Path, SourceMapVar, GoVar, InnerExtract),
+        
+        format(string(FullExtract), '~s\n~s', [ExtractCode, InnerExtract]),
+        format(atom(FixedExtract), FullExtract, []),
+        
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [FixedExtract, RestCode])
+
+    ;   Op = iterate(ListVar, ItemVar) ->
+        (   lookup_var_identity(ListVar, VarMap, ListGoVar) -> true
+        ;   format('ERROR: List variable not found in map: ~w~n', [ListVar]), fail
+        ),
+        format(atom(ItemGoVar), 'v~w', [VIdx]),
+        
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(ItemVar, ItemGoVar)|VarMap], InnerCode),
+        
+        format(string(Code), '
+\t\tif listVal~w, ok := ~w.([]interface{}); ok {
+\t\t\tfor _, itemVal~w := range listVal~w {
+\t\t\t\t~w := itemVal~w
+~s
+\t\t\t}
+\t\t}', [VIdx, ListGoVar, VIdx, VIdx, ItemGoVar, VIdx, InnerCode])
+    ;   % Fallback for unknown ops
+        format('WARNING: Unknown JSON operation: ~w~n', [Op]),
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, VIdx, VarMap, Code)
+    ).
+
+generate_nested_extraction_code(Path, Source, Target, Code) :-
+    (   is_list(Path) -> PathList = Path ; PathList = [Path] ),
+    maplist(atom_string, PathList, PathStrs),
+    atomic_list_concat(PathStrs, '", "', PathStr),
+    format(string(Code), '
+\t\t~w, found := getNestedField(~w, []string{"~s"})
+\t\tif !found { continue }', [Target, Source, PathStr]).
+
+generate_json_output_from_map(HeadArgs, VarMap, DelimChar, OutputExpr) :-
+    maplist(arg_to_go_var(VarMap), HeadArgs, GoVars),
+    length(HeadArgs, NumArgs),
+    findall('%v', between(1, NumArgs, _), FormatParts),
+    atomic_list_concat(FormatParts, DelimChar, FormatStr),
+    atomic_list_concat(GoVars, ', ', VarList),
+    format(atom(OutputExpr), 'fmt.Sprintf("~s", ~s)', [FormatStr, VarList]).
+
+arg_to_go_var(VarMap, Arg, GoVar) :-
+    var(Arg), !,
+    (   lookup_var_identity(Arg, VarMap, Name) ->
+        GoVar = Name
+    ;   GoVar = '"<unknown>"'
+    ).
+arg_to_go_var(_, Arg, GoVar) :-
+    atom(Arg), !,
+    format(atom(GoVar), '"~w"', [Arg]).
+arg_to_go_var(_, Arg, Arg) :- number(Arg), !.
+
+%% lookup_var_identity(+Key, +Map, -Val)
+%  Lookup value in association list using identity check (==)
+lookup_var_identity(Key, [(K, V)|_], Val) :- Key == K, !, Val = V.
+lookup_var_identity(Key, [_|Rest], Val) :- lookup_var_identity(Key, Rest, Val).
+
+
 
 %% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +FieldDelim, +Unique, -GoCode)
 %  Generate Go code for JSON input mode with type safety from schema
