@@ -1673,7 +1673,7 @@ compile_joins([], Builtins, Head, FirstGoal, Config, Code) :-
     % Build output
     findall(Assign,
         (   nth0(I, HeadArgs, Arg),
-            (   var(Arg),
+            (   var(Arg) ->
                 (   find_var_access(Arg, AccumPairs, Src, SrcIdx)
                 ->  format(user_output, 'DEBUG output arg ~w uses ~w arg~w~n', [Arg, Src, SrcIdx]),
                     format(string(Assign), "{ \"arg~w\", ~w[\"arg~w\"] }", [I, Src, SrcIdx])
@@ -1713,9 +1713,11 @@ compile_nway_join([], Builtins, Head, AccumPairs, Config, _, Code) :-
     % Build output
     findall(Assign,
         (   nth0(I, HeadArgs, Arg),
-            (   var(Arg),
-                find_var_access(Arg, AccumPairs, Src, SrcIdx)
-            ->  format(string(Assign), "{ \"arg~w\", ~w[\"arg~w\"] }", [I, Src, SrcIdx])
+            (   var(Arg) ->
+                (   find_var_access(Arg, AccumPairs, Src, SrcIdx)
+                ->  format(string(Assign), "{ \"arg~w\", ~w[\"arg~w\"] }", [I, Src, SrcIdx])
+                ;   fail
+                )
             ;   translate_expr_common(Arg, VarMap, Config, Expr)
             ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
             ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
