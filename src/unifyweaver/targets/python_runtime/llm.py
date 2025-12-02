@@ -3,7 +3,7 @@ import sys
 import shutil
 
 class LLMProvider:
-    def __init__(self, model="gemini-2.0-flash-exp"):
+    def __init__(self, model="gemini-2.5-flash"):
         self.model = model
         self.cli_path = shutil.which("gemini")
 
