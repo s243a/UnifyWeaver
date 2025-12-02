@@ -467,6 +467,19 @@ translate_goal(upsert_object(Id, Type, Data), Code) :-
     var_to_python(Data, PyData),
     format(string(Code), "    _get_runtime().importer.upsert_object(~w, ~w, ~w)\n", [PyId, PyType, PyData]).
 
+translate_goal(llm_ask(Prompt, Context, Response), Code) :-
+    !,
+    var_to_python(Prompt, PyPrompt),
+    var_to_python(Context, PyContext),
+    var_to_python(Response, PyResponse),
+    format(string(Code), "    ~w = _get_runtime().llm.ask(~w, ~w)\n", [PyResponse, PyPrompt, PyContext]).
+
+translate_goal(chunk_text(Text, Chunks), Code) :-
+    !,
+    var_to_python(Text, PyText),
+    var_to_python(Chunks, PyChunks),
+    format(string(Code), "    ~w = [asdict(c) for c in _get_runtime().chunker.chunk(~w, 'inline')]\n", [PyChunks, PyText]).
+
 translate_goal(true, Code) :-
     !,
     Code = "    pass\n".
@@ -1973,7 +1986,9 @@ semantic_runtime_helpers(Code) :-
         'src/unifyweaver/targets/python_runtime/importer.py',
         'src/unifyweaver/targets/python_runtime/onnx_embedding.py',
         'src/unifyweaver/targets/python_runtime/searcher.py',
-        'src/unifyweaver/targets/python_runtime/crawler.py'
+        'src/unifyweaver/targets/python_runtime/crawler.py',
+        'src/unifyweaver/targets/python_runtime/llm.py',
+        'src/unifyweaver/targets/python_runtime/chunker.py'
     ],
     
     findall(Content, (
@@ -1998,6 +2013,8 @@ class SemanticRuntime:
             
         self.crawler = PtCrawler(self.importer, self.embedder)
         self.searcher = PtSearcher(db_path, self.embedder)
+        self.llm = LLMProvider()
+        self.chunker = HierarchicalChunker()
 
 _runtime_instance = None
 def _get_runtime():
