@@ -44,6 +44,7 @@ The Go target generates standalone Go executables from Prolog predicates, provid
 - **Constraints and arithmetic**: Support for >, <, >=, =<, ==, !=, and is/2
 - **Aggregations**: sum, count, max, min, avg operations on numeric fields
 - **Smart imports**: Only includes necessary Go packages (regexp, strings, strconv) when needed
+- **Database Support**: Embedded `bbolt` database support for persistent storage
 
 ### Planned Features
 
@@ -644,7 +645,7 @@ Completed features (moved to Current Features):
 - ✅ Multiple rules with different bodies
 - ✅ JSON Input/Output (JSONL)
 - ✅ XML Input (Streaming/Flattening)
-- ✅ Bbolt Database Support
+
 
 Planned additions (in priority order):
 
