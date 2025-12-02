@@ -88,14 +88,23 @@ class MicroChunker(ChunkingStrategy):
         chunks.append(Chunk(cid, text, ctype, pid, src, self.count_tokens(text), {}))
 
 class HierarchicalChunker:
-    def __init__(self, macro_size=1500, macro_overlap=500, micro_size=300, micro_overlap=100):
-        self.macro = MacroChunker(macro_size, macro_overlap)
-        self.micro = MicroChunker(micro_size, micro_overlap)
+    def __init__(self, macro_size=1000, macro_overlap=200, micro_size=250, micro_overlap=50):
+        self.defaults = {
+            'macro_size': macro_size,
+            'macro_overlap': macro_overlap,
+            'micro_size': micro_size,
+            'micro_overlap': micro_overlap
+        }
 
-    def chunk(self, text: str, source_file: str) -> List[Chunk]:
-        macros = self.macro.chunk_text(text, source_file)
+    def chunk(self, text: str, source_file: str, **kwargs) -> List[Chunk]:
+        cfg = {**self.defaults, **kwargs}
+        
+        macro = MacroChunker(cfg.get('macro_size'), cfg.get('macro_overlap'))
+        micro = MicroChunker(cfg.get('micro_size'), cfg.get('micro_overlap'))
+        
+        macros = macro.chunk_text(text, source_file)
         all_chunks = list(macros)
         for m in macros:
-            micros = self.micro.chunk_text(m.text, source_file, m.chunk_id)
+            micros = micro.chunk_text(m.text, source_file, m.chunk_id)
             all_chunks.extend(micros)
         return all_chunks

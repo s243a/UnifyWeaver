@@ -480,6 +480,22 @@ translate_goal(chunk_text(Text, Chunks), Code) :-
     var_to_python(Chunks, PyChunks),
     format(string(Code), "    ~w = [asdict(c) for c in _get_runtime().chunker.chunk(~w, 'inline')]\n", [PyChunks, PyText]).
 
+translate_goal(chunk_text(Text, Chunks, Options), Code) :-
+    !,
+    var_to_python(Text, PyText),
+    var_to_python(Chunks, PyChunks),
+    (   is_list(Options)
+    ->  maplist(opt_to_py_pair, Options, Pairs),
+        atomic_list_concat(Pairs, ', ', PairsStr),
+        format(string(PyKwargs), "{~s}", [PairsStr])
+    ;   var_to_python(Options, PyKwargs)
+    ),
+    format(string(Code), "    ~w = [asdict(c) for c in _get_runtime().chunker.chunk(~w, 'inline', **~w)]\n", [PyChunks, PyText, PyKwargs]).
+
+opt_to_py_pair(Term, Pair) :-
+    Term =.. [Key, Value],
+    format(string(Pair), "'~w': ~w", [Key, Value]).
+
 translate_goal(true, Code) :-
     !,
     Code = "    pass\n".
