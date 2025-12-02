@@ -21,7 +21,15 @@ class PtSearcher:
             results.append((score, obj_id))
         
         results.sort(key=lambda x: x[0], reverse=True)
-        return results[:top_k]
+        
+        # Enrich with content
+        enriched = []
+        for score, obj_id in results[:top_k]:
+            row = self.conn.execute("SELECT data FROM objects WHERE id = ?", (obj_id,)).fetchone()
+            data = row[0] if row else "{}"
+            enriched.append({'id': obj_id, 'score': float(score), 'data': data})
+            
+        return enriched
 
     def _cosine_similarity(self, a, b):
         dot = np.dot(a, b)

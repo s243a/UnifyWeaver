@@ -8,10 +8,14 @@ index_pt(_) :-
     crawler_run([File], 1).
 
 % Define search logic (generic)
-% This predicate expects Query to be passed, but our compiler 
-% currently compiles static logic or reads from stdin.
-% To make a dynamic search tool, we'd read Query from stdin.
-% For this playbook, we'll compile a hardcoded query for demonstration.
+search_topic(Results) :-
+    semantic_search('physics', 5, Results).
+
+% Define RAG logic
+summarize_topic(Topic, Summary) :-
+    semantic_search(Topic, 3, Results),
+    Prompt = 'Summarize the following search results regarding the topic.',
+    llm_ask(Prompt, Results, Summary).
 
 % Helper to compile the indexer
 compile_indexer :-
@@ -27,7 +31,6 @@ compile_indexer :-
 % Helper to compile a searcher for a specific topic
 compile_searcher(Topic) :-
     format('Compiling searcher for "~w"...~n', [Topic]),
-    % Dynamic clause generation
     Term = (search_topic(Results) :- semantic_search(Topic, 5, Results)),
     assertz(user:Term),
     compile_predicate_to_python(user:search_topic/1, [mode(procedural)], Code),
@@ -39,6 +42,25 @@ compile_searcher(Topic) :-
     retractall(user:search_topic(_)),
     format('Generated run_search.py~n', []).
 
+% Helper to compile summarizer
+compile_summarizer(Topic) :-
+    format('Compiling summarizer for "~w"...~n', [Topic]),
+    % Inline the logic
+    Prompt = 'Summarize the following search results regarding the topic.',
+    Body = (semantic_search(Topic, 3, Results), llm_ask(Prompt, Results, S)),
+    
+    Term = (gen_summary(S) :- Body),
+    assertz(user:Term),
+    compile_predicate_to_python(user:gen_summary/1, [mode(procedural)], Code),
+    setup_call_cleanup(
+        open('run_summary.py', write, S),
+        write(S, Code),
+        close(S)
+    ),
+    retractall(user:gen_summary(_)),
+    format('Generated run_summary.py~n', []).
+
 main :-
     compile_indexer,
-    compile_searcher('physics').
+    compile_searcher('physics'),
+    compile_summarizer('physics').
