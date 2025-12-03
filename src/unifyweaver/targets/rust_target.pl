@@ -17,6 +17,7 @@
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
 :- use_module(library(gensym)). % For generating unique variable names
+:- use_module(library(yall)).
 
 %% ============================================ 
 %% JSON SCHEMA SUPPORT
@@ -134,19 +135,28 @@ compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, Inclu
     extract_predicates(Body, Predicates),
     extract_constraints(Body, Constraints),
     extract_match_constraints(Body, MatchConstraints), 
+    extract_key_generation(Body, Keys),
     
-    (   Predicates = [BodyPred] ->
-        BodyPred =.. [_BodyName|BodyArgs],
+    (   (Predicates = [BodyPred]; Predicates = []) ->
+        (   Predicates = [BodyPred]
+        ->  BodyPred =.. [_BodyName|BodyArgs]
+        ;   BodyArgs = HeadArgs
+        ),
         length(BodyArgs, NumFields),
         
         build_source_map(BodyArgs, SourceMap), 
         
         map_field_delimiter(FieldDelim, DelimChar),
+
+        generate_rust_keys(Keys, SourceMap, KeyCode, KeyMap),
+
         findall(OutputPart, 
             (
                 member(Arg, HeadArgs),
                 (   var(Arg), member((Var, Idx), SourceMap), Arg == Var ->
                     format(string(OutputPart), "parts[~w]", [Idx])
+                ;   var(Arg), member((Var, RustVar), KeyMap), Arg == Var ->
+                    format(string(OutputPart), "~w", [RustVar])
                 ;   atom(Arg) ->
                     format(string(OutputPart), '\"~w\"', [Arg])
                 ;   OutputPart = "\"unknown\""
@@ -175,12 +185,13 @@ compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, Inclu
             if parts.len() == ~w {
 ~s
 ~s
+~s
                 let result = ~s;
 ~s
             }
         }
     }
-', [UniqueDecl, RegexInit, DelimChar, NumFields, RegexChecks, ConstraintChecks, OutputExpr, UniqueCheck]),
+', [UniqueDecl, RegexInit, DelimChar, NumFields, RegexChecks, ConstraintChecks, KeyCode, OutputExpr, UniqueCheck]),
 
         (   IncludeMain ->
             (   NeedsRegex = true -> UseRegex = "use regex::Regex;\n" ; UseRegex = "" ),
@@ -376,7 +387,7 @@ rust_format_placeholder(_, "{}").
 
 extract_predicates(true, []) :- !.
 extract_predicates((A, B), Ps) :- !, extract_predicates(A, P1), extract_predicates(B, P2), append(P1, P2, Ps).
-extract_predicates(Goal, []) :- member(Goal, [(_>_), (_<_), (_>=_), (_=<_), (_=:=_), (_=\=_), (_ is _), match(_, _), json_field(_, _), json_path(_, _), json_record(_), json_get(_, _)]), !.
+extract_predicates(Goal, []) :- member(Goal, [(_>_), (_<_), (_>=_), (_=<_), (_=:=_), (_=\=_), (_ is _), match(_, _), json_field(_, _), json_path(_, _), json_record(_), json_get(_, _), generate_key(_, _)]), !.
 extract_predicates(Goal, [Goal]).
 
 extract_constraints(true, []) :- !.
@@ -396,6 +407,54 @@ extract_json_operations(json_path(P, V), [json_path(P, V)]) :- !.
 extract_json_operations(json_record(Fs), Ops) :- !, maplist(field_to_json_op, Fs, Ops).
 extract_json_operations(json_get(P, V), [json_path(P, V)]) :- !.
 extract_json_operations(_, []).
+
+extract_key_generation(true, []) :- !.
+extract_key_generation((A, B), Keys) :- !, extract_key_generation(A, K1), extract_key_generation(B, K2), append(K1, K2, Keys).
+extract_key_generation(generate_key(S, V), [generate_key(S, V)]) :- !.
+extract_key_generation(_, []).
+
+generate_rust_keys([], _, "", []).
+generate_rust_keys(Keys, SourceMap, Code, KeyMap) :-
+    generate_rust_keys_(Keys, SourceMap, [], CodeList, [], KeyMap),
+    atomic_list_concat(CodeList, '\n', Code).
+
+generate_rust_keys_([], _, CodeAcc, CodeList, MapAcc, MapAcc) :-
+    reverse(CodeAcc, CodeList).
+generate_rust_keys_([generate_key(Strategy, Var)|Rest], SourceMap, CodeAcc, CodeResult, MapAcc, MapResult) :-
+    gensym('key_', KeyVar),
+    compile_rust_key_expr(Strategy, SourceMap, MapAcc, Expr),
+    format(string(Line), "                let ~w = ~s;", [KeyVar, Expr]),
+    generate_rust_keys_(Rest, SourceMap, [Line|CodeAcc], CodeResult, [(Var, KeyVar)|MapAcc], MapResult).
+
+compile_rust_key_expr(Var, SourceMap, _, Code) :- % Implicit field or key
+    var(Var), member((V, I), SourceMap), Var == V, !,
+    format(string(Code), "parts[~w]", [I]).
+compile_rust_key_expr(Var, _, KeyMap, Code) :- % Generated key
+    var(Var), member((V, K), KeyMap), Var == V, !,
+    format(string(Code), "~w", [K]).
+compile_rust_key_expr(field(Var), SourceMap, _, Code) :-
+    var(Var), member((V, I), SourceMap), Var == V, !,
+    format(string(Code), "parts[~w]", [I]).
+compile_rust_key_expr(literal(Text), _, _, Code) :-
+    format(string(Code), "\"~w\"", [Text]).
+compile_rust_key_expr(composite(List), SourceMap, KeyMap, Code) :-
+    compile_rust_key_expr_list(List, SourceMap, KeyMap, Parts),
+    atomic_list_concat(Parts, ", ", Args),
+    length(Parts, N),
+    length(Slots, N), maplist(=("{}"), Slots), atomic_list_concat(Slots, "", Fmt),
+    format(string(Code), "format!(\"~s\", ~s)", [Fmt, Args]).
+compile_rust_key_expr(hash(Expr), SourceMap, KeyMap, Code) :-
+    compile_rust_key_expr(Expr, SourceMap, KeyMap, Inner),
+    format(string(Code), "{ use sha2::{Sha256, Digest}; let mut hasher = Sha256::new(); hasher.update(~s.as_bytes()); hex::encode(hasher.finalize()) }", [Inner]).
+compile_rust_key_expr(uuid(), _, _, "uuid::Uuid::new_v4().to_string()").
+compile_rust_key_expr(Var, _, _, "\"UNKNOWN_VAR\"") :-
+    var(Var),
+    format('WARNING: Key variable ~w not found in source map or key map~n', [Var]).
+
+compile_rust_key_expr_list([], _, _, []).
+compile_rust_key_expr_list([H|T], SourceMap, KeyMap, [HC|TC]) :-
+    compile_rust_key_expr(H, SourceMap, KeyMap, HC),
+    compile_rust_key_expr_list(T, SourceMap, KeyMap, TC).
 
 field_to_json_op(Field-Var, json_field(Field, Var)).
 
@@ -457,6 +516,9 @@ detect_dependencies(Code, Deps) :-
         (   sub_string(Code, _, _, _, 'use regex::'), Dep = regex
         ;   sub_string(Code, _, _, _, 'use serde::'), Dep = serde
         ;   sub_string(Code, _, _, _, 'use serde_json'), Dep = serde_json
+        ;   sub_string(Code, _, _, _, 'use sha2::'), Dep = sha2
+        ;   sub_string(Code, _, _, _, 'hex::encode'), Dep = hex
+        ;   sub_string(Code, _, _, _, 'uuid::Uuid'), Dep = uuid
         ),
         DepsList),
     sort(DepsList, Deps).
@@ -469,3 +531,6 @@ generate_cargo_toml(Name, Deps, Content) :-
 dep_to_toml(regex, "regex = \"1\"").
 dep_to_toml(serde, "serde = { version = \"1.0\", features = [\"derive\"] }").
 dep_to_toml(serde_json, "serde_json = \"1.0\"").
+dep_to_toml(sha2, "sha2 = \"0.10\"").
+dep_to_toml(hex, "hex = \"0.4\"").
+dep_to_toml(uuid, "uuid = { version = \"1.4\", features = [\"v4\"] }").
