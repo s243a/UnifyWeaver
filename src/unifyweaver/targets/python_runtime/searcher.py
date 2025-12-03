@@ -1,6 +1,8 @@
 import sqlite3
 import struct
+import json
 import numpy as np
+import sys
 
 class PtSearcher:
     def __init__(self, db_path, embedder):
@@ -38,9 +40,27 @@ class PtSearcher:
         cursor = self.conn.execute("SELECT id, data FROM objects WHERE data LIKE ? LIMIT ?", (search_term, top_k))
         
         results = []
-        for obj_id, data in cursor:
+        for obj_id, data_str in cursor:
             # Score is dummy 1.0 for text match
-            results.append({'id': obj_id, 'score': 1.0, 'data': data})
+            results.append({'id': obj_id, 'score': 1.0, 'data': data_str})
+            
+            # Lazy Embedding: If we found it by text, ensure it has an embedding for next time
+            if self.embedder:
+                # Check if embedding exists
+                has_emb = self.conn.execute("SELECT 1 FROM embeddings WHERE id = ?", (obj_id,)).fetchone()
+                if not has_emb:
+                    try:
+                        data = json.loads(data_str)
+                        text = data.get('title') or data.get('text') or ""
+                        if text:
+                            vec = self.embedder.get_embedding(text)
+                            # Upsert embedding (Pack floats into bytes)
+                            blob = struct.pack(f'<{len(vec)}f', *vec)
+                            self.conn.execute("INSERT OR REPLACE INTO embeddings (id, vector) VALUES (?, ?)", (obj_id, blob))
+                            self.conn.commit()
+                    except Exception:
+                        # Silent fail for lazy embedding to not break search
+                        pass
             
         return results
 
