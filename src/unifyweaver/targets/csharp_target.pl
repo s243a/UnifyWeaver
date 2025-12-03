@@ -46,6 +46,21 @@ term_signature(Term0, Name/Arity) :-
     Term =.. [Name|Args],
     length(Args, Arity).
 
+term_to_dependency(aggregate_all(_, Goal, _), Dep) :- !,
+    term_signature(Goal, Dep).
+term_to_dependency(Term, Dep) :-
+    (   aggregate_goal(Term)
+    ->  aggregate_goal_info(Term, aggr{pred:P, args:Args}),
+        length(Args, A),
+        Dep = P/A,
+        !
+    ;   Term =.. ['\\+', Inner]
+    ->  term_signature(Inner, Dep)
+    ;   Term =.. [not, Inner]
+    ->  term_signature(Inner, Dep)
+    ;   term_signature(Term, Dep)
+    ).
+
 gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses) :-
     findall(Head-Body,
         (   functor(Head, Pred, Arity),
@@ -72,12 +87,7 @@ predicate_dependencies(Name/Arity, Dependencies) :-
                 body_to_list(Body, Terms),
                 member(Term, Terms),
                 \+ constraint_goal(Term),
-                (   Term =.. ['\\+', Inner]
-                ->  term_signature(Inner, Dep)
-                ;   Term =.. [not, Inner]
-                ->  term_signature(Inner, Dep)
-                ;   term_signature(Term, Dep)
-                ),
+                term_to_dependency(Term, Dep),
                 (   predicate_defined(Dep)
                 ;   dynamic_source_metadata(Dep, _)
                 )
@@ -1516,7 +1526,7 @@ compile_generator_mode(Pred/Arity, _Options, Code) :-
 
     gather_group_clauses(GroupSpecs, AllClauses),
     guard_stratified_negation(Pred/Arity, GroupSpecs, AllClauses),
-    \+ clauses_contain_aggregate(AllClauses), % fail with message if aggregates present
+    guard_supported_aggregates(AllClauses),
     collect_fact_heads(AllClauses, FactHeads),
     compile_generator_facts(FactHeads, Config, FactsCode),
 
@@ -1532,20 +1542,45 @@ compile_generator_mode(Pred/Arity, _Options, Code) :-
     csharp_generator_header(Pred, Header),
     format(string(Code), "~w\n~w\n~w\n~w\n    }\n}\n", [Header, FactsCode, RulesCode, ExecutionCode]).
 
-clauses_contain_aggregate(Clauses) :-
-    member(_Head-Body, Clauses),
-    Body \= true,
-    body_to_list(Body, Goals),
-    member(G, Goals),
-    aggregate_goal(G),
-    format(user_error,
-           'C# generator mode does not yet support aggregate goals (~w).~n',
-           [G]).
-
 aggregate_goal(G) :-
     compound(G),
     functor(G, Fun, Arity),
     member(Fun/Arity, [aggregate_all/3, aggregate_all/4, aggregate/4]).
+
+guard_supported_aggregates(Clauses) :-
+    forall(
+        ( member(_Head-Body, Clauses),
+          Body \= true,
+          body_to_list(Body, Goals),
+          member(G, Goals),
+          aggregate_goal(G)
+        ),
+        aggregate_supported(G)
+    ).
+guard_supported_aggregates(_).
+
+aggregate_supported(aggregate_all(count, _Inner, _Result)) :- !.
+aggregate_supported(aggregate_all(Op, _Inner, _Result)) :-
+    \+ member(Op, [count]),
+    format(user_error,
+           'C# generator mode: aggregate_all/3 with op ~w not yet supported.~n',
+           [Op]),
+    fail.
+aggregate_supported(aggregate_all(Op, _Inner, _Group, _Result)) :-
+    format(user_error,
+           'C# generator mode: aggregate_all/4 not yet supported (~w/~w).~n',
+           [Op, _Inner]),
+    fail.
+aggregate_supported(aggregate(_Op, _Inner, _Group, _Result)) :-
+    format(user_error,
+           'C# generator mode: aggregate/4 not yet supported (~w).~n',
+           [_Op]),
+    fail.
+aggregate_supported(G) :-
+    format(user_error,
+           'C# generator mode: aggregate goal not supported (~w).~n',
+           [G]),
+    fail.
 
 guard_stratified_negation(HeadPI, GroupSpecs, Clauses) :-
     build_dependency_graph([HeadPI], [], [], Vertices, [], Edges),
@@ -1673,16 +1708,24 @@ compile_generator_rules(_GroupSpecs, Clauses, Config, Code, RuleNames) :-
     atomic_list_concat(RuleCodes, "\n\n", Code).
 
 compile_rule(Index, Head, Body, Config, Code, RuleName) :-
-    format(string(RuleName), "ApplyRule_~w", [Index]),
-    Head =.. [_HeadPred|_HeadArgs],
-    
-    % Parse body
-    body_to_list(Body, Goals),
-    
-    % Separate builtins
-    partition(is_builtin_goal, Goals, Builtins, Relations),
-    
-    (   Relations = []
+        format(string(RuleName), "ApplyRule_~w", [Index]),
+        Head =.. [_HeadPred|_HeadArgs],
+        
+        % Parse body
+        body_to_list(Body, Goals),
+        partition(is_aggregate_goal, Goals, Aggregates, NonAggGoals),
+        partition(is_builtin_goal, NonAggGoals, Builtins, Relations),
+        
+        (   Relations = [],
+            Aggregates = [Agg],
+            Builtins = []
+        ->  compile_aggregate_rule(Index, Head, Agg, Config, Code, RuleName)
+        ;   Aggregates = [_|_]
+        ->  format(user_error,
+                   'C# generator mode: aggregates supported only in simple non-join rules.~n',
+                   []),
+            fail
+        ;   Relations = []
     ->  format(string(Code), "// Rule ~w: No relations", [Index])
     ;   Relations = [FirstGoal|RestGoals],
         FirstGoal =.. [Pred1|Args1],
@@ -1712,9 +1755,65 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
         }", [RuleName, Index, Head, Pattern, JoinBody])
     ).
 
+is_aggregate_goal(G) :- aggregate_goal(G).
+
 is_builtin_goal(Goal) :-
     Goal =.. [Functor|_],
     member(Functor, ['is', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '!=', 'not', '\\+']).
+
+compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
+    aggregate_goal_info(AggGoal, aggr{op:Op, pred:Pred, args:Args, result:ResVar}),
+    Op = count,
+    maplist(must_be_ground_or_var, Args),
+    maplist(must_be_var_or_ground, [ResVar]),
+    Head =.. [HeadPred|HeadArgs],
+    format(string(RuleName), "ApplyRule_~w", [Index]),
+    build_aggregate_filter(Pred, Args, Config, FilterExpr),
+    build_head_assignments(HeadArgs, ResVar, Config, Assigns),
+    atomic_list_concat(Assigns, ", ", AssignStr),
+    format(string(Code),
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
+        {
+            // Rule ~w: ~w :- aggregate_all(count, ~w(~w), ~w)
+            var agg = total.Count(f => ~w);
+            yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
+        }", [RuleName, Index, Head, Pred, Args, ResVar, FilterExpr, HeadPred, AssignStr]).
+
+aggregate_goal_info(aggregate_all(Op, Goal, Result), aggr{op:Op, pred:Pred, args:Args, result:Result}) :-
+    Goal =.. [Pred|Args].
+
+must_be_ground_or_var(X) :- (ground(X) ; var(X)), !.
+must_be_var_or_ground(X) :- (var(X) ; ground(X)), !.
+
+build_aggregate_filter(Pred, Args, _Config, Expr) :-
+    length(Args, Arity),
+    findall(Cond,
+        (   between(0, Arity, I), I < Arity,
+            nth0(I, Args, Arg),
+            (   ground(Arg)
+            ->  format(string(Cond), "f.Args.ContainsKey(\"arg~w\") && f.Args[\"arg~w\"].Equals(\"~w\")", [I, I, Arg])
+            ;   format(string(Cond), "f.Args.ContainsKey(\"arg~w\")", [I])
+            )
+        ),
+        Conds),
+    atomic_list_concat(Conds, " && ", ArgConds),
+    format(string(Expr), "f.Relation == \"~w\" && ~w", [Pred, ArgConds]).
+
+build_head_assignments(HeadArgs, ResVar, Config, Assigns) :-
+    findall(Assign,
+        (   nth0(I, HeadArgs, Arg),
+            (   var(Arg),
+                Arg == ResVar
+            ->  format(string(Assign), "{ \"arg~w\", agg }", [I])
+            ;   var(Arg)
+            ->  format(user_error, 'C# generator aggregate: head var ~w not bound by aggregate result.~n', [Arg]),
+                fail
+            ;   translate_expr_common(Arg, [], Config, Expr)
+            ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
+            ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
+            )
+        ),
+        Assigns).
 
 compile_joins([], Builtins, Head, FirstGoal, Config, Code) :-
     % No more relations, just constraints and output
