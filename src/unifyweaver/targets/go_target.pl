@@ -1977,6 +1977,121 @@ extract_field_names_from_expr(_, []).  % literals, uuid, etc.
 %% DATABASE READ MODE COMPILATION
 %% ============================================
 
+%% ============================================
+%% KEY OPTIMIZATION DETECTION (Phase 8c)
+%% ============================================
+
+%% analyze_key_optimization(+KeyStrategy, +Constraints, +FieldMappings, -OptType, -OptDetails)
+%  Analyze if predicate can use optimized key lookup
+%  OptType: direct_lookup | prefix_scan | full_scan
+%  OptDetails: Details needed for code generation
+%
+analyze_key_optimization(KeyStrategy, Constraints, FieldMappings, OptType, OptDetails) :-
+    (   can_use_direct_lookup(KeyStrategy, Constraints, FieldMappings, KeyValue)
+    ->  OptType = direct_lookup,
+        OptDetails = key_value(KeyValue),
+        format('  Optimization: Direct lookup (key=~w)~n', [KeyValue])
+    ;   can_use_prefix_scan(KeyStrategy, Constraints, FieldMappings, PrefixValue)
+    ->  OptType = prefix_scan,
+        OptDetails = prefix_value(PrefixValue),
+        format('  Optimization: Prefix scan (prefix=~w)~n', [PrefixValue])
+    ;   OptType = full_scan,
+        OptDetails = none,
+        format('  Optimization: Full scan (no key match)~n')
+    ).
+
+%% can_use_direct_lookup(+KeyStrategy, +Constraints, +FieldMappings, -KeyValue)
+%  Check if we can use bucket.Get() for direct key lookup
+%  True if there's an exact equality constraint on the key field
+%
+can_use_direct_lookup([KeyField], Constraints, FieldMappings, KeyValue) :-
+    % Single key field
+    member(KeyField-_Var, FieldMappings),
+    member(Constraint, Constraints),
+    is_exact_equality_on_field(Constraint, KeyField, FieldMappings, KeyValue),
+    !.
+
+can_use_direct_lookup(KeyFields, Constraints, FieldMappings, CompositeKey) :-
+    % Composite key - all fields must have exact equality
+    is_list(KeyFields),
+    length(KeyFields, Len),
+    Len > 1,
+    maplist(has_exact_constraint_for_field(Constraints, FieldMappings), KeyFields, Values),
+    build_composite_key_value(Values, CompositeKey),
+    !.
+
+%% can_use_prefix_scan(+KeyStrategy, +Constraints, +FieldMappings, -PrefixValue)
+%  Check if we can use cursor.Seek() for prefix scan
+%  True if first N fields of composite key have exact equality
+%
+can_use_prefix_scan(KeyFields, Constraints, FieldMappings, PrefixValue) :-
+    is_list(KeyFields),
+    length(KeyFields, TotalLen),
+    TotalLen > 1,  % Must be composite key
+    find_matching_prefix_fields(KeyFields, Constraints, FieldMappings, PrefixFields, PrefixValues),
+    length(PrefixFields, PrefixLen),
+    PrefixLen > 0,
+    PrefixLen < TotalLen,  % Not all fields (that would be direct lookup)
+    build_composite_key_value(PrefixValues, PrefixValue),
+    !.
+
+%% is_exact_equality_on_field(+Constraint, +FieldName, +FieldMappings, -Value)
+%  Check if constraint is exact equality (=) on the field and extract value
+%  Rejects case-insensitive (=@=), contains, member, etc.
+%
+is_exact_equality_on_field(Var = Value, FieldName, FieldMappings, Value) :-
+    member(FieldName-Var, FieldMappings),
+    ground(Value),
+    \+ is_variable_reference(Value, FieldMappings),  % Value must be literal, not another field
+    !.
+
+%% is_variable_reference(+Term, +FieldMappings)
+%  Check if Term is a variable that appears in FieldMappings
+%
+is_variable_reference(Var, FieldMappings) :-
+    var(Var),
+    member(_-Var, FieldMappings),
+    !.
+
+%% has_exact_constraint_for_field(+Constraints, +FieldMappings, +FieldName, -Value)
+%  Check if there's an exact equality constraint for this field
+%
+has_exact_constraint_for_field(Constraints, FieldMappings, FieldName, Value) :-
+    member(Constraint, Constraints),
+    is_exact_equality_on_field(Constraint, FieldName, FieldMappings, Value).
+
+%% find_matching_prefix_fields(+KeyFields, +Constraints, +FieldMappings, -PrefixFields, -PrefixValues)
+%  Find the longest prefix of KeyFields that all have exact equality constraints
+%
+find_matching_prefix_fields([Field|Rest], Constraints, FieldMappings, [Field|RestFields], [Value|RestValues]) :-
+    has_exact_constraint_for_field(Constraints, FieldMappings, Field, Value),
+    !,
+    find_matching_prefix_fields(Rest, Constraints, FieldMappings, RestFields, RestValues).
+find_matching_prefix_fields(_, _, _, [], []).
+
+%% build_composite_key_value(+Values, -CompositeKey)
+%  Build composite key string with colon separator
+%  For direct lookup and prefix scan
+%
+build_composite_key_value([Single], Single) :- !.
+build_composite_key_value(Values, CompositeKey) :-
+    maplist(value_to_key_string, Values, Strings),
+    atomic_list_concat(Strings, ':', CompositeKey).
+
+%% value_to_key_string(+Value, -String)
+%  Convert a value to string for key construction
+%
+value_to_key_string(Value, String) :-
+    (   atom(Value) -> atom_string(Value, String)
+    ;   string(Value) -> String = Value
+    ;   number(Value) -> format(string(String), '~w', [Value])
+    ;   format(string(String), '~w', [Value])
+    ).
+
+%% ============================================
+%% FIELD EXTRACTION FOR DATABASE READ
+%% ============================================
+
 %% generate_field_extractions_for_read(+FieldMappings, +Constraints, +HeadArgs, -GoCode)
 %  Generate field extraction code for read mode with proper type conversions
 %  - Extracts all fields from FieldMappings
@@ -2081,9 +2196,142 @@ generate_output_for_read(HeadArgs, FieldMappings, GoCode) :-
 \t\t\t}
 \t\t\tfmt.Println(string(output))', [FieldsStr]).
 
+%% ============================================
+%% DATABASE ACCESS CODE GENERATION (Phase 8c)
+%% ============================================
+
+%% generate_direct_lookup_code(+DbFile, +BucketStr, +KeyValue, +ProcessCode, -BodyCode)
+%  Generate optimized code using bucket.Get() for direct key lookup
+%
+generate_direct_lookup_code(DbFile, BucketStr, KeyValue, ProcessCode, BodyCode) :-
+    atom_string(KeyValue, KeyStr),
+    format(string(BodyCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Direct lookup using bucket.Get() (optimized)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\t// Get record by key
+\t\tkey := []byte("~s")
+\t\tvalue := bucket.Get(key)
+\t\tif value == nil {
+\t\t\treturn nil // Key not found
+\t\t}
+
+\t\t// Deserialize JSON record
+\t\tvar data map[string]interface{}
+\t\tif err := json.Unmarshal(value, &data); err != nil {
+\t\t\tfmt.Fprintf(os.Stderr, "Error unmarshaling record: %v\\n", err)
+\t\t\treturn nil
+\t\t}
+
+~s
+\t\treturn nil
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+', [DbFile, BucketStr, BucketStr, KeyStr, ProcessCode]).
+
+%% generate_prefix_scan_code(+DbFile, +BucketStr, +PrefixValue, +ProcessCode, -BodyCode)
+%  Generate optimized code using cursor.Seek() for prefix scan
+%
+generate_prefix_scan_code(DbFile, BucketStr, PrefixValue, ProcessCode, BodyCode) :-
+    atom_string(PrefixValue, PrefixStr),
+    format(string(BodyCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Prefix scan using cursor.Seek() (optimized)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\t// Seek to first key with prefix
+\t\tcursor := bucket.Cursor()
+\t\tprefix := []byte("~s:")
+
+\t\tfor k, v := cursor.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = cursor.Next() {
+\t\t\t// Deserialize JSON record
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\tfmt.Fprintf(os.Stderr, "Error unmarshaling record: %v\\n", err)
+\t\t\t\tcontinue // Continue with next record
+\t\t\t}
+
+~s
+\t\t}
+\t\treturn nil
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+', [DbFile, BucketStr, BucketStr, PrefixStr, ProcessCode]).
+
+%% generate_full_scan_code(+DbFile, +BucketStr, +RecordsDesc, +ProcessCode, -BodyCode)
+%  Generate standard code using bucket.ForEach() for full scan
+%
+generate_full_scan_code(DbFile, BucketStr, RecordsDesc, ProcessCode, BodyCode) :-
+    format(string(Header), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Read ~s from bucket
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\t// Deserialize JSON record
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\tfmt.Fprintf(os.Stderr, "Error unmarshaling record: %v\\n", err)
+\t\t\t\treturn nil // Continue with next record
+\t\t\t}
+
+', [DbFile, RecordsDesc, BucketStr, BucketStr]),
+    Footer = '
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+',
+    string_concat(Header, ProcessCode, Temp),
+    string_concat(Temp, Footer, BodyCode).
+
 %% compile_database_read_mode(+Pred, +Arity, +Options, -GoCode)
 %  Compile predicate to read from bbolt database and output as JSON
 %  Supports optional filtering based on constraints in predicate body
+%  Phase 8c: Includes key optimization detection and optimized code generation
 %
 compile_database_read_mode(Pred, Arity, Options, GoCode) :-
     % Get database options
@@ -2091,6 +2339,17 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
     option(db_bucket(BucketName), Options, Pred),
     atom_string(BucketName, BucketStr),
     option(include_package(IncludePackage), Options, true),
+
+    % Get key strategy (can be single field or list of fields)
+    (   option(db_key_field(KeyField), Options)
+    ->  (   is_list(KeyField)
+        ->  KeyStrategy = KeyField
+        ;   KeyStrategy = [KeyField]
+        ),
+        format('  Key strategy: ~w~n', [KeyStrategy])
+    ;   KeyStrategy = none,
+        format('  No key strategy specified~n')
+    ),
 
     % Check if predicate has a body with constraints
     functor(Head, Pred, Arity),
@@ -2108,6 +2367,17 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
         ;   format('ERROR: No json_record/1 found in predicate body~n'),
             fail
         ),
+
+        % Analyze key optimization opportunities (Phase 8c)
+        (   KeyStrategy \= none,
+            Constraints \= []
+        ->  format('  Analyzing key optimization...~n'),
+            analyze_key_optimization(KeyStrategy, Constraints, FieldMappings, OptType, OptDetails)
+        ;   OptType = full_scan,
+            OptDetails = none,
+            format('  Skipping optimization (no key strategy or constraints)~n')
+        ),
+
         % Generate field extraction code (with type conversions for constraints)
         format('  Generating field extractions...~n'),
         generate_field_extractions_for_read(FieldMappings, Constraints, HeadArgs, ExtractCode),
@@ -2142,64 +2412,42 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
         HasFilters = false
     ),
 
-    % Generate database read code
+    % Generate database read code (Phase 8c: with optimizations)
     format('  Generating database read code...~n'),
     (   HasFilters = true
     ->  RecordsDesc = 'filtered records'
     ;   RecordsDesc = 'all records'
     ),
 
-    % Build Body by concatenating parts (avoids format issues with ProcessCode)
-    format('  About to format Header...~n'),
-    format(string(Header), '\t// Open database (read-only)
-\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-\tdefer db.Close()
-
-\t// Read ~s from bucket
-\terr = db.View(func(tx *bolt.Tx) error {
-\t\tbucket := tx.Bucket([]byte("~s"))
-\t\tif bucket == nil {
-\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
-\t\t}
-
-\t\treturn bucket.ForEach(func(k, v []byte) error {
-\t\t\t// Deserialize JSON record
-\t\t\tvar data map[string]interface{}
-\t\t\tif err := json.Unmarshal(v, &data); err != nil {
-\t\t\t\tfmt.Fprintf(os.Stderr, "Error unmarshaling record: %v\\n", err)
-\t\t\t\treturn nil // Continue with next record
-\t\t\t}
-
-', [DbFile, RecordsDesc, BucketStr, BucketStr]),
-    format('  Header formatted successfully~n'),
-
-    format('  Setting Footer...~n'),
-    Footer = '
-\t\t\treturn nil
-\t\t})
-\t})
-
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-',
-    format('  Footer set successfully~n'),
-
-    % Concatenate Header + ProcessCode + Footer
-    format('  About to concatenate...~n'),
-    string_concat(Header, ProcessCode, Temp),
-    string_concat(Temp, Footer, BodyCode),
-    format('  Concatenation successful~n'),
+    % Generate appropriate database access code based on optimization type
+    (   var(OptType)
+    ->  % No optimization analysis (no constraints or no key strategy)
+        format('  Using full scan (no optimization analysis)~n'),
+        generate_full_scan_code(DbFile, BucketStr, RecordsDesc, ProcessCode, BodyCode)
+    ;   OptType = direct_lookup
+    ->  % Direct lookup optimization
+        OptDetails = key_value(KeyValue),
+        format('  Generating direct lookup code~n'),
+        generate_direct_lookup_code(DbFile, BucketStr, KeyValue, ProcessCode, BodyCode)
+    ;   OptType = prefix_scan
+    ->  % Prefix scan optimization
+        OptDetails = prefix_value(PrefixValue),
+        format('  Generating prefix scan code~n'),
+        generate_prefix_scan_code(DbFile, BucketStr, PrefixValue, ProcessCode, BodyCode)
+    ;   % Full scan (default/fallback)
+        format('  Using full scan~n'),
+        generate_full_scan_code(DbFile, BucketStr, RecordsDesc, ProcessCode, BodyCode)
+    ),
     format('  Body generated successfully (~w chars)~n', [BodyCode]),
 
     % Wrap in package if requested
     (   IncludePackage = true
-    ->  % Check if we need strings package (only if Constraints is defined)
+    ->  % Check if we need bytes package (for prefix scan optimization)
+        (   nonvar(OptType), OptType = prefix_scan
+        ->  BytesImport = '\t"bytes"\n'
+        ;   BytesImport = ''
+        ),
+        % Check if we need strings package (only if Constraints is defined)
         (   (var(Constraints) ; Constraints = [])
         ->  % No constraints or empty constraints - no strings needed
             StringsImport = ''
@@ -2209,11 +2457,11 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
             ;   StringsImport = ''
             )
         ),
-        % Build package with conditional strings import
+        % Build package with conditional bytes and strings imports
         format(string(GoCode), 'package main
 
 import (
-\t"encoding/json"
+~s\t"encoding/json"
 \t"fmt"
 \t"os"
 ~s
@@ -2222,7 +2470,7 @@ import (
 
 func main() {
 ~s}
-', [StringsImport, BodyCode])
+', [BytesImport, StringsImport, BodyCode])
     ;   GoCode = BodyCode
     ).
 
