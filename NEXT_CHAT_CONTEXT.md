@@ -4,10 +4,10 @@
 - **Core Targets**: Semantic Capability Parity (Python, Go, C#).
 - **Graph RAG**: Verified.
 - **Bookmark Suggestions**: Verified.
-- **Key Construction**: Verified (Python & Rust Phase 1).
-- **Rust Semantic Runtime**: **Phase 2 Initiated**.
-    - `importer.rs` (Redb) and `crawler.rs` (quick-xml) created in `src/unifyweaver/targets/rust_runtime/`.
-    - `rust_target.pl` updated to detect `redb`/`quick-xml` dependencies.
+- **Key Construction**: Verified.
+- **Rust Semantic Runtime**: **Phase 2 Almost Complete**.
+    - `importer.rs` (Redb), `crawler.rs` (quick-xml), `searcher.rs` (Text/Graph), `llm.rs` (Gemini) are implemented.
+    - `rust_target.pl` now copies these files to the generated project.
 - **Environment**: `gemini` CLI v0.18.4. `pwsh` missing.
 
 ## Active Proposals
@@ -15,13 +15,12 @@
 - **Status**: Accepted. Pending implementation.
 
 ### 2. Rust Semantic Target
-- **Status**: Phase 2 (Runtime Foundation) In Progress.
+- **Status**: Runtime files created.
 - **Next Steps**:
-    - Create `searcher.rs` (Vector/Text Search).
-    - Implement the compiler logic to inline these runtime files into the generated project.
-    - Implement `crawler_run` translation.
+    - Implement `compile_predicate_to_rust` logic to *use* these runtime files (generate `main.rs` calls).
+    - Implement `translate_goal` for `crawler_run`, `graph_search`.
 
 ## Next Steps
-1.  **Merge `feat/rust-runtime-v1`**.
-2.  **Finish Rust Runtime** (Searcher, LLM).
+1.  **Merge `feat/rust-runtime-v2`**.
+2.  **Finish Rust Compiler Integration**.
 3.  **Start PowerShell Implementation**.

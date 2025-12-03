@@ -503,10 +503,11 @@ format_type_for_json(any, "Value").
 
 write_rust_program(Code, Path) :- open(Path, write, S), write(S, Code), close(S), format('Rust program written to: ~w~n', [Path]).
 
-write_rust_project(RustCode, ProjectDir) :-
+write_rust_project(RustCode, ProjectDir) :- 
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'src', SrcDir), make_directory_path(SrcDir),
     directory_file_path(SrcDir, 'main.rs', MainPath), write_rust_program(RustCode, MainPath),
+    write_runtime_files(SrcDir),
     detect_dependencies(RustCode, Deps),
     directory_file_path(ProjectDir, 'Cargo.toml', CargoPath),
     file_base_name(ProjectDir, ProjectName),
@@ -514,6 +515,21 @@ write_rust_project(RustCode, ProjectDir) :-
     open(CargoPath, write, S), write(S, CargoContent), close(S),
     format('Rust project created at: ~w~n', [ProjectDir]).
 
+write_runtime_files(SrcDir) :-
+    RuntimeFiles = ['importer.rs', 'crawler.rs', 'searcher.rs', 'llm.rs'],
+    % Assuming runtime dir is relative to this source file or cwd
+    % We'll try a fixed path relative to CWD for now
+    RuntimeDir = 'src/unifyweaver/targets/rust_runtime',
+    
+    forall(member(File, RuntimeFiles), (
+        directory_file_path(RuntimeDir, File, SourcePath),
+        directory_file_path(SrcDir, File, DestPath),
+        (   exists_file(SourcePath)
+        ->  copy_file(SourcePath, DestPath),
+            format('Copied runtime file: ~w~n', [File])
+        ;   format('WARNING: Runtime file not found: ~w~n', [SourcePath])
+        )
+    )).
 detect_dependencies(Code, Deps) :-
     findall(Dep, 
         (   sub_string(Code, _, _, _, 'use regex::'), Dep = regex
