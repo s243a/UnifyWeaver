@@ -1,0 +1,4 @@
+{"name": "Alice", "salary": 75000.50, "age": 30, "active": true}
+{"name": "Bob", "salary": "high", "age": 25, "active": true}
+{"name": "Charlie", "salary": 65000, "age": 35, "active": "yes"}
+{"name": "Diana", "salary": 80000.0, "age": 28, "active": false}

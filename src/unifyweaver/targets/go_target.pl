@@ -20,6 +20,7 @@
 % Suppress singleton warnings in this experimental generator target.
 :- style_check(-singleton).
 :- discontiguous extract_match_constraints/2.
+:- discontiguous term_to_go_expr/3.
 :- use_module(library(filesex)).
 
 %% ============================================
@@ -1118,8 +1119,9 @@ term_to_go_expr(Term, _, GoExpr) :-
     atom(Term), !,
     % Atom constant - quote it for Go
     format(atom(GoExpr), '"~w"', [Term]).
-term_to_go_expr(Term, _, Term) :-
-    number(Term), !.
+term_to_go_expr(Term, _, GoExpr) :-
+    number(Term), !,
+    format(atom(GoExpr), '~w', [Term]).
 term_to_go_expr(Term, VarMap, GoExpr) :-
     compound(Term), !,
     Term =.. [Op, Left, Right],
@@ -1688,6 +1690,126 @@ normalize_key_strategy(Options, NormalizedOptions) :-
 
 wrap_field_expr(Field, field(Field)).
 
+%% ============================================
+%% DATABASE QUERY CONSTRAINTS (Phase 8a)
+%% ============================================
+
+%% extract_db_constraints(+Body, -JsonRecord, -Constraints)
+%  Extract filter constraints from predicate body
+%  Separates json_record/1 from comparison constraints
+%
+%  Supported constraints (Phase 8a):
+%    - Comparisons: >, <, >=, =<, =, \=
+%    - Implicit AND (multiple constraints in body)
+%
+extract_db_constraints(Body, JsonRecord, Constraints) :-
+    extract_constraints_impl(Body, none, JsonRecord, [], Constraints).
+
+% Helper: recursively extract constraints from conjunction
+extract_constraints_impl((A, B), JsonRecAcc, JsonRec, ConsAcc, Constraints) :- !,
+    extract_constraints_impl(A, JsonRecAcc, JsonRec1, ConsAcc, Cons1),
+    extract_constraints_impl(B, JsonRec1, JsonRec, Cons1, Constraints).
+
+% json_record/1 - save for later
+extract_constraints_impl(json_record(Fields), _JsonRecAcc, json_record(Fields), ConsAcc, ConsAcc) :- !.
+
+% Comparison constraints - collect them
+extract_constraints_impl(Constraint, JsonRecAcc, JsonRecAcc, ConsAcc, [Constraint|ConsAcc]) :-
+    is_comparison_constraint(Constraint), !.
+
+% Skip other predicates (like json_get, etc.)
+extract_constraints_impl(_, JsonRecAcc, JsonRecAcc, ConsAcc, ConsAcc).
+
+%% is_comparison_constraint(+Term)
+%  Check if term is a supported comparison constraint
+%
+is_comparison_constraint(_ > _).
+is_comparison_constraint(_ < _).
+is_comparison_constraint(_ >= _).
+is_comparison_constraint(_ =< _).
+is_comparison_constraint(_ = _).
+is_comparison_constraint(_ \= _).
+
+%% generate_filter_checks(+Constraints, +FieldMappings, -GoCode)
+%  Generate Go if statements for constraint checking
+%  Returns empty string if no constraints
+%
+generate_filter_checks([], _, '') :- !.
+generate_filter_checks(Constraints, FieldMappings, GoCode) :-
+    findall(CheckCode,
+        (member(Constraint, Constraints),
+         constraint_to_go_check(Constraint, FieldMappings, CheckCode)),
+        Checks),
+    atomic_list_concat(Checks, '\n', GoCode).
+
+%% constraint_to_go_check(+Constraint, +FieldMappings, -GoCode)
+%  Convert a Prolog constraint to Go if statement
+%
+constraint_to_go_check(Left > Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w > ~w\n\t\t\tif !(~s > ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left < Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w < ~w\n\t\t\tif !(~s < ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left >= Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w >= ~w\n\t\t\tif !(~s >= ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left =< Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w =< ~w\n\t\t\tif !(~s <= ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left = Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w = ~w\n\t\t\tif !(~s == ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left \= Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w \\= ~w\n\t\t\tif !(~s != ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+%% field_term_to_go_expr(+Term, +FieldMappings, -GoExpr)
+%  Convert a Prolog term to Go expression for filter constraints
+%  Handles variables (map to fieldN) and literals
+%  FieldMappings is a list of Name-Var pairs from json_record
+%
+field_term_to_go_expr(Term, FieldMappings, GoExpr) :-
+    var(Term), !,
+    % Find which field this variable corresponds to
+    (   nth1(Pos, FieldMappings, _-Var),
+        Term == Var
+    ->  format(atom(GoExpr), 'field~w', [Pos])
+    ;   % Variable not in mappings - shouldn't happen
+        format('WARNING: Variable ~w not found in field mappings~n', [Term]),
+        GoExpr = 'unknownVar'
+    ).
+
+field_term_to_go_expr(Term, _, GoExpr) :-
+    atom(Term), !,
+    % Atom literal - quote it for Go string
+    format(atom(GoExpr), '"~w"', [Term]).
+
+field_term_to_go_expr(Term, _, GoExpr) :-
+    number(Term), !,
+    format(atom(GoExpr), '~w', [Term]).
+
+field_term_to_go_expr(Term, _, GoExpr) :-
+    % Fallback for unknown terms
+    format(atom(GoExpr), '%s /* ~w */', [Term]).
+
 %% extract_used_fields(+KeyExpr, -UsedFieldPositions)
 %  Extract which field positions are referenced by the key expression
 %
@@ -1758,8 +1880,56 @@ extract_field_names_from_expr(_, []).  % literals, uuid, etc.
 %% DATABASE READ MODE COMPILATION
 %% ============================================
 
+%% generate_field_extractions_for_read(+FieldMappings, -GoCode)
+%  Generate untyped field extraction code for read mode
+%  Extracts fields as interface{} and checks for existence
+%
+generate_field_extractions_for_read(FieldMappings, GoCode) :-
+    findall(ExtractLine,
+        (   nth1(Pos, FieldMappings, Field-_Var),
+            atom_string(Field, FieldStr),
+            format(string(ExtractLine), '\t\t\t// Extract field: ~w
+\t\t\tfield~w, field~wOk := data["~s"]
+\t\t\tif !field~wOk {
+\t\t\t\treturn nil // Skip if field missing
+\t\t\t}',
+                [Field, Pos, Pos, FieldStr, Pos])
+        ),
+        ExtractLines),
+    atomic_list_concat(ExtractLines, '\n', GoCode).
+
+%% generate_output_for_read(+HeadArgs, +FieldMappings, -GoCode)
+%  Generate JSON output code with selected fields only
+%  Creates a map with only the fields that appear in the predicate head
+%
+generate_output_for_read(HeadArgs, FieldMappings, GoCode) :-
+    % Build a map of selected fields
+    findall(FieldName:Pos,
+        (   nth1(Idx, HeadArgs, Var),
+            nth1(Pos, FieldMappings, FieldName-MappedVar),
+            Var == MappedVar
+        ),
+        FieldSelections),
+
+    % Generate output struct
+    findall(FieldPair,
+        (   member(FieldName:Pos, FieldSelections),
+            atom_string(FieldName, FieldStr),
+            format(string(FieldPair), '"~s": field~w', [FieldStr, Pos])
+        ),
+        FieldPairs),
+    atomic_list_concat(FieldPairs, ', ', FieldsStr),
+
+    format(string(GoCode), '\t\t\t// Output selected fields
+\t\t\toutput, err := json.Marshal(map[string]interface{}{~s})
+\t\t\tif err != nil {
+\t\t\t\treturn nil
+\t\t\t}
+\t\t\tfmt.Println(string(output))', [FieldsStr]).
+
 %% compile_database_read_mode(+Pred, +Arity, +Options, -GoCode)
 %  Compile predicate to read from bbolt database and output as JSON
+%  Supports optional filtering based on constraints in predicate body
 %
 compile_database_read_mode(Pred, Arity, Options, GoCode) :-
     % Get database options
@@ -1767,6 +1937,47 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
     option(db_bucket(BucketName), Options, Pred),
     atom_string(BucketName, BucketStr),
     option(include_package(IncludePackage), Options, true),
+
+    % Check if predicate has a body with constraints
+    functor(Head, Pred, Arity),
+    (   clause(Head, Body),
+        Body \= true
+    ->  % Has body - extract constraints and field mappings
+        format('  Predicate body: ~w~n', [Body]),
+        extract_db_constraints(Body, JsonRecord, Constraints),
+        (   JsonRecord = json_record(FieldMappings0)
+        ->  % FieldMappings0 is the list of Name-Var pairs from json_record
+            FieldMappings = FieldMappings0,
+            Head =.. [_|HeadArgs],
+            format('  Field mappings: ~w~n', [FieldMappings]),
+            format('  Constraints: ~w~n', [Constraints])
+        ;   format('ERROR: No json_record/1 found in predicate body~n'),
+            fail
+        ),
+        % Generate field extraction code
+        generate_field_extractions_for_read(FieldMappings, ExtractCode),
+        % Generate filter checks
+        generate_filter_checks(Constraints, FieldMappings, FilterCode),
+        % Generate output code (selected fields only)
+        generate_output_for_read(HeadArgs, FieldMappings, OutputCode),
+        % Combine extraction + filter + output
+        (   FilterCode \= ''
+        ->  format(string(ProcessCode), '~s\n~s\n~s', [ExtractCode, FilterCode, OutputCode])
+        ;   format(string(ProcessCode), '~s\n~s', [ExtractCode, OutputCode])
+        ),
+        HasFilters = true
+    ;   % No body or body is 'true' - read all records as-is
+        format('  No predicate body found - reading all records~n'),
+        ProcessCode = '\t\t\t// Output as JSON
+\t\t\toutput, err := json.Marshal(data)
+\t\t\tif err != nil {
+\t\t\t\tfmt.Fprintf(os.Stderr, "Error marshaling output: %v\\n", err)
+\t\t\t\treturn nil // Continue with next record
+\t\t\t}
+
+\t\t\tfmt.Println(string(output))',
+        HasFilters = false
+    ),
 
     % Generate database read code
     format(string(Body), '\t// Open database (read-only)
@@ -1777,7 +1988,7 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 \t}
 \tdefer db.Close()
 
-\t// Read all records from bucket
+\t// Read ~w from bucket
 \terr = db.View(func(tx *bolt.Tx) error {
 \t\tbucket := tx.Bucket([]byte("~s"))
 \t\tif bucket == nil {
@@ -1792,14 +2003,7 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 \t\t\t\treturn nil // Continue with next record
 \t\t\t}
 
-\t\t\t// Output as JSON
-\t\t\toutput, err := json.Marshal(data)
-\t\t\tif err != nil {
-\t\t\t\tfmt.Fprintf(os.Stderr, "Error marshaling output: %v\\n", err)
-\t\t\t\treturn nil // Continue with next record
-\t\t\t}
-
-\t\t\tfmt.Println(string(output))
+~s
 \t\t\treturn nil
 \t\t})
 \t})
@@ -1808,7 +2012,7 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 \t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
 \t\tos.Exit(1)
 \t}
-', [DbFile, BucketStr, BucketStr]),
+', [DbFile, (HasFilters -> 'filtered records' ; 'all records'), BucketStr, BucketStr, ProcessCode]),
 
     % Wrap in package if requested
     (   IncludePackage = true

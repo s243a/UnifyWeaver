@@ -1,0 +1,3 @@
+{"id": 1, "location": {"city": "NYC"}}
+{"id": "two", "location": {"city": "Boston"}}
+{"id": 3, "location": {"city": 789}}
