@@ -1543,6 +1543,218 @@ func main() {
 %% ============================================
 
 %% ============================================
+%% DATABASE KEY EXPRESSION COMPILER
+%% ============================================
+
+%% compile_key_expression(+KeyExpr, +FieldMappings, +Options, -KeyCode, -Imports)
+%  Compile a key expression into Go code that generates a database key
+%
+%  KeyExpr can be:
+%    - field(FieldName)              - Extract a single field value
+%    - composite([Expr1, Expr2, ...]) - Concatenate multiple expressions
+%    - hash(Expr)                    - SHA-256 hash of an expression
+%    - hash(Expr, Algorithm)         - Hash with specific algorithm
+%    - literal(String)               - Constant string value
+%    - substring(Expr, Start, Len)   - Extract substring
+%    - uuid()                        - Generate UUID
+%    - auto_increment()              - Sequential counter (future)
+%
+%  Returns:
+%    - KeyCode: Go code that evaluates to the key (as string)
+%    - Imports: List of required import packages
+%
+compile_key_expression(KeyExpr, FieldMappings, Options, KeyCode, Imports) :-
+    compile_key_expr(KeyExpr, FieldMappings, Options, KeyCode, Imports).
+
+%% compile_key_expr/5 - Main expression compiler
+%
+%  field(FieldName) - Extract field value
+compile_key_expr(field(FieldName), FieldMappings, _Options, KeyCode, []) :-
+    % Find field position
+    (   nth1(Pos, FieldMappings, FieldName-_)
+    ->  true
+    ;   nth1(Pos, FieldMappings, nested(Path, _)),
+        last(Path, FieldName)
+    ->  true
+    ;   format('ERROR: Field ~w not found in mappings: ~w~n', [FieldName, FieldMappings]),
+        fail
+    ),
+    format(atom(FieldVar), 'field~w', [Pos]),
+    format(string(KeyCode), 'fmt.Sprintf("%v", ~s)', [FieldVar]).
+
+%  composite([Expr1, Expr2, ...]) - Concatenate expressions
+compile_key_expr(composite(Exprs), FieldMappings, Options, KeyCode, AllImports) :-
+    % Get delimiter (default ':')
+    option(db_key_delimiter(Delimiter), Options, ':'),
+
+    % Compile each sub-expression
+    maplist(compile_key_expr_for_composite(FieldMappings, Options), Exprs, ExprCodes, ExprImportsList),
+
+    % Flatten imports
+    append(ExprImportsList, AllImports),
+
+    % Build format string and args
+    length(Exprs, NumExprs),
+    length(FormatSpecifiers, NumExprs),
+    maplist(=('%s'), FormatSpecifiers),
+    atomic_list_concat(FormatSpecifiers, Delimiter, FormatString),
+    atomic_list_concat(ExprCodes, ', ', ArgsString),
+
+    format(string(KeyCode), 'fmt.Sprintf("~s", ~s)', [FormatString, ArgsString]).
+
+%  hash(Expr) - SHA-256 hash of expression
+compile_key_expr(hash(Expr), FieldMappings, Options, KeyCode, Imports) :-
+    compile_key_expr(hash(Expr, sha256), FieldMappings, Options, KeyCode, Imports).
+
+%  hash(Expr, Algorithm) - Hash with specific algorithm
+compile_key_expr(hash(Expr, Algorithm), FieldMappings, Options, KeyCode, Imports) :-
+    % Compile the inner expression
+    compile_key_expr(Expr, FieldMappings, Options, ExprCode, ExprImports),
+
+    % Generate hash code based on algorithm
+    (   Algorithm = sha256
+    ->  HashImport = 'crypto/sha256',
+        format(string(KeyCode), 'func() string {
+\t\tvalStr := ~s
+\t\thash := sha256.Sum256([]byte(valStr))
+\t\treturn hex.EncodeToString(hash[:])
+\t}()', [ExprCode])
+    ;   Algorithm = md5
+    ->  HashImport = 'crypto/md5',
+        format(string(KeyCode), 'func() string {
+\t\tvalStr := ~s
+\t\thash := md5.Sum([]byte(valStr))
+\t\treturn hex.EncodeToString(hash[:])
+\t}()', [ExprCode])
+    ;   format('ERROR: Unsupported hash algorithm: ~w~n', [Algorithm]),
+        fail
+    ),
+
+    append(ExprImports, [HashImport, 'encoding/hex'], Imports).
+
+%  literal(String) - Constant string value
+compile_key_expr(literal(String), _FieldMappings, _Options, KeyCode, []) :-
+    format(string(KeyCode), '"~s"', [String]).
+
+%  substring(Expr, Start, Length) - Extract substring
+compile_key_expr(substring(Expr, Start, Length), FieldMappings, Options, KeyCode, Imports) :-
+    compile_key_expr(Expr, FieldMappings, Options, ExprCode, Imports),
+    End is Start + Length,
+    format(string(KeyCode), 'func() string {
+\t\tstr := ~s
+\t\tif len(str) > ~w {
+\t\t\treturn str[~w:~w]
+\t\t}
+\t\treturn str
+\t}()', [ExprCode, End, Start, End]).
+
+%  uuid() - Generate UUID
+compile_key_expr(uuid(), _FieldMappings, _Options, KeyCode, ['github.com/google/uuid']) :-
+    KeyCode = 'uuid.New().String()'.
+
+%  auto_increment() - Sequential counter (requires state management)
+compile_key_expr(auto_increment(), _FieldMappings, _Options, _KeyCode, _Imports) :-
+    format('ERROR: auto_increment() not yet implemented~n'),
+    fail.
+
+%% Helper for composite - wraps each expression's code
+compile_key_expr_for_composite(FieldMappings, Options, Expr, Code, Imports) :-
+    compile_key_expr(Expr, FieldMappings, Options, Code, Imports).
+
+%% normalize_key_strategy(+Options, -NormalizedOptions)
+%  Normalize key strategy options for backward compatibility
+%
+%  Converts:
+%    db_key_field(Field) → db_key_strategy(field(Field))
+%    db_key_fields([F1,F2]) → db_key_strategy(composite([field(F1), field(F2)]))
+%
+normalize_key_strategy(Options, NormalizedOptions) :-
+    % Check if db_key_strategy is already present
+    (   option(db_key_strategy(_), Options)
+    ->  % Already normalized
+        NormalizedOptions = Options
+    ;   option(db_key_field(Field), Options)
+    ->  % Convert db_key_field(F) to db_key_strategy(field(F))
+        select(db_key_field(Field), Options, TempOptions),
+        NormalizedOptions = [db_key_strategy(field(Field))|TempOptions]
+    ;   option(db_key_fields(Fields), Options)
+    ->  % Convert db_key_fields([...]) to db_key_strategy(composite([field(F1), ...]))
+        maplist(wrap_field_expr, Fields, FieldExprs),
+        select(db_key_fields(Fields), Options, TempOptions),
+        NormalizedOptions = [db_key_strategy(composite(FieldExprs))|TempOptions]
+    ;   % No key strategy specified - will use default
+        NormalizedOptions = Options
+    ).
+
+wrap_field_expr(Field, field(Field)).
+
+%% extract_used_fields(+KeyExpr, -UsedFieldPositions)
+%  Extract which field positions are referenced by the key expression
+%
+extract_used_fields(field(FieldName), [Pos]) :-
+    % Single field reference - need to find its position in FieldMappings
+    % This is a simplified version - full implementation would need FieldMappings
+    % For now, extract field number from field(name) atom
+    !,
+    Pos = 1.  % Placeholder - will be computed properly in context
+
+extract_used_fields(composite(Exprs), AllUsedFields) :-
+    !,
+    findall(UsedFields,
+        (member(Expr, Exprs),
+         extract_used_fields(Expr, UsedFields)),
+        UsedFieldsList),
+    append(UsedFieldsList, AllUsedFields).
+
+extract_used_fields(hash(Expr), UsedFields) :-
+    !,
+    extract_used_fields(Expr, UsedFields).
+
+extract_used_fields(hash(Expr, _Algorithm), UsedFields) :-
+    !,
+    extract_used_fields(Expr, UsedFields).
+
+extract_used_fields(substring(Expr, _, _), UsedFields) :-
+    !,
+    extract_used_fields(Expr, UsedFields).
+
+extract_used_fields(literal(_), []) :- !.
+extract_used_fields(uuid(), []) :- !.
+extract_used_fields(auto_increment(), []) :- !.
+
+%% extract_used_field_positions(+KeyExpr, +FieldMappings, -UsedPositions)
+%  Extract actual field positions by matching field names
+%
+extract_used_field_positions(KeyExpr, FieldMappings, UsedPositions) :-
+    extract_field_names_from_expr(KeyExpr, FieldNames),
+    findall(Pos,
+        (member(FieldName, FieldNames),
+         nth1(Pos, FieldMappings, FieldName-_)),
+        UsedPositions).
+
+%% extract_field_names_from_expr(+KeyExpr, -FieldNames)
+%  Extract all field names referenced in the expression
+%
+extract_field_names_from_expr(field(FieldName), [FieldName]) :- !.
+extract_field_names_from_expr(composite(Exprs), AllFields) :-
+    !,
+    findall(Fields,
+        (member(Expr, Exprs),
+         extract_field_names_from_expr(Expr, Fields)),
+        FieldsList),
+    append(FieldsList, AllFields).
+extract_field_names_from_expr(hash(Expr), Fields) :-
+    !,
+    extract_field_names_from_expr(Expr, Fields).
+extract_field_names_from_expr(hash(Expr, _), Fields) :-
+    !,
+    extract_field_names_from_expr(Expr, Fields).
+extract_field_names_from_expr(substring(Expr, _, _), Fields) :-
+    !,
+    extract_field_names_from_expr(Expr, Fields).
+extract_field_names_from_expr(_, []).  % literals, uuid, etc.
+
+%% ============================================
 %% DATABASE READ MODE COMPILATION
 %% ============================================
 
@@ -1643,12 +1855,16 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         extract_json_field_mappings(SingleBody, FieldMappings),
         format('  Field mappings: ~w~n', [FieldMappings]),
 
-        % Check for schema option
+        % Check for schema option OR database backend (both require typed compilation)
         SingleHead =.. [_|HeadArgs],
         (   option(json_schema(SchemaName), Options)
-        ->  % Typed compilation with schema
+        ->  % Typed compilation with schema validation
             format('  Using schema: ~w~n', [SchemaName]),
             compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, CoreBody)
+        ;   option(db_backend(bbolt), Options)
+        ->  % Typed compilation without schema (for database writes)
+            format('  Database mode: using typed compilation~n'),
+            compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
         ;   % Untyped compilation (current behavior)
             compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
         ),
@@ -1657,10 +1873,11 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         (   option(db_backend(bbolt), Options)
         ->  % Wrap core body with database operations
             format('  Database: bbolt~n'),
-            wrap_with_database(CoreBody, FieldMappings, Pred, Options, ScriptBody),
+            wrap_with_database(CoreBody, FieldMappings, Pred, Options, ScriptBody, KeyImports),
             NeedsDatabase = true
         ;   ScriptBody = CoreBody,
-            NeedsDatabase = false
+            NeedsDatabase = false,
+            KeyImports = []
         ),
 
         % Check if helpers are needed (for the package wrapping)
@@ -1677,7 +1894,18 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
     (   IncludePackage ->
         % Generate imports based on what's needed
         (   NeedsDatabase = true
-        ->  Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"\n\n\tbolt "go.etcd.io/bbolt"'
+        ->  BaseImports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"\n\n\tbolt "go.etcd.io/bbolt"',
+            % Add key expression imports if any
+            (   KeyImports \= []
+            ->  findall(FormattedImport,
+                    (member(Imp, KeyImports),
+                     atom_string(Imp, ImpStr),
+                     format(string(FormattedImport), '\t"~s"', [ImpStr])),
+                    FormattedImports),
+                atomic_list_concat(FormattedImports, '\n', KeyImportsStr),
+                format(string(Imports), '~s\n~s', [BaseImports, KeyImportsStr])
+            ;   Imports = BaseImports
+            )
         ;   Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"'
         ),
 
@@ -1883,40 +2111,55 @@ generate_parallel_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarM
 				}', [ListGoVar, ItemGoVar, LoopBody])
     ).
 
-%% wrap_with_database(+CoreBody, +FieldMappings, +Pred, +Options, -WrappedBody)
+%% wrap_with_database(+CoreBody, +FieldMappings, +Pred, +Options, -WrappedBody, -KeyImports)
 %  Wrap core extraction code with database operations
+%  Returns additional imports needed for key expressions
 %
-wrap_with_database(CoreBody, FieldMappings, Pred, Options, WrappedBody) :-
+wrap_with_database(CoreBody, FieldMappings, Pred, Options, WrappedBody, KeyImports) :-
     % Get database options
     option(db_file(DbFile), Options, 'data.db'),
     option(db_bucket(BucketName), Options, Pred),
     atom_string(BucketName, BucketStr),
 
-    % Determine key field (use first field by default)
-    (   option(db_key_field(KeyField), Options)
+    % Normalize key strategy options (backward compatibility)
+    normalize_key_strategy(Options, NormalizedOptions),
+
+    % Determine key strategy (with default fallback)
+    (   option(db_key_strategy(KeyStrategy), NormalizedOptions)
     ->  true
-    ;   FieldMappings = [KeyField-_|_]
-    ->  true
-    ;   FieldMappings = [nested(Path, _)|_],
-        last(Path, KeyField)
+    ;   % Default: use first field
+        (   FieldMappings = [FirstField-_|_]
+        ->  KeyStrategy = field(FirstField)
+        ;   FieldMappings = [nested(Path, _)|_],
+            last(Path, FirstField)
+        ->  KeyStrategy = field(FirstField)
+        ;   format('ERROR: No fields found in mappings: ~w~n', [FieldMappings]),
+            fail
+        )
     ),
 
-    % Find which field position is the key
-    (   nth1(KeyPos, FieldMappings, KeyField-_)
-    ->  true
-    ;   nth1(KeyPos, FieldMappings, nested(KeyPath, _)),
-        last(KeyPath, KeyField)
-    ->  true
-    ;   KeyPos = 1  % Default to first field
-    ),
+    % Compile key expression to Go code
+    compile_key_expression(KeyStrategy, FieldMappings, NormalizedOptions, KeyCode, KeyImports),
 
-    format(atom(KeyVar), 'field~w', [KeyPos]),
+    % Determine which fields are used by the key expression
+    extract_used_field_positions(KeyStrategy, FieldMappings, UsedFieldPositions),
 
-    % Create storage code block
-    format(string(StorageCode), '\t\t// Store in database
+    % Generate blank assignments for unused fields (to avoid Go unused variable errors)
+    findall(BlankAssignment,
+        (nth1(Pos, FieldMappings, _),
+         \+ memberchk(Pos, UsedFieldPositions),
+         format(string(BlankAssignment), '\t\t_ = field~w  // Unused in key\n', [Pos])),
+        BlankAssignments),
+    atomic_list_concat(BlankAssignments, '', UnusedFieldCode),
+
+    % Create storage code block with compiled key
+    format(string(StorageCode), '~s\t\t// Store in database
 \t\terr = db.Update(func(tx *bolt.Tx) error {
 \t\t\tbucket := tx.Bucket([]byte("~s"))
-\t\t\tkey := []byte(fmt.Sprintf("%v", ~s))
+\t\t\t
+\t\t\t// Generate key using strategy
+\t\t\tkeyStr := ~s
+\t\t\tkey := []byte(keyStr)
 \t\t\t
 \t\t\t// Store full JSON record
 \t\t\tvalue, err := json.Marshal(data)
@@ -1933,11 +2176,12 @@ wrap_with_database(CoreBody, FieldMappings, Pred, Options, WrappedBody) :-
 \t\t\tcontinue
 \t\t}
 \t\t
-\t\trecordCount++', [BucketStr, KeyVar]),
+\t\trecordCount++', [UnusedFieldCode, BucketStr, KeyCode]),
 
     % Remove output block and inject storage code
     split_string(CoreBody, "\n", "", Lines),
-    filter_and_replace_lines(Lines, StorageCode, KeyPos, FilteredLines),
+    % Pass -1 to keep all fields (key expression will determine which it needs)
+    filter_and_replace_lines(Lines, StorageCode, -1, FilteredLines),
     atomics_to_string(FilteredLines, "\n", CleanedCore),
 
     % Generate wrapped code with storage inside loop
@@ -2000,6 +2244,8 @@ filter_and_replace_lines([Line|Rest], StorageCode, KeyPos, Acc, Result) :-
 
 % Replace fieldN with _ if N != KeyPos
 replace_unused_field_var(Line, KeyPos, NewLine) :-
+    % If KeyPos is -1, keep all fields (don't replace anything)
+    KeyPos \= -1,
     % Try to replace field1, field2, field3, etc. up to field9
     between(1, 9, N),
     N \= KeyPos,
@@ -2275,7 +2521,13 @@ generate_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarMap, Code)
 
     ;   Op = Field-Var ->
         format(atom(GoVar), 'v~w', [VIdx]),
-        generate_nested_extraction_code(Field, 'data', GoVar, ExtractCode),
+        % Generate flat field extraction (not nested)
+        atom_string(Field, FieldStr),
+        format(string(ExtractCode), '
+\t\t~w, ok~w := data["~s"]
+\t\tif !ok~w {
+\t\t\tcontinue
+\t\t}', [GoVar, VIdx, FieldStr, VIdx]),
         generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
         format(string(Code), '~s\n~s', [ExtractCode, RestCode])
 
@@ -2351,6 +2603,59 @@ lookup_var_identity(Key, [(K, V)|_], Val) :- Key == K, !, Val = V.
 lookup_var_identity(Key, [_|Rest], Val) :- lookup_var_identity(Key, Rest, Val).
 
 
+
+%% compile_json_to_go_typed_noschema(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, -GoCode)
+%  Generate Go code for JSON input mode with fieldN variables but no type validation
+%  Used for database writes without schema
+%
+compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
+    % Map delimiter
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % Generate untyped field extraction code with fieldN variable names
+    findall(ExtractLine,
+        (   nth1(Pos, FieldMappings, Mapping),
+            format(atom(VarName), 'field~w', [Pos]),
+            % Generate extraction for flat or nested fields
+            (   Mapping = Field-_Var
+            ->  % Flat field - untyped extraction
+                atom_string(Field, FieldStr),
+                format(atom(ExtractLine), '\t\t~w, ~wOk := data["~s"]\n\t\tif !~wOk {\n\t\t\tcontinue\n\t\t}',
+                    [VarName, VarName, FieldStr, VarName])
+            ;   Mapping = nested(Path, _Var)
+            ->  % Nested field - untyped extraction
+                generate_nested_field_extraction(Path, VarName, ExtractLine)
+            )
+        ),
+        ExtractLines),
+    atomic_list_concat(ExtractLines, '\n', ExtractCode),
+
+    % Generate output expression (same as typed)
+    generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
+
+    % Build main loop
+    (   Unique = true ->
+        SeenDecl = '\tseen := make(map[string]bool)\n\t',
+        UniqueCheck = '\t\tif !seen[result] {\n\t\t\tseen[result] = true\n\t\t\tfmt.Println(result)\n\t\t}\n'
+    ;   SeenDecl = '\t',
+        UniqueCheck = '\t\tfmt.Println(result)\n'
+    ),
+
+    % Build the loop code
+    format(string(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+~w
+\tfor scanner.Scan() {
+\t\tvar data map[string]interface{}
+\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+\t\t\tcontinue
+\t\t}
+\t\t
+~s
+\t\t
+\t\tresult := ~s
+~s\t}
+', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
 
 %% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +FieldDelim, +Unique, -GoCode)
 %  Generate Go code for JSON input mode with type safety from schema
