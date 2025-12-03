@@ -25,7 +25,7 @@
 
 :- dynamic json_schema_def/2.
 
-json_schema(SchemaName, Fields) :- 
+json_schema(SchemaName, Fields) :-
     (   validate_schema_fields(Fields)
     ->  retractall(json_schema_def(SchemaName, _)),
         assertz(json_schema_def(SchemaName, Fields))
@@ -34,11 +34,11 @@ json_schema(SchemaName, Fields) :-
     ).
 
 validate_schema_fields([]).
-validate_schema_fields([field(Name, Type)|Rest]) :- 
+validate_schema_fields([field(Name, Type)|Rest]) :-
     atom(Name),
     valid_json_type(Type),
     validate_schema_fields(Rest).
-validate_schema_fields([Invalid|_]) :- 
+validate_schema_fields([Invalid|_]) :-
     format('ERROR: Invalid field specification: ~w~n', [Invalid]),
     fail.
 
@@ -50,13 +50,13 @@ valid_json_type(array).
 valid_json_type(object).
 valid_json_type(any).
 
-get_json_schema(SchemaName, Fields) :- 
+get_json_schema(SchemaName, Fields) :-
     json_schema_def(SchemaName, Fields), !.
-get_json_schema(SchemaName, _) :- 
+get_json_schema(SchemaName, _) :-
     format('ERROR: Schema not found: ~w~n', [SchemaName]),
     fail.
 
-get_field_type(SchemaName, FieldName, Type) :- 
+get_field_type(SchemaName, FieldName, Type) :-
     get_json_schema(SchemaName, Fields),
     member(field(FieldName, Type), Fields), !.
 get_field_type(_SchemaName, _FieldName, serde_json_value).
@@ -65,7 +65,7 @@ get_field_type(_SchemaName, _FieldName, serde_json_value).
 %% PUBLIC API
 %% ============================================ 
 
-compile_predicate_to_rust(PredIndicator, Options, RustCode) :- 
+compile_predicate_to_rust(PredIndicator, Options, RustCode) :-
     PredIndicator = Pred/Arity,
     format('=== Compiling ~w/~w to Rust ===~n', [Pred, Arity]),
 
@@ -83,7 +83,7 @@ compile_predicate_to_rust(PredIndicator, Options, RustCode) :-
     ;   compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode)
     ).
 
-compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :- 
+compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     option(field_delimiter(FieldDelim), Options, colon),
     option(include_main(IncludeMain), Options, true),
     option(unique(Unique), Options, true),
@@ -105,7 +105,7 @@ is_fact_clause(_-true).
 %% COMPILATION MODES
 %% ============================================ 
 
-compile_facts_to_rust(_Pred, _Arity, Clauses, FieldDelim, RustCode) :- 
+compile_facts_to_rust(_Pred, _Arity, Clauses, FieldDelim, RustCode) :-
     map_field_delimiter(FieldDelim, DelimChar),
     
     findall(Entry, 
@@ -129,7 +129,7 @@ fn main() {
 }
 ', [EntriesCode]).
 
-compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, IncludeMain, RustCode) :- 
+compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, IncludeMain, RustCode) :-
     Head =.. [_|HeadArgs],
     
     extract_predicates(Body, Predicates),
@@ -158,7 +158,7 @@ compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, Inclu
                 ;   var(Arg), member((Var, RustVar), KeyMap), Arg == Var ->
                     format(string(OutputPart), "~w", [RustVar])
                 ;   atom(Arg) ->
-                    format(string(OutputPart), '\"~w\"', [Arg])
+                    format(string(OutputPart), '"~w"', [Arg])
                 ;   OutputPart = "\"unknown\""
                 )
             ),
@@ -210,7 +210,7 @@ fn main() {
 %% AGGREGATION COMPILATION
 %% ============================================ 
 
-compile_aggregation_to_rust(_Pred, _Arity, AggOp, _FieldDelim, IncludeMain, RustCode) :- 
+compile_aggregation_to_rust(_Pred, _Arity, AggOp, _FieldDelim, IncludeMain, RustCode) :-
     generate_aggregation_logic(AggOp, Logic),
     
     (   IncludeMain ->
@@ -226,7 +226,7 @@ fn main() {
 %% JSON INPUT COMPILATION
 %% ============================================ 
 
-compile_json_input_to_rust(Pred, Arity, Options, RustCode) :- 
+compile_json_input_to_rust(Pred, Arity, Options, RustCode) :-
     functor(Head, Pred, Arity),
     findall(Head-Body, user:clause(Head, Body), Clauses),
 
@@ -255,7 +255,7 @@ fn main() {
 %% JSON OUTPUT COMPILATION
 %% ============================================ 
 
-compile_json_output_to_rust(Pred, Arity, Options, RustCode) :- 
+compile_json_output_to_rust(Pred, Arity, Options, RustCode) :-
     atom_string(Pred, PredStr),
     functor(Head, Pred, Arity),
     findall(Head-Body, user:clause(Head, Body), Clauses),
@@ -298,7 +298,7 @@ generate_aggregation_logic(avg, "let (c, s) = io::stdin().lock().lines().filter_
 generate_aggregation_logic(min, "if let Some(m) = io::stdin().lock().lines().filter_map(|l| l.ok()?.trim().parse::<f64>().ok()).min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)) { println!(\"{}\", m); }").
 generate_aggregation_logic(max, "if let Some(m) = io::stdin().lock().lines().filter_map(|l| l.ok()?.trim().parse::<f64>().ok()).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)) { println!(\"{}\", m); }").
 
-generate_json_input_logic(JsonOps, Head, SchemaName, DelimChar, Unique, ScriptBody) :- 
+generate_json_input_logic(JsonOps, Head, SchemaName, DelimChar, Unique, ScriptBody) :-
     Head =.. [_|HeadArgs],
     findall(ExtractLine, (
         nth1(Pos, HeadArgs, Arg),
@@ -326,7 +326,7 @@ generate_json_input_logic(JsonOps, Head, SchemaName, DelimChar, Unique, ScriptBo
         }
     }', [UniqueDecl, ExtractCode, OutputExpr, UniqueCheck]).
 
-rust_json_extract_code(Var, Field, Type, Code) :- 
+rust_json_extract_code(Var, Field, Type, Code) :-
     atom_string(Field, FieldStr),
     (   Type = any -> format(string(Code), 'let ~w = json_data.get(\"~s\").cloned().unwrap_or(Value::Null);', [Var, FieldStr])
     ;   format_type_for_json(Type, RustType),
@@ -335,7 +335,7 @@ rust_json_extract_code(Var, Field, Type, Code) :-
                 None => continue,
             };', [Var, RustType, FieldStr])
     ).
-ust_json_path_extract_code(Var, Path, Type, Code) :- 
+ust_json_path_extract_code(Var, Path, Type, Code) :-
     atomic_list_concat(Path, '/', PathStr),
     (   Type = any -> format(string(Code), 'let ~w = json_data.pointer(\"/~s\").cloned().unwrap_or(Value::Null);', [Var, PathStr])
     ;   format_type_for_json(Type, RustType),
@@ -355,7 +355,10 @@ generate_json_output_struct(PredName, Head, StructDef) :-
         format(string(FieldLine), '    #[serde(rename = "~w")]\n    pub ~w: ~s,', [FieldName, FieldName, RustType])
     ), FieldLines),
     atomic_list_concat(FieldLines, '\n', FieldsStr),
-    format(string(StructDef), '#[derive(Serialize)]\nstruct ~w {\n~s\n}', [PredName, FieldsStr]).
+    format(string(StructDef), '#[derive(Serialize)]
+struct ~w {
+~s
+}', [PredName, FieldsStr]).
 
 generate_json_output_logic(Head, _DelimChar, ScriptBody) :-
     Head =.. [PredName|HeadArgs],
@@ -377,7 +380,7 @@ build_source_map_([], _, []).
 build_source_map_([Arg|Rest], Idx, [(Arg, Idx)|Map]) :- NextIdx is Idx + 1, build_source_map_(Rest, NextIdx, Map).
 
 build_rust_concat([Single], _, Format) :- !, format(string(Format), "String::from(~s)", [Single]).
-build_rust_concat(Parts, Delim, Format) :- 
+build_rust_concat(Parts, Delim, Format) :-
     atomic_list_concat(Parts, ', ', Args),
     maplist(rust_format_placeholder, Parts, Placeholders),
     atomic_list_concat(Placeholders, Delim, FmtStr),
@@ -459,11 +462,11 @@ compile_rust_key_expr_list([H|T], SourceMap, KeyMap, [HC|TC]) :-
 field_to_json_op(Field-Var, json_field(Field, Var)).
 
 generate_rust_constraints([], _, "").
-generate_rust_constraints(Constraints, SourceMap, Code) :- 
+generate_rust_constraints(Constraints, SourceMap, Code) :-
     findall(Check, (member(C, Constraints), constraint_to_rust(C, SourceMap, Check)), Checks),
     atomic_list_concat(Checks, '\n', Code).
 
-constraint_to_rust(Comparison, SourceMap, Code) :- 
+constraint_to_rust(Comparison, SourceMap, Code) :-
     Comparison =.. [Op, L, R], map_rust_op(Op, RO), term_to_rust_numeric(L, SourceMap, LC), term_to_rust_numeric(R, SourceMap, RC),
     format(string(Code), "if !(~s ~s ~s) { continue; }", [LC, RO, RC]).
 
@@ -473,7 +476,7 @@ term_to_rust_numeric(Var, SourceMap, Code) :- var(Var), member((V, I), SourceMap
 term_to_rust_numeric(Num, _, Num) :- number(Num).
 
 generate_rust_match_constraints([], _, "", "", false).
-generate_rust_match_constraints(Matches, SourceMap, InitCode, CheckCode, true) :- 
+generate_rust_match_constraints(Matches, SourceMap, InitCode, CheckCode, true) :-
     findall((Init, Check), (
         member(match(Var, Pattern), Matches),
         var(Var), member((V, Idx), SourceMap), Var == V,
@@ -500,7 +503,7 @@ format_type_for_json(any, "Value").
 
 write_rust_program(Code, Path) :- open(Path, write, S), write(S, Code), close(S), format('Rust program written to: ~w~n', [Path]).
 
-write_rust_project(RustCode, ProjectDir) :- 
+write_rust_project(RustCode, ProjectDir) :-
     make_directory_path(ProjectDir),
     directory_file_path(ProjectDir, 'src', SrcDir), make_directory_path(SrcDir),
     directory_file_path(SrcDir, 'main.rs', MainPath), write_rust_program(RustCode, MainPath),
@@ -519,10 +522,12 @@ detect_dependencies(Code, Deps) :-
         ;   sub_string(Code, _, _, _, 'use sha2::'), Dep = sha2
         ;   sub_string(Code, _, _, _, 'hex::encode'), Dep = hex
         ;   sub_string(Code, _, _, _, 'uuid::Uuid'), Dep = uuid
+        ;   sub_string(Code, _, _, _, 'use redb::'), Dep = redb
+        ;   sub_string(Code, _, _, _, 'use quick_xml::'), Dep = quick_xml
         ),
         DepsList),
     sort(DepsList, Deps).
-generate_cargo_toml(Name, Deps, Content) :- 
+generate_cargo_toml(Name, Deps, Content) :-
     format(string(Header), '[package]\nname = "~w"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\n', [Name]),
     maplist(dep_to_toml, Deps, DepLines),
     atomic_list_concat(DepLines, '\n', DepBlock),
@@ -534,3 +539,5 @@ dep_to_toml(serde_json, "serde_json = \"1.0\"").
 dep_to_toml(sha2, "sha2 = \"0.10\"").
 dep_to_toml(hex, "hex = \"0.4\"").
 dep_to_toml(uuid, "uuid = { version = \"1.4\", features = [\"v4\"] }").
+dep_to_toml(redb, "redb = \"1.4.0\"").
+dep_to_toml(quick_xml, "quick-xml = \"0.30\"").

@@ -2,15 +2,12 @@
 
 ## Project State (Dec 2025)
 - **Core Targets**: Semantic Capability Parity (Python, Go, C#).
-- **Graph RAG**: Verified (Vector & CPU/Text).
+- **Graph RAG**: Verified.
 - **Bookmark Suggestions**: Verified.
-- **Key Construction**:
-    - **Python**: Verified (`generate_key/2`).
-    - **Rust**: **Partially Implemented**.
-        - `generate_key/2` compiler logic implemented in `rust_target.pl`.
-        - Supports `composite`, `hash`, `uuid`.
-        - Dependencies (`sha2`, `hex`, `uuid`) added to Cargo generation.
-- **Rust Semantic Runtime**: Proposed (`RUST_SEMANTIC_PROPOSAL.md`).
+- **Key Construction**: Verified (Python & Rust Phase 1).
+- **Rust Semantic Runtime**: **Phase 2 Initiated**.
+    - `importer.rs` (Redb) and `crawler.rs` (quick-xml) created in `src/unifyweaver/targets/rust_runtime/`.
+    - `rust_target.pl` updated to detect `redb`/`quick-xml` dependencies.
 - **Environment**: `gemini` CLI v0.18.4. `pwsh` missing.
 
 ## Active Proposals
@@ -18,11 +15,13 @@
 - **Status**: Accepted. Pending implementation.
 
 ### 2. Rust Semantic Target
-- **Status**: Phase 1 (Key Construction) Complete.
+- **Status**: Phase 2 (Runtime Foundation) In Progress.
 - **Next Steps**:
-    - Implement `rust_runtime` library (importer, crawler).
-    - Implement `crawler_run` and `graph_search` in Rust target.
+    - Create `searcher.rs` (Vector/Text Search).
+    - Implement the compiler logic to inline these runtime files into the generated project.
+    - Implement `crawler_run` translation.
 
 ## Next Steps
-1.  **Merge `feat/rust-keys`**.
-2.  **Start PowerShell Implementation** (as originally planned before Rust diversion).
+1.  **Merge `feat/rust-runtime-v1`**.
+2.  **Finish Rust Runtime** (Searcher, LLM).
+3.  **Start PowerShell Implementation**.
