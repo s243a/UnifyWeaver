@@ -287,21 +287,21 @@ using var searcher = new PtSearcher("full_database.db", embeddingProvider);
 
 // Find top 100 physics-related documents (all types)
 var seedIds = searcher.GetSeedIds(
-    query: "quantum mechanics physics",
+    query: "physics",
     topK: 100,           // Return top 100 matches
-    minScore: 0.5        // Minimum similarity threshold (0-1)
+    minScore: 0.40       // Recommended threshold for broad topics
 );
 
 // Find top 100 physics trees only (more diverse coverage)
 var treeSeedIds = searcher.GetSeedIds(
-    query: "quantum mechanics physics",
+    query: "physics",
     topK: 100,
-    minScore: 0.5,
+    minScore: 0.40,
     typeFilter: "pt:Tree"  // Only return trees, exclude pearls
 );
 
 Console.WriteLine($"Found {seedIds.Count} seed documents");
-// Output: Found 87 seed documents (if only 87 met the 0.5 threshold)
+// Output: Found 69 seed documents (at threshold 0.40)
 ```
 
 **Parameters**:
@@ -318,19 +318,78 @@ Filtering to trees only (`typeFilter: "pt:Tree"`) provides **more diverse covera
 - ✅ **Without filter**: May return many pearls from the same tree (redundant starting points)
 - ✅ **With tree filter**: Each seed is a distinct organizational node, ensuring broad graph coverage
 
+### Threshold Tuning Guide
+
+**IMPORTANT**: These recommendations are based on **cosine similarity** using the **all-MiniLM-L6-v2** embedding model (384 dimensions). Different models may require different thresholds.
+
+**Cosine Similarity Metric:**
+- Formula: `dot(a, b) / (||a|| * ||b||)`
+- Range: 0.0 (orthogonal/unrelated) to 1.0 (identical semantic direction)
+- Normalized vectors ensure scores reflect semantic similarity, not magnitude
+
+**Threshold Recommendations** (tested on 11,867 Pearltrees documents):
+
+| Threshold | Tree Matches | Coverage | Use Case | Interpretation |
+|-----------|--------------|----------|----------|----------------|
+| **0.60+** | 6 | Minimal | Exact match only | Perfect semantic alignment - same topic, same terminology |
+| **0.50** | 21 | Conservative | High precision | Strong semantic match - core topic with standard terminology |
+| **0.40** | 69 | Balanced | **Recommended** | Good semantic match - includes subtopics and related concepts |
+| **0.35** | 118 | Comprehensive | Broad exploration | Moderate match - captures specialized subtopics and tangential areas |
+| **0.30** | 239 | Very broad | Maximum recall | Weak but relevant - includes loosely related domains |
+
+**Example: Query "physics" on 11,867 Pearltrees documents**
+
+Threshold 0.60 captures:
+- ✅ "Physics" (1.000)
+- ✅ "Introductory Physics" (0.739)
+- ✅ "mechanics" (0.702)
+- ❌ Misses "Quantum Mechanics" (0.502) - **too strict!**
+
+Threshold 0.40 captures:
+- ✅ All core physics topics
+- ✅ "Quantum Mechanics" (0.502)
+- ✅ "Classical Mechanics" (0.544)
+- ✅ "Energy" (0.555)
+- ❌ Excludes "Statistics" (0.362), "advanced calculus" (0.354)
+
+Threshold 0.35 captures:
+- ✅ All physics and specialized subtopics
+- ✅ "advanced calculus" (0.354) - math foundation
+- ✅ "Material Engineering" (0.359) - applied physics
+- ✅ ~118 trees for "top 100" broad searches
+
+**Recommendations:**
+
+1. **For broad topic discovery** (e.g., "physics", "machine learning"): Use **0.35-0.40**
+   - Captures 100-150 seeds
+   - Balances coverage vs noise
+   - Includes specialized subtopics
+
+2. **For specific concept search** (e.g., "quantum field theory"): Use **0.50-0.60**
+   - Focuses on exact matches
+   - Reduces false positives
+   - Targets precise terminology
+
+3. **For maximum recall** (research, exploration): Use **0.30**
+   - Casts wide net
+   - Accepts more tangential matches
+   - Good for discovering unexpected connections
+
+**Pro Tip**: Start with 0.40, then adjust based on your first search results. If you're missing obvious relevant content, lower it to 0.35. If you're getting too much noise, raise it to 0.50.
+
 ### API: RunSemanticCrawl
 
 The `PtHarness.RunSemanticCrawl()` method combines semantic search with fixed-point crawling:
 
 ```csharp
 PtHarness.RunSemanticCrawl(
-    seedQuery: "quantum mechanics physics",
+    seedQuery: "physics",
     sourceDb: "full_database.db",           // Database with embeddings
     targetDb: "physics_subset.db",          // Output crawl subset
     embeddingProvider: embeddingProvider,
     fetchConfig: id => new XmlSourceConfig { /* config for fetching by ID */ },
-    topSeeds: 100,       // Find top 100 physics documents
-    minScore: 0.5,       // Minimum similarity for seeds
+    topSeeds: 150,       // Find top 150 physics documents
+    minScore: 0.40,      // Recommended threshold for broad topics
     maxDepth: 3,         // Crawl 3 hops from seeds
     typeFilter: "pt:Tree"  // Only use trees as seeds (recommended for diversity)
 );
@@ -371,8 +430,8 @@ PtHarness.RunSemanticCrawl(
         },
         TreatPearltreesCDataAsText: true
     },
-    topSeeds: 100,       // Start from top 100 physics trees
-    minScore: 0.5,       // High quality threshold
+    topSeeds: 120,       // Request ~100-120 seeds
+    minScore: 0.35,      // Balanced threshold for comprehensive coverage
     maxDepth: 3,         // Crawl 3 hops deep
     typeFilter: "pt:Tree"  // Only trees as seeds (avoids pearl clustering)
 );
