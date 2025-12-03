@@ -7,16 +7,17 @@ Achieve **Semantic Capability Parity** with the Python and Go targets in the Rus
 
 While Python uses SQLite (relational) and C# uses LiteDB (document), the Go target successfully uses `bbolt` (pure Go KV) by manually handling indexing.
 
-For Rust, to maintain the "self-contained" philosophy without external C dependencies (like `sqlite3`), we recommend **Redb**.
+For Rust, to maintain the "self-contained" philosophy without external C dependencies (like `sqlite3`), we will prioritize **Pure Rust Embedded** databases.
 
-### Why Redb?
-*   **Pure Rust**: No C compiler/linker required.
-*   **Embedded**: Single file storage.
-*   **ACID**: Safe transactions.
-*   **Performance**: Often faster than LMDB/Bbolt.
-*   **Type Safe**: Strong typing for keys/values.
+### Candidates
+1.  **Redb** (Primary): Embedded ACID Key-Value store. Simple, fast, pure Rust. Ideal for object storage and manual indexing.
+2.  **LanceDB** (Secondary): Columnar vector database. Ideal if vector search performance becomes a bottleneck.
+3.  **IndraDB** (Tertiary): Graph database. Useful if graph traversal complexity increases significantly.
 
-### Architecture
+### Decision
+We will start with **Redb**. It matches the architecture we successfully used in Go (`bbolt`), allowing us to reuse the design patterns for manual indexing (links table) and storage (objects bucket). Vector search will be handled in-memory (or via a lightweight linear scan) initially, as `redb` stores vectors as blobs.
+
+## Architecture
 
 #### 1. Rust Semantic Runtime (`src/unifyweaver/targets/rust_runtime/`)
 
@@ -24,12 +25,12 @@ For Rust, to maintain the "self-contained" philosophy without external C depende
     *   *Crate*: `redb`
     *   *Tables*:
         *   `objects`: `Table<String, String>` (ID -> JSON)
-        *   `embeddings`: `Table<String, Vec<f32>>` (ID -> Vector)
+        *   `embeddings`: `Table<String, Vec<u8>>` (ID -> Vector Blob)
         *   `links`: `Table<String, String>` (Source -> Target) - *Note: May need composite key or multimap for links*
 *   **`crawler.rs`**: XML streaming.
     *   *Crate*: `quick-xml`
 *   **`searcher.rs`**:
-    *   *Vector Search*: Manual Cosine Similarity or use `lance` (if it can be embedded easily, otherwise pure Rust math).
+    *   *Vector Search*: Manual Cosine Similarity (load vectors from Redb).
     *   *Graph Traversal*: Key lookups in Redb.
 
 #### 2. Key Construction (`generate_key/2`)
