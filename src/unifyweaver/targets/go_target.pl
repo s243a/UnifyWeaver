@@ -122,6 +122,12 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
         is_aggregation_predicate(Body)
     ->  format('  Mode: Aggregation~n'),
         compile_aggregation_mode(Pred, Arity, Options, GoCode)
+    % Check if this is a GROUP BY predicate (group_by/4 in body)
+    ;   functor(Head, Pred, Arity),
+        clause(Head, Body),
+        is_group_by_predicate(Body)
+    ->  format('  Mode: GROUP BY Aggregation~n'),
+        compile_group_by_mode(Pred, Arity, Options, GoCode)
     % Check if this is database read mode
     ;   option(db_backend(bbolt), Options),
         (option(db_mode(read), Options) ; \+ option(json_input(true), Options)),
@@ -2816,6 +2822,404 @@ generate_min_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
 \t// Output result
 \tfmt.Println(minValue)
 ', [DbFile, BucketStr, BucketStr, FieldName]).
+
+%% ============================================
+%% GROUP BY AGGREGATION SUPPORT (Phase 9b)
+%% ============================================
+
+%% is_group_by_predicate(+Body)
+%  Check if predicate body contains group_by/4
+%
+is_group_by_predicate(group_by(_GroupField, _Goal, _AggOp, _Result)).
+is_group_by_predicate((group_by(_GroupField, _Goal, _AggOp, _Result), _Rest)).
+is_group_by_predicate((_First, Rest)) :-
+    is_group_by_predicate(Rest).
+
+%% extract_group_by_spec(+Body, -GroupField, -Goal, -AggOp, -Result)
+%  Extract group_by operation components
+%
+extract_group_by_spec(group_by(GroupField, Goal, AggOp, Result), GroupField, Goal, AggOp, Result) :- !.
+extract_group_by_spec((group_by(GroupField, Goal, AggOp, Result), _Rest), GroupField, Goal, AggOp, Result) :- !.
+extract_group_by_spec((_First, Rest), GroupField, Goal, AggOp, Result) :-
+    extract_group_by_spec(Rest, GroupField, Goal, AggOp, Result).
+
+%% compile_group_by_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate with GROUP BY aggregation
+%
+compile_group_by_mode(Pred, Arity, Options, GoCode) :-
+    % Get predicate definition
+    functor(Head, Pred, Arity),
+    clause(Head, Body),
+
+    % Extract group_by specification
+    extract_group_by_spec(Body, GroupField, Goal, AggOp, Result),
+    format('  Group by field: ~w~n', [GroupField]),
+    format('  Aggregation: ~w~n', [AggOp]),
+    format('  Goal: ~w~n', [Goal]),
+
+    % Extract field mappings from json_record
+    (   Goal = json_record(FieldMappings)
+    ->  format('  Field mappings: ~w~n', [FieldMappings])
+    ;   format('ERROR: No json_record/1 found in group_by goal~n'),
+        fail
+    ),
+
+    % Get database options
+    option(db_file(DbFile), Options, 'data.db'),
+    option(db_bucket(BucketAtom), Options, Pred),
+    atom_string(BucketAtom, BucketStr),
+
+    % Generate grouped aggregation code
+    generate_group_by_code(GroupField, FieldMappings, AggOp, DbFile, BucketStr, AggBody),
+
+    % Wrap in package main
+    format(string(GoCode), 'package main
+
+import (
+\t"encoding/json"
+\t"fmt"
+\t"os"
+
+\tbolt "go.etcd.io/bbolt"
+)
+
+func main() {
+~s}
+', [AggBody]).
+
+%% generate_group_by_code(+GroupField, +FieldMappings, +AggOp, +DbFile, +BucketStr, -GoCode)
+%  Generate Go code for grouped aggregation
+%
+generate_group_by_code(GroupField, FieldMappings, AggOp, DbFile, BucketStr, GoCode) :-
+    % Find the field name for group field variable
+    find_field_for_var(GroupField, FieldMappings, GroupFieldName),
+
+    % Dispatch based on aggregation operation
+    (   AggOp = count
+    ->  generate_group_by_count(GroupFieldName, DbFile, BucketStr, GoCode)
+    ;   AggOp = sum(AggVar)
+    ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+        generate_group_by_sum(GroupFieldName, AggFieldName, DbFile, BucketStr, GoCode)
+    ;   AggOp = avg(AggVar)
+    ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+        generate_group_by_avg(GroupFieldName, AggFieldName, DbFile, BucketStr, GoCode)
+    ;   AggOp = max(AggVar)
+    ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+        generate_group_by_max(GroupFieldName, AggFieldName, DbFile, BucketStr, GoCode)
+    ;   AggOp = min(AggVar)
+    ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+        generate_group_by_min(GroupFieldName, AggFieldName, DbFile, BucketStr, GoCode)
+    ;   format('ERROR: Unknown group_by aggregation operation: ~w~n', [AggOp]),
+        fail
+    ).
+
+%% generate_group_by_count(+GroupField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY count code
+%
+generate_group_by_count(GroupField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and count
+\tcounts := make(map[string]int)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group field
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tcounts[groupStr]++
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, count := range counts {
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"count": count,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, BucketStr, BucketStr, GroupField, GroupField]).
+
+%% generate_group_by_sum(+GroupField, +AggField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY sum code
+%
+generate_group_by_sum(GroupField, AggField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and sum ~s
+\tsums := make(map[string]float64)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group and aggregation fields
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tsums[groupStr] += valueFloat
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, sum := range sums {
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"sum": sum,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, AggField, BucketStr, BucketStr, GroupField, AggField, GroupField]).
+
+%% generate_group_by_avg(+GroupField, +AggField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY average code
+%
+generate_group_by_avg(GroupField, AggField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and average ~s
+\ttype GroupStats struct {
+\t\tsum   float64
+\t\tcount int
+\t}
+\tstats := make(map[string]*GroupStats)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group and aggregation fields
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif _, exists := stats[groupStr]; !exists {
+\t\t\t\t\t\t\t\tstats[groupStr] = &GroupStats{}
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t\tstats[groupStr].count++
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, s := range stats {
+\t\tavg := 0.0
+\t\tif s.count > 0 {
+\t\t\tavg = s.sum / float64(s.count)
+\t\t}
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"avg": avg,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, AggField, BucketStr, BucketStr, GroupField, AggField, GroupField]).
+
+%% generate_group_by_max(+GroupField, +AggField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY max code
+%
+generate_group_by_max(GroupField, AggField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and find max ~s
+\ttype GroupMax struct {
+\t\tmaxValue float64
+\t\tfirst    bool
+\t}
+\tmaxes := make(map[string]*GroupMax)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group and aggregation fields
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif _, exists := maxes[groupStr]; !exists {
+\t\t\t\t\t\t\t\tmaxes[groupStr] = &GroupMax{first: true}
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t\tif maxes[groupStr].first || valueFloat > maxes[groupStr].maxValue {
+\t\t\t\t\t\t\t\tmaxes[groupStr].maxValue = valueFloat
+\t\t\t\t\t\t\t\tmaxes[groupStr].first = false
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, m := range maxes {
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"max": m.maxValue,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, AggField, BucketStr, BucketStr, GroupField, AggField, GroupField]).
+
+%% generate_group_by_min(+GroupField, +AggField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY min code
+%
+generate_group_by_min(GroupField, AggField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and find min ~s
+\ttype GroupMin struct {
+\t\tminValue float64
+\t\tfirst    bool
+\t}
+\tmins := make(map[string]*GroupMin)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group and aggregation fields
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif _, exists := mins[groupStr]; !exists {
+\t\t\t\t\t\t\t\tmins[groupStr] = &GroupMin{first: true}
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t\tif mins[groupStr].first || valueFloat < mins[groupStr].minValue {
+\t\t\t\t\t\t\t\tmins[groupStr].minValue = valueFloat
+\t\t\t\t\t\t\t\tmins[groupStr].first = false
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, m := range mins {
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"min": m.minValue,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, AggField, BucketStr, BucketStr, GroupField, AggField, GroupField]).
 
 %% ============================================
 %% JSON INPUT MODE COMPILATION
