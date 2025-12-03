@@ -1717,6 +1717,9 @@ extract_constraints_impl(json_record(Fields), _JsonRecAcc, json_record(Fields), 
 extract_constraints_impl(Constraint, JsonRecAcc, JsonRecAcc, ConsAcc, [Constraint|ConsAcc]) :-
     is_comparison_constraint(Constraint), !.
 
+extract_constraints_impl(Constraint, JsonRecAcc, JsonRecAcc, ConsAcc, [Constraint|ConsAcc]) :-
+    is_functional_constraint(Constraint), !.
+
 % Skip other predicates (like json_get, etc.)
 extract_constraints_impl(_, JsonRecAcc, JsonRecAcc, ConsAcc, ConsAcc).
 
@@ -1729,6 +1732,13 @@ is_comparison_constraint(_ >= _).
 is_comparison_constraint(_ =< _).
 is_comparison_constraint(_ = _).
 is_comparison_constraint(_ \= _).
+is_comparison_constraint(_ =@= _).  % Case-insensitive equality
+
+%% is_functional_constraint(+Term)
+%  Check if term is a functional constraint (contains, member, etc.)
+%
+is_functional_constraint(contains(_, _)).
+is_functional_constraint(member(_, _)).
 
 %% is_numeric_constraint(+Constraint)
 %  Check if constraint requires numeric type conversion (>, <, >=, =<)
@@ -1738,6 +1748,16 @@ is_numeric_constraint(_ > _).
 is_numeric_constraint(_ < _).
 is_numeric_constraint(_ >= _).
 is_numeric_constraint(_ =< _).
+
+%% constraints_need_strings(+Constraints)
+%  Check if any constraint requires the strings package
+%  True if constraints contain =@= or contains/2
+%
+constraints_need_strings(Constraints) :-
+    member(Constraint, Constraints),
+    (   Constraint = (_ =@= _)
+    ;   Constraint = contains(_, _)
+    ), !.
 
 %% generate_filter_checks(+Constraints, +FieldMappings, -GoCode)
 %  Generate Go if statements for constraint checking
@@ -1790,6 +1810,25 @@ constraint_to_go_check(Left \= Right, FieldMappings, Code) :- !,
     format(string(Code), '\t\t\t// Filter: ~w \\= ~w\n\t\t\tif !(~s != ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
            [Left, Right, LeftExpr, RightExpr]).
 
+% Case-insensitive equality (requires strings package)
+constraint_to_go_check(Left =@= Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w =@= ~w (case-insensitive)\n\t\t\tif !strings.EqualFold(fmt.Sprintf("%v", ~s), fmt.Sprintf("%v", ~s)) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+% Contains check (requires strings package)
+constraint_to_go_check(contains(Haystack, Needle), FieldMappings, Code) :- !,
+    field_term_to_go_expr(Haystack, FieldMappings, HaystackExpr),
+    field_term_to_go_expr(Needle, FieldMappings, NeedleExpr),
+    format(string(Code), '\t\t\t// Filter: contains(~w, ~w)\n\t\t\tif !strings.Contains(fmt.Sprintf("%v", ~s), fmt.Sprintf("%v", ~s)) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Haystack, Needle, HaystackExpr, NeedleExpr]).
+
+% List membership check
+constraint_to_go_check(member(Element, List), FieldMappings, Code) :- !,
+    field_term_to_go_expr(Element, FieldMappings, ElementExpr),
+    generate_member_check_code(ElementExpr, List, FieldMappings, Code).
+
 %% field_term_to_go_expr(+Term, +FieldMappings, -GoExpr)
 %  Convert a Prolog term to Go expression for filter constraints
 %  Handles variables (map to fieldN) and literals
@@ -1823,6 +1862,50 @@ field_term_to_go_expr(Term, _, GoExpr) :-
 field_term_to_go_expr(Term, _, GoExpr) :-
     % Fallback for unknown terms
     format(atom(GoExpr), '%s /* ~w */', [Term]).
+
+%% generate_member_check_code(+ElementExpr, +List, +FieldMappings, -Code)
+%  Generate Go code for list membership check
+%  Handles both string and numeric list members
+%
+generate_member_check_code(ElementExpr, List, FieldMappings, Code) :-
+    % Convert list elements to Go expressions
+    findall(GoExpr,
+        (member(ListItem, List),
+         field_term_to_go_expr(ListItem, FieldMappings, GoExpr)),
+        GoExprs),
+    % Generate the list items as Go slice literals
+    atomic_list_concat(GoExprs, ', ', GoListItems),
+    % Determine if we're checking strings or numbers
+    (   List = [FirstItem|_],
+        (atom(FirstItem) ; string(FirstItem))
+    ->  % String membership
+        format(string(Code), '\t\t\t// Filter: member(~w, list)
+\t\t\toptions := []string{~s}
+\t\t\tfound := false
+\t\t\tfor _, opt := range options {
+\t\t\t\tif fmt.Sprintf("%v", ~s) == opt {
+\t\t\t\t\tfound = true
+\t\t\t\t\tbreak
+\t\t\t\t}
+\t\t\t}
+\t\t\tif !found {
+\t\t\t\treturn nil // Skip record
+\t\t\t}',
+            [ElementExpr, GoListItems, ElementExpr])
+    ;   % Numeric membership
+        format(string(Code), '\t\t\t// Filter: member(~w, list)
+\t\t\tfound := false
+\t\t\tfor _, opt := range []interface{}{~s} {
+\t\t\t\tif fmt.Sprintf("%v", ~s) == fmt.Sprintf("%v", opt) {
+\t\t\t\t\tfound = true
+\t\t\t\t\tbreak
+\t\t\t\t}
+\t\t\t}
+\t\t\tif !found {
+\t\t\t\treturn nil // Skip record
+\t\t\t}',
+            [ElementExpr, GoListItems, ElementExpr])
+    ).
 
 %% extract_used_fields(+KeyExpr, -UsedFieldPositions)
 %  Extract which field positions are referenced by the key expression
@@ -2116,19 +2199,30 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 
     % Wrap in package if requested
     (   IncludePackage = true
-    ->  format(string(GoCode), 'package main
+    ->  % Check if we need strings package (only if Constraints is defined)
+        (   (var(Constraints) ; Constraints = [])
+        ->  % No constraints or empty constraints - no strings needed
+            StringsImport = ''
+        ;   % Check if constraints need strings package
+            (   constraints_need_strings(Constraints)
+            ->  StringsImport = '\t"strings"\n'
+            ;   StringsImport = ''
+            )
+        ),
+        % Build package with conditional strings import
+        format(string(GoCode), 'package main
 
 import (
 \t"encoding/json"
 \t"fmt"
 \t"os"
-
+~s
 \tbolt "go.etcd.io/bbolt"
 )
 
 func main() {
 ~s}
-', [BodyCode])
+', [StringsImport, BodyCode])
     ;   GoCode = BodyCode
     ).
 

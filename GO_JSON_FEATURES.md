@@ -895,6 +895,161 @@ Age >= 30  →  WHERE age >= 30
 City = "NYC"  →  WHERE city = 'NYC'
 ```
 
+### ✅ Phase 8b: Enhanced Filtering - String Operations & List Membership (NEW!)
+
+Extends Phase 8a with advanced string operations and list membership checks.
+
+**New Operators:**
+- `=@=` - Case-insensitive string equality (requires `strings` package)
+- `contains(String, Substring)` - Substring matching (requires `strings` package)
+- `member(Element, List)` - List membership check
+
+**Prolog Syntax:**
+```prolog
+% Case-insensitive city search
+user_by_city_insensitive(Name, City) :-
+    json_record([name-Name, age-_Age, city-City, status-_Status]),
+    City =@= "nyc".  % Matches "NYC", "nyc", "Nyc", etc.
+
+% Substring matching
+users_with_substring(Name) :-
+    json_record([name-Name, age-_Age, city-_City, status-_Status]),
+    contains(Name, "ali").  % Matches "Alice", "Natalie", "Kalina"
+
+% String list membership
+major_city_users(Name, City) :-
+    json_record([name-Name, age-_Age, city-City, status-_Status]),
+    member(City, ["NYC", "SF", "LA", "Chicago"]).
+
+% Numeric list membership
+specific_age_users(Name, Age) :-
+    json_record([name-Name, age-Age, city-_City, status-_Status]),
+    member(Age, [25, 30, 35, 40]).
+
+% Mixed constraints
+nyc_young_adults(Name, Age, City) :-
+    json_record([name-Name, age-Age, city-City, status-_Status]),
+    City =@= "nyc",    % Case-insensitive
+    Age > 25.          % Numeric filter
+```
+
+**Input (Database):**
+```
+Key: Alice   → {"name": "Alice", "age": 35, "city": "NYC", "status": "active"}
+Key: Charlie → {"name": "Charlie", "age": 42, "city": "nyc", "status": "premium"}
+Key: Eve     → {"name": "Eve", "age": 31, "city": "Nyc", "status": "active"}
+Key: Natalie → {"name": "Natalie", "age": 30, "city": "SF", "status": "premium"}
+Key: Kalina  → {"name": "Kalina", "age": 40, "city": "LA", "status": "premium"}
+```
+
+**Output (user_by_city_insensitive/2 - City =@= "nyc"):**
+```json
+{"city":"NYC","name":"Alice"}
+{"city":"nyc","name":"Charlie"}
+{"city":"Nyc","name":"Eve"}
+```
+
+**Output (users_with_substring/1 - contains(Name, "ali")):**
+```json
+{"name":"Natalie"}
+{"name":"Kalina"}
+```
+*Note: Case-sensitive. "Alice" with capital "Ali" doesn't match.*
+
+**Output (major_city_users/2 - member(City, ["NYC", "SF", "LA"])):**
+```json
+{"city":"NYC","name":"Alice"}
+{"city":"SF","name":"Natalie"}
+{"city":"LA","name":"Kalina"}
+```
+*Note: Case-sensitive. Only exact "NYC" matches, not "nyc" or "Nyc".*
+
+**Key Features:**
+- Automatic `strings` package import when `=@=` or `contains/2` are used
+- Type-aware list membership (string lists use `[]string`, mixed use `[]interface{}`)
+- Efficient membership checks with found-flag pattern
+- Works seamlessly with Phase 8a numeric and equality constraints
+
+**Generated Go Code (=@=):**
+```go
+// Case-insensitive filter
+if !strings.EqualFold(fmt.Sprintf("%v", field3), fmt.Sprintf("%v", "nyc")) {
+    return nil // Skip record
+}
+```
+
+**Generated Go Code (contains/2):**
+```go
+// Substring matching
+if !strings.Contains(fmt.Sprintf("%v", field1), fmt.Sprintf("%v", "ali")) {
+    return nil // Skip record
+}
+```
+
+**Generated Go Code (member/2 - String List):**
+```go
+// String list membership
+options := []string{"NYC", "SF", "LA", "Chicago"}
+found := false
+for _, opt := range options {
+    if fmt.Sprintf("%v", field3) == opt {
+        found = true
+        break
+    }
+}
+if !found {
+    return nil // Skip record
+}
+```
+
+**Generated Go Code (member/2 - Numeric List):**
+```go
+// Numeric list membership
+found := false
+for _, opt := range []interface{}{25, 30, 35, 40} {
+    if fmt.Sprintf("%v", field2) == fmt.Sprintf("%v", opt) {
+        found = true
+        break
+    }
+}
+if !found {
+    return nil // Skip record
+}
+```
+
+**Conditional Import Detection:**
+The `strings` package is automatically added only when needed:
+```go
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "strings"  // ← Added only when =@= or contains/2 are used
+
+    bolt "go.etcd.io/bbolt"
+)
+```
+
+**Implementation Details:**
+- String operation detection: `is_comparison_constraint(_ =@= _)` in `go_target.pl:1723`
+- Functional constraint detection: `is_functional_constraint/1` in `go_target.pl:1736-1741`
+- Import detection: `constraints_need_strings/1` in `go_target.pl:1752-1760`
+- Member code generation: `generate_member_check_code/4` in `go_target.pl:1856-1898`
+- Conditional imports: Modified package wrapping in `go_target.pl:2200-2227`
+
+**Operator Behavior:**
+| Operator | Case Sensitive | Go Function | Example |
+|----------|---------------|-------------|---------|
+| `=@=` | No | `strings.EqualFold` | "NYC" =@= "nyc" ✅ |
+| `contains/2` | Yes | `strings.Contains` | contains("Alice", "ali") ❌ |
+| `member/2` | Yes | Slice iteration | member("NYC", ["NYC", "nyc"]) ❌ for "nyc" |
+| `=` | Yes | `==` | "NYC" = "nyc" ❌ |
+
+**Performance Notes:**
+- Case-insensitive comparison (`=@=`) is slightly slower than `=` due to Unicode normalization
+- `contains/2` is O(n) where n is the string length
+- `member/2` is O(n) where n is the list size (could be optimized with maps for large lists)
+
 ## Comparison with Other Targets
 
 | Feature | Python | C# | Go |
