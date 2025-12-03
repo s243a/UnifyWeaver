@@ -789,6 +789,112 @@ key := []byte(keyStr)
 - Unused field detection via `extract_used_field_positions/3`
 - Backward compatibility via `normalize_key_strategy/2`
 
+### ✅ Phase 8a: Database Query/Filter Predicates (NEW!)
+
+Filter database records using native Prolog comparison operators in predicate bodies.
+
+**Supported Operators:**
+- Numeric: `>`, `<`, `>=`, `=<` (requires numeric fields)
+- Equality: `=`, `\=` (works with any type)
+
+**Prolog Syntax:**
+```prolog
+:- json_schema(user_data, [
+    field(name, string),
+    field(age, integer),
+    field(city, string),
+    field(salary, integer)
+]).
+
+% Simple age filter
+adults(Name, Age) :-
+    json_record([name-Name, age-Age, city-_City, salary-_Salary]),
+    Age >= 30.
+
+% Multi-field filter with AND
+nyc_young_adults(Name, Age) :-
+    json_record([name-Name, age-Age, city-City, salary-_Salary]),
+    Age > 25,
+    City = "NYC".
+
+% Salary range filter
+middle_income(Name, Salary) :-
+    json_record([name-Name, age-_Age, city-_City, salary-Salary]),
+    30000 =< Salary,
+    Salary =< 80000.
+
+compile_predicate_to_go(adults/2, [
+    db_backend(bbolt),
+    db_file('users.db'),
+    db_bucket(users),
+    db_mode(read),
+    package(main)
+], Code).
+```
+
+**Input (Database):**
+```
+Key: Alice → {"name": "Alice", "age": 35, "city": "NYC", "salary": 75000}
+Key: Bob   → {"name": "Bob", "age": 28, "city": "SF", "salary": 90000}
+Key: Eve   → {"name": "Eve", "age": 31, "city": "NYC", "salary": 55000}
+```
+
+**Output (adults/2 - Age >= 30):**
+```json
+{"name":"Alice","age":35}
+{"name":"Eve","age":31}
+```
+
+**Output (nyc_young_adults/2 - NYC AND Age > 25):**
+```json
+{"name":"Alice","age":35}
+{"name":"Eve","age":31}
+```
+
+**Key Features:**
+- Native Prolog constraint syntax (no custom DSL)
+- Smart type conversion for numeric comparisons
+- Automatic field selection (only outputs fields in head)
+- String comparison support
+- Unused field handling (avoids Go compiler warnings)
+- Multiple constraints combined with implicit AND
+
+**Generated Go Code:**
+```go
+// Extract field with type conversion for constraint
+field2Raw, field2Ok := data["age"]
+if !field2Ok {
+    return nil
+}
+field2Float, field2FloatOk := field2Raw.(float64)
+if !field2FloatOk {
+    return nil
+}
+field2 := field2Float
+
+// Apply filter
+if !(field2 >= 30) {
+    return nil // Skip record
+}
+
+// Output selected fields only
+output, err := json.Marshal(map[string]interface{}{"name": field1, "age": field2})
+```
+
+**Implementation Details:**
+- Constraint extraction: `extract_db_constraints/3` in `go_target.pl`
+- Numeric vs equality detection: `is_numeric_constraint/1`
+- Smart field extraction: `generate_field_extractions_for_read/4`
+- Filter code generation: `generate_filter_checks/3`
+- Position-based variable mapping for correct type conversions
+
+**SQL Compatibility:**
+The same constraint syntax will map directly to SQL WHERE clauses when SQL target is implemented:
+```prolog
+Age >= 30  →  WHERE age >= 30
+City = "NYC"  →  WHERE city = 'NYC'
+```
+
 ## Comparison with Other Targets
 
 | Feature | Python | C# | Go |
