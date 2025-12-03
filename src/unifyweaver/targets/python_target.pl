@@ -448,6 +448,30 @@ translate_goal(>(Var, Value), Code) :-
     var_to_python(Value, PyValue),
     format(string(Code), "    if not (~w > ~w): return\n", [PyVar, PyValue]).
 
+translate_goal(<(Var, Value), Code) :-
+    !,
+    var_to_python(Var, PyVar),
+    var_to_python(Value, PyValue),
+    format(string(Code), "    if not (~w < ~w): return\n", [PyVar, PyValue]).
+
+translate_goal(>=(Var, Value), Code) :-
+    !,
+    var_to_python(Var, PyVar),
+    var_to_python(Value, PyValue),
+    format(string(Code), "    if not (~w >= ~w): return\n", [PyVar, PyValue]).
+
+translate_goal(=<(Var, Value), Code) :-
+    !,
+    var_to_python(Var, PyVar),
+    var_to_python(Value, PyValue),
+    format(string(Code), "    if not (~w <= ~w): return\n", [PyVar, PyValue]).
+
+translate_goal(\=(Var, Value), Code) :-
+    !,
+    var_to_python(Var, PyVar),
+    var_to_python(Value, PyValue),
+    format(string(Code), "    if not (~w != ~w): return\n", [PyVar, PyValue]).
+
 % Match predicate support for procedural mode
 translate_goal(match(Var, Pattern), Code) :-
     !,
