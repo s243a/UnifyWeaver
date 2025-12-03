@@ -12,7 +12,7 @@ class PtCrawler:
         self.embedder = embedder
         self.seen = set()
 
-    def crawl(self, seed_ids, fetch_func, max_depth=5):
+    def crawl(self, seed_ids, fetch_func, max_depth=5, embed_content=True):
         frontier = deque(seed_ids)
         self.seen.update(seed_ids)
         depth = 0
@@ -29,7 +29,7 @@ class PtCrawler:
                     if not xml_stream:
                         continue
                         
-                    self._process_stream(xml_stream, next_batch)
+                    self._process_stream(xml_stream, next_batch, embed_content=embed_content)
                 except Exception as e:
                     print(f"Error processing {obj_id}: {e}", file=sys.stderr)
             
@@ -37,7 +37,7 @@ class PtCrawler:
                 frontier.append(kid)
             depth += 1
 
-    def _process_stream(self, xml_stream, next_batch):
+    def _process_stream(self, xml_stream, next_batch, embed_content=True):
         context = etree.iterparse(xml_stream, events=('end',), recover=True)
         count = 0
         limit = 50 # Safety limit for testing
@@ -87,7 +87,7 @@ class PtCrawler:
                 self.importer.upsert_object(obj_id, tag, data)
                 
                 # Embeddings
-                if self.embedder:
+                if embed_content and self.embedder:
                     text = data.get('title') or data.get('text') or ""
                     if text:
                         # print(f"DEBUG: Embedding {obj_id}: {text[:50]}...", file=sys.stderr)

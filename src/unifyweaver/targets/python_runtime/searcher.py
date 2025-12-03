@@ -31,9 +31,25 @@ class PtSearcher:
             
         return enriched
 
-    def graph_search(self, query, top_k=5, hops=1):
-        # 1. Initial Vector Search
-        seeds = self.search(query, top_k=top_k)
+    def text_search(self, query, top_k=10):
+        # Simple keyword search using LIKE
+        # Searches in the raw JSON 'data' column
+        search_term = f"%{query}%"
+        cursor = self.conn.execute("SELECT id, data FROM objects WHERE data LIKE ? LIMIT ?", (search_term, top_k))
+        
+        results = []
+        for obj_id, data in cursor:
+            # Score is dummy 1.0 for text match
+            results.append({'id': obj_id, 'score': 1.0, 'data': data})
+            
+        return results
+
+    def graph_search(self, query, top_k=5, hops=1, mode='vector'):
+        # 1. Initial Search (Anchor)
+        if mode == 'text':
+            seeds = self.text_search(query, top_k=top_k)
+        else:
+            seeds = self.search(query, top_k=top_k)
         
         # 2. Graph Traversal (1 hop for now)
         ids_to_fetch = set(s['id'] for s in seeds)

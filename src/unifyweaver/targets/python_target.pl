@@ -447,6 +447,19 @@ translate_goal(match(Var, Pattern, Type, Groups), Code) :-
     !,
     translate_match_goal(Var, Pattern, Type, Groups, Code).
 
+translate_goal(graph_search(Query, TopK, Hops, Options, Results), Code) :-
+    !,
+    var_to_python(Query, PyQuery),
+    var_to_python(TopK, PyTopK),
+    var_to_python(Hops, PyHops),
+    var_to_python(Results, PyResults),
+    % Extract search mode from options (default vector)
+    (   member(mode(Mode), Options)
+    ->  atom_string(Mode, ModeStr)
+    ;   ModeStr = "vector"
+    ),
+    format(string(Code), "    ~w = _get_runtime().searcher.graph_search(~w, top_k=~w, hops=~w, mode='~w')\n", [PyResults, PyQuery, PyTopK, PyHops, ModeStr]).
+
 translate_goal(graph_search(Query, TopK, Hops, Results), Code) :-
     !,
     var_to_python(Query, PyQuery),
@@ -461,6 +474,17 @@ translate_goal(semantic_search(Query, TopK, Results), Code) :-
     var_to_python(TopK, PyTopK),
     var_to_python(Results, PyResults),
     format(string(Code), "    ~w = _get_runtime().searcher.search(~w, top_k=~w)\n", [PyResults, PyQuery, PyTopK]).
+
+translate_goal(crawler_run(SeedIds, MaxDepth, Options), Code) :-
+    !,
+    var_to_python(SeedIds, PySeeds),
+    var_to_python(MaxDepth, PyDepth),
+    % Check options for embedding(false)
+    (   member(embedding(false), Options)
+    ->  EmbedVal = "False"
+    ;   EmbedVal = "True"
+    ),
+    format(string(Code), "    _get_runtime().crawler.crawl(~w, fetch_xml_func, max_depth=~w, embed_content=~w)\n", [PySeeds, PyDepth, EmbedVal]).
 
 translate_goal(crawler_run(SeedIds, MaxDepth), Code) :-
     !,
