@@ -398,6 +398,9 @@ translate_body((Goal, Rest), Code) :-
 translate_body(Goal, Code) :-
     translate_goal(Goal, Code).
 
+is_var_term(V) :- var(V), !.
+is_var_term('$VAR'(_)).
+
 translate_goal(_:Goal, Code) :-
     !,
     translate_goal(Goal, Code).
@@ -405,10 +408,10 @@ translate_goal(_:Goal, Code) :-
 translate_goal(get_dict(Key, Record, Value), Code) :-
     !,
     var_to_python(Record, PyRecord),
-    (   var(Value)
+    (   is_var_term(Value)
     ->  var_to_python(Value, PyValue),
         format(string(Code), "    ~w = ~w.get('~w')\n", [PyValue, PyRecord, Key])
-    ;   % Value is a constant/bound
+    ;   % Value is a constant
         var_to_python(Value, PyValue),
         % Check if key exists and equals value
         format(string(Code), "    if ~w.get('~w') != ~w: return\n", [PyRecord, Key, PyValue])
@@ -424,11 +427,20 @@ translate_goal(=(Var, Dict), Code) :-
     format(string(Code), "    ~w = {~s}\n", [PyVar, PairsStr]).
 
 translate_goal(=(Var, Value), Code) :-
+    is_var_term(Var),
     atomic(Value),
     !,
     var_to_python(Var, PyVar),
     var_to_python(Value, PyVal),
     format(string(Code), "    ~w = ~w\n", [PyVar, PyVal]).
+
+translate_goal(=(Var1, Var2), Code) :-
+    is_var_term(Var1),
+    is_var_term(Var2),
+    !,
+    var_to_python(Var1, PyVar1),
+    var_to_python(Var2, PyVar2),
+    format(string(Code), "    ~w = ~w\n", [PyVar1, PyVar2]).
 
 translate_goal(>(Var, Value), Code) :-
     !,
@@ -541,6 +553,12 @@ translate_goal(chunk_text(Text, Chunks, Options), Code) :-
     ),
     format(string(Code), "    ~w = [asdict(c) for c in _get_runtime().chunker.chunk(~w, 'inline', **~w)]\n", [PyChunks, PyText, PyKwargs]).
 
+translate_goal(generate_key(Strategy, KeyVar), Code) :-
+    !,
+    var_to_python(KeyVar, PyKeyVar),
+    compile_python_key_expr(Strategy, PyExpr),
+    format(string(Code), "    ~w = ~s\n", [PyKeyVar, PyExpr]).
+
 opt_to_py_pair(Term, Pair) :-
     Term =.. [Key, Value],
     format(string(Pair), "'~w': ~w", [Key, Value]).
@@ -551,6 +569,36 @@ translate_goal(true, Code) :-
 
 translate_goal(Goal, "") :-
     format(string(Msg), "Warning: Unsupported goal ~w", [Goal]),
+    print_message(warning, Msg).
+
+%% compile_python_key_expr(+Strategy, -PyExpr)
+%  Compiles a key generation strategy into a Python string expression.
+compile_python_key_expr(Var, PyExpr) :-
+    is_var_term(Var), !,
+    var_to_python(Var, PyVar),
+    format(string(PyExpr), "str(~w)", [PyVar]).
+compile_python_key_expr(literal(Text), PyExpr) :-
+    !,
+    format(string(PyExpr), "'~w'", [Text]).
+compile_python_key_expr(field(Var), PyExpr) :-
+    !,
+    compile_python_key_expr(Var, PyExpr).
+compile_python_key_expr(composite(List), PyExpr) :-
+    !,
+    maplist(compile_python_key_expr, List, Parts),
+    atomic_list_concat(Parts, " + ", Expr),
+    PyExpr = Expr.
+compile_python_key_expr(hash(Expr), PyExpr) :-
+    !,
+    compile_python_key_expr(Expr, Inner),
+    format(string(PyExpr), "hashlib.sha256(str(~s).encode('utf-8')).hexdigest()", [Inner]).
+compile_python_key_expr(uuid(), "uuid.uuid4().hex") :- !.
+compile_python_key_expr(Term, PyExpr) :-
+    atomic(Term),
+    !,
+    format(string(PyExpr), "'~w'", [Term]).
+compile_python_key_expr(Strategy, "'UNKNOWN_STRATEGY'") :-
+    format(string(Msg), "Warning: Unknown key strategy ~w", [Strategy]),
     print_message(warning, Msg).
 
 %% translate_match_goal(+Var, +Pattern, +Type, +Groups, -Code)
@@ -888,9 +936,9 @@ generate_recursive_wrapper(Name, Arity, WrapperCode) :-
     ;   WrapperCode = "# ERROR: Unsupported arity for recursion wrapper"
     ).
 
-header("import sys\nimport json\nimport re\nfrom typing import Iterator, Dict, Any\n\n").
+header("import sys\nimport json\nimport re\nimport hashlib\nimport uuid\nfrom typing import Iterator, Dict, Any\n\n").
 
-header_with_functools("import sys\nimport json\nimport re\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
+header_with_functools("import sys\nimport json\nimport re\nimport hashlib\nimport uuid\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
 
 helpers(Helpers) :-
     helpers_base(Base),
