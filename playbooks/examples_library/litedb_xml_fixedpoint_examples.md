@@ -491,3 +491,218 @@ SEMANTIC_CRAWL_OK
 **Note**: With `typeFilter: "pt:Tree"`, only 2 trees were selected as seeds (excluding 1 pearl), ensuring diverse organizational coverage. The crawl then expanded from those 2 tree nodes to capture their children, resulting in a focused physics subset.
 
 This demonstrates the full workflow: semantic search → type filtering → seed selection → focused crawl → subset creation.
+
+---
+
+## LLM-Assisted Bookmark Filing
+
+The `PtSearcher` class now includes graph navigation and tree formatting features to help LLMs suggest optimal filing locations for new bookmarks.
+
+### Overview
+
+When organizing bookmarks, you often need to decide where in your hierarchy a new item belongs. This feature:
+1. Uses semantic search to find candidate locations
+2. Explores the graph to show each candidate's context (ancestors, siblings, children)
+3. Formats results in a tree structure that LLMs can understand
+4. Enables the LLM to suggest the best placement with full context
+
+### Graph Navigation API
+
+**Core Methods** (PtSearcher.cs:109-192):
+
+```csharp
+// Get immediate children
+public List<PtEntity> GetChildren(string id);
+
+// Get parent tree
+public PtEntity? GetParent(string id);
+
+// Get all ancestors (parent → grandparent → ... → root)
+// Includes cycle detection
+public List<PtEntity> GetAncestors(string id);
+
+// Get siblings (entities with same parent)
+public List<PtEntity> GetSiblings(string id);
+```
+
+### Tree Formatting for LLMs
+
+**Main API** (PtSearcher.cs:202-235):
+
+```csharp
+/// <summary>
+/// Find candidate locations for filing a new bookmark.
+/// Returns formatted string showing each candidate in tree context.
+/// </summary>
+public string FindBookmarkPlacements(
+    string bookmarkDescription,
+    int topCandidates = 5,
+    double minScore = 0.35
+)
+```
+
+**Example Usage**:
+
+```csharp
+var dbPath = "pearltrees.db";
+var embeddingProvider = new OnnxEmbeddingProvider(modelPath, vocabPath);
+using var searcher = new PtSearcher(dbPath, embeddingProvider);
+
+// Find where to file a new quantum computing article
+var result = searcher.FindBookmarkPlacements(
+    "Article about quantum entanglement and its applications in quantum computing",
+    topCandidates: 3,
+    minScore: 0.35
+);
+
+Console.WriteLine(result);
+```
+
+**Output Format** (when data includes hierarchical relationships):
+
+```
+=== Bookmark Filing Suggestions ===
+
+Bookmark: "Article about quantum entanglement and its applications in quantum computing"
+Found 3 candidate location(s):
+
+================================================================================
+
+Option 1:
+
+Candidate: "Quantum Mechanics" (similarity: 0.719)
+
+└── Science/
+    └── Physics/
+        ├── Classical Mechanics/
+        ├── Quantum Mechanics/              ← CANDIDATE (place new bookmark here)
+        │   ├── Wave Functions/
+        │   ├── Operators/
+        │   └── Entanglement/
+        └── Relativity/
+
+--------------------------------------------------------------------------------
+
+Option 2:
+
+Candidate: "Quantum Computing" (similarity: 0.668)
+
+└── Technology/
+    └── Computer Science/
+        ├── Algorithms/
+        ├── Quantum Computing/              ← CANDIDATE (place new bookmark here)
+        │   ├── Qubits/
+        │   ├── Quantum Algorithms/
+        │   └── Error Correction/
+        └── Distributed Systems/
+
+[Additional candidates...]
+```
+
+### How It Works
+
+1. **Semantic Search**: Find trees semantically similar to the bookmark description
+2. **Type Filtering**: Filter to `pt:Tree` type (folder-like containers) for organizational purposes
+3. **Context Building**: For each candidate:
+   - Get ancestors (path from root to candidate)
+   - Get siblings (show context at current level)
+   - Get children (show what's already filed there)
+4. **Tree Formatting**: Display in Linux `tree`-style format with the candidate marked
+
+### Advanced Context Builder
+
+**Low-Level API** (PtSearcher.cs:246-338):
+
+```csharp
+/// <summary>
+/// Build a tree-formatted context string for a candidate entity.
+/// Shows ancestors, siblings, the candidate itself (marked), and children.
+/// </summary>
+public string BuildTreeContext(
+    string candidateId,
+    double score,
+    int maxChildrenToShow = 10
+)
+```
+
+Use this when you need fine-grained control over individual candidate formatting.
+
+### Test Results
+
+From `tmp/pt_ingest_test/Program.cs` demo:
+
+```
+Query: "Tutorial on classical mechanics and Newton's laws of motion"
+Found:
+  1. "Classical Mechanics" (similarity: 0.737)
+  2. "action (mechanics math)" (similarity: 0.576)
+  3. "Inverse problem for Lagrangian mechanics" (similarity: 0.554)
+
+Query: "Research paper on electromagnetic waves and Maxwell's equations"
+Found:
+  1. "Electromagnetic Waves" (similarity: 0.636)
+  2. "Videos (Maxwell's Equations)" (similarity: 0.554)
+  3. "Maxwell relation" (similarity: 0.513)
+```
+
+### LLM Integration
+
+Pass the formatted output to an LLM with a prompt like:
+
+```
+Given these candidate locations for filing a bookmark, analyze the tree structure and suggest:
+1. The best location (with reasoning)
+2. Whether a new category should be created
+3. Alternative placements if the top choice is uncertain
+
+[Paste FindBookmarkPlacements output here]
+```
+
+The LLM can:
+- Understand hierarchical relationships via the tree structure
+- See what content already exists in each location (via children)
+- Consider the semantic similarity scores
+- Make informed suggestions about optimal placement
+
+### Data Requirements
+
+**Important**: The tree formatting requires Pearltrees data with hierarchical relationships:
+- `ParentTree` field pointing to parent tree ID
+- `Children` array containing child IDs
+
+If your data lacks these fields (e.g., scrubbed/filtered exports), the semantic search will still work, but tree context will be minimal (showing only the candidate node itself).
+
+### Performance Considerations
+
+- **Semantic search**: O(n) brute-force over all embeddings (~1 second for 11,867 documents)
+- **Graph traversal**: O(depth × branching factor) for building context
+- **Typical response time**: <2 seconds for finding and formatting 3-5 candidates
+
+For large datasets (>100k documents), consider:
+- Using FAISS or HNSW for approximate nearest neighbor search
+- Caching frequently accessed subtrees
+- Limiting `maxChildrenToShow` to reduce output size
+
+### Example Workflow
+
+```csharp
+// 1. Load database and embeddings
+var searcher = new PtSearcher("pearltrees.db", embeddingProvider);
+
+// 2. Find filing locations
+var suggestions = searcher.FindBookmarkPlacements(
+    "New deep learning paper on transformers",
+    topCandidates: 5,
+    minScore: 0.35
+);
+
+// 3. Pass to LLM (pseudo-code)
+var llmResponse = await LLM.Complete(
+    $"Suggest the best location:\n\n{suggestions}"
+);
+
+// 4. Parse LLM response and file bookmark accordingly
+Console.WriteLine(llmResponse);
+```
+
+This enables a conversational workflow where users describe what they want to file, and the system suggests optimal locations with full context.

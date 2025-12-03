@@ -104,6 +104,241 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         /// <summary>
+        /// Get all children of a tree or pearl.
+        /// </summary>
+        public List<PtEntity> GetChildren(string id)
+        {
+            var entity = GetEntity(id);
+            if (entity?.Children == null || entity.Children.Count == 0)
+            {
+                return new List<PtEntity>();
+            }
+
+            var children = new List<PtEntity>();
+            foreach (var childId in entity.Children)
+            {
+                var child = GetEntity(childId);
+                if (child != null)
+                {
+                    children.Add(child);
+                }
+            }
+            return children;
+        }
+
+        /// <summary>
+        /// Get the parent tree of an entity.
+        /// </summary>
+        public PtEntity? GetParent(string id)
+        {
+            var entity = GetEntity(id);
+            if (entity?.ParentTree == null)
+            {
+                return null;
+            }
+            return GetEntity(entity.ParentTree);
+        }
+
+        /// <summary>
+        /// Get all ancestors (parent, grandparent, ...) up to the root.
+        /// Returns list from immediate parent to root.
+        /// </summary>
+        public List<PtEntity> GetAncestors(string id)
+        {
+            var ancestors = new List<PtEntity>();
+            var current = GetParent(id);
+            var visited = new HashSet<string> { id }; // Prevent cycles
+
+            while (current != null && !visited.Contains(current.Id))
+            {
+                ancestors.Add(current);
+                visited.Add(current.Id);
+                current = GetParent(current.Id);
+            }
+
+            return ancestors;
+        }
+
+        /// <summary>
+        /// Get siblings (entities with the same parent).
+        /// </summary>
+        public List<PtEntity> GetSiblings(string id)
+        {
+            var entity = GetEntity(id);
+            if (entity?.ParentTree == null)
+            {
+                return new List<PtEntity>();
+            }
+
+            var parent = GetEntity(entity.ParentTree);
+            if (parent?.Children == null)
+            {
+                return new List<PtEntity>();
+            }
+
+            var siblings = new List<PtEntity>();
+            foreach (var siblingId in parent.Children)
+            {
+                if (siblingId != id) // Exclude self
+                {
+                    var sibling = GetEntity(siblingId);
+                    if (sibling != null)
+                    {
+                        siblings.Add(sibling);
+                    }
+                }
+            }
+            return siblings;
+        }
+
+        /// <summary>
+        /// Find candidate locations for filing a new bookmark and format for LLM presentation.
+        /// Returns a formatted string showing each candidate in tree context.
+        /// </summary>
+        /// <param name="bookmarkDescription">Description of the bookmark to file (title, content, etc.)</param>
+        /// <param name="topCandidates">Number of candidate locations to return (default 5)</param>
+        /// <param name="minScore">Minimum similarity threshold (default 0.35)</param>
+        /// <returns>Formatted string with all candidates and their contexts</returns>
+        public string FindBookmarkPlacements(string bookmarkDescription, int topCandidates = 5, double minScore = 0.35)
+        {
+            // Find semantically similar trees
+            var candidates = SearchSimilar(bookmarkDescription, topK: topCandidates, minScore: minScore, typeFilter: "pt:Tree");
+
+            if (candidates.Count == 0)
+            {
+                return "No suitable placement locations found. Consider lowering the similarity threshold or creating a new category.";
+            }
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("=== Bookmark Filing Suggestions ===");
+            sb.AppendLine();
+            sb.AppendLine($"Bookmark: \"{bookmarkDescription}\"");
+            sb.AppendLine($"Found {candidates.Count} candidate location(s):");
+            sb.AppendLine();
+            sb.AppendLine(new string('=', 80));
+            sb.AppendLine();
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                sb.AppendLine($"Option {i + 1}:");
+                sb.AppendLine();
+                sb.Append(BuildTreeContext(candidates[i].Id, candidates[i].Score));
+                sb.AppendLine();
+                if (i < candidates.Count - 1)
+                {
+                    sb.AppendLine(new string('-', 80));
+                    sb.AppendLine();
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Build a tree-formatted context string for a candidate entity.
+        /// Shows ancestors, siblings, the candidate itself (marked), and children.
+        /// Format is similar to Linux 'tree' command output.
+        /// </summary>
+        /// <param name="candidateId">The candidate entity ID</param>
+        /// <param name="score">Similarity score for the candidate</param>
+        /// <param name="maxChildrenToShow">Maximum children to display (default 10)</param>
+        /// <returns>Formatted tree string showing context</returns>
+        public string BuildTreeContext(string candidateId, double score, int maxChildrenToShow = 10)
+        {
+            var candidate = GetEntity(candidateId);
+            if (candidate == null)
+            {
+                return $"Entity {candidateId} not found";
+            }
+
+            var sb = new System.Text.StringBuilder();
+            var title = candidate.Title ?? candidate.About ?? candidateId;
+
+            // Header with score
+            sb.AppendLine($"Candidate: \"{title}\" (similarity: {score:F3})");
+            sb.AppendLine();
+
+            // Build ancestor path (root to immediate parent)
+            var ancestors = GetAncestors(candidateId);
+            ancestors.Reverse(); // Want root first
+
+            // Show ancestor path
+            if (ancestors.Count > 0)
+            {
+                for (int i = 0; i < ancestors.Count; i++)
+                {
+                    var indent = new string(' ', i * 4);
+                    var ancestorTitle = ancestors[i].Title ?? ancestors[i].About ?? ancestors[i].Id;
+                    if (ancestorTitle.Length > 60) ancestorTitle = ancestorTitle.Substring(0, 57) + "...";
+
+                    if (i == 0)
+                    {
+                        sb.AppendLine($"└── {ancestorTitle}/");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"{indent}└── {ancestorTitle}/");
+                    }
+                }
+            }
+
+            // Show siblings and candidate at current level
+            var siblings = GetSiblings(candidateId);
+            var baseIndent = new string(' ', ancestors.Count * 4);
+
+            // Show some siblings before candidate
+            foreach (var sibling in siblings.Take(3))
+            {
+                var siblingTitle = sibling.Title ?? sibling.About ?? sibling.Id;
+                if (siblingTitle.Length > 60) siblingTitle = siblingTitle.Substring(0, 57) + "...";
+                sb.AppendLine($"{baseIndent}    ├── {siblingTitle}/");
+            }
+
+            // Show the candidate (marked with arrow)
+            var candTitle = candidate.Title ?? candidate.About ?? candidateId;
+            if (candTitle.Length > 50) candTitle = candTitle.Substring(0, 47) + "...";
+            sb.AppendLine($"{baseIndent}    ├── {candTitle}/        ← CANDIDATE (place new bookmark here)");
+
+            // Show remaining siblings
+            if (siblings.Count > 3)
+            {
+                foreach (var sibling in siblings.Skip(3).Take(2))
+                {
+                    var siblingTitle = sibling.Title ?? sibling.About ?? sibling.Id;
+                    if (siblingTitle.Length > 60) siblingTitle = siblingTitle.Substring(0, 57) + "...";
+                    sb.AppendLine($"{baseIndent}    ├── {siblingTitle}/");
+                }
+                if (siblings.Count > 5)
+                {
+                    sb.AppendLine($"{baseIndent}    ├── ... ({siblings.Count - 5} more siblings)");
+                }
+            }
+
+            // Show children of the candidate
+            var children = GetChildren(candidateId);
+            if (children.Count > 0)
+            {
+                var childIndent = baseIndent + "    │   ";
+                int shown = 0;
+                foreach (var child in children.Take(maxChildrenToShow))
+                {
+                    var childTitle = child.Title ?? child.About ?? child.Id;
+                    if (childTitle.Length > 60) childTitle = childTitle.Substring(0, 57) + "...";
+                    var isLast = (shown == Math.Min(children.Count, maxChildrenToShow) - 1);
+                    var prefix = isLast && children.Count <= maxChildrenToShow ? "└──" : "├──";
+                    sb.AppendLine($"{childIndent}{prefix} {childTitle}");
+                    shown++;
+                }
+                if (children.Count > maxChildrenToShow)
+                {
+                    sb.AppendLine($"{childIndent}└── ... ({children.Count - maxChildrenToShow} more children)");
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
         /// Compute cosine similarity between two vectors.
         /// Returns a value between 0 (orthogonal) and 1 (identical).
         /// </summary>
