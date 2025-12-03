@@ -447,6 +447,23 @@ translate_goal(match(Var, Pattern, Type, Groups), Code) :-
     !,
     translate_match_goal(Var, Pattern, Type, Groups, Code).
 
+translate_goal(suggest_bookmarks(Query, Options, Suggestions), Code) :-
+    !,
+    var_to_python(Query, PyQuery),
+    var_to_python(Suggestions, PyResults),
+    % Extract search mode from options (default vector)
+    (   member(mode(Mode), Options)
+    ->  atom_string(Mode, ModeStr)
+    ;   ModeStr = "vector"
+    ),
+    format(string(Code), "    ~w = _get_runtime().searcher.suggest_bookmarks(~w, top_k=5, mode='~w')\n", [PyResults, PyQuery, ModeStr]).
+
+translate_goal(suggest_bookmarks(Query, Suggestions), Code) :-
+    !,
+    var_to_python(Query, PyQuery),
+    var_to_python(Suggestions, PyResults),
+    format(string(Code), "    ~w = _get_runtime().searcher.suggest_bookmarks(~w, top_k=5)\n", [PyResults, PyQuery]).
+
 translate_goal(graph_search(Query, TopK, Hops, Options, Results), Code) :-
     !,
     var_to_python(Query, PyQuery),

@@ -125,6 +125,139 @@ class PtSearcher:
             
         return final_results
 
+    def suggest_bookmarks(self, query, top_k=5, min_score=0.0, mode='vector'):
+        # Find candidates using vector search or text search
+        if mode == 'text':
+            candidates = self.text_search(query, top_k=top_k)
+        else:
+            candidates = self.search(query, top_k=top_k)
+        
+        if not candidates:
+            return "No suitable placement locations found."
+            
+        output = []
+        output.append("=== Bookmark Filing Suggestions ===")
+        output.append(f"Bookmark: \"{query}\"")
+        output.append(f"Found {len(candidates)} candidate location(s):")
+        output.append("")
+        output.append("=" * 80)
+        output.append("")
+        
+        for i, cand in enumerate(candidates):
+            if cand['score'] < min_score:
+                continue
+            output.append(f"Option {i+1}:")
+            output.append("")
+            output.append(self.build_tree_context(cand['id'], cand['score']))
+            output.append("")
+            if i < len(candidates) - 1:
+                output.append("-" * 80)
+                output.append("")
+                
+        return "\n".join(output)
+
+    def build_tree_context(self, candidate_id, score, max_children=10):
+        cand_entity = self._get_entity(candidate_id)
+        if not cand_entity:
+            return f"Entity {candidate_id} not found"
+            
+        sb = []
+        title = cand_entity.get('title') or cand_entity.get('@about') or candidate_id
+        sb.append(f"Candidate: \"{title}\" (similarity: {score:.3f})")
+        sb.append("")
+        
+        # Ancestors
+        ancestors = self._get_ancestors(candidate_id)
+        ancestors.reverse() # Root first
+        
+        for i, anc in enumerate(ancestors):
+            indent = " " * (i * 4)
+            anc_title = anc.get('title') or anc.get('@about') or anc.get('id')
+            if len(anc_title) > 60: anc_title = anc_title[:57] + "..."
+            sb.append(f"{indent}└── {anc_title}/")
+            
+        # Siblings
+        siblings = self._get_siblings(candidate_id)
+        base_indent = " " * (len(ancestors) * 4)
+        
+        # Show some siblings before
+        for sib in siblings[:3]:
+            s_title = sib.get('title') or sib.get('@about') or sib.get('id')
+            if len(s_title) > 60: s_title = s_title[:57] + "..."
+            sb.append(f"{base_indent}    ├── {s_title}/")
+            
+        # Candidate
+        c_title = title
+        if len(c_title) > 50: c_title = c_title[:47] + "..."
+        sb.append(f"{base_indent}    ├── {c_title}/        ← CANDIDATE (place new bookmark here)")
+        
+        # Show siblings after
+        if len(siblings) > 3:
+            for sib in siblings[3:5]:
+                s_title = sib.get('title') or sib.get('@about') or sib.get('id')
+                if len(s_title) > 60: s_title = s_title[:57] + "..."
+                sb.append(f"{base_indent}    ├── {s_title}/")
+            if len(siblings) > 5:
+                sb.append(f"{base_indent}    ├── ... ({len(siblings) - 5} more siblings)")
+                
+        # Children
+        children = self._get_children(candidate_id)
+        if children:
+            child_indent = base_indent + "    │   "
+            for i, child in enumerate(children[:max_children]):
+                c_title = child.get('title') or child.get('@about') or child.get('id')
+                if len(c_title) > 60: c_title = c_title[:57] + "..."
+                is_last = (i == min(len(children), max_children) - 1)
+                prefix = "└──" if is_last and len(children) <= max_children else "├──"
+                sb.append(f"{child_indent}{prefix} {c_title}")
+            if len(children) > max_children:
+                sb.append(f"{child_indent}└── ... ({len(children) - max_children} more children)")
+                
+        return "\n".join(sb)
+
+    def _get_entity(self, obj_id):
+        row = self.conn.execute("SELECT data FROM objects WHERE id = ?", (obj_id,)).fetchone()
+        if row:
+            d = json.loads(row[0])
+            d['id'] = obj_id
+            return d
+        return None
+
+    def _get_parent(self, obj_id):
+        row = self.conn.execute("SELECT target_id FROM links WHERE source_id = ?", (obj_id,)).fetchone()
+        return row[0] if row else None
+
+    def _get_children(self, obj_id):
+        cursor = self.conn.execute("SELECT source_id FROM links WHERE target_id = ?", (obj_id,))
+        return [self._get_entity(row[0]) for row in cursor if row[0]]
+
+    def _get_siblings(self, obj_id):
+        parent_id = self._get_parent(obj_id)
+        if not parent_id:
+            return []
+        
+        cursor = self.conn.execute("SELECT source_id FROM links WHERE target_id = ?", (parent_id,))
+        siblings = []
+        for row in cursor:
+            sid = row[0]
+            if sid != obj_id:
+                siblings.append(self._get_entity(sid))
+        return siblings
+
+    def _get_ancestors(self, obj_id):
+        ancestors = []
+        current_id = self._get_parent(obj_id)
+        visited = {obj_id}
+        
+        while current_id and current_id not in visited:
+            entity = self._get_entity(current_id)
+            if entity:
+                ancestors.append(entity)
+            visited.add(current_id)
+            current_id = self._get_parent(current_id)
+            
+        return ancestors
+
     def _cosine_similarity(self, a, b):
         dot = np.dot(a, b)
         norm_a = np.linalg.norm(a)
