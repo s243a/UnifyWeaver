@@ -1730,6 +1730,15 @@ is_comparison_constraint(_ =< _).
 is_comparison_constraint(_ = _).
 is_comparison_constraint(_ \= _).
 
+%% is_numeric_constraint(+Constraint)
+%  Check if constraint requires numeric type conversion (>, <, >=, =<)
+%  Equality and inequality (=, \=) can work with any type
+%
+is_numeric_constraint(_ > _).
+is_numeric_constraint(_ < _).
+is_numeric_constraint(_ >= _).
+is_numeric_constraint(_ =< _).
+
 %% generate_filter_checks(+Constraints, +FieldMappings, -GoCode)
 %  Generate Go if statements for constraint checking
 %  Returns empty string if no constraints
@@ -1796,6 +1805,11 @@ field_term_to_go_expr(Term, FieldMappings, GoExpr) :-
         format('WARNING: Variable ~w not found in field mappings~n', [Term]),
         GoExpr = 'unknownVar'
     ).
+
+field_term_to_go_expr(Term, _, GoExpr) :-
+    string(Term), !,
+    % String literal - use as-is with quotes
+    format(atom(GoExpr), '"~s"', [Term]).
 
 field_term_to_go_expr(Term, _, GoExpr) :-
     atom(Term), !,
@@ -1880,23 +1894,80 @@ extract_field_names_from_expr(_, []).  % literals, uuid, etc.
 %% DATABASE READ MODE COMPILATION
 %% ============================================
 
-%% generate_field_extractions_for_read(+FieldMappings, -GoCode)
-%  Generate untyped field extraction code for read mode
-%  Extracts fields as interface{} and checks for existence
+%% generate_field_extractions_for_read(+FieldMappings, +Constraints, +HeadArgs, -GoCode)
+%  Generate field extraction code for read mode with proper type conversions
+%  - Extracts all fields from FieldMappings
+%  - Adds type conversions for fields used in constraints
+%  - Marks unused fields with _ = fieldN to avoid Go compiler warnings
 %
-generate_field_extractions_for_read(FieldMappings, GoCode) :-
-    findall(ExtractLine,
+generate_field_extractions_for_read(FieldMappings, Constraints, HeadArgs, GoCode) :-
+    % Build set of field positions used in NUMERIC constraints (need float64 conversion)
+    findall(NumericPos,
+        (   nth1(NumericPos, FieldMappings, _-Var),
+            member(C, Constraints),
+            is_numeric_constraint(C),
+            term_variables(C, CVars),
+            member(CV, CVars),
+            CV == Var
+        ),
+        NumericConstraintPositions),
+
+    findall(HeadPos,
+        (   nth1(HeadPos, FieldMappings, _-Var),
+            member(HV, HeadArgs),
+            HV == Var
+        ),
+        HeadPositions),
+
+    findall(ExtractBlock,
         (   nth1(Pos, FieldMappings, Field-_Var),
             atom_string(Field, FieldStr),
-            format(string(ExtractLine), '\t\t\t// Extract field: ~w
+
+            % Check if this position needs numeric type conversion
+            (   member(Pos, NumericConstraintPositions)
+            ->  NeedsNumericConversion = true
+            ;   NeedsNumericConversion = false
+            ),
+
+            (   member(Pos, HeadPositions)
+            ->  UsedInHead = true
+            ;   UsedInHead = false
+            ),
+
+            % Generate extraction with type conversion if needed
+            (   NeedsNumericConversion = true
+            ->  % Need type conversion for numeric comparison
+                format(string(ExtractBlock), '\t\t\t// Extract field: ~w (with type conversion)
+\t\t\tfield~wRaw, field~wOk := data["~s"]
+\t\t\tif !field~wOk {
+\t\t\t\treturn nil // Skip if field missing
+\t\t\t}
+\t\t\tfield~wFloat, field~wFloatOk := field~wRaw.(float64)
+\t\t\tif !field~wFloatOk {
+\t\t\t\treturn nil // Skip if wrong type
+\t\t\t}
+\t\t\tfield~w := field~wFloat',
+                    [Field, Pos, Pos, FieldStr, Pos, Pos, Pos, Pos, Pos, Pos, Pos])
+            ;   UsedInHead = true
+            ->  % Keep as interface{} for output
+                format(string(ExtractBlock), '\t\t\t// Extract field: ~w
 \t\t\tfield~w, field~wOk := data["~s"]
 \t\t\tif !field~wOk {
 \t\t\t\treturn nil // Skip if field missing
 \t\t\t}',
-                [Field, Pos, Pos, FieldStr, Pos])
+                    [Field, Pos, Pos, FieldStr, Pos])
+            ;   % Unused field - extract and mark as unused
+                format(string(ExtractBlock), '\t\t\t// Extract field: ~w (unused)
+\t\t\tfield~w, field~wOk := data["~s"]
+\t\t\tif !field~wOk {
+\t\t\t\treturn nil // Skip if field missing
+\t\t\t}
+\t\t\t_ = field~w  // Mark as intentionally unused',
+                    [Field, Pos, Pos, FieldStr, Pos, Pos])
+            )
         ),
-        ExtractLines),
-    atomic_list_concat(ExtractLines, '\n', GoCode).
+        ExtractBlocks),
+    atomic_list_concat(ExtractBlocks, '\n', GoCode).
 
 %% generate_output_for_read(+HeadArgs, +FieldMappings, -GoCode)
 %  Generate JSON output code with selected fields only
@@ -1954,18 +2025,27 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
         ;   format('ERROR: No json_record/1 found in predicate body~n'),
             fail
         ),
-        % Generate field extraction code
-        generate_field_extractions_for_read(FieldMappings, ExtractCode),
+        % Generate field extraction code (with type conversions for constraints)
+        format('  Generating field extractions...~n'),
+        generate_field_extractions_for_read(FieldMappings, Constraints, HeadArgs, ExtractCode),
+        format('  Generated ~w chars of extraction code~n', [ExtractCode]),
         % Generate filter checks
+        format('  Generating filter checks...~n'),
         generate_filter_checks(Constraints, FieldMappings, FilterCode),
+        format('  Generated ~w chars of filter code~n', [FilterCode]),
         % Generate output code (selected fields only)
+        format('  Generating output code...~n'),
         generate_output_for_read(HeadArgs, FieldMappings, OutputCode),
+        format('  Generated ~w chars of output code~n', [OutputCode]),
         % Combine extraction + filter + output
+        format('  Combining code sections...~n'),
         (   FilterCode \= ''
         ->  format(string(ProcessCode), '~s\n~s\n~s', [ExtractCode, FilterCode, OutputCode])
         ;   format(string(ProcessCode), '~s\n~s', [ExtractCode, OutputCode])
         ),
-        HasFilters = true
+        format('  Process code ready: ~w chars~n', [ProcessCode]),
+        HasFilters = true,
+        format('  HasFilters set to true~n')
     ;   % No body or body is 'true' - read all records as-is
         format('  No predicate body found - reading all records~n'),
         ProcessCode = '\t\t\t// Output as JSON
@@ -1980,7 +2060,15 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
     ),
 
     % Generate database read code
-    format(string(Body), '\t// Open database (read-only)
+    format('  Generating database read code...~n'),
+    (   HasFilters = true
+    ->  RecordsDesc = 'filtered records'
+    ;   RecordsDesc = 'all records'
+    ),
+
+    % Build Body by concatenating parts (avoids format issues with ProcessCode)
+    format('  About to format Header...~n'),
+    format(string(Header), '\t// Open database (read-only)
 \tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
 \tif err != nil {
 \t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
@@ -1988,7 +2076,7 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 \t}
 \tdefer db.Close()
 
-\t// Read ~w from bucket
+\t// Read ~s from bucket
 \terr = db.View(func(tx *bolt.Tx) error {
 \t\tbucket := tx.Bucket([]byte("~s"))
 \t\tif bucket == nil {
@@ -2003,7 +2091,11 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 \t\t\t\treturn nil // Continue with next record
 \t\t\t}
 
-~s
+', [DbFile, RecordsDesc, BucketStr, BucketStr]),
+    format('  Header formatted successfully~n'),
+
+    format('  Setting Footer...~n'),
+    Footer = '
 \t\t\treturn nil
 \t\t})
 \t})
@@ -2012,7 +2104,15 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 \t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
 \t\tos.Exit(1)
 \t}
-', [DbFile, (HasFilters -> 'filtered records' ; 'all records'), BucketStr, BucketStr, ProcessCode]),
+',
+    format('  Footer set successfully~n'),
+
+    % Concatenate Header + ProcessCode + Footer
+    format('  About to concatenate...~n'),
+    string_concat(Header, ProcessCode, Temp),
+    string_concat(Temp, Footer, BodyCode),
+    format('  Concatenation successful~n'),
+    format('  Body generated successfully (~w chars)~n', [BodyCode]),
 
     % Wrap in package if requested
     (   IncludePackage = true
@@ -2028,8 +2128,8 @@ import (
 
 func main() {
 ~s}
-', [Body])
-    ;   GoCode = Body
+', [BodyCode])
+    ;   GoCode = BodyCode
     ).
 
 %% ============================================
