@@ -1324,6 +1324,355 @@ All tests validated with correct Go code generation.
 
 ---
 
+## Phase 9: Aggregations (count, sum, avg, max, min)
+
+**Status**: ✅ Implemented
+
+Adds support for aggregation operations over database records using `aggregate/3` (simple aggregations) and `group_by/4` (grouped aggregations).
+
+### Phase 9a: Simple Aggregations
+
+Aggregate across all records matching criteria.
+
+**Prolog Syntax:**
+```prolog
+% Count all users
+user_count(Count) :-
+    aggregate(count, json_record([name-_Name]), Count).
+
+% Sum all ages
+total_age(Sum) :-
+    aggregate(sum(Age), json_record([age-Age]), Sum).
+
+% Average age
+avg_age(Avg) :-
+    aggregate(avg(Age), json_record([age-Age]), Avg).
+
+% Maximum age
+max_age(Max) :-
+    aggregate(max(Age), json_record([age-Age]), Max).
+
+% Minimum age
+min_age(Min) :-
+    aggregate(min(Age), json_record([age-Age]), Min).
+
+compile_predicate_to_go(user_count/1, [
+    db_backend(bbolt),
+    db_file('users.db'),
+    db_bucket(users)
+], Code).
+```
+
+**Generated Go Code (Count Example):**
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	bolt "go.etcd.io/bbolt"
+)
+
+func main() {
+	db, err := bolt.Open("users.db", 0600, &bolt.Options{ReadOnly: true})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// Count records
+	count := 0
+	err = db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("users"))
+		if bucket == nil {
+			return fmt.Errorf("bucket 'users' not found")
+		}
+
+		return bucket.ForEach(func(k, v []byte) error {
+			var data map[string]interface{}
+			if err := json.Unmarshal(v, &data); err != nil {
+				return nil // Skip invalid records
+			}
+			count++
+			return nil
+		})
+	})
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading database: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(count)
+}
+```
+
+**Generated Go Code (Average Example):**
+```go
+// Calculate average
+sum := 0.0
+count := 0
+
+err = db.View(func(tx *bolt.Tx) error {
+	bucket := tx.Bucket([]byte("users"))
+	return bucket.ForEach(func(k, v []byte) error {
+		var data map[string]interface{}
+		json.Unmarshal(v, &data)
+
+		if valueRaw, ok := data["age"]; ok {
+			if valueFloat, ok := valueRaw.(float64); ok {
+				sum += valueFloat
+				count++
+			}
+		}
+		return nil
+	})
+})
+
+avg := 0.0
+if count > 0 {
+	avg = sum / float64(count)
+}
+fmt.Println(avg)
+```
+
+**Output:**
+```
+42.5
+```
+
+**Key Features:**
+- Single-pass O(n) database scan
+- Type-safe float64 conversion for numeric aggregations
+- Automatic null value handling (skipped)
+- First flag pattern for max/min to handle negative values
+- Zero-division protection for averages
+
+### Phase 9b: GROUP BY Aggregations
+
+Aggregate with grouping by field values (like SQL GROUP BY).
+
+**Prolog Syntax:**
+```prolog
+% Count users per city
+city_counts(City, Count) :-
+    group_by(City, json_record([city-City, name-_Name]), count, Count).
+
+% Average age per city
+city_avg_age(City, AvgAge) :-
+    group_by(City, json_record([city-City, age-Age]), avg(Age), AvgAge).
+
+% Sum ages per city
+city_total_age(City, Total) :-
+    group_by(City, json_record([city-City, age-Age]), sum(Age), Total).
+
+% Max age per city
+city_max_age(City, MaxAge) :-
+    group_by(City, json_record([city-City, age-Age]), max(Age), MaxAge).
+
+% Min age per city
+city_min_age(City, MinAge) :-
+    group_by(City, json_record([city-City, age-Age]), min(Age), MinAge).
+
+compile_predicate_to_go(city_counts/2, [
+    db_backend(bbolt),
+    db_file('users.db'),
+    db_bucket(users)
+], Code).
+```
+
+**Generated Go Code (Group By Count):**
+```go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	bolt "go.etcd.io/bbolt"
+)
+
+func main() {
+	db, err := bolt.Open("users.db", 0600, &bolt.Options{ReadOnly: true})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// Group by city and count
+	counts := make(map[string]int)
+	err = db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("users"))
+		if bucket == nil {
+			return fmt.Errorf("bucket 'users' not found")
+		}
+
+		return bucket.ForEach(func(k, v []byte) error {
+			var data map[string]interface{}
+			if err := json.Unmarshal(v, &data); err != nil {
+				return nil
+			}
+
+			// Extract group field
+			if groupRaw, ok := data["city"]; ok {
+				if groupStr, ok := groupRaw.(string); ok {
+					counts[groupStr]++
+				}
+			}
+			return nil
+		})
+	})
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading database: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Output results as JSON (one per group)
+	for group, count := range counts {
+		result := map[string]interface{}{
+			"city": group,
+			"count": count,
+		}
+		output, _ := json.Marshal(result)
+		fmt.Println(string(output))
+	}
+}
+```
+
+**Generated Go Code (Group By Average):**
+```go
+// Group by city and average age
+type GroupStats struct {
+	sum   float64
+	count int
+}
+stats := make(map[string]*GroupStats)
+
+err = db.View(func(tx *bolt.Tx) error {
+	bucket := tx.Bucket([]byte("users"))
+	return bucket.ForEach(func(k, v []byte) error {
+		var data map[string]interface{}
+		json.Unmarshal(v, &data)
+
+		// Extract group and aggregation fields
+		if groupRaw, ok := data["city"]; ok {
+			if groupStr, ok := groupRaw.(string); ok {
+				if valueRaw, ok := data["age"]; ok {
+					if valueFloat, ok := valueRaw.(float64); ok {
+						if _, exists := stats[groupStr]; !exists {
+							stats[groupStr] = &GroupStats{}
+						}
+						stats[groupStr].sum += valueFloat
+						stats[groupStr].count++
+					}
+				}
+			}
+		}
+		return nil
+	})
+})
+
+// Output results as JSON (one per group)
+for group, s := range stats {
+	avg := 0.0
+	if s.count > 0 {
+		avg = s.sum / float64(s.count)
+	}
+	result := map[string]interface{}{
+		"city": group,
+		"avg": avg,
+	}
+	output, _ := json.Marshal(result)
+	fmt.Println(string(output))
+}
+```
+
+**Output:**
+```json
+{"city":"NYC","count":5}
+{"city":"LA","count":3}
+{"city":"SF","count":2}
+```
+
+Or for average:
+```json
+{"city":"NYC","avg":35.2}
+{"city":"LA","avg":42.0}
+{"city":"SF","avg":28.5}
+```
+
+**Key Features:**
+- Map-based grouping with string keys
+- Struct types for complex aggregations (GroupStats, GroupMax, GroupMin)
+- Single-pass O(n) database scan
+- JSON output with one record per group
+- Type-safe field extraction
+- Efficient map operations in Go
+
+**Supported Operations:**
+1. **count**: Count records per group
+2. **sum(Field)**: Sum numeric field per group
+3. **avg(Field)**: Calculate average per group (sum/count)
+4. **max(Field)**: Find maximum value per group (with first flag)
+5. **min(Field)**: Find minimum value per group (with first flag)
+
+**Implementation Details:**
+
+File: `src/unifyweaver/targets/go_target.pl`
+
+**Phase 9a Predicates** (lines 2487-2818):
+- `is_aggregation_predicate/1` - Detect aggregate/3 in body
+- `extract_aggregation_spec/3` - Parse aggregation operation
+- `compile_aggregation_mode/4` - Main compilation
+- `generate_count_aggregation/3` - Count implementation
+- `generate_sum_aggregation/4` - Sum implementation
+- `generate_avg_aggregation/4` - Average (sum/count)
+- `generate_max_aggregation/4` - Maximum with first flag
+- `generate_min_aggregation/4` - Minimum with first flag
+- `find_field_for_var/3` - Map variables to field names
+
+**Phase 9b Predicates** (lines 2820-3216):
+- `is_group_by_predicate/1` - Detect group_by/4 in body
+- `extract_group_by_spec/4` - Parse GROUP BY operation
+- `compile_group_by_mode/4` - Main GROUP BY compilation
+- `generate_group_by_code/5` - Dispatcher for operations
+- `generate_group_by_count/3` - Grouped count with map[string]int
+- `generate_group_by_sum/4` - Grouped sum with map[string]float64
+- `generate_group_by_avg/4` - Grouped average with GroupStats struct
+- `generate_group_by_max/4` - Grouped max with GroupMax struct
+- `generate_group_by_min/4` - Grouped min with GroupMin struct
+
+**Integration** (lines 119-130):
+- Aggregation check comes BEFORE db_backend check in compile_predicate_to_go/3
+- GROUP BY check comes after simple aggregation check
+- Routes to appropriate compilation mode
+
+**Performance:**
+- Single-pass algorithm: O(n) where n = record count
+- Memory usage: O(1) for simple aggregations, O(g) for GROUP BY where g = unique group count
+- No temporary collections beyond accumulators
+- Efficient map operations in Go
+
+**Testing:**
+- `test_phase_9a.pl`: 5 tests for simple aggregations (count, sum, avg, max, min)
+- `test_phase_9b.pl`: 5 tests for grouped aggregations
+- `run_phase_9a_tests.sh`: Test runner for Phase 9a
+- `run_phase_9b_tests.sh`: Test runner for Phase 9b
+- All 10 tests passing ✓
+
+**Future Enhancements** (Phase 9c+):
+- Multiple aggregations in single query: `group_by(City, ..., [count(C), avg(Age, A)], ...)`
+- HAVING clause filtering: `group_by(City, ..., count, C), C > 10`
+- Nested grouping: `group_by([City, State], ...)`
+- Statistical functions: `stddev`, `median`, `percentile`
+- Array aggregations: `collect_list`, `collect_set`
+
+---
+
 ## Comparison with Other Targets
 
 | Feature | Python | C# | Go |
@@ -1344,5 +1693,6 @@ All tests validated with correct Go code generation.
 - Comparison: `GO_JSON_COMPARISON.md`
 - Schema Design: `JSON_SCHEMA_DESIGN.md`
 - Database Design: `BBOLT_INTEGRATION_DESIGN.md`
-- Tests: `test_json_input.pl`, `test_json_output.pl`, `test_json_nested.pl`, `test_schema_*.pl`, `test_bbolt_*.pl`, `test_composite_keys.pl`
-- Test Runners: `run_json_tests.sh`, `run_json_output_tests.sh`, `run_nested_tests.sh`, `run_schema_tests.sh`, `run_bbolt_tests.sh`, `run_key_strategy_tests.sh`
+- Aggregations Plan: `PHASE_9_AGGREGATIONS_PLAN.md`
+- Tests: `test_json_input.pl`, `test_json_output.pl`, `test_json_nested.pl`, `test_schema_*.pl`, `test_bbolt_*.pl`, `test_composite_keys.pl`, `test_phase_8b.pl`, `test_phase_8c.pl`, `test_phase_9a.pl`, `test_phase_9b.pl`
+- Test Runners: `run_json_tests.sh`, `run_json_output_tests.sh`, `run_nested_tests.sh`, `run_schema_tests.sh`, `run_bbolt_tests.sh`, `run_key_strategy_tests.sh`, `run_phase_8b_tests.sh`, `run_phase_9a_tests.sh`, `run_phase_9b_tests.sh`
