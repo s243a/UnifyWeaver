@@ -2,7 +2,11 @@
 % Comprehensive Go target tests
 % Tests all major features: facts, rules, match, multiple rules
 
+:- use_module(library(filesex)).
 :- use_module('src/unifyweaver/targets/go_target').
+
+ensure_output_dir :-
+    make_directory_path('output_test').
 
 %% Test 1: Facts compilation
 user(alice, 25).
@@ -11,6 +15,7 @@ user(charlie, 28).
 
 test_facts :-
     write('=== Test 1: Facts Compilation ==='), nl,
+    ensure_output_dir,
     go_target:compile_predicate_to_go(user/2, [], Code),
     go_target:write_go_program(Code, 'output_test/test_facts.go'),
     write('Generated: output_test/test_facts.go'), nl, nl.
@@ -23,6 +28,7 @@ child(C, P) :- parent(P, C).
 
 test_single_rule :-
     write('=== Test 2: Single Rule - Field Reordering ==='), nl,
+    ensure_output_dir,
     go_target:compile_predicate_to_go(child/2, [], Code),
     go_target:write_go_program(Code, 'output_test/test_child.go'),
     write('Generated: output_test/test_child.go'), nl, nl.
@@ -39,6 +45,7 @@ error_log(Line) :-
 
 test_match :-
     write('=== Test 3: Match Predicate ==='), nl,
+    ensure_output_dir,
     go_target:compile_predicate_to_go(error_log/1, [], Code),
     go_target:write_go_program(Code, 'output_test/test_error_log.go'),
     write('Generated: output_test/test_error_log.go'), nl, nl.
@@ -63,6 +70,7 @@ alert(Line) :-
 
 test_multiple_rules :-
     write('=== Test 4: Multiple Rules - OR Pattern ==='), nl,
+    ensure_output_dir,
     go_target:compile_predicate_to_go(alert/1, [], Code),
     go_target:write_go_program(Code, 'output_test/test_alert.go'),
     write('Generated: output_test/test_alert.go'), nl, nl.
@@ -72,6 +80,7 @@ user_name(Name) :- user(Name, _).
 
 test_projection :-
     write('=== Test 5: Projection - Single Field ==='), nl,
+    ensure_output_dir,
     go_target:compile_predicate_to_go(user_name/1, [], Code),
     go_target:write_go_program(Code, 'output_test/test_user_name.go'),
     write('Generated: output_test/test_user_name.go'), nl, nl.
@@ -79,12 +88,14 @@ test_projection :-
 %% Test 6: Tab delimiter
 test_tab_delimiter :-
     write('=== Test 6: Tab Delimiter ==='), nl,
+    ensure_output_dir,
     go_target:compile_predicate_to_go(child/2, [field_delimiter(tab)], Code),
     go_target:write_go_program(Code, 'output_test/test_child_tab.go'),
     write('Generated: output_test/test_child_tab.go'), nl, nl.
 
 %% Run all tests
 run_all_tests :-
+    ensure_output_dir,
     test_facts,
     test_single_rule,
     test_match,

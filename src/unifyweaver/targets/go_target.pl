@@ -15,6 +15,12 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(filesex)).
+
+% Suppress singleton warnings in this experimental generator target.
+:- style_check(-singleton).
+:- discontiguous extract_match_constraints/2.
+:- use_module(library(filesex)).
 
 %% ============================================
 %% JSON SCHEMA SUPPORT
@@ -103,7 +109,10 @@ get_field_type(SchemaName, FieldName, any) :-
 %  - db_mode(read|write) - Database operation mode (default: write with json_input, read otherwise)
 %
 compile_predicate_to_go(PredIndicator, Options, GoCode) :-
-    PredIndicator = Pred/Arity,
+    (   PredIndicator = _Module:Pred/Arity
+    ->  true
+    ;   PredIndicator = Pred/Arity
+    ),
     format('=== Compiling ~w/~w to Go ===~n', [Pred, Arity]),
 
     % Check if this is database read mode
@@ -120,7 +129,17 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
         ->  format('  Mode: JSON input (JSONL) with database storage~n')
         ;   format('  Mode: JSON input (JSONL)~n')
         ),
-        compile_json_input_mode(Pred, Arity, Options, GoCode)
+        % Check for parallel execution
+        (   option(workers(Workers), Options), Workers > 1
+        ->  format('  Parallel execution: ~w workers~n', [Workers]),
+            compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode)
+        ;   compile_json_input_mode(Pred, Arity, Options, GoCode)
+        )
+    % Check if this is XML input mode
+    ;   option(xml_input(true), Options)
+    ->  % Compile for XML input
+        format('  Mode: XML input (streaming + flattening)~n'),
+        compile_xml_input_mode(Pred, Arity, Options, GoCode)
     % Check if this is JSON output mode
     ;   option(json_output(true), Options)
     ->  % Compile for JSON output
@@ -159,80 +178,80 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
     (   Clauses = [] ->
         format('ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
         fail
+    
+    % Semantic Rule Check
+    ;   Clauses = [Head-Body], Body \= true,
+        extract_predicates(Body, [SinglePred]),
+        is_semantic_predicate(SinglePred)
+    ->  Head =.. [_|HeadArgs],
+        compile_semantic_rule_go(Pred, HeadArgs, SinglePred, GoCode)
+
     ;   maplist(is_fact_clause, Clauses) ->
         % All bodies are 'true' - these are facts
         format('Type: facts (~w clauses)~n', [length(Clauses, _)]),
         compile_facts_to_go(Pred, Arity, Clauses, RecordDelim, FieldDelim,
-                           Unique, ScriptBody)
+                           Unique, ScriptBody),
+        GenerateProgram = true
     ;   is_tail_recursive_pattern(Pred, Clauses) ->
         % Tail recursive pattern - compile to iterative loop
         format('Type: tail_recursion~n'),
-        compile_tail_recursive_to_go(Pred, Arity, Clauses, ScriptBody)
+        compile_tail_recursive_to_go(Pred, Arity, Clauses, ScriptBody),
+        GenerateProgram = true
     ;   Clauses = [SingleHead-SingleBody], SingleBody \= true ->
         % Single rule
         format('Type: single_rule~n'),
         compile_single_rule_to_go(Pred, Arity, SingleHead, SingleBody, RecordDelim,
-                                 FieldDelim, Unique, ScriptBody)
+                                 FieldDelim, Unique, ScriptBody),
+        GenerateProgram = true
     ;   % Multiple rules (OR pattern)
         format('Type: multiple_rules (~w clauses)~n', [length(Clauses, _)]),
         compile_multiple_rules_to_go(Pred, Arity, Clauses, RecordDelim,
-                                    FieldDelim, Unique, ScriptBody)
+                                    FieldDelim, Unique, ScriptBody),
+        GenerateProgram = true
     ),
 
-    % Determine if we need stdin I/O imports
-    (   maplist(is_fact_clause, Clauses) ->
-        % Facts only - no stdin needed
-        NeedsStdin = false
-    ;   is_tail_recursive_pattern(Pred, Clauses) ->
-        % Tail recursion - standalone function, no stdin
-        NeedsStdin = false
-    ;   % Rules - needs stdin
-        NeedsStdin = true
-    ),
+    % Determine if we need imports (only if GenerateProgram is true)
+    (   var(GenerateProgram) -> true
+    ;   (   maplist(is_fact_clause, Clauses) ->
+            NeedsStdin = false
+        ;   is_tail_recursive_pattern(Pred, Clauses) ->
+            NeedsStdin = false
+        ;   NeedsStdin = true
+        ),
 
-    % Determine if we need regexp imports (check if any clause has match constraints)
-    (   member(_Head-Body, Clauses),
-        extract_match_constraints(Body, MatchCs),
-        MatchCs \= []
-    ->  NeedsRegexp = true
-    ;   NeedsRegexp = false
-    ),
+        % Determine if we need regexp imports
+        (   member(_Head-Body, Clauses),
+            extract_match_constraints(Body, MatchCs),
+            MatchCs \= []
+        ->  NeedsRegexp = true
+        ;   NeedsRegexp = false
+        ),
 
-    % Determine if we need strings import
-    % Need strings if:
-    % 1. Multi-field records with predicates (not match-only), OR
-    % 2. Multiple rules (we use strings.Split to try each pattern)
-    (   NeedsStdin,
-        (   % Multiple rules case
-            length(Clauses, NumClauses),
-            NumClauses > 1,
-            \+ maplist(is_fact_clause, Clauses)
-        ;   % Multi-field with predicates case
-            member(Head-Body, Clauses),
-            \+ is_fact_clause(Head-Body),
-            Head =.. [_|Args],
-            length(Args, ArgCount),
-            ArgCount > 1,
-            extract_predicates(Body, Preds),
-            Preds \= []
+        % Determine if we need strings import
+        (   NeedsStdin,
+            (   length(Clauses, NumClauses), NumClauses > 1, \+ maplist(is_fact_clause, Clauses)
+            ;   member(Head-Body, Clauses), \+ is_fact_clause(Head-Body),
+                Head =.. [_|Args], length(Args, ArgCount), ArgCount > 1,
+                extract_predicates(Body, Preds), Preds \= []
+            )
+        ->  NeedsStrings = true
+        ;   NeedsStrings = false
+        ),
+
+        % Determine if we need strconv import
+        (   member(_Head-Body, Clauses),
+            extract_constraints(Body, Cs),
+            Cs \= []
+        ->  NeedsStrconv = true
+        ;   NeedsStrconv = false
+        ),
+
+        % Generate complete Go program
+        (   IncludePackage ->
+            generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting,
+                               EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, ScriptBody, GoCode)
+        ;   GoCode = ScriptBody
         )
-    ->  NeedsStrings = true
-    ;   NeedsStrings = false
-    ),
-
-    % Determine if we need strconv import (for numeric constraints)
-    (   member(_Head-Body, Clauses),
-        extract_constraints(Body, Cs),
-        Cs \= []
-    ->  NeedsStrconv = true
-    ;   NeedsStrconv = false
-    ),
-
-    % Generate complete Go program
-    (   IncludePackage ->
-        generate_go_program(Pred, Arity, RecordDelim, FieldDelim, Quoting,
-                           EscapeChar, NeedsStdin, NeedsRegexp, NeedsStrings, NeedsStrconv, ScriptBody, GoCode)
-    ;   GoCode = ScriptBody
     ),
     !.
 
@@ -434,14 +453,20 @@ compile_single_rule_to_go(Pred, Arity, Head, Body, RecordDelim, FieldDelim, Uniq
 
     % Handle simple case: single predicate in body (with optional constraints)
     (   Predicates = [SinglePred] ->
-        compile_single_predicate_rule_go(PredStr, HeadArgs, SinglePred, VarMap,
-                                        FieldDelim, Unique, MatchConstraints, Constraints, GoCode)
+        (   is_semantic_predicate(SinglePred)
+        ->  compile_semantic_rule_go(PredStr, HeadArgs, SinglePred, GoCode)
+        ;   compile_single_predicate_rule_go(PredStr, HeadArgs, SinglePred, VarMap,
+                                            FieldDelim, Unique, MatchConstraints, Constraints, GoCode)
+        )
     ;   Predicates = [], MatchConstraints \= [] ->
         % No predicates, just match constraints - read from stdin and filter
         compile_match_only_rule_go(PredStr, HeadArgs, VarMap, FieldDelim,
                                    Unique, MatchConstraints, GoCode)
     ;   % Multiple predicates or unsupported pattern
-        GoCode = '\t// TODO: Multi-predicate or constraint-only rules not yet implemented\n'
+        format(user_error,
+               'Go target: multi-predicate or constraint-only rules not supported (yet) for ~w/~w~n',
+               [Pred, Arity]),
+        fail
     ).
 
 %% compile_single_predicate_rule_go(+PredStr, +HeadArgs, +BodyPred, +VarMap, +FieldDelim, +Unique, +MatchConstraints, +Constraints, -GoCode)
@@ -615,6 +640,87 @@ compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap, FieldDelim
 ', [BodyPredStr, MatchRegexDecls, DelimChar, NumFields, FieldAssignments, AllChecksAndCaptures, OutputExpr])
         )
     ).
+
+%% is_semantic_predicate(+Goal)
+is_semantic_predicate(semantic_search(_, _, _)).
+is_semantic_predicate(crawler_run(_, _)).
+
+%% compile_semantic_rule_go(+PredStr, +HeadArgs, +Goal, -GoCode)
+compile_semantic_rule_go(_PredStr, HeadArgs, Goal, GoCode) :-
+    build_var_map(HeadArgs, VarMap),
+    Goal =.. [GoalName | GoalArgs],
+    
+    Imports = '\t"fmt"\n\t"log"\n\n\t"unifyweaver/targets/go_runtime/search"\n\t"unifyweaver/targets/go_runtime/embedder"\n\t"unifyweaver/targets/go_runtime/storage"\n\t"unifyweaver/targets/go_runtime/crawler"',
+    
+    (   GoalName == semantic_search
+    ->  GoalArgs = [Query, TopK, _Results],
+        term_to_go_expr(Query, VarMap, QueryExpr),
+        term_to_go_expr(TopK, VarMap, TopKExpr),
+        
+        format(string(Body), '
+\t// Initialize runtime
+\tstore, err := storage.NewStore("data.db")
+\tif err != nil { log.Fatal(err) }
+\tdefer store.Close()
+
+\temb, err := embedder.NewHugotEmbedder("models/model.onnx", "all-MiniLM-L6-v2")
+\tif err != nil { log.Fatal(err) }
+\tdefer emb.Close()
+
+\t// Embed query
+\tqVec, err := emb.Embed(~s)
+\tif err != nil { log.Fatal(err) }
+\t
+\t// Search
+\tresults, err := search.Search(store, qVec, ~w)
+\tif err != nil { log.Fatal(err) }
+
+\tfor _, res := range results {
+\t\tfmt.Printf("Result: %%s (Score: %%f)\\n", res.ID, res.Score)
+\t}
+', [QueryExpr, TopKExpr])
+    ;   GoalName == crawler_run
+    ->  GoalArgs = [Seeds, MaxDepth],
+        term_to_go_expr(MaxDepth, VarMap, DepthExpr),
+        
+        (   is_list(Seeds)
+        ->  maplist(atom_string, Seeds, SeedStrs),
+            atomic_list_concat(SeedStrs, '", "', Inner),
+            format(string(SeedsGo), '[]string{"~w"}', [Inner])
+        ;   term_to_go_expr(Seeds, VarMap, SeedsExpr),
+            SeedsGo = SeedsExpr
+        ),
+
+        format(string(Body), '
+\t// Initialize runtime
+\tstore, err := storage.NewStore("data.db")
+\tif err != nil { log.Fatal(err) }
+\tdefer store.Close()
+
+\temb, err := embedder.NewHugotEmbedder("models/model.onnx", "all-MiniLM-L6-v2")
+\tif err != nil { 
+\t\tlog.Printf("Warning: Embeddings disabled: %%v\\n", err) 
+\t\temb = nil
+\t} else {
+\t\tdefer emb.Close()
+\t}
+
+\tcraw := crawler.NewCrawler(store, emb)
+\tcraw.Crawl(~w, int(~w))
+', [SeedsGo, DepthExpr])
+    ),
+    
+    format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+func main() {
+\t// Parse input arguments if needed (e.g. if HeadArgs are used)
+\t// For now, we assume simple stdin/args or constants
+~s}
+', [Imports, Body]).
 
 %% generate_field_assignments(+Args, -Code)
 %  Generate field assignment statements
@@ -825,7 +931,11 @@ compile_match_only_rule_go(PredStr, HeadArgs, VarMap, FieldDelim, Unique, MatchC
 '\n\t// Read from stdin and process with regex pattern matching\n\n\tpattern := regexp.MustCompile(`~w`)\n\tscanner := bufio.NewScanner(os.Stdin)~w\n\t\n\tfor scanner.Scan() {\n\t\tline := scanner.Text()\n\t\tmatches := pattern.FindStringSubmatch(line)\n\t\tif matches != nil {\n~w\n\t\t\tresult := ~w~w\n\t\t}\n\t}\n',
             [Pattern, SeenMapCode, CaptureCode, OutputExpr, UniqueCode])
     ;   % Multiple or no match constraints
-        GoCode = '\t// TODO: Multiple or no match constraints not yet supported\n'
+        length(HeadArgs, Arity),
+        format(user_error,
+               'Go target: multiple/no match constraints not supported for ~w/~w~n',
+               [PredStr, Arity]),
+        fail
     ).
 
 %% build_go_concat_expr(+Parts, +Delimiter, -Expression)
@@ -852,6 +962,7 @@ build_var_map_([Arg|Rest], Pos, [(Arg, Pos)|RestMap]) :-
     build_var_map_(Rest, NextPos, RestMap).
 
 %% Skip match predicates when extracting regular predicates
+extract_predicates(_:Goal, Preds) :- !, extract_predicates(Goal, Preds).
 extract_predicates(match(_, _), []) :- !.
 extract_predicates(match(_, _, _), []) :- !.
 extract_predicates(match(_, _, _, _), []) :- !.
@@ -1070,7 +1181,10 @@ compile_multiple_rules_to_go(Pred, Arity, Clauses, _RecordDelim, FieldDelim, Uni
             compile_single_predicate_rule_go(PredStr, HeadArgs, BodyPred, VarMap,
                                             FieldDelim, Unique, CombinedConstraint, GoCode)
         ;   % No match constraints - just multiple rules with same body
-            GoCode = '\t// TODO: Multiple rules without match constraints not yet implemented\n'
+            format(user_error,
+                   'Go target: multiple rules without match constraints not supported for ~w~n',
+                   [PredStr]),
+            fail
         )
     ;   % Rules not compatible for simple merging - different body predicates
         format('  Rules have different body predicates - compiling separately~n'),
@@ -1289,7 +1403,10 @@ compile_tail_recursive_to_go(Pred, Arity, Clauses, GoCode) :-
     ;   Arity =:= 2 ->
         generate_binary_tail_recursion_go(PredStr, BaseArgs, RecArgs, RecBody, GoCode)
     ;   % Unsupported arity
-        format(atom(GoCode), '// TODO: Tail recursion for arity ~w not yet supported~n', [Arity])
+        format(user_error,
+               'Go target: tail recursion for arity ~w not supported for ~w~n',
+               [Arity, PredStr]),
+        fail
     ).
 
 %% generate_ternary_tail_recursion_go(+PredStr, +BaseArgs, +RecArgs, +RecBody, -GoCode)
@@ -1333,8 +1450,11 @@ func ~w(n int, acc int) int {
 
 %% generate_binary_tail_recursion_go(+PredStr, +BaseArgs, +RecArgs, +RecBody, -GoCode)
 %  Generate Go code for arity-2 tail recursion
-generate_binary_tail_recursion_go(PredStr, _BaseArgs, _RecArgs, _RecBody, GoCode) :-
-    format(atom(GoCode), '// TODO: Binary tail recursion for ~w not yet implemented~n', [PredStr]).
+generate_binary_tail_recursion_go(PredStr, _BaseArgs, _RecArgs, _RecBody, _GoCode) :-
+    format(user_error,
+           'Go target: binary tail recursion not supported for ~w~n',
+           [PredStr]),
+    fail.
 
 %% extract_step_operation(+Body, -StepOp)
 %  Extract the accumulator step operation from recursive body
@@ -1735,12 +1855,16 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         extract_json_field_mappings(SingleBody, FieldMappings),
         format('  Field mappings: ~w~n', [FieldMappings]),
 
-        % Check for schema option
+        % Check for schema option OR database backend (both require typed compilation)
         SingleHead =.. [_|HeadArgs],
         (   option(json_schema(SchemaName), Options)
-        ->  % Typed compilation with schema
+        ->  % Typed compilation with schema validation
             format('  Using schema: ~w~n', [SchemaName]),
             compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, CoreBody)
+        ;   option(db_backend(bbolt), Options)
+        ->  % Typed compilation without schema (for database writes)
+            format('  Database mode: using typed compilation~n'),
+            compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
         ;   % Untyped compilation (current behavior)
             compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
         ),
@@ -1808,6 +1932,183 @@ func main() {
 ', [Imports, HelperSection, ScriptBody])
         )
     ;   GoCode = ScriptBody
+    ).
+
+%% compile_parallel_json_input_mode(+Pred, +Arity, +Options, +Workers, -GoCode)
+%  Compile predicate with JSON input for parallel execution
+compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
+    % Get options
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(include_package(IncludePackage), Options, true),
+    option(unique(Unique), Options, true),
+
+    % Get predicate clauses
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+
+    (   Clauses = [SingleHead-SingleBody] ->
+        % Single clause - extract JSON field mappings
+        extract_json_field_mappings(SingleBody, FieldMappings),
+        
+        SingleHead =.. [_|HeadArgs],
+        compile_parallel_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Workers, ScriptBody),
+
+        % Check if helpers are needed
+        (   member(nested(_, _), FieldMappings)
+        ->  generate_nested_helper(HelperFunc),
+            HelperSection = HelperFunc
+        ;   HelperSection = ''
+        )
+    ;   format('ERROR: Multiple clauses not yet supported for parallel JSON input mode~n'),
+        fail
+    ),
+
+    % Wrap in package if requested
+    (   IncludePackage ->
+        Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"\n\t"sync"',
+        (   HelperSection = '' ->
+            format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+func main() {
+~s}
+', [Imports, ScriptBody])
+        ;   format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+~s
+
+func main() {
+~s}
+', [Imports, HelperSection, ScriptBody])
+        )
+    ;   GoCode = ScriptBody
+    ).
+
+%% compile_parallel_json_to_go(+HeadArgs, +Operations, +FieldDelim, +Unique, +Workers, -GoCode)
+%  Generate Go code for parallel JSON processing
+compile_parallel_json_to_go(HeadArgs, Operations, FieldDelim, Unique, Workers, GoCode) :-
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % Generate processing code (recursive)
+    generate_parallel_json_processing(Operations, HeadArgs, DelimChar, Unique, 1, [], ProcessingCode),
+
+    (   Unique = true 
+    ->  UniqueVars = "var seenMutex sync.Mutex\n\tseen := make(map[string]bool)" 
+    ;   UniqueVars = ""
+    ),
+
+    format(string(GoCode), '
+	// Parallel execution with ~w workers
+	jobs := make(chan []byte, 100)
+	var wg sync.WaitGroup
+	var outputMutex sync.Mutex
+	~s
+
+	// Start workers
+	for i := 0; i < ~w; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for lineBytes := range jobs {
+				var data map[string]interface{}
+				if err := json.Unmarshal(lineBytes, &data); err != nil {
+					continue
+				}
+				
+				~s
+			}
+		}()
+	}
+
+	// Scanner loop
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		// Copy bytes because scanner.Bytes() is reused
+		b := make([]byte, len(scanner.Bytes()))
+		copy(b, scanner.Bytes())
+		jobs <- b
+	}
+	close(jobs)
+	wg.Wait()
+', [Workers, UniqueVars, Workers, ProcessingCode]).
+
+%% generate_parallel_json_processing(+Operations, +HeadArgs, +Delim, +Unique, +VIdx, +VarMap, -Code)
+generate_parallel_json_processing([], HeadArgs, Delim, Unique, _, VarMap, Code) :-
+    !,
+    generate_json_output_from_map(HeadArgs, VarMap, Delim, OutputExpr),
+    (   Unique = true ->
+        format(string(Code), '
+				result := ~s
+				seenMutex.Lock()
+				if !seen[result] {
+					seen[result] = true
+					outputMutex.Lock()
+					fmt.Println(result)
+					outputMutex.Unlock()
+				}
+				seenMutex.Unlock()', [OutputExpr])
+    ;   format(string(Code), '
+				result := ~s
+				outputMutex.Lock()
+				fmt.Println(result)
+				outputMutex.Unlock()', [OutputExpr])
+    ).
+
+generate_parallel_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarMap, Code) :-
+    % Reuse existing logic for extraction, just recurse to parallel version
+    NextVIdx is VIdx + 1,
+    (   Op = nested(Path, Var) ->
+        format(atom(GoVar), 'v~w', [VIdx]),
+        generate_nested_extraction_code(Path, 'data', GoVar, ExtractCode),
+        generate_parallel_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = Field-Var ->
+        format(atom(GoVar), 'v~w', [VIdx]),
+        atom_string(Field, FieldStr),
+        generate_flat_field_extraction(FieldStr, GoVar, ExtractCode),
+        generate_parallel_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = extract(SourceVar, Path, Var) ->
+        (   lookup_var_identity(SourceVar, VarMap, SourceGoVar) -> true
+        ;   format('ERROR: Source variable not found in map: ~w~n', [SourceVar]), fail
+        ),
+        format(atom(GoVar), 'v~w', [VIdx]),
+        format(string(ExtractCode), '
+				var ~w interface{}
+				if val, ok := ~w.(map[string]interface{}); ok {
+					if v, ok := val["~w"]; ok {
+						~w = v
+					} else {
+						continue
+					}
+				} else {
+					continue
+				}', [GoVar, SourceGoVar, Path, GoVar]),
+        generate_parallel_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = iterate(ListVar, ItemVar) ->
+        (   lookup_var_identity(ListVar, VarMap, ListGoVar) -> true
+        ;   format('ERROR: List variable not found in map: ~w~n', [ListVar]), fail
+        ),
+        format(atom(ItemGoVar), 'v~w', [VIdx]),
+        generate_parallel_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(ItemVar, ItemGoVar)|VarMap], LoopBody),
+        format(string(Code), '
+				if listVal, ok := ~w.([]interface{}); ok {
+					for _, itemVal := range listVal {
+						~w := itemVal
+						~s
+					}
+				}', [ListGoVar, ItemGoVar, LoopBody])
     ).
 
 %% wrap_with_database(+CoreBody, +FieldMappings, +Pred, +Options, -WrappedBody, -KeyImports)
@@ -2144,6 +2445,8 @@ extract_json_field_mappings(Body, FieldMappings) :-
 %% extract_json_operations(+Body, -Operations)
 %  Extract all JSON operations from body (handles conjunction)
 %
+extract_json_operations(_:Goal, Ops) :- !,
+    extract_json_operations(Goal, Ops).
 extract_json_operations((A, B), Ops) :- !,
     extract_json_operations(A, OpsA),
     extract_json_operations(B, OpsB),
@@ -2151,7 +2454,11 @@ extract_json_operations((A, B), Ops) :- !,
 extract_json_operations(json_record(Fields), RecordOps) :- !,
     extract_field_list(Fields, RecordOps).
 extract_json_operations(json_get(Path, Var), [nested(Path, Var)]) :- !.
+extract_json_operations(json_get(Source, Path, Var), [extract(Source, Path, Var)]) :- !,
+    var(Source).
+extract_json_operations(json_array_member(List, Item), [iterate(List, Item)]) :- !.
 extract_json_operations(_, []).
+
 
 extract_field_list([], []).
 extract_field_list([Field-Var|Rest], [Field-Var|Mappings]) :- !,
@@ -2160,17 +2467,170 @@ extract_field_list([Other|Rest], Mappings) :-
     format('WARNING: Unexpected field format: ~w~n', [Other]),
     extract_field_list(Rest, Mappings).
 
-%% compile_json_to_go(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, -GoCode)
-%  Generate Go code for JSON input mode
+%% compile_json_to_go(+HeadArgs, +Operations, +FieldDelim, +Unique, -GoCode)
+%  Generate Go code for JSON input mode (recursive for arrays)
 %
-compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
+compile_json_to_go(HeadArgs, Operations, FieldDelim, Unique, GoCode) :-
     % Map delimiter
     map_field_delimiter(FieldDelim, DelimChar),
 
-    % Generate field extraction code
-    generate_json_field_extractions(FieldMappings, HeadArgs, ExtractCode),
+    % Generate processing code (recursive)
+    % Initial VarMap contains 'data' -> 'data'
+    generate_json_processing(Operations, HeadArgs, DelimChar, Unique, 1, [], ProcessingCode),
 
-    % Generate output expression
+    % Build the loop code
+    format(string(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+\tseen := make(map[string]bool)
+\t
+\tfor scanner.Scan() {
+\t\tvar data map[string]interface{}
+\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+\t\t\tcontinue
+\t\t}
+\t\t
+~s
+\t}
+', [ProcessingCode]).
+
+%% generate_json_processing(+Operations, +HeadArgs, +Delim, +Unique, +VIdx, +VarMap, -Code)
+%  Generate nested Go code for JSON operations
+generate_json_processing([], HeadArgs, Delim, Unique, _, VarMap, Code) :-
+    !,
+    % No more operations - generate output
+    generate_json_output_from_map(HeadArgs, VarMap, Delim, OutputExpr),
+    (   Unique = true ->
+        format(string(Code), '
+\t\tresult := ~s
+\t\tif !seen[result] {
+\t\t\tseen[result] = true
+\t\t\tfmt.Println(result)
+\t\t}', [OutputExpr])
+    ;   format(string(Code), '
+\t\tresult := ~s
+\t\tfmt.Println(result)', [OutputExpr])
+    ).
+
+generate_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarMap, Code) :-
+    NextVIdx is VIdx + 1,
+    (   Op = nested(Path, Var) ->
+        format(atom(GoVar), 'v~w', [VIdx]),
+        generate_nested_extraction_code(Path, 'data', GoVar, ExtractCode),
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = Field-Var ->
+        format(atom(GoVar), 'v~w', [VIdx]),
+        % Generate flat field extraction (not nested)
+        atom_string(Field, FieldStr),
+        format(string(ExtractCode), '
+\t\t~w, ok~w := data["~s"]
+\t\tif !ok~w {
+\t\t\tcontinue
+\t\t}', [GoVar, VIdx, FieldStr, VIdx]),
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [ExtractCode, RestCode])
+
+    ;   Op = extract(SourceVar, Path, Var) ->
+        (   lookup_var_identity(SourceVar, VarMap, SourceGoVar) -> true
+        ;   format('ERROR: Source variable not found in map: ~w~n', [SourceVar]), fail
+        ),
+        format(atom(GoVar), 'v~w', [VIdx]),
+        % Source must be a map
+        format(string(ExtractCode), '
+\t\tsourceMap~w, ok := ~w.(map[string]interface{})
+\t\tif !ok { continue }', [VIdx, SourceGoVar]),
+        
+        format(atom(SourceMapVar), 'sourceMap~w', [VIdx]),
+        generate_nested_extraction_code(Path, SourceMapVar, GoVar, InnerExtract),
+        
+        format(string(FullExtract), '~s\n~s', [ExtractCode, InnerExtract]),
+        format(atom(FixedExtract), FullExtract, []),
+        
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
+        format(string(Code), '~s\n~s', [FixedExtract, RestCode])
+
+    ;   Op = iterate(ListVar, ItemVar) ->
+        (   lookup_var_identity(ListVar, VarMap, ListGoVar) -> true
+        ;   format('ERROR: List variable not found in map: ~w~n', [ListVar]), fail
+        ),
+        format(atom(ItemGoVar), 'v~w', [VIdx]),
+        
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(ItemVar, ItemGoVar)|VarMap], InnerCode),
+        
+        format(string(Code), '
+\t\tif listVal~w, ok := ~w.([]interface{}); ok {
+\t\t\tfor _, itemVal~w := range listVal~w {
+\t\t\t\t~w := itemVal~w
+~s
+\t\t\t}
+\t\t}', [VIdx, ListGoVar, VIdx, VIdx, ItemGoVar, VIdx, InnerCode])
+    ;   % Fallback for unknown ops
+        format('WARNING: Unknown JSON operation: ~w~n', [Op]),
+        generate_json_processing(Rest, HeadArgs, Delim, Unique, VIdx, VarMap, Code)
+    ).
+
+generate_nested_extraction_code(Path, Source, Target, Code) :-
+    (   is_list(Path) -> PathList = Path ; PathList = [Path] ),
+    maplist(atom_string, PathList, PathStrs),
+    atomic_list_concat(PathStrs, '", "', PathStr),
+    format(string(Code), '
+\t\t~w, found := getNestedField(~w, []string{"~s"})
+\t\tif !found { continue }', [Target, Source, PathStr]).
+
+generate_json_output_from_map(HeadArgs, VarMap, DelimChar, OutputExpr) :-
+    maplist(arg_to_go_var(VarMap), HeadArgs, GoVars),
+    length(HeadArgs, NumArgs),
+    findall('%v', between(1, NumArgs, _), FormatParts),
+    atomic_list_concat(FormatParts, DelimChar, FormatStr),
+    atomic_list_concat(GoVars, ', ', VarList),
+    format(atom(OutputExpr), 'fmt.Sprintf("~s", ~s)', [FormatStr, VarList]).
+
+arg_to_go_var(VarMap, Arg, GoVar) :-
+    var(Arg), !,
+    (   lookup_var_identity(Arg, VarMap, Name) ->
+        GoVar = Name
+    ;   GoVar = '"<unknown>"'
+    ).
+arg_to_go_var(_, Arg, GoVar) :-
+    atom(Arg), !,
+    format(atom(GoVar), '"~w"', [Arg]).
+arg_to_go_var(_, Arg, Arg) :- number(Arg), !.
+
+%% lookup_var_identity(+Key, +Map, -Val)
+%  Lookup value in association list using identity check (==)
+lookup_var_identity(Key, [(K, V)|_], Val) :- Key == K, !, Val = V.
+lookup_var_identity(Key, [_|Rest], Val) :- lookup_var_identity(Key, Rest, Val).
+
+
+
+%% compile_json_to_go_typed_noschema(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, -GoCode)
+%  Generate Go code for JSON input mode with fieldN variables but no type validation
+%  Used for database writes without schema
+%
+compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
+    % Map delimiter
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % Generate untyped field extraction code with fieldN variable names
+    findall(ExtractLine,
+        (   nth1(Pos, FieldMappings, Mapping),
+            format(atom(VarName), 'field~w', [Pos]),
+            % Generate extraction for flat or nested fields
+            (   Mapping = Field-_Var
+            ->  % Flat field - untyped extraction
+                atom_string(Field, FieldStr),
+                format(atom(ExtractLine), '\t\t~w, ~wOk := data["~s"]\n\t\tif !~wOk {\n\t\t\tcontinue\n\t\t}',
+                    [VarName, VarName, FieldStr, VarName])
+            ;   Mapping = nested(Path, _Var)
+            ->  % Nested field - untyped extraction
+                generate_nested_field_extraction(Path, VarName, ExtractLine)
+            )
+        ),
+        ExtractLines),
+    atomic_list_concat(ExtractLines, '\n', ExtractCode),
+
+    % Generate output expression (same as typed)
     generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
 
     % Build main loop
@@ -2181,7 +2641,7 @@ compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
         UniqueCheck = '\t\tfmt.Println(result)\n'
     ),
 
-    % Build the loop code (helper function is added at package level, not here)
+    % Build the loop code
     format(string(GoCode), '
 \tscanner := bufio.NewScanner(os.Stdin)
 ~w
@@ -2365,8 +2825,13 @@ generate_flat_field_extraction(FieldName, VarName, ExtractCode) :-
 %  Generate extraction code for a nested field using getNestedField helper
 %
 generate_nested_field_extraction(Path, VarName, ExtractCode) :-
+    % Ensure path is a list
+    (   is_list(Path)
+    ->  PathList = Path
+    ;   PathList = [Path]
+    ),
     % Convert path atoms to Go string slice
-    maplist(atom_string, Path, PathStrs),
+    maplist(atom_string, PathList, PathStrs),
     atomic_list_concat(PathStrs, '", "', PathStr),
     format(atom(ExtractCode), '\t\t~w, ~wOk := getNestedField(data, []string{"~s"})\n\t\tif !~wOk {\n\t\t\tcontinue\n\t\t}',
         [VarName, VarName, PathStr, VarName]).
@@ -2393,6 +2858,191 @@ generate_json_output_expr(HeadArgs, DelimChar, OutputExpr) :-
 %% UTILITY FUNCTIONS
 %% ============================================
 
+%% ============================================
+%% XML INPUT MODE COMPILATION
+%% ============================================
+
+%% compile_xml_input_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate for XML input (streaming + flattening)
+compile_xml_input_mode(Pred, Arity, Options, GoCode) :-
+    % Get options
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(include_package(IncludePackage), Options, true),
+    option(unique(Unique), Options, true),
+    
+    % Get predicate clauses
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    
+    (   Clauses = [SingleHead-SingleBody] ->
+        % Extract mappings (same as JSON)
+        extract_json_field_mappings(SingleBody, FieldMappings),
+        format('DEBUG: FieldMappings = ~w~n', [FieldMappings]),
+        
+        % Generate XML loop
+        SingleHead =.. [_|HeadArgs],
+        compile_xml_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Options, CoreBody),
+        
+        % Check if database backend is specified
+        (   option(db_backend(bbolt), Options)
+        ->  format('  Database: bbolt~n'),
+            wrap_with_database(CoreBody, FieldMappings, Pred, Options, ScriptBody),
+            NeedsDatabase = true
+        ;   ScriptBody = CoreBody,
+            NeedsDatabase = false
+        )
+    ;   format('ERROR: XML mode supports single clause only~n'),
+        fail
+    ),
+    
+    % Generate XML helpers
+    generate_xml_helpers(XmlHelpers),
+    
+    % Check if nested helper is needed
+    (   member(nested(_, _), FieldMappings)
+    ->  generate_nested_helper(NestedHelper),
+        format(string(Helpers), "~s\n~s", [XmlHelpers, NestedHelper])
+    ;   Helpers = XmlHelpers
+    ),
+    
+    % Wrap in package
+    (   IncludePackage ->
+        (   NeedsDatabase = true
+        ->  Imports = '\t"encoding/xml"\n\t"fmt"\n\t"os"\n\t"strings"\n\t"io"\n\n\tbolt "go.etcd.io/bbolt"'
+        ;   Imports = '\t"encoding/xml"\n\t"fmt"\n\t"os"\n\t"strings"\n\t"io"'
+        ),
+        
+        format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+~s
+
+func main() {
+~s}
+', [Imports, Helpers, ScriptBody])
+    ;   GoCode = ScriptBody
+    ).
+
+%% compile_xml_to_go(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, +Options, -GoCode)
+compile_xml_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Options, GoCode) :-
+    % Map delimiter
+    map_field_delimiter(FieldDelim, DelimChar),
+    
+    % Generate field extraction code (resusing JSON logic as data is map[string]interface{})
+    generate_json_field_extractions(FieldMappings, HeadArgs, ExtractCode),
+    generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
+    
+    % Get XML file and tags
+    option(xml_file(XmlFile), Options, stdin),
+    
+    (   XmlFile == stdin
+    ->  FileOpenCode = '\tf := os.Stdin'
+    ;   format(string(FileOpenCode), '
+\tf, err := os.Open("~w")
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening file: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer f.Close()', [XmlFile])
+    ),
+
+    (   option(tags(Tags), Options)
+    ->  true
+    ;   option(tag(Tag), Options)
+    ->  Tags = [Tag]
+    ;   Tags = []
+    ),
+    
+    % Build tag check
+    (   Tags = []
+    ->  TagCheck = 'true'
+    ;   maplist(tag_to_go_cond, Tags, Conds),
+        atomic_list_concat(Conds, " || ", TagCheck)
+    ),
+    
+    % Build main loop
+    (   Unique = true ->
+        SeenDecl = '\tseen := make(map[string]bool)\n\t',
+        UniqueCheck = '\t\tif !seen[result] {\n\t\t\tseen[result] = true\n\t\t\tfmt.Println(result)\n\t\t}\n'
+    ;   SeenDecl = '\t',
+        UniqueCheck = '\t\tfmt.Println(result)\n'
+    ),
+    
+    format(string(GoCode), '
+~s
+
+\tdecoder := xml.NewDecoder(f)
+~w
+\tfor {
+\t\tt, err := decoder.Token()
+\t\tif err == io.EOF {
+\t\t\tbreak
+\t\t}
+\t\tif err != nil {
+\t\t\tcontinue
+\t\t}
+\t\t
+\t\tswitch se := t.(type) {
+\t\tcase xml.StartElement:
+\t\t\tif ~w {
+\t\t\t\tvar node XmlNode
+\t\t\t\tif err := decoder.DecodeElement(&node, &se); err != nil {
+\t\t\t\t\tcontinue
+\t\t\t\t}
+\t\t\t\t
+\t\t\t\tdata := FlattenXML(node)
+\t\t\t\t
+~s
+\t\t\t\t
+\t\t\t\tresult := ~s
+~s
+\t\t\t}
+\t\t}
+\t}
+', [FileOpenCode, SeenDecl, TagCheck, ExtractCode, OutputExpr, UniqueCheck]).
+
+tag_to_go_cond(Tag, Cond) :-
+    format(string(Cond), 'se.Name.Local == "~w"', [Tag]).
+
+generate_xml_helpers(Code) :-
+    Code = '
+type XmlNode struct {
+	XMLName xml.Name
+	Attrs   []xml.Attr `xml:",any,attr"`
+	Content string     `xml:",chardata"`
+	Nodes   []XmlNode  `xml:",any"`
+}
+
+func FlattenXML(n XmlNode) map[string]interface{} {
+	m := make(map[string]interface{})
+	for _, a := range n.Attrs {
+		m["@"+a.Name.Local] = a.Value
+	}
+	trim := strings.TrimSpace(n.Content)
+	if trim != "" {
+		m["text"] = trim
+	}
+	for _, child := range n.Nodes {
+        tag := child.XMLName.Local
+        flatChild := FlattenXML(child)
+        
+        if existing, ok := m[tag]; ok {
+            if list, isList := existing.([]interface{}); isList {
+                m[tag] = append(list, flatChild)
+            } else {
+                m[tag] = []interface{}{existing, flatChild}
+            }
+        } else {
+		    m[tag] = flatChild
+        }
+	}
+	return m
+}
+'.
+
 %% map_field_delimiter(+Delimiter, -String)
 %  Map delimiter atom to string
 map_field_delimiter(colon, ':') :- !.
@@ -2405,6 +3055,8 @@ map_field_delimiter(Char, Char) :- atom(Char), atom_length(Char, 1), !.
 %  Write Go code to file
 %
 write_go_program(GoCode, FilePath) :-
+    file_directory_name(FilePath, Dir),
+    (   Dir \= '.' -> make_directory_path(Dir) ; true ),
     open(FilePath, write, Stream),
     write(Stream, GoCode),
     close(Stream),

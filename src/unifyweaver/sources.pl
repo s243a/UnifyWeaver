@@ -78,9 +78,18 @@ augment_source_options(Type, Options, Augmented) :-
     ->  augment_json_options(Options, Augmented)
     ;   Type = yaml
     ->  augment_yaml_options(Options, Augmented)
+    ;   Type = sqlite
+    ->  augment_sqlite_options(Options, Augmented)
     ;   Type = xml
     ->  augment_xml_options(Options, Augmented)
     ;   Augmented = Options
+    ).
+
+augment_sqlite_options(Options0, Options) :-
+    (   option(sqlite_file(File), Options0)
+    ->  absolute_file_name(File, Abs),
+        ensure_option(input(file(Abs)), Options0, Options)
+    ;   Options = Options0
     ).
 
 augment_yaml_options(Options0, Options) :-

@@ -1,0 +1,61 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Docker files (avoid recursion)
+Dockerfile
+Dockerfile.*
+docker-compose.yml
+.dockerignore
+*.sh
+
+# Documentation (not needed in image)
+*.md
+docs/
+
+# Test outputs
+output/
+scripts/testing/test_env/
+scripts/testing/test_env_ps/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Dependencies (will be installed fresh)
+node_modules/
+.npm
+.yarn
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.pytest_cache/
+.venv/
+venv/
+ENV/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+test_debug.pl
+test_call_graph_only.pl
+
+# OS files
+Thumbs.db
+.DS_Store

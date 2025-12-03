@@ -46,9 +46,30 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Arithmetic & constraints** - LINQ-based pipelines honour `is/2`, comparisons, and deduplication.
 - **Streaming codegen (`target(csharp_codegen)`)** - Emit standalone C# projects that mirror Bash streaming templates.
 
-**See [C# Compilation Guide](docs/DOTNET_COMPILATION.md) for details.**
+**See [C# Compilation Guide](docs/DOTNET_COMPILATION.md) for details.**                           
 
-### Data Source Plugin System (v0.1)
+                                                 
+
+### Python Target (v0.2)                         
+
+- **Procedural & Generator Modes** - streaming pipelines or Datalog-style fixpoint evaluation.
+
+- **Native XML Integration** - In-process `lxml` reading and flattening for high-performance ETL.
+
+- **Advanced Recursion** - Tail loop optimization and memoization.
+
+- **Standard I/O** - JSONL/NUL-JSON piping support.
+
+- **Semantic Runtime** - Built-in support for crawling, SQLite storage, and vector search.
+
+
+
+**See [Python Target Guide](docs/PYTHON_TARGET.md) and [Semantic Runtime](docs/PYTHON_RUNTIME.md) for details.**
+
+
+
+### Data Source Plugin System (v0.1)             
+
 - **5 Production-Ready Plugins** - CSV/TSV, AWK, Python, HTTP, JSON data sources
 - **Self-Registering Architecture** - Plugin-based system with automatic discovery
 - **Template Integration** - Seamless bash code generation with comprehensive error handling
@@ -193,11 +214,31 @@ sibling(X, Y)     % Same parent, different children
     cache_duration(3600)
 ]).
 
-% Python with SQLite
-:- source(python, get_users, [
-    sqlite_query('SELECT name, age FROM users WHERE active = 1'),
-    database('app.db')
+% Python with SQLite                             
+
+:- source(python, get_users, [                   
+
+    sqlite_query('SELECT name, age FROM users WHE
+
+RE active = 1'),                                 
+
+    database('app.db')                           
+
+]).                                              
+
+
+
+% Native SQLite (v0.2)
+
+:- source(sqlite, active_users, [
+
+    sqlite_file('app.db'),
+
+    query('SELECT name, age FROM users WHERE active = 1')
+
 ]).
+
+
 
 % JSON processing with jq                        
 :- source(json, extract_names, [                 

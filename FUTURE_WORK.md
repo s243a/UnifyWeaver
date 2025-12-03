@@ -4,84 +4,12 @@ This document captures ideas for future development of UnifyWeaver targets and f
 
 ## Go Target Enhancements
 
-### Database Integration (High Priority)
+### Database Integration (Completed)
 
-Add embedded database support to the Go target for complete data pipelines: JSON → Schema Validation → Database Storage.
+✅ **Implemented**: `bbolt` support is now available in the Go target.
+- Pure Go, ACID transactions.
+- Use `db_backend(bbolt)` option.
 
-#### Database Options
-
-**bbolt (Recommended)**
-- Pure Go, no CGo dependencies
-- ACID transactions with B+tree storage
-- Simple API similar to LiteDB philosophy
-- Most popular embedded KV store in Go
-- Use case: Document storage with collections
-- Example: `go get go.etcd.io/bbolt`
-
-**BadgerDB**
-- Fast LSM-tree based storage
-- Good for write-heavy workloads
-- Built-in compression and encryption
-- Used in production at scale
-- Example: `go get github.com/dgraph-io/badger/v4`
-
-**Pebble**
-- LSM-based like RocksDB
-- Used by CockroachDB
-- High performance concurrent operations
-- Good for large datasets
-- Example: `go get github.com/cockroachdb/pebble`
-
-**SQLite via CGo**
-- Full SQL support with mattn/go-sqlite3
-- Downside: Requires CGo (complicates cross-compilation)
-- Upside: Feature parity with Python target
-
-#### Implementation Plan
-
-```prolog
-% Define database schema
-:- db_schema(users, bbolt, [
-    collection(users),
-    key_field(id),
-    indexed_fields([email, name])
-]).
-
-% Predicate with database storage
-store_user(Id, Name, Email) :-
-    json_record([id-Id, name-Name, email-Email]),
-    db_store(users, Id, [name-Name, email-Email]).
-
-% Compile with database support
-compile_predicate_to_go(store_user/3, [
-    json_input(true),
-    json_schema(user),
-    db_backend(bbolt),
-    db_file('users.db')
-], Code).
-```
-
-**Generated Go Pattern:**
-```go
-import "go.etcd.io/bbolt"
-
-db, _ := bbolt.Open("users.db", 0600, nil)
-defer db.Close()
-
-db.Update(func(tx *bbolt.Tx) error {
-    bucket, _ := tx.CreateBucketIfNotExists([]byte("users"))
-
-    // Store JSON-validated record
-    value, _ := json.Marshal(record)
-    return bucket.Put([]byte(id), value)
-})
-```
-
-**Benefits:**
-- Complete data pipeline (ingest → validate → persist)
-- Feature parity with C# (LiteDB) and Python (SQLite)
-- Real-world utility for data processing tasks
-- No external dependencies (pure Go)
 
 ### Advanced JSON Features (Phase 5+)
 
@@ -127,91 +55,16 @@ user_tags(Name, Tag) :-
 - **Error Aggregation** - Collect and report validation errors
 - **Progress Reporting** - Optional progress output for large datasets
 
-## Rust Target (Major Milestone)
+## Rust Target (Completed)
 
-Create a new compilation target for Rust with embedded database support.
+✅ **Implemented**: The Rust target is now available with support for:
+- Core compilation (facts, rules, constraints, aggregations)
+- Regex matching (`regex` crate)
+- JSON I/O (`serde`, `serde_json`)
+- Project generation (`Cargo.toml`)
 
-### Why Rust?
+See [docs/RUST_TARGET.md](docs/RUST_TARGET.md) for details.
 
-**Advantages:**
-- Memory safety without garbage collection
-- Zero-cost abstractions
-- Stronger type system (algebraic data types, pattern matching)
-- Excellent performance (often faster than Go)
-- Growing ecosystem
-
-**Challenges:**
-- Ownership and borrowing system (different from Go/C#)
-- Steeper learning curve
-- More complex compilation patterns
-- Lifetime annotations
-
-### Rust Database Options
-
-**sled (Recommended)**
-- Pure Rust embedded database
-- ACID transactions
-- Similar to bbolt in philosophy
-- Example: `sled = "0.34"`
-
-**redb**
-- Pure Rust, zero-copy reads
-- ACID with MVCC
-- Simpler API than sled
-- Example: `redb = "1.0"`
-
-**RocksDB**
-- Via rust-rocksdb bindings
-- Production-proven at scale
-- More complex but very powerful
-
-**SQLite**
-- Via rusqlite crate
-- Full SQL support
-- Similar to Python target
-
-### Implementation Approach
-
-Apply lessons learned from Go target:
-1. Start with basic record processing (stdin/stdout)
-2. Add JSON I/O support
-3. Implement schema validation using Rust's type system
-4. Add database integration (sled or redb)
-5. Leverage Rust's type system for compile-time guarantees
-
-**Unique Rust Features:**
-- Use enums for schema types (algebraic data types)
-- Pattern matching for record processing
-- Iterator chains for data transformation
-- Zero-copy deserialization with serde
-
-**Example Target Code:**
-```rust
-use serde_json::Value;
-use sled::Db;
-
-fn main() -> Result<(), Box<dyn Error>> {
-    let db = sled::open("data.db")?;
-    let stdin = io::stdin();
-
-    for line in stdin.lock().lines() {
-        let data: Value = serde_json::from_str(&line?)?;
-
-        // Type-safe extraction
-        let name = data["name"].as_str()
-            .ok_or("name is not a string")?;
-        let age = data["age"].as_i64()
-            .ok_or("age is not a number")?;
-
-        // Store in sled
-        let key = name.as_bytes();
-        let value = serde_json::to_vec(&data)?;
-        db.insert(key, value)?;
-    }
-
-    Ok(())
-}
-```
 
 ## Other Target Ideas
 
@@ -320,13 +173,12 @@ Explore integration with machine learning:
 ## Priority Ranking
 
 **Immediate (Next 1-2 Milestones):**
-1. ✅ Go + bbolt integration (database support)
-2. Advanced JSON features (arrays, advanced schemas)
+1. Advanced JSON features (arrays, advanced schemas)
+2. Stream processing enhancements
 
 **Short Term (Next 3-6 Months):**
-3. Rust target with sled/redb
-4. Stream processing enhancements
-5. Query optimization basics
+3. Query optimization basics
+
 
 **Medium Term (6-12 Months):**
 6. WebAssembly target

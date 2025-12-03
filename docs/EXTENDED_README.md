@@ -715,6 +715,37 @@ PYTHON_EOF
 }
 ```
 
+### SQLite Plugin (Native)
+
+Query SQLite databases directly using the `sqlite3` command-line tool (faster than Python wrapper for simple queries):
+
+```prolog
+:- source(sqlite, high_value_orders, [
+    sqlite_file('data/orders.db'),
+    query('SELECT id, total FROM orders WHERE total > 1000'),
+    output_format(tsv)
+]).
+```
+
+**Generated bash:**
+```bash
+high_value_orders() {
+    sqlite3 -separator '	' -noheader "data/orders.db" "SELECT id, total FROM orders WHERE total > 1000"
+}
+```
+
+**Safe Parameter Binding (v1.1):**
+
+To prevent SQL injection when using dynamic inputs, use `parameters/1`. This automatically switches to a safer Python-based execution mode:
+
+```prolog
+:- source(sqlite, user_by_id, [
+    sqlite_file('data/users.db'),
+    query('SELECT name, email FROM users WHERE id = ?'),
+    parameters(['$1'])  % Binds first script argument to ?
+]).
+```
+
 ### C# Plugin (LiteDB Integration)
 
 UnifyWeaver supports C# data sources with automatic compilation and LiteDB integration.

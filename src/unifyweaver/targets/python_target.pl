@@ -7,6 +7,7 @@
 % Conditional import of call_graph for mutual recursion detection
 % Falls back gracefully if module not available
 :- catch(use_module('../core/advanced/call_graph'), _, true).
+:- use_module(common_generator).
 
 /** <module> Python Target Compiler
  *
@@ -81,23 +82,7 @@ compile_non_recursive_predicate(_Name, Arity, Clauses, Options, PythonCode) :-
     header(Header),
     helpers(Helpers),
     
-    % Select format
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
-    format(string(Main), 
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     format(string(Logic), 
 "
@@ -191,27 +176,11 @@ compile_mutual_recursive_group(Predicates, Options, PythonCode) :-
     header_with_functools(Header),
     helpers(Helpers),
     
-    % Select format
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
     % For mutual recursion, generate a dispatcher that handles all predicates
     findall(Pred/Arity, member(Pred/Arity, Predicates), PredList),
     generate_mutual_dispatcher(PredList, DispatcherCode),
     
-    format(string(Main), 
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     format(string(Logic), 
 "
@@ -332,23 +301,7 @@ compile_tail_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonCode
     header_with_functools(Header),
     helpers(Helpers),
     
-    % Select format
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
-    format(string(Main), 
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     format(string(Logic), 
 "
@@ -375,23 +328,7 @@ compile_general_recursive(Name, Arity, BaseClauses, RecClauses, Options, PythonC
     header_with_functools(Header),
     helpers(Helpers),
     
-    % Select format
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
-    format(string(Main), 
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     format(string(Logic), 
 "
@@ -461,6 +398,10 @@ translate_body((Goal, Rest), Code) :-
 translate_body(Goal, Code) :-
     translate_goal(Goal, Code).
 
+translate_goal(_:Goal, Code) :-
+    !,
+    translate_goal(Goal, Code).
+
 translate_goal(get_dict(Key, Record, Value), Code) :-
     !,
     var_to_python(Record, PyRecord),
@@ -482,6 +423,13 @@ translate_goal(=(Var, Dict), Code) :-
     atomic_list_concat(PyPairList, ', ', PairsStr),
     format(string(Code), "    ~w = {~s}\n", [PyVar, PairsStr]).
 
+translate_goal(=(Var, Value), Code) :-
+    atomic(Value),
+    !,
+    var_to_python(Var, PyVar),
+    var_to_python(Value, PyVal),
+    format(string(Code), "    ~w = ~w\n", [PyVar, PyVal]).
+
 translate_goal(>(Var, Value), Code) :-
     !,
     var_to_python(Var, PyVar),
@@ -498,6 +446,87 @@ translate_goal(match(Var, Pattern, Type), Code) :-
 translate_goal(match(Var, Pattern, Type, Groups), Code) :-
     !,
     translate_match_goal(Var, Pattern, Type, Groups, Code).
+
+translate_goal(graph_search(Query, TopK, Hops, Options, Results), Code) :-
+    !,
+    var_to_python(Query, PyQuery),
+    var_to_python(TopK, PyTopK),
+    var_to_python(Hops, PyHops),
+    var_to_python(Results, PyResults),
+    % Extract search mode from options (default vector)
+    (   member(mode(Mode), Options)
+    ->  atom_string(Mode, ModeStr)
+    ;   ModeStr = "vector"
+    ),
+    format(string(Code), "    ~w = _get_runtime().searcher.graph_search(~w, top_k=~w, hops=~w, mode='~w')\n", [PyResults, PyQuery, PyTopK, PyHops, ModeStr]).
+
+translate_goal(graph_search(Query, TopK, Hops, Results), Code) :-
+    !,
+    var_to_python(Query, PyQuery),
+    var_to_python(TopK, PyTopK),
+    var_to_python(Hops, PyHops),
+    var_to_python(Results, PyResults),
+    format(string(Code), "    ~w = _get_runtime().searcher.graph_search(~w, top_k=~w, hops=~w)\n", [PyResults, PyQuery, PyTopK, PyHops]).
+
+translate_goal(semantic_search(Query, TopK, Results), Code) :-
+    !,
+    var_to_python(Query, PyQuery),
+    var_to_python(TopK, PyTopK),
+    var_to_python(Results, PyResults),
+    format(string(Code), "    ~w = _get_runtime().searcher.search(~w, top_k=~w)\n", [PyResults, PyQuery, PyTopK]).
+
+translate_goal(crawler_run(SeedIds, MaxDepth, Options), Code) :-
+    !,
+    var_to_python(SeedIds, PySeeds),
+    var_to_python(MaxDepth, PyDepth),
+    % Check options for embedding(false)
+    (   member(embedding(false), Options)
+    ->  EmbedVal = "False"
+    ;   EmbedVal = "True"
+    ),
+    format(string(Code), "    _get_runtime().crawler.crawl(~w, fetch_xml_func, max_depth=~w, embed_content=~w)\n", [PySeeds, PyDepth, EmbedVal]).
+
+translate_goal(crawler_run(SeedIds, MaxDepth), Code) :-
+    !,
+    var_to_python(SeedIds, PySeeds),
+    var_to_python(MaxDepth, PyDepth),
+    format(string(Code), "    _get_runtime().crawler.crawl(~w, fetch_xml_func, max_depth=~w)\n", [PySeeds, PyDepth]).
+
+translate_goal(upsert_object(Id, Type, Data), Code) :-
+    !,
+    var_to_python(Id, PyId),
+    var_to_python(Type, PyType),
+    var_to_python(Data, PyData),
+    format(string(Code), "    _get_runtime().importer.upsert_object(~w, ~w, ~w)\n", [PyId, PyType, PyData]).
+
+translate_goal(llm_ask(Prompt, Context, Response), Code) :-
+    !,
+    var_to_python(Prompt, PyPrompt),
+    var_to_python(Context, PyContext),
+    var_to_python(Response, PyResponse),
+    format(string(Code), "    ~w = _get_runtime().llm.ask(~w, ~w)\n", [PyResponse, PyPrompt, PyContext]).
+
+translate_goal(chunk_text(Text, Chunks), Code) :-
+    !,
+    var_to_python(Text, PyText),
+    var_to_python(Chunks, PyChunks),
+    format(string(Code), "    ~w = [asdict(c) for c in _get_runtime().chunker.chunk(~w, 'inline')]\n", [PyChunks, PyText]).
+
+translate_goal(chunk_text(Text, Chunks, Options), Code) :-
+    !,
+    var_to_python(Text, PyText),
+    var_to_python(Chunks, PyChunks),
+    (   is_list(Options)
+    ->  maplist(opt_to_py_pair, Options, Pairs),
+        atomic_list_concat(Pairs, ', ', PairsStr),
+        format(string(PyKwargs), "{~s}", [PairsStr])
+    ;   var_to_python(Options, PyKwargs)
+    ),
+    format(string(Code), "    ~w = [asdict(c) for c in _get_runtime().chunker.chunk(~w, 'inline', **~w)]\n", [PyChunks, PyText, PyKwargs]).
+
+opt_to_py_pair(Term, Pair) :-
+    Term =.. [Key, Value],
+    format(string(Pair), "'~w': ~w", [Key, Value]).
 
 translate_goal(true, Code) :-
     !,
@@ -562,6 +591,12 @@ var_to_python(Atom, Quoted) :-
 var_to_python(Number, Number) :- 
     number(Number), 
     !.
+var_to_python(List, PyList) :-
+    is_list(List),
+    !,
+    maplist(var_to_python, List, Elems),
+    atomic_list_concat(Elems, ', ', Inner),
+    format(string(PyList), "[~w]", [Inner]).
 var_to_python(Term, String) :-
     term_string(Term, String).
 
@@ -840,7 +875,12 @@ header("import sys\nimport json\nimport re\nfrom typing import Iterator, Dict, A
 
 header_with_functools("import sys\nimport json\nimport re\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
 
-helpers("
+helpers(Helpers) :-
+    helpers_base(Base),
+    semantic_runtime_helpers(Runtime),
+    format(string(Helpers), "~s\n~s", [Base, Runtime]).
+
+helpers_base("
 def read_jsonl(stream) -> Iterator[Dict[str, Any]]:
     \"\"\"Read JSONL from stream.\"\"\"
     for line in stream:
@@ -871,6 +911,53 @@ def write_nul_json(records: Iterator[Dict], stream) -> None:
     \"\"\"Write NUL-delimited JSON to stream.\"\"\"
     for record in records:
         stream.write(json.dumps(record) + '\\0')
+
+def read_xml_lxml(file_path: str, tags: set) -> Iterator[Dict[str, Any]]:
+    \"\"\"Read and flatten XML using lxml.\"\"\"
+    try:
+        from lxml import etree
+    except ImportError:
+        sys.stderr.write('Error: lxml required for XML source\\n')
+        sys.exit(1)
+    
+    context = etree.iterparse(file_path, events=('start', 'end'), recover=True)
+    context = iter(context)
+    _, root = next(context) # Get root start
+    
+    def expand(tag, nsmap):
+        if ':' in tag:
+            pfx, local = tag.split(':', 1)
+            uri = nsmap.get(pfx)
+            if uri:
+                return '{' + uri + '}' + local
+        return tag
+
+    # Pre-calculate wanted tags (assuming passed tags are QNames if needed, or local names)
+    # For simplicity, we match suffix or exact
+    
+    for event, elem in context:
+        if event == 'end' and (elem.tag in tags or elem.tag.split('}')[-1] in tags):
+            data = {}
+            # Attributes
+            for k, v in elem.attrib.items():
+                data['@' + k] = v
+            # Text
+            if elem.text and elem.text.strip():
+                data['text'] = elem.text.strip()
+            # Children (simple flattening)
+            for child in elem:
+                tag = child.tag.split('}')[-1]
+                if not len(child) and child.text:
+                    data[tag] = child.text.strip()
+            
+            yield data
+            
+            # Memory cleanup
+            elem.clear()
+            while elem.getprevious() is not None:
+                del elem.getparent()[0]
+    del context
+    root.clear()
 \n").
 
 %% ============================================
@@ -896,23 +983,7 @@ generate_generator_code(_Name, _Arity, Clauses, Options, PythonCode) :-
     generate_rule_functions(Name, Clauses, RuleFunctions),
     generate_fixpoint_loop(Name, Clauses, FixpointLoop),
     
-    % Main function
-    option(record_format(Format), Options, jsonl),
-    (   Format == nul_json
-    ->  Reader = "read_nul_json", Writer = "write_nul_json"
-    ;   Reader = "read_jsonl", Writer = "write_jsonl"
-    ),
-    
-    format(string(Main),
-"
-def main():
-    records = ~w(sys.stdin)
-    results = process_stream_generator(records)
-    ~w(results, sys.stdout)
-
-if __name__ == '__main__':
-    main()
-", [Reader, Writer]),
+    generate_python_main(Options, Main),
     
     atomic_list_concat([Header, Helpers, RuleFunctions, FixpointLoop, Main], "\n", PythonCode).
 
@@ -992,7 +1063,8 @@ def write_jsonl(records: Iterator[Dict], stream: Any):
 ",
         NulReader = ""
     ),
-    atomic_list_concat([JsonlReader, NulReader], "", Helpers).
+    semantic_runtime_helpers(Runtime),
+    atomic_list_concat([JsonlReader, NulReader, Runtime], "", Helpers).
 
 %% generate_rule_functions(+Name, +Clauses, -RuleFunctions)
 generate_rule_functions(Name, Clauses, RuleFunctions) :-
@@ -1398,43 +1470,27 @@ translate_builtins(Builtins, VarMap, ConstraintChecks) :-
         Checks),
     atomic_list_concat(Checks, " and ", ConstraintChecks).
 
+python_config(Config) :-
+    Config = [
+        access_fmt-"~w.get('arg~w')",
+        atom_fmt-"'~w'",
+        null_val-"None",
+        ops-[
+            + - "+", - - "-", * - "*", / - "/", mod - "%",
+            > - ">", < - "<", >= - ">=", =< - "<=", =:= - "==", =\= - "!=",
+            is - "=="
+        ]
+    ].
+
 %% translate_builtin(+Builtin, +VarMap, -PythonExpr)
 %  Translate a single built-in to Python
-translate_builtin(Left is Right, VarMap, PythonExpr) :-
-    !, % is/2
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w == ~w", [LeftPy, RightPy]).
-translate_builtin(Left > Right, VarMap, PythonExpr) :-
+translate_builtin(Goal, VarMap, PythonExpr) :-
+    Goal =.. [Op | _],
+    python_config(Config),
+    memberchk(ops-Ops, Config),
+    memberchk(Op-_, Ops),
     !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w > ~w", [LeftPy, RightPy]).
-translate_builtin(Left < Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w < ~w", [LeftPy, RightPy]).
-translate_builtin(Left >= Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w >= ~w", [LeftPy, RightPy]).
-translate_builtin(Left =< Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w <= ~w", [LeftPy, RightPy]).
-translate_builtin(Left =:= Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w == ~w", [LeftPy, RightPy]).
-translate_builtin(Left =\= Right, VarMap, PythonExpr) :-
-    !,
-    translate_expr(Left, VarMap, LeftPy),
-    translate_expr(Right, VarMap, RightPy),
-    format(string(PythonExpr), "~w != ~w", [LeftPy, RightPy]).
+    translate_builtin_common(Goal, VarMap, Config, PythonExpr).
 translate_builtin(\+ Goal, VarMap, PythonExpr) :-
     !,
     translate_negation(Goal, VarMap, PythonExpr).
@@ -1457,23 +1513,14 @@ translate_builtin(_, _VarMap, "True").  % Fallback
 
 %% translate_negation(+Goal, +VarMap, -PythonExpr)
 translate_negation(Goal, VarMap, PythonExpr) :-
-    Goal =.. [Pred | Args],
-    findall(Pair,
-        (   nth0(Idx, Args, Arg),
-            (   var(Arg)
-            ->  translate_expr(Arg, VarMap, ValExpr)
-            ;   atom(Arg)
-            ->  format(string(ValExpr), "'~w'", [Arg])
-            ;   number(Arg)
-            ->  format(string(ValExpr), "~w", [Arg])
-            ;   ValExpr = "None"
-            ),
-            format(string(Pair), "'arg~w': ~w", [Idx, ValExpr])
+    python_config(Config),
+    prepare_negation_data(Goal, VarMap, Config, Pairs),
+    findall(PairStr,
+        (   member(Key-Val, Pairs),
+            format(string(PairStr), "'~w': ~w", [Key, Val])
         ),
-        Pairs),
-    format(string(RelPair), "'relation': '~w'", [Pred]),
-    AllPairs = [RelPair | Pairs],
-    atomic_list_concat(AllPairs, ", ", DictContent),
+        PairStrings),
+    atomic_list_concat(PairStrings, ", ", DictContent),
     format(string(PythonExpr), "FrozenDict.from_dict({~w}) not in total", [DictContent]).
 
 %% translate_match(+Var, +Pattern, +Type, +Groups, +VarMap, -PythonExpr)
@@ -1938,3 +1985,97 @@ def process_stream_generator(records: Iterator[Dict]) -> Iterator[Dict]:
         delta = new_delta
 ", [RuleCallsStr]).
 
+%% generate_python_main(+Options, -MainCode)
+%  Generate the main entry point with appropriate reader/writer
+generate_python_main(Options, MainCode) :-
+    option(record_format(Format), Options, jsonl),
+    (   Format == nul_json
+    ->  Writer = "write_nul_json"
+    ;   Writer = "write_jsonl"
+    ),
+    
+    (   option(input_source(xml(File, Tags)), Options)
+    ->  % XML Source
+        maplist(atom_string, Tags, TagStrs),
+        maplist(quote_py_string, TagStrs, QuotedTags),
+        atomic_list_concat(QuotedTags, ", ", TagsInner),
+        format(string(ReaderCall), "read_xml_lxml('~w', {~w})", [File, TagsInner])
+    ;   Format == nul_json
+    ->  ReaderCall = "read_nul_json(sys.stdin)"
+    ;   ReaderCall = "read_jsonl(sys.stdin)"
+    ),
+    
+    % Handle generator mode vs procedural mode function name
+    (   option(mode(generator), Options)
+    ->  ProcessFunc = "process_stream_generator"
+    ;   ProcessFunc = "process_stream"
+    ),
+    
+    format(string(MainCode), 
+"
+def main():
+    records = ~w
+    results = ~w(records)
+    ~w(results, sys.stdout)
+
+if __name__ == '__main__':
+    main()
+", [ReaderCall, ProcessFunc, Writer]).
+
+quote_py_string(Str, Quoted) :-
+    format(string(Quoted), "'~w'", [Str]).
+
+%% semantic_runtime_helpers(-Code)
+%  Inject the Semantic Runtime library (Importer, Crawler, etc.) into the script
+semantic_runtime_helpers(Code) :-
+    % List of runtime files to inline
+    Files = [
+        'src/unifyweaver/targets/python_runtime/embedding.py',
+        'src/unifyweaver/targets/python_runtime/importer.py',
+        'src/unifyweaver/targets/python_runtime/onnx_embedding.py',
+        'src/unifyweaver/targets/python_runtime/searcher.py',
+        'src/unifyweaver/targets/python_runtime/crawler.py',
+        'src/unifyweaver/targets/python_runtime/llm.py',
+        'src/unifyweaver/targets/python_runtime/chunker.py'
+    ],
+    
+    findall(Content, (
+        member(File, Files),
+        (   exists_file(File)
+        ->  read_file_to_string(File, Raw, []),
+            % Remove relative imports 'from .embedding import'
+            re_replace("from \\.embedding import.*", "", Raw, Content)
+        ;   format(string(Content), "# ERROR: Runtime file ~w not found\\n", [File])
+        )
+    ), Contents),
+    
+    Wrapper = "
+class SemanticRuntime:
+    def __init__(self, db_path='data.db', model_path='models/model.onnx', vocab_path='models/vocab.txt'):
+        self.importer = PtImporter(db_path)
+        if os.path.exists(model_path):
+            self.embedder = OnnxEmbeddingProvider(model_path, vocab_path)
+        else:
+            sys.stderr.write(f'Warning: Model {model_path} not found, embeddings disabled\\\\n')
+            self.embedder = None
+            
+        self.crawler = PtCrawler(self.importer, self.embedder)
+        self.searcher = PtSearcher(db_path, self.embedder)
+        self.llm = LLMProvider()
+        self.chunker = HierarchicalChunker()
+
+_runtime_instance = None
+def _get_runtime():
+    global _runtime_instance
+    if _runtime_instance is None:
+        _runtime_instance = SemanticRuntime()
+    return _runtime_instance
+
+def fetch_xml_func(url):
+    if os.path.exists(url):
+        return open(url, 'rb')
+    return None
+",
+    
+    atomic_list_concat(Contents, "\n", LibCode),
+    string_concat(LibCode, Wrapper, Code).
