@@ -1515,6 +1515,7 @@ compile_generator_mode(Pred/Arity, _Options, Code) :-
     csharp_config(Config),
 
     gather_group_clauses(GroupSpecs, AllClauses),
+    guard_stratified_negation(Pred/Arity, GroupSpecs, AllClauses),
     \+ clauses_contain_aggregate(AllClauses), % fail with message if aggregates present
     collect_fact_heads(AllClauses, FactHeads),
     compile_generator_facts(FactHeads, Config, FactsCode),
@@ -1539,14 +1540,47 @@ clauses_contain_aggregate(Clauses) :-
     aggregate_goal(G),
     format(user_error,
            'C# generator mode does not yet support aggregate goals (~w).~n',
-           [G]),
-    fail.
-clauses_contain_aggregate(_).
+           [G]).
 
 aggregate_goal(G) :-
     compound(G),
     functor(G, Fun, Arity),
-    member(Fun/Arity, [aggregate_all/3, aggregate/4]).
+    member(Fun/Arity, [aggregate_all/3, aggregate_all/4, aggregate/4]).
+
+guard_stratified_negation(HeadPI, GroupSpecs, Clauses) :-
+    build_dependency_graph([HeadPI], [], [], Vertices, [], Edges),
+    vertices_edges_to_ugraph(Vertices, Edges, Graph),
+    forall(
+        ( member(_H-B, Clauses),
+          B \= true,
+          body_to_list(B, Goals),
+          member(G, Goals),
+          neg_goal_pred(G, NegPI)
+        ),
+        (   reachable(NegPI, Graph, Reach),
+            \+ memberchk(HeadPI, Reach)
+        ->  true
+        ;   format(user_error,
+                   'C# generator mode: negation of ~w is not stratified w.r.t ~w; unsupported.~n',
+                   [NegPI, HeadPI]),
+            fail
+        )
+    ),
+    % Also ensure negated predicate exists if in group
+    forall(
+        ( member(_H-B2, Clauses),
+          B2 \= true,
+          body_to_list(B2, Goals2),
+          member(G2, Goals2),
+          neg_goal_pred(G2, NegPI2),
+          member(NegSpec, GroupSpecs),
+          spec_signature(NegSpec, NegPI2)
+        ),
+        predicate_defined(NegPI2)
+    ).
+
+neg_goal_pred(\+ G, PI) :- term_signature(G, PI).
+neg_goal_pred(not(G), PI) :- term_signature(G, PI).
 
 csharp_generator_header(Pred, Header) :-
     get_time(Timestamp),
