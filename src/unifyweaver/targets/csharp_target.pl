@@ -1557,10 +1557,9 @@ guard_supported_aggregates(Clauses) :-
         ),
         aggregate_supported(G)
     ).
-guard_supported_aggregates(_).
 
 aggregate_supported(aggregate_all(OpTerm, _Goal, _Result)) :-
-    member(OpTerm, [count, sum(_), min(_), max(_)]), !.
+    member(OpTerm, [count, sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate(sum(_), _Goal, _Result)) :- !.
 aggregate_supported(aggregate(sum(_), _Inner, _Group, _Result)) :- !.
 aggregate_supported(aggregate_all(Op, _Inner, _Result)) :-
@@ -1635,6 +1634,44 @@ namespace UnifyWeaver.Generated
 {
     public record Fact(string Relation, Dictionary<string, object> Args)
     {
+        private static bool ValuesEqual(object? left, object? right)
+        {
+            if (ReferenceEquals(left, right)) return true;
+            if (left is null || right is null) return false;
+            if (left is string ls && right is string rs) return ls.Equals(rs);
+            if (left is System.Collections.IEnumerable le &&
+                right is System.Collections.IEnumerable re &&
+                left is not string && right is not string)
+            {
+                return le.Cast<object?>().SequenceEqual(re.Cast<object?>());
+            }
+            return object.Equals(left, right);
+        }
+
+        private static void AddValueToHash(ref HashCode hash, object? value)
+        {
+            if (value is null)
+            {
+                hash.Add(0);
+                return;
+            }
+            if (value is string s)
+            {
+                hash.Add(s);
+                return;
+            }
+            if (value is System.Collections.IEnumerable enumerable && value is not string)
+            {
+                foreach (var v in enumerable.Cast<object?>())
+                {
+                    AddValueToHash(ref hash, v);
+                }
+                hash.Add(\"[]\");
+                return;
+            }
+            hash.Add(value);
+        }
+
         public virtual bool Equals(Fact? other)
         {
             if (other is null) return false;
@@ -1644,7 +1681,7 @@ namespace UnifyWeaver.Generated
             foreach (var kvp in Args)
             {
                 if (!other.Args.TryGetValue(kvp.Key, out var value)) return false;
-                if (!object.Equals(value, kvp.Value)) return false;
+                if (!ValuesEqual(kvp.Value, value)) return false;
             }
             return true;
         }
@@ -1656,7 +1693,7 @@ namespace UnifyWeaver.Generated
             foreach (var kvp in Args.OrderBy(k => k.Key))
             {
                 hash.Add(kvp.Key);
-                hash.Add(kvp.Value);
+                AddValueToHash(ref hash, kvp.Value);
             }
             return hash.ToHashCode();
         }
@@ -1769,7 +1806,7 @@ compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
     format(string(RuleName), "ApplyRule_~w", [Index]),
     Head =.. [HeadPred|HeadArgs],
     (   Type = all,
-        member(Op, [count, sum, min, max])
+        member(Op, [count, sum, min, max, set, bag])
     ->  build_aggregate_filter(Pred, Args, Config, FilterExpr),
         build_value_expr(Op, Args, ValueVar, ValueExpr),
         bind_count_head(HeadArgs, ResVar, Config, Assigns),
@@ -1807,6 +1844,8 @@ parse_agg_op(sum(Var), sum, Var, _) :- !.
 parse_agg_op(min(Var), min, Var, _) :- !.
 parse_agg_op(max(Var), max, Var, _) :- !.
 parse_agg_op(count, count, _, _) :- !.
+parse_agg_op(set(Var), set, Var, _) :- !.
+parse_agg_op(bag(Var), bag, Var, _) :- !.
 parse_agg_op(OpTerm, Op, _, _) :-
     OpTerm =.. [Op|_].
 
@@ -1838,6 +1877,12 @@ build_value_expr(min, Args, ValVar, Expr) :-
 build_value_expr(max, Args, ValVar, Expr) :-
     find_var_index(ValVar, Args, ValIdx),
     format(string(Expr), "Convert.ToDecimal(f.Args[\"arg~w\"])", [ValIdx]).
+build_value_expr(set, Args, ValVar, Expr) :-
+    find_var_index(ValVar, Args, ValIdx),
+    format(string(Expr), "f.Args[\"arg~w\"]", [ValIdx]).
+build_value_expr(bag, Args, ValVar, Expr) :-
+    find_var_index(ValVar, Args, ValIdx),
+    format(string(Expr), "f.Args[\"arg~w\"]", [ValIdx]).
 
 agg_expr(count, _ValExpr, "aggQuery.Count()").
 agg_expr(sum, ValExpr, AggExpr) :-
@@ -1846,12 +1891,13 @@ agg_expr(min, ValExpr, AggExpr) :-
     format(string(AggExpr), "aggQuery.Min(f => ~w)", [ValExpr]).
 agg_expr(max, ValExpr, AggExpr) :-
     format(string(AggExpr), "aggQuery.Max(f => ~w)", [ValExpr]).
+agg_expr(set, ValExpr, AggExpr) :-
+    format(string(AggExpr), "aggQuery.Select(f => ~w).Distinct().ToList()", [ValExpr]).
+agg_expr(bag, ValExpr, AggExpr) :-
+    format(string(AggExpr), "aggQuery.Select(f => ~w).ToList()", [ValExpr]).
 
 emit_condition(count, "true").
 emit_condition(_, "aggQuery.Any()").
-
-need_emit(count, "true").
-need_emit(_, "aggQuery.Any()").
 
 bind_count_head(HeadArgs, ResVar, Config, Assigns) :-
     findall(Assign,
