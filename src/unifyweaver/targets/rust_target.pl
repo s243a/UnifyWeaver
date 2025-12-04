@@ -65,9 +65,12 @@ get_field_type(_SchemaName, _FieldName, serde_json_value).
 %% PUBLIC API
 %% ============================================ 
 
-compile_predicate_to_rust(PredIndicator, Options, RustCode) :-
-    PredIndicator = Pred/Arity,
-    format('=== Compiling ~w/~w to Rust ===~n', [Pred, Arity]),
+compile_predicate_to_rust(PredIndicator, Options, RustCode) :- 
+    (   PredIndicator = Module:Name/Arity
+    ->  Pred = Name, GoalModule = Module
+    ;   PredIndicator = Name/Arity, GoalModule = user, Pred = Name
+    ),
+    format('=== Compiling ~w/~w to Rust (Module: ~w) ===~n', [Pred, Arity, GoalModule]),
 
     (   option(json_input(true), Options)
     ->  format('  Mode: JSON input~n'),
@@ -75,6 +78,11 @@ compile_predicate_to_rust(PredIndicator, Options, RustCode) :-
     ;   option(json_output(true), Options)
     ->  format('  Mode: JSON output~n'),
         compile_json_output_to_rust(Pred, Arity, Options, RustCode)
+    ;   functor(Head, Pred, Arity),
+        GoalModule:clause(Head, Body),
+        is_semantic_predicate(Body)
+    ->  format('  Mode: Semantic Runtime~n'),
+        compile_semantic_mode(Pred, Arity, Head, Body, RustCode)
     ;   option(aggregation(AggOp), Options, none),
         AggOp \= none
     ->  option(field_delimiter(FieldDelim), Options, colon),
@@ -83,6 +91,77 @@ compile_predicate_to_rust(PredIndicator, Options, RustCode) :-
     ;   compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode)
     ).
 
+is_semantic_predicate(Body) :-
+    (   sub_term(crawler_run(_, _), Body)
+    ;   sub_term(graph_search(_, _, _, _, _), Body)
+    ;   sub_term(graph_search(_, _, _, _), Body)
+    ).
+
+compile_semantic_mode(Pred, _Arity, Head, Body, RustCode) :-
+    % Generate main.rs content
+    generate_semantic_main(Pred, Head, Body, RustCode).
+
+generate_semantic_main(_Pred, _Head, Body, RustCode) :-
+    % Simple translation for now
+    translate_semantic_body(Body, BodyCode),
+    format(string(RustCode), '
+mod importer;
+mod crawler;
+mod searcher;
+mod llm;
+
+use importer::PtImporter;
+use crawler::PtCrawler;
+use searcher::PtSearcher;
+use llm::LLMProvider;
+use std::error::Error;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    // Initialize Runtime
+    let importer = PtImporter::new("data.redb")?;
+    let crawler = PtCrawler::new(importer);
+    let searcher = PtSearcher::new("data.redb")?;
+    // let llm = LLMProvider::new("gemini-2.5-flash");
+
+    ~s
+
+    Ok(())
+}
+', [BodyCode]).
+
+translate_semantic_body((A, B), Code) :- !,
+    translate_semantic_body(A, C1),
+    translate_semantic_body(B, C2),
+    format(string(Code), "~s\n    ~s", [C1, C2]).
+
+translate_semantic_body(crawler_run(Seeds, Depth), Code) :-
+    % Convert seeds to Rust vec
+    (   is_list(Seeds) -> maplist(atom_string, Seeds, SeedStrs), maplist(rust_quote, SeedStrs, QuotedSeeds), atomic_list_concat(QuotedSeeds, ', ', SeedList)
+    ;   format(string(SeedList), '"~w"', [Seeds]) % Single seed
+    ),
+    format(string(Code), 'crawler.crawl(&vec![~s], ~w)?;', [SeedList, Depth]).
+
+translate_semantic_body(graph_search(Query, TopK, Hops, Results), Code) :-
+    translate_semantic_body(graph_search(Query, TopK, Hops, [mode(vector)], Results), Code).
+
+translate_semantic_body(graph_search(Query, TopK, Hops, Mode, _Results), Code) :-
+    % Results variable binding not supported in this simple mode yet
+    % Just printing results
+    (   Mode = [mode(M)] -> atom_string(M, ModeStr) ; ModeStr = "vector" ),
+    format(string(Code), 'let results = searcher.graph_search("~w", ~w, ~w, "~w")?;\n    println!("{}", serde_json::to_string_pretty(&results)?);', [Query, TopK, Hops, ModeStr]).
+
+translate_semantic_body(true, "").
+
+rust_quote(S, Q) :- format(string(Q), "\"~s\"", [S]).
+
+% Helper for sub_term if not available
+:- if(\+ current_predicate(sub_term/2)).
+sub_term(T, T).
+sub_term(Sub, Term) :-
+    compound(Term),
+    arg(_, Term, Arg),
+    sub_term(Sub, Arg).
+:- endif.
 compile_predicate_to_rust_normal(Pred, Arity, Options, RustCode) :-
     option(field_delimiter(FieldDelim), Options, colon),
     option(include_main(IncludeMain), Options, true),
@@ -530,6 +609,7 @@ write_runtime_files(SrcDir) :-
         ;   format('WARNING: Runtime file not found: ~w~n', [SourcePath])
         )
     )).
+
 detect_dependencies(Code, Deps) :-
     findall(Dep, 
         (   sub_string(Code, _, _, _, 'use regex::'), Dep = regex
@@ -538,8 +618,9 @@ detect_dependencies(Code, Deps) :-
         ;   sub_string(Code, _, _, _, 'use sha2::'), Dep = sha2
         ;   sub_string(Code, _, _, _, 'hex::encode'), Dep = hex
         ;   sub_string(Code, _, _, _, 'uuid::Uuid'), Dep = uuid
-        ;   sub_string(Code, _, _, _, 'use redb::'), Dep = redb
-        ;   sub_string(Code, _, _, _, 'use quick_xml::'), Dep = quick_xml
+        ;   sub_string(Code, _, _, _, 'mod importer;'), Dep = redb
+        ;   sub_string(Code, _, _, _, 'mod crawler;'), Dep = quick_xml
+        ;   sub_string(Code, _, _, _, 'mod llm;'), Dep = serde_json % llm uses serde_json
         ),
         DepsList),
     sort(DepsList, Deps).
