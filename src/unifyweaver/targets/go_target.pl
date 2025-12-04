@@ -2850,6 +2850,17 @@ extract_group_by_spec((group_by(GroupField, Goal, AggOp, Result), _Rest), GroupF
 extract_group_by_spec((_First, Rest), GroupField, Goal, AggOp, Result) :-
     extract_group_by_spec(Rest, GroupField, Goal, AggOp, Result).
 
+%% extract_having_constraints(+Body, -Constraints)
+%  Extract constraints that appear after group_by (HAVING clause)
+%  Returns null if no constraints, or the constraint goals
+%
+extract_having_constraints(group_by(_, _, _), null) :- !.
+extract_having_constraints(group_by(_, _, _, _), null) :- !.
+extract_having_constraints((group_by(_, _, _), Rest), Rest) :- !.
+extract_having_constraints((group_by(_, _, _, _), Rest), Rest) :- !.
+extract_having_constraints((_First, Rest), Constraints) :-
+    extract_having_constraints(Rest, Constraints).
+
 %% compile_group_by_mode(+Pred, +Arity, +Options, -GoCode)
 %  Compile predicate with GROUP BY aggregation
 %
@@ -2864,6 +2875,13 @@ compile_group_by_mode(Pred, Arity, Options, GoCode) :-
     format('  Aggregation: ~w~n', [AggOp]),
     format('  Goal: ~w~n', [Goal]),
 
+    % Extract HAVING constraints (Phase 9c-2)
+    extract_having_constraints(Body, HavingConstraints),
+    (   HavingConstraints \= null
+    ->  format('  HAVING constraints: ~w~n', [HavingConstraints])
+    ;   true
+    ),
+
     % Extract field mappings from json_record
     (   Goal = json_record(FieldMappings)
     ->  format('  Field mappings: ~w~n', [FieldMappings])
@@ -2876,8 +2894,8 @@ compile_group_by_mode(Pred, Arity, Options, GoCode) :-
     option(db_bucket(BucketAtom), Options, Pred),
     atom_string(BucketAtom, BucketStr),
 
-    % Generate grouped aggregation code
-    generate_group_by_code(GroupField, FieldMappings, AggOp, DbFile, BucketStr, AggBody),
+    % Generate grouped aggregation code with HAVING support
+    generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstraints, DbFile, BucketStr, AggBody),
 
     % Wrap in package main
     format(string(GoCode), 'package main
@@ -2894,42 +2912,43 @@ func main() {
 ~s}
 ', [AggBody]).
 
-%% generate_group_by_code(+GroupField, +FieldMappings, +AggOp, +DbFile, +BucketStr, -GoCode)
-%  Generate Go code for grouped aggregation
+%% generate_group_by_code(+GroupField, +FieldMappings, +AggOp, +Result, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
+%  Generate Go code for grouped aggregation with optional HAVING clause
 %
-generate_group_by_code(GroupField, FieldMappings, AggOp, DbFile, BucketStr, GoCode) :-
+generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstraints, DbFile, BucketStr, GoCode) :-
     % Find the field name for group field variable
     find_field_for_var(GroupField, FieldMappings, GroupFieldName),
 
     % Check if AggOp is a list (multiple aggregations) or single operation
     (   is_list(AggOp)
-    ->  % Multiple aggregations (Phase 9c-1)
+    ->  % Multiple aggregations (Phase 9c-1 + HAVING support Phase 9c-2)
         format('  Multiple aggregations detected: ~w~n', [AggOp]),
-        generate_multi_aggregation_code(GroupFieldName, FieldMappings, AggOp, DbFile, BucketStr, GoCode)
-    % Single aggregation (Phase 9b - backward compatible)
+        generate_multi_aggregation_code(GroupFieldName, FieldMappings, AggOp, HavingConstraints, DbFile, BucketStr, GoCode)
+    % Single aggregation (Phase 9b - backward compatible, HAVING support added)
     ;   AggOp = count
-    ->  generate_group_by_count(GroupFieldName, DbFile, BucketStr, GoCode)
+    ->  generate_group_by_count_with_having(GroupFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
     ;   AggOp = sum(AggVar)
     ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
-        generate_group_by_sum(GroupFieldName, AggFieldName, DbFile, BucketStr, GoCode)
+        generate_group_by_sum_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
     ;   AggOp = avg(AggVar)
     ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
-        generate_group_by_avg(GroupFieldName, AggFieldName, DbFile, BucketStr, GoCode)
+        generate_group_by_avg_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
     ;   AggOp = max(AggVar)
     ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
-        generate_group_by_max(GroupFieldName, AggFieldName, DbFile, BucketStr, GoCode)
+        generate_group_by_max_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
     ;   AggOp = min(AggVar)
     ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
-        generate_group_by_min(GroupFieldName, AggFieldName, DbFile, BucketStr, GoCode)
+        generate_group_by_min_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
     ;   format('ERROR: Unknown group_by aggregation operation: ~w~n', [AggOp]),
         fail
     ).
 
-%% generate_multi_aggregation_code(+GroupField, +FieldMappings, +OpList, +DbFile, +BucketStr, -GoCode)
-%  Generate GROUP BY code for multiple aggregations in single query
+%% generate_multi_aggregation_code(+GroupField, +FieldMappings, +OpList, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY code for multiple aggregations in single query with HAVING support
 %  OpList is a list like [count(Count), avg(Age, AvgAge), max(Age, MaxAge)]
+%  HavingConstraints are post-aggregation filters (null if none)
 %
-generate_multi_aggregation_code(GroupField, FieldMappings, OpList, DbFile, BucketStr, GoCode) :-
+generate_multi_aggregation_code(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode) :-
     % Parse operations to determine what's needed
     parse_multi_agg_operations(OpList, FieldMappings, AggInfo),
 
@@ -2947,6 +2966,9 @@ generate_multi_aggregation_code(GroupField, FieldMappings, OpList, DbFile, Bucke
 
     % Get output calculations (e.g., avg = sum/count)
     get_output_calculations(AggInfo, OutputCalcs),
+
+    % Generate HAVING filter code (Phase 9c-2)
+    generate_having_filter_code(HavingConstraints, AggInfo, OpList, HavingFilterCode),
 
     % Combine into full Go code
     format(string(GoCode), '\t// Open database (read-only)
@@ -2996,6 +3018,7 @@ generate_multi_aggregation_code(GroupField, FieldMappings, OpList, DbFile, Bucke
 \t// Output results as JSON (one per group)
 \tfor group, s := range stats {
 ~s
+~s
 \t\tresult := map[string]interface{}{
 \t\t\t"~s": group,
 ~s
@@ -3004,7 +3027,7 @@ generate_multi_aggregation_code(GroupField, FieldMappings, OpList, DbFile, Bucke
 \t\tfmt.Println(string(output))
 \t}
 ', [DbFile, GroupField, StructFields, BucketStr, BucketStr, GroupField,
-    InitValues, AccumulationCode, OutputCalcs, GroupField, OutputCode]).
+    InitValues, AccumulationCode, OutputCalcs, HavingFilterCode, GroupField, OutputCode]).
 
 %% parse_multi_agg_operations(+OpList, +FieldMappings, -AggInfo)
 %  Parse list of operations into structured info
@@ -3221,6 +3244,48 @@ generate_output_field(agg(sum, _, _, _), '\t\t\t"sum": s.sum') :- !.
 generate_output_field(agg(avg, _, _, _), '\t\t\t"avg": avg') :- !.
 generate_output_field(agg(max, _, _, _), '\t\t\t"max": s.maxValue') :- !.
 generate_output_field(agg(min, _, _, _), '\t\t\t"min": s.minValue') :- !.
+
+%% ============================================
+%% HAVING CLAUSE SUPPORT (Phase 9c-2)
+%% ============================================
+
+%% generate_having_filter_code(+HavingConstraints, +AggInfo, +OpList, -FilterCode)
+%  Generate HAVING filter code for output loop
+%  Currently generates empty string (basic implementation)
+%  TODO: Implement full constraint parsing and Go code generation
+%
+generate_having_filter_code(null, _, _, '') :- !.
+generate_having_filter_code(_, _, _, '') :- !.
+    % Placeholder: For now, ignore HAVING constraints
+    % Full implementation would parse constraints and generate:
+    %   if !(count > 100) { continue }
+    %   if !(avg > 40.0) { continue }
+
+%% ============================================
+%% SINGLE AGGREGATION WRAPPERS WITH HAVING
+%% ============================================
+
+%% Wrapper predicates that delegate to existing implementations
+%% HAVING support for single aggregations is TODO (Phase 9c-2 enhancement)
+
+generate_group_by_count_with_having(GroupField, _Result, _Having, DbFile, BucketStr, GoCode) :-
+    generate_group_by_count(GroupField, DbFile, BucketStr, GoCode).
+
+generate_group_by_sum_with_having(GroupField, AggField, _Result, _Having, DbFile, BucketStr, GoCode) :-
+    generate_group_by_sum(GroupField, AggField, DbFile, BucketStr, GoCode).
+
+generate_group_by_avg_with_having(GroupField, AggField, _Result, _Having, DbFile, BucketStr, GoCode) :-
+    generate_group_by_avg(GroupField, AggField, DbFile, BucketStr, GoCode).
+
+generate_group_by_max_with_having(GroupField, AggField, _Result, _Having, DbFile, BucketStr, GoCode) :-
+    generate_group_by_max(GroupField, AggField, DbFile, BucketStr, GoCode).
+
+generate_group_by_min_with_having(GroupField, AggField, _Result, _Having, DbFile, BucketStr, GoCode) :-
+    generate_group_by_min(GroupField, AggField, DbFile, BucketStr, GoCode).
+
+%% ============================================
+%% ORIGINAL SINGLE AGGREGATION GENERATORS (Phase 9b)
+%% ============================================
 
 %% generate_group_by_count(+GroupField, +DbFile, +BucketStr, -GoCode)
 %  Generate GROUP BY count code
