@@ -3251,37 +3251,130 @@ generate_output_field(agg(min, _, _, _), '\t\t\t"min": s.minValue') :- !.
 
 %% generate_having_filter_code(+HavingConstraints, +AggInfo, +OpList, -FilterCode)
 %  Generate HAVING filter code for output loop
-%  Currently generates empty string (basic implementation)
-%  TODO: Implement full constraint parsing and Go code generation
+%  Parses constraints and generates Go filter code with continue statements
 %
 generate_having_filter_code(null, _, _, '') :- !.
-generate_having_filter_code(_, _, _, '') :- !.
-    % Placeholder: For now, ignore HAVING constraints
-    % Full implementation would parse constraints and generate:
-    %   if !(count > 100) { continue }
-    %   if !(avg > 40.0) { continue }
+generate_having_filter_code(Constraints, AggInfo, OpList, FilterCode) :-
+    % Parse constraints into list
+    parse_constraints_to_list(Constraints, ConstraintList),
+    % Generate filter code for each constraint
+    findall(Code, (
+        member(Constraint, ConstraintList),
+        generate_single_having_filter(Constraint, AggInfo, OpList, Code)
+    ), CodeLines),
+    atomic_list_concat(CodeLines, '', FilterCode).
+
+%% parse_constraints_to_list(+Constraints, -ConstraintList)
+%  Convert conjunction of constraints into a list
+%
+parse_constraints_to_list((C1, C2), List) :- !,
+    parse_constraints_to_list(C1, L1),
+    parse_constraints_to_list(C2, L2),
+    append(L1, L2, List).
+parse_constraints_to_list(C, [C]).
+
+%% generate_single_having_filter(+Constraint, +AggInfo, +OpList, -Code)
+%  Generate filter code for a single constraint
+%  Supports: >, <, >=, <=, =, =\=
+%
+generate_single_having_filter(Constraint, AggInfo, OpList, Code) :-
+    % Extract operator and operands
+    parse_constraint_operator(Constraint, Var, Op, Value),
+    % Map variable to Go expression
+    map_variable_to_go_expr(Var, AggInfo, OpList, GoExpr),
+    % Generate Go comparison code
+    format(string(Code), '\t\t// HAVING filter: ~w ~w ~w
+\t\tif !(~s ~s ~w) {
+\t\t\tcontinue
+\t\t}
+', [Var, Op, Value, GoExpr, Op, Value]).
+
+%% parse_constraint_operator(+Constraint, -Var, -Op, -Value)
+%  Parse constraint to extract variable, operator, and value
+%
+parse_constraint_operator(Var > Value, Var, '>', Value) :- !.
+parse_constraint_operator(Var < Value, Var, '<', Value) :- !.
+parse_constraint_operator(Var >= Value, Var, '>=', Value) :- !.
+parse_constraint_operator(Var =< Value, Var, '=<', Value) :- !.
+parse_constraint_operator(Var = Value, Var, '==', Value) :- !.
+parse_constraint_operator(Var =\= Value, Var, '!=', Value) :- !.
+
+%% map_variable_to_go_expr(+Var, +AggInfo, +OpList, -GoExpr)
+%  Map Prolog variable to Go expression (e.g., Count -> s.count, Avg -> avg)
+%
+map_variable_to_go_expr(Var, _AggInfo, OpList, GoExpr) :-
+    % Find which operation produces this variable
+    member(Op, OpList),
+    variable_from_operation(Op, Var, OpType),
+    !,
+    % Map to Go expression
+    operation_to_go_expr(OpType, GoExpr).
+
+%% variable_from_operation(+Operation, ?Var, -OpType)
+%  Extract result variable and operation type from operation spec
+%  Uses == for variable identity checking to avoid incorrect unification
+%
+variable_from_operation(count(Var), RequestedVar, count) :-
+    Var == RequestedVar,  % Use == to check if they're the same variable
+    !.
+variable_from_operation(count, _, count) :- !.
+variable_from_operation(sum(_, Var), RequestedVar, sum) :-
+    Var == RequestedVar, !.
+variable_from_operation(avg(_, Var), RequestedVar, avg) :-
+    Var == RequestedVar, !.
+variable_from_operation(max(_, Var), RequestedVar, max) :-
+    Var == RequestedVar, !.
+variable_from_operation(min(_, Var), RequestedVar, min) :-
+    Var == RequestedVar, !.
+
+%% operation_to_go_expr(+OpType, -GoExpr)
+%  Map operation type to Go expression in output loop
+%
+operation_to_go_expr(count, 's.count').
+operation_to_go_expr(sum, 's.sum').
+operation_to_go_expr(avg, 'avg').
+operation_to_go_expr(max, 's.maxValue').
+operation_to_go_expr(min, 's.minValue').
 
 %% ============================================
 %% SINGLE AGGREGATION WRAPPERS WITH HAVING
 %% ============================================
 
-%% Wrapper predicates that delegate to existing implementations
-%% HAVING support for single aggregations is TODO (Phase 9c-2 enhancement)
+%% Wrapper predicates with HAVING support (Phase 9c-2)
+%% For single aggregations, convert to multi-agg format and use multi-agg code generator
 
-generate_group_by_count_with_having(GroupField, _Result, _Having, DbFile, BucketStr, GoCode) :-
-    generate_group_by_count(GroupField, DbFile, BucketStr, GoCode).
+generate_group_by_count_with_having(GroupField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single count to multi-agg format: [count(Result)]
+    OpList = [count(Result)],
+    % Use empty field mappings for count (doesn't need any field)
+    FieldMappings = [],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
 
-generate_group_by_sum_with_having(GroupField, AggField, _Result, _Having, DbFile, BucketStr, GoCode) :-
-    generate_group_by_sum(GroupField, AggField, DbFile, BucketStr, GoCode).
+generate_group_by_sum_with_having(GroupField, AggField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single sum to multi-agg format: [sum(AggField, Result)]
+    % Create a fake variable for the field (we'll use AggField directly)
+    OpList = [sum(AggField, Result)],
+    % Create field mappings with the aggregation field
+    FieldMappings = [field-AggField],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
 
-generate_group_by_avg_with_having(GroupField, AggField, _Result, _Having, DbFile, BucketStr, GoCode) :-
-    generate_group_by_avg(GroupField, AggField, DbFile, BucketStr, GoCode).
+generate_group_by_avg_with_having(GroupField, AggField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single avg to multi-agg format: [avg(AggField, Result)]
+    OpList = [avg(AggField, Result)],
+    FieldMappings = [field-AggField],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
 
-generate_group_by_max_with_having(GroupField, AggField, _Result, _Having, DbFile, BucketStr, GoCode) :-
-    generate_group_by_max(GroupField, AggField, DbFile, BucketStr, GoCode).
+generate_group_by_max_with_having(GroupField, AggField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single max to multi-agg format: [max(AggField, Result)]
+    OpList = [max(AggField, Result)],
+    FieldMappings = [field-AggField],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
 
-generate_group_by_min_with_having(GroupField, AggField, _Result, _Having, DbFile, BucketStr, GoCode) :-
-    generate_group_by_min(GroupField, AggField, DbFile, BucketStr, GoCode).
+generate_group_by_min_with_having(GroupField, AggField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single min to multi-agg format: [min(AggField, Result)]
+    OpList = [min(AggField, Result)],
+    FieldMappings = [field-AggField],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
 
 %% ============================================
 %% ORIGINAL SINGLE AGGREGATION GENERATORS (Phase 9b)
