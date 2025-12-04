@@ -27,11 +27,24 @@ The SQL target compiles Prolog predicates to SQL queries, enabling UnifyWeaver t
   - JOINs combined with WHERE clauses
   - **Tests**: 3/3 passing
 
+### ✅ Phase 4: Set Operations (COMPLETE)
+- **UNION**:
+  - Automatic UNION for multi-clause predicates
+  - UNION ALL support via option
+  - Works with both regular and aggregation clauses
+  - **Tests**: 3/3 passing
+- **INTERSECT & EXCEPT**:
+  - Explicit set operations via `compile_set_operation/4`
+  - INTERSECT finds common elements across predicates
+  - EXCEPT (MINUS) finds difference between predicates
+  - Multi-way operations (3+ predicates)
+  - **Tests**: 4/4 passing
+
 ### 🚧 Future Phases
 - **Phase 3**: Advanced JOINs (LEFT, RIGHT, OUTER), self-joins, multi-hop joins
-- **Phase 4**: Subqueries, CTEs, UNION/INTERSECT/EXCEPT
-- **Phase 5**: Window functions, advanced analytics
-- **Phase 6**: Database-specific optimizations
+- **Phase 5**: Subqueries, CTEs (WITH clauses)
+- **Phase 6**: Window functions, advanced analytics
+- **Phase 7**: Database-specific optimizations
 
 ## Motivation
 
@@ -284,6 +297,114 @@ GROUP BY state, city;
 | `avg(Var, Result)` | `AVG(column)` |
 | `max(Var, Result)` | `MAX(column)` |
 | `min(Var, Result)` | `MIN(column)` |
+
+## Phase 4: Set Operations
+
+### UNION (Automatic for Multi-Clause Predicates)
+
+**Prolog:**
+```prolog
+% Multiple clauses automatically become UNION
+adult(Name) :- person(Name, Age, _), Age >= 18.
+adult(Name) :- special_members(Name, _).
+```
+
+**Generated SQL:**
+```sql
+CREATE VIEW adult AS
+SELECT name
+FROM person
+WHERE age >= 18
+UNION
+SELECT name
+FROM special_members;
+```
+
+### UNION ALL
+
+**Prolog:**
+```prolog
+% Use union_all option to keep duplicates
+compile_predicate_to_sql(adult/1, [format(view), union_all(true)], SQL).
+```
+
+**Generated SQL:**
+```sql
+CREATE VIEW adult AS
+SELECT name
+FROM person
+WHERE age >= 18
+UNION ALL
+SELECT name
+FROM special_members;
+```
+
+### INTERSECT
+
+**Prolog:**
+```prolog
+% Define predicates separately
+adults(Name) :- person(Name, Age, _), Age >= 18.
+members(Name) :- special_members(Name, _).
+
+% Compile with INTERSECT to find common elements
+compile_set_operation(intersect, [adults/1, members/1],
+                     [format(view), view_name(adult_members)], SQL).
+```
+
+**Generated SQL:**
+```sql
+CREATE VIEW adult_members AS
+SELECT name
+FROM person
+WHERE age >= 18
+INTERSECT
+SELECT name
+FROM special_members;
+```
+
+### EXCEPT (MINUS)
+
+**Prolog:**
+```prolog
+% Find adults who are NOT members
+compile_set_operation(except, [adults/1, members/1],
+                     [format(view), view_name(adults_only)], SQL).
+```
+
+**Generated SQL:**
+```sql
+CREATE VIEW adults_only AS
+SELECT name
+FROM person
+WHERE age >= 18
+EXCEPT
+SELECT name
+FROM special_members;
+```
+
+### Multi-Way Set Operations
+
+**Prolog:**
+```prolog
+% Three-way INTERSECT - find elements in all three predicates
+compile_set_operation(intersect, [adults/1, members/1, staff/1],
+                     [format(view), view_name(common_all)], SQL).
+```
+
+**Generated SQL:**
+```sql
+CREATE VIEW common_all AS
+SELECT name
+FROM person
+WHERE age >= 18
+INTERSECT
+SELECT name
+FROM special_members
+INTERSECT
+SELECT name
+FROM employees;
+```
 
 ## Phase 3: Advanced Features
 
