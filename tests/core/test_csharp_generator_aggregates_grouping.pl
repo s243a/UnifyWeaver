@@ -30,7 +30,7 @@ setup_data :-
     assertz(user:gs_item(a, 2)),
     assertz(user:gs_item(b, 5)),
     assertz(user:gs_item(b, 7)),
-    assertz(user:(gs_sum(Key, Sum) :- aggregate(sum(Val), Key^gs_item(Key, Val), Sum))).
+    assertz(user:(gs_sum(Key, Sum) :- aggregate(sum(Val), gs_item(Key, Val), Key, Sum))).
 
 cleanup_data :-
     maplist(retractall, [
