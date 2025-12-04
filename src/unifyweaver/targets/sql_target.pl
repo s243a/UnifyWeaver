@@ -1000,27 +1000,41 @@ remove_duplicate_joins([join_spec(T1, C1, T2, C2)|Rest], Unique) :-
     remove_duplicate_joins(Rest, Unique).
 
 %% generate_join_clause(+FirstTable, +RestGoals, +JoinSpecs, -FromClause)
-%  Generate FROM clause with INNER JOIN
+%  Generate FROM clause with INNER JOIN (iterative for chains)
 %
 generate_join_clause(FirstTable, RestGoals, JoinSpecs, FromClause) :-
-    % Start with first table
-    findall(JoinClause,
-            (   member(G, RestGoals),
-                functor(G, TableName, _),
-                % Find join condition for this table
-                (   member(join_spec(FirstTable, Col1, TableName, Col2), JoinSpecs)
-                ->  format(string(JoinClause), 'INNER JOIN ~w ON ~w.~w = ~w.~w',
-                          [TableName, FirstTable, Col1, TableName, Col2])
-                ;   member(join_spec(TableName, Col2, FirstTable, Col1), JoinSpecs)
-                ->  format(string(JoinClause), 'INNER JOIN ~w ON ~w.~w = ~w.~w',
-                          [TableName, TableName, Col2, FirstTable, Col1])
-                ;   % No join condition - CROSS JOIN
-                    format(string(JoinClause), 'CROSS JOIN ~w', [TableName])
-                )
-            ),
-            JoinClauses),
+    % Generate joins iteratively, accumulating joined tables
+    generate_join_clauses_iter(RestGoals, [FirstTable], JoinSpecs, JoinClauses),
     atomic_list_concat(JoinClauses, '\n', JoinsStr),
     format(string(FromClause), 'FROM ~w\n~w', [FirstTable, JoinsStr]).
+
+%% generate_join_clauses_iter(+RemainingGoals, +AccTables, +JoinSpecs, -JoinClauses)
+%  Iteratively generate JOIN clauses, accumulating joined tables
+%
+generate_join_clauses_iter([], _, _, []).
+generate_join_clauses_iter([G|RestGoals], AccTables, JoinSpecs, [JoinClause|RestJoins]) :-
+    functor(G, TableName, _),
+    % Find join condition with ANY previously joined table
+    (   find_join_to_accumulated(TableName, AccTables, JoinSpecs, LeftTable, Col1, Col2)
+    ->  format(string(JoinClause), 'INNER JOIN ~w ON ~w.~w = ~w.~w',
+              [TableName, LeftTable, Col1, TableName, Col2])
+    ;   % No join condition - CROSS JOIN
+        format(string(JoinClause), 'CROSS JOIN ~w', [TableName])
+    ),
+    % Add this table to accumulated
+    append(AccTables, [TableName], NewAccTables),
+    % Recurse
+    generate_join_clauses_iter(RestGoals, NewAccTables, JoinSpecs, RestJoins).
+
+%% find_join_to_accumulated(+TableName, +AccTables, +JoinSpecs, -LeftTable, -Col1, -Col2)
+%  Find join between TableName and any accumulated table
+%
+find_join_to_accumulated(TableName, AccTables, JoinSpecs, LeftTable, Col1, Col2) :-
+    member(LeftTable, AccTables),
+    (   member(join_spec(LeftTable, Col1, TableName, Col2), JoinSpecs)
+    ->  true
+    ;   member(join_spec(TableName, Col2, LeftTable, Col1), JoinSpecs)
+    ).
 
 %% generate_where_clause(+Constraints, +HeadArgs, +TableGoals, -WhereClause)
 %  Generate WHERE clause from constraints and table goal constants
