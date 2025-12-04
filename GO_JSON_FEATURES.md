@@ -1664,12 +1664,204 @@ File: `src/unifyweaver/targets/go_target.pl`
 - `run_phase_9b_tests.sh`: Test runner for Phase 9b
 - All 10 tests passing ✓
 
-**Future Enhancements** (Phase 9c+):
-- Multiple aggregations in single query: `group_by(City, ..., [count(C), avg(Age, A)], ...)`
-- HAVING clause filtering: `group_by(City, ..., count, C), C > 10`
-- Nested grouping: `group_by([City, State], ...)`
+### Phase 9c: Advanced GROUP BY (Multiple Aggregations, HAVING, Nested Grouping)
+
+**Status:** ✅ Complete
+
+Extends Phase 9b with advanced GROUP BY features including multiple aggregations in single queries, HAVING clause filtering, and nested grouping by multiple fields.
+
+#### Phase 9c-1: Multiple Aggregations
+
+**Feature:** Compute multiple aggregation functions in a single pass over grouped data.
+
+**Prolog Syntax:**
+```prolog
+% Count and average in one query
+city_count_and_avg(City, Count, AvgAge) :-
+    group_by(City, json_record([city-City, age-Age]), [count(Count), avg(Age, AvgAge)]).
+
+% All five aggregations
+city_complete_stats(City, Count, Sum, Avg, Max, Min) :-
+    group_by(City, json_record([city-City, age-Age]),
+             [count(Count), sum(Age, Sum), avg(Age, Avg), max(Age, Max), min(Age, Min)]).
+```
+
+**Generated Go Code:**
+```go
+type GroupStats struct {
+    count    int
+    sum      float64
+    maxFirst bool
+    maxValue float64
+    minFirst bool
+    minValue float64
+}
+
+// Single-pass accumulation
+stats[groupStr].count++
+stats[groupStr].sum += valueFloat
+if stats[groupStr].maxFirst || valueFloat > stats[groupStr].maxValue {
+    stats[groupStr].maxValue = valueFloat
+    stats[groupStr].maxFirst = false
+}
+// ... similar for min
+
+// Output with calculations
+avg := 0.0
+if s.count > 0 {
+    avg = s.sum / float64(s.count)
+}
+result := map[string]interface{}{
+    "city": group,
+    "count": s.count,
+    "sum": s.sum,
+    "avg": avg,
+    "max": s.maxValue,
+    "min": s.minValue
+}
+```
+
+**Key Features:**
+- Single-pass O(n) algorithm for all aggregations
+- Shared count and sum accumulators across operations
+- Efficient struct-based state management
+- Automatic calculation of derived values (avg from sum/count)
+
+#### Phase 9c-2: HAVING Clause
+
+**Feature:** Filter grouped results based on aggregation values (SQL HAVING equivalent).
+
+**Prolog Syntax:**
+```prolog
+% Cities with more than 100 residents
+large_cities(City, Count) :-
+    group_by(City, json_record([city-City, name-_]), count, Count),
+    Count > 100.
+
+% Multiple HAVING constraints
+active_cities(City, Count, Avg) :-
+    group_by(City, json_record([city-City, age-Age]),
+             [count(Count), avg(Age, Avg)]),
+    Count >= 10,
+    Avg > 30.0.
+```
+
+**Supported Operators:**
+- `>` - Greater than
+- `<` - Less than
+- `>=` - Greater than or equal
+- `=<` - Less than or equal
+- `=` - Equal
+- `=\=` - Not equal
+
+**Generated Go Code:**
+```go
+for groupKey, s := range stats {
+    avg := 0.0
+    if s.count > 0 {
+        avg = s.sum / float64(s.count)
+    }
+
+    // HAVING filter: Count >= 10
+    if !(s.count >= 10) {
+        continue
+    }
+
+    // HAVING filter: Avg > 30.0
+    if !(avg > 30) {
+        continue
+    }
+
+    // Output result
+    result := map[string]interface{}{ /* ... */ }
+}
+```
+
+**Key Features:**
+- Post-aggregation filtering (after GROUP BY computation)
+- Multiple constraints with short-circuit evaluation
+- Works with all aggregation types (count, sum, avg, max, min)
+- Automatic variable-to-aggregation mapping
+
+#### Phase 9c-3: Nested Grouping
+
+**Feature:** Group by multiple fields simultaneously (composite grouping keys).
+
+**Prolog Syntax:**
+```prolog
+% Group by state and city
+state_city_counts(State, City, Count) :-
+    group_by([State, City],
+             json_record([state-State, city-City, name-_]),
+             count, Count).
+
+% Nested grouping with multiple aggregations
+region_stats(Region, Category, Count, AvgPrice) :-
+    group_by([Region, Category],
+             json_record([region-Region, category-Category, price-Price]),
+             [count(Count), avg(Price, AvgPrice)]).
+```
+
+**Generated Go Code:**
+```go
+import (
+    "strings"  // Automatic import for nested grouping
+    // ...
+)
+
+// Extract group fields for composite key
+keyParts := make([]string, 0, 2)
+if val1, ok := data["state"]; ok {
+    if str1, ok := val1.(string); ok {
+        keyParts = append(keyParts, str1)
+    }
+}
+if val2, ok := data["city"]; ok {
+    if str2, ok := val2.(string); ok {
+        keyParts = append(keyParts, str2)
+    }
+}
+
+// Check all fields were extracted
+if len(keyParts) == 2 {
+    groupKey := strings.Join(keyParts, "|")
+    if _, exists := stats[groupKey]; !exists {
+        stats[groupKey] = &GroupStats{}
+    }
+    stats[groupKey].count++
+}
+
+// Output with key parsing
+for groupKey, s := range stats {
+    parts := strings.Split(groupKey, "|")
+    if len(parts) < 2 {
+        continue  // Skip malformed keys
+    }
+    result := map[string]interface{}{
+        "state": parts[0],
+        "city": parts[1],
+        "count": s.count
+    }
+}
+```
+
+**Key Features:**
+- Composite keys using pipe (`|`) delimiter
+- Automatic variable-to-field-name mapping
+- Field validation (ensures all fields present)
+- Automatic `strings` package import
+- Works with all aggregation types and HAVING clauses
+
+**Testing:**
+- `test_phase_9c1.pl`: 4 tests for multiple aggregations
+- `test_phase_9c2.pl`: 7 tests for HAVING clause with all operators
+- `test_phase_9c3.pl`: 2 tests for nested grouping
+- All 13 tests passing ✓
+
+**Future Enhancements** (Phase 9d+):
 - Statistical functions: `stddev`, `median`, `percentile`
 - Array aggregations: `collect_list`, `collect_set`
+- Window functions: `row_number`, `rank`
 
 ---
 
@@ -1694,5 +1886,5 @@ File: `src/unifyweaver/targets/go_target.pl`
 - Schema Design: `JSON_SCHEMA_DESIGN.md`
 - Database Design: `BBOLT_INTEGRATION_DESIGN.md`
 - Aggregations Plan: `PHASE_9_AGGREGATIONS_PLAN.md`
-- Tests: `test_json_input.pl`, `test_json_output.pl`, `test_json_nested.pl`, `test_schema_*.pl`, `test_bbolt_*.pl`, `test_composite_keys.pl`, `test_phase_8b.pl`, `test_phase_8c.pl`, `test_phase_9a.pl`, `test_phase_9b.pl`
-- Test Runners: `run_json_tests.sh`, `run_json_output_tests.sh`, `run_nested_tests.sh`, `run_schema_tests.sh`, `run_bbolt_tests.sh`, `run_key_strategy_tests.sh`, `run_phase_8b_tests.sh`, `run_phase_9a_tests.sh`, `run_phase_9b_tests.sh`
+- Tests: `test_json_input.pl`, `test_json_output.pl`, `test_json_nested.pl`, `test_schema_*.pl`, `test_bbolt_*.pl`, `test_composite_keys.pl`, `test_phase_8b.pl`, `test_phase_8c.pl`, `test_phase_9a.pl`, `test_phase_9b.pl`, `test_phase_9c1.pl`, `test_phase_9c2.pl`, `test_phase_9c3.pl`
+- Test Runners: `run_json_tests.sh`, `run_json_output_tests.sh`, `run_nested_tests.sh`, `run_schema_tests.sh`, `run_bbolt_tests.sh`, `run_key_strategy_tests.sh`, `run_phase_8b_tests.sh`, `run_phase_9a_tests.sh`, `run_phase_9b_tests.sh`, `run_phase_9c1_tests.sh`, `run_phase_9c2_tests.sh`, `run_phase_9c3_tests.sh`

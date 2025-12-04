@@ -2897,8 +2897,25 @@ compile_group_by_mode(Pred, Arity, Options, GoCode) :-
     % Generate grouped aggregation code with HAVING support
     generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstraints, DbFile, BucketStr, AggBody),
 
-    % Wrap in package main
-    format(string(GoCode), 'package main
+    % Wrap in package main - add strings import for nested grouping
+    (   is_list(GroupField)
+    ->  % Nested grouping needs strings package
+        format(string(GoCode), 'package main
+
+import (
+\t"encoding/json"
+\t"fmt"
+\t"os"
+\t"strings"
+
+\tbolt "go.etcd.io/bbolt"
+)
+
+func main() {
+~s}
+', [AggBody])
+    ;   % Single field grouping - no strings needed
+        format(string(GoCode), 'package main
 
 import (
 \t"encoding/json"
@@ -2910,45 +2927,86 @@ import (
 
 func main() {
 ~s}
-', [AggBody]).
+', [AggBody])
+    ).
 
 %% generate_group_by_code(+GroupField, +FieldMappings, +AggOp, +Result, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
 %  Generate Go code for grouped aggregation with optional HAVING clause
 %
 generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstraints, DbFile, BucketStr, GoCode) :-
-    % Find the field name for group field variable
-    find_field_for_var(GroupField, FieldMappings, GroupFieldName),
+    % Check if GroupField is a list (nested grouping) - handle differently
+    (   is_list(GroupField)
+    ->  % Nested grouping: GroupField is a list like [_1820, _1822]
+        % Pass the list directly to multi-aggregation code (it will extract field names)
+        format('  Nested grouping field list detected: ~w~n', [GroupField]),
+        (   is_list(AggOp)
+        ->  % Already in list format
+            generate_multi_aggregation_code(GroupField, FieldMappings, AggOp, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   % Single aggregation with nested grouping - convert to multi-agg format
+            format('  Converting single aggregation ~w to list format~n', [AggOp]),
+            (   AggOp = count
+            ->  OpList = [count(Result)]
+            ;   AggOp = sum(AggVar)
+            ->  OpList = [sum(AggVar, Result)]
+            ;   AggOp = avg(AggVar)
+            ->  OpList = [avg(AggVar, Result)]
+            ;   AggOp = max(AggVar)
+            ->  OpList = [max(AggVar, Result)]
+            ;   AggOp = min(AggVar)
+            ->  OpList = [min(AggVar, Result)]
+            ;   format('ERROR: Unknown aggregation operation: ~w~n', [AggOp]),
+                fail
+            ),
+            generate_multi_aggregation_code(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode)
+        )
+    ;   % Single field grouping: GroupField is a variable
+        % Find the field name for group field variable
+        find_field_for_var(GroupField, FieldMappings, GroupFieldName),
 
-    % Check if AggOp is a list (multiple aggregations) or single operation
-    (   is_list(AggOp)
-    ->  % Multiple aggregations (Phase 9c-1 + HAVING support Phase 9c-2)
-        format('  Multiple aggregations detected: ~w~n', [AggOp]),
-        generate_multi_aggregation_code(GroupFieldName, FieldMappings, AggOp, HavingConstraints, DbFile, BucketStr, GoCode)
-    % Single aggregation (Phase 9b - backward compatible, HAVING support added)
-    ;   AggOp = count
-    ->  generate_group_by_count_with_having(GroupFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
-    ;   AggOp = sum(AggVar)
-    ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
-        generate_group_by_sum_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
-    ;   AggOp = avg(AggVar)
-    ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
-        generate_group_by_avg_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
-    ;   AggOp = max(AggVar)
-    ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
-        generate_group_by_max_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
-    ;   AggOp = min(AggVar)
-    ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
-        generate_group_by_min_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
-    ;   format('ERROR: Unknown group_by aggregation operation: ~w~n', [AggOp]),
-        fail
+        % Check if AggOp is a list (multiple aggregations) or single operation
+        (   is_list(AggOp)
+        ->  % Multiple aggregations (Phase 9c-1 + HAVING support Phase 9c-2)
+            format('  Multiple aggregations detected: ~w~n', [AggOp]),
+            generate_multi_aggregation_code(GroupFieldName, FieldMappings, AggOp, HavingConstraints, DbFile, BucketStr, GoCode)
+        % Single aggregation (Phase 9b - backward compatible, HAVING support added)
+        ;   AggOp = count
+        ->  generate_group_by_count_with_having(GroupFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   AggOp = sum(AggVar)
+        ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+            generate_group_by_sum_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   AggOp = avg(AggVar)
+        ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+            generate_group_by_avg_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   AggOp = max(AggVar)
+        ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+            generate_group_by_max_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   AggOp = min(AggVar)
+        ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+            generate_group_by_min_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   format('ERROR: Unknown group_by aggregation operation: ~w~n', [AggOp]),
+            fail
+        )
     ).
 
 %% generate_multi_aggregation_code(+GroupField, +FieldMappings, +OpList, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
 %  Generate GROUP BY code for multiple aggregations in single query with HAVING support
+%  GroupField can be a single field name or a list of field names for nested grouping
 %  OpList is a list like [count(Count), avg(Age, AvgAge), max(Age, MaxAge)]
 %  HavingConstraints are post-aggregation filters (null if none)
 %
 generate_multi_aggregation_code(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode) :-
+    % Check if GroupField is a list (nested grouping) or single field
+    (   is_list(GroupField)
+    ->  format('  Nested grouping detected: ~w~n', [GroupField]),
+        generate_nested_group_multi_agg(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode)
+    ;   % Single field grouping - original implementation
+        generate_single_field_multi_agg(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode)
+    ).
+
+%% generate_single_field_multi_agg(+GroupField, +FieldMappings, +OpList, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
+%  Original implementation for single-field grouping
+%
+generate_single_field_multi_agg(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode) :-
     % Parse operations to determine what's needed
     parse_multi_agg_operations(OpList, FieldMappings, AggInfo),
 
@@ -3026,8 +3084,229 @@ generate_multi_aggregation_code(GroupField, FieldMappings, OpList, HavingConstra
 \t\toutput, _ := json.Marshal(result)
 \t\tfmt.Println(string(output))
 \t}
-', [DbFile, GroupField, StructFields, BucketStr, BucketStr, GroupField,
+',  [DbFile, GroupField, StructFields, BucketStr, BucketStr, GroupField,
     InitValues, AccumulationCode, OutputCalcs, HavingFilterCode, GroupField, OutputCode]).
+
+%% extract_group_field_names(+GroupFieldVars, +FieldMappings, -FieldNames)
+%  Extract field names from a list of variables by looking them up in FieldMappings
+%  GroupFieldVars: List of variables like [_1820, _1822]
+%  FieldMappings: List of pairs like [state-_1820, city-_1822, name-_1892]
+%  FieldNames: Extracted atom list like [state, city]
+%
+extract_group_field_names([], _, []) :- !.
+extract_group_field_names([Var|Rest], FieldMappings, [FieldName|RestNames]) :-
+    member(FieldName-MappedVar, FieldMappings),
+    Var == MappedVar,  % Use == for variable identity check
+    !,
+    extract_group_field_names(Rest, FieldMappings, RestNames).
+extract_group_field_names([Var|_], FieldMappings, _) :-
+    % If we get here, variable wasn't found in mappings
+    format('ERROR: Group field variable ~w not found in mappings ~w~n', [Var, FieldMappings]),
+    fail.
+
+%% generate_nested_group_multi_agg(+GroupFields, +FieldMappings, +OpList, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY code for nested grouping (multiple group fields)
+%  GroupFields is a list like [State, City]
+%
+generate_nested_group_multi_agg(GroupFields, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode) :-
+    % Extract field names from variables
+    extract_group_field_names(GroupFields, FieldMappings, FieldNames),
+
+    % Parse operations
+    parse_multi_agg_operations(OpList, FieldMappings, AggInfo),
+
+    % Generate struct fields
+    generate_multi_agg_struct_fields(AggInfo, StructFields),
+
+    % Generate accumulation code
+    generate_multi_agg_accumulation(AggInfo, AccumulationCode),
+
+    % Get struct initialization
+    get_struct_init_values(AggInfo, InitValues),
+
+    % Get output calculations
+    get_output_calculations(AggInfo, OutputCalcs),
+
+    % Generate HAVING filter code
+    generate_having_filter_code(HavingConstraints, AggInfo, OpList, HavingFilterCode),
+
+    % Generate composite key extraction code (includes accumulation) - use field names
+    generate_composite_key_extraction(FieldNames, AccumulationCode, KeyExtractionCode),
+
+    % Generate composite key parsing and output - use field names
+    generate_composite_key_output(FieldNames, AggInfo, KeyOutputCode),
+
+    % Create group fields description for comment
+    atomic_list_concat(FieldNames, ', ', GroupFieldsStr),
+
+    % Combine into full Go code
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by [~s] with multiple aggregations
+\ttype GroupStats struct {
+~s
+\t}
+\tstats := make(map[string]*GroupStats)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+~s
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor groupKey, s := range stats {
+~s
+~s
+~s
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupFieldsStr, StructFields, BucketStr, BucketStr,
+    KeyExtractionCode, OutputCalcs, HavingFilterCode, KeyOutputCode]).
+
+%% generate_composite_key_extraction(+GroupFields, -Code)
+%  Generate Go code to extract multiple fields and create composite key
+%
+generate_composite_key_extraction(GroupFields, AccumulationCode, Code) :-
+    length(GroupFields, NumFields),
+    (   NumFields =:= 1
+    ->  % Single field - simpler case
+        [Field] = GroupFields,
+        format(string(Code), '\t\t\t// Extract group field
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\t// Initialize stats for this group if needed
+\t\t\t\t\tif _, exists := stats[groupStr]; !exists {
+\t\t\t\t\t\tstats[groupStr] = &GroupStats{}
+\t\t\t\t\t}
+~s
+\t\t\t\t}
+\t\t\t}', [Field, AccumulationCode])
+    ;   % Multiple fields - use composite key
+        generate_field_extractions(GroupFields, Extractions),
+        % Replace groupStr with groupKey in accumulation code for nested grouping
+        atomic_list_concat(Split, 'groupStr', AccumulationCode),
+        atomic_list_concat(Split, 'groupKey', AccumulationCodeFixed),
+        format(string(Code), '\t\t\t// Extract group fields for composite key
+\t\t\tkeyParts := make([]string, 0, ~d)
+~s
+\t\t\t// Check all fields were extracted
+\t\t\tif len(keyParts) == ~d {
+\t\t\t\tgroupKey := strings.Join(keyParts, "|")
+\t\t\t\t// Initialize stats for this group if needed
+\t\t\t\tif _, exists := stats[groupKey]; !exists {
+\t\t\t\t\tstats[groupKey] = &GroupStats{}
+\t\t\t\t}
+~s
+\t\t\t}', [NumFields, Extractions, NumFields, AccumulationCodeFixed])
+    ).
+
+%% generate_field_extractions(+Fields, -Code)
+%  Generate extraction code for each field in the composite key
+%
+generate_field_extractions(Fields, Code) :-
+    generate_field_extractions_impl(Fields, 1, CodeLines),
+    atomic_list_concat(CodeLines, '\n', Code).
+
+generate_field_extractions_impl([], _, []).
+generate_field_extractions_impl([Field|Rest], Index, [ThisCode|RestCodes]) :-
+    format(string(ThisCode), '\t\t\tif val~d, ok := data["~s"]; ok {
+\t\t\t\tif str~d, ok := val~d.(string); ok {
+\t\t\t\t\tkeyParts = append(keyParts, str~d)
+\t\t\t\t}
+\t\t\t}', [Index, Field, Index, Index, Index]),
+    NextIndex is Index + 1,
+    generate_field_extractions_impl(Rest, NextIndex, RestCodes).
+
+%% generate_key_parts_list(+Fields, -Code)
+%  Generate the keyParts list initialization
+%
+generate_key_parts_list(Fields, Code) :-
+    length(Fields, Len),
+    format(string(Code), 'make([]string, 0, ~d)', [Len]).
+
+%% generate_composite_key_output(+GroupFields, +AggInfo, -Code)
+%  Generate code to parse composite key and output all group fields
+%
+generate_composite_key_output([Field], AggInfo, Code) :- !,
+    % Single field - simple output
+    generate_multi_agg_output_fields(AggInfo, AggOutputCode),
+    format(string(Code), '\t\tresult := map[string]interface{}{
+\t\t\t"~s": groupKey,
+~s
+\t\t}', [Field, AggOutputCode]).
+
+generate_composite_key_output(GroupFields, AggInfo, Code) :-
+    % Multiple fields - parse composite key
+    length(GroupFields, NumFields),
+    generate_groupkey_field_parsing(GroupFields, 0, FieldParsing),
+    generate_multi_agg_output_fields(AggInfo, AggOutputCode),
+    (   AggOutputCode = ''
+    ->  FullOutput = FieldParsing
+    ;   atomic_list_concat([FieldParsing, ',\n', AggOutputCode], FullOutput)
+    ),
+    format(string(Code), '\t\t// Parse composite key
+\t\tparts := strings.Split(groupKey, "|")
+\t\tif len(parts) < ~d {
+\t\t\tcontinue  // Skip malformed keys
+\t\t}
+\t\tresult := map[string]interface{}{
+~s
+\t\t}', [NumFields, FullOutput]).
+
+%% generate_groupkey_field_parsing(+Fields, +Index, -Code)
+%  Generate parsing code for composite key fields from group_by
+%
+generate_groupkey_field_parsing([], _, '').
+generate_groupkey_field_parsing([Field|Rest], Index, Code) :-
+    format(string(ThisCode), '\t\t\t"~s": parts[~d]', [Field, Index]),
+    NextIndex is Index + 1,
+    generate_groupkey_field_parsing(Rest, NextIndex, RestCode),
+    (   RestCode = ''
+    ->  Code = ThisCode
+    ;   atomic_list_concat([ThisCode, ',\n', RestCode], Code)
+    ).
+
+%% generate_multi_agg_output_fields(+AggInfo, -Code)
+%  Generate output field code for aggregations (without map wrapper)
+%
+generate_multi_agg_output_fields(AggInfo, Code) :-
+    findall(FieldCode, (
+        member(agg(OpType, _, _, OutputName), AggInfo),
+        operation_output_field(OpType, OutputName, FieldCode)
+    ), FieldCodes),
+    atomic_list_concat(FieldCodes, ',\n', Code).
+
+%% operation_output_field(+OpType, +Name, -Code)
+%  Generate single output field code
+%
+operation_output_field(count, count, '\t\t\t"count": s.count').
+operation_output_field(sum, sum, '\t\t\t"sum": s.sum').
+operation_output_field(avg, avg, '\t\t\t"avg": avg').
+operation_output_field(max, max, '\t\t\t"max": s.maxValue').
+operation_output_field(min, min, '\t\t\t"min": s.minValue').
 
 %% parse_multi_agg_operations(+OpList, +FieldMappings, -AggInfo)
 %  Parse list of operations into structured info
