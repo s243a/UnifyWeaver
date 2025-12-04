@@ -1775,14 +1775,18 @@ compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
         bind_count_head(HeadArgs, ResVar, Config, Assigns),
         atomic_list_concat(Assigns, ", ", AssignStr),
         agg_expr(Op, ValueExpr, AggExpr),
-        replace_filter_placeholder(AggExpr, FilterExpr, FinalAgg),
+        emit_condition(Op, EmitCond),
         format(string(Code),
 "        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
         {
             // Rule ~w: ~w :- aggregate_all(~w, ~w(~w), ~w)
-            var agg = ~w;
-            yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
-        }", [RuleName, Index, Head, Op, Pred, Args, ResVar, FinalAgg, HeadPred, AssignStr])
+            var aggQuery = total.Where(f => ~w);
+            if (~w)
+            {
+                var agg = ~w;
+                yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
+            }
+        }", [RuleName, Index, Head, Op, Pred, Args, ResVar, FilterExpr, EmitCond, AggExpr, HeadPred, AssignStr])
     ;   Type = group,
         Op = sum
     ->  build_group_sum(Pred, Args, GroupVar, ValueVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code)
@@ -1835,31 +1839,19 @@ build_value_expr(max, Args, ValVar, Expr) :-
     find_var_index(ValVar, Args, ValIdx),
     format(string(Expr), "Convert.ToDecimal(f.Args[\"arg~w\"])", [ValIdx]).
 
-find_var_index(Var, Args, Idx) :-
-    nth0(Idx, Args, Arg),
-    (   Var == Arg
-    ;   compound(Arg),
-        Arg =.. ['^', Var, _]
-    ;   compound(Arg),
-        Arg =.. ['^', _, Var]
-    ),
-    !.
-find_var_index(Var, _Args, _) :-
-    format(user_error, 'C# generator aggregate: unable to bind value/group variable ~w.~n', [Var]),
-    fail.
-
-agg_expr(count, _ValExpr, AggExpr) :-
-    format(string(AggExpr), "total.Count(f => ~w)", ["FILTER_PLACEHOLDER"]).
+agg_expr(count, _ValExpr, "aggQuery.Count()").
 agg_expr(sum, ValExpr, AggExpr) :-
-    format(string(AggExpr), "total.Where(f => FILTER_PLACEHOLDER).Sum(f => ~w)", [ValExpr]).
+    format(string(AggExpr), "aggQuery.Sum(f => ~w)", [ValExpr]).
 agg_expr(min, ValExpr, AggExpr) :-
-    format(string(AggExpr), "total.Where(f => FILTER_PLACEHOLDER).Min(f => ~w)", [ValExpr]).
+    format(string(AggExpr), "aggQuery.Min(f => ~w)", [ValExpr]).
 agg_expr(max, ValExpr, AggExpr) :-
-    format(string(AggExpr), "total.Where(f => FILTER_PLACEHOLDER).Max(f => ~w)", [ValExpr]).
+    format(string(AggExpr), "aggQuery.Max(f => ~w)", [ValExpr]).
 
-replace_filter_placeholder(AggExpr, FilterExpr, Final) :-
-    split_string(AggExpr, "FILTER_PLACEHOLDER", "", Parts),
-    atomics_to_string(Parts, FilterExpr, Final).
+emit_condition(count, "true").
+emit_condition(_, "aggQuery.Any()").
+
+need_emit(count, "true").
+need_emit(_, "aggQuery.Any()").
 
 bind_count_head(HeadArgs, ResVar, Config, Assigns) :-
     findall(Assign,
