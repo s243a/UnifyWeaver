@@ -4,6 +4,35 @@
 
 The SQL target compiles Prolog predicates to SQL queries, enabling UnifyWeaver to work with any SQL database (PostgreSQL, MySQL, SQLite, SQL Server, etc.). Unlike embedded database targets (bbolt, redb), the SQL target generates declarative queries rather than imperative code.
 
+## Implementation Status
+
+### ✅ Phase 1: Basic SELECT Queries (COMPLETE)
+- Basic SELECT, FROM, WHERE clauses
+- Simple constraints (>=, >, =<, <, =:=, =\=, =)
+- Constant matching in table goals
+- Single-table queries
+- **Tests**: 4/4 passing (SQLite integration)
+
+### ✅ Phase 2: Aggregations & JOINs (COMPLETE)
+- **Aggregations**:
+  - All 5 SQL aggregation functions (COUNT, SUM, AVG, MAX, MIN)
+  - GROUP BY clause generation
+  - HAVING clause for post-aggregation filtering
+  - Combined WHERE + GROUP BY
+  - **Tests**: 7/7 passing
+- **JOINs**:
+  - Automatic INNER JOIN detection based on shared variables
+  - Join condition inference (table1.column = table2.column)
+  - Qualified column names (table.column) for multi-table queries
+  - JOINs combined with WHERE clauses
+  - **Tests**: 3/3 passing
+
+### 🚧 Future Phases
+- **Phase 3**: Advanced JOINs (LEFT, RIGHT, OUTER), self-joins, multi-hop joins
+- **Phase 4**: Subqueries, CTEs, UNION/INTERSECT/EXCEPT
+- **Phase 5**: Window functions, advanced analytics
+- **Phase 6**: Database-specific optimizations
+
 ## Motivation
 
 ### Why SQL Target?

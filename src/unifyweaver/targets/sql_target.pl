@@ -97,36 +97,239 @@ compile_clauses_to_sql(Name, Arity, HeadBodyPairs, Options, SQLCode) :-
 %  Compile a single Prolog clause to SQL
 %
 compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
-    % Parse the clause body
-    parse_clause_body(Body, ParsedGoals),
+    % Check if this is an aggregation clause
+    (   is_group_by_clause(Body)
+    ->  compile_aggregation_clause(Name, Arity, Body, Head, Options, SQLCode)
+    ;   % Regular clause - existing logic
+        % Parse the clause body
+        parse_clause_body(Body, ParsedGoals),
 
-    % Extract table references and constraints
-    separate_goals(ParsedGoals, TableGoals, Constraints),
+        % Extract table references and constraints
+        separate_goals(ParsedGoals, TableGoals, Constraints),
 
-    % Generate SELECT clause from head arguments
+        % Generate SELECT clause from head arguments
+        Head =.. [Name|Args],
+        generate_select_clause(Args, TableGoals, SelectClause),
+
+        % Generate FROM clause
+        generate_from_clause(TableGoals, FromClause),
+
+        % Generate WHERE clause
+        generate_where_clause(Constraints, Args, TableGoals, WhereClause),
+
+        % Get output format
+        (   member(format(Format), Options)
+        ->  true
+        ;   Format = view
+        ),
+
+        % Get view name
+        (   member(view_name(ViewName), Options)
+        ->  true
+        ;   ViewName = Name
+        ),
+
+        % Combine into SQL
+        format_sql(Format, ViewName, SelectClause, FromClause, WhereClause, SQLCode)
+    ).
+
+%% ============================================
+%% AGGREGATION SUPPORT (GROUP BY)
+%% ============================================
+
+%% is_group_by_clause(+Body)
+%  Check if clause body contains group_by
+%
+is_group_by_clause(Body) :-
+    extract_group_by_spec(Body, _, _, _, _), !.
+
+%% extract_group_by_spec(+Body, -GroupField, -Goal, -AggOp, -Result)
+%  Extract group_by components from clause body
+%
+extract_group_by_spec(group_by(GroupField, Goal, AggOp), GroupField, Goal, AggOp, null) :- !.
+extract_group_by_spec(group_by(GroupField, Goal, AggOp, Result), GroupField, Goal, AggOp, Result) :- !.
+extract_group_by_spec((group_by(GroupField, Goal, AggOp), _Rest), GroupField, Goal, AggOp, null) :- !.
+extract_group_by_spec((group_by(GroupField, Goal, AggOp, Result), _Rest), GroupField, Goal, AggOp, Result) :- !.
+
+%% extract_having_constraints(+Body, -Constraints)
+%  Extract HAVING constraints from after group_by
+%
+extract_having_constraints(group_by(_, _, _), []) :- !.
+extract_having_constraints(group_by(_, _, _, _), []) :- !.
+extract_having_constraints((group_by(_, _, _), Rest), Constraints) :- !,
+    parse_clause_body(Rest, Constraints).
+extract_having_constraints((group_by(_, _, _, _), Rest), Constraints) :- !,
+    parse_clause_body(Rest, Constraints).
+extract_having_constraints(_, []).
+
+%% compile_aggregation_clause(+Name, +Arity, +Body, +Head, +Options, -SQLCode)
+%  Compile a group_by clause to SQL with GROUP BY
+%
+compile_aggregation_clause(Name, Arity, Body, Head, Options, SQLCode) :-
+    % Extract group_by specification
+    extract_group_by_spec(Body, GroupField, Goal, AggOp, Result),
+
+    % Extract HAVING constraints
+    extract_having_constraints(Body, HavingConstraints),
+
+    % Parse the inner goal
+    parse_clause_body(Goal, ParsedGoals),
+    separate_goals(ParsedGoals, TableGoals, WhereConstraints),
+
+    % Get head arguments
     Head =.. [Name|Args],
-    generate_select_clause(Args, TableGoals, SelectClause),
+
+    % Generate SELECT clause with aggregation
+    generate_aggregation_select(Args, GroupField, AggOp, Result, TableGoals, SelectClause),
 
     % Generate FROM clause
     generate_from_clause(TableGoals, FromClause),
 
     % Generate WHERE clause
-    generate_where_clause(Constraints, Args, TableGoals, WhereClause),
+    generate_where_clause(WhereConstraints, Args, TableGoals, WhereClause),
 
-    % Get output format
+    % Generate GROUP BY clause
+    find_var_column(GroupField, [], TableGoals, GroupColumn),
+    format(string(GroupByClause), 'GROUP BY ~w', [GroupColumn]),
+
+    % Generate HAVING clause
+    generate_having_clause(HavingConstraints, Result, HavingClause),
+
+    % Get output format and view name
     (   member(format(Format), Options)
     ->  true
     ;   Format = view
     ),
-
-    % Get view name
     (   member(view_name(ViewName), Options)
     ->  true
     ;   ViewName = Name
     ),
 
     % Combine into SQL
-    format_sql(Format, ViewName, SelectClause, FromClause, WhereClause, SQLCode).
+    format_aggregation_sql(Format, ViewName, SelectClause, FromClause, WhereClause,
+                          GroupByClause, HavingClause, SQLCode).
+
+%% generate_aggregation_select(+Args, +GroupField, +AggOp, +Result, +TableGoals, -SelectClause)
+%  Generate SELECT clause with aggregation function
+%
+generate_aggregation_select(Args, GroupField, AggOp, Result, TableGoals, SelectClause) :-
+    % Find group column
+    find_var_column(GroupField, [], TableGoals, GroupColumn),
+
+    % Map aggregation operation to SQL
+    agg_op_to_sql(AggOp, AggFunc),
+
+    % Determine what we're aggregating
+    (   Result = null
+    ->  % Simple aggregation like count(*)
+        (   AggOp = count
+        ->  format(string(AggExpr), '~w(*)', [AggFunc])
+        ;   % Need to infer column from table goals
+            infer_agg_column(TableGoals, AggColumn),
+            format(string(AggExpr), '~w(~w)', [AggFunc, AggColumn])
+        )
+    ;   % Explicit result variable - find its column
+        find_var_column(Result, [], TableGoals, ResultColumn),
+        format(string(AggExpr), '~w(~w)', [AggFunc, ResultColumn])
+    ),
+
+    % Generate SELECT items
+    (   Args = [GroupField, Result]
+    ->  % Grouping column and aggregation result
+        format(string(SelectClause), 'SELECT ~w, ~w', [GroupColumn, AggExpr])
+    ;   Args = [GroupField]
+    ->  % Just grouping column
+        format(string(SelectClause), 'SELECT ~w', [GroupColumn])
+    ;   Args = [Result]
+    ->  % Just aggregation result
+        format(string(SelectClause), 'SELECT ~w', [AggExpr])
+    ;   % Default: group column and aggregation
+        format(string(SelectClause), 'SELECT ~w, ~w', [GroupColumn, AggExpr])
+    ).
+
+%% agg_op_to_sql(+AggOp, -SQLFunc)
+%  Map Prolog aggregation operation to SQL function
+%
+agg_op_to_sql(count, 'COUNT').
+agg_op_to_sql(sum, 'SUM').
+agg_op_to_sql(avg, 'AVG').
+agg_op_to_sql(max, 'MAX').
+agg_op_to_sql(min, 'MIN').
+
+%% infer_agg_column(+TableGoals, -Column)
+%  Infer which column to aggregate (for simple cases)
+%
+infer_agg_column([Goal|_], Column) :-
+    Goal =.. [TableName|Args],
+    get_table_schema(TableName, Schema),
+    % Find first numeric column
+    nth1(Pos, Args, Arg),
+    var(Arg),
+    nth1(Pos, Schema, Column-Type),
+    member(Type, [integer, number, real]), !.
+infer_agg_column([_|Rest], Column) :-
+    infer_agg_column(Rest, Column).
+
+%% generate_having_clause(+Constraints, +Result, -HavingClause)
+%  Generate HAVING clause from constraints
+%
+generate_having_clause([], _, '') :- !.
+generate_having_clause(Constraints, Result, HavingClause) :-
+    findall(Condition,
+            (member(C, Constraints), having_constraint_to_sql(C, Result, Condition)),
+            Conditions),
+    (   Conditions = []
+    ->  HavingClause = ''
+    ;   atomic_list_concat(Conditions, ' AND ', ConditionsStr),
+        format(string(HavingClause), 'HAVING ~w', [ConditionsStr])
+    ).
+
+%% having_constraint_to_sql(+Constraint, +Result, -SQLCondition)
+%  Convert HAVING constraint to SQL
+%
+having_constraint_to_sql(Result >= Value, Result, Condition) :- !,
+    format(string(Condition), 'COUNT(*) >= ~w', [Value]).
+having_constraint_to_sql(Result > Value, Result, Condition) :- !,
+    format(string(Condition), 'COUNT(*) > ~w', [Value]).
+having_constraint_to_sql(Result =< Value, Result, Condition) :- !,
+    format(string(Condition), 'COUNT(*) <= ~w', [Value]).
+having_constraint_to_sql(Result < Value, Result, Condition) :- !,
+    format(string(Condition), 'COUNT(*) < ~w', [Value]).
+having_constraint_to_sql(Result =:= Value, Result, Condition) :- !,
+    format(string(Condition), 'COUNT(*) = ~w', [Value]).
+
+%% format_aggregation_sql(+Format, +ViewName, +Select, +From, +Where, +GroupBy, +Having, -SQL)
+%  Format SQL with GROUP BY and optional HAVING
+%
+format_aggregation_sql(view, ViewName, Select, From, Where, GroupBy, Having, SQL) :-
+    (   Where = '', Having = ''
+    ->  format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w~n~w~n~w;~n~n',
+               [ViewName, ViewName, Select, From, GroupBy])
+    ;   Where \= '', Having = ''
+    ->  format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w~n~w~n~w~n~w;~n~n',
+               [ViewName, ViewName, Select, From, Where, GroupBy])
+    ;   Where = '', Having \= ''
+    ->  format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w~n~w~n~w~n~w;~n~n',
+               [ViewName, ViewName, Select, From, GroupBy, Having])
+    ;   % Both WHERE and HAVING
+        format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w~n~w~n~w~n~w~n~w;~n~n',
+               [ViewName, ViewName, Select, From, Where, GroupBy, Having])
+    ).
+
+format_aggregation_sql(select, _, Select, From, Where, GroupBy, Having, SQL) :-
+    (   Where = '', Having = ''
+    ->  format(string(SQL), '~w~n~w~n~w;~n', [Select, From, GroupBy])
+    ;   Where \= '', Having = ''
+    ->  format(string(SQL), '~w~n~w~n~w~n~w;~n', [Select, From, Where, GroupBy])
+    ;   Where = '', Having \= ''
+    ->  format(string(SQL), '~w~n~w~n~w~n~w;~n', [Select, From, GroupBy, Having])
+    ;   % Both WHERE and HAVING
+        format(string(SQL), '~w~n~w~n~w~n~w~n~w;~n', [Select, From, Where, GroupBy, Having])
+    ).
+
+%% ============================================
+%% REGULAR QUERY SUPPORT
+%% ============================================
 
 %% parse_clause_body(+Body, -Goals)
 %  Parse clause body into list of goals
@@ -195,12 +398,91 @@ generate_from_clause([Goal|Rest], FromClause) :-
     ).
 
 %% generate_from_clause_multi(+Goals, -FromClause)
-%  Generate FROM clause with multiple tables (simple CROSS JOIN for now)
+%  Generate FROM clause with INNER JOINs based on shared variables
 %
-generate_from_clause_multi(Goals, FromClause) :-
-    findall(TableName, (member(G, Goals), functor(G, TableName, _)), Tables),
-    atomic_list_concat(Tables, ', ', TablesStr),
-    format(string(FromClause), 'FROM ~w', [TablesStr]).
+generate_from_clause_multi([FirstGoal|RestGoals], FromClause) :-
+    functor(FirstGoal, FirstTable, _),
+    % Find join conditions between tables
+    find_join_conditions([FirstGoal|RestGoals], JoinSpecs),
+    % Generate JOIN clauses
+    (   JoinSpecs = []
+    ->  % No shared variables - use CROSS JOIN
+        findall(TN, member(G, [FirstGoal|RestGoals]), (functor(G, TN, _)), Tables),
+        atomic_list_concat(Tables, ', ', TablesStr),
+        format(string(FromClause), 'FROM ~w', [TablesStr])
+    ;   % Generate INNER JOINs
+        generate_join_clause(FirstTable, RestGoals, JoinSpecs, FromClause)
+    ).
+
+%% find_join_conditions(+Goals, -JoinSpecs)
+%  Find shared variables between table goals
+%  Returns list of join_spec(Table1, Col1, Table2, Col2)
+%
+find_join_conditions(Goals, JoinSpecs) :-
+    find_all_join_pairs(Goals, AllSpecs),
+    % Remove duplicates (A-B and B-A are same join)
+    remove_duplicate_joins(AllSpecs, JoinSpecs).
+
+%% find_all_join_pairs(+Goals, -JoinSpecs)
+%  Find all join pairs between goals
+%
+find_all_join_pairs([], []).
+find_all_join_pairs([G1|Rest], JoinSpecs) :-
+    G1 =.. [T1|Args1],
+    findall(join_spec(T1, C1, T2, C2),
+            (   member(G2, Rest),
+                G2 =.. [T2|Args2],
+                % Find position in Args1 that has a variable
+                nth1(Pos1, Args1, Var1),
+                var(Var1),
+                % Check if same variable instance appears in Args2
+                nth1(Pos2, Args2, Var2),
+                Var1 == Var2,  % Same variable instance (by identity)
+                % Get column names
+                get_table_schema(T1, Schema1),
+                get_table_schema(T2, Schema2),
+                nth1(Pos1, Schema1, C1-_),
+                nth1(Pos2, Schema2, C2-_)
+            ),
+            Joins1),
+    find_all_join_pairs(Rest, Joins2),
+    append(Joins1, Joins2, JoinSpecs).
+
+%% remove_duplicate_joins(+Specs, -UniqueSpecs)
+%  Remove duplicate join specifications
+%
+remove_duplicate_joins([], []).
+remove_duplicate_joins([join_spec(T1, C1, T2, C2)|Rest], [join_spec(T1, C1, T2, C2)|Unique]) :-
+    % Remove reverse join
+    \+ member(join_spec(T2, C2, T1, C1), Rest),
+    remove_duplicate_joins(Rest, Unique).
+remove_duplicate_joins([join_spec(T1, C1, T2, C2)|Rest], Unique) :-
+    % Skip if reverse exists
+    member(join_spec(T2, C2, T1, C1), Rest),
+    remove_duplicate_joins(Rest, Unique).
+
+%% generate_join_clause(+FirstTable, +RestGoals, +JoinSpecs, -FromClause)
+%  Generate FROM clause with INNER JOIN
+%
+generate_join_clause(FirstTable, RestGoals, JoinSpecs, FromClause) :-
+    % Start with first table
+    findall(JoinClause,
+            (   member(G, RestGoals),
+                functor(G, TableName, _),
+                % Find join condition for this table
+                (   member(join_spec(FirstTable, Col1, TableName, Col2), JoinSpecs)
+                ->  format(string(JoinClause), 'INNER JOIN ~w ON ~w.~w = ~w.~w',
+                          [TableName, FirstTable, Col1, TableName, Col2])
+                ;   member(join_spec(TableName, Col2, FirstTable, Col1), JoinSpecs)
+                ->  format(string(JoinClause), 'INNER JOIN ~w ON ~w.~w = ~w.~w',
+                          [TableName, TableName, Col2, FirstTable, Col1])
+                ;   % No join condition - CROSS JOIN
+                    format(string(JoinClause), 'CROSS JOIN ~w', [TableName])
+                )
+            ),
+            JoinClauses),
+    atomic_list_concat(JoinClauses, '\n', JoinsStr),
+    format(string(FromClause), 'FROM ~w\n~w', [FirstTable, JoinsStr]).
 
 %% generate_where_clause(+Constraints, +HeadArgs, +TableGoals, -WhereClause)
 %  Generate WHERE clause from constraints and table goal constants
@@ -228,6 +510,19 @@ generate_where_clause(Constraints, HeadArgs, TableGoals, WhereClause) :-
 %% constraint_to_sql(+Constraint, +HeadArgs, +TableGoals, -SQLCondition)
 %  Convert Prolog constraint to SQL condition
 %
+constraint_to_sql(Var = Value, HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    (   atom(Value)
+    ->  find_var_column(Var, HeadArgs, TableGoals, Column),
+        format(string(Condition), "~w = '~w'", [Column, Value])
+    ;   number(Value)
+    ->  find_var_column(Var, HeadArgs, TableGoals, Column),
+        format(string(Condition), '~w = ~w', [Column, Value])
+    ;   % String literal
+        find_var_column(Var, HeadArgs, TableGoals, Column),
+        format(string(Condition), "~w = '~w'", [Column, Value])
+    ).
+
 constraint_to_sql(Var >= Value, HeadArgs, TableGoals, Condition) :-
     var(Var),
     find_var_column(Var, HeadArgs, TableGoals, Column),
@@ -289,6 +584,7 @@ table_args_to_conditions([Arg|Rest], Schema, Pos, Condition) :-
 
 %% find_var_column(+Var, +HeadArgs, +TableGoals, -ColumnName)
 %  Find the SQL column name for a Prolog variable
+%  Returns table.column when multiple tables involved
 %
 find_var_column(Var, HeadArgs, TableGoals, ColumnName) :-
     % Find which table goal contains this variable
@@ -298,7 +594,12 @@ find_var_column(Var, HeadArgs, TableGoals, ColumnName) :-
     Arg == Var, !,
     % Get column name from schema
     get_table_schema(TableName, Schema),
-    nth1(Position, Schema, ColumnName-_Type).
+    nth1(Position, Schema, ColName-_Type),
+    % Qualify with table name if multiple tables
+    (   length(TableGoals, N), N > 1
+    ->  format(atom(ColumnName), '~w.~w', [TableName, ColName])
+    ;   ColumnName = ColName
+    ).
 
 %% format_sql(+Format, +ViewName, +Select, +From, +Where, -SQL)
 %  Format the final SQL output
