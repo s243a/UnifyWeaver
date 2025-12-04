@@ -2,12 +2,15 @@ use redb::{Database, ReadableTable, TableDefinition};
 use serde_json::Value;
 use std::sync::Arc;
 use std::collections::HashSet;
+use crate::embedding::EmbeddingProvider;
 
 const OBJECTS: TableDefinition<&str, &str> = TableDefinition::new("objects");
 const LINKS: TableDefinition<&str, &str> = TableDefinition::new("links");
+const EMBEDDINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("embeddings");
 
 pub struct PtSearcher {
     db: Arc<Database>,
+    embedder: EmbeddingProvider,
 }
 
 #[derive(Debug, Clone)]
@@ -18,9 +21,9 @@ pub struct SearchResult {
 }
 
 impl PtSearcher {
-    pub fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(path: &str, embedder: EmbeddingProvider) -> Result<Self, Box<dyn std::error::Error>> {
         let db = Database::create(path)?; // Opens or creates
-        Ok(Self { db: Arc::new(db) })
+        Ok(Self { db: Arc::new(db), embedder })
     }
 
     pub fn text_search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResult>, Box<dyn std::error::Error>> {
@@ -53,13 +56,63 @@ impl PtSearcher {
         Ok(results)
     }
 
+    pub fn vector_search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResult>, Box<dyn std::error::Error>> {
+        // 1. Generate Query Embedding
+        let query_vec = self.embedder.get_embedding(query)?;
+
+        // 2. Linear Scan & Compute Cosine Similarity
+        // Note: For large datasets, use an index (LanceDB/HNSW). For <10k, scan is fine.
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(EMBEDDINGS)?;
+        let objects_table = read_txn.open_table(OBJECTS)?;
+
+        let mut results = Vec::new();
+
+        for result in table.iter()? {
+            let (id, blob) = result?;
+            let id = id.value();
+            let blob = blob.value();
+
+            // Convert blob to f32 vec
+            let vec_len = blob.len() / 4;
+            let mut vec = Vec::with_capacity(vec_len);
+            for chunk in blob.chunks_exact(4) {
+                let bytes: [u8; 4] = chunk.try_into()?;
+                vec.push(f32::from_ne_bytes(bytes));
+            }
+
+            // Cosine Similarity
+            let score = cosine_similarity(&query_vec, &vec);
+            
+            // Optimization: Maintain a min-heap of top-k
+            results.push((score, id.to_string()));
+        }
+
+        // Sort descending
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(top_k);
+
+        // Fetch Objects
+        let mut full_results = Vec::new();
+        for (score, id) in results {
+            if let Ok(Some(data_str)) = objects_table.get(id.as_str()) {
+                let data: Value = serde_json::from_str(data_str.value())?;
+                full_results.push(SearchResult {
+                    id,
+                    score,
+                    data,
+                });
+            }
+        }
+
+        Ok(full_results)
+    }
+
     pub fn graph_search(&self, query: &str, top_k: usize, _hops: usize, mode: &str) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         let seeds = if mode == "text" {
             self.text_search(query, top_k)?
         } else {
-            // Vector search placeholder
-            println!("WARNING: Vector search not implemented, falling back to text search");
-            self.text_search(query, top_k)?
+            self.vector_search(query, top_k)?
         };
 
         let read_txn = self.db.begin_read()?;
@@ -74,11 +127,6 @@ impl PtSearcher {
             context.insert("focus".to_string(), seed.data.clone());
             
             // Find Children (Source = Seed)
-            // Links key is "Source|Target". 
-            // Redb range scan is needed for prefix matching if we want efficient lookups
-            // Key format: "Source|Target"
-            // To find targets for source S, scan range "S|" to "S|~"
-            
             let mut children = Vec::new();
             let prefix = format!("{}|", seed.id);
             for link_res in links_table.range(prefix.as_str()..)? {
@@ -98,23 +146,6 @@ impl PtSearcher {
                 }
             }
             context.insert("children".to_string(), Value::Array(children));
-
-            // Find Parents (Target = Seed)
-            // This is hard with "Source|Target" keys. We need to scan ALL links? 
-            // Or maintain a reverse index "Target|Source".
-            // For this prototype, we'll skip reverse lookup optimization and just scan (slow)
-            // or assume Importer stores both directions?
-            // Let's assume Importer stores "Child|Parent" as the standard link. 
-            // So "Source|Target" means "Child|Parent".
-            // Parents are found by looking up the object where `id` is the target of a link where `source` is seed.
-            // Which is what we just did above (Source=Seed -> Target=Parent).
-            // Wait, "pt:parentTree" implies Child -> Parent.
-            // So `upsert_link(Child, Parent)`.
-            // Finding Parents: keys starting with "Child|". (Efficient)
-            // Finding Children: keys where Target = Seed. (Inefficient without index).
-            
-            // For now, we'll just output what we can efficiently find (Parents).
-            // To fix this, Importer should store "reverse_links" table or keys.
             
             final_results.push(Value::Object(context));
         }
@@ -146,5 +177,16 @@ impl PtSearcher {
         }
 
         Ok(output)
+    }
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot_product: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        0.0
+    } else {
+        dot_product / (norm_a * norm_b)
     }
 }
