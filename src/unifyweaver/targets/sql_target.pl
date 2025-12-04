@@ -8,6 +8,7 @@
 
 :- module(sql_target, [
     compile_predicate_to_sql/3,     % +Predicate, +Options, -SQLCode
+    compile_set_operation/4,        % +SetOp, +Predicates, +Options, -SQLCode
     write_sql_file/2,               % +SQLCode, +FilePath
     sql_table/2                     % +TableName, +Columns (directive)
 ]).
@@ -80,18 +81,193 @@ compile_predicate_to_sql(Predicate, Options, SQLCode) :-
     ).
 
 %% compile_clauses_to_sql(+Name, +Arity, +HeadBodyPairs, +Options, -SQLCode)
-%  Compile multiple clauses to SQL
+%  Compile multiple clauses to SQL with UNION
 %
 compile_clauses_to_sql(Name, Arity, HeadBodyPairs, Options, SQLCode) :-
-    % For now, we only support single-clause predicates (Phase 1)
     (   HeadBodyPairs = [head_body(Head, Body)]
-    ->  compile_single_clause(Name, Arity, Body, Head, Options, SQLCode)
-    ;   length(HeadBodyPairs, N),
-        format('WARNING: Multiple clauses not yet supported. Found ~w clauses for ~w/~w~n', [N, Name, Arity]),
-        % Use UNION for multiple clauses (future)
-        HeadBodyPairs = [head_body(FirstHead, FirstBody)|_],
-        compile_single_clause(Name, Arity, FirstBody, FirstHead, Options, SQLCode)
+    ->  % Single clause - direct compilation
+        compile_single_clause(Name, Arity, Body, Head, Options, SQLCode)
+    ;   % Multiple clauses - use UNION
+        compile_union_clauses(Name, Arity, HeadBodyPairs, Options, SQLCode)
     ).
+
+%% compile_union_clauses(+Name, +Arity, +HeadBodyPairs, +Options, -SQLCode)
+%  Compile multiple clauses using UNION
+%
+compile_union_clauses(Name, Arity, HeadBodyPairs, Options, SQLCode) :-
+    % Compile each clause to a SELECT statement
+    findall(SelectSQL,
+            (   member(head_body(Head, Body), HeadBodyPairs),
+                compile_clause_to_select(Name, Arity, Body, Head, SelectSQL)
+            ),
+            SelectStatements),
+
+    % Determine UNION type (default: UNION for distinct)
+    (   member(union_all(true), Options)
+    ->  UnionSep = '\nUNION ALL\n'
+    ;   UnionSep = '\nUNION\n'
+    ),
+
+    % Join with UNION
+    atomic_list_concat(SelectStatements, UnionSep, UnionQuery),
+
+    % Get output format and view name
+    (   member(format(Format), Options)
+    ->  true
+    ;   Format = view
+    ),
+    (   member(view_name(ViewName), Options)
+    ->  true
+    ;   ViewName = Name
+    ),
+
+    % Format as view or standalone SELECT
+    format_union_sql(Format, ViewName, UnionQuery, SQLCode).
+
+%% compile_clause_to_select(+Name, +Arity, +Body, +Head, -SelectSQL)
+%  Compile a single clause to a SELECT statement (without CREATE VIEW wrapper)
+%
+compile_clause_to_select(Name, Arity, Body, Head, SelectSQL) :-
+    % Check if this is an aggregation clause
+    (   is_group_by_clause(Body)
+    ->  compile_aggregation_to_select(Name, Arity, Body, Head, SelectSQL)
+    ;   % Regular clause
+        parse_clause_body(Body, ParsedGoals),
+        separate_goals(ParsedGoals, TableGoals, Constraints),
+        Head =.. [Name|Args],
+        generate_select_clause(Args, TableGoals, SelectClause),
+        generate_from_clause(TableGoals, FromClause),
+        generate_where_clause(Constraints, Args, TableGoals, WhereClause),
+
+        % Combine into standalone SELECT
+        (   WhereClause = ''
+        ->  format(string(SelectSQL), '~w\n~w', [SelectClause, FromClause])
+        ;   format(string(SelectSQL), '~w\n~w\n~w', [SelectClause, FromClause, WhereClause])
+        )
+    ).
+
+%% compile_aggregation_to_select(+Name, +Arity, +Body, +Head, -SelectSQL)
+%  Compile aggregation clause to SELECT statement
+%
+compile_aggregation_to_select(Name, Arity, Body, Head, SelectSQL) :-
+    extract_group_by_spec(Body, GroupField, Goal, AggOp, Result),
+    extract_having_constraints(Body, HavingConstraints),
+    parse_clause_body(Goal, ParsedGoals),
+    separate_goals(ParsedGoals, TableGoals, WhereConstraints),
+    Head =.. [Name|Args],
+    generate_aggregation_select(Args, GroupField, AggOp, Result, TableGoals, SelectClause),
+    generate_from_clause(TableGoals, FromClause),
+    generate_where_clause(WhereConstraints, Args, TableGoals, WhereClause),
+    find_var_column(GroupField, [], TableGoals, GroupColumn),
+    format(string(GroupByClause), 'GROUP BY ~w', [GroupColumn]),
+    generate_having_clause(HavingConstraints, Result, HavingClause),
+
+    % Combine into standalone SELECT
+    (   WhereClause = '', HavingClause = ''
+    ->  format(string(SelectSQL), '~w\n~w\n~w', [SelectClause, FromClause, GroupByClause])
+    ;   WhereClause \= '', HavingClause = ''
+    ->  format(string(SelectSQL), '~w\n~w\n~w\n~w', [SelectClause, FromClause, WhereClause, GroupByClause])
+    ;   WhereClause = '', HavingClause \= ''
+    ->  format(string(SelectSQL), '~w\n~w\n~w\n~w', [SelectClause, FromClause, GroupByClause, HavingClause])
+    ;   format(string(SelectSQL), '~w\n~w\n~w\n~w\n~w', [SelectClause, FromClause, WhereClause, GroupByClause, HavingClause])
+    ).
+
+%% format_union_sql(+Format, +ViewName, +UnionQuery, -SQL)
+%  Format UNION query as view or standalone
+%
+format_union_sql(view, ViewName, UnionQuery, SQL) :-
+    format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w;~n~n',
+           [ViewName, ViewName, UnionQuery]).
+format_union_sql(select, _, UnionQuery, SQL) :-
+    format(string(SQL), '~w;~n', [UnionQuery]).
+
+%% compile_set_operation(+SetOp, +Predicates, +Options, -SQLCode)
+%  Compile set operations (INTERSECT, EXCEPT) over multiple predicates
+%  SetOp: intersect, except (or minus)
+%  Predicates: List of predicate specs (Name/Arity)
+%  Options: Same as compile_predicate_to_sql/3
+%
+compile_set_operation(SetOp, Predicates, Options, SQLCode) :-
+    % Validate set operation
+    (   member(SetOp, [intersect, except, minus])
+    ->  true
+    ;   format('ERROR: Unknown set operation: ~w~n', [SetOp]),
+        fail
+    ),
+
+    % Normalize MINUS to EXCEPT
+    (   SetOp = minus
+    ->  ActualOp = except
+    ;   ActualOp = SetOp
+    ),
+
+    % Compile each predicate to a standalone SELECT statement
+    findall(SelectSQL,
+            (   member(Pred, Predicates),
+                Pred = Name/Arity,
+                % Get the predicate clauses
+                functor(Goal, Name, Arity),
+                findall(head_body(Goal, Body),
+                        clause(Goal, Body),
+                        HeadBodyPairs),
+                (   HeadBodyPairs = []
+                ->  format('ERROR: No clauses found for ~w~n', [Pred]),
+                    fail
+                ;   HeadBodyPairs = [head_body(Head, Body)]
+                ->  % Single clause - compile to SELECT
+                    compile_clause_to_select(Name, Arity, Body, Head, SelectSQL)
+                ;   % Multiple clauses - need UNION first
+                    compile_union_clauses(Name, Arity, HeadBodyPairs, [format(select)], UnionSQL),
+                    % Wrap in parentheses for set operation
+                    format(string(SelectSQL), '(~w)', [UnionSQL])
+                )
+            ),
+            SelectStatements),
+
+    % Ensure we have at least 2 statements
+    (   length(SelectStatements, Len),
+        Len < 2
+    ->  format('ERROR: Set operations require at least 2 predicates~n', []),
+        fail
+    ;   true
+    ),
+
+    % Determine operator keyword
+    (   ActualOp = intersect
+    ->  OpKeyword = 'INTERSECT'
+    ;   OpKeyword = 'EXCEPT'
+    ),
+
+    % Build separator with operator
+    format(string(OpSep), '~n~w~n', [OpKeyword]),
+
+    % Join statements with operator
+    atomic_list_concat(SelectStatements, OpSep, SetQuery),
+
+    % Get output format and view name
+    (   member(format(Format), Options)
+    ->  true
+    ;   Format = view
+    ),
+    (   member(view_name(ViewName), Options)
+    ->  true
+    ;   % Generate view name from operation and predicates
+        Predicates = [FirstPred|_],
+        FirstPred = FirstName/_,
+        format(atom(ViewName), '~w_~w', [FirstName, ActualOp])
+    ),
+
+    % Format as view or standalone SELECT
+    format_set_operation_sql(Format, ViewName, SetQuery, SQLCode).
+
+%% format_set_operation_sql(+Format, +ViewName, +SetQuery, -SQL)
+%  Format set operation query as view or standalone
+%
+format_set_operation_sql(view, ViewName, SetQuery, SQL) :-
+    format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w;~n~n',
+           [ViewName, ViewName, SetQuery]).
+format_set_operation_sql(select, _, SetQuery, SQL) :-
+    format(string(SQL), '~w;~n', [SetQuery]).
 
 %% compile_single_clause(+Name, +Arity, +Body, +Head, +Options, -SQLCode)
 %  Compile a single Prolog clause to SQL
