@@ -150,6 +150,20 @@ translate_semantic_body(graph_search(Query, TopK, Hops, Mode, _Results), Code) :
     (   Mode = [mode(M)] -> atom_string(M, ModeStr) ; ModeStr = "vector" ),
     format(string(Code), 'let results = searcher.graph_search("~w", ~w, ~w, "~w")?;\n    println!("{}", serde_json::to_string_pretty(&results)?);', [Query, TopK, Hops, ModeStr]).
 
+translate_semantic_body(suggest_bookmarks(Query, _Suggestions), Code) :-
+    format(string(Code), 'let output = searcher.suggest_bookmarks("~w", 5)?;\n    println!("{}", output);', [Query]).
+
+translate_semantic_body(semantic_search(Query, TopK, _Results), Code) :-
+    format(string(Code), 'let results = searcher.text_search("~w", ~w)?;\n    println!("{}", serde_json::to_string_pretty(&results)?);', [Query, TopK]).
+
+translate_semantic_body(upsert_object(Id, Type, Data), Code) :-
+    % Simple translation assuming Data is a string literal or variable that can be stringified
+    (   string(Data) -> format(string(DataStr), '"~s"', [Data])
+    ;   atom(Data) -> format(string(DataStr), '"~w"', [Data])
+    ;   format(string(DataStr), '"~w"', [Data]) % Fallback
+    ),
+    format(string(Code), 'importer.upsert_object("~w", "~w", &serde_json::from_str(~s)?)?;', [Id, Type, DataStr]).
+
 translate_semantic_body(true, "").
 
 rust_quote(S, Q) :- format(string(Q), "\"~s\"", [S]).

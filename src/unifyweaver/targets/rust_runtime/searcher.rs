@@ -121,4 +121,30 @@ impl PtSearcher {
 
         Ok(final_results)
     }
+
+    pub fn suggest_bookmarks(&self, query: &str, _top_k: usize) -> Result<String, Box<dyn std::error::Error>> {
+        // Placeholder for Tree View logic
+        // 1. Search
+        let results = self.graph_search(query, 5, 1, "text")?;
+        
+        if results.is_empty() {
+            return Ok("No suitable placement locations found.".to_string());
+        }
+
+        let mut output = String::new();
+        output.push_str("=== Bookmark Filing Suggestions ===\n");
+        output.push_str(&format!("Bookmark: \"{}\"\n", query));
+        output.push_str(&format!("Found {} candidate location(s):\n\n", results.len()));
+        output.push_str("================================================================================\n\n");
+
+        for (i, res) in results.iter().enumerate() {
+            output.push_str(&format!("Option {}:\n\n", i + 1));
+            // TODO: Build actual tree context string from graph
+            // For now, dump JSON
+            output.push_str(&serde_json::to_string_pretty(res)?);
+            output.push_str("\n\n--------------------------------------------------------------------------------\n\n");
+        }
+
+        Ok(output)
+    }
 }
