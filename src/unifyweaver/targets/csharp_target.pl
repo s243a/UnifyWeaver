@@ -50,9 +50,9 @@ term_to_dependency(aggregate_all(_, Goal, _), Dep) :- !,
     term_signature(Goal, Dep).
 term_to_dependency(Term, Dep) :-
     (   aggregate_goal(Term)
-    ->  aggregate_goal_info(Term, aggr{pred:P, args:Args}),
+    ->  decompose_aggregate_goal(Term, _Type, _Op, Pred, Args, _GroupVar, _ValueVar, _ResultVar),
         length(Args, A),
-        Dep = P/A,
+        Dep = Pred/A,
         !
     ;   Term =.. ['\\+', Inner]
     ->  term_signature(Inner, Dep)
@@ -1560,6 +1560,8 @@ guard_supported_aggregates(Clauses) :-
 guard_supported_aggregates(_).
 
 aggregate_supported(aggregate_all(count, _Inner, _Result)) :- !.
+aggregate_supported(aggregate(sum(_), _Goal, _Result)) :- !.
+aggregate_supported(aggregate(sum(_), _Inner, _Group, _Result)) :- !.
 aggregate_supported(aggregate_all(Op, _Inner, _Result)) :-
     \+ member(Op, [count]),
     format(user_error,
@@ -1716,13 +1718,13 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
         partition(is_aggregate_goal, Goals, Aggregates, NonAggGoals),
         partition(is_builtin_goal, NonAggGoals, Builtins, Relations),
         
-        (   Relations = [],
-            Aggregates = [Agg],
-            Builtins = []
+        (   Aggregates = [Agg],
+            Builtins = [],
+            Relations = []
         ->  compile_aggregate_rule(Index, Head, Agg, Config, Code, RuleName)
         ;   Aggregates = [_|_]
         ->  format(user_error,
-                   'C# generator mode: aggregates supported only in simple non-join rules.~n',
+                   'C# generator mode: only one aggregate goal supported per rule.~n',
                    []),
             fail
         ;   Relations = []
@@ -1762,28 +1764,44 @@ is_builtin_goal(Goal) :-
     member(Functor, ['is', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '!=', 'not', '\\+']).
 
 compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
-    aggregate_goal_info(AggGoal, aggr{op:Op, pred:Pred, args:Args, result:ResVar}),
-    Op = count,
-    maplist(must_be_ground_or_var, Args),
-    maplist(must_be_var_or_ground, [ResVar]),
-    Head =.. [HeadPred|HeadArgs],
+    decompose_aggregate_goal(AggGoal, Type, Op, Pred, Args, GroupVar, ValueVar, ResVar),
     format(string(RuleName), "ApplyRule_~w", [Index]),
-    build_aggregate_filter(Pred, Args, Config, FilterExpr),
-    build_head_assignments(HeadArgs, ResVar, Config, Assigns),
-    atomic_list_concat(Assigns, ", ", AssignStr),
-    format(string(Code),
+    Head =.. [HeadPred|HeadArgs],
+    (   Type = all,
+        Op = count
+    ->  build_aggregate_filter(Pred, Args, Config, FilterExpr),
+        bind_count_head(HeadArgs, ResVar, Config, Assigns),
+        atomic_list_concat(Assigns, ", ", AssignStr),
+        format(string(Code),
 "        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
         {
             // Rule ~w: ~w :- aggregate_all(count, ~w(~w), ~w)
             var agg = total.Count(f => ~w);
             yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
-        }", [RuleName, Index, Head, Pred, Args, ResVar, FilterExpr, HeadPred, AssignStr]).
+        }", [RuleName, Index, Head, Pred, Args, ResVar, FilterExpr, HeadPred, AssignStr])
+    ;   Type = group,
+        Op = sum
+    ->  build_group_sum(Pred, Args, GroupVar, ValueVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code)
+    ;   format(user_error,
+               'C# generator mode: aggregate ~w/~w not supported in generator codegen.~n',
+               [Op, Type]),
+        fail
+    ).
 
-aggregate_goal_info(aggregate_all(Op, Goal, Result), aggr{op:Op, pred:Pred, args:Args, result:Result}) :-
+decompose_aggregate_goal(aggregate_all(Op, Goal, Result), all, Op, Pred, Args, _GroupVar, _ValueVar, Result) :-
     Goal =.. [Pred|Args].
+decompose_aggregate_goal(aggregate(OpTerm, Goal, GroupVar, Result), group, Op, Pred, Args, GroupVar, ValueVar, Result) :-
+    Goal =.. [Pred|Args],
+    parse_agg_op(OpTerm, Op, ValueVar).
 
-must_be_ground_or_var(X) :- (ground(X) ; var(X)), !.
-must_be_var_or_ground(X) :- (var(X) ; ground(X)), !.
+parse_agg_op(sum(Var), sum, Var) :- !.
+parse_agg_op(count, count, _) :- !.
+parse_agg_op(OpTerm, Op, _) :-
+    OpTerm =.. [Op|_].
+
+parse_group_term(Var^_, [Var]) :- !.
+parse_group_term(Var, [Var]) :- var(Var), !.
+parse_group_term(_, []).
 
 build_aggregate_filter(Pred, Args, _Config, Expr) :-
     length(Args, Arity),
@@ -1799,6 +1817,90 @@ build_aggregate_filter(Pred, Args, _Config, Expr) :-
     atomic_list_concat(Conds, " && ", ArgConds),
     format(string(Expr), "f.Relation == \"~w\" && ~w", [Pred, ArgConds]).
 
+bind_count_head(HeadArgs, ResVar, Config, Assigns) :-
+    findall(Assign,
+        (   nth0(I, HeadArgs, Arg),
+            (   var(Arg),
+                Arg == ResVar
+            ->  format(string(Assign), "{ \"arg~w\", agg }", [I])
+            ;   var(Arg)
+            ->  format(user_error, 'C# generator aggregate: head var ~w not bound by aggregate result.~n', [Arg]),
+                fail
+            ;   translate_expr_common(Arg, [], Config, Expr)
+            ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
+            ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
+            )
+        ),
+        Assigns).
+
+find_var_index(Var, Args, Idx) :-
+    nth0(Idx, Args, Arg),
+    Var == Arg, !.
+find_var_index(Var, Args, Idx) :-
+    nth0(Idx, Args, Arg),
+    compound(Arg),
+    Arg =.. ['^', Var, _],
+    !.
+find_var_index(Var, Args, Idx) :-
+    nth0(Idx, Args, Arg),
+    compound(Arg),
+    Arg =.. ['^', _, Var],
+    !.
+
+build_group_filter(Pred, Args, _Config, Expr) :-
+    length(Args, Arity),
+    findall(Cond,
+        (   between(0, Arity, I), I < Arity,
+            nth0(I, Args, Arg),
+            (   ground(Arg)
+            ->  format(string(Cond), "f.Args.ContainsKey(\"arg~w\") && f.Args[\"arg~w\"].Equals(\"~w\")", [I, I, Arg])
+            ;   format(string(Cond), "f.Args.ContainsKey(\"arg~w\")", [I])
+            )
+        ),
+        Conds),
+    atomic_list_concat(Conds, " && ", ArgConds),
+    format(string(Expr), "f.Relation == \"~w\" && ~w", [Pred, ArgConds]).
+
+build_group_key([_], Idx, Expr) :-
+    format(string(Expr), "f.Args[\"arg~w\"]", [Idx]).
+build_group_key(_, Idx, Expr) :-
+    format(string(Expr), "f.Args[\"arg~w\"]", [Idx]).
+
+build_group_sum(Pred, Args, GroupVar, ValVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code) :-
+    find_var_index(GroupVar, Args, GroupIdx),
+    find_var_index(ValVar, Args, ValIdx),
+    build_group_filter(Pred, Args, [], FilterExpr),
+    build_group_key([GroupVar], GroupIdx, GroupExpr),
+    bind_group_head_assignments(HeadArgs, GroupVar, ResVar, GroupExpr, Config, Assigns),
+    atomic_list_concat(Assigns, ", ", AssignStr),
+    format(string(Code),
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
+        {
+            // Grouped aggregate sum over ~w/~w
+            var aggResults = total
+                .Where(f => ~w)
+                .GroupBy(f => ~w)
+                .Select(g => new { Key = g.Key, Sum = g.Sum(f => Convert.ToDecimal(f.Args[\"arg~w\"])) });
+            foreach (var r in aggResults)
+            {
+                yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
+            }
+        }", [RuleName, Pred, Args, FilterExpr, GroupExpr, ValIdx, HeadPred, AssignStr]).
+
+bind_group_head_assignments(HeadArgs, GroupVar, ResVar, _GroupExpr, Config, Assigns) :-
+    findall(Assign,
+        (   nth0(I, HeadArgs, Arg),
+            (   var(Arg),
+                Arg == ResVar
+            ->  format(string(Assign), "{ \"arg~w\", r.Sum }", [I])
+            ;   var(Arg)
+            ->  format(string(Assign), "{ \"arg~w\", r.Key }", [I])
+            ;   translate_expr_common(Arg, [], Config, Expr)
+            ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
+            ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
+            )
+        ),
+        Assigns).
 build_head_assignments(HeadArgs, ResVar, Config, Assigns) :-
     findall(Assign,
         (   nth0(I, HeadArgs, Arg),
