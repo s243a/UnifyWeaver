@@ -64,6 +64,30 @@ sqlite3 "$DB" < output_sql_test/left_join_multi.sql
 sqlite3 "$DB" "SELECT * FROM customer_order_details ORDER BY name;"
 echo
 
+# Test 3: Nested LEFT JOINs
+echo "Test 3: Nested LEFT JOINs (customers → orders → shipments)"
+echo "Expected: All customers with products and tracking (NULLs where missing)"
+echo
+
+# Add shipments table
+sqlite3 "$DB" <<EOF
+CREATE TABLE shipments (
+    id INTEGER PRIMARY KEY,
+    order_id INTEGER,
+    tracking TEXT NOT NULL,
+    FOREIGN KEY (order_id) REFERENCES orders(id)
+);
+
+-- Insert test data (only order 101 has shipment)
+INSERT INTO shipments (id, order_id, tracking) VALUES
+    (201, 101, 'TRACK-101-A');
+EOF
+
+sqlite3 "$DB" < output_sql_test/left_join_nested.sql
+
+sqlite3 "$DB" "SELECT * FROM customer_shipments ORDER BY name;"
+echo
+
 # Test 4: LEFT JOIN with WHERE
 echo "Test 4: LEFT JOIN with WHERE (EU customers only)"
 echo "Expected: Only EU customers (Bob, Diana) with their orders"

@@ -550,6 +550,86 @@ split_at_disjunction((A, B), Before, Disj) :-
     ).
 split_at_disjunction((A ; B), true, (A ; B)).
 
+%% extract_all_disjunctions(+Body, -LeftGoals, -Disjunctions)
+%  Extract all disjunctions in order, with goals before first disjunction
+%  For (A, (B ; C), (D ; E)), returns LeftGoals=A, Disjunctions=[(B;C), (D;E)]
+%
+extract_all_disjunctions(Body, LeftPart, Disjunctions) :-
+    extract_disjs_iter(Body, [], LeftPart, Disjunctions).
+
+%% extract_disjs_iter(+Body, +Acc, -LeftGoals, -Disjunctions)
+%  Iteratively extract disjunctions
+%
+extract_disjs_iter((A, B), Acc, LeftGoals, Disjs) :-
+    (   A = (_ ; _)
+    ->  % Found first disjunction
+        (   Acc = []
+        ->  LeftGoals = true
+        ;   Acc = [Single]
+        ->  LeftGoals = Single
+        ;   reverse(Acc, ReversedAcc),
+            list_to_conjunction(ReversedAcc, LeftGoals)
+        ),
+        collect_all_disjunctions((A, B), Disjs)
+    ;   % Not a disjunction yet, accumulate
+        extract_disjs_iter(B, [A|Acc], LeftGoals, Disjs)
+    ).
+extract_disjs_iter((A ; B), [], true, [(A ; B)]) :- !.
+extract_disjs_iter((A ; B), Acc, LeftGoals, Disjs) :-
+    % Reached a disjunction with accumulated left goals
+    Acc \= [],
+    (   Acc = [Single]
+    ->  LeftGoals = Single
+    ;   reverse(Acc, ReversedAcc),
+        list_to_conjunction(ReversedAcc, LeftGoals)
+    ),
+    collect_all_disjunctions((A ; B), Disjs).
+extract_disjs_iter(Goal, Acc, LeftGoals, []) :-
+    % No disjunction found
+    Goal \= (_ ; _),
+    reverse([Goal|Acc], ReversedAcc),
+    list_to_conjunction(ReversedAcc, LeftGoals).
+
+%% collect_all_disjunctions(+Body, -Disjunctions)
+%  Collect all disjunctions from remaining body
+%
+collect_all_disjunctions((A, B), [A|Rest]) :-
+    A = (_ ; _), !,
+    collect_all_disjunctions(B, Rest).
+collect_all_disjunctions((A ; B), [(A ; B)]) :- !.
+collect_all_disjunctions(_, []).
+
+%% list_to_conjunction(+List, -Conjunction)
+%  Convert list to conjunction
+%
+list_to_conjunction([], true).
+list_to_conjunction([Goal], Goal) :- !.
+list_to_conjunction([H|T], (H, Rest)) :-
+    list_to_conjunction(T, Rest).
+
+%% process_left_joins(+Disjunctions, +InitialLeftGoals, -JoinClauses, -AllRightGoals, -AllNullVars)
+%  Process each disjunction iteratively to generate JOIN clauses
+%
+process_left_joins([], _, [], [], []).
+process_left_joins([Disj|Rest], LeftGoals, [JoinClause|RestJoins], [RightGoal|RestRightGoals], AllNullVars) :-
+    % Extract pattern
+    Disj = (RightGoal ; Fallback),
+
+    % Extract NULL bindings
+    extract_null_bindings(Fallback, NullVars),
+
+    % Generate LEFT JOIN clause
+    generate_left_join_sql(LeftGoals, RightGoal, JoinClause),
+
+    % Add RightGoal to LeftGoals for next iteration
+    append(LeftGoals, [RightGoal], NewLeftGoals),
+
+    % Recurse
+    process_left_joins(Rest, NewLeftGoals, RestJoins, RestRightGoals, RestNullVars),
+
+    % Accumulate NULL vars
+    append(NullVars, RestNullVars, AllNullVars).
+
 %% contains_null_binding(+Goal)
 %  Check if goal contains X = null pattern
 %
@@ -559,17 +639,17 @@ contains_null_binding(_ = null).
 
 %% compile_left_join_clause(+Name, +Arity, +Body, +Head, +Options, -SQLCode)
 %  Compile LEFT JOIN pattern to SQL
+%  Supports multiple sequential disjunctions (nested LEFT JOINs)
 %
 compile_left_join_clause(Name, Arity, Body, Head, Options, SQLCode) :-
-    % Extract LEFT JOIN pattern: LeftGoals, (RightGoal ; Fallback)
-    % The disjunction may be nested in conjunctions
-    split_at_disjunction(Body, LeftPart, (RightGoal ; Fallback)),
+    % Extract ALL disjunctions from body
+    extract_all_disjunctions(Body, LeftPart, Disjunctions),
+
+    % Verify we have at least one disjunction
+    Disjunctions \= [],
 
     % Convert left part to list of goals
     conjunction_to_list(LeftPart, LeftGoals),
-
-    % Extract NULL bindings from fallback
-    extract_null_bindings(Fallback, NullVars),
 
     % Parse head arguments
     Head =.. [Name|HeadArgs],
@@ -580,11 +660,14 @@ compile_left_join_clause(Name, Arity, Body, Head, Options, SQLCode) :-
     % Generate FROM clause from left tables
     generate_from_clause(LeftTableGoals, FromClause),
 
-    % Generate LEFT JOIN clause
-    generate_left_join_sql(LeftTableGoals, RightGoal, JoinClause),
+    % Process all disjunctions iteratively to generate JOIN clauses
+    process_left_joins(Disjunctions, LeftTableGoals, JoinClauses, AllRightGoals, AllNullVars),
 
-    % Generate SELECT clause (include NULL-able columns)
-    generate_select_for_left_join(HeadArgs, LeftTableGoals, RightGoal, NullVars, SelectClause),
+    % Combine all JOIN clauses
+    atomic_list_concat(JoinClauses, '\n', AllJoins),
+
+    % Generate SELECT clause (include all tables and NULL-able columns)
+    generate_select_for_nested_joins(HeadArgs, LeftTableGoals, AllRightGoals, AllNullVars, SelectClause),
 
     % Generate WHERE clause from constraints
     generate_where_clause(LeftConstraints, HeadArgs, LeftTableGoals, WhereClause),
@@ -600,11 +683,12 @@ compile_left_join_clause(Name, Arity, Body, Head, Options, SQLCode) :-
     ),
 
     % Combine into final SQL
-    combine_left_join_sql(Format, ViewName, SelectClause, FromClause, JoinClause, WhereClause, SQLCode).
+    combine_left_join_sql(Format, ViewName, SelectClause, FromClause, AllJoins, WhereClause, SQLCode).
 
 %% conjunction_to_list(+Conjunction, -Goals)
 %  Convert conjunction to list of goals
 %
+conjunction_to_list(true, []) :- !.  % Empty list for true
 conjunction_to_list((A, B), [A|Rest]) :- !,
     conjunction_to_list(B, Rest).
 conjunction_to_list(Goal, [Goal]).
@@ -719,6 +803,28 @@ generate_select_for_left_join(HeadArgs, LeftGoals, RightGoal, NullVars, SelectCl
                  % Fallback to unknown
                  ;   ColExpr = 'unknown'
                  )
+             )),
+            Columns),
+
+    atomic_list_concat(Columns, ', ', ColStr),
+    format(atom(SelectClause), 'SELECT ~w', [ColStr]).
+
+%% generate_select_for_nested_joins(+HeadArgs, +LeftGoals, +RightGoals, +NullVars, -SelectClause)
+%  Generate SELECT clause for nested LEFT JOINs (multiple right tables)
+%
+generate_select_for_nested_joins(HeadArgs, LeftGoals, RightGoals, NullVars, SelectClause) :-
+    % Combine left and right goals
+    append(LeftGoals, RightGoals, AllGoals),
+
+    % Generate column list for head arguments
+    findall(ColExpr,
+            (nth1(Idx, HeadArgs, Arg),
+             var(Arg),
+             % Try to find in all goals (left + all right tables)
+             (   find_column_in_goals(Arg, AllGoals, ColExpr)
+             ->  true
+             % Fallback to unknown
+             ;   ColExpr = 'unknown'
              )),
             Columns),
 
