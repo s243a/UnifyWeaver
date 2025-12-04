@@ -2828,17 +2828,24 @@ generate_min_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
 %% ============================================
 
 %% is_group_by_predicate(+Body)
-%  Check if predicate body contains group_by/4
+%  Check if predicate body contains group_by/3 or group_by/4
+%  group_by/3: group_by(GroupField, Goal, AggOpList) for multiple aggregations
+%  group_by/4: group_by(GroupField, Goal, AggOp, Result) for single aggregation
 %
+is_group_by_predicate(group_by(_GroupField, _Goal, _AggOp)).
 is_group_by_predicate(group_by(_GroupField, _Goal, _AggOp, _Result)).
+is_group_by_predicate((group_by(_GroupField, _Goal, _AggOp), _Rest)).
 is_group_by_predicate((group_by(_GroupField, _Goal, _AggOp, _Result), _Rest)).
 is_group_by_predicate((_First, Rest)) :-
     is_group_by_predicate(Rest).
 
 %% extract_group_by_spec(+Body, -GroupField, -Goal, -AggOp, -Result)
 %  Extract group_by operation components
+%  Handles both group_by/3 (Result = null) and group_by/4 (explicit Result)
 %
+extract_group_by_spec(group_by(GroupField, Goal, AggOp), GroupField, Goal, AggOp, null) :- !.
 extract_group_by_spec(group_by(GroupField, Goal, AggOp, Result), GroupField, Goal, AggOp, Result) :- !.
+extract_group_by_spec((group_by(GroupField, Goal, AggOp), _Rest), GroupField, Goal, AggOp, null) :- !.
 extract_group_by_spec((group_by(GroupField, Goal, AggOp, Result), _Rest), GroupField, Goal, AggOp, Result) :- !.
 extract_group_by_spec((_First, Rest), GroupField, Goal, AggOp, Result) :-
     extract_group_by_spec(Rest, GroupField, Goal, AggOp, Result).
@@ -2894,8 +2901,13 @@ generate_group_by_code(GroupField, FieldMappings, AggOp, DbFile, BucketStr, GoCo
     % Find the field name for group field variable
     find_field_for_var(GroupField, FieldMappings, GroupFieldName),
 
-    % Dispatch based on aggregation operation
-    (   AggOp = count
+    % Check if AggOp is a list (multiple aggregations) or single operation
+    (   is_list(AggOp)
+    ->  % Multiple aggregations (Phase 9c-1)
+        format('  Multiple aggregations detected: ~w~n', [AggOp]),
+        generate_multi_aggregation_code(GroupFieldName, FieldMappings, AggOp, DbFile, BucketStr, GoCode)
+    % Single aggregation (Phase 9b - backward compatible)
+    ;   AggOp = count
     ->  generate_group_by_count(GroupFieldName, DbFile, BucketStr, GoCode)
     ;   AggOp = sum(AggVar)
     ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
@@ -2912,6 +2924,303 @@ generate_group_by_code(GroupField, FieldMappings, AggOp, DbFile, BucketStr, GoCo
     ;   format('ERROR: Unknown group_by aggregation operation: ~w~n', [AggOp]),
         fail
     ).
+
+%% generate_multi_aggregation_code(+GroupField, +FieldMappings, +OpList, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY code for multiple aggregations in single query
+%  OpList is a list like [count(Count), avg(Age, AvgAge), max(Age, MaxAge)]
+%
+generate_multi_aggregation_code(GroupField, FieldMappings, OpList, DbFile, BucketStr, GoCode) :-
+    % Parse operations to determine what's needed
+    parse_multi_agg_operations(OpList, FieldMappings, AggInfo),
+
+    % Generate struct fields based on operations
+    generate_multi_agg_struct_fields(AggInfo, StructFields),
+
+    % Generate field extractions and accumulation code
+    generate_multi_agg_accumulation(AggInfo, AccumulationCode),
+
+    % Generate output code for all metrics
+    generate_multi_agg_output(GroupField, AggInfo, OutputCode),
+
+    % Get struct initialization values
+    get_struct_init_values(AggInfo, InitValues),
+
+    % Get output calculations (e.g., avg = sum/count)
+    get_output_calculations(AggInfo, OutputCalcs),
+
+    % Combine into full Go code
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s with multiple aggregations
+\ttype GroupStats struct {
+~s
+\t}
+\tstats := make(map[string]*GroupStats)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group field
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\t// Initialize stats for this group if needed
+\t\t\t\t\tif _, exists := stats[groupStr]; !exists {
+\t\t\t\t\t\tstats[groupStr] = &GroupStats{~s}
+\t\t\t\t\t}
+~s
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, s := range stats {
+~s
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+~s
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, StructFields, BucketStr, BucketStr, GroupField,
+    InitValues, AccumulationCode, OutputCalcs, GroupField, OutputCode]).
+
+%% parse_multi_agg_operations(+OpList, +FieldMappings, -AggInfo)
+%  Parse list of operations into structured info
+%  AggInfo is a list of operation specs like:
+%    [op(count, null, CountVar), op(avg, age, AvgVar), op(max, age, MaxVar)]
+%
+parse_multi_agg_operations([], _FieldMappings, []).
+parse_multi_agg_operations([Op|Rest], FieldMappings, [Info|RestInfo]) :-
+    parse_single_agg_op(Op, FieldMappings, Info),
+    parse_multi_agg_operations(Rest, FieldMappings, RestInfo).
+
+%% parse_single_agg_op(+Op, +FieldMappings, -Info)
+%  Parse a single operation specification
+%
+parse_single_agg_op(count, _FieldMappings, agg(count, null, null, count)) :- !.
+parse_single_agg_op(count(_ResultVar), _FieldMappings, agg(count, null, null, count)) :- !.
+parse_single_agg_op(sum(AggVar), FieldMappings, agg(sum, FieldName, null, sum)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(sum(AggVar, _ResultVar), FieldMappings, agg(sum, FieldName, null, sum)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(avg(AggVar), FieldMappings, agg(avg, FieldName, null, avg)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(avg(AggVar, _ResultVar), FieldMappings, agg(avg, FieldName, null, avg)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(max(AggVar), FieldMappings, agg(max, FieldName, null, max)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(max(AggVar, _ResultVar), FieldMappings, agg(max, FieldName, null, max)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(min(AggVar), FieldMappings, agg(min, FieldName, null, min)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(min(AggVar, _ResultVar), FieldMappings, agg(min, FieldName, null, min)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+
+%% generate_multi_agg_struct_fields(+AggInfo, -StructFields)
+%  Generate Go struct field declarations based on operations
+%
+generate_multi_agg_struct_fields(AggInfo, StructFields) :-
+    collect_needed_fields(AggInfo, NeededFields),
+    format_struct_fields(NeededFields, StructFields).
+
+%% collect_needed_fields(+AggInfo, -NeededFields)
+%  Determine which struct fields are needed
+%
+collect_needed_fields(AggInfo, NeededFields) :-
+    findall(Field, (
+        member(agg(OpType, _FieldName, _, _), AggInfo),
+        needed_struct_field(OpType, Field)
+    ), AllFields),
+    sort(AllFields, NeededFields).
+
+%% needed_struct_field(+OpType, -Field)
+%  Map operation type to required struct fields
+%
+needed_struct_field(count, count).
+needed_struct_field(sum, sum).
+needed_struct_field(sum, count).  % sum also needs count for proper tracking
+needed_struct_field(avg, sum).
+needed_struct_field(avg, count).
+needed_struct_field(max, maxValue).
+needed_struct_field(max, maxFirst).
+needed_struct_field(min, minValue).
+needed_struct_field(min, minFirst).
+
+%% format_struct_fields(+NeededFields, -StructFields)
+%  Format struct fields as Go code
+%
+format_struct_fields(NeededFields, StructFields) :-
+    findall(FieldLine, (
+        member(Field, NeededFields),
+        go_struct_field_line(Field, FieldLine)
+    ), Lines),
+    atomic_list_concat(Lines, '\n', StructFields).
+
+%% go_struct_field_line(+Field, -Line)
+%  Generate Go struct field declaration
+%
+go_struct_field_line(count, '\t\tcount    int').
+go_struct_field_line(sum, '\t\tsum      float64').
+go_struct_field_line(maxValue, '\t\tmaxValue float64').
+go_struct_field_line(maxFirst, '\t\tmaxFirst bool').
+go_struct_field_line(minValue, '\t\tminValue float64').
+go_struct_field_line(minFirst, '\t\tminFirst bool').
+
+%% get_struct_init_values(+AggInfo, -InitValues)
+%  Generate initialization values for struct
+%
+get_struct_init_values(AggInfo, 'maxFirst: true, minFirst: true') :-
+    member(agg(max, _, _, _), AggInfo),
+    member(agg(min, _, _, _), AggInfo),
+    !.
+get_struct_init_values(AggInfo, 'maxFirst: true') :-
+    member(agg(max, _, _, _), AggInfo),
+    !.
+get_struct_init_values(AggInfo, 'minFirst: true') :-
+    member(agg(min, _, _, _), AggInfo),
+    !.
+get_struct_init_values(_, '').
+
+%% generate_multi_agg_accumulation(+AggInfo, -AccumulationCode)
+%  Generate accumulation code for all operations
+%  Smart handling: if 'count' operation is present, it owns the count field
+%
+generate_multi_agg_accumulation(AggInfo, AccumulationCode) :-
+    % Check if count operation is present
+    (   member(agg(count, _, _, _), AggInfo)
+    ->  HasCount = true
+    ;   HasCount = false
+    ),
+    % Generate code for each operation
+    findall(Code, (
+        member(AggSpec, AggInfo),
+        generate_single_accumulation(AggSpec, HasCount, Code)
+    ), CodeLines),
+    atomic_list_concat(CodeLines, '', AccumulationCode).
+
+%% generate_single_accumulation(+AggSpec, +HasCount, -Code)
+%  Generate accumulation code for one operation
+%  HasCount indicates if a separate count operation exists
+%
+generate_single_accumulation(agg(count, null, _, _), _, '\t\t\t\t\t// Count operation
+\t\t\t\t\tstats[groupStr].count++
+') :- !.
+
+generate_single_accumulation(agg(sum, FieldName, _, _), HasCount, Code) :- !,
+    % Only increment count if no separate count operation exists
+    (   HasCount = true
+    ->  format(string(Code), '\t\t\t\t\t// Sum ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName])
+    ;   format(string(Code), '\t\t\t\t\t// Sum ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t\tstats[groupStr].count++
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName])
+    ).
+
+generate_single_accumulation(agg(avg, FieldName, _, _), HasCount, Code) :- !,
+    % Only increment count if no separate count operation exists
+    (   HasCount = true
+    ->  format(string(Code), '\t\t\t\t\t// Average ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName])
+    ;   format(string(Code), '\t\t\t\t\t// Average ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t\tstats[groupStr].count++
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName])
+    ).
+
+generate_single_accumulation(agg(max, FieldName, _, _), _, Code) :- !,
+    format(string(Code), '\t\t\t\t\t// Max ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif stats[groupStr].maxFirst || valueFloat > stats[groupStr].maxValue {
+\t\t\t\t\t\t\t\tstats[groupStr].maxValue = valueFloat
+\t\t\t\t\t\t\t\tstats[groupStr].maxFirst = false
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName]).
+
+generate_single_accumulation(agg(min, FieldName, _, _), _, Code) :- !,
+    format(string(Code), '\t\t\t\t\t// Min ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif stats[groupStr].minFirst || valueFloat < stats[groupStr].minValue {
+\t\t\t\t\t\t\t\tstats[groupStr].minValue = valueFloat
+\t\t\t\t\t\t\t\tstats[groupStr].minFirst = false
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName]).
+
+%% get_output_calculations(+AggInfo, -OutputCalcs)
+%  Generate pre-output calculations (e.g., avg = sum / count)
+%
+get_output_calculations(AggInfo, '\t\tavg := 0.0
+\t\tif s.count > 0 {
+\t\t\tavg = s.sum / float64(s.count)
+\t\t}') :-
+    member(agg(avg, _, _, _), AggInfo),
+    !.
+get_output_calculations(_, '').
+
+%% generate_multi_agg_output(+GroupField, +AggInfo, -OutputCode)
+%  Generate output field mappings for result JSON
+%
+generate_multi_agg_output(_GroupField, AggInfo, OutputCode) :-
+    findall(Line, (
+        member(AggSpec, AggInfo),
+        generate_output_field(AggSpec, Line)
+    ), Lines),
+    atomic_list_concat(Lines, ',\n', OutputCode).
+
+%% generate_output_field(+AggSpec, -Line)
+%  Generate single output field mapping
+%
+generate_output_field(agg(count, _, _, _), '\t\t\t"count": s.count') :- !.
+generate_output_field(agg(sum, _, _, _), '\t\t\t"sum": s.sum') :- !.
+generate_output_field(agg(avg, _, _, _), '\t\t\t"avg": avg') :- !.
+generate_output_field(agg(max, _, _, _), '\t\t\t"max": s.maxValue') :- !.
+generate_output_field(agg(min, _, _, _), '\t\t\t"min": s.minValue') :- !.
 
 %% generate_group_by_count(+GroupField, +DbFile, +BucketStr, -GoCode)
 %  Generate GROUP BY count code
