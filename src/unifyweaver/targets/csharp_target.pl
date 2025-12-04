@@ -1753,38 +1753,28 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
         
         % Parse body
         body_to_list(Body, Goals),
-        partition(is_aggregate_goal, Goals, Aggregates, NonAggGoals),
-        partition(is_builtin_goal, NonAggGoals, Builtins, Relations),
+        partition(is_aggregate_goal, Goals, Aggregates, NonAggGoals0),
         
         (   Aggregates = [Agg],
-            Builtins = [],
-            Relations = []
-        ->  compile_aggregate_rule(Index, Head, Agg, Config, Code, RuleName)
-        ;   Aggregates = [_|_]
-        ->  format(user_error,
-                   'C# generator mode: only one aggregate goal supported per rule.~n',
-                   []),
-            fail
-        ;   Relations = []
-    ->  format(string(Code), "// Rule ~w: No relations", [Index])
-    ;   Relations = [FirstGoal|RestGoals],
-        FirstGoal =.. [Pred1|Args1],
-        
-        % Generate pattern check for first goal
-        length(Args1, Arity1),
-        findall(Check,
-            (   between(0, Arity1, I), I < Arity1,
-                format(string(Check), "fact.Args.ContainsKey(\"arg~w\")", [I])
-            ),
-            Checks),
-        format(string(RelCheck), "fact.Relation == \"~w\"", [Pred1]),
-        append([RelCheck], Checks, AllChecks),
-        atomic_list_concat(AllChecks, " && ", Pattern),
-        
-        % Generate joins
-        compile_joins(RestGoals, Builtins, Head, FirstGoal, Config, JoinBody),
-        
-        format(string(Code),
+            append(RelGoals, [Agg], Goals)
+        ->  partition(is_builtin_goal, RelGoals, Builtins, Relations),
+            (   Builtins = [],
+                Relations = []
+            ->  compile_aggregate_rule(Index, Head, Agg, Config, Code, RuleName)
+            ;   Relations = [FirstGoal|RestGoals]
+            ->  FirstGoal =.. [Pred1|Args1],
+                % Generate pattern check for first goal
+                length(Args1, Arity1),
+                findall(Check,
+                    (   between(0, Arity1, I), I < Arity1,
+                        format(string(Check), "fact.Args.ContainsKey(\"arg~w\")", [I])
+                    ),
+                    Checks),
+                format(string(RelCheck), "fact.Relation == \"~w\"", [Pred1]),
+                append([RelCheck], Checks, AllChecks),
+                atomic_list_concat(AllChecks, " && ", Pattern),
+                compile_joins_with_aggregate(RestGoals, Builtins, Agg, Head, FirstGoal, Config, JoinBody),
+                format(string(Code),
 "        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
         {
             // Rule ~w: ~w :- ...
@@ -1793,6 +1783,46 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
 ~w
             }
         }", [RuleName, Index, Head, Pattern, JoinBody])
+            ;   format(user_error,
+                       'C# generator mode: aggregate goal must appear last and needs at least one relation before it when combined with joins/negation.~n',
+                       []),
+                fail
+            )
+        ;   Aggregates = [_|_]
+        ->  format(user_error,
+                   'C# generator mode: only one aggregate goal supported per rule.~n',
+                   []),
+            fail
+        ;   partition(is_builtin_goal, NonAggGoals0, Builtins, Relations),
+            (   Relations = []
+        ->  format(string(Code), "// Rule ~w: No relations", [Index])
+        ;   Relations = [FirstGoal|RestGoals],
+            FirstGoal =.. [Pred1|Args1],
+            
+            % Generate pattern check for first goal
+            length(Args1, Arity1),
+            findall(Check,
+                (   between(0, Arity1, I), I < Arity1,
+                    format(string(Check), "fact.Args.ContainsKey(\"arg~w\")", [I])
+                ),
+                Checks),
+            format(string(RelCheck), "fact.Relation == \"~w\"", [Pred1]),
+            append([RelCheck], Checks, AllChecks),
+            atomic_list_concat(AllChecks, " && ", Pattern),
+            
+            % Generate joins
+            compile_joins(RestGoals, Builtins, Head, FirstGoal, Config, JoinBody),
+            
+            format(string(Code),
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
+        {
+            // Rule ~w: ~w :- ...
+            if (~w)
+            {
+~w
+            }
+        }", [RuleName, Index, Head, Pattern, JoinBody])
+        )
     ).
 
 is_aggregate_goal(G) :- aggregate_goal(G).
@@ -1999,6 +2029,68 @@ build_head_assignments(HeadArgs, ResVar, Config, Assigns) :-
         ),
         Assigns).
 
+build_head_assignments_with_agg(HeadArgs, ResVar, AccumPairs, VarMap, Config, Assigns) :-
+    findall(Assign,
+        (   nth0(I, HeadArgs, Arg),
+            (   var(Arg),
+                Arg == ResVar
+            ->  format(string(Assign), "{ \"arg~w\", agg }", [I])
+            ;   var(Arg)
+            ->  (   find_var_access(Arg, AccumPairs, Src, SrcIdx)
+                ->  format(string(Assign), "{ \"arg~w\", ~w[\"arg~w\"] }", [I, Src, SrcIdx])
+                ;   format(user_error, 'C# generator aggregate(join): head var ~w not bound by relations or aggregate result.~n', [Arg]),
+                    fail
+                )
+            ;   translate_expr_common(Arg, VarMap, Config, Expr)
+            ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
+            ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
+            )
+        ),
+        Assigns).
+
+build_aggregate_filter_with_vars(Pred, Args, VarMap, Config, Expr) :-
+    length(Args, Arity),
+    findall(Cond,
+        (   between(0, Arity, I), I < Arity,
+            nth0(I, Args, Arg),
+            (   ground(Arg)
+            ->  format(string(Cond), "f.Args.ContainsKey(\"arg~w\") && f.Args[\"arg~w\"].Equals(\"~w\")", [I, I, Arg])
+            ;   translate_expr_common(Arg, VarMap, Config, ArgExpr),
+                ArgExpr \= "null"
+            ->  format(string(Cond), "f.Args.ContainsKey(\"arg~w\") && object.Equals(f.Args[\"arg~w\"], ~w)", [I, I, ArgExpr])
+            ;   format(string(Cond), "f.Args.ContainsKey(\"arg~w\")", [I])
+            )
+        ),
+        Conds),
+    atomic_list_concat(Conds, " && ", ArgConds),
+    format(string(Expr), "f.Relation == \"~w\" && ~w", [Pred, ArgConds]).
+
+compile_aggregate_from_bindings(HeadPred, HeadArgs, AggGoal, VarMap, AccumPairs, Config, ConstraintChecks, Code) :-
+    decompose_aggregate_goal(AggGoal, Type, Op, Pred, Args, _GroupVar, ValueVar, ResVar),
+    Type = all,
+    member(Op, [count, sum, min, max, set, bag]),
+    build_aggregate_filter_with_vars(Pred, Args, VarMap, Config, FilterExpr),
+    build_value_expr(Op, Args, ValueVar, ValueExpr),
+    agg_expr(Op, ValueExpr, AggExpr),
+    emit_condition(Op, EmitCond),
+    build_head_assignments_with_agg(HeadArgs, ResVar, AccumPairs, VarMap, Config, Assigns),
+    atomic_list_concat(Assigns, ", ", AssignStr),
+    format(string(AggBlock),
+"                var aggQuery = total.Where(f => ~w);
+                if (~w)
+                {
+                    var agg = ~w;
+                    yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
+                }", [FilterExpr, EmitCond, AggExpr, HeadPred, AssignStr]),
+    (   ConstraintChecks == "true"
+    ->  Code = AggBlock
+    ;   format(string(Code),
+"                if (~w)
+                {
+~w
+                }", [ConstraintChecks, AggBlock])
+    ).
+
 compile_joins([], Builtins, Head, FirstGoal, Config, Code) :-
     % No more relations, just constraints and output
     Head =.. [HeadPred|HeadArgs],
@@ -2041,6 +2133,9 @@ compile_joins([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Code) :-
     % Handle join with one or more additional goals
     % Start with FirstGoal in accumulator
     compile_nway_join([Goal|RestGoals], Builtins, Head, [FirstGoal-"fact.Args"], Config, 2, Code).
+
+compile_joins_with_aggregate(RestGoals, Builtins, AggGoal, Head, FirstGoal, Config, Code) :-
+    compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, [FirstGoal-"fact.Args"], Config, 2, Code).
 
 %% compile_nway_join(+Goals, +Builtins, +Head, +AccumPairs, +Config, +Index, -Code)
 %  Recursively build N-way joins, threading Goal-Access pairs through
@@ -2120,6 +2215,49 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
     compile_nway_join(RestGoals, Builtins, Head, NewAccumPairs, Config, NextIndex, InnerCode),
     
     % Generate nested foreach
+    format(string(Code),
+'                foreach (var ~w in total)
+                {
+                    if (~w && ~w)
+                    {
+~w
+                    }
+                }', [VarName, RelCheck, JoinCond, InnerCode]).
+
+compile_nway_join_with_aggregate([], Builtins, AggGoal, Head, AccumPairs, Config, _, Code) :-
+    Head =.. [HeadPred|HeadArgs],
+    build_variable_map(AccumPairs, VarMap),
+    translate_builtins(Builtins, VarMap, Config, ConstraintChecks),
+    compile_aggregate_from_bindings(HeadPred, HeadArgs, AggGoal, VarMap, AccumPairs, Config, ConstraintChecks, Code).
+
+compile_nway_join_with_aggregate([Goal|RestGoals], Builtins, AggGoal, Head, AccumPairs, Config, Index, Code) :-
+    Goal =.. [Pred|Args],
+    format(atom(VarName), 'join~w', [Index]),
+    format(string(VarAccess), '~w.Args', [VarName]),
+    append(AccumPairs, [Goal-VarAccess], NewAccumPairs),
+    build_variable_map(NewAccumPairs, VarMap),
+    findall(Var-PrevAccess-PrevIdx-CurrIdx-VarAccess,
+        (   nth0(CurrIdx, Args, Var),
+            var(Var),
+            member(PrevGoal-PrevAccess, AccumPairs),
+            PrevGoal =.. [_|PrevArgs],
+            nth0(PrevIdx, PrevArgs, PrevVar),
+            Var == PrevVar
+        ),
+        JoinVars),
+    (   JoinVars = []
+    ->  JoinCond = "true"
+    ;   findall(Cond,
+            (   member(_-SrcAccess-PrevIdx-CurrIdx-CurrAccess, JoinVars),
+                format(string(Cond), '~w[\"arg~w\"].Equals(~w[\"arg~w\"])', 
+                       [CurrAccess, CurrIdx, SrcAccess, PrevIdx])
+            ),
+            Conds),
+        atomic_list_concat(Conds, " && ", JoinCond)
+    ),
+    format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
+    NextIndex is Index + 1,
+    compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, NewAccumPairs, Config, NextIndex, InnerCode),
     format(string(Code),
 '                foreach (var ~w in total)
                 {
