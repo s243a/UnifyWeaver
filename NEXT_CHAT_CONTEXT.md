@@ -5,22 +5,16 @@
 - **Graph RAG**: Verified.
 - **Bookmark Suggestions**: Verified.
 - **Key Construction**: Verified.
-- **Rust Semantic Runtime**: **Phase 2 Almost Complete**.
-    - `importer.rs` (Redb), `crawler.rs` (quick-xml), `searcher.rs` (Text/Graph), `llm.rs` (Gemini) are implemented.
-    - `rust_target.pl` now copies these files to the generated project.
+- **Rust Semantic Runtime**: **Phase 3 Complete (Integration)**.
+    - Runtime modules (`importer`, `crawler`, `searcher`, `llm`) are complete.
+    - Compiler (`rust_target.pl`) now detects semantic predicates (`crawler_run`) and generates a `main.rs` that orchestrates the runtime components.
+    - `rust_semantic_playbook.pl` verifies the full compilation flow.
 - **Environment**: `gemini` CLI v0.18.4. `pwsh` missing.
 
 ## Active Proposals
 ### 1. PowerShell Semantic Target
 - **Status**: Accepted. Pending implementation.
 
-### 2. Rust Semantic Target
-- **Status**: Runtime files created.
-- **Next Steps**:
-    - Implement `compile_predicate_to_rust` logic to *use* these runtime files (generate `main.rs` calls).
-    - Implement `translate_goal` for `crawler_run`, `graph_search`.
-
 ## Next Steps
-1.  **Merge `feat/rust-runtime-v2`**.
-2.  **Finish Rust Compiler Integration**.
-3.  **Start PowerShell Implementation**.
+1.  **Merge `feat/rust-integration`**.
+2.  **Start PowerShell Implementation**.
