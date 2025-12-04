@@ -276,6 +276,9 @@ compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
     % Check if this is an aggregation clause
     (   is_group_by_clause(Body)
     ->  compile_aggregation_clause(Name, Arity, Body, Head, Options, SQLCode)
+    % Check if this is a LEFT JOIN clause (disjunction pattern)
+    ;   is_left_join_clause(Body)
+    ->  compile_left_join_clause(Name, Arity, Body, Head, Options, SQLCode)
     ;   % Regular clause - existing logic
         % Parse the clause body
         parse_clause_body(Body, ParsedGoals),
@@ -501,6 +504,259 @@ format_aggregation_sql(select, _, Select, From, Where, GroupBy, Having, SQL) :-
     ->  format(string(SQL), '~w~n~w~n~w~n~w;~n', [Select, From, GroupBy, Having])
     ;   % Both WHERE and HAVING
         format(string(SQL), '~w~n~w~n~w~n~w~n~w;~n', [Select, From, Where, GroupBy, Having])
+    ).
+
+%% ============================================
+%% LEFT JOIN SUPPORT (Phase 3)
+%% ============================================
+
+%% is_left_join_clause(+Body)
+%  Check if clause body contains LEFT JOIN pattern
+%  Pattern: LeftGoals, (RightGoal ; Fallback)
+%  The disjunction may be nested within conjunctions
+%
+is_left_join_clause(Body) :-
+    % Search for a disjunction with null binding anywhere in the body
+    find_disjunction_in_conjunction(Body, (_RightGoal ; Fallback)),
+    contains_null_binding(Fallback).
+
+%% find_disjunction_in_conjunction(+Body, -Disjunction)
+%  Find a disjunction nested within conjunctions
+%
+find_disjunction_in_conjunction((A, B), Disj) :-
+    % Check if A is a disjunction
+    (   A = (_ ; _)
+    ->  Disj = A
+    % Otherwise recurse into B
+    ;   find_disjunction_in_conjunction(B, Disj)
+    ).
+find_disjunction_in_conjunction((A ; B), (A ; B)).
+
+%% split_at_disjunction(+Body, -Before, -Disjunction)
+%  Split body into parts before and at the disjunction
+%  For (A, (B, (C ; D))), returns Before=(A, B), Disjunction=(C ; D)
+%
+split_at_disjunction((A, B), Before, Disj) :-
+    (   B = (_ ; _)
+    ->  % Found it: B is the disjunction
+        Before = A,
+        Disj = B
+    ;   % Recurse into B
+        split_at_disjunction(B, BeforeB, Disj),
+        (   BeforeB = true
+        ->  Before = A
+        ;   Before = (A, BeforeB)
+        )
+    ).
+split_at_disjunction((A ; B), true, (A ; B)).
+
+%% contains_null_binding(+Goal)
+%  Check if goal contains X = null pattern
+%
+contains_null_binding((A, B)) :- !,
+    (contains_null_binding(A) ; contains_null_binding(B)).
+contains_null_binding(_ = null).
+
+%% compile_left_join_clause(+Name, +Arity, +Body, +Head, +Options, -SQLCode)
+%  Compile LEFT JOIN pattern to SQL
+%
+compile_left_join_clause(Name, Arity, Body, Head, Options, SQLCode) :-
+    % Extract LEFT JOIN pattern: LeftGoals, (RightGoal ; Fallback)
+    % The disjunction may be nested in conjunctions
+    split_at_disjunction(Body, LeftPart, (RightGoal ; Fallback)),
+
+    % Convert left part to list of goals
+    conjunction_to_list(LeftPart, LeftGoals),
+
+    % Extract NULL bindings from fallback
+    extract_null_bindings(Fallback, NullVars),
+
+    % Parse head arguments
+    Head =.. [Name|HeadArgs],
+
+    % Separate left goals into tables and constraints
+    separate_goals(LeftGoals, LeftTableGoals, LeftConstraints),
+
+    % Generate FROM clause from left tables
+    generate_from_clause(LeftTableGoals, FromClause),
+
+    % Generate LEFT JOIN clause
+    generate_left_join_sql(LeftTableGoals, RightGoal, JoinClause),
+
+    % Generate SELECT clause (include NULL-able columns)
+    generate_select_for_left_join(HeadArgs, LeftTableGoals, RightGoal, NullVars, SelectClause),
+
+    % Generate WHERE clause from constraints
+    generate_where_clause(LeftConstraints, HeadArgs, LeftTableGoals, WhereClause),
+
+    % Get output format and view name
+    (   member(format(Format), Options)
+    ->  true
+    ;   Format = view
+    ),
+    (   member(view_name(ViewName), Options)
+    ->  true
+    ;   ViewName = Name
+    ),
+
+    % Combine into final SQL
+    combine_left_join_sql(Format, ViewName, SelectClause, FromClause, JoinClause, WhereClause, SQLCode).
+
+%% conjunction_to_list(+Conjunction, -Goals)
+%  Convert conjunction to list of goals
+%
+conjunction_to_list((A, B), [A|Rest]) :- !,
+    conjunction_to_list(B, Rest).
+conjunction_to_list(Goal, [Goal]).
+
+%% extract_null_bindings(+Fallback, -NullVars)
+%  Extract variables bound to null in fallback
+%
+extract_null_bindings(Fallback, NullVars) :-
+    fallback_to_list(Fallback, FallbackGoals),
+    findall(Var,
+            (member(Goal, FallbackGoals),
+             Goal = (Var = null),
+             var(Var)),
+            NullVars).
+
+%% fallback_to_list(+Fallback, -Goals)
+%  Convert fallback (potentially a conjunction) to list
+%
+fallback_to_list((A, B), [A|Rest]) :- !,
+    fallback_to_list(B, Rest).
+fallback_to_list(Goal, [Goal]).
+
+%% generate_left_join_sql(+LeftTableGoals, +RightGoal, -JoinClause)
+%  Generate LEFT JOIN ON ... clause
+%
+generate_left_join_sql(LeftTableGoals, RightGoal, JoinClause) :-
+    % Extract table name from right goal
+    RightGoal =.. [RightTable|RightArgs],
+
+    % Find shared variables (join keys)
+    findall(Cond,
+            (nth1(RightPos, RightArgs, RightArg),
+             var(RightArg),
+             % Find this variable in left goals
+             member(LeftGoal, LeftTableGoals),
+             LeftGoal =.. [LeftTable|LeftArgs],
+             nth1(LeftPos, LeftArgs, LeftArg),
+             LeftArg == RightArg,  % Same variable
+             % Get column names
+             get_column_name_from_schema(LeftTable, LeftPos, LeftCol),
+             get_column_name_from_schema(RightTable, RightPos, RightCol),
+             % Format condition
+             format(atom(Cond), '~w.~w = ~w.~w', [RightTable, RightCol, LeftTable, LeftCol])
+            ),
+            JoinConditions),
+
+    % Build JOIN clause
+    (   JoinConditions = []
+    ->  format(atom(JoinClause), 'LEFT JOIN ~w', [RightTable])
+    ;   atomic_list_concat(JoinConditions, ' AND ', JoinCondStr),
+        format(atom(JoinClause), 'LEFT JOIN ~w ON ~w', [RightTable, JoinCondStr])
+    ).
+
+%% extract_bound_vars_from_goals(+Goals, -BoundVars)
+%  Extract variables from goals
+%
+extract_bound_vars_from_goals(Goals, BoundVars) :-
+    findall(Var,
+            (member(Goal, Goals),
+             Goal =.. [_|Args],
+             member(Arg, Args),
+             var(Arg),
+             Var = Arg),
+            BoundVars).
+
+%% member_with_position(+Var, +VarList, +Goals, -Column)
+%  Find variable in goals and get its column name
+%
+member_with_position(Var, _VarList, Goals, Column) :-
+    member(Goal, Goals),
+    Goal =.. [TableName|Args],
+    nth1(Pos, Args, Arg),
+    Arg == Var, !,
+    get_column_name_from_schema(TableName, Pos, ColName),
+    format(atom(Column), '~w', [ColName]).
+
+%% get_column_name_from_schema(+Table, +Position, -Name)
+%  Get column name from table schema
+%
+get_column_name_from_schema(TableName, Position, ColName) :-
+    % Look up schema
+    sql_table_def(TableName, Columns),
+    nth1(Position, Columns, ColSpec),
+    (   ColSpec = (Name-_Type)
+    ->  ColName = Name
+    ;   ColName = ColSpec
+    ), !.
+get_column_name_from_schema(_Table, Position, ColName) :-
+    % Fallback: generic column name
+    format(atom(ColName), 'col~w', [Position]).
+
+%% generate_select_for_left_join(+HeadArgs, +LeftGoals, +RightGoal, +NullVars, -SelectClause)
+%  Generate SELECT clause for LEFT JOIN
+%
+generate_select_for_left_join(HeadArgs, LeftGoals, RightGoal, NullVars, SelectClause) :-
+    % Extract right table info
+    RightGoal =.. [RightTable|RightArgs],
+
+    % Generate column list for head arguments
+    findall(ColExpr,
+            (nth1(Idx, HeadArgs, Arg),
+             var(Arg),
+             % Try to find in left goals first
+             (   find_column_in_goals(Arg, LeftGoals, ColExpr)
+             ->  true
+             % Then try right goal
+             ;   (   nth1(RightPos, RightArgs, RightArgMatch),
+                     RightArgMatch == Arg,
+                     get_column_name_from_schema(RightTable, RightPos, ColName),
+                     format(atom(ColExpr), '~w.~w', [RightTable, ColName])
+                 ->  true
+                 % Fallback to unknown
+                 ;   ColExpr = 'unknown'
+                 )
+             )),
+            Columns),
+
+    atomic_list_concat(Columns, ', ', ColStr),
+    format(atom(SelectClause), 'SELECT ~w', [ColStr]).
+
+%% member_check(+Var, +List)
+%  Check if variable is in list (using ==)
+%
+member_check(Var, [H|_]) :- Var == H, !.
+member_check(Var, [_|T]) :- member_check(Var, T).
+
+%% find_column_in_goals(+Var, +Goals, -ColumnExpr)
+%  Find column expression for variable in goals
+%
+find_column_in_goals(Var, Goals, ColumnExpr) :-
+    member(Goal, Goals),
+    Goal =.. [TableName|Args],
+    nth1(Pos, Args, Arg),
+    Arg == Var, !,
+    get_column_name_from_schema(TableName, Pos, ColName),
+    format(atom(ColumnExpr), '~w.~w', [TableName, ColName]).
+
+%% combine_left_join_sql(+Format, +ViewName, +Select, +From, +Join, +Where, -SQL)
+%  Combine clauses into final SQL
+%
+combine_left_join_sql(Format, ViewName, SelectClause, FromClause, JoinClause, WhereClause, SQL) :-
+    % Build query
+    (   WhereClause = ''
+    ->  format(atom(Query), '~w~n~w~n~w', [SelectClause, FromClause, JoinClause])
+    ;   format(atom(Query), '~w~n~w~n~w~n~w', [SelectClause, FromClause, JoinClause, WhereClause])
+    ),
+
+    % Wrap in view if requested
+    (   Format = view
+    ->  format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w;~n~n',
+               [ViewName, ViewName, Query])
+    ;   format(string(SQL), '~w;~n', [Query])
     ).
 
 %% ============================================
