@@ -9,6 +9,7 @@
 :- module(sql_target, [
     compile_predicate_to_sql/3,     % +Predicate, +Options, -SQLCode
     compile_set_operation/4,        % +SetOp, +Predicates, +Options, -SQLCode
+    compile_with_cte/4,             % +CTEs, +MainPred, +Options, -SQLCode
     write_sql_file/2,               % +SQLCode, +FilePath
     sql_table/2                     % +TableName, +Columns (directive)
 ]).
@@ -139,17 +140,25 @@ compile_clause_to_select(Name, Arity, Body, Head, SelectSQL) :-
         % Separate query modifiers (ORDER BY, LIMIT, OFFSET) first
         separate_query_modifiers(AllConstraints, ConstraintsNoMods, OrderBySpecs, LimitOffset),
 
+        % Check for DISTINCT
+        (   has_distinct(ConstraintsNoMods)
+        ->  Distinct = true,
+            remove_distinct(ConstraintsNoMods, ConstraintsNoDistinct)
+        ;   Distinct = false,
+            ConstraintsNoDistinct = ConstraintsNoMods
+        ),
+
         % Check for window functions
-        (   has_window_functions(ConstraintsNoMods)
+        (   has_window_functions(ConstraintsNoDistinct)
         ->  % Separate window functions from regular constraints
-            separate_window_functions(ConstraintsNoMods, RegularConstraints, WindowFuncs),
-            generate_select_with_windows(Args, TableGoals, WindowFuncs, SelectClause),
+            separate_window_functions(ConstraintsNoDistinct, RegularConstraints, WindowFuncs),
+            generate_select_with_windows(Args, TableGoals, WindowFuncs, Distinct, SelectClause),
             generate_from_clause(TableGoals, FromClause),
             generate_where_clause(RegularConstraints, Args, TableGoals, WhereClause)
         ;   % No window functions - standard processing
-            generate_select_clause(Args, TableGoals, SelectClause),
+            generate_select_clause(Args, TableGoals, Distinct, SelectClause),
             generate_from_clause(TableGoals, FromClause),
-            generate_where_clause(ConstraintsNoMods, Args, TableGoals, WhereClause)
+            generate_where_clause(ConstraintsNoDistinct, Args, TableGoals, WhereClause)
         ),
 
         % Generate ORDER BY and LIMIT/OFFSET clauses
@@ -323,14 +332,22 @@ compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
         % Separate query modifiers (ORDER BY, LIMIT, OFFSET) first
         separate_query_modifiers(AllConstraints, ConstraintsNoMods, OrderBySpecs, LimitOffset),
 
+        % Check for DISTINCT
+        (   has_distinct(ConstraintsNoMods)
+        ->  Distinct = true,
+            remove_distinct(ConstraintsNoMods, ConstraintsNoDistinct)
+        ;   Distinct = false,
+            ConstraintsNoDistinct = ConstraintsNoMods
+        ),
+
         % Check for window functions
-        (   has_window_functions(ConstraintsNoMods)
+        (   has_window_functions(ConstraintsNoDistinct)
         ->  % Separate window functions from regular constraints
-            separate_window_functions(ConstraintsNoMods, Constraints, WindowFuncs),
-            generate_select_with_windows(Args, TableGoals, WindowFuncs, SelectClause)
+            separate_window_functions(ConstraintsNoDistinct, Constraints, WindowFuncs),
+            generate_select_with_windows(Args, TableGoals, WindowFuncs, Distinct, SelectClause)
         ;   % No window functions - standard SELECT
-            Constraints = ConstraintsNoMods,
-            generate_select_clause(Args, TableGoals, SelectClause)
+            Constraints = ConstraintsNoDistinct,
+            generate_select_clause(Args, TableGoals, Distinct, SelectClause)
         ),
 
         % Generate FROM clause
@@ -1212,9 +1229,18 @@ is_table_goal(Goal) :-
 %  Generate SELECT clause from head arguments
 %
 generate_select_clause(Args, TableGoals, SelectClause) :-
+    generate_select_clause(Args, TableGoals, false, SelectClause).
+
+%% generate_select_clause(+Args, +TableGoals, +Distinct, -SelectClause)
+%  Generate SELECT clause with optional DISTINCT
+%
+generate_select_clause(Args, TableGoals, Distinct, SelectClause) :-
     generate_select_items(Args, TableGoals, Items),
     atomic_list_concat(Items, ', ', ItemsStr),
-    format(string(SelectClause), 'SELECT ~w', [ItemsStr]).
+    (   Distinct = true
+    ->  format(string(SelectClause), 'SELECT DISTINCT ~w', [ItemsStr])
+    ;   format(string(SelectClause), 'SELECT ~w', [ItemsStr])
+    ).
 
 %% generate_select_items(+Args, +TableGoals, -Items)
 %  Generate SELECT items with column names from table goals
@@ -1875,6 +1901,12 @@ combine_over_clauses(Part, Order, Combined) :-
 %  Generate SELECT clause including window function columns
 %
 generate_select_with_windows(Args, TableGoals, WindowFuncs, SelectClause) :-
+    generate_select_with_windows(Args, TableGoals, WindowFuncs, false, SelectClause).
+
+%% generate_select_with_windows(+Args, +TableGoals, +WindowFuncs, +Distinct, -SelectClause)
+%  Generate SELECT clause including window function columns with optional DISTINCT
+%
+generate_select_with_windows(Args, TableGoals, WindowFuncs, Distinct, SelectClause) :-
     % Generate regular select items (excluding window result vars)
     collect_window_result_vars(WindowFuncs, WindowVars),
     generate_select_items_excluding(Args, TableGoals, WindowVars, RegularItems),
@@ -1885,7 +1917,10 @@ generate_select_with_windows(Args, TableGoals, WindowFuncs, SelectClause) :-
     % Combine
     append(RegularItems, WindowItems, AllItems),
     atomic_list_concat(AllItems, ', ', ItemsStr),
-    format(string(SelectClause), 'SELECT ~w', [ItemsStr]).
+    (   Distinct = true
+    ->  format(string(SelectClause), 'SELECT DISTINCT ~w', [ItemsStr])
+    ;   format(string(SelectClause), 'SELECT ~w', [ItemsStr])
+    ).
 
 %% collect_window_result_vars(+WindowFuncs, -Vars)
 %  Collect result variables from window functions
@@ -2030,6 +2065,267 @@ generate_limit_offset_sql(limit_offset(none, Offset), Clause) :- !,
     format(string(Clause), 'OFFSET ~w', [Offset]).
 generate_limit_offset_sql(limit_offset(Limit, Offset), Clause) :-
     format(string(Clause), 'LIMIT ~w OFFSET ~w', [Limit, Offset]).
+
+%% ============================================
+%% DISTINCT SUPPORT
+%% ============================================
+
+%% has_distinct(+Constraints)
+%  Check if constraints contain sql_distinct
+%
+has_distinct(Constraints) :-
+    member(sql_distinct, Constraints), !.
+
+%% remove_distinct(+Constraints, -CleanConstraints)
+%  Remove sql_distinct from constraints
+%
+remove_distinct([], []).
+remove_distinct([sql_distinct|Rest], CleanRest) :- !,
+    remove_distinct(Rest, CleanRest).
+remove_distinct([C|Rest], [C|CleanRest]) :-
+    remove_distinct(Rest, CleanRest).
+
+%% ============================================
+%% CASE WHEN EXPRESSIONS
+%% ============================================
+
+%% is_case_expression(+Expr)
+%  Check if expression is a CASE WHEN
+%
+is_case_expression(sql_case(_, _, _)).
+is_case_expression(sql_case(_, _)).
+
+%% generate_case_sql(+CaseExpr, +TableGoals, -SQL)
+%  Generate CASE WHEN SQL
+%  sql_case(Conditions, ElseValue) where Conditions = [when(Cond, Then), ...]
+%  sql_case(Column, Mappings, ElseValue) for simple value mapping
+%
+generate_case_sql(sql_case(Column, Mappings, ElseValue), TableGoals, SQL) :-
+    % Simple CASE: CASE column WHEN val1 THEN result1 ...
+    (   var(Column)
+    ->  find_var_column(Column, [], TableGoals, ColName)
+    ;   ColName = Column
+    ),
+    findall(WhenClause,
+            (member(Mapping, Mappings),
+             generate_case_mapping(Mapping, WhenClause)),
+            WhenClauses),
+    atomic_list_concat(WhenClauses, ' ', WhenStr),
+    format_case_else(ElseValue, ElseStr),
+    format(atom(SQL), 'CASE ~w ~w~w END', [ColName, WhenStr, ElseStr]).
+
+generate_case_sql(sql_case(Conditions, ElseValue), TableGoals, SQL) :-
+    % Searched CASE: CASE WHEN cond1 THEN result1 ...
+    is_list(Conditions),
+    findall(WhenClause,
+            (member(Cond, Conditions),
+             generate_searched_when(Cond, TableGoals, WhenClause)),
+            WhenClauses),
+    atomic_list_concat(WhenClauses, ' ', WhenStr),
+    format_case_else(ElseValue, ElseStr),
+    format(atom(SQL), 'CASE ~w~w END', [WhenStr, ElseStr]).
+
+%% generate_case_mapping(+Mapping, -WhenClause)
+%  Generate WHEN value THEN result for simple CASE
+%
+generate_case_mapping(Value-Result, WhenClause) :- !,
+    format_sql_value(Value, ValStr),
+    format_sql_value(Result, ResStr),
+    format(atom(WhenClause), 'WHEN ~w THEN ~w', [ValStr, ResStr]).
+generate_case_mapping(when(Value, Result), WhenClause) :-
+    format_sql_value(Value, ValStr),
+    format_sql_value(Result, ResStr),
+    format(atom(WhenClause), 'WHEN ~w THEN ~w', [ValStr, ResStr]).
+
+%% generate_searched_when(+Condition, +TableGoals, -WhenClause)
+%  Generate WHEN condition THEN result for searched CASE
+%
+generate_searched_when(when(Cond, Result), TableGoals, WhenClause) :-
+    generate_condition_sql(Cond, TableGoals, CondStr),
+    format_sql_value(Result, ResStr),
+    format(atom(WhenClause), 'WHEN ~w THEN ~w', [CondStr, ResStr]).
+
+%% generate_condition_sql(+Cond, +TableGoals, -SQL)
+%  Generate SQL for a condition
+%
+generate_condition_sql(Var > Val, TableGoals, SQL) :-
+    var(Var), !,
+    find_var_column(Var, [], TableGoals, ColName),
+    format(atom(SQL), '~w > ~w', [ColName, Val]).
+generate_condition_sql(Var < Val, TableGoals, SQL) :-
+    var(Var), !,
+    find_var_column(Var, [], TableGoals, ColName),
+    format(atom(SQL), '~w < ~w', [ColName, Val]).
+generate_condition_sql(Var >= Val, TableGoals, SQL) :-
+    var(Var), !,
+    find_var_column(Var, [], TableGoals, ColName),
+    format(atom(SQL), '~w >= ~w', [ColName, Val]).
+generate_condition_sql(Var =< Val, TableGoals, SQL) :-
+    var(Var), !,
+    find_var_column(Var, [], TableGoals, ColName),
+    format(atom(SQL), '~w <= ~w', [ColName, Val]).
+generate_condition_sql(Var = Val, TableGoals, SQL) :-
+    var(Var), !,
+    find_var_column(Var, [], TableGoals, ColName),
+    format_sql_value(Val, ValStr),
+    format(atom(SQL), '~w = ~w', [ColName, ValStr]).
+generate_condition_sql(Var \= Val, TableGoals, SQL) :-
+    var(Var), !,
+    find_var_column(Var, [], TableGoals, ColName),
+    format_sql_value(Val, ValStr),
+    format(atom(SQL), '~w <> ~w', [ColName, ValStr]).
+generate_condition_sql(is_null(Var), TableGoals, SQL) :-
+    var(Var), !,
+    find_var_column(Var, [], TableGoals, ColName),
+    format(atom(SQL), '~w IS NULL', [ColName]).
+generate_condition_sql(not_null(Var), TableGoals, SQL) :-
+    var(Var), !,
+    find_var_column(Var, [], TableGoals, ColName),
+    format(atom(SQL), '~w IS NOT NULL', [ColName]).
+
+%% format_case_else(+ElseValue, -ElseStr)
+%  Format ELSE clause
+%
+format_case_else(none, '') :- !.
+format_case_else(null, ' ELSE NULL') :- !.
+format_case_else(Value, ElseStr) :-
+    format_sql_value(Value, ValStr),
+    format(atom(ElseStr), ' ELSE ~w', [ValStr]).
+
+%% format_sql_value(+Value, -SQLStr)
+%  Format a value for SQL
+%
+format_sql_value(Value, SQLStr) :-
+    var(Value), !,
+    SQLStr = 'NULL'.
+format_sql_value(null, 'NULL') :- !.
+format_sql_value(Value, SQLStr) :-
+    number(Value), !,
+    format(atom(SQLStr), '~w', [Value]).
+format_sql_value(Value, SQLStr) :-
+    atom(Value), !,
+    format(atom(SQLStr), '''~w''', [Value]).
+format_sql_value(Value, SQLStr) :-
+    format(atom(SQLStr), '''~w''', [Value]).
+
+%% ============================================
+%% SCALAR SUBQUERIES IN SELECT
+%% ============================================
+
+%% is_scalar_subquery(+Expr)
+%  Check if expression is a scalar subquery
+%
+is_scalar_subquery(sql_scalar(_, _)).
+is_scalar_subquery(sql_scalar(_, _, _)).
+
+%% generate_scalar_subquery_sql(+Expr, +OuterTableGoals, -SQL)
+%  Generate scalar subquery SQL
+%  sql_scalar(AggFunc, Goal) - e.g., sql_scalar(count, orders(_, CustId, _))
+%  sql_scalar(AggFunc, Goal, Alias) - with explicit alias
+%
+generate_scalar_subquery_sql(sql_scalar(AggFunc, Goal), OuterTableGoals, SQL) :-
+    generate_scalar_subquery_sql(sql_scalar(AggFunc, Goal, subquery_result), OuterTableGoals, SQL).
+
+generate_scalar_subquery_sql(sql_scalar(AggFunc, Goal, Alias), OuterTableGoals, SQL) :-
+    functor(Goal, TableName, _),
+    Goal =.. [TableName|Args],
+    % Get correlation conditions
+    (   sql_table_def(TableName, Schema)
+    ->  generate_correlation_conditions(Args, Schema, TableName, OuterTableGoals, CorrelationConds),
+        (   CorrelationConds = []
+        ->  format(atom(Subquery), '(SELECT ~w(*) FROM ~w)', [AggFunc, TableName])
+        ;   atomic_list_concat(CorrelationConds, ' AND ', CondStr),
+            format(atom(Subquery), '(SELECT ~w(*) FROM ~w WHERE ~w)', [AggFunc, TableName, CondStr])
+        )
+    ;   format(atom(Subquery), '(SELECT ~w(*) FROM ~w)', [AggFunc, TableName])
+    ),
+    format(atom(SQL), '~w AS ~w', [Subquery, Alias]).
+
+%% ============================================
+%% COLUMN ALIASES
+%% ============================================
+
+%% is_alias_expression(+Expr)
+%  Check if expression is an alias
+%
+is_alias_expression(sql_as(_, _)).
+
+%% generate_alias_sql(+Expr, +TableGoals, -SQL)
+%  Generate column AS alias
+%
+generate_alias_sql(sql_as(Column, Alias), TableGoals, SQL) :-
+    (   var(Column)
+    ->  find_var_column(Column, [], TableGoals, ColName)
+    ;   is_case_expression(Column)
+    ->  generate_case_sql(Column, TableGoals, ColName)
+    ;   is_scalar_subquery(Column)
+    ->  generate_scalar_subquery_sql(Column, TableGoals, ColName)
+    ;   ColName = Column
+    ),
+    format(atom(SQL), '~w AS ~w', [ColName, Alias]).
+
+%% ============================================
+%% DERIVED TABLES (Subquery in FROM)
+%% ============================================
+
+%% is_derived_table(+Goal)
+%  Check if goal is a derived table reference
+%
+is_derived_table(sql_from(_, _)).
+
+%% compile_derived_table(+DerivedTable, -FromSQL)
+%  Compile derived table (subquery in FROM)
+%  sql_from(PredicateSpec, Alias) - e.g., sql_from(high_earners/2, he)
+%
+compile_derived_table(sql_from(Pred/Arity, Alias), FromSQL) :-
+    % Compile the predicate to a SELECT statement
+    compile_predicate_to_sql(Pred/Arity, [format(select)], SubquerySQL),
+    % Remove trailing semicolon and newline
+    atom_string(SubquerySQL, SubqStr),
+    (   sub_string(SubqStr, _, 2, 0, ";\n")
+    ->  sub_string(SubqStr, 0, _, 2, CleanSubq)
+    ;   CleanSubq = SubqStr
+    ),
+    format(atom(FromSQL), '(~w) AS ~w', [CleanSubq, Alias]).
+
+%% ============================================
+%% CTE SUPPORT (WITH clause)
+%% ============================================
+
+%% compile_with_cte(+CTEs, +MainPred, +Options, -SQLCode)
+%  Compile WITH clause with CTEs
+%  CTEs: list of cte(Name, PredicateSpec)
+%  MainPred: main query predicate
+%
+compile_with_cte(CTEs, MainPred, Options, SQLCode) :-
+    % Compile each CTE
+    findall(CTEDef,
+            (member(cte(Name, Pred/Arity), CTEs),
+             compile_predicate_to_sql(Pred/Arity, [format(select)], CTEQuery),
+             % Clean up the query
+             atom_string(CTEQuery, CTEStr),
+             (   sub_string(CTEStr, _, 2, 0, ";\n")
+             ->  sub_string(CTEStr, 0, _, 2, CleanCTE)
+             ;   CleanCTE = CTEStr
+             ),
+             format(atom(CTEDef), '~w AS (~w)', [Name, CleanCTE])),
+            CTEDefs),
+    atomic_list_concat(CTEDefs, ',\n', CTEsStr),
+
+    % Compile main query
+    compile_predicate_to_sql(MainPred, [format(select)], MainQuery),
+    atom_string(MainQuery, MainStr),
+    (   sub_string(MainStr, _, 2, 0, ";\n")
+    ->  sub_string(MainStr, 0, _, 2, CleanMain)
+    ;   CleanMain = MainStr
+    ),
+
+    % Combine
+    (   member(view_name(ViewName), Options)
+    ->  format(string(SQLCode), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~nWITH ~w~n~w;~n~n',
+               [ViewName, ViewName, CTEsStr, CleanMain])
+    ;   format(string(SQLCode), 'WITH ~w~n~w;~n', [CTEsStr, CleanMain])
+    ).
 
 %% ============================================
 %% FILE I/O
