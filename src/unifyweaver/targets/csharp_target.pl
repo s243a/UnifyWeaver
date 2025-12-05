@@ -1560,8 +1560,10 @@ guard_supported_aggregates(Clauses) :-
 
 aggregate_supported(aggregate_all(OpTerm, _Goal, _Result)) :-
     member(OpTerm, [count, sum(_), min(_), max(_), set(_), bag(_)]), !.
-aggregate_supported(aggregate(sum(_), _Goal, _Result)) :- !.
-aggregate_supported(aggregate(sum(_), _Goal, _Group, _Result)) :- !.
+aggregate_supported(aggregate(OpTerm, _Goal, _Result)) :-
+    member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
+aggregate_supported(aggregate(OpTerm, _Goal, _Group, _Result)) :-
+    member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate_all(Op, _Inner, _Result)) :-
     \+ member(Op, [count]),
     format(user_error,
@@ -1855,8 +1857,8 @@ compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
             }
         }", [RuleName, Index, Head, Op, Pred, Args, ResVar, FilterExpr, EmitCond, AggExpr, HeadPred, AssignStr])
     ;   Type = group,
-        Op = sum
-    ->  build_group_sum(Pred, Args, GroupVar, ValueVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code)
+        member(Op, [sum, min, max, set, bag])
+    ->  build_group_aggregate(Op, Pred, Args, GroupVar, ValueVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code)
     ;   format(user_error,
                'C# generator mode: aggregate ~w/~w not supported in generator codegen.~n',
                [Op, Type]),
@@ -1978,33 +1980,63 @@ build_group_key([_], Idx, Expr) :-
 build_group_key(_, Idx, Expr) :-
     format(string(Expr), "f.Args[\"arg~w\"]", [Idx]).
 
-build_group_sum(Pred, Args, GroupVar, ValVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code) :-
+build_group_aggregate(Op, Pred, Args, GroupVar, ValVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code) :-
     find_var_index(GroupVar, Args, GroupIdx),
     find_var_index(ValVar, Args, ValIdx),
     build_group_filter(Pred, Args, [], FilterExpr),
     build_group_key([GroupVar], GroupIdx, GroupExpr),
-    bind_group_head_assignments(HeadArgs, GroupVar, ResVar, GroupExpr, Config, Assigns),
+    group_value_field(Op, ValVar, ValueField, SelectorExpr),
+    bind_group_head_assignments(Op, HeadArgs, ResVar, Config, ValueField, Assigns),
     atomic_list_concat(Assigns, ", ", AssignStr),
+    group_agg_selector(Op, ValIdx, SelectorExpr, AggSelector),
+    group_agg_projection(Op, AggSelector, Projection),
     format(string(Code),
 "        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
         {
-            // Grouped aggregate sum over ~w/~w
+            // Grouped aggregate ~w over ~w/~w
             var aggResults = total
                 .Where(f => ~w)
                 .GroupBy(f => ~w)
-                .Select(g => new { Key = g.Key, Sum = g.Sum(f => Convert.ToDecimal(f.Args[\"arg~w\"])) });
+                .Select(g => ~w);
             foreach (var r in aggResults)
             {
                 yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
             }
-        }", [RuleName, Pred, Args, FilterExpr, GroupExpr, ValIdx, HeadPred, AssignStr]).
+        }", [RuleName, Op, Pred, Args, FilterExpr, GroupExpr, Projection, HeadPred, AssignStr]).
 
-bind_group_head_assignments(HeadArgs, _GroupVar, ResVar, _GroupExpr, Config, Assigns) :-
+group_value_field(set, _ValVar, "Set", _).
+group_value_field(bag, _ValVar, "Bag", _).
+group_value_field(sum, _ValVar, "Sum", _).
+group_value_field(min, _ValVar, "Min", _).
+group_value_field(max, _ValVar, "Max", _).
+
+group_agg_selector(sum, ValIdx, _SelectorExpr, Selector) :-
+    format(string(Selector), "g.Sum(f => Convert.ToDecimal(f.Args[\"arg~w\"]))", [ValIdx]).
+group_agg_selector(min, ValIdx, _SelectorExpr, Selector) :-
+    format(string(Selector), "g.Min(f => Convert.ToDecimal(f.Args[\"arg~w\"]))", [ValIdx]).
+group_agg_selector(max, ValIdx, _SelectorExpr, Selector) :-
+    format(string(Selector), "g.Max(f => Convert.ToDecimal(f.Args[\"arg~w\"]))", [ValIdx]).
+group_agg_selector(set, ValIdx, SelectorExpr, Selector) :-
+    ( SelectorExpr = "" ->
+        format(string(Selector), "g.Select(f => f.Args[\"arg~w\"]).Distinct().ToList()", [ValIdx])
+    ;   format(string(Selector), "g.Select(f => ~w).Distinct().ToList()", [SelectorExpr])
+    ).
+group_agg_selector(bag, ValIdx, SelectorExpr, Selector) :-
+    ( SelectorExpr = "" ->
+        format(string(Selector), "g.Select(f => f.Args[\"arg~w\"]).ToList()", [ValIdx])
+    ;   format(string(Selector), "g.Select(f => ~w).ToList()", [SelectorExpr])
+    ).
+
+group_agg_projection(Op, AggSelector, Projection) :-
+    group_value_field(Op, _, Field, _),
+    format(string(Projection), "new { Key = g.Key, ~w = ~w }", [Field, AggSelector]).
+
+bind_group_head_assignments(Op, HeadArgs, ResVar, Config, ValueField, Assigns) :-
     findall(Assign,
         (   nth0(I, HeadArgs, Arg),
             (   var(Arg),
                 Arg == ResVar
-            ->  format(string(Assign), "{ \"arg~w\", r.Sum }", [I])
+            ->  format(string(Assign), "{ \"arg~w\", r.~w }", [I, ValueField])
             ;   var(Arg)
             ->  format(string(Assign), "{ \"arg~w\", r.Key }", [I])
             ;   translate_expr_common(Arg, [], Config, Expr)
