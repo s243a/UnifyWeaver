@@ -48,6 +48,10 @@ term_signature(Term0, Name/Arity) :-
 
 term_to_dependency(aggregate_all(_, Goal, _), Dep) :- !,
     term_signature(Goal, Dep).
+term_to_dependency(aggregate_all(_, Goal, _, _), Dep) :- !,
+    term_signature(Goal, Dep).
+term_to_dependency(aggregate(_, Goal, _, _), Dep) :- !,
+    term_signature(Goal, Dep).
 term_to_dependency(Term, Dep) :-
     (   aggregate_goal(Term)
     ->  decompose_aggregate_goal(Term, _Type, _Op, Pred, Args, _GroupVar, _ValueVar, _ResultVar),
@@ -1560,6 +1564,8 @@ guard_supported_aggregates(Clauses) :-
 
 aggregate_supported(aggregate_all(OpTerm, _Goal, _Result)) :-
     member(OpTerm, [count, sum(_), min(_), max(_), set(_), bag(_)]), !.
+aggregate_supported(aggregate_all(OpTerm, _Goal, _Group, _Result)) :-
+    member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate(OpTerm, _Goal, _Result)) :-
     member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate(OpTerm, _Goal, _Group, _Result)) :-
@@ -1867,6 +1873,9 @@ compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
     ).
 
 decompose_aggregate_goal(aggregate_all(OpTerm, Goal, Result), all, Op, Pred, Args, _GroupVar, ValueVar, Result) :-
+    Goal =.. [Pred|Args],
+    parse_agg_op(OpTerm, Op, ValueVar, Args).
+decompose_aggregate_goal(aggregate_all(OpTerm, Goal, GroupVar, Result), group, Op, Pred, Args, GroupVar, ValueVar, Result) :-
     Goal =.. [Pred|Args],
     parse_agg_op(OpTerm, Op, ValueVar, Args).
 decompose_aggregate_goal(aggregate(OpTerm, Goal, GroupVar, Result), group, Op, Pred, Args, GroupVar, ValueVar, Result) :-
