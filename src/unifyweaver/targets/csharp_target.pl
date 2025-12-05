@@ -1561,7 +1561,7 @@ guard_supported_aggregates(Clauses) :-
 aggregate_supported(aggregate_all(OpTerm, _Goal, _Result)) :-
     member(OpTerm, [count, sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate(sum(_), _Goal, _Result)) :- !.
-aggregate_supported(aggregate(sum(_), _Inner, _Group, _Result)) :- !.
+aggregate_supported(aggregate(sum(_), _Goal, _Group, _Result)) :- !.
 aggregate_supported(aggregate_all(Op, _Inner, _Result)) :-
     \+ member(Op, [count]),
     format(user_error,
@@ -1570,13 +1570,13 @@ aggregate_supported(aggregate_all(Op, _Inner, _Result)) :-
     fail.
 aggregate_supported(aggregate_all(Op, _Inner, _Group, _Result)) :-
     format(user_error,
-           'C# generator mode: aggregate_all/4 not yet supported (~w/~w).~n',
-           [Op, _Inner]),
+           'C# generator mode: aggregate_all/4 not yet supported (~w).~n',
+           [Op]),
     fail.
-aggregate_supported(aggregate(_Op, _Inner, _Group, _Result)) :-
+aggregate_supported(aggregate(Op, _Inner, _Group, _Result)) :-
     format(user_error,
            'C# generator mode: aggregate/4 not yet supported (~w).~n',
-           [_Op]),
+           [Op]),
     fail.
 aggregate_supported(G) :-
     format(user_error,
@@ -1588,7 +1588,7 @@ guard_stratified_negation(HeadPI, GroupSpecs, Clauses) :-
     build_dependency_graph([HeadPI], [], [], Vertices, [], Edges),
     vertices_edges_to_ugraph(Vertices, Edges, Graph),
     forall(
-        ( member(_H-B, Clauses),
+        ( member(_-B, Clauses),
           B \= true,
           body_to_list(B, Goals),
           member(G, Goals),
@@ -1999,7 +1999,7 @@ build_group_sum(Pred, Args, GroupVar, ValVar, ResVar, Config, HeadPred, HeadArgs
             }
         }", [RuleName, Pred, Args, FilterExpr, GroupExpr, ValIdx, HeadPred, AssignStr]).
 
-bind_group_head_assignments(HeadArgs, GroupVar, ResVar, _GroupExpr, Config, Assigns) :-
+bind_group_head_assignments(HeadArgs, _GroupVar, ResVar, _GroupExpr, Config, Assigns) :-
     findall(Assign,
         (   nth0(I, HeadArgs, Arg),
             (   var(Arg),
