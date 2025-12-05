@@ -148,17 +148,21 @@ compile_clause_to_select(Name, Arity, Body, Head, SelectSQL) :-
             ConstraintsNoDistinct = ConstraintsNoMods
         ),
 
+        % Extract CASE/alias expressions from constraints and apply to Args
+        extract_expression_bindings(ConstraintsNoDistinct, ExprBindings, ConstraintsNoExprs),
+        apply_expression_bindings(Args, ExprBindings, ResolvedArgs),
+
         % Check for window functions
-        (   has_window_functions(ConstraintsNoDistinct)
+        (   has_window_functions(ConstraintsNoExprs)
         ->  % Separate window functions from regular constraints
-            separate_window_functions(ConstraintsNoDistinct, RegularConstraints, WindowFuncs),
-            generate_select_with_windows(Args, TableGoals, WindowFuncs, Distinct, SelectClause),
+            separate_window_functions(ConstraintsNoExprs, RegularConstraints, WindowFuncs),
+            generate_select_with_windows(ResolvedArgs, TableGoals, WindowFuncs, Distinct, SelectClause),
             generate_from_clause(TableGoals, FromClause),
-            generate_where_clause(RegularConstraints, Args, TableGoals, WhereClause)
+            generate_where_clause(RegularConstraints, ResolvedArgs, TableGoals, WhereClause)
         ;   % No window functions - standard processing
-            generate_select_clause(Args, TableGoals, Distinct, SelectClause),
+            generate_select_clause(ResolvedArgs, TableGoals, Distinct, SelectClause),
             generate_from_clause(TableGoals, FromClause),
-            generate_where_clause(ConstraintsNoDistinct, Args, TableGoals, WhereClause)
+            generate_where_clause(ConstraintsNoExprs, ResolvedArgs, TableGoals, WhereClause)
         ),
 
         % Generate ORDER BY and LIMIT/OFFSET clauses
@@ -340,14 +344,18 @@ compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
             ConstraintsNoDistinct = ConstraintsNoMods
         ),
 
+        % Extract CASE/alias expression bindings and apply to Args
+        extract_expression_bindings(ConstraintsNoDistinct, ExprBindings, ConstraintsNoExprs),
+        apply_expression_bindings(Args, ExprBindings, ResolvedArgs),
+
         % Check for window functions
-        (   has_window_functions(ConstraintsNoDistinct)
+        (   has_window_functions(ConstraintsNoExprs)
         ->  % Separate window functions from regular constraints
-            separate_window_functions(ConstraintsNoDistinct, Constraints, WindowFuncs),
-            generate_select_with_windows(Args, TableGoals, WindowFuncs, Distinct, SelectClause)
+            separate_window_functions(ConstraintsNoExprs, Constraints, WindowFuncs),
+            generate_select_with_windows(ResolvedArgs, TableGoals, WindowFuncs, Distinct, SelectClause)
         ;   % No window functions - standard SELECT
-            Constraints = ConstraintsNoDistinct,
-            generate_select_clause(Args, TableGoals, Distinct, SelectClause)
+            Constraints = ConstraintsNoExprs,
+            generate_select_clause(ResolvedArgs, TableGoals, Distinct, SelectClause)
         ),
 
         % Generate FROM clause
@@ -1244,22 +1252,45 @@ generate_select_clause(Args, TableGoals, Distinct, SelectClause) :-
 
 %% generate_select_items(+Args, +TableGoals, -Items)
 %  Generate SELECT items with column names from table goals
+%  Handles: variables, atoms, numbers, CASE expressions, aliases
 %
 generate_select_items([], _, []).
 generate_select_items([Arg|Rest], TableGoals, [Item|Items]) :-
-    (   var(Arg)
-    ->  % Find column name for this variable
-        (   find_var_column(Arg, [], TableGoals, ColumnName)
-        ->  Item = ColumnName
-        ;   Item = 'unknown'
-        )
-    ;   atom(Arg)
-    ->  format(string(Item), "'~w'", [Arg])
-    ;   number(Arg)
-    ->  Item = Arg
-    ;   format(string(Item), "'~w'", [Arg])
-    ),
+    generate_single_select_item(Arg, TableGoals, Item),
     generate_select_items(Rest, TableGoals, Items).
+
+%% generate_single_select_item(+Arg, +TableGoals, -Item)
+%  Generate a single SELECT item
+%
+generate_single_select_item(Arg, TableGoals, Item) :-
+    var(Arg), !,
+    % Find column name for this variable
+    (   find_var_column(Arg, [], TableGoals, ColumnName)
+    ->  Item = ColumnName
+    ;   Item = 'unknown'
+    ).
+generate_single_select_item(sql_case(Column, Mappings, ElseValue), TableGoals, Item) :- !,
+    % Simple CASE expression
+    generate_case_sql(sql_case(Column, Mappings, ElseValue), TableGoals, Item).
+generate_single_select_item(sql_case(Conditions, ElseValue), TableGoals, Item) :- !,
+    % Searched CASE expression
+    generate_case_sql(sql_case(Conditions, ElseValue), TableGoals, Item).
+generate_single_select_item(sql_as(Expr, Alias), TableGoals, Item) :- !,
+    % Column with alias
+    generate_alias_sql(sql_as(Expr, Alias), TableGoals, Item).
+generate_single_select_item(sql_scalar(AggFunc, Goal), TableGoals, Item) :- !,
+    % Scalar subquery
+    generate_scalar_subquery_sql(sql_scalar(AggFunc, Goal), TableGoals, Item).
+generate_single_select_item(sql_scalar(AggFunc, Goal, Alias), TableGoals, Item) :- !,
+    % Scalar subquery with alias
+    generate_scalar_subquery_sql(sql_scalar(AggFunc, Goal, Alias), TableGoals, Item).
+generate_single_select_item(Arg, _, Item) :-
+    atom(Arg), !,
+    format(string(Item), "'~w'", [Arg]).
+generate_single_select_item(Arg, _, Arg) :-
+    number(Arg), !.
+generate_single_select_item(Arg, _, Item) :-
+    format(string(Item), "'~w'", [Arg]).
 
 %% generate_from_clause(+TableGoals, -FromClause)
 %  Generate FROM clause from table goals
@@ -2153,6 +2184,44 @@ remove_distinct([sql_distinct|Rest], CleanRest) :- !,
     remove_distinct(Rest, CleanRest).
 remove_distinct([C|Rest], [C|CleanRest]) :-
     remove_distinct(Rest, CleanRest).
+
+%% ============================================
+%% EXPRESSION BINDING EXTRACTION
+%% ============================================
+
+%% extract_expression_bindings(+Constraints, -Bindings, -RemainingConstraints)
+%  Extract Var = sql_case/sql_as/sql_scalar bindings from constraints
+%
+extract_expression_bindings([], [], []).
+extract_expression_bindings([C|Rest], [binding(Var, Expr)|Bindings], Remaining) :-
+    C = (Var = Expr),
+    var(Var),
+    is_sql_expression(Expr), !,
+    extract_expression_bindings(Rest, Bindings, Remaining).
+extract_expression_bindings([C|Rest], Bindings, [C|Remaining]) :-
+    extract_expression_bindings(Rest, Bindings, Remaining).
+
+%% is_sql_expression(+Expr)
+%  Check if expression is a SQL expression (CASE, alias, scalar subquery)
+%
+is_sql_expression(sql_case(_, _, _)) :- !.
+is_sql_expression(sql_case(_, _)) :- !.
+is_sql_expression(sql_as(_, _)) :- !.
+is_sql_expression(sql_scalar(_, _)) :- !.
+is_sql_expression(sql_scalar(_, _, _)) :- !.
+
+%% apply_expression_bindings(+Args, +Bindings, -ResolvedArgs)
+%  Replace variables in Args with their bound expressions
+%
+apply_expression_bindings([], _, []).
+apply_expression_bindings([Arg|Rest], Bindings, [Resolved|ResolvedRest]) :-
+    (   var(Arg),
+        member(binding(BoundVar, Expr), Bindings),
+        Arg == BoundVar
+    ->  Resolved = Expr
+    ;   Resolved = Arg
+    ),
+    apply_expression_bindings(Rest, Bindings, ResolvedRest).
 
 %% ============================================
 %% CASE WHEN EXPRESSIONS
