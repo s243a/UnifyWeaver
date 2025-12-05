@@ -5,16 +5,17 @@
 - **Graph RAG**: Verified.
 - **Bookmark Suggestions**: Verified.
 - **Key Construction**: Verified.
-- **Rust Semantic Runtime**: **Phase 3 Complete (Integration)**.
-    - Runtime modules (`importer`, `crawler`, `searcher`, `llm`) are complete.
-    - Compiler (`rust_target.pl`) now detects semantic predicates (`crawler_run`) and generates a `main.rs` that orchestrates the runtime components.
-    - `rust_semantic_playbook.pl` verifies the full compilation flow.
-- **Environment**: `gemini` CLI v0.18.4. `pwsh` missing.
+- **Rust Semantic Target**: **Phase 4 Complete (Vector Search)**.
+    - Implemented `embedding.rs` (Candle/BERT).
+    - Implemented `searcher.rs` (Vector/Text/Graph).
+    - Updated compiler to generate full projects with dependencies.
+    - **Status**: Code complete, verification limited by environment Rust version.
+- **Environment**: `gemini` CLI v0.18.4. `pwsh` missing. `rustc` 1.63 (too old for `anstyle`/`candle`).
 
 ## Active Proposals
 ### 1. PowerShell Semantic Target
 - **Status**: Accepted. Pending implementation.
 
 ## Next Steps
-1.  **Merge `feat/rust-integration`**.
+1.  **Merge `feat/rust-vectors`**.
 2.  **Start PowerShell Implementation**.

@@ -4,14 +4,16 @@ use serde_json::{Map, Value};
 use std::fs::File;
 use std::io::BufReader;
 use crate::importer::PtImporter;
+use crate::embedding::EmbeddingProvider;
 
 pub struct PtCrawler {
     importer: PtImporter,
+    embedder: EmbeddingProvider,
 }
 
 impl PtCrawler {
-    pub fn new(importer: PtImporter) -> Self {
-        Self { importer }
+    pub fn new(importer: PtImporter, embedder: EmbeddingProvider) -> Self {
+        Self { importer, embedder }
     }
 
     pub fn crawl(&self, seeds: &[String], _max_depth: usize) -> Result<(), Box<dyn std::error::Error>> {
@@ -83,7 +85,14 @@ impl PtCrawler {
                         if tag == current_tag {
                             // Object complete
                             if let Some(Value::String(id)) = obj.get("@rdf:about").or(obj.get("@id")) {
-                                self.importer.upsert_object(id, &tag, &Value::Object(obj))?;
+                                self.importer.upsert_object(id, &tag, &Value::Object(obj.clone()))?;
+                                
+                                // Generate Embedding
+                                if let Some(Value::String(text)) = obj.get("title").or(obj.get("text")) {
+                                    if let Ok(vec) = self.embedder.get_embedding(text) {
+                                        self.importer.upsert_embedding(id, &vec)?;
+                                    }
+                                }
                             }
                         }
                     }
