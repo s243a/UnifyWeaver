@@ -1385,6 +1385,134 @@ constraint_to_sql(Var =\= Value, HeadArgs, TableGoals, Condition) :-
     find_var_column(Var, HeadArgs, TableGoals, Column),
     format(string(Condition), '~w != ~w', [Column, Value]).
 
+%% ============================================
+%% SUBQUERY SUPPORT (Phase 4)
+%% ============================================
+
+%% constraint_to_sql for IN subquery
+%  in_query(Var, Pred/Arity) compiles to: column IN (SELECT ... FROM Pred)
+%
+constraint_to_sql(in_query(Var, PredIndicator), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    compile_subquery_select(PredIndicator, SubquerySQL),
+    format(string(Condition), '~w IN (~w)', [Column, SubquerySQL]).
+
+%% constraint_to_sql for NOT IN subquery
+%  not_in_query(Var, Pred/Arity) compiles to: column NOT IN (SELECT ... FROM Pred)
+%
+constraint_to_sql(not_in_query(Var, PredIndicator), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    compile_subquery_select(PredIndicator, SubquerySQL),
+    format(string(Condition), '~w NOT IN (~w)', [Column, SubquerySQL]).
+
+%% constraint_to_sql for EXISTS subquery
+%  exists(Goal) compiles to: EXISTS (SELECT 1 FROM ... WHERE correlation)
+%
+constraint_to_sql(exists(Goal), _HeadArgs, OuterTableGoals, Condition) :-
+    compile_exists_subquery(Goal, OuterTableGoals, SubquerySQL),
+    format(string(Condition), 'EXISTS (~w)', [SubquerySQL]).
+
+%% constraint_to_sql for NOT EXISTS subquery
+%
+constraint_to_sql(not_exists(Goal), _HeadArgs, OuterTableGoals, Condition) :-
+    compile_exists_subquery(Goal, OuterTableGoals, SubquerySQL),
+    format(string(Condition), 'NOT EXISTS (~w)', [SubquerySQL]).
+
+%% compile_subquery_select(+PredIndicator, -SubquerySQL)
+%  Compile a predicate to a SELECT statement for use in IN subquery
+%
+compile_subquery_select(Pred/Arity, SubquerySQL) :-
+    % Get clauses for the predicate
+    functor(Head, Pred, Arity),
+    (   user:clause(Head, Body)
+    ->  % Compile the clause body
+        Head =.. [_|HeadArgs],
+        parse_clause_body(Body, ParsedGoals),
+        separate_goals(ParsedGoals, TableGoals, Constraints),
+
+        % For IN subquery, we only need the first column (the value being checked)
+        (   HeadArgs = [FirstArg|_],
+            var(FirstArg),
+            find_var_column(FirstArg, HeadArgs, TableGoals, SelectColumn)
+        ->  true
+        ;   SelectColumn = '*'
+        ),
+
+        % Generate FROM clause
+        generate_from_clause(TableGoals, FromClause),
+
+        % Generate WHERE clause
+        generate_where_clause(Constraints, HeadArgs, TableGoals, WhereClause),
+
+        % Build subquery
+        (   WhereClause = ''
+        ->  format(string(SubquerySQL), 'SELECT ~w ~w', [SelectColumn, FromClause])
+        ;   format(string(SubquerySQL), 'SELECT ~w ~w ~w', [SelectColumn, FromClause, WhereClause])
+        )
+    ;   % No clause found - error
+        format('ERROR: No clause found for subquery predicate ~w/~w~n', [Pred, Arity]),
+        SubquerySQL = 'SELECT NULL'
+    ).
+
+%% compile_exists_subquery(+Goal, +OuterTableGoals, -SubquerySQL)
+%  Compile EXISTS subquery with correlation to outer query
+%
+compile_exists_subquery(Goal, OuterTableGoals, SubquerySQL) :-
+    functor(Goal, Pred, Arity),
+    Goal =.. [Pred|GoalArgs],
+
+    % Get table schema for the inner predicate
+    (   sql_table_def(Pred, Schema)
+    ->  % Generate correlation conditions
+        generate_correlation_conditions(GoalArgs, Schema, Pred, OuterTableGoals, CorrelationConditions),
+
+        % Build EXISTS subquery
+        (   CorrelationConditions = []
+        ->  format(string(SubquerySQL), 'SELECT 1 FROM ~w', [Pred])
+        ;   atomic_list_concat(CorrelationConditions, ' AND ', CondStr),
+            format(string(SubquerySQL), 'SELECT 1 FROM ~w WHERE ~w', [Pred, CondStr])
+        )
+    ;   % Table not found - use simple EXISTS
+        format(string(SubquerySQL), 'SELECT 1 FROM ~w', [Pred])
+    ).
+
+%% generate_correlation_conditions(+GoalArgs, +Schema, +InnerTable, +OuterTableGoals, -Conditions)
+%  Generate WHERE conditions correlating inner subquery to outer query
+%
+generate_correlation_conditions([], _, _, _, []).
+generate_correlation_conditions([Arg|RestArgs], Schema, InnerTable, OuterTableGoals, Conditions) :-
+    Schema = [ColName-_Type|RestSchema],
+    (   var(Arg),
+        % Check if this variable appears in outer table goals
+        find_var_in_outer_goals(Arg, OuterTableGoals, OuterColumn)
+    ->  % Generate correlation condition
+        format(atom(Cond), '~w.~w = ~w', [InnerTable, ColName, OuterColumn]),
+        Conditions = [Cond|RestConditions]
+    ;   % No correlation for this argument
+        Conditions = RestConditions
+    ),
+    generate_correlation_conditions(RestArgs, RestSchema, InnerTable, OuterTableGoals, RestConditions).
+
+%% find_var_in_outer_goals(+Var, +OuterTableGoals, -ColumnRef)
+%  Find if a variable appears in outer table goals and return its column reference
+%
+find_var_in_outer_goals(Var, OuterTableGoals, ColumnRef) :-
+    member(Goal, OuterTableGoals),
+    Goal =.. [TableName|Args],
+    sql_table_def(TableName, Schema),
+    find_var_in_args(Var, Args, Schema, TableName, ColumnRef).
+
+%% find_var_in_args(+Var, +Args, +Schema, +TableName, -ColumnRef)
+%  Find variable position in args and return table.column reference
+%
+find_var_in_args(Var, Args, Schema, TableName, ColumnRef) :-
+    nth1(Pos, Args, Arg),
+    Arg == Var,  % Same variable (by identity)
+    nth1(Pos, Schema, ColName-_),
+    format(atom(ColumnRef), '~w.~w', [TableName, ColName]).
+
 %% table_goal_to_conditions(+Goal, -Condition)
 %  Extract WHERE conditions from constant arguments in table goals
 %
