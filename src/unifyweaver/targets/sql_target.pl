@@ -1206,8 +1206,16 @@ generate_from_clause([Goal|Rest], FromClause) :-
         generate_from_clause_multi([Goal|Rest], FromClause)
     ).
 
+%% generate_cross_joins(+Tables, -JoinClauses)
+%  Generate CROSS JOIN clauses for list of tables
+%
+generate_cross_joins([], []).
+generate_cross_joins([Table|Rest], [JoinClause|RestClauses]) :-
+    format(atom(JoinClause), 'CROSS JOIN ~w', [Table]),
+    generate_cross_joins(Rest, RestClauses).
+
 %% generate_from_clause_multi(+Goals, -FromClause)
-%  Generate FROM clause with INNER JOINs based on shared variables
+%  Generate FROM clause with INNER JOINs or CROSS JOINs based on shared variables
 %
 generate_from_clause_multi([FirstGoal|RestGoals], FromClause) :-
     functor(FirstGoal, FirstTable, _),
@@ -1215,11 +1223,12 @@ generate_from_clause_multi([FirstGoal|RestGoals], FromClause) :-
     find_join_conditions([FirstGoal|RestGoals], JoinSpecs),
     % Generate JOIN clauses
     (   JoinSpecs = []
-    ->  % No shared variables - use CROSS JOIN
-        findall(TN, member(G, [FirstGoal|RestGoals]), (functor(G, TN, _)), Tables),
-        atomic_list_concat(Tables, ', ', TablesStr),
-        format(string(FromClause), 'FROM ~w', [TablesStr])
-    ;   % Generate INNER JOINs
+    ->  % No shared variables - generate explicit CROSS JOINs
+        findall(TN, (member(G, RestGoals), functor(G, TN, _)), RestTables),
+        generate_cross_joins(RestTables, CrossJoinClauses),
+        atomic_list_concat(CrossJoinClauses, '\n', CrossJoinsStr),
+        format(string(FromClause), 'FROM ~w\n~w', [FirstTable, CrossJoinsStr])
+    ;   % Shared variables - generate INNER JOINs
         generate_join_clause(FirstTable, RestGoals, JoinSpecs, FromClause)
     ).
 
