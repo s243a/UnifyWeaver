@@ -131,30 +131,45 @@ compile_clause_to_select(Name, Arity, Body, Head, SelectSQL) :-
     % Check if this is an aggregation clause
     (   is_group_by_clause(Body)
     ->  compile_aggregation_to_select(Name, Arity, Body, Head, SelectSQL)
-    ;   % Regular clause (may include window functions)
+    ;   % Regular clause (may include window functions and query modifiers)
         parse_clause_body(Body, ParsedGoals),
         separate_goals(ParsedGoals, TableGoals, AllConstraints),
         Head =.. [Name|Args],
 
+        % Separate query modifiers (ORDER BY, LIMIT, OFFSET) first
+        separate_query_modifiers(AllConstraints, ConstraintsNoMods, OrderBySpecs, LimitOffset),
+
         % Check for window functions
-        (   has_window_functions(AllConstraints)
+        (   has_window_functions(ConstraintsNoMods)
         ->  % Separate window functions from regular constraints
-            separate_window_functions(AllConstraints, RegularConstraints, WindowFuncs),
+            separate_window_functions(ConstraintsNoMods, RegularConstraints, WindowFuncs),
             generate_select_with_windows(Args, TableGoals, WindowFuncs, SelectClause),
             generate_from_clause(TableGoals, FromClause),
             generate_where_clause(RegularConstraints, Args, TableGoals, WhereClause)
         ;   % No window functions - standard processing
             generate_select_clause(Args, TableGoals, SelectClause),
             generate_from_clause(TableGoals, FromClause),
-            generate_where_clause(AllConstraints, Args, TableGoals, WhereClause)
+            generate_where_clause(ConstraintsNoMods, Args, TableGoals, WhereClause)
         ),
 
+        % Generate ORDER BY and LIMIT/OFFSET clauses
+        generate_order_by_sql(OrderBySpecs, TableGoals, OrderByClause),
+        generate_limit_offset_sql(LimitOffset, LimitOffsetClause),
+
         % Combine into standalone SELECT
-        (   WhereClause = ''
-        ->  format(string(SelectSQL), '~w\n~w', [SelectClause, FromClause])
-        ;   format(string(SelectSQL), '~w\n~w\n~w', [SelectClause, FromClause, WhereClause])
-        )
+        combine_select_clauses(SelectClause, FromClause, WhereClause, OrderByClause, LimitOffsetClause, SelectSQL)
     ).
+
+%% combine_select_clauses(+Select, +From, +Where, +OrderBy, +LimitOffset, -SQL)
+%  Combine all SQL clauses into final SELECT statement
+%
+combine_select_clauses(Select, From, Where, OrderBy, LimitOffset, SQL) :-
+    % Build list of non-empty clauses
+    findall(Clause,
+            (member(Clause, [Select, From, Where, OrderBy, LimitOffset]),
+             Clause \= ''),
+            Clauses),
+    atomic_list_concat(Clauses, '\n', SQL).
 
 %% compile_aggregation_to_select(+Name, +Arity, +Body, +Head, -SelectSQL)
 %  Compile aggregation clause to SELECT statement
@@ -295,7 +310,7 @@ compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
     % Check if this is a LEFT JOIN clause (disjunction pattern)
     ;   is_left_join_clause(Body)
     ->  compile_left_join_clause(Name, Arity, Body, Head, Options, SQLCode)
-    ;   % Regular clause - existing logic (may include window functions)
+    ;   % Regular clause - existing logic (may include window functions and query modifiers)
         % Parse the clause body
         parse_clause_body(Body, ParsedGoals),
 
@@ -305,13 +320,16 @@ compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
         % Generate SELECT clause from head arguments
         Head =.. [Name|Args],
 
+        % Separate query modifiers (ORDER BY, LIMIT, OFFSET) first
+        separate_query_modifiers(AllConstraints, ConstraintsNoMods, OrderBySpecs, LimitOffset),
+
         % Check for window functions
-        (   has_window_functions(AllConstraints)
+        (   has_window_functions(ConstraintsNoMods)
         ->  % Separate window functions from regular constraints
-            separate_window_functions(AllConstraints, Constraints, WindowFuncs),
+            separate_window_functions(ConstraintsNoMods, Constraints, WindowFuncs),
             generate_select_with_windows(Args, TableGoals, WindowFuncs, SelectClause)
         ;   % No window functions - standard SELECT
-            Constraints = AllConstraints,
+            Constraints = ConstraintsNoMods,
             generate_select_clause(Args, TableGoals, SelectClause)
         ),
 
@@ -320,6 +338,10 @@ compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
 
         % Generate WHERE clause (from regular constraints only)
         generate_where_clause(Constraints, Args, TableGoals, WhereClause),
+
+        % Generate ORDER BY and LIMIT/OFFSET clauses
+        generate_order_by_sql(OrderBySpecs, TableGoals, OrderByClause),
+        generate_limit_offset_sql(LimitOffset, LimitOffsetClause),
 
         % Get output format
         (   member(format(Format), Options)
@@ -334,7 +356,7 @@ compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
         ),
 
         % Combine into SQL
-        format_sql(Format, ViewName, SelectClause, FromClause, WhereClause, SQLCode)
+        format_sql_extended(Format, ViewName, SelectClause, FromClause, WhereClause, OrderByClause, LimitOffsetClause, SQLCode)
     ).
 
 %% ============================================
@@ -1603,6 +1625,29 @@ format_sql(cte, ViewName, Select, From, Where, SQL) :-
     ;   format(string(SQL), 'WITH ~w AS (~n  ~w~n  ~w~n  ~w~n)', [ViewName, Select, From, Where])
     ).
 
+%% format_sql_extended(+Format, +ViewName, +Select, +From, +Where, +OrderBy, +LimitOffset, -SQL)
+%  Format SQL with ORDER BY and LIMIT/OFFSET support
+%
+format_sql_extended(Format, ViewName, Select, From, Where, OrderBy, LimitOffset, SQL) :-
+    % Build list of non-empty clauses for the query body
+    findall(Clause,
+            (member(Clause, [Select, From, Where, OrderBy, LimitOffset]),
+             Clause \= ''),
+            Clauses),
+    atomic_list_concat(Clauses, '\n', QueryBody),
+    % Format based on output type
+    (   Format = view
+    ->  format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w;~n~n',
+               [ViewName, ViewName, QueryBody])
+    ;   Format = select
+    ->  format(string(SQL), '~w;~n', [QueryBody])
+    ;   Format = cte
+    ->  format(string(SQL), 'WITH ~w AS (~n~w~n)', [ViewName, QueryBody])
+    ;   % Default to view
+        format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w;~n~n',
+               [ViewName, ViewName, QueryBody])
+    ).
+
 %% compile_multiple_clauses(+Name, +Arity, +Clauses, +Head, +Options, -SQLCode)
 %  Handle multiple clauses with UNION (future)
 %
@@ -1890,6 +1935,101 @@ generate_select_items_excluding([Arg|Rest], TableGoals, ExcludeVars, Items) :-
         Items = [Item|RestItems],
         generate_select_items_excluding(Rest, TableGoals, ExcludeVars, RestItems)
     ).
+
+%% ============================================
+%% QUERY MODIFIERS: ORDER BY, LIMIT, OFFSET
+%% ============================================
+
+%% is_query_modifier(+Goal)
+%  Check if a goal is a query modifier (ORDER BY, LIMIT, OFFSET)
+%
+is_query_modifier(sql_order_by(_, _)) :- !.
+is_query_modifier(sql_order_by(_)) :- !.
+is_query_modifier(sql_limit(_)) :- !.
+is_query_modifier(sql_offset(_)) :- !.
+is_query_modifier(sql_distinct) :- !.
+
+%% separate_query_modifiers(+Constraints, -RegularConstraints, -OrderBySpecs, -LimitOffset)
+%  Separate query modifiers from regular WHERE constraints
+%  OrderBySpecs: list of order_spec(Column, Direction)
+%  LimitOffset: limit_offset(Limit, Offset) or none
+%
+separate_query_modifiers(Constraints, RegularConstraints, OrderBySpecs, LimitOffset) :-
+    separate_modifiers_iter(Constraints, RegularConstraints, OrderBySpecs, none, none, LimitOffset).
+
+separate_modifiers_iter([], [], [], Limit, Offset, LimitOffset) :-
+    (   Limit = none, Offset = none
+    ->  LimitOffset = none
+    ;   Limit = none
+    ->  LimitOffset = limit_offset(none, Offset)
+    ;   Offset = none
+    ->  LimitOffset = limit_offset(Limit, none)
+    ;   LimitOffset = limit_offset(Limit, Offset)
+    ).
+separate_modifiers_iter([C|Rest], Regular, [order_spec(Col, Dir)|OrderRest], Limit, Offset, LimitOffset) :-
+    C = sql_order_by(Col, Dir), !,
+    separate_modifiers_iter(Rest, Regular, OrderRest, Limit, Offset, LimitOffset).
+separate_modifiers_iter([C|Rest], Regular, [order_spec(Col, asc)|OrderRest], Limit, Offset, LimitOffset) :-
+    C = sql_order_by(Col), !,
+    separate_modifiers_iter(Rest, Regular, OrderRest, Limit, Offset, LimitOffset).
+separate_modifiers_iter([C|Rest], Regular, OrderSpecs, _, Offset, LimitOffset) :-
+    C = sql_limit(N), !,
+    separate_modifiers_iter(Rest, Regular, OrderSpecs, N, Offset, LimitOffset).
+separate_modifiers_iter([C|Rest], Regular, OrderSpecs, Limit, _, LimitOffset) :-
+    C = sql_offset(N), !,
+    separate_modifiers_iter(Rest, Regular, OrderSpecs, Limit, N, LimitOffset).
+separate_modifiers_iter([C|Rest], [C|Regular], OrderSpecs, Limit, Offset, LimitOffset) :-
+    separate_modifiers_iter(Rest, Regular, OrderSpecs, Limit, Offset, LimitOffset).
+
+%% has_query_modifiers(+Constraints)
+%  Check if constraints contain any query modifiers
+%
+has_query_modifiers(Constraints) :-
+    member(C, Constraints),
+    is_query_modifier(C), !.
+
+%% generate_order_by_sql(+OrderBySpecs, +TableGoals, -OrderByClause)
+%  Generate ORDER BY clause from specifications
+%
+generate_order_by_sql([], _, '') :- !.
+generate_order_by_sql(OrderBySpecs, TableGoals, OrderByClause) :-
+    findall(ColExpr,
+            (member(order_spec(Col, Dir), OrderBySpecs),
+             resolve_order_column(Col, TableGoals, Dir, ColExpr)),
+            ColExprs),
+    (   ColExprs = []
+    ->  OrderByClause = ''
+    ;   atomic_list_concat(ColExprs, ', ', ColsStr),
+        format(string(OrderByClause), 'ORDER BY ~w', [ColsStr])
+    ).
+
+%% resolve_order_column(+Col, +TableGoals, +Dir, -ColExpr)
+%  Resolve column for ORDER BY with direction
+%
+resolve_order_column(Col, TableGoals, Dir, ColExpr) :-
+    (   var(Col)
+    ->  find_var_column(Col, [], TableGoals, ColName)
+    ;   ColName = Col
+    ),
+    dir_to_sql(Dir, DirSQL),
+    (   DirSQL = ''
+    ->  ColExpr = ColName
+    ;   format(atom(ColExpr), '~w ~w', [ColName, DirSQL])
+    ).
+
+%% generate_limit_offset_sql(+LimitOffset, -LimitOffsetClause)
+%  Generate LIMIT/OFFSET clause
+%
+generate_limit_offset_sql(none, '') :- !.
+generate_limit_offset_sql(limit_offset(Limit, none), Clause) :- !,
+    (   Limit = none
+    ->  Clause = ''
+    ;   format(string(Clause), 'LIMIT ~w', [Limit])
+    ).
+generate_limit_offset_sql(limit_offset(none, Offset), Clause) :- !,
+    format(string(Clause), 'OFFSET ~w', [Offset]).
+generate_limit_offset_sql(limit_offset(Limit, Offset), Clause) :-
+    format(string(Clause), 'LIMIT ~w OFFSET ~w', [Limit, Offset]).
 
 %% ============================================
 %% FILE I/O
