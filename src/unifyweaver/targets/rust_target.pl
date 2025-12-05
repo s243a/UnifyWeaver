@@ -109,18 +109,21 @@ mod importer;
 mod crawler;
 mod searcher;
 mod llm;
+mod embedding;
 
 use importer::PtImporter;
 use crawler::PtCrawler;
 use searcher::PtSearcher;
+use embedding::EmbeddingProvider;
 use llm::LLMProvider;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize Runtime
+    let embedding = EmbeddingProvider::new("models/model.safetensors", "models/tokenizer.json")?;
     let importer = PtImporter::new("data.redb")?;
-    let crawler = PtCrawler::new(importer);
-    let searcher = PtSearcher::new("data.redb")?;
+    let crawler = PtCrawler::new(importer, embedding.clone());
+    let searcher = PtSearcher::new("data.redb", embedding)?;
     // let llm = LLMProvider::new("gemini-2.5-flash");
 
     ~s
@@ -609,7 +612,7 @@ write_rust_project(RustCode, ProjectDir) :-
     format('Rust project created at: ~w~n', [ProjectDir]).
 
 write_runtime_files(SrcDir) :-
-    RuntimeFiles = ['importer.rs', 'crawler.rs', 'searcher.rs', 'llm.rs'],
+    RuntimeFiles = ['importer.rs', 'crawler.rs', 'searcher.rs', 'llm.rs', 'embedding.rs'],
     % Assuming runtime dir is relative to this source file or cwd
     % We'll try a fixed path relative to CWD for now
     RuntimeDir = 'src/unifyweaver/targets/rust_runtime',
@@ -635,6 +638,7 @@ detect_dependencies(Code, Deps) :-
         ;   sub_string(Code, _, _, _, 'mod importer;'), Dep = redb
         ;   sub_string(Code, _, _, _, 'mod crawler;'), Dep = quick_xml
         ;   sub_string(Code, _, _, _, 'mod llm;'), Dep = serde_json % llm uses serde_json
+        ;   sub_string(Code, _, _, _, 'mod embedding;'), Dep = candle
         ),
         DepsList),
     sort(DepsList, Deps).
@@ -652,3 +656,4 @@ dep_to_toml(hex, "hex = \"0.4\"").
 dep_to_toml(uuid, "uuid = { version = \"1.4\", features = [\"v4\"] }").
 dep_to_toml(redb, "redb = \"1.4.0\"").
 dep_to_toml(quick_xml, "quick-xml = \"0.30\"").
+dep_to_toml(candle, "candle-core = \"0.3.0\"\ncandle-nn = \"0.3.0\"\ncandle-transformers = \"0.3.0\"\ntokenizers = \"0.15\"\nanyhow = \"1.0\"").
