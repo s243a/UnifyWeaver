@@ -131,13 +131,23 @@ compile_clause_to_select(Name, Arity, Body, Head, SelectSQL) :-
     % Check if this is an aggregation clause
     (   is_group_by_clause(Body)
     ->  compile_aggregation_to_select(Name, Arity, Body, Head, SelectSQL)
-    ;   % Regular clause
+    ;   % Regular clause (may include window functions)
         parse_clause_body(Body, ParsedGoals),
-        separate_goals(ParsedGoals, TableGoals, Constraints),
+        separate_goals(ParsedGoals, TableGoals, AllConstraints),
         Head =.. [Name|Args],
-        generate_select_clause(Args, TableGoals, SelectClause),
-        generate_from_clause(TableGoals, FromClause),
-        generate_where_clause(Constraints, Args, TableGoals, WhereClause),
+
+        % Check for window functions
+        (   has_window_functions(AllConstraints)
+        ->  % Separate window functions from regular constraints
+            separate_window_functions(AllConstraints, RegularConstraints, WindowFuncs),
+            generate_select_with_windows(Args, TableGoals, WindowFuncs, SelectClause),
+            generate_from_clause(TableGoals, FromClause),
+            generate_where_clause(RegularConstraints, Args, TableGoals, WhereClause)
+        ;   % No window functions - standard processing
+            generate_select_clause(Args, TableGoals, SelectClause),
+            generate_from_clause(TableGoals, FromClause),
+            generate_where_clause(AllConstraints, Args, TableGoals, WhereClause)
+        ),
 
         % Combine into standalone SELECT
         (   WhereClause = ''
@@ -285,21 +295,30 @@ compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
     % Check if this is a LEFT JOIN clause (disjunction pattern)
     ;   is_left_join_clause(Body)
     ->  compile_left_join_clause(Name, Arity, Body, Head, Options, SQLCode)
-    ;   % Regular clause - existing logic
+    ;   % Regular clause - existing logic (may include window functions)
         % Parse the clause body
         parse_clause_body(Body, ParsedGoals),
 
         % Extract table references and constraints
-        separate_goals(ParsedGoals, TableGoals, Constraints),
+        separate_goals(ParsedGoals, TableGoals, AllConstraints),
 
         % Generate SELECT clause from head arguments
         Head =.. [Name|Args],
-        generate_select_clause(Args, TableGoals, SelectClause),
+
+        % Check for window functions
+        (   has_window_functions(AllConstraints)
+        ->  % Separate window functions from regular constraints
+            separate_window_functions(AllConstraints, Constraints, WindowFuncs),
+            generate_select_with_windows(Args, TableGoals, WindowFuncs, SelectClause)
+        ;   % No window functions - standard SELECT
+            Constraints = AllConstraints,
+            generate_select_clause(Args, TableGoals, SelectClause)
+        ),
 
         % Generate FROM clause
         generate_from_clause(TableGoals, FromClause),
 
-        % Generate WHERE clause
+        % Generate WHERE clause (from regular constraints only)
         generate_where_clause(Constraints, Args, TableGoals, WhereClause),
 
         % Get output format
@@ -1591,6 +1610,286 @@ compile_multiple_clauses(Name, Arity, Clauses, Head, Options, SQLCode) :-
     % For now, just use the first clause
     Clauses = [FirstClause|_],
     compile_single_clause(Name, Arity, FirstClause, Head, Options, SQLCode).
+
+%% ============================================
+%% WINDOW FUNCTION SUPPORT (Phase 5)
+%% ============================================
+
+%% is_window_function(+Goal)
+%  Check if a goal is a window function call
+%
+is_window_function(row_number(_, _)).
+is_window_function(rank(_, _)).
+is_window_function(dense_rank(_, _)).
+is_window_function(ntile(_, _, _)).
+is_window_function(window_sum(_, _, _)).
+is_window_function(window_avg(_, _, _)).
+is_window_function(window_count(_, _)).
+is_window_function(window_min(_, _, _)).
+is_window_function(window_max(_, _, _)).
+is_window_function(lag(_, _, _, _)).
+is_window_function(lead(_, _, _, _)).
+
+%% separate_window_functions(+Constraints, -RegularConstraints, -WindowFunctions)
+%  Separate window function calls from regular constraints
+%
+separate_window_functions([], [], []).
+separate_window_functions([C|Rest], Regular, [C|Windows]) :-
+    is_window_function(C), !,
+    separate_window_functions(Rest, Regular, Windows).
+separate_window_functions([C|Rest], [C|Regular], Windows) :-
+    separate_window_functions(Rest, Regular, Windows).
+
+%% has_window_functions(+Constraints)
+%  Check if constraints contain any window functions
+%
+has_window_functions(Constraints) :-
+    member(C, Constraints),
+    is_window_function(C), !.
+
+%% generate_window_select_item(+WindowFunc, +TableGoals, -SelectItem)
+%  Generate a SELECT item for a window function
+%
+generate_window_select_item(row_number(ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, row_num, Alias),
+    format(string(SelectItem), 'ROW_NUMBER() OVER (~w) AS ~w', [OverClause, Alias]).
+
+generate_window_select_item(rank(ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, rank, Alias),
+    format(string(SelectItem), 'RANK() OVER (~w) AS ~w', [OverClause, Alias]).
+
+generate_window_select_item(dense_rank(ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, dense_rank, Alias),
+    format(string(SelectItem), 'DENSE_RANK() OVER (~w) AS ~w', [OverClause, Alias]).
+
+generate_window_select_item(ntile(N, ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, ntile, Alias),
+    format(string(SelectItem), 'NTILE(~w) OVER (~w) AS ~w', [N, OverClause, Alias]).
+
+generate_window_select_item(window_sum(Field, ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, running_sum, Alias),
+    find_var_column(Field, [], TableGoals, FieldCol),
+    format(string(SelectItem), 'SUM(~w) OVER (~w) AS ~w', [FieldCol, OverClause, Alias]).
+
+generate_window_select_item(window_avg(Field, ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, running_avg, Alias),
+    find_var_column(Field, [], TableGoals, FieldCol),
+    format(string(SelectItem), 'AVG(~w) OVER (~w) AS ~w', [FieldCol, OverClause, Alias]).
+
+generate_window_select_item(window_count(ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, running_count, Alias),
+    format(string(SelectItem), 'COUNT(*) OVER (~w) AS ~w', [OverClause, Alias]).
+
+generate_window_select_item(window_min(Field, ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, running_min, Alias),
+    find_var_column(Field, [], TableGoals, FieldCol),
+    format(string(SelectItem), 'MIN(~w) OVER (~w) AS ~w', [FieldCol, OverClause, Alias]).
+
+generate_window_select_item(window_max(Field, ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, running_max, Alias),
+    find_var_column(Field, [], TableGoals, FieldCol),
+    format(string(SelectItem), 'MAX(~w) OVER (~w) AS ~w', [FieldCol, OverClause, Alias]).
+
+generate_window_select_item(lag(Field, Offset, ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, prev_value, Alias),
+    find_var_column(Field, [], TableGoals, FieldCol),
+    format(string(SelectItem), 'LAG(~w, ~w) OVER (~w) AS ~w', [FieldCol, Offset, OverClause, Alias]).
+
+generate_window_select_item(lead(Field, Offset, ResultVar, Options), TableGoals, SelectItem) :-
+    generate_over_clause(Options, TableGoals, OverClause),
+    get_window_alias_typed(ResultVar, next_value, Alias),
+    find_var_column(Field, [], TableGoals, FieldCol),
+    format(string(SelectItem), 'LEAD(~w, ~w) OVER (~w) AS ~w', [FieldCol, Offset, OverClause, Alias]).
+
+%% get_window_alias(+ResultVar, -Alias)
+%  Get alias name for window function result
+%  Uses variable name if available, otherwise generates based on function type
+%
+get_window_alias(ResultVar, Alias) :-
+    (   var(ResultVar)
+    ->  % Try to get meaningful name from variable
+        term_to_atom(ResultVar, VarAtom),
+        (   sub_atom(VarAtom, 0, _, _, '_')  % Internal var like _G1234 or _1234
+        ->  Alias = window_col  % Generic name for anonymous vars
+        ;   % User-named variable - convert to lowercase
+            downcase_atom(VarAtom, Alias)
+        )
+    ;   atom(ResultVar)
+    ->  downcase_atom(ResultVar, Alias)
+    ;   Alias = window_col
+    ).
+
+%% Helper to generate window alias with function type context
+get_window_alias_typed(ResultVar, FuncType, Alias) :-
+    (   var(ResultVar)
+    ->  term_to_atom(ResultVar, VarAtom),
+        (   sub_atom(VarAtom, 0, _, _, '_')  % Internal var
+        ->  Alias = FuncType  % Use function type as alias
+        ;   downcase_atom(VarAtom, Alias)
+        )
+    ;   atom(ResultVar)
+    ->  downcase_atom(ResultVar, Alias)
+    ;   Alias = FuncType
+    ).
+
+%% generate_over_clause(+Options, +TableGoals, -OverClause)
+%  Generate OVER clause from options
+%
+generate_over_clause(Options, TableGoals, OverClause) :-
+    % Extract PARTITION BY
+    (   member(partition_by(PartSpec), Options)
+    ->  generate_partition_by(PartSpec, TableGoals, PartClause)
+    ;   PartClause = ''
+    ),
+    % Extract ORDER BY
+    (   member(order_by(OrderSpec, Dir), Options)
+    ->  generate_order_by(OrderSpec, Dir, TableGoals, OrderClause)
+    ;   member(order_by(OrderSpec), Options)
+    ->  generate_order_by(OrderSpec, asc, TableGoals, OrderClause)
+    ;   OrderClause = ''
+    ),
+    % Combine
+    combine_over_clauses(PartClause, OrderClause, OverClause).
+
+%% generate_partition_by(+Spec, +TableGoals, -Clause)
+%  Generate PARTITION BY clause
+%
+generate_partition_by(Cols, TableGoals, Clause) :-
+    is_list(Cols), !,
+    findall(ColName,
+            (member(Col, Cols), resolve_column(Col, TableGoals, ColName)),
+            ColNames),
+    atomic_list_concat(ColNames, ', ', ColsStr),
+    format(string(Clause), 'PARTITION BY ~w', [ColsStr]).
+generate_partition_by(Col, TableGoals, Clause) :-
+    resolve_column(Col, TableGoals, ColName),
+    format(string(Clause), 'PARTITION BY ~w', [ColName]).
+
+%% generate_order_by(+Spec, +Dir, +TableGoals, -Clause)
+%  Generate ORDER BY clause for window function
+%
+generate_order_by(Cols, Dir, TableGoals, Clause) :-
+    is_list(Cols), !,
+    findall(ColExpr,
+            (member(ColSpec, Cols), resolve_order_spec(ColSpec, TableGoals, ColExpr)),
+            ColExprs),
+    atomic_list_concat(ColExprs, ', ', ColsStr),
+    format(string(Clause), 'ORDER BY ~w', [ColsStr]).
+generate_order_by(Col, Dir, TableGoals, Clause) :-
+    resolve_column(Col, TableGoals, ColName),
+    dir_to_sql(Dir, DirSQL),
+    format(string(Clause), 'ORDER BY ~w ~w', [ColName, DirSQL]).
+
+%% resolve_order_spec(+Spec, +TableGoals, -ColExpr)
+%  Resolve order specification (column or column-direction pair)
+%
+resolve_order_spec(Col-Dir, TableGoals, ColExpr) :- !,
+    resolve_column(Col, TableGoals, ColName),
+    dir_to_sql(Dir, DirSQL),
+    format(atom(ColExpr), '~w ~w', [ColName, DirSQL]).
+resolve_order_spec(Col, TableGoals, ColExpr) :-
+    resolve_column(Col, TableGoals, ColName),
+    format(atom(ColExpr), '~w', [ColName]).
+
+%% resolve_column(+Col, +TableGoals, -ColName)
+%  Resolve column reference (variable or atom)
+%
+resolve_column(Col, TableGoals, ColName) :-
+    var(Col), !,
+    find_var_column(Col, [], TableGoals, ColName).
+resolve_column(Col, _, Col) :-
+    atom(Col), !.
+
+%% dir_to_sql(+Dir, -SQL)
+%  Convert direction atom to SQL
+%
+dir_to_sql(asc, 'ASC') :- !.
+dir_to_sql(desc, 'DESC') :- !.
+dir_to_sql(_, '').
+
+%% combine_over_clauses(+PartClause, +OrderClause, -Combined)
+%  Combine PARTITION BY and ORDER BY into OVER clause content
+%
+combine_over_clauses('', '', '') :- !.
+combine_over_clauses(Part, '', Part) :- !.
+combine_over_clauses('', Order, Order) :- !.
+combine_over_clauses(Part, Order, Combined) :-
+    format(string(Combined), '~w ~w', [Part, Order]).
+
+%% generate_select_with_windows(+Args, +TableGoals, +WindowFuncs, -SelectClause)
+%  Generate SELECT clause including window function columns
+%
+generate_select_with_windows(Args, TableGoals, WindowFuncs, SelectClause) :-
+    % Generate regular select items (excluding window result vars)
+    collect_window_result_vars(WindowFuncs, WindowVars),
+    generate_select_items_excluding(Args, TableGoals, WindowVars, RegularItems),
+    % Generate window function items
+    findall(WinItem,
+            (member(WF, WindowFuncs), generate_window_select_item(WF, TableGoals, WinItem)),
+            WindowItems),
+    % Combine
+    append(RegularItems, WindowItems, AllItems),
+    atomic_list_concat(AllItems, ', ', ItemsStr),
+    format(string(SelectClause), 'SELECT ~w', [ItemsStr]).
+
+%% collect_window_result_vars(+WindowFuncs, -Vars)
+%  Collect result variables from window functions
+%
+collect_window_result_vars([], []).
+collect_window_result_vars([WF|Rest], [Var|Vars]) :-
+    window_result_var(WF, Var),
+    collect_window_result_vars(Rest, Vars).
+
+%% window_result_var(+WindowFunc, -ResultVar)
+%  Extract result variable from window function
+%
+window_result_var(row_number(Var, _), Var).
+window_result_var(rank(Var, _), Var).
+window_result_var(dense_rank(Var, _), Var).
+window_result_var(ntile(_, Var, _), Var).
+window_result_var(window_sum(_, Var, _), Var).
+window_result_var(window_avg(_, Var, _), Var).
+window_result_var(window_count(Var, _), Var).
+window_result_var(window_min(_, Var, _), Var).
+window_result_var(window_max(_, Var, _), Var).
+window_result_var(lag(_, _, Var, _), Var).
+window_result_var(lead(_, _, Var, _), Var).
+
+%% generate_select_items_excluding(+Args, +TableGoals, +ExcludeVars, -Items)
+%  Generate SELECT items excluding certain variables (window results)
+%
+generate_select_items_excluding([], _, _, []).
+generate_select_items_excluding([Arg|Rest], TableGoals, ExcludeVars, Items) :-
+    (   var(Arg),
+        member(ExVar, ExcludeVars),
+        Arg == ExVar
+    ->  % Skip this - it's a window result variable
+        generate_select_items_excluding(Rest, TableGoals, ExcludeVars, Items)
+    ;   % Include this item
+        (   var(Arg)
+        ->  (   find_var_column(Arg, [], TableGoals, ColumnName)
+            ->  Item = ColumnName
+            ;   Item = 'unknown'
+            )
+        ;   atom(Arg)
+        ->  format(string(Item), "'~w'", [Arg])
+        ;   number(Arg)
+        ->  Item = Arg
+        ;   format(string(Item), "'~w'", [Arg])
+        ),
+        Items = [Item|RestItems],
+        generate_select_items_excluding(Rest, TableGoals, ExcludeVars, RestItems)
+    ).
 
 %% ============================================
 %% FILE I/O
