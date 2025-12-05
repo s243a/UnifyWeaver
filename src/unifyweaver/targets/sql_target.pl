@@ -1829,8 +1829,22 @@ generate_over_clause(Options, TableGoals, OverClause) :-
     ->  generate_order_by(OrderSpec, asc, TableGoals, OrderClause)
     ;   OrderClause = ''
     ),
-    % Combine
-    combine_over_clauses(PartClause, OrderClause, OverClause).
+    % Extract FRAME specification
+    generate_frame_clause(Options, FrameClause),
+    % Combine all parts
+    combine_over_clauses_with_frame(PartClause, OrderClause, FrameClause, OverClause).
+
+%% combine_over_clauses_with_frame(+Part, +Order, +Frame, -Combined)
+%  Combine PARTITION BY, ORDER BY, and FRAME into OVER clause
+%
+combine_over_clauses_with_frame(Part, Order, Frame, Combined) :-
+    combine_over_clauses(Part, Order, PartOrder),
+    (   Frame = ''
+    ->  Combined = PartOrder
+    ;   PartOrder = ''
+    ->  Combined = Frame
+    ;   format(string(Combined), '~w ~w', [PartOrder, Frame])
+    ).
 
 %% generate_partition_by(+Spec, +TableGoals, -Clause)
 %  Generate PARTITION BY clause
@@ -1896,6 +1910,61 @@ combine_over_clauses(Part, '', Part) :- !.
 combine_over_clauses('', Order, Order) :- !.
 combine_over_clauses(Part, Order, Combined) :-
     format(string(Combined), '~w ~w', [Part, Order]).
+
+%% ============================================
+%% WINDOW FRAME SPECIFICATION (Phase 5d)
+%% ============================================
+
+%% generate_frame_clause(+Options, -FrameClause)
+%  Generate frame specification from options
+%  Syntax: frame(Type, Start, End) where:
+%    Type: rows | range | groups
+%    Start/End: unbounded_preceding | unbounded_following | current_row | N preceding | N following
+%
+generate_frame_clause(Options, FrameClause) :-
+    (   member(frame(Type, Start, End), Options)
+    ->  frame_type_to_sql(Type, TypeSQL),
+        frame_bound_to_sql(Start, StartSQL),
+        frame_bound_to_sql(End, EndSQL),
+        format(string(FrameClause), '~w BETWEEN ~w AND ~w', [TypeSQL, StartSQL, EndSQL])
+    ;   member(frame(Type, Start), Options)
+    ->  % Single bound (implies CURRENT ROW as end for ROWS, or unbounded for RANGE)
+        frame_type_to_sql(Type, TypeSQL),
+        frame_bound_to_sql(Start, StartSQL),
+        format(string(FrameClause), '~w ~w', [TypeSQL, StartSQL])
+    ;   FrameClause = ''
+    ).
+
+%% frame_type_to_sql(+Type, -SQL)
+%  Convert frame type to SQL keyword
+%
+frame_type_to_sql(rows, 'ROWS') :- !.
+frame_type_to_sql(range, 'RANGE') :- !.
+frame_type_to_sql(groups, 'GROUPS') :- !.
+frame_type_to_sql(_, 'ROWS').
+
+%% frame_bound_to_sql(+Bound, -SQL)
+%  Convert frame bound to SQL
+%
+frame_bound_to_sql(unbounded_preceding, 'UNBOUNDED PRECEDING') :- !.
+frame_bound_to_sql(unbounded_following, 'UNBOUNDED FOLLOWING') :- !.
+frame_bound_to_sql(current_row, 'CURRENT ROW') :- !.
+frame_bound_to_sql(N-preceding, SQL) :- !,
+    format(atom(SQL), '~w PRECEDING', [N]).
+frame_bound_to_sql(N-following, SQL) :- !,
+    format(atom(SQL), '~w FOLLOWING', [N]).
+frame_bound_to_sql(preceding(N), SQL) :- !,
+    format(atom(SQL), '~w PRECEDING', [N]).
+frame_bound_to_sql(following(N), SQL) :- !,
+    format(atom(SQL), '~w FOLLOWING', [N]).
+% Handle numeric preceding/following as compound terms
+frame_bound_to_sql(Term, SQL) :-
+    Term =.. [preceding, N], !,
+    format(atom(SQL), '~w PRECEDING', [N]).
+frame_bound_to_sql(Term, SQL) :-
+    Term =.. [following, N], !,
+    format(atom(SQL), '~w FOLLOWING', [N]).
+frame_bound_to_sql(_, 'CURRENT ROW').
 
 %% generate_select_with_windows(+Args, +TableGoals, +WindowFuncs, -SelectClause)
 %  Generate SELECT clause including window function columns
