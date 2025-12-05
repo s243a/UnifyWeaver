@@ -276,6 +276,12 @@ compile_single_clause(Name, Arity, Body, Head, Options, SQLCode) :-
     % Check if this is an aggregation clause
     (   is_group_by_clause(Body)
     ->  compile_aggregation_clause(Name, Arity, Body, Head, Options, SQLCode)
+    % Check if this is a FULL OUTER JOIN clause (check before RIGHT/LEFT)
+    ;   is_full_outer_join_clause(Body)
+    ->  compile_full_outer_join_clause(Name, Arity, Body, Head, Options, SQLCode)
+    % Check if this is a RIGHT JOIN clause
+    ;   is_right_join_clause(Body)
+    ->  compile_right_join_clause(Name, Arity, Body, Head, Options, SQLCode)
     % Check if this is a LEFT JOIN clause (disjunction pattern)
     ;   is_left_join_clause(Body)
     ->  compile_left_join_clause(Name, Arity, Body, Head, Options, SQLCode)
@@ -510,12 +516,48 @@ format_aggregation_sql(select, _, Select, From, Where, GroupBy, Having, SQL) :-
 %% LEFT JOIN SUPPORT (Phase 3)
 %% ============================================
 
+%% is_right_join_clause(+Body)
+%  Check if clause body contains RIGHT JOIN pattern
+%  Pattern: (LeftGoal ; Fallback), RightGoals
+%  Disjunction at the START (before regular tables)
+%
+is_right_join_clause(Body) :-
+    % Body must start with a disjunction
+    Body = ((LeftGoal ; Fallback), _Rest),
+    % Fallback must contain null bindings
+    contains_null_binding(Fallback),
+    % LeftGoal must be a table goal (not another disjunction)
+    LeftGoal =.. [TableName|_],
+    \+ TableName = (','),
+    \+ TableName = (';').
+
+%% is_full_outer_join_clause(+Body)
+%  Check if clause body contains FULL OUTER JOIN pattern
+%  Pattern: (TableA ; FallbackA), (TableB ; FallbackB)
+%  Both sides are disjunctions with null bindings
+%
+is_full_outer_join_clause(Body) :-
+    Body = ((LeftGoal ; LeftFallback), (RightGoal ; RightFallback)),
+    % Both fallbacks must contain null bindings
+    contains_null_binding(LeftFallback),
+    contains_null_binding(RightFallback),
+    % Both must be table goals
+    LeftGoal =.. [LeftTable|_],
+    RightGoal =.. [RightTable|_],
+    \+ LeftTable = (','),
+    \+ LeftTable = (';'),
+    \+ RightTable = (','),
+    \+ RightTable = (';').
+
 %% is_left_join_clause(+Body)
 %  Check if clause body contains LEFT JOIN pattern
 %  Pattern: LeftGoals, (RightGoal ; Fallback)
 %  The disjunction may be nested within conjunctions
 %
 is_left_join_clause(Body) :-
+    % Must NOT be RIGHT or FULL OUTER (those take precedence)
+    \+ is_right_join_clause(Body),
+    \+ is_full_outer_join_clause(Body),
     % Search for a disjunction with null binding anywhere in the body
     find_disjunction_in_conjunction(Body, (_RightGoal ; Fallback)),
     contains_null_binding(Fallback).
@@ -863,6 +905,180 @@ combine_left_join_sql(Format, ViewName, SelectClause, FromClause, JoinClause, Wh
     ->  format(string(SQL), '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~n~w;~n~n',
                [ViewName, ViewName, Query])
     ;   format(string(SQL), '~w;~n', [Query])
+    ).
+
+%% ============================================
+%% RIGHT JOIN SUPPORT (Phase 3d)
+%% ============================================
+
+%% compile_right_join_clause(+Name, +Arity, +Body, +Head, +Options, -SQLCode)
+%  Compile RIGHT JOIN pattern to SQL
+%  Pattern: (LeftGoal ; Fallback), RightGoals
+%
+compile_right_join_clause(Name, Arity, Body, Head, Options, SQLCode) :-
+    % Extract pattern: (LeftGoal ; Fallback), Rest
+    Body = ((LeftGoal ; Fallback), Rest),
+
+    % Extract NULL bindings from fallback
+    extract_null_bindings(Fallback, NullVars),
+
+    % Parse head arguments
+    Head =.. [Name|HeadArgs],
+
+    % Convert Rest to list of goals
+    conjunction_to_list(Rest, RightGoals),
+
+    % Separate right goals into tables and constraints
+    separate_goals(RightGoals, RightTableGoals, RightConstraints),
+
+    % For RIGHT JOIN: LeftGoal is FROM, RightTableGoals are RIGHT JOINs
+    % FROM clause starts with the left table (the one with disjunction)
+    generate_from_clause([LeftGoal], FromClause),
+
+    % Generate RIGHT JOINs for all right tables
+    (   RightTableGoals = []
+    ->  AllJoins = ''
+    ;   generate_right_join_chain([LeftGoal], RightTableGoals, RightJoinClauses),
+        atomic_list_concat(RightJoinClauses, '\n', AllJoins)
+    ),
+
+    % Generate SELECT clause
+    AllTableGoals = [LeftGoal|RightTableGoals],
+    generate_select_for_nested_joins(HeadArgs, [LeftGoal], RightTableGoals, NullVars, SelectClause),
+
+    % Generate WHERE clause
+    generate_where_clause(RightConstraints, HeadArgs, AllTableGoals, WhereClause),
+
+    % Get output format
+    (   member(format(Format), Options)
+    ->  true
+    ;   Format = view
+    ),
+    (   member(view_name(ViewName), Options)
+    ->  true
+    ;   ViewName = Name
+    ),
+
+    % Combine into final SQL
+    combine_left_join_sql(Format, ViewName, SelectClause, FromClause, AllJoins, WhereClause, SQLCode).
+
+%% generate_right_join_chain(+AccTables, +RightTables, -JoinClauses)
+%  Generate a chain of RIGHT JOIN clauses
+%
+generate_right_join_chain(_, [], []).
+generate_right_join_chain(AccTables, [RightTable|Rest], [JoinClause|RestClauses]) :-
+    % Generate RIGHT JOIN for this table
+    generate_right_join_sql(AccTables, RightTable, JoinClause),
+    % Add this table to accumulated tables
+    append(AccTables, [RightTable], NewAccTables),
+    % Recursively process remaining tables
+    generate_right_join_chain(NewAccTables, Rest, RestClauses).
+
+%% generate_right_join_sql(+LeftTables, +RightGoal, -JoinClause)
+%  Generate RIGHT JOIN clause
+%
+generate_right_join_sql(LeftTables, RightGoal, JoinClause) :-
+    RightGoal =.. [RightTableName|RightArgs],
+
+    % Find shared variables (join keys)
+    findall(Cond,
+            (nth1(RightPos, RightArgs, RightArg),
+             var(RightArg),
+             % Find this variable in left tables
+             member(LeftTable, LeftTables),
+             LeftTable =.. [LeftTableName|LeftArgs],
+             nth1(LeftPos, LeftArgs, LeftArg),
+             LeftArg == RightArg,  % Same variable
+             % Get column names
+             get_column_name_from_schema(LeftTableName, LeftPos, LeftCol),
+             get_column_name_from_schema(RightTableName, RightPos, RightCol),
+             % Format condition
+             format(atom(Cond), '~w.~w = ~w.~w',
+                    [RightTableName, RightCol, LeftTableName, LeftCol])
+            ),
+            JoinConditions),
+
+    % Build RIGHT JOIN clause
+    (   JoinConditions = []
+    ->  format(atom(JoinClause), 'RIGHT JOIN ~w', [RightTableName])
+    ;   atomic_list_concat(JoinConditions, ' AND ', JoinCondStr),
+        format(atom(JoinClause), 'RIGHT JOIN ~w ON ~w', [RightTableName, JoinCondStr])
+    ).
+
+%% ============================================
+%% FULL OUTER JOIN SUPPORT (Phase 3d)
+%% ============================================
+
+%% compile_full_outer_join_clause(+Name, +Arity, +Body, +Head, +Options, -SQLCode)
+%  Compile FULL OUTER JOIN pattern to SQL
+%  Pattern: (LeftGoal ; LeftFallback), (RightGoal ; RightFallback)
+%
+compile_full_outer_join_clause(Name, Arity, Body, Head, Options, SQLCode) :-
+    % Extract pattern
+    Body = ((LeftGoal ; LeftFallback), (RightGoal ; RightFallback)),
+
+    % Extract NULL bindings
+    extract_null_bindings(LeftFallback, LeftNullVars),
+    extract_null_bindings(RightFallback, RightNullVars),
+    append(LeftNullVars, RightNullVars, AllNullVars),
+
+    % Parse head arguments
+    Head =.. [Name|HeadArgs],
+
+    % Get table names
+    LeftGoal =.. [LeftTableName|LeftArgs],
+    RightGoal =.. [RightTableName|RightArgs],
+
+    % Generate FROM clause (left table)
+    generate_from_clause([LeftGoal], FromClause),
+
+    % Generate FULL OUTER JOIN
+    generate_full_outer_join_sql(LeftGoal, RightGoal, JoinClause),
+
+    % Generate SELECT clause
+    generate_select_for_nested_joins(HeadArgs, [LeftGoal], [RightGoal], AllNullVars, SelectClause),
+
+    % No WHERE clause for simple FULL OUTER
+    WhereClause = '',
+
+    % Get output format
+    (   member(format(Format), Options)
+    ->  true
+    ;   Format = view
+    ),
+    (   member(view_name(ViewName), Options)
+    ->  true
+    ;   ViewName = Name
+    ),
+
+    % Combine into final SQL
+    combine_left_join_sql(Format, ViewName, SelectClause, FromClause, JoinClause, WhereClause, SQLCode).
+
+%% generate_full_outer_join_sql(+LeftGoal, +RightGoal, -JoinClause)
+%  Generate FULL OUTER JOIN clause
+%
+generate_full_outer_join_sql(LeftGoal, RightGoal, JoinClause) :-
+    LeftGoal =.. [LeftTableName|LeftArgs],
+    RightGoal =.. [RightTableName|RightArgs],
+
+    % Find shared variables
+    findall(Cond,
+            (nth1(RightPos, RightArgs, RightArg),
+             var(RightArg),
+             nth1(LeftPos, LeftArgs, LeftArg),
+             LeftArg == RightArg,
+             get_column_name_from_schema(LeftTableName, LeftPos, LeftCol),
+             get_column_name_from_schema(RightTableName, RightPos, RightCol),
+             format(atom(Cond), '~w.~w = ~w.~w',
+                    [RightTableName, RightCol, LeftTableName, LeftCol])
+            ),
+            JoinConditions),
+
+    % Build FULL OUTER JOIN clause
+    (   JoinConditions = []
+    ->  format(atom(JoinClause), 'FULL OUTER JOIN ~w', [RightTableName])
+    ;   atomic_list_concat(JoinConditions, ' AND ', JoinCondStr),
+        format(atom(JoinClause), 'FULL OUTER JOIN ~w ON ~w', [RightTableName, JoinCondStr])
     ).
 
 %% ============================================
