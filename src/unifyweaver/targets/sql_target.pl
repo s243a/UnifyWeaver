@@ -911,43 +911,98 @@ combine_left_join_sql(Format, ViewName, SelectClause, FromClause, JoinClause, Wh
 %% RIGHT JOIN SUPPORT (Phase 3d)
 %% ============================================
 
+%% extract_leading_disjunctions(+Body, -LeadingDisjunctions, -RemainingGoals)
+%  Extract all leading disjunctions (for RIGHT JOIN chains)
+%  Pattern: (A ; ...), (B ; ...), C, D → LeadingDisjs = [(A;...), (B;...)], Remaining = [C, D]
+%
+extract_leading_disjunctions(Body, LeadingDisjunctions, RemainingGoals) :-
+    extract_leading_disjs_iter(Body, [], LeadingDisjunctions, RemainingGoals).
+
+extract_leading_disjs_iter((Disj, Rest), Acc, AllDisjs, Remaining) :-
+    Disj = (_ ; _),  % Is a disjunction
+    !,
+    extract_leading_disjs_iter(Rest, [Disj|Acc], AllDisjs, Remaining).
+extract_leading_disjs_iter((Disj ; _) = FinalDisj, Acc, AllDisjs, []) :-
+    % Final goal is a disjunction
+    !,
+    reverse([FinalDisj|Acc], AllDisjs).
+extract_leading_disjs_iter(Rest, Acc, AllDisjs, Remaining) :-
+    % Hit a non-disjunction
+    Acc \= [],
+    reverse(Acc, AllDisjs),
+    conjunction_to_list(Rest, Remaining).
+
+%% process_right_joins(+Goals, +AccTables, -JoinClauses, -AllTables, -AllNullVars)
+%  Process goals iteratively to generate RIGHT JOIN clauses
+%  Goals can be disjunctions (table ; null) or regular table goals
+%
+process_right_joins([], _, [], [], []).
+process_right_joins([Goal|Rest], AccTables, [JoinClause|RestJoins], [Table|RestTables], AllNullVars) :-
+    % Check if Goal is a disjunction
+    (   Goal = (TableGoal ; Fallback)
+    ->  % Disjunction - extract table and NULL bindings
+        extract_null_bindings(Fallback, NullVars),
+        Table = TableGoal
+    ;   % Regular table goal
+        NullVars = [],
+        Table = Goal
+    ),
+
+    % Generate RIGHT JOIN for this table
+    generate_right_join_sql(AccTables, Table, JoinClause),
+
+    % Add this table to accumulated
+    append(AccTables, [Table], NewAccTables),
+
+    % Recurse
+    process_right_joins(Rest, NewAccTables, RestJoins, RestTables, RestNullVars),
+
+    % Accumulate NULL vars
+    append(NullVars, RestNullVars, AllNullVars).
+
 %% compile_right_join_clause(+Name, +Arity, +Body, +Head, +Options, -SQLCode)
 %  Compile RIGHT JOIN pattern to SQL
-%  Pattern: (LeftGoal ; Fallback), RightGoals
+%  Pattern: (LeftGoal ; Fallback), RightGoals (supports chains with multiple disjunctions)
 %
 compile_right_join_clause(Name, Arity, Body, Head, Options, SQLCode) :-
-    % Extract pattern: (LeftGoal ; Fallback), Rest
-    Body = ((LeftGoal ; Fallback), Rest),
+    % Extract ALL leading disjunctions and remaining goals
+    extract_leading_disjunctions(Body, LeadingDisjunctions, RemainingGoals),
 
-    % Extract NULL bindings from fallback
-    extract_null_bindings(Fallback, NullVars),
+    % Verify we have at least one leading disjunction
+    LeadingDisjunctions \= [],
+
+    % First disjunction becomes FROM table
+    LeadingDisjunctions = [FirstDisj|RestDisjs],
+    FirstDisj = (FirstTable ; FirstFallback),
+    extract_null_bindings(FirstFallback, FirstNullVars),
+
+    % Generate FROM clause
+    generate_from_clause([FirstTable], FromClause),
+
+    % Combine remaining disjunctions with regular goals
+    append(RestDisjs, RemainingGoals, AllRightGoals),
+
+    % Process all right goals to generate RIGHT JOINs
+    (   AllRightGoals = []
+    ->  AllJoins = '',
+        AllRightTables = [],
+        RestNullVars = []
+    ;   process_right_joins(AllRightGoals, [FirstTable], JoinClauses, AllRightTables, RestNullVars),
+        atomic_list_concat(JoinClauses, '\n', AllJoins)
+    ),
+
+    % Combine NULL vars
+    append(FirstNullVars, RestNullVars, AllNullVars),
 
     % Parse head arguments
     Head =.. [Name|HeadArgs],
 
-    % Convert Rest to list of goals
-    conjunction_to_list(Rest, RightGoals),
-
-    % Separate right goals into tables and constraints
-    separate_goals(RightGoals, RightTableGoals, RightConstraints),
-
-    % For RIGHT JOIN: LeftGoal is FROM, RightTableGoals are RIGHT JOINs
-    % FROM clause starts with the left table (the one with disjunction)
-    generate_from_clause([LeftGoal], FromClause),
-
-    % Generate RIGHT JOINs for all right tables
-    (   RightTableGoals = []
-    ->  AllJoins = ''
-    ;   generate_right_join_chain([LeftGoal], RightTableGoals, RightJoinClauses),
-        atomic_list_concat(RightJoinClauses, '\n', AllJoins)
-    ),
-
     % Generate SELECT clause
-    AllTableGoals = [LeftGoal|RightTableGoals],
-    generate_select_for_nested_joins(HeadArgs, [LeftGoal], RightTableGoals, NullVars, SelectClause),
+    AllTableGoals = [FirstTable|AllRightTables],
+    generate_select_for_nested_joins(HeadArgs, [FirstTable], AllRightTables, AllNullVars, SelectClause),
 
-    % Generate WHERE clause
-    generate_where_clause(RightConstraints, HeadArgs, AllTableGoals, WhereClause),
+    % Generate WHERE clause (no constraints in simple RIGHT JOIN chains)
+    WhereClause = '',
 
     % Get output format
     (   member(format(Format), Options)
