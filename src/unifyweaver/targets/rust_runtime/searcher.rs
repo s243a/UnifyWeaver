@@ -1,7 +1,6 @@
 use redb::{Database, ReadableTable, TableDefinition};
 use serde_json::Value;
 use std::sync::Arc;
-use std::collections::HashSet;
 use crate::embedding::EmbeddingProvider;
 
 const OBJECTS: TableDefinition<&str, &str> = TableDefinition::new("objects");
@@ -13,7 +12,7 @@ pub struct PtSearcher {
     embedder: EmbeddingProvider,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
     pub id: String,
     pub score: f32,

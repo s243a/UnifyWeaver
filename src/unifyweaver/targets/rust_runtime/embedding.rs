@@ -19,8 +19,8 @@ impl EmbeddingProvider {
         // Load Model
         let device = Device::Cpu;
         let config = Config::default(); // Assuming bert-base or similar config match
-        let vb = VarBuilder::from_safetensors(vec![model_path], candle_core::DType::F32, &device)?;
-        let model = BertModel::new(vb, &config)?;
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_path.as_ref()], candle_core::DType::F32, &device)? };
+        let model = BertModel::load(vb, &config)?;
 
         Ok(Self {
             model: std::sync::Arc::new(model),
@@ -39,7 +39,7 @@ impl EmbeddingProvider {
         let token_type_ids = Tensor::new(tokens.get_type_ids(), &device)?.unsqueeze(0)?;
 
         // Run Inference
-        let embeddings = model.forward(&token_ids, &token_type_ids)?;
+        let embeddings = model.forward(&token_ids, &token_type_ids, None)?;
         
         // Mean Pooling (simplified: just taking [CLS] token or mean of last hidden state)
         // For sentence-transformers, usually mean pooling with attention mask is used.
