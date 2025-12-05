@@ -21,6 +21,7 @@
 % Suppress singleton warnings in this experimental generator target.
 :- style_check(-singleton).
 :- discontiguous extract_match_constraints/2.
+:- discontiguous term_to_go_expr/3.
 :- use_module(library(filesex)).
 
 %% ============================================
@@ -140,8 +141,20 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     ),
     format('=== Compiling ~w/~w to Go ===~n', [Pred, Arity]),
 
+    % Check if this is an aggregation predicate (aggregate/3 in body) - MUST come before db_backend check
+    (   functor(Head, Pred, Arity),
+        clause(Head, Body),
+        is_aggregation_predicate(Body)
+    ->  format('  Mode: Aggregation~n'),
+        compile_aggregation_mode(Pred, Arity, Options, GoCode)
+    % Check if this is a GROUP BY predicate (group_by/4 in body)
+    ;   functor(Head, Pred, Arity),
+        clause(Head, Body),
+        is_group_by_predicate(Body)
+    ->  format('  Mode: GROUP BY Aggregation~n'),
+        compile_group_by_mode(Pred, Arity, Options, GoCode)
     % Check if this is database read mode
-    (   option(db_backend(bbolt), Options),
+    ;   option(db_backend(bbolt), Options),
         (option(db_mode(read), Options) ; \+ option(json_input(true), Options)),
         \+ option(json_output(true), Options)
     ->  % Compile for database read
@@ -170,7 +183,7 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     ->  % Compile for JSON output
         format('  Mode: JSON output~n'),
         compile_json_output_mode(Pred, Arity, Options, GoCode)
-    % Check if this is an aggregation operation
+    % Check if this is an aggregation operation (legacy option-based)
     ;   option(aggregation(AggOp), Options, none),
         AggOp \= none
     ->  % Compile as aggregation
@@ -1143,8 +1156,9 @@ term_to_go_expr(Term, _, GoExpr) :-
     atom(Term), !,
     % Atom constant - quote it for Go
     format(atom(GoExpr), '"~w"', [Term]).
-term_to_go_expr(Term, _, Term) :-
-    number(Term), !.
+term_to_go_expr(Term, _, GoExpr) :-
+    number(Term), !,
+    format(atom(GoExpr), '~w', [Term]).
 term_to_go_expr(Term, VarMap, GoExpr) :-
     compound(Term), !,
     Term =.. [Op, Left, Right],
@@ -1568,21 +1582,667 @@ func main() {
 %% ============================================
 
 %% ============================================
+%% DATABASE KEY EXPRESSION COMPILER
+%% ============================================
+
+%% compile_key_expression(+KeyExpr, +FieldMappings, +Options, -KeyCode, -Imports)
+%  Compile a key expression into Go code that generates a database key
+%
+%  KeyExpr can be:
+%    - field(FieldName)              - Extract a single field value
+%    - composite([Expr1, Expr2, ...]) - Concatenate multiple expressions
+%    - hash(Expr)                    - SHA-256 hash of an expression
+%    - hash(Expr, Algorithm)         - Hash with specific algorithm
+%    - literal(String)               - Constant string value
+%    - substring(Expr, Start, Len)   - Extract substring
+%    - uuid()                        - Generate UUID
+%    - auto_increment()              - Sequential counter (future)
+%
+%  Returns:
+%    - KeyCode: Go code that evaluates to the key (as string)
+%    - Imports: List of required import packages
+%
+compile_key_expression(KeyExpr, FieldMappings, Options, KeyCode, Imports) :-
+    compile_key_expr(KeyExpr, FieldMappings, Options, KeyCode, Imports).
+
+%% compile_key_expr/5 - Main expression compiler
+%
+%  field(FieldName) - Extract field value
+compile_key_expr(field(FieldName), FieldMappings, _Options, KeyCode, []) :-
+    % Find field position
+    (   nth1(Pos, FieldMappings, FieldName-_)
+    ->  true
+    ;   nth1(Pos, FieldMappings, nested(Path, _)),
+        last(Path, FieldName)
+    ->  true
+    ;   format('ERROR: Field ~w not found in mappings: ~w~n', [FieldName, FieldMappings]),
+        fail
+    ),
+    format(atom(FieldVar), 'field~w', [Pos]),
+    format(string(KeyCode), 'fmt.Sprintf("%v", ~s)', [FieldVar]).
+
+%  composite([Expr1, Expr2, ...]) - Concatenate expressions
+compile_key_expr(composite(Exprs), FieldMappings, Options, KeyCode, AllImports) :-
+    % Get delimiter (default ':')
+    option(db_key_delimiter(Delimiter), Options, ':'),
+
+    % Compile each sub-expression
+    maplist(compile_key_expr_for_composite(FieldMappings, Options), Exprs, ExprCodes, ExprImportsList),
+
+    % Flatten imports
+    append(ExprImportsList, AllImports),
+
+    % Build format string and args
+    length(Exprs, NumExprs),
+    length(FormatSpecifiers, NumExprs),
+    maplist(=('%s'), FormatSpecifiers),
+    atomic_list_concat(FormatSpecifiers, Delimiter, FormatString),
+    atomic_list_concat(ExprCodes, ', ', ArgsString),
+
+    format(string(KeyCode), 'fmt.Sprintf("~s", ~s)', [FormatString, ArgsString]).
+
+%  hash(Expr) - SHA-256 hash of expression
+compile_key_expr(hash(Expr), FieldMappings, Options, KeyCode, Imports) :-
+    compile_key_expr(hash(Expr, sha256), FieldMappings, Options, KeyCode, Imports).
+
+%  hash(Expr, Algorithm) - Hash with specific algorithm
+compile_key_expr(hash(Expr, Algorithm), FieldMappings, Options, KeyCode, Imports) :-
+    % Compile the inner expression
+    compile_key_expr(Expr, FieldMappings, Options, ExprCode, ExprImports),
+
+    % Generate hash code based on algorithm
+    (   Algorithm = sha256
+    ->  HashImport = 'crypto/sha256',
+        format(string(KeyCode), 'func() string {
+\t\tvalStr := ~s
+\t\thash := sha256.Sum256([]byte(valStr))
+\t\treturn hex.EncodeToString(hash[:])
+\t}()', [ExprCode])
+    ;   Algorithm = md5
+    ->  HashImport = 'crypto/md5',
+        format(string(KeyCode), 'func() string {
+\t\tvalStr := ~s
+\t\thash := md5.Sum([]byte(valStr))
+\t\treturn hex.EncodeToString(hash[:])
+\t}()', [ExprCode])
+    ;   format('ERROR: Unsupported hash algorithm: ~w~n', [Algorithm]),
+        fail
+    ),
+
+    append(ExprImports, [HashImport, 'encoding/hex'], Imports).
+
+%  literal(String) - Constant string value
+compile_key_expr(literal(String), _FieldMappings, _Options, KeyCode, []) :-
+    format(string(KeyCode), '"~s"', [String]).
+
+%  substring(Expr, Start, Length) - Extract substring
+compile_key_expr(substring(Expr, Start, Length), FieldMappings, Options, KeyCode, Imports) :-
+    compile_key_expr(Expr, FieldMappings, Options, ExprCode, Imports),
+    End is Start + Length,
+    format(string(KeyCode), 'func() string {
+\t\tstr := ~s
+\t\tif len(str) > ~w {
+\t\t\treturn str[~w:~w]
+\t\t}
+\t\treturn str
+\t}()', [ExprCode, End, Start, End]).
+
+%  uuid() - Generate UUID
+compile_key_expr(uuid(), _FieldMappings, _Options, KeyCode, ['github.com/google/uuid']) :-
+    KeyCode = 'uuid.New().String()'.
+
+%  auto_increment() - Sequential counter (requires state management)
+compile_key_expr(auto_increment(), _FieldMappings, _Options, _KeyCode, _Imports) :-
+    format('ERROR: auto_increment() not yet implemented~n'),
+    fail.
+
+%% Helper for composite - wraps each expression's code
+compile_key_expr_for_composite(FieldMappings, Options, Expr, Code, Imports) :-
+    compile_key_expr(Expr, FieldMappings, Options, Code, Imports).
+
+%% normalize_key_strategy(+Options, -NormalizedOptions)
+%  Normalize key strategy options for backward compatibility
+%
+%  Converts:
+%    db_key_field(Field) → db_key_strategy(field(Field))
+%    db_key_fields([F1,F2]) → db_key_strategy(composite([field(F1), field(F2)]))
+%
+normalize_key_strategy(Options, NormalizedOptions) :-
+    % Check if db_key_strategy is already present
+    (   option(db_key_strategy(_), Options)
+    ->  % Already normalized
+        NormalizedOptions = Options
+    ;   option(db_key_field(Field), Options)
+    ->  % Convert db_key_field(F) to db_key_strategy(field(F))
+        select(db_key_field(Field), Options, TempOptions),
+        NormalizedOptions = [db_key_strategy(field(Field))|TempOptions]
+    ;   option(db_key_fields(Fields), Options)
+    ->  % Convert db_key_fields([...]) to db_key_strategy(composite([field(F1), ...]))
+        maplist(wrap_field_expr, Fields, FieldExprs),
+        select(db_key_fields(Fields), Options, TempOptions),
+        NormalizedOptions = [db_key_strategy(composite(FieldExprs))|TempOptions]
+    ;   % No key strategy specified - will use default
+        NormalizedOptions = Options
+    ).
+
+wrap_field_expr(Field, field(Field)).
+
+%% ============================================
+%% DATABASE QUERY CONSTRAINTS (Phase 8a)
+%% ============================================
+
+%% extract_db_constraints(+Body, -JsonRecord, -Constraints)
+%  Extract filter constraints from predicate body
+%  Separates json_record/1 from comparison constraints
+%
+%  Supported constraints (Phase 8a):
+%    - Comparisons: >, <, >=, =<, =, \=
+%    - Implicit AND (multiple constraints in body)
+%
+extract_db_constraints(Body, JsonRecord, Constraints) :-
+    extract_constraints_impl(Body, none, JsonRecord, [], Constraints).
+
+% Helper: recursively extract constraints from conjunction
+extract_constraints_impl((A, B), JsonRecAcc, JsonRec, ConsAcc, Constraints) :- !,
+    extract_constraints_impl(A, JsonRecAcc, JsonRec1, ConsAcc, Cons1),
+    extract_constraints_impl(B, JsonRec1, JsonRec, Cons1, Constraints).
+
+% json_record/1 - save for later
+extract_constraints_impl(json_record(Fields), _JsonRecAcc, json_record(Fields), ConsAcc, ConsAcc) :- !.
+
+% Comparison constraints - collect them
+extract_constraints_impl(Constraint, JsonRecAcc, JsonRecAcc, ConsAcc, [Constraint|ConsAcc]) :-
+    is_comparison_constraint(Constraint), !.
+
+extract_constraints_impl(Constraint, JsonRecAcc, JsonRecAcc, ConsAcc, [Constraint|ConsAcc]) :-
+    is_functional_constraint(Constraint), !.
+
+% Skip other predicates (like json_get, etc.)
+extract_constraints_impl(_, JsonRecAcc, JsonRecAcc, ConsAcc, ConsAcc).
+
+%% is_comparison_constraint(+Term)
+%  Check if term is a supported comparison constraint
+%
+is_comparison_constraint(_ > _).
+is_comparison_constraint(_ < _).
+is_comparison_constraint(_ >= _).
+is_comparison_constraint(_ =< _).
+is_comparison_constraint(_ = _).
+is_comparison_constraint(_ \= _).
+is_comparison_constraint(_ =@= _).  % Case-insensitive equality
+
+%% is_functional_constraint(+Term)
+%  Check if term is a functional constraint (contains, member, etc.)
+%
+is_functional_constraint(contains(_, _)).
+is_functional_constraint(member(_, _)).
+
+%% is_numeric_constraint(+Constraint)
+%  Check if constraint requires numeric type conversion (>, <, >=, =<)
+%  Equality and inequality (=, \=) can work with any type
+%
+is_numeric_constraint(_ > _).
+is_numeric_constraint(_ < _).
+is_numeric_constraint(_ >= _).
+is_numeric_constraint(_ =< _).
+
+%% constraints_need_strings(+Constraints)
+%  Check if any constraint requires the strings package
+%  True if constraints contain =@= or contains/2
+%
+constraints_need_strings(Constraints) :-
+    member(Constraint, Constraints),
+    (   Constraint = (_ =@= _)
+    ;   Constraint = contains(_, _)
+    ), !.
+
+%% generate_filter_checks(+Constraints, +FieldMappings, -GoCode)
+%  Generate Go if statements for constraint checking
+%  Returns empty string if no constraints
+%
+generate_filter_checks([], _, '') :- !.
+generate_filter_checks(Constraints, FieldMappings, GoCode) :-
+    findall(CheckCode,
+        (member(Constraint, Constraints),
+         constraint_to_go_check(Constraint, FieldMappings, CheckCode)),
+        Checks),
+    atomic_list_concat(Checks, '\n', GoCode).
+
+%% constraint_to_go_check(+Constraint, +FieldMappings, -GoCode)
+%  Convert a Prolog constraint to Go if statement
+%
+constraint_to_go_check(Left > Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w > ~w\n\t\t\tif !(~s > ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left < Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w < ~w\n\t\t\tif !(~s < ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left >= Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w >= ~w\n\t\t\tif !(~s >= ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left =< Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w =< ~w\n\t\t\tif !(~s <= ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left = Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w = ~w\n\t\t\tif !(~s == ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+constraint_to_go_check(Left \= Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w \\= ~w\n\t\t\tif !(~s != ~s) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+% Case-insensitive equality (requires strings package)
+constraint_to_go_check(Left =@= Right, FieldMappings, Code) :- !,
+    field_term_to_go_expr(Left, FieldMappings, LeftExpr),
+    field_term_to_go_expr(Right, FieldMappings, RightExpr),
+    format(string(Code), '\t\t\t// Filter: ~w =@= ~w (case-insensitive)\n\t\t\tif !strings.EqualFold(fmt.Sprintf("%v", ~s), fmt.Sprintf("%v", ~s)) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Left, Right, LeftExpr, RightExpr]).
+
+% Contains check (requires strings package)
+constraint_to_go_check(contains(Haystack, Needle), FieldMappings, Code) :- !,
+    field_term_to_go_expr(Haystack, FieldMappings, HaystackExpr),
+    field_term_to_go_expr(Needle, FieldMappings, NeedleExpr),
+    format(string(Code), '\t\t\t// Filter: contains(~w, ~w)\n\t\t\tif !strings.Contains(fmt.Sprintf("%v", ~s), fmt.Sprintf("%v", ~s)) {\n\t\t\t\treturn nil // Skip record\n\t\t\t}',
+           [Haystack, Needle, HaystackExpr, NeedleExpr]).
+
+% List membership check
+constraint_to_go_check(member(Element, List), FieldMappings, Code) :- !,
+    field_term_to_go_expr(Element, FieldMappings, ElementExpr),
+    generate_member_check_code(ElementExpr, List, FieldMappings, Code).
+
+%% field_term_to_go_expr(+Term, +FieldMappings, -GoExpr)
+%  Convert a Prolog term to Go expression for filter constraints
+%  Handles variables (map to fieldN) and literals
+%  FieldMappings is a list of Name-Var pairs from json_record
+%
+field_term_to_go_expr(Term, FieldMappings, GoExpr) :-
+    var(Term), !,
+    % Find which field this variable corresponds to
+    (   nth1(Pos, FieldMappings, _-Var),
+        Term == Var
+    ->  format(atom(GoExpr), 'field~w', [Pos])
+    ;   % Variable not in mappings - shouldn't happen
+        format('WARNING: Variable ~w not found in field mappings~n', [Term]),
+        GoExpr = 'unknownVar'
+    ).
+
+field_term_to_go_expr(Term, _, GoExpr) :-
+    string(Term), !,
+    % String literal - use as-is with quotes
+    format(atom(GoExpr), '"~s"', [Term]).
+
+field_term_to_go_expr(Term, _, GoExpr) :-
+    atom(Term), !,
+    % Atom literal - quote it for Go string
+    format(atom(GoExpr), '"~w"', [Term]).
+
+field_term_to_go_expr(Term, _, GoExpr) :-
+    number(Term), !,
+    format(atom(GoExpr), '~w', [Term]).
+
+field_term_to_go_expr(Term, _, GoExpr) :-
+    % Fallback for unknown terms
+    format(atom(GoExpr), '%s /* ~w */', [Term]).
+
+%% generate_member_check_code(+ElementExpr, +List, +FieldMappings, -Code)
+%  Generate Go code for list membership check
+%  Handles both string and numeric list members
+%
+generate_member_check_code(ElementExpr, List, FieldMappings, Code) :-
+    % Convert list elements to Go expressions
+    findall(GoExpr,
+        (member(ListItem, List),
+         field_term_to_go_expr(ListItem, FieldMappings, GoExpr)),
+        GoExprs),
+    % Generate the list items as Go slice literals
+    atomic_list_concat(GoExprs, ', ', GoListItems),
+    % Determine if we're checking strings or numbers
+    (   List = [FirstItem|_],
+        (atom(FirstItem) ; string(FirstItem))
+    ->  % String membership
+        format(string(Code), '\t\t\t// Filter: member(~w, list)
+\t\t\toptions := []string{~s}
+\t\t\tfound := false
+\t\t\tfor _, opt := range options {
+\t\t\t\tif fmt.Sprintf("%v", ~s) == opt {
+\t\t\t\t\tfound = true
+\t\t\t\t\tbreak
+\t\t\t\t}
+\t\t\t}
+\t\t\tif !found {
+\t\t\t\treturn nil // Skip record
+\t\t\t}',
+            [ElementExpr, GoListItems, ElementExpr])
+    ;   % Numeric membership
+        format(string(Code), '\t\t\t// Filter: member(~w, list)
+\t\t\tfound := false
+\t\t\tfor _, opt := range []interface{}{~s} {
+\t\t\t\tif fmt.Sprintf("%v", ~s) == fmt.Sprintf("%v", opt) {
+\t\t\t\t\tfound = true
+\t\t\t\t\tbreak
+\t\t\t\t}
+\t\t\t}
+\t\t\tif !found {
+\t\t\t\treturn nil // Skip record
+\t\t\t}',
+            [ElementExpr, GoListItems, ElementExpr])
+    ).
+
+%% extract_used_fields(+KeyExpr, -UsedFieldPositions)
+%  Extract which field positions are referenced by the key expression
+%
+extract_used_fields(field(FieldName), [Pos]) :-
+    % Single field reference - need to find its position in FieldMappings
+    % This is a simplified version - full implementation would need FieldMappings
+    % For now, extract field number from field(name) atom
+    !,
+    Pos = 1.  % Placeholder - will be computed properly in context
+
+extract_used_fields(composite(Exprs), AllUsedFields) :-
+    !,
+    findall(UsedFields,
+        (member(Expr, Exprs),
+         extract_used_fields(Expr, UsedFields)),
+        UsedFieldsList),
+    append(UsedFieldsList, AllUsedFields).
+
+extract_used_fields(hash(Expr), UsedFields) :-
+    !,
+    extract_used_fields(Expr, UsedFields).
+
+extract_used_fields(hash(Expr, _Algorithm), UsedFields) :-
+    !,
+    extract_used_fields(Expr, UsedFields).
+
+extract_used_fields(substring(Expr, _, _), UsedFields) :-
+    !,
+    extract_used_fields(Expr, UsedFields).
+
+extract_used_fields(literal(_), []) :- !.
+extract_used_fields(uuid(), []) :- !.
+extract_used_fields(auto_increment(), []) :- !.
+
+%% extract_used_field_positions(+KeyExpr, +FieldMappings, -UsedPositions)
+%  Extract actual field positions by matching field names
+%
+extract_used_field_positions(KeyExpr, FieldMappings, UsedPositions) :-
+    extract_field_names_from_expr(KeyExpr, FieldNames),
+    findall(Pos,
+        (member(FieldName, FieldNames),
+         nth1(Pos, FieldMappings, FieldName-_)),
+        UsedPositions).
+
+%% extract_field_names_from_expr(+KeyExpr, -FieldNames)
+%  Extract all field names referenced in the expression
+%
+extract_field_names_from_expr(field(FieldName), [FieldName]) :- !.
+extract_field_names_from_expr(composite(Exprs), AllFields) :-
+    !,
+    findall(Fields,
+        (member(Expr, Exprs),
+         extract_field_names_from_expr(Expr, Fields)),
+        FieldsList),
+    append(FieldsList, AllFields).
+extract_field_names_from_expr(hash(Expr), Fields) :-
+    !,
+    extract_field_names_from_expr(Expr, Fields).
+extract_field_names_from_expr(hash(Expr, _), Fields) :-
+    !,
+    extract_field_names_from_expr(Expr, Fields).
+extract_field_names_from_expr(substring(Expr, _, _), Fields) :-
+    !,
+    extract_field_names_from_expr(Expr, Fields).
+extract_field_names_from_expr(_, []).  % literals, uuid, etc.
+
+%% ============================================
 %% DATABASE READ MODE COMPILATION
 %% ============================================
 
-%% compile_database_read_mode(+Pred, +Arity, +Options, -GoCode)
-%  Compile predicate to read from bbolt database and output as JSON
-%
-compile_database_read_mode(Pred, Arity, Options, GoCode) :-
-    % Get database options
-    option(db_file(DbFile), Options, 'data.db'),
-    option(db_bucket(BucketName), Options, Pred),
-    atom_string(BucketName, BucketStr),
-    option(include_package(IncludePackage), Options, true),
+%% ============================================
+%% KEY OPTIMIZATION DETECTION (Phase 8c)
+%% ============================================
 
-    % Generate database read code
-    format(string(Body), '\t// Open database (read-only)
+%% analyze_key_optimization(+KeyStrategy, +Constraints, +FieldMappings, -OptType, -OptDetails)
+%  Analyze if predicate can use optimized key lookup
+%  OptType: direct_lookup | prefix_scan | full_scan
+%  OptDetails: Details needed for code generation
+%
+analyze_key_optimization(KeyStrategy, Constraints, FieldMappings, OptType, OptDetails) :-
+    (   can_use_direct_lookup(KeyStrategy, Constraints, FieldMappings, KeyValue)
+    ->  OptType = direct_lookup,
+        OptDetails = key_value(KeyValue),
+        format('  Optimization: Direct lookup (key=~w)~n', [KeyValue])
+    ;   can_use_prefix_scan(KeyStrategy, Constraints, FieldMappings, PrefixValue)
+    ->  OptType = prefix_scan,
+        OptDetails = prefix_value(PrefixValue),
+        format('  Optimization: Prefix scan (prefix=~w)~n', [PrefixValue])
+    ;   OptType = full_scan,
+        OptDetails = none,
+        format('  Optimization: Full scan (no key match)~n')
+    ).
+
+%% can_use_direct_lookup(+KeyStrategy, +Constraints, +FieldMappings, -KeyValue)
+%  Check if we can use bucket.Get() for direct key lookup
+%  True if there's an exact equality constraint on the key field
+%
+can_use_direct_lookup([KeyField], Constraints, FieldMappings, KeyValue) :-
+    % Single key field
+    member(KeyField-_Var, FieldMappings),
+    member(Constraint, Constraints),
+    is_exact_equality_on_field(Constraint, KeyField, FieldMappings, KeyValue),
+    !.
+
+can_use_direct_lookup(KeyFields, Constraints, FieldMappings, CompositeKey) :-
+    % Composite key - all fields must have exact equality
+    is_list(KeyFields),
+    length(KeyFields, Len),
+    Len > 1,
+    maplist(has_exact_constraint_for_field(Constraints, FieldMappings), KeyFields, Values),
+    build_composite_key_value(Values, CompositeKey),
+    !.
+
+%% can_use_prefix_scan(+KeyStrategy, +Constraints, +FieldMappings, -PrefixValue)
+%  Check if we can use cursor.Seek() for prefix scan
+%  True if first N fields of composite key have exact equality
+%
+can_use_prefix_scan(KeyFields, Constraints, FieldMappings, PrefixValue) :-
+    is_list(KeyFields),
+    length(KeyFields, TotalLen),
+    TotalLen > 1,  % Must be composite key
+    find_matching_prefix_fields(KeyFields, Constraints, FieldMappings, PrefixFields, PrefixValues),
+    length(PrefixFields, PrefixLen),
+    PrefixLen > 0,
+    PrefixLen < TotalLen,  % Not all fields (that would be direct lookup)
+    build_composite_key_value(PrefixValues, PrefixValue),
+    !.
+
+%% is_exact_equality_on_field(+Constraint, +FieldName, +FieldMappings, -Value)
+%  Check if constraint is exact equality (=) on the field and extract value
+%  Rejects case-insensitive (=@=), contains, member, etc.
+%
+is_exact_equality_on_field(Var = Value, FieldName, FieldMappings, Value) :-
+    member(FieldName-Var, FieldMappings),
+    ground(Value),
+    \+ is_variable_reference(Value, FieldMappings),  % Value must be literal, not another field
+    !.
+
+%% is_variable_reference(+Term, +FieldMappings)
+%  Check if Term is a variable that appears in FieldMappings
+%
+is_variable_reference(Var, FieldMappings) :-
+    var(Var),
+    member(_-Var, FieldMappings),
+    !.
+
+%% has_exact_constraint_for_field(+Constraints, +FieldMappings, +FieldName, -Value)
+%  Check if there's an exact equality constraint for this field
+%
+has_exact_constraint_for_field(Constraints, FieldMappings, FieldName, Value) :-
+    member(Constraint, Constraints),
+    is_exact_equality_on_field(Constraint, FieldName, FieldMappings, Value).
+
+%% find_matching_prefix_fields(+KeyFields, +Constraints, +FieldMappings, -PrefixFields, -PrefixValues)
+%  Find the longest prefix of KeyFields that all have exact equality constraints
+%
+find_matching_prefix_fields([Field|Rest], Constraints, FieldMappings, [Field|RestFields], [Value|RestValues]) :-
+    has_exact_constraint_for_field(Constraints, FieldMappings, Field, Value),
+    !,
+    find_matching_prefix_fields(Rest, Constraints, FieldMappings, RestFields, RestValues).
+find_matching_prefix_fields(_, _, _, [], []).
+
+%% build_composite_key_value(+Values, -CompositeKey)
+%  Build composite key string with colon separator
+%  For direct lookup and prefix scan
+%
+build_composite_key_value([Single], Single) :- !.
+build_composite_key_value(Values, CompositeKey) :-
+    maplist(value_to_key_string, Values, Strings),
+    atomic_list_concat(Strings, ':', CompositeKey).
+
+%% value_to_key_string(+Value, -String)
+%  Convert a value to string for key construction
+%
+value_to_key_string(Value, String) :-
+    (   atom(Value) -> atom_string(Value, String)
+    ;   string(Value) -> String = Value
+    ;   number(Value) -> format(string(String), '~w', [Value])
+    ;   format(string(String), '~w', [Value])
+    ).
+
+%% ============================================
+%% FIELD EXTRACTION FOR DATABASE READ
+%% ============================================
+
+%% generate_field_extractions_for_read(+FieldMappings, +Constraints, +HeadArgs, -GoCode)
+%  Generate field extraction code for read mode with proper type conversions
+%  - Extracts all fields from FieldMappings
+%  - Adds type conversions for fields used in constraints
+%  - Marks unused fields with _ = fieldN to avoid Go compiler warnings
+%
+generate_field_extractions_for_read(FieldMappings, Constraints, HeadArgs, GoCode) :-
+    % Build set of field positions used in NUMERIC constraints (need float64 conversion)
+    findall(NumericPos,
+        (   nth1(NumericPos, FieldMappings, _-Var),
+            member(C, Constraints),
+            is_numeric_constraint(C),
+            term_variables(C, CVars),
+            member(CV, CVars),
+            CV == Var
+        ),
+        NumericConstraintPositions),
+
+    findall(HeadPos,
+        (   nth1(HeadPos, FieldMappings, _-Var),
+            member(HV, HeadArgs),
+            HV == Var
+        ),
+        HeadPositions),
+
+    findall(ExtractBlock,
+        (   nth1(Pos, FieldMappings, Field-_Var),
+            atom_string(Field, FieldStr),
+
+            % Check if this position needs numeric type conversion
+            (   member(Pos, NumericConstraintPositions)
+            ->  NeedsNumericConversion = true
+            ;   NeedsNumericConversion = false
+            ),
+
+            (   member(Pos, HeadPositions)
+            ->  UsedInHead = true
+            ;   UsedInHead = false
+            ),
+
+            % Generate extraction with type conversion if needed
+            (   NeedsNumericConversion = true
+            ->  % Need type conversion for numeric comparison
+                format(string(ExtractBlock), '\t\t\t// Extract field: ~w (with type conversion)
+\t\t\tfield~wRaw, field~wOk := data["~s"]
+\t\t\tif !field~wOk {
+\t\t\t\treturn nil // Skip if field missing
+\t\t\t}
+\t\t\tfield~wFloat, field~wFloatOk := field~wRaw.(float64)
+\t\t\tif !field~wFloatOk {
+\t\t\t\treturn nil // Skip if wrong type
+\t\t\t}
+\t\t\tfield~w := field~wFloat',
+                    [Field, Pos, Pos, FieldStr, Pos, Pos, Pos, Pos, Pos, Pos, Pos])
+            ;   UsedInHead = true
+            ->  % Keep as interface{} for output
+                format(string(ExtractBlock), '\t\t\t// Extract field: ~w
+\t\t\tfield~w, field~wOk := data["~s"]
+\t\t\tif !field~wOk {
+\t\t\t\treturn nil // Skip if field missing
+\t\t\t}',
+                    [Field, Pos, Pos, FieldStr, Pos])
+            ;   % Unused field - extract and mark as unused
+                format(string(ExtractBlock), '\t\t\t// Extract field: ~w (unused)
+\t\t\tfield~w, field~wOk := data["~s"]
+\t\t\tif !field~wOk {
+\t\t\t\treturn nil // Skip if field missing
+\t\t\t}
+\t\t\t_ = field~w  // Mark as intentionally unused',
+                    [Field, Pos, Pos, FieldStr, Pos, Pos])
+            )
+        ),
+        ExtractBlocks),
+    atomic_list_concat(ExtractBlocks, '\n', GoCode).
+
+%% generate_output_for_read(+HeadArgs, +FieldMappings, -GoCode)
+%  Generate JSON output code with selected fields only
+%  Creates a map with only the fields that appear in the predicate head
+%
+generate_output_for_read(HeadArgs, FieldMappings, GoCode) :-
+    % Build a map of selected fields
+    findall(FieldName:Pos,
+        (   nth1(Idx, HeadArgs, Var),
+            nth1(Pos, FieldMappings, FieldName-MappedVar),
+            Var == MappedVar
+        ),
+        FieldSelections),
+
+    % Generate output struct
+    findall(FieldPair,
+        (   member(FieldName:Pos, FieldSelections),
+            atom_string(FieldName, FieldStr),
+            format(string(FieldPair), '"~s": field~w', [FieldStr, Pos])
+        ),
+        FieldPairs),
+    atomic_list_concat(FieldPairs, ', ', FieldsStr),
+
+    format(string(GoCode), '\t\t\t// Output selected fields
+\t\t\toutput, err := json.Marshal(map[string]interface{}{~s})
+\t\t\tif err != nil {
+\t\t\t\treturn nil
+\t\t\t}
+\t\t\tfmt.Println(string(output))', [FieldsStr]).
+
+%% ============================================
+%% DATABASE ACCESS CODE GENERATION (Phase 8c)
+%% ============================================
+
+%% generate_direct_lookup_code(+DbFile, +BucketStr, +KeyValue, +ProcessCode, -BodyCode)
+%  Generate optimized code using bucket.Get() for direct key lookup
+%
+generate_direct_lookup_code(DbFile, BucketStr, KeyValue, ProcessCode, BodyCode) :-
+    atom_string(KeyValue, KeyStr),
+    format(string(BodyCode), '\t// Open database (read-only)
 \tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
 \tif err != nil {
 \t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
@@ -1590,7 +2250,93 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 \t}
 \tdefer db.Close()
 
-\t// Read all records from bucket
+\t// Direct lookup using bucket.Get() (optimized)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\t// Get record by key
+\t\tkey := []byte("~s")
+\t\tvalue := bucket.Get(key)
+\t\tif value == nil {
+\t\t\treturn nil // Key not found
+\t\t}
+
+\t\t// Deserialize JSON record
+\t\tvar data map[string]interface{}
+\t\tif err := json.Unmarshal(value, &data); err != nil {
+\t\t\tfmt.Fprintf(os.Stderr, "Error unmarshaling record: %v\\n", err)
+\t\t\treturn nil
+\t\t}
+
+~s
+\t\treturn nil
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+', [DbFile, BucketStr, BucketStr, KeyStr, ProcessCode]).
+
+%% generate_prefix_scan_code(+DbFile, +BucketStr, +PrefixValue, +ProcessCode, -BodyCode)
+%  Generate optimized code using cursor.Seek() for prefix scan
+%
+generate_prefix_scan_code(DbFile, BucketStr, PrefixValue, ProcessCode, BodyCode) :-
+    atom_string(PrefixValue, PrefixStr),
+    format(string(BodyCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Prefix scan using cursor.Seek() (optimized)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\t// Seek to first key with prefix
+\t\tcursor := bucket.Cursor()
+\t\tprefix := []byte("~s:")
+
+\t\tfor k, v := cursor.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = cursor.Next() {
+\t\t\t// Deserialize JSON record
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\tfmt.Fprintf(os.Stderr, "Error unmarshaling record: %v\\n", err)
+\t\t\t\tcontinue // Continue with next record
+\t\t\t}
+
+~s
+\t\t}
+\t\treturn nil
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+', [DbFile, BucketStr, BucketStr, PrefixStr, ProcessCode]).
+
+%% generate_full_scan_code(+DbFile, +BucketStr, +RecordsDesc, +ProcessCode, -BodyCode)
+%  Generate standard code using bucket.ForEach() for full scan
+%
+generate_full_scan_code(DbFile, BucketStr, RecordsDesc, ProcessCode, BodyCode) :-
+    format(string(Header), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Read ~s from bucket
 \terr = db.View(func(tx *bolt.Tx) error {
 \t\tbucket := tx.Bucket([]byte("~s"))
 \t\tif bucket == nil {
@@ -1605,14 +2351,8 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 \t\t\t\treturn nil // Continue with next record
 \t\t\t}
 
-\t\t\t// Output as JSON
-\t\t\toutput, err := json.Marshal(data)
-\t\t\tif err != nil {
-\t\t\t\tfmt.Fprintf(os.Stderr, "Error marshaling output: %v\\n", err)
-\t\t\t\treturn nil // Continue with next record
-\t\t\t}
-
-\t\t\tfmt.Println(string(output))
+', [DbFile, RecordsDesc, BucketStr, BucketStr]),
+    Footer = '
 \t\t\treturn nil
 \t\t})
 \t})
@@ -1621,9 +2361,209 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 \t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
 \t\tos.Exit(1)
 \t}
-', [DbFile, BucketStr, BucketStr]),
+',
+    string_concat(Header, ProcessCode, Temp),
+    string_concat(Temp, Footer, BodyCode).
+
+%% compile_database_read_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate to read from bbolt database and output as JSON
+%  Supports optional filtering based on constraints in predicate body
+%  Phase 8c: Includes key optimization detection and optimized code generation
+%
+compile_database_read_mode(Pred, Arity, Options, GoCode) :-
+    % Get database options
+    option(db_file(DbFile), Options, 'data.db'),
+    option(db_bucket(BucketName), Options, Pred),
+    atom_string(BucketName, BucketStr),
+    option(include_package(IncludePackage), Options, true),
+
+    % Get key strategy (can be single field or list of fields)
+    (   option(db_key_field(KeyField), Options)
+    ->  (   is_list(KeyField)
+        ->  KeyStrategy = KeyField
+        ;   KeyStrategy = [KeyField]
+        ),
+        format('  Key strategy: ~w~n', [KeyStrategy])
+    ;   KeyStrategy = none,
+        format('  No key strategy specified~n')
+    ),
+
+    % Check if predicate has a body with constraints
+    functor(Head, Pred, Arity),
+    (   clause(Head, Body),
+        Body \= true
+    ->  % Has body - extract constraints and field mappings
+        format('  Predicate body: ~w~n', [Body]),
+        extract_db_constraints(Body, JsonRecord, Constraints),
+        (   JsonRecord = json_record(FieldMappings0)
+        ->  % FieldMappings0 is the list of Name-Var pairs from json_record
+            FieldMappings = FieldMappings0,
+            Head =.. [_|HeadArgs],
+            format('  Field mappings: ~w~n', [FieldMappings]),
+            format('  Constraints: ~w~n', [Constraints])
+        ;   format('ERROR: No json_record/1 found in predicate body~n'),
+            fail
+        ),
+
+        % Analyze key optimization opportunities (Phase 8c)
+        (   KeyStrategy \= none,
+            Constraints \= []
+        ->  format('  Analyzing key optimization...~n'),
+            analyze_key_optimization(KeyStrategy, Constraints, FieldMappings, OptType, OptDetails)
+        ;   OptType = full_scan,
+            OptDetails = none,
+            format('  Skipping optimization (no key strategy or constraints)~n')
+        ),
+
+        % Generate field extraction code (with type conversions for constraints)
+        format('  Generating field extractions...~n'),
+        generate_field_extractions_for_read(FieldMappings, Constraints, HeadArgs, ExtractCode),
+        format('  Generated ~w chars of extraction code~n', [ExtractCode]),
+        % Generate filter checks
+        format('  Generating filter checks...~n'),
+        generate_filter_checks(Constraints, FieldMappings, FilterCode),
+        format('  Generated ~w chars of filter code~n', [FilterCode]),
+        % Generate output code (selected fields only)
+        format('  Generating output code...~n'),
+        generate_output_for_read(HeadArgs, FieldMappings, OutputCode),
+        format('  Generated ~w chars of output code~n', [OutputCode]),
+        % Combine extraction + filter + output
+        format('  Combining code sections...~n'),
+        (   FilterCode \= ''
+        ->  format(string(ProcessCode), '~s\n~s\n~s', [ExtractCode, FilterCode, OutputCode])
+        ;   format(string(ProcessCode), '~s\n~s', [ExtractCode, OutputCode])
+        ),
+        format('  Process code ready: ~w chars~n', [ProcessCode]),
+        HasFilters = true,
+        format('  HasFilters set to true~n')
+    ;   % No body or body is 'true' - read all records as-is
+        format('  No predicate body found - reading all records~n'),
+        ProcessCode = '\t\t\t// Output as JSON
+\t\t\toutput, err := json.Marshal(data)
+\t\t\tif err != nil {
+\t\t\t\tfmt.Fprintf(os.Stderr, "Error marshaling output: %v\\n", err)
+\t\t\t\treturn nil // Continue with next record
+\t\t\t}
+
+\t\t\tfmt.Println(string(output))',
+        HasFilters = false
+    ),
+
+    % Generate database read code (Phase 8c: with optimizations)
+    format('  Generating database read code...~n'),
+    (   HasFilters = true
+    ->  RecordsDesc = 'filtered records'
+    ;   RecordsDesc = 'all records'
+    ),
+
+    % Generate appropriate database access code based on optimization type
+    (   var(OptType)
+    ->  % No optimization analysis (no constraints or no key strategy)
+        format('  Using full scan (no optimization analysis)~n'),
+        generate_full_scan_code(DbFile, BucketStr, RecordsDesc, ProcessCode, BodyCode)
+    ;   OptType = direct_lookup
+    ->  % Direct lookup optimization
+        OptDetails = key_value(KeyValue),
+        format('  Generating direct lookup code~n'),
+        generate_direct_lookup_code(DbFile, BucketStr, KeyValue, ProcessCode, BodyCode)
+    ;   OptType = prefix_scan
+    ->  % Prefix scan optimization
+        OptDetails = prefix_value(PrefixValue),
+        format('  Generating prefix scan code~n'),
+        generate_prefix_scan_code(DbFile, BucketStr, PrefixValue, ProcessCode, BodyCode)
+    ;   % Full scan (default/fallback)
+        format('  Using full scan~n'),
+        generate_full_scan_code(DbFile, BucketStr, RecordsDesc, ProcessCode, BodyCode)
+    ),
+    format('  Body generated successfully (~w chars)~n', [BodyCode]),
 
     % Wrap in package if requested
+    (   IncludePackage = true
+    ->  % Check if we need bytes package (for prefix scan optimization)
+        (   nonvar(OptType), OptType = prefix_scan
+        ->  BytesImport = '\t"bytes"\n'
+        ;   BytesImport = ''
+        ),
+        % Check if we need strings package (only if Constraints is defined)
+        (   (var(Constraints) ; Constraints = [])
+        ->  % No constraints or empty constraints - no strings needed
+            StringsImport = ''
+        ;   % Check if constraints need strings package
+            (   constraints_need_strings(Constraints)
+            ->  StringsImport = '\t"strings"\n'
+            ;   StringsImport = ''
+            )
+        ),
+        % Build package with conditional bytes and strings imports
+        format(string(GoCode), 'package main
+
+import (
+~s\t"encoding/json"
+\t"fmt"
+\t"os"
+~s
+\tbolt "go.etcd.io/bbolt"
+)
+
+func main() {
+~s}
+', [BytesImport, StringsImport, BodyCode])
+    ;   GoCode = BodyCode
+    ).
+
+%% ============================================
+%% AGGREGATION SUPPORT (Phase 9)
+%% ============================================
+
+%% is_aggregation_predicate(+Body)
+%  Check if predicate body contains aggregation
+%
+is_aggregation_predicate(aggregate(_Op, _Goal, _Result)).
+is_aggregation_predicate((aggregate(_Op, _Goal, _Result), _Rest)).
+is_aggregation_predicate((_First, Rest)) :-
+    is_aggregation_predicate(Rest).
+
+%% extract_aggregation_spec(+Body, -AggOp, -Goal, -Result)
+%  Extract aggregation operation, goal, and result variable
+%
+extract_aggregation_spec(aggregate(AggOp, Goal, Result), AggOp, Goal, Result) :- !.
+extract_aggregation_spec((aggregate(AggOp, Goal, Result), _Rest), AggOp, Goal, Result) :- !.
+extract_aggregation_spec((_First, Rest), AggOp, Goal, Result) :-
+    extract_aggregation_spec(Rest, AggOp, Goal, Result).
+
+%% compile_aggregation_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate with aggregation operation
+%
+compile_aggregation_mode(Pred, Arity, Options, GoCode) :-
+    functor(Head, Pred, Arity),
+    clause(Head, Body),
+
+    % Extract aggregation spec
+    extract_aggregation_spec(Body, AggOp, Goal, Result),
+    format('  Aggregation: ~w~n', [AggOp]),
+    format('  Goal: ~w~n', [Goal]),
+
+    % Extract field mappings from goal
+    (   Goal = json_record(FieldMappings)
+    ->  true
+    ;   Goal = (json_record(FieldMappings), _Constraints)
+    ->  true
+    ;   format('ERROR: Aggregation goal must contain json_record/1~n'),
+        fail
+    ),
+
+    format('  Field mappings: ~w~n', [FieldMappings]),
+
+    % Generate aggregation code based on operation
+    option(db_file(DbFile), Options, 'data.db'),
+    option(db_bucket(BucketName), Options, Pred),
+    atom_string(BucketName, BucketStr),
+    option(include_package(IncludePackage), Options, true),
+
+    % Generate aggregation code
+    generate_aggregation_code(AggOp, FieldMappings, DbFile, BucketStr, AggBody),
+
+    % Wrap in package if needed
     (   IncludePackage = true
     ->  format(string(GoCode), 'package main
 
@@ -1637,9 +2577,1420 @@ import (
 
 func main() {
 ~s}
-', [Body])
-    ;   GoCode = Body
+', [AggBody])
+    ;   GoCode = AggBody
     ).
+
+%% generate_aggregation_code(+AggOp, +FieldMappings, +DbFile, +BucketStr, -GoCode)
+%  Generate Go code for specific aggregation operation
+%
+generate_aggregation_code(count, FieldMappings, DbFile, BucketStr, GoCode) :-
+    generate_count_aggregation(DbFile, BucketStr, FieldMappings, GoCode).
+
+generate_aggregation_code(sum(FieldVar), FieldMappings, DbFile, BucketStr, GoCode) :-
+    find_field_for_var(FieldVar, FieldMappings, FieldName),
+    atom_string(FieldName, FieldNameStr),
+    generate_sum_aggregation(DbFile, BucketStr, FieldNameStr, GoCode).
+
+generate_aggregation_code(avg(FieldVar), FieldMappings, DbFile, BucketStr, GoCode) :-
+    find_field_for_var(FieldVar, FieldMappings, FieldName),
+    atom_string(FieldName, FieldNameStr),
+    generate_avg_aggregation(DbFile, BucketStr, FieldNameStr, GoCode).
+
+generate_aggregation_code(max(FieldVar), FieldMappings, DbFile, BucketStr, GoCode) :-
+    find_field_for_var(FieldVar, FieldMappings, FieldName),
+    atom_string(FieldName, FieldNameStr),
+    generate_max_aggregation(DbFile, BucketStr, FieldNameStr, GoCode).
+
+generate_aggregation_code(min(FieldVar), FieldMappings, DbFile, BucketStr, GoCode) :-
+    find_field_for_var(FieldVar, FieldMappings, FieldName),
+    atom_string(FieldName, FieldNameStr),
+    generate_min_aggregation(DbFile, BucketStr, FieldNameStr, GoCode).
+
+%% find_field_for_var(+Var, +FieldMappings, -FieldName)
+%  Find field name for a variable in field mappings
+%
+find_field_for_var(Var, [FieldName-MappedVar|_], FieldName) :-
+    Var == MappedVar, !.
+find_field_for_var(Var, [_|Rest], FieldName) :-
+    find_field_for_var(Var, Rest, FieldName).
+
+%% generate_count_aggregation(+DbFile, +BucketStr, +FieldMappings, -GoCode)
+%  Generate count aggregation code
+%
+generate_count_aggregation(DbFile, BucketStr, _FieldMappings, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Count records
+\tcount := 0
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+\t\t\tcount++
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output result
+\tfmt.Println(count)
+', [DbFile, BucketStr, BucketStr]).
+
+%% generate_sum_aggregation(+DbFile, +BucketStr, +FieldName, -GoCode)
+%  Generate sum aggregation code
+%
+generate_sum_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Sum field values
+\tsum := 0.0
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract field
+\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\tsum += valueFloat
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output result
+\tfmt.Println(sum)
+', [DbFile, BucketStr, BucketStr, FieldName]).
+
+%% generate_avg_aggregation(+DbFile, +BucketStr, +FieldName, -GoCode)
+%  Generate average aggregation code
+%
+generate_avg_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Calculate average
+\tsum := 0.0
+\tcount := 0
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract field
+\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\tsum += valueFloat
+\t\t\t\t\tcount++
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Calculate and output average
+\tavg := 0.0
+\tif count > 0 {
+\t\tavg = sum / float64(count)
+\t}
+\tfmt.Println(avg)
+', [DbFile, BucketStr, BucketStr, FieldName]).
+
+%% generate_max_aggregation(+DbFile, +BucketStr, +FieldName, -GoCode)
+%  Generate max aggregation code
+%
+generate_max_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Find maximum value
+\tmaxValue := 0.0
+\tfirst := true
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract field
+\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\tif first || valueFloat > maxValue {
+\t\t\t\t\t\tmaxValue = valueFloat
+\t\t\t\t\t\tfirst = false
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output result
+\tfmt.Println(maxValue)
+', [DbFile, BucketStr, BucketStr, FieldName]).
+
+%% generate_min_aggregation(+DbFile, +BucketStr, +FieldName, -GoCode)
+%  Generate min aggregation code
+%
+generate_min_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Find minimum value
+\tminValue := 0.0
+\tfirst := true
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract field
+\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\tif first || valueFloat < minValue {
+\t\t\t\t\t\tminValue = valueFloat
+\t\t\t\t\t\tfirst = false
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output result
+\tfmt.Println(minValue)
+', [DbFile, BucketStr, BucketStr, FieldName]).
+
+%% ============================================
+%% GROUP BY AGGREGATION SUPPORT (Phase 9b)
+%% ============================================
+
+%% is_group_by_predicate(+Body)
+%  Check if predicate body contains group_by/3 or group_by/4
+%  group_by/3: group_by(GroupField, Goal, AggOpList) for multiple aggregations
+%  group_by/4: group_by(GroupField, Goal, AggOp, Result) for single aggregation
+%
+is_group_by_predicate(group_by(_GroupField, _Goal, _AggOp)).
+is_group_by_predicate(group_by(_GroupField, _Goal, _AggOp, _Result)).
+is_group_by_predicate((group_by(_GroupField, _Goal, _AggOp), _Rest)).
+is_group_by_predicate((group_by(_GroupField, _Goal, _AggOp, _Result), _Rest)).
+is_group_by_predicate((_First, Rest)) :-
+    is_group_by_predicate(Rest).
+
+%% extract_group_by_spec(+Body, -GroupField, -Goal, -AggOp, -Result)
+%  Extract group_by operation components
+%  Handles both group_by/3 (Result = null) and group_by/4 (explicit Result)
+%
+extract_group_by_spec(group_by(GroupField, Goal, AggOp), GroupField, Goal, AggOp, null) :- !.
+extract_group_by_spec(group_by(GroupField, Goal, AggOp, Result), GroupField, Goal, AggOp, Result) :- !.
+extract_group_by_spec((group_by(GroupField, Goal, AggOp), _Rest), GroupField, Goal, AggOp, null) :- !.
+extract_group_by_spec((group_by(GroupField, Goal, AggOp, Result), _Rest), GroupField, Goal, AggOp, Result) :- !.
+extract_group_by_spec((_First, Rest), GroupField, Goal, AggOp, Result) :-
+    extract_group_by_spec(Rest, GroupField, Goal, AggOp, Result).
+
+%% extract_having_constraints(+Body, -Constraints)
+%  Extract constraints that appear after group_by (HAVING clause)
+%  Returns null if no constraints, or the constraint goals
+%
+extract_having_constraints(group_by(_, _, _), null) :- !.
+extract_having_constraints(group_by(_, _, _, _), null) :- !.
+extract_having_constraints((group_by(_, _, _), Rest), Rest) :- !.
+extract_having_constraints((group_by(_, _, _, _), Rest), Rest) :- !.
+extract_having_constraints((_First, Rest), Constraints) :-
+    extract_having_constraints(Rest, Constraints).
+
+%% compile_group_by_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate with GROUP BY aggregation
+%
+compile_group_by_mode(Pred, Arity, Options, GoCode) :-
+    % Get predicate definition
+    functor(Head, Pred, Arity),
+    clause(Head, Body),
+
+    % Extract group_by specification
+    extract_group_by_spec(Body, GroupField, Goal, AggOp, Result),
+    format('  Group by field: ~w~n', [GroupField]),
+    format('  Aggregation: ~w~n', [AggOp]),
+    format('  Goal: ~w~n', [Goal]),
+
+    % Extract HAVING constraints (Phase 9c-2)
+    extract_having_constraints(Body, HavingConstraints),
+    (   HavingConstraints \= null
+    ->  format('  HAVING constraints: ~w~n', [HavingConstraints])
+    ;   true
+    ),
+
+    % Extract field mappings from json_record
+    (   Goal = json_record(FieldMappings)
+    ->  format('  Field mappings: ~w~n', [FieldMappings])
+    ;   format('ERROR: No json_record/1 found in group_by goal~n'),
+        fail
+    ),
+
+    % Get database options
+    option(db_file(DbFile), Options, 'data.db'),
+    option(db_bucket(BucketAtom), Options, Pred),
+    atom_string(BucketAtom, BucketStr),
+
+    % Generate grouped aggregation code with HAVING support
+    generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstraints, DbFile, BucketStr, AggBody),
+
+    % Wrap in package main - add strings import for nested grouping
+    (   is_list(GroupField)
+    ->  % Nested grouping needs strings package
+        format(string(GoCode), 'package main
+
+import (
+\t"encoding/json"
+\t"fmt"
+\t"os"
+\t"strings"
+
+\tbolt "go.etcd.io/bbolt"
+)
+
+func main() {
+~s}
+', [AggBody])
+    ;   % Single field grouping - no strings needed
+        format(string(GoCode), 'package main
+
+import (
+\t"encoding/json"
+\t"fmt"
+\t"os"
+
+\tbolt "go.etcd.io/bbolt"
+)
+
+func main() {
+~s}
+', [AggBody])
+    ).
+
+%% generate_group_by_code(+GroupField, +FieldMappings, +AggOp, +Result, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
+%  Generate Go code for grouped aggregation with optional HAVING clause
+%
+generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstraints, DbFile, BucketStr, GoCode) :-
+    % Check if GroupField is a list (nested grouping) - handle differently
+    (   is_list(GroupField)
+    ->  % Nested grouping: GroupField is a list like [_1820, _1822]
+        % Pass the list directly to multi-aggregation code (it will extract field names)
+        format('  Nested grouping field list detected: ~w~n', [GroupField]),
+        (   is_list(AggOp)
+        ->  % Already in list format
+            generate_multi_aggregation_code(GroupField, FieldMappings, AggOp, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   % Single aggregation with nested grouping - convert to multi-agg format
+            format('  Converting single aggregation ~w to list format~n', [AggOp]),
+            (   AggOp = count
+            ->  OpList = [count(Result)]
+            ;   AggOp = sum(AggVar)
+            ->  OpList = [sum(AggVar, Result)]
+            ;   AggOp = avg(AggVar)
+            ->  OpList = [avg(AggVar, Result)]
+            ;   AggOp = max(AggVar)
+            ->  OpList = [max(AggVar, Result)]
+            ;   AggOp = min(AggVar)
+            ->  OpList = [min(AggVar, Result)]
+            ;   format('ERROR: Unknown aggregation operation: ~w~n', [AggOp]),
+                fail
+            ),
+            generate_multi_aggregation_code(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode)
+        )
+    ;   % Single field grouping: GroupField is a variable
+        % Find the field name for group field variable
+        find_field_for_var(GroupField, FieldMappings, GroupFieldName),
+
+        % Check if AggOp is a list (multiple aggregations) or single operation
+        (   is_list(AggOp)
+        ->  % Multiple aggregations (Phase 9c-1 + HAVING support Phase 9c-2)
+            format('  Multiple aggregations detected: ~w~n', [AggOp]),
+            generate_multi_aggregation_code(GroupFieldName, FieldMappings, AggOp, HavingConstraints, DbFile, BucketStr, GoCode)
+        % Single aggregation (Phase 9b - backward compatible, HAVING support added)
+        ;   AggOp = count
+        ->  generate_group_by_count_with_having(GroupFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   AggOp = sum(AggVar)
+        ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+            generate_group_by_sum_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   AggOp = avg(AggVar)
+        ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+            generate_group_by_avg_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   AggOp = max(AggVar)
+        ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+            generate_group_by_max_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   AggOp = min(AggVar)
+        ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
+            generate_group_by_min_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   format('ERROR: Unknown group_by aggregation operation: ~w~n', [AggOp]),
+            fail
+        )
+    ).
+
+%% generate_multi_aggregation_code(+GroupField, +FieldMappings, +OpList, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY code for multiple aggregations in single query with HAVING support
+%  GroupField can be a single field name or a list of field names for nested grouping
+%  OpList is a list like [count(Count), avg(Age, AvgAge), max(Age, MaxAge)]
+%  HavingConstraints are post-aggregation filters (null if none)
+%
+generate_multi_aggregation_code(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode) :-
+    % Check if GroupField is a list (nested grouping) or single field
+    (   is_list(GroupField)
+    ->  format('  Nested grouping detected: ~w~n', [GroupField]),
+        generate_nested_group_multi_agg(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode)
+    ;   % Single field grouping - original implementation
+        generate_single_field_multi_agg(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode)
+    ).
+
+%% generate_single_field_multi_agg(+GroupField, +FieldMappings, +OpList, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
+%  Original implementation for single-field grouping
+%
+generate_single_field_multi_agg(GroupField, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode) :-
+    % Parse operations to determine what's needed
+    parse_multi_agg_operations(OpList, FieldMappings, AggInfo),
+
+    % Generate struct fields based on operations
+    generate_multi_agg_struct_fields(AggInfo, StructFields),
+
+    % Generate field extractions and accumulation code
+    generate_multi_agg_accumulation(AggInfo, AccumulationCode),
+
+    % Generate output code for all metrics
+    generate_multi_agg_output(GroupField, AggInfo, OutputCode),
+
+    % Get struct initialization values
+    get_struct_init_values(AggInfo, InitValues),
+
+    % Get output calculations (e.g., avg = sum/count)
+    get_output_calculations(AggInfo, OutputCalcs),
+
+    % Generate HAVING filter code (Phase 9c-2)
+    generate_having_filter_code(HavingConstraints, AggInfo, OpList, HavingFilterCode),
+
+    % Combine into full Go code
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s with multiple aggregations
+\ttype GroupStats struct {
+~s
+\t}
+\tstats := make(map[string]*GroupStats)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group field
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\t// Initialize stats for this group if needed
+\t\t\t\t\tif _, exists := stats[groupStr]; !exists {
+\t\t\t\t\t\tstats[groupStr] = &GroupStats{~s}
+\t\t\t\t\t}
+~s
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, s := range stats {
+~s
+~s
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+~s
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+',  [DbFile, GroupField, StructFields, BucketStr, BucketStr, GroupField,
+    InitValues, AccumulationCode, OutputCalcs, HavingFilterCode, GroupField, OutputCode]).
+
+%% extract_group_field_names(+GroupFieldVars, +FieldMappings, -FieldNames)
+%  Extract field names from a list of variables by looking them up in FieldMappings
+%  GroupFieldVars: List of variables like [_1820, _1822]
+%  FieldMappings: List of pairs like [state-_1820, city-_1822, name-_1892]
+%  FieldNames: Extracted atom list like [state, city]
+%
+extract_group_field_names([], _, []) :- !.
+extract_group_field_names([Var|Rest], FieldMappings, [FieldName|RestNames]) :-
+    member(FieldName-MappedVar, FieldMappings),
+    Var == MappedVar,  % Use == for variable identity check
+    !,
+    extract_group_field_names(Rest, FieldMappings, RestNames).
+extract_group_field_names([Var|_], FieldMappings, _) :-
+    % If we get here, variable wasn't found in mappings
+    format('ERROR: Group field variable ~w not found in mappings ~w~n', [Var, FieldMappings]),
+    fail.
+
+%% generate_nested_group_multi_agg(+GroupFields, +FieldMappings, +OpList, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY code for nested grouping (multiple group fields)
+%  GroupFields is a list like [State, City]
+%
+generate_nested_group_multi_agg(GroupFields, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode) :-
+    % Extract field names from variables
+    extract_group_field_names(GroupFields, FieldMappings, FieldNames),
+
+    % Parse operations
+    parse_multi_agg_operations(OpList, FieldMappings, AggInfo),
+
+    % Generate struct fields
+    generate_multi_agg_struct_fields(AggInfo, StructFields),
+
+    % Generate accumulation code
+    generate_multi_agg_accumulation(AggInfo, AccumulationCode),
+
+    % Get struct initialization
+    get_struct_init_values(AggInfo, InitValues),
+
+    % Get output calculations
+    get_output_calculations(AggInfo, OutputCalcs),
+
+    % Generate HAVING filter code
+    generate_having_filter_code(HavingConstraints, AggInfo, OpList, HavingFilterCode),
+
+    % Generate composite key extraction code (includes accumulation) - use field names
+    generate_composite_key_extraction(FieldNames, AccumulationCode, KeyExtractionCode),
+
+    % Generate composite key parsing and output - use field names
+    generate_composite_key_output(FieldNames, AggInfo, KeyOutputCode),
+
+    % Create group fields description for comment
+    atomic_list_concat(FieldNames, ', ', GroupFieldsStr),
+
+    % Combine into full Go code
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by [~s] with multiple aggregations
+\ttype GroupStats struct {
+~s
+\t}
+\tstats := make(map[string]*GroupStats)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+~s
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor groupKey, s := range stats {
+~s
+~s
+~s
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupFieldsStr, StructFields, BucketStr, BucketStr,
+    KeyExtractionCode, OutputCalcs, HavingFilterCode, KeyOutputCode]).
+
+%% generate_composite_key_extraction(+GroupFields, -Code)
+%  Generate Go code to extract multiple fields and create composite key
+%
+generate_composite_key_extraction(GroupFields, AccumulationCode, Code) :-
+    length(GroupFields, NumFields),
+    (   NumFields =:= 1
+    ->  % Single field - simpler case
+        [Field] = GroupFields,
+        format(string(Code), '\t\t\t// Extract group field
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\t// Initialize stats for this group if needed
+\t\t\t\t\tif _, exists := stats[groupStr]; !exists {
+\t\t\t\t\t\tstats[groupStr] = &GroupStats{}
+\t\t\t\t\t}
+~s
+\t\t\t\t}
+\t\t\t}', [Field, AccumulationCode])
+    ;   % Multiple fields - use composite key
+        generate_field_extractions(GroupFields, Extractions),
+        % Replace groupStr with groupKey in accumulation code for nested grouping
+        atomic_list_concat(Split, 'groupStr', AccumulationCode),
+        atomic_list_concat(Split, 'groupKey', AccumulationCodeFixed),
+        format(string(Code), '\t\t\t// Extract group fields for composite key
+\t\t\tkeyParts := make([]string, 0, ~d)
+~s
+\t\t\t// Check all fields were extracted
+\t\t\tif len(keyParts) == ~d {
+\t\t\t\tgroupKey := strings.Join(keyParts, "|")
+\t\t\t\t// Initialize stats for this group if needed
+\t\t\t\tif _, exists := stats[groupKey]; !exists {
+\t\t\t\t\tstats[groupKey] = &GroupStats{}
+\t\t\t\t}
+~s
+\t\t\t}', [NumFields, Extractions, NumFields, AccumulationCodeFixed])
+    ).
+
+%% generate_field_extractions(+Fields, -Code)
+%  Generate extraction code for each field in the composite key
+%
+generate_field_extractions(Fields, Code) :-
+    generate_field_extractions_impl(Fields, 1, CodeLines),
+    atomic_list_concat(CodeLines, '\n', Code).
+
+generate_field_extractions_impl([], _, []).
+generate_field_extractions_impl([Field|Rest], Index, [ThisCode|RestCodes]) :-
+    format(string(ThisCode), '\t\t\tif val~d, ok := data["~s"]; ok {
+\t\t\t\tif str~d, ok := val~d.(string); ok {
+\t\t\t\t\tkeyParts = append(keyParts, str~d)
+\t\t\t\t}
+\t\t\t}', [Index, Field, Index, Index, Index]),
+    NextIndex is Index + 1,
+    generate_field_extractions_impl(Rest, NextIndex, RestCodes).
+
+%% generate_key_parts_list(+Fields, -Code)
+%  Generate the keyParts list initialization
+%
+generate_key_parts_list(Fields, Code) :-
+    length(Fields, Len),
+    format(string(Code), 'make([]string, 0, ~d)', [Len]).
+
+%% generate_composite_key_output(+GroupFields, +AggInfo, -Code)
+%  Generate code to parse composite key and output all group fields
+%
+generate_composite_key_output([Field], AggInfo, Code) :- !,
+    % Single field - simple output
+    generate_multi_agg_output_fields(AggInfo, AggOutputCode),
+    format(string(Code), '\t\tresult := map[string]interface{}{
+\t\t\t"~s": groupKey,
+~s
+\t\t}', [Field, AggOutputCode]).
+
+generate_composite_key_output(GroupFields, AggInfo, Code) :-
+    % Multiple fields - parse composite key
+    length(GroupFields, NumFields),
+    generate_groupkey_field_parsing(GroupFields, 0, FieldParsing),
+    generate_multi_agg_output_fields(AggInfo, AggOutputCode),
+    (   AggOutputCode = ''
+    ->  FullOutput = FieldParsing
+    ;   atomic_list_concat([FieldParsing, ',\n', AggOutputCode], FullOutput)
+    ),
+    format(string(Code), '\t\t// Parse composite key
+\t\tparts := strings.Split(groupKey, "|")
+\t\tif len(parts) < ~d {
+\t\t\tcontinue  // Skip malformed keys
+\t\t}
+\t\tresult := map[string]interface{}{
+~s
+\t\t}', [NumFields, FullOutput]).
+
+%% generate_groupkey_field_parsing(+Fields, +Index, -Code)
+%  Generate parsing code for composite key fields from group_by
+%
+generate_groupkey_field_parsing([], _, '').
+generate_groupkey_field_parsing([Field|Rest], Index, Code) :-
+    format(string(ThisCode), '\t\t\t"~s": parts[~d]', [Field, Index]),
+    NextIndex is Index + 1,
+    generate_groupkey_field_parsing(Rest, NextIndex, RestCode),
+    (   RestCode = ''
+    ->  Code = ThisCode
+    ;   atomic_list_concat([ThisCode, ',\n', RestCode], Code)
+    ).
+
+%% generate_multi_agg_output_fields(+AggInfo, -Code)
+%  Generate output field code for aggregations (without map wrapper)
+%
+generate_multi_agg_output_fields(AggInfo, Code) :-
+    findall(FieldCode, (
+        member(agg(OpType, _, _, OutputName), AggInfo),
+        operation_output_field(OpType, OutputName, FieldCode)
+    ), FieldCodes),
+    atomic_list_concat(FieldCodes, ',\n', Code).
+
+%% operation_output_field(+OpType, +Name, -Code)
+%  Generate single output field code
+%
+operation_output_field(count, count, '\t\t\t"count": s.count').
+operation_output_field(sum, sum, '\t\t\t"sum": s.sum').
+operation_output_field(avg, avg, '\t\t\t"avg": avg').
+operation_output_field(max, max, '\t\t\t"max": s.maxValue').
+operation_output_field(min, min, '\t\t\t"min": s.minValue').
+
+%% parse_multi_agg_operations(+OpList, +FieldMappings, -AggInfo)
+%  Parse list of operations into structured info
+%  AggInfo is a list of operation specs like:
+%    [op(count, null, CountVar), op(avg, age, AvgVar), op(max, age, MaxVar)]
+%
+parse_multi_agg_operations([], _FieldMappings, []).
+parse_multi_agg_operations([Op|Rest], FieldMappings, [Info|RestInfo]) :-
+    parse_single_agg_op(Op, FieldMappings, Info),
+    parse_multi_agg_operations(Rest, FieldMappings, RestInfo).
+
+%% parse_single_agg_op(+Op, +FieldMappings, -Info)
+%  Parse a single operation specification
+%
+parse_single_agg_op(count, _FieldMappings, agg(count, null, null, count)) :- !.
+parse_single_agg_op(count(_ResultVar), _FieldMappings, agg(count, null, null, count)) :- !.
+parse_single_agg_op(sum(AggVar), FieldMappings, agg(sum, FieldName, null, sum)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(sum(AggVar, _ResultVar), FieldMappings, agg(sum, FieldName, null, sum)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(avg(AggVar), FieldMappings, agg(avg, FieldName, null, avg)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(avg(AggVar, _ResultVar), FieldMappings, agg(avg, FieldName, null, avg)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(max(AggVar), FieldMappings, agg(max, FieldName, null, max)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(max(AggVar, _ResultVar), FieldMappings, agg(max, FieldName, null, max)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(min(AggVar), FieldMappings, agg(min, FieldName, null, min)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(min(AggVar, _ResultVar), FieldMappings, agg(min, FieldName, null, min)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+
+%% generate_multi_agg_struct_fields(+AggInfo, -StructFields)
+%  Generate Go struct field declarations based on operations
+%
+generate_multi_agg_struct_fields(AggInfo, StructFields) :-
+    collect_needed_fields(AggInfo, NeededFields),
+    format_struct_fields(NeededFields, StructFields).
+
+%% collect_needed_fields(+AggInfo, -NeededFields)
+%  Determine which struct fields are needed
+%
+collect_needed_fields(AggInfo, NeededFields) :-
+    findall(Field, (
+        member(agg(OpType, _FieldName, _, _), AggInfo),
+        needed_struct_field(OpType, Field)
+    ), AllFields),
+    sort(AllFields, NeededFields).
+
+%% needed_struct_field(+OpType, -Field)
+%  Map operation type to required struct fields
+%
+needed_struct_field(count, count).
+needed_struct_field(sum, sum).
+needed_struct_field(sum, count).  % sum also needs count for proper tracking
+needed_struct_field(avg, sum).
+needed_struct_field(avg, count).
+needed_struct_field(max, maxValue).
+needed_struct_field(max, maxFirst).
+needed_struct_field(min, minValue).
+needed_struct_field(min, minFirst).
+
+%% format_struct_fields(+NeededFields, -StructFields)
+%  Format struct fields as Go code
+%
+format_struct_fields(NeededFields, StructFields) :-
+    findall(FieldLine, (
+        member(Field, NeededFields),
+        go_struct_field_line(Field, FieldLine)
+    ), Lines),
+    atomic_list_concat(Lines, '\n', StructFields).
+
+%% go_struct_field_line(+Field, -Line)
+%  Generate Go struct field declaration
+%
+go_struct_field_line(count, '\t\tcount    int').
+go_struct_field_line(sum, '\t\tsum      float64').
+go_struct_field_line(maxValue, '\t\tmaxValue float64').
+go_struct_field_line(maxFirst, '\t\tmaxFirst bool').
+go_struct_field_line(minValue, '\t\tminValue float64').
+go_struct_field_line(minFirst, '\t\tminFirst bool').
+
+%% get_struct_init_values(+AggInfo, -InitValues)
+%  Generate initialization values for struct
+%
+get_struct_init_values(AggInfo, 'maxFirst: true, minFirst: true') :-
+    member(agg(max, _, _, _), AggInfo),
+    member(agg(min, _, _, _), AggInfo),
+    !.
+get_struct_init_values(AggInfo, 'maxFirst: true') :-
+    member(agg(max, _, _, _), AggInfo),
+    !.
+get_struct_init_values(AggInfo, 'minFirst: true') :-
+    member(agg(min, _, _, _), AggInfo),
+    !.
+get_struct_init_values(_, '').
+
+%% generate_multi_agg_accumulation(+AggInfo, -AccumulationCode)
+%  Generate accumulation code for all operations
+%  Smart handling: if 'count' operation is present, it owns the count field
+%
+generate_multi_agg_accumulation(AggInfo, AccumulationCode) :-
+    % Check if count operation is present
+    (   member(agg(count, _, _, _), AggInfo)
+    ->  HasCount = true
+    ;   HasCount = false
+    ),
+    % Generate code for each operation
+    findall(Code, (
+        member(AggSpec, AggInfo),
+        generate_single_accumulation(AggSpec, HasCount, Code)
+    ), CodeLines),
+    atomic_list_concat(CodeLines, '', AccumulationCode).
+
+%% generate_single_accumulation(+AggSpec, +HasCount, -Code)
+%  Generate accumulation code for one operation
+%  HasCount indicates if a separate count operation exists
+%
+generate_single_accumulation(agg(count, null, _, _), _, '\t\t\t\t\t// Count operation
+\t\t\t\t\tstats[groupStr].count++
+') :- !.
+
+generate_single_accumulation(agg(sum, FieldName, _, _), HasCount, Code) :- !,
+    % Only increment count if no separate count operation exists
+    (   HasCount = true
+    ->  format(string(Code), '\t\t\t\t\t// Sum ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName])
+    ;   format(string(Code), '\t\t\t\t\t// Sum ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t\tstats[groupStr].count++
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName])
+    ).
+
+generate_single_accumulation(agg(avg, FieldName, _, _), HasCount, Code) :- !,
+    % Only increment count if no separate count operation exists
+    (   HasCount = true
+    ->  format(string(Code), '\t\t\t\t\t// Average ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName])
+    ;   format(string(Code), '\t\t\t\t\t// Average ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t\tstats[groupStr].count++
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName])
+    ).
+
+generate_single_accumulation(agg(max, FieldName, _, _), _, Code) :- !,
+    format(string(Code), '\t\t\t\t\t// Max ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif stats[groupStr].maxFirst || valueFloat > stats[groupStr].maxValue {
+\t\t\t\t\t\t\t\tstats[groupStr].maxValue = valueFloat
+\t\t\t\t\t\t\t\tstats[groupStr].maxFirst = false
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName]).
+
+generate_single_accumulation(agg(min, FieldName, _, _), _, Code) :- !,
+    format(string(Code), '\t\t\t\t\t// Min ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif stats[groupStr].minFirst || valueFloat < stats[groupStr].minValue {
+\t\t\t\t\t\t\t\tstats[groupStr].minValue = valueFloat
+\t\t\t\t\t\t\t\tstats[groupStr].minFirst = false
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName]).
+
+%% get_output_calculations(+AggInfo, -OutputCalcs)
+%  Generate pre-output calculations (e.g., avg = sum / count)
+%
+get_output_calculations(AggInfo, '\t\tavg := 0.0
+\t\tif s.count > 0 {
+\t\t\tavg = s.sum / float64(s.count)
+\t\t}') :-
+    member(agg(avg, _, _, _), AggInfo),
+    !.
+get_output_calculations(_, '').
+
+%% generate_multi_agg_output(+GroupField, +AggInfo, -OutputCode)
+%  Generate output field mappings for result JSON
+%
+generate_multi_agg_output(_GroupField, AggInfo, OutputCode) :-
+    findall(Line, (
+        member(AggSpec, AggInfo),
+        generate_output_field(AggSpec, Line)
+    ), Lines),
+    atomic_list_concat(Lines, ',\n', OutputCode).
+
+%% generate_output_field(+AggSpec, -Line)
+%  Generate single output field mapping
+%
+generate_output_field(agg(count, _, _, _), '\t\t\t"count": s.count') :- !.
+generate_output_field(agg(sum, _, _, _), '\t\t\t"sum": s.sum') :- !.
+generate_output_field(agg(avg, _, _, _), '\t\t\t"avg": avg') :- !.
+generate_output_field(agg(max, _, _, _), '\t\t\t"max": s.maxValue') :- !.
+generate_output_field(agg(min, _, _, _), '\t\t\t"min": s.minValue') :- !.
+
+%% ============================================
+%% HAVING CLAUSE SUPPORT (Phase 9c-2)
+%% ============================================
+
+%% generate_having_filter_code(+HavingConstraints, +AggInfo, +OpList, -FilterCode)
+%  Generate HAVING filter code for output loop
+%  Parses constraints and generates Go filter code with continue statements
+%
+generate_having_filter_code(null, _, _, '') :- !.
+generate_having_filter_code(Constraints, AggInfo, OpList, FilterCode) :-
+    % Parse constraints into list
+    parse_constraints_to_list(Constraints, ConstraintList),
+    % Generate filter code for each constraint
+    findall(Code, (
+        member(Constraint, ConstraintList),
+        generate_single_having_filter(Constraint, AggInfo, OpList, Code)
+    ), CodeLines),
+    atomic_list_concat(CodeLines, '', FilterCode).
+
+%% parse_constraints_to_list(+Constraints, -ConstraintList)
+%  Convert conjunction of constraints into a list
+%
+parse_constraints_to_list((C1, C2), List) :- !,
+    parse_constraints_to_list(C1, L1),
+    parse_constraints_to_list(C2, L2),
+    append(L1, L2, List).
+parse_constraints_to_list(C, [C]).
+
+%% generate_single_having_filter(+Constraint, +AggInfo, +OpList, -Code)
+%  Generate filter code for a single constraint
+%  Supports: >, <, >=, <=, =, =\=
+%
+generate_single_having_filter(Constraint, AggInfo, OpList, Code) :-
+    % Extract operator and operands
+    parse_constraint_operator(Constraint, Var, Op, Value),
+    % Map variable to Go expression
+    map_variable_to_go_expr(Var, AggInfo, OpList, GoExpr),
+    % Generate Go comparison code
+    format(string(Code), '\t\t// HAVING filter: ~w ~w ~w
+\t\tif !(~s ~s ~w) {
+\t\t\tcontinue
+\t\t}
+', [Var, Op, Value, GoExpr, Op, Value]).
+
+%% parse_constraint_operator(+Constraint, -Var, -Op, -Value)
+%  Parse constraint to extract variable, operator, and value
+%
+parse_constraint_operator(Var > Value, Var, '>', Value) :- !.
+parse_constraint_operator(Var < Value, Var, '<', Value) :- !.
+parse_constraint_operator(Var >= Value, Var, '>=', Value) :- !.
+parse_constraint_operator(Var =< Value, Var, '=<', Value) :- !.
+parse_constraint_operator(Var = Value, Var, '==', Value) :- !.
+parse_constraint_operator(Var =\= Value, Var, '!=', Value) :- !.
+
+%% map_variable_to_go_expr(+Var, +AggInfo, +OpList, -GoExpr)
+%  Map Prolog variable to Go expression (e.g., Count -> s.count, Avg -> avg)
+%
+map_variable_to_go_expr(Var, _AggInfo, OpList, GoExpr) :-
+    % Find which operation produces this variable
+    member(Op, OpList),
+    variable_from_operation(Op, Var, OpType),
+    !,
+    % Map to Go expression
+    operation_to_go_expr(OpType, GoExpr).
+
+%% variable_from_operation(+Operation, ?Var, -OpType)
+%  Extract result variable and operation type from operation spec
+%  Uses == for variable identity checking to avoid incorrect unification
+%
+variable_from_operation(count(Var), RequestedVar, count) :-
+    Var == RequestedVar,  % Use == to check if they're the same variable
+    !.
+variable_from_operation(count, _, count) :- !.
+variable_from_operation(sum(_, Var), RequestedVar, sum) :-
+    Var == RequestedVar, !.
+variable_from_operation(avg(_, Var), RequestedVar, avg) :-
+    Var == RequestedVar, !.
+variable_from_operation(max(_, Var), RequestedVar, max) :-
+    Var == RequestedVar, !.
+variable_from_operation(min(_, Var), RequestedVar, min) :-
+    Var == RequestedVar, !.
+
+%% operation_to_go_expr(+OpType, -GoExpr)
+%  Map operation type to Go expression in output loop
+%
+operation_to_go_expr(count, 's.count').
+operation_to_go_expr(sum, 's.sum').
+operation_to_go_expr(avg, 'avg').
+operation_to_go_expr(max, 's.maxValue').
+operation_to_go_expr(min, 's.minValue').
+
+%% ============================================
+%% SINGLE AGGREGATION WRAPPERS WITH HAVING
+%% ============================================
+
+%% Wrapper predicates with HAVING support (Phase 9c-2)
+%% For single aggregations, convert to multi-agg format and use multi-agg code generator
+
+generate_group_by_count_with_having(GroupField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single count to multi-agg format: [count(Result)]
+    OpList = [count(Result)],
+    % Use empty field mappings for count (doesn't need any field)
+    FieldMappings = [],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
+
+generate_group_by_sum_with_having(GroupField, AggField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single sum to multi-agg format: [sum(AggField, Result)]
+    % Create a fake variable for the field (we'll use AggField directly)
+    OpList = [sum(AggField, Result)],
+    % Create field mappings with the aggregation field
+    FieldMappings = [field-AggField],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
+
+generate_group_by_avg_with_having(GroupField, AggField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single avg to multi-agg format: [avg(AggField, Result)]
+    OpList = [avg(AggField, Result)],
+    FieldMappings = [field-AggField],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
+
+generate_group_by_max_with_having(GroupField, AggField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single max to multi-agg format: [max(AggField, Result)]
+    OpList = [max(AggField, Result)],
+    FieldMappings = [field-AggField],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
+
+generate_group_by_min_with_having(GroupField, AggField, Result, Having, DbFile, BucketStr, GoCode) :-
+    % Convert single min to multi-agg format: [min(AggField, Result)]
+    OpList = [min(AggField, Result)],
+    FieldMappings = [field-AggField],
+    generate_multi_aggregation_code(GroupField, FieldMappings, OpList, Having, DbFile, BucketStr, GoCode).
+
+%% ============================================
+%% ORIGINAL SINGLE AGGREGATION GENERATORS (Phase 9b)
+%% ============================================
+
+%% generate_group_by_count(+GroupField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY count code
+%
+generate_group_by_count(GroupField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and count
+\tcounts := make(map[string]int)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group field
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tcounts[groupStr]++
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, count := range counts {
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"count": count,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, BucketStr, BucketStr, GroupField, GroupField]).
+
+%% generate_group_by_sum(+GroupField, +AggField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY sum code
+%
+generate_group_by_sum(GroupField, AggField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and sum ~s
+\tsums := make(map[string]float64)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group and aggregation fields
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tsums[groupStr] += valueFloat
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, sum := range sums {
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"sum": sum,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, AggField, BucketStr, BucketStr, GroupField, AggField, GroupField]).
+
+%% generate_group_by_avg(+GroupField, +AggField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY average code
+%
+generate_group_by_avg(GroupField, AggField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and average ~s
+\ttype GroupStats struct {
+\t\tsum   float64
+\t\tcount int
+\t}
+\tstats := make(map[string]*GroupStats)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group and aggregation fields
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif _, exists := stats[groupStr]; !exists {
+\t\t\t\t\t\t\t\tstats[groupStr] = &GroupStats{}
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t\tstats[groupStr].sum += valueFloat
+\t\t\t\t\t\t\tstats[groupStr].count++
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, s := range stats {
+\t\tavg := 0.0
+\t\tif s.count > 0 {
+\t\t\tavg = s.sum / float64(s.count)
+\t\t}
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"avg": avg,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, AggField, BucketStr, BucketStr, GroupField, AggField, GroupField]).
+
+%% generate_group_by_max(+GroupField, +AggField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY max code
+%
+generate_group_by_max(GroupField, AggField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and find max ~s
+\ttype GroupMax struct {
+\t\tmaxValue float64
+\t\tfirst    bool
+\t}
+\tmaxes := make(map[string]*GroupMax)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group and aggregation fields
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif _, exists := maxes[groupStr]; !exists {
+\t\t\t\t\t\t\t\tmaxes[groupStr] = &GroupMax{first: true}
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t\tif maxes[groupStr].first || valueFloat > maxes[groupStr].maxValue {
+\t\t\t\t\t\t\t\tmaxes[groupStr].maxValue = valueFloat
+\t\t\t\t\t\t\t\tmaxes[groupStr].first = false
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, m := range maxes {
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"max": m.maxValue,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, AggField, BucketStr, BucketStr, GroupField, AggField, GroupField]).
+
+%% generate_group_by_min(+GroupField, +AggField, +DbFile, +BucketStr, -GoCode)
+%  Generate GROUP BY min code
+%
+generate_group_by_min(GroupField, AggField, DbFile, BucketStr, GoCode) :-
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Group by ~s and find min ~s
+\ttype GroupMin struct {
+\t\tminValue float64
+\t\tfirst    bool
+\t}
+\tmins := make(map[string]*GroupMin)
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil {
+\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
+\t\t}
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil {
+\t\t\t\treturn nil // Skip invalid records
+\t\t\t}
+
+\t\t\t// Extract group and aggregation fields
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tif _, exists := mins[groupStr]; !exists {
+\t\t\t\t\t\t\t\tmins[groupStr] = &GroupMin{first: true}
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t\tif mins[groupStr].first || valueFloat < mins[groupStr].minValue {
+\t\t\t\t\t\t\t\tmins[groupStr].minValue = valueFloat
+\t\t\t\t\t\t\t\tmins[groupStr].first = false
+\t\t\t\t\t\t\t}
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Output results as JSON (one per group)
+\tfor group, m := range mins {
+\t\tresult := map[string]interface{}{
+\t\t\t"~s": group,
+\t\t\t"min": m.minValue,
+\t\t}
+\t\toutput, _ := json.Marshal(result)
+\t\tfmt.Println(string(output))
+\t}
+', [DbFile, GroupField, AggField, BucketStr, BucketStr, GroupField, AggField, GroupField]).
 
 %% ============================================
 %% JSON INPUT MODE COMPILATION
@@ -1668,12 +4019,16 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         extract_json_field_mappings(SingleBody, FieldMappings),
         format('  Field mappings: ~w~n', [FieldMappings]),
 
-        % Check for schema option
+        % Check for schema option OR database backend (both require typed compilation)
         SingleHead =.. [_|HeadArgs],
         (   option(json_schema(SchemaName), Options)
-        ->  % Typed compilation with schema
+        ->  % Typed compilation with schema validation
             format('  Using schema: ~w~n', [SchemaName]),
             compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, CoreBody)
+        ;   option(db_backend(bbolt), Options)
+        ->  % Typed compilation without schema (for database writes)
+            format('  Database mode: using typed compilation~n'),
+            compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
         ;   % Untyped compilation (current behavior)
             compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
         ),
@@ -1682,10 +4037,11 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         (   option(db_backend(bbolt), Options)
         ->  % Wrap core body with database operations
             format('  Database: bbolt~n'),
-            wrap_with_database(CoreBody, FieldMappings, Pred, Options, ScriptBody),
+            wrap_with_database(CoreBody, FieldMappings, Pred, Options, ScriptBody, KeyImports),
             NeedsDatabase = true
         ;   ScriptBody = CoreBody,
-            NeedsDatabase = false
+            NeedsDatabase = false,
+            KeyImports = []
         ),
 
         % Check if helpers are needed (for the package wrapping)
@@ -1705,13 +4061,23 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         ->  BaseImports = ["bufio", "encoding/json", "fmt", "os", "bolt \"go.etcd.io/bbolt\""]
         ;   BaseImports = ["bufio", "encoding/json", "fmt", "os"]
         ),
-        
-        (   option(json_schema(SchemaName), Options), schema_needs_strings(SchemaName)
-        ->  append(BaseImports, ["strings"], AllImportsList)
-        ;   AllImportsList = BaseImports
+
+        % Add key expression imports if any (from main)
+        (   KeyImports \= []
+        ->  maplist(atom_string, KeyImports, KeyImportStrs),
+            append(BaseImports, KeyImportStrs, ImportsWithKeys)
+        ;   ImportsWithKeys = BaseImports
         ),
         
-        maplist(format_import, AllImportsList, ImportLines),
+        % Add strings import if needed (from feature branch)
+        (   option(json_schema(SchemaName), Options), schema_needs_strings(SchemaName)
+        ->  append(ImportsWithKeys, ["strings"], AllImportsList)
+        ;   AllImportsList = ImportsWithKeys
+        ),
+        
+        % Format all imports
+        sort(AllImportsList, UniqueImports), % Deduplicate
+        maplist(format_import, UniqueImports, ImportLines),
         atomic_list_concat(ImportLines, '\n', Imports),
 
         (   HelperSection = '' ->
@@ -1924,40 +4290,55 @@ generate_parallel_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarM
 				}', [ListGoVar, ItemGoVar, LoopBody])
     ).
 
-%% wrap_with_database(+CoreBody, +FieldMappings, +Pred, +Options, -WrappedBody)
+%% wrap_with_database(+CoreBody, +FieldMappings, +Pred, +Options, -WrappedBody, -KeyImports)
 %  Wrap core extraction code with database operations
+%  Returns additional imports needed for key expressions
 %
-wrap_with_database(CoreBody, FieldMappings, Pred, Options, WrappedBody) :-
+wrap_with_database(CoreBody, FieldMappings, Pred, Options, WrappedBody, KeyImports) :-
     % Get database options
     option(db_file(DbFile), Options, 'data.db'),
     option(db_bucket(BucketName), Options, Pred),
     atom_string(BucketName, BucketStr),
 
-    % Determine key field (use first field by default)
-    (   option(db_key_field(KeyField), Options)
+    % Normalize key strategy options (backward compatibility)
+    normalize_key_strategy(Options, NormalizedOptions),
+
+    % Determine key strategy (with default fallback)
+    (   option(db_key_strategy(KeyStrategy), NormalizedOptions)
     ->  true
-    ;   FieldMappings = [KeyField-_|_]
-    ->  true
-    ;   FieldMappings = [nested(Path, _)|_],
-        last(Path, KeyField)
+    ;   % Default: use first field
+        (   FieldMappings = [FirstField-_|_]
+        ->  KeyStrategy = field(FirstField)
+        ;   FieldMappings = [nested(Path, _)|_],
+            last(Path, FirstField)
+        ->  KeyStrategy = field(FirstField)
+        ;   format('ERROR: No fields found in mappings: ~w~n', [FieldMappings]),
+            fail
+        )
     ),
 
-    % Find which field position is the key
-    (   nth1(KeyPos, FieldMappings, KeyField-_)
-    ->  true
-    ;   nth1(KeyPos, FieldMappings, nested(KeyPath, _)),
-        last(KeyPath, KeyField)
-    ->  true
-    ;   KeyPos = 1  % Default to first field
-    ),
+    % Compile key expression to Go code
+    compile_key_expression(KeyStrategy, FieldMappings, NormalizedOptions, KeyCode, KeyImports),
 
-    format(atom(KeyVar), 'field~w', [KeyPos]),
+    % Determine which fields are used by the key expression
+    extract_used_field_positions(KeyStrategy, FieldMappings, UsedFieldPositions),
 
-    % Create storage code block
-    format(string(StorageCode), '\t\t// Store in database
+    % Generate blank assignments for unused fields (to avoid Go unused variable errors)
+    findall(BlankAssignment,
+        (nth1(Pos, FieldMappings, _),
+         \+ memberchk(Pos, UsedFieldPositions),
+         format(string(BlankAssignment), '\t\t_ = field~w  // Unused in key\n', [Pos])),
+        BlankAssignments),
+    atomic_list_concat(BlankAssignments, '', UnusedFieldCode),
+
+    % Create storage code block with compiled key
+    format(string(StorageCode), '~s\t\t// Store in database
 \t\terr = db.Update(func(tx *bolt.Tx) error {
 \t\t\tbucket := tx.Bucket([]byte("~s"))
-\t\t\tkey := []byte(fmt.Sprintf("%v", ~s))
+\t\t\t
+\t\t\t// Generate key using strategy
+\t\t\tkeyStr := ~s
+\t\t\tkey := []byte(keyStr)
 \t\t\t
 \t\t\t// Store full JSON record
 \t\t\tvalue, err := json.Marshal(data)
@@ -1974,11 +4355,12 @@ wrap_with_database(CoreBody, FieldMappings, Pred, Options, WrappedBody) :-
 \t\t\tcontinue
 \t\t}
 \t\t
-\t\trecordCount++', [BucketStr, KeyVar]),
+\t\trecordCount++', [UnusedFieldCode, BucketStr, KeyCode]),
 
     % Remove output block and inject storage code
     split_string(CoreBody, "\n", "", Lines),
-    filter_and_replace_lines(Lines, StorageCode, KeyPos, FilteredLines),
+    % Pass -1 to keep all fields (key expression will determine which it needs)
+    filter_and_replace_lines(Lines, StorageCode, -1, FilteredLines),
     atomics_to_string(FilteredLines, "\n", CleanedCore),
 
     % Generate wrapped code with storage inside loop
@@ -2041,6 +4423,8 @@ filter_and_replace_lines([Line|Rest], StorageCode, KeyPos, Acc, Result) :-
 
 % Replace fieldN with _ if N != KeyPos
 replace_unused_field_var(Line, KeyPos, NewLine) :-
+    % If KeyPos is -1, keep all fields (don't replace anything)
+    KeyPos \= -1,
     % Try to replace field1, field2, field3, etc. up to field9
     between(1, 9, N),
     N \= KeyPos,
@@ -2317,7 +4701,13 @@ generate_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarMap, Code)
 
     ;   Op = Field-Var ->
         format(atom(GoVar), 'v~w', [VIdx]),
-        generate_nested_extraction_code(Field, 'data', GoVar, ExtractCode),
+        % Generate flat field extraction (not nested)
+        atom_string(Field, FieldStr),
+        format(string(ExtractCode), '
+\t\t~w, ok~w := data["~s"]
+\t\tif !ok~w {
+\t\t\tcontinue
+\t\t}', [GoVar, VIdx, FieldStr, VIdx]),
         generate_json_processing(Rest, HeadArgs, Delim, Unique, NextVIdx, [(Var, GoVar)|VarMap], RestCode),
         format(string(Code), '~s\n~s', [ExtractCode, RestCode])
 
@@ -2393,6 +4783,59 @@ lookup_var_identity(Key, [(K, V)|_], Val) :- Key == K, !, Val = V.
 lookup_var_identity(Key, [_|Rest], Val) :- lookup_var_identity(Key, Rest, Val).
 
 
+
+%% compile_json_to_go_typed_noschema(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, -GoCode)
+%  Generate Go code for JSON input mode with fieldN variables but no type validation
+%  Used for database writes without schema
+%
+compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
+    % Map delimiter
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % Generate untyped field extraction code with fieldN variable names
+    findall(ExtractLine,
+        (   nth1(Pos, FieldMappings, Mapping),
+            format(atom(VarName), 'field~w', [Pos]),
+            % Generate extraction for flat or nested fields
+            (   Mapping = Field-_Var
+            ->  % Flat field - untyped extraction
+                atom_string(Field, FieldStr),
+                format(atom(ExtractLine), '\t\t~w, ~wOk := data["~s"]\n\t\tif !~wOk {\n\t\t\tcontinue\n\t\t}',
+                    [VarName, VarName, FieldStr, VarName])
+            ;   Mapping = nested(Path, _Var)
+            ->  % Nested field - untyped extraction
+                generate_nested_field_extraction(Path, VarName, ExtractLine)
+            )
+        ),
+        ExtractLines),
+    atomic_list_concat(ExtractLines, '\n', ExtractCode),
+
+    % Generate output expression (same as typed)
+    generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
+
+    % Build main loop
+    (   Unique = true ->
+        SeenDecl = '\tseen := make(map[string]bool)\n\t',
+        UniqueCheck = '\t\tif !seen[result] {\n\t\t\tseen[result] = true\n\t\t\tfmt.Println(result)\n\t\t}\n'
+    ;   SeenDecl = '\t',
+        UniqueCheck = '\t\tfmt.Println(result)\n'
+    ),
+
+    % Build the loop code
+    format(string(GoCode), '
+\tscanner := bufio.NewScanner(os.Stdin)
+~w
+\tfor scanner.Scan() {
+\t\tvar data map[string]interface{}
+\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+\t\t\tcontinue
+\t\t}
+\t\t
+~s
+\t\t
+\t\tresult := ~s
+~s\t}
+', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
 
 %% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +FieldDelim, +Unique, -GoCode)
 %  Generate Go code for JSON input mode with type safety from schema

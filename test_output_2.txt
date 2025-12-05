@@ -1,0 +1,3 @@
+1:Bob:true
+2:Alice:false
+3:Charlie:true

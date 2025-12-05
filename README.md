@@ -85,6 +85,17 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **BaaS Mode** - Reuse bash templates via WSL/Git Bash for complex sources (AWK, etc.)
 - **Platform Compatibility** - Automatic detection and adaptation to available tools
 
+### SQL Target (v0.3)
+- **Pure SQL Generation** - Compiles Prolog predicates to SQL queries (CREATE VIEW statements)
+- **Database Portability** - Works with SQLite, PostgreSQL, MySQL, SQL Server, and any SQL database
+- **Aggregations** - Full support for GROUP BY, HAVING, and all 5 SQL aggregation functions (COUNT, SUM, AVG, MAX, MIN)
+- **Automatic JOINs** - Detects shared variables and generates INNER JOIN with correct join conditions
+- **Set Operations** - UNION for multi-clause predicates, explicit INTERSECT/EXCEPT operations
+- **Declarative Queries** - Translates Prolog constraints to WHERE/HAVING clauses
+- **Enterprise Analytics** - Leverage existing SQL infrastructure for analytics, reporting, and ETL
+
+**See [SQL Target Design](SQL_TARGET_DESIGN.md) for details.**
+
 ### Control Plane
 - **Enhanced Firewall** - Multi-service security for external tools (python3, curl, wget, jq)
 - **Network Access Control** - Host pattern matching and access restrictions

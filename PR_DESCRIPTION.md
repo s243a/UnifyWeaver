@@ -1,23 +1,28 @@
-# PR Title: Update Roadmap - Mark Go DB & Rust Target as Completed
+# Feature: Go Target Advanced Schema Validation
 
-## Description
-
-This PR updates the project documentation to reflect the current state of the codebase, specifically regarding the Go and Rust targets.
+## Summary
+This PR adds advanced schema validation capabilities to the Go target. Users can now define constraints on JSON fields, such as range checks, format validation, and optionality. The generated Go code enforces these constraints efficiently during stream processing.
 
 ## Changes
+-   **`src/unifyweaver/targets/go_target.pl`**:
+    -   Updated `json_schema/2` to accept `field(Name, Type, Options)`.
+    -   Implemented validation logic generation for:
+        -   `min(N)`, `max(N)` (integer/float)
+        -   `format(email)` (string)
+        -   `optional` (skip validation if missing, don't skip record)
+    -   Added dynamic import of `strings` package when needed.
 
--   **`FUTURE_WORK.md`**:
-    -   Moved "Go Target Enhancements > Database Integration" to "Completed".
-    -   Moved "Rust Target" to "Completed".
-    -   Updated priority ranking to reflect these completions.
--   **`docs/GO_TARGET.md`**:
-    -   Promoted "Bbolt Database Support" from "Future Enhancements" to "Current Features".
-
-## Motivation
-
-The `FUTURE_WORK.md` document listed `bbolt` integration and the Rust target as future/planned work, but code inspection revealed these features are already implemented. This update aligns the documentation with reality.
+## Usage
+```prolog
+:- json_schema(user, [
+    field(age, integer, [min(18)]),
+    field(email, string, [format(email)]),
+    field(nickname, string, [optional])
+]).
+```
 
 ## Verification
-
--   [x] Verified `bbolt` code exists in `src/unifyweaver/targets/go_target.pl`.
--   [x] Verified Rust target code exists in `src/unifyweaver/targets/rust_target.pl`.
+-   Added `tests/test_go_validation.pl` which verifies:
+    -   Valid records are processed.
+    -   Records violating `min`, `max`, or `format` are skipped.
+    -   Records missing `optional` fields are processed (not skipped).

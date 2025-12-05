@@ -46,6 +46,21 @@ term_signature(Term0, Name/Arity) :-
     Term =.. [Name|Args],
     length(Args, Arity).
 
+term_to_dependency(aggregate_all(_, Goal, _), Dep) :- !,
+    term_signature(Goal, Dep).
+term_to_dependency(Term, Dep) :-
+    (   aggregate_goal(Term)
+    ->  decompose_aggregate_goal(Term, _Type, _Op, Pred, Args, _GroupVar, _ValueVar, _ResultVar),
+        length(Args, A),
+        Dep = Pred/A,
+        !
+    ;   Term =.. ['\\+', Inner]
+    ->  term_signature(Inner, Dep)
+    ;   Term =.. [not, Inner]
+    ->  term_signature(Inner, Dep)
+    ;   term_signature(Term, Dep)
+    ).
+
 gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses) :-
     findall(Head-Body,
         (   functor(Head, Pred, Arity),
@@ -72,12 +87,7 @@ predicate_dependencies(Name/Arity, Dependencies) :-
                 body_to_list(Body, Terms),
                 member(Term, Terms),
                 \+ constraint_goal(Term),
-                (   Term =.. ['\\+', Inner]
-                ->  term_signature(Inner, Dep)
-                ;   Term =.. [not, Inner]
-                ->  term_signature(Inner, Dep)
-                ;   term_signature(Term, Dep)
-                ),
+                term_to_dependency(Term, Dep),
                 (   predicate_defined(Dep)
                 ;   dynamic_source_metadata(Dep, _)
                 )
@@ -1515,7 +1525,8 @@ compile_generator_mode(Pred/Arity, _Options, Code) :-
     csharp_config(Config),
 
     gather_group_clauses(GroupSpecs, AllClauses),
-    \+ clauses_contain_aggregate(AllClauses), % fail with message if aggregates present
+    guard_stratified_negation(Pred/Arity, GroupSpecs, AllClauses),
+    guard_supported_aggregates(AllClauses),
     collect_fact_heads(AllClauses, FactHeads),
     compile_generator_facts(FactHeads, Config, FactsCode),
 
@@ -1531,22 +1542,84 @@ compile_generator_mode(Pred/Arity, _Options, Code) :-
     csharp_generator_header(Pred, Header),
     format(string(Code), "~w\n~w\n~w\n~w\n    }\n}\n", [Header, FactsCode, RulesCode, ExecutionCode]).
 
-clauses_contain_aggregate(Clauses) :-
-    member(_Head-Body, Clauses),
-    Body \= true,
-    body_to_list(Body, Goals),
-    member(G, Goals),
-    aggregate_goal(G),
-    format(user_error,
-           'C# generator mode does not yet support aggregate goals (~w).~n',
-           [G]),
-    fail.
-clauses_contain_aggregate(_).
-
 aggregate_goal(G) :-
     compound(G),
     functor(G, Fun, Arity),
-    member(Fun/Arity, [aggregate_all/3, aggregate/4]).
+    member(Fun/Arity, [aggregate_all/3, aggregate_all/4, aggregate/4]).
+
+guard_supported_aggregates(Clauses) :-
+    forall(
+        ( member(_Head-Body, Clauses),
+          Body \= true,
+          body_to_list(Body, Goals),
+          member(G, Goals),
+          aggregate_goal(G)
+        ),
+        aggregate_supported(G)
+    ).
+
+aggregate_supported(aggregate_all(OpTerm, _Goal, _Result)) :-
+    member(OpTerm, [count, sum(_), min(_), max(_), set(_), bag(_)]), !.
+aggregate_supported(aggregate(OpTerm, _Goal, _Result)) :-
+    member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
+aggregate_supported(aggregate(OpTerm, _Goal, _Group, _Result)) :-
+    member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
+aggregate_supported(aggregate_all(Op, _Inner, _Result)) :-
+    \+ member(Op, [count]),
+    format(user_error,
+           'C# generator mode: aggregate_all/3 with op ~w not yet supported.~n',
+           [Op]),
+    fail.
+aggregate_supported(aggregate_all(Op, _Inner, _Group, _Result)) :-
+    format(user_error,
+           'C# generator mode: aggregate_all/4 not yet supported (~w).~n',
+           [Op]),
+    fail.
+aggregate_supported(aggregate(Op, _Inner, _Group, _Result)) :-
+    format(user_error,
+           'C# generator mode: aggregate/4 not yet supported (~w).~n',
+           [Op]),
+    fail.
+aggregate_supported(G) :-
+    format(user_error,
+           'C# generator mode: aggregate goal not supported (~w).~n',
+           [G]),
+    fail.
+
+guard_stratified_negation(HeadPI, GroupSpecs, Clauses) :-
+    build_dependency_graph([HeadPI], [], [], Vertices, [], Edges),
+    vertices_edges_to_ugraph(Vertices, Edges, Graph),
+    forall(
+        ( member(_-B, Clauses),
+          B \= true,
+          body_to_list(B, Goals),
+          member(G, Goals),
+          neg_goal_pred(G, NegPI)
+        ),
+        (   reachable(NegPI, Graph, Reach),
+            \+ memberchk(HeadPI, Reach)
+        ->  true
+        ;   format(user_error,
+                   'C# generator mode: negation of ~w is not stratified w.r.t ~w; unsupported.~n',
+                   [NegPI, HeadPI]),
+            fail
+        )
+    ),
+    % Also ensure negated predicate exists if in group
+    forall(
+        ( member(_H-B2, Clauses),
+          B2 \= true,
+          body_to_list(B2, Goals2),
+          member(G2, Goals2),
+          neg_goal_pred(G2, NegPI2),
+          member(NegSpec, GroupSpecs),
+          spec_signature(NegSpec, NegPI2)
+        ),
+        predicate_defined(NegPI2)
+    ).
+
+neg_goal_pred(\+ G, PI) :- term_signature(G, PI).
+neg_goal_pred(not(G), PI) :- term_signature(G, PI).
 
 csharp_generator_header(Pred, Header) :-
     get_time(Timestamp),
@@ -1563,6 +1636,44 @@ namespace UnifyWeaver.Generated
 {
     public record Fact(string Relation, Dictionary<string, object> Args)
     {
+        private static bool ValuesEqual(object? left, object? right)
+        {
+            if (ReferenceEquals(left, right)) return true;
+            if (left is null || right is null) return false;
+            if (left is string ls && right is string rs) return ls.Equals(rs);
+            if (left is System.Collections.IEnumerable le &&
+                right is System.Collections.IEnumerable re &&
+                left is not string && right is not string)
+            {
+                return le.Cast<object?>().SequenceEqual(re.Cast<object?>());
+            }
+            return object.Equals(left, right);
+        }
+
+        private static void AddValueToHash(ref HashCode hash, object? value)
+        {
+            if (value is null)
+            {
+                hash.Add(0);
+                return;
+            }
+            if (value is string s)
+            {
+                hash.Add(s);
+                return;
+            }
+            if (value is System.Collections.IEnumerable enumerable && value is not string)
+            {
+                foreach (var v in enumerable.Cast<object?>())
+                {
+                    AddValueToHash(ref hash, v);
+                }
+                hash.Add(\"[]\");
+                return;
+            }
+            hash.Add(value);
+        }
+
         public virtual bool Equals(Fact? other)
         {
             if (other is null) return false;
@@ -1572,7 +1683,7 @@ namespace UnifyWeaver.Generated
             foreach (var kvp in Args)
             {
                 if (!other.Args.TryGetValue(kvp.Key, out var value)) return false;
-                if (!object.Equals(value, kvp.Value)) return false;
+                if (!ValuesEqual(kvp.Value, value)) return false;
             }
             return true;
         }
@@ -1584,7 +1695,7 @@ namespace UnifyWeaver.Generated
             foreach (var kvp in Args.OrderBy(k => k.Key))
             {
                 hash.Add(kvp.Key);
-                hash.Add(kvp.Value);
+                AddValueToHash(ref hash, kvp.Value);
             }
             return hash.ToHashCode();
         }
@@ -1639,35 +1750,33 @@ compile_generator_rules(_GroupSpecs, Clauses, Config, Code, RuleNames) :-
     atomic_list_concat(RuleCodes, "\n\n", Code).
 
 compile_rule(Index, Head, Body, Config, Code, RuleName) :-
-    format(string(RuleName), "ApplyRule_~w", [Index]),
-    Head =.. [_HeadPred|_HeadArgs],
-    
-    % Parse body
-    body_to_list(Body, Goals),
-    
-    % Separate builtins
-    partition(is_builtin_goal, Goals, Builtins, Relations),
-    
-    (   Relations = []
-    ->  format(string(Code), "// Rule ~w: No relations", [Index])
-    ;   Relations = [FirstGoal|RestGoals],
-        FirstGoal =.. [Pred1|Args1],
+        format(string(RuleName), "ApplyRule_~w", [Index]),
+        Head =.. [_HeadPred|_HeadArgs],
         
-        % Generate pattern check for first goal
-        length(Args1, Arity1),
-        findall(Check,
-            (   between(0, Arity1, I), I < Arity1,
-                format(string(Check), "fact.Args.ContainsKey(\"arg~w\")", [I])
-            ),
-            Checks),
-        format(string(RelCheck), "fact.Relation == \"~w\"", [Pred1]),
-        append([RelCheck], Checks, AllChecks),
-        atomic_list_concat(AllChecks, " && ", Pattern),
+        % Parse body
+        body_to_list(Body, Goals),
+        partition(is_aggregate_goal, Goals, Aggregates, NonAggGoals0),
         
-        % Generate joins
-        compile_joins(RestGoals, Builtins, Head, FirstGoal, Config, JoinBody),
-        
-        format(string(Code),
+        (   Aggregates = [Agg],
+            append(RelGoals, [Agg], Goals)
+        ->  partition(is_builtin_goal, RelGoals, Builtins, Relations),
+            (   Builtins = [],
+                Relations = []
+            ->  compile_aggregate_rule(Index, Head, Agg, Config, Code, RuleName)
+            ;   Relations = [FirstGoal|RestGoals]
+            ->  FirstGoal =.. [Pred1|Args1],
+                % Generate pattern check for first goal
+                length(Args1, Arity1),
+                findall(Check,
+                    (   between(0, Arity1, I), I < Arity1,
+                        format(string(Check), "fact.Args.ContainsKey(\"arg~w\")", [I])
+                    ),
+                    Checks),
+                format(string(RelCheck), "fact.Relation == \"~w\"", [Pred1]),
+                append([RelCheck], Checks, AllChecks),
+                atomic_list_concat(AllChecks, " && ", Pattern),
+                compile_joins_with_aggregate(RestGoals, Builtins, Agg, Head, FirstGoal, Config, JoinBody),
+                format(string(Code),
 "        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
         {
             // Rule ~w: ~w :- ...
@@ -1676,11 +1785,343 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
 ~w
             }
         }", [RuleName, Index, Head, Pattern, JoinBody])
+            ;   format(user_error,
+                       'C# generator mode: aggregate goal must appear last and needs at least one relation before it when combined with joins/negation.~n',
+                       []),
+                fail
+            )
+        ;   Aggregates = [_|_]
+        ->  format(user_error,
+                   'C# generator mode: only one aggregate goal supported per rule.~n',
+                   []),
+            fail
+        ;   partition(is_builtin_goal, NonAggGoals0, Builtins, Relations),
+            (   Relations = []
+        ->  format(string(Code), "// Rule ~w: No relations", [Index])
+        ;   Relations = [FirstGoal|RestGoals],
+            FirstGoal =.. [Pred1|Args1],
+            
+            % Generate pattern check for first goal
+            length(Args1, Arity1),
+            findall(Check,
+                (   between(0, Arity1, I), I < Arity1,
+                    format(string(Check), "fact.Args.ContainsKey(\"arg~w\")", [I])
+                ),
+                Checks),
+            format(string(RelCheck), "fact.Relation == \"~w\"", [Pred1]),
+            append([RelCheck], Checks, AllChecks),
+            atomic_list_concat(AllChecks, " && ", Pattern),
+            
+            % Generate joins
+            compile_joins(RestGoals, Builtins, Head, FirstGoal, Config, JoinBody),
+            
+            format(string(Code),
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
+        {
+            // Rule ~w: ~w :- ...
+            if (~w)
+            {
+~w
+            }
+        }", [RuleName, Index, Head, Pattern, JoinBody])
+        )
     ).
+
+is_aggregate_goal(G) :- aggregate_goal(G).
 
 is_builtin_goal(Goal) :-
     Goal =.. [Functor|_],
     member(Functor, ['is', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '!=', 'not', '\\+']).
+
+compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
+    decompose_aggregate_goal(AggGoal, Type, Op, Pred, Args, GroupVar, ValueVar, ResVar),
+    format(string(RuleName), "ApplyRule_~w", [Index]),
+    Head =.. [HeadPred|HeadArgs],
+    (   Type = all,
+        member(Op, [count, sum, min, max, set, bag])
+    ->  build_aggregate_filter(Pred, Args, Config, FilterExpr),
+        build_value_expr(Op, Args, ValueVar, ValueExpr),
+        bind_count_head(HeadArgs, ResVar, Config, Assigns),
+        atomic_list_concat(Assigns, ", ", AssignStr),
+        agg_expr(Op, ValueExpr, AggExpr),
+        emit_condition(Op, EmitCond),
+        format(string(Code),
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
+        {
+            // Rule ~w: ~w :- aggregate_all(~w, ~w(~w), ~w)
+            var aggQuery = total.Where(f => ~w);
+            if (~w)
+            {
+                var agg = ~w;
+                yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
+            }
+        }", [RuleName, Index, Head, Op, Pred, Args, ResVar, FilterExpr, EmitCond, AggExpr, HeadPred, AssignStr])
+    ;   Type = group,
+        member(Op, [sum, min, max, set, bag])
+    ->  build_group_aggregate(Op, Pred, Args, GroupVar, ValueVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code)
+    ;   format(user_error,
+               'C# generator mode: aggregate ~w/~w not supported in generator codegen.~n',
+               [Op, Type]),
+        fail
+    ).
+
+decompose_aggregate_goal(aggregate_all(OpTerm, Goal, Result), all, Op, Pred, Args, _GroupVar, ValueVar, Result) :-
+    Goal =.. [Pred|Args],
+    parse_agg_op(OpTerm, Op, ValueVar, Args).
+decompose_aggregate_goal(aggregate(OpTerm, Goal, GroupVar, Result), group, Op, Pred, Args, GroupVar, ValueVar, Result) :-
+    Goal =.. [Pred|Args],
+    parse_agg_op(OpTerm, Op, ValueVar, Args).
+
+parse_agg_op(sum(Var), sum, Var, _) :- !.
+parse_agg_op(min(Var), min, Var, _) :- !.
+parse_agg_op(max(Var), max, Var, _) :- !.
+parse_agg_op(count, count, _, _) :- !.
+parse_agg_op(set(Var), set, Var, _) :- !.
+parse_agg_op(bag(Var), bag, Var, _) :- !.
+parse_agg_op(OpTerm, Op, _, _) :-
+    OpTerm =.. [Op|_].
+
+parse_group_term(Var^_, [Var]) :- !.
+parse_group_term(Var, [Var]) :- var(Var), !.
+parse_group_term(_, []).
+
+build_aggregate_filter(Pred, Args, _Config, Expr) :-
+    length(Args, Arity),
+    findall(Cond,
+        (   between(0, Arity, I), I < Arity,
+            nth0(I, Args, Arg),
+            (   ground(Arg)
+            ->  format(string(Cond), "f.Args.ContainsKey(\"arg~w\") && f.Args[\"arg~w\"].Equals(\"~w\")", [I, I, Arg])
+            ;   format(string(Cond), "f.Args.ContainsKey(\"arg~w\")", [I])
+            )
+        ),
+        Conds),
+    atomic_list_concat(Conds, " && ", ArgConds),
+    format(string(Expr), "f.Relation == \"~w\" && ~w", [Pred, ArgConds]).
+
+build_value_expr(count, _Args, _ValVar, "1").
+build_value_expr(sum, Args, ValVar, Expr) :-
+    find_var_index(ValVar, Args, ValIdx),
+    format(string(Expr), "Convert.ToDecimal(f.Args[\"arg~w\"])", [ValIdx]).
+build_value_expr(min, Args, ValVar, Expr) :-
+    find_var_index(ValVar, Args, ValIdx),
+    format(string(Expr), "Convert.ToDecimal(f.Args[\"arg~w\"])", [ValIdx]).
+build_value_expr(max, Args, ValVar, Expr) :-
+    find_var_index(ValVar, Args, ValIdx),
+    format(string(Expr), "Convert.ToDecimal(f.Args[\"arg~w\"])", [ValIdx]).
+build_value_expr(set, Args, ValVar, Expr) :-
+    find_var_index(ValVar, Args, ValIdx),
+    format(string(Expr), "f.Args[\"arg~w\"]", [ValIdx]).
+build_value_expr(bag, Args, ValVar, Expr) :-
+    find_var_index(ValVar, Args, ValIdx),
+    format(string(Expr), "f.Args[\"arg~w\"]", [ValIdx]).
+
+agg_expr(count, _ValExpr, "aggQuery.Count()").
+agg_expr(sum, ValExpr, AggExpr) :-
+    format(string(AggExpr), "aggQuery.Sum(f => ~w)", [ValExpr]).
+agg_expr(min, ValExpr, AggExpr) :-
+    format(string(AggExpr), "aggQuery.Min(f => ~w)", [ValExpr]).
+agg_expr(max, ValExpr, AggExpr) :-
+    format(string(AggExpr), "aggQuery.Max(f => ~w)", [ValExpr]).
+agg_expr(set, ValExpr, AggExpr) :-
+    format(string(AggExpr), "aggQuery.Select(f => ~w).Distinct().ToList()", [ValExpr]).
+agg_expr(bag, ValExpr, AggExpr) :-
+    format(string(AggExpr), "aggQuery.Select(f => ~w).ToList()", [ValExpr]).
+
+emit_condition(count, "true").
+emit_condition(_, "aggQuery.Any()").
+
+bind_count_head(HeadArgs, ResVar, Config, Assigns) :-
+    findall(Assign,
+        (   nth0(I, HeadArgs, Arg),
+            (   var(Arg),
+                Arg == ResVar
+            ->  format(string(Assign), "{ \"arg~w\", agg }", [I])
+            ;   var(Arg)
+            ->  format(user_error, 'C# generator aggregate: head var ~w not bound by aggregate result.~n', [Arg]),
+                fail
+            ;   translate_expr_common(Arg, [], Config, Expr)
+            ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
+            ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
+            )
+        ),
+        Assigns).
+
+find_var_index(Var, Args, Idx) :-
+    nth0(Idx, Args, Arg),
+    Var == Arg, !.
+find_var_index(Var, Args, Idx) :-
+    nth0(Idx, Args, Arg),
+    compound(Arg),
+    Arg =.. ['^', Var, _],
+    !.
+find_var_index(Var, Args, Idx) :-
+    nth0(Idx, Args, Arg),
+    compound(Arg),
+    Arg =.. ['^', _, Var],
+    !.
+
+build_group_filter(Pred, Args, _Config, Expr) :-
+    length(Args, Arity),
+    findall(Cond,
+        (   between(0, Arity, I), I < Arity,
+            nth0(I, Args, Arg),
+            (   ground(Arg)
+            ->  format(string(Cond), "f.Args.ContainsKey(\"arg~w\") && f.Args[\"arg~w\"].Equals(\"~w\")", [I, I, Arg])
+            ;   format(string(Cond), "f.Args.ContainsKey(\"arg~w\")", [I])
+            )
+        ),
+        Conds),
+    atomic_list_concat(Conds, " && ", ArgConds),
+    format(string(Expr), "f.Relation == \"~w\" && ~w", [Pred, ArgConds]).
+
+build_group_key([_], Idx, Expr) :-
+    format(string(Expr), "f.Args[\"arg~w\"]", [Idx]).
+build_group_key(_, Idx, Expr) :-
+    format(string(Expr), "f.Args[\"arg~w\"]", [Idx]).
+
+build_group_aggregate(Op, Pred, Args, GroupVar, ValVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code) :-
+    find_var_index(GroupVar, Args, GroupIdx),
+    find_var_index(ValVar, Args, ValIdx),
+    build_group_filter(Pred, Args, [], FilterExpr),
+    build_group_key([GroupVar], GroupIdx, GroupExpr),
+    group_value_field(Op, ValVar, ValueField, SelectorExpr),
+    bind_group_head_assignments(Op, HeadArgs, ResVar, Config, ValueField, Assigns),
+    atomic_list_concat(Assigns, ", ", AssignStr),
+    group_agg_selector(Op, ValIdx, SelectorExpr, AggSelector),
+    group_agg_projection(Op, AggSelector, Projection),
+    format(string(Code),
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total)
+        {
+            // Grouped aggregate ~w over ~w/~w
+            var aggResults = total
+                .Where(f => ~w)
+                .GroupBy(f => ~w)
+                .Select(g => ~w);
+            foreach (var r in aggResults)
+            {
+                yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
+            }
+        }", [RuleName, Op, Pred, Args, FilterExpr, GroupExpr, Projection, HeadPred, AssignStr]).
+
+group_value_field(set, _ValVar, "Set", _).
+group_value_field(bag, _ValVar, "Bag", _).
+group_value_field(sum, _ValVar, "Sum", _).
+group_value_field(min, _ValVar, "Min", _).
+group_value_field(max, _ValVar, "Max", _).
+
+group_agg_selector(sum, ValIdx, _SelectorExpr, Selector) :-
+    format(string(Selector), "g.Sum(f => Convert.ToDecimal(f.Args[\"arg~w\"]))", [ValIdx]).
+group_agg_selector(min, ValIdx, _SelectorExpr, Selector) :-
+    format(string(Selector), "g.Min(f => Convert.ToDecimal(f.Args[\"arg~w\"]))", [ValIdx]).
+group_agg_selector(max, ValIdx, _SelectorExpr, Selector) :-
+    format(string(Selector), "g.Max(f => Convert.ToDecimal(f.Args[\"arg~w\"]))", [ValIdx]).
+group_agg_selector(set, ValIdx, SelectorExpr, Selector) :-
+    ( SelectorExpr = "" ->
+        format(string(Selector), "g.Select(f => f.Args[\"arg~w\"]).Distinct().ToList()", [ValIdx])
+    ;   format(string(Selector), "g.Select(f => ~w).Distinct().ToList()", [SelectorExpr])
+    ).
+group_agg_selector(bag, ValIdx, SelectorExpr, Selector) :-
+    ( SelectorExpr = "" ->
+        format(string(Selector), "g.Select(f => f.Args[\"arg~w\"]).ToList()", [ValIdx])
+    ;   format(string(Selector), "g.Select(f => ~w).ToList()", [SelectorExpr])
+    ).
+
+group_agg_projection(Op, AggSelector, Projection) :-
+    group_value_field(Op, _, Field, _),
+    format(string(Projection), "new { Key = g.Key, ~w = ~w }", [Field, AggSelector]).
+
+bind_group_head_assignments(Op, HeadArgs, ResVar, Config, ValueField, Assigns) :-
+    findall(Assign,
+        (   nth0(I, HeadArgs, Arg),
+            (   var(Arg),
+                Arg == ResVar
+            ->  format(string(Assign), "{ \"arg~w\", r.~w }", [I, ValueField])
+            ;   var(Arg)
+            ->  format(string(Assign), "{ \"arg~w\", r.Key }", [I])
+            ;   translate_expr_common(Arg, [], Config, Expr)
+            ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
+            ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
+            )
+        ),
+        Assigns).
+build_head_assignments(HeadArgs, ResVar, Config, Assigns) :-
+    findall(Assign,
+        (   nth0(I, HeadArgs, Arg),
+            (   var(Arg),
+                Arg == ResVar
+            ->  format(string(Assign), "{ \"arg~w\", agg }", [I])
+            ;   var(Arg)
+            ->  format(user_error, 'C# generator aggregate: head var ~w not bound by aggregate result.~n', [Arg]),
+                fail
+            ;   translate_expr_common(Arg, [], Config, Expr)
+            ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
+            ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
+            )
+        ),
+        Assigns).
+
+build_head_assignments_with_agg(HeadArgs, ResVar, AccumPairs, VarMap, Config, Assigns) :-
+    findall(Assign,
+        (   nth0(I, HeadArgs, Arg),
+            (   var(Arg),
+                Arg == ResVar
+            ->  format(string(Assign), "{ \"arg~w\", agg }", [I])
+            ;   var(Arg)
+            ->  (   find_var_access(Arg, AccumPairs, Src, SrcIdx)
+                ->  format(string(Assign), "{ \"arg~w\", ~w[\"arg~w\"] }", [I, Src, SrcIdx])
+                ;   format(user_error, 'C# generator aggregate(join): head var ~w not bound by relations or aggregate result.~n', [Arg]),
+                    fail
+                )
+            ;   translate_expr_common(Arg, VarMap, Config, Expr)
+            ->  format(string(Assign), "{ \"arg~w\", ~w }", [I, Expr])
+            ;   format(string(Assign), "{ \"arg~w\", \"~w\" }", [I, Arg])
+            )
+        ),
+        Assigns).
+
+build_aggregate_filter_with_vars(Pred, Args, VarMap, Config, Expr) :-
+    length(Args, Arity),
+    findall(Cond,
+        (   between(0, Arity, I), I < Arity,
+            nth0(I, Args, Arg),
+            (   ground(Arg)
+            ->  format(string(Cond), "f.Args.ContainsKey(\"arg~w\") && f.Args[\"arg~w\"].Equals(\"~w\")", [I, I, Arg])
+            ;   translate_expr_common(Arg, VarMap, Config, ArgExpr),
+                ArgExpr \= "null"
+            ->  format(string(Cond), "f.Args.ContainsKey(\"arg~w\") && object.Equals(f.Args[\"arg~w\"], ~w)", [I, I, ArgExpr])
+            ;   format(string(Cond), "f.Args.ContainsKey(\"arg~w\")", [I])
+            )
+        ),
+        Conds),
+    atomic_list_concat(Conds, " && ", ArgConds),
+    format(string(Expr), "f.Relation == \"~w\" && ~w", [Pred, ArgConds]).
+
+compile_aggregate_from_bindings(HeadPred, HeadArgs, AggGoal, VarMap, AccumPairs, Config, ConstraintChecks, Code) :-
+    decompose_aggregate_goal(AggGoal, Type, Op, Pred, Args, _GroupVar, ValueVar, ResVar),
+    Type = all,
+    member(Op, [count, sum, min, max, set, bag]),
+    build_aggregate_filter_with_vars(Pred, Args, VarMap, Config, FilterExpr),
+    build_value_expr(Op, Args, ValueVar, ValueExpr),
+    agg_expr(Op, ValueExpr, AggExpr),
+    emit_condition(Op, EmitCond),
+    build_head_assignments_with_agg(HeadArgs, ResVar, AccumPairs, VarMap, Config, Assigns),
+    atomic_list_concat(Assigns, ", ", AssignStr),
+    format(string(AggBlock),
+"                var aggQuery = total.Where(f => ~w);
+                if (~w)
+                {
+                    var agg = ~w;
+                    yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
+                }", [FilterExpr, EmitCond, AggExpr, HeadPred, AssignStr]),
+    (   ConstraintChecks == "true"
+    ->  Code = AggBlock
+    ;   format(string(Code),
+"                if (~w)
+                {
+~w
+                }", [ConstraintChecks, AggBlock])
+    ).
 
 compile_joins([], Builtins, Head, FirstGoal, Config, Code) :-
     % No more relations, just constraints and output
@@ -1724,6 +2165,9 @@ compile_joins([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Code) :-
     % Handle join with one or more additional goals
     % Start with FirstGoal in accumulator
     compile_nway_join([Goal|RestGoals], Builtins, Head, [FirstGoal-"fact.Args"], Config, 2, Code).
+
+compile_joins_with_aggregate(RestGoals, Builtins, AggGoal, Head, FirstGoal, Config, Code) :-
+    compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, [FirstGoal-"fact.Args"], Config, 2, Code).
 
 %% compile_nway_join(+Goals, +Builtins, +Head, +AccumPairs, +Config, +Index, -Code)
 %  Recursively build N-way joins, threading Goal-Access pairs through
@@ -1803,6 +2247,49 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
     compile_nway_join(RestGoals, Builtins, Head, NewAccumPairs, Config, NextIndex, InnerCode),
     
     % Generate nested foreach
+    format(string(Code),
+'                foreach (var ~w in total)
+                {
+                    if (~w && ~w)
+                    {
+~w
+                    }
+                }', [VarName, RelCheck, JoinCond, InnerCode]).
+
+compile_nway_join_with_aggregate([], Builtins, AggGoal, Head, AccumPairs, Config, _, Code) :-
+    Head =.. [HeadPred|HeadArgs],
+    build_variable_map(AccumPairs, VarMap),
+    translate_builtins(Builtins, VarMap, Config, ConstraintChecks),
+    compile_aggregate_from_bindings(HeadPred, HeadArgs, AggGoal, VarMap, AccumPairs, Config, ConstraintChecks, Code).
+
+compile_nway_join_with_aggregate([Goal|RestGoals], Builtins, AggGoal, Head, AccumPairs, Config, Index, Code) :-
+    Goal =.. [Pred|Args],
+    format(atom(VarName), 'join~w', [Index]),
+    format(string(VarAccess), '~w.Args', [VarName]),
+    append(AccumPairs, [Goal-VarAccess], NewAccumPairs),
+    build_variable_map(NewAccumPairs, VarMap),
+    findall(Var-PrevAccess-PrevIdx-CurrIdx-VarAccess,
+        (   nth0(CurrIdx, Args, Var),
+            var(Var),
+            member(PrevGoal-PrevAccess, AccumPairs),
+            PrevGoal =.. [_|PrevArgs],
+            nth0(PrevIdx, PrevArgs, PrevVar),
+            Var == PrevVar
+        ),
+        JoinVars),
+    (   JoinVars = []
+    ->  JoinCond = "true"
+    ;   findall(Cond,
+            (   member(_-SrcAccess-PrevIdx-CurrIdx-CurrAccess, JoinVars),
+                format(string(Cond), '~w[\"arg~w\"].Equals(~w[\"arg~w\"])', 
+                       [CurrAccess, CurrIdx, SrcAccess, PrevIdx])
+            ),
+            Conds),
+        atomic_list_concat(Conds, " && ", JoinCond)
+    ),
+    format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
+    NextIndex is Index + 1,
+    compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, NewAccumPairs, Config, NextIndex, InnerCode),
     format(string(Code),
 '                foreach (var ~w in total)
                 {
