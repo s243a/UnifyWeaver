@@ -1113,6 +1113,24 @@ namespace UnifyWeaver.QueryRuntime.Dynamic
                 var attrQualified = attr.Name.ToString();
                 var attrPrefix = ResolvePrefix(attr.Name);
 
+                // Element-scoped attribute keys (prevents conflicts when multiple child elements have same attribute)
+                // e.g., "seeAlso@rdf:resource" and "parentTree@rdf:resource" are now distinct
+                map[$"{local}@{attrLocal}"] = attr.Value;
+                map[$"{qualified}@{attrQualified}"] = attr.Value;
+                if (!string.IsNullOrEmpty(prefix))
+                {
+                    map[$"{prefix}:{local}@{attrLocal}"] = attr.Value;
+                }
+                if (!string.IsNullOrEmpty(attrPrefix))
+                {
+                    map[$"{local}@{attrPrefix}:{attrLocal}"] = attr.Value;
+                    if (!string.IsNullOrEmpty(prefix))
+                    {
+                        map[$"{prefix}:{local}@{attrPrefix}:{attrLocal}"] = attr.Value;
+                    }
+                }
+
+                // Global attribute keys (backward compatibility - may conflict if multiple elements have same attribute)
                 map[$"@{attrLocal}"] = attr.Value;
                 map[$"@{attrQualified}"] = attr.Value;
                 if (!string.IsNullOrEmpty(attrPrefix))
