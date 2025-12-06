@@ -1,10 +1,13 @@
 package crawler
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -124,6 +127,123 @@ func (c *Crawler) processStream(r io.Reader) ([]string, error) {
 	}
 	
 	return links, nil
+}
+
+// ProcessFragmentsFromStdin reads null-delimited XML fragments from stdin
+// This enables AWK-based ingestion where AWK filters and extracts fragments
+// Usage: awk -f extract_fragments.sh input.rdf | go_crawler
+func (c *Crawler) ProcessFragmentsFromStdin() error {
+	return c.ProcessFragments(os.Stdin)
+}
+
+// ProcessFragments reads null-delimited XML fragments from a reader
+// Each fragment is a complete XML element separated by null bytes (\0)
+func (c *Crawler) ProcessFragments(r io.Reader) error {
+	scanner := bufio.NewScanner(r)
+	scanner.Split(scanNullDelimited)
+
+	// Set larger buffer for XML fragments (default 64KB may be too small)
+	const maxFragmentSize = 1024 * 1024 // 1MB
+	buf := make([]byte, maxFragmentSize)
+	scanner.Buffer(buf, maxFragmentSize)
+
+	count := 0
+	for scanner.Scan() {
+		fragment := scanner.Bytes()
+		if len(fragment) == 0 {
+			continue
+		}
+
+		if err := c.processFragment(fragment); err != nil {
+			fmt.Fprintf(os.Stderr, "Error processing fragment: %v\n", err)
+			continue
+		}
+
+		count++
+		if count%100 == 0 {
+			fmt.Fprintf(os.Stderr, "Processed %d fragments...\n", count)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scanner error: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "✓ Processed %d total fragments\n", count)
+	return nil
+}
+
+// processFragment parses and stores a single XML fragment
+func (c *Crawler) processFragment(fragment []byte) error {
+	decoder := xml.NewDecoder(bytes.NewReader(fragment))
+
+	for {
+		t, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("xml decode: %w", err)
+		}
+
+		switch se := t.(type) {
+		case xml.StartElement:
+			var node XmlNode
+			if err := decoder.DecodeElement(&node, &se); err != nil {
+				return fmt.Errorf("decode element: %w", err)
+			}
+
+			data := FlattenXML(node)
+
+			// Extract ID
+			id, _ := data["@id"].(string)
+			if id == "" {
+				id, _ = data["@rdf:about"].(string)
+			}
+			if id == "" {
+				id, _ = data["@about"].(string)
+			}
+
+			if id != "" {
+				if err := c.store.UpsertObject(id, data); err != nil {
+					return fmt.Errorf("upsert object: %w", err)
+				}
+
+				// Embed text
+				if c.embedder != nil {
+					if text, ok := data["text"].(string); ok && text != "" {
+						vec, err := c.embedder.Embed(text)
+						if err == nil && vec != nil {
+							c.store.UpsertEmbedding(id, vec)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// scanNullDelimited is a split function for bufio.Scanner that splits on null bytes
+func scanNullDelimited(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+
+	// Look for null delimiter
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		// Found null byte - return data up to (but not including) the null
+		return i + 1, data[0:i], nil
+	}
+
+	// If at EOF, return remaining data
+	if atEOF {
+		return len(data), data, nil
+	}
+
+	// Request more data
+	return 0, nil, nil
 }
 
 // XML Helpers

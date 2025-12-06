@@ -1027,7 +1027,7 @@ def read_xml_lxml(file_path: str, tags: set) -> Iterator[Dict[str, Any]]:
     for event, elem in context:
         if event == 'end' and (elem.tag in tags or elem.tag.split('}')[-1] in tags):
             data = {}
-            # Attributes
+            # Root element attributes (global keys for backward compatibility)
             for k, v in elem.attrib.items():
                 data['@' + k] = v
             # Text
@@ -1038,7 +1038,13 @@ def read_xml_lxml(file_path: str, tags: set) -> Iterator[Dict[str, Any]]:
                 tag = child.tag.split('}')[-1]
                 if not len(child) and child.text:
                     data[tag] = child.text.strip()
-            
+                # Child element attributes (element-scoped to prevent conflicts)
+                for attr_name, attr_val in child.attrib.items():
+                    scoped_key = tag + '@' + attr_name
+                    data[scoped_key] = attr_val
+                    # Also store with global key for backward compatibility
+                    data['@' + attr_name] = attr_val
+
             yield data
             
             # Memory cleanup

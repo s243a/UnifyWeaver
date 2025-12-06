@@ -966,7 +966,7 @@ flatten = ~w
 # Flattening logic
 def flatten_element(elem):
     data = {}
-    # Attributes
+    # Root element attributes (global keys for backward compatibility)
     for k, v in elem.attrib.items():
         data["@" + k] = v
     # Text content
@@ -980,7 +980,14 @@ def flatten_element(elem):
         tag = child.tag.split("}")[-1] # strip namespace for simplicity in keys
         if not len(child) and child.text:
             data[tag] = child.text.strip()
-        # TODO: Handle complex children or lists
+        # Child element attributes (element-scoped to prevent conflicts)
+        # e.g., "seeAlso@rdf:resource" vs "parentTree@rdf:resource"
+        for attr_name, attr_val in child.attrib.items():
+            # Element-scoped: prevents conflicts when multiple children have same attribute
+            scoped_key = tag + "@" + attr_name
+            data[scoped_key] = attr_val
+            # Also store with global key for backward compatibility (may conflict)
+            data["@" + attr_name] = attr_val
     return data
 
 # Parse with namespace handling

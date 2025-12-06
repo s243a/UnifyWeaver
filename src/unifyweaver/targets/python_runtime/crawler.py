@@ -50,20 +50,31 @@ class PtCrawler:
                 
             # Simple flattening (similar to read_xml_lxml)
             data = {}
+            # Root element attributes (global keys for backward compatibility)
             for k, v in elem.attrib.items():
                 local_k = k.split('}')[-1] if '}' in k else k
                 data['@' + local_k] = v
-            
+
             tag = elem.tag.split('}')[-1] # Local name
-            
+
             obj_id = data.get('@id') or data.get('@rdf:about') or data.get('@about')
 
-            # Flatten children (text only)
+            # Flatten children
             for child in elem:
                 child_tag = child.tag.split('}')[-1]
+                # Child text content
                 if not len(child) and child.text:
                     data[child_tag] = child.text.strip()
-                
+
+                # Child element attributes (element-scoped to prevent conflicts)
+                for attr_name, attr_val in child.attrib.items():
+                    local_attr = attr_name.split('}')[-1] if '}' in attr_name else attr_name
+                    # Element-scoped: e.g., "seeAlso@resource" vs "parentTree@resource"
+                    scoped_key = child_tag + '@' + local_attr
+                    data[scoped_key] = attr_val
+                    # Also store with global key for backward compatibility
+                    data['@' + local_attr] = attr_val
+
                 # Link extraction
                 # Look for rdf:resource attribute
                 resource = None
@@ -72,7 +83,7 @@ class PtCrawler:
                     if k.endswith('}resource') or k == 'resource':
                         resource = v
                         break
-                
+
                 if resource and obj_id:
                     # Store link: source=obj_id, target=resource
                     # This captures parentTree (Child->Parent) and seeAlso
