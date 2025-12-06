@@ -8,11 +8,42 @@
 
 :- module(powershell_target, [
     compile_predicate_to_powershell/3,  % +Predicate, +Options, -PsCode
-    compile_vector_ops/2                % +Options, -PsCode
+    compile_vector_ops/2,               % +Options, -PsCode
+    compile_vector_search/3             % +PredName, +Options, -PsCode
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+
+%% compile_vector_search(+PredName, +Options, -PsCode)
+%  Generates a PowerShell function to perform vector search over a collection.
+compile_vector_search(PredName, _Options, PsCode) :-
+    format(string(PsCode),
+'
+function ~w {
+    param(
+        [Parameter(Mandatory=$true)]$Items,
+        [Parameter(Mandatory=$true)][float[]]$QueryVector,
+        [int]$TopK = 10
+    )
+
+    $results = @()
+
+    foreach ($item in $Items) {
+        if ($item.vector) {
+            $score = Get-CosineSimilarity $QueryVector $item.vector
+            # Add score to a copy of the item to avoid modifying original if needed
+            # Or just return a result object
+            $results += [PSCustomObject]@{
+                Score = $score
+                Item = $item
+            }
+        }
+    }
+
+    $results | Sort-Object Score -Descending | Select-Object -First $TopK
+}
+', [PredName]).
 
 %% compile_predicate_to_powershell(+Predicate, +Options, -PsCode)
 %  Main entry point for compiling Prolog predicates to native PowerShell.
