@@ -655,5 +655,5 @@ dep_to_toml(sha2, "sha2 = \"0.10\"").
 dep_to_toml(hex, "hex = \"0.4\"").
 dep_to_toml(uuid, "uuid = { version = \"1.4\", features = [\"v4\"] }").
 dep_to_toml(redb, "redb = \"1.4.0\"").
-dep_to_toml(quick_xml, "quick-xml = \"0.30\"").
-dep_to_toml(candle, "candle-core = \"0.3.0\"\ncandle-nn = \"0.3.0\"\ncandle-transformers = \"0.3.0\"\ntokenizers = \"0.15\"\nanyhow = \"1.0\"").
+dep_to_toml(quick_xml, "quick-xml = \"0.38\"").
+dep_to_toml(candle, "candle-core = \"0.9\"\ncandle-nn = \"0.9\"\ncandle-transformers = \"0.9\"\ntokenizers = \"0.22\"\nanyhow = \"1.0\"").

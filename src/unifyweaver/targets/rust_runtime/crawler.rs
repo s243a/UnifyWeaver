@@ -66,27 +66,29 @@ impl PtCrawler {
                         obj.insert(format!("@{}", key), Value::String(val.to_string()));
                     }
                     
-                    if !obj_id.is_empty() {
+                    // Only track top-level objects that have an ID
+                    // This avoids nested elements overwriting the parent
+                    if !obj_id.is_empty() && current_obj.is_none() {
                         current_obj = Some(obj);
                         current_tag = tag;
                     }
                 }
                 Ok(Event::Text(e)) => {
                     if let Some(ref mut obj) = current_obj {
-                        let text = e.unescape()?.to_string();
+                        let text = std::str::from_utf8(e.as_ref()).unwrap_or("").to_string();
                         if !text.is_empty() {
                             obj.insert("text".to_string(), Value::String(text));
                         }
                     }
                 }
                 Ok(Event::End(e)) => {
-                    let tag = String::from_utf8_lossy(e.name().as_ref());
+                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
                     if let Some(obj) = current_obj.take() {
                         if tag == current_tag {
                             // Object complete
                             if let Some(Value::String(id)) = obj.get("@rdf:about").or(obj.get("@id")) {
                                 self.importer.upsert_object(id, &tag, &Value::Object(obj.clone()))?;
-                                
+
                                 // Generate Embedding
                                 if let Some(Value::String(text)) = obj.get("title").or(obj.get("text")) {
                                     if let Ok(vec) = self.embedder.get_embedding(text) {
@@ -94,6 +96,9 @@ impl PtCrawler {
                                     }
                                 }
                             }
+                        } else {
+                            // Put it back if it's not the matching end tag (handles nested elements)
+                            current_obj = Some(obj);
                         }
                     }
                 }
