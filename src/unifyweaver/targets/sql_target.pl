@@ -20,6 +20,9 @@
 % Suppress singleton warnings
 :- style_check(-singleton).
 
+% Allow discontiguous predicates for logical grouping
+:- discontiguous constraint_to_sql/4.
+
 %% ============================================
 %% SCHEMA DECLARATIONS
 %% ============================================
@@ -1284,6 +1287,45 @@ generate_single_select_item(sql_scalar(AggFunc, Goal), TableGoals, Item) :- !,
 generate_single_select_item(sql_scalar(AggFunc, Goal, Alias), TableGoals, Item) :- !,
     % Scalar subquery with alias
     generate_scalar_subquery_sql(sql_scalar(AggFunc, Goal, Alias), TableGoals, Item).
+% NULL handling functions
+generate_single_select_item(sql_coalesce(Args), TableGoals, Item) :- !,
+    generate_coalesce_sql(Args, TableGoals, Item).
+generate_single_select_item(sql_nullif(Arg1, Arg2), TableGoals, Item) :- !,
+    generate_nullif_sql(Arg1, Arg2, TableGoals, Item).
+generate_single_select_item(sql_ifnull(Arg1, Arg2), TableGoals, Item) :- !,
+    generate_ifnull_sql(Arg1, Arg2, TableGoals, Item).
+% String functions
+generate_single_select_item(sql_concat(Args), TableGoals, Item) :- !,
+    generate_concat_sql(Args, TableGoals, Item).
+generate_single_select_item(sql_upper(Arg), TableGoals, Item) :- !,
+    generate_upper_sql(Arg, TableGoals, Item).
+generate_single_select_item(sql_lower(Arg), TableGoals, Item) :- !,
+    generate_lower_sql(Arg, TableGoals, Item).
+generate_single_select_item(sql_substring(Arg, Start, Len), TableGoals, Item) :- !,
+    generate_substring_sql(Arg, Start, Len, TableGoals, Item).
+generate_single_select_item(sql_trim(Arg), TableGoals, Item) :- !,
+    generate_trim_sql(Arg, TableGoals, Item).
+generate_single_select_item(sql_ltrim(Arg), TableGoals, Item) :- !,
+    generate_ltrim_sql(Arg, TableGoals, Item).
+generate_single_select_item(sql_rtrim(Arg), TableGoals, Item) :- !,
+    generate_rtrim_sql(Arg, TableGoals, Item).
+generate_single_select_item(sql_length(Arg), TableGoals, Item) :- !,
+    generate_length_sql(Arg, TableGoals, Item).
+generate_single_select_item(sql_replace(Arg, From, To), TableGoals, Item) :- !,
+    generate_replace_sql(Arg, From, To, TableGoals, Item).
+% Date functions
+generate_single_select_item(sql_date(Arg), TableGoals, Item) :- !,
+    generate_date_sql(Arg, TableGoals, Item).
+generate_single_select_item(sql_datetime(Arg), TableGoals, Item) :- !,
+    generate_datetime_sql(Arg, TableGoals, Item).
+generate_single_select_item(sql_date_add(Arg, Amount, Unit), TableGoals, Item) :- !,
+    generate_date_add_sql(Arg, Amount, Unit, TableGoals, Item).
+generate_single_select_item(sql_date_diff(Arg1, Arg2), TableGoals, Item) :- !,
+    generate_date_diff_sql(Arg1, Arg2, TableGoals, Item).
+generate_single_select_item(sql_extract(Part, Arg), TableGoals, Item) :- !,
+    generate_extract_sql(Part, Arg, TableGoals, Item).
+generate_single_select_item(sql_strftime(Format, Arg), TableGoals, Item) :- !,
+    generate_strftime_sql(Format, Arg, TableGoals, Item).
 generate_single_select_item(Arg, _, Item) :-
     atom(Arg), !,
     format(string(Item), "'~w'", [Arg]).
@@ -1482,6 +1524,116 @@ constraint_to_sql(Var =\= Value, HeadArgs, TableGoals, Condition) :-
     var(Var),
     find_var_column(Var, HeadArgs, TableGoals, Column),
     format(string(Condition), '~w != ~w', [Column, Value]).
+
+%% ============================================
+%% BETWEEN AND LIKE PREDICATES
+%% ============================================
+
+%% constraint_to_sql for BETWEEN
+%  sql_between(Var, Low, High) compiles to: column BETWEEN low AND high
+%
+constraint_to_sql(sql_between(Var, Low, High), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    format_between_value(Low, LowStr),
+    format_between_value(High, HighStr),
+    format(string(Condition), '~w BETWEEN ~w AND ~w', [Column, LowStr, HighStr]).
+
+%% constraint_to_sql for NOT BETWEEN
+%  sql_not_between(Var, Low, High) compiles to: column NOT BETWEEN low AND high
+%
+constraint_to_sql(sql_not_between(Var, Low, High), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    format_between_value(Low, LowStr),
+    format_between_value(High, HighStr),
+    format(string(Condition), '~w NOT BETWEEN ~w AND ~w', [Column, LowStr, HighStr]).
+
+%% constraint_to_sql for LIKE
+%  sql_like(Var, Pattern) compiles to: column LIKE 'pattern'
+%
+constraint_to_sql(sql_like(Var, Pattern), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    format(string(Condition), '~w LIKE \'~w\'', [Column, Pattern]).
+
+%% constraint_to_sql for NOT LIKE
+%  sql_not_like(Var, Pattern) compiles to: column NOT LIKE 'pattern'
+%
+constraint_to_sql(sql_not_like(Var, Pattern), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    format(string(Condition), '~w NOT LIKE \'~w\'', [Column, Pattern]).
+
+%% constraint_to_sql for GLOB (SQLite-specific)
+%  sql_glob(Var, Pattern) compiles to: column GLOB 'pattern'
+%
+constraint_to_sql(sql_glob(Var, Pattern), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    format(string(Condition), '~w GLOB \'~w\'', [Column, Pattern]).
+
+%% constraint_to_sql for IN (list)
+%  sql_in(Var, List) compiles to: column IN (val1, val2, ...)
+%
+constraint_to_sql(sql_in(Var, List), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    is_list(List),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    maplist(format_in_value, List, FormattedValues),
+    atomic_list_concat(FormattedValues, ', ', ValuesStr),
+    format(string(Condition), '~w IN (~w)', [Column, ValuesStr]).
+
+%% constraint_to_sql for NOT IN (list)
+%  sql_not_in(Var, List) compiles to: column NOT IN (val1, val2, ...)
+%
+constraint_to_sql(sql_not_in(Var, List), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    is_list(List),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    maplist(format_in_value, List, FormattedValues),
+    atomic_list_concat(FormattedValues, ', ', ValuesStr),
+    format(string(Condition), '~w NOT IN (~w)', [Column, ValuesStr]).
+
+%% constraint_to_sql for IS NULL
+%  sql_is_null(Var) compiles to: column IS NULL
+%
+constraint_to_sql(sql_is_null(Var), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    format(string(Condition), '~w IS NULL', [Column]).
+
+%% constraint_to_sql for IS NOT NULL
+%  sql_is_not_null(Var) compiles to: column IS NOT NULL
+%
+constraint_to_sql(sql_is_not_null(Var), HeadArgs, TableGoals, Condition) :-
+    var(Var),
+    find_var_column(Var, HeadArgs, TableGoals, Column),
+    format(string(Condition), '~w IS NOT NULL', [Column]).
+
+%% format_between_value(+Value, -Formatted)
+%  Format a value for BETWEEN clause
+%
+format_between_value(Value, Formatted) :-
+    number(Value), !,
+    format(atom(Formatted), '~w', [Value]).
+format_between_value(Value, Formatted) :-
+    atom(Value), !,
+    format(atom(Formatted), '''~w''', [Value]).
+format_between_value(Value, Formatted) :-
+    format(atom(Formatted), '''~w''', [Value]).
+
+%% format_in_value(+Value, -Formatted)
+%  Format a value for IN clause
+%
+format_in_value(Value, Formatted) :-
+    number(Value), !,
+    format(atom(Formatted), '~w', [Value]).
+format_in_value(Value, Formatted) :-
+    atom(Value), !,
+    format(atom(Formatted), '''~w''', [Value]).
+format_in_value(Value, Formatted) :-
+    format(atom(Formatted), '''~w''', [Value]).
 
 %% ============================================
 %% SUBQUERY SUPPORT (Phase 4)
@@ -2202,13 +2354,34 @@ extract_expression_bindings([C|Rest], Bindings, [C|Remaining]) :-
     extract_expression_bindings(Rest, Bindings, Remaining).
 
 %% is_sql_expression(+Expr)
-%  Check if expression is a SQL expression (CASE, alias, scalar subquery)
+%  Check if expression is a SQL expression (CASE, alias, scalar subquery, functions)
 %
 is_sql_expression(sql_case(_, _, _)) :- !.
 is_sql_expression(sql_case(_, _)) :- !.
 is_sql_expression(sql_as(_, _)) :- !.
 is_sql_expression(sql_scalar(_, _)) :- !.
 is_sql_expression(sql_scalar(_, _, _)) :- !.
+% NULL handling functions
+is_sql_expression(sql_coalesce(_)) :- !.
+is_sql_expression(sql_nullif(_, _)) :- !.
+is_sql_expression(sql_ifnull(_, _)) :- !.
+% String functions
+is_sql_expression(sql_concat(_)) :- !.
+is_sql_expression(sql_upper(_)) :- !.
+is_sql_expression(sql_lower(_)) :- !.
+is_sql_expression(sql_substring(_, _, _)) :- !.
+is_sql_expression(sql_trim(_)) :- !.
+is_sql_expression(sql_ltrim(_)) :- !.
+is_sql_expression(sql_rtrim(_)) :- !.
+is_sql_expression(sql_length(_)) :- !.
+is_sql_expression(sql_replace(_, _, _)) :- !.
+% Date functions
+is_sql_expression(sql_date(_)) :- !.
+is_sql_expression(sql_datetime(_)) :- !.
+is_sql_expression(sql_date_add(_, _, _)) :- !.
+is_sql_expression(sql_date_diff(_, _)) :- !.
+is_sql_expression(sql_extract(_, _)) :- !.
+is_sql_expression(sql_strftime(_, _)) :- !.
 
 %% apply_expression_bindings(+Args, +Bindings, -ResolvedArgs)
 %  Replace variables in Args with their bound expressions
@@ -2394,11 +2567,12 @@ is_alias_expression(sql_as(_, _)).
 generate_alias_sql(sql_as(Column, Alias), TableGoals, SQL) :-
     (   var(Column)
     ->  find_var_column(Column, [], TableGoals, ColName)
-    ;   is_case_expression(Column)
-    ->  generate_case_sql(Column, TableGoals, ColName)
-    ;   is_scalar_subquery(Column)
-    ->  generate_scalar_subquery_sql(Column, TableGoals, ColName)
-    ;   ColName = Column
+    ;   is_sql_expression(Column)
+    ->  % Handle any SQL expression (CASE, functions, etc.)
+        generate_single_select_item(Column, TableGoals, ColName)
+    ;   atom(Column)
+    ->  ColName = Column
+    ;   format(atom(ColName), '~w', [Column])
     ),
     format(atom(SQL), '~w AS ~w', [ColName, Alias]).
 
@@ -2464,6 +2638,205 @@ compile_with_cte(CTEs, MainPred, Options, SQLCode) :-
                [ViewName, ViewName, CTEsStr, CleanMain])
     ;   format(string(SQLCode), 'WITH ~w~n~w;~n', [CTEsStr, CleanMain])
     ).
+
+%% ============================================
+%% NULL HANDLING FUNCTIONS
+%% ============================================
+
+%% generate_coalesce_sql(+Args, +TableGoals, -SQL)
+%  Generate COALESCE(arg1, arg2, ...) SQL
+%
+generate_coalesce_sql(Args, TableGoals, SQL) :-
+    is_list(Args), !,
+    maplist(resolve_function_arg(TableGoals), Args, ResolvedArgs),
+    atomic_list_concat(ResolvedArgs, ', ', ArgsStr),
+    format(atom(SQL), 'COALESCE(~w)', [ArgsStr]).
+
+%% generate_nullif_sql(+Arg1, +Arg2, +TableGoals, -SQL)
+%  Generate NULLIF(arg1, arg2) SQL
+%
+generate_nullif_sql(Arg1, Arg2, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg1, Resolved1),
+    resolve_function_arg(TableGoals, Arg2, Resolved2),
+    format(atom(SQL), 'NULLIF(~w, ~w)', [Resolved1, Resolved2]).
+
+%% generate_ifnull_sql(+Arg1, +Arg2, +TableGoals, -SQL)
+%  Generate IFNULL(arg1, arg2) SQL (SQLite) or COALESCE for portability
+%
+generate_ifnull_sql(Arg1, Arg2, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg1, Resolved1),
+    resolve_function_arg(TableGoals, Arg2, Resolved2),
+    format(atom(SQL), 'IFNULL(~w, ~w)', [Resolved1, Resolved2]).
+
+%% ============================================
+%% STRING FUNCTIONS
+%% ============================================
+
+%% generate_concat_sql(+Args, +TableGoals, -SQL)
+%  Generate string concatenation
+%  Uses || for SQLite, CONCAT() for others
+%
+generate_concat_sql(Args, TableGoals, SQL) :-
+    is_list(Args), !,
+    maplist(resolve_function_arg(TableGoals), Args, ResolvedArgs),
+    atomic_list_concat(ResolvedArgs, ' || ', SQL).
+
+%% generate_upper_sql(+Arg, +TableGoals, -SQL)
+%  Generate UPPER(arg) SQL
+%
+generate_upper_sql(Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'UPPER(~w)', [Resolved]).
+
+%% generate_lower_sql(+Arg, +TableGoals, -SQL)
+%  Generate LOWER(arg) SQL
+%
+generate_lower_sql(Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'LOWER(~w)', [Resolved]).
+
+%% generate_substring_sql(+Arg, +Start, +Len, +TableGoals, -SQL)
+%  Generate SUBSTR(arg, start, len) SQL
+%
+generate_substring_sql(Arg, Start, Len, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'SUBSTR(~w, ~w, ~w)', [Resolved, Start, Len]).
+
+%% generate_trim_sql(+Arg, +TableGoals, -SQL)
+%  Generate TRIM(arg) SQL
+%
+generate_trim_sql(Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'TRIM(~w)', [Resolved]).
+
+%% generate_ltrim_sql(+Arg, +TableGoals, -SQL)
+%  Generate LTRIM(arg) SQL
+%
+generate_ltrim_sql(Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'LTRIM(~w)', [Resolved]).
+
+%% generate_rtrim_sql(+Arg, +TableGoals, -SQL)
+%  Generate RTRIM(arg) SQL
+%
+generate_rtrim_sql(Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'RTRIM(~w)', [Resolved]).
+
+%% generate_length_sql(+Arg, +TableGoals, -SQL)
+%  Generate LENGTH(arg) SQL
+%
+generate_length_sql(Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'LENGTH(~w)', [Resolved]).
+
+%% generate_replace_sql(+Arg, +From, +To, +TableGoals, -SQL)
+%  Generate REPLACE(arg, from, to) SQL
+%
+generate_replace_sql(Arg, From, To, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    resolve_function_arg(TableGoals, From, FromResolved),
+    resolve_function_arg(TableGoals, To, ToResolved),
+    format(atom(SQL), 'REPLACE(~w, ~w, ~w)', [Resolved, FromResolved, ToResolved]).
+
+%% ============================================
+%% DATE FUNCTIONS
+%% ============================================
+
+%% generate_date_sql(+Arg, +TableGoals, -SQL)
+%  Generate DATE(arg) SQL
+%
+generate_date_sql(Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'DATE(~w)', [Resolved]).
+
+%% generate_datetime_sql(+Arg, +TableGoals, -SQL)
+%  Generate DATETIME(arg) SQL
+%
+generate_datetime_sql(Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'DATETIME(~w)', [Resolved]).
+
+%% generate_date_add_sql(+Arg, +Amount, +Unit, +TableGoals, -SQL)
+%  Generate date addition SQL
+%  SQLite: DATE(arg, '+N unit')
+%
+generate_date_add_sql(Arg, Amount, Unit, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    (   Amount >= 0
+    ->  format(atom(Modifier), '+~w ~w', [Amount, Unit])
+    ;   AbsAmount is abs(Amount),
+        format(atom(Modifier), '-~w ~w', [AbsAmount, Unit])
+    ),
+    format(atom(SQL), 'DATE(~w, \'~w\')', [Resolved, Modifier]).
+
+%% generate_date_diff_sql(+Arg1, +Arg2, +TableGoals, -SQL)
+%  Generate date difference SQL
+%  SQLite: JULIANDAY(arg1) - JULIANDAY(arg2)
+%
+generate_date_diff_sql(Arg1, Arg2, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg1, Resolved1),
+    resolve_function_arg(TableGoals, Arg2, Resolved2),
+    format(atom(SQL), 'CAST(JULIANDAY(~w) - JULIANDAY(~w) AS INTEGER)', [Resolved1, Resolved2]).
+
+%% generate_extract_sql(+Part, +Arg, +TableGoals, -SQL)
+%  Generate date part extraction SQL
+%  SQLite: STRFTIME('%Y', arg) for year, etc.
+%
+generate_extract_sql(Part, Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    date_part_format(Part, FormatStr),
+    format(atom(SQL), 'CAST(STRFTIME(\'~w\', ~w) AS INTEGER)', [FormatStr, Resolved]).
+
+%% generate_strftime_sql(+Format, +Arg, +TableGoals, -SQL)
+%  Generate STRFTIME(format, arg) SQL
+%
+generate_strftime_sql(Format, Arg, TableGoals, SQL) :-
+    resolve_function_arg(TableGoals, Arg, Resolved),
+    format(atom(SQL), 'STRFTIME(\'~w\', ~w)', [Format, Resolved]).
+
+%% date_part_format(+Part, -FormatStr)
+%  Map date part names to strftime format strings
+%
+date_part_format(year, '%Y') :- !.
+date_part_format(month, '%m') :- !.
+date_part_format(day, '%d') :- !.
+date_part_format(hour, '%H') :- !.
+date_part_format(minute, '%M') :- !.
+date_part_format(second, '%S') :- !.
+date_part_format(dayofweek, '%w') :- !.
+date_part_format(dayofyear, '%j') :- !.
+date_part_format(week, '%W') :- !.
+
+%% ============================================
+%% FUNCTION ARGUMENT RESOLUTION
+%% ============================================
+
+%% resolve_function_arg(+TableGoals, +Arg, -Resolved)
+%  Resolve a function argument to its SQL representation
+%
+resolve_function_arg(TableGoals, Arg, Resolved) :-
+    var(Arg), !,
+    (   find_var_column(Arg, [], TableGoals, ColName)
+    ->  Resolved = ColName
+    ;   Resolved = 'NULL'
+    ).
+resolve_function_arg(_, null, 'NULL') :- !.
+resolve_function_arg(_, Arg, Resolved) :-
+    number(Arg), !,
+    format(atom(Resolved), '~w', [Arg]).
+resolve_function_arg(_, Arg, Resolved) :-
+    atom(Arg), !,
+    format(atom(Resolved), '''~w''', [Arg]).
+resolve_function_arg(_, Arg, Resolved) :-
+    string(Arg), !,
+    format(atom(Resolved), '''~w''', [Arg]).
+resolve_function_arg(TableGoals, Arg, Resolved) :-
+    % Handle nested function calls
+    is_sql_expression(Arg), !,
+    generate_single_select_item(Arg, TableGoals, Resolved).
+resolve_function_arg(_, Arg, Resolved) :-
+    format(atom(Resolved), '''~w''', [Arg]).
 
 %% ============================================
 %% FILE I/O
