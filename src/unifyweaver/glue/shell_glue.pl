@@ -251,8 +251,8 @@ python_reader(json, _Fields, _SkipHeader, Code) :-
 
 python_field_dict(Fields, Dict) :-
     length(Fields, N),
-    numlist(0, N, Indices0),
-    Indices0 = [_|Indices],
+    N1 is N - 1,
+    numlist(0, N1, Indices),
     maplist(python_dict_pair, Fields, Indices, Pairs),
     atomic_list_concat(Pairs, ', ', PairStr),
     format(atom(Dict), '{~w}', [PairStr]).
