@@ -49,8 +49,10 @@ term_signature(Term0, Name/Arity) :-
 term_to_dependency(aggregate_all(_, Goal, _), Dep) :- !,
     term_signature(Goal, Dep).
 term_to_dependency(aggregate_all(_, Goal, _, _), Dep) :- !,
+    nonvar(Goal),
     term_signature(Goal, Dep).
 term_to_dependency(aggregate(_, Goal, _, _), Dep) :- !,
+    nonvar(Goal),
     term_signature(Goal, Dep).
 term_to_dependency(Term, Dep) :-
     (   aggregate_goal(Term)
@@ -1562,14 +1564,26 @@ guard_supported_aggregates(Clauses) :-
         aggregate_supported(G)
     ).
 
+aggregate_supported(aggregate_all(_OpTerm, Goal, _Group, _Result)) :-
+    \+ callable(Goal),
+    format(user_error,
+           'C# generator mode: aggregate_all/4 requires callable goal (~w).~n',
+           [Goal]),
+    !, fail.
+aggregate_supported(aggregate_all(_OpTerm, Goal, _Result)) :-
+    \+ callable(Goal),
+    format(user_error,
+           'C# generator mode: aggregate_all/3 requires callable goal (~w).~n',
+           [Goal]),
+    !, fail.
 aggregate_supported(aggregate_all(OpTerm, _Goal, _Result)) :-
     member(OpTerm, [count, sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate_all(OpTerm, _Goal, _Group, _Result)) :-
-    member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
+    member(OpTerm, [count, sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate(OpTerm, _Goal, _Result)) :-
     member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate(OpTerm, _Goal, _Group, _Result)) :-
-    member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
+    member(OpTerm, [count, sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate_all(Op, _Inner, _Result)) :-
     \+ member(Op, [count]),
     format(user_error,
@@ -1861,7 +1875,7 @@ compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
             }
         }", [RuleName, Index, Head, Op, Pred, Args, ResVar, Pred, FilterExpr, EmitCond, AggExpr, HeadPred, AssignStr])
     ;   Type = group,
-        member(Op, [sum, min, max, set, bag])
+        member(Op, [count, sum, min, max, set, bag])
     ->  build_group_aggregate(Op, Pred, Args, GroupVar, ValueVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code)
     ;   format(user_error,
                'C# generator mode: aggregate ~w/~w not supported in generator codegen.~n',
@@ -1870,12 +1884,15 @@ compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
     ).
 
 decompose_aggregate_goal(aggregate_all(OpTerm, Goal, Result), all, Op, Pred, Args, _GroupVar, ValueVar, Result) :-
+    nonvar(Goal),
     Goal =.. [Pred|Args],
     parse_agg_op(OpTerm, Op, ValueVar, Args).
 decompose_aggregate_goal(aggregate_all(OpTerm, Goal, GroupVar, Result), group, Op, Pred, Args, GroupVar, ValueVar, Result) :-
+    nonvar(Goal),
     Goal =.. [Pred|Args],
     parse_agg_op(OpTerm, Op, ValueVar, Args).
 decompose_aggregate_goal(aggregate(OpTerm, Goal, GroupVar, Result), group, Op, Pred, Args, GroupVar, ValueVar, Result) :-
+    nonvar(Goal),
     Goal =.. [Pred|Args],
     parse_agg_op(OpTerm, Op, ValueVar, Args).
 
@@ -1989,7 +2006,12 @@ build_group_key(_, Idx, Expr) :-
 
 build_group_aggregate(Op, Pred, Args, GroupVar, ValVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code) :-
     find_var_index(GroupVar, Args, GroupIdx),
-    find_var_index(ValVar, Args, ValIdx),
+    (   Op = count
+    ->  ValIdx = 0,
+        SelectorExpr = ""
+    ;   find_var_index(ValVar, Args, ValIdx),
+        SelectorExpr = ""
+    ),
     build_group_filter(Pred, Args, [], FilterExpr),
     build_group_key([GroupVar], GroupIdx, GroupExpr),
     group_value_field(Op, ValVar, ValueField, SelectorExpr),
@@ -2017,6 +2039,7 @@ group_value_field(bag, _ValVar, "Bag", _).
 group_value_field(sum, _ValVar, "Sum", _).
 group_value_field(min, _ValVar, "Min", _).
 group_value_field(max, _ValVar, "Max", _).
+group_value_field(count, _ValVar, "Count", _).
 
 group_agg_selector(sum, ValIdx, _SelectorExpr, Selector) :-
     format(string(Selector), "g.Sum(f => Convert.ToDecimal(f.Args[\"arg~w\"]))", [ValIdx]).
@@ -2034,6 +2057,7 @@ group_agg_selector(bag, ValIdx, SelectorExpr, Selector) :-
         format(string(Selector), "g.Select(f => f.Args[\"arg~w\"]).ToList()", [ValIdx])
     ;   format(string(Selector), "g.Select(f => ~w).ToList()", [SelectorExpr])
     ).
+group_agg_selector(count, _ValIdx, _SelectorExpr, "g.Count()").
 
 group_agg_projection(Op, AggSelector, Projection) :-
     group_value_field(Op, _, Field, _),
