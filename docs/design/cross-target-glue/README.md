@@ -18,6 +18,7 @@ Cross-target glue enables UnifyWeaver targets to communicate and compose, allowi
 | [02-specification.md](02-specification.md) | API definitions, protocols, data formats |
 | [03-implementation-plan.md](03-implementation-plan.md) | Phased implementation with status |
 | [04-api-reference.md](04-api-reference.md) | Complete API documentation |
+| [05-phase6-design.md](05-phase6-design.md) | Phase 6: Deployment, error handling, monitoring |
 
 ## Implementation Status
 
@@ -28,7 +29,8 @@ Cross-target glue enables UnifyWeaver targets to communicate and compose, allowi
 | 3 | .NET Integration (C# ↔ PowerShell ↔ IronPython) | ✅ Complete |
 | 4 | Native Targets (Go ↔ Rust binaries) | ✅ Complete |
 | 5 | Network Layer (HTTP, sockets) | ✅ Complete |
-| 6 | Advanced Features (error handling, monitoring) | Planned |
+| 6 | Production Ready (deployment, error handling, monitoring) | Planned |
+| 7 | Cloud & Enterprise (containers, secrets, multi-region) | Future |
 
 ## Modules
 
