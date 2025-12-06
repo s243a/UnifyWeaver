@@ -121,7 +121,6 @@ impl PtCrawler {
     /// Process null-delimited XML fragments from a reader
     /// Each fragment is a complete XML element separated by null bytes (\0)
     pub fn process_fragments<R: Read>(&self, reader: &mut R) -> Result<(), Box<dyn std::error::Error>> {
-        let mut buffer = Vec::new();
         let mut fragment = Vec::new();
         let mut count = 0;
 
