@@ -145,7 +145,7 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     (   functor(Head, Pred, Arity),
         clause(Head, Body),
         is_aggregation_predicate(Body)
-    ->  format('  Mode: Aggregation~n'),
+    ->  format('  Mode: Aggregation (New)~n'),
         compile_aggregation_mode(Pred, Arity, Options, GoCode)
     % Check if this is a GROUP BY predicate (group_by/4 in body)
     ;   functor(Head, Pred, Arity),
@@ -296,6 +296,18 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
 %% Helper to check if a clause is a fact (body is just 'true')
 is_fact_clause(_-true).
 
+%% is_aggregation_predicate(+Body)
+%  Check if body contains an aggregation goal
+is_aggregation_predicate(Body) :-
+    format('Checking body for aggregation: ~w~n', [Body]),
+    extract_aggregation_spec(Body, _, _, _).
+
+%% extract_aggregation_spec(+Body, -Op, -Goal, -Result)
+%  Extract aggregation specification from body
+%  Supports: aggregate(Op, Goal, Result)
+extract_aggregation_spec(aggregate(Op, Goal, Result), Op, Goal, Result).
+extract_aggregation_spec((aggregate(Op, Goal, Result), _), Op, Goal, Result).
+
 %% ============================================
 %% AGGREGATION PATTERN COMPILATION
 %% ============================================
@@ -303,23 +315,66 @@ is_fact_clause(_-true).
 %% compile_aggregation_to_go(+Pred, +Arity, +AggOp, +FieldDelim, +IncludePackage, -GoCode)
 %  Compile aggregation operations (sum, count, max, min, avg)
 %
+%% compile_aggregation_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile aggregation predicate (new style)
+%
+compile_aggregation_mode(Pred, Arity, Options, GoCode) :- !,
+    % Get predicate clauses
+    functor(Head, Pred, Arity),
+    clause(Head, Body),
+    
+    % Extract aggregation spec
+    extract_aggregation_spec(Body, Op, Goal, ResultVar),
+    
+    % Determine if we are aggregating over a field or just counting
+    (   Op = count
+    ->  AggField = none,
+        OpType = count
+    ;   compound(Op), functor(Op, AggType, 1), arg(1, Op, AggVar)
+    ->  AggField = AggVar,
+        OpType = AggType
+    ;   % Fallback / Error case
+        OpType = Op, AggField = none
+    ),
+    
+    % Extract JSON field mappings from the inner goal
+    extract_json_field_mappings(Goal, FieldMappings),
+    
+    % Generate Go code
+    generate_aggregation_code(OpType, AggField, ResultVar, FieldMappings, Options, ScriptBody),
+    
+    % Determine imports
+    (   OpType = count ->
+        Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"'
+    ;   Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"'
+    ),
+    
+    % Wrap in package main if requested
+    option(include_package(IncludePackage), Options, true),
+    (   IncludePackage ->
+        format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+func main() {
+~s}
+', [Imports, ScriptBody])
+    ;   GoCode = ScriptBody
+    ).
+
+%% compile_aggregation_to_go(+Pred, +Arity, +AggOp, +FieldDelim, +IncludePackage, -GoCode)
+%  Compile aggregation operations (legacy option-based)
 compile_aggregation_to_go(Pred, Arity, AggOp, FieldDelim, IncludePackage, GoCode) :-
     atom_string(Pred, PredStr),
     map_field_delimiter(FieldDelim, DelimChar),
-
-    format('  Aggregation type: ~w~n', [AggOp]),
-
-    % Generate aggregation Go code based on operation
+    format('  Legacy Aggregation type: ~w~n', [AggOp]),
     generate_aggregation_go(AggOp, Arity, DelimChar, ScriptBody),
-
-    % Determine imports based on aggregation type
-    %  count doesn't need strconv, others do
     (   AggOp = count ->
         Imports = '\t"bufio"\n\t"fmt"\n\t"os"'
     ;   Imports = '\t"bufio"\n\t"fmt"\n\t"os"\n\t"strconv"'
     ),
-
-    % Wrap in package main if requested
     (   IncludePackage ->
         format(string(GoCode), 'package main
 
@@ -5288,3 +5343,97 @@ format_import(Import, Line) :-
 format_import(Import, Line) :-
     sub_string(Import, _, _, _, '"'), % Already quoted (e.g. bolt "...")
     format(atom(Line), '\t~w', [Import]).
+%% generate_aggregation_code(+Op, +AggField, +ResultVar, +FieldMappings, +Options, -GoCode)
+%  Generate Go code for aggregation
+generate_aggregation_code(Op, AggField, ResultVar, FieldMappings, Options, GoCode) :-
+    % Generate field extraction code
+    (   AggField == none
+    ->  ExtractCode = ''
+    ;   % Find the field mapping for the aggregation variable
+        (   member(Field-Var, FieldMappings), Var == AggField
+        ->  true
+        ;   format('ERROR: Aggregation variable ~w not found in field mappings~n', [AggField]),
+            fail
+        ),
+        % Generate extraction logic
+        format(atom(ExtractCode), '
+		valRaw, ok := data["~w"]
+		if !ok { continue }
+		val, ok := valRaw.(float64)
+		if !ok { continue }', [Field])
+    ),
+
+    % Generate specific aggregation logic
+    (   Op = count -> generate_count_aggregation(ExtractCode, BodyCode)
+    ;   Op = sum   -> generate_sum_aggregation(ExtractCode, BodyCode)
+    ;   Op = avg   -> generate_avg_aggregation(ExtractCode, BodyCode)
+    ;   Op = max   -> generate_max_aggregation(ExtractCode, BodyCode)
+    ;   Op = min   -> generate_min_aggregation(ExtractCode, BodyCode)
+    ;   format('ERROR: Unknown aggregation operation: ~w~n', [Op]), fail
+    ),
+    
+    BodyCode = code(Init, Loop, Output),
+    
+    % Wrap in loop
+    format(string(GoCode), '
+	scanner := bufio.NewScanner(os.Stdin)
+	~s
+	
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var data map[string]interface{}
+		if err := json.Unmarshal(line, &data); err != nil {
+			continue
+		}
+		~s
+	}
+	
+	~s
+', [Init, Loop, Output]).
+
+%% Aggregation Generators
+
+generate_count_aggregation(_, code(
+    'count := 0',
+    'count++',
+    'fmt.Println(count)'
+)).
+
+generate_sum_aggregation(ExtractCode, code(
+    'sum := 0.0',
+    LoopCode,
+    'fmt.Println(sum)'
+)) :-
+    format(string(LoopCode), '~s
+		sum += val', [ExtractCode]).
+
+generate_avg_aggregation(ExtractCode, code(
+    'sum := 0.0\n\tcount := 0',
+    LoopCode,
+    'if count > 0 {\n\t\tfmt.Println(sum / float64(count))\n\t} else {\n\t\tfmt.Println(0)\n\t}'
+)) :-
+    format(string(LoopCode), '~s
+		sum += val
+		count++', [ExtractCode]).
+
+generate_max_aggregation(ExtractCode, code(
+    'var maxVal float64\n\tfirst := true',
+    LoopCode,
+    'if !first {\n\t\tfmt.Println(maxVal)\n\t}'
+)) :-
+    format(string(LoopCode), '~s
+		if first || val > maxVal {
+			maxVal = val
+			first = false
+		}', [ExtractCode]).
+
+generate_min_aggregation(ExtractCode, code(
+    'var minVal float64\n\tfirst := true',
+    LoopCode,
+    'if !first {\n\t\tfmt.Println(minVal)\n\t}'
+)) :-
+    format(string(LoopCode), '~s
+		if first || val < minVal {
+			minVal = val
+			first = false
+		}', [ExtractCode]).
