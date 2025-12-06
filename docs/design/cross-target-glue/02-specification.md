@@ -1,24 +1,51 @@
 # Cross-Target Glue: Specification
 
-## 1. Target Location Model
+## 1. Location and Transport Model
+
+Locations and transports are distinct concepts:
+- **Location** (arity 1): Where a target runs
+- **Transport** (arity 2): How two targets communicate (a connection between locations)
 
 ### 1.1 Location Types
 
-```prolog
-% Location type hierarchy
-location_type(in_process).      % Same process, direct calls
-location_type(local_process).   % Separate process, same machine
-location_type(remote).          % Different machine, network
+Locations describe where a predicate executes:
 
-% Sub-types
-location_type(pipe) :- parent(local_process).
-location_type(shared_memory) :- parent(local_process).
-location_type(socket) :- parent(remote).
-location_type(http) :- parent(remote).
-location_type(grpc) :- parent(remote).
+```prolog
+% Location types (arity 1 - where something runs)
+location(in_process).           % Same process, direct calls
+location(local_process).        % Separate process, same machine
+location(remote(Host)).         % Different machine
 ```
 
-### 1.2 Location Specification
+### 1.2 Transport Types
+
+Transports describe how two locations communicate:
+
+```prolog
+% Transport types (arity 2 - connection between locations)
+% transport(Name, ValidLocationPairs)
+
+transport(direct).              % in_process ↔ in_process (no serialization)
+transport(pipe).                % local_process ↔ local_process
+transport(shared_memory).       % local_process ↔ local_process
+transport(unix_socket).         % local_process ↔ local_process
+transport(socket).              % any ↔ any (TCP/IP)
+transport(http).                % any ↔ remote (HTTP/HTTPS)
+transport(grpc).                % any ↔ remote (gRPC)
+
+% Valid transport for location pairs
+valid_transport(in_process, in_process, direct).
+valid_transport(local_process, local_process, pipe).
+valid_transport(local_process, local_process, shared_memory).
+valid_transport(local_process, local_process, unix_socket).
+valid_transport(local_process, remote(_), socket).
+valid_transport(local_process, remote(_), http).
+valid_transport(remote(_), remote(_), socket).
+valid_transport(remote(_), remote(_), http).
+valid_transport(remote(_), remote(_), grpc).
+```
+
+### 1.3 Location Specification
 
 ```prolog
 % Full location specification
@@ -26,24 +53,39 @@ location_type(grpc) :- parent(remote).
 
 % Options:
 %   process(same | separate)     - Process boundary
-%   host(Hostname)               - Machine location
+%   host(Hostname)               - Machine location (implies remote)
 %   port(Port)                   - Network port
-%   transport(pipe | socket | http | grpc)
-%   format(tsv | json | binary | native)
-%   buffer(none | line | block(Size))
-%   timeout(Seconds)
-%   retry(Count)
 ```
 
-### 1.3 Default Resolution
+### 1.4 Transport Specification
+
+```prolog
+% Transport between two predicates
+:- connection(Pred1/Arity1, Pred2/Arity2, Options).
+
+% Options:
+%   transport(pipe | socket | http | grpc)  - How to communicate
+%   format(tsv | json | binary | native)    - Data format
+%   buffer(none | line | block(Size))       - Buffering strategy
+%   timeout(Seconds)                        - Connection timeout
+%   retry(Count)                            - Retry on failure
+```
+
+### 1.5 Default Resolution
 
 ```prolog
 % Default location resolution rules
 default_location(Target1, Target2, in_process) :-
     same_runtime_family(Target1, Target2).
 
-default_location(Target1, Target2, local_process(pipe)) :-
+default_location(Target1, Target2, local_process) :-
     \+ same_runtime_family(Target1, Target2).
+
+% Default transport resolution rules
+default_transport(in_process, in_process, direct).
+default_transport(local_process, local_process, pipe).
+default_transport(local_process, remote(_), http).
+default_transport(remote(_), remote(_), http).
 
 % Runtime families
 runtime_family(csharp, dotnet).
@@ -359,9 +401,21 @@ error_handling(fallback(Pred)). % Call fallback predicate
 ?- target_of(analyze/2, Target).
 Target = python.
 
+% Query location (where it runs)
 ?- location_of(analyze/2, Location).
-Location = local_process(pipe).
+Location = local_process.
 
+% Query transport between two predicates (how they connect)
+?- transport_between(fetch/1, analyze/2, Transport).
+Transport = pipe.
+
+% Full communication path with locations and transports
 ?- communication_path(fetch/1, store/1, Path).
-Path = [fetch/1:bash, pipe, transform/2:python, pipe, store/1:sql].
+Path = [
+    node(fetch/1, bash, local_process),
+    edge(pipe),
+    node(transform/2, python, local_process),
+    edge(pipe),
+    node(store/1, sql, remote('db.local'))
+].
 ```
