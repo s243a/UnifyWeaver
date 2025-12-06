@@ -259,16 +259,17 @@ if __name__ == "__main__":
 python_endpoint_route(endpoint(Path, Handler, Opts), Code) :-
     option_or_default(methods(Methods), Opts, ['POST']),
     methods_to_python_list(Methods, MethodsList),
+    path_to_func_name(Path, RouteName),
     format(atom(Code), '
 @app.route("~w", methods=~w)
-def ~w():
+def ~w_route():
     try:
         data = request.get_json() if request.is_json else {}
         result = ~w(data.get("data"))
         return jsonify({"success": True, "data": result})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
-', [Path, MethodsList, Handler, Handler]).
+', [Path, MethodsList, RouteName, Handler]).
 
 methods_to_python_list(Methods, List) :-
     maplist(method_to_string, Methods, Strings),
