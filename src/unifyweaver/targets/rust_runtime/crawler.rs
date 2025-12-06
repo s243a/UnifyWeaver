@@ -29,7 +29,7 @@ impl PtCrawler {
         let file = File::open(path)?;
         let file_len = file.metadata()?.len();
         let mut reader = Reader::from_reader(BufReader::new(file));
-        reader.config_mut().trim_text(true);
+        // Note: trim_text config removed for quick-xml 0.31+ compatibility
 
         let mut buf = Vec::new();
         let mut current_obj: Option<Map<String, Value>> = None;
@@ -162,7 +162,7 @@ impl PtCrawler {
     /// Process a single XML fragment
     fn process_fragment(&self, fragment: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         let mut reader = Reader::from_reader(fragment);
-        reader.config_mut().trim_text(true);
+        // Note: trim_text config removed for quick-xml 0.31+ compatibility
 
         let mut buf = Vec::new();
         let mut obj: Option<Map<String, Value>> = None;
