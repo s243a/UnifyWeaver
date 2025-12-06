@@ -96,6 +96,17 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 
 **See [SQL Target Design](SQL_TARGET_DESIGN.md) for details.**
 
+### Cross-Target Glue System (v0.1)
+- **Multi-Language Pipelines** - Compose predicates across AWK, Python, Bash, Go, Rust, C#, PowerShell
+- **Shell Integration** - Generate complete scripts with TSV/CSV/JSON I/O for AWK ↔ Python ↔ Bash
+- **.NET Bridges** - In-process C# ↔ PowerShell ↔ IronPython with automatic CPython fallback
+- **Native Binary Orchestration** - Go/Rust compilation with parallel workers and cross-compilation
+- **Network Communication** - HTTP servers/clients (Go, Python, Rust) and TCP socket streaming
+- **Service Registry** - Track and route calls to distributed services
+- **294+ Test Assertions** - Comprehensive test coverage across all glue modules
+
+**See [Cross-Target Glue Guide](docs/guides/cross-target-glue.md) for details.**
+
 ### Control Plane
 - **Enhanced Firewall** - Multi-service security for external tools (python3, curl, wget, jq)
 - **Network Access Control** - Host pattern matching and access restrictions
@@ -328,6 +339,7 @@ In SWI-Prolog:
 
 - **[🎓 Educational Materials](https://github.com/s243a/UnifyWeaver_Education)** - Learn UnifyWeaver with comprehensive tutorials
 - **[Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive guide with tutorials and examples
+- [Cross-Target Glue Guide](docs/guides/cross-target-glue.md) - Multi-language pipeline composition
 - [TESTING_GUIDE.md](docs/TESTING_GUIDE.md) - Testing infrastructure
 - [ADVANCED_RECURSION.md](docs/ADVANCED_RECURSION.md) - Recursion patterns deep dive
 - [POWERSHELL_TARGET.md](docs/POWERSHELL_TARGET.md) - PowerShell compilation guide
