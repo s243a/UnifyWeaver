@@ -122,30 +122,168 @@ foreach (var kvp in parentToChildren)
 
 Console.WriteLine($"✓ Updated {pearlsUpdated} pearls with ParentTree field");
 
-// Show sample tree with children
-Console.WriteLine("\n=== Sample Tree with Children ===");
+// Extract tree → tree relationships from RefPearl seeAlso
+Console.WriteLine("\n=== Extracting Tree-to-Tree Relationships ===");
+Console.WriteLine("Scanning RefPearls for seeAlso → child tree links...");
+
+var treeToChildTrees = new Dictionary<string, List<string>>();
+int refPearlsProcessed = 0;
+int refPearlsWithSeeAlso = 0;
+foreach (var pearl in pearls.FindAll())
+{
+    var pearlType = pearl["Type"]?.AsString ?? "";
+    if (pearlType == "pt:RefPearl" || pearlType == "pt:AliasPearl")
+    {
+        refPearlsProcessed++;
+        var pearlId = pearl["_id"].AsString;
+        var parentTreeId = pearl["ParentTree"]?.AsString;
+
+        if (!string.IsNullOrEmpty(parentTreeId) && pearl.ContainsKey("Raw"))
+        {
+            var raw = pearl["Raw"].AsDocument;
+
+            // The seeAlso target is in element-scoped attribute: seeAlso@rdf:resource
+            // Try multiple possible key formats (with different namespace representations)
+            string? seeAlsoUrl = null;
+            var possibleKeys = new[]
+            {
+                "seeAlso@rdf:resource",
+                "seeAlso@{http://www.w3.org/1999/02/22-rdf-syntax-ns#}resource",
+                "rdfs:seeAlso@rdf:resource",
+                "{http://www.w3.org/2000/01/rdf-schema#}seeAlso@rdf:resource",
+                "{http://www.w3.org/2000/01/rdf-schema#}seeAlso@{http://www.w3.org/1999/02/22-rdf-syntax-ns#}resource",
+                // Fallback to old global keys (for backward compatibility with old databases)
+                "@rdf:resource",
+                "@{http://www.w3.org/1999/02/22-rdf-syntax-ns#}resource",
+                "@resource"
+            };
+
+            foreach (var key in possibleKeys)
+            {
+                if (raw.ContainsKey(key))
+                {
+                    seeAlsoUrl = raw[key].ToString();
+                    break;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(seeAlsoUrl))
+            {
+                // Extract child tree ID from URL like: .../id12345
+                var match = Regex.Match(seeAlsoUrl, @"/id(\d+)");
+                if (match.Success)
+                {
+                    var childTreeId = match.Groups[1].Value;
+
+                    // Only count if it's different from parent (not self-reference)
+                    if (childTreeId != parentTreeId)
+                    {
+                        refPearlsWithSeeAlso++;
+
+                        if (!treeToChildTrees.ContainsKey(parentTreeId))
+                        {
+                            treeToChildTrees[parentTreeId] = new List<string>();
+                        }
+                        if (!treeToChildTrees[parentTreeId].Contains(childTreeId))
+                        {
+                            treeToChildTrees[parentTreeId].Add(childTreeId);
+                        }
+
+                        if (refPearlsWithSeeAlso <= 5)
+                        {
+                            Console.WriteLine($"  Tree {parentTreeId} → Tree {childTreeId} (via RefPearl)");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+Console.WriteLine($"\nProcessed: {refPearlsProcessed} RefPearls/AliasPearls");
+Console.WriteLine($"RefPearls with seeAlso: {refPearlsWithSeeAlso}");
+Console.WriteLine($"Trees with child trees: {treeToChildTrees.Count}");
+
+// Update trees with ChildTrees field
+Console.WriteLine("\nUpdating tree ChildTrees fields...");
+int treesWithChildTrees = 0;
+
+foreach (var kvp in treeToChildTrees)
+{
+    var parentId = kvp.Key;
+    var childTreeIds = kvp.Value;
+
+    var tree = trees.FindById(parentId);
+    if (tree != null)
+    {
+        var childTreeArray = new BsonArray();
+        foreach (var childTreeId in childTreeIds)
+        {
+            childTreeArray.Add(new BsonValue(childTreeId));
+        }
+        tree["ChildTrees"] = childTreeArray;
+        trees.Update(tree);
+        treesWithChildTrees++;
+
+        if (treesWithChildTrees <= 5)
+        {
+            Console.WriteLine($"  Updated tree {parentId}: {childTreeIds.Count} child trees");
+        }
+    }
+}
+
+Console.WriteLine($"✓ Updated {treesWithChildTrees} trees with ChildTrees lists");
+
+// Show sample tree with both children and child trees
+Console.WriteLine("\n=== Sample Tree with Children & Child Trees ===");
 var sampleTree = trees.FindAll().FirstOrDefault(t =>
-    t.ContainsKey("Children") &&
-    t["Children"].AsArray.Count > 0);
+    t.ContainsKey("ChildTrees") &&
+    t["ChildTrees"].AsArray.Count > 0);
 
 if (sampleTree != null)
 {
     Console.WriteLine($"Tree: {sampleTree["Title"]?.AsString ?? sampleTree["_id"].AsString}");
     Console.WriteLine($"  ID: {sampleTree["_id"].AsString}");
-    Console.WriteLine($"  Children count: {sampleTree["Children"].AsArray.Count}");
-    foreach (var childId in sampleTree["Children"].AsArray.Take(10))
+
+    // Show child trees (tree → tree relationships)
+    if (sampleTree.ContainsKey("ChildTrees") && sampleTree["ChildTrees"].AsArray.Count > 0)
     {
-        var childPearl = pearls.FindById(childId.AsString);
-        if (childPearl != null)
+        Console.WriteLine($"  Child Trees: {sampleTree["ChildTrees"].AsArray.Count}");
+        foreach (var childTreeId in sampleTree["ChildTrees"].AsArray.Take(5))
         {
-            var childTitle = childPearl["Title"]?.AsString ?? childId.AsString;
-            if (childTitle.Length > 60) childTitle = childTitle.Substring(0, 60) + "...";
-            Console.WriteLine($"    - {childTitle}");
+            var childTree = trees.FindById(childTreeId.AsString);
+            if (childTree != null)
+            {
+                var childTitle = childTree["Title"]?.AsString ?? childTreeId.AsString;
+                if (childTitle.Length > 50) childTitle = childTitle.Substring(0, 50) + "...";
+                Console.WriteLine($"    → {childTitle}");
+            }
+        }
+        if (sampleTree["ChildTrees"].AsArray.Count > 5)
+        {
+            Console.WriteLine($"    ... and {sampleTree["ChildTrees"].AsArray.Count - 5} more child trees");
         }
     }
-    if (sampleTree["Children"].AsArray.Count > 10)
+
+    // Show children (pearls)
+    if (sampleTree.ContainsKey("Children") && sampleTree["Children"].AsArray.Count > 0)
     {
-        Console.WriteLine($"    ... and {sampleTree["Children"].AsArray.Count - 10} more");
+        Console.WriteLine($"  Children (pearls): {sampleTree["Children"].AsArray.Count}");
+        foreach (var childId in sampleTree["Children"].AsArray.Take(5))
+        {
+            var childPearl = pearls.FindById(childId.AsString);
+            if (childPearl != null)
+            {
+                var childTitle = childPearl["Title"]?.AsString ?? childId.AsString;
+                var childType = childPearl["Type"]?.AsString ?? "";
+                if (childTitle.Length > 50) childTitle = childTitle.Substring(0, 50) + "...";
+                Console.WriteLine($"    • [{childType}] {childTitle}");
+            }
+        }
+        if (sampleTree["Children"].AsArray.Count > 5)
+        {
+            Console.WriteLine($"    ... and {sampleTree["Children"].AsArray.Count - 5} more pearls");
+        }
     }
 }
 
