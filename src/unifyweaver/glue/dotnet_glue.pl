@@ -602,8 +602,7 @@ for line in sys.stdin:
             var psi = new ProcessStartInfo
             {
                 FileName = PythonPath,
-                Arguments = $"-c \\"{wrappedScript.Replace("\\"", "\\\\\\"")}\\""
-",
+                Arguments = $"-c \\"{wrappedScript.Replace("\\"", "\\\\\\"")}\\"",
                 UseShellExecute = false,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
