@@ -1576,11 +1576,8 @@ aggregate_supported(aggregate_all(Op, _Inner, _Result)) :-
            'C# generator mode: aggregate_all/3 with op ~w not yet supported.~n',
            [Op]),
     fail.
-aggregate_supported(aggregate_all(Op, _Inner, _Group, _Result)) :-
-    format(user_error,
-           'C# generator mode: aggregate_all/4 not yet supported (~w).~n',
-           [Op]),
-    fail.
+aggregate_supported(aggregate_all(OpTerm, _Inner, _Group, _Result)) :-
+    member(OpTerm, [sum(_), min(_), max(_), set(_), bag(_)]), !.
 aggregate_supported(aggregate(Op, _Inner, _Group, _Result)) :-
     format(user_error,
            'C# generator mode: aggregate/4 not yet supported (~w).~n',
@@ -1783,7 +1780,7 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
                 atomic_list_concat(AllChecks, " && ", Pattern),
                 compile_joins_with_aggregate(RestGoals, Builtins, Agg, Head, FirstGoal, Config, JoinBody),
                 format(string(Code),
-"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex)
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex, Dictionary<string, Dictionary<object, List<Fact>>> relIndexArg0)
         {
             // Rule ~w: ~w :- ...
             if (~w)
@@ -1822,7 +1819,7 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
             compile_joins(RestGoals, Builtins, Head, FirstGoal, Config, JoinBody),
             
             format(string(Code),
-"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex)
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex, Dictionary<string, Dictionary<object, List<Fact>>> relIndexArg0)
         {
             // Rule ~w: ~w :- ...
             if (~w)
@@ -1852,7 +1849,7 @@ compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
         agg_expr(Op, ValueExpr, AggExpr),
         emit_condition(Op, EmitCond),
         format(string(Code),
-"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex)
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex, Dictionary<string, Dictionary<object, List<Fact>>> relIndexArg0)
         {
             // Rule ~w: ~w :- aggregate_all(~w, ~w(~w), ~w)
             var aggSource = relIndex.TryGetValue(\"~w\", out var aggList) ? aggList : Enumerable.Empty<Fact>();
@@ -2001,7 +1998,7 @@ build_group_aggregate(Op, Pred, Args, GroupVar, ValVar, ResVar, Config, HeadPred
     group_agg_selector(Op, ValIdx, SelectorExpr, AggSelector),
     group_agg_projection(Op, AggSelector, Projection),
     format(string(Code),
-"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex)
+"        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex, Dictionary<string, Dictionary<object, List<Fact>>> relIndexArg0)
         {
             // Grouped aggregate ~w over ~w/~w
             var groupSource = relIndex.TryGetValue(\"~w\", out var groupList) ? groupList : Enumerable.Empty<Fact>();
@@ -2042,7 +2039,7 @@ group_agg_projection(Op, AggSelector, Projection) :-
     group_value_field(Op, _, Field, _),
     format(string(Projection), "new { Key = g.Key, ~w = ~w }", [Field, AggSelector]).
 
-bind_group_head_assignments(Op, HeadArgs, ResVar, Config, ValueField, Assigns) :-
+bind_group_head_assignments(_Op, HeadArgs, ResVar, Config, ValueField, Assigns) :-
     findall(Assign,
         (   nth0(I, HeadArgs, Arg),
             (   var(Arg),
@@ -2226,7 +2223,7 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
     append(AccumPairs, [Goal-VarAccess], NewAccumPairs),
     
     % Build VarMap from all goals so far
-    build_variable_map(NewAccumPairs, VarMap),
+    build_variable_map(NewAccumPairs, _VarMap),
     
     % Find join conditions by checking current goal args against all previous goals
     findall(Var-PrevAccess-PrevIdx-CurrIdx-VarAccess,
@@ -2253,6 +2250,7 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
     
     % Relation check
     format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
+    join_source_expr(Pred, Args, AccumPairs, Index, SourceExpr),
     
     % Recurse for remaining goals with extended accumulator
     NextIndex is Index + 1,
@@ -2260,13 +2258,13 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
     
     % Generate nested foreach
     format(string(Code),
-'                foreach (var ~w in (relIndex.TryGetValue("~w", out var list~w) ? list~w : Enumerable.Empty<Fact>()))
+'                foreach (var ~w in ~w)
                 {
                     if (~w && ~w)
                     {
 ~w
                     }
-                }', [VarName, Pred, Index, JoinCond, RelCheck, InnerCode]).
+                }', [VarName, SourceExpr, JoinCond, RelCheck, InnerCode]).
 
 compile_nway_join_with_aggregate([], Builtins, AggGoal, Head, AccumPairs, Config, _, Code) :-
     Head =.. [HeadPred|HeadArgs],
@@ -2279,7 +2277,7 @@ compile_nway_join_with_aggregate([Goal|RestGoals], Builtins, AggGoal, Head, Accu
     format(atom(VarName), 'join~w', [Index]),
     format(string(VarAccess), '~w.Args', [VarName]),
     append(AccumPairs, [Goal-VarAccess], NewAccumPairs),
-    build_variable_map(NewAccumPairs, VarMap),
+    build_variable_map(NewAccumPairs, _VarMap),
     findall(Var-PrevAccess-PrevIdx-CurrIdx-VarAccess,
         (   nth0(CurrIdx, Args, Var),
             var(Var),
@@ -2300,16 +2298,17 @@ compile_nway_join_with_aggregate([Goal|RestGoals], Builtins, AggGoal, Head, Accu
         atomic_list_concat(Conds, " && ", JoinCond)
     ),
     format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
+    join_source_expr(Pred, Args, AccumPairs, Index, SourceExpr),
     NextIndex is Index + 1,
     compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, NewAccumPairs, Config, NextIndex, InnerCode),
     format(string(Code),
-'                foreach (var ~w in (relIndex.TryGetValue("~w", out var list~w) ? list~w : Enumerable.Empty<Fact>()))
+'                foreach (var ~w in ~w)
                 {
                     if (~w && ~w)
                     {
 ~w
                     }
-                }', [VarName, Pred, Index, JoinCond, RelCheck, InnerCode]).
+                }', [VarName, SourceExpr, JoinCond, RelCheck, InnerCode]).
 
 % Find the most recent access path for a variable across accumulated goals
 find_var_access(Var, AccumPairs, Source, Idx) :-
@@ -2319,6 +2318,25 @@ find_var_access(Var, AccumPairs, Source, Idx) :-
     nth0(Idx, Args, Var0),
     Var == Var0,
     !.
+
+arg0_key_expr(Args, AccumPairs, KeyExpr) :-
+    nth0(0, Args, Arg0),
+    (   ground(Arg0)
+    ->  format(string(KeyExpr), "\"~w\"", [Arg0])
+    ;   var(Arg0),
+        find_var_access(Arg0, AccumPairs, Src, SrcIdx)
+    ->  format(string(KeyExpr), "~w[\"arg~w\"]", [Src, SrcIdx])
+    ).
+
+join_source_expr(Pred, Args, AccumPairs, Index, SourceExpr) :-
+    (   arg0_key_expr(Args, AccumPairs, KeyExpr)
+    ->  format(string(SourceExpr),
+               '(relIndexArg0.TryGetValue("~w", out var map~w) && map~w.TryGetValue(~w, out var list~w) ? (IEnumerable<Fact>)list~w : Enumerable.Empty<Fact>())',
+               [Pred, Index, Index, KeyExpr, Index])
+    ;   format(string(SourceExpr),
+               '(relIndex.TryGetValue("~w", out var list~w) ? list~w : Enumerable.Empty<Fact>())',
+               [Pred, Index])
+    ).
 
 translate_builtins([], _, _, "true").
 translate_builtins(Builtins, VarMap, Config, Code) :-
@@ -2359,7 +2377,7 @@ translate_negation_check(Goal, VarMap, Config, Check) :-
 compile_generator_execution(_Pred, RuleNames, Code) :-
     findall(Call,
         (   member(Name, RuleNames),
-            format(string(Call), "            newFacts.UnionWith(~w(fact, total, relIndex));", [Name])
+            format(string(Call), "            newFacts.UnionWith(~w(fact, total, relIndex, relIndexArg0));", [Name])
         ),
         Calls),
     atomic_list_concat(Calls, "\n", CallsStr),
@@ -2375,6 +2393,13 @@ compile_generator_execution(_Pred, RuleNames, Code) :-
                 var relIndex = total
                     .GroupBy(f => f.Relation)
                     .ToDictionary(g => g.Key, g => g.ToList());
+                var relIndexArg0 = total
+                    .GroupBy(f => f.Relation)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => g.GroupBy(f => f.Args.ContainsKey(\"arg0\") ? f.Args[\"arg0\"] : null)
+                              .ToDictionary(h => h.Key, h => h.ToList())
+                    );
                 foreach (var fact in total)
                 {
 ~w
