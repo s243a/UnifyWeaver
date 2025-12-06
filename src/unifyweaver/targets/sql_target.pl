@@ -10,6 +10,9 @@
     compile_predicate_to_sql/3,     % +Predicate, +Options, -SQLCode
     compile_set_operation/4,        % +SetOp, +Predicates, +Options, -SQLCode
     compile_with_cte/4,             % +CTEs, +MainPred, +Options, -SQLCode
+    compile_recursive_cte/5,        % +CTEName, +Columns, +RecursiveDef, +MainPred, -SQLCode
+    compile_recursive_cte/6,        % +CTEName, +Columns, +RecursiveDef, +MainPred, +Options, -SQLCode
+    sql_recursive_table/2,          % +CTEName, +Columns (declare recursive CTE schema)
     write_sql_file/2,               % +SQLCode, +FilePath
     sql_table/2                     % +TableName, +Columns (directive)
 ]).
@@ -2638,6 +2641,113 @@ compile_with_cte(CTEs, MainPred, Options, SQLCode) :-
                [ViewName, ViewName, CTEsStr, CleanMain])
     ;   format(string(SQLCode), 'WITH ~w~n~w;~n', [CTEsStr, CleanMain])
     ).
+
+%% ============================================
+%% RECURSIVE CTE SUPPORT (WITH RECURSIVE)
+%% ============================================
+
+%% compile_recursive_cte(+CTEName, +Columns, +RecursiveDef, +MainPred, -SQLCode)
+%  Compile a recursive CTE (WITH RECURSIVE)
+%
+%  CTEName: Name for the recursive CTE
+%  Columns: List of column names for the CTE
+%  RecursiveDef: recursive_cte(BasePred, RecursivePred) structure
+%    - BasePred: Predicate for anchor/base case
+%    - RecursivePred: Predicate for recursive case (references CTEName)
+%  MainPred: Main query predicate that uses the CTE
+%
+%  Example usage:
+%    compile_recursive_cte(
+%        org_tree,
+%        [id, name, manager_id, level],
+%        recursive_cte(org_base/4, org_recursive/4),
+%        org_result/4,
+%        SQL
+%    )
+%
+compile_recursive_cte(CTEName, Columns, recursive_cte(BasePred, RecursivePred), MainPred, SQLCode) :-
+    % Compile base case
+    compile_predicate_to_sql(BasePred, [format(select)], BaseQuery),
+    clean_sql_query(BaseQuery, CleanBase),
+
+    % Compile recursive case
+    compile_predicate_to_sql(RecursivePred, [format(select)], RecursiveQuery),
+    clean_sql_query(RecursiveQuery, CleanRecursive),
+
+    % Compile main query
+    compile_predicate_to_sql(MainPred, [format(select)], MainQuery),
+    clean_sql_query(MainQuery, CleanMain),
+
+    % Format column list
+    atomic_list_concat(Columns, ', ', ColumnList),
+
+    % Build WITH RECURSIVE
+    format(string(SQLCode),
+           'WITH RECURSIVE ~w(~w) AS (\n    ~w\n    UNION ALL\n    ~w\n)\n~w;~n',
+           [CTEName, ColumnList, CleanBase, CleanRecursive, CleanMain]).
+
+%% compile_recursive_cte/6 - with options
+%  Additional options: union_type(all|distinct), view_name(Name)
+%
+compile_recursive_cte(CTEName, Columns, recursive_cte(BasePred, RecursivePred), MainPred, Options, SQLCode) :-
+    % Compile base case
+    compile_predicate_to_sql(BasePred, [format(select)], BaseQuery),
+    clean_sql_query(BaseQuery, CleanBase),
+
+    % Compile recursive case
+    compile_predicate_to_sql(RecursivePred, [format(select)], RecursiveQuery),
+    clean_sql_query(RecursiveQuery, CleanRecursive),
+
+    % Compile main query
+    compile_predicate_to_sql(MainPred, [format(select)], MainQuery),
+    clean_sql_query(MainQuery, CleanMain),
+
+    % Format column list
+    atomic_list_concat(Columns, ', ', ColumnList),
+
+    % Get union type (default: ALL)
+    (   member(union_type(distinct), Options)
+    ->  UnionType = 'UNION'
+    ;   UnionType = 'UNION ALL'
+    ),
+
+    % Build WITH RECURSIVE
+    (   member(view_name(ViewName), Options)
+    ->  format(string(SQLCode),
+               '-- View: ~w~nCREATE VIEW IF NOT EXISTS ~w AS~nWITH RECURSIVE ~w(~w) AS (\n    ~w\n    ~w\n    ~w\n)\n~w;~n~n',
+               [ViewName, ViewName, CTEName, ColumnList, CleanBase, UnionType, CleanRecursive, CleanMain])
+    ;   format(string(SQLCode),
+               'WITH RECURSIVE ~w(~w) AS (\n    ~w\n    ~w\n    ~w\n)\n~w;~n',
+               [CTEName, ColumnList, CleanBase, UnionType, CleanRecursive, CleanMain])
+    ).
+
+%% clean_sql_query(+Query, -CleanQuery)
+%  Remove trailing semicolon and newline from SQL query
+%
+clean_sql_query(Query, CleanQuery) :-
+    atom_string(Query, QueryStr),
+    (   sub_string(QueryStr, _, 2, 0, ";\n")
+    ->  sub_string(QueryStr, 0, _, 2, CleanQuery)
+    ;   sub_string(QueryStr, _, 1, 0, ";")
+    ->  sub_string(QueryStr, 0, _, 1, CleanQuery)
+    ;   CleanQuery = QueryStr
+    ).
+
+%% ============================================
+%% RECURSIVE CTE HELPER - Self-referencing table
+%% ============================================
+
+%% For recursive queries, we need to handle references to the CTE itself.
+%% This is done by defining a virtual table schema for the CTE.
+
+%% sql_recursive_table(+CTEName, +Columns)
+%  Declare a recursive CTE as a virtual table for use in recursive predicates
+%  Usage: :- sql_recursive_table(org_tree, [id-integer, name-text, manager_id-integer, level-integer]).
+%
+sql_recursive_table(CTEName, Columns) :-
+    retractall(sql_table_def(CTEName, _)),
+    assertz(sql_table_def(CTEName, Columns)),
+    format('Recursive CTE table declared: ~w ~w~n', [CTEName, Columns]).
 
 %% ============================================
 %% NULL HANDLING FUNCTIONS
