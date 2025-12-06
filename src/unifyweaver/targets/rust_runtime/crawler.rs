@@ -2,7 +2,7 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use serde_json::{Map, Value};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{self, BufReader, Read};
 use crate::importer::PtImporter;
 use crate::embedding::EmbeddingProvider;
 
@@ -29,7 +29,7 @@ impl PtCrawler {
         let file = File::open(path)?;
         let file_len = file.metadata()?.len();
         let mut reader = Reader::from_reader(BufReader::new(file));
-        reader.config_mut().trim_text(true);
+        // Note: trim_text config removed for quick-xml 0.31+ compatibility
 
         let mut buf = Vec::new();
         let mut current_obj: Option<Map<String, Value>> = None;
@@ -108,6 +108,128 @@ impl PtCrawler {
             }
             buf.clear();
         }
+        Ok(())
+    }
+
+    /// Process null-delimited XML fragments from stdin
+    /// This enables AWK-based ingestion where AWK filters and extracts fragments
+    /// Usage: awk -f extract_fragments.sh input.rdf | rust_crawler
+    pub fn process_fragments_from_stdin(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.process_fragments(&mut io::stdin())
+    }
+
+    /// Process null-delimited XML fragments from a reader
+    /// Each fragment is a complete XML element separated by null bytes (\0)
+    pub fn process_fragments<R: Read>(&self, reader: &mut R) -> Result<(), Box<dyn std::error::Error>> {
+        let mut fragment = Vec::new();
+        let mut count = 0;
+
+        // Read byte by byte, splitting on null delimiter
+        for byte_result in reader.bytes() {
+            let byte = byte_result?;
+
+            if byte == 0 {
+                // Found null delimiter - process accumulated fragment
+                if !fragment.is_empty() {
+                    if let Err(e) = self.process_fragment(&fragment) {
+                        eprintln!("Error processing fragment: {}", e);
+                    }
+                    count += 1;
+
+                    if count % 100 == 0 {
+                        eprintln!("Processed {} fragments...", count);
+                    }
+
+                    fragment.clear();
+                }
+            } else {
+                fragment.push(byte);
+            }
+        }
+
+        // Process final fragment if exists (no trailing null)
+        if !fragment.is_empty() {
+            if let Err(e) = self.process_fragment(&fragment) {
+                eprintln!("Error processing fragment: {}", e);
+            }
+            count += 1;
+        }
+
+        eprintln!("✓ Processed {} total fragments", count);
+        Ok(())
+    }
+
+    /// Process a single XML fragment
+    fn process_fragment(&self, fragment: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        let mut reader = Reader::from_reader(fragment);
+        // Note: trim_text config removed for quick-xml 0.31+ compatibility
+
+        let mut buf = Vec::new();
+        let mut obj: Option<Map<String, Value>> = None;
+        let mut obj_id = String::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => {
+                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let mut current_obj = Map::new();
+
+                    // Extract attributes
+                    for attr in e.attributes() {
+                        let attr = attr?;
+                        let key = String::from_utf8_lossy(attr.key.as_ref());
+                        let val = String::from_utf8_lossy(&attr.value);
+
+                        if key == "rdf:about" || key == "id" || key.ends_with("about") {
+                            obj_id = val.to_string();
+                        }
+
+                        current_obj.insert(format!("@{}", key), Value::String(val.to_string()));
+                    }
+
+                    // Only track top-level object if it has an ID
+                    if !obj_id.is_empty() && obj.is_none() {
+                        obj = Some(current_obj);
+                    }
+                }
+                Ok(Event::Text(e)) => {
+                    if let Some(ref mut current_obj) = obj {
+                        let text = std::str::from_utf8(e.as_ref()).unwrap_or("").trim().to_string();
+                        if !text.is_empty() {
+                            current_obj.insert("text".to_string(), Value::String(text));
+                        }
+                    }
+                }
+                Ok(Event::End(_)) => {
+                    if let Some(current_obj) = obj.take() {
+                        // Extract ID from attributes
+                        let id = current_obj.get("@rdf:about")
+                            .or(current_obj.get("@id"))
+                            .or(current_obj.get("@about"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        if !id.is_empty() {
+                            // Get tag for object type (could extract from fragment)
+                            let tag = "unknown";
+                            self.importer.upsert_object(id, tag, &Value::Object(current_obj.clone()))?;
+
+                            // Generate embedding if we have text
+                            if let Some(Value::String(text)) = current_obj.get("title").or(current_obj.get("text")) {
+                                if let Ok(vec) = self.embedder.get_embedding(text) {
+                                    self.importer.upsert_embedding(id, &vec)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(Box::new(e)),
+                _ => (),
+            }
+            buf.clear();
+        }
+
         Ok(())
     }
 }
