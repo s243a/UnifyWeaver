@@ -15,6 +15,8 @@ This document frames how UnifyWeaver maps logical predicates onto executable env
   Emits idiomatic C# source that mirrors the Bash streaming semantics. Today it focuses on non-recursive predicates; over time it can absorb more patterns (e.g., tail recursion) where direct translation is tractable.
 - C# Query Runtime (`target(csharp_query)`)
   Produces a declarative intermediate representation (IR) consumed by a reusable LINQ-driven engine. Clause bodies turn into relational operators; recursion is handled by a fixpoint driver that iterates until convergence.
+- SQL (`target(sql)`)
+  Generates declarative SQL queries (SELECT, CREATE VIEW) for execution on relational databases. Unlike other targets that emit executable code, SQL output is meant for external database execution. Supports full SQL feature set including JOINs, aggregations, subqueries, window functions, CTEs, recursive CTEs, and set operations.
 
 ## Selecting Targets
 Preferences (`preferences.pl`) and runtime options choose a target. Planned behaviour:
@@ -22,6 +24,7 @@ Preferences (`preferences.pl`) and runtime options choose a target. Planned beha
 - `target(csharp_query)` forces IR + engine execution.
 - `target(csharp)` acts as a smart facade, preferring `csharp_codegen` where features exist and falling back to `csharp_query` when advanced behaviour (e.g., recursion) is required.
 - `target(bash)` continues to reference the existing Bash ecosystem (partitioning, fork, etc.).
+- `target(sql)` generates SQL queries for database execution rather than standalone programs.
 
 ## Why Multiple Targets
 - Operational diversity: Bash fits quick shell deployment; C# unlocks integration with managed runtimes, type safety, and IDE tooling.
