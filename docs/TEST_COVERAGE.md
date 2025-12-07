@@ -10,6 +10,7 @@ This document describes the test coverage for UnifyWeaver's cross-target glue sy
 | 6a-d | deployment_glue.pl | ✅ Yes | ⚠️ Partial | ✅ Yes |
 | 7a | Container deployment | ✅ Yes | ❌ No | ⚠️ Experimental |
 | 7b | Secrets management | ✅ Yes | ❌ No | ⚠️ Experimental |
+| 7c | Multi-region & Cloud Functions | ✅ Yes | ❌ No | ⚠️ Experimental |
 
 ## Test Categories
 
@@ -295,6 +296,124 @@ Before using Phase 7b in production:
 
 ---
 
+## Phase 7c: Multi-Region & Cloud Functions [EXPERIMENTAL]
+
+**⚠️ WARNING: All Phase 7c features are experimental.**
+
+### Test Coverage - Multi-Region
+
+| Feature | What's Tested | What's NOT Tested |
+|---------|---------------|-------------------|
+| `declare_region/2` | Config stored/retrieved | N/A |
+| `declare_service_regions/2` | Config stored/retrieved | N/A |
+| `declare_failover_policy/2` | Config stored/retrieved | N/A |
+| `select_region/3` | Region selection logic | Health checks work |
+| `failover_to_region/3` | Command generation | Failover executes |
+| `deploy_to_region/4` | Command generation | Deployment succeeds |
+| `deploy_to_all_regions/3` | Commands for all regions | Deployments succeed |
+| `region_status/3` | Status command generated | Status retrieved |
+| `generate_region_config/3` | Terraform/JSON structure | Config applies |
+| `declare_traffic_policy/2` | Config stored/retrieved | N/A |
+| `generate_route53_config/3` | JSON structure correct | Route53 applies changes |
+| `generate_cloudflare_config/3` | JSON structure correct | Cloudflare applies |
+
+### Test Coverage - Cloud Functions
+
+| Feature | What's Tested | What's NOT Tested |
+|---------|---------------|-------------------|
+| `declare_lambda_config/2` | Config stored/retrieved | N/A |
+| `generate_lambda_function/3` | Handler code generated | Code executes |
+| `generate_lambda_deploy/3` | Command structure | Lambda deploys* |
+| `generate_sam_template/3` | YAML structure | `sam deploy` works |
+| `declare_gcf_config/2` | Config stored/retrieved | N/A |
+| `generate_gcf_deploy/3` | Command structure | GCF deploys |
+| `declare_azure_func_config/2` | Config stored/retrieved | N/A |
+| `generate_azure_func_deploy/3` | Command structure | Azure deploys |
+| `declare_api_gateway/2` | Config stored/retrieved | N/A |
+| `generate_api_gateway_config/3` | Swagger/OpenAPI structure | Gateway creates |
+| `generate_openapi_spec/3` | OpenAPI structure | Spec validates |
+| `deploy_function/3` | Dispatches to correct provider | Deployment works* |
+| `invoke_function/4` | Command generated | Invocation works |
+| `function_logs/3` | Command generated | Logs retrieved |
+
+*Note: Some Lambda tests are skipped due to a Prolog format/3 compatibility issue with integer values.
+
+### What Unit Tests Verify
+
+```prolog
+% Example: test_generate_route53_config_failover
+test_generate_route53_config_failover :-
+    declare_service_regions(traffic_test_svc, [primary(us_east_1), secondary([eu_west_1])]),
+    generate_route53_config(traffic_test_svc, [domain('example.com')], Config),
+    % Verifies JSON structure, NOT that Route53 applies it:
+    sub_atom(Config, _, _, _, 'Failover'),
+    sub_atom(Config, _, _, _, 'PRIMARY'),
+    sub_atom(Config, _, _, _, 'SECONDARY').
+```
+
+### What Would Be Needed for Full Testing
+
+1. **Multi-Region Integration Tests**
+   ```bash
+   # Deploy to multiple regions
+   aws ecs update-service ... --region us-east-1
+   aws ecs update-service ... --region eu-west-1
+
+   # Verify both are running
+   aws ecs describe-services --region us-east-1
+   aws ecs describe-services --region eu-west-1
+   ```
+
+2. **Route53 Integration Tests**
+   ```bash
+   # Apply generated config
+   aws route53 change-resource-record-sets --hosted-zone-id $ZONE_ID --change-batch file://config.json
+
+   # Verify DNS resolution
+   dig +short myservice.example.com
+   ```
+
+3. **Lambda Integration Tests**
+   ```bash
+   # Deploy function
+   aws lambda create-function ...
+
+   # Invoke and verify
+   aws lambda invoke --function-name test --payload '{}' output.json
+   cat output.json
+   ```
+
+4. **GCP Cloud Functions Integration Tests**
+   ```bash
+   gcloud functions deploy my-func --runtime python311 ...
+   gcloud functions call my-func --data '{}'
+   ```
+
+### Recommended Validation Before Production
+
+Before using Phase 7c in production:
+
+1. **Multi-region validation:**
+   ```bash
+   # Test deployment to each region
+   aws ecs describe-services --cluster my-cluster --services my-service --region us-east-1
+   ```
+
+2. **DNS validation:**
+   ```bash
+   # Apply config with --dry-run first
+   aws route53 change-resource-record-sets --hosted-zone-id $ZONE_ID --change-batch file://config.json --dry-run
+   ```
+
+3. **Lambda validation:**
+   ```bash
+   # Create function and invoke
+   aws lambda create-function ...
+   aws lambda invoke --function-name test output.json
+   ```
+
+---
+
 ## Future Test Improvements
 
 ### Short Term
@@ -317,13 +436,14 @@ Before using Phase 7b in production:
 ## Running Tests
 
 ```bash
-# All deployment glue tests (103 tests)
+# All deployment glue tests (132 tests)
 swipl tests/glue/test_deployment_glue.pl
 
 # Expected output includes:
 # - Phase 6a-d: 62 tests (production ready)
 # - Phase 7a: 21 tests (experimental, code generation only)
 # - Phase 7b: 20 tests (experimental, code generation only)
+# - Phase 7c: 29 tests (experimental, code generation only)
 ```
 
 ## Contributing
