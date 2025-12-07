@@ -52,7 +52,7 @@ This documentation is dual-licensed under MIT and CC-BY-4.0.
 ```
 
 **What qualifies as documentation:**
-- ✅ Chapters (all `.md` files in book-1-core-bash/, book-2-csharp-target/)
+- ✅ Chapters (all `.md` files in book-01-foundations/, book-02-bash-target/, book-03-csharp-target/)
 - ✅ README.md files
 - ✅ Tutorials and guides
 - ✅ Appendices

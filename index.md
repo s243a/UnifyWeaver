@@ -1,14 +1,14 @@
 ---
 layout: default
-title: UnifyWeaver - Prolog to Multi-Target Code Compiler
-description: Transform declarative Prolog programs into efficient streaming scripts for Bash, C#, and more
+title: UnifyWeaver - Prolog Transpiler for Multi-Target Data Pipelines
+description: A Prolog transpiler that turns logic programs into LINQ-style data pipelines - Bash, C#, Go, SQL, and more
 ---
 
 # UnifyWeaver
 
-**Transform declarative Prolog programs into efficient streaming scripts**
+**A Prolog transpiler that turns logic programs into LINQ-style data pipelines.**
 
-UnifyWeaver is a Prolog-to-Code compiler that generates optimized streaming code from declarative logic programs. Write your data processing logic once in Prolog, compile to multiple targets: Bash, C#, PowerShell, or pure Prolog services.
+One codebase → Bash streams, C# queries, Go binaries, SQL views, and more.
 
 ---
 
@@ -17,26 +17,39 @@ UnifyWeaver is a Prolog-to-Code compiler that generates optimized streaming code
 ### 📦 Project Documentation [(code)](https://github.com/s243a/UnifyWeaver)
 - **[Project README](project/README)** - Overview, installation, and quick start
 - **[Extended README](project/docs/EXTENDED_README)** - Comprehensive tutorials and examples
-- **[Documentation](project/docs/README)** - Complete technical documentation
 - **[GitHub Repository](https://github.com/s243a/UnifyWeaver)** - Source code and issues
 
-### 📚 Educational Materials [(code)](https://github.com/s243a/UnifyWeaver_Education)
-- **[Education Project Home](education/README)** - Learning resources overview
-- **[Book 1: Core Bash Target](education/book-1-core-bash/README)** - Fundamentals and Bash compilation
-- **[Book 2: C# Target](education/book-2-csharp-target/README)** - Multi-target and .NET
-- **[Book-Misc: Emerging Features](education/book-misc/README)** - New and experimental features
+### 📚 Educational Materials (13-Book Series)
+
+#### Core Sequence
+- **[Book 1: Foundations](education/book-01-foundations/README)** - Architecture, Prolog basics, preference system
+- **[Book 2: Bash Target](education/book-02-bash-target/README)** - Stream compilation, templates, data sources
+- **[Book 3: C# Target](education/book-03-csharp-target/README)** - .NET compilation, LINQ, fixed-point approaches
+- **[Book 4: Workflows](education/book-04-workflows/README)** - AI agent playbooks, strategic planning
+
+#### Portable Targets
+- **[Book 5: Python Target](education/book-05-python-target/README)** - Generator-based streaming
+- **[Book 6: Go Target](education/book-06-go-target/README)** - Native binaries, cross-platform
+
+#### Integration & Advanced
+- **[Book 7: Cross-Target Glue](education/book-07-cross-target-glue/README)** - Multi-language pipelines
+- **[Book 9: Rust Target](education/book-09-rust-target/README)** - Memory-safe compilation
+- **[Book 10: SQL Target](education/book-10-sql-target/README)** - Database query generation
+- **[Book 13: Semantic Search](education/book-13-semantic-search/README)** - Graph RAG, embeddings
+
+**[View All Books →](education/README)**
 
 ---
 
 ## Key Features
 
-✅ **Multiple Targets** - Compile to Bash, C#, PowerShell, or Prolog services  
-✅ **Streaming Processing** - Memory-efficient data pipelines  
-✅ **Data Source Plugins** - CSV, JSON, XML, HTTP, AWK, Python integration  
-✅ **Advanced Recursion** - Fibonacci, binomial, tree patterns with memoization  
-✅ **Parallel Execution** - Automatic partitioning and parallel processing  
-✅ **Firewall System** - Security-aware compilation with tool restrictions  
-✅ **Template System** - Flexible code generation with fallback strategies  
+✅ **9 Target Languages** - Bash, C#, Go, Rust, Python, SQL, AWK, Prolog, PowerShell
+✅ **Multiple Compilation Approaches** - Stream-based, fixed-point, generator, declarative
+✅ **Advanced Recursion** - Linear, tail, tree, mutual recursion with automatic optimization
+✅ **Data Source Plugins** - CSV, JSON, XML, HTTP, AWK, Python integration
+✅ **Cross-Target Glue** - Compose predicates across languages in unified pipelines
+✅ **Parallel Execution** - Automatic partitioning and parallel processing
+✅ **Security & Firewall** - Production-ready policy enforcement  
 
 ---
 
@@ -96,7 +109,7 @@ done
    ```
 
 2. **Learn the Basics**
-   - Start with [Book 1, Chapter 1](education/book-1-core-bash/01_introduction.md)
+   - Start with [Book 1: Foundations](education/book-01-foundations/README)
    - Try the [Quick Start Guide](project/docs/README.md)
 
 3. **Explore Examples**
@@ -107,12 +120,15 @@ done
 
 ## Recent Updates
 
-**v0.1 (November 2025)**
-- ✅ Perl service infrastructure for Python-free XML processing
-- ✅ Multi-call linear recursion (fibonacci, tribonacci)
-- ✅ PowerShell compatibility layer
-- ✅ C# query runtime with mutual recursion support
-- ✅ Enhanced testing infrastructure
+**December 2025**
+- ✅ Reorganized 13-book educational series with learning paths
+- ✅ Cross-target glue Phase 7 (cloud & enterprise deployment)
+- ✅ New README with target comparison tables
+
+**November 2025**
+- ✅ C# query runtime with semi-naive fixpoint evaluation
+- ✅ SQL target with recursive CTEs and window functions
+- ✅ Go/Rust native binary targets
 
 ---
 
@@ -121,16 +137,15 @@ done
 ### For Users
 - **[README](project/README.md)** - Project overview
 - **[Testing Guide](project/docs/TESTING_GUIDE.md)** - How to run tests
-- **[XML Tools Installation](project/docs/XML_PARSING_TOOLS_INSTALLATION.md)** - XML processing setup
 
 ### For Learners
-- **[Book 1: Core Bash](education/book-1-core-bash/README.md)** - Start here if new to UnifyWeaver
-- **[Book 2: C# Target](education/book-2-csharp-target/README.md)** - Multi-target compilation
-- **[Book-Misc](education/book-misc/README.md)** - Emerging features (Perl services, Prolog targets)
+- **[Book 1: Foundations](education/book-01-foundations/README)** - Start here
+- **[Book 2: Bash Target](education/book-02-bash-target/README)** - Stream compilation
+- **[Book 3: C# Target](education/book-03-csharp-target/README)** - Fixed-point approaches
+- **[All 13 Books](education/README)** - Complete educational series
 
 ### For Developers
-- **[Contributing Guide](project/docs/CONTRIBUTING.md)** - How to contribute
-- **[Architecture Docs](project/docs/)** - Technical deep dives
+- **[Architecture](project/docs/ARCHITECTURE.md)** - System design
 - **[Source Code](https://github.com/s243a/UnifyWeaver/tree/main/src)** - Browse the codebase
 
 ---
@@ -139,7 +154,6 @@ done
 
 - **Issues & Discussions:** [GitHub Issues](https://github.com/s243a/UnifyWeaver/issues)
 - **Source Code:** [github.com/s243a/UnifyWeaver](https://github.com/s243a/UnifyWeaver)
-- **Education Materials:** [github.com/s243a/UnifyWeaver_Education](https://github.com/s243a/UnifyWeaver_Education)
 
 ---
 
@@ -152,7 +166,5 @@ done
 
 <div style="text-align: center; margin-top: 2em; color: #666; font-size: 0.9em;">
   This site is published from the <code>gh-pages</code> branch.<br>
-  Source repositories:
-  <a href="https://github.com/s243a/UnifyWeaver">UnifyWeaver</a> |
-  <a href="https://github.com/s243a/UnifyWeaver_Education">UnifyWeaver_Education</a>
+  Source: <a href="https://github.com/s243a/UnifyWeaver">github.com/s243a/UnifyWeaver</a>
 </div>

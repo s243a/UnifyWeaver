@@ -1,9 +1,3 @@
----
-layout: default
-title: UnifyWeaver Education
-description: Comprehensive educational materials for learning UnifyWeaver
----
-
 <!--
 SPDX-License-Identifier: MIT AND CC-BY-4.0
 Copyright (c) 2025 John William Creighton (s243a)
@@ -11,101 +5,113 @@ Copyright (c) 2025 John William Creighton (s243a)
 This documentation is dual-licensed under MIT and CC-BY-4.0.
 -->
 
-# UnifyWeaver_Education
+# UnifyWeaver Education
 
 **Educational Materials for [UnifyWeaver](https://github.com/s243a/UnifyWeaver)**
 
-This project contains comprehensive educational materials for learning UnifyWeaver - a Prolog-to-Code compiler that transforms declarative logic programs into efficient streaming scripts. The content is organized into two books covering different aspects of the system.
+This project contains comprehensive educational materials for learning UnifyWeaver - a Prolog-to-Code compiler that transforms declarative logic programs into efficient streaming scripts across multiple target languages.
 
-## Book Structure
+## Book Series Overview
 
-### 📘 Book 1: Core UnifyWeaver & Bash Target
-**[📖 Read Book 1](book-1-core-bash/README)** | **Location:** `book-1-core-bash/`
+The books are designed to be read in sequence, with each building on concepts from previous books. However, after completing Books 1-3, you can explore target-specific books based on your needs.
 
-Covers fundamental concepts and Bash code generation:
-- Prolog basics and UnifyWeaver architecture
-- Stream compilation and template system
-- Advanced recursion patterns
-- Data source plugins (CSV, JSON, Python, HTTP, AWK, XML)
-- Partitioning and parallel execution
-- Complete ETL pipeline examples
+### Core Sequence (Books 1-4)
 
-**Start here if you're new to UnifyWeaver.**
+| Book | Title | Focus |
+|------|-------|-------|
+| **1** | [Foundations](book-01-foundations/README.md) | Architecture, Prolog basics, preference system |
+| **2** | [Bash Target](book-02-bash-target/README.md) | Stream compilation, templates, data sources |
+| **3** | [C# Target](book-03-csharp-target/README.md) | .NET compilation, LINQ, **fixed-point approaches** |
+| **4** | [Workflows](book-04-workflows/README.md) | AI agent playbooks, strategic planning |
 
-### 📗 Book 2: C# Target Language
-**[📖 Read Book 2](book-2-csharp-target/README)** | **Location:** `book-2-csharp-target/`
+### Portable Targets (Books 5-6)
 
-Covers multi-target compilation and C# / .NET:
-- C# Stream Target (direct source generation)
-- C# Query Runtime (IR + runtime library)
-- LINQ-based query execution
-- Cross-platform .NET deployment
-- Performance optimization
+| Book | Title | Focus |
+|------|-------|-------|
+| **5** | [Python Target](book-05-python-target/README.md) | Python code generation, widely portable |
+| **6** | [Go Target](book-06-go-target/README.md) | Native binaries, cross-platform, no runtime deps |
 
-**Complete Book 1 before starting Book 2.**
+### Integration & Security (Books 7-8)
 
-### 📙 Book-Misc: Emerging Features & Advanced Topics
-**[📖 Read Book-Misc](book-misc/README)** | **Location:** `book-misc/`
+| Book | Title | Focus |
+|------|-------|-------|
+| **7** | [Cross-Target Glue](book-07-cross-target-glue/README.md) | Multi-language pipelines, Phases 1-7, cloud deployment |
+| **8** | [Security & Firewall](book-08-security-firewall/README.md) | Cross-target security policies, production hardening |
 
-Documentation for newly implemented or experimental features:
-- **Perl Service Infrastructure** ✅ - Python-free data processing
-- **XML Perl Splitter** ✅ - Enhanced XML source capabilities
-- **Prolog as Target** 🚧 - Pure Prolog code generation (limited)
-- **Prolog Bash Service** 🚧 - Fallback compilation strategy
-- **Fallback Strategies** 📋 - Pattern matching failure handling
+### Specialized Targets (Books 9-12)
 
-**Status:** Work in Progress - Content may be merged into main books or expanded into Book 3.
+| Book | Title | Focus |
+|------|-------|-------|
+| **9** | [Rust Target](book-09-rust-target/README.md) | Memory-safe compilation, performance-critical |
+| **10** | [SQL Target](book-10-sql-target/README.md) | Database query generation |
+| **11** | [Prolog Target](book-11-prolog-target/README.md) | Prolog-to-Prolog, dialect support |
+| **12** | [PowerShell Target](book-12-powershell-target/README.md) | Windows automation, .NET scripting |
 
-### 📓 Jupyter Notebooks
-**[📖 View Notebooks](notebooks/README)** | **Location:** `notebooks/`
+### Advanced Applications (Book 13)
 
-Interactive notebooks for hands-on experimentation with UnifyWeaver concepts.
+| Book | Title | Focus |
+|------|-------|-------|
+| **13** | [Semantic Search](book-13-semantic-search/README.md) | Graph RAG, embeddings, vector databases |
 
-## Quick Start
+### Supplementary Material
 
-### For Beginners
-1. Read `book-1-core-bash/README.md`
-2. Work through chapters 1-4 (Foundations)
-3. Try the exercises in each chapter
-4. Explore case studies and appendices
-
-### For Experienced Users
-- Jump to specific topics using the chapter guides
-- Review appendices for deep dives on specific patterns
-- Check case studies for real-world examples
-
-### For .NET Developers
-- Complete Book 1 chapters 1-4 (foundations)
-- Skip to Book 2 for C# compilation
-- Reference Book 1 as needed for Prolog concepts
+| Resource | Description |
+|----------|-------------|
+| [AWK Target](book-awk-target/README.md) | Lightweight text processing (supplementary) |
+| [Notebooks](notebooks/README.md) | Interactive Jupyter notebooks |
 
 ## Learning Paths
 
-### Path 1: Data Engineer
-Focus on data processing and ETL:
-- Book 1: Chapters 1-5, 13-14
-- Data Sources Pipeline Guide
-- Case Study: Production Pipeline
+### Path 1: Quick Start (Beginners)
+1. Book 1: Foundations (Chapters 1-4)
+2. Book 2: Bash Target (Chapters 1-5)
+3. Try examples and exercises
 
-### Path 2: Language Developer
-Focus on compilation and code generation:
-- Book 1: Chapters 1-12
-- Book 2: All chapters
-- Appendices A, B, C
+### Path 2: Full Stack Developer
+1. Books 1-4 (Core sequence)
+2. Book 5 or 6 (Python or Go)
+3. Book 7 (Cross-Target Glue)
+4. Book 8 (Security)
 
-### Path 3: Quick Start
-Minimum to get started:
-- Book 1: Chapters 1-4
-- Data Sources Pipeline Guide
-- Your specific use case examples
+### Path 3: .NET Developer
+1. Book 1: Foundations
+2. Book 3: C# Target
+3. Book 12: PowerShell Target
+4. Book 7: Cross-Target Glue
+
+### Path 4: Data Engineer
+1. Book 1: Foundations
+2. Book 2: Bash Target
+3. Book 10: SQL Target
+4. Book 7: Cross-Target Glue
+5. Book 13: Semantic Search
+
+### Path 5: Systems Programmer
+1. Book 1: Foundations
+2. Book 6: Go Target
+3. Book 9: Rust Target
+4. Book 7: Cross-Target Glue
+5. Book 8: Security
+
+### Path 6: AI/ML Engineer
+1. Book 1: Foundations
+2. Book 5: Python Target
+3. Book 4: Workflows
+4. Book 13: Semantic Search
 
 ## Prerequisites
 
 - Basic command-line knowledge
 - Programming experience (any language)
 - SWI-Prolog 8.0+ installed
-- Bash 4.0+ (for Book 1)
-- .NET SDK 6.0+ (for Book 2, optional)
+
+Additional requirements per book:
+- **Book 2**: Bash 4.0+
+- **Book 3, 12**: .NET SDK 8.0+
+- **Book 5**: Python 3.8+
+- **Book 6**: Go 1.21+
+- **Book 9**: Rust/Cargo
+- **Book 10**: SQLite or PostgreSQL
 
 ## Installation
 
@@ -122,18 +128,57 @@ brew install swi-prolog
 # Download from https://www.swi-prolog.org/download/stable
 ```
 
-### Optional (for Book 2)
-```bash
-# Install .NET SDK
-# See: https://dotnet.microsoft.com/download
-dotnet --version
-```
-
 ### Clone Repository
 ```bash
 git clone https://github.com/s243a/UnifyWeaver.git
 cd UnifyWeaver
 ```
+
+## Book Status
+
+| Book | Status | Directory |
+|------|--------|-----------|
+| 1 - Foundations | Complete (chapters 1-3) | `book-01-foundations/` |
+| 2 - Bash Target | Complete | `book-02-bash-target/` |
+| 3 - C# Target | Complete | `book-03-csharp-target/` |
+| 4 - Workflows | Complete | `book-04-workflows/` |
+| 5 - Python Target | Planned | `book-05-python-target/` |
+| 6 - Go Target | Complete | `book-06-go-target/` |
+| 7 - Cross-Target Glue | Complete | `book-07-cross-target-glue/` |
+| 8 - Security & Firewall | Planned (extract from Prolog book) | `book-08-security-firewall/` |
+| 9 - Rust Target | Complete | `book-09-rust-target/` |
+| 10 - SQL Target | Complete | `book-10-sql-target/` |
+| 11 - Prolog Target | Complete | `book-11-prolog-target/` |
+| 12 - PowerShell Target | Planned | `book-12-powershell-target/` |
+| 13 - Semantic Search | Complete | `book-13-semantic-search/` |
+| AWK Target | Complete (supplementary) | `book-awk-target/` |
+
+## Progress Tracking
+
+Track your progress through the series:
+
+**Core Sequence:**
+- [ ] Book 1: Foundations
+- [ ] Book 2: Bash Target
+- [ ] Book 3: C# Target (fixed-point approaches)
+- [ ] Book 4: Workflows
+
+**Portable Targets:**
+- [ ] Book 5: Python Target
+- [ ] Book 6: Go Target
+
+**Integration:**
+- [ ] Book 7: Cross-Target Glue
+- [ ] Book 8: Security & Firewall
+
+**Specialized:**
+- [ ] Book 9: Rust Target
+- [ ] Book 10: SQL Target
+- [ ] Book 11: Prolog Target
+- [ ] Book 12: PowerShell Target
+
+**Advanced:**
+- [ ] Book 13: Semantic Search
 
 ## Additional Resources
 
@@ -141,7 +186,6 @@ cd UnifyWeaver
 - Main README: `../README.md`
 - API Documentation: `../docs/`
 - Change Log: `CHANGELOG.md`
-- C# Query Target Test Plan (v0.1): https://github.com/s243a/UnifyWeaver/blob/main/docs/development/testing/v0_1_csharp_test_plan.md
 
 ### Examples
 - Code examples: `../examples/`
@@ -153,72 +197,24 @@ cd UnifyWeaver
 - Discussions: https://github.com/s243a/UnifyWeaver/discussions
 - Contributing: `CONTRIBUTING.md`
 
-## Book Contents Overview
-
-### Book 1 Chapters (13+ chapters)
-1. Introduction
-2. Prolog Fundamentals
-3. UnifyWeaver Architecture
-4. Your First Program
-5. Stream Compilation
-6. Advanced Constraints
-7. Variable Scope and Process Substitution
-8. Template System
-9. Advanced Recursion
-10. Prolog Introspection
-11. Test Runner Inference
-12. Recursive Compilation
-13. Partitioning and Parallel Execution
-14. XML Source Plugin
-- Plus: Appendices, Case Studies, Guides
-
-### Book 2 Chapters (4 chapters)
-1. Introduction to Multi-Target Compilation
-2. C# Stream Target
-3. C# Query Runtime
-4. Runtime Libraries and Deployment
-
-## Progress Tracking
-
-Track your progress:
-- [ ] Completed Book 1 Foundations (Chapters 1-4)
-- [ ] Completed Book 1 Core Techniques (Chapters 5-8)
-- [ ] Completed Book 1 Advanced Topics (Chapters 9-14)
-- [ ] Completed Book 2 C# Basics (Chapters 1-2)
-- [ ] Completed Book 2 Advanced (Chapters 3-4)
-
-## Updates and Versions
-
-This educational content tracks UnifyWeaver development:
-- **Book 1:** Covers features up to v0.0.2+
-- **Book 2:** Covers C# target (experimental/in-development)
-
-Check `CHANGELOG.md` for updates.
-
 ## License
-
-This educational project is separate from the main UnifyWeaver codebase and uses its own licensing:
 
 ### Educational Content (Documentation)
 
 All chapters, guides, tutorials, and documentation files (`.md`) are dual-licensed under:
 
 * **MIT License** ([LICENSE-MIT](LICENSE-MIT))
-* **Creative Commons Attribution 4.0 International** ([LICENSE-CC-BY-4.0](LICENSE-CC-BY-4.0) or https://creativecommons.org/licenses/by/4.0/)
+* **Creative Commons Attribution 4.0 International** ([LICENSE-CC-BY-4.0](LICENSE-CC-BY-4.0))
 
 **SPDX:** `MIT AND CC-BY-4.0`
-
-You are free to share and adapt with attribution under either license.
 
 ### Code Examples
 
 All code example files (`.pl`, `.sh`, `.cs`, `.py`, etc.) are licensed under:
 
-* **MIT License** ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+* **MIT License** ([LICENSE-MIT](LICENSE-MIT))
 
 **SPDX:** `MIT`
-
-Choose the license that works best for your project.
 
 ### Copyright
 
@@ -234,20 +230,13 @@ Found an error or want to improve the content?
 3. See `CONTRIBUTING.md` for guidelines
 
 ### For Content Developers
-- **[Content Planning](docs/development/PLANNING)** - Roadmap for future educational content additions
-- **[License Guide](docs/development/LICENSE_GUIDE)** - Detailed licensing guide for contributors and users
+- **[Content Planning](docs/development/PLANNING.md)** - Roadmap for future content
+- **[License Guide](docs/development/LICENSE_GUIDE.md)** - Licensing guide for contributors
 
 ## Acknowledgments
 
 UnifyWeaver educational materials created by John William Creighton (@s243a) with contributions from the community.
 
-## Get Help
-
-- Check the chapter's "Troubleshooting" section
-- Review related appendices
-- Search GitHub issues
-- Ask in Discussions
-
 ---
 
-**Ready to begin?** Start with `book-1-core-bash/README.md` →
+**Ready to begin?** Start with [Book 1: Foundations](book-01-foundations/README.md)

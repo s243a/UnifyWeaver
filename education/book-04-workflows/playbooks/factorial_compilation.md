@@ -1,0 +1,385 @@
+---
+id: playbook-factorial-compile-v1
+name: "Factorial Compilation Playbook"
+version: 1.0
+workflow_id: compile-and-test
+pattern: linear_recursion
+target: bash
+difficulty: beginner
+estimated_time: 5_minutes
+prerequisites: [swipl, unifyweaver_installed, bash]
+---
+
+# Factorial Compilation Playbook
+
+## Goal
+
+Compile a factorial predicate from Prolog to optimized Bash, generate a test runner, and verify the compiled script produces correct results for inputs 0 through 10.
+
+## Context
+
+This playbook demonstrates **linear recursion compilation** - one of the most fundamental and straightforward patterns in UnifyWeaver. The factorial function serves as an excellent introduction to the compilation pipeline because it has:
+
+- A clear base case (`0! = 1`)
+- A single recursive call with decremented argument
+- Simple arithmetic operations
+- Predictable, testable outputs
+
+**Assumptions**:
+- UnifyWeaver is installed at `$UNIFYWEAVER_HOME`
+- SWI-Prolog (`swipl`) is available in PATH
+- You have write access to `/tmp/` and `education/output/`
+- Working directory is `$UNIFYWEAVER_HOME`
+
+**Background**:
+Linear recursion is automatically optimized by UnifyWeaver's compiler. The system:
+- Detects the recursive pattern
+- Generates tail-recursive Bash code where possible
+- Optimizes arithmetic operations using `$((...))` syntax
+- Creates both standalone and stream-compatible versions
+
+## Execution Steps
+
+### Step 1: Create Prolog Source
+
+Create the factorial predicate in `/tmp/factorial.pl`:
+
+```bash
+cat > /tmp/factorial.pl <<'EOF'
+% factorial(+N, -F) - F is the factorial of N
+% Computes the factorial of a non-negative integer
+factorial(0, 1).
+factorial(N, F) :-
+    N > 0,
+    N1 is N - 1,
+    factorial(N1, F1),
+    F is N * F1.
+EOF
+```
+
+**Verification**: File should exist and contain exactly 8 lines
+```bash
+test -f /tmp/factorial.pl && wc -l /tmp/factorial.pl
+# Expected: 8 /tmp/factorial.pl
+```
+
+> [!note]
+> The predicate includes comments for documentation. UnifyWeaver preserves these in the generated Bash scripts.
+
+### Step 2: Navigate to UnifyWeaver Root
+
+Ensure you're in the correct directory:
+
+```bash
+cd $UNIFYWEAVER_HOME
+pwd
+# Expected: /path/to/UnifyWeaver
+```
+
+**Verification**: Check that core files exist
+```bash
+test -d src/unifyweaver && test -f src/unifyweaver/core/compiler_driver.pl && echo "✓ UnifyWeaver found"
+# Expected: ✓ UnifyWeaver found
+```
+
+### Step 3: Compile Factorial to Bash
+
+Run the compiler_driver to transpile Prolog to Bash:
+
+```bash
+swipl -q -g "
+    asserta(file_search_path(unifyweaver, 'src/unifyweaver')),
+    ['/tmp/factorial.pl'],
+    use_module(unifyweaver(core/compiler_driver)),
+    compile(factorial/2, [
+        output_dir('education/output/advanced')
+    ], Scripts),
+    format('Generated scripts: ~w~n', [Scripts]),
+    halt"
+```
+
+**Expected output**:
+```
+Generated scripts: [education/output/advanced/factorial.sh]
+```
+
+**Verification**: Script should exist and be executable
+```bash
+ls -lh education/output/advanced/factorial.sh
+# Should show executable permissions (-rwxr-xr-x)
+```
+
+> [!tip]
+> If the script isn't executable, run: `chmod +x education/output/advanced/factorial.sh`
+
+### Step 4: Test the Compiled Script Manually
+
+Test with a few known values:
+
+```bash
+echo "0" | bash education/output/advanced/factorial.sh
+# Expected: 1
+
+echo "5" | bash education/output/advanced/factorial.sh
+# Expected: 120
+
+echo "10" | bash education/output/advanced/factorial.sh
+# Expected: 3628800
+```
+
+> [!note]
+> **Math Check**:
+> - 0! = 1 (by definition)
+> - 5! = 5 × 4 × 3 × 2 × 1 = 120
+> - 10! = 3,628,800
+
+### Step 5: Generate Automated Test Runner
+
+Use UnifyWeaver's test runner inference to create a comprehensive test suite:
+
+```bash
+swipl -q -g "
+    asserta(file_search_path(unifyweaver, 'src/unifyweaver')),
+    use_module(unifyweaver(core/advanced/test_runner_inference)),
+    generate_test_runner_inferred('education/output/advanced/test_runner.sh', [
+        mode(explicit),
+        output_dir('education/output/advanced')
+    ]),
+    halt"
+```
+
+**Expected output**:
+```
+Generated test runner: education/output/advanced/test_runner.sh
+```
+
+**Verification**: Test runner should exist
+```bash
+test -f education/output/advanced/test_runner.sh && echo "✓ Test runner created"
+# Expected: ✓ Test runner created
+```
+
+### Step 6: Run Automated Tests
+
+Execute the test suite:
+
+```bash
+chmod +x education/output/advanced/test_runner.sh
+./education/output/advanced/test_runner.sh
+```
+
+**Expected output**:
+```
+Testing factorial.sh...
+Test 1: factorial 0 → 1
+    Result: PASS
+Test 2: factorial 1 → 1
+    Result: PASS
+Test 3: factorial 5 → 120
+    Result: PASS
+Test 4: factorial 10 → 3628800
+    Result: PASS
+
+All tests passed! ✓
+```
+
+## Expected Outputs
+
+> [!output]
+> language: bash
+> purpose: Compiled factorial function
+> format: executable
+> location: education/output/advanced/factorial.sh
+>
+> ```bash
+> #!/bin/bash
+> # Generated by UnifyWeaver
+> # Pattern: Linear Recursion
+> # Source: /tmp/factorial.pl
+>
+> factorial() {
+>     local N=$1
+>     local F
+>
+>     if [ "$N" -eq 0 ]; then
+>         echo 1
+>     else
+>         local N1=$((N - 1))
+>         local F1=$(factorial $N1)
+>         F=$((N * F1))
+>         echo $F
+>     fi
+> }
+>
+> # Main execution
+> while IFS= read -r line; do
+>     result=$(factorial "$line")
+>     echo "$result"
+> done
+> ```
+
+> [!note]
+> The actual generated code may vary slightly depending on UnifyWeaver optimizations.
+
+## Verification
+
+### Manual Test Results
+
+Run all manual tests and verify outputs:
+
+```bash
+for n in 0 1 5 10; do
+    result=$(echo "$n" | bash education/output/advanced/factorial.sh)
+    echo "factorial($n) = $result"
+done
+```
+
+**Expected**:
+```
+factorial(0) = 1
+factorial(1) = 1
+factorial(5) = 120
+factorial(10) = 3628800
+```
+
+### Automated Test Results
+
+```bash
+./education/output/advanced/test_runner.sh && echo "Exit code: $?"
+# Expected: All tests PASS, Exit code: 0
+```
+
+### Success Criteria
+
+✅ All of the following must be true:
+- `/tmp/factorial.pl` exists with valid Prolog code
+- `education/output/advanced/factorial.sh` exists and is executable
+- `factorial 0` returns `1`
+- `factorial 5` returns `120`
+- `factorial 10` returns `3628800`
+- Test runner exists at `education/output/advanced/test_runner.sh`
+- All automated tests PASS
+- Test runner exit code is 0
+
+## Troubleshooting
+
+### Error: "No such file or directory: compiler_driver.pl"
+
+**Cause**: `file_search_path(unifyweaver, ...)` not set correctly
+
+**Solution**:
+```bash
+# Verify you're in UnifyWeaver root
+cd $UNIFYWEAVER_HOME
+
+# Verify the path exists
+ls src/unifyweaver/core/compiler_driver.pl
+
+# If $UNIFYWEAVER_HOME not set:
+export UNIFYWEAVER_HOME=$(pwd)
+```
+
+### Error: "Predicate factorial/2 not found"
+
+**Cause**: Prolog file not loaded before compilation
+
+**Solution**: Ensure the square bracket load statement `['/tmp/factorial.pl']` appears **before** the `compile(...)` call in the swipl command.
+
+### Error: "Permission denied" when running factorial.sh
+
+**Cause**: Script not executable
+
+**Solution**:
+```bash
+chmod +x education/output/advanced/factorial.sh
+```
+
+### Incorrect Output (e.g., factorial(5) ≠ 120)
+
+**Cause**: Logic error in Prolog source or compilation issue
+
+**Solution**:
+1. Verify Prolog source manually:
+   ```bash
+   swipl -q -f /tmp/factorial.pl -g "factorial(5, F), writeln(F), halt"
+   # Should output: 120
+   ```
+2. If Prolog works but Bash doesn't, there may be a compilation bug. Report to UnifyWeaver issues.
+
+### Test runner not found or fails
+
+**Cause**: Test runner generation failed or predicates changed
+
+**Solution**:
+```bash
+# Regenerate test runner
+swipl -q -g "
+    asserta(file_search_path(unifyweaver, 'src/unifyweaver')),
+    use_module(unifyweaver(core/advanced/test_runner_inference)),
+    generate_test_runner_inferred('education/output/advanced/test_runner.sh', [
+        mode(explicit),
+        output_dir('education/output/advanced')
+    ]),
+    halt"
+
+chmod +x education/output/advanced/test_runner.sh
+```
+
+## References
+
+- [Factorial Compilation Example](../examples_library/compilation_examples.md#factorial-compilation) - Detailed example in library
+- [Linear Recursion Patterns](../examples_library/recursion_examples.md) - More recursive examples
+- [Test Runner Inference](../examples_library/testing_examples.md) - Testing documentation
+- [Playbook Format Specification](../playbook_format.md) - How to write playbooks
+
+## Next Steps
+
+After completing this playbook successfully:
+
+1. **Try variations**:
+   - Modify the predicate to compute other sequences (Fibonacci, powers of 2)
+   - Add input validation (reject negative numbers)
+   - Optimize with memoization
+
+2. **Explore other patterns**:
+   - [Ancestor Relationship](../examples_library/compilation_examples.md#ancestor-compilation) - Transitive closure
+   - [Data Source Integration](data_source_csv.md) - Working with external data
+
+3. **Target other platforms**:
+   - Compile to C# instead of Bash
+   - Generate Prolog service targets
+   - Create multi-target deployments
+
+## Notes
+
+> [!tip]
+> **Performance Consideration**
+>
+> For large N (>20), consider adding memoization to avoid redundant calculations. UnifyWeaver can automatically apply memoization optimizations with the `optimize(memoize)` option.
+
+> [!tip]
+> **Debugging Generated Bash**
+>
+> To see the generated Bash code, run:
+> ```bash
+> cat education/output/advanced/factorial.sh
+> ```
+> This helps understand how UnifyWeaver translates Prolog to Bash.
+
+> [!warning]
+> **Arithmetic Limits**
+>
+> Bash uses 64-bit signed integers. Factorials grow rapidly:
+> - 20! = 2,432,902,008,176,640,000 (fits in 64-bit)
+> - 21! overflows
+>
+> For larger factorials, consider using arbitrary-precision arithmetic or a different target language (Python, arbitrary-precision C#).
+
+---
+
+**Playbook Version**: 1.0
+**Last Updated**: 2025-11-17
+**Tested With**: UnifyWeaver v0.1, SWI-Prolog 8.x
+
+**Execution Time**: ~5 minutes
+**Success Rate**: Should be 100% with correct setup
