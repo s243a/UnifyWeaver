@@ -458,3 +458,328 @@ cat input.tsv | awk -f step1.awk | python3 step2.py  # Test steps 1+2
 1. Check service is running: `curl http://localhost:8080/health`
 2. Check CORS if browser-based: Enable `cors(true)` option
 3. Check timeout: Increase with `timeout(60)` option
+
+---
+
+## Deployment Glue (`deployment_glue.pl`)
+
+Production-ready deployment, error handling, and monitoring for remote services.
+
+### Service Declaration
+
+```prolog
+:- use_module('src/unifyweaver/glue/deployment_glue').
+
+% Declare a remote service
+:- declare_service(ml_predictor, [
+    host('ml.example.com'),
+    port(8080),
+    target(python),
+    entry_point('server.py'),
+    transport(https)
+]).
+
+% Configure SSH deployment
+:- declare_deploy_method(ml_predictor, ssh, [
+    user('deploy'),
+    remote_dir('/opt/services')
+]).
+
+% Track source files for change detection
+:- declare_service_sources(ml_predictor, [
+    'src/**/*.py',
+    'requirements.txt'
+]).
+```
+
+### Deployment Operations
+
+```prolog
+% Generate deployment script
+generate_deploy_script(ml_predictor, [], Script).
+
+% Deploy service (checks for changes first)
+deploy_service(ml_predictor, Result).
+
+% Lifecycle operations
+start_service(ml_predictor, Result).
+stop_service(ml_predictor, Result).
+restart_service(ml_predictor, Result).
+
+% Check service status
+service_status(ml_predictor, Status).
+```
+
+### Multi-Host Deployment
+
+```prolog
+% Configure multiple hosts
+:- declare_service_hosts(api_service, [
+    host_config('api1.example.com', [user('deploy')]),
+    host_config('api2.example.com', [user('deploy')]),
+    host_config('api3.example.com', [user('deploy')])
+]).
+
+% Deploy to all hosts
+deploy_to_all_hosts(api_service, Results).
+```
+
+### Rollback Support
+
+```prolog
+% Deploy with automatic rollback on health check failure
+deploy_with_rollback(ml_service, Result).
+
+% Manual rollback
+rollback_service(ml_service, Result).
+```
+
+### Graceful Shutdown
+
+```prolog
+graceful_stop(api_service, [
+    drain_timeout(30),   % Wait 30s for connections
+    force_after(60)      % Force kill after 60s
+], Result).
+```
+
+---
+
+## Error Handling
+
+### Retry Policies
+
+```prolog
+:- declare_retry_policy(ml_service, [
+    max_retries(5),
+    initial_delay(1000),       % 1 second
+    max_delay(30000),          % Max 30 seconds
+    backoff(exponential),      % exponential | linear | fixed
+    multiplier(2),
+    retry_on([timeout, connection_refused]),
+    fail_on([400, 401, 403])
+]).
+
+% Execute with retry
+call_with_retry(ml_service, predict, [Input], Result).
+```
+
+### Fallback Mechanisms
+
+```prolog
+% Use backup service
+:- declare_fallback(primary_service, backup_service(secondary_service)).
+
+% Return default value
+:- declare_fallback(ml_service, default_value(fallback_prediction)).
+
+% Use cache
+:- declare_fallback(data_service, cache([key(user_data), ttl(3600)])).
+
+% Custom fallback predicate
+:- declare_fallback(api_service, custom(my_fallback_handler)).
+
+% Execute with fallback
+call_with_fallback(ml_service, predict, [Input], Result).
+```
+
+### Circuit Breaker
+
+```prolog
+:- declare_circuit_breaker(ml_service, [
+    failure_threshold(5),      % Open after 5 failures
+    success_threshold(3),      % Close after 3 successes
+    half_open_timeout(30000)   % Try half-open after 30s
+]).
+
+% Execute with circuit protection
+call_with_circuit_breaker(ml_service, predict, [Input], Result).
+
+% Query state: closed | open | half_open
+circuit_state(ml_service, State).
+
+% Reset circuit
+reset_circuit_breaker(ml_service).
+```
+
+### Timeout Configuration
+
+```prolog
+:- declare_timeouts(ml_service, [
+    connect_timeout(5000),     % 5s connection timeout
+    read_timeout(30000),       % 30s response timeout
+    total_timeout(60000)       % 60s total timeout
+]).
+
+call_with_timeout(ml_service, predict, [Input], Result).
+```
+
+### Combined Protection
+
+```prolog
+% Apply all error handling strategies
+protected_call(ml_service, predict, [Input], Result).
+% Order: circuit breaker → timeout → retry → fallback
+```
+
+---
+
+## Monitoring
+
+### Health Check Monitoring
+
+```prolog
+:- declare_health_check(api_service, [
+    endpoint('/health'),
+    interval(30),              % Check every 30s
+    timeout(5),
+    unhealthy_threshold(3),    % Unhealthy after 3 failures
+    healthy_threshold(2)       % Healthy after 2 successes
+]).
+
+% Query health status
+health_status(api_service, Status).  % healthy | unhealthy | unknown
+
+% Start monitoring
+start_health_monitor(api_service, Result).
+```
+
+### Metrics Collection
+
+```prolog
+:- declare_metrics(api_service, [
+    collect([request_count, latency, error_count]),
+    labels([service-api_service, env-production]),
+    export(prometheus),
+    retention(3600)            % Keep for 1 hour
+]).
+
+% Record metrics
+record_metric(api_service, request_count, 1).
+record_metric(api_service, latency, 150).
+
+% Get metrics
+get_metrics(api_service, Metrics).
+
+% Export as Prometheus format
+generate_prometheus_metrics(api_service, Output).
+```
+
+### Structured Logging
+
+```prolog
+:- declare_logging(api_service, [
+    level(info),               % debug | info | warn | error
+    format(json),              % json | text
+    output(stdout),            % stdout | file(Path)
+    max_entries(1000)
+]).
+
+% Log events
+log_event(api_service, info, 'Request received', [method-'GET', path-'/api']).
+log_event(api_service, error, 'Database failed', [retry-3]).
+
+% Query logs
+get_log_entries(api_service, [level(warn), limit(100)], Entries).
+```
+
+**JSON Output:**
+```json
+{"timestamp":"2025-01-15T10:30:00Z","service":"api_service","level":"info","message":"Request received","method":"GET","path":"/api"}
+```
+
+### Alerting
+
+```prolog
+:- declare_alert(api_service, high_error_rate, [
+    condition('error_rate > 0.05'),
+    severity(critical),        % critical | warning | info
+    cooldown(300),             % 5 min between alerts
+    notify([
+        slack('#alerts'),
+        email('oncall@example.com'),
+        pagerduty
+    ])
+]).
+
+% Trigger alert
+trigger_alert(api_service, high_error_rate, [rate-0.1]).
+
+% Check triggered alerts
+check_alerts(api_service, TriggeredAlerts).
+
+% Get alert history
+alert_history(api_service, [limit(100)], History).
+```
+
+---
+
+## Complete Production Example
+
+```prolog
+:- use_module('src/unifyweaver/glue/deployment_glue').
+
+%% Service Configuration
+:- declare_service(ml_predictor, [
+    host('ml.example.com'),
+    port(8080),
+    target(python),
+    entry_point('server.py'),
+    transport(https)
+]).
+
+:- declare_deploy_method(ml_predictor, ssh, [
+    user('deploy'),
+    remote_dir('/opt/services/ml')
+]).
+
+:- declare_service_sources(ml_predictor, [
+    'src/ml/**/*.py',
+    'models/*.pkl',
+    'requirements.txt'
+]).
+
+%% Error Handling
+:- declare_retry_policy(ml_predictor, [
+    max_retries(3),
+    initial_delay(1000),
+    backoff(exponential)
+]).
+
+:- declare_fallback(ml_predictor, default_value({status: unavailable})).
+
+:- declare_circuit_breaker(ml_predictor, [
+    failure_threshold(5),
+    half_open_timeout(30000)
+]).
+
+:- declare_timeouts(ml_predictor, [
+    total_timeout(60000)
+]).
+
+%% Monitoring
+:- declare_health_check(ml_predictor, [
+    endpoint('/health'),
+    interval(30)
+]).
+
+:- declare_metrics(ml_predictor, [
+    collect([requests, latency, errors]),
+    export(prometheus)
+]).
+
+:- declare_logging(ml_predictor, [
+    level(info),
+    format(json)
+]).
+
+:- declare_alert(ml_predictor, service_unhealthy, [
+    severity(critical),
+    notify([pagerduty])
+]).
+
+%% Usage
+call_service :-
+    protected_call(ml_predictor, predict, [Input], Result),
+    handle_result(Result).
+```
