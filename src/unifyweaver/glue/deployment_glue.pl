@@ -11,7 +11,7 @@
  * - Security validation (encryption requirements)
  * - Generated deployment scripts
  *
- * EXPERIMENTAL FEATURES (Phase 7a):
+ * EXPERIMENTAL FEATURES (Phase 7a - Container Deployment):
  * The following features are experimental and have only been tested for
  * code generation correctness, NOT actual deployment functionality:
  * - Docker configuration and Dockerfile generation
@@ -20,9 +20,17 @@
  * - Container registry authentication
  * - Helm chart generation
  *
- * These predicates generate shell commands and YAML/Dockerfile content but
- * do NOT execute them. Integration testing with actual Docker/Kubernetes
- * environments is required before production use.
+ * EXPERIMENTAL FEATURES (Phase 7b - Secrets Management):
+ * - HashiCorp Vault integration (read, agent config)
+ * - AWS Secrets Manager integration
+ * - Azure Key Vault integration
+ * - GCP Secret Manager integration
+ * - Service secret bindings and environment injection
+ * - Kubernetes Secret and ExternalSecret manifests
+ *
+ * These predicates generate shell commands and YAML/config content but
+ * do NOT execute them. Integration testing with actual secret management
+ * services is required before production use.
  *
  * See TEST_COVERAGE.md for detailed test coverage information.
  */
@@ -192,7 +200,50 @@
     % Container orchestration
     deploy_to_k8s/3,                % deploy_to_k8s(+Service, +Options, -Result)
     scale_k8s_deployment/4,         % scale_k8s_deployment(+Service, +Replicas, +Options, -Result)
-    rollout_status/3                % rollout_status(+Service, +Options, -Status)
+    rollout_status/3,               % rollout_status(+Service, +Options, -Status)
+
+    % Phase 7b: Secrets Management [EXPERIMENTAL]
+    % Secret source declarations
+    declare_secret_source/2,        % declare_secret_source(+Name, +Config)
+    secret_source_config/2,         % secret_source_config(?Name, ?Config)
+
+    % HashiCorp Vault
+    declare_vault_config/2,         % declare_vault_config(+Name, +Config)
+    vault_config/2,                 % vault_config(?Name, ?Config)
+    generate_vault_read/4,          % generate_vault_read(+Source, +Path, +Options, -Command)
+    generate_vault_agent_config/3,  % generate_vault_agent_config(+Service, +Options, -Config)
+
+    % AWS Secrets Manager
+    declare_aws_secrets_config/2,   % declare_aws_secrets_config(+Name, +Config)
+    aws_secrets_config/2,           % aws_secrets_config(?Name, ?Config)
+    generate_aws_secret_read/4,     % generate_aws_secret_read(+Source, +SecretId, +Options, -Command)
+
+    % Azure Key Vault
+    declare_azure_keyvault_config/2, % declare_azure_keyvault_config(+Name, +Config)
+    azure_keyvault_config/2,        % azure_keyvault_config(?Name, ?Config)
+    generate_azure_secret_read/4,   % generate_azure_secret_read(+Source, +SecretName, +Options, -Command)
+
+    % GCP Secret Manager
+    declare_gcp_secrets_config/2,   % declare_gcp_secrets_config(+Name, +Config)
+    gcp_secrets_config/2,           % gcp_secrets_config(?Name, ?Config)
+    generate_gcp_secret_read/4,     % generate_gcp_secret_read(+Source, +SecretId, +Options, -Command)
+
+    % Secret bindings for services
+    declare_service_secrets/2,      % declare_service_secrets(+Service, +Secrets)
+    service_secrets/2,              % service_secrets(?Service, ?Secrets)
+
+    % Environment variable injection
+    generate_secret_env_script/3,   % generate_secret_env_script(+Service, +Options, -Script)
+    generate_k8s_secret/3,          % generate_k8s_secret(+Service, +Options, -Manifest)
+    generate_k8s_external_secret/3, % generate_k8s_external_secret(+Service, +Options, -Manifest)
+
+    % Secret rotation
+    declare_secret_rotation/3,      % declare_secret_rotation(+Service, +Secret, +Config)
+    secret_rotation_config/3,       % secret_rotation_config(?Service, ?Secret, ?Config)
+
+    % Unified secret access
+    resolve_secret/4,               % resolve_secret(+Source, +Path, +Options, -Result)
+    list_secrets/3                  % list_secrets(+Source, +Options, -Secrets)
 ]).
 
 :- use_module(library(lists)).
@@ -238,6 +289,15 @@
 :- dynamic compose_config_db/2.         % compose_config_db(Project, Config)
 :- dynamic k8s_config_db/2.             % k8s_config_db(Service, Config)
 :- dynamic registry_config_db/2.        % registry_config_db(Name, Config)
+
+% Phase 7b dynamic storage
+:- dynamic secret_source_db/2.          % secret_source_db(Name, Config)
+:- dynamic vault_config_db/2.           % vault_config_db(Name, Config)
+:- dynamic aws_secrets_config_db/2.     % aws_secrets_config_db(Name, Config)
+:- dynamic azure_keyvault_config_db/2.  % azure_keyvault_config_db(Name, Config)
+:- dynamic gcp_secrets_config_db/2.     % gcp_secrets_config_db(Name, Config)
+:- dynamic service_secrets_db/2.        % service_secrets_db(Service, Secrets)
+:- dynamic secret_rotation_db/3.        % secret_rotation_db(Service, Secret, Config)
 
 %% ============================================
 %% Service Declarations
@@ -3752,3 +3812,631 @@ rollout_status(Service, Options, Status) :-
            [ServiceStr, Namespace]),
 
     Status = rollout_status_command(Cmd, Service).
+
+%% ============================================
+%% Phase 7b: Secrets Management [EXPERIMENTAL]
+%% ============================================
+%%
+%% WARNING: All Phase 7b predicates are EXPERIMENTAL.
+%%
+%% Current test coverage:
+%% - Unit tests verify code generation (command strings, YAML output)
+%% - NO integration tests with actual secret management services
+%% - Generated commands are NOT executed, only returned
+%%
+%% Before production use, verify:
+%% - Vault/AWS/Azure/GCP credentials are properly configured
+%% - Generated commands execute correctly in your environment
+%% - Secret rotation works as expected
+%% - Kubernetes ExternalSecrets operator is installed (if using)
+%%
+%% ============================================
+
+%% --------------------------------------------
+%% Secret Source Declarations [EXPERIMENTAL]
+%% --------------------------------------------
+
+%% declare_secret_source(+Name, +Config)
+%  Declare a generic secret source.
+%
+%  Config options:
+%    - type(Type)           : vault | aws | azure | gcp | env | file
+%    - priority(N)          : Priority for fallback (lower = higher priority)
+%
+declare_secret_source(Name, Config) :-
+    retractall(secret_source_db(Name, _)),
+    assertz(secret_source_db(Name, Config)).
+
+%% secret_source_config(?Name, ?Config)
+%  Query secret source configuration.
+%
+secret_source_config(Name, Config) :-
+    secret_source_db(Name, Config).
+
+%% --------------------------------------------
+%% HashiCorp Vault [EXPERIMENTAL]
+%% --------------------------------------------
+
+%% declare_vault_config(+Name, +Config)
+%  Configure HashiCorp Vault connection.
+%
+%  Config options:
+%    - url(URL)             : Vault server URL
+%    - auth_method(Method)  : token | approle | kubernetes | aws_iam
+%    - token_env(Var)       : Environment variable for token
+%    - role_id_env(Var)     : Environment variable for AppRole role_id
+%    - secret_id_env(Var)   : Environment variable for AppRole secret_id
+%    - k8s_role(Role)       : Kubernetes auth role
+%    - namespace(NS)        : Vault namespace (enterprise)
+%    - mount_path(Path)     : Secret engine mount path (default: secret)
+%
+declare_vault_config(Name, Config) :-
+    retractall(vault_config_db(Name, _)),
+    assertz(vault_config_db(Name, Config)).
+
+%% vault_config(?Name, ?Config)
+%  Query Vault configuration.
+%
+vault_config(Name, Config) :-
+    vault_config_db(Name, Config).
+
+%% generate_vault_read(+Source, +Path, +Options, -Command)
+%  Generate command to read secret from Vault.
+%
+%  Options:
+%    - field(F)             : Specific field to extract
+%    - format(F)            : json | table | raw (default: json)
+%    - version(V)           : KV v2 version number
+%
+generate_vault_read(Source, Path, Options, Command) :-
+    vault_config(Source, Config),
+    option_or_default(url, Config, 'http://127.0.0.1:8200', URL),
+    option_or_default(auth_method, Config, token, AuthMethod),
+    option_or_default(mount_path, Config, 'secret', MountPath),
+    option_or_default(namespace, Config, none, Namespace),
+    option_or_default(format, Options, json, Format),
+    option_or_default(field, Options, none, Field),
+    option_or_default(version, Options, none, Version),
+
+    % Build auth part
+    generate_vault_auth_env(AuthMethod, Config, AuthEnv),
+
+    % Build namespace flag
+    (Namespace \= none -> format(atom(NSFlag), '-namespace=~w ', [Namespace]) ; NSFlag = ''),
+
+    % Build field flag
+    (Field \= none -> format(atom(FieldFlag), '-field=~w ', [Field]) ; FieldFlag = ''),
+
+    % Build version flag (KV v2)
+    (Version \= none -> format(atom(VersionFlag), '-version=~w ', [Version]) ; VersionFlag = ''),
+
+    % Full path with mount
+    format(atom(FullPath), '~w/data/~w', [MountPath, Path]),
+
+    format(atom(Command),
+'~wVAULT_ADDR=~w vault kv get ~w~w~w-format=~w ~w',
+           [AuthEnv, URL, NSFlag, FieldFlag, VersionFlag, Format, FullPath]).
+
+%% generate_vault_auth_env(+Method, +Config, -EnvSetup)
+%  Generate environment setup for Vault authentication.
+%
+generate_vault_auth_env(token, Config, EnvSetup) :-
+    option_or_default(token_env, Config, 'VAULT_TOKEN', TokenEnv),
+    format(atom(EnvSetup), 'VAULT_TOKEN=$~w ', [TokenEnv]).
+
+generate_vault_auth_env(approle, Config, EnvSetup) :-
+    option_or_default(role_id_env, Config, 'VAULT_ROLE_ID', RoleIdEnv),
+    option_or_default(secret_id_env, Config, 'VAULT_SECRET_ID', SecretIdEnv),
+    format(atom(EnvSetup),
+'VAULT_TOKEN=$(vault write -field=token auth/approle/login role_id=$~w secret_id=$~w) ',
+           [RoleIdEnv, SecretIdEnv]).
+
+generate_vault_auth_env(kubernetes, Config, EnvSetup) :-
+    option_or_default(k8s_role, Config, 'default', Role),
+    format(atom(EnvSetup),
+'VAULT_TOKEN=$(vault write -field=token auth/kubernetes/login role=~w jwt=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)) ',
+           [Role]).
+
+generate_vault_auth_env(aws_iam, _Config, EnvSetup) :-
+    EnvSetup = 'VAULT_TOKEN=$(vault login -method=aws -field=token) '.
+
+%% generate_vault_agent_config(+Service, +Options, -Config)
+%  Generate Vault Agent configuration for automatic secret injection.
+%
+generate_vault_agent_config(Service, Options, Config) :-
+    service_secrets(Service, Secrets),
+    option_or_default(vault_source, Options, default_vault, VaultSource),
+    vault_config(VaultSource, VaultConfig),
+    option_or_default(url, VaultConfig, 'http://127.0.0.1:8200', URL),
+    option_or_default(auth_method, VaultConfig, kubernetes, AuthMethod),
+    option_or_default(k8s_role, VaultConfig, Service, Role),
+
+    atom_string(Service, ServiceStr),
+
+    % Generate template stanzas for each secret
+    generate_vault_templates(Secrets, TemplateStanzas),
+
+    % Generate auth config
+    generate_vault_agent_auth(AuthMethod, Role, AuthStanza),
+
+    format(atom(Config),
+'# Vault Agent configuration for ~w
+# Generated by UnifyWeaver - Phase 7b Secrets Management
+
+vault {
+  address = "~w"
+}
+
+auto_auth {
+~w
+}
+
+template_config {
+  static_secret_render_interval = "5m"
+}
+
+~w
+', [ServiceStr, URL, AuthStanza, TemplateStanzas]).
+
+generate_vault_agent_auth(kubernetes, Role, Stanza) :-
+    format(atom(Stanza),
+'  method "kubernetes" {
+    mount_path = "auth/kubernetes"
+    config = {
+      role = "~w"
+    }
+  }
+
+  sink "file" {
+    config = {
+      path = "/home/vault/.vault-token"
+    }
+  }', [Role]).
+
+generate_vault_agent_auth(approle, _Role, Stanza) :-
+    Stanza = '  method "approle" {
+    mount_path = "auth/approle"
+    config = {
+      role_id_file_path = "/etc/vault/role-id"
+      secret_id_file_path = "/etc/vault/secret-id"
+    }
+  }
+
+  sink "file" {
+    config = {
+      path = "/home/vault/.vault-token"
+    }
+  }'.
+
+generate_vault_agent_auth(token, _Role, Stanza) :-
+    Stanza = '  method "token_file" {
+    config = {
+      token_file_path = "/etc/vault/token"
+    }
+  }'.
+
+generate_vault_templates([], '').
+generate_vault_templates([Secret|Rest], Stanzas) :-
+    generate_vault_template(Secret, Stanza),
+    generate_vault_templates(Rest, RestStanzas),
+    format(atom(Stanzas), '~w\n~w', [Stanza, RestStanzas]).
+
+generate_vault_template(secret(EnvVar, Path, Field), Stanza) :-
+    format(atom(Stanza),
+'template {
+  destination = "/etc/secrets/~w"
+  contents = <<EOF
+{{ with secret "~w" }}{{ .Data.data.~w }}{{ end }}
+EOF
+}', [EnvVar, Path, Field]).
+
+generate_vault_template(secret(EnvVar, Path), Stanza) :-
+    format(atom(Stanza),
+'template {
+  destination = "/etc/secrets/~w"
+  contents = <<EOF
+{{ with secret "~w" }}{{ .Data.data | toJSON }}{{ end }}
+EOF
+}', [EnvVar, Path]).
+
+%% --------------------------------------------
+%% AWS Secrets Manager [EXPERIMENTAL]
+%% --------------------------------------------
+
+%% declare_aws_secrets_config(+Name, +Config)
+%  Configure AWS Secrets Manager connection.
+%
+%  Config options:
+%    - region(R)            : AWS region
+%    - profile(P)           : AWS CLI profile
+%    - role_arn(ARN)        : Role to assume
+%    - endpoint_url(URL)    : Custom endpoint (for LocalStack, etc.)
+%
+declare_aws_secrets_config(Name, Config) :-
+    retractall(aws_secrets_config_db(Name, _)),
+    assertz(aws_secrets_config_db(Name, Config)).
+
+%% aws_secrets_config(?Name, ?Config)
+%  Query AWS Secrets Manager configuration.
+%
+aws_secrets_config(Name, Config) :-
+    aws_secrets_config_db(Name, Config).
+
+%% generate_aws_secret_read(+Source, +SecretId, +Options, -Command)
+%  Generate command to read secret from AWS Secrets Manager.
+%
+%  Options:
+%    - version_id(V)        : Specific version
+%    - version_stage(S)     : AWSCURRENT | AWSPREVIOUS | custom
+%    - key(K)               : JSON key to extract (uses jq)
+%
+generate_aws_secret_read(Source, SecretId, Options, Command) :-
+    aws_secrets_config(Source, Config),
+    option_or_default(region, Config, 'us-east-1', Region),
+    option_or_default(profile, Config, none, Profile),
+    option_or_default(endpoint_url, Config, none, Endpoint),
+    option_or_default(version_id, Options, none, VersionId),
+    option_or_default(version_stage, Options, none, VersionStage),
+    option_or_default(key, Options, none, Key),
+
+    % Build profile flag
+    (Profile \= none -> format(atom(ProfileFlag), '--profile ~w ', [Profile]) ; ProfileFlag = ''),
+
+    % Build endpoint flag
+    (Endpoint \= none -> format(atom(EndpointFlag), '--endpoint-url ~w ', [Endpoint]) ; EndpointFlag = ''),
+
+    % Build version flags
+    (VersionId \= none -> format(atom(VersionIdFlag), '--version-id ~w ', [VersionId]) ; VersionIdFlag = ''),
+    (VersionStage \= none -> format(atom(VersionStageFlag), '--version-stage ~w ', [VersionStage]) ; VersionStageFlag = ''),
+
+    % Build jq filter for key extraction
+    (Key \= none
+    ->  format(atom(JqPart), ' | jq -r \'.SecretString | fromjson | .~w\'', [Key])
+    ;   JqPart = ' | jq -r \'.SecretString\''
+    ),
+
+    format(atom(Command),
+'aws secretsmanager get-secret-value ~w--region ~w ~w~w~w--secret-id ~w --query SecretString --output text~w',
+           [ProfileFlag, Region, EndpointFlag, VersionIdFlag, VersionStageFlag, SecretId, JqPart]).
+
+%% --------------------------------------------
+%% Azure Key Vault [EXPERIMENTAL]
+%% --------------------------------------------
+
+%% declare_azure_keyvault_config(+Name, +Config)
+%  Configure Azure Key Vault connection.
+%
+%  Config options:
+%    - vault_name(Name)     : Key Vault name
+%    - subscription(Sub)    : Azure subscription ID
+%    - tenant_id(Tenant)    : Azure AD tenant ID
+%    - use_msi(Bool)        : Use Managed Service Identity
+%
+declare_azure_keyvault_config(Name, Config) :-
+    retractall(azure_keyvault_config_db(Name, _)),
+    assertz(azure_keyvault_config_db(Name, Config)).
+
+%% azure_keyvault_config(?Name, ?Config)
+%  Query Azure Key Vault configuration.
+%
+azure_keyvault_config(Name, Config) :-
+    azure_keyvault_config_db(Name, Config).
+
+%% generate_azure_secret_read(+Source, +SecretName, +Options, -Command)
+%  Generate command to read secret from Azure Key Vault.
+%
+%  Options:
+%    - version(V)           : Specific secret version
+%
+generate_azure_secret_read(Source, SecretName, Options, Command) :-
+    azure_keyvault_config(Source, Config),
+    option_or_default(vault_name, Config, '', VaultName),
+    option_or_default(subscription, Config, none, Subscription),
+    option_or_default(version, Options, none, Version),
+
+    % Build subscription flag
+    (Subscription \= none -> format(atom(SubFlag), '--subscription ~w ', [Subscription]) ; SubFlag = ''),
+
+    % Build version flag
+    (Version \= none -> format(atom(VersionFlag), '--version ~w ', [Version]) ; VersionFlag = ''),
+
+    format(atom(Command),
+'az keyvault secret show ~w--vault-name ~w --name ~w ~w--query value -o tsv',
+           [SubFlag, VaultName, SecretName, VersionFlag]).
+
+%% --------------------------------------------
+%% GCP Secret Manager [EXPERIMENTAL]
+%% --------------------------------------------
+
+%% declare_gcp_secrets_config(+Name, +Config)
+%  Configure GCP Secret Manager connection.
+%
+%  Config options:
+%    - project(P)           : GCP project ID
+%    - impersonate_sa(SA)   : Service account to impersonate
+%
+declare_gcp_secrets_config(Name, Config) :-
+    retractall(gcp_secrets_config_db(Name, _)),
+    assertz(gcp_secrets_config_db(Name, Config)).
+
+%% gcp_secrets_config(?Name, ?Config)
+%  Query GCP Secret Manager configuration.
+%
+gcp_secrets_config(Name, Config) :-
+    gcp_secrets_config_db(Name, Config).
+
+%% generate_gcp_secret_read(+Source, +SecretId, +Options, -Command)
+%  Generate command to read secret from GCP Secret Manager.
+%
+%  Options:
+%    - version(V)           : Specific version (default: latest)
+%
+generate_gcp_secret_read(Source, SecretId, Options, Command) :-
+    gcp_secrets_config(Source, Config),
+    option_or_default(project, Config, '', Project),
+    option_or_default(impersonate_sa, Config, none, ImpersonateSA),
+    option_or_default(version, Options, 'latest', Version),
+
+    % Build impersonation flag
+    (ImpersonateSA \= none
+    ->  format(atom(ImpersonateFlag), '--impersonate-service-account=~w ', [ImpersonateSA])
+    ;   ImpersonateFlag = ''
+    ),
+
+    format(atom(Command),
+'gcloud secrets versions access ~w --secret=~w --project=~w ~w',
+           [Version, SecretId, Project, ImpersonateFlag]).
+
+%% --------------------------------------------
+%% Service Secret Bindings [EXPERIMENTAL]
+%% --------------------------------------------
+
+%% declare_service_secrets(+Service, +Secrets)
+%  Bind secrets to a service for injection.
+%
+%  Secrets is a list of:
+%    - secret(EnvVar, Source, Path)       : Map secret to env var
+%    - secret(EnvVar, Source, Path, Field): Map specific field to env var
+%    - file_secret(Path, Source, SecretPath): Mount as file
+%
+declare_service_secrets(Service, Secrets) :-
+    retractall(service_secrets_db(Service, _)),
+    assertz(service_secrets_db(Service, Secrets)).
+
+%% service_secrets(?Service, ?Secrets)
+%  Query service secret bindings.
+%
+service_secrets(Service, Secrets) :-
+    service_secrets_db(Service, Secrets).
+
+%% --------------------------------------------
+%% Environment Variable Injection [EXPERIMENTAL]
+%% --------------------------------------------
+
+%% generate_secret_env_script(+Service, +Options, -Script)
+%  Generate shell script to export secrets as environment variables.
+%
+generate_secret_env_script(Service, _Options, Script) :-
+    service_secrets(Service, Secrets),
+    generate_env_exports(Secrets, ExportLines),
+    atom_string(Service, ServiceStr),
+
+    format(atom(Script),
+'#!/bin/bash
+# Secret injection script for ~w
+# Generated by UnifyWeaver - Phase 7b Secrets Management
+# WARNING: This script is for development/testing only.
+# In production, use native secret injection (K8s secrets, Vault Agent, etc.)
+
+set -e
+
+~w
+
+echo "Secrets loaded for ~w"
+', [ServiceStr, ExportLines, ServiceStr]).
+
+generate_env_exports([], '').
+generate_env_exports([Secret|Rest], Lines) :-
+    generate_env_export(Secret, Line),
+    generate_env_exports(Rest, RestLines),
+    format(atom(Lines), '~w\n~w', [Line, RestLines]).
+
+generate_env_export(secret(EnvVar, Source, Path), Line) :-
+    (   vault_config(Source, _)
+    ->  generate_vault_read(Source, Path, [format(raw)], Cmd),
+        format(atom(Line), 'export ~w=$( ~w )', [EnvVar, Cmd])
+    ;   aws_secrets_config(Source, _)
+    ->  generate_aws_secret_read(Source, Path, [], Cmd),
+        format(atom(Line), 'export ~w=$( ~w )', [EnvVar, Cmd])
+    ;   azure_keyvault_config(Source, _)
+    ->  generate_azure_secret_read(Source, Path, [], Cmd),
+        format(atom(Line), 'export ~w=$( ~w )', [EnvVar, Cmd])
+    ;   gcp_secrets_config(Source, _)
+    ->  generate_gcp_secret_read(Source, Path, [], Cmd),
+        format(atom(Line), 'export ~w=$( ~w )', [EnvVar, Cmd])
+    ;   format(atom(Line), '# Unknown source: ~w for ~w', [Source, EnvVar])
+    ).
+
+generate_env_export(secret(EnvVar, Source, Path, Field), Line) :-
+    (   vault_config(Source, _)
+    ->  generate_vault_read(Source, Path, [field(Field)], Cmd),
+        format(atom(Line), 'export ~w=$( ~w )', [EnvVar, Cmd])
+    ;   aws_secrets_config(Source, _)
+    ->  generate_aws_secret_read(Source, Path, [key(Field)], Cmd),
+        format(atom(Line), 'export ~w=$( ~w )', [EnvVar, Cmd])
+    ;   format(atom(Line), '# Field extraction not supported for ~w', [Source])
+    ).
+
+generate_env_export(file_secret(_, _, _), Line) :-
+    Line = '# File secrets handled separately'.
+
+%% generate_k8s_secret(+Service, +Options, -Manifest)
+%  Generate Kubernetes Secret manifest (for static secrets).
+%
+%  Note: This creates a placeholder manifest. In production,
+%  secrets should be injected by ExternalSecrets or similar.
+%
+generate_k8s_secret(Service, Options, Manifest) :-
+    k8s_config(Service, Config),
+    option_or_default(namespace, Config, 'default', Namespace),
+    service_secrets(Service, Secrets),
+    atom_string(Service, ServiceStr),
+
+    option_or_default(secret_name, Options, none, SecretNameOpt),
+    (SecretNameOpt \= none -> SecretName = SecretNameOpt ; format(atom(SecretName), '~w-secrets', [ServiceStr])),
+
+    % Generate data section (placeholders)
+    generate_k8s_secret_data(Secrets, DataSection),
+
+    format(atom(Manifest),
+'# Generated by UnifyWeaver - Phase 7b Secrets Management
+# WARNING: This is a placeholder manifest. Do NOT commit real secrets!
+# Use ExternalSecrets or sealed-secrets in production.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ~w
+  namespace: ~w
+type: Opaque
+stringData:
+~w', [SecretName, Namespace, DataSection]).
+
+generate_k8s_secret_data([], '  # No secrets configured\n').
+generate_k8s_secret_data(Secrets, Section) :-
+    Secrets \= [],
+    maplist(generate_k8s_secret_item, Secrets, Lines),
+    atomic_list_concat(Lines, '\n', Section).
+
+generate_k8s_secret_item(secret(EnvVar, _, _), Line) :-
+    format(atom(Line), '  ~w: "PLACEHOLDER_VALUE"', [EnvVar]).
+generate_k8s_secret_item(secret(EnvVar, _, _, _), Line) :-
+    format(atom(Line), '  ~w: "PLACEHOLDER_VALUE"', [EnvVar]).
+generate_k8s_secret_item(file_secret(_, _, _), Line) :-
+    Line = '  # file_secret: handled separately'.
+
+%% generate_k8s_external_secret(+Service, +Options, -Manifest)
+%  Generate ExternalSecret manifest for external-secrets operator.
+%
+generate_k8s_external_secret(Service, Options, Manifest) :-
+    k8s_config(Service, Config),
+    service_secrets(Service, Secrets),
+    option_or_default(namespace, Config, 'default', Namespace),
+    option_or_default(secret_store, Options, 'vault-backend', SecretStore),
+    option_or_default(refresh_interval, Options, '1h', RefreshInterval),
+    atom_string(Service, ServiceStr),
+
+    format(atom(SecretName), '~w-secrets', [ServiceStr]),
+
+    % Generate data mappings
+    generate_external_secret_data(Secrets, DataSection),
+
+    format(atom(Manifest),
+'# Generated by UnifyWeaver - Phase 7b Secrets Management
+# ExternalSecret for external-secrets operator
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: ~w
+  namespace: ~w
+spec:
+  refreshInterval: ~w
+  secretStoreRef:
+    name: ~w
+    kind: SecretStore
+  target:
+    name: ~w
+    creationPolicy: Owner
+  data:
+~w', [SecretName, Namespace, RefreshInterval, SecretStore, SecretName, DataSection]).
+
+generate_external_secret_data([], '  # No secrets configured\n').
+generate_external_secret_data(Secrets, Section) :-
+    Secrets \= [],
+    maplist(generate_external_secret_item, Secrets, Lines),
+    atomic_list_concat(Lines, '\n', Section).
+
+generate_external_secret_item(secret(EnvVar, _Source, Path), Line) :-
+    format(atom(Line),
+'  - secretKey: ~w
+    remoteRef:
+      key: ~w', [EnvVar, Path]).
+generate_external_secret_item(secret(EnvVar, _Source, Path, Field), Line) :-
+    format(atom(Line),
+'  - secretKey: ~w
+    remoteRef:
+      key: ~w
+      property: ~w', [EnvVar, Path, Field]).
+generate_external_secret_item(file_secret(_, _, _), Line) :-
+    Line = '  # file_secret: not supported in ExternalSecret'.
+
+%% --------------------------------------------
+%% Secret Rotation [EXPERIMENTAL]
+%% --------------------------------------------
+
+%% declare_secret_rotation(+Service, +Secret, +Config)
+%  Configure secret rotation for a service.
+%
+%  Config options:
+%    - interval(Duration)   : Rotation interval (e.g., '30d', '90d')
+%    - notify(Channels)     : Notification channels
+%    - pre_rotate(Hook)     : Pre-rotation hook
+%    - post_rotate(Hook)    : Post-rotation hook
+%
+declare_secret_rotation(Service, Secret, Config) :-
+    retractall(secret_rotation_db(Service, Secret, _)),
+    assertz(secret_rotation_db(Service, Secret, Config)).
+
+%% secret_rotation_config(?Service, ?Secret, ?Config)
+%  Query secret rotation configuration.
+%
+secret_rotation_config(Service, Secret, Config) :-
+    secret_rotation_db(Service, Secret, Config).
+
+%% --------------------------------------------
+%% Unified Secret Access [EXPERIMENTAL]
+%% --------------------------------------------
+
+%% resolve_secret(+Source, +Path, +Options, -Result)
+%  Generate command to resolve a secret from any configured source.
+%
+resolve_secret(Source, Path, Options, Result) :-
+    (   vault_config(Source, _)
+    ->  generate_vault_read(Source, Path, Options, Cmd),
+        Result = vault_secret(Cmd)
+    ;   aws_secrets_config(Source, _)
+    ->  generate_aws_secret_read(Source, Path, Options, Cmd),
+        Result = aws_secret(Cmd)
+    ;   azure_keyvault_config(Source, _)
+    ->  generate_azure_secret_read(Source, Path, Options, Cmd),
+        Result = azure_secret(Cmd)
+    ;   gcp_secrets_config(Source, _)
+    ->  generate_gcp_secret_read(Source, Path, Options, Cmd),
+        Result = gcp_secret(Cmd)
+    ;   Result = error(unknown_source(Source))
+    ).
+
+%% list_secrets(+Source, +Options, -Secrets)
+%  Generate command to list secrets from a source.
+%
+list_secrets(Source, Options, Secrets) :-
+    (   vault_config(Source, Config)
+    ->  option_or_default(mount_path, Config, 'secret', MountPath),
+        option_or_default(path, Options, '', SubPath),
+        (SubPath \= '' -> format(atom(FullPath), '~w/metadata/~w', [MountPath, SubPath])
+        ;   format(atom(FullPath), '~w/metadata', [MountPath])),
+        format(atom(Cmd), 'vault kv list -format=json ~w', [FullPath]),
+        Secrets = vault_list(Cmd)
+    ;   aws_secrets_config(Source, Config)
+    ->  option_or_default(region, Config, 'us-east-1', Region),
+        format(atom(Cmd), 'aws secretsmanager list-secrets --region ~w --query "SecretList[].Name" --output json', [Region]),
+        Secrets = aws_list(Cmd)
+    ;   azure_keyvault_config(Source, Config)
+    ->  option_or_default(vault_name, Config, '', VaultName),
+        format(atom(Cmd), 'az keyvault secret list --vault-name ~w --query "[].name" -o json', [VaultName]),
+        Secrets = azure_list(Cmd)
+    ;   gcp_secrets_config(Source, Config)
+    ->  option_or_default(project, Config, '', Project),
+        format(atom(Cmd), 'gcloud secrets list --project=~w --format=json', [Project]),
+        Secrets = gcp_list(Cmd)
+    ;   Secrets = error(unknown_source(Source))
+    ).
