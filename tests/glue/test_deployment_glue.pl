@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2025 John William Creighton (s243a)
  *
- * Tests for deployment_glue.pl - Phase 6a & 6b
+ * Tests for deployment_glue.pl - Phase 6a, 6b, 6c, 6d & 7a
  */
 
 :- use_module('../../src/unifyweaver/glue/deployment_glue').
@@ -18,7 +18,7 @@ run_all_tests :-
     retractall(test_passed(_)),
     retractall(test_failed(_, _)),
 
-    format('~n=== Deployment Glue Tests (Phase 6a & 6b) ===~n~n'),
+    format('~n=== Deployment Glue Tests (Phase 6a, 6b, 6c, 6d & 7a) ===~n~n'),
 
     % Phase 6a Tests
     format('--- Phase 6a: Foundation ---~n~n'),
@@ -164,6 +164,51 @@ run_all_tests :-
         test_trigger_alert,
         test_check_alerts,
         test_alert_history
+    ]),
+
+    % Phase 7a Tests
+    format('~n--- Phase 7a: Container Deployment ---~n~n'),
+
+    run_test_group('Docker Configuration', [
+        test_declare_docker_config,
+        test_docker_config_query
+    ]),
+
+    run_test_group('Dockerfile Generation', [
+        test_generate_dockerfile_python,
+        test_generate_dockerfile_go,
+        test_generate_dockerfile_nodejs,
+        test_generate_dockerignore
+    ]),
+
+    run_test_group('Docker Operations', [
+        test_docker_image_tag_simple,
+        test_docker_image_tag_with_registry,
+        test_build_docker_image,
+        test_push_docker_image
+    ]),
+
+    run_test_group('Docker Compose', [
+        test_declare_compose_config,
+        test_generate_docker_compose
+    ]),
+
+    run_test_group('Kubernetes Deployment', [
+        test_declare_k8s_config,
+        test_generate_k8s_deployment,
+        test_generate_k8s_service,
+        test_generate_k8s_ingress
+    ]),
+
+    run_test_group('Container Registry', [
+        test_declare_registry,
+        test_login_registry_basic,
+        test_login_registry_aws_ecr
+    ]),
+
+    run_test_group('Kubernetes Operations', [
+        test_deploy_to_k8s,
+        test_scale_k8s_deployment
     ]),
 
     print_summary.
@@ -902,6 +947,254 @@ test_check_alerts :-
 test_alert_history :-
     alert_history(alert_test_service, [], History),
     member(history(high_error_rate, triggered, _, _), History).
+
+%% ============================================
+%% Phase 7a Tests: Docker Configuration
+%% ============================================
+
+test_declare_docker_config :-
+    declare_docker_config(docker_test_service, [
+        base_image('python:3.11-slim'),
+        registry(test_registry),
+        tag('v1.0.0'),
+        env(['APP_ENV'-production, 'DEBUG'-false])
+    ]),
+    docker_config(docker_test_service, Config),
+    member(base_image('python:3.11-slim'), Config).
+
+test_docker_config_query :-
+    docker_config(docker_test_service, Config),
+    member(tag('v1.0.0'), Config),
+    member(registry(test_registry), Config).
+
+%% ============================================
+%% Phase 7a Tests: Dockerfile Generation
+%% ============================================
+
+test_generate_dockerfile_python :-
+    % Setup service and docker config
+    declare_service(dockerfile_py_test, [
+        host(localhost),
+        port(8080),
+        target(python),
+        entry_point('app.py')
+    ]),
+    declare_docker_config(dockerfile_py_test, [
+        base_image('python:3.11-slim'),
+        env(['APP_ENV'-production])
+    ]),
+    generate_dockerfile(dockerfile_py_test, [], Dockerfile),
+    sub_atom(Dockerfile, _, _, _, 'FROM python:3.11-slim'),
+    sub_atom(Dockerfile, _, _, _, 'pip install'),
+    sub_atom(Dockerfile, _, _, _, 'EXPOSE 8080').
+
+test_generate_dockerfile_go :-
+    declare_service(dockerfile_go_test, [
+        host(localhost),
+        port(8080),
+        target(go),
+        entry_point('main.go')
+    ]),
+    declare_docker_config(dockerfile_go_test, [
+        multi_stage(true)
+    ]),
+    generate_dockerfile(dockerfile_go_test, [], Dockerfile),
+    sub_atom(Dockerfile, _, _, _, 'FROM golang'),
+    sub_atom(Dockerfile, _, _, _, 'go build'),
+    sub_atom(Dockerfile, _, _, _, 'alpine').
+
+test_generate_dockerfile_nodejs :-
+    declare_service(dockerfile_node_test, [
+        host(localhost),
+        port(3000),
+        target(nodejs),
+        entry_point('index.js')
+    ]),
+    declare_docker_config(dockerfile_node_test, []),
+    generate_dockerfile(dockerfile_node_test, [], Dockerfile),
+    sub_atom(Dockerfile, _, _, _, 'FROM node'),
+    sub_atom(Dockerfile, _, _, _, 'npm ci'),
+    sub_atom(Dockerfile, _, _, _, 'EXPOSE 3000').
+
+test_generate_dockerignore :-
+    generate_dockerignore(dockerfile_py_test, [], Content),
+    sub_atom(Content, _, _, _, '__pycache__'),
+    sub_atom(Content, _, _, _, '.git/'),
+    sub_atom(Content, _, _, _, 'Dockerfile').
+
+%% ============================================
+%% Phase 7a Tests: Docker Operations
+%% ============================================
+
+test_docker_image_tag_simple :-
+    declare_docker_config(tag_test_simple, [
+        image_name(my_app),
+        tag(latest)
+    ]),
+    docker_image_tag(tag_test_simple, Tag),
+    Tag == 'my_app:latest'.
+
+test_docker_image_tag_with_registry :-
+    declare_registry(test_reg, [
+        url('registry.example.com'),
+        image_prefix('myorg/')
+    ]),
+    declare_docker_config(tag_test_registry, [
+        registry(test_reg),
+        image_name(my_service),
+        tag('v2.0.0')
+    ]),
+    docker_image_tag(tag_test_registry, Tag),
+    Tag == 'registry.example.com/myorg/my_service:v2.0.0'.
+
+test_build_docker_image :-
+    build_docker_image(tag_test_simple, [], Result),
+    Result = build_command(Cmd, _),
+    sub_atom(Cmd, _, _, _, 'docker build'),
+    sub_atom(Cmd, _, _, _, '-t my_app:latest').
+
+test_push_docker_image :-
+    push_docker_image(tag_test_simple, [], Result),
+    Result = push_command(Cmd, _),
+    sub_atom(Cmd, _, _, _, 'docker push'),
+    sub_atom(Cmd, _, _, _, 'my_app:latest').
+
+%% ============================================
+%% Phase 7a Tests: Docker Compose
+%% ============================================
+
+test_declare_compose_config :-
+    declare_compose_config(test_project, [
+        services([api, db]),
+        networks([backend]),
+        version('3.8')
+    ]),
+    compose_config(test_project, Config),
+    member(services([api, db]), Config).
+
+test_generate_docker_compose :-
+    % Setup services for compose
+    declare_service(compose_api, [
+        host(localhost),
+        port(8080),
+        target(python)
+    ]),
+    declare_docker_config(compose_api, [
+        image_name(api),
+        tag(latest),
+        env(['DB_HOST'-db])
+    ]),
+    declare_compose_config(compose_project, [
+        services([compose_api]),
+        version('3.8')
+    ]),
+    generate_docker_compose(compose_project, [], ComposeYaml),
+    sub_atom(ComposeYaml, _, _, _, 'version: "3.8"'),
+    sub_atom(ComposeYaml, _, _, _, 'services:').
+
+%% ============================================
+%% Phase 7a Tests: Kubernetes Deployment
+%% ============================================
+
+test_declare_k8s_config :-
+    declare_k8s_config(k8s_test_service, [
+        namespace(production),
+        replicas(3),
+        service_type('LoadBalancer'),
+        resources(default)
+    ]),
+    k8s_config(k8s_test_service, Config),
+    member(replicas(3), Config).
+
+test_generate_k8s_deployment :-
+    declare_service(k8s_deploy_test, [
+        host('api.example.com'),
+        port(8080),
+        target(go)
+    ]),
+    declare_docker_config(k8s_deploy_test, [
+        image_name('myorg/api'),
+        tag('v1.0.0')
+    ]),
+    declare_k8s_config(k8s_deploy_test, [
+        namespace(production),
+        replicas(2)
+    ]),
+    generate_k8s_deployment(k8s_deploy_test, [], Manifest),
+    sub_atom(Manifest, _, _, _, 'apiVersion: apps/v1'),
+    sub_atom(Manifest, _, _, _, 'kind: Deployment'),
+    sub_atom(Manifest, _, _, _, 'namespace: production'),
+    sub_atom(Manifest, _, _, _, 'replicas: 2').
+
+test_generate_k8s_service :-
+    generate_k8s_service(k8s_deploy_test, [], Manifest),
+    sub_atom(Manifest, _, _, _, 'apiVersion: v1'),
+    sub_atom(Manifest, _, _, _, 'kind: Service'),
+    sub_atom(Manifest, _, _, _, 'port: 8080').
+
+test_generate_k8s_ingress :-
+    declare_k8s_config(k8s_ingress_test, [
+        namespace(production),
+        ingress([host('api.example.com'), path('/'), tls(true)])
+    ]),
+    declare_service(k8s_ingress_test, [
+        host('api.example.com'),
+        port(8080),
+        target(python)
+    ]),
+    declare_docker_config(k8s_ingress_test, [
+        image_name(api),
+        tag(latest)
+    ]),
+    generate_k8s_ingress(k8s_ingress_test, [], Manifest),
+    sub_atom(Manifest, _, _, _, 'kind: Ingress'),
+    sub_atom(Manifest, _, _, _, 'api.example.com').
+
+%% ============================================
+%% Phase 7a Tests: Container Registry
+%% ============================================
+
+test_declare_registry :-
+    declare_registry(docker_hub, [
+        url('docker.io'),
+        username(myuser),
+        password_env('DOCKER_PASSWORD'),
+        auth_method(basic)
+    ]),
+    registry_config(docker_hub, Config),
+    member(url('docker.io'), Config).
+
+test_login_registry_basic :-
+    login_registry(docker_hub, Result),
+    Result = login_command(docker_hub, Cmd),
+    sub_atom(Cmd, _, _, _, 'docker login'),
+    sub_atom(Cmd, _, _, _, 'docker.io').
+
+test_login_registry_aws_ecr :-
+    declare_registry(aws_ecr_test, [
+        url('123456789.dkr.ecr.us-east-1.amazonaws.com'),
+        auth_method(aws_ecr)
+    ]),
+    login_registry(aws_ecr_test, Result),
+    Result = login_command(aws_ecr_test, Cmd),
+    sub_atom(Cmd, _, _, _, 'aws ecr get-login-password'),
+    sub_atom(Cmd, _, _, _, '--username AWS').
+
+%% ============================================
+%% Phase 7a Tests: Kubernetes Operations
+%% ============================================
+
+test_deploy_to_k8s :-
+    deploy_to_k8s(k8s_deploy_test, [namespace(staging)], Result),
+    Result.service == k8s_deploy_test,
+    Result.namespace == staging,
+    sub_atom(Result.deployment_cmd, _, _, _, 'kubectl apply').
+
+test_scale_k8s_deployment :-
+    scale_k8s_deployment(k8s_deploy_test, 5, [namespace(production)], Result),
+    Result = scale_command(Cmd, k8s_deploy_test, 5),
+    sub_atom(Cmd, _, _, _, 'kubectl scale'),
+    sub_atom(Cmd, _, _, _, '--replicas=5').
 
 %% ============================================
 %% Main Entry Point
