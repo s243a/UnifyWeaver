@@ -1,9 +1,3 @@
----
-layout: default
-title: UnifyWeaver Extended Documentation
-description: Comprehensive tutorials, examples, and advanced usage patterns
----
-
 <!--
 SPDX-License-Identifier: MIT OR Apache-2.0
 Copyright (c) 2025 John William Creighton (@s243a)
@@ -24,10 +18,11 @@ This document provides comprehensive documentation for UnifyWeaver, including de
 5. [Data Source Plugin System](#data-source-plugin-system)
 6. [Firewall and Security](#firewall-and-security)
 7. [PowerShell Target](#powershell-target)
-8. [Complete Examples](#complete-examples)
-9. [Architecture Deep Dive](#architecture-deep-dive)
-10. [Testing Guide](#testing-guide)
-11. [Troubleshooting](#troubleshooting)
+8. [C# Target Family](#c-target-family)
+9. [Complete Examples](#complete-examples)
+10. [Architecture Deep Dive](#architecture-deep-dive)
+11. [Testing Guide](#testing-guide)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -382,6 +377,7 @@ UnifyWeaver v0.0.2 introduces a powerful plugin system for integrating external 
 │  - JSON Plugin                             │
 │  - HTTP Plugin                             │
 │  - Python Plugin                           │
+│  - C# Plugin (LiteDB)                      │
 └────────────────┬────────────────────────────┘
                  │
                  ↓
@@ -486,15 +482,159 @@ Process JSON data with jq filters:
 ```prolog
 :- source(json, config_values, [
     json_file('config.json'),
-    jq_filter('.database | {host, port, name}')
+    columns(['database.host', 'database.port', 'database.name'])
 ]).
+
+?- config_values(Host, Port, Name).
 ```
+
+Returning full JSON objects instead of individual fields:
+
+```prolog
+:- source(json, raw_products, [
+    json_file('test_data/test_products.json'),
+    arity(1),
+    return_object(true),
+    type_hint('System.Text.Json.Nodes.JsonObject, System.Text.Json')
+]).
+
+?- raw_products(ProductJson).
+```
+
+Generating a typed record via `schema/1`:
+
+```prolog
+:- source(json, product_rows, [
+    json_file('test_data/test_products.json'),
+    schema([
+        field(id, 'id', string),
+        field(name, 'name', string),
+        field(price, 'price', double)
+    ]),
+    record_type('ProductRecord')
+]).
+
+?- product_rows(Row).
+% Row = ProductRecord { Id = P001, Name = Laptop, Price = 999 }
+```
+
+Selecting via JSONPath (using wildcards and recursive descent):
+
+```prolog
+:- source(json, order_first_items, [
+    json_file('test_data/test_orders.json'),
+    columns([
+        jsonpath('$.order.customer.name'),
+        jsonpath('$.items[*].product')
+    ])
+]).
+
+?- order_first_items(Customer, Product).
+% Customer = Alice,  Product = Laptop
+```
+
+Combining schema + nested records:
+
+```prolog
+:- source(json, order_summaries, [
+    json_file('test_data/test_orders.json'),
+    schema([
+        field(order, 'order', record('OrderRecord', [
+            field(id, 'id', string),
+            field(customer, 'customer.name', string)
+        ])),
+        field(first_item, 'items[0]', record('LineItemRecord', [
+            field(product, 'product', string),
+            field(total, 'total', double)
+        ]))
+    ]),
+    record_type('OrderSummaryRecord')
+]).
+
+?- order_summaries(Row).
+% Row = OrderSummaryRecord { Order = OrderRecord { Id = SO1, Customer = Alice },
+%                            FirstItem = LineItemRecord { Product = Laptop, Total = 1200 } }
+```
+
+Streaming JSON Lines (`record_format(jsonl)`) with null-handling policy:
+
+```prolog
+:- source(json, order_second_items, [
+    json_file('test_data/test_orders.jsonl'),
+    record_format(jsonl),
+    columns([
+        jsonpath('$.order.customer.name'),
+        jsonpath('$.items[1].product')
+    ]),
+    null_policy(default('N/A'))
+]).
+
+?- order_second_items(Customer, SecondProduct).
+% Customer = Alice, SecondProduct = Mouse
+% Customer = Bob,   SecondProduct = 'N/A'
+% Customer = Charlie, SecondProduct = 'N/A'
+```
+
+`null_policy(fail|skip|default(Value))` controls how missing fields behave: fail immediately, skip the row, or substitute the provided default string.
 
 **Generated bash:**
 ```bash
 extract_names() {
     jq -r '.users[] | {name: .name, email: .email} | @tsv'
 }
+```
+
+### YAML Plugin
+
+Process YAML data using Python (PyYAML):
+
+**Read YAML files with filters:**
+```prolog
+:- source(yaml, config_users, [
+    yaml_filter('data["users"]'),
+    yaml_file('config.yaml')
+]).
+```
+
+**Process YAML from stdin:**
+```prolog
+:- source(yaml, stream_data, [
+    yaml_stdin(true)
+]).
+```
+
+**Generated bash:**
+```bash
+config_users() {
+    python3 << 'PYTHON'
+    import yaml
+    # ... (embedded python script)
+PYTHON
+}
+```
+
+### XML Plugin
+
+Process XML data using Python:
+
+**Parse XML with Python:**
+```prolog
+:- data_source_driver(python).
+:- data_source_work_fn(sum_prices).
+
+:- data_source_schema([
+    string(name),
+    number(price)
+]).
+
+:- data_source_prolog_fn(xml_prolog_data_source).
+
+data_source_definition(xml_data_source, _{
+    driver: python,
+    work_fn: sum_prices,
+    schema: [string(name), number(price)],
+    prolog_fn: xml_prolog_data_source
+}).
 ```
 
 ### HTTP Plugin
@@ -574,6 +714,56 @@ conn = sqlite3.connect("app.db")
 PYTHON_EOF
 }
 ```
+
+### SQLite Plugin (Native)
+
+Query SQLite databases directly using the `sqlite3` command-line tool (faster than Python wrapper for simple queries):
+
+```prolog
+:- source(sqlite, high_value_orders, [
+    sqlite_file('data/orders.db'),
+    query('SELECT id, total FROM orders WHERE total > 1000'),
+    output_format(tsv)
+]).
+```
+
+**Generated bash:**
+```bash
+high_value_orders() {
+    sqlite3 -separator '	' -noheader "data/orders.db" "SELECT id, total FROM orders WHERE total > 1000"
+}
+```
+
+**Safe Parameter Binding (v1.1):**
+
+To prevent SQL injection when using dynamic inputs, use `parameters/1`. This automatically switches to a safer Python-based execution mode:
+
+```prolog
+:- source(sqlite, user_by_id, [
+    sqlite_file('data/users.db'),
+    query('SELECT name, email FROM users WHERE id = ?'),
+    parameters(['$1'])  % Binds first script argument to ?
+]).
+```
+
+### C# Plugin (LiteDB Integration)
+
+UnifyWeaver supports C# data sources with automatic compilation and LiteDB integration.
+
+**LiteDB Inserter:**
+```prolog
+:- source(dotnet, load_products, [
+    arity(0),
+    target(powershell),
+    csharp_inline('
+using LiteDB;
+// ... C# code ...
+'),
+    references(['lib/LiteDB.dll'])
+]).
+```
+
+**See [C# Compilation Guide](DOTNET_COMPILATION.md) for full details.**
 
 ### Complete ETL Pipeline Example
 
@@ -821,6 +1011,27 @@ For complete PowerShell documentation, see:
 
 ---
 
+## C# Target Family
+
+UnifyWeaver provides a robust C# compilation system that integrates seamlessly with PowerShell.
+
+### Features
+
+- **External Compilation**: Uses `dotnet build` for robust dependency management and isolation.
+- **Pre-Compilation**: Fallback to `Add-Type` for simple scripts.
+- **File Locking Solution**: Unique build directories prevent DLL locking issues.
+- **LiteDB Support**: Built-in integration for NoSQL document storage.
+- **Dynamic Sources (CSV/JSON/XML)**:
+  - `DelimitedTextReader` for CSV/TSV (NUL- or LF-delimited)
+  - `JsonStreamReader` for JSON/JSONL with schema/type hints and null policy
+  - `XmlStreamReader` for NUL- or LF-delimited XML fragments; matches both prefixes and fully-qualified names and projects elements/attributes into a dictionary per record.
+
+**See [DOTNET_COMPILATION.md](DOTNET_COMPILATION.md) for the complete guide.**
+
+---
+
+
+
 ## Complete Examples
 
 ### Example 1: Family Tree with Transitive Queries
@@ -951,6 +1162,15 @@ fib 10
 # Output:
 # 55
 ```
+
+### Example 5: XML Data Source
+
+See the complete working example in the playbook: `playbooks/xml_data_source_playbook.md`.
+
+This demonstrates:
+- Defining a data source using Python to parse XML.
+- Extracting data from the XML.
+- Executing the data source.
 
 ---
 

@@ -6,10 +6,29 @@ description: Overview, installation, and quick start guide
 
 # UnifyWeaver
 
-A Prolog-to-Bash compiler that transforms declarative logic programs into efficient streaming bash scripts. UnifyWeaver specializes in compiling data relationships and queries into executable bash code with optimized handling of transitive closures and advanced recursion patterns.
+**A Prolog transpiler that turns logic programs into LINQ-style data pipelines.**
+
+One codebase → Bash streams, C# queries, or PowerShell orchestration.
+
+UnifyWeaver transforms declarative Prolog predicates into efficient code for multiple targets, with optimized handling of transitive closures, advanced recursion patterns, and relational query semantics.
 
 **📚 [Extended Documentation](docs/EXTENDED_README)** - Comprehensive tutorials, examples, and advanced usage
-**🎓 [Educational Materials](../education/README)** - Learn UnifyWeaver with hands-on tutorials and examples
+**🎓 [Educational Materials](../education/README)** - Learn UnifyWeaver with a 13-book educational series
+
+## Target Comparison
+
+| Target | Approach | Best For | Status |
+|--------|----------|----------|--------|
+| **Bash** | Stream/Procedural | Unix pipelines, text processing | Production |
+| **C# Query** | Fixed-Point (Query Engine) | Complex recursion, .NET integration | Production |
+| **C# Codegen** | Generator-Based | Standalone .NET apps | Production |
+| **Go** | Generator-Based | High-performance services | Experimental |
+| **Rust** | Generator-Based | Systems programming | Experimental |
+| **Python** | Generator-Based | Data science, scripting | Experimental |
+| **SQL** | Declarative | Database queries | Experimental |
+| **AWK** | Stream/Procedural | Text processing, log analysis | Experimental |
+| **PowerShell** | Orchestration | Windows/.NET orchestration | In Development |
+| **Prolog** | Direct Copy | Fallback, debugging | Ready |
 
 ## Features
 
@@ -287,9 +306,10 @@ dual licensed as above, without any additional terms or conditions.
 
 ## Acknowledgments
 
-Developed as an exploration of compiling declarative logic to imperative scripts while preserving correctness and efficiency. Special focus on making Prolog's power accessible in bash environments.
+Developed as an exploration of compiling declarative logic to multiple target languages while preserving correctness and efficiency. UnifyWeaver makes Prolog's power accessible across Unix shells, .NET, and beyond.
 
 **Contributors:**
-- John William Creighton (@s243a) - Core development
+- John William Creighton (@s243a) - Core development, architecture
 - Gemini (via gemini-cli) - Constraint awareness features
-- Claude (via Claude Code) - Advanced recursion system, test infrastructure
+- Claude (via Claude Code) - Advanced recursion system, test infrastructure, documentation
+- GPT-5/5.1-Codex - Fixed-point architecture (query engine and generator approaches)
