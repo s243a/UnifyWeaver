@@ -1526,9 +1526,11 @@ csharp_config(Config) :-
         ]
     ].
 
-compile_generator_mode(Pred/Arity, _Options, Code) :-
+compile_generator_mode(Pred/Arity, Options, Code) :-
     compute_generator_dependency_closure(Pred/Arity, GroupSpecs),
     csharp_config(Config),
+    option(enable_indexing(IndexingOpt), Options, true),
+    ( IndexingOpt == false -> Indexing = false ; Indexing = true ),
 
     gather_group_clauses(GroupSpecs, AllClauses),
     guard_stratified_negation(Pred/Arity, GroupSpecs, AllClauses),
@@ -1541,9 +1543,9 @@ compile_generator_mode(Pred/Arity, _Options, Code) :-
             Body \= true
         ),
         RuleClauses),
-    compile_generator_rules(GroupSpecs, RuleClauses, Config, RulesCode, RuleNames),
+    compile_generator_rules(GroupSpecs, RuleClauses, Config, Indexing, RulesCode, RuleNames),
 
-    compile_generator_execution(Pred, RuleNames, ExecutionCode),
+    compile_generator_execution(Pred, RuleNames, Indexing, ExecutionCode),
 
     csharp_generator_header(Pred, Header),
     format(string(Code), "~w\n~w\n~w\n~w\n    }\n}\n", [Header, FactsCode, RulesCode, ExecutionCode]).
@@ -1755,18 +1757,18 @@ generate_fact_creation(Pred, Args, Code) :-
     atomic_list_concat(ArgCodes, ", ", ArgsStr),
     format(string(Code), "facts.Add(new Fact(\"~w\", new Dictionary<string, object> { ~w }));", [Pred, ArgsStr]).
 
-compile_generator_rules(_GroupSpecs, Clauses, Config, Code, RuleNames) :-
+compile_generator_rules(_GroupSpecs, Clauses, Config, Indexing, Code, RuleNames) :-
     findall(RuleCode-RuleName,
         (   nth1(I, Clauses, Clause),
             Clause = Head-Body,
             Body \= true,
-            once(compile_rule(I, Head, Body, Config, RuleCode, RuleName))
+            once(compile_rule(I, Head, Body, Config, Indexing, RuleCode, RuleName))
         ),
         Pairs),
     pairs_keys_values(Pairs, RuleCodes, RuleNames),
     atomic_list_concat(RuleCodes, "\n\n", Code).
 
-compile_rule(Index, Head, Body, Config, Code, RuleName) :-
+compile_rule(Index, Head, Body, Config, Indexing, Code, RuleName) :-
         format(string(RuleName), "ApplyRule_~w", [Index]),
         Head =.. [_HeadPred|_HeadArgs],
         
@@ -1779,7 +1781,7 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
         ->  partition(is_builtin_goal, RelGoals, Builtins, Relations),
             (   Builtins = [],
                 Relations = []
-            ->  compile_aggregate_rule(Index, Head, Agg, Config, Code, RuleName)
+            ->  compile_aggregate_rule(Index, Head, Agg, Config, Indexing, Code, RuleName)
             ;   Relations = [FirstGoal|RestGoals]
             ->  FirstGoal =.. [Pred1|Args1],
                 % Generate pattern check for first goal
@@ -1792,7 +1794,7 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
                 format(string(RelCheck), "fact.Relation == \"~w\"", [Pred1]),
                 append([RelCheck], Checks, AllChecks),
                 atomic_list_concat(AllChecks, " && ", Pattern),
-                compile_joins_with_aggregate(RestGoals, Builtins, Agg, Head, FirstGoal, Config, JoinBody),
+                compile_joins_with_aggregate(RestGoals, Builtins, Agg, Head, FirstGoal, Config, Indexing, JoinBody),
                 format(string(Code),
 "        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex, Dictionary<string, Dictionary<object, List<Fact>>> relIndexArg0, Dictionary<string, Dictionary<object, List<Fact>>> relIndexArg1)
         {
@@ -1830,7 +1832,7 @@ compile_rule(Index, Head, Body, Config, Code, RuleName) :-
             atomic_list_concat(AllChecks, " && ", Pattern),
             
             % Generate joins
-            compile_joins(RestGoals, Builtins, Head, FirstGoal, Config, JoinBody),
+            compile_joins(RestGoals, Builtins, Head, FirstGoal, Config, Indexing, JoinBody),
             
             format(string(Code),
 "        public static IEnumerable<Fact> ~w(Fact fact, HashSet<Fact> total, Dictionary<string, List<Fact>> relIndex, Dictionary<string, Dictionary<object, List<Fact>>> relIndexArg0, Dictionary<string, Dictionary<object, List<Fact>>> relIndexArg1)
@@ -1850,7 +1852,7 @@ is_builtin_goal(Goal) :-
     Goal =.. [Functor|_],
     member(Functor, ['is', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '!=', 'not', '\\+']).
 
-compile_aggregate_rule(Index, Head, AggGoal, Config, Code, RuleName) :-
+compile_aggregate_rule(Index, Head, AggGoal, Config, _Indexing, Code, RuleName) :-
     decompose_aggregate_goal(AggGoal, Type, Op, Pred, Args, GroupVar, ValueVar, ResVar),
     format(string(RuleName), "ApplyRule_~w", [Index]),
     Head =.. [HeadPred|HeadArgs],
@@ -2156,7 +2158,7 @@ compile_aggregate_from_bindings(HeadPred, HeadArgs, AggGoal, VarMap, AccumPairs,
                 }", [ConstraintChecks, AggBlock])
     ).
 
-compile_joins([], Builtins, Head, FirstGoal, Config, Code) :-
+compile_joins([], Builtins, Head, FirstGoal, Config, _Indexing, Code) :-
     % No more relations, just constraints and output
     Head =.. [HeadPred|HeadArgs],
     
@@ -2194,17 +2196,17 @@ compile_joins([], Builtins, Head, FirstGoal, Config, Code) :-
                 }", [ConstraintChecks, HeadPred, OutputStr])
     ).
 
-compile_joins([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Code) :-
+compile_joins([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Indexing, Code) :-
     % Handle join with one or more additional goals
     % Start with FirstGoal in accumulator
-    compile_nway_join([Goal|RestGoals], Builtins, Head, [FirstGoal-"fact.Args"], Config, 2, Code).
+    compile_nway_join([Goal|RestGoals], Builtins, Head, [FirstGoal-"fact.Args"], Config, Indexing, 2, Code).
 
-compile_joins_with_aggregate(RestGoals, Builtins, AggGoal, Head, FirstGoal, Config, Code) :-
-    compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, [FirstGoal-"fact.Args"], Config, 2, Code).
+compile_joins_with_aggregate(RestGoals, Builtins, AggGoal, Head, FirstGoal, Config, Indexing, Code) :-
+    compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, [FirstGoal-"fact.Args"], Config, Indexing, 2, Code).
 
 %% compile_nway_join(+Goals, +Builtins, +Head, +AccumPairs, +Config, +Index, -Code)
 %  Recursively build N-way joins, threading Goal-Access pairs through
-compile_nway_join([], Builtins, Head, AccumPairs, Config, _, Code) :-
+compile_nway_join([], Builtins, Head, AccumPairs, Config, _Indexing, _, Code) :-
     % Base case: no more goals to join, use ALL accumulated pairs for VarMap
     Head =.. [HeadPred|HeadArgs],
     build_variable_map(AccumPairs, VarMap),
@@ -2235,7 +2237,7 @@ compile_nway_join([], Builtins, Head, AccumPairs, Config, _, Code) :-
                 }", [ConstraintChecks, HeadPred, OutputStr])
     ).
 
-compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, Code) :-
+compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Indexing, Index, Code) :-
     % Recursive case: join with current goal, then recurse with extended accumulator
     Goal =.. [Pred|Args],
     
@@ -2278,7 +2280,7 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
     
     % Recurse for remaining goals with extended accumulator
     NextIndex is Index + 1,
-    compile_nway_join(RestGoals, Builtins, Head, NewAccumPairs, Config, NextIndex, InnerCode),
+    compile_nway_join(RestGoals, Builtins, Head, NewAccumPairs, Config, Indexing, NextIndex, InnerCode),
     
     % Generate nested foreach
     format(string(Code),
@@ -2290,13 +2292,13 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Index, C
                     }
                 }', [VarName, SourceExpr, JoinCond, RelCheck, InnerCode]).
 
-compile_nway_join_with_aggregate([], Builtins, AggGoal, Head, AccumPairs, Config, _, Code) :-
+compile_nway_join_with_aggregate([], Builtins, AggGoal, Head, AccumPairs, Config, _Indexing, _, Code) :-
     Head =.. [HeadPred|HeadArgs],
     build_variable_map(AccumPairs, VarMap),
     translate_builtins(Builtins, VarMap, Config, ConstraintChecks),
     compile_aggregate_from_bindings(HeadPred, HeadArgs, AggGoal, VarMap, AccumPairs, Config, ConstraintChecks, Code).
 
-compile_nway_join_with_aggregate([Goal|RestGoals], Builtins, AggGoal, Head, AccumPairs, Config, Index, Code) :-
+compile_nway_join_with_aggregate([Goal|RestGoals], Builtins, AggGoal, Head, AccumPairs, Config, Indexing, Index, Code) :-
     Goal =.. [Pred|Args],
     format(atom(VarName), 'join~w', [Index]),
     format(string(VarAccess), '~w.Args', [VarName]),
@@ -2324,7 +2326,7 @@ compile_nway_join_with_aggregate([Goal|RestGoals], Builtins, AggGoal, Head, Accu
     format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
     join_source_expr(Pred, Args, AccumPairs, Index, SourceExpr),
     NextIndex is Index + 1,
-    compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, NewAccumPairs, Config, NextIndex, InnerCode),
+    compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, NewAccumPairs, Config, Indexing, NextIndex, InnerCode),
     format(string(Code),
 '                foreach (var ~w in ~w)
                 {
@@ -2352,12 +2354,14 @@ arg_key_expr(Args, AccumPairs, Pos, KeyExpr) :-
     ->  format(string(KeyExpr), "~w[\"arg~w\"]", [Src, SrcIdx])
     ).
 
-join_source_expr(Pred, Args, AccumPairs, Index, SourceExpr) :-
-    (   arg_key_expr(Args, AccumPairs, 0, KeyExpr)
+join_source_expr(Pred, Args, AccumPairs, Index, Indexing, SourceExpr) :-
+    (   Indexing == true,
+        arg_key_expr(Args, AccumPairs, 0, KeyExpr)
     ->  format(string(SourceExpr),
                '(relIndexArg0.TryGetValue("~w", out var map~w) && map~w.TryGetValue(~w, out var list~w) ? (IEnumerable<Fact>)list~w : Enumerable.Empty<Fact>())',
                [Pred, Index, Index, KeyExpr, Index])
-    ;   arg_key_expr(Args, AccumPairs, 1, KeyExpr1)
+    ;   Indexing == true,
+        arg_key_expr(Args, AccumPairs, 1, KeyExpr1)
     ->  format(string(SourceExpr),
                '(relIndexArg1.TryGetValue("~w", out var map~w) && map~w.TryGetValue(~w, out var list~w) ? (IEnumerable<Fact>)list~w : Enumerable.Empty<Fact>())',
                [Pred, Index, Index, KeyExpr1, Index])
@@ -2402,22 +2406,15 @@ translate_negation_check(Goal, VarMap, Config, Check) :-
     atomic_list_concat(Assigns, ", ", DictContent),
     format(string(Check), '!total.Contains(new Fact("~w", new Dictionary<string, object> { ~w }))', [Pred, DictContent]).
 
-compile_generator_execution(_Pred, RuleNames, Code) :-
+compile_generator_execution(_Pred, RuleNames, Indexing, Code) :-
     findall(Call,
         (   member(Name, RuleNames),
             format(string(Call), "            newFacts.UnionWith(~w(fact, total, relIndex, relIndexArg0, relIndexArg1));", [Name])
         ),
         Calls),
     atomic_list_concat(Calls, "\n", CallsStr),
-    format(string(Code),
-"        public static HashSet<Fact> Solve()
-        {
-            var total = GetInitialFacts();
-            bool changed = true;
-            while (changed)
-            {
-                changed = false;
-                var newFacts = new HashSet<Fact>();
+    (   Indexing == true
+    ->  IndexSetup = "
                 var relIndex = total
                     .GroupBy(f => f.Relation)
                     .ToDictionary(g => g.Key, g => g.ToList());
@@ -2436,7 +2433,21 @@ compile_generator_execution(_Pred, RuleNames, Code) :-
                         g => g.Key,
                         g => g.GroupBy(f => f.Args[\"arg1\"])
                               .ToDictionary(h => h.Key, h => h.ToList())
-                    );
+                    );"
+    ;   IndexSetup = "
+                var relIndex = new Dictionary<string, List<Fact>>();
+                var relIndexArg0 = new Dictionary<string, Dictionary<object, List<Fact>>>();
+                var relIndexArg1 = new Dictionary<string, Dictionary<object, List<Fact>>>();"
+    ),
+    format(string(Code),
+"        public static HashSet<Fact> Solve()
+        {
+            var total = GetInitialFacts();
+            bool changed = true;
+            while (changed)
+            {
+                changed = false;
+                var newFacts = new HashSet<Fact>();~w
                 foreach (var fact in total)
                 {
 ~w
@@ -2450,4 +2461,4 @@ compile_generator_execution(_Pred, RuleNames, Code) :-
                 }
             }
             return total;
-        }", [CallsStr]).
+        }", [IndexSetup, CallsStr]).
