@@ -27,6 +27,7 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Standalone Executables** - Compiles Prolog predicates to single-binary Go programs
 - **Cross-Platform** - Runs on any platform with Go support, no runtime dependencies
 - **Stream Processing** - Efficient stdin/stdout pipeline integration for record processing
+- **AWK Ingestion** - High-performance null-delimited streaming with buffered scanning
 - **JSON I/O** - Native JSONL parsing and JSON generation with automatic type conversion
 - **Nested JSON** - Access deeply nested structures with path-based extraction (`json_get`)
 - **JSON Schemas** - Type-safe field extraction with runtime validation (`json_schema`)
@@ -36,25 +37,28 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 - **Constraints & Aggregations** - Numeric comparisons (>, <, >=, =<) and sum/count/avg/min/max
 - **Smart Compilation** - Selective field assignment and automatic package imports
 
-**See [Go Target Guide](docs/GO_TARGET.md) and [JSON Features](GO_JSON_FEATURES.md) for details.**
+**See [Go Target Guide](docs/GO_TARGET.md), [JSON Features](GO_JSON_FEATURES.md), and [AWK Ingestion](docs/AWK_INGESTION.md) for details.**
 
 ### C# Target Family (v0.1)
 - **Query Runtime (`target(csharp_query)`)** - Generates relational plans executed by a shared .NET engine with semi-naive fixpoint evaluation.
 - **External Compilation** - Robust `dotnet build` integration with dependency support and file locking prevention.
+- **AWK Ingestion** - High-performance null-delimited streaming for large-scale data ingestion.
 - **LiteDB Integration** - Built-in support for NoSQL document storage.
 - **Mutual recursion support** - Even/odd style dependencies now run entirely inside the C# runtime.
 - **Arithmetic & constraints** - LINQ-based pipelines honour `is/2`, comparisons, and deduplication.
 - **Streaming codegen (`target(csharp_codegen)`)** - Emit standalone C# projects that mirror Bash streaming templates.
 
-**See [C# Compilation Guide](docs/DOTNET_COMPILATION.md) for details.**                           
+**See [C# Compilation Guide](docs/DOTNET_COMPILATION.md) and [AWK Ingestion](docs/AWK_INGESTION.md) for details.**                           
 
                                                  
 
-### Python Target (v0.2)                         
+### Python Target (v0.2)
 
 - **Procedural & Generator Modes** - streaming pipelines or Datalog-style fixpoint evaluation.
 
 - **Native XML Integration** - In-process `lxml` reading and flattening for high-performance ETL.
+
+- **AWK Ingestion** - High-performance null-delimited streaming from stdin (10x faster for large datasets).
 
 - **Advanced Recursion** - Tail loop optimization and memoization.
 
@@ -64,7 +68,7 @@ A Prolog-to-Bash compiler that transforms declarative logic programs into effici
 
 
 
-**See [Python Target Guide](docs/PYTHON_TARGET.md) and [Semantic Runtime](docs/PYTHON_RUNTIME.md) for details.**
+**See [Python Target Guide](docs/PYTHON_TARGET.md), [Semantic Runtime](docs/PYTHON_RUNTIME.md), and [AWK Ingestion](docs/AWK_INGESTION.md) for details.**
 
 
 
