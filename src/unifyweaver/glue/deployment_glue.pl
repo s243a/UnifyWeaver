@@ -10,6 +10,21 @@
  * - Change detection and automatic redeployment
  * - Security validation (encryption requirements)
  * - Generated deployment scripts
+ *
+ * EXPERIMENTAL FEATURES (Phase 7a):
+ * The following features are experimental and have only been tested for
+ * code generation correctness, NOT actual deployment functionality:
+ * - Docker configuration and Dockerfile generation
+ * - Docker Compose generation
+ * - Kubernetes manifest generation (Deployment, Service, Ingress, ConfigMap)
+ * - Container registry authentication
+ * - Helm chart generation
+ *
+ * These predicates generate shell commands and YAML/Dockerfile content but
+ * do NOT execute them. Integration testing with actual Docker/Kubernetes
+ * environments is required before production use.
+ *
+ * See TEST_COVERAGE.md for detailed test coverage information.
  */
 
 :- module(deployment_glue, [
@@ -2507,11 +2522,26 @@ filter_alert_history(Options, AlertName, Timestamp) :-
     ).
 
 %% ============================================
-%% Phase 7a: Container Deployment
+%% Phase 7a: Container Deployment [EXPERIMENTAL]
+%% ============================================
+%%
+%% WARNING: All Phase 7a predicates are EXPERIMENTAL.
+%%
+%% Current test coverage:
+%% - Unit tests verify code generation (string/structure output)
+%% - NO integration tests with actual Docker/Kubernetes
+%% - Generated commands are NOT executed, only returned
+%%
+%% Before production use, verify:
+%% - Generated Dockerfiles build successfully
+%% - Generated K8s manifests pass: kubectl apply --dry-run=client
+%% - Registry authentication works in your environment
+%% - Commands execute correctly on your target systems
+%%
 %% ============================================
 
 %% --------------------------------------------
-%% Docker Configuration
+%% Docker Configuration [EXPERIMENTAL]
 %% --------------------------------------------
 
 %% declare_docker_config(+Service, +Config)
