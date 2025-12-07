@@ -22,22 +22,22 @@ One codebase → Bash streams, C# queries, Go binaries, SQL views, and more.
 ### 📚 Educational Materials (13-Book Series)
 
 #### Core Sequence
-- **[Book 1: Foundations](education/book-01-foundations/README)** - Architecture, Prolog basics, preference system
-- **[Book 2: Bash Target](education/book-02-bash-target/README)** - Stream compilation, templates, data sources
-- **[Book 3: C# Target](education/book-03-csharp-target/README)** - .NET compilation, LINQ, fixed-point approaches
-- **[Book 4: Workflows](education/book-04-workflows/README)** - AI agent playbooks, strategic planning
+- **[Book 1: Foundations](education/book-01-foundations/)** - Architecture, Prolog basics, preference system
+- **[Book 2: Bash Target](education/book-02-bash-target/)** - Stream compilation, templates, data sources
+- **[Book 3: C# Target](education/book-03-csharp-target/)** - .NET compilation, LINQ, fixed-point approaches
+- **[Book 4: Workflows](education/book-04-workflows/)** - AI agent playbooks, strategic planning
 
 #### Portable Targets
-- **[Book 5: Python Target](education/book-05-python-target/README)** - Generator-based streaming
-- **[Book 6: Go Target](education/book-06-go-target/README)** - Native binaries, cross-platform
+- **[Book 5: Python Target](education/book-05-python-target/)** - Generator-based streaming
+- **[Book 6: Go Target](education/book-06-go-target/)** - Native binaries, cross-platform
 
 #### Integration & Advanced
-- **[Book 7: Cross-Target Glue](education/book-07-cross-target-glue/README)** - Multi-language pipelines
-- **[Book 9: Rust Target](education/book-09-rust-target/README)** - Memory-safe compilation
-- **[Book 10: SQL Target](education/book-10-sql-target/README)** - Database query generation
-- **[Book 13: Semantic Search](education/book-13-semantic-search/README)** - Graph RAG, embeddings
+- **[Book 7: Cross-Target Glue](education/book-07-cross-target-glue/)** - Multi-language pipelines
+- **[Book 9: Rust Target](education/book-09-rust-target/)** - Memory-safe compilation
+- **[Book 10: SQL Target](education/book-10-sql-target/)** - Database query generation
+- **[Book 13: Semantic Search](education/book-13-semantic-search/)** - Graph RAG, embeddings
 
-**[View All Books →](education/README)**
+**[View All Books →](education/)**
 
 ---
 
@@ -109,8 +109,8 @@ done
    ```
 
 2. **Learn the Basics**
-   - Start with [Book 1: Foundations](education/book-01-foundations/README)
-   - Try the [Quick Start Guide](project/docs/README.md)
+   - Start with [Book 1: Foundations](education/book-01-foundations/)
+   - Try the [Quick Start Guide](project/docs/EXTENDED_README)
 
 3. **Explore Examples**
    - See [examples/](https://github.com/s243a/UnifyWeaver/tree/main/examples) in the repository
@@ -139,10 +139,10 @@ done
 - **[Testing Guide](project/docs/TESTING_GUIDE.md)** - How to run tests
 
 ### For Learners
-- **[Book 1: Foundations](education/book-01-foundations/README)** - Start here
-- **[Book 2: Bash Target](education/book-02-bash-target/README)** - Stream compilation
-- **[Book 3: C# Target](education/book-03-csharp-target/README)** - Fixed-point approaches
-- **[All 13 Books](education/README)** - Complete educational series
+- **[Book 1: Foundations](education/book-01-foundations/)** - Start here
+- **[Book 2: Bash Target](education/book-02-bash-target/)** - Stream compilation
+- **[Book 3: C# Target](education/book-03-csharp-target/)** - Fixed-point approaches
+- **[All 13 Books](education/)** - Complete educational series
 
 ### For Developers
 - **[Architecture](project/docs/ARCHITECTURE.md)** - System design
