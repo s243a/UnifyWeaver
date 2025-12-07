@@ -222,12 +222,15 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
 compile_generator_mode_go(Pred, Arity, Options, GoCode) :-
     go_generator_config(Config),
     
-    % Gather all clauses for this predicate
+    % Gather all clauses for this predicate (use copy_term to normalize)
     functor(Head, Pred, Arity),
-    findall(Head-B, user:clause(Head, B), TargetClauses),
+    findall(HC-BC, 
+        (user:clause(Head, B), copy_term((Head, B), (HC, BC))), 
+        TargetClauses0),
+    remove_variant_duplicates(TargetClauses0, TargetClauses),
     
     % Also gather clauses for predicates referenced in rule bodies (dependency closure)
-    findall(DepHead-DepBody,
+    findall(DepPred/DepArity,
         (   member(_-Body, TargetClauses),
             Body \= true,
             body_to_list_go(Body, Goals),
@@ -235,23 +238,30 @@ compile_generator_mode_go(Pred, Arity, Options, GoCode) :-
             \+ is_builtin_goal_go(Goal),
             Goal =.. [DepPred|DepArgs],
             length(DepArgs, DepArity),
-            functor(DepHead, DepPred, DepArity),
-            user:clause(DepHead, DepBody)
+            DepPred/DepArity \= Pred/Arity  % Don't include self-references
         ),
-        DepClauses),
-    append(TargetClauses, DepClauses, AllClauses),
-    sort(AllClauses, UniqueClauses),  % Remove duplicates
+        DepPredList0),
+    sort(DepPredList0, DepPredList),
     
-    % Separate facts from rules
-    partition(is_fact_clause, UniqueClauses, FactClauses, RuleClauses),
+    % Gather facts from dependencies
+    findall(DepHead,
+        (   member(DP/DA, DepPredList),
+            functor(DepHead, DP, DA),
+            user:clause(DepHead, true)
+        ),
+        DepFacts),
+    
+    % Combine target clauses with dependency facts
+    findall(FactHead, member(FactHead-true, TargetClauses), TargetFacts),
+    append(TargetFacts, DepFacts, AllFacts0),
+    remove_variant_duplicates_single(AllFacts0, AllFacts),
     
     % Compile facts
-    findall(FactHead, member(FactHead-true, FactClauses), FactHeads),
-    compile_go_generator_facts(FactHeads, Config, FactsCode),
+    compile_go_generator_facts(AllFacts, Config, FactsCode),
     
-    % Compile rules (only for target predicate)
+    % Compile rules (only for target predicate, exclude facts)
     findall(RuleClause, 
-        (member(RuleClause, RuleClauses), RuleClause = (RH-_), functor(RH, Pred, Arity)),
+        (member(RuleClause, TargetClauses), RuleClause = (_-RB), RB \= true),
         TargetRuleClauses),
     compile_go_generator_rules(TargetRuleClauses, Config, RulesCode, RuleNames),
     
@@ -262,6 +272,31 @@ compile_generator_mode_go(Pred, Arity, Options, GoCode) :-
     go_generator_header(Pred, Header),
     format(string(GoCode), "~w\n~w\n~w\n~w\n", [Header, FactsCode, RulesCode, ExecutionCode]).
 
+%% remove_variant_duplicates(+List, -Unique)
+%  Remove duplicates where terms are variants (same structure, different vars)
+remove_variant_duplicates([], []).
+remove_variant_duplicates([H|T], Result) :-
+    (   member_variant(H, T)
+    ->  remove_variant_duplicates(T, Result)
+    ;   Result = [H|Rest],
+        remove_variant_duplicates(T, Rest)
+    ).
+
+member_variant(X, [H|_]) :- X =@= H, !.
+member_variant(X, [_|T]) :- member_variant(X, T).
+
+%% remove_variant_duplicates_single(+List, -Unique)
+%  For single terms (not pairs)
+remove_variant_duplicates_single([], []).
+remove_variant_duplicates_single([H|T], Result) :-
+    (   member_variant_single(H, T)
+    ->  remove_variant_duplicates_single(T, Result)
+    ;   Result = [H|Rest],
+        remove_variant_duplicates_single(T, Rest)
+    ).
+
+member_variant_single(X, [H|_]) :- X =@= H, !.
+member_variant_single(X, [_|T]) :- member_variant_single(X, T).
 %% go_generator_header(+Pred, -Header)
 %  Generate Go boilerplate with Fact type
 go_generator_header(Pred, Header) :-
@@ -333,7 +368,7 @@ compile_go_generator_rules(RuleClauses, Config, RulesCode, RuleNames) :-
     findall(RuleCode-RuleName,
         (   nth1(I, RuleClauses, Head-Body),
             Body \= true,
-            compile_go_generator_rule(I, Head, Body, Config, RuleCode, RuleName)
+            once(compile_go_generator_rule(I, Head, Body, Config, RuleCode, RuleName))
         ),
         Pairs),
     pairs_keys_values(Pairs, RuleCodes, RuleNames),
@@ -343,13 +378,10 @@ compile_go_generator_rules(RuleClauses, Config, RulesCode, RuleNames) :-
 %  Compile a single rule to a Go function
 compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
     format(string(RuleName), "ApplyRule_~w", [Index]),
-    
-    % Copy term to ensure fresh variables
-    copy_term((Head, Body), (HeadCopy, BodyCopy)),
-    HeadCopy =.. [HeadPred|HeadArgs],
+    Head =.. [HeadPred|HeadArgs],
     
     % Parse body into goals
-    body_to_list_go(BodyCopy, Goals),
+    body_to_list_go(Body, Goals),
     partition(is_builtin_goal_go, Goals, Builtins, RelGoals),
     
     (   RelGoals = []
@@ -358,7 +390,8 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
 "func ~w(fact Fact, total map[string]Fact) []Fact {
     // Rule ~w: constraint-only (no relational goals)
     return nil
-}", [RuleName, Index])
+}", [RuleName, Index]),
+        !
     ;   RelGoals = [FirstGoal|RestGoals],
         FirstGoal =.. [Pred1|_],
         
@@ -425,7 +458,8 @@ compile_go_join_with_result([], VarMap, Config, Builtins, HeadPred, HeadArgs, Co
 
 compile_go_join_with_result([Goal|Rest], VarMap, Config, Builtins, HeadPred, HeadArgs, Code) :-
     Goal =.. [Pred|Args],
-    format(string(VarName), "j~w", [length([Goal|Rest])]),
+    length([Goal|Rest], Len),
+    format(string(VarName), "j~w", [Len]),
     
     % Build join condition from shared variables
     compile_go_join_condition(Args, VarMap, Config, VarName, JoinCond),
@@ -541,7 +575,7 @@ compile_go_single_builtin(_, _, _, "").
 translate_go_expr(Var, VarMap, _, Expr) :-
     var(Var),
     !,
-    (   member(Var-source(Source, Idx), VarMap)
+    (   member(V-source(Source, Idx), VarMap), Var == V
     ->  format(string(Expr), "~w.Args[\"arg~w\"]", [Source, Idx])
     ;   Expr = "nil"
     ).
