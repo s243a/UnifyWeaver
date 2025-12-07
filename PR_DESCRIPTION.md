@@ -1,44 +1,40 @@
-# Add Aggregation Support to Go Generator Mode
+# Add JSON Input Support to Go Generator Mode
 
 ## Summary
 
-Extends the Go generator mode with aggregation support, implementing `aggregate_all/3` (ungrouped) and `aggregate_all/4` (grouped) for fixpoint evaluation. Also adds backward-compatible aliasing from `aggregate/3`.
-
-## What's included
-
-### New Features
-- **Ungrouped aggregation** (`aggregate_all/3`): count, sum, min, max, avg
-- **Grouped aggregation** (`aggregate_all/4`): aggregate by key column
-- **Syntax aliasing**: `aggregate/3` normalized to `aggregate_all/3`
-- **Dependency closure**: Extracts inner goal predicates from aggregates
-
-### Files Changed
-- `src/unifyweaver/targets/go_target.pl` - Aggregation rule compilation
-- `tests/core/test_go_generator_aggregates.pl` - Test suite (3 tests)
-
-## Verification
-
-Grouped sum aggregation produces correct results:
-
-```bash
-$ go run dept_total_gen.go
-{"relation":"dept_total","args":{"arg0":"eng","arg1":2500}}
-{"relation":"dept_total","args":{"arg0":"sales","arg1":2500}}
-```
-
-All tests pass.
+Enables loading initial facts from stdin via JSONL format, making generator mode practical for real data pipelines.
 
 ## Usage
 
 ```prolog
-% Ungrouped count
-item_count(N) :- aggregate_all(count, item(_, _), N).
-
-% Grouped sum
-dept_total(Dept, Total) :- aggregate_all(sum(S), salary(Dept, S), Dept, Total).
+compile_predicate_to_go(ancestor/2, [mode(generator), json_input(true)], Code)
 ```
 
-## TODO (Future PRs)
+```bash
+echo '{"relation":"parent","args":{"arg0":"john","arg1":"mary"}}
+{"relation":"parent","args":{"arg0":"mary","arg1":"sue"}}' | go run ancestor.go
+```
 
-- [ ] Indexing (arg0/arg1 buckets for faster joins)
-- [ ] I/O integration (json_input for initial facts)
+## Changes
+
+- `go_generator_header` now accepts Options, adds `bufio`/`os` imports conditionally
+- `compile_go_generator_execution` inserts stdin JSONL parsing when enabled
+- Facts from stdin merged with `GetInitialFacts()` before fixpoint iteration
+
+## Generated Code
+
+```go
+// Load additional facts from stdin (JSONL format)
+scanner := bufio.NewScanner(os.Stdin)
+for scanner.Scan() {
+    var fact Fact
+    if err := json.Unmarshal(scanner.Bytes(), &fact); err == nil {
+        total[fact.Key()] = fact
+    }
+}
+```
+
+## Verification
+
+- All 6 tests pass
+- Piping 3 parent facts produces all 6 expected ancestor facts
