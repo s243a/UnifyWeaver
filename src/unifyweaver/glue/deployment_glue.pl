@@ -28,9 +28,18 @@
  * - Service secret bindings and environment injection
  * - Kubernetes Secret and ExternalSecret manifests
  *
+ * EXPERIMENTAL FEATURES (Phase 7c - Multi-Region & Cloud Functions):
+ * - Multi-region deployment configuration
+ * - Geographic failover configuration
+ * - Health-based region selection
+ * - AWS Lambda function deployment
+ * - Google Cloud Functions deployment
+ * - Azure Functions deployment
+ * - API Gateway integration (AWS, GCP, Azure)
+ *
  * These predicates generate shell commands and YAML/config content but
- * do NOT execute them. Integration testing with actual secret management
- * services is required before production use.
+ * do NOT execute them. Integration testing with actual cloud services
+ * is required before production use.
  *
  * See TEST_COVERAGE.md for detailed test coverage information.
  */
@@ -243,7 +252,61 @@
 
     % Unified secret access
     resolve_secret/4,               % resolve_secret(+Source, +Path, +Options, -Result)
-    list_secrets/3                  % list_secrets(+Source, +Options, -Secrets)
+    list_secrets/3,                 % list_secrets(+Source, +Options, -Secrets)
+
+    % Phase 7c: Multi-Region Deployment [EXPERIMENTAL]
+    % Region configuration
+    declare_region/2,               % declare_region(+Name, +Config)
+    region_config/2,                % region_config(?Name, ?Config)
+    declare_service_regions/2,      % declare_service_regions(+Service, +RegionConfig)
+    service_regions/2,              % service_regions(?Service, ?RegionConfig)
+
+    % Geographic failover
+    declare_failover_policy/2,      % declare_failover_policy(+Service, +Policy)
+    failover_policy/2,              % failover_policy(?Service, ?Policy)
+    select_region/3,                % select_region(+Service, +Options, -Region)
+    failover_to_region/3,           % failover_to_region(+Service, +Region, -Result)
+
+    % Multi-region deployment
+    deploy_to_region/4,             % deploy_to_region(+Service, +Region, +Options, -Result)
+    deploy_to_all_regions/3,        % deploy_to_all_regions(+Service, +Options, -Results)
+    region_status/3,                % region_status(+Service, +Region, -Status)
+    generate_region_config/3,       % generate_region_config(+Service, +Options, -Config)
+
+    % Traffic management
+    declare_traffic_policy/2,       % declare_traffic_policy(+Service, +Policy)
+    traffic_policy/2,               % traffic_policy(?Service, ?Policy)
+    generate_route53_config/3,      % generate_route53_config(+Service, +Options, -Config)
+    generate_cloudflare_config/3,   % generate_cloudflare_config(+Service, +Options, -Config)
+
+    % Phase 7c: Cloud Functions [EXPERIMENTAL]
+    % AWS Lambda
+    declare_lambda_config/2,        % declare_lambda_config(+Function, +Config)
+    lambda_config/2,                % lambda_config(?Function, ?Config)
+    generate_lambda_function/3,     % generate_lambda_function(+Function, +Options, -Package)
+    generate_lambda_deploy/3,       % generate_lambda_deploy(+Function, +Options, -Commands)
+    generate_sam_template/3,        % generate_sam_template(+Function, +Options, -Template)
+
+    % Google Cloud Functions
+    declare_gcf_config/2,           % declare_gcf_config(+Function, +Config)
+    gcf_config/2,                   % gcf_config(?Function, ?Config)
+    generate_gcf_deploy/3,          % generate_gcf_deploy(+Function, +Options, -Commands)
+
+    % Azure Functions
+    declare_azure_func_config/2,    % declare_azure_func_config(+Function, +Config)
+    azure_func_config/2,            % azure_func_config(?Function, ?Config)
+    generate_azure_func_deploy/3,   % generate_azure_func_deploy(+Function, +Options, -Commands)
+
+    % API Gateway integration
+    declare_api_gateway/2,          % declare_api_gateway(+Name, +Config)
+    api_gateway_config/2,           % api_gateway_config(?Name, ?Config)
+    generate_api_gateway_config/3,  % generate_api_gateway_config(+Name, +Options, -Config)
+    generate_openapi_spec/3,        % generate_openapi_spec(+Gateway, +Options, -Spec)
+
+    % Unified serverless deployment
+    deploy_function/3,              % deploy_function(+Function, +Options, -Result)
+    invoke_function/4,              % invoke_function(+Function, +Payload, +Options, -Result)
+    function_logs/3                 % function_logs(+Function, +Options, -Logs)
 ]).
 
 :- use_module(library(lists)).
@@ -298,6 +361,19 @@
 :- dynamic gcp_secrets_config_db/2.     % gcp_secrets_config_db(Name, Config)
 :- dynamic service_secrets_db/2.        % service_secrets_db(Service, Secrets)
 :- dynamic secret_rotation_db/3.        % secret_rotation_db(Service, Secret, Config)
+
+% Phase 7c dynamic storage - Multi-Region
+:- dynamic region_config_db/2.          % region_config_db(Name, Config)
+:- dynamic service_regions_db/2.        % service_regions_db(Service, RegionConfig)
+:- dynamic failover_policy_db/2.        % failover_policy_db(Service, Policy)
+:- dynamic region_status_db/4.          % region_status_db(Service, Region, Status, Timestamp)
+:- dynamic traffic_policy_db/2.         % traffic_policy_db(Service, Policy)
+
+% Phase 7c dynamic storage - Cloud Functions
+:- dynamic lambda_config_db/2.          % lambda_config_db(Function, Config)
+:- dynamic gcf_config_db/2.             % gcf_config_db(Function, Config)
+:- dynamic azure_func_config_db/2.      % azure_func_config_db(Function, Config)
+:- dynamic api_gateway_config_db/2.     % api_gateway_config_db(Name, Config)
 
 %% ============================================
 %% Service Declarations
@@ -4439,4 +4515,698 @@ list_secrets(Source, Options, Secrets) :-
         format(atom(Cmd), 'gcloud secrets list --project=~w --format=json', [Project]),
         Secrets = gcp_list(Cmd)
     ;   Secrets = error(unknown_source(Source))
+    ).
+
+%% ============================================
+%% Phase 7c: Multi-Region Deployment [EXPERIMENTAL]
+%% ============================================
+
+%% --------------------------------------------
+%% Region Configuration
+%% --------------------------------------------
+
+%% declare_region(+Name, +Config)
+%  Declare a region configuration.
+%  Options:
+%    - provider(Provider)      : Cloud provider (aws, gcp, azure)
+%    - region_id(Id)          : Provider-specific region ID (e.g., 'us-east-1')
+%    - endpoint(URL)          : Custom endpoint URL
+%    - availability_zones(List) : Available AZs in this region
+%    - latency_zone(Zone)     : Latency zone for geo-routing (e.g., 'NA', 'EU', 'APAC')
+%
+declare_region(Name, Config) :-
+    retractall(region_config_db(Name, _)),
+    assertz(region_config_db(Name, Config)).
+
+%% region_config(?Name, ?Config)
+%  Query region configuration.
+%
+region_config(Name, Config) :-
+    region_config_db(Name, Config).
+
+%% declare_service_regions(+Service, +RegionConfig)
+%  Declare regions for a service.
+%  Options:
+%    - primary(Region)         : Primary region
+%    - secondary(Regions)      : Secondary/failover regions
+%    - active_active(bool)     : Whether all regions are active
+%    - replication(Config)     : Data replication configuration
+%
+declare_service_regions(Service, RegionConfig) :-
+    retractall(service_regions_db(Service, _)),
+    assertz(service_regions_db(Service, RegionConfig)).
+
+%% service_regions(?Service, ?RegionConfig)
+%  Query service region configuration.
+%
+service_regions(Service, RegionConfig) :-
+    service_regions_db(Service, RegionConfig).
+
+%% --------------------------------------------
+%% Geographic Failover
+%% --------------------------------------------
+
+%% declare_failover_policy(+Service, +Policy)
+%  Declare failover policy for a service.
+%  Options:
+%    - strategy(Strategy)      : 'priority' | 'latency' | 'weighted' | 'geolocation'
+%    - health_check(Config)    : Health check configuration
+%    - failover_threshold(N)   : Number of failures before failover
+%    - recovery_threshold(N)   : Number of successes before recovery
+%    - dns_ttl(Seconds)        : DNS TTL for failover records
+%
+declare_failover_policy(Service, Policy) :-
+    retractall(failover_policy_db(Service, _)),
+    assertz(failover_policy_db(Service, Policy)).
+
+%% failover_policy(?Service, ?Policy)
+%  Query failover policy.
+%
+failover_policy(Service, Policy) :-
+    failover_policy_db(Service, Policy).
+
+%% select_region(+Service, +Options, -Region)
+%  Select the best region for a service based on policy.
+%  Options:
+%    - source_location(Loc)    : Source location for latency-based selection
+%    - prefer_healthy(bool)    : Only select healthy regions
+%
+select_region(Service, Options, Region) :-
+    service_regions(Service, RegionConfig),
+    failover_policy(Service, Policy),
+    option_or_default(strategy, Policy, priority, Strategy),
+    select_region_by_strategy(Service, RegionConfig, Strategy, Options, Region).
+
+%% select_region_by_strategy(+Service, +RegionConfig, +Strategy, +Options, -Region)
+%  Select region based on strategy.
+%
+select_region_by_strategy(_Service, RegionConfig, priority, Options, Region) :-
+    option_or_default(primary, RegionConfig, none, Primary),
+    option_or_default(secondary, RegionConfig, [], Secondary),
+    option_or_default(prefer_healthy, Options, true, PreferHealthy),
+    (   PreferHealthy == true
+    ->  % Try primary first if healthy
+        (   region_is_healthy(Primary)
+        ->  Region = Primary
+        ;   % Try secondary regions in order
+            member(Region, Secondary),
+            region_is_healthy(Region)
+        )
+    ;   Region = Primary
+    ).
+
+select_region_by_strategy(_Service, RegionConfig, latency, Options, Region) :-
+    option_or_default(primary, RegionConfig, none, Primary),
+    option_or_default(secondary, RegionConfig, [], Secondary),
+    option_or_default(source_location, Options, unknown, SourceLoc),
+    AllRegions = [Primary|Secondary],
+    (   SourceLoc \= unknown
+    ->  % Select by latency zone
+        select_by_latency_zone(AllRegions, SourceLoc, Region)
+    ;   Region = Primary
+    ).
+
+select_region_by_strategy(_Service, RegionConfig, weighted, _Options, Region) :-
+    option_or_default(primary, RegionConfig, none, Primary),
+    % For weighted, just return primary (would need weights in real impl)
+    Region = Primary.
+
+select_region_by_strategy(_Service, RegionConfig, geolocation, Options, Region) :-
+    option_or_default(source_location, Options, unknown, SourceLoc),
+    option_or_default(geo_mappings, RegionConfig, [], Mappings),
+    (   member(SourceLoc-MappedRegion, Mappings)
+    ->  Region = MappedRegion
+    ;   option_or_default(primary, RegionConfig, none, Region)
+    ).
+
+%% region_is_healthy(+Region)
+%  Check if a region is healthy (based on stored status).
+%
+region_is_healthy(Region) :-
+    (   region_status_db(_, Region, healthy, _)
+    ->  true
+    ;   % Default to healthy if no status recorded
+        true
+    ).
+
+%% select_by_latency_zone(+Regions, +SourceLoc, -Region)
+%  Select region by latency zone matching.
+%
+select_by_latency_zone(Regions, SourceLoc, Region) :-
+    member(Region, Regions),
+    region_config(Region, Config),
+    option_or_default(latency_zone, Config, unknown, Zone),
+    Zone = SourceLoc,
+    !.
+select_by_latency_zone([Region|_], _, Region).
+
+%% failover_to_region(+Service, +Region, -Result)
+%  Initiate failover to a specific region.
+%  Generates the commands needed for failover.
+%
+failover_to_region(Service, Region, Result) :-
+    service_regions(Service, RegionConfig),
+    option_or_default(primary, RegionConfig, none, CurrentPrimary),
+    (   CurrentPrimary == Region
+    ->  Result = already_primary(Region)
+    ;   % Generate failover commands
+        generate_failover_commands(Service, CurrentPrimary, Region, Commands),
+        Result = failover_commands(Commands)
+    ).
+
+%% generate_failover_commands(+Service, +FromRegion, +ToRegion, -Commands)
+%  Generate commands for failover.
+%
+generate_failover_commands(Service, FromRegion, ToRegion, Commands) :-
+    traffic_policy(Service, Policy),
+    option_or_default(dns_provider, Policy, route53, DnsProvider),
+    (   DnsProvider == route53
+    ->  format(atom(Cmd1), '# Failover ~w from ~w to ~w', [Service, FromRegion, ToRegion]),
+        format(atom(Cmd2), 'aws route53 change-resource-record-sets --hosted-zone-id $ZONE_ID --change-batch file://failover-~w.json', [Service]),
+        Commands = [Cmd1, Cmd2]
+    ;   DnsProvider == cloudflare
+    ->  format(atom(Cmd1), '# Failover ~w from ~w to ~w', [Service, FromRegion, ToRegion]),
+        format(atom(Cmd2), 'curl -X PATCH "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/$RECORD_ID" -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" --data \'{"content":"~w"}\'', [ToRegion]),
+        Commands = [Cmd1, Cmd2]
+    ;   Commands = ['# Unknown DNS provider']
+    ).
+
+%% --------------------------------------------
+%% Multi-Region Deployment
+%% --------------------------------------------
+
+%% deploy_to_region(+Service, +Region, +Options, -Result)
+%  Generate deployment commands for a specific region.
+%
+deploy_to_region(Service, Region, Options, Result) :-
+    region_config(Region, RegionCfg),
+    option_or_default(provider, RegionCfg, aws, Provider),
+    option_or_default(region_id, RegionCfg, 'us-east-1', RegionId),
+    generate_region_deploy_commands(Service, Provider, RegionId, Options, Commands),
+    Result = deploy_commands(Region, Commands).
+
+%% generate_region_deploy_commands(+Service, +Provider, +RegionId, +Options, -Commands)
+%  Generate provider-specific deployment commands.
+%
+generate_region_deploy_commands(Service, aws, RegionId, _Options, Commands) :-
+    format(atom(Cmd1), 'export AWS_REGION=~w', [RegionId]),
+    format(atom(Cmd2), 'aws ecs update-service --cluster ~w-cluster --service ~w --force-new-deployment --region ~w', [Service, Service, RegionId]),
+    Commands = [Cmd1, Cmd2].
+
+generate_region_deploy_commands(Service, gcp, RegionId, _Options, Commands) :-
+    format(atom(Cmd1), 'gcloud config set compute/region ~w', [RegionId]),
+    format(atom(Cmd2), 'gcloud run deploy ~w --region ~w --image gcr.io/$PROJECT_ID/~w:latest', [Service, RegionId, Service]),
+    Commands = [Cmd1, Cmd2].
+
+generate_region_deploy_commands(Service, azure, RegionId, _Options, Commands) :-
+    format(atom(Cmd1), 'az configure --defaults location=~w', [RegionId]),
+    format(atom(Cmd2), 'az container create --resource-group ~w-rg --name ~w --location ~w', [Service, Service, RegionId]),
+    Commands = [Cmd1, Cmd2].
+
+%% deploy_to_all_regions(+Service, +Options, -Results)
+%  Generate deployment commands for all configured regions.
+%
+deploy_to_all_regions(Service, Options, Results) :-
+    service_regions(Service, RegionConfig),
+    option_or_default(primary, RegionConfig, none, Primary),
+    option_or_default(secondary, RegionConfig, [], Secondary),
+    AllRegions = [Primary|Secondary],
+    findall(
+        Result,
+        (   member(Region, AllRegions),
+            Region \= none,
+            deploy_to_region(Service, Region, Options, Result)
+        ),
+        Results
+    ).
+
+%% region_status(+Service, +Region, -Status)
+%  Get the current status of a service in a region.
+%  Returns command to check status.
+%
+region_status(Service, Region, Status) :-
+    region_config(Region, RegionCfg),
+    option_or_default(provider, RegionCfg, aws, Provider),
+    option_or_default(region_id, RegionCfg, 'us-east-1', RegionId),
+    generate_status_command(Service, Provider, RegionId, StatusCmd),
+    Status = status_command(Region, StatusCmd).
+
+%% generate_status_command(+Service, +Provider, +RegionId, -Command)
+%  Generate provider-specific status check command.
+%
+generate_status_command(Service, aws, RegionId, Command) :-
+    format(atom(Command), 'aws ecs describe-services --cluster ~w-cluster --services ~w --region ~w --query "services[0].status"', [Service, Service, RegionId]).
+
+generate_status_command(Service, gcp, RegionId, Command) :-
+    format(atom(Command), 'gcloud run services describe ~w --region ~w --format="value(status.conditions[0].status)"', [Service, RegionId]).
+
+generate_status_command(Service, azure, RegionId, Command) :-
+    format(atom(Command), 'az container show --resource-group ~w-rg --name ~w --query "instanceView.state" --location ~w', [Service, Service, RegionId]).
+
+%% generate_region_config(+Service, +Options, -Config)
+%  Generate a region configuration file (e.g., for Terraform).
+%
+generate_region_config(Service, Options, Config) :-
+    service_regions(Service, RegionConfig),
+    option_or_default(format, Options, terraform, Format),
+    (   Format == terraform
+    ->  generate_terraform_region_config(Service, RegionConfig, Config)
+    ;   Format == json
+    ->  generate_json_region_config(Service, RegionConfig, Config)
+    ;   Config = 'Unknown format'
+    ).
+
+%% generate_terraform_region_config(+Service, +RegionConfig, -Config)
+%  Generate Terraform configuration for multi-region.
+%
+generate_terraform_region_config(Service, RegionConfig, Config) :-
+    option_or_default(primary, RegionConfig, 'us-east-1', Primary),
+    option_or_default(secondary, RegionConfig, [], Secondary),
+    format(atom(Header), '# Multi-region configuration for ~w\n\n', [Service]),
+    format(atom(PrimaryBlock), 'module "~w_primary" {\n  source = "./modules/service"\n  region = "~w"\n  is_primary = true\n}\n\n', [Service, Primary]),
+    format_secondary_blocks(Service, Secondary, SecondaryBlocks),
+    atom_concat(Header, PrimaryBlock, Temp),
+    atom_concat(Temp, SecondaryBlocks, Config).
+
+%% format_secondary_blocks(+Service, +Regions, -Blocks)
+%  Format Terraform blocks for secondary regions.
+%
+format_secondary_blocks(_, [], '').
+format_secondary_blocks(Service, [Region|Rest], Blocks) :-
+    format(atom(Block), 'module "~w_~w" {\n  source = "./modules/service"\n  region = "~w"\n  is_primary = false\n}\n\n', [Service, Region, Region]),
+    format_secondary_blocks(Service, Rest, RestBlocks),
+    atom_concat(Block, RestBlocks, Blocks).
+
+%% generate_json_region_config(+Service, +RegionConfig, -Config)
+%  Generate JSON configuration for multi-region.
+%
+generate_json_region_config(Service, RegionConfig, Config) :-
+    option_or_default(primary, RegionConfig, 'us-east-1', Primary),
+    option_or_default(secondary, RegionConfig, [], Secondary),
+    format(atom(Config), '{\n  "service": "~w",\n  "primary": "~w",\n  "secondary": ~w\n}', [Service, Primary, Secondary]).
+
+%% --------------------------------------------
+%% Traffic Management
+%% --------------------------------------------
+
+%% declare_traffic_policy(+Service, +Policy)
+%  Declare traffic routing policy.
+%  Options:
+%    - dns_provider(Provider)  : 'route53' | 'cloudflare' | 'gcp_dns'
+%    - routing_policy(Policy)  : 'simple' | 'weighted' | 'latency' | 'geolocation' | 'failover'
+%    - weights(List)           : Region weights for weighted routing
+%    - health_check_id(Id)     : Associated health check
+%
+declare_traffic_policy(Service, Policy) :-
+    retractall(traffic_policy_db(Service, _)),
+    assertz(traffic_policy_db(Service, Policy)).
+
+%% traffic_policy(?Service, ?Policy)
+%  Query traffic policy.
+%
+traffic_policy(Service, Policy) :-
+    traffic_policy_db(Service, Policy).
+
+%% generate_route53_config(+Service, +Options, -Config)
+%  Generate AWS Route53 configuration.
+%
+generate_route53_config(Service, Options, Config) :-
+    service_regions(Service, RegionConfig),
+    traffic_policy(Service, TrafficPolicy),
+    option_or_default(routing_policy, TrafficPolicy, failover, RoutingPolicy),
+    option_or_default(hosted_zone, Options, '$HOSTED_ZONE_ID', HostedZone),
+    option_or_default(domain, Options, 'example.com', Domain),
+    option_or_default(primary, RegionConfig, 'us-east-1', Primary),
+    option_or_default(secondary, RegionConfig, [], Secondary),
+    generate_route53_records(Service, Domain, HostedZone, Primary, Secondary, RoutingPolicy, Config).
+
+%% generate_route53_records(+Service, +Domain, +Zone, +Primary, +Secondary, +Policy, -Config)
+%  Generate Route53 record configuration.
+%
+generate_route53_records(Service, Domain, Zone, Primary, Secondary, failover, Config) :-
+    format(atom(Header), '{\n  "Comment": "Multi-region failover for ~w",\n  "Changes": [\n', [Service]),
+    format(atom(PrimaryRecord), '    {\n      "Action": "UPSERT",\n      "ResourceRecordSet": {\n        "Name": "~w.~w",\n        "Type": "A",\n        "SetIdentifier": "primary",\n        "Failover": "PRIMARY",\n        "TTL": 60,\n        "ResourceRecords": [{"Value": "~w-endpoint"}],\n        "HealthCheckId": "$HEALTH_CHECK_ID"\n      }\n    }', [Service, Domain, Primary]),
+    (   Secondary = [SecondaryRegion|_]
+    ->  format(atom(SecondaryRecord), ',\n    {\n      "Action": "UPSERT",\n      "ResourceRecordSet": {\n        "Name": "~w.~w",\n        "Type": "A",\n        "SetIdentifier": "secondary",\n        "Failover": "SECONDARY",\n        "TTL": 60,\n        "ResourceRecords": [{"Value": "~w-endpoint"}]\n      }\n    }', [Service, Domain, SecondaryRegion])
+    ;   SecondaryRecord = ''
+    ),
+    format(atom(Footer), '\n  ]\n}', []),
+    atomic_list_concat([Header, PrimaryRecord, SecondaryRecord, Footer], Config),
+    _ = Zone. % Suppress unused warning
+
+generate_route53_records(Service, Domain, _Zone, Primary, Secondary, weighted, Config) :-
+    format(atom(Header), '{\n  "Comment": "Weighted routing for ~w",\n  "Changes": [\n', [Service]),
+    format(atom(PrimaryRecord), '    {\n      "Action": "UPSERT",\n      "ResourceRecordSet": {\n        "Name": "~w.~w",\n        "Type": "A",\n        "SetIdentifier": "~w",\n        "Weight": 70,\n        "TTL": 60,\n        "ResourceRecords": [{"Value": "~w-endpoint"}]\n      }\n    }', [Service, Domain, Primary, Primary]),
+    format_weighted_secondary(Service, Domain, Secondary, 30, SecondaryRecords),
+    format(atom(Footer), '\n  ]\n}', []),
+    atomic_list_concat([Header, PrimaryRecord, SecondaryRecords, Footer], Config).
+
+generate_route53_records(Service, Domain, _Zone, Primary, _Secondary, simple, Config) :-
+    format(atom(Config), '{\n  "Comment": "Simple routing for ~w",\n  "Changes": [\n    {\n      "Action": "UPSERT",\n      "ResourceRecordSet": {\n        "Name": "~w.~w",\n        "Type": "A",\n        "TTL": 300,\n        "ResourceRecords": [{"Value": "~w-endpoint"}]\n      }\n    }\n  ]\n}', [Service, Service, Domain, Primary]).
+
+%% format_weighted_secondary(+Service, +Domain, +Regions, +Weight, -Records)
+%  Format weighted records for secondary regions.
+%
+format_weighted_secondary(_, _, [], _, '').
+format_weighted_secondary(Service, Domain, [Region|Rest], Weight, Records) :-
+    format(atom(Record), ',\n    {\n      "Action": "UPSERT",\n      "ResourceRecordSet": {\n        "Name": "~w.~w",\n        "Type": "A",\n        "SetIdentifier": "~w",\n        "Weight": ~w,\n        "TTL": 60,\n        "ResourceRecords": [{"Value": "~w-endpoint"}]\n      }\n    }', [Service, Domain, Region, Weight, Region]),
+    NewWeight is Weight div 2,
+    format_weighted_secondary(Service, Domain, Rest, NewWeight, RestRecords),
+    atom_concat(Record, RestRecords, Records).
+
+%% generate_cloudflare_config(+Service, +Options, -Config)
+%  Generate Cloudflare DNS configuration.
+%
+generate_cloudflare_config(Service, Options, Config) :-
+    service_regions(Service, RegionConfig),
+    option_or_default(domain, Options, 'example.com', Domain),
+    option_or_default(primary, RegionConfig, 'us-east-1', Primary),
+    format(atom(Config), '{\n  "type": "A",\n  "name": "~w.~w",\n  "content": "~w-endpoint",\n  "ttl": 1,\n  "proxied": true\n}', [Service, Domain, Primary]).
+
+%% ============================================
+%% Phase 7c: Cloud Functions [EXPERIMENTAL]
+%% ============================================
+
+%% --------------------------------------------
+%% AWS Lambda
+%% --------------------------------------------
+
+%% declare_lambda_config(+Function, +Config)
+%  Declare AWS Lambda function configuration.
+%  Options:
+%    - runtime(Runtime)        : 'python3.11' | 'nodejs20.x' | 'go1.x' | 'dotnet8'
+%    - handler(Handler)        : Function handler (e.g., 'index.handler')
+%    - memory(MB)              : Memory allocation (128-10240)
+%    - timeout(Seconds)        : Function timeout (1-900)
+%    - role(ARN)               : IAM execution role ARN
+%    - environment(Vars)       : Environment variables
+%    - vpc_config(Config)      : VPC configuration
+%    - layers(List)            : Lambda layer ARNs
+%
+declare_lambda_config(Function, Config) :-
+    retractall(lambda_config_db(Function, _)),
+    assertz(lambda_config_db(Function, Config)).
+
+%% lambda_config(?Function, ?Config)
+%  Query Lambda configuration.
+%
+lambda_config(Function, Config) :-
+    lambda_config_db(Function, Config).
+
+%% generate_lambda_function(+Function, +Options, -Package)
+%  Generate Lambda function package structure.
+%
+generate_lambda_function(Function, Options, Package) :-
+    lambda_config(Function, Config),
+    option_or_default(runtime, Config, 'python3.11', Runtime),
+    option_or_default(handler, Config, 'index.handler', Handler),
+    generate_lambda_handler(Function, Runtime, Handler, Options, HandlerCode),
+    Package = lambda_package(Function, Runtime, HandlerCode).
+
+%% generate_lambda_handler(+Function, +Runtime, +Handler, +Options, -Code)
+%  Generate Lambda handler boilerplate.
+%
+generate_lambda_handler(Function, Runtime, Handler, _Options, Code) :-
+    (   sub_atom(Runtime, 0, _, _, python)
+    ->  format(atom(Code), '# Lambda function: ~w\n# Handler: ~w\n\nimport json\nimport logging\n\nlogger = logging.getLogger()\nlogger.setLevel(logging.INFO)\n\ndef handler(event, context):\n    """\n    AWS Lambda handler for ~w\n    """\n    logger.info(f"Event: {json.dumps(event)}")\n    \n    # TODO: Implement function logic\n    \n    return {\n        "statusCode": 200,\n        "body": json.dumps({"message": "Success"})\n    }\n', [Function, Handler, Function])
+    ;   sub_atom(Runtime, 0, _, _, nodejs)
+    ->  format(atom(Code), '// Lambda function: ~w\n// Handler: ~w\n\nexports.handler = async (event, context) => {\n    console.log(\'Event:\', JSON.stringify(event));\n    \n    // TODO: Implement function logic\n    \n    return {\n        statusCode: 200,\n        body: JSON.stringify({ message: \'Success\' })\n    };\n};\n', [Function, Handler])
+    ;   sub_atom(Runtime, 0, _, _, go)
+    ->  format(atom(Code), '// Lambda function: ~w\npackage main\n\nimport (\n    "context"\n    "encoding/json"\n    "github.com/aws/aws-lambda-go/events"\n    "github.com/aws/aws-lambda-go/lambda"\n)\n\nfunc handler(ctx context.Context, event events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {\n    // TODO: Implement function logic\n    \n    return events.APIGatewayProxyResponse{\n        StatusCode: 200,\n        Body:       `{"message":"Success"}`,\n    }, nil\n}\n\nfunc main() {\n    lambda.Start(handler)\n}\n', [Function])
+    ;   format(atom(Code), '# Unsupported runtime: ~w', [Runtime])
+    ).
+
+%% generate_lambda_deploy(+Function, +Options, -Commands)
+%  Generate Lambda deployment commands.
+%
+generate_lambda_deploy(Function, Options, Commands) :-
+    lambda_config(Function, Config),
+    option_or_default(runtime, Config, 'python3.11', Runtime),
+    option_or_default(handler, Config, 'index.handler', Handler),
+    option_or_default(memory, Config, 256, MemoryRaw),
+    option_or_default(timeout, Config, 30, TimeoutRaw),
+    option_or_default(role, Config, '$LAMBDA_ROLE_ARN', Role),
+    option_or_default(region, Options, 'us-east-1', Region),
+    % Convert integers to atoms for format/3
+    term_to_atom(MemoryRaw, Memory),
+    term_to_atom(TimeoutRaw, Timeout),
+    format(atom(Cmd1), '# Deploy Lambda function: ~w', [Function]),
+    format(atom(Cmd2), 'cd ~w && zip -r function.zip .', [Function]),
+    format(atom(Cmd3), 'aws lambda create-function --function-name ~w --runtime ~w --handler ~w --role ~w --zip-file fileb://function.zip --memory-size ~w --timeout ~w --region ~w', [Function, Runtime, Handler, Role, Memory, Timeout, Region]),
+    format(atom(Cmd4), '# Or update existing function:'),
+    format(atom(Cmd5), 'aws lambda update-function-code --function-name ~w --zip-file fileb://function.zip --region ~w', [Function, Region]),
+    Commands = [Cmd1, Cmd2, Cmd3, Cmd4, Cmd5].
+
+%% generate_sam_template(+Function, +Options, -Template)
+%  Generate AWS SAM template for Lambda function.
+%
+generate_sam_template(Function, Options, Template) :-
+    lambda_config(Function, Config),
+    option_or_default(runtime, Config, 'python3.11', Runtime),
+    option_or_default(handler, Config, 'index.handler', Handler),
+    option_or_default(memory, Config, 256, Memory),
+    option_or_default(timeout, Config, 30, Timeout),
+    option_or_default(description, Options, 'Lambda function', Description),
+    format(atom(Template), 'AWSTemplateFormatVersion: \'2010-09-09\'\nTransform: AWS::Serverless-2016-10-31\nDescription: ~w\n\nGlobals:\n  Function:\n    Timeout: ~w\n    MemorySize: ~w\n\nResources:\n  ~wFunction:\n    Type: AWS::Serverless::Function\n    Properties:\n      FunctionName: ~w\n      Runtime: ~w\n      Handler: ~w\n      CodeUri: ./\n      Description: ~w\n      Events:\n        Api:\n          Type: Api\n          Properties:\n            Path: /~w\n            Method: ANY\n\nOutputs:\n  ~wApi:\n    Description: API Gateway endpoint URL\n    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/~w/"\n  ~wFunction:\n    Description: Lambda Function ARN\n    Value: !GetAtt ~wFunction.Arn\n', [Description, Timeout, Memory, Function, Function, Runtime, Handler, Description, Function, Function, Function, Function, Function]).
+
+%% --------------------------------------------
+%% Google Cloud Functions
+%% --------------------------------------------
+
+%% declare_gcf_config(+Function, +Config)
+%  Declare Google Cloud Functions configuration.
+%  Options:
+%    - runtime(Runtime)        : 'python311' | 'nodejs20' | 'go121' | 'dotnet8'
+%    - entry_point(Name)       : Function entry point
+%    - memory(MB)              : Memory allocation (128-8192)
+%    - timeout(Seconds)        : Function timeout (1-540)
+%    - region(Region)          : Deployment region
+%    - trigger(Type)           : 'http' | 'pubsub' | 'storage' | 'firestore'
+%    - environment(Vars)       : Environment variables
+%
+declare_gcf_config(Function, Config) :-
+    retractall(gcf_config_db(Function, _)),
+    assertz(gcf_config_db(Function, Config)).
+
+%% gcf_config(?Function, ?Config)
+%  Query GCF configuration.
+%
+gcf_config(Function, Config) :-
+    gcf_config_db(Function, Config).
+
+%% generate_gcf_deploy(+Function, +Options, -Commands)
+%  Generate Google Cloud Functions deployment commands.
+%
+generate_gcf_deploy(Function, Options, Commands) :-
+    gcf_config(Function, Config),
+    option_or_default(runtime, Config, 'python311', Runtime),
+    option_or_default(entry_point, Config, 'main', EntryPoint),
+    option_or_default(memory, Config, 256, Memory),
+    option_or_default(timeout, Config, 60, Timeout),
+    option_or_default(region, Config, 'us-central1', Region),
+    option_or_default(trigger, Config, http, Trigger),
+    option_or_default(project, Options, '$GCP_PROJECT', Project),
+    format(atom(Cmd1), '# Deploy Google Cloud Function: ~w', [Function]),
+    (   Trigger == http
+    ->  format(atom(TriggerOpt), '--trigger-http --allow-unauthenticated', [])
+    ;   Trigger == pubsub
+    ->  format(atom(TriggerOpt), '--trigger-topic ~w-topic', [Function])
+    ;   format(atom(TriggerOpt), '--trigger-http', [])
+    ),
+    format(atom(Cmd2), 'gcloud functions deploy ~w --runtime ~w --entry-point ~w --memory ~wMB --timeout ~ws --region ~w ~w --project ~w', [Function, Runtime, EntryPoint, Memory, Timeout, Region, TriggerOpt, Project]),
+    Commands = [Cmd1, Cmd2].
+
+%% --------------------------------------------
+%% Azure Functions
+%% --------------------------------------------
+
+%% declare_azure_func_config(+Function, +Config)
+%  Declare Azure Functions configuration.
+%  Options:
+%    - runtime(Runtime)        : 'python' | 'node' | 'dotnet' | 'java'
+%    - version(Version)        : Runtime version
+%    - os(OS)                  : 'windows' | 'linux'
+%    - plan(Plan)              : 'consumption' | 'premium' | 'dedicated'
+%    - resource_group(Name)    : Azure resource group
+%    - storage_account(Name)   : Storage account name
+%
+declare_azure_func_config(Function, Config) :-
+    retractall(azure_func_config_db(Function, _)),
+    assertz(azure_func_config_db(Function, Config)).
+
+%% azure_func_config(?Function, ?Config)
+%  Query Azure Functions configuration.
+%
+azure_func_config(Function, Config) :-
+    azure_func_config_db(Function, Config).
+
+%% generate_azure_func_deploy(+Function, +Options, -Commands)
+%  Generate Azure Functions deployment commands.
+%
+generate_azure_func_deploy(Function, Options, Commands) :-
+    azure_func_config(Function, Config),
+    option_or_default(runtime, Config, 'python', Runtime),
+    option_or_default(version, Config, '3.11', Version),
+    option_or_default(os, Config, 'linux', OS),
+    option_or_default(resource_group, Config, '$AZURE_RG', ResourceGroup),
+    option_or_default(storage_account, Config, '$AZURE_STORAGE', Storage),
+    option_or_default(location, Options, 'eastus', Location),
+    format(atom(Cmd1), '# Deploy Azure Function: ~w', [Function]),
+    format(atom(Cmd2), 'az functionapp create --name ~w --resource-group ~w --storage-account ~w --runtime ~w --runtime-version ~w --os-type ~w --consumption-plan-location ~w', [Function, ResourceGroup, Storage, Runtime, Version, OS, Location]),
+    format(atom(Cmd3), 'func azure functionapp publish ~w', [Function]),
+    Commands = [Cmd1, Cmd2, Cmd3].
+
+%% --------------------------------------------
+%% API Gateway Integration
+%% --------------------------------------------
+
+%% declare_api_gateway(+Name, +Config)
+%  Declare API Gateway configuration.
+%  Options:
+%    - provider(Provider)      : 'aws' | 'gcp' | 'azure'
+%    - name(Name)              : Gateway name
+%    - description(Desc)       : Description
+%    - endpoints(List)         : List of endpoint configurations
+%    - auth(Config)            : Authentication configuration
+%    - cors(Config)            : CORS configuration
+%
+declare_api_gateway(Name, Config) :-
+    retractall(api_gateway_config_db(Name, _)),
+    assertz(api_gateway_config_db(Name, Config)).
+
+%% api_gateway_config(?Name, ?Config)
+%  Query API Gateway configuration.
+%
+api_gateway_config(Name, Config) :-
+    api_gateway_config_db(Name, Config).
+
+%% generate_api_gateway_config(+Name, +Options, -Config)
+%  Generate API Gateway configuration.
+%
+generate_api_gateway_config(Name, Options, Config) :-
+    api_gateway_config(Name, GatewayConfig),
+    option_or_default(provider, GatewayConfig, aws, Provider),
+    (   Provider == aws
+    ->  generate_aws_api_gateway(Name, GatewayConfig, Options, Config)
+    ;   Provider == gcp
+    ->  generate_gcp_api_gateway(Name, GatewayConfig, Options, Config)
+    ;   Provider == azure
+    ->  generate_azure_api_gateway(Name, GatewayConfig, Options, Config)
+    ;   Config = 'Unknown provider'
+    ).
+
+%% generate_aws_api_gateway(+Name, +GatewayConfig, +Options, -Config)
+%  Generate AWS API Gateway configuration.
+%
+generate_aws_api_gateway(Name, GatewayConfig, _Options, Config) :-
+    option_or_default(description, GatewayConfig, 'API Gateway', Description),
+    option_or_default(endpoints, GatewayConfig, [], Endpoints),
+    format_aws_endpoints(Endpoints, EndpointConfigs),
+    format(atom(Config), '{\n  "swagger": "2.0",\n  "info": {\n    "title": "~w",\n    "description": "~w",\n    "version": "1.0"\n  },\n  "basePath": "/v1",\n  "schemes": ["https"],\n  "paths": {\n~w  }\n}', [Name, Description, EndpointConfigs]).
+
+%% format_aws_endpoints(+Endpoints, -Config)
+%  Format AWS API Gateway endpoints.
+%
+format_aws_endpoints([], '').
+format_aws_endpoints([endpoint(Path, Method, Function)|Rest], Config) :-
+    format(atom(EndpointConfig), '    "~w": {\n      "~w": {\n        "x-amazon-apigateway-integration": {\n          "uri": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:~w/invocations",\n          "type": "aws_proxy",\n          "httpMethod": "POST"\n        }\n      }\n    }', [Path, Method, Function]),
+    format_aws_endpoints(Rest, RestConfig),
+    (   RestConfig \= ''
+    ->  format(atom(Config), '~w,\n~w', [EndpointConfig, RestConfig])
+    ;   Config = EndpointConfig
+    ).
+
+%% generate_gcp_api_gateway(+Name, +GatewayConfig, +Options, -Config)
+%  Generate GCP API Gateway configuration.
+%
+generate_gcp_api_gateway(Name, GatewayConfig, _Options, Config) :-
+    option_or_default(description, GatewayConfig, 'API Gateway', Description),
+    format(atom(Config), 'swagger: "2.0"\ninfo:\n  title: ~w\n  description: ~w\n  version: "1.0.0"\nhost: "~w.apigateway.$PROJECT_ID.cloud.goog"\nschemes:\n  - https\npaths:\n  /hello:\n    get:\n      summary: Hello endpoint\n      operationId: hello\n      x-google-backend:\n        address: https://$REGION-$PROJECT_ID.cloudfunctions.net/~w\n      responses:\n        "200":\n          description: Success\n', [Name, Description, Name, Name]).
+
+%% generate_azure_api_gateway(+Name, +GatewayConfig, +Options, -Config)
+%  Generate Azure API Management configuration.
+%
+generate_azure_api_gateway(Name, GatewayConfig, _Options, Config) :-
+    option_or_default(description, GatewayConfig, 'API Gateway', Description),
+    format(atom(Config), '<?xml version="1.0" encoding="UTF-8"?>\n<api-management>\n  <api name="~w">\n    <description>~w</description>\n    <subscription-required>false</subscription-required>\n    <operations>\n      <operation name="get-hello" method="GET" url-template="/hello">\n        <backend-service>\n          <url>https://~w.azurewebsites.net/api/hello</url>\n        </backend-service>\n      </operation>\n    </operations>\n  </api>\n</api-management>\n', [Name, Description, Name]).
+
+%% generate_openapi_spec(+Gateway, +Options, -Spec)
+%  Generate OpenAPI specification for an API Gateway.
+%
+generate_openapi_spec(Gateway, Options, Spec) :-
+    api_gateway_config(Gateway, GatewayConfig),
+    option_or_default(version, Options, '3.0.0', Version),
+    option_or_default(description, GatewayConfig, 'API Gateway', Description),
+    option_or_default(endpoints, GatewayConfig, [], Endpoints),
+    format_openapi_paths(Endpoints, Paths),
+    format(atom(Spec), 'openapi: "~w"\ninfo:\n  title: ~w\n  description: ~w\n  version: "1.0.0"\nservers:\n  - url: https://api.example.com/v1\npaths:\n~w', [Version, Gateway, Description, Paths]).
+
+%% format_openapi_paths(+Endpoints, -Paths)
+%  Format OpenAPI paths.
+%
+format_openapi_paths([], '').
+format_openapi_paths([endpoint(Path, Method, _Function)|Rest], Paths) :-
+    format(atom(PathConfig), '  ~w:\n    ~w:\n      summary: ~w endpoint\n      responses:\n        "200":\n          description: Successful response\n', [Path, Method, Path]),
+    format_openapi_paths(Rest, RestPaths),
+    atom_concat(PathConfig, RestPaths, Paths).
+
+%% --------------------------------------------
+%% Unified Serverless Deployment
+%% --------------------------------------------
+
+%% deploy_function(+Function, +Options, -Result)
+%  Deploy a serverless function to any configured provider.
+%
+deploy_function(Function, Options, Result) :-
+    (   lambda_config(Function, _)
+    ->  generate_lambda_deploy(Function, Options, Commands),
+        Result = lambda_deploy(Commands)
+    ;   gcf_config(Function, _)
+    ->  generate_gcf_deploy(Function, Options, Commands),
+        Result = gcf_deploy(Commands)
+    ;   azure_func_config(Function, _)
+    ->  generate_azure_func_deploy(Function, Options, Commands),
+        Result = azure_deploy(Commands)
+    ;   Result = error(unknown_function(Function))
+    ).
+
+%% invoke_function(+Function, +Payload, +Options, -Result)
+%  Generate command to invoke a serverless function.
+%
+invoke_function(Function, Payload, Options, Result) :-
+    (   lambda_config(Function, Config)
+    ->  option_or_default(region, Options, 'us-east-1', Region),
+        format(atom(Cmd), 'aws lambda invoke --function-name ~w --payload \'~w\' --region ~w /dev/stdout', [Function, Payload, Region]),
+        Result = invoke_command(aws, Cmd),
+        _ = Config  % Suppress unused warning
+    ;   gcf_config(Function, Config)
+    ->  option_or_default(region, Config, 'us-central1', Region),
+        option_or_default(project, Options, '$GCP_PROJECT', Project),
+        format(atom(Cmd), 'gcloud functions call ~w --data \'~w\' --region ~w --project ~w', [Function, Payload, Region, Project]),
+        Result = invoke_command(gcp, Cmd)
+    ;   azure_func_config(Function, _)
+    ->  format(atom(Cmd), 'curl -X POST "https://~w.azurewebsites.net/api/~w" -H "Content-Type: application/json" -d \'~w\'', [Function, Function, Payload]),
+        Result = invoke_command(azure, Cmd)
+    ;   Result = error(unknown_function(Function))
+    ).
+
+%% function_logs(+Function, +Options, -Logs)
+%  Generate command to retrieve function logs.
+%
+function_logs(Function, Options, Logs) :-
+    (   lambda_config(Function, _)
+    ->  option_or_default(region, Options, 'us-east-1', Region),
+        option_or_default(tail, Options, 100, Tail),
+        format(atom(Cmd), 'aws logs tail /aws/lambda/~w --follow --since 1h --region ~w | head -~w', [Function, Region, Tail]),
+        Logs = log_command(aws, Cmd)
+    ;   gcf_config(Function, Config)
+    ->  option_or_default(region, Config, 'us-central1', Region),
+        option_or_default(limit, Options, 100, Limit),
+        format(atom(Cmd), 'gcloud functions logs read ~w --region ~w --limit ~w', [Function, Region, Limit]),
+        Logs = log_command(gcp, Cmd)
+    ;   azure_func_config(Function, Config)
+    ->  option_or_default(resource_group, Config, '$AZURE_RG', ResourceGroup),
+        format(atom(Cmd), 'az webapp log tail --name ~w --resource-group ~w', [Function, ResourceGroup]),
+        Logs = log_command(azure, Cmd)
+    ;   Logs = error(unknown_function(Function))
     ).
