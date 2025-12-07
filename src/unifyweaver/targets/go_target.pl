@@ -230,14 +230,13 @@ compile_generator_mode_go(Pred, Arity, Options, GoCode) :-
     remove_variant_duplicates(TargetClauses0, TargetClauses),
     
     % Also gather clauses for predicates referenced in rule bodies (dependency closure)
+    % This includes extracting inner goals from aggregate_all
     findall(DepPred/DepArity,
         (   member(_-Body, TargetClauses),
             Body \= true,
             body_to_list_go(Body, Goals),
             member(Goal, Goals),
-            \+ is_builtin_goal_go(Goal),
-            Goal =.. [DepPred|DepArgs],
-            length(DepArgs, DepArity),
+            extract_goal_predicate(Goal, DepPred, DepArity),
             DepPred/DepArity \= Pred/Arity  % Don't include self-references
         ),
         DepPredList0),
@@ -297,6 +296,27 @@ remove_variant_duplicates_single([H|T], Result) :-
 
 member_variant_single(X, [H|_]) :- X =@= H, !.
 member_variant_single(X, [_|T]) :- member_variant_single(X, T).
+
+%% extract_goal_predicate(+Goal, -Pred, -Arity)
+%  Extract predicate name and arity from a goal
+%  Handles aggregate_all/3,4 by extracting from inner goal
+extract_goal_predicate(aggregate_all(_, InnerGoal, _), Pred, Arity) :-
+    !,
+    InnerGoal =.. [Pred|Args],
+    length(Args, Arity).
+extract_goal_predicate(aggregate_all(_, InnerGoal, _, _), Pred, Arity) :-
+    !,
+    InnerGoal =.. [Pred|Args],
+    length(Args, Arity).
+extract_goal_predicate(aggregate(_, InnerGoal, _), Pred, Arity) :-
+    !,
+    InnerGoal =.. [Pred|Args],
+    length(Args, Arity).
+extract_goal_predicate(Goal, Pred, Arity) :-
+    \+ is_builtin_goal_go(Goal),
+    Goal =.. [Pred|Args],
+    length(Args, Arity).
+
 %% go_generator_header(+Pred, -Header)
 %  Generate Go boilerplate with Fact type
 go_generator_header(Pred, Header) :-
@@ -312,6 +332,7 @@ package main
 import (
     \"encoding/json\"
     \"fmt\"
+    \"strconv\"
 )
 
 // Fact represents a relation tuple
@@ -324,6 +345,23 @@ type Fact struct {
 func (f Fact) Key() string {
     b, _ := json.Marshal(f)
     return string(b)
+}
+
+// toFloat64 converts interface{} to float64 for aggregation
+func toFloat64(v interface{}) (float64, bool) {
+    switch val := v.(type) {
+    case float64:
+        return val, true
+    case int:
+        return float64(val), true
+    case int64:
+        return float64(val), true
+    case string:
+        f, err := strconv.ParseFloat(val, 64)
+        return f, err == nil
+    default:
+        return 0, false
+    }
 }
 
 ", [DateStr, Pred]).
@@ -382,29 +420,36 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
     
     % Parse body into goals
     body_to_list_go(Body, Goals),
-    partition(is_builtin_goal_go, Goals, Builtins, RelGoals),
     
-    (   RelGoals = []
-    ->  % Only builtins - not a productive rule
-        format(string(Code),
+    % Check for aggregate goal first
+    (   member(AggGoal, Goals),
+        is_aggregate_goal_go(AggGoal)
+    ->  % Aggregate rule
+        compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal, Config, Code)
+    ;   % Normal rule (joins, negation, etc.)
+        partition(is_builtin_goal_go, Goals, Builtins, RelGoals),
+        
+        (   RelGoals = []
+        ->  % Only builtins - not a productive rule
+            format(string(Code),
 "func ~w(fact Fact, total map[string]Fact) []Fact {
     // Rule ~w: constraint-only (no relational goals)
     return nil
 }", [RuleName, Index]),
-        !
-    ;   RelGoals = [FirstGoal|RestGoals],
-        FirstGoal =.. [Pred1|_],
-        
-        % Build initial variable map from first goal
-        build_variable_map([FirstGoal-fact], VarMap0),
-        
-        (   RestGoals == []
-        ->  % Simple rule: no join
-            % Generate builtin checks
-            compile_go_builtins(Builtins, VarMap0, Config, BuiltinCode),
-            % Generate head construction
-            compile_go_head_construction(HeadPred, HeadArgs, VarMap0, Config, HeadCode),
-            format(string(Code),
+            !
+        ;   RelGoals = [FirstGoal|RestGoals],
+            FirstGoal =.. [Pred1|_],
+            
+            % Build initial variable map from first goal
+            build_variable_map([FirstGoal-fact], VarMap0),
+            
+            (   RestGoals == []
+            ->  % Simple rule: no join
+                % Generate builtin checks
+                compile_go_builtins(Builtins, VarMap0, Config, BuiltinCode),
+                % Generate head construction
+                compile_go_head_construction(HeadPred, HeadArgs, VarMap0, Config, HeadCode),
+                format(string(Code),
 "func ~w(fact Fact, total map[string]Fact) []Fact {
     var results []Fact
     
@@ -418,9 +463,9 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
     
     return results
 }", [RuleName, FirstGoal, Pred1, BuiltinCode, HeadCode])
-        ;   % Join rule: need to nest the result inside join loops
-            compile_go_join_with_result(RestGoals, VarMap0, Config, Builtins, HeadPred, HeadArgs, JoinWithResultCode),
-            format(string(Code),
+            ;   % Join rule: need to nest the result inside join loops
+                compile_go_join_with_result(RestGoals, VarMap0, Config, Builtins, HeadPred, HeadArgs, JoinWithResultCode),
+                format(string(Code),
 "func ~w(fact Fact, total map[string]Fact) []Fact {
     var results []Fact
     
@@ -431,8 +476,171 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
 ~w
     return results
 }", [RuleName, FirstGoal, Pred1, JoinWithResultCode])
+            )
         )
     ).
+
+%% is_aggregate_goal_go(+Goal)
+%  Check if goal is an aggregate
+is_aggregate_goal_go(aggregate_all(_, _, _)).
+is_aggregate_goal_go(aggregate_all(_, _, _, _)).
+is_aggregate_goal_go(aggregate(_, _, _)).  % Will be normalized
+
+%% normalize_aggregate_goal_go(+Goal, -NormalizedGoal)
+%  Normalize aggregate/3 to aggregate_all/3 for consistency
+normalize_aggregate_goal_go(aggregate(Op, Body, Res), aggregate_all(Op, Body, Res)) :- !.
+normalize_aggregate_goal_go(G, G).
+
+%% compile_go_aggregate_rule(+Index, +HeadPred, +HeadArgs, +AggGoal, +Config, -Code)
+%  Compile an aggregate rule to Go
+compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal0, Config, Code) :-
+    format(string(RuleName), "ApplyRule_~w", [Index]),
+    
+    % Normalize aggregate/3 -> aggregate_all/3
+    normalize_aggregate_goal_go(AggGoal0, AggGoal),
+    
+    % Decompose aggregate goal
+    (   AggGoal = aggregate_all(OpTerm, InnerGoal, GroupVar, Result)
+    ->  % Grouped aggregation (aggregate_all/4)
+        compile_go_grouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, GroupVar, Result, Config, Code)
+    ;   AggGoal = aggregate_all(OpTerm, InnerGoal, Result)
+    ->  % Ungrouped aggregation (aggregate_all/3)
+        compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, Result, Config, Code)
+    ;   format(string(Code),
+"func ~w(fact Fact, total map[string]Fact) []Fact {
+    // Unsupported aggregate form
+    return nil
+}", [RuleName])
+    ).
+
+%% compile_go_ungrouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +OpTerm, +InnerGoal, +Result, +Config, -Code)
+compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, Result, _Config, Code) :-
+    InnerGoal =.. [Pred|Args],
+    
+    % Determine the aggregate operation and value variable
+    decompose_agg_op(OpTerm, Op, ValueVar),
+    
+    % Find value variable index in inner goal args
+    (   var(ValueVar)
+    ->  find_var_index_go(ValueVar, Args, ValueIdx)
+    ;   ValueIdx = -1  % count doesn't need a value index
+    ),
+    
+    % Generate aggregate code
+    go_agg_code(Op, AggCode),
+    
+    % Build result args
+    length(HeadArgs, NumArgs),
+    (   NumArgs == 1
+    ->  ArgsStr = "\"arg0\": agg"
+    ;   ArgsStr = "\"arg0\": agg"  % Default for now
+    ),
+    
+    format(string(Code),
+"func ~w(fact Fact, total map[string]Fact) []Fact {
+    var results []Fact
+    
+    // Skip if not triggered by this relation
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    
+    // Collect values for aggregation
+    var values []float64
+    for _, f := range total {
+        if f.Relation == \"~w\" {
+            val, ok := toFloat64(f.Args[\"arg~w\"])
+            if ok {
+                values = append(values, val)
+            }
+        }
+    }
+    
+    // Compute aggregate
+    if len(values) > 0 {
+        ~w
+        results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})
+    }
+    
+    return results
+}", [RuleName, Pred, Pred, ValueIdx, AggCode, HeadPred, ArgsStr]).
+
+%% compile_go_grouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +OpTerm, +InnerGoal, +GroupVar, +Result, +Config, -Code)
+compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, OpTerm, InnerGoal, GroupVar, _Result, _Config, Code) :-
+    InnerGoal =.. [Pred|Args],
+    
+    % Determine the aggregate operation and value variable
+    decompose_agg_op(OpTerm, Op, ValueVar),
+    
+    % Find group key and value indices
+    find_var_index_go(GroupVar, Args, GroupIdx),
+    (   var(ValueVar)
+    ->  find_var_index_go(ValueVar, Args, ValueIdx)
+    ;   ValueIdx = -1
+    ),
+    
+    % Generate aggregate code
+    go_agg_code(Op, AggCode),
+    
+    format(string(Code),
+"func ~w(fact Fact, total map[string]Fact) []Fact {
+    var results []Fact
+    
+    // Skip if not triggered by this relation
+    if fact.Relation != \"~w\" {
+        return results
+    }
+    
+    // Group by key
+    groups := make(map[interface{}][]float64)
+    for _, f := range total {
+        if f.Relation == \"~w\" {
+            key := f.Args[\"arg~w\"]
+            val, ok := toFloat64(f.Args[\"arg~w\"])
+            if ok {
+                groups[key] = append(groups[key], val)
+            }
+        }
+    }
+    
+    // Compute aggregate per group
+    for key, values := range groups {
+        if len(values) > 0 {
+            ~w
+            results = append(results, Fact{
+                Relation: \"~w\",
+                Args: map[string]interface{}{\"arg0\": key, \"arg1\": agg},
+            })
+        }
+    }
+    
+    return results
+}", [RuleName, Pred, Pred, GroupIdx, ValueIdx, AggCode, HeadPred]).
+
+%% decompose_agg_op(+OpTerm, -Op, -ValueVar)
+decompose_agg_op(count, count, _).
+decompose_agg_op(sum(V), sum, V).
+decompose_agg_op(min(V), min, V).
+decompose_agg_op(max(V), max, V).
+decompose_agg_op(avg(V), avg, V).
+decompose_agg_op(set(V), set, V).
+decompose_agg_op(bag(V), bag, V).
+
+%% go_agg_code(+Op, -GoCode)
+go_agg_code(count, "agg := float64(len(values))").
+go_agg_code(sum, "agg := 0.0; for _, v := range values { agg += v }").
+go_agg_code(min, "agg := values[0]; for _, v := range values { if v < agg { agg = v } }").
+go_agg_code(max, "agg := values[0]; for _, v := range values { if v > agg { agg = v } }").
+go_agg_code(avg, "agg := 0.0; for _, v := range values { agg += v }; agg /= float64(len(values))").
+go_agg_code(set, "agg := float64(len(values))").  % Simplified for now
+go_agg_code(bag, "agg := float64(len(values))").  % Simplified for now
+
+%% find_var_index_go(+Var, +Args, -Index)
+find_var_index_go(Var, Args, Index) :-
+    nth0(Index, Args, Arg),
+    Var == Arg,
+    !.
+find_var_index_go(_, _, 0).  % Default to 0 if not found
 
 %% body_to_list_go(+Body, -Goals)
 %  Convert conjunction body to list of goals
