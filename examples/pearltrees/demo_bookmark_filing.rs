@@ -18,8 +18,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("=== Bookmark Filing Assistant Demo ===\n");
     println!("Loading database and embedding model...");
 
-    let model_path = "models/all-MiniLM-L6-v2/model.safetensors";
-    let tokenizer_path = "models/all-MiniLM-L6-v2/tokenizer.json";
+    let model_path = "models/all-MiniLM-L6-v2-safetensors/model.safetensors";
+    let tokenizer_path = "models/all-MiniLM-L6-v2-safetensors/tokenizer.json";
     let db_path = "pt_ingest_test.redb";
 
     let embedder = EmbeddingProvider::new(model_path, tokenizer_path)?;
@@ -38,7 +38,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("{}", "=".repeat(100));
         println!();
 
-        let result = searcher.find_bookmark_placements(bookmark, 3, 0.35)?;
+        // Try with lower threshold to see results
+        let result = searcher.find_bookmark_placements(bookmark, 3, 0.1)?;
         println!("{}", result);
 
         println!();
