@@ -22,11 +22,12 @@ This path emits self-contained C# (facts + ApplyRule\_* + Solve) that runs witho
   - At most one aggregate goal per rule; when present with joins, it must be last.
 - Dependency groups and fixpoint evaluation are handled inside the generated module.
 
-## Recent performance tweak
-- Generated `Solve()` now builds a per-relation index each iteration:
-  - `relIndex: Dictionary<string, List<Fact>>` derived from the current `total`.
-  - Joins and aggregates iterate over relation buckets instead of scanning all facts.
-  - Semantics unchanged; reduces work for rules that focus on specific relations.
+## Performance notes
+- Indexing (default on): `Solve()` builds per-relation and arg0/arg1 buckets each iteration.
+  - `relIndex: Dictionary<string, List<Fact>>` for relation-level scans.
+  - `relIndexArg0/relIndexArg1` for arg-position buckets; joins/aggregates prefer arg0, then arg1, else relation list.
+  - Can be disabled via `enable_indexing(false)` option if needed.
+- Constraint pruning: builtins/negation whose variables are already bound at the current join depth are evaluated early to cut work; others stay in place, preserving semantics.
 
 ## Cross-target direction
 - The generator shares helpers (`common_generator`) with other targets; the goal is a common generator API across languages (joins/negation/aggregates) with per-target renderers.
