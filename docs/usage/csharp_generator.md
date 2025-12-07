@@ -29,6 +29,12 @@ This path emits self-contained C# (facts + ApplyRule\_* + Solve) that runs witho
   - Can be disabled via `enable_indexing(false)` option if needed.
 - Constraint pruning: builtins/negation whose variables are already bound at the current join depth are evaluated early to cut work; others stay in place, preserving semantics.
 
+### Examples
+- Disable indexing (fallback to full scans):
+  - `compile_predicate_to_csharp(p/2, [mode(generator), enable_indexing(false)], Code).`
+- Bound-only builtin pruning (safe):
+  - For `r(X,Y) :- a(X), b(X,Y), X > 0.` the generated join checks `a` first, then `b`, and evaluates `X > 0` as soon as `X` is bound—no semantic change, less work.
+
 ## Cross-target direction
 - The generator shares helpers (`common_generator`) with other targets; the goal is a common generator API across languages (joins/negation/aggregates) with per-target renderers.
 - This C# generator is the current reference for the standalone fixed-point path.
