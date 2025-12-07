@@ -2167,7 +2167,9 @@ compile_joins([], Builtins, Head, FirstGoal, Config, _Indexing, Code) :-
     build_variable_map(AccumPairs, VarMap),
     
     % Translate builtins
-    translate_builtins(Builtins, VarMap, Config, ConstraintChecks),
+    reorder_constraints(Builtins, VarMap, EarlyBuiltins, LateBuiltins),
+    translate_builtins(EarlyBuiltins, VarMap, Config, EarlyChecks),
+    translate_builtins(LateBuiltins, VarMap, Config, LateChecks),
     
     % Build output
     findall(Assign,
@@ -2187,13 +2189,13 @@ compile_joins([], Builtins, Head, FirstGoal, Config, _Indexing, Code) :-
         Assigns),
     atomic_list_concat(Assigns, ", ", OutputStr),
     
-    (   ConstraintChecks == "true"
+    (   EarlyChecks == "true", LateChecks == "true"
     ->  format(string(Code), "                yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });", [HeadPred, OutputStr])
     ;   format(string(Code), 
-"                if (~w)
+"                if (~w && ~w)
                 {
                     yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
-                }", [ConstraintChecks, HeadPred, OutputStr])
+                }", [EarlyChecks, LateChecks, HeadPred, OutputStr])
     ).
 
 compile_joins([Goal|RestGoals], Builtins, Head, FirstGoal, Config, Indexing, Code) :-
@@ -2210,7 +2212,9 @@ compile_nway_join([], Builtins, Head, AccumPairs, Config, _Indexing, _, Code) :-
     % Base case: no more goals to join, use ALL accumulated pairs for VarMap
     Head =.. [HeadPred|HeadArgs],
     build_variable_map(AccumPairs, VarMap),
-    translate_builtins(Builtins, VarMap, Config, ConstraintChecks),
+    reorder_constraints(Builtins, VarMap, EarlyBuiltins, LateBuiltins),
+    translate_builtins(EarlyBuiltins, VarMap, Config, EarlyChecks),
+    translate_builtins(LateBuiltins, VarMap, Config, LateChecks),
     
     % Build output
     findall(Assign,
@@ -2228,13 +2232,13 @@ compile_nway_join([], Builtins, Head, AccumPairs, Config, _Indexing, _, Code) :-
         Assigns),
     atomic_list_concat(Assigns, ", ", OutputStr),
     
-    (   ConstraintChecks == "true"
+    (   EarlyChecks == "true", LateChecks == "true"
     ->  format(string(Code), "                yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });", [HeadPred, OutputStr])
     ;   format(string(Code), 
-"                if (~w)
+"                if (~w && ~w)
                 {
                     yield return new Fact(\"~w\", new Dictionary<string, object> { ~w });
-                }", [ConstraintChecks, HeadPred, OutputStr])
+                }", [EarlyChecks, LateChecks, HeadPred, OutputStr])
     ).
 
 compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Indexing, Index, Code) :-
@@ -2381,6 +2385,16 @@ translate_builtins(Builtins, VarMap, Config, Code) :-
     ->  Code = "true"
     ;   atomic_list_concat(Checks, " && ", Code)
     ).
+
+%% reorder_constraints(+Builtins, +VarMap, -Early, -Late)
+%  Split builtins into those whose variables are already bound (Early)
+%  and the rest (Late). Safe because Early only references bound vars.
+reorder_constraints(Builtins, VarMap, Early, Late) :-
+    partition(can_eval_now(VarMap), Builtins, Early, Late).
+
+can_eval_now(VarMap, Goal) :-
+    Goal =.. [_|Args],
+    forall(member(A, Args), ( \+ var(A) ; member(A-source(_,_), VarMap) )).
 
 %% translate_builtin_or_negation(+Goal, +VarMap, +Config, -Check)
 %  Handles both regular builtins and negation
