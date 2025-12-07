@@ -135,6 +135,37 @@ run_all_tests :-
         test_protected_call_success
     ]),
 
+    % Phase 6d Tests
+    format('~n--- Phase 6d: Monitoring ---~n~n'),
+
+    run_test_group('Health Check Monitoring', [
+        test_declare_health_check,
+        test_health_check_config_query,
+        test_health_status_initial,
+        test_start_health_monitor
+    ]),
+
+    run_test_group('Metrics Collection', [
+        test_declare_metrics,
+        test_record_metric,
+        test_get_metrics,
+        test_prometheus_metrics_format
+    ]),
+
+    run_test_group('Structured Logging', [
+        test_declare_logging,
+        test_log_event,
+        test_get_log_entries,
+        test_log_level_filtering
+    ]),
+
+    run_test_group('Alerting', [
+        test_declare_alert,
+        test_trigger_alert,
+        test_check_alerts,
+        test_alert_history
+    ]),
+
     print_summary.
 
 run_test_group(GroupName, Tests) :-
@@ -725,6 +756,152 @@ test_protected_call_success :-
 
     protected_call(protected_test_service, test_op_success, [], Result),
     Result = ok(success_value).
+
+%% ============================================
+%% Phase 6d Tests: Health Check Monitoring
+%% ============================================
+
+test_declare_health_check :-
+    declare_health_check(health_test_service, [
+        endpoint('/health'),
+        interval(30),
+        timeout(5),
+        unhealthy_threshold(3),
+        healthy_threshold(2)
+    ]),
+    health_check_config(health_test_service, Config),
+    member(endpoint('/health'), Config),
+    member(interval(30), Config).
+
+test_health_check_config_query :-
+    health_check_config(health_test_service, Config),
+    member(timeout(5), Config),
+    member(unhealthy_threshold(3), Config).
+
+test_health_status_initial :-
+    undeclare_service(health_status_service),
+    declare_service(health_status_service, [port(8080)]),
+    health_status(health_status_service, Status),
+    Status == unknown.
+
+test_start_health_monitor :-
+    undeclare_service(health_monitor_service),
+    declare_service(health_monitor_service, [
+        host(localhost),
+        port(9999)
+    ]),
+    declare_deploy_method(health_monitor_service, local, []),
+    declare_health_check(health_monitor_service, [
+        endpoint('/health'),
+        timeout(1)
+    ]),
+    % Will fail health check (no server running) but tests the flow
+    catch(
+        start_health_monitor(health_monitor_service, _Result),
+        _,
+        true
+    ).
+
+%% ============================================
+%% Phase 6d Tests: Metrics Collection
+%% ============================================
+
+test_declare_metrics :-
+    declare_metrics(metrics_test_service, [
+        collect([request_count, latency]),
+        labels([service-metrics_test_service]),
+        export(prometheus),
+        retention(3600)
+    ]),
+    metrics_config(metrics_test_service, Config),
+    member(export(prometheus), Config).
+
+test_record_metric :-
+    record_metric(metrics_test_service, request_count, 1),
+    record_metric(metrics_test_service, request_count, 2),
+    record_metric(metrics_test_service, latency, 150),
+    get_metrics(metrics_test_service, Metrics),
+    length(Metrics, Count),
+    Count >= 3.
+
+test_get_metrics :-
+    get_metrics(metrics_test_service, Metrics),
+    member(metric(request_count, _, _), Metrics),
+    member(metric(latency, _, _), Metrics).
+
+test_prometheus_metrics_format :-
+    generate_prometheus_metrics(metrics_test_service, Output),
+    atom(Output),
+    sub_atom(Output, _, _, _, 'metrics_test_service').
+
+%% ============================================
+%% Phase 6d Tests: Structured Logging
+%% ============================================
+
+test_declare_logging :-
+    declare_logging(logging_test_service, [
+        level(info),
+        format(json),
+        output(stdout),
+        max_entries(100)
+    ]),
+    logging_config(logging_test_service, Config),
+    member(level(info), Config),
+    member(format(json), Config).
+
+test_log_event :-
+    % Clear any existing logs
+    retractall(log_entry_db(logging_test_service, _, _, _, _)),
+    log_event(logging_test_service, info, 'Test message', [key-value]),
+    log_event(logging_test_service, warn, 'Warning message', []),
+    get_log_entries(logging_test_service, [], Entries),
+    length(Entries, Count),
+    Count >= 2.
+
+test_get_log_entries :-
+    get_log_entries(logging_test_service, [limit(10)], Entries),
+    member(entry(info, 'Test message', _, _), Entries).
+
+test_log_level_filtering :-
+    % Clear and add fresh logs - use unique service name to avoid test pollution
+    retractall(log_entry_db(log_filter_test_service, _, _, _, _)),
+    retractall(logging_config_db(log_filter_test_service, _)),
+    declare_logging(log_filter_test_service, [level(warn), output(stdout)]),
+    log_event(log_filter_test_service, debug, 'Debug message', []),
+    log_event(log_filter_test_service, info, 'Info message', []),
+    log_event(log_filter_test_service, warn, 'Warn message', []),
+    log_event(log_filter_test_service, error, 'Error message', []),
+    get_log_entries(log_filter_test_service, [], Entries),
+    % Only warn and error should be logged (debug and info filtered out)
+    length(Entries, 2).
+
+%% ============================================
+%% Phase 6d Tests: Alerting
+%% ============================================
+
+test_declare_alert :-
+    declare_alert(alert_test_service, high_error_rate, [
+        condition('error_rate > 0.05'),
+        severity(critical),
+        cooldown(60)
+    ]),
+    alert_config(alert_test_service, high_error_rate, Config),
+    member(severity(critical), Config).
+
+test_trigger_alert :-
+    declare_logging(alert_test_service, [level(info), format(json)]),
+    trigger_alert(alert_test_service, high_error_rate, [rate-0.1]),
+    check_alerts(alert_test_service, Triggered),
+    member(alert(high_error_rate, triggered, _), Triggered).
+
+test_check_alerts :-
+    check_alerts(alert_test_service, Triggered),
+    is_list(Triggered),
+    member(alert(high_error_rate, triggered, _), Triggered).
+
+test_alert_history :-
+    alert_history(alert_test_service, [], History),
+    member(history(high_error_rate, triggered, _, _), History).
 
 %% ============================================
 %% Main Entry Point
