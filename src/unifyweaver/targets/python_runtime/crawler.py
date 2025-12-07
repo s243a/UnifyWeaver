@@ -6,6 +6,22 @@ except ImportError:
     sys.stderr.write("Error: lxml required for crawler\n")
     sys.exit(1)
 
+def get_local(data, local_name):
+    """Get value from data dict ignoring namespace prefixes.
+
+    Tries: exact match, @prefix, and any namespace:localname pattern.
+    Examples: 'title', '@title', 'dcterms:title', '@dcterms:title'
+    """
+    if local_name in data:
+        return data[local_name]
+    if f'@{local_name}' in data:
+        return data[f'@{local_name}']
+    suffix = f':{local_name}'
+    for key in data:
+        if key.endswith(suffix):
+            return data[key]
+    return None
+
 class PtCrawler:
     def __init__(self, importer, embedder=None):
         self.importer = importer
@@ -99,7 +115,7 @@ class PtCrawler:
                 
                 # Embeddings
                 if embed_content and self.embedder:
-                    text = data.get('title') or data.get('text') or ""
+                    text = get_local(data, 'title') or get_local(data, 'about') or data.get('text') or ""
                     if text:
                         # print(f"DEBUG: Embedding {obj_id}: {text[:50]}...", file=sys.stderr)
                         vec = self.embedder.get_embedding(text)
@@ -177,8 +193,10 @@ class PtCrawler:
         Args:
             fragment: Bytes containing a complete XML element
         """
+        # Use recover=True to handle fragments without namespace declarations
+        parser = etree.XMLParser(recover=True)
         try:
-            root = etree.fromstring(fragment)
+            root = etree.fromstring(fragment, parser=parser)
         except etree.XMLSyntaxError as e:
             raise ValueError(f"Invalid XML fragment: {e}")
 
@@ -226,7 +244,7 @@ class PtCrawler:
 
             # Generate embedding if embedder is available
             if self.embedder:
-                text = data.get('title') or data.get('text') or ""
+                text = get_local(data, 'title') or get_local(data, 'about') or data.get('text') or ""
                 if text:
                     vec = self.embedder.get_embedding(text)
                     self.importer.upsert_embedding(obj_id, vec)
