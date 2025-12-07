@@ -17,12 +17,26 @@
 
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
+:- use_module(common_generator).
 
 % Suppress singleton warnings in this experimental generator target.
 :- style_check(-singleton).
 :- discontiguous extract_match_constraints/2.
 :- discontiguous term_to_go_expr/3.
 :- use_module(library(filesex)).
+
+%% Go generator config for common_generator.pl
+go_generator_config(Config) :-
+    Config = [
+        access_fmt-"~w.Args[\"arg~w\"]",
+        atom_fmt-"\"~w\"",
+        null_val-"nil",
+        ops-[
+            + - "+", - - "-", * - "*", / - "/",
+            > - ">", < - "<", >= - ">=", =< - "<=",
+            =:= - "==", =\= - "!="
+        ]
+    ].
 
 %% ============================================
 %% JSON SCHEMA SUPPORT
@@ -141,8 +155,12 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     ),
     format('=== Compiling ~w/~w to Go ===~n', [Pred, Arity]),
 
-    % Check if this is an aggregation predicate (aggregate/3 in body) - MUST come before db_backend check
-    (   functor(Head, Pred, Arity),
+    % Check for generator mode (fixpoint evaluation) - MUST come first
+    (   option(mode(generator), Options)
+    ->  format('  Mode: Generator (fixpoint)~n'),
+        compile_generator_mode_go(Pred, Arity, Options, GoCode)
+    % Check if this is an aggregation predicate (aggregate/3 in body)
+    ;   functor(Head, Pred, Arity),
         clause(Head, Body),
         is_aggregation_predicate(Body)
     ->  format('  Mode: Aggregation (New)~n'),
@@ -193,6 +211,455 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     ;   % Continue with normal compilation
         compile_predicate_to_go_normal(Pred, Arity, Options, GoCode)
     ).
+
+%% ============================================
+%% GENERATOR MODE IMPLEMENTATION (Fixpoint)
+%% ============================================
+
+%% compile_generator_mode_go(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate using fixpoint evaluation (generator mode)
+%  Produces standalone Go program with Solve() iteration loop
+compile_generator_mode_go(Pred, Arity, Options, GoCode) :-
+    go_generator_config(Config),
+    
+    % Gather all clauses for this predicate (use copy_term to normalize)
+    functor(Head, Pred, Arity),
+    findall(HC-BC, 
+        (user:clause(Head, B), copy_term((Head, B), (HC, BC))), 
+        TargetClauses0),
+    remove_variant_duplicates(TargetClauses0, TargetClauses),
+    
+    % Also gather clauses for predicates referenced in rule bodies (dependency closure)
+    findall(DepPred/DepArity,
+        (   member(_-Body, TargetClauses),
+            Body \= true,
+            body_to_list_go(Body, Goals),
+            member(Goal, Goals),
+            \+ is_builtin_goal_go(Goal),
+            Goal =.. [DepPred|DepArgs],
+            length(DepArgs, DepArity),
+            DepPred/DepArity \= Pred/Arity  % Don't include self-references
+        ),
+        DepPredList0),
+    sort(DepPredList0, DepPredList),
+    
+    % Gather facts from dependencies
+    findall(DepHead,
+        (   member(DP/DA, DepPredList),
+            functor(DepHead, DP, DA),
+            user:clause(DepHead, true)
+        ),
+        DepFacts),
+    
+    % Combine target clauses with dependency facts
+    findall(FactHead, member(FactHead-true, TargetClauses), TargetFacts),
+    append(TargetFacts, DepFacts, AllFacts0),
+    remove_variant_duplicates_single(AllFacts0, AllFacts),
+    
+    % Compile facts
+    compile_go_generator_facts(AllFacts, Config, FactsCode),
+    
+    % Compile rules (only for target predicate, exclude facts)
+    findall(RuleClause, 
+        (member(RuleClause, TargetClauses), RuleClause = (_-RB), RB \= true),
+        TargetRuleClauses),
+    compile_go_generator_rules(TargetRuleClauses, Config, RulesCode, RuleNames),
+    
+    % Compile execution (fixpoint loop)
+    compile_go_generator_execution(Pred, RuleNames, Options, ExecutionCode),
+    
+    % Assemble complete program
+    go_generator_header(Pred, Header),
+    format(string(GoCode), "~w\n~w\n~w\n~w\n", [Header, FactsCode, RulesCode, ExecutionCode]).
+
+%% remove_variant_duplicates(+List, -Unique)
+%  Remove duplicates where terms are variants (same structure, different vars)
+remove_variant_duplicates([], []).
+remove_variant_duplicates([H|T], Result) :-
+    (   member_variant(H, T)
+    ->  remove_variant_duplicates(T, Result)
+    ;   Result = [H|Rest],
+        remove_variant_duplicates(T, Rest)
+    ).
+
+member_variant(X, [H|_]) :- X =@= H, !.
+member_variant(X, [_|T]) :- member_variant(X, T).
+
+%% remove_variant_duplicates_single(+List, -Unique)
+%  For single terms (not pairs)
+remove_variant_duplicates_single([], []).
+remove_variant_duplicates_single([H|T], Result) :-
+    (   member_variant_single(H, T)
+    ->  remove_variant_duplicates_single(T, Result)
+    ;   Result = [H|Rest],
+        remove_variant_duplicates_single(T, Rest)
+    ).
+
+member_variant_single(X, [H|_]) :- X =@= H, !.
+member_variant_single(X, [_|T]) :- member_variant_single(X, T).
+%% go_generator_header(+Pred, -Header)
+%  Generate Go boilerplate with Fact type
+go_generator_header(Pred, Header) :-
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+    format(string(Header),
+"// Generated by UnifyWeaver Go Generator Mode
+// Date: ~w
+// Predicate: ~w
+
+package main
+
+import (
+    \"encoding/json\"
+    \"fmt\"
+)
+
+// Fact represents a relation tuple
+type Fact struct {
+    Relation string                 \x60json:\"relation\"\x60
+    Args     map[string]interface{} \x60json:\"args\"\x60
+}
+
+// Key returns a canonical string for set membership
+func (f Fact) Key() string {
+    b, _ := json.Marshal(f)
+    return string(b)
+}
+
+", [DateStr, Pred]).
+
+%% compile_go_generator_facts(+FactHeads, +Config, -FactsCode)
+%  Generate GetInitialFacts() function
+compile_go_generator_facts(FactHeads, _Config, Code) :-
+    findall(FactCode,
+        (   member(Head, FactHeads),
+            Head =.. [Pred|Args],
+            generate_go_generator_fact(Pred, Args, FactCode)
+        ),
+        FactCodes),
+    (   FactCodes == []
+    ->  FactsBody = ""
+    ;   atomic_list_concat(FactCodes, "\n\t\t", FactsBody)
+    ),
+    format(string(Code),
+"// GetInitialFacts returns base facts for fixpoint computation
+func GetInitialFacts() []Fact {
+    return []Fact{
+        ~w
+    }
+}
+", [FactsBody]).
+
+%% generate_go_generator_fact(+Pred, +Args, -FactCode)
+generate_go_generator_fact(Pred, Args, Code) :-
+    findall(ArgCode,
+        (   nth0(I, Args, Arg),
+            format(string(ArgCode), "\"arg~w\": \"~w\"", [I, Arg])
+        ),
+        ArgCodes),
+    atomic_list_concat(ArgCodes, ", ", ArgsStr),
+    format(string(Code), 
+        "{Relation: \"~w\", Args: map[string]interface{}{~w}},", 
+        [Pred, ArgsStr]).
+
+%% compile_go_generator_rules(+RuleClauses, +Config, -RulesCode, -RuleNames)
+%  Generate ApplyRule_N functions for each rule clause
+compile_go_generator_rules(RuleClauses, Config, RulesCode, RuleNames) :-
+    findall(RuleCode-RuleName,
+        (   nth1(I, RuleClauses, Head-Body),
+            Body \= true,
+            once(compile_go_generator_rule(I, Head, Body, Config, RuleCode, RuleName))
+        ),
+        Pairs),
+    pairs_keys_values(Pairs, RuleCodes, RuleNames),
+    atomic_list_concat(RuleCodes, "\n\n", RulesCode).
+
+%% compile_go_generator_rule(+Index, +Head, +Body, +Config, -Code, -RuleName)
+%  Compile a single rule to a Go function
+compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
+    format(string(RuleName), "ApplyRule_~w", [Index]),
+    Head =.. [HeadPred|HeadArgs],
+    
+    % Parse body into goals
+    body_to_list_go(Body, Goals),
+    partition(is_builtin_goal_go, Goals, Builtins, RelGoals),
+    
+    (   RelGoals = []
+    ->  % Only builtins - not a productive rule
+        format(string(Code),
+"func ~w(fact Fact, total map[string]Fact) []Fact {
+    // Rule ~w: constraint-only (no relational goals)
+    return nil
+}", [RuleName, Index]),
+        !
+    ;   RelGoals = [FirstGoal|RestGoals],
+        FirstGoal =.. [Pred1|_],
+        
+        % Build initial variable map from first goal
+        build_variable_map([FirstGoal-fact], VarMap0),
+        
+        (   RestGoals == []
+        ->  % Simple rule: no join
+            % Generate builtin checks
+            compile_go_builtins(Builtins, VarMap0, Config, BuiltinCode),
+            % Generate head construction
+            compile_go_head_construction(HeadPred, HeadArgs, VarMap0, Config, HeadCode),
+            format(string(Code),
+"func ~w(fact Fact, total map[string]Fact) []Fact {
+    var results []Fact
+    
+    // Match first goal: ~w
+    if fact.Relation != \"~w\" {
+        return results
+    }
+~w
+    // Emit result
+    ~w
+    
+    return results
+}", [RuleName, FirstGoal, Pred1, BuiltinCode, HeadCode])
+        ;   % Join rule: need to nest the result inside join loops
+            compile_go_join_with_result(RestGoals, VarMap0, Config, Builtins, HeadPred, HeadArgs, JoinWithResultCode),
+            format(string(Code),
+"func ~w(fact Fact, total map[string]Fact) []Fact {
+    var results []Fact
+    
+    // Match first goal: ~w
+    if fact.Relation != \"~w\" {
+        return results
+    }
+~w
+    return results
+}", [RuleName, FirstGoal, Pred1, JoinWithResultCode])
+        )
+    ).
+
+%% body_to_list_go(+Body, -Goals)
+%  Convert conjunction body to list of goals
+body_to_list_go((A, B), Goals) :- !,
+    body_to_list_go(A, GoalsA),
+    body_to_list_go(B, GoalsB),
+    append(GoalsA, GoalsB, Goals).
+body_to_list_go(Goal, [Goal]).
+
+%% is_builtin_goal_go(+Goal)
+%  Check if goal is a builtin (comparison, arithmetic)
+is_builtin_goal_go(Goal) :-
+    Goal =.. [Functor|_],
+    member(Functor, [is, '>', '<', '>=', '=<', '=:=', '=\\=', '==', '\\=', not, '\\+']).
+
+%% compile_go_join_with_result(+Goals, +VarMap, +Config, +Builtins, +HeadPred, +HeadArgs, -Code)
+%  Generate nested join loops with result emission inside innermost loop
+compile_go_join_with_result([], VarMap, Config, Builtins, HeadPred, HeadArgs, Code) :-
+    % Base case: generate builtin checks and result emit
+    compile_go_builtins(Builtins, VarMap, Config, BuiltinCode),
+    compile_go_head_construction(HeadPred, HeadArgs, VarMap, Config, HeadCode),
+    format(string(Code), "~w\n            ~w", [BuiltinCode, HeadCode]).
+
+compile_go_join_with_result([Goal|Rest], VarMap, Config, Builtins, HeadPred, HeadArgs, Code) :-
+    Goal =.. [Pred|Args],
+    length([Goal|Rest], Len),
+    format(string(VarName), "j~w", [Len]),
+    
+    % Build join condition from shared variables
+    compile_go_join_condition(Args, VarMap, Config, VarName, JoinCond),
+    
+    % Update variable map with this goal's bindings
+    build_variable_map([Goal-VarName], NewBindings),
+    append(VarMap, NewBindings, VarMap1),
+    
+    % Recurse to get inner code
+    compile_go_join_with_result(Rest, VarMap1, Config, Builtins, HeadPred, HeadArgs, InnerCode),
+    
+    format(string(Code),
+"    
+    // Join with ~w
+    for _, ~w := range total {
+        if ~w.Relation == \"~w\"~w {
+~w
+        }
+    }
+", [Pred, VarName, VarName, Pred, JoinCond, InnerCode]).
+
+%% compile_go_joins(+Goals, +VarMap, +Config, +Index, -JoinCode, -FinalVarMap)
+%  Generate nested loops for join goals
+compile_go_joins([], VarMap, _, _, "", VarMap).
+compile_go_joins([Goal|Rest], VarMap, Config, Index, Code, FinalVarMap) :-
+    Goal =.. [Pred|Args],
+    format(string(VarName), "j~w", [Index]),
+    
+    % Build join condition from shared variables
+    compile_go_join_condition(Args, VarMap, Config, VarName, JoinCond),
+    
+    % Update variable map with this goal's bindings
+    build_variable_map([Goal-VarName], NewBindings),
+    append(VarMap, NewBindings, VarMap1),
+    
+    % Recurse for remaining goals
+    Next is Index + 1,
+    compile_go_joins(Rest, VarMap1, Config, Next, RestCode, FinalVarMap),
+    
+    format(string(Code),
+"    
+    // Join with ~w
+    for _, ~w := range total {
+        if ~w.Relation == \"~w\"~w {
+~w        }
+    }
+", [Pred, VarName, VarName, Pred, JoinCond, RestCode]).
+
+%% compile_go_join_condition(+Args, +VarMap, +Config, +VarName, -Condition)
+%  Generate join condition checking shared variables
+compile_go_join_condition(Args, VarMap, _Config, VarName, Condition) :-
+    findall(Cond,
+        (   nth0(I, Args, Arg),
+            var(Arg),
+            member(Arg0-source(Source, SrcIdx), VarMap),
+            Arg == Arg0,
+            format(string(Cond), " && ~w.Args[\"arg~w\"] == ~w.Args[\"arg~w\"]", [VarName, I, Source, SrcIdx])
+        ),
+        Conds),
+    atomic_list_concat(Conds, "", Condition).
+
+%% compile_go_builtins(+Builtins, +VarMap, +Config, -Code)
+%  Generate builtin constraint checks
+compile_go_builtins([], _, _, "").
+compile_go_builtins(Builtins, VarMap, Config, Code) :-
+    findall(Check,
+        (   member(B, Builtins),
+            compile_go_single_builtin(B, VarMap, Config, Check)
+        ),
+        Checks),
+    (   Checks == []
+    ->  Code = ""
+    ;   atomic_list_concat(Checks, "\n", ChecksStr),
+        format(string(Code), "\n    // Constraint checks\n~w\n", [ChecksStr])
+    ).
+
+%% compile_go_single_builtin(+Builtin, +VarMap, +Config, -Check)
+compile_go_single_builtin(Goal, VarMap, Config, Check) :-
+    (   Goal = (\+ NegGoal)
+    ;   Goal = not(NegGoal)
+    ),
+    !,
+    % Negation check
+    NegGoal =.. [NegPred|NegArgs],
+    findall(Assign,
+        (   nth0(I, NegArgs, Arg),
+            translate_go_expr(Arg, VarMap, Config, Expr),
+            format(string(Assign), "\"arg~w\": ~w", [I, Expr])
+        ),
+        Assigns),
+    atomic_list_concat(Assigns, ", ", ArgsStr),
+    format(string(Check),
+"    negFact := Fact{Relation: \"~w\", Args: map[string]interface{}{~w}}
+    if _, exists := total[negFact.Key()]; exists {
+        return results
+    }", [NegPred, ArgsStr]).
+
+compile_go_single_builtin(Goal, VarMap, Config, Check) :-
+    Goal =.. [Op, Left, Right],
+    member(Op-GoOp, ['>' - ">", '<' - "<", '>=' - ">=", '=<' - "<=", '=:=' - "==", '=\\=' - "!="]),
+    !,
+    translate_go_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_expr(Right, VarMap, Config, RightExpr),
+    format(string(Check),
+"    if !(~w ~w ~w) {
+        return results
+    }", [LeftExpr, GoOp, RightExpr]).
+
+compile_go_single_builtin(_, _, _, "").
+
+%% translate_go_expr(+Expr, +VarMap, +Config, -GoExpr)
+%  Translate Prolog expression to Go expression
+translate_go_expr(Var, VarMap, _, Expr) :-
+    var(Var),
+    !,
+    (   member(V-source(Source, Idx), VarMap), Var == V
+    ->  format(string(Expr), "~w.Args[\"arg~w\"]", [Source, Idx])
+    ;   Expr = "nil"
+    ).
+translate_go_expr(Num, _, _, Expr) :-
+    number(Num),
+    !,
+    format(string(Expr), "~w", [Num]).
+translate_go_expr(Atom, _, _, Expr) :-
+    atom(Atom),
+    !,
+    format(string(Expr), "\"~w\"", [Atom]).
+translate_go_expr(Expr, VarMap, Config, GoExpr) :-
+    Expr =.. [Op, Left, Right],
+    member(Op, [+, -, *, /]),
+    !,
+    translate_go_expr(Left, VarMap, Config, LeftExpr),
+    translate_go_expr(Right, VarMap, Config, RightExpr),
+    format(string(GoExpr), "(~w ~w ~w)", [LeftExpr, Op, RightExpr]).
+translate_go_expr(_, _, _, "nil").
+
+%% compile_go_head_construction(+HeadPred, +HeadArgs, +VarMap, +Config, -Code)
+%  Generate code to construct result fact
+compile_go_head_construction(HeadPred, HeadArgs, VarMap, Config, Code) :-
+    findall(ArgCode,
+        (   nth0(I, HeadArgs, Arg),
+            translate_go_expr(Arg, VarMap, Config, Expr),
+            format(string(ArgCode), "\"arg~w\": ~w", [I, Expr])
+        ),
+        ArgCodes),
+    atomic_list_concat(ArgCodes, ", ", ArgsStr),
+    format(string(Code),
+"results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})", 
+        [HeadPred, ArgsStr]).
+
+%% compile_go_generator_execution(+Pred, +RuleNames, +Options, -Code)
+%  Generate Solve() fixpoint loop and main()
+compile_go_generator_execution(_Pred, RuleNames, _Options, Code) :-
+    findall(Call,
+        (   member(Name, RuleNames),
+            format(string(Call), "\t\t\tnewFacts = append(newFacts, ~w(fact, total)...)", [Name])
+        ),
+        Calls),
+    atomic_list_concat(Calls, "\n", CallsStr),
+    format(string(Code),
+"// Solve runs fixpoint iteration until no new facts are derived
+func Solve() map[string]Fact {
+    total := make(map[string]Fact)
+    
+    // Initialize with base facts
+    for _, fact := range GetInitialFacts() {
+        total[fact.Key()] = fact
+    }
+    
+    // Fixpoint iteration
+    changed := true
+    for changed {
+        changed = false
+        var newFacts []Fact
+        
+        for _, fact := range total {
+~w
+        }
+        
+        // Add new facts to total
+        for _, nf := range newFacts {
+            key := nf.Key()
+            if _, exists := total[key]; !exists {
+                total[key] = nf
+                changed = true
+            }
+        }
+    }
+    
+    return total
+}
+
+func main() {
+    result := Solve()
+    for _, fact := range result {
+        b, _ := json.Marshal(fact)
+        fmt.Println(string(b))
+    }
+}
+", [CallsStr]).
 
 %% compile_predicate_to_go_normal(+Pred, +Arity, +Options, -GoCode)
 %  Normal (non-aggregation) compilation path
