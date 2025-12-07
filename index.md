@@ -43,13 +43,13 @@ One codebase → Bash streams, C# queries, Go binaries, SQL views, and more.
 
 ## Key Features
 
-✅ **9 Target Languages** - Bash, C#, Go, Rust, Python, SQL, AWK, Prolog, PowerShell
-✅ **Multiple Compilation Approaches** - Stream-based, fixed-point, generator, declarative
-✅ **Advanced Recursion** - Linear, tail, tree, mutual recursion with automatic optimization
-✅ **Data Source Plugins** - CSV, JSON, XML, HTTP, AWK, Python integration
-✅ **Cross-Target Glue** - Compose predicates across languages in unified pipelines
-✅ **Parallel Execution** - Automatic partitioning and parallel processing
-✅ **Security & Firewall** - Production-ready policy enforcement  
+- ✅ **9 Target Languages** - Bash, C#, Go, Rust, Python, SQL, AWK, Prolog, PowerShell
+- ✅ **Multiple Compilation Approaches** - Stream-based, fixed-point, generator, declarative
+- ✅ **Advanced Recursion** - Linear, tail, tree, mutual recursion with automatic optimization
+- ✅ **Data Source Plugins** - CSV, JSON, XML, HTTP, AWK, Python integration
+- ✅ **Cross-Target Glue** - Compose predicates across languages in unified pipelines
+- ✅ **Parallel Execution** - Automatic partitioning and parallel processing
+- ✅ **Security & Firewall** - Production-ready policy enforcement  
 
 ---
 
