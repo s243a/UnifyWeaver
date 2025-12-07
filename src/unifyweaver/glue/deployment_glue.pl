@@ -139,7 +139,45 @@
     alert_config/3,                 % alert_config(?Service, ?AlertName, ?Config)
     check_alerts/2,                 % check_alerts(+Service, -TriggeredAlerts)
     trigger_alert/3,                % trigger_alert(+Service, +AlertName, +Data)
-    alert_history/3                 % alert_history(+Service, +Options, -History)
+    alert_history/3,                % alert_history(+Service, +Options, -History)
+
+    % Phase 7a: Container Deployment
+    % Docker configuration
+    declare_docker_config/2,        % declare_docker_config(+Service, +Config)
+    docker_config/2,                % docker_config(?Service, ?Config)
+
+    % Dockerfile generation
+    generate_dockerfile/3,          % generate_dockerfile(+Service, +Options, -Dockerfile)
+    generate_dockerignore/3,        % generate_dockerignore(+Service, +Options, -Content)
+
+    % Docker operations
+    build_docker_image/3,           % build_docker_image(+Service, +Options, -Result)
+    push_docker_image/3,            % push_docker_image(+Service, +Options, -Result)
+    docker_image_tag/2,             % docker_image_tag(+Service, -Tag)
+
+    % Docker Compose
+    declare_compose_config/2,       % declare_compose_config(+Project, +Config)
+    compose_config/2,               % compose_config(?Project, ?Config)
+    generate_docker_compose/3,      % generate_docker_compose(+Project, +Options, -ComposeYaml)
+
+    % Kubernetes deployment
+    declare_k8s_config/2,           % declare_k8s_config(+Service, +Config)
+    k8s_config/2,                   % k8s_config(?Service, ?Config)
+    generate_k8s_deployment/3,      % generate_k8s_deployment(+Service, +Options, -Manifest)
+    generate_k8s_service/3,         % generate_k8s_service(+Service, +Options, -Manifest)
+    generate_k8s_configmap/3,       % generate_k8s_configmap(+Service, +Options, -Manifest)
+    generate_k8s_ingress/3,         % generate_k8s_ingress(+Service, +Options, -Manifest)
+    generate_helm_chart/3,          % generate_helm_chart(+Service, +Options, -Chart)
+
+    % Container registry
+    declare_registry/2,             % declare_registry(+Name, +Config)
+    registry_config/2,              % registry_config(?Name, ?Config)
+    login_registry/2,               % login_registry(+Name, -Result)
+
+    % Container orchestration
+    deploy_to_k8s/3,                % deploy_to_k8s(+Service, +Options, -Result)
+    scale_k8s_deployment/4,         % scale_k8s_deployment(+Service, +Replicas, +Options, -Result)
+    rollout_status/3                % rollout_status(+Service, +Options, -Status)
 ]).
 
 :- use_module(library(lists)).
@@ -179,6 +217,12 @@
 :- dynamic alert_config_db/3.           % alert_config_db(Service, AlertName, Config)
 :- dynamic alert_state_db/4.            % alert_state_db(Service, AlertName, State, Since)
 :- dynamic alert_history_db/5.          % alert_history_db(Service, AlertName, State, Data, Timestamp)
+
+% Phase 7a dynamic storage
+:- dynamic docker_config_db/2.          % docker_config_db(Service, Config)
+:- dynamic compose_config_db/2.         % compose_config_db(Project, Config)
+:- dynamic k8s_config_db/2.             % k8s_config_db(Service, Config)
+:- dynamic registry_config_db/2.        % registry_config_db(Name, Config)
 
 %% ============================================
 %% Service Declarations
@@ -2461,3 +2505,1220 @@ filter_alert_history(Options, AlertName, Timestamp) :-
     ->  Timestamp >= Since
     ;   true
     ).
+
+%% ============================================
+%% Phase 7a: Container Deployment
+%% ============================================
+
+%% --------------------------------------------
+%% Docker Configuration
+%% --------------------------------------------
+
+%% declare_docker_config(+Service, +Config)
+%  Configure Docker settings for a service.
+%
+%  Config options:
+%    - base_image(Image)     : Base Docker image (default: auto-detected)
+%    - registry(Name)        : Registry to push to
+%    - image_name(Name)      : Image name (default: service name)
+%    - tag(Tag)              : Image tag (default: latest)
+%    - build_args(Args)      : Build arguments (list of name-value pairs)
+%    - labels(Labels)        : Docker labels
+%    - expose(Ports)         : Ports to expose
+%    - env(Vars)             : Environment variables
+%    - volumes(Vols)         : Volume mounts
+%    - healthcheck(HC)       : Health check configuration
+%    - multi_stage(Bool)     : Use multi-stage build
+%    - workdir(Dir)          : Working directory
+%    - user(User)            : Run as user
+%    - entrypoint(EP)        : Container entrypoint
+%    - cmd(Cmd)              : Default command
+%
+declare_docker_config(Service, Config) :-
+    retractall(docker_config_db(Service, _)),
+    assertz(docker_config_db(Service, Config)).
+
+%% docker_config(?Service, ?Config)
+%  Query Docker configuration.
+%
+docker_config(Service, Config) :-
+    docker_config_db(Service, Config).
+
+%% --------------------------------------------
+%% Dockerfile Generation
+%% --------------------------------------------
+
+%% generate_dockerfile(+Service, +Options, -Dockerfile)
+%  Generate a Dockerfile for the service.
+%
+%  Options:
+%    - optimize(Bool)        : Enable build optimizations
+%    - no_cache_layers(List) : Layers to not cache
+%
+generate_dockerfile(Service, Options, Dockerfile) :-
+    service_config(Service, ServiceConfig),
+    docker_config(Service, DockerConfig),
+    option_or_default(target, ServiceConfig, python, Target),
+    generate_dockerfile_for_target(Target, Service, ServiceConfig, DockerConfig, Options, Dockerfile).
+
+%% generate_dockerfile_for_target(+Target, +Service, +ServiceConfig, +DockerConfig, +Options, -Dockerfile)
+%  Generate target-specific Dockerfile.
+%
+generate_dockerfile_for_target(python, Service, ServiceConfig, DockerConfig, _Options, Dockerfile) :-
+    option_or_default(base_image, DockerConfig, 'python:3.11-slim', BaseImage),
+    option_or_default(workdir, DockerConfig, '/app', WorkDir),
+    option_or_default(entry_point, ServiceConfig, 'main.py', EntryPoint),
+    option_or_default(port, ServiceConfig, 8080, Port),
+    option_or_default(env, DockerConfig, [], EnvVars),
+    option_or_default(healthcheck, DockerConfig, none, HealthCheck),
+    option_or_default(user, DockerConfig, none, User),
+
+    % Build environment lines
+    format_env_lines(EnvVars, EnvLines),
+
+    % Build healthcheck line
+    format_healthcheck(HealthCheck, Port, HealthCheckLine),
+
+    % Build user line
+    format_user_line(User, UserLine),
+
+    format(atom(Dockerfile),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Service: ~w
+
+FROM ~w
+
+WORKDIR ~w
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application
+COPY . .
+
+~w~w~w
+EXPOSE ~w
+
+CMD ["python", "~w"]
+', [Service, BaseImage, WorkDir, EnvLines, UserLine, HealthCheckLine, Port, EntryPoint]).
+
+generate_dockerfile_for_target(go, Service, ServiceConfig, DockerConfig, Options, Dockerfile) :-
+    option_or_default(base_image, DockerConfig, 'golang:1.21-alpine', BuildImage),
+    option_or_default(runtime_image, DockerConfig, 'alpine:latest', RuntimeImage),
+    option_or_default(workdir, DockerConfig, '/app', WorkDir),
+    option_or_default(entry_point, ServiceConfig, 'main.go', _EntryPoint),
+    option_or_default(port, ServiceConfig, 8080, Port),
+    option_or_default(multi_stage, DockerConfig, true, MultiStage),
+    option_or_default(env, DockerConfig, [], EnvVars),
+    atom_string(Service, ServiceStr),
+
+    format_env_lines(EnvVars, EnvLines),
+
+    (   MultiStage == true, \+ member(single_stage, Options)
+    ->  format(atom(Dockerfile),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Service: ~w (Go multi-stage build)
+
+# Build stage
+FROM ~w AS builder
+
+WORKDIR ~w
+
+# Download dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Build application
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o /~w .
+
+# Runtime stage
+FROM ~w
+
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+
+COPY --from=builder /~w .
+
+~w
+EXPOSE ~w
+
+CMD ["./~w"]
+', [Service, BuildImage, WorkDir, ServiceStr, RuntimeImage, ServiceStr, EnvLines, Port, ServiceStr])
+    ;   format(atom(Dockerfile),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Service: ~w (Go single-stage build)
+
+FROM ~w
+
+WORKDIR ~w
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -o /~w .
+
+~w
+EXPOSE ~w
+
+CMD ["/~w"]
+', [Service, BuildImage, WorkDir, ServiceStr, EnvLines, Port, ServiceStr])
+    ).
+
+generate_dockerfile_for_target(rust, Service, ServiceConfig, DockerConfig, _Options, Dockerfile) :-
+    option_or_default(base_image, DockerConfig, 'rust:1.73-slim', BuildImage),
+    option_or_default(runtime_image, DockerConfig, 'debian:bookworm-slim', RuntimeImage),
+    option_or_default(workdir, DockerConfig, '/app', WorkDir),
+    option_or_default(port, ServiceConfig, 8080, Port),
+    option_or_default(env, DockerConfig, [], EnvVars),
+    atom_string(Service, ServiceStr),
+
+    format_env_lines(EnvVars, EnvLines),
+
+    format(atom(Dockerfile),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Service: ~w (Rust multi-stage build)
+
+# Build stage
+FROM ~w AS builder
+
+WORKDIR ~w
+
+# Copy manifests
+COPY Cargo.toml Cargo.lock ./
+
+# Create dummy main to cache dependencies
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN cargo build --release
+RUN rm -rf src
+
+# Build actual application
+COPY src ./src
+RUN touch src/main.rs && cargo build --release
+
+# Runtime stage
+FROM ~w
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder ~w/target/release/~w /usr/local/bin/
+
+~w
+EXPOSE ~w
+
+CMD ["~w"]
+', [Service, BuildImage, WorkDir, RuntimeImage, WorkDir, ServiceStr, EnvLines, Port, ServiceStr]).
+
+generate_dockerfile_for_target(nodejs, Service, ServiceConfig, DockerConfig, _Options, Dockerfile) :-
+    option_or_default(base_image, DockerConfig, 'node:20-alpine', BaseImage),
+    option_or_default(workdir, DockerConfig, '/app', WorkDir),
+    option_or_default(entry_point, ServiceConfig, 'index.js', EntryPoint),
+    option_or_default(port, ServiceConfig, 3000, Port),
+    option_or_default(env, DockerConfig, [], EnvVars),
+
+    format_env_lines(EnvVars, EnvLines),
+
+    format(atom(Dockerfile),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Service: ~w (Node.js)
+
+FROM ~w
+
+WORKDIR ~w
+
+# Install dependencies
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Copy application
+COPY . .
+
+~w
+EXPOSE ~w
+
+CMD ["node", "~w"]
+', [Service, BaseImage, WorkDir, EnvLines, Port, EntryPoint]).
+
+generate_dockerfile_for_target(csharp, Service, ServiceConfig, DockerConfig, _Options, Dockerfile) :-
+    option_or_default(base_image, DockerConfig, 'mcr.microsoft.com/dotnet/sdk:8.0', BuildImage),
+    option_or_default(runtime_image, DockerConfig, 'mcr.microsoft.com/dotnet/aspnet:8.0', RuntimeImage),
+    option_or_default(workdir, DockerConfig, '/app', WorkDir),
+    option_or_default(port, ServiceConfig, 8080, Port),
+    option_or_default(env, DockerConfig, [], EnvVars),
+    atom_string(Service, ServiceStr),
+
+    format_env_lines(EnvVars, EnvLines),
+
+    format(atom(Dockerfile),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Service: ~w (C# .NET)
+
+# Build stage
+FROM ~w AS build
+
+WORKDIR /src
+
+COPY *.csproj ./
+RUN dotnet restore
+
+COPY . .
+RUN dotnet publish -c Release -o /app/publish
+
+# Runtime stage
+FROM ~w
+
+WORKDIR ~w
+
+COPY --from=build /app/publish .
+
+~w
+EXPOSE ~w
+
+ENTRYPOINT ["dotnet", "~w.dll"]
+', [Service, BuildImage, RuntimeImage, WorkDir, EnvLines, Port, ServiceStr]).
+
+% Fallback for unknown targets
+generate_dockerfile_for_target(Target, Service, _ServiceConfig, DockerConfig, _Options, Dockerfile) :-
+    option_or_default(base_image, DockerConfig, 'alpine:latest', BaseImage),
+    format(atom(Dockerfile),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Service: ~w (Target: ~w)
+# WARNING: Unknown target, using generic template
+
+FROM ~w
+
+WORKDIR /app
+
+COPY . .
+
+# TODO: Add build/run commands for target: ~w
+', [Service, Target, BaseImage, Target]).
+
+%% format_env_lines(+EnvVars, -Lines)
+%  Format environment variables for Dockerfile.
+%
+format_env_lines([], '').
+format_env_lines(EnvVars, Lines) :-
+    EnvVars \= [],
+    maplist(format_env_var, EnvVars, EnvLines),
+    atomic_list_concat(EnvLines, '\n', Lines0),
+    format(atom(Lines), '~w\n', [Lines0]).
+
+format_env_var(Name-Value, Line) :-
+    format(atom(Line), 'ENV ~w=~w', [Name, Value]).
+format_env_var(Name=Value, Line) :-
+    format(atom(Line), 'ENV ~w=~w', [Name, Value]).
+
+%% format_healthcheck(+HealthCheck, +Port, -Line)
+%  Format health check for Dockerfile.
+%
+format_healthcheck(none, _, '').
+format_healthcheck(http(Path), Port, Line) :-
+    format(atom(Line), 'HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \\\n  CMD wget --quiet --tries=1 --spider http://localhost:~w~w || exit 1\n', [Port, Path]).
+format_healthcheck(tcp, Port, Line) :-
+    format(atom(Line), 'HEALTHCHECK --interval=30s --timeout=5s --retries=3 \\\n  CMD nc -z localhost ~w || exit 1\n', [Port]).
+format_healthcheck(cmd(Cmd), _, Line) :-
+    format(atom(Line), 'HEALTHCHECK --interval=30s --timeout=5s --retries=3 \\\n  CMD ~w\n', [Cmd]).
+
+%% format_user_line(+User, -Line)
+%  Format user line for Dockerfile.
+%
+format_user_line(none, '').
+format_user_line(User, Line) :-
+    User \= none,
+    format(atom(Line), 'USER ~w\n', [User]).
+
+%% generate_dockerignore(+Service, +Options, -Content)
+%  Generate .dockerignore file content.
+%
+generate_dockerignore(Service, _Options, Content) :-
+    service_config(Service, ServiceConfig),
+    option_or_default(target, ServiceConfig, python, Target),
+    generate_dockerignore_for_target(Target, Content).
+
+generate_dockerignore_for_target(python, Content) :-
+    Content = '# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Tests
+tests/
+*_test.py
+test_*.py
+'.
+
+generate_dockerignore_for_target(go, Content) :-
+    Content = '# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Tests
+*_test.go
+'.
+
+generate_dockerignore_for_target(rust, Content) :-
+    Content = '# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+'.
+
+generate_dockerignore_for_target(nodejs, Content) :-
+    Content = '# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Tests
+test/
+tests/
+*.test.js
+*.spec.js
+__tests__/
+'.
+
+generate_dockerignore_for_target(csharp, Content) :-
+    Content = '# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+'.
+
+generate_dockerignore_for_target(_, Content) :-
+    Content = '# Generic
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+.idea/
+.vscode/
+*.swp
+'.
+
+%% --------------------------------------------
+%% Docker Operations
+%% --------------------------------------------
+
+%% docker_image_tag(+Service, -Tag)
+%  Get the full Docker image tag for a service.
+%
+docker_image_tag(Service, Tag) :-
+    docker_config(Service, Config),
+    option_or_default(registry, Config, none, Registry),
+    option_or_default(image_name, Config, Service, ImageName),
+    option_or_default(tag, Config, latest, ImageTag),
+    (   Registry == none
+    ->  format(atom(Tag), '~w:~w', [ImageName, ImageTag])
+    ;   registry_config(Registry, RegConfig),
+        option_or_default(url, RegConfig, Registry, RegURL),
+        option_or_default(image_prefix, RegConfig, '', Prefix),
+        format(atom(Tag), '~w/~w~w:~w', [RegURL, Prefix, ImageName, ImageTag])
+    ).
+
+%% build_docker_image(+Service, +Options, -Result)
+%  Build Docker image for a service.
+%
+%  Options:
+%    - no_cache(Bool)       : Build without cache
+%    - platform(P)          : Target platform (e.g., linux/amd64)
+%    - build_args(Args)     : Additional build arguments
+%
+build_docker_image(Service, Options, Result) :-
+    docker_image_tag(Service, Tag),
+    option_or_default(no_cache, Options, false, NoCache),
+    option_or_default(platform, Options, none, Platform),
+    option_or_default(build_args, Options, [], BuildArgs),
+
+    % Build command parts
+    (NoCache == true -> NoCacheFlag = '--no-cache ' ; NoCacheFlag = ''),
+    (Platform \= none -> format(atom(PlatformFlag), '--platform ~w ', [Platform]) ; PlatformFlag = ''),
+    format_build_args(BuildArgs, BuildArgsStr),
+
+    format(atom(Cmd), 'docker build ~w~w~w-t ~w .', [NoCacheFlag, PlatformFlag, BuildArgsStr, Tag]),
+
+    Result = build_command(Cmd, Tag).
+
+format_build_args([], '').
+format_build_args(Args, Str) :-
+    Args \= [],
+    maplist(format_build_arg, Args, ArgStrs),
+    atomic_list_concat(ArgStrs, ' ', Str0),
+    format(atom(Str), '~w ', [Str0]).
+
+format_build_arg(Name-Value, Str) :-
+    format(atom(Str), '--build-arg ~w=~w', [Name, Value]).
+format_build_arg(Name=Value, Str) :-
+    format(atom(Str), '--build-arg ~w=~w', [Name, Value]).
+
+%% push_docker_image(+Service, +Options, -Result)
+%  Push Docker image to registry.
+%
+push_docker_image(Service, _Options, Result) :-
+    docker_image_tag(Service, Tag),
+    format(atom(Cmd), 'docker push ~w', [Tag]),
+    Result = push_command(Cmd, Tag).
+
+%% --------------------------------------------
+%% Docker Compose
+%% --------------------------------------------
+
+%% declare_compose_config(+Project, +Config)
+%  Configure Docker Compose project.
+%
+%  Config options:
+%    - services(List)       : List of service names
+%    - networks(List)       : Network configurations
+%    - volumes(List)        : Volume configurations
+%    - version(V)           : Compose file version (default: '3.8')
+%
+declare_compose_config(Project, Config) :-
+    retractall(compose_config_db(Project, _)),
+    assertz(compose_config_db(Project, Config)).
+
+%% compose_config(?Project, ?Config)
+%  Query Docker Compose configuration.
+%
+compose_config(Project, Config) :-
+    compose_config_db(Project, Config).
+
+%% generate_docker_compose(+Project, +Options, -ComposeYaml)
+%  Generate docker-compose.yml content.
+%
+generate_docker_compose(Project, _Options, ComposeYaml) :-
+    compose_config(Project, Config),
+    option_or_default(services, Config, [], ServiceNames),
+    option_or_default(networks, Config, [default], Networks),
+    option_or_default(volumes, Config, [], Volumes),
+    option_or_default(version, Config, '3.8', Version),
+
+    % Generate services section
+    maplist(generate_compose_service, ServiceNames, ServiceYamls),
+    atomic_list_concat(ServiceYamls, '\n', ServicesSection),
+
+    % Generate networks section
+    generate_compose_networks(Networks, NetworksSection),
+
+    % Generate volumes section
+    generate_compose_volumes(Volumes, VolumesSection),
+
+    format(atom(ComposeYaml),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Project: ~w
+
+version: "~w"
+
+services:
+~w
+~w~w', [Project, Version, ServicesSection, NetworksSection, VolumesSection]).
+
+%% generate_compose_service(+ServiceName, -ServiceYaml)
+%  Generate service entry for docker-compose.yml.
+%
+generate_compose_service(ServiceName, ServiceYaml) :-
+    (   service_config(ServiceName, ServiceConfig),
+        docker_config(ServiceName, DockerConfig)
+    ->  option_or_default(port, ServiceConfig, 8080, Port),
+        option_or_default(env, DockerConfig, [], EnvVars),
+        option_or_default(volumes, DockerConfig, [], Volumes),
+        option_or_default(depends_on, DockerConfig, [], DependsOn),
+        option_or_default(restart, DockerConfig, 'unless-stopped', Restart),
+
+        % Format environment
+        format_compose_env(EnvVars, EnvSection),
+
+        % Format volumes
+        format_compose_volumes(Volumes, VolSection),
+
+        % Format depends_on
+        format_compose_depends(DependsOn, DependsSection),
+
+        docker_image_tag(ServiceName, ImageTag),
+
+        format(atom(ServiceYaml),
+'  ~w:
+    image: ~w
+    ports:
+      - "~w:~w"
+    restart: ~w~w~w~w
+', [ServiceName, ImageTag, Port, Port, Restart, EnvSection, VolSection, DependsSection])
+    ;   % Service not fully configured, use defaults
+        format(atom(ServiceYaml),
+'  ~w:
+    build: ./~w
+    restart: unless-stopped
+', [ServiceName, ServiceName])
+    ).
+
+format_compose_env([], '').
+format_compose_env(EnvVars, Section) :-
+    EnvVars \= [],
+    maplist(format_compose_env_var, EnvVars, Lines),
+    atomic_list_concat(Lines, '\n', LinesStr),
+    format(atom(Section), '\n    environment:\n~w', [LinesStr]).
+
+format_compose_env_var(Name-Value, Line) :-
+    format(atom(Line), '      - ~w=~w', [Name, Value]).
+format_compose_env_var(Name=Value, Line) :-
+    format(atom(Line), '      - ~w=~w', [Name, Value]).
+
+format_compose_volumes([], '').
+format_compose_volumes(Volumes, Section) :-
+    Volumes \= [],
+    maplist(format_compose_volume, Volumes, Lines),
+    atomic_list_concat(Lines, '\n', LinesStr),
+    format(atom(Section), '\n    volumes:\n~w', [LinesStr]).
+
+format_compose_volume(Source:Target, Line) :-
+    format(atom(Line), '      - ~w:~w', [Source, Target]).
+format_compose_volume(Vol, Line) :-
+    \+ (Vol = _:_),
+    format(atom(Line), '      - ~w', [Vol]).
+
+format_compose_depends([], '').
+format_compose_depends(DependsOn, Section) :-
+    DependsOn \= [],
+    maplist(format_compose_depend, DependsOn, Lines),
+    atomic_list_concat(Lines, '\n', LinesStr),
+    format(atom(Section), '\n    depends_on:\n~w', [LinesStr]).
+
+format_compose_depend(Service, Line) :-
+    format(atom(Line), '      - ~w', [Service]).
+
+generate_compose_networks([], '').
+generate_compose_networks([default], '').
+generate_compose_networks(Networks, Section) :-
+    Networks \= [],
+    Networks \= [default],
+    maplist(format_compose_network, Networks, Lines),
+    atomic_list_concat(Lines, '\n', LinesStr),
+    format(atom(Section), '\nnetworks:\n~w\n', [LinesStr]).
+
+format_compose_network(Name, Line) :-
+    format(atom(Line), '  ~w:', [Name]).
+
+generate_compose_volumes([], '').
+generate_compose_volumes(Volumes, Section) :-
+    Volumes \= [],
+    maplist(format_compose_named_volume, Volumes, Lines),
+    atomic_list_concat(Lines, '\n', LinesStr),
+    format(atom(Section), '\nvolumes:\n~w\n', [LinesStr]).
+
+format_compose_named_volume(Name, Line) :-
+    format(atom(Line), '  ~w:', [Name]).
+
+%% --------------------------------------------
+%% Kubernetes Deployment
+%% --------------------------------------------
+
+%% declare_k8s_config(+Service, +Config)
+%  Configure Kubernetes deployment settings.
+%
+%  Config options:
+%    - namespace(NS)        : Kubernetes namespace (default: 'default')
+%    - replicas(N)          : Number of replicas (default: 1)
+%    - resources(Res)       : Resource requests/limits
+%    - env(Vars)            : Environment variables
+%    - env_from(Sources)    : ConfigMap/Secret references
+%    - service_type(Type)   : ClusterIP | NodePort | LoadBalancer
+%    - node_port(Port)      : For NodePort services
+%    - ingress(Config)      : Ingress configuration
+%    - labels(Labels)       : Additional labels
+%    - annotations(Ann)     : Annotations
+%    - liveness_probe(P)    : Liveness probe config
+%    - readiness_probe(P)   : Readiness probe config
+%    - image_pull_policy(P) : Always | IfNotPresent | Never
+%    - image_pull_secrets(S): Image pull secret names
+%
+declare_k8s_config(Service, Config) :-
+    retractall(k8s_config_db(Service, _)),
+    assertz(k8s_config_db(Service, Config)).
+
+%% k8s_config(?Service, ?Config)
+%  Query Kubernetes configuration.
+%
+k8s_config(Service, Config) :-
+    k8s_config_db(Service, Config).
+
+%% generate_k8s_deployment(+Service, +Options, -Manifest)
+%  Generate Kubernetes Deployment manifest.
+%
+generate_k8s_deployment(Service, _Options, Manifest) :-
+    k8s_config(Service, Config),
+    service_config(Service, ServiceConfig),
+    docker_image_tag(Service, ImageTag),
+
+    option_or_default(namespace, Config, 'default', Namespace),
+    option_or_default(replicas, Config, 1, Replicas),
+    option_or_default(port, ServiceConfig, 8080, Port),
+    option_or_default(resources, Config, default, Resources),
+    option_or_default(env, Config, [], EnvVars),
+    option_or_default(labels, Config, [], ExtraLabels),
+    option_or_default(image_pull_policy, Config, 'IfNotPresent', ImagePullPolicy),
+    option_or_default(liveness_probe, Config, none, LivenessProbe),
+    option_or_default(readiness_probe, Config, none, ReadinessProbe),
+
+    atom_string(Service, ServiceStr),
+
+    % Format resources
+    format_k8s_resources(Resources, ResourcesSection),
+
+    % Format env vars
+    format_k8s_env(EnvVars, EnvSection),
+
+    % Format labels
+    format_k8s_labels(ExtraLabels, ServiceStr, LabelsSection),
+
+    % Format probes
+    format_k8s_probe(liveness, LivenessProbe, Port, LivenessSection),
+    format_k8s_probe(readiness, ReadinessProbe, Port, ReadinessSection),
+
+    format(atom(Manifest),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Kubernetes Deployment for ~w
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ~w
+  namespace: ~w
+  labels:
+    app: ~w
+~w
+spec:
+  replicas: ~w
+  selector:
+    matchLabels:
+      app: ~w
+  template:
+    metadata:
+      labels:
+        app: ~w
+~w
+    spec:
+      containers:
+      - name: ~w
+        image: ~w
+        imagePullPolicy: ~w
+        ports:
+        - containerPort: ~w
+~w~w~w~w', [Service, ServiceStr, Namespace, ServiceStr, LabelsSection,
+             Replicas, ServiceStr, ServiceStr, LabelsSection,
+             ServiceStr, ImageTag, ImagePullPolicy, Port,
+             EnvSection, ResourcesSection, LivenessSection, ReadinessSection]).
+
+format_k8s_resources(default, Section) :-
+    Section = '        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+'.
+format_k8s_resources(none, '').
+format_k8s_resources(resources(Requests, Limits), Section) :-
+    format_k8s_resource_spec(Requests, ReqStr),
+    format_k8s_resource_spec(Limits, LimStr),
+    format(atom(Section), '        resources:
+          requests:
+~w
+          limits:
+~w
+', [ReqStr, LimStr]).
+
+format_k8s_resource_spec([], '').
+format_k8s_resource_spec(Specs, Str) :-
+    Specs \= [],
+    maplist(format_k8s_resource_item, Specs, Lines),
+    atomic_list_concat(Lines, '\n', Str).
+
+format_k8s_resource_item(memory-Val, Line) :-
+    format(atom(Line), '            memory: "~w"', [Val]).
+format_k8s_resource_item(cpu-Val, Line) :-
+    format(atom(Line), '            cpu: "~w"', [Val]).
+
+format_k8s_env([], '').
+format_k8s_env(EnvVars, Section) :-
+    EnvVars \= [],
+    maplist(format_k8s_env_var, EnvVars, Lines),
+    atomic_list_concat(Lines, '\n', LinesStr),
+    format(atom(Section), '        env:
+~w
+', [LinesStr]).
+
+format_k8s_env_var(Name-Value, Line) :-
+    format(atom(Line), '        - name: ~w
+          value: "~w"', [Name, Value]).
+format_k8s_env_var(Name=Value, Line) :-
+    format(atom(Line), '        - name: ~w
+          value: "~w"', [Name, Value]).
+format_k8s_env_var(secret_ref(Name, Key), Line) :-
+    format(atom(Line), '        - name: ~w
+          valueFrom:
+            secretKeyRef:
+              name: ~w
+              key: ~w', [Key, Name, Key]).
+format_k8s_env_var(configmap_ref(Name, Key), Line) :-
+    format(atom(Line), '        - name: ~w
+          valueFrom:
+            configMapKeyRef:
+              name: ~w
+              key: ~w', [Key, Name, Key]).
+
+format_k8s_labels([], _, '').
+format_k8s_labels(Labels, _, Section) :-
+    Labels \= [],
+    maplist(format_k8s_label, Labels, Lines),
+    atomic_list_concat(Lines, '\n', LinesStr),
+    format(atom(Section), '~w', [LinesStr]).
+
+format_k8s_label(Name-Value, Line) :-
+    format(atom(Line), '    ~w: ~w', [Name, Value]).
+
+format_k8s_probe(_, none, _, '').
+format_k8s_probe(Type, http(Path), Port, Section) :-
+    (Type == liveness -> TypeName = 'livenessProbe' ; TypeName = 'readinessProbe'),
+    format(atom(Section), '        ~w:
+          httpGet:
+            path: ~w
+            port: ~w
+          initialDelaySeconds: 10
+          periodSeconds: 10
+', [TypeName, Path, Port]).
+format_k8s_probe(Type, tcp, Port, Section) :-
+    (Type == liveness -> TypeName = 'livenessProbe' ; TypeName = 'readinessProbe'),
+    format(atom(Section), '        ~w:
+          tcpSocket:
+            port: ~w
+          initialDelaySeconds: 10
+          periodSeconds: 10
+', [TypeName, Port]).
+format_k8s_probe(Type, exec(Cmd), _, Section) :-
+    (Type == liveness -> TypeName = 'livenessProbe' ; TypeName = 'readinessProbe'),
+    format(atom(Section), '        ~w:
+          exec:
+            command:
+            - ~w
+          initialDelaySeconds: 10
+          periodSeconds: 10
+', [TypeName, Cmd]).
+
+%% generate_k8s_service(+Service, +Options, -Manifest)
+%  Generate Kubernetes Service manifest.
+%
+generate_k8s_service(Service, _Options, Manifest) :-
+    k8s_config(Service, Config),
+    service_config(Service, ServiceConfig),
+
+    option_or_default(namespace, Config, 'default', Namespace),
+    option_or_default(port, ServiceConfig, 8080, Port),
+    option_or_default(service_type, Config, 'ClusterIP', ServiceType),
+    option_or_default(node_port, Config, none, NodePort),
+
+    atom_string(Service, ServiceStr),
+
+    % Format node port if applicable
+    (   NodePort \= none, ServiceType == 'NodePort'
+    ->  format(atom(NodePortLine), '    nodePort: ~w\n', [NodePort])
+    ;   NodePortLine = ''
+    ),
+
+    format(atom(Manifest),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Kubernetes Service for ~w
+apiVersion: v1
+kind: Service
+metadata:
+  name: ~w
+  namespace: ~w
+spec:
+  type: ~w
+  selector:
+    app: ~w
+  ports:
+  - port: ~w
+    targetPort: ~w
+~w', [Service, ServiceStr, Namespace, ServiceType, ServiceStr, Port, Port, NodePortLine]).
+
+%% generate_k8s_configmap(+Service, +Options, -Manifest)
+%  Generate Kubernetes ConfigMap manifest.
+%
+generate_k8s_configmap(Service, Options, Manifest) :-
+    k8s_config(Service, Config),
+
+    option_or_default(namespace, Config, 'default', Namespace),
+    option_or_default(config_data, Options, [], ConfigData),
+
+    atom_string(Service, ServiceStr),
+    format(atom(ConfigMapName), '~w-config', [ServiceStr]),
+
+    % Format config data
+    format_k8s_configmap_data(ConfigData, DataSection),
+
+    format(atom(Manifest),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Kubernetes ConfigMap for ~w
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ~w
+  namespace: ~w
+data:
+~w', [Service, ConfigMapName, Namespace, DataSection]).
+
+format_k8s_configmap_data([], '  # No data configured\n').
+format_k8s_configmap_data(Data, Section) :-
+    Data \= [],
+    maplist(format_k8s_configmap_item, Data, Lines),
+    atomic_list_concat(Lines, '\n', Section).
+
+format_k8s_configmap_item(Key-Value, Line) :-
+    format(atom(Line), '  ~w: "~w"', [Key, Value]).
+
+%% generate_k8s_ingress(+Service, +Options, -Manifest)
+%  Generate Kubernetes Ingress manifest.
+%
+generate_k8s_ingress(Service, _Options, Manifest) :-
+    k8s_config(Service, Config),
+    service_config(Service, ServiceConfig),
+
+    option_or_default(namespace, Config, 'default', Namespace),
+    option_or_default(port, ServiceConfig, 8080, Port),
+    option_or_default(ingress, Config, [], IngressConfig),
+    option_or_default(host, IngressConfig, none, Host),
+    option_or_default(path, IngressConfig, '/', Path),
+    option_or_default(tls, IngressConfig, false, TLS),
+    option_or_default(ingress_class, IngressConfig, 'nginx', IngressClass),
+
+    atom_string(Service, ServiceStr),
+
+    % Format TLS section
+    (   TLS == true, Host \= none
+    ->  format(atom(TLSSection), '  tls:
+  - hosts:
+    - ~w
+    secretName: ~w-tls
+', [Host, ServiceStr])
+    ;   TLSSection = ''
+    ),
+
+    % Format host rule
+    (   Host \= none
+    ->  format(atom(HostLine), '    - host: ~w\n      http:', [Host])
+    ;   HostLine = '    - http:'
+    ),
+
+    format(atom(Manifest),
+'# Generated by UnifyWeaver - Phase 7a Container Deployment
+# Kubernetes Ingress for ~w
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ~w
+  namespace: ~w
+  annotations:
+    kubernetes.io/ingress.class: ~w
+spec:
+~w  rules:
+~w
+        paths:
+        - path: ~w
+          pathType: Prefix
+          backend:
+            service:
+              name: ~w
+              port:
+                number: ~w
+', [Service, ServiceStr, Namespace, IngressClass, TLSSection, HostLine, Path, ServiceStr, Port]).
+
+%% generate_helm_chart(+Service, +Options, -Chart)
+%  Generate Helm chart structure.
+%
+generate_helm_chart(Service, Options, Chart) :-
+    atom_string(Service, ServiceStr),
+
+    % Generate Chart.yaml
+    option_or_default(version, Options, '0.1.0', ChartVersion),
+    option_or_default(app_version, Options, '1.0.0', AppVersion),
+    option_or_default(description, Options, 'A Helm chart for UnifyWeaver service', Description),
+
+    format(atom(ChartYaml),
+'apiVersion: v2
+name: ~w
+description: ~w
+type: application
+version: ~w
+appVersion: "~w"
+', [ServiceStr, Description, ChartVersion, AppVersion]),
+
+    % Generate values.yaml
+    k8s_config(Service, Config),
+    service_config(Service, ServiceConfig),
+    docker_image_tag(Service, ImageTag),
+
+    option_or_default(replicas, Config, 1, Replicas),
+    option_or_default(port, ServiceConfig, 8080, Port),
+    option_or_default(service_type, Config, 'ClusterIP', ServiceType),
+
+    format(atom(ValuesYaml),
+'# Default values for ~w
+replicaCount: ~w
+
+image:
+  repository: ~w
+  pullPolicy: IfNotPresent
+  tag: ""
+
+service:
+  type: ~w
+  port: ~w
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+', [ServiceStr, Replicas, ImageTag, ServiceType, Port]),
+
+    Chart = helm_chart{
+        'Chart.yaml': ChartYaml,
+        'values.yaml': ValuesYaml,
+        name: ServiceStr
+    }.
+
+%% --------------------------------------------
+%% Container Registry
+%% --------------------------------------------
+
+%% declare_registry(+Name, +Config)
+%  Configure a container registry.
+%
+%  Config options:
+%    - url(URL)             : Registry URL
+%    - username(U)          : Username for authentication
+%    - password_env(Var)    : Environment variable containing password
+%    - image_prefix(P)      : Prefix for image names
+%    - auth_method(M)       : token | basic | aws_ecr | gcp_gcr
+%
+declare_registry(Name, Config) :-
+    retractall(registry_config_db(Name, _)),
+    assertz(registry_config_db(Name, Config)).
+
+%% registry_config(?Name, ?Config)
+%  Query registry configuration.
+%
+registry_config(Name, Config) :-
+    registry_config_db(Name, Config).
+
+%% login_registry(+Name, -Result)
+%  Generate login command for registry.
+%
+login_registry(Name, Result) :-
+    registry_config(Name, Config),
+    option_or_default(url, Config, Name, URL),
+    option_or_default(auth_method, Config, basic, AuthMethod),
+    option_or_default(username, Config, none, Username),
+    option_or_default(password_env, Config, none, PasswordEnv),
+
+    generate_login_command(AuthMethod, URL, Username, PasswordEnv, Cmd),
+    Result = login_command(Name, Cmd).
+
+generate_login_command(basic, URL, Username, PasswordEnv, Cmd) :-
+    (   Username \= none, PasswordEnv \= none
+    ->  format(atom(Cmd), 'echo $~w | docker login ~w -u ~w --password-stdin', [PasswordEnv, URL, Username])
+    ;   format(atom(Cmd), 'docker login ~w', [URL])
+    ).
+generate_login_command(aws_ecr, URL, _, _, Cmd) :-
+    format(atom(Cmd), 'aws ecr get-login-password | docker login --username AWS --password-stdin ~w', [URL]).
+generate_login_command(gcp_gcr, URL, _, _, Cmd) :-
+    format(atom(Cmd), 'gcloud auth configure-docker ~w', [URL]).
+generate_login_command(token, URL, _, PasswordEnv, Cmd) :-
+    format(atom(Cmd), 'echo $~w | docker login ~w --password-stdin', [PasswordEnv, URL]).
+
+%% --------------------------------------------
+%% Container Orchestration
+%% --------------------------------------------
+
+%% deploy_to_k8s(+Service, +Options, -Result)
+%  Deploy service to Kubernetes.
+%
+%  Options:
+%    - namespace(NS)        : Target namespace
+%    - wait(Bool)           : Wait for rollout
+%    - timeout(Secs)        : Rollout timeout
+%
+deploy_to_k8s(Service, Options, Result) :-
+    atom_string(Service, ServiceStr),
+    option_or_default(namespace, Options, 'default', Namespace),
+    option_or_default(wait, Options, true, Wait),
+    option_or_default(timeout, Options, 300, Timeout),
+
+    % Generate manifests
+    generate_k8s_deployment(Service, Options, DeploymentManifest),
+    generate_k8s_service(Service, Options, ServiceManifest),
+
+    % Build apply commands
+    format(atom(ApplyDeployment), 'kubectl apply -f - <<EOF\n~w\nEOF', [DeploymentManifest]),
+    format(atom(ApplyService), 'kubectl apply -f - <<EOF\n~w\nEOF', [ServiceManifest]),
+
+    % Build wait command if needed
+    (   Wait == true
+    ->  format(atom(WaitCmd), 'kubectl rollout status deployment/~w -n ~w --timeout=~ws',
+               [ServiceStr, Namespace, Timeout])
+    ;   WaitCmd = ''
+    ),
+
+    Result = k8s_deploy{
+        deployment_cmd: ApplyDeployment,
+        service_cmd: ApplyService,
+        wait_cmd: WaitCmd,
+        service: Service,
+        namespace: Namespace
+    }.
+
+%% scale_k8s_deployment(+Service, +Replicas, +Options, -Result)
+%  Scale Kubernetes deployment.
+%
+scale_k8s_deployment(Service, Replicas, Options, Result) :-
+    atom_string(Service, ServiceStr),
+    option_or_default(namespace, Options, 'default', Namespace),
+
+    format(atom(Cmd), 'kubectl scale deployment/~w --replicas=~w -n ~w',
+           [ServiceStr, Replicas, Namespace]),
+
+    Result = scale_command(Cmd, Service, Replicas).
+
+%% rollout_status(+Service, +Options, -Status)
+%  Check Kubernetes rollout status.
+%
+rollout_status(Service, Options, Status) :-
+    atom_string(Service, ServiceStr),
+    option_or_default(namespace, Options, 'default', Namespace),
+
+    format(atom(Cmd), 'kubectl rollout status deployment/~w -n ~w',
+           [ServiceStr, Namespace]),
+
+    Status = rollout_status_command(Cmd, Service).
