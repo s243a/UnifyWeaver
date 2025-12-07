@@ -5107,66 +5107,18 @@ generate_min_aggregation(ExtractCode, code(
 
 %% generate_group_by_code_jsonl(+GroupField, +FieldMappings, +AggOp, +Result, +HavingConstraints, +Options, -GoCode)
 %  Generate Go code for JSONL stream grouped aggregation
-generate_group_by_code_jsonl(GroupField, FieldMappings, AggOp, Result, _HavingConstraints, _Options, GoCode) :-
+generate_group_by_code_jsonl(GroupField, FieldMappings, AggOp, _Result, HavingConstraints, _Options, GoCode) :-
     % 1. Determine key type (simplification: assume string for now)
-    % In future, use schema to determine actual type
     KeyType = "string",
     
-    % 2. Determine aggregation update logic
-    (   AggOp = count
-    ->  StateStruct = "int",
-        UpdateLogic = "state++",
-        OutputLogic = "fmt.Printf(\"%v: %d\\n\", key, state)"
-    ;   AggOp = sum(AggVar)
-    ->  find_field_for_var(AggVar, FieldMappings, AggField),
-        StateStruct = "float64",
-        format(string(UpdateLogic), '
-        if val, ok := data["~w"].(float64); ok {
-            state += val
-        }', [AggField]),
-        OutputLogic = "fmt.Printf(\"%v: %g\\n\", key, state)"
-    ;   format('ERROR: Unsupported aggregation op for JSONL: ~w~n', [AggOp]),
-        fail
+    % 2. Normalize AggOp to list
+    (   is_list(AggOp)
+    ->  AggOpList = AggOp
+    ;   AggOpList = [AggOp]
     ),
-    
-    % 3. Determine key extraction logic
-    find_field_for_var(GroupField, FieldMappings, GroupFieldName),
-    format(string(KeyExtraction), '
-        keyRaw, ok := data["~w"]
-        if !ok { continue }
-        key := fmt.Sprintf("%v", keyRaw)', [GroupFieldName]),
 
-    % 4. Generate complete code
-    format(string(GoCode), '
-    scanner := bufio.NewScanner(os.Stdin)
-    
-    // Map to store aggregation state
-    results := make(map[~s]~s)
-    
-    for scanner.Scan() {
-        var data map[string]interface{}
-        if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
-            continue
-        }
-        
-        // Extract key
-        ~s
-        
-        // Update state
-        state := results[key]
-        ~s
-        results[key] = state
-    }
-    
-    if err := scanner.Err(); err != nil {
-        fmt.Fprintln(os.Stderr, "reading standard input:", err)
-    }
-    
-    // Output results
-    for key, state := range results {
-        ~s
-    }
-', [KeyType, StateStruct, KeyExtraction, UpdateLogic, OutputLogic]).
+    % 3. Generate Code using Multi-Agg logic
+    generate_group_by_code_jsonl_multi(GroupField, FieldMappings, AggOpList, HavingConstraints, KeyType, GoCode).
 
 %% find_field_for_var(+Var, +FieldMappings, -FieldName)
 %  Find field name for a variable in field mappings
@@ -5177,3 +5129,129 @@ find_field_for_var(Var, [_|Rest], FieldName) :-
 
 %% format_import(+Import, -Line)
 %  Format import string for Go
+
+%% generate_group_by_code_jsonl_multi(+GroupField, +FieldMappings, +AggOpList, +HavingConstraints, +KeyType, -GoCode)
+%  Generate Go code for multiple aggregations on JSONL stream
+generate_group_by_code_jsonl_multi(GroupField, FieldMappings, AggOpList, HavingConstraints, KeyType, GoCode) :-
+    % 1. Parse operations
+    parse_multi_agg_operations(AggOpList, FieldMappings, AggInfo),
+    
+    % 2. Generate Struct Definition
+    generate_multi_agg_struct_fields(AggInfo, StructFields),
+    format(string(StateStructDef), 'struct {
+~w
+    }', [StructFields]),
+    StateStruct = "AggState",
+    
+    % 3. Generate Update Logic
+    generate_multi_agg_jsonl_updates(AggInfo, UpdateLogic),
+    
+    % 4. Generate Output/Having Logic
+    generate_multi_agg_jsonl_output(AggInfo, HavingConstraints, OutputLogic),
+    
+    % 5. Key Extraction
+    find_field_for_var(GroupField, FieldMappings, GroupFieldName),
+    format(string(KeyExtraction), '
+        keyRaw, ok := data["~w"]
+        if !ok { continue }
+        key := fmt.Sprintf("%v", keyRaw)', [GroupFieldName]),
+
+    % 6. Generate Complete Code
+    format(string(GoCode), '
+    type AggState ~w
+    
+    scanner := bufio.NewScanner(os.Stdin)
+    results := make(map[~w]*AggState)
+    
+    for scanner.Scan() {
+        var data map[string]interface{}
+        if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+            continue
+        }
+        
+        ~w
+        
+        state, exists := results[key]
+        if !exists {
+            state = &AggState{}
+            results[key] = state
+        }
+        
+        ~w
+    }
+    
+    if err := scanner.Err(); err != nil {
+        fmt.Fprintln(os.Stderr, "reading standard input:", err)
+    }
+    
+    for key, s := range results {
+        ~w
+    }
+', [StateStructDef, KeyType, KeyExtraction, UpdateLogic, OutputLogic]).
+
+%% generate_multi_agg_jsonl_updates(+AggInfo, -Code)
+%  Generate update statements for each aggregation in struct
+generate_multi_agg_jsonl_updates(AggInfo, Code) :-
+    findall(UpdateStr, (
+        member(agg(OpType, FieldName, _Var, _OutName), AggInfo),
+        jsonl_op_update(OpType, FieldName, UpdateStr)
+    ), UpdateStrs),
+    atomic_list_concat(UpdateStrs, '\n        ', Code).
+
+jsonl_op_update(count, _Field, 'state.count++').
+jsonl_op_update(sum, Field, Code) :-
+    format(string(Code), 'if val, ok := data["~w"].(float64); ok { state.sum += val }', [Field]).
+% Extensible for avg, max, min...
+
+%% generate_multi_agg_jsonl_output(+AggInfo, +HavingConstraints, -Code)
+%  Generate output printing code, with optional HAVING filtering
+generate_multi_agg_jsonl_output(AggInfo, HavingConstraints, Code) :-
+    % Generate print args
+    findall(Arg, (
+        member(agg(OpType, _, _, _), AggInfo),
+        jsonl_op_print_arg(OpType, Arg)
+    ), ArgsList),
+    atomic_list_concat(["key"|ArgsList], ', ', PrintArgs),
+    
+    % Generate format string
+    findall(Fmt, (
+        member(agg(OpType, _, _, _), AggInfo),
+        jsonl_op_fmt(OpType, Fmt)
+    ), Fmts),
+    atomic_list_concat(["%v"|Fmts], ': ', FmtStr),
+    
+    format(string(PrintStmt), 'fmt.Printf("~w\\n", ~w)', [FmtStr, PrintArgs]),
+    
+    % Handle HAVING
+    (   HavingConstraints \== null, HavingConstraints \== []
+    ->  % Let's implement basic "SUM > Val" support via manual check for now.
+        generate_having_check(HavingConstraints, AggInfo, CheckCode),
+        format(string(Code), '
+        if ~w {
+            ~w
+        }', [CheckCode, PrintStmt])
+    ;   Code = PrintStmt
+    ).
+
+jsonl_op_print_arg(count, 's.count').
+jsonl_op_print_arg(sum, 's.sum').
+
+jsonl_op_fmt(count, '%d').
+jsonl_op_fmt(sum, '%g').
+% Add others as needed
+
+%% generate_having_check(+Constraints, +AggInfo, -GoExpr)
+%  Generate Go boolean expression for HAVING clause
+generate_having_check((A > B), AggInfo, Code) :-
+    resolve_having_var(A, AggInfo, ACode),
+    resolve_having_var(B, AggInfo, BCode),
+    format(string(Code), '~w > ~w', [ACode, BCode]).
+% Add other operators as needed
+
+resolve_having_var(Var, AggInfo, Code) :-
+    var(Var),
+    member(agg(OpType, _, Var, _), AggInfo),
+    jsonl_op_print_arg(OpType, CodeStr),
+    atom_string(Code, CodeStr).
+resolve_having_var(Num, _, Num) :- number(Num).
+
