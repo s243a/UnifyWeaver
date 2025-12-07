@@ -54,7 +54,34 @@
     % Lifecycle operations
     start_service/2,                % start_service(+Service, -Result)
     stop_service/2,                 % stop_service(+Service, -Result)
-    restart_service/2               % restart_service(+Service, -Result)
+    restart_service/2,              % restart_service(+Service, -Result)
+
+    % Phase 6b: Advanced deployment
+    % Multi-host support
+    declare_service_hosts/2,        % declare_service_hosts(+Service, +Hosts)
+    service_hosts/2,                % service_hosts(?Service, ?Hosts)
+    deploy_to_all_hosts/2,          % deploy_to_all_hosts(+Service, -Results)
+
+    % Rollback support
+    store_rollback_hash/2,          % store_rollback_hash(+Service, +Hash)
+    rollback_hash/2,                % rollback_hash(?Service, ?Hash)
+    rollback_service/2,             % rollback_service(+Service, -Result)
+    deploy_with_rollback/2,         % deploy_with_rollback(+Service, -Result)
+
+    % Graceful shutdown
+    graceful_stop/3,                % graceful_stop(+Service, +Options, -Result)
+    drain_connections/3,            % drain_connections(+Service, +Options, -Result)
+
+    % Health check integration
+    run_health_check/3,             % run_health_check(+Service, +Options, -Result)
+    wait_for_healthy/3,             % wait_for_healthy(+Service, +Options, -Result)
+
+    % Deployment with full lifecycle
+    deploy_with_hooks/2,            % deploy_with_hooks(+Service, -Result)
+    generate_rollback_script/3,     % generate_rollback_script(+Service, +Options, -Script)
+
+    % Hook execution (internal but exported for testing)
+    execute_hooks/3                 % execute_hooks(+Service, +Event, -Result)
 ]).
 
 :- use_module(library(lists)).
@@ -71,6 +98,10 @@
 :- dynamic service_sources_db/2.    % service_sources_db(Service, Sources)
 :- dynamic deployed_hash_db/2.      % deployed_hash_db(Service, Hash)
 :- dynamic lifecycle_hook_db/3.     % lifecycle_hook_db(Service, Event, Action)
+
+% Phase 6b dynamic storage
+:- dynamic service_hosts_db/2.      % service_hosts_db(Service, Hosts)
+:- dynamic rollback_hash_db/2.      % rollback_hash_db(Service, Hash)
 
 %% ============================================
 %% Service Declarations
@@ -813,3 +844,491 @@ option_or_default(Key, Options, Default, Value) :-
 %
 merge_options(Options1, Options2, Merged) :-
     append(Options1, Options2, Merged).
+
+%% ============================================
+%% Phase 6b: Multi-Host Support
+%% ============================================
+
+%% declare_service_hosts(+Service, +Hosts)
+%  Declare multiple hosts for a service (for load balancing/redundancy).
+%
+%  Hosts: List of host configurations
+%    e.g., [host_config('host1.example.com', [user('deploy')]),
+%           host_config('host2.example.com', [user('deploy')])]
+%
+declare_service_hosts(Service, Hosts) :-
+    atom(Service),
+    is_list(Hosts),
+    retractall(service_hosts_db(Service, _)),
+    assertz(service_hosts_db(Service, Hosts)).
+
+%% service_hosts(?Service, ?Hosts)
+%  Query service hosts.
+%
+service_hosts(Service, Hosts) :-
+    service_hosts_db(Service, Hosts).
+
+%% deploy_to_all_hosts(+Service, -Results)
+%  Deploy service to all configured hosts.
+%  Returns list of result(Host, Status) terms.
+%
+deploy_to_all_hosts(Service, Results) :-
+    (   service_hosts(Service, Hosts)
+    ->  maplist(deploy_to_host(Service), Hosts, Results)
+    ;   % Single host from service config
+        service_config(Service, Options),
+        (   member(host(Host), Options)
+        ->  deploy_service(Service, Result),
+            Results = [result(Host, Result)]
+        ;   Results = [result(localhost, error(no_host_configured))]
+        )
+    ).
+
+%% deploy_to_host(+Service, +HostConfig, -Result)
+%  Deploy to a specific host.
+%
+deploy_to_host(Service, host_config(Host, HostOptions), result(Host, Result)) :-
+    % Temporarily override host in service config
+    service_config(Service, OriginalOptions),
+    merge_options([host(Host)|HostOptions], OriginalOptions, MergedOptions),
+
+    % Deploy with merged options
+    (   catch(
+            deploy_with_options(Service, MergedOptions, DeployResult),
+            Error,
+            DeployResult = error(Error)
+        )
+    ->  Result = DeployResult
+    ;   Result = error(deployment_failed)
+    ).
+
+%% deploy_with_options(+Service, +Options, -Result)
+%  Deploy service with specific options (internal helper).
+%
+deploy_with_options(Service, Options, Result) :-
+    validate_security_with_options(Options, SecurityErrors),
+    (   SecurityErrors \== []
+    ->  Result = error(security_validation_failed(SecurityErrors))
+    ;   generate_deploy_script(Service, Options, Script),
+        execute_deployment(Script, ExecResult),
+        (   ExecResult == success
+        ->  compute_source_hash(Service, NewHash),
+            store_deployed_hash(Service, NewHash),
+            Result = deployed
+        ;   Result = error(deployment_failed(ExecResult))
+        )
+    ).
+
+%% validate_security_with_options(+Options, -Errors)
+%  Validate security for given options.
+%
+validate_security_with_options(Options, Errors) :-
+    findall(Error, security_violation_opts(Options, Error), Errors).
+
+security_violation_opts(Options, remote_requires_encryption(Host)) :-
+    member(host(Host), Options),
+    \+ is_localhost(Host),
+    member(transport(http), Options).
+
+security_violation_opts(Options, remote_missing_transport(Host)) :-
+    member(host(Host), Options),
+    \+ is_localhost(Host),
+    \+ member(transport(_), Options).
+
+%% ============================================
+%% Phase 6b: Rollback Support
+%% ============================================
+
+%% store_rollback_hash(+Service, +Hash)
+%  Store hash for potential rollback (previous good version).
+%
+store_rollback_hash(Service, Hash) :-
+    retractall(rollback_hash_db(Service, _)),
+    assertz(rollback_hash_db(Service, Hash)).
+
+%% rollback_hash(?Service, ?Hash)
+%  Query rollback hash.
+%
+rollback_hash(Service, Hash) :-
+    rollback_hash_db(Service, Hash).
+
+%% rollback_service(+Service, -Result)
+%  Rollback to previous version using stored rollback hash.
+%
+rollback_service(Service, Result) :-
+    (   rollback_hash(Service, RollbackHash)
+    ->  % Generate rollback script
+        generate_rollback_script(Service, [], Script),
+        execute_deployment(Script, ExecResult),
+        (   ExecResult == success
+        ->  % Update deployed hash to rollback version
+            store_deployed_hash(Service, RollbackHash),
+            Result = rolled_back(RollbackHash)
+        ;   Result = error(rollback_failed(ExecResult))
+        )
+    ;   Result = error(no_rollback_available)
+    ).
+
+%% deploy_with_rollback(+Service, -Result)
+%  Deploy with automatic rollback on health check failure.
+%
+deploy_with_rollback(Service, Result) :-
+    % Store current hash as rollback point
+    (   deployed_hash(Service, CurrentHash)
+    ->  store_rollback_hash(Service, CurrentHash)
+    ;   true  % No previous deployment
+    ),
+
+    % Attempt deployment
+    deploy_with_hooks(Service, DeployResult),
+
+    (   DeployResult = deployed
+    ->  % Run health check
+        run_health_check(Service, [retries(5), delay(2)], HealthResult),
+        (   HealthResult == healthy
+        ->  Result = deployed
+        ;   % Health check failed - rollback
+            format(user_error, 'Health check failed, initiating rollback...~n', []),
+            rollback_service(Service, RollbackResult),
+            Result = rolled_back_after_failure(RollbackResult)
+        )
+    ;   Result = DeployResult
+    ).
+
+%% generate_rollback_script(+Service, +Options, -Script)
+%  Generate script to rollback to previous version.
+%
+generate_rollback_script(Service, Options, Script) :-
+    deploy_method_config(Service, Method, MethodOptions),
+    merge_options(Options, MethodOptions, MergedOptions),
+    service_config(Service, ServiceOptions),
+
+    option_or_default(host, MergedOptions, ServiceOptions, 'localhost', Host),
+    option_or_default(user, MergedOptions, ServiceOptions, 'deploy', User),
+    option_or_default(remote_dir, MergedOptions, ServiceOptions, '/opt/unifyweaver/services', BaseRemoteDir),
+
+    format(atom(RemoteDir), '~w/~w', [BaseRemoteDir, Service]),
+
+    (   Method == ssh
+    ->  format(atom(Script), '#!/bin/bash
+# Rollback script for ~w
+# Generated by UnifyWeaver deployment_glue
+
+set -euo pipefail
+
+SERVICE="~w"
+HOST="~w"
+USER="~w"
+REMOTE_DIR="~w"
+
+echo "=== Rolling back ${SERVICE} on ${HOST} ==="
+
+# Check for backup
+ssh "${USER}@${HOST}" "
+    if [ -d ${REMOTE_DIR}.backup ]; then
+        echo \\"Restoring from backup...\\"
+        rm -rf ${REMOTE_DIR}
+        mv ${REMOTE_DIR}.backup ${REMOTE_DIR}
+        echo \\"Backup restored\\"
+    else
+        echo \\"No backup found at ${REMOTE_DIR}.backup\\"
+        exit 1
+    fi
+"
+
+# Restart service
+echo "Restarting service..."
+ssh "${USER}@${HOST}" "systemctl --user restart ${SERVICE} || pkill -f ${SERVICE} && cd ${REMOTE_DIR} && nohup ./start.sh > service.log 2>&1 &"
+
+echo "=== Rollback complete ==="
+', [Service, Service, Host, User, RemoteDir])
+    ;   % Local rollback
+        format(atom(Script), '#!/bin/bash
+# Local rollback script for ~w
+# Generated by UnifyWeaver deployment_glue
+
+set -euo pipefail
+
+SERVICE="~w"
+DIR="."
+
+echo "=== Rolling back ${SERVICE} locally ==="
+
+if [ -d "${DIR}.backup" ]; then
+    echo "Restoring from backup..."
+    rm -rf "${DIR}"
+    mv "${DIR}.backup" "${DIR}"
+    echo "Backup restored"
+else
+    echo "No backup found"
+    exit 1
+fi
+
+echo "=== Rollback complete ==="
+', [Service, Service])
+    ).
+
+%% ============================================
+%% Phase 6b: Graceful Shutdown
+%% ============================================
+
+%% graceful_stop(+Service, +Options, -Result)
+%  Stop service gracefully with connection draining.
+%
+%  Options:
+%    - drain_timeout(Seconds)  : Time to wait for connections to drain (default: 30)
+%    - force_after(Seconds)    : Force kill after this time (default: 60)
+%
+graceful_stop(Service, Options, Result) :-
+    option_or_default(drain_timeout, Options, 30, DrainTimeout),
+    option_or_default(force_after, Options, 60, ForceTimeout),
+
+    % Execute pre-shutdown hooks
+    execute_hooks(Service, pre_shutdown, PreResult),
+
+    (   PreResult == ok
+    ->  % Drain connections
+        drain_connections(Service, [timeout(DrainTimeout)], DrainResult),
+
+        (   DrainResult == drained
+        ->  % Stop service
+            stop_service(Service, StopResult),
+            Result = StopResult
+        ;   DrainResult == timeout
+        ->  % Force stop after timeout
+            format(user_error, 'Drain timeout, forcing stop after ~w seconds...~n', [ForceTimeout]),
+            force_stop_service(Service, ForceTimeout, Result)
+        ;   Result = error(drain_failed(DrainResult))
+        )
+    ;   Result = error(pre_shutdown_hook_failed(PreResult))
+    ).
+
+%% drain_connections(+Service, +Options, -Result)
+%  Wait for active connections to complete.
+%
+drain_connections(Service, Options, Result) :-
+    option_or_default(timeout, Options, 30, Timeout),
+
+    deploy_method_config(Service, Method, MethodOptions),
+    service_config(Service, ServiceOptions),
+
+    option_or_default(host, MethodOptions, ServiceOptions, 'localhost', Host),
+    option_or_default(user, MethodOptions, ServiceOptions, 'deploy', User),
+    option_or_default(port, ServiceOptions, 8080, Port),
+
+    (   Method == ssh
+    ->  % Remote drain - signal service to stop accepting new connections
+        format(atom(DrainCmd), 'ssh ~w@~w "curl -sf http://localhost:~w/drain || true; sleep ~w"',
+               [User, Host, Port, Timeout]),
+        (   shell(DrainCmd, 0)
+        ->  Result = drained
+        ;   Result = timeout
+        )
+    ;   % Local drain
+        format(atom(DrainCmd), 'curl -sf http://localhost:~w/drain || true; sleep ~w',
+               [Port, Timeout]),
+        (   shell(DrainCmd, 0)
+        ->  Result = drained
+        ;   Result = timeout
+        )
+    ).
+
+%% force_stop_service(+Service, +Timeout, -Result)
+%  Force stop a service after timeout.
+%
+force_stop_service(Service, _Timeout, Result) :-
+    deploy_method_config(Service, Method, MethodOptions),
+    service_config(Service, ServiceOptions),
+
+    option_or_default(host, MethodOptions, ServiceOptions, 'localhost', Host),
+    option_or_default(user, MethodOptions, ServiceOptions, 'deploy', User),
+
+    (   Method == ssh
+    ->  format(atom(Cmd), 'ssh ~w@~w "pkill -9 -f ~w || true"', [User, Host, Service]),
+        shell(Cmd, _),
+        Result = force_stopped
+    ;   format(atom(Cmd), 'pkill -9 -f ~w || true', [Service]),
+        shell(Cmd, _),
+        Result = force_stopped
+    ).
+
+%% execute_hooks(+Service, +Event, -Result)
+%  Execute all hooks for an event.
+%
+execute_hooks(Service, Event, Result) :-
+    lifecycle_hooks(Service, Hooks),
+    findall(Action, member(hook(Event, Action), Hooks), Actions),
+    execute_hook_actions(Service, Actions, Result).
+
+execute_hook_actions(_Service, [], ok).
+execute_hook_actions(Service, [Action|Rest], Result) :-
+    execute_single_hook(Service, Action, ActionResult),
+    (   ActionResult == ok
+    ->  execute_hook_actions(Service, Rest, Result)
+    ;   Result = error(hook_failed(Action, ActionResult))
+    ).
+
+%% execute_single_hook(+Service, +Action, -Result)
+%  Execute a single hook action.
+%
+execute_single_hook(Service, drain_connections, Result) :-
+    drain_connections(Service, [timeout(30)], DrainResult),
+    (   DrainResult == drained -> Result = ok ; Result = DrainResult ).
+
+execute_single_hook(Service, health_check, Result) :-
+    run_health_check(Service, [retries(3)], HealthResult),
+    (   HealthResult == healthy -> Result = ok ; Result = HealthResult ).
+
+execute_single_hook(_Service, save_state, ok) :-
+    % Placeholder - would save service state
+    true.
+
+execute_single_hook(_Service, warm_cache, ok) :-
+    % Placeholder - would warm up caches
+    true.
+
+execute_single_hook(Service, custom(Command), Result) :-
+    deploy_method_config(Service, Method, MethodOptions),
+    service_config(Service, ServiceOptions),
+
+    option_or_default(host, MethodOptions, ServiceOptions, 'localhost', Host),
+    option_or_default(user, MethodOptions, ServiceOptions, 'deploy', User),
+
+    (   Method == ssh
+    ->  format(atom(Cmd), 'ssh ~w@~w "~w"', [User, Host, Command])
+    ;   Cmd = Command
+    ),
+    (   shell(Cmd, 0)
+    ->  Result = ok
+    ;   Result = error(command_failed)
+    ).
+
+%% ============================================
+%% Phase 6b: Health Check Integration
+%% ============================================
+
+%% run_health_check(+Service, +Options, -Result)
+%  Run health check for a service.
+%
+%  Options:
+%    - retries(N)     : Number of retries (default: 3)
+%    - delay(Seconds) : Delay between retries (default: 2)
+%    - timeout(Secs)  : Request timeout (default: 5)
+%    - endpoint(Path) : Health endpoint (default: '/health')
+%
+run_health_check(Service, Options, Result) :-
+    option_or_default(retries, Options, 3, Retries),
+    option_or_default(delay, Options, 2, Delay),
+    option_or_default(timeout, Options, 5, Timeout),
+    option_or_default(endpoint, Options, '/health', Endpoint),
+
+    service_config(Service, ServiceOptions),
+    deploy_method_config(Service, _Method, MethodOptions),
+
+    option_or_default(host, MethodOptions, ServiceOptions, 'localhost', Host),
+    option_or_default(port, ServiceOptions, 8080, Port),
+
+    % Determine protocol
+    (   is_localhost(Host)
+    ->  Protocol = 'http'
+    ;   Protocol = 'https'
+    ),
+
+    format(atom(URL), '~w://~w:~w~w', [Protocol, Host, Port, Endpoint]),
+
+    run_health_check_loop(URL, Timeout, Retries, Delay, Result).
+
+%% run_health_check_loop(+URL, +Timeout, +Retries, +Delay, -Result)
+%  Health check retry loop.
+%
+run_health_check_loop(URL, Timeout, Retries, Delay, Result) :-
+    Retries > 0,
+    format(atom(Cmd), 'curl -sf --max-time ~w "~w"', [Timeout, URL]),
+    (   shell(Cmd, 0)
+    ->  Result = healthy
+    ;   NewRetries is Retries - 1,
+        (   NewRetries > 0
+        ->  sleep(Delay),
+            run_health_check_loop(URL, Timeout, NewRetries, Delay, Result)
+        ;   Result = unhealthy
+        )
+    ).
+
+%% wait_for_healthy(+Service, +Options, -Result)
+%  Wait for service to become healthy.
+%
+%  Options:
+%    - timeout(Seconds) : Maximum wait time (default: 60)
+%    - interval(Secs)   : Check interval (default: 2)
+%
+wait_for_healthy(Service, Options, Result) :-
+    option_or_default(timeout, Options, 60, Timeout),
+    option_or_default(interval, Options, 2, Interval),
+
+    MaxRetries is Timeout // Interval,
+
+    run_health_check(Service, [retries(MaxRetries), delay(Interval)], Result).
+
+%% ============================================
+%% Phase 6b: Deploy with Full Lifecycle
+%% ============================================
+
+%% deploy_with_hooks(+Service, -Result)
+%  Deploy service executing all lifecycle hooks.
+%
+deploy_with_hooks(Service, Result) :-
+    % Validate security
+    validate_security(Service, SecurityErrors),
+    (   SecurityErrors \== []
+    ->  Result = error(security_validation_failed(SecurityErrors))
+    ;   % Execute pre-deploy hooks (if any)
+        execute_hooks(Service, pre_deploy, PreDeployResult),
+        (   PreDeployResult \== ok
+        ->  Result = error(pre_deploy_failed(PreDeployResult))
+        ;   % Check for changes
+            check_for_changes(Service, Changes),
+            (   Changes == no_changes
+            ->  Result = unchanged
+            ;   % Backup current deployment for rollback
+                backup_current_deployment(Service),
+
+                % Generate and execute deployment
+                generate_deploy_script(Service, [], Script),
+                execute_deployment(Script, ExecResult),
+                (   ExecResult == success
+                ->  % Store new hash
+                    compute_source_hash(Service, NewHash),
+                    store_deployed_hash(Service, NewHash),
+
+                    % Execute post-deploy hooks
+                    execute_hooks(Service, post_deploy, PostDeployResult),
+                    (   PostDeployResult == ok
+                    ->  Result = deployed
+                    ;   Result = deployed_with_warnings(PostDeployResult)
+                    )
+                ;   Result = error(deployment_failed(ExecResult))
+                )
+            )
+        )
+    ).
+
+%% backup_current_deployment(+Service)
+%  Create backup of current deployment for rollback.
+%
+backup_current_deployment(Service) :-
+    deploy_method_config(Service, Method, MethodOptions),
+    service_config(Service, ServiceOptions),
+
+    option_or_default(host, MethodOptions, ServiceOptions, 'localhost', Host),
+    option_or_default(user, MethodOptions, ServiceOptions, 'deploy', User),
+    option_or_default(remote_dir, MethodOptions, ServiceOptions, '/opt/unifyweaver/services', BaseRemoteDir),
+
+    format(atom(RemoteDir), '~w/~w', [BaseRemoteDir, Service]),
+
+    (   Method == ssh
+    ->  format(atom(Cmd), 'ssh ~w@~w "rm -rf ~w.backup; cp -r ~w ~w.backup 2>/dev/null || true"',
+               [User, Host, RemoteDir, RemoteDir, RemoteDir]),
+        shell(Cmd, _)
+    ;   format(atom(Cmd), 'rm -rf .backup; cp -r . .backup 2>/dev/null || true', []),
+        shell(Cmd, _)
+    ).
