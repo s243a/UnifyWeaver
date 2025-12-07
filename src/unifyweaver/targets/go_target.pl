@@ -714,25 +714,75 @@ compile_go_join_with_result([Goal|Rest], VarMap, Config, Builtins, HeadPred, Hea
     length([Goal|Rest], Len),
     format(string(VarName), "j~w", [Len]),
     
-    % Build join condition from shared variables
-    compile_go_join_condition(Args, VarMap, Config, VarName, JoinCond),
-    
-    % Update variable map with this goal's bindings
-    build_variable_map([Goal-VarName], NewBindings),
-    append(VarMap, NewBindings, VarMap1),
-    
-    % Recurse to get inner code
-    compile_go_join_with_result(Rest, VarMap1, Config, Builtins, HeadPred, HeadArgs, InnerCode),
-    
-    format(string(Code),
+    % Find first shared variable that can use index lookup
+    (   find_indexable_join(Args, VarMap, ArgIdx, Source, SrcIdx)
+    ->  % Use indexed lookup
+        format(string(LookupKey), "~w.Args[\"arg~w\"]", [Source, SrcIdx]),
+        format(string(ArgName), "arg~w", [ArgIdx]),
+        
+        % Build remaining join conditions (excluding the indexed one)
+        compile_go_join_condition_excluding(Args, VarMap, Config, VarName, ArgIdx, JoinCond),
+        
+        % Update variable map with this goal's bindings
+        build_variable_map([Goal-VarName], NewBindings),
+        append(VarMap, NewBindings, VarMap1),
+        
+        % Recurse to get inner code
+        compile_go_join_with_result(Rest, VarMap1, Config, Builtins, HeadPred, HeadArgs, InnerCode),
+        
+        format(string(Code),
 "    
-    // Join with ~w
+    // Join with ~w (indexed on ~w)
+    for _, ~wPtr := range idx.Lookup(\"~w\", \"~w\", ~w) {
+        ~w := *~wPtr
+        if true~w {
+~w
+        }
+    }
+", [Pred, ArgName, VarName, Pred, ArgName, LookupKey, VarName, VarName, JoinCond, InnerCode])
+    ;   % Fallback to linear scan (no indexable join condition)
+        compile_go_join_condition(Args, VarMap, Config, VarName, JoinCond),
+        
+        % Update variable map with this goal's bindings
+        build_variable_map([Goal-VarName], NewBindings),
+        append(VarMap, NewBindings, VarMap1),
+        
+        % Recurse to get inner code
+        compile_go_join_with_result(Rest, VarMap1, Config, Builtins, HeadPred, HeadArgs, InnerCode),
+        
+        format(string(Code),
+"    
+    // Join with ~w (linear scan)
     for _, ~w := range total {
         if ~w.Relation == \"~w\"~w {
 ~w
         }
     }
-", [Pred, VarName, VarName, Pred, JoinCond, InnerCode]).
+", [Pred, VarName, VarName, Pred, JoinCond, InnerCode])
+    ).
+
+%% find_indexable_join(+Args, +VarMap, -ArgIdx, -Source, -SrcIdx)
+%  Find the first argument that is bound in VarMap (prefer arg0)
+find_indexable_join(Args, VarMap, ArgIdx, Source, SrcIdx) :-
+    nth0(ArgIdx, Args, Arg),
+    var(Arg),
+    member(Arg0-source(Source, SrcIdx), VarMap),
+    Arg == Arg0,
+    !.
+
+%% compile_go_join_condition_excluding(+Args, +VarMap, +Config, +VarName, +ExcludeIdx, -Condition)
+%  Generate join conditions excluding the indexed argument
+compile_go_join_condition_excluding(Args, VarMap, _Config, VarName, ExcludeIdx, Condition) :-
+    findall(Cond,
+        (   nth0(I, Args, Arg),
+            I \= ExcludeIdx,
+            var(Arg),
+            member(Arg0-source(Source, SrcIdx), VarMap),
+            Arg == Arg0,
+            format(string(Cond), " && ~w.Args[\"arg~w\"] == ~w.Args[\"arg~w\"]", [VarName, I, Source, SrcIdx])
+        ),
+        Conds),
+    atomic_list_concat(Conds, "", Condition).
 
 %% compile_go_joins(+Goals, +VarMap, +Config, +Index, -JoinCode, -FinalVarMap)
 %  Generate nested loops for join goals
