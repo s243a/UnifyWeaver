@@ -90,12 +90,7 @@ impl PtCrawler {
                                 self.importer.upsert_object(id, &tag, &Value::Object(obj.clone()))?;
 
                                 // Generate Embedding
-                                let text = get_local(&obj, "title")
-                                    .or_else(|| get_local(&obj, "about"))
-                                    .or_else(|| obj.get("text"))
-                                    .and_then(|v| v.as_str());
-
-                                if let Some(text) = text {
+                                if let Some(Value::String(text)) = obj.get("title").or(obj.get("text")) {
                                     if let Ok(vec) = self.embedder.get_embedding(text) {
                                         self.importer.upsert_embedding(id, &vec)?;
                                     }
@@ -172,8 +167,6 @@ impl PtCrawler {
         let mut buf = Vec::new();
         let mut obj: Option<Map<String, Value>> = None;
         let mut obj_id = String::new();
-        let mut nested_element: Option<String> = None;
-        let mut nested_text = String::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -197,56 +190,17 @@ impl PtCrawler {
                     // Only track top-level object if it has an ID
                     if !obj_id.is_empty() && obj.is_none() {
                         obj = Some(current_obj);
-                    } else if obj.is_some() {
-                        // This is a nested element within our object
-                        nested_element = Some(tag);
-                        nested_text.clear();
                     }
                 }
                 Ok(Event::Text(e)) => {
-                    let text = std::str::from_utf8(e.as_ref()).unwrap_or("").trim().to_string();
-                    if !text.is_empty() {
-                        if nested_element.is_some() {
-                            // Text belongs to nested element
-                            nested_text.push_str(&text);
-                        } else if let Some(ref mut current_obj) = obj {
-                            // Direct text content of the main object
+                    if let Some(ref mut current_obj) = obj {
+                        let text = std::str::from_utf8(e.as_ref()).unwrap_or("").trim().to_string();
+                        if !text.is_empty() {
                             current_obj.insert("text".to_string(), Value::String(text));
                         }
                     }
                 }
-                Ok(Event::CData(e)) => {
-                    let text = std::str::from_utf8(e.as_ref()).unwrap_or("").trim().to_string();
-                    if !text.is_empty() {
-                        if nested_element.is_some() {
-                            // CDATA belongs to nested element
-                            nested_text.push_str(&text);
-                        } else if let Some(ref mut current_obj) = obj {
-                            // Direct CDATA of the main object
-                            current_obj.insert("text".to_string(), Value::String(text));
-                        }
-                    }
-                }
-                Ok(Event::End(e)) => {
-                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-
-                    // Check if this is the end of a nested element
-                    if let Some(ref nested_tag) = nested_element {
-                        if *nested_tag == tag {
-                            // Add nested element's text to parent object
-                            if let Some(ref mut current_obj) = obj {
-                                if !nested_text.is_empty() {
-                                    current_obj.insert(tag.clone(), Value::String(nested_text.clone()));
-                                }
-                            }
-                            nested_element = None;
-                            nested_text.clear();
-                            buf.clear();
-                            continue;
-                        }
-                    }
-
-                    // This is the end of the main object
+                Ok(Event::End(_)) => {
                     if let Some(current_obj) = obj.take() {
                         // Extract ID from attributes
                         let id = current_obj.get("@rdf:about")
@@ -261,12 +215,7 @@ impl PtCrawler {
                             self.importer.upsert_object(id, tag, &Value::Object(current_obj.clone()))?;
 
                             // Generate embedding if we have text
-                            let text = get_local(&current_obj, "title")
-                                .or_else(|| get_local(&current_obj, "about"))
-                                .or_else(|| current_obj.get("text"))
-                                .and_then(|v| v.as_str());
-
-                            if let Some(text) = text {
+                            if let Some(Value::String(text)) = current_obj.get("title").or(current_obj.get("text")) {
                                 if let Ok(vec) = self.embedder.get_embedding(text) {
                                     self.importer.upsert_embedding(id, &vec)?;
                                 }
@@ -283,29 +232,4 @@ impl PtCrawler {
 
         Ok(())
     }
-}
-
-/// Helper function to get a value from a JSON map ignoring namespace prefixes
-/// Tries: exact match, @prefix, and any namespace:localname pattern
-fn get_local<'a>(map: &'a serde_json::Map<String, Value>, local_name: &str) -> Option<&'a Value> {
-    // Try exact match
-    if let Some(v) = map.get(local_name) {
-        return Some(v);
-    }
-
-    // Try with @ prefix
-    let at_key = format!("@{}", local_name);
-    if let Some(v) = map.get(&at_key) {
-        return Some(v);
-    }
-
-    // Try with any namespace prefix (e.g., "dcterms:title", "@dcterms:title")
-    let suffix = format!(":{}", local_name);
-    for (key, value) in map.iter() {
-        if key.ends_with(&suffix) {
-            return Some(value);
-        }
-    }
-
-    None
 }
