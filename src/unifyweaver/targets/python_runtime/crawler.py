@@ -120,3 +120,113 @@ class PtCrawler:
                         del parent[0]
                     else:
                         break
+
+    def process_fragments_from_stdin(self):
+        """Process null-delimited XML fragments from stdin.
+
+        This enables AWK-based ingestion where AWK filters and extracts fragments.
+        Usage: awk -f extract_fragments.awk input.rdf | python_crawler
+        """
+        return self.process_fragments(sys.stdin.buffer)
+
+    def process_fragments(self, reader):
+        """Process null-delimited XML fragments from a binary reader.
+
+        Each fragment is a complete XML element separated by null bytes (\\0).
+
+        Args:
+            reader: A binary file-like object (e.g., sys.stdin.buffer, open(file, 'rb'))
+        """
+        fragment = bytearray()
+        count = 0
+
+        # Read byte by byte, splitting on null delimiter
+        while True:
+            byte = reader.read(1)
+            if not byte:
+                # EOF - process final fragment if exists
+                if fragment:
+                    try:
+                        self._process_fragment(bytes(fragment))
+                        count += 1
+                    except Exception as e:
+                        print(f"Error processing fragment: {e}", file=sys.stderr)
+                break
+
+            if byte == b'\x00':
+                # Found null delimiter - process accumulated fragment
+                if fragment:
+                    try:
+                        self._process_fragment(bytes(fragment))
+                        count += 1
+
+                        if count % 100 == 0:
+                            print(f"Processed {count} fragments...", file=sys.stderr)
+                    except Exception as e:
+                        print(f"Error processing fragment: {e}", file=sys.stderr)
+
+                    fragment.clear()
+            else:
+                fragment.extend(byte)
+
+        print(f"✓ Processed {count} total fragments", file=sys.stderr)
+
+    def _process_fragment(self, fragment):
+        """Process a single XML fragment.
+
+        Args:
+            fragment: Bytes containing a complete XML element
+        """
+        try:
+            root = etree.fromstring(fragment)
+        except etree.XMLSyntaxError as e:
+            raise ValueError(f"Invalid XML fragment: {e}")
+
+        # Extract data similar to _process_stream
+        data = {}
+
+        # Root element attributes
+        for k, v in root.attrib.items():
+            local_k = k.split('}')[-1] if '}' in k else k
+            data['@' + local_k] = v
+
+        tag = root.tag.split('}')[-1]  # Local name
+        obj_id = data.get('@id') or data.get('@rdf:about') or data.get('@about')
+
+        # Flatten children
+        for child in root:
+            child_tag = child.tag.split('}')[-1]
+
+            # Child text content
+            if not len(child) and child.text:
+                data[child_tag] = child.text.strip()
+
+            # Child element attributes (element-scoped to prevent conflicts)
+            for attr_name, attr_val in child.attrib.items():
+                local_attr = attr_name.split('}')[-1] if '}' in attr_name else attr_name
+                # Element-scoped: e.g., "seeAlso@resource" vs "parentTree@resource"
+                scoped_key = child_tag + '@' + local_attr
+                data[scoped_key] = attr_val
+                # Also store with global key for backward compatibility
+                data['@' + local_attr] = attr_val
+
+            # Link extraction
+            resource = None
+            for k, v in child.attrib.items():
+                if k.endswith('}resource') or k == 'resource':
+                    resource = v
+                    break
+
+            if resource and obj_id:
+                self.importer.upsert_link(obj_id, resource)
+
+        # Store object if it has an ID
+        if obj_id:
+            self.importer.upsert_object(obj_id, tag, data)
+
+            # Generate embedding if embedder is available
+            if self.embedder:
+                text = data.get('title') or data.get('text') or ""
+                if text:
+                    vec = self.embedder.get_embedding(text)
+                    self.importer.upsert_embedding(obj_id, vec)

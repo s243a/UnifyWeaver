@@ -98,5 +98,108 @@ namespace UnifyWeaver.QueryRuntime
             return map;
         }
 
+        /// <summary>
+        /// Process null-delimited XML fragments from stdin.
+        /// This enables AWK-based ingestion where AWK filters and extracts fragments.
+        /// Usage: awk -f extract_fragments.awk input.rdf | csharp_crawler
+        /// </summary>
+        public void ProcessFragmentsFromStdin(bool emitEmbeddings = false)
+        {
+            using var stdin = Console.OpenStandardInput();
+            ProcessFragments(stdin, emitEmbeddings);
+        }
+
+        /// <summary>
+        /// Process null-delimited XML fragments from a stream.
+        /// Each fragment is a complete XML element separated by null bytes (\0).
+        /// </summary>
+        public void ProcessFragments(System.IO.Stream stream, bool emitEmbeddings = false)
+        {
+            var fragment = new List<byte>();
+            int count = 0;
+            int b;
+
+            while ((b = stream.ReadByte()) != -1)
+            {
+                if (b == 0)
+                {
+                    // Found null delimiter - process accumulated fragment
+                    if (fragment.Count > 0)
+                    {
+                        try
+                        {
+                            ProcessFragment(fragment.ToArray(), emitEmbeddings);
+                            count++;
+
+                            if (count % 100 == 0)
+                            {
+                                Console.Error.WriteLine($"Processed {count} fragments...");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"Error processing fragment: {ex.Message}");
+                        }
+
+                        fragment.Clear();
+                    }
+                }
+                else
+                {
+                    fragment.Add((byte)b);
+                }
+            }
+
+            // Process final fragment if exists (no trailing null)
+            if (fragment.Count > 0)
+            {
+                try
+                {
+                    ProcessFragment(fragment.ToArray(), emitEmbeddings);
+                    count++;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error processing fragment: {ex.Message}");
+                }
+            }
+
+            Console.Error.WriteLine($"✓ Processed {count} total fragments");
+        }
+
+        /// <summary>
+        /// Process a single XML fragment.
+        /// </summary>
+        private void ProcessFragment(byte[] fragmentBytes, bool emitEmbeddings)
+        {
+            using var ms = new System.IO.MemoryStream(fragmentBytes);
+            var config = new XmlSourceConfig
+            {
+                StreamFactory = () => ms,
+                IsFile = false
+            };
+
+            var reader = new XmlStreamReader(config);
+            foreach (var row in reader.Read())
+            {
+                var map = ToDict(row);
+                var entity = PtMapper.Map(map);
+
+                if (entity.Privacy.HasValue && entity.Privacy.Value > 1)
+                {
+                    continue; // skip private
+                }
+
+                _importer.Upsert(entity);
+
+                if (emitEmbeddings && _embeddingProvider is not null)
+                {
+                    var text = entity.Title ?? entity.About ?? entity.Id;
+                    var embedding = _embeddingProvider.GetEmbedding(text);
+                    _importer.UpsertEmbedding(entity.Id, embedding);
+                }
+            }
+        }
+
     }
 }

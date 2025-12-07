@@ -1,0 +1,127 @@
+# Physics-related trees (cosine similarity >= 0.35)
+# Query: "physics"
+# Total matches: 118
+# Similarity metric: Cosine similarity
+#   Formula: dot(a, b) / (||a|| * ||b||)
+#   Range: 0.0 (orthogonal) to 1.0 (identical direction)
+
+Rank	Score	ID	Title
+----	-----	--	-----
+1	1.0000	10647426	Physics
+2	0.7385	10647429	Introductory Physics
+3	0.7019	11477015	mechanics
+4	0.6576	10388356	science
+5	0.6470	11728726	News (Physics)
+6	0.6200	11728727	Partical Physics News
+7	0.5796	11257890	dynamics
+8	0.5583	12324949	science-space
+9	0.5552	11491214	light (physics)
+10	0.5551	11610814	Energy
+11	0.5462	11799066	science (to sort)
+12	0.5437	11495602	Classical Mechanics
+13	0.5409	11110477	Tensors in Physics
+14	0.5274	11540570	Molecular Physics
+15	0.5193	10647433	Electricity & Magnitism (Physics)
+16	0.5172	11193475	Scientists
+17	0.5150	11495612	Conservation Principles (Physics)
+18	0.5138	11457393	Waves (physics)
+19	0.5028	10516788	math
+20	0.5023	11459405	Quantum Mechanics
+21	0.5014	11615420	The Privitization of Science
+22	0.4932	10797629	Science art
+23	0.4883	11110453	Math, Physical Sciences & Engineering
+24	0.4848	10518550	Chemistry
+25	0.4797	11878359	Philosophy of Science
+26	0.4759	10976618	Engineering
+27	0.4716	11110458	Continuum Mechanics
+28	0.4710	11551914	Chaos (Physics)
+29	0.4630	11574716	Dimensional Analysis (Physics)
+30	0.4611	10459336	The War on Science
+31	0.4606	11540624	Solid State Physics
+32	0.4586	11804184	RDF-Gravity
+33	0.4575	11551877	Kinetic theory
+34	0.4562	11551549	Transport Phenomena
+35	0.4561	12117244	2.1 Science
+36	0.4520	12294042	math (quantum mechanics)
+37	0.4520	11540296	Matter Wave
+38	0.4512	11599899	Energy (Thermodynamics)
+39	0.4505	11864644	The History of Science
+40	0.4504	11276413	Mechanical Engineering
+41	0.4400	12350077	perception
+42	0.4356	11804945	Sci-Fi Technology
+43	0.4337	11540574	molecular dynamics physical paramaters
+44	0.4321	10676587	calculus
+45	0.4311	11540603	Force field_(chemistry) aka potential fields
+46	0.4271	12338900	Analysis & Quantum Mechanics
+47	0.4246	11539884	Statistical Mechanics
+48	0.4224	11853645	to sort science 7 Jan 14
+49	0.4214	10797508	Energy Technology
+50	0.4196	11466003	floating steel ball valv
+51	0.4194	10674250	psychology
+52	0.4182	11800024	0 - tosort science -> realtree
+53	0.4174	11459409	Quantum Physics by other Pearlers
+54	0.4150	10676668	action (mechanics math)
+55	0.4136	10410933	space
+56	0.4124	10588828	Space Technology
+57	0.4116	12160246	Energy & Geopolitics
+58	0.4114	10647421	Videos (Maxwell's Equations)
+59	0.4114	10380971	technology
+60	0.4114	12324693	Technology
+61	0.4103	10752367	Climate Science
+62	0.4098	11460359	Pysical Chemistry
+63	0.4069	10388492	Economics
+64	0.4062	11552129	Equipartion Energy
+65	0.4033	11723072	Biology
+66	0.4033	12324929	biology
+67	0.4030	11257879	Reciprocating Motion
+68	0.4025	10455187	Social Sciences
+69	0.4024	11728356	Movements
+70	0.3993	10504694	Not so scientific
+71	0.3991	11460385	Wave Theory
+72	0.3982	11257306	Engines
+73	0.3975	10455333	The Power Principle
+74	0.3968	10390754	law
+75	0.3968	10484411	Law
+76	0.3919	10455547	Politics in Science
+77	0.3916	10659804	geometry
+78	0.3893	11257345	Energy Engineering
+79	0.3888	11540230	Physical Constant
+80	0.3881	10410253	The Force of isms
+81	0.3852	10539006	dynamics (economics)
+82	0.3842	12345160	The History of Science & Technology
+83	0.3839	11540595	molecular dynamics/mechanics
+84	0.3832	11450334	Lift
+85	0.3829	10658342	Artificial Intelligence
+86	0.3828	11625569	Electroncis Engineering
+87	0.3828	11644838	Geotechnical Engineering
+88	0.3828	12344769	Piping Engineering
+89	0.3810	11257285	Dynamics Simulation
+90	0.3804	11540752	Electromagnetic Waves
+91	0.3797	11495613	Conservation of Energy
+92	0.3764	11491216	Scattering
+93	0.3752	10410246	events
+94	0.3752	10995367	Events
+95	0.3745	11551925	Thermal Conductivity
+96	0.3745	11551940	Thermal transmittance
+97	0.3744	11276501	Transmission
+98	0.3729	11610817	Potential Energy
+99	0.3651	11460527	Fluid Dynamics
+100	0.3648	12338213	Related Math (Quantum Mechanics)
+101	0.3647	10669410	Algebra
+102	0.3635	11249669	Instrumentation Engineering
+103	0.3635	11386945	Geology
+104	0.3634	10490022	Education
+105	0.3628	11000027	to review (science & technology)
+106	0.3626	11467418	Properties of Materials
+107	0.3619	10516833	Statistics
+108	0.3616	11469576	Internal energy
+109	0.3608	11257825	Simple Harmonic Motion
+110	0.3590	11193628	Faith in Science
+111	0.3587	12392961	Material Engineering
+112	0.3567	11676890	science documentaries
+113	0.3540	10687416	advanced calculus
+114	0.3537	12338200	Measurement (Quantum Mechanics)
+115	0.3525	11460486	Field
+116	0.3522	12392995	Material Resistance
+117	0.3516	11193488	Theoretical Physicists
+118	0.3502	10959089	earth ships
