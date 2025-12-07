@@ -9,6 +9,7 @@ This document describes the test coverage for UnifyWeaver's cross-target glue sy
 | 1-5 | Core glue modules | ✅ Yes | ⚠️ Partial | ✅ Yes |
 | 6a-d | deployment_glue.pl | ✅ Yes | ⚠️ Partial | ✅ Yes |
 | 7a | Container deployment | ✅ Yes | ❌ No | ⚠️ Experimental |
+| 7b | Secrets management | ✅ Yes | ❌ No | ⚠️ Experimental |
 
 ## Test Categories
 
@@ -185,6 +186,115 @@ Before using Phase 7a in production:
 
 ---
 
+## Phase 7b: Secrets Management [EXPERIMENTAL]
+
+**⚠️ WARNING: All Phase 7b features are experimental.**
+
+### Test Coverage
+
+| Feature | What's Tested | What's NOT Tested |
+|---------|---------------|-------------------|
+| `declare_secret_source/2` | Config stored/retrieved | N/A |
+| `declare_vault_config/2` | Config stored/retrieved | Vault server connectivity |
+| `generate_vault_read/4` | CLI command string generated | Vault authentication works |
+| `generate_vault_agent_config/3` | Config file structure | Agent actually runs |
+| `declare_aws_secrets_config/2` | Config stored/retrieved | AWS credentials valid |
+| `generate_aws_secret_read/4` | CLI command string generated | Secret retrieved from AWS |
+| `declare_azure_keyvault_config/2` | Config stored/retrieved | Azure credentials valid |
+| `generate_azure_secret_read/4` | CLI command string generated | Secret retrieved from Azure |
+| `declare_gcp_secrets_config/2` | Config stored/retrieved | GCP credentials valid |
+| `generate_gcp_secret_read/4` | CLI command string generated | Secret retrieved from GCP |
+| `declare_service_secrets/2` | Config stored/retrieved | N/A |
+| `generate_secret_env_script/3` | Script structure correct | Script executes successfully |
+| `generate_k8s_secret/3` | YAML structure correct | `kubectl apply` succeeds |
+| `generate_k8s_external_secret/3` | YAML structure correct | ExternalSecrets operator works |
+| `resolve_secret/4` | Command for each source type | Secret values retrieved |
+| `list_secrets/3` | List commands generated | Secrets listed from sources |
+
+### What Unit Tests Verify
+
+```prolog
+% Example: test_generate_vault_read_token
+test_generate_vault_read_token :-
+    declare_vault_config(test_vault, [url('https://vault.example.com'), auth_method(token)]),
+    generate_vault_read(test_vault, 'secret/data/myapp', [], Command),
+    % Verifies command structure, NOT that Vault is accessible:
+    sub_atom(Command, _, _, _, 'vault kv get'),
+    sub_atom(Command, _, _, _, '-address=https://vault.example.com').
+```
+
+### What Would Be Needed for Full Testing
+
+1. **HashiCorp Vault Integration Tests**
+   ```bash
+   # Start test Vault server
+   vault server -dev
+
+   # Write test secret
+   vault kv put secret/test password=secret123
+
+   # Verify generated command works
+   eval "$(generate_vault_read(cfg, 'secret/test', [], Cmd), write(Cmd))"
+   ```
+
+2. **AWS Secrets Manager Integration Tests**
+   ```bash
+   # Requires valid AWS credentials
+   aws secretsmanager create-secret --name test/secret --secret-string '{"key":"value"}'
+
+   # Verify generated command works
+   eval "$(generate_aws_secret_read(cfg, 'test/secret', [], Cmd), write(Cmd))"
+   ```
+
+3. **Azure Key Vault Integration Tests**
+   ```bash
+   # Requires Azure subscription and Key Vault
+   az keyvault secret set --vault-name myvault --name testsecret --value secret123
+
+   # Verify generated command works
+   eval "$(generate_azure_secret_read(cfg, testsecret, [], Cmd), write(Cmd))"
+   ```
+
+4. **GCP Secret Manager Integration Tests**
+   ```bash
+   # Requires GCP project
+   echo -n "secret123" | gcloud secrets create test-secret --data-file=-
+
+   # Verify generated command works
+   eval "$(generate_gcp_secret_read(cfg, 'test-secret', [], Cmd), write(Cmd))"
+   ```
+
+### Recommended Validation Before Production
+
+Before using Phase 7b in production:
+
+1. **Vault connectivity test:**
+   ```bash
+   # Test with real Vault
+   vault status
+   vault kv get secret/path/to/test
+   ```
+
+2. **AWS credentials test:**
+   ```bash
+   aws sts get-caller-identity
+   aws secretsmanager list-secrets
+   ```
+
+3. **Azure credentials test:**
+   ```bash
+   az account show
+   az keyvault secret list --vault-name myvault
+   ```
+
+4. **GCP credentials test:**
+   ```bash
+   gcloud auth list
+   gcloud secrets list
+   ```
+
+---
+
 ## Future Test Improvements
 
 ### Short Term
@@ -207,12 +317,13 @@ Before using Phase 7a in production:
 ## Running Tests
 
 ```bash
-# All deployment glue tests (83 tests)
+# All deployment glue tests (103 tests)
 swipl tests/glue/test_deployment_glue.pl
 
 # Expected output includes:
 # - Phase 6a-d: 62 tests (production ready)
 # - Phase 7a: 21 tests (experimental, code generation only)
+# - Phase 7b: 20 tests (experimental, code generation only)
 ```
 
 ## Contributing

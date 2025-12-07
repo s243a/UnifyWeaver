@@ -211,6 +211,50 @@ run_all_tests :-
         test_scale_k8s_deployment
     ]),
 
+    % Phase 7b Tests
+    format('~n--- Phase 7b: Secrets Management ---~n~n'),
+
+    run_test_group('Secret Source Config', [
+        test_declare_secret_source,
+        test_secret_source_query
+    ]),
+
+    run_test_group('HashiCorp Vault', [
+        test_declare_vault_config,
+        test_generate_vault_read_token,
+        test_generate_vault_read_with_field,
+        test_generate_vault_agent_config
+    ]),
+
+    run_test_group('AWS Secrets Manager', [
+        test_declare_aws_secrets_config,
+        test_generate_aws_secret_read,
+        test_generate_aws_secret_read_with_key
+    ]),
+
+    run_test_group('Azure Key Vault', [
+        test_declare_azure_keyvault_config,
+        test_generate_azure_secret_read
+    ]),
+
+    run_test_group('GCP Secret Manager', [
+        test_declare_gcp_secrets_config,
+        test_generate_gcp_secret_read
+    ]),
+
+    run_test_group('Service Secrets', [
+        test_declare_service_secrets,
+        test_generate_secret_env_script,
+        test_generate_k8s_secret,
+        test_generate_k8s_external_secret
+    ]),
+
+    run_test_group('Unified Secret Access', [
+        test_resolve_secret_vault,
+        test_resolve_secret_aws,
+        test_list_secrets_vault
+    ]),
+
     print_summary.
 
 run_test_group(GroupName, Tests) :-
@@ -1195,6 +1239,175 @@ test_scale_k8s_deployment :-
     Result = scale_command(Cmd, k8s_deploy_test, 5),
     sub_atom(Cmd, _, _, _, 'kubectl scale'),
     sub_atom(Cmd, _, _, _, '--replicas=5').
+
+%% ============================================
+%% Phase 7b Tests: Secret Source Config
+%% ============================================
+
+test_declare_secret_source :-
+    declare_secret_source(my_vault, [
+        type(vault),
+        priority(1)
+    ]),
+    secret_source_config(my_vault, Config),
+    member(type(vault), Config).
+
+test_secret_source_query :-
+    secret_source_config(my_vault, Config),
+    member(priority(1), Config).
+
+%% ============================================
+%% Phase 7b Tests: HashiCorp Vault
+%% ============================================
+
+test_declare_vault_config :-
+    declare_vault_config(test_vault, [
+        url('https://vault.example.com:8200'),
+        auth_method(token),
+        token_env('VAULT_TOKEN'),
+        mount_path('secret')
+    ]),
+    vault_config(test_vault, Config),
+    member(url('https://vault.example.com:8200'), Config).
+
+test_generate_vault_read_token :-
+    generate_vault_read(test_vault, 'myapp/database', [], Cmd),
+    sub_atom(Cmd, _, _, _, 'vault kv get'),
+    sub_atom(Cmd, _, _, _, 'VAULT_ADDR=https://vault.example.com:8200'),
+    sub_atom(Cmd, _, _, _, 'secret/data/myapp/database').
+
+test_generate_vault_read_with_field :-
+    generate_vault_read(test_vault, 'myapp/database', [field(password)], Cmd),
+    sub_atom(Cmd, _, _, _, '-field=password').
+
+test_generate_vault_agent_config :-
+    declare_vault_config(agent_vault, [
+        url('https://vault.example.com:8200'),
+        auth_method(kubernetes),
+        k8s_role(myapp)
+    ]),
+    declare_service_secrets(vault_agent_test_svc, [
+        secret('DB_PASSWORD', 'secret/myapp/db', password)
+    ]),
+    generate_vault_agent_config(vault_agent_test_svc, [vault_source(agent_vault)], Config),
+    sub_atom(Config, _, _, _, 'vault {'),
+    sub_atom(Config, _, _, _, 'auto_auth'),
+    sub_atom(Config, _, _, _, 'template').
+
+%% ============================================
+%% Phase 7b Tests: AWS Secrets Manager
+%% ============================================
+
+test_declare_aws_secrets_config :-
+    declare_aws_secrets_config(test_aws, [
+        region('us-west-2'),
+        profile(production)
+    ]),
+    aws_secrets_config(test_aws, Config),
+    member(region('us-west-2'), Config).
+
+test_generate_aws_secret_read :-
+    generate_aws_secret_read(test_aws, 'myapp/database', [], Cmd),
+    sub_atom(Cmd, _, _, _, 'aws secretsmanager get-secret-value'),
+    sub_atom(Cmd, _, _, _, '--region us-west-2'),
+    sub_atom(Cmd, _, _, _, '--profile production'),
+    sub_atom(Cmd, _, _, _, '--secret-id myapp/database').
+
+test_generate_aws_secret_read_with_key :-
+    generate_aws_secret_read(test_aws, 'myapp/database', [key(password)], Cmd),
+    sub_atom(Cmd, _, _, _, 'jq'),
+    sub_atom(Cmd, _, _, _, '.password').
+
+%% ============================================
+%% Phase 7b Tests: Azure Key Vault
+%% ============================================
+
+test_declare_azure_keyvault_config :-
+    declare_azure_keyvault_config(test_azure, [
+        vault_name('mycompany-vault'),
+        subscription('12345-abcde')
+    ]),
+    azure_keyvault_config(test_azure, Config),
+    member(vault_name('mycompany-vault'), Config).
+
+test_generate_azure_secret_read :-
+    generate_azure_secret_read(test_azure, 'db-password', [], Cmd),
+    sub_atom(Cmd, _, _, _, 'az keyvault secret show'),
+    sub_atom(Cmd, _, _, _, '--vault-name mycompany-vault'),
+    sub_atom(Cmd, _, _, _, '--name db-password'),
+    sub_atom(Cmd, _, _, _, '--subscription 12345-abcde').
+
+%% ============================================
+%% Phase 7b Tests: GCP Secret Manager
+%% ============================================
+
+test_declare_gcp_secrets_config :-
+    declare_gcp_secrets_config(test_gcp, [
+        project('my-gcp-project')
+    ]),
+    gcp_secrets_config(test_gcp, Config),
+    member(project('my-gcp-project'), Config).
+
+test_generate_gcp_secret_read :-
+    generate_gcp_secret_read(test_gcp, 'db-password', [], Cmd),
+    sub_atom(Cmd, _, _, _, 'gcloud secrets versions access'),
+    sub_atom(Cmd, _, _, _, '--secret=db-password'),
+    sub_atom(Cmd, _, _, _, '--project=my-gcp-project').
+
+%% ============================================
+%% Phase 7b Tests: Service Secrets
+%% ============================================
+
+test_declare_service_secrets :-
+    declare_service_secrets(secrets_test_svc, [
+        secret('DB_HOST', test_vault, 'myapp/db', host),
+        secret('DB_PASSWORD', test_vault, 'myapp/db', password),
+        secret('API_KEY', test_aws, 'myapp/api-key')
+    ]),
+    service_secrets(secrets_test_svc, Secrets),
+    length(Secrets, 3).
+
+test_generate_secret_env_script :-
+    generate_secret_env_script(secrets_test_svc, [], Script),
+    sub_atom(Script, _, _, _, '#!/bin/bash'),
+    sub_atom(Script, _, _, _, 'export DB_HOST'),
+    sub_atom(Script, _, _, _, 'export DB_PASSWORD'),
+    sub_atom(Script, _, _, _, 'export API_KEY').
+
+test_generate_k8s_secret :-
+    % Need k8s config for namespace
+    declare_k8s_config(secrets_test_svc, [namespace(production)]),
+    generate_k8s_secret(secrets_test_svc, [], Manifest),
+    sub_atom(Manifest, _, _, _, 'apiVersion: v1'),
+    sub_atom(Manifest, _, _, _, 'kind: Secret'),
+    sub_atom(Manifest, _, _, _, 'namespace: production'),
+    sub_atom(Manifest, _, _, _, 'DB_HOST').
+
+test_generate_k8s_external_secret :-
+    generate_k8s_external_secret(secrets_test_svc, [secret_store('vault-backend')], Manifest),
+    sub_atom(Manifest, _, _, _, 'apiVersion: external-secrets.io/v1beta1'),
+    sub_atom(Manifest, _, _, _, 'kind: ExternalSecret'),
+    sub_atom(Manifest, _, _, _, 'secretStoreRef'),
+    sub_atom(Manifest, _, _, _, 'vault-backend').
+
+%% ============================================
+%% Phase 7b Tests: Unified Secret Access
+%% ============================================
+
+test_resolve_secret_vault :-
+    resolve_secret(test_vault, 'myapp/db', [], Result),
+    Result = vault_secret(Cmd),
+    sub_atom(Cmd, _, _, _, 'vault kv get').
+
+test_resolve_secret_aws :-
+    resolve_secret(test_aws, 'myapp/api', [], Result),
+    Result = aws_secret(Cmd),
+    sub_atom(Cmd, _, _, _, 'aws secretsmanager').
+
+test_list_secrets_vault :-
+    list_secrets(test_vault, [], Result),
+    Result = vault_list(Cmd),
+    sub_atom(Cmd, _, _, _, 'vault kv list').
 
 %% ============================================
 %% Main Entry Point
