@@ -80,4 +80,4 @@ Let's begin our journey by diving into the fundamentals of Prolog.
 
 ## Navigation
 
-[📖 Book 1: Foundations](README) | [Next: Chapter 2: Prolog Fundamentals for UnifyWeaver →](02_prolog_fundamentals)
+[📖 Book 1: Foundations](./) | [Next: Chapter 2: Prolog Fundamentals for UnifyWeaver →](02_prolog_fundamentals)

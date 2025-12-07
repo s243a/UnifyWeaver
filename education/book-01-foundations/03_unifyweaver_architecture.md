@@ -141,4 +141,4 @@ With an understanding of the architecture, we are now ready to get our hands dir
 
 ## Navigation
 
-**←** [Previous: Chapter 2: Prolog Fundamentals for UnifyWeaver](02_prolog_fundamentals) | [📖 Book 1: Foundations](README)
+**←** [Previous: Chapter 2: Prolog Fundamentals for UnifyWeaver](02_prolog_fundamentals) | [📖 Book 1: Foundations](./) | [Next: Book 2: Bash Target →](../book-02-bash-target/)

@@ -128,4 +128,4 @@ Each chapter includes:
 
 ## Navigation
 
-[📖 Book 11: Prolog Target](README) | [Next: Chapter 1: Introduction to the Prolog Target →](01_introduction)
+[📖 Book 11: Prolog Target](./) | [Next: Chapter 1: Introduction to the Prolog Target →](01_introduction)

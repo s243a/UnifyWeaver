@@ -801,4 +801,4 @@ Return to Book 1 for Bash-specific topics or explore the appendices for advanced
 
 ## Navigation
 
-**←** [Previous: Chapter 3: C# Query Runtime - Deep Dive](03_query_engine_deep_dive) | [📖 Book 3: C# Target](README) | [Next: Chapter 5: Semantic Crawling and Vector Search →](05_semantic_crawling)
+**←** [Previous: Chapter 3: C# Query Runtime - Deep Dive](03_query_engine_deep_dive) | [📖 Book 3: C# Target](./) | [Next: Chapter 5: Semantic Crawling and Vector Search →](05_semantic_crawling)

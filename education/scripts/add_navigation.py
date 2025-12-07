@@ -34,6 +34,35 @@ BOOK_NAMES = {
     'book-awk-target': 'AWK Target (Supplementary)',
 }
 
+# Book sequence for "next book" links (in reading order)
+BOOK_SEQUENCE = [
+    'book-01-foundations',
+    'book-02-bash-target',
+    'book-03-csharp-target',
+    'book-04-workflows',
+    'book-05-python-target',
+    'book-06-go-target',
+    'book-07-cross-target-glue',
+    'book-08-security-firewall',
+    'book-09-rust-target',
+    'book-10-sql-target',
+    'book-11-prolog-target',
+    'book-12-powershell-target',
+    'book-13-semantic-search',
+    # book-awk-target is supplementary, not in main sequence
+]
+
+def get_next_book(current_book_key):
+    """Get the next book in sequence, or None if last."""
+    try:
+        idx = BOOK_SEQUENCE.index(current_book_key)
+        if idx < len(BOOK_SEQUENCE) - 1:
+            next_key = BOOK_SEQUENCE[idx + 1]
+            return (next_key, BOOK_NAMES.get(next_key, next_key))
+    except ValueError:
+        pass
+    return None
+
 def get_chapter_title(filepath):
     """Extract chapter title from first H1 heading."""
     try:
@@ -63,10 +92,11 @@ def strip_existing_navigation(content):
     content = re.sub(pattern, '', content, flags=re.DOTALL)
     return content.rstrip()
 
-def create_navigation_footer(book_dir, book_name, chapters, current_idx):
+def create_navigation_footer(book_dir, book_name, book_key, chapters, current_idx):
     """Create navigation footer for a chapter."""
     current_file = chapters[current_idx]
     current_base = current_file.replace('.md', '')
+    is_last_chapter = current_idx == len(chapters) - 1
 
     parts = []
 
@@ -82,10 +112,10 @@ def create_navigation_footer(book_dir, book_name, chapters, current_idx):
         else:
             parts.append(f'**←** [Previous]({prev_base})')
 
-    # Back to book link
-    parts.append(f'[📖 {book_name}](README)')
+    # Back to book link (use ./ instead of README for Jekyll compatibility)
+    parts.append(f'[📖 {book_name}](./)')
 
-    # Next link
+    # Next link - either next chapter or next book
     if current_idx < len(chapters) - 1:
         next_file = chapters[current_idx + 1]
         next_base = next_file.replace('.md', '')
@@ -95,14 +125,23 @@ def create_navigation_footer(book_dir, book_name, chapters, current_idx):
             parts.append(f'[Next: {short_title} →]({next_base})')
         else:
             parts.append(f'[Next →]({next_base})')
+    else:
+        # Last chapter - link to next book or all books
+        next_book = get_next_book(book_key)
+        if next_book:
+            next_book_key, next_book_name = next_book
+            parts.append(f'[Next: {next_book_name} →](../{next_book_key}/)')
+        else:
+            # Last book in sequence - link to all books
+            parts.append(f'[📚 All Books →](../)')
 
     nav_line = ' | '.join(parts)
     return f'\n\n---\n\n## Navigation\n\n{nav_line}\n'
 
 def process_book(book_dir, dry_run=False):
     """Process all chapters in a book directory."""
-    book_name_key = os.path.basename(book_dir)
-    book_name = BOOK_NAMES.get(book_name_key, book_name_key)
+    book_key = os.path.basename(book_dir)
+    book_name = BOOK_NAMES.get(book_key, book_key)
 
     print(f"\nProcessing {book_name} ({book_dir})")
 
@@ -128,7 +167,7 @@ def process_book(book_dir, dry_run=False):
         content = strip_existing_navigation(content)
 
         # Create new navigation footer
-        nav_footer = create_navigation_footer(book_dir, book_name, chapters, idx)
+        nav_footer = create_navigation_footer(book_dir, book_name, book_key, chapters, idx)
 
         # Add navigation
         new_content = content + nav_footer

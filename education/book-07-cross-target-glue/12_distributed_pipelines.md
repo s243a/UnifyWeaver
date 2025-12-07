@@ -626,4 +626,4 @@ See `examples/05-distributed/` for:
 
 ## Navigation
 
-**←** [Previous: Chapter 11: HTTP Services](11_http_services) | [📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 13: API Reference →](13_api_reference)
+**←** [Previous: Chapter 11: HTTP Services](11_http_services) | [📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 13: API Reference →](13_api_reference)

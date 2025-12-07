@@ -634,4 +634,4 @@ All code examples in this chapter are from actual working implementations in `ou
 
 ## Navigation
 
-**←** [Previous: Chapter 8: The Modern Template System](05_template_system) | [📖 Book 2: Bash Target](README) | [Next: Chapter 10: Prolog Introspection and Theory →](07_prolog_introspection)
+**←** [Previous: Chapter 8: The Modern Template System](05_template_system) | [📖 Book 2: Bash Target](./) | [Next: Chapter 10: Prolog Introspection and Theory →](07_prolog_introspection)

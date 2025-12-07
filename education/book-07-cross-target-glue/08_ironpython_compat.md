@@ -411,4 +411,4 @@ matplotlib, seaborn, plotly, keras, xgboost, lightgbm, catboost
 
 ## Navigation
 
-**←** [Previous: Chapter 7: .NET Bridge Generation](07_dotnet_bridges) | [📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 9: Go and Rust Code Generation →](09_native_code_gen)
+**←** [Previous: Chapter 7: .NET Bridge Generation](07_dotnet_bridges) | [📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 9: Go and Rust Code Generation →](09_native_code_gen)

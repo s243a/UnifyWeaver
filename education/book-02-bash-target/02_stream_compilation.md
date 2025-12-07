@@ -148,4 +148,4 @@ In the next chapter, we will explore some more advanced topics, including the co
 
 ## Navigation
 
-**←** [Previous: Chapter 4: Your First UnifyWeaver Program](01_your_first_program) | [📖 Book 2: Bash Target](README) | [Next: Chapter 6: Advanced Topic: The Constraint System →](03_advanced_constraints)
+**←** [Previous: Chapter 4: Your First UnifyWeaver Program](01_your_first_program) | [📖 Book 2: Bash Target](./) | [Next: Chapter 6: Advanced Topic: The Constraint System →](03_advanced_constraints)

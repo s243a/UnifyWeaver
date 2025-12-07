@@ -106,4 +106,4 @@ The compiler driver represents a significant step forward in the usability of Un
 
 ## Navigation
 
-**←** [Previous: Chapter 11: Test Runner Inference](08_test_runner_inference) | [📖 Book 2: Bash Target](README) | [Next: Chapter 13: Partitioning and Parallel Execution →](10_partitioning_and_parallel_execution)
+**←** [Previous: Chapter 11: Test Runner Inference](08_test_runner_inference) | [📖 Book 2: Bash Target](./) | [Next: Chapter 13: Partitioning and Parallel Execution →](10_partitioning_and_parallel_execution)

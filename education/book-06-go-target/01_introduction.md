@@ -47,4 +47,4 @@ In the next chapter, we will write our first Prolog predicate and compile it to 
 
 ## Navigation
 
-[📖 Book 6: Go Target](README) | [Next: Chapter 2: Basic Compilation →](02_basic_compilation)
+[📖 Book 6: Go Target](./) | [Next: Chapter 2: Basic Compilation →](02_basic_compilation)

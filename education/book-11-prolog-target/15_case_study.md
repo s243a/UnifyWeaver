@@ -514,4 +514,4 @@ This case study demonstrated the complete workflow for using the Prolog target t
 
 ## Navigation
 
-**←** [Previous: Chapter 8: Dialect Fallback Mechanisms](08_fallback_mechanisms) | [📖 Book 11: Prolog Target](README)
+**←** [Previous: Chapter 8: Dialect Fallback Mechanisms](08_fallback_mechanisms) | [📖 Book 11: Prolog Target](./) | [Next: Book 12: PowerShell Target →](../book-12-powershell-target/)

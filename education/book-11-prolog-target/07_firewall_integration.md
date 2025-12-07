@@ -464,4 +464,4 @@ Chapter 8 explores fallback mechanisms, showing how the system gracefully handle
 
 ## Navigation
 
-**←** [Previous: Chapter 3: Understanding Prolog Dialects](03_dialects) | [📖 Book 11: Prolog Target](README) | [Next: Chapter 8: Dialect Fallback Mechanisms →](08_fallback_mechanisms)
+**←** [Previous: Chapter 3: Understanding Prolog Dialects](03_dialects) | [📖 Book 11: Prolog Target](./) | [Next: Chapter 8: Dialect Fallback Mechanisms →](08_fallback_mechanisms)

@@ -171,4 +171,4 @@ In the next chapter, we'll dive into the architecture of the Prolog target, expl
 
 ## Navigation
 
-**←** [Previous: The Prolog Target: Implementation and Usage Guide](00_index) | [📖 Book 11: Prolog Target](README) | [Next: Chapter 2: Architecture Overview →](02_architecture)
+**←** [Previous: The Prolog Target: Implementation and Usage Guide](00_index) | [📖 Book 11: Prolog Target](./) | [Next: Chapter 2: Architecture Overview →](02_architecture)

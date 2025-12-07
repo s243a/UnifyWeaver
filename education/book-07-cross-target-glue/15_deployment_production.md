@@ -724,4 +724,4 @@ run_pipeline(Input, Output) :-
 
 ## Navigation
 
-**←** [Previous: Chapter 14: Case Studies](14_case_studies) | [📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 16: Cloud & Enterprise (Phase 7) →](16_cloud_enterprise)
+**←** [Previous: Chapter 14: Case Studies](14_case_studies) | [📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 16: Cloud & Enterprise (Phase 7) →](16_cloud_enterprise)

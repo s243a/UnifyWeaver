@@ -76,4 +76,4 @@ This "Meta-Programming" approach is powerful. You can write a Prolog script that
 
 ## Navigation
 
-**←** [Previous: Chapter 4: Logic and Recursion in Python](04_logic_and_recursion) | [📖 Book 13: Semantic Search](README)
+**←** [Previous: Chapter 4: Logic and Recursion in Python](04_logic_and_recursion) | [📖 Book 13: Semantic Search](./) | [📚 All Books →](../)

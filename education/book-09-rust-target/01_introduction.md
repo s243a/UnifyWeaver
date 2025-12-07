@@ -46,4 +46,4 @@ cargo --version
 
 ## Navigation
 
-[📖 Book 9: Rust Target](README) | [Next: Chapter 2: Basic Compilation →](02_basic_compilation)
+[📖 Book 9: Rust Target](./) | [Next: Chapter 2: Basic Compilation →](02_basic_compilation)

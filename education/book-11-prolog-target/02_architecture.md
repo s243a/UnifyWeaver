@@ -396,4 +396,4 @@ In Chapter 3, we'll explore Prolog dialects in detail, understanding the capabil
 
 ## Navigation
 
-**←** [Previous: Chapter 1: Introduction to the Prolog Target](01_introduction) | [📖 Book 11: Prolog Target](README) | [Next: Chapter 3: Understanding Prolog Dialects →](03_dialects)
+**←** [Previous: Chapter 1: Introduction to the Prolog Target](01_introduction) | [📖 Book 11: Prolog Target](./) | [Next: Chapter 3: Understanding Prolog Dialects →](03_dialects)

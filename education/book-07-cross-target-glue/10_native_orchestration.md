@@ -478,4 +478,4 @@ See `examples/04-native-parallel/` for:
 
 ## Navigation
 
-**←** [Previous: Chapter 9: Go and Rust Code Generation](09_native_code_gen) | [📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 11: HTTP Services →](11_http_services)
+**←** [Previous: Chapter 9: Go and Rust Code Generation](09_native_code_gen) | [📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 11: HTTP Services →](11_http_services)

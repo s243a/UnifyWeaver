@@ -601,4 +601,4 @@ From a can reach f in 3 steps
 
 ## Navigation
 
-**←** [Previous: Chapter 1: Introduction to Cross-Target Communicat...](01_introduction) | [📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 3: Target Registry and Mapping →](03_target_registry)
+**←** [Previous: Chapter 1: Introduction to Cross-Target Communicat...](01_introduction) | [📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 3: Target Registry and Mapping →](03_target_registry)

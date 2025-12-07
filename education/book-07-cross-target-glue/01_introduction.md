@@ -483,4 +483,4 @@ bob is ancestor of alice
 
 ## Navigation
 
-[📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 2: Philosophy and Design Principles →](02_philosophy)
+[📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 2: Philosophy and Design Principles →](02_philosophy)

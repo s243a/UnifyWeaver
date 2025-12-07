@@ -307,4 +307,4 @@ Next: **Chapter 2 - C# Stream Target** →
 
 ## Navigation
 
-[📖 Book 3: C# Target](README) | [Next: Chapter 2: C# Stream Target →](02_csharp_stream_target)
+[📖 Book 3: C# Target](./) | [Next: Chapter 2: C# Stream Target →](02_csharp_stream_target)

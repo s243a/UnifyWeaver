@@ -499,4 +499,4 @@ See `examples/02-shell-formats/` for:
 
 ## Navigation
 
-**←** [Previous: Chapter 4: Pipe Protocols and Data Formats](04_pipe_protocols) | [📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 6: Shell Pipeline Orchestration →](06_shell_pipelines)
+**←** [Previous: Chapter 4: Pipe Protocols and Data Formats](04_pipe_protocols) | [📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 6: Shell Pipeline Orchestration →](06_shell_pipelines)

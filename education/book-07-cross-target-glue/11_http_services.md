@@ -569,4 +569,4 @@ See `examples/05-distributed/` for:
 
 ## Navigation
 
-**←** [Previous: Chapter 10: Native Binary Orchestration](10_native_orchestration) | [📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 12: Distributed Pipelines →](12_distributed_pipelines)
+**←** [Previous: Chapter 10: Native Binary Orchestration](10_native_orchestration) | [📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 12: Distributed Pipelines →](12_distributed_pipelines)

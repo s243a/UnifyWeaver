@@ -70,4 +70,4 @@ The compiler automatically identifies the "worker" logic and wraps it in `functo
 
 ## Navigation
 
-**←** [Previous: Chapter 3: The Semantic Data Pipeline](03_semantic_data_pipeline) | [📖 Book 13: Semantic Search](README) | [Next: Chapter 5: The Semantic Playbook →](05_semantic_playbook)
+**←** [Previous: Chapter 3: The Semantic Data Pipeline](03_semantic_data_pipeline) | [📖 Book 13: Semantic Search](./) | [Next: Chapter 5: The Semantic Playbook →](05_semantic_playbook)

@@ -409,4 +409,4 @@ Chapter 4 shows practical usage of the Prolog target, starting with basic exampl
 
 ## Navigation
 
-**←** [Previous: Chapter 2: Architecture Overview](02_architecture) | [📖 Book 11: Prolog Target](README) | [Next: Chapter 7: The Firewall System →](07_firewall_integration)
+**←** [Previous: Chapter 2: Architecture Overview](02_architecture) | [📖 Book 11: Prolog Target](./) | [Next: Chapter 7: The Firewall System →](07_firewall_integration)

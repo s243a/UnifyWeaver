@@ -88,4 +88,4 @@ The runtime (`PtSearcher`) executes the following SQL logic:
 
 ## Navigation
 
-**←** [Previous: Chapter 1: The Python Semantic Target](01_introduction) | [📖 Book 13: Semantic Search](README) | [Next: Chapter 3: The Semantic Data Pipeline →](03_semantic_data_pipeline)
+**←** [Previous: Chapter 1: The Python Semantic Target](01_introduction) | [📖 Book 13: Semantic Search](./) | [Next: Chapter 3: The Semantic Data Pipeline →](03_semantic_data_pipeline)

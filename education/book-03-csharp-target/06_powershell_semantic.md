@@ -99,4 +99,4 @@ This ensures that UnifyWeaver logic can run natively on corporate Windows server
 
 ## Navigation
 
-**←** [Previous: Chapter 5: Semantic Crawling and Vector Search](05_semantic_crawling) | [📖 Book 3: C# Target](README)
+**←** [Previous: Chapter 5: Semantic Crawling and Vector Search](05_semantic_crawling) | [📖 Book 3: C# Target](./) | [Next: Book 4: Workflows →](../book-04-workflows/)

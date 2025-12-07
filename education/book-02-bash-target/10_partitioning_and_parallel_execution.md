@@ -976,4 +976,4 @@ partitioner_init(my_strategy(custom_config), [], Handle).
 
 ## Navigation
 
-**←** [Previous: Chapter 10: Seamless Compilation with the Compiler...](09_recursive_compilation) | [📖 Book 2: Bash Target](README) | [Next: Chapter 14: XML Source Plugin →](11_xml_source_plugin)
+**←** [Previous: Chapter 10: Seamless Compilation with the Compiler...](09_recursive_compilation) | [📖 Book 2: Bash Target](./) | [Next: Chapter 14: XML Source Plugin →](11_xml_source_plugin)

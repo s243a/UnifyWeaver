@@ -638,4 +638,4 @@ These techniques enable UnifyWeaver to automatically select the optimal compilat
 
 ## Navigation
 
-**←** [Previous: Chapter 9: Advanced Recursion Patterns](06_advanced_recursion) | [📖 Book 2: Bash Target](README) | [Next: Chapter 11: Test Runner Inference →](08_test_runner_inference)
+**←** [Previous: Chapter 9: Advanced Recursion Patterns](06_advanced_recursion) | [📖 Book 2: Bash Target](./) | [Next: Chapter 11: Test Runner Inference →](08_test_runner_inference)

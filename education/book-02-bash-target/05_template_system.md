@@ -150,4 +150,4 @@ The modern template system is a significant enhancement that gives you fine-grai
 
 ## Navigation
 
-**←** [Previous: Chapter 7: Variable Scope and Process Substitution](04_variable_scope_and_process_substitution) | [📖 Book 2: Bash Target](README) | [Next: Chapter 9: Advanced Recursion Patterns →](06_advanced_recursion)
+**←** [Previous: Chapter 7: Variable Scope and Process Substitution](04_variable_scope_and_process_substitution) | [📖 Book 2: Bash Target](./) | [Next: Chapter 9: Advanced Recursion Patterns →](06_advanced_recursion)

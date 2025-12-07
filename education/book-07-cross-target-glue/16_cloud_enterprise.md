@@ -694,4 +694,4 @@ After this book, continue to **Book: Workflow** for:
 
 ## Navigation
 
-**←** [Previous: Chapter 15: Production Deployment (Phase 6)](15_deployment_production) | [📖 Book 7: Cross-Target Glue](README)
+**←** [Previous: Chapter 15: Production Deployment (Phase 6)](15_deployment_production) | [📖 Book 7: Cross-Target Glue](./) | [Next: Book 8: Security & Firewall →](../book-08-security-firewall/)

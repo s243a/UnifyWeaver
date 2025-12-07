@@ -456,4 +456,4 @@ Chapter 9 explores validation and compatibility checking in depth, showing how t
 
 ## Navigation
 
-**←** [Previous: Chapter 7: The Firewall System](07_firewall_integration) | [📖 Book 11: Prolog Target](README) | [Next: Chapter 15: Case Study - Factorial Compilation →](15_case_study)
+**←** [Previous: Chapter 7: The Firewall System](07_firewall_integration) | [📖 Book 11: Prolog Target](./) | [Next: Chapter 15: Case Study - Factorial Compilation →](15_case_study)

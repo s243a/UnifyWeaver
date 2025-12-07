@@ -316,4 +316,4 @@ Now that you understand variable scope, the next chapter will explore the **temp
 
 ## Navigation
 
-**←** [Previous: Chapter 6: Advanced Topic: The Constraint System](03_advanced_constraints) | [📖 Book 2: Bash Target](README) | [Next: Chapter 8: The Modern Template System →](05_template_system)
+**←** [Previous: Chapter 6: Advanced Topic: The Constraint System](03_advanced_constraints) | [📖 Book 2: Bash Target](./) | [Next: Chapter 8: The Modern Template System →](05_template_system)

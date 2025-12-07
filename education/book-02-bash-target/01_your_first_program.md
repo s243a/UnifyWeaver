@@ -287,4 +287,4 @@ In the next chapter, we will delve deeper into the compilation process, explorin
 
 ## Navigation
 
-[📖 Book 2: Bash Target](README) | [Next: Chapter 5: Stream Compilation: Handling Non-Recurs... →](02_stream_compilation)
+[📖 Book 2: Bash Target](./) | [Next: Chapter 5: Stream Compilation: Handling Non-Recurs... →](02_stream_compilation)

@@ -519,4 +519,4 @@ See `examples/03-dotnet-bridge/` for:
 
 ## Navigation
 
-**←** [Previous: Chapter 6: Shell Pipeline Orchestration](06_shell_pipelines) | [📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 8: IronPython Compatibility →](08_ironpython_compat)
+**←** [Previous: Chapter 6: Shell Pipeline Orchestration](06_shell_pipelines) | [📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 8: IronPython Compatibility →](08_ironpython_compat)

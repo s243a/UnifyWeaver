@@ -107,4 +107,4 @@ The Semantic Runtime transforms UnifyWeaver from a simple logic-to-script compil
 
 ## Navigation
 
-**←** [Previous: Chapter 4: Runtime Libraries and Deployment](04_runtime_libraries_deployment) | [📖 Book 3: C# Target](README) | [Next: Chapter 3: PowerShell Semantic Target (XML & Vecto... →](06_powershell_semantic)
+**←** [Previous: Chapter 4: Runtime Libraries and Deployment](04_runtime_libraries_deployment) | [📖 Book 3: C# Target](./) | [Next: Chapter 3: PowerShell Semantic Target (XML & Vecto... →](06_powershell_semantic)

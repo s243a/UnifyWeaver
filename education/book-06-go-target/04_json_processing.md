@@ -115,4 +115,4 @@ echo '{"id":1, "name":"alice", "active":true}' | ./etl
 
 ## Navigation
 
-**←** [Previous: Chapter 3: Advanced Features](03_advanced_features) | [📖 Book 6: Go Target](README) | [Next: Chapter 5: Semantic Crawling & RDF Processing →](05_semantic_crawling)
+**←** [Previous: Chapter 3: Advanced Features](03_advanced_features) | [📖 Book 6: Go Target](./) | [Next: Chapter 5: Semantic Crawling & RDF Processing →](05_semantic_crawling)

@@ -553,4 +553,4 @@ See `examples/04-native-parallel/` for:
 
 ## Navigation
 
-**←** [Previous: Chapter 8: IronPython Compatibility](08_ironpython_compat) | [📖 Book 7: Cross-Target Glue](README) | [Next: Chapter 10: Native Binary Orchestration →](10_native_orchestration)
+**←** [Previous: Chapter 8: IronPython Compatibility](08_ironpython_compat) | [📖 Book 7: Cross-Target Glue](./) | [Next: Chapter 10: Native Binary Orchestration →](10_native_orchestration)

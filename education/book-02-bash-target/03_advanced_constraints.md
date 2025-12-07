@@ -165,4 +165,4 @@ From here, you are well-equipped to start writing your own declarative programs 
 
 ## Navigation
 
-**←** [Previous: Chapter 5: Stream Compilation: Handling Non-Recurs...](02_stream_compilation) | [📖 Book 2: Bash Target](README) | [Next: Chapter 7: Variable Scope and Process Substitution →](04_variable_scope_and_process_substitution)
+**←** [Previous: Chapter 5: Stream Compilation: Handling Non-Recurs...](02_stream_compilation) | [📖 Book 2: Bash Target](./) | [Next: Chapter 7: Variable Scope and Process Substitution →](04_variable_scope_and_process_substitution)

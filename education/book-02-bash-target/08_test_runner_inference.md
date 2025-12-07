@@ -817,4 +817,4 @@ This closes the loop on UnifyWeaver's automated workflow: write declarative Prol
 
 ## Navigation
 
-**←** [Previous: Chapter 10: Prolog Introspection and Theory](07_prolog_introspection) | [📖 Book 2: Bash Target](README) | [Next: Chapter 10: Seamless Compilation with the Compiler... →](09_recursive_compilation)
+**←** [Previous: Chapter 10: Prolog Introspection and Theory](07_prolog_introspection) | [📖 Book 2: Bash Target](./) | [Next: Chapter 10: Seamless Compilation with the Compiler... →](09_recursive_compilation)

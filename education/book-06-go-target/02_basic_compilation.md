@@ -103,4 +103,4 @@ compile_predicate_to_go(swap/2, [field_delimiter(tab)], Code).
 
 ## Navigation
 
-**←** [Previous: Chapter 1: Introduction to the Go Target](01_introduction) | [📖 Book 6: Go Target](README) | [Next: Chapter 3: Advanced Features →](03_advanced_features)
+**←** [Previous: Chapter 1: Introduction to the Go Target](01_introduction) | [📖 Book 6: Go Target](./) | [Next: Chapter 3: Advanced Features →](03_advanced_features)

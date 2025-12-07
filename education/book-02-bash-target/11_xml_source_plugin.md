@@ -368,4 +368,4 @@ engine(iterparse)  % Force lxml
 
 ## Navigation
 
-**←** [Previous: Chapter 13: Partitioning and Parallel Execution](10_partitioning_and_parallel_execution) | [📖 Book 2: Bash Target](README)
+**←** [Previous: Chapter 13: Partitioning and Parallel Execution](10_partitioning_and_parallel_execution) | [📖 Book 2: Bash Target](./) | [Next: Book 3: C# Target →](../book-03-csharp-target/)

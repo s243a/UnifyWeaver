@@ -79,4 +79,4 @@ The compiler generates Python code that initializes the `PtCrawler` and executes
 
 ## Navigation
 
-**←** [Previous: Chapter 2: Graph Retrieval-Augmented Generation (G...](02_graph_rag) | [📖 Book 13: Semantic Search](README) | [Next: Chapter 4: Logic and Recursion in Python →](04_logic_and_recursion)
+**←** [Previous: Chapter 2: Graph Retrieval-Augmented Generation (G...](02_graph_rag) | [📖 Book 13: Semantic Search](./) | [Next: Chapter 4: Logic and Recursion in Python →](04_logic_and_recursion)
