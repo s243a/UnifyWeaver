@@ -17,8 +17,13 @@ The **Python Semantic Runtime** is a standalone library embedded within generate
 *   **Role**: Fetches and parses XML/RDF data streams.
 *   **Features**:
     *   **Streaming**: Uses `etree.iterparse` for low memory usage.
+    *   **AWK Ingestion**: Process null-delimited XML fragments from stdin for high-performance pipelines.
     *   **Link Extraction**: Automatically identifies `rdf:resource` and `pt:parentTree` attributes to populate the `links` table.
     *   **Embedding**: Automatically calls the embedder for textual content (`title`, `text`).
+*   **AWK Pipeline Methods**:
+    *   `process_fragments_from_stdin()` - Read null-delimited fragments from stdin
+    *   `process_fragments(reader)` - Read fragments from any binary file-like object
+    *   See [AWK Ingestion Guide](AWK_INGESTION.md) for details and examples.
 
 ### 3. `PtSearcher` (Retrieval)
 *   **File**: `src/unifyweaver/targets/python_runtime/searcher.py`

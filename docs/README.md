@@ -49,6 +49,13 @@ This applies to:
 
 ### Features
 
+- **[AWK_INGESTION.md](AWK_INGESTION.md)** - High-performance AWK ingestion pipeline
+  - Null-delimited streaming protocol
+  - Cross-target support (Python, C#, Go, Rust)
+  - Performance benchmarks and use cases
+  - AWK fragment extraction scripts
+  - Pipeline architecture patterns
+
 - **[POWERSHELL_TARGET.md](POWERSHELL_TARGET.md)** - PowerShell compilation target
   - Pure PowerShell mode
   - BaaS (Bash-as-a-Service) mode
