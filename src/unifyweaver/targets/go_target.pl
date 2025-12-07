@@ -2567,341 +2567,7 @@ func main() {
     ).
 
 %% ============================================
-%% AGGREGATION SUPPORT (Phase 9)
-%% ============================================
 
-%% is_aggregation_predicate(+Body)
-%  Check if predicate body contains aggregation
-%
-is_aggregation_predicate(aggregate(_Op, _Goal, _Result)).
-is_aggregation_predicate((aggregate(_Op, _Goal, _Result), _Rest)).
-is_aggregation_predicate((_First, Rest)) :-
-    is_aggregation_predicate(Rest).
-
-%% extract_aggregation_spec(+Body, -AggOp, -Goal, -Result)
-%  Extract aggregation operation, goal, and result variable
-%
-extract_aggregation_spec(aggregate(AggOp, Goal, Result), AggOp, Goal, Result) :- !.
-extract_aggregation_spec((aggregate(AggOp, Goal, Result), _Rest), AggOp, Goal, Result) :- !.
-extract_aggregation_spec((_First, Rest), AggOp, Goal, Result) :-
-    extract_aggregation_spec(Rest, AggOp, Goal, Result).
-
-%% compile_aggregation_mode(+Pred, +Arity, +Options, -GoCode)
-%  Compile predicate with aggregation operation
-%
-compile_aggregation_mode(Pred, Arity, Options, GoCode) :-
-    functor(Head, Pred, Arity),
-    clause(Head, Body),
-
-    % Extract aggregation spec
-    extract_aggregation_spec(Body, AggOp, Goal, Result),
-    format('  Aggregation: ~w~n', [AggOp]),
-    format('  Goal: ~w~n', [Goal]),
-
-    % Extract field mappings from goal
-    (   Goal = json_record(FieldMappings)
-    ->  true
-    ;   Goal = (json_record(FieldMappings), _Constraints)
-    ->  true
-    ;   format('ERROR: Aggregation goal must contain json_record/1~n'),
-        fail
-    ),
-
-    format('  Field mappings: ~w~n', [FieldMappings]),
-
-    % Generate aggregation code based on operation
-    option(db_file(DbFile), Options, 'data.db'),
-    option(db_bucket(BucketName), Options, Pred),
-    atom_string(BucketName, BucketStr),
-    option(include_package(IncludePackage), Options, true),
-
-    % Generate aggregation code
-    generate_aggregation_code(AggOp, FieldMappings, DbFile, BucketStr, AggBody),
-
-    % Wrap in package if needed
-    (   IncludePackage = true
-    ->  format(string(GoCode), 'package main
-
-import (
-\t"encoding/json"
-\t"fmt"
-\t"os"
-
-\tbolt "go.etcd.io/bbolt"
-)
-
-func main() {
-~s}
-', [AggBody])
-    ;   GoCode = AggBody
-    ).
-
-%% generate_aggregation_code(+AggOp, +FieldMappings, +DbFile, +BucketStr, -GoCode)
-%  Generate Go code for specific aggregation operation
-%
-generate_aggregation_code(count, FieldMappings, DbFile, BucketStr, GoCode) :-
-    generate_count_aggregation(DbFile, BucketStr, FieldMappings, GoCode).
-
-generate_aggregation_code(sum(FieldVar), FieldMappings, DbFile, BucketStr, GoCode) :-
-    find_field_for_var(FieldVar, FieldMappings, FieldName),
-    atom_string(FieldName, FieldNameStr),
-    generate_sum_aggregation(DbFile, BucketStr, FieldNameStr, GoCode).
-
-generate_aggregation_code(avg(FieldVar), FieldMappings, DbFile, BucketStr, GoCode) :-
-    find_field_for_var(FieldVar, FieldMappings, FieldName),
-    atom_string(FieldName, FieldNameStr),
-    generate_avg_aggregation(DbFile, BucketStr, FieldNameStr, GoCode).
-
-generate_aggregation_code(max(FieldVar), FieldMappings, DbFile, BucketStr, GoCode) :-
-    find_field_for_var(FieldVar, FieldMappings, FieldName),
-    atom_string(FieldName, FieldNameStr),
-    generate_max_aggregation(DbFile, BucketStr, FieldNameStr, GoCode).
-
-generate_aggregation_code(min(FieldVar), FieldMappings, DbFile, BucketStr, GoCode) :-
-    find_field_for_var(FieldVar, FieldMappings, FieldName),
-    atom_string(FieldName, FieldNameStr),
-    generate_min_aggregation(DbFile, BucketStr, FieldNameStr, GoCode).
-
-%% find_field_for_var(+Var, +FieldMappings, -FieldName)
-%  Find field name for a variable in field mappings
-%
-find_field_for_var(Var, [FieldName-MappedVar|_], FieldName) :-
-    Var == MappedVar, !.
-find_field_for_var(Var, [_|Rest], FieldName) :-
-    find_field_for_var(Var, Rest, FieldName).
-
-%% generate_count_aggregation(+DbFile, +BucketStr, +FieldMappings, -GoCode)
-%  Generate count aggregation code
-%
-generate_count_aggregation(DbFile, BucketStr, _FieldMappings, GoCode) :-
-    format(string(GoCode), '\t// Open database (read-only)
-\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-\tdefer db.Close()
-
-\t// Count records
-\tcount := 0
-\terr = db.View(func(tx *bolt.Tx) error {
-\t\tbucket := tx.Bucket([]byte("~s"))
-\t\tif bucket == nil {
-\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
-\t\t}
-
-\t\treturn bucket.ForEach(func(k, v []byte) error {
-\t\t\tvar data map[string]interface{}
-\t\t\tif err := json.Unmarshal(v, &data); err != nil {
-\t\t\t\treturn nil // Skip invalid records
-\t\t\t}
-\t\t\tcount++
-\t\t\treturn nil
-\t\t})
-\t})
-
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-
-\t// Output result
-\tfmt.Println(count)
-', [DbFile, BucketStr, BucketStr]).
-
-%% generate_sum_aggregation(+DbFile, +BucketStr, +FieldName, -GoCode)
-%  Generate sum aggregation code
-%
-generate_sum_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
-    format(string(GoCode), '\t// Open database (read-only)
-\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-\tdefer db.Close()
-
-\t// Sum field values
-\tsum := 0.0
-\terr = db.View(func(tx *bolt.Tx) error {
-\t\tbucket := tx.Bucket([]byte("~s"))
-\t\tif bucket == nil {
-\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
-\t\t}
-
-\t\treturn bucket.ForEach(func(k, v []byte) error {
-\t\t\tvar data map[string]interface{}
-\t\t\tif err := json.Unmarshal(v, &data); err != nil {
-\t\t\t\treturn nil // Skip invalid records
-\t\t\t}
-
-\t\t\t// Extract field
-\t\t\tif valueRaw, ok := data["~s"]; ok {
-\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
-\t\t\t\t\tsum += valueFloat
-\t\t\t\t}
-\t\t\t}
-\t\t\treturn nil
-\t\t})
-\t})
-
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-
-\t// Output result
-\tfmt.Println(sum)
-', [DbFile, BucketStr, BucketStr, FieldName]).
-
-%% generate_avg_aggregation(+DbFile, +BucketStr, +FieldName, -GoCode)
-%  Generate average aggregation code
-%
-generate_avg_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
-    format(string(GoCode), '\t// Open database (read-only)
-\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-\tdefer db.Close()
-
-\t// Calculate average
-\tsum := 0.0
-\tcount := 0
-\terr = db.View(func(tx *bolt.Tx) error {
-\t\tbucket := tx.Bucket([]byte("~s"))
-\t\tif bucket == nil {
-\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
-\t\t}
-
-\t\treturn bucket.ForEach(func(k, v []byte) error {
-\t\t\tvar data map[string]interface{}
-\t\t\tif err := json.Unmarshal(v, &data); err != nil {
-\t\t\t\treturn nil // Skip invalid records
-\t\t\t}
-
-\t\t\t// Extract field
-\t\t\tif valueRaw, ok := data["~s"]; ok {
-\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
-\t\t\t\t\tsum += valueFloat
-\t\t\t\t\tcount++
-\t\t\t\t}
-\t\t\t}
-\t\t\treturn nil
-\t\t})
-\t})
-
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-
-\t// Calculate and output average
-\tavg := 0.0
-\tif count > 0 {
-\t\tavg = sum / float64(count)
-\t}
-\tfmt.Println(avg)
-', [DbFile, BucketStr, BucketStr, FieldName]).
-
-%% generate_max_aggregation(+DbFile, +BucketStr, +FieldName, -GoCode)
-%  Generate max aggregation code
-%
-generate_max_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
-    format(string(GoCode), '\t// Open database (read-only)
-\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-\tdefer db.Close()
-
-\t// Find maximum value
-\tmaxValue := 0.0
-\tfirst := true
-\terr = db.View(func(tx *bolt.Tx) error {
-\t\tbucket := tx.Bucket([]byte("~s"))
-\t\tif bucket == nil {
-\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
-\t\t}
-
-\t\treturn bucket.ForEach(func(k, v []byte) error {
-\t\t\tvar data map[string]interface{}
-\t\t\tif err := json.Unmarshal(v, &data); err != nil {
-\t\t\t\treturn nil // Skip invalid records
-\t\t\t}
-
-\t\t\t// Extract field
-\t\t\tif valueRaw, ok := data["~s"]; ok {
-\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
-\t\t\t\t\tif first || valueFloat > maxValue {
-\t\t\t\t\t\tmaxValue = valueFloat
-\t\t\t\t\t\tfirst = false
-\t\t\t\t\t}
-\t\t\t\t}
-\t\t\t}
-\t\t\treturn nil
-\t\t})
-\t})
-
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-
-\t// Output result
-\tfmt.Println(maxValue)
-', [DbFile, BucketStr, BucketStr, FieldName]).
-
-%% generate_min_aggregation(+DbFile, +BucketStr, +FieldName, -GoCode)
-%  Generate min aggregation code
-%
-generate_min_aggregation(DbFile, BucketStr, FieldName, GoCode) :-
-    format(string(GoCode), '\t// Open database (read-only)
-\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-\tdefer db.Close()
-
-\t// Find minimum value
-\tminValue := 0.0
-\tfirst := true
-\terr = db.View(func(tx *bolt.Tx) error {
-\t\tbucket := tx.Bucket([]byte("~s"))
-\t\tif bucket == nil {
-\t\t\treturn fmt.Errorf("bucket ''~s'' not found")
-\t\t}
-
-\t\treturn bucket.ForEach(func(k, v []byte) error {
-\t\t\tvar data map[string]interface{}
-\t\t\tif err := json.Unmarshal(v, &data); err != nil {
-\t\t\t\treturn nil // Skip invalid records
-\t\t\t}
-
-\t\t\t// Extract field
-\t\t\tif valueRaw, ok := data["~s"]; ok {
-\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
-\t\t\t\t\tif first || valueFloat < minValue {
-\t\t\t\t\t\tminValue = valueFloat
-\t\t\t\t\t\tfirst = false
-\t\t\t\t\t}
-\t\t\t\t}
-\t\t\t}
-\t\t\treturn nil
-\t\t})
-\t})
-
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error reading database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-
-\t// Output result
-\tfmt.Println(minValue)
-', [DbFile, BucketStr, BucketStr, FieldName]).
 
 %% ============================================
 %% GROUP BY AGGREGATION SUPPORT (Phase 9b)
@@ -2969,46 +2635,47 @@ compile_group_by_mode(Pred, Arity, Options, GoCode) :-
         fail
     ),
 
-    % Get database options
-    option(db_file(DbFile), Options, 'data.db'),
-    option(db_bucket(BucketAtom), Options, Pred),
-    atom_string(BucketAtom, BucketStr),
+    % Generate grouped aggregation code
+    (   option(json_input(true), Options)
+    ->  % JSONL Stream Mode
+        format('  Generating JSONL stream code for group_by~n'),
+        generate_group_by_code_jsonl(GroupField, FieldMappings, AggOp, Result, HavingConstraints, Options, AggBody),
+        BaseImports = ["bufio", "encoding/json", "fmt", "os"]
+    ;   % Database Mode (bbolt)
+        format('  Generating bbolt code for group_by~n'),
+        
+        % Get database options
+        option(db_file(DbFile), Options, 'data.db'),
+        option(db_bucket(BucketAtom), Options, Pred),
+        atom_string(BucketAtom, BucketStr),
+        
+        generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstraints, DbFile, BucketStr, AggBody),
+        BaseImports = ["encoding/json", "fmt", "os", "bolt \"go.etcd.io/bbolt\""]
+    ),
 
-    % Generate grouped aggregation code with HAVING support
-    generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstraints, DbFile, BucketStr, AggBody),
+    % Add strings import if needed (for nested grouping or string manipulation)
+    (   (is_list(GroupField) ; member(nested(_, _), FieldMappings))
+    ->  append(BaseImports, ["strings"], ImportsList)
+    ;   ImportsList = BaseImports
+    ),
+    
+    % Sort and format imports
+    sort(ImportsList, UniqueImports),
+    maplist(format_import, UniqueImports, ImportLines),
+    atomic_list_concat(ImportLines, '\n', Imports),
 
-    % Wrap in package main - add strings import for nested grouping
-    (   is_list(GroupField)
-    ->  % Nested grouping needs strings package
-        format(string(GoCode), 'package main
+    % Wrap in package main
+    format(string(GoCode), 'package main
 
 import (
-\t"encoding/json"
-\t"fmt"
-\t"os"
-\t"strings"
-
-\tbolt "go.etcd.io/bbolt"
+~s
 )
 
 func main() {
 ~s}
-', [AggBody])
-    ;   % Single field grouping - no strings needed
-        format(string(GoCode), 'package main
+', [Imports, AggBody]).
 
-import (
-\t"encoding/json"
-\t"fmt"
-\t"os"
 
-\tbolt "go.etcd.io/bbolt"
-)
-
-func main() {
-~s}
-', [AggBody])
-    ).
 
 %% generate_group_by_code(+GroupField, +FieldMappings, +AggOp, +Result, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
 %  Generate Go code for grouped aggregation with optional HAVING clause
@@ -5437,3 +5104,76 @@ generate_min_aggregation(ExtractCode, code(
 			minVal = val
 			first = false
 		}', [ExtractCode]).
+
+%% generate_group_by_code_jsonl(+GroupField, +FieldMappings, +AggOp, +Result, +HavingConstraints, +Options, -GoCode)
+%  Generate Go code for JSONL stream grouped aggregation
+generate_group_by_code_jsonl(GroupField, FieldMappings, AggOp, Result, _HavingConstraints, _Options, GoCode) :-
+    % 1. Determine key type (simplification: assume string for now)
+    % In future, use schema to determine actual type
+    KeyType = "string",
+    
+    % 2. Determine aggregation update logic
+    (   AggOp = count
+    ->  StateStruct = "int",
+        UpdateLogic = "state++",
+        OutputLogic = "fmt.Printf(\"%v: %d\\n\", key, state)"
+    ;   AggOp = sum(AggVar)
+    ->  find_field_for_var(AggVar, FieldMappings, AggField),
+        StateStruct = "float64",
+        format(string(UpdateLogic), '
+        if val, ok := data["~w"].(float64); ok {
+            state += val
+        }', [AggField]),
+        OutputLogic = "fmt.Printf(\"%v: %g\\n\", key, state)"
+    ;   format('ERROR: Unsupported aggregation op for JSONL: ~w~n', [AggOp]),
+        fail
+    ),
+    
+    % 3. Determine key extraction logic
+    find_field_for_var(GroupField, FieldMappings, GroupFieldName),
+    format(string(KeyExtraction), '
+        keyRaw, ok := data["~w"]
+        if !ok { continue }
+        key := fmt.Sprintf("%v", keyRaw)', [GroupFieldName]),
+
+    % 4. Generate complete code
+    format(string(GoCode), '
+    scanner := bufio.NewScanner(os.Stdin)
+    
+    // Map to store aggregation state
+    results := make(map[~s]~s)
+    
+    for scanner.Scan() {
+        var data map[string]interface{}
+        if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+            continue
+        }
+        
+        // Extract key
+        ~s
+        
+        // Update state
+        state := results[key]
+        ~s
+        results[key] = state
+    }
+    
+    if err := scanner.Err(); err != nil {
+        fmt.Fprintln(os.Stderr, "reading standard input:", err)
+    }
+    
+    // Output results
+    for key, state := range results {
+        ~s
+    }
+', [KeyType, StateStruct, KeyExtraction, UpdateLogic, OutputLogic]).
+
+%% find_field_for_var(+Var, +FieldMappings, -FieldName)
+%  Find field name for a variable in field mappings
+find_field_for_var(Var, [FieldName-MappedVar|_], FieldName) :-
+    Var == MappedVar, !.
+find_field_for_var(Var, [_|Rest], FieldName) :-
+    find_field_for_var(Var, Rest, FieldName).
+
+%% format_import(+Import, -Line)
+%  Format import string for Go
