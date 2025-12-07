@@ -102,6 +102,39 @@ run_all_tests :-
         test_deploy_with_hooks_security_check
     ]),
 
+    % Phase 6c Tests
+    format('~n--- Phase 6c: Error Handling ---~n~n'),
+
+    run_test_group('Retry Policy', [
+        test_declare_retry_policy,
+        test_retry_policy_query,
+        test_call_with_retry_success,
+        test_call_with_retry_exponential_backoff
+    ]),
+
+    run_test_group('Fallback Mechanisms', [
+        test_declare_fallback,
+        test_fallback_default_value,
+        test_call_with_fallback_success,
+        test_call_with_fallback_uses_default
+    ]),
+
+    run_test_group('Circuit Breaker', [
+        test_declare_circuit_breaker,
+        test_circuit_initial_state,
+        test_circuit_opens_on_failures,
+        test_circuit_reset
+    ]),
+
+    run_test_group('Timeout Configuration', [
+        test_declare_timeouts,
+        test_timeout_config_query
+    ]),
+
+    run_test_group('Protected Call', [
+        test_protected_call_success
+    ]),
+
     print_summary.
 
 run_test_group(GroupName, Tests) :-
@@ -530,6 +563,168 @@ test_deploy_with_hooks_security_check :-
 
     deploy_with_hooks(insecure_deploy_service, Result),
     Result = error(security_validation_failed(_)).
+
+%% ============================================
+%% Phase 6c Tests: Retry Policy
+%% ============================================
+
+test_declare_retry_policy :-
+    declare_retry_policy(retry_test_service, [
+        max_retries(5),
+        initial_delay(100),
+        max_delay(5000),
+        backoff(exponential),
+        multiplier(2)
+    ]),
+    retry_policy(retry_test_service, Policy),
+    member(max_retries(5), Policy),
+    member(backoff(exponential), Policy).
+
+test_retry_policy_query :-
+    retry_policy(retry_test_service, Policy),
+    member(initial_delay(100), Policy),
+    member(max_delay(5000), Policy).
+
+% Helper predicate for testing
+test_op_success(Result) :-
+    Result = success_value.
+
+test_call_with_retry_success :-
+    declare_retry_policy(retry_success_service, [
+        max_retries(3),
+        initial_delay(10)
+    ]),
+    call_with_retry(retry_success_service, test_op_success, [], Result),
+    Result = ok(success_value).
+
+% Helper predicate that tracks call count
+:- dynamic test_retry_counter/1.
+
+test_op_fails_then_succeeds(Result) :-
+    (   test_retry_counter(Count)
+    ->  retract(test_retry_counter(Count)),
+        NewCount is Count + 1,
+        assertz(test_retry_counter(NewCount))
+    ;   NewCount = 1,
+        assertz(test_retry_counter(NewCount))
+    ),
+    (   NewCount >= 2
+    ->  Result = success_after_retry
+    ;   throw(temporary_failure)
+    ).
+
+test_call_with_retry_exponential_backoff :-
+    retractall(test_retry_counter(_)),
+    declare_retry_policy(retry_backoff_service, [
+        max_retries(5),
+        initial_delay(10),  % 10ms for fast tests
+        backoff(exponential),
+        multiplier(2)
+    ]),
+    call_with_retry(retry_backoff_service, test_op_fails_then_succeeds, [], Result),
+    Result = ok(success_after_retry),
+    test_retry_counter(CallCount),
+    CallCount >= 2.  % Should have retried at least once
+
+%% ============================================
+%% Phase 6c Tests: Fallback Mechanisms
+%% ============================================
+
+test_declare_fallback :-
+    declare_fallback(fallback_test_service, default_value(fallback_result)),
+    fallback_config(fallback_test_service, Fallback),
+    Fallback = default_value(fallback_result).
+
+test_fallback_default_value :-
+    declare_fallback(fallback_default_service, default_value(my_default)),
+    fallback_config(fallback_default_service, Fallback),
+    Fallback = default_value(my_default).
+
+test_call_with_fallback_success :-
+    declare_fallback(fallback_success_service, default_value(should_not_use)),
+    call_with_fallback(fallback_success_service, test_op_success, [], Result),
+    Result = ok(success_value).
+
+% Helper that always fails
+test_op_always_fails(_Result) :-
+    throw(always_fails).
+
+test_call_with_fallback_uses_default :-
+    declare_fallback(fallback_use_service, default_value(default_used)),
+    call_with_fallback(fallback_use_service, test_op_always_fails, [], Result),
+    Result = ok(default_used).
+
+%% ============================================
+%% Phase 6c Tests: Circuit Breaker
+%% ============================================
+
+test_declare_circuit_breaker :-
+    declare_circuit_breaker(circuit_test_service, [
+        failure_threshold(3),
+        success_threshold(2),
+        half_open_timeout(1000)
+    ]),
+    circuit_breaker_config(circuit_test_service, Config),
+    member(failure_threshold(3), Config).
+
+test_circuit_initial_state :-
+    declare_circuit_breaker(circuit_initial_service, [failure_threshold(5)]),
+    circuit_state(circuit_initial_service, State),
+    State == closed.
+
+test_circuit_opens_on_failures :-
+    declare_circuit_breaker(circuit_open_service, [
+        failure_threshold(2)
+    ]),
+    % Record failures until circuit opens
+    record_circuit_failure(circuit_open_service),
+    circuit_state(circuit_open_service, State1),
+    State1 == closed,
+    record_circuit_failure(circuit_open_service),
+    circuit_state(circuit_open_service, State2),
+    State2 == open.
+
+test_circuit_reset :-
+    declare_circuit_breaker(circuit_reset_service, [failure_threshold(2)]),
+    record_circuit_failure(circuit_reset_service),
+    record_circuit_failure(circuit_reset_service),
+    circuit_state(circuit_reset_service, OpenState),
+    OpenState == open,
+    reset_circuit_breaker(circuit_reset_service),
+    circuit_state(circuit_reset_service, ClosedState),
+    ClosedState == closed.
+
+%% ============================================
+%% Phase 6c Tests: Timeout Configuration
+%% ============================================
+
+test_declare_timeouts :-
+    declare_timeouts(timeout_test_service, [
+        connect_timeout(5000),
+        read_timeout(30000),
+        total_timeout(60000)
+    ]),
+    timeout_config(timeout_test_service, Timeouts),
+    member(total_timeout(60000), Timeouts).
+
+test_timeout_config_query :-
+    timeout_config(timeout_test_service, Timeouts),
+    member(connect_timeout(5000), Timeouts),
+    member(read_timeout(30000), Timeouts).
+
+%% ============================================
+%% Phase 6c Tests: Protected Call
+%% ============================================
+
+test_protected_call_success :-
+    undeclare_service(protected_test_service),
+    declare_service(protected_test_service, [port(8080)]),
+    declare_retry_policy(protected_test_service, [max_retries(3), initial_delay(10)]),
+    declare_fallback(protected_test_service, default_value(fallback)),
+    declare_circuit_breaker(protected_test_service, [failure_threshold(5)]),
+
+    protected_call(protected_test_service, test_op_success, [], Result),
+    Result = ok(success_value).
 
 %% ============================================
 %% Main Entry Point

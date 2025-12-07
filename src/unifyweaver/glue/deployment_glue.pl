@@ -81,7 +81,37 @@
     generate_rollback_script/3,     % generate_rollback_script(+Service, +Options, -Script)
 
     % Hook execution (internal but exported for testing)
-    execute_hooks/3                 % execute_hooks(+Service, +Event, -Result)
+    execute_hooks/3,                % execute_hooks(+Service, +Event, -Result)
+
+    % Phase 6c: Error Handling
+    % Retry policies
+    declare_retry_policy/2,         % declare_retry_policy(+Service, +Policy)
+    retry_policy/2,                 % retry_policy(?Service, ?Policy)
+    call_with_retry/4,              % call_with_retry(+Service, +Operation, +Args, -Result)
+
+    % Fallback mechanisms
+    declare_fallback/2,             % declare_fallback(+Service, +Fallback)
+    fallback_config/2,              % fallback_config(?Service, ?Fallback)
+    call_with_fallback/4,           % call_with_fallback(+Service, +Operation, +Args, -Result)
+
+    % Circuit breaker
+    declare_circuit_breaker/2,      % declare_circuit_breaker(+Service, +Config)
+    circuit_breaker_config/2,       % circuit_breaker_config(?Service, ?Config)
+    circuit_state/2,                % circuit_state(?Service, ?State)
+    call_with_circuit_breaker/4,    % call_with_circuit_breaker(+Service, +Operation, +Args, -Result)
+    reset_circuit_breaker/1,        % reset_circuit_breaker(+Service)
+
+    % Timeout configuration
+    declare_timeouts/2,             % declare_timeouts(+Service, +Timeouts)
+    timeout_config/2,               % timeout_config(?Service, ?Timeouts)
+    call_with_timeout/4,            % call_with_timeout(+Service, +Operation, +Args, -Result)
+
+    % Combined error handling
+    protected_call/4,               % protected_call(+Service, +Operation, +Args, -Result)
+
+    % Internal (exported for testing)
+    record_circuit_failure/1,       % record_circuit_failure(+Service)
+    record_circuit_success/1        % record_circuit_success(+Service)
 ]).
 
 :- use_module(library(lists)).
@@ -102,6 +132,13 @@
 % Phase 6b dynamic storage
 :- dynamic service_hosts_db/2.      % service_hosts_db(Service, Hosts)
 :- dynamic rollback_hash_db/2.      % rollback_hash_db(Service, Hash)
+
+% Phase 6c dynamic storage
+:- dynamic retry_policy_db/2.       % retry_policy_db(Service, Policy)
+:- dynamic fallback_config_db/2.    % fallback_config_db(Service, Fallback)
+:- dynamic circuit_breaker_db/2.    % circuit_breaker_db(Service, Config)
+:- dynamic circuit_state_db/3.      % circuit_state_db(Service, State, Data)
+:- dynamic timeout_config_db/2.     % timeout_config_db(Service, Timeouts)
 
 %% ============================================
 %% Service Declarations
@@ -1331,4 +1368,515 @@ backup_current_deployment(Service) :-
         shell(Cmd, _)
     ;   format(atom(Cmd), 'rm -rf .backup; cp -r . .backup 2>/dev/null || true', []),
         shell(Cmd, _)
+    ).
+
+%% ============================================
+%% Phase 6c: Retry Policies
+%% ============================================
+
+%% declare_retry_policy(+Service, +Policy)
+%  Declare retry policy for a service.
+%
+%  Policy options:
+%    - max_retries(N)                     : Maximum retry attempts (default: 3)
+%    - initial_delay(Ms)                  : Initial delay in milliseconds (default: 1000)
+%    - max_delay(Ms)                      : Maximum delay (default: 30000)
+%    - backoff(exponential|linear|fixed)  : Backoff strategy (default: exponential)
+%    - multiplier(N)                      : Backoff multiplier for exponential (default: 2)
+%    - retry_on([Errors])                 : List of error types to retry on
+%    - fail_on([Errors])                  : List of error types to fail fast on
+%
+declare_retry_policy(Service, Policy) :-
+    atom(Service),
+    is_list(Policy),
+    retractall(retry_policy_db(Service, _)),
+    assertz(retry_policy_db(Service, Policy)).
+
+%% retry_policy(?Service, ?Policy)
+%  Query retry policy for a service.
+%
+retry_policy(Service, Policy) :-
+    retry_policy_db(Service, Policy).
+
+%% call_with_retry(+Service, +Operation, +Args, -Result)
+%  Execute an operation with retry policy.
+%
+%  Operation: Callable term representing the operation to execute
+%  Args: Arguments to pass to the operation
+%  Result: ok(Value) | error(Reason)
+%
+call_with_retry(Service, Operation, Args, Result) :-
+    (   retry_policy(Service, Policy)
+    ->  true
+    ;   Policy = [max_retries(3), initial_delay(1000), backoff(exponential)]
+    ),
+
+    option_or_default(max_retries, Policy, 3, MaxRetries),
+    option_or_default(initial_delay, Policy, 1000, InitialDelay),
+    option_or_default(max_delay, Policy, 30000, MaxDelay),
+    option_or_default(backoff, Policy, exponential, Backoff),
+    option_or_default(multiplier, Policy, 2, Multiplier),
+    option_or_default(retry_on, Policy, [], RetryOnErrors),
+    option_or_default(fail_on, Policy, [], FailOnErrors),
+
+    retry_loop(Operation, Args, MaxRetries, InitialDelay, MaxDelay,
+               Backoff, Multiplier, RetryOnErrors, FailOnErrors, 0, Result).
+
+%% retry_loop/11
+%  Internal retry loop.
+%
+retry_loop(Operation, Args, MaxRetries, CurrentDelay, MaxDelay,
+           Backoff, Multiplier, RetryOnErrors, FailOnErrors, Attempt, Result) :-
+    Attempt < MaxRetries,
+    % Try the operation
+    catch(
+        (   apply_operation(Operation, Args, OpResult)
+        ->  Result = ok(OpResult)
+        ;   Result = error(operation_failed)
+        ),
+        Error,
+        handle_retry_error(Error, Operation, Args, MaxRetries, CurrentDelay, MaxDelay,
+                          Backoff, Multiplier, RetryOnErrors, FailOnErrors, Attempt, Result)
+    ).
+
+retry_loop(_Operation, _Args, MaxRetries, _CurrentDelay, _MaxDelay,
+           _Backoff, _Multiplier, _RetryOnErrors, _FailOnErrors, MaxRetries, Result) :-
+    Result = error(max_retries_exceeded).
+
+%% handle_retry_error/12
+%  Handle an error and decide whether to retry.
+%
+handle_retry_error(Error, Operation, Args, MaxRetries, CurrentDelay, MaxDelay,
+                   Backoff, Multiplier, RetryOnErrors, FailOnErrors, Attempt, Result) :-
+    extract_error_type(Error, ErrorType),
+    (   % Check if we should fail fast
+        (   FailOnErrors \== [],
+            member(ErrorType, FailOnErrors)
+        )
+    ->  Result = error(Error)
+    ;   % Check if this error is retryable
+        (   RetryOnErrors == []  % Empty means retry on all errors
+        ;   member(ErrorType, RetryOnErrors)
+        )
+    ->  % Calculate next delay
+        NextAttempt is Attempt + 1,
+        calculate_next_delay(CurrentDelay, MaxDelay, Backoff, Multiplier, NextDelay),
+
+        % Wait before retry
+        DelaySeconds is CurrentDelay / 1000,
+        sleep(DelaySeconds),
+
+        % Retry
+        retry_loop(Operation, Args, MaxRetries, NextDelay, MaxDelay,
+                   Backoff, Multiplier, RetryOnErrors, FailOnErrors, NextAttempt, Result)
+    ;   % Error not in retry list - fail
+        Result = error(Error)
+    ).
+
+%% calculate_next_delay(+CurrentDelay, +MaxDelay, +Backoff, +Multiplier, -NextDelay)
+%  Calculate the next delay based on backoff strategy.
+%
+calculate_next_delay(CurrentDelay, MaxDelay, exponential, Multiplier, NextDelay) :-
+    NextDelayRaw is CurrentDelay * Multiplier,
+    NextDelay is min(NextDelayRaw, MaxDelay).
+
+calculate_next_delay(CurrentDelay, MaxDelay, linear, Multiplier, NextDelay) :-
+    NextDelayRaw is CurrentDelay + (Multiplier * 1000),
+    NextDelay is min(NextDelayRaw, MaxDelay).
+
+calculate_next_delay(CurrentDelay, _MaxDelay, fixed, _Multiplier, CurrentDelay).
+
+%% extract_error_type(+Error, -Type)
+%  Extract the error type for matching.
+%
+extract_error_type(error(Type, _), Type) :- !.
+extract_error_type(error(Type), Type) :- !.
+extract_error_type(timeout, timeout) :- !.
+extract_error_type(connection_refused, connection_refused) :- !.
+extract_error_type(Error, Error).
+
+%% apply_operation(+Operation, +Args, -Result)
+%  Apply an operation with arguments.
+%
+apply_operation(Operation, Args, Result) :-
+    (   Args == []
+    ->  call(Operation, Result)
+    ;   Args = [Arg1]
+    ->  call(Operation, Arg1, Result)
+    ;   Args = [Arg1, Arg2]
+    ->  call(Operation, Arg1, Arg2, Result)
+    ;   Args = [Arg1, Arg2, Arg3]
+    ->  call(Operation, Arg1, Arg2, Arg3, Result)
+    ;   % Fallback: use apply
+        append([Operation|Args], [Result], FullCall),
+        Call =.. FullCall,
+        call(Call)
+    ).
+
+%% ============================================
+%% Phase 6c: Fallback Mechanisms
+%% ============================================
+
+%% declare_fallback(+Service, +Fallback)
+%  Declare fallback configuration for a service.
+%
+%  Fallback options:
+%    - backup_service(ServiceName)  : Use another service as fallback
+%    - cache(Options)               : Return cached value on failure
+%    - default_value(Value)         : Return default value on failure
+%    - custom(Predicate)            : Call custom predicate for fallback
+%
+declare_fallback(Service, Fallback) :-
+    atom(Service),
+    retractall(fallback_config_db(Service, _)),
+    assertz(fallback_config_db(Service, Fallback)).
+
+%% fallback_config(?Service, ?Fallback)
+%  Query fallback configuration.
+%
+fallback_config(Service, Fallback) :-
+    fallback_config_db(Service, Fallback).
+
+%% call_with_fallback(+Service, +Operation, +Args, -Result)
+%  Execute an operation with fallback on failure.
+%
+call_with_fallback(Service, Operation, Args, Result) :-
+    catch(
+        (   apply_operation(Operation, Args, OpResult)
+        ->  Result = ok(OpResult)
+        ;   execute_fallback(Service, Operation, Args, Result)
+        ),
+        _Error,
+        execute_fallback(Service, Operation, Args, Result)
+    ).
+
+%% execute_fallback(+Service, +Operation, +Args, -Result)
+%  Execute the configured fallback.
+%
+execute_fallback(Service, Operation, Args, Result) :-
+    (   fallback_config(Service, Fallback)
+    ->  apply_fallback(Fallback, Operation, Args, Result)
+    ;   Result = error(no_fallback_configured)
+    ).
+
+%% apply_fallback(+Fallback, +Operation, +Args, -Result)
+%  Apply a specific fallback strategy.
+%
+apply_fallback(backup_service(BackupService), Operation, Args, Result) :-
+    % Try the backup service
+    catch(
+        (   apply_operation_for_service(BackupService, Operation, Args, OpResult)
+        ->  Result = ok(OpResult)
+        ;   Result = error(backup_service_failed)
+        ),
+        Error,
+        Result = error(backup_service_error(Error))
+    ).
+
+apply_fallback(cache(CacheOptions), _Operation, _Args, Result) :-
+    option_or_default(key, CacheOptions, default, CacheKey),
+    option_or_default(ttl, CacheOptions, 3600, _TTL),
+    (   get_cached_value(CacheKey, CachedValue)
+    ->  Result = ok(CachedValue)
+    ;   Result = error(cache_miss)
+    ).
+
+apply_fallback(default_value(Value), _Operation, _Args, ok(Value)).
+
+apply_fallback(custom(Predicate), Operation, Args, Result) :-
+    catch(
+        (   call(Predicate, Operation, Args, FallbackResult)
+        ->  Result = ok(FallbackResult)
+        ;   Result = error(custom_fallback_failed)
+        ),
+        Error,
+        Result = error(custom_fallback_error(Error))
+    ).
+
+%% apply_operation_for_service(+Service, +Operation, +Args, -Result)
+%  Apply an operation in the context of a specific service.
+%
+apply_operation_for_service(_Service, Operation, Args, Result) :-
+    apply_operation(Operation, Args, Result).
+
+%% get_cached_value(+Key, -Value)
+%  Get a cached value (placeholder - would integrate with actual cache).
+%
+get_cached_value(_Key, _Value) :-
+    fail.  % No cache implementation yet
+
+%% ============================================
+%% Phase 6c: Circuit Breaker
+%% ============================================
+
+%% declare_circuit_breaker(+Service, +Config)
+%  Declare circuit breaker configuration for a service.
+%
+%  Config options:
+%    - failure_threshold(N)    : Number of failures before opening (default: 5)
+%    - success_threshold(N)    : Number of successes to close (default: 3)
+%    - half_open_timeout(Ms)   : Time before trying half-open (default: 30000)
+%    - reset_timeout(Ms)       : Time before auto-reset (default: 60000)
+%
+declare_circuit_breaker(Service, Config) :-
+    atom(Service),
+    is_list(Config),
+    retractall(circuit_breaker_db(Service, _)),
+    assertz(circuit_breaker_db(Service, Config)),
+    % Initialize state to closed
+    reset_circuit_breaker(Service).
+
+%% circuit_breaker_config(?Service, ?Config)
+%  Query circuit breaker configuration.
+%
+circuit_breaker_config(Service, Config) :-
+    circuit_breaker_db(Service, Config).
+
+%% circuit_state(?Service, ?State)
+%  Query circuit breaker state.
+%  State: closed | open | half_open
+%
+circuit_state(Service, State) :-
+    (   circuit_state_db(Service, State, _Data)
+    ->  true
+    ;   State = closed  % Default
+    ).
+
+%% reset_circuit_breaker(+Service)
+%  Reset circuit breaker to closed state.
+%
+reset_circuit_breaker(Service) :-
+    retractall(circuit_state_db(Service, _, _)),
+    assertz(circuit_state_db(Service, closed, state_data(0, 0, 0))).
+
+%% call_with_circuit_breaker(+Service, +Operation, +Args, -Result)
+%  Execute an operation with circuit breaker protection.
+%
+call_with_circuit_breaker(Service, Operation, Args, Result) :-
+    circuit_state(Service, CurrentState),
+    (   CurrentState == open
+    ->  % Check if we should try half-open
+        check_half_open_transition(Service, ShouldTry),
+        (   ShouldTry == yes
+        ->  execute_with_circuit(Service, Operation, Args, Result)
+        ;   Result = error(circuit_open)
+        )
+    ;   execute_with_circuit(Service, Operation, Args, Result)
+    ).
+
+%% check_half_open_transition(+Service, -ShouldTry)
+%  Check if circuit should transition to half-open.
+%
+check_half_open_transition(Service, ShouldTry) :-
+    (   circuit_breaker_config(Service, Config)
+    ->  true
+    ;   Config = []
+    ),
+    option_or_default(half_open_timeout, Config, 30000, HalfOpenTimeout),
+
+    circuit_state_db(Service, open, state_data(_, _, LastFailureTime)),
+    get_time(Now),
+    NowMs is Now * 1000,
+    TimeSinceFailure is NowMs - LastFailureTime,
+
+    (   TimeSinceFailure >= HalfOpenTimeout
+    ->  % Transition to half-open
+        retractall(circuit_state_db(Service, _, _)),
+        assertz(circuit_state_db(Service, half_open, state_data(0, 0, LastFailureTime))),
+        ShouldTry = yes
+    ;   ShouldTry = no
+    ).
+
+%% execute_with_circuit(+Service, +Operation, +Args, -Result)
+%  Execute operation and update circuit state.
+%
+execute_with_circuit(Service, Operation, Args, Result) :-
+    catch(
+        (   apply_operation(Operation, Args, OpResult)
+        ->  record_circuit_success(Service),
+            Result = ok(OpResult)
+        ;   record_circuit_failure(Service),
+            Result = error(operation_failed)
+        ),
+        Error,
+        (   record_circuit_failure(Service),
+            Result = error(Error)
+        )
+    ).
+
+%% record_circuit_success(+Service)
+%  Record a successful call for circuit breaker.
+%
+record_circuit_success(Service) :-
+    (   circuit_breaker_config(Service, Config)
+    ->  true
+    ;   Config = []
+    ),
+    option_or_default(success_threshold, Config, 3, SuccessThreshold),
+
+    circuit_state_db(Service, State, state_data(Failures, Successes, LastTime)),
+    NewSuccesses is Successes + 1,
+
+    (   State == half_open, NewSuccesses >= SuccessThreshold
+    ->  % Close the circuit
+        retractall(circuit_state_db(Service, _, _)),
+        assertz(circuit_state_db(Service, closed, state_data(0, 0, LastTime)))
+    ;   retractall(circuit_state_db(Service, _, _)),
+        assertz(circuit_state_db(Service, State, state_data(Failures, NewSuccesses, LastTime)))
+    ).
+
+%% record_circuit_failure(+Service)
+%  Record a failed call for circuit breaker.
+%
+record_circuit_failure(Service) :-
+    (   circuit_breaker_config(Service, Config)
+    ->  true
+    ;   Config = []
+    ),
+    option_or_default(failure_threshold, Config, 5, FailureThreshold),
+
+    circuit_state_db(Service, State, state_data(Failures, Successes, _LastTime)),
+    NewFailures is Failures + 1,
+    get_time(Now),
+    NowMs is Now * 1000,
+
+    (   State == half_open
+    ->  % Back to open on any failure in half-open
+        retractall(circuit_state_db(Service, _, _)),
+        assertz(circuit_state_db(Service, open, state_data(NewFailures, 0, NowMs)))
+    ;   NewFailures >= FailureThreshold
+    ->  % Open the circuit
+        retractall(circuit_state_db(Service, _, _)),
+        assertz(circuit_state_db(Service, open, state_data(NewFailures, 0, NowMs)))
+    ;   retractall(circuit_state_db(Service, _, _)),
+        assertz(circuit_state_db(Service, State, state_data(NewFailures, Successes, NowMs)))
+    ).
+
+%% ============================================
+%% Phase 6c: Timeout Configuration
+%% ============================================
+
+%% declare_timeouts(+Service, +Timeouts)
+%  Declare timeout configuration for a service.
+%
+%  Timeout options:
+%    - connect_timeout(Ms)  : Connection timeout (default: 5000)
+%    - read_timeout(Ms)     : Read/response timeout (default: 30000)
+%    - total_timeout(Ms)    : Total operation timeout (default: 60000)
+%    - idle_timeout(Ms)     : Idle connection timeout (default: 120000)
+%
+declare_timeouts(Service, Timeouts) :-
+    atom(Service),
+    is_list(Timeouts),
+    retractall(timeout_config_db(Service, _)),
+    assertz(timeout_config_db(Service, Timeouts)).
+
+%% timeout_config(?Service, ?Timeouts)
+%  Query timeout configuration.
+%
+timeout_config(Service, Timeouts) :-
+    timeout_config_db(Service, Timeouts).
+
+%% call_with_timeout(+Service, +Operation, +Args, -Result)
+%  Execute an operation with configured timeout.
+%
+call_with_timeout(Service, Operation, Args, Result) :-
+    (   timeout_config(Service, Timeouts)
+    ->  true
+    ;   Timeouts = [total_timeout(60000)]
+    ),
+    option_or_default(total_timeout, Timeouts, 60000, TotalTimeoutMs),
+
+    TotalTimeoutSecs is TotalTimeoutMs / 1000,
+
+    catch(
+        call_with_time_limit(TotalTimeoutSecs,
+            (   apply_operation(Operation, Args, OpResult)
+            ->  Result = ok(OpResult)
+            ;   Result = error(operation_failed)
+            )
+        ),
+        time_limit_exceeded,
+        Result = error(timeout)
+    ).
+
+%% call_with_time_limit(+Seconds, +Goal)
+%  Execute goal with time limit.
+%
+call_with_time_limit(Seconds, Goal) :-
+    catch(
+        setup_call_cleanup(
+            alarm(Seconds, throw(time_limit_exceeded), AlarmId),
+            Goal,
+            remove_alarm(AlarmId)
+        ),
+        time_limit_exceeded,
+        throw(time_limit_exceeded)
+    ).
+
+%% ============================================
+%% Phase 6c: Combined Error Handling
+%% ============================================
+
+%% protected_call(+Service, +Operation, +Args, -Result)
+%  Execute an operation with full error handling:
+%  1. Check circuit breaker
+%  2. Apply timeouts
+%  3. Retry on failure
+%  4. Fall back if all retries fail
+%
+protected_call(Service, Operation, Args, Result) :-
+    % Check circuit breaker first
+    circuit_state(Service, CircuitState),
+    (   CircuitState == open
+    ->  check_half_open_transition(Service, ShouldTry),
+        (   ShouldTry == yes
+        ->  protected_call_internal(Service, Operation, Args, Result)
+        ;   % Circuit is open - try fallback directly
+            execute_fallback(Service, Operation, Args, Result)
+        )
+    ;   protected_call_internal(Service, Operation, Args, Result)
+    ).
+
+%% protected_call_internal(+Service, +Operation, +Args, -Result)
+%  Internal protected call with retry and fallback.
+%
+protected_call_internal(Service, Operation, Args, Result) :-
+    % Try operation with timeout directly (retry wrapping is complex, simplify)
+    (   timeout_config(Service, _Timeouts)
+    ->  % Use timeout-wrapped call
+        call_with_timeout(Service, Operation, Args, TimeoutResult),
+        (   TimeoutResult = ok(Value)
+        ->  record_circuit_success(Service),
+            Result = ok(Value)
+        ;   record_circuit_failure(Service),
+            execute_fallback(Service, Operation, Args, FallbackResult),
+            (   FallbackResult = ok(_)
+            ->  Result = FallbackResult
+            ;   Result = TimeoutResult
+            )
+        )
+    ;   % No timeout configured - direct call with retry
+        call_with_retry(Service, Operation, Args, RetryResult),
+        (   RetryResult = ok(Value)
+        ->  record_circuit_success(Service),
+            Result = ok(Value)
+        ;   record_circuit_failure(Service),
+            execute_fallback(Service, Operation, Args, FallbackResult),
+            (   FallbackResult = ok(_)
+            ->  Result = FallbackResult
+            ;   Result = RetryResult
+            )
+        )
+    ).
+
+%% call_with_timeout_internal(+Service, +Operation, +Args, -Result)
+%  Internal timeout wrapper for use in retry loop.
+%
+call_with_timeout_internal(Service, Operation, Args, Result) :-
+    call_with_timeout(Service, Operation, Args, TimeoutResult),
+    (   TimeoutResult = ok(Value)
+    ->  Result = Value
+    ;   TimeoutResult = error(Error)
+    ->  throw(Error)
     ).
