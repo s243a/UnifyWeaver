@@ -111,7 +111,35 @@
 
     % Internal (exported for testing)
     record_circuit_failure/1,       % record_circuit_failure(+Service)
-    record_circuit_success/1        % record_circuit_success(+Service)
+    record_circuit_success/1,       % record_circuit_success(+Service)
+
+    % Phase 6d: Monitoring
+    % Health check monitoring
+    declare_health_check/2,         % declare_health_check(+Service, +Config)
+    health_check_config/2,          % health_check_config(?Service, ?Config)
+    start_health_monitor/2,         % start_health_monitor(+Service, -Result)
+    stop_health_monitor/1,          % stop_health_monitor(+Service)
+    health_status/2,                % health_status(?Service, ?Status)
+
+    % Metrics collection
+    declare_metrics/2,              % declare_metrics(+Service, +Config)
+    metrics_config/2,               % metrics_config(?Service, ?Config)
+    record_metric/3,                % record_metric(+Service, +Metric, +Value)
+    get_metrics/2,                  % get_metrics(+Service, -Metrics)
+    generate_prometheus_metrics/2,  % generate_prometheus_metrics(+Service, -Output)
+
+    % Structured logging
+    declare_logging/2,              % declare_logging(+Service, +Config)
+    logging_config/2,               % logging_config(?Service, ?Config)
+    log_event/4,                    % log_event(+Service, +Level, +Message, +Data)
+    get_log_entries/3,              % get_log_entries(+Service, +Options, -Entries)
+
+    % Alerting
+    declare_alert/3,                % declare_alert(+Service, +AlertName, +Config)
+    alert_config/3,                 % alert_config(?Service, ?AlertName, ?Config)
+    check_alerts/2,                 % check_alerts(+Service, -TriggeredAlerts)
+    trigger_alert/3,                % trigger_alert(+Service, +AlertName, +Data)
+    alert_history/3                 % alert_history(+Service, +Options, -History)
 ]).
 
 :- use_module(library(lists)).
@@ -139,6 +167,18 @@
 :- dynamic circuit_breaker_db/2.    % circuit_breaker_db(Service, Config)
 :- dynamic circuit_state_db/3.      % circuit_state_db(Service, State, Data)
 :- dynamic timeout_config_db/2.     % timeout_config_db(Service, Timeouts)
+
+% Phase 6d dynamic storage
+:- dynamic health_check_config_db/2.    % health_check_config_db(Service, Config)
+:- dynamic health_status_db/3.          % health_status_db(Service, Status, Timestamp)
+:- dynamic health_monitor_pid_db/2.     % health_monitor_pid_db(Service, Pid)
+:- dynamic metrics_config_db/2.         % metrics_config_db(Service, Config)
+:- dynamic metric_data_db/4.            % metric_data_db(Service, Metric, Value, Timestamp)
+:- dynamic logging_config_db/2.         % logging_config_db(Service, Config)
+:- dynamic log_entry_db/5.              % log_entry_db(Service, Level, Message, Data, Timestamp)
+:- dynamic alert_config_db/3.           % alert_config_db(Service, AlertName, Config)
+:- dynamic alert_state_db/4.            % alert_state_db(Service, AlertName, State, Since)
+:- dynamic alert_history_db/5.          % alert_history_db(Service, AlertName, State, Data, Timestamp)
 
 %% ============================================
 %% Service Declarations
@@ -1879,4 +1919,545 @@ call_with_timeout_internal(Service, Operation, Args, Result) :-
     ->  Result = Value
     ;   TimeoutResult = error(Error)
     ->  throw(Error)
+    ).
+
+%% ============================================
+%% Phase 6d: Health Check Monitoring
+%% ============================================
+
+%% declare_health_check(+Service, +Config)
+%  Declare health check configuration for a service.
+%
+%  Config options:
+%    - endpoint(Path)           : Health endpoint (default: '/health')
+%    - interval(Seconds)        : Check interval (default: 30)
+%    - timeout(Seconds)         : Request timeout (default: 5)
+%    - unhealthy_threshold(N)   : Failures before unhealthy (default: 3)
+%    - healthy_threshold(N)     : Successes before healthy (default: 2)
+%
+declare_health_check(Service, Config) :-
+    atom(Service),
+    is_list(Config),
+    retractall(health_check_config_db(Service, _)),
+    assertz(health_check_config_db(Service, Config)).
+
+%% health_check_config(?Service, ?Config)
+%  Query health check configuration.
+%
+health_check_config(Service, Config) :-
+    health_check_config_db(Service, Config).
+
+%% health_status(?Service, ?Status)
+%  Query current health status of a service.
+%  Status: healthy | unhealthy | unknown
+%
+health_status(Service, Status) :-
+    (   health_status_db(Service, Status, _Timestamp)
+    ->  true
+    ;   Status = unknown
+    ).
+
+%% update_health_status(+Service, +Status)
+%  Update health status for a service.
+%
+update_health_status(Service, Status) :-
+    get_time(Now),
+    retractall(health_status_db(Service, _, _)),
+    assertz(health_status_db(Service, Status, Now)),
+    % Log the status change
+    (   logging_config(Service, _)
+    ->  log_event(Service, info, 'Health status changed', [status-Status])
+    ;   true
+    ),
+    % Check if we need to trigger alerts
+    check_health_alerts(Service, Status).
+
+%% check_health_alerts(+Service, +Status)
+%  Check and trigger health-related alerts.
+%
+check_health_alerts(Service, unhealthy) :-
+    (   alert_config(Service, service_unhealthy, _)
+    ->  trigger_alert(Service, service_unhealthy, [status-unhealthy])
+    ;   true
+    ).
+check_health_alerts(Service, healthy) :-
+    (   alert_state_db(Service, service_unhealthy, triggered, _)
+    ->  resolve_alert(Service, service_unhealthy)
+    ;   true
+    ).
+check_health_alerts(_, _).
+
+%% start_health_monitor(+Service, -Result)
+%  Start background health monitoring for a service.
+%  Note: This is a simplified version - in production would use threads.
+%
+start_health_monitor(Service, Result) :-
+    (   health_check_config(Service, _Config)
+    ->  % For now, just mark as started and do initial check
+        run_health_check(Service, [], HealthResult),
+        (   HealthResult == healthy
+        ->  update_health_status(Service, healthy)
+        ;   update_health_status(Service, unhealthy)
+        ),
+        Result = started
+    ;   Result = error(no_health_check_configured)
+    ).
+
+%% stop_health_monitor(+Service)
+%  Stop health monitoring for a service.
+%
+stop_health_monitor(Service) :-
+    retractall(health_monitor_pid_db(Service, _)).
+
+%% ============================================
+%% Phase 6d: Metrics Collection
+%% ============================================
+
+%% declare_metrics(+Service, +Config)
+%  Declare metrics configuration for a service.
+%
+%  Config options:
+%    - collect([Metrics])       : List of metrics to collect
+%    - labels([Labels])         : Labels to attach to metrics
+%    - export(Format)           : prometheus | statsd | json
+%    - port(Port)               : Metrics server port
+%    - retention(Seconds)       : How long to keep metrics (default: 3600)
+%
+declare_metrics(Service, Config) :-
+    atom(Service),
+    is_list(Config),
+    retractall(metrics_config_db(Service, _)),
+    assertz(metrics_config_db(Service, Config)).
+
+%% metrics_config(?Service, ?Config)
+%  Query metrics configuration.
+%
+metrics_config(Service, Config) :-
+    metrics_config_db(Service, Config).
+
+%% record_metric(+Service, +Metric, +Value)
+%  Record a metric value for a service.
+%
+%  Metric types:
+%    - counter(Name)            : Incrementing counter
+%    - gauge(Name)              : Point-in-time value
+%    - histogram(Name, Bucket)  : Distribution of values
+%
+record_metric(Service, Metric, Value) :-
+    get_time(Now),
+    assertz(metric_data_db(Service, Metric, Value, Now)),
+    % Clean old metrics based on retention
+    clean_old_metrics(Service).
+
+%% clean_old_metrics(+Service)
+%  Remove metrics older than retention period.
+%
+clean_old_metrics(Service) :-
+    (   metrics_config(Service, Config)
+    ->  option_or_default(retention, Config, 3600, Retention)
+    ;   Retention = 3600
+    ),
+    get_time(Now),
+    Cutoff is Now - Retention,
+    forall(
+        (   metric_data_db(Service, Metric, Value, Timestamp),
+            Timestamp < Cutoff
+        ),
+        retract(metric_data_db(Service, Metric, Value, Timestamp))
+    ).
+
+%% get_metrics(+Service, -Metrics)
+%  Get all current metrics for a service.
+%
+get_metrics(Service, Metrics) :-
+    findall(
+        metric(Metric, Value, Timestamp),
+        metric_data_db(Service, Metric, Value, Timestamp),
+        Metrics
+    ).
+
+%% generate_prometheus_metrics(+Service, -Output)
+%  Generate Prometheus-compatible metrics output.
+%
+generate_prometheus_metrics(Service, Output) :-
+    get_metrics(Service, Metrics),
+    (   metrics_config(Service, Config)
+    ->  option_or_default(labels, Config, [], Labels)
+    ;   Labels = []
+    ),
+    format_prometheus_metrics(Service, Metrics, Labels, Output).
+
+%% format_prometheus_metrics(+Service, +Metrics, +Labels, -Output)
+%  Format metrics in Prometheus text format.
+%
+format_prometheus_metrics(Service, Metrics, Labels, Output) :-
+    aggregate_metrics(Metrics, Aggregated),
+    format_labels(Labels, LabelStr),
+    maplist(format_single_prometheus_metric(Service, LabelStr), Aggregated, Lines),
+    atomic_list_concat(Lines, '\n', Output).
+
+%% aggregate_metrics(+Metrics, -Aggregated)
+%  Aggregate metrics by name (latest value for gauges, sum for counters).
+%
+aggregate_metrics(Metrics, Aggregated) :-
+    findall(Name, member(metric(Name, _, _), Metrics), Names),
+    sort(Names, UniqueNames),
+    maplist(aggregate_single_metric(Metrics), UniqueNames, Aggregated).
+
+aggregate_single_metric(Metrics, Name, aggregated(Name, Value, Count)) :-
+    findall(V, member(metric(Name, V, _), Metrics), Values),
+    length(Values, Count),
+    (   Count > 0
+    ->  last(Values, Value)  % Use latest value
+    ;   Value = 0
+    ).
+
+%% format_labels(+Labels, -LabelStr)
+%  Format labels for Prometheus.
+%
+format_labels([], '').
+format_labels(Labels, LabelStr) :-
+    Labels \== [],
+    maplist(format_single_label, Labels, LabelParts),
+    atomic_list_concat(LabelParts, ',', Inner),
+    format(atom(LabelStr), '{~w}', [Inner]).
+
+format_single_label(Label, Part) :-
+    (   Label = Name-Value
+    ->  format(atom(Part), '~w="~w"', [Name, Value])
+    ;   format(atom(Part), '~w', [Label])
+    ).
+
+%% format_single_prometheus_metric(+Service, +LabelStr, +Aggregated, -Line)
+%  Format a single metric line.
+%
+format_single_prometheus_metric(Service, LabelStr, aggregated(Name, Value, _Count), Line) :-
+    (   LabelStr == ''
+    ->  format(atom(Line), '~w_~w ~w', [Service, Name, Value])
+    ;   format(atom(Line), '~w_~w~w ~w', [Service, Name, LabelStr, Value])
+    ).
+
+%% ============================================
+%% Phase 6d: Structured Logging
+%% ============================================
+
+%% declare_logging(+Service, +Config)
+%  Declare logging configuration for a service.
+%
+%  Config options:
+%    - level(Level)             : debug | info | warn | error (default: info)
+%    - format(Format)           : json | text (default: json)
+%    - output(Output)           : stdout | file(Path) (default: stdout)
+%    - include([Fields])        : Fields to include in each entry
+%    - max_entries(N)           : Max log entries to keep (default: 1000)
+%
+declare_logging(Service, Config) :-
+    atom(Service),
+    is_list(Config),
+    retractall(logging_config_db(Service, _)),
+    assertz(logging_config_db(Service, Config)).
+
+%% logging_config(?Service, ?Config)
+%  Query logging configuration.
+%
+logging_config(Service, Config) :-
+    logging_config_db(Service, Config).
+
+%% log_event(+Service, +Level, +Message, +Data)
+%  Log an event for a service.
+%
+%  Level: debug | info | warn | error
+%  Data: List of Key-Value pairs
+%
+log_event(Service, Level, Message, Data) :-
+    (   logging_config(Service, Config)
+    ->  option_or_default(level, Config, info, MinLevel),
+        (   level_priority(Level, LevelPri),
+            level_priority(MinLevel, MinPri),
+            LevelPri >= MinPri
+        ->  get_time(Now),
+            assertz(log_entry_db(Service, Level, Message, Data, Now)),
+            output_log_entry(Service, Config, Level, Message, Data, Now),
+            clean_old_logs(Service, Config)
+        ;   true  % Level below minimum, skip
+        )
+    ;   % No logging configured, still store internally
+        get_time(Now),
+        assertz(log_entry_db(Service, Level, Message, Data, Now))
+    ).
+
+%% level_priority(+Level, -Priority)
+%  Get priority for log level (higher = more severe).
+%
+level_priority(debug, 0).
+level_priority(info, 1).
+level_priority(warn, 2).
+level_priority(warning, 2).
+level_priority(error, 3).
+
+%% output_log_entry(+Service, +Config, +Level, +Message, +Data, +Timestamp)
+%  Output log entry based on configuration.
+%
+output_log_entry(Service, Config, Level, Message, Data, Timestamp) :-
+    option_or_default(format, Config, json, Format),
+    option_or_default(output, Config, stdout, Output),
+    format_log_entry(Format, Service, Level, Message, Data, Timestamp, Formatted),
+    write_log_output(Output, Formatted).
+
+%% format_log_entry(+Format, +Service, +Level, +Message, +Data, +Timestamp, -Formatted)
+%  Format log entry.
+%
+format_log_entry(json, Service, Level, Message, Data, Timestamp, Formatted) :-
+    format_timestamp_iso(Timestamp, ISOTime),
+    format_json_data(Data, JsonData),
+    format(atom(Formatted),
+           '{"timestamp":"~w","service":"~w","level":"~w","message":"~w"~w}',
+           [ISOTime, Service, Level, Message, JsonData]).
+
+format_log_entry(text, Service, Level, Message, Data, Timestamp, Formatted) :-
+    format_timestamp_iso(Timestamp, ISOTime),
+    format_text_data(Data, TextData),
+    format(atom(Formatted),
+           '[~w] ~w [~w] ~w~w',
+           [ISOTime, Level, Service, Message, TextData]).
+
+%% format_timestamp_iso(+Timestamp, -ISO)
+%  Format timestamp as ISO 8601.
+%
+format_timestamp_iso(Timestamp, ISO) :-
+    stamp_date_time(Timestamp, DateTime, 'UTC'),
+    format_time(atom(ISO), '%FT%T%:z', DateTime).
+
+%% format_json_data(+Data, -JsonStr)
+%  Format data as JSON fields.
+%
+format_json_data([], '').
+format_json_data(Data, JsonStr) :-
+    Data \== [],
+    maplist(format_json_field, Data, Fields),
+    atomic_list_concat(Fields, '', FieldStr),
+    format(atom(JsonStr), ',~w', [FieldStr]).
+
+format_json_field(Key-Value, Field) :-
+    format(atom(Field), '"~w":"~w"', [Key, Value]).
+
+%% format_text_data(+Data, -TextStr)
+%  Format data as text fields.
+%
+format_text_data([], '').
+format_text_data(Data, TextStr) :-
+    Data \== [],
+    maplist(format_text_field, Data, Fields),
+    atomic_list_concat(Fields, ' ', FieldStr),
+    format(atom(TextStr), ' [~w]', [FieldStr]).
+
+format_text_field(Key-Value, Field) :-
+    format(atom(Field), '~w=~w', [Key, Value]).
+
+%% write_log_output(+Output, +Formatted)
+%  Write formatted log to output.
+%
+write_log_output(stdout, Formatted) :-
+    format('~w~n', [Formatted]).
+write_log_output(file(Path), Formatted) :-
+    open(Path, append, Stream),
+    format(Stream, '~w~n', [Formatted]),
+    close(Stream).
+
+%% clean_old_logs(+Service, +Config)
+%  Remove old log entries beyond max_entries.
+%
+clean_old_logs(Service, Config) :-
+    option_or_default(max_entries, Config, 1000, MaxEntries),
+    findall(T, log_entry_db(Service, _, _, _, T), Timestamps),
+    length(Timestamps, Count),
+    (   Count > MaxEntries
+    ->  ToRemove is Count - MaxEntries,
+        sort(Timestamps, Sorted),
+        length(OldTimestamps, ToRemove),
+        append(OldTimestamps, _, Sorted),
+        forall(member(T, OldTimestamps),
+               retract(log_entry_db(Service, _, _, _, T)))
+    ;   true
+    ).
+
+%% get_log_entries(+Service, +Options, -Entries)
+%  Get log entries for a service.
+%
+%  Options:
+%    - level(Level)     : Filter by minimum level
+%    - limit(N)         : Maximum entries to return
+%    - since(Timestamp) : Entries since timestamp
+%
+get_log_entries(Service, Options, Entries) :-
+    findall(
+        entry(Level, Message, Data, Timestamp),
+        (   log_entry_db(Service, Level, Message, Data, Timestamp),
+            filter_log_entry(Options, Level, Timestamp)
+        ),
+        AllEntries
+    ),
+    option_or_default(limit, Options, 100, Limit),
+    (   length(AllEntries, Len), Len > Limit
+    ->  length(Entries, Limit),
+        append(_, Entries, AllEntries)  % Take last N
+    ;   Entries = AllEntries
+    ).
+
+%% filter_log_entry(+Options, +Level, +Timestamp)
+%  Check if log entry matches filters.
+%
+filter_log_entry(Options, Level, Timestamp) :-
+    (   member(level(MinLevel), Options)
+    ->  level_priority(Level, LevelPri),
+        level_priority(MinLevel, MinPri),
+        LevelPri >= MinPri
+    ;   true
+    ),
+    (   member(since(Since), Options)
+    ->  Timestamp >= Since
+    ;   true
+    ).
+
+%% ============================================
+%% Phase 6d: Alerting
+%% ============================================
+
+%% declare_alert(+Service, +AlertName, +Config)
+%  Declare an alert for a service.
+%
+%  Config options:
+%    - condition(Condition)     : Alert condition (term or string)
+%    - duration(Seconds)        : How long condition must hold (default: 0)
+%    - severity(Level)          : critical | warning | info (default: warning)
+%    - notify([Channels])       : Notification channels
+%    - cooldown(Seconds)        : Minimum time between alerts (default: 300)
+%
+declare_alert(Service, AlertName, Config) :-
+    atom(Service),
+    atom(AlertName),
+    is_list(Config),
+    retractall(alert_config_db(Service, AlertName, _)),
+    assertz(alert_config_db(Service, AlertName, Config)),
+    % Initialize alert state
+    retractall(alert_state_db(Service, AlertName, _, _)),
+    assertz(alert_state_db(Service, AlertName, resolved, 0)).
+
+%% alert_config(?Service, ?AlertName, ?Config)
+%  Query alert configuration.
+%
+alert_config(Service, AlertName, Config) :-
+    alert_config_db(Service, AlertName, Config).
+
+%% trigger_alert(+Service, +AlertName, +Data)
+%  Trigger an alert.
+%
+trigger_alert(Service, AlertName, Data) :-
+    get_time(Now),
+    (   alert_config(Service, AlertName, Config)
+    ->  option_or_default(severity, Config, warning, Severity),
+        option_or_default(cooldown, Config, 300, Cooldown),
+
+        % Check cooldown
+        (   alert_state_db(Service, AlertName, triggered, LastTime),
+            Now - LastTime < Cooldown
+        ->  true  % Still in cooldown, skip
+        ;   % Trigger the alert
+            retractall(alert_state_db(Service, AlertName, _, _)),
+            assertz(alert_state_db(Service, AlertName, triggered, Now)),
+            % Record in history
+            assertz(alert_history_db(Service, AlertName, triggered, Data, Now)),
+            % Log the alert
+            log_event(Service, Severity, 'Alert triggered', [alert-AlertName|Data]),
+            % Send notifications
+            send_alert_notifications(Service, AlertName, Config, Data)
+        )
+    ;   true  % No such alert configured
+    ).
+
+%% resolve_alert(+Service, +AlertName)
+%  Resolve a triggered alert.
+%
+resolve_alert(Service, AlertName) :-
+    get_time(Now),
+    (   alert_state_db(Service, AlertName, triggered, _)
+    ->  retractall(alert_state_db(Service, AlertName, _, _)),
+        assertz(alert_state_db(Service, AlertName, resolved, Now)),
+        assertz(alert_history_db(Service, AlertName, resolved, [], Now)),
+        log_event(Service, info, 'Alert resolved', [alert-AlertName])
+    ;   true
+    ).
+
+%% send_alert_notifications(+Service, +AlertName, +Config, +Data)
+%  Send notifications for an alert.
+%
+send_alert_notifications(Service, AlertName, Config, Data) :-
+    (   member(notify(Channels), Config)
+    ->  maplist(send_notification(Service, AlertName, Data), Channels)
+    ;   true  % No notification channels configured
+    ).
+
+%% send_notification(+Service, +AlertName, +Data, +Channel)
+%  Send notification to a specific channel.
+%
+send_notification(Service, AlertName, Data, slack(Channel)) :-
+    format(user_error, '[SLACK ~w] Alert ~w/~w: ~w~n',
+           [Channel, Service, AlertName, Data]).
+send_notification(Service, AlertName, Data, email(Address)) :-
+    format(user_error, '[EMAIL ~w] Alert ~w/~w: ~w~n',
+           [Address, Service, AlertName, Data]).
+send_notification(Service, AlertName, Data, pagerduty) :-
+    format(user_error, '[PAGERDUTY] Alert ~w/~w: ~w~n',
+           [Service, AlertName, Data]).
+send_notification(Service, AlertName, Data, webhook(URL)) :-
+    format(user_error, '[WEBHOOK ~w] Alert ~w/~w: ~w~n',
+           [URL, Service, AlertName, Data]).
+send_notification(_, _, _, _).  % Unknown channel - ignore
+
+%% check_alerts(+Service, -TriggeredAlerts)
+%  Check all alerts for a service and return triggered ones.
+%
+check_alerts(Service, TriggeredAlerts) :-
+    findall(
+        alert(AlertName, State, Since),
+        (   alert_state_db(Service, AlertName, State, Since),
+            State == triggered
+        ),
+        TriggeredAlerts
+    ).
+
+%% alert_history(+Service, +Options, -History)
+%  Get alert history for a service.
+%
+%  Options:
+%    - alert(Name)       : Filter by alert name
+%    - limit(N)          : Maximum entries
+%    - since(Timestamp)  : Entries since timestamp
+%
+alert_history(Service, Options, History) :-
+    findall(
+        history(AlertName, State, Data, Timestamp),
+        (   alert_history_db(Service, AlertName, State, Data, Timestamp),
+            filter_alert_history(Options, AlertName, Timestamp)
+        ),
+        AllHistory
+    ),
+    option_or_default(limit, Options, 100, Limit),
+    (   length(AllHistory, Len), Len > Limit
+    ->  length(History, Limit),
+        append(_, History, AllHistory)
+    ;   History = AllHistory
+    ).
+
+%% filter_alert_history(+Options, +AlertName, +Timestamp)
+%  Check if alert history entry matches filters.
+%
+filter_alert_history(Options, AlertName, Timestamp) :-
+    (   member(alert(FilterName), Options)
+    ->  AlertName == FilterName
+    ;   true
+    ),
+    (   member(since(Since), Options)
+    ->  Timestamp >= Since
+    ;   true
     ).
