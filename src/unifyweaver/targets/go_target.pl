@@ -364,6 +364,51 @@ func toFloat64(v interface{}) (float64, bool) {
     }
 }
 
+// Index provides O(1) lookup by relation and argument value
+type Index struct {
+    // byArg[relation][argN][value] -> []*Fact
+    byArg map[string]map[string]map[interface{}][]*Fact
+}
+
+// NewIndex creates an empty index
+func NewIndex() *Index {
+    return &Index{byArg: make(map[string]map[string]map[interface{}][]*Fact)}
+}
+
+// Add indexes a fact by all its arguments
+func (idx *Index) Add(fact *Fact) {
+    rel := fact.Relation
+    if _, ok := idx.byArg[rel]; !ok {
+        idx.byArg[rel] = make(map[string]map[interface{}][]*Fact)
+    }
+    for argName, argVal := range fact.Args {
+        if _, ok := idx.byArg[rel][argName]; !ok {
+            idx.byArg[rel][argName] = make(map[interface{}][]*Fact)
+        }
+        idx.byArg[rel][argName][argVal] = append(idx.byArg[rel][argName][argVal], fact)
+    }
+}
+
+// Lookup returns facts matching relation, argument name, and value
+func (idx *Index) Lookup(relation, argName string, value interface{}) []*Fact {
+    if relIdx, ok := idx.byArg[relation]; ok {
+        if argIdx, ok := relIdx[argName]; ok {
+            return argIdx[value]
+        }
+    }
+    return nil
+}
+
+// BuildIndex creates an index from all facts in the total map
+func BuildIndex(total map[string]Fact) *Index {
+    idx := NewIndex()
+    for _, fact := range total {
+        f := fact // Create copy for stable pointer
+        idx.Add(&f)
+    }
+    return idx
+}
+
 ", [DateStr, Pred]).
 
 %% compile_go_generator_facts(+FactHeads, +Config, -FactsCode)
@@ -432,7 +477,7 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
         (   RelGoals = []
         ->  % Only builtins - not a productive rule
             format(string(Code),
-"func ~w(fact Fact, total map[string]Fact) []Fact {
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     // Rule ~w: constraint-only (no relational goals)
     return nil
 }", [RuleName, Index]),
@@ -450,7 +495,7 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
                 % Generate head construction
                 compile_go_head_construction(HeadPred, HeadArgs, VarMap0, Config, HeadCode),
                 format(string(Code),
-"func ~w(fact Fact, total map[string]Fact) []Fact {
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     
     // Match first goal: ~w
@@ -466,7 +511,7 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
             ;   % Join rule: need to nest the result inside join loops
                 compile_go_join_with_result(RestGoals, VarMap0, Config, Builtins, HeadPred, HeadArgs, JoinWithResultCode),
                 format(string(Code),
-"func ~w(fact Fact, total map[string]Fact) []Fact {
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     
     // Match first goal: ~w
@@ -537,7 +582,7 @@ compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, 
     ),
     
     format(string(Code),
-"func ~w(fact Fact, total map[string]Fact) []Fact {
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     
     // Skip if not triggered by this relation
@@ -583,7 +628,7 @@ compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, OpTerm, InnerGoal, G
     go_agg_code(Op, AggCode),
     
     format(string(Code),
-"func ~w(fact Fact, total map[string]Fact) []Fact {
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
     
     // Skip if not triggered by this relation
@@ -823,7 +868,7 @@ compile_go_head_construction(HeadPred, HeadArgs, VarMap, Config, Code) :-
 compile_go_generator_execution(_Pred, RuleNames, _Options, Code) :-
     findall(Call,
         (   member(Name, RuleNames),
-            format(string(Call), "\t\t\tnewFacts = append(newFacts, ~w(fact, total)...)", [Name])
+            format(string(Call), "\t\t\tnewFacts = append(newFacts, ~w(fact, total, idx)...)", [Name])
         ),
         Calls),
     atomic_list_concat(Calls, "\n", CallsStr),
@@ -837,6 +882,9 @@ func Solve() map[string]Fact {
         total[fact.Key()] = fact
     }
     
+    // Build initial index
+    idx := BuildIndex(total)
+    
     // Fixpoint iteration
     changed := true
     for changed {
@@ -847,11 +895,12 @@ func Solve() map[string]Fact {
 ~w
         }
         
-        // Add new facts to total
+        // Add new facts to total and index
         for _, nf := range newFacts {
             key := nf.Key()
             if _, exists := total[key]; !exists {
                 total[key] = nf
+                idx.Add(&nf)
                 changed = true
             }
         }
