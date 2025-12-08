@@ -1,6 +1,6 @@
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::bert::{BertModel, Config};
+use candle_transformers::models::bert::{BertModel, Config, HiddenAct};
 use tokenizers::Tokenizer;
 use anyhow::Result;
 use std::path::Path;
@@ -26,7 +26,21 @@ impl EmbeddingProvider {
 
         // Load Model
         eprintln!("Loading model on device: {:?}", device);
-        let config = Config::default(); // Assuming bert-base or similar config match
+        // Config for all-MiniLM-L6-v2 (384-dimensional, 6 layers)
+        let config = Config {
+            vocab_size: 30522,
+            hidden_size: 384,
+            num_hidden_layers: 6,
+            num_attention_heads: 12,
+            intermediate_size: 1536,
+            hidden_act: HiddenAct::Gelu,
+            hidden_dropout_prob: 0.1,
+            max_position_embeddings: 512,
+            type_vocab_size: 2,
+            initializer_range: 0.02,
+            layer_norm_eps: 1e-12,
+            ..Default::default()
+        };
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_path.as_ref()], candle_core::DType::F32, &device)? };
         let model = BertModel::load(vb, &config)?;
 
@@ -38,45 +52,75 @@ impl EmbeddingProvider {
     }
 
     /// Auto-select the best available device
-    /// Priority: CUDA > Metal > CPU
+    /// CONSERVATIVE: Defaults to CPU unless explicitly configured
     /// Respects CANDLE_DEVICE environment variable
+    ///
+    /// For GPU acceleration, explicitly set CANDLE_DEVICE=cuda or CANDLE_DEVICE=metal
+    /// This ensures compatibility with constrained environments (proot, containers, etc.)
     fn auto_select_device() -> Device {
-        // Check environment variable first
+        // Check environment variable first (explicit user choice)
         if let Ok(device_str) = std::env::var("CANDLE_DEVICE") {
             match device_str.to_lowercase().as_str() {
-                "cpu" => return Device::Cpu,
+                "cpu" => {
+                    eprintln!("Using CPU device (via CANDLE_DEVICE=cpu)");
+                    return Device::Cpu;
+                }
                 "cuda" | "gpu" => {
-                    if let Ok(device) = Device::new_cuda(0) {
-                        eprintln!("Using CUDA device (via CANDLE_DEVICE)");
-                        return device;
+                    eprintln!("Attempting CUDA device (via CANDLE_DEVICE={})...", device_str);
+                    match Device::new_cuda(0) {
+                        Ok(device) => {
+                            eprintln!("✓ CUDA device initialized successfully");
+                            return device;
+                        }
+                        Err(e) => {
+                            eprintln!("✗ CUDA initialization failed: {}", e);
+                            eprintln!("  Falling back to CPU");
+                            return Device::Cpu;
+                        }
                     }
-                    eprintln!("CUDA requested but not available, falling back to CPU");
                 }
                 "metal" => {
-                    if let Ok(device) = Device::new_metal(0) {
-                        eprintln!("Using Metal device (via CANDLE_DEVICE)");
+                    eprintln!("Attempting Metal device (via CANDLE_DEVICE=metal)...");
+                    match Device::new_metal(0) {
+                        Ok(device) => {
+                            eprintln!("✓ Metal device initialized successfully");
+                            return device;
+                        }
+                        Err(e) => {
+                            eprintln!("✗ Metal initialization failed: {}", e);
+                            eprintln!("  Falling back to CPU");
+                            return Device::Cpu;
+                        }
+                    }
+                }
+                "auto" => {
+                    eprintln!("CANDLE_DEVICE=auto: Attempting GPU detection...");
+                    // Try CUDA first
+                    if let Ok(device) = Device::new_cuda(0) {
+                        eprintln!("✓ Auto-detected CUDA device");
                         return device;
                     }
-                    eprintln!("Metal requested but not available, falling back to CPU");
+                    // Try Metal (macOS)
+                    if let Ok(device) = Device::new_metal(0) {
+                        eprintln!("✓ Auto-detected Metal device");
+                        return device;
+                    }
+                    eprintln!("  No GPU detected, using CPU");
+                    return Device::Cpu;
                 }
-                _ => eprintln!("Unknown CANDLE_DEVICE value: {}, using auto-detect", device_str),
+                _ => {
+                    eprintln!("⚠ Unknown CANDLE_DEVICE value: '{}', defaulting to CPU", device_str);
+                    eprintln!("  Valid values: cpu, cuda, gpu, metal, auto");
+                    return Device::Cpu;
+                }
             }
         }
 
-        // Auto-detect: Try CUDA first (most common for ML)
-        if let Ok(device) = Device::new_cuda(0) {
-            eprintln!("Auto-detected CUDA device");
-            return device;
-        }
-
-        // Try Metal (macOS)
-        if let Ok(device) = Device::new_metal(0) {
-            eprintln!("Auto-detected Metal device");
-            return device;
-        }
-
-        // Fallback to CPU
-        eprintln!("Using CPU device (no GPU detected)");
+        // CONSERVATIVE DEFAULT: Use CPU if no explicit configuration
+        // This ensures safety in unknown/constrained environments
+        eprintln!("Using CPU device (no CANDLE_DEVICE set - conservative default)");
+        eprintln!("  To use GPU: export CANDLE_DEVICE=cuda  (or =metal on macOS)");
+        eprintln!("  To auto-detect: export CANDLE_DEVICE=auto");
         Device::Cpu
     }
 
@@ -100,8 +144,9 @@ impl EmbeddingProvider {
         let embeddings = (embeddings.sum(1)? / (n_tokens as f64))?;
         let embeddings = embeddings.squeeze(0)?;
 
-        // Normalize
-        let embeddings = (embeddings.clone() / embeddings.sqr()?.sum_all()?.sqrt()?)?;
+        // Normalize (L2 normalization)
+        let norm = embeddings.sqr()?.sum_all()?.sqrt()?;
+        let embeddings = embeddings.broadcast_div(&norm)?;
         
         Ok(embeddings.to_vec1()?)
     }
