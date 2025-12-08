@@ -1,15 +1,17 @@
 # Pure PowerShell Implementation
 
-**Status:** Implemented (Phase 1)
-**Version:** 1.0.0
-**Date:** 2025-10-26
-**Branch:** powershell-target-language
+**Status:** Implemented (Phase 1 + Phase 2 Recursion)
+**Version:** 2.0.0
+**Date:** 2025-12-08
+**Branch:** main
 
 ---
 
 ## Overview
 
 This document describes the pure PowerShell implementation for UnifyWeaver's PowerShell target language feature. Pure PowerShell mode generates native PowerShell code with no bash dependency, providing better integration with Windows environments and satisfying firewall restrictions.
+
+**Phase 2 Update (2025-12):** Added complete recursion support including simple recursion, transitive closure (fixpoint), mutual recursion, accumulator patterns, and tail recursion optimization.
 
 ## What Was Implemented
 
@@ -66,6 +68,42 @@ function api_user {
 
 ---
 
+## Phase 2: Recursion Support ✅ (New in v2.0.0)
+
+The following recursion patterns are now implemented in pure PowerShell:
+
+### 4. Simple Recursion ✅
+- **Pattern:** Basic recursion with N-1 decrement
+- **Example:** `factorial(N, F) :- N1 is N - 1, factorial(N1, F1), F is N * F1`
+- **PowerShell:** Native function recursion
+
+### 5. Transitive Closure (Fixpoint Mode) ✅
+- **Pattern:** Self-join generator mode for computing transitive closure
+- **Example:** `ancestor(X,Z) :- parent(X,Y), ancestor(Y,Z)`
+- **PowerShell:** Delta/Total iteration with `[PSCustomObject]` facts
+
+### 6. Fibonacci Pattern ✅
+- **Pattern:** Tree recursion with two recursive calls
+- **Example:** `fib(N, F) :- fib(N-1, F1), fib(N-2, F2), F is F1 + F2`
+- **PowerShell:** Two recursive calls with result combination
+
+### 7. Accumulator Pattern ✅
+- **Pattern:** List processing with accumulator
+- **Example:** `sum_list([H|T], Acc, R) :- NewAcc is Acc + H, sum_list(T, NewAcc, R)`
+- **PowerShell:** Array processing with accumulator variable
+
+### 8. Mutual Recursion ✅
+- **Pattern:** Multiple predicates calling each other
+- **Example:** `is_even(N) :- is_odd(N-1)`, `is_odd(N) :- is_even(N-1)`
+- **PowerShell:** Shared memoization table with dispatch function
+
+### 9. Tail Recursion Optimization ✅
+- **Pattern:** Accumulator patterns with tail calls
+- **Example:** `count([], Acc, Acc). count([_|T], Acc, N) :- Acc1 is Acc+1, count(T, Acc1, N)`
+- **PowerShell:** Compiled to iterative `foreach` loops
+
+---
+
 ## What Was NOT Implemented (Future Work)
 
 The following features still use **Bash-as-a-Service** (BaaS) mode and will be implemented in future phases:
@@ -80,13 +118,9 @@ The following features still use **Bash-as-a-Service** (BaaS) mode and will be i
 - **Reason:** Cannot execute Python from pure PowerShell without subprocess
 - **Future:** Remains BaaS-only
 
-#### Simple Facts/Relations
-- **Reason:** Not a priority (works fine with BaaS)
-- **Future:** Phase 2b - native PowerShell arrays and hashtables
-
-#### Joins/Recursion
-- **Reason:** More complex, needs careful PowerShell design
-- **Future:** Phase 2b - PowerShell object-based joins
+#### Data Partitioning
+- **Reason:** Requires port from bash_partitioning_target.pl
+- **Future:** Phase 3 - fixed-size, hash-based, key-based partitioning
 
 ---
 
@@ -365,21 +399,29 @@ pwsh -File test.ps1
 
 ## Future Work
 
-### Phase 2b: Advanced Pure PowerShell (v0.0.6)
+### Phase 2: Pure PowerShell Recursion ✅ Complete (v2.0.0)
 
-- [ ] Simple facts (arrays)
-- [ ] Binary relations (hashtables, PSCustomObject arrays)
-- [ ] Joins (nested loops with Where-Object)
-- [ ] Recursion (native PowerShell recursion)
-- [ ] SQL sources (.NET System.Data.SQLite)
+- [x] Simple recursion
+- [x] Transitive closure (fixpoint)
+- [x] Fibonacci (tree recursion)
+- [x] Accumulator patterns
+- [x] Mutual recursion
+- [x] Tail recursion optimization
 
-### Phase 2c: PowerShell Object Pipeline (v0.0.7)
+### Phase 3: Data Partitioning (Pending)
+
+- [ ] Port bash_partitioning_target.pl to PowerShell
+- [ ] Fixed-size partitioning
+- [ ] Hash-based partitioning
+- [ ] Key-based partitioning
+
+### Phase 4: PowerShell Object Pipeline
 
 - [ ] Return PowerShell objects instead of colon-separated strings
 - [ ] Support PowerShell pipeline chaining
 - [ ] Type annotations for better IntelliSense
 
-### Phase 3: Firewall Mode
+### Phase 5: Firewall Mode
 
 - [ ] Firewall detection logic
 - [ ] Enforce pure mode when firewall detected
