@@ -464,6 +464,10 @@ build_rule_clause(GroupSpecs, HeadSpec, HeadArgs, Body, Root, Relations) :-
     Width >= WidthHead.
 
 body_to_list(true, []) :- !.
+body_to_list(Body, Terms) :-
+    compound(Body),
+    Body = _Module:InnerBody, !,
+    body_to_list(InnerBody, Terms).
 body_to_list((A, B), Terms) :- !,
     body_to_list(A, TA),
     body_to_list(B, TB),
