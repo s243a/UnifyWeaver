@@ -32,7 +32,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 |----------|-----------|-----------|------------------|----------------|-------|
 | `csv_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Both pass after bug fix |
 | `xml_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
-| `json_litedb_playbook` | ➖ | ✅ Pass (3/10) | ➖ | ⏳ Pending | Extract-and-run pattern works |
+| `json_litedb_playbook` | ➖ | ✅ Pass (3/10) | ➖ | ⏳ CLI Issues | Extract-and-run pattern works |
 | `large_xml_streaming_playbook` | ➖ | ➖ | ➖ | ➖ | Multi-stage pipeline |
 
 ### C# Compilation Playbooks
@@ -40,7 +40,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
 | `csharp_codegen_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
-| `csharp_query_playbook` | ➖ | ❌ N/A | ➖ | ➖ | BLOCKED: C# stream target doesn't support `is/2` arithmetic |
+| `csharp_query_playbook` | ➖ | ❌ Blocked (8/10) | ➖ | ➖ | BLOCKED: Missing `build_unifyweaver_project/0` + `is/2` unsupported |
 | `csharp_xml_fragments_playbook` | ➖ | ➖ | ➖ | ➖ | XML streaming |
 
 ### Recursion Playbooks
@@ -595,6 +595,55 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
 > The playbook provides numbered steps that are straightforward to follow: Install LiteDB → Extract script → Make executable → Run it. Each step has a single, unambiguous action. A fresh agent can follow the exact bash commands as written without needing knowledge of LiteDB, Prolog, or .NET internals.
 
 **Key Insight**: Restructuring to follow the extract-and-run pattern dropped difficulty from 7/10 to 3/10 - a dramatic improvement in model accessibility.
+
+---
+
+### 2025-12-08 - csharp_query_playbook - Haiku 4.5 (Confirm BLOCKED)
+
+**Result**: ❌ Fail (BLOCKED - missing implementation)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Identified that `build_unifyweaver_project/0` predicate doesn't exist
+- Attempted extraction and script execution anyway
+- SWI-Prolog error: `Unknown procedure: build_unifyweaver_project/0`
+
+**Difficulty Rating**: 8/10
+
+**Reasoning from Haiku 4.5**:
+> The playbook describes an **aspirational API** that assumes `build_unifyweaver_project/0` exists, but that function was never implemented. The underlying C# compilation machinery exists (`csharp_query_target.pl`), but the orchestration layer is missing.
+
+**Key Issues Identified**:
+1. `build_unifyweaver_project/0` predicate does not exist anywhere in codebase
+2. Even with fixed examples using `compile_predicate_to_csharp/3`, the C# stream target gives error: `Literal :/2 contains non-variable arguments; this shape is not yet supported`
+3. The `is/2` arithmetic operations aren't supported in the C# target compiler
+
+**Status**: BLOCKED until C# stream target supports `is/2` arithmetic expressions.
+
+---
+
+### 2025-12-08 - Gemini CLI Testing Issues
+
+**Result**: ⏳ BLOCKED - CLI hangs indefinitely
+
+**Multiple Attempts**:
+1. `gemini --model gemini-2.5-pro ... --yolo` - Hangs after "Loaded cached credentials"
+2. `gemini --model gemini-3-pro-preview ... --yolo` - Same hang
+3. `gemini --model gemini-2.5-pro ... --yolo --output-format stream-json` - No output at all
+
+**Settings Applied**:
+- Added `noOutputTimeout: 600` to `~/.gemini/settings.json`
+- Tried streaming JSON format for progress updates
+- All attempts timed out without producing any response
+
+**Environment**:
+- Linux (PRoot-Distro)
+- OAuth personal authentication
+- All previous Gemini tests in this conversation passed, but current session has issues
+
+**Key Insight**: Gemini CLI appears to have intermittent reliability issues. Tests that worked earlier in the same session now hang indefinitely. This may be an API quota issue, network issue, or CLI bug.
+
+**Recommendation**: For now, Gemini testing is unreliable. Focus on Claude models (Haiku, Sonnet, Opus) for consistent testing results.
 
 ---
 
