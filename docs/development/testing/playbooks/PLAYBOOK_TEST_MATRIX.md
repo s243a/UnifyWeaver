@@ -32,7 +32,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 |----------|-----------|-----------|------------------|----------------|-------|
 | `csv_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Both pass after bug fix |
 | `xml_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
-| `json_litedb_playbook` | ➖ | 🔄 Partial (7/10) | ➖ | ⏳ Timeout | Complex multi-system integration |
+| `json_litedb_playbook` | ➖ | ✅ Pass (3/10) | ➖ | ⏳ Pending | Extract-and-run pattern works |
 | `large_xml_streaming_playbook` | ➖ | ➖ | ➖ | ➖ | Multi-stage pipeline |
 
 ### C# Compilation Playbooks
@@ -40,7 +40,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
 | `csharp_codegen_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
-| `csharp_query_playbook` | ➖ | ❌ N/A | ➖ | ➖ | BLOCKED: `build_unifyweaver_project` not implemented |
+| `csharp_query_playbook` | ➖ | ❌ N/A | ➖ | ➖ | BLOCKED: C# stream target doesn't support `is/2` arithmetic |
 | `csharp_xml_fragments_playbook` | ➖ | ➖ | ➖ | ➖ | XML streaming |
 
 ### Recursion Playbooks
@@ -71,8 +71,8 @@ When a Tier 5+ model runs a playbook, it should provide a difficulty rating:
 | `mutual_recursion_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - deterministic |
 | `xml_data_source_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - deterministic |
 | `parallel_execution_playbook` | 3/10 | Avg of Gemini (2) + Haiku (4) = 3 - needs cross-referencing |
-| `json_litedb_playbook` | 7/10 | Haiku only - complex multi-system integration |
-| `csharp_query_playbook` | N/A | BLOCKED: `build_unifyweaver_project` not implemented |
+| `json_litedb_playbook` | 3/10 | After fix: Haiku (3) - extract-and-run pattern works |
+| `csharp_query_playbook` | N/A | BLOCKED: C# stream target doesn't support `is/2` arithmetic |
 | ... | | |
 
 ### Rating Criteria
@@ -555,7 +555,7 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
 
 ---
 
-### 2025-12-08 - json_litedb_playbook - Gemini 2.5 Pro
+### 2025-12-08 - json_litedb_playbook - Gemini 2.5 Pro (Pre-fix)
 
 **Result**: ⏳ Timeout
 
@@ -566,6 +566,35 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
 **Difficulty Rating**: Not completed
 
 **Key Insight**: This playbook needs more explicit step-by-step instructions and may need to be restructured to follow the extract-and-run pattern of other successful playbooks.
+
+---
+
+### 2025-12-08 - json_litedb_playbook - Haiku 4.5 (After restructure to extract-and-run)
+
+**Result**: ✅ Pass (first attempt)
+
+**Changes Made**:
+1. Added YAML frontmatter to `json_litedb_examples.md` (`file_type: UnifyWeaver Example Library`)
+2. Added explicit step-by-step instructions at top of playbook
+3. Followed extract-and-run pattern like other successful playbooks
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Extracted and ran the bash script successfully
+- All expected outputs present
+
+**Output verified**:
+- Compiled Prolog to PowerShell ✅
+- Loaded 4 products into LiteDB ✅
+- Queried products by category 'Electronics' (3 products returned) ✅
+- Created database file (32K) ✅
+
+**Difficulty Rating**: 3/10 (down from 7/10)
+
+**Reasoning from Haiku 4.5**:
+> The playbook provides numbered steps that are straightforward to follow: Install LiteDB → Extract script → Make executable → Run it. Each step has a single, unambiguous action. A fresh agent can follow the exact bash commands as written without needing knowledge of LiteDB, Prolog, or .NET internals.
+
+**Key Insight**: Restructuring to follow the extract-and-run pattern dropped difficulty from 7/10 to 3/10 - a dramatic improvement in model accessibility.
 
 ---
 
