@@ -55,7 +55,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
 | `parallel_execution_playbook` | ➖ | ➖ | ➖ | ➖ | Parallel processing |
-| `prolog_generation_playbook` | ➖ | ➖ | ➖ | ➖ | Prolog dialects |
+| `prolog_generation_playbook` | ➖ | 🔄 Partial (6/10) | ➖ | 🔄 Partial (7/10) | Bug: no auto-execute in generated script |
 | `powershell_inline_dotnet_playbook` | ➖ | ➖ | ➖ | ➖ | Inline .NET |
 
 ## Difficulty Ratings (From Advanced Models)
@@ -65,6 +65,7 @@ When a Tier 5+ model runs a playbook, it should provide a difficulty rating:
 | Playbook | Difficulty (1-10) | Reasoning |
 |----------|-------------------|-----------|
 | `csv_data_source_playbook` | 1-2/10 | Gemini 2.5 Pro: 1/10, Haiku 4.5: 2/10 - purely mechanical steps |
+| `prolog_generation_playbook` | 6-7/10 | Haiku 4.5: 6/10, Gemini 2.5 Pro: 7/10 - required debugging missing output |
 | `xml_data_source_playbook` | ➖ | |
 | `csharp_codegen_playbook` | ➖ | |
 | ... | | |
@@ -243,6 +244,66 @@ Success: CSV source compiled and executed
 > The playbook's instructions were exceptionally clear and deterministic. It provided the exact shell commands to execute in a precise sequence. There was no need for interpretation, context-specific knowledge, or complex reasoning. The steps were purely mechanical, leading directly to the expected outcome.
 
 **Comparison with pre-fix run**: Previous rating was 7/10 because model had to debug the missing "Alice" bug. After fix, rating dropped to 1/10 - demonstrating that playbook difficulty is heavily influenced by whether the underlying code works correctly.
+
+---
+
+### 2025-12-08 - prolog_generation_playbook - Haiku 4.5
+
+**Result**: 🔄 Partial
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Extracted and ran the bash script successfully
+- Script ran but `5:120` output was missing
+- Model diagnosed the issue: generated `factorial.sh` has no auto-execute block
+
+**Output**:
+```
+Generating Prolog code for factorial...
+✓ Generated Prolog code: tmp/factorial.pl
+...
+Generated scripts: [tmp/factorial.sh]
+
+Testing generated factorial script...
+Running factorial(5):
+                      <-- Missing 5:120 here
+Success: Factorial compiled and executed correctly
+```
+
+**Bug Found**: Generated `tmp/factorial.sh` defines `factorial` function but doesn't invoke it when run directly. The script lacks the auto-execute pattern:
+```bash
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    factorial_stream "$@"
+fi
+```
+
+**Difficulty Rating**: 6/10
+
+**Reasoning from Haiku 4.5**:
+> The playbook has explicit step-by-step instructions that are easy to follow. However, executing it successfully requires understanding the context and purpose of each step, not just mechanically following commands. The non-deterministic aspects (missing output) required understanding what went wrong.
+
+---
+
+### 2025-12-08 - prolog_generation_playbook - Gemini 2.5 Pro
+
+**Result**: 🔄 Partial (manually fixed to complete)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Identified same bug as Haiku 4.5
+- Attempted to patch `factorial.sh` but script was regenerated
+- Manually re-ran compilation steps and patched script to demonstrate fix
+
+**Bug Found**: Same as Haiku 4.5 - missing auto-execute block in generated script.
+
+**Difficulty Rating**: 7/10
+
+**Reasoning from Gemini 2.5 Pro**:
+> The playbook's instructions were clear, but a successful execution required significant debugging and context-awareness beyond what was written. The underlying `compiler_driver` tool produced a non-functional script, and I had to diagnose this by inspecting multiple generated files, understand the shell execution flow, and devise a manual, multi-step workaround.
+
+**Action Items**:
+- [ ] Fix recursive compiler to add auto-execute block to generated bash scripts
+- [ ] Re-test after fix to verify clean pass
 
 ---
 
