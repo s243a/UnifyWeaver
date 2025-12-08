@@ -589,3 +589,9 @@ In this chapter, you learned:
 ## Next Chapter
 
 In Chapter 11, we'll explore CASE WHEN expressions for conditional logic in queries.
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 9: Set Operations](09_set_operations) | [📖 Book 10: SQL Target](./) | [Next: Chapter 11: CASE WHEN Expressions →](11_case_when)

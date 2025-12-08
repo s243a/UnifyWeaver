@@ -459,3 +459,9 @@ In Chapter 9, we'll explore Set Operations:
 - INTERSECT
 - EXCEPT
 - Combining multiple queries
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 7: Common Table Expressions (CTEs)](07_common_table_expressions) | [📖 Book 10: SQL Target](./) | [Next: Chapter 9: Set Operations →](09_set_operations)

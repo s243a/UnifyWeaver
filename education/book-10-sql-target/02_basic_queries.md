@@ -412,3 +412,9 @@ In Chapter 3, we'll explore JOINs:
 - Explicit LEFT, RIGHT, and FULL OUTER JOINs
 - Multi-table joins
 - Self-joins
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 1: Getting Started with SQL Target](01_getting_started) | [📖 Book 10: SQL Target](./) | [Next: Chapter 3: JOINs →](03_joins)

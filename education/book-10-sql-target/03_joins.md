@@ -427,3 +427,9 @@ In Chapter 4, we'll explore aggregations:
 - COUNT, SUM, AVG, MIN, MAX
 - GROUP BY clauses
 - HAVING for filtering aggregated results
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 2: Basic Queries](02_basic_queries) | [📖 Book 10: SQL Target](./) | [Next: Chapter 4: Aggregations →](04_aggregations)

@@ -439,3 +439,9 @@ In Chapter 5, we'll explore subqueries:
 - IN and NOT IN subqueries
 - EXISTS and NOT EXISTS
 - Correlated subqueries
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 3: JOINs](03_joins) | [📖 Book 10: SQL Target](./) | [Next: Chapter 5: Subqueries →](05_subqueries)

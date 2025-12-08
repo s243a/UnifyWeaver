@@ -415,3 +415,9 @@ In Chapter 7, we'll explore Common Table Expressions (CTEs):
 - WITH clause for query organization
 - Simplifying complex queries
 - Using CTEs with window functions
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 5: Subqueries](05_subqueries) | [📖 Book 10: SQL Target](./) | [Next: Chapter 7: Common Table Expressions (CTEs) →](07_common_table_expressions)

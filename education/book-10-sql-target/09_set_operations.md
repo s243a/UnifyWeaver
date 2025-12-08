@@ -390,3 +390,9 @@ In Chapter 10, we'll explore SQL Functions:
 - String functions (CONCAT, UPPER, SUBSTRING)
 - Date functions (DATE, DATE_ADD, EXTRACT)
 - Pattern matching (LIKE, BETWEEN, IN)
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 8: Recursive CTEs](08_recursive_ctes) | [📖 Book 10: SQL Target](./) | [Next: Chapter 10: SQL Functions →](10_sql_functions)

@@ -430,3 +430,9 @@ In Chapter 6, we'll explore window functions:
 - RANK, ROW_NUMBER, DENSE_RANK
 - LAG and LEAD for row comparisons
 - Window frame specifications
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 4: Aggregations](04_aggregations) | [📖 Book 10: SQL Target](./) | [Next: Chapter 6: Window Functions →](06_window_functions)

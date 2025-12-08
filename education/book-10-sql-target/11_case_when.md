@@ -395,3 +395,9 @@ In this chapter, you learned:
 ## Next Chapter
 
 In Chapter 12, we'll bring it all together with practical, real-world applications and complete projects using the SQL target.
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 10: SQL Functions](10_sql_functions) | [📖 Book 10: SQL Target](./) | [Next: Chapter 12: Practical Applications →](12_practical_applications)

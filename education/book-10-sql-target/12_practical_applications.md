@@ -475,3 +475,9 @@ Congratulations on completing the SQL Target book! You now have the skills to:
 - Apply best practices for production deployments
 
 Continue exploring by combining SQL target with other UnifyWeaver targets for full-stack data applications.
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 11: CASE WHEN Expressions](11_case_when) | [📖 Book 10: SQL Target](./) | [Next: Book 11: Prolog Target →](../book-11-prolog-target/)

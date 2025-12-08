@@ -376,3 +376,9 @@ In Chapter 8, we'll explore Recursive CTEs:
 - WITH RECURSIVE for hierarchical data
 - Org charts and tree structures
 - Graph traversal queries
+
+---
+
+## Navigation
+
+**←** [Previous: Chapter 6: Window Functions](06_window_functions) | [📖 Book 10: SQL Target](./) | [Next: Chapter 8: Recursive CTEs →](08_recursive_ctes)

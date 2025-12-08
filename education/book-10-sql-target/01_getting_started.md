@@ -310,3 +310,9 @@ In Chapter 2, we'll explore more complex queries including:
 - ORDER BY, LIMIT, and OFFSET
 - DISTINCT queries
 - Column aliasing with `sql_as/2`
+
+---
+
+## Navigation
+
+[📖 Book 10: SQL Target](./) | [Next: Chapter 2: Basic Queries →](02_basic_queries)
