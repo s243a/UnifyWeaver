@@ -26,11 +26,35 @@ impl EmbeddingProvider {
 
         // Load Model
         eprintln!("Loading model on device: {:?}", device);
-        // Config for all-MiniLM-L6-v2 (384-dimensional, 6 layers)
+
+        // Model Configuration
+        // Choose one of the configurations below by uncommenting it
+        // and commenting out the others
+
+        // OPTION 1: all-MiniLM-L6-v2 (small, fast, 384-dim, 256 tokens)
+        // RAM: ~0.1-0.2 GB | Context: 256 tokens
+        // let config = Config {
+        //     vocab_size: 30522,
+        //     hidden_size: 384,
+        //     num_hidden_layers: 6,
+        //     num_attention_heads: 12,
+        //     intermediate_size: 1536,
+        //     hidden_act: HiddenAct::Gelu,
+        //     hidden_dropout_prob: 0.1,
+        //     max_position_embeddings: 512,
+        //     type_vocab_size: 2,
+        //     initializer_range: 0.02,
+        //     layer_norm_eps: 1e-12,
+        //     ..Default::default()
+        // };
+
+        // OPTION 2: intfloat/e5-small-v2 (medium quality, 384-dim, 512 tokens) *** ACTIVE ***
+        // RAM: ~0.5 GB | Context: 512 tokens
+        // Better quality than MiniLM with moderate RAM increase
         let config = Config {
             vocab_size: 30522,
             hidden_size: 384,
-            num_hidden_layers: 6,
+            num_hidden_layers: 12,
             num_attention_heads: 12,
             intermediate_size: 1536,
             hidden_act: HiddenAct::Gelu,
