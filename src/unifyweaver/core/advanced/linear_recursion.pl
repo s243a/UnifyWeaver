@@ -289,7 +289,12 @@ build_range_down() {
 ~w_stream() {
     ~w "$@"
 }
-', [PredStr, PredStr, PredStr, BashFoldOp, MemoDecl, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, BaseOutput, PredStr, MemoStoreCode, PredStr, PredStr]).
+
+# Auto-execute when run directly (not when sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    ~w_stream "$@"
+fi
+', [PredStr, PredStr, PredStr, BashFoldOp, MemoDecl, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, BaseOutput, PredStr, MemoStoreCode, PredStr, PredStr, PredStr]).
 
 
 %% translate_fold_expr(+PrologExpr, +InputVar, +AccVar, -BashExpr)
@@ -437,7 +442,12 @@ parse_list() {
 ~w_stream() {
     ~w "$@"
 }
-', [PredStr, PredStr, PredStr, BashFoldOp, MemoDecl, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, BaseOutput, PredStr, MemoStoreCode, PredStr, PredStr]).
+
+# Auto-execute when run directly (not when sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    ~w_stream "$@"
+fi
+', [PredStr, PredStr, PredStr, BashFoldOp, MemoDecl, PredStr, MemoCheckCode, BaseInput, BaseOutput, MemoStoreCode, BaseOutput, PredStr, MemoStoreCode, PredStr, PredStr, PredStr]).
 
 %% generate_binary_linear_recursion_old(+PredStr, +BaseClauses, +RecClauses, -BashCode)
 %  OLD IMPLEMENTATION - kept as fallback
@@ -520,7 +530,12 @@ generate_binary_linear_recursion_old(PredStr, _BaseClauses, _RecClauses, BashCod
         "# Stream all solutions",
         "{{pred}}_stream() {",
         "    {{pred}} \"$@\"",
-        "}"
+        "}",
+        "",
+        "# Auto-execute when run directly (not when sourced)",
+        "if [[ \"${BASH_SOURCE[0]}\" == \"${0}\" ]]; then",
+        "    {{pred}}_stream \"$@\"",
+        "fi"
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),
@@ -556,7 +571,17 @@ generate_generic_linear_recursion(PredStr, Arity, _BaseClauses, _RecClauses, Mem
         "    ",
         "    echo \"# Generic linear recursion - not yet implemented\" >&2",
         "    return 1",
-        "}"
+        "}",
+        "",
+        "# Stream wrapper",
+        "{{pred}}_stream() {",
+        "    {{pred}} \"$@\"",
+        "}",
+        "",
+        "# Auto-execute when run directly (not when sourced)",
+        "if [[ \"${BASH_SOURCE[0]}\" == \"${0}\" ]]; then",
+        "    {{pred}}_stream \"$@\"",
+        "fi"
     ],
 
     atomic_list_concat(TemplateLines, '\n', Template),
