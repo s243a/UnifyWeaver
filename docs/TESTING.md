@@ -670,19 +670,71 @@ bash: output/test.sh: No such file or directory
 ---
 
 
+## 6. Go Target Tests
+
+See [`docs/development/testing/v0_2_go_target_test_plan.md`](development/testing/v0_2_go_target_test_plan.md) for the full plan.
+
+### Quick Test
+```bash
+swipl -g "use_module('tests/core/test_go_generator'), run_tests" -t halt
+```
+
+---
+
+## 7. Python Target Tests
+
+See [`docs/development/testing/v0_2_python_target_test_plan.md`](development/testing/v0_2_python_target_test_plan.md) for the full plan.
+
+### Quick Test
+```bash
+swipl -g "[tests/core/test_python_generator], run_tests(python_generator)" -t halt
+```
+
+---
+
+## 8. Rust Target Tests
+
+See [`docs/development/testing/v0_2_rust_target_test_plan.md`](development/testing/v0_2_rust_target_test_plan.md) for the full plan.
+
+### Quick Test
+```bash
+swipl -g run_tests -t halt tests/test_rust_target.pl
+```
+
+---
+
+## 9. Cross-Target Glue Tests
+
+See [`docs/development/testing/v0_2_cross_target_glue_test_plan.md`](development/testing/v0_2_cross_target_glue_test_plan.md) for the full plan.
+
+### Quick Test
+```bash
+# Shell glue
+swipl -g "use_module('tests/integration/glue/test_shell_glue'), run_tests" -t halt
+
+# .NET glue
+swipl -g "use_module('tests/integration/glue/test_dotnet_glue'), run_tests" -t halt
+```
+
+---
+
 ## Future Test Additions
 
 As features are added, tests should be created for:
 
-- [ ] Negation handling
+- [ ] Negation handling (partial coverage in Go/Python targets)
 - [ ] Complex built-ins (arithmetic, string operations)
 - [ ] Module system integration
 - [ ] Incremental compilation
 - [ ] Query optimization
 - [ ] Parallel execution strategies
 - [ ] Error handling and reporting
-- [ ] Cross-platform compatibility (WSL, Cygwin, native Linux, macOS)
+- [x] Cross-platform compatibility (WSL, Cygwin, native Linux, macOS)
+- [x] Go target code generation
+- [x] Python target code generation
+- [x] Rust target code generation
+- [x] Cross-target glue integration
 
 ---
 
-*Last updated: 2025-10-06*
+*Last updated: 2025-12-08*
