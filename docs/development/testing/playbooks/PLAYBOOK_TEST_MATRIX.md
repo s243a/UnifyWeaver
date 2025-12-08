@@ -30,7 +30,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
-| `csv_data_source_playbook` | ➖ | ➖ | ➖ | ➖ | Basic extraction |
+| `csv_data_source_playbook` | ➖ | ➖ | ➖ | ⚠️ Pass+fix | Bug fixed in csv_source.pl (NR>2→NR>1) |
 | `xml_data_source_playbook` | ➖ | ➖ | ➖ | ➖ | Python XML parsing |
 | `json_litedb_playbook` | ➖ | ➖ | ➖ | ➖ | .NET + LiteDB |
 | `large_xml_streaming_playbook` | ➖ | ➖ | ➖ | ➖ | Multi-stage pipeline |
@@ -105,6 +105,76 @@ Explain your rating and suggest improvements to make it easier to follow.
 ```
 
 ## Test Results Log
+
+### 2025-12-08 - csv_data_source_playbook - Gemini 2.5 Pro
+
+**Result**: ⚠️ Pass with fix
+
+**Execution**:
+- Model followed playbook steps correctly
+- Extracted and ran the bash script
+- Output was missing "Alice" record
+- Model investigated and found bug in generated `tmp/users.sh`
+- Bug: In lookup mode, `NR > 2` should be `NR > 1` (skips first data row)
+- Model fixed the bug and verified correct output
+
+**Output after fix**:
+```
+1:Alice:30
+2:Bob:25
+3:Charlie:35
+```
+
+**Bug Found**: Real bug in `csv_source.pl` - lookup mode uses `NR > 2` instead of `NR > 1`
+- Streaming mode (no key): `NR > 1` ✅ correct
+- Lookup mode (with key): `NR > 2` ❌ wrong - skips first data row
+
+**Difficulty Rating**: 7/10
+- Easy: Clear goal, good project structure
+- Difficult: Required debugging when output was wrong, no explicit guidance on troubleshooting
+
+**Observations**:
+- Gemini couldn't read files in `tmp/` due to gitignore patterns
+- Worked around by using `cat` via shell command
+- This test discovered a real bug that should be fixed
+
+**Action Items**:
+- [x] Fix `NR > 2` bug in `src/unifyweaver/sources/csv_source.pl` (fixed by Claude Opus 4.5)
+- [x] Re-test after fix to verify clean pass
+
+---
+
+### 2025-12-08 - csv_data_source_playbook - Bug Fix Verification (Claude Opus 4.5)
+
+**Result**: ✅ Pass (after fix)
+
+**Root Cause Analysis**:
+- Bug was in `sources.pl` + `csv_source.pl` interaction
+- `sources.pl:108-111` already adds `skip_lines(1)` when `has_header(true)` is set
+- `csv_source.pl:168-171` was ALSO adding 1 when `HeaderMode = auto`
+- Result: Double-counting → `TotalSkip = 2` instead of `1`
+
+**Fix Applied**:
+- Modified `csv_source.pl:generate_csv_bash/11` to NOT add 1 for headers
+- Changed `TotalSkip is SkipLines + 1` to just `TotalSkip = SkipLines`
+- Comment added explaining that `sources.pl` already handles header skip
+
+**Verification Output**:
+```
+=== All users ===
+1:Alice:30
+2:Bob:25
+3:Charlie:35
+
+=== Lookup user 1 ===
+1:Alice:30
+
+Success: CSV source compiled and executed
+```
+
+**Both streaming and lookup modes now correctly use `NR > 1`**
+
+---
 
 ### Template for Recording Results
 
