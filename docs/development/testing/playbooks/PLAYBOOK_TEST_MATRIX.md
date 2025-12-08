@@ -30,7 +30,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
-| `csv_data_source_playbook` | ➖ | ➖ | ➖ | ⚠️ Pass+fix | Bug fixed in csv_source.pl (NR>2→NR>1) |
+| `csv_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ⚠️ Pass+fix | Bug fixed; Haiku 4.5 rates 2/10 |
 | `xml_data_source_playbook` | ➖ | ➖ | ➖ | ➖ | Python XML parsing |
 | `json_litedb_playbook` | ➖ | ➖ | ➖ | ➖ | .NET + LiteDB |
 | `large_xml_streaming_playbook` | ➖ | ➖ | ➖ | ➖ | Multi-stage pipeline |
@@ -64,7 +64,7 @@ When a Tier 5+ model runs a playbook, it should provide a difficulty rating:
 
 | Playbook | Difficulty (1-10) | Reasoning |
 |----------|-------------------|-----------|
-| `csv_data_source_playbook` | ➖ | |
+| `csv_data_source_playbook` | 2/10 (Haiku 4.5) | Deterministic steps, explicit commands, clear output expectations |
 | `xml_data_source_playbook` | ➖ | |
 | `csharp_codegen_playbook` | ➖ | |
 | ... | | |
@@ -176,6 +176,50 @@ Success: CSV source compiled and executed
 
 ---
 
+### 2025-12-08 - csv_data_source_playbook - Haiku 4.5
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Extracted and ran the bash script successfully
+- All expected output matched perfectly
+
+**Output**:
+```
+Creating Prolog script...
+Compiling CSV source to bash...
+Registered source type: csv -> csv_source
+Compiling dynamic source: users/3 using csv
+  Compiling CSV source: users/3
+Compiled CSV source to tmp/users.sh
+To use: source tmp/users.sh && users
+
+Testing generated bash script...
+Loading users function...
+
+Calling users() to get all records:
+1:Alice:30
+2:Bob:25
+3:Charlie:35
+
+Success: CSV source compiled and executed
+```
+
+**Difficulty Rating**: 2/10
+
+**Reasoning from Haiku 4.5**:
+> This playbook scores very low in difficulty (2/10) for the following reasons:
+> - **Deterministic and sequential**: The playbook provides 4 clear, numbered steps to follow in exact order
+> - **Unambiguous instructions**: Each step has a specific bash command that requires no interpretation
+> - **Explicit output expectations**: The expected output section is detailed and specific, making validation trivial
+> - **Error prevention**: The "Common Mistakes to Avoid" section clearly warns against a wrong approach
+> - **No decision-making required**: There's no branching logic or conditional steps—just a straight path forward
+
+**Key Insight**: Haiku 4.5 (Tier 2 model) passing on first attempt with a 2/10 difficulty rating indicates **highly deterministic documentation**. This validates the playbook's quality for automated LLM testing.
+
+---
+
 ### Template for Recording Results
 
 ```markdown
@@ -221,10 +265,11 @@ Success: CSV source compiled and executed
 
 ## Next Steps
 
-1. [ ] Run `csv_data_source_playbook` with Haiku 4.5
-2. [ ] Run `csv_data_source_playbook` with Gemini 2.5 Pro (get difficulty rating)
-3. [ ] Document results and iterate on playbook if needed
-4. [ ] Expand to other playbooks
+1. [x] Run `csv_data_source_playbook` with Haiku 4.5 - ✅ Pass (2/10)
+2. [x] Run `csv_data_source_playbook` with Gemini 2.5 Pro - ⚠️ Pass+fix (found bug)
+3. [x] Fix bug and verify - ✅ Fixed by Claude Opus 4.5
+4. [ ] Test `csharp_codegen_playbook` with multiple models
+5. [ ] Expand to other playbooks
 
 ## Related Documentation
 
