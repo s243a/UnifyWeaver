@@ -1,40 +1,61 @@
-# Add JSON Input Support to Go Generator Mode
+# Add Database Persistence to Go Generator Mode
 
 ## Summary
 
-Enables loading initial facts from stdin via JSONL format, making generator mode practical for real data pipelines.
+Implements `db_backend(bbolt)` option for saving/loading fixpoint state, enabling incremental Datalog computation.
 
 ## Usage
 
 ```prolog
-compile_predicate_to_go(ancestor/2, [mode(generator), json_input(true)], Code)
+compile_predicate_to_go(ancestor/2, [mode(generator), db_backend(bbolt)], Code)
+
+% With custom file/bucket:
+compile_predicate_to_go(ancestor/2, [mode(generator), db_backend(bbolt), 
+                                      db_file('my.db'), db_bucket(results)], Code)
 ```
+
+## How It Works
+
+1. **On startup:** Load existing facts from bbolt bucket
+2. **Compute fixpoint:** Including loaded facts
+3. **After fixpoint:** Save all facts back to bbolt
+
+## Incremental Workflow
 
 ```bash
-echo '{"relation":"parent","args":{"arg0":"john","arg1":"mary"}}
-{"relation":"parent","args":{"arg0":"mary","arg1":"sue"}}' | go run ancestor.go
+# First run - computes and saves
+./ancestor
+
+# Add more parent facts via json_input, continue from saved state
+echo '{"relation":"parent","args":{"arg0":"alice","arg1":"bob"}}' | ./ancestor
 ```
-
-## Changes
-
-- `go_generator_header` now accepts Options, adds `bufio`/`os` imports conditionally
-- `compile_go_generator_execution` inserts stdin JSONL parsing when enabled
-- Facts from stdin merged with `GetInitialFacts()` before fixpoint iteration
 
 ## Generated Code
 
 ```go
-// Load additional facts from stdin (JSONL format)
-scanner := bufio.NewScanner(os.Stdin)
-for scanner.Scan() {
-    var fact Fact
-    if err := json.Unmarshal(scanner.Bytes(), &fact); err == nil {
-        total[fact.Key()] = fact
-    }
+// Load facts from database
+db, err := bolt.Open("facts.db", 0600, nil)
+if err == nil {
+    defer db.Close()
+    db.View(func(tx *bolt.Tx) error {
+        b := tx.Bucket([]byte("facts"))
+        // ... load facts
+    })
 }
+
+// ... fixpoint iteration ...
+
+// Save all facts to database  
+db2.Update(func(tx *bolt.Tx) error {
+    b, _ := tx.CreateBucketIfNotExists([]byte("facts"))
+    for key, fact := range total {
+        v, _ := json.Marshal(fact)
+        b.Put([]byte(key), v)
+    }
+    return nil
+})
 ```
 
 ## Verification
 
 - All 6 tests pass
-- Piping 3 parent facts produces all 6 expected ancestor facts
