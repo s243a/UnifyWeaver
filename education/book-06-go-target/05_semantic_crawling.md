@@ -94,4 +94,4 @@ To run generated semantic programs, you need:
 
 ## Navigation
 
-**←** [Previous: Chapter 4: JSON Processing](04_json_processing) | [📖 Book 6: Go Target](./) | [Next: Book 7: Cross-Target Glue →](../book-07-cross-target-glue/)
+**←** [Previous: Chapter 4: JSON Processing](04_json_processing) | [📖 Book 6: Go Target](./) | [Next: Chapter 6: Generator Mode - Fixpoint Datalog Evalu... →](06_generator_mode)

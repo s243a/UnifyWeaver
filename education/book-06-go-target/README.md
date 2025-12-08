@@ -52,6 +52,13 @@ This book covers how to use UnifyWeaver to compile Prolog predicates into standa
 -   RDF/XML Crawling
 -   Embeddings and Vector Storage
 
+**6. Generator Mode** (`06_generator_mode.md`) **NEW**
+-   Fixpoint Datalog evaluation
+-   Indexed joins and stratified negation
+-   Aggregation with HAVING clauses
+-   Parallel execution with goroutines
+-   Database persistence with BoltDB
+
 ## License
 
 This educational content is licensed under CC BY 4.0.
