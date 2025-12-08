@@ -14,9 +14,25 @@ pub struct EmbeddingProvider {
 
 impl EmbeddingProvider {
     /// Create a new EmbeddingProvider with automatic device selection
+    ///
+    /// Model paths can be configured via environment variables:
+    /// - MODEL_DIR: Directory containing model files (default: models/all-MiniLM-L6-v2-safetensors)
+    /// - MODEL_NAME: Descriptive name for logging (default: all-MiniLM-L6-v2)
     pub fn new<P: AsRef<Path>>(model_path: P, tokenizer_path: P) -> Result<Self> {
         let device = Self::auto_select_device();
         Self::with_device(model_path, tokenizer_path, device)
+    }
+
+    /// Get model directory from environment or use default
+    fn get_model_dir() -> String {
+        std::env::var("MODEL_DIR")
+            .unwrap_or_else(|_| "models/all-MiniLM-L6-v2-safetensors".to_string())
+    }
+
+    /// Get model name from environment or use default
+    fn get_model_name() -> String {
+        std::env::var("MODEL_NAME")
+            .unwrap_or_else(|_| "all-MiniLM-L6-v2".to_string())
     }
 
     /// Create a new EmbeddingProvider with explicit device selection
