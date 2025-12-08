@@ -691,27 +691,80 @@ format_args_ps([A|Rest], Str) :-
     format(string(Str), "'~w', ~w", [A, RestStr]).
 
 %% generate_rule_functions_ps(+Pred, +RuleClauses, -Code)
+%  Generate Apply-* functions for all rules
 generate_rule_functions_ps(Pred, RuleClauses, Code) :-
     atom_string(Pred, PredStr),
     (   RuleClauses = []
     ->  Code = "# No rules"
-    ;   RuleClauses = [_Head-Body|_],
-        body_to_list_ps(Body, Goals),
-        generate_apply_rule_ps(PredStr, Goals, Code)
+    ;   % Generate code for each rule
+        findall(RuleCode-RuleType, (
+            member(_Head-Body, RuleClauses),
+            body_to_list_ps(Body, Goals),
+            partition(is_recursive_goal_ps(PredStr), Goals, RecGoals, BaseGoals),
+            length(RecGoals, NumRec),
+            (   NumRec = 0
+            ->  RuleType = base
+            ;   RuleType = recursive
+            ),
+            generate_apply_rule_ps(PredStr, Goals, RuleCode)
+        ), RuleCodePairs),
+        % Separate base and recursive rules
+        findall(C, member(C-base, RuleCodePairs), BaseCodes),
+        findall(C, member(C-recursive, RuleCodePairs), RecCodes),
+        % Combine codes
+        append(BaseCodes, RecCodes, AllCodes),
+        atomic_list_concat(AllCodes, '\n\n', Code)
     ).
 
 %% generate_apply_rule_ps(+PredStr, +Goals, -Code)
+%  Generates rule application code for different patterns:
+%  1. Two base goals (join between two different relations)
+%  2. One base + one recursive (self-join pattern like ancestor)
+%  3. Single base goal (copy pattern)
 generate_apply_rule_ps(PredStr, Goals, Code) :-
-    % Find the non-recursive goals (base relations)
-    exclude(is_recursive_goal_ps(PredStr), Goals, BaseGoals),
-    (   BaseGoals = [Goal1, Goal2|_]
-    ->  % Join pattern
+    % Partition goals into recursive and non-recursive
+    partition(is_recursive_goal_ps(PredStr), Goals, RecGoals, BaseGoals),
+    length(BaseGoals, NumBase),
+    length(RecGoals, NumRec),
+    format('[PowerShell Generator] ~w base goals, ~w recursive goals~n', [NumBase, NumRec]),
+    
+    (   NumBase = 2, NumRec = 0
+    ->  % Pattern 1: Two base goals (regular join)
+        BaseGoals = [Goal1, Goal2|_],
         Goal1 =.. [Pred1|_],
         Goal2 =.. [Pred2|_],
         atom_string(Pred1, Pred1Str),
         atom_string(Pred2, Pred2Str),
+        generate_two_base_join_ps(PredStr, Pred1Str, Pred2Str, Code)
+    
+    ;   NumBase = 1, NumRec = 1
+    ->  % Pattern 2: Self-join (one base + one recursive)
+        BaseGoals = [BaseGoal],
+        BaseGoal =.. [BasePred|_],
+        atom_string(BasePred, BasePredStr),
+        generate_self_join_ps(PredStr, BasePredStr, Code)
+    
+    ;   NumBase = 1, NumRec = 0
+    ->  % Pattern 3: Single base goal (copy pattern - like ancestor(X,Y) :- parent(X,Y))
+        BaseGoals = [BaseGoal],
+        BaseGoal =.. [BasePred|_],
+        atom_string(BasePred, BasePredStr),
+        generate_copy_rule_ps(PredStr, BasePredStr, Code)
+    
+    ;   % Unsupported pattern
         format(string(Code),
-"# Apply rule: ~w from ~w and ~w
+"# Unsupported rule pattern: ~w base, ~w recursive goals
+function Apply-~wRule {
+    param($facts)
+    # Rule pattern not yet supported
+}", [NumBase, NumRec, PredStr])
+    ).
+
+%% generate_two_base_join_ps(+PredStr, +Pred1Str, +Pred2Str, -Code)
+%  Generate join between two different base relations
+generate_two_base_join_ps(PredStr, Pred1Str, Pred2Str, Code) :-
+    format(string(Code),
+"# Apply rule: ~w from ~w and ~w (two-base join)
 function Apply-~wRule {
     param($facts)
     
@@ -729,9 +782,55 @@ function Apply-~wRule {
             }
         }
     }
-}", [PredStr, Pred1Str, Pred2Str, PredStr, Pred1Str, Pred2Str, PredStr])
-    ;   Code = "# Simple rule application not yet supported"
-    ).
+}", [PredStr, Pred1Str, Pred2Str, PredStr, Pred1Str, Pred2Str, PredStr]).
+
+%% generate_self_join_ps(+PredStr, +BasePredStr, -Code)
+%  Generate self-join: base relation joined with derived relation
+%  Example: ancestor(X,Z) :- parent(X,Y), ancestor(Y,Z)
+generate_self_join_ps(PredStr, BasePredStr, Code) :-
+    format(string(Code),
+"# Apply rule: ~w from ~w and ~w (self-join/transitive closure)
+function Apply-~wRule {
+    param($facts)
+    
+    # Base relation (e.g., parent)
+    $base = $facts.Values | Where-Object { $_.Pred -eq '~w' }
+    # Derived relation (e.g., ancestor) - includes what we've computed so far
+    $derived = $facts.Values | Where-Object { $_.Pred -eq '~w' }
+    
+    # Join: base.Y = derived.X (transitive step)
+    foreach ($b in $base) {
+        foreach ($d in $derived) {
+            if ($b.Args[1] -eq $d.Args[0]) {
+                $newFact = [Fact]::new('~w', @($b.Args[0], $d.Args[1]))
+                $key = $newFact.Key()
+                if (-not $facts.ContainsKey($key)) {
+                    $script:delta[$key] = $newFact
+                }
+            }
+        }
+    }
+}", [PredStr, BasePredStr, PredStr, PredStr, BasePredStr, PredStr, PredStr]).
+
+%% generate_copy_rule_ps(+PredStr, +BasePredStr, -Code)
+%  Generate copy rule: derived = base (e.g., ancestor(X,Y) :- parent(X,Y))
+generate_copy_rule_ps(PredStr, BasePredStr, Code) :-
+    format(string(Code),
+"# Apply rule: ~w from ~w (copy/base case rule)
+function Apply-~wBaseRule {
+    param($facts)
+    
+    # Copy base facts to derived relation
+    $base = $facts.Values | Where-Object { $_.Pred -eq '~w' }
+    
+    foreach ($b in $base) {
+        $newFact = [Fact]::new('~w', @($b.Args[0], $b.Args[1]))
+        $key = $newFact.Key()
+        if (-not $facts.ContainsKey($key)) {
+            $script:delta[$key] = $newFact
+        }
+    }
+}", [PredStr, BasePredStr, PredStr, BasePredStr, PredStr]).
 
 %% is_recursive_goal_ps(+PredStr, +Goal)
 is_recursive_goal_ps(PredStr, Goal) :-
@@ -745,11 +844,21 @@ generate_fixpoint_loop_ps(PredStr, Code) :-
 function Solve-~w {
     Initialize-Facts
     
+    # First, apply base rule (copy from base relation)
+    $script:delta = @{}
+    Apply-~wBaseRule $script:total
+    foreach ($key in $script:delta.Keys) {
+        $script:total[$key] = $script:delta[$key]
+    }
+    Write-Host \"Base rule applied: $($script:delta.Count) initial derived facts\" -ForegroundColor Yellow
+    
+    # Then iterate until fixpoint
     $iteration = 0
     do {
         $iteration++
         $script:delta = @{}
         
+        # Apply recursive rule (self-join)
         Apply-~wRule $script:total
         
         # Merge delta into total
@@ -766,7 +875,7 @@ function Solve-~w {
     $script:total.Values | Where-Object { $_.Pred -eq '~w' } | ForEach-Object {
         \"$($_.Args -join ':')\"
     }
-}", [PredStr, PredStr, '$($script:delta.Count)', PredStr]).
+}", [PredStr, PredStr, PredStr, '$($script:delta.Count)', PredStr]).
 
 %% compile_to_baas_powershell(+Predicate, +Options, -PowerShellCode)
 %  Compile using bash-as-a-service approach (original implementation)
