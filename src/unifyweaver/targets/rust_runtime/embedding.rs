@@ -14,9 +14,25 @@ pub struct EmbeddingProvider {
 
 impl EmbeddingProvider {
     /// Create a new EmbeddingProvider with automatic device selection
+    ///
+    /// Model paths can be configured via environment variables:
+    /// - MODEL_DIR: Directory containing model files (default: models/all-MiniLM-L6-v2-safetensors)
+    /// - MODEL_NAME: Descriptive name for logging (default: all-MiniLM-L6-v2)
     pub fn new<P: AsRef<Path>>(model_path: P, tokenizer_path: P) -> Result<Self> {
         let device = Self::auto_select_device();
         Self::with_device(model_path, tokenizer_path, device)
+    }
+
+    /// Get model directory from environment or use default
+    fn get_model_dir() -> String {
+        std::env::var("MODEL_DIR")
+            .unwrap_or_else(|_| "models/all-MiniLM-L6-v2-safetensors".to_string())
+    }
+
+    /// Get model name from environment or use default
+    fn get_model_name() -> String {
+        std::env::var("MODEL_NAME")
+            .unwrap_or_else(|_| "all-MiniLM-L6-v2".to_string())
     }
 
     /// Create a new EmbeddingProvider with explicit device selection
@@ -26,11 +42,35 @@ impl EmbeddingProvider {
 
         // Load Model
         eprintln!("Loading model on device: {:?}", device);
-        // Config for all-MiniLM-L6-v2 (384-dimensional, 6 layers)
+
+        // Model Configuration
+        // Choose one of the configurations below by uncommenting it
+        // and commenting out the others
+
+        // OPTION 1: all-MiniLM-L6-v2 (small, fast, 384-dim, 256 tokens)
+        // RAM: ~0.1-0.2 GB | Context: 256 tokens
+        // let config = Config {
+        //     vocab_size: 30522,
+        //     hidden_size: 384,
+        //     num_hidden_layers: 6,
+        //     num_attention_heads: 12,
+        //     intermediate_size: 1536,
+        //     hidden_act: HiddenAct::Gelu,
+        //     hidden_dropout_prob: 0.1,
+        //     max_position_embeddings: 512,
+        //     type_vocab_size: 2,
+        //     initializer_range: 0.02,
+        //     layer_norm_eps: 1e-12,
+        //     ..Default::default()
+        // };
+
+        // OPTION 2: intfloat/e5-small-v2 (medium quality, 384-dim, 512 tokens) *** ACTIVE ***
+        // RAM: ~0.5 GB | Context: 512 tokens
+        // Better quality than MiniLM with moderate RAM increase
         let config = Config {
             vocab_size: 30522,
             hidden_size: 384,
-            num_hidden_layers: 6,
+            num_hidden_layers: 12,
             num_attention_heads: 12,
             intermediate_size: 1536,
             hidden_act: HiddenAct::Gelu,
