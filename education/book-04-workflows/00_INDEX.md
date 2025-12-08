@@ -333,4 +333,4 @@ Start with the [Factorial Playbook](playbooks/factorial_compilation.md) and work
 
 ## Navigation
 
-[📖 Book 4: Workflows](./) | [Next: Book 5: Python Target →](../book-05-python-target/)
+[📖 Book 4: Workflows](./) | [Next: Chapter 1: Thinking in Workflows →](01_introduction)

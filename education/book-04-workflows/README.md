@@ -32,66 +32,54 @@ Traditional programming: Write scripts that execute fixed sequences of commands.
 
 The AI agent becomes an **economic strategist**, not just a script executor.
 
-## Book Structure
+## Chapters
 
-### Chapter 1: Thinking in Workflows
-[ch1_introduction/ch1_introduction.md](ch1_introduction/ch1_introduction.md)
+### [Chapter 1: Introduction - Thinking in Workflows](01_introduction.md)
+From scripts to strategies. Learn the distinction between workflows (strategic guides) and playbooks (specific execution plans), and how AI agents use them.
 
-**Core Concepts**:
-- Workflows vs Playbooks (the distinction)
-- Strategic thinking for AI agents
-- Example libraries and tool usage
-- From fixed recipes to flexible strategies
+### [Chapter 2: Playbook Format](02_playbook_format.md)
+The standardized format for creating playbooks. Covers frontmatter, callout types (`[!output]`, `[!example-record]`), and best practices.
 
-**Start here** if you're new to the workflow paradigm.
+### [Chapter 3: Pipeline Orchestration](03_pipeline_orchestration.md)
+Design multi-stage pipelines that chain compilation targets. AWK → Python → Go and other cross-language workflows.
 
-### Playbook Format Specification
-[playbook_format.md](playbook_format.md)
+### [Chapter 4: Economic Decision Making](04_economic_decisions.md)
+How AI agents choose strategies based on cost, speed, and quality trade-offs. Heuristics and decision frameworks.
 
-**Learn**:
-- Standard playbook structure
-- Callout types (`[!output]`, `[!example-record]`)
-- How to reference example libraries
-- Best practices for playbook design
+### [Chapter 5: Example Libraries](05_example_libraries.md)
+Create, organize, and use reusable code patterns. Naming conventions, cross-references, and maintenance.
 
-**Reference this** when creating new playbooks.
+## Additional Resources
 
 ### Example Libraries
 [examples_library/](examples_library/)
 
 Reusable code patterns and examples:
 
-- **[compilation_examples.md](examples_library/compilation_examples.md)**: Factorial, ancestor, and other compilation patterns
-- **[recursion_examples.md](examples_library/recursion_examples.md)**: Common recursive Prolog patterns
-- **[testing_examples.md](examples_library/testing_examples.md)**: Test runner patterns and verification
-- **[tool_usage_examples.md](examples_library/tool_usage_examples.md)**: How to use UnifyWeaver tools
-- **[log_examples.md](examples_library/log_examples.md)**: Logging and debugging patterns
-- **[data_source_playbooks.md](examples_library/data_source_playbooks.md)**: Principles for data source integration
+- **[compilation_examples.md](examples_library/compilation_examples.md)**: Factorial, ancestor compilation
+- **[recursion_examples.md](examples_library/recursion_examples.md)**: Recursive Prolog patterns
+- **[testing_examples.md](examples_library/testing_examples.md)**: Test runner generation
+- **[parallel_examples.md](examples_library/parallel_examples.md)**: Parallel execution patterns
 
-**Use these** as building blocks for your playbooks.
+### Sample Playbooks
+[playbooks/](playbooks/)
+
+Complete playbook examples:
+
+- **[factorial_compilation.md](playbooks/factorial_compilation.md)**: Linear recursion example
+- **[gnu_prolog_compilation.md](playbooks/gnu_prolog_compilation.md)**: GNU Prolog target
 
 ## Quick Start
 
 ### 5-Minute Introduction
 
-**Goal**: Understand the workflow paradigm.
-
-1. Read: [Chapter 1: Thinking in Workflows](ch1_introduction/ch1_introduction.md) (5 min)
-2. Skim: [Playbook Format](playbook_format.md) (2 min)
-3. Look at: [Factorial Example](examples_library/compilation_examples.md#factorial-compilation) (3 min)
-
-### 30-Minute Tutorial
-
-**Goal**: Create your first playbook.
-
-1. Read Chapter 1 thoroughly (10 min)
-2. Study the playbook format spec (10 min)
-3. Review a complete example (factorial workflow) (5 min)
-4. Create a simple playbook for a new task (5 min)
+1. Read [Chapter 1: Introduction](01_introduction.md) (5 min)
+2. Skim [Chapter 2: Playbook Format](02_playbook_format.md) (2 min)
+3. Look at [Factorial Playbook](playbooks/factorial_compilation.md) (3 min)
 
 ### Complete Guide
 
-Work through all chapters and examples (2-3 hours).
+Work through all chapters (1-2 hours).
 
 ## Key Concepts
 
