@@ -39,7 +39,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
-| `csharp_codegen_playbook` | ➖ | ➖ | ➖ | ➖ | Non-recursive |
+| `csharp_codegen_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
 | `csharp_query_playbook` | ➖ | ➖ | ➖ | ➖ | Recursive (Fibonacci) |
 | `csharp_xml_fragments_playbook` | ➖ | ➖ | ➖ | ➖ | XML streaming |
 
@@ -65,9 +65,9 @@ When a Tier 5+ model runs a playbook, it should provide a difficulty rating:
 | Playbook | Difficulty (1-10) | Reasoning |
 |----------|-------------------|-----------|
 | `csv_data_source_playbook` | 1-2/10 | Gemini 2.5 Pro: 1/10, Haiku 4.5: 2/10 - purely mechanical steps |
-| `prolog_generation_playbook` | 1-3/10 | After fix: Gemini 2.5 Pro: 1/10, Haiku 4.5: 3/10 - straightforward steps |
+| `prolog_generation_playbook` | 2/10 | Avg of Gemini (1) + Haiku (3) = 2 - straightforward steps |
+| `csharp_codegen_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - deterministic |
 | `xml_data_source_playbook` | ➖ | |
-| `csharp_codegen_playbook` | ➖ | |
 | ... | | |
 
 ### Rating Criteria
@@ -344,6 +344,38 @@ fi
 - Gemini 2.5 Pro: 7/10 → 1/10
 
 This confirms that playbook difficulty is heavily influenced by whether the underlying code works correctly.
+
+---
+
+### 2025-12-08 - csharp_codegen_playbook - Haiku 4.5
+
+**Result**: ✅ Pass (first attempt)
+
+**Output verified**:
+- "Compiling Prolog to C#..." ✅
+- "anne:charles" ✅
+- "anne:diana" ✅
+- "Success: C# program compiled and executed successfully." ✅
+
+**Difficulty Rating**: 2/10
+
+**Reasoning from Haiku 4.5**:
+> Clear step-by-step instructions with 4 well-defined bash commands. Minimal decision-making, dependencies already met, automated script extraction, and error handling built-in. Single command to run after extraction.
+
+---
+
+### 2025-12-08 - csharp_codegen_playbook - Gemini 2.5 Pro
+
+**Result**: ✅ Pass (first attempt)
+
+**Output verified**: All expected outputs present.
+
+**Difficulty Rating**: 1/10
+
+**Reasoning from Gemini 2.5 Pro**:
+> The playbook provided clear, step-by-step instructions that were easy to follow. The commands were already provided and only needed to be executed in the correct order. No debugging or significant analysis was required.
+
+**Average Difficulty**: (2 + 1) / 2 = **1.5/10**
 
 ---
 
