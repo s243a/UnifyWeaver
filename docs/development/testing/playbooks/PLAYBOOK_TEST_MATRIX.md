@@ -55,7 +55,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
 | `parallel_execution_playbook` | ➖ | ➖ | ➖ | ➖ | Parallel processing |
-| `prolog_generation_playbook` | ➖ | 🔄 Partial (6/10) | ➖ | 🔄 Partial (7/10) | Bug: no auto-execute in generated script |
+| `prolog_generation_playbook` | ➖ | ✅ Pass (3/10) | ➖ | ✅ Pass (1/10) | Bug fixed; both pass after fix |
 | `powershell_inline_dotnet_playbook` | ➖ | ➖ | ➖ | ➖ | Inline .NET |
 
 ## Difficulty Ratings (From Advanced Models)
@@ -65,7 +65,7 @@ When a Tier 5+ model runs a playbook, it should provide a difficulty rating:
 | Playbook | Difficulty (1-10) | Reasoning |
 |----------|-------------------|-----------|
 | `csv_data_source_playbook` | 1-2/10 | Gemini 2.5 Pro: 1/10, Haiku 4.5: 2/10 - purely mechanical steps |
-| `prolog_generation_playbook` | 6-7/10 | Haiku 4.5: 6/10, Gemini 2.5 Pro: 7/10 - required debugging missing output |
+| `prolog_generation_playbook` | 1-3/10 | After fix: Gemini 2.5 Pro: 1/10, Haiku 4.5: 3/10 - straightforward steps |
 | `xml_data_source_playbook` | ➖ | |
 | `csharp_codegen_playbook` | ➖ | |
 | ... | | |
@@ -302,8 +302,48 @@ fi
 > The playbook's instructions were clear, but a successful execution required significant debugging and context-awareness beyond what was written. The underlying `compiler_driver` tool produced a non-functional script, and I had to diagnose this by inspecting multiple generated files, understand the shell execution flow, and devise a manual, multi-step workaround.
 
 **Action Items**:
-- [ ] Fix recursive compiler to add auto-execute block to generated bash scripts
-- [ ] Re-test after fix to verify clean pass
+- [x] Fix recursive compiler to add auto-execute block to generated bash scripts
+- [x] Re-test after fix to verify clean pass
+
+---
+
+### 2025-12-08 - prolog_generation_playbook - Haiku 4.5 (Re-test after fix)
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- All expected output present including `5:120`
+
+**Difficulty Rating**: 3/10 (down from 6/10)
+
+**Reasoning from Haiku 4.5**:
+> This is a very straightforward playbook to follow because:
+> - Clear instructions with explicit bash commands
+> - Pre-written script with compilation logic already embedded
+> - Single execution path with no branching or troubleshooting needed
+> - Well-tested with clearly documented expected output
+
+---
+
+### 2025-12-08 - prolog_generation_playbook - Gemini 2.5 Pro (Re-test after fix)
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- All expected output present including `5:120`
+
+**Difficulty Rating**: 1/10 (down from 7/10)
+
+**Reasoning from Gemini 2.5 Pro**:
+> This task was straightforward as it involved executing a well-documented playbook with explicit, copy-and-paste commands. No debugging or deviation from the script was required. The process was entirely linear and the expected outcome was achieved by following the instructions precisely.
+
+**Key Insight**: After fixing the auto-execute bug, difficulty ratings dropped dramatically:
+- Haiku 4.5: 6/10 → 3/10
+- Gemini 2.5 Pro: 7/10 → 1/10
+
+This confirms that playbook difficulty is heavily influenced by whether the underlying code works correctly.
 
 ---
 
