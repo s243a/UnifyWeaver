@@ -1,13 +1,28 @@
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::bert::{BertModel, Config, HiddenAct};
+use candle_transformers::models::bert::{BertModel, Config as BertConfig, HiddenAct};
+use candle_transformers::models::modernbert::{ModernBert, Config as ModernBertConfig};
 use tokenizers::Tokenizer;
 use anyhow::Result;
 use std::path::Path;
 
+/// Model type selection for embedding generation
+#[derive(Clone, Debug)]
+pub enum ModelType {
+    Bert,
+    ModernBert,
+}
+
+/// Internal model wrapper to support multiple architectures
+enum Model {
+    Bert(BertModel),
+    ModernBert(ModernBert),
+}
+
 #[derive(Clone)]
 pub struct EmbeddingProvider {
-    model: std::sync::Arc<BertModel>,
+    model: std::sync::Arc<Model>,
+    model_type: ModelType,
     tokenizer: std::sync::Arc<Tokenizer>,
     device: Device,
 }
@@ -18,9 +33,11 @@ impl EmbeddingProvider {
     /// Model paths can be configured via environment variables:
     /// - MODEL_DIR: Directory containing model files (default: models/all-MiniLM-L6-v2-safetensors)
     /// - MODEL_NAME: Descriptive name for logging (default: all-MiniLM-L6-v2)
+    /// - MODEL_TYPE: Model architecture (bert or modernbert, default: bert)
     pub fn new<P: AsRef<Path>>(model_path: P, tokenizer_path: P) -> Result<Self> {
         let device = Self::auto_select_device();
-        Self::with_device(model_path, tokenizer_path, device)
+        let model_type = Self::get_model_type();
+        Self::with_device(model_path, tokenizer_path, model_type, device)
     }
 
     /// Get model directory from environment or use default
@@ -35,57 +52,107 @@ impl EmbeddingProvider {
             .unwrap_or_else(|_| "all-MiniLM-L6-v2".to_string())
     }
 
-    /// Create a new EmbeddingProvider with explicit device selection
-    pub fn with_device<P: AsRef<Path>>(model_path: P, tokenizer_path: P, device: Device) -> Result<Self> {
+    /// Get model type from environment or use default
+    fn get_model_type() -> ModelType {
+        std::env::var("MODEL_TYPE")
+            .ok()
+            .and_then(|s| match s.to_lowercase().as_str() {
+                "modernbert" => Some(ModelType::ModernBert),
+                "bert" => Some(ModelType::Bert),
+                _ => None,
+            })
+            .unwrap_or(ModelType::Bert)
+    }
+
+    /// Create a new EmbeddingProvider with explicit device and model type selection
+    pub fn with_device<P: AsRef<Path>>(
+        model_path: P,
+        tokenizer_path: P,
+        model_type: ModelType,
+        device: Device,
+    ) -> Result<Self> {
         // Load Tokenizer
         let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(|e| anyhow::anyhow!(e))?;
 
-        // Load Model
-        eprintln!("Loading model on device: {:?}", device);
+        eprintln!("Loading {:?} model on device: {:?}", model_type, device);
 
-        // Model Configuration
-        // Choose one of the configurations below by uncommenting it
-        // and commenting out the others
-
-        // OPTION 1: all-MiniLM-L6-v2 (small, fast, 384-dim, 256 tokens)
-        // RAM: ~0.1-0.2 GB | Context: 256 tokens
-        // let config = Config {
-        //     vocab_size: 30522,
-        //     hidden_size: 384,
-        //     num_hidden_layers: 6,
-        //     num_attention_heads: 12,
-        //     intermediate_size: 1536,
-        //     hidden_act: HiddenAct::Gelu,
-        //     hidden_dropout_prob: 0.1,
-        //     max_position_embeddings: 512,
-        //     type_vocab_size: 2,
-        //     initializer_range: 0.02,
-        //     layer_norm_eps: 1e-12,
-        //     ..Default::default()
-        // };
-
-        // OPTION 2: intfloat/e5-small-v2 (medium quality, 384-dim, 512 tokens) *** ACTIVE ***
-        // RAM: ~0.5 GB | Context: 512 tokens
-        // Better quality than MiniLM with moderate RAM increase
-        let config = Config {
-            vocab_size: 30522,
-            hidden_size: 384,
-            num_hidden_layers: 12,
-            num_attention_heads: 12,
-            intermediate_size: 1536,
-            hidden_act: HiddenAct::Gelu,
-            hidden_dropout_prob: 0.1,
-            max_position_embeddings: 512,
-            type_vocab_size: 2,
-            initializer_range: 0.02,
-            layer_norm_eps: 1e-12,
-            ..Default::default()
+        // Load model weights
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[model_path.as_ref()],
+                candle_core::DType::F32,
+                &device,
+            )?
         };
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[model_path.as_ref()], candle_core::DType::F32, &device)? };
-        let model = BertModel::load(vb, &config)?;
+
+        // Create model based on type
+        let model = match model_type {
+            ModelType::Bert => {
+                // BERT Model Configuration
+                // Choose one of the configurations below by uncommenting it
+                // and commenting out the others
+
+                // OPTION 1: all-MiniLM-L6-v2 (small, fast, 384-dim, 512 tokens)
+                // RAM: ~0.1-0.2 GB | Context: 512 tokens
+                // let config = BertConfig {
+                //     vocab_size: 30522,
+                //     hidden_size: 384,
+                //     num_hidden_layers: 6,
+                //     num_attention_heads: 12,
+                //     intermediate_size: 1536,
+                //     hidden_act: HiddenAct::Gelu,
+                //     hidden_dropout_prob: 0.1,
+                //     max_position_embeddings: 512,
+                //     type_vocab_size: 2,
+                //     initializer_range: 0.02,
+                //     layer_norm_eps: 1e-12,
+                //     ..Default::default()
+                // };
+
+                // OPTION 2: intfloat/e5-small-v2 (medium quality, 384-dim, 512 tokens) *** ACTIVE ***
+                // RAM: ~0.5 GB | Context: 512 tokens
+                // Better quality than MiniLM with moderate RAM increase
+                let config = BertConfig {
+                    vocab_size: 30522,
+                    hidden_size: 384,
+                    num_hidden_layers: 12,
+                    num_attention_heads: 12,
+                    intermediate_size: 1536,
+                    hidden_act: HiddenAct::Gelu,
+                    hidden_dropout_prob: 0.1,
+                    max_position_embeddings: 512,
+                    type_vocab_size: 2,
+                    initializer_range: 0.02,
+                    layer_norm_eps: 1e-12,
+                    ..Default::default()
+                };
+
+                let bert_model = BertModel::load(vb, &config)?;
+                Model::Bert(bert_model)
+            }
+            ModelType::ModernBert => {
+                // ModernBERT: Load config from JSON file
+                // Assume config.json is in the same directory as model.safetensors
+                let model_dir = model_path.as_ref().parent()
+                    .ok_or_else(|| anyhow::anyhow!("Could not determine model directory"))?;
+                let config_path = model_dir.join("config.json");
+
+                let config_str = std::fs::read_to_string(&config_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to read config.json: {}", e))?;
+                let config: ModernBertConfig = serde_json::from_str(&config_str)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse config.json: {}", e))?;
+
+                eprintln!("ModernBERT config: {} layers, {} hidden size, {} max positions",
+                    config.num_hidden_layers, config.hidden_size, config.max_position_embeddings);
+
+                let modernbert_model = ModernBert::load(vb, &config)?;
+                Model::ModernBert(modernbert_model)
+            }
+        };
 
         Ok(Self {
             model: std::sync::Arc::new(model),
+            model_type,
             tokenizer: std::sync::Arc::new(tokenizer),
             device: device.clone(),
         })
@@ -172,11 +239,24 @@ impl EmbeddingProvider {
         // Tokenize
         let tokens = tokenizer.encode(text, true).map_err(|e| anyhow::anyhow!(e))?;
         let token_ids = Tensor::new(tokens.get_ids(), device)?.unsqueeze(0)?;
-        let token_type_ids = Tensor::new(tokens.get_type_ids(), device)?.unsqueeze(0)?;
 
-        // Run Inference
-        let embeddings = model.forward(&token_ids, &token_type_ids, None)?;
-        
+        // Run Inference based on model type
+        let embeddings = match &*model {
+            Model::Bert(bert_model) => {
+                let token_type_ids = Tensor::new(tokens.get_type_ids(), device)?.unsqueeze(0)?;
+                bert_model.forward(&token_ids, &token_type_ids, None)?
+            }
+            Model::ModernBert(modernbert_model) => {
+                // ModernBERT doesn't use token_type_ids, uses attention_mask instead
+                let attention_mask = Tensor::ones(
+                    (1, token_ids.dim(1)?),
+                    candle_core::DType::U8,
+                    device
+                )?;
+                modernbert_model.forward(&token_ids, &attention_mask)?
+            }
+        };
+
         // Mean Pooling (simplified: just taking [CLS] token or mean of last hidden state)
         // For sentence-transformers, usually mean pooling with attention mask is used.
         // Here, we'll just take the mean of the last hidden state for simplicity in this prototype.
@@ -187,7 +267,7 @@ impl EmbeddingProvider {
         // Normalize (L2 normalization)
         let norm = embeddings.sqr()?.sum_all()?.sqrt()?;
         let embeddings = embeddings.broadcast_div(&norm)?;
-        
+
         Ok(embeddings.to_vec1()?)
     }
 }
