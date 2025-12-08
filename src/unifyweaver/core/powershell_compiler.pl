@@ -506,8 +506,9 @@ is_fact_clause_ps(_-true).
 %% generate_ps_params(+Arity, -ParamStr, -ArgNames)
 generate_ps_params(1, "    param([int]$N)", ["N"]).
 generate_ps_params(2, "    param($Arg1, $Arg2)", ["Arg1", "Arg2"]).
+generate_ps_params(3, "    param($List, $Acc, $Result)", ["List", "Acc", "Result"]).
 generate_ps_params(Arity, ParamStr, ArgNames) :-
-    Arity > 2,
+    Arity > 3,
     numlist(1, Arity, Nums),
     maplist([N, Name]>>format(atom(Name), '$Arg~w', [N]), Nums, ArgNames),
     atomic_list_concat(ArgNames, ', ', ArgsJoined),
@@ -533,36 +534,120 @@ generate_base_case_check_ps([Val], [ArgName], Code) :-
 generate_base_case_check_ps([Val1, Val2], [Arg1, Arg2], Code) :-
     format(string(Code), "    if ($~w -eq ~w -and $~w -eq ~w) { return @($~w, $~w) }", 
            [Arg1, Val1, Arg2, Val2, Arg1, Arg2]).
+% Accumulator pattern: sum_list([], Acc, Acc)
+generate_base_case_check_ps([[], AccVal, AccVal], [ListArg, AccArg, _ResultArg], Code) :-
+    format(string(Code), "    if ($~w.Count -eq 0) { return $~w }", [ListArg, AccArg]).
+generate_base_case_check_ps([Val1, Val2, Val3], [Arg1, Arg2, Arg3], Code) :-
+    format(string(Code), "    if ($~w -eq ~w -and $~w -eq ~w -and $~w -eq ~w) { return @($~w, $~w, $~w) }", 
+           [Arg1, Val1, Arg2, Val2, Arg3, Val3, Arg1, Arg2, Arg3]).
 
 %% generate_recursive_cases_ps(+RecursiveCases, +PredStr, +ArgNames, -Code)
 generate_recursive_cases_ps([], _, _, "    # No recursive cases").
 generate_recursive_cases_ps([Head-Body|_], PredStr, ArgNames, Code) :-
     % Analyze the body to generate recursive call
     body_to_list_ps(Body, Goals),
-    % Find the recursive call and arithmetic
+    % Find and classify the recursive pattern
     find_recursive_pattern_ps(Goals, PredStr, Pattern),
+    format('[PowerShell Pure] Detected pattern: ~w~n', [Pattern]),
     generate_recursive_code_ps(Pattern, PredStr, ArgNames, Code).
 
 %% find_recursive_pattern_ps(+Goals, +PredStr, -Pattern)
+%  Classify the recursion pattern based on body structure
 find_recursive_pattern_ps(Goals, PredStr, Pattern) :-
-    % Look for common patterns
-    (   % Factorial pattern: N > 0, N1 is N - 1, factorial(N1, F1), F is N * F1
-        member(RecCall, Goals),
-        RecCall =.. [PredStr|_]
-    ->  Pattern = recursive_call(RecCall)
+    atom_string(PredAtom, PredStr),
+    % Count recursive calls
+    findall(Call, (member(Call, Goals), Call =.. [PredAtom|_]), RecCalls),
+    length(RecCalls, NumRec),
+    
+    % Look for arithmetic operations
+    findall(ArithGoal, (member(ArithGoal, Goals), ArithGoal = (_ is _)), ArithGoals),
+    
+    % Look for list operations (head/tail)
+    findall(ListGoal, (member(ListGoal, Goals), is_list_op_ps(ListGoal)), ListGoals),
+    
+    % Classify pattern
+    (   NumRec = 2
+    ->  % Fibonacci-like: two recursive calls
+        Pattern = fibonacci
+    ;   NumRec = 1, ListGoals \= []
+    ->  % Accumulator pattern: list processing with recursion
+        Pattern = accumulator
+    ;   NumRec = 1, ArithGoals \= []
+    ->  % Factorial-like: single recursion with arithmetic
+        Pattern = factorial
+    ;   NumRec = 1
+    ->  % Simple recursion
+        Pattern = simple_recursive
     ;   Pattern = unknown
     ).
 
+%% is_list_op_ps(+Goal)
+%  Check if goal is a list operation (unification with [H|T])
+is_list_op_ps(Goal) :-
+    Goal = (_ = [_|_]).
+is_list_op_ps(Goal) :-
+    Goal =.. [=, _, List],
+    is_list(List).
+
 %% generate_recursive_code_ps(+Pattern, +PredStr, +ArgNames, -Code)
-generate_recursive_code_ps(recursive_call(_), PredStr, [ArgName|_], Code) :-
-    % Generate generic recursive pattern (handles factorial-like recursion)
+%  Generate PowerShell code for each recursion pattern
+
+% Fibonacci pattern: fib(N) = fib(N-1) + fib(N-2)
+generate_recursive_code_ps(fibonacci, PredStr, [ArgName|_], Code) :-
     format(string(Code),
-"    # Recursive case
+"    # Fibonacci pattern: two recursive calls
+    if ($~w -le 1) { return $~w }
+    
+    $n1 = $~w - 1
+    $n2 = $~w - 2
+    $r1 = ~w $n1
+    $r2 = ~w $n2
+    return $r1 + $r2", [ArgName, ArgName, ArgName, ArgName, PredStr, PredStr]).
+
+% Factorial pattern: fact(N) = N * fact(N-1)
+generate_recursive_code_ps(factorial, PredStr, [ArgName|_], Code) :-
+    format(string(Code),
+"    # Factorial pattern: N * recursive_call(N-1)
     $n1 = $~w - 1
     $result = ~w $n1
     return $~w * $result", [ArgName, PredStr, ArgName]).
+
+% Accumulator pattern: process list with accumulator
+generate_recursive_code_ps(accumulator, PredStr, ArgNames, Code) :-
+    (   ArgNames = [ListArg, AccArg, ResultArg|_]
+    ->  format(string(Code),
+"    # Accumulator pattern: process list head, recurse on tail
+    if ($~w.Count -eq 0) { return $~w }
+    
+    $head = $~w[0]
+    $tail = $~w[1..($~w.Count - 1)]
+    $newAcc = $~w + $head
+    return ~w $tail $newAcc $~w", 
+           [ListArg, AccArg, ListArg, ListArg, ListArg, AccArg, PredStr, ResultArg])
+    ;   ArgNames = [ListArg, AccArg|_]
+    ->  format(string(Code),
+"    # Accumulator pattern: process list head, recurse on tail
+    if ($~w.Count -eq 0) { return $~w }
+    
+    $head = $~w[0]
+    $tail = $~w[1..($~w.Count - 1)]
+    $newAcc = $~w + $head
+    return ~w $tail $newAcc", 
+           [ListArg, AccArg, ListArg, ListArg, ListArg, AccArg, PredStr])
+    ;   Code = "    # Accumulator pattern requires list and accumulator arguments
+    Write-Error 'Invalid accumulator arguments'"
+    ).
+
+% Simple recursive pattern
+generate_recursive_code_ps(simple_recursive, PredStr, [ArgName|_], Code) :-
+    format(string(Code),
+"    # Simple recursive pattern
+    $n1 = $~w - 1
+    return ~w $n1", [ArgName, PredStr]).
+
+% Unknown pattern - fallback
 generate_recursive_code_ps(unknown, _, _, 
-"    # Complex recursion pattern - not fully supported
+"    # Unknown recursion pattern
     Write-Error 'Complex recursion pattern not supported'").
 
 %% ============================================================================
