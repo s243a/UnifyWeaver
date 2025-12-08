@@ -485,8 +485,9 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
     % Check for aggregate goal first
     (   member(AggGoal, Goals),
         is_aggregate_goal_go(AggGoal)
-    ->  % Aggregate rule
-        compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal, Config, Code)
+    ->  % Aggregate rule - extract HAVING filters (builtins after aggregate)
+        extract_having_filters(Goals, AggGoal, HavingFilters),
+        compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal, HavingFilters, Config, Code)
     ;   % Normal rule (joins, negation, etc.)
         partition(is_builtin_goal_go, Goals, Builtins, RelGoals),
         
@@ -552,9 +553,19 @@ is_aggregate_goal_go(aggregate(_, _, _)).  % Will be normalized
 normalize_aggregate_goal_go(aggregate(Op, Body, Res), aggregate_all(Op, Body, Res)) :- !.
 normalize_aggregate_goal_go(G, G).
 
-%% compile_go_aggregate_rule(+Index, +HeadPred, +HeadArgs, +AggGoal, +Config, -Code)
-%  Compile an aggregate rule to Go
-compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal0, Config, Code) :-
+%% extract_having_filters(+Goals, +AggGoal, -HavingFilters)
+%  Extract builtin goals that appear after the aggregate (HAVING clause)
+extract_having_filters(Goals, AggGoal, HavingFilters) :-
+    % Find position of aggregate goal
+    append(Before, [AggGoal|After], Goals),
+    !,
+    % Builtins after aggregate are HAVING filters
+    include(is_builtin_goal_go, After, HavingFilters).
+extract_having_filters(_, _, []).
+
+%% compile_go_aggregate_rule(+Index, +HeadPred, +HeadArgs, +AggGoal, +HavingFilters, +Config, -Code)
+%  Compile an aggregate rule to Go with optional HAVING filters
+compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal0, HavingFilters, Config, Code) :-
     format(string(RuleName), "ApplyRule_~w", [Index]),
     
     % Normalize aggregate/3 -> aggregate_all/3
@@ -563,19 +574,19 @@ compile_go_aggregate_rule(Index, HeadPred, HeadArgs, AggGoal0, Config, Code) :-
     % Decompose aggregate goal
     (   AggGoal = aggregate_all(OpTerm, InnerGoal, GroupVar, Result)
     ->  % Grouped aggregation (aggregate_all/4)
-        compile_go_grouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, GroupVar, Result, Config, Code)
+        compile_go_grouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, GroupVar, Result, HavingFilters, Config, Code)
     ;   AggGoal = aggregate_all(OpTerm, InnerGoal, Result)
     ->  % Ungrouped aggregation (aggregate_all/3)
-        compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, Result, Config, Code)
+        compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, Result, HavingFilters, Config, Code)
     ;   format(string(Code),
-"func ~w(fact Fact, total map[string]Fact) []Fact {
+"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     // Unsupported aggregate form
     return nil
 }", [RuleName])
     ).
 
-%% compile_go_ungrouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +OpTerm, +InnerGoal, +Result, +Config, -Code)
-compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, Result, _Config, Code) :-
+%% compile_go_ungrouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +OpTerm, +InnerGoal, +Result, +HavingFilters, +Config, -Code)
+compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, Result, HavingFilters, _Config, Code) :-
     InnerGoal =.. [Pred|Args],
     
     % Determine the aggregate operation and value variable
@@ -595,6 +606,18 @@ compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, 
     (   NumArgs == 1
     ->  ArgsStr = "\"arg0\": agg"
     ;   ArgsStr = "\"arg0\": agg"  % Default for now
+    ),
+    
+    % Generate HAVING filter code if any
+    (   HavingFilters \= []
+    ->  generate_having_conditions(HavingFilters, Result, HavingCond),
+        format(string(HavingIfStart), "
+        // HAVING clause filter
+        if ~w {", [HavingCond]),
+        HavingIfEnd = "
+        }"
+    ;   HavingIfStart = "",
+        HavingIfEnd = ""
     ),
     
     format(string(Code),
@@ -619,15 +642,15 @@ compile_go_ungrouped_aggregate(RuleName, HeadPred, HeadArgs, OpTerm, InnerGoal, 
     
     // Compute aggregate
     if len(values) > 0 {
-        ~w
-        results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})
+        ~w~w
+            results = append(results, Fact{Relation: \"~w\", Args: map[string]interface{}{~w}})~w
     }
     
     return results
-}", [RuleName, Pred, Pred, ValueIdx, AggCode, HeadPred, ArgsStr]).
+}", [RuleName, Pred, Pred, ValueIdx, AggCode, HavingIfStart, HeadPred, ArgsStr, HavingIfEnd]).
 
-%% compile_go_grouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +OpTerm, +InnerGoal, +GroupVar, +Result, +Config, -Code)
-compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, OpTerm, InnerGoal, GroupVar, _Result, _Config, Code) :-
+%% compile_go_grouped_aggregate(+RuleName, +HeadPred, +HeadArgs, +OpTerm, +InnerGoal, +GroupVar, +Result, +HavingFilters, +Config, -Code)
+compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, OpTerm, InnerGoal, GroupVar, Result, HavingFilters, _Config, Code) :-
     InnerGoal =.. [Pred|Args],
     
     % Determine the aggregate operation and value variable
@@ -642,6 +665,17 @@ compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, OpTerm, InnerGoal, G
     
     % Generate aggregate code
     go_agg_code(Op, AggCode),
+    
+    % Generate HAVING filter code if any
+    (   HavingFilters \= []
+    ->  generate_having_conditions(HavingFilters, Result, HavingCond),
+        format(string(HavingCode), "
+            // HAVING clause filter
+            if !(~w) {
+                continue
+            }", [HavingCond])
+    ;   HavingCode = ""
+    ),
     
     format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
@@ -667,7 +701,7 @@ compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, OpTerm, InnerGoal, G
     // Compute aggregate per group
     for key, values := range groups {
         if len(values) > 0 {
-            ~w
+            ~w~w
             results = append(results, Fact{
                 Relation: \"~w\",
                 Args: map[string]interface{}{\"arg0\": key, \"arg1\": agg},
@@ -676,7 +710,7 @@ compile_go_grouped_aggregate(RuleName, HeadPred, _HeadArgs, OpTerm, InnerGoal, G
     }
     
     return results
-}", [RuleName, Pred, Pred, GroupIdx, ValueIdx, AggCode, HeadPred]).
+}", [RuleName, Pred, Pred, GroupIdx, ValueIdx, AggCode, HavingCode, HeadPred]).
 
 %% decompose_agg_op(+OpTerm, -Op, -ValueVar)
 decompose_agg_op(count, count, _).
@@ -686,6 +720,37 @@ decompose_agg_op(max(V), max, V).
 decompose_agg_op(avg(V), avg, V).
 decompose_agg_op(set(V), set, V).
 decompose_agg_op(bag(V), bag, V).
+
+%% generate_having_conditions(+HavingFilters, +ResultVar, -GoCondition)
+%  Translate HAVING filter builtins to Go conditions
+%  ResultVar is the Prolog variable bound to the aggregate result
+generate_having_conditions([], _, "true").
+generate_having_conditions([Filter|Rest], ResultVar, Condition) :-
+    generate_single_having_condition(Filter, ResultVar, Cond1),
+    (   Rest == []
+    ->  Condition = Cond1
+    ;   generate_having_conditions(Rest, ResultVar, RestCond),
+        format(string(Condition), "(~w) && (~w)", [Cond1, RestCond])
+    ).
+
+%% generate_single_having_condition(+Filter, +ResultVar, -GoCond)
+generate_single_having_condition(Filter, ResultVar, GoCond) :-
+    Filter =.. [Op, Left, Right],
+    member(Op-GoOp, [(>)-">", (<)-"<", (>=)-">=", (=<)-"<=", (=:=)-"==", (=\=)-"!="]),
+    !,
+    translate_having_operand(Left, ResultVar, LeftGo),
+    translate_having_operand(Right, ResultVar, RightGo),
+    format(string(GoCond), "~w ~w ~w", [LeftGo, GoOp, RightGo]).
+generate_single_having_condition(_, _, "true").  % Fallback
+
+%% translate_having_operand(+Term, +ResultVar, -GoExpr)
+translate_having_operand(Term, ResultVar, "agg") :-
+    var(Term), Term == ResultVar, !.
+translate_having_operand(N, _, Str) :-
+    number(N), !,
+    format(string(Str), "~w", [N]).
+translate_having_operand(Term, _, Str) :-
+    format(string(Str), "~w", [Term]).
 
 %% go_agg_code(+Op, -GoCode)
 go_agg_code(count, "agg := float64(len(values))").
