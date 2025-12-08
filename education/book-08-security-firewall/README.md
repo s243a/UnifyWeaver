@@ -34,62 +34,30 @@ By completing this book, you will be able to:
 - Audit and monitor generated code
 - Implement fallback mechanisms
 
-## Chapter Overview (Planned)
+## Chapters
 
-### Part 1: Firewall System
+### [Chapter 1: Introduction](01_introduction.md)
+Security architecture overview. Threats, defense in depth, firewall system introduction.
 
-**Chapter 1: Introduction to Code Generation Security**
-- Why firewall code generation?
-- Threat models for generated code
-- Defense in depth
+### [Chapter 2: Firewall Policies](02_firewall_policies.md)
+Declarative policy system. Allow/deny rules, policy composition, modes (guidance, enforce, audit).
 
-**Chapter 2: Firewall Policies**
-- Policy declaration syntax
-- Allow/deny rules
-- Target-specific policies
-- Default behaviors
+### [Chapter 3: Lifecycle Hooks](03_lifecycle_hooks.md)
+Runtime security checkpoints. Pre/post deploy hooks, graceful shutdown, health checks.
 
-**Chapter 3: Validation System**
-- Pre-generation validation
-- Post-generation checks
-- Runtime validation
-- Custom validators
+### [Chapter 4: Target Security](04_target_security.md)
+Per-target security considerations. Bash, Python, Go, Rust, C#, Prolog security matrices.
 
-### Part 2: Production Hardening
+### [Chapter 5: Validation & Fallback](05_validation_fallback.md)
+Pre/post generation validation. Fallback mechanisms, retry policies, circuit breakers.
 
-**Chapter 4: Secure Deployment**
-- Sandboxing generated code
-- Resource limits
-- Network isolation
-- File system restrictions
+### [Chapter 6: Production Hardening](06_production_hardening.md)
+TLS configuration, secrets management (Vault, AWS, Azure, GCP), monitoring, alerting.
 
-**Chapter 5: Transport Security**
-- Encryption for remote targets (from Cross-Target Glue)
-- TLS configuration
-- Certificate management
-- Secure service-to-service communication
+## Related Content
 
-**Chapter 6: Secrets Management**
-- Integration with Vault, AWS, Azure, GCP (from Cross-Target Glue Phase 7b)
-- Secret injection patterns
-- Rotation strategies
-
-### Part 3: Monitoring and Audit
-
-**Chapter 7: Logging and Audit**
-- Structured logging
-- Audit trails
-- Compliance reporting
-
-**Chapter 8: Alerting**
-- Security event detection
-- Alert configuration
-- Incident response patterns
-
-## Content Status
-
-This book is planned. Some content exists in:
-- [Book 11: Prolog Target](../book-11-prolog-target/README.md) - Chapters 7-8 (Firewall, Fallback)
+For more detailed coverage, see:
+- [Book 11: Prolog Target](../book-11-prolog-target/README.md) - Chapters 7-8 (Prolog-specific firewall, fallback)
 - [Book 7: Cross-Target Glue](../book-07-cross-target-glue/README.md) - Chapter 15-16 (Production, Cloud)
 
 ## Quick Example
