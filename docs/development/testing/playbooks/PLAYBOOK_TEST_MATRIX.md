@@ -30,7 +30,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
-| `csv_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ⚠️ Pass+fix | Bug fixed; Haiku 4.5 rates 2/10 |
+| `csv_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Both pass after bug fix |
 | `xml_data_source_playbook` | ➖ | ➖ | ➖ | ➖ | Python XML parsing |
 | `json_litedb_playbook` | ➖ | ➖ | ➖ | ➖ | .NET + LiteDB |
 | `large_xml_streaming_playbook` | ➖ | ➖ | ➖ | ➖ | Multi-stage pipeline |
@@ -64,7 +64,7 @@ When a Tier 5+ model runs a playbook, it should provide a difficulty rating:
 
 | Playbook | Difficulty (1-10) | Reasoning |
 |----------|-------------------|-----------|
-| `csv_data_source_playbook` | 2/10 (Haiku 4.5) | Deterministic steps, explicit commands, clear output expectations |
+| `csv_data_source_playbook` | 1-2/10 | Gemini 2.5 Pro: 1/10, Haiku 4.5: 2/10 - purely mechanical steps |
 | `xml_data_source_playbook` | ➖ | |
 | `csharp_codegen_playbook` | ➖ | |
 | ... | | |
@@ -217,6 +217,32 @@ Success: CSV source compiled and executed
 > - **No decision-making required**: There's no branching logic or conditional steps—just a straight path forward
 
 **Key Insight**: Haiku 4.5 (Tier 2 model) passing on first attempt with a 2/10 difficulty rating indicates **highly deterministic documentation**. This validates the playbook's quality for automated LLM testing.
+
+---
+
+### 2025-12-08 - csv_data_source_playbook - Gemini 2.5 Pro (Re-test after fix)
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Extracted and ran the bash script successfully
+- All expected output matched perfectly
+
+**Output confirmed**:
+```
+1:Alice:30
+2:Bob:25
+3:Charlie:35
+Success: CSV source compiled and executed
+```
+
+**Difficulty Rating**: 1/10
+
+**Reasoning from Gemini 2.5 Pro**:
+> The playbook's instructions were exceptionally clear and deterministic. It provided the exact shell commands to execute in a precise sequence. There was no need for interpretation, context-specific knowledge, or complex reasoning. The steps were purely mechanical, leading directly to the expected outcome.
+
+**Comparison with pre-fix run**: Previous rating was 7/10 because model had to debug the missing "Alice" bug. After fix, rating dropped to 1/10 - demonstrating that playbook difficulty is heavily influenced by whether the underlying code works correctly.
 
 ---
 
