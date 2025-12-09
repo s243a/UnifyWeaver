@@ -64,7 +64,8 @@ compile_predicate_to_csharp(PredIndicator, Options, Code) :-
     ->  compile_generator_mode(PredIndicator, Options, Code)
     ;   Mode == query
     ->  PredIndicator = Pred/Arity,
-        build_query_plan(Pred/Arity, Options, Plan),
+        modes_for_pred(Pred/Arity, Modes),
+        build_query_plan(Pred/Arity, Options, Modes, Plan),
         render_plan_to_csharp(Plan, Code)
     ;   format(user_error, 'Unknown mode ~w for C# target~n', [Mode]),
         fail
@@ -187,11 +188,11 @@ sort_components(Pred/Arity, Specs, [HeadSpec|RestSpecs]) :-
 
 signature_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
 
-%% build_query_plan(+PredIndicator, +Options, -PlanDict) is semidet.
+%% build_query_plan(+PredIndicator, +Options, +Modes, -PlanDict) is semidet.
 %  Produce a declarative plan describing how to evaluate the requested
 %  predicate. Plans are represented as dicts containing the head descriptor,
 %  root operator, materialised fact tables, and metadata.
-build_query_plan(Pred/Arity, Options, Plan) :-
+build_query_plan(Pred/Arity, Options, Modes, Plan) :-
     must_be(atom, Pred),
     must_be(integer, Arity),
     Arity >= 0,
@@ -246,7 +247,7 @@ build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Plan) :-
         head:HeadSpec,
         root:Root,
         relations:Relations,
-        metadata:_{classification:facts, options:Options},
+        metadata:_{classification:facts, options:Options, modes:Modes},
         is_recursive:false
     }.
 build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Plan) :-
@@ -298,7 +299,7 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Pla
         head:HeadSpec,
         root:Root,
         relations:CombinedRelations,
-        metadata:_{classification:recursive, options:Options},
+        metadata:_{classification:recursive, options:Options, modes:Modes},
         is_recursive:true
     }.
 
@@ -315,7 +316,7 @@ build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Plan) :-
         head:HeadSpec,
         root:Root,
         relations:CombinedRelations,
-        metadata:_{classification:mutual_recursive, options:Options},
+        metadata:_{classification:mutual_recursive, options:Options, modes:Modes},
         is_recursive:true
     }.
 
