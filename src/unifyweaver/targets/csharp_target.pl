@@ -22,6 +22,38 @@
 :- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1, dynamic_source_metadata/2]).
 :- use_module(common_generator).
 
+%% Optional mode declarations (input/output) for future parameterised queries
+:- dynamic mode_decl/2.
+
+%% modes_for_pred(+Pred/Arity, -Modes:list)
+%  Reads user:mode/1 declarations, e.g., mode(fib(+, -)).
+%  Modes is a list of atoms: input/output/any. Defaults to all output.
+modes_for_pred(Pred/Arity, Modes) :-
+    (   current_predicate(user:mode/1),
+        user:mode(ModeSpec),
+        mode_term_signature(ModeSpec, Pred/Arity),
+        parse_mode_spec(ModeSpec, Modes)
+    ->  true
+    ;   length(Modes, Arity),
+        maplist(=(output), Modes)
+    ).
+
+mode_term_signature(Term, Pred/Arity) :-
+    compound(Term),
+    Term =.. [Pred|Args],
+    length(Args, Arity).
+
+parse_mode_spec(Term, Modes) :-
+    Term =.. [_|Args],
+    maplist(mode_symbol_to_mode, Args, Modes).
+
+mode_symbol_to_mode(+, input).
+mode_symbol_to_mode(-, output).
+mode_symbol_to_mode(?, any).
+mode_symbol_to_mode(Atom, _) :-
+    format(user_error, 'Unrecognised mode symbol in mode/1: ~w~n', [Atom]),
+    fail.
+
 %% compile_predicate_to_csharp(+PredIndicator, +Options, -Code)
 %  Compile a predicate to C# code.
 %  Options:
