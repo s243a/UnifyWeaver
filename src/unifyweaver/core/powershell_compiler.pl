@@ -189,10 +189,17 @@ body_contains_pred_ps(Pred, Goal) :-
 
 %% compile_facts_to_powershell(+Pred, +Arity, +Clauses, +Options, -Code)
 %  Compile simple facts to pure PowerShell
-compile_facts_to_powershell(Pred, Arity, Clauses, _Options, Code) :-
+%  Options: output_format(object|text) - Return PSCustomObject or strings
+compile_facts_to_powershell(Pred, Arity, Clauses, Options, Code) :-
     atom_string(Pred, PredStr),
     get_time(Timestamp),
     format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+    
+    % Check output format option (default: text for backward compatibility)
+    (   member(output_format(object), Options)
+    ->  OutputFormat = object
+    ;   OutputFormat = text
+    ),
     
     % Build fact array entries
     findall(FactEntry, (
@@ -210,28 +217,8 @@ compile_facts_to_powershell(Pred, Arity, Clauses, _Options, Code) :-
     ;   ParamStr = "[string]$X, [string]$Y, [string]$Z"  % Generic for now
     ),
     
-    % Generate filter logic based on arity
-    (   Arity = 1
-    ->  FilterLogic = "
-    if ($Key) {
-        $facts | Where-Object { $_ -eq $Key }
-    } else {
-        $facts
-    }"
-    ;   Arity = 2
-    ->  FilterLogic = "
-    if ($X -and $Y) {
-        $facts | Where-Object { $_.X -eq $X -and $_.Y -eq $Y }
-    } elseif ($X) {
-        $facts | Where-Object { $_.X -eq $X } | ForEach-Object { $_.Y }
-    } elseif ($Y) {
-        $facts | Where-Object { $_.Y -eq $Y } | ForEach-Object { $_.X }
-    } else {
-        $facts | ForEach-Object { \"$($_.X):$($_.Y)\" }
-    }"
-    ;   FilterLogic = "
-    $facts | ForEach-Object { $_ }"  % Generic fallback
-    ),
+    % Generate filter logic based on arity AND output format
+    generate_filter_logic_ps(Arity, OutputFormat, FilterLogic),
     
     % Generate appropriate fact array based on arity
     (   Arity = 1
@@ -277,6 +264,50 @@ function ~w {
 ~w
 ", [Pred, Arity, DateStr, PredStr, ParamStr, ObjStr, FilterLogic, PredStr])
     ).
+
+%% generate_filter_logic_ps(+Arity, +OutputFormat, -FilterLogic)
+%  Generate filter logic based on arity and output format
+%  OutputFormat: object | text
+
+% Arity 1 - simple facts (same for text and object)
+generate_filter_logic_ps(1, _, FilterLogic) :-
+    FilterLogic = "
+    if ($Key) {
+        $facts | Where-Object { $_ -eq $Key }
+    } else {
+        $facts
+    }".
+
+% Arity 2 - binary relations with object output (returns PSCustomObject)
+generate_filter_logic_ps(2, object, FilterLogic) :-
+    FilterLogic = "
+    if ($X -and $Y) {
+        $facts | Where-Object { $_.X -eq $X -and $_.Y -eq $Y }
+    } elseif ($X) {
+        $facts | Where-Object { $_.X -eq $X }
+    } elseif ($Y) {
+        $facts | Where-Object { $_.Y -eq $Y }
+    } else {
+        $facts
+    }".
+
+% Arity 2 - binary relations with text output (colon-separated strings)
+generate_filter_logic_ps(2, text, FilterLogic) :-
+    FilterLogic = "
+    if ($X -and $Y) {
+        $facts | Where-Object { $_.X -eq $X -and $_.Y -eq $Y }
+    } elseif ($X) {
+        $facts | Where-Object { $_.X -eq $X } | ForEach-Object { $_.Y }
+    } elseif ($Y) {
+        $facts | Where-Object { $_.Y -eq $Y } | ForEach-Object { $_.X }
+    } else {
+        $facts | ForEach-Object { \"$($_.X):$($_.Y)\" }
+    }".
+
+% Generic fallback (same for text and object - just pass through)
+generate_filter_logic_ps(_, _, FilterLogic) :-
+    FilterLogic = "
+    $facts | ForEach-Object { $_ }".
 
 %% format_ps_fact_entry(+Args, -Entry)
 %  Format fact arguments for PowerShell array
