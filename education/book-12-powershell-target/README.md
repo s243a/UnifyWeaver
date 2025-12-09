@@ -26,72 +26,54 @@ This book covers compiling Prolog predicates to PowerShell scripts. PowerShell's
 - PowerShell 7+ (cross-platform) or Windows PowerShell 5.1
 - Basic PowerShell knowledge (helpful)
 
-## What You'll Learn
+## Learning Path
 
-By completing this book, you will be able to:
-
-- Compile Prolog predicates to PowerShell cmdlets
-- Generate standalone PowerShell scripts
-- Access .NET types from generated code
-- Build Windows automation pipelines
-- Integrate with Active Directory and Windows services
-
-## Chapter Overview (Planned)
-
-### Part 1: Basic Compilation
-
-**Chapter 1: Introduction**
+**1. Introduction** (`01_introduction.md`)
 - Why use the PowerShell target?
 - PowerShell vs Bash for automation
-- Cross-platform PowerShell (pwsh)
+- Compilation modes (BaaS, Pure, Inline .NET)
+- Your first PowerShell compilation
 
-**Chapter 2: Facts and Rules**
+**2. Facts and Rules** (`02_facts_rules.md`)
 - Compiling facts to PowerShell arrays
-- Translating rules to functions
-- Pipeline integration (|)
+- PSCustomObject for binary facts
+- Translating rules to functions with joins
+- Pipeline integration
 
-**Chapter 3: Cmdlet Generation**
-- Creating advanced functions
-- Parameter attributes
-- Pipeline input/output
+**3. Cmdlet Generation** (`03_cmdlet_generation.md`)
+- Creating advanced functions with CmdletBinding
+- Parameter attributes and validation
+- Begin/Process/End blocks
+- Verbose and Debug output
 
-### Part 2: .NET Integration
+**4. .NET Integration** (`04_dotnet_integration.md`)
+- Inline C# with Add-Type
+- The dotnet_source plugin
+- DLL caching for 138x speedup
+- NuGet package integration
 
-**Chapter 4: .NET Types**
-- Accessing .NET from PowerShell
-- Type conversions
-- Working with collections
+**5. Windows Automation** (`05_windows_automation.md`)
+- File system operations
+- Windows services management
+- Registry access
+- Event logs and WMI/CIM queries
 
-**Chapter 5: In-Process with C#**
+### Part 3: Advanced Topics (Planned)
+
+**Chapter 6: In-Process Hosting** *(coming soon)*
 - Sharing runtime with C# target
 - Cross-target glue via .NET
 - Performance considerations
 
-### Part 3: Windows Automation
-
-**Chapter 6: System Administration**
-- File system operations
-- Registry access
-- Windows services
-- Event logs
-
-**Chapter 7: Active Directory**
+**Chapter 7: Active Directory** *(coming soon)*
 - LDAP queries from Prolog
 - User and group management
 - Permission handling
 
-**Chapter 8: Enterprise Patterns**
+**Chapter 8: Enterprise Patterns** *(coming soon)*
 - Remote execution (PSRemoting)
 - Scheduled tasks
 - Credential management
-
-## Content Status
-
-This book is planned. Chapters are not yet written.
-
-**For .NET concepts now**, see:
-- [Book 3: C# Target](../book-03-csharp-target/README.md) - Core .NET compilation
-- [Book 7: Cross-Target Glue](../book-07-cross-target-glue/README.md) - PowerShell in-process hosting
 
 ## Quick Example
 

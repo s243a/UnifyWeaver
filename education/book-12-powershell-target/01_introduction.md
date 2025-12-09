@@ -1,0 +1,231 @@
+<!--
+SPDX-License-Identifier: MIT AND CC-BY-4.0
+Copyright (c) 2025 John William Creighton (s243a)
+
+This documentation is dual-licensed under MIT and CC-BY-4.0.
+-->
+
+# Chapter 1: Introduction to the PowerShell Target
+
+Welcome to the PowerShell target for UnifyWeaver! This chapter introduces you to compiling Prolog predicates to PowerShell scripts, explains why you might choose PowerShell over other targets, and walks you through your first compilation.
+
+## Why PowerShell?
+
+PowerShell is more than just a shell - it's a powerful automation framework built on .NET. This makes it an excellent target for UnifyWeaver when you need:
+
+### Windows Integration
+- Native access to Windows APIs, registry, and services
+- Active Directory and Group Policy management
+- WMI/CIM queries for system information
+- Windows Event Log access
+
+### .NET Access
+- Use any .NET library from your compiled predicates
+- Strong typing and performance when needed
+- Access to NuGet packages (JSON, XML, databases, etc.)
+- Seamless integration with C# code
+
+### Enterprise Environments
+- PowerShell is pre-installed on Windows
+- IT departments are familiar with PowerShell
+- Remote execution via PSRemoting
+- Integration with Azure and Microsoft 365
+
+### Cross-Platform Support
+- PowerShell 7+ (pwsh) runs on Windows, Linux, and macOS
+- Same scripts work across platforms
+- Consistent object pipeline behavior
+
+## PowerShell vs Bash
+
+UnifyWeaver supports both Bash and PowerShell targets. Here's when to choose each:
+
+| Factor | PowerShell | Bash |
+|--------|------------|------|
+| **Platform** | Windows-first, cross-platform | Unix-first, cross-platform |
+| **Type System** | Objects with properties | Text streams |
+| **Pipeline** | Object pipeline | Text pipeline |
+| **.NET Access** | Native | Requires Mono/external tools |
+| **Windows Admin** | Excellent | Limited |
+| **Unix Admin** | Good (pwsh) | Excellent |
+| **Performance** | Good (with caching) | Good |
+
+**Choose PowerShell when:**
+- Targeting Windows environments
+- Need .NET library access
+- Working with structured data (JSON, XML, objects)
+- Building enterprise automation
+
+**Choose Bash when:**
+- Targeting Unix/Linux environments
+- Need maximum portability
+- Working with text streams
+- Simple data processing
+
+## Compilation Modes
+
+UnifyWeaver offers multiple ways to compile Prolog to PowerShell:
+
+### 1. BaaS Mode (Bash-as-a-Service)
+The original approach - generates Bash code wrapped in PowerShell. Uses a compatibility layer.
+
+```prolog
+?- compile_to_powershell(ancestor/2, [powershell_mode(baas)], Code).
+```
+
+**Pros:** Works immediately, reuses all Bash templates
+**Cons:** Requires Bash on the system
+
+### 2. Pure PowerShell Mode
+Native PowerShell generation without Bash dependency.
+
+```prolog
+?- compile_to_powershell(ancestor/2, [powershell_mode(pure)], Code).
+```
+
+**Pros:** No Bash required, native object support
+**Cons:** Some features still being implemented
+
+### 3. Inline .NET Mode
+Embed C# code directly, compiled at runtime via `Add-Type`.
+
+```prolog
+:- use_module(library(dotnet_source)).
+
+?- Config = [csharp_inline('... C# code ...')],
+   dotnet_source:compile_source(my_pred/2, Config, [], PowerShellCode).
+```
+
+**Pros:** Full .NET library access, high performance with caching
+**Cons:** Requires .NET SDK for external compilation
+
+## Your First PowerShell Compilation
+
+Let's compile a simple predicate to PowerShell. We'll use the classic `grandparent/2` example.
+
+### Step 1: Start SWI-Prolog
+
+```bash
+$ cd /path/to/UnifyWeaver
+$ swipl
+```
+
+### Step 2: Initialize the Environment
+
+```prolog
+?- ['education/init'].
+true.
+```
+
+### Step 3: Load the PowerShell Compiler
+
+```prolog
+?- use_module(unifyweaver(core/powershell_compiler)).
+true.
+```
+
+### Step 4: Define Your Facts and Rules
+
+```prolog
+% Define some parent facts
+?- assertz(parent(anne, bob)).
+?- assertz(parent(bob, charles)).
+?- assertz(parent(bob, diana)).
+
+% Define the grandparent rule
+?- assertz((grandparent(X, Z) :- parent(X, Y), parent(Y, Z))).
+```
+
+### Step 5: Compile to PowerShell
+
+```prolog
+?- compile_to_powershell(grandparent/2, [], Code),
+   format('~w~n', [Code]).
+```
+
+This will output a PowerShell script that implements the `grandparent/2` predicate.
+
+### Step 6: Save to File
+
+```prolog
+?- compile_to_powershell(grandparent/2, [output_file('grandparent.ps1')], _).
+true.
+```
+
+### Step 7: Run in PowerShell
+
+```powershell
+# On Windows
+PS> .\grandparent.ps1
+
+# On Linux/macOS with PowerShell 7
+$ pwsh grandparent.ps1
+```
+
+## Understanding the Generated Code
+
+The generated PowerShell script includes several key components:
+
+### Function Definition
+```powershell
+function grandparent {
+    param(
+        [Parameter(ValueFromPipeline=$true)]
+        $InputData
+    )
+    # ... implementation
+}
+```
+
+### Pipeline Support
+PowerShell scripts generated by UnifyWeaver support the pipeline:
+```powershell
+# Call directly
+grandparent
+
+# Pipe input
+"bob" | grandparent
+```
+
+### Verbose Output
+Use `-Verbose` to see compilation and execution details:
+```powershell
+grandparent -Verbose
+```
+
+## What's Next?
+
+In the following chapters, you'll learn:
+
+- **Chapter 2:** Compiling facts and rules to PowerShell arrays and functions
+- **Chapter 3:** Generating advanced PowerShell cmdlets with proper parameters
+- **Chapter 4:** Accessing .NET types from compiled predicates
+- **Chapter 5:** Building Windows automation pipelines
+
+## Quick Reference
+
+### API Summary
+
+| Predicate | Description |
+|-----------|-------------|
+| `compile_to_powershell/2` | Compile with default options |
+| `compile_to_powershell/3` | Compile with custom options |
+| `dotnet_source:compile_source/4` | Compile inline .NET to PowerShell |
+
+### Common Options
+
+| Option | Values | Description |
+|--------|--------|-------------|
+| `powershell_mode` | `pure`, `baas`, `auto` | Compilation mode |
+| `output_file` | Path | Write to file |
+| `source_type` | `dotnet`, `csv`, etc. | Data source type |
+| `pre_compile` | `true`, `false` | Enable DLL caching |
+
+### File Locations
+
+| Path | Contents |
+|------|----------|
+| `src/unifyweaver/core/powershell_compiler.pl` | Main compiler |
+| `src/unifyweaver/sources/dotnet_source.pl` | .NET inline plugin |
+| `playbooks/powershell_inline_dotnet_playbook.md` | Inline .NET guide |
+| `docs/POWERSHELL_TARGET.md` | Full API reference |
