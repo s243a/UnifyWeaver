@@ -26,33 +26,53 @@ This book covers compiling Prolog predicates to PowerShell scripts. PowerShell's
 - PowerShell 7+ (cross-platform) or Windows PowerShell 5.1
 - Basic PowerShell knowledge (helpful)
 
+## Implementation Status
+
+This table shows the current implementation status of features described in each chapter.
+
+| Chapter | Feature | Status | Notes |
+|---------|---------|--------|-------|
+| [Ch 1](01_introduction) | Basic compilation | **Implemented** | `compile_to_powershell/3` works |
+| [Ch 1](01_introduction) | Module loading | **Implemented** | `use_module(unifyweaver(core/powershell_compiler))` |
+| [Ch 2](02_facts_rules) | Facts to arrays | **Implemented** | Facts compile to `PSCustomObject` arrays |
+| [Ch 2](02_facts_rules) | Rules to joins | Partial | Rules generate join code, but don't auto-include dependent facts |
+| [Ch 3](03_cmdlet_generation) | CmdletBinding | Not yet | Advanced function attributes not generated |
+| [Ch 3](03_cmdlet_generation) | Parameter validation | Not yet | `[ValidateSet()]`, `[Mandatory]` not generated |
+| [Ch 3](03_cmdlet_generation) | Begin/Process/End | Partial | Only in `.NET` mode via `dotnet_source` |
+| [Ch 4](04_dotnet_integration) | dotnet_source | **Implemented** | Inline C# compilation works |
+| [Ch 4](04_dotnet_integration) | DLL caching | **Implemented** | `pre_compile(true)` generates caching |
+| [Ch 4](04_dotnet_integration) | NuGet references | **Implemented** | `references(['LiteDB'])` works |
+| [Ch 5](05_windows_automation) | Windows automation | Design only | Examples show patterns, not auto-generated |
+
+**Legend:** **Implemented** = tested and working, Partial = works with limitations, Not yet = documented but not implemented, Design only = conceptual/aspirational
+
 ## Learning Path
 
-**1. Introduction** (`01_introduction.md`)
+**[1. Introduction](01_introduction)** - *Implemented*
 - Why use the PowerShell target?
 - PowerShell vs Bash for automation
 - Compilation modes (BaaS, Pure, Inline .NET)
 - Your first PowerShell compilation
 
-**2. Facts and Rules** (`02_facts_rules.md`)
+**[2. Facts and Rules](02_facts_rules)** - *Mostly Implemented*
 - Compiling facts to PowerShell arrays
 - PSCustomObject for binary facts
 - Translating rules to functions with joins
 - Pipeline integration
 
-**3. Cmdlet Generation** (`03_cmdlet_generation.md`)
+**[3. Cmdlet Generation](03_cmdlet_generation)** - *Design Document*
 - Creating advanced functions with CmdletBinding
 - Parameter attributes and validation
 - Begin/Process/End blocks
 - Verbose and Debug output
 
-**4. .NET Integration** (`04_dotnet_integration.md`)
+**[4. .NET Integration](04_dotnet_integration)** - *Fully Implemented*
 - Inline C# with Add-Type
 - The dotnet_source plugin
 - DLL caching for 138x speedup
 - NuGet package integration
 
-**5. Windows Automation** (`05_windows_automation.md`)
+**[5. Windows Automation](05_windows_automation)** - *Design Document*
 - File system operations
 - Windows services management
 - Registry access
