@@ -31,8 +31,8 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
 | `csv_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Both pass after bug fix |
-| `xml_data_source_playbook` | ➖ | ➖ | ➖ | ➖ | Python XML parsing |
-| `json_litedb_playbook` | ➖ | ➖ | ➖ | ➖ | .NET + LiteDB |
+| `xml_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
+| `json_litedb_playbook` | ➖ | 🔄 Partial (7/10) | ➖ | ⏳ Timeout | Complex multi-system integration |
 | `large_xml_streaming_playbook` | ➖ | ➖ | ➖ | ➖ | Multi-stage pipeline |
 
 ### C# Compilation Playbooks
@@ -40,21 +40,21 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
 | `csharp_codegen_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
-| `csharp_query_playbook` | ➖ | ➖ | ➖ | ➖ | Recursive (Fibonacci) |
+| `csharp_query_playbook` | ➖ | ❌ N/A | ➖ | ➖ | BLOCKED: `build_unifyweaver_project` not implemented |
 | `csharp_xml_fragments_playbook` | ➖ | ➖ | ➖ | ➖ | XML streaming |
 
 ### Recursion Playbooks
 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
-| `tree_recursion_playbook` | ➖ | ➖ | ➖ | ➖ | Tree traversal |
-| `mutual_recursion_playbook` | ➖ | ➖ | ➖ | ➖ | Even/odd recursion |
+| `tree_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (2/10) | Avg: 2/10 - deterministic |
+| `mutual_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
 
 ### Execution Playbooks
 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
-| `parallel_execution_playbook` | ➖ | ➖ | ➖ | ➖ | Parallel processing |
+| `parallel_execution_playbook` | ➖ | ✅ Pass (4/10) | ➖ | ✅ Pass (2/10) | Avg: 3/10 - needs cross-referencing |
 | `prolog_generation_playbook` | ➖ | ✅ Pass (3/10) | ➖ | ✅ Pass (1/10) | Bug fixed; both pass after fix |
 | `powershell_inline_dotnet_playbook` | ➖ | ➖ | ➖ | ➖ | Inline .NET |
 
@@ -67,7 +67,12 @@ When a Tier 5+ model runs a playbook, it should provide a difficulty rating:
 | `csv_data_source_playbook` | 1-2/10 | Gemini 2.5 Pro: 1/10, Haiku 4.5: 2/10 - purely mechanical steps |
 | `prolog_generation_playbook` | 2/10 | Avg of Gemini (1) + Haiku (3) = 2 - straightforward steps |
 | `csharp_codegen_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - deterministic |
-| `xml_data_source_playbook` | ➖ | |
+| `tree_recursion_playbook` | 2/10 | Avg of Gemini (2) + Haiku (2) = 2 - deterministic |
+| `mutual_recursion_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - deterministic |
+| `xml_data_source_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - deterministic |
+| `parallel_execution_playbook` | 3/10 | Avg of Gemini (2) + Haiku (4) = 3 - needs cross-referencing |
+| `json_litedb_playbook` | 7/10 | Haiku only - complex multi-system integration |
+| `csharp_query_playbook` | N/A | BLOCKED: `build_unifyweaver_project` not implemented |
 | ... | | |
 
 ### Rating Criteria
@@ -379,6 +384,191 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
 
 ---
 
+### 2025-12-08 - csharp_query_playbook - Haiku 4.5
+
+**Result**: ❌ Fail (unimplemented functionality)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Script references `build_unifyweaver_project/0` predicate that does not exist
+- SWI-Prolog error: `Unknown procedure: build_unifyweaver_project/0`
+
+**Bug Found**: Playbook describes an aspirational API that was never implemented. The `build_unifyweaver_project/0` predicate does not exist anywhere in the codebase.
+
+**Difficulty Rating**: 8/10 (due to unimplemented blocker)
+
+**Key Insight**: This playbook cannot be tested until `build_unifyweaver_project/0` is implemented.
+
+---
+
+### 2025-12-08 - tree_recursion_playbook - Haiku 4.5
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Extracted and ran the bash script successfully
+- Tree sum output: `[10,[5,[],[]],[15,[],[]]]:30` ✅
+
+**Difficulty Rating**: 2/10
+
+**Reasoning from Haiku 4.5**:
+> The playbook provides exact bash commands to run verbatim. No interpretation needed—just copy/paste the commands in order. The complexity (tree recursion compilation, Prolog-to-bash translation) is hidden inside the extracted script.
+
+---
+
+### 2025-12-08 - tree_recursion_playbook - Gemini 2.5 Pro
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- All expected output present
+
+**Difficulty Rating**: 2/10
+
+**Reasoning from Gemini 2.5 Pro**:
+> The playbook's instructions were extremely clear and deterministic. It provided exact commands to be executed in sequence, along with the expected output for verification. No interpretation was needed to follow the steps.
+
+**Average Difficulty**: (2 + 2) / 2 = **2/10**
+
+---
+
+### 2025-12-08 - mutual_recursion_playbook - Haiku 4.5
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Extracted and ran the bash script successfully
+- Generated `is_even.sh` and `is_odd.sh` scripts
+- Both even/odd tests passed
+
+**Difficulty Rating**: 2/10
+
+**Reasoning from Haiku 4.5**:
+> Each step is explicit and prescriptive. There's no ambiguity about what to do—the instructions tell you exactly which commands to run and where. The only complexity is understanding that the executable record is embedded in another markdown file.
+
+---
+
+### 2025-12-08 - mutual_recursion_playbook - Gemini 2.5 Pro
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- All expected output present
+
+**Difficulty Rating**: 1/10
+
+**Reasoning from Gemini 2.5 Pro**:
+> This was a very clear and deterministic task. The playbook provided exact, copy-and-paste commands to run in sequence. No interpretation or contextual understanding was needed.
+
+**Average Difficulty**: (2 + 1) / 2 = **1.5/10**
+
+---
+
+### 2025-12-08 - xml_data_source_playbook - Haiku 4.5
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Extracted and ran the bash script successfully
+- Output: `Total price: 1300` ✅
+
+**Difficulty Rating**: 2/10
+
+**Reasoning from Haiku 4.5**:
+> Explicit, step-by-step instructions. The playbook provides exact bash commands to copy-paste verbatim. Clear warnings about common mistakes remove any ambiguity.
+
+---
+
+### 2025-12-08 - xml_data_source_playbook - Gemini 2.5 Pro
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- All expected output present
+
+**Difficulty Rating**: 1/10
+
+**Reasoning from Gemini 2.5 Pro**:
+> The playbook provided very clear, deterministic steps. Each command was explicitly given, and the expected output was clearly defined, so no interpretation was needed.
+
+**Average Difficulty**: (2 + 1) / 2 = **1.5/10**
+
+---
+
+### 2025-12-08 - parallel_execution_playbook - Haiku 4.5
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- Extracted and ran the bash script successfully
+- Output: `SUCCESS: Final sum is 500500` ✅
+
+**Difficulty Rating**: 4/10
+
+**Reasoning from Haiku 4.5**:
+> The playbook itself is minimal and references 5 external documents. An agent must navigate to multiple skill/reference documents to understand the full picture and synthesize information from multiple sources before executing. Parser selection logic and technical prerequisites add interpretation overhead.
+
+---
+
+### 2025-12-08 - parallel_execution_playbook - Gemini 2.5 Pro
+
+**Result**: ✅ Pass (first attempt)
+
+**Execution**:
+- Model followed all playbook steps correctly
+- All expected output present
+
+**Difficulty Rating**: 2/10
+
+**Reasoning from Gemini 2.5 Pro**:
+> The playbook provided very clear, deterministic steps. The instructions for which tools to use, what commands to run, and what output to expect were explicit and easy to follow.
+
+**Average Difficulty**: (4 + 2) / 2 = **3/10**
+
+**Key Insight**: This playbook has the highest difficulty variance so far (Haiku: 4, Gemini: 2). The playbook requires cross-referencing multiple documents, which Haiku noted as increasing complexity while Gemini found straightforward.
+
+---
+
+### 2025-12-08 - json_litedb_playbook - Haiku 4.5
+
+**Result**: 🔄 Partial
+
+**Execution**:
+- Model attempted to follow playbook steps
+- LiteDB installation worked
+- Hit sandboxing restrictions when creating Prolog files
+- Could not complete full execution due to file creation restrictions
+
+**Difficulty Rating**: 7/10
+
+**Reasoning from Haiku 4.5**:
+> Complex multi-system integration requiring Prolog, C#, PowerShell, and LiteDB. Understanding how these interact requires knowledge of all four technologies. The embedded C# code within Prolog's `csharp_inline()` function requires proper quote escaping, multi-line string handling, and knowledge of both syntaxes simultaneously.
+
+**Key Insight**: This is the first playbook to require **context understanding** (rating 6-7 territory). The playbook chains together multiple systems and doesn't follow the simple extract-and-run pattern of other playbooks.
+
+---
+
+### 2025-12-08 - json_litedb_playbook - Gemini 2.5 Pro
+
+**Result**: ⏳ Timeout
+
+**Execution**:
+- Model started LiteDB setup
+- Test timed out before completion
+
+**Difficulty Rating**: Not completed
+
+**Key Insight**: This playbook needs more explicit step-by-step instructions and may need to be restructured to follow the extract-and-run pattern of other successful playbooks.
+
+---
+
 ### Template for Recording Results
 
 ```markdown
@@ -427,8 +617,9 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
 1. [x] Run `csv_data_source_playbook` with Haiku 4.5 - ✅ Pass (2/10)
 2. [x] Run `csv_data_source_playbook` with Gemini 2.5 Pro - ⚠️ Pass+fix (found bug)
 3. [x] Fix bug and verify - ✅ Fixed by Claude Opus 4.5
-4. [ ] Test `csharp_codegen_playbook` with multiple models
-5. [ ] Expand to other playbooks
+4. [x] Test `csharp_codegen_playbook` with multiple models - ✅ Avg 1.5/10
+5. [ ] Test `csharp_query_playbook` with multiple models
+6. [ ] Expand to other playbooks
 
 ## Related Documentation
 
