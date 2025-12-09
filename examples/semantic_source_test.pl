@@ -14,7 +14,7 @@
 %% Test 1: Basic semantic source with minimal config
 :- source(semantic, test_papers, [
     vector_store('test_data/papers_vectors.json'),
-    embedding_model(onnx, 'all-MiniLM-L6-v2'),
+    embedding_backend(python_onnx, 'all-MiniLM-L6-v2'),
     similarity_threshold(0.6),
     top_k(5)
 ]).
@@ -22,7 +22,7 @@
 %% Test 2: Semantic source with explicit model configuration
 :- source(semantic, detailed_search, [
     vector_store('test_data/documents.json'),
-    embedding_model(onnx, [
+    embedding_backend(python_onnx, [
         model_path('models/all-MiniLM-L6-v2.onnx'),
         vocab_path('models/vocab.txt'),
         dimensions(384)

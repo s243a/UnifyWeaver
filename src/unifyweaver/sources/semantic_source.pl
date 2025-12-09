@@ -4,18 +4,20 @@
 %
 % Provides semantic search capabilities via embedding vectors and similarity search.
 %
-% This plugin enables semantic retrieval over document collections using:
-% - ONNX embedding models (local inference)
-% - External embedding services (Ollama, Together AI, OpenAI)
-% - Rust Candle embeddings (GPU-accelerated)
+% This plugin enables semantic retrieval over document collections with:
+% - Multiple target wrappers: bash, powershell, csharp, python
+% - Multiple embedding backends: python_onnx, go_service, rust_candle, csharp_native
 %
 % Example usage:
 %   :- source(semantic, research_papers, [
-%       vector_store('papers.litedb'),
-%       embedding_model(onnx, 'all-MiniLM-L6-v2'),
+%       vector_store('papers.json'),
+%       embedding_backend(python_onnx),  % Backend in Config
 %       similarity_threshold(0.7),
 %       top_k(10)
 %   ]).
+%
+%   % Compile with target wrapper specified:
+%   ?- compile(research_papers/2, [target(bash), output_dir('out/')], Code).
 %
 %   find_papers(Query, PaperId, Score) :-
 %       research_papers(Query, PaperId, Score),
@@ -37,18 +39,26 @@
 % Provides plugin metadata for the semantic source.
 source_info(info(
     name('Semantic/Vector Search Source'),
-    version('0.1.0'),
+    version('0.2.0'),
     description('Query documents via embedding vectors and cosine similarity'),
     supported_arities([2, 3]),  % (Query, Id), (Query, Id, Score)
     author('UnifyWeaver Team'),
     requires([
-        'Python 3.8+ with numpy, onnxruntime (for ONNX embeddings)',
-        'or C# with LiteDB and ONNX Runtime (for C# target)',
-        'or Rust with Candle ML framework (for Rust target)'
+        'Embedding backends:',
+        '  - python_onnx: Python 3.8+ with numpy, onnxruntime',
+        '  - go_service: Go HTTP service',
+        '  - rust_candle: Rust with Candle ML framework',
+        '  - csharp_native: C# with LiteDB and ONNX Runtime',
+        'Target wrappers:',
+        '  - bash: Shell scripts',
+        '  - powershell: PowerShell scripts',
+        '  - csharp: C# code',
+        '  - python: Python scripts'
     ]),
     options([
         'vector_store(Path) - Path to vector database (required)',
-        'embedding_model(Type, Config) - Embedding provider configuration (required)',
+        'embedding_backend(Backend) - Backend type: python_onnx, go_service, rust_candle, csharp_native (required)',
+        'embedding_backend(Backend, Config) - Backend with configuration',
         'similarity_threshold(Float) - Minimum similarity score 0.0-1.0 (default: 0.5)',
         'top_k(Int) - Maximum results to return (default: 10)',
         'similarity_metric(Atom) - Similarity function: cosine, euclidean, dot (default: cosine)',
@@ -71,9 +81,12 @@ validate_config(Config) :-
                     'vector_store(Path) is required for semantic sources'))
     ),
 
-    % Required: embedding_model (will use default if not specified)
-    (   member(embedding_model(Type, ModelConfig), Config)
-    ->  validate_embedding_model_type(Type, ModelConfig)
+    % Required: embedding_backend (will use default if not specified)
+    (   member(embedding_backend(Backend), Config)
+    ->  validate_backend_type(Backend)
+    ;   member(embedding_backend(Backend, BackendConfig), Config)
+    ->  validate_backend_type(Backend),
+        validate_backend_config(Backend, BackendConfig)
     ;   true  % Will use default in augmentation phase
     ),
 
@@ -110,133 +123,249 @@ validate_config(Config) :-
     ;   true
     ).
 
-%% validate_embedding_model_type(+Type, +Config) is det.
+%% validate_backend_type(+Backend) is det.
 %
-% Validates specific embedding model configuration.
-validate_embedding_model_type(onnx, Config) :-
+% Validates embedding backend type.
+validate_backend_type(Backend) :-
+    must_be(atom, Backend),
+    (   member(Backend, [python_onnx, go_service, rust_candle, csharp_native])
+    ->  true
+    ;   throw(error(domain_error(embedding_backend, Backend),
+                    'Backend must be one of: python_onnx, go_service, rust_candle, csharp_native'))
+    ).
+
+%% validate_backend_config(+Backend, +Config) is det.
+%
+% Validates backend-specific configuration.
+
+% Python ONNX backend
+validate_backend_config(python_onnx, Config) :-
     !,
-    % For ONNX, we can accept either:
-    % 1. Simple atom: onnx('all-MiniLM-L6-v2')
-    % 2. Full config: onnx([model_path(...), vocab_path(...), dimensions(...)])
     (   atom(Config)
-    ->  true  % Simple model name, will be expanded
+    ->  % Shorthand model name (e.g., 'all-MiniLM-L6-v2')
+        true
     ;   is_list(Config)
-    ->  % Validate list config
+    ->  % Full config with model_path, vocab_path, etc.
         (   member(model_path(_), Config) -> true
         ;   throw(error(missing_option(model_path),
-                        'ONNX embedding model requires model_path in config'))
+                        'python_onnx backend requires model_path'))
         )
-    ;   throw(error(type_error(embedding_config, Config),
-                    'ONNX config must be atom or list'))
+    ;   throw(error(type_error(backend_config, Config),
+                    'python_onnx config must be atom or list'))
     ).
 
-validate_embedding_model_type(service, Config) :-
+% Go service backend
+validate_backend_config(go_service, Config) :-
     !,
     (   is_list(Config)
-    ->  (   member(endpoint(_), Config) -> true
-        ;   throw(error(missing_option(endpoint),
-                        'Service embedding model requires endpoint in config'))
+    ->  (   member(url(_), Config) -> true
+        ;   throw(error(missing_option(url),
+                        'go_service backend requires url'))
         )
-    ;   throw(error(type_error(embedding_config, Config),
-                    'Service config must be a list'))
+    ;   throw(error(type_error(backend_config, Config),
+                    'go_service config must be a list'))
     ).
 
-validate_embedding_model_type(rust_candle, Config) :-
+% Rust Candle backend
+validate_backend_config(rust_candle, Config) :-
     !,
     (   is_list(Config)
-    ->  (   member(model_path(_), Config) -> true
-        ;   throw(error(missing_option(model_path),
-                        'Rust Candle embedding model requires model_path in config'))
+    ->  (   member(binary_path(_), Config) -> true
+        ;   member(model_path(_), Config) -> true
+        ;   throw(error(missing_option(binary_or_model),
+                        'rust_candle backend requires binary_path or model_path'))
         )
-    ;   throw(error(type_error(embedding_config, Config),
-                    'Rust Candle config must be a list'))
+    ;   throw(error(type_error(backend_config, Config),
+                    'rust_candle config must be a list'))
     ).
 
-validate_embedding_model_type(Type, _Config) :-
-    throw(error(domain_error(embedding_model_type, Type),
-                'Unknown embedding model type. Must be one of: onnx, service, rust_candle')).
+% C# native backend
+validate_backend_config(csharp_native, Config) :-
+    !,
+    (   atom(Config) ; is_list(Config)
+    ->  true
+    ;   throw(error(type_error(backend_config, Config),
+                    'csharp_native config must be atom or list'))
+    ).
 
 %% compile_source(+Pred/Arity, +Config, +Options, -GeneratedCode) is det.
 %
-% Generates code for semantic source based on target platform.
+% Generates code for semantic source based on target wrapper and embedding backend.
+%
+% Target (from Options): bash, powershell, csharp, python
+% Backend (from Config): python_onnx, go_service, rust_candle, csharp_native
 %
 % @param Pred/Arity The predicate name and arity
-% @param Config The source configuration options
-% @param Options Compilation options (target, output_dir, etc.)
+% @param Config The source configuration options (includes embedding_backend)
+% @param Options Compilation options (includes target)
 % @param GeneratedCode The generated code (atom)
 compile_source(Pred/Arity, Config, Options, GeneratedCode) :-
     format('  Compiling Semantic source: ~w/~w~n', [Pred, Arity]),
 
-    % Extract configuration with defaults
-    option(vector_store(StorePath), Config),
-    option(embedding_model(EmbedType, EmbedConfig), Config, onnx('all-MiniLM-L6-v2')),
-    option(similarity_threshold(Threshold), Config, 0.5),
-    option(top_k(TopK), Config, 10),
-    option(similarity_metric(Metric), Config, cosine),
-    option(normalize_vectors(Normalize), Config, true),
+    % Validate configuration
+    validate_config(Config),
 
-    % Determine target language (default: bash)
-    option(target(Target), Options, bash),
+    % Merge config and options for convenience
+    append(Config, Options, AllOptions),
 
-    % Generate code based on target and embedding type
-    generate_code(Target, EmbedType, Pred, Arity,
-                  StorePath, EmbedConfig, Threshold, TopK, Metric, Normalize,
-                  GeneratedCode).
+    % Extract target wrapper (from Options)
+    option(target(Target), AllOptions, bash),
 
-%% generate_code(+Target, +EmbedType, +Pred, +Arity, +StorePath, +EmbedConfig,
-%%                +Threshold, +TopK, +Metric, +Normalize, -Code) is det.
+    % Extract embedding backend (from Config)
+    (   option(embedding_backend(Backend, BackendConfig), AllOptions)
+    ->  true
+    ;   option(embedding_backend(Backend), AllOptions)
+    ->  BackendConfig = default
+    ;   Backend = python_onnx, BackendConfig = 'all-MiniLM-L6-v2'  % Default
+    ),
+
+    % Extract other configuration with defaults
+    option(vector_store(StorePath), AllOptions),
+    option(similarity_threshold(Threshold), AllOptions, 0.5),
+    option(top_k(TopK), AllOptions, 10),
+    option(similarity_metric(Metric), AllOptions, cosine),
+    option(normalize_vectors(Normalize), AllOptions, true),
+
+    % Validate Target × Backend combination is supported
+    validate_combination(Target, Backend),
+
+    % Dispatch to appropriate generator
+    generate_wrapper_for_target_and_backend(
+        Target, Backend, Pred, Arity,
+        StorePath, BackendConfig, Threshold, TopK, Metric, Normalize,
+        GeneratedCode
+    ).
+
+%% validate_combination(+Target, +Backend) is det.
 %
-% Target-specific code generation dispatcher.
+% Validates that Target × Backend combination is supported.
+validate_combination(Target, Backend) :-
+    (   supported_combination(Target, Backend)
+    ->  true
+    ;   format(atom(Msg), 'Unsupported combination: target=~w with backend=~w', [Target, Backend]),
+        throw(error(not_supported(Target, Backend), Msg))
+    ).
 
-% Bash target with ONNX embeddings
-generate_code(bash, onnx, Pred, _Arity,
-              StorePath, EmbedConfig, Threshold, TopK, Metric, Normalize,
-              BashCode) :-
+%% supported_combination(?Target, ?Backend) is nondet.
+%
+% Defines supported Target × Backend combinations.
+
+% Bash wrapper supports all backends
+supported_combination(bash, python_onnx).
+supported_combination(bash, go_service).
+supported_combination(bash, rust_candle).
+supported_combination(bash, csharp_native).  % Via mono/dotnet
+
+% PowerShell wrapper supports all backends
+supported_combination(powershell, python_onnx).
+supported_combination(powershell, go_service).
+supported_combination(powershell, rust_candle).
+supported_combination(powershell, csharp_native).
+
+% C# target only supports csharp_native backend natively
+supported_combination(csharp, csharp_native).
+% But could call external services
+supported_combination(csharp, go_service).
+supported_combination(csharp, rust_candle).  % Via Process.Start
+
+% Python target supports Python backend natively
+supported_combination(python, python_onnx).
+% And can call services
+supported_combination(python, go_service).
+supported_combination(python, rust_candle).  % Via subprocess
+
+%% generate_wrapper_for_target_and_backend(+Target, +Backend, ..., -Code) is det.
+%
+% Dispatches to specific generator based on Target × Backend combination.
+
+% ===== BASH WRAPPERS =====
+
+% Bash + Python ONNX
+generate_wrapper_for_target_and_backend(
+    bash, python_onnx, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, Metric, Normalize,
+    BashCode
+) :-
     !,
-    % Expand model config if it's just a model name
-    expand_onnx_config(EmbedConfig, ExpandedConfig),
-
-    % Extract ONNX-specific configuration
+    % Expand backend config
+    expand_python_onnx_config(BackendConfig, ExpandedConfig),
     option(model_path(ModelPath), ExpandedConfig, 'models/all-MiniLM-L6-v2.onnx'),
     option(vocab_path(VocabPath), ExpandedConfig, 'models/vocab.txt'),
-    option(dimensions(Dims), ExpandedConfig, 384),
+    option(dimensions(_Dims), ExpandedConfig, 384),
 
     % Generate Python code for ONNX inference
-    generate_onnx_python_code(
-        ModelPath, VocabPath, Dims,
+    generate_python_onnx_code(
+        ModelPath, VocabPath,
         StorePath, Threshold, TopK, Metric, Normalize,
         PythonCode
     ),
 
-    % Render bash template with embedded Python
-    render_named_template(semantic_bash_onnx, [
+    % Render bash template
+    render_named_template(semantic_bash_python_onnx, [
         pred=Pred,
-        python_code=PythonCode,
+        python_code=PythonCode
+    ], BashCode).
+
+% Bash + Go Service
+generate_wrapper_for_target_and_backend(
+    bash, go_service, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, Metric, _Normalize,
+    BashCode
+) :-
+    !,
+    option(url(ServiceUrl), BackendConfig),
+    render_named_template(semantic_bash_go_service, [
+        pred=Pred,
+        service_url=ServiceUrl,
         vector_store=StorePath,
         threshold=Threshold,
         top_k=TopK,
         metric=Metric
     ], BashCode).
 
-% Fallback for unsupported target/embedding combinations
-generate_code(Target, EmbedType, _Pred, _Arity, _, _, _, _, _, _, _) :-
-    format(atom(Msg), 'Unsupported combination: target=~w, embedding_model=~w', [Target, EmbedType]),
-    throw(error(not_implemented(Target, EmbedType), Msg)).
+% Bash + Rust Candle
+generate_wrapper_for_target_and_backend(
+    bash, rust_candle, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, _Metric, _Normalize,
+    BashCode
+) :-
+    !,
+    (   option(binary_path(BinaryPath), BackendConfig)
+    ->  true
+    ;   BinaryPath = './rust_semantic_search'  % Default
+    ),
+    render_named_template(semantic_bash_rust_candle, [
+        pred=Pred,
+        binary_path=BinaryPath,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK
+    ], BashCode).
 
-%% expand_onnx_config(+ConfigIn, -ConfigOut) is det.
+% ===== FALLBACK =====
+
+% Unsupported Target × Backend combinations
+generate_wrapper_for_target_and_backend(Target, Backend, _, _, _, _, _, _, _, _, _) :-
+    format(atom(Msg), 'Code generation not yet implemented for target=~w, backend=~w', [Target, Backend]),
+    throw(error(not_implemented(Target, Backend), Msg)).
+
+%% expand_python_onnx_config(+ConfigIn, -ConfigOut) is det.
 %
 % Expands simple model name to full configuration.
-expand_onnx_config(ModelName, ExpandedConfig) :-
+expand_python_onnx_config(ModelName, ExpandedConfig) :-
     atom(ModelName),
     !,
-    % Map common model names to their configurations
     onnx_model_defaults(ModelName, ExpandedConfig).
 
-expand_onnx_config(Config, Config) :-
+expand_python_onnx_config(default, ExpandedConfig) :-
+    !,
+    onnx_model_defaults('all-MiniLM-L6-v2', ExpandedConfig).
+
+expand_python_onnx_config(Config, Config) :-
     is_list(Config),
     !.
 
-expand_onnx_config(Config, _) :-
+expand_python_onnx_config(Config, _) :-
     throw(error(type_error(onnx_config, Config),
                 'ONNX config must be atom (model name) or list (full config)')).
 
@@ -268,10 +397,10 @@ onnx_model_defaults(ModelName, _) :-
     format(atom(Msg), 'Unknown ONNX model: ~w. Please provide full config.', [ModelName]),
     throw(error(unknown_model(ModelName), Msg)).
 
-%% generate_onnx_python_code(..., -PythonCode) is det.
+%% generate_python_onnx_code(..., -PythonCode) is det.
 %
 % Generates Python code for ONNX embedding and vector search.
-generate_onnx_python_code(ModelPath, VocabPath, _Dims,
+generate_python_onnx_code(ModelPath, VocabPath,
                           StorePath, Threshold, TopK, Metric, Normalize,
                           PythonCode) :-
     % Generate normalization code
@@ -320,10 +449,8 @@ def get_embedding_onnx(text):
             "attention_mask": inputs["attention_mask"].astype(np.int64)
         })
 
-        # Extract embedding (typically from [CLS] token or mean pooling)
-        embedding = outputs[0][0]  # Shape: (seq_len, hidden_dim)
-
-        # Mean pooling over sequence length
+        # Extract embedding (mean pooling over sequence)
+        embedding = outputs[0][0]
         attention_mask = inputs["attention_mask"][0]
         mask_expanded = np.expand_dims(attention_mask, -1)
         sum_embeddings = np.sum(embedding * mask_expanded, axis=0)
@@ -340,7 +467,6 @@ def get_embedding_onnx(text):
 def search_vectors(query_embedding, vector_store_path, top_k, threshold, similarity_func):
     """Search vector store for similar documents."""
     try:
-        # Load vector store
         with open(vector_store_path, "r") as f:
             vector_store = json.load(f)
 
@@ -352,7 +478,6 @@ def search_vectors(query_embedding, vector_store_path, top_k, threshold, similar
             if similarity >= threshold:
                 results.append((doc_id, float(similarity)))
 
-        # Sort by similarity (descending) and take top k
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:top_k]
 
@@ -372,11 +497,8 @@ def main():
         sys.exit(1)
 
     query = sys.argv[1]
-
-    # Generate query embedding
     query_embedding = get_embedding_onnx(query)
 
-    # Search vector store
     results = search_vectors(
         query_embedding,
         "~w",  # vector_store_path
@@ -385,7 +507,6 @@ def main():
         ~w     # similarity_func
     )
 
-    # Output results (format: doc_id:score)
     for doc_id, score in results:
         print(f"{{doc_id}}:{{score:.4f}}")
 
@@ -400,16 +521,14 @@ similarity_function_name(cosine, cosine_similarity).
 similarity_function_name(euclidean, euclidean_distance).
 similarity_function_name(dot, dot_product).
 
-%% Bash template with embedded Python ONNX code
+%% ========== TEMPLATES ==========
+
 :- multifile template_system:template/2.
 
-template_system:template(semantic_bash_onnx,
+% Bash + Python ONNX template
+template_system:template(semantic_bash_python_onnx,
 '#!/bin/bash
-# {{pred}} - Semantic search source (ONNX embeddings)
-# Vector store: {{vector_store}}
-# Similarity threshold: {{threshold}}
-# Top K: {{top_k}}
-# Metric: {{metric}}
+# {{pred}} - Semantic search (bash + Python ONNX backend)
 
 {{pred}}() {
     local query="$1"
@@ -424,12 +543,10 @@ template_system:template(semantic_bash_onnx,
 PYTHON_EOF
 }
 
-# Stream interface (for pipeline integration)
 {{pred}}_stream() {
     {{pred}} "$@"
 }
 
-# Batch query interface
 {{pred}}_batch() {
     while IFS= read -r line; do
         if [ -n "$line" ]; then
@@ -438,8 +555,57 @@ PYTHON_EOF
     done
 }
 
-# Export for subshell access
 export -f {{pred}}
 export -f {{pred}}_stream
 export -f {{pred}}_batch
+').
+
+% Bash + Go Service template
+template_system:template(semantic_bash_go_service,
+'#!/bin/bash
+# {{pred}} - Semantic search (bash + Go service backend)
+
+{{pred}}() {
+    local query="$1"
+
+    if [ -z "$query" ]; then
+        echo "Error: Query argument required" >&2
+        return 1
+    fi
+
+    # Call Go service via HTTP
+    curl -s -X POST "{{service_url}}/search" -H "Content-Type: application/json" -d "{\"query\": \"$query\", \"top_k\": {{top_k}}, \"threshold\": {{threshold}}, \"metric\": \"{{metric}}\", \"vector_store\": \"{{vector_store}}\"}" | jq -r \'.results[] | "\\(.id):\\(.score)"\'
+}
+
+{{pred}}_stream() {
+    {{pred}} "$@"
+}
+
+export -f {{pred}}
+export -f {{pred}}_stream
+').
+
+% Bash + Rust Candle template
+template_system:template(semantic_bash_rust_candle,
+'#!/bin/bash
+# {{pred}} - Semantic search (bash + Rust Candle backend)
+
+{{pred}}() {
+    local query="$1"
+
+    if [ -z "$query" ]; then
+        echo "Error: Query argument required" >&2
+        return 1
+    fi
+
+    # Call Rust binary
+    "{{binary_path}}" search --query "$query" --vector-store "{{vector_store}}" --top-k {{top_k}} --threshold {{threshold}}
+}
+
+{{pred}}_stream() {
+    {{pred}} "$@"
+}
+
+export -f {{pred}}
+export -f {{pred}}_stream
 ').
