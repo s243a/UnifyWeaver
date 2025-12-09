@@ -69,10 +69,36 @@ compile_to_powershell(Predicate, Options, PowerShellCode) :-
         supports_pure_powershell(Predicate, Options)
     ->  % Use pure PowerShell template
         format('[PowerShell Compiler] Using pure PowerShell templates~n', []),
-        compile_to_pure_powershell(Predicate, Options, PowerShellCode)
+        compile_to_pure_powershell(Predicate, Options, CompiledCode)
     ;   % Fall back to bash-as-a-service
         format('[PowerShell Compiler] Using bash-as-a-service (BaaS) mode~n', []),
-        compile_to_baas_powershell(Predicate, Options, PowerShellCode)
+        compile_to_baas_powershell(Predicate, Options, CompiledCode)
+    ),
+
+    % Handle include_dependencies option
+    (   member(include_dependencies(true), Options)
+    ->  % Get dependencies and compile them
+        Predicate = PredAtom/Arity,
+        functor(Head, PredAtom, Arity),
+        findall(_H-B, user:clause(Head, B), Clauses),
+        gather_dependencies_ps(Clauses, PredAtom, Dependencies),
+        format('[PowerShell Compiler] Dependencies: ~w~n', [Dependencies]),
+        % Compile each dependency (without include_dependencies to avoid recursion)
+        DepOptions = [powershell_mode(pure)],
+        findall(DepCode, (
+            member(DepPred, Dependencies),
+            user:current_predicate(DepPred/DepArity),
+            functor(DepHead, DepPred, DepArity),
+            user:clause(DepHead, _),
+            compile_to_pure_powershell(DepPred/DepArity, DepOptions, DepCode)
+        ), DepCodes),
+        list_to_set(DepCodes, UniqueDepCodes),  % Remove duplicates
+        (   UniqueDepCodes = []
+        ->  PowerShellCode = CompiledCode
+        ;   atomic_list_concat(UniqueDepCodes, '\n\n', DepCodeStr),
+            atomic_list_concat([DepCodeStr, '\n\n', CompiledCode], PowerShellCode)
+        )
+    ;   PowerShellCode = CompiledCode
     ),
 
     % Optionally write to file
