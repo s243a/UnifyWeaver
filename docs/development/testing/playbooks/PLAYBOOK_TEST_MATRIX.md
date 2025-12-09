@@ -33,7 +33,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 | `csv_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Both pass after bug fix |
 | `xml_data_source_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
 | `json_litedb_playbook` | ➖ | 🔄 Partial (7/10) | ➖ | ⏳ Timeout | Complex multi-system integration |
-| `large_xml_streaming_playbook` | ➖ | ➖ | ➖ | ➖ | Multi-stage pipeline |
+| `large_xml_streaming_playbook` | ➖ | ➖ | ➖ | ⚠️ Pass (4/10) | Playbook has issues: wrong paths, Python syntax error |
 
 ### C# Compilation Playbooks
 
@@ -41,7 +41,8 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 |----------|-----------|-----------|------------------|----------------|-------|
 | `csharp_codegen_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
 | `csharp_query_playbook` | ➖ | ❌ N/A | ➖ | ➖ | BLOCKED: `build_unifyweaver_project` not implemented |
-| `csharp_xml_fragments_playbook` | ➖ | ➖ | ➖ | ➖ | XML streaming |
+| `csharp_xml_fragments_playbook` | ➖ | ➖ | ➖ | 🔄 Partial | Complex test harness; Gemini struggled with debugging |
+| `csharp_generator_playbook` | ➖ | ❌ Incomplete (3/10) | ➖ | 🔄 In Progress | Playbook lacks executable steps; design-only |
 
 ### Recursion Playbooks
 
@@ -56,7 +57,7 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 |----------|-----------|-----------|------------------|----------------|-------|
 | `parallel_execution_playbook` | ➖ | ✅ Pass (4/10) | ➖ | ✅ Pass (2/10) | Avg: 3/10 - needs cross-referencing |
 | `prolog_generation_playbook` | ➖ | ✅ Pass (3/10) | ➖ | ✅ Pass (1/10) | Bug fixed; both pass after fix |
-| `powershell_inline_dotnet_playbook` | ➖ | ➖ | ➖ | ➖ | Inline .NET |
+| `powershell_inline_dotnet_playbook` | ➖ | ✅ Pass (4/10) | ➖ | ❌ Rate limit | Haiku passed; Gemini hit API rate limits |
 
 ## Difficulty Ratings (From Advanced Models)
 
@@ -111,6 +112,44 @@ Explain your rating and suggest improvements to make it easier to follow.
 ```
 
 ## Test Results Log
+
+### 2025-12-09 - Untested Playbooks Batch Test
+
+**Tested**: `large_xml_streaming_playbook`, `csharp_xml_fragments_playbook`, `powershell_inline_dotnet_playbook`, `csharp_generator_playbook`
+
+#### powershell_inline_dotnet_playbook - Haiku 4.5
+**Result**: ✅ Pass
+**Difficulty**: 4/10
+**Notes**: Haiku completed successfully. Playbook requires module discovery and understanding of dotnet_source plugin configuration options.
+
+#### powershell_inline_dotnet_playbook - Gemini 2.5 Pro
+**Result**: ❌ Rate Limited (429 errors)
+**Notes**: Gemini hit API rate limits multiple times during execution. Unable to complete test.
+
+#### large_xml_streaming_playbook - Gemini 2.5 Pro
+**Result**: ⚠️ Pass with issues (4/10)
+**Notes**:
+- Incorrect file path in playbook (had to locate correct path)
+- Python syntax error in `filter_by_parent_tree.py` (Python version compatibility)
+- Misleading example output (Example 4 implies all pearls share same tree ID, but they don't)
+
+#### csharp_generator_playbook - Haiku 4.5
+**Result**: ❌ Incomplete (3/10)
+**Notes**:
+- Playbook is incomplete - provides code patterns but no executable steps
+- No extraction record in `playbooks/examples_library/`
+- Requires users to infer how to execute the examples
+- **Recommendation**: Add executable steps and extraction record like `csharp_codegen_playbook`
+
+#### csharp_xml_fragments_playbook - Gemini 2.5 Pro
+**Result**: 🔄 Partial (not completed)
+**Notes**:
+- Gemini spent extensive time debugging the test harness
+- Hit issues with module contexts, arity mismatches, and source registration
+- Never completed full execution
+- **Recommendation**: Playbook needs significant simplification or executable extraction record
+
+---
 
 ### 2025-12-08 - csv_data_source_playbook - Gemini 2.5 Pro
 

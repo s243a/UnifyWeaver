@@ -9,7 +9,10 @@ This document provides a complete procedure for testing all UnifyWeaver playbook
 | **Standard** | csv, xml, tree_recursion, mutual_recursion, csharp_codegen, prolog_generation, parallel_execution | Haiku 4.5 + Gemini 2.5 Pro | Both models work well |
 | **Haiku Only** | json_litedb | Haiku 4.5 only | Gemini times out on this one |
 | **Blocked** | csharp_query | Do not test | Missing `build_unifyweaver_project` implementation |
-| **Untested** | large_xml_streaming, csharp_xml_fragments, powershell_inline_dotnet, csharp_generator | Needs evaluation | Not yet tested with any model |
+| **Haiku Only** | powershell_inline_dotnet | Haiku 4.5 only | Gemini rate limited; Haiku passes (4/10) |
+| **Issues** | large_xml_streaming | Gemini only (so far) | Has path errors, Python syntax issues |
+| **Design Only** | csharp_generator | Do not test | Lacks executable steps; needs extraction record |
+| **Complex** | csharp_xml_fragments | Needs work | Too complex for current playbook structure |
 
 ## Environment Setup
 
