@@ -203,10 +203,10 @@ build_query_plan(Pred/Arity, Options, Modes, Plan) :-
         partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
         (   RecClauses == []
         ->  classify_clauses(BaseClauses, Classification),
-            build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Plan)
-        ;   build_recursive_plan(HeadSpec, [HeadSpec], BaseClauses, RecClauses, Options, Plan)
+            build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Modes, Plan)
+        ;   build_recursive_plan(HeadSpec, [HeadSpec], BaseClauses, RecClauses, Options, Modes, Plan)
         )
-    ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Plan)
+    ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan)
     ).
 
 partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses) :-
@@ -230,16 +230,16 @@ classify_clauses(Clauses, multiple_rules) :-
     Clauses \= [_-true], !.
 classify_clauses(_Clauses, unsupported).
 
-%% build_plan_by_class(+Class, +Pred, +Arity, +Clauses, +Options, -Plan) is semidet.
-build_plan_by_class(none, Pred, Arity, _Clauses, _Options, _) :-
+%% build_plan_by_class(+Class, +Pred, +Arity, +Clauses, +Options, +Modes, -Plan) is semidet.
+build_plan_by_class(none, Pred, Arity, _Clauses, _Options, _Modes, _) :-
     format(user_error, 'C# query target: no clauses found for ~w/~w.~n', [Pred, Arity]),
     fail.
-build_plan_by_class(unsupported, Pred, Arity, _Clauses, _Options, _) :-
+build_plan_by_class(unsupported, Pred, Arity, _Clauses, _Options, _Modes, _) :-
     format(user_error,
            'C# query target: predicate shape not yet supported (~w/~w).~n',
            [Pred, Arity]),
     fail.
-build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Plan) :-
+build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Modes, Plan) :-
     ensure_relation(Pred, Arity, [], Relations),
     Relations = [relation{predicate:HeadSpec, facts:_}|_],
     Root = relation_scan{type:relation_scan, predicate:HeadSpec, width:Arity},
@@ -250,7 +250,7 @@ build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Plan) :-
         metadata:_{classification:facts, options:Options, modes:Modes},
         is_recursive:false
     }.
-build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Plan) :-
+build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Modes, Plan) :-
     Head =.. [Pred|HeadArgs],
     length(HeadArgs, Arity),
     HeadSpec = predicate{name:Pred, arity:Arity},
@@ -260,10 +260,10 @@ build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Plan) :-
         head:HeadSpec,
         root:Node,
         relations:UniqueRelations,
-        metadata:_{classification:single_rule, options:Options},
+        metadata:_{classification:single_rule, options:Options, modes:Modes},
         is_recursive:false
     }.
-build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Plan) :-
+build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Modes, Plan) :-
     maplist(build_clause_node(Pred/Arity), Clauses, Nodes, RelationLists),
     append(RelationLists, RelationsFlat),
     dedup_relations(RelationsFlat, Relations),
@@ -273,18 +273,18 @@ build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Plan) :-
         head:HeadSpec,
         root:Root,
         relations:Relations,
-        metadata:_{classification:multiple_rules, options:Options},
+        metadata:_{classification:multiple_rules, options:Options, modes:Modes},
         is_recursive:false
     }.
-build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _) :-
+build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _Modes, _) :-
     format(user_error, 'C# query target: unexpected fact classified as rule (~w/~w).~n', [Pred, Arity]),
     fail.
 
 %% Recursive plan construction ----------------------------------------------
 
-build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Plan) :-
+build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Modes, Plan) :-
     get_dict(arity, HeadSpec, Arity),
-    build_base_root(HeadSpec, BaseClauses, Options, BaseRoot, BaseRelations),
+    build_base_root(HeadSpec, BaseClauses, Options, Modes, BaseRoot, BaseRelations),
     build_recursive_variants(HeadSpec, GroupSpecs, RecClauses, RecursiveNodes, RecursiveRelations),
     append(BaseRelations, RecursiveRelations, CombinedRelations0),
     dedup_relations(CombinedRelations0, CombinedRelations),
@@ -303,8 +303,8 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Pla
         is_recursive:true
     }.
 
-build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Plan) :-
-    maplist(build_member_plan(GroupSpecs, Options), GroupSpecs, MemberStructs, RelationLists),
+build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
+    maplist(build_member_plan(GroupSpecs, Options, Modes), GroupSpecs, MemberStructs, RelationLists),
     append(RelationLists, RelationsFlat),
     dedup_relations(RelationsFlat, CombinedRelations),
     Root = mutual_fixpoint{
@@ -320,7 +320,7 @@ build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Plan) :-
         is_recursive:true
     }.
 
-build_member_plan(GroupSpecs, Options, PredSpec, member{
+build_member_plan(GroupSpecs, Options, Modes, PredSpec, member{
         type:member,
         predicate:PredSpec,
         base:BaseRoot,
@@ -330,7 +330,7 @@ build_member_plan(GroupSpecs, Options, PredSpec, member{
     get_dict(arity, PredSpec, Arity),
     gather_predicate_clauses(PredSpec, Clauses),
     partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses),
-    build_base_root(PredSpec, BaseClauses, Options, BaseRoot, BaseRelations),
+    build_base_root(PredSpec, BaseClauses, Options, Modes, BaseRoot, BaseRelations),
     build_recursive_variants(PredSpec, GroupSpecs, RecClauses, RecursiveNodes, RecursiveRelations),
     append(BaseRelations, RecursiveRelations, Relations).
 
@@ -342,15 +342,15 @@ clause_has_group_literal(GroupSpecs, _Head-Body) :-
     member(Term, Terms),
     group_literal_spec(Term, GroupSpecs, _).
 
-build_base_root(_HeadSpec, [], _Options, empty{type:empty, width:Arity}, []) :-
+build_base_root(_HeadSpec, [], _Options, _Modes, empty{type:empty, width:Arity}, []) :-
     Arity = 0.
-build_base_root(HeadSpec, [], _Options, empty{type:empty, width:Arity}, []) :-
+build_base_root(HeadSpec, [], _Options, _Modes, empty{type:empty, width:Arity}, []) :-
     get_dict(arity, HeadSpec, Arity).
-build_base_root(HeadSpec, Clauses, Options, BaseRoot, Relations) :-
+build_base_root(HeadSpec, Clauses, Options, Modes, BaseRoot, Relations) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
     classify_clauses(Clauses, Class),
-    build_plan_by_class(Class, Pred, Arity, Clauses, Options, BasePlan),
+    build_plan_by_class(Class, Pred, Arity, Clauses, Options, Modes, BasePlan),
     get_dict(root, BasePlan, BaseRoot),
     get_dict(relations, BasePlan, Relations).
 
