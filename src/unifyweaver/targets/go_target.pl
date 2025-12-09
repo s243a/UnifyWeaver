@@ -497,50 +497,47 @@ compile_go_generator_rule(Index, Head, Body, Config, Code, RuleName) :-
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     // Rule ~w: constraint-only (no relational goals)
     return nil
-}", [RuleName, Index]),
-            !
-        ;   RelGoals = [FirstGoal|RestGoals],
-            FirstGoal =.. [Pred1|_],
-            
-            % Build initial variable map from first goal
-            build_variable_map([FirstGoal-fact], VarMap0),
-            
-            (   RestGoals == []
-            ->  % Simple rule: no join
-                % Generate builtin checks
-                compile_go_builtins(Builtins, VarMap0, Config, BuiltinCode),
-                % Generate head construction
-                compile_go_head_construction(HeadPred, HeadArgs, VarMap0, Config, HeadCode),
-                format(string(Code),
+}", [RuleName, Index])
+        ;   % Generate a trigger block for EACH relational goal
+            findall(BlockCode,
+                (   select(TriggerGoal, RelGoals, OtherGoals),
+                    compile_go_trigger_block(TriggerGoal, OtherGoals, Builtins, HeadPred, HeadArgs, Config, BlockCode)
+                ),
+                Blocks),
+            atomic_list_concat(Blocks, "\n\n", AllBlocks),
+            format(string(Code),
 "func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
     var results []Fact
-    
-    // Match first goal: ~w
-    if fact.Relation != \"~w\" {
-        return results
-    }
-~w
-    // Emit result
-    ~w
-    
-    return results
-}", [RuleName, FirstGoal, Pred1, BuiltinCode, HeadCode])
-            ;   % Join rule: need to nest the result inside join loops
-                compile_go_join_with_result(RestGoals, VarMap0, Config, Builtins, HeadPred, HeadArgs, JoinWithResultCode),
-                format(string(Code),
-"func ~w(fact Fact, total map[string]Fact, idx *Index) []Fact {
-    var results []Fact
-    
-    // Match first goal: ~w
-    if fact.Relation != \"~w\" {
-        return results
-    }
 ~w
     return results
-}", [RuleName, FirstGoal, Pred1, JoinWithResultCode])
-            )
+}", [RuleName, AllBlocks])
         )
     ).
+
+%% compile_go_trigger_block(+TriggerGoal, +OtherGoals, +Builtins, +HeadPred, +HeadArgs, +Config, -BlockCode)
+compile_go_trigger_block(TriggerGoal, OtherGoals, Builtins, HeadPred, HeadArgs, Config, BlockCode) :-
+    TriggerGoal =.. [TriggerPred|_],
+    
+    % Build variable map from trigger goal (fact)
+    build_variable_map([TriggerGoal-fact], VarMap0),
+    
+    (   OtherGoals == []
+    ->  % Simple rule
+        compile_go_builtins(Builtins, VarMap0, Config, BuiltinCode),
+        compile_go_head_construction(HeadPred, HeadArgs, VarMap0, Config, HeadCode),
+        format(string(BodyCode), "~w\n        ~w", [BuiltinCode, HeadCode])
+    ;   % Join rule
+        compile_go_join_with_result(OtherGoals, VarMap0, Config, Builtins, HeadPred, HeadArgs, BodyCode)
+    ),
+    
+    format(string(BlockCode),
+"    // Case: Fact matches ~w
+    func() {
+        if fact.Relation != \"~w\" {
+            return
+        }
+~w
+    }()", [TriggerGoal, TriggerPred, BodyCode]).
 
 %% is_aggregate_goal_go(+Goal)
 %  Check if goal is an aggregate
