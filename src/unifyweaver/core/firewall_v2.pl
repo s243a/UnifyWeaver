@@ -38,6 +38,10 @@
     derive_powershell_mode/2,
     supports_pure_powershell/1,
 
+    % PowerShell mode preferences
+    preferred_powershell_mode/1,
+    set_preferred_powershell_mode/1,
+
     % Tool availability predicates
     tool_availability_policy/1,
     require_tool/1,
@@ -100,6 +104,9 @@
 :- dynamic allowed_domain/1.             % allowed_domain(Domain)
 :- dynamic denied_domain/1.              % denied_domain(Domain)
 
+%% PowerShell mode preferences
+:- dynamic preferred_powershell_mode/1.  % pure | baas | auto (default: auto)
+
 %% ============================================
 %% DEFAULT CONFIGURATION
 %% ============================================
@@ -114,6 +121,24 @@ set_firewall_mode(Mode) :-
     retractall(firewall_mode(_)),
     assertz(firewall_mode(Mode)),
     format('[Firewall] Mode set to: ~w~n', [Mode]).
+
+%% set_preferred_powershell_mode(+Mode)
+%  Set preferred PowerShell compilation mode (pure|baas|auto)
+%
+%  - pure: Always use pure PowerShell when supported
+%  - baas: Always use Bash-as-a-Service when allowed
+%  - auto: Let firewall automatically decide (default)
+%
+%  Example:
+%    ?- set_preferred_powershell_mode(pure).  % Forces pure mode
+set_preferred_powershell_mode(Mode) :-
+    (   memberchk(Mode, [pure, baas, auto])
+    ->  retractall(preferred_powershell_mode(_)),
+        assertz(preferred_powershell_mode(Mode)),
+        format('[Firewall] PowerShell mode preference set to: ~w~n', [Mode])
+    ;   format('[Firewall Error] Invalid mode: ~w (expected: pure|baas|auto)~n', [Mode]),
+        fail
+    ).
 
 %% ============================================
 %% DEFAULT TARGET LANGUAGE POLICIES
@@ -279,9 +304,21 @@ derive_powershell_mode(SourceType, Mode) :-
     ).
 
 % Helper: Check if source type supports pure PowerShell
+% Phase 1: External data sources
 supports_pure_powershell(csv).
 supports_pure_powershell(json).
 supports_pure_powershell(http).
+
+% Phase 1: Internal predicates
+supports_pure_powershell(facts).         % Static facts
+supports_pure_powershell(rules).         % Rules with joins/negation
+
+% Phase 2: Recursion patterns
+supports_pure_powershell(recursion).     % All recursion patterns
+supports_pure_powershell(fixpoint).      % Transitive closure
+
+% Phase 3: Data partitioning
+supports_pure_powershell(partitioning).  % Data partitioning strategies
 
 %% ============================================
 %% POLICY TEMPLATES
