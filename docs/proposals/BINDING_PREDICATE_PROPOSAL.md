@@ -1,9 +1,10 @@
 # Proposal: Foreign Function Binding Predicate
 
 **Status:** Draft
-**Author:** Claude (via Claude Code)
+**Author:** John William Creighton (@s243a)
+**Co-Author:** Claude Code (Opus 4.5)
 **Date:** 2025-12-09
-**Updated:** 2025-12-09 (v2)
+**Updated:** 2025-12-09 (v3)
 **Related:** `constraint_analyzer.pl`, `target_registry.pl`, `firewall_v2.pl`
 
 ## Summary
@@ -422,7 +423,23 @@ composable_pipe(B1, B2) :-
     member(pattern(pipe_transform), Opts2).
 ```
 
-This approach was inspired by the PowerShell semantic target work (see `education/UnifyWeaver_Education/book-2-csharp-target/06_powershell_semantic.md`) which emphasizes composability and reusability across different runtime environments.
+This approach was inspired by the PowerShell target educational materials, specifically:
+
+- **Chapter 3: Cmdlet Generation** (`book-12-powershell-target/03_cmdlet_generation.md`)
+  - Shows how compilation options map to PowerShell cmdlet attributes
+  - Demonstrates `cmdlet_name`, `cmdlet_binding`, `verbose_output` as binding-like declarations
+  - Parameter attributes (`Mandatory`, `ValueFromPipeline`) parallel our input/output specifications
+
+- **Chapter 5: Windows Automation** (`book-12-powershell-target/05_windows_automation.md`)
+  - Models system state (services, registry, events) as Prolog facts
+  - Rules like `low_disk/1`, `memory_pressure/0` show semantic predicates over system state
+  - Generated PowerShell uses patterns (CIM queries, registry providers) that need binding declarations
+
+- **PowerShell Semantic Target** (`book-03-csharp-target/06_powershell_semantic.md`)
+  - XML streaming via .NET, vector search strategies
+  - Emphasizes composability and reusability across runtime environments
+
+These materials demonstrate that bindings need to capture not just function names, but also parameter semantics, pipeline behavior, and platform-specific patterns.
 
 ## Design Rationale: Haskell Type System Connection
 
@@ -530,10 +547,24 @@ The `partial` vs `total` distinction maps to database NULL semantics and helps q
 
 ## References
 
+### Internal Documentation
 - `src/unifyweaver/core/constraint_analyzer.pl` - Existing constraint system
 - `src/unifyweaver/core/target_registry.pl` - Target registration system
 - `src/unifyweaver/core/firewall_v2.pl` - Firewall and security system
 - `docs/EXTENDED_README.md` - Project documentation
+
+### Educational Materials
+- `education/UnifyWeaver_Education/book-12-powershell-target/03_cmdlet_generation.md` - Cmdlet generation patterns
+- `education/UnifyWeaver_Education/book-12-powershell-target/05_windows_automation.md` - Windows automation patterns
+- `education/UnifyWeaver_Education/book-03-csharp-target/06_powershell_semantic.md` - PowerShell semantic target
+
+### External References
 - [SWI-Prolog Foreign Language Interface](https://www.swi-prolog.org/pldoc/man?section=foreign)
 - [Scryer Prolog FFI](https://www.scryer.pl/ffi)
 - [Foreign Function Interface - Wikipedia](https://en.wikipedia.org/wiki/Foreign_function_interface)
+
+## Acknowledgements
+
+This proposal was developed collaboratively. The technical content, including the predicate designs, effect system, pattern-based semantics, database constraint interpretation, and code examples, was extensively contributed by Claude Code (Opus 4.5). The conceptual direction, design requirements, and feedback on non-standard usage patterns, composability goals, and database semantics were provided by John William Creighton (@s243a).
+
+The binding concept was inspired by earlier work on the PowerShell target (book-12-powershell-target, Chapters 3 and 5), which explored making code more reusable and composable across different runtime environments.
