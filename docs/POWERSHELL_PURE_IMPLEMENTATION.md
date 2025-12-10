@@ -1,7 +1,7 @@
 # Pure PowerShell Implementation
 
-**Status:** Implemented (Phases 1-9: Sources, Recursion, Bindings, Automation, Joins, C# Hosting, Advanced Optimizations)
-**Version:** 2.3.0
+**Status:** Implemented (Phases 1-10: Sources, Recursion, Bindings, Automation, Joins, C# Hosting, Advanced Optimizations, Firewall)
+**Version:** 2.4.0
 **Date:** 2025-12-10
 **Branch:** main
 
@@ -629,11 +629,64 @@ foreach ($prev in $pipeline_2) {
 }
 ```
 
-### Phase 10: Firewall Mode & Security
+### Phase 10: Firewall Mode & Security ✅ Complete (v2.4.0)
 
-- [ ] Firewall detection logic in compiler
-- [ ] Enforce pure mode when firewall detected
-- [ ] Clear error messages when pure mode unsupported
+- [x] **Default-level firewall policies** - Global rules for all predicates
+  - `set_firewall_mode/1` - strict | permissive | disabled
+  - `set_preferred_powershell_mode/1` - pure | baas | auto
+  - `denied_service/2` - Block services globally
+- [x] **Predicate-level firewall rules** - Fine-grained per-predicate control
+  - `set_predicate_firewall_mode/2` - Set mode for specific predicate
+  - `set_predicate_service_policy/4` - Allow/deny services per predicate
+  - `clear_predicate_firewall_mode/1` - Remove predicate rules
+- [x] **Priority enforcement** - Predicate rules override default rules
+  - Predicate-level denied_service (highest priority)
+  - Predicate-level firewall_mode
+  - Default-level denied_service
+  - Default-level firewall_mode
+- [x] **Clear error messages** - When compilation is denied or mode unsupported
+- [x] **6 new tests** for predicate-level firewall
+
+#### Usage Examples
+
+```prolog
+% Force pure PowerShell for sensitive predicates (no bash)
+?- set_predicate_firewall_mode(user_data/2, pure).
+
+% Allow bash for log parsing (even if default is pure)
+?- set_predicate_firewall_mode(log_parser/3, baas).
+
+% Deny bash for specific predicate
+?- set_predicate_service_policy(api_call/2, powershell, executable(bash), deny).
+
+% Clear predicate rules (inherit from default)
+?- clear_predicate_firewall_mode(user_data/2).
+```
+
+#### Enforcement Flow
+
+```
+compile_to_powershell(Predicate, Options, Code)
+    |
+    +--> resolve_powershell_mode_with_predicate/4
+    |       |
+    |       +--> Check predicate_firewall_mode/2 (explicit mode)
+    |       |       |
+    |       |       +--> pure → Use pure PowerShell
+    |       |       +--> baas → Check if bash allowed
+    |       |       +--> auto → Fall to default
+    |       |
+    |       +--> Check predicate_denied_service/3 (bash denied?)
+    |       |       |
+    |       |       +--> Yes, pure supported → Use pure
+    |       |       +--> Yes, pure not supported → DENY
+    |       |
+    |       +--> Fall back to resolve_powershell_mode/3 (default)
+    |
+    +--> If denied(Reason) → Fail with error message
+    |
+    +--> Otherwise → Compile with resolved mode
+```
 
 ### Future Enhancements
 
@@ -643,9 +696,9 @@ foreach ($prev in $pipeline_2) {
 - [ ] Active Directory cmdlets (Get-ADUser, Get-ADGroup)
 - [ ] Network cmdlets (Test-Connection, Resolve-DnsName)
 
-#### Advanced Join Optimizations
-- [ ] Index-based lookups for frequently-joined predicates
-- [ ] Pipelined hash joins for N-way joins (currently nested loops)
+#### Advanced Join Optimizations ✅ (Completed in Phase 9)
+- [x] Index-based lookups for frequently-joined predicates
+- [x] Pipelined hash joins for N-way joins
 
 ---
 
