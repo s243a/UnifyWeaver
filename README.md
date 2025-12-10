@@ -114,10 +114,12 @@ Compiles predicates to SQL queries for database execution.
 
 **Docs:** [SQL Target Design](SQL_TARGET_DESIGN.md)
 
-### PowerShell Target (v0.1)
+### PowerShell Target (v0.2)
 Windows automation and .NET orchestration.
 - Dual-mode: pure PowerShell or Bash-as-a-Service via WSL
 - Cross-platform (PowerShell 7+)
+- **Binding system**: 52 bindings for cmdlets, .NET methods, Windows automation
+- **Auto-transpilation**: Rules like `sqrt(X, Y)` compile directly to `[Math]::Sqrt($X)`
 - Ideal for orchestrating .NET targets (C#, IronPython)
 
 **Docs:** [PowerShell Target Guide](docs/POWERSHELL_TARGET.md)
