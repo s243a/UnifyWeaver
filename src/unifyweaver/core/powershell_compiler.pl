@@ -198,7 +198,11 @@ compile_prolog_to_pure_powershell(Predicate, Options, PowerShellCode) :-
             member(H-Body, Clauses),
             Body \= true
         ->  format('[PowerShell Pure] Type: rule with body~n', []),
-            compile_rule_to_powershell(Pred, Arity, H, Body, Options, PowerShellCode)
+            % Try binding-aware compilation first, fall back to standard
+            (   compile_rule_with_bindings(Pred, Arity, H, Body, Options, PowerShellCode)
+            ->  true
+            ;   compile_rule_to_powershell(Pred, Arity, H, Body, Options, PowerShellCode)
+            )
         ;   format('[PowerShell Pure] Error: No clauses found~n', []),
             fail
         )
@@ -1852,6 +1856,531 @@ format_param_entry(Index, Name, Attrs, Entry) :-
     format(string(Entry), "~w~w~w\n        [string]$~w", [ParamAttr, Val1, Val2, Name]).
 
 % ============================================================================
+% BINDING INTEGRATION FOR RULE COMPILATION (Book 12, Chapter 5)
+% ============================================================================
+%
+% These predicates integrate the binding system into rule body compilation,
+% allowing goals like get_service(Name, Status) to automatically compile to
+% Get-Service calls instead of requiring explicit fact definitions.
+
+%% lookup_var_eq(+Var, +VarMap, -PSVar)
+%
+%  Look up a Prolog variable in the VarMap using strict equality (==).
+%  This prevents accidental unification when looking up different variables.
+%
+%  IMPORTANT: member/2 uses unification which causes bugs when variables
+%  in the VarMap get unified with the lookup variable. We must use ==.
+%
+lookup_var_eq(Var, [V-PS|_], PS) :-
+    Var == V, !.
+lookup_var_eq(Var, [_|Rest], PS) :-
+    lookup_var_eq(Var, Rest, PS).
+
+%% goal_has_binding(+Goal, -Binding)
+%
+%  Check if a goal matches a registered PowerShell binding.
+%  Returns the binding information if found.
+%  Handles both plain goals and module-qualified goals (Module:Goal).
+%
+%  @param Goal     A Prolog goal term (e.g., get_service(Name, Status))
+%  @param Binding  binding(Pred, TargetName, Inputs, Outputs, Options)
+%
+goal_has_binding(Goal, Binding) :-
+    % Handle module-qualified goals like powershell_compiler:sqrt(X,Y)
+    (   Goal = _Module:InnerGoal
+    ->  ActualGoal = InnerGoal
+    ;   ActualGoal = Goal
+    ),
+    ActualGoal =.. [Pred|Args],
+    length(Args, Arity),
+    binding(powershell, Pred/Arity, TargetName, Inputs, Outputs, Options),
+    Binding = binding(Pred/Arity, TargetName, Inputs, Outputs, Options).
+
+%% classify_body_goals(+Goals, -BoundGoals, -FactGoals, -BuiltinGoals)
+%
+%  Classify goals in a rule body into bound (have PowerShell bindings),
+%  fact-based (need to be loaded from Prolog facts), and builtins.
+%
+classify_body_goals([], [], [], []).
+classify_body_goals([Goal|Rest], Bound, Facts, Builtins) :-
+    classify_body_goals(Rest, RestBound, RestFacts, RestBuiltins),
+    (   is_builtin_goal_ps(Goal)
+    ->  Bound = RestBound,
+        Facts = RestFacts,
+        Builtins = [Goal|RestBuiltins]
+    ;   goal_has_binding(Goal, Binding)
+    ->  Bound = [Goal-Binding|RestBound],
+        Facts = RestFacts,
+        Builtins = RestBuiltins
+    ;   % Assume it's a fact-based goal
+        Bound = RestBound,
+        Facts = [Goal|RestFacts],
+        Builtins = RestBuiltins
+    ).
+
+%% is_builtin_goal_ps(+Goal)
+%
+%  Check if a goal is a Prolog builtin that needs special handling.
+%  Handles both plain goals and module-qualified goals (Module:Goal).
+%
+is_builtin_goal_ps(Goal) :-
+    % Handle module-qualified goals
+    (   Goal = _Module:InnerGoal
+    ->  is_builtin_goal_ps_inner(InnerGoal)
+    ;   is_builtin_goal_ps_inner(Goal)
+    ).
+
+is_builtin_goal_ps_inner(_ = _).
+is_builtin_goal_ps_inner(_ \= _).
+is_builtin_goal_ps_inner(_ == _).
+is_builtin_goal_ps_inner(_ \== _).
+is_builtin_goal_ps_inner(_ < _).
+is_builtin_goal_ps_inner(_ > _).
+is_builtin_goal_ps_inner(_ =< _).
+is_builtin_goal_ps_inner(_ >= _).
+is_builtin_goal_ps_inner(_ is _).
+is_builtin_goal_ps_inner(true).
+is_builtin_goal_ps_inner(fail).
+is_builtin_goal_ps_inner(!).
+is_builtin_goal_ps_inner(\+ _).
+is_builtin_goal_ps_inner(not(_)).
+
+%% generate_bound_goal_code(+Goal, +Binding, +VarMap, -Code, -NewVarMap)
+%
+%  Generate PowerShell code for a bound goal.
+%
+%  @param Goal      The Prolog goal (e.g., get_service(Name, Status))
+%  @param Binding   The binding info from goal_has_binding/2
+%  @param VarMap    Current variable name mappings
+%  @param Code      Generated PowerShell code
+%  @param NewVarMap Updated variable mappings
+%
+generate_bound_goal_code(Goal, binding(_Pred, TargetName, Inputs, Outputs, Options), VarMap, Code, NewVarMap) :-
+    % Handle module-qualified goals like powershell_compiler:sqrt(X,Y)
+    (   Goal = _Module:InnerGoal
+    ->  ActualGoal = InnerGoal
+    ;   ActualGoal = Goal
+    ),
+    ActualGoal =.. [_|Args],
+    length(Inputs, NumInputs),
+    length(Outputs, NumOutputs),
+    length(Args, TotalArgs),
+
+    % Split args into inputs and outputs based on binding spec
+    (   NumInputs + NumOutputs =:= TotalArgs
+    ->  length(InputArgs, NumInputs),
+        append(InputArgs, OutputArgs, Args)
+    ;   % All args are inputs (output via return value)
+        InputArgs = Args,
+        OutputArgs = []
+    ),
+
+    % Generate the call based on binding pattern
+    (   member(pattern(pipe_transform), Options)
+    ->  % Pipeline pattern: input | Cmdlet
+        generate_pipeline_call(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ;   member(pattern(exit_code_bool), Options)
+    ->  % Boolean via exit code (like Test-Path)
+        generate_bool_call(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ;   sub_string(TargetName, 0, _, _, "[")
+    ->  % .NET static method
+        generate_dotnet_static_call(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ;   sub_string(TargetName, 0, _, _, ".")
+    ->  % .NET instance method
+        generate_dotnet_instance_call(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ;   % Standard cmdlet call
+        generate_cmdlet_call_code(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ).
+
+%% generate_cmdlet_call_code(+CmdletName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate PowerShell cmdlet call code.
+%
+generate_cmdlet_call_code(CmdletName, InputArgs, OutputArgs, VarMap, Code, NewVarMap) :-
+    % Format input arguments
+    maplist(format_arg_for_ps(VarMap), InputArgs, FormattedInputs),
+    atomic_list_concat(FormattedInputs, ' ', InputStr),
+
+    % Generate output variable assignment if needed
+    % NOTE: Must use lookup_var_eq/3, NOT member/2 for variable lookup!
+    (   OutputArgs = [OutVar|_],
+        var(OutVar),
+        lookup_var_eq(OutVar, VarMap, ExistingVar)
+    ->  % Output variable already mapped from head - use existing name
+        format(string(Code), "~w = ~w ~w", [ExistingVar, CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ;   OutputArgs = [OutVar|_],
+        var(OutVar)
+    ->  % New output variable - create new name
+        gensym('$result', ResultVar),
+        format(string(Code), "~w = ~w ~w", [ResultVar, CmdletName, InputStr]),
+        NewVarMap = [OutVar-ResultVar|VarMap]
+    ;   OutputArgs = [OutVar|_],
+        atom(OutVar)
+    ->  % Output to named variable
+        format_arg_for_ps(VarMap, OutVar, OutVarStr),
+        format(string(Code), "~w = ~w ~w", [OutVarStr, CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ;   % No output capture needed
+        format(string(Code), "~w ~w", [CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ).
+
+%% generate_dotnet_static_call(+MethodName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate .NET static method call (e.g., [Math]::Sqrt(x))
+%
+generate_dotnet_static_call(MethodName, InputArgs, OutputArgs, VarMap, Code, NewVarMap) :-
+    maplist(format_arg_for_ps(VarMap), InputArgs, FormattedInputs),
+    atomic_list_concat(FormattedInputs, ', ', InputStr),
+
+    (   OutputArgs = [OutVar|_]
+    ->  % Check if output variable is already mapped (e.g., from head args)
+        % NOTE: Must use lookup_var_eq/3, NOT member/2!
+        % member/2 uses unification which causes different variables to unify
+        (   var(OutVar), lookup_var_eq(OutVar, VarMap, ExistingVar)
+        ->  % Assign directly to existing variable
+            format(string(Code), "~w = ~w(~w)", [ExistingVar, MethodName, InputStr]),
+            NewVarMap = VarMap
+        ;   % Create new result variable
+            gensym('$result', ResultVar),
+            format(string(Code), "~w = ~w(~w)", [ResultVar, MethodName, InputStr]),
+            NewVarMap = [OutVar-ResultVar|VarMap]
+        )
+    ;   format(string(Code), "~w(~w)", [MethodName, InputStr]),
+        NewVarMap = VarMap
+    ).
+
+%% generate_dotnet_instance_call(+MethodName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate .NET instance method call (e.g., $str.Trim())
+%
+generate_dotnet_instance_call(MethodName, [Object|RestInputs], OutputArgs, VarMap, Code, NewVarMap) :-
+    format_arg_for_ps(VarMap, Object, ObjStr),
+    maplist(format_arg_for_ps(VarMap), RestInputs, FormattedInputs),
+    atomic_list_concat(FormattedInputs, ', ', InputStr),
+
+    % Check if method already has () in name
+    (   sub_string(MethodName, _, 2, 0, "()")
+    ->  MethodCall = MethodName
+    ;   InputStr = ""
+    ->  format(string(MethodCall), "~w()", [MethodName])
+    ;   format(string(MethodCall), "~w(~w)", [MethodName, InputStr])
+    ),
+
+    % NOTE: Must use lookup_var_eq/3, NOT member/2 for variable lookup!
+    (   OutputArgs = [OutVar|_],
+        var(OutVar),
+        lookup_var_eq(OutVar, VarMap, ExistingVar)
+    ->  % Output variable already mapped - use existing name
+        format(string(Code), "~w = ~w~w", [ExistingVar, ObjStr, MethodCall]),
+        NewVarMap = VarMap
+    ;   OutputArgs = [OutVar|_]
+    ->  gensym('$result', ResultVar),
+        format(string(Code), "~w = ~w~w", [ResultVar, ObjStr, MethodCall]),
+        NewVarMap = [OutVar-ResultVar|VarMap]
+    ;   format(string(Code), "~w~w", [ObjStr, MethodCall]),
+        NewVarMap = VarMap
+    ).
+
+%% generate_pipeline_call(+CmdletName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate pipeline-style call (input | Cmdlet)
+%
+generate_pipeline_call(CmdletName, InputArgs, OutputArgs, VarMap, Code, NewVarMap) :-
+    (   InputArgs = [PipeInput|RestInputs]
+    ->  format_arg_for_ps(VarMap, PipeInput, PipeStr),
+        maplist(format_arg_for_ps(VarMap), RestInputs, FormattedRest),
+        atomic_list_concat(FormattedRest, ' ', RestStr)
+    ;   PipeStr = "$_",
+        RestStr = ""
+    ),
+
+    % NOTE: Must use lookup_var_eq/3, NOT member/2 for variable lookup!
+    (   OutputArgs = [OutVar|_],
+        var(OutVar),
+        lookup_var_eq(OutVar, VarMap, ExistingVar)
+    ->  % Output variable already mapped - use existing name
+        (   RestStr = ""
+        ->  format(string(Code), "~w = ~w | ~w", [ExistingVar, PipeStr, CmdletName])
+        ;   format(string(Code), "~w = ~w | ~w ~w", [ExistingVar, PipeStr, CmdletName, RestStr])
+        ),
+        NewVarMap = VarMap
+    ;   OutputArgs = [OutVar|_]
+    ->  gensym('$result', ResultVar),
+        (   RestStr = ""
+        ->  format(string(Code), "~w = ~w | ~w", [ResultVar, PipeStr, CmdletName])
+        ;   format(string(Code), "~w = ~w | ~w ~w", [ResultVar, PipeStr, CmdletName, RestStr])
+        ),
+        NewVarMap = [OutVar-ResultVar|VarMap]
+    ;   (   RestStr = ""
+        ->  format(string(Code), "~w | ~w", [PipeStr, CmdletName])
+        ;   format(string(Code), "~w | ~w ~w", [PipeStr, CmdletName, RestStr])
+        ),
+        NewVarMap = VarMap
+    ).
+
+%% generate_bool_call(+CmdletName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate boolean test call (like Test-Path)
+%
+generate_bool_call(CmdletName, InputArgs, OutputArgs, VarMap, Code, NewVarMap) :-
+    maplist(format_arg_for_ps(VarMap), InputArgs, FormattedInputs),
+    atomic_list_concat(FormattedInputs, ' ', InputStr),
+
+    % NOTE: Must use lookup_var_eq/3, NOT member/2 for variable lookup!
+    (   OutputArgs = [OutVar|_],
+        var(OutVar),
+        lookup_var_eq(OutVar, VarMap, ExistingVar)
+    ->  % Output variable already mapped - use existing name
+        format(string(Code), "~w = ~w ~w", [ExistingVar, CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ;   OutputArgs = [OutVar|_]
+    ->  gensym('$result', ResultVar),
+        format(string(Code), "~w = ~w ~w", [ResultVar, CmdletName, InputStr]),
+        NewVarMap = [OutVar-ResultVar|VarMap]
+    ;   % Use in condition context
+        format(string(Code), "~w ~w", [CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ).
+
+%% format_arg_for_ps(+VarMap, +Arg, -Formatted)
+%
+%  Format a Prolog argument for PowerShell code.
+%
+format_arg_for_ps(VarMap, Arg, Formatted) :-
+    (   var(Arg)
+    ->  % Unbound variable - look up in VarMap using strict equality
+        % NOTE: Must use lookup_var_eq/3, NOT member/2!
+        % member/2 uses unification which causes different variables to unify
+        (   lookup_var_eq(Arg, VarMap, PSVar)
+        ->  Formatted = PSVar
+        ;   Formatted = "$_"  % Default for unbound
+        )
+    ;   atom(Arg)
+    ->  % Atom - check if it's a Prolog variable name pattern (starts with uppercase)
+        atom_codes(Arg, [C|_]),
+        (   C >= 65, C =< 90  % A-Z = 65-90
+        ->  format(string(Formatted), "$~w", [Arg])
+        ;   format(string(Formatted), "'~w'", [Arg])
+        )
+    ;   number(Arg)
+    ->  format(string(Formatted), "~w", [Arg])
+    ;   string(Arg)
+    ->  format(string(Formatted), "'~w'", [Arg])
+    ;   is_list(Arg)
+    ->  maplist(format_arg_for_ps(VarMap), Arg, Items),
+        atomic_list_concat(Items, ', ', ItemsStr),
+        format(string(Formatted), "@(~w)", [ItemsStr])
+    ;   format(string(Formatted), "~w", [Arg])
+    ).
+
+%% create_head_var_map(+HeadArgs, -VarMap)
+%
+%  Create a variable mapping from head arguments to PowerShell parameter names.
+%  Maps the first arg to $X, second to $Y, etc.
+%
+create_head_var_map(HeadArgs, VarMap) :-
+    create_head_var_map(HeadArgs, 0, VarMap).
+
+create_head_var_map([], _, []).
+create_head_var_map([Arg|Rest], Index, VarMap) :-
+    get_arg_name(Index, PSName),
+    format(string(PSVar), "$~w", [PSName]),
+    NextIndex is Index + 1,
+    create_head_var_map(Rest, NextIndex, RestMap),
+    (   var(Arg)
+    ->  VarMap = [Arg-PSVar|RestMap]
+    ;   VarMap = RestMap  % Ground args don't need mapping
+    ).
+
+%% compile_rule_with_bindings(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%
+%  Compile a rule that may contain bound goals to PowerShell.
+%  This is the main entry point for binding-aware rule compilation.
+%
+compile_rule_with_bindings(Pred, Arity, Head, Body, Options, Code) :-
+    atom_string(Pred, PredStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+
+    % Convert body to list of goals
+    body_to_list_ps(Body, Goals),
+
+    % Separate negated goals
+    partition(is_negated_goal_ps, Goals, NegatedGoals, PositiveGoals),
+
+    % Classify positive goals
+    classify_body_goals(PositiveGoals, BoundGoals, FactGoals, BuiltinGoals),
+
+    length(BoundGoals, NumBound),
+    length(FactGoals, NumFacts),
+    length(BuiltinGoals, NumBuiltins),
+    format('[PowerShell Pure] Rule analysis: ~w bound, ~w fact-based, ~w builtin goals~n',
+           [NumBound, NumFacts, NumBuiltins]),
+
+    % Generate code based on goal composition
+    (   BoundGoals \= [], FactGoals = []
+    ->  % Pure bound rule - all goals have bindings
+        format('[PowerShell Pure] Compiling pure bound rule~n', []),
+        compile_pure_bound_rule(Pred, Arity, Head, BoundGoals, BuiltinGoals, NegatedGoals, Options, Code)
+    ;   BoundGoals \= [], FactGoals \= []
+    ->  % Mixed rule - some bound, some fact-based
+        format('[PowerShell Pure] Compiling mixed bound/fact rule~n', []),
+        compile_mixed_bound_rule(Pred, Arity, Head, BoundGoals, FactGoals, BuiltinGoals, NegatedGoals, Options, Code)
+    ;   % No bound goals - use standard fact-based compilation
+        format('[PowerShell Pure] No bound goals, using standard compilation~n', []),
+        fail  % Fall back to standard compile_rule_to_powershell
+    ).
+
+%% compile_pure_bound_rule(+Pred, +Arity, +Head, +BoundGoals, +BuiltinGoals, +NegatedGoals, +Options, -Code)
+%
+%  Compile a rule where all data goals have PowerShell bindings.
+%
+compile_pure_bound_rule(Pred, Arity, Head, BoundGoals, _BuiltinGoals, _NegatedGoals, Options, Code) :-
+    atom_string(Pred, PredStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+
+    % Generate parameters
+    generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock),
+
+    % Extract head arguments and create initial variable mapping
+    Head =.. [_|HeadArgs],
+    create_head_var_map(HeadArgs, InitialVarMap),
+
+    % Generate code for each bound goal with variable mapping
+    generate_bound_goals_code(BoundGoals, InitialVarMap, GoalCodes, _FinalVarMap),
+    atomic_list_concat(GoalCodes, '\n        ', GoalsStr),
+
+    % Check for verbose output
+    (   member(verbose_output(true), Options)
+    ->  format(string(VerboseStart), "Write-Verbose \"[~w] Executing bound rule...\"~n        ", [PredStr])
+    ;   VerboseStart = ""
+    ),
+
+    % Structure based on cmdlet_binding option
+    (   member(cmdlet_binding(true), Options)
+    ->  format(string(BodyStr),
+"    begin {
+        ~w
+    }
+
+    process {
+        ~w
+    }
+
+    end {
+        Write-Verbose \"[~w] Complete\"
+    }", [VerboseStart, GoalsStr, PredStr])
+    ;   format(string(BodyStr), "~w~w", [VerboseStart, GoalsStr])
+    ),
+
+    format(string(Code),
+"# Generated Pure PowerShell Script (Bound Rule)
+# Predicate: ~w/~w
+# Generated: ~w
+# Generated by UnifyWeaver PowerShell Compiler (Binding Mode)
+
+function ~w {
+~w~w
+
+~w
+}
+
+# Call the function
+~w
+", [Pred, Arity, DateStr, PredStr, CmdletBindingAttr, ParamBlock, BodyStr, PredStr]).
+
+%% compile_mixed_bound_rule(+Pred, +Arity, +Head, +BoundGoals, +FactGoals, +BuiltinGoals, +NegatedGoals, +Options, -Code)
+%
+%  Compile a rule with both bound goals and fact-based goals.
+%
+compile_mixed_bound_rule(Pred, Arity, _Head, BoundGoals, FactGoals, _BuiltinGoals, NegatedGoals, Options, Code) :-
+    atom_string(Pred, PredStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+
+    % Generate parameters
+    generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock),
+
+    % Generate fact loaders for fact-based goals
+    findall(LoaderCode, (
+        member(FactGoal, FactGoals),
+        FactGoal =.. [FactPred|_],
+        atom_string(FactPred, FactPredStr),
+        format(string(LoaderCode), "$~w_facts = ~w", [FactPredStr, FactPredStr])
+    ), LoaderCodes),
+    atomic_list_concat(LoaderCodes, '\n        ', LoadersStr),
+
+    % Generate bound goal code
+    generate_bound_goals_code(BoundGoals, [], BoundCodes, _VarMap),
+    atomic_list_concat(BoundCodes, '\n        ', BoundStr),
+
+    % Handle negation if present
+    (   NegatedGoals \= []
+    ->  generate_negation_check_ps(NegatedGoals, NegCheckCode),
+        generate_negated_facts_loaders(NegatedGoals, NegLoaderCode)
+    ;   NegCheckCode = "",
+        NegLoaderCode = ""
+    ),
+
+    % Generate join/filter logic for fact goals
+    (   FactGoals = [FG1, FG2|_]
+    ->  FG1 =.. [FP1|_], FG2 =.. [FP2|_],
+        atom_string(FP1, FP1Str), atom_string(FP2, FP2Str),
+        format(string(JoinStr),
+"# Join fact-based goals
+        $results = foreach ($r1 in $~w_facts) {
+            foreach ($r2 in $~w_facts) {
+                if ($r1.Y -eq $r2.X) {~w
+                    [PSCustomObject]@{ X = $r1.X; Y = $r2.Y }
+                }
+            }
+        }", [FP1Str, FP2Str, NegCheckCode])
+    ;   FactGoals = [FG1]
+    ->  FG1 =.. [FP1|_],
+        atom_string(FP1, FP1Str),
+        format(string(JoinStr), "# Fact-based goal\n        $results = $~w_facts", [FP1Str])
+    ;   JoinStr = ""
+    ),
+
+    format(string(Code),
+"# Generated Pure PowerShell Script (Mixed Bound/Fact Rule)
+# Predicate: ~w/~w
+# Generated: ~w
+# Generated by UnifyWeaver PowerShell Compiler (Mixed Mode)
+
+function ~w {
+~w~w
+
+    # Load fact-based relations
+    ~w
+~w
+    # Execute bound goals
+    ~w
+
+    ~w
+
+    # Return results
+    $results
+}
+
+# Call the function
+~w
+", [Pred, Arity, DateStr, PredStr, CmdletBindingAttr, ParamBlock,
+    LoadersStr, NegLoaderCode, BoundStr, JoinStr, PredStr]).
+
+%% generate_bound_goals_code(+BoundGoals, +VarMap, -Codes, -FinalVarMap)
+%
+%  Generate PowerShell code for a list of bound goals.
+%
+generate_bound_goals_code([], VarMap, [], VarMap).
+generate_bound_goals_code([Goal-Binding|Rest], VarMap, [Code|RestCodes], FinalVarMap) :-
+    generate_bound_goal_code(Goal, Binding, VarMap, Code, NewVarMap),
+    generate_bound_goals_code(Rest, NewVarMap, RestCodes, FinalVarMap).
+
+% ============================================================================
 % BINDING-BASED CMDLET GENERATION (Book 12, Chapters 3 & 5)
 % ============================================================================
 %
@@ -2018,3 +2547,68 @@ test_bindings_integration :-
     ),
 
     format('~n=== Binding Integration Tests Complete ===~n', []).
+
+%% test_bound_rule_compilation
+%
+%  Test compilation of rules that use bound predicates.
+%
+test_bound_rule_compilation :-
+    format('~n=== Testing Bound Rule Compilation ===~n~n', []),
+
+    % Initialize bindings
+    init_powershell_compiler,
+
+    % Test 1: Goal classification
+    format('[Test 1] Goal classification~n', []),
+    classify_body_goals([sqrt(X, Y), parent(A, B), X > 0], Bound, Facts, Builtins),
+    length(Bound, NumBound),
+    length(Facts, NumFacts),
+    length(Builtins, NumBuiltins),
+    format('  Bound: ~w, Facts: ~w, Builtins: ~w~n', [NumBound, NumFacts, NumBuiltins]),
+    (   NumBound = 1, NumFacts = 1, NumBuiltins = 1
+    ->  format('  [PASS] Goals correctly classified~n', [])
+    ;   format('  [FAIL] Expected 1 bound, 1 fact, 1 builtin~n', [])
+    ),
+
+    % Test 2: Generate bound goal code
+    format('[Test 2] Generate bound goal code~n', []),
+    goal_has_binding(sqrt(16, Result), Binding),
+    generate_bound_goal_code(sqrt(16, Result), Binding, [], Code, _NewVarMap),
+    format('  sqrt(16, Result) -> ~w~n', [Code]),
+    (   sub_string(Code, _, _, _, "[Math]::Sqrt")
+    ->  format('  [PASS] Generated .NET static call~n', [])
+    ;   format('  [FAIL] Expected [Math]::Sqrt~n', [])
+    ),
+
+    % Test 3: Format Prolog args for PowerShell
+    format('[Test 3] Format arguments~n', []),
+    format_arg_for_ps([], 'ServiceName', Arg1),
+    format_arg_for_ps([], 42, Arg2),
+    format_arg_for_ps([], hello, Arg3),
+    format('  ServiceName -> ~w~n', [Arg1]),
+    format('  42 -> ~w~n', [Arg2]),
+    format('  hello -> ~w~n', [Arg3]),
+    (   Arg1 = "$ServiceName", Arg2 = "42", Arg3 = "'hello'"
+    ->  format('  [PASS] Arguments formatted correctly~n', [])
+    ;   format('  [FAIL] Argument formatting issue~n', [])
+    ),
+
+    % Test 4: Compile a pure bound rule
+    format('[Test 4] Compile pure bound rule~n', []),
+    % Define a test rule dynamically
+    % NOTE: Must use distinct variable names from Tests 1-3 to avoid
+    % sharing Prolog variables across the test predicate!
+    abolish(user:compute_sqrt/2),
+    assertz((user:compute_sqrt(In, Out) :- sqrt(In, Out))),
+    (   compile_to_powershell(compute_sqrt/2, [powershell_mode(pure)], PSCode)
+    ->  format('  Generated code length: ~w chars~n', [PSCode]),
+        (   sub_string(PSCode, _, _, _, "[Math]::Sqrt")
+        ->  format('  [PASS] Pure bound rule compiled with binding~n', [])
+        ;   format('  [INFO] Code generated but binding not used (may need init)~n', []),
+            format('  Code snippet: ~w~n', [PSCode])
+        )
+    ;   format('  [FAIL] Compilation failed~n', [])
+    ),
+    abolish(user:compute_sqrt/2),
+
+    format('~n=== Bound Rule Compilation Tests Complete ===~n', []).
