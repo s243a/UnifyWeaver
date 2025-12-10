@@ -1,7 +1,7 @@
 # Pure PowerShell Implementation
 
-**Status:** Implemented (Phases 1-8: Sources, Recursion, Bindings, Automation, Joins, C# Hosting)
-**Version:** 2.2.0
+**Status:** Implemented (Phases 1-9: Sources, Recursion, Bindings, Automation, Joins, C# Hosting, Advanced Optimizations)
+**Version:** 2.3.0
 **Date:** 2025-12-10
 **Branch:** main
 
@@ -575,7 +575,61 @@ pwsh -File test.ps1
 - [x] PowerShell runspace management from C#
 - [x] Book 12 Chapter 6 documentation
 
-### Phase 9: Firewall Mode & Security
+### Phase 9: Advanced Join Optimizations ✅ Complete (v2.3.0)
+
+- [x] **Pipelined Hash Joins for N-Way Joins** - O(n+m+p+...) complexity
+  - Multi-stage pipeline: Build hash index → Probe → Build next index → Continue
+  - Each stage produces intermediate results for the next
+  - Falls back to nested loops for non-equi joins
+- [x] **Index-Based Lookups** - O(1) lookups on frequently-joined predicates
+  - `create_predicate_index/2` - Pre-build hash indices on specific fields
+  - `generate_indexed_lookup/4` - Generate indexed lookup code
+  - Composite index support (multi-field keys)
+- [x] **Automatic Strategy Selection**
+  - `generate_optimized_nway_join/7` - Chooses best strategy based on join keys
+  - `detect_consecutive_join_keys/2` - Finds equi-join opportunities
+  - `has_equijoin_keys/2` - Checks for hash-eligible joins
+- [x] **Test Suite** - 4 new tests for join optimizations
+
+#### Pipelined Hash Join Example
+
+For a 3-way join: `user(Id, Name), order(Id, Product), product(Product, Price)`
+
+**Before (Nested Loops):** O(n*m*p)
+```powershell
+foreach ($r1 in $user_data) {
+    foreach ($r2 in $order_data) {
+        foreach ($r3 in $product_data) {
+            if ($r1_X -eq $r2_X -and $r2_Y -eq $r3_X) {
+                # Output
+            }
+        }
+    }
+}
+```
+
+**After (Pipelined Hash Join):** O(n+m+p)
+```powershell
+# Stage 1: Build hash on user, probe with order
+$hashIndex_1 = @{}
+foreach ($r1 in $user_data) { $hashIndex_1[$r1.X] = ... }
+foreach ($r2 in $order_data) {
+    if ($hashIndex_1.ContainsKey($r2.X)) {
+        $pipeline_2.Add($joined)
+    }
+}
+
+# Stage 2: Build hash on product, probe with pipeline
+$hashIndex_2 = @{}
+foreach ($r3 in $product_data) { $hashIndex_2[$r3.X] = ... }
+foreach ($prev in $pipeline_2) {
+    if ($hashIndex_2.ContainsKey($prev.r2_Y)) {
+        $pipeline_3.Add($joined)
+    }
+}
+```
+
+### Phase 10: Firewall Mode & Security
 
 - [ ] Firewall detection logic in compiler
 - [ ] Enforce pure mode when firewall detected
