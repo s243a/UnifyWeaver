@@ -2850,11 +2850,11 @@ generate_nway_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, _HeadVars,
     ;   VerboseStr = ""
     ),
 
-    % Generate the pipelined join code
-    generate_pipelined_joins(NumberedFacts, NegCheckStr, BoundSection, OutputCode,
-                             VerboseStr, JoinCode),
+    % Generate the optimized join code (pipelined hash join or nested loop)
+    generate_optimized_nway_join(NumberedFacts, NegCheckStr, BoundSection, OutputCode,
+                                 VerboseStr, Options, JoinCode),
 
-    format(string(Code), "    ~w~w", [LoaderCode, JoinCode]).
+    format(string(Code), "    ~w~n~w", [LoaderCode, JoinCode]).
 
 %% number_fact_goals(+FactGoals, +StartNum, -NumberedFacts)
 %  Number fact goals as r1, r2, r3, etc.
@@ -2977,6 +2977,386 @@ indent_string(N, Str) :-
     N1 is N - 1,
     indent_string(N1, Rest),
     atom_concat(" ", Rest, Str).
+
+%% ============================================================================
+%% ADVANCED JOIN OPTIMIZATIONS (Book 12, Chapter 7)
+%% ============================================================================
+%%
+%% This section implements two key optimizations:
+%%
+%% 1. **Index-Based Lookups**: Pre-build hash indices on frequently-joined
+%%    predicates to enable O(1) lookups instead of O(n) scans.
+%%
+%% 2. **Pipelined Hash Joins for N-Way Joins**: For joins with 3+ relations,
+%%    use a pipelining strategy:
+%%      - Build hash index on R1
+%%      - Probe with R2, immediately building hash index on join results
+%%      - Probe with R3, etc.
+%%    This achieves O(n+m+p+...) complexity instead of O(n*m*p).
+%%
+%% ============================================================================
+
+%% generate_pipelined_hash_join(+NumberedFacts, +NegCheckStr, +BoundSection, +OutputCode, +VerboseStr, -Code)
+%  Generate true pipelined hash joins for N-way joins.
+%  Strategy:
+%    1. Build hash index on first relation using join key with second
+%    2. Probe with second relation, build new hash index for third
+%    3. Continue until all relations are processed
+generate_pipelined_hash_join(NumberedFacts, NegCheckStr, BoundSection, OutputCode, VerboseStr, Code) :-
+    length(NumberedFacts, NumFacts),
+    format('[PowerShell] Generating pipelined hash join for ~w relations~n', [NumFacts]),
+
+    % Collect all field extractions
+    findall(ExtrLines, (
+        member(fact_info(_, Prefix, _, Args, _), NumberedFacts),
+        generate_prefixed_field_extraction(Args, Prefix, ExtrLines)
+    ), AllExtractions),
+    atomic_list_concat(AllExtractions, '\n        ', ExtractionsCode),
+
+    % Detect join keys between consecutive pairs
+    detect_consecutive_join_keys(NumberedFacts, PairwiseJoinKeys),
+
+    % Generate the pipelined join code
+    generate_pipeline_stages(NumberedFacts, PairwiseJoinKeys, 1, PipelineCode),
+
+    % Final output loop
+    format(string(Code),
+"~w# Pipelined hash join: O(n+m+p+...) complexity for ~w-way join
+~w
+    # Final output with all fields
+    $results = foreach ($joined in $pipeline_~w) {
+        # Extract all fields
+        ~w~w~w
+        # Output result
+        ~w
+    }
+    $results",
+           [VerboseStr, NumFacts, PipelineCode, NumFacts, ExtractionsCode,
+            NegCheckStr, BoundSection, OutputCode]).
+
+%% detect_consecutive_join_keys(+NumberedFacts, -PairwiseJoinKeys)
+%  Detect join keys between each consecutive pair of facts.
+%  Returns a list of pairs: (FactNumA-FactNumB)-JoinKeys
+detect_consecutive_join_keys([], []).
+detect_consecutive_join_keys([_], []).
+detect_consecutive_join_keys([fact_info(N1, _, _, Args1, _),
+                               fact_info(N2, _, _, Args2, _)|Rest],
+                              [(N1-N2)-JoinKeys|RestKeys]) :-
+    detect_join_keys(Args1, Args2, JoinKeys),
+    detect_consecutive_join_keys([fact_info(N2, _, _, Args2, _)|Rest], RestKeys).
+
+%% generate_pipeline_stages(+Facts, +JoinKeys, +StageNum, -Code)
+%  Generate each stage of the pipelined hash join.
+generate_pipeline_stages([Fact1], _, _, Code) :-
+    % Single fact - just load it as the initial pipeline
+    Fact1 = fact_info(_, _, FPred, _, _),
+    atom_string(FPred, FPredStr),
+    format(string(Code),
+"    # Stage 1: Load initial relation
+    $~w_data = ~w
+    $pipeline_1 = $~w_data",
+           [FPredStr, FPredStr, FPredStr]).
+
+generate_pipeline_stages([Fact1, Fact2|Rest], [(N1-N2)-JoinKeys|RestJoinKeys], StageNum, Code) :-
+    Fact1 = fact_info(N1, Prefix1, FPred1, Args1, _),
+    Fact2 = fact_info(N2, Prefix2, FPred2, Args2, _),
+    atom_string(FPred1, FP1Str),
+    atom_string(FPred2, FP2Str),
+
+    NextStageNum is StageNum + 1,
+
+    % Generate hash key expressions for this pair
+    (   JoinKeys \= []
+    ->  generate_hash_key_expr_for_stage(JoinKeys, Prefix1, Args1, HashKeyExpr1),
+        generate_hash_key_expr_for_stage(JoinKeys, Prefix2, Args2, HashKeyExpr2),
+        JoinType = "hash"
+    ;   % No join keys - use nested loop for this stage
+        HashKeyExpr1 = "",
+        HashKeyExpr2 = "",
+        JoinType = "nested"
+    ),
+
+    % Generate field mapping for joined result
+    generate_joined_field_mappings(Args1, Prefix1, Args2, Prefix2, FieldMappings),
+
+    (   StageNum = 1
+    ->  % First stage: build from raw relations
+        (   JoinType = "hash"
+        ->  format(string(StageCode),
+"    # Stage ~w: Load relations and build hash index
+    $~w_data = ~w
+    $~w_data = ~w
+
+    # Build hash index on ~w
+    $hashIndex_~w = @{}
+    foreach ($~w in $~w_data) {
+        $key = ~w
+        if (-not $hashIndex_~w.ContainsKey($key)) {
+            $hashIndex_~w[$key] = [System.Collections.ArrayList]::new()
+        }
+        [void]$hashIndex_~w[$key].Add($~w)
+    }
+
+    # Probe with ~w and create pipeline result
+    $pipeline_~w = [System.Collections.ArrayList]::new()
+    foreach ($~w in $~w_data) {
+        $probeKey = ~w
+        if ($hashIndex_~w.ContainsKey($probeKey)) {
+            foreach ($~w in $hashIndex_~w[$probeKey]) {
+                $joined = [PSCustomObject]@{ ~w }
+                [void]$pipeline_~w.Add($joined)
+            }
+        }
+    }",
+                   [StageNum, FP1Str, FP1Str, FP2Str, FP2Str,
+                    FP1Str, StageNum, Prefix1, FP1Str, HashKeyExpr1, StageNum, StageNum, StageNum, Prefix1,
+                    FP2Str, NextStageNum, Prefix2, FP2Str, HashKeyExpr2, StageNum, Prefix1, StageNum, FieldMappings, NextStageNum])
+        ;   % Nested loop for cross product
+            format(string(StageCode),
+"    # Stage ~w: Load relations (cross product - no join key)
+    $~w_data = ~w
+    $~w_data = ~w
+
+    # Nested loop join
+    $pipeline_~w = [System.Collections.ArrayList]::new()
+    foreach ($~w in $~w_data) {
+        foreach ($~w in $~w_data) {
+            $joined = [PSCustomObject]@{ ~w }
+            [void]$pipeline_~w.Add($joined)
+        }
+    }",
+                   [StageNum, FP1Str, FP1Str, FP2Str, FP2Str, NextStageNum,
+                    Prefix1, FP1Str, Prefix2, FP2Str, FieldMappings, NextStageNum])
+        )
+    ;   % Subsequent stages: join with pipeline result
+        % Get join key for pipeline (which contains fields from previous relations)
+        generate_pipeline_probe_key(JoinKeys, Prefix1, Args1, PipelineKeyExpr),
+        (   JoinType = "hash"
+        ->  format(string(StageCode),
+"
+    # Stage ~w: Join pipeline with ~w
+    $~w_data = ~w
+
+    # Build hash index on ~w
+    $hashIndex_~w = @{}
+    foreach ($~w in $~w_data) {
+        $key = ~w
+        if (-not $hashIndex_~w.ContainsKey($key)) {
+            $hashIndex_~w[$key] = [System.Collections.ArrayList]::new()
+        }
+        [void]$hashIndex_~w[$key].Add($~w)
+    }
+
+    # Probe pipeline with ~w
+    $pipeline_~w = [System.Collections.ArrayList]::new()
+    foreach ($prev in $pipeline_~w) {
+        $probeKey = ~w
+        if ($hashIndex_~w.ContainsKey($probeKey)) {
+            foreach ($~w in $hashIndex_~w[$probeKey]) {
+                $joined = [PSCustomObject]@{ ~w }
+                [void]$pipeline_~w.Add($joined)
+            }
+        }
+    }",
+                   [StageNum, FP2Str, FP2Str, FP2Str, FP2Str, StageNum,
+                    Prefix2, FP2Str, HashKeyExpr2, StageNum, StageNum, StageNum, Prefix2,
+                    FP2Str, NextStageNum, StageNum, PipelineKeyExpr, StageNum,
+                    Prefix2, StageNum, FieldMappings, NextStageNum])
+        ;   format(string(StageCode),
+"
+    # Stage ~w: Join pipeline with ~w (cross product)
+    $~w_data = ~w
+
+    $pipeline_~w = [System.Collections.ArrayList]::new()
+    foreach ($prev in $pipeline_~w) {
+        foreach ($~w in $~w_data) {
+            $joined = [PSCustomObject]@{ ~w }
+            [void]$pipeline_~w.Add($joined)
+        }
+    }",
+                   [StageNum, FP2Str, FP2Str, FP2Str, NextStageNum, StageNum,
+                    Prefix2, FP2Str, FieldMappings, NextStageNum])
+        )
+    ),
+
+    % Generate remaining stages
+    (   Rest = []
+    ->  Code = StageCode
+    ;   generate_pipeline_stages([Fact2|Rest], RestJoinKeys, NextStageNum, RestCode),
+        format(string(Code), "~w~w", [StageCode, RestCode])
+    ).
+
+%% generate_hash_key_expr_for_stage(+JoinKeys, +Prefix, +Args, -KeyExpr)
+%  Generate hash key expression for a specific prefix and arguments.
+generate_hash_key_expr_for_stage(JoinKeys, Prefix, Args, KeyExpr) :-
+    findall(FieldAccess, (
+        member(Idx1-Idx2, JoinKeys),
+        length(Args, Len),
+        (   Len > 2
+        ->  (Prefix = "r1" -> Idx = Idx1 ; Idx = Idx2)
+        ;   (Prefix = "r1" -> Idx = Idx1 ; Idx = Idx2)
+        ),
+        idx_to_field_name(Idx, FieldName),
+        format(string(FieldAccess), "$~w.~w", [Prefix, FieldName])
+    ), FieldAccesses),
+    (   FieldAccesses = [Single]
+    ->  KeyExpr = Single
+    ;   atomic_list_concat(FieldAccesses, ':', Combined),
+        format(string(KeyExpr), "\"~w\"", [Combined])
+    ).
+
+%% generate_pipeline_probe_key(+JoinKeys, +Prefix, +Args, -KeyExpr)
+%  Generate probe key for pipeline (uses $prev variable).
+generate_pipeline_probe_key(JoinKeys, Prefix, _Args, KeyExpr) :-
+    findall(FieldAccess, (
+        member(Idx1-_, JoinKeys),
+        idx_to_field_name(Idx1, FieldName),
+        format(string(FieldAccess), "$prev.~w_~w", [Prefix, FieldName])
+    ), FieldAccesses),
+    (   FieldAccesses = [Single]
+    ->  KeyExpr = Single
+    ;   atomic_list_concat(FieldAccesses, ':', Combined),
+        format(string(KeyExpr), "\"~w\"", [Combined])
+    ).
+
+%% generate_joined_field_mappings(+Args1, +Prefix1, +Args2, +Prefix2, -Mappings)
+%  Generate field mappings for the joined result object.
+generate_joined_field_mappings(Args1, Prefix1, Args2, Prefix2, Mappings) :-
+    generate_field_mapping_list(Args1, Prefix1, 0, Mappings1),
+    generate_field_mapping_list(Args2, Prefix2, 0, Mappings2),
+    append(Mappings1, Mappings2, AllMappings),
+    atomic_list_concat(AllMappings, '; ', Mappings).
+
+generate_field_mapping_list([], _, _, []).
+generate_field_mapping_list([_|Rest], Prefix, Idx, [Mapping|RestMappings]) :-
+    idx_to_field_name(Idx, FieldName),
+    format(string(Mapping), "~w_~w = $~w.~w", [Prefix, FieldName, Prefix, FieldName]),
+    NextIdx is Idx + 1,
+    generate_field_mapping_list(Rest, Prefix, NextIdx, RestMappings).
+
+%% ============================================================================
+%% INDEX-BASED LOOKUPS
+%% ============================================================================
+%%
+%% For predicates that are frequently joined on specific fields, we can
+%% pre-build hash indices that persist across queries.
+%%
+%% Usage:
+%%   ?- create_predicate_index(user, [0]).      % Index on first field (ID)
+%%   ?- create_predicate_index(order, [0, 1]).  % Composite index
+%%
+%% The generated PowerShell maintains these indices in script scope.
+%% ============================================================================
+
+%% create_predicate_index(+Predicate, +FieldIndices)
+%  Generate code to create and maintain a hash index on a predicate.
+create_predicate_index(Predicate, FieldIndices) :-
+    atom_string(Predicate, PredStr),
+    generate_index_key_expr(FieldIndices, "$item", KeyExpr),
+    format(string(IndexName), "$script:index_~w", [PredStr]),
+
+    format("# Create index on ~w fields ~w~n", [PredStr, FieldIndices]),
+    format("~w = @{}~n", [IndexName]),
+    format("foreach ($item in ~w) {~n", [PredStr]),
+    format("    $key = ~w~n", [KeyExpr]),
+    format("    if (-not ~w.ContainsKey($key)) {~n", [IndexName]),
+    format("        ~w[$key] = [System.Collections.ArrayList]::new()~n", [IndexName]),
+    format("    }~n"),
+    format("    [void]~w[$key].Add($item)~n", [IndexName]),
+    format("}~n").
+
+%% generate_index_key_expr(+FieldIndices, +VarPrefix, -KeyExpr)
+%  Generate the key expression for an index.
+generate_index_key_expr([Idx], VarPrefix, KeyExpr) :-
+    idx_to_field_name(Idx, FieldName),
+    format(string(KeyExpr), "~w.~w", [VarPrefix, FieldName]).
+generate_index_key_expr(FieldIndices, VarPrefix, KeyExpr) :-
+    FieldIndices = [_,_|_],
+    findall(FieldAccess, (
+        member(Idx, FieldIndices),
+        idx_to_field_name(Idx, FieldName),
+        format(string(FieldAccess), "~w.~w", [VarPrefix, FieldName])
+    ), FieldAccesses),
+    atomic_list_concat(FieldAccesses, ':', Combined),
+    format(string(KeyExpr), "\"~w\"", [Combined]).
+
+%% generate_indexed_lookup(+Predicate, +FieldIndices, +LookupValues, -Code)
+%  Generate code for an indexed lookup.
+generate_indexed_lookup(Predicate, FieldIndices, LookupValues, Code) :-
+    atom_string(Predicate, PredStr),
+    format(string(IndexName), "$script:index_~w", [PredStr]),
+
+    % Generate key expression from lookup values
+    (   LookupValues = [SingleVal]
+    ->  format(string(KeyExpr), "~w", [SingleVal])
+    ;   atomic_list_concat(LookupValues, ':', Combined),
+        format(string(KeyExpr), "\"~w\"", [Combined])
+    ),
+
+    format(string(Code),
+"    # Indexed lookup on ~w~w
+    $lookupKey = ~w
+    if (~w.ContainsKey($lookupKey)) {
+        ~w[$lookupKey]
+    } else {
+        @()
+    }",
+           [PredStr, FieldIndices, KeyExpr, IndexName, IndexName]).
+
+%% use_index_for_join(+NumberedFacts, +Options, -ShouldUseIndex, -IndexedFact)
+%  Determine if we should use an existing index for the join.
+use_index_for_join(NumberedFacts, Options, ShouldUseIndex, IndexedFact) :-
+    (   member(use_indices(true), Options),
+        member(fact_info(N, Prefix, FPred, Args, VarMap), NumberedFacts),
+        atom_string(FPred, FPredStr),
+        member(indexed(FPredStr, FieldIndices), Options)
+    ->  ShouldUseIndex = true,
+        IndexedFact = fact_info(N, Prefix, FPred, Args, VarMap)-FieldIndices
+    ;   ShouldUseIndex = false,
+        IndexedFact = none
+    ).
+
+%% ============================================================================
+%% UPDATED N-WAY JOIN WITH OPTIMIZATION SELECTION
+%% ============================================================================
+
+%% generate_optimized_nway_join(+NumberedFacts, +NegCheckStr, +BoundSection, +OutputCode, +VerboseStr, +Options, -Code)
+%  Choose the best join strategy for N-way joins based on available information.
+generate_optimized_nway_join(NumberedFacts, NegCheckStr, BoundSection, OutputCode, VerboseStr, Options, Code) :-
+    length(NumberedFacts, NumFacts),
+
+    % Check for available optimizations
+    detect_consecutive_join_keys(NumberedFacts, PairwiseJoinKeys),
+    has_equijoin_keys(PairwiseJoinKeys, HasEquiJoins),
+
+    % Select strategy
+    (   member(join_strategy(nested_loop), Options)
+    ->  % Force nested loop (for debugging/comparison)
+        format('[PowerShell] Using forced nested loop for ~w-way join~n', [NumFacts]),
+        generate_nested_foreach_loops(NumberedFacts, [], "", NegCheckStr, BoundSection, OutputCode, VerboseStr, Code)
+    ;   HasEquiJoins = true
+    ->  % Use pipelined hash join for equi-joins
+        format('[PowerShell] Using pipelined hash join for ~w-way join~n', [NumFacts]),
+        generate_pipelined_hash_join(NumberedFacts, NegCheckStr, BoundSection, OutputCode, VerboseStr, Code)
+    ;   % Fall back to nested loops for non-equi joins
+        format('[PowerShell] Using nested loop for ~w-way join (no equi-join keys)~n', [NumFacts]),
+        detect_all_join_conditions(NumberedFacts, AllJoinConditions),
+        findall(ExtrLines, (
+            member(fact_info(_, Prefix, _, Args, _), NumberedFacts),
+            generate_prefixed_field_extraction(Args, Prefix, ExtrLines)
+        ), AllExtractions),
+        atomic_list_concat(AllExtractions, '\n                ', ExtractionsCode),
+        generate_nested_foreach_loops(NumberedFacts, AllJoinConditions, ExtractionsCode, NegCheckStr, BoundSection, OutputCode, VerboseStr, Code)
+    ).
+
+%% has_equijoin_keys(+PairwiseJoinKeys, -HasKeys)
+%  Check if there are any equi-join keys between consecutive facts.
+has_equijoin_keys([], false).
+has_equijoin_keys([(_-_)-JoinKeys|Rest], HasKeys) :-
+    (   JoinKeys \= []
+    ->  HasKeys = true
+    ;   has_equijoin_keys(Rest, HasKeys)
+    ).
 
 %% generate_bound_goals_code(+BoundGoals, +VarMap, -Codes, -FinalVarMap)
 %
@@ -3576,3 +3956,135 @@ test_csharp_hosting :-
     ),
 
     format('~n=== C# Hosting Tests Complete ===~n', []).
+
+%% ============================================================================
+%% ADVANCED JOIN OPTIMIZATION TESTS
+%% ============================================================================
+
+test_advanced_join_optimizations :-
+    format('~n=== Testing Advanced Join Optimizations ===~n~n', []),
+
+    % Test 1: Pipelined hash join generation
+    format('[Test 1] Pipelined hash join generation~n', []),
+    test_pipelined_hash_join,
+
+    % Test 2: Index-based lookup generation
+    format('[Test 2] Index-based lookup generation~n', []),
+    test_index_generation,
+
+    % Test 3: Consecutive join key detection
+    format('[Test 3] Consecutive join key detection~n', []),
+    test_consecutive_join_keys,
+
+    % Test 4: Optimization strategy selection
+    format('[Test 4] Join strategy selection~n', []),
+    test_join_strategy_selection,
+
+    format('~n=== Advanced Join Optimization Tests Complete ===~n', []).
+
+test_pipelined_hash_join :-
+    % Create mock numbered facts for a 3-way join with equi-join keys
+    % Simulating: user(Id, Name), order(Id, Product), product(Product, Price)
+    Args1 = [Id1, Name],
+    Args2 = [Id2, Product1],
+    Args3 = [Product2, Price],
+    Id1 = Id2,  % Same variable = equi-join key
+    Product1 = Product2,
+
+    NumberedFacts = [
+        fact_info(1, "r1", user, Args1, [Id1-"$r1_X", Name-"$r1_Y"]),
+        fact_info(2, "r2", order, Args2, [Id2-"$r2_X", Product1-"$r2_Y"]),
+        fact_info(3, "r3", product, Args3, [Product2-"$r3_X", Price-"$r3_Y"])
+    ],
+
+    % Generate pipelined hash join
+    generate_pipelined_hash_join(NumberedFacts, "", "", "[PSCustomObject]@{}", "", Code),
+
+    % Verify key components exist
+    (   sub_string(Code, _, _, _, "Pipelined hash join"),
+        sub_string(Code, _, _, _, "hashIndex_"),
+        sub_string(Code, _, _, _, "pipeline_")
+    ->  format('  [PASS] Pipelined hash join generated with hash indices~n', [])
+    ;   format('  [FAIL] Missing pipelined hash join components~n', [])
+    ).
+
+test_index_generation :-
+    % Test single field index
+    generate_index_key_expr([0], "$item", KeyExpr1),
+    (   KeyExpr1 = "$item.X"
+    ->  format('  Single field index: PASS~n', [])
+    ;   format('  Single field index: FAIL (got ~w)~n', [KeyExpr1])
+    ),
+
+    % Test composite index
+    generate_index_key_expr([0, 1], "$item", KeyExpr2),
+    (   sub_string(KeyExpr2, _, _, _, "X"),
+        sub_string(KeyExpr2, _, _, _, "Y")
+    ->  format('  Composite index: PASS~n', [])
+    ;   format('  Composite index: FAIL (got ~w)~n', [KeyExpr2])
+    ),
+
+    % Test indexed lookup code generation
+    generate_indexed_lookup(user, [0], ["$userId"], LookupCode),
+    (   sub_string(LookupCode, _, _, _, "index_user"),
+        sub_string(LookupCode, _, _, _, "lookupKey")
+    ->  format('  Indexed lookup: PASS~n', []),
+        format('  [PASS] Index generation complete~n', [])
+    ;   format('  Indexed lookup: FAIL~n', [])
+    ).
+
+test_consecutive_join_keys :-
+    % Create facts with join keys between consecutive pairs
+    Args1 = [A, B],
+    Args2 = [C, D],
+    Args3 = [E, F],
+    B = C,  % Join between fact 1 and 2
+    D = E,  % Join between fact 2 and 3
+
+    NumberedFacts = [
+        fact_info(1, "r1", f1, Args1, []),
+        fact_info(2, "r2", f2, Args2, []),
+        fact_info(3, "r3", f3, Args3, [])
+    ],
+
+    detect_consecutive_join_keys(NumberedFacts, PairwiseKeys),
+    length(PairwiseKeys, NumPairs),
+    (   NumPairs = 2
+    ->  format('  [PASS] Detected ~w join key pairs~n', [NumPairs])
+    ;   format('  [FAIL] Expected 2 pairs, got ~w~n', [NumPairs])
+    ).
+
+test_join_strategy_selection :-
+    % Test with equi-join keys - should select hash join
+    Args1 = [X1, Y1],
+    Args2 = [X2, Y2],
+    X1 = X2,
+
+    NumberedFacts = [
+        fact_info(1, "r1", f1, Args1, []),
+        fact_info(2, "r2", f2, Args2, [])
+    ],
+
+    detect_consecutive_join_keys(NumberedFacts, JoinKeys),
+    has_equijoin_keys(JoinKeys, HasEqui1),
+    (   HasEqui1 = true
+    ->  format('  Equi-join detection: PASS~n', [])
+    ;   format('  Equi-join detection: FAIL~n', [])
+    ),
+
+    % Test without join keys - should fall back to nested loop
+    Args3 = [A, B],
+    Args4 = [C, D],  % No shared variables
+
+    NumberedFacts2 = [
+        fact_info(1, "r1", f1, Args3, []),
+        fact_info(2, "r2", f2, Args4, [])
+    ],
+
+    detect_consecutive_join_keys(NumberedFacts2, JoinKeys2),
+    has_equijoin_keys(JoinKeys2, HasEqui2),
+    (   HasEqui2 = false
+    ->  format('  Non-equi-join detection: PASS~n', []),
+        format('  [PASS] Join strategy selection complete~n', [])
+    ;   format('  Non-equi-join detection: FAIL~n', [])
+    ).
