@@ -3,7 +3,7 @@
 **Status:** Draft
 **Author:** Claude (via Claude Code)
 **Date:** 2025-12-09
-**Updated:** 2025-12-09
+**Updated:** 2025-12-09 (v2)
 **Related:** `constraint_analyzer.pl`, `target_registry.pl`, `firewall_v2.pl`
 
 ## Summary
@@ -77,6 +77,9 @@ Input and output arguments can be specified as:
 | `returns_error` | Returns error as additional value (Go-style) |
 | `variadic` | Accepts variable number of arguments |
 | `import(Module)` | Required import/module for firewall validation |
+| `pattern(Name)` | Design pattern for non-standard usage (see below) |
+| `total` | Function always succeeds for valid inputs |
+| `partial` | Function may fail/return no result |
 
 ### Exit Status Handling
 
@@ -363,6 +366,64 @@ resolve_binding([_|Rest], Pred, Target, Binding) :-
 
 This enables graceful degradation when a preferred target lacks a binding.
 
+## Design Patterns for Non-Standard Usage
+
+Languages often use functions in non-standard ways. For instance, in Bash we might use `echo` or a variable assignment to return a result rather than a true function return. The binding should declare the **semantic intent** (design pattern) rather than the literal language construct.
+
+### Pattern-Based Type Semantics
+
+```prolog
+%% pattern(+PatternName, +Description)
+%
+% Declares a design pattern for non-standard function usage.
+
+pattern(stdout_return, "Return value via stdout (shell idiom)").
+pattern(variable_return, "Return value via variable assignment").
+pattern(exit_code_bool, "Boolean result via exit code").
+pattern(pipe_transform, "Transform data through pipe").
+pattern(accumulator, "Build result via accumulator parameter").
+
+%% binding with pattern annotation
+binding(bash, get_value/2, "echo $1", [varname], [string],
+        [pattern(stdout_return), pure]).
+
+binding(bash, set_value/2, "$1=$2", [varname, value], [],
+        [pattern(variable_return), effect(state)]).
+
+binding(bash, is_empty/1, "test -z", [string], [],
+        [pattern(exit_code_bool), pure]).
+```
+
+### Types Match Intent, Not Literals
+
+The input/output types should reflect the **logical meaning** of the operation:
+
+```prolog
+% Even though bash `wc -l` outputs to stdout, the binding declares
+% the semantic output type as 'int' because that's the intent
+binding(bash, line_count/2, "wc -l", [file], [int],
+        [pattern(stdout_return), effect(io)]).
+
+% The AWK print returns via stdout, but semantically it's outputting records
+binding(bash, emit_record/1, "print", [record], [],
+        [pattern(stdout_return), effect(io)]).
+```
+
+### Composability Through Patterns
+
+Patterns enable reusable composition rules:
+
+```prolog
+% Rule: stdout_return patterns can be piped
+composable_pipe(B1, B2) :-
+    binding(bash, _, _, _, _, Opts1),
+    member(pattern(stdout_return), Opts1),
+    binding(bash, _, _, _, _, Opts2),
+    member(pattern(pipe_transform), Opts2).
+```
+
+This approach was inspired by the PowerShell semantic target work (see `education/UnifyWeaver_Education/book-2-csharp-target/06_powershell_semantic.md`) which emphasizes composability and reusability across different runtime environments.
+
 ## Design Rationale: Haskell Type System Connection
 
 The design mirrors concepts from Haskell's type system, which is rooted in logic:
@@ -375,6 +436,79 @@ The design mirrors concepts from Haskell's type system, which is rooted in logic
 | Type signatures | Input/Output lists | Document interfaces |
 
 This connection is natural given Prolog's logical foundations and enables similar reasoning about program properties.
+
+## Database Semantics: Bindings as Constraints
+
+Given UnifyWeaver's deep connection between Prolog and database operations, bindings can be viewed through a relational/constraint lens.
+
+### Bindings as Relations That Always Succeed
+
+In database terms, a binding defines a **functional dependency** or **view** that always returns results (never fails in the Prolog sense of "no solutions"). The binding declares:
+
+> "For these inputs, this target function will produce these outputs"
+
+```prolog
+% This binding asserts: for any valid string input, len() returns an int
+% It's a total function - always succeeds for valid inputs
+binding(python, length/2, "len", [string], [int], [pure, deterministic]).
+```
+
+### Constraint Interpretation
+
+| Database Concept | Binding Interpretation |
+|------------------|------------------------|
+| Functional dependency | Deterministic binding (inputs → outputs) |
+| View definition | Binding = view over target language primitives |
+| NOT NULL constraint | No `effect(throws)` = guaranteed result |
+| CHECK constraint | Type specifications = domain constraints |
+| Foreign key | `import(Module)` = external dependency |
+
+### Bindings as Datalog-Style Rules
+
+A binding can be seen as a Datalog rule that always holds:
+
+```prolog
+% Conceptually, this binding is like asserting:
+% ∀ X, Y: python_len(X, Y) ← is_string(X) ∧ Y = len(X)
+%
+% The binding never "fails" - it defines a mapping that exists
+binding(python, length/2, "len", [string], [int], [pure]).
+```
+
+### Implications for Query Planning
+
+If bindings always succeed (for valid inputs), the query planner can:
+
+1. **Reorder freely** - Pure bindings with no effects can be evaluated in any order
+2. **Push down filters** - Bindings can be treated as base relations for join optimization
+3. **Materialize or stream** - Choose execution strategy based on binding properties
+
+```prolog
+% Query: find files larger than 1MB
+% The binding tells us file_size/2 always produces a result for valid paths
+% So we can safely use it in a filter without worrying about failure
+
+large_file(Path) :-
+    glob_files(Pattern, Path),      % nondeterministic
+    file_size(Path, Size),          % deterministic - always succeeds
+    Size > 1000000.                 % filter
+```
+
+### Partial Functions and Failure
+
+For bindings that might not produce a result, use explicit annotations:
+
+```prolog
+% This can fail (file might not exist)
+binding(bash, read_file/2, "cat", [path], [string],
+        [effect(io), effect(throws), partial]).
+
+% vs. this always succeeds (returns empty string for missing file)
+binding(bash, read_file_safe/2, "cat 2>/dev/null || echo ''", [path], [string],
+        [effect(io), total]).
+```
+
+The `partial` vs `total` distinction maps to database NULL semantics and helps query planners handle potential failures.
 
 ## Implementation Plan
 
