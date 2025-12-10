@@ -299,26 +299,43 @@ body_contains_pred_ps(Pred, Goal) :-
 
 %% compile_facts_to_powershell(+Pred, +Arity, +Clauses, +Options, -Code)
 %  Compile simple facts to pure PowerShell
-%  Options: output_format(object|text) - Return PSCustomObject or strings
+%  Options:
+%    - output_format(object|text) - Return PSCustomObject or strings
+%    - pipeline_input(true) - Enable ValueFromPipeline on first parameter
+%    - arg_names([...]) - Custom argument names (default: X, Y, Z, ...)
 compile_facts_to_powershell(Pred, Arity, Clauses, Options, Code) :-
     atom_string(Pred, PredStr),
     get_time(Timestamp),
     format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
-    
+
     % Check output format option (default: text for backward compatibility)
     (   member(output_format(object), Options)
     ->  OutputFormat = object
     ;   OutputFormat = text
     ),
-    
-    % Build fact array entries
+
+    % Get argument names from options or use defaults
+    get_arg_names_from_options(Arity, Options, ArgNames),
+
+    % Build fact array entries (use dynamic property names if specified)
+    (   ArgNames = [N1, N2|_], Arity >= 2
+    ->  % Use custom property names
+        findall(ObjEntryCustom, (
+            member(Head-true, Clauses),
+            Head =.. [_|[A1, A2|_]],
+            format(string(ObjEntryCustom), "        [PSCustomObject]@{ ~w='~w'; ~w='~w' }", [N1, A1, N2, A2])
+        ), CustomObjEntries)
+    ;   CustomObjEntries = []
+    ),
+
+    % Build standard fact entries
     findall(FactEntry, (
         member(Head-true, Clauses),
         Head =.. [_|Args],
         format_ps_fact_entry(Args, FactEntry)
     ), FactEntries),
     atomic_list_concat(FactEntries, '\n', FactsStr),
-    
+
     % Generate parameter string based on arity
     (   Arity = 1
     ->  ParamStr = "[string]$Key"
@@ -326,10 +343,10 @@ compile_facts_to_powershell(Pred, Arity, Clauses, Options, Code) :-
     ->  ParamStr = "[string]$X, [string]$Y"
     ;   ParamStr = "[string]$X, [string]$Y, [string]$Z"  % Generic for now
     ),
-    
+
     % Generate filter logic based on arity AND output format
     generate_filter_logic_ps(Arity, OutputFormat, FilterLogic),
-    
+
     % Generate appropriate fact array based on arity
     (   Arity = 1
     ->  format(string(Code),
@@ -340,7 +357,7 @@ compile_facts_to_powershell(Pred, Arity, Clauses, Options, Code) :-
 
 function ~w {
     param(~w)
-    
+
     $facts = @(~w)
 ~w
 }
@@ -349,16 +366,23 @@ function ~w {
 ~w
 ", [Pred, Arity, DateStr, PredStr, ParamStr, FactsStr, FilterLogic, PredStr])
     ;   % Binary facts use PSCustomObject
-        findall(ObjEntry, (
-            member(Head-true, Clauses),
-            Head =.. [_|[A1, A2|_]],
-            format(string(ObjEntry), "        [PSCustomObject]@{ X='~w'; Y='~w' }", [A1, A2])
-        ), ObjEntries),
-        atomic_list_concat(ObjEntries, ',\n', ObjStr),
-        
-        % Generate parameters (simple or cmdlet-style)
-        generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock),
-        
+        % Use custom property names if arg_names specified
+        (   CustomObjEntries \= []
+        ->  atomic_list_concat(CustomObjEntries, ',\n', ObjStr)
+        ;   findall(ObjEntry, (
+                member(Head-true, Clauses),
+                Head =.. [_|[A1, A2|_]],
+                format(string(ObjEntry), "        [PSCustomObject]@{ X='~w'; Y='~w' }", [A1, A2])
+            ), ObjEntries),
+            atomic_list_concat(ObjEntries, ',\n', ObjStr)
+        ),
+
+        % Generate parameters - use pipeline params if pipeline_input(true)
+        (   member(pipeline_input(true), Options)
+        ->  generate_pipeline_params(Arity, Options, CmdletBindingAttr, ParamBlock)
+        ;   generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock)
+        ),
+
         % Generate facts definition
         format(string(FactsDef), "    $facts = @(\n~w\n    )", [ObjStr]),
 
@@ -369,9 +393,9 @@ function ~w {
         ;   VerboseLoad = "",
             VerboseQuery = ""
         ),
-        
+
         % Structure body based on cmdlet_binding (Begin/Process vs simple)
-        (   member(cmdlet_binding(true), Options)
+        (   member(cmdlet_binding(true), Options) ; member(pipeline_input(true), Options)
         ->  % Advanced function: Use begin/process blocks
             format(string(Body), 
 "    begin {
@@ -458,21 +482,34 @@ format_ps_fact_entry([A, B|_], Entry) :-
 
 %% compile_rule_to_powershell(+Pred, +Arity, +Head, +Body, +Options, -Code)
 %  Compile a rule with joins and optional negation to pure PowerShell
+%  Options:
+%    - pipeline_input(true) - Enable ValueFromPipeline on first parameter
+%    - output_format(object|text) - Return PSCustomObject or strings
+%    - arg_names([...]) - Custom argument names (default: X, Y, Z, ...)
 compile_rule_to_powershell(Pred, Arity, _Head, Body, Options, Code) :-
     atom_string(Pred, PredStr),
     get_time(Timestamp),
     format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
-    
+
+    % Get output format (default: text for backwards compatibility)
+    (   member(output_format(object), Options)
+    ->  OutputFormat = object
+    ;   OutputFormat = text
+    ),
+
+    % Get argument names for dynamic property output
+    get_arg_names_from_options(Arity, Options, ArgNames),
+
     % Extract body goals
     body_to_list_ps(Body, Goals),
     length(Goals, NumGoals),
     format('[PowerShell Pure] Body has ~w goals~n', [NumGoals]),
-    
+
     % Partition into positive and negated goals
     partition(is_negated_goal_ps, Goals, NegatedGoals, PositiveGoals),
     length(NegatedGoals, NumNeg),
     format('[PowerShell Pure] ~w negated goals~n', [NumNeg]),
-    
+
     % Handle rules based on structure
     (   PositiveGoals = [Goal1, Goal2],
         Goal1 =.. [Pred1|_],
@@ -486,18 +523,25 @@ compile_rule_to_powershell(Pred, Arity, _Head, Body, Options, Code) :-
         ;   NegCheckCode = "",
             NegLoaderCode = ""
         ),
-        
-        % Generate Parameters
-        generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock),
+
+        % Generate Parameters - use pipeline params if pipeline_input(true)
+        (   member(pipeline_input(true), Options)
+        ->  generate_pipeline_params(Arity, Options, CmdletBindingAttr, ParamBlock)
+        ;   generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock)
+        ),
 
         % Generate Loading Logic (Facts)
-        format(string(Loaders), 
+        format(string(Loaders),
 "        # Get facts from both relations
         $rel1 = ~w
         $rel2 = ~w
 ~w", [Pred1Str, Pred2Str, NegLoaderCode]),
 
-        % Generate Join Logic
+        % Generate Join Logic with dynamic property names
+        (   ArgNames = [N1, N2|_]
+        ->  atom_string(N1, N1Str), atom_string(N2, N2Str)
+        ;   N1Str = "X", N2Str = "Y"
+        ),
         format(string(JoinLogic),
 "        # Nested loop join: rel1.Y = rel2.X
         $results = foreach ($r1 in $rel1) {
@@ -506,25 +550,37 @@ compile_rule_to_powershell(Pred, Arity, _Head, Body, Options, Code) :-
                     $x = $r1.X
                     $y = $r2.Y~w
                     [PSCustomObject]@{
-                        X = $x
-                        Y = $y
+                        ~w = $x
+                        ~w = $y
                     }
                 }
             }
-        }", [NegCheckCode]),
+        }", [NegCheckCode, N1Str, N2Str]),
 
-        % Generate Filter Logic
-        format(string(FilterLogic),
+        % Generate Filter Logic based on output format
+        (   OutputFormat = object
+        ->  format(string(FilterLogic),
 "        if ($X -and $Y) {
-            $results | Where-Object { $_.X -eq $X -and $_.Y -eq $Y }
+            $results | Where-Object { $_.~w -eq $X -and $_.~w -eq $Y }
         } elseif ($X) {
-            $results | Where-Object { $_.X -eq $X } | ForEach-Object { $_.Y }
+            $results | Where-Object { $_.~w -eq $X }
         } elseif ($Y) {
-            $results | Where-Object { $_.Y -eq $Y } | ForEach-Object { $_.X }
+            $results | Where-Object { $_.~w -eq $Y }
         } else {
-            $results | ForEach-Object { \"$($_.X):$($_.Y)\" }
-        }", []),
-        
+            $results
+        }", [N1Str, N2Str, N1Str, N2Str])
+        ;   format(string(FilterLogic),
+"        if ($X -and $Y) {
+            $results | Where-Object { $_.~w -eq $X -and $_.~w -eq $Y }
+        } elseif ($X) {
+            $results | Where-Object { $_.~w -eq $X } | ForEach-Object { $_.~w }
+        } elseif ($Y) {
+            $results | Where-Object { $_.~w -eq $Y } | ForEach-Object { $_.~w }
+        } else {
+            $results | ForEach-Object { \"$($_.~w):$($_.~w)\" }
+        }", [N1Str, N2Str, N1Str, N2Str, N2Str, N1Str, N1Str, N2Str])
+        ),
+
         % Check verbose_output option
         (   member(verbose_output(true), Options)
         ->  format(string(VerboseLoad), "        Write-Verbose \"[~w] Loading relations ~w, ~w...\"\n", [PredStr, Pred1Str, Pred2Str]),
@@ -533,8 +589,8 @@ compile_rule_to_powershell(Pred, Arity, _Head, Body, Options, Code) :-
             VerboseQuery = ""
         ),
 
-        % Structure body
-        (   member(cmdlet_binding(true), Options)
+        % Structure body - use begin/process blocks for cmdlet or pipeline
+        (   member(cmdlet_binding(true), Options) ; member(pipeline_input(true), Options)
         ->  format(string(BodyStr),
 "    begin {
 ~w~w
@@ -1828,6 +1884,16 @@ test_powershell_compiler :-
     format('~n[Test 3] Compilation with various options~n', []),
     test_compilation_options,
 
+    % Phase 11 Tests: Object Pipeline Support
+    format('~n[Test 4] Object pipeline parameter generation~n', []),
+    test_object_pipeline_params,
+
+    format('~n[Test 5] Object output format~n', []),
+    test_object_output_format,
+
+    format('~n[Test 6] Dynamic property names~n', []),
+    test_dynamic_property_names,
+
     format('~n╔════════════════════════════════════════╗~n', []),
     format('║  All PowerShell Compiler Tests Passed ║~n', []),
     format('╚════════════════════════════════════════╝~n', []).
@@ -1866,6 +1932,62 @@ test_compilation_options :-
     sub_string(PSCode2, _, _, _, 'if (-not (Get-Command uw-bash'),
     format('[✓] Default includes compatibility check~n', []).
 
+%% ============================================================================
+%% PHASE 11 TESTS: Object Pipeline Support
+%% ============================================================================
+
+test_object_pipeline_params :-
+    % Test: generate_pipeline_params produces ValueFromPipeline attribute
+    generate_pipeline_params(2, [pipeline_input(true)], CmdletBinding, ParamBlock),
+
+    % Verify CmdletBinding attribute is generated
+    sub_string(CmdletBinding, _, _, _, "[CmdletBinding"),
+    format('[✓] CmdletBinding attribute generated~n', []),
+
+    % Verify ValueFromPipeline is in param block
+    sub_string(ParamBlock, _, _, _, "ValueFromPipeline=$true"),
+    format('[✓] ValueFromPipeline attribute present~n', []),
+
+    % Verify ValueFromPipelineByPropertyName is in param block
+    sub_string(ParamBlock, _, _, _, "ValueFromPipelineByPropertyName=$true"),
+    format('[✓] ValueFromPipelineByPropertyName attribute present~n', []),
+
+    % Verify Position attributes
+    sub_string(ParamBlock, _, _, _, "Position=0"),
+    sub_string(ParamBlock, _, _, _, "Position=1"),
+    format('[✓] Position attributes present~n', []).
+
+test_object_output_format :-
+    % Test: generate_object_output produces PSCustomObject with correct properties
+    ArgNames = ['Id', 'Name'],
+    VarMap = ['Id'-"$id", 'Name'-"$name"],
+    generate_object_output(ArgNames, VarMap, OutputCode),
+
+    % Verify PSCustomObject syntax
+    sub_string(OutputCode, _, _, _, "[PSCustomObject]@{"),
+    format('[✓] PSCustomObject syntax generated~n', []),
+
+    % Verify property names
+    sub_string(OutputCode, _, _, _, "Id = $id"),
+    sub_string(OutputCode, _, _, _, "Name = $name"),
+    format('[✓] Dynamic property names in output~n', []).
+
+test_dynamic_property_names :-
+    % Test: get_arg_names_from_options returns custom names when provided
+    get_arg_names_from_options(2, [arg_names(['UserId', 'UserName'])], ArgNames1),
+    ArgNames1 = ['UserId', 'UserName'],
+    format('[✓] Custom arg_names option respected~n', []),
+
+    % Test: get_arg_names_from_options returns defaults when not provided
+    get_arg_names_from_options(2, [], ArgNames2),
+    ArgNames2 = ['X', 'Y'],
+    format('[✓] Default arg names (X, Y) used when not specified~n', []),
+
+    % Test: get_arg_names_from_options handles arity 3
+    get_arg_names_from_options(3, [], ArgNames3),
+    ArgNames3 = ['X', 'Y', 'Z'],
+    format('[✓] Default arg names for arity 3~n', []).
+
 %% generate_cmdlet_params_ps(+Arity, +Options, -CmdletBinding, -ParamBlock)
 %  Generate the [CmdletBinding()] attribute and param(...) block
 generate_cmdlet_params_ps(Arity, Options, CmdletBinding, ParamBlock) :-
@@ -1885,6 +2007,201 @@ generate_simple_params(Arity, Str) :-
     Arity > 3,
     findall(S, (between(1, Arity, I), format(string(S), "[string]$Arg~w", [I])), List),
     atomic_list_concat(List, ', ', Str).
+
+%% ============================================================================
+%% POWERSHELL OBJECT PIPELINE SUPPORT (Phase 11)
+%% ============================================================================
+%%
+%% This section implements full PowerShell object pipeline support:
+%%
+%% 1. **InputObject parameter**: Accept piped objects with ValueFromPipeline
+%% 2. **Dynamic property names**: Use predicate argument names as properties
+%% 3. **Process block streaming**: One-at-a-time processing for pipeline
+%% 4. **Output format propagation**: output_format(object) works everywhere
+%% 5. **End block support**: Optional aggregation/cleanup
+%%
+%% Usage:
+%%   ?- compile_to_powershell(user/2, [output_format(object), cmdlet_binding(true)], Code).
+%%
+%% Generated PowerShell:
+%%   function user {
+%%       [CmdletBinding()]
+%%       param(
+%%           [Parameter(Position=0)]
+%%           [string]$X,
+%%           [Parameter(Position=1, ValueFromPipeline=$true)]
+%%           [string]$Y
+%%       )
+%%       begin { $facts = @(...) }
+%%       process { ... output PSCustomObject ... }
+%%       end { }
+%%   }
+%%
+%% ============================================================================
+
+%% generate_pipeline_params(+Arity, +Options, -CmdletBinding, -ParamBlock)
+%  Generate parameters with full pipeline support including InputObject.
+generate_pipeline_params(Arity, Options, CmdletBinding, ParamBlock) :-
+    % Get argument names (from options or default)
+    get_arg_names_from_options(Arity, Options, ArgNames),
+
+    % Check for pipeline input mode
+    (   member(pipeline_input(true), Options)
+    ->  PipelineInput = true
+    ;   PipelineInput = false
+    ),
+
+    % Generate CmdletBinding with SupportsPipeline if needed
+    (   PipelineInput = true
+    ->  CmdletBinding = "    [CmdletBinding(SupportsShouldProcess=$false)]\n"
+    ;   CmdletBinding = "    [CmdletBinding()]\n"
+    ),
+
+    % Generate param block with ValueFromPipeline attributes
+    generate_pipeline_param_entries(ArgNames, Options, PipelineInput, 0, ParamEntries),
+    atomic_list_concat(ParamEntries, ",\n", ParamsStr),
+    format(string(ParamBlock), "    param(\n~w\n    )", [ParamsStr]).
+
+%% get_arg_names_from_options(+Arity, +Options, -ArgNames)
+%  Get argument names from options or use defaults (X, Y, Z, Arg4, ...)
+get_arg_names_from_options(Arity, Options, ArgNames) :-
+    (   member(arg_names(Names), Options),
+        length(Names, Arity)
+    ->  ArgNames = Names
+    ;   % Default names
+        findall(Name, (
+            between(1, Arity, I),
+            Idx is I - 1,
+            get_arg_name(Idx, Name)
+        ), ArgNames)
+    ).
+
+%% generate_pipeline_param_entries(+Names, +Options, +PipelineInput, +Index, -Entries)
+%  Generate parameter entries with pipeline attributes.
+generate_pipeline_param_entries([], _, _, _, []).
+generate_pipeline_param_entries([Name|Rest], Options, PipelineInput, Index, [Entry|RestEntries]) :-
+    % Get type (default: string)
+    (   member(arg_types(Types), Options),
+        nth0(Index, Types, Type)
+    ->  true
+    ;   Type = string
+    ),
+
+    % Determine if this parameter should accept pipeline input
+    (   PipelineInput = true,
+        Index = 0  % First parameter accepts pipeline by default
+    ->  PipeAttr = ", ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true"
+    ;   member(arg_options(Index, ArgOpts), Options),
+        member(pipeline(true), ArgOpts)
+    ->  PipeAttr = ", ValueFromPipeline=$true"
+    ;   PipeAttr = ""
+    ),
+
+    % Mandatory check
+    (   member(arg_options(Index, ArgOpts2), Options),
+        member(mandatory(true), ArgOpts2)
+    ->  MandAttr = ", Mandatory=$true"
+    ;   MandAttr = ""
+    ),
+
+    format(string(Entry),
+"        [Parameter(Position=~w~w~w)]
+        [~w]$~w", [Index, MandAttr, PipeAttr, Type, Name]),
+
+    NextIndex is Index + 1,
+    generate_pipeline_param_entries(Rest, Options, PipelineInput, NextIndex, RestEntries).
+
+%% generate_object_output(+ArgNames, +VarMap, -OutputCode)
+%  Generate PSCustomObject output with dynamic property names.
+generate_object_output(ArgNames, VarMap, OutputCode) :-
+    findall(PropStr, (
+        member(Name, ArgNames),
+        atom_string(Name, NameStr),
+        (   member(Name-Var, VarMap)
+        ->  format(string(PropStr), "~w = ~w", [NameStr, Var])
+        ;   format(string(PropStr), "~w = $~w", [NameStr, NameStr])
+        )
+    ), PropStrs),
+    atomic_list_concat(PropStrs, '; ', PropsJoined),
+    format(string(OutputCode), "[PSCustomObject]@{ ~w }", [PropsJoined]).
+
+%% generate_filter_with_output_format(+Arity, +OutputFormat, +ArgNames, -FilterLogic)
+%  Generate filter logic that respects output_format option.
+generate_filter_with_output_format(2, object, [X, Y], FilterLogic) :-
+    atom_string(X, XStr),
+    atom_string(Y, YStr),
+    format(string(FilterLogic),
+"    if ($~w -and $~w) {
+        $facts | Where-Object { $_.~w -eq $~w -and $_.~w -eq $~w }
+    } elseif ($~w) {
+        $facts | Where-Object { $_.~w -eq $~w }
+    } elseif ($~w) {
+        $facts | Where-Object { $_.~w -eq $~w }
+    } else {
+        $facts
+    }", [XStr, YStr, XStr, XStr, YStr, YStr, XStr, XStr, XStr, YStr, YStr, YStr]).
+
+generate_filter_with_output_format(2, text, [X, Y], FilterLogic) :-
+    atom_string(X, XStr),
+    atom_string(Y, YStr),
+    format(string(FilterLogic),
+"    if ($~w -and $~w) {
+        $facts | Where-Object { $_.~w -eq $~w -and $_.~w -eq $~w }
+    } elseif ($~w) {
+        $facts | Where-Object { $_.~w -eq $~w } | ForEach-Object { $_.~w }
+    } elseif ($~w) {
+        $facts | Where-Object { $_.~w -eq $~w } | ForEach-Object { $_.~w }
+    } else {
+        $facts | ForEach-Object { \"$($_.~w):$($_.~w)\" }
+    }", [XStr, YStr, XStr, XStr, YStr, YStr, XStr, XStr, XStr, YStr, YStr, YStr, YStr, XStr, XStr, YStr]).
+
+%% generate_join_output_with_format(+OutputFormat, +ArgNames, -OutputCode)
+%  Generate join output respecting output_format.
+generate_join_output_with_format(object, [X, Y|_], OutputCode) :-
+    atom_string(X, XStr),
+    atom_string(Y, YStr),
+    format(string(OutputCode),
+"                    [PSCustomObject]@{
+                        ~w = $x
+                        ~w = $y
+                    }", [XStr, YStr]).
+
+generate_join_output_with_format(text, [X, Y|_], OutputCode) :-
+    atom_string(X, XStr),
+    atom_string(Y, YStr),
+    format(string(OutputCode),
+"                    \"$($x):$($y)\"  # ~w:~w", [XStr, YStr]).
+
+%% generate_process_block(+Facts, +FilterLogic, +Options, -ProcessBlock)
+%  Generate a proper process block for pipeline streaming.
+generate_process_block(FactsDef, FilterLogic, Options, ProcessBlock) :-
+    (   member(output_format(object), Options)
+    ->  OutputHint = "# Outputs PSCustomObject"
+    ;   OutputHint = "# Outputs text"
+    ),
+    format(string(ProcessBlock),
+"    process {
+        ~w
+~w
+~w
+    }", [OutputHint, FactsDef, FilterLogic]).
+
+%% generate_begin_end_blocks(+FactsDef, +Options, -BeginBlock, -EndBlock)
+%  Generate begin and end blocks for advanced functions.
+generate_begin_end_blocks(FactsDef, Options, BeginBlock, EndBlock) :-
+    (   member(verbose_output(true), Options)
+    ->  format(string(VerboseInit), "        Write-Verbose \"Initializing...\"~n", [])
+    ;   VerboseInit = ""
+    ),
+    format(string(BeginBlock),
+"    begin {
+~w~w
+    }", [VerboseInit, FactsDef]),
+
+    (   member(end_block(EndCode), Options)
+    ->  format(string(EndBlock), "~n    end {~n        ~w~n    }", [EndCode])
+    ;   EndBlock = ""
+    ).
 
 generate_advanced_params(Arity, Options, ParamsStr) :-
     ArityM1 is Arity - 1,

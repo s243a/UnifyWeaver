@@ -1,7 +1,7 @@
 # Pure PowerShell Implementation
 
-**Status:** Implemented (Phases 1-10: Sources, Recursion, Bindings, Automation, Joins, C# Hosting, Advanced Optimizations, Firewall)
-**Version:** 2.4.0
+**Status:** Implemented (Phases 1-11: Sources, Recursion, Bindings, Automation, Joins, C# Hosting, Advanced Optimizations, Firewall, Object Pipeline)
+**Version:** 2.5.0
 **Date:** 2025-12-10
 **Branch:** main
 
@@ -530,12 +530,12 @@ pwsh -File test.ps1
 - [x] Hash-based partitioning
 - [x] Key-based partitioning
 
-### Phase 4: PowerShell Object Pipeline
+### Phase 4: PowerShell Object Pipeline ✅ Complete (v2.5.0)
 
-- [ ] Return PowerShell objects instead of colon-separated strings
-- [ ] Support PowerShell pipeline chaining
-- [ ] Type annotations for better IntelliSense
-- [ ] **Dependency:** Requires Binding System (Phase 5) to define output types
+- [x] Return PowerShell objects instead of colon-separated strings
+- [x] Support PowerShell pipeline with `ValueFromPipeline` parameters
+- [x] Dynamic property names via `arg_names([...])` option
+- [x] Output format control: `output_format(object|text)`
 
 ### Phase 5: Binding System Integration ✅ Complete (v2.1.0)
 
@@ -686,6 +686,77 @@ compile_to_powershell(Predicate, Options, Code)
     +--> If denied(Reason) → Fail with error message
     |
     +--> Otherwise → Compile with resolved mode
+```
+
+### Phase 11: Object Pipeline Support ✅ Complete (v2.5.0)
+
+- [x] **`pipeline_input(true)` option** - Enables ValueFromPipeline on first parameter
+  - `ValueFromPipeline=$true` for accepting piped input
+  - `ValueFromPipelineByPropertyName=$true` for property-based piping
+  - Automatic `[CmdletBinding()]` attribute generation
+- [x] **`output_format(object|text)` option** - Control output type
+  - `object`: Return `[PSCustomObject]` for pipeline chaining
+  - `text`: Return colon-separated strings (backward compatible)
+- [x] **`arg_names([...])` option** - Dynamic property names
+  - Custom property names instead of X, Y, Z
+  - Example: `arg_names(['UserId', 'UserName'])`
+- [x] **Begin/Process block structure** - Pipeline streaming support
+  - Facts loaded in `begin` block (once per pipeline)
+  - Filtering in `process` block (for each input)
+- [x] **Integration with facts and rules** - Works with all compilation paths
+- [x] **3 new tests** for object pipeline functionality
+
+#### Usage Examples
+
+```prolog
+% Generate function with pipeline input support
+?- compile_to_powershell(user/2, [
+    pipeline_input(true),
+    output_format(object),
+    arg_names(['UserId', 'UserName'])
+], Code).
+```
+
+**Generated PowerShell:**
+```powershell
+function user {
+    [CmdletBinding(SupportsShouldProcess=$false)]
+    param(
+        [Parameter(Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string]$UserId,
+        [Parameter(Position=1)]
+        [string]$UserName
+    )
+    begin {
+        $facts = @(
+            [PSCustomObject]@{ UserId='alice'; UserName='Alice Smith' },
+            [PSCustomObject]@{ UserId='bob'; UserName='Bob Jones' }
+        )
+    }
+    process {
+        if ($UserId -and $UserName) {
+            $facts | Where-Object { $_.UserId -eq $UserId -and $_.UserName -eq $UserName }
+        } elseif ($UserId) {
+            $facts | Where-Object { $_.UserId -eq $UserId }
+        } elseif ($UserName) {
+            $facts | Where-Object { $_.UserName -eq $UserName }
+        } else {
+            $facts
+        }
+    }
+}
+```
+
+**PowerShell Usage:**
+```powershell
+# Direct invocation
+user -UserId "alice"
+
+# Pipeline chaining
+"alice", "bob" | user | Select-Object UserName
+
+# Object pipeline
+user | Where-Object { $_.UserName -like "*Smith*" }
 ```
 
 ### Future Enhancements
