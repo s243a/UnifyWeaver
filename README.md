@@ -114,15 +114,18 @@ Compiles predicates to SQL queries for database execution.
 
 **Docs:** [SQL Target Design](SQL_TARGET_DESIGN.md)
 
-### PowerShell Target (v0.2)
-Windows automation and .NET orchestration.
+### PowerShell Target (v2.5)
+Windows automation and .NET orchestration with full object pipeline support.
 - Dual-mode: pure PowerShell or Bash-as-a-Service via WSL
 - Cross-platform (PowerShell 7+)
-- **Binding system**: 52 bindings for cmdlets, .NET methods, Windows automation
+- **Binding system**: 68+ bindings for cmdlets, .NET methods, Windows automation
 - **Auto-transpilation**: Rules like `sqrt(X, Y)` compile directly to `[Math]::Sqrt($X)`
+- **Object pipeline**: `ValueFromPipeline` parameters, `PSCustomObject` output
+- **Advanced joins**: Hash-based and pipelined N-way joins with O(n+m) complexity
+- **Firewall security**: Per-predicate mode control (pure/baas/auto)
 - Ideal for orchestrating .NET targets (C#, IronPython)
 
-**Docs:** [PowerShell Target Guide](docs/POWERSHELL_TARGET.md)
+**Docs:** [PowerShell Target Guide](docs/POWERSHELL_TARGET.md) | [Pure Implementation](docs/POWERSHELL_PURE_IMPLEMENTATION.md)
 
 ### AWK Target
 Lightweight, portable text processing.
