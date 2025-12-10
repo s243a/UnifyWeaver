@@ -1,7 +1,7 @@
 # Pure PowerShell Implementation
 
-**Status:** Implemented (Phase 1 + Phase 2 Recursion + Phase 5 Bindings + Phase 6 Automation)
-**Version:** 2.1.0
+**Status:** Implemented (Phases 1-8: Sources, Recursion, Bindings, Automation, Joins, C# Hosting)
+**Version:** 2.2.0
 **Date:** 2025-12-10
 **Branch:** main
 
@@ -557,7 +557,25 @@ pwsh -File test.ps1
 - [x] Process management (Get-Process, Start-Process, Stop-Process)
 - [x] .NET integration (System.Math, System.IO, System.Xml methods)
 
-### Phase 7: Firewall Mode & Security
+### Phase 7: Multi-Fact Join Optimizations ✅ Complete (v2.2.0)
+
+- [x] Hash-based joins for large datasets - O(n+m) instead of O(n*m)
+- [x] Support for N-way joins (3+ fact goals)
+- [x] Automatic join key detection from shared variables
+- [x] Combined variable maps for multi-fact bound goal code generation
+
+### Phase 8: In-Process C# Hosting (Chapter 6) ✅ Complete (v2.2.0)
+
+- [x] Integration with `dotnet_glue.pl` for .NET bridge generation
+- [x] `compile_with_csharp_host/4` - dual PowerShell/C# output
+- [x] `generate_csharp_bridge/3` - PowerShell, IronPython, CPython bridges
+- [x] `compile_cross_target_pipeline/3` - multi-language pipelines
+- [x] 16 new C# hosting bindings (68 total PowerShell bindings)
+- [x] Runtime detection (.NET, PowerShell, IronPython)
+- [x] PowerShell runspace management from C#
+- [x] Book 12 Chapter 6 documentation
+
+### Phase 9: Firewall Mode & Security
 
 - [ ] Firewall detection logic in compiler
 - [ ] Enforce pure mode when firewall detected
@@ -565,21 +583,15 @@ pwsh -File test.ps1
 
 ### Future Enhancements
 
-#### Multi-Fact Join Optimizations
-- [ ] Hash-based joins for large datasets (instead of nested loops)
-- [ ] Support for more than 2 fact goals in joins
-- [ ] Index-based lookups for frequently-joined predicates
-
 #### Additional Bindings
 - [ ] Scheduled tasks (Register-ScheduledTask, Get-ScheduledTask)
 - [ ] Date/time operations (Get-Date, AddDays, AddHours)
 - [ ] Active Directory cmdlets (Get-ADUser, Get-ADGroup)
 - [ ] Network cmdlets (Test-Connection, Resolve-DnsName)
 
-#### In-Process C# Hosting (Chapter 6)
-- [ ] Cross-target glue for C# ↔ PowerShell integration
-- [ ] In-process .NET assembly hosting
-- [ ] PowerShell runspace management
+#### Advanced Join Optimizations
+- [ ] Index-based lookups for frequently-joined predicates
+- [ ] Pipelined hash joins for N-way joins (currently nested loops)
 
 ---
 

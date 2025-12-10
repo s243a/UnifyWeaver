@@ -33,7 +33,8 @@
 init_powershell_bindings :-
     register_cmdlet_bindings,
     register_automation_bindings,
-    register_dotnet_bindings.
+    register_dotnet_bindings,
+    register_csharp_hosting_bindings.
 
 % ============================================================================
 % CONVENIENCE PREDICATE
@@ -377,6 +378,121 @@ register_dotnet_bindings :-
     declare_binding(powershell, string_replace/4, '.Replace',
         [type(string), type(string), type(string)], [type(string)],
         [pure, deterministic, total]).
+
+% ============================================================================
+% C# HOSTING BINDINGS (Chapter 6)
+% ============================================================================
+%
+% These bindings support in-process C# ↔ PowerShell communication.
+% They enable hosting C# code from PowerShell and vice versa.
+
+register_csharp_hosting_bindings :-
+    % -------------------------------------------
+    % Add-Type (Inline C# Compilation)
+    % -------------------------------------------
+
+    % Add-Type with TypeDefinition - compile inline C# code
+    declare_binding(powershell, add_type/1, 'Add-Type -TypeDefinition',
+        [type(string)], [],
+        [effect(state), deterministic,
+         imports(['Microsoft.CSharp'])]),
+
+    % Add-Type with AssemblyName - load existing assembly
+    declare_binding(powershell, load_assembly/1, 'Add-Type -AssemblyName',
+        [type(string)], [],
+        [effect(state), deterministic]),
+
+    % Add-Type with Path - load DLL from path
+    declare_binding(powershell, load_dll/1, 'Add-Type -Path',
+        [type(string)], [],
+        [effect(state), effect(io), deterministic]),
+
+    % -------------------------------------------
+    % .NET Object Creation
+    % -------------------------------------------
+
+    % New-Object - create .NET instance
+    declare_binding(powershell, new_object/2, 'New-Object',
+        [type(string)], [type(object)],
+        [effect(state), deterministic]),
+
+    % New-Object with ArgumentList
+    declare_binding(powershell, new_object/3, 'New-Object -TypeName',
+        [type(string), type(array)], [type(object)],
+        [effect(state), deterministic]),
+
+    % -------------------------------------------
+    % Runspace Management
+    % -------------------------------------------
+
+    % Create a new runspace
+    declare_binding(powershell, create_runspace/1, '[System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()',
+        [], [type('System.Management.Automation.Runspaces.Runspace')],
+        [effect(state), deterministic,
+         imports(['System.Management.Automation'])]),
+
+    % Open a runspace
+    declare_binding(powershell, open_runspace/1, '.Open()',
+        [type('Runspace')], [],
+        [effect(state), deterministic]),
+
+    % Create PowerShell instance
+    declare_binding(powershell, create_powershell/1, '[System.Management.Automation.PowerShell]::Create()',
+        [], [type('System.Management.Automation.PowerShell')],
+        [effect(state), deterministic,
+         imports(['System.Management.Automation'])]),
+
+    % -------------------------------------------
+    % Script Execution
+    % -------------------------------------------
+
+    % Add script to PowerShell instance
+    declare_binding(powershell, add_script/2, '.AddScript',
+        [type('PowerShell'), type(string)], [type('PowerShell')],
+        [effect(state), deterministic]),
+
+    % Add command to PowerShell instance
+    declare_binding(powershell, add_command/2, '.AddCommand',
+        [type('PowerShell'), type(string)], [type('PowerShell')],
+        [effect(state), deterministic]),
+
+    % Add parameter to PowerShell instance
+    declare_binding(powershell, add_parameter/3, '.AddParameter',
+        [type('PowerShell'), type(string), type(any)], [type('PowerShell')],
+        [effect(state), deterministic]),
+
+    % Invoke PowerShell - execute and get results
+    declare_binding(powershell, invoke_powershell/2, '.Invoke()',
+        [type('PowerShell')], [type('Collection<PSObject>')],
+        [effect(io), deterministic]),
+
+    % -------------------------------------------
+    % Type Conversion
+    % -------------------------------------------
+
+    % Cast to specific .NET type
+    declare_binding(powershell, cast_type/3, '-as',
+        [type(any), type(type)], [type(any)],
+        [pure, deterministic]),
+
+    % Check type
+    declare_binding(powershell, is_type/2, '-is',
+        [type(any), type(type)], [],
+        [pure, deterministic, pattern(exit_code_bool)]),
+
+    % -------------------------------------------
+    % Assembly Inspection
+    % -------------------------------------------
+
+    % Get types from assembly
+    declare_binding(powershell, get_assembly_types/2, '.GetTypes()',
+        [type('Assembly')], [type('Type[]')],
+        [pure, deterministic]),
+
+    % Get assembly from type
+    declare_binding(powershell, get_type_assembly/2, '.Assembly',
+        [type('Type')], [type('Assembly')],
+        [pure, deterministic]).
 
 % ============================================================================
 % TESTING
