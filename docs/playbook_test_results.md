@@ -14,7 +14,7 @@
 | powershell_inline_dotnet | 4/10 | - | PASS |
 | awk_advanced | 4-5/10 | - | PASS |
 | json_litedb | 7/10 | 4/10 | PASS |
-| csharp_query | 8/10 | - | BLOCKED |
+| csharp_query | 8/10 | - | PASS (verified) |
 
 ## Difficulty Scale
 
@@ -105,13 +105,13 @@ Key findings:
 ### csharp_query_playbook.md
 
 **Rating**: 8/10
-**Status**: BLOCKED
+**Status**: PASS (verified manually)
 
 Key findings:
-- Reports missing `build_unifyweaver_project/0` predicate
-- Underlying functionality (`compile_predicate_to_csharp/3`) works
-- Playbook may reference aspirational/unimplemented API
-- Manual testing showed C# code generation succeeds
+- Haiku initially reported missing `build_unifyweaver_project/0` but this was an error
+- Playbook correctly uses `compile_predicate_to_csharp/3` (verified in source)
+- Manual verification confirmed the bash example works correctly
+- High difficulty rating due to multi-step C# compilation workflow
 
 ## Issues Identified
 
@@ -122,10 +122,11 @@ The `extract_records.pl` tool uses regex matching, which can cause:
 - `csharp_sum_pair` matches both bash and PowerShell examples
 - Fix: Use exact match with `^query$` anchors
 
-### 2. Missing Predicates
+### 2. AI Agent Misreporting
 
-- `build_unifyweaver_project/0` referenced in csharp_query_playbook doesn't exist
-- The underlying compilation machinery works via `compile_predicate_to_csharp/3`
+- Haiku initially reported `build_unifyweaver_project/0` was missing from csharp_query_playbook
+- Manual verification showed this was incorrect - the playbook uses `compile_predicate_to_csharp/3`
+- Agent hallucination or misinterpretation of playbook instructions
 
 ### 3. Interactive Setup
 
@@ -135,9 +136,9 @@ The `extract_records.pl` tool uses regex matching, which can cause:
 ## Recommendations
 
 1. **Add exact match examples** to playbooks that use `extract_records.pl`
-2. **Update csharp_query_playbook** to use `compile_predicate_to_csharp/3` directly
-3. **Add execution records** to csharp_generator_playbook
-4. **Document interactive setup handling** for playbooks with dependencies
+2. **Add execution records** to csharp_generator_playbook (currently incomplete)
+3. **Document interactive setup handling** for playbooks with dependencies
+4. **Consider agent validation** - manual verification may be needed for high-difficulty ratings
 
 ## Test Environment
 
