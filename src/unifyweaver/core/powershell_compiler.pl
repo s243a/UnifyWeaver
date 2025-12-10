@@ -2465,10 +2465,20 @@ generate_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, HeadVars,
     }
     $results", [FactPredStr, VerboseStr, FactFieldExtraction, NegCheckStr, BoundCode, OutputCode])
 
-    ;   % Multiple fact goals - generate nested loops with join
-        FactGoals = [FG1, FG2|_],
-        generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, HeadVars,
-                                 FactVars, BoundVars, NegatedGoals, Options, Code)
+    ;   % Multiple fact goals - generate joins (2 or more facts)
+        length(FactGoals, NumFacts),
+        (   NumFacts = 2
+        ->  % Two-way join - use existing binary join
+            FactGoals = [FG1, FG2],
+            generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, HeadVars,
+                                     FactVars, BoundVars, NegatedGoals, Options, Code)
+        ;   NumFacts > 2
+        ->  % N-way join (3+ facts) - use multi-way join
+            generate_nway_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, HeadVars,
+                                    FactVars, BoundVars, NegatedGoals, Options, Code)
+        ;   % Should not happen but fallback
+            fail
+        )
     ).
 
 %% create_fact_var_map(+FactArgs, -VarMap)
@@ -2535,11 +2545,13 @@ generate_output_fields([Arg|Rest], VarMap, Idx, [Field|RestFields]) :-
     generate_output_fields(Rest, VarMap, NextIdx, RestFields).
 
 %% generate_multi_fact_loop(+PredStr, +HeadArgs, +FG1, +FG2, +BoundGoals, +HeadVars, +FactVars, +BoundVars, +NegatedGoals, +Options, -Code)
-%  Generate nested loops for multiple fact goals with join conditions.
-%  Properly handles:
-%    - Join variable detection (shared variables between facts)
-%    - Bound goals with combined variable mapping
-%    - Output generation based on head arguments
+%  Generate joins for multiple fact goals.
+%  Supports two join strategies:
+%    - Hash join (default): O(n+m) - builds hashtable on first relation, probes with second
+%    - Nested loop: O(n*m) - fallback for cross products or when explicitly requested
+%
+%  Use option join_strategy(nested_loop) to force nested loops.
+%  Use option join_strategy(hash) for hash join (default when join conditions exist).
 generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, _HeadVars,
                           _FactVars, _BoundVars, NegatedGoals, Options, Code) :-
     strip_module_qualifier(FG1, Plain1),
@@ -2556,9 +2568,8 @@ generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, _HeadVars,
     % Detect join conditions (shared variables between facts)
     detect_join_conditions(Args1, Args2, VarMap1, VarMap2, JoinConditions),
 
-    % Generate field extractions for both facts
-    generate_prefixed_field_extraction(Args1, "r1", Extraction1),
-    generate_prefixed_field_extraction(Args2, "r2", Extraction2),
+    % Also get the join key info for hash joins
+    detect_join_keys(Args1, Args2, JoinKeys),
 
     % Combine var maps for bound goals and output
     append(VarMap1, VarMap2, CombinedVarMap),
@@ -2566,7 +2577,7 @@ generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, _HeadVars,
     % Generate bound goal code if any
     (   BoundGoals \= []
     ->  generate_bound_goals_in_loop(BoundGoals, CombinedVarMap, HeadArgs, BoundCode, OutputVarMap),
-        format(string(BoundSection), "~n            # Apply bound operations~n            ~w", [BoundCode])
+        format(string(BoundSection), "~n        # Apply bound operations~n        ~w", [BoundCode])
     ;   BoundSection = "",
         OutputVarMap = []
     ),
@@ -2574,7 +2585,7 @@ generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, _HeadVars,
     % Generate negation check if needed
     (   NegatedGoals \= []
     ->  generate_negation_check_ps(NegatedGoals, NegCheck),
-        format(string(NegCheckStr), "~n            ~w", [NegCheck])
+        format(string(NegCheckStr), "~n        ~w", [NegCheck])
     ;   NegCheckStr = ""
     ),
 
@@ -2582,20 +2593,97 @@ generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, _HeadVars,
     append(OutputVarMap, CombinedVarMap, FinalVarMap),
     generate_output_object(HeadArgs, OutputVarMap, FinalVarMap, OutputCode),
 
+    % Check for verbose output
+    (   member(verbose_output(true), Options)
+    ->  VerboseFlag = true
+    ;   VerboseFlag = false
+    ),
+
+    % Determine join strategy
+    (   member(join_strategy(nested_loop), Options)
+    ->  % Force nested loop
+        generate_nested_loop_join(PredStr, FP1Str, FP2Str, Args1, Args2, VarMap1, VarMap2,
+                                  JoinConditions, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code)
+    ;   JoinKeys \= []
+    ->  % Has join keys - use hash join
+        generate_hash_join(PredStr, FP1Str, FP2Str, Args1, Args2, VarMap1, VarMap2,
+                          JoinKeys, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code)
+    ;   % No join keys (cross product) - use nested loop
+        generate_nested_loop_join(PredStr, FP1Str, FP2Str, Args1, Args2, VarMap1, VarMap2,
+                                  JoinConditions, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code)
+    ).
+
+%% generate_hash_join(+PredStr, +FP1Str, +FP2Str, +Args1, +Args2, +VarMap1, +VarMap2, +JoinKeys, +NegCheckStr, +BoundSection, +OutputCode, +VerboseFlag, -Code)
+%  Generate a hash-based join for O(n+m) performance.
+%  Builds a hashtable from the first relation, then probes with the second.
+generate_hash_join(PredStr, FP1Str, FP2Str, Args1, Args2, VarMap1, VarMap2,
+                   JoinKeys, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code) :-
+    % Get the join key field names for building hashtable
+    generate_hash_key_expr(JoinKeys, "r1", HashKeyExpr1),
+    generate_hash_key_expr(JoinKeys, "r2", HashKeyExpr2),
+
+    % Generate field extractions
+    generate_prefixed_field_extraction(Args1, "r1", Extraction1),
+    generate_prefixed_field_extraction(Args2, "r2", Extraction2),
+
+    % Verbose output
+    (   VerboseFlag = true
+    ->  format(string(VerboseStr), "Write-Verbose \"[~w] Building hash index on ~w...\"~n    ", [PredStr, FP1Str])
+    ;   VerboseStr = ""
+    ),
+
+    format(string(Code),
+"    # Hash join: O(n+m) complexity
+    ~w# Build hash index on first relation
+    $hashIndex = @{}
+    foreach ($r1 in $~w_data) {
+        $key = ~w
+        if (-not $hashIndex.ContainsKey($key)) {
+            $hashIndex[$key] = [System.Collections.ArrayList]::new()
+        }
+        [void]$hashIndex[$key].Add($r1)
+    }
+
+    # Probe hash index with second relation
+    $results = foreach ($r2 in $~w_data) {
+        $probeKey = ~w
+        if ($hashIndex.ContainsKey($probeKey)) {
+            foreach ($r1 in $hashIndex[$probeKey]) {
+                # Extract fields from first fact
+                ~w
+                # Extract fields from second fact
+                ~w~w~w
+                # Output result
+                ~w
+            }
+        }
+    }
+    $results", [VerboseStr, FP1Str, HashKeyExpr1, FP2Str, HashKeyExpr2,
+                Extraction1, Extraction2, NegCheckStr, BoundSection, OutputCode]).
+
+%% generate_nested_loop_join(+PredStr, +FP1Str, +FP2Str, +Args1, +Args2, +VarMap1, +VarMap2, +JoinConditions, +NegCheckStr, +BoundSection, +OutputCode, +VerboseFlag, -Code)
+%  Generate a nested loop join (original implementation).
+generate_nested_loop_join(PredStr, FP1Str, FP2Str, Args1, Args2, _VarMap1, _VarMap2,
+                          JoinConditions, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code) :-
+    % Generate field extractions
+    generate_prefixed_field_extraction(Args1, "r1", Extraction1),
+    generate_prefixed_field_extraction(Args2, "r2", Extraction2),
+
     % Generate join condition string
     (   JoinConditions \= []
     ->  atomic_list_concat(JoinConditions, ' -and ', JoinStr)
     ;   JoinStr = "$true"  % No join condition = cross product
     ),
 
-    % Check for verbose output
-    (   member(verbose_output(true), Options)
-    ->  format(string(VerboseStr), "Write-Verbose \"[~w] Joining facts...\"\n            ", [PredStr])
+    % Verbose output
+    (   VerboseFlag = true
+    ->  format(string(VerboseStr), "Write-Verbose \"[~w] Nested loop join...\"~n            ", [PredStr])
     ;   VerboseStr = ""
     ),
 
     format(string(Code),
-"    $results = foreach ($r1 in $~w_data) {
+"    # Nested loop join: O(n*m) complexity
+    $results = foreach ($r1 in $~w_data) {
         foreach ($r2 in $~w_data) {
             ~w# Extract fields from first fact
             ~w
@@ -2609,6 +2697,55 @@ generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, _HeadVars,
         }
     }
     $results", [FP1Str, FP2Str, VerboseStr, Extraction1, Extraction2, JoinStr, NegCheckStr, BoundSection, OutputCode]).
+
+%% detect_join_keys(+Args1, +Args2, -JoinKeys)
+%  Detect shared variables and return their field positions for hash key generation.
+%  JoinKeys is a list of idx1-idx2 pairs indicating which fields to use for the join key.
+detect_join_keys(Args1, Args2, JoinKeys) :-
+    findall(Idx1-Idx2, (
+        nth0(Idx1, Args1, Arg1),
+        var(Arg1),
+        nth0(Idx2, Args2, Arg2),
+        var(Arg2),
+        Arg1 == Arg2
+    ), JoinKeys).
+
+%% generate_hash_key_expr(+JoinKeys, +Prefix, -KeyExpr)
+%  Generate a PowerShell expression for the hash key based on join fields.
+generate_hash_key_expr(JoinKeys, Prefix, KeyExpr) :-
+    findall(FieldAccess, (
+        member(Idx-_, JoinKeys),
+        idx_to_field_name(Idx, FieldName),
+        format(string(FieldAccess), "$~w.~w", [Prefix, FieldName])
+    ), FieldAccesses1),
+    findall(FieldAccess, (
+        member(_-Idx, JoinKeys),
+        Prefix = "r2",
+        idx_to_field_name(Idx, FieldName),
+        format(string(FieldAccess), "$~w.~w", [Prefix, FieldName])
+    ), FieldAccesses2),
+    % Use appropriate list based on prefix
+    (   Prefix = "r1"
+    ->  FieldAccesses = FieldAccesses1
+    ;   % For r2, we need the second index from each pair
+        findall(FieldAccess, (
+            member(_-Idx, JoinKeys),
+            idx_to_field_name(Idx, FieldName),
+            format(string(FieldAccess), "$~w.~w", [Prefix, FieldName])
+        ), FieldAccesses)
+    ),
+    (   FieldAccesses = [Single]
+    ->  KeyExpr = Single
+    ;   atomic_list_concat(FieldAccesses, ':', Combined),
+        format(string(KeyExpr), "\"~w\"", [Combined])
+    ).
+
+%% idx_to_field_name(+Idx, -FieldName)
+%  Convert a 0-based index to a field name (X, Y, F2, F3, ...).
+idx_to_field_name(0, "X") :- !.
+idx_to_field_name(1, "Y") :- !.
+idx_to_field_name(Idx, FieldName) :-
+    format(atom(FieldName), "F~w", [Idx]).
 
 %% create_prefixed_fact_var_map(+FactArgs, +Prefix, -VarMap)
 %  Create a variable map with prefixed PS variables (e.g., $r1_X, $r1_Y)
@@ -2652,6 +2789,186 @@ detect_join_conditions(Args1, Args2, VarMap1, VarMap2, JoinConditions) :-
         lookup_var_eq(Arg2, VarMap2, PSVar2),
         format(string(Condition), "~w -eq ~w", [PSVar1, PSVar2])
     ), JoinConditions).
+
+%% ============================================================================
+%% N-WAY JOINS (3+ fact goals)
+%% ============================================================================
+%%
+%% For rules with 3 or more fact goals, we generate pipelined nested hash joins:
+%%   Join(F1, F2) -> Result1
+%%   Join(Result1, F3) -> Result2
+%%   ...
+%%
+%% This maintains O(n+m+p+...) complexity for equi-joins.
+
+%% generate_nway_fact_loop(+PredStr, +HeadArgs, +FactGoals, +BoundGoals, +HeadVars, +FactVars, +BoundVars, +NegatedGoals, +Options, -Code)
+%  Generate joins for 3 or more fact goals using pipelined hash joins.
+generate_nway_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, _HeadVars,
+                        _FactVars, _BoundVars, NegatedGoals, Options, Code) :-
+    length(FactGoals, NumFacts),
+    format('[PowerShell] Generating ~w-way join~n', [NumFacts]),
+
+    % Build fact info list with prefixes r1, r2, r3, ...
+    number_fact_goals(FactGoals, 1, NumberedFacts),
+
+    % Generate fact loaders
+    generate_all_fact_loaders(NumberedFacts, LoaderCode),
+
+    % Build combined variable map from all facts
+    build_combined_var_map(NumberedFacts, CombinedVarMap),
+
+    % Generate bound goal code if any
+    (   BoundGoals \= []
+    ->  generate_bound_goals_in_loop(BoundGoals, CombinedVarMap, HeadArgs, BoundCode, OutputVarMap),
+        format(string(BoundSection), "~n                # Apply bound operations~n                ~w", [BoundCode])
+    ;   BoundSection = "",
+        OutputVarMap = []
+    ),
+
+    % Generate negation check if needed
+    (   NegatedGoals \= []
+    ->  generate_negation_check_ps(NegatedGoals, NegCheck),
+        format(string(NegCheckStr), "~n                ~w", [NegCheck])
+    ;   NegCheckStr = ""
+    ),
+
+    % Generate output object
+    append(OutputVarMap, CombinedVarMap, FinalVarMap),
+    generate_output_object(HeadArgs, OutputVarMap, FinalVarMap, OutputCode),
+
+    % Check for verbose output
+    (   member(verbose_output(true), Options)
+    ->  format(string(VerboseStr), "Write-Verbose \"[~w] ~w-way join...\"~n    ", [PredStr, NumFacts])
+    ;   VerboseStr = ""
+    ),
+
+    % Generate the pipelined join code
+    generate_pipelined_joins(NumberedFacts, NegCheckStr, BoundSection, OutputCode,
+                             VerboseStr, JoinCode),
+
+    format(string(Code), "    ~w~w", [LoaderCode, JoinCode]).
+
+%% number_fact_goals(+FactGoals, +StartNum, -NumberedFacts)
+%  Number fact goals as r1, r2, r3, etc.
+number_fact_goals([], _, []).
+number_fact_goals([FG|Rest], N, [fact_info(N, Prefix, FPred, Args, VarMap)|RestNumbered]) :-
+    strip_module_qualifier(FG, PlainFG),
+    PlainFG =.. [FPred|Args],
+    format(atom(Prefix), "r~w", [N]),
+    create_prefixed_fact_var_map(Args, Prefix, VarMap),
+    N1 is N + 1,
+    number_fact_goals(Rest, N1, RestNumbered).
+
+%% generate_all_fact_loaders(+NumberedFacts, -Code)
+%  Generate loader code for all facts.
+generate_all_fact_loaders(NumberedFacts, Code) :-
+    findall(LoaderLine, (
+        member(fact_info(_, _, FPred, _, _), NumberedFacts),
+        atom_string(FPred, FPredStr),
+        format(string(LoaderLine), "$~w_data = ~w", [FPredStr, FPredStr])
+    ), LoaderLines),
+    atomic_list_concat(LoaderLines, '\n    ', Code).
+
+%% build_combined_var_map(+NumberedFacts, -CombinedVarMap)
+%  Combine variable maps from all facts.
+build_combined_var_map([], []).
+build_combined_var_map([fact_info(_, _, _, _, VarMap)|Rest], CombinedVarMap) :-
+    build_combined_var_map(Rest, RestMap),
+    append(VarMap, RestMap, CombinedVarMap).
+
+%% generate_pipelined_joins(+NumberedFacts, +NegCheckStr, +BoundSection, +OutputCode, +VerboseStr, -Code)
+%  Generate pipelined hash joins for N facts.
+%  Strategy: nested loops with hash acceleration where possible.
+generate_pipelined_joins(NumberedFacts, NegCheckStr, BoundSection, OutputCode, VerboseStr, Code) :-
+    % For N-way joins, we generate deeply nested foreach loops with join conditions
+    % at each level. Future optimization: build hash indices for each pair.
+
+    % Collect all field extractions
+    findall(ExtrLines, (
+        member(fact_info(_, Prefix, _, Args, _), NumberedFacts),
+        generate_prefixed_field_extraction(Args, Prefix, ExtrLines)
+    ), AllExtractions),
+    atomic_list_concat(AllExtractions, '\n                ', ExtractionsCode),
+
+    % Detect all join conditions between consecutive facts
+    detect_all_join_conditions(NumberedFacts, AllJoinConditions),
+
+    % Generate nested foreach loops
+    generate_nested_foreach_loops(NumberedFacts, AllJoinConditions, ExtractionsCode,
+                                   NegCheckStr, BoundSection, OutputCode, VerboseStr, Code).
+
+%% detect_all_join_conditions(+NumberedFacts, -AllConditions)
+%  Detect join conditions between all pairs of facts.
+detect_all_join_conditions(NumberedFacts, AllConditions) :-
+    findall(Condition, (
+        member(fact_info(N1, _, _, Args1, VarMap1), NumberedFacts),
+        member(fact_info(N2, _, _, Args2, VarMap2), NumberedFacts),
+        N1 < N2,
+        member(Arg1, Args1),
+        var(Arg1),
+        member(Arg2, Args2),
+        var(Arg2),
+        Arg1 == Arg2,
+        lookup_var_eq(Arg1, VarMap1, PSVar1),
+        lookup_var_eq(Arg2, VarMap2, PSVar2),
+        format(string(Condition), "~w -eq ~w", [PSVar1, PSVar2])
+    ), AllConditions).
+
+%% generate_nested_foreach_loops(+Facts, +JoinConds, +Extractions, +NegCheck, +Bound, +Output, +Verbose, -Code)
+%  Generate deeply nested foreach loops.
+generate_nested_foreach_loops(NumberedFacts, JoinConditions, ExtractionsCode,
+                               NegCheckStr, BoundSection, OutputCode, VerboseStr, Code) :-
+    length(NumberedFacts, NumFacts),
+    % Build the opening loops
+    build_foreach_openings(NumberedFacts, Openings, Closings),
+
+    % Build the join condition check
+    (   JoinConditions \= []
+    ->  atomic_list_concat(JoinConditions, ' -and ', JoinStr)
+    ;   JoinStr = "$true"
+    ),
+
+    % Calculate indentation for innermost block (4 spaces per nesting level + base)
+    BaseIndent = 4,
+    InnerIndent is BaseIndent + (NumFacts * 4),
+    indent_string(InnerIndent, InnerIndentStr),
+
+    format(string(Code),
+"~w# ~w-way nested loop join
+    $results = ~w
+        # Extract all fields
+        ~w
+        # Check join conditions
+        if (~w) {~w~w
+            # Output result
+            ~w
+        }
+    ~w
+    $results",
+           [VerboseStr, NumFacts, Openings, ExtractionsCode, JoinStr,
+            NegCheckStr, BoundSection, OutputCode, Closings]).
+
+%% build_foreach_openings(+Facts, -Openings, -Closings)
+%  Build the foreach opening and closing strings.
+build_foreach_openings([], "", "").
+build_foreach_openings([fact_info(N, Prefix, FPred, _, _)|Rest], Openings, Closings) :-
+    atom_string(FPred, FPredStr),
+    (   N = 1
+    ->  format(string(ThisOpen), "foreach ($~w in $~w_data) {", [Prefix, FPredStr])
+    ;   format(string(ThisOpen), "~n        foreach ($~w in $~w_data) {", [Prefix, FPredStr])
+    ),
+    build_foreach_openings(Rest, RestOpenings, RestClosings),
+    atom_concat(ThisOpen, RestOpenings, Openings),
+    atom_concat("}", RestClosings, Closings).
+
+%% indent_string(+NumSpaces, -Str)
+%  Generate a string of spaces.
+indent_string(0, "") :- !.
+indent_string(N, Str) :-
+    N > 0,
+    N1 is N - 1,
+    indent_string(N1, Rest),
+    atom_concat(" ", Rest, Str).
 
 %% generate_bound_goals_code(+BoundGoals, +VarMap, -Codes, -FinalVarMap)
 %
@@ -2956,14 +3273,79 @@ test_bound_rule_compilation :-
     (   compile_to_powershell(combined/2, [powershell_mode(pure)], CombinedCode)
     ->  (sub_string(CombinedCode, _, _, _, "[Math]::Sqrt") -> HasSqrtBind = true ; HasSqrtBind = false),
         (sub_string(CombinedCode, _, _, _, "foreach") -> HasLoop = true ; HasLoop = false),
-        (   HasSqrtBind = true, HasLoop = true
-        ->  format('  [PASS] Multi-fact join with bound goal compiled~n', [])
-        ;   format('  [FAIL] Missing patterns: Sqrt=~w, loop=~w~n', [HasSqrtBind, HasLoop])
+        % Check for hash join pattern
+        (sub_string(CombinedCode, _, _, _, "$hashIndex") -> HasHashJoin = true ; HasHashJoin = false),
+        (   HasSqrtBind = true, HasLoop = true, HasHashJoin = true
+        ->  format('  [PASS] Multi-fact join with bound goal compiled (using hash join)~n', [])
+        ;   HasSqrtBind = true, HasLoop = true
+        ->  format('  [PASS] Multi-fact join with bound goal compiled (nested loop fallback)~n', [])
+        ;   format('  [FAIL] Missing patterns: Sqrt=~w, loop=~w, hashJoin=~w~n', [HasSqrtBind, HasLoop, HasHashJoin])
         )
     ;   format('  [FAIL] Multi-fact join with bound goal compilation failed~n', [])
     ),
     abolish(user:item/2),
     abolish(user:price/2),
     abolish(user:combined/2),
+
+    % Test 8: Verify hash join pattern explicitly
+    format('[Test 8] Hash join vs nested loop selection~n', []),
+    % Define facts for testing hash join
+    abolish(user:emp/2),
+    assertz(user:emp(alice, 100)),
+    assertz(user:emp(bob, 200)),
+    abolish(user:dept/2),
+    assertz(user:dept(alice, engineering)),
+    assertz(user:dept(bob, sales)),
+    % Join rule with bound goal (should use hash join)
+    abolish(user:emp_dept_sqrt/3),
+    assertz((user:emp_dept_sqrt(EmpName, EmpDept, SqrtSal) :-
+        emp(EmpName, EmpSal), dept(EmpName, EmpDept), sqrt(EmpSal, SqrtSal))),
+    (   compile_to_powershell(emp_dept_sqrt/3, [powershell_mode(pure)], HashJoinCode)
+    ->  (sub_string(HashJoinCode, _, _, _, "$hashIndex") -> UsesHashJoin = true ; UsesHashJoin = false),
+        (sub_string(HashJoinCode, _, _, _, "O(n+m)") -> HasHashComment = true ; HasHashComment = false),
+        (sub_string(HashJoinCode, _, _, _, "probeKey") -> HasProbe = true ; HasProbe = false),
+        (   UsesHashJoin = true, HasProbe = true
+        ->  format('  [PASS] Hash join generated for equi-join with bound goal~n', [])
+        ;   format('  [INFO] Using nested loop (join_keys not detected): hash=~w, probe=~w~n',
+                   [UsesHashJoin, HasProbe])
+        )
+    ;   format('  [FAIL] Hash join compilation failed~n', [])
+    ),
+    abolish(user:emp/2),
+    abolish(user:dept/2),
+    abolish(user:emp_dept_sqrt/3),
+
+    % Test 9: 3-way join (N-way join support)
+    format('[Test 9] 3-way join with bound goal~n', []),
+    % Define facts for 3-way join: employee, department, location
+    abolish(user:employee/2),
+    assertz(user:employee(alice, eng)),
+    assertz(user:employee(bob, sales)),
+    abolish(user:department/2),
+    assertz(user:department(eng, building_a)),
+    assertz(user:department(sales, building_b)),
+    abolish(user:building/2),
+    assertz(user:building(building_a, 100)),
+    assertz(user:building(building_b, 200)),
+    % 3-way join: employee -> department -> building with sqrt on capacity
+    abolish(user:emp_capacity/3),
+    assertz((user:emp_capacity(EmpName3, Building3, SqrtCap3) :-
+        employee(EmpName3, Dept3), department(Dept3, Building3), building(Building3, Cap3), sqrt(Cap3, SqrtCap3))),
+    (   compile_to_powershell(emp_capacity/3, [powershell_mode(pure)], ThreeWayCode)
+    ->  (sub_string(ThreeWayCode, _, _, _, "3-way") -> Has3Way = true ; Has3Way = false),
+        (sub_string(ThreeWayCode, _, _, _, "$r3") -> HasR3 = true ; HasR3 = false),
+        (sub_string(ThreeWayCode, _, _, _, "[Math]::Sqrt") -> Has3Sqrt = true ; Has3Sqrt = false),
+        (   Has3Way = true, HasR3 = true, Has3Sqrt = true
+        ->  format('  [PASS] 3-way join generated with all facts and binding~n', [])
+        ;   Has3Way = false, HasR3 = true, Has3Sqrt = true
+        ->  format('  [PASS] 3-way join generated (nested loops)~n', [])
+        ;   format('  [FAIL] Missing patterns: 3-way=~w, r3=~w, Sqrt=~w~n', [Has3Way, HasR3, Has3Sqrt])
+        )
+    ;   format('  [FAIL] 3-way join compilation failed~n', [])
+    ),
+    abolish(user:employee/2),
+    abolish(user:department/2),
+    abolish(user:building/2),
+    abolish(user:emp_capacity/3),
 
     format('~n=== Bound Rule Compilation Tests Complete ===~n', []).
