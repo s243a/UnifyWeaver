@@ -1,8 +1,8 @@
 # Pure PowerShell Implementation
 
-**Status:** Implemented (Phase 1 + Phase 2 Recursion)
-**Version:** 2.0.0
-**Date:** 2025-12-08
+**Status:** Implemented (Phase 1 + Phase 2 Recursion + Phase 5 Bindings + Phase 6 Automation)
+**Version:** 2.1.0
+**Date:** 2025-12-10
 **Branch:** main
 
 ---
@@ -101,6 +101,121 @@ The following recursion patterns are now implemented in pure PowerShell:
 - **Pattern:** Accumulator patterns with tail calls
 - **Example:** `count([], Acc, Acc). count([_|T], Acc, N) :- Acc1 is Acc+1, count(T, Acc1, N)`
 - **PowerShell:** Compiled to iterative `foreach` loops
+
+---
+
+## Phase 5 & 6: Binding System & Windows Automation ✅ (New in v2.1.0)
+
+The binding system enables automatic transpilation of Prolog rules to PowerShell code using registered bindings for cmdlets, .NET methods, and Windows automation operations.
+
+### 10. Binding System Architecture
+
+The binding system consists of three components:
+
+1. **Binding Registry** (`src/unifyweaver/core/binding_registry.pl`)
+   - Core `binding/6` predicate for declaring bindings
+   - Effect annotations (pure, io, state, throws)
+   - Design patterns (pipe_transform, cmdlet_output, exit_code_bool)
+
+2. **PowerShell Bindings** (`src/unifyweaver/bindings/powershell_bindings.pl`)
+   - 52 pre-registered bindings for PowerShell operations
+   - Cmdlet bindings (Write-Output, ForEach-Object, etc.)
+   - .NET method bindings ([Math]::Sqrt, [System.IO.File]::Exists, etc.)
+   - Windows automation bindings (services, registry, event logs)
+
+3. **Binding-Aware Compilation** (`src/unifyweaver/core/powershell_compiler.pl`)
+   - Classifies rule body goals as bound, fact-based, or builtin
+   - Generates code for pure bound rules (all goals have bindings)
+   - Generates code for mixed rules (facts + bindings with variable flow)
+
+### 11. Binding Categories (52 Total)
+
+#### Core Cmdlets (18 bindings)
+- Output: `write_output/1`, `write_host/1`, `write_verbose/1`, `write_warning/1`, `write_error/1`
+- Objects: `ps_object/2`, `select_object/2`
+- Pipeline: `foreach_object/2`, `where_object/2`, `sort_object/2`, `group_object/2`, `measure_object/2`
+- Type conversions: `to_string/2`, `to_int/2`, `to_array/2`, `to_hashtable/2`
+
+#### Windows Automation (22 bindings)
+- File system: `get_child_item/2`, `test_path/1`, `get_content/2`, `set_content/2`, `remove_item/1`, `new_item/2`
+- Services: `get_service/1`, `get_service/2`, `start_service/1`, `stop_service/1`, `restart_service/1`
+- Registry: `get_item_property/3`, `set_item_property/3`, `new_registry_key/1`
+- Event logs: `get_win_event/2`, `write_event_log/4`
+- WMI/CIM: `get_cim_instance/2`, `invoke_cim_method/4`
+- Processes: `get_process/1`, `get_process/2`, `stop_process/1`, `start_process/2`
+
+#### .NET Integration (12 bindings)
+- System.IO: `file_exists/1`, `file_read_all_text/2`, `file_write_all_text/2`, `path_get_full/2`, `path_combine/3`
+- System.Xml: `xml_reader_create/2`, `xml_document_load/2`
+- System.Math: `sqrt/2`, `round/2`, `abs/2`
+- String: `string_split/3`, `string_trim/2`, `string_replace/4`
+
+### 12. Auto-Transpilation Examples
+
+#### Pure Bound Rule
+```prolog
+compute_sqrt(X, Y) :- sqrt(X, Y).
+```
+Compiles to:
+```powershell
+function compute_sqrt {
+    param([string]$X, [string]$Y)
+    $Y = [Math]::Sqrt($X)
+}
+```
+
+#### Mixed Bound/Fact Rule (Single Fact)
+```prolog
+emp_sqrt(Name, SqrtSalary) :- employee(Name, Salary), sqrt(Salary, SqrtSalary).
+```
+Compiles to:
+```powershell
+function emp_sqrt {
+    param([string]$X, [string]$Y)
+    $employee_data = employee
+    $results = foreach ($fact in $employee_data) {
+        $X = $fact.X
+        $Y = $fact.Y
+        $result1 = [Math]::Sqrt($Y)
+        [PSCustomObject]@{ X = $X; Y = $result1 }
+    }
+    $results
+}
+```
+
+#### Multi-Fact Join with Binding
+```prolog
+combined(Name, SqrtQty) :- item(Name, Qty), price(Name, _), sqrt(Qty, SqrtQty).
+```
+Compiles to:
+```powershell
+function combined {
+    param([string]$X, [string]$Y)
+    $item_data = item
+    $price_data = price
+    $results = foreach ($r1 in $item_data) {
+        foreach ($r2 in $price_data) {
+            $r1_X = $r1.X; $r1_Y = $r1.Y
+            $r2_X = $r2.X; $r2_Y = $r2.Y
+            if ($r1_X -eq $r2_X) {  # Join on Name
+                $result1 = [Math]::Sqrt($r1_Y)
+                [PSCustomObject]@{ X = $r1_X; Y = $result1 }
+            }
+        }
+    }
+    $results
+}
+```
+
+### 13. Variable Flow Analysis
+
+The compiler automatically tracks variable flow between:
+- **Head arguments** → Parameter names
+- **Fact goal arguments** → Extracted field values
+- **Bound goal inputs** → Values from facts or previous bindings
+- **Bound goal outputs** → New result variables
+
+This enables seamless data flow through mixed rules without explicit plumbing.
 
 ---
 
@@ -422,23 +537,49 @@ pwsh -File test.ps1
 - [ ] Type annotations for better IntelliSense
 - [ ] **Dependency:** Requires Binding System (Phase 5) to define output types
 
-### Phase 5: Binding System Integration (Planned)
+### Phase 5: Binding System Integration ✅ Complete (v2.1.0)
 
-- [ ] Adopt `binding/6` proposal (see `docs/proposals/BINDING_PREDICATE_PROPOSAL.md`)
-- [ ] Migrate `arg_options` and `cmdlet_binding` to new system
-- [ ] Standardize parameter generation and validation logic
+- [x] Adopted `binding/6` proposal (see `docs/proposals/BINDING_PREDICATE_PROPOSAL.md`)
+- [x] Core binding registry (`src/unifyweaver/core/binding_registry.pl`)
+- [x] PowerShell bindings (52 bindings) (`src/unifyweaver/bindings/powershell_bindings.pl`)
+- [x] Binding-aware rule compilation
+- [x] Variable flow between fact goals and bound goals
+- [x] Multi-fact joins with automatic join condition detection
 
-### Phase 6: Windows Automation (Chapter 5)
+### Phase 6: Windows Automation (Chapter 5) ✅ Complete (v2.1.0)
 
-- [ ] Implement `service/2`, `registry/3`, `wmi/3` predicates
-- [ ] Requires Binding System for complex parameter mapping
-- [ ] Pure PowerShell implementations for system administration tasks
+- [x] 52 PowerShell bindings for Windows automation
+- [x] File system operations (Get-ChildItem, Test-Path, Get-Content, etc.)
+- [x] Windows services (Get-Service, Start-Service, Stop-Service, etc.)
+- [x] Registry operations (Get-ItemProperty, Set-ItemProperty)
+- [x] Event logs (Get-WinEvent, Write-EventLog)
+- [x] WMI/CIM queries (Get-CimInstance, Invoke-CimMethod)
+- [x] Process management (Get-Process, Start-Process, Stop-Process)
+- [x] .NET integration (System.Math, System.IO, System.Xml methods)
 
 ### Phase 7: Firewall Mode & Security
 
 - [ ] Firewall detection logic in compiler
 - [ ] Enforce pure mode when firewall detected
 - [ ] Clear error messages when pure mode unsupported
+
+### Future Enhancements
+
+#### Multi-Fact Join Optimizations
+- [ ] Hash-based joins for large datasets (instead of nested loops)
+- [ ] Support for more than 2 fact goals in joins
+- [ ] Index-based lookups for frequently-joined predicates
+
+#### Additional Bindings
+- [ ] Scheduled tasks (Register-ScheduledTask, Get-ScheduledTask)
+- [ ] Date/time operations (Get-Date, AddDays, AddHours)
+- [ ] Active Directory cmdlets (Get-ADUser, Get-ADGroup)
+- [ ] Network cmdlets (Test-Connection, Resolve-DnsName)
+
+#### In-Process C# Hosting (Chapter 6)
+- [ ] Cross-target glue for C# ↔ PowerShell integration
+- [ ] In-process .NET assembly hosting
+- [ ] PowerShell runspace management
 
 ---
 
