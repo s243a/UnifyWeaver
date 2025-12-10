@@ -272,27 +272,36 @@ function ~w {
         ), ObjEntries),
         atomic_list_concat(ObjEntries, ',\n', ObjStr),
         
-        % Check cmdlet_binding option
-        (   member(cmdlet_binding(true), Options)
-        ->  CmdletBindingAttr = "    [CmdletBinding()]\n",
-            % Generate cmdlet-style parameter block
-            ParamBlock = "    param(
-        [Parameter(Position=0)]
-        [string]$X,
+        % Generate parameters (simple or cmdlet-style)
+        generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock),
         
-        [Parameter(Position=1, ValueFromPipeline=$true)]
-        [string]$Y
-    )"
-        ;   CmdletBindingAttr = "",
-            format(string(ParamBlock), "    param(~w)", [ParamStr])
-        ),
-        
+        % Generate facts definition
+        format(string(FactsDef), "    $facts = @(\n~w\n    )", [ObjStr]),
+
         % Check verbose_output option
         (   member(verbose_output(true), Options)
-        ->  format(string(VerboseLoad), "    Write-Verbose \"[~w] Loading ~w facts...\"", [PredStr, Pred]),
-            format(string(VerboseQuery), "    Write-Verbose \"[~w] Query: X=$X, Y=$Y\"", [PredStr])
+        ->  format(string(VerboseLoad), "        Write-Verbose \"[~w] Loading ~w facts...\"\n", [PredStr, Pred]),
+            format(string(VerboseQuery), "        Write-Verbose \"[~w] Query: X=$X, Y=$Y\"\n", [PredStr])
         ;   VerboseLoad = "",
             VerboseQuery = ""
+        ),
+        
+        % Structure body based on cmdlet_binding (Begin/Process vs simple)
+        (   member(cmdlet_binding(true), Options)
+        ->  % Advanced function: Use begin/process blocks
+            format(string(Body), 
+"    begin {
+~w~w
+    }
+
+    process {
+~w~w
+    }", [VerboseLoad, FactsDef, VerboseQuery, FilterLogic])
+        ;   % Basic function: Sequential execution
+            format(string(Body), 
+"~w~w
+~w
+~w", [VerboseLoad, VerboseQuery, FactsDef, FilterLogic])
         ),
         
         format(string(Code),
@@ -305,16 +314,11 @@ function ~w {
 ~w~w
     
 ~w
-~w
-    $facts = @(
-~w
-    )
-~w
 }
 
 # Stream all facts
 ~w
-", [Pred, Arity, DateStr, PredStr, CmdletBindingAttr, ParamBlock, VerboseLoad, VerboseQuery, ObjStr, FilterLogic, PredStr])
+", [Pred, Arity, DateStr, PredStr, CmdletBindingAttr, ParamBlock, Body, PredStr])
     ).
 
 %% generate_filter_logic_ps(+Arity, +OutputFormat, -FilterLogic)
@@ -370,7 +374,7 @@ format_ps_fact_entry([A, B|_], Entry) :-
 
 %% compile_rule_to_powershell(+Pred, +Arity, +Head, +Body, +Options, -Code)
 %  Compile a rule with joins and optional negation to pure PowerShell
-compile_rule_to_powershell(Pred, Arity, _Head, Body, _Options, Code) :-
+compile_rule_to_powershell(Pred, Arity, _Head, Body, Options, Code) :-
     atom_string(Pred, PredStr),
     get_time(Timestamp),
     format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
@@ -398,6 +402,71 @@ compile_rule_to_powershell(Pred, Arity, _Head, Body, _Options, Code) :-
         ;   NegCheckCode = "",
             NegLoaderCode = ""
         ),
+        
+        % Generate Parameters
+        generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock),
+
+        % Generate Loading Logic (Facts)
+        format(string(Loaders), 
+"        # Get facts from both relations
+        $rel1 = ~w
+        $rel2 = ~w
+~w", [Pred1Str, Pred2Str, NegLoaderCode]),
+
+        % Generate Join Logic
+        format(string(JoinLogic),
+"        # Nested loop join: rel1.Y = rel2.X
+        $results = foreach ($r1 in $rel1) {
+            foreach ($r2 in $rel2) {
+                if ($r1.Y -eq $r2.X) {
+                    $x = $r1.X
+                    $y = $r2.Y~w
+                    [PSCustomObject]@{
+                        X = $x
+                        Y = $y
+                    }
+                }
+            }
+        }", [NegCheckCode]),
+
+        % Generate Filter Logic
+        format(string(FilterLogic),
+"        if ($X -and $Y) {
+            $results | Where-Object { $_.X -eq $X -and $_.Y -eq $Y }
+        } elseif ($X) {
+            $results | Where-Object { $_.X -eq $X } | ForEach-Object { $_.Y }
+        } elseif ($Y) {
+            $results | Where-Object { $_.Y -eq $Y } | ForEach-Object { $_.X }
+        } else {
+            $results | ForEach-Object { \"$($_.X):$($_.Y)\" }
+        }", []),
+        
+        % Check verbose_output option
+        (   member(verbose_output(true), Options)
+        ->  format(string(VerboseLoad), "        Write-Verbose \"[~w] Loading relations ~w, ~w...\"\n", [PredStr, Pred1Str, Pred2Str]),
+            format(string(VerboseQuery), "        Write-Verbose \"[~w] Query: X=$X, Y=$Y\"\n", [PredStr])
+        ;   VerboseLoad = "",
+            VerboseQuery = ""
+        ),
+
+        % Structure body
+        (   member(cmdlet_binding(true), Options)
+        ->  format(string(BodyStr),
+"    begin {
+~w~w
+    }
+    
+    process {
+~w~w
+~w
+    }", [VerboseLoad, Loaders, VerboseQuery, JoinLogic, FilterLogic])
+        ;   format(string(BodyStr),
+"~w~w
+~w
+~w
+~w", [VerboseLoad, VerboseQuery, Loaders, JoinLogic, FilterLogic])
+        ),
+
         format(string(Code),
 "# Generated Pure PowerShell Script
 # Predicate: ~w/~w (join~w)
@@ -405,41 +474,14 @@ compile_rule_to_powershell(Pred, Arity, _Head, Body, _Options, Code) :-
 # Generated by UnifyWeaver PowerShell Compiler (Pure Mode)
 
 function ~w {
-    param([string]$X, [string]$Z)
+~w~w
     
-    # Get facts from both relations
-    $rel1 = ~w
-    $rel2 = ~w
 ~w
-    # Nested loop join: rel1.Y = rel2.X
-    $results = foreach ($r1 in $rel1) {
-        foreach ($r2 in $rel2) {
-            if ($r1.Y -eq $r2.X) {
-                $x = $r1.X
-                $z = $r2.Y~w
-                [PSCustomObject]@{
-                    X = $x
-                    Z = $z
-                }
-            }
-        }
-    }
-    
-    if ($X -and $Z) {
-        $results | Where-Object { $_.X -eq $X -and $_.Z -eq $Z }
-    } elseif ($X) {
-        $results | Where-Object { $_.X -eq $X } | ForEach-Object { $_.Z }
-    } elseif ($Z) {
-        $results | Where-Object { $_.Z -eq $Z } | ForEach-Object { $_.X }
-    } else {
-        $results | ForEach-Object { \"$($_.X):$($_.Z)\" }
-    }
 }
 
 # Stream all results
 ~w
-", [Pred, Arity, (NegatedGoals \= [] -> " with negation" ; ""), DateStr, PredStr, Pred1Str, Pred2Str, 
-   NegLoaderCode, NegCheckCode, PredStr])
+", [Pred, Arity, (NegatedGoals \= [] -> " with negation" ; ""), DateStr, PredStr, CmdletBindingAttr, ParamBlock, BodyStr, PredStr])
     ;   PositiveGoals = [Goal1],
         Goal1 =.. [Pred1|_],
         NegatedGoals \= []
@@ -1733,3 +1775,68 @@ test_compilation_options :-
     powershell_wrapper(BashCode, [wrapper_style(inline)], PSCode2),
     sub_string(PSCode2, _, _, _, 'if (-not (Get-Command uw-bash'),
     format('[✓] Default includes compatibility check~n', []).
+
+%% generate_cmdlet_params_ps(+Arity, +Options, -CmdletBinding, -ParamBlock)
+%  Generate the [CmdletBinding()] attribute and param(...) block
+generate_cmdlet_params_ps(Arity, Options, CmdletBinding, ParamBlock) :-
+    (   member(cmdlet_binding(true), Options)
+    ->  CmdletBinding = "    [CmdletBinding()]\n",
+        generate_advanced_params(Arity, Options, ParamsStr),
+        format(string(ParamBlock), "    param(~n~w~n    )", [ParamsStr])
+    ;   CmdletBinding = "",
+        generate_simple_params(Arity, ParamStr),
+        format(string(ParamBlock), "    param(~w)", [ParamStr])
+    ).
+
+generate_simple_params(1, "[string]$Key").
+generate_simple_params(2, "[string]$X, [string]$Y").
+generate_simple_params(3, "[string]$X, [string]$Y, [string]$Z").
+generate_simple_params(Arity, Str) :-
+    Arity > 3,
+    findall(S, (between(1, Arity, I), format(string(S), "[string]$Arg~w", [I])), List),
+    atomic_list_concat(List, ', ', Str).
+
+generate_advanced_params(Arity, Options, ParamsStr) :-
+    ArityM1 is Arity - 1,
+    findall(PStr, (
+        between(0, ArityM1, I),
+        get_arg_name(I, Name),
+        get_arg_attributes(I, Options, Attrs),
+        format_param_entry(I, Name, Attrs, PStr)
+    ), PList),
+    atomic_list_concat(PList, ",\n\n", ParamsStr).
+
+get_arg_name(0, 'X').
+get_arg_name(1, 'Y').
+get_arg_name(2, 'Z').
+get_arg_name(I, Name) :- I > 2, format(string(Name), "Arg~w", [I]).
+
+get_arg_attributes(Index, Options, Attrs) :-
+    (   member(arg_options(Index, Opts), Options)
+    ->  Attrs = Opts
+    ;   Attrs = []
+    ).
+
+format_param_entry(Index, Name, Attrs, Entry) :-
+    % Position is default
+    (   member(position(P), Attrs) -> Pos = P ; Pos = Index ),
+    % Mandatory
+    (   member(mandatory(true), Attrs) -> Mand = ", Mandatory=$true" ; Mand = "" ),
+    % Pipeline
+    (   member(pipeline(true), Attrs) -> Pipe = ", ValueFromPipeline=$true"
+    ;   Index = 1 -> Pipe = ", ValueFromPipeline=$true" % Default for 2nd arg in binary
+    ;   Pipe = ""
+    ),
+    
+    format(string(ParamAttr), "        [Parameter(Position=~w~w~w)]", [Pos, Mand, Pipe]),
+    
+    % Validation
+    (   member(validate_not_null(true), Attrs) -> Val1 = "\n        [ValidateNotNullOrEmpty()]" ; Val1 = "" ),
+    (   member(validate_set(Set), Attrs), is_list(Set) -> 
+        atomic_list_concat(Set, "', '", SetInner),
+        format(string(Val2), "\n        [ValidateSet('~w')]", [SetInner])
+    ;   Val2 = ""
+    ),
+    
+    format(string(Entry), "~w~w~w\n        [string]$~w", [ParamAttr, Val1, Val2, Name]).
+
