@@ -79,9 +79,18 @@ compile_to_powershell(Predicate, Options, PowerShellCode) :-
     ;   SourceType = unknown
     ),
 
-    % Resolve mode (may consult firewall)
-    resolve_powershell_mode(UserMode, SourceType, ResolvedMode),
+    % Resolve mode using predicate-level firewall rules (Phase 10)
+    % Priority: predicate-level > default-level > user option
+    resolve_powershell_mode_with_predicate(Predicate, UserMode, SourceType, ResolvedMode),
     format('[PowerShell Compiler] PowerShell mode: ~w (resolved from ~w)~n', [ResolvedMode, UserMode]),
+
+    % Check if resolved mode is denied by firewall
+    (   ResolvedMode = denied(Reason)
+    ->  format('[PowerShell Compiler ERROR] Compilation denied: ~w~n', [Reason]),
+        format('[PowerShell Compiler] Predicate ~w cannot be compiled due to firewall rules~n', [Predicate]),
+        fail
+    ;   true
+    ),
 
     % Check if pure mode and predicate supports it
     (   (ResolvedMode = pure ; ResolvedMode = auto ; ResolvedMode = auto_with_preference(pure)),
@@ -89,7 +98,13 @@ compile_to_powershell(Predicate, Options, PowerShellCode) :-
     ->  % Use pure PowerShell template
         format('[PowerShell Compiler] Using pure PowerShell templates~n', []),
         compile_to_pure_powershell(Predicate, Options, CompiledCode)
-    ;   % Fall back to bash-as-a-service
+    ;   % Check if BaaS is allowed
+        (   ResolvedMode = denied(_)
+        ->  format('[PowerShell Compiler ERROR] Cannot use BaaS - mode denied~n', []),
+            fail
+        ;   true
+        ),
+        % Fall back to bash-as-a-service
         format('[PowerShell Compiler] Using bash-as-a-service (BaaS) mode~n', []),
         compile_to_baas_powershell(Predicate, Options, CompiledCode)
     ),
@@ -144,6 +159,52 @@ resolve_powershell_mode(UserMode, SourceType, ResolvedMode) :-
         )
     ;   % User explicitly specified mode, respect it
         ResolvedMode = UserMode
+    ).
+
+%% resolve_powershell_mode_with_predicate(+Predicate, +UserMode, +SourceType, -ResolvedMode)
+%  Resolve PowerShell mode considering predicate-level firewall rules (Phase 10).
+%
+%  Priority order:
+%  1. Predicate-level firewall mode (if set)
+%  2. Predicate-level denied services (may force pure or deny)
+%  3. Default-level firewall policies
+%  4. User-specified mode
+%
+%  ResolvedMode: pure | baas | auto | auto_with_preference(Mode) | denied(Reason)
+resolve_powershell_mode_with_predicate(Predicate, UserMode, SourceType, ResolvedMode) :-
+    % Check predicate-level firewall first
+    (   catch(firewall_v2:predicate_firewall_mode(Predicate, PredicateMode), _, fail),
+        PredicateMode \= inherit
+    ->  % Predicate has explicit mode
+        format('[Firewall] Predicate ~w has explicit mode: ~w~n', [Predicate, PredicateMode]),
+        (   PredicateMode = pure
+        ->  ResolvedMode = pure
+        ;   PredicateMode = baas
+        ->  % Check if bash is allowed at default level
+            (   catch(firewall_v2:check_service(powershell, executable(bash), BashResult), _, fail),
+                BashResult \= deny(_)
+            ->  ResolvedMode = baas
+            ;   format('[Firewall Warning] Predicate ~w wants baas but bash denied at default level~n', [Predicate]),
+                ResolvedMode = denied(bash_denied_at_default_level)
+            )
+        ;   PredicateMode = auto
+        ->  % Use default derivation
+            resolve_powershell_mode(UserMode, SourceType, ResolvedMode)
+        )
+
+    % Check predicate-level denied bash service
+    ;   catch(firewall_v2:predicate_denied_service(Predicate, powershell, executable(bash)), _, fail)
+    ->  % Bash denied for this predicate
+        format('[Firewall] Predicate ~w: bash denied, must use pure~n', [Predicate]),
+        (   catch(firewall_v2:supports_pure_powershell(SourceType), _, fail)
+        ->  ResolvedMode = pure
+        ;   format('[Firewall Error] Predicate ~w: bash denied but ~w has no pure implementation~n',
+                   [Predicate, SourceType]),
+            ResolvedMode = denied(no_pure_implementation)
+        )
+
+    % Fall back to default-level resolution
+    ;   resolve_powershell_mode(UserMode, SourceType, ResolvedMode)
     ).
 
 %% supports_pure_powershell(+Predicate, +Options)
