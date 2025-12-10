@@ -28,6 +28,9 @@
 :- use_module('../core/template_system').
 :- use_module('../core/dynamic_source_compiler').
 
+% Allow non-contiguous clauses (generators are organized by target)
+:- discontiguous generate_wrapper_for_target_and_backend/11.
+
 % Register this plugin at module load time
 :- initialization(
     register_source_type(semantic, semantic_source),
@@ -342,6 +345,260 @@ generate_wrapper_for_target_and_backend(
         top_k=TopK
     ], BashCode).
 
+% ===== PYTHON WRAPPERS =====
+
+% Python + Python ONNX
+generate_wrapper_for_target_and_backend(
+    python, python_onnx, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, Metric, Normalize,
+    PythonCode
+) :-
+    !,
+    % Expand backend config
+    expand_python_onnx_config(BackendConfig, ExpandedConfig),
+    option(model_path(ModelPath), ExpandedConfig, 'models/all-MiniLM-L6-v2.onnx'),
+    option(vocab_path(_VocabPath), ExpandedConfig, 'models/vocab.txt'),
+    option(dimensions(_Dims), ExpandedConfig, 384),
+
+    % For Python target, we use the model directory for tokenizer
+    atom_concat(ModelDir, '/onnx/model.onnx', ModelPath),
+
+    % Generate Python code directly (no wrapper needed)
+    generate_python_onnx_code(
+        ModelPath, ModelDir,
+        StorePath, Threshold, TopK, Metric, Normalize,
+        PythonCodeInner
+    ),
+
+    % Wrap in a Python module with shebang
+    render_named_template(semantic_python_python_onnx, [
+        pred=Pred,
+        python_code=PythonCodeInner,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK,
+        metric=Metric
+    ], PythonCode).
+
+% ===== POWERSHELL WRAPPERS =====
+
+% PowerShell + Python ONNX
+generate_wrapper_for_target_and_backend(
+    powershell, python_onnx, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, Metric, Normalize,
+    PowerShellCode
+) :-
+    !,
+    % Expand backend config
+    expand_python_onnx_config(BackendConfig, ExpandedConfig),
+    option(model_path(ModelPath), ExpandedConfig, 'models/all-MiniLM-L6-v2.onnx'),
+    option(vocab_path(_VocabPath), ExpandedConfig, 'models/vocab.txt'),
+    option(dimensions(_Dims), ExpandedConfig, 384),
+
+    % For PowerShell target, we use the model directory for tokenizer
+    atom_concat(ModelDir, '/onnx/model.onnx', ModelPath),
+
+    % Generate Python code (same as for Python target)
+    generate_python_onnx_code(
+        ModelPath, ModelDir,
+        StorePath, Threshold, TopK, Metric, Normalize,
+        PythonCodeInner
+    ),
+
+    % Wrap in PowerShell with embedded Python
+    render_named_template(semantic_powershell_python_onnx, [
+        pred=Pred,
+        python_code=PythonCodeInner,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK,
+        metric=Metric
+    ], PowerShellCode).
+
+% ===== C# IMPLEMENTATIONS =====
+
+% C# + Native ONNX Runtime
+generate_wrapper_for_target_and_backend(
+    csharp, csharp_native, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, Metric, Normalize,
+    CSharpCode
+) :-
+    !,
+    % Expand backend config
+    expand_csharp_native_config(BackendConfig, ExpandedConfig),
+    option(model_path(ModelPath), ExpandedConfig, 'models/all-MiniLM-L6-v2.onnx'),
+    option(vocab_path(VocabPath), ExpandedConfig, 'models/vocab.txt'),
+    option(dimensions(Dims), ExpandedConfig, 384),
+
+    % Generate similarity function name
+    similarity_function_csharp(Metric, SimFuncName),
+
+    % Generate normalization code
+    (Normalize = true -> NormalizeFlag = 'true' ; NormalizeFlag = 'false'),
+
+    % Render C# template
+    render_named_template(semantic_csharp_native, [
+        pred=Pred,
+        model_path=ModelPath,
+        vocab_path=VocabPath,
+        dimensions=Dims,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK,
+        metric=Metric,
+        similarity_func=SimFuncName,
+        normalize=NormalizeFlag
+    ], CSharpCode).
+
+%% expand_csharp_native_config(+ConfigIn, -ConfigOut) is det.
+%
+% Expands simple model name to full configuration for C# native.
+expand_csharp_native_config(ModelName, ExpandedConfig) :-
+    atom(ModelName),
+    !,
+    csharp_native_model_defaults(ModelName, ExpandedConfig).
+
+expand_csharp_native_config(default, ExpandedConfig) :-
+    !,
+    csharp_native_model_defaults('all-MiniLM-L6-v2', ExpandedConfig).
+
+expand_csharp_native_config(Config, Config) :-
+    is_list(Config),
+    !.
+
+expand_csharp_native_config(Config, _) :-
+    throw(error(type_error(csharp_native_config, Config),
+                'C# native config must be atom (model name) or list (full config)')).
+
+%% csharp_native_model_defaults(+ModelName, -Config) is det.
+%
+% Default configurations for C# native ONNX models.
+csharp_native_model_defaults('all-MiniLM-L6-v2', [
+    model_path('models/all-MiniLM-L6-v2.onnx'),
+    vocab_path('models/vocab.txt'),
+    dimensions(384),
+    max_length(512)
+]).
+
+%% similarity_function_csharp(+Metric, -FunctionName) is det.
+%
+% Maps similarity metric to C# method name.
+similarity_function_csharp(cosine, 'CosineSimilarity').
+similarity_function_csharp(euclidean, 'EuclideanDistance').
+similarity_function_csharp(dot, 'DotProduct').
+
+% ===== GO SERVICE WRAPPERS =====
+
+% Python + Go Service
+generate_wrapper_for_target_and_backend(
+    python, go_service, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, Metric, _Normalize,
+    PythonCode
+) :-
+    !,
+    option(url(ServiceUrl), BackendConfig),
+    render_named_template(semantic_python_go_service, [
+        pred=Pred,
+        service_url=ServiceUrl,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK,
+        metric=Metric
+    ], PythonCode).
+
+% PowerShell + Go Service
+generate_wrapper_for_target_and_backend(
+    powershell, go_service, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, Metric, _Normalize,
+    PowerShellCode
+) :-
+    !,
+    option(url(ServiceUrl), BackendConfig),
+    render_named_template(semantic_powershell_go_service, [
+        pred=Pred,
+        service_url=ServiceUrl,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK,
+        metric=Metric
+    ], PowerShellCode).
+
+% C# + Go Service
+generate_wrapper_for_target_and_backend(
+    csharp, go_service, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, Metric, _Normalize,
+    CSharpCode
+) :-
+    !,
+    option(url(ServiceUrl), BackendConfig),
+    render_named_template(semantic_csharp_go_service, [
+        pred=Pred,
+        service_url=ServiceUrl,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK,
+        metric=Metric
+    ], CSharpCode).
+
+% ===== RUST CANDLE WRAPPERS =====
+
+% Python + Rust Candle
+generate_wrapper_for_target_and_backend(
+    python, rust_candle, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, _Metric, _Normalize,
+    PythonCode
+) :-
+    !,
+    (   option(binary_path(BinaryPath), BackendConfig)
+    ->  true
+    ;   BinaryPath = './rust_semantic_search'  % Default
+    ),
+    render_named_template(semantic_python_rust_candle, [
+        pred=Pred,
+        binary_path=BinaryPath,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK
+    ], PythonCode).
+
+% PowerShell + Rust Candle
+generate_wrapper_for_target_and_backend(
+    powershell, rust_candle, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, _Metric, _Normalize,
+    PowerShellCode
+) :-
+    !,
+    (   option(binary_path(BinaryPath), BackendConfig)
+    ->  true
+    ;   BinaryPath = './rust_semantic_search'  % Default
+    ),
+    render_named_template(semantic_powershell_rust_candle, [
+        pred=Pred,
+        binary_path=BinaryPath,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK
+    ], PowerShellCode).
+
+% C# + Rust Candle
+generate_wrapper_for_target_and_backend(
+    csharp, rust_candle, Pred, _Arity,
+    StorePath, BackendConfig, Threshold, TopK, _Metric, _Normalize,
+    CSharpCode
+) :-
+    !,
+    (   option(binary_path(BinaryPath), BackendConfig)
+    ->  true
+    ;   BinaryPath = './rust_semantic_search'  % Default
+    ),
+    render_named_template(semantic_csharp_rust_candle, [
+        pred=Pred,
+        binary_path=BinaryPath,
+        vector_store=StorePath,
+        threshold=Threshold,
+        top_k=TopK
+    ], CSharpCode).
+
 % ===== FALLBACK =====
 
 % Unsupported Target × Backend combinations
@@ -608,4 +865,636 @@ template_system:template(semantic_bash_rust_candle,
 
 export -f {{pred}}
 export -f {{pred}}_stream
+').
+
+% Python + Python ONNX template
+template_system:template(semantic_python_python_onnx,
+'#!/usr/bin/env python3
+"""
+{{pred}} - Semantic search (Python + Python ONNX backend)
+"""
+
+{{python_code}}
+').
+
+% PowerShell + Python ONNX template
+template_system:template(semantic_powershell_python_onnx,
+'# {{pred}}.ps1 - Semantic search (PowerShell + Python ONNX backend)
+
+function {{pred}} {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Query
+    )
+
+    $pythonCode = @"
+{{python_code}}
+"@
+
+    # Run Python code with query argument
+    $pythonCode | python3 - $Query
+}
+
+function {{pred}}-Stream {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Query
+    )
+    {{pred}} -Query $Query
+}
+
+function {{pred}}-Batch {
+    param(
+        [Parameter(ValueFromPipeline=$true)]
+        [string[]]$Lines
+    )
+    process {
+        foreach ($line in $Lines) {
+            if ($line) {
+                {{pred}} -Query $line
+            }
+        }
+    }
+}
+
+Export-ModuleMember -Function {{pred}}, {{pred}}-Stream, {{pred}}-Batch
+').
+
+% C# + Native ONNX Runtime template
+template_system:template(semantic_csharp_native,
+'// {{pred}}.cs - Semantic search (C# + native ONNX Runtime)
+// Requires: Microsoft.ML.OnnxRuntime, System.Text.Json
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
+
+namespace SemanticSearch
+{
+    public class {{pred}}
+    {
+        private readonly InferenceSession _session;
+        private readonly string _vectorStorePath;
+        private readonly float _threshold;
+        private readonly int _topK;
+        private readonly Dictionary<string, float[]> _vectorStore;
+
+        public {{pred}}()
+        {
+            _session = new InferenceSession("{{model_path}}");
+            _vectorStorePath = "{{vector_store}}";
+            _threshold = {{threshold}}f;
+            _topK = {{top_k}};
+
+            // Load vector store
+            var json = File.ReadAllText(_vectorStorePath);
+            var rawStore = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json);
+            _vectorStore = new Dictionary<string, float[]>();
+
+            foreach (var kvp in rawStore)
+            {
+                var embedding = kvp.Value.GetProperty("embedding")
+                    .EnumerateArray()
+                    .Select(e => (float)e.GetDouble())
+                    .ToArray();
+                _vectorStore[kvp.Key] = embedding;
+            }
+        }
+
+        public List<(string Id, float Score)> Search(string query)
+        {
+            var queryEmbedding = GetEmbedding(query);
+            var results = new List<(string, float)>();
+
+            foreach (var kvp in _vectorStore)
+            {
+                var similarity = {{similarity_func}}(queryEmbedding, kvp.Value);
+                if (similarity >= _threshold)
+                {
+                    results.Add((kvp.Key, similarity));
+                }
+            }
+
+            results.Sort((a, b) => b.Item2.CompareTo(a.Item2));
+            return results.Take(_topK).ToList();
+        }
+
+        private float[] GetEmbedding(string text)
+        {
+            // Simple tokenization (word-based, for demo)
+            var tokens = text.Split(\' \');
+            var inputIds = new long[tokens.Length];
+            var attentionMask = new long[tokens.Length];
+
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                inputIds[i] = tokens[i].GetHashCode() % 30000;
+                attentionMask[i] = 1;
+            }
+
+            var inputIdsTensor = new DenseTensor<long>(inputIds, new[] { 1, tokens.Length });
+            var attentionMaskTensor = new DenseTensor<long>(attentionMask, new[] { 1, tokens.Length });
+
+            var inputs = new List<NamedOnnxValue>
+            {
+                NamedOnnxValue.CreateFromTensor("input_ids", inputIdsTensor),
+                NamedOnnxValue.CreateFromTensor("attention_mask", attentionMaskTensor)
+            };
+
+            using var results = _session.Run(inputs);
+            var output = results.First().AsEnumerable<float>().ToArray();
+
+            // Mean pooling and normalization
+            var pooled = MeanPool(output, attentionMask);
+            if ({{normalize}})
+            {
+                Normalize(pooled);
+            }
+
+            return pooled;
+        }
+
+        private static float[] MeanPool(float[] embeddings, long[] mask)
+        {
+            var dims = {{dimensions}};
+            var pooled = new float[dims];
+            var sumMask = mask.Sum();
+
+            for (int i = 0; i < dims; i++)
+            {
+                pooled[i] = embeddings[i] / sumMask;
+            }
+
+            return pooled;
+        }
+
+        private static void Normalize(float[] vec)
+        {
+            var norm = (float)Math.Sqrt(vec.Sum(x => x * x));
+            if (norm > 0)
+            {
+                for (int i = 0; i < vec.Length; i++)
+                {
+                    vec[i] /= norm;
+                }
+            }
+        }
+
+        private static float CosineSimilarity(float[] a, float[] b)
+        {
+            var dot = a.Zip(b, (x, y) => x * y).Sum();
+            var normA = Math.Sqrt(a.Sum(x => x * x));
+            var normB = Math.Sqrt(b.Sum(x => x * x));
+            return (float)(dot / (normA * normB));
+        }
+
+        private static float EuclideanDistance(float[] a, float[] b)
+        {
+            return -(float)Math.Sqrt(a.Zip(b, (x, y) => (x - y) * (x - y)).Sum());
+        }
+
+        private static float DotProduct(float[] a, float[] b)
+        {
+            return a.Zip(b, (x, y) => x * y).Sum();
+        }
+
+        public static void Main(string[] args)
+        {
+            if (args.Length < 1)
+            {
+                Console.Error.WriteLine("Usage: {{pred}} <query>");
+                Environment.Exit(1);
+            }
+
+            var searcher = new {{pred}}();
+            var results = searcher.Search(args[0]);
+
+            foreach (var (id, score) in results)
+            {
+                Console.WriteLine($"{id}:{score:F4}");
+            }
+        }
+    }
+}
+').
+
+% Python + Go Service template
+template_system:template(semantic_python_go_service,
+'#!/usr/bin/env python3
+"""
+{{pred}} - Semantic search (Python + Go service backend)
+"""
+
+import sys
+import json
+import urllib.request
+import urllib.parse
+
+def {{pred}}(query, top_k={{top_k}}, threshold={{threshold}}):
+    """Search using Go service backend."""
+    url = "{{service_url}}/search"
+    data = {
+        "query": query,
+        "top_k": top_k,
+        "threshold": threshold,
+        "metric": "{{metric}}",
+        "vector_store": "{{vector_store}}"
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(data).encode("utf-8"),
+        headers={"Content-Type": "application/json"}
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            return result.get("results", [])
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: {{pred}} <query>", file=sys.stderr)
+        sys.exit(1)
+
+    results = {{pred}}(sys.argv[1])
+    for result in results:
+        print(f"{result[\"id\"]}:{result[\"score\"]:.4f}")
+').
+
+% PowerShell + Go Service template
+template_system:template(semantic_powershell_go_service,
+'# {{pred}}.ps1 - Semantic search (PowerShell + Go service backend)
+
+function {{pred}} {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Query,
+        [int]$TopK = {{top_k}},
+        [float]$Threshold = {{threshold}}
+    )
+
+    $url = "{{service_url}}/search"
+    $body = @{
+        query = $Query
+        top_k = $TopK
+        threshold = $Threshold
+        metric = "{{metric}}"
+        vector_store = "{{vector_store}}"
+    } | ConvertTo-Json
+
+    try {
+        $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json"
+        foreach ($result in $response.results) {
+            Write-Output "$($result.id):$($result.score.ToString(\"F4\"))"
+        }
+    }
+    catch {
+        Write-Error "Error calling Go service: $_"
+        exit 1
+    }
+}
+
+function {{pred}}-Stream {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Query
+    )
+    {{pred}} -Query $Query
+}
+
+function {{pred}}-Batch {
+    param(
+        [Parameter(ValueFromPipeline=$true)]
+        [string[]]$Lines
+    )
+    process {
+        foreach ($line in $Lines) {
+            if ($line) {
+                {{pred}} -Query $line
+            }
+        }
+    }
+}
+
+Export-ModuleMember -Function {{pred}}, {{pred}}-Stream, {{pred}}-Batch
+').
+
+% C# + Go Service template
+template_system:template(semantic_csharp_go_service,
+'// {{pred}}.cs - Semantic search (C# + Go service backend)
+
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Tasks;
+
+namespace SemanticSearch
+{
+    public class {{pred}}
+    {
+        private readonly HttpClient _httpClient;
+        private readonly string _serviceUrl;
+        private readonly string _vectorStore;
+        private readonly float _threshold;
+        private readonly int _topK;
+        private readonly string _metric;
+
+        public {{pred}}()
+        {
+            _httpClient = new HttpClient();
+            _serviceUrl = "{{service_url}}";
+            _vectorStore = "{{vector_store}}";
+            _threshold = {{threshold}}f;
+            _topK = {{top_k}};
+            _metric = "{{metric}}";
+        }
+
+        public async Task<List<SearchResult>> SearchAsync(string query)
+        {
+            var request = new SearchRequest
+            {
+                Query = query,
+                TopK = _topK,
+                Threshold = _threshold,
+                Metric = _metric,
+                VectorStore = _vectorStore
+            };
+
+            var json = JsonSerializer.Serialize(request);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            try
+            {
+                var response = await _httpClient.PostAsync($"{_serviceUrl}/search", content);
+                response.EnsureSuccessStatusCode();
+
+                var responseJson = await response.Content.ReadAsStringAsync();
+                var result = JsonSerializer.Deserialize<SearchResponse>(responseJson);
+
+                return result?.Results ?? new List<SearchResult>();
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"Error: {e.Message}");
+                Environment.Exit(1);
+                return null;
+            }
+        }
+
+        public static async Task Main(string[] args)
+        {
+            if (args.Length < 1)
+            {
+                Console.Error.WriteLine("Usage: {{pred}} <query>");
+                Environment.Exit(1);
+            }
+
+            var searcher = new {{pred}}();
+            var results = await searcher.SearchAsync(args[0]);
+
+            foreach (var result in results)
+            {
+                Console.WriteLine($"{result.Id}:{result.Score:F4}");
+            }
+        }
+    }
+
+    public class SearchRequest
+    {
+        public string Query { get; set; }
+        public int TopK { get; set; }
+        public float Threshold { get; set; }
+        public string Metric { get; set; }
+        public string VectorStore { get; set; }
+    }
+
+    public class SearchResponse
+    {
+        public List<SearchResult> Results { get; set; }
+    }
+
+    public class SearchResult
+    {
+        public string Id { get; set; }
+        public float Score { get; set; }
+    }
+}
+').
+
+% Python + Rust Candle template
+template_system:template(semantic_python_rust_candle,
+'#!/usr/bin/env python3
+"""
+{{pred}} - Semantic search (Python + Rust Candle backend)
+"""
+
+import sys
+import subprocess
+import json
+
+def {{pred}}(query, top_k={{top_k}}, threshold={{threshold}}):
+    """Search using Rust Candle backend."""
+    try:
+        result = subprocess.run(
+            [
+                "{{binary_path}}",
+                "search",
+                "--query", query,
+                "--vector-store", "{{vector_store}}",
+                "--top-k", str(top_k),
+                "--threshold", str(threshold)
+            ],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        # Parse output (format: doc_id:score)
+        results = []
+        for line in result.stdout.strip().split("\\n"):
+            if ":" in line:
+                doc_id, score = line.split(":", 1)
+                results.append({"id": doc_id, "score": float(score)})
+
+        return results
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e.stderr}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: {{pred}} <query>", file=sys.stderr)
+        sys.exit(1)
+
+    results = {{pred}}(sys.argv[1])
+    for result in results:
+        print(f"{result[\"id\"]}:{result[\"score\"]:.4f}")
+').
+
+% PowerShell + Rust Candle template
+template_system:template(semantic_powershell_rust_candle,
+'# {{pred}}.ps1 - Semantic search (PowerShell + Rust Candle backend)
+
+function {{pred}} {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Query,
+        [int]$TopK = {{top_k}},
+        [float]$Threshold = {{threshold}}
+    )
+
+    try {
+        $result = & "{{binary_path}}" search `
+            --query $Query `
+            --vector-store "{{vector_store}}" `
+            --top-k $TopK `
+            --threshold $Threshold
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Rust binary failed with exit code $LASTEXITCODE"
+            exit 1
+        }
+
+        $result
+    }
+    catch {
+        Write-Error "Error calling Rust binary: $_"
+        exit 1
+    }
+}
+
+function {{pred}}-Stream {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Query
+    )
+    {{pred}} -Query $Query
+}
+
+function {{pred}}-Batch {
+    param(
+        [Parameter(ValueFromPipeline=$true)]
+        [string[]]$Lines
+    )
+    process {
+        foreach ($line in $Lines) {
+            if ($line) {
+                {{pred}} -Query $line
+            }
+        }
+    }
+}
+
+Export-ModuleMember -Function {{pred}}, {{pred}}-Stream, {{pred}}-Batch
+').
+
+% C# + Rust Candle template
+template_system:template(semantic_csharp_rust_candle,
+'// {{pred}}.cs - Semantic search (C# + Rust Candle backend)
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+
+namespace SemanticSearch
+{
+    public class {{pred}}
+    {
+        private readonly string _binaryPath;
+        private readonly string _vectorStore;
+        private readonly float _threshold;
+        private readonly int _topK;
+
+        public {{pred}}()
+        {
+            _binaryPath = "{{binary_path}}";
+            _vectorStore = "{{vector_store}}";
+            _threshold = {{threshold}}f;
+            _topK = {{top_k}};
+        }
+
+        public List<SearchResult> Search(string query)
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = _binaryPath,
+                    Arguments = $"search --query \"{query}\" --vector-store \"{_vectorStore}\" --top-k {_topK} --threshold {_threshold}",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using var process = Process.Start(startInfo);
+                var output = process.StandardOutput.ReadToEnd();
+                var error = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+
+                if (process.ExitCode != 0)
+                {
+                    Console.Error.WriteLine($"Error: {error}");
+                    Environment.Exit(1);
+                }
+
+                // Parse output (format: doc_id:score)
+                return output.Split(new[] { \'\\n\' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line =>
+                    {
+                        var parts = line.Split(\':\');
+                        return new SearchResult
+                        {
+                            Id = parts[0],
+                            Score = float.Parse(parts[1])
+                        };
+                    })
+                    .ToList();
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"Error: {e.Message}");
+                Environment.Exit(1);
+                return null;
+            }
+        }
+
+        public static void Main(string[] args)
+        {
+            if (args.Length < 1)
+            {
+                Console.Error.WriteLine("Usage: {{pred}} <query>");
+                Environment.Exit(1);
+            }
+
+            var searcher = new {{pred}}();
+            var results = searcher.Search(args[0]);
+
+            foreach (var result in results)
+            {
+                Console.WriteLine($"{result.Id}:{result.Score:F4}");
+            }
+        }
+    }
+
+    public class SearchResult
+    {
+        public string Id { get; set; }
+        public float Score { get; set; }
+    }
+}
 ').
