@@ -408,12 +408,12 @@ pwsh -File test.ps1
 - [x] Mutual recursion
 - [x] Tail recursion optimization
 
-### Phase 3: Data Partitioning (Pending)
+### Phase 3: Data Partitioning (Implemented) ✅
 
-- [ ] Port bash_partitioning_target.pl to PowerShell
-- [ ] Fixed-size partitioning
-- [ ] Hash-based partitioning
-- [ ] Key-based partitioning
+- [x] Port bash_partitioning_target.pl to PowerShell
+- [x] Fixed-size partitioning (rows and bytes)
+- [x] Hash-based partitioning
+- [x] Key-based partitioning
 
 ### Phase 4: PowerShell Object Pipeline
 
