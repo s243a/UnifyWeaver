@@ -625,7 +625,7 @@ test_template_system :-
 
     % Test 3: Generate transitive closure
     writeln('Test 3 - Generate transitive closure:'),
-    generate_transitive_closure(ancestor, parent, Code3),
+    generate_transitive_closure(ancestor, parent, [], Code3),
     (   sub_string(Code3, _, _, _, 'ancestor_all')
     ->  writeln('PASS - contains ancestor_all function')
     ;   writeln('FAIL - missing expected function')
