@@ -2536,24 +2536,122 @@ generate_output_fields([Arg|Rest], VarMap, Idx, [Field|RestFields]) :-
 
 %% generate_multi_fact_loop(+PredStr, +HeadArgs, +FG1, +FG2, +BoundGoals, +HeadVars, +FactVars, +BoundVars, +NegatedGoals, +Options, -Code)
 %  Generate nested loops for multiple fact goals with join conditions.
-generate_multi_fact_loop(_PredStr, _HeadArgs, FG1, FG2, _BoundGoals, _HeadVars,
-                          _FactVars, _BoundVars, _NegatedGoals, _Options, Code) :-
+%  Properly handles:
+%    - Join variable detection (shared variables between facts)
+%    - Bound goals with combined variable mapping
+%    - Output generation based on head arguments
+generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, _HeadVars,
+                          _FactVars, _BoundVars, NegatedGoals, Options, Code) :-
     strip_module_qualifier(FG1, Plain1),
     strip_module_qualifier(FG2, Plain2),
-    Plain1 =.. [FP1|_],
-    Plain2 =.. [FP2|_],
+    Plain1 =.. [FP1|Args1],
+    Plain2 =.. [FP2|Args2],
     atom_string(FP1, FP1Str),
     atom_string(FP2, FP2Str),
-    % Basic nested loop structure - can be enhanced later
+
+    % Create variable maps for each fact with prefixed field names
+    create_prefixed_fact_var_map(Args1, "r1", VarMap1),
+    create_prefixed_fact_var_map(Args2, "r2", VarMap2),
+
+    % Detect join conditions (shared variables between facts)
+    detect_join_conditions(Args1, Args2, VarMap1, VarMap2, JoinConditions),
+
+    % Generate field extractions for both facts
+    generate_prefixed_field_extraction(Args1, "r1", Extraction1),
+    generate_prefixed_field_extraction(Args2, "r2", Extraction2),
+
+    % Combine var maps for bound goals and output
+    append(VarMap1, VarMap2, CombinedVarMap),
+
+    % Generate bound goal code if any
+    (   BoundGoals \= []
+    ->  generate_bound_goals_in_loop(BoundGoals, CombinedVarMap, HeadArgs, BoundCode, OutputVarMap),
+        format(string(BoundSection), "~n            # Apply bound operations~n            ~w", [BoundCode])
+    ;   BoundSection = "",
+        OutputVarMap = []
+    ),
+
+    % Generate negation check if needed
+    (   NegatedGoals \= []
+    ->  generate_negation_check_ps(NegatedGoals, NegCheck),
+        format(string(NegCheckStr), "~n            ~w", [NegCheck])
+    ;   NegCheckStr = ""
+    ),
+
+    % Generate output object
+    append(OutputVarMap, CombinedVarMap, FinalVarMap),
+    generate_output_object(HeadArgs, OutputVarMap, FinalVarMap, OutputCode),
+
+    % Generate join condition string
+    (   JoinConditions \= []
+    ->  atomic_list_concat(JoinConditions, ' -and ', JoinStr)
+    ;   JoinStr = "$true"  % No join condition = cross product
+    ),
+
+    % Check for verbose output
+    (   member(verbose_output(true), Options)
+    ->  format(string(VerboseStr), "Write-Verbose \"[~w] Joining facts...\"\n            ", [PredStr])
+    ;   VerboseStr = ""
+    ),
+
     format(string(Code),
 "    $results = foreach ($r1 in $~w_data) {
         foreach ($r2 in $~w_data) {
-            if ($r1.Y -eq $r2.X) {
-                [PSCustomObject]@{ X = $r1.X; Y = $r2.Y }
+            ~w# Extract fields from first fact
+            ~w
+            # Extract fields from second fact
+            ~w
+            # Check join condition
+            if (~w) {~w~w
+                # Output result
+                ~w
             }
         }
     }
-    $results", [FP1Str, FP2Str]).
+    $results", [FP1Str, FP2Str, VerboseStr, Extraction1, Extraction2, JoinStr, NegCheckStr, BoundSection, OutputCode]).
+
+%% create_prefixed_fact_var_map(+FactArgs, +Prefix, -VarMap)
+%  Create a variable map with prefixed PS variables (e.g., $r1_X, $r1_Y)
+create_prefixed_fact_var_map(FactArgs, Prefix, VarMap) :-
+    create_prefixed_fact_var_map(FactArgs, Prefix, 0, VarMap).
+
+create_prefixed_fact_var_map([], _, _, []).
+create_prefixed_fact_var_map([Arg|Rest], Prefix, Idx, VarMap) :-
+    NextIdx is Idx + 1,
+    create_prefixed_fact_var_map(Rest, Prefix, NextIdx, RestMap),
+    (   var(Arg)
+    ->  (Idx = 0 -> FieldName = "X" ; Idx = 1 -> FieldName = "Y" ; format(atom(FieldName), "F~w", [Idx])),
+        format(string(PSVar), "$~w_~w", [Prefix, FieldName]),
+        VarMap = [Arg-PSVar|RestMap]
+    ;   VarMap = RestMap
+    ).
+
+%% generate_prefixed_field_extraction(+FactArgs, +Prefix, -Code)
+%  Generate field extraction with prefixed variable names.
+generate_prefixed_field_extraction(FactArgs, Prefix, Code) :-
+    generate_prefixed_field_extraction(FactArgs, Prefix, 0, Extractions),
+    atomic_list_concat(Extractions, '\n            ', Code).
+
+generate_prefixed_field_extraction([], _, _, []).
+generate_prefixed_field_extraction([_|Rest], Prefix, Idx, [Extraction|RestExtractions]) :-
+    NextIdx is Idx + 1,
+    (Idx = 0 -> FieldName = "X" ; Idx = 1 -> FieldName = "Y" ; format(atom(FieldName), "F~w", [Idx])),
+    format(string(Extraction), "$~w_~w = $~w.~w", [Prefix, FieldName, Prefix, FieldName]),
+    generate_prefixed_field_extraction(Rest, Prefix, NextIdx, RestExtractions).
+
+%% detect_join_conditions(+Args1, +Args2, +VarMap1, +VarMap2, -JoinConditions)
+%  Detect shared variables between two fact goals and generate join conditions.
+detect_join_conditions(Args1, Args2, VarMap1, VarMap2, JoinConditions) :-
+    findall(Condition, (
+        member(Arg1, Args1),
+        var(Arg1),
+        member(Arg2, Args2),
+        var(Arg2),
+        Arg1 == Arg2,  % Same Prolog variable
+        lookup_var_eq(Arg1, VarMap1, PSVar1),
+        lookup_var_eq(Arg2, VarMap2, PSVar2),
+        format(string(Condition), "~w -eq ~w", [PSVar1, PSVar2])
+    ), JoinConditions).
 
 %% generate_bound_goals_code(+BoundGoals, +VarMap, -Codes, -FinalVarMap)
 %
@@ -2818,5 +2916,54 @@ test_bound_rule_compilation :-
     ),
     abolish(user:test_emp/2),
     abolish(user:emp_sqrt/2),
+
+    % Test 6: Compile multi-fact join rule
+    format('[Test 6] Compile multi-fact join rule~n', []),
+    % Define facts for a transitive closure style join
+    abolish(user:edge/2),
+    assertz(user:edge(a, b)),
+    assertz(user:edge(b, c)),
+    assertz(user:edge(c, d)),
+    % Define join rule: path(X, Z) :- edge(X, Y), edge(Y, Z)
+    abolish(user:path/2),
+    assertz((user:path(JoinX, JoinZ) :- edge(JoinX, JoinY), edge(JoinY, JoinZ))),
+    (   compile_to_powershell(path/2, [powershell_mode(pure)], JoinCode)
+    ->  % Check for nested loops and join condition
+        (sub_string(JoinCode, _, _, _, "foreach ($r1") -> HasR1 = true ; HasR1 = false),
+        (sub_string(JoinCode, _, _, _, "foreach ($r2") -> HasR2 = true ; HasR2 = false),
+        (sub_string(JoinCode, _, _, _, "-eq") -> HasJoinCond = true ; HasJoinCond = false),
+        (   HasR1 = true, HasR2 = true, HasJoinCond = true
+        ->  format('  [PASS] Multi-fact join compiled with nested loops and join condition~n', [])
+        ;   format('  [FAIL] Missing patterns: r1=~w, r2=~w, join=~w~n', [HasR1, HasR2, HasJoinCond])
+        )
+    ;   format('  [FAIL] Multi-fact join compilation failed~n', [])
+    ),
+    abolish(user:edge/2),
+    abolish(user:path/2),
+
+    % Test 7: Multi-fact join with bound goal
+    format('[Test 7] Multi-fact join with bound goal~n', []),
+    % Define facts for join
+    abolish(user:item/2),
+    assertz(user:item(apple, 4)),
+    assertz(user:item(banana, 9)),
+    abolish(user:price/2),
+    assertz(user:price(apple, 100)),
+    assertz(user:price(banana, 200)),
+    % Join with sqrt bound goal: combined(Name, SqrtQty) :- item(Name, Qty), price(Name, _), sqrt(Qty, SqrtQty)
+    abolish(user:combined/2),
+    assertz((user:combined(ItemName, SqrtQty) :- item(ItemName, ItemQty), price(ItemName, _ItemPrice), sqrt(ItemQty, SqrtQty))),
+    (   compile_to_powershell(combined/2, [powershell_mode(pure)], CombinedCode)
+    ->  (sub_string(CombinedCode, _, _, _, "[Math]::Sqrt") -> HasSqrtBind = true ; HasSqrtBind = false),
+        (sub_string(CombinedCode, _, _, _, "foreach") -> HasLoop = true ; HasLoop = false),
+        (   HasSqrtBind = true, HasLoop = true
+        ->  format('  [PASS] Multi-fact join with bound goal compiled~n', [])
+        ;   format('  [FAIL] Missing patterns: Sqrt=~w, loop=~w~n', [HasSqrtBind, HasLoop])
+        )
+    ;   format('  [FAIL] Multi-fact join with bound goal compilation failed~n', [])
+    ),
+    abolish(user:item/2),
+    abolish(user:price/2),
+    abolish(user:combined/2),
 
     format('~n=== Bound Rule Compilation Tests Complete ===~n', []).
