@@ -420,10 +420,23 @@ pwsh -File test.ps1
 - [ ] Return PowerShell objects instead of colon-separated strings
 - [ ] Support PowerShell pipeline chaining
 - [ ] Type annotations for better IntelliSense
+- [ ] **Dependency:** Requires Binding System (Phase 5) to define output types
 
-### Phase 5: Firewall Mode
+### Phase 5: Binding System Integration (Planned)
 
-- [ ] Firewall detection logic
+- [ ] Adopt `binding/6` proposal (see `docs/proposals/BINDING_PREDICATE_PROPOSAL.md`)
+- [ ] Migrate `arg_options` and `cmdlet_binding` to new system
+- [ ] Standardize parameter generation and validation logic
+
+### Phase 6: Windows Automation (Chapter 5)
+
+- [ ] Implement `service/2`, `registry/3`, `wmi/3` predicates
+- [ ] Requires Binding System for complex parameter mapping
+- [ ] Pure PowerShell implementations for system administration tasks
+
+### Phase 7: Firewall Mode & Security
+
+- [ ] Firewall detection logic in compiler
 - [ ] Enforce pure mode when firewall detected
 - [ ] Clear error messages when pure mode unsupported
 
