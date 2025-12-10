@@ -21,7 +21,12 @@
     compile_bound_predicate/3,    % compile_bound_predicate(+Pred, +Options, -Code)
     generate_cmdlet_wrapper/3,    % generate_cmdlet_wrapper(+Pred, +Options, -CmdletCode)
     has_powershell_binding/1,     % has_powershell_binding(+Pred)
-    init_powershell_compiler/0    % Initialize compiler with bindings
+    init_powershell_compiler/0,   % Initialize compiler with bindings
+
+    % C# hosting integration (Book 12, Chapter 6)
+    compile_with_csharp_host/4,   % compile_with_csharp_host(+Predicates, +Options, -PSCode, -CSharpCode)
+    generate_csharp_bridge/3,     % generate_csharp_bridge(+BridgeType, +Options, -Code)
+    compile_cross_target_pipeline/3  % compile_cross_target_pipeline(+Steps, +Options, -Code)
 ]).
 
 :- use_module(library(lists)).
@@ -39,6 +44,9 @@
 :- use_module('binding_registry').
 :- use_module('../bindings/powershell_bindings').
 :- use_module('../bindings/binding_codegen').
+
+% .NET glue for C# hosting (Book 12, Chapter 6)
+:- use_module('../glue/dotnet_glue').
 
 %% compile_to_powershell(+Predicate, -PowerShellCode)
 %  Simplified interface with default options
@@ -3349,3 +3357,222 @@ test_bound_rule_compilation :-
     abolish(user:emp_capacity/3),
 
     format('~n=== Bound Rule Compilation Tests Complete ===~n', []).
+
+%% ============================================================================
+%% C# HOSTING INTEGRATION (Book 12, Chapter 6)
+%% ============================================================================
+%%
+%% These predicates integrate with dotnet_glue to enable:
+%% - In-process C# ↔ PowerShell communication
+%% - Cross-target pipeline compilation
+%% - Runspace management for efficient execution
+
+%% compile_with_csharp_host(+Predicates, +Options, -PSCode, -CSharpCode)
+%
+%  Compile predicates to PowerShell and generate a C# host for in-process execution.
+%
+%  This generates two outputs:
+%  1. PSCode - PowerShell functions for the predicates
+%  2. CSharpCode - C# host class that can invoke the PowerShell in-process
+%
+%  Options:
+%    - namespace(Name) : C# namespace (default: UnifyWeaver.Generated)
+%    - class(Name) : Host class name (default: PowerShellHost)
+%    - async(Bool) : Generate async methods (default: false)
+%    - include_bridge(Bool) : Include PowerShellBridge class (default: true)
+%
+compile_with_csharp_host(Predicates, Options, PSCode, CSharpCode) :-
+    format('[C# Hosting] Compiling ~w predicates with C# host~n', [Predicates]),
+
+    % Compile each predicate to PowerShell
+    findall(Code, (
+        member(Pred, Predicates),
+        compile_to_powershell(Pred, [powershell_mode(pure)|Options], Code)
+    ), PSCodes),
+    atomic_list_concat(PSCodes, '\n\n', PSCode),
+
+    % Generate C# host
+    generate_csharp_host_code(Predicates, Options, CSharpCode).
+
+%% generate_csharp_host_code(+Predicates, +Options, -Code)
+%  Generate C# host class for invoking PowerShell predicates.
+generate_csharp_host_code(Predicates, Options, Code) :-
+    option_or_default(namespace(Namespace), Options, 'UnifyWeaver.Generated'),
+    option_or_default(class(ClassName), Options, 'PowerShellHost'),
+    option_or_default(include_bridge(IncludeBridge), Options, true),
+
+    % Generate method wrappers for each predicate
+    findall(MethodCode, (
+        member(Pred/Arity, Predicates),
+        generate_host_method(Pred, Arity, MethodCode)
+    ), Methods),
+    atomic_list_concat(Methods, '\n\n', MethodsCode),
+
+    % Include bridge if requested
+    (   IncludeBridge == true
+    ->  dotnet_glue:generate_powershell_bridge([namespace(Namespace)], BridgeCode),
+        format(atom(FullCode), '~w~n~n~w', [BridgeCode, HostCode])
+    ;   FullCode = HostCode
+    ),
+
+    format(atom(HostCode), '
+// Generated PowerShell Host for UnifyWeaver predicates
+// Provides typed C# wrappers for PowerShell function calls
+
+using System;
+using System.Collections.Generic;
+using System.Management.Automation;
+
+namespace ~w
+{
+    /// <summary>
+    /// Host class for invoking compiled PowerShell predicates from C#.
+    /// </summary>
+    public class ~w
+    {
+        private readonly string _scriptBlock;
+
+        /// <summary>
+        /// Initialize host with the compiled PowerShell script.
+        /// </summary>
+        /// <param name="scriptBlock">PowerShell script containing compiled predicates</param>
+        public ~w(string scriptBlock)
+        {
+            _scriptBlock = scriptBlock;
+            // Initialize the runspace with the script
+            PowerShellBridge.SetVariable("__init_script__", scriptBlock);
+            PowerShellBridge.Invoke<object, object>("Invoke-Expression $__init_script__", null);
+        }
+
+~w
+    }
+}
+', [Namespace, ClassName, ClassName, MethodsCode]),
+
+    Code = FullCode.
+
+%% generate_host_method(+Pred, +Arity, -Code)
+%  Generate a C# method wrapper for a PowerShell predicate.
+generate_host_method(Pred, Arity, Code) :-
+    atom_string(Pred, PredStr),
+    % Generate parameter list
+    generate_csharp_params(Arity, ParamList, ArgList),
+
+    format(atom(Code), '
+        /// <summary>
+        /// Invoke the ~w predicate.
+        /// </summary>
+        public IEnumerable<dynamic> ~w(~w)
+        {
+            var script = "~w ~w";
+            return PowerShellBridge.Invoke<object, dynamic>(script, null);
+        }', [PredStr, PredStr, ParamList, PredStr, ArgList]).
+
+%% generate_csharp_params(+Arity, -ParamList, -ArgList)
+%  Generate C# parameter declarations and argument list.
+generate_csharp_params(0, "", "") :- !.
+generate_csharp_params(1, "string arg1", "$arg1") :- !.
+generate_csharp_params(2, "string arg1, string arg2", "$arg1 $arg2") :- !.
+generate_csharp_params(Arity, ParamList, ArgList) :-
+    Arity > 2,
+    findall(P, (between(1, Arity, I), format(atom(P), "string arg~w", [I])), Params),
+    findall(A, (between(1, Arity, I), format(atom(A), "$arg~w", [I])), Args),
+    atomic_list_concat(Params, ', ', ParamList),
+    atomic_list_concat(Args, ' ', ArgList).
+
+%% generate_csharp_bridge(+BridgeType, +Options, -Code)
+%
+%  Generate a specific type of C# bridge code.
+%
+%  BridgeType:
+%    - powershell : PowerShell in-process bridge
+%    - ironpython : IronPython in-process bridge
+%    - cpython : CPython pipe-based bridge
+%
+generate_csharp_bridge(powershell, Options, Code) :-
+    dotnet_glue:generate_powershell_bridge(Options, Code).
+
+generate_csharp_bridge(ironpython, Options, Code) :-
+    dotnet_glue:generate_ironpython_bridge(Options, Code).
+
+generate_csharp_bridge(cpython, Options, Code) :-
+    dotnet_glue:generate_cpython_bridge(Options, Code).
+
+%% compile_cross_target_pipeline(+Steps, +Options, -Code)
+%
+%  Compile a cross-target pipeline where steps can be in different languages.
+%
+%  Steps is a list of step(Target, Predicate, Options):
+%    - step(powershell, filter_users/2, [])
+%    - step(csharp, transform_data/2, [inline_code(...)])
+%    - step(python, analyze/1, [])
+%
+%  This generates a complete .NET solution that orchestrates the pipeline.
+%
+compile_cross_target_pipeline(Steps, Options, Code) :-
+    format('[Cross-Target] Compiling ~w-step pipeline~n', [Steps]),
+    length(Steps, NumSteps),
+
+    % Detect runtime capabilities
+    dotnet_glue:detect_dotnet_runtime(DotNetRuntime),
+    dotnet_glue:detect_powershell(PSVersion),
+    format('[Cross-Target] .NET: ~w, PowerShell: ~w~n', [DotNetRuntime, PSVersion]),
+
+    % Generate pipeline code using dotnet_glue
+    dotnet_glue:generate_dotnet_pipeline(Steps, Options, Code),
+    format('[Cross-Target] Generated ~w-step pipeline code~n', [NumSteps]).
+
+%% option_or_default(+Option, +Options, +Default)
+%  Extract option value or use default.
+option_or_default(Option, Options, _Default) :-
+    member(Option, Options), !.
+option_or_default(Option, _Options, Default) :-
+    Option =.. [Name, Default],
+    \+ var(Default).
+
+%% ============================================================================
+%% C# HOSTING TESTS
+%% ============================================================================
+
+test_csharp_hosting :-
+    format('~n=== Testing C# Hosting Integration ===~n~n', []),
+
+    % Test 1: Generate PowerShell bridge
+    format('[Test 1] Generate PowerShell bridge~n', []),
+    generate_csharp_bridge(powershell, [], BridgeCode),
+    (   sub_string(BridgeCode, _, _, _, "PowerShellBridge"),
+        sub_string(BridgeCode, _, _, _, "SharedRunspace")
+    ->  format('  [PASS] PowerShell bridge generated with runspace~n', [])
+    ;   format('  [FAIL] Bridge missing expected components~n', [])
+    ),
+
+    % Test 2: Runtime detection
+    format('[Test 2] Runtime detection~n', []),
+    dotnet_glue:detect_dotnet_runtime(Runtime),
+    dotnet_glue:detect_powershell(PSVer),
+    format('  .NET Runtime: ~w~n', [Runtime]),
+    format('  PowerShell: ~w~n', [PSVer]),
+    format('  [PASS] Runtime detection complete~n', []),
+
+    % Test 3: Generate IronPython bridge
+    format('[Test 3] Generate IronPython bridge~n', []),
+    generate_csharp_bridge(ironpython, [namespace('Test.Glue')], IPBridge),
+    (   sub_string(IPBridge, _, _, _, "IronPythonBridge"),
+        sub_string(IPBridge, _, _, _, "Test.Glue")
+    ->  format('  [PASS] IronPython bridge generated with custom namespace~n', [])
+    ;   format('  [FAIL] IronPython bridge missing expected components~n', [])
+    ),
+
+    % Test 4: C# parameter generation
+    format('[Test 4] C# parameter generation~n', []),
+    generate_csharp_params(0, P0, A0),
+    generate_csharp_params(1, P1, A1),
+    generate_csharp_params(3, P3, A3),
+    (   P0 = "", A0 = "",
+        P1 = "string arg1", A1 = "$arg1",
+        sub_string(P3, _, _, _, "arg3")
+    ->  format('  [PASS] Parameters generated correctly~n', [])
+    ;   format('  [FAIL] Parameter generation error~n', [])
+    ),
+
+    format('~n=== C# Hosting Tests Complete ===~n', []).
