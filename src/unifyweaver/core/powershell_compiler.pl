@@ -596,6 +596,12 @@ generate_negated_facts_loaders(NegatedGoals, Code) :-
 
 %% body_to_list_ps(+Body, -Goals)
 %  Convert conjunctive body to list of goals
+%  Handle module-qualified conjunctions: Module:(A, B) -> split into goals
+body_to_list_ps(_Module:(A, B), Goals) :- !,
+    body_to_list_ps((A, B), Goals).
+body_to_list_ps(_Module:Goal, [Goal]) :-
+    Goal \= (_,_),  % Not a conjunction - just strip module
+    !.
 body_to_list_ps((A, B), [A|Rest]) :- !,
     body_to_list_ps(B, Rest).
 body_to_list_ps(true, []) :- !.
@@ -2295,8 +2301,14 @@ function ~w {
 %% compile_mixed_bound_rule(+Pred, +Arity, +Head, +BoundGoals, +FactGoals, +BuiltinGoals, +NegatedGoals, +Options, -Code)
 %
 %  Compile a rule with both bound goals and fact-based goals.
+%  Properly handles variable flow between fact results and bound goal inputs.
 %
-compile_mixed_bound_rule(Pred, Arity, _Head, BoundGoals, FactGoals, _BuiltinGoals, NegatedGoals, Options, Code) :-
+%  Example: salary_sqrt(Name, SqrtSal) :- employee(Name, Sal), sqrt(Sal, SqrtSal).
+%
+%  The Sal variable flows from the employee fact to the sqrt bound goal.
+%  Generated code loops through facts and applies bindings to each.
+%
+compile_mixed_bound_rule(Pred, Arity, Head, BoundGoals, FactGoals, BuiltinGoals, NegatedGoals, Options, Code) :-
     atom_string(Pred, PredStr),
     get_time(Timestamp),
     format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
@@ -2304,46 +2316,15 @@ compile_mixed_bound_rule(Pred, Arity, _Head, BoundGoals, FactGoals, _BuiltinGoal
     % Generate parameters
     generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock),
 
-    % Generate fact loaders for fact-based goals
-    findall(LoaderCode, (
-        member(FactGoal, FactGoals),
-        FactGoal =.. [FactPred|_],
-        atom_string(FactPred, FactPredStr),
-        format(string(LoaderCode), "$~w_facts = ~w", [FactPredStr, FactPredStr])
-    ), LoaderCodes),
-    atomic_list_concat(LoaderCodes, '\n        ', LoadersStr),
+    % Extract head arguments for output variable mapping
+    Head =.. [_|HeadArgs],
 
-    % Generate bound goal code
-    generate_bound_goals_code(BoundGoals, [], BoundCodes, _VarMap),
-    atomic_list_concat(BoundCodes, '\n        ', BoundStr),
+    % Analyze variable sharing between goals
+    analyze_mixed_rule_vars(HeadArgs, FactGoals, BoundGoals, VarAnalysis),
 
-    % Handle negation if present
-    (   NegatedGoals \= []
-    ->  generate_negation_check_ps(NegatedGoals, NegCheckCode),
-        generate_negated_facts_loaders(NegatedGoals, NegLoaderCode)
-    ;   NegCheckCode = "",
-        NegLoaderCode = ""
-    ),
-
-    % Generate join/filter logic for fact goals
-    (   FactGoals = [FG1, FG2|_]
-    ->  FG1 =.. [FP1|_], FG2 =.. [FP2|_],
-        atom_string(FP1, FP1Str), atom_string(FP2, FP2Str),
-        format(string(JoinStr),
-"# Join fact-based goals
-        $results = foreach ($r1 in $~w_facts) {
-            foreach ($r2 in $~w_facts) {
-                if ($r1.Y -eq $r2.X) {~w
-                    [PSCustomObject]@{ X = $r1.X; Y = $r2.Y }
-                }
-            }
-        }", [FP1Str, FP2Str, NegCheckCode])
-    ;   FactGoals = [FG1]
-    ->  FG1 =.. [FP1|_],
-        atom_string(FP1, FP1Str),
-        format(string(JoinStr), "# Fact-based goal\n        $results = $~w_facts", [FP1Str])
-    ;   JoinStr = ""
-    ),
+    % Generate the mixed rule body
+    generate_mixed_rule_body(PredStr, HeadArgs, FactGoals, BoundGoals, BuiltinGoals,
+                             NegatedGoals, VarAnalysis, Options, BodyCode),
 
     format(string(Code),
 "# Generated Pure PowerShell Script (Mixed Bound/Fact Rule)
@@ -2354,22 +2335,225 @@ compile_mixed_bound_rule(Pred, Arity, _Head, BoundGoals, FactGoals, _BuiltinGoal
 function ~w {
 ~w~w
 
-    # Load fact-based relations
-    ~w
 ~w
-    # Execute bound goals
-    ~w
-
-    ~w
-
-    # Return results
-    $results
 }
 
 # Call the function
 ~w
-", [Pred, Arity, DateStr, PredStr, CmdletBindingAttr, ParamBlock,
-    LoadersStr, NegLoaderCode, BoundStr, JoinStr, PredStr]).
+", [Pred, Arity, DateStr, PredStr, CmdletBindingAttr, ParamBlock, BodyCode, PredStr]).
+
+%% analyze_mixed_rule_vars(+HeadArgs, +FactGoals, +BoundGoals, -VarAnalysis)
+%
+%  Analyze how variables flow between head, fact goals, and bound goals.
+%  Returns a structure describing which variables are shared.
+%
+analyze_mixed_rule_vars(HeadArgs, FactGoals, BoundGoals, VarAnalysis) :-
+    % Collect all variables from fact goals with their positions
+    findall(fact_var(FactPred, ArgIdx, Var), (
+        member(FactGoal, FactGoals),
+        strip_module_qualifier(FactGoal, PlainGoal),
+        PlainGoal =.. [FactPred|FactArgs],
+        nth0(ArgIdx, FactArgs, Var),
+        var(Var)
+    ), FactVars),
+
+    % Collect all variables from bound goals with their positions
+    findall(bound_var(BoundPred, ArgIdx, Var, IsInput), (
+        member(Goal-Binding, BoundGoals),
+        strip_module_qualifier(Goal, PlainGoal),
+        PlainGoal =.. [BoundPred|BoundArgs],
+        Binding = binding(_, _, Inputs, Outputs, _),
+        length(Inputs, NumInputs),
+        nth0(ArgIdx, BoundArgs, Var),
+        var(Var),
+        (ArgIdx < NumInputs -> IsInput = true ; IsInput = false)
+    ), BoundVars),
+
+    % Find head variable positions
+    findall(head_var(ArgIdx, Var), (
+        nth0(ArgIdx, HeadArgs, Var),
+        var(Var)
+    ), HeadVars),
+
+    VarAnalysis = var_analysis(HeadVars, FactVars, BoundVars).
+
+%% strip_module_qualifier(+Goal, -PlainGoal)
+%  Remove module qualifier from a goal if present.
+strip_module_qualifier(_Module:Goal, Goal) :- !.
+strip_module_qualifier(Goal, Goal).
+
+%% generate_mixed_rule_body(+PredStr, +HeadArgs, +FactGoals, +BoundGoals, +BuiltinGoals, +NegatedGoals, +VarAnalysis, +Options, -Code)
+%
+%  Generate the body code for a mixed rule.
+%
+generate_mixed_rule_body(PredStr, HeadArgs, FactGoals, BoundGoals, _BuiltinGoals,
+                         NegatedGoals, VarAnalysis, Options, Code) :-
+    VarAnalysis = var_analysis(HeadVars, FactVars, BoundVars),
+
+    % Generate fact loader calls
+    generate_fact_loaders(FactGoals, LoaderCode),
+
+    % Generate negation loaders if needed
+    (   NegatedGoals \= []
+    ->  generate_negated_facts_loaders(NegatedGoals, NegLoaderCode)
+    ;   NegLoaderCode = ""
+    ),
+
+    % Generate the foreach loop over fact results
+    generate_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, HeadVars,
+                       FactVars, BoundVars, NegatedGoals, Options, LoopCode),
+
+    format(string(Code),
+"    ~w~w
+~w", [LoaderCode, NegLoaderCode, LoopCode]).
+
+%% generate_fact_loaders(+FactGoals, -Code)
+%  Generate PowerShell code to load facts for each fact-based goal.
+generate_fact_loaders([], "").
+generate_fact_loaders([FactGoal|Rest], Code) :-
+    strip_module_qualifier(FactGoal, PlainGoal),
+    PlainGoal =.. [FactPred|_],
+    atom_string(FactPred, FactPredStr),
+    generate_fact_loaders(Rest, RestCode),
+    format(string(Code), "$~w_data = ~w\n    ~w", [FactPredStr, FactPredStr, RestCode]).
+
+%% generate_fact_loop(+PredStr, +HeadArgs, +FactGoals, +BoundGoals, +HeadVars, +FactVars, +BoundVars, +NegatedGoals, +Options, -Code)
+%
+%  Generate the main foreach loop that iterates over facts and applies bindings.
+%
+generate_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, HeadVars,
+                   FactVars, BoundVars, NegatedGoals, Options, Code) :-
+    % For single fact goal, generate simple loop
+    (   FactGoals = [SingleFactGoal]
+    ->  strip_module_qualifier(SingleFactGoal, PlainFact),
+        PlainFact =.. [FactPred|FactArgs],
+        atom_string(FactPred, FactPredStr),
+
+        % Create variable map from fact fields to PS variables
+        create_fact_var_map(FactArgs, FactVarMap),
+
+        % Generate bound goal code using the fact variable map
+        generate_bound_goals_in_loop(BoundGoals, FactVarMap, HeadArgs, BoundCode, OutputVarMap),
+
+        % Generate negation check if needed
+        (   NegatedGoals \= []
+        ->  generate_negation_check_ps(NegatedGoals, NegCheck),
+            format(string(NegCheckStr), "~n            ~w", [NegCheck])
+        ;   NegCheckStr = ""
+        ),
+
+        % Generate output object creation
+        generate_output_object(HeadArgs, OutputVarMap, FactVarMap, OutputCode),
+
+        % Generate fact field extraction BEFORE the format call
+        generate_fact_field_extraction(FactArgs, FactFieldExtraction),
+
+        % Check for verbose output
+        (   member(verbose_output(true), Options)
+        ->  format(string(VerboseStr), "Write-Verbose \"[~w] Processing fact...\"\n            ", [PredStr])
+        ;   VerboseStr = ""
+        ),
+
+        format(string(Code),
+"    $results = foreach ($fact in $~w_data) {
+        ~w# Extract fact fields
+        ~w
+        # Apply bound operations~w
+        ~w
+        # Output result
+        ~w
+    }
+    $results", [FactPredStr, VerboseStr, FactFieldExtraction, NegCheckStr, BoundCode, OutputCode])
+
+    ;   % Multiple fact goals - generate nested loops with join
+        FactGoals = [FG1, FG2|_],
+        generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, HeadVars,
+                                 FactVars, BoundVars, NegatedGoals, Options, Code)
+    ).
+
+%% create_fact_var_map(+FactArgs, -VarMap)
+%  Create a mapping from fact argument variables to PowerShell field accessors.
+create_fact_var_map(FactArgs, VarMap) :-
+    create_fact_var_map(FactArgs, 0, VarMap).
+
+create_fact_var_map([], _, []).
+create_fact_var_map([Arg|Rest], Idx, VarMap) :-
+    NextIdx is Idx + 1,
+    create_fact_var_map(Rest, NextIdx, RestMap),
+    (   var(Arg)
+    ->  % Map to $fact.X, $fact.Y, etc. based on position
+        (Idx = 0 -> FieldName = "X" ; Idx = 1 -> FieldName = "Y" ; format(atom(FieldName), "F~w", [Idx])),
+        format(string(PSVar), "$~w", [FieldName]),
+        VarMap = [Arg-PSVar|RestMap]
+    ;   VarMap = RestMap
+    ).
+
+%% generate_fact_field_extraction(+FactArgs, -Code)
+%  Generate code to extract fact fields into local variables.
+generate_fact_field_extraction(FactArgs, Code) :-
+    generate_fact_field_extraction(FactArgs, 0, Extractions),
+    atomic_list_concat(Extractions, '\n        ', Code).
+
+generate_fact_field_extraction([], _, []).
+generate_fact_field_extraction([_|Rest], Idx, [Extraction|RestExtractions]) :-
+    NextIdx is Idx + 1,
+    (Idx = 0 -> FieldName = "X" ; Idx = 1 -> FieldName = "Y" ; format(atom(FieldName), "F~w", [Idx])),
+    format(string(Extraction), "$~w = $fact.~w", [FieldName, FieldName]),
+    generate_fact_field_extraction(Rest, NextIdx, RestExtractions).
+
+%% generate_bound_goals_in_loop(+BoundGoals, +FactVarMap, +HeadArgs, -Code, -OutputVarMap)
+%  Generate bound goal code using fact-derived variables.
+generate_bound_goals_in_loop([], VarMap, _, "", VarMap).
+generate_bound_goals_in_loop([Goal-Binding|Rest], VarMap, HeadArgs, Code, FinalVarMap) :-
+    generate_bound_goal_code(Goal, Binding, VarMap, GoalCode, NewVarMap),
+    generate_bound_goals_in_loop(Rest, NewVarMap, HeadArgs, RestCode, FinalVarMap),
+    (   RestCode = ""
+    ->  Code = GoalCode
+    ;   format(string(Code), "~w\n        ~w", [GoalCode, RestCode])
+    ).
+
+%% generate_output_object(+HeadArgs, +OutputVarMap, +FactVarMap, -Code)
+%  Generate the output PSCustomObject based on head arguments.
+generate_output_object(HeadArgs, OutputVarMap, FactVarMap, Code) :-
+    % Combine both var maps for lookup
+    append(OutputVarMap, FactVarMap, CombinedMap),
+    generate_output_fields(HeadArgs, CombinedMap, 0, Fields),
+    atomic_list_concat(Fields, '; ', FieldsStr),
+    format(string(Code), "[PSCustomObject]@{ ~w }", [FieldsStr]).
+
+generate_output_fields([], _, _, []).
+generate_output_fields([Arg|Rest], VarMap, Idx, [Field|RestFields]) :-
+    NextIdx is Idx + 1,
+    (Idx = 0 -> OutName = "X" ; Idx = 1 -> OutName = "Y" ; format(atom(OutName), "F~w", [Idx])),
+    (   var(Arg),
+        lookup_var_eq(Arg, VarMap, PSVar)
+    ->  format(string(Field), "~w = ~w", [OutName, PSVar])
+    ;   var(Arg)
+    ->  format(string(Field), "~w = $null", [OutName])
+    ;   format(string(Field), "~w = '~w'", [OutName, Arg])
+    ),
+    generate_output_fields(Rest, VarMap, NextIdx, RestFields).
+
+%% generate_multi_fact_loop(+PredStr, +HeadArgs, +FG1, +FG2, +BoundGoals, +HeadVars, +FactVars, +BoundVars, +NegatedGoals, +Options, -Code)
+%  Generate nested loops for multiple fact goals with join conditions.
+generate_multi_fact_loop(_PredStr, _HeadArgs, FG1, FG2, _BoundGoals, _HeadVars,
+                          _FactVars, _BoundVars, _NegatedGoals, _Options, Code) :-
+    strip_module_qualifier(FG1, Plain1),
+    strip_module_qualifier(FG2, Plain2),
+    Plain1 =.. [FP1|_],
+    Plain2 =.. [FP2|_],
+    atom_string(FP1, FP1Str),
+    atom_string(FP2, FP2Str),
+    % Basic nested loop structure - can be enhanced later
+    format(string(Code),
+"    $results = foreach ($r1 in $~w_data) {
+        foreach ($r2 in $~w_data) {
+            if ($r1.Y -eq $r2.X) {
+                [PSCustomObject]@{ X = $r1.X; Y = $r2.Y }
+            }
+        }
+    }
+    $results", [FP1Str, FP2Str]).
 
 %% generate_bound_goals_code(+BoundGoals, +VarMap, -Codes, -FinalVarMap)
 %
@@ -2610,5 +2794,29 @@ test_bound_rule_compilation :-
     ;   format('  [FAIL] Compilation failed~n', [])
     ),
     abolish(user:compute_sqrt/2),
+
+    % Test 5: Compile a mixed bound/fact rule
+    format('[Test 5] Compile mixed bound/fact rule~n', []),
+    % Define facts first
+    abolish(user:test_emp/2),
+    assertz(user:test_emp(alice, 100)),
+    assertz(user:test_emp(bob, 144)),
+    % Define mixed rule: test_emp is fact-based, sqrt is bound
+    % Use unique variable names to avoid sharing with other tests
+    abolish(user:emp_sqrt/2),
+    assertz((user:emp_sqrt(MixName, MixSqrt) :- test_emp(MixName, MixVal), sqrt(MixVal, MixSqrt))),
+    (   compile_to_powershell(emp_sqrt/2, [powershell_mode(pure)], MixedCode)
+    ->  % Check each pattern individually for debugging
+        (sub_string(MixedCode, _, _, _, "foreach") -> HasForeach = true ; HasForeach = false),
+        (sub_string(MixedCode, _, _, _, "[Math]::Sqrt") -> HasSqrt = true ; HasSqrt = false),
+        (sub_string(MixedCode, _, _, _, "$fact") -> HasFact = true ; HasFact = false),
+        (   HasForeach = true, HasSqrt = true, HasFact = true
+        ->  format('  [PASS] Mixed rule compiled with foreach loop and binding~n', [])
+        ;   format('  [FAIL] Missing patterns: foreach=~w, Sqrt=~w, fact=~w~n', [HasForeach, HasSqrt, HasFact])
+        )
+    ;   format('  [FAIL] Mixed rule compilation failed~n', [])
+    ),
+    abolish(user:test_emp/2),
+    abolish(user:emp_sqrt/2),
 
     format('~n=== Bound Rule Compilation Tests Complete ===~n', []).
