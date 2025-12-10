@@ -15,7 +15,13 @@
     compile_tail_recursion_powershell/3,    % +Pred/Arity, +Options, -PowerShellCode
     can_compile_tail_recursion_ps/1,        % +Pred/Arity
     powershell_wrapper/3,         % powershell_wrapper(+BashCode, +Options, -PowerShellCode)
-    test_powershell_compiler/0    % Run tests
+    test_powershell_compiler/0,   % Run tests
+
+    % Binding-based compilation (Book 12, Chapter 3 & 5)
+    compile_bound_predicate/3,    % compile_bound_predicate(+Pred, +Options, -Code)
+    generate_cmdlet_wrapper/3,    % generate_cmdlet_wrapper(+Pred, +Options, -CmdletCode)
+    has_powershell_binding/1,     % has_powershell_binding(+Pred)
+    init_powershell_compiler/0    % Initialize compiler with bindings
 ]).
 
 :- use_module(library(lists)).
@@ -28,6 +34,11 @@
 :- use_module('../sources/http_source', []).
 :- use_module('../sources/xml_source', []).
 :- use_module('../sources/dotnet_source', []).
+
+% Binding system for cmdlet generation (Book 12, Chapters 3 & 5)
+:- use_module('binding_registry').
+:- use_module('../bindings/powershell_bindings').
+:- use_module('../bindings/binding_codegen').
 
 %% compile_to_powershell(+Predicate, -PowerShellCode)
 %  Simplified interface with default options
@@ -1827,16 +1838,183 @@ format_param_entry(Index, Name, Attrs, Entry) :-
     ;   Index = 1 -> Pipe = ", ValueFromPipeline=$true" % Default for 2nd arg in binary
     ;   Pipe = ""
     ),
-    
+
     format(string(ParamAttr), "        [Parameter(Position=~w~w~w)]", [Pos, Mand, Pipe]),
-    
+
     % Validation
     (   member(validate_not_null(true), Attrs) -> Val1 = "\n        [ValidateNotNullOrEmpty()]" ; Val1 = "" ),
-    (   member(validate_set(Set), Attrs), is_list(Set) -> 
+    (   member(validate_set(Set), Attrs), is_list(Set) ->
         atomic_list_concat(Set, "', '", SetInner),
         format(string(Val2), "\n        [ValidateSet('~w')]", [SetInner])
     ;   Val2 = ""
     ),
-    
+
     format(string(Entry), "~w~w~w\n        [string]$~w", [ParamAttr, Val1, Val2, Name]).
 
+% ============================================================================
+% BINDING-BASED CMDLET GENERATION (Book 12, Chapters 3 & 5)
+% ============================================================================
+%
+% These predicates integrate with the binding system to generate PowerShell
+% cmdlets that wrap Prolog predicate semantics using proper PowerShell patterns.
+
+%% init_powershell_compiler
+%
+%  Initialize the PowerShell compiler with all registered bindings.
+%  Call this before using binding-based compilation.
+%
+init_powershell_compiler :-
+    format('[PowerShell Compiler] Initializing binding system...~n', []),
+    powershell_bindings:init_powershell_bindings,
+    bindings_for_target(powershell, Bindings),
+    length(Bindings, NumBindings),
+    format('[PowerShell Compiler] Loaded ~w PowerShell bindings~n', [NumBindings]).
+
+%% has_powershell_binding(+Pred)
+%
+%  Check if a predicate has a registered PowerShell binding.
+%
+%  @param Pred  Name/Arity predicate indicator
+%
+has_powershell_binding(Pred) :-
+    binding(powershell, Pred, _, _, _, _).
+
+%% compile_bound_predicate(+Pred, +Options, -Code)
+%
+%  Compile a predicate using its PowerShell binding to generate a cmdlet call.
+%  Falls back to standard compilation if no binding exists.
+%
+%  @param Pred     Name/Arity predicate indicator
+%  @param Options  Compilation options:
+%                    - args(List) - Arguments to pass to the binding
+%                    - wrap_cmdlet(true) - Wrap in cmdlet function
+%                    - verbose_output(true) - Add Write-Verbose statements
+%  @param Code     Generated PowerShell code
+%
+compile_bound_predicate(Pred, Options, Code) :-
+    (   has_powershell_binding(Pred)
+    ->  % Use binding-based generation
+        format('[PowerShell Compiler] Using binding for ~w~n', [Pred]),
+        (   member(args(Args), Options)
+        ->  true
+        ;   Args = []
+        ),
+        (   member(wrap_cmdlet(true), Options)
+        ->  % Generate full cmdlet wrapper
+            generate_cmdlet_wrapper(Pred, Options, Code)
+        ;   % Generate just the call
+            binding_codegen:generate_binding_call(powershell, Pred, Args, Code)
+        )
+    ;   % Fall back to standard compilation
+        format('[PowerShell Compiler] No binding for ~w, using standard compilation~n', [Pred]),
+        compile_to_powershell(Pred, Options, Code)
+    ).
+
+%% generate_cmdlet_wrapper(+Pred, +Options, -CmdletCode)
+%
+%  Generate a complete PowerShell cmdlet function that wraps a bound predicate.
+%  Follows PowerShell conventions: [CmdletBinding()], param(), begin/process/end.
+%
+%  @param Pred        Name/Arity predicate indicator
+%  @param Options     Options passed to binding_codegen
+%  @param CmdletCode  Complete cmdlet function code
+%
+generate_cmdlet_wrapper(Pred, Options, CmdletCode) :-
+    binding_codegen:generate_cmdlet_from_binding(powershell, Pred, Options, CmdletCode).
+
+%% compile_with_bindings(+Predicate, +Options, -Code)
+%
+%  Enhanced compilation that first checks for bindings before falling back
+%  to traditional compilation. Useful for predicates that map directly to
+%  PowerShell cmdlets (e.g., get_service -> Get-Service).
+%
+compile_with_bindings(Predicate, Options, Code) :-
+    Predicate = Pred/Arity,
+    format('[PowerShell Compiler] Checking bindings for ~w/~w~n', [Pred, Arity]),
+    (   has_powershell_binding(Predicate)
+    ->  compile_bound_predicate(Predicate, Options, Code)
+    ;   compile_to_powershell(Predicate, Options, Code)
+    ).
+
+%% generate_binding_call_inline(+Pred, +Args, -Code)
+%
+%  Generate inline code for a bound predicate call without cmdlet wrapper.
+%  Useful when embedding bound calls within larger generated code.
+%
+generate_binding_call_inline(Pred, Args, Code) :-
+    (   has_powershell_binding(Pred)
+    ->  binding_codegen:generate_binding_call(powershell, Pred, Args, Code)
+    ;   % No binding - generate placeholder
+        Pred = Name/Arity,
+        format(string(Code), "# Unbound predicate: ~w/~w", [Name, Arity])
+    ).
+
+%% list_powershell_bindings
+%
+%  List all registered PowerShell bindings with their target names.
+%
+list_powershell_bindings :-
+    format('~n=== Registered PowerShell Bindings ===~n~n', []),
+    forall(
+        binding(powershell, Pred, TargetName, Inputs, Outputs, Opts),
+        (   Pred = Name/Arity,
+            length(Inputs, NumIn),
+            length(Outputs, NumOut),
+            format('  ~w/~w -> ~w  (in:~w, out:~w)~n', [Name, Arity, TargetName, NumIn, NumOut]),
+            (   member(effect(E), Opts)
+            ->  format('    effect: ~w~n', [E])
+            ;   true
+            ),
+            (   member(pattern(P), Opts)
+            ->  format('    pattern: ~w~n', [P])
+            ;   true
+            )
+        )
+    ),
+    format('~n', []).
+
+%% test_bindings_integration
+%
+%  Test the binding system integration with the PowerShell compiler.
+%
+test_bindings_integration :-
+    format('~n=== Testing Binding System Integration ===~n~n', []),
+
+    % Initialize
+    format('[Test] Initializing...~n', []),
+    init_powershell_compiler,
+
+    % Test 1: Check binding exists
+    format('[Test 1] Check binding existence~n', []),
+    (   has_powershell_binding(get_service/1)
+    ->  format('  [PASS] get_service/1 has binding~n', [])
+    ;   format('  [FAIL] get_service/1 binding not found~n', [])
+    ),
+
+    % Test 2: Generate binding call
+    format('[Test 2] Generate binding call~n', []),
+    generate_binding_call_inline(sqrt/2, [16], SqrtCode),
+    format('  sqrt(16) -> ~w~n', [SqrtCode]),
+    (   sub_string(SqrtCode, _, _, _, "Sqrt")
+    ->  format('  [PASS] Generated [Math]::Sqrt call~n', [])
+    ;   format('  [FAIL] Expected Sqrt in output~n', [])
+    ),
+
+    % Test 3: Generate cmdlet wrapper
+    format('[Test 3] Generate cmdlet wrapper~n', []),
+    generate_cmdlet_wrapper(test_path/1, [verbose_output(true)], CmdletCode),
+    (   sub_string(CmdletCode, _, _, _, "[CmdletBinding()]")
+    ->  format('  [PASS] Generated CmdletBinding attribute~n', [])
+    ;   format('  [FAIL] Missing CmdletBinding~n', [])
+    ),
+
+    % Test 4: Compile bound predicate
+    format('[Test 4] Compile bound predicate with call~n', []),
+    compile_bound_predicate(write_output/1, [args(['Hello'])], OutputCode),
+    format('  write_output -> ~w~n', [OutputCode]),
+    (   sub_string(OutputCode, _, _, _, "Write-Output")
+    ->  format('  [PASS] Generated Write-Output call~n', [])
+    ;   format('  [FAIL] Expected Write-Output~n', [])
+    ),
+
+    format('~n=== Binding Integration Tests Complete ===~n', []).
