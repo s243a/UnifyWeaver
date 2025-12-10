@@ -4,11 +4,17 @@ This document provides a complete procedure for testing all UnifyWeaver playbook
 
 ## Quick Reference: Which Models to Use
 
+**Recommended: Test with 4 models for comprehensive coverage:**
+1. **Claude Haiku 4.5** - Fast baseline, good tool use
+2. **Claude Sonnet 4** - Higher capability, validates complex playbooks
+3. **Gemini 2.5 Pro** - Cross-vendor validation
+4. **Gemini 2.5 Flash** - Fast, catches tool use edge cases
+
 | Category | Playbooks | Test With | Notes |
 |----------|-----------|-----------|-------|
-| **Standard** | csv, xml, tree_recursion, mutual_recursion, csharp_codegen, prolog_generation, parallel_execution | Haiku 4.5 + Gemini 2.5 Pro | Both models work well |
-| **Haiku Only** | json_litedb | Haiku 4.5 only | Gemini times out on this one |
-| **Blocked** | csharp_query | Do not test | Missing `build_unifyweaver_project` implementation |
+| **Standard** | csv, xml, tree_recursion, mutual_recursion, csharp_codegen, prolog_generation, parallel_execution | All 4 models | Both vendors work well |
+| **Complex** | json_litedb | Haiku + Sonnet preferred | Gemini may timeout; Sonnet: 4/10, Haiku: 7/10 |
+| **Fixed** | csharp_query | All 4 models | Now uses `csharp_sum_pair` records |
 | **Haiku Only** | powershell_inline_dotnet | Haiku 4.5 only | Gemini rate limited; Haiku passes (4/10) |
 | **Issues** | large_xml_streaming | Gemini only (so far) | Has path errors, Python syntax issues |
 | **Design Only** | csharp_generator | Do not test | Lacks executable steps; needs extraction record |
@@ -59,10 +65,42 @@ Explain your rating." \
   --allowedTools "Bash(perl:*),Bash(chmod:*),Bash(bash:*),Bash(swipl:*),Bash(python3:*),Bash(mkdir:*),Bash(cat:*),Bash(ls:*),Bash(dotnet:*),Bash(pwsh:*),Read,Glob,Grep"
 ```
 
+### Testing with Claude Sonnet 4
+
+```bash
+claude -p "Pretend you have fresh context and run the playbook at playbooks/<PLAYBOOK_NAME>.md
+
+After completing, rate the difficulty 1-10 where:
+- 1-3: Very clear, deterministic steps
+- 4-5: Some interpretation needed
+- 6-7: Requires context understanding
+- 8-10: Complex reasoning required
+
+Explain your rating." \
+  --model claude-sonnet-4-20250514 \
+  --allowedTools "Bash(perl:*),Bash(chmod:*),Bash(bash:*),Bash(swipl:*),Bash(python3:*),Bash(mkdir:*),Bash(cat:*),Bash(ls:*),Bash(dotnet:*),Bash(pwsh:*),Read,Glob,Grep"
+```
+
 ### Testing with Gemini 2.5 Pro
 
 ```bash
 gemini --model gemini-2.5-pro \
+  --prompt "Pretend you have fresh context and run the playbook at playbooks/<PLAYBOOK_NAME>.md
+
+After completing, rate the difficulty 1-10 where:
+- 1-3: Very clear, deterministic steps
+- 4-5: Some interpretation needed
+- 6-7: Requires context understanding
+- 8-10: Complex reasoning required
+
+Explain your rating." \
+  --yolo
+```
+
+### Testing with Gemini 2.5 Flash
+
+```bash
+gemini --model gemini-2.5-flash \
   --prompt "Pretend you have fresh context and run the playbook at playbooks/<PLAYBOOK_NAME>.md
 
 After completing, rate the difficulty 1-10 where:
@@ -117,13 +155,13 @@ claude -p "Pretend you have fresh context and run the playbook at playbooks/json
   --allowedTools "Bash(perl:*),Bash(chmod:*),Bash(bash:*),Bash(swipl:*),Bash(python3:*),Bash(mkdir:*),Bash(cat:*),Bash(ls:*),Bash(dotnet:*),Bash(pwsh:*),Read,Glob,Grep"
 ```
 
-### Tier 3: Do Not Test (Blocked)
+### Tier 3: Recently Fixed (Needs Retesting)
 
-These playbooks have known blocking issues:
+These playbooks had blocking issues that have been resolved:
 
-| Playbook | Blocking Issue |
-|----------|----------------|
-| `csharp_query_playbook.md` | Missing `build_unifyweaver_project` predicate |
+| Playbook | Fix Applied | Status |
+|----------|-------------|--------|
+| `csharp_query_playbook.md` | Now uses `csharp_sum_pair` records | Ready for testing |
 
 ### Tier 4: Needs Evaluation (Untested)
 
