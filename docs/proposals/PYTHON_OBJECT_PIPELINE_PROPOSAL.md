@@ -362,6 +362,54 @@ How do exceptions propagate across runtime boundaries?
 
 ---
 
+## Already Implemented (dotnet_glue.pl)
+
+Analysis of `src/unifyweaver/glue/dotnet_glue.pl` reveals significant infrastructure already exists:
+
+### Runtime Detection
+
+| Predicate | Purpose |
+|-----------|---------|
+| `detect_dotnet_runtime/1` | Returns `dotnet_modern`, `dotnet_core`, `mono`, or `none` |
+| `detect_ironpython/1` | Checks for `ipy` or `ipy64` executables |
+| `detect_powershell/1` | Returns `core(Version)`, `windows(Version)`, or `none` |
+
+### IronPython Compatibility
+
+| Predicate | Purpose |
+|-----------|---------|
+| `ironpython_compatible/1` | 30+ modules declared (sys, os, json, re, collections, clr...) |
+| `can_use_ironpython/1` | Check if all imports are IronPython-compatible |
+| `python_runtime_choice/2` | Returns `ironpython` or `cpython_pipe` based on imports |
+
+**Incompatible modules listed:** numpy, scipy, pandas, matplotlib, PIL/pillow, cv2, h5py, tensorflow, torch, sklearn
+
+### Bridge Generation
+
+| Predicate | Generated Code |
+|-----------|----------------|
+| `generate_ironpython_bridge/2` | C# class with `ExecuteStream<TInput>` (uses `yield return`) |
+| `generate_cpython_bridge/2` | C# class with `ExecuteStream<TInput, TOutput>` (uses pipes + JSONL) |
+| `generate_powershell_bridge/2` | C# class with `InvokeStream<TInput, TOutput>` |
+| `generate_csharp_host/3` | Multi-target host combining all bridges |
+| `generate_dotnet_pipeline/3` | Pipeline with `Step1`, `Step2`, ... methods |
+
+### What This Means for Implementation
+
+**Already done (can reuse):**
+- Runtime detection (Phase 2 partial)
+- IronPython compatibility checking (Phase 2)
+- C# hosting code generation (Phase 3/4 partial)
+- Pipeline chaining across targets (Phase 5 partial)
+
+**Still needed:**
+- Pipeline options in `python_target.pl` (Phase 1) - `pipeline_input`, `output_format`, `arg_names`
+- Python generator code generation (Phase 1) - the `def foo(stream): yield from ...` pattern
+- Integration of `python_runtime_choice/2` into `compile_predicate_to_python/3` (Phase 2)
+- Binding registry extension for runtime-specific targets (Phase 3)
+
+---
+
 ## Relationship to Existing Systems
 
 ### Cross-Target Glue (docs/guides/cross-target-glue.md)
