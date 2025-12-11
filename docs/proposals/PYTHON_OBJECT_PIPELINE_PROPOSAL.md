@@ -301,66 +301,160 @@ def process(input_dict):
 
 ---
 
-## Open Questions
+## Decisions (Resolved)
 
-### 1. IronPython 2 vs 3?
+### 1. Python Version: Python 3 Default
 
-IronPython 2.7 is stable but Python 2 only. IronPython 3 supports Python 3 but is still in development. Options:
-
-- **Option A:** Support IronPython 2.7 only (stable, but Python 2 syntax)
-- **Option B:** Support IronPython 3 (Python 3 syntax, but less stable)
-- **Option C:** Generate compatible subset that works with both
-
-**Recommendation:** Option A initially, with Option C as target.
-
-### 2. Binding Compatibility?
-
-Current bindings assume CPython. For IronPython:
-
-- Math bindings: Use `System.Math` instead of `math` module?
-- I/O bindings: Use `System.IO` instead of Python `open()`?
-- Regex bindings: Use `System.Text.RegularExpressions`?
-
-**Options:**
-- **Option A:** Separate binding sets per runtime
-- **Option B:** Binding options specify runtime-specific targets
-- **Option C:** Runtime-agnostic bindings with translation layer
-
-**Recommendation:** Option B - extend binding/6 with runtime-specific options:
+**Decision:** Python 3 is the default target, controllable via firewall/preferences.
 
 ```prolog
-declare_binding(python, sqrt/2, 'math.sqrt',
-    [number], [float],
-    [
-        pure, import('math'),
-        ironpython_target('[Math]::Sqrt'),  % .NET fallback
-        jython_target('java.lang.Math.sqrt') % JVM fallback
-    ]).
+%% Default: Python 3
+:- assertz(preferences:preferences_default([
+    python_version(3)
+])).
+
+%% Firewall can restrict Python version per runtime
+:- assertz(firewall:rule_firewall(legacy_pred/2, [
+    denied([python_version(3, ironpython)])  % IronPython 3 not stable enough
+])).
+
+%% Or prefer Python 2 for specific predicates
+:- assertz(preferences:rule_preferences(legacy_pred/2, [
+    python_version(2)  % This predicate needs Python 2 syntax
+])).
 ```
 
-### 3. Glue Protocol?
+The firewall can express constraints like "no Python 3 for IronPython" while preferences express "prefer Python 3 when available."
 
-When runtimes can't share process, what serialization?
+### 2. Binding Compatibility: Default with Overrides
 
-- **JSONL:** Universal, but verbose
-- **MessagePack:** Binary, efficient, but needs library
-- **Protocol Buffers:** Typed, efficient, but complex setup
-- **Pickle:** Python-native, but security concerns
+**Decision:** Python bindings are the default; runtime-specific overrides or removals are allowed.
 
-**Recommendation:** JSONL as default (universal), MessagePack as option.
+```prolog
+%% Default binding (works for CPython, PyPy)
+declare_binding(python, sqrt/2, 'math.sqrt',
+    [number], [float],
+    [pure, import('math')]).
 
-### 4. Error Handling Across Runtimes?
+%% Override for IronPython (uses .NET Math)
+declare_binding_override(python, sqrt/2, ironpython,
+    'System.Math.Sqrt',
+    [import('System')]).
 
-How do exceptions propagate across runtime boundaries?
+%% Override for Jython (uses Java Math)
+declare_binding_override(python, sqrt/2, jython,
+    'java.lang.Math.sqrt',
+    []).
 
-**Options:**
-- **Option A:** Convert all to JSON error objects
-- **Option B:** Runtime-specific exception translation
-- **Option C:** Wrapper types that serialize exception info
+%% Remove binding for specific runtime (forces pure Prolog implementation)
+declare_binding_removed(python, unsafe_op/2, ironpython).
+```
 
-**Recommendation:** Option A for simplicity.
+Binding lookup order:
+1. Check for `declare_binding_removed/3` → skip binding
+2. Check for `declare_binding_override/4` → use override
+3. Fall back to `declare_binding/6` → use default
 
-### 5. Integration with Existing Firewall/Preference System
+### 3. Glue Protocol: Preference/Firewall Controlled
+
+**Decision:** Glue protocol specified via preference/firewall. JSONL is the only current implementation, so it's the only unifiable result for now.
+
+```prolog
+%% Preference for protocol (future-proofing)
+:- assertz(preferences:preferences_default([
+    glue_protocol(jsonl)  % Only option currently implemented
+])).
+
+%% Future: when MessagePack is implemented
+:- assertz(preferences:rule_preferences(high_throughput_pred/2, [
+    glue_protocol(messagepack)  % Prefer binary for performance
+])).
+
+%% Firewall can restrict protocols
+:- assertz(firewall:firewall_default([
+    services([glue_protocol(jsonl)]),      % Allow JSONL
+    denied([glue_protocol(pickle)])        % Never allow pickle (security)
+])).
+```
+
+Protocol selection unifies with available implementations:
+```prolog
+select_glue_protocol(Preferred, Available, Selected) :-
+    member(Preferred, Available),  % Unify preference with implementation
+    !,
+    Selected = Preferred.
+select_glue_protocol(_, Available, Selected) :-
+    member(Selected, Available).   % Fall back to any available
+```
+
+### 4. Error Handling: Stderr with Same Protocol
+
+**Decision:** Errors communicated over stderr. Error protocol matches data stream protocol unless overridden.
+
+```prolog
+%% Generated Python pattern
+import sys
+import json
+
+def process(stream):
+    for line in sys.stdin:
+        try:
+            record = json.loads(line)
+            result = process_record(record)
+            print(json.dumps(result))  # stdout: data
+        except Exception as e:
+            # stderr: errors in same protocol as data
+            print(json.dumps({
+                "error": True,
+                "type": type(e).__name__,
+                "message": str(e),
+                "record": line.strip()
+            }), file=sys.stderr)
+            sys.stderr.flush()
+```
+
+```prolog
+%% Error protocol option (defaults to data protocol)
+:- assertz(preferences:preferences_default([
+    error_protocol(same_as_data)  % Use same protocol as data stream
+])).
+
+%% Override for specific needs
+:- assertz(preferences:rule_preferences(debug_pred/2, [
+    error_protocol(text)  % Plain text errors for debugging
+])).
+```
+
+### 5. Metrics/Scoring: Deferred
+
+**Decision:** Defer metrics-based scoring until core implementation complete. Design code to make future addition easy.
+
+**Current approach:** Prolog's evaluation order handles preference ordering naturally.
+
+**Future-proofing:**
+```prolog
+%% Placeholder for metrics integration
+%% Currently returns 0, designed for easy extension
+metrics_bonus(_Runtime, 0).
+
+%% Future implementation will be:
+%% metrics_bonus(Runtime, Bonus) :-
+%%     runtime_metric(Runtime, success_rate, Rate),
+%%     runtime_metric(Runtime, avg_latency_ms, Latency),
+%%     Bonus is Rate * 2 + max(0, 2 - Latency/100).
+
+%% Score calculation designed for extension
+score_runtime(Options, Runtime, Score) :-
+    order_score(Options, Runtime, OrderScore),
+    communication_score(Options, Runtime, CommScore),
+    optimization_score(Options, Runtime, OptScore),
+    metrics_bonus(Runtime, MetricsBonus),  % Currently 0
+    Score is OrderScore + CommScore + OptScore + MetricsBonus.
+```
+
+The `metrics_bonus/2` predicate is a hook point. When metrics are implemented later, only that predicate needs to change.
+
+### 6. Integration with Existing Firewall/Preference System
 
 UnifyWeaver already has a Control Plane with **Firewall** (hard security boundaries) and **Preferences** (flexible implementation choices). See `docs/CONTROL_PLANE.md` and `docs/ARCHITECTURE.md`.
 
