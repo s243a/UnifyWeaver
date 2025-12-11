@@ -665,38 +665,21 @@ translate_goal(Goal, "") :-
 
 %% generate_binding_call_python(+TargetName, +Args, +Outputs, +Options, -Code)
 %  Generate Python code for a binding call
+%
+%  Handles multiple patterns:
+%  - Function calls: func(args) -> result
+%  - Method calls: object.method(args) -> result
+%  - No-arg methods: object.method() (TargetName may include () or not)
+%  - Mutating methods: object.method(arg) with no output (e.g., list.append)
+%  - Chained calls: object.method1().method2()
+%
 generate_binding_call_python(TargetName, Args, Outputs, Options, Code) :-
-    % Determine if this is a method call or function call
+    % Determine call pattern type
     (   member(pattern(method_call), Options)
-    ->  % Method call: first arg is the object
-        Args = [Object|RestArgs],
-        var_to_python(Object, PyObject),
-        maplist(var_to_python, RestArgs, PyRestArgs),
-        (   PyRestArgs = []
-        ->  % No-arg method call (already has () in TargetName or needs it)
-            (   sub_string(TargetName, _, _, 0, "()")
-            ->  format(string(CallExpr), "~w~w", [PyObject, TargetName])
-            ;   format(string(CallExpr), "~w~w", [PyObject, TargetName])
-            )
-        ;   % Method call with arguments
-            atomic_list_concat(PyRestArgs, ', ', ArgsStr),
-            format(string(CallExpr), "~w~w(~w)", [PyObject, TargetName, ArgsStr])
-        )
-    ;   % Regular function call
-        maplist(var_to_python, Args, PyArgs),
-        (   Outputs = []
-        ->  % No output - just call the function
-            atomic_list_concat(PyArgs, ', ', ArgsStr),
-            format(string(CallExpr), "~w(~w)", [TargetName, ArgsStr])
-        ;   % Has output - extract input args (all but last which is output)
-            (   append(InputArgs, [_OutputArg], Args)
-            ->  maplist(var_to_python, InputArgs, PyInputArgs),
-                atomic_list_concat(PyInputArgs, ', ', ArgsStr),
-                format(string(CallExpr), "~w(~w)", [TargetName, ArgsStr])
-            ;   % Single arg that is output (constant function)
-                format(string(CallExpr), "~w", [TargetName])
-            )
-        )
+    ->  generate_method_call(TargetName, Args, Outputs, CallExpr)
+    ;   member(pattern(chained_call(Methods)), Options)
+    ->  generate_chained_call(Methods, Args, Outputs, CallExpr)
+    ;   generate_function_call(TargetName, Args, Outputs, CallExpr)
     ),
 
     % Generate assignment if there are outputs
@@ -707,6 +690,119 @@ generate_binding_call_python(TargetName, Args, Outputs, Options, Code) :-
         var_to_python(OutputVar, PyOutputVar),
         format(string(Code), "    ~w = ~w\n", [PyOutputVar, CallExpr])
     ).
+
+%% generate_method_call(+TargetName, +Args, +Outputs, -CallExpr)
+%  Generate a method call expression: object.method(args)
+%
+%  Args structure depends on Outputs:
+%  - Outputs = []: All args are inputs, first is object
+%  - Outputs = [_]: All but last are inputs, first is object, last is output
+%
+generate_method_call(TargetName, Args, Outputs, CallExpr) :-
+    % Separate object from other arguments
+    Args = [Object|RestArgs],
+    var_to_python(Object, PyObject),
+
+    % Determine which args are inputs (exclude output if present)
+    (   Outputs = []
+    ->  % No output: all RestArgs are method arguments
+        InputArgs = RestArgs
+    ;   % Has output: RestArgs minus last element are method arguments
+        (   RestArgs = []
+        ->  InputArgs = []
+        ;   append(InputArgs, [_OutputArg], RestArgs)
+        )
+    ),
+
+    % Convert input args to Python
+    maplist(var_to_python, InputArgs, PyInputArgs),
+
+    % Generate method call expression
+    (   PyInputArgs = []
+    ->  % No-arg method call
+        (   sub_string(TargetName, _, _, 0, "()")
+        ->  % TargetName already has () like ".split()" or ".lower()"
+            format(string(CallExpr), "~w~w", [PyObject, TargetName])
+        ;   % TargetName doesn't have (), add them
+            format(string(CallExpr), "~w~w()", [PyObject, TargetName])
+        )
+    ;   % Method call with arguments
+        atomic_list_concat(PyInputArgs, ', ', ArgsStr),
+        format(string(CallExpr), "~w~w(~w)", [PyObject, TargetName, ArgsStr])
+    ).
+
+%% generate_function_call(+TargetName, +Args, +Outputs, -CallExpr)
+%  Generate a function call expression: func(args)
+%
+generate_function_call(TargetName, Args, Outputs, CallExpr) :-
+    (   Outputs = []
+    ->  % No output - all args are inputs
+        maplist(var_to_python, Args, PyArgs),
+        atomic_list_concat(PyArgs, ', ', ArgsStr),
+        format(string(CallExpr), "~w(~w)", [TargetName, ArgsStr])
+    ;   % Has output - extract input args (all but last which is output)
+        (   append(InputArgs, [_OutputArg], Args)
+        ->  maplist(var_to_python, InputArgs, PyInputArgs),
+            (   PyInputArgs = []
+            ->  % Constant/no-arg function
+                format(string(CallExpr), "~w", [TargetName])
+            ;   atomic_list_concat(PyInputArgs, ', ', ArgsStr),
+                format(string(CallExpr), "~w(~w)", [TargetName, ArgsStr])
+            )
+        ;   % Single arg that is output (constant function like pi/1)
+            format(string(CallExpr), "~w", [TargetName])
+        )
+    ).
+
+%% generate_chained_call(+Methods, +Args, +Outputs, -CallExpr)
+%  Generate a chained method call: object.method1(args1).method2(args2)
+%
+%  Methods is a list of method(Name, ArgIndices) terms specifying which
+%  args (by index) go to each method in the chain.
+%
+%  Example: pattern(chained_call([method('.strip', []), method('.lower', [])]))
+%  For: strip_lower(Str, Result) -> Str.strip().lower()
+%
+generate_chained_call(Methods, Args, Outputs, CallExpr) :-
+    % First arg is always the object
+    Args = [Object|RestArgs],
+    var_to_python(Object, PyObject),
+
+    % Determine input args (exclude output if present)
+    (   Outputs = []
+    ->  InputArgs = RestArgs
+    ;   (   RestArgs = []
+        ->  InputArgs = []
+        ;   append(InputArgs, [_], RestArgs)
+        )
+    ),
+
+    % Build the chain
+    generate_method_chain(Methods, InputArgs, PyObject, CallExpr).
+
+%% generate_method_chain(+Methods, +InputArgs, +CurrentExpr, -FinalExpr)
+%  Recursively build a method chain expression
+generate_method_chain([], _InputArgs, Expr, Expr).
+generate_method_chain([method(Name, ArgIndices)|Rest], InputArgs, CurrentExpr, FinalExpr) :-
+    % Get args for this method by indices
+    findall(PyArg, (
+        member(Idx, ArgIndices),
+        nth0(Idx, InputArgs, Arg),
+        var_to_python(Arg, PyArg)
+    ), MethodPyArgs),
+
+    % Generate this method call
+    (   MethodPyArgs = []
+    ->  (   sub_string(Name, _, _, 0, "()")
+        ->  format(string(NextExpr), "~w~w", [CurrentExpr, Name])
+        ;   format(string(NextExpr), "~w~w()", [CurrentExpr, Name])
+        )
+    ;   atomic_list_concat(MethodPyArgs, ', ', ArgsStr),
+        format(string(NextExpr), "~w~w(~w)", [CurrentExpr, Name, ArgsStr])
+    ),
+
+    % Continue with rest of chain
+    generate_method_chain(Rest, InputArgs, NextExpr, FinalExpr).
 
 %% compile_python_key_expr(+Strategy, -PyExpr)
 %  Compiles a key generation strategy into a Python string expression.
@@ -783,11 +879,15 @@ pair_to_python(Key-Value, Str) :-
     var_to_python(Value, PyValue),
     format(string(Str), "'~w': ~w", [Key, PyValue]).
 
-var_to_python('$VAR'(I), PyVar) :- 
-    !, 
+var_to_python('$VAR'(I), PyVar) :-
+    !,
     format(string(PyVar), "v_~d", [I]).
-var_to_python(Atom, Quoted) :- 
-    atom(Atom), 
+var_to_python(v(Name), PyVar) :-
+    % Support for readable variable notation v(name) -> v_name
+    !,
+    format(string(PyVar), "v_~w", [Name]).
+var_to_python(Atom, Quoted) :-
+    atom(Atom),
     !,
     format(string(Quoted), "\"~w\"", [Atom]).
 var_to_python(Number, Number) :- 
@@ -2624,3 +2724,121 @@ test_import_autogeneration :-
     clear_binding_imports,
 
     format('~n=== All Import Auto-Generation Tests Passed ===~n', []).
+
+% ============================================================================
+% TESTS - Method Call Pattern Enhancement
+% ============================================================================
+
+%% test_method_call_patterns
+%  Test the enhanced method call code generation
+test_method_call_patterns :-
+    format('~n=== Python Method Call Pattern Tests ===~n~n', []),
+
+    % Test 1: No-arg method with () in TargetName
+    format('[Test 1] No-arg method with () in name~n', []),
+    generate_method_call('.strip()', [v(str), v(result)], [string], CallExpr1),
+    (   CallExpr1 == "v_str.strip()"
+    ->  format('  [PASS] .strip() -> ~w~n', [CallExpr1])
+    ;   format('  [FAIL] Expected v_str.strip(), got ~w~n', [CallExpr1])
+    ),
+
+    % Test 2: No-arg method without () in TargetName
+    format('[Test 2] No-arg method without () in name~n', []),
+    generate_method_call('.lower', [v(str), v(result)], [string], CallExpr2),
+    (   CallExpr2 == "v_str.lower()"
+    ->  format('  [PASS] .lower -> ~w~n', [CallExpr2])
+    ;   format('  [FAIL] Expected v_str.lower(), got ~w~n', [CallExpr2])
+    ),
+
+    % Test 3: Method with one argument and output
+    format('[Test 3] Method with argument and output~n', []),
+    generate_method_call('.split', [v(str), v(delim), v(result)], [list], CallExpr3),
+    (   CallExpr3 == "v_str.split(v_delim)"
+    ->  format('  [PASS] .split with arg -> ~w~n', [CallExpr3])
+    ;   format('  [FAIL] Expected v_str.split(v_delim), got ~w~n', [CallExpr3])
+    ),
+
+    % Test 4: Method with multiple arguments and output
+    format('[Test 4] Method with multiple arguments~n', []),
+    generate_method_call('.replace', [v(str), v(old), v(new), v(result)], [string], CallExpr4),
+    (   CallExpr4 == "v_str.replace(v_old, v_new)"
+    ->  format('  [PASS] .replace with args -> ~w~n', [CallExpr4])
+    ;   format('  [FAIL] Expected v_str.replace(v_old, v_new), got ~w~n', [CallExpr4])
+    ),
+
+    % Test 5: Mutating method (no output) with argument
+    format('[Test 5] Mutating method with argument (no output)~n', []),
+    generate_method_call('.append', [v(list), v(item)], [], CallExpr5),
+    (   CallExpr5 == "v_list.append(v_item)"
+    ->  format('  [PASS] .append mutating -> ~w~n', [CallExpr5])
+    ;   format('  [FAIL] Expected v_list.append(v_item), got ~w~n', [CallExpr5])
+    ),
+
+    % Test 6: Function call with output
+    format('[Test 6] Function call with output~n', []),
+    generate_function_call('len', [v(list), v(result)], [int], CallExpr6),
+    (   CallExpr6 == "len(v_list)"
+    ->  format('  [PASS] len() function -> ~w~n', [CallExpr6])
+    ;   format('  [FAIL] Expected len(v_list), got ~w~n', [CallExpr6])
+    ),
+
+    % Test 7: Function call with no output (side effect)
+    format('[Test 7] Function call with no output~n', []),
+    generate_function_call('print', [v(msg)], [], CallExpr7),
+    (   CallExpr7 == "print(v_msg)"
+    ->  format('  [PASS] print() no output -> ~w~n', [CallExpr7])
+    ;   format('  [FAIL] Expected print(v_msg), got ~w~n', [CallExpr7])
+    ),
+
+    % Test 8: Constant function (no input args)
+    format('[Test 8] Constant function (pi)~n', []),
+    generate_function_call('math.pi', [v(result)], [float], CallExpr8),
+    (   CallExpr8 == "math.pi"
+    ->  format('  [PASS] math.pi constant -> ~w~n', [CallExpr8])
+    ;   format('  [FAIL] Expected math.pi, got ~w~n', [CallExpr8])
+    ),
+
+    % Test 9: Chained method call
+    format('[Test 9] Chained method call~n', []),
+    generate_chained_call(
+        [method('.strip', []), method('.lower', [])],
+        [v(str), v(result)],
+        [string],
+        CallExpr9
+    ),
+    (   CallExpr9 == "v_str.strip().lower()"
+    ->  format('  [PASS] Chained .strip().lower() -> ~w~n', [CallExpr9])
+    ;   format('  [FAIL] Expected v_str.strip().lower(), got ~w~n', [CallExpr9])
+    ),
+
+    % Test 10: Chained method with arguments
+    format('[Test 10] Chained method with arguments~n', []),
+    generate_chained_call(
+        [method('.replace', [0, 1]), method('.strip', [])],
+        [v(str), v(old), v(new), v(result)],
+        [string],
+        CallExpr10
+    ),
+    (   CallExpr10 == "v_str.replace(v_old, v_new).strip()"
+    ->  format('  [PASS] Chained .replace().strip() -> ~w~n', [CallExpr10])
+    ;   format('  [FAIL] Expected v_str.replace(v_old, v_new).strip(), got ~w~n', [CallExpr10])
+    ),
+
+    % Test 11: Full code generation with method call binding
+    format('[Test 11] Full code generation for method binding~n', []),
+    generate_binding_call_python('.lower()', [v(str), v(result)], [string], [pattern(method_call)], Code11),
+    (   sub_string(Code11, _, _, _, "v_result = v_str.lower()")
+    ->  format('  [PASS] Full method binding code generated~n', [])
+    ;   format('  [FAIL] Expected assignment, got ~w~n', [Code11])
+    ),
+
+    % Test 12: Full code generation for mutating method (no assignment)
+    format('[Test 12] Full code generation for mutating method~n', []),
+    generate_binding_call_python('.append', [v(list), v(item)], [], [pattern(method_call)], Code12),
+    (   sub_string(Code12, _, _, _, "v_list.append(v_item)"),
+        \+ sub_string(Code12, _, _, _, "=")
+    ->  format('  [PASS] Mutating method - no assignment~n', [])
+    ;   format('  [FAIL] Unexpected output: ~w~n', [Code12])
+    ),
+
+    format('~n=== All Method Call Pattern Tests Passed ===~n', []).
