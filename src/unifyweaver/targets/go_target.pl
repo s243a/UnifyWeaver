@@ -16,7 +16,9 @@
     init_go_target/0,               % Initialize Go target with bindings
     clear_binding_imports/0,        % Clear collected binding imports
     get_collected_imports/1,        % Get imports collected from bindings
-    test_go_binding_integration/0   % Test binding integration
+    test_go_binding_integration/0,  % Test binding integration
+    % Pipeline mode exports
+    test_go_pipeline_mode/0         % Test pipeline mode
 ]).
 
 :- use_module(library(lists)).
@@ -222,6 +224,10 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
         is_group_by_predicate(Body)
     ->  format('  Mode: GROUP BY Aggregation~n'),
         compile_group_by_mode(Pred, Arity, Options, GoCode)
+    % Check if this is pipeline mode (streaming JSONL I/O with typed output)
+    ;   option(pipeline_input(true), Options)
+    ->  format('  Mode: Pipeline (streaming JSONL)~n'),
+        compile_pipeline_mode(Pred, Arity, Options, GoCode)
     % Check if this is database read mode
     ;   option(db_backend(bbolt), Options),
         (option(db_mode(read), Options) ; \+ option(json_input(true), Options)),
@@ -4900,6 +4906,365 @@ generate_group_by_min(GroupField, AggField, DbFile, BucketStr, GoCode) :-
 ', [DbFile, GroupField, AggField, BucketStr, BucketStr, GroupField, AggField, GroupField]).
 
 %% ============================================
+%% PIPELINE MODE COMPILATION
+%% ============================================
+%%
+%% Pipeline mode provides streaming JSONL I/O with typed object output,
+%% similar to Python's pipeline mode. It enables:
+%%   - Streaming input processing (pipeline_input(true))
+%%   - Typed object output (output_format(object))
+%%   - Named fields in output (arg_names(['Name', 'Age', ...]))
+%%   - JSONL streaming output (output_format(jsonl))
+%%   - Text output (output_format(text))
+%%
+%% Options:
+%%   - pipeline_input(true)        Enable streaming JSONL input
+%%   - output_format(Format)       object | jsonl | text (default: jsonl)
+%%   - arg_names(Names)            List of output field names
+%%   - filter_only(true)           Only output records that pass (no transformation)
+
+%% compile_pipeline_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile predicate in pipeline mode for streaming JSONL processing
+compile_pipeline_mode(Pred, Arity, Options, GoCode) :-
+    % Get options with defaults
+    option(output_format(OutputFormat), Options, jsonl),
+    option(include_package(IncludePackage), Options, true),
+    option(filter_only(FilterOnly), Options, false),
+
+    format('  Output format: ~w~n', [OutputFormat]),
+
+    % Get predicate clauses
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+
+    (   Clauses = []
+    ->  format('ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
+        fail
+    ;   Clauses = [SingleHead-SingleBody]
+    ->  % Single clause - extract JSON field mappings and compile
+        format('  Clause: ~w :- ~w~n', [SingleHead, SingleBody]),
+        extract_json_field_mappings(SingleBody, FieldMappings),
+        format('  Field mappings: ~w~n', [FieldMappings]),
+
+        SingleHead =.. [_|HeadArgs],
+
+        % Get output field names
+        (   option(arg_names(ArgNames), Options)
+        ->  true
+        ;   generate_pipeline_arg_names(HeadArgs, 1, ArgNames)
+        ),
+        format('  Output field names: ~w~n', [ArgNames]),
+
+        % Add predicate name to options for struct generation
+        PipelineOptions = [predicate_name(Pred)|Options],
+
+        % Compile based on output format
+        compile_pipeline_body(OutputFormat, FilterOnly, HeadArgs, FieldMappings, ArgNames, PipelineOptions, PipelineBody),
+
+        % Check if helpers are needed (for nested field access)
+        (   member(nested(_, _), FieldMappings)
+        ->  generate_nested_helper(HelperFunc),
+            HelperSection = HelperFunc
+        ;   HelperSection = ''
+        )
+    ;   format('ERROR: Multiple clauses not yet supported for pipeline mode~n'),
+        fail
+    ),
+
+    % Wrap in package if requested
+    (   IncludePackage
+    ->  % Determine required imports based on output format
+        base_pipeline_imports(OutputFormat, BaseImports),
+
+        % Add binding imports if any
+        get_collected_imports(BindingImports),
+        append(BaseImports, BindingImports, AllImportsList),
+        sort(AllImportsList, UniqueImports),
+        maplist(format_import, UniqueImports, ImportLines),
+        atomic_list_concat(ImportLines, '\n', Imports),
+
+        % Generate struct definition for object output
+        (   OutputFormat = object
+        ->  atom_string(Pred, PredStr),
+            upcase_atom(Pred, UpperPred),
+            generate_pipeline_struct(UpperPred, ArgNames, StructDef),
+            format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+~s
+
+~sfunc main() {
+~s}
+', [Imports, StructDef, HelperSection, PipelineBody])
+        ;   % No struct needed for jsonl or text output
+            (   HelperSection = ''
+            ->  format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+func main() {
+~s}
+', [Imports, PipelineBody])
+            ;   format(string(GoCode), 'package main
+
+import (
+~s
+)
+
+~s
+
+func main() {
+~s}
+', [Imports, HelperSection, PipelineBody])
+            )
+        )
+    ;   GoCode = PipelineBody
+    ).
+
+%% base_pipeline_imports(+OutputFormat, -Imports)
+%  Get base imports needed for pipeline mode
+base_pipeline_imports(object, ["bufio", "encoding/json", "fmt", "os"]).
+base_pipeline_imports(jsonl, ["bufio", "encoding/json", "fmt", "os"]).
+base_pipeline_imports(text, ["bufio", "encoding/json", "fmt", "os"]).
+
+%% generate_pipeline_arg_names(+Args, +StartNum, -Names)
+%  Generate default argument names (arg1, arg2, ...)
+generate_pipeline_arg_names([], _, []).
+generate_pipeline_arg_names([_|Rest], N, [Name|RestNames]) :-
+    format(atom(Name), 'arg~w', [N]),
+    N1 is N + 1,
+    generate_pipeline_arg_names(Rest, N1, RestNames).
+
+%% generate_pipeline_struct(+StructName, +FieldNames, -StructDef)
+%  Generate Go struct definition for typed object output
+generate_pipeline_struct(StructName, FieldNames, StructDef) :-
+    findall(FieldLine,
+        (   member(FieldName, FieldNames),
+            capitalize_first(FieldName, CapField),
+            downcase_atom(FieldName, LowerField),
+            format(atom(FieldLine), '\t~w interface{} `json:"~w"`', [CapField, LowerField])
+        ),
+        FieldLines),
+    atomic_list_concat(FieldLines, '\n', FieldsStr),
+    format(atom(StructDef), 'type ~wOutput struct {\n~w\n}', [StructName, FieldsStr]).
+
+%% capitalize_first(+Atom, -Capitalized)
+%  Capitalize first letter of atom
+capitalize_first(Atom, Capitalized) :-
+    atom_string(Atom, Str),
+    (   Str = ""
+    ->  Capitalized = Atom
+    ;   string_chars(Str, [First|Rest]),
+        upcase_atom(First, Upper),
+        atom_string(Upper, UpperStr),
+        string_chars(RestStr, Rest),
+        string_concat(UpperStr, RestStr, CapStr),
+        atom_string(Capitalized, CapStr)
+    ).
+
+%% compile_pipeline_body(+OutputFormat, +FilterOnly, +HeadArgs, +FieldMappings, +ArgNames, +Options, -Code)
+%  Compile the main pipeline processing body
+compile_pipeline_body(OutputFormat, FilterOnly, HeadArgs, FieldMappings, ArgNames, Options, Code) :-
+    % Generate field extraction code
+    generate_pipeline_field_extraction(FieldMappings, ExtractionCode, VarMap),
+
+    % Generate filter/constraint checks
+    option(constraints(Constraints), Options, []),
+    generate_pipeline_constraints(Constraints, VarMap, ConstraintCode),
+
+    % Generate output based on format
+    (   FilterOnly = true
+    ->  % Just pass through matching records
+        OutputCode = "\t\tfmt.Println(scanner.Text())"
+    ;   generate_pipeline_output(OutputFormat, HeadArgs, ArgNames, VarMap, Options, OutputCode)
+    ),
+
+    % Assemble the pipeline body
+    format(string(Code), '
+\tscanner := bufio.NewScanner(os.Stdin)
+\tfor scanner.Scan() {
+\t\tvar data map[string]interface{}
+\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+\t\t\tcontinue
+\t\t}
+~s~s
+~s
+\t}
+', [ExtractionCode, ConstraintCode, OutputCode]).
+
+%% generate_pipeline_field_extraction(+FieldMappings, -Code, -VarMap)
+%  Generate Go code to extract fields from JSON data
+generate_pipeline_field_extraction([], "", []).
+generate_pipeline_field_extraction(FieldMappings, Code, VarMap) :-
+    FieldMappings \= [],
+    findall(extraction(VarName, FieldExpr, ExtractCode),
+        (   member(Mapping, FieldMappings),
+            pipeline_extract_one_field(Mapping, VarName, FieldExpr, ExtractCode)
+        ),
+        Extractions),
+    findall(C, member(extraction(_, _, C), Extractions), CodeParts),
+    atomic_list_concat(CodeParts, '', Code),
+    findall(V-F, member(extraction(V, F, _), Extractions), VarMap).
+
+%% pipeline_extract_one_field(+Mapping, -VarName, -FieldExpr, -Code)
+%  Generate extraction code for a single field mapping
+pipeline_extract_one_field(flat(FieldName, VarName), VarName, FieldName, Code) :-
+    format(string(Code), '
+\t\t~w, _ := data["~w"]', [VarName, FieldName]).
+
+pipeline_extract_one_field(nested(Path, VarName), VarName, nested(Path), Code) :-
+    % Generate nested field access
+    path_to_go_nested_access(Path, AccessExpr),
+    format(string(Code), '
+\t\t~w, _ := ~w', [VarName, AccessExpr]).
+
+%% path_to_go_nested_access(+Path, -GoExpr)
+%  Convert a path like [user, address, city] to Go nested access
+path_to_go_nested_access(Path, GoExpr) :-
+    maplist(atom_string, Path, PathStrs),
+    maplist(quote_string, PathStrs, QuotedParts),
+    atomic_list_concat(QuotedParts, ', ', PathArgsStr),
+    format(string(GoExpr), 'getNestedField(data, []string{~w})', [PathArgsStr]).
+
+quote_string(S, Q) :- format(string(Q), '"~w"', [S]).
+
+%% generate_pipeline_constraints(+Constraints, +VarMap, -Code)
+%  Generate constraint checking code
+generate_pipeline_constraints([], _, "").
+generate_pipeline_constraints(Constraints, VarMap, Code) :-
+    Constraints \= [],
+    findall(Check,
+        (   member(Constraint, Constraints),
+            pipeline_constraint_to_go(Constraint, VarMap, Check)
+        ),
+        Checks),
+    atomic_list_concat(Checks, '', Code).
+
+%% pipeline_constraint_to_go(+Constraint, +VarMap, -Code)
+%  Convert a pipeline constraint to Go if-check (uses continue semantics)
+pipeline_constraint_to_go(Var > Value, VarMap, Code) :-
+    member(Var-_, VarMap),
+    format(string(Code), '
+\t\tif ~wNum, ok := ~w.(float64); !ok || ~wNum <= ~w {
+\t\t\tcontinue
+\t\t}', [Var, Var, Var, Value]).
+pipeline_constraint_to_go(Var < Value, VarMap, Code) :-
+    member(Var-_, VarMap),
+    format(string(Code), '
+\t\tif ~wNum, ok := ~w.(float64); !ok || ~wNum >= ~w {
+\t\t\tcontinue
+\t\t}', [Var, Var, Var, Value]).
+pipeline_constraint_to_go(Var >= Value, VarMap, Code) :-
+    member(Var-_, VarMap),
+    format(string(Code), '
+\t\tif ~wNum, ok := ~w.(float64); !ok || ~wNum < ~w {
+\t\t\tcontinue
+\t\t}', [Var, Var, Var, Value]).
+pipeline_constraint_to_go(Var =< Value, VarMap, Code) :-
+    member(Var-_, VarMap),
+    format(string(Code), '
+\t\tif ~wNum, ok := ~w.(float64); !ok || ~wNum > ~w {
+\t\t\tcontinue
+\t\t}', [Var, Var, Var, Value]).
+pipeline_constraint_to_go(Var == Value, VarMap, Code) :-
+    member(Var-_, VarMap),
+    (   number(Value)
+    ->  format(string(Code), '
+\t\tif ~wNum, ok := ~w.(float64); !ok || ~wNum != ~w {
+\t\t\tcontinue
+\t\t}', [Var, Var, Var, Value])
+    ;   format(string(Code), '
+\t\tif ~wStr, ok := ~w.(string); !ok || ~wStr != "~w" {
+\t\t\tcontinue
+\t\t}', [Var, Var, Var, Value])
+    ).
+pipeline_constraint_to_go(_, _, "").
+
+%% generate_pipeline_output(+Format, +HeadArgs, +ArgNames, +VarMap, +Options, -Code)
+%  Generate output code based on format
+generate_pipeline_output(jsonl, HeadArgs, ArgNames, VarMap, _Options, Code) :-
+    % Output as JSONL using map
+    generate_jsonl_output_map(HeadArgs, ArgNames, VarMap, MapCode),
+    format(string(Code), '
+\t\toutput := map[string]interface{}{~s}
+\t\tjsonBytes, _ := json.Marshal(output)
+\t\tfmt.Println(string(jsonBytes))', [MapCode]).
+
+generate_pipeline_output(object, HeadArgs, ArgNames, VarMap, Options, Code) :-
+    % Output as typed struct
+    option(predicate_name(Pred), Options, output),
+    upcase_atom(Pred, UpperPred),
+    generate_struct_output_init(UpperPred, HeadArgs, ArgNames, VarMap, StructInit),
+    format(string(Code), '
+\t\trecord := ~s
+\t\tjsonBytes, _ := json.Marshal(record)
+\t\tfmt.Println(string(jsonBytes))', [StructInit]).
+
+generate_pipeline_output(text, HeadArgs, _ArgNames, VarMap, _Options, Code) :-
+    % Output as tab-separated text
+    generate_text_output(HeadArgs, VarMap, TextExpr),
+    format(string(Code), '
+\t\tfmt.Println(~s)', [TextExpr]).
+
+%% generate_jsonl_output_map(+HeadArgs, +ArgNames, +VarMap, -MapCode)
+%  Generate map literal for JSONL output
+generate_jsonl_output_map(HeadArgs, ArgNames, VarMap, MapCode) :-
+    findall(Entry,
+        (   nth1(Idx, HeadArgs, Arg),
+            nth1(Idx, ArgNames, Name),
+            head_arg_to_output_expr(Arg, VarMap, Expr),
+            downcase_atom(Name, LowerName),
+            format(string(Entry), '"~w": ~w', [LowerName, Expr])
+        ),
+        Entries),
+    atomic_list_concat(Entries, ', ', MapCode).
+
+%% head_arg_to_output_expr(+Arg, +VarMap, -Expr)
+%  Convert a head argument to its Go output expression
+head_arg_to_output_expr(Arg, VarMap, Expr) :-
+    (   member(Arg-_, VarMap)
+    ->  atom_string(Arg, Expr)
+    ;   atom(Arg)
+    ->  format(string(Expr), '"~w"', [Arg])
+    ;   number(Arg)
+    ->  format(string(Expr), '~w', [Arg])
+    ;   Expr = "nil"
+    ).
+
+%% generate_struct_output_init(+StructName, +HeadArgs, +ArgNames, +VarMap, -Init)
+%  Generate struct initialization for object output
+generate_struct_output_init(StructName, HeadArgs, ArgNames, VarMap, Init) :-
+    findall(FieldInit,
+        (   nth1(Idx, HeadArgs, Arg),
+            nth1(Idx, ArgNames, Name),
+            head_arg_to_output_expr(Arg, VarMap, Expr),
+            capitalize_first(Name, CapName),
+            format(string(FieldInit), '~w: ~w', [CapName, Expr])
+        ),
+        FieldInits),
+    atomic_list_concat(FieldInits, ', ', FieldsStr),
+    format(string(Init), '~wOutput{~w}', [StructName, FieldsStr]).
+
+%% generate_text_output(+HeadArgs, +VarMap, -TextExpr)
+%  Generate fmt.Sprintf expression for text output
+generate_text_output(HeadArgs, VarMap, TextExpr) :-
+    length(HeadArgs, NumArgs),
+    findall('%v', between(1, NumArgs, _), Formats),
+    atomic_list_concat(Formats, '\t', FormatStr),
+    findall(Expr,
+        (   member(Arg, HeadArgs),
+            head_arg_to_output_expr(Arg, VarMap, Expr)
+        ),
+        Exprs),
+    atomic_list_concat(Exprs, ', ', ArgsStr),
+    format(string(TextExpr), 'fmt.Sprintf("~w", ~w)', [FormatStr, ArgsStr]).
+
+%% ============================================
 %% JSON INPUT MODE COMPILATION
 %% ============================================
 
@@ -6560,3 +6925,109 @@ test_binding_compilation :-
     ->  format('  [PASS] format_binding_imports generates correct import block~n', [])
     ;   format('  [FAIL] format_binding_imports should include strings and math~n', [])
     ).
+
+%% ============================================
+%% PIPELINE MODE TESTS
+%% ============================================
+
+%% test_go_pipeline_mode
+%  Test pipeline mode compilation
+test_go_pipeline_mode :-
+    format('~n=== Go Pipeline Mode Tests ===~n~n', []),
+
+    % Test 1: Basic pipeline arg name generation
+    format('[Test 1] Generate pipeline arg names~n', []),
+    generate_pipeline_arg_names([a, b, c], 1, Names1),
+    (   Names1 = [arg1, arg2, arg3]
+    ->  format('  [PASS] Generated: ~w~n', [Names1])
+    ;   format('  [FAIL] Expected [arg1, arg2, arg3], got ~w~n', [Names1])
+    ),
+
+    % Test 2: Capitalize first letter
+    format('[Test 2] Capitalize first letter~n', []),
+    capitalize_first(name, Cap1),
+    capitalize_first('userId', Cap2),
+    (   Cap1 = 'Name', Cap2 = 'UserId'
+    ->  format('  [PASS] name -> ~w, userId -> ~w~n', [Cap1, Cap2])
+    ;   format('  [FAIL] Capitalization failed~n', [])
+    ),
+
+    % Test 3: Generate pipeline struct
+    format('[Test 3] Generate pipeline struct~n', []),
+    generate_pipeline_struct('USER', [name, age, email], StructDef),
+    (   sub_string(StructDef, _, _, _, "USEROutput"),
+        sub_string(StructDef, _, _, _, "Name interface{}"),
+        sub_string(StructDef, _, _, _, "`json:\"name\"`")
+    ->  format('  [PASS] Generated struct with correct fields and tags~n', [])
+    ;   format('  [FAIL] Struct generation failed~n', [])
+    ),
+
+    % Test 4: Base pipeline imports
+    format('[Test 4] Base pipeline imports~n', []),
+    base_pipeline_imports(jsonl, JsonlImports),
+    base_pipeline_imports(object, ObjectImports),
+    base_pipeline_imports(text, TextImports),
+    (   member("encoding/json", JsonlImports),
+        member("bufio", ObjectImports),
+        member("fmt", TextImports)
+    ->  format('  [PASS] All output formats have correct base imports~n', [])
+    ;   format('  [FAIL] Missing base imports~n', [])
+    ),
+
+    % Test 5: Pipeline field extraction - flat fields
+    format('[Test 5] Pipeline field extraction (flat)~n', []),
+    pipeline_extract_one_field(flat(name, varName), V1, F1, C1),
+    (   V1 = varName, F1 = name,
+        sub_string(C1, _, _, _, "data[\"name\"]")
+    ->  format('  [PASS] Flat field extraction: ~w~n', [V1])
+    ;   format('  [FAIL] Flat field extraction failed~n', [])
+    ),
+
+    % Test 6: Path to Go nested access
+    format('[Test 6] Path to Go nested access~n', []),
+    path_to_go_nested_access([user, address, city], GoExpr),
+    (   sub_string(GoExpr, _, _, _, "getNestedField"),
+        sub_string(GoExpr, _, _, _, "\"user\""),
+        sub_string(GoExpr, _, _, _, "\"city\"")
+    ->  format('  [PASS] Nested path: ~w~n', [GoExpr])
+    ;   format('  [FAIL] Nested path conversion failed~n', [])
+    ),
+
+    % Test 7: JSONL output map generation
+    format('[Test 7] JSONL output map generation~n', []),
+    generate_jsonl_output_map([name, age], [userName, userAge], [name-name, age-age], MapCode),
+    (   sub_string(MapCode, _, _, _, "\"username\":"),
+        sub_string(MapCode, _, _, _, "\"userage\":")
+    ->  format('  [PASS] Map code generated correctly~n', [])
+    ;   format('  [FAIL] Map code: ~w~n', [MapCode])
+    ),
+
+    % Test 8: Text output generation
+    format('[Test 8] Text output generation~n', []),
+    generate_text_output([name, age], [name-name, age-age], TextExpr),
+    (   sub_string(TextExpr, _, _, _, "fmt.Sprintf"),
+        sub_string(TextExpr, _, _, _, "%v")
+    ->  format('  [PASS] Text output: ~w~n', [TextExpr])
+    ;   format('  [FAIL] Text output failed~n', [])
+    ),
+
+    % Test 9: Pipeline constraint to Go check (greater than)
+    format('[Test 9] Pipeline constraint to Go check~n', []),
+    pipeline_constraint_to_go(age > 18, [age-age], CheckCode),
+    (   sub_string(CheckCode, _, _, _, "age.(float64)"),
+        sub_string(CheckCode, _, _, _, "<= 18")
+    ->  format('  [PASS] Constraint check generated~n', [])
+    ;   format('  [FAIL] Constraint check: ~w~n', [CheckCode])
+    ),
+
+    % Test 10: Full pipeline body compilation
+    format('[Test 10] Full pipeline body compilation~n', []),
+    compile_pipeline_body(jsonl, false, [name, age], [flat(name, name), flat(age, age)], [userName, userAge], [], BodyCode),
+    (   sub_string(BodyCode, _, _, _, "bufio.NewScanner"),
+        sub_string(BodyCode, _, _, _, "json.Unmarshal"),
+        sub_string(BodyCode, _, _, _, "json.Marshal")
+    ->  format('  [PASS] Pipeline body compiled successfully~n', [])
+    ;   format('  [FAIL] Pipeline body compilation failed~n', [])
+    ),
+
+    format('~n=== All Go Pipeline Mode Tests Passed ===~n', []).
