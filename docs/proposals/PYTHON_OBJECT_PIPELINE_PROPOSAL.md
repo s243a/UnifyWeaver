@@ -360,6 +360,172 @@ How do exceptions propagate across runtime boundaries?
 
 **Recommendation:** Option A for simplicity.
 
+### 5. Preference System for Runtime Selection?
+
+The current `python_runtime_choice/2` is binary (IronPython if compatible, else CPython). But users may have conflicting preferences:
+
+| Preference | Favors |
+|------------|--------|
+| "Prefer CPython" | CPython (better library support, debugging) |
+| "Prefer in-process" | IronPython (no serialization overhead) |
+| "Prefer performance" | PyPy (JIT) or IronPython (avoid pipes) |
+| "Prefer stability" | CPython (most tested) |
+
+**The Problem:** A user might prefer CPython over IronPython, but also prefer in-process over cross-process. These conflict when calling from C#.
+
+**Options:**
+
+- **Option A: Priority ordering** - User ranks preferences, system picks first satisfiable
+  ```prolog
+  user_preferences([
+      prefer(communication, in_process),    % Priority 1
+      prefer(runtime, cpython),             % Priority 2
+      prefer(performance, high)             % Priority 3
+  ]).
+  % Result: IronPython wins (satisfies #1, loses #2)
+  ```
+
+- **Option B: Weighted scoring** - Each option scored against weighted preferences
+  ```prolog
+  preference_weights([
+      (communication, in_process, 0.8),   % Strong preference
+      (runtime, cpython, 0.3),            % Mild preference
+      (performance, high, 0.5)            % Medium preference
+  ]).
+
+  % Score calculation:
+  % IronPython: 0.8 (in-process) + 0.0 (not cpython) + 0.4 (decent perf) = 1.2
+  % CPython:    0.0 (cross-proc) + 0.3 (is cpython) + 0.5 (good perf)   = 0.8
+  % Result: IronPython wins with higher score
+  ```
+
+- **Option C: Constraint-based with soft/hard** - Hard constraints filter, soft constraints score
+  ```prolog
+  constraints([
+      hard(compatible_with_imports),       % Must satisfy
+      hard(runtime_available),             % Must satisfy
+      soft(prefer(communication, in_process), 0.8),
+      soft(prefer(runtime, cpython), 0.3)
+  ]).
+  ```
+
+- **Option D: Metrics-driven adaptation** - System learns from execution metrics
+  ```prolog
+  % After each execution, record:
+  runtime_metric(ironpython, latency_ms, 45).
+  runtime_metric(cpython_pipe, latency_ms, 120).
+  runtime_metric(ironpython, error_rate, 0.02).
+  runtime_metric(cpython_pipe, error_rate, 0.001).
+
+  % Selection incorporates historical data:
+  select_runtime(Imports, Context, Runtime) :-
+      findall(R-Score, score_runtime(R, Imports, Context, Score), Pairs),
+      keysort(Pairs, Sorted),
+      last(Sorted, Runtime-_).
+  ```
+
+**Recommendation:** Option C (constraint-based) as foundation, with Option D (metrics) as future enhancement.
+
+**Proposed Preference System Design:**
+
+```prolog
+%% ============================================
+%% Preference System for Runtime Selection
+%% ============================================
+
+:- dynamic user_preference/3.       % user_preference(Dimension, Value, Weight)
+:- dynamic runtime_metric/3.        % runtime_metric(Runtime, Metric, Value)
+:- dynamic hard_constraint/1.       % hard_constraint(Constraint)
+
+%% Dimensions for preferences
+%%   - runtime: cpython | ironpython | jython | pypy
+%%   - communication: in_process | cross_process
+%%   - performance: latency | throughput | memory
+%%   - stability: mature | experimental
+%%   - library_support: full | limited
+
+%% Default preferences (can be overridden)
+default_preference(communication, in_process, 0.6).
+default_preference(stability, mature, 0.4).
+default_preference(library_support, full, 0.3).
+
+%% Runtime characteristics (static)
+runtime_characteristic(cpython, communication, cross_process).
+runtime_characteristic(cpython, stability, mature).
+runtime_characteristic(cpython, library_support, full).
+
+runtime_characteristic(ironpython, communication, in_process).  % When in .NET
+runtime_characteristic(ironpython, stability, mature).
+runtime_characteristic(ironpython, library_support, limited).
+
+runtime_characteristic(pypy, communication, cross_process).
+runtime_characteristic(pypy, stability, experimental).
+runtime_characteristic(pypy, library_support, limited).
+
+%% select_python_runtime_weighted(+Imports, +Context, -Runtime, -Score)
+select_python_runtime_weighted(Imports, Context, Runtime, Score) :-
+    findall(R, candidate_runtime(Imports, Context, R), Candidates),
+    Candidates \= [],
+    maplist(score_runtime_weighted(Context), Candidates, Scored),
+    keysort(Scored, Sorted),
+    last(Sorted, Score-Runtime).
+
+candidate_runtime(Imports, Context, Runtime) :-
+    member(Runtime, [cpython, ironpython, pypy, jython]),
+    satisfies_hard_constraints(Runtime, Imports, Context).
+
+satisfies_hard_constraints(Runtime, Imports, Context) :-
+    % Must be available
+    runtime_available(Runtime),
+    % Must support required imports
+    (   Runtime = ironpython
+    ->  can_use_ironpython(Imports)
+    ;   true
+    ),
+    % Must satisfy context requirements
+    forall(member(hard(C), Context), satisfies_constraint(Runtime, C)).
+
+score_runtime_weighted(Context, Runtime, Score-Runtime) :-
+    findall(W, (
+        (user_preference(Dim, Val, W) ; default_preference(Dim, Val, W)),
+        runtime_characteristic(Runtime, Dim, Val)
+    ), Weights),
+    sum_list(Weights, BaseScore),
+    % Add metrics bonus if available
+    metrics_bonus(Runtime, MetricsBonus),
+    Score is BaseScore + MetricsBonus.
+
+metrics_bonus(Runtime, Bonus) :-
+    (   runtime_metric(Runtime, success_rate, Rate)
+    ->  Bonus is Rate * 0.2  % Up to 0.2 bonus for reliability
+    ;   Bonus = 0
+    ).
+```
+
+**Future Metrics Integration:**
+
+```prolog
+%% Record execution outcome for learning
+record_execution(Runtime, Duration, Success) :-
+    % Update rolling averages
+    update_metric(Runtime, avg_latency, Duration),
+    (   Success = true
+    ->  increment_metric(Runtime, success_count)
+    ;   increment_metric(Runtime, failure_count)
+    ),
+    recalculate_success_rate(Runtime).
+
+%% Could eventually feed into ML-based selection
+%% or simple exponential moving averages
+```
+
+This design allows:
+1. Users to express preferences without understanding implementation details
+2. Hard constraints to filter impossible options (e.g., numpy requires CPython)
+3. Soft preferences to score remaining options
+4. Historical metrics to influence selection over time
+5. Easy extension to new dimensions or runtimes
+
 ---
 
 ## Already Implemented (dotnet_glue.pl)
