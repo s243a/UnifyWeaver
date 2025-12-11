@@ -360,171 +360,239 @@ How do exceptions propagate across runtime boundaries?
 
 **Recommendation:** Option A for simplicity.
 
-### 5. Preference System for Runtime Selection?
+### 5. Integration with Existing Firewall/Preference System
 
-The current `python_runtime_choice/2` is binary (IronPython if compatible, else CPython). But users may have conflicting preferences:
+UnifyWeaver already has a Control Plane with **Firewall** (hard security boundaries) and **Preferences** (flexible implementation choices). See `docs/CONTROL_PLANE.md` and `docs/ARCHITECTURE.md`.
 
-| Preference | Favors |
-|------------|--------|
-| "Prefer CPython" | CPython (better library support, debugging) |
-| "Prefer in-process" | IronPython (no serialization overhead) |
-| "Prefer performance" | PyPy (JIT) or IronPython (avoid pipes) |
-| "Prefer stability" | CPython (most tested) |
+**The Problem:** Runtime selection involves both:
+- **Firewall concerns** - "IronPython is denied" (security)
+- **Preference concerns** - "Prefer in-process over cross-process" (optimization)
 
-**The Problem:** A user might prefer CPython over IronPython, but also prefer in-process over cross-process. These conflict when calling from C#.
+And conflicting preferences, e.g., "prefer CPython" vs "prefer in-process communication".
 
-**Options:**
+**Solution: Integrate with Existing System**
 
-- **Option A: Priority ordering** - User ranks preferences, system picks first satisfiable
-  ```prolog
-  user_preferences([
-      prefer(communication, in_process),    % Priority 1
-      prefer(runtime, cpython),             % Priority 2
-      prefer(performance, high)             % Priority 3
-  ]).
-  % Result: IronPython wins (satisfies #1, loses #2)
-  ```
+#### Firewall Layer (Hard Constraints)
 
-- **Option B: Weighted scoring** - Each option scored against weighted preferences
-  ```prolog
-  preference_weights([
-      (communication, in_process, 0.8),   % Strong preference
-      (runtime, cpython, 0.3),            % Mild preference
-      (performance, high, 0.5)            % Medium preference
-  ]).
-
-  % Score calculation:
-  % IronPython: 0.8 (in-process) + 0.0 (not cpython) + 0.4 (decent perf) = 1.2
-  % CPython:    0.0 (cross-proc) + 0.3 (is cpython) + 0.5 (good perf)   = 0.8
-  % Result: IronPython wins with higher score
-  ```
-
-- **Option C: Constraint-based with soft/hard** - Hard constraints filter, soft constraints score
-  ```prolog
-  constraints([
-      hard(compatible_with_imports),       % Must satisfy
-      hard(runtime_available),             % Must satisfy
-      soft(prefer(communication, in_process), 0.8),
-      soft(prefer(runtime, cpython), 0.3)
-  ]).
-  ```
-
-- **Option D: Metrics-driven adaptation** - System learns from execution metrics
-  ```prolog
-  % After each execution, record:
-  runtime_metric(ironpython, latency_ms, 45).
-  runtime_metric(cpython_pipe, latency_ms, 120).
-  runtime_metric(ironpython, error_rate, 0.02).
-  runtime_metric(cpython_pipe, error_rate, 0.001).
-
-  % Selection incorporates historical data:
-  select_runtime(Imports, Context, Runtime) :-
-      findall(R-Score, score_runtime(R, Imports, Context, Score), Pairs),
-      keysort(Pairs, Sorted),
-      last(Sorted, Runtime-_).
-  ```
-
-**Recommendation:** Option C (constraint-based) as foundation, with Option D (metrics) as future enhancement.
-
-**Proposed Preference System Design:**
+Use existing `firewall_implies/2` for runtime constraints:
 
 ```prolog
-%% ============================================
-%% Preference System for Runtime Selection
-%% ============================================
+%% New firewall implications for Python runtime
+firewall_implies_default(ironpython_unavailable,
+                        denied(python_runtime(ironpython))).
 
-:- dynamic user_preference/3.       % user_preference(Dimension, Value, Weight)
-:- dynamic runtime_metric/3.        % runtime_metric(Runtime, Metric, Value)
-:- dynamic hard_constraint/1.       % hard_constraint(Constraint)
+firewall_implies_default(require_numpy,
+                        denied(python_runtime(ironpython))).  % numpy needs CPython
 
-%% Dimensions for preferences
-%%   - runtime: cpython | ironpython | jython | pypy
-%%   - communication: in_process | cross_process
-%%   - performance: latency | throughput | memory
-%%   - stability: mature | experimental
-%%   - library_support: full | limited
+firewall_implies_default(require_numpy,
+                        denied(python_runtime(pypy))).        % numpy C extension issues
 
-%% Default preferences (can be overridden)
-default_preference(communication, in_process, 0.6).
-default_preference(stability, mature, 0.4).
-default_preference(library_support, full, 0.3).
+firewall_implies_default(environment(no_dotnet),
+                        denied(python_runtime(ironpython))).
 
-%% Runtime characteristics (static)
-runtime_characteristic(cpython, communication, cross_process).
-runtime_characteristic(cpython, stability, mature).
-runtime_characteristic(cpython, library_support, full).
+firewall_implies_default(environment(no_jvm),
+                        denied(python_runtime(jython))).
 
-runtime_characteristic(ironpython, communication, in_process).  % When in .NET
-runtime_characteristic(ironpython, stability, mature).
-runtime_characteristic(ironpython, library_support, limited).
+%% Predicate-specific firewall rules
+:- assertz(firewall:rule_firewall(data_science_pred/2, [
+    denied([python_runtime(ironpython), python_runtime(jython)]),  % needs numpy
+    services([python3])
+])).
+```
 
-runtime_characteristic(pypy, communication, cross_process).
-runtime_characteristic(pypy, stability, experimental).
-runtime_characteristic(pypy, library_support, limited).
+#### Preference Layer (Soft Preferences)
 
-%% select_python_runtime_weighted(+Imports, +Context, -Runtime, -Score)
-select_python_runtime_weighted(Imports, Context, Runtime, Score) :-
-    findall(R, candidate_runtime(Imports, Context, R), Candidates),
+Extend `rule_preferences/2` with new preference terms:
+
+```prolog
+%% New preference terms for Python runtime
+%%
+%% - prefer_runtime([cpython, ironpython, pypy]) - Runtime preference order
+%% - prefer_communication(in_process | cross_process) - IPC preference
+%% - optimization(latency | throughput | memory) - Performance hint
+%% - fallback_runtime([...]) - Order to try if preferred fails
+
+%% Global default: prefer in-process when available
+:- assertz(preferences:preferences_default([
+    prefer_communication(in_process),
+    prefer_runtime([ironpython, cpython, pypy]),  % in-process first
+    fallback_runtime([cpython])                   % always have fallback
+])).
+
+%% Predicate-specific: this one needs CPython for library support
+:- assertz(preferences:rule_preferences(ml_predict/2, [
+    prefer_runtime([cpython]),           % needs full library support
+    optimization(throughput)
+])).
+
+%% Predicate-specific: this one is latency-sensitive
+:- assertz(preferences:rule_preferences(realtime_filter/2, [
+    prefer_communication(in_process),    % minimize latency
+    prefer_runtime([ironpython, pypy]),  % fast runtimes
+    optimization(latency)
+])).
+```
+
+#### Selection Algorithm
+
+The selection algorithm respects the existing merge precedence (Runtime > Rule > Default):
+
+```prolog
+%% select_python_runtime(+PredIndicator, +Imports, +Context, -Runtime)
+%
+% Selects Python runtime respecting firewall and preferences.
+%
+select_python_runtime(PredIndicator, Imports, Context, Runtime) :-
+    % 1. Get merged preferences (uses existing preferences:get_final_options/3)
+    preferences:get_final_options(PredIndicator, Context, FinalOptions),
+
+    % 2. Get firewall policy (uses existing firewall:get_firewall_policy/2)
+    firewall:get_firewall_policy(PredIndicator, Firewall),
+
+    % 3. Determine candidate runtimes (filtered by hard constraints)
+    findall(R, valid_runtime_candidate(R, Imports, Firewall), Candidates),
     Candidates \= [],
-    maplist(score_runtime_weighted(Context), Candidates, Scored),
-    keysort(Scored, Sorted),
-    last(Sorted, Score-Runtime).
 
-candidate_runtime(Imports, Context, Runtime) :-
+    % 4. Score candidates against preferences
+    score_runtime_candidates(Candidates, FinalOptions, ScoredCandidates),
+
+    % 5. Select best (or use fallback order)
+    select_best_runtime(ScoredCandidates, FinalOptions, Runtime).
+
+%% valid_runtime_candidate(+Runtime, +Imports, +Firewall) is semidet.
+%
+% Check if runtime passes all hard constraints.
+%
+valid_runtime_candidate(Runtime, Imports, Firewall) :-
     member(Runtime, [cpython, ironpython, pypy, jython]),
-    satisfies_hard_constraints(Runtime, Imports, Context).
-
-satisfies_hard_constraints(Runtime, Imports, Context) :-
-    % Must be available
+    % Not explicitly denied in firewall
+    \+ member(denied(python_runtime(Runtime)), Firewall),
+    % Runtime is available on system
     runtime_available(Runtime),
-    % Must support required imports
+    % Compatible with required imports
     (   Runtime = ironpython
-    ->  can_use_ironpython(Imports)
-    ;   true
+    ->  dotnet_glue:can_use_ironpython(Imports)
+    ;   Runtime = jython
+    ->  can_use_jython(Imports)  % Similar check for JVM
+    ;   true  % CPython/PyPy support everything
+    ).
+
+%% score_runtime_candidates(+Candidates, +Options, -Scored)
+%
+% Score each candidate against preference dimensions.
+%
+score_runtime_candidates(Candidates, Options, Scored) :-
+    maplist(score_single_runtime(Options), Candidates, Scored).
+
+score_single_runtime(Options, Runtime, Runtime-Score) :-
+    % Base score from preference order
+    (   member(prefer_runtime(Order), Options),
+        nth0(Idx, Order, Runtime)
+    ->  OrderScore is 10 - Idx  % Higher = better
+    ;   OrderScore = 0
     ),
-    % Must satisfy context requirements
-    forall(member(hard(C), Context), satisfies_constraint(Runtime, C)).
 
-score_runtime_weighted(Context, Runtime, Score-Runtime) :-
-    findall(W, (
-        (user_preference(Dim, Val, W) ; default_preference(Dim, Val, W)),
-        runtime_characteristic(Runtime, Dim, Val)
-    ), Weights),
-    sum_list(Weights, BaseScore),
-    % Add metrics bonus if available
+    % Communication preference bonus
+    (   member(prefer_communication(Comm), Options),
+        runtime_communication(Runtime, Comm)
+    ->  CommScore = 5
+    ;   CommScore = 0
+    ),
+
+    % Optimization hint bonus
+    (   member(optimization(Opt), Options),
+        runtime_optimization(Runtime, Opt)
+    ->  OptScore = 3
+    ;   OptScore = 0
+    ),
+
+    % Metrics bonus (if available)
     metrics_bonus(Runtime, MetricsBonus),
-    Score is BaseScore + MetricsBonus.
 
+    Score is OrderScore + CommScore + OptScore + MetricsBonus.
+
+%% Runtime characteristics (static facts)
+runtime_communication(ironpython, in_process).   % When called from .NET
+runtime_communication(cpython, cross_process).   % Via pipes/JSONL
+runtime_communication(pypy, cross_process).
+runtime_communication(jython, in_process).       % When called from JVM
+
+runtime_optimization(pypy, throughput).          % JIT for long-running
+runtime_optimization(pypy, latency).             % Fast after warmup
+runtime_optimization(ironpython, latency).       % No serialization
+runtime_optimization(cpython, memory).           % Most efficient
+```
+
+#### Metrics-Driven Adaptation (Future)
+
+Extend the system with runtime metrics that feed back into selection:
+
+```prolog
+%% runtime_metric(+Runtime, +Metric, -Value) is nondet.
+%
+% Dynamic metrics collected from execution history.
+%
+:- dynamic runtime_metric/3.
+
+%% Record execution outcome
+record_runtime_execution(Runtime, DurationMs, Success) :-
+    % Update success rate
+    update_success_rate(Runtime, Success),
+    % Update latency moving average
+    update_latency_average(Runtime, DurationMs).
+
+%% metrics_bonus(+Runtime, -Bonus)
+%
+% Calculate bonus score from historical metrics.
+%
 metrics_bonus(Runtime, Bonus) :-
-    (   runtime_metric(Runtime, success_rate, Rate)
-    ->  Bonus is Rate * 0.2  % Up to 0.2 bonus for reliability
-    ;   Bonus = 0
+    (   runtime_metric(Runtime, success_rate, SuccessRate),
+        runtime_metric(Runtime, avg_latency_ms, AvgLatency)
+    ->  % Higher success rate = higher bonus (0-2 points)
+        SuccessBonus is SuccessRate * 2,
+        % Lower latency = higher bonus (0-2 points, inverse scale)
+        LatencyBonus is max(0, 2 - (AvgLatency / 100)),
+        Bonus is SuccessBonus + LatencyBonus
+    ;   Bonus = 0  % No metrics yet
     ).
 ```
 
-**Future Metrics Integration:**
+#### Example Usage
 
 ```prolog
-%% Record execution outcome for learning
-record_execution(Runtime, Duration, Success) :-
-    % Update rolling averages
-    update_metric(Runtime, avg_latency, Duration),
-    (   Success = true
-    ->  increment_metric(Runtime, success_count)
-    ;   increment_metric(Runtime, failure_count)
-    ),
-    recalculate_success_rate(Runtime).
+%% Configuration
+:- assertz(firewall:firewall_default([
+    execution([python, bash]),
+    denied([python_runtime(jython)])  % No JVM in this environment
+])).
 
-%% Could eventually feed into ML-based selection
-%% or simple exponential moving averages
+:- assertz(preferences:preferences_default([
+    prefer_communication(in_process),
+    prefer_runtime([ironpython, cpython]),
+    optimization(latency)
+])).
+
+%% Compilation
+?- compile_predicate_to_python(my_filter/2, [runtime(auto)], Code).
+% System:
+%   1. Checks firewall: jython denied, others allowed
+%   2. Checks preferences: prefer ironpython, then cpython
+%   3. Checks imports: my_filter uses 'json', 're' (IronPython compatible)
+%   4. Scores: ironpython=15, cpython=10
+%   5. Selects: ironpython
+%   6. Generates: IronPython-compatible code + C# hosting glue
+
+%% Override at runtime
+?- compile_predicate_to_python(my_filter/2, [prefer_runtime([cpython])], Code).
+% Runtime option overrides default, selects cpython
 ```
 
-This design allows:
-1. Users to express preferences without understanding implementation details
-2. Hard constraints to filter impossible options (e.g., numpy requires CPython)
-3. Soft preferences to score remaining options
-4. Historical metrics to influence selection over time
-5. Easy extension to new dimensions or runtimes
+This design:
+1. **Reuses existing infrastructure** - No new preference/firewall systems
+2. **Maintains separation** - Firewall for security, Preferences for optimization
+3. **Follows merge precedence** - Runtime > Rule > Default
+4. **Supports metrics** - Future adaptation based on execution history
+5. **Is extensible** - New dimensions can be added to preferences
 
 ---
 
