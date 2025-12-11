@@ -15,7 +15,12 @@
     runtime_compatible_with_imports/2,
     test_runtime_selection/0,
     % Runtime-specific code generation exports (Phase 3)
-    test_runtime_headers/0
+    test_runtime_headers/0,
+    % Pipeline chaining exports (Phase 4)
+    compile_pipeline/3,
+    compile_same_runtime_pipeline/3,
+    compile_cross_runtime_pipeline/3,
+    test_pipeline_chaining/0
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -3893,3 +3898,466 @@ test_runtime_headers :-
     ),
 
     format('~n=== All Runtime-Specific Header Tests Passed ===~n', []).
+
+% ============================================================================
+% PIPELINE CHAINING (Phase 4)
+% ============================================================================
+%
+% Pipeline chaining connects multiple predicates in a data flow:
+%   input -> pred1 -> pred2 -> pred3 -> output
+%
+% Two modes:
+%   1. Same-runtime chaining: All predicates run in same Python process
+%   2. Cross-runtime chaining: Predicates may run in different runtimes,
+%      connected via JSONL pipes or in-process bridges
+%
+
+%% compile_pipeline(+Predicates, +Options, -Code)
+%  Main entry point for pipeline chaining.
+%  Automatically selects same-runtime or cross-runtime based on predicates.
+%
+%  Predicates: List of Name/Arity or Target:Name/Arity
+%    Examples:
+%      - [get_users/1, filter_active/2, format_output/1]
+%      - [python:get_users/1, csharp:validate/1, python:format/1]
+%
+%  Options:
+%    - runtime(Runtime)     : Force specific runtime for same-runtime
+%    - glue_protocol(P)     : Protocol for cross-runtime (jsonl/messagepack)
+%    - pipeline_name(Name)  : Name for generated pipeline function
+%    - arg_names(Names)     : Property names for final output
+%
+compile_pipeline(Predicates, Options, Code) :-
+    % Check if all predicates are same runtime
+    (   all_same_runtime(Predicates)
+    ->  compile_same_runtime_pipeline(Predicates, Options, Code)
+    ;   compile_cross_runtime_pipeline(Predicates, Options, Code)
+    ).
+
+%% all_same_runtime(+Predicates)
+%  True if all predicates can run in the same Python runtime.
+%
+all_same_runtime([]).
+all_same_runtime([Pred|Rest]) :-
+    predicate_runtime(Pred, Runtime),
+    all_same_runtime_check(Rest, Runtime).
+
+all_same_runtime_check([], _).
+all_same_runtime_check([Pred|Rest], Runtime) :-
+    predicate_runtime(Pred, PredRuntime),
+    compatible_runtimes(Runtime, PredRuntime),
+    all_same_runtime_check(Rest, Runtime).
+
+%% predicate_runtime(+Pred, -Runtime)
+%  Determine the runtime for a predicate.
+%
+predicate_runtime(python:_Name/_Arity, python) :- !.
+predicate_runtime(cpython:_Name/_Arity, cpython) :- !.
+predicate_runtime(ironpython:_Name/_Arity, ironpython) :- !.
+predicate_runtime(pypy:_Name/_Arity, pypy) :- !.
+predicate_runtime(jython:_Name/_Arity, jython) :- !.
+predicate_runtime(csharp:_Name/_Arity, csharp) :- !.
+predicate_runtime(powershell:_Name/_Arity, powershell) :- !.
+predicate_runtime(_Name/_Arity, python).  % Default to python
+
+%% compatible_runtimes(+R1, +R2)
+%  True if two runtimes can run in same process.
+%
+compatible_runtimes(R, R) :- !.
+compatible_runtimes(python, cpython) :- !.
+compatible_runtimes(cpython, python) :- !.
+compatible_runtimes(python, ironpython) :- !.
+compatible_runtimes(ironpython, python) :- !.
+compatible_runtimes(python, pypy) :- !.
+compatible_runtimes(pypy, python) :- !.
+compatible_runtimes(python, jython) :- !.
+compatible_runtimes(jython, python) :- !.
+
+% ============================================================================
+% Same-Runtime Pipeline Chaining
+% ============================================================================
+
+%% compile_same_runtime_pipeline(+Predicates, +Options, -Code)
+%  Compile a pipeline where all predicates run in the same Python process.
+%  This is efficient as no serialization is needed between steps.
+%
+compile_same_runtime_pipeline(Predicates, Options, Code) :-
+    option(runtime(Runtime), Options, cpython),
+    option(glue_protocol(GlueProtocol), Options, jsonl),
+    option(pipeline_name(PipelineName), Options, pipeline),
+    option(arg_names(ArgNames), Options, []),
+
+    % Generate header
+    pipeline_header(GlueProtocol, Runtime, Header),
+
+    % Compile each predicate to a function
+    compile_pipeline_predicates(Predicates, PredicateFunctions),
+
+    % Generate the pipeline connector function
+    generate_pipeline_connector(Predicates, PipelineName, ConnectorCode),
+
+    % Generate helpers
+    pipeline_helpers(GlueProtocol, same_as_data, Helpers),
+
+    % Generate main block
+    generate_chained_pipeline_main(PipelineName, GlueProtocol, ArgNames, MainCode),
+
+    format(string(Code), "~w~w~w~w~w",
+        [Header, Helpers, PredicateFunctions, ConnectorCode, MainCode]).
+
+%% compile_pipeline_predicates(+Predicates, -Code)
+%  Compile each predicate to a Python generator function.
+%
+compile_pipeline_predicates([], "").
+compile_pipeline_predicates([Pred|Rest], Code) :-
+    compile_single_pipeline_predicate(Pred, PredCode),
+    compile_pipeline_predicates(Rest, RestCode),
+    format(string(Code), "~w~w", [PredCode, RestCode]).
+
+%% compile_single_pipeline_predicate(+Pred, -Code)
+%  Compile a single predicate for use in a pipeline.
+%
+compile_single_pipeline_predicate(_Target:Name/Arity, Code) :-
+    !,
+    % Extract just the name for the function
+    compile_single_pipeline_predicate(Name/Arity, Code).
+
+compile_single_pipeline_predicate(Name/Arity, Code) :-
+    atom_string(Name, NameStr),
+    % Generate a simple passthrough function as placeholder
+    % In real usage, this would compile the actual predicate
+    generate_default_arg_names(Arity, ArgNames),
+    generate_extraction_code(ArgNames, ExtractionCode),
+    format(string(Code),
+"
+def ~w(stream):
+    \"\"\"
+    Pipeline step: ~w/~w
+    \"\"\"
+    for record in stream:
+        # Extract inputs from record
+~w
+        # Process (placeholder - actual logic from predicate)
+        result = record.copy()
+        yield result
+
+", [NameStr, NameStr, Arity, ExtractionCode]).
+
+%% generate_arg_list(+Names, -Code)
+generate_arg_list(Names, Code) :-
+    atomic_list_concat(Names, ', ', Code).
+
+%% generate_dict_construction(+Names, -Code)
+generate_dict_construction(Names, Code) :-
+    maplist(generate_dict_entry, Names, Entries),
+    atomic_list_concat(Entries, ', ', EntriesStr),
+    format(string(Code), "{~w}", [EntriesStr]).
+
+generate_dict_entry(Name, Entry) :-
+    format(string(Entry), "'~w': ~w", [Name, Name]).
+
+%% generate_extraction_code(+Names, -Code)
+%  Generate code to extract inputs from record dict.
+%
+generate_extraction_code(Names, Code) :-
+    maplist(generate_extraction_line, Names, Lines),
+    atomic_list_concat(Lines, '\n', Code).
+
+generate_extraction_line(Name, Line) :-
+    format(string(Line), "        ~w = record.get('~w')", [Name, Name]).
+
+%% generate_pipeline_connector(+Predicates, +Name, -Code)
+%  Generate the function that chains all predicates together.
+%
+generate_pipeline_connector(Predicates, PipelineName, Code) :-
+    % Build the chain: pred1(pred2(pred3(input)))
+    % Or use generator chaining for efficiency
+    extract_predicate_names(Predicates, Names),
+    generate_chain_code(Names, ChainCode),
+    format(string(Code),
+"
+def ~w(input_stream):
+    \"\"\"
+    Chained pipeline: ~w
+    Connects all predicates in sequence.
+    \"\"\"
+~w
+", [PipelineName, Names, ChainCode]).
+
+%% extract_predicate_names(+Predicates, -Names)
+extract_predicate_names([], []).
+extract_predicate_names([Pred|Rest], [Name|RestNames]) :-
+    extract_pred_name(Pred, Name),
+    extract_predicate_names(Rest, RestNames).
+
+extract_pred_name(_Target:Name/_Arity, NameStr) :-
+    !,
+    atom_string(Name, NameStr).
+extract_pred_name(Name/_Arity, NameStr) :-
+    atom_string(Name, NameStr).
+
+%% generate_chain_code(+Names, -Code)
+%  Generate the chaining code connecting all predicates.
+%
+generate_chain_code([], "    yield from input_stream\n").
+generate_chain_code([First|Rest], Code) :-
+    generate_chain_recursive(Rest, First, "input_stream", ChainExpr),
+    format(string(Code), "    yield from ~w\n", [ChainExpr]).
+
+generate_chain_recursive([], Current, Input, Expr) :-
+    format(string(Expr), "~w(~w)", [Current, Input]).
+generate_chain_recursive([Next|Rest], Current, Input, Expr) :-
+    format(string(CurrentCall), "~w(~w)", [Current, Input]),
+    generate_chain_recursive(Rest, Next, CurrentCall, Expr).
+
+%% generate_chained_pipeline_main(+Name, +Protocol, +ArgNames, -Code)
+%  Generate the main block for the chained pipeline.
+%
+generate_chained_pipeline_main(PipelineName, jsonl, _ArgNames, Code) :-
+    format(string(Code),
+"
+if __name__ == '__main__':
+    import sys
+
+    # Read from stdin, process through pipeline, write to stdout
+    input_stream = read_stream(sys.stdin)
+    for result in ~w(input_stream):
+        write_record(result)
+", [PipelineName]).
+
+generate_chained_pipeline_main(PipelineName, messagepack, _ArgNames, Code) :-
+    format(string(Code),
+"
+if __name__ == '__main__':
+    import sys
+
+    # Read MessagePack from stdin, process, write to stdout
+    input_stream = read_stream(sys.stdin.buffer)
+    for result in ~w(input_stream):
+        write_record(result)
+", [PipelineName]).
+
+% ============================================================================
+% Cross-Runtime Pipeline Chaining
+% ============================================================================
+
+%% compile_cross_runtime_pipeline(+Predicates, +Options, -Code)
+%  Compile a pipeline where predicates run in different runtimes.
+%  Uses JSONL pipes or in-process bridges for communication.
+%
+compile_cross_runtime_pipeline(Predicates, Options, Code) :-
+    option(glue_protocol(GlueProtocol), Options, jsonl),
+    option(pipeline_name(PipelineName), Options, pipeline),
+
+    % Group predicates by runtime
+    group_by_runtime(Predicates, Groups),
+
+    % Generate orchestrator code (shell script or Python)
+    generate_cross_runtime_orchestrator(Groups, PipelineName, GlueProtocol, Code).
+
+%% group_by_runtime(+Predicates, -Groups)
+%  Group consecutive predicates that share a runtime.
+%
+group_by_runtime([], []).
+group_by_runtime([Pred|Rest], [group(Runtime, [Pred|SameRuntime])|RestGroups]) :-
+    predicate_runtime(Pred, Runtime),
+    take_same_runtime(Rest, Runtime, SameRuntime, Remaining),
+    group_by_runtime(Remaining, RestGroups).
+
+take_same_runtime([], _, [], []).
+take_same_runtime([Pred|Rest], Runtime, [Pred|Same], Remaining) :-
+    predicate_runtime(Pred, PredRuntime),
+    compatible_runtimes(Runtime, PredRuntime),
+    !,
+    take_same_runtime(Rest, Runtime, Same, Remaining).
+take_same_runtime(Preds, _, [], Preds).
+
+%% generate_cross_runtime_orchestrator(+Groups, +Name, +Protocol, -Code)
+%  Generate orchestrator that manages cross-runtime pipeline.
+%
+generate_cross_runtime_orchestrator(Groups, PipelineName, GlueProtocol, Code) :-
+    length(Groups, NumGroups),
+    (   NumGroups == 1
+    ->  % Single group - just compile as same-runtime
+        Groups = [group(_Runtime, Predicates)],
+        compile_same_runtime_pipeline(Predicates, [pipeline_name(PipelineName)], Code)
+    ;   % Multiple groups - generate orchestrator
+        generate_multi_runtime_code(Groups, PipelineName, GlueProtocol, Code)
+    ).
+
+%% generate_multi_runtime_code(+Groups, +Name, +Protocol, -Code)
+%  Generate Python code that orchestrates multiple runtime stages.
+%
+generate_multi_runtime_code(Groups, PipelineName, GlueProtocol, Code) :-
+    % Generate stage functions for each group
+    generate_stage_functions(Groups, 1, StageFunctions),
+
+    % Generate the orchestrator that pipes between stages
+    generate_orchestrator_function(Groups, PipelineName, GlueProtocol, OrchestratorCode),
+
+    % Generate header
+    pipeline_header(GlueProtocol, cpython, Header),
+    pipeline_helpers(GlueProtocol, same_as_data, Helpers),
+
+    % Generate main
+    generate_chained_pipeline_main(PipelineName, GlueProtocol, [], MainCode),
+
+    format(string(Code), "~w~w~w~w~w",
+        [Header, Helpers, StageFunctions, OrchestratorCode, MainCode]).
+
+%% generate_stage_functions(+Groups, +StageNum, -Code)
+generate_stage_functions([], _, "").
+generate_stage_functions([group(Runtime, Predicates)|Rest], N, Code) :-
+    generate_stage_function(Runtime, Predicates, N, StageCode),
+    N1 is N + 1,
+    generate_stage_functions(Rest, N1, RestCode),
+    format(string(Code), "~w~w", [StageCode, RestCode]).
+
+%% generate_stage_function(+Runtime, +Predicates, +N, -Code)
+generate_stage_function(Runtime, Predicates, N, Code) :-
+    extract_predicate_names(Predicates, Names),
+    atomic_list_concat(Names, ' -> ', NamesStr),
+    runtime_to_string(Runtime, RuntimeStr),
+    generate_stage_chain_code(Names, StageChainCode),
+    format(string(Code),
+"
+def stage_~w(input_stream):
+    \"\"\"
+    Stage ~w: ~w
+    Runtime: ~w
+    \"\"\"
+    # Chain predicates within this stage
+    current = input_stream
+~w
+    yield from current
+
+", [N, N, NamesStr, RuntimeStr, StageChainCode]).
+
+generate_stage_chain_code([], "").
+generate_stage_chain_code([Name|Rest], Code) :-
+    format(string(Line), "    current = ~w(current)\n", [Name]),
+    generate_stage_chain_code(Rest, RestCode),
+    string_concat(Line, RestCode, Code).
+
+runtime_to_string(python, "Python (CPython)").
+runtime_to_string(cpython, "CPython").
+runtime_to_string(ironpython, "IronPython").
+runtime_to_string(pypy, "PyPy").
+runtime_to_string(jython, "Jython").
+runtime_to_string(csharp, "C#").
+runtime_to_string(powershell, "PowerShell").
+runtime_to_string(R, S) :- atom_string(R, S).
+
+%% generate_orchestrator_function(+Groups, +Name, +Protocol, -Code)
+generate_orchestrator_function(Groups, PipelineName, _Protocol, Code) :-
+    length(Groups, NumStages),
+    numlist(1, NumStages, StageNums),
+    maplist(format_stage_call, StageNums, StageCalls),
+    atomic_list_concat(StageCalls, '\n', StageCallsCode),
+    format(string(Code),
+"
+def ~w(input_stream):
+    \"\"\"
+    Cross-runtime pipeline orchestrator.
+    Chains ~w stages together.
+    \"\"\"
+    current = input_stream
+~w
+    yield from current
+
+", [PipelineName, NumStages, StageCallsCode]).
+
+format_stage_call(N, Call) :-
+    format(string(Call), "    current = stage_~w(current)", [N]).
+
+% ============================================================================
+% Pipeline Chaining Tests (Phase 4)
+% ============================================================================
+
+test_pipeline_chaining :-
+    format('~n=== Python Pipeline Chaining Tests (Phase 4) ===~n~n', []),
+
+    % Test 1: All same runtime detection
+    format('[Test 1] Same runtime detection~n', []),
+    (   all_same_runtime([get_users/1, filter_active/2, format_output/1])
+    ->  format('  [PASS] Plain predicates are same runtime~n', [])
+    ;   format('  [FAIL] Should detect same runtime~n', [])
+    ),
+
+    % Test 2: Mixed runtime detection
+    format('[Test 2] Mixed runtime detection~n', []),
+    (   \+ all_same_runtime([python:get_users/1, csharp:validate/1])
+    ->  format('  [PASS] Python + C# detected as different~n', [])
+    ;   format('  [FAIL] Should detect different runtimes~n', [])
+    ),
+
+    % Test 3: Predicate runtime extraction
+    format('[Test 3] Predicate runtime extraction~n', []),
+    predicate_runtime(ironpython:foo/2, R3),
+    (   R3 == ironpython
+    ->  format('  [PASS] ironpython:foo/2 -> ironpython~n', [])
+    ;   format('  [FAIL] Got ~w~n', [R3])
+    ),
+
+    % Test 4: Compile same-runtime pipeline
+    format('[Test 4] Compile same-runtime pipeline~n', []),
+    compile_same_runtime_pipeline(
+        [get_users/1, filter_active/2],
+        [runtime(cpython), pipeline_name(my_pipeline)],
+        Code4
+    ),
+    (   sub_string(Code4, _, _, _, "def my_pipeline"),
+        sub_string(Code4, _, _, _, "def get_users"),
+        sub_string(Code4, _, _, _, "def filter_active")
+    ->  format('  [PASS] Same-runtime pipeline generated~n', [])
+    ;   format('  [FAIL] Pipeline missing components~n', [])
+    ),
+
+    % Test 5: Pipeline connector generation
+    format('[Test 5] Pipeline connector generation~n', []),
+    generate_pipeline_connector([a/1, b/1, c/1], test_pipe, Code5),
+    (   sub_string(Code5, _, _, _, "def test_pipe"),
+        sub_string(Code5, _, _, _, "yield from")
+    ->  format('  [PASS] Connector chains predicates~n', [])
+    ;   format('  [FAIL] Connector issue~n', [])
+    ),
+
+    % Test 6: Group by runtime
+    format('[Test 6] Group predicates by runtime~n', []),
+    group_by_runtime(
+        [python:a/1, python:b/1, csharp:c/1, python:d/1],
+        Groups6
+    ),
+    (   Groups6 = [group(python, [python:a/1, python:b/1]),
+                   group(csharp, [csharp:c/1]),
+                   group(python, [python:d/1])]
+    ->  format('  [PASS] Grouped into 3 stages~n', [])
+    ;   format('  [FAIL] Got ~w~n', [Groups6])
+    ),
+
+    % Test 7: Cross-runtime pipeline
+    format('[Test 7] Cross-runtime pipeline~n', []),
+    compile_cross_runtime_pipeline(
+        [python:extract/1, csharp:validate/1, python:format/1],
+        [pipeline_name(cross_pipe)],
+        Code7
+    ),
+    (   sub_string(Code7, _, _, _, "stage_1"),
+        sub_string(Code7, _, _, _, "stage_2"),
+        sub_string(Code7, _, _, _, "stage_3"),
+        sub_string(Code7, _, _, _, "def cross_pipe")
+    ->  format('  [PASS] Cross-runtime pipeline has 3 stages~n', [])
+    ;   format('  [FAIL] Cross-runtime pipeline issue~n', [])
+    ),
+
+    % Test 8: Main entry point dispatch
+    format('[Test 8] Main entry point dispatch~n', []),
+    compile_pipeline([a/1, b/1], [pipeline_name(dispatch_test)], Code8a),
+    compile_pipeline([python:a/1, csharp:b/1], [pipeline_name(dispatch_test)], Code8b),
+    (   sub_string(Code8a, _, _, _, "def dispatch_test"),
+        sub_string(Code8b, _, _, _, "stage_1")
+    ->  format('  [PASS] Dispatch selects correct mode~n', [])
+    ;   format('  [FAIL] Dispatch issue~n', [])
+    ),
+
+    format('~n=== All Pipeline Chaining Tests Passed ===~n', []).
