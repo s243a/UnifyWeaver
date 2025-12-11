@@ -21,6 +21,7 @@
 
 :- use_module('../core/binding_registry').
 :- use_module('powershell_bindings').
+:- use_module('go_bindings').
 
 % ============================================================================
 % CODE GENERATION FROM BINDINGS

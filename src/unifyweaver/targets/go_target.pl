@@ -11,13 +11,48 @@
     write_go_program/2,             % +GoCode, +FilePath
     json_schema/2,                  % +SchemaName, +Fields (directive)
     get_json_schema/2,              % +SchemaName, -Fields (lookup)
-    get_json_schema/2,              % +SchemaName, -Fields (lookup)
-    get_field_info/4                % +SchemaName, +FieldName, -Type, -Options (lookup)
+    get_field_info/4,               % +SchemaName, +FieldName, -Type, -Options (lookup)
+    % Binding system exports
+    init_go_target/0,               % Initialize Go target with bindings
+    clear_binding_imports/0,        % Clear collected binding imports
+    get_collected_imports/1,        % Get imports collected from bindings
+    test_go_binding_integration/0   % Test binding integration
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
 :- use_module(common_generator).
+
+% Binding system integration
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/go_bindings').
+
+% Track required imports from bindings
+:- dynamic required_binding_import/1.
+
+%% init_go_target
+%  Initialize Go target with bindings
+init_go_target :-
+    retractall(required_binding_import(_)),
+    init_go_bindings.
+
+%% clear_binding_imports
+%  Clear collected binding imports
+clear_binding_imports :-
+    retractall(required_binding_import(_)).
+
+%% collect_binding_import(+Import)
+%  Record that an import is required
+collect_binding_import(Import) :-
+    (   required_binding_import(Import)
+    ->  true
+    ;   assertz(required_binding_import(Import))
+    ).
+
+%% get_collected_imports(-Imports)
+%  Get all collected imports from bindings
+get_collected_imports(Imports) :-
+    findall(I, required_binding_import(I), Imports).
 
 % Suppress singleton warnings in this experimental generator target.
 :- style_check(-singleton).
@@ -6280,3 +6315,64 @@ resolve_having_var(Var, AggInfo, Code) :-
     atom_string(Code, CodeStr).
 resolve_having_var(Num, _, Num) :- number(Num).
 
+% ============================================================================
+% BINDING SYSTEM INTEGRATION TESTS
+% ============================================================================
+
+%% test_go_binding_integration
+%  Test that Go bindings are properly integrated
+test_go_binding_integration :-
+    format('~n=== Go Binding Integration Tests ===~n~n', []),
+
+    % Test 1: Initialize bindings
+    format('[Test 1] Initialize Go target with bindings~n', []),
+    init_go_target,
+    format('  [PASS] Go target initialized~n', []),
+
+    % Test 2: Check bindings are accessible
+    format('[Test 2] Check bindings accessibility~n', []),
+    (   go_binding(sqrt/2, 'math.Sqrt', _, _, Opts),
+        member(import('math'), Opts)
+    ->  format('  [PASS] sqrt/2 binding accessible with import~n', [])
+    ;   format('  [FAIL] sqrt/2 binding not found~n', [])
+    ),
+
+    % Test 3: Test import collection
+    format('[Test 3] Test import collection~n', []),
+    clear_binding_imports,
+    collect_binding_import('math'),
+    collect_binding_import('strings'),
+    collect_binding_import('math'),  % Duplicate should be ignored
+    get_collected_imports(Imports),
+    length(Imports, NumImports),
+    (   NumImports == 2
+    ->  format('  [PASS] Collected ~w unique imports~n', [NumImports])
+    ;   format('  [FAIL] Expected 2 imports, got ~w~n', [NumImports])
+    ),
+
+    % Test 4: Query bindings by package
+    format('[Test 4] Query bindings by package~n', []),
+    findall(P, (go_binding(P, _, _, _, Opts4), member(import('strings'), Opts4)), StringPreds),
+    length(StringPreds, NumStrPreds),
+    (   NumStrPreds > 10
+    ->  format('  [PASS] Found ~w strings package bindings~n', [NumStrPreds])
+    ;   format('  [FAIL] Expected >10 strings bindings, got ~w~n', [NumStrPreds])
+    ),
+
+    % Test 5: Check pure bindings
+    format('[Test 5] Check pure bindings~n', []),
+    (   go_binding(string_lower/2, _, _, _, Opts5),
+        member(pure, Opts5)
+    ->  format('  [PASS] string_lower/2 is pure~n', [])
+    ;   format('  [FAIL] string_lower/2 should be pure~n', [])
+    ),
+
+    % Test 6: Check effect bindings
+    format('[Test 6] Check effect bindings~n', []),
+    (   go_binding(println/1, _, _, _, Opts6),
+        member(effect(io), Opts6)
+    ->  format('  [PASS] println/1 has effect(io)~n', [])
+    ;   format('  [FAIL] println/1 should have effect(io)~n', [])
+    ),
+
+    format('~n=== All Go Binding Integration Tests Passed ===~n', []).
