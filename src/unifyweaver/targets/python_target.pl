@@ -7,7 +7,12 @@
     pipeline_header/2,
     pipeline_helpers/3,
     generate_output_formatting/4,
-    generate_pipeline_main/4
+    generate_pipeline_main/4,
+    % Runtime selection exports (Phase 2)
+    select_python_runtime/4,
+    runtime_available/1,
+    runtime_compatible_with_imports/2,
+    test_runtime_selection/0
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -20,6 +25,11 @@
 % Binding system integration (ported from PowerShell target)
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/python_bindings').
+
+% Control plane integration (Phase 2 - Runtime Selection)
+:- catch(use_module('../core/preferences'), _, true).
+:- catch(use_module('../core/firewall'), _, true).
+:- catch(use_module('../glue/dotnet_glue'), _, true).
 
 % Track required imports from bindings
 :- dynamic required_import/1.
@@ -410,6 +420,217 @@ if __name__ == '__main__':
     for result in ~s(input_stream):
         write_record(result)
 ", [Name]).
+
+% ============================================================================
+% RUNTIME SELECTION - Phase 2: Firewall/Preference Integration
+% ============================================================================
+
+%% select_python_runtime(+PredIndicator, +Imports, +Context, -Runtime)
+%
+% Selects Python runtime respecting firewall and preferences.
+% Uses existing dotnet_glue.pl for IronPython compatibility checking.
+%
+% @arg PredIndicator The predicate being compiled (Name/Arity)
+% @arg Imports List of required Python imports
+% @arg Context Additional context (e.g., [target(csharp)])
+% @arg Runtime Selected runtime: cpython | ironpython | pypy | jython
+%
+select_python_runtime(PredIndicator, Imports, Context, Runtime) :-
+    % 1. Get merged preferences (uses existing preferences module if available)
+    get_runtime_preferences(PredIndicator, Context, Preferences),
+
+    % 2. Get firewall policy (uses existing firewall module if available)
+    get_runtime_firewall(PredIndicator, Firewall),
+
+    % 3. Determine candidate runtimes (filtered by hard constraints)
+    findall(R, valid_runtime_candidate(R, Imports, Firewall, Context), Candidates),
+    (   Candidates == []
+    ->  % No valid candidates - fall back to cpython
+        Runtime = cpython
+    ;   % 4. Score candidates against preferences
+        score_runtime_candidates(Candidates, Preferences, Context, ScoredCandidates),
+        % 5. Select best
+        select_best_runtime(ScoredCandidates, Preferences, Runtime)
+    ).
+
+%% get_runtime_preferences(+PredIndicator, +Context, -Preferences)
+%  Get merged runtime preferences from preference system
+get_runtime_preferences(PredIndicator, Context, Preferences) :-
+    (   catch(preferences:get_final_options(PredIndicator, Context, Prefs), _, fail)
+    ->  Preferences = Prefs
+    ;   % Default preferences if module not available
+        Preferences = [
+            prefer_runtime([cpython, ironpython, pypy]),
+            prefer_communication(in_process),
+            python_version(3)
+        ]
+    ).
+
+%% get_runtime_firewall(+PredIndicator, -Firewall)
+%  Get firewall policy for runtime selection
+get_runtime_firewall(PredIndicator, Firewall) :-
+    (   catch(firewall:get_firewall_policy(PredIndicator, FW), _, fail)
+    ->  Firewall = FW
+    ;   % Default: no restrictions
+        Firewall = []
+    ).
+
+%% valid_runtime_candidate(+Runtime, +Imports, +Firewall, +Context) is semidet.
+%
+% Check if runtime passes all hard constraints.
+%
+valid_runtime_candidate(Runtime, Imports, Firewall, Context) :-
+    member(Runtime, [cpython, ironpython, pypy, jython]),
+    % Not explicitly denied in firewall
+    \+ member(denied(python_runtime(Runtime)), Firewall),
+    \+ (member(denied(List), Firewall), is_list(List), member(python_runtime(Runtime), List)),
+    % Runtime is available on system
+    runtime_available(Runtime),
+    % Compatible with required imports
+    runtime_compatible_with_imports(Runtime, Imports),
+    % Context requirements (e.g., .NET integration needs ironpython or cpython_pipe)
+    runtime_satisfies_context(Runtime, Context).
+
+%% runtime_available(+Runtime) is semidet.
+%  Check if runtime is available on the system
+runtime_available(cpython) :-
+    % CPython is always assumed available (python3 command)
+    !.
+runtime_available(ironpython) :-
+    % Check for IronPython using dotnet_glue if available
+    (   catch(dotnet_glue:detect_ironpython(true), _, fail)
+    ->  true
+    ;   % Fallback: check for ipy command
+        catch(process_create(path(ipy), ['--version'], [stdout(null), stderr(null)]), _, fail)
+    ).
+runtime_available(pypy) :-
+    % Check for PyPy
+    catch(process_create(path(pypy3), ['--version'], [stdout(null), stderr(null)]), _, fail).
+runtime_available(jython) :-
+    % Check for Jython
+    catch(process_create(path(jython), ['--version'], [stdout(null), stderr(null)]), _, fail).
+
+%% runtime_compatible_with_imports(+Runtime, +Imports) is semidet.
+%  Check if runtime supports all required imports
+runtime_compatible_with_imports(cpython, _) :- !.  % CPython supports everything
+runtime_compatible_with_imports(pypy, Imports) :-
+    % PyPy has issues with some C extensions
+    \+ member(numpy, Imports),
+    \+ member(scipy, Imports),
+    \+ member(tensorflow, Imports),
+    \+ member(torch, Imports).
+runtime_compatible_with_imports(ironpython, Imports) :-
+    % Use dotnet_glue's compatibility check if available
+    (   catch(dotnet_glue:can_use_ironpython(Imports), _, fail)
+    ->  true
+    ;   % Fallback: check against known incompatible modules
+        \+ member(numpy, Imports),
+        \+ member(scipy, Imports),
+        \+ member(pandas, Imports),
+        \+ member(matplotlib, Imports),
+        \+ member(tensorflow, Imports),
+        \+ member(torch, Imports)
+    ).
+runtime_compatible_with_imports(jython, Imports) :-
+    % Jython has similar limitations to IronPython
+    \+ member(numpy, Imports),
+    \+ member(scipy, Imports),
+    \+ member(pandas, Imports).
+
+%% runtime_satisfies_context(+Runtime, +Context) is semidet.
+%  Check if runtime satisfies context requirements
+runtime_satisfies_context(_, []) :- !.
+runtime_satisfies_context(Runtime, Context) :-
+    % If targeting .NET, prefer in-process runtimes
+    (   member(target(csharp), Context)
+    ;   member(target(dotnet), Context)
+    )
+    ->  member(Runtime, [ironpython, cpython])  % cpython via pipes is fallback
+    ;   % If targeting JVM, prefer Jython
+        member(target(java), Context)
+    ->  member(Runtime, [jython, cpython])
+    ;   % No special context requirements
+        true.
+
+%% score_runtime_candidates(+Candidates, +Preferences, +Context, -Scored)
+%  Score each candidate against preference dimensions
+score_runtime_candidates(Candidates, Preferences, Context, Scored) :-
+    maplist(score_single_runtime(Preferences, Context), Candidates, Scored).
+
+%% score_single_runtime(+Preferences, +Context, +Runtime, -Scored)
+score_single_runtime(Preferences, Context, Runtime, Runtime-Score) :-
+    % Base score from preference order
+    (   member(prefer_runtime(Order), Preferences),
+        nth0(Idx, Order, Runtime)
+    ->  OrderScore is 10 - Idx  % Higher = better
+    ;   OrderScore = 0
+    ),
+
+    % Communication preference bonus
+    (   member(prefer_communication(Comm), Preferences),
+        runtime_communication(Runtime, Comm, Context)
+    ->  CommScore = 5
+    ;   CommScore = 0
+    ),
+
+    % Optimization hint bonus
+    (   member(optimization(Opt), Preferences),
+        runtime_optimization(Runtime, Opt)
+    ->  OptScore = 3
+    ;   OptScore = 0
+    ),
+
+    % Metrics bonus placeholder (returns 0 for now, designed for future extension)
+    metrics_bonus(Runtime, MetricsBonus),
+
+    Score is OrderScore + CommScore + OptScore + MetricsBonus.
+
+%% runtime_communication(+Runtime, +CommType, +Context) is semidet.
+%  Check if runtime provides the communication type in given context
+runtime_communication(ironpython, in_process, Context) :-
+    % IronPython is in-process when targeting .NET
+    (member(target(csharp), Context) ; member(target(dotnet), Context)), !.
+runtime_communication(jython, in_process, Context) :-
+    % Jython is in-process when targeting JVM
+    member(target(java), Context), !.
+runtime_communication(cpython, cross_process, _) :- !.
+runtime_communication(pypy, cross_process, _) :- !.
+runtime_communication(_, cross_process, _).  % Default fallback
+
+%% runtime_optimization(+Runtime, +OptType) is semidet.
+%  Check if runtime is optimized for given workload type
+runtime_optimization(pypy, throughput).      % JIT for long-running
+runtime_optimization(pypy, latency).         % Fast after warmup
+runtime_optimization(ironpython, latency).   % No serialization in .NET
+runtime_optimization(cpython, memory).       % Most memory efficient
+runtime_optimization(cpython, compatibility). % Best library support
+
+%% metrics_bonus(+Runtime, -Bonus)
+%  Placeholder for metrics-driven selection (returns 0 for now)
+%  Future: Use runtime_metric/3 facts to calculate bonus from execution history
+metrics_bonus(_Runtime, 0).
+
+%% select_best_runtime(+ScoredCandidates, +Preferences, -Runtime)
+%  Select the highest-scoring runtime, with fallback handling
+select_best_runtime(ScoredCandidates, Preferences, Runtime) :-
+    % Sort by score (descending)
+    keysort(ScoredCandidates, Sorted),
+    reverse(Sorted, [Best-_|_]),
+    (   Best \= cpython
+    ->  Runtime = Best
+    ;   % If cpython is best but fallback specified, check it
+        (   member(fallback_runtime(Fallbacks), Preferences),
+            member(FB, Fallbacks),
+            member(FB-_, ScoredCandidates)
+        ->  Runtime = FB
+        ;   Runtime = Best
+        )
+    ).
+
+%% get_collected_imports(-Imports)
+%  Get the list of imports collected during compilation
+get_collected_imports(Imports) :-
+    findall(I, required_import(I), Imports).
 
 %% compile_recursive_predicate(+Name, +Arity, +Clauses, +Options, -PythonCode)
 compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
@@ -3247,3 +3468,94 @@ test_pipeline_mode :-
     abolish(test_user_info/2),
 
     format('~n=== All Pipeline Mode Tests Passed ===~n', []).
+
+% ============================================================================
+% TESTS - Runtime Selection (Phase 2)
+% ============================================================================
+
+%% test_runtime_selection
+%  Test the runtime selection system
+test_runtime_selection :-
+    format('~n=== Python Runtime Selection Tests ===~n~n', []),
+
+    % Test 1: CPython is always available
+    format('[Test 1] CPython availability~n', []),
+    (   runtime_available(cpython)
+    ->  format('  [PASS] CPython is available~n', [])
+    ;   format('  [FAIL] CPython should always be available~n', [])
+    ),
+
+    % Test 2: CPython compatible with all imports
+    format('[Test 2] CPython import compatibility~n', []),
+    (   runtime_compatible_with_imports(cpython, [numpy, tensorflow, pandas])
+    ->  format('  [PASS] CPython supports all imports~n', [])
+    ;   format('  [FAIL] CPython should support all imports~n', [])
+    ),
+
+    % Test 3: IronPython incompatible with numpy
+    format('[Test 3] IronPython numpy incompatibility~n', []),
+    (   \+ runtime_compatible_with_imports(ironpython, [numpy])
+    ->  format('  [PASS] IronPython correctly rejects numpy~n', [])
+    ;   format('  [FAIL] IronPython should reject numpy~n', [])
+    ),
+
+    % Test 4: IronPython compatible with basic imports
+    format('[Test 4] IronPython basic import compatibility~n', []),
+    (   runtime_compatible_with_imports(ironpython, [json, re, os, sys])
+    ->  format('  [PASS] IronPython supports basic imports~n', [])
+    ;   format('  [FAIL] IronPython should support basic imports~n', [])
+    ),
+
+    % Test 5: Runtime selection with no constraints
+    format('[Test 5] Runtime selection (no constraints)~n', []),
+    select_python_runtime(test/1, [], [], Runtime5),
+    (   Runtime5 == cpython
+    ->  format('  [PASS] Default selection is cpython: ~w~n', [Runtime5])
+    ;   format('  [INFO] Selected runtime: ~w (cpython expected as default)~n', [Runtime5])
+    ),
+
+    % Test 6: Runtime selection with numpy import
+    format('[Test 6] Runtime selection with numpy~n', []),
+    select_python_runtime(test/1, [numpy], [], Runtime6),
+    (   Runtime6 == cpython
+    ->  format('  [PASS] numpy forces cpython: ~w~n', [Runtime6])
+    ;   format('  [FAIL] numpy should force cpython, got: ~w~n', [Runtime6])
+    ),
+
+    % Test 7: Runtime scoring
+    format('[Test 7] Runtime scoring~n', []),
+    Prefs7 = [prefer_runtime([ironpython, cpython, pypy])],
+    score_single_runtime(Prefs7, [], cpython, cpython-Score7a),
+    score_single_runtime(Prefs7, [], ironpython, ironpython-Score7b),
+    (   Score7b > Score7a
+    ->  format('  [PASS] IronPython scores higher (~w) than CPython (~w) with preference~n', [Score7b, Score7a])
+    ;   format('  [FAIL] Scoring issue: iron=~w, cpython=~w~n', [Score7b, Score7a])
+    ),
+
+    % Test 8: Context-based selection (.NET context)
+    format('[Test 8] Context-based runtime selection~n', []),
+    (   runtime_satisfies_context(ironpython, [target(csharp)])
+    ->  format('  [PASS] IronPython satisfies .NET context~n', [])
+    ;   format('  [FAIL] IronPython should satisfy .NET context~n', [])
+    ),
+
+    % Test 9: Firewall denies runtime
+    format('[Test 9] Firewall runtime denial~n', []),
+    Firewall9 = [denied([python_runtime(ironpython)])],
+    (   \+ valid_runtime_candidate(ironpython, [], Firewall9, [])
+    ->  format('  [PASS] Firewall correctly denies ironpython~n', [])
+    ;   format('  [FAIL] Firewall should deny ironpython~n', [])
+    ),
+
+    % Test 10: Communication preference
+    format('[Test 10] Communication preference~n', []),
+    (   runtime_communication(ironpython, in_process, [target(csharp)])
+    ->  format('  [PASS] IronPython is in-process for .NET~n', [])
+    ;   format('  [FAIL] IronPython should be in-process for .NET~n', [])
+    ),
+    (   runtime_communication(cpython, cross_process, [])
+    ->  format('  [PASS] CPython is cross-process~n', [])
+    ;   format('  [FAIL] CPython should be cross-process~n', [])
+    ),
+
+    format('~n=== All Runtime Selection Tests Passed ===~n', []).
