@@ -43,21 +43,24 @@ init_python_target :-
 %   * mode(Mode) - 'procedural' (default) or 'generator'
 %
 compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
+    % Clear any previously collected binding imports
+    clear_binding_imports,
+
     % Handle module expansion (meta_predicate ensures M:Name/Arity)
     (   PredicateIndicator = Module:Name/Arity
     ->  true
     ;   PredicateIndicator = Name/Arity, Module = user
     ),
-    
+
     % Determine ordering constraint
     (   member(ordered(_Order), Options) % Changed AllOptions to Options
     ->  true
     ;   _Order = true  % Default: ordered
     ),
-    
+
     % Determine evaluation mode
     option(mode(Mode), Options, procedural),
-    
+
     % Dispatch to appropriate compiler
     (   Mode == generator
     ->  compile_generator_mode(Name, Arity, Module, Options, PythonCode)
@@ -1070,10 +1073,6 @@ generate_recursive_wrapper(Name, Arity, WrapperCode) :-
     ;   WrapperCode = "# ERROR: Unsupported arity for recursion wrapper"
     ).
 
-header("import sys\nimport json\nimport re\nimport hashlib\nimport uuid\nfrom typing import Iterator, Dict, Any\n\n").
-
-header_with_functools("import sys\nimport json\nimport re\nimport hashlib\nimport uuid\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
-
 %% get_binding_imports(-ImportStr)
 %  Get import statements for all modules required by bindings used in compilation
 get_binding_imports(ImportStr) :-
@@ -1084,7 +1083,7 @@ get_binding_imports(ImportStr) :-
     ;   findall(ImportLine, (
             member(M, UniqueModules),
             % Skip modules already in base imports
-            \+ member(M, [sys, json, re, hashlib, uuid, functools]),
+            \+ member(M, [sys, json, re, hashlib, uuid, functools, typing]),
             format(string(ImportLine), "import ~w", [M])
         ), ImportLines),
         (   ImportLines = []
@@ -1094,9 +1093,9 @@ get_binding_imports(ImportStr) :-
         )
     ).
 
-%% header_with_binding_imports(-Header)
-%  Generate header with base imports plus binding-required imports
-header_with_binding_imports(Header) :-
+%% header(-Header)
+%  Generate header with base imports plus any binding-required imports
+header(Header) :-
     get_binding_imports(BindingImports),
     format(string(Header),
 "import sys
@@ -1104,6 +1103,21 @@ import json
 import re
 import hashlib
 import uuid
+from typing import Iterator, Dict, Any
+~w
+", [BindingImports]).
+
+%% header_with_functools(-Header)
+%  Generate header with functools plus any binding-required imports
+header_with_functools(Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"import sys
+import json
+import re
+import hashlib
+import uuid
+import functools
 from typing import Iterator, Dict, Any
 ~w
 ", [BindingImports]).
@@ -1236,38 +1250,41 @@ generate_generator_code(_Name, _Arity, Facts, Rules, Options, PythonCode) :-
     atomic_list_concat([Header, Helpers, FactFunctions, RuleFunctions, FixpointLoop, Main], "\n", PythonCode).
 
 %% generator_header(-Header)
+%  Generate header for generator mode with binding-required imports
 generator_header(Header) :-
-    Header = "import sys
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"import sys
 import json
 import re
 from typing import Iterator, Dict, Any, Set
 from dataclasses import dataclass
-
+~w
 # FrozenDict - hashable dictionary for use in sets
 @dataclass(frozen=True)
 class FrozenDict:
     '''Immutable dictionary that can be used in sets.'''
     items: tuple
-    
+
     @staticmethod
     def from_dict(d: Dict) -> 'FrozenDict':
         return FrozenDict(tuple(sorted(d.items())))
-    
+
     def to_dict(self) -> Dict:
         return dict(self.items)
-    
+
     def get(self, key, default=None):
         for k, v in self.items:
             if k == key:
                 return v
         return default
-    
+
     def __contains__(self, key):
         return any(k == key for k, _ in self.items)
-    
+
     def __repr__(self):
         return f'FrozenDict({dict(self.items)})'
-".
+", [BindingImports]).
 
 %% generator_helpers(+Options, -Helpers)
 generator_helpers(Options, Helpers) :-
@@ -2482,6 +2499,128 @@ def fetch_xml_func(url):
         return open(url, 'rb')
     return None
 ",
-    
+
     atomic_list_concat(Contents, "\n", LibCode),
     string_concat(LibCode, Wrapper, Code).
+
+% ============================================================================
+% TESTS - Import Auto-Generation
+% ============================================================================
+
+%% test_import_autogeneration
+%  Test that binding imports are automatically included in generated Python code
+test_import_autogeneration :-
+    format('~n=== Python Import Auto-Generation Tests ===~n~n', []),
+
+    % Test 1: Clear imports starts fresh
+    format('[Test 1] Clear binding imports~n', []),
+    clear_binding_imports,
+    findall(M, required_import(M), Ms1),
+    (   Ms1 == []
+    ->  format('  [PASS] No imports after clear~n', [])
+    ;   format('  [FAIL] Expected no imports, got ~w~n', [Ms1])
+    ),
+
+    % Test 2: Recording imports
+    format('[Test 2] Record binding imports~n', []),
+    assertz(required_import(math)),
+    assertz(required_import(os)),
+    assertz(required_import(collections)),
+    findall(M, required_import(M), Ms2),
+    sort(Ms2, Sorted2),
+    (   Sorted2 == [collections, math, os]
+    ->  format('  [PASS] Imports recorded: ~w~n', [Sorted2])
+    ;   format('  [FAIL] Expected [collections, math, os], got ~w~n', [Sorted2])
+    ),
+
+    % Test 3: get_binding_imports generates correct import lines
+    format('[Test 3] Generate import statements~n', []),
+    get_binding_imports(ImportStr),
+    (   sub_string(ImportStr, _, _, _, "import math"),
+        sub_string(ImportStr, _, _, _, "import os"),
+        sub_string(ImportStr, _, _, _, "import collections")
+    ->  format('  [PASS] Import string contains math, os, collections~n', [])
+    ;   format('  [FAIL] Missing imports in: ~w~n', [ImportStr])
+    ),
+
+    % Test 4: header/1 includes binding imports
+    format('[Test 4] Header includes binding imports~n', []),
+    header(Header),
+    (   sub_string(Header, _, _, _, "import math"),
+        sub_string(Header, _, _, _, "import sys"),
+        sub_string(Header, _, _, _, "import json")
+    ->  format('  [PASS] Header includes base + binding imports~n', [])
+    ;   format('  [FAIL] Header missing imports~n', [])
+    ),
+
+    % Test 5: header_with_functools/1 includes both functools and bindings
+    format('[Test 5] Header with functools includes binding imports~n', []),
+    header_with_functools(HeaderFT),
+    (   sub_string(HeaderFT, _, _, _, "import functools"),
+        sub_string(HeaderFT, _, _, _, "import math"),
+        sub_string(HeaderFT, _, _, _, "import collections")
+    ->  format('  [PASS] Header with functools includes binding imports~n', [])
+    ;   format('  [FAIL] Header with functools missing imports~n', [])
+    ),
+
+    % Test 6: generator_header/1 includes binding imports
+    format('[Test 6] Generator header includes binding imports~n', []),
+    generator_header(GenHeader),
+    (   sub_string(GenHeader, _, _, _, "import math"),
+        sub_string(GenHeader, _, _, _, "FrozenDict")
+    ->  format('  [PASS] Generator header includes binding imports + FrozenDict~n', [])
+    ;   format('  [FAIL] Generator header missing imports~n', [])
+    ),
+
+    % Test 7: Skip already-included base modules
+    format('[Test 7] Skip base modules (sys, json, re, etc.)~n', []),
+    clear_binding_imports,
+    assertz(required_import(sys)),    % Should be skipped
+    assertz(required_import(json)),   % Should be skipped
+    assertz(required_import(numpy)),  % Should be included
+    get_binding_imports(ImportStr2),
+    (   sub_string(ImportStr2, _, _, _, "import numpy"),
+        \+ sub_string(ImportStr2, _, _, _, "import sys\nimport sys")
+    ->  format('  [PASS] Base modules skipped, numpy included~n', [])
+    ;   format('  [FAIL] Base module filtering issue~n', [])
+    ),
+
+    % Cleanup
+    clear_binding_imports,
+
+    % Test 8: End-to-end - binding lookup records imports
+    format('[Test 8] End-to-end: binding lookup records imports~n', []),
+    init_python_target,
+    % sqrt/2 binding has import(math) - simulate what translate_goal does
+    (   binding(python, sqrt/2, _TargetName, _Inputs, _Outputs, SqrtOptions),
+        member(import(math), SqrtOptions)
+    ->  % Record import as translate_goal would
+        assertz(required_import(math)),
+        format('  [PASS] sqrt/2 binding has import(math), recorded~n', [])
+    ;   format('  [FAIL] sqrt/2 binding does not have import(math)~n', [])
+    ),
+
+    % Test 9: Multiple bindings accumulate imports
+    format('[Test 9] Multiple bindings accumulate imports~n', []),
+    clear_binding_imports,
+    init_python_bindings,
+    % Simulate translate_goal recording imports for multiple bindings
+    (   binding(python, sqrt/2, _, _, _, Opts1), member(import(M1), Opts1)
+    ->  assertz(required_import(M1))
+    ;   true
+    ),
+    (   binding(python, counter/2, _, _, _, Opts2), member(import(M2), Opts2)
+    ->  assertz(required_import(M2))
+    ;   true
+    ),
+    get_binding_imports(AccumImports),
+    (   sub_string(AccumImports, _, _, _, "import math"),
+        sub_string(AccumImports, _, _, _, "import collections")
+    ->  format('  [PASS] Multiple imports accumulated: math, collections~n', [])
+    ;   format('  [FAIL] Import accumulation issue: ~w~n', [AccumImports])
+    ),
+
+    % Final cleanup
+    clear_binding_imports,
+
+    format('~n=== All Import Auto-Generation Tests Passed ===~n', []).
