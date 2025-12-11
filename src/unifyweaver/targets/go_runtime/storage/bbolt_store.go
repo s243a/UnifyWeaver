@@ -100,3 +100,39 @@ func (s *Store) IterateEmbeddings(fn func(id string, vector []float32) error) er
 		})
 	})
 }
+
+// GetObject retrieves an object by ID
+func (s *Store) GetObject(id string) (map[string]interface{}, error) {
+	var data map[string]interface{}
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("objects"))
+		v := b.Get([]byte(id))
+		if v == nil {
+			return fmt.Errorf("not found: %s", id)
+		}
+		return json.Unmarshal(v, &data)
+	})
+	return data, err
+}
+
+// CountObjects returns the number of objects in the store
+func (s *Store) CountObjects() (int, error) {
+	var count int
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("objects"))
+		count = b.Stats().KeyN
+		return nil
+	})
+	return count, err
+}
+
+// CountEmbeddings returns the number of embeddings in the store
+func (s *Store) CountEmbeddings() (int, error) {
+	var count int
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("embeddings"))
+		count = b.Stats().KeyN
+		return nil
+	})
+	return count, err
+}
