@@ -1,6 +1,13 @@
 :- module(python_target, [
     compile_predicate_to_python/3,
-    init_python_target/0
+    init_python_target/0,
+    % Pipeline mode exports (Phase 1)
+    test_pipeline_mode/0,
+    generate_default_arg_names/2,
+    pipeline_header/2,
+    pipeline_helpers/3,
+    generate_output_formatting/4,
+    generate_pipeline_main/4
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -42,6 +49,16 @@ init_python_target :-
 %   * record_format(Format) - 'jsonl' (default) or 'nul_json'
 %   * mode(Mode) - 'procedural' (default) or 'generator'
 %
+% Pipeline Options (Phase 1 - Object Pipeline Support):
+%   * pipeline_input(Bool) - true: enable streaming input from stdin/iterator
+%                           false: standalone function (default)
+%   * output_format(Format) - object: yield typed dicts with arg_names
+%                            text: yield string representation (default)
+%   * arg_names(Names) - List of property names for output dict
+%                        Example: ['UserId', 'Email']
+%   * glue_protocol(Protocol) - jsonl (default), messagepack (future)
+%   * error_protocol(Protocol) - same_as_data (default), text
+%
 compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     % Clear any previously collected binding imports
     clear_binding_imports,
@@ -61,8 +78,13 @@ compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     % Determine evaluation mode
     option(mode(Mode), Options, procedural),
 
+    % Check for pipeline mode (Phase 1 - Object Pipeline Support)
+    option(pipeline_input(PipelineInput), Options, false),
+
     % Dispatch to appropriate compiler
-    (   Mode == generator
+    (   PipelineInput == true
+    ->  compile_pipeline_mode(Name, Arity, Module, Options, PythonCode)
+    ;   Mode == generator
     ->  compile_generator_mode(Name, Arity, Module, Options, PythonCode)
     ;   compile_procedural_mode(Name, Arity, Module, Options, PythonCode)
     ).
@@ -115,6 +137,279 @@ def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
 \n", [AllClausesCode, CallsCode]),
 
     format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
+% ============================================================================
+% PIPELINE MODE - Phase 1: Object Pipeline Support
+% ============================================================================
+
+%% compile_pipeline_mode(+Name, +Arity, +Module, +Options, -PythonCode)
+%
+% Compiles predicate to Python generator for pipeline processing.
+% This mode generates streaming code that:
+%   - Reads from stdin (or accepts iterator)
+%   - Yields typed dict objects with named properties
+%   - Writes to stdout with configurable protocol (JSONL default)
+%   - Writes errors to stderr in same protocol
+%
+% Options used:
+%   - pipeline_input(true) - already checked in dispatcher
+%   - output_format(object|text) - dict or string output
+%   - arg_names([...]) - property names for output dict
+%   - glue_protocol(jsonl|messagepack) - serialization format
+%   - error_protocol(same_as_data|text) - error format
+%
+compile_pipeline_mode(Name, Arity, Module, Options, PythonCode) :-
+    functor(Head, Name, Arity),
+    findall((Head, Body), clause(Module:Head, Body), Clauses),
+    (   Clauses == []
+    ->  throw(error(clause_not_found(Module:Head), _))
+    ;   true
+    ),
+
+    % Extract options with defaults
+    option(output_format(OutputFormat), Options, object),
+    option(arg_names(ArgNames), Options, []),
+    option(glue_protocol(GlueProtocol), Options, jsonl),
+    option(error_protocol(ErrorProtocol), Options, same_as_data),
+
+    % Generate arg names if not provided
+    (   ArgNames == []
+    ->  generate_default_arg_names(Arity, DefaultArgNames)
+    ;   DefaultArgNames = ArgNames
+    ),
+
+    % Generate the pipeline function
+    atom_string(Name, NameStr),
+    generate_pipeline_function(NameStr, Arity, Clauses, OutputFormat, DefaultArgNames, FunctionCode),
+
+    % Generate header and helpers
+    pipeline_header(GlueProtocol, Header),
+    pipeline_helpers(GlueProtocol, ErrorProtocol, Helpers),
+
+    % Generate main block
+    generate_pipeline_main(NameStr, GlueProtocol, Options, Main),
+
+    format(string(PythonCode), "~s~s~s~s", [Header, Helpers, FunctionCode, Main]).
+
+%% generate_default_arg_names(+Arity, -ArgNames)
+%  Generate default argument names: ['arg_0', 'arg_1', ...]
+generate_default_arg_names(Arity, ArgNames) :-
+    NumArgs is Arity,
+    findall(ArgName, (
+        between(0, NumArgs, I),
+        I < NumArgs,
+        format(atom(ArgName), 'arg_~d', [I])
+    ), ArgNames).
+
+%% generate_pipeline_function(+Name, +Arity, +Clauses, +OutputFormat, +ArgNames, -Code)
+%  Generate the main pipeline processing function
+generate_pipeline_function(Name, Arity, Clauses, OutputFormat, ArgNames, Code) :-
+    % Generate clause handlers
+    findall(ClauseCode, (
+        nth0(Index, Clauses, (ClauseHead, ClauseBody)),
+        generate_pipeline_clause(ClauseHead, ClauseBody, Index, Arity, OutputFormat, ArgNames, ClauseCode)
+    ), ClauseCodes),
+    atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
+
+    % Generate yield calls for each clause
+    findall(YieldCall, (
+        nth0(Index, Clauses, _),
+        format(string(YieldCall), "            yield from _clause_~d(record)", [Index])
+    ), YieldCalls),
+    atomic_list_concat(YieldCalls, "\n", YieldCallsCode),
+
+    format(string(Code),
+"
+~s
+
+def ~s(stream: Iterator[Dict]) -> Generator[Dict, None, None]:
+    \"\"\"
+    Pipeline-enabled predicate with structured output.
+
+    Args:
+        stream: Iterator of input records (dicts)
+
+    Yields:
+        Dict with keys: ~w
+    \"\"\"
+    for record in stream:
+        try:
+~s
+        except Exception as e:
+            # Error handling - yield error record to stderr
+            yield {'__error__': True, '__type__': type(e).__name__, '__message__': str(e), '__record__': record}
+", [AllClausesCode, Name, ArgNames, YieldCallsCode]).
+
+%% generate_pipeline_clause(+Head, +Body, +Index, +Arity, +OutputFormat, +ArgNames, -Code)
+%  Generate a clause handler for pipeline mode
+generate_pipeline_clause(Head, Body, Index, _Arity, OutputFormat, ArgNames, Code) :-
+    % Instantiate variables for translation (same as translate_clause/5)
+    copy_term((Head, Body), (HeadCopy, BodyCopy)),
+    numbervars((HeadCopy, BodyCopy), 0, _),
+
+    HeadCopy =.. [_Name | Args],
+
+    % Generate input extraction from record
+    generate_input_extraction(Args, ArgNames, InputCode),
+
+    % Translate the body
+    (   BodyCopy == true
+    ->  BodyCode = "    pass  # No body goals"
+    ;   translate_body(BodyCopy, BodyCode)
+    ),
+
+    % Generate output formatting
+    generate_output_formatting(Args, ArgNames, OutputFormat, OutputCode),
+
+    format(string(Code),
+"def _clause_~d(record: Dict) -> Generator[Dict, None, None]:
+    \"\"\"Clause ~d handler.\"\"\"
+~s
+~s
+~s
+", [Index, Index, InputCode, BodyCode, OutputCode]).
+
+%% generate_input_extraction(+Args, +ArgNames, -Code)
+%  Generate code to extract input values from record dict
+generate_input_extraction(Args, ArgNames, Code) :-
+    findall(Line, (
+        nth0(I, Args, Arg),
+        nth0(I, ArgNames, ArgName),
+        is_var_term(Arg),  % Only extract for input variables (includes $VAR(N))
+        format(string(Line), "    v_~d = record.get('~w')", [I, ArgName])
+    ), Lines),
+    (   Lines == []
+    ->  Code = "    # No input extraction needed"
+    ;   atomic_list_concat(Lines, "\n", Code)
+    ).
+
+%% generate_output_formatting(+Args, +ArgNames, +OutputFormat, -Code)
+%  Generate code to format output as dict or text
+generate_output_formatting(Args, ArgNames, OutputFormat, Code) :-
+    length(Args, NumArgs),
+    (   OutputFormat == object
+    ->  % Build dict with arg names as keys
+        findall(Pair, (
+            nth0(I, ArgNames, ArgName),
+            I < NumArgs,
+            format(string(Pair), "'~w': v_~d", [ArgName, I])
+        ), Pairs),
+        atomic_list_concat(Pairs, ", ", PairsStr),
+        format(string(Code), "    yield {~s}", [PairsStr])
+    ;   % Text format - just yield string representation
+        format(string(Code), "    yield {'result': str(v_0)}", [])
+    ).
+
+%% pipeline_header(+Protocol, -Header)
+%  Generate header for pipeline mode with appropriate imports
+pipeline_header(jsonl, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env python3
+\"\"\"
+Generated pipeline predicate.
+Protocol: JSONL (line-delimited JSON)
+\"\"\"
+import sys
+import json
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+pipeline_header(messagepack, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env python3
+\"\"\"
+Generated pipeline predicate.
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+import msgpack
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+%% pipeline_helpers(+GlueProtocol, +ErrorProtocol, -Helpers)
+%  Generate helper functions for pipeline I/O
+pipeline_helpers(jsonl, same_as_data, Helpers) :-
+    Helpers = "
+def read_stream(stream) -> Iterator[Dict[str, Any]]:
+    \"\"\"Read JSONL records from stream.\"\"\"
+    for line in stream:
+        line = line.strip()
+        if line:
+            yield json.loads(line)
+
+def write_record(record: Dict, stream=sys.stdout) -> None:
+    \"\"\"Write a single record as JSONL.\"\"\"
+    if record.get('__error__'):
+        # Error records go to stderr
+        error_record = {k: v for k, v in record.items() if not k.startswith('__')}
+        error_record['error'] = True
+        error_record['type'] = record.get('__type__', 'Unknown')
+        error_record['message'] = record.get('__message__', '')
+        sys.stderr.write(json.dumps(error_record) + '\\n')
+        sys.stderr.flush()
+    else:
+        stream.write(json.dumps(record) + '\\n')
+        stream.flush()
+".
+
+pipeline_helpers(jsonl, text, Helpers) :-
+    Helpers = "
+def read_stream(stream) -> Iterator[Dict[str, Any]]:
+    \"\"\"Read JSONL records from stream.\"\"\"
+    for line in stream:
+        line = line.strip()
+        if line:
+            yield json.loads(line)
+
+def write_record(record: Dict, stream=sys.stdout) -> None:
+    \"\"\"Write a single record as JSONL, errors as plain text.\"\"\"
+    if record.get('__error__'):
+        # Error records go to stderr as plain text
+        sys.stderr.write(f\"ERROR [{record.get('__type__', 'Unknown')}]: {record.get('__message__', '')}\\n\")
+        sys.stderr.flush()
+    else:
+        stream.write(json.dumps(record) + '\\n')
+        stream.flush()
+".
+
+pipeline_helpers(messagepack, _, Helpers) :-
+    Helpers = "
+def read_stream(stream) -> Iterator[Dict[str, Any]]:
+    \"\"\"Read MessagePack records from binary stream.\"\"\"
+    unpacker = msgpack.Unpacker(stream.buffer, raw=False)
+    for record in unpacker:
+        yield record
+
+def write_record(record: Dict, stream=sys.stdout) -> None:
+    \"\"\"Write a single record as MessagePack.\"\"\"
+    if record.get('__error__'):
+        # Error records go to stderr
+        error_record = {k: v for k, v in record.items() if not k.startswith('__')}
+        error_record['error'] = True
+        error_record['type'] = record.get('__type__', 'Unknown')
+        error_record['message'] = record.get('__message__', '')
+        sys.stderr.buffer.write(msgpack.packb(error_record))
+        sys.stderr.flush()
+    else:
+        stream.buffer.write(msgpack.packb(record))
+        stream.flush()
+".
+
+%% generate_pipeline_main(+Name, +Protocol, +Options, -Main)
+%  Generate the main block for pipeline execution
+generate_pipeline_main(Name, _Protocol, _Options, Main) :-
+    format(string(Main),
+"
+if __name__ == '__main__':
+    # Pipeline mode: read from stdin, write to stdout
+    input_stream = read_stream(sys.stdin)
+    for result in ~s(input_stream):
+        write_record(result)
+", [Name]).
 
 %% compile_recursive_predicate(+Name, +Arity, +Clauses, +Options, -PythonCode)
 compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
@@ -2842,3 +3137,113 @@ test_method_call_patterns :-
     ),
 
     format('~n=== All Method Call Pattern Tests Passed ===~n', []).
+
+% ============================================================================
+% TESTS - Pipeline Mode (Phase 1: Object Pipeline Support)
+% ============================================================================
+
+%% test_pipeline_mode
+%  Test the pipeline mode code generation
+test_pipeline_mode :-
+    format('~n=== Python Pipeline Mode Tests ===~n~n', []),
+
+    % Test 1: Generate default arg names
+    format('[Test 1] Generate default arg names~n', []),
+    generate_default_arg_names(3, ArgNames1),
+    (   ArgNames1 == [arg_0, arg_1, arg_2]
+    ->  format('  [PASS] Default arg names: ~w~n', [ArgNames1])
+    ;   format('  [FAIL] Expected [arg_0, arg_1, arg_2], got ~w~n', [ArgNames1])
+    ),
+
+    % Test 2: Pipeline header for JSONL
+    format('[Test 2] Pipeline header for JSONL~n', []),
+    clear_binding_imports,
+    pipeline_header(jsonl, Header2),
+    (   sub_string(Header2, _, _, _, "import json"),
+        sub_string(Header2, _, _, _, "Generator")
+    ->  format('  [PASS] JSONL header has json and Generator imports~n', [])
+    ;   format('  [FAIL] Header missing imports: ~w~n', [Header2])
+    ),
+
+    % Test 3: Pipeline header for MessagePack
+    format('[Test 3] Pipeline header for MessagePack~n', []),
+    pipeline_header(messagepack, Header3),
+    (   sub_string(Header3, _, _, _, "import msgpack")
+    ->  format('  [PASS] MessagePack header has msgpack import~n', [])
+    ;   format('  [FAIL] Header missing msgpack: ~w~n', [Header3])
+    ),
+
+    % Test 4: Pipeline helpers for JSONL with same_as_data errors
+    format('[Test 4] Pipeline helpers for JSONL (same_as_data errors)~n', []),
+    pipeline_helpers(jsonl, same_as_data, Helpers4),
+    (   sub_string(Helpers4, _, _, _, "read_stream"),
+        sub_string(Helpers4, _, _, _, "write_record"),
+        sub_string(Helpers4, _, _, _, "__error__")
+    ->  format('  [PASS] JSONL helpers have read_stream, write_record, error handling~n', [])
+    ;   format('  [FAIL] Missing helpers~n', [])
+    ),
+
+    % Test 5: Pipeline helpers for JSONL with text errors
+    format('[Test 5] Pipeline helpers for JSONL (text errors)~n', []),
+    pipeline_helpers(jsonl, text, Helpers5),
+    (   sub_string(Helpers5, _, _, _, "ERROR [")
+    ->  format('  [PASS] Text error protocol has plain text error format~n', [])
+    ;   format('  [FAIL] Missing plain text error format~n', [])
+    ),
+
+    % Test 6: Output formatting for object mode
+    format('[Test 6] Output formatting for object mode~n', []),
+    generate_output_formatting([_A, _B, _C], ['Id', 'Name', 'Active'], object, OutputCode6),
+    (   sub_string(OutputCode6, _, _, _, "'Id': v_0"),
+        sub_string(OutputCode6, _, _, _, "'Name': v_1"),
+        sub_string(OutputCode6, _, _, _, "'Active': v_2")
+    ->  format('  [PASS] Object output has named keys~n', [])
+    ;   format('  [FAIL] Output formatting issue: ~w~n', [OutputCode6])
+    ),
+
+    % Test 7: Output formatting for text mode
+    format('[Test 7] Output formatting for text mode~n', []),
+    generate_output_formatting([_X], ['Result'], text, OutputCode7),
+    (   sub_string(OutputCode7, _, _, _, "str(v_0)")
+    ->  format('  [PASS] Text output uses str()~n', [])
+    ;   format('  [FAIL] Text output issue: ~w~n', [OutputCode7])
+    ),
+
+    % Test 8: Pipeline main block
+    format('[Test 8] Pipeline main block~n', []),
+    generate_pipeline_main("test_pred", jsonl, [], Main8),
+    (   sub_string(Main8, _, _, _, "if __name__"),
+        sub_string(Main8, _, _, _, "read_stream(sys.stdin)"),
+        sub_string(Main8, _, _, _, "test_pred(input_stream)")
+    ->  format('  [PASS] Main block has correct structure~n', [])
+    ;   format('  [FAIL] Main block issue: ~w~n', [Main8])
+    ),
+
+    % Test 9: Full pipeline compilation (needs test predicate)
+    format('[Test 9] Full pipeline compilation~n', []),
+    % Define a simple test predicate
+    abolish(test_user_info/2),
+    assert((test_user_info(Id, Email) :- Email = Id)),
+    (   catch(
+            compile_predicate_to_python(test_user_info/2, [
+                pipeline_input(true),
+                output_format(object),
+                arg_names(['UserId', 'Email'])
+            ], Code9),
+            Error9,
+            (format('  [FAIL] Compilation error: ~w~n', [Error9]), fail)
+        )
+    ->  (   sub_string(Code9, _, _, _, "def test_user_info(stream"),
+            sub_string(Code9, _, _, _, "'UserId'"),
+            sub_string(Code9, _, _, _, "'Email'"),
+            sub_string(Code9, _, _, _, "read_stream"),
+            sub_string(Code9, _, _, _, "write_record")
+        ->  format('  [PASS] Full pipeline code generated correctly~n', [])
+        ;   format('  [FAIL] Generated code missing expected content~n', []),
+            format('  Code: ~w~n', [Code9])
+        )
+    ;   format('  [FAIL] Pipeline compilation failed~n', [])
+    ),
+    abolish(test_user_info/2),
+
+    format('~n=== All Pipeline Mode Tests Passed ===~n', []).
