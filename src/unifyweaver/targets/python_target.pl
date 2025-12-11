@@ -1,6 +1,21 @@
 :- module(python_target, [
     compile_predicate_to_python/3,
-    init_python_target/0
+    init_python_target/0,
+    % Pipeline mode exports (Phase 1)
+    test_pipeline_mode/0,
+    generate_default_arg_names/2,
+    pipeline_header/2,
+    pipeline_header/3,
+    pipeline_helpers/3,
+    generate_output_formatting/4,
+    generate_pipeline_main/4,
+    % Runtime selection exports (Phase 2)
+    select_python_runtime/4,
+    runtime_available/1,
+    runtime_compatible_with_imports/2,
+    test_runtime_selection/0,
+    % Runtime-specific code generation exports (Phase 3)
+    test_runtime_headers/0
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -14,11 +29,19 @@
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/python_bindings').
 
+% Control plane integration (Phase 2 - Runtime Selection)
+:- catch(use_module('../core/preferences'), _, true).
+:- catch(use_module('../core/firewall'), _, true).
+:- catch(use_module('../glue/dotnet_glue'), _, true).
+
 % Track required imports from bindings
 :- dynamic required_import/1.
 
 % translate_goal/2 is spread across the file for organization
 :- discontiguous translate_goal/2.
+
+% pipeline_header/2 has multiple clauses spread across the file (legacy + new)
+:- discontiguous pipeline_header/2.
 
 %% init_python_target
 %  Initialize Python target with bindings
@@ -42,6 +65,16 @@ init_python_target :-
 %   * record_format(Format) - 'jsonl' (default) or 'nul_json'
 %   * mode(Mode) - 'procedural' (default) or 'generator'
 %
+% Pipeline Options (Phase 1 - Object Pipeline Support):
+%   * pipeline_input(Bool) - true: enable streaming input from stdin/iterator
+%                           false: standalone function (default)
+%   * output_format(Format) - object: yield typed dicts with arg_names
+%                            text: yield string representation (default)
+%   * arg_names(Names) - List of property names for output dict
+%                        Example: ['UserId', 'Email']
+%   * glue_protocol(Protocol) - jsonl (default), messagepack (future)
+%   * error_protocol(Protocol) - same_as_data (default), text
+%
 compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     % Clear any previously collected binding imports
     clear_binding_imports,
@@ -61,8 +94,13 @@ compile_predicate_to_python(PredicateIndicator, Options, PythonCode) :-
     % Determine evaluation mode
     option(mode(Mode), Options, procedural),
 
+    % Check for pipeline mode (Phase 1 - Object Pipeline Support)
+    option(pipeline_input(PipelineInput), Options, false),
+
     % Dispatch to appropriate compiler
-    (   Mode == generator
+    (   PipelineInput == true
+    ->  compile_pipeline_mode(Name, Arity, Module, Options, PythonCode)
+    ;   Mode == generator
     ->  compile_generator_mode(Name, Arity, Module, Options, PythonCode)
     ;   compile_procedural_mode(Name, Arity, Module, Options, PythonCode)
     ).
@@ -115,6 +153,710 @@ def process_stream(records: Iterator[Dict]) -> Iterator[Dict]:
 \n", [AllClausesCode, CallsCode]),
 
     format(string(PythonCode), "~s~s~s~s", [Header, Helpers, Logic, Main]).
+
+% ============================================================================
+% PIPELINE MODE - Phase 1: Object Pipeline Support
+% ============================================================================
+
+%% compile_pipeline_mode(+Name, +Arity, +Module, +Options, -PythonCode)
+%
+% Compiles predicate to Python generator for pipeline processing.
+% This mode generates streaming code that:
+%   - Reads from stdin (or accepts iterator)
+%   - Yields typed dict objects with named properties
+%   - Writes to stdout with configurable protocol (JSONL default)
+%   - Writes errors to stderr in same protocol
+%
+% Options used:
+%   - pipeline_input(true) - already checked in dispatcher
+%   - output_format(object|text) - dict or string output
+%   - arg_names([...]) - property names for output dict
+%   - glue_protocol(jsonl|messagepack) - serialization format
+%   - error_protocol(same_as_data|text) - error format
+%
+compile_pipeline_mode(Name, Arity, Module, Options, PythonCode) :-
+    functor(Head, Name, Arity),
+    findall((Head, Body), clause(Module:Head, Body), Clauses),
+    (   Clauses == []
+    ->  throw(error(clause_not_found(Module:Head), _))
+    ;   true
+    ),
+
+    % Extract options with defaults
+    option(output_format(OutputFormat), Options, object),
+    option(arg_names(ArgNames), Options, []),
+    option(glue_protocol(GlueProtocol), Options, jsonl),
+    option(error_protocol(ErrorProtocol), Options, same_as_data),
+    option(runtime(Runtime), Options, cpython),
+
+    % Generate arg names if not provided
+    (   ArgNames == []
+    ->  generate_default_arg_names(Arity, DefaultArgNames)
+    ;   DefaultArgNames = ArgNames
+    ),
+
+    % Generate the pipeline function
+    atom_string(Name, NameStr),
+    generate_pipeline_function(NameStr, Arity, Clauses, OutputFormat, DefaultArgNames, FunctionCode),
+
+    % Generate header and helpers (Phase 3: runtime-specific headers)
+    pipeline_header(GlueProtocol, Runtime, Header),
+    pipeline_helpers(GlueProtocol, ErrorProtocol, Helpers),
+
+    % Generate main block
+    generate_pipeline_main(NameStr, GlueProtocol, Options, Main),
+
+    format(string(PythonCode), "~s~s~s~s", [Header, Helpers, FunctionCode, Main]).
+
+%% generate_default_arg_names(+Arity, -ArgNames)
+%  Generate default argument names: ['arg_0', 'arg_1', ...]
+generate_default_arg_names(Arity, ArgNames) :-
+    NumArgs is Arity,
+    findall(ArgName, (
+        between(0, NumArgs, I),
+        I < NumArgs,
+        format(atom(ArgName), 'arg_~d', [I])
+    ), ArgNames).
+
+%% generate_pipeline_function(+Name, +Arity, +Clauses, +OutputFormat, +ArgNames, -Code)
+%  Generate the main pipeline processing function
+generate_pipeline_function(Name, Arity, Clauses, OutputFormat, ArgNames, Code) :-
+    % Generate clause handlers
+    findall(ClauseCode, (
+        nth0(Index, Clauses, (ClauseHead, ClauseBody)),
+        generate_pipeline_clause(ClauseHead, ClauseBody, Index, Arity, OutputFormat, ArgNames, ClauseCode)
+    ), ClauseCodes),
+    atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
+
+    % Generate yield calls for each clause
+    findall(YieldCall, (
+        nth0(Index, Clauses, _),
+        format(string(YieldCall), "            yield from _clause_~d(record)", [Index])
+    ), YieldCalls),
+    atomic_list_concat(YieldCalls, "\n", YieldCallsCode),
+
+    format(string(Code),
+"
+~s
+
+def ~s(stream: Iterator[Dict]) -> Generator[Dict, None, None]:
+    \"\"\"
+    Pipeline-enabled predicate with structured output.
+
+    Args:
+        stream: Iterator of input records (dicts)
+
+    Yields:
+        Dict with keys: ~w
+    \"\"\"
+    for record in stream:
+        try:
+~s
+        except Exception as e:
+            # Error handling - yield error record to stderr
+            yield {'__error__': True, '__type__': type(e).__name__, '__message__': str(e), '__record__': record}
+", [AllClausesCode, Name, ArgNames, YieldCallsCode]).
+
+%% generate_pipeline_clause(+Head, +Body, +Index, +Arity, +OutputFormat, +ArgNames, -Code)
+%  Generate a clause handler for pipeline mode
+generate_pipeline_clause(Head, Body, Index, _Arity, OutputFormat, ArgNames, Code) :-
+    % Instantiate variables for translation (same as translate_clause/5)
+    copy_term((Head, Body), (HeadCopy, BodyCopy)),
+    numbervars((HeadCopy, BodyCopy), 0, _),
+
+    HeadCopy =.. [_Name | Args],
+
+    % Generate input extraction from record
+    generate_input_extraction(Args, ArgNames, InputCode),
+
+    % Translate the body
+    (   BodyCopy == true
+    ->  BodyCode = "    pass  # No body goals"
+    ;   translate_body(BodyCopy, BodyCode)
+    ),
+
+    % Generate output formatting
+    generate_output_formatting(Args, ArgNames, OutputFormat, OutputCode),
+
+    format(string(Code),
+"def _clause_~d(record: Dict) -> Generator[Dict, None, None]:
+    \"\"\"Clause ~d handler.\"\"\"
+~s
+~s
+~s
+", [Index, Index, InputCode, BodyCode, OutputCode]).
+
+%% generate_input_extraction(+Args, +ArgNames, -Code)
+%  Generate code to extract input values from record dict
+generate_input_extraction(Args, ArgNames, Code) :-
+    findall(Line, (
+        nth0(I, Args, Arg),
+        nth0(I, ArgNames, ArgName),
+        is_var_term(Arg),  % Only extract for input variables (includes $VAR(N))
+        format(string(Line), "    v_~d = record.get('~w')", [I, ArgName])
+    ), Lines),
+    (   Lines == []
+    ->  Code = "    # No input extraction needed"
+    ;   atomic_list_concat(Lines, "\n", Code)
+    ).
+
+%% generate_output_formatting(+Args, +ArgNames, +OutputFormat, -Code)
+%  Generate code to format output as dict or text
+generate_output_formatting(Args, ArgNames, OutputFormat, Code) :-
+    length(Args, NumArgs),
+    (   OutputFormat == object
+    ->  % Build dict with arg names as keys
+        findall(Pair, (
+            nth0(I, ArgNames, ArgName),
+            I < NumArgs,
+            format(string(Pair), "'~w': v_~d", [ArgName, I])
+        ), Pairs),
+        atomic_list_concat(Pairs, ", ", PairsStr),
+        format(string(Code), "    yield {~s}", [PairsStr])
+    ;   % Text format - just yield string representation
+        format(string(Code), "    yield {'result': str(v_0)}", [])
+    ).
+
+%% pipeline_header(+Protocol, -Header)
+%% pipeline_header(+Protocol, +Runtime, -Header)
+%  Generate header for pipeline mode with appropriate imports
+%  Runtime can be: cpython (default), ironpython, pypy, jython
+
+% Default: cpython
+pipeline_header(Protocol, Header) :-
+    pipeline_header(Protocol, cpython, Header).
+
+% CPython headers
+pipeline_header(jsonl, cpython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env python3
+\"\"\"
+Generated pipeline predicate.
+Runtime: CPython
+Protocol: JSONL (line-delimited JSON)
+\"\"\"
+import sys
+import json
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+pipeline_header(messagepack, cpython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env python3
+\"\"\"
+Generated pipeline predicate.
+Runtime: CPython
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+import msgpack
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+% IronPython headers - include CLR integration
+pipeline_header(jsonl, ironpython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env ipy
+\"\"\"
+Generated pipeline predicate.
+Runtime: IronPython (CLR/.NET integration)
+Protocol: JSONL (line-delimited JSON)
+\"\"\"
+import sys
+import json
+import clr
+
+# Add .NET references for common types
+clr.AddReference('System')
+clr.AddReference('System.Core')
+from System import String, Int32, Double, DateTime, Math
+from System.Collections.Generic import Dictionary, List
+
+# Python typing (IronPython 3.4+ compatible)
+from typing import Iterator, Dict, Any, Generator
+~w
+
+# Helper: Convert Python dict to .NET Dictionary
+def to_dotnet_dict(py_dict):
+    \"\"\"Convert Python dict to .NET Dictionary<string, object>.\"\"\"
+    result = Dictionary[String, object]()
+    for k, v in py_dict.items():
+        result[str(k)] = v
+    return result
+
+# Helper: Convert .NET Dictionary to Python dict
+def from_dotnet_dict(dotnet_dict):
+    \"\"\"Convert .NET Dictionary to Python dict.\"\"\"
+    return {str(k): v for k, v in dotnet_dict}
+", [BindingImports]).
+
+pipeline_header(messagepack, ironpython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env ipy
+\"\"\"
+Generated pipeline predicate.
+Runtime: IronPython (CLR/.NET integration)
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+import clr
+
+clr.AddReference('System')
+clr.AddReference('System.Core')
+from System import String, Int32, Double, DateTime, Math
+from System.Collections.Generic import Dictionary, List
+
+# MessagePack for IronPython
+try:
+    import msgpack
+except ImportError:
+    # Fallback: use .NET serialization if msgpack not available
+    clr.AddReference('System.Text.Json')
+    from System.Text.Json import JsonSerializer
+    class msgpack:
+        @staticmethod
+        def packb(obj):
+            return JsonSerializer.SerializeToUtf8Bytes(obj)
+        @staticmethod
+        def unpackb(data):
+            return JsonSerializer.Deserialize(data, object)
+
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+% PyPy headers (similar to CPython but with PyPy shebang)
+pipeline_header(jsonl, pypy, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env pypy3
+\"\"\"
+Generated pipeline predicate.
+Runtime: PyPy (JIT-optimized)
+Protocol: JSONL (line-delimited JSON)
+\"\"\"
+import sys
+import json
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+pipeline_header(messagepack, pypy, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env pypy3
+\"\"\"
+Generated pipeline predicate.
+Runtime: PyPy (JIT-optimized)
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+import msgpack
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+% Jython headers - include Java integration
+pipeline_header(jsonl, jython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env jython
+\"\"\"
+Generated pipeline predicate.
+Runtime: Jython (JVM integration)
+Protocol: JSONL (line-delimited JSON)
+\"\"\"
+import sys
+import json
+
+# Java imports
+from java.lang import String as JString, Math as JMath
+from java.util import HashMap, ArrayList
+
+# Note: typing module may not be available in Jython 2.7
+try:
+    from typing import Iterator, Dict, Any, Generator
+except ImportError:
+    Iterator = Dict = Any = Generator = object
+~w
+
+# Helper: Convert Python dict to Java HashMap
+def to_java_map(py_dict):
+    \"\"\"Convert Python dict to Java HashMap.\"\"\"
+    result = HashMap()
+    for k, v in py_dict.items():
+        result.put(str(k), v)
+    return result
+", [BindingImports]).
+
+pipeline_header(messagepack, jython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env jython
+\"\"\"
+Generated pipeline predicate.
+Runtime: Jython (JVM integration)
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+
+# Java imports
+from java.lang import String as JString, Math as JMath
+from java.util import HashMap, ArrayList
+
+# MessagePack - try Python version, fallback to Java
+try:
+    import msgpack
+except ImportError:
+    # Use Java serialization as fallback
+    from java.io import ByteArrayOutputStream, ObjectOutputStream
+    from java.io import ByteArrayInputStream, ObjectInputStream
+    class msgpack:
+        @staticmethod
+        def packb(obj):
+            baos = ByteArrayOutputStream()
+            oos = ObjectOutputStream(baos)
+            oos.writeObject(obj)
+            oos.close()
+            return baos.toByteArray()
+        @staticmethod
+        def unpackb(data):
+            bais = ByteArrayInputStream(data)
+            ois = ObjectInputStream(bais)
+            return ois.readObject()
+
+# Note: typing module may not be available in Jython 2.7
+try:
+    from typing import Iterator, Dict, Any, Generator
+except ImportError:
+    Iterator = Dict = Any = Generator = object
+~w
+
+# Helper: Convert Python dict to Java HashMap
+def to_java_map(py_dict):
+    \"\"\"Convert Python dict to Java HashMap.\"\"\"
+    result = HashMap()
+    for k, v in py_dict.items():
+        result.put(str(k), v)
+    return result
+", [BindingImports]).
+
+% Legacy 2-argument version for backward compatibility
+pipeline_header(messagepack, Header) :-
+    pipeline_header(messagepack, cpython, Header).
+
+% Original messagepack header moved here
+pipeline_header_messagepack_base(Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env python3
+\"\"\"
+Generated pipeline predicate.
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+import msgpack
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+%% pipeline_helpers(+GlueProtocol, +ErrorProtocol, -Helpers)
+%  Generate helper functions for pipeline I/O
+pipeline_helpers(jsonl, same_as_data, Helpers) :-
+    Helpers = "
+def read_stream(stream) -> Iterator[Dict[str, Any]]:
+    \"\"\"Read JSONL records from stream.\"\"\"
+    for line in stream:
+        line = line.strip()
+        if line:
+            yield json.loads(line)
+
+def write_record(record: Dict, stream=sys.stdout) -> None:
+    \"\"\"Write a single record as JSONL.\"\"\"
+    if record.get('__error__'):
+        # Error records go to stderr
+        error_record = {k: v for k, v in record.items() if not k.startswith('__')}
+        error_record['error'] = True
+        error_record['type'] = record.get('__type__', 'Unknown')
+        error_record['message'] = record.get('__message__', '')
+        sys.stderr.write(json.dumps(error_record) + '\\n')
+        sys.stderr.flush()
+    else:
+        stream.write(json.dumps(record) + '\\n')
+        stream.flush()
+".
+
+pipeline_helpers(jsonl, text, Helpers) :-
+    Helpers = "
+def read_stream(stream) -> Iterator[Dict[str, Any]]:
+    \"\"\"Read JSONL records from stream.\"\"\"
+    for line in stream:
+        line = line.strip()
+        if line:
+            yield json.loads(line)
+
+def write_record(record: Dict, stream=sys.stdout) -> None:
+    \"\"\"Write a single record as JSONL, errors as plain text.\"\"\"
+    if record.get('__error__'):
+        # Error records go to stderr as plain text
+        sys.stderr.write(f\"ERROR [{record.get('__type__', 'Unknown')}]: {record.get('__message__', '')}\\n\")
+        sys.stderr.flush()
+    else:
+        stream.write(json.dumps(record) + '\\n')
+        stream.flush()
+".
+
+pipeline_helpers(messagepack, _, Helpers) :-
+    Helpers = "
+def read_stream(stream) -> Iterator[Dict[str, Any]]:
+    \"\"\"Read MessagePack records from binary stream.\"\"\"
+    unpacker = msgpack.Unpacker(stream.buffer, raw=False)
+    for record in unpacker:
+        yield record
+
+def write_record(record: Dict, stream=sys.stdout) -> None:
+    \"\"\"Write a single record as MessagePack.\"\"\"
+    if record.get('__error__'):
+        # Error records go to stderr
+        error_record = {k: v for k, v in record.items() if not k.startswith('__')}
+        error_record['error'] = True
+        error_record['type'] = record.get('__type__', 'Unknown')
+        error_record['message'] = record.get('__message__', '')
+        sys.stderr.buffer.write(msgpack.packb(error_record))
+        sys.stderr.flush()
+    else:
+        stream.buffer.write(msgpack.packb(record))
+        stream.flush()
+".
+
+%% generate_pipeline_main(+Name, +Protocol, +Options, -Main)
+%  Generate the main block for pipeline execution
+generate_pipeline_main(Name, _Protocol, _Options, Main) :-
+    format(string(Main),
+"
+if __name__ == '__main__':
+    # Pipeline mode: read from stdin, write to stdout
+    input_stream = read_stream(sys.stdin)
+    for result in ~s(input_stream):
+        write_record(result)
+", [Name]).
+
+% ============================================================================
+% RUNTIME SELECTION - Phase 2: Firewall/Preference Integration
+% ============================================================================
+
+%% select_python_runtime(+PredIndicator, +Imports, +Context, -Runtime)
+%
+% Selects Python runtime respecting firewall and preferences.
+% Uses existing dotnet_glue.pl for IronPython compatibility checking.
+%
+% @arg PredIndicator The predicate being compiled (Name/Arity)
+% @arg Imports List of required Python imports
+% @arg Context Additional context (e.g., [target(csharp)])
+% @arg Runtime Selected runtime: cpython | ironpython | pypy | jython
+%
+select_python_runtime(PredIndicator, Imports, Context, Runtime) :-
+    % 1. Get merged preferences (uses existing preferences module if available)
+    get_runtime_preferences(PredIndicator, Context, Preferences),
+
+    % 2. Get firewall policy (uses existing firewall module if available)
+    get_runtime_firewall(PredIndicator, Firewall),
+
+    % 3. Determine candidate runtimes (filtered by hard constraints)
+    findall(R, valid_runtime_candidate(R, Imports, Firewall, Context), Candidates),
+    (   Candidates == []
+    ->  % No valid candidates - fall back to cpython
+        Runtime = cpython
+    ;   % 4. Score candidates against preferences
+        score_runtime_candidates(Candidates, Preferences, Context, ScoredCandidates),
+        % 5. Select best
+        select_best_runtime(ScoredCandidates, Preferences, Runtime)
+    ).
+
+%% get_runtime_preferences(+PredIndicator, +Context, -Preferences)
+%  Get merged runtime preferences from preference system
+get_runtime_preferences(PredIndicator, Context, Preferences) :-
+    (   catch(preferences:get_final_options(PredIndicator, Context, Prefs), _, fail)
+    ->  Preferences = Prefs
+    ;   % Default preferences if module not available
+        Preferences = [
+            prefer_runtime([cpython, ironpython, pypy]),
+            prefer_communication(in_process),
+            python_version(3)
+        ]
+    ).
+
+%% get_runtime_firewall(+PredIndicator, -Firewall)
+%  Get firewall policy for runtime selection
+get_runtime_firewall(PredIndicator, Firewall) :-
+    (   catch(firewall:get_firewall_policy(PredIndicator, FW), _, fail)
+    ->  Firewall = FW
+    ;   % Default: no restrictions
+        Firewall = []
+    ).
+
+%% valid_runtime_candidate(+Runtime, +Imports, +Firewall, +Context) is semidet.
+%
+% Check if runtime passes all hard constraints.
+%
+valid_runtime_candidate(Runtime, Imports, Firewall, Context) :-
+    member(Runtime, [cpython, ironpython, pypy, jython]),
+    % Not explicitly denied in firewall
+    \+ member(denied(python_runtime(Runtime)), Firewall),
+    \+ (member(denied(List), Firewall), is_list(List), member(python_runtime(Runtime), List)),
+    % Runtime is available on system
+    runtime_available(Runtime),
+    % Compatible with required imports
+    runtime_compatible_with_imports(Runtime, Imports),
+    % Context requirements (e.g., .NET integration needs ironpython or cpython_pipe)
+    runtime_satisfies_context(Runtime, Context).
+
+%% runtime_available(+Runtime) is semidet.
+%  Check if runtime is available on the system
+runtime_available(cpython) :-
+    % CPython is always assumed available (python3 command)
+    !.
+runtime_available(ironpython) :-
+    % Check for IronPython using dotnet_glue if available
+    (   catch(dotnet_glue:detect_ironpython(true), _, fail)
+    ->  true
+    ;   % Fallback: check for ipy command
+        catch(process_create(path(ipy), ['--version'], [stdout(null), stderr(null)]), _, fail)
+    ).
+runtime_available(pypy) :-
+    % Check for PyPy
+    catch(process_create(path(pypy3), ['--version'], [stdout(null), stderr(null)]), _, fail).
+runtime_available(jython) :-
+    % Check for Jython
+    catch(process_create(path(jython), ['--version'], [stdout(null), stderr(null)]), _, fail).
+
+%% runtime_compatible_with_imports(+Runtime, +Imports) is semidet.
+%  Check if runtime supports all required imports
+runtime_compatible_with_imports(cpython, _) :- !.  % CPython supports everything
+runtime_compatible_with_imports(pypy, Imports) :-
+    % PyPy has issues with some C extensions
+    \+ member(numpy, Imports),
+    \+ member(scipy, Imports),
+    \+ member(tensorflow, Imports),
+    \+ member(torch, Imports).
+runtime_compatible_with_imports(ironpython, Imports) :-
+    % Use dotnet_glue's compatibility check if available
+    (   catch(dotnet_glue:can_use_ironpython(Imports), _, fail)
+    ->  true
+    ;   % Fallback: check against known incompatible modules
+        \+ member(numpy, Imports),
+        \+ member(scipy, Imports),
+        \+ member(pandas, Imports),
+        \+ member(matplotlib, Imports),
+        \+ member(tensorflow, Imports),
+        \+ member(torch, Imports)
+    ).
+runtime_compatible_with_imports(jython, Imports) :-
+    % Jython has similar limitations to IronPython
+    \+ member(numpy, Imports),
+    \+ member(scipy, Imports),
+    \+ member(pandas, Imports).
+
+%% runtime_satisfies_context(+Runtime, +Context) is semidet.
+%  Check if runtime satisfies context requirements
+runtime_satisfies_context(_, []) :- !.
+runtime_satisfies_context(Runtime, Context) :-
+    % If targeting .NET, prefer in-process runtimes
+    (   member(target(csharp), Context)
+    ;   member(target(dotnet), Context)
+    )
+    ->  member(Runtime, [ironpython, cpython])  % cpython via pipes is fallback
+    ;   % If targeting JVM, prefer Jython
+        member(target(java), Context)
+    ->  member(Runtime, [jython, cpython])
+    ;   % No special context requirements
+        true.
+
+%% score_runtime_candidates(+Candidates, +Preferences, +Context, -Scored)
+%  Score each candidate against preference dimensions
+score_runtime_candidates(Candidates, Preferences, Context, Scored) :-
+    maplist(score_single_runtime(Preferences, Context), Candidates, Scored).
+
+%% score_single_runtime(+Preferences, +Context, +Runtime, -Scored)
+score_single_runtime(Preferences, Context, Runtime, Runtime-Score) :-
+    % Base score from preference order
+    (   member(prefer_runtime(Order), Preferences),
+        nth0(Idx, Order, Runtime)
+    ->  OrderScore is 10 - Idx  % Higher = better
+    ;   OrderScore = 0
+    ),
+
+    % Communication preference bonus
+    (   member(prefer_communication(Comm), Preferences),
+        runtime_communication(Runtime, Comm, Context)
+    ->  CommScore = 5
+    ;   CommScore = 0
+    ),
+
+    % Optimization hint bonus
+    (   member(optimization(Opt), Preferences),
+        runtime_optimization(Runtime, Opt)
+    ->  OptScore = 3
+    ;   OptScore = 0
+    ),
+
+    % Metrics bonus placeholder (returns 0 for now, designed for future extension)
+    metrics_bonus(Runtime, MetricsBonus),
+
+    Score is OrderScore + CommScore + OptScore + MetricsBonus.
+
+%% runtime_communication(+Runtime, +CommType, +Context) is semidet.
+%  Check if runtime provides the communication type in given context
+runtime_communication(ironpython, in_process, Context) :-
+    % IronPython is in-process when targeting .NET
+    (member(target(csharp), Context) ; member(target(dotnet), Context)), !.
+runtime_communication(jython, in_process, Context) :-
+    % Jython is in-process when targeting JVM
+    member(target(java), Context), !.
+runtime_communication(cpython, cross_process, _) :- !.
+runtime_communication(pypy, cross_process, _) :- !.
+runtime_communication(_, cross_process, _).  % Default fallback
+
+%% runtime_optimization(+Runtime, +OptType) is semidet.
+%  Check if runtime is optimized for given workload type
+runtime_optimization(pypy, throughput).      % JIT for long-running
+runtime_optimization(pypy, latency).         % Fast after warmup
+runtime_optimization(ironpython, latency).   % No serialization in .NET
+runtime_optimization(cpython, memory).       % Most memory efficient
+runtime_optimization(cpython, compatibility). % Best library support
+
+%% metrics_bonus(+Runtime, -Bonus)
+%  Placeholder for metrics-driven selection (returns 0 for now)
+%  Future: Use runtime_metric/3 facts to calculate bonus from execution history
+metrics_bonus(_Runtime, 0).
+
+%% select_best_runtime(+ScoredCandidates, +Preferences, -Runtime)
+%  Select the highest-scoring runtime, with fallback handling
+select_best_runtime(ScoredCandidates, Preferences, Runtime) :-
+    % Sort by score (descending)
+    keysort(ScoredCandidates, Sorted),
+    reverse(Sorted, [Best-_|_]),
+    (   Best \= cpython
+    ->  Runtime = Best
+    ;   % If cpython is best but fallback specified, check it
+        (   member(fallback_runtime(Fallbacks), Preferences),
+            member(FB, Fallbacks),
+            member(FB-_, ScoredCandidates)
+        ->  Runtime = FB
+        ;   Runtime = Best
+        )
+    ).
+
+%% get_collected_imports(-Imports)
+%  Get the list of imports collected during compilation
+get_collected_imports(Imports) :-
+    findall(I, required_import(I), Imports).
 
 %% compile_recursive_predicate(+Name, +Arity, +Clauses, +Options, -PythonCode)
 compile_recursive_predicate(Name, Arity, Clauses, Options, PythonCode) :-
@@ -2842,3 +3584,312 @@ test_method_call_patterns :-
     ),
 
     format('~n=== All Method Call Pattern Tests Passed ===~n', []).
+
+% ============================================================================
+% TESTS - Pipeline Mode (Phase 1: Object Pipeline Support)
+% ============================================================================
+
+%% test_pipeline_mode
+%  Test the pipeline mode code generation
+test_pipeline_mode :-
+    format('~n=== Python Pipeline Mode Tests ===~n~n', []),
+
+    % Test 1: Generate default arg names
+    format('[Test 1] Generate default arg names~n', []),
+    generate_default_arg_names(3, ArgNames1),
+    (   ArgNames1 == [arg_0, arg_1, arg_2]
+    ->  format('  [PASS] Default arg names: ~w~n', [ArgNames1])
+    ;   format('  [FAIL] Expected [arg_0, arg_1, arg_2], got ~w~n', [ArgNames1])
+    ),
+
+    % Test 2: Pipeline header for JSONL
+    format('[Test 2] Pipeline header for JSONL~n', []),
+    clear_binding_imports,
+    pipeline_header(jsonl, Header2),
+    (   sub_string(Header2, _, _, _, "import json"),
+        sub_string(Header2, _, _, _, "Generator")
+    ->  format('  [PASS] JSONL header has json and Generator imports~n', [])
+    ;   format('  [FAIL] Header missing imports: ~w~n', [Header2])
+    ),
+
+    % Test 3: Pipeline header for MessagePack
+    format('[Test 3] Pipeline header for MessagePack~n', []),
+    pipeline_header(messagepack, Header3),
+    (   sub_string(Header3, _, _, _, "import msgpack")
+    ->  format('  [PASS] MessagePack header has msgpack import~n', [])
+    ;   format('  [FAIL] Header missing msgpack: ~w~n', [Header3])
+    ),
+
+    % Test 4: Pipeline helpers for JSONL with same_as_data errors
+    format('[Test 4] Pipeline helpers for JSONL (same_as_data errors)~n', []),
+    pipeline_helpers(jsonl, same_as_data, Helpers4),
+    (   sub_string(Helpers4, _, _, _, "read_stream"),
+        sub_string(Helpers4, _, _, _, "write_record"),
+        sub_string(Helpers4, _, _, _, "__error__")
+    ->  format('  [PASS] JSONL helpers have read_stream, write_record, error handling~n', [])
+    ;   format('  [FAIL] Missing helpers~n', [])
+    ),
+
+    % Test 5: Pipeline helpers for JSONL with text errors
+    format('[Test 5] Pipeline helpers for JSONL (text errors)~n', []),
+    pipeline_helpers(jsonl, text, Helpers5),
+    (   sub_string(Helpers5, _, _, _, "ERROR [")
+    ->  format('  [PASS] Text error protocol has plain text error format~n', [])
+    ;   format('  [FAIL] Missing plain text error format~n', [])
+    ),
+
+    % Test 6: Output formatting for object mode
+    format('[Test 6] Output formatting for object mode~n', []),
+    generate_output_formatting([_A, _B, _C], ['Id', 'Name', 'Active'], object, OutputCode6),
+    (   sub_string(OutputCode6, _, _, _, "'Id': v_0"),
+        sub_string(OutputCode6, _, _, _, "'Name': v_1"),
+        sub_string(OutputCode6, _, _, _, "'Active': v_2")
+    ->  format('  [PASS] Object output has named keys~n', [])
+    ;   format('  [FAIL] Output formatting issue: ~w~n', [OutputCode6])
+    ),
+
+    % Test 7: Output formatting for text mode
+    format('[Test 7] Output formatting for text mode~n', []),
+    generate_output_formatting([_X], ['Result'], text, OutputCode7),
+    (   sub_string(OutputCode7, _, _, _, "str(v_0)")
+    ->  format('  [PASS] Text output uses str()~n', [])
+    ;   format('  [FAIL] Text output issue: ~w~n', [OutputCode7])
+    ),
+
+    % Test 8: Pipeline main block
+    format('[Test 8] Pipeline main block~n', []),
+    generate_pipeline_main("test_pred", jsonl, [], Main8),
+    (   sub_string(Main8, _, _, _, "if __name__"),
+        sub_string(Main8, _, _, _, "read_stream(sys.stdin)"),
+        sub_string(Main8, _, _, _, "test_pred(input_stream)")
+    ->  format('  [PASS] Main block has correct structure~n', [])
+    ;   format('  [FAIL] Main block issue: ~w~n', [Main8])
+    ),
+
+    % Test 9: Full pipeline compilation (needs test predicate)
+    format('[Test 9] Full pipeline compilation~n', []),
+    % Define a simple test predicate
+    abolish(test_user_info/2),
+    assert((test_user_info(Id, Email) :- Email = Id)),
+    (   catch(
+            compile_predicate_to_python(test_user_info/2, [
+                pipeline_input(true),
+                output_format(object),
+                arg_names(['UserId', 'Email'])
+            ], Code9),
+            Error9,
+            (format('  [FAIL] Compilation error: ~w~n', [Error9]), fail)
+        )
+    ->  (   sub_string(Code9, _, _, _, "def test_user_info(stream"),
+            sub_string(Code9, _, _, _, "'UserId'"),
+            sub_string(Code9, _, _, _, "'Email'"),
+            sub_string(Code9, _, _, _, "read_stream"),
+            sub_string(Code9, _, _, _, "write_record")
+        ->  format('  [PASS] Full pipeline code generated correctly~n', [])
+        ;   format('  [FAIL] Generated code missing expected content~n', []),
+            format('  Code: ~w~n', [Code9])
+        )
+    ;   format('  [FAIL] Pipeline compilation failed~n', [])
+    ),
+    abolish(test_user_info/2),
+
+    format('~n=== All Pipeline Mode Tests Passed ===~n', []).
+
+% ============================================================================
+% TESTS - Runtime Selection (Phase 2)
+% ============================================================================
+
+%% test_runtime_selection
+%  Test the runtime selection system
+test_runtime_selection :-
+    format('~n=== Python Runtime Selection Tests ===~n~n', []),
+
+    % Test 1: CPython is always available
+    format('[Test 1] CPython availability~n', []),
+    (   runtime_available(cpython)
+    ->  format('  [PASS] CPython is available~n', [])
+    ;   format('  [FAIL] CPython should always be available~n', [])
+    ),
+
+    % Test 2: CPython compatible with all imports
+    format('[Test 2] CPython import compatibility~n', []),
+    (   runtime_compatible_with_imports(cpython, [numpy, tensorflow, pandas])
+    ->  format('  [PASS] CPython supports all imports~n', [])
+    ;   format('  [FAIL] CPython should support all imports~n', [])
+    ),
+
+    % Test 3: IronPython incompatible with numpy
+    format('[Test 3] IronPython numpy incompatibility~n', []),
+    (   \+ runtime_compatible_with_imports(ironpython, [numpy])
+    ->  format('  [PASS] IronPython correctly rejects numpy~n', [])
+    ;   format('  [FAIL] IronPython should reject numpy~n', [])
+    ),
+
+    % Test 4: IronPython compatible with basic imports
+    format('[Test 4] IronPython basic import compatibility~n', []),
+    (   runtime_compatible_with_imports(ironpython, [json, re, os, sys])
+    ->  format('  [PASS] IronPython supports basic imports~n', [])
+    ;   format('  [FAIL] IronPython should support basic imports~n', [])
+    ),
+
+    % Test 5: Runtime selection with no constraints
+    format('[Test 5] Runtime selection (no constraints)~n', []),
+    select_python_runtime(test/1, [], [], Runtime5),
+    (   Runtime5 == cpython
+    ->  format('  [PASS] Default selection is cpython: ~w~n', [Runtime5])
+    ;   format('  [INFO] Selected runtime: ~w (cpython expected as default)~n', [Runtime5])
+    ),
+
+    % Test 6: Runtime selection with numpy import
+    format('[Test 6] Runtime selection with numpy~n', []),
+    select_python_runtime(test/1, [numpy], [], Runtime6),
+    (   Runtime6 == cpython
+    ->  format('  [PASS] numpy forces cpython: ~w~n', [Runtime6])
+    ;   format('  [FAIL] numpy should force cpython, got: ~w~n', [Runtime6])
+    ),
+
+    % Test 7: Runtime scoring
+    format('[Test 7] Runtime scoring~n', []),
+    Prefs7 = [prefer_runtime([ironpython, cpython, pypy])],
+    score_single_runtime(Prefs7, [], cpython, cpython-Score7a),
+    score_single_runtime(Prefs7, [], ironpython, ironpython-Score7b),
+    (   Score7b > Score7a
+    ->  format('  [PASS] IronPython scores higher (~w) than CPython (~w) with preference~n', [Score7b, Score7a])
+    ;   format('  [FAIL] Scoring issue: iron=~w, cpython=~w~n', [Score7b, Score7a])
+    ),
+
+    % Test 8: Context-based selection (.NET context)
+    format('[Test 8] Context-based runtime selection~n', []),
+    (   runtime_satisfies_context(ironpython, [target(csharp)])
+    ->  format('  [PASS] IronPython satisfies .NET context~n', [])
+    ;   format('  [FAIL] IronPython should satisfy .NET context~n', [])
+    ),
+
+    % Test 9: Firewall denies runtime
+    format('[Test 9] Firewall runtime denial~n', []),
+    Firewall9 = [denied([python_runtime(ironpython)])],
+    (   \+ valid_runtime_candidate(ironpython, [], Firewall9, [])
+    ->  format('  [PASS] Firewall correctly denies ironpython~n', [])
+    ;   format('  [FAIL] Firewall should deny ironpython~n', [])
+    ),
+
+    % Test 10: Communication preference
+    format('[Test 10] Communication preference~n', []),
+    (   runtime_communication(ironpython, in_process, [target(csharp)])
+    ->  format('  [PASS] IronPython is in-process for .NET~n', [])
+    ;   format('  [FAIL] IronPython should be in-process for .NET~n', [])
+    ),
+    (   runtime_communication(cpython, cross_process, [])
+    ->  format('  [PASS] CPython is cross-process~n', [])
+    ;   format('  [FAIL] CPython should be cross-process~n', [])
+    ),
+
+    format('~n=== All Runtime Selection Tests Passed ===~n', []).
+
+% ============================================================================
+% TESTS - Runtime-Specific Code Generation (Phase 3)
+% ============================================================================
+
+%% test_runtime_headers
+%  Test the runtime-specific pipeline header generation
+test_runtime_headers :-
+    format('~n=== Python Runtime-Specific Header Tests (Phase 3) ===~n~n', []),
+    clear_binding_imports,
+
+    % Test 1: CPython JSONL header
+    format('[Test 1] CPython JSONL header~n', []),
+    pipeline_header(jsonl, cpython, Header1),
+    (   sub_string(Header1, _, _, _, "#!/usr/bin/env python3"),
+        sub_string(Header1, _, _, _, "Runtime: CPython"),
+        sub_string(Header1, _, _, _, "import json")
+    ->  format('  [PASS] CPython JSONL header correct~n', [])
+    ;   format('  [FAIL] CPython JSONL header issue~n', [])
+    ),
+
+    % Test 2: IronPython JSONL header (CLR integration)
+    format('[Test 2] IronPython JSONL header (CLR imports)~n', []),
+    pipeline_header(jsonl, ironpython, Header2),
+    (   sub_string(Header2, _, _, _, "#!/usr/bin/env ipy"),
+        sub_string(Header2, _, _, _, "import clr"),
+        sub_string(Header2, _, _, _, "clr.AddReference('System')"),
+        sub_string(Header2, _, _, _, "from System import"),
+        sub_string(Header2, _, _, _, "Dictionary, List"),
+        sub_string(Header2, _, _, _, "to_dotnet_dict")
+    ->  format('  [PASS] IronPython has CLR imports and helpers~n', [])
+    ;   format('  [FAIL] IronPython missing CLR integration~n', [])
+    ),
+
+    % Test 3: IronPython MessagePack header (fallback)
+    format('[Test 3] IronPython MessagePack header~n', []),
+    pipeline_header(messagepack, ironpython, Header3),
+    (   sub_string(Header3, _, _, _, "System.Text.Json"),
+        sub_string(Header3, _, _, _, "class msgpack")
+    ->  format('  [PASS] IronPython has msgpack fallback~n', [])
+    ;   format('  [FAIL] IronPython missing msgpack fallback~n', [])
+    ),
+
+    % Test 4: PyPy JSONL header
+    format('[Test 4] PyPy JSONL header~n', []),
+    pipeline_header(jsonl, pypy, Header4),
+    (   sub_string(Header4, _, _, _, "#!/usr/bin/env pypy3"),
+        sub_string(Header4, _, _, _, "Runtime: PyPy"),
+        sub_string(Header4, _, _, _, "JIT-optimized")
+    ->  format('  [PASS] PyPy header correct~n', [])
+    ;   format('  [FAIL] PyPy header issue~n', [])
+    ),
+
+    % Test 5: Jython JSONL header (Java integration)
+    format('[Test 5] Jython JSONL header (Java imports)~n', []),
+    pipeline_header(jsonl, jython, Header5),
+    (   sub_string(Header5, _, _, _, "#!/usr/bin/env jython"),
+        sub_string(Header5, _, _, _, "from java.lang import"),
+        sub_string(Header5, _, _, _, "HashMap, ArrayList"),
+        sub_string(Header5, _, _, _, "to_java_map")
+    ->  format('  [PASS] Jython has Java imports and helpers~n', [])
+    ;   format('  [FAIL] Jython missing Java integration~n', [])
+    ),
+
+    % Test 6: Jython MessagePack header
+    format('[Test 6] Jython MessagePack header~n', []),
+    pipeline_header(messagepack, jython, Header6),
+    (   sub_string(Header6, _, _, _, "ByteArrayOutputStream"),
+        sub_string(Header6, _, _, _, "ObjectOutputStream"),
+        sub_string(Header6, _, _, _, "class msgpack")
+    ->  format('  [PASS] Jython has Java msgpack fallback~n', [])
+    ;   format('  [FAIL] Jython missing msgpack fallback~n', [])
+    ),
+
+    % Test 7: compile_pipeline_mode uses runtime option
+    format('[Test 7] Pipeline compilation with runtime option~n', []),
+    abolish(test_iron_pred/1),
+    assert((test_iron_pred(X) :- X = hello)),
+    (   catch(
+            compile_predicate_to_python(test_iron_pred/1, [
+                pipeline_input(true),
+                output_format(object),
+                arg_names(['Value']),
+                runtime(ironpython)
+            ], Code7),
+            Error7,
+            (format('  [FAIL] Compilation error: ~w~n', [Error7]), fail)
+        )
+    ->  (   sub_string(Code7, _, _, _, "#!/usr/bin/env ipy"),
+            sub_string(Code7, _, _, _, "import clr"),
+            sub_string(Code7, _, _, _, "to_dotnet_dict")
+        ->  format('  [PASS] Pipeline uses IronPython runtime header~n', [])
+        ;   format('  [FAIL] Pipeline missing IronPython header~n', [])
+        )
+    ;   format('  [FAIL] Pipeline compilation failed~n', [])
+    ),
+    abolish(test_iron_pred/1),
+
+    % Test 8: Legacy 2-arg pipeline_header still works
+    format('[Test 8] Legacy pipeline_header/2 compatibility~n', []),
+    pipeline_header(jsonl, LegacyHeader),
+    (   sub_string(LegacyHeader, _, _, _, "#!/usr/bin/env python3"),
+        sub_string(LegacyHeader, _, _, _, "import json")
+    ->  format('  [PASS] Legacy header defaults to CPython~n', [])
+    ;   format('  [FAIL] Legacy header compatibility issue~n', [])
+    ),
+
+    format('~n=== All Runtime-Specific Header Tests Passed ===~n', []).
