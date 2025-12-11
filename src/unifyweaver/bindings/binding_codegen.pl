@@ -16,11 +16,18 @@
     generate_binding_call/4,        % generate_binding_call(Target, Pred, Args, Code)
     generate_function_from_binding/4, % generate_function_from_binding(Target, Pred, Options, Code)
     generate_cmdlet_from_binding/4, % generate_cmdlet_from_binding(powershell, Pred, Options, Code)
-    test_binding_codegen/0
+    % Go-specific exports
+    generate_go_call/3,             % generate_go_call(TargetName, Args, Code)
+    generate_go_binding_call/4,     % generate_go_binding_call(Pred, Args, Code, Imports)
+    generate_go_binding_expr/5,     % generate_go_binding_expr(Pred, Args, ResultVar, Code, Imports)
+    generate_go_import_block/2,     % generate_go_import_block(Imports, Code)
+    test_binding_codegen/0,
+    test_go_binding_codegen/0       % Test Go-specific code generation
 ]).
 
 :- use_module('../core/binding_registry').
 :- use_module('powershell_bindings').
+:- use_module('go_bindings').
 
 % ============================================================================
 % CODE GENERATION FROM BINDINGS
@@ -63,9 +70,113 @@ generate_call_code(bash, TargetName, Args, Code) :-
     format(string(Code), "~w ~w", [TargetName, ArgsStr]).
 
 generate_call_code(go, TargetName, Args, Code) :-
+    generate_go_call(TargetName, Args, Code).
+
+% ============================================================================
+% GO CODE GENERATION FROM BINDINGS
+% ============================================================================
+
+%% generate_go_call(+TargetName, +Args, -Code)
+%
+%  Generate Go code for a binding call. Handles different patterns:
+%  - Package functions: strings.ToLower(s)
+%  - Methods: .Method(args) - first arg is receiver
+%  - Built-in functions: len(s), append(s, v)
+%
+generate_go_call(TargetName, Args, Code) :-
+    atom_string(TargetName, TargetStr),
+    (   % Method call pattern: starts with .
+        sub_string(TargetStr, 0, 1, _, ".")
+    ->  generate_go_method_call(TargetStr, Args, Code)
+    ;   % Regular function call
+        generate_go_function_call(TargetStr, Args, Code)
+    ).
+
+%% generate_go_function_call(+FuncName, +Args, -Code)
+%  Generate Go function call: func(arg1, arg2, ...)
+generate_go_function_call(FuncName, Args, Code) :-
     maplist(format_go_arg, Args, FormattedArgs),
-    atomic_list_concat(FormattedArgs, ', ', ArgsStr),
-    format(string(Code), "~w(~w)", [TargetName, ArgsStr]).
+    (   FormattedArgs = []
+    ->  format(string(Code), "~w()", [FuncName])
+    ;   atomic_list_concat(FormattedArgs, ', ', ArgsStr),
+        format(string(Code), "~w(~w)", [FuncName, ArgsStr])
+    ).
+
+%% generate_go_method_call(+MethodName, +Args, -Code)
+%  Generate Go method call: receiver.Method(args)
+%  MethodName starts with "." - first arg is the receiver
+generate_go_method_call(MethodName, [Receiver|Args], Code) :-
+    format_go_arg(Receiver, RecvStr),
+    % Check if method already ends with ()
+    (   sub_string(MethodName, _, 2, 0, "()")
+    ->  % No args needed, like .String()
+        format(string(Code), "~w~w", [RecvStr, MethodName])
+    ;   % Has args
+        maplist(format_go_arg, Args, FormattedArgs),
+        (   FormattedArgs = []
+        ->  format(string(Code), "~w~w()", [RecvStr, MethodName])
+        ;   atomic_list_concat(FormattedArgs, ', ', ArgsStr),
+            format(string(Code), "~w~w(~w)", [RecvStr, MethodName, ArgsStr])
+        )
+    ).
+generate_go_method_call(MethodName, [], Code) :-
+    % Edge case: method with no receiver (shouldn't happen normally)
+    format(string(Code), "/* missing receiver */~w()", [MethodName]).
+
+%% generate_go_binding_call(+Pred, +Args, -Code, -Imports)
+%
+%  Generate Go code from a binding, returning both code and required imports.
+%
+%  @param Pred     Name/Arity - the Prolog predicate
+%  @param Args     list - actual arguments for the call
+%  @param Code     string - generated Go code
+%  @param Imports  list - required imports (e.g., ['strings', 'math'])
+%
+generate_go_binding_call(Pred, Args, Code, Imports) :-
+    (   binding(go, Pred, TargetName, _Inputs, _Outputs, Options)
+    ->  generate_go_call(TargetName, Args, Code),
+        % Extract imports from options
+        findall(Imp, member(import(Imp), Options), Imports)
+    ;   format(string(Code), "/* No binding for ~w */", [Pred]),
+        Imports = []
+    ).
+
+%% generate_go_binding_expr(+Pred, +Args, +ResultVar, -Code, -Imports)
+%
+%  Generate Go code that assigns result to a variable.
+%  Handles error returns for functions that return (value, error).
+%
+generate_go_binding_expr(Pred, Args, ResultVar, Code, Imports) :-
+    (   binding(go, Pred, TargetName, _Inputs, Outputs, Options)
+    ->  generate_go_call(TargetName, Args, CallCode),
+        % Check if function returns error
+        (   member(error, Outputs)
+        ->  % Returns (value, error)
+            format(string(Code), "~w, err := ~w", [ResultVar, CallCode])
+        ;   % Single return value
+            format(string(Code), "~w := ~w", [ResultVar, CallCode])
+        ),
+        findall(Imp, member(import(Imp), Options), Imports)
+    ;   format(string(Code), "/* No binding for ~w */", [Pred]),
+        Imports = []
+    ).
+
+%% generate_go_import_block(+Imports, -Code)
+%
+%  Generate Go import block from list of imports.
+%
+generate_go_import_block([], "") :- !.
+generate_go_import_block([Single], Code) :-
+    !,
+    format(string(Code), "import \"~w\"", [Single]).
+generate_go_import_block(Imports, Code) :-
+    sort(Imports, SortedImports),
+    maplist(format_go_import_line, SortedImports, Lines),
+    atomic_list_concat(Lines, '\n', ImportsBody),
+    format(string(Code), "import (\n~w\n)", [ImportsBody]).
+
+format_go_import_line(Import, Line) :-
+    format(string(Line), "\t\"~w\"", [Import]).
 
 % Helper: Format .NET static method call
 format_dotnet_call(TargetName, Args, Code) :-
@@ -418,3 +529,123 @@ test_binding_codegen :-
     ),
 
     format('~n=== Binding Code Generation Tests Complete ===~n').
+
+% ============================================================================
+% GO CODE GENERATION TESTS
+% ============================================================================
+
+test_go_binding_codegen :-
+    format('~n=== Testing Go Binding Code Generation ===~n~n'),
+
+    % Initialize Go bindings
+    format('[Setup] Initializing Go bindings...~n'),
+    init_go_bindings,
+
+    % Test 1: Generate package function call
+    format('[Test 1] Package function call~n'),
+    generate_go_binding_call(string_lower/2, [myStr], Code1, Imports1),
+    format('  string_lower(myStr) -> ~w~n', [Code1]),
+    format('  Imports: ~w~n', [Imports1]),
+    (   sub_string(Code1, _, _, _, "strings.ToLower"),
+        member('strings', Imports1)
+    ->  format('  [PASS] strings.ToLower generated with import~n')
+    ;   format('  [FAIL] Expected strings.ToLower~n')
+    ),
+
+    % Test 2: Generate math function call
+    format('[Test 2] Math function call~n'),
+    generate_go_binding_call(sqrt/2, [16.0], Code2, Imports2),
+    format('  sqrt(16.0) -> ~w~n', [Code2]),
+    (   sub_string(Code2, _, _, _, "math.Sqrt"),
+        member('math', Imports2)
+    ->  format('  [PASS] math.Sqrt generated with import~n')
+    ;   format('  [FAIL] Expected math.Sqrt~n')
+    ),
+
+    % Test 3: Generate built-in function call (no import)
+    format('[Test 3] Built-in function call~n'),
+    generate_go_binding_call(length/2, [mySlice], Code3, Imports3),
+    format('  length(mySlice) -> ~w~n', [Code3]),
+    format('  Imports: ~w~n', [Imports3]),
+    (   sub_string(Code3, _, _, _, "len("),
+        Imports3 = []
+    ->  format('  [PASS] len() generated with no imports~n')
+    ;   format('  [FAIL] Expected len() with no imports~n')
+    ),
+
+    % Test 4: Generate method call
+    format('[Test 4] Method call~n'),
+    generate_go_binding_call(regex_matches/3, [re, str], Code4, Imports4),
+    format('  regex_matches(re, str) -> ~w~n', [Code4]),
+    (   sub_string(Code4, _, _, _, ".MatchString("),
+        member('regexp', Imports4)
+    ->  format('  [PASS] Method call generated~n')
+    ;   format('  [FAIL] Expected method call~n')
+    ),
+
+    % Test 5: Generate expression with assignment
+    format('[Test 5] Expression with assignment~n'),
+    generate_go_binding_expr(atoi/2, [numStr], result, Code5, Imports5),
+    format('  atoi(numStr) -> ~w~n', [Code5]),
+    (   sub_string(Code5, _, _, _, "result"),
+        sub_string(Code5, _, _, _, "err :="),
+        sub_string(Code5, _, _, _, "strconv.Atoi"),
+        member('strconv', Imports5)
+    ->  format('  [PASS] Assignment with error return generated~n')
+    ;   format('  [FAIL] Expected assignment with error~n')
+    ),
+
+    % Test 6: Generate import block
+    format('[Test 6] Import block generation~n'),
+    generate_go_import_block(['fmt', 'strings', 'math'], ImportBlock),
+    format('  Import block:~n~w~n', [ImportBlock]),
+    (   sub_string(ImportBlock, _, _, _, "import ("),
+        sub_string(ImportBlock, _, _, _, "\"fmt\""),
+        sub_string(ImportBlock, _, _, _, "\"math\""),
+        sub_string(ImportBlock, _, _, _, "\"strings\"")
+    ->  format('  [PASS] Multi-import block generated~n')
+    ;   format('  [FAIL] Import block issue~n')
+    ),
+
+    % Test 7: Single import
+    format('[Test 7] Single import~n'),
+    generate_go_import_block(['fmt'], SingleImport),
+    format('  Single import: ~w~n', [SingleImport]),
+    (   sub_string(SingleImport, _, _, _, "import \"fmt\"")
+    ->  format('  [PASS] Single import generated~n')
+    ;   format('  [FAIL] Single import issue~n')
+    ),
+
+    % Test 8: Empty import
+    format('[Test 8] Empty import~n'),
+    generate_go_import_block([], EmptyImport),
+    (   EmptyImport = ""
+    ->  format('  [PASS] Empty import returns empty string~n')
+    ;   format('  [FAIL] Expected empty string~n')
+    ),
+
+    % Test 9: Multiple bindings with same import
+    format('[Test 9] Multiple bindings, deduplicate imports~n'),
+    generate_go_binding_call(string_upper/2, [s1], _, Imp9a),
+    generate_go_binding_call(string_lower/2, [s2], _, Imp9b),
+    generate_go_binding_call(string_split/3, [s3, sep], _, Imp9c),
+    append([Imp9a, Imp9b, Imp9c], AllImports),
+    sort(AllImports, UniqueImports),
+    length(UniqueImports, NumUnique),
+    format('  All imports: ~w -> Unique: ~w~n', [AllImports, UniqueImports]),
+    (   NumUnique == 1, UniqueImports = ['strings']
+    ->  format('  [PASS] Imports deduplicated correctly~n')
+    ;   format('  [FAIL] Expected single unique import~n')
+    ),
+
+    % Test 10: JSON binding
+    format('[Test 10] JSON binding~n'),
+    generate_go_binding_call(json_marshal/2, [data], Code10, Imports10),
+    format('  json_marshal(data) -> ~w~n', [Code10]),
+    (   sub_string(Code10, _, _, _, "json.Marshal"),
+        member('encoding/json', Imports10)
+    ->  format('  [PASS] JSON binding works~n')
+    ;   format('  [FAIL] JSON binding issue~n')
+    ),
+
+    format('~n=== Go Binding Code Generation Tests Complete ===~n').
