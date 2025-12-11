@@ -97,11 +97,14 @@ Features: LiteDB integration, mutual recursion via SCC, arithmetic constraints.
 
 **Docs:** [C# Compilation Guide](docs/DOTNET_COMPILATION.md)
 
-### Python Target (v0.2)
-Generator-based streaming with Python ecosystem integration.
-- Procedural and generator modes
-- Native XML via lxml, JSONL I/O
-- Semantic runtime with SQLite and vector search
+### Python Target (v0.3)
+Generator-based streaming with Python ecosystem integration and multi-runtime support.
+- **Pipeline Mode** — Streaming JSONL I/O with typed object output
+- **Runtime Selection** — Auto-select CPython, IronPython, PyPy, or Jython based on context
+- **Pipeline Chaining** — Connect multiple predicates with `yield from` composition
+- **Cross-Runtime Pipelines** — Stage-based orchestration for mixed Python/C# workflows
+- **C# Hosting** — IronPython in-process or CPython subprocess with JSONL glue
+- Native XML via lxml, semantic runtime with SQLite and vector search
 
 **Docs:** [Python Target Guide](docs/PYTHON_TARGET.md) | [Semantic Runtime](docs/PYTHON_RUNTIME.md)
 
@@ -148,6 +151,8 @@ Compose predicates across multiple languages in unified pipelines:
 
 - **Shell Integration** — TSV/CSV/JSON I/O between AWK, Python, Bash
 - **.NET Bridges** — In-process C# ↔ PowerShell ↔ IronPython
+- **Python/C# Glue** — IronPython in-process hosting or CPython subprocess with JSONL
+- **Pipeline Chaining** — Multi-stage orchestration with automatic runtime grouping
 - **Native Orchestration** — Go/Rust compilation with parallel workers
 - **Network Communication** — HTTP servers/clients, TCP streaming
 - **Service Registry** — Distributed service routing
@@ -316,6 +321,33 @@ sibling(X, Y)     % Same parent, different children
 ```
 
 **See [Extended Documentation](docs/EXTENDED_README.md) for complete examples.**
+
+### Python Pipeline Example
+
+```prolog
+% Compile predicates to a chained Python pipeline
+compile_pipeline(
+    [parse_user/2, filter_adult/2, format_output/3],
+    [runtime(cpython), pipeline_name(user_pipeline)],
+    PythonCode
+).
+```
+
+Generated Python uses efficient generator chaining:
+```python
+def user_pipeline(input_stream):
+    """Chained pipeline: [parse_user, filter_adult, format_output]"""
+    yield from format_output(filter_adult(parse_user(input_stream)))
+```
+
+For cross-runtime workflows (Python + C#):
+```prolog
+compile_pipeline(
+    [python:extract/1, csharp:validate/1, python:transform/1],
+    [pipeline_name(data_processor)],
+    Code
+).
+```
 
 ### Current Limitations
 
