@@ -147,6 +147,159 @@ Get-Content $csFile
 Write-Host "Success: C# program compiled successfully."
 ```
 
+## Generator Mode Examples
+
+### `unifyweaver.execution.csharp_fib_generator`
+
+> [!example-record]
+> id: unifyweaver.execution.csharp_fib_generator
+> name: C# Fibonacci Generator Mode (Bash)
+> platform: bash
+
+This record demonstrates generator mode with recursive arithmetic (Fibonacci). Generator mode supports recursive predicates that query mode cannot handle.
+
+```bash
+#!/bin/bash
+set -e
+
+cd /root/UnifyWeaver
+
+# Create temporary directory for the project
+TMP_DIR="tmp/csharp_fib_project"
+mkdir -p $TMP_DIR
+
+# Define and write the Prolog code (Fibonacci - recursive arithmetic)
+cat > tmp/fib_generator.pl <<'EOF'
+% Fibonacci sequence - requires generator mode (recursive calls with computed args)
+:- multifile fib/2.
+:- dynamic fib/2.
+
+fib(0, 0).
+fib(1, 1).
+fib(N, F) :-
+    N > 1,
+    N1 is N - 1,
+    N2 is N - 2,
+    fib(N1, F1),
+    fib(N2, F2),
+    F is F1 + F2.
+EOF
+
+# Compile the Prolog code to C# using generator mode
+echo "Compiling Prolog to C# (generator mode)..."
+
+cat > tmp/swipl_fib_goal.pl <<'GOAL'
+:- asserta(user:file_search_path(library, 'src/unifyweaver/targets')).
+:- asserta(user:file_search_path(library, 'src/unifyweaver/core')).
+:- consult('tmp/fib_generator.pl').
+:- use_module(library(csharp_target)).
+:- compile_predicate_to_csharp(fib/2, [mode(generator)], CSharpCode),
+   open('tmp/csharp_fib_project/fib.cs', write, Stream),
+   write(Stream, CSharpCode),
+   close(Stream).
+:- halt.
+GOAL
+
+swipl -l tmp/swipl_fib_goal.pl
+
+# Check if C# file was created
+if [ ! -f "$TMP_DIR/fib.cs" ]; then
+    echo "ERROR: C# file was not created."
+    exit 1
+fi
+
+echo "C# code generated successfully (generator mode)."
+echo "=== Generated C# code ==="
+cat $TMP_DIR/fib.cs
+
+echo ""
+echo "Success: Fibonacci generator compiled to C#."
+```
+
+### `unifyweaver.execution.csharp_fib_generator_ps`
+
+> [!example-record]
+> id: unifyweaver.execution.csharp_fib_generator_ps
+> name: C# Fibonacci Generator Mode (PowerShell)
+> platform: powershell
+
+PowerShell version of the Fibonacci generator mode example.
+
+```powershell
+$ErrorActionPreference = "Stop"
+
+Set-Location "/root/UnifyWeaver"
+
+# Create temporary directory for the project
+$tmpDir = "tmp/csharp_fib_project"
+if (-not (Test-Path -Path $tmpDir)) {
+    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+}
+
+# Define the Prolog code (Fibonacci - recursive arithmetic)
+$prologCode = @'
+% Fibonacci sequence - requires generator mode (recursive calls with computed args)
+:- multifile fib/2.
+:- dynamic fib/2.
+
+fib(0, 0).
+fib(1, 1).
+fib(N, F) :-
+    N > 1,
+    N1 is N - 1,
+    N2 is N - 2,
+    fib(N1, F1),
+    fib(N2, F2),
+    F is F1 + F2.
+'@
+
+# Write the Prolog code to a file
+Set-Content -Path "tmp/fib_generator.pl" -Value $prologCode
+
+# Compile the Prolog code to C# using generator mode
+Write-Host "Compiling Prolog to C# (generator mode)..."
+$csFile = "$tmpDir/fib.cs"
+
+# Auto-detect swipl location
+$swiplPath = $null
+$swiplLocations = @(
+    "/usr/bin/swipl",
+    "C:\Program Files\swipl\bin\swipl.exe",
+    "C:\Program Files (x86)\swipl\bin\swipl.exe",
+    "$env:ProgramFiles\swipl\bin\swipl.exe",
+    (Get-Command swipl -ErrorAction SilentlyContinue).Source
+)
+
+foreach ($loc in $swiplLocations) {
+    if ($loc -and (Test-Path -Path $loc)) {
+        $swiplPath = $loc
+        break
+    }
+}
+
+if (-not $swiplPath) {
+    Write-Host "ERROR: Could not find swipl. Please ensure SWI-Prolog is installed."
+    exit 1
+}
+
+Write-Host "Using SWI-Prolog at: $swiplPath"
+
+$goal = "asserta(user:file_search_path(library, 'src/unifyweaver/targets')), asserta(user:file_search_path(library, 'src/unifyweaver/core')), consult('tmp/fib_generator.pl'), use_module(library(csharp_target)), compile_predicate_to_csharp(fib/2, [mode(generator)], CSharpCode), open('$csFile', write, Stream), write(Stream, CSharpCode), close(Stream)."
+& $swiplPath -g $goal -t halt
+
+# Check if the C# file was created
+if (-not (Test-Path -Path $csFile)) {
+    Write-Host "ERROR: C# file was not created."
+    exit 1
+}
+
+Write-Host "C# code generated successfully (generator mode)."
+Write-Host "=== Generated C# code ==="
+Get-Content $csFile
+
+Write-Host "Success: Fibonacci generator compiled to C#."
+```
+
 ## Additional C# Examples
 
 The following examples are documented placeholders for future implementation:

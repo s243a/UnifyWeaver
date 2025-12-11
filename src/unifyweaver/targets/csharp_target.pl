@@ -2284,8 +2284,8 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Indexing
     
     % Relation check
     format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
-    join_source_expr(Pred, Args, AccumPairs, Index, SourceExpr),
-    
+    join_source_expr(Pred, Args, AccumPairs, Index, Indexing, SourceExpr),
+
     % Recurse for remaining goals with extended accumulator
     NextIndex is Index + 1,
     compile_nway_join(RestGoals, Builtins, Head, NewAccumPairs, Config, Indexing, NextIndex, InnerCode),
@@ -2332,7 +2332,7 @@ compile_nway_join_with_aggregate([Goal|RestGoals], Builtins, AggGoal, Head, Accu
         atomic_list_concat(Conds, " && ", JoinCond)
     ),
     format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
-    join_source_expr(Pred, Args, AccumPairs, Index, SourceExpr),
+    join_source_expr(Pred, Args, AccumPairs, Index, Indexing, SourceExpr),
     NextIndex is Index + 1,
     compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, NewAccumPairs, Config, Indexing, NextIndex, InnerCode),
     format(string(Code),
@@ -2367,15 +2367,15 @@ join_source_expr(Pred, Args, AccumPairs, Index, Indexing, SourceExpr) :-
         arg_key_expr(Args, AccumPairs, 0, KeyExpr)
     ->  format(string(SourceExpr),
                '(relIndexArg0.TryGetValue("~w", out var map~w) && map~w.TryGetValue(~w, out var list~w) ? (IEnumerable<Fact>)list~w : Enumerable.Empty<Fact>())',
-               [Pred, Index, Index, KeyExpr, Index])
+               [Pred, Index, Index, KeyExpr, Index, Index])
     ;   Indexing == true,
         arg_key_expr(Args, AccumPairs, 1, KeyExpr1)
     ->  format(string(SourceExpr),
                '(relIndexArg1.TryGetValue("~w", out var map~w) && map~w.TryGetValue(~w, out var list~w) ? (IEnumerable<Fact>)list~w : Enumerable.Empty<Fact>())',
-               [Pred, Index, Index, KeyExpr1, Index])
+               [Pred, Index, Index, KeyExpr1, Index, Index])
     ;   format(string(SourceExpr),
                '(relIndex.TryGetValue("~w", out var list~w) ? list~w : Enumerable.Empty<Fact>())',
-               [Pred, Index])
+               [Pred, Index, Index])
     ).
 
 translate_builtins([], _, _, "true").
