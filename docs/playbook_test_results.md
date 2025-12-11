@@ -97,7 +97,7 @@ Key findings:
 **Status**: PASS
 
 Key findings:
-- Complex multi-system integration (Prolog → C# → PowerShell → LiteDB)
+- Complex multi-system integration (Prolog -> C# -> PowerShell -> LiteDB)
 - LiteDB installation has interactive prompts
 - Sonnet handled interactive setup more easily
 - Model capability affects perceived difficulty
@@ -112,6 +112,7 @@ Key findings:
 - Playbook correctly uses `compile_predicate_to_csharp/3` (verified in source)
 - Manual verification confirmed the bash example works correctly
 - High difficulty rating due to multi-step C# compilation workflow
+- Haiku consistently misreports this predicate across multiple runs (hallucination)
 
 ## Issues Identified
 
@@ -124,9 +125,10 @@ The `extract_records.pl` tool uses regex matching, which can cause:
 
 ### 2. AI Agent Misreporting
 
-- Haiku initially reported `build_unifyweaver_project/0` was missing from csharp_query_playbook
+- Haiku consistently reports `build_unifyweaver_project/0` as missing from csharp_query_playbook
 - Manual verification showed this was incorrect - the playbook uses `compile_predicate_to_csharp/3`
 - Agent hallucination or misinterpretation of playbook instructions
+- This occurred across multiple independent test runs
 
 ### 3. Interactive Setup
 
