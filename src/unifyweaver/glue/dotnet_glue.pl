@@ -28,7 +28,13 @@
 
     % Script wrappers
     generate_csharp_host/3,         % generate_csharp_host(+Bridges, +Options, -Code)
-    generate_dotnet_pipeline/3      % generate_dotnet_pipeline(+Steps, +Options, -Code)
+    generate_dotnet_pipeline/3,     % generate_dotnet_pipeline(+Steps, +Options, -Code)
+
+    % Python Pipeline Hosting (Phase 3+ Integration)
+    generate_python_predicate_wrapper/4,  % generate_python_predicate_wrapper(+Name, +Arity, +Options, -CSharpCode)
+    generate_pipeline_host/3,             % generate_pipeline_host(+Predicates, +Options, -Code)
+    compile_python_for_csharp/4,          % compile_python_for_csharp(+Predicate, +Options, -PythonCode, -CSharpCode)
+    test_python_csharp_glue/0             % Run tests
 ]).
 
 :- use_module(library(lists)).
@@ -852,3 +858,647 @@ option_or_default(Option, Options, _Default) :-
     !.
 option_or_default(Option, _Options, Default) :-
     Option =.. [_, Default].
+
+%% ============================================
+%% Python Pipeline Hosting (Phase 3+ Integration)
+%% ============================================
+%%
+%% These predicates integrate the Python pipeline mode (Phases 1-3) with
+%% C# hosting, enabling compiled Python predicates to be called from C#
+%% via IronPython (in-process) or CPython (subprocess).
+%%
+
+%% compile_python_for_csharp(+Predicate, +Options, -PythonCode, -CSharpCode)
+%  Compile a Prolog predicate to Python and generate C# wrapper.
+%
+%  This is the main entry point for cross-target Python/C# glue.
+%
+%  Options:
+%    - arg_names([...])     : Property names for pipeline output
+%    - namespace(Name)      : C# namespace (default: UnifyWeaver.Generated)
+%    - class_name(Name)     : C# class name (default: derived from predicate)
+%    - runtime(Runtime)     : Force runtime (ironpython/cpython/auto)
+%    - embed_python(Bool)   : Embed Python code in C# as string (default: true)
+%    - python_file(Path)    : Write Python to file instead of embedding
+%
+compile_python_for_csharp(Module:Name/Arity, Options, PythonCode, CSharpCode) :-
+    !,
+    compile_python_for_csharp_impl(Module, Name, Arity, Options, PythonCode, CSharpCode).
+compile_python_for_csharp(Name/Arity, Options, PythonCode, CSharpCode) :-
+    compile_python_for_csharp_impl(user, Name, Arity, Options, PythonCode, CSharpCode).
+
+compile_python_for_csharp_impl(Module, Name, Arity, Options, PythonCode, CSharpCode) :-
+    % Determine runtime based on imports and context
+    option_or_default(runtime(RequestedRuntime), Options, auto),
+    determine_runtime(Module, Name, Arity, RequestedRuntime, Runtime),
+
+    % Compile to Python with pipeline mode
+    PythonOptions = [
+        pipeline_input(true),
+        output_format(object),
+        runtime(Runtime)
+        | Options
+    ],
+
+    % Import python_target if available
+    (   catch(use_module('../targets/python_target'), _, fail)
+    ->  python_target:compile_predicate_to_python(Module:Name/Arity, PythonOptions, PythonCode)
+    ;   throw(error(module_not_found(python_target), compile_python_for_csharp/4))
+    ),
+
+    % Generate C# wrapper
+    generate_python_predicate_wrapper(Name, Arity, [runtime(Runtime)|Options], CSharpCode).
+
+%% determine_runtime(+Module, +Name, +Arity, +Requested, -Runtime)
+%  Determine the actual runtime to use.
+%
+determine_runtime(_Module, _Name, _Arity, Runtime, Runtime) :-
+    Runtime \= auto,
+    !.
+determine_runtime(Module, Name, Arity, auto, Runtime) :-
+    % Try to detect imports from predicate
+    (   catch(detect_predicate_imports(Module, Name, Arity, Imports), _, Imports = [])
+    ->  true
+    ;   Imports = []
+    ),
+    % Check IronPython compatibility
+    (   can_use_ironpython(Imports)
+    ->  Runtime = ironpython
+    ;   Runtime = cpython
+    ).
+
+%% detect_predicate_imports(+Module, +Name, +Arity, -Imports)
+%  Detect Python imports used by predicate (placeholder for future enhancement).
+%
+detect_predicate_imports(_Module, _Name, _Arity, []).
+
+%% generate_python_predicate_wrapper(+Name, +Arity, +Options, -CSharpCode)
+%  Generate C# class that wraps a Python predicate for in-process calling.
+%
+%  The generated class:
+%  - Hosts IronPython (or manages CPython subprocess)
+%  - Loads the compiled Python code
+%  - Exposes typed methods matching the predicate signature
+%  - Handles data marshaling between .NET and Python
+%
+generate_python_predicate_wrapper(Name, Arity, Options, CSharpCode) :-
+    option_or_default(namespace(Namespace), Options, 'UnifyWeaver.Generated'),
+    option_or_default(class_name(ClassName), Options, ''),
+    option_or_default(runtime(Runtime), Options, ironpython),
+    option_or_default(arg_names(ArgNames), Options, []),
+    option_or_default(embed_python(EmbedPython), Options, true),
+    option_or_default(python_file(PythonFile), Options, ''),
+
+    % Generate class name from predicate if not specified
+    (   ClassName == ''
+    ->  atom_string(Name, NameStr),
+        string_to_pascal_case(NameStr, PascalName),
+        format(string(ActualClassName), "~sPredicate", [PascalName])
+    ;   ActualClassName = ClassName
+    ),
+
+    % Generate arg names if not provided
+    (   ArgNames == []
+    ->  generate_arg_names(Arity, GeneratedArgNames)
+    ;   GeneratedArgNames = ArgNames
+    ),
+
+    % Generate based on runtime
+    (   Runtime == ironpython
+    ->  generate_ironpython_wrapper(Name, Arity, GeneratedArgNames, Namespace, ActualClassName, EmbedPython, PythonFile, CSharpCode)
+    ;   generate_cpython_wrapper(Name, Arity, GeneratedArgNames, Namespace, ActualClassName, EmbedPython, PythonFile, CSharpCode)
+    ).
+
+%% generate_ironpython_wrapper/8
+%  Generate C# wrapper using IronPython for in-process execution.
+%
+generate_ironpython_wrapper(Name, Arity, ArgNames, Namespace, ClassName, EmbedPython, PythonFile, Code) :-
+    atom_string(Name, NameStr),
+
+    % Generate method parameters
+    generate_csharp_parameters(ArgNames, Arity, MethodParams),
+
+    % Generate Python load code
+    (   EmbedPython == true
+    ->  PythonLoadCode = '_engine.Execute(PythonCode, _scope);'
+    ;   format(string(PythonLoadCode), '_engine.ExecuteFile("~w", _scope);', [PythonFile])
+    ),
+
+    % Generate property class for output
+    generate_result_class(ArgNames, ResultClassCode),
+
+    % Generate invoke arguments
+    generate_invoke_args(ArgNames, Arity, InvokeArgs),
+
+    format(string(Code),
+'// Generated C# wrapper for Python predicate: ~w/~w
+// Runtime: IronPython (in-process .NET integration)
+
+using System;
+using System.Collections.Generic;
+using System.Dynamic;
+using System.Linq;
+using IronPython.Hosting;
+using Microsoft.Scripting.Hosting;
+
+namespace ~w
+{
+~w
+
+    /// <summary>
+    /// C# wrapper for the ~w Python predicate.
+    /// Hosts IronPython engine for in-process execution.
+    /// </summary>
+    public class ~w : IDisposable
+    {
+        private readonly ScriptEngine _engine;
+        private readonly ScriptScope _scope;
+        private readonly dynamic _predicate;
+        private bool _disposed;
+
+        // Embedded Python code (set via SetPythonCode or constructor)
+        private static string PythonCode = "";
+
+        /// <summary>
+        /// Initialize the IronPython engine and load the predicate.
+        /// </summary>
+        public ~w()
+        {
+            _engine = Python.CreateEngine();
+            _scope = _engine.CreateScope();
+
+            // Add common imports
+            _engine.Execute("import sys, json, clr", _scope);
+            _engine.Execute("clr.AddReference(\'System\')", _scope);
+            _engine.Execute("from System.Collections.Generic import Dictionary, List", _scope);
+
+            // Load the predicate code
+            if (!string.IsNullOrEmpty(PythonCode))
+            {
+                ~w
+                _predicate = _scope.GetVariable("~w");
+            }
+        }
+
+        /// <summary>
+        /// Set the Python code before instantiation.
+        /// </summary>
+        public static void SetPythonCode(string code)
+        {
+            PythonCode = code;
+        }
+
+        /// <summary>
+        /// Invoke the predicate with a stream of input records.
+        /// </summary>
+        /// <param name="inputStream">Stream of input dictionaries</param>
+        /// <returns>Stream of result objects</returns>
+        public IEnumerable<~wResult> Invoke(IEnumerable<IDictionary<string, object>> inputStream)
+        {
+            var pyInputList = inputStream.Select(ToPythonDict).ToList();
+            var results = _predicate(pyInputList);
+
+            foreach (dynamic result in results)
+            {
+                yield return FromPythonDict(result);
+            }
+        }
+
+        /// <summary>
+        /// Invoke the predicate with a single input record.
+        /// </summary>
+        public IEnumerable<~wResult> InvokeSingle(~w)
+        {
+            var input = new Dictionary<string, object>
+            {
+~w
+            };
+            return Invoke(new[] { input });
+        }
+
+        /// <summary>
+        /// Convert C# dictionary to Python dict.
+        /// </summary>
+        private dynamic ToPythonDict(IDictionary<string, object> dict)
+        {
+            var pyDict = _engine.Execute("dict()", _scope);
+            foreach (var kvp in dict)
+            {
+                pyDict[kvp.Key] = kvp.Value;
+            }
+            return pyDict;
+        }
+
+        /// <summary>
+        /// Convert Python dict to typed result.
+        /// </summary>
+        private ~wResult FromPythonDict(dynamic pyDict)
+        {
+            return new ~wResult
+            {
+~w
+            };
+        }
+
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                _engine?.Runtime?.Shutdown();
+                _disposed = true;
+            }
+        }
+    }
+}
+', [NameStr, Arity, Namespace, ResultClassCode, NameStr, ClassName, ClassName,
+    PythonLoadCode, NameStr, ClassName, ClassName, MethodParams, InvokeArgs,
+    ClassName, ClassName, generate_result_assignments(ArgNames)]).
+
+%% generate_cpython_wrapper/8
+%  Generate C# wrapper using CPython subprocess for execution.
+%
+generate_cpython_wrapper(Name, Arity, ArgNames, Namespace, ClassName, EmbedPython, PythonFile, Code) :-
+    atom_string(Name, NameStr),
+
+    % Generate method parameters
+    generate_csharp_parameters(ArgNames, Arity, MethodParams),
+
+    % Generate property class for output
+    generate_result_class(ArgNames, ResultClassCode),
+
+    % Generate invoke arguments
+    generate_invoke_args(ArgNames, Arity, InvokeArgs),
+
+    % Determine Python path handling
+    (   EmbedPython == true
+    ->  PythonPathCode = 'var tempFile = Path.GetTempFileName() + ".py";\n            File.WriteAllText(tempFile, PythonCode);',
+        CleanupCode = 'File.Delete(tempFile);',
+        ScriptPath = 'tempFile'
+    ;   format(string(PythonPathCode), 'var tempFile = "~w";', [PythonFile]),
+        CleanupCode = '',
+        ScriptPath = 'tempFile'
+    ),
+
+    format(string(Code),
+'// Generated C# wrapper for Python predicate: ~w/~w
+// Runtime: CPython (subprocess with JSONL communication)
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+
+namespace ~w
+{
+~w
+
+    /// <summary>
+    /// C# wrapper for the ~w Python predicate.
+    /// Uses CPython subprocess with JSONL for communication.
+    /// </summary>
+    public class ~w : IDisposable
+    {
+        private Process _process;
+        private bool _disposed;
+
+        // Embedded Python code (set via SetPythonCode or constructor)
+        private static string PythonCode = "";
+        private static string PythonPath = "python3";
+
+        /// <summary>
+        /// Set the Python code before instantiation.
+        /// </summary>
+        public static void SetPythonCode(string code)
+        {
+            PythonCode = code;
+        }
+
+        /// <summary>
+        /// Set the Python interpreter path.
+        /// </summary>
+        public static void SetPythonPath(string path)
+        {
+            PythonPath = path;
+        }
+
+        /// <summary>
+        /// Invoke the predicate with a stream of input records.
+        /// </summary>
+        public IEnumerable<~wResult> Invoke(IEnumerable<IDictionary<string, object>> inputStream)
+        {
+            ~w
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = PythonPath,
+                Arguments = ~w,
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            _process = Process.Start(psi);
+
+            // Write input in background
+            var writeTask = System.Threading.Tasks.Task.Run(() =>
+            {
+                foreach (var record in inputStream)
+                {
+                    var json = JsonSerializer.Serialize(record);
+                    _process.StandardInput.WriteLine(json);
+                }
+                _process.StandardInput.Close();
+            });
+
+            // Read output
+            string line;
+            while ((line = _process.StandardOutput.ReadLine()) != null)
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(line);
+                    yield return FromDict(dict);
+                }
+            }
+
+            writeTask.Wait();
+            _process.WaitForExit();
+            ~w
+        }
+
+        /// <summary>
+        /// Invoke the predicate with a single input record.
+        /// </summary>
+        public IEnumerable<~wResult> InvokeSingle(~w)
+        {
+            var input = new Dictionary<string, object>
+            {
+~w
+            };
+            return Invoke(new[] { input });
+        }
+
+        /// <summary>
+        /// Convert dictionary to typed result.
+        /// </summary>
+        private ~wResult FromDict(Dictionary<string, object> dict)
+        {
+            return new ~wResult
+            {
+~w
+            };
+        }
+
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                _process?.Kill();
+                _process?.Dispose();
+                _disposed = true;
+            }
+        }
+    }
+}
+', [NameStr, Arity, Namespace, ResultClassCode, NameStr, ClassName,
+    ClassName, PythonPathCode, ScriptPath, CleanupCode,
+    ClassName, MethodParams, InvokeArgs,
+    ClassName, ClassName, generate_result_assignments(ArgNames)]).
+
+%% generate_result_class(+ArgNames, -Code)
+%  Generate C# result class with properties for each argument.
+%
+generate_result_class(ArgNames, Code) :-
+    maplist(generate_property, ArgNames, Properties),
+    atomic_list_concat(Properties, '\n', PropertiesCode),
+    format(string(Code),
+'    /// <summary>
+    /// Result type for predicate output.
+    /// </summary>
+    public class Result
+    {
+~w
+    }', [PropertiesCode]).
+
+generate_property(Name, Code) :-
+    format(string(Code), '        public object ~w { get; set; }', [Name]).
+
+%% generate_csharp_parameters(+ArgNames, +Arity, -Code)
+%  Generate C# method parameter list.
+%
+generate_csharp_parameters(ArgNames, Arity, Code) :-
+    length(ArgNames, Len),
+    (   Len >= Arity
+    ->  take_n(ArgNames, Arity, InputArgs)
+    ;   generate_arg_names(Arity, InputArgs)
+    ),
+    maplist(format_param, InputArgs, Params),
+    atomic_list_concat(Params, ', ', Code).
+
+format_param(Name, Param) :-
+    format(string(Param), 'object ~w', [Name]).
+
+%% generate_invoke_args(+ArgNames, +Arity, -Code)
+%  Generate dictionary initialization for invoke.
+%
+generate_invoke_args(ArgNames, Arity, Code) :-
+    length(ArgNames, Len),
+    (   Len >= Arity
+    ->  take_n(ArgNames, Arity, InputArgs)
+    ;   generate_arg_names(Arity, InputArgs)
+    ),
+    maplist(format_dict_entry, InputArgs, Entries),
+    atomic_list_concat(Entries, ',\n', Code).
+
+format_dict_entry(Name, Entry) :-
+    format(string(Entry), '                ["~w"] = ~w', [Name, Name]).
+
+%% generate_result_assignments(+ArgNames)
+%  Generate property assignments from Python dict (for string interpolation).
+%
+generate_result_assignments(ArgNames) :-
+    maplist(format_result_assignment, ArgNames, Assignments),
+    atomic_list_concat(Assignments, ',\n', _Code).
+
+format_result_assignment(Name, Assignment) :-
+    format(string(Assignment), '                ~w = pyDict["~w"]', [Name, Name]).
+
+%% generate_arg_names(+Arity, -Names)
+%  Generate default argument names.
+%
+generate_arg_names(Arity, Names) :-
+    findall(Name, (
+        between(0, Arity, I),
+        I < Arity,
+        format(atom(Name), 'Arg~d', [I])
+    ), Names).
+
+%% take_n(+List, +N, -FirstN)
+%  Take first N elements from list.
+%
+take_n(_, 0, []) :- !.
+take_n([], _, []) :- !.
+take_n([H|T], N, [H|Rest]) :-
+    N > 0,
+    N1 is N - 1,
+    take_n(T, N1, Rest).
+
+%% string_to_pascal_case(+String, -PascalCase)
+%  Convert snake_case or lowercase to PascalCase.
+%
+string_to_pascal_case(String, PascalCase) :-
+    split_string(String, "_", "", Parts),
+    maplist(capitalize_first, Parts, CapParts),
+    atomic_list_concat(CapParts, '', PascalCase).
+
+capitalize_first("", "") :- !.
+capitalize_first(Str, Cap) :-
+    string_chars(Str, [H|T]),
+    upcase_atom(H, HU),
+    atom_chars(HU, [HUC]),
+    string_chars(Cap, [HUC|T]).
+
+%% generate_pipeline_host(+Predicates, +Options, -Code)
+%  Generate C# host that manages multiple Python predicates.
+%
+%  Predicates: List of Name/Arity or Module:Name/Arity
+%
+generate_pipeline_host(Predicates, Options, Code) :-
+    option_or_default(namespace(Namespace), Options, 'UnifyWeaver.Generated'),
+    option_or_default(class_name(ClassName), Options, 'PipelineHost'),
+
+    % Generate wrapper for each predicate
+    maplist(generate_predicate_field, Predicates, Fields),
+    atomic_list_concat(Fields, '\n', FieldsCode),
+
+    maplist(generate_predicate_init, Predicates, Inits),
+    atomic_list_concat(Inits, '\n', InitsCode),
+
+    format(string(Code),
+'// Generated Pipeline Host for multiple Python predicates
+// Manages IronPython/CPython bridges for cross-target calls
+
+using System;
+using System.Collections.Generic;
+
+namespace ~w
+{
+    /// <summary>
+    /// Host for managing multiple Python predicate wrappers.
+    /// </summary>
+    public class ~w : IDisposable
+    {
+~w
+
+        public ~w()
+        {
+~w
+        }
+
+        /// <summary>
+        /// Execute a predicate by name.
+        /// </summary>
+        public IEnumerable<IDictionary<string, object>> Execute(
+            string predicateName,
+            IEnumerable<IDictionary<string, object>> input)
+        {
+            return predicateName switch
+            {
+                // Add cases for each predicate
+                _ => throw new ArgumentException($"Unknown predicate: {predicateName}")
+            };
+        }
+
+        public void Dispose()
+        {
+            // Dispose all predicate wrappers
+        }
+    }
+}
+', [Namespace, ClassName, FieldsCode, ClassName, InitsCode]).
+
+generate_predicate_field(Name/_Arity, Code) :-
+    atom_string(Name, NameStr),
+    string_to_pascal_case(NameStr, PascalName),
+    format(string(Code), '        private ~wPredicate _~w;', [PascalName, NameStr]).
+generate_predicate_field(_:Name/Arity, Code) :-
+    generate_predicate_field(Name/Arity, Code).
+
+generate_predicate_init(Name/_Arity, Code) :-
+    atom_string(Name, NameStr),
+    string_to_pascal_case(NameStr, PascalName),
+    format(string(Code), '            _~w = new ~wPredicate();', [NameStr, PascalName]).
+generate_predicate_init(_:Name/Arity, Code) :-
+    generate_predicate_init(Name/Arity, Code).
+
+%% ============================================
+%% Tests for Python/C# Glue
+%% ============================================
+
+test_python_csharp_glue :-
+    format('~n=== Python/C# Glue Tests ===~n~n', []),
+
+    % Test 1: Generate IronPython wrapper
+    format('[Test 1] Generate IronPython wrapper~n', []),
+    generate_python_predicate_wrapper(user_info, 2, [
+        runtime(ironpython),
+        arg_names(['UserId', 'Email']),
+        namespace('TestNamespace')
+    ], Code1),
+    (   sub_string(Code1, _, _, _, "IronPython.Hosting"),
+        sub_string(Code1, _, _, _, "UserInfoPredicate"),
+        sub_string(Code1, _, _, _, "ScriptEngine")
+    ->  format('  [PASS] IronPython wrapper generated~n', [])
+    ;   format('  [FAIL] IronPython wrapper missing components~n', [])
+    ),
+
+    % Test 2: Generate CPython wrapper
+    format('[Test 2] Generate CPython wrapper~n', []),
+    generate_python_predicate_wrapper(filter_users, 3, [
+        runtime(cpython),
+        arg_names(['Name', 'Age', 'Active']),
+        namespace('TestNamespace')
+    ], Code2),
+    (   sub_string(Code2, _, _, _, "Process.Start"),
+        sub_string(Code2, _, _, _, "FilterUsersPredicate"),
+        sub_string(Code2, _, _, _, "JSONL")
+    ->  format('  [PASS] CPython wrapper generated~n', [])
+    ;   format('  [FAIL] CPython wrapper missing components~n', [])
+    ),
+
+    % Test 3: Generate pipeline host
+    format('[Test 3] Generate pipeline host~n', []),
+    generate_pipeline_host([user_info/2, filter_users/3], [
+        namespace('TestNamespace'),
+        class_name('MyPipelineHost')
+    ], Code3),
+    (   sub_string(Code3, _, _, _, "MyPipelineHost"),
+        sub_string(Code3, _, _, _, "_user_info"),
+        sub_string(Code3, _, _, _, "_filter_users")
+    ->  format('  [PASS] Pipeline host generated~n', [])
+    ;   format('  [FAIL] Pipeline host missing components~n', [])
+    ),
+
+    % Test 4: String to PascalCase conversion
+    format('[Test 4] String to PascalCase~n', []),
+    string_to_pascal_case("user_info", Pascal1),
+    string_to_pascal_case("filteractive", Pascal2),
+    (   Pascal1 == 'UserInfo',
+        Pascal2 == 'Filteractive'
+    ->  format('  [PASS] PascalCase conversion works~n', [])
+    ;   format('  [FAIL] PascalCase: got ~w, ~w~n', [Pascal1, Pascal2])
+    ),
+
+    % Test 5: Generate arg names
+    format('[Test 5] Generate default arg names~n', []),
+    generate_arg_names(3, Names5),
+    (   Names5 == ['Arg0', 'Arg1', 'Arg2']
+    ->  format('  [PASS] Default arg names: ~w~n', [Names5])
+    ;   format('  [FAIL] Expected [Arg0,Arg1,Arg2], got ~w~n', [Names5])
+    ),
+
+    format('~n=== Python/C# Glue Tests Complete ===~n', []).
