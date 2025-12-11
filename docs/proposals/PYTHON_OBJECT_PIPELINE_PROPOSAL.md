@@ -856,6 +856,190 @@ compile_pipeline([
 
 ---
 
+## Appendix: Glue Protocol Alternatives
+
+This section documents alternative serialization protocols for cross-process communication. While JSONL is the initial implementation, other protocols may be added in the future based on performance requirements or integration needs.
+
+### Protocol Comparison
+
+| Protocol | Pros | Cons | Best For |
+|----------|------|------|----------|
+| **JSONL** | Universal, human-readable, debuggable, no dependencies | Verbose, slower parsing, no binary data | Default, debugging, interop |
+| **MessagePack** | Binary, efficient, schema-less, wide language support | Requires library, not human-readable | High-throughput pipelines |
+| **Protocol Buffers** | Typed, very efficient, schema evolution | Complex setup, requires .proto files, codegen | Large-scale systems, strict typing |
+| **Pickle** | Python-native, preserves Python objects exactly | Security risk (arbitrary code execution), Python-only | Never recommended for cross-process |
+| **CBOR** | Binary, self-describing, IETF standard | Less common, smaller ecosystem than MessagePack | IoT, constrained environments |
+| **Apache Avro** | Schema evolution, compact binary | Requires schema registry, complex | Data lakes, Kafka integration |
+
+### JSONL (Selected Default)
+
+**Format:** One JSON object per line, newline-delimited.
+
+```
+{"id": 1, "name": "Alice", "active": true}
+{"id": 2, "name": "Bob", "active": false}
+```
+
+**Advantages:**
+- Zero dependencies (built into Python, PowerShell, most languages)
+- Line-based streaming fits Unix philosophy
+- Easy to debug with `cat`, `jq`, `head`
+- Human-readable error messages
+- Works with existing shell tools
+
+**Disadvantages:**
+- Text encoding overhead (~2-3x larger than binary)
+- JSON parsing slower than binary formats
+- No native binary data (must base64 encode)
+- No schema validation
+
+**Implementation:**
+```python
+# Python
+import json
+for line in sys.stdin:
+    record = json.loads(line)
+    result = process(record)
+    print(json.dumps(result))
+```
+
+```powershell
+# PowerShell
+$input | ForEach-Object {
+    $record = $_ | ConvertFrom-Json
+    $result = Process-Record $record
+    $result | ConvertTo-Json -Compress
+}
+```
+
+### MessagePack (Future Option)
+
+**Format:** Binary, schema-less, similar data model to JSON.
+
+**Advantages:**
+- 2-10x smaller than JSON
+- 2-5x faster parsing
+- Native binary data support
+- Wide language support (Python, C#, Go, Rust, etc.)
+
+**Disadvantages:**
+- Not human-readable
+- Requires `msgpack` library
+- Debugging requires special tools
+
+**When to Use:**
+- High-throughput data pipelines
+- Large record sizes
+- Binary data in records (images, audio)
+- Performance-critical paths
+
+**Future Implementation:**
+```python
+# Python (future)
+import msgpack
+import sys
+
+unpacker = msgpack.Unpacker(sys.stdin.buffer)
+for record in unpacker:
+    result = process(record)
+    sys.stdout.buffer.write(msgpack.packb(result))
+```
+
+**Preference Configuration:**
+```prolog
+%% When MessagePack is implemented
+:- assertz(preferences:rule_preferences(high_volume_pred/2, [
+    glue_protocol(messagepack)
+])).
+```
+
+### Protocol Buffers (Future Option)
+
+**Format:** Binary, schema-defined, strongly typed.
+
+**Advantages:**
+- Very compact (smaller than MessagePack)
+- Schema validation and evolution
+- Generated code for type safety
+- Excellent .NET/Java integration
+
+**Disadvantages:**
+- Requires `.proto` schema files
+- Code generation step
+- More complex setup
+- Overkill for simple use cases
+
+**When to Use:**
+- Enterprise systems with strict typing
+- Long-term API contracts
+- Integration with gRPC services
+- When schema validation is required
+
+**Schema Example:**
+```protobuf
+// user.proto
+message User {
+    int32 id = 1;
+    string name = 2;
+    bool active = 3;
+}
+```
+
+### Pickle (Not Recommended)
+
+**Format:** Python-specific binary serialization.
+
+**Why Not:**
+- **Security Risk:** Pickle can execute arbitrary code during deserialization
+- **Python-Only:** Cannot be read by other languages
+- **Version Fragility:** Pickle format tied to Python version
+
+**Firewall Policy:**
+```prolog
+%% Always deny pickle for security
+:- assertz(firewall:firewall_default([
+    denied([glue_protocol(pickle)])
+])).
+```
+
+### Adding New Protocols
+
+To add a new protocol in the future:
+
+1. **Implement serializer/deserializer** in target language
+2. **Register protocol** in available protocols list
+3. **Add firewall validation** if protocol has security implications
+4. **Update bridge generators** to support protocol option
+
+```prolog
+%% Protocol registry (future)
+:- dynamic available_glue_protocol/2.
+
+available_glue_protocol(jsonl, [
+    languages([python, powershell, bash, csharp, go]),
+    streaming(line_delimited),
+    human_readable(true)
+]).
+
+available_glue_protocol(messagepack, [
+    languages([python, csharp, go]),
+    streaming(length_prefixed),
+    human_readable(false),
+    requires_library(true)
+]).
+
+%% Protocol selection with fallback
+select_protocol(Preferred, TargetLanguages, Selected) :-
+    available_glue_protocol(Preferred, Opts),
+    member(languages(Langs), Opts),
+    subset(TargetLanguages, Langs),
+    !,
+    Selected = Preferred.
+select_protocol(_, _, jsonl).  % Fallback to JSONL
+```
+
+---
+
 ## References
 
 - [PowerShell Target Guide](../POWERSHELL_TARGET.md)
@@ -863,3 +1047,5 @@ compile_pipeline([
 - [Python Target Guide](../PYTHON_TARGET.md)
 - [Binding Registry](../proposals/BINDING_PREDICATE_PROPOSAL.md)
 - [IronPython Documentation](https://ironpython.net/)
+- [MessagePack Specification](https://msgpack.org/)
+- [Protocol Buffers Documentation](https://developers.google.com/protocol-buffers)
