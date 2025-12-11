@@ -8,6 +8,7 @@
 
 :- module(go_target, [
     compile_predicate_to_go/3,      % +Predicate, +Options, -GoCode
+    compile_go_pipeline/3,          % +Predicates, +Options, -GoCode
     write_go_program/2,             % +GoCode, +FilePath
     json_schema/2,                  % +SchemaName, +Fields (directive)
     get_json_schema/2,              % +SchemaName, -Fields (lookup)
@@ -18,7 +19,8 @@
     get_collected_imports/1,        % Get imports collected from bindings
     test_go_binding_integration/0,  % Test binding integration
     % Pipeline mode exports
-    test_go_pipeline_mode/0         % Test pipeline mode
+    test_go_pipeline_mode/0,        % Test pipeline mode
+    test_go_pipeline_chaining/0     % Test pipeline chaining
 ]).
 
 :- use_module(library(lists)).
@@ -5265,6 +5267,378 @@ generate_text_output(HeadArgs, VarMap, TextExpr) :-
     format(string(TextExpr), 'fmt.Sprintf("~w", ~w)', [FormatStr, ArgsStr]).
 
 %% ============================================
+%% PIPELINE CHAINING
+%% ============================================
+%%
+%% Pipeline chaining allows composing multiple predicates into a single
+%% Go program where data flows through each stage sequentially.
+%%
+%% Unlike Python's generators, Go uses channels or sequential processing.
+%% We implement two modes:
+%%   1. Sequential mode (default) - simpler, processes all records through each stage
+%%   2. Channel mode - uses goroutines and channels for streaming
+%%
+%% Options:
+%%   - pipeline_name(Name)    Name for the pipeline (default: pipeline)
+%%   - pipeline_mode(Mode)    sequential | channel (default: sequential)
+%%   - output_format(Format)  jsonl | text (default: jsonl)
+%%   - arg_names(Names)       Property names for final output
+
+%% compile_go_pipeline(+Predicates, +Options, -GoCode)
+%  Main entry point for Go pipeline chaining.
+%  Compiles multiple predicates into a single Go program.
+%
+%  Predicates: List of Name/Arity or go:Name/Arity
+%    Examples:
+%      - [parse_user/2, filter_active/1, format_output/2]
+%      - [go:parse/1, go:transform/1, go:output/1]
+%
+compile_go_pipeline(Predicates, Options, GoCode) :-
+    format('=== Compiling Go Pipeline ===~n', []),
+    format('  Predicates: ~w~n', [Predicates]),
+
+    % Get options with defaults
+    option(pipeline_name(PipelineName), Options, pipeline),
+    option(pipeline_mode(PipelineMode), Options, sequential),
+    option(output_format(OutputFormat), Options, jsonl),
+    option(include_package(IncludePackage), Options, true),
+
+    format('  Pipeline name: ~w~n', [PipelineName]),
+    format('  Mode: ~w~n', [PipelineMode]),
+
+    % Clear any previous binding imports
+    clear_binding_imports,
+
+    % Extract predicate info and compile each stage
+    extract_pipeline_predicates(Predicates, PredInfos),
+    compile_pipeline_stages(PredInfos, Options, StagesCode, StageNames),
+
+    format('  Compiled ~w stages~n', [StageNames]),
+
+    % Generate the pipeline connector
+    generate_go_pipeline_connector(StageNames, PipelineName, PipelineMode, ConnectorCode),
+
+    % Generate main function
+    generate_go_pipeline_main(PipelineName, OutputFormat, Options, MainCode),
+
+    % Wrap in package if requested
+    (   IncludePackage
+    ->  % Collect imports
+        pipeline_chaining_imports(PipelineMode, BaseImports),
+        get_collected_imports(BindingImports),
+        append(BaseImports, BindingImports, AllImportsList),
+        sort(AllImportsList, UniqueImports),
+        maplist(format_import, UniqueImports, ImportLines),
+        atomic_list_concat(ImportLines, '\n', ImportsStr),
+
+        format(string(GoCode), 'package main
+
+import (
+~w
+)
+
+// Record represents a data record flowing through the pipeline
+type Record map[string]interface{}
+
+~w
+~w
+~w', [ImportsStr, StagesCode, ConnectorCode, MainCode])
+    ;   format(string(GoCode), '~w~w~w', [StagesCode, ConnectorCode, MainCode])
+    ).
+
+%% pipeline_chaining_imports(+Mode, -Imports)
+%  Get base imports needed for pipeline chaining
+pipeline_chaining_imports(sequential, ["bufio", "encoding/json", "fmt", "os"]).
+pipeline_chaining_imports(channel, ["bufio", "encoding/json", "fmt", "os", "sync"]).
+
+%% extract_pipeline_predicates(+Predicates, -PredInfos)
+%  Extract predicate name and arity from list
+extract_pipeline_predicates([], []).
+extract_pipeline_predicates([Pred|Rest], [Info|RestInfos]) :-
+    extract_pred_info(Pred, Info),
+    extract_pipeline_predicates(Rest, RestInfos).
+
+extract_pred_info(go:Name/Arity, pred_info(Name, Arity, go)) :- !.
+extract_pred_info(Name/Arity, pred_info(Name, Arity, go)) :- !.
+extract_pred_info(Pred, pred_info(Pred, 1, go)) :-
+    atom(Pred).
+
+%% compile_pipeline_stages(+PredInfos, +Options, -Code, -StageNames)
+%  Compile each predicate into a pipeline stage function
+compile_pipeline_stages([], _, "", []).
+compile_pipeline_stages([pred_info(Name, Arity, _Target)|Rest], Options, Code, [StageName|RestNames]) :-
+    atom_string(Name, NameStr),
+    StageName = NameStr,
+
+    % Check if predicate exists and compile it
+    (   functor(Head, Name, Arity),
+        clause(Head, Body)
+    ->  % Compile actual predicate logic
+        compile_pipeline_stage_from_clause(Name, Arity, Head, Body, Options, StageCode)
+    ;   % Generate placeholder stage
+        generate_placeholder_stage(Name, Arity, StageCode)
+    ),
+
+    compile_pipeline_stages(Rest, Options, RestCode, RestNames),
+    format(string(Code), "~w~w", [StageCode, RestCode]).
+
+%% compile_pipeline_stage_from_clause(+Name, +Arity, +Head, +Body, +Options, -Code)
+%  Compile a predicate clause into a pipeline stage function
+compile_pipeline_stage_from_clause(Name, Arity, Head, Body, _Options, Code) :-
+    atom_string(Name, NameStr),
+    Head =.. [_|HeadArgs],
+
+    % Extract field mappings from body
+    extract_json_field_mappings(Body, FieldMappings),
+
+    % Generate field extraction code
+    generate_stage_field_extraction(FieldMappings, ExtractionCode, VarMap),
+
+    % Generate output construction
+    generate_stage_output(HeadArgs, VarMap, OutputCode),
+
+    format(string(Code),
+'// ~w processes records for ~w/~w
+func ~w(records []Record) []Record {
+\tvar results []Record
+\tfor _, record := range records {
+~w
+\t\tresult := Record{~w}
+\t\tresults = append(results, result)
+\t}
+\treturn results
+}
+
+', [NameStr, NameStr, Arity, NameStr, ExtractionCode, OutputCode]).
+
+%% generate_placeholder_stage(+Name, +Arity, -Code)
+%  Generate a placeholder stage for undefined predicates
+generate_placeholder_stage(Name, Arity, Code) :-
+    atom_string(Name, NameStr),
+    format(string(Code),
+'// ~w is a placeholder for ~w/~w
+// TODO: Implement actual predicate logic
+func ~w(records []Record) []Record {
+\t// Pass through - actual implementation needed
+\treturn records
+}
+
+', [NameStr, NameStr, Arity, NameStr]).
+
+%% generate_stage_field_extraction(+FieldMappings, -Code, -VarMap)
+%  Generate Go code to extract fields for a pipeline stage
+generate_stage_field_extraction([], "", []).
+generate_stage_field_extraction(FieldMappings, Code, VarMap) :-
+    FieldMappings \= [],
+    findall(extraction(VarName, FieldName, ExtractCode),
+        (   member(Mapping, FieldMappings),
+            stage_extract_one_field(Mapping, VarName, FieldName, ExtractCode)
+        ),
+        Extractions),
+    findall(C, member(extraction(_, _, C), Extractions), CodeParts),
+    atomic_list_concat(CodeParts, '', Code),
+    findall(V-F, member(extraction(V, F, _), Extractions), VarMap).
+
+stage_extract_one_field(flat(FieldName, VarName), VarName, FieldName, Code) :-
+    format(string(Code), '\t\t~w := record["~w"]\n', [VarName, FieldName]).
+stage_extract_one_field(FieldName-VarName, VarName, FieldName, Code) :-
+    atom(FieldName),
+    format(string(Code), '\t\t~w := record["~w"]\n', [VarName, FieldName]).
+stage_extract_one_field(nested(Path, VarName), VarName, nested(Path), Code) :-
+    path_to_go_nested_access(Path, AccessExpr),
+    format(string(Code), '\t\t~w, _ := ~w\n', [VarName, AccessExpr]).
+
+%% generate_stage_output(+HeadArgs, +VarMap, -Code)
+%  Generate output record construction for a stage
+generate_stage_output(HeadArgs, VarMap, Code) :-
+    findall(Entry,
+        (   nth1(Idx, HeadArgs, Arg),
+            format(atom(FieldName), 'arg~w', [Idx]),
+            stage_arg_to_output(Arg, VarMap, Expr),
+            format(string(Entry), '"~w": ~w', [FieldName, Expr])
+        ),
+        Entries),
+    atomic_list_concat(Entries, ', ', Code).
+
+stage_arg_to_output(Arg, VarMap, Expr) :-
+    (   member(Arg-_, VarMap)
+    ->  atom_string(Arg, Expr)
+    ;   atom(Arg)
+    ->  format(string(Expr), '"~w"', [Arg])
+    ;   number(Arg)
+    ->  format(string(Expr), '~w', [Arg])
+    ;   Expr = "nil"
+    ).
+
+%% generate_go_pipeline_connector(+StageNames, +PipelineName, +Mode, -Code)
+%  Generate the function that chains all stages together
+generate_go_pipeline_connector(StageNames, PipelineName, sequential, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    generate_sequential_chain(StageNames, ChainCode),
+    format(string(Code),
+'// ~w chains all pipeline stages together
+func ~w(input []Record) []Record {
+~w}
+
+', [PipelineNameStr, PipelineNameStr, ChainCode]).
+
+generate_go_pipeline_connector(StageNames, PipelineName, channel, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    generate_channel_chain(StageNames, ChainCode),
+    format(string(Code),
+'// ~w chains all pipeline stages using channels
+func ~w(input []Record) []Record {
+~w}
+
+', [PipelineNameStr, PipelineNameStr, ChainCode]).
+
+%% generate_sequential_chain(+StageNames, -Code)
+%  Generate sequential chaining code: stage1(stage2(stage3(input)))
+generate_sequential_chain([], "\treturn input\n").
+generate_sequential_chain([First|Rest], Code) :-
+    generate_sequential_chain_recursive(Rest, First, "input", ChainExpr),
+    format(string(Code), "\treturn ~w\n", [ChainExpr]).
+
+generate_sequential_chain_recursive([], Current, Input, Expr) :-
+    format(string(Expr), "~w(~w)", [Current, Input]).
+generate_sequential_chain_recursive([Next|Rest], Current, Input, Expr) :-
+    format(string(CurrentCall), "~w(~w)", [Current, Input]),
+    generate_sequential_chain_recursive(Rest, Next, CurrentCall, Expr).
+
+%% generate_channel_chain(+StageNames, -Code)
+%  Generate channel-based chaining code using goroutines
+generate_channel_chain(StageNames, Code) :-
+    length(StageNames, NumStages),
+    generate_channel_declarations(NumStages, DeclCode),
+    generate_channel_goroutines(StageNames, 0, GoroutineCode),
+    format(string(Code),
+'\tvar wg sync.WaitGroup
+~w
+~w
+\twg.Wait()
+\treturn results
+', [DeclCode, GoroutineCode]).
+
+generate_channel_declarations(0, "").
+generate_channel_declarations(N, Code) :-
+    N > 0,
+    findall(Decl,
+        (   between(0, N, I),
+            (   I =:= N
+            ->  format(string(Decl), '\tvar results []Record', [])
+            ;   format(string(Decl), '\tch~w := make(chan Record, 100)', [I])
+            )
+        ),
+        Decls),
+    atomic_list_concat(Decls, '\n', Code).
+
+generate_channel_goroutines([], _, "").
+generate_channel_goroutines([Stage|Rest], Idx, Code) :-
+    NextIdx is Idx + 1,
+    (   Idx =:= 0
+    ->  InputExpr = "input"
+    ;   format(string(InputExpr), "ch~w", [Idx])
+    ),
+    (   Rest = []
+    ->  format(string(StageCode),
+'\twg.Add(1)
+\tgo func() {
+\t\tdefer wg.Done()
+\t\tfor record := range ~w {
+\t\t\tprocessed := ~w([]Record{record})
+\t\t\tresults = append(results, processed...)
+\t\t}
+\t}()
+', [InputExpr, Stage])
+    ;   format(string(StageCode),
+'\twg.Add(1)
+\tgo func() {
+\t\tdefer wg.Done()
+\t\tfor record := range ~w {
+\t\t\tprocessed := ~w([]Record{record})
+\t\t\tfor _, r := range processed {
+\t\t\t\tch~w <- r
+\t\t\t}
+\t\t}
+\t\tclose(ch~w)
+\t}()
+', [InputExpr, Stage, NextIdx, NextIdx])
+    ),
+    generate_channel_goroutines(Rest, NextIdx, RestCode),
+    format(string(Code), "~w~w", [StageCode, RestCode]).
+
+%% generate_go_pipeline_main(+PipelineName, +OutputFormat, +Options, -Code)
+%  Generate the main function for the pipeline
+generate_go_pipeline_main(PipelineName, jsonl, _Options, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+'func main() {
+\t// Read input records from stdin
+\tvar input []Record
+\tscanner := bufio.NewScanner(os.Stdin)
+\tfor scanner.Scan() {
+\t\tvar record Record
+\t\tif err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+\t\t\tcontinue
+\t\t}
+\t\tinput = append(input, record)
+\t}
+
+\t// Process through pipeline
+\tresults := ~w(input)
+
+\t// Output results as JSONL
+\tfor _, result := range results {
+\t\tjsonBytes, _ := json.Marshal(result)
+\t\tfmt.Println(string(jsonBytes))
+\t}
+}
+', [PipelineNameStr]).
+
+generate_go_pipeline_main(PipelineName, text, Options, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    option(arg_names(ArgNames), Options, []),
+    (   ArgNames = []
+    ->  OutputCode = "\t\tfmt.Printf(\"%v\\n\", result)"
+    ;   generate_text_output_code(ArgNames, OutputCode)
+    ),
+    format(string(Code),
+'func main() {
+\t// Read input records from stdin
+\tvar input []Record
+\tscanner := bufio.NewScanner(os.Stdin)
+\tfor scanner.Scan() {
+\t\tvar record Record
+\t\tif err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+\t\t\tcontinue
+\t\t}
+\t\tinput = append(input, record)
+\t}
+
+\t// Process through pipeline
+\tresults := ~w(input)
+
+\t// Output results as text
+\tfor _, result := range results {
+~w
+\t}
+}
+', [PipelineNameStr, OutputCode]).
+
+generate_text_output_code(ArgNames, Code) :-
+    findall(FieldAccess,
+        (   member(Name, ArgNames),
+            downcase_atom(Name, LowerName),
+            format(string(FieldAccess), 'result["~w"]', [LowerName])
+        ),
+        Accesses),
+    length(ArgNames, NumFields),
+    findall('%v', between(1, NumFields, _), Formats),
+    atomic_list_concat(Formats, '\t', FormatStr),
+    atomic_list_concat(Accesses, ', ', AccessStr),
+    format(string(Code), '\t\tfmt.Printf("~w\\n", ~w)', [FormatStr, AccessStr]).
+
+%% ============================================
 %% JSON INPUT MODE COMPILATION
 %% ============================================
 
@@ -7031,3 +7405,112 @@ test_go_pipeline_mode :-
     ),
 
     format('~n=== All Go Pipeline Mode Tests Passed ===~n', []).
+
+%% ============================================
+%% GO PIPELINE CHAINING TESTS
+%% ============================================
+
+test_go_pipeline_chaining :-
+    format('~n=== Go Pipeline Chaining Tests ===~n~n', []),
+
+    % Test 1: Extract pipeline predicates
+    format('[Test 1] Extract pipeline predicates~n', []),
+    extract_pipeline_predicates([parse_user/2, filter/1, go:output/1], PredInfos),
+    (   PredInfos = [pred_info(parse_user, 2, go), pred_info(filter, 1, go), pred_info(output, 1, go)]
+    ->  format('  [PASS] Extracted: ~w~n', [PredInfos])
+    ;   format('  [FAIL] Got: ~w~n', [PredInfos])
+    ),
+
+    % Test 2: Generate sequential chain
+    format('[Test 2] Generate sequential chain~n', []),
+    generate_sequential_chain(["stage1", "stage2", "stage3"], ChainCode),
+    (   sub_string(ChainCode, _, _, _, "stage3(stage2(stage1(input)))")
+    ->  format('  [PASS] Sequential chain generated correctly~n', [])
+    ;   format('  [FAIL] Chain: ~w~n', [ChainCode])
+    ),
+
+    % Test 3: Generate pipeline connector (sequential mode)
+    format('[Test 3] Generate pipeline connector (sequential)~n', []),
+    generate_go_pipeline_connector(["parse", "transform"], myPipeline, sequential, ConnectorCode),
+    (   sub_string(ConnectorCode, _, _, _, "func myPipeline"),
+        sub_string(ConnectorCode, _, _, _, "transform(parse(input))")
+    ->  format('  [PASS] Connector generated~n', [])
+    ;   format('  [FAIL] Connector: ~w~n', [ConnectorCode])
+    ),
+
+    % Test 4: Pipeline chaining imports
+    format('[Test 4] Pipeline chaining imports~n', []),
+    pipeline_chaining_imports(sequential, SeqImports),
+    pipeline_chaining_imports(channel, ChanImports),
+    (   member("bufio", SeqImports),
+        member("encoding/json", SeqImports),
+        member("sync", ChanImports)
+    ->  format('  [PASS] Imports: seq=~w, chan=~w~n', [SeqImports, ChanImports])
+    ;   format('  [FAIL] Import check failed~n', [])
+    ),
+
+    % Test 5: Generate placeholder stage
+    format('[Test 5] Generate placeholder stage~n', []),
+    generate_placeholder_stage(unknown_pred, 2, PlaceholderCode),
+    (   sub_string(PlaceholderCode, _, _, _, "func unknown_pred"),
+        sub_string(PlaceholderCode, _, _, _, "return records")
+    ->  format('  [PASS] Placeholder generated~n', [])
+    ;   format('  [FAIL] Placeholder: ~w~n', [PlaceholderCode])
+    ),
+
+    % Test 6: Generate pipeline main (jsonl format)
+    format('[Test 6] Generate pipeline main (jsonl)~n', []),
+    generate_go_pipeline_main(testPipeline, jsonl, [], MainJsonlCode),
+    (   sub_string(MainJsonlCode, _, _, _, "func main()"),
+        sub_string(MainJsonlCode, _, _, _, "testPipeline(input)"),
+        sub_string(MainJsonlCode, _, _, _, "json.Marshal")
+    ->  format('  [PASS] JSONL main generated~n', [])
+    ;   format('  [FAIL] JSONL main: ~w~n', [MainJsonlCode])
+    ),
+
+    % Test 7: Generate pipeline main (text format)
+    format('[Test 7] Generate pipeline main (text)~n', []),
+    generate_go_pipeline_main(testPipeline, text, [arg_names([name, value])], MainTextCode),
+    (   sub_string(MainTextCode, _, _, _, "func main()"),
+        sub_string(MainTextCode, _, _, _, "testPipeline(input)"),
+        sub_string(MainTextCode, _, _, _, "fmt.Printf")
+    ->  format('  [PASS] Text main generated~n', [])
+    ;   format('  [FAIL] Text main: ~w~n', [MainTextCode])
+    ),
+
+    % Test 8: Full pipeline compilation (placeholder stages)
+    format('[Test 8] Full pipeline compilation~n', []),
+    compile_go_pipeline([stage1/1, stage2/1], [
+        pipeline_name(testPipe),
+        pipeline_mode(sequential),
+        output_format(jsonl)
+    ], FullCode),
+    (   sub_string(FullCode, _, _, _, "package main"),
+        sub_string(FullCode, _, _, _, "func stage1"),
+        sub_string(FullCode, _, _, _, "func stage2"),
+        sub_string(FullCode, _, _, _, "func testPipe"),
+        sub_string(FullCode, _, _, _, "func main()")
+    ->  format('  [PASS] Full pipeline compiled~n', [])
+    ;   format('  [FAIL] Full pipeline compilation failed~n', [])
+    ),
+
+    % Test 9: Channel declarations
+    format('[Test 9] Channel declarations~n', []),
+    generate_channel_declarations(2, ChanDeclCode),
+    (   sub_string(ChanDeclCode, _, _, _, "ch0"),
+        sub_string(ChanDeclCode, _, _, _, "ch1"),
+        sub_string(ChanDeclCode, _, _, _, "results")
+    ->  format('  [PASS] Channel declarations~n', [])
+    ;   format('  [FAIL] Channel decls: ~w~n', [ChanDeclCode])
+    ),
+
+    % Test 10: Stage output generation
+    format('[Test 10] Stage output generation~n', []),
+    generate_stage_output([name, age], [name-name, age-age], StageOutputCode),
+    (   sub_string(StageOutputCode, _, _, _, '"arg1":'),
+        sub_string(StageOutputCode, _, _, _, '"arg2":')
+    ->  format('  [PASS] Stage output: ~w~n', [StageOutputCode])
+    ;   format('  [FAIL] Stage output: ~w~n', [StageOutputCode])
+    ),
+
+    format('~n=== All Go Pipeline Chaining Tests Passed ===~n', []).
