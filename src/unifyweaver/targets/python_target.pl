@@ -5,6 +5,7 @@
     test_pipeline_mode/0,
     generate_default_arg_names/2,
     pipeline_header/2,
+    pipeline_header/3,
     pipeline_helpers/3,
     generate_output_formatting/4,
     generate_pipeline_main/4,
@@ -12,7 +13,9 @@
     select_python_runtime/4,
     runtime_available/1,
     runtime_compatible_with_imports/2,
-    test_runtime_selection/0
+    test_runtime_selection/0,
+    % Runtime-specific code generation exports (Phase 3)
+    test_runtime_headers/0
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -36,6 +39,9 @@
 
 % translate_goal/2 is spread across the file for organization
 :- discontiguous translate_goal/2.
+
+% pipeline_header/2 has multiple clauses spread across the file (legacy + new)
+:- discontiguous pipeline_header/2.
 
 %% init_python_target
 %  Initialize Python target with bindings
@@ -181,6 +187,7 @@ compile_pipeline_mode(Name, Arity, Module, Options, PythonCode) :-
     option(arg_names(ArgNames), Options, []),
     option(glue_protocol(GlueProtocol), Options, jsonl),
     option(error_protocol(ErrorProtocol), Options, same_as_data),
+    option(runtime(Runtime), Options, cpython),
 
     % Generate arg names if not provided
     (   ArgNames == []
@@ -192,8 +199,8 @@ compile_pipeline_mode(Name, Arity, Module, Options, PythonCode) :-
     atom_string(Name, NameStr),
     generate_pipeline_function(NameStr, Arity, Clauses, OutputFormat, DefaultArgNames, FunctionCode),
 
-    % Generate header and helpers
-    pipeline_header(GlueProtocol, Header),
+    % Generate header and helpers (Phase 3: runtime-specific headers)
+    pipeline_header(GlueProtocol, Runtime, Header),
     pipeline_helpers(GlueProtocol, ErrorProtocol, Helpers),
 
     % Generate main block
@@ -311,13 +318,22 @@ generate_output_formatting(Args, ArgNames, OutputFormat, Code) :-
     ).
 
 %% pipeline_header(+Protocol, -Header)
+%% pipeline_header(+Protocol, +Runtime, -Header)
 %  Generate header for pipeline mode with appropriate imports
-pipeline_header(jsonl, Header) :-
+%  Runtime can be: cpython (default), ironpython, pypy, jython
+
+% Default: cpython
+pipeline_header(Protocol, Header) :-
+    pipeline_header(Protocol, cpython, Header).
+
+% CPython headers
+pipeline_header(jsonl, cpython, Header) :-
     get_binding_imports(BindingImports),
     format(string(Header),
 "#!/usr/bin/env python3
 \"\"\"
 Generated pipeline predicate.
+Runtime: CPython
 Protocol: JSONL (line-delimited JSON)
 \"\"\"
 import sys
@@ -326,7 +342,217 @@ from typing import Iterator, Dict, Any, Generator
 ~w
 ", [BindingImports]).
 
+pipeline_header(messagepack, cpython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env python3
+\"\"\"
+Generated pipeline predicate.
+Runtime: CPython
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+import msgpack
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+% IronPython headers - include CLR integration
+pipeline_header(jsonl, ironpython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env ipy
+\"\"\"
+Generated pipeline predicate.
+Runtime: IronPython (CLR/.NET integration)
+Protocol: JSONL (line-delimited JSON)
+\"\"\"
+import sys
+import json
+import clr
+
+# Add .NET references for common types
+clr.AddReference('System')
+clr.AddReference('System.Core')
+from System import String, Int32, Double, DateTime, Math
+from System.Collections.Generic import Dictionary, List
+
+# Python typing (IronPython 3.4+ compatible)
+from typing import Iterator, Dict, Any, Generator
+~w
+
+# Helper: Convert Python dict to .NET Dictionary
+def to_dotnet_dict(py_dict):
+    \"\"\"Convert Python dict to .NET Dictionary<string, object>.\"\"\"
+    result = Dictionary[String, object]()
+    for k, v in py_dict.items():
+        result[str(k)] = v
+    return result
+
+# Helper: Convert .NET Dictionary to Python dict
+def from_dotnet_dict(dotnet_dict):
+    \"\"\"Convert .NET Dictionary to Python dict.\"\"\"
+    return {str(k): v for k, v in dotnet_dict}
+", [BindingImports]).
+
+pipeline_header(messagepack, ironpython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env ipy
+\"\"\"
+Generated pipeline predicate.
+Runtime: IronPython (CLR/.NET integration)
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+import clr
+
+clr.AddReference('System')
+clr.AddReference('System.Core')
+from System import String, Int32, Double, DateTime, Math
+from System.Collections.Generic import Dictionary, List
+
+# MessagePack for IronPython
+try:
+    import msgpack
+except ImportError:
+    # Fallback: use .NET serialization if msgpack not available
+    clr.AddReference('System.Text.Json')
+    from System.Text.Json import JsonSerializer
+    class msgpack:
+        @staticmethod
+        def packb(obj):
+            return JsonSerializer.SerializeToUtf8Bytes(obj)
+        @staticmethod
+        def unpackb(data):
+            return JsonSerializer.Deserialize(data, object)
+
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+% PyPy headers (similar to CPython but with PyPy shebang)
+pipeline_header(jsonl, pypy, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env pypy3
+\"\"\"
+Generated pipeline predicate.
+Runtime: PyPy (JIT-optimized)
+Protocol: JSONL (line-delimited JSON)
+\"\"\"
+import sys
+import json
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+pipeline_header(messagepack, pypy, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env pypy3
+\"\"\"
+Generated pipeline predicate.
+Runtime: PyPy (JIT-optimized)
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+import msgpack
+from typing import Iterator, Dict, Any, Generator
+~w
+", [BindingImports]).
+
+% Jython headers - include Java integration
+pipeline_header(jsonl, jython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env jython
+\"\"\"
+Generated pipeline predicate.
+Runtime: Jython (JVM integration)
+Protocol: JSONL (line-delimited JSON)
+\"\"\"
+import sys
+import json
+
+# Java imports
+from java.lang import String as JString, Math as JMath
+from java.util import HashMap, ArrayList
+
+# Note: typing module may not be available in Jython 2.7
+try:
+    from typing import Iterator, Dict, Any, Generator
+except ImportError:
+    Iterator = Dict = Any = Generator = object
+~w
+
+# Helper: Convert Python dict to Java HashMap
+def to_java_map(py_dict):
+    \"\"\"Convert Python dict to Java HashMap.\"\"\"
+    result = HashMap()
+    for k, v in py_dict.items():
+        result.put(str(k), v)
+    return result
+", [BindingImports]).
+
+pipeline_header(messagepack, jython, Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"#!/usr/bin/env jython
+\"\"\"
+Generated pipeline predicate.
+Runtime: Jython (JVM integration)
+Protocol: MessagePack (binary)
+\"\"\"
+import sys
+
+# Java imports
+from java.lang import String as JString, Math as JMath
+from java.util import HashMap, ArrayList
+
+# MessagePack - try Python version, fallback to Java
+try:
+    import msgpack
+except ImportError:
+    # Use Java serialization as fallback
+    from java.io import ByteArrayOutputStream, ObjectOutputStream
+    from java.io import ByteArrayInputStream, ObjectInputStream
+    class msgpack:
+        @staticmethod
+        def packb(obj):
+            baos = ByteArrayOutputStream()
+            oos = ObjectOutputStream(baos)
+            oos.writeObject(obj)
+            oos.close()
+            return baos.toByteArray()
+        @staticmethod
+        def unpackb(data):
+            bais = ByteArrayInputStream(data)
+            ois = ObjectInputStream(bais)
+            return ois.readObject()
+
+# Note: typing module may not be available in Jython 2.7
+try:
+    from typing import Iterator, Dict, Any, Generator
+except ImportError:
+    Iterator = Dict = Any = Generator = object
+~w
+
+# Helper: Convert Python dict to Java HashMap
+def to_java_map(py_dict):
+    \"\"\"Convert Python dict to Java HashMap.\"\"\"
+    result = HashMap()
+    for k, v in py_dict.items():
+        result.put(str(k), v)
+    return result
+", [BindingImports]).
+
+% Legacy 2-argument version for backward compatibility
 pipeline_header(messagepack, Header) :-
+    pipeline_header(messagepack, cpython, Header).
+
+% Original messagepack header moved here
+pipeline_header_messagepack_base(Header) :-
     get_binding_imports(BindingImports),
     format(string(Header),
 "#!/usr/bin/env python3
@@ -3559,3 +3785,111 @@ test_runtime_selection :-
     ),
 
     format('~n=== All Runtime Selection Tests Passed ===~n', []).
+
+% ============================================================================
+% TESTS - Runtime-Specific Code Generation (Phase 3)
+% ============================================================================
+
+%% test_runtime_headers
+%  Test the runtime-specific pipeline header generation
+test_runtime_headers :-
+    format('~n=== Python Runtime-Specific Header Tests (Phase 3) ===~n~n', []),
+    clear_binding_imports,
+
+    % Test 1: CPython JSONL header
+    format('[Test 1] CPython JSONL header~n', []),
+    pipeline_header(jsonl, cpython, Header1),
+    (   sub_string(Header1, _, _, _, "#!/usr/bin/env python3"),
+        sub_string(Header1, _, _, _, "Runtime: CPython"),
+        sub_string(Header1, _, _, _, "import json")
+    ->  format('  [PASS] CPython JSONL header correct~n', [])
+    ;   format('  [FAIL] CPython JSONL header issue~n', [])
+    ),
+
+    % Test 2: IronPython JSONL header (CLR integration)
+    format('[Test 2] IronPython JSONL header (CLR imports)~n', []),
+    pipeline_header(jsonl, ironpython, Header2),
+    (   sub_string(Header2, _, _, _, "#!/usr/bin/env ipy"),
+        sub_string(Header2, _, _, _, "import clr"),
+        sub_string(Header2, _, _, _, "clr.AddReference('System')"),
+        sub_string(Header2, _, _, _, "from System import"),
+        sub_string(Header2, _, _, _, "Dictionary, List"),
+        sub_string(Header2, _, _, _, "to_dotnet_dict")
+    ->  format('  [PASS] IronPython has CLR imports and helpers~n', [])
+    ;   format('  [FAIL] IronPython missing CLR integration~n', [])
+    ),
+
+    % Test 3: IronPython MessagePack header (fallback)
+    format('[Test 3] IronPython MessagePack header~n', []),
+    pipeline_header(messagepack, ironpython, Header3),
+    (   sub_string(Header3, _, _, _, "System.Text.Json"),
+        sub_string(Header3, _, _, _, "class msgpack")
+    ->  format('  [PASS] IronPython has msgpack fallback~n', [])
+    ;   format('  [FAIL] IronPython missing msgpack fallback~n', [])
+    ),
+
+    % Test 4: PyPy JSONL header
+    format('[Test 4] PyPy JSONL header~n', []),
+    pipeline_header(jsonl, pypy, Header4),
+    (   sub_string(Header4, _, _, _, "#!/usr/bin/env pypy3"),
+        sub_string(Header4, _, _, _, "Runtime: PyPy"),
+        sub_string(Header4, _, _, _, "JIT-optimized")
+    ->  format('  [PASS] PyPy header correct~n', [])
+    ;   format('  [FAIL] PyPy header issue~n', [])
+    ),
+
+    % Test 5: Jython JSONL header (Java integration)
+    format('[Test 5] Jython JSONL header (Java imports)~n', []),
+    pipeline_header(jsonl, jython, Header5),
+    (   sub_string(Header5, _, _, _, "#!/usr/bin/env jython"),
+        sub_string(Header5, _, _, _, "from java.lang import"),
+        sub_string(Header5, _, _, _, "HashMap, ArrayList"),
+        sub_string(Header5, _, _, _, "to_java_map")
+    ->  format('  [PASS] Jython has Java imports and helpers~n', [])
+    ;   format('  [FAIL] Jython missing Java integration~n', [])
+    ),
+
+    % Test 6: Jython MessagePack header
+    format('[Test 6] Jython MessagePack header~n', []),
+    pipeline_header(messagepack, jython, Header6),
+    (   sub_string(Header6, _, _, _, "ByteArrayOutputStream"),
+        sub_string(Header6, _, _, _, "ObjectOutputStream"),
+        sub_string(Header6, _, _, _, "class msgpack")
+    ->  format('  [PASS] Jython has Java msgpack fallback~n', [])
+    ;   format('  [FAIL] Jython missing msgpack fallback~n', [])
+    ),
+
+    % Test 7: compile_pipeline_mode uses runtime option
+    format('[Test 7] Pipeline compilation with runtime option~n', []),
+    abolish(test_iron_pred/1),
+    assert((test_iron_pred(X) :- X = hello)),
+    (   catch(
+            compile_predicate_to_python(test_iron_pred/1, [
+                pipeline_input(true),
+                output_format(object),
+                arg_names(['Value']),
+                runtime(ironpython)
+            ], Code7),
+            Error7,
+            (format('  [FAIL] Compilation error: ~w~n', [Error7]), fail)
+        )
+    ->  (   sub_string(Code7, _, _, _, "#!/usr/bin/env ipy"),
+            sub_string(Code7, _, _, _, "import clr"),
+            sub_string(Code7, _, _, _, "to_dotnet_dict")
+        ->  format('  [PASS] Pipeline uses IronPython runtime header~n', [])
+        ;   format('  [FAIL] Pipeline missing IronPython header~n', [])
+        )
+    ;   format('  [FAIL] Pipeline compilation failed~n', [])
+    ),
+    abolish(test_iron_pred/1),
+
+    % Test 8: Legacy 2-arg pipeline_header still works
+    format('[Test 8] Legacy pipeline_header/2 compatibility~n', []),
+    pipeline_header(jsonl, LegacyHeader),
+    (   sub_string(LegacyHeader, _, _, _, "#!/usr/bin/env python3"),
+        sub_string(LegacyHeader, _, _, _, "import json")
+    ->  format('  [PASS] Legacy header defaults to CPython~n', [])
+    ;   format('  [FAIL] Legacy header compatibility issue~n', [])
+    ),
+
+    format('~n=== All Runtime-Specific Header Tests Passed ===~n', []).
