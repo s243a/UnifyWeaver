@@ -11,17 +11,18 @@ type HugotEmbedder struct {
 }
 
 func NewHugotEmbedder(modelPath string, name string) (*HugotEmbedder, error) {
-	session, err := hugot.NewSession()
+	// Use pure Go session (no C dependencies)
+	session, err := hugot.NewGoSession()
 	if err != nil {
 		return nil, err
 	}
 
-	config := pipelines.FeatureExtractionConfig{
+	config := hugot.FeatureExtractionConfig{
 		ModelPath: modelPath,
 		Name:      name,
 	}
 
-	pipeline, err := session.NewFeatureExtractionPipeline(config)
+	pipeline, err := hugot.NewPipeline(session, config)
 	if err != nil {
 		session.Destroy()
 		return nil, err
@@ -31,13 +32,12 @@ func NewHugotEmbedder(modelPath string, name string) (*HugotEmbedder, error) {
 }
 
 func (e *HugotEmbedder) Embed(text string) ([]float32, error) {
-	batch := []string{text}
-	output, err := e.pipeline.Run(batch)
+	output, err := e.pipeline.RunPipeline([]string{text})
 	if err != nil {
 		return nil, err
 	}
-	
-	if len(output.Embeddings) == 0 {
+
+	if output == nil || len(output.Embeddings) == 0 {
 		return nil, nil
 	}
 
