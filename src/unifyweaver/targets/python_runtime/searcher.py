@@ -4,6 +4,22 @@ import json
 import numpy as np
 import sys
 
+def get_local(data, local_name):
+    """Get value from data dict ignoring namespace prefixes.
+
+    Tries: exact match, @prefix, and any namespace:localname pattern.
+    Examples: 'title', '@title', 'dcterms:title', '@dcterms:title'
+    """
+    if local_name in data:
+        return data[local_name]
+    if f'@{local_name}' in data:
+        return data[f'@{local_name}']
+    suffix = f':{local_name}'
+    for key in data:
+        if key.endswith(suffix):
+            return data[key]
+    return None
+
 class PtSearcher:
     def __init__(self, db_path, embedder):
         self.conn = sqlite3.connect(db_path)
@@ -51,7 +67,7 @@ class PtSearcher:
                 if not has_emb:
                     try:
                         data = json.loads(data_str)
-                        text = data.get('title') or data.get('text') or ""
+                        text = get_local(data, 'title') or get_local(data, 'about') or data.get('text') or ""
                         if text:
                             vec = self.embedder.get_embedding(text)
                             # Upsert embedding (Pack floats into bytes)
@@ -162,7 +178,7 @@ class PtSearcher:
             return f"Entity {candidate_id} not found"
             
         sb = []
-        title = cand_entity.get('title') or cand_entity.get('@about') or candidate_id
+        title = get_local(cand_entity, 'title') or get_local(cand_entity, 'about') or candidate_id
         sb.append(f"Candidate: \"{title}\" (similarity: {score:.3f})")
         sb.append("")
         
@@ -172,7 +188,7 @@ class PtSearcher:
         
         for i, anc in enumerate(ancestors):
             indent = " " * (i * 4)
-            anc_title = anc.get('title') or anc.get('@about') or anc.get('id')
+            anc_title = get_local(anc, 'title') or get_local(anc, 'about') or anc.get('id')
             if len(anc_title) > 60: anc_title = anc_title[:57] + "..."
             sb.append(f"{indent}└── {anc_title}/")
             
@@ -182,7 +198,7 @@ class PtSearcher:
         
         # Show some siblings before
         for sib in siblings[:3]:
-            s_title = sib.get('title') or sib.get('@about') or sib.get('id')
+            s_title = get_local(sib, 'title') or get_local(sib, 'about') or sib.get('id')
             if len(s_title) > 60: s_title = s_title[:57] + "..."
             sb.append(f"{base_indent}    ├── {s_title}/")
             
@@ -194,7 +210,7 @@ class PtSearcher:
         # Show siblings after
         if len(siblings) > 3:
             for sib in siblings[3:5]:
-                s_title = sib.get('title') or sib.get('@about') or sib.get('id')
+                s_title = get_local(sib, 'title') or get_local(sib, 'about') or sib.get('id')
                 if len(s_title) > 60: s_title = s_title[:57] + "..."
                 sb.append(f"{base_indent}    ├── {s_title}/")
             if len(siblings) > 5:
@@ -205,7 +221,7 @@ class PtSearcher:
         if children:
             child_indent = base_indent + "    │   "
             for i, child in enumerate(children[:max_children]):
-                c_title = child.get('title') or child.get('@about') or child.get('id')
+                c_title = get_local(child, 'title') or get_local(child, 'about') or child.get('id')
                 if len(c_title) > 60: c_title = c_title[:57] + "..."
                 is_last = (i == min(len(children), max_children) - 1)
                 prefix = "└──" if is_last and len(children) <= max_children else "├──"
