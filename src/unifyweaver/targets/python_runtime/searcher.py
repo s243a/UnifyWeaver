@@ -4,21 +4,7 @@ import json
 import numpy as np
 import sys
 
-def get_local(data, local_name):
-    """Get value from data dict ignoring namespace prefixes.
-
-    Tries: exact match, @prefix, and any namespace:localname pattern.
-    Examples: 'title', '@title', 'dcterms:title', '@dcterms:title'
-    """
-    if local_name in data:
-        return data[local_name]
-    if f'@{local_name}' in data:
-        return data[f'@{local_name}']
-    suffix = f':{local_name}'
-    for key in data:
-        if key.endswith(suffix):
-            return data[key]
-    return None
+from .utils import get_local
 
 class PtSearcher:
     def __init__(self, db_path, embedder):

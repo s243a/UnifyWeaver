@@ -6,21 +6,7 @@ except ImportError:
     sys.stderr.write("Error: lxml required for crawler\n")
     sys.exit(1)
 
-def get_local(data, local_name):
-    """Get value from data dict ignoring namespace prefixes.
-
-    Tries: exact match, @prefix, and any namespace:localname pattern.
-    Examples: 'title', '@title', 'dcterms:title', '@dcterms:title'
-    """
-    if local_name in data:
-        return data[local_name]
-    if f'@{local_name}' in data:
-        return data[f'@{local_name}']
-    suffix = f':{local_name}'
-    for key in data:
-        if key.endswith(suffix):
-            return data[key]
-    return None
+from .utils import get_local
 
 class PtCrawler:
     def __init__(self, importer, embedder=None):
