@@ -1,5 +1,6 @@
 :- module(python_target, [
-    compile_predicate_to_python/3
+    compile_predicate_to_python/3,
+    init_python_target/0
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -8,6 +9,22 @@
 % Falls back gracefully if module not available
 :- catch(use_module('../core/advanced/call_graph'), _, true).
 :- use_module(common_generator).
+
+% Binding system integration (ported from PowerShell target)
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/python_bindings').
+
+% Track required imports from bindings
+:- dynamic required_import/1.
+
+% translate_goal/2 is spread across the file for organization
+:- discontiguous translate_goal/2.
+
+%% init_python_target
+%  Initialize Python target with bindings
+init_python_target :-
+    retractall(required_import(_)),
+    init_python_bindings.
 
 /** <module> Python Target Compiler
  *
@@ -601,9 +618,92 @@ translate_goal(true, Code) :-
     !,
     Code = "    pass\n".
 
+% ============================================================================
+% BINDING-BASED GOAL TRANSLATION
+% ============================================================================
+%
+% Check the binding registry for Python bindings before falling back to
+% unsupported goal warning. This enables extensible goal handling.
+%
+% The binding registry maps Prolog predicates to Python functions with:
+% - TargetName: The Python function/method name
+% - Inputs/Outputs: Argument specifications
+% - Options: Effect annotations (pure, io, etc.) and imports
+%
+
+translate_goal(Goal, Code) :-
+    % Extract predicate name and arity from goal
+    Goal =.. [Pred|Args],
+    length(Args, Arity),
+
+    % Check if we have a Python binding for this predicate
+    binding(python, Pred/Arity, TargetName, _Inputs, Outputs, Options),
+    !,
+
+    % Record any required imports
+    (   member(import(Module), Options)
+    ->  (   required_import(Module)
+        ->  true
+        ;   assertz(required_import(Module))
+        )
+    ;   true
+    ),
+
+    % Generate Python code based on binding
+    generate_binding_call_python(TargetName, Args, Outputs, Options, Code).
+
 translate_goal(Goal, "") :-
     format(string(Msg), "Warning: Unsupported goal ~w", [Goal]),
     print_message(warning, Msg).
+
+% ============================================================================
+% BINDING CODE GENERATION FOR PYTHON
+% ============================================================================
+
+%% generate_binding_call_python(+TargetName, +Args, +Outputs, +Options, -Code)
+%  Generate Python code for a binding call
+generate_binding_call_python(TargetName, Args, Outputs, Options, Code) :-
+    % Determine if this is a method call or function call
+    (   member(pattern(method_call), Options)
+    ->  % Method call: first arg is the object
+        Args = [Object|RestArgs],
+        var_to_python(Object, PyObject),
+        maplist(var_to_python, RestArgs, PyRestArgs),
+        (   PyRestArgs = []
+        ->  % No-arg method call (already has () in TargetName or needs it)
+            (   sub_string(TargetName, _, _, 0, "()")
+            ->  format(string(CallExpr), "~w~w", [PyObject, TargetName])
+            ;   format(string(CallExpr), "~w~w", [PyObject, TargetName])
+            )
+        ;   % Method call with arguments
+            atomic_list_concat(PyRestArgs, ', ', ArgsStr),
+            format(string(CallExpr), "~w~w(~w)", [PyObject, TargetName, ArgsStr])
+        )
+    ;   % Regular function call
+        maplist(var_to_python, Args, PyArgs),
+        (   Outputs = []
+        ->  % No output - just call the function
+            atomic_list_concat(PyArgs, ', ', ArgsStr),
+            format(string(CallExpr), "~w(~w)", [TargetName, ArgsStr])
+        ;   % Has output - extract input args (all but last which is output)
+            (   append(InputArgs, [_OutputArg], Args)
+            ->  maplist(var_to_python, InputArgs, PyInputArgs),
+                atomic_list_concat(PyInputArgs, ', ', ArgsStr),
+                format(string(CallExpr), "~w(~w)", [TargetName, ArgsStr])
+            ;   % Single arg that is output (constant function)
+                format(string(CallExpr), "~w", [TargetName])
+            )
+        )
+    ),
+
+    % Generate assignment if there are outputs
+    (   Outputs = []
+    ->  format(string(Code), "    ~w\n", [CallExpr])
+    ;   % Assign result to output variable (last argument)
+        last(Args, OutputVar),
+        var_to_python(OutputVar, PyOutputVar),
+        format(string(Code), "    ~w = ~w\n", [PyOutputVar, CallExpr])
+    ).
 
 %% compile_python_key_expr(+Strategy, -PyExpr)
 %  Compiles a key generation strategy into a Python string expression.
@@ -973,6 +1073,45 @@ generate_recursive_wrapper(Name, Arity, WrapperCode) :-
 header("import sys\nimport json\nimport re\nimport hashlib\nimport uuid\nfrom typing import Iterator, Dict, Any\n\n").
 
 header_with_functools("import sys\nimport json\nimport re\nimport hashlib\nimport uuid\nimport functools\nfrom typing import Iterator, Dict, Any\n\n").
+
+%% get_binding_imports(-ImportStr)
+%  Get import statements for all modules required by bindings used in compilation
+get_binding_imports(ImportStr) :-
+    findall(Module, required_import(Module), Modules),
+    sort(Modules, UniqueModules),  % Remove duplicates
+    (   UniqueModules = []
+    ->  ImportStr = ""
+    ;   findall(ImportLine, (
+            member(M, UniqueModules),
+            % Skip modules already in base imports
+            \+ member(M, [sys, json, re, hashlib, uuid, functools]),
+            format(string(ImportLine), "import ~w", [M])
+        ), ImportLines),
+        (   ImportLines = []
+        ->  ImportStr = ""
+        ;   atomic_list_concat(ImportLines, '\n', ImportsBody),
+            format(string(ImportStr), "~w\n", [ImportsBody])
+        )
+    ).
+
+%% header_with_binding_imports(-Header)
+%  Generate header with base imports plus binding-required imports
+header_with_binding_imports(Header) :-
+    get_binding_imports(BindingImports),
+    format(string(Header),
+"import sys
+import json
+import re
+import hashlib
+import uuid
+from typing import Iterator, Dict, Any
+~w
+", [BindingImports]).
+
+%% clear_binding_imports
+%  Clear collected binding imports (call before each compilation)
+clear_binding_imports :-
+    retractall(required_import(_)).
 
 helpers(Helpers) :-
     helpers_base(Base),
