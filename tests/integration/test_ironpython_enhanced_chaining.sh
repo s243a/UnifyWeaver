@@ -88,9 +88,48 @@ EOF
     fi
 }
 
-# Test 3: IronPython generates valid code with filter
+# Test 3: IronPython generates valid code with parallel (.NET Tasks)
+test_ironpython_parallel_code_generation() {
+    log_info "Test 3: IronPython parallel code generation (.NET Tasks)"
+
+    cd "$PROJECT_ROOT"
+
+    cat > "$OUTPUT_DIR/ironpython_parallel_test.pl" << 'EOF'
+:- use_module(src/unifyweaver/targets/python_target).
+
+test_compile :-
+    compile_ironpython_enhanced_pipeline([
+        extract/1,
+        parallel([validate/1, enrich/1, audit/1]),
+        merge,
+        output/1
+    ], [pipeline_name(parallel_pipe)], Code),
+    atom_string(CodeAtom, Code),
+    open('output_ironpython_enhanced_chaining_test/ironpython_parallel.py', write, S),
+    write(S, CodeAtom),
+    close(S).
+EOF
+
+    if swipl -g "consult('output_ironpython_enhanced_chaining_test/ironpython_parallel_test.pl'), test_compile" -t halt 2>/dev/null; then
+        if [ -f "$OUTPUT_DIR/ironpython_parallel.py" ]; then
+            if grep -q "parallel_records" "$OUTPUT_DIR/ironpython_parallel.py" && \
+               grep -q "Parallel execution of 3 stages" "$OUTPUT_DIR/ironpython_parallel.py" && \
+               grep -q "concurrent via .NET Tasks" "$OUTPUT_DIR/ironpython_parallel.py"; then
+                log_pass "IronPython parallel code generated correctly"
+            else
+                log_fail "IronPython parallel code missing expected patterns"
+            fi
+        else
+            log_fail "IronPython parallel file not generated"
+        fi
+    else
+        log_fail "IronPython parallel compilation failed"
+    fi
+}
+
+# Test 4: IronPython generates valid code with filter
 test_ironpython_filter_code_generation() {
-    log_info "Test 3: IronPython filter code generation"
+    log_info "Test 4: IronPython filter code generation"
 
     cd "$PROJECT_ROOT"
 
@@ -125,9 +164,9 @@ EOF
     fi
 }
 
-# Test 4: IronPython generates valid code with routing
+# Test 5: IronPython generates valid code with routing
 test_ironpython_routing_code_generation() {
-    log_info "Test 4: IronPython routing code generation"
+    log_info "Test 5: IronPython routing code generation"
 
     cd "$PROJECT_ROOT"
 
@@ -163,9 +202,9 @@ EOF
     fi
 }
 
-# Test 5: Complex IronPython pipeline with all patterns
+# Test 6: Complex IronPython pipeline with all patterns
 test_ironpython_complex_pipeline() {
-    log_info "Test 5: Complex IronPython pipeline with all patterns"
+    log_info "Test 6: Complex IronPython pipeline with all patterns"
 
     cd "$PROJECT_ROOT"
 
@@ -205,9 +244,9 @@ EOF
     fi
 }
 
-# Test 6: IronPython helpers include .NET collections
+# Test 7: IronPython helpers include .NET collections and parallel support
 test_ironpython_helpers_dotnet() {
-    log_info "Test 6: IronPython helpers use .NET collections"
+    log_info "Test 7: IronPython helpers use .NET collections and parallel"
 
     cd "$PROJECT_ROOT"
 
@@ -227,8 +266,10 @@ EOF
             if grep -q "List\[object\]" "$OUTPUT_DIR/ironpython_helpers.py" && \
                grep -q "Dictionary\[object, object\]" "$OUTPUT_DIR/ironpython_helpers.py" && \
                grep -q "to_dotnet_list" "$OUTPUT_DIR/ironpython_helpers.py" && \
-               grep -q "from_dotnet_list" "$OUTPUT_DIR/ironpython_helpers.py"; then
-                log_pass "IronPython helpers use .NET collections"
+               grep -q "from_dotnet_list" "$OUTPUT_DIR/ironpython_helpers.py" && \
+               grep -q "parallel_records" "$OUTPUT_DIR/ironpython_helpers.py" && \
+               grep -q "ConcurrentBag" "$OUTPUT_DIR/ironpython_helpers.py"; then
+                log_pass "IronPython helpers use .NET collections and parallel"
             else
                 log_fail "IronPython helpers missing .NET patterns"
             fi
@@ -240,9 +281,9 @@ EOF
     fi
 }
 
-# Test 7: IronPython generates proper shebang and CLR imports
+# Test 8: IronPython generates proper shebang and CLR imports
 test_ironpython_header() {
-    log_info "Test 7: IronPython header structure"
+    log_info "Test 8: IronPython header structure"
 
     if [ -f "$OUTPUT_DIR/ironpython_complex.py" ]; then
         if grep -q "#!/usr/bin/env ipy" "$OUTPUT_DIR/ironpython_complex.py" && \
@@ -257,9 +298,9 @@ test_ironpython_header() {
     fi
 }
 
-# Test 8: IronPython code has proper main block
+# Test 9: IronPython code has proper main block
 test_ironpython_main_block() {
-    log_info "Test 8: IronPython main block"
+    log_info "Test 9: IronPython main block"
 
     if [ -f "$OUTPUT_DIR/ironpython_complex.py" ]; then
         if grep -q '__name__ == "__main__"' "$OUTPUT_DIR/ironpython_complex.py" && \
@@ -285,6 +326,7 @@ main() {
 
     test_ironpython_unit_tests
     test_ironpython_fanout_code_generation
+    test_ironpython_parallel_code_generation
     test_ironpython_filter_code_generation
     test_ironpython_routing_code_generation
     test_ironpython_complex_pipeline
