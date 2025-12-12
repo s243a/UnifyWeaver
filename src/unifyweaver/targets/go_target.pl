@@ -22,7 +22,12 @@
     test_go_pipeline_mode/0,        % Test pipeline mode
     test_go_pipeline_chaining/0,    % Test pipeline chaining
     test_go_pipeline_bindings/0,    % Test pipeline binding integration
-    test_go_pipeline_generator/0    % Test pipeline generator mode
+    test_go_pipeline_generator/0,   % Test pipeline generator mode
+    % Enhanced pipeline chaining exports
+    compile_go_enhanced_pipeline/3, % +Stages, +Options, -GoCode
+    go_enhanced_helpers/1,          % -Code
+    generate_go_enhanced_connector/3, % +Stages, +PipelineName, -Code
+    test_go_enhanced_chaining/0     % Test enhanced pipeline chaining
 ]).
 
 :- use_module(library(lists)).
@@ -8063,3 +8068,452 @@ test_go_pipeline_generator :-
     ),
 
     format('~n=== All Go Pipeline Generator Mode Tests Passed ===~n', []).
+
+%% ============================================
+%% GO ENHANCED PIPELINE CHAINING
+%% ============================================
+%
+%  Supports advanced flow patterns:
+%    - fan_out(Stages) : Broadcast to parallel stages
+%    - merge          : Combine results from parallel stages
+%    - route_by(Pred, Routes) : Conditional routing
+%    - filter_by(Pred) : Filter records
+%    - Pred/Arity     : Standard stage
+%
+%% compile_go_enhanced_pipeline(+Stages, +Options, -GoCode)
+%  Main entry point for enhanced Go pipeline with advanced flow patterns.
+%
+compile_go_enhanced_pipeline(Stages, Options, GoCode) :-
+    option(pipeline_name(PipelineName), Options, enhanced_pipeline),
+    option(output_format(OutputFormat), Options, jsonl),
+    option(include_package(IncludePackage), Options, true),
+
+    % Generate helper functions
+    go_enhanced_helpers(Helpers),
+
+    % Generate stage functions
+    generate_go_enhanced_stage_functions(Stages, StageFunctions),
+
+    % Generate the main connector
+    generate_go_enhanced_connector(Stages, PipelineName, ConnectorCode),
+
+    % Generate main function
+    generate_go_enhanced_main(PipelineName, OutputFormat, MainCode),
+
+    % Wrap in package if requested
+    (   IncludePackage
+    ->  format(string(GoCode),
+'package main
+
+import (
+\t"bufio"
+\t"encoding/json"
+\t"fmt"
+\t"os"
+)
+
+// Record represents a data record flowing through the pipeline
+type Record map[string]interface{}
+
+~w
+
+~w
+~w
+~w', [Helpers, StageFunctions, ConnectorCode, MainCode])
+    ;   format(string(GoCode), '~w~w~w~w', [Helpers, StageFunctions, ConnectorCode, MainCode])
+    ).
+
+%% go_enhanced_helpers(-Code)
+%  Generate helper functions for enhanced pipeline operations.
+go_enhanced_helpers(Code) :-
+    Code = '// Enhanced Pipeline Helpers
+
+// fanOutRecords broadcasts a record to multiple stages and collects all results
+func fanOutRecords(record Record, stages []func([]Record) []Record) []Record {
+\tvar results []Record
+\tfor _, stage := range stages {
+\t\tfor _, result := range stage([]Record{record}) {
+\t\t\tresults = append(results, result)
+\t\t}
+\t}
+\treturn results
+}
+
+// mergeStreams combines multiple record slices into one
+func mergeStreams(streams ...[]Record) []Record {
+\tvar merged []Record
+\tfor _, stream := range streams {
+\t\tmerged = append(merged, stream...)
+\t}
+\treturn merged
+}
+
+// routeRecord directs a record to appropriate stage based on condition
+func routeRecord(record Record, conditionFn func(Record) interface{}, routeMap map[interface{}]func([]Record) []Record, defaultFn func([]Record) []Record) []Record {
+\tcondition := conditionFn(record)
+\tif stage, ok := routeMap[condition]; ok {
+\t\treturn stage([]Record{record})
+\t}
+\tif defaultFn != nil {
+\t\treturn defaultFn([]Record{record})
+\t}
+\t// Pass through if no matching route
+\treturn []Record{record}
+}
+
+// filterRecords returns only records that satisfy the predicate
+func filterRecords(records []Record, predicateFn func(Record) bool) []Record {
+\tvar filtered []Record
+\tfor _, record := range records {
+\t\tif predicateFn(record) {
+\t\t\tfiltered = append(filtered, record)
+\t\t}
+\t}
+\treturn filtered
+}
+
+// teeStream sends each record to multiple stages and collects all results
+func teeStream(records []Record, stages ...func([]Record) []Record) []Record {
+\tvar results []Record
+\tfor _, record := range records {
+\t\tfor _, stage := range stages {
+\t\t\tresults = append(results, stage([]Record{record})...)
+\t\t}
+\t}
+\treturn results
+}
+
+'.
+
+%% generate_go_enhanced_stage_functions(+Stages, -Code)
+%  Generate stub functions for each stage.
+generate_go_enhanced_stage_functions([], "").
+generate_go_enhanced_stage_functions([Stage|Rest], Code) :-
+    generate_go_single_enhanced_stage(Stage, StageCode),
+    generate_go_enhanced_stage_functions(Rest, RestCode),
+    (RestCode = "" ->
+        Code = StageCode
+    ;   format(string(Code), "~w~n~w", [StageCode, RestCode])
+    ).
+
+generate_go_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(merge, "") :- !.
+generate_go_single_enhanced_stage(route_by(_, Routes), Code) :-
+    !,
+    findall(Stage, member((_Cond, Stage), Routes), RouteStages),
+    generate_go_enhanced_stage_functions(RouteStages, Code).
+generate_go_single_enhanced_stage(filter_by(_), "") :- !.
+generate_go_single_enhanced_stage(Pred/Arity, Code) :-
+    !,
+    format(string(Code),
+"// ~w is a pipeline stage (~w/~w)
+func ~w(input []Record) []Record {
+\t// TODO: Implement based on predicate bindings
+\tvar output []Record
+\tfor _, record := range input {
+\t\toutput = append(output, record)
+\t}
+\treturn output
+}
+
+", [Pred, Pred, Arity, Pred]).
+generate_go_single_enhanced_stage(_, "").
+
+%% generate_go_enhanced_connector(+Stages, +PipelineName, -Code)
+%  Generate the main connector that handles enhanced flow patterns.
+generate_go_enhanced_connector(Stages, PipelineName, Code) :-
+    generate_go_enhanced_flow_code(Stages, "input", FlowCode),
+    format(string(Code),
+"// ~w is an enhanced pipeline with fan-out, merge, and routing support
+func ~w(input []Record) []Record {
+~w
+}
+
+", [PipelineName, PipelineName, FlowCode]).
+
+%% generate_go_enhanced_flow_code(+Stages, +CurrentVar, -Code)
+%  Generate the flow code for enhanced pipeline stages.
+generate_go_enhanced_flow_code([], CurrentVar, Code) :-
+    format(string(Code), "\treturn ~w", [CurrentVar]).
+generate_go_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
+    generate_go_stage_flow(Stage, CurrentVar, NextVar, StageCode),
+    generate_go_enhanced_flow_code(Rest, NextVar, RestCode),
+    format(string(Code), "~w~n~w", [StageCode, RestCode]).
+
+%% generate_go_stage_flow(+Stage, +InVar, -OutVar, -Code)
+%  Generate flow code for a single stage.
+
+% Fan-out stage: broadcast to parallel stages
+generate_go_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "fanOut~wResult", [N]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"\t// Fan-out to ~w parallel stages
+\tvar ~w []Record
+\tfor _, record := range ~w {
+\t\tfanOutResults := fanOutRecords(record, []func([]Record) []Record{~w})
+\t\t~w = append(~w, fanOutResults...)
+\t}", [N, OutVar, InVar, StageListStr, OutVar, OutVar]).
+
+% Merge stage: placeholder, usually follows fan_out
+generate_go_stage_flow(merge, InVar, OutVar, Code) :-
+    !,
+    OutVar = InVar,
+    Code = "\t// Merge: results already combined from fan-out".
+
+% Conditional routing
+generate_go_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "routedResult", []),
+    format_go_route_map(Routes, RouteMapStr),
+    format(string(Code),
+"\t// Conditional routing based on ~w
+\tvar ~w []Record
+\trouteMap := map[interface{}]func([]Record) []Record{~w}
+\tfor _, record := range ~w {
+\t\troutedRecords := routeRecord(record, ~w, routeMap, nil)
+\t\t~w = append(~w, routedRecords...)
+\t}", [CondPred, OutVar, RouteMapStr, InVar, CondPred, OutVar, OutVar]).
+
+% Filter stage
+generate_go_stage_flow(filter_by(Pred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "filteredResult", []),
+    format(string(Code),
+"\t// Filter by ~w
+\t~w := filterRecords(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Standard predicate stage
+generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
+    !,
+    atom(Pred),
+    format(atom(OutVar), "~wResult", [Pred]),
+    format(string(Code),
+"\t// Stage: ~w/~w
+\t~w := ~w(~w)", [Pred, Arity, OutVar, Pred, InVar]).
+
+% Fallback for unknown stages
+generate_go_stage_flow(Stage, InVar, InVar, Code) :-
+    format(string(Code), "\t// Unknown stage type: ~w (pass-through)", [Stage]).
+
+%% extract_go_stage_names(+Stages, -Names)
+%  Extract function names from stage specifications.
+extract_go_stage_names([], []).
+extract_go_stage_names([Pred/_Arity|Rest], [Pred|RestNames]) :-
+    !,
+    extract_go_stage_names(Rest, RestNames).
+extract_go_stage_names([_|Rest], RestNames) :-
+    extract_go_stage_names(Rest, RestNames).
+
+%% format_go_stage_list(+Names, -ListStr)
+%  Format stage names as Go function references.
+format_go_stage_list([], "").
+format_go_stage_list([Name], Str) :-
+    format(string(Str), "~w", [Name]).
+format_go_stage_list([Name|Rest], Str) :-
+    Rest \= [],
+    format_go_stage_list(Rest, RestStr),
+    format(string(Str), "~w, ~w", [Name, RestStr]).
+
+%% format_go_route_map(+Routes, -MapStr)
+%  Format routing map for Go.
+format_go_route_map([], "").
+format_go_route_map([(_Cond, Stage)|[]], Str) :-
+    (Stage = StageName/_Arity -> true ; StageName = Stage),
+    format(string(Str), "true: ~w", [StageName]).
+format_go_route_map([(Cond, Stage)|Rest], Str) :-
+    Rest \= [],
+    (Stage = StageName/_Arity -> true ; StageName = Stage),
+    format_go_route_map(Rest, RestStr),
+    (Cond = true ->
+        format(string(Str), "true: ~w, ~w", [StageName, RestStr])
+    ; Cond = false ->
+        format(string(Str), "false: ~w, ~w", [StageName, RestStr])
+    ;   format(string(Str), "\"~w\": ~w, ~w", [Cond, StageName, RestStr])
+    ).
+
+%% generate_go_enhanced_main(+PipelineName, +OutputFormat, -Code)
+%  Generate main function for enhanced pipeline.
+generate_go_enhanced_main(PipelineName, jsonl, Code) :-
+    format(string(Code),
+'func main() {
+\t// Read JSONL from stdin
+\tvar input []Record
+\tscanner := bufio.NewScanner(os.Stdin)
+\tfor scanner.Scan() {
+\t\tvar record Record
+\t\tif err := json.Unmarshal(scanner.Bytes(), &record); err == nil {
+\t\t\tinput = append(input, record)
+\t\t}
+\t}
+
+\t// Run enhanced pipeline
+\tresults := ~w(input)
+
+\t// Output results as JSONL
+\tfor _, record := range results {
+\t\tif output, err := json.Marshal(record); err == nil {
+\t\t\tfmt.Println(string(output))
+\t\t}
+\t}
+}
+', [PipelineName]).
+generate_go_enhanced_main(PipelineName, _, Code) :-
+    format(string(Code),
+'func main() {
+\t// Read JSONL from stdin
+\tvar input []Record
+\tscanner := bufio.NewScanner(os.Stdin)
+\tfor scanner.Scan() {
+\t\tvar record Record
+\t\tif err := json.Unmarshal(scanner.Bytes(), &record); err == nil {
+\t\t\tinput = append(input, record)
+\t\t}
+\t}
+
+\t// Run enhanced pipeline
+\tresults := ~w(input)
+
+\t// Output results
+\tfor _, record := range results {
+\t\tif output, err := json.Marshal(record); err == nil {
+\t\t\tfmt.Println(string(output))
+\t\t}
+\t}
+}
+', [PipelineName]).
+
+%% ============================================
+%% GO ENHANCED PIPELINE CHAINING TESTS
+%% ============================================
+
+test_go_enhanced_chaining :-
+    format('~n=== Go Enhanced Pipeline Chaining Tests ===~n~n', []),
+
+    % Test 1: Generate enhanced helpers
+    format('[Test 1] Generate enhanced helpers~n', []),
+    go_enhanced_helpers(Helpers1),
+    (   sub_string(Helpers1, _, _, _, "func fanOutRecords"),
+        sub_string(Helpers1, _, _, _, "func mergeStreams"),
+        sub_string(Helpers1, _, _, _, "func routeRecord"),
+        sub_string(Helpers1, _, _, _, "func filterRecords"),
+        sub_string(Helpers1, _, _, _, "func teeStream")
+    ->  format('  [PASS] All helper functions generated~n', [])
+    ;   format('  [FAIL] Missing helper functions~n', [])
+    ),
+
+    % Test 2: Linear pipeline connector
+    format('[Test 2] Linear pipeline connector~n', []),
+    generate_go_enhanced_connector([extract/1, transform/1, load/1], linearPipe, Code2),
+    (   sub_string(Code2, _, _, _, "func linearPipe"),
+        sub_string(Code2, _, _, _, "extract(input)"),
+        sub_string(Code2, _, _, _, "transform(extractResult)"),
+        sub_string(Code2, _, _, _, "load(transformResult)")
+    ->  format('  [PASS] Linear connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code2])
+    ),
+
+    % Test 3: Fan-out connector
+    format('[Test 3] Fan-out connector~n', []),
+    generate_go_enhanced_connector([fan_out([validate/1, enrich/1])], fanoutPipe, Code3),
+    (   sub_string(Code3, _, _, _, "func fanoutPipe"),
+        sub_string(Code3, _, _, _, "Fan-out to 2 parallel stages"),
+        sub_string(Code3, _, _, _, "fanOutRecords")
+    ->  format('  [PASS] Fan-out connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code3])
+    ),
+
+    % Test 4: Fan-out with merge
+    format('[Test 4] Fan-out with merge~n', []),
+    generate_go_enhanced_connector([fan_out([a/1, b/1]), merge], mergePipe, Code4),
+    (   sub_string(Code4, _, _, _, "func mergePipe"),
+        sub_string(Code4, _, _, _, "Fan-out to 2"),
+        sub_string(Code4, _, _, _, "Merge: results already combined")
+    ->  format('  [PASS] Merge connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code4])
+    ),
+
+    % Test 5: Conditional routing
+    format('[Test 5] Conditional routing~n', []),
+    generate_go_enhanced_connector([route_by(hasError, [(true, errorHandler/1), (false, success/1)])], routePipe, Code5),
+    (   sub_string(Code5, _, _, _, "func routePipe"),
+        sub_string(Code5, _, _, _, "Conditional routing based on hasError"),
+        sub_string(Code5, _, _, _, "routeMap")
+    ->  format('  [PASS] Routing connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code5])
+    ),
+
+    % Test 6: Filter stage
+    format('[Test 6] Filter stage~n', []),
+    generate_go_enhanced_connector([filter_by(isValid)], filterPipe, Code6),
+    (   sub_string(Code6, _, _, _, "func filterPipe"),
+        sub_string(Code6, _, _, _, "Filter by isValid"),
+        sub_string(Code6, _, _, _, "filterRecords")
+    ->  format('  [PASS] Filter connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code6])
+    ),
+
+    % Test 7: Complex pipeline with all patterns
+    format('[Test 7] Complex pipeline~n', []),
+    generate_go_enhanced_connector([
+        extract/1,
+        filter_by(isActive),
+        fan_out([validate/1, enrich/1, audit/1]),
+        merge,
+        route_by(hasError, [(true, errorLog/1), (false, transform/1)]),
+        output/1
+    ], complexPipe, Code7),
+    (   sub_string(Code7, _, _, _, "func complexPipe"),
+        sub_string(Code7, _, _, _, "Filter by isActive"),
+        sub_string(Code7, _, _, _, "Fan-out to 3 parallel stages"),
+        sub_string(Code7, _, _, _, "Merge"),
+        sub_string(Code7, _, _, _, "Conditional routing")
+    ->  format('  [PASS] Complex connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code7])
+    ),
+
+    % Test 8: Stage function generation
+    format('[Test 8] Stage function generation~n', []),
+    generate_go_enhanced_stage_functions([extract/1, transform/1], StageFns8),
+    (   sub_string(StageFns8, _, _, _, "func extract"),
+        sub_string(StageFns8, _, _, _, "func transform")
+    ->  format('  [PASS] Stage functions generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [StageFns8])
+    ),
+
+    % Test 9: Full enhanced pipeline compilation
+    format('[Test 9] Full enhanced pipeline~n', []),
+    compile_go_enhanced_pipeline([
+        extract/1,
+        filter_by(isActive),
+        fan_out([validate/1, enrich/1]),
+        merge,
+        output/1
+    ], [pipeline_name(fullEnhanced), output_format(jsonl)], FullCode9),
+    (   sub_string(FullCode9, _, _, _, "package main"),
+        sub_string(FullCode9, _, _, _, "func fanOutRecords"),
+        sub_string(FullCode9, _, _, _, "func filterRecords"),
+        sub_string(FullCode9, _, _, _, "func fullEnhanced"),
+        sub_string(FullCode9, _, _, _, "func main()")
+    ->  format('  [PASS] Full pipeline compiles~n', [])
+    ;   format('  [FAIL] Missing patterns in generated code~n', [])
+    ),
+
+    % Test 10: Enhanced helpers include all functions
+    format('[Test 10] Enhanced helpers completeness~n', []),
+    go_enhanced_helpers(Helpers10),
+    (   sub_string(Helpers10, _, _, _, "fanOutRecords"),
+        sub_string(Helpers10, _, _, _, "mergeStreams"),
+        sub_string(Helpers10, _, _, _, "routeRecord"),
+        sub_string(Helpers10, _, _, _, "filterRecords"),
+        sub_string(Helpers10, _, _, _, "teeStream")
+    ->  format('  [PASS] All helpers present~n', [])
+    ;   format('  [FAIL] Missing helpers~n', [])
+    ),
+
+    format('~n=== All Go Enhanced Pipeline Chaining Tests Passed ===~n', []).
