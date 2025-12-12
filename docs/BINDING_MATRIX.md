@@ -21,6 +21,7 @@ This document tracks which bindings are implemented for each target language.
 | **Go** | 50+ | 10 (Built-ins, String, Math, I/O, JSON, Regex, Time, Path, Collections, Conv) |
 | **C#** | 36+ | 5 (Built-ins, String, Math, I/O, LINQ) |
 | **Rust** | 29+ | 6 (Built-ins, String, Math, I/O, Regex, JSON) |
+| **Bash** | 20+ | 4 (Built-ins, String, Math, File Ops) |
 
 ---
 
@@ -353,7 +354,7 @@ Placeholder for future target languages:
 | Go | Implemented | Native bindings for Go standard library |
 | Rust | Implemented | Bindings for Rust std crate |
 | C# | Implemented | LINQ and .NET bindings (Basic set) |
-| Bash | Planned | Shell command bindings |
+| Bash | Implemented | Shell command bindings |
 | SQL | N/A | SQL uses declarative generation, not bindings |
 
 ---
