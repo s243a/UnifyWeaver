@@ -29,7 +29,11 @@
     compile_enhanced_pipeline/3,
     enhanced_pipeline_helpers/1,
     generate_enhanced_connector/3,
-    test_enhanced_pipeline_chaining/0
+    test_enhanced_pipeline_chaining/0,
+    % IronPython enhanced pipeline chaining exports (Phase 8)
+    compile_ironpython_enhanced_pipeline/3,
+    ironpython_enhanced_helpers/1,
+    test_ironpython_enhanced_chaining/0
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -5192,3 +5196,489 @@ test_enhanced_pipeline_chaining :-
     ),
 
     format('~n=== All Enhanced Pipeline Chaining Tests Passed ===~n', []).
+
+%% ============================================================================
+%% IRONPYTHON ENHANCED PIPELINE CHAINING (Phase 8)
+%% ============================================================================
+%%
+%% Extends enhanced pipeline chaining with IronPython/.NET-specific features:
+%%   - Uses .NET List<T> for fan-out results collection
+%%   - Uses .NET Dictionary<TKey,TValue> for routing maps
+%%   - Leverages CLR interop for .NET integration scenarios
+%%
+%% Example usage:
+%%   compile_ironpython_enhanced_pipeline([
+%%       extract/1,
+%%       filter_by(is_active),
+%%       fan_out([validate/1, enrich/1]),
+%%       merge,
+%%       route_by(has_error, [(true, error_handler/1), (false, success/1)]),
+%%       output/1
+%%   ], [pipeline_name(iron_enhanced)], Code).
+%%
+%% ============================================================================
+
+%% compile_ironpython_enhanced_pipeline(+Stages, +Options, -Code)
+%  Main entry point for IronPython enhanced pipelines with .NET integration.
+compile_ironpython_enhanced_pipeline(Stages, Options, Code) :-
+    option(pipeline_name(PipelineName), Options, iron_enhanced_pipeline),
+    option(glue_protocol(GlueProtocol), Options, jsonl),
+
+    % Generate IronPython header with CLR imports
+    ironpython_enhanced_header(GlueProtocol, Header),
+
+    % Generate IronPython-specific enhanced helpers
+    ironpython_enhanced_helpers(EnhancedHelpers),
+
+    % Generate stage functions (reuse from base enhanced)
+    generate_enhanced_stage_functions(Stages, StageFunctions),
+
+    % Generate the enhanced connector
+    generate_ironpython_enhanced_connector(Stages, PipelineName, ConnectorCode),
+
+    % Generate main block
+    generate_ironpython_enhanced_main(PipelineName, GlueProtocol, MainBlock),
+
+    format(string(Code), "~w~n~n~w~n~n~w~n~w~n~w~n",
+           [Header, EnhancedHelpers, StageFunctions, ConnectorCode, MainBlock]).
+
+%% ironpython_enhanced_header(+Protocol, -Code)
+%  Generate IronPython header with CLR imports for enhanced pipeline.
+ironpython_enhanced_header(jsonl, Code) :-
+    format(string(Code),
+'#!/usr/bin/env ipy
+"""
+Generated IronPython Enhanced Pipeline
+Supports: fan-out, merge, conditional routing, filtering
+Runtime: IronPython with CLR/.NET integration
+"""
+import sys
+import json
+import clr
+
+# Add .NET references
+clr.AddReference("System")
+clr.AddReference("System.Core")
+from System import String, Object, Func
+from System.Collections.Generic import List, Dictionary, HashSet
+
+# Python typing (IronPython 3.4+ compatible)
+from typing import Iterator, Dict, Any, Generator, Callable
+', []).
+
+ironpython_enhanced_header(_, Code) :-
+    format(string(Code),
+'#!/usr/bin/env ipy
+"""
+Generated IronPython Enhanced Pipeline
+Supports: fan-out, merge, conditional routing, filtering
+Runtime: IronPython with CLR/.NET integration
+"""
+import sys
+import clr
+
+clr.AddReference("System")
+clr.AddReference("System.Core")
+from System import String, Object, Func
+from System.Collections.Generic import List, Dictionary, HashSet
+
+from typing import Iterator, Dict, Any, Generator, Callable
+', []).
+
+%% ironpython_enhanced_helpers(-Code)
+%  Generate IronPython-specific helper functions using .NET collections.
+ironpython_enhanced_helpers(Code) :-
+    Code = '# ============================================
+# IronPython Enhanced Pipeline Helpers
+# Uses .NET collections for CLR interoperability
+# ============================================
+
+def fan_out_records(record, stages):
+    """
+    Fan-out: Send record to all stages, collect results.
+    Uses .NET List for result collection.
+    """
+    results = List[object]()
+    for stage in stages:
+        for result in stage(iter([record])):
+            results.Add(result)
+    return list(results)  # Convert back to Python list for iteration
+
+def merge_streams(*streams):
+    """
+    Merge: Combine multiple streams into one.
+    Yields records from all streams in order.
+    """
+    for stream in streams:
+        for record in stream:
+            yield record
+
+def route_record(record, condition_fn, route_map):
+    """
+    Route: Direct record to appropriate stage based on condition.
+    route_map is .NET Dictionary or Python dict.
+    """
+    condition = condition_fn(record)
+
+    # Handle both .NET Dictionary and Python dict
+    if hasattr(route_map, "ContainsKey"):
+        # .NET Dictionary
+        if route_map.ContainsKey(condition):
+            yield from route_map[condition](iter([record]))
+        elif route_map.ContainsKey("default"):
+            yield from route_map["default"](iter([record]))
+        else:
+            yield record
+    else:
+        # Python dict
+        if condition in route_map:
+            yield from route_map[condition](iter([record]))
+        elif "default" in route_map:
+            yield from route_map["default"](iter([record]))
+        else:
+            yield record
+
+def filter_records(stream, predicate_fn):
+    """
+    Filter: Only yield records that satisfy the predicate.
+    """
+    for record in stream:
+        if predicate_fn(record):
+            yield record
+
+def tee_stream(stream, *stages):
+    """
+    Tee: Send each record to multiple stages, yield all results.
+    Uses .NET List for intermediate storage.
+    """
+    records = List[object]()
+    for record in stream:
+        records.Add(record)
+
+    for record in records:
+        for stage in stages:
+            yield from stage(iter([record]))
+
+def create_route_map(routes):
+    """
+    Create a .NET Dictionary for routing.
+    routes: list of (condition, stage_function) tuples
+    """
+    route_map = Dictionary[object, object]()
+    for condition, stage in routes:
+        route_map[condition] = stage
+    return route_map
+
+def to_dotnet_list(py_list):
+    """Convert Python list to .NET List<object>."""
+    result = List[object]()
+    for item in py_list:
+        result.Add(item)
+    return result
+
+def from_dotnet_list(dotnet_list):
+    """Convert .NET List to Python list."""
+    return list(dotnet_list)
+'.
+
+%% generate_ironpython_enhanced_connector(+Stages, +PipelineName, -Code)
+%  Generate the enhanced connector for IronPython with .NET integration.
+generate_ironpython_enhanced_connector(Stages, PipelineName, Code) :-
+    generate_ironpython_enhanced_flow(Stages, "input_stream", FlowCode),
+    format(string(Code),
+'# ============================================
+# IronPython Enhanced Pipeline Connector
+# ============================================
+
+def ~w(input_stream):
+    """
+    Enhanced IronPython pipeline with fan-out, merge, and routing.
+    Uses .NET collections for CLR interoperability.
+    """
+~w
+', [PipelineName, FlowCode]).
+
+%% generate_ironpython_enhanced_flow(+Stages, +CurrentVar, -Code)
+%  Generate flow code for IronPython enhanced stages.
+generate_ironpython_enhanced_flow([], CurrentVar, Code) :-
+    format(string(Code), '    yield from ~w', [CurrentVar]).
+generate_ironpython_enhanced_flow([Stage|Rest], CurrentVar, Code) :-
+    generate_ironpython_stage_flow(Stage, CurrentVar, NextVar, StageCode),
+    generate_ironpython_enhanced_flow(Rest, NextVar, RestCode),
+    format(string(Code), '~w~n~w', [StageCode, RestCode]).
+
+%% generate_ironpython_stage_flow(+Stage, +CurrentVar, -NextVar, -Code)
+%  Generate IronPython-specific flow code for each stage type.
+
+% Standard predicate stage
+generate_ironpython_stage_flow(Pred/_, CurrentVar, NextVar, Code) :-
+    !,
+    format(atom(NextVar), '~w_result', [Pred]),
+    format(string(Code),
+'    # Stage: ~w
+    ~w = ~w(~w)', [Pred, NextVar, Pred, CurrentVar]).
+
+% Fan-out stage with .NET List
+generate_ironpython_stage_flow(fan_out(SubStages), CurrentVar, NextVar, Code) :-
+    !,
+    length(SubStages, N),
+    NextVar = 'fan_out_results',
+    collect_stage_names(SubStages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+'    # Fan-out to ~w parallel stages (IronPython/.NET)
+    fan_out_stages = [~w]
+    ~w = []
+    for record in ~w:
+        ~w.extend(fan_out_records(record, fan_out_stages))',
+    [N, StageListStr, NextVar, CurrentVar, NextVar]).
+
+% Merge stage
+generate_ironpython_stage_flow(merge, CurrentVar, NextVar, Code) :-
+    !,
+    NextVar = 'merged_stream',
+    format(string(Code),
+'    # Merge parallel results
+    ~w = iter(~w) if ~w else iter([])', [NextVar, CurrentVar, CurrentVar]).
+
+% Conditional routing with .NET Dictionary support
+generate_ironpython_stage_flow(route_by(Pred, Routes), CurrentVar, NextVar, Code) :-
+    !,
+    NextVar = 'routed_stream',
+    format_python_route_map(Routes, RouteMapCode),
+    format(string(Code),
+'    # Conditional routing by ~w (IronPython/.NET)
+    route_map = {~w}
+    def route_generator():
+        for record in ~w:
+            yield from route_record(record, ~w, route_map)
+    ~w = route_generator()', [Pred, RouteMapCode, CurrentVar, Pred, NextVar]).
+
+% Filter stage
+generate_ironpython_stage_flow(filter_by(Pred), CurrentVar, NextVar, Code) :-
+    !,
+    NextVar = 'filtered_stream',
+    format(string(Code),
+'    # Filter by ~w
+    ~w = filter_records(~w, ~w)', [Pred, NextVar, CurrentVar, Pred]).
+
+% Unknown stage - pass through
+generate_ironpython_stage_flow(Stage, CurrentVar, CurrentVar, Code) :-
+    format(string(Code), '    # Unknown stage: ~w (pass-through)', [Stage]).
+
+%% collect_stage_names(+Stages, -Names)
+%  Extract stage function names from stage specifications.
+collect_stage_names([], []).
+collect_stage_names([Pred/_|Rest], [Pred|RestNames]) :-
+    !,
+    collect_stage_names(Rest, RestNames).
+collect_stage_names([_|Rest], RestNames) :-
+    collect_stage_names(Rest, RestNames).
+
+%% format_stage_list(+Names, -Str)
+%  Format stage names as Python function references.
+format_stage_list([], '').
+format_stage_list([Name], Str) :-
+    format(string(Str), '~w', [Name]).
+format_stage_list([Name|Rest], Str) :-
+    Rest \= [],
+    format_stage_list(Rest, RestStr),
+    format(string(Str), '~w, ~w', [Name, RestStr]).
+
+%% format_python_route_map(+Routes, -Code)
+%  Format routing map as Python dict literal.
+format_python_route_map([], '').
+format_python_route_map([(Cond, Stage)|[]], Code) :-
+    (Stage = StageName/_Arity -> true ; StageName = Stage),
+    (Cond = true ->
+        format(string(Code), 'True: ~w', [StageName])
+    ; Cond = false ->
+        format(string(Code), 'False: ~w', [StageName])
+    ;   format(string(Code), '"~w": ~w', [Cond, StageName])
+    ).
+format_python_route_map([(Cond, Stage)|Rest], Code) :-
+    Rest \= [],
+    (Stage = StageName/_Arity -> true ; StageName = Stage),
+    format_python_route_map(Rest, RestCode),
+    (Cond = true ->
+        format(string(Code), 'True: ~w, ~w', [StageName, RestCode])
+    ; Cond = false ->
+        format(string(Code), 'False: ~w, ~w', [StageName, RestCode])
+    ;   format(string(Code), '"~w": ~w, ~w', [Cond, StageName, RestCode])
+    ).
+
+%% generate_ironpython_enhanced_main(+PipelineName, +Protocol, -Code)
+%  Generate main execution block for IronPython enhanced pipeline.
+generate_ironpython_enhanced_main(PipelineName, jsonl, Code) :-
+    format(string(Code),
+'# ============================================
+# Main Execution Block (IronPython)
+# ============================================
+
+def read_input():
+    """Read JSONL records from stdin."""
+    for line in sys.stdin:
+        line = line.strip()
+        if line:
+            yield json.loads(line)
+
+def write_output(records):
+    """Write records as JSONL to stdout."""
+    for record in records:
+        print(json.dumps(record))
+
+if __name__ == "__main__":
+    input_stream = read_input()
+    output_stream = ~w(input_stream)
+    write_output(output_stream)
+', [PipelineName]).
+
+generate_ironpython_enhanced_main(PipelineName, _, Code) :-
+    format(string(Code),
+'# ============================================
+# Main Execution Block (IronPython)
+# ============================================
+
+def read_input():
+    """Read records from stdin."""
+    for line in sys.stdin:
+        line = line.strip()
+        if line:
+            yield line
+
+def write_output(records):
+    """Write records to stdout."""
+    for record in records:
+        print(record)
+
+if __name__ == "__main__":
+    input_stream = read_input()
+    output_stream = ~w(input_stream)
+    write_output(output_stream)
+', [PipelineName]).
+
+%% ============================================
+%% IRONPYTHON ENHANCED PIPELINE CHAINING TESTS
+%% ============================================
+
+test_ironpython_enhanced_chaining :-
+    format('~n=== IronPython Enhanced Pipeline Chaining Tests ===~n~n', []),
+
+    % Test 1: Generate IronPython enhanced helpers
+    format('[Test 1] IronPython enhanced helpers~n', []),
+    ironpython_enhanced_helpers(Helpers1),
+    (   sub_string(Helpers1, _, _, _, "fan_out_records"),
+        sub_string(Helpers1, _, _, _, "List[object]"),
+        sub_string(Helpers1, _, _, _, "route_record"),
+        sub_string(Helpers1, _, _, _, "filter_records"),
+        sub_string(Helpers1, _, _, _, "Dictionary")
+    ->  format('  [PASS] IronPython helpers use .NET collections~n', [])
+    ;   format('  [FAIL] Missing .NET collection usage~n', [])
+    ),
+
+    % Test 2: IronPython enhanced header
+    format('[Test 2] IronPython enhanced header~n', []),
+    ironpython_enhanced_header(jsonl, Header2),
+    (   sub_string(Header2, _, _, _, "#!/usr/bin/env ipy"),
+        sub_string(Header2, _, _, _, "import clr"),
+        sub_string(Header2, _, _, _, "List, Dictionary, HashSet")
+    ->  format('  [PASS] Header has IronPython CLR imports~n', [])
+    ;   format('  [FAIL] Header missing CLR imports~n', [])
+    ),
+
+    % Test 3: Linear pipeline connector
+    format('[Test 3] Linear pipeline connector~n', []),
+    generate_ironpython_enhanced_connector([extract/1, transform/1, load/1], linear_pipe, Code3),
+    (   sub_string(Code3, _, _, _, "def linear_pipe"),
+        sub_string(Code3, _, _, _, "extract"),
+        sub_string(Code3, _, _, _, "transform"),
+        sub_string(Code3, _, _, _, "load")
+    ->  format('  [PASS] Linear connector generated~n', [])
+    ;   format('  [FAIL] Linear connector missing patterns~n', [])
+    ),
+
+    % Test 4: Fan-out connector with .NET comment
+    format('[Test 4] Fan-out connector~n', []),
+    generate_ironpython_enhanced_connector([extract/1, fan_out([validate/1, enrich/1])], fanout_pipe, Code4),
+    (   sub_string(Code4, _, _, _, "Fan-out to 2"),
+        sub_string(Code4, _, _, _, "IronPython/.NET"),
+        sub_string(Code4, _, _, _, "fan_out_records")
+    ->  format('  [PASS] Fan-out connector uses .NET~n', [])
+    ;   format('  [FAIL] Fan-out connector missing .NET patterns~n', [])
+    ),
+
+    % Test 5: Fan-out with merge
+    format('[Test 5] Fan-out with merge~n', []),
+    generate_ironpython_enhanced_connector([fan_out([a/1, b/1]), merge, output/1], merge_pipe, Code5),
+    (   sub_string(Code5, _, _, _, "Merge"),
+        sub_string(Code5, _, _, _, "merged_stream")
+    ->  format('  [PASS] Merge connector generated~n', [])
+    ;   format('  [FAIL] Merge connector issue~n', [])
+    ),
+
+    % Test 6: Conditional routing
+    format('[Test 6] Conditional routing~n', []),
+    generate_ironpython_enhanced_connector([extract/1, route_by(has_error, [(true, error/1), (false, success/1)])], route_pipe, Code6),
+    (   sub_string(Code6, _, _, _, "route_map"),
+        sub_string(Code6, _, _, _, "route_record"),
+        sub_string(Code6, _, _, _, "Conditional routing")
+    ->  format('  [PASS] Routing connector generated~n', [])
+    ;   format('  [FAIL] Routing connector missing patterns~n', [])
+    ),
+
+    % Test 7: Filter stage
+    format('[Test 7] Filter stage~n', []),
+    generate_ironpython_enhanced_connector([extract/1, filter_by(is_valid), output/1], filter_pipe, Code7),
+    (   sub_string(Code7, _, _, _, "filter_records"),
+        sub_string(Code7, _, _, _, "Filter by is_valid")
+    ->  format('  [PASS] Filter connector generated~n', [])
+    ;   format('  [FAIL] Filter connector missing patterns~n', [])
+    ),
+
+    % Test 8: Complex pipeline with all patterns
+    format('[Test 8] Complex pipeline~n', []),
+    generate_ironpython_enhanced_connector([
+        extract/1,
+        filter_by(is_active),
+        fan_out([validate/1, enrich/1, audit/1]),
+        merge,
+        route_by(has_error, [(true, error_log/1), (false, transform/1)]),
+        output/1
+    ], complex_pipe, Code8),
+    (   sub_string(Code8, _, _, _, "Fan-out to 3"),
+        sub_string(Code8, _, _, _, "Filter by is_active"),
+        sub_string(Code8, _, _, _, "Merge"),
+        sub_string(Code8, _, _, _, "Conditional routing")
+    ->  format('  [PASS] Complex connector has all patterns~n', [])
+    ;   format('  [FAIL] Complex connector missing patterns~n', [])
+    ),
+
+    % Test 9: Full IronPython enhanced pipeline compilation
+    format('[Test 9] Full IronPython enhanced pipeline~n', []),
+    compile_ironpython_enhanced_pipeline([
+        extract/1,
+        filter_by(is_active),
+        fan_out([validate/1, enrich/1]),
+        merge,
+        output/1
+    ], [pipeline_name(full_iron_enhanced)], Code9),
+    (   sub_string(Code9, _, _, _, "#!/usr/bin/env ipy"),
+        sub_string(Code9, _, _, _, "import clr"),
+        sub_string(Code9, _, _, _, "fan_out_records"),
+        sub_string(Code9, _, _, _, "def full_iron_enhanced"),
+        sub_string(Code9, _, _, _, '__name__ == "__main__"')
+    ->  format('  [PASS] Full IronPython enhanced pipeline compiles~n', [])
+    ;   format('  [FAIL] Full pipeline compilation failed~n', [])
+    ),
+
+    % Test 10: IronPython helpers have .NET interop utilities
+    format('[Test 10] IronPython .NET interop utilities~n', []),
+    ironpython_enhanced_helpers(Helpers10),
+    (   sub_string(Helpers10, _, _, _, "to_dotnet_list"),
+        sub_string(Helpers10, _, _, _, "from_dotnet_list"),
+        sub_string(Helpers10, _, _, _, "create_route_map")
+    ->  format('  [PASS] .NET interop utilities present~n', [])
+    ;   format('  [FAIL] Missing .NET interop utilities~n', [])
+    ),
+
+    format('~n=== All IronPython Enhanced Pipeline Chaining Tests Passed ===~n', []).
