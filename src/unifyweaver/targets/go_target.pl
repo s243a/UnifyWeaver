@@ -38,6 +38,9 @@
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/go_bindings').
 
+% Pipeline validation
+:- use_module('../core/pipeline_validation').
+
 % Track required imports from bindings
 :- dynamic required_binding_import/1.
 
@@ -8082,8 +8085,36 @@ test_go_pipeline_generator :-
 %
 %% compile_go_enhanced_pipeline(+Stages, +Options, -GoCode)
 %  Main entry point for enhanced Go pipeline with advanced flow patterns.
+%  Validates pipeline stages before code generation.
 %
 compile_go_enhanced_pipeline(Stages, Options, GoCode) :-
+    % Validate pipeline stages
+    option(validate(Validate), Options, true),
+    option(strict(Strict), Options, false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'Go pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'Go pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
     option(pipeline_name(PipelineName), Options, enhanced_pipeline),
     option(output_format(OutputFormat), Options, jsonl),
     option(include_package(IncludePackage), Options, true),

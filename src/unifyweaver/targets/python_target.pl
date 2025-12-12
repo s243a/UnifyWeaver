@@ -47,6 +47,9 @@
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/python_bindings').
 
+% Pipeline validation (Phase 9)
+:- use_module('../core/pipeline_validation').
+
 % Control plane integration (Phase 2 - Runtime Selection)
 :- catch(use_module('../core/preferences'), _, true).
 :- catch(use_module('../core/firewall'), _, true).
@@ -4524,7 +4527,35 @@ format_stage_call(N, Call) :-
 
 %% compile_enhanced_pipeline(+Stages, +Options, -Code)
 %  Main entry point for enhanced pipeline with advanced flow patterns.
+%  Validates pipeline stages before code generation.
 compile_enhanced_pipeline(Stages, Options, Code) :-
+    % Validate pipeline stages (Phase 9)
+    option(validate(Validate), Options, true),
+    option(strict(Strict), Options, false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'Pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'Pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
     option(pipeline_name(PipelineName), Options, enhanced_pipeline),
     option(runtime(Runtime), Options, cpython),
     option(glue_protocol(GlueProtocol), Options, jsonl),
@@ -5220,7 +5251,35 @@ test_enhanced_pipeline_chaining :-
 
 %% compile_ironpython_enhanced_pipeline(+Stages, +Options, -Code)
 %  Main entry point for IronPython enhanced pipelines with .NET integration.
+%  Validates pipeline stages before code generation.
 compile_ironpython_enhanced_pipeline(Stages, Options, Code) :-
+    % Validate pipeline stages (Phase 9)
+    option(validate(Validate), Options, true),
+    option(strict(Strict), Options, false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'IronPython pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'IronPython pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
     option(pipeline_name(PipelineName), Options, iron_enhanced_pipeline),
     option(glue_protocol(GlueProtocol), Options, jsonl),
 

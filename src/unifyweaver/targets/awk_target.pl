@@ -23,6 +23,7 @@
 :- use_module(library(gensym)).
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/awk_bindings').
+:- use_module('../core/pipeline_validation').
 
 %% init_awk_target
 %  Initialize the AWK target by loading bindings.
@@ -1757,8 +1758,36 @@ test_awk_pipeline_generator :-
 %
 %% compile_awk_enhanced_pipeline(+Stages, +Options, -AwkCode)
 %  Main entry point for enhanced AWK pipeline with advanced flow patterns.
+%  Validates pipeline stages before code generation.
 %
 compile_awk_enhanced_pipeline(Stages, Options, AwkCode) :-
+    % Validate pipeline stages
+    option(validate(Validate), Options, true),
+    option(strict(Strict), Options, false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'AWK pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'AWK pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
     option(pipeline_name(PipelineName), Options, enhanced_pipeline),
     option(record_format(RecordFormat), Options, jsonl),
 

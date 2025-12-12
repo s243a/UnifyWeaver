@@ -21,6 +21,7 @@
 :- use_module(library(gensym)).
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/bash_bindings').
+:- use_module('../core/pipeline_validation').
 
 %% init_bash_target
 %  Initialize the Bash target by loading bindings.
@@ -559,6 +560,7 @@ bash_pipeline_test('Full pipeline compilation', (
 
 %% compile_bash_enhanced_pipeline(+Stages, +Options, -BashCode)
 %  Main entry point for compiling enhanced pipelines to Bash.
+%  Validates pipeline stages before code generation.
 %  Stages can include:
 %    - Pred/Arity      : Standard predicate stage
 %    - fan_out(Stages) : Broadcast to parallel stages
@@ -566,6 +568,33 @@ bash_pipeline_test('Full pipeline compilation', (
 %    - route_by(Pred, Routes) : Conditional routing
 %    - filter_by(Pred) : Filter records by predicate
 compile_bash_enhanced_pipeline(Stages, Options, BashCode) :-
+    % Validate pipeline stages
+    (member(validate(Validate), Options) -> true ; Validate = true),
+    (member(strict(Strict), Options) -> true ; Strict = false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'Bash pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'Bash pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
     % Extract options with defaults
     (member(pipeline_name(PipelineName), Options) -> true ; PipelineName = enhanced_pipeline),
     (member(record_format(Format), Options) -> true ; Format = jsonl),
