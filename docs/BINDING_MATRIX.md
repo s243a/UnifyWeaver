@@ -18,26 +18,23 @@ This document tracks which bindings are implemented for each target language.
 |--------|----------|------------|
 | **Python** | 106 | 9 (Built-ins, String, List, Dict, I/O, Regex, Math, Collections, Itertools) |
 | **PowerShell** | 68 | 4 (Cmdlets, Automation, .NET, C# Hosting) |
+| **Go** | 50+ | 10 (Built-ins, String, Math, I/O, JSON, Regex, Time, Path, Collections, Conv) |
+| **C#** | 36+ | 5 (Built-ins, String, Math, I/O, LINQ) |
+| **Rust** | 29+ | 6 (Built-ins, String, Math, I/O, Regex, JSON) |
 
 ---
 
 ## Core Operations
 
-| Binding | Python | PowerShell | Notes |
-|---------|:------:|:----------:|-------|
-| `abs/2` | ✓ | ✓ | Absolute value |
-| `sqrt/2` | ✓ | ✓ | Square root |
-| `to_string/2` | ✓ | ✓ | Convert to string |
-| `to_int/2` | ✓ | ✓ | Convert to integer |
-| `to_float/2` | ✓ | ✗ | Convert to float |
-| `to_bool/2` | ✓ | ✗ | Convert to boolean |
-| `to_list/2` | ✓ | ✗ | Convert to list |
-| `to_array/2` | ✗ | ✓ | Convert to array |
-| `to_set/2` | ✓ | ✗ | Convert to set |
-| `to_tuple/2` | ✓ | ✗ | Convert to tuple |
-| `to_dict/2` | ✓ | ✗ | Convert to dict |
-| `to_hashtable/2` | ✗ | ✓ | Convert to hashtable |
-| `length/2` | ✓ | ✗ | Get length/count |
+| Binding | Python | PowerShell | Go | C# | Rust | Notes |
+|---------|:------:|:----------:|:--:|:--:|:----:|-------|
+| `abs/2` | ✓ | ✓ | ✓ | ✓ | ✓ | Absolute value |
+| `sqrt/2` | ✓ | ✓ | ✓ | ✓ | ✓ | Square root |
+| `to_string/2` | ✓ | ✓ | ✓ | ✓ | ✓ | Convert to string |
+| `to_int/2` | ✓ | ✓ | ✓ | ✓ | ✓ | Convert to integer |
+| `to_float/2` | ✓ | ✗ | ✓ | ✓ | ✓ | Convert to float |
+| `to_bool/2` | ✓ | ✗ | ✓ | ✓ | ✗ | Convert to boolean |
+| `length/2` | ✓ | ✗ | ✓ | ✓ | ✓ | Get length/count |
 | `type_of/2` | ✓ | ✗ | Get type |
 | `is_instance/2` | ✓ | ✗ | Type check |
 | `is_type/2` | ✗ | ✓ | Type check (-is) |
