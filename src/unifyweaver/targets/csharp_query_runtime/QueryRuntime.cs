@@ -38,6 +38,24 @@ namespace UnifyWeaver.QueryRuntime
     public abstract record PlanNode;
 
     /// <summary>
+    /// Seeds execution with caller-supplied parameter tuples.
+    /// </summary>
+    public sealed record ParamSeedNode(
+        PredicateId Predicate,
+        IReadOnlyList<int> InputPositions,
+        int Width
+    ) : PlanNode;
+
+    /// <summary>
+    /// Evaluates a subplan once and caches its tuples for reuse.
+    /// </summary>
+    public sealed record MaterializeNode(
+        string Id,
+        PlanNode Plan,
+        int Width
+    ) : PlanNode;
+
+    /// <summary>
     /// Scans a base relation provided by <see cref="IRelationProvider"/>.
     /// </summary>
     public sealed record RelationScanNode(PredicateId Relation) : PlanNode;
@@ -159,7 +177,8 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record QueryPlan(
         PredicateId Head,
         PlanNode Root,
-        bool IsRecursive = false
+        bool IsRecursive = false,
+        IReadOnlyList<int>? InputPositions = null
     );
 
     /// <summary>
@@ -216,16 +235,31 @@ namespace UnifyWeaver.QueryRuntime
             _provider = provider ?? throw new ArgumentNullException(nameof(provider));
         }
 
-        public IEnumerable<object[]> Execute(QueryPlan plan)
+        public IEnumerable<object[]> Execute(QueryPlan plan, IEnumerable<object[]>? parameters = null)
         {
             if (plan is null) throw new ArgumentNullException(nameof(plan));
-            return Evaluate(plan.Root);
+            var paramList = parameters?.ToList() ?? new List<object[]>();
+            var context = new EvaluationContext(paramList);
+            var result = Evaluate(plan.Root, context);
+
+            if (plan.InputPositions is { Count: > 0 })
+            {
+                return FilterByParameters(result, plan.InputPositions, paramList);
+            }
+
+            return result;
         }
 
         private IEnumerable<object[]> Evaluate(PlanNode node, EvaluationContext? context = null)
         {
             switch (node)
             {
+                case ParamSeedNode seed:
+                    return EvaluateParamSeed(seed, context);
+
+                case MaterializeNode materialize:
+                    return EvaluateMaterialize(materialize, context);
+
                 case RelationScanNode scan:
                     return _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>();
 
@@ -248,10 +282,10 @@ namespace UnifyWeaver.QueryRuntime
                     return ExecuteDistinct(distinct, context);
 
                 case FixpointNode fixpoint:
-                    return ExecuteFixpoint(fixpoint);
+                    return ExecuteFixpoint(fixpoint, context);
 
                 case MutualFixpointNode mutualFixpoint:
-                    return ExecuteMutualFixpoint(mutualFixpoint);
+                    return ExecuteMutualFixpoint(mutualFixpoint, context);
 
                 case RecursiveRefNode recursiveRef:
                     return EvaluateRecursiveReference(recursiveRef, context);
@@ -313,7 +347,107 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
-        private IEnumerable<object[]> ExecuteFixpoint(FixpointNode fixpoint)
+        private IEnumerable<object[]> EvaluateParamSeed(ParamSeedNode seed, EvaluationContext? context)
+        {
+            var parameters = context?.Parameters ?? Enumerable.Empty<object[]>();
+
+            foreach (var paramTuple in parameters)
+            {
+                if (paramTuple is null) continue;
+
+                var tuple = new object[seed.Width];
+
+                if (paramTuple.Length == seed.InputPositions.Count)
+                {
+                    for (var i = 0; i < seed.InputPositions.Count; i++)
+                    {
+                        tuple[seed.InputPositions[i]] = paramTuple[i];
+                    }
+                }
+                else if (paramTuple.Length == seed.Width)
+                {
+                    foreach (var pos in seed.InputPositions)
+                    {
+                        tuple[pos] = paramTuple[pos];
+                    }
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Parameter tuple length {paramTuple.Length} does not match input positions ({seed.InputPositions.Count}) or arity ({seed.Width}).");
+                }
+
+                yield return tuple;
+            }
+        }
+
+        private IEnumerable<object[]> EvaluateMaterialize(MaterializeNode node, EvaluationContext? context)
+        {
+            if (context is null)
+            {
+                return Evaluate(node.Plan, context).ToList();
+            }
+
+            if (context.Materialized.TryGetValue(node.Id, out var cached))
+            {
+                return cached;
+            }
+
+            var rows = Evaluate(node.Plan, context).ToList();
+            context.Materialized[node.Id] = rows;
+            return rows;
+        }
+
+        private static IEnumerable<object[]> FilterByParameters(
+            IEnumerable<object[]> source,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<object[]> parameters)
+        {
+            if (inputPositions.Count == 0)
+            {
+                return source;
+            }
+
+            if (parameters.Count == 0)
+            {
+                return Enumerable.Empty<object[]>();
+            }
+
+            var parameterSet = new HashSet<RowWrapper>(
+                parameters.Select(p => new RowWrapper(BuildKeyFromTuple(p, inputPositions))),
+                new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            return source.Where(tuple =>
+            {
+                if (tuple is null) return false;
+                var key = BuildKeyFromTuple(tuple, inputPositions);
+                return parameterSet.Contains(new RowWrapper(key));
+            });
+        }
+
+        private static object[] BuildKeyFromTuple(object[] tuple, IReadOnlyList<int> inputPositions)
+        {
+            var key = new object[inputPositions.Count];
+
+            if (tuple.Length == inputPositions.Count)
+            {
+                for (var i = 0; i < inputPositions.Count; i++)
+                {
+                    key[i] = tuple[i];
+                }
+                return key;
+            }
+
+            for (var i = 0; i < inputPositions.Count; i++)
+            {
+                var pos = inputPositions[i];
+                key[i] = pos >= 0 && pos < tuple.Length ? tuple[pos] : null!;
+            }
+
+            return key;
+        }
+
+        private IEnumerable<object[]> ExecuteFixpoint(FixpointNode fixpoint, EvaluationContext? parentContext)
         {
             if (fixpoint is null) throw new ArgumentNullException(nameof(fixpoint));
 
@@ -321,7 +455,8 @@ namespace UnifyWeaver.QueryRuntime
             var predicate = fixpoint.Predicate;
             var totalSet = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
             var totalRows = new List<object[]>();
-            var baseRows = Evaluate(fixpoint.BasePlan).ToList();
+            var context = parentContext ?? new EvaluationContext();
+            var baseRows = Evaluate(fixpoint.BasePlan, context).ToList();
             var deltaRows = new List<object[]>();
 
             foreach (var tuple in baseRows)
@@ -333,10 +468,7 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
-            var context = new EvaluationContext
-            {
-                Current = predicate
-            };
+            context.Current = predicate;
             context.Totals[predicate] = totalRows;
             context.Deltas[predicate] = deltaRows;
 
@@ -360,13 +492,13 @@ namespace UnifyWeaver.QueryRuntime
             return totalRows;
         }
 
-        private IEnumerable<object[]> ExecuteMutualFixpoint(MutualFixpointNode node)
+        private IEnumerable<object[]> ExecuteMutualFixpoint(MutualFixpointNode node, EvaluationContext? parentContext)
         {
             if (node is null) throw new ArgumentNullException(nameof(node));
 
             var comparer = StructuralArrayComparer.Instance;
             var totalSets = new Dictionary<PredicateId, HashSet<RowWrapper>>();
-            var context = new EvaluationContext();
+            var context = parentContext ?? new EvaluationContext();
 
             foreach (var member in node.Members)
             {
@@ -379,7 +511,7 @@ namespace UnifyWeaver.QueryRuntime
                 var set = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
                 totalSets[predicate] = set;
 
-                var baseRows = Evaluate(member.BasePlan).ToList();
+                var baseRows = Evaluate(member.BasePlan, context).ToList();
                 foreach (var tuple in baseRows)
                 {
                     if (TryAddRow(set, tuple))
@@ -628,12 +760,21 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class EvaluationContext
         {
+            public EvaluationContext(IEnumerable<object[]>? parameters = null)
+            {
+                Parameters = parameters?.ToList() ?? new List<object[]>();
+            }
+
             public PredicateId Current { get; set; }
             = new PredicateId("", 0);
 
             public Dictionary<PredicateId, List<object[]>> Totals { get; } = new();
 
             public Dictionary<PredicateId, List<object[]>> Deltas { get; } = new();
+
+            public IReadOnlyList<object[]> Parameters { get; }
+
+            public Dictionary<string, List<object[]>> Materialized { get; } = new();
         }
 
         private sealed record RowWrapper(object[] Row);

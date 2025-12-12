@@ -28,3 +28,13 @@
   - Update query codegen/runtime for new nodes.
   - Add targeted tests (Fibonacci-style recursion; ensure existing tests still pass).
 - Keep generator mode as fallback; only merge to main when stable.
+
+## Progress update (current branch snapshot)
+- Modes are parsed and threaded through all query plans.
+- Implemented a `param_seed` plan node; pipelines now seed inputs (when declared) before body evaluation, preserving the existing all-output path when no inputs are declared.
+- Implemented bottom-up demand closure for non-mutual, aggregates-free parameterised recursion: a synthetic `pred$need` fixpoint is built from recursive clause prefixes, materialized once, and used to seed/filter the main predicate’s base and recursive pipelines.
+- Added a `materialize` plan node and matching C# `MaterializeNode` runtime support to cache subplan results (used by demand closure).
+- C# QueryRuntime now understands `ParamSeedNode`, accepts parameters at execution time, and filters outputs by declared input positions.
+- Rendered plans emit input-position metadata into `QueryPlan`.
+- Added a plan-structure test for parameterised Fibonacci (`tests/core/test_csharp_query_target.pl`) to assert the need/materialize shape is present and rendered.
+- Next: end-to-end runtime tests that pass parameters into `QueryExecutor.Execute`, broaden coverage (negation/aggregates/mutual recursion), and optionally add the memoized fallback once semantics are locked down.

@@ -16,6 +16,7 @@
 
 :- use_module(library(apply)).
 :- use_module(library(error)).
+:- use_module(library(gensym)).
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(ugraphs), [vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3]).
@@ -192,6 +193,10 @@ signature_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
 %  Produce a declarative plan describing how to evaluate the requested
 %  predicate. Plans are represented as dicts containing the head descriptor,
 %  root operator, materialised fact tables, and metadata.
+build_query_plan(Pred/Arity, Options, Plan) :-
+    modes_for_pred(Pred/Arity, Modes),
+    build_query_plan(Pred/Arity, Options, Modes, Plan).
+
 build_query_plan(Pred/Arity, Options, Modes, Plan) :-
     must_be(atom, Pred),
     must_be(integer, Arity),
@@ -203,7 +208,7 @@ build_query_plan(Pred/Arity, Options, Modes, Plan) :-
         partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
         (   RecClauses == []
         ->  classify_clauses(BaseClauses, Classification),
-            build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Modes, Plan)
+            build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Modes, none, Plan)
         ;   build_recursive_plan(HeadSpec, [HeadSpec], BaseClauses, RecClauses, Options, Modes, Plan)
         )
     ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan)
@@ -230,19 +235,39 @@ classify_clauses(Clauses, multiple_rules) :-
     Clauses \= [_-true], !.
 classify_clauses(_Clauses, unsupported).
 
-%% build_plan_by_class(+Class, +Pred, +Arity, +Clauses, +Options, +Modes, -Plan) is semidet.
-build_plan_by_class(none, Pred, Arity, _Clauses, _Options, _Modes, _) :-
+%% build_plan_by_class(+Class, +Pred, +Arity, +Clauses, +Options, +Modes, +SeedOverride, -Plan) is semidet.
+build_plan_by_class(none, Pred, Arity, _Clauses, _Options, _Modes, _SeedOverride, _) :-
     format(user_error, 'C# query target: no clauses found for ~w/~w.~n', [Pred, Arity]),
     fail.
-build_plan_by_class(unsupported, Pred, Arity, _Clauses, _Options, _Modes, _) :-
+build_plan_by_class(unsupported, Pred, Arity, _Clauses, _Options, _Modes, _SeedOverride, _) :-
     format(user_error,
            'C# query target: predicate shape not yet supported (~w/~w).~n',
            [Pred, Arity]),
     fail.
-build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Modes, Plan) :-
+build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Modes, SeedOverride, Plan) :-
     ensure_relation(Pred, Arity, [], Relations),
     Relations = [relation{predicate:HeadSpec, facts:_}|_],
-    Root = relation_scan{type:relation_scan, predicate:HeadSpec, width:Arity},
+    Root0 = relation_scan{type:relation_scan, predicate:HeadSpec, width:Arity},
+    (   SeedOverride = seed(NeedMat, InputPositions)
+    ->  length(InputPositions, InputCount),
+        EndLeft is InputCount - 1,
+        numlist(0, EndLeft, LeftKeys),
+        RightKeys = InputPositions,
+        JoinNode = join{
+            type:join,
+            left:NeedMat,
+            right:Root0,
+            left_keys:LeftKeys,
+            right_keys:RightKeys,
+            left_width:InputCount,
+            right_width:Arity,
+            width:InputCount+Arity
+        },
+        EndFact is Arity - 1,
+        findall(Idx, (between(0, EndFact, I), Idx is InputCount+I), RightCols),
+        Root = projection{type:projection, input:JoinNode, columns:RightCols, width:Arity}
+    ;   Root = Root0
+    ),
     Plan = plan{
         head:HeadSpec,
         root:Root,
@@ -250,11 +275,11 @@ build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Modes, Plan) :-
         metadata:_{classification:facts, options:Options, modes:Modes},
         is_recursive:false
     }.
-build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Modes, Plan) :-
+build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Modes, SeedOverride, Plan) :-
     Head =.. [Pred|HeadArgs],
     length(HeadArgs, Arity),
     HeadSpec = predicate{name:Pred, arity:Arity},
-    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Node, Relations),
+    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Modes, SeedOverride, Node, Relations),
     dedup_relations(Relations, UniqueRelations),
     Plan = plan{
         head:HeadSpec,
@@ -263,8 +288,8 @@ build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Modes, Plan)
         metadata:_{classification:single_rule, options:Options, modes:Modes},
         is_recursive:false
     }.
-build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Modes, Plan) :-
-    maplist(build_clause_node(Pred/Arity), Clauses, Nodes, RelationLists),
+build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Modes, SeedOverride, Plan) :-
+    maplist(build_clause_node(Pred/Arity, Modes, SeedOverride), Clauses, Nodes, RelationLists),
     append(RelationLists, RelationsFlat),
     dedup_relations(RelationsFlat, Relations),
     HeadSpec = predicate{name:Pred, arity:Arity},
@@ -276,7 +301,7 @@ build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Modes, Plan) 
         metadata:_{classification:multiple_rules, options:Options, modes:Modes},
         is_recursive:false
     }.
-build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _Modes, _) :-
+build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _Modes, _SeedOverride, _) :-
     format(user_error, 'C# query target: unexpected fact classified as rule (~w/~w).~n', [Pred, Arity]),
     fail.
 
@@ -284,9 +309,16 @@ build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _Modes, _) :-
 
 build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Modes, Plan) :-
     get_dict(arity, HeadSpec, Arity),
-    build_base_root(HeadSpec, BaseClauses, Options, Modes, BaseRoot, BaseRelations),
-    build_recursive_variants(HeadSpec, GroupSpecs, RecClauses, RecursiveNodes, RecursiveRelations),
-    append(BaseRelations, RecursiveRelations, CombinedRelations0),
+    (   eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes)
+    ->  build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositions),
+        SeedOverride = seed(NeedMat, InputPositions)
+    ;   NeedRelations = [],
+        SeedOverride = none
+    ),
+    build_base_root(HeadSpec, BaseClauses, Options, Modes, SeedOverride, BaseRoot, BaseRelations),
+    build_recursive_variants(HeadSpec, GroupSpecs, RecClauses, Modes, SeedOverride, RecursiveNodes, RecursiveRelations),
+    append(BaseRelations, RecursiveRelations, MainRelations0),
+    append(NeedRelations, MainRelations0, CombinedRelations0),
     dedup_relations(CombinedRelations0, CombinedRelations),
     Root = fixpoint{
         type:fixpoint,
@@ -330,8 +362,8 @@ build_member_plan(GroupSpecs, Options, Modes, PredSpec, member{
     get_dict(arity, PredSpec, Arity),
     gather_predicate_clauses(PredSpec, Clauses),
     partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses),
-    build_base_root(PredSpec, BaseClauses, Options, Modes, BaseRoot, BaseRelations),
-    build_recursive_variants(PredSpec, GroupSpecs, RecClauses, RecursiveNodes, RecursiveRelations),
+    build_base_root(PredSpec, BaseClauses, Options, Modes, none, BaseRoot, BaseRelations),
+    build_recursive_variants(PredSpec, GroupSpecs, RecClauses, Modes, none, RecursiveNodes, RecursiveRelations),
     append(BaseRelations, RecursiveRelations, Relations).
 
 partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses) :-
@@ -342,25 +374,25 @@ clause_has_group_literal(GroupSpecs, _Head-Body) :-
     member(Term, Terms),
     group_literal_spec(Term, GroupSpecs, _).
 
-build_base_root(_HeadSpec, [], _Options, _Modes, empty{type:empty, width:Arity}, []) :-
+build_base_root(_HeadSpec, [], _Options, _Modes, _SeedOverride, empty{type:empty, width:Arity}, []) :-
     Arity = 0.
-build_base_root(HeadSpec, [], _Options, _Modes, empty{type:empty, width:Arity}, []) :-
+build_base_root(HeadSpec, [], _Options, _Modes, _SeedOverride, empty{type:empty, width:Arity}, []) :-
     get_dict(arity, HeadSpec, Arity).
-build_base_root(HeadSpec, Clauses, Options, Modes, BaseRoot, Relations) :-
+build_base_root(HeadSpec, Clauses, Options, Modes, SeedOverride, BaseRoot, Relations) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
     classify_clauses(Clauses, Class),
-    build_plan_by_class(Class, Pred, Arity, Clauses, Options, Modes, BasePlan),
+    build_plan_by_class(Class, Pred, Arity, Clauses, Options, Modes, SeedOverride, BasePlan),
     get_dict(root, BasePlan, BaseRoot),
     get_dict(relations, BasePlan, Relations).
 
-build_recursive_variants(_HeadSpec, _GroupSpecs, [], [], []) :- !.
-build_recursive_variants(HeadSpec, GroupSpecs, Clauses, Variants, Relations) :-
+build_recursive_variants(_HeadSpec, _GroupSpecs, [], _Modes, _SeedOverride, [], []) :- !.
+build_recursive_variants(HeadSpec, GroupSpecs, Clauses, Modes, SeedOverride, Variants, Relations) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
     findall(variant(Node, RelList),
         (   member(Head-Body, Clauses),
-            build_recursive_clause_variants(HeadSpec, GroupSpecs, Head-Body, VariantStructs),
+            build_recursive_clause_variants(HeadSpec, GroupSpecs, Modes, SeedOverride, Head-Body, VariantStructs),
             member(variant(Node, RelList), VariantStructs)
         ),
         VariantPairs),
@@ -373,19 +405,19 @@ build_recursive_variants(HeadSpec, GroupSpecs, Clauses, Variants, Relations) :-
         dedup_relations(RelationsFlat, Relations)
     ).
 
-build_recursive_clause_variants(HeadSpec, GroupSpecs, Head-Body, Variants) :-
+build_recursive_clause_variants(HeadSpec, GroupSpecs, Modes, SeedOverride, Head-Body, Variants) :-
     Head =.. [_|HeadArgs],
     body_to_list(Body, Terms),
     group_occurrence_positions(GroupSpecs, Terms, Occurrences),
     (   Occurrences = []
     ->  assign_roles_for_variant(HeadSpec, GroupSpecs, Terms, none, Roles),
-        build_pipeline(HeadSpec, GroupSpecs, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
+        build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
         project_to_head(HeadArgs, PipelineNode, VarMap, Node),
         Variants = [variant(Node, RelList)]
     ;   findall(variant(Node, RelList),
         (   member(occurrence(Index, PredSpec), Occurrences),
             assign_roles_for_variant(HeadSpec, GroupSpecs, Terms, delta(Index, PredSpec), Roles),
-            build_pipeline(HeadSpec, GroupSpecs, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
+            build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
             project_to_head(HeadArgs, PipelineNode, VarMap, Node)
         ),
         Variants)
@@ -473,25 +505,25 @@ arithmetic_goal(Goal0) :-
 
 %% Clause helpers -----------------------------------------------------------
 
-build_clause_node(_HeadSig, Head-true, Node, Relations) :-
+build_clause_node(_HeadSig, _Modes, _SeedOverride, Head-true, Node, Relations) :-
     Head =.. [Pred|Args],
     length(Args, Arity),
     ensure_relation(Pred, Arity, [], Relations),
     HeadSpec = predicate{name:Pred, arity:Arity},
     Node = relation_scan{type:relation_scan, predicate:HeadSpec, width:Arity}.
-build_clause_node(HeadSig, Head-Body, Node, Relations) :-
+build_clause_node(HeadSig, Modes, SeedOverride, Head-Body, Node, Relations) :-
     HeadSig = Pred/Arity,
     Head =.. [Pred|HeadArgs],
     HeadSpec = predicate{name:Pred, arity:Arity},
-    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Node, ClauseRelations),
+    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Modes, SeedOverride, Node, ClauseRelations),
     Relations = ClauseRelations.
 
-build_rule_clause(GroupSpecs, HeadSpec, HeadArgs, Body, Root, Relations) :-
+build_rule_clause(GroupSpecs, HeadSpec, HeadArgs, Body, Modes, SeedOverride, Root, Relations) :-
     Body \= true,
     body_to_list(Body, Terms),
     Terms \= [],
     roles_for_nonrecursive_terms(HeadSpec, Terms, Roles),
-    build_pipeline(HeadSpec, GroupSpecs, Terms, Roles, PipelineNode, Relations, VarMap, Width),
+    build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms, Roles, PipelineNode, Relations, VarMap, Width),
     project_to_head(HeadArgs, PipelineNode, VarMap, Root),
     length(HeadArgs, WidthHead),
     Width >= WidthHead.
@@ -511,6 +543,156 @@ build_pipeline(HeadSpec, GroupSpecs, [Term|Rest], [Role|Roles], FinalNode, Final
     build_initial_node(HeadSpec, GroupSpecs, Term, Role, Node0, Relations0, VarMap0, Width0),
     fold_terms(GroupSpecs, Rest, Roles, HeadSpec, Node0, VarMap0, Width0, Relations0,
                FinalNode, FinalVarMap, FinalWidth, FinalRelations).
+
+%% Parameterised pipeline seed ---------------------------------------------
+
+has_input_mode(Modes) :-
+    member(input, Modes).
+
+input_positions(Modes, Positions) :-
+    findall(Pos, (nth0(Pos, Modes, input)), Positions).
+
+build_parameter_seed_node(_HeadSpec, _HeadArgs, Modes, _Node, _VarMap, _Width) :-
+    \+ has_input_mode(Modes), !, fail.
+build_parameter_seed_node(HeadSpec, HeadArgs, Modes, param_seed{
+        type:param_seed,
+        predicate:HeadSpec,
+        input_positions:Positions,
+        width:Arity
+    }, VarMap, Arity) :-
+    get_dict(arity, HeadSpec, Arity),
+    length(HeadArgs, Arity),
+    input_positions(Modes, Positions),
+    Positions \= [],
+    seed_var_map(HeadArgs, Positions, VarMap).
+
+seed_var_map(HeadArgs, Positions, VarMap) :-
+    findall(Var-Pos,
+        (   member(Pos, Positions),
+            nth0(Pos, HeadArgs, Var),
+            (   var(Var)
+            ->  true
+            ;   format(user_error, 'C# query target: input mode position must be a variable (~w).~n', [Var]),
+                fail
+            )
+        ),
+        VarMap).
+
+%% build_pipeline_seeded(+HeadSpec,+GroupSpecs,+HeadArgs,+Modes,+SeedOverride,+Terms,+Roles,...)
+%  If input modes are declared, start the pipeline from a param_seed node that
+%  binds inputs prior to evaluating the body. Otherwise, fall back to the
+%  standard pipeline builder.
+build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms, Roles,
+        FinalNode, FinalRelations, FinalVarMap, FinalWidth) :-
+    (   SeedOverride = seed(SeedNode, InputPositions)
+    ->  select_positions(InputPositions, HeadArgs, SeedArgs),
+        init_var_map(SeedArgs, 0, SeedVarMap),
+        length(InputPositions, SeedWidth),
+        fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, SeedWidth, [],
+            FinalNode, FinalVarMap, FinalWidth, FinalRelations)
+    ;   build_parameter_seed_node(HeadSpec, HeadArgs, Modes, SeedNode, SeedVarMap, SeedWidth)
+    ->  fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, SeedWidth, [],
+            FinalNode, FinalVarMap, FinalWidth, FinalRelations)
+    ;   build_pipeline(HeadSpec, GroupSpecs, Terms, Roles,
+            FinalNode, FinalRelations, FinalVarMap, FinalWidth)
+    ).
+
+%% Demand ("need") closure for parameterised recursion --------------------
+
+eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes) :-
+    has_input_mode(Modes),
+    GroupSpecs = [HeadSpec],
+    safe_recursive_clauses_for_need(RecClauses).
+
+safe_recursive_clauses_for_need([]) :- fail.
+safe_recursive_clauses_for_need([_-Body|Rest]) :-
+    body_to_list(Body, Terms),
+    \+ (member(T, Terms), (aggregate_goal(T) ; negation_goal(T))),
+    safe_recursive_clauses_for_need(Rest).
+safe_recursive_clauses_for_need([_-Body]) :-
+    body_to_list(Body, Terms),
+    \+ (member(T, Terms), (aggregate_goal(T) ; negation_goal(T))).
+
+negation_goal(Term0) :-
+    strip_module(Term0, _, Term),
+    (   Term =.. ['\\+', _]
+    ;   Term =.. [not, _]
+    ).
+
+select_positions(Positions, List, Selected) :-
+    maplist(nth0_in(List), Positions, Selected).
+
+nth0_in(List, Pos, Elem) :-
+    nth0(Pos, List, Elem).
+
+need_predicate_spec(predicate{name:Pred, arity:_}, InputCount, predicate{name:NeedPred, arity:InputCount}) :-
+    atom_concat(Pred, '$need', NeedPred).
+
+build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositions) :-
+    input_positions(Modes, InputPositions),
+    length(InputPositions, InputCount),
+    need_predicate_spec(HeadSpec, InputCount, NeedSpec),
+    EndNeed is InputCount - 1,
+    numlist(0, EndNeed, NeedInputPositions),
+    NeedSeed = param_seed{
+        type:param_seed,
+        predicate:NeedSpec,
+        input_positions:NeedInputPositions,
+        width:InputCount
+    },
+    build_need_recursive_variants(HeadSpec, NeedSpec, RecClauses, InputPositions, NeedRecNodes, NeedRelations),
+    NeedRoot = fixpoint{
+        type:fixpoint,
+        head:NeedSpec,
+        base:NeedSeed,
+        recursive:NeedRecNodes,
+        width:InputCount
+    },
+    gensym(need_mat_, Id),
+    NeedMat = materialize{type:materialize, id:Id, plan:NeedRoot, width:InputCount}.
+
+build_need_recursive_variants(HeadSpec, NeedSpec, RecClauses, InputPositions, Variants, Relations) :-
+    get_dict(name, HeadSpec, Pred),
+    get_dict(arity, HeadSpec, Arity),
+    length(InputPositions, InputCount),
+    findall(variant(Node, RelList),
+        (   member(Head-Body, RecClauses),
+            Head =.. [_|HeadArgs],
+            select_positions(InputPositions, HeadArgs, NeedArgs),
+            body_to_list(Body, Terms),
+            findall(Index,
+                (nth0(Index, Terms, Term), functor(Term, Pred, Arity)),
+                Occs),
+            member(Index, Occs),
+            nth0(Index, Terms, RecTerm),
+            prefix_terms(Index, Terms, Pred, Arity, Prefix0),
+            roles_for_nonrecursive_terms(NeedSpec, Prefix0, PrefixRoles),
+            recursive_ref_node(NeedSpec, delta, SeedNode),
+            init_var_map(NeedArgs, 0, SeedVarMap),
+            fold_terms([NeedSpec], Prefix0, PrefixRoles, NeedSpec, SeedNode, SeedVarMap, InputCount, [],
+                PrefixNode, VarMapMid, _WidthMid, RelList),
+            RecTerm =.. [_|RecArgs],
+            select_positions(InputPositions, RecArgs, RecNeedArgs),
+            projection_indices(RecNeedArgs, VarMapMid, Cols),
+            Node = projection{type:projection, input:PrefixNode, columns:Cols, width:InputCount}
+        ),
+        VariantPairs),
+    (   VariantPairs == []
+    ->  Variants = [], Relations = []
+    ;   findall(Node, member(variant(Node, _), VariantPairs), Variants),
+        findall(RelList, member(variant(_, RelList), VariantPairs), RelLists),
+        append(RelLists, Flat),
+        dedup_relations(Flat, Relations)
+    ).
+
+prefix_terms(Index, Terms, Pred, Arity, Prefix) :-
+    length(Before, Index),
+    append(Before, _Rest, Terms),
+    exclude(is_recursive_literal(Pred, Arity), Before, Prefix).
+
+is_recursive_literal(Pred, Arity, Term0) :-
+    strip_module(Term0, _, Term),
+    functor(Term, Pred, Arity).
 
 build_initial_node(HeadSpec, _GroupSpecs, _Term, constraint, _Node, _Relations, _VarMap, _Width) :-
     get_dict(name, HeadSpec, Pred),
@@ -849,6 +1031,7 @@ render_plan_to_csharp(Plan, Code) :-
     get_dict(root, Plan, Root),
     get_dict(relations, Plan, Relations),
     get_dict(is_recursive, Plan, IsRecursive),
+    get_dict(metadata, Plan, Meta),
     relation_blocks(Relations, ProviderBody, UsesDynamic),
     schema_declarations(Relations, SchemaDeclarations),
     (   ProviderBody == ''
@@ -858,9 +1041,19 @@ render_plan_to_csharp(Plan, Code) :-
     emit_plan_expression(Root, PlanExpr),
     plan_module_name(Plan, ModuleClass),
     atom_string(Pred, PredStr),
+    (   get_dict(modes, Meta, Modes)
+    ->  true
+    ;   Modes = []
+    ),
     (   IsRecursive == true
     ->  RecLiteral = 'true'
     ;   RecLiteral = 'false'
+    ),
+    (   input_positions(Modes, InputPosList),
+        InputPosList \= []
+    ->  atomic_list_concat(InputPosList, ', ', InputPosStr),
+        format(atom(InputPosLiteral), 'new int[]{ ~w }', [InputPosStr])
+    ;   InputPosLiteral = 'null'
     ),
     (   UsesDynamic == true
     ->  DynamicUsing = 'using UnifyWeaver.QueryRuntime.Dynamic;
@@ -884,14 +1077,35 @@ namespace UnifyWeaver.Generated
 ~w            var plan = new QueryPlan(
                 new PredicateId("~w", ~w),
                 ~w,
+                ~w,
                 ~w
             );
             return (provider, plan);
         }
     }
 }
-', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderSection, PredStr, Arity, PlanExpr, RecLiteral]).
+', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderSection, PredStr, Arity, PlanExpr, RecLiteral, InputPosLiteral]).
 
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, param_seed), !,
+    get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
+    get_dict(input_positions, Node, Positions),
+    get_dict(width, Node, Width),
+    atom_string(Name, NameStr),
+    (   Positions == []
+    ->  PositionsLiteral = 'new int[]{}'
+    ;   atomic_list_concat(Positions, ', ', PosStr),
+        format(atom(PositionsLiteral), 'new int[]{ ~w }', [PosStr])
+    ),
+    format(atom(Expr), 'new ParamSeedNode(new PredicateId("~w", ~w), ~w, ~w)', [NameStr, Arity, PositionsLiteral, Width]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, materialize), !,
+    get_dict(id, Node, Id),
+    get_dict(plan, Node, PlanNode),
+    get_dict(width, Node, Width),
+    emit_plan_expression(PlanNode, PlanExpr),
+    atom_string(Id, IdStr),
+    format(atom(Expr), 'new MaterializeNode("~w", ~w, ~w)', [IdStr, PlanExpr, Width]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, relation_scan), !,
     get_dict(predicate, Node, predicate{name:Name, arity:Arity}),

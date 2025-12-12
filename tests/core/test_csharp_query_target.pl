@@ -20,6 +20,7 @@
 :- dynamic cqt_option/2.
 :- dynamic user:test_factorial/2.
 :- dynamic user:test_factorial_input/1.
+:- dynamic user:test_fib_param/2.
 :- dynamic user:test_even/1.
 :- dynamic user:test_odd/1.
 :- dynamic user:test_parity_input/1.
@@ -29,6 +30,7 @@
 :- dynamic user:test_orders_jsonl/3.
 :- dynamic user:test_json_null_skip/2.
 :- dynamic user:test_json_null_default/2.
+:- dynamic user:mode/1.
 
 :- dynamic progress_last_report/1.
 :- dynamic progress_count/1.
@@ -47,6 +49,7 @@ test_csharp_query_target :-
         verify_arithmetic_plan,
         verify_recursive_arithmetic_plan,
         verify_comparison_plan,
+        verify_parameterized_fib_plan,
         verify_recursive_plan,
         verify_mutual_recursion_plan,
         verify_dynamic_source_plan,
@@ -92,6 +95,17 @@ setup_test_data :-
         test_factorial(N1, Prev),
         Result is Prev * N
     )),
+    assertz(user:mode(test_fib_param(+, -))),
+    assertz(user:test_fib_param(0, 1)),
+    assertz(user:test_fib_param(1, 1)),
+    assertz(user:(test_fib_param(N, F) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        test_fib_param(N1, F1),
+        test_fib_param(N2, F2),
+        F is F1 + F2
+    )),
     assertz(user:test_parity_input(0)),
     assertz(user:test_parity_input(1)),
     assertz(user:test_parity_input(2)),
@@ -124,6 +138,8 @@ cleanup_test_data :-
     retractall(user:test_positive(_)),
     retractall(user:test_factorial_input(_)),
     retractall(user:test_factorial(_, _)),
+    retractall(user:test_fib_param(_, _)),
+    retractall(user:mode(test_fib_param(_,_))),
     retractall(user:test_parity_input(_)),
     retractall(user:test_even(_)),
     retractall(user:test_odd(_)),
@@ -196,6 +212,19 @@ verify_comparison_plan :-
         width:_
     },
     maybe_run_query_runtime(Plan, ['item1']).
+
+verify_parameterized_fib_plan :-
+    csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input, output],
+    get_dict(root, Plan, Root),
+    atom_concat(test_fib_param, '$need', NeedName),
+    sub_term(materialize{type:materialize, id:_, plan:fixpoint{type:fixpoint, head:predicate{name:NeedName, arity:1}, base:_, recursive:_, width:1}, width:1}, Root),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'MaterializeNode'),
+    sub_string(Source, _, _, _, 'ParamSeedNode').
 
 verify_recursive_arithmetic_plan :-
     csharp_query_target:build_query_plan(test_factorial/2, [target(csharp_query)], Plan),
