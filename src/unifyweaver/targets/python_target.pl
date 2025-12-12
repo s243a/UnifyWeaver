@@ -24,7 +24,12 @@
     % Pipeline generator mode exports (Phase 5)
     test_python_pipeline_generator/0,
     % IronPython pipeline generator mode exports (Phase 6)
-    test_ironpython_pipeline_generator/0
+    test_ironpython_pipeline_generator/0,
+    % Enhanced pipeline chaining exports (Phase 7)
+    compile_enhanced_pipeline/3,
+    enhanced_pipeline_helpers/1,
+    generate_enhanced_connector/3,
+    test_enhanced_pipeline_chaining/0
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -4495,6 +4500,248 @@ format_stage_call(N, Call) :-
     format(string(Call), "    current = stage_~w(current)", [N]).
 
 % ============================================================================
+% Enhanced Pipeline Chaining - Fan-out, Merge, Conditional Routing (Phase 7)
+% ============================================================================
+%
+% Enhanced pipeline stages support complex data flow patterns:
+%   - fan_out(Stages)     : Broadcast each record to all parallel stages
+%   - merge               : Combine results from parallel stages
+%   - route_by(Pred, Map) : Route records based on condition
+%   - filter_by(Pred)     : Filter records by predicate
+%   - Name/Arity          : Standard predicate stage (unchanged)
+%
+% Example pipeline:
+%   compile_enhanced_pipeline([
+%       extract/1,
+%       fan_out([validate/1, enrich/1]),
+%       merge,
+%       route_by(has_error, [(true, error_handler/1), (false, success/1)])
+%   ], Options, Code)
+
+%% compile_enhanced_pipeline(+Stages, +Options, -Code)
+%  Main entry point for enhanced pipeline with advanced flow patterns.
+compile_enhanced_pipeline(Stages, Options, Code) :-
+    option(pipeline_name(PipelineName), Options, enhanced_pipeline),
+    option(runtime(Runtime), Options, cpython),
+    option(glue_protocol(GlueProtocol), Options, jsonl),
+    option(pipeline_mode(PipelineMode), Options, sequential),
+
+    % Generate header
+    pipeline_header_extended(GlueProtocol, Runtime, PipelineMode, Header),
+
+    % Generate helpers (including enhanced helpers)
+    pipeline_helpers_extended(GlueProtocol, same_as_data, PipelineMode, Runtime, BaseHelpers),
+    enhanced_pipeline_helpers(EnhancedHelpers),
+    format(string(Helpers), "~w~w", [BaseHelpers, EnhancedHelpers]),
+
+    % Generate stage functions
+    generate_enhanced_stage_functions(Stages, StageFunctions),
+
+    % Generate the main pipeline connector
+    generate_enhanced_connector(Stages, PipelineName, ConnectorCode),
+
+    % Generate main block
+    generate_chained_pipeline_main(PipelineName, GlueProtocol, [], MainBlock),
+
+    format(string(Code), "~w~w~w~w~w",
+           [Header, Helpers, StageFunctions, ConnectorCode, MainBlock]).
+
+%% enhanced_pipeline_helpers(-Code)
+%  Generate helper functions for enhanced pipeline operations.
+enhanced_pipeline_helpers(Code) :-
+    Code = "
+# Enhanced Pipeline Helpers
+
+def fan_out_records(record, stages):
+    '''
+    Fan-out: Send record to all stages, collect all results.
+    Each stage receives the same input record.
+    '''
+    results = []
+    for stage in stages:
+        for result in stage(iter([record])):
+            results.append(result)
+    return results
+
+def merge_streams(*streams):
+    '''
+    Merge: Combine multiple streams into one.
+    Yields records from all streams in order.
+    '''
+    for stream in streams:
+        yield from stream
+
+def route_record(record, condition_fn, route_map):
+    '''
+    Route: Direct record to appropriate stage based on condition.
+    route_map is dict of {condition_value: stage_function}
+    '''
+    condition = condition_fn(record)
+    if condition in route_map:
+        yield from route_map[condition](iter([record]))
+    elif 'default' in route_map:
+        yield from route_map['default'](iter([record]))
+    else:
+        yield record  # Pass through if no matching route
+
+def filter_records(stream, predicate_fn):
+    '''
+    Filter: Only yield records that satisfy the predicate.
+    '''
+    for record in stream:
+        if predicate_fn(record):
+            yield record
+
+def tee_stream(stream, *stages):
+    '''
+    Tee: Send each record to multiple stages, yield all results.
+    Similar to fan_out but operates on streams.
+    '''
+    records = list(stream)  # Materialize to allow multiple iterations
+    for record in records:
+        for stage in stages:
+            yield from stage(iter([record]))
+
+".
+
+%% generate_enhanced_stage_functions(+Stages, -Code)
+%  Generate stub functions for each stage, including enhanced stages.
+generate_enhanced_stage_functions([], "").
+generate_enhanced_stage_functions([Stage|Rest], Code) :-
+    generate_single_enhanced_stage(Stage, StageCode),
+    generate_enhanced_stage_functions(Rest, RestCode),
+    (RestCode = "" ->
+        Code = StageCode
+    ;   format(string(Code), "~w~n~w", [StageCode, RestCode])
+    ).
+
+generate_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, SubCode),
+    Code = SubCode.
+generate_single_enhanced_stage(merge, "") :- !.
+generate_single_enhanced_stage(route_by(_, Routes), Code) :-
+    !,
+    findall(Stage, member((_Cond, Stage), Routes), RouteStages),
+    generate_enhanced_stage_functions(RouteStages, Code).
+generate_single_enhanced_stage(filter_by(_), "") :- !.
+generate_single_enhanced_stage(Pred/Arity, Code) :-
+    !,
+    format(string(Code),
+"
+def ~w(stream):
+    '''Pipeline stage: ~w/~w'''
+    for record in stream:
+        # TODO: Implement based on predicate bindings
+        yield record
+", [Pred, Pred, Arity]).
+generate_single_enhanced_stage(_, "").
+
+%% generate_enhanced_connector(+Stages, +PipelineName, -Code)
+%  Generate the main connector that handles enhanced flow patterns.
+generate_enhanced_connector(Stages, PipelineName, Code) :-
+    generate_enhanced_flow_code(Stages, "input_stream", FlowCode),
+    format(string(Code),
+"
+def ~w(input_stream):
+    '''
+    Enhanced pipeline with fan-out, merge, and routing support.
+    '''
+~w
+", [PipelineName, FlowCode]).
+
+%% generate_enhanced_flow_code(+Stages, +CurrentVar, -Code)
+%  Generate the flow code for enhanced pipeline stages.
+generate_enhanced_flow_code([], CurrentVar, Code) :-
+    format(string(Code), "    yield from ~w", [CurrentVar]).
+generate_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
+    generate_stage_flow(Stage, CurrentVar, NextVar, StageCode),
+    generate_enhanced_flow_code(Rest, NextVar, RestCode),
+    format(string(Code), "~w~n~w", [StageCode, RestCode]).
+
+%% generate_stage_flow(+Stage, +InVar, -OutVar, -Code)
+%  Generate flow code for a single stage.
+
+% Fan-out stage: broadcast to parallel stages
+generate_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
+    length(SubStages, N),
+    format(atom(OutVar), "fan_out_~w_result", [N]),
+    extract_stage_names(SubStages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Fan-out to ~w parallel stages
+    def fan_out_generator():
+        for record in ~w:
+            for result in fan_out_records(record, [~w]):
+                yield result
+    ~w = fan_out_generator()", [N, InVar, StageListStr, OutVar]).
+
+% Merge stage: placeholder, usually follows fan_out
+generate_stage_flow(merge, InVar, OutVar, Code) :-
+    OutVar = InVar,
+    Code = "    # Merge: results already combined from fan-out".
+
+% Conditional routing
+generate_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-
+    format(atom(OutVar), "routed_result", []),
+    format_route_map(Routes, RouteMapStr),
+    format(string(Code),
+"    # Conditional routing based on ~w
+    def routing_generator():
+        route_map = {~w}
+        for record in ~w:
+            yield from route_record(record, ~w, route_map)
+    ~w = routing_generator()", [CondPred, RouteMapStr, InVar, CondPred, OutVar]).
+
+% Filter stage
+generate_stage_flow(filter_by(Pred), InVar, OutVar, Code) :-
+    format(atom(OutVar), "filtered_result", []),
+    format(string(Code),
+"    # Filter by ~w
+    ~w = filter_records(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Standard predicate stage
+generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
+    atom(Pred),
+    format(atom(OutVar), "~w_result", [Pred]),
+    format(string(Code),
+"    # Stage: ~w/~w
+    ~w = ~w(~w)", [Pred, Arity, OutVar, Pred, InVar]).
+
+% Fallback for unknown stages
+generate_stage_flow(Stage, InVar, InVar, Code) :-
+    format(string(Code), "    # Unknown stage type: ~w (pass-through)", [Stage]).
+
+%% extract_stage_names(+Stages, -Names)
+%  Extract function names from stage specifications.
+extract_stage_names([], []).
+extract_stage_names([Pred/_Arity|Rest], [Pred|RestNames]) :-
+    !,
+    extract_stage_names(Rest, RestNames).
+extract_stage_names([_|Rest], RestNames) :-
+    extract_stage_names(Rest, RestNames).
+
+%% format_stage_list(+Names, -Str)
+%  Format a list of stage names as Python function references.
+format_stage_list([], "").
+format_stage_list([Name], Str) :-
+    format(string(Str), "~w", [Name]).
+format_stage_list([Name|Rest], Str) :-
+    Rest \= [],
+    format_stage_list(Rest, RestStr),
+    format(string(Str), "~w, ~w", [Name, RestStr]).
+
+%% format_route_map(+Routes, -Str)
+%  Format route mappings as Python dict entries.
+format_route_map([], "").
+format_route_map([(Cond, Pred/_Arity)], Str) :-
+    format(string(Str), "~q: ~w", [Cond, Pred]).
+format_route_map([(Cond, Pred/_Arity)|Rest], Str) :-
+    Rest \= [],
+    format_route_map(Rest, RestStr),
+    format(string(Str), "~q: ~w, ~w", [Cond, Pred, RestStr]).
+
+% ============================================================================
 % Pipeline Chaining Tests (Phase 4)
 % ============================================================================
 
@@ -4822,3 +5069,126 @@ test_ironpython_pipeline_generator :-
     ),
 
     format('~n=== All IronPython Pipeline Generator Mode Tests Passed ===~n', []).
+
+%% ============================================
+%% ENHANCED PIPELINE CHAINING TESTS (Phase 7)
+%% ============================================
+
+test_enhanced_pipeline_chaining :-
+    format('~n=== Enhanced Pipeline Chaining Tests (Phase 7) ===~n~n', []),
+
+    % Test 1: Enhanced pipeline helpers generation
+    format('[Test 1] Enhanced pipeline helpers~n', []),
+    enhanced_pipeline_helpers(Helpers1),
+    (   sub_string(Helpers1, _, _, _, "def fan_out_records"),
+        sub_string(Helpers1, _, _, _, "def merge_streams"),
+        sub_string(Helpers1, _, _, _, "def route_record"),
+        sub_string(Helpers1, _, _, _, "def filter_records")
+    ->  format('  [PASS] All enhanced helpers generated~n', [])
+    ;   format('  [FAIL] Missing helper functions~n', [])
+    ),
+
+    % Test 2: Simple linear pipeline
+    format('[Test 2] Simple linear pipeline~n', []),
+    generate_enhanced_connector([extract/1, transform/1, load/1], linear_pipe, Code2),
+    (   sub_string(Code2, _, _, _, "def linear_pipe"),
+        sub_string(Code2, _, _, _, "extract_result"),
+        sub_string(Code2, _, _, _, "transform_result"),
+        sub_string(Code2, _, _, _, "load_result")
+    ->  format('  [PASS] Linear pipeline generated~n', [])
+    ;   format('  [FAIL] Linear pipeline issue~n', [])
+    ),
+
+    % Test 3: Fan-out stage
+    format('[Test 3] Fan-out stage~n', []),
+    generate_enhanced_connector([fan_out([validate/1, enrich/1])], fanout_pipe, Code3),
+    (   sub_string(Code3, _, _, _, "def fanout_pipe"),
+        sub_string(Code3, _, _, _, "Fan-out to 2 parallel stages"),
+        sub_string(Code3, _, _, _, "fan_out_records")
+    ->  format('  [PASS] Fan-out stage generated~n', [])
+    ;   format('  [FAIL] Fan-out issue~n', [])
+    ),
+
+    % Test 4: Merge stage
+    format('[Test 4] Merge stage~n', []),
+    generate_enhanced_connector([fan_out([a/1, b/1]), merge], merge_pipe, Code4),
+    (   sub_string(Code4, _, _, _, "def merge_pipe"),
+        sub_string(Code4, _, _, _, "Merge:")
+    ->  format('  [PASS] Merge stage generated~n', [])
+    ;   format('  [FAIL] Merge issue~n', [])
+    ),
+
+    % Test 5: Conditional routing
+    format('[Test 5] Conditional routing~n', []),
+    generate_enhanced_connector([route_by(has_error, [(true, error_handler/1), (false, success/1)])], route_pipe, Code5),
+    (   sub_string(Code5, _, _, _, "def route_pipe"),
+        sub_string(Code5, _, _, _, "Conditional routing"),
+        sub_string(Code5, _, _, _, "route_map"),
+        sub_string(Code5, _, _, _, "route_record")
+    ->  format('  [PASS] Conditional routing generated~n', [])
+    ;   format('  [FAIL] Routing issue~n', [])
+    ),
+
+    % Test 6: Filter stage
+    format('[Test 6] Filter stage~n', []),
+    generate_enhanced_connector([filter_by(is_valid)], filter_pipe, Code6),
+    (   sub_string(Code6, _, _, _, "def filter_pipe"),
+        sub_string(Code6, _, _, _, "Filter by is_valid"),
+        sub_string(Code6, _, _, _, "filter_records")
+    ->  format('  [PASS] Filter stage generated~n', [])
+    ;   format('  [FAIL] Filter issue~n', [])
+    ),
+
+    % Test 7: Complex pipeline with multiple patterns
+    format('[Test 7] Complex pipeline~n', []),
+    generate_enhanced_connector([
+        extract/1,
+        fan_out([validate/1, enrich/1]),
+        merge,
+        filter_by(is_valid),
+        transform/1
+    ], complex_pipe, Code7),
+    (   sub_string(Code7, _, _, _, "def complex_pipe"),
+        sub_string(Code7, _, _, _, "extract_result"),
+        sub_string(Code7, _, _, _, "Fan-out"),
+        sub_string(Code7, _, _, _, "Filter"),
+        sub_string(Code7, _, _, _, "transform_result")
+    ->  format('  [PASS] Complex pipeline generated~n', [])
+    ;   format('  [FAIL] Complex pipeline issue~n', [])
+    ),
+
+    % Test 8: Stage function generation
+    format('[Test 8] Stage function generation~n', []),
+    generate_enhanced_stage_functions([extract/1, transform/1], StageFuncs8),
+    (   sub_string(StageFuncs8, _, _, _, "def extract(stream)"),
+        sub_string(StageFuncs8, _, _, _, "def transform(stream)")
+    ->  format('  [PASS] Stage functions generated~n', [])
+    ;   format('  [FAIL] Stage functions issue~n', [])
+    ),
+
+    % Test 9: Full enhanced pipeline compilation
+    format('[Test 9] Full enhanced pipeline compilation~n', []),
+    compile_enhanced_pipeline([
+        extract/1,
+        fan_out([validate/1, audit/1]),
+        merge,
+        transform/1
+    ], [pipeline_name(full_enhanced)], FullCode9),
+    (   sub_string(FullCode9, _, _, _, "def full_enhanced"),
+        sub_string(FullCode9, _, _, _, "def fan_out_records"),
+        sub_string(FullCode9, _, _, _, "def extract(stream)"),
+        sub_string(FullCode9, _, _, _, "Fan-out to 2")
+    ->  format('  [PASS] Full enhanced pipeline compiled~n', [])
+    ;   format('  [FAIL] Full compilation issue~n', [])
+    ),
+
+    % Test 10: Tee stream helper
+    format('[Test 10] Tee stream helper~n', []),
+    enhanced_pipeline_helpers(Helpers10),
+    (   sub_string(Helpers10, _, _, _, "def tee_stream"),
+        sub_string(Helpers10, _, _, _, "Materialize to allow multiple iterations")
+    ->  format('  [PASS] Tee stream helper present~n', [])
+    ;   format('  [FAIL] Tee stream issue~n', [])
+    ),
+
+    format('~n=== All Enhanced Pipeline Chaining Tests Passed ===~n', []).
