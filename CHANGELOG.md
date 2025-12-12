@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Enhanced Pipeline Chaining** - Complex data flow patterns across all targets (#296-#300)
+  - `fan_out(Stages)` — Broadcast records to multiple parallel stages
+  - `merge` — Combine results from parallel fan-out stages
+  - `route_by(Pred, Routes)` — Conditional routing based on predicate
+  - `filter_by(Pred)` — Filter records by predicate condition
+  - Supported targets: Python, Go, C#, Rust, PowerShell, AWK, Bash, IronPython
+  - `docs/ENHANCED_PIPELINE_CHAINING.md` — Unified documentation
+  - Integration tests for all targets
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
