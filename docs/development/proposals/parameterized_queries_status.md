@@ -37,4 +37,5 @@
 - C# QueryRuntime now understands `ParamSeedNode`, accepts parameters at execution time, and filters outputs by declared input positions.
 - Rendered plans emit input-position metadata into `QueryPlan`.
 - Added a plan-structure test for parameterised Fibonacci (`tests/core/test_csharp_query_target.pl`) to assert the need/materialize shape is present and rendered.
-- Next: end-to-end runtime tests that pass parameters into `QueryExecutor.Execute`, broaden coverage (negation/aggregates/mutual recursion), and optionally add the memoized fallback once semantics are locked down.
+- Added end‑to‑end runtime coverage for parameterised Fibonacci and parameter‑passing plumbing in the dotnet harness.
+- Next: broaden coverage (mutual recursion, stratified negation, aggregates), and optionally add a memoized/procedural fallback once semantics are locked down.

@@ -8,9 +8,10 @@
 
 While attempting to run `playbooks/csharp_query_playbook.md`, I discovered that the Fibonacci example fails to compile. After investigation, I found that:
 
-1. The `is/2` predicate IS supported for simple derived column computation
-2. The Fibonacci example fails due to a fundamental architectural mismatch between recursive arithmetic predicates and the query runtime's relational join model
-3. A secondary bug (module prefix not being stripped) was fixed during investigation
+1. The `is/2` predicate IS supported for derived-column computation **when all RHS variables are already bound**.
+2. In **all‑output** query mode (default), Fibonacci‑style recursion still fails due to a fundamental mismatch with the relation‑first join pipeline.
+3. In **parameterized** query mode (via `mode/1`, e.g. `:- mode(fib(+, -)).`), the C# query target now seeds bindings from inputs and uses a bottom‑up demand‑closure (`pred$need`) fixpoint so Fibonacci‑style recursion can compile and run for eligible predicates (non‑mutual, no negation/aggregates).
+4. A secondary bug (module prefix not being stripped) was fixed during investigation.
 
 ## Task Context
 
@@ -279,12 +280,18 @@ Document that `csharp_stream_target` and `csharp_target` are for datalog-style q
 # Working example (sum_pair with is/2)
 swipl -l /tmp/test_csharp_target.pl  # Uses sum_pair/3
 
-# Failing example (Fibonacci - demonstrates the limitation)
-# Original Fibonacci code would fail at compilation
+# All-output Fibonacci still fails (demonstrates the limitation)
+# fib/2 without a mode declaration will still be rejected.
+
+# Parameterized Fibonacci now works
+swipl -q -t test_csharp_query_target -s tests/core/test_csharp_query_target.pl
+# (See verify_parameterized_fib_plan / verify_parameterized_fib_runtime)
 ```
 
 ## Conclusion
 
-The `is/2` predicate IS supported for computing derived columns from bound tuple values. The Fibonacci example fails not because of missing `is/2` support, but because its recursive structure requires computing argument values BEFORE making recursive calls - a pattern fundamentally incompatible with the relational join model.
+The `is/2` predicate is supported for computing derived columns from bound tuple values. Fibonacci‑style recursion fails in the default (all‑output) relational pipeline because it requires computing recursive call arguments before those calls.
+
+However, with explicit input modes (`mode/1`) the query target can treat head inputs as pre‑bound, compute argument deltas legally, and (via demand closure) restrict the fixpoint to the reachable subspace. This resolves the Fibonacci case without abandoning the bottom‑up query model, while preserving the existing datalog semantics for predicates without inputs.
 
 I recommend Codex-5.1 review Options B or C if supporting recursive arithmetic predicates is a priority, or Option D if the current scope should be limited to datalog-style queries.
