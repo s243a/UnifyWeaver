@@ -355,7 +355,7 @@ Placeholder for future target languages:
 |--------|--------|-------|
 | Go | Planned | Native bindings for Go standard library |
 | Rust | Planned | Bindings for Rust std crate |
-| C# | Planned | LINQ and .NET bindings |
+| C# | Implemented | LINQ and .NET bindings (Basic set) |
 | Bash | Planned | Shell command bindings |
 | SQL | N/A | SQL uses declarative generation, not bindings |
 

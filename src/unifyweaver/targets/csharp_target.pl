@@ -11,7 +11,8 @@
     compile_predicate_to_csharp/3, % +PredIndicator, +Options, -CSharpCode
     build_query_plan/3,     % +PredIndicator, +Options, -PlanDict
     render_plan_to_csharp/2,% +PlanDict, -CSharpSource
-    plan_module_name/2      % +PlanDict, -ModuleName
+    plan_module_name/2,     % +PlanDict, -ModuleName
+    init_csharp_target/0    % Initialize bindings
 ]).
 
 :- use_module(library(apply)).
@@ -20,7 +21,14 @@
 :- use_module(library(option)).
 :- use_module(library(ugraphs), [vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3]).
 :- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1, dynamic_source_metadata/2]).
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/csharp_bindings').
 :- use_module(common_generator).
+
+%% init_csharp_target
+%  Initialize the C# target by loading bindings.
+init_csharp_target :-
+    init_csharp_bindings.
 
 %% compile_predicate_to_csharp(+PredIndicator, +Options, -Code)
 %  Compile a predicate to C# code.
@@ -1855,6 +1863,9 @@ is_aggregate_goal(G) :- aggregate_goal(G).
 is_builtin_goal(Goal) :-
     Goal =.. [Functor|_],
     member(Functor, ['is', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '!=', 'not', '\\+']).
+is_builtin_goal(Goal) :-
+    functor(Goal, Name, Arity),
+    cs_binding(Name/Arity, _, _, _, _).
 
 compile_aggregate_rule(Index, Head, AggGoal, Config, _Indexing, Code, RuleName) :-
     decompose_aggregate_goal(AggGoal, Type, Op, Pred, Args, GroupVar, ValueVar, ResVar),
@@ -2407,7 +2418,43 @@ translate_builtin_or_negation(\+ NegGoal, VarMap, Config, Check) :- !,
 translate_builtin_or_negation(not(NegGoal), VarMap, Config, Check) :- !,
     translate_negation_check(NegGoal, VarMap, Config, Check).
 translate_builtin_or_negation(Goal, VarMap, Config, Check) :-
-    translate_builtin_common(Goal, VarMap, Config, Check).
+    (   is_binding_goal_csharp(Goal)
+    ->  translate_binding_goal(Goal, VarMap, Config, Check)
+    ;   translate_builtin_common(Goal, VarMap, Config, Check)
+    ).
+
+is_binding_goal_csharp(Goal) :-
+    functor(Goal, Name, Arity),
+    cs_binding(Name/Arity, _, _, _, _).
+
+translate_binding_goal(Goal, VarMap, Config, Check) :-
+    Goal =.. [Pred|Args],
+    length(Args, Arity),
+    cs_binding(Pred/Arity, TargetName, _, _, _),
+    maplist(translate_arg_binding(VarMap, Config), Args, ArgExprs),
+    (   sub_string(TargetName, 0, 1, _, ".")
+    ->  ArgExprs = [Obj|RestArgs],
+        (   sub_string(TargetName, _, 2, 0, "()")
+        ->  sub_string(TargetName, 0, _, 2, MethodName),
+            format(string(Check), "~w~w()", [Obj, MethodName])
+        ;   atomic_list_concat(RestArgs, ", ", ArgStr),
+            (   sub_string(TargetName, _, 1, 0, "(") % Ends with (
+            ->  format(string(Check), "~w~w~w)", [Obj, TargetName, ArgStr])
+            ;   sub_string(TargetName, _, 1, 0, ")") % Full signature .Method() ?
+            ->  % Fallback for complex patterns, just use as is if no args?
+                format(string(Check), "~w~w", [Obj, TargetName])
+            ;   format(string(Check), "~w~w(~w)", [Obj, TargetName, ArgStr])
+            )
+        )
+    ;   atomic_list_concat(ArgExprs, ", ", ArgStr),
+        format(string(Check), "~w(~w)", [TargetName, ArgStr])
+    ).
+
+translate_arg_binding(VarMap, Config, Arg, Expr) :-
+    (   translate_expr_common(Arg, VarMap, Config, E)
+    ->  Expr = E
+    ;   csharp_literal(Arg, Expr)
+    ).
 
 %% translate_negation_check(+Goal, +VarMap, +Config, -Check)
 %  Generates !total.Contains(new Fact(...)) check
