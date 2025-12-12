@@ -22,6 +22,8 @@
 :- dynamic user:test_factorial_input/1.
 :- dynamic user:test_fib_param/2.
 :- dynamic user:test_post_agg_param/2.
+:- dynamic user:test_banned/1.
+:- dynamic user:test_allowed/1.
 :- dynamic user:test_even/1.
 :- dynamic user:test_odd/1.
 :- dynamic user:test_parity_input/1.
@@ -50,6 +52,7 @@ test_csharp_query_target :-
         verify_arithmetic_plan,
         verify_recursive_arithmetic_plan,
         verify_comparison_plan,
+        verify_negation_plan,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
         verify_parameterized_need_allows_post_agg,
@@ -87,6 +90,8 @@ setup_test_data :-
     assertz(user:test_num(item1, 5)),
     assertz(user:test_num(item2, -3)),
     assertz(user:(test_positive(Id) :- test_num(Id, Value), Value > 0)),
+    assertz(user:test_banned(bob)),
+    assertz(user:(test_allowed(X) :- test_fact(X, _), \+ test_banned(X))),
     assertz(user:test_factorial_input(1)),
     assertz(user:test_factorial_input(2)),
     assertz(user:test_factorial_input(3)),
@@ -154,6 +159,8 @@ cleanup_test_data :-
     retractall(user:mode(test_fib_param(_,_))),
     retractall(user:test_post_agg_param(_, _)),
     retractall(user:mode(test_post_agg_param(_,_))),
+    retractall(user:test_banned(_)),
+    retractall(user:test_allowed(_)),
     retractall(user:test_parity_input(_)),
     retractall(user:test_even(_)),
     retractall(user:test_odd(_)),
@@ -249,6 +256,14 @@ verify_parameterized_need_allows_post_agg :-
     csharp_target:gather_predicate_clauses(HeadSpec, Clauses),
     csharp_target:partition_recursive_clauses(test_post_agg_param, 2, Clauses, _BaseClauses, RecClauses),
     csharp_target:eligible_for_need_closure(HeadSpec, [HeadSpec], RecClauses, [input, output]).
+
+verify_negation_plan :-
+    csharp_query_target:build_query_plan(test_allowed/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(negation{type:negation, predicate:predicate{name:test_banned, arity:1}, args:_, input:_, width:_}, Root),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'NegationNode'),
+    maybe_run_query_runtime(Plan, ['alice']).
 
 verify_recursive_arithmetic_plan :-
     csharp_query_target:build_query_plan(test_factorial/2, [target(csharp_query)], Plan),

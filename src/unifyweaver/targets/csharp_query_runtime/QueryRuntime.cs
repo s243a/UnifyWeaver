@@ -66,6 +66,15 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record SelectionNode(PlanNode Input, Func<object[], bool> Predicate) : PlanNode;
 
     /// <summary>
+    /// Filters tuples by requiring that a bound negated predicate has no matching fact.
+    /// </summary>
+    public sealed record NegationNode(
+        PlanNode Input,
+        PredicateId Predicate,
+        Func<object[], object[]> KeySelector
+    ) : PlanNode;
+
+    /// <summary>
     /// Projects each tuple to a new shape.
     /// </summary>
     public sealed record ProjectionNode(PlanNode Input, Func<object[], object[]> Project) : PlanNode;
@@ -266,6 +275,9 @@ namespace UnifyWeaver.QueryRuntime
                 case SelectionNode selection:
                     return Evaluate(selection.Input, context).Where(tuple => selection.Predicate(tuple));
 
+                case NegationNode negation:
+                    return ExecuteNegation(negation, context);
+
                 case ArithmeticNode arithmetic:
                     return ExecuteArithmetic(arithmetic, context);
 
@@ -314,6 +326,22 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         yield return join.Project(leftTuple, rightTuple);
                     }
+                }
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteNegation(NegationNode negation, EvaluationContext? context)
+        {
+            var input = Evaluate(negation.Input, context);
+            var facts = _provider.GetFacts(negation.Predicate) ?? Enumerable.Empty<object[]>();
+            var factSet = new HashSet<object[]>(facts, StructuralArrayComparer.Instance);
+
+            foreach (var tuple in input)
+            {
+                var key = negation.KeySelector(tuple);
+                if (!factSet.Contains(key))
+                {
+                    yield return tuple;
                 }
             }
         }

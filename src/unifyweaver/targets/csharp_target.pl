@@ -447,7 +447,7 @@ assign_roles_for_variant(HeadSpec, GroupSpecs, Terms, DeltaSpec, Roles) :-
 
 assign_roles_for_variant_([], _GroupSpecs, _Pred, _Arity, _DeltaSpec, _Pos, []).
 assign_roles_for_variant_([Term|Rest], GroupSpecs, Pred, Arity, DeltaSpec, Pos, [Role|Roles]) :-
-    (   constraint_goal(Term)
+    (   query_constraint_goal(Term)
     ->  Role = constraint
     ;   term_signature(Term, Name/TermArity),
         TermArity =:= Arity,
@@ -475,7 +475,7 @@ roles_for_nonrecursive_terms(HeadSpec, Terms, Roles) :-
 
 roles_for_nonrecursive_terms_([], _Pred, _Arity, []).
 roles_for_nonrecursive_terms_([Term|Rest], Pred, Arity, [Role|Roles]) :-
-    (   constraint_goal(Term)
+    (   query_constraint_goal(Term)
     ->  Role = constraint
     ;   functor(Term, Pred, TermArity),
         TermArity =:= Arity
@@ -507,6 +507,10 @@ constraint_goal(Goal0) :-
         ;   atom_codes(Functor, [92, 61])
         )
     ).
+
+%% Query-mode constraints (includes stratified negation as filters).
+query_constraint_goal(Goal) :- constraint_goal(Goal).
+query_constraint_goal(Goal) :- negation_goal(Goal).
 
 arithmetic_goal(Goal0) :-
     strip_module(Goal0, _, Goal),
@@ -757,10 +761,10 @@ fold_terms(_GroupSpecs, [], [], _HeadSpec, Node, VarMap, Width, Relations, Node,
 fold_terms(GroupSpecs, [Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, WidthIn, RelationsIn,
            NodeOut, VarMapOut, WidthOut, RelationsOut) :-
     (   Role = constraint
-    ->  build_constraint_node(Term, AccNode, VarMapIn, WidthIn,
-                               ConstraintNode, VarMapMid, WidthMid),
-        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsIn,
-                   NodeOut, VarMapOut, WidthOut, RelationsOut)
+    ->  build_constraint_node(GroupSpecs, HeadSpec, Term, AccNode, VarMapIn, WidthIn,
+                                ConstraintNode, VarMapMid, WidthMid),
+         fold_terms(GroupSpecs, Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsIn,
+                    NodeOut, VarMapOut, WidthOut, RelationsOut)
     ;   Role = relation
     ->  Term =.. [Pred|Args],
         length(Args, Arity),
@@ -808,11 +812,15 @@ build_join_node(LeftNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapOut, 
         width:WidthOut
     }.
 
-build_constraint_node(Term, InputNode, VarMapIn, WidthIn,
+build_constraint_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn,
         NodeOut, VarMapOut, WidthOut) :-
     (   arithmetic_goal(Term)
     ->  build_arithmetic_node(Term, InputNode, VarMapIn, WidthIn,
             NodeOut, VarMapOut, WidthOut)
+    ;   negation_goal(Term)
+    ->  build_negation_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, NodeOut),
+        VarMapOut = VarMapIn,
+        WidthOut = WidthIn
     ;   constraint_condition(Term, VarMapIn, Condition),
         NodeOut = selection{
             type:selection,
@@ -823,6 +831,36 @@ build_constraint_node(Term, InputNode, VarMapIn, WidthIn,
         VarMapOut = VarMapIn,
         WidthOut = WidthIn
     ).
+
+build_negation_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMap, Width,
+        negation{type:negation, input:InputNode, predicate:NegSpec, args:Operands, width:Width}) :-
+    strip_module(Term0, _, Term),
+    (   Term =.. ['\\+', Inner]
+    ;   Term =.. [not, Inner]
+    ),
+    term_signature(Inner, NegPI),
+    signature_to_spec(NegPI, NegSpec),
+    (   memberchk(NegSpec, GroupSpecs)
+    ->  spec_signature(NegSpec, Name/Arity),
+        format(user_error,
+               'C# query target: negation of recursive predicate ~w/~w is not supported.~n',
+               [Name, Arity]),
+        fail
+    ;   true
+    ),
+    Inner =.. [_|Args],
+    maplist(negation_arg_operand(VarMap), Args, Operands).
+
+negation_arg_operand(VarMap, Arg, operand{kind:column, index:Index}) :-
+    var(Arg),
+    lookup_var_index(VarMap, Arg, Index),
+    !.
+negation_arg_operand(_VarMap, Arg, operand{kind:value, value:Arg}) :-
+    nonvar(Arg),
+    !.
+negation_arg_operand(_VarMap, Arg, _) :-
+    format(user_error, 'C# query target: variable ~w not bound before negation check.~n', [Arg]),
+    fail.
 
 build_arithmetic_node(Goal, InputNode, VarMapIn, WidthIn,
         arithmetic{
@@ -1152,6 +1190,18 @@ emit_plan_expression(Node, Expr) :-
     selection_condition_expression(Condition, tuple, ConditionExpr),
     format(atom(Expr), 'new SelectionNode(~w, tuple => ~w)', [InputExpr, ConditionExpr]).
 emit_plan_expression(Node, Expr) :-
+    is_dict(Node, negation), !,
+    get_dict(input, Node, Input),
+    get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
+    get_dict(args, Node, Args),
+    emit_plan_expression(Input, InputExpr),
+    maplist(operand_expression_with_tuple(tuple), Args, ArgExprs),
+    atomic_list_concat(ArgExprs, ', ', ArgList),
+    atom_string(Name, NameStr),
+    format(atom(Expr),
+           'new NegationNode(~w, new PredicateId("~w", ~w), tuple => new object[]{ ~w })',
+           [InputExpr, NameStr, Arity, ArgList]).
+emit_plan_expression(Node, Expr) :-
     is_dict(Node, arithmetic), !,
     get_dict(input, Node, Input),
     get_dict(expression, Node, Expression),
@@ -1286,6 +1336,9 @@ arithmetic_binary_operator_atom(multiply, 'Multiply').
 arithmetic_binary_operator_atom(divide, 'Divide').
 arithmetic_binary_operator_atom(int_divide, 'IntegerDivide').
 arithmetic_binary_operator_atom(modulo, 'Modulo').
+
+operand_expression_with_tuple(TupleVar, Operand, Expr) :-
+    operand_expression(Operand, TupleVar, Expr).
 
 operand_expression(operand{kind:column, index:Index}, TupleVar, Expr) :-
     format(atom(Expr), '~w[~w]', [TupleVar, Index]).
