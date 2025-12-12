@@ -48,8 +48,8 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
-| `tree_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ⚠️ Partial (1/10) | Compilation OK, execution empty - BUG FOUND |
-| `mutual_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ⚠️ Partial (1/10) | Execution fails "Unknown function" - BUG FOUND |
+| `tree_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Bug fixed in commit b04fe8d |
+| `mutual_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Bug fixed in commit b04fe8d |
 
 ### Execution Playbooks
 
@@ -646,12 +646,12 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
 | csv_data_source_playbook | ✅ Pass | 1/10 | ~1 min |
 | xml_data_source_playbook | ✅ Pass | 1/10 | ~1 min |
 | csharp_codegen_playbook | ✅ Pass | 1/10 | ~2 min |
-| tree_recursion_playbook | ⚠️ Partial | 1/10 | ~1 min |
-| mutual_recursion_playbook | ⚠️ Partial | 1/10 | ~1 min |
+| tree_recursion_playbook | ✅ Pass | 1/10 | ~1 min |
+| mutual_recursion_playbook | ✅ Pass | 1/10 | ~1 min |
 | parallel_execution_playbook | ✅ Pass | 1/10 | ~1 min |
 | prolog_generation_playbook | ✅ Pass | 1/10 | ~1 min |
 
-**Overall**: 5/7 Pass, 2/7 Partial (bugs found in generated code)
+**Overall**: 7/7 Pass (bugs fixed in commit b04fe8d)
 
 #### Key Findings
 
@@ -659,10 +659,10 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
    - Instructions were "precise" and "execution succeeded with expected output"
    - Confirms playbooks are highly deterministic
 
-2. **Bugs Discovered**:
-   - **tree_recursion_playbook**: Compilation succeeded but execution produces no output for test case
-   - **mutual_recursion_playbook**: Execution fails with "Unknown function: 4" and "Unknown function: 3"
-   - Both bugs are in generated bash code, not the playbook itself
+2. **Bugs Discovered and Fixed** (commit b04fe8d):
+   - **tree_recursion_playbook**: Missing auto-execute block → Fixed, now outputs `30` correctly
+   - **mutual_recursion_playbook**: Wrong group passed to compiler → Fixed, both functions work
+   - Both bugs were in code generation, not playbook documentation
 
 3. **Performance**: Average completion time ~1 minute per playbook (very fast)
 
@@ -684,13 +684,13 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
 
 **tree_recursion_playbook**:
 - Compilation: ✓ Compiled as tree recursion ✅
-- Execution: No output for test case `[10,[5,[],[]],[15,[],[]]]` ❌ (Expected: `...:30`)
-- Bug in generated bash code
+- Execution: Outputs `30` correctly ✅ (Fixed in commit b04fe8d)
+- Reasoning: "Compilation succeeded and execution produced correct output"
 
 **mutual_recursion_playbook**:
 - Compilation: Generated scripts ✅
-- Execution: "Unknown function: 4" and "Unknown function: 3" ❌
-- Bug in generated bash code for mutual recursion
+- Execution: Both `is_even(4)` and `is_odd(3)` return `true` ✅ (Fixed in commit b04fe8d)
+- Reasoning: "Compilation succeeded for the recursion group, and execution verified functions work"
 
 **parallel_execution_playbook**:
 - Output: `SUCCESS: Final sum is 500500` ✅
@@ -702,10 +702,10 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
 
 #### Action Items
 
-- [ ] Investigate tree_recursion compilation bug (empty output)
-- [ ] Investigate mutual_recursion compilation bug ("Unknown function" errors)
-- [ ] Update playbook difficulty averages with Gemini ratings
-- [ ] Note: Both bugs are in code generation, not playbook documentation
+- [x] ~~Investigate tree_recursion compilation bug (empty output)~~ → **FIXED** in commit b04fe8d
+- [x] ~~Investigate mutual_recursion compilation bug ("Unknown function" errors)~~ → **FIXED** in commit b04fe8d
+- [x] ~~Update playbook difficulty averages with Gemini ratings~~ → **COMPLETE**
+- Both bugs were fixed: auto-execute block added, group passing corrected
 
 ---
 

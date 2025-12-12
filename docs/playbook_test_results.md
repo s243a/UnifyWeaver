@@ -18,8 +18,8 @@
 | **csv_data_source** | **2/10** | **1/10** | **PASS** |
 | **xml_data_source** | **2/10** | **1/10** | **PASS** |
 | **csharp_codegen** | **2/10** | **1/10** | **PASS** |
-| **tree_recursion** | **2/10** | **1/10** | **PARTIAL (Bug)** |
-| **mutual_recursion** | **2/10** | **1/10** | **PARTIAL (Bug)** |
+| **tree_recursion** | **2/10** | **1/10** | **PASS** |
+| **mutual_recursion** | **2/10** | **1/10** | **PASS** |
 | **parallel_execution** | **4/10** | **1/10** | **PASS** |
 | **prolog_generation** | **3/10** | **1/10** | **PASS** |
 
@@ -129,10 +129,10 @@ Key findings:
 
 ### Results Summary
 
-- **5/7 Passed**: csv_data_source, xml_data_source, csharp_codegen, parallel_execution, prolog_generation
-- **2/7 Partial**: tree_recursion, mutual_recursion (bugs in generated code)
+- **7/7 Passed**: All playbooks now pass (bugs fixed in commit b04fe8d)
 - **All rated 1/10 difficulty**: Extremely clear, deterministic instructions
 - **Average time**: ~1 minute per playbook
+- **Bug fixes verified**: Both Gemini 2.5 Pro and Haiku 4.5 retests confirm fixes work
 
 ### Key Findings
 
@@ -141,10 +141,11 @@ Key findings:
    - Confirms playbooks are highly deterministic
    - Instructions described as "precise" with "expected output"
 
-2. **Bugs Discovered in Code Generation** (not playbooks):
-   - **tree_recursion_playbook**: Compilation OK, but execution produces empty output
-   - **mutual_recursion_playbook**: Execution fails with "Unknown function: 4" and "Unknown function: 3"
-   - Both are bugs in the bash code generator, not the playbook documentation
+2. **Bugs Discovered and Fixed** (commit b04fe8d):
+   - **tree_recursion_playbook**: Missing auto-execute block → Fixed, now outputs `30`
+   - **mutual_recursion_playbook**: Wrong group passed to compiler → Fixed, both functions work
+   - Both bugs were in code generation, not playbook documentation
+   - Fixes verified with Gemini 2.5 Pro and Haiku 4.5 retests
 
 3. **Cross-Model Validation**
    - Gemini consistently rates playbooks lower difficulty than Haiku
@@ -165,15 +166,15 @@ Key findings:
 - Output: `anne:charles`, `anne:diana`
 - Time: ~2 minutes
 
-**tree_recursion_playbook**: ⚠️ Partial (1/10)
+**tree_recursion_playbook**: ✅ Pass (1/10)
 - Compilation: ✓ Succeeded
-- Execution: Empty output (expected `...:30`)
-- Bug in generated code
+- Execution: Outputs `30` correctly ✅ (Fixed in b04fe8d)
+- Time: ~1 minute
 
-**mutual_recursion_playbook**: ⚠️ Partial (1/10)
+**mutual_recursion_playbook**: ✅ Pass (1/10)
 - Compilation: ✓ Succeeded
-- Execution: "Unknown function" errors
-- Bug in generated code
+- Execution: Both `is_even(4)` and `is_odd(3)` work ✅ (Fixed in b04fe8d)
+- Time: ~1 minute
 
 **parallel_execution_playbook**: ✅ Pass (1/10)
 - Output: `SUCCESS: Final sum is 500500`
@@ -225,8 +226,8 @@ The `extract_records.pl` tool uses regex matching, which can cause:
 2. **Add execution records** to csharp_generator_playbook (currently incomplete)
 3. **Document interactive setup handling** for playbooks with dependencies
 4. **Consider agent validation** - manual verification may be needed for high-difficulty ratings
-5. **Fix tree_recursion bash generator** - execution produces empty output
-6. **Fix mutual_recursion bash generator** - "Unknown function" errors on execution
+5. ~~**Fix tree_recursion bash generator**~~ → **COMPLETE** (commit b04fe8d)
+6. ~~**Fix mutual_recursion bash generator**~~ → **COMPLETE** (commit b04fe8d)
 
 ## Test Environment
 
