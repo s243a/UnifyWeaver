@@ -4,15 +4,30 @@ UnifyWeaver supports **enhanced pipeline chaining** across all major targets, en
 
 ## Overview
 
-Enhanced pipeline chaining adds four new stage types to the standard predicate stages:
+Enhanced pipeline chaining adds five new stage types to the standard predicate stages:
 
 | Stage Type | Description |
 |------------|-------------|
-| `fan_out(Stages)` | Broadcast each record to multiple parallel stages, collect all results |
-| `merge` | Combine results from parallel stages (used after fan_out) |
+| `fan_out(Stages)` | Broadcast each record to multiple stages (sequential execution) |
+| `parallel(Stages)` | Execute stages concurrently using target-native parallelism |
+| `merge` | Combine results from fan_out or parallel stages |
 | `route_by(Pred, Routes)` | Route records to different stages based on a predicate condition |
 | `filter_by(Pred)` | Filter records that satisfy a predicate |
 | `Pred/Arity` | Standard predicate stage (unchanged) |
+
+### Fan-out vs Parallel
+
+The key difference between `fan_out` and `parallel`:
+
+- **`fan_out(Stages)`**: Processes stages **sequentially**, one after another. Safe for any workload.
+- **`parallel(Stages)`**: Processes stages **concurrently** using target-native mechanisms:
+  - **Python**: `ThreadPoolExecutor`
+  - **Go**: Goroutines with `sync.WaitGroup`
+  - **C#**: `Task.WhenAll`
+  - **Rust**: `std::thread`
+  - **PowerShell**: Runspace pools
+  - **Bash**: Background processes with `wait`
+  - **AWK**: Sequential (single-threaded by design)
 
 ## Supported Targets
 
@@ -80,7 +95,7 @@ compile_bash_enhanced_pipeline([
 
 ### Fan-Out (`fan_out/1`)
 
-Broadcasts each input record to multiple parallel stages and collects all results.
+Broadcasts each input record to multiple stages **sequentially** and collects all results.
 
 ```prolog
 fan_out([validate/1, enrich/1, audit/1])
@@ -88,9 +103,9 @@ fan_out([validate/1, enrich/1, audit/1])
 
 **Data Flow:**
 ```
-Input Record ─┬─► validate/1 ─► Result 1
-              ├─► enrich/1   ─► Result 2
-              └─► audit/1    ─► Result 3
+Input Record ─► validate/1 ─► Result 1
+             ─► enrich/1   ─► Result 2  (after validate completes)
+             ─► audit/1    ─► Result 3  (after enrich completes)
 ```
 
 All results are collected and passed to the next stage.
@@ -99,15 +114,70 @@ All results are collected and passed to the next stage.
 ```python
 def fan_out_records(record, stages):
     results = []
-    for stage in stages:
+    for stage in stages:  # Sequential iteration
         for result in stage(iter([record])):
             results.append(result)
     return results
 ```
 
+### Parallel (`parallel/1`)
+
+Executes stages **concurrently** using target-native parallelism mechanisms.
+
+```prolog
+parallel([validate/1, enrich/1, audit/1])
+```
+
+**Data Flow:**
+```
+Input Record ─┬─► validate/1 ─► Result 1  ─┐
+              ├─► enrich/1   ─► Result 2  ─┼─► Collected
+              └─► audit/1    ─► Result 3  ─┘
+              (all stages execute simultaneously)
+```
+
+**Generated Code (Python):**
+```python
+def parallel_records(record, stages):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def run_stage(stage):
+        return list(stage(iter([record])))
+
+    results = []
+    with ThreadPoolExecutor(max_workers=len(stages)) as executor:
+        futures = {executor.submit(run_stage, stage): i for i, stage in enumerate(stages)}
+        for future in as_completed(futures):
+            results.extend(future.result())
+    return results
+```
+
+**Generated Code (Go):**
+```go
+func parallelRecords(record Record, stages []func([]Record) []Record) []Record {
+    var wg sync.WaitGroup
+    var mu sync.Mutex
+    var results []Record
+
+    for _, stage := range stages {
+        wg.Add(1)
+        go func(s func([]Record) []Record) {
+            defer wg.Done()
+            stageResults := s([]Record{record})
+            mu.Lock()
+            results = append(results, stageResults...)
+            mu.Unlock()
+        }(stage)
+    }
+
+    wg.Wait()
+    return results
+}
+```
+
 ### Merge (`merge`)
 
-Combines results from parallel fan-out stages into a single stream.
+Combines results from fan_out or parallel stages into a single stream.
 
 ```prolog
 fan_out([a/1, b/1, c/1]),

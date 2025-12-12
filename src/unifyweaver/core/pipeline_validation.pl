@@ -144,6 +144,8 @@ is_valid_stage(Pred/Arity) :-
     Arity >= 0.
 is_valid_stage(fan_out(Stages)) :-
     is_list(Stages).
+is_valid_stage(parallel(Stages)) :-
+    is_list(Stages).
 is_valid_stage(merge).
 is_valid_stage(route_by(Pred, Routes)) :-
     atom(Pred),
@@ -157,6 +159,7 @@ is_valid_stage(filter_by(Pred)) :-
 stage_type(Pred/Arity, predicate) :-
     atom(Pred), integer(Arity), !.
 stage_type(fan_out(_), fan_out) :- !.
+stage_type(parallel(_), parallel) :- !.
 stage_type(merge, merge) :- !.
 stage_type(route_by(_, _), route_by) :- !.
 stage_type(filter_by(_), filter_by) :- !.
@@ -180,6 +183,9 @@ validate_stage_type(Stage, Type) :-
 validate_stage_specific(fan_out(Stages), Errors) :-
     !,
     validate_fan_out(fan_out(Stages), Errors).
+validate_stage_specific(parallel(Stages), Errors) :-
+    !,
+    validate_parallel(parallel(Stages), Errors).
 validate_stage_specific(route_by(Pred, Routes), Errors) :-
     !,
     validate_route_by(route_by(Pred, Routes), Errors).
@@ -216,6 +222,32 @@ validate_fan_out_stages([Stage|Rest], Index, AllErrors) :-
 
 prefix_fan_out_error(Index, error(Type, Msg), error(Type, PrefixedMsg)) :-
     format(atom(PrefixedMsg), 'fan_out[~w]: ~w', [Index, Msg]).
+
+%% validate_parallel(+ParallelStage, -Errors) is det.
+%
+%  Validates a parallel stage:
+%    - Must have at least two sub-stages (otherwise no benefit from parallelism)
+%    - All sub-stages must be valid
+validate_parallel(parallel([]), [error(empty_parallel, 'parallel requires at least two sub-stages')]) :- !.
+validate_parallel(parallel([_]), [error(single_parallel_stage, 'parallel requires at least two sub-stages (use a regular stage for single operations)')]) :- !.
+validate_parallel(parallel(Stages), Errors) :-
+    validate_parallel_stages(Stages, 1, Errors).
+
+validate_parallel_stages([], _, []).
+validate_parallel_stages([Stage|Rest], Index, AllErrors) :-
+    ( is_valid_stage(Stage) ->
+        validate_stage_specific(Stage, StageErrors),
+        maplist(prefix_parallel_error(Index), StageErrors, PrefixedErrors)
+    ;
+        format(atom(Msg), 'parallel sub-stage ~w is invalid: ~w', [Index, Stage]),
+        PrefixedErrors = [error(invalid_parallel_stage, Msg)]
+    ),
+    Index1 is Index + 1,
+    validate_parallel_stages(Rest, Index1, RestErrors),
+    append(PrefixedErrors, RestErrors, AllErrors).
+
+prefix_parallel_error(Index, error(Type, Msg), error(Type, PrefixedMsg)) :-
+    format(atom(PrefixedMsg), 'parallel[~w]: ~w', [Index, Msg]).
 
 %% validate_route_by(+RouteByStage, -Errors) is det.
 %
@@ -304,59 +336,72 @@ validate_predicate_stage(Pred/Arity, Errors) :-
 %  Returns warnings (not errors) for issues that may be intentional.
 %
 %  Checks:
-%    - merge should typically follow fan_out
-%    - Multiple consecutive fan_out without merge
+%    - merge should typically follow fan_out or parallel
+%    - fan_out or parallel without merge
 validate_stage_sequence(Stages, Warnings) :-
-    check_merge_without_fan_out(Stages, MergeWarnings),
-    check_fan_out_without_merge(Stages, FanOutWarnings),
-    append(MergeWarnings, FanOutWarnings, Warnings).
+    check_merge_without_parallel_stage(Stages, MergeWarnings),
+    check_parallel_stage_without_merge(Stages, ParallelWarnings),
+    append(MergeWarnings, ParallelWarnings, Warnings).
 
-%% check_merge_without_fan_out(+Stages, -Warnings) is det.
+%% check_merge_without_parallel_stage(+Stages, -Warnings) is det.
 %
-%  Warns if merge appears without a preceding fan_out.
-check_merge_without_fan_out(Stages, Warnings) :-
+%  Warns if merge appears without a preceding fan_out or parallel.
+check_merge_without_parallel_stage(Stages, Warnings) :-
     check_merge_helper(Stages, false, Warnings).
 
 check_merge_helper([], _, []).
 check_merge_helper([fan_out(_)|Rest], _, Warnings) :-
     !,
     check_merge_helper(Rest, true, Warnings).
-check_merge_helper([merge|Rest], HadFanOut, Warnings) :-
+check_merge_helper([parallel(_)|Rest], _, Warnings) :-
     !,
-    ( HadFanOut == false ->
-        Warnings = [warning(merge_without_fan_out,
-            'merge stage without preceding fan_out - results may be unexpected')|RestWarnings]
+    check_merge_helper(Rest, true, Warnings).
+check_merge_helper([merge|Rest], HadParallelStage, Warnings) :-
+    !,
+    ( HadParallelStage == false ->
+        Warnings = [warning(merge_without_parallel_stage,
+            'merge stage without preceding fan_out or parallel - results may be unexpected')|RestWarnings]
     ;
         Warnings = RestWarnings
     ),
     check_merge_helper(Rest, false, RestWarnings).
-check_merge_helper([_|Rest], HadFanOut, Warnings) :-
-    check_merge_helper(Rest, HadFanOut, Warnings).
+check_merge_helper([_|Rest], HadParallelStage, Warnings) :-
+    check_merge_helper(Rest, HadParallelStage, Warnings).
 
-%% check_fan_out_without_merge(+Stages, -Warnings) is det.
+%% check_parallel_stage_without_merge(+Stages, -Warnings) is det.
 %
-%  Warns if fan_out is not followed by merge before pipeline ends.
-check_fan_out_without_merge(Stages, Warnings) :-
-    check_fan_out_helper(Stages, Warnings).
+%  Warns if fan_out or parallel is not followed by merge before pipeline ends.
+check_parallel_stage_without_merge(Stages, Warnings) :-
+    check_parallel_helper(Stages, Warnings).
 
-check_fan_out_helper([], []).
-check_fan_out_helper([fan_out(_)|Rest], Warnings) :-
+check_parallel_helper([], []).
+check_parallel_helper([fan_out(_)|Rest], Warnings) :-
     !,
     ( has_merge_before_end(Rest) ->
-        check_fan_out_helper(Rest, Warnings)
+        check_parallel_helper(Rest, Warnings)
     ;
         Warnings = [warning(fan_out_without_merge,
             'fan_out stage without subsequent merge - parallel results may be nested')|RestWarnings],
-        check_fan_out_helper(Rest, RestWarnings)
+        check_parallel_helper(Rest, RestWarnings)
     ).
-check_fan_out_helper([_|Rest], Warnings) :-
-    check_fan_out_helper(Rest, Warnings).
+check_parallel_helper([parallel(_)|Rest], Warnings) :-
+    !,
+    ( has_merge_before_end(Rest) ->
+        check_parallel_helper(Rest, Warnings)
+    ;
+        Warnings = [warning(parallel_without_merge,
+            'parallel stage without subsequent merge - parallel results may be nested')|RestWarnings],
+        check_parallel_helper(Rest, RestWarnings)
+    ).
+check_parallel_helper([_|Rest], Warnings) :-
+    check_parallel_helper(Rest, Warnings).
 
 %% has_merge_before_end(+Stages) is semidet.
 %
-%  Succeeds if there's a merge stage before the next fan_out or end.
+%  Succeeds if there's a merge stage before the next fan_out, parallel, or end.
 has_merge_before_end([merge|_]) :- !.
 has_merge_before_end([fan_out(_)|_]) :- !, fail.
+has_merge_before_end([parallel(_)|_]) :- !, fail.
 has_merge_before_end([_|Rest]) :- has_merge_before_end(Rest).
 
 % ============================================================================
@@ -395,10 +440,13 @@ run_all_validation_tests :-
     test_empty_fan_out,
     test_empty_routes,
     test_invalid_route_format,
-    test_merge_without_fan_out_warning,
+    test_merge_without_parallel_stage_warning,
     test_fan_out_without_merge_warning,
     test_nested_fan_out,
-    test_complex_valid_pipeline.
+    test_complex_valid_pipeline,
+    test_empty_parallel,
+    test_single_parallel_stage,
+    test_valid_parallel.
 
 %% Test: Empty pipeline
 test_empty_pipeline :-
@@ -486,14 +534,14 @@ test_invalid_route_format :-
     ).
 
 %% Test: Merge without fan_out warning
-test_merge_without_fan_out_warning :-
-    format('  Test: merge without fan_out warning...', []),
+test_merge_without_parallel_stage_warning :-
+    format('  Test: merge without parallel stage warning...', []),
     validate_pipeline([parse/1, merge, output/1], [], result(_, Warnings)),
-    ( member(warning(merge_without_fan_out, _), Warnings) ->
+    ( member(warning(merge_without_parallel_stage, _), Warnings) ->
         format(' PASSED~n', [])
     ;
         format(' FAILED~n', []),
-        throw(test_failed(merge_without_fan_out_warning))
+        throw(test_failed(merge_without_parallel_stage_warning))
     ).
 
 %% Test: Fan_out without merge warning
@@ -554,4 +602,43 @@ test_complex_valid_pipeline :-
     ;
         format(' FAILED: ~w~n', [Errors]),
         throw(test_failed(complex_valid_pipeline))
+    ).
+
+%% Test: Empty parallel
+test_empty_parallel :-
+    format('  Test: empty parallel...', []),
+    validate_pipeline([parse/1, parallel([]), output/1], Errors),
+    ( member(error(empty_parallel, _), Errors) ->
+        format(' PASSED~n', [])
+    ;
+        format(' FAILED~n', []),
+        throw(test_failed(empty_parallel))
+    ).
+
+%% Test: Single parallel stage (invalid - need at least 2)
+test_single_parallel_stage :-
+    format('  Test: single parallel stage...', []),
+    validate_pipeline([parse/1, parallel([transform/1]), output/1], Errors),
+    ( member(error(single_parallel_stage, _), Errors) ->
+        format(' PASSED~n', [])
+    ;
+        format(' FAILED~n', []),
+        throw(test_failed(single_parallel_stage))
+    ).
+
+%% Test: Valid parallel with 2+ stages
+test_valid_parallel :-
+    format('  Test: valid parallel...', []),
+    Pipeline = [
+        parse/1,
+        parallel([transform_a/1, transform_b/1, transform_c/1]),
+        merge,
+        output/1
+    ],
+    validate_pipeline(Pipeline, Errors),
+    ( Errors == [] ->
+        format(' PASSED~n', [])
+    ;
+        format(' FAILED: ~w~n', [Errors]),
+        throw(test_failed(valid_parallel))
     ).
