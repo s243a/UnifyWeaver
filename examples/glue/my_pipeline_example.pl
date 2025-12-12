@@ -7,6 +7,7 @@
 % Load necessary modules (using relative paths from examples/glue/)
 :- use_module('../../src/unifyweaver/glue/shell_glue').
 :- use_module('../../src/unifyweaver/core/target_mapping').
+:- use_module('../../src/unifyweaver/core/compiler_driver').
 
 % 1. High-level declarative Prolog for the data processing logic
 %    This defines the *what* and *flow*, without specifying *how* or *where*.
@@ -22,7 +23,7 @@ process_data(Input, Output) :-
 :- declare_target(store/2, awk, [file('store.awk'), name('store_stage')]).
 
 % 3. Predicate to generate the pipeline script using inferred steps.
-%    Now uses the built-in infer_steps_from_goal/2 from shell_glue.
+%    Uses infer_steps_from_goal/2 from shell_glue + generate_pipeline/3.
 generate_process_data_pipeline_inferred(Script) :-
     % Infer the steps from the high-level process_data/2 goal
     infer_steps_from_goal(my_pipeline_example:process_data(_, _), Steps),
@@ -32,7 +33,7 @@ generate_process_data_pipeline_inferred(Script) :-
     ],
     generate_pipeline(Steps, Options, Script).
 
-% Alternative: Use compile_goal_to_pipeline/3 for a one-step approach
+% Alternative: Use compile_goal_to_pipeline/3 from compiler_driver for a one-step approach
 generate_pipeline_onestep(Script) :-
     compile_goal_to_pipeline(
         my_pipeline_example:process_data(_, _),

@@ -20,7 +20,7 @@
     % Goal inference (re-exported from goal_inference)
     infer_steps_from_goal/2,    % infer_steps_from_goal(+Goal, -Steps)
     infer_steps_from_goal/3,    % infer_steps_from_goal(+Goal, +Options, -Steps)
-    compile_goal_to_pipeline/3, % compile_goal_to_pipeline(+Goal, +Options, -Script)
+    % Note: compile_goal_to_pipeline/3 is now in compiler_driver
 
     % Format detection
     input_format/2,             % input_format(Options, Format)
@@ -30,8 +30,7 @@
 :- use_module(library(lists)).
 :- use_module(goal_inference, [
     infer_steps_from_goal/2,
-    infer_steps_from_goal/3,
-    compile_goal_to_pipeline/3
+    infer_steps_from_goal/3
 ]).
 
 %% ============================================
