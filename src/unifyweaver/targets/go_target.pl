@@ -21,7 +21,8 @@
     % Pipeline mode exports
     test_go_pipeline_mode/0,        % Test pipeline mode
     test_go_pipeline_chaining/0,    % Test pipeline chaining
-    test_go_pipeline_bindings/0     % Test pipeline binding integration
+    test_go_pipeline_bindings/0,    % Test pipeline binding integration
+    test_go_pipeline_generator/0    % Test pipeline generator mode
 ]).
 
 :- use_module(library(lists)).
@@ -5322,13 +5323,21 @@ compile_go_pipeline(Predicates, Options, GoCode) :-
     % Generate main function
     generate_go_pipeline_main(PipelineName, OutputFormat, Options, MainCode),
 
+    % Generate helper functions if needed
+    generate_pipeline_helpers(PipelineMode, HelperCode),
+
     % Wrap in package if requested
     (   IncludePackage
     ->  % Collect imports
         pipeline_chaining_imports(PipelineMode, BaseImports),
         get_collected_imports(BindingImports),
         append(BaseImports, BindingImports, AllImportsList),
-        sort(AllImportsList, UniqueImports),
+        % Add sort import for generator mode
+        (   PipelineMode = generator
+        ->  append(AllImportsList, ["sort"], AllImportsWithSort)
+        ;   AllImportsWithSort = AllImportsList
+        ),
+        sort(AllImportsWithSort, UniqueImports),
         maplist(format_import, UniqueImports, ImportLines),
         atomic_list_concat(ImportLines, '\n', ImportsStr),
 
@@ -5341,16 +5350,40 @@ import (
 // Record represents a data record flowing through the pipeline
 type Record map[string]interface{}
 
+~w~w
 ~w
-~w
-~w', [ImportsStr, StagesCode, ConnectorCode, MainCode])
-    ;   format(string(GoCode), '~w~w~w', [StagesCode, ConnectorCode, MainCode])
+~w', [ImportsStr, HelperCode, StagesCode, ConnectorCode, MainCode])
+    ;   format(string(GoCode), '~w~w~w~w', [HelperCode, StagesCode, ConnectorCode, MainCode])
     ).
+
+%% generate_pipeline_helpers(+Mode, -Code)
+%  Generate helper functions based on pipeline mode
+generate_pipeline_helpers(generator, Code) :-
+    Code = '// recordKey generates a unique key for a record to track duplicates
+func recordKey(r Record) string {
+\t// Get all keys and sort them for consistent ordering
+\tkeys := make([]string, 0, len(r))
+\tfor k := range r {
+\t\tkeys = append(keys, k)
+\t}
+\tsort.Strings(keys)
+\t
+\t// Build key from sorted key-value pairs
+\tvar result string
+\tfor _, k := range keys {
+\t\tresult += fmt.Sprintf("%s=%v;", k, r[k])
+\t}
+\treturn result
+}
+
+'.
+generate_pipeline_helpers(_, "").
 
 %% pipeline_chaining_imports(+Mode, -Imports)
 %  Get base imports needed for pipeline chaining
 pipeline_chaining_imports(sequential, ["bufio", "encoding/json", "fmt", "os"]).
 pipeline_chaining_imports(channel, ["bufio", "encoding/json", "fmt", "os", "sync"]).
+pipeline_chaining_imports(generator, ["bufio", "encoding/json", "fmt", "os"]).
 
 %% extract_pipeline_predicates(+Predicates, -PredInfos)
 %  Extract predicate name and arity from list
@@ -5386,12 +5419,16 @@ compile_pipeline_stages([pred_info(Name, Arity, _Target)|Rest], Options, Code, [
 %% compile_pipeline_stage_from_clause(+Name, +Arity, +Head, +Body, +Options, -Code)
 %  Compile a predicate clause into a pipeline stage function.
 %  Now supports binding goals (e.g., string_lower/2, sqrt/2) in the body.
+%  Includes nil guards for robustness in fixpoint (generator) mode.
 compile_pipeline_stage_from_clause(Name, Arity, Head, Body, _Options, Code) :-
     atom_string(Name, NameStr),
     Head =.. [_|HeadArgs],
 
     % Extract field mappings from body
     extract_json_field_mappings(Body, FieldMappings),
+
+    % Generate field guards (nil checks for required fields)
+    generate_stage_field_guards(FieldMappings, GuardCode),
 
     % Generate field extraction code
     generate_stage_field_extraction(FieldMappings, ExtractionCode, VarMap),
@@ -5411,14 +5448,14 @@ compile_pipeline_stage_from_clause(Name, Arity, Head, Body, _Options, Code) :-
 func ~w(records []Record) []Record {
 \tvar results []Record
 \tfor _, record := range records {
-~w~w
+~w~w~w
 \t\tresult := Record{~w}
 \t\tresults = append(results, result)
 \t}
 \treturn results
 }
 
-', [NameStr, NameStr, Arity, NameStr, ExtractionCode, BindingCode, OutputCode]).
+', [NameStr, NameStr, Arity, NameStr, GuardCode, ExtractionCode, BindingCode, OutputCode]).
 
 %% generate_placeholder_stage(+Name, +Arity, -Code)
 %  Generate a placeholder stage for undefined predicates
@@ -5613,6 +5650,35 @@ stage_extract_one_field(nested(Path, VarName), VarName, nested(Path), Code) :-
     path_to_go_nested_access(Path, AccessExpr),
     format(string(Code), '\t\t~w, _ := ~w\n', [VarName, AccessExpr]).
 
+%% generate_stage_field_guards(+FieldMappings, -Code)
+%  Generate nil checks for required fields - for use with generator mode
+%  to skip records that don't have the expected structure
+generate_stage_field_guards([], "").
+generate_stage_field_guards(FieldMappings, Code) :-
+    FieldMappings \= [],
+    findall(FieldName,
+        (   member(Mapping, FieldMappings),
+            extract_field_name(Mapping, FieldName)
+        ),
+        FieldNames),
+    (   FieldNames = []
+    ->  Code = ""
+    ;   generate_nil_check_conditions(FieldNames, Conditions),
+        format(string(Code), '\t\tif ~w {\n\t\t\tcontinue\n\t\t}\n', [Conditions])
+    ).
+
+extract_field_name(flat(FieldName, _), FieldName).
+extract_field_name(FieldName-_, FieldName) :- atom(FieldName).
+extract_field_name(nested([First|_], _), First).
+
+generate_nil_check_conditions([Field], Condition) :-
+    format(string(Condition), 'record["~w"] == nil', [Field]).
+generate_nil_check_conditions([Field|Rest], Condition) :-
+    Rest \= [],
+    format(string(FirstCheck), 'record["~w"] == nil', [Field]),
+    generate_nil_check_conditions(Rest, RestCheck),
+    format(string(Condition), '~w || ~w', [FirstCheck, RestCheck]).
+
 %% generate_stage_output(+HeadArgs, +VarMap, -Code)
 %  Generate output record construction for a stage
 generate_stage_output(HeadArgs, VarMap, Code) :-
@@ -5656,6 +5722,65 @@ func ~w(input []Record) []Record {
 ~w}
 
 ', [PipelineNameStr, PipelineNameStr, ChainCode]).
+
+generate_go_pipeline_connector(StageNames, PipelineName, generator, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    generate_generator_chain(StageNames, ChainCode),
+    format(string(Code),
+'// ~w chains pipeline stages with fixpoint evaluation for recursive stages
+func ~w(input []Record) []Record {
+~w}
+
+', [PipelineNameStr, PipelineNameStr, ChainCode]).
+
+%% generate_generator_chain(+StageNames, -Code)
+%  Generate fixpoint-based chaining for recursive stages
+generate_generator_chain([], "\treturn input\n").
+generate_generator_chain(StageNames, Code) :-
+    StageNames \= [],
+    generate_generator_chain_body(StageNames, BodyCode),
+    format(string(Code),
+'\t// Initialize with input records
+\ttotal := make(map[string]Record)
+\tfor _, r := range input {
+\t\tkey := recordKey(r)
+\t\ttotal[key] = r
+\t}
+
+\t// Fixpoint iteration - apply stages until no new records
+\tchanged := true
+\tfor changed {
+\t\tchanged = false
+\t\tvar current []Record
+\t\tfor _, r := range total {
+\t\t\tcurrent = append(current, r)
+\t\t}
+
+~w
+
+\t\t// Add new records to total
+\t\tfor _, r := range current {
+\t\t\tkey := recordKey(r)
+\t\t\tif _, exists := total[key]; !exists {
+\t\t\t\ttotal[key] = r
+\t\t\t\tchanged = true
+\t\t\t}
+\t\t}
+\t}
+
+\t// Convert map to slice
+\tvar results []Record
+\tfor _, r := range total {
+\t\tresults = append(results, r)
+\t}
+\treturn results
+', [BodyCode]).
+
+generate_generator_chain_body([], "").
+generate_generator_chain_body([Stage|Rest], Code) :-
+    format(string(StageCall), '\t\tcurrent = ~w(current)\n', [Stage]),
+    generate_generator_chain_body(Rest, RestCode),
+    string_concat(StageCall, RestCode, Code).
 
 %% generate_sequential_chain(+StageNames, -Code)
 %  Generate sequential chaining code: stage1(stage2(stage3(input)))
@@ -7807,3 +7932,134 @@ test_go_pipeline_bindings :-
     ),
 
     format('~n=== All Go Pipeline Binding Integration Tests Passed ===~n', []).
+
+%% ============================================
+%% GO PIPELINE GENERATOR MODE TESTS
+%% ============================================
+
+test_go_pipeline_generator :-
+    format('~n=== Go Pipeline Generator Mode Tests ===~n~n', []),
+
+    % Initialize bindings
+    init_go_target,
+
+    % Test 1: Generate helper functions for generator mode
+    format('[Test 1] Generate pipeline helpers~n', []),
+    generate_pipeline_helpers(generator, HelperCode1),
+    (   sub_string(HelperCode1, _, _, _, "func recordKey"),
+        sub_string(HelperCode1, _, _, _, "sort.Strings"),
+        sub_string(HelperCode1, _, _, _, "fmt.Sprintf")
+    ->  format('  [PASS] recordKey helper generated~n', [])
+    ;   format('  [FAIL] Helper code: ~w~n', [HelperCode1])
+    ),
+
+    % Test 2: No helpers for sequential mode
+    format('[Test 2] No helpers for sequential mode~n', []),
+    generate_pipeline_helpers(sequential, HelperCode2),
+    (   HelperCode2 = ""
+    ->  format('  [PASS] No helpers for sequential~n', [])
+    ;   format('  [FAIL] Got: ~w~n', [HelperCode2])
+    ),
+
+    % Test 3: Generator mode imports include sort
+    format('[Test 3] Generator mode imports~n', []),
+    pipeline_chaining_imports(generator, GenImports),
+    (   member("bufio", GenImports),
+        member("encoding/json", GenImports),
+        member("fmt", GenImports),
+        member("os", GenImports)
+    ->  format('  [PASS] Generator imports: ~w~n', [GenImports])
+    ;   format('  [FAIL] Imports: ~w~n', [GenImports])
+    ),
+
+    % Test 4: Generate generator chain for empty stages
+    format('[Test 4] Generator chain (empty)~n', []),
+    generate_generator_chain([], EmptyChain),
+    (   sub_string(EmptyChain, _, _, _, "return input")
+    ->  format('  [PASS] Empty chain returns input~n', [])
+    ;   format('  [FAIL] Chain: ~w~n', [EmptyChain])
+    ),
+
+    % Test 5: Generate generator chain body
+    format('[Test 5] Generator chain body~n', []),
+    generate_generator_chain_body(["stage1", "stage2"], BodyCode5),
+    (   sub_string(BodyCode5, _, _, _, "current = stage1(current)"),
+        sub_string(BodyCode5, _, _, _, "current = stage2(current)")
+    ->  format('  [PASS] Chain body correct~n', [])
+    ;   format('  [FAIL] Body: ~w~n', [BodyCode5])
+    ),
+
+    % Test 6: Generate full generator chain
+    format('[Test 6] Full generator chain~n', []),
+    generate_generator_chain(["transform", "derive"], ChainCode6),
+    (   sub_string(ChainCode6, _, _, _, "total := make(map[string]Record)"),
+        sub_string(ChainCode6, _, _, _, "recordKey(r)"),
+        sub_string(ChainCode6, _, _, _, "changed := true"),
+        sub_string(ChainCode6, _, _, _, "for changed"),
+        sub_string(ChainCode6, _, _, _, "current = transform(current)"),
+        sub_string(ChainCode6, _, _, _, "current = derive(current)")
+    ->  format('  [PASS] Fixpoint iteration generated~n', [])
+    ;   format('  [FAIL] Chain: ~w~n', [ChainCode6])
+    ),
+
+    % Test 7: Generate pipeline connector for generator mode
+    format('[Test 7] Pipeline connector (generator)~n', []),
+    generate_go_pipeline_connector(["step1", "step2"], testGen, generator, ConnCode7),
+    (   sub_string(ConnCode7, _, _, _, "func testGen(input []Record)"),
+        sub_string(ConnCode7, _, _, _, "fixpoint evaluation")
+    ->  format('  [PASS] Connector generated~n', [])
+    ;   format('  [FAIL] Connector: ~w~n', [ConnCode7])
+    ),
+
+    % Test 8: Full pipeline compilation with generator mode
+    format('[Test 8] Full pipeline (generator mode)~n', []),
+    clear_binding_imports,
+    compile_go_pipeline([gen_stage1/1, gen_stage2/1], [
+        pipeline_name(fixpointPipe),
+        pipeline_mode(generator),
+        output_format(jsonl)
+    ], FullGenCode),
+    (   sub_string(FullGenCode, _, _, _, "package main"),
+        sub_string(FullGenCode, _, _, _, "\"sort\""),
+        sub_string(FullGenCode, _, _, _, "func recordKey"),
+        sub_string(FullGenCode, _, _, _, "func fixpointPipe"),
+        sub_string(FullGenCode, _, _, _, "changed := true"),
+        sub_string(FullGenCode, _, _, _, "for changed")
+    ->  format('  [PASS] Full generator pipeline compiled~n', [])
+    ;   format('  [FAIL] Missing expected patterns in generated code~n', [])
+    ),
+
+    % Test 9: Generator mode with defined predicate
+    format('[Test 9] Generator with defined predicate~n', []),
+    abolish(user:test_derive/2),
+    assert(user:(test_derive(input, derived) :-
+        json_record([input-input]),
+        string_upper(input, derived))),
+    clear_binding_imports,
+    compile_go_pipeline([test_derive/2], [
+        pipeline_name(derivePipe),
+        pipeline_mode(generator),
+        output_format(jsonl)
+    ], DeriveCode),
+    (   sub_string(DeriveCode, _, _, _, "func test_derive"),
+        sub_string(DeriveCode, _, _, _, "strings.ToUpper"),
+        sub_string(DeriveCode, _, _, _, "func recordKey"),
+        sub_string(DeriveCode, _, _, _, "total := make(map[string]Record)")
+    ->  format('  [PASS] Generator with bindings compiles~n', [])
+    ;   format('  [FAIL] Code missing expected patterns~n', [])
+    ),
+    abolish(user:test_derive/2),
+
+    % Test 10: Verify sort import is added for generator mode
+    format('[Test 10] Sort import verification~n', []),
+    compile_go_pipeline([placeholder/1], [
+        pipeline_name(sortTest),
+        pipeline_mode(generator),
+        output_format(jsonl)
+    ], SortTestCode),
+    (   sub_string(SortTestCode, _, _, _, "\"sort\"")
+    ->  format('  [PASS] Sort import added~n', [])
+    ;   format('  [FAIL] Missing sort import~n', [])
+    ),
+
+    format('~n=== All Go Pipeline Generator Mode Tests Passed ===~n', []).
