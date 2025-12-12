@@ -61,6 +61,31 @@ compile_pipeline(
 
 This generates stage-based orchestration with automatic runtime grouping.
 
+**Enhanced Pipeline Chaining:**
+
+For complex data flow patterns beyond linear pipelines:
+```prolog
+compile_enhanced_pipeline([
+    extract/1,
+    filter_by(is_active),           % Filter stage
+    fan_out([validate/1, enrich/1]), % Broadcast to parallel stages
+    merge,                           % Combine parallel results
+    route_by(has_error, [            % Conditional routing
+        (true, error_handler/1),
+        (false, success/1)
+    ]),
+    output/1
+], [pipeline_name(enhanced_pipeline)], Code).
+```
+
+Enhanced stages:
+- `fan_out(Stages)` — Broadcast each record to multiple stages
+- `merge` — Combine results from parallel fan-out stages
+- `route_by(Pred, Routes)` — Route records based on predicate condition
+- `filter_by(Pred)` — Filter records by predicate
+
+**See [Enhanced Pipeline Chaining Guide](ENHANCED_PIPELINE_CHAINING.md) for complete documentation.**
+
 **Runtime Selection:**
 
 | Runtime | Use Case |
