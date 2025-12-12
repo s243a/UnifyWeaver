@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - PowerShell: Runspace pools
     - Bash: Background processes with `wait`
     - IronPython: .NET `Task.Factory.StartNew` with `ConcurrentBag<T>`
-    - AWK: Sequential (single-threaded by design)
+    - AWK: Sequential by default, GNU Parallel with `parallel_mode(gnu_parallel)` option
   - Validation support: empty parallel detection, single-stage parallel warning
   - Clear distinction from `fan_out` (sequential) vs `parallel` (concurrent)
 

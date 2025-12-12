@@ -274,6 +274,47 @@ test_awk_main_processing() {
     fi
 }
 
+# Test 9: AWK GNU Parallel mode generates bash script
+test_awk_gnu_parallel_mode() {
+    log_info "Test 9: AWK GNU Parallel mode code generation"
+
+    cd "$PROJECT_ROOT"
+
+    cat > "$OUTPUT_DIR/awk_gnu_parallel_test.pl" << 'EOF'
+:- use_module(src/unifyweaver/targets/awk_target).
+
+test_compile :-
+    compile_awk_enhanced_pipeline([
+        extract/1,
+        parallel([validate/1, enrich/1]),
+        merge,
+        output/1
+    ], [pipeline_name(gnu_parallel_pipe), parallel_mode(gnu_parallel)], Code),
+    atom_string(CodeAtom, Code),
+    open('output_awk_enhanced_chaining_test/awk_gnu_parallel.sh', write, S),
+    write(S, CodeAtom),
+    close(S).
+EOF
+
+    if swipl -g "consult('output_awk_enhanced_chaining_test/awk_gnu_parallel_test.pl'), test_compile" -t halt 2>/dev/null; then
+        if [ -f "$OUTPUT_DIR/awk_gnu_parallel.sh" ]; then
+            if grep -q "#!/bin/bash" "$OUTPUT_DIR/awk_gnu_parallel.sh" && \
+               grep -q "GNU Parallel" "$OUTPUT_DIR/awk_gnu_parallel.sh" && \
+               grep -q "parallel --keep-order" "$OUTPUT_DIR/awk_gnu_parallel.sh" && \
+               grep -q "stage_validate" "$OUTPUT_DIR/awk_gnu_parallel.sh" && \
+               grep -q "stage_enrich" "$OUTPUT_DIR/awk_gnu_parallel.sh"; then
+                log_pass "AWK GNU Parallel mode generates correct bash script"
+            else
+                log_fail "AWK GNU Parallel script missing expected patterns"
+            fi
+        else
+            log_fail "AWK GNU Parallel file not generated"
+        fi
+    else
+        log_fail "AWK GNU Parallel compilation failed"
+    fi
+}
+
 # Main test runner
 main() {
     echo "=========================================="
@@ -291,6 +332,7 @@ main() {
     test_awk_helpers_completeness
     test_awk_begin_block
     test_awk_main_processing
+    test_awk_gnu_parallel_mode
 
     echo ""
     echo "=========================================="
