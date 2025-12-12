@@ -259,6 +259,8 @@ verify_parameterized_need_allows_post_agg :-
 
 verify_negation_plan :-
     csharp_query_target:build_query_plan(test_allowed/1, [target(csharp_query)], Plan),
+    get_dict(relations, Plan, Relations),
+    member(relation{predicate:predicate{name:test_banned, arity:1}, facts:_}, Relations),
     get_dict(root, Plan, Root),
     sub_term(negation{type:negation, predicate:predicate{name:test_banned, arity:1}, args:_, input:_, width:_}, Root),
     csharp_query_target:render_plan_to_csharp(Plan, Source),

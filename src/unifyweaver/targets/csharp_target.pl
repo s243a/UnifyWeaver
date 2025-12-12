@@ -761,9 +761,9 @@ fold_terms(_GroupSpecs, [], [], _HeadSpec, Node, VarMap, Width, Relations, Node,
 fold_terms(GroupSpecs, [Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, WidthIn, RelationsIn,
            NodeOut, VarMapOut, WidthOut, RelationsOut) :-
     (   Role = constraint
-    ->  build_constraint_node(GroupSpecs, HeadSpec, Term, AccNode, VarMapIn, WidthIn,
-                                ConstraintNode, VarMapMid, WidthMid),
-         fold_terms(GroupSpecs, Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsIn,
+    ->  build_constraint_node(GroupSpecs, HeadSpec, Term, AccNode, VarMapIn, WidthIn, RelationsIn,
+                                ConstraintNode, VarMapMid, WidthMid, RelationsMid),
+        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsMid,
                     NodeOut, VarMapOut, WidthOut, RelationsOut)
     ;   Role = relation
     ->  Term =.. [Pred|Args],
@@ -812,13 +812,15 @@ build_join_node(LeftNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapOut, 
         width:WidthOut
     }.
 
-build_constraint_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn,
-        NodeOut, VarMapOut, WidthOut) :-
+build_constraint_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, RelationsIn,
+        NodeOut, VarMapOut, WidthOut, RelationsOut) :-
     (   arithmetic_goal(Term)
     ->  build_arithmetic_node(Term, InputNode, VarMapIn, WidthIn,
             NodeOut, VarMapOut, WidthOut)
+        , RelationsOut = RelationsIn
     ;   negation_goal(Term)
-    ->  build_negation_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, NodeOut),
+    ->  build_negation_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, RelationsIn,
+            NodeOut, RelationsOut),
         VarMapOut = VarMapIn,
         WidthOut = WidthIn
     ;   constraint_condition(Term, VarMapIn, Condition),
@@ -829,17 +831,20 @@ build_constraint_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn,
             width:WidthIn
         },
         VarMapOut = VarMapIn,
-        WidthOut = WidthIn
+        WidthOut = WidthIn,
+        RelationsOut = RelationsIn
     ).
 
-build_negation_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMap, Width,
-        negation{type:negation, input:InputNode, predicate:NegSpec, args:Operands, width:Width}) :-
+build_negation_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMap, Width, RelationsIn,
+        negation{type:negation, input:InputNode, predicate:NegSpec, args:Operands, width:Width},
+        RelationsOut) :-
     strip_module(Term0, _, Term),
     (   Term =.. ['\\+', Inner]
     ;   Term =.. [not, Inner]
     ),
     term_signature(Inner, NegPI),
     signature_to_spec(NegPI, NegSpec),
+    spec_signature(NegSpec, NegName/NegArity),
     (   memberchk(NegSpec, GroupSpecs)
     ->  spec_signature(NegSpec, Name/Arity),
         format(user_error,
@@ -848,6 +853,7 @@ build_negation_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMap, Width,
         fail
     ;   true
     ),
+    ensure_relation(NegName, NegArity, RelationsIn, RelationsOut),
     Inner =.. [_|Args],
     maplist(negation_arg_operand(VarMap), Args, Operands).
 
