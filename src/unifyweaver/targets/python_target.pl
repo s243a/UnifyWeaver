@@ -5269,15 +5269,20 @@ test_enhanced_pipeline_chaining :-
 %% ============================================================================
 %%
 %% Extends enhanced pipeline chaining with IronPython/.NET-specific features:
-%%   - Uses .NET List<T> for fan-out results collection
-%%   - Uses .NET Dictionary<TKey,TValue> for routing maps
+%%   - fan_out(Stages)        : Broadcast to stages (sequential execution)
+%%   - parallel(Stages)       : Execute stages concurrently (.NET Tasks)
+%%   - merge                  : Combine results from fan_out or parallel
+%%   - route_by(Pred, Routes) : Conditional routing with .NET Dictionary
+%%   - filter_by(Pred)        : Filter records by predicate
+%%   - Uses .NET List<T> for results collection
+%%   - Uses .NET ConcurrentBag<T> for parallel results
 %%   - Leverages CLR interop for .NET integration scenarios
 %%
 %% Example usage:
 %%   compile_ironpython_enhanced_pipeline([
 %%       extract/1,
 %%       filter_by(is_active),
-%%       fan_out([validate/1, enrich/1]),
+%%       parallel([validate/1, enrich/1]),  % Concurrent via .NET Tasks
 %%       merge,
 %%       route_by(has_error, [(true, error_handler/1), (false, success/1)]),
 %%       output/1
@@ -5474,6 +5479,35 @@ def to_dotnet_list(py_list):
 def from_dotnet_list(dotnet_list):
     """Convert .NET List to Python list."""
     return list(dotnet_list)
+
+def parallel_records(record, stages):
+    """
+    Parallel: Execute stages concurrently using .NET Tasks.
+    Uses System.Threading.Tasks for true parallelism in IronPython.
+    Each stage receives the same input record.
+    Results are collected after all tasks complete.
+    """
+    from System.Threading.Tasks import Task, TaskFactory
+    from System.Collections.Concurrent import ConcurrentBag
+
+    results_bag = ConcurrentBag[object]()
+
+    def run_stage(stage):
+        stage_results = list(stage(iter([record])))
+        for result in stage_results:
+            results_bag.Add(result)
+
+    # Create and start tasks for each stage
+    tasks = List[Task]()
+    for stage in stages:
+        task = Task.Factory.StartNew(lambda s=stage: run_stage(s))
+        tasks.Add(task)
+
+    # Wait for all tasks to complete
+    Task.WaitAll(tasks.ToArray())
+
+    # Convert ConcurrentBag to list
+    return list(results_bag)
 '.
 
 %% generate_ironpython_enhanced_connector(+Stages, +PipelineName, -Code)
@@ -5513,7 +5547,7 @@ generate_ironpython_stage_flow(Pred/_, CurrentVar, NextVar, Code) :-
 '    # Stage: ~w
     ~w = ~w(~w)', [Pred, NextVar, Pred, CurrentVar]).
 
-% Fan-out stage with .NET List
+% Fan-out stage with .NET List (sequential execution)
 generate_ironpython_stage_flow(fan_out(SubStages), CurrentVar, NextVar, Code) :-
     !,
     length(SubStages, N),
@@ -5521,19 +5555,34 @@ generate_ironpython_stage_flow(fan_out(SubStages), CurrentVar, NextVar, Code) :-
     collect_stage_names(SubStages, StageNames),
     format_stage_list(StageNames, StageListStr),
     format(string(Code),
-'    # Fan-out to ~w parallel stages (IronPython/.NET)
+'    # Fan-out to ~w stages (sequential, IronPython/.NET)
     fan_out_stages = [~w]
     ~w = []
     for record in ~w:
         ~w.extend(fan_out_records(record, fan_out_stages))',
     [N, StageListStr, NextVar, CurrentVar, NextVar]).
 
-% Merge stage
+% Parallel stage with .NET Tasks (concurrent execution)
+generate_ironpython_stage_flow(parallel(SubStages), CurrentVar, NextVar, Code) :-
+    !,
+    length(SubStages, N),
+    NextVar = 'parallel_results',
+    collect_stage_names(SubStages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+'    # Parallel execution of ~w stages (concurrent via .NET Tasks)
+    parallel_stages = [~w]
+    ~w = []
+    for record in ~w:
+        ~w.extend(parallel_records(record, parallel_stages))',
+    [N, StageListStr, NextVar, CurrentVar, NextVar]).
+
+% Merge stage (follows fan_out or parallel)
 generate_ironpython_stage_flow(merge, CurrentVar, NextVar, Code) :-
     !,
     NextVar = 'merged_stream',
     format(string(Code),
-'    # Merge parallel results
+'    # Merge results from fan_out or parallel
     ~w = iter(~w) if ~w else iter([])', [NextVar, CurrentVar, CurrentVar]).
 
 % Conditional routing with .NET Dictionary support
