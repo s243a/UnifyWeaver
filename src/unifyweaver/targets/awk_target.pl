@@ -8,10 +8,19 @@
 
 :- module(awk_target, [
     compile_predicate_to_awk/3,     % +Predicate, +Options, -AwkCode
-    write_awk_script/2              % +AwkCode, +FilePath
+    write_awk_script/2,             % +AwkCode, +FilePath
+    init_awk_target/0
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(gensym)).
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/awk_bindings').
+
+%% init_awk_target
+%  Initialize the AWK target by loading bindings.
+init_awk_target :-
+    init_awk_bindings.
 
 %% ============================================
 %% PUBLIC API
@@ -616,22 +625,24 @@ compile_single_rule_to_awk(Pred, Arity, Head, Body, _RecordFormat, FieldSep,
     build_var_map(HeadArgs, VarMap),
     format('  Variable map: ~w~n', [VarMap]),
 
-    % Extract predicates and constraints from body
+    % Extract predicates, constraints, and bindings
     extract_predicates(Body, Predicates),
     extract_constraints(Body, Constraints),
+    extract_bindings(Body, Bindings),
     format('  Body predicates: ~w~n', [Predicates]),
     format('  Constraints: ~w~n', [Constraints]),
+    format('  Bindings: ~w~n', [Bindings]),
 
     % Determine compilation strategy
     (   Predicates = [] ->
-        % No predicates - just constraints or empty body
-        compile_constraint_only_rule(PredStr, Arity, Constraints, VarMap, FieldSep, Unique, AwkCode)
+        % No predicates - just constraints, bindings, or empty body
+        compile_constraint_only_rule(PredStr, Arity, Constraints, Bindings, VarMap, FieldSep, Unique, AwkCode)
     ;   Predicates = [SinglePred] ->
         % Single predicate - simple lookup with optional constraints
-        compile_single_predicate_rule(PredStr, Arity, SinglePred, Constraints, VarMap,
+        compile_single_predicate_rule(PredStr, Arity, SinglePred, Constraints, Bindings, VarMap,
                                      FieldSep, Unique, AwkCode)
     ;   % Multiple predicates - hash join pipeline
-        compile_multi_predicate_rule(PredStr, Arity, Predicates, Constraints, VarMap,
+        compile_multi_predicate_rule(PredStr, Arity, Predicates, Constraints, Bindings, VarMap,
                                     FieldSep, Unique, AwkCode)
     ).
 
@@ -655,42 +666,44 @@ var_map_lookup(Var, [(MapVar, Pos)|_], Pos) :-
 var_map_lookup(Var, [_|Rest], Pos) :-
     var_map_lookup(Var, Rest, Pos).
 
-%% compile_constraint_only_rule(+PredStr, +Arity, +Constraints, +VarMap, +FieldSep, +Unique, -AwkCode)
-%  Compile a rule with no predicates (just constraints or empty body)
+%% compile_constraint_only_rule(+PredStr, +Arity, +Constraints, +Bindings, +VarMap, +FieldSep, +Unique, -AwkCode)
+%  Compile a rule with no predicates (just constraints, bindings, or empty body)
 %
-compile_constraint_only_rule(_PredStr, _Arity, Constraints, VarMap, FieldSep, Unique, AwkCode) :-
+compile_constraint_only_rule(_PredStr, _Arity, Constraints, Bindings, VarMap, FieldSep, Unique, AwkCode) :-
+    % Generate binding code
+    generate_awk_bindings(Bindings, VarMap, BindingCode, NewVarMap),
+
     (   Constraints = [] ->
-        % No constraints - just pass through (always true)
-        MainBlock = '{ print $0 }'
-    ;   % Has constraints - generate AWK condition
-        generate_constraint_code(Constraints, VarMap, ConstraintCode),
-        (   Unique ->
-            format(atom(MainBlock),
+        ConstraintCode = '1'
+    ;   generate_constraint_code(Constraints, NewVarMap, ConstraintCode)
+    ),
+    
+    (   Unique ->
+        format(atom(MainBlock),
 '{
-    if (~w) {
+~s    if (~w) {
         key = $0
         if (!(key in seen)) {
             seen[key] = 1
             print $0
         }
     }
-}', [ConstraintCode])
-        ;   format(atom(MainBlock),
+}', [BindingCode, ConstraintCode])
+    ;   format(atom(MainBlock),
 '{
-    if (~w) {
+~s    if (~w) {
         print $0
     }
-}', [ConstraintCode])
-        )
+}', [BindingCode, ConstraintCode])
     ),
     format(atom(BeginBlock), 'BEGIN { FS = "~w" }', [FieldSep]),
     atomic_list_concat([BeginBlock, '\n', MainBlock], AwkCode).
 
-%% compile_single_predicate_rule(+PredStr, +Arity, +Predicate, +Constraints,
+%% compile_single_predicate_rule(+PredStr, +Arity, +Predicate, +Constraints, +Bindings,
 %%                                +VarMap, +FieldSep, +Unique, -AwkCode)
 %  Compile a rule with a single predicate (simple lookup)
 %
-compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, FieldSep, Unique, AwkCode) :-
+compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, Bindings, VarMap, FieldSep, Unique, AwkCode) :-
     % Need to load the predicate's facts
     atom_string(Predicate, PredLookupStr),
 
@@ -709,12 +722,13 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
         InitStmts),
     atomic_list_concat(InitStmts, '\n', InitStmtsStr),
 
+    % Generate bindings
+    generate_awk_bindings(Bindings, VarMap, BindingCode, NewVarMap),
+
     % Generate main lookup logic
-    % This depends on how the input maps to the predicate arguments
-    % For now, assume direct mapping
     (   Constraints = [] ->
         ConstraintCheck = ''
-    ;   generate_constraint_code(Constraints, VarMap, ConstraintCode),
+    ;   generate_constraint_code(Constraints, NewVarMap, ConstraintCode),
         format(atom(ConstraintCheck), ' && ~w', [ConstraintCode])
     ),
 
@@ -738,20 +752,24 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
         format(atom(MainBlock),
 '{
     key = ~w
-    if (key in ~w_data~w) {
-        if (!(key in seen)) {
-            seen[key] = 1
-            ~w
+    if (key in ~w_data) {
+~s        if (1~w) {
+            if (!(key in seen)) {
+                seen[key] = 1
+                ~w
+            }
         }
     }
-}', [FieldsConcat, PredLookupStr, ConstraintCheck, PrintStmt])
+}', [FieldsConcat, PredLookupStr, BindingCode, ConstraintCheck, PrintStmt])
     ;   format(atom(MainBlock),
 '{
     key = ~w
-    if (key in ~w_data~w) {
-        ~w
+    if (key in ~w_data) {
+~s        if (1~w) {
+            ~w
+        }
     }
-}', [FieldsConcat, PredLookupStr, ConstraintCheck, PrintStmt])
+}', [FieldsConcat, PredLookupStr, BindingCode, ConstraintCheck, PrintStmt])
     ),
 
     format(atom(BeginBlock),
@@ -761,11 +779,11 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
 }', [FieldSep, InitStmtsStr]),
     atomic_list_concat([BeginBlock, '\n', MainBlock], AwkCode).
 
-%% compile_multi_predicate_rule(+PredStr, +Arity, +Predicates, +Constraints,
+%% compile_multi_predicate_rule(+PredStr, +Arity, +Predicates, +Constraints, +Bindings,
 %%                              +VarMap, +FieldSep, +Unique, -AwkCode)
 %  Compile a rule with multiple predicates (hash join)
 %
-compile_multi_predicate_rule(_PredStr, _Arity, Predicates, Constraints, _VarMap, FieldSep, Unique, AwkCode) :-
+compile_multi_predicate_rule(_PredStr, _Arity, Predicates, Constraints, _Bindings, _VarMap, FieldSep, Unique, AwkCode) :-
     % For multiple predicates, we need to implement a hash join
     % Strategy: Load all predicate facts, then perform nested joins
 
@@ -868,11 +886,12 @@ constraint_to_awk(match(Var, Pattern, Type, Groups), VarMap, AwkCode) :-
 %
 term_to_awk_expr(Term, VarMap, AwkExpr) :-
     var(Term), !,
-    % It's a Prolog variable - look it up in VarMap using identity check
-    (   var_map_lookup(Term, VarMap, Pos) ->
-        format(atom(AwkExpr), '$~w', [Pos])
-    ;   % Variable not in map - might be from nested term
-        AwkExpr = Term
+    (   var_map_lookup(Term, VarMap, Val) ->
+        (   Val = field(Pos) -> format(atom(AwkExpr), '$~w', [Pos])
+        ;   Val = var(Name) -> AwkExpr = Name
+        ;   integer(Val) -> format(atom(AwkExpr), '$~w', [Val]) % Legacy support
+        )
+    ;   AwkExpr = Term
     ).
 term_to_awk_expr(Term, _, AwkExpr) :-
     atom(Term), !,
@@ -1090,6 +1109,10 @@ extract_predicates((A, B), Predicates) :- !,
     append(P1, P2, Predicates).
 extract_predicates(Goal, []) :-
     var(Goal), !.
+% Skip bindings
+extract_predicates(Goal, []) :-
+    functor(Goal, Name, Arity),
+    awk_binding(Name/Arity, _, _, _, _), !.
 % Skip inequality operators
 extract_predicates(_ \= _, []) :- !.
 extract_predicates(\=(_, _), []) :- !.
@@ -1207,6 +1230,47 @@ generate_capture_print(NumCaptures, PrintStmt) :-
         Captures),
     atomic_list_concat(Captures, ', ', CapturesStr),
     format(atom(PrintStmt), 'print ~w', [CapturesStr]).
+
+%% extract_bindings(+Body, -Bindings)
+extract_bindings(true, []) :- !.
+extract_bindings((A, B), Bs) :- !,
+    extract_bindings(A, B1),
+    extract_bindings(B, B2),
+    append(B1, B2, Bs).
+extract_bindings(Goal, [Goal]) :-
+    functor(Goal, Name, Arity),
+    awk_binding(Name/Arity, _, _, _, _), !.
+extract_bindings(_, []).
+
+%% generate_awk_bindings(+Bindings, +VarMap, -Code, -NewVarMap)
+generate_awk_bindings([], VarMap, "", VarMap).
+generate_awk_bindings([Goal|Rest], VarMapIn, Code, VarMapOut) :-
+    Goal =.. [Pred|Args],
+    functor(Goal, Pred, Arity),
+    binding(awk, Pred/Arity, Pattern, Inputs, Outputs, _),
+    
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, OutArgs, Args),
+    
+    maplist(term_to_awk_expr_binding(VarMapIn), InArgs, AwkInArgs),
+    format_pattern(Pattern, AwkInArgs, Expr),
+    
+    (   Outputs = []
+    ->  format(string(Line), "    ~s\n", [Expr]),
+        VarMapNext = VarMapIn
+    ;   OutArgs = [OutVar],
+        gensym(v, VarName),
+        format(string(Line), "    ~s = ~s\n", [VarName, Expr]),
+        VarMapNext = [(OutVar, var(VarName))|VarMapIn]
+    ),
+    
+    generate_awk_bindings(Rest, VarMapNext, RestCode, VarMapOut),
+    string_concat(Line, RestCode, Code).
+
+term_to_awk_expr_binding(VarMap, Term, Expr) :- term_to_awk_expr(Term, VarMap, Expr).
+
+format_pattern(Pattern, Args, Cmd) :- format(string(Cmd), Pattern, Args).
 
 %% ============================================
 %% OPTIONS
