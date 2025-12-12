@@ -73,6 +73,82 @@ generate_server :-
 
 ---
 
+## Transport-Aware Compilation
+
+UnifyWeaver automatically selects the optimal transport between pipeline steps based on target families.
+
+### How It Works
+
+When you compile a high-level goal to a pipeline, the compiler:
+1. Infers steps from target declarations
+2. Groups consecutive steps by transport type
+3. Generates appropriate glue code for each group
+
+```prolog
+:- use_module('src/unifyweaver/core/compiler_driver').
+
+% Automatically infers steps and chooses transports
+?- compile_goal_to_pipeline(
+       my_module:process_data(_, _),
+       [input('data.csv')],
+       Script,
+       Steps
+   ).
+```
+
+### Transport Selection
+
+| Source Target | Dest Target | Transport | Glue Module |
+|--------------|-------------|-----------|-------------|
+| bash, awk, python | bash, awk, python | `pipe` | shell_glue |
+| csharp, powershell | csharp, powershell | `direct` | dotnet_glue |
+| java, scala | java, scala | `direct` | (future) |
+| any | remote host | `http` | network_glue |
+
+### Example: Mixed-Target Pipeline
+
+```prolog
+% Define a pipeline with mixed targets
+process_analytics(Input, Output) :-
+    ingest(Input, Raw),           % bash
+    parse(Raw, Parsed),           % awk  
+    enrich(Parsed, Enriched),     % csharp
+    aggregate(Enriched, Stats),   % powershell
+    export(Stats, Output).        % python
+
+:- declare_target(ingest/2, bash, [file('ingest.sh')]).
+:- declare_target(parse/2, awk, [file('parse.awk')]).
+:- declare_target(enrich/2, csharp, [file('Enricher.cs')]).
+:- declare_target(aggregate/2, powershell, [file('aggregate.ps1')]).
+:- declare_target(export/2, python, [file('export.py')]).
+```
+
+**Result:** The compiler groups steps:
+- `group(pipe, [ingest, parse, enrich])` — shell targets via pipes
+- `group(direct, [enrich, aggregate])` — .NET targets in-process
+- `group(pipe, [aggregate, export])` — cross-family via pipes
+
+> [!NOTE]
+> Boundary steps (enrich, aggregate) appear in both adjacent groups for proper handoff.
+
+### Low-Level Transport Queries
+
+```prolog
+:- use_module('src/unifyweaver/glue/goal_inference').
+
+% Check transport between targets
+?- infer_transport_from_targets(csharp, powershell, T).
+T = direct.
+
+?- infer_transport_from_targets(bash, python, T).
+T = pipe.
+
+% Group steps manually
+?- group_steps_by_transport(Steps, Groups).
+```
+
+---
+
 ## Module Reference
 
 ### Shell Glue (`shell_glue.pl`)
