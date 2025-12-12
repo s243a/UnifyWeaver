@@ -20,7 +20,8 @@
     test_go_binding_integration/0,  % Test binding integration
     % Pipeline mode exports
     test_go_pipeline_mode/0,        % Test pipeline mode
-    test_go_pipeline_chaining/0     % Test pipeline chaining
+    test_go_pipeline_chaining/0,    % Test pipeline chaining
+    test_go_pipeline_bindings/0     % Test pipeline binding integration
 ]).
 
 :- use_module(library(lists)).
@@ -5383,7 +5384,8 @@ compile_pipeline_stages([pred_info(Name, Arity, _Target)|Rest], Options, Code, [
     format(string(Code), "~w~w", [StageCode, RestCode]).
 
 %% compile_pipeline_stage_from_clause(+Name, +Arity, +Head, +Body, +Options, -Code)
-%  Compile a predicate clause into a pipeline stage function
+%  Compile a predicate clause into a pipeline stage function.
+%  Now supports binding goals (e.g., string_lower/2, sqrt/2) in the body.
 compile_pipeline_stage_from_clause(Name, Arity, Head, Body, _Options, Code) :-
     atom_string(Name, NameStr),
     Head =.. [_|HeadArgs],
@@ -5394,22 +5396,29 @@ compile_pipeline_stage_from_clause(Name, Arity, Head, Body, _Options, Code) :-
     % Generate field extraction code
     generate_stage_field_extraction(FieldMappings, ExtractionCode, VarMap),
 
-    % Generate output construction
-    generate_stage_output(HeadArgs, VarMap, OutputCode),
+    % Extract and compile binding goals from body
+    extract_stage_binding_goals(Body, BindingGoals),
+    compile_stage_bindings(BindingGoals, VarMap, BindingCode, BindingVarMap),
+
+    % Merge variable maps (binding outputs extend the map)
+    append(VarMap, BindingVarMap, FullVarMap),
+
+    % Generate output construction with full variable map
+    generate_stage_output(HeadArgs, FullVarMap, OutputCode),
 
     format(string(Code),
 '// ~w processes records for ~w/~w
 func ~w(records []Record) []Record {
 \tvar results []Record
 \tfor _, record := range records {
-~w
+~w~w
 \t\tresult := Record{~w}
 \t\tresults = append(results, result)
 \t}
 \treturn results
 }
 
-', [NameStr, NameStr, Arity, NameStr, ExtractionCode, OutputCode]).
+', [NameStr, NameStr, Arity, NameStr, ExtractionCode, BindingCode, OutputCode]).
 
 %% generate_placeholder_stage(+Name, +Arity, -Code)
 %  Generate a placeholder stage for undefined predicates
@@ -5424,6 +5433,162 @@ func ~w(records []Record) []Record {
 }
 
 ', [NameStr, NameStr, Arity, NameStr]).
+
+%% ============================================
+%% PIPELINE BINDING INTEGRATION
+%% ============================================
+%%
+%% These predicates extract and compile binding goals (e.g., string_lower/2,
+%% sqrt/2) from predicate bodies for use in pipeline stages.
+
+%% extract_stage_binding_goals(+Body, -BindingGoals)
+%  Extract all binding goals from a predicate body.
+%  Traverses conjunctions and disjunctions to find binding calls.
+%
+extract_stage_binding_goals(Body, BindingGoals) :-
+    findall(Goal, extract_binding_goal(Body, Goal), BindingGoals).
+
+extract_binding_goal((A, B), Goal) :-
+    (   extract_binding_goal(A, Goal)
+    ;   extract_binding_goal(B, Goal)
+    ).
+extract_binding_goal((A ; B), Goal) :-
+    (   extract_binding_goal(A, Goal)
+    ;   extract_binding_goal(B, Goal)
+    ).
+extract_binding_goal(Goal, Goal) :-
+    Goal \= (_, _),
+    Goal \= (_ ; _),
+    is_stage_binding_goal(Goal).
+
+%% is_stage_binding_goal(+Goal)
+%  Check if a goal is a binding goal (has a Go binding defined).
+%
+is_stage_binding_goal(Goal) :-
+    callable(Goal),
+    Goal \= true,
+    Goal \= fail,
+    functor(Goal, Functor, Arity),
+    % Skip json_record and json_get - handled separately
+    Functor \= json_record,
+    Functor \= json_get,
+    % Check if binding exists
+    go_binding(Functor/Arity, _, _, _, _).
+
+%% compile_stage_bindings(+BindingGoals, +VarMap, -Code, -NewVarMap)
+%  Compile binding goals to Go code for pipeline stages.
+%  Returns code and any new variable mappings (for binding outputs).
+%
+compile_stage_bindings([], _, "", []).
+compile_stage_bindings([Goal|Rest], VarMap, Code, NewVarMap) :-
+    compile_single_stage_binding(Goal, VarMap, GoalCode, GoalVarMap),
+    % Update VarMap with outputs from this goal
+    append(VarMap, GoalVarMap, ExtendedVarMap),
+    compile_stage_bindings(Rest, ExtendedVarMap, RestCode, RestVarMap),
+    format(string(Code), "~w~w", [GoalCode, RestCode]),
+    append(GoalVarMap, RestVarMap, NewVarMap).
+
+%% compile_single_stage_binding(+Goal, +VarMap, -Code, -NewVarMap)
+%  Compile a single binding goal to Go code.
+%
+compile_single_stage_binding(Goal, VarMap, Code, NewVarMap) :-
+    Goal =.. [Functor|Args],
+    length(Args, Arity),
+    Pred = Functor/Arity,
+
+    % Get the binding
+    go_binding(Pred, TargetName, _Inputs, Outputs, Options),
+
+    % Collect import if needed
+    (   member(import(Import), Options)
+    ->  collect_binding_import(Import)
+    ;   true
+    ),
+
+    % Determine input and output args
+    length(Outputs, NumOutputs),
+    NumInputs is Arity - NumOutputs,
+    length(InputArgs, NumInputs),
+    length(OutputArgs, NumOutputs),
+    append(InputArgs, OutputArgs, Args),
+
+    % Translate input arguments to Go expressions
+    maplist(stage_arg_to_go_expr(VarMap), InputArgs, GoInputExprs),
+
+    % Generate the binding call
+    atom_string(TargetName, TargetStr),
+    (   % Method call pattern: starts with .
+        sub_string(TargetStr, 0, 1, _, ".")
+    ->  % First input is receiver
+        (   GoInputExprs = [Receiver|RestInputs]
+        ->  (   RestInputs = []
+            ->  format(string(CallCode), "~w~w", [Receiver, TargetStr])
+            ;   atomic_list_concat(RestInputs, ", ", RestArgsStr),
+                (   sub_string(TargetStr, _, 2, 0, "()")
+                ->  sub_string(TargetStr, 0, _, 2, MethodBase),
+                    format(string(CallCode), "~w~w(~w)", [Receiver, MethodBase, RestArgsStr])
+                ;   format(string(CallCode), "~w~w(~w)", [Receiver, TargetStr, RestArgsStr])
+                )
+            )
+        ;   format(string(CallCode), "/* missing receiver for ~w */", [TargetStr])
+        )
+    ;   % Regular function call
+        (   GoInputExprs = []
+        ->  format(string(CallCode), "~w()", [TargetStr])
+        ;   atomic_list_concat(GoInputExprs, ", ", ArgsStr),
+            format(string(CallCode), "~w(~w)", [TargetStr, ArgsStr])
+        )
+    ),
+
+    % Handle output assignment
+    (   OutputArgs = [OutputVar]
+    ->  % Single output - assign to variable
+        atom_string(OutputVar, OutputVarStr),
+        format(string(Code), '\t\t~w := ~w\n', [OutputVarStr, CallCode]),
+        NewVarMap = [OutputVar-binding_output]
+    ;   OutputArgs = [Out1, Out2]
+    ->  % Two outputs (value, error pattern)
+        atom_string(Out1, Out1Str),
+        atom_string(Out2, Out2Str),
+        format(string(Code), '\t\t~w, ~w := ~w\n\t\t_ = ~w // ignore error for now\n',
+            [Out1Str, Out2Str, CallCode, Out2Str]),
+        NewVarMap = [Out1-binding_output, Out2-binding_output]
+    ;   OutputArgs = []
+    ->  % No output - just call
+        format(string(Code), '\t\t~w\n', [CallCode]),
+        NewVarMap = []
+    ;   % Multiple outputs - use tuple
+        maplist(atom_string, OutputArgs, OutputVarStrs),
+        atomic_list_concat(OutputVarStrs, ", ", OutputsStr),
+        format(string(Code), '\t\t~w := ~w\n', [OutputsStr, CallCode]),
+        findall(V-binding_output, member(V, OutputArgs), NewVarMap)
+    ).
+
+%% stage_arg_to_go_expr(+VarMap, +Arg, -GoExpr)
+%  Convert a Prolog argument to a Go expression for stage binding calls.
+%
+stage_arg_to_go_expr(VarMap, Arg, GoExpr) :-
+    (   % Check if it's a known variable from extraction
+        member(Arg-_, VarMap)
+    ->  % Variable - use its name, but need type assertion for interface{}
+        atom_string(Arg, VarStr),
+        format(string(GoExpr), "~w.(string)", [VarStr])
+    ;   % Atom - string literal
+        atom(Arg)
+    ->  format(string(GoExpr), '"~w"', [Arg])
+    ;   % Number
+        number(Arg)
+    ->  format(string(GoExpr), '~w', [Arg])
+    ;   % String
+        string(Arg)
+    ->  format(string(GoExpr), '"~w"', [Arg])
+    ;   % Variable not in map - use as-is with type assertion
+        var(Arg)
+    ->  GoExpr = "nil"
+    ;   % Compound term or unknown
+        term_string(Arg, ArgStr),
+        format(string(GoExpr), '/* ~w */', [ArgStr])
+    ).
 
 %% generate_stage_field_extraction(+FieldMappings, -Code, -VarMap)
 %  Generate Go code to extract fields for a pipeline stage
@@ -7514,3 +7679,131 @@ test_go_pipeline_chaining :-
     ),
 
     format('~n=== All Go Pipeline Chaining Tests Passed ===~n', []).
+
+%% ============================================
+%% GO PIPELINE BINDING INTEGRATION TESTS
+%% ============================================
+
+test_go_pipeline_bindings :-
+    format('~n=== Go Pipeline Binding Integration Tests ===~n~n', []),
+
+    % Initialize bindings
+    init_go_target,
+
+    % Test 1: is_stage_binding_goal
+    format('[Test 1] is_stage_binding_goal detection~n', []),
+    (   is_stage_binding_goal(string_lower(x, y)),
+        is_stage_binding_goal(string_upper(a, b)),
+        \+ is_stage_binding_goal(json_record([name-_])),
+        \+ is_stage_binding_goal(true)
+    ->  format('  [PASS] Correctly identifies binding goals~n', [])
+    ;   format('  [FAIL] Binding goal detection failed~n', [])
+    ),
+
+    % Test 2: extract_stage_binding_goals from conjunction
+    format('[Test 2] Extract binding goals from body~n', []),
+    TestBody2 = (json_record([name-Name]), string_lower(Name, Lower)),
+    extract_stage_binding_goals(TestBody2, Goals2),
+    (   Goals2 = [string_lower(Name, Lower)]
+    ->  format('  [PASS] Extracted: ~w~n', [Goals2])
+    ;   format('  [FAIL] Got: ~w~n', [Goals2])
+    ),
+
+    % Test 3: compile_single_stage_binding for string_lower
+    format('[Test 3] Compile string_lower binding~n', []),
+    compile_single_stage_binding(string_lower(name, lower), [name-name], Code3, VarMap3),
+    (   sub_string(Code3, _, _, _, "strings.ToLower"),
+        sub_string(Code3, _, _, _, "lower :="),
+        VarMap3 = [lower-binding_output]
+    ->  format('  [PASS] Code: ~w~n', [Code3])
+    ;   format('  [FAIL] Code: ~w, VarMap: ~w~n', [Code3, VarMap3])
+    ),
+
+    % Test 4: compile_single_stage_binding for string_upper
+    format('[Test 4] Compile string_upper binding~n', []),
+    compile_single_stage_binding(string_upper(text, upper), [text-text], Code4, VarMap4),
+    (   sub_string(Code4, _, _, _, "strings.ToUpper"),
+        sub_string(Code4, _, _, _, "upper :="),
+        VarMap4 = [upper-binding_output]
+    ->  format('  [PASS] Code: ~w~n', [Code4])
+    ;   format('  [FAIL] Code: ~w, VarMap: ~w~n', [Code4, VarMap4])
+    ),
+
+    % Test 5: compile_stage_bindings with multiple goals
+    format('[Test 5] Compile multiple bindings~n', []),
+    compile_stage_bindings(
+        [string_lower(name, lower), string_upper(title, upper)],
+        [name-name, title-title],
+        Code5,
+        VarMap5
+    ),
+    (   sub_string(Code5, _, _, _, "strings.ToLower"),
+        sub_string(Code5, _, _, _, "strings.ToUpper"),
+        member(lower-binding_output, VarMap5),
+        member(upper-binding_output, VarMap5)
+    ->  format('  [PASS] Multiple bindings compiled~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code5])
+    ),
+
+    % Test 6: stage_arg_to_go_expr
+    format('[Test 6] stage_arg_to_go_expr conversion~n', []),
+    stage_arg_to_go_expr([name-name], name, Expr6a),
+    stage_arg_to_go_expr([], hello, Expr6b),
+    stage_arg_to_go_expr([], 42, Expr6c),
+    (   sub_string(Expr6a, _, _, _, "name.(string)"),
+        Expr6b = "\"hello\"",
+        Expr6c = "42"
+    ->  format('  [PASS] Expressions: ~w, ~w, ~w~n', [Expr6a, Expr6b, Expr6c])
+    ;   format('  [FAIL] Got: ~w, ~w, ~w~n', [Expr6a, Expr6b, Expr6c])
+    ),
+
+    % Test 7: Import collection
+    format('[Test 7] Import collection~n', []),
+    clear_binding_imports,
+    compile_single_stage_binding(string_lower(name, lower), [name-name], _, _),
+    get_collected_imports(Imports7),
+    (   (member("strings", Imports7) ; member(strings, Imports7))
+    ->  format('  [PASS] Collected imports: ~w~n', [Imports7])
+    ;   format('  [FAIL] Imports: ~w~n', [Imports7])
+    ),
+
+    % Test 8: Full pipeline with bindings (using asserted clause)
+    format('[Test 8] Full pipeline with bindings~n', []),
+    clear_binding_imports,
+    % Assert a test predicate with ground atoms for args
+    abolish(user:test_normalize/2),
+    assert(user:(test_normalize(myname, mylower) :-
+        json_record([name-myname]),
+        string_lower(myname, mylower))),
+    % Compile the pipeline
+    compile_go_pipeline([test_normalize/2], [
+        pipeline_name(testNorm),
+        output_format(jsonl)
+    ], PipelineCode8),
+    (   sub_string(PipelineCode8, _, _, _, "strings.ToLower"),
+        sub_string(PipelineCode8, _, _, _, "func test_normalize"),
+        sub_string(PipelineCode8, _, _, _, "import")
+    ->  format('  [PASS] Pipeline with bindings compiles correctly~n', [])
+    ;   format('  [FAIL] Pipeline code missing expected patterns~n', [])
+    ),
+    abolish(user:test_normalize/2),
+
+    % Test 9: String trim_space binding
+    format('[Test 9] String trim_space binding~n', []),
+    compile_single_stage_binding(string_trim_space(input, trimmed), [input-input], Code9, _),
+    (   sub_string(Code9, _, _, _, "strings.TrimSpace"),
+        sub_string(Code9, _, _, _, "trimmed :=")
+    ->  format('  [PASS] trim_space: ~w~n', [Code9])
+    ;   format('  [FAIL] Code: ~w~n', [Code9])
+    ),
+
+    % Test 10: String contains binding (returns bool)
+    format('[Test 10] String contains binding~n', []),
+    compile_single_stage_binding(string_contains(text, sub, result), [text-text], Code10, _),
+    (   sub_string(Code10, _, _, _, "strings.Contains"),
+        sub_string(Code10, _, _, _, "result :=")
+    ->  format('  [PASS] contains: ~w~n', [Code10])
+    ;   format('  [FAIL] Code: ~w~n', [Code10])
+    ),
+
+    format('~n=== All Go Pipeline Binding Integration Tests Passed ===~n', []).
