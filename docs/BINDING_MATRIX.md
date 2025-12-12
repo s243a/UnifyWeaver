@@ -1,7 +1,7 @@
 # Binding Tracking Matrix
 
 **Status:** Living Document
-**Last Updated:** 2025-12-10
+**Last Updated:** 2025-12-12
 
 This document tracks which bindings are implemented for each target language.
 
@@ -22,20 +22,21 @@ This document tracks which bindings are implemented for each target language.
 | **C#** | 36+ | 5 (Built-ins, String, Math, I/O, LINQ) |
 | **Rust** | 29+ | 6 (Built-ins, String, Math, I/O, Regex, JSON) |
 | **Bash** | 20+ | 4 (Built-ins, String, Math, File Ops) |
+| **AWK** | 15+ | 3 (Built-ins, String, Math) |
 
 ---
 
 ## Core Operations
 
-| Binding | Python | PowerShell | Go | C# | Rust | Notes |
-|---------|:------:|:----------:|:--:|:--:|:----:|-------|
-| `abs/2` | ✓ | ✓ | ✓ | ✓ | ✓ | Absolute value |
-| `sqrt/2` | ✓ | ✓ | ✓ | ✓ | ✓ | Square root |
-| `to_string/2` | ✓ | ✓ | ✓ | ✓ | ✓ | Convert to string |
-| `to_int/2` | ✓ | ✓ | ✓ | ✓ | ✓ | Convert to integer |
-| `to_float/2` | ✓ | ✗ | ✓ | ✓ | ✓ | Convert to float |
-| `to_bool/2` | ✓ | ✗ | ✓ | ✓ | ✗ | Convert to boolean |
-| `length/2` | ✓ | ✗ | ✓ | ✓ | ✓ | Get length/count |
+| Binding | Python | PowerShell | Go | C# | Rust | AWK | Notes |
+|---------|:------:|:----------:|:--:|:--:|:----:|:---:|-------|
+| `abs/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | Absolute value |
+| `sqrt/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Square root |
+| `to_string/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | Convert to string |
+| `to_int/2` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Convert to integer |
+| `to_float/2` | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ | Convert to float |
+| `to_bool/2` | ✓ | ✗ | ✓ | ✓ | ✗ | ✗ | Convert to boolean |
+| `length/2` | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | Get length/count |
 | `type_of/2` | ✓ | ✗ | Get type |
 | `is_instance/2` | ✓ | ✗ | Type check |
 | `is_type/2` | ✗ | ✓ | Type check (-is) |
@@ -355,6 +356,7 @@ Placeholder for future target languages:
 | Rust | Implemented | Bindings for Rust std crate |
 | C# | Implemented | LINQ and .NET bindings (Basic set) |
 | Bash | Implemented | Shell command bindings |
+| AWK | Implemented | Built-ins, String, Math |
 | SQL | N/A | SQL uses declarative generation, not bindings |
 
 ---
