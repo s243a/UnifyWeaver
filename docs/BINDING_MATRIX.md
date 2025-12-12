@@ -353,7 +353,7 @@ Placeholder for future target languages:
 
 | Target | Status | Notes |
 |--------|--------|-------|
-| Go | Planned | Native bindings for Go standard library |
+| Go | Implemented | Native bindings for Go standard library |
 | Rust | Planned | Bindings for Rust std crate |
 | C# | Implemented | LINQ and .NET bindings (Basic set) |
 | Bash | Planned | Shell command bindings |
