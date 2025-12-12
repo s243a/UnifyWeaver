@@ -1,20 +1,27 @@
 # Playbook Test Results
 
-**Test Date**: 2025-12-10
+**Test Date**: 2025-12-10 to 2025-12-12
 **Test Method**: Automated execution with difficulty rating by AI agents
 
 ## Summary
 
-| Playbook | Haiku Rating | Sonnet Rating | Status |
+| Playbook | Haiku Rating | Gemini Rating | Status |
 |----------|-------------|---------------|--------|
 | sqlite_source | 2-5/10 | - | PASS |
 | sql_window | 3-4/10 | - | PASS |
 | bash_parallel | 3-6/10 | - | PASS |
-| csharp_generator | 3/10 | - | PASS (incomplete) |
-| powershell_inline_dotnet | 4/10 | - | PASS |
+| csharp_generator | 3/10 | 4/10 | PASS |
+| powershell_inline_dotnet | 4/10 | 8/10 | PASS / RATE LIMITED |
 | awk_advanced | 4-5/10 | - | PASS |
-| json_litedb | 7/10 | 4/10 | PASS |
+| json_litedb | 7/10 | - | PASS |
 | csharp_query | 8/10 | - | PASS (verified) |
+| **csv_data_source** | **2/10** | **1/10** | **PASS** |
+| **xml_data_source** | **2/10** | **1/10** | **PASS** |
+| **csharp_codegen** | **2/10** | **1/10** | **PASS** |
+| **tree_recursion** | **2/10** | **1/10** | **PARTIAL (Bug)** |
+| **mutual_recursion** | **2/10** | **1/10** | **PARTIAL (Bug)** |
+| **parallel_execution** | **4/10** | **1/10** | **PASS** |
+| **prolog_generation** | **3/10** | **1/10** | **PASS** |
 
 ## Difficulty Scale
 
@@ -114,6 +121,68 @@ Key findings:
 - High difficulty rating due to multi-step C# compilation workflow
 - Haiku consistently misreports this predicate across multiple runs (hallucination)
 
+## 2025-12-12 Gemini Batch Testing
+
+**Model**: Gemini 2.5 Pro
+**Playbooks Tested**: 7
+**Method**: Manual testing via Gemini CLI
+
+### Results Summary
+
+- **5/7 Passed**: csv_data_source, xml_data_source, csharp_codegen, parallel_execution, prolog_generation
+- **2/7 Partial**: tree_recursion, mutual_recursion (bugs in generated code)
+- **All rated 1/10 difficulty**: Extremely clear, deterministic instructions
+- **Average time**: ~1 minute per playbook
+
+### Key Findings
+
+1. **Documentation Quality Validated**
+   - All 7 playbooks rated 1/10 by Gemini 2.5 Pro
+   - Confirms playbooks are highly deterministic
+   - Instructions described as "precise" with "expected output"
+
+2. **Bugs Discovered in Code Generation** (not playbooks):
+   - **tree_recursion_playbook**: Compilation OK, but execution produces empty output
+   - **mutual_recursion_playbook**: Execution fails with "Unknown function: 4" and "Unknown function: 3"
+   - Both are bugs in the bash code generator, not the playbook documentation
+
+3. **Cross-Model Validation**
+   - Gemini consistently rates playbooks lower difficulty than Haiku
+   - Confirms that documentation works across vendors
+   - Average difficulty drop: Haiku 2-4/10 → Gemini 1/10
+
+### Detailed Gemini Results
+
+**csv_data_source_playbook**: ✅ Pass (1/10)
+- Output: `1:Alice:30`, `2:Bob:25`, `3:Charlie:35`
+- Time: ~1 minute
+
+**xml_data_source_playbook**: ✅ Pass (1/10)
+- Output: `Total price: 1300`
+- Time: ~1 minute
+
+**csharp_codegen_playbook**: ✅ Pass (1/10)
+- Output: `anne:charles`, `anne:diana`
+- Time: ~2 minutes
+
+**tree_recursion_playbook**: ⚠️ Partial (1/10)
+- Compilation: ✓ Succeeded
+- Execution: Empty output (expected `...:30`)
+- Bug in generated code
+
+**mutual_recursion_playbook**: ⚠️ Partial (1/10)
+- Compilation: ✓ Succeeded
+- Execution: "Unknown function" errors
+- Bug in generated code
+
+**parallel_execution_playbook**: ✅ Pass (1/10)
+- Output: `SUCCESS: Final sum is 500500`
+- Time: ~1 minute
+
+**prolog_generation_playbook**: ✅ Pass (1/10)
+- Output: `5:120`
+- Time: ~1 minute
+
 ## Issues Identified
 
 ### 1. Extract Tool Query Matching
@@ -135,12 +204,29 @@ The `extract_records.pl` tool uses regex matching, which can cause:
 - Some playbooks require handling interactive prompts (e.g., LiteDB setup)
 - More capable models handle this better
 
+### 4. Code Generation Bugs (Found 2025-12-12)
+
+**tree_recursion_playbook**:
+- Playbook documentation: ✅ Clear (1/10 difficulty)
+- Compilation: ✅ Succeeds
+- Execution: ❌ Produces no output for test case `[10,[5,[],[]],[15,[],[]]]`
+- Expected output: `...:30`
+- Issue: Bug in bash code generator for tree recursion
+
+**mutual_recursion_playbook**:
+- Playbook documentation: ✅ Clear (1/10 difficulty)
+- Compilation: ✅ Succeeds
+- Execution: ❌ Fails with "Unknown function: 4" and "Unknown function: 3"
+- Issue: Bug in bash code generator for mutual recursion
+
 ## Recommendations
 
 1. **Add exact match examples** to playbooks that use `extract_records.pl`
 2. **Add execution records** to csharp_generator_playbook (currently incomplete)
 3. **Document interactive setup handling** for playbooks with dependencies
 4. **Consider agent validation** - manual verification may be needed for high-difficulty ratings
+5. **Fix tree_recursion bash generator** - execution produces empty output
+6. **Fix mutual_recursion bash generator** - "Unknown function" errors on execution
 
 ## Test Environment
 
@@ -152,6 +238,9 @@ The `extract_records.pl` tool uses regex matching, which can cause:
 
 ## Notes
 
-- Gemini tests mostly failed due to API quota exhaustion
+- **2025-12-12 Update**: Gemini 2.5 Pro successfully tested 7 playbooks (5 pass, 2 partial)
+- Initial Gemini tests (2025-12-10) failed due to API quota exhaustion - resolved by manual testing
 - Some tests ran multiple times for consistency verification
 - Model capability significantly affects perceived playbook difficulty
+- Gemini consistently rates playbooks as easier (1/10) compared to Haiku (2-4/10)
+- Cross-vendor testing validates documentation quality

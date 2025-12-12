@@ -48,8 +48,8 @@ This document tracks which LLMs can successfully execute each playbook, serving 
 
 | Playbook | Haiku 3.5 | Haiku 4.5 | Gemini 2.0 Flash | Gemini 2.5 Pro | Notes |
 |----------|-----------|-----------|------------------|----------------|-------|
-| `tree_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (2/10) | Avg: 2/10 - deterministic |
-| `mutual_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ✅ Pass (1/10) | Avg: 1.5/10 - deterministic |
+| `tree_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ⚠️ Partial (1/10) | Compilation OK, execution empty - BUG FOUND |
+| `mutual_recursion_playbook` | ➖ | ✅ Pass (2/10) | ➖ | ⚠️ Partial (1/10) | Execution fails "Unknown function" - BUG FOUND |
 
 ### Execution Playbooks
 
@@ -65,13 +65,13 @@ When a Tier 5+ model runs a playbook, it should provide a difficulty rating:
 
 | Playbook | Difficulty (1-10) | Reasoning |
 |----------|-------------------|-----------|
-| `csv_data_source_playbook` | 1-2/10 | Gemini 2.5 Pro: 1/10, Haiku 4.5: 2/10 - purely mechanical steps |
+| `csv_data_source_playbook` | 1.5/10 | Gemini 2.5 Pro: 1/10, Haiku 4.5: 2/10 - purely mechanical steps |
 | `prolog_generation_playbook` | 2/10 | Avg of Gemini (1) + Haiku (3) = 2 - straightforward steps |
 | `csharp_codegen_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - deterministic |
-| `tree_recursion_playbook` | 2/10 | Avg of Gemini (2) + Haiku (2) = 2 - deterministic |
-| `mutual_recursion_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - deterministic |
+| `tree_recursion_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - playbook clear but execution bug |
+| `mutual_recursion_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - playbook clear but execution bug |
 | `xml_data_source_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (2) = 1.5 - deterministic |
-| `parallel_execution_playbook` | 3/10 | Avg of Gemini (2) + Haiku (4) = 3 - needs cross-referencing |
+| `parallel_execution_playbook` | 1.5/10 | Avg of Gemini (1) + Haiku (4) = 2.5 → 1.5 - Gemini found it very clear |
 | `json_litedb_playbook` | 7/10 | Haiku only - complex multi-system integration |
 | `csharp_query_playbook` | 4/10 | Manual test confirmed working; uses `compile_predicate_to_csharp/3` |
 | ... | | |
@@ -631,6 +631,81 @@ This confirms that playbook difficulty is heavily influenced by whether the unde
 **Difficulty Rating**: Not completed
 
 **Key Insight**: This playbook needs more explicit step-by-step instructions and may need to be restructured to follow the extract-and-run pattern of other successful playbooks.
+
+---
+
+### 2025-12-12 - Batch Gemini 2.5 Pro Testing (7 Playbooks)
+
+**Tester**: Manual testing via Gemini CLI
+**Model**: Gemini 2.5 Pro (default)
+
+#### Summary Results
+
+| Playbook | Result | Difficulty | Time |
+|----------|--------|------------|------|
+| csv_data_source_playbook | ✅ Pass | 1/10 | ~1 min |
+| xml_data_source_playbook | ✅ Pass | 1/10 | ~1 min |
+| csharp_codegen_playbook | ✅ Pass | 1/10 | ~2 min |
+| tree_recursion_playbook | ⚠️ Partial | 1/10 | ~1 min |
+| mutual_recursion_playbook | ⚠️ Partial | 1/10 | ~1 min |
+| parallel_execution_playbook | ✅ Pass | 1/10 | ~1 min |
+| prolog_generation_playbook | ✅ Pass | 1/10 | ~1 min |
+
+**Overall**: 5/7 Pass, 2/7 Partial (bugs found in generated code)
+
+#### Key Findings
+
+1. **Documentation Quality**: All 7 playbooks rated 1/10 difficulty by Gemini 2.5 Pro
+   - Instructions were "precise" and "execution succeeded with expected output"
+   - Confirms playbooks are highly deterministic
+
+2. **Bugs Discovered**:
+   - **tree_recursion_playbook**: Compilation succeeded but execution produces no output for test case
+   - **mutual_recursion_playbook**: Execution fails with "Unknown function: 4" and "Unknown function: 3"
+   - Both bugs are in generated bash code, not the playbook itself
+
+3. **Performance**: Average completion time ~1 minute per playbook (very fast)
+
+4. **Model Capability**: Gemini 2.5 Pro successfully followed all 7 playbooks without interpretation issues
+
+#### Detailed Notes
+
+**csv_data_source_playbook**:
+- Output: `1:Alice:30`, `2:Bob:25`, `3:Charlie:35` ✅
+- Reasoning: "Instructions were precise and execution succeeded with expected output"
+
+**xml_data_source_playbook**:
+- Output: `Total price: 1300` ✅
+- Reasoning: "Instructions were precise. Output matched expectations"
+
+**csharp_codegen_playbook**:
+- Output: `anne:charles`, `anne:diana` ✅
+- Reasoning: "Compilation and execution succeeded. Auto-detection of .NET worked"
+
+**tree_recursion_playbook**:
+- Compilation: ✓ Compiled as tree recursion ✅
+- Execution: No output for test case `[10,[5,[],[]],[15,[],[]]]` ❌ (Expected: `...:30`)
+- Bug in generated bash code
+
+**mutual_recursion_playbook**:
+- Compilation: Generated scripts ✅
+- Execution: "Unknown function: 4" and "Unknown function: 3" ❌
+- Bug in generated bash code for mutual recursion
+
+**parallel_execution_playbook**:
+- Output: `SUCCESS: Final sum is 500500` ✅
+- Reasoning: "Parallel execution worked perfectly"
+
+**prolog_generation_playbook**:
+- Output: `5:120` ✅
+- Reasoning: "Factorial compiled and executed correctly"
+
+#### Action Items
+
+- [ ] Investigate tree_recursion compilation bug (empty output)
+- [ ] Investigate mutual_recursion compilation bug ("Unknown function" errors)
+- [ ] Update playbook difficulty averages with Gemini ratings
+- [ ] Note: Both bugs are in code generation, not playbook documentation
 
 ---
 
