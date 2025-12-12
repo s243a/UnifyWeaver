@@ -25,7 +25,9 @@
 :- use_module('../glue/goal_inference', [
     infer_steps_from_goal/2,
     infer_steps_from_goal/3,
-    compile_goal_to_pipeline/3  % Re-exported
+    compile_goal_to_pipeline/3,  % Re-exported
+    group_steps_by_transport/2,
+    generate_pipeline_for_groups/3
 ]).
 
 :- dynamic compiled/1.
@@ -230,29 +232,27 @@ is_linear_recursive(Pred, RecClauses) :-
 %% compile_goal_to_pipeline/3 is re-exported from goal_inference.
 %% This extension adds compile_goal_to_pipeline/4 which also returns steps.
 %%
-%% Current implementation uses shell pipes (via shell_glue).
-%% Future: Will use resolve_transport/3 to choose optimal transport
+%% Now uses resolve_transport/3 to choose optimal transport
 %% based on target families (in-process for .NET, pipes for shell, etc.)
 %%
 %% See: docs/proposals/meta_interpreter_inference.md
 %% See: education/book-07-cross-target-glue/01_introduction.md
 
 %% compile_goal_to_pipeline(+Goal, +Options, -Script, -Steps)
-%  Compile goal to pipeline, also returning the inferred steps.
-%  Useful for debugging or further processing.
+%  Compile goal to pipeline with transport-aware grouping.
+%  Returns both the script and the inferred steps.
+%
+%  Transport selection:
+%    - direct: Same runtime family (.NET targets in-process)
+%    - pipe: Different families (shell ↔ python ↔ native)
+%    - http: Remote hosts
 %
 compile_goal_to_pipeline(Goal, Options, Script, Steps) :-
     % Infer steps from goal body and target declarations
     infer_steps_from_goal(Goal, Steps),
     
-    % TODO: Future enhancement - use resolve_transport/3 to pick
-    % optimal transport for each step pair based on target families.
-    % For now, delegate to shell_glue for pipe-based orchestration.
+    % Group steps by transport type
+    group_steps_by_transport(Steps, Groups),
     
-    % Generate pipeline script
-    (   current_predicate(shell_glue:generate_pipeline/3)
-    ->  shell_glue:generate_pipeline(Steps, Options, Script)
-    ;   throw(error(shell_glue_not_loaded,
-                    context(compile_goal_to_pipeline/4,
-                            'Load shell_glue module for pipeline generation')))
-    ).
+    % Generate pipeline using appropriate glue for each transport
+    generate_pipeline_for_groups(Groups, Options, Script).
