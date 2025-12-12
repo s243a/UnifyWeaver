@@ -24,11 +24,18 @@
     subgoal_to_step/3,              % subgoal_to_step(+Module, +SubGoal, -Step)
     
     % High-level API
-    compile_goal_to_pipeline/3      % compile_goal_to_pipeline(+Goal, +Options, -Script)
+    compile_goal_to_pipeline/3,     % compile_goal_to_pipeline(+Goal, +Options, -Script)
+    
+    % Transport-aware grouping
+    group_steps_by_transport/2,     % group_steps_by_transport(+Steps, -Groups)
+    step_pair_transport/3,          % step_pair_transport(+Step1, +Step2, -Transport)
+    infer_transport_from_targets/3, % infer_transport_from_targets(+Target1, +Target2, -Transport)
+    generate_pipeline_for_groups/3  % generate_pipeline_for_groups(+Groups, +Options, -Script)
 ]).
 
 :- use_module(library(lists)).
 :- use_module('../core/target_mapping').
+:- use_module('../core/target_registry').
 
 %% ============================================
 %% Core Inference Predicates
@@ -205,3 +212,169 @@ compile_goal_to_pipeline(Goal, Options, Script) :-
 %
 is_inference_option(module(_)).
 is_inference_option(skip_missing(_)).
+
+%% ============================================
+%% Transport-Aware Step Grouping
+%% ============================================
+%%
+%% These predicates analyze steps and group them by transport type,
+%% enabling optimal glue code generation for each transport.
+
+%% group_steps_by_transport(+Steps, -Groups)
+%  Group consecutive steps that share the same transport.
+%  Returns list of group(Transport, Steps) terms.
+%
+%  A group contains steps connected by the same transport.
+%  The transport refers to the edge BETWEEN steps.
+%
+%  Example:
+%    Steps = [bash, awk, csharp, powershell, python]
+%    Transports = [pipe, pipe, direct, pipe]
+%    Groups = [group(pipe, [bash, awk, csharp]), group(direct, [csharp, powershell]), group(pipe, [powershell, python])]
+%
+%    Note: boundary nodes appear in both groups for proper handoff.
+%
+group_steps_by_transport([], []).
+group_steps_by_transport([Step], [group(single, [Step])]).
+group_steps_by_transport(Steps, Groups) :-
+    Steps = [Step1, Step2|Rest],
+    step_pair_transport(Step1, Step2, FirstTransport),
+    group_steps_loop([Step1, Step2|Rest], FirstTransport, [Step1], Groups).
+
+%% group_steps_loop(+RemainingSteps, +CurrentTransport, +AccumulatedSteps, -Groups)
+%  Recursively group steps by transport.
+%
+group_steps_loop([_Last], Transport, Acc, [group(Transport, AccReversed)]) :-
+    reverse(Acc, AccReversed).
+
+group_steps_loop([_S1, S2], Transport, Acc, [group(Transport, AllSteps)]) :-
+    reverse([S2|Acc], AllSteps).
+
+group_steps_loop([_S1, S2, S3|Rest], CurrentTransport, Acc, Groups) :-
+    step_pair_transport(S2, S3, NextTransport),
+    (   CurrentTransport == NextTransport
+    ->  % Same transport, add S2 to current group
+        group_steps_loop([S2, S3|Rest], CurrentTransport, [S2|Acc], Groups)
+    ;   % Different transport, finalize current group and start new one
+        reverse([S2|Acc], CurrentGroup),
+        Groups = [group(CurrentTransport, CurrentGroup)|RestGroups],
+        % S2 is the boundary - belongs to next group as its first element
+        group_steps_loop([S2, S3|Rest], NextTransport, [S2], RestGroups)
+    ).
+
+%% step_pair_transport(+Step1, +Step2, -Transport)
+%  Determine the transport between two adjacent steps.
+%  Uses target families to determine optimal transport.
+%
+step_pair_transport(step(_, Target1, _, _), step(_, Target2, _, _), Transport) :-
+    % Use target-based transport inference
+    infer_transport_from_targets(Target1, Target2, Transport).
+
+%% infer_transport_from_targets(+Target1, +Target2, -Transport)
+%  Infer transport based on target families.
+%
+infer_transport_from_targets(Target1, Target2, Transport) :-
+    (   catch(target_registry:targets_same_family(Target1, Target2), _, fail)
+    ->  % Same family - check if in-process capable
+        catch(target_registry:target_family(Target1, Family), _, fail),
+        (   in_process_family(Family)
+        ->  Transport = direct
+        ;   Transport = pipe
+        )
+    ;   % Different families - use pipes
+        Transport = pipe
+    ).
+
+%% in_process_family(+Family)
+%  Families that support in-process communication.
+%
+in_process_family(dotnet).
+in_process_family(jvm).
+
+%% ============================================
+%% Transport-Aware Pipeline Generation
+%% ============================================
+
+%% generate_pipeline_for_groups(+Groups, +Options, -Script)
+%  Generate combined pipeline script for transport groups.
+%
+generate_pipeline_for_groups(Groups, Options, Script) :-
+    maplist(generate_group_code(Options), Groups, GroupCodes),
+    combine_group_scripts(Groups, GroupCodes, Options, Script).
+
+%% generate_group_code(+Options, +Group, -Code)
+%  Generate code for a single transport group.
+%
+generate_group_code(Options, group(pipe, Steps), Code) :-
+    % Use shell_glue for pipe-based groups
+    (   current_predicate(shell_glue:generate_pipeline/3)
+    ->  shell_glue:generate_pipeline(Steps, Options, Code)
+    ;   throw(error(shell_glue_not_loaded, context(generate_group_code/3, 'shell_glue required')))
+    ).
+
+generate_group_code(Options, group(direct, Steps), Code) :-
+    % Use dotnet_glue for in-process groups
+    (   current_predicate(dotnet_glue:generate_dotnet_pipeline/3)
+    ->  steps_to_dotnet_steps(Steps, DotNetSteps),
+        dotnet_glue:generate_dotnet_pipeline(DotNetSteps, Options, Code)
+    ;   % Fallback to pipe if dotnet_glue not available
+        generate_group_code(Options, group(pipe, Steps), Code)
+    ).
+
+generate_group_code(Options, group(http, Steps), Code) :-
+    % Use network_glue for HTTP groups
+    (   current_predicate(network_glue:generate_http_pipeline/3)
+    ->  network_glue:generate_http_pipeline(Steps, Options, Code)
+    ;   % Fallback to pipe
+        generate_group_code(Options, group(pipe, Steps), Code)
+    ).
+
+generate_group_code(Options, group(_, Steps), Code) :-
+    % Unknown transport - fallback to pipe
+    generate_group_code(Options, group(pipe, Steps), Code).
+
+%% steps_to_dotnet_steps(+Steps, -DotNetSteps)
+%  Convert step/4 terms to dotnet_glue format.
+%
+steps_to_dotnet_steps([], []).
+steps_to_dotnet_steps([step(Name, Target, File, _Opts)|Rest], [step(Target, Name, File)|RestDN]) :-
+    steps_to_dotnet_steps(Rest, RestDN).
+
+%% combine_group_scripts(+Groups, +Codes, +Options, -Script)
+%  Combine multiple group scripts into a single orchestration script.
+%
+combine_group_scripts([_SingleGroup], [SingleCode], _Options, SingleCode) :- !.
+combine_group_scripts(Groups, Codes, Options, Script) :-
+    % Multiple groups require a meta-orchestrator
+    generate_multi_transport_orchestrator(Groups, Codes, Options, Script).
+
+%% generate_multi_transport_orchestrator(+Groups, +Codes, +Options, -Script)
+%  Generate bash script that orchestrates multiple transport groups.
+%
+generate_multi_transport_orchestrator(Groups, Codes, Options, Script) :-
+    % Output redirection
+    (   member(output(OutputFile), Options)
+    ->  format(atom(OutputRedir), ' > "~w"', [OutputFile])
+    ;   OutputRedir = ''
+    ),
+    
+    % Embed group scripts inline for now (simplified approach)
+    maplist(format_group_summary, Groups, GroupSummaries),
+    atomic_list_concat(GroupSummaries, '\n# ', GroupComments),
+    
+    % Just concatenate the codes with pipes between them
+    % (This is a simplified version - real impl would handle temp files)
+    atomic_list_concat(Codes, '\n\n', CombinedCode),
+    
+    format(atom(Script),
+'#!/bin/bash
+# Generated UnifyWeaver Multi-Transport Pipeline
+# Groups: ~w
+set -euo pipefail
+
+~w~w
+', [GroupComments, CombinedCode, OutputRedir]).
+
+format_group_summary(group(Transport, Steps), Summary) :-
+    length(Steps, N),
+    format(atom(Summary), '~w (~w steps)', [Transport, N]).

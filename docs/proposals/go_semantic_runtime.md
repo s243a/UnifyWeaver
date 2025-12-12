@@ -16,12 +16,14 @@ We use [hugot](https://github.com/knights-analytics/hugot) for embedding generat
 
 #### Backend Options
 
-| Backend | Function | CGO Required | Performance | Use Case |
-|---------|----------|--------------|-------------|----------|
-| **Pure Go** | `hugot.NewGoSession()` | No | Slower | Simple deployment, no dependencies |
-| **ONNX Runtime** | `hugot.NewORTSession()` | Yes | Faster | Production, requires libtokenizers |
+| Backend | Build Tag | Dependencies | GPU Support | Performance | Portability |
+|---------|-----------|--------------|-------------|-------------|-------------|
+| **Pure Go** | (default) | None | No | ~100/sec | Most portable |
+| **Candle** | `-tags candle` | Rust | Yes (CUDA) | ~500/sec | Very portable |
+| **ORT** | `-tags ort` | C (ONNX Runtime) | Yes (CUDA) | ~1000/sec | Moderate |
+| **XLA** | `-tags xla` | C++ (PJRT) | Yes (CUDA/Metal/TPU) | ~1000/sec | Least portable |
 
-**Current default:** Pure Go backend (`NewGoSession()`) - no C dependencies required.
+**Current default:** Pure Go backend - no external dependencies required.
 
 ### 2. Storage: `bbolt`
 We will stick with [bbolt](https://github.com/etcd-io/bbolt) for storage.
@@ -96,56 +98,207 @@ func main() {
 
 ## Installation
 
-### Option 1: Pure Go (Recommended - No Dependencies)
-
-This is the simplest option with no C dependencies:
+### Prerequisites (All Backends)
 
 ```bash
-# 1. Get the model
+# 1. Download embedding model
 mkdir -p models
-# Download all-MiniLM-L6-v2 ONNX model from Hugging Face
+cd models
+git clone https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 all-MiniLM-L6-v2-onnx
+cd ..
 
-# 2. Build and run
+# 2. Verify Go version (1.21+ required)
+go version
+```
+
+---
+
+### Option 1: Pure Go (Most Portable - No Dependencies)
+
+**Best for:** Simple deployment, cross-compilation, environments without C/Rust toolchains
+
+```bash
+# Build (no special tags needed)
 cd examples/pearltrees_go
 go build -o pearltrees_go ./...
+
+# Run
 ./pearltrees_go --search "quantum physics"
 ```
 
-**Pros:** Simple deployment, cross-compiles easily, no CGO
-**Cons:** Slower inference (~100 embeddings/sec vs 1000+/sec with ORT)
+**Pros:**
+- No external dependencies
+- Cross-compiles to any GOOS/GOARCH
+- Simple CI/CD deployment
+- Works in minimal containers
 
-### Option 2: ONNX Runtime Backend (Faster, Requires C)
+**Cons:**
+- CPU only (no GPU acceleration)
+- Slower inference (~100 embeddings/sec)
+- Best for small batches (<32 inputs)
 
-For production workloads requiring higher throughput:
+---
 
+### Option 2: Candle Backend (Go + Rust)
+
+**Best for:** GPU acceleration without C dependencies, good balance of portability and performance
+
+**Prerequisites:**
 ```bash
-# 1. Install ONNX Runtime
-# Ubuntu/Debian:
+# Install Rust toolchain
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+
+# Verify Rust version (1.70+ required)
+rustc --version
+```
+
+**Build the Candle library:**
+```bash
+# Clone and build candle-semantic-router
+git clone https://github.com/vllm-project/semantic-router
+cd semantic-router/candle-binding
+cargo build --release
+
+# Copy library to system path
+sudo cp target/release/libcandle_semantic_router.so /usr/local/lib/
+sudo ldconfig
+
+# Or set LD_LIBRARY_PATH for local use
+export LD_LIBRARY_PATH=$(pwd)/target/release:$LD_LIBRARY_PATH
+```
+
+**Build Go with Candle:**
+```bash
+cd examples/pearltrees_go
+go build -tags candle -o pearltrees_go ./...
+./pearltrees_go --search "quantum physics"
+```
+
+**For GPU support (CUDA):**
+```bash
+# Build with CUDA features
+cd semantic-router/candle-binding
+cargo build --release --features cuda
+
+# Ensure CUDA is installed
+nvidia-smi  # Should show your GPU
+```
+
+**Pros:**
+- GPU acceleration (CUDA)
+- No C dependencies (Rust only)
+- Good performance (~500 embeddings/sec CPU, faster on GPU)
+- Portable Rust binary
+
+**Cons:**
+- Requires Rust toolchain
+- Larger binary size
+- CUDA requires Nvidia drivers
+
+---
+
+### Option 3: ONNX Runtime Backend (Go + C)
+
+**Best for:** Maximum CPU performance, production workloads
+
+**Prerequisites:**
+```bash
+# Install ONNX Runtime
 wget https://github.com/microsoft/onnxruntime/releases/download/v1.16.0/onnxruntime-linux-x64-1.16.0.tgz
 tar xzf onnxruntime-linux-x64-1.16.0.tgz
 sudo cp onnxruntime-linux-x64-1.16.0/lib/* /usr/local/lib/
 sudo ldconfig
 
-# 2. Install libtokenizers (from daulet/tokenizers, not knights-analytics fork)
+# Install Rust (for building tokenizers)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+```
+
+**Build libtokenizers:**
+```bash
+# IMPORTANT: Use daulet/tokenizers, NOT knights-analytics/tokenizers
+# The knights-analytics fork exports different symbols that won't link correctly
 git clone https://github.com/daulet/tokenizers
 cd tokenizers
 cargo build --release
 sudo cp target/release/libtokenizers.a /usr/local/lib/
-
-# 3. Build with ORT tag
-go build -tags ORT -o pearltrees_go ./...
 ```
 
-**Note:** The knights-analytics/tokenizers fork exports different symbols and won't link correctly. Use daulet/tokenizers.
+**Build Go with ORT:**
+```bash
+cd examples/pearltrees_go
+go build -tags ort -o pearltrees_go ./...
+./pearltrees_go --search "quantum physics"
+```
 
-### Option 3: Alternative Embedding Libraries
+**For GPU support (CUDA):**
+```bash
+# Download CUDA version of ONNX Runtime
+wget https://github.com/microsoft/onnxruntime/releases/download/v1.16.0/onnxruntime-linux-x64-gpu-1.16.0.tgz
+tar xzf onnxruntime-linux-x64-gpu-1.16.0.tgz
+sudo cp onnxruntime-linux-x64-gpu-1.16.0/lib/* /usr/local/lib/
+sudo ldconfig
+```
 
-| Library | Language | Notes |
-|---------|----------|-------|
-| **hugot (pure Go)** | Go | Current default, no deps |
-| **hugot (ORT)** | Go+C | Faster, needs libtokenizers |
-| **candle** | Rust | Used by Rust target |
-| **ONNX Runtime** | C# | Used by C# target |
+**Pros:**
+- Fastest CPU inference (~1000+ embeddings/sec)
+- GPU acceleration (CUDA)
+- Battle-tested ONNX Runtime
+
+**Cons:**
+- Requires C dependencies
+- Complex setup (ONNX Runtime + libtokenizers)
+- Symbol mismatch issues with wrong tokenizers fork
+
+---
+
+### Option 4: XLA Backend (Go + C++)
+
+**Best for:** Advanced hardware support (TPU, Metal), training/fine-tuning
+
+**Prerequisites:**
+```bash
+# Install PJRT libraries from GoMLX
+curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_linux_amd64.sh | bash
+
+# For CUDA GPU support
+curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_cuda_linux_amd64.sh | bash
+```
+
+**Build Go with XLA:**
+```bash
+cd examples/pearltrees_go
+go build -tags xla -o pearltrees_go ./...
+./pearltrees_go --search "quantum physics"
+```
+
+**Pros:**
+- Broadest hardware support (CPU, CUDA, Metal, TPU)
+- JIT compilation for optimized inference
+- Supports fine-tuning
+
+**Cons:**
+- Most complex setup
+- Largest dependencies
+- Requires C++ libraries
+
+---
+
+## Backend Selection Guide
+
+| Use Case | Recommended Backend |
+|----------|---------------------|
+| Development/Testing | Pure Go |
+| Simple deployment | Pure Go |
+| Cross-compilation needed | Pure Go |
+| GPU acceleration (simple) | Candle |
+| Maximum CPU performance | ORT |
+| GPU + production scale | ORT or XLA |
+| TPU or Apple Metal | XLA |
+| Fine-tuning models | XLA |
+
+---
 
 ## Tested Results
 
@@ -161,3 +314,28 @@ Query: "python programming"
 Query: "machine learning tutorials"
 → "Machine Learning" (similarity: 0.631)
 ```
+
+---
+
+## Troubleshooting
+
+### Pure Go: "model not found"
+Ensure the model path points to a directory containing `model.onnx` and tokenizer files.
+
+### Candle: "libcandle_semantic_router.so not found"
+```bash
+export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+# Or add to ~/.bashrc
+```
+
+### ORT: "undefined reference to tokenizers_encode"
+You're using the wrong tokenizers library. Use `daulet/tokenizers`, not `knights-analytics/tokenizers`.
+
+### ORT: "onnxruntime.so not found"
+```bash
+export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+sudo ldconfig
+```
+
+### XLA: "PJRT plugin not found"
+Re-run the GoMLX installation script for your platform.
