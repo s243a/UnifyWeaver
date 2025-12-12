@@ -27,6 +27,7 @@ The key difference between `fan_out` and `parallel`:
   - **Rust**: `std::thread`
   - **PowerShell**: Runspace pools
   - **Bash**: Background processes with `wait`
+  - **IronPython**: .NET `Task.Factory.StartNew` with `ConcurrentBag<T>`
   - **AWK**: Sequential (single-threaded by design)
 
 ## Supported Targets
@@ -289,7 +290,40 @@ Input ─► parse ─► filter(active) ─┬─► validate ──┐
 ### Python/IronPython
 - Uses Python generators (`yield from`) for lazy evaluation
 - IronPython uses .NET `List<T>` and `Dictionary<TKey,TValue>` for CLR interop
+- IronPython parallel uses .NET `Task.Factory.StartNew` with `ConcurrentBag<T>`
 - Supports both CPython and IronPython runtimes
+
+**IronPython Parallel Example:**
+```prolog
+compile_ironpython_enhanced_pipeline([
+    extract/1,
+    parallel([validate/1, enrich/1]),  % Concurrent via .NET Tasks
+    merge,
+    output/1
+], [pipeline_name(my_pipeline)], Code).
+```
+
+**Generated IronPython Code:**
+```python
+def parallel_records(record, stages):
+    from System.Threading.Tasks import Task, TaskFactory
+    from System.Collections.Concurrent import ConcurrentBag
+
+    results_bag = ConcurrentBag[object]()
+
+    def run_stage(stage):
+        stage_results = list(stage(iter([record])))
+        for result in stage_results:
+            results_bag.Add(result)
+
+    tasks = List[Task]()
+    for stage in stages:
+        task = Task.Factory.StartNew(lambda s=stage: run_stage(s))
+        tasks.Add(task)
+
+    Task.WaitAll(tasks.ToArray())
+    return list(results_bag)
+```
 
 ### Go
 - Uses slices and maps for efficient collection handling
