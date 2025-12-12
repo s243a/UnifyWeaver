@@ -21,6 +21,7 @@
 :- dynamic user:test_factorial/2.
 :- dynamic user:test_factorial_input/1.
 :- dynamic user:test_fib_param/2.
+:- dynamic user:test_post_agg_param/2.
 :- dynamic user:test_even/1.
 :- dynamic user:test_odd/1.
 :- dynamic user:test_parity_input/1.
@@ -51,6 +52,7 @@ test_csharp_query_target :-
         verify_comparison_plan,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
+        verify_parameterized_need_allows_post_agg,
         verify_recursive_plan,
         verify_mutual_recursion_plan,
         verify_dynamic_source_plan,
@@ -107,6 +109,15 @@ setup_test_data :-
         test_fib_param(N2, F2),
         F is F1 + F2
     )),
+    assertz(user:mode(test_post_agg_param(+, -))),
+    assertz(user:test_post_agg_param(0, 0)),
+    assertz(user:(test_post_agg_param(N, Sum) :-
+        N > 0,
+        N1 is N - 1,
+        test_post_agg_param(N1, Prev),
+        aggregate_all(count, test_num(_, _), C),
+        Sum is Prev + C
+    )),
     assertz(user:test_parity_input(0)),
     assertz(user:test_parity_input(1)),
     assertz(user:test_parity_input(2)),
@@ -141,6 +152,8 @@ cleanup_test_data :-
     retractall(user:test_factorial(_, _)),
     retractall(user:test_fib_param(_, _)),
     retractall(user:mode(test_fib_param(_,_))),
+    retractall(user:test_post_agg_param(_, _)),
+    retractall(user:mode(test_post_agg_param(_,_))),
     retractall(user:test_parity_input(_)),
     retractall(user:test_even(_)),
     retractall(user:test_odd(_)),
@@ -230,6 +243,12 @@ verify_parameterized_fib_plan :-
 verify_parameterized_fib_runtime :-
     csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
     maybe_run_query_runtime(Plan, ['5,8'], [[5]]).
+
+verify_parameterized_need_allows_post_agg :-
+    HeadSpec = predicate{name:test_post_agg_param, arity:2},
+    csharp_target:gather_predicate_clauses(HeadSpec, Clauses),
+    csharp_target:partition_recursive_clauses(test_post_agg_param, 2, Clauses, _BaseClauses, RecClauses),
+    csharp_target:eligible_for_need_closure(HeadSpec, [HeadSpec], RecClauses, [input, output]).
 
 verify_recursive_arithmetic_plan :-
     csharp_query_target:build_query_plan(test_factorial/2, [target(csharp_query)], Plan),

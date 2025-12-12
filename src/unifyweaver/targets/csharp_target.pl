@@ -336,6 +336,15 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
     }.
 
 build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
+    (   has_input_mode(Modes)
+    ->  get_dict(name, HeadSpec, Pred),
+        get_dict(arity, HeadSpec, Arity),
+        format(user_error,
+               'C# query target: parameterized input modes for mutually recursive groups are not yet supported (~w/~w).~n',
+               [Pred, Arity]),
+        fail
+    ;   true
+    ),
     maplist(build_member_plan(GroupSpecs, Options, Modes), GroupSpecs, MemberStructs, RelationLists),
     append(RelationLists, RelationsFlat),
     dedup_relations(RelationsFlat, CombinedRelations),
@@ -602,16 +611,32 @@ build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms
 eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes) :-
     has_input_mode(Modes),
     GroupSpecs = [HeadSpec],
-    safe_recursive_clauses_for_need(RecClauses).
+    safe_recursive_clauses_for_need(HeadSpec, RecClauses).
 
-safe_recursive_clauses_for_need([]) :- fail.
-safe_recursive_clauses_for_need([_-Body|Rest]) :-
+safe_recursive_clauses_for_need(_HeadSpec, []) :- fail.
+safe_recursive_clauses_for_need(HeadSpec, [Clause|Rest]) :-
+    safe_recursive_clause_for_need(HeadSpec, Clause),
+    safe_recursive_clauses_for_need(HeadSpec, Rest).
+safe_recursive_clauses_for_need(HeadSpec, [Clause]) :-
+    safe_recursive_clause_for_need(HeadSpec, Clause).
+
+safe_recursive_clause_for_need(HeadSpec, _-Body) :-
+    get_dict(name, HeadSpec, Pred),
+    get_dict(arity, HeadSpec, Arity),
     body_to_list(Body, Terms),
-    \+ (member(T, Terms), (aggregate_goal(T) ; negation_goal(T))),
-    safe_recursive_clauses_for_need(Rest).
-safe_recursive_clauses_for_need([_-Body]) :-
-    body_to_list(Body, Terms),
-    \+ (member(T, Terms), (aggregate_goal(T) ; negation_goal(T))).
+    findall(Index,
+        (   nth0(Index, Terms, Term0),
+            strip_module(Term0, _, Term),
+            functor(Term, Pred, Arity)
+        ),
+        Occs),
+    Occs \= [],
+    forall(
+        member(Index, Occs),
+        (   prefix_terms(Index, Terms, Pred, Arity, Prefix),
+            \+ (member(T, Prefix), (aggregate_goal(T) ; negation_goal(T)))
+        )
+    ).
 
 negation_goal(Term0) :-
     strip_module(Term0, _, Term),
