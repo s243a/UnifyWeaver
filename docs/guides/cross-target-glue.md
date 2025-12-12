@@ -2,6 +2,9 @@
 
 UnifyWeaver's cross-target glue system enables seamless communication between different programming languages and runtimes. This guide covers practical usage patterns.
 
+> [!TIP]
+> **New to cross-target glue?** Start with [Book 7, Chapter 1](file:///home/s243a/Projects/UnifyWeaver/education/book-07-cross-target-glue/01_introduction.md) which covers three approaches: high-level declarative, low-level explicit steps, and meta-interpreter inference.
+
 ## Quick Start
 
 ### Shell Pipeline (AWK + Python)
