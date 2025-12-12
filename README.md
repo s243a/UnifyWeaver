@@ -79,6 +79,7 @@ Standalone native binaries with no runtime dependencies.
 - Regex matching with capture groups
 - Embedded bbolt database storage
 - Parallel workers for high-throughput processing
+- **Binding System** — Map predicates to Go stdlib functions
 
 **Docs:** [Go Target Guide](docs/GO_TARGET.md) | [JSON Features](GO_JSON_FEATURES.md)
 
@@ -87,6 +88,7 @@ Memory-safe native binaries via Cargo.
 - Serde JSON integration
 - Semantic crawling support
 - Full Cargo project scaffolding
+- **Binding System** — Map predicates to Rust stdlib and crates
 
 ### C# Target Family (v0.1)
 Two compilation modes for different needs:
@@ -94,6 +96,7 @@ Two compilation modes for different needs:
 - **Query Runtime** (`csharp_query`) — IR + semi-naive fixpoint for complex recursion
 
 Features: LiteDB integration, mutual recursion via SCC, arithmetic constraints.
+- **Binding System** — Map predicates to .NET APIs and LINQ
 
 **Docs:** [C# Compilation Guide](docs/DOTNET_COMPILATION.md)
 
@@ -104,6 +107,7 @@ Generator-based streaming with Python ecosystem integration and multi-runtime su
 - **Pipeline Chaining** — Connect multiple predicates with `yield from` composition
 - **Cross-Runtime Pipelines** — Stage-based orchestration for mixed Python/C# workflows
 - **C# Hosting** — IronPython in-process or CPython subprocess with JSONL glue
+- **Binding System** — Map predicates to Python built-ins and libraries
 - Native XML via lxml, semantic runtime with SQLite and vector search
 
 **Docs:** [Python Target Guide](docs/PYTHON_TARGET.md) | [Semantic Runtime](docs/PYTHON_RUNTIME.md)

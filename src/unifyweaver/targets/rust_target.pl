@@ -11,13 +11,21 @@
     write_rust_program/2,             % +RustCode, +FilePath
     write_rust_project/2,             % +RustCode, +Dir
     json_schema/2,                    % +SchemaName, +Fields (directive)
-    get_json_schema/2                 % +SchemaName, -Fields (lookup)
+    get_json_schema/2,                % +SchemaName, -Fields (lookup)
+    init_rust_target/0                % Initialize bindings
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(filesex)).
 :- use_module(library(gensym)). % For generating unique variable names
 :- use_module(library(yall)).
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/rust_bindings').
+
+%% init_rust_target
+%  Initialize the Rust target by loading bindings.
+init_rust_target :-
+    init_rust_bindings.
 
 %% ============================================ 
 %% JSON SCHEMA SUPPORT
@@ -232,6 +240,7 @@ compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, Inclu
     extract_constraints(Body, Constraints),
     extract_match_constraints(Body, MatchConstraints), 
     extract_key_generation(Body, Keys),
+    extract_bindings(Body, Bindings),
     
     (   (Predicates = [BodyPred]; Predicates = []) ->
         (   Predicates = [BodyPred]
@@ -245,6 +254,7 @@ compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, Inclu
         map_field_delimiter(FieldDelim, DelimChar),
 
         generate_rust_keys(Keys, SourceMap, KeyCode, KeyMap),
+        generate_rust_bindings(Bindings, SourceMap, BindingMap, BindingCode),
 
         findall(OutputPart, 
             (
@@ -253,6 +263,8 @@ compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, Inclu
                     format(string(OutputPart), "parts[~w]", [Idx])
                 ;   var(Arg), member((Var, RustVar), KeyMap), Arg == Var ->
                     format(string(OutputPart), "~w", [RustVar])
+                ;   var(Arg), member((Var, BindVar), BindingMap), Arg == Var ->
+                    format(string(OutputPart), "~w", [BindVar])
                 ;   atom(Arg) ->
                     format(string(OutputPart), '"~w"', [Arg])
                 ;   OutputPart = "\"unknown\""
@@ -261,7 +273,7 @@ compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, Inclu
             OutputParts),
         build_rust_concat(OutputParts, DelimChar, OutputExpr),
 
-        generate_rust_constraints(Constraints, SourceMap, ConstraintChecks),
+        generate_rust_constraints(Constraints, SourceMap, BindingMap, ConstraintChecks),
         
         generate_rust_match_constraints(MatchConstraints, SourceMap, RegexInit, RegexChecks, NeedsRegex),
 
@@ -282,12 +294,13 @@ compile_single_rule_to_rust(_Pred, _Arity, Head, Body, FieldDelim, Unique, Inclu
 ~s
 ~s
 ~s
+~s
                 let result = ~s;
 ~s
             }
         }
     }
-', [UniqueDecl, RegexInit, DelimChar, NumFields, RegexChecks, ConstraintChecks, KeyCode, OutputExpr, UniqueCheck]),
+', [UniqueDecl, RegexInit, DelimChar, NumFields, RegexChecks, ConstraintChecks, KeyCode, BindingCode, OutputExpr, UniqueCheck]),
 
         (   IncludeMain ->
             (   NeedsRegex = true -> UseRegex = "use regex::Regex;\n" ; UseRegex = "" ),
@@ -487,6 +500,7 @@ rust_format_placeholder(_, "{}").
 extract_predicates(true, []) :- !.
 extract_predicates((A, B), Ps) :- !, extract_predicates(A, P1), extract_predicates(B, P2), append(P1, P2, Ps).
 extract_predicates(Goal, []) :- member(Goal, [(_>_), (_<_), (_>=_), (_=<_), (_=:=_), (_=\=_), (_ is _), match(_, _), json_field(_, _), json_path(_, _), json_record(_), json_get(_, _), generate_key(_, _)]), !.
+extract_predicates(Goal, []) :- functor(Goal, Name, Arity), rs_binding(Name/Arity, _, _, _, _), !.
 extract_predicates(Goal, [Goal]).
 
 extract_constraints(true, []) :- !.
@@ -498,6 +512,69 @@ extract_match_constraints(true, []) :- !.
 extract_match_constraints((A, B), Ms) :- !, extract_match_constraints(A, M1), extract_match_constraints(B, M2), append(M1, M2, Ms).
 extract_match_constraints(match(Var, Pattern), [match(Var, Pattern)]) :- !.
 extract_match_constraints(_, []).
+
+extract_bindings(true, []) :- !.
+extract_bindings((A, B), Bs) :- !, extract_bindings(A, B1), extract_bindings(B, B2), append(B1, B2, Bs).
+extract_bindings(Goal, [Goal]) :-
+    functor(Goal, Name, Arity),
+    rs_binding(Name/Arity, _, _, _, _), !.
+extract_bindings(_, []).
+
+generate_rust_bindings(Goals, SourceMap, BindingMap, Code) :-
+    generate_rust_bindings_rec(Goals, SourceMap, [], BindingMap, Code).
+
+generate_rust_bindings_rec([], _, Map, Map, "").
+generate_rust_bindings_rec([Goal|Rest], SourceMap, MapIn, MapOut, Code) :-
+    Goal =.. [Pred|Args],
+    functor(Goal, Pred, Arity),
+    binding(rust, Pred/Arity, TargetName, InputTypes, _, _),
+    
+    length(InputTypes, NumInputs),
+    length(Inputs, NumInputs),
+    append(Inputs, Outputs, Args),
+    
+    maplist(term_to_rust_expr(SourceMap, MapIn), Inputs, InputExprs),
+    
+    findall(VarName-Var, (member(Var, Outputs), gensym('val_', Atom), atom_string(Atom, VarName)), OutPairs),
+    
+    (   sub_string(TargetName, 0, 1, _, ".")
+    ->  InputExprs = [Obj|RestInputs],
+        atomic_list_concat(RestInputs, ", ", ArgStr),
+        (   sub_string(TargetName, _, 2, 0, "()")
+        ->  sub_string(TargetName, 0, _, 2, MethodName),
+            format(string(CallExpr), "~s~w()", [Obj, MethodName])
+        ;   format(string(CallExpr), "~s~w(~s)", [Obj, TargetName, ArgStr])
+        )
+    ;   atomic_list_concat(InputExprs, ", ", ArgStr),
+        format(string(CallExpr), "~w(~s)", [TargetName, ArgStr])
+    ),
+    
+    (   OutPairs = [VarName-Var]
+    ->  format(string(Line), "                let ~s = ~s;\n", [VarName, CallExpr]),
+        NewBindings = [(Var, VarName)]
+    ;   OutPairs = []
+    ->  format(string(Line), "                ~s;\n", [CallExpr]),
+        NewBindings = []
+    ;   fail % Tuple todo
+    ),
+    
+    append(NewBindings, MapIn, MapNext),
+    generate_rust_bindings_rec(Rest, SourceMap, MapNext, MapOut, RestCode),
+    string_concat(Line, RestCode, Code).
+
+term_to_rust_expr(SourceMap, _, Var, Code) :-
+    var(Var), member((V, I), SourceMap), Var == V, !,
+    format(string(Code), "parts[~w].trim()", [I]). % Default string
+term_to_rust_expr(_, BindingMap, Var, Code) :-
+    var(Var), member((V, Name), BindingMap), Var == V, !,
+    Code = Name.
+term_to_rust_expr(_, _, Val, Code) :-
+    number(Val), !, format(string(Code), "~w", [Val]).
+term_to_rust_expr(_, _, Val, Code) :-
+    string(Val), !, format(string(Code), "\"~s\"", [Val]).
+term_to_rust_expr(_, _, Val, Code) :-
+    atom(Val), !, format(string(Code), "\"~w\"", [Val]).
+
 
 extract_json_operations(true, []) :- !.
 extract_json_operations((A, B), Ops) :- !, extract_json_operations(A, O1), extract_json_operations(B, O2), append(O1, O2, Ops).
@@ -557,19 +634,22 @@ compile_rust_key_expr_list([H|T], SourceMap, KeyMap, [HC|TC]) :-
 
 field_to_json_op(Field-Var, json_field(Field, Var)).
 
-generate_rust_constraints([], _, "").
-generate_rust_constraints(Constraints, SourceMap, Code) :-
-    findall(Check, (member(C, Constraints), constraint_to_rust(C, SourceMap, Check)), Checks),
+generate_rust_constraints([], _, _, "").
+generate_rust_constraints(Constraints, SourceMap, BindingMap, Code) :-
+    findall(Check, (member(C, Constraints), constraint_to_rust(C, SourceMap, BindingMap, Check)), Checks),
     atomic_list_concat(Checks, '\n', Code).
 
-constraint_to_rust(Comparison, SourceMap, Code) :-
-    Comparison =.. [Op, L, R], map_rust_op(Op, RO), term_to_rust_numeric(L, SourceMap, LC), term_to_rust_numeric(R, SourceMap, RC),
+constraint_to_rust(Comparison, SourceMap, BindingMap, Code) :-
+    Comparison =.. [Op, L, R], map_rust_op(Op, RO), 
+    term_to_rust_numeric(L, SourceMap, BindingMap, LC), 
+    term_to_rust_numeric(R, SourceMap, BindingMap, RC),
     format(string(Code), "if !(~s ~s ~s) { continue; }", [LC, RO, RC]).
 
 map_rust_op(>, ">"). map_rust_op(<, "<"). map_rust_op(>=, ">="). map_rust_op(=<, "<="). map_rust_op(=:=, "=="). map_rust_op(=\=, "!=").
 
-term_to_rust_numeric(Var, SourceMap, Code) :- var(Var), member((V, I), SourceMap), Var == V, !, format(string(Code), "parts[~w].trim().parse::<f64>().unwrap_or(0.0)", [I]).
-term_to_rust_numeric(Num, _, Num) :- number(Num).
+term_to_rust_numeric(Var, SourceMap, _, Code) :- var(Var), member((V, I), SourceMap), Var == V, !, format(string(Code), "parts[~w].trim().parse::<f64>().unwrap_or(0.0)", [I]).
+term_to_rust_numeric(Var, _, BindingMap, Code) :- var(Var), member((V, Name), BindingMap), Var == V, !, format(string(Code), "~w as f64", [Name]).
+term_to_rust_numeric(Num, _, _, Num) :- number(Num).
 
 generate_rust_match_constraints([], _, "", "", false).
 generate_rust_match_constraints(Matches, SourceMap, InitCode, CheckCode, true) :-
