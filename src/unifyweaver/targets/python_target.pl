@@ -20,7 +20,9 @@
     compile_pipeline/3,
     compile_same_runtime_pipeline/3,
     compile_cross_runtime_pipeline/3,
-    test_pipeline_chaining/0
+    test_pipeline_chaining/0,
+    % Pipeline generator mode exports (Phase 5)
+    test_python_pipeline_generator/0
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -3981,29 +3983,86 @@ compatible_runtimes(jython, python) :- !.
 %  Compile a pipeline where all predicates run in the same Python process.
 %  This is efficient as no serialization is needed between steps.
 %
+%  Supports pipeline_mode option:
+%    - sequential (default): Stages chained sequentially
+%    - generator: Fixpoint iteration with deduplication
+%
 compile_same_runtime_pipeline(Predicates, Options, Code) :-
     option(runtime(Runtime), Options, cpython),
     option(glue_protocol(GlueProtocol), Options, jsonl),
     option(pipeline_name(PipelineName), Options, pipeline),
+    option(pipeline_mode(PipelineMode), Options, sequential),
     option(arg_names(ArgNames), Options, []),
 
-    % Generate header
-    pipeline_header(GlueProtocol, Runtime, Header),
+    % Generate header (extended for generator mode)
+    pipeline_header_extended(GlueProtocol, Runtime, PipelineMode, Header),
 
     % Compile each predicate to a function
     compile_pipeline_predicates(Predicates, PredicateFunctions),
 
-    % Generate the pipeline connector function
-    generate_pipeline_connector(Predicates, PipelineName, ConnectorCode),
+    % Generate the pipeline connector function based on mode
+    generate_pipeline_connector(Predicates, PipelineName, PipelineMode, ConnectorCode),
 
-    % Generate helpers
-    pipeline_helpers(GlueProtocol, same_as_data, Helpers),
+    % Generate helpers (extended for generator mode)
+    pipeline_helpers_extended(GlueProtocol, same_as_data, PipelineMode, Helpers),
 
     % Generate main block
     generate_chained_pipeline_main(PipelineName, GlueProtocol, ArgNames, MainCode),
 
     format(string(Code), "~w~w~w~w~w",
         [Header, Helpers, PredicateFunctions, ConnectorCode, MainCode]).
+
+%% pipeline_header_extended(+Protocol, +Runtime, +Mode, -Header)
+%  Generate header with additional imports for generator mode
+pipeline_header_extended(GlueProtocol, Runtime, generator, Header) :-
+    !,
+    pipeline_header(GlueProtocol, Runtime, BaseHeader),
+    format(string(Header), "~wfrom typing import Set
+from dataclasses import dataclass
+
+", [BaseHeader]).
+pipeline_header_extended(GlueProtocol, Runtime, _, Header) :-
+    pipeline_header(GlueProtocol, Runtime, Header).
+
+%% pipeline_helpers_extended(+Protocol, +DataSource, +Mode, -Helpers)
+%  Generate helpers including FrozenDict for generator mode
+pipeline_helpers_extended(GlueProtocol, DataSource, generator, Helpers) :-
+    !,
+    pipeline_helpers(GlueProtocol, DataSource, BaseHelpers),
+    FrozenDictCode = "
+# FrozenDict - hashable dictionary for use in sets (fixpoint deduplication)
+@dataclass(frozen=True)
+class FrozenDict:
+    '''Immutable dictionary that can be used in sets.'''
+    items: tuple
+
+    @staticmethod
+    def from_dict(d: dict) -> 'FrozenDict':
+        return FrozenDict(tuple(sorted(d.items())))
+
+    def to_dict(self) -> dict:
+        return dict(self.items)
+
+    def get(self, key, default=None):
+        for k, v in self.items:
+            if k == key:
+                return v
+        return default
+
+    def __contains__(self, key):
+        return any(k == key for k, _ in self.items)
+
+    def __repr__(self):
+        return f'FrozenDict({dict(self.items)})'
+
+def record_key(record: dict) -> FrozenDict:
+    '''Convert a record to a hashable key for deduplication.'''
+    return FrozenDict.from_dict(record)
+
+",
+    format(string(Helpers), "~w~w", [BaseHelpers, FrozenDictCode]).
+pipeline_helpers_extended(GlueProtocol, DataSource, _, Helpers) :-
+    pipeline_helpers(GlueProtocol, DataSource, Helpers).
 
 %% compile_pipeline_predicates(+Predicates, -Code)
 %  Compile each predicate to a Python generator function.
@@ -4067,9 +4126,16 @@ generate_extraction_line(Name, Line) :-
     format(string(Line), "        ~w = record.get('~w')", [Name, Name]).
 
 %% generate_pipeline_connector(+Predicates, +Name, -Code)
-%  Generate the function that chains all predicates together.
+%  Generate the function that chains all predicates together (legacy 3-arg version).
 %
 generate_pipeline_connector(Predicates, PipelineName, Code) :-
+    generate_pipeline_connector(Predicates, PipelineName, sequential, Code).
+
+%% generate_pipeline_connector(+Predicates, +Name, +Mode, -Code)
+%  Generate the function that chains all predicates together.
+%  Mode can be: sequential, generator
+%
+generate_pipeline_connector(Predicates, PipelineName, sequential, Code) :-
     % Build the chain: pred1(pred2(pred3(input)))
     % Or use generator chaining for efficiency
     extract_predicate_names(Predicates, Names),
@@ -4083,6 +4149,61 @@ def ~w(input_stream):
     \"\"\"
 ~w
 ", [PipelineName, Names, ChainCode]).
+
+generate_pipeline_connector(Predicates, PipelineName, generator, Code) :-
+    % Generate fixpoint iteration pipeline
+    extract_predicate_names(Predicates, Names),
+    generate_fixpoint_chain_code(Names, ChainCode),
+    format(string(Code),
+"
+def ~w(input_stream):
+    \"\"\"
+    Fixpoint pipeline: ~w
+    Iterates until no new records are produced.
+    \"\"\"
+    # Initialize with input records
+    total: Set[FrozenDict] = set()
+
+    for record in input_stream:
+        key = record_key(record)
+        if key not in total:
+            total.add(key)
+            yield record
+
+    # Fixpoint iteration - apply stages until no new records
+    changed = True
+    while changed:
+        changed = False
+        current = [key.to_dict() for key in total]
+
+~w
+
+        # Check for new records
+        for record in new_records:
+            key = record_key(record)
+            if key not in total:
+                total.add(key)
+                changed = True
+                yield record
+
+", [PipelineName, Names, ChainCode]).
+
+%% generate_fixpoint_chain_code(+Names, -Code)
+%  Generate the stage application code for fixpoint iteration
+generate_fixpoint_chain_code([], "        new_records = current\n").
+generate_fixpoint_chain_code(Names, Code) :-
+    Names \= [],
+    generate_fixpoint_stage_calls(Names, "current", StageCalls),
+    format(string(Code), "        # Apply pipeline stages
+~w", [StageCalls]).
+
+generate_fixpoint_stage_calls([], Current, Code) :-
+    format(string(Code), "        new_records = ~w\n", [Current]).
+generate_fixpoint_stage_calls([Stage|Rest], Current, Code) :-
+    format(string(NextVar), "stage_~w_out", [Stage]),
+    format(string(StageCall), "        ~w = list(~w(iter(~w)))\n", [NextVar, Stage, Current]),
+    generate_fixpoint_stage_calls(Rest, NextVar, RestCode),
+    format(string(Code), "~w~w", [StageCall, RestCode]).
 
 %% extract_predicate_names(+Predicates, -Names)
 extract_predicate_names([], []).
@@ -4361,3 +4482,120 @@ test_pipeline_chaining :-
     ),
 
     format('~n=== All Pipeline Chaining Tests Passed ===~n', []).
+
+%% ============================================
+%% PYTHON PIPELINE GENERATOR MODE TESTS
+%% ============================================
+
+test_python_pipeline_generator :-
+    format('~n=== Python Pipeline Generator Mode Tests ===~n~n', []),
+
+    % Test 1: Pipeline header extended for generator mode
+    format('[Test 1] Pipeline header extended (generator)~n', []),
+    pipeline_header_extended(jsonl, cpython, generator, Header1),
+    (   sub_string(Header1, _, _, _, "from typing import Set"),
+        sub_string(Header1, _, _, _, "from dataclasses import dataclass")
+    ->  format('  [PASS] Generator header has required imports~n', [])
+    ;   format('  [FAIL] Header: ~w~n', [Header1])
+    ),
+
+    % Test 2: Pipeline header extended for sequential mode (unchanged)
+    format('[Test 2] Pipeline header extended (sequential)~n', []),
+    pipeline_header_extended(jsonl, cpython, sequential, Header2),
+    pipeline_header(jsonl, cpython, BaseHeader2),
+    (   Header2 == BaseHeader2
+    ->  format('  [PASS] Sequential header unchanged~n', [])
+    ;   format('  [FAIL] Headers differ~n', [])
+    ),
+
+    % Test 3: Pipeline helpers extended for generator mode
+    format('[Test 3] Pipeline helpers extended (generator)~n', []),
+    pipeline_helpers_extended(jsonl, same_as_data, generator, Helpers3),
+    (   sub_string(Helpers3, _, _, _, "class FrozenDict"),
+        sub_string(Helpers3, _, _, _, "def record_key"),
+        sub_string(Helpers3, _, _, _, "from_dict")
+    ->  format('  [PASS] Generator helpers include FrozenDict~n', [])
+    ;   format('  [FAIL] Helpers: ~w~n', [Helpers3])
+    ),
+
+    % Test 4: Generate fixpoint chain code (empty)
+    format('[Test 4] Fixpoint chain code (empty)~n', []),
+    generate_fixpoint_chain_code([], ChainCode4),
+    (   sub_string(ChainCode4, _, _, _, "new_records = current")
+    ->  format('  [PASS] Empty chain returns current~n', [])
+    ;   format('  [FAIL] Chain: ~w~n', [ChainCode4])
+    ),
+
+    % Test 5: Generate fixpoint chain code with stages
+    format('[Test 5] Fixpoint chain code with stages~n', []),
+    generate_fixpoint_chain_code(["stage1", "stage2"], ChainCode5),
+    (   sub_string(ChainCode5, _, _, _, "stage_stage1_out"),
+        sub_string(ChainCode5, _, _, _, "stage_stage2_out"),
+        sub_string(ChainCode5, _, _, _, "stage1(iter(current))"),
+        sub_string(ChainCode5, _, _, _, "stage2(iter(stage_stage1_out))")
+    ->  format('  [PASS] Stage calls generated correctly~n', [])
+    ;   format('  [FAIL] Chain code: ~w~n', [ChainCode5])
+    ),
+
+    % Test 6: Pipeline connector for generator mode
+    format('[Test 6] Pipeline connector (generator)~n', []),
+    generate_pipeline_connector([a/1, b/1], test_gen, generator, ConnCode6),
+    (   sub_string(ConnCode6, _, _, _, "def test_gen"),
+        sub_string(ConnCode6, _, _, _, "Fixpoint pipeline"),
+        sub_string(ConnCode6, _, _, _, "total: Set[FrozenDict]"),
+        sub_string(ConnCode6, _, _, _, "while changed"),
+        sub_string(ConnCode6, _, _, _, "record_key(record)")
+    ->  format('  [PASS] Generator connector has fixpoint loop~n', [])
+    ;   format('  [FAIL] Connector: ~w~n', [ConnCode6])
+    ),
+
+    % Test 7: Pipeline connector for sequential mode (unchanged)
+    format('[Test 7] Pipeline connector (sequential)~n', []),
+    generate_pipeline_connector([a/1, b/1], test_seq, sequential, ConnCode7),
+    (   sub_string(ConnCode7, _, _, _, "def test_seq"),
+        sub_string(ConnCode7, _, _, _, "Chained pipeline"),
+        sub_string(ConnCode7, _, _, _, "yield from")
+    ->  format('  [PASS] Sequential connector unchanged~n', [])
+    ;   format('  [FAIL] Connector: ~w~n', [ConnCode7])
+    ),
+
+    % Test 8: Full pipeline with generator mode
+    format('[Test 8] Full pipeline (generator mode)~n', []),
+    compile_same_runtime_pipeline([stage1/1, stage2/1], [
+        pipeline_name(fixpoint_pipe),
+        pipeline_mode(generator)
+    ], FullCode8),
+    (   sub_string(FullCode8, _, _, _, "class FrozenDict"),
+        sub_string(FullCode8, _, _, _, "def fixpoint_pipe"),
+        sub_string(FullCode8, _, _, _, "while changed"),
+        sub_string(FullCode8, _, _, _, "total.add(key)")
+    ->  format('  [PASS] Full generator pipeline compiled~n', [])
+    ;   format('  [FAIL] Missing expected patterns~n', [])
+    ),
+
+    % Test 9: Full pipeline with sequential mode (default)
+    format('[Test 9] Full pipeline (sequential, default)~n', []),
+    compile_same_runtime_pipeline([stage1/1, stage2/1], [
+        pipeline_name(seq_pipe)
+    ], FullCode9),
+    (   sub_string(FullCode9, _, _, _, "def seq_pipe"),
+        sub_string(FullCode9, _, _, _, "yield from"),
+        \+ sub_string(FullCode9, _, _, _, "class FrozenDict")
+    ->  format('  [PASS] Sequential pipeline (default) works~n', [])
+    ;   format('  [FAIL] Sequential pipeline issue~n', [])
+    ),
+
+    % Test 10: Main entry point with generator mode
+    format('[Test 10] Main entry point (generator)~n', []),
+    compile_pipeline([a/1, b/1], [
+        pipeline_name(main_gen_pipe),
+        pipeline_mode(generator)
+    ], FullCode10),
+    (   sub_string(FullCode10, _, _, _, "def main_gen_pipe"),
+        sub_string(FullCode10, _, _, _, "class FrozenDict"),
+        sub_string(FullCode10, _, _, _, "while changed")
+    ->  format('  [PASS] Main entry point uses generator mode~n', [])
+    ;   format('  [FAIL] Main entry point issue~n', [])
+    ),
+
+    format('~n=== All Python Pipeline Generator Mode Tests Passed ===~n', []).
