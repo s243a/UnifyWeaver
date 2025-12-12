@@ -251,6 +251,42 @@ Input ─► parse ─► filter(active) ─┬─► validate ──┐
 - `FAN_OUT_RESULTS` array for fan-out collection
 - `ROUTE_MAP` associative array for routing
 
+## Pipeline Validation
+
+Enhanced pipelines are validated at compile-time to catch errors early. Validation is enabled by default and checks for:
+
+**Errors** (compilation fails):
+- Empty pipeline
+- Invalid stage types
+- Empty `fan_out` (no sub-stages)
+- Empty `route_by` (no routes)
+- Invalid route format (must be `(Condition, Stage)`)
+
+**Warnings** (compilation succeeds with message):
+- `fan_out` without subsequent `merge` - parallel results may be nested
+- `merge` without preceding `fan_out` - results may be unexpected
+
+### Validation Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `validate(Bool)` | Enable/disable validation | `true` |
+| `strict(Bool)` | Treat warnings as errors | `false` |
+
+### Example: Disabling Validation
+
+```prolog
+% Skip validation (not recommended)
+compile_enhanced_pipeline([...], [validate(false)], Code).
+```
+
+### Example: Strict Mode
+
+```prolog
+% Treat warnings as errors
+compile_enhanced_pipeline([...], [strict(true)], Code).
+```
+
 ## Options
 
 Common options across all targets:
@@ -260,6 +296,8 @@ Common options across all targets:
 | `pipeline_name(Name)` | Name of the generated pipeline function | `enhanced_pipeline` |
 | `record_format(Format)` | Input/output format (`jsonl`, `tsv`, `csv`) | `jsonl` |
 | `output_format(Format)` | Output serialization format | Target-specific |
+| `validate(Bool)` | Enable compile-time validation | `true` |
+| `strict(Bool)` | Treat warnings as errors | `false` |
 
 Target-specific options are documented in each target's guide.
 
@@ -268,6 +306,10 @@ Target-specific options are documented in each target's guide.
 Each target includes comprehensive tests:
 
 ```bash
+# Run pipeline validation tests
+swipl -g "use_module(src/unifyweaver/core/pipeline_validation), test_pipeline_validation" -t halt
+./tests/integration/test_pipeline_validation.sh
+
 # Run all enhanced chaining tests for a specific target
 swipl -g "use_module(src/unifyweaver/targets/python_target), test_enhanced_pipeline_chaining" -t halt
 swipl -g "use_module(src/unifyweaver/targets/go_target), test_go_enhanced_chaining" -t halt

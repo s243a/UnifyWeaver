@@ -30,6 +30,7 @@
 :- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1, dynamic_source_metadata/2]).
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/csharp_bindings').
+:- use_module('../core/pipeline_validation').
 :- use_module(common_generator).
 
 %% init_csharp_target
@@ -2999,8 +3000,36 @@ test_csharp_pipeline_generator :-
 %
 %% compile_csharp_enhanced_pipeline(+Stages, +Options, -CSharpCode)
 %  Main entry point for enhanced C# pipeline with advanced flow patterns.
+%  Validates pipeline stages before code generation.
 %
 compile_csharp_enhanced_pipeline(Stages, Options, CSharpCode) :-
+    % Validate pipeline stages
+    option(validate(Validate), Options, true),
+    option(strict(Strict), Options, false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'C# pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'C# pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
     option(pipeline_name(PipelineName), Options, 'EnhancedPipeline'),
     option(output_format(OutputFormat), Options, jsonl),
 

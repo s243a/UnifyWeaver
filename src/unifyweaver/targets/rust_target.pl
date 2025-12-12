@@ -28,6 +28,7 @@
 :- use_module(library(yall)).
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/rust_bindings').
+:- use_module('../core/pipeline_validation').
 
 %% init_rust_target
 %  Initialize the Rust target by loading bindings.
@@ -1166,8 +1167,36 @@ test_rust_pipeline_generator :-
 %
 %% compile_rust_enhanced_pipeline(+Stages, +Options, -RustCode)
 %  Main entry point for enhanced Rust pipeline with advanced flow patterns.
+%  Validates pipeline stages before code generation.
 %
 compile_rust_enhanced_pipeline(Stages, Options, RustCode) :-
+    % Validate pipeline stages
+    option(validate(Validate), Options, true),
+    option(strict(Strict), Options, false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'Rust pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'Rust pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
     option(pipeline_name(PipelineName), Options, enhanced_pipeline),
     option(output_format(OutputFormat), Options, jsonl),
 

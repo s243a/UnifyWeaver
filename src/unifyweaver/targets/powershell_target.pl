@@ -22,6 +22,7 @@
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module('../core/pipeline_validation').
 
 %% compile_vector_search(+PredName, +Options, -PsCode)
 %  Generates a PowerShell function to perform vector search over a collection.
@@ -601,8 +602,36 @@ test_powershell_pipeline_generator :-
 %
 %% compile_powershell_enhanced_pipeline(+Stages, +Options, -PsCode)
 %  Main entry point for enhanced PowerShell pipeline with advanced flow patterns.
+%  Validates pipeline stages before code generation.
 %
 compile_powershell_enhanced_pipeline(Stages, Options, PsCode) :-
+    % Validate pipeline stages
+    option(validate(Validate), Options, true),
+    option(strict(Strict), Options, false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'PowerShell pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'PowerShell pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
     option(pipeline_name(PipelineName), Options, 'Invoke-EnhancedPipeline'),
     option(output_format(OutputFormat), Options, jsonl),
 

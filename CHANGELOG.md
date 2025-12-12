@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/ENHANCED_PIPELINE_CHAINING.md` — Unified documentation
   - Integration tests for all targets
 
+- **Pipeline Validation** - Compile-time validation for enhanced pipeline stages
+  - `src/unifyweaver/core/pipeline_validation.pl` — Validation module
+  - Error detection: empty pipeline, invalid stages, empty fan_out, empty routes, invalid route format
+  - Warning detection: fan_out without merge, merge without fan_out
+  - Options: `validate(Bool)` to enable/disable, `strict(Bool)` to treat warnings as errors
+  - Integrated into all enhanced pipeline compilation predicates
+  - `tests/integration/test_pipeline_validation.sh` — 12 integration tests
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
