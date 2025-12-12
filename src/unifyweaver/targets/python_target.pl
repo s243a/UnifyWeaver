@@ -22,7 +22,9 @@
     compile_cross_runtime_pipeline/3,
     test_pipeline_chaining/0,
     % Pipeline generator mode exports (Phase 5)
-    test_python_pipeline_generator/0
+    test_python_pipeline_generator/0,
+    % IronPython pipeline generator mode exports (Phase 6)
+    test_ironpython_pipeline_generator/0
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -4000,11 +4002,11 @@ compile_same_runtime_pipeline(Predicates, Options, Code) :-
     % Compile each predicate to a function
     compile_pipeline_predicates(Predicates, PredicateFunctions),
 
-    % Generate the pipeline connector function based on mode
-    generate_pipeline_connector(Predicates, PipelineName, PipelineMode, ConnectorCode),
+    % Generate the pipeline connector function based on mode and runtime
+    generate_pipeline_connector(Predicates, PipelineName, PipelineMode, Runtime, ConnectorCode),
 
-    % Generate helpers (extended for generator mode)
-    pipeline_helpers_extended(GlueProtocol, same_as_data, PipelineMode, Helpers),
+    % Generate helpers (extended for generator mode, runtime-aware)
+    pipeline_helpers_extended(GlueProtocol, same_as_data, PipelineMode, Runtime, Helpers),
 
     % Generate main block
     generate_chained_pipeline_main(PipelineName, GlueProtocol, ArgNames, MainCode),
@@ -4014,6 +4016,16 @@ compile_same_runtime_pipeline(Predicates, Options, Code) :-
 
 %% pipeline_header_extended(+Protocol, +Runtime, +Mode, -Header)
 %  Generate header with additional imports for generator mode
+%  IronPython uses .NET HashSet instead of dataclasses
+pipeline_header_extended(GlueProtocol, ironpython, generator, Header) :-
+    !,
+    pipeline_header(GlueProtocol, ironpython, BaseHeader),
+    % IronPython: Use .NET HashSet, no dataclasses needed
+    format(string(Header), "~w
+# .NET HashSet for fixpoint deduplication (IronPython)
+from System.Collections.Generic import HashSet
+
+", [BaseHeader]).
 pipeline_header_extended(GlueProtocol, Runtime, generator, Header) :-
     !,
     pipeline_header(GlueProtocol, Runtime, BaseHeader),
@@ -4024,9 +4036,48 @@ from dataclasses import dataclass
 pipeline_header_extended(GlueProtocol, Runtime, _, Header) :-
     pipeline_header(GlueProtocol, Runtime, Header).
 
-%% pipeline_helpers_extended(+Protocol, +DataSource, +Mode, -Helpers)
-%  Generate helpers including FrozenDict for generator mode
-pipeline_helpers_extended(GlueProtocol, DataSource, generator, Helpers) :-
+%% pipeline_helpers_extended(+Protocol, +DataSource, +Mode, +Runtime, -Helpers)
+%  Generate helpers including record_key for generator mode
+%  IronPython uses .NET HashSet<String> with JSON-serialized keys
+pipeline_helpers_extended(GlueProtocol, DataSource, generator, ironpython, Helpers) :-
+    !,
+    pipeline_helpers(GlueProtocol, DataSource, BaseHelpers),
+    IronPythonHashCode = "
+# Record key generation for .NET HashSet (IronPython)
+# Uses JSON serialization with sorted keys for consistent hashing
+
+def record_key(record):
+    '''Convert a record to a hashable string key for .NET HashSet.'''
+    # Sort keys for consistent ordering
+    sorted_items = sorted(record.items(), key=lambda x: str(x[0]))
+    # Create canonical JSON string
+    return json.dumps(dict(sorted_items), sort_keys=True)
+
+def dict_from_key(key):
+    '''Convert a key back to a dictionary.'''
+    return json.loads(key)
+
+# .NET HashSet wrapper for Python-style interface
+class RecordSet:
+    '''Wrapper around .NET HashSet<String> for record deduplication.'''
+    def __init__(self):
+        self._set = HashSet[String]()
+
+    def add(self, key):
+        '''Add a key to the set.'''
+        self._set.Add(String(key))
+
+    def __contains__(self, key):
+        '''Check if key is in the set.'''
+        return self._set.Contains(String(key))
+
+    def __len__(self):
+        return self._set.Count
+
+",
+    format(string(Helpers), "~w~w", [BaseHelpers, IronPythonHashCode]).
+
+pipeline_helpers_extended(GlueProtocol, DataSource, generator, _Runtime, Helpers) :-
     !,
     pipeline_helpers(GlueProtocol, DataSource, BaseHelpers),
     FrozenDictCode = "
@@ -4061,7 +4112,8 @@ def record_key(record: dict) -> FrozenDict:
 
 ",
     format(string(Helpers), "~w~w", [BaseHelpers, FrozenDictCode]).
-pipeline_helpers_extended(GlueProtocol, DataSource, _, Helpers) :-
+
+pipeline_helpers_extended(GlueProtocol, DataSource, _, _Runtime, Helpers) :-
     pipeline_helpers(GlueProtocol, DataSource, Helpers).
 
 %% compile_pipeline_predicates(+Predicates, -Code)
@@ -4129,13 +4181,20 @@ generate_extraction_line(Name, Line) :-
 %  Generate the function that chains all predicates together (legacy 3-arg version).
 %
 generate_pipeline_connector(Predicates, PipelineName, Code) :-
-    generate_pipeline_connector(Predicates, PipelineName, sequential, Code).
+    generate_pipeline_connector(Predicates, PipelineName, sequential, cpython, Code).
 
 %% generate_pipeline_connector(+Predicates, +Name, +Mode, -Code)
-%  Generate the function that chains all predicates together.
+%  Generate the function that chains all predicates together (4-arg version).
 %  Mode can be: sequential, generator
 %
-generate_pipeline_connector(Predicates, PipelineName, sequential, Code) :-
+generate_pipeline_connector(Predicates, PipelineName, Mode, Code) :-
+    generate_pipeline_connector(Predicates, PipelineName, Mode, cpython, Code).
+
+%% generate_pipeline_connector(+Predicates, +Name, +Mode, +Runtime, -Code)
+%  Runtime-aware pipeline connector generation.
+%  IronPython uses .NET HashSet wrapper for generator mode.
+%
+generate_pipeline_connector(Predicates, PipelineName, sequential, _Runtime, Code) :-
     % Build the chain: pred1(pred2(pred3(input)))
     % Or use generator chaining for efficiency
     extract_predicate_names(Predicates, Names),
@@ -4150,7 +4209,51 @@ def ~w(input_stream):
 ~w
 ", [PipelineName, Names, ChainCode]).
 
-generate_pipeline_connector(Predicates, PipelineName, generator, Code) :-
+%% IronPython generator mode - uses .NET HashSet wrapper
+generate_pipeline_connector(Predicates, PipelineName, generator, ironpython, Code) :-
+    !,
+    extract_predicate_names(Predicates, Names),
+    generate_fixpoint_chain_code(Names, ChainCode),
+    format(string(Code),
+"
+def ~w(input_stream):
+    \"\"\"
+    Fixpoint pipeline: ~w (IronPython/.NET)
+    Iterates until no new records are produced.
+    Uses .NET HashSet<String> for deduplication.
+    \"\"\"
+    # Initialize with input records using .NET HashSet wrapper
+    total = RecordSet()
+    all_records = []
+
+    for record in input_stream:
+        key = record_key(record)
+        if key not in total:
+            total.add(key)
+            all_records.append(record)
+            yield record
+
+    # Fixpoint iteration - apply stages until no new records
+    changed = True
+    while changed:
+        changed = False
+        current = list(all_records)
+
+~w
+
+        # Check for new records
+        for record in new_records:
+            key = record_key(record)
+            if key not in total:
+                total.add(key)
+                all_records.append(record)
+                changed = True
+                yield record
+
+", [PipelineName, Names, ChainCode]).
+
+%% CPython/PyPy/Jython generator mode - uses FrozenDict with Python set
+generate_pipeline_connector(Predicates, PipelineName, generator, _Runtime, Code) :-
     % Generate fixpoint iteration pipeline
     extract_predicate_names(Predicates, Names),
     generate_fixpoint_chain_code(Names, ChainCode),
@@ -4508,9 +4611,9 @@ test_python_pipeline_generator :-
     ;   format('  [FAIL] Headers differ~n', [])
     ),
 
-    % Test 3: Pipeline helpers extended for generator mode
-    format('[Test 3] Pipeline helpers extended (generator)~n', []),
-    pipeline_helpers_extended(jsonl, same_as_data, generator, Helpers3),
+    % Test 3: Pipeline helpers extended for generator mode (CPython)
+    format('[Test 3] Pipeline helpers extended (generator, CPython)~n', []),
+    pipeline_helpers_extended(jsonl, same_as_data, generator, cpython, Helpers3),
     (   sub_string(Helpers3, _, _, _, "class FrozenDict"),
         sub_string(Helpers3, _, _, _, "def record_key"),
         sub_string(Helpers3, _, _, _, "from_dict")
@@ -4599,3 +4702,123 @@ test_python_pipeline_generator :-
     ),
 
     format('~n=== All Python Pipeline Generator Mode Tests Passed ===~n', []).
+
+%% ============================================
+%% IRONPYTHON PIPELINE GENERATOR MODE TESTS
+%% ============================================
+
+test_ironpython_pipeline_generator :-
+    format('~n=== IronPython Pipeline Generator Mode Tests ===~n~n', []),
+
+    % Test 1: IronPython header for generator mode has .NET HashSet
+    format('[Test 1] IronPython header (generator)~n', []),
+    pipeline_header_extended(jsonl, ironpython, generator, Header1),
+    (   sub_string(Header1, _, _, _, "import clr"),
+        sub_string(Header1, _, _, _, "HashSet"),
+        \+ sub_string(Header1, _, _, _, "dataclass")
+    ->  format('  [PASS] IronPython header has .NET HashSet import~n', [])
+    ;   format('  [FAIL] Header: ~w~n', [Header1])
+    ),
+
+    % Test 2: IronPython helpers for generator mode
+    format('[Test 2] IronPython helpers (generator)~n', []),
+    pipeline_helpers_extended(jsonl, same_as_data, generator, ironpython, Helpers2),
+    (   sub_string(Helpers2, _, _, _, "class RecordSet"),
+        sub_string(Helpers2, _, _, _, "HashSet[String]"),
+        sub_string(Helpers2, _, _, _, "def record_key")
+    ->  format('  [PASS] IronPython helpers include RecordSet wrapper~n', [])
+    ;   format('  [FAIL] Helpers: ~w~n', [Helpers2])
+    ),
+
+    % Test 3: IronPython connector for generator mode
+    format('[Test 3] IronPython connector (generator)~n', []),
+    generate_pipeline_connector([a/1, b/1], iron_gen, generator, ironpython, ConnCode3),
+    (   sub_string(ConnCode3, _, _, _, "def iron_gen"),
+        sub_string(ConnCode3, _, _, _, "RecordSet()"),
+        sub_string(ConnCode3, _, _, _, "IronPython/.NET"),
+        sub_string(ConnCode3, _, _, _, "while changed")
+    ->  format('  [PASS] IronPython connector uses RecordSet~n', [])
+    ;   format('  [FAIL] Connector: ~w~n', [ConnCode3])
+    ),
+
+    % Test 4: Full IronPython pipeline with generator mode
+    format('[Test 4] Full IronPython pipeline (generator)~n', []),
+    compile_same_runtime_pipeline([stage1/1, stage2/1], [
+        pipeline_name(iron_fixpoint),
+        pipeline_mode(generator),
+        runtime(ironpython)
+    ], FullCode4),
+    (   sub_string(FullCode4, _, _, _, "#!/usr/bin/env ipy"),
+        sub_string(FullCode4, _, _, _, "class RecordSet"),
+        sub_string(FullCode4, _, _, _, "def iron_fixpoint"),
+        sub_string(FullCode4, _, _, _, "while changed")
+    ->  format('  [PASS] Full IronPython generator pipeline compiled~n', [])
+    ;   format('  [FAIL] Missing expected patterns~n', [])
+    ),
+
+    % Test 5: IronPython sequential mode still works
+    format('[Test 5] IronPython sequential mode~n', []),
+    compile_same_runtime_pipeline([stage1/1], [
+        pipeline_name(iron_seq),
+        pipeline_mode(sequential),
+        runtime(ironpython)
+    ], SeqCode5),
+    (   sub_string(SeqCode5, _, _, _, "#!/usr/bin/env ipy"),
+        sub_string(SeqCode5, _, _, _, "def iron_seq"),
+        sub_string(SeqCode5, _, _, _, "yield from"),
+        \+ sub_string(SeqCode5, _, _, _, "RecordSet")
+    ->  format('  [PASS] IronPython sequential mode works~n', [])
+    ;   format('  [FAIL] Sequential issue~n', [])
+    ),
+
+    % Test 6: IronPython generator uses all_records list
+    format('[Test 6] IronPython generator tracks all_records~n', []),
+    generate_pipeline_connector([a/1], track_test, generator, ironpython, ConnCode6),
+    (   sub_string(ConnCode6, _, _, _, "all_records = []"),
+        sub_string(ConnCode6, _, _, _, "all_records.append(record)")
+    ->  format('  [PASS] IronPython tracks all_records for iteration~n', [])
+    ;   format('  [FAIL] Tracking issue~n', [])
+    ),
+
+    % Test 7: CPython generator still uses FrozenDict
+    format('[Test 7] CPython generator uses FrozenDict~n', []),
+    compile_same_runtime_pipeline([stage1/1], [
+        pipeline_name(py_gen),
+        pipeline_mode(generator),
+        runtime(cpython)
+    ], PyCode7),
+    (   sub_string(PyCode7, _, _, _, "class FrozenDict"),
+        sub_string(PyCode7, _, _, _, "Set[FrozenDict]"),
+        \+ sub_string(PyCode7, _, _, _, "RecordSet")
+    ->  format('  [PASS] CPython uses FrozenDict (not RecordSet)~n', [])
+    ;   format('  [FAIL] CPython issue~n', [])
+    ),
+
+    % Test 8: IronPython header has CLR references
+    format('[Test 8] IronPython header CLR references~n', []),
+    pipeline_header(jsonl, ironpython, BaseHeader8),
+    (   sub_string(BaseHeader8, _, _, _, "clr.AddReference"),
+        sub_string(BaseHeader8, _, _, _, "from System import")
+    ->  format('  [PASS] IronPython header has CLR setup~n', [])
+    ;   format('  [FAIL] Missing CLR: ~w~n', [BaseHeader8])
+    ),
+
+    % Test 9: IronPython record_key uses json.dumps
+    format('[Test 9] IronPython record_key serialization~n', []),
+    pipeline_helpers_extended(jsonl, same_as_data, generator, ironpython, Helpers9),
+    (   sub_string(Helpers9, _, _, _, "json.dumps"),
+        sub_string(Helpers9, _, _, _, "sort_keys=True")
+    ->  format('  [PASS] IronPython record_key uses JSON serialization~n', [])
+    ;   format('  [FAIL] Serialization issue~n', [])
+    ),
+
+    % Test 10: IronPython RecordSet __contains__ method
+    format('[Test 10] IronPython RecordSet contains check~n', []),
+    pipeline_helpers_extended(jsonl, same_as_data, generator, ironpython, Helpers10),
+    (   sub_string(Helpers10, _, _, _, "def __contains__"),
+        sub_string(Helpers10, _, _, _, ".Contains(String(key))")
+    ->  format('  [PASS] RecordSet has proper contains check~n', [])
+    ;   format('  [FAIL] Contains issue~n', [])
+    ),
+
+    format('~n=== All IronPython Pipeline Generator Mode Tests Passed ===~n', []).
