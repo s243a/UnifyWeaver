@@ -1750,11 +1750,12 @@ test_awk_pipeline_generator :-
 %% ============================================
 %
 %  Supports advanced flow patterns:
-%    - fan_out(Stages) : Broadcast to parallel stages
-%    - merge          : Combine results from parallel stages
+%    - fan_out(Stages)        : Broadcast to stages (sequential execution)
+%    - parallel(Stages)       : Execute stages (sequential in AWK, single-threaded)
+%    - merge                  : Combine results from fan_out or parallel
 %    - route_by(Pred, Routes) : Conditional routing
-%    - filter_by(Pred) : Filter records
-%    - Pred/Arity     : Standard stage
+%    - filter_by(Pred)        : Filter records
+%    - Pred/Arity             : Standard stage
 %
 %% compile_awk_enhanced_pipeline(+Stages, +Options, -AwkCode)
 %  Main entry point for enhanced AWK pipeline with advanced flow patterns.
@@ -1918,6 +1919,24 @@ function tee_stream(records, count, stages,    i, j, n, stage, result) {
     }
 }
 
+# Helper: Parallel - send record to multiple stages (sequential in AWK)
+# Note: AWK is single-threaded, so this executes stages sequentially.
+# Use this when you want to indicate parallel intent for other targets.
+# Returns results in parallel_results array, sets parallel_count
+function parallel_records(record, stages,    i, n, stage, result) {
+    parallel_count = 0
+    n = split(stages, stage_arr, \",\")
+    for (i = 1; i <= n; i++) {
+        stage = stage_arr[i]
+        gsub(/^ +| +$/, \"\", stage)
+        # Call stage function dynamically using indirect call
+        result = @stage(record)
+        parallel_count++
+        parallel_results[parallel_count] = result
+    }
+    return parallel_count
+}
+
 ".
 
 %% generate_awk_enhanced_stage_functions(+Stages, -Code)
@@ -1932,6 +1951,9 @@ generate_awk_enhanced_stage_functions([Stage|Rest], Code) :-
     ).
 
 generate_awk_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_awk_enhanced_stage_functions(SubStages, Code).
+generate_awk_single_enhanced_stage(parallel(SubStages), Code) :-
     !,
     generate_awk_enhanced_stage_functions(SubStages, Code).
 generate_awk_single_enhanced_stage(merge, "") :- !.
@@ -1978,7 +2000,7 @@ generate_awk_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
 %% generate_awk_stage_flow(+Stage, +InVar, -OutVar, -Code)
 %  Generate flow code for a single stage.
 
-% Fan-out stage: broadcast to parallel stages
+% Fan-out stage: broadcast to stages (sequential execution)
 generate_awk_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     !,
     length(SubStages, N),
@@ -1986,7 +2008,7 @@ generate_awk_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     extract_awk_enhanced_stage_names(SubStages, StageNames),
     format_awk_stage_list(StageNames, StageListStr),
     format(string(Code),
-"    # Fan-out to ~w parallel stages
+"    # Fan-out to ~w stages (sequential)
     fan_out_records(~w, \"~w\")
     # Collect fan-out results
     ~w = \"\"
@@ -1995,11 +2017,28 @@ generate_awk_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
         ~w = ~w fan_out_results[_fo_i]
     }", [N, InVar, StageListStr, OutVar, OutVar, OutVar, OutVar, OutVar, OutVar]).
 
-% Merge stage: placeholder, usually follows fan_out
+% Parallel stage: concurrent execution (sequential in AWK - single threaded)
+generate_awk_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel_~w_result", [N]),
+    extract_awk_enhanced_stage_names(SubStages, StageNames),
+    format_awk_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Parallel execution of ~w stages (sequential in AWK - single threaded)
+    parallel_records(~w, \"~w\")
+    # Collect parallel results
+    ~w = \"\"
+    for (_p_i = 1; _p_i <= parallel_count; _p_i++) {
+        if (~w != \"\") ~w = ~w \"\\n\"
+        ~w = ~w parallel_results[_p_i]
+    }", [N, InVar, StageListStr, OutVar, OutVar, OutVar, OutVar, OutVar, OutVar]).
+
+% Merge stage: placeholder, usually follows fan_out or parallel
 generate_awk_stage_flow(merge, InVar, OutVar, Code) :-
     !,
     OutVar = InVar,
-    Code = "    # Merge: results already combined from fan-out".
+    Code = "    # Merge: results already combined from fan-out or parallel".
 
 % Conditional routing
 generate_awk_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-

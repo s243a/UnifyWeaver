@@ -8077,11 +8077,12 @@ test_go_pipeline_generator :-
 %% ============================================
 %
 %  Supports advanced flow patterns:
-%    - fan_out(Stages) : Broadcast to parallel stages
-%    - merge          : Combine results from parallel stages
+%    - fan_out(Stages)        : Broadcast to stages (sequential execution)
+%    - parallel(Stages)       : Execute stages concurrently (goroutines)
+%    - merge                  : Combine results from fan_out or parallel
 %    - route_by(Pred, Routes) : Conditional routing
-%    - filter_by(Pred) : Filter records
-%    - Pred/Arity     : Standard stage
+%    - filter_by(Pred)        : Filter records
+%    - Pred/Arity             : Standard stage
 %
 %% compile_go_enhanced_pipeline(+Stages, +Options, -GoCode)
 %  Main entry point for enhanced Go pipeline with advanced flow patterns.
@@ -8141,6 +8142,7 @@ import (
 \t"encoding/json"
 \t"fmt"
 \t"os"
+\t"sync"
 )
 
 // Record represents a data record flowing through the pipeline
@@ -8214,6 +8216,27 @@ func teeStream(records []Record, stages ...func([]Record) []Record) []Record {
 \treturn results
 }
 
+// parallelRecords executes stages concurrently using goroutines and collects all results
+func parallelRecords(record Record, stages []func([]Record) []Record) []Record {
+\tvar wg sync.WaitGroup
+\tvar mu sync.Mutex
+\tvar results []Record
+
+\tfor _, stage := range stages {
+\t\twg.Add(1)
+\t\tgo func(s func([]Record) []Record) {
+\t\t\tdefer wg.Done()
+\t\t\tstageResults := s([]Record{record})
+\t\t\tmu.Lock()
+\t\t\tresults = append(results, stageResults...)
+\t\t\tmu.Unlock()
+\t\t}(stage)
+\t}
+
+\twg.Wait()
+\treturn results
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -8228,6 +8251,9 @@ generate_go_enhanced_stage_functions([Stage|Rest], Code) :-
     ).
 
 generate_go_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(parallel(SubStages), Code) :-
     !,
     generate_go_enhanced_stage_functions(SubStages, Code).
 generate_go_single_enhanced_stage(merge, "") :- !.
@@ -8276,7 +8302,7 @@ generate_go_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
 %% generate_go_stage_flow(+Stage, +InVar, -OutVar, -Code)
 %  Generate flow code for a single stage.
 
-% Fan-out stage: broadcast to parallel stages
+% Fan-out stage: broadcast to parallel stages (sequential execution)
 generate_go_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     !,
     length(SubStages, N),
@@ -8284,18 +8310,33 @@ generate_go_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     extract_go_stage_names(SubStages, StageNames),
     format_go_stage_list(StageNames, StageListStr),
     format(string(Code),
-"\t// Fan-out to ~w parallel stages
+"\t// Fan-out to ~w stages (sequential)
 \tvar ~w []Record
 \tfor _, record := range ~w {
 \t\tfanOutResults := fanOutRecords(record, []func([]Record) []Record{~w})
 \t\t~w = append(~w, fanOutResults...)
 \t}", [N, OutVar, InVar, StageListStr, OutVar, OutVar]).
 
-% Merge stage: placeholder, usually follows fan_out
+% Parallel stage: concurrent execution using goroutines
+generate_go_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel~wResult", [N]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"\t// Parallel execution of ~w stages (concurrent via goroutines)
+\tvar ~w []Record
+\tfor _, record := range ~w {
+\t\tparallelResults := parallelRecords(record, []func([]Record) []Record{~w})
+\t\t~w = append(~w, parallelResults...)
+\t}", [N, OutVar, InVar, StageListStr, OutVar, OutVar]).
+
+% Merge stage: placeholder, usually follows fan_out or parallel
 generate_go_stage_flow(merge, InVar, OutVar, Code) :-
     !,
     OutVar = InVar,
-    Code = "\t// Merge: results already combined from fan-out".
+    Code = "\t// Merge: results already combined from fan-out or parallel".
 
 % Conditional routing
 generate_go_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-

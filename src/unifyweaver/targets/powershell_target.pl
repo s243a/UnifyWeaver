@@ -594,11 +594,12 @@ test_powershell_pipeline_generator :-
 %% ============================================
 %
 %  Supports advanced flow patterns:
-%    - fan_out(Stages) : Broadcast to parallel stages
-%    - merge          : Combine results from parallel stages
+%    - fan_out(Stages)        : Broadcast to stages (sequential execution)
+%    - parallel(Stages)       : Execute stages concurrently (runspaces)
+%    - merge                  : Combine results from fan_out or parallel
 %    - route_by(Pred, Routes) : Conditional routing
-%    - filter_by(Pred) : Filter records
-%    - Pred/Arity     : Standard stage
+%    - filter_by(Pred)        : Filter records
+%    - Pred/Arity             : Standard stage
 %
 %% compile_powershell_enhanced_pipeline(+Stages, +Options, -PsCode)
 %  Main entry point for enhanced PowerShell pipeline with advanced flow patterns.
@@ -784,6 +785,45 @@ function Write-JsonlStream {
     }
 }
 
+function Invoke-Parallel {
+    <#
+    .SYNOPSIS
+    Parallel: Execute stages concurrently using runspaces.
+    Each stage receives the same input record.
+    Results are collected after all stages complete.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]$Record,
+        [Parameter(Mandatory=$true)][scriptblock[]]$Stages
+    )
+
+    $runspacePool = [RunspaceFactory]::CreateRunspacePool(1, $Stages.Count)
+    $runspacePool.Open()
+
+    $jobs = @()
+    foreach ($stage in $Stages) {
+        $powershell = [PowerShell]::Create()
+        $powershell.RunspacePool = $runspacePool
+        [void]$powershell.AddScript({
+            param($Record, $Stage)
+            @($Record) | & ([scriptblock]::Create($Stage))
+        }).AddArgument($Record).AddArgument($stage.ToString())
+        $jobs += @{
+            PowerShell = $powershell
+            AsyncResult = $powershell.BeginInvoke()
+        }
+    }
+
+    $results = @()
+    foreach ($job in $jobs) {
+        $results += $job.PowerShell.EndInvoke($job.AsyncResult)
+        $job.PowerShell.Dispose()
+    }
+    $runspacePool.Close()
+    $runspacePool.Dispose()
+    $results
+}
+
 ".
 
 %% generate_ps_enhanced_stage_functions(+Stages, -Code)
@@ -798,6 +838,9 @@ generate_ps_enhanced_stage_functions([Stage|Rest], Code) :-
     ).
 
 generate_ps_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_ps_enhanced_stage_functions(SubStages, Code).
+generate_ps_single_enhanced_stage(parallel(SubStages), Code) :-
     !,
     generate_ps_enhanced_stage_functions(SubStages, Code).
 generate_ps_single_enhanced_stage(merge, "") :- !.
@@ -861,7 +904,7 @@ generate_ps_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
 %% generate_ps_stage_flow(+Stage, +InVar, -OutVar, -Code)
 %  Generate flow code for a single stage.
 
-% Fan-out stage: broadcast to parallel stages
+% Fan-out stage: broadcast to stages (sequential execution)
 generate_ps_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     !,
     length(SubStages, N),
@@ -869,17 +912,31 @@ generate_ps_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     extract_ps_stage_names(SubStages, StageNames),
     format_ps_stage_list(StageNames, StageListStr),
     format(string(Code),
-"        # Fan-out to ~w parallel stages
+"        # Fan-out to ~w stages (sequential)
         ~w = @()
         foreach ($record in ~w) {
             ~w += Invoke-FanOut -Record $record -Stages @(~w)
         }", [N, OutVar, InVar, OutVar, StageListStr]).
 
-% Merge stage: placeholder, usually follows fan_out
+% Parallel stage: concurrent execution using runspaces
+generate_ps_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "$parallel~wResult", [N]),
+    extract_ps_stage_names(SubStages, StageNames),
+    format_ps_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"        # Parallel execution of ~w stages (concurrent via runspaces)
+        ~w = @()
+        foreach ($record in ~w) {
+            ~w += Invoke-Parallel -Record $record -Stages @(~w)
+        }", [N, OutVar, InVar, OutVar, StageListStr]).
+
+% Merge stage: placeholder, usually follows fan_out or parallel
 generate_ps_stage_flow(merge, InVar, OutVar, Code) :-
     !,
     OutVar = InVar,
-    Code = "        # Merge: results already combined from fan-out".
+    Code = "        # Merge: results already combined from fan-out or parallel".
 
 % Conditional routing
 generate_ps_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-

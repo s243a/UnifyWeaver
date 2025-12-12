@@ -4637,6 +4637,24 @@ def tee_stream(stream, *stages):
         for stage in stages:
             yield from stage(iter([record]))
 
+def parallel_records(record, stages):
+    '''
+    Parallel: Execute stages concurrently using ThreadPoolExecutor.
+    Each stage receives the same input record.
+    Results are collected after all stages complete.
+    '''
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def run_stage(stage):
+        return list(stage(iter([record])))
+
+    results = []
+    with ThreadPoolExecutor(max_workers=len(stages)) as executor:
+        futures = {executor.submit(run_stage, stage): i for i, stage in enumerate(stages)}
+        for future in as_completed(futures):
+            results.extend(future.result())
+    return results
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -4651,6 +4669,10 @@ generate_enhanced_stage_functions([Stage|Rest], Code) :-
     ).
 
 generate_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, SubCode),
+    Code = SubCode.
+generate_single_enhanced_stage(parallel(SubStages), Code) :-
     !,
     generate_enhanced_stage_functions(SubStages, SubCode),
     Code = SubCode.
@@ -4697,21 +4719,35 @@ generate_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
 %% generate_stage_flow(+Stage, +InVar, -OutVar, -Code)
 %  Generate flow code for a single stage.
 
-% Fan-out stage: broadcast to parallel stages
+% Fan-out stage: broadcast to parallel stages (sequential execution)
 generate_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     length(SubStages, N),
     format(atom(OutVar), "fan_out_~w_result", [N]),
     extract_stage_names(SubStages, StageNames),
     format_stage_list(StageNames, StageListStr),
     format(string(Code),
-"    # Fan-out to ~w parallel stages
+"    # Fan-out to ~w stages (sequential broadcast)
     def fan_out_generator():
         for record in ~w:
             for result in fan_out_records(record, [~w]):
                 yield result
     ~w = fan_out_generator()", [N, InVar, StageListStr, OutVar]).
 
-% Merge stage: placeholder, usually follows fan_out
+% Parallel stage: concurrent execution using ThreadPoolExecutor
+generate_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    length(SubStages, N),
+    format(atom(OutVar), "parallel_~w_result", [N]),
+    extract_stage_names(SubStages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Parallel execution of ~w stages (concurrent via ThreadPoolExecutor)
+    def parallel_generator():
+        for record in ~w:
+            for result in parallel_records(record, [~w]):
+                yield result
+    ~w = parallel_generator()", [N, InVar, StageListStr, OutVar]).
+
+% Merge stage: placeholder, usually follows fan_out or parallel
 generate_stage_flow(merge, InVar, OutVar, Code) :-
     OutVar = InVar,
     Code = "    # Merge: results already combined from fan-out".

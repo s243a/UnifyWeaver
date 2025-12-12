@@ -9,21 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Enhanced Pipeline Chaining** - Complex data flow patterns across all targets (#296-#300)
-  - `fan_out(Stages)` — Broadcast records to multiple parallel stages
-  - `merge` — Combine results from parallel fan-out stages
+  - `fan_out(Stages)` — Broadcast records to stages (sequential execution)
+  - `parallel(Stages)` — Execute stages concurrently using target-native parallelism
+  - `merge` — Combine results from fan_out or parallel stages
   - `route_by(Pred, Routes)` — Conditional routing based on predicate
   - `filter_by(Pred)` — Filter records by predicate condition
   - Supported targets: Python, Go, C#, Rust, PowerShell, AWK, Bash, IronPython
   - `docs/ENHANCED_PIPELINE_CHAINING.md` — Unified documentation
   - Integration tests for all targets
 
+- **Parallel Stage Execution** - True concurrent processing for performance-critical workloads
+  - `parallel(Stages)` stage type for concurrent stage execution
+  - Target-native parallelism mechanisms:
+    - Python: `ThreadPoolExecutor`
+    - Go: Goroutines with `sync.WaitGroup`
+    - C#: `Task.WhenAll`
+    - Rust: `std::thread`
+    - PowerShell: Runspace pools
+    - Bash: Background processes with `wait`
+    - AWK: Sequential (single-threaded by design)
+  - Validation support: empty parallel detection, single-stage parallel warning
+  - Clear distinction from `fan_out` (sequential) vs `parallel` (concurrent)
+
 - **Pipeline Validation** - Compile-time validation for enhanced pipeline stages
   - `src/unifyweaver/core/pipeline_validation.pl` — Validation module
-  - Error detection: empty pipeline, invalid stages, empty fan_out, empty routes, invalid route format
-  - Warning detection: fan_out without merge, merge without fan_out
+  - Error detection: empty pipeline, invalid stages, empty fan_out, empty parallel, empty routes, invalid route format
+  - Warning detection: fan_out/parallel without merge, merge without fan_out/parallel
   - Options: `validate(Bool)` to enable/disable, `strict(Bool)` to treat warnings as errors
   - Integrated into all enhanced pipeline compilation predicates
-  - `tests/integration/test_pipeline_validation.sh` — 12 integration tests
+  - `tests/integration/test_pipeline_validation.sh` — Integration tests
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
 - **XML Data Source Playbook** - A new playbook for processing XML data.

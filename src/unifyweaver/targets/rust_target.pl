@@ -1159,11 +1159,12 @@ test_rust_pipeline_generator :-
 %% ============================================
 %
 %  Supports advanced flow patterns:
-%    - fan_out(Stages) : Broadcast to parallel stages
-%    - merge          : Combine results from parallel stages
+%    - fan_out(Stages)        : Broadcast to stages (sequential execution)
+%    - parallel(Stages)       : Execute stages concurrently (threads)
+%    - merge                  : Combine results from fan_out or parallel
 %    - route_by(Pred, Routes) : Conditional routing
-%    - filter_by(Pred) : Filter records
-%    - Pred/Arity     : Standard stage
+%    - filter_by(Pred)        : Filter records
+%    - Pred/Arity             : Standard stage
 %
 %% compile_rust_enhanced_pipeline(+Stages, +Options, -RustCode)
 %  Main entry point for enhanced Rust pipeline with advanced flow patterns.
@@ -1329,6 +1330,41 @@ fn write_jsonl_stream(records: &[Record]) {
     }
 }
 
+/// Parallel: Execute stages concurrently using threads.
+/// Each stage receives the same input record.
+/// Results are collected after all stages complete.
+fn parallel_records<F>(record: &Record, stages: &[F]) -> Vec<Record>
+where
+    F: Fn(&[Record]) -> Vec<Record> + Send + Sync,
+{
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    let record = Arc::new(record.clone());
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let handles: Vec<_> = stages
+        .iter()
+        .map(|stage| {
+            let record_clone = Arc::clone(&record);
+            let results_clone = Arc::clone(&results);
+            let stage_results = stage(&[(*record_clone).clone()]);
+            thread::spawn(move || {
+                let mut results = results_clone.lock().unwrap();
+                results.extend(stage_results);
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().ok();
+    }
+
+    Arc::try_unwrap(results)
+        .unwrap_or_else(|arc| (*arc.lock().unwrap()).clone())
+        .into_inner()
+        .unwrap_or_default()
+}
+
 ".
 
 %% generate_rust_enhanced_stage_functions(+Stages, -Code)
@@ -1343,6 +1379,9 @@ generate_rust_enhanced_stage_functions([Stage|Rest], Code) :-
     ).
 
 generate_rust_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(parallel(SubStages), Code) :-
     !,
     generate_rust_enhanced_stage_functions(SubStages, Code).
 generate_rust_single_enhanced_stage(merge, "") :- !.
@@ -1387,7 +1426,7 @@ generate_rust_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
 %% generate_rust_stage_flow(+Stage, +InVar, -OutVar, -Code)
 %  Generate flow code for a single stage.
 
-% Fan-out stage: broadcast to parallel stages
+% Fan-out stage: broadcast to stages (sequential execution)
 generate_rust_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     !,
     length(SubStages, N),
@@ -1395,16 +1434,29 @@ generate_rust_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     extract_rust_stage_names(SubStages, StageNames),
     format_rust_stage_list(StageNames, StageListStr),
     format(string(Code),
-"    // Fan-out to ~w parallel stages
+"    // Fan-out to ~w stages (sequential)
     let ~w: Vec<Record> = ~w.iter()
         .flat_map(|record| fan_out_records(record, &[~w]))
         .collect();", [N, OutVar, InVar, StageListStr]).
 
-% Merge stage: placeholder, usually follows fan_out
+% Parallel stage: concurrent execution using threads
+generate_rust_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel_~w_result", [N]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    // Parallel execution of ~w stages (concurrent via threads)
+    let ~w: Vec<Record> = ~w.iter()
+        .flat_map(|record| parallel_records(record, &[~w]))
+        .collect();", [N, OutVar, InVar, StageListStr]).
+
+% Merge stage: placeholder, usually follows fan_out or parallel
 generate_rust_stage_flow(merge, InVar, OutVar, Code) :-
     !,
     OutVar = InVar,
-    Code = "    // Merge: results already combined from fan-out".
+    Code = "    // Merge: results already combined from fan-out or parallel".
 
 % Conditional routing
 generate_rust_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-

@@ -2992,11 +2992,12 @@ test_csharp_pipeline_generator :-
 %% ============================================
 %
 %  Supports advanced flow patterns:
-%    - fan_out(Stages) : Broadcast to parallel stages
-%    - merge          : Combine results from parallel stages
+%    - fan_out(Stages)        : Broadcast to stages (sequential execution)
+%    - parallel(Stages)       : Execute stages concurrently (Task.WhenAll)
+%    - merge                  : Combine results from fan_out or parallel
 %    - route_by(Pred, Routes) : Conditional routing
-%    - filter_by(Pred) : Filter records
-%    - Pred/Arity     : Standard stage
+%    - filter_by(Pred)        : Filter records
+%    - Pred/Arity             : Standard stage
 %
 %% compile_csharp_enhanced_pipeline(+Stages, +Options, -CSharpCode)
 %  Main entry point for enhanced C# pipeline with advanced flow patterns.
@@ -3195,6 +3196,27 @@ csharp_enhanced_helpers(Code) :-
                 writer.WriteLine(JsonSerializer.Serialize(record));
             }
         }
+
+        /// <summary>
+        /// Parallel: Execute stages concurrently using Task.WhenAll.
+        /// Each stage receives the same input record.
+        /// Results are collected after all stages complete.
+        /// </summary>
+        public static IEnumerable<Dictionary<string, object?>> ParallelRecords(
+            Dictionary<string, object?> record,
+            params Func<IEnumerable<Dictionary<string, object?>>, IEnumerable<Dictionary<string, object?>>>[] stages)
+        {
+            var tasks = stages.Select(stage =>
+                Task.Run(() => stage(new[] { record }).ToList())).ToArray();
+            Task.WhenAll(tasks).Wait();
+            foreach (var task in tasks)
+            {
+                foreach (var result in task.Result)
+                {
+                    yield return result;
+                }
+            }
+        }
     }
 ".
 
@@ -3210,6 +3232,9 @@ generate_csharp_enhanced_stage_functions([Stage|Rest], Code) :-
     ).
 
 generate_csharp_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_csharp_enhanced_stage_functions(SubStages, Code).
+generate_csharp_single_enhanced_stage(parallel(SubStages), Code) :-
     !,
     generate_csharp_enhanced_stage_functions(SubStages, Code).
 generate_csharp_single_enhanced_stage(merge, "") :- !.
@@ -3271,7 +3296,7 @@ generate_csharp_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
 %% generate_csharp_stage_flow(+Stage, +InVar, -OutVar, -Code)
 %  Generate flow code for a single stage.
 
-% Fan-out stage: broadcast to parallel stages
+% Fan-out stage: broadcast to stages (sequential execution)
 generate_csharp_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     !,
     length(SubStages, N),
@@ -3279,15 +3304,27 @@ generate_csharp_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     extract_csharp_stage_names(SubStages, StageNames),
     format_csharp_stage_list(StageNames, StageListStr),
     format(string(Code),
-"            // Fan-out to ~w parallel stages
+"            // Fan-out to ~w stages (sequential)
             var ~w = ~w.SelectMany(record =>
                 EnhancedPipelineHelpers.FanOutRecords(record, ~w));", [N, OutVar, InVar, StageListStr]).
 
-% Merge stage: placeholder, usually follows fan_out
+% Parallel stage: concurrent execution using Task.WhenAll
+generate_csharp_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel~wResult", [N]),
+    extract_csharp_stage_names(SubStages, StageNames),
+    format_csharp_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"            // Parallel execution of ~w stages (concurrent via Task.WhenAll)
+            var ~w = ~w.SelectMany(record =>
+                EnhancedPipelineHelpers.ParallelRecords(record, ~w));", [N, OutVar, InVar, StageListStr]).
+
+% Merge stage: placeholder, usually follows fan_out or parallel
 generate_csharp_stage_flow(merge, InVar, OutVar, Code) :-
     !,
     OutVar = InVar,
-    Code = "            // Merge: results already combined from fan-out".
+    Code = "            // Merge: results already combined from fan-out or parallel".
 
 % Conditional routing
 generate_csharp_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-

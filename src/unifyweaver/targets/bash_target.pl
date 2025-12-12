@@ -541,10 +541,11 @@ bash_pipeline_test('Full pipeline compilation', (
 %% ============================================================================
 %%
 %% Adds support for complex data flow patterns beyond linear pipelines:
-%%   - fan_out(Stages)     : Broadcast record to multiple stages, collect results
-%%   - merge               : Combine results from parallel stages
+%%   - fan_out(Stages)        : Broadcast to stages (sequential execution)
+%%   - parallel(Stages)       : Execute stages concurrently (background jobs)
+%%   - merge                  : Combine results from fan_out or parallel
 %%   - route_by(Pred, Routes) : Conditional routing based on predicate
-%%   - filter_by(Pred)     : Filter records by predicate
+%%   - filter_by(Pred)        : Filter records by predicate
 %%
 %% Example usage:
 %%   compile_bash_enhanced_pipeline([
@@ -562,11 +563,12 @@ bash_pipeline_test('Full pipeline compilation', (
 %  Main entry point for compiling enhanced pipelines to Bash.
 %  Validates pipeline stages before code generation.
 %  Stages can include:
-%    - Pred/Arity      : Standard predicate stage
-%    - fan_out(Stages) : Broadcast to parallel stages
-%    - merge           : Combine parallel results
+%    - Pred/Arity         : Standard predicate stage
+%    - fan_out(Stages)    : Broadcast to stages (sequential)
+%    - parallel(Stages)   : Execute stages concurrently (background jobs)
+%    - merge              : Combine results from fan_out or parallel
 %    - route_by(Pred, Routes) : Conditional routing
-%    - filter_by(Pred) : Filter records by predicate
+%    - filter_by(Pred)    : Filter records by predicate
 compile_bash_enhanced_pipeline(Stages, Options, BashCode) :-
     % Validate pipeline stages
     (member(validate(Validate), Options) -> true ; Validate = true),
@@ -708,6 +710,47 @@ tee_stream() {
     done
 }
 
+# Helper: Parallel execution - run stages concurrently and collect results
+# Usage: parallel_records "$record" "stage1,stage2,stage3"
+# Results stored in PARALLEL_RESULTS array
+parallel_records() {
+    local record="$1"
+    local stages="$2"
+    local tmpdir=$(mktemp -d)
+
+    PARALLEL_RESULTS=()
+    IFS="," read -ra stage_arr <<< "$stages"
+
+    local pids=()
+    local idx=0
+
+    # Launch stages in parallel
+    for stage in "${stage_arr[@]}"; do
+        stage=$(echo "$stage" | xargs)  # Trim whitespace
+        (
+            result=$("$stage" "$record")
+            echo "$result" > "$tmpdir/result_$idx"
+        ) &
+        pids+=($!)
+        ((idx++))
+    done
+
+    # Wait for all stages to complete
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+
+    # Collect results
+    for ((i=0; i<idx; i++)); do
+        if [[ -f "$tmpdir/result_$i" ]]; then
+            PARALLEL_RESULTS+=("$(cat "$tmpdir/result_$i")")
+        fi
+    done
+
+    # Cleanup
+    rm -rf "$tmpdir"
+}
+
 # Helper: Parse JSONL record (identity for now)
 parse_jsonl() {
     local line="$1"
@@ -740,6 +783,9 @@ extract_bash_stage_names(Pred/_, [StageName]) :-
     !,
     format(atom(StageName), 'stage_~w', [Pred]).
 extract_bash_stage_names(fan_out(SubStages), Names) :-
+    !,
+    collect_bash_enhanced_stage_names(SubStages, Names).
+extract_bash_stage_names(parallel(SubStages), Names) :-
     !,
     collect_bash_enhanced_stage_names(SubStages, Names).
 extract_bash_stage_names(route_by(Pred, Routes), [PredName|RouteNames]) :-
@@ -827,7 +873,7 @@ generate_bash_stage_flow(Pred/_, InVar, OutVar, Code) :-
 '    # Stage: ~w
     local ~w=$(stage_~w "$~w")', [Pred, OutVar, Pred, InVar]).
 
-% Fan-out stage: broadcast to parallel stages
+% Fan-out stage: broadcast to stages (sequential execution)
 generate_bash_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     !,
     length(SubStages, N),
@@ -835,11 +881,23 @@ generate_bash_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     extract_bash_enhanced_stage_names_list(SubStages, StageNames),
     format_bash_stage_list(StageNames, StageListStr),
     format(string(Code),
-'    # Fan-out to ~w parallel stages
+'    # Fan-out to ~w stages (sequential)
     fan_out_records "$~w" "~w"
     local ~w="${FAN_OUT_RESULTS[*]}"', [N, InVar, StageListStr, OutVar]).
 
-% Merge stage: combine results from fan-out
+% Parallel stage: concurrent execution using background jobs
+generate_bash_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel_~w_result", [N]),
+    extract_bash_enhanced_stage_names_list(SubStages, StageNames),
+    format_bash_stage_list(StageNames, StageListStr),
+    format(string(Code),
+'    # Parallel execution of ~w stages (concurrent via background jobs)
+    parallel_records "$~w" "~w"
+    local ~w="${PARALLEL_RESULTS[*]}"', [N, InVar, StageListStr, OutVar]).
+
+% Merge stage: combine results from fan-out or parallel
 generate_bash_stage_flow(merge, InVar, OutVar, Code) :-
     !,
     OutVar = "merged_result",
