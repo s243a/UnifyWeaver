@@ -363,12 +363,15 @@ Enhanced pipelines are validated at compile-time to catch errors early. Validati
 - Empty pipeline
 - Invalid stage types
 - Empty `fan_out` (no sub-stages)
+- Empty `parallel` (no sub-stages)
+- Single-stage `parallel` (use regular stage instead - need 2+ for parallelism benefit)
 - Empty `route_by` (no routes)
 - Invalid route format (must be `(Condition, Stage)`)
 
 **Warnings** (compilation succeeds with message):
 - `fan_out` without subsequent `merge` - parallel results may be nested
-- `merge` without preceding `fan_out` - results may be unexpected
+- `parallel` without subsequent `merge` - parallel results may be nested
+- `merge` without preceding `fan_out` or `parallel` - results may be unexpected
 
 ### Validation Options
 
