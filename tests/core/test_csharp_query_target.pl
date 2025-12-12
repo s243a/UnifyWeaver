@@ -50,6 +50,7 @@ test_csharp_query_target :-
         verify_recursive_arithmetic_plan,
         verify_comparison_plan,
         verify_parameterized_fib_plan,
+        verify_parameterized_fib_runtime,
         verify_recursive_plan,
         verify_mutual_recursion_plan,
         verify_dynamic_source_plan,
@@ -225,6 +226,10 @@ verify_parameterized_fib_plan :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'MaterializeNode'),
     sub_string(Source, _, _, _, 'ParamSeedNode').
+
+verify_parameterized_fib_runtime :-
+    csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
+    maybe_run_query_runtime(Plan, ['5,8'], [[5]]).
 
 verify_recursive_arithmetic_plan :-
     csharp_query_target:build_query_plan(test_factorial/2, [target(csharp_query)], Plan),
@@ -755,12 +760,15 @@ cleanup_json_object_source :-
 
 % Run with build-first approach, optionally skipping execution
 maybe_run_query_runtime(Plan, ExpectedRows) :-
+    maybe_run_query_runtime(Plan, ExpectedRows, []).
+
+maybe_run_query_runtime(Plan, ExpectedRows, Params) :-
     dotnet_cli(Dotnet),
     !,
     prepare_temp_dir(Plan, Dir),
     (   getenv('SKIP_CSHARP_EXECUTION', '1')
     ->  % Generate code but skip execution (quiet)
-        (   generate_csharp_code_only(Dotnet, Plan, Dir)
+        (   generate_csharp_code_only(Dotnet, Plan, Params, Dir)
         ->  true
         ;   writeln('  (C# code generation: FAIL)'),
             finalize_temp_dir(Dir),
@@ -768,7 +776,7 @@ maybe_run_query_runtime(Plan, ExpectedRows) :-
         ),
         finalize_temp_dir(Dir)
     ;   % Full execution
-        (   run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir)
+        (   run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Params, Dir)
         ->  writeln('  (query runtime execution: PASS)'),
             finalize_temp_dir(Dir)
         ;   writeln('  (query runtime execution: FAIL - but plan structure verified)'),
@@ -777,7 +785,7 @@ maybe_run_query_runtime(Plan, ExpectedRows) :-
     ).
 
 % Fall back to plan-only verification if dotnet not available
-maybe_run_query_runtime(_Plan, _ExpectedRows) :-
+maybe_run_query_runtime(_Plan, _ExpectedRows, _Params) :-
     writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)').
 
 dotnet_cli(Path) :-
@@ -823,6 +831,9 @@ finalize_temp_dir(Dir) :-
 % Build-first approach (works around dotnet run hang)
 % See: docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md
 run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
+    run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, [], Dir).
+
+run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Params, Dir) :-
     % Step 1: Create project and write source files
     dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
     (   StatusNew =:= 0
@@ -843,7 +854,7 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
     write_string(ModulePath, ModuleSource),
 
     % Write harness
-    harness_source(ModuleClass, HarnessSource),
+    harness_source(ModuleClass, Params, HarnessSource),
     directory_file_path(Dir, 'Program.cs', ProgramPath),
     write_string(ProgramPath, HarnessSource),
 
@@ -877,7 +888,10 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
 
 % Generate C# code without execution (for SKIP_CSHARP_EXECUTION mode)
 % Skips all dotnet commands - just generates and writes C# source files
-generate_csharp_code_only(_Dotnet, Plan, Dir) :-
+generate_csharp_code_only(Dotnet, Plan, Dir) :-
+    generate_csharp_code_only(Dotnet, Plan, [], Dir).
+
+generate_csharp_code_only(_Dotnet, Plan, Params, Dir) :-
     % Create .csproj file manually (without calling dotnet new console)
     file_base_name(Dir, ProjectName),
     create_minimal_csproj(Dir, ProjectName),
@@ -895,7 +909,7 @@ generate_csharp_code_only(_Dotnet, Plan, Dir) :-
     write_string(ModulePath, ModuleSource),
 
     % Write harness
-    harness_source(ModuleClass, HarnessSource),
+    harness_source(ModuleClass, Params, HarnessSource),
     directory_file_path(Dir, 'Program.cs', ProgramPath),
     write_string(ProgramPath, HarnessSource).
     % Note: dotnet execution commands (build, run) still skipped in this mode
@@ -998,6 +1012,16 @@ execute_compiled_binary(ExePath, Dir, Status, Output) :-
     string_concat(Stdout, Stderr, Output).
 
 harness_source(ModuleClass, Source) :-
+    harness_source(ModuleClass, [], Source).
+
+harness_source(ModuleClass, Params, Source) :-
+    (   Params == []
+    ->  ParamDecl = '',
+        ExecCall = 'executor.Execute(result.Plan)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters)'
+    ),
     format(atom(Source),
 'using System;
 using System.Linq;
@@ -1007,7 +1031,7 @@ using System.Text.Json.Nodes;
 
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(result.Provider);
-var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
 string FormatValue(object? value) => value switch
 {
@@ -1015,7 +1039,7 @@ string FormatValue(object? value) => value switch
     JsonElement element => element.GetRawText(),
     _ => value?.ToString() ?? string.Empty
 };
-foreach (var row in executor.Execute(result.Plan))
+foreach (var row in ~w)
 {
     var projected = row.Take(result.Plan.Head.Arity)
                        .Select(FormatValue)
@@ -1028,7 +1052,27 @@ foreach (var row in executor.Execute(result.Plan))
 
     Console.WriteLine(string.Join(\",\", projected));
 }
-', [ModuleClass]).
+', [ModuleClass, ParamDecl, ExecCall]).
+
+csharp_params_literal(Params, Literal) :-
+    maplist(csharp_tuple_literal, Params, TupleLits),
+    atomic_list_concat(TupleLits, ", ", TuplesStr),
+    format(atom(Literal), 'new object[][]{ ~w }', [TuplesStr]).
+
+csharp_tuple_literal(Tuple, Literal) :-
+    maplist(csharp_value_literal, Tuple, Values),
+    atomic_list_concat(Values, ", ", ValuesStr),
+    format(atom(Literal), 'new object[]{ ~w }', [ValuesStr]).
+
+csharp_value_literal(Value, Literal) :-
+    (   number(Value)
+    ->  format(atom(Literal), '~w', [Value])
+    ;   string(Value)
+    ->  format(atom(Literal), '\"~w\"', [Value])
+    ;   atom(Value)
+    ->  format(atom(Literal), '\"~w\"', [Value])
+    ;   format(atom(Literal), '\"~w\"', [Value])
+    ).
 
 write_string(Path, String) :-
     setup_call_cleanup(open(Path, write, Stream),
