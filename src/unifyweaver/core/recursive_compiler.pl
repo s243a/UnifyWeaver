@@ -87,7 +87,9 @@ compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
         format('Detected transitive closure over ~w~n', [BasePred]),
         compile_transitive_closure(Target, Pred, Arity, BasePred, FinalOptions, GeneratedCode)
     ;   Classification = mutual_recursion -> % Handle mutual recursion
-        advanced_recursive_compiler:compile_mutual_recursion(Pred/Arity, FinalOptions, GeneratedCode)
+        % Get the full mutual recursion group (not just one predicate)
+        call_graph:predicates_in_group(Pred/Arity, Group),
+        advanced_recursive_compiler:compile_mutual_recursion(Group, FinalOptions, GeneratedCode)
     ;   catch(
             compile_advanced(Target, Pred/Arity, FinalOptions, GeneratedCode),
             error(existence_error(procedure, _), _),

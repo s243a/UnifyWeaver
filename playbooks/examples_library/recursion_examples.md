@@ -58,9 +58,9 @@ echo ""
 echo "Testing generated scripts..."
 if [[ -f "$OUTPUT_DIR/is_even.sh" && -f "$OUTPUT_DIR/is_odd.sh" ]]; then
     echo "Testing is_even(4):"
-    bash "$OUTPUT_DIR/is_even.sh" 4 && echo "  ✓ 4 is even"
+    bash "$OUTPUT_DIR/is_even.sh" is_even 4 && echo "  ✓ 4 is even"
     echo "Testing is_odd(3):"
-    bash "$OUTPUT_DIR/is_odd.sh" 3 && echo "  ✓ 3 is odd"
+    bash "$OUTPUT_DIR/is_odd.sh" is_odd 3 && echo "  ✓ 3 is odd"
     echo ""
     echo "Success: Mutual recursion compiled and executed"
 else
