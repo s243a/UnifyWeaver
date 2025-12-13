@@ -314,9 +314,9 @@ generate_group_code(Options, group(pipe, Steps), Code) :-
 
 generate_group_code(Options, group(direct, Steps), Code) :-
     % Use dotnet_glue for in-process groups
+    % Note: dotnet_glue:generate_dotnet_pipeline/3 uses same step/4 format
     (   current_predicate(dotnet_glue:generate_dotnet_pipeline/3)
-    ->  steps_to_dotnet_steps(Steps, DotNetSteps),
-        dotnet_glue:generate_dotnet_pipeline(DotNetSteps, Options, Code)
+    ->  dotnet_glue:generate_dotnet_pipeline(Steps, Options, Code)
     ;   % Fallback to pipe if dotnet_glue not available
         generate_group_code(Options, group(pipe, Steps), Code)
     ).
