@@ -1,31 +1,26 @@
-# fix(glue): Remove unnecessary step format conversion for dotnet_glue
+# docs(guides): Add HTTP transport examples to cross-target glue guide
 
 ## Summary
 
-Fixes the integration between `goal_inference` and `dotnet_glue` for in-process .NET pipeline generation.
-
-## Problem
-
-The `steps_to_dotnet_steps/2` function was incorrectly converting steps:
-- **From:** `step(Name, Target, File, Opts)` (4-arity)
-- **To:** `step(Target, Name, File)` (3-arity)
-
-But `dotnet_glue:generate_dotnet_pipeline/3` expects the original 4-arity format.
-
-## Fix
-
-Removed the conversion since both modules already use the same `step/4` format.
+Adds documentation for the HTTP transport in the Transport-Aware Compilation section.
 
 ## Changes
 
-### [goal_inference.pl](file:///home/s243a/Projects/UnifyWeaver/src/unifyweaver/glue/goal_inference.pl)
-- Removed `steps_to_dotnet_steps` call in `generate_group_code/3`
-- Direct call to `dotnet_glue:generate_dotnet_pipeline/3` with original steps
+### [cross-target-glue.md](file:///home/s243a/Projects/UnifyWeaver/docs/guides/cross-target-glue.md)
 
-## Verification
+Added "HTTP Transport for Remote Hosts" section with:
+- Example step definitions targeting remote service URLs
+- Generated Python code showing `requests.post` calls
+- Tip about Go (`http.Client`) and Bash (`curl`) alternatives
+
+## Example Added
 
 ```prolog
-generate_pipeline_for_groups([group(direct, Steps)], [], Code)
+Steps = [
+    step(ml_predict, python, 'http://ml-service:8080/predict', []),
+    step(enrich, go, 'http://enricher:9000/enrich', [timeout(60)])
+],
+generate_pipeline_for_groups([group(http, Steps)], [language(python)], Code).
 ```
 
-**Result:** Generates C# code with in-process PowerShell via `PowerShellBridge.InvokeStream`.
+This completes the documentation for all three transport types: `pipe`, `direct`, and `http`.
