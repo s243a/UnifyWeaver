@@ -100,11 +100,21 @@ With SVD decomposition (W = UΣVᵀ), we get orthogonal attention heads where ea
 
 ## Algorithm
 
+### Bootstrapping Problem: Computing Weighted Centroids
+
+To compute the weighted centroid q̄, we need weights based on similarity to the centroid - but we need the centroid to compute the weights. This chicken-and-egg problem is solved iteratively:
+
+1. **Initialize**: Start with uniform weights (simple average)
+2. **Iterate**: Compute centroid → recompute weights from similarity to centroid → repeat
+3. **Converge**: Typically stabilizes in 2-3 iterations
+
+This is an EM-like algorithm where representative questions (close to the emerging centroid) gain weight, while outliers lose influence.
+
 ```python
 import numpy as np
 
 def compute_weighted_centroid(questions, max_iter=3):
-    """Iteratively compute weighted centroid."""
+    """Iteratively compute weighted centroid (solves bootstrapping problem)."""
     n = len(questions)
     weights = np.ones(n) / n
 
