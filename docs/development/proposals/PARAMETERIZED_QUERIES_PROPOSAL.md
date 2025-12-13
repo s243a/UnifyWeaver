@@ -8,6 +8,17 @@
 
 This proposal introduces **parameterized queries** to the C# query runtime, enabling support for predicates like Fibonacci where head arguments are provided as inputs rather than derived from relation scans. This extends the query model from pure enumeration to function-style invocation while maintaining compatibility with existing datalog patterns.
 
+## Implementation Update (Branch Snapshot)
+
+This proposal has been partially implemented (and, in places, superseded) on the working branch `feat/parameterized-queries-querymode`. The current branch design is centred on:
+- **Mode declarations** provided as `user:mode/1` facts (not a built-in `:- mode(...)` directive in SWI-Prolog).
+- A **`param_seed`** plan node to seed bindings from caller parameters.
+- A demand-driven **`$need` closure** (a synthetic fixpoint) that computes reachable input bindings and is then used to seed/filter the main predicate’s base/recursive pipelines.
+- A **`materialize`** plan node to cache the `$need` closure result and share it across plans.
+- Existing **`arithmetic`** plan nodes for derived columns; no dedicated `bind_expr` IR node is required for the current approach.
+
+See `docs/development/proposals/parameterized_queries_status.md` for the up-to-date implementation status and current constraints.
+
 ## Motivation
 
 The current query runtime assumes all head variables are unbound and get bound only through relation scans. This works well for datalog-style queries:
@@ -38,9 +49,13 @@ The Fibonacci pattern requires:
 Introduce optional mode declarations to specify input/output arguments:
 
 ```prolog
-:- mode(fib(+, -)).      % First arg is input (+), second is output (-)
-:- mode(grandparent(-, -)).  % Both outputs (current behavior, default)
-:- mode(lookup(+, -)).   % Key is input, value is output
+% In this repo, modes are read from `user:mode/1` facts:
+mode(fib(+, -)).            % First arg is input (+), second is output (-)
+mode(grandparent(-, -)).    % Both outputs (current behavior, default)
+mode(lookup(+, -)).         % Key is input, value is output
+
+% Tests often set these dynamically:
+%   assertz(user:mode(fib(+, -))).
 ```
 
 Mode symbols:
@@ -69,7 +84,7 @@ Plan = plan{
 }.
 ```
 
-#### 2.2 New IR Node: BindExpression
+#### 2.2 Possible Future IR Node: BindExpression
 
 Add a node type that computes new bindings from existing bound variables:
 
@@ -92,7 +107,9 @@ This node:
 - Extends the tuple width with new columns
 - Outputs tuples with the computed values appended
 
-#### 2.3 Parameterized Recursive Reference
+Implementation note: the current branch uses existing `arithmetic` nodes to compute derived columns and does not introduce a separate `bind_expr` node yet.
+
+#### 2.3 Possible Future IR Node: Parameterized Recursive Reference
 
 Extend the recursive reference node to pass computed arguments:
 
@@ -112,6 +129,8 @@ param_recursive_ref{
     width: 2
 }
 ```
+
+Implementation note: the current branch keeps the existing `recursive_ref` / `cross_ref` nodes and instead uses `$need` demand-closure seeding to restrict recursion to the reachable subspace for the given inputs.
 
 ### 3. Compilation Changes
 
