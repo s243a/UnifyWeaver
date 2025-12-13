@@ -147,6 +147,42 @@ T = pipe.
 ?- group_steps_by_transport(Steps, Groups).
 ```
 
+### HTTP Transport for Remote Hosts
+
+When pipeline steps target remote services, use the `http` transport:
+
+```prolog
+% Define steps that call remote services
+Steps = [
+    step(ml_predict, python, 'http://ml-service:8080/predict', []),
+    step(enrich, go, 'http://enricher:9000/enrich', [timeout(60)])
+],
+
+% Generate pipeline with HTTP calls
+generate_pipeline_for_groups([group(http, Steps)], [language(python)], Code).
+```
+
+**Generated Python code:**
+```python
+def step_ml_predict(data):
+    response = requests.post(
+        "http://ml-service:8080/predict",
+        json={"data": data},
+        timeout=30
+    )
+    response.raise_for_status()
+    return response.json().get("data")
+
+def run_pipeline(input_data):
+    data = input_data
+    data = step_ml_predict(data)
+    data = step_enrich(data)
+    return data
+```
+
+> [!TIP]
+> Use `[language(go)]` for Go pipelines with `http.Client`, or `[language(bash)]` for Bash pipelines with `curl`.
+
 ---
 
 ## Module Reference
