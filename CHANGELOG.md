@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Python: `ThreadPoolExecutor`
     - Go: Goroutines with `sync.WaitGroup`
     - C#: `Task.WhenAll`
-    - Rust: `std::thread`
+    - Rust: `std::thread` by default, rayon with `parallel_mode(rayon)` option
     - PowerShell: Runspace pools
     - Bash: Background processes with `wait`
     - IronPython: .NET `Task.Factory.StartNew` with `ConcurrentBag<T>`
