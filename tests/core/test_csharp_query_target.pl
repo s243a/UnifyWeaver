@@ -28,6 +28,13 @@
 :- dynamic user:test_sales_by_customer/2.
 :- dynamic user:test_sale_count_by_customer/2.
 :- dynamic user:test_sale_sum_by_customer/2.
+:- dynamic user:test_sale_min/1.
+:- dynamic user:test_sale_max/1.
+:- dynamic user:test_sale_min_by_customer/2.
+:- dynamic user:test_sale_max_by_customer/2.
+:- dynamic user:test_sale_count_grouped/2.
+:- dynamic user:test_sale_customers_set/1.
+:- dynamic user:test_sale_customers_bag/1.
 :- dynamic user:test_banned/1.
 :- dynamic user:test_allowed/1.
 :- dynamic user:test_blocked/1.
@@ -61,9 +68,16 @@ test_csharp_query_target :-
         verify_recursive_arithmetic_plan,
         verify_comparison_plan,
         verify_aggregate_count_plan,
+        verify_aggregate_min_plan,
+        verify_aggregate_max_plan,
         verify_grouped_aggregate_sum_plan,
+        verify_grouped_aggregate_count_plan,
         verify_correlated_aggregate_count_plan,
         verify_correlated_aggregate_sum_plan,
+        verify_correlated_aggregate_min_plan,
+        verify_correlated_aggregate_max_plan,
+        verify_aggregate_set_plan,
+        verify_aggregate_bag_plan,
         verify_negation_plan,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
@@ -120,6 +134,29 @@ setup_test_data :-
     assertz(user:(test_sale_sum_by_customer(Customer, Sum) :-
         test_customer(Customer),
         aggregate_all(sum(Amount), test_sale(Customer, Amount), Sum)
+    )),
+    assertz(user:(test_sale_min(Min) :-
+        aggregate_all(min(Amount), test_sale(_, Amount), Min)
+    )),
+    assertz(user:(test_sale_max(Max) :-
+        aggregate_all(max(Amount), test_sale(_, Amount), Max)
+    )),
+    assertz(user:(test_sale_min_by_customer(Customer, Min) :-
+        test_customer(Customer),
+        aggregate_all(min(Amount), test_sale(Customer, Amount), Min)
+    )),
+    assertz(user:(test_sale_max_by_customer(Customer, Max) :-
+        test_customer(Customer),
+        aggregate_all(max(Amount), test_sale(Customer, Amount), Max)
+    )),
+    assertz(user:(test_sale_count_grouped(Customer, Count) :-
+        aggregate_all(count, test_sale(Customer, _), Customer, Count)
+    )),
+    assertz(user:(test_sale_customers_set(Set) :-
+        aggregate_all(set(Customer), test_sale(Customer, _), Set)
+    )),
+    assertz(user:(test_sale_customers_bag(Bag) :-
+        aggregate_all(bag(Customer), test_sale(Customer, _), Bag)
     )),
     assertz(user:test_banned(bob)),
     assertz(user:(test_allowed(X) :- test_fact(X, _), \+ test_banned(X))),
@@ -200,6 +237,13 @@ cleanup_test_data :-
     retractall(user:test_sales_by_customer(_, _)),
     retractall(user:test_sale_count_by_customer(_, _)),
     retractall(user:test_sale_sum_by_customer(_, _)),
+    retractall(user:test_sale_min(_)),
+    retractall(user:test_sale_max(_)),
+    retractall(user:test_sale_min_by_customer(_, _)),
+    retractall(user:test_sale_max_by_customer(_, _)),
+    retractall(user:test_sale_count_grouped(_, _)),
+    retractall(user:test_sale_customers_set(_)),
+    retractall(user:test_sale_customers_bag(_)),
     retractall(user:test_factorial_input(_)),
     retractall(user:test_factorial(_, _)),
     retractall(user:test_fib_param(_, _)),
@@ -302,6 +346,34 @@ verify_aggregate_count_plan :-
     sub_string(Source, _, _, _, 'Wildcard.Value'),
     maybe_run_query_runtime(Plan, ['3']).
 
+verify_aggregate_min_plan :-
+    csharp_query_target:build_query_plan(test_sale_min/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0], width:1}),
+    is_dict(Aggregate, aggregate),
+    get_dict(input, Aggregate, unit{type:unit, width:0}),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, min),
+    get_dict(group_indices, Aggregate, []),
+    get_dict(value_index, Aggregate, 1),
+    get_dict(width, Aggregate, 1),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Min'),
+    maybe_run_query_runtime(Plan, ['5']).
+
+verify_aggregate_max_plan :-
+    csharp_query_target:build_query_plan(test_sale_max/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0], width:1}),
+    is_dict(Aggregate, aggregate),
+    get_dict(input, Aggregate, unit{type:unit, width:0}),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, max),
+    get_dict(group_indices, Aggregate, []),
+    get_dict(value_index, Aggregate, 1),
+    get_dict(width, Aggregate, 1),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Max'),
+    maybe_run_query_runtime(Plan, ['10']).
+
 verify_grouped_aggregate_sum_plan :-
     csharp_query_target:build_query_plan(test_sales_by_customer/2, [target(csharp_query)], Plan),
     get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0, 1], width:2}),
@@ -316,6 +388,20 @@ verify_grouped_aggregate_sum_plan :-
     sub_string(Source, _, _, _, 'AggregateNode'),
     sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
     maybe_run_query_runtime(Plan, ['alice,15', 'bob,7']).
+
+verify_grouped_aggregate_count_plan :-
+    csharp_query_target:build_query_plan(test_sale_count_grouped/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0, 1], width:2}),
+    is_dict(Aggregate, aggregate),
+    get_dict(input, Aggregate, unit{type:unit, width:0}),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, count),
+    get_dict(group_indices, Aggregate, [0]),
+    get_dict(value_index, Aggregate, -1),
+    get_dict(width, Aggregate, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Count'),
+    maybe_run_query_runtime(Plan, ['alice,2', 'bob,1']).
 
 verify_correlated_aggregate_count_plan :-
     csharp_query_target:build_query_plan(test_sale_count_by_customer/2, [target(csharp_query)], Plan),
@@ -340,6 +426,46 @@ verify_correlated_aggregate_sum_plan :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
     maybe_run_query_runtime(Plan, ['alice,15', 'bob,7']).
+
+verify_correlated_aggregate_min_plan :-
+    csharp_query_target:build_query_plan(test_sale_min_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Aggregate, Root),
+    is_dict(Aggregate, aggregate),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, min),
+    get_dict(group_indices, Aggregate, []),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Min'),
+    maybe_run_query_runtime(Plan, ['alice,5', 'bob,7']).
+
+verify_correlated_aggregate_max_plan :-
+    csharp_query_target:build_query_plan(test_sale_max_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Aggregate, Root),
+    is_dict(Aggregate, aggregate),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, max),
+    get_dict(group_indices, Aggregate, []),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Max'),
+    maybe_run_query_runtime(Plan, ['alice,10', 'bob,7']).
+
+verify_aggregate_set_plan :-
+    csharp_query_target:build_query_plan(test_sale_customers_set/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0], width:1}),
+    is_dict(Aggregate, aggregate),
+    get_dict(op, Aggregate, set),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Set').
+
+verify_aggregate_bag_plan :-
+    csharp_query_target:build_query_plan(test_sale_customers_bag/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0], width:1}),
+    is_dict(Aggregate, aggregate),
+    get_dict(op, Aggregate, bag),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Bag').
 
 verify_parameterized_fib_plan :-
     csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),

@@ -32,11 +32,16 @@
 ## Progress update (current branch snapshot)
 - Modes are parsed and threaded through all query plans.
 - Implemented a `param_seed` plan node; pipelines now seed inputs (when declared) before body evaluation, preserving the existing all-output path when no inputs are declared.
-- Implemented bottom-up demand closure for non-mutual, aggregates-free parameterised recursion: a synthetic `pred$need` fixpoint is built from recursive clause prefixes, materialized once, and used to seed/filter the main predicate’s base and recursive pipelines.
+- Implemented bottom-up demand closure for non-mutual parameterised recursion: a synthetic `pred$need` fixpoint is built from recursive clause prefixes, materialized once, and used to seed/filter the main predicate’s base and recursive pipelines.
 - Added a `materialize` plan node and matching C# `MaterializeNode` runtime support to cache subplan results (used by demand closure).
 - C# QueryRuntime now understands `ParamSeedNode`, accepts parameters at execution time, and filters outputs by declared input positions.
 - Rendered plans emit input-position metadata into `QueryPlan`.
 - Added a plan-structure test for parameterised Fibonacci (`tests/core/test_csharp_query_target.pl`) to assert the need/materialize shape is present and rendered.
 - Added end‑to‑end runtime coverage for parameterised Fibonacci and parameter‑passing plumbing in the dotnet harness.
 - Added bound-only stratified negation in query mode (`\+` / `not/1`) via a `negation` plan node and C# `NegationNode`, including need-closure support when negation appears before recursive calls.
-- Next: broaden coverage (mutual recursion, stratified negation, aggregates), and optionally add a memoized/procedural fallback once semantics are locked down.
+- Added query-mode aggregates (`aggregate_all/3,4`, including correlated aggregates) via an `aggregate` plan node and C# `AggregateNode` runtime support.
+- Current aggregate constraints:
+  - Aggregate goals must be a single predicate call (no conjunctions/subplans yet).
+  - Aggregates over SCC predicates are rejected (stratification requirement).
+  - Need-closure prefixes still reject aggregates (allowed after recursion in the clause body).
+- Next: broaden coverage (mutual recursion, richer aggregate forms like multi-key grouping, and optional memoized/procedural fallback once semantics are locked down).

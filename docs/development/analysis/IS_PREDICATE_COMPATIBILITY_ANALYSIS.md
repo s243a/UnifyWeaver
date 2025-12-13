@@ -10,8 +10,11 @@ While attempting to run `playbooks/csharp_query_playbook.md`, I discovered that 
 
 1. The `is/2` predicate IS supported for derived-column computation **when all RHS variables are already bound**.
 2. In **all‑output** query mode (default), Fibonacci‑style recursion still fails due to a fundamental mismatch with the relation‑first join pipeline.
-3. In **parameterized** query mode (via `mode/1`, e.g. `:- mode(fib(+, -)).`), the C# query target now seeds bindings from inputs and uses a bottom‑up demand‑closure (`pred$need`) fixpoint so Fibonacci‑style recursion can compile and run for eligible predicates (non‑mutual, no negation/aggregates).
+3. In **parameterized** query mode (via `mode/1` input positions), the C# query target seeds bindings from inputs and uses a bottom‑up demand‑closure (`pred$need`) fixpoint so Fibonacci‑style recursion can compile and run for eligible predicates (currently non‑mutual).
 4. A secondary bug (module prefix not being stripped) was fixed during investigation.
+5. Since this analysis was written, query mode gained **bound-only stratified negation** and **correlated/grouped aggregates**; these features still have safety/stratification restrictions and do not change the all-output Fibonacci limitation.
+
+> Note on `mode/1` syntax: SWI-Prolog does not provide `:- mode(...)` as a built-in directive. In this repo, modes are read from `user:mode/1` facts (e.g., `assertz(user:mode(fib(+, -))).` in tests).
 
 ## Task Context
 
@@ -262,6 +265,18 @@ This would require changes to:
 ### Option D: Use Different Target for Recursive Arithmetic
 
 Document that `csharp_stream_target` and `csharp_target` are for datalog-style queries, and recursive arithmetic predicates should use a different compilation strategy (e.g., direct Prolog interpretation or a dedicated functional target).
+
+### Option E: Broaden `is/2` Support (Quality-of-Life)
+
+This does **not** solve all-output Fibonacci, but improves compatibility for non-recursive code and for parameterized code that uses `is/2` as a *check*.
+
+Today, query mode treats `Var is Expr` as “compute a new column” and rejects `Value is Expr` / `BoundVar is Expr`.
+
+Two incremental extensions:
+1. **Allow bound-LHS `is/2` as a filter**: compile `X is Expr` (where `X` is already bound) into “compute Expr into a temp column, then compare to X, then drop the temp column”.
+2. **Allow arithmetic expressions in comparisons** (`=:=`, `<`, `>`, etc.) by using the same temp-column rewrite.
+
+Downside: more planner complexity, and it encourages using `is/2` as a constraint rather than separating “compute” (`is/2`) from “compare” (`=:=`). The rewrite approach keeps runtime changes minimal.
 
 ## Files Referenced
 
