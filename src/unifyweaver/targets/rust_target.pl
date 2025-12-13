@@ -1254,7 +1254,8 @@ use rayon::prelude::*;  // Requires: rayon = \"1.8\" in Cargo.toml".
 rust_enhanced_helpers(ParallelMode, Code) :-
     rust_common_helpers(CommonHelpers),
     rust_parallel_helper(ParallelMode, ParallelHelper),
-    format(string(Code), "~w~n~w", [CommonHelpers, ParallelHelper]).
+    rust_parallel_helper_ordered(ParallelMode, ParallelHelperOrdered),
+    format(string(Code), "~w~n~w~n~w", [CommonHelpers, ParallelHelper, ParallelHelperOrdered]).
 
 %% rust_common_helpers(-Code)
 %  Helper functions shared between all parallel modes.
@@ -1432,6 +1433,81 @@ where
 }
 ".
 
+%% rust_parallel_helper_ordered(+ParallelMode, -Code) is det.
+%  Generate parallel_records_ordered helper based on mode (preserves stage order).
+
+% std_thread mode: Use std::thread with indexed results
+rust_parallel_helper_ordered(std_thread, Code) :-
+    Code = "
+/// Parallel (Ordered): Execute stages concurrently, preserve input order.
+/// Each stage receives the same input record.
+/// Results are returned in stage definition order.
+fn parallel_records_ordered<F>(record: &Record, stages: &[F]) -> Vec<Record>
+where
+    F: Fn(&[Record]) -> Vec<Record> + Send + Sync,
+{
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    let record = Arc::new(record.clone());
+    let indexed_results: Arc<Mutex<Vec<Option<Vec<Record>>>>> =
+        Arc::new(Mutex::new(vec![None; stages.len()]));
+
+    let handles: Vec<_> = stages
+        .iter()
+        .enumerate()
+        .map(|(idx, stage)| {
+            let record_clone = Arc::clone(&record);
+            let results_clone = Arc::clone(&indexed_results);
+            let stage_results = stage(&[(*record_clone).clone()]);
+            thread::spawn(move || {
+                let mut results = results_clone.lock().unwrap();
+                results[idx] = Some(stage_results);
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().ok();
+    }
+
+    // Flatten results in order
+    Arc::try_unwrap(indexed_results)
+        .unwrap_or_else(|arc| (*arc.lock().unwrap()).clone())
+        .into_inner()
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect()
+}
+".
+
+% rayon mode: Use rayon with indexed collection
+rust_parallel_helper_ordered(rayon, Code) :-
+    Code = "
+/// Parallel (Ordered): Execute stages concurrently, preserve input order.
+/// Each stage receives the same input record.
+/// Results are returned in stage definition order.
+/// Requires: rayon = \"1.8\" in Cargo.toml
+fn parallel_records_ordered<F>(record: &Record, stages: &[F]) -> Vec<Record>
+where
+    F: Fn(&[Record]) -> Vec<Record> + Send + Sync,
+{
+    // Execute in parallel but collect with indices
+    let indexed_results: Vec<(usize, Vec<Record>)> = stages
+        .par_iter()
+        .enumerate()
+        .map(|(idx, stage)| (idx, stage(&[record.clone()])))
+        .collect();
+
+    // Sort by index and flatten
+    let mut sorted = indexed_results;
+    sorted.sort_by_key(|(idx, _)| *idx);
+    sorted.into_iter().flat_map(|(_, results)| results).collect()
+}
+".
+
 %% generate_rust_enhanced_stage_functions(+Stages, -Code)
 %  Generate stub functions for each stage.
 generate_rust_enhanced_stage_functions([], "").
@@ -1444,6 +1520,9 @@ generate_rust_enhanced_stage_functions([Stage|Rest], Code) :-
     ).
 
 generate_rust_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(parallel(SubStages, _Options), Code) :-
     !,
     generate_rust_enhanced_stage_functions(SubStages, Code).
 generate_rust_single_enhanced_stage(parallel(SubStages), Code) :-
@@ -1506,7 +1585,27 @@ generate_rust_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
         .flat_map(|record| fan_out_records(record, &[~w]))
         .collect();", [N, OutVar, InVar, StageListStr]).
 
-% Parallel stage: concurrent execution using threads
+% Parallel stage with options: parallel(Stages, Options)
+generate_rust_stage_flow(parallel(SubStages, Options), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel_~w_result", [N]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    % Check for ordered option
+    (   member(ordered(true), Options)
+    ->  FuncName = "parallel_records_ordered",
+        format(atom(Comment), "Parallel execution (ordered) of ~w stages", [N])
+    ;   FuncName = "parallel_records",
+        format(atom(Comment), "Parallel execution of ~w stages (concurrent via threads)", [N])
+    ),
+    format(string(Code),
+"    // ~w
+    let ~w: Vec<Record> = ~w.iter()
+        .flat_map(|record| ~w(record, &[~w]))
+        .collect();", [Comment, OutVar, InVar, FuncName, StageListStr]).
+
+% Parallel stage: concurrent execution using threads (default: unordered)
 generate_rust_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
     !,
     length(SubStages, N),

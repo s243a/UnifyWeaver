@@ -8216,7 +8216,7 @@ func teeStream(records []Record, stages ...func([]Record) []Record) []Record {
 \treturn results
 }
 
-// parallelRecords executes stages concurrently using goroutines and collects all results
+// parallelRecords executes stages concurrently using goroutines and collects all results (completion order)
 func parallelRecords(record Record, stages []func([]Record) []Record) []Record {
 \tvar wg sync.WaitGroup
 \tvar mu sync.Mutex
@@ -8234,6 +8234,29 @@ func parallelRecords(record Record, stages []func([]Record) []Record) []Record {
 \t}
 
 \twg.Wait()
+\treturn results
+}
+
+// parallelRecordsOrdered executes stages concurrently but preserves stage definition order
+func parallelRecordsOrdered(record Record, stages []func([]Record) []Record) []Record {
+\tvar wg sync.WaitGroup
+\tindexedResults := make([][]Record, len(stages))
+
+\tfor i, stage := range stages {
+\t\twg.Add(1)
+\t\tgo func(idx int, s func([]Record) []Record) {
+\t\t\tdefer wg.Done()
+\t\t\tindexedResults[idx] = s([]Record{record})
+\t\t}(i, stage)
+\t}
+
+\twg.Wait()
+
+\t// Flatten results in order
+\tvar results []Record
+\tfor _, stageResults := range indexedResults {
+\t\tresults = append(results, stageResults...)
+\t}
 \treturn results
 }
 
@@ -8273,6 +8296,9 @@ generate_go_enhanced_stage_functions([Stage|Rest], Code) :-
     ).
 
 generate_go_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(parallel(SubStages, _Options), Code) :-
     !,
     generate_go_enhanced_stage_functions(SubStages, Code).
 generate_go_single_enhanced_stage(parallel(SubStages), Code) :-
@@ -8341,7 +8367,29 @@ generate_go_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
 \t\t~w = append(~w, fanOutResults...)
 \t}", [N, OutVar, InVar, StageListStr, OutVar, OutVar]).
 
-% Parallel stage: concurrent execution using goroutines
+% Parallel stage with options: parallel(Stages, Options)
+generate_go_stage_flow(parallel(SubStages, Options), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel~wResult", [N]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    % Check for ordered option
+    (   member(ordered(true), Options)
+    ->  FuncName = "parallelRecordsOrdered",
+        format(atom(Comment), "Parallel execution (ordered) of ~w stages", [N])
+    ;   FuncName = "parallelRecords",
+        format(atom(Comment), "Parallel execution of ~w stages (concurrent via goroutines)", [N])
+    ),
+    format(string(Code),
+"\t// ~w
+\tvar ~w []Record
+\tfor _, record := range ~w {
+\t\tparallelResults := ~w(record, []func([]Record) []Record{~w})
+\t\t~w = append(~w, parallelResults...)
+\t}", [Comment, OutVar, InVar, FuncName, StageListStr, OutVar, OutVar]).
+
+% Parallel stage: concurrent execution using goroutines (default: unordered)
 generate_go_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
     !,
     length(SubStages, N),
