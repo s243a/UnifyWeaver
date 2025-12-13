@@ -508,6 +508,7 @@ constraint_goal(Goal0) :-
         ;   Functor == >=
         ;   Functor == =<
         ;   Functor == =:=
+        ;   Functor == '=\\='
         ;   atom_codes(Functor, [92, 61])
         )
     ).
@@ -828,14 +829,18 @@ build_join_node(LeftNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapOut, 
 build_constraint_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, RelationsIn,
         NodeOut, VarMapOut, WidthOut, RelationsOut) :-
     (   arithmetic_goal(Term)
-    ->  build_arithmetic_node(Term, InputNode, VarMapIn, WidthIn,
-            NodeOut, VarMapOut, WidthOut)
-        , RelationsOut = RelationsIn
+    ->  build_is_goal_node(Term, InputNode, VarMapIn, WidthIn,
+            NodeOut, VarMapOut, WidthOut),
+        RelationsOut = RelationsIn
     ;   negation_goal(Term)
     ->  build_negation_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, RelationsIn,
             NodeOut, RelationsOut),
         VarMapOut = VarMapIn,
         WidthOut = WidthIn
+    ;   comparison_goal_needs_arithmetic_nodes(Term)
+    ->  build_comparison_constraint_node(Term, InputNode, VarMapIn, WidthIn,
+            NodeOut, VarMapOut, WidthOut),
+        RelationsOut = RelationsIn
     ;   constraint_condition(Term, VarMapIn, Condition),
         NodeOut = selection{
             type:selection,
@@ -846,6 +851,95 @@ build_constraint_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, 
         VarMapOut = VarMapIn,
         WidthOut = WidthIn,
         RelationsOut = RelationsIn
+    ).
+
+build_is_goal_node(Goal0, InputNode, VarMapIn, WidthIn, NodeOut, VarMapOut, WidthOut) :-
+    strip_module(Goal0, _, Goal),
+    Goal =.. [is, Left, ExprTerm],
+    (   var(Left),
+        \+ lookup_var_index(VarMapIn, Left, _)
+    ->  build_arithmetic_node(Goal, InputNode, VarMapIn, WidthIn,
+            NodeOut, VarMapOut, WidthOut)
+    ;   is_check_left_operand(Left, VarMapIn, LeftOperand),
+        TmpVar = _,
+        TmpGoal =.. [is, TmpVar, ExprTerm],
+        build_arithmetic_node(TmpGoal, InputNode, VarMapIn, WidthIn,
+            NodeMid, VarMapMid, WidthMid),
+        lookup_var_index(VarMapMid, TmpVar, TmpIndex),
+        Condition = condition{
+            type:eq,
+            left:operand{kind:column, index:TmpIndex},
+            right:LeftOperand
+        },
+        NodeOut = selection{
+            type:selection,
+            input:NodeMid,
+            predicate:Condition,
+            width:WidthMid
+        },
+        VarMapOut = VarMapMid,
+        WidthOut = WidthMid
+    ).
+
+is_check_left_operand(Left, VarMap, operand{kind:column, index:Index}) :-
+    var(Left),
+    lookup_var_index(VarMap, Left, Index),
+    !.
+is_check_left_operand(Left, _VarMap, operand{kind:value, value:Left}) :-
+    number(Left),
+    !.
+is_check_left_operand(Left, _VarMap, _Operand) :-
+    format(user_error,
+           'C# query target: left operand of is/2 must be an unbound/bound variable or number (~q).~n',
+           [Left]),
+    fail.
+
+comparison_goal_needs_arithmetic_nodes(Goal0) :-
+    comparison_goal(Goal0, _Functor, Left, Right),
+    (   compound(Left)
+    ;   compound(Right)
+    ).
+
+comparison_goal(Goal0, Functor, Left, Right) :-
+    strip_module(Goal0, _, Goal),
+    functor(Goal, Functor, 2),
+    arg(1, Goal, Left),
+    arg(2, Goal, Right),
+    memberchk(Functor, [>, <, >=, =<, =:=, '=\\=']).
+
+build_comparison_constraint_node(Goal0, InputNode, VarMapIn, WidthIn,
+        NodeOut, VarMapOut, WidthOut) :-
+    comparison_goal(Goal0, Functor, LeftTerm, RightTerm),
+    comparison_condition_type(Functor, ConditionType),
+    normalize_comparison_operand(LeftTerm, InputNode, VarMapIn, WidthIn,
+        NodeMid1, VarMapMid1, WidthMid1, LeftOperand),
+    normalize_comparison_operand(RightTerm, NodeMid1, VarMapMid1, WidthMid1,
+        NodeMid2, VarMapMid2, WidthMid2, RightOperand),
+    Condition = condition{type:ConditionType, left:LeftOperand, right:RightOperand},
+    NodeOut = selection{type:selection, input:NodeMid2, predicate:Condition, width:WidthMid2},
+    VarMapOut = VarMapMid2,
+    WidthOut = WidthMid2.
+
+comparison_condition_type(>, gt).
+comparison_condition_type(<, lt).
+comparison_condition_type(>=, ge).
+comparison_condition_type(=<, le).
+comparison_condition_type(=:=, arith_eq).
+comparison_condition_type('=\\=', arith_neq).
+
+normalize_comparison_operand(Term, InputNode, VarMapIn, WidthIn,
+        NodeOut, VarMapOut, WidthOut, Operand) :-
+    (   compound(Term)
+    ->  TmpVar = _,
+        TmpGoal =.. [is, TmpVar, Term],
+        build_arithmetic_node(TmpGoal, InputNode, VarMapIn, WidthIn,
+            NodeOut, VarMapOut, WidthOut),
+        lookup_var_index(VarMapOut, TmpVar, TmpIndex),
+        Operand = operand{kind:column, index:TmpIndex}
+    ;   constraint_operand(VarMapIn, Term, Operand),
+        NodeOut = InputNode,
+        VarMapOut = VarMapIn,
+        WidthOut = WidthIn
     ).
 
 build_aggregate_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMapIn, WidthIn, RelationsIn,
@@ -1102,7 +1196,9 @@ constraint_condition(Goal0, VarMap, Condition) :-
     ;   Functor == =<
     ->  build_condition(le, Left, Right, VarMap, Condition)
     ;   Functor == =:=
-    ->  build_condition(eq, Left, Right, VarMap, Condition)
+    ->  build_condition(arith_eq, Left, Right, VarMap, Condition)
+    ;   Functor == '=\\='
+    ->  build_condition(arith_neq, Left, Right, VarMap, Condition)
     ;   format(user_error, 'C# query target: unsupported constraint goal ~q.~n', [Goal]),
         fail
     ).
@@ -1465,6 +1561,10 @@ selection_condition_expression(condition{type:neq, left:Left, right:Right}, Tupl
     operand_expression(Left, TupleVar, LeftExpr),
     operand_expression(Right, TupleVar, RightExpr),
     format(atom(Expr), '!(Equals(~w, ~w))', [LeftExpr, RightExpr]).
+selection_condition_expression(condition{type:arith_eq, left:Left, right:Right}, TupleVar, Expr) :-
+    comparison_condition_expression(Left, Right, TupleVar, ' == 0', Expr).
+selection_condition_expression(condition{type:arith_neq, left:Left, right:Right}, TupleVar, Expr) :-
+    comparison_condition_expression(Left, Right, TupleVar, ' != 0', Expr).
 selection_condition_expression(condition{type:gt, left:Left, right:Right}, TupleVar, Expr) :-
     comparison_condition_expression(Left, Right, TupleVar, ' > 0', Expr).
 selection_condition_expression(condition{type:ge, left:Left, right:Right}, TupleVar, Expr) :-

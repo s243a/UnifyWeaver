@@ -67,6 +67,12 @@ test_csharp_query_target :-
         verify_arithmetic_plan,
         verify_recursive_arithmetic_plan,
         verify_comparison_plan,
+        verify_is_check_literal_plan,
+        verify_is_check_bound_var_plan,
+        verify_arith_expr_eq_plan,
+        verify_arith_expr_neq_plan,
+        verify_arith_eq_direct_plan,
+        verify_arith_neq_direct_plan,
         verify_aggregate_count_plan,
         verify_aggregate_min_plan,
         verify_aggregate_max_plan,
@@ -114,6 +120,12 @@ setup_test_data :-
     assertz(user:test_val(item1, 5)),
     assertz(user:test_val(item2, 2)),
     assertz(user:(test_increment(Id, Result) :- test_val(Id, Value), Result is Value + 1)),
+    assertz(user:(test_is_check_literal(Id) :- test_val(Id, Value), 6 is Value + 1)),
+    assertz(user:(test_is_check_bound_var(Id) :- test_val(Id, Value), W is Value + 1, W is 6)),
+    assertz(user:(test_arith_expr_eq(Id) :- test_val(Id, Value), Value + 1 =:= 6)),
+    assertz(user:(test_arith_expr_neq(Id) :- test_val(Id, Value), Value + 1 =\= 6)),
+    assertz(user:(test_arith_eq_direct(Id) :- test_val(Id, Value), Value =:= 5)),
+    assertz(user:(test_arith_neq_direct(Id) :- test_val(Id, Value), Value =\= 5)),
     assertz(user:test_num(item1, 5)),
     assertz(user:test_num(item2, -3)),
     assertz(user:(test_positive(Id) :- test_num(Id, Value), Value > 0)),
@@ -229,6 +241,12 @@ cleanup_test_data :-
     retractall(user:test_filtered(_)),
     retractall(user:test_val(_, _)),
     retractall(user:test_increment(_, _)),
+    retractall(user:test_is_check_literal(_)),
+    retractall(user:test_is_check_bound_var(_)),
+    retractall(user:test_arith_expr_eq(_)),
+    retractall(user:test_arith_expr_neq(_)),
+    retractall(user:test_arith_eq_direct(_)),
+    retractall(user:test_arith_neq_direct(_)),
     retractall(user:test_num(_, _)),
     retractall(user:test_positive(_)),
     retractall(user:test_customer(_)),
@@ -327,6 +345,119 @@ verify_comparison_plan :-
         width:_
     },
     maybe_run_query_runtime(Plan, ['item1']).
+
+verify_is_check_literal_plan :-
+    csharp_query_target:build_query_plan(test_is_check_literal/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:Arithmetic,
+        predicate:condition{type:eq, left:operand{kind:column, index:2}, right:operand{kind:value, value:6}},
+        width:3
+    },
+    Arithmetic = arithmetic{
+        type:arithmetic,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        expression:expr{type:binary, op:add, left:expr{type:column, index:1}, right:expr{type:value, value:1}},
+        result_index:2,
+        width:3
+    },
+    maybe_run_query_runtime(Plan, ['item1']).
+
+verify_is_check_bound_var_plan :-
+    csharp_query_target:build_query_plan(test_is_check_bound_var/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:ConstArithmetic,
+        predicate:condition{type:eq, left:operand{kind:column, index:3}, right:operand{kind:column, index:2}},
+        width:4
+    },
+    ConstArithmetic = arithmetic{
+        type:arithmetic,
+        input:Arithmetic,
+        expression:expr{type:value, value:6},
+        result_index:3,
+        width:4
+    },
+    Arithmetic = arithmetic{
+        type:arithmetic,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        expression:expr{type:binary, op:add, left:expr{type:column, index:1}, right:expr{type:value, value:1}},
+        result_index:2,
+        width:3
+    },
+    maybe_run_query_runtime(Plan, ['item1']).
+
+verify_arith_expr_eq_plan :-
+    csharp_query_target:build_query_plan(test_arith_expr_eq/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:Arithmetic,
+        predicate:condition{type:arith_eq, left:operand{kind:column, index:2}, right:operand{kind:value, value:6}},
+        width:3
+    },
+    Arithmetic = arithmetic{
+        type:arithmetic,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        expression:expr{type:binary, op:add, left:expr{type:column, index:1}, right:expr{type:value, value:1}},
+        result_index:2,
+        width:3
+    },
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'CompareValues'),
+    sub_string(Source, _, _, _, '== 0'),
+    maybe_run_query_runtime(Plan, ['item1']).
+
+verify_arith_expr_neq_plan :-
+    csharp_query_target:build_query_plan(test_arith_expr_neq/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:Arithmetic,
+        predicate:condition{type:arith_neq, left:operand{kind:column, index:2}, right:operand{kind:value, value:6}},
+        width:3
+    },
+    Arithmetic = arithmetic{
+        type:arithmetic,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        expression:expr{type:binary, op:add, left:expr{type:column, index:1}, right:expr{type:value, value:1}},
+        result_index:2,
+        width:3
+    },
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'CompareValues'),
+    sub_string(Source, _, _, _, '!= 0'),
+    maybe_run_query_runtime(Plan, ['item2']).
+
+verify_arith_eq_direct_plan :-
+    csharp_query_target:build_query_plan(test_arith_eq_direct/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        predicate:condition{type:arith_eq, left:operand{kind:column, index:1}, right:operand{kind:value, value:5}},
+        width:_
+    },
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'CompareValues'),
+    sub_string(Source, _, _, _, '== 0'),
+    maybe_run_query_runtime(Plan, ['item1']).
+
+verify_arith_neq_direct_plan :-
+    csharp_query_target:build_query_plan(test_arith_neq_direct/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        predicate:condition{type:arith_neq, left:operand{kind:column, index:1}, right:operand{kind:value, value:5}},
+        width:_
+    },
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'CompareValues'),
+    sub_string(Source, _, _, _, '!= 0'),
+    maybe_run_query_runtime(Plan, ['item2']).
 
 verify_aggregate_count_plan :-
     csharp_query_target:build_query_plan(test_sale_count/1, [target(csharp_query)], Plan),
