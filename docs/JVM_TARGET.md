@@ -24,6 +24,15 @@ T = direct.
 T = pipe.
 ```
 
+### JVM Glue Module
+
+The `jvm_glue.pl` module provides:
+- **Runtime detection** - JVM, Java version, Jython availability
+- **Transport selection** - `direct` for JVM-to-JVM, `pipe` for others
+- **Bridge generation** - Java ↔ Jython via PythonInterpreter
+- **Launcher generation** - Shell scripts with classpath management
+- **Mixed pipeline orchestration** - Combine Java and Jython steps
+
 ## Java Target
 
 ### Quick Start
