@@ -336,16 +336,7 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
     }.
 
 build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
-    (   has_input_mode(Modes)
-    ->  get_dict(name, HeadSpec, Pred),
-        get_dict(arity, HeadSpec, Arity),
-        format(user_error,
-               'C# query target: parameterized input modes for mutually recursive groups are not yet supported (~w/~w).~n',
-               [Pred, Arity]),
-        fail
-    ;   true
-    ),
-    maplist(build_member_plan(GroupSpecs, Options, Modes), GroupSpecs, MemberStructs, RelationLists),
+    maplist(build_mutual_member_plan(GroupSpecs, Options), GroupSpecs, MemberStructs, RelationLists),
     append(RelationLists, RelationsFlat),
     dedup_relations(RelationsFlat, CombinedRelations),
     Root = mutual_fixpoint{
@@ -360,6 +351,12 @@ build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
         metadata:_{classification:mutual_recursive, options:Options, modes:Modes},
         is_recursive:true
     }.
+
+build_mutual_member_plan(GroupSpecs, Options, PredSpec, MemberStruct, Relations) :-
+    get_dict(arity, PredSpec, Arity),
+    length(MemberModes, Arity),
+    maplist(=(output), MemberModes),
+    build_member_plan(GroupSpecs, Options, MemberModes, PredSpec, MemberStruct, Relations).
 
 build_member_plan(GroupSpecs, Options, Modes, PredSpec, member{
         type:member,

@@ -41,6 +41,8 @@
 :- dynamic user:test_countdown/2.
 :- dynamic user:test_even/1.
 :- dynamic user:test_odd/1.
+:- dynamic user:test_even_param/1.
+:- dynamic user:test_odd_param/1.
 :- dynamic user:test_parity_input/1.
 :- dynamic user:test_product_record/1.
 :- dynamic user:test_jsonpath_projection/2.
@@ -91,6 +93,7 @@ test_csharp_query_target :-
         verify_parameterized_need_allows_prefix_negation,
         verify_recursive_plan,
         verify_mutual_recursion_plan,
+        verify_parameterized_mutual_recursion_plan,
         verify_dynamic_source_plan,
         verify_tsv_dynamic_source_plan,
         verify_json_dynamic_source_plan,
@@ -220,6 +223,21 @@ setup_test_data :-
     assertz(user:test_parity_input(4)),
     assertz(user:test_even(0)),
     assertz(user:test_odd(1)),
+    assertz(user:mode(test_even_param(+))),
+    assertz(user:test_even_param(0)),
+    assertz(user:test_odd_param(1)),
+    assertz(user:(test_even_param(N) :-
+        test_parity_input(N),
+        N > 0,
+        N1 is N - 1,
+        test_odd_param(N1)
+    )),
+    assertz(user:(test_odd_param(N) :-
+        test_parity_input(N),
+        N > 1,
+        N1 is N - 1,
+        test_even_param(N1)
+    )),
     assertz(user:(test_even(N) :-
         test_parity_input(N),
         N > 0,
@@ -276,6 +294,9 @@ cleanup_test_data :-
     retractall(user:test_parity_input(_)),
     retractall(user:test_even(_)),
     retractall(user:test_odd(_)),
+    retractall(user:test_even_param(_)),
+    retractall(user:test_odd_param(_)),
+    retractall(user:mode(test_even_param(_))),
     retractall(user:test_reachable(_, _)),
     cleanup_csv_dynamic_source.
 
@@ -739,6 +760,18 @@ verify_mutual_recursion_plan :-
     member(OddRecursive, OddVariants),
     sub_term(cross_ref{predicate:predicate{name:test_even, arity:1}, role:delta, type:cross_ref, width:_}, OddRecursive),
     maybe_run_query_runtime(Plan, ['0', '2', '4']).
+
+verify_parameterized_mutual_recursion_plan :-
+    csharp_query_target:build_query_plan(test_even_param/1, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input],
+    get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even_param, arity:1}, members:Members}),
+    length(Members, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    maybe_run_query_runtime(Plan, ['4'], [[4]]).
 
 verify_dynamic_source_plan :-
     setup_call_cleanup(
