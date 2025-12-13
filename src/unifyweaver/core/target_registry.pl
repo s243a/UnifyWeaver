@@ -178,6 +178,7 @@ register_builtin_targets :-
     register_target(scala, jvm, [compiled, streaming, functional]),
     register_target(clojure, jvm, [compiled, streaming, functional, lisp]),
     register_target(jython, jvm, [scripting, jvm_interop]),
+    register_target(kotlin, jvm, [compiled, streaming, android, coroutines]),
 
     % Native family - compiled binaries
     register_target(go, native, [compiled, streaming, concurrency, cross_platform]),
