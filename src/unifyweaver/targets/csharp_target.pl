@@ -449,6 +449,8 @@ assign_roles_for_variant_([], _GroupSpecs, _Pred, _Arity, _DeltaSpec, _Pos, []).
 assign_roles_for_variant_([Term|Rest], GroupSpecs, Pred, Arity, DeltaSpec, Pos, [Role|Roles]) :-
     (   query_constraint_goal(Term)
     ->  Role = constraint
+    ;   aggregate_goal(Term)
+    ->  Role = aggregate
     ;   term_signature(Term, Name/TermArity),
         TermArity =:= Arity,
         Pred == Name
@@ -477,6 +479,8 @@ roles_for_nonrecursive_terms_([], _Pred, _Arity, []).
 roles_for_nonrecursive_terms_([Term|Rest], Pred, Arity, [Role|Roles]) :-
     (   query_constraint_goal(Term)
     ->  Role = constraint
+    ;   aggregate_goal(Term)
+    ->  Role = aggregate
     ;   functor(Term, Pred, TermArity),
         TermArity =:= Arity
     ->  format(user_error, 'C# query target: recursive literal encountered in non-recursive clause (~w/~w).~n', [Pred, Arity]),
@@ -728,6 +732,10 @@ build_initial_node(HeadSpec, _GroupSpecs, _Term, constraint, _Node, _Relations, 
     get_dict(arity, HeadSpec, Arity),
     format(user_error, 'C# query target: clause for ~w/~w begins with a constraint; reorder body literals.~n', [Pred, Arity]),
     fail.
+build_initial_node(HeadSpec, GroupSpecs, Term, aggregate, Node, Relations, VarMap, Width) :-
+    Unit = unit{type:unit, width:0},
+    build_aggregate_node(GroupSpecs, HeadSpec, Term, Unit, [], 0, [],
+        Node, VarMap, Width, Relations).
 build_initial_node(_HeadSpec, _GroupSpecs, Term, relation, Node, Relations, VarMap, Width) :-
     Term =.. [Pred|Args],
     length(Args, Arity),
@@ -765,6 +773,11 @@ fold_terms(GroupSpecs, [Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, W
                                 ConstraintNode, VarMapMid, WidthMid, RelationsMid),
         fold_terms(GroupSpecs, Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsMid,
                     NodeOut, VarMapOut, WidthOut, RelationsOut)
+    ;   Role = aggregate
+    ->  build_aggregate_node(GroupSpecs, HeadSpec, Term, AccNode, VarMapIn, WidthIn, RelationsIn,
+            AggregateNode, VarMapMid, WidthMid, RelationsMid),
+        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, AggregateNode, VarMapMid, WidthMid, RelationsMid,
+            NodeOut, VarMapOut, WidthOut, RelationsOut)
     ;   Role = relation
     ->  Term =.. [Pred|Args],
         length(Args, Arity),
@@ -834,6 +847,133 @@ build_constraint_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, 
         WidthOut = WidthIn,
         RelationsOut = RelationsIn
     ).
+
+build_aggregate_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMapIn, WidthIn, RelationsIn,
+        aggregate{
+            type:aggregate,
+            input:InputNode,
+            predicate:AggSpec,
+            op:Op,
+            args:ArgOperands,
+            group_indices:GroupIndices,
+            value_index:ValueIndex,
+            width:WidthOut
+        },
+        VarMapOut,
+        WidthOut,
+        RelationsOut) :-
+    strip_module(Term0, _, Term),
+    decompose_aggregate_goal(Term, Type, Op, Pred, Args, GroupTerm, ValueVar, ResVar),
+    member(Op, [count, sum, min, max, set, bag]),
+    length(Args, AggArity),
+    signature_to_spec(Pred/AggArity, AggSpec),
+    (   memberchk(AggSpec, GroupSpecs)
+    ->  spec_signature(AggSpec, Name/Arity),
+        format(user_error,
+               'C# query target: aggregate over recursive predicate ~w/~w is not supported.~n',
+               [Name, Arity]),
+        fail
+    ;   true
+    ),
+    ensure_relation(Pred, AggArity, RelationsIn, RelationsMid),
+    ensure_no_unbound_repeated_vars(Args, VarMapIn),
+    maplist(aggregate_arg_operand(VarMapIn), Args, ArgOperands),
+    aggregate_value_index(Op, Args, ValueVar, ValueIndex),
+    build_aggregate_outputs(Type, GroupTerm, Args, VarMapIn, WidthIn, ResVar,
+        GroupIndices, VarMapOut, WidthOut),
+    RelationsOut = RelationsMid.
+
+aggregate_value_index(count, _Args, _ValueVar, -1) :- !.
+aggregate_value_index(Op, Args, ValueVar, ValueIndex) :-
+    member(Op, [sum, min, max, set, bag]),
+    (   var(ValueVar)
+    ->  true
+    ;   format(user_error, 'C# query target: aggregate value selector must be a variable (~q).~n', [ValueVar]),
+        fail
+    ),
+    aggregate_var_arg_index(ValueVar, Args, ValueIndex).
+
+build_aggregate_outputs(all, _GroupTerm, _Args, VarMapIn, WidthIn, ResVar,
+        [], VarMapOut, WidthOut) :-
+    must_be(var, ResVar),
+    (   lookup_var_index(VarMapIn, ResVar, _)
+    ->  format(user_error, 'C# query target: aggregate result variable ~w already bound.~n', [ResVar]),
+        fail
+    ;   true
+    ),
+    ResultIndex is WidthIn,
+    WidthOut is WidthIn + 1,
+    VarMapOut = [ResVar-ResultIndex|VarMapIn].
+build_aggregate_outputs(group, GroupTerm, Args, VarMapIn, WidthIn, ResVar,
+        [GroupIdx], VarMapOut, WidthOut) :-
+    parse_group_term(GroupTerm, GroupVars),
+    (   GroupVars = [GroupVar]
+    ->  true
+    ;   format(user_error, 'C# query target: aggregate group term ~q not supported.~n', [GroupTerm]),
+        fail
+    ),
+    aggregate_var_arg_index(GroupVar, Args, GroupIdx),
+    must_be(var, ResVar),
+    (   lookup_var_index(VarMapIn, ResVar, _)
+    ->  format(user_error, 'C# query target: aggregate result variable ~w already bound.~n', [ResVar]),
+        fail
+    ;   true
+    ),
+    GroupOutIndex is WidthIn,
+    ResultIndex is WidthIn + 1,
+    WidthOut is WidthIn + 2,
+    (   lookup_var_index(VarMapIn, GroupVar, _)
+    ->  VarMapMid = VarMapIn
+    ;   VarMapMid = [GroupVar-GroupOutIndex|VarMapIn]
+    ),
+    VarMapOut = [ResVar-ResultIndex|VarMapMid].
+
+aggregate_var_arg_index(Var, Args, Idx) :-
+    nth0(Idx, Args, Arg),
+    (   Var == Arg
+    ;   compound(Arg),
+        Arg =.. ['^', Var, _]
+    ),
+    !.
+aggregate_var_arg_index(Var, _Args, _Idx) :-
+    format(user_error, 'C# query target: aggregate variable ~w not found in goal arguments.~n', [Var]),
+    fail.
+
+aggregate_arg_operand(VarMap, Arg, operand{kind:column, index:Index}) :-
+    var(Arg),
+    lookup_var_index(VarMap, Arg, Index),
+    !.
+aggregate_arg_operand(_VarMap, Arg, operand{kind:wildcard}) :-
+    var(Arg),
+    !.
+aggregate_arg_operand(_VarMap, Arg, operand{kind:value, value:Arg}).
+
+ensure_no_unbound_repeated_vars(Args, VarMap) :-
+    findall(Var,
+        (   member(Var, Args),
+            var(Var),
+            \+ lookup_var_index(VarMap, Var, _)
+        ),
+        Unbound),
+    (   first_duplicate_var(Unbound, Dup)
+    ->  format(user_error,
+               'C# query target: aggregate goal repeats unbound variable ~w; rewrite using explicit equality constraints.~n',
+               [Dup]),
+        fail
+    ;   true
+    ).
+
+first_duplicate_var([Var|Rest], Var) :-
+    memberchk_eq(Var, Rest),
+    !.
+first_duplicate_var([_|Rest], Var) :-
+    first_duplicate_var(Rest, Var).
+
+memberchk_eq(Var, [Head|_]) :-
+    Var == Head,
+    !.
+memberchk_eq(Var, [_|Rest]) :-
+    memberchk_eq(Var, Rest).
 
 build_negation_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMap, Width, RelationsIn,
         negation{type:negation, input:InputNode, predicate:NegSpec, args:Operands, width:Width},
@@ -1208,6 +1348,24 @@ emit_plan_expression(Node, Expr) :-
            'new NegationNode(~w, new PredicateId("~w", ~w), tuple => new object[]{ ~w })',
            [InputExpr, NameStr, Arity, ArgList]).
 emit_plan_expression(Node, Expr) :-
+    is_dict(Node, aggregate), !,
+    get_dict(input, Node, Input),
+    get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
+    get_dict(op, Node, Op),
+    get_dict(args, Node, Args),
+    get_dict(group_indices, Node, GroupIndices),
+    get_dict(value_index, Node, ValueIndex),
+    get_dict(width, Node, Width),
+    emit_plan_expression(Input, InputExpr),
+    maplist(operand_expression_with_tuple(tuple), Args, ArgExprs),
+    atomic_list_concat(ArgExprs, ', ', ArgList),
+    aggregate_op_atom(Op, OpAtom),
+    int_array_literal(GroupIndices, GroupLiteral),
+    atom_string(Name, NameStr),
+    format(atom(Expr),
+           'new AggregateNode(~w, new PredicateId("~w", ~w), AggregateOperation.~w, tuple => new object[]{ ~w }, ~w, ~w, ~w)',
+           [InputExpr, NameStr, Arity, OpAtom, ArgList, GroupLiteral, ValueIndex, Width]).
+emit_plan_expression(Node, Expr) :-
     is_dict(Node, arithmetic), !,
     get_dict(input, Node, Input),
     get_dict(expression, Node, Expression),
@@ -1277,6 +1435,10 @@ emit_plan_expression(Node, Expr) :-
     is_dict(Node, empty), !,
     get_dict(width, Node, Width),
     format(atom(Expr), 'new EmptyNode(~w)', [Width]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, unit), !,
+    get_dict(width, Node, Width),
+    format(atom(Expr), 'new UnitNode(~w)', [Width]).
 emit_plan_expression(Node, _Expr) :-
     format(user_error, 'C# query target: cannot render plan node ~q.~n', [Node]),
     fail.
@@ -1350,6 +1512,19 @@ operand_expression(operand{kind:column, index:Index}, TupleVar, Expr) :-
     format(atom(Expr), '~w[~w]', [TupleVar, Index]).
 operand_expression(operand{kind:value, value:Value}, _TupleVar, Expr) :-
     csharp_literal(Value, Expr).
+operand_expression(operand{kind:wildcard}, _TupleVar, 'Wildcard.Value').
+
+int_array_literal([], 'Array.Empty<int>()') :- !.
+int_array_literal(Ints, Literal) :-
+    atomic_list_concat(Ints, ', ', IntStr),
+    format(atom(Literal), 'new int[]{ ~w }', [IntStr]).
+
+aggregate_op_atom(count, 'Count').
+aggregate_op_atom(sum, 'Sum').
+aggregate_op_atom(min, 'Min').
+aggregate_op_atom(max, 'Max').
+aggregate_op_atom(set, 'Set').
+aggregate_op_atom(bag, 'Bag').
 
 column_expression(Prefix, Index, Expr) :-
     format(atom(Expr), '~w[~w]', [Prefix, Index]).
@@ -2242,7 +2417,11 @@ parse_agg_op(bag(Var), bag, Var, _) :- !.
 parse_agg_op(OpTerm, Op, _, _) :-
     OpTerm =.. [Op|_].
 
-parse_group_term(Var^_, [Var]) :- !.
+parse_group_term(Term, [Var]) :-
+    nonvar(Term),
+    Term = Var^_,
+    var(Var),
+    !.
 parse_group_term(Var, [Var]) :- var(Var), !.
 parse_group_term(_, []).
 
