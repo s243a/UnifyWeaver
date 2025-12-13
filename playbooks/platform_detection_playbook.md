@@ -1,26 +1,29 @@
 # Playbook: Platform and Environment Detection
 
 ## Audience
-This playbook demonstrates UnifyWeaver's platform_detection module for detecting the execution environment.
+This playbook is a high-level guide for coding agents. It demonstrates UnifyWeaver's platform_detection module for detecting execution environments and adapting compilation accordingly.
 
-## Overview
-The `platform_detection` module determines:
-- Platform type (Windows, WSL, Docker, Linux, macOS)
-- Execution mode
-- Bash execution capability
-- Container environments
+## Workflow Overview
+Use platform_detection for environment-aware compilation:
+1. Detect current platform (Windows, WSL, Docker, Linux, macOS)
+2. Check bash availability and execution mode
+3. Adapt compilation strategy based on platform
 
-## When to Use
+## Agent Inputs
+Reference the following artifacts:
+1. **Core Module** – `src/unifyweaver/core/platform_detection.pl` contains platform detection predicates
+2. **Module Documentation** – See module header for API details
 
-✅ **Use platform_detection when:**
-- Need platform-specific compilation
-- Detecting Docker/WSL/native environments
-- Checking bash availability
-- Adapting behavior to platform
+## Key Features
 
-## Example Usage
+- Platform type detection (windows, wsl, docker, linux, macos)
+- Bash execution capability checking
+- Container environment detection
+- Platform-specific compilation strategies
 
-### Detect Platform
+## Execution Guidance
+
+Consult the module for predicate usage:
 
 ```prolog
 :- use_module('src/unifyweaver/core/platform_detection').
@@ -31,62 +34,24 @@ Platform = linux.
 
 % Check specific platforms
 ?- is_docker.
-true.
-
 ?- is_wsl.
-false.
-
-?- is_windows.
-false.
-```
-
-### Check Bash Availability
-
-```prolog
-% Can we execute bash directly?
 ?- can_execute_bash_directly.
-true.
-```
 
-### Platform-Specific Compilation
-
-```prolog
-% Compile differently based on platform
+% Platform-specific compilation
 compile_for_platform(Pred, Code) :-
     detect_platform(Platform),
     (   Platform = windows
     ->  compile_for_windows(Pred, Code)
-    ;   Platform = wsl
-    ->  compile_for_wsl(Pred, Code)
     ;   compile_for_unix(Pred, Code)
     ).
 ```
 
-## Detected Platforms
+## Expected Outcome
+- Platform correctly identified
+- Bash availability determined
+- Compilation adapted to platform capabilities
+- Cross-platform compatibility achieved
 
-- **windows**: Native Windows
-- **wsl**: Windows Subsystem for Linux
-- **docker**: Docker container
-- **linux**: Native Linux
-- **macos**: macOS
-- **unknown**: Unrecognized platform
+## Citations
+[1] src/unifyweaver/core/platform_detection.pl
 
-## Execution Modes
-
-- Direct bash execution
-- WSL bash wrapper
-- Docker entrypoint
-- PowerShell wrapper
-
-## See Also
-
-- `playbooks/powershell_inline_dotnet_playbook.md` - Windows-specific
-- `playbooks/bash_parallel_playbook.md` - Unix-specific
-
-## Summary
-
-**Key Concepts:**
-- ✅ Platform detection (Windows/WSL/Docker/Linux/macOS)
-- ✅ Bash availability checking
-- ✅ Container environment detection
-- ✅ Platform-specific compilation

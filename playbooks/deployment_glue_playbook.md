@@ -1,136 +1,65 @@
 # Playbook: Service Deployment and Lifecycle Management
 
 ## Audience
-This playbook demonstrates UnifyWeaver's deployment_glue module for deploying and managing services via SSH, Docker, Kubernetes, and cloud functions.
+This playbook is a high-level guide for coding agents. It demonstrates UnifyWeaver's deployment_glue module for deploying and managing services via SSH, Docker, Kubernetes, and cloud functions.
 
-## Overview
-The `deployment_glue` module provides:
-- SSH-based deployment with agent forwarding
-- Service lifecycle management (start/stop/restart)
-- Docker/Kubernetes manifest generation
-- Cloud function deployment (AWS Lambda, GCP, Azure)
-- Secrets management integration (Vault, AWS, Azure, GCP)
-
-## When to Use
-
-✅ **Use deployment_glue when:**
-- Deploying services to remote hosts
-- Managing service lifecycles
-- Generating Docker/Kubernetes configs
-- Need automated deployment pipelines
-- Integrating with cloud platforms
+## Workflow Overview
+Use deployment_glue for service deployment:
+1. Declare services with configuration (ports, health checks, restart policies)
+2. Declare deployment methods (SSH, Docker, Kubernetes, cloud functions)
+3. Generate deployment scripts and manifests
+4. Execute deployment workflows
 
 ## Agent Inputs
+Reference the following artifacts:
+1. **Glue Module** – `src/unifyweaver/glue/deployment_glue.pl` contains all deployment predicates
+2. **Module Documentation** – See module header comments for API details
 
-1. **Glue Module** – `src/unifyweaver/glue/deployment_glue.pl`
+## Key Features
+
+### SSH Deployment
+- Agent forwarding support
+- Change detection and automatic redeployment
+- Security validation
+
+### Container Deployment (Experimental)
+- Docker/Docker Compose generation
+- Kubernetes manifests
+- Helm charts
+
+### Secrets Management (Experimental)
+- HashiCorp Vault, AWS Secrets Manager
+- Azure Key Vault, GCP Secret Manager
+
+### Cloud Functions (Experimental)
+- AWS Lambda, Google Cloud Functions, Azure Functions
 
 ## Execution Guidance
 
-### Example 1: Declare Service
+Consult the module directly for predicate usage:
 
 ```prolog
-% Load deployment glue
 :- use_module('src/unifyweaver/glue/deployment_glue').
 
 % Declare a service
-:- declare_service(myapp, [
-    port(8080),
-    health_check('/health'),
-    restart_policy(always)
-]).
+:- declare_service(myapp, [port(8080), health_check('/health')]).
 
-% Declare deployment method
+% Declare SSH deployment
 :- declare_deploy_method(myapp, ssh, [
     host('prod.example.com'),
     user(deploy),
     path('/opt/myapp')
 ]).
-```
 
-### Example 2: Generate Deployment Script
-
-```prolog
 % Generate deployment script
-?- deployment_glue:generate_deploy_script(myapp, ssh, Script).
+?- generate_deploy_script(myapp, ssh, Script).
 ```
 
-**Generated Output:**
-```bash
-#!/bin/bash
-# Deploy myapp via SSH
-ssh -A deploy@prod.example.com << 'EOF'
-cd /opt/myapp
-./deploy.sh
-systemctl restart myapp
-EOF
-```
+## Expected Outcome
+- Services declared successfully
+- Deployment scripts generated
+- Manifests created for container platforms
+- Ready for deployment execution
 
-### Example 3: Docker Deployment
-
-```prolog
-% Declare Docker deployment
-:- declare_deploy_method(myapp, docker, [
-    image('myapp:latest'),
-    ports(['8080:8080']),
-    env(['DB_HOST=db.example.com'])
-]).
-
-% Generate Dockerfile
-?- deployment_glue:generate_dockerfile(myapp, Dockerfile).
-```
-
-### Example 4: Kubernetes Deployment
-
-```prolog
-% Declare Kubernetes deployment
-:- declare_deploy_method(myapp, kubernetes, [
-    namespace(production),
-    replicas(3),
-    image('myapp:v1.0')
-]).
-
-% Generate K8s manifests
-?- deployment_glue:generate_k8s_deployment(myapp, Manifest).
-```
-
-## Key Features
-
-**SSH Deployment:**
-- Agent forwarding support
-- Change detection
-- Automatic redeployment
-- Security validation
-
-**Container Deployment (Experimental):**
-- Docker/Docker Compose generation
-- Kubernetes manifests (Deployment, Service, Ingress)
-- Helm chart generation
-- Registry authentication
-
-**Secrets Management (Experimental):**
-- HashiCorp Vault integration
-- AWS Secrets Manager
-- Azure Key Vault
-- GCP Secret Manager
-
-**Cloud Functions (Experimental):**
-- AWS Lambda deployment
-- Google Cloud Functions
-- Azure Functions
-- API Gateway integration
-
-## See Also
-
-- `playbooks/network_glue_playbook.md` - Network communication
-- `playbooks/cross_target_glue_playbook.md` - Cross-language pipelines
-
-## Summary
-
-**Key Concepts:**
-- ✅ Service deployment automation
-- ✅ SSH, Docker, Kubernetes support
-- ✅ Cloud function deployment
-- ✅ Secrets management integration
-- ✅ Lifecycle management (start/stop/restart)
-
-**Note**: Container, secrets, and cloud features are experimental - code generation tested, but not deployment functionality.
+## Citations
+[1] src/unifyweaver/glue/deployment_glue.pl

@@ -1,77 +1,58 @@
 # Playbook: Pipe-Based Inter-Target Communication
 
 ## Audience
-This playbook demonstrates pipe_glue for generating reader/writer code for Unix pipe communication between different targets.
+This playbook is a high-level guide for coding agents. It demonstrates pipe_glue for generating reader/writer code for Unix pipe communication between different targets.
 
-## Overview
-The `pipe_glue` module generates code for TSV and JSON pipe protocols, enabling targets to communicate via Unix pipes.
+## Workflow Overview
+Use pipe_glue for pipe-based communication:
+1. Generate pipe writers (producers) for a target language
+2. Generate pipe readers (consumers) for a target language
+3. Chain targets via Unix pipes using TSV or JSON formats
+4. Generate pipeline orchestration scripts
 
-## When to Use
+## Agent Inputs
+Reference the following artifacts:
+1. **Glue Module** – `src/unifyweaver/glue/pipe_glue.pl` contains pipe generation predicates
+2. **Module Documentation** – See module header for API details
 
-✅ **Use pipe_glue when:**
-- Chaining different language targets via pipes
-- Need TSV or JSON data exchange
-- Building multi-stage pipelines
-- Want producer-consumer patterns
+## Key Features
 
-## Example Usage
+- TSV and JSON pipe protocols
+- Multi-target support (AWK, Python, Bash, Go, Rust)
+- Producer/consumer pattern
+- Pipeline orchestration
 
-### TSV Pipe Communication
+## Execution Guidance
+
+Consult the module for predicate usage:
 
 ```prolog
 :- use_module('src/unifyweaver/glue/pipe_glue').
 
-% Generate AWK writer (producer)
+% Generate TSV writer (producer)
 Fields = [id, name, score].
 ?- generate_tsv_writer(awk, Fields, WriterCode).
 
-% Generate Python reader (consumer)
+% Generate TSV reader (consumer)
 ?- generate_tsv_reader(python, Fields, ReaderCode).
 
-% Use in pipeline:
-% awk ... | python ...
-```
+% Generate JSON pipes
+?- generate_json_writer(go, Fields, WriterCode).
+?- generate_json_reader(rust, Fields, ReaderCode).
 
-### JSON Pipe Communication
-
-```prolog
-% Generate Go JSON writer
-?- generate_json_writer(go, [id, name, score], WriterCode).
-
-% Generate Rust JSON reader
-?- generate_json_reader(rust, [id, name, score], ReaderCode).
-```
-
-### Pipeline Orchestration
-
-```prolog
-% Generate full pipeline script
+% Generate full pipeline
 Steps = [
     step(extract, awk, 'extract.awk', []),
-    step(transform, python, 'transform.py', []),
-    step(load, bash, 'load.sh', [])
+    step(transform, python, 'transform.py', [])
 ].
 ?- generate_pipeline_script(Steps, [format(tsv)], Script).
 ```
 
-## Supported Formats
+## Expected Outcome
+- Pipe readers/writers generated for targets
+- Data flows correctly through pipes
+- Pipeline scripts orchestrate multi-stage processing
+- TSV and JSON formats handled correctly
 
-- **TSV**: Tab-separated values (default)
-- **JSON**: JSON lines format (one object per line)
-
-## Supported Targets
-
-AWK, Python, Bash, Go, Rust (readers and writers)
-
-## See Also
-
-- `playbooks/bash_pipeline_source_playbook.md` - Bash pipelines
-- `playbooks/cross_target_glue_playbook.md` - Cross-language glue
-
-## Summary
-
-**Key Concepts:**
-- ✅ Generate pipe readers/writers
-- ✅ TSV and JSON formats
-- ✅ Multi-target support
-- ✅ Pipeline orchestration
+## Citations
+[1] src/unifyweaver/glue/pipe_glue.pl

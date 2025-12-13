@@ -1,91 +1,56 @@
 # Playbook: Security Policy Enforcement (Firewall)
 
 ## Audience
-This playbook demonstrates UnifyWeaver's firewall module for enforcing security policies on backend and service usage.
+This playbook is a high-level guide for coding agents. It demonstrates UnifyWeaver's firewall module for enforcing security policies on backend execution, service access, and resource usage.
 
-## Overview
-The `firewall` module enforces security boundaries before compilation:
-- Backend execution whitelists
+## Workflow Overview
+Use the firewall module for security enforcement:
+1. Define security policies with rule_firewall/2 (execution backends, services, network/file access)
+2. Set firewall mode (disabled, permissive, strict)
+3. Validate operations before compilation using validate_* predicates
+
+## Agent Inputs
+Reference the following artifacts:
+1. **Core Module** – `src/unifyweaver/core/firewall.pl` contains all security policy predicates
+2. **Module Documentation** – See module header for API details
+
+## Key Features
+
+- Backend execution whitelisting
 - Service access control
-- Network/file access restrictions
+- Network and file access restrictions
 - Python import restrictions
-- Cache directory validation
+- Multiple enforcement modes (disabled/permissive/strict)
 
-## When to Use
+## Execution Guidance
 
-✅ **Use firewall when:**
-- Need security policy enforcement
-- Restricting backend/service access
-- Validating file and network operations
-- Building secure compilation pipelines
-- Need audit trails for security
-
-## Example Usage
-
-### Define Firewall Rules
+Consult the module for predicate usage:
 
 ```prolog
 :- use_module('src/unifyweaver/core/firewall').
 
-% Restrict which backends can execute this predicate
+% Define security policy
 :- rule_firewall(my_pred/1, [
-    execution([bash, python]),  % Only bash and python allowed
-    services([]),                % No external services
-    network(disabled)            % No network access
+    execution([bash, python]),
+    services([]),
+    network(disabled),
+    files(['/tmp/data.txt'])
 ]).
-```
 
-### Set Firewall Mode
-
-```prolog
-% Set firewall to strict mode
+% Set enforcement mode
 ?- set_firewall_mode(strict).
 
-% Check current mode
-?- current_firewall_mode(Mode).
-Mode = strict.
-```
-
-### Validate Operations
-
-```prolog
-% Validate service access
+% Validate operations
 ?- validate_service(my_pred/1, http_service).
-false.  % Denied - not in whitelist
-
-% Validate file access
-?- validate_file_access(my_pred/1, '/tmp/data.txt', read).
-true.  % Allowed
-
-% Validate network access
 ?- validate_network_access(my_pred/1, 'api.example.com').
-false.  % Denied - network disabled
 ```
 
-## Firewall Modes
+## Expected Outcome
+- Security policies enforced before compilation
+- Backend and service access validated
+- Network and file operations controlled
+- Violations logged or rejected based on mode
 
-- **disabled**: No enforcement (default for development)
-- **permissive**: Log violations but allow
-- **strict**: Enforce all policies, reject violations
+## Citations
+[1] src/unifyweaver/core/firewall.pl
 
-## Policy Terms
-
-- `execution([Backends])` - Allowed backends
-- `services([Services])` - Allowed external services
-- `network(enabled|disabled)` - Network access
-- `files([Paths])` - File access whitelist
-- `python_imports([Modules])` - Python import whitelist
-
-## See Also
-
-- `playbooks/deployment_glue_playbook.md` - Deployment security
-- `playbooks/network_glue_playbook.md` - Network services
-
-## Summary
-
-**Key Concepts:**
-- ✅ Security policy enforcement
-- ✅ Backend/service whitelisting
-- ✅ Network/file access control
-- ✅ Multiple firewall modes
-- ✅ Pre-compilation validation

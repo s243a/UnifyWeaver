@@ -1,31 +1,29 @@
 # Playbook: Bash Pipeline Composer
 
 ## Audience
-This playbook demonstrates composing multi-stage bash pipelines as UnifyWeaver data sources.
+This playbook is a high-level guide for coding agents. It demonstrates composing multi-stage bash pipelines as UnifyWeaver data sources.
 
-## Overview
-The `bash_pipeline_source` plugin lets you declare Prolog predicates that execute complex bash pipeline chains (grep | awk | sort | uniq, etc.).
-
-## When to Use
-
-✅ **Use bash_pipeline when:**
-- Composing multi-tool pipelines
-- Need grep + awk + sort chains
-- Want reusable pipeline abstractions
-- Processing text with Unix tools
+## Workflow Overview
+Use UnifyWeaver to compose bash pipelines:
+1. Declare a data source using the `bash_pipeline` plugin with pipeline stages
+2. Each stage specifies tool (grep, awk, sort, etc.), script, and arguments
+3. UnifyWeaver chains stages into a unified pipeline
 
 ## Agent Inputs
-
-1. **Executable Records** – `playbooks/examples_library/bash_pipeline_examples.md`
+Reference the following artifacts:
+1. **Executable Records** – `pipeline_basic`, `pipeline_complex`, `pipeline_aggregate` in `playbooks/examples_library/bash_pipeline_examples.md`
 2. **Source Module** – `src/unifyweaver/sources/bash_pipeline_source.pl`
+3. **Extraction Tool** – `scripts/extract_records.pl`
 
 ## Execution Guidance
 
+**IMPORTANT**: Records contain **BASH SCRIPTS**. Extract and run with `bash`, not `swipl`.
+
 ### Example 1: Grep + AWK Pipeline
 
+**Step 1: Navigate and extract**
 ```bash
 cd /path/to/UnifyWeaver
-
 perl scripts/extract_records.pl playbooks/examples_library/bash_pipeline_examples.md \
     pipeline_basic > tmp/pipeline_basic.sh
 chmod +x tmp/pipeline_basic.sh
@@ -39,76 +37,24 @@ Generated: tmp/find_errors.sh
 Testing find_errors/1:
 ERROR:Connection failed
 ERROR:Timeout occurred
+Success: Grep + AWK pipeline works
 ```
 
-### Example 2: Multi-Stage Data Processing
+### Example 2: Multi-Stage Aggregation
 
-```bash
-perl scripts/extract_records.pl playbooks/examples_library/bash_pipeline_examples.md \
-    pipeline_complex > tmp/pipeline_complex.sh
-chmod +x tmp/pipeline_complex.sh
-bash tmp/pipeline_complex.sh
-```
+Extract and run `pipeline_complex` query for AWK aggregation with sort.
 
-**Expected Output:**
-```
-Compiling bash pipeline: top_sellers/1
-Generated: tmp/top_sellers.sh
-Testing top_sellers/1:
-Widget:450
-Gadget:250
-```
+### Example 3: Sort + Uniq
 
-### Example 3: Sort + Uniq Pipeline
+Extract and run `pipeline_aggregate` query for deduplication pipeline.
 
-```bash
-perl scripts/extract_records.pl playbooks/examples_library/bash_pipeline_examples.md \
-    pipeline_aggregate > tmp/pipeline_aggregate.sh
-chmod +x tmp/pipeline_aggregate.sh
-bash tmp/pipeline_aggregate.sh
-```
+## Expected Outcome
+- Pipeline stages execute in sequence
+- Data flows correctly through all stages
+- Final output matches expected results
+- Exit code 0 with "Success" message
 
-**Expected Output:**
-```
-Compiling bash pipeline: unique_users/1
-Generated: tmp/unique_users.sh
-Testing unique_users/1:
-alice
-bob
-charlie
-```
-
-## Configuration Options
-
-- `stages(List)` - List of `stage(Tool, Script, Args)` (required)
-- `input_file(File)` - Input file (default: stdin)
-- `output_file(File)` - Output file (default: stdout)
-
-## Stage Definitions
-
-```prolog
-% Grep stage
-stage(grep, 'grep', ['-i', 'error'])
-
-% AWK stage
-stage(awk, 'awk', ['-F:', '{print $1}'])
-
-% Sort stage
-stage(sort, 'sort', ['-nr'])
-
-% Uniq stage
-stage(uniq, 'uniq', [])
-```
-
-## See Also
-
-- `playbooks/awk_source_playbook.md` - AWK foreign functions
-- `playbooks/bash_parallel_playbook.md` - Parallel bash execution
-
-## Summary
-
-**Key Concepts:**
-- ✅ Compose multi-stage Unix pipelines
-- ✅ Reusable pipeline abstractions
-- ✅ Supports grep, awk, sort, uniq, sed, etc.
-- ✅ Configurable input/output
+## Citations
+[1] playbooks/examples_library/bash_pipeline_examples.md
+[2] src/unifyweaver/sources/bash_pipeline_source.pl
+[3] scripts/extract_records.pl

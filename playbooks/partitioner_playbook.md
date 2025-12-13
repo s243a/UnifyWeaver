@@ -1,32 +1,30 @@
 # Playbook: Data Partitioning Strategies
 
 ## Audience
-This playbook demonstrates UnifyWeaver's partitioning system for splitting data streams for parallel processing.
+This playbook is a high-level guide for coding agents. It demonstrates UnifyWeaver's partitioning system for splitting data streams for parallel processing.
 
-## Overview
-The `partitioner` module provides pluggable strategies for partitioning data: fixed_size, hash_based, and key_based.
-
-## When to Use
-
-✅ **Use partitioner when:**
-- Splitting data for parallel processing
-- Need load balancing across workers
-- Want consistent key-based distribution
-- Processing large datasets in chunks
+## Workflow Overview
+Use UnifyWeaver's partitioner module:
+1. Initialize a partitioner with strategy (fixed_size, hash_based, or key_based) and configuration
+2. Partition data stream using the configured strategy
+3. Process partitions independently (often in parallel)
 
 ## Agent Inputs
-
-1. **Executable Records** – `playbooks/examples_library/partitioner_examples.md`
+Reference the following artifacts:
+1. **Executable Records** – `partition_fixed`, `partition_hash`, `partition_key` in `playbooks/examples_library/partitioner_examples.md`
 2. **Core Module** – `src/unifyweaver/core/partitioner.pl`
-3. **Strategies** – `src/unifyweaver/core/partitioners/{fixed_size,hash_based,key_based}.pl`
+3. **Strategy Modules** – `src/unifyweaver/core/partitioners/{fixed_size,hash_based,key_based}.pl`
+4. **Extraction Tool** – `scripts/extract_records.pl`
 
 ## Execution Guidance
 
+**IMPORTANT**: Records contain **BASH SCRIPTS**. Extract and run with `bash`, not `swipl`.
+
 ### Example 1: Fixed-Size Partitioning
 
+**Step 1: Navigate and extract**
 ```bash
 cd /path/to/UnifyWeaver
-
 perl scripts/extract_records.pl playbooks/examples_library/partitioner_examples.md \
     partition_fixed > tmp/partition_fixed.sh
 chmod +x tmp/partition_fixed.sh
@@ -40,68 +38,25 @@ Partition 0: [1,2,3]
 Partition 1: [4,5,6]
 Partition 2: [7,8,9]
 Partition 3: [10]
+Success: Fixed-size partitioning works
 ```
 
-### Example 2: Hash-Based Partitioning
+### Example 2: Hash-Based Distribution
 
-```bash
-perl scripts/extract_records.pl playbooks/examples_library/partitioner_examples.md \
-    partition_hash > tmp/partition_hash.sh
-chmod +x tmp/partition_hash.sh
-bash tmp/partition_hash.sh
-```
+Extract and run `partition_hash` query for load-balanced distribution across workers.
 
-**Expected Output:**
-```
-Testing hash_based partitioner (workers=3):
-Partition 0: [alice,diana]
-Partition 1: [bob,eve]
-Partition 2: [charlie]
-```
+### Example 3: Key-Based Grouping
 
-### Example 3: Key-Based Partitioning
+Extract and run `partition_key` query for grouping by extracted keys.
 
-```bash
-perl scripts/extract_records.pl playbooks/examples_library/partitioner_examples.md \
-    partition_key > tmp/partition_key.sh
-chmod +x tmp/partition_key.sh
-bash tmp/partition_key.sh
-```
+## Expected Outcome
+- Data partitioned according to strategy
+- Partition counts and distributions correct
+- Suitable for parallel processing workflows
+- Exit code 0 with "Success" message
 
-**Expected Output:**
-```
-Testing key_based partitioner:
-Partition north: [record1,record3]
-Partition south: [record2]
-Partition east: [record4]
-```
-
-## Partitioning Strategies
-
-### 1. Fixed-Size (Chunk-Based)
-- Splits data into fixed-size chunks
-- Config: `chunk_size(N)`
-- Use: Simple batch processing
-
-### 2. Hash-Based (Load Balancing)
-- Distributes items via hash function
-- Config: `num_partitions(N)` or `num_workers(N)`
-- Use: Parallel worker pools
-
-### 3. Key-Based (Grouping)
-- Groups by extracted key field
-- Config: `key_field(Field)` or `key_extractor(Pred)`
-- Use: Group-by operations
-
-## See Also
-
-- `playbooks/bash_parallel_playbook.md` - Uses partitioning for parallel execution
-- `playbooks/parallel_execution_playbook.md` - Parallel processing patterns
-
-## Summary
-
-**Key Concepts:**
-- ✅ Pluggable partitioning strategies
-- ✅ Fixed-size, hash-based, key-based
-- ✅ Supports parallel processing
-- ✅ Load balancing and grouping
+## Citations
+[1] playbooks/examples_library/partitioner_examples.md
+[2] src/unifyweaver/core/partitioner.pl
+[3] src/unifyweaver/core/partitioners/*.pl
+[4] scripts/extract_records.pl
