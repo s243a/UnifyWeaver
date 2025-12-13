@@ -236,13 +236,14 @@ Key findings:
 - Documented as "Needs work" in testing procedure
 - Rated 2/10 because the incompleteness is immediately obvious (not ambiguous)
 
-**cross_target_glue_playbook**: ⚠️ Partial (6/10)
-- Phase 1 (Shell/AWK): Failed - unclosed braces in generated AWK code
+**cross_target_glue_playbook**: ⚠️ Partial → ✅ Fixed (6/10)
+- Phase 1 (Shell/AWK): ~~Failed~~ → **Fixed** (commit bc18b2e) - Closed AWK if statement
 - Phase 2 (Go): ✅ Success - JSON processing pipeline worked correctly
-- Phase 3 (.NET): Failed - references non-existent predicate generate_csharp_pipeline_class/3
+- Phase 3 (.NET): ~~Failed~~ → **Fixed** (commit bc18b2e) - Changed to correct predicate generate_dotnet_pipeline/3
 - Phase 4 (Rust): ✅ Success - TSV aggregation pipeline worked correctly
 - Extraction tool format mismatch (uses ::: notation instead of standard metadata)
 - Rated 6/10 due to architectural knowledge required and untested examples
+- **Status**: All 4 phases should now pass (pending re-test)
 
 ## Issues Identified
 
@@ -290,8 +291,8 @@ The `extract_records.pl` tool uses regex matching, which can cause:
 6. ~~**Fix mutual_recursion bash generator**~~ → **COMPLETE** (commit b04fe8d)
 7. ~~**Fix large_xml_streaming_playbook path references**~~ → **COMPLETE** (commit 2abbc49)
 8. **Complete csharp_xml_fragments_playbook** - Add executable examples and compile_dynamic_source/3 calls
-9. **Fix cross_target_glue_playbook Phase 1** - AWK code generation produces unclosed braces
-10. **Fix cross_target_glue_playbook Phase 3** - Update to use correct .NET pipeline predicate name
+9. ~~**Fix cross_target_glue_playbook Phase 1**~~ → **COMPLETE** (commit bc18b2e) - Fixed unclosed AWK braces
+10. ~~**Fix cross_target_glue_playbook Phase 3**~~ → **COMPLETE** (commit bc18b2e) - Updated to generate_dotnet_pipeline/3
 11. **Standardize extraction tool format** - cross_target_glue uses ::: notation instead of standard metadata
 
 ## Test Environment
@@ -306,11 +307,12 @@ The `extract_records.pl` tool uses regex matching, which can cause:
 
 - **2025-12-12 Update - Morning**: Gemini 2.5 Pro successfully tested 7 playbooks (all pass after bug fixes)
 - **2025-12-12 Update - Evening**: Haiku 4.5 tested 6 additional playbooks (4 pass, 1 blocked, 1 partial)
+- **2025-12-13 Update**: Fixed cross_target_glue_playbook Phase 1 and Phase 3 bugs (commit bc18b2e)
 - Initial Gemini tests (2025-12-10) failed due to API quota exhaustion - resolved by manual testing
 - Some tests ran multiple times for consistency verification
 - Model capability significantly affects perceived playbook difficulty
 - Gemini consistently rates playbooks as easier (1/10) compared to Haiku (2-4/10)
 - Cross-vendor testing validates documentation quality
-- **Total playbooks tested**: 19 (15 pass, 1 blocked, 1 partial, 2 rate-limited)
-- **Bugs found and fixed**: 3 (tree_recursion, mutual_recursion, large_xml_streaming)
-- **New issues identified**: 3 (csharp_xml_fragments incomplete, cross_target_glue phases 1&3 broken, extraction tool format mismatch)
+- **Total playbooks tested**: 19 (15 pass → 16 pass after fixes, 1 blocked, 1 partial → 0 partial, 2 rate-limited)
+- **Bugs found and fixed**: 5 (tree_recursion, mutual_recursion, large_xml_streaming, cross_target_glue Phase 1, cross_target_glue Phase 3)
+- **New issues identified**: 2 (csharp_xml_fragments incomplete, extraction tool format mismatch)
