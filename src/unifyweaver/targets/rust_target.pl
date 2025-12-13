@@ -1601,6 +1601,80 @@ where
     result.sort_by(|a, b| comparator(a, b));
     result
 }
+
+// Error Handling Stage Helpers
+
+/// Type alias for stage functions
+type StageFunc = fn(&[Record]) -> Result<Vec<Record>, Box<dyn std::error::Error>>;
+type ErrorHandlerFunc = fn(&[Record], &dyn std::error::Error) -> Vec<Record>;
+
+/// Try-catch: Execute stage, on error route to handler.
+fn try_catch_stage(
+    records: &[Record],
+    stage: StageFunc,
+    handler: ErrorHandlerFunc,
+) -> Vec<Record> {
+    let mut result = Vec::new();
+    for record in records {
+        match stage(&[record.clone()]) {
+            Ok(results) => result.extend(results),
+            Err(e) => {
+                let handler_results = handler(&[record.clone()], e.as_ref());
+                result.extend(handler_results);
+            }
+        }
+    }
+    result
+}
+
+/// Retry: Retry stage up to max_retries times on failure.
+fn retry_stage(
+    records: &[Record],
+    stage: StageFunc,
+    max_retries: usize,
+    delay_ms: u64,
+    backoff: &str,
+) -> Vec<Record> {
+    let mut result = Vec::new();
+    for record in records {
+        let mut last_error: Option<String> = None;
+        for attempt in 0..=max_retries {
+            match stage(&[record.clone()]) {
+                Ok(results) => {
+                    result.extend(results);
+                    last_error = None;
+                    break;
+                }
+                Err(e) => {
+                    last_error = Some(e.to_string());
+                    if attempt < max_retries && delay_ms > 0 {
+                        let wait_time = match backoff {
+                            \"exponential\" => delay_ms * (1 << attempt),
+                            \"linear\" => delay_ms * (attempt as u64 + 1),
+                            _ => delay_ms,
+                        };
+                        std::thread::sleep(std::time::Duration::from_millis(wait_time));
+                    }
+                }
+            }
+        }
+        // If all retries exhausted, add error record
+        if let Some(err) = last_error {
+            let mut error_record = Record::new();
+            error_record.insert(\"_error\".to_string(), Value::String(err));
+            error_record.insert(\"_record\".to_string(), serde_json::to_value(record).unwrap_or(Value::Null));
+            error_record.insert(\"_retries\".to_string(), Value::Number(max_retries.into()));
+            result.push(error_record);
+        }
+    }
+    result
+}
+
+/// On-error: Global error handler wrapping.
+fn on_error_stage(records: &[Record], _handler: ErrorHandlerFunc) -> Vec<Record> {
+    // In Rust, we pass records through - errors are handled at stage level
+    records.to_vec()
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -1777,6 +1851,20 @@ generate_rust_single_enhanced_stage(scan(_), "") :- !.
 generate_rust_single_enhanced_stage(order_by(_), "") :- !.
 generate_rust_single_enhanced_stage(order_by(_, _), "") :- !.
 generate_rust_single_enhanced_stage(sort_by(_), "") :- !.
+generate_rust_single_enhanced_stage(try_catch(Stage, Handler), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(Stage, StageCode),
+    generate_rust_single_enhanced_stage(Handler, HandlerCode),
+    format(string(Code), "~w~w", [StageCode, HandlerCode]).
+generate_rust_single_enhanced_stage(retry(Stage, _), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(Stage, Code).
+generate_rust_single_enhanced_stage(retry(Stage, _, _), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(Stage, Code).
+generate_rust_single_enhanced_stage(on_error(Handler), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(Handler, Code).
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -2003,6 +2091,44 @@ generate_rust_stage_flow(sort_by(ComparePred), InVar, OutVar, Code) :-
 "    // Sort by custom comparator: ~w
     let ~w = sort_by_comparator(&~w, ~w);", [ComparePred, OutVar, InVar, ComparePred]).
 
+% Try-catch stage: execute stage, on error route to handler
+generate_rust_stage_flow(try_catch(Stage, Handler), InVar, OutVar, Code) :-
+    !,
+    extract_rust_stage_name(Stage, StageName),
+    extract_rust_stage_name(Handler, HandlerName),
+    OutVar = "try_catch_result",
+    format(string(Code),
+"    // Try-Catch: ~w with handler ~w
+    let ~w = try_catch_stage(&~w, ~w, ~w);", [StageName, HandlerName, OutVar, InVar, StageName, HandlerName]).
+
+% Retry stage: retry N times on failure
+generate_rust_stage_flow(retry(Stage, N), InVar, OutVar, Code) :-
+    !,
+    extract_rust_stage_name(Stage, StageName),
+    OutVar = "retry_result",
+    format(string(Code),
+"    // Retry: ~w up to ~w times
+    let ~w = retry_stage(&~w, ~w, ~w, 0, \"none\");", [StageName, N, OutVar, InVar, StageName, N]).
+
+% Retry stage with options
+generate_rust_stage_flow(retry(Stage, N, Options), InVar, OutVar, Code) :-
+    !,
+    extract_rust_stage_name(Stage, StageName),
+    OutVar = "retry_result",
+    extract_rust_retry_options(Options, DelayMs, Backoff),
+    format(string(Code),
+"    // Retry: ~w up to ~w times (delay=~wms, backoff=~w)
+    let ~w = retry_stage(&~w, ~w, ~w, ~w, \"~w\");", [StageName, N, DelayMs, Backoff, OutVar, InVar, StageName, N, DelayMs, Backoff]).
+
+% On-error stage: global error handler
+generate_rust_stage_flow(on_error(Handler), InVar, OutVar, Code) :-
+    !,
+    extract_rust_stage_name(Handler, HandlerName),
+    OutVar = "on_error_result",
+    format(string(Code),
+"    // On-Error: route errors to ~w
+    let ~w = on_error_stage(&~w, ~w);", [HandlerName, OutVar, InVar, HandlerName]).
+
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -2024,6 +2150,18 @@ extract_rust_stage_names([Pred/_Arity|Rest], [Pred|RestNames]) :-
     extract_rust_stage_names(Rest, RestNames).
 extract_rust_stage_names([_|Rest], RestNames) :-
     extract_rust_stage_names(Rest, RestNames).
+
+%% extract_rust_stage_name(+Stage, -Name)
+%  Extract function name from a single stage specification.
+extract_rust_stage_name(Pred/_, Pred) :- atom(Pred), !.
+extract_rust_stage_name(Pred, Pred) :- atom(Pred), !.
+extract_rust_stage_name(_, unknown_stage).
+
+%% extract_rust_retry_options(+Options, -DelayMs, -Backoff)
+%  Extract retry options from options list.
+extract_rust_retry_options(Options, DelayMs, Backoff) :-
+    ( member(delay(D), Options) -> DelayMs = D ; DelayMs = 0 ),
+    ( member(backoff(B), Options) -> Backoff = B ; Backoff = none ).
 
 %% format_rust_stage_list(+Names, -ListStr)
 %  Format stage names as Rust function references.

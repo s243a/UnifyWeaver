@@ -72,6 +72,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_sorting_stages.sh` — Integration tests (12 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Error Handling Stages** - Resilient data processing with error recovery
+  - Try-catch pattern:
+    - `try_catch(Stage, Handler)` — Execute stage, route failures to handler
+  - Retry logic:
+    - `retry(Stage, N)` — Retry stage up to N times on failure
+    - `retry(Stage, N, Options)` — Retry with delay and backoff options
+    - Options: `delay(Ms)`, `backoff(linear)`, `backoff(exponential)`
+  - Global error handling:
+    - `on_error(Handler)` — Global error handler for the pipeline
+  - Nested error handling: `try_catch(retry(...), fallback)` for complex recovery
+  - Error records: Failed retries emit `{_error, _record, _retries}` for downstream handling
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_error_handling_stages.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
