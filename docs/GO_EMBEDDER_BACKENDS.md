@@ -375,7 +375,34 @@ cp -r /tmp/jax_cuda_venv/lib/python3.9/site-packages/nvidia/* ~/.local/lib/gomlx
 rm -rf /tmp/jax_cuda_venv
 ```
 
-**Note:** XLA GPU may not work properly in WSL2 due to `/dev/nvidia*` device detection issues. For GPU acceleration in WSL2, **Candle or ORT are better alternatives**.
+#### XLA GPU Environment Requirements
+
+The gopjrt library detects NVIDIA GPUs by looking for `/dev/nvidia*` device nodes. This works on native Linux but **fails in WSL2**, which uses `/dev/dxg` instead. The following environments should support XLA GPU (untested):
+
+**Environments where XLA GPU should work:**
+
+| Environment | Why it works |
+|-------------|--------------|
+| **Bare metal Linux** | Standard NVIDIA driver creates `/dev/nvidia*` devices |
+| **VM with GPU passthrough** | KVM/QEMU, Proxmox, ESXi with VFIO/IOMMU - guest gets direct GPU access |
+| **Cloud GPU instances** | AWS P3/G4, GCP GPU, Azure NC-series - standard NVIDIA drivers |
+| **Docker on native Linux** | With `--gpus all` and nvidia-container-toolkit, sees host's `/dev/nvidia*` |
+
+**Environments where XLA GPU does NOT work:**
+
+| Environment | Why it fails |
+|-------------|--------------|
+| **WSL2** | Uses `/dev/dxg` translation layer, no `/dev/nvidia*` devices |
+| **VirtualBox/VMware without passthrough** | No GPU access |
+
+**WSL2 Workaround:** For GPU acceleration in WSL2, use **Candle or ORT** instead - both work with WSL2's CUDA implementation.
+
+**Docker example** (native Linux host):
+```bash
+docker run --gpus all -v $(pwd):/app -w /app \
+  -e LD_LIBRARY_PATH=/usr/local/lib \
+  your-image ./myapp --search "test"
+```
 
 ### Build
 
