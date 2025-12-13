@@ -19,6 +19,7 @@ This document tracks which bindings are implemented for each target language.
 | **Python** | 106 | 9 (Built-ins, String, List, Dict, I/O, Regex, Math, Collections, Itertools) |
 | **PowerShell** | 68 | 4 (Cmdlets, Automation, .NET, C# Hosting) |
 | **Jython** | 66 | 5+ (Python-compatible + Java I/O, Collections, Regex, Strings) |
+| **Kotlin** | 44 | 5 (Stdlib, Collections, Strings, I/O, Sequences) |
 | **Java** | 42 | 5 (String, Math, Collections, I/O, Stream API) |
 | **Go** | 50+ | 10 (Built-ins, String, Math, I/O, JSON, Regex, Time, Path, Collections, Conv) |
 | **C#** | 36+ | 5 (Built-ins, String, Math, I/O, LINQ) |
