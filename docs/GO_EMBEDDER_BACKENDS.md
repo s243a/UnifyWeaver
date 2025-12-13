@@ -50,11 +50,24 @@ type Embedder interface {
 | Backend | Difficulty | Performance | GPU Support | Dependencies |
 |---------|------------|-------------|-------------|--------------|
 | Pure Go | Easy | Moderate | No | None (pure Go) |
-| Candle | Easy-Medium | Fast | CUDA | Rust toolchain, libcandle_semantic_router.so |
-| ORT | Medium | Fast | CUDA | ONNX Runtime 1.22+, libtokenizers.a |
-| XLA | Hard | Fastest | CUDA/TPU/Metal | PJRT libraries, C++ toolchain |
+| Candle | Easy-Medium | **Fastest** | CUDA | Rust toolchain, libcandle_semantic_router.so |
+| ORT | Medium | Moderate | CUDA | ONNX Runtime 1.22+, libtokenizers.a |
+| XLA | Hard | Slow (CPU) | CUDA/TPU/Metal | PJRT libraries, C++ toolchain |
 
 **Recommendation:** Start with Pure Go for development, use Candle for production.
+
+### Performance Benchmarks
+
+Tested on GTX 1660 Ti, all-MiniLM-L6-v2 model, 5 queries x 5 runs averaged:
+
+| Backend | Avg/Query (CPU) | Binary Size | Notes |
+|---------|-----------------|-------------|-------|
+| **Candle** | **0.21s** | 17MB | Fastest on CPU |
+| Pure Go | 0.36s | 20MB | Good balance |
+| ORT | 0.44s | 38MB | More overhead |
+| XLA | 0.67s | 40MB | Optimized for TPU/GPU batches |
+
+**GPU Note:** For single-query workloads, CPU is often faster due to GPU transfer overhead. GPU acceleration benefits appear with batch processing (multiple embeddings at once).
 
 ---
 
@@ -257,37 +270,60 @@ MODEL_PATH="../../models/all-MiniLM-L6-v2" LD_LIBRARY_PATH=/usr/local/lib ./myap
 
 ## Backend 4: XLA/PJRT (Most Complex)
 
-The XLA backend uses Google's XLA compiler via PJRT. Provides the best performance, especially on TPUs, but has the most complex setup.
+The XLA backend uses Google's XLA compiler via PJRT. Optimized for hardware accelerators (TPU, GPU), but slower on CPU due to compilation overhead.
 
 ### Prerequisites
 
 ```bash
-# Install PJRT libraries
+# Install PJRT libraries (CPU)
+# Option 1: System-wide (requires sudo)
 curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_linux_amd64.sh | bash
 
-# For CUDA support
-curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_cuda_linux_amd64.sh | bash
+# Option 2: Local install (no sudo)
+GOPJRT_INSTALL_DIR=$HOME/.local GOPJRT_NOSUDO=1 \
+  bash -c 'curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_linux_amd64.sh | bash'
+
+# For CUDA support (requires python3-venv)
+curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_cuda.sh | bash
 ```
 
 ### Build
 
 ```bash
+# With system-wide install
 go build -tags XLA -o myapp ./examples/pearltrees_go
+
+# With local install
+CGO_LDFLAGS="-L$HOME/.local/lib" go build -tags XLA -o myapp ./examples/pearltrees_go
+```
+
+### Usage
+
+```bash
+# System-wide
+./myapp --search "quantum physics"
+
+# Local install
+LD_LIBRARY_PATH=$HOME/.local/lib ./myapp --search "quantum physics"
 ```
 
 ### Status
 
-**Note:** XLA backend is implemented but not yet fully tested. Use Candle or ORT for production.
+XLA backend is **working** but slower than other backends on CPU (0.67s vs 0.21s for Candle). This is expected - XLA is optimized for:
+- TPU inference
+- GPU batch processing
+- Large model compilation
 
 ### Pros
-- Best performance potential
 - Supports TPU, Metal (Apple Silicon)
-- Optimizing compiler
+- Optimizing compiler (benefits large models)
+- Best for batch processing on accelerators
 
 ### Cons
+- Slowest on CPU (compilation overhead)
 - Most complex installation
-- Large dependencies
-- Less mature Go integration
+- Large dependencies (~250MB PJRT plugin)
+- CUDA install requires python3-venv and JAX
 
 ---
 
