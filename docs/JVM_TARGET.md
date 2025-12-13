@@ -6,8 +6,8 @@ UnifyWeaver provides JVM (Java Virtual Machine) targets for generating pipelines
 
 | Target | Module | Status |
 |--------|--------|--------|
-| Java | `java_target.pl` | ✅ Initial (pipeline mode) |
-| Jython | `jython_target.pl` | ✅ Initial (pipeline mode) |
+| Java | `java_target.pl` | ✅ Initial (pipeline + generator modes) |
+| Jython | `jython_target.pl` | ✅ Initial (pipeline + generator modes) |
 | Kotlin | `kotlin_target.pl` | ✅ Initial (pipeline + generator modes) |
 | Scala | `scala_target.pl` | ✅ Initial (pipeline + generator modes) |
 | Clojure | `clojure_target.pl` | ✅ Initial (pipeline + generator modes) |
