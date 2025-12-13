@@ -1,54 +1,52 @@
-# feat(glue): Add JVM glue module for direct transport
+# feat(targets): Add Scala target with bindings and LazyList generator
 
 ## Summary
 
-Adds the JVM glue module (`jvm_glue.pl`) that enables direct in-process communication between JVM targets (Java, Jython, Scala, Kotlin, Clojure).
+Adds a complete Scala target with pipeline mode (Option/flatMap), generator mode (LazyList), and 43 bindings leveraging Scala's functional features.
 
 ## Changes
 
 ### New Files
 
-#### `src/unifyweaver/glue/jvm_glue.pl`
+#### `src/unifyweaver/targets/scala_target.pl`
+**Three compilation modes:**
+- **Simple mode** - Basic predicate translation
+- **Pipeline mode** - `Option[Record]` with `flatMap` for filtering
+- **Generator mode** - `LazyList` with `#::` for lazy sequences
 
-**Runtime Detection:**
-- `detect_jvm_runtime/1` - Detect JDK, JRE, or GraalVM
-- `detect_java_version/1` - Parse Java version number
-- `detect_jython/1` - Check Jython availability
+**Features:**
+- Pattern matching in JSON value handling
+- `@tailrec` annotation for tail-recursive predicates
+- SBT build generation
 
-**Transport Selection:**
-- `jvm_transport_type/3` - Select `direct` vs `pipe` transport
-- `can_use_direct/2` - Check if JVM-to-JVM direct works
-
-**Bridge Generation:**
-- `generate_java_jython_bridge/3` - Java calling Jython via PythonInterpreter
-- `generate_jython_java_bridge/3` - Jython calling Java classes directly
-
-**Process Management:**
-- `generate_jvm_launcher/3` - Shell script with classpath management
-- `generate_classpath/2` - Build classpath from options
-- `generate_jvm_pipeline/3` - Mixed Java/Jython orchestration
+#### `src/unifyweaver/bindings/scala_bindings.pl`
+43 bindings across 5 categories:
+- **Option/Either:** Some, None, getOrElse, map, flatMap, filter, Right, Left
+- **Collections:** List, Nil, ::, Map, head, tail, foldLeft, foldRight
+- **Strings:** length, substring, split, trim, toLowerCase
+- **LazyList:** LazyList.from, #::, take, drop, takeWhile, dropWhile
+- **Pattern matching:** match, case class, unapply
 
 ### Modified Files
 
 #### `docs/JVM_TARGET.md`
-- Added "JVM Glue Module" section with feature list
+- Updated Scala status to "pipeline + generator modes"
 
-## Technical Notes
-
-- JVM targets (java, jython, scala, kotlin, clojure) use `direct` transport
-- Non-JVM targets use `pipe` transport
-- Java → Jython uses embedded `PythonInterpreter` for in-process calls
-- Jython → Java imports Java classes directly
+#### `docs/BINDING_MATRIX.md`
+- Added Scala (43 bindings, 5 categories)
 
 ## Testing
 
 ```bash
-# Unit tests
-swipl -g "use_module('src/unifyweaver/glue/jvm_glue'), test_jvm_glue, halt(0)"
+# Target tests
+swipl -g "use_module('src/unifyweaver/targets/scala_target'),
+    test_scala_pipeline_mode, halt(0)"
+# Output: 5/5 passed (pipeline, pattern matching, Option, LazyList, SBT)
 
-# End-to-end Jython execution
-echo '{"name": "test", "value": 42}' | jython generated_pipeline.py
-# Output: {"name": "test", "value": 42}
+# Bindings tests  
+swipl -g "use_module('src/unifyweaver/bindings/scala_bindings'),
+    test_scala_bindings, halt(0)"
+# Output: 43 bindings registered
 ```
 
 All tests pass.
