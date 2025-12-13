@@ -38,4 +38,5 @@
 - Rendered plans emit input-position metadata into `QueryPlan`.
 - Added a plan-structure test for parameterised Fibonacci (`tests/core/test_csharp_query_target.pl`) to assert the need/materialize shape is present and rendered.
 - Added end‑to‑end runtime coverage for parameterised Fibonacci and parameter‑passing plumbing in the dotnet harness.
+- Added bound-only stratified negation in query mode (`\+` / `not/1`) via a `negation` plan node and C# `NegationNode`, including need-closure support when negation appears before recursive calls.
 - Next: broaden coverage (mutual recursion, stratified negation, aggregates), and optionally add a memoized/procedural fallback once semantics are locked down.
