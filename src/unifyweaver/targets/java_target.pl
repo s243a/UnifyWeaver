@@ -17,13 +17,18 @@
 
 :- use_module(library(lists)).
 
+% Binding system integration
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/java_bindings').
+
 % Track required imports
 :- dynamic required_java_import/1.
 
 %% init_java_target
-%  Initialize Java target
+%  Initialize Java target with bindings
 init_java_target :-
-    retractall(required_java_import(_)).
+    retractall(required_java_import(_)),
+    init_java_bindings.
 
 %% clear_java_imports
 %  Clear collected Java imports
@@ -256,19 +261,13 @@ generate_pipeline_process(Clauses, Code) :-
     Clauses = [(Head, _)|_],
     functor(Head, Name, _),
     (   is_recursive_predicate_java(Name, Clauses)
-    ->  % Generate recursive handling
-        format(string(Code), 
-"        // Recursive predicate detected - use iterative approach
-        Map<String, Object> current = new HashMap<>(record);
-        int maxIterations = 1000;
-        for (int i = 0; i < maxIterations; i++) {
-            Optional<Map<String, Object>> next = processOnce(current);
-            if (!next.isPresent() || next.get().equals(current)) {
-                return Optional.of(current);
-            }
-            current = next.get();
-        }
-        return Optional.of(current);")
+    ->  % Separate base and recursive clauses
+        partition(is_recursive_clause_java(Name), Clauses, RecClauses, BaseClauses),
+        % Check if tail recursive
+        (   is_tail_recursive_java(Name, RecClauses)
+        ->  compile_tail_recursive_java(Name, BaseClauses, RecClauses, Code)
+        ;   compile_general_recursive_java(Name, BaseClauses, RecClauses, Code)
+        )
     ;   % Generate clause-based processing
         findall(ClauseCode, 
             (member((H, B), Clauses), translate_clause_java(H, B, ClauseCode)),
@@ -278,7 +277,7 @@ generate_pipeline_process(Clauses, Code) :-
     ).
 
 %% ============================================
-%% RECURSION DETECTION
+%% RECURSION DETECTION AND PATTERNS
 %% ============================================
 
 %% is_recursive_predicate_java(+Name, +Clauses)
@@ -286,6 +285,21 @@ generate_pipeline_process(Clauses, Code) :-
 is_recursive_predicate_java(Name, Clauses) :-
     member((_, Body), Clauses),
     contains_recursive_call_java(Body, Name).
+
+%% is_recursive_clause_java(+Name, +Clause)
+is_recursive_clause_java(Name, (_, Body)) :-
+    contains_recursive_call_java(Body, Name).
+
+%% is_tail_recursive_java(+Name, +RecClauses)
+%  Check if recursive call is in tail position
+is_tail_recursive_java(Name, RecClauses) :-
+    member((_, Body), RecClauses),
+    get_last_goal_java(Body, LastGoal),
+    functor(LastGoal, Name, _).
+
+%% get_last_goal_java(+Body, -LastGoal)
+get_last_goal_java((_, B), LastGoal) :- !, get_last_goal_java(B, LastGoal).
+get_last_goal_java(Goal, Goal).
 
 %% contains_recursive_call_java(+Body, +Name)
 contains_recursive_call_java(Body, Name) :-
@@ -300,6 +314,130 @@ extract_goal_java(Goal, Goal) :-
     \+ Goal = (_;_).
 extract_goal_java((A, _), Goal) :- extract_goal_java(A, Goal).
 extract_goal_java((_, B), Goal) :- extract_goal_java(B, Goal).
+
+%% ============================================
+%% TAIL RECURSION PATTERN (→ while loop)
+%% ============================================
+
+%% compile_tail_recursive_java(+Name, +BaseClauses, +RecClauses, -Code)
+%  Compile tail recursive predicate to iterative while loop
+compile_tail_recursive_java(Name, BaseClauses, RecClauses, Code) :-
+    % Generate base case condition
+    (   BaseClauses = [(BaseHead, BaseBody)|_]
+    ->  generate_base_condition_java(BaseHead, BaseBody, BaseCondition, _BaseReturn)
+    ;   BaseCondition = "false", _BaseReturn = "record"
+    ),
+    
+    % Generate recursive transformation
+    (   RecClauses = [(_, RecBody)|_]
+    ->  generate_recursive_transform_java(RecBody, Name, Transform)
+    ;   Transform = "current"
+    ),
+    
+    format(string(Code),
+"        // Tail-recursive predicate: ~w - optimized to while loop
+        Map<String, Object> current = new HashMap<>(record);
+        int maxIterations = 10000;
+        
+        for (int i = 0; i < maxIterations; i++) {
+            // Base case check
+            if (~w) {
+                return Optional.of(current);
+            }
+            
+            // Recursive step (tail call transformed to loop)
+            current = ~w;
+        }
+        
+        // Exceeded max iterations
+        System.err.println(\"Warning: Max iterations exceeded for ~w\");
+        return Optional.of(current);", [Name, BaseCondition, Transform, Name]).
+
+%% generate_base_condition_java(+Head, +Body, -Condition, -Return)
+generate_base_condition_java(Head, Body, Condition, Return) :-
+    Head =.. [_|Args],
+    (   Args = [Arg|_],
+        (   number(Arg)
+        ->  format(string(Condition), "toDouble(current.get(\"arg0\")) == ~w", [Arg])
+        ;   atom(Arg)
+        ->  format(string(Condition), "\"~w\".equals(current.get(\"arg0\"))", [Arg])
+        ;   Condition = "false"
+        )
+    ;   Condition = "false"
+    ),
+    (   Body == true
+    ->  Return = "current"
+    ;   Return = "current"
+    ).
+
+%% generate_recursive_transform_java(+Body, +Name, -Transform)
+generate_recursive_transform_java(Body, Name, Transform) :-
+    % Find recursive call and extract argument transformation
+    extract_goal_java(Body, Goal),
+    functor(Goal, Name, _),
+    Goal =.. [_|Args],
+    (   Args = [Expr|_],
+        expr_to_java(Expr, JavaExpr),
+        format(string(Transform), 
+            "new HashMap<String, Object>() {{ put(\"arg0\", ~w); }}", [JavaExpr])
+    ;   Transform = "current"
+    ).
+
+%% ============================================
+%% GENERAL RECURSION PATTERN (→ memoization)
+%% ============================================
+
+%% compile_general_recursive_java(+Name, +BaseClauses, +RecClauses, -Code)
+%  Compile general recursive predicate with memoization
+compile_general_recursive_java(Name, BaseClauses, RecClauses, Code) :-
+    % Generate base case
+    (   BaseClauses = [(BaseHead, BaseBody)|_]
+    ->  generate_base_condition_java(BaseHead, BaseBody, BaseCondition, _)
+    ;   BaseCondition = "false"
+    ),
+    
+    % Generate recursive case
+    (   RecClauses = [(_, RecBody)|_]
+    ->  generate_memoized_recursive_java(RecBody, Name, RecursiveComputation)
+    ;   RecursiveComputation = "current"
+    ),
+    
+    format(string(Code),
+"        // General recursive predicate: ~w - with memoization
+        // Cache to avoid recomputation
+        @SuppressWarnings(\"unchecked\")
+        Map<String, Object> memo = (Map<String, Object>) record.getOrDefault(\"__memo__\", new HashMap<>());
+        
+        String key = record.get(\"arg0\").toString();
+        if (memo.containsKey(key)) {
+            return Optional.of((Map<String, Object>) memo.get(key));
+        }
+        
+        Map<String, Object> current = new HashMap<>(record);
+        
+        // Base case check
+        if (~w) {
+            memo.put(key, current);
+            return Optional.of(current);
+        }
+        
+        // Recursive computation with memoization
+        Map<String, Object> result = ~w;
+        memo.put(key, result);
+        return Optional.of(result);", [Name, BaseCondition, RecursiveComputation]).
+
+%% generate_memoized_recursive_java(+Body, +Name, -Code)
+generate_memoized_recursive_java(Body, Name, Code) :-
+    % Extract recursive call
+    extract_goal_java(Body, Goal),
+    functor(Goal, Name, _),
+    Goal =.. [_|Args],
+    (   Args = [Expr|_]
+    ->  expr_to_java(Expr, JavaExpr),
+        format(string(Code),
+"processWithMemo(new HashMap<String, Object>() {{ put(\"arg0\", ~w); put(\"__memo__\", memo); }}).orElse(current)", [JavaExpr])
+    ;   Code = "current"
+    ).
 
 %% ============================================
 %% CLAUSE TRANSLATION
