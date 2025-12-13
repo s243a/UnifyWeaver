@@ -8282,6 +8282,150 @@ func unbatchRecords(batches [][]Record) []Record {
 \treturn records
 }
 
+// uniqueByField keeps only the first record for each unique field value
+func uniqueByField(records []Record, field string) []Record {
+\tseen := make(map[interface{}]bool)
+\tvar result []Record
+\tfor _, record := range records {
+\t\tkey := record[field]
+\t\tif !seen[key] {
+\t\t\tseen[key] = true
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// firstByField is an alias for uniqueByField (keep first occurrence)
+func firstByField(records []Record, field string) []Record {
+\treturn uniqueByField(records, field)
+}
+
+// lastByField keeps only the last record for each unique field value
+func lastByField(records []Record, field string) []Record {
+\tlastSeen := make(map[interface{}]Record)
+\tvar order []interface{}
+\tfor _, record := range records {
+\t\tkey := record[field]
+\t\tif _, exists := lastSeen[key]; !exists {
+\t\t\torder = append(order, key)
+\t\t}
+\t\tlastSeen[key] = record
+\t}
+\tvar result []Record
+\tfor _, key := range order {
+\t\tresult = append(result, lastSeen[key])
+\t}
+\treturn result
+}
+
+// Aggregation represents an aggregation operation
+type Aggregation struct {
+\tName    string
+\tType    string
+\tField   string
+}
+
+// groupByField groups records by field and applies aggregations
+func groupByField(records []Record, field string, aggregations []Aggregation) []Record {
+\tgroups := make(map[interface{}][]Record)
+\tvar order []interface{}
+
+\t// Collect records into groups
+\tfor _, record := range records {
+\t\tkey := record[field]
+\t\tif _, exists := groups[key]; !exists {
+\t\t\torder = append(order, key)
+\t\t}
+\t\tgroups[key] = append(groups[key], record)
+\t}
+
+\t// Apply aggregations to each group
+\tvar result []Record
+\tfor _, key := range order {
+\t\tgroupRecords := groups[key]
+\t\tresultRecord := Record{field: key}
+
+\t\tfor _, agg := range aggregations {
+\t\t\tswitch agg.Type {
+\t\t\tcase \"count\":
+\t\t\t\tresultRecord[agg.Name] = len(groupRecords)
+\t\t\tcase \"sum\":
+\t\t\t\tvar sum float64
+\t\t\t\tfor _, r := range groupRecords {
+\t\t\t\t\tif v, ok := r[agg.Field].(float64); ok {
+\t\t\t\t\t\tsum += v
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tresultRecord[agg.Name] = sum
+\t\t\tcase \"avg\":
+\t\t\t\tvar sum float64
+\t\t\t\tfor _, r := range groupRecords {
+\t\t\t\t\tif v, ok := r[agg.Field].(float64); ok {
+\t\t\t\t\t\tsum += v
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tresultRecord[agg.Name] = sum / float64(len(groupRecords))
+\t\t\tcase \"min\":
+\t\t\t\tvar minVal float64 = 1e308
+\t\t\t\tfor _, r := range groupRecords {
+\t\t\t\t\tif v, ok := r[agg.Field].(float64); ok && v < minVal {
+\t\t\t\t\t\tminVal = v
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tresultRecord[agg.Name] = minVal
+\t\t\tcase \"max\":
+\t\t\t\tvar maxVal float64 = -1e308
+\t\t\t\tfor _, r := range groupRecords {
+\t\t\t\t\tif v, ok := r[agg.Field].(float64); ok && v > maxVal {
+\t\t\t\t\t\tmaxVal = v
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tresultRecord[agg.Name] = maxVal
+\t\t\tcase \"first\":
+\t\t\t\tif len(groupRecords) > 0 {
+\t\t\t\t\tresultRecord[agg.Name] = groupRecords[0][agg.Field]
+\t\t\t\t}
+\t\t\tcase \"last\":
+\t\t\t\tif len(groupRecords) > 0 {
+\t\t\t\t\tresultRecord[agg.Name] = groupRecords[len(groupRecords)-1][agg.Field]
+\t\t\t\t}
+\t\t\tcase \"collect\":
+\t\t\t\tvar values []interface{}
+\t\t\t\tfor _, r := range groupRecords {
+\t\t\t\t\tvalues = append(values, r[agg.Field])
+\t\t\t\t}
+\t\t\t\tresultRecord[agg.Name] = values
+\t\t\t}
+\t\t}
+\t\tresult = append(result, resultRecord)
+\t}
+\treturn result
+}
+
+// ReducerFunc is a function type for reduce operations
+type ReducerFunc func(record Record, acc interface{}) interface{}
+
+// reduceRecords applies a reducer function sequentially across all records
+func reduceRecords(records []Record, reducer ReducerFunc, initial interface{}) []Record {
+\tacc := initial
+\tfor _, record := range records {
+\t\tacc = reducer(record, acc)
+\t}
+\treturn []Record{{\"result\": acc}}
+}
+
+// scanRecords applies a reducer function and yields intermediate results
+func scanRecords(records []Record, reducer ReducerFunc, initial interface{}) []Record {
+\tvar result []Record
+\tacc := initial
+\tfor _, record := range records {
+\t\tacc = reducer(record, acc)
+\t\tresult = append(result, Record{\"result\": acc})
+\t}
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -8312,6 +8456,14 @@ generate_go_single_enhanced_stage(route_by(_, Routes), Code) :-
 generate_go_single_enhanced_stage(filter_by(_), "") :- !.
 generate_go_single_enhanced_stage(batch(_), "") :- !.
 generate_go_single_enhanced_stage(unbatch, "") :- !.
+generate_go_single_enhanced_stage(unique(_), "") :- !.
+generate_go_single_enhanced_stage(first(_), "") :- !.
+generate_go_single_enhanced_stage(last(_), "") :- !.
+generate_go_single_enhanced_stage(group_by(_, _), "") :- !.
+generate_go_single_enhanced_stage(reduce(_, _), "") :- !.
+generate_go_single_enhanced_stage(reduce(_), "") :- !.
+generate_go_single_enhanced_stage(scan(_, _), "") :- !.
+generate_go_single_enhanced_stage(scan(_), "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -8448,6 +8600,71 @@ generate_go_stage_flow(unbatch, InVar, OutVar, Code) :-
 "\t// Unbatch: flatten batches to individual records
 \t~w := unbatchRecords(~w)", [OutVar, InVar]).
 
+% Unique stage: deduplicate by field (keep first)
+generate_go_stage_flow(unique(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "unique~wResult", [Field]),
+    format(string(Code),
+"\t// Unique: keep first record per '~w' value
+\t~w := uniqueByField(~w, \"~w\")", [Field, OutVar, InVar, Field]).
+
+% First stage: alias for unique (keep first occurrence)
+generate_go_stage_flow(first(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "first~wResult", [Field]),
+    format(string(Code),
+"\t// First: keep first record per '~w' value
+\t~w := firstByField(~w, \"~w\")", [Field, OutVar, InVar, Field]).
+
+% Last stage: keep last record per field value
+generate_go_stage_flow(last(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "last~wResult", [Field]),
+    format(string(Code),
+"\t// Last: keep last record per '~w' value
+\t~w := lastByField(~w, \"~w\")", [Field, OutVar, InVar, Field]).
+
+% Group by stage: group and aggregate
+generate_go_stage_flow(group_by(Field, Agg), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "grouped~wResult", [Field]),
+    format_go_aggregations(Agg, AggStr),
+    format(string(Code),
+"\t// Group by '~w' with aggregations
+\t~w := groupByField(~w, \"~w\", []Aggregation{~w})", [Field, OutVar, InVar, Field, AggStr]).
+
+% Reduce stage with initial value: custom sequential fold
+generate_go_stage_flow(reduce(Pred, Init), InVar, OutVar, Code) :-
+    !,
+    OutVar = "reducedResult",
+    format(string(Code),
+"\t// Reduce: sequential fold with ~w
+\t~w := reduceRecords(~w, ~w, ~w)", [Pred, OutVar, InVar, Pred, Init]).
+
+% Reduce stage without initial value
+generate_go_stage_flow(reduce(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "reducedResult",
+    format(string(Code),
+"\t// Reduce: sequential fold with ~w
+\t~w := reduceRecords(~w, ~w, nil)", [Pred, OutVar, InVar, Pred]).
+
+% Scan stage with initial value: reduce with intermediate outputs
+generate_go_stage_flow(scan(Pred, Init), InVar, OutVar, Code) :-
+    !,
+    OutVar = "scannedResult",
+    format(string(Code),
+"\t// Scan: running fold with ~w (emits intermediate values)
+\t~w := scanRecords(~w, ~w, ~w)", [Pred, OutVar, InVar, Pred, Init]).
+
+% Scan stage without initial value
+generate_go_stage_flow(scan(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "scannedResult",
+    format(string(Code),
+"\t// Scan: running fold with ~w (emits intermediate values)
+\t~w := scanRecords(~w, ~w, nil)", [Pred, OutVar, InVar, Pred]).
+
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -8496,6 +8713,42 @@ format_go_route_map([(Cond, Stage)|Rest], Str) :-
         format(string(Str), "false: ~w, ~w", [StageName, RestStr])
     ;   format(string(Str), "\"~w\": ~w, ~w", [Cond, StageName, RestStr])
     ).
+
+%% format_go_aggregations(+Agg, -Str)
+%  Format aggregation specifications for Go group_by stage.
+format_go_aggregations(Aggs, Str) :-
+    is_list(Aggs),
+    !,
+    format_go_aggregation_list(Aggs, Str).
+format_go_aggregations(Agg, Str) :-
+    format_go_single_aggregation(Agg, Str).
+
+format_go_aggregation_list([], "").
+format_go_aggregation_list([Agg], Str) :-
+    format_go_single_aggregation(Agg, Str).
+format_go_aggregation_list([Agg|Rest], Str) :-
+    Rest \= [],
+    format_go_single_aggregation(Agg, AggStr),
+    format_go_aggregation_list(Rest, RestStr),
+    format(string(Str), "~w, ~w", [AggStr, RestStr]).
+
+% count aggregation
+format_go_single_aggregation(count, "{\"count\", \"count\", \"\"}").
+% Aggregations with field
+format_go_single_aggregation(sum(Field), Str) :-
+    format(string(Str), "{\"sum\", \"sum\", \"~w\"}", [Field]).
+format_go_single_aggregation(avg(Field), Str) :-
+    format(string(Str), "{\"avg\", \"avg\", \"~w\"}", [Field]).
+format_go_single_aggregation(min(Field), Str) :-
+    format(string(Str), "{\"min\", \"min\", \"~w\"}", [Field]).
+format_go_single_aggregation(max(Field), Str) :-
+    format(string(Str), "{\"max\", \"max\", \"~w\"}", [Field]).
+format_go_single_aggregation(first(Field), Str) :-
+    format(string(Str), "{\"first\", \"first\", \"~w\"}", [Field]).
+format_go_single_aggregation(last(Field), Str) :-
+    format(string(Str), "{\"last\", \"last\", \"~w\"}", [Field]).
+format_go_single_aggregation(collect(Field), Str) :-
+    format(string(Str), "{\"collect\", \"collect\", \"~w\"}", [Field]).
 
 %% generate_go_enhanced_main(+PipelineName, +OutputFormat, -Code)
 %  Generate main function for enhanced pipeline.

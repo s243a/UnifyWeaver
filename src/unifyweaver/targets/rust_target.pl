@@ -1371,6 +1371,159 @@ fn unbatch_records(batches: &[Vec<Record>]) -> Vec<Record> {
         .flat_map(|batch| batch.clone())
         .collect()
 }
+
+/// Unique: Keep only the first record for each unique field value.
+fn unique_by_field(records: &[Record], field: &str) -> Vec<Record> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for record in records {
+        if let Some(key) = record.get(field) {
+            let key_str = format!(\"{:?}\", key);
+            if !seen.contains(&key_str) {
+                seen.insert(key_str);
+                result.push(record.clone());
+            }
+        }
+    }
+    result
+}
+
+/// First: Alias for unique_by_field (keeps first occurrence).
+fn first_by_field(records: &[Record], field: &str) -> Vec<Record> {
+    unique_by_field(records, field)
+}
+
+/// Last: Keep only the last record for each unique field value.
+fn last_by_field(records: &[Record], field: &str) -> Vec<Record> {
+    use std::collections::HashMap;
+    let mut last_seen: HashMap<String, Record> = HashMap::new();
+    let mut order = Vec::new();
+    for record in records {
+        if let Some(key) = record.get(field) {
+            let key_str = format!(\"{:?}\", key);
+            if !last_seen.contains_key(&key_str) {
+                order.push(key_str.clone());
+            }
+            last_seen.insert(key_str, record.clone());
+        }
+    }
+    order.iter().filter_map(|k| last_seen.get(k).cloned()).collect()
+}
+
+/// Aggregation type for group_by operations.
+#[derive(Clone)]
+enum AggType {
+    Count,
+    Sum(String),
+    Avg(String),
+    Min(String),
+    Max(String),
+    First(String),
+    Last(String),
+    Collect(String),
+}
+
+/// Group by field and apply aggregations.
+fn group_by_field(records: &[Record], field: &str, aggregations: &[(&str, AggType)]) -> Vec<Record> {
+    use std::collections::HashMap;
+    let mut groups: HashMap<String, Vec<Record>> = HashMap::new();
+    let mut order = Vec::new();
+
+    for record in records {
+        if let Some(key) = record.get(field) {
+            let key_str = format!(\"{:?}\", key);
+            if !groups.contains_key(&key_str) {
+                order.push((key_str.clone(), key.clone()));
+            }
+            groups.entry(key_str).or_insert_with(Vec::new).push(record.clone());
+        }
+    }
+
+    let mut result = Vec::new();
+    for (key_str, key_val) in order {
+        if let Some(group_records) = groups.get(&key_str) {
+            let mut result_record = Record::new();
+            result_record.insert(field.to_string(), key_val);
+
+            for (name, agg) in aggregations {
+                let value: Value = match agg {
+                    AggType::Count => Value::from(group_records.len() as i64),
+                    AggType::Sum(f) => {
+                        let sum: f64 = group_records.iter()
+                            .filter_map(|r| r.get(f).and_then(|v| v.as_f64()))
+                            .sum();
+                        Value::from(sum)
+                    }
+                    AggType::Avg(f) => {
+                        let values: Vec<f64> = group_records.iter()
+                            .filter_map(|r| r.get(f).and_then(|v| v.as_f64()))
+                            .collect();
+                        let avg = if values.is_empty() { 0.0 } else { values.iter().sum::<f64>() / values.len() as f64 };
+                        Value::from(avg)
+                    }
+                    AggType::Min(f) => {
+                        group_records.iter()
+                            .filter_map(|r| r.get(f).and_then(|v| v.as_f64()))
+                            .fold(f64::INFINITY, f64::min)
+                            .into()
+                    }
+                    AggType::Max(f) => {
+                        group_records.iter()
+                            .filter_map(|r| r.get(f).and_then(|v| v.as_f64()))
+                            .fold(f64::NEG_INFINITY, f64::max)
+                            .into()
+                    }
+                    AggType::First(f) => {
+                        group_records.first().and_then(|r| r.get(f)).cloned().unwrap_or(Value::Null)
+                    }
+                    AggType::Last(f) => {
+                        group_records.last().and_then(|r| r.get(f)).cloned().unwrap_or(Value::Null)
+                    }
+                    AggType::Collect(f) => {
+                        let values: Vec<Value> = group_records.iter()
+                            .filter_map(|r| r.get(f).cloned())
+                            .collect();
+                        Value::from(values)
+                    }
+                };
+                result_record.insert(name.to_string(), value);
+            }
+            result.push(result_record);
+        }
+    }
+    result
+}
+
+/// Reduce: Apply reducer function sequentially across all records.
+fn reduce_records<F>(records: &[Record], reducer: F, initial: Value) -> Vec<Record>
+where
+    F: Fn(&Record, Value) -> Value,
+{
+    let mut acc = initial;
+    for record in records {
+        acc = reducer(record, acc);
+    }
+    let mut result = Record::new();
+    result.insert(\"result\".to_string(), acc);
+    vec![result]
+}
+
+/// Scan: Like reduce but yields intermediate results.
+fn scan_records<F>(records: &[Record], reducer: F, initial: Value) -> Vec<Record>
+where
+    F: Fn(&Record, Value) -> Value,
+{
+    let mut result = Vec::new();
+    let mut acc = initial;
+    for record in records {
+        acc = reducer(record, acc);
+        let mut r = Record::new();
+        r.insert(\"result\".to_string(), acc.clone());
+        result.push(r);
+    }
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -1536,6 +1689,14 @@ generate_rust_single_enhanced_stage(route_by(_, Routes), Code) :-
 generate_rust_single_enhanced_stage(filter_by(_), "") :- !.
 generate_rust_single_enhanced_stage(batch(_), "") :- !.
 generate_rust_single_enhanced_stage(unbatch, "") :- !.
+generate_rust_single_enhanced_stage(unique(_), "") :- !.
+generate_rust_single_enhanced_stage(first(_), "") :- !.
+generate_rust_single_enhanced_stage(last(_), "") :- !.
+generate_rust_single_enhanced_stage(group_by(_, _), "") :- !.
+generate_rust_single_enhanced_stage(reduce(_, _), "") :- !.
+generate_rust_single_enhanced_stage(reduce(_), "") :- !.
+generate_rust_single_enhanced_stage(scan(_, _), "") :- !.
+generate_rust_single_enhanced_stage(scan(_), "") :- !.
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -1661,6 +1822,71 @@ generate_rust_stage_flow(unbatch, InVar, OutVar, Code) :-
 "    // Unbatch: flatten batches to individual records
     let ~w = unbatch_records(&~w);", [OutVar, InVar]).
 
+% Unique stage: deduplicate by field (keep first)
+generate_rust_stage_flow(unique(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "unique_~w_result", [Field]),
+    format(string(Code),
+"    // Unique: keep first record per '~w' value
+    let ~w = unique_by_field(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
+
+% First stage: alias for unique (keep first occurrence)
+generate_rust_stage_flow(first(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "first_~w_result", [Field]),
+    format(string(Code),
+"    // First: keep first record per '~w' value
+    let ~w = first_by_field(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
+
+% Last stage: keep last record per field value
+generate_rust_stage_flow(last(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "last_~w_result", [Field]),
+    format(string(Code),
+"    // Last: keep last record per '~w' value
+    let ~w = last_by_field(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
+
+% Group by stage: group and aggregate
+generate_rust_stage_flow(group_by(Field, Agg), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "grouped_~w_result", [Field]),
+    format_rust_aggregations(Agg, AggStr),
+    format(string(Code),
+"    // Group by '~w' with aggregations
+    let ~w = group_by_field(&~w, \"~w\", &[~w]);", [Field, OutVar, InVar, Field, AggStr]).
+
+% Reduce stage with initial value
+generate_rust_stage_flow(reduce(Pred, Init), InVar, OutVar, Code) :-
+    !,
+    OutVar = "reduced_result",
+    format(string(Code),
+"    // Reduce: sequential fold with ~w
+    let ~w = reduce_records(&~w, ~w, ~w.into());", [Pred, OutVar, InVar, Pred, Init]).
+
+% Reduce stage without initial value
+generate_rust_stage_flow(reduce(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "reduced_result",
+    format(string(Code),
+"    // Reduce: sequential fold with ~w
+    let ~w = reduce_records(&~w, ~w, Value::Null);", [Pred, OutVar, InVar, Pred]).
+
+% Scan stage with initial value
+generate_rust_stage_flow(scan(Pred, Init), InVar, OutVar, Code) :-
+    !,
+    OutVar = "scanned_result",
+    format(string(Code),
+"    // Scan: running fold with ~w (emits intermediate values)
+    let ~w = scan_records(&~w, ~w, ~w.into());", [Pred, OutVar, InVar, Pred, Init]).
+
+% Scan stage without initial value
+generate_rust_stage_flow(scan(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "scanned_result",
+    format(string(Code),
+"    // Scan: running fold with ~w (emits intermediate values)
+    let ~w = scan_records(&~w, ~w, Value::Null);", [Pred, OutVar, InVar, Pred]).
+
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -1709,6 +1935,42 @@ format_rust_route_map([(Cond, Stage)|Rest], Str) :-
         format(string(Str), "    route_map.insert(Value::Bool(false), ~w);~n~w", [StageName, RestStr])
     ;   format(string(Str), "    route_map.insert(Value::String(\"~w\".to_string()), ~w);~n~w", [Cond, StageName, RestStr])
     ).
+
+%% format_rust_aggregations(+Agg, -Str)
+%  Format aggregation specifications for Rust group_by stage.
+format_rust_aggregations(Aggs, Str) :-
+    is_list(Aggs),
+    !,
+    format_rust_aggregation_list(Aggs, Str).
+format_rust_aggregations(Agg, Str) :-
+    format_rust_single_aggregation(Agg, Str).
+
+format_rust_aggregation_list([], "").
+format_rust_aggregation_list([Agg], Str) :-
+    format_rust_single_aggregation(Agg, Str).
+format_rust_aggregation_list([Agg|Rest], Str) :-
+    Rest \= [],
+    format_rust_single_aggregation(Agg, AggStr),
+    format_rust_aggregation_list(Rest, RestStr),
+    format(string(Str), "~w, ~w", [AggStr, RestStr]).
+
+% count aggregation
+format_rust_single_aggregation(count, "(\"count\", AggType::Count)").
+% Aggregations with field
+format_rust_single_aggregation(sum(Field), Str) :-
+    format(string(Str), "(\"sum\", AggType::Sum(\"~w\".to_string()))", [Field]).
+format_rust_single_aggregation(avg(Field), Str) :-
+    format(string(Str), "(\"avg\", AggType::Avg(\"~w\".to_string()))", [Field]).
+format_rust_single_aggregation(min(Field), Str) :-
+    format(string(Str), "(\"min\", AggType::Min(\"~w\".to_string()))", [Field]).
+format_rust_single_aggregation(max(Field), Str) :-
+    format(string(Str), "(\"max\", AggType::Max(\"~w\".to_string()))", [Field]).
+format_rust_single_aggregation(first(Field), Str) :-
+    format(string(Str), "(\"first\", AggType::First(\"~w\".to_string()))", [Field]).
+format_rust_single_aggregation(last(Field), Str) :-
+    format(string(Str), "(\"last\", AggType::Last(\"~w\".to_string()))", [Field]).
+format_rust_single_aggregation(collect(Field), Str) :-
+    format(string(Str), "(\"collect\", AggType::Collect(\"~w\".to_string()))", [Field]).
 
 %% generate_rust_enhanced_main(+PipelineName, +OutputFormat, -Code)
 %  Generate main function for enhanced pipeline.

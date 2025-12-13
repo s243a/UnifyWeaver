@@ -4,7 +4,7 @@ UnifyWeaver supports **enhanced pipeline chaining** across all major targets, en
 
 ## Overview
 
-Enhanced pipeline chaining adds seven new stage types to the standard predicate stages:
+Enhanced pipeline chaining adds the following stage types to the standard predicate stages:
 
 | Stage Type | Description |
 |------------|-------------|
@@ -16,6 +16,12 @@ Enhanced pipeline chaining adds seven new stage types to the standard predicate 
 | `filter_by(Pred)` | Filter records that satisfy a predicate |
 | `batch(N)` | Collect N records into batches for bulk processing |
 | `unbatch` | Flatten batches back to individual records |
+| `unique(Field)` | Keep first record per unique field value (deduplicate) |
+| `first(Field)` | Alias for unique - keep first occurrence |
+| `last(Field)` | Keep last record per unique field value |
+| `group_by(Field, Agg)` | Group by field and apply aggregations |
+| `reduce(Pred, Init)` | Sequential fold across all records |
+| `scan(Pred, Init)` | Like reduce but emits intermediate values |
 | `Pred/Arity` | Standard predicate stage (unchanged) |
 
 ### Fan-out vs Parallel
@@ -386,6 +392,104 @@ def unbatch_records(stream):
                 yield record
         else:
             yield batch
+```
+
+## Aggregation Stages
+
+Pipeline-level aggregation stages for deduplication, grouping, and sequential processing.
+
+### Unique (`unique/1`) / First (`first/1`)
+
+Keep only the first record for each unique field value. Deduplicates the stream.
+
+```prolog
+unique(user_id)
+% or equivalently:
+first(user_id)
+```
+
+**Data Flow:**
+```
+{id: 1, user: "A"} ─┐
+{id: 2, user: "B"} ─┼─► {id: 1, user: "A"}, {id: 2, user: "B"}
+{id: 3, user: "A"} ─┘   (second "A" is filtered out)
+```
+
+### Last (`last/1`)
+
+Keep only the last record for each unique field value.
+
+```prolog
+last(user_id)
+```
+
+### Group By (`group_by/2`)
+
+Group records by a field and apply aggregations.
+
+```prolog
+% Single aggregation
+group_by(category, count)
+
+% Multiple aggregations
+group_by(category, [count, sum(amount), avg(price)])
+```
+
+**Available Aggregations:**
+| Aggregation | Description |
+|-------------|-------------|
+| `count` | Count records in group |
+| `sum(Field)` | Sum numeric field |
+| `avg(Field)` | Average numeric field |
+| `min(Field)` | Minimum value |
+| `max(Field)` | Maximum value |
+| `first(Field)` | First value in group |
+| `last(Field)` | Last value in group |
+| `collect(Field)` | Collect all values into list |
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    group_by(region, [count, sum(sales), avg(sales)]),
+    output/1
+], [pipeline_name(sales_by_region)], Code).
+```
+
+**Generated Output:**
+```json
+{"region": "North", "count": 150, "sum": 45000.0, "avg": 300.0}
+{"region": "South", "count": 200, "sum": 60000.0, "avg": 300.0}
+```
+
+### Reduce (`reduce/2`)
+
+Apply a reducer function sequentially across all records. Unlike `group_by`, `reduce` sees all data in order and maintains running state.
+
+```prolog
+% reduce(ReducerPred, InitialValue)
+reduce(running_total, 0)
+```
+
+**Use Cases:**
+- Running totals/cumulative sums
+- State machines
+- Sequential aggregations where order matters
+
+### Scan (`scan/2`)
+
+Like `reduce` but emits intermediate results after each record.
+
+```prolog
+% scan(ReducerPred, InitialValue)
+scan(running_sum, 0)
+```
+
+**Data Flow:**
+```
+{amount: 10} ─► {result: 10}
+{amount: 20} ─► {result: 30}
+{amount: 5}  ─► {result: 35}
 ```
 
 ### Batch Processing Example
