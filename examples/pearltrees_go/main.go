@@ -10,6 +10,51 @@ import (
 	"unifyweaver/targets/go_runtime/storage"
 )
 
+// createEmbedder initializes the embedder based on compile-time backend selection.
+// Uses MODEL_PATH environment variable or defaults to all-MiniLM-L6-v2.
+// Returns the embedder and an optional close function.
+func createEmbedder() (embedder.Embedder, func()) {
+	// Get model path from environment or use default
+	modelPath := os.Getenv("MODEL_PATH")
+	if modelPath == "" {
+		// Default paths based on backend
+		backend := embedder.AvailableBackend()
+		switch backend {
+		case embedder.BackendCandle:
+			// Candle uses HuggingFace model ID or local safetensors path
+			modelPath = "sentence-transformers/all-MiniLM-L6-v2"
+		default:
+			// Pure Go/ORT/XLA use ONNX model path
+			modelPath = "../../models/all-MiniLM-L6-v2-onnx"
+		}
+	}
+
+	backend := embedder.AvailableBackend()
+	fmt.Fprintf(os.Stderr, "Backend: %s\n", backend)
+	fmt.Fprintf(os.Stderr, "Model: %s\n", modelPath)
+
+	// Check for GPU environment variable
+	useGPU := os.Getenv("USE_GPU") == "1" || os.Getenv("USE_GPU") == "true"
+
+	config := embedder.EmbedderConfig{
+		ModelPath:  modelPath,
+		ModelName:  "all-MiniLM-L6-v2",
+		Dimensions: 384,
+		UseGPU:     useGPU,
+		MaxLength:  512,
+	}
+
+	emb, err := embedder.NewEmbedder(config)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Could not load embedder (%s): %v\n", backend, err)
+		fmt.Fprintf(os.Stderr, "Falling back to stub embedder...\n")
+		return embedder.NewStubEmbedder(384), nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Embedding model loaded successfully\n")
+	return emb, func() { emb.Close() }
+}
+
 func main() {
 	dbPath := "pearltrees.bolt"
 
@@ -40,18 +85,10 @@ func runIngest(dbPath string) {
 	defer store.Close()
 	fmt.Fprintf(os.Stderr, "Database: %s\n", dbPath)
 
-	// Initialize embedder - try HugotEmbedder first, fall back to stub
-	modelPath := "../../models/all-MiniLM-L6-v2-onnx"
-	var emb crawler.Embedder
-	hugotEmb, err := embedder.NewHugotEmbedder(modelPath, "all-MiniLM-L6-v2")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Could not load HugotEmbedder: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Falling back to stub embedder...\n")
-		emb = embedder.NewStubEmbedder(384)
-	} else {
-		fmt.Fprintf(os.Stderr, "Embedding model: all-MiniLM-L6-v2 (hugot)\n")
-		emb = hugotEmb
-		defer hugotEmb.Close()
+	// Initialize embedder using backend selected at compile time
+	emb, closeFunc := createEmbedder()
+	if closeFunc != nil {
+		defer closeFunc()
 	}
 
 	// Initialize crawler
@@ -85,18 +122,10 @@ func runSearch(dbPath, query string) {
 	}
 	defer store.Close()
 
-	// Initialize embedder - try HugotEmbedder first, fall back to stub
-	modelPath := "../../models/all-MiniLM-L6-v2-onnx"
-	var emb search.Embedder
-	hugotEmb, err := embedder.NewHugotEmbedder(modelPath, "all-MiniLM-L6-v2")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Could not load HugotEmbedder: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Falling back to stub embedder...\n")
-		emb = embedder.NewStubEmbedder(384)
-	} else {
-		fmt.Fprintf(os.Stderr, "Embedding model: all-MiniLM-L6-v2 (hugot)\n")
-		emb = hugotEmb
-		defer hugotEmb.Close()
+	// Initialize embedder using backend selected at compile time
+	emb, closeFunc := createEmbedder()
+	if closeFunc != nil {
+		defer closeFunc()
 	}
 
 	// Initialize bookmark filer
