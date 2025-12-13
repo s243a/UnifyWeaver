@@ -4,15 +4,47 @@ The Go embedder package provides text embedding for semantic search with multipl
 
 ## Table of Contents
 
-1. [Overview](#overview)
-2. [Backend Comparison](#backend-comparison)
-3. [Backend 1: Pure Go (Easiest)](#backend-1-pure-go-easiest)
-4. [Backend 2: Candle/Rust (Recommended)](#backend-2-candlerust-recommended)
-5. [Backend 3: ONNX Runtime (ORT)](#backend-3-onnx-runtime-ort)
-6. [Backend 4: XLA/PJRT (Most Complex)](#backend-4-xlapjrt-most-complex)
-7. [Model Setup](#model-setup)
-8. [Configuration](#configuration)
-9. [Troubleshooting](#troubleshooting)
+1. [Quick Start](#quick-start)
+2. [Overview](#overview)
+3. [Backend Comparison](#backend-comparison)
+4. [Backend 1: Pure Go (Easiest)](#backend-1-pure-go-easiest)
+5. [Backend 2: Candle/Rust (Recommended)](#backend-2-candlerust-recommended)
+6. [Backend 3: ONNX Runtime (ORT)](#backend-3-onnx-runtime-ort)
+7. [Backend 4: XLA/PJRT (Most Complex)](#backend-4-xlapjrt-most-complex)
+8. [Model Setup](#model-setup)
+9. [Configuration](#configuration)
+10. [Troubleshooting](#troubleshooting)
+
+---
+
+## Quick Start
+
+**Just want it working? Use Pure Go (no dependencies):**
+
+```bash
+# Download the model
+pip install huggingface_hub
+huggingface-cli download sentence-transformers/all-MiniLM-L6-v2 --local-dir models/all-MiniLM-L6-v2
+
+# Build and run
+go build -o myapp ./examples/pearltrees_go
+MODEL_PATH="models/all-MiniLM-L6-v2" ./myapp --search "your query"
+```
+
+**Want best performance? Use Candle:**
+
+```bash
+# Install Rust and build the library
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+git clone https://github.com/vllm-project/semantic-router.git /tmp/semantic-router
+cd /tmp/semantic-router/candle-binding && cargo build --release
+sudo cp target/release/libcandle_semantic_router.so /usr/local/lib/ && sudo ldconfig
+
+# Build and run
+go build -tags candle -o myapp ./examples/pearltrees_go
+MODEL_PATH="sentence-transformers/all-MiniLM-L6-v2" LD_LIBRARY_PATH=/usr/local/lib ./myapp --search "your query"
+```
 
 ---
 
@@ -50,11 +82,24 @@ type Embedder interface {
 | Backend | Difficulty | Performance | GPU Support | Dependencies |
 |---------|------------|-------------|-------------|--------------|
 | Pure Go | Easy | Moderate | No | None (pure Go) |
-| Candle | Easy-Medium | Fast | CUDA | Rust toolchain, libcandle_semantic_router.so |
-| ORT | Medium | Fast | CUDA | ONNX Runtime 1.22+, libtokenizers.a |
-| XLA | Hard | Fastest | CUDA/TPU/Metal | PJRT libraries, C++ toolchain |
+| Candle | Easy-Medium | **Fastest** | CUDA | Rust toolchain, libcandle_semantic_router.so |
+| ORT | Medium | Moderate | CUDA | ONNX Runtime 1.22+, libtokenizers.a |
+| XLA | Hard | Slow (CPU) | CUDA/TPU/Metal | PJRT libraries, C++ toolchain |
 
 **Recommendation:** Start with Pure Go for development, use Candle for production.
+
+### Performance Benchmarks
+
+Tested on GTX 1660 Ti, all-MiniLM-L6-v2 model, 5 queries x 3 runs averaged:
+
+| Backend | CPU Time | GPU Time | Notes |
+|---------|----------|----------|-------|
+| **Candle** | **0.21s** | 0.36s | Fastest on CPU |
+| Pure Go | 0.34s | N/A | No GPU support |
+| ORT | 0.45s | 0.44s | Marginal GPU gain |
+| XLA | 0.70s | ~0.72s | WSL2 may fall back to CPU |
+
+**GPU Note:** For single-query workloads, CPU is often faster due to GPU transfer overhead. The embedding model is small enough that CPU inference completes before GPU data transfer finishes. GPU acceleration benefits appear with batch processing (multiple embeddings at once) or larger models.
 
 ---
 
@@ -243,6 +288,31 @@ MODEL_PATH="../../models/all-MiniLM-L6-v2" LD_LIBRARY_PATH=/usr/local/lib ./myap
 4. **Tokenizer not found**: "feature extraction pipeline requires a tokenizer"
    - Solution: Ensure `tokenizer.json` is in the same directory as `model.onnx`
 
+### GPU Support (CUDA)
+
+For GPU acceleration with ORT:
+
+```bash
+# Download GPU version of ONNX Runtime
+cd /tmp
+wget https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-gpu-1.22.0.tgz
+tar xzf onnxruntime-linux-x64-gpu-1.22.0.tgz
+
+# Install GPU libraries
+sudo cp onnxruntime-linux-x64-gpu-1.22.0/lib/libonnxruntime_providers_cuda.so /usr/local/lib/
+sudo cp onnxruntime-linux-x64-gpu-1.22.0/lib/libonnxruntime_providers_shared.so /usr/local/lib/
+
+# Install cuDNN 9 (required for CUDA provider)
+sudo apt install libcudnn9-cuda-12
+
+sudo ldconfig
+```
+
+Then run with:
+```bash
+USE_GPU=1 LD_LIBRARY_PATH=/usr/local/lib ./myapp --search "machine learning"
+```
+
 ### Pros
 - Fast inference
 - GPU support (with CUDA build)
@@ -252,42 +322,98 @@ MODEL_PATH="../../models/all-MiniLM-L6-v2" LD_LIBRARY_PATH=/usr/local/lib ./myap
 - Complex installation (multiple dependencies)
 - Version sensitivity (API v22 requirement)
 - Requires runtime library path configuration
+- GPU requires cuDNN 9
 
 ---
 
 ## Backend 4: XLA/PJRT (Most Complex)
 
-The XLA backend uses Google's XLA compiler via PJRT. Provides the best performance, especially on TPUs, but has the most complex setup.
+The XLA backend uses Google's XLA compiler via PJRT. Optimized for hardware accelerators (TPU, GPU), but slower on CPU due to compilation overhead.
 
 ### Prerequisites
 
+#### CPU-only Install
+
 ```bash
-# Install PJRT libraries
+# Option 1: System-wide (requires sudo)
 curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_linux_amd64.sh | bash
 
-# For CUDA support
-curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_cuda_linux_amd64.sh | bash
+# Option 2: Local install (no sudo) - RECOMMENDED
+GOPJRT_INSTALL_DIR=$HOME/.local GOPJRT_NOSUDO=1 \
+  bash -c 'curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_linux_amd64.sh | bash'
 ```
+
+The local install places libraries in `~/.local/lib/` (~250MB PJRT plugin).
+
+#### GPU/CUDA Install (Complex)
+
+XLA CUDA support requires Python and JAX. This is significantly more complex than other backends:
+
+**Option 1: Official install script** (requires python3-venv):
+```bash
+sudo apt install python3-venv python3-dev
+curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_cuda.sh | bash
+```
+
+**Option 2: Manual install with Python 3.9+** (if python3-venv not available):
+```bash
+# Create venv with newer Python
+python3.9 -m venv /tmp/jax_cuda_venv
+source /tmp/jax_cuda_venv/bin/activate
+pip install --upgrade pip
+pip install "jax[cuda12]"
+
+# Copy CUDA PJRT plugin
+mkdir -p ~/.local/lib/gomlx/pjrt
+cp /tmp/jax_cuda_venv/lib/python3.9/site-packages/jax_plugins/xla_cuda12/xla_cuda_plugin.so \
+   ~/.local/lib/gomlx/pjrt/pjrt_c_api_cuda_plugin.so
+
+# Copy nvidia libraries
+cp -r /tmp/jax_cuda_venv/lib/python3.9/site-packages/nvidia/* ~/.local/lib/gomlx/nvidia/
+
+# Cleanup
+rm -rf /tmp/jax_cuda_venv
+```
+
+**Note:** XLA GPU may not work properly in WSL2 due to `/dev/nvidia*` device detection issues. For GPU acceleration in WSL2, **Candle or ORT are better alternatives**.
 
 ### Build
 
 ```bash
+# With system-wide install
 go build -tags XLA -o myapp ./examples/pearltrees_go
+
+# With local install
+CGO_LDFLAGS="-L$HOME/.local/lib" go build -tags XLA -o myapp ./examples/pearltrees_go
+```
+
+### Usage
+
+```bash
+# System-wide
+./myapp --search "quantum physics"
+
+# Local install
+LD_LIBRARY_PATH=$HOME/.local/lib ./myapp --search "quantum physics"
 ```
 
 ### Status
 
-**Note:** XLA backend is implemented but not yet fully tested. Use Candle or ORT for production.
+XLA backend is **working** but slower than other backends on CPU (0.67s vs 0.21s for Candle). This is expected - XLA is optimized for:
+- TPU inference
+- GPU batch processing
+- Large model compilation
 
 ### Pros
-- Best performance potential
 - Supports TPU, Metal (Apple Silicon)
-- Optimizing compiler
+- Optimizing compiler (benefits large models)
+- Best for batch processing on accelerators
 
 ### Cons
+- Slowest on CPU (compilation overhead)
 - Most complex installation
-- Large dependencies
-- Less mature Go integration
+- Large dependencies (~250MB PJRT plugin)
+- CUDA install requires python3-venv and JAX
 
 ---
 
@@ -393,11 +519,17 @@ Falling back to stub embedder...
 
 ```bash
 # Check if libraries are found
-ldd ./myapp | grep -E "onnx|candle|tokenizer"
+ldd ./myapp | grep -E "onnx|candle|tokenizer|pjrt"
+
+# Check for missing libraries
+ldd ./myapp | grep "not found"
 
 # Add to library path permanently
 echo '/usr/local/lib' | sudo tee /etc/ld.so.conf.d/local.conf
 sudo ldconfig
+
+# For XLA local install
+export LD_LIBRARY_PATH=$HOME/.local/lib:$LD_LIBRARY_PATH
 ```
 
 ### Build Tag Verification
@@ -408,6 +540,60 @@ go build -tags ORT -v ./... 2>&1 | grep embedder
 
 # Should show embedder_ort.go being compiled, NOT embedder_purego.go
 ```
+
+### Common Errors by Backend
+
+#### Candle
+- **"libcandle_semantic_router.so: cannot open"**: Library not installed or not in LD_LIBRARY_PATH
+  ```bash
+  sudo ldconfig
+  # or
+  LD_LIBRARY_PATH=/usr/local/lib ./myapp
+  ```
+
+#### ORT
+- **"ORT API version 22 is not available"**: Wrong ONNX Runtime version
+  ```bash
+  # Must use v1.22.0+
+  wget https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-1.22.0.tgz
+  ```
+
+- **"libcudnn.so.9: cannot open"**: Missing cuDNN for GPU
+  ```bash
+  sudo apt install libcudnn9-cuda-12
+  sudo ldconfig
+  ```
+
+- **"multiple .onnx file detected"**: Model directory has multiple ONNX files
+  - The embedder defaults to `model.onnx`. Ensure only one exists or it's named correctly.
+
+#### XLA
+- **"libpjrt_c_api_cpu_plugin.so: cannot open"**: PJRT not installed
+  ```bash
+  # Local install
+  GOPJRT_INSTALL_DIR=$HOME/.local GOPJRT_NOSUDO=1 \
+    bash -c 'curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_linux_amd64.sh | bash'
+  ```
+
+- **"ml-dtypes build failed"**: Missing Python headers for CUDA install
+  ```bash
+  sudo apt install python3-dev
+  ```
+
+### Verify GPU is Being Used
+
+```bash
+# Check GPU memory before/after running
+nvidia-smi --query-gpu=memory.used --format=csv,noheader
+
+# Run with GPU enabled
+USE_GPU=1 LD_LIBRARY_PATH=/usr/local/lib ./myapp --search "test"
+
+# Check GPU memory again - should increase if GPU is active
+nvidia-smi --query-gpu=memory.used --format=csv,noheader
+```
+
+**Note:** For small models like all-MiniLM-L6-v2, CPU may be faster than GPU for single queries due to data transfer overhead.
 
 ---
 
