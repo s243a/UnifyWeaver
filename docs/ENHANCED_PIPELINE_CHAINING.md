@@ -28,7 +28,7 @@ The key difference between `fan_out` and `parallel`:
   - **PowerShell**: Runspace pools
   - **Bash**: Background processes with `wait`
   - **IronPython**: .NET `Task.Factory.StartNew` with `ConcurrentBag<T>`
-  - **AWK**: Sequential (single-threaded by design)
+  - **AWK**: Sequential by default, or GNU Parallel with `parallel_mode(gnu_parallel)` option
 
 ## Supported Targets
 
@@ -349,6 +349,22 @@ def parallel_records(record, stages):
 - Uses indirect function calls (`@function_name`) for dynamic dispatch
 - Global arrays for state management
 - JSONL processing helpers
+- **Parallel modes:**
+  - `sequential` (default): Pure AWK, parallel stages run sequentially
+  - `gnu_parallel`: Bash+AWK hybrid using GNU Parallel for true concurrency
+
+**AWK GNU Parallel Example:**
+```prolog
+compile_awk_enhanced_pipeline([
+    extract/1,
+    parallel([validate/1, enrich/1]),
+    merge,
+    output/1
+], [pipeline_name(my_pipe), parallel_mode(gnu_parallel)], Code).
+```
+
+This generates a bash script that uses GNU Parallel to execute parallel stages concurrently.
+Requires: `parallel` (GNU Parallel) and `gawk`.
 
 ### Bash
 - Uses associative arrays (Bash 4.0+)
