@@ -4,6 +4,7 @@ package embedder
 
 import (
 	"github.com/knights-analytics/hugot"
+	"github.com/knights-analytics/hugot/options"
 	"github.com/knights-analytics/hugot/pipelines"
 )
 
@@ -19,10 +20,17 @@ type xlaEmbedder struct {
 // newEmbedder creates an XLA/PJRT embedder
 // Requires: PJRT plugin libraries from GoMLX
 // Install: curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_linux_amd64.sh | bash
-// For GPU: curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_cuda_linux_amd64.sh | bash
+// For GPU: curl -sSf https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_cuda.sh | bash
 func newEmbedder(config EmbedderConfig) (Embedder, error) {
+	// Build session options
+	var sessionOpts []options.WithOption
+	if config.UseGPU {
+		// Enable CUDA for GPU acceleration
+		sessionOpts = append(sessionOpts, options.WithCuda(nil))
+	}
+
 	// Use XLA session (requires PJRT C++ libraries)
-	session, err := hugot.NewXLASession()
+	session, err := hugot.NewXLASession(sessionOpts...)
 	if err != nil {
 		return nil, err
 	}

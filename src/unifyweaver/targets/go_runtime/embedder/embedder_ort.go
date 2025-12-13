@@ -4,6 +4,7 @@ package embedder
 
 import (
 	"github.com/knights-analytics/hugot"
+	"github.com/knights-analytics/hugot/options"
 	"github.com/knights-analytics/hugot/pipelines"
 )
 
@@ -18,12 +19,22 @@ type ortEmbedder struct {
 
 // newEmbedder creates an ONNX Runtime embedder
 // Requires: onnxruntime.so and libtokenizers.a
+// For GPU: libonnxruntime_providers_cuda.so and libonnxruntime_providers_shared.so
 func newEmbedder(config EmbedderConfig) (Embedder, error) {
 	// Use ONNX Runtime session (requires C dependencies)
 	// This requires:
 	// 1. onnxruntime.so in /usr/lib/ or LD_LIBRARY_PATH
 	// 2. libtokenizers.a linked at build time (from daulet/tokenizers)
-	session, err := hugot.NewORTSession()
+	// 3. For GPU: libonnxruntime_providers_cuda.so
+
+	// Build session options
+	var sessionOpts []options.WithOption
+	if config.UseGPU {
+		// Enable CUDA provider for GPU acceleration
+		sessionOpts = append(sessionOpts, options.WithCuda(nil))
+	}
+
+	session, err := hugot.NewORTSession(sessionOpts...)
 	if err != nil {
 		return nil, err
 	}
