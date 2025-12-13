@@ -24,6 +24,8 @@
 :- dynamic user:test_post_agg_param/2.
 :- dynamic user:test_banned/1.
 :- dynamic user:test_allowed/1.
+:- dynamic user:test_blocked/1.
+:- dynamic user:test_countdown/2.
 :- dynamic user:test_even/1.
 :- dynamic user:test_odd/1.
 :- dynamic user:test_parity_input/1.
@@ -56,6 +58,7 @@ test_csharp_query_target :-
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
         verify_parameterized_need_allows_post_agg,
+        verify_parameterized_need_allows_prefix_negation,
         verify_recursive_plan,
         verify_mutual_recursion_plan,
         verify_dynamic_source_plan,
@@ -123,6 +126,16 @@ setup_test_data :-
         aggregate_all(count, test_num(_, _), C),
         Sum is Prev + C
     )),
+    assertz(user:mode(test_countdown(+, -))),
+    assertz(user:test_blocked(2)),
+    assertz(user:test_countdown(0, 0)),
+    assertz(user:(test_countdown(N, Out) :-
+        \+ test_blocked(N),
+        N > 0,
+        N1 is N - 1,
+        test_countdown(N1, Prev),
+        Out is Prev + 1
+    )),
     assertz(user:test_parity_input(0)),
     assertz(user:test_parity_input(1)),
     assertz(user:test_parity_input(2)),
@@ -161,6 +174,9 @@ cleanup_test_data :-
     retractall(user:mode(test_post_agg_param(_,_))),
     retractall(user:test_banned(_)),
     retractall(user:test_allowed(_)),
+    retractall(user:test_blocked(_)),
+    retractall(user:test_countdown(_, _)),
+    retractall(user:mode(test_countdown(_,_))),
     retractall(user:test_parity_input(_)),
     retractall(user:test_even(_)),
     retractall(user:test_odd(_)),
@@ -266,6 +282,14 @@ verify_negation_plan :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'NegationNode'),
     maybe_run_query_runtime(Plan, ['alice']).
+
+verify_parameterized_need_allows_prefix_negation :-
+    csharp_query_target:build_query_plan(test_countdown/2, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    atom_concat(test_countdown, '$need', NeedName),
+    sub_term(materialize{type:materialize, id:_, plan:fixpoint{type:fixpoint, head:predicate{name:NeedName, arity:1}, base:_, recursive:_, width:1}, width:1}, Root),
+    sub_term(negation{type:negation, predicate:predicate{name:test_blocked, arity:1}, args:_, input:_, width:_}, Root).
 
 verify_recursive_arithmetic_plan :-
     csharp_query_target:build_query_plan(test_factorial/2, [target(csharp_query)], Plan),

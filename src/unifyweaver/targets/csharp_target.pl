@@ -638,7 +638,7 @@ safe_recursive_clause_for_need(HeadSpec, _-Body) :-
     forall(
         member(Index, Occs),
         (   prefix_terms(Index, Terms, Pred, Arity, Prefix),
-            \+ (member(T, Prefix), (aggregate_goal(T) ; negation_goal(T)))
+            \+ (member(T, Prefix), aggregate_goal(T))
         )
     ).
 
