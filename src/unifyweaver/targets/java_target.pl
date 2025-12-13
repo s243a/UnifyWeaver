@@ -248,15 +248,235 @@ public class ~w {
 ", [Pred, Arity, Package, ImportsStr, Pred, CapClassName, ProcessCode]).
 
 %% generate_pipeline_process(+Clauses, -Code)
-%  Generate process method body from clauses
+%  Generate process method body from clauses with body translation
 generate_pipeline_process([], "        return Optional.of(record);").
-generate_pipeline_process([(_Head, Body)|_Rest], Code) :-
+generate_pipeline_process(Clauses, Code) :-
+    Clauses \= [],
+    % Check for recursion
+    Clauses = [(Head, _)|_],
+    functor(Head, Name, _),
+    (   is_recursive_predicate_java(Name, Clauses)
+    ->  % Generate recursive handling
+        format(string(Code), 
+"        // Recursive predicate detected - use iterative approach
+        Map<String, Object> current = new HashMap<>(record);
+        int maxIterations = 1000;
+        for (int i = 0; i < maxIterations; i++) {
+            Optional<Map<String, Object>> next = processOnce(current);
+            if (!next.isPresent() || next.get().equals(current)) {
+                return Optional.of(current);
+            }
+            current = next.get();
+        }
+        return Optional.of(current);")
+    ;   % Generate clause-based processing
+        findall(ClauseCode, 
+            (member((H, B), Clauses), translate_clause_java(H, B, ClauseCode)),
+            ClauseCodes),
+        atomic_list_concat(ClauseCodes, '\n', AllClausesCode),
+        format(string(Code), "~w", [AllClausesCode])
+    ).
+
+%% ============================================
+%% RECURSION DETECTION
+%% ============================================
+
+%% is_recursive_predicate_java(+Name, +Clauses)
+%  Check if any clause body contains a recursive call
+is_recursive_predicate_java(Name, Clauses) :-
+    member((_, Body), Clauses),
+    contains_recursive_call_java(Body, Name).
+
+%% contains_recursive_call_java(+Body, +Name)
+contains_recursive_call_java(Body, Name) :-
+    extract_goal_java(Body, Goal),
+    functor(Goal, Name, _),
+    !.
+
+%% extract_goal_java(+Body, -Goal)
+extract_goal_java(Goal, Goal) :-
+    compound(Goal),
+    \+ Goal = (_,_),
+    \+ Goal = (_;_).
+extract_goal_java((A, _), Goal) :- extract_goal_java(A, Goal).
+extract_goal_java((_, B), Goal) :- extract_goal_java(B, Goal).
+
+%% ============================================
+%% CLAUSE TRANSLATION
+%% ============================================
+
+%% translate_clause_java(+Head, +Body, -Code)
+%  Translate a single clause to Java code
+translate_clause_java(Head, Body, Code) :-
+    Head =.. [_Pred|Args],
+    % Generate input extraction
+    generate_input_extraction_java(Args, InputCode),
+    % Translate body
     (   Body == true
-    ->  Code = "        // Fact - always succeeds
-        return Optional.of(record);"
-    ;   Code = "        // Rule - implement matching logic
-        // TODO: Translate body to Java
-        return Optional.of(record);"
+    ->  BodyCode = "        // Fact - no conditions"
+    ;   translate_body_java(Body, BodyCode)
+    ),
+    % Generate output construction  
+    generate_output_construction_java(Args, OutputCode),
+    format(string(Code), "~w\n~w\n~w", [InputCode, BodyCode, OutputCode]).
+
+%% generate_input_extraction_java(+Args, -Code)
+generate_input_extraction_java(Args, Code) :-
+    findall(Line, (
+        nth0(I, Args, Arg),
+        (   var(Arg)
+        ->  format(string(Line), "        Object arg~w = record.get(\"arg~w\");", [I, I])
+        ;   format(string(Line), "        // arg~w = ~w (constant)", [I, Arg])
+        )
+    ), Lines),
+    atomic_list_concat(Lines, '\n', Code).
+
+%% generate_output_construction_java(+Args, -Code)
+generate_output_construction_java(_Args, Code) :-
+    Code = "        return Optional.of(record);".
+
+%% ============================================
+%% BODY TRANSLATION
+%% ============================================
+
+%% translate_body_java(+Body, -Code)
+%  Translate clause body to Java code
+translate_body_java((Goal, Rest), Code) :-
+    !,
+    translate_goal_java(Goal, Code1),
+    translate_body_java(Rest, Code2),
+    format(string(Code), "~w\n~w", [Code1, Code2]).
+translate_body_java(Goal, Code) :-
+    translate_goal_java(Goal, Code).
+
+%% translate_goal_java(+Goal, -Code)
+%  Translate individual goals to Java
+
+% Assignment: X = Value
+translate_goal_java(=(Var, Value), Code) :-
+    var(Var), !,
+    var_to_java(Var, JavaVar),
+    value_to_java(Value, JavaValue),
+    format(string(Code), "        ~w = ~w;", [JavaVar, JavaValue]).
+
+% Comparison: X > Y, X < Y, etc.
+translate_goal_java(>(X, Y), Code) :-
+    !,
+    expr_to_java(X, JX),
+    expr_to_java(Y, JY),
+    format(string(Code), "        if (!(toDouble(~w) > toDouble(~w))) return Optional.empty();", [JX, JY]).
+
+translate_goal_java(<(X, Y), Code) :-
+    !,
+    expr_to_java(X, JX),
+    expr_to_java(Y, JY),
+    format(string(Code), "        if (!(toDouble(~w) < toDouble(~w))) return Optional.empty();", [JX, JY]).
+
+translate_goal_java(>=(X, Y), Code) :-
+    !,
+    expr_to_java(X, JX),
+    expr_to_java(Y, JY),
+    format(string(Code), "        if (!(toDouble(~w) >= toDouble(~w))) return Optional.empty();", [JX, JY]).
+
+translate_goal_java(=<(X, Y), Code) :-
+    !,
+    expr_to_java(X, JX),
+    expr_to_java(Y, JY),
+    format(string(Code), "        if (!(toDouble(~w) <= toDouble(~w))) return Optional.empty();", [JX, JY]).
+
+translate_goal_java(=:=(X, Y), Code) :-
+    !,
+    expr_to_java(X, JX),
+    expr_to_java(Y, JY),
+    format(string(Code), "        if (toDouble(~w) != toDouble(~w)) return Optional.empty();", [JX, JY]).
+
+translate_goal_java(=\\=(X, Y), Code) :-
+    !,
+    expr_to_java(X, JX),
+    expr_to_java(Y, JY),
+    format(string(Code), "        if (toDouble(~w) == toDouble(~w)) return Optional.empty();", [JX, JY]).
+
+% Arithmetic: X is Expr
+translate_goal_java(is(Var, Expr), Code) :-
+    !,
+    var_to_java(Var, JavaVar),
+    expr_to_java(Expr, JavaExpr),
+    format(string(Code), "        ~w = ~w;", [JavaVar, JavaExpr]).
+
+% get_dict/3: get_dict(Key, Dict, Value)
+translate_goal_java(get_dict(Key, Dict, Value), Code) :-
+    !,
+    var_to_java(Dict, JavaDict),
+    var_to_java(Value, JavaValue),
+    format(string(Code), "        ~w = ~w.get(\"~w\");", [JavaValue, JavaDict, Key]).
+
+% put_dict/3: put_dict(Key, Dict, Value)
+translate_goal_java(put_dict(Updates, Dict, NewDict), Code) :-
+    !,
+    var_to_java(Dict, JavaDict),
+    var_to_java(NewDict, JavaNewDict),
+    format(string(Code), "        ~w = new HashMap<>(~w);\n        ~w.putAll(~w);", 
+           [JavaNewDict, JavaDict, JavaNewDict, Updates]).
+
+% true - no-op
+translate_goal_java(true, Code) :-
+    !,
+    Code = "        // true".
+
+% Unknown goal - comment
+translate_goal_java(Goal, Code) :-
+    format(string(Code), "        // TODO: ~w", [Goal]).
+
+%% ============================================
+%% HELPER PREDICATES FOR TRANSLATION
+%% ============================================
+
+%% var_to_java(+Var, -JavaVar)
+var_to_java(Var, JavaVar) :-
+    (   var(Var)
+    ->  term_to_atom(Var, VarAtom),
+        format(atom(JavaVar), "var_~w", [VarAtom])
+    ;   Var = '$VAR'(N)
+    ->  format(atom(JavaVar), "v_~w", [N])
+    ;   term_to_atom(Var, JavaVar)
+    ).
+
+%% value_to_java(+Value, -JavaValue)
+value_to_java(Value, JavaValue) :-
+    (   number(Value)
+    ->  format(atom(JavaValue), "~w", [Value])
+    ;   atom(Value)
+    ->  format(atom(JavaValue), "\"~w\"", [Value])
+    ;   var(Value)
+    ->  var_to_java(Value, JavaValue)
+    ;   format(atom(JavaValue), "~w", [Value])
+    ).
+
+%% expr_to_java(+Expr, -JavaExpr)
+%  Translate Prolog arithmetic expr to Java
+expr_to_java(Expr, JavaExpr) :-
+    (   number(Expr)
+    ->  format(atom(JavaExpr), "~w", [Expr])
+    ;   var(Expr)
+    ->  var_to_java(Expr, JavaExpr)
+    ;   Expr = '$VAR'(N)
+    ->  format(atom(JavaExpr), "v_~w", [N])
+    ;   Expr = X + Y
+    ->  expr_to_java(X, JX), expr_to_java(Y, JY),
+        format(atom(JavaExpr), "(~w + ~w)", [JX, JY])
+    ;   Expr = X - Y
+    ->  expr_to_java(X, JX), expr_to_java(Y, JY),
+        format(atom(JavaExpr), "(~w - ~w)", [JX, JY])
+    ;   Expr = X * Y
+    ->  expr_to_java(X, JX), expr_to_java(Y, JY),
+        format(atom(JavaExpr), "(~w * ~w)", [JX, JY])
+    ;   Expr = X / Y
+    ->  expr_to_java(X, JX), expr_to_java(Y, JY),
+        format(atom(JavaExpr), "(~w / ~w)", [JX, JY])
+    ;   Expr = X mod Y
+    ->  expr_to_java(X, JX), expr_to_java(Y, JY),
+        format(atom(JavaExpr), "(~w % ~w)", [JX, JY])
+    ;   format(atom(JavaExpr), "~w", [Expr])
     ).
 
 %% ============================================

@@ -60,7 +60,11 @@ Gradle is the default build system. Generated projects include:
 - [x] Basic predicate compilation
 - [x] Pipeline mode with JSONL streaming
 - [x] Gradle build generation
-- [ ] Enhanced body translation
+- [x] Body translation (goals → Java)
+- [x] Recursion detection
+- [x] Arithmetic expressions (+, -, *, /, mod)
+- [x] Comparison operators (>, <, >=, =<, =:=, =\=)
+- [x] get_dict/3 support
 
 ### Phase 2: Kotlin & Scala
 - [ ] Kotlin target with coroutine support
