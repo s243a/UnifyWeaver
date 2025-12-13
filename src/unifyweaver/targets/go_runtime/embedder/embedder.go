@@ -51,6 +51,10 @@ type EmbedderConfig struct {
 	// ModelName is the name/identifier of the model
 	ModelName string
 
+	// OnnxFilename is the specific ONNX file to use (for ORT/XLA backends)
+	// Required when model directory contains multiple .onnx files
+	OnnxFilename string
+
 	// Dimensions is the expected output dimension (0 = auto-detect)
 	Dimensions int
 

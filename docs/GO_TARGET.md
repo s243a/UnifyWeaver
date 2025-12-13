@@ -696,6 +696,7 @@ See `test_go_target.pl` and `test_go_target_comprehensive.pl` for examples.
 
 ## See Also
 
+- [Go Embedder Backends](GO_EMBEDDER_BACKENDS.md) - Semantic search with Pure Go, Candle, ORT, and XLA backends
 - [AWK Target](AWK_TARGET_STATUS.md) - Similar record/field processing in AWK
 - [Match Predicate](MATCH_PREDICATE.md) - Regex matching across targets
 - [Python Target](../src/unifyweaver/targets/python_target.pl) - Alternative target
