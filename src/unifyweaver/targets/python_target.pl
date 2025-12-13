@@ -4641,7 +4641,7 @@ def parallel_records(record, stages):
     '''
     Parallel: Execute stages concurrently using ThreadPoolExecutor.
     Each stage receives the same input record.
-    Results are collected after all stages complete.
+    Results are collected in completion order (fastest first).
     '''
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -4653,6 +4653,31 @@ def parallel_records(record, stages):
         futures = {executor.submit(run_stage, stage): i for i, stage in enumerate(stages)}
         for future in as_completed(futures):
             results.extend(future.result())
+    return results
+
+def parallel_records_ordered(record, stages):
+    '''
+    Parallel (Ordered): Execute stages concurrently, preserve input order.
+    Each stage receives the same input record.
+    Results are collected and returned in stage definition order.
+    '''
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def run_stage(stage):
+        return list(stage(iter([record])))
+
+    indexed_results = [None] * len(stages)
+    with ThreadPoolExecutor(max_workers=len(stages)) as executor:
+        futures = {executor.submit(run_stage, stage): i for i, stage in enumerate(stages)}
+        for future in as_completed(futures):
+            idx = futures[future]
+            indexed_results[idx] = future.result()
+
+    # Flatten results in order
+    results = []
+    for stage_results in indexed_results:
+        if stage_results:
+            results.extend(stage_results)
     return results
 
 def batch_records(stream, batch_size):
@@ -4695,6 +4720,10 @@ generate_enhanced_stage_functions([Stage|Rest], Code) :-
     ).
 
 generate_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, SubCode),
+    Code = SubCode.
+generate_single_enhanced_stage(parallel(SubStages, _Options), Code) :-
     !,
     generate_enhanced_stage_functions(SubStages, SubCode),
     Code = SubCode.
@@ -4761,7 +4790,29 @@ generate_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
                 yield result
     ~w = fan_out_generator()", [N, InVar, StageListStr, OutVar]).
 
-% Parallel stage: concurrent execution using ThreadPoolExecutor
+% Parallel stage with options: parallel(Stages, Options)
+generate_stage_flow(parallel(SubStages, Options), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel_~w_result", [N]),
+    extract_stage_names(SubStages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    % Check for ordered option
+    (   member(ordered(true), Options)
+    ->  FuncName = "parallel_records_ordered",
+        format(atom(Comment), "Parallel execution (ordered) of ~w stages", [N])
+    ;   FuncName = "parallel_records",
+        format(atom(Comment), "Parallel execution of ~w stages (concurrent via ThreadPoolExecutor)", [N])
+    ),
+    format(string(Code),
+"    # ~w
+    def parallel_generator():
+        for record in ~w:
+            for result in ~w(record, [~w]):
+                yield result
+    ~w = parallel_generator()", [Comment, InVar, FuncName, StageListStr, OutVar]).
+
+% Parallel stage: concurrent execution using ThreadPoolExecutor (default: unordered)
 generate_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
     length(SubStages, N),
     format(atom(OutVar), "parallel_~w_result", [N]),

@@ -10,6 +10,7 @@ Enhanced pipeline chaining adds seven new stage types to the standard predicate 
 |------------|-------------|
 | `fan_out(Stages)` | Broadcast each record to multiple stages (sequential execution) |
 | `parallel(Stages)` | Execute stages concurrently using target-native parallelism |
+| `parallel(Stages, Options)` | Execute stages concurrently with options (e.g., `ordered(true)`) |
 | `merge` | Combine results from fan_out or parallel stages |
 | `route_by(Pred, Routes)` | Route records to different stages based on a predicate condition |
 | `filter_by(Pred)` | Filter records that satisfy a predicate |
@@ -174,6 +175,79 @@ func parallelRecords(record Record, stages []func([]Record) []Record) []Record {
     }
 
     wg.Wait()
+    return results
+}
+```
+
+#### Ordered Parallel (`parallel/2` with `ordered(true)`)
+
+By default, `parallel/1` returns results in **completion order** (fastest stage first). Use `ordered(true)` to preserve **stage definition order**.
+
+```prolog
+% Unordered (default) - Results in completion order
+parallel([slow_stage/1, fast_stage/1])
+
+% Ordered - Results in stage definition order
+parallel([slow_stage/1, fast_stage/1], [ordered(true)])
+```
+
+**Data Flow (ordered):**
+```
+Input Record ─┬─► slow_stage/1 ─► Result 1  ─┐
+              └─► fast_stage/1 ─► Result 2  ─┘
+              Completion: [fast, slow]
+              Output: [slow_result, fast_result]  ← ordered by stage position
+```
+
+**When to use `ordered(true)`:**
+- When downstream processing depends on result order
+- When stage outputs must maintain predictable ordering
+- When combining results with zip-like operations
+
+**Generated Code (Python - ordered):**
+```python
+def parallel_records_ordered(record, stages):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def run_stage(stage):
+        return list(stage(iter([record])))
+
+    indexed_results = [None] * len(stages)
+    with ThreadPoolExecutor(max_workers=len(stages)) as executor:
+        futures = {executor.submit(run_stage, stage): i for i, stage in enumerate(stages)}
+        for future in as_completed(futures):
+            idx = futures[future]
+            indexed_results[idx] = future.result()
+
+    # Flatten results in order
+    results = []
+    for stage_results in indexed_results:
+        if stage_results:
+            results.extend(stage_results)
+    return results
+```
+
+**Generated Code (Go - ordered):**
+```go
+func parallelRecordsOrdered(record Record, stages []func([]Record) []Record) []Record {
+    var wg sync.WaitGroup
+    indexedResults := make([][]Record, len(stages))
+
+    for i, stage := range stages {
+        wg.Add(1)
+        go func(idx int, s func([]Record) []Record) {
+            defer wg.Done()
+            indexedResults[idx] = s([]Record{record})
+        }(i, stage)
+    }
+
+    wg.Wait()
+
+    // Flatten results in order
+    var results []Record
+    for _, stageResults := range indexedResults {
+        results = append(results, stageResults...)
+    }
     return results
 }
 ```

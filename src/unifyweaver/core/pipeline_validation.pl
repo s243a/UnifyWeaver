@@ -149,6 +149,9 @@ is_valid_stage(fan_out(Stages)) :-
     is_list(Stages).
 is_valid_stage(parallel(Stages)) :-
     is_list(Stages).
+is_valid_stage(parallel(Stages, Options)) :-
+    is_list(Stages),
+    is_list(Options).
 is_valid_stage(merge).
 is_valid_stage(route_by(Pred, Routes)) :-
     atom(Pred),
@@ -166,6 +169,7 @@ stage_type(Pred/Arity, predicate) :-
     atom(Pred), integer(Arity), !.
 stage_type(fan_out(_), fan_out) :- !.
 stage_type(parallel(_), parallel) :- !.
+stage_type(parallel(_, _), parallel) :- !.
 stage_type(merge, merge) :- !.
 stage_type(route_by(_, _), route_by) :- !.
 stage_type(filter_by(_), filter_by) :- !.
@@ -194,6 +198,9 @@ validate_stage_specific(fan_out(Stages), Errors) :-
 validate_stage_specific(parallel(Stages), Errors) :-
     !,
     validate_parallel(parallel(Stages), Errors).
+validate_stage_specific(parallel(Stages, Options), Errors) :-
+    !,
+    validate_parallel(parallel(Stages, Options), Errors).
 validate_stage_specific(route_by(Pred, Routes), Errors) :-
     !,
     validate_route_by(route_by(Pred, Routes), Errors).
@@ -256,6 +263,29 @@ validate_parallel(parallel([]), [error(empty_parallel, 'parallel requires at lea
 validate_parallel(parallel([_]), [error(single_parallel_stage, 'parallel requires at least two sub-stages (use a regular stage for single operations)')]) :- !.
 validate_parallel(parallel(Stages), Errors) :-
     validate_parallel_stages(Stages, 1, Errors).
+
+% Parallel with options
+validate_parallel(parallel([], _), [error(empty_parallel, 'parallel requires at least two sub-stages')]) :- !.
+validate_parallel(parallel([_], _), [error(single_parallel_stage, 'parallel requires at least two sub-stages (use a regular stage for single operations)')]) :- !.
+validate_parallel(parallel(Stages, Options), Errors) :-
+    validate_parallel_stages(Stages, 1, StageErrors),
+    validate_parallel_options(Options, OptionErrors),
+    append(StageErrors, OptionErrors, Errors).
+
+%% validate_parallel_options(+Options, -Errors) is det.
+%
+%  Validates parallel stage options:
+%    - ordered(true) or ordered(false) for result ordering
+validate_parallel_options([], []).
+validate_parallel_options([Option|Rest], AllErrors) :-
+    validate_single_parallel_option(Option, OptionErrors),
+    validate_parallel_options(Rest, RestErrors),
+    append(OptionErrors, RestErrors, AllErrors).
+
+validate_single_parallel_option(ordered(true), []) :- !.
+validate_single_parallel_option(ordered(false), []) :- !.
+validate_single_parallel_option(Option, [error(invalid_parallel_option, Msg)]) :-
+    format(atom(Msg), 'invalid parallel option: ~w (valid options: ordered(true), ordered(false))', [Option]).
 
 validate_parallel_stages([], _, []).
 validate_parallel_stages([Stage|Rest], Index, AllErrors) :-

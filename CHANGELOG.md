@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Parallel Stage Execution** - True concurrent processing for performance-critical workloads
   - `parallel(Stages)` stage type for concurrent stage execution
+  - `parallel(Stages, Options)` with options support:
+    - `ordered(true)` — Preserve stage definition order in results (default: completion order)
   - Target-native parallelism mechanisms:
     - Python: `ThreadPoolExecutor`
     - Go: Goroutines with `sync.WaitGroup`
@@ -31,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Bash: Background processes with `wait`
     - IronPython: .NET `Task.Factory.StartNew` with `ConcurrentBag<T>`
     - AWK: Sequential by default, GNU Parallel with `parallel_mode(gnu_parallel)` option
-  - Validation support: empty parallel detection, single-stage parallel warning
+  - Validation support: empty parallel detection, single-stage parallel warning, invalid option detection
   - Clear distinction from `fan_out` (sequential) vs `parallel` (concurrent)
 
 - **Pipeline Validation** - Compile-time validation for enhanced pipeline stages
