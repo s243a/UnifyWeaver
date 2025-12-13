@@ -179,6 +179,28 @@ is_valid_stage(scan(Pred)) :-
     atom(Pred).
 is_valid_stage(scan(Pred, _Init)) :-
     atom(Pred).
+% Sorting stages
+is_valid_stage(order_by(Field)) :-
+    atom(Field).
+is_valid_stage(order_by(Field, Dir)) :-
+    atom(Field),
+    is_valid_direction(Dir).
+is_valid_stage(order_by(FieldSpecs)) :-
+    is_list(FieldSpecs),
+    FieldSpecs \= [],
+    maplist(is_valid_field_spec, FieldSpecs).
+is_valid_stage(sort_by(ComparePred)) :-
+    atom(ComparePred).
+
+%% is_valid_direction(+Dir) is semidet.
+%  Validates sort direction.
+is_valid_direction(asc).
+is_valid_direction(desc).
+
+%% is_valid_field_spec(+Spec) is semidet.
+%  Validates field specification for multi-field ordering.
+is_valid_field_spec(Field) :- atom(Field), !.
+is_valid_field_spec((Field, Dir)) :- atom(Field), is_valid_direction(Dir).
 
 %% is_valid_aggregation(+Agg) is semidet.
 %  Validates aggregation specification for group_by.
@@ -216,6 +238,9 @@ stage_type(reduce(_), reduce) :- !.
 stage_type(reduce(_, _), reduce) :- !.
 stage_type(scan(_), scan) :- !.
 stage_type(scan(_, _), scan) :- !.
+stage_type(order_by(_), order_by) :- !.
+stage_type(order_by(_, _), order_by) :- !.
+stage_type(sort_by(_), sort_by) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -265,6 +290,10 @@ validate_stage_specific(reduce(_), []) :- !.
 validate_stage_specific(reduce(_, _), []) :- !.
 validate_stage_specific(scan(_), []) :- !.
 validate_stage_specific(scan(_, _), []) :- !.
+% Sorting stages
+validate_stage_specific(order_by(_), []) :- !.
+validate_stage_specific(order_by(_, _), []) :- !.
+validate_stage_specific(sort_by(_), []) :- !.
 validate_stage_specific(_, []).
 
 %% validate_batch(+BatchStage, -Errors) is det.
