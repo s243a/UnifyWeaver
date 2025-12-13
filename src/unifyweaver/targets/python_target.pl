@@ -4706,6 +4706,104 @@ def unbatch_records(stream):
         else:
             yield batch  # Pass through non-list items
 
+def unique_by_field(stream, field):
+    '''
+    Unique: Keep only the first record for each unique field value.
+    Deduplicates the stream based on the specified field.
+    '''
+    seen = set()
+    for record in stream:
+        key = record.get(field)
+        if key not in seen:
+            seen.add(key)
+            yield record
+
+def first_by_field(stream, field):
+    '''
+    First: Alias for unique_by_field - keeps first occurrence.
+    '''
+    yield from unique_by_field(stream, field)
+
+def last_by_field(stream, field):
+    '''
+    Last: Keep only the last record for each unique field value.
+    Buffers all records, then yields last occurrence of each.
+    '''
+    last_seen = {}
+    order = []
+    for record in stream:
+        key = record.get(field)
+        if key not in last_seen:
+            order.append(key)
+        last_seen[key] = record
+    for key in order:
+        yield last_seen[key]
+
+def group_by_field(stream, field, aggregations):
+    '''
+    Group By: Group records by field and apply aggregations.
+    aggregations is a list of (name, agg_type, agg_field) tuples.
+    '''
+    from collections import defaultdict
+    groups = defaultdict(list)
+    order = []
+
+    # Collect records into groups
+    for record in stream:
+        key = record.get(field)
+        if key not in groups:
+            order.append(key)
+        groups[key].append(record)
+
+    # Apply aggregations to each group
+    for key in order:
+        group_records = groups[key]
+        result = {field: key}
+
+        for agg_name, agg_type, agg_field in aggregations:
+            if agg_type == 'count':
+                result[agg_name] = len(group_records)
+            elif agg_type == 'sum':
+                result[agg_name] = sum(r.get(agg_field, 0) for r in group_records)
+            elif agg_type == 'avg':
+                values = [r.get(agg_field, 0) for r in group_records]
+                result[agg_name] = sum(values) / len(values) if values else 0
+            elif agg_type == 'min':
+                values = [r.get(agg_field) for r in group_records if r.get(agg_field) is not None]
+                result[agg_name] = min(values) if values else None
+            elif agg_type == 'max':
+                values = [r.get(agg_field) for r in group_records if r.get(agg_field) is not None]
+                result[agg_name] = max(values) if values else None
+            elif agg_type == 'first':
+                result[agg_name] = group_records[0].get(agg_field) if group_records else None
+            elif agg_type == 'last':
+                result[agg_name] = group_records[-1].get(agg_field) if group_records else None
+            elif agg_type == 'collect':
+                result[agg_name] = [r.get(agg_field) for r in group_records]
+
+        yield result
+
+def reduce_records(stream, reducer_fn, initial):
+    '''
+    Reduce: Apply reducer function sequentially across all records.
+    reducer_fn(record, accumulator) -> new_accumulator
+    Yields final accumulated result.
+    '''
+    acc = initial
+    for record in stream:
+        acc = reducer_fn(record, acc)
+    yield acc
+
+def scan_records(stream, reducer_fn, initial):
+    '''
+    Scan: Like reduce but yields intermediate results.
+    Emits running accumulated values after each record.
+    '''
+    acc = initial
+    for record in stream:
+        acc = reducer_fn(record, acc)
+        yield acc
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -4739,6 +4837,14 @@ generate_single_enhanced_stage(route_by(_, Routes), Code) :-
 generate_single_enhanced_stage(filter_by(_), "") :- !.
 generate_single_enhanced_stage(batch(_), "") :- !.
 generate_single_enhanced_stage(unbatch, "") :- !.
+generate_single_enhanced_stage(unique(_), "") :- !.
+generate_single_enhanced_stage(first(_), "") :- !.
+generate_single_enhanced_stage(last(_), "") :- !.
+generate_single_enhanced_stage(group_by(_, _), "") :- !.
+generate_single_enhanced_stage(reduce(_, _), "") :- !.
+generate_single_enhanced_stage(reduce(_), "") :- !.
+generate_single_enhanced_stage(scan(_, _), "") :- !.
+generate_single_enhanced_stage(scan(_), "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -4864,6 +4970,63 @@ generate_stage_flow(unbatch, InVar, OutVar, Code) :-
 "    # Unbatch: flatten batches to individual records
     ~w = unbatch_records(~w)", [OutVar, InVar]).
 
+% Unique stage: deduplicate by field (keep first)
+generate_stage_flow(unique(Field), InVar, OutVar, Code) :-
+    format(atom(OutVar), "unique_~w_result", [Field]),
+    format(string(Code),
+"    # Unique: keep first record per '~w' value
+    ~w = unique_by_field(~w, '~w')", [Field, OutVar, InVar, Field]).
+
+% First stage: alias for unique (keep first occurrence)
+generate_stage_flow(first(Field), InVar, OutVar, Code) :-
+    format(atom(OutVar), "first_~w_result", [Field]),
+    format(string(Code),
+"    # First: keep first record per '~w' value
+    ~w = first_by_field(~w, '~w')", [Field, OutVar, InVar, Field]).
+
+% Last stage: keep last record per field value
+generate_stage_flow(last(Field), InVar, OutVar, Code) :-
+    format(atom(OutVar), "last_~w_result", [Field]),
+    format(string(Code),
+"    # Last: keep last record per '~w' value
+    ~w = last_by_field(~w, '~w')", [Field, OutVar, InVar, Field]).
+
+% Group by stage: group and aggregate
+generate_stage_flow(group_by(Field, Agg), InVar, OutVar, Code) :-
+    format(atom(OutVar), "grouped_~w_result", [Field]),
+    format_aggregations(Agg, AggStr),
+    format(string(Code),
+"    # Group by '~w' with aggregations
+    ~w = group_by_field(~w, '~w', [~w])", [Field, OutVar, InVar, Field, AggStr]).
+
+% Reduce stage with initial value: custom sequential fold
+generate_stage_flow(reduce(Pred, Init), InVar, OutVar, Code) :-
+    format(atom(OutVar), "reduced_result", []),
+    format(string(Code),
+"    # Reduce: sequential fold with ~w
+    ~w = reduce_records(~w, ~w, ~w)", [Pred, OutVar, InVar, Pred, Init]).
+
+% Reduce stage without initial value (defaults to empty dict)
+generate_stage_flow(reduce(Pred), InVar, OutVar, Code) :-
+    format(atom(OutVar), "reduced_result", []),
+    format(string(Code),
+"    # Reduce: sequential fold with ~w
+    ~w = reduce_records(~w, ~w, {})", [Pred, OutVar, InVar, Pred]).
+
+% Scan stage with initial value: reduce with intermediate outputs
+generate_stage_flow(scan(Pred, Init), InVar, OutVar, Code) :-
+    format(atom(OutVar), "scanned_result", []),
+    format(string(Code),
+"    # Scan: running fold with ~w (emits intermediate values)
+    ~w = scan_records(~w, ~w, ~w)", [Pred, OutVar, InVar, Pred, Init]).
+
+% Scan stage without initial value
+generate_stage_flow(scan(Pred), InVar, OutVar, Code) :-
+    format(atom(OutVar), "scanned_result", []),
+    format(string(Code),
+"    # Scan: running fold with ~w (emits intermediate values)
+    ~w = scan_records(~w, ~w, {})", [Pred, OutVar, InVar, Pred]).
+
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     atom(Pred),
@@ -4894,6 +5057,44 @@ format_stage_list([Name|Rest], Str) :-
     Rest \= [],
     format_stage_list(Rest, RestStr),
     format(string(Str), "~w, ~w", [Name, RestStr]).
+
+%% format_aggregations(+Agg, -Str)
+%  Format aggregation specifications for group_by stage.
+%  Aggregations can be: count, sum(Field), avg(Field), min(Field), max(Field),
+%  first(Field), last(Field), collect(Field), or a list of these.
+format_aggregations(Aggs, Str) :-
+    is_list(Aggs),
+    !,
+    format_aggregation_list(Aggs, Str).
+format_aggregations(Agg, Str) :-
+    format_single_aggregation(Agg, Str).
+
+format_aggregation_list([], "").
+format_aggregation_list([Agg], Str) :-
+    format_single_aggregation(Agg, Str).
+format_aggregation_list([Agg|Rest], Str) :-
+    Rest \= [],
+    format_single_aggregation(Agg, AggStr),
+    format_aggregation_list(Rest, RestStr),
+    format(string(Str), "~w, ~w", [AggStr, RestStr]).
+
+% count aggregation (no field needed)
+format_single_aggregation(count, "('count', 'count', None)").
+% Aggregations with field: sum(Field), avg(Field), etc.
+format_single_aggregation(sum(Field), Str) :-
+    format(string(Str), "('sum', 'sum', '~w')", [Field]).
+format_single_aggregation(avg(Field), Str) :-
+    format(string(Str), "('avg', 'avg', '~w')", [Field]).
+format_single_aggregation(min(Field), Str) :-
+    format(string(Str), "('min', 'min', '~w')", [Field]).
+format_single_aggregation(max(Field), Str) :-
+    format(string(Str), "('max', 'max', '~w')", [Field]).
+format_single_aggregation(first(Field), Str) :-
+    format(string(Str), "('first', 'first', '~w')", [Field]).
+format_single_aggregation(last(Field), Str) :-
+    format(string(Str), "('last', 'last', '~w')", [Field]).
+format_single_aggregation(collect(Field), Str) :-
+    format(string(Str), "('collect', 'collect', '~w')", [Field]).
 
 %% format_route_map(+Routes, -Str)
 %  Format route mappings as Python dict entries.

@@ -161,6 +161,39 @@ is_valid_stage(filter_by(Pred)) :-
 is_valid_stage(batch(N)) :-
     integer(N).
 is_valid_stage(unbatch).
+% Aggregation stages
+is_valid_stage(unique(Field)) :-
+    atom(Field).
+is_valid_stage(first(Field)) :-
+    atom(Field).
+is_valid_stage(last(Field)) :-
+    atom(Field).
+is_valid_stage(group_by(Field, Agg)) :-
+    atom(Field),
+    is_valid_aggregation(Agg).
+is_valid_stage(reduce(Pred)) :-
+    atom(Pred).
+is_valid_stage(reduce(Pred, _Init)) :-
+    atom(Pred).
+is_valid_stage(scan(Pred)) :-
+    atom(Pred).
+is_valid_stage(scan(Pred, _Init)) :-
+    atom(Pred).
+
+%% is_valid_aggregation(+Agg) is semidet.
+%  Validates aggregation specification for group_by.
+is_valid_aggregation(count).
+is_valid_aggregation(sum(F)) :- atom(F).
+is_valid_aggregation(avg(F)) :- atom(F).
+is_valid_aggregation(min(F)) :- atom(F).
+is_valid_aggregation(max(F)) :- atom(F).
+is_valid_aggregation(first(F)) :- atom(F).
+is_valid_aggregation(last(F)) :- atom(F).
+is_valid_aggregation(collect(F)) :- atom(F).
+is_valid_aggregation(Aggs) :-
+    is_list(Aggs),
+    Aggs \= [],
+    maplist(is_valid_aggregation, Aggs).
 
 %% stage_type(+Stage, -Type) is det.
 %
@@ -175,6 +208,14 @@ stage_type(route_by(_, _), route_by) :- !.
 stage_type(filter_by(_), filter_by) :- !.
 stage_type(batch(_), batch) :- !.
 stage_type(unbatch, unbatch) :- !.
+stage_type(unique(_), unique) :- !.
+stage_type(first(_), first) :- !.
+stage_type(last(_), last) :- !.
+stage_type(group_by(_, _), group_by) :- !.
+stage_type(reduce(_), reduce) :- !.
+stage_type(reduce(_, _), reduce) :- !.
+stage_type(scan(_), scan) :- !.
+stage_type(scan(_, _), scan) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -215,6 +256,15 @@ validate_stage_specific(batch(N), Errors) :-
     !,
     validate_batch(batch(N), Errors).
 validate_stage_specific(unbatch, []) :- !.
+% Aggregation stages
+validate_stage_specific(unique(_), []) :- !.
+validate_stage_specific(first(_), []) :- !.
+validate_stage_specific(last(_), []) :- !.
+validate_stage_specific(group_by(_, _), []) :- !.
+validate_stage_specific(reduce(_), []) :- !.
+validate_stage_specific(reduce(_, _), []) :- !.
+validate_stage_specific(scan(_), []) :- !.
+validate_stage_specific(scan(_, _), []) :- !.
 validate_stage_specific(_, []).
 
 %% validate_batch(+BatchStage, -Errors) is det.

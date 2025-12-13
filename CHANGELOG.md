@@ -45,6 +45,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_pipeline_validation.sh` — Integration tests
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Aggregation Stages** - Deduplication and grouping at pipeline level
+  - Deduplication stages:
+    - `unique(Field)` — Keep first occurrence of each unique field value
+    - `first(Field)` — Alias for unique, keep first occurrence
+    - `last(Field)` — Keep last occurrence of each unique field value
+  - Grouping stage:
+    - `group_by(Field, Aggregations)` — Group records by field with aggregations
+    - Built-in aggregations: `count`, `sum(F)`, `avg(F)`, `min(F)`, `max(F)`, `first(F)`, `last(F)`, `collect(F)`
+  - Sequential processing:
+    - `reduce(Pred, Init)` — Fold all records into single result with custom reducer
+    - `scan(Pred, Init)` — Like reduce but emits intermediate results
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_aggregation_stages.sh` — Integration tests (12 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
