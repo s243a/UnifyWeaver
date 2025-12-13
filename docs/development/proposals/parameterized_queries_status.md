@@ -33,6 +33,9 @@
 - Modes are parsed and threaded through all query plans.
 - Implemented a `param_seed` plan node; pipelines now seed inputs (when declared) before body evaluation, preserving the existing all-output path when no inputs are declared.
 - Implemented bottom-up demand closure for non-mutual parameterised recursion: a synthetic `pred$need` fixpoint is built from recursive clause prefixes, materialized once, and used to seed/filter the main predicate’s base and recursive pipelines.
+- Broadened query-mode arithmetic constraints:
+  - Bound-LHS `is/2` compiles as “evaluate into temp column, then equality filter”.
+  - Arithmetic expressions in comparisons (e.g. `X+1 =:= 6`) compile via temp arithmetic columns; `=:=`/`=\\=` use numeric `CompareValues(...)` semantics.
 - Added a `materialize` plan node and matching C# `MaterializeNode` runtime support to cache subplan results (used by demand closure).
 - C# QueryRuntime now understands `ParamSeedNode`, accepts parameters at execution time, and filters outputs by declared input positions.
 - Rendered plans emit input-position metadata into `QueryPlan`.
@@ -40,8 +43,12 @@
 - Added end‑to‑end runtime coverage for parameterised Fibonacci and parameter‑passing plumbing in the dotnet harness.
 - Added bound-only stratified negation in query mode (`\+` / `not/1`) via a `negation` plan node and C# `NegationNode`, including need-closure support when negation appears before recursive calls.
 - Added query-mode aggregates (`aggregate_all/3,4`, including correlated aggregates) via an `aggregate` plan node and C# `AggregateNode` runtime support.
+- Parameterised mutual recursion:
+  - Input modes are accepted for mutually-recursive SCCs (previously rejected).
+  - When every predicate in the SCC declares compatible input modes (same input count), a tagged `$need` fixpoint is built and shared to seed each member’s base/recursive pipelines (demand-driven mutual SCC evaluation).
+  - Otherwise, SCC evaluation falls back to full mutual fixpoint + final parameter filtering.
 - Current aggregate constraints:
   - Aggregate goals must be a single predicate call (no conjunctions/subplans yet).
   - Aggregates over SCC predicates are rejected (stratification requirement).
   - Need-closure prefixes still reject aggregates (allowed after recursion in the clause body).
-- Next: broaden coverage (mutual recursion, richer aggregate forms like multi-key grouping, and optional memoized/procedural fallback once semantics are locked down).
+- Next: broaden coverage (loosen SCC need-closure eligibility, richer aggregate forms like multi-key grouping, and optional memoized/procedural fallback once semantics are locked down).

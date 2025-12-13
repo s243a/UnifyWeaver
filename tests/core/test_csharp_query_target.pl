@@ -224,6 +224,7 @@ setup_test_data :-
     assertz(user:test_even(0)),
     assertz(user:test_odd(1)),
     assertz(user:mode(test_even_param(+))),
+    assertz(user:mode(test_odd_param(+))),
     assertz(user:test_even_param(0)),
     assertz(user:test_odd_param(1)),
     assertz(user:(test_even_param(N) :-
@@ -297,6 +298,7 @@ cleanup_test_data :-
     retractall(user:test_even_param(_)),
     retractall(user:test_odd_param(_)),
     retractall(user:mode(test_even_param(_))),
+    retractall(user:mode(test_odd_param(_))),
     retractall(user:test_reachable(_, _)),
     cleanup_csv_dynamic_source.
 
@@ -769,8 +771,12 @@ verify_parameterized_mutual_recursion_plan :-
     Modes == [input],
     get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even_param, arity:1}, members:Members}),
     length(Members, 2),
+    atom_concat(test_even_param, '$need', NeedName),
+    sub_term(materialize{type:materialize, id:_, plan:fixpoint{type:fixpoint, head:predicate{name:NeedName, arity:2}, base:_, recursive:_, width:2}, width:2}, Members),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    sub_string(Source, _, _, _, NeedName),
+    sub_string(Source, _, _, _, 'MaterializeNode'),
     maybe_run_query_runtime(Plan, ['4'], [[4]]).
 
 verify_dynamic_source_plan :-

@@ -336,8 +336,15 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
     }.
 
 build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
-    maplist(build_mutual_member_plan(GroupSpecs, Options), GroupSpecs, MemberStructs, RelationLists),
-    append(RelationLists, RelationsFlat),
+    (   eligible_for_mutual_need_closure(HeadSpec, GroupSpecs, Modes, NeedMat, NeedRelations, SeedOverrides)
+    ->  true
+    ;   NeedMat = none,
+        NeedRelations = [],
+        SeedOverrides = []
+    ),
+    maplist(build_mutual_member_plan(GroupSpecs, Options, NeedMat, SeedOverrides), GroupSpecs, MemberStructs, RelationLists),
+    append(RelationLists, RelationsFlat0),
+    append(NeedRelations, RelationsFlat0, RelationsFlat),
     dedup_relations(RelationsFlat, CombinedRelations),
     Root = mutual_fixpoint{
         type:mutual_fixpoint,
@@ -352,13 +359,18 @@ build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
         is_recursive:true
     }.
 
-build_mutual_member_plan(GroupSpecs, Options, PredSpec, MemberStruct, Relations) :-
+build_mutual_member_plan(GroupSpecs, Options, NeedMat, SeedOverrides, PredSpec, MemberStruct, Relations) :-
     get_dict(arity, PredSpec, Arity),
     length(MemberModes, Arity),
     maplist(=(output), MemberModes),
-    build_member_plan(GroupSpecs, Options, MemberModes, PredSpec, MemberStruct, Relations).
+    (   NeedMat \= none,
+        memberchk(PredSpec-SeedOverride, SeedOverrides)
+    ->  true
+    ;   SeedOverride = none
+    ),
+    build_member_plan(GroupSpecs, Options, MemberModes, SeedOverride, PredSpec, MemberStruct, Relations).
 
-build_member_plan(GroupSpecs, Options, Modes, PredSpec, member{
+build_member_plan(GroupSpecs, Options, Modes, SeedOverride, PredSpec, member{
         type:member,
         predicate:PredSpec,
         base:BaseRoot,
@@ -368,8 +380,8 @@ build_member_plan(GroupSpecs, Options, Modes, PredSpec, member{
     get_dict(arity, PredSpec, Arity),
     gather_predicate_clauses(PredSpec, Clauses),
     partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses),
-    build_base_root(PredSpec, BaseClauses, Options, Modes, none, BaseRoot, BaseRelations),
-    build_recursive_variants(PredSpec, GroupSpecs, RecClauses, Modes, none, RecursiveNodes, RecursiveRelations),
+    build_base_root(PredSpec, BaseClauses, Options, Modes, SeedOverride, BaseRoot, BaseRelations),
+    build_recursive_variants(PredSpec, GroupSpecs, RecClauses, Modes, SeedOverride, RecursiveNodes, RecursiveRelations),
     append(BaseRelations, RecursiveRelations, Relations).
 
 partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses) :-
@@ -681,6 +693,191 @@ build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositi
     },
     gensym(need_mat_, Id),
     NeedMat = materialize{type:materialize, id:Id, plan:NeedRoot, width:InputCount}.
+
+%% Demand closure for mutual recursion -------------------------------------
+
+eligible_for_mutual_need_closure(HeadSpec, GroupSpecs, Modes, NeedMat, NeedRelations, SeedOverrides) :-
+    has_input_mode(Modes),
+    GroupSpecs = [_First, _Second|_],
+    mutual_need_infos(GroupSpecs, Infos, InputCount),
+    input_positions(Modes, HeadInputPositions),
+    need_info_for_spec(Infos, HeadSpec, HeadInfo),
+    get_dict(input_positions, HeadInfo, HeadInputPositions),
+    safe_mutual_need_prefixes(GroupSpecs),
+    build_mutual_need_plan(HeadSpec, GroupSpecs, Infos, InputCount, NeedMat, NeedRelations),
+    build_mutual_need_seed_overrides(NeedMat, Infos, InputCount, SeedOverrides).
+
+mutual_need_infos(GroupSpecs, Infos, InputCount) :-
+    findall(info{spec:Spec, sig:Sig, modes:Modes, input_positions:Positions, tag:Tag},
+        (   nth0(Tag, GroupSpecs, Spec),
+            spec_signature(Spec, Sig),
+            modes_for_pred(Sig, Modes),
+            input_positions(Modes, Positions),
+            Positions \= []
+        ),
+        Infos),
+    same_length(Infos, GroupSpecs),
+    findall(Count,
+        (   member(Info, Infos),
+            get_dict(input_positions, Info, Positions),
+            length(Positions, Count)
+        ),
+        Counts),
+    sort(Counts, [InputCount]).
+
+safe_mutual_need_prefixes(GroupSpecs) :-
+    \+ (   member(PredSpec, GroupSpecs),
+           gather_predicate_clauses(PredSpec, Clauses),
+           partition_mutual_clauses(GroupSpecs, Clauses, _BaseClauses, RecClauses),
+           member(_Head-Body, RecClauses),
+           body_to_list(Body, Terms),
+           group_occurrence_positions(GroupSpecs, Terms, Occs),
+           member(occurrence(Index, _), Occs),
+           prefix_terms_scc(Index, Terms, GroupSpecs, Prefix),
+           member(Term, Prefix),
+           aggregate_goal(Term)
+       ).
+
+prefix_terms_scc(Index, Terms, GroupSpecs, Prefix) :-
+    length(Before, Index),
+    append(Before, _Rest, Terms),
+    exclude(group_literal_in(GroupSpecs), Before, Prefix).
+
+group_literal_in(GroupSpecs, Term) :-
+    group_literal_spec(Term, GroupSpecs, _).
+
+need_info_for_spec([Info|_], Spec, Info) :-
+    get_dict(spec, Info, Spec0),
+    Spec0 == Spec,
+    !.
+need_info_for_spec([_|Rest], Spec, Info) :-
+    need_info_for_spec(Rest, Spec, Info).
+
+build_mutual_need_plan(HeadSpec, GroupSpecs, Infos, InputCount, NeedMat, NeedRelations) :-
+    NeedArity is InputCount + 1,
+    need_predicate_spec(HeadSpec, NeedArity, NeedSpec),
+    EndNeed is InputCount - 1,
+    numlist(0, EndNeed, NeedKeyPositions),
+    need_info_for_spec(Infos, HeadSpec, HeadInfo),
+    get_dict(tag, HeadInfo, HeadTag),
+    Seed0 = param_seed{
+        type:param_seed,
+        predicate:NeedSpec,
+        input_positions:NeedKeyPositions,
+        width:InputCount
+    },
+    BaseSeed = arithmetic{
+        type:arithmetic,
+        input:Seed0,
+        expression:expr{type:value, value:HeadTag},
+        result_index:InputCount,
+        width:NeedArity
+    },
+    build_mutual_need_recursive_variants(GroupSpecs, NeedSpec, NeedArity, Infos, InputCount, NeedRecNodes, NeedRelations),
+    NeedRoot = fixpoint{
+        type:fixpoint,
+        head:NeedSpec,
+        base:BaseSeed,
+        recursive:NeedRecNodes,
+        width:NeedArity
+    },
+    gensym(need_mat_, Id),
+    NeedMat = materialize{type:materialize, id:Id, plan:NeedRoot, width:NeedArity}.
+
+build_mutual_need_seed_overrides(NeedMat, Infos, InputCount, SeedOverrides) :-
+    NeedArity is InputCount + 1,
+    TagIndex is InputCount,
+    EndKey is InputCount - 1,
+    numlist(0, EndKey, KeyCols),
+    findall(Spec-SeedOverride,
+        (   member(Info, Infos),
+            get_dict(spec, Info, Spec),
+            get_dict(tag, Info, Tag),
+            get_dict(input_positions, Info, InputPositions),
+            Condition = condition{
+                type:eq,
+                left:operand{kind:column, index:TagIndex},
+                right:operand{kind:value, value:Tag}
+            },
+            Selection = selection{
+                type:selection,
+                input:NeedMat,
+                predicate:Condition,
+                width:NeedArity
+            },
+            SeedNode = projection{
+                type:projection,
+                input:Selection,
+                columns:KeyCols,
+                width:InputCount
+            },
+            SeedOverride = seed(SeedNode, InputPositions)
+        ),
+        SeedOverrides).
+
+build_mutual_need_recursive_variants(GroupSpecs, NeedSpec, NeedArity, Infos, InputCount, Variants, Relations) :-
+    TagIndex is InputCount,
+    findall(variant(Node, RelList),
+        (   member(FromInfo, Infos),
+            get_dict(spec, FromInfo, FromSpec),
+            get_dict(tag, FromInfo, FromTag),
+            get_dict(input_positions, FromInfo, FromInputPositions),
+            gather_predicate_clauses(FromSpec, Clauses),
+            partition_mutual_clauses(GroupSpecs, Clauses, _BaseClauses, RecClauses),
+            member(Head-Body, RecClauses),
+            Head =.. [_|HeadArgs],
+            select_positions(FromInputPositions, HeadArgs, NeedArgs),
+            body_to_list(Body, Terms),
+            group_occurrence_positions(GroupSpecs, Terms, Occurrences),
+            member(occurrence(Index, ToSpec), Occurrences),
+            need_info_for_spec(Infos, ToSpec, ToInfo),
+            get_dict(tag, ToInfo, ToTag),
+            get_dict(input_positions, ToInfo, ToInputPositions),
+            nth0(Index, Terms, RecTerm),
+            prefix_terms_scc(Index, Terms, GroupSpecs, Prefix0),
+            \+ (member(T, Prefix0), aggregate_goal(T)),
+            roles_for_nonrecursive_terms(NeedSpec, Prefix0, PrefixRoles),
+            recursive_ref_node(NeedSpec, delta, SeedNode0),
+            TagCondition = condition{
+                type:eq,
+                left:operand{kind:column, index:TagIndex},
+                right:operand{kind:value, value:FromTag}
+            },
+            SeedNode = selection{
+                type:selection,
+                input:SeedNode0,
+                predicate:TagCondition,
+                width:NeedArity
+            },
+            init_var_map(NeedArgs, 0, SeedVarMap),
+            fold_terms([NeedSpec], Prefix0, PrefixRoles, NeedSpec, SeedNode, SeedVarMap, NeedArity, [],
+                PrefixNode, VarMapMid, _WidthMid, RelList),
+            RecTerm =.. [_|RecArgs],
+            select_positions(ToInputPositions, RecArgs, RecNeedArgs),
+            projection_indices(RecNeedArgs, VarMapMid, Cols),
+            ProjectionNode = projection{
+                type:projection,
+                input:PrefixNode,
+                columns:Cols,
+                width:InputCount
+            },
+            TagAppendNode = arithmetic{
+                type:arithmetic,
+                input:ProjectionNode,
+                expression:expr{type:value, value:ToTag},
+                result_index:InputCount,
+                width:NeedArity
+            },
+            Node = TagAppendNode
+        ),
+        VariantPairs),
+    (   VariantPairs == []
+    ->  Variants = [], Relations = []
+    ;   findall(Node, member(variant(Node, _), VariantPairs), Variants),
+        findall(RelList, member(variant(_, RelList), VariantPairs), RelLists),
+        append(RelLists, Flat),
+        dedup_relations(Flat, Relations)
+    ).
 
 build_need_recursive_variants(HeadSpec, NeedSpec, RecClauses, InputPositions, Variants, Relations) :-
     get_dict(name, HeadSpec, Pred),
