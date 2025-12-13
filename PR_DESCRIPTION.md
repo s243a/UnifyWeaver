@@ -1,50 +1,54 @@
-# feat(targets): Add Java target with recursion patterns and bindings
+# feat(glue): Add JVM glue module for direct transport
 
 ## Summary
 
-Adds a complete Java target for UnifyWeaver with streaming pipeline mode, body translation, recursion patterns, and binding system integration.
+Adds the JVM glue module (`jvm_glue.pl`) that enables direct in-process communication between JVM targets (Java, Jython, Scala, Kotlin, Clojure).
 
 ## Changes
 
 ### New Files
 
-#### `src/unifyweaver/targets/java_target.pl`
-- `compile_predicate_to_java/3` - compile predicates to Java classes
-- `compile_java_pipeline/3` - multi-step pipeline compilation
-- `generate_gradle_build/2` - Gradle build file generation
-- Pipeline mode with streaming JSONL I/O
-- Body/goal translation for comparisons, arithmetic, and dict access
-- Tail recursion → while loop optimization
-- General recursion → memoization pattern
+#### `src/unifyweaver/glue/jvm_glue.pl`
 
-#### `src/unifyweaver/bindings/java_bindings.pl`
-- String bindings: length, toLowerCase, trim, contains, split, replace, etc.
-- Math bindings: abs, max, min, sqrt, pow, floor, ceil, round, PI
-- Collection bindings: List size/get/add, Map get/put/containsKey
-- I/O bindings: println, eprintln
-- Stream API bindings: filter, map, collect, reduce
+**Runtime Detection:**
+- `detect_jvm_runtime/1` - Detect JDK, JRE, or GraalVM
+- `detect_java_version/1` - Parse Java version number
+- `detect_jython/1` - Check Jython availability
 
-#### `docs/JVM_TARGET.md`
-- JVM target family documentation with transport support
-- Implementation roadmap (Java → Kotlin → Scala → Jython → Clojure)
+**Transport Selection:**
+- `jvm_transport_type/3` - Select `direct` vs `pipe` transport
+- `can_use_direct/2` - Check if JVM-to-JVM direct works
+
+**Bridge Generation:**
+- `generate_java_jython_bridge/3` - Java calling Jython via PythonInterpreter
+- `generate_jython_java_bridge/3` - Jython calling Java classes directly
+
+**Process Management:**
+- `generate_jvm_launcher/3` - Shell script with classpath management
+- `generate_classpath/2` - Build classpath from options
+- `generate_jvm_pipeline/3` - Mixed Java/Jython orchestration
 
 ### Modified Files
 
-#### `src/unifyweaver/core/target_registry.pl`
-- Added Kotlin to JVM family with android/coroutines capabilities
+#### `docs/JVM_TARGET.md`
+- Added "JVM Glue Module" section with feature list
 
 ## Technical Notes
 
-- JVM family uses `direct` transport for in-process communication
-- Tail recursion converted to while loop with 10k max iterations
-- General recursion uses `__memo__` field for memoization
-- Default Java version set to 25 (matching Termux OpenJDK)
-- Gradle used as build system (Freenet-compatible)
+- JVM targets (java, jython, scala, kotlin, clojure) use `direct` transport
+- Non-JVM targets use `pipe` transport
+- Java → Jython uses embedded `PythonInterpreter` for in-process calls
+- Jython → Java imports Java classes directly
 
 ## Testing
 
 ```bash
-swipl -g "use_module('src/unifyweaver/targets/java_target'), test_java_pipeline_mode, halt(0)"
+# Unit tests
+swipl -g "use_module('src/unifyweaver/glue/jvm_glue'), test_jvm_glue, halt(0)"
+
+# End-to-end Jython execution
+echo '{"name": "test", "value": 42}' | jython generated_pipeline.py
+# Output: {"name": "test", "value": 42}
 ```
 
 All tests pass.
