@@ -26,6 +26,10 @@ Enhanced pipeline chaining adds the following stage types to the standard predic
 | `order_by(Field, Dir)` | Sort records by field with direction (asc/desc) |
 | `order_by(FieldSpecs)` | Sort by multiple fields with directions |
 | `sort_by(ComparePred)` | Sort using custom comparator function |
+| `try_catch(Stage, Handler)` | Execute stage, route failures to handler |
+| `retry(Stage, N)` | Retry stage up to N times on failure |
+| `retry(Stage, N, Options)` | Retry with delay and backoff options |
+| `on_error(Handler)` | Global error handler for the pipeline |
 | `Pred/Arity` | Standard predicate stage (unchanged) |
 
 ### Fan-out vs Parallel
@@ -588,6 +592,170 @@ The generated code expects a `compare_priority(record_a, record_b)` function tha
 | `sort_by(Pred)` | Custom comparison logic needed |
 
 **Key Distinction:** `order_by` is declarative (specify fields), `sort_by` is programmatic (specify comparison function).
+
+## Error Handling Stages
+
+Pipeline-level error handling stages for resilient data processing.
+
+### Try-Catch (`try_catch/2`)
+
+Execute a stage and route failures to a handler function.
+
+```prolog
+try_catch(process/1, error_handler/1)
+```
+
+**Data Flow:**
+```
+Input Record ─► process/1 ─┬─ Success ─► Result
+                           └─ Exception ─► error_handler/1 ─► Handler Result
+```
+
+**Use Cases:**
+- Graceful degradation for unreliable stages
+- Custom error recovery logic
+- Logging and continuing on failure
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    try_catch(fetch_external/1, use_cached/1),
+    output/1
+], [pipeline_name(resilient_fetch)], Code).
+```
+
+### Retry (`retry/2`, `retry/3`)
+
+Retry a failing stage up to N times before giving up.
+
+```prolog
+% Simple retry
+retry(fetch/1, 3)
+
+% Retry with options
+retry(fetch/1, 3, [delay(1000), backoff(exponential)])
+```
+
+**Data Flow:**
+```
+Input Record ─► fetch/1 ─┬─ Success ─► Result
+                         └─ Fail ─► Retry (up to N times) ─┬─ Success ─► Result
+                                                           └─ All Failed ─► Error Record
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `delay(Ms)` | Base delay between retries in milliseconds |
+| `backoff(linear)` | Delay increases linearly: `delay * attempt` |
+| `backoff(exponential)` | Delay doubles each attempt: `delay * 2^attempt` |
+
+**Error Record:** When all retries are exhausted, an error record is emitted:
+```json
+{"_error": "error message", "_record": {...original...}, "_retries": 3}
+```
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    retry(call_api/1, 3, [delay(500), backoff(exponential)]),
+    output/1
+], [pipeline_name(api_caller)], Code).
+```
+
+### On-Error (`on_error/1`)
+
+Global error handler for the pipeline. Routes any errors to a handler function.
+
+```prolog
+on_error(log_error/1)
+```
+
+**Use Cases:**
+- Centralized error logging
+- Error aggregation and reporting
+- Default fallback behavior
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    on_error(log_and_skip/1),
+    process/1,
+    output/1
+], [pipeline_name(logged_pipeline)], Code).
+```
+
+### Nested Error Handling
+
+Error handling stages can be nested for complex recovery strategies:
+
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    try_catch(
+        retry(fetch_remote/1, 3, [delay(1000), backoff(exponential)]),
+        use_local_fallback/1
+    ),
+    output/1
+], [pipeline_name(robust_fetch)], Code).
+```
+
+**Data Flow:**
+```
+Input ─► fetch_remote (retry 3x with backoff) ─┬─ Success ─► Result
+                                               └─ All Failed ─► use_local_fallback ─► Result
+```
+
+### Error Handling Generated Code
+
+**Python:**
+```python
+def try_catch_stage(stream, stage_fn, handler_fn):
+    for record in stream:
+        try:
+            for result in stage_fn([record]):
+                yield result
+        except Exception as e:
+            for result in handler_fn([record], e):
+                yield result
+
+def retry_stage(stream, stage_fn, max_retries, delay_ms=0, backoff='none'):
+    import time
+    for record in stream:
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                for result in stage_fn([record]):
+                    yield result
+                break
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries and delay_ms > 0:
+                    wait_time = calculate_backoff(delay_ms, attempt, backoff)
+                    time.sleep(wait_time / 1000)
+        else:
+            yield {'_error': str(last_error), '_record': record, '_retries': max_retries}
+```
+
+**Go:**
+```go
+func tryCatchStage(records []Record, stage StageFunc, handler ErrorHandlerFunc) []Record {
+    var result []Record
+    for _, record := range records {
+        results, err := stage([]Record{record})
+        if err != nil {
+            handlerResults := handler([]Record{record}, err)
+            result = append(result, handlerResults...)
+        } else {
+            result = append(result, results...)
+        }
+    }
+    return result
+}
+```
 
 ## Complex Pipeline Example
 

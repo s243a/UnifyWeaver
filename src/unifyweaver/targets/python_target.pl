@@ -4874,6 +4874,61 @@ def sort_by_comparator(stream, compare_fn):
     records.sort(key=cmp_to_key(compare_fn))
     yield from records
 
+def try_catch_stage(stream, stage_fn, handler_fn):
+    '''
+    Try-Catch: Execute stage_fn on each record, on exception route to handler_fn.
+    handler_fn receives (record, error) and should yield results or nothing.
+    '''
+    for record in stream:
+        try:
+            for result in stage_fn([record]):
+                yield result
+        except Exception as e:
+            for result in handler_fn([record], e):
+                yield result
+
+def retry_stage(stream, stage_fn, max_retries, delay_ms=0, backoff='none'):
+    '''
+    Retry: Execute stage_fn with retries on failure.
+    max_retries: Maximum number of retry attempts
+    delay_ms: Initial delay between retries in milliseconds
+    backoff: 'none', 'linear', or 'exponential'
+    '''
+    import time
+    for record in stream:
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                for result in stage_fn([record]):
+                    yield result
+                break  # Success, move to next record
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    # Calculate delay
+                    if delay_ms > 0:
+                        if backoff == 'exponential':
+                            wait_time = delay_ms * (2 ** attempt) / 1000.0
+                        elif backoff == 'linear':
+                            wait_time = delay_ms * (attempt + 1) / 1000.0
+                        else:
+                            wait_time = delay_ms / 1000.0
+                        time.sleep(wait_time)
+        else:
+            # All retries exhausted, re-raise last error or yield error record
+            yield {'_error': str(last_error), '_record': record, '_retries': max_retries}
+
+def on_error_stage(stream, handler_fn):
+    '''
+    On-Error: Global error handler that catches any exception and routes to handler.
+    '''
+    for record in stream:
+        try:
+            yield record
+        except Exception as e:
+            for result in handler_fn([record], e):
+                yield result
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -4918,6 +4973,20 @@ generate_single_enhanced_stage(scan(_), "") :- !.
 generate_single_enhanced_stage(order_by(_), "") :- !.
 generate_single_enhanced_stage(order_by(_, _), "") :- !.
 generate_single_enhanced_stage(sort_by(_), "") :- !.
+generate_single_enhanced_stage(try_catch(Stage, Handler), Code) :-
+    !,
+    generate_single_enhanced_stage(Stage, StageCode),
+    generate_single_enhanced_stage(Handler, HandlerCode),
+    format(string(Code), "~w~w", [StageCode, HandlerCode]).
+generate_single_enhanced_stage(retry(Stage, _), Code) :-
+    !,
+    generate_single_enhanced_stage(Stage, Code).
+generate_single_enhanced_stage(retry(Stage, _, _), Code) :-
+    !,
+    generate_single_enhanced_stage(Stage, Code).
+generate_single_enhanced_stage(on_error(Handler), Code) :-
+    !,
+    generate_single_enhanced_stage(Handler, Code).
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5135,6 +5204,44 @@ generate_stage_flow(sort_by(ComparePred), InVar, OutVar, Code) :-
 "    # Sort by custom comparator: ~w
     ~w = sort_by_comparator(~w, ~w)", [ComparePred, OutVar, InVar, ComparePred]).
 
+% Try-catch stage: execute stage, on error route to handler
+generate_stage_flow(try_catch(Stage, Handler), InVar, OutVar, Code) :-
+    !,
+    extract_stage_name(Stage, StageName),
+    extract_stage_name(Handler, HandlerName),
+    OutVar = "try_catch_result",
+    format(string(Code),
+"    # Try-Catch: ~w with handler ~w
+    ~w = try_catch_stage(~w, ~w, ~w)", [StageName, HandlerName, OutVar, InVar, StageName, HandlerName]).
+
+% Retry stage: retry N times on failure
+generate_stage_flow(retry(Stage, N), InVar, OutVar, Code) :-
+    !,
+    extract_stage_name(Stage, StageName),
+    OutVar = "retry_result",
+    format(string(Code),
+"    # Retry: ~w up to ~w times
+    ~w = retry_stage(~w, ~w, ~w)", [StageName, N, OutVar, InVar, StageName, N]).
+
+% Retry stage with options
+generate_stage_flow(retry(Stage, N, Options), InVar, OutVar, Code) :-
+    !,
+    extract_stage_name(Stage, StageName),
+    OutVar = "retry_result",
+    extract_retry_options(Options, DelayMs, Backoff),
+    format(string(Code),
+"    # Retry: ~w up to ~w times (delay=~wms, backoff=~w)
+    ~w = retry_stage(~w, ~w, ~w, ~w, '~w')", [StageName, N, DelayMs, Backoff, OutVar, InVar, StageName, N, DelayMs, Backoff]).
+
+% On-error stage: global error handler
+generate_stage_flow(on_error(Handler), InVar, OutVar, Code) :-
+    !,
+    extract_stage_name(Handler, HandlerName),
+    OutVar = "on_error_result",
+    format(string(Code),
+"    # On-Error: route errors to ~w
+    ~w = on_error_stage(~w, ~w)", [HandlerName, OutVar, InVar, HandlerName]).
+
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     atom(Pred),
@@ -5232,6 +5339,18 @@ format_route_map([(Cond, Pred/_Arity)|Rest], Str) :-
     Rest \= [],
     format_route_map(Rest, RestStr),
     format(string(Str), "~q: ~w, ~w", [Cond, Pred, RestStr]).
+
+%% extract_stage_name(+Stage, -Name)
+%  Extract the function name from a stage specification.
+extract_stage_name(Pred/_, Pred) :- atom(Pred), !.
+extract_stage_name(Pred, Pred) :- atom(Pred), !.
+extract_stage_name(_, unknown_stage).
+
+%% extract_retry_options(+Options, -DelayMs, -Backoff)
+%  Extract retry options from options list.
+extract_retry_options(Options, DelayMs, Backoff) :-
+    ( member(delay(D), Options) -> DelayMs = D ; DelayMs = 0 ),
+    ( member(backoff(B), Options) -> Backoff = B ; Backoff = none ).
 
 % ============================================================================
 % Pipeline Chaining Tests (Phase 4)

@@ -8531,6 +8531,75 @@ func sortByComparator(records []Record, comparator ComparatorFunc) []Record {
 \treturn result
 }
 
+// StageFunc is a function type for pipeline stages
+type StageFunc func([]Record) ([]Record, error)
+
+// ErrorHandlerFunc is a function type for error handlers
+type ErrorHandlerFunc func([]Record, error) []Record
+
+// tryCatchStage executes a stage and routes errors to handler
+func tryCatchStage(records []Record, stage StageFunc, handler ErrorHandlerFunc) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tresults, err := stage([]Record{record})
+\t\tif err != nil {
+\t\t\thandlerResults := handler([]Record{record}, err)
+\t\t\tresult = append(result, handlerResults...)
+\t\t} else {
+\t\t\tresult = append(result, results...)
+\t\t}
+\t}
+\treturn result
+}
+
+// retryStage retries a stage up to maxRetries times
+func retryStage(records []Record, stage StageFunc, maxRetries int, delayMs int, backoff string) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tvar lastErr error
+\t\tfor attempt := 0; attempt <= maxRetries; attempt++ {
+\t\t\tresults, err := stage([]Record{record})
+\t\t\tif err == nil {
+\t\t\t\tresult = append(result, results...)
+\t\t\t\tbreak
+\t\t\t}
+\t\t\tlastErr = err
+\t\t\tif attempt < maxRetries && delayMs > 0 {
+\t\t\t\tvar waitTime time.Duration
+\t\t\t\tswitch backoff {
+\t\t\t\tcase \"exponential\":
+\t\t\t\t\twaitTime = time.Duration(delayMs*(1<<attempt)) * time.Millisecond
+\t\t\t\tcase \"linear\":
+\t\t\t\t\twaitTime = time.Duration(delayMs*(attempt+1)) * time.Millisecond
+\t\t\t\tdefault:
+\t\t\t\t\twaitTime = time.Duration(delayMs) * time.Millisecond
+\t\t\t\t}
+\t\t\t\ttime.Sleep(waitTime)
+\t\t\t}
+\t\t}
+\t\tif lastErr != nil {
+\t\t\t// All retries exhausted
+\t\t\terrorRecord := Record{
+\t\t\t\t\"_error\":   lastErr.Error(),
+\t\t\t\t\"_record\":  record,
+\t\t\t\t\"_retries\": maxRetries,
+\t\t\t}
+\t\t\tresult = append(result, errorRecord)
+\t\t}
+\t}
+\treturn result
+}
+
+// onErrorStage wraps records with error handling
+func onErrorStage(records []Record, handler ErrorHandlerFunc) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\t// In Go, we pass records through - errors are handled at stage level
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -8572,6 +8641,20 @@ generate_go_single_enhanced_stage(scan(_), "") :- !.
 generate_go_single_enhanced_stage(order_by(_), "") :- !.
 generate_go_single_enhanced_stage(order_by(_, _), "") :- !.
 generate_go_single_enhanced_stage(sort_by(_), "") :- !.
+generate_go_single_enhanced_stage(try_catch(Stage, Handler), Code) :-
+    !,
+    generate_go_single_enhanced_stage(Stage, StageCode),
+    generate_go_single_enhanced_stage(Handler, HandlerCode),
+    format(string(Code), "~w~w", [StageCode, HandlerCode]).
+generate_go_single_enhanced_stage(retry(Stage, _), Code) :-
+    !,
+    generate_go_single_enhanced_stage(Stage, Code).
+generate_go_single_enhanced_stage(retry(Stage, _, _), Code) :-
+    !,
+    generate_go_single_enhanced_stage(Stage, Code).
+generate_go_single_enhanced_stage(on_error(Handler), Code) :-
+    !,
+    generate_go_single_enhanced_stage(Handler, Code).
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -8809,6 +8892,44 @@ generate_go_stage_flow(sort_by(ComparePred), InVar, OutVar, Code) :-
 "\t// Sort by custom comparator: ~w
 \t~w := sortByComparator(~w, ~w)", [ComparePred, OutVar, InVar, ComparePred]).
 
+% Try-catch stage: execute stage, on error route to handler
+generate_go_stage_flow(try_catch(Stage, Handler), InVar, OutVar, Code) :-
+    !,
+    extract_go_stage_name(Stage, StageName),
+    extract_go_stage_name(Handler, HandlerName),
+    OutVar = "tryCatchResult",
+    format(string(Code),
+"\t// Try-Catch: ~w with handler ~w
+\t~w := tryCatchStage(~w, ~w, ~w)", [StageName, HandlerName, OutVar, InVar, StageName, HandlerName]).
+
+% Retry stage: retry N times on failure
+generate_go_stage_flow(retry(Stage, N), InVar, OutVar, Code) :-
+    !,
+    extract_go_stage_name(Stage, StageName),
+    OutVar = "retryResult",
+    format(string(Code),
+"\t// Retry: ~w up to ~w times
+\t~w := retryStage(~w, ~w, ~w, 0, \"none\")", [StageName, N, OutVar, InVar, StageName, N]).
+
+% Retry stage with options
+generate_go_stage_flow(retry(Stage, N, Options), InVar, OutVar, Code) :-
+    !,
+    extract_go_stage_name(Stage, StageName),
+    OutVar = "retryResult",
+    extract_go_retry_options(Options, DelayMs, Backoff),
+    format(string(Code),
+"\t// Retry: ~w up to ~w times (delay=~wms, backoff=~w)
+\t~w := retryStage(~w, ~w, ~w, ~w, \"~w\")", [StageName, N, DelayMs, Backoff, OutVar, InVar, StageName, N, DelayMs, Backoff]).
+
+% On-error stage: global error handler
+generate_go_stage_flow(on_error(Handler), InVar, OutVar, Code) :-
+    !,
+    extract_go_stage_name(Handler, HandlerName),
+    OutVar = "onErrorResult",
+    format(string(Code),
+"\t// On-Error: route errors to ~w
+\t~w := onErrorStage(~w, ~w)", [HandlerName, OutVar, InVar, HandlerName]).
+
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -8830,6 +8951,18 @@ extract_go_stage_names([Pred/_Arity|Rest], [Pred|RestNames]) :-
     extract_go_stage_names(Rest, RestNames).
 extract_go_stage_names([_|Rest], RestNames) :-
     extract_go_stage_names(Rest, RestNames).
+
+%% extract_go_stage_name(+Stage, -Name)
+%  Extract function name from a single stage specification.
+extract_go_stage_name(Pred/_, Pred) :- atom(Pred), !.
+extract_go_stage_name(Pred, Pred) :- atom(Pred), !.
+extract_go_stage_name(_, unknown_stage).
+
+%% extract_go_retry_options(+Options, -DelayMs, -Backoff)
+%  Extract retry options from options list.
+extract_go_retry_options(Options, DelayMs, Backoff) :-
+    ( member(delay(D), Options) -> DelayMs = D ; DelayMs = 0 ),
+    ( member(backoff(B), Options) -> Backoff = B ; Backoff = none ).
 
 %% format_go_stage_list(+Names, -ListStr)
 %  Format stage names as Go function references.

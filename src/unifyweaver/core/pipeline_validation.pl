@@ -191,6 +191,28 @@ is_valid_stage(order_by(FieldSpecs)) :-
     maplist(is_valid_field_spec, FieldSpecs).
 is_valid_stage(sort_by(ComparePred)) :-
     atom(ComparePred).
+% Error handling stages
+is_valid_stage(try_catch(Stage, Handler)) :-
+    is_valid_stage(Stage),
+    is_valid_stage(Handler).
+is_valid_stage(retry(Stage, N)) :-
+    is_valid_stage(Stage),
+    integer(N),
+    N > 0.
+is_valid_stage(retry(Stage, N, Options)) :-
+    is_valid_stage(Stage),
+    integer(N),
+    N > 0,
+    is_list(Options),
+    maplist(is_valid_retry_option, Options).
+is_valid_stage(on_error(Handler)) :-
+    is_valid_stage(Handler).
+
+%% is_valid_retry_option(+Option) is semidet.
+%  Validates retry options.
+is_valid_retry_option(backoff(linear)).
+is_valid_retry_option(backoff(exponential)).
+is_valid_retry_option(delay(Ms)) :- integer(Ms), Ms >= 0.
 
 %% is_valid_direction(+Dir) is semidet.
 %  Validates sort direction.
@@ -241,6 +263,10 @@ stage_type(scan(_, _), scan) :- !.
 stage_type(order_by(_), order_by) :- !.
 stage_type(order_by(_, _), order_by) :- !.
 stage_type(sort_by(_), sort_by) :- !.
+stage_type(try_catch(_, _), try_catch) :- !.
+stage_type(retry(_, _), retry) :- !.
+stage_type(retry(_, _, _), retry) :- !.
+stage_type(on_error(_), on_error) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -294,6 +320,35 @@ validate_stage_specific(scan(_, _), []) :- !.
 validate_stage_specific(order_by(_), []) :- !.
 validate_stage_specific(order_by(_, _), []) :- !.
 validate_stage_specific(sort_by(_), []) :- !.
+% Error handling stages
+validate_stage_specific(try_catch(Stage, Handler), Errors) :-
+    !,
+    validate_stage(Stage, StageErrors),
+    validate_stage(Handler, HandlerErrors),
+    append(StageErrors, HandlerErrors, Errors).
+validate_stage_specific(retry(Stage, N), Errors) :-
+    !,
+    validate_stage(Stage, StageErrors),
+    ( integer(N), N > 0 ->
+        NErrors = []
+    ;
+        format(atom(Msg), 'retry count must be positive integer, got: ~w', [N]),
+        NErrors = [error(invalid_retry_count, Msg)]
+    ),
+    append(StageErrors, NErrors, Errors).
+validate_stage_specific(retry(Stage, N, _Options), Errors) :-
+    !,
+    validate_stage(Stage, StageErrors),
+    ( integer(N), N > 0 ->
+        NErrors = []
+    ;
+        format(atom(Msg), 'retry count must be positive integer, got: ~w', [N]),
+        NErrors = [error(invalid_retry_count, Msg)]
+    ),
+    append(StageErrors, NErrors, Errors).
+validate_stage_specific(on_error(Handler), Errors) :-
+    !,
+    validate_stage(Handler, Errors).
 validate_stage_specific(_, []).
 
 %% validate_batch(+BatchStage, -Errors) is det.
