@@ -323,8 +323,10 @@ generate_group_code(Options, group(direct, Steps), Code) :-
 
 generate_group_code(Options, group(http, Steps), Code) :-
     % Use network_glue for HTTP groups
-    (   current_predicate(network_glue:generate_http_pipeline/3)
-    ->  network_glue:generate_http_pipeline(Steps, Options, Code)
+    % Note: Steps need to be converted to network_glue format (local/remote types)
+    (   current_predicate(network_glue:generate_network_pipeline/3)
+    ->  steps_to_network_steps(Steps, NetworkSteps),
+        network_glue:generate_network_pipeline(NetworkSteps, Options, Code)
     ;   % Fallback to pipe
         generate_group_code(Options, group(pipe, Steps), Code)
     ).
@@ -339,6 +341,17 @@ generate_group_code(Options, group(_, Steps), Code) :-
 steps_to_dotnet_steps([], []).
 steps_to_dotnet_steps([step(Name, Target, File, _Opts)|Rest], [step(Target, Name, File)|RestDN]) :-
     steps_to_dotnet_steps(Rest, RestDN).
+
+%% steps_to_network_steps(+Steps, -NetworkSteps)
+%  Convert step/4 terms to network_glue format.
+%  Network steps use step(Name, Type, Config, Options) where Type = local | remote
+%
+%  For HTTP transport, we treat the File/Script as a remote URL.
+%
+steps_to_network_steps([], []).
+steps_to_network_steps([step(Name, _Target, URL, Opts)|Rest], [step(Name, remote, URL, Opts)|RestNet]) :-
+    % Treat all HTTP transport steps as remote calls to the given URL
+    steps_to_network_steps(Rest, RestNet).
 
 %% combine_group_scripts(+Groups, +Codes, +Options, -Script)
 %  Combine multiple group scripts into a single orchestration script.
