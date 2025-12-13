@@ -60,6 +60,19 @@ W = A · Q̄ᵀ · (Q̄ · Q̄ᵀ + λ · Δw · Δwᵀ)⁻¹
 
 Where Δw has columns √wₖᵢ · δqₖᵢ (weighted residuals).
 
+### Numerical Stability
+
+If `(Q̄ · Q̄ᵀ + λ · Δw · Δwᵀ)` is ill-conditioned (e.g., few clusters, high dimensionality), options include:
+
+1. **Pseudo-inverse**: Use `pinv()` instead of `inv()` to handle rank deficiency
+2. **Additional ridge term**: Add μI for numerical stability:
+   ```
+   W = A · Q̄ᵀ · (Q̄ · Q̄ᵀ + λ · Δw · Δwᵀ + μI)⁻¹
+   ```
+3. **Truncated SVD**: Compute SVD of the covariance, discard small singular values, then invert
+
+The structured regularization (λ · Δw · Δwᵀ) helps condition the matrix, but when m << d (few clusters relative to embedding dimension), additional regularization may be needed.
+
 ### Interpretation
 
 | Component | Meaning |
@@ -103,13 +116,14 @@ def compute_weighted_centroid(questions, max_iter=3):
 
     return q_bar, weights
 
-def compute_W(clusters, lambda_reg=1.0):
+def compute_W(clusters, lambda_reg=1.0, ridge=1e-6):
     """
     Compute transformation matrix W from Q-A clusters.
 
     Args:
         clusters: List of (answer_embedding, [question_embeddings])
-        lambda_reg: Regularization strength
+        lambda_reg: Regularization strength for residual suppression
+        ridge: Additional ridge regularization for numerical stability
 
     Returns:
         W: d × d transformation matrix
@@ -130,9 +144,10 @@ def compute_W(clusters, lambda_reg=1.0):
     Q_bar = np.column_stack(centroids)      # d × m
     A = np.column_stack(answers)            # d × m
     Delta_w = np.column_stack(residuals_weighted)  # d × n_total
+    d = Q_bar.shape[0]
 
-    # Compute regularized solution
-    cov = Q_bar @ Q_bar.T + lambda_reg * Delta_w @ Delta_w.T
+    # Compute regularized solution with ridge for numerical stability
+    cov = Q_bar @ Q_bar.T + lambda_reg * Delta_w @ Delta_w.T + ridge * np.eye(d)
     W = A @ Q_bar.T @ np.linalg.pinv(cov)
 
     return W
