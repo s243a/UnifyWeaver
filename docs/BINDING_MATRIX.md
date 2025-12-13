@@ -18,6 +18,8 @@ This document tracks which bindings are implemented for each target language.
 |--------|----------|------------|
 | **Python** | 106 | 9 (Built-ins, String, List, Dict, I/O, Regex, Math, Collections, Itertools) |
 | **PowerShell** | 68 | 4 (Cmdlets, Automation, .NET, C# Hosting) |
+| **Jython** | 66 | 5+ (Python-compatible + Java I/O, Collections, Regex, Strings) |
+| **Java** | 42 | 5 (String, Math, Collections, I/O, Stream API) |
 | **Go** | 50+ | 10 (Built-ins, String, Math, I/O, JSON, Regex, Time, Path, Collections, Conv) |
 | **C#** | 36+ | 5 (Built-ins, String, Math, I/O, LINQ) |
 | **Rust** | 29+ | 6 (Built-ins, String, Math, I/O, Regex, JSON) |
@@ -352,12 +354,16 @@ Placeholder for future target languages:
 
 | Target | Status | Notes |
 |--------|--------|-------|
+| Java | Implemented | String, Math, Collections, I/O, Stream API |
+| Jython | Implemented | Python-compatible + Java I/O, Collections, Regex |
 | Go | Implemented | Native bindings for Go standard library |
 | Rust | Implemented | Bindings for Rust std crate |
 | C# | Implemented | LINQ and .NET bindings (Basic set) |
 | Bash | Implemented | Shell command bindings |
 | AWK | Implemented | Built-ins, String, Math |
 | SQL | N/A | SQL uses declarative generation, not bindings |
+| Kotlin | Planned | Coroutines and Android support |
+| Scala | Planned | Functional idioms |
 
 ---
 
