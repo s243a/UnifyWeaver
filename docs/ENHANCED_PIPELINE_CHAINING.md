@@ -4,7 +4,7 @@ UnifyWeaver supports **enhanced pipeline chaining** across all major targets, en
 
 ## Overview
 
-Enhanced pipeline chaining adds five new stage types to the standard predicate stages:
+Enhanced pipeline chaining adds seven new stage types to the standard predicate stages:
 
 | Stage Type | Description |
 |------------|-------------|
@@ -13,6 +13,8 @@ Enhanced pipeline chaining adds five new stage types to the standard predicate s
 | `merge` | Combine results from fan_out or parallel stages |
 | `route_by(Pred, Routes)` | Route records to different stages based on a predicate condition |
 | `filter_by(Pred)` | Filter records that satisfy a predicate |
+| `batch(N)` | Collect N records into batches for bulk processing |
+| `unbatch` | Flatten batches back to individual records |
 | `Pred/Arity` | Standard predicate stage (unchanged) |
 
 ### Fan-out vs Parallel
@@ -243,6 +245,86 @@ filter_record() {
         echo ""
     fi
 }
+```
+
+### Batch (`batch/1`)
+
+Collects N records into batches for bulk processing. Useful for:
+- Bulk database inserts
+- Batch API calls with rate limits
+- Efficient I/O operations
+
+```prolog
+batch(100)
+```
+
+**Data Flow:**
+```
+Record 1 ─┐
+Record 2 ─┤
+   ...    ├─► [Batch of 100] ─► Next Stage
+Record 100─┘
+Record 101─┐
+   ...    ├─► [Batch of 100] ─► Next Stage
+Record 200─┘
+```
+
+**Generated Code (Python):**
+```python
+def batch_records(stream, batch_size):
+    '''
+    Batch: Collect records into batches of specified size.
+    Yields each batch as a list. Final batch may be smaller.
+    '''
+    batch = []
+    for record in stream:
+        batch.append(record)
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:  # Flush remaining records
+        yield batch
+```
+
+### Unbatch (`unbatch`)
+
+Flattens batches back to individual records. Typically follows batch processing.
+
+```prolog
+unbatch
+```
+
+**Data Flow:**
+```
+[Batch 1] ─► Record 1, Record 2, ... Record 100
+[Batch 2] ─► Record 101, Record 102, ... Record 200
+```
+
+**Generated Code (Python):**
+```python
+def unbatch_records(stream):
+    '''
+    Unbatch: Flatten batches back to individual records.
+    '''
+    for batch in stream:
+        if isinstance(batch, list):
+            for record in batch:
+                yield record
+        else:
+            yield batch
+```
+
+### Batch Processing Example
+
+```prolog
+compile_enhanced_pipeline([
+    extract/1,
+    filter_by(is_valid),
+    batch(100),           % Collect 100 records
+    bulk_insert/1,        % Process batch
+    unbatch,              % Flatten back to records
+    output/1
+], [pipeline_name(batch_pipe)], Code).
 ```
 
 ## Complex Pipeline Example

@@ -4655,6 +4655,32 @@ def parallel_records(record, stages):
             results.extend(future.result())
     return results
 
+def batch_records(stream, batch_size):
+    '''
+    Batch: Collect records into batches of specified size.
+    Yields each batch as a list. Final batch may be smaller.
+    '''
+    batch = []
+    for record in stream:
+        batch.append(record)
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:  # Flush remaining records
+        yield batch
+
+def unbatch_records(stream):
+    '''
+    Unbatch: Flatten batches back to individual records.
+    Each batch (list) is expanded to yield individual records.
+    '''
+    for batch in stream:
+        if isinstance(batch, list):
+            for record in batch:
+                yield record
+        else:
+            yield batch  # Pass through non-list items
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -4682,6 +4708,8 @@ generate_single_enhanced_stage(route_by(_, Routes), Code) :-
     findall(Stage, member((_Cond, Stage), Routes), RouteStages),
     generate_enhanced_stage_functions(RouteStages, Code).
 generate_single_enhanced_stage(filter_by(_), "") :- !.
+generate_single_enhanced_stage(batch(_), "") :- !.
+generate_single_enhanced_stage(unbatch, "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -4770,6 +4798,20 @@ generate_stage_flow(filter_by(Pred), InVar, OutVar, Code) :-
     format(string(Code),
 "    # Filter by ~w
     ~w = filter_records(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Batch stage: collect N records into batches
+generate_stage_flow(batch(N), InVar, OutVar, Code) :-
+    format(atom(OutVar), "batched_~w_result", [N]),
+    format(string(Code),
+"    # Batch records into groups of ~w
+    ~w = batch_records(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Unbatch stage: flatten batches back to individual records
+generate_stage_flow(unbatch, InVar, OutVar, Code) :-
+    OutVar = "unbatched_result",
+    format(string(Code),
+"    # Unbatch: flatten batches to individual records
+    ~w = unbatch_records(~w)", [OutVar, InVar]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

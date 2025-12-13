@@ -13,9 +13,12 @@
 % Supported stage types:
 %   - Pred/Arity          - Standard predicate stage
 %   - fan_out(Stages)     - Broadcast to multiple parallel stages
-%   - merge               - Combine results from fan_out
+%   - parallel(Stages)    - Execute stages concurrently
+%   - merge               - Combine results from fan_out/parallel
 %   - route_by(Pred, Routes) - Conditional routing
 %   - filter_by(Pred)     - Filter by predicate
+%   - batch(N)            - Collect N records into batches
+%   - unbatch             - Flatten batches back to records
 
 :- module(pipeline_validation, [
     % Main validation API
@@ -152,6 +155,9 @@ is_valid_stage(route_by(Pred, Routes)) :-
     is_list(Routes).
 is_valid_stage(filter_by(Pred)) :-
     atom(Pred).
+is_valid_stage(batch(N)) :-
+    integer(N).
+is_valid_stage(unbatch).
 
 %% stage_type(+Stage, -Type) is det.
 %
@@ -163,6 +169,8 @@ stage_type(parallel(_), parallel) :- !.
 stage_type(merge, merge) :- !.
 stage_type(route_by(_, _), route_by) :- !.
 stage_type(filter_by(_), filter_by) :- !.
+stage_type(batch(_), batch) :- !.
+stage_type(unbatch, unbatch) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -196,7 +204,23 @@ validate_stage_specific(Pred/Arity, Errors) :-
     !,
     validate_predicate_stage(Pred/Arity, Errors).
 validate_stage_specific(merge, []) :- !.
+validate_stage_specific(batch(N), Errors) :-
+    !,
+    validate_batch(batch(N), Errors).
+validate_stage_specific(unbatch, []) :- !.
 validate_stage_specific(_, []).
+
+%% validate_batch(+BatchStage, -Errors) is det.
+%
+%  Validates a batch stage:
+%    - N must be a positive integer
+validate_batch(batch(N), Errors) :-
+    ( integer(N), N > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'batch size must be a positive integer, got: ~w', [N]),
+        Errors = [error(invalid_batch_size, Msg)]
+    ).
 
 %% validate_fan_out(+FanOutStage, -Errors) is det.
 %
@@ -446,7 +470,10 @@ run_all_validation_tests :-
     test_complex_valid_pipeline,
     test_empty_parallel,
     test_single_parallel_stage,
-    test_valid_parallel.
+    test_valid_parallel,
+    test_valid_batch,
+    test_invalid_batch_size,
+    test_batch_unbatch_pipeline.
 
 %% Test: Empty pipeline
 test_empty_pipeline :-
@@ -641,4 +668,52 @@ test_valid_parallel :-
     ;
         format(' FAILED: ~w~n', [Errors]),
         throw(test_failed(valid_parallel))
+    ).
+
+%% Test: Valid batch stage
+test_valid_batch :-
+    format('  Test: valid batch stage...', []),
+    Pipeline = [
+        parse/1,
+        batch(100),
+        process_batch/1,
+        unbatch,
+        output/1
+    ],
+    validate_pipeline(Pipeline, Errors),
+    ( Errors == [] ->
+        format(' PASSED~n', [])
+    ;
+        format(' FAILED: ~w~n', [Errors]),
+        throw(test_failed(valid_batch))
+    ).
+
+%% Test: Invalid batch size
+test_invalid_batch_size :-
+    format('  Test: invalid batch size...', []),
+    validate_pipeline([parse/1, batch(0), output/1], Errors),
+    ( member(error(invalid_batch_size, _), Errors) ->
+        format(' PASSED~n', [])
+    ;
+        format(' FAILED~n', []),
+        throw(test_failed(invalid_batch_size))
+    ).
+
+%% Test: Batch and unbatch pipeline
+test_batch_unbatch_pipeline :-
+    format('  Test: batch and unbatch pipeline...', []),
+    Pipeline = [
+        extract/1,
+        filter_by(is_valid),
+        batch(50),
+        bulk_insert/1,
+        unbatch,
+        output/1
+    ],
+    validate_pipeline(Pipeline, Errors),
+    ( Errors == [] ->
+        format(' PASSED~n', [])
+    ;
+        format(' FAILED: ~w~n', [Errors]),
+        throw(test_failed(batch_unbatch_pipeline))
     ).
