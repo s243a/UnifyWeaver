@@ -25,7 +25,8 @@ func createEmbedder() (embedder.Embedder, func()) {
 			modelPath = "sentence-transformers/all-MiniLM-L6-v2"
 		default:
 			// Pure Go/ORT/XLA use ONNX model path
-			modelPath = "../../models/all-MiniLM-L6-v2-onnx"
+			// Must contain model.onnx and tokenizer.json in same directory
+			modelPath = "../../models/all-MiniLM-L6-v2"
 		}
 	}
 

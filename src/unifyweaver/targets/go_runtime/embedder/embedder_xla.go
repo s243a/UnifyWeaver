@@ -1,4 +1,4 @@
-//go:build xla
+//go:build xla || XLA
 
 package embedder
 
@@ -27,9 +27,16 @@ func newEmbedder(config EmbedderConfig) (Embedder, error) {
 		return nil, err
 	}
 
+	// Default to model.onnx if no specific ONNX file is specified
+	onnxFile := config.OnnxFilename
+	if onnxFile == "" {
+		onnxFile = "model.onnx"
+	}
+
 	hugotConfig := hugot.FeatureExtractionConfig{
-		ModelPath: config.ModelPath,
-		Name:      config.ModelName,
+		ModelPath:    config.ModelPath,
+		Name:         config.ModelName,
+		OnnxFilename: onnxFile,
 	}
 
 	pipeline, err := hugot.NewPipeline(session, hugotConfig)
