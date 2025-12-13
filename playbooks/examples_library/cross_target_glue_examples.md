@@ -44,7 +44,9 @@ main :-
     AwkLogic = '
     # Calculate line total
     total = quantity * price
-    if (total > 1000) {',
+    if (total > 1000) {
+        print region, product, quantity, price, total
+    }',
     generate_awk_script(AwkLogic, [region, product, quantity, price],
                         [format(tsv), header(true)], AwkScript),
 
@@ -331,10 +333,11 @@ main :-
         }',
 
     % Generate using dotnet_glue predicates
-    (   generate_csharp_pipeline_class(CsharpLogic, [], CsharpCode)
-    ->  format("Generated C# code (~d chars)~n", [CsharpCode])
-    ;   format("dotnet_glue module provides: generate_csharp_pipeline_class/3~n"),
-        format("This generates C# pipeline processors with JSON support~n")
+    (   generate_dotnet_pipeline(CsharpLogic, [], CsharpCode)
+    ->  atom_length(CsharpCode, Len),
+        format("Generated C# code (~d chars)~n", [Len])
+    ;   format("dotnet_glue module provides: generate_dotnet_pipeline/3~n"),
+        format("This generates .NET pipeline processors with JSON support~n")
     ),
 
     format("~nNote: For full .NET integration, see:~n"),
