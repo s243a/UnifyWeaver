@@ -22,6 +22,10 @@ Enhanced pipeline chaining adds the following stage types to the standard predic
 | `group_by(Field, Agg)` | Group by field and apply aggregations |
 | `reduce(Pred, Init)` | Sequential fold across all records |
 | `scan(Pred, Init)` | Like reduce but emits intermediate values |
+| `order_by(Field)` | Sort records by field (ascending) |
+| `order_by(Field, Dir)` | Sort records by field with direction (asc/desc) |
+| `order_by(FieldSpecs)` | Sort by multiple fields with directions |
+| `sort_by(ComparePred)` | Sort using custom comparator function |
 | `Pred/Arity` | Standard predicate stage (unchanged) |
 
 ### Fan-out vs Parallel
@@ -504,6 +508,86 @@ compile_enhanced_pipeline([
     output/1
 ], [pipeline_name(batch_pipe)], Code).
 ```
+
+## Sorting Stages
+
+Pipeline-level sorting stages for ordering records by field values or custom comparison logic.
+
+### Order By (`order_by/1`, `order_by/2`)
+
+Sort records by a single field.
+
+```prolog
+% Ascending (default)
+order_by(timestamp)
+
+% With explicit direction
+order_by(timestamp, asc)
+order_by(timestamp, desc)
+```
+
+**Data Flow:**
+```
+{ts: 3, name: "C"} ─┐          {ts: 1, name: "A"}
+{ts: 1, name: "A"} ─┼─► order_by(ts) ─►  {ts: 2, name: "B"}
+{ts: 2, name: "B"} ─┘          {ts: 3, name: "C"}
+```
+
+### Multi-Field Order By
+
+Sort by multiple fields with individual directions.
+
+```prolog
+% Sort by category ascending, then by price descending
+order_by([(category, asc), (price, desc)])
+```
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    order_by([(department, asc), (salary, desc)]),
+    output/1
+], [pipeline_name(sorted_employees)], Code).
+```
+
+### Sort By (`sort_by/1`)
+
+Sort using a custom comparator function. The comparator takes two records and returns:
+- Negative (or `-1`) if first record comes before second
+- Zero (`0`) if records are equal
+- Positive (or `1`) if first record comes after second
+
+```prolog
+sort_by(compare_priority)
+```
+
+**Use Cases:**
+- Complex sorting logic that can't be expressed as field ordering
+- Multi-criteria sorting with custom weighting
+- Domain-specific ordering rules
+
+**Example (Python target):**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    sort_by(compare_priority),
+    output/1
+], [pipeline_name(priority_sorted)], Code).
+```
+
+The generated code expects a `compare_priority(record_a, record_b)` function that returns the comparison result.
+
+### Order By vs Sort By
+
+| Stage | Use When |
+|-------|----------|
+| `order_by(Field)` | Simple field-based sorting |
+| `order_by(Field, Dir)` | Field sorting with direction |
+| `order_by(FieldSpecs)` | Multiple fields with directions |
+| `sort_by(Pred)` | Custom comparison logic needed |
+
+**Key Distinction:** `order_by` is declarative (specify fields), `sort_by` is programmatic (specify comparison function).
 
 ## Complex Pipeline Example
 

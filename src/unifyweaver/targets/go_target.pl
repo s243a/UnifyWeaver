@@ -8426,6 +8426,111 @@ func scanRecords(records []Record, reducer ReducerFunc, initial interface{}) []R
 \treturn result
 }
 
+// orderByField sorts records by a single field
+func orderByField(records []Record, field string, direction string) []Record {
+\tresult := make([]Record, len(records))
+\tcopy(result, records)
+\tsort.Slice(result, func(i, j int) bool {
+\t\tvi := result[i][field]
+\t\tvj := result[j][field]
+\t\tcmp := compareValues(vi, vj)
+\t\tif direction == \"desc\" {
+\t\t\treturn cmp > 0
+\t\t}
+\t\treturn cmp < 0
+\t})
+\treturn result
+}
+
+// FieldSpec represents a field ordering specification
+type FieldSpec struct {
+\tField     string
+\tDirection string
+}
+
+// orderByFields sorts records by multiple fields
+func orderByFields(records []Record, fieldSpecs []FieldSpec) []Record {
+\tresult := make([]Record, len(records))
+\tcopy(result, records)
+\tsort.Slice(result, func(i, j int) bool {
+\t\tfor _, spec := range fieldSpecs {
+\t\t\tvi := result[i][spec.Field]
+\t\t\tvj := result[j][spec.Field]
+\t\t\tcmp := compareValues(vi, vj)
+\t\t\tif cmp != 0 {
+\t\t\t\tif spec.Direction == \"desc\" {
+\t\t\t\t\treturn cmp > 0
+\t\t\t\t}
+\t\t\t\treturn cmp < 0
+\t\t\t}
+\t\t}
+\t\treturn false // All fields equal
+\t})
+\treturn result
+}
+
+// compareValues compares two interface{} values
+func compareValues(a, b interface{}) int {
+\t// Handle nil values (sort to end)
+\tif a == nil && b == nil {
+\t\treturn 0
+\t}
+\tif a == nil {
+\t\treturn 1
+\t}
+\tif b == nil {
+\t\treturn -1
+\t}
+\t// Compare based on type
+\tswitch va := a.(type) {
+\tcase float64:
+\t\tif vb, ok := b.(float64); ok {
+\t\t\tif va < vb {
+\t\t\t\treturn -1
+\t\t\t}
+\t\t\tif va > vb {
+\t\t\t\treturn 1
+\t\t\t}
+\t\t\treturn 0
+\t\t}
+\tcase string:
+\t\tif vb, ok := b.(string); ok {
+\t\t\tif va < vb {
+\t\t\t\treturn -1
+\t\t\t}
+\t\t\tif va > vb {
+\t\t\t\treturn 1
+\t\t\t}
+\t\t\treturn 0
+\t\t}
+\tcase int:
+\t\tif vb, ok := b.(int); ok {
+\t\t\tif va < vb {
+\t\t\t\treturn -1
+\t\t\t}
+\t\t\tif va > vb {
+\t\t\t\treturn 1
+\t\t\t}
+\t\t\treturn 0
+\t\t}
+\t}
+\t// Fallback: string comparison
+\treturn 0
+}
+
+// ComparatorFunc is a function type for custom comparisons
+type ComparatorFunc func(a, b Record) int
+
+// sortByComparator sorts records using a custom comparison function
+func sortByComparator(records []Record, comparator ComparatorFunc) []Record {
+\tresult := make([]Record, len(records))
+\tcopy(result, records)
+\tsort.Slice(result, func(i, j int) bool {
+\t\treturn comparator(result[i], result[j]) < 0
+\t})
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -8464,6 +8569,9 @@ generate_go_single_enhanced_stage(reduce(_, _), "") :- !.
 generate_go_single_enhanced_stage(reduce(_), "") :- !.
 generate_go_single_enhanced_stage(scan(_, _), "") :- !.
 generate_go_single_enhanced_stage(scan(_), "") :- !.
+generate_go_single_enhanced_stage(order_by(_), "") :- !.
+generate_go_single_enhanced_stage(order_by(_, _), "") :- !.
+generate_go_single_enhanced_stage(sort_by(_), "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -8665,6 +8773,42 @@ generate_go_stage_flow(scan(Pred), InVar, OutVar, Code) :-
 "\t// Scan: running fold with ~w (emits intermediate values)
 \t~w := scanRecords(~w, ~w, nil)", [Pred, OutVar, InVar, Pred]).
 
+% Order by single field (ascending by default)
+generate_go_stage_flow(order_by(Field), InVar, OutVar, Code) :-
+    atom(Field),
+    !,
+    format(atom(OutVar), "ordered~wResult", [Field]),
+    format(string(Code),
+"\t// Order by '~w' ascending
+\t~w := orderByField(~w, \"~w\", \"asc\")", [Field, OutVar, InVar, Field]).
+
+% Order by single field with direction
+generate_go_stage_flow(order_by(Field, Dir), InVar, OutVar, Code) :-
+    atom(Field),
+    !,
+    format(atom(OutVar), "ordered~wResult", [Field]),
+    format(string(Code),
+"\t// Order by '~w' ~w
+\t~w := orderByField(~w, \"~w\", \"~w\")", [Field, Dir, OutVar, InVar, Field, Dir]).
+
+% Order by multiple fields with directions
+generate_go_stage_flow(order_by(FieldSpecs), InVar, OutVar, Code) :-
+    is_list(FieldSpecs),
+    !,
+    OutVar = "orderedMultiResult",
+    format_go_field_specs(FieldSpecs, SpecStr),
+    format(string(Code),
+"\t// Order by multiple fields
+\t~w := orderByFields(~w, []FieldSpec{~w})", [OutVar, InVar, SpecStr]).
+
+% Sort by custom comparator
+generate_go_stage_flow(sort_by(ComparePred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "sorted~wResult", [ComparePred]),
+    format(string(Code),
+"\t// Sort by custom comparator: ~w
+\t~w := sortByComparator(~w, ~w)", [ComparePred, OutVar, InVar, ComparePred]).
+
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -8749,6 +8893,24 @@ format_go_single_aggregation(last(Field), Str) :-
     format(string(Str), "{\"last\", \"last\", \"~w\"}", [Field]).
 format_go_single_aggregation(collect(Field), Str) :-
     format(string(Str), "{\"collect\", \"collect\", \"~w\"}", [Field]).
+
+%% format_go_field_specs(+FieldSpecs, -Str)
+%  Format field specifications for multi-field ordering.
+format_go_field_specs([], "").
+format_go_field_specs([Spec], Str) :-
+    format_go_single_field_spec(Spec, Str).
+format_go_field_specs([Spec|Rest], Str) :-
+    Rest \= [],
+    format_go_single_field_spec(Spec, SpecStr),
+    format_go_field_specs(Rest, RestStr),
+    format(string(Str), "~w, ~w", [SpecStr, RestStr]).
+
+format_go_single_field_spec(Field, Str) :-
+    atom(Field),
+    !,
+    format(string(Str), "{\"~w\", \"asc\"}", [Field]).
+format_go_single_field_spec((Field, Dir), Str) :-
+    format(string(Str), "{\"~w\", \"~w\"}", [Field, Dir]).
 
 %% generate_go_enhanced_main(+PipelineName, +OutputFormat, -Code)
 %  Generate main function for enhanced pipeline.

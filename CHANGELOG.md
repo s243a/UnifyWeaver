@@ -60,6 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_aggregation_stages.sh` — Integration tests (12 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Sorting Stages** - Ordering records at pipeline level
+  - Field-based ordering:
+    - `order_by(Field)` — Sort by field ascending
+    - `order_by(Field, Dir)` — Sort by field with direction (asc/desc)
+    - `order_by(FieldSpecs)` — Sort by multiple fields with individual directions
+  - Custom comparator:
+    - `sort_by(ComparePred)` — Sort using user-defined comparison function
+  - Key distinction: `order_by` is declarative (fields), `sort_by` is programmatic (comparator)
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_sorting_stages.sh` — Integration tests (12 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.

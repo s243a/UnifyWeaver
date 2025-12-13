@@ -4804,6 +4804,76 @@ def scan_records(stream, reducer_fn, initial):
         acc = reducer_fn(record, acc)
         yield acc
 
+def order_by_field(stream, field, direction='asc'):
+    '''
+    Order by field: Sort records by a single field.
+    direction can be 'asc' (ascending) or 'desc' (descending).
+    Buffers all records before yielding sorted results.
+    '''
+    records = list(stream)
+    reverse = (direction == 'desc')
+    records.sort(key=lambda r: (r.get(field) is None, r.get(field)), reverse=reverse)
+    yield from records
+
+def order_by_fields(stream, field_specs):
+    '''
+    Order by multiple fields: Sort records by multiple fields with directions.
+    field_specs is a list of (field, direction) tuples.
+    direction can be 'asc' or 'desc'.
+    '''
+    records = list(stream)
+
+    def make_sort_key(record):
+        key_parts = []
+        for field, direction in field_specs:
+            value = record.get(field)
+            # Handle None values (sort them to end)
+            is_none = value is None
+            if direction == 'desc':
+                # For descending, we need to invert the sort
+                # Use a wrapper that inverts comparison
+                key_parts.append((is_none, Descending(value) if not is_none else value))
+            else:
+                key_parts.append((is_none, value))
+        return tuple(key_parts)
+
+    records.sort(key=make_sort_key)
+    yield from records
+
+class Descending:
+    '''Helper class to invert comparison for descending sort.'''
+    def __init__(self, value):
+        self.value = value
+    def __lt__(self, other):
+        if isinstance(other, Descending):
+            return self.value > other.value
+        return False
+    def __gt__(self, other):
+        if isinstance(other, Descending):
+            return self.value < other.value
+        return False
+    def __eq__(self, other):
+        if isinstance(other, Descending):
+            return self.value == other.value
+        return False
+    def __le__(self, other):
+        return self.__lt__(other) or self.__eq__(other)
+    def __ge__(self, other):
+        return self.__gt__(other) or self.__eq__(other)
+
+def sort_by_comparator(stream, compare_fn):
+    '''
+    Sort by custom comparator: Sort records using a user-defined comparison function.
+    compare_fn(record_a, record_b) should return:
+      -1 (or negative) if a < b
+       0 if a == b
+       1 (or positive) if a > b
+    '''
+    from functools import cmp_to_key
+    records = list(stream)
+    records.sort(key=cmp_to_key(compare_fn))
+    yield from records
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -4845,6 +4915,9 @@ generate_single_enhanced_stage(reduce(_, _), "") :- !.
 generate_single_enhanced_stage(reduce(_), "") :- !.
 generate_single_enhanced_stage(scan(_, _), "") :- !.
 generate_single_enhanced_stage(scan(_), "") :- !.
+generate_single_enhanced_stage(order_by(_), "") :- !.
+generate_single_enhanced_stage(order_by(_, _), "") :- !.
+generate_single_enhanced_stage(sort_by(_), "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5027,6 +5100,41 @@ generate_stage_flow(scan(Pred), InVar, OutVar, Code) :-
 "    # Scan: running fold with ~w (emits intermediate values)
     ~w = scan_records(~w, ~w, {})", [Pred, OutVar, InVar, Pred]).
 
+% Order by single field (ascending by default)
+generate_stage_flow(order_by(Field), InVar, OutVar, Code) :-
+    atom(Field),
+    !,
+    format(atom(OutVar), "ordered_~w_result", [Field]),
+    format(string(Code),
+"    # Order by '~w' ascending
+    ~w = order_by_field(~w, '~w', 'asc')", [Field, OutVar, InVar, Field]).
+
+% Order by single field with direction
+generate_stage_flow(order_by(Field, Dir), InVar, OutVar, Code) :-
+    atom(Field),
+    !,
+    format(atom(OutVar), "ordered_~w_result", [Field]),
+    format(string(Code),
+"    # Order by '~w' ~w
+    ~w = order_by_field(~w, '~w', '~w')", [Field, Dir, OutVar, InVar, Field, Dir]).
+
+% Order by multiple fields with directions
+generate_stage_flow(order_by(FieldSpecs), InVar, OutVar, Code) :-
+    is_list(FieldSpecs),
+    !,
+    OutVar = "ordered_multi_result",
+    format_field_specs(FieldSpecs, SpecStr),
+    format(string(Code),
+"    # Order by multiple fields
+    ~w = order_by_fields(~w, [~w])", [OutVar, InVar, SpecStr]).
+
+% Sort by custom comparator
+generate_stage_flow(sort_by(ComparePred), InVar, OutVar, Code) :-
+    format(atom(OutVar), "sorted_~w_result", [ComparePred]),
+    format(string(Code),
+"    # Sort by custom comparator: ~w
+    ~w = sort_by_comparator(~w, ~w)", [ComparePred, OutVar, InVar, ComparePred]).
+
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     atom(Pred),
@@ -5095,6 +5203,25 @@ format_single_aggregation(last(Field), Str) :-
     format(string(Str), "('last', 'last', '~w')", [Field]).
 format_single_aggregation(collect(Field), Str) :-
     format(string(Str), "('collect', 'collect', '~w')", [Field]).
+
+%% format_field_specs(+FieldSpecs, -Str)
+%  Format field specifications for multi-field ordering.
+%  FieldSpecs can be atoms (field names with default asc) or (Field, Dir) tuples.
+format_field_specs([], "").
+format_field_specs([Spec], Str) :-
+    format_single_field_spec(Spec, Str).
+format_field_specs([Spec|Rest], Str) :-
+    Rest \= [],
+    format_single_field_spec(Spec, SpecStr),
+    format_field_specs(Rest, RestStr),
+    format(string(Str), "~w, ~w", [SpecStr, RestStr]).
+
+format_single_field_spec(Field, Str) :-
+    atom(Field),
+    !,
+    format(string(Str), "('~w', 'asc')", [Field]).
+format_single_field_spec((Field, Dir), Str) :-
+    format(string(Str), "('~w', '~w')", [Field, Dir]).
 
 %% format_route_map(+Routes, -Str)
 %  Format route mappings as Python dict entries.

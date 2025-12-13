@@ -1524,6 +1524,83 @@ where
     }
     result
 }
+
+/// Order by single field with direction.
+fn order_by_field(records: &[Record], field: &str, direction: &str) -> Vec<Record> {
+    let mut result: Vec<Record> = records.to_vec();
+    result.sort_by(|a, b| {
+        let va = a.get(field);
+        let vb = b.get(field);
+        let cmp = compare_values(va, vb);
+        if direction == \"desc\" {
+            cmp.reverse()
+        } else {
+            cmp
+        }
+    });
+    result
+}
+
+/// Field specification for multi-field ordering.
+struct FieldSpec {
+    field: String,
+    direction: String,
+}
+
+/// Order by multiple fields.
+fn order_by_fields(records: &[Record], field_specs: &[FieldSpec]) -> Vec<Record> {
+    let mut result: Vec<Record> = records.to_vec();
+    result.sort_by(|a, b| {
+        for spec in field_specs {
+            let va = a.get(&spec.field);
+            let vb = b.get(&spec.field);
+            let cmp = compare_values(va, vb);
+            let cmp = if spec.direction == \"desc\" { cmp.reverse() } else { cmp };
+            if cmp != std::cmp::Ordering::Equal {
+                return cmp;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    result
+}
+
+/// Compare two optional JSON values.
+fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,  // None sorts to end
+        (Some(_), None) => Ordering::Less,
+        (Some(va), Some(vb)) => {
+            // Compare by type
+            match (va, vb) {
+                (Value::Number(na), Value::Number(nb)) => {
+                    let fa = na.as_f64().unwrap_or(0.0);
+                    let fb = nb.as_f64().unwrap_or(0.0);
+                    fa.partial_cmp(&fb).unwrap_or(Ordering::Equal)
+                }
+                (Value::String(sa), Value::String(sb)) => sa.cmp(sb),
+                _ => {
+                    // Fallback: compare string representations
+                    let sa = format!(\"{:?}\", va);
+                    let sb = format!(\"{:?}\", vb);
+                    sa.cmp(&sb)
+                }
+            }
+        }
+    }
+}
+
+/// Sort by custom comparator function.
+fn sort_by_comparator<F>(records: &[Record], comparator: F) -> Vec<Record>
+where
+    F: Fn(&Record, &Record) -> std::cmp::Ordering,
+{
+    let mut result: Vec<Record> = records.to_vec();
+    result.sort_by(|a, b| comparator(a, b));
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -1697,6 +1774,9 @@ generate_rust_single_enhanced_stage(reduce(_, _), "") :- !.
 generate_rust_single_enhanced_stage(reduce(_), "") :- !.
 generate_rust_single_enhanced_stage(scan(_, _), "") :- !.
 generate_rust_single_enhanced_stage(scan(_), "") :- !.
+generate_rust_single_enhanced_stage(order_by(_), "") :- !.
+generate_rust_single_enhanced_stage(order_by(_, _), "") :- !.
+generate_rust_single_enhanced_stage(sort_by(_), "") :- !.
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -1887,6 +1967,42 @@ generate_rust_stage_flow(scan(Pred), InVar, OutVar, Code) :-
 "    // Scan: running fold with ~w (emits intermediate values)
     let ~w = scan_records(&~w, ~w, Value::Null);", [Pred, OutVar, InVar, Pred]).
 
+% Order by single field (ascending by default)
+generate_rust_stage_flow(order_by(Field), InVar, OutVar, Code) :-
+    atom(Field),
+    !,
+    format(atom(OutVar), "ordered_~w_result", [Field]),
+    format(string(Code),
+"    // Order by '~w' ascending
+    let ~w = order_by_field(&~w, \"~w\", \"asc\");", [Field, OutVar, InVar, Field]).
+
+% Order by single field with direction
+generate_rust_stage_flow(order_by(Field, Dir), InVar, OutVar, Code) :-
+    atom(Field),
+    !,
+    format(atom(OutVar), "ordered_~w_result", [Field]),
+    format(string(Code),
+"    // Order by '~w' ~w
+    let ~w = order_by_field(&~w, \"~w\", \"~w\");", [Field, Dir, OutVar, InVar, Field, Dir]).
+
+% Order by multiple fields with directions
+generate_rust_stage_flow(order_by(FieldSpecs), InVar, OutVar, Code) :-
+    is_list(FieldSpecs),
+    !,
+    OutVar = "ordered_multi_result",
+    format_rust_field_specs(FieldSpecs, SpecStr),
+    format(string(Code),
+"    // Order by multiple fields
+    let ~w = order_by_fields(&~w, &[~w]);", [OutVar, InVar, SpecStr]).
+
+% Sort by custom comparator
+generate_rust_stage_flow(sort_by(ComparePred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "sorted_~w_result", [ComparePred]),
+    format(string(Code),
+"    // Sort by custom comparator: ~w
+    let ~w = sort_by_comparator(&~w, ~w);", [ComparePred, OutVar, InVar, ComparePred]).
+
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -1971,6 +2087,24 @@ format_rust_single_aggregation(last(Field), Str) :-
     format(string(Str), "(\"last\", AggType::Last(\"~w\".to_string()))", [Field]).
 format_rust_single_aggregation(collect(Field), Str) :-
     format(string(Str), "(\"collect\", AggType::Collect(\"~w\".to_string()))", [Field]).
+
+%% format_rust_field_specs(+FieldSpecs, -Str)
+%  Format field specifications for multi-field ordering.
+format_rust_field_specs([], "").
+format_rust_field_specs([Spec], Str) :-
+    format_rust_single_field_spec(Spec, Str).
+format_rust_field_specs([Spec|Rest], Str) :-
+    Rest \= [],
+    format_rust_single_field_spec(Spec, SpecStr),
+    format_rust_field_specs(Rest, RestStr),
+    format(string(Str), "~w, ~w", [SpecStr, RestStr]).
+
+format_rust_single_field_spec(Field, Str) :-
+    atom(Field),
+    !,
+    format(string(Str), "FieldSpec { field: \"~w\".to_string(), direction: \"asc\".to_string() }", [Field]).
+format_rust_single_field_spec((Field, Dir), Str) :-
+    format(string(Str), "FieldSpec { field: \"~w\".to_string(), direction: \"~w\".to_string() }", [Field, Dir]).
 
 %% generate_rust_enhanced_main(+PipelineName, +OutputFormat, -Code)
 %  Generate main function for enhanced pipeline.
