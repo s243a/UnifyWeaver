@@ -761,6 +761,55 @@ parse_jsonl() {
 format_jsonl() {
     local record="$1"
     echo "$record"
+}
+
+# Helper: Batch records - collect N records into batches
+# Usage: batch_records batch_size
+# Reads from stdin, outputs batches separated by BATCH_DELIMITER
+BATCH_DELIMITER="---BATCH---"
+batch_records() {
+    local batch_size="$1"
+    local count=0
+    local batch=""
+
+    while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            if [[ -n "$batch" ]]; then
+                batch="$batch"$\'\\n\'"$line"
+            else
+                batch="$line"
+            fi
+            ((count++))
+
+            if [[ $count -ge $batch_size ]]; then
+                echo "$batch"
+                echo "$BATCH_DELIMITER"
+                batch=""
+                count=0
+            fi
+        fi
+    done
+
+    # Flush remaining records
+    if [[ -n "$batch" ]]; then
+        echo "$batch"
+        echo "$BATCH_DELIMITER"
+    fi
+}
+
+# Helper: Unbatch records - flatten batches back to individual records
+# Usage: unbatch_records
+# Reads batches from stdin, outputs individual records
+unbatch_records() {
+    local in_batch=false
+
+    while IFS= read -r line; do
+        if [[ "$line" == "$BATCH_DELIMITER" ]]; then
+            in_batch=false
+        elif [[ -n "$line" ]]; then
+            echo "$line"
+        fi
+    done
 }'.
 
 %% generate_bash_enhanced_stage_functions(+Stages, -Code)
@@ -796,6 +845,8 @@ extract_bash_stage_names(filter_by(Pred), [PredName]) :-
     !,
     format(atom(PredName), 'predicate_~w', [Pred]).
 extract_bash_stage_names(merge, []).
+extract_bash_stage_names(batch(_), []).
+extract_bash_stage_names(unbatch, []).
 extract_bash_stage_names(_, []).
 
 %% extract_bash_route_names(+Routes, -Names)
@@ -931,6 +982,22 @@ generate_bash_stage_flow(filter_by(Pred), InVar, OutVar, Code) :-
         result=""
         return
     fi', [Pred, OutVar, InVar, Pred, OutVar]).
+
+% Batch stage: collect N records into batches
+generate_bash_stage_flow(batch(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "batched_~w_out", [N]),
+    format(string(Code),
+'    # Batch records into groups of ~w
+    local ~w=$(echo "$~w" | batch_records ~w)', [N, OutVar, InVar, N]).
+
+% Unbatch stage: flatten batches back to individual records
+generate_bash_stage_flow(unbatch, InVar, OutVar, Code) :-
+    !,
+    OutVar = "unbatched_out",
+    format(string(Code),
+'    # Unbatch: flatten batches to individual records
+    local ~w=$(echo "$~w" | unbatch_records)', [OutVar, InVar]).
 
 % Unknown stage type - pass through
 generate_bash_stage_flow(Stage, InVar, InVar, Code) :-

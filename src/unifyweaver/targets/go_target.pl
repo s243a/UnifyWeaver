@@ -8237,6 +8237,28 @@ func parallelRecords(record Record, stages []func([]Record) []Record) []Record {
 \treturn results
 }
 
+// batchRecords collects records into batches of specified size
+func batchRecords(records []Record, batchSize int) [][]Record {
+\tvar batches [][]Record
+\tfor i := 0; i < len(records); i += batchSize {
+\t\tend := i + batchSize
+\t\tif end > len(records) {
+\t\t\tend = len(records)
+\t\t}
+\t\tbatches = append(batches, records[i:end])
+\t}
+\treturn batches
+}
+
+// unbatchRecords flattens batches back to individual records
+func unbatchRecords(batches [][]Record) []Record {
+\tvar records []Record
+\tfor _, batch := range batches {
+\t\trecords = append(records, batch...)
+\t}
+\treturn records
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -8262,6 +8284,8 @@ generate_go_single_enhanced_stage(route_by(_, Routes), Code) :-
     findall(Stage, member((_Cond, Stage), Routes), RouteStages),
     generate_go_enhanced_stage_functions(RouteStages, Code).
 generate_go_single_enhanced_stage(filter_by(_), "") :- !.
+generate_go_single_enhanced_stage(batch(_), "") :- !.
+generate_go_single_enhanced_stage(unbatch, "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -8359,6 +8383,22 @@ generate_go_stage_flow(filter_by(Pred), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// Filter by ~w
 \t~w := filterRecords(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Batch stage: collect N records into batches
+generate_go_stage_flow(batch(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "batched~wResult", [N]),
+    format(string(Code),
+"\t// Batch records into groups of ~w
+\t~w := batchRecords(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Unbatch stage: flatten batches back to individual records
+generate_go_stage_flow(unbatch, InVar, OutVar, Code) :-
+    !,
+    OutVar = "unbatchedResult",
+    format(string(Code),
+"\t// Unbatch: flatten batches to individual records
+\t~w := unbatchRecords(~w)", [OutVar, InVar]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

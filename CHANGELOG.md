@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `merge` — Combine results from fan_out or parallel stages
   - `route_by(Pred, Routes)` — Conditional routing based on predicate
   - `filter_by(Pred)` — Filter records by predicate condition
+  - `batch(N)` — Collect N records into batches for bulk processing
+  - `unbatch` — Flatten batches back to individual records
   - Supported targets: Python, Go, C#, Rust, PowerShell, AWK, Bash, IronPython
   - `docs/ENHANCED_PIPELINE_CHAINING.md` — Unified documentation
   - Integration tests for all targets
@@ -34,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Pipeline Validation** - Compile-time validation for enhanced pipeline stages
   - `src/unifyweaver/core/pipeline_validation.pl` — Validation module
-  - Error detection: empty pipeline, invalid stages, empty fan_out, empty parallel, empty routes, invalid route format
+  - Error detection: empty pipeline, invalid stages, empty fan_out, empty parallel, empty routes, invalid route format, invalid batch size
   - Warning detection: fan_out/parallel without merge, merge without fan_out/parallel
   - Options: `validate(Bool)` to enable/disable, `strict(Bool)` to treat warnings as errors
   - Integrated into all enhanced pipeline compilation predicates
