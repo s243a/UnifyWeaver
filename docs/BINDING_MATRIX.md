@@ -20,9 +20,11 @@ This document tracks which bindings are implemented for each target language.
 | **PowerShell** | 68 | 4 (Cmdlets, Automation, .NET, C# Hosting) |
 | **Jython** | 66 | 5+ (Python-compatible + Java I/O, Collections, Regex, Strings) |
 | **Clojure** | 64 | 5 (Core, Collections, Sequences, Strings, Threading Macros) |
+| **C++** | 45 | 4 (STL, iostream, Algorithms, nlohmann/json) |
 | **Kotlin** | 44 | 5 (Stdlib, Collections, Strings, I/O, Sequences) |
 | **Scala** | 43 | 5 (Option/Either, Collections, Strings, LazyList, Pattern Matching) |
 | **Java** | 42 | 5 (String, Math, Collections, I/O, Stream API) |
+| **C** | 41 | 4 (Stdlib, I/O, Strings, cJSON) |
 | **Go** | 50+ | 10 (Built-ins, String, Math, I/O, JSON, Regex, Time, Path, Collections, Conv) |
 | **C#** | 36+ | 5 (Built-ins, String, Math, I/O, LINQ) |
 | **Rust** | 29+ | 6 (Built-ins, String, Math, I/O, Regex, JSON) |

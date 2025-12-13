@@ -1,52 +1,55 @@
-# feat(targets): Add Scala target with bindings and LazyList generator
+# feat(targets): Add generator mode to Java and Jython
 
 ## Summary
 
-Adds a complete Scala target with pipeline mode (Option/flatMap), generator mode (LazyList), and 43 bindings leveraging Scala's functional features.
+Adds generator mode to Java and Jython targets for consistency with Kotlin, Scala, and Clojure. **All 5 JVM targets now support both pipeline and generator modes!**
 
 ## Changes
 
-### New Files
-
-#### `src/unifyweaver/targets/scala_target.pl`
-**Three compilation modes:**
-- **Simple mode** - Basic predicate translation
-- **Pipeline mode** - `Option[Record]` with `flatMap` for filtering
-- **Generator mode** - `LazyList` with `#::` for lazy sequences
-
-**Features:**
-- Pattern matching in JSON value handling
-- `@tailrec` annotation for tail-recursive predicates
-- SBT build generation
-
-#### `src/unifyweaver/bindings/scala_bindings.pl`
-43 bindings across 5 categories:
-- **Option/Either:** Some, None, getOrElse, map, flatMap, filter, Right, Left
-- **Collections:** List, Nil, ::, Map, head, tail, foldLeft, foldRight
-- **Strings:** length, substring, split, trim, toLowerCase
-- **LazyList:** LazyList.from, #::, take, drop, takeWhile, dropWhile
-- **Pattern matching:** match, case class, unapply
-
 ### Modified Files
 
-#### `docs/JVM_TARGET.md`
-- Updated Scala status to "pipeline + generator modes"
+#### `src/unifyweaver/targets/java_target.pl`
+- Added `generator_mode(true)` option
+- New predicate: `compile_generator_mode_java/4`
+- Uses `Stream.flatMap()` for generator semantics
+- `process()` returns `Stream<Map<String, Object>>`
+- `processAll()` flattens multiple streams
+- `Stream.iterate()` for recursive predicates
 
-#### `docs/BINDING_MATRIX.md`
-- Added Scala (43 bindings, 5 categories)
+#### `src/unifyweaver/targets/jython_target.pl`
+- Added `generator_mode(true)` option
+- New predicate: `compile_generator_mode_jython/4`
+- Uses Python generators with `yield`
+- `process()` is a generator yielding multiple results
+- `process_all()` flattens nested generators
+- Python 2.7 compatible (`xrange`, `print >>`)
+
+#### `docs/JVM_TARGET.md`
+- Updated Java status to "pipeline + generator modes"
+- Updated Jython status to "pipeline + generator modes"
 
 ## Testing
 
 ```bash
-# Target tests
-swipl -g "use_module('src/unifyweaver/targets/scala_target'),
-    test_scala_pipeline_mode, halt(0)"
-# Output: 5/5 passed (pipeline, pattern matching, Option, LazyList, SBT)
+# Java generator mode
+swipl -g "use_module('src/unifyweaver/targets/java_target'),
+    compile_predicate_to_java(test/2, [generator_mode(true)], C),
+    sub_atom(C, _, _, _, 'flatMap'), halt(0)"
+# PASS: Uses flatMap
 
-# Bindings tests  
-swipl -g "use_module('src/unifyweaver/bindings/scala_bindings'),
-    test_scala_bindings, halt(0)"
-# Output: 43 bindings registered
+# Jython generator mode
+swipl -g "use_module('src/unifyweaver/targets/jython_target'),
+    compile_predicate_to_jython(test/2, [generator_mode(true)], C),
+    sub_atom(C, _, _, _, 'yield'), halt(0)"
+# PASS: Uses yield
 ```
 
-All tests pass.
+## JVM Family Complete! 🎉
+
+| Target | Pipeline | Generator |
+|--------|----------|-----------|
+| Java | ✅ | ✅ |
+| Jython | ✅ | ✅ |
+| Kotlin | ✅ | ✅ |
+| Scala | ✅ | ✅ |
+| Clojure | ✅ | ✅ |
