@@ -24,7 +24,7 @@ The key difference between `fan_out` and `parallel`:
   - **Python**: `ThreadPoolExecutor`
   - **Go**: Goroutines with `sync.WaitGroup`
   - **C#**: `Task.WhenAll`
-  - **Rust**: `std::thread`
+  - **Rust**: `std::thread` by default, or rayon with `parallel_mode(rayon)` option
   - **PowerShell**: Runspace pools
   - **Bash**: Background processes with `wait`
   - **IronPython**: .NET `Task.Factory.StartNew` with `ConcurrentBag<T>`
@@ -339,6 +339,21 @@ def parallel_records(record, stages):
 - Uses iterators and closures with generics
 - Memory-safe with ownership semantics
 - Generates type-safe helper functions
+- **Parallel modes:**
+  - `std_thread` (default): Use `std::thread` for parallelism (no extra deps)
+  - `rayon`: Use rayon crate for parallel iterators (requires `rayon = "1.8"` in Cargo.toml)
+
+**Rust Rayon Example:**
+```prolog
+compile_rust_enhanced_pipeline([
+    extract/1,
+    parallel([validate/1, enrich/1]),
+    merge,
+    output/1
+], [pipeline_name(my_pipe), parallel_mode(rayon)], Code).
+```
+
+This generates Rust code using `par_iter()` from rayon for efficient work-stealing parallelism.
 
 ### PowerShell
 - Uses cmdlet-style helper functions
