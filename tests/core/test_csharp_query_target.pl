@@ -43,6 +43,8 @@
 :- dynamic user:test_odd/1.
 :- dynamic user:test_even_param/1.
 :- dynamic user:test_odd_param/1.
+:- dynamic user:test_even_param_partial/1.
+:- dynamic user:test_odd_param_partial/1.
 :- dynamic user:test_parity_input/1.
 :- dynamic user:test_product_record/1.
 :- dynamic user:test_jsonpath_projection/2.
@@ -94,6 +96,7 @@ test_csharp_query_target :-
         verify_recursive_plan,
         verify_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_plan,
+        verify_parameterized_mutual_recursion_fallback_plan,
         verify_dynamic_source_plan,
         verify_tsv_dynamic_source_plan,
         verify_json_dynamic_source_plan,
@@ -239,6 +242,21 @@ setup_test_data :-
         N1 is N - 1,
         test_even_param(N1)
     )),
+    assertz(user:mode(test_even_param_partial(+))),
+    assertz(user:test_even_param_partial(0)),
+    assertz(user:test_odd_param_partial(1)),
+    assertz(user:(test_even_param_partial(N) :-
+        test_parity_input(N),
+        N > 0,
+        N1 is N - 1,
+        test_odd_param_partial(N1)
+    )),
+    assertz(user:(test_odd_param_partial(N) :-
+        test_parity_input(N),
+        N > 1,
+        N1 is N - 1,
+        test_even_param_partial(N1)
+    )),
     assertz(user:(test_even(N) :-
         test_parity_input(N),
         N > 0,
@@ -299,6 +317,9 @@ cleanup_test_data :-
     retractall(user:test_odd_param(_)),
     retractall(user:mode(test_even_param(_))),
     retractall(user:mode(test_odd_param(_))),
+    retractall(user:test_even_param_partial(_)),
+    retractall(user:test_odd_param_partial(_)),
+    retractall(user:mode(test_even_param_partial(_))),
     retractall(user:test_reachable(_, _)),
     cleanup_csv_dynamic_source.
 
@@ -778,6 +799,21 @@ verify_parameterized_mutual_recursion_plan :-
     sub_string(Source, _, _, _, NeedName),
     sub_string(Source, _, _, _, 'MaterializeNode'),
     maybe_run_query_runtime(Plan, ['4'], [[4]]).
+
+verify_parameterized_mutual_recursion_fallback_plan :-
+    csharp_query_target:build_query_plan(test_even_param_partial/1, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input],
+    get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even_param_partial, arity:1}, members:Members}),
+    length(Members, 2),
+    atom_concat(test_even_param_partial, '$need', NeedName),
+    \+ sub_term(predicate{name:NeedName, arity:_}, Members),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    \+ sub_string(Source, _, _, _, NeedName),
+    \+ sub_string(Source, _, _, _, 'MaterializeNode').
 
 verify_dynamic_source_plan :-
     setup_call_cleanup(
