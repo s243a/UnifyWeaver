@@ -84,6 +84,28 @@ term_signature(Term0, Name/Arity) :-
     Term =.. [Name|Args],
     length(Args, Arity).
 
+term_to_dependency(Term0, _Dep) :-
+    constraint_goal(Term0),
+    !,
+    fail.
+term_to_dependency((A, B), Dep) :- !,
+    (   term_to_dependency(A, Dep)
+    ;   term_to_dependency(B, Dep)
+    ).
+term_to_dependency((A ; B), Dep) :- !,
+    (   term_to_dependency(A, Dep)
+    ;   term_to_dependency(B, Dep)
+    ).
+term_to_dependency((A -> B), Dep) :- !,
+    (   term_to_dependency(A, Dep)
+    ;   term_to_dependency(B, Dep)
+    ).
+term_to_dependency((A *-> B), Dep) :- !,
+    (   term_to_dependency(A, Dep)
+    ;   term_to_dependency(B, Dep)
+    ).
+term_to_dependency(!, _Dep) :- !,
+    fail.
 term_to_dependency(aggregate_all(_, Goal, _), Dep) :- !,
     aggregate_goal_dependency(Goal, Dep).
 term_to_dependency(aggregate_all(_, Goal, _, _), Dep) :- !,
@@ -232,7 +254,8 @@ build_query_plan(Pred/Arity, Options, Modes, Plan) :-
     compute_dependency_group(Pred/Arity, GroupSpecs),
     (   GroupSpecs = [HeadSpec]
     ->  gather_predicate_clauses(HeadSpec, Clauses),
-        partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
+        expand_disjunction_clauses(Clauses, ExpandedClauses),
+        partition_recursive_clauses(Pred, Arity, ExpandedClauses, BaseClauses, RecClauses),
         (   RecClauses == []
         ->  classify_clauses(BaseClauses, Classification),
             build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Modes, none, Plan)
@@ -249,6 +272,53 @@ clause_is_recursive(Pred, Arity, _Head-Body) :-
     member(Term, Terms),
     functor(Term, Pred, TermArity),
     TermArity =:= Arity.
+
+expand_disjunction_clauses([], []).
+expand_disjunction_clauses([Head-Body0|Rest], Expanded) :-
+    findall(Head-Body,
+        expand_clause_disjunction(Body0, Body),
+        ClauseVariants),
+    expand_disjunction_clauses(Rest, ExpandedRest),
+    append(ClauseVariants, ExpandedRest, Expanded).
+
+expand_clause_disjunction(true, true) :- !.
+expand_clause_disjunction(Body0, Body) :-
+    body_branch_terms(Body0, Terms),
+    terms_to_body(Terms, Body).
+
+body_branch_terms(Body0, Terms) :-
+    strip_module(Body0, _, Body),
+    body_branch_terms_(Body, Terms, []).
+
+body_branch_terms_(true, Terms, Terms) :- !.
+body_branch_terms_((A, B), Terms0, Terms) :- !,
+    body_branch_terms_(A, Terms0, Terms1),
+    body_branch_terms_(B, Terms1, Terms).
+body_branch_terms_((A ; B), Terms0, Terms) :- !,
+    (   body_branch_terms_(A, Terms0, Terms)
+    ;   body_branch_terms_(B, Terms0, Terms)
+    ).
+body_branch_terms_((A -> B), _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: if-then-else inside rule bodies is not supported (~q).~n',
+           [(A -> B)]),
+    fail.
+body_branch_terms_((A *-> B), _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: soft cut (*->) inside rule bodies is not supported (~q).~n',
+           [(A *-> B)]),
+    fail.
+body_branch_terms_(!, _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: cut (!) inside rule bodies is not supported.~n',
+           []),
+    fail.
+body_branch_terms_(Goal, [Goal|Terms], Terms).
+
+terms_to_body([], true) :- !.
+terms_to_body([Term], Term) :- !.
+terms_to_body([Term|Rest], (Term, Tail)) :-
+    terms_to_body(Rest, Tail).
 
 %% classify_clauses(+Clauses, -Classification) is det.
 classify_clauses([], none).
@@ -406,7 +476,8 @@ build_member_plan(GroupSpecs, Options, Modes, SeedOverride, PredSpec, member{
         width:Arity
     }, Relations) :-
     get_dict(arity, PredSpec, Arity),
-    gather_predicate_clauses(PredSpec, Clauses),
+    gather_predicate_clauses(PredSpec, Clauses0),
+    expand_disjunction_clauses(Clauses0, Clauses),
     partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses),
     build_base_root(PredSpec, BaseClauses, Options, Modes, SeedOverride, BaseRoot, BaseRelations),
     build_recursive_variants(PredSpec, GroupSpecs, RecClauses, Modes, SeedOverride, RecursiveNodes, RecursiveRelations),

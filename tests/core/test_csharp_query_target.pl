@@ -24,6 +24,7 @@
 :- dynamic user:test_fib_param/2.
 :- dynamic user:test_post_agg_param/2.
 :- dynamic user:test_customer/1.
+:- dynamic user:test_customer_alice_or_bob/1.
 :- dynamic user:test_sale/2.
 :- dynamic user:test_sale_item/3.
 :- dynamic user:test_sale_count/1.
@@ -75,6 +76,7 @@ test_csharp_query_target :-
         verify_fact_plan,
         verify_join_plan,
         verify_selection_plan,
+        verify_disjunction_body_union_plan,
         verify_arithmetic_plan,
         verify_recursive_arithmetic_plan,
         verify_comparison_plan,
@@ -156,6 +158,10 @@ setup_test_data :-
     assertz(user:test_customer(alice)),
     assertz(user:test_customer(bob)),
     assertz(user:test_customer(charlie)),
+    assertz(user:(test_customer_alice_or_bob(Customer) :-
+        test_customer(Customer),
+        (Customer = alice ; Customer = bob)
+    )),
     assertz(user:test_sale(alice, 10)),
     assertz(user:test_sale(alice, 5)),
     assertz(user:test_sale(bob, 7)),
@@ -361,6 +367,7 @@ cleanup_test_data :-
     retractall(user:test_num(_, _)),
     retractall(user:test_positive(_)),
     retractall(user:test_customer(_)),
+    retractall(user:test_customer_alice_or_bob(_)),
     retractall(user:test_sale(_, _)),
     retractall(user:test_sale_item(_, _, _)),
     retractall(user:test_sale_count(_)),
@@ -447,6 +454,17 @@ verify_selection_plan :-
     },
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:_}]),
     maybe_run_query_runtime(Plan, ['alice']).
+
+verify_disjunction_body_union_plan :-
+    csharp_query_target:build_query_plan(test_customer_alice_or_bob/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    is_dict(Root, union),
+    get_dict(width, Root, 1),
+    get_dict(sources, Root, Sources),
+    length(Sources, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'UnionNode'),
+    maybe_run_query_runtime(Plan, ['alice', 'bob']).
 
 verify_arithmetic_plan :-
     csharp_query_target:build_query_plan(test_increment/2, [target(csharp_query)], Plan),
