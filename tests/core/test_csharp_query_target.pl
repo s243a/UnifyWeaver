@@ -26,6 +26,7 @@
 :- dynamic user:test_customer/1.
 :- dynamic user:test_customer_alice_or_bob/1.
 :- dynamic user:test_sale/2.
+:- dynamic user:test_sale_amount_for_alice/1.
 :- dynamic user:test_sale_item/3.
 :- dynamic user:test_sale_count/1.
 :- dynamic user:test_sales_by_customer/2.
@@ -76,6 +77,7 @@ test_csharp_query_target :-
         verify_fact_plan,
         verify_join_plan,
         verify_selection_plan,
+        verify_ground_relation_arg_plan,
         verify_disjunction_body_union_plan,
         verify_arithmetic_plan,
         verify_recursive_arithmetic_plan,
@@ -165,6 +167,9 @@ setup_test_data :-
     assertz(user:test_sale(alice, 10)),
     assertz(user:test_sale(alice, 5)),
     assertz(user:test_sale(bob, 7)),
+    assertz(user:(test_sale_amount_for_alice(Amount) :-
+        test_sale(alice, Amount)
+    )),
     assertz(user:test_sale_item(alice, laptop, 10)),
     assertz(user:test_sale_item(alice, laptop, 2)),
     assertz(user:test_sale_item(alice, mouse, 5)),
@@ -369,6 +374,7 @@ cleanup_test_data :-
     retractall(user:test_customer(_)),
     retractall(user:test_customer_alice_or_bob(_)),
     retractall(user:test_sale(_, _)),
+    retractall(user:test_sale_amount_for_alice(_)),
     retractall(user:test_sale_item(_, _, _)),
     retractall(user:test_sale_count(_)),
     retractall(user:test_sales_by_customer(_, _)),
@@ -454,6 +460,17 @@ verify_selection_plan :-
     },
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:_}]),
     maybe_run_query_runtime(Plan, ['alice']).
+
+verify_ground_relation_arg_plan :-
+    csharp_query_target:build_query_plan(test_sale_amount_for_alice/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[1], width:1}),
+    Selection = selection{
+        type:selection,
+        input:relation_scan{predicate:predicate{name:test_sale, arity:2}, type:relation_scan, width:_},
+        predicate:condition{type:eq, left:operand{kind:column, index:0}, right:operand{kind:value, value:alice}},
+        width:_
+    },
+    maybe_run_query_runtime(Plan, ['10', '5']).
 
 verify_disjunction_body_union_plan :-
     csharp_query_target:build_query_plan(test_customer_alice_or_bob/1, [target(csharp_query)], Plan),

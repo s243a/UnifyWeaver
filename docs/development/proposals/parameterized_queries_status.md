@@ -46,6 +46,7 @@
   - Grouped aggregates now support multi-key grouping (group term containing multiple variables maps to multiple `group_indices`).
   - Aggregate goals can now be conjunctions/subplans (e.g. joins, comparisons, stratified negation) via an `aggregate_subplan` plan node and C# `AggregateSubplanNode` runtime support; simple single-predicate aggregate goals still use the faster `aggregate` node path.
   - Rule bodies now support disjunction (`;/2`) by expanding into multiple clause variants and emitting a `union` plan node; `->`/`*->` and cut (`!`) remain unsupported.
+  - Relation/recursive literals in query-mode bodies may now include simple constants (atomic/string); they are normalized to fresh variables plus equality constraints (e.g. `p(alice, X)` → `p(A, X), A = alice`).
 - Parameterised mutual recursion:
   - Input modes are accepted for mutually-recursive SCCs (previously rejected).
   - When every predicate in the SCC declares compatible input modes (same input count), a tagged `$need` fixpoint is built and shared to seed each member’s base/recursive pipelines (demand-driven mutual SCC evaluation).

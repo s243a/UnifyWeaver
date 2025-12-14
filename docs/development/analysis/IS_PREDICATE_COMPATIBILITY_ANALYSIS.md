@@ -309,6 +309,8 @@ p(A, X), A = alice
 
 This can be done during clause preprocessing (before role assignment) without changing runtime semantics for pure constraints. It pairs naturally with the disjunction-expansion work now in place.
 
+**Status:** Implemented in `feat/parameterized-queries-querymode` by normalizing query-mode clause terms so relation/recursive literals with simple constants are rewritten to fresh variables plus equality constraints.
+
 ## Files Referenced
 
 | File | Lines | Purpose |
@@ -340,4 +342,4 @@ The `is/2` predicate is supported for computing derived columns from bound tuple
 
 However, with explicit input modes (`mode/1`) the query target can treat head inputs as pre‑bound, compute argument deltas legally, and (via demand closure) restrict the fixpoint to the reachable subspace. This resolves the Fibonacci case without abandoning the bottom‑up query model, while preserving the existing datalog semantics for predicates without inputs.
 
-I recommend Codex-5.1 review Options B or C if supporting recursive arithmetic predicates in all-output mode is a priority, or Option D if the intended scope should remain datalog-style queries. Option F is a pragmatic improvement that would make query mode less strict about constant arguments while keeping the underlying join model unchanged.
+I recommend Codex-5.1 review Options B or C if supporting recursive arithmetic predicates in all-output mode is a priority, or Option D if the intended scope should remain datalog-style queries. Option F is now implemented and removes a common source of boilerplate/errors for query-mode bodies.

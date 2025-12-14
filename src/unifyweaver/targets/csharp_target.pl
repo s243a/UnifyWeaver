@@ -284,7 +284,8 @@ expand_disjunction_clauses([Head-Body0|Rest], Expanded) :-
 expand_clause_disjunction(true, true) :- !.
 expand_clause_disjunction(Body0, Body) :-
     body_branch_terms(Body0, Terms),
-    terms_to_body(Terms, Body).
+    normalize_query_terms(Terms, NormalizedTerms),
+    terms_to_body(NormalizedTerms, Body).
 
 body_branch_terms(Body0, Terms) :-
     strip_module(Body0, _, Body),
@@ -314,6 +315,48 @@ body_branch_terms_(!, _Terms0, _Terms) :- !,
            []),
     fail.
 body_branch_terms_(Goal, [Goal|Terms], Terms).
+
+normalize_query_terms([], []).
+normalize_query_terms([Term|Rest], Normalized) :-
+    normalize_query_term(Term, TermTerms),
+    normalize_query_terms(Rest, RestTerms),
+    append(TermTerms, RestTerms, Normalized).
+
+normalize_query_term(Term, [Term]) :-
+    query_constraint_goal(Term),
+    !.
+normalize_query_term(Term, [Term]) :-
+    aggregate_goal(Term),
+    !.
+normalize_query_term(Term0, [Term|Constraints]) :-
+    strip_module(Term0, _, Term1),
+    Term1 =.. [Pred|Args],
+    atom(Pred),
+    rewrite_literal_constants(Args, ArgsOut, Constraints),
+    Term =.. [Pred|ArgsOut].
+
+rewrite_literal_constants([], [], []).
+rewrite_literal_constants([Arg|Rest], [Arg|ArgsOut], ConstraintsOut) :-
+    var(Arg),
+    !,
+    rewrite_literal_constants(Rest, ArgsOut, ConstraintsOut).
+rewrite_literal_constants([Arg|Rest], [Var|ArgsOut], [Constraint|ConstraintsOut]) :-
+    simple_query_literal_constant(Arg),
+    !,
+    Var = _,
+    Constraint = (Var = Arg),
+    rewrite_literal_constants(Rest, ArgsOut, ConstraintsOut).
+rewrite_literal_constants([Arg|_Rest], _ArgsOut, _ConstraintsOut) :-
+    format(user_error,
+           'C# query target: relation argument must be a variable or simple constant (atomic/string), got ~q.~n',
+           [Arg]),
+    fail.
+
+simple_query_literal_constant(Value) :-
+    atomic(Value),
+    !.
+simple_query_literal_constant(Value) :-
+    string(Value).
 
 terms_to_body([], true) :- !.
 terms_to_body([Term], Term) :- !.
