@@ -87,6 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_error_handling_stages.sh` — Integration tests (16 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Timeout Stage** - Time-limited stage execution
+  - `timeout(Stage, Ms)` — Execute stage with time limit, emit error record on timeout
+  - `timeout(Stage, Ms, Fallback)` — Execute stage with time limit, use fallback on timeout
+  - Timeout record: `{_timeout, _record, _limit_ms}` for downstream handling
+  - Combines with other error handling: `try_catch(timeout(...), handler)`
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_timeout_stage.sh` — Integration tests (12 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.

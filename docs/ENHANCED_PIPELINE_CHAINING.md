@@ -30,6 +30,8 @@ Enhanced pipeline chaining adds the following stage types to the standard predic
 | `retry(Stage, N)` | Retry stage up to N times on failure |
 | `retry(Stage, N, Options)` | Retry with delay and backoff options |
 | `on_error(Handler)` | Global error handler for the pipeline |
+| `timeout(Stage, Ms)` | Execute stage with time limit |
+| `timeout(Stage, Ms, Fallback)` | Execute stage with time limit, use fallback on timeout |
 | `Pred/Arity` | Standard predicate stage (unchanged) |
 
 ### Fan-out vs Parallel
@@ -686,6 +688,43 @@ compile_enhanced_pipeline([
     process/1,
     output/1
 ], [pipeline_name(logged_pipeline)], Code).
+```
+
+### Timeout (`timeout/2`, `timeout/3`)
+
+Execute a stage with a time limit. On timeout, either emit an error record or route to a fallback.
+
+```prolog
+% Simple timeout - emit error record on timeout
+timeout(fetch_api/1, 5000)
+
+% Timeout with fallback
+timeout(fetch_api/1, 5000, use_cache/1)
+```
+
+**Data Flow:**
+```
+Input Record ─► fetch_api ─┬─ Completes ─► Result
+                           └─ Timeout ─► Error Record or Fallback
+```
+
+**Timeout Record:** When timeout occurs without fallback:
+```json
+{"_timeout": true, "_record": {...original...}, "_limit_ms": 5000}
+```
+
+**Use Cases:**
+- Prevent slow operations from blocking the pipeline
+- API calls with response time requirements
+- Graceful degradation with fallback strategies
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    timeout(call_external_api/1, 3000, use_cached_response/1),
+    output/1
+], [pipeline_name(api_with_timeout)], Code).
 ```
 
 ### Nested Error Handling
