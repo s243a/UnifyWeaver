@@ -2224,6 +2224,70 @@ fn throttle_stage(records: &[Record], delay_ms: u64) -> Vec<Record> {
     }
     result
 }
+
+/// Buffer: Collect records into batches of specified size.
+fn buffer_stage(records: &[Record], size: usize) -> Vec<Vec<Record>> {
+    let mut result = Vec::new();
+    let mut buffer = Vec::new();
+
+    for record in records {
+        buffer.push(record.clone());
+        if buffer.len() >= size {
+            result.push(buffer);
+            buffer = Vec::new();
+        }
+    }
+    if !buffer.is_empty() {
+        result.push(buffer);
+    }
+    result
+}
+
+/// Debounce: Emit record only after quiet period.
+fn debounce_stage(records: &[Record], delay_ms: u64) -> Vec<Record> {
+    use std::time::Duration;
+    use std::thread;
+
+    if records.is_empty() {
+        return Vec::new();
+    }
+
+    let delay = Duration::from_millis(delay_ms);
+    let last_record = records.last().unwrap().clone();
+    thread::sleep(delay);
+    vec![last_record]
+}
+
+/// Zip: Run multiple stage functions and combine results.
+fn zip_stage<F>(records: &[Record], stages: &[F]) -> Vec<Record>
+where
+    F: Fn(&[Record]) -> Vec<Record>,
+{
+    let mut result = Vec::new();
+    for record in records {
+        let mut stage_results: Vec<Vec<Record>> = Vec::new();
+        let mut max_len = 0;
+        for stage in stages {
+            let res = stage(&[record.clone()]);
+            if res.len() > max_len {
+                max_len = res.len();
+            }
+            stage_results.push(res);
+        }
+        for i in 0..max_len {
+            let mut combined = Record::new();
+            for res_list in &stage_results {
+                if i < res_list.len() {
+                    for (k, v) in &res_list[i] {
+                        combined.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            result.push(combined);
+        }
+    }
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2424,6 +2488,11 @@ generate_rust_single_enhanced_stage(timeout(Stage, _, Fallback), Code) :-
     format(string(Code), "~w~w", [StageCode, FallbackCode]).
 generate_rust_single_enhanced_stage(rate_limit(_, _), "") :- !.
 generate_rust_single_enhanced_stage(throttle(_), "") :- !.
+generate_rust_single_enhanced_stage(buffer(_), "") :- !.
+generate_rust_single_enhanced_stage(debounce(_), "") :- !.
+generate_rust_single_enhanced_stage(zip(SubStages), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -2723,6 +2792,32 @@ generate_rust_stage_flow(throttle(Ms), InVar, OutVar, Code) :-
     format(string(Code),
 "    // Throttle: ~wms delay between records
     let ~w = throttle_stage(&~w, ~w);", [Ms, OutVar, InVar, Ms]).
+
+% Buffer stage: collect records into batches
+generate_rust_stage_flow(buffer(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "buffered",
+    format(string(Code),
+"    // Buffer: collect ~w records into batches
+    let ~w = buffer_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Debounce stage: emit only if no new record within delay
+generate_rust_stage_flow(debounce(Ms), InVar, OutVar, Code) :-
+    !,
+    OutVar = "debounced",
+    format(string(Code),
+"    // Debounce: ~wms quiet period
+    let ~w = debounce_stage(&~w, ~w);", [Ms, OutVar, InVar, Ms]).
+
+% Zip stage: combine multiple stages record-by-record
+generate_rust_stage_flow(zip(Stages), InVar, OutVar, Code) :-
+    !,
+    OutVar = "zipped",
+    extract_rust_stage_names(Stages, Names),
+    format_rust_stage_list(Names, StageListStr),
+    format(string(Code),
+"    // Zip: combine outputs from multiple stages
+    let ~w = zip_stage(&~w, &[~w]);", [OutVar, InVar, StageListStr]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

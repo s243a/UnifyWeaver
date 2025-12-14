@@ -9197,6 +9197,77 @@ func throttleStage(records []Record, delayMs int) []Record {
 \treturn result
 }
 
+// bufferStage collects records into batches of specified size
+func bufferStage(records []Record, size int) [][]Record {
+\tvar result [][]Record
+\tvar buffer []Record
+
+\tfor _, record := range records {
+\t\tbuffer = append(buffer, record)
+\t\tif len(buffer) >= size {
+\t\t\tresult = append(result, buffer)
+\t\t\tbuffer = nil
+\t\t}
+\t}
+\tif len(buffer) > 0 {
+\t\tresult = append(result, buffer)
+\t}
+\treturn result
+}
+
+// debounceStage emits record only after quiet period
+func debounceStage(records []Record, delayMs int) []Record {
+\tif len(records) == 0 {
+\t\treturn nil
+\t}
+\tdelay := time.Duration(delayMs) * time.Millisecond
+\tvar result []Record
+\tvar pending Record
+\thasPending := false
+\ttimer := time.NewTimer(delay)
+\ttimer.Stop()
+
+\tfor _, record := range records {
+\t\tpending = record
+\t\thasPending = true
+\t\ttimer.Reset(delay)
+\t}
+
+\tif hasPending {
+\t\t<-timer.C
+\t\tresult = append(result, pending)
+\t}
+\treturn result
+}
+
+// zipStage runs multiple stage functions and combines results
+func zipStage(records []Record, stages []func([]Record) []Record) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tvar stageResults [][]Record
+\t\tmaxLen := 0
+\t\tfor _, stage := range stages {
+\t\t\tres := stage([]Record{record})
+\t\t\tstageResults = append(stageResults, res)
+\t\t\tif len(res) > maxLen {
+\t\t\t\tmaxLen = len(res)
+\t\t\t}
+\t\t}
+\t\tfor i := 0; i < maxLen; i++ {
+\t\t\tcombined := make(Record)
+\t\t\tfor _, resList := range stageResults {
+\t\t\t\tif i < len(resList) {
+\t\t\t\t\tfor k, v := range resList[i] {
+\t\t\t\t\t\tcombined[k] = v
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+\t\t\tresult = append(result, combined)
+\t\t}
+\t}
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9262,6 +9333,11 @@ generate_go_single_enhanced_stage(timeout(Stage, _, Fallback), Code) :-
     format(string(Code), "~w~w", [StageCode, FallbackCode]).
 generate_go_single_enhanced_stage(rate_limit(_, _), "") :- !.
 generate_go_single_enhanced_stage(throttle(_), "") :- !.
+generate_go_single_enhanced_stage(buffer(_), "") :- !.
+generate_go_single_enhanced_stage(debounce(_), "") :- !.
+generate_go_single_enhanced_stage(zip(SubStages), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -9572,6 +9648,32 @@ generate_go_stage_flow(throttle(Ms), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// Throttle: ~wms delay between records
 \t~w := throttleStage(~w, ~w)", [Ms, OutVar, InVar, Ms]).
+
+% Buffer stage: collect records into batches
+generate_go_stage_flow(buffer(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "bufferedResult",
+    format(string(Code),
+"\t// Buffer: collect ~w records into batches
+\t~w := bufferStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Debounce stage: emit only if no new record within delay
+generate_go_stage_flow(debounce(Ms), InVar, OutVar, Code) :-
+    !,
+    OutVar = "debouncedResult",
+    format(string(Code),
+"\t// Debounce: ~wms quiet period
+\t~w := debounceStage(~w, ~w)", [Ms, OutVar, InVar, Ms]).
+
+% Zip stage: combine multiple stages record-by-record
+generate_go_stage_flow(zip(Stages), InVar, OutVar, Code) :-
+    !,
+    OutVar = "zippedResult",
+    extract_go_stage_names(Stages, Names),
+    format_go_stage_list(Names, StageListStr),
+    format(string(Code),
+"\t// Zip: combine outputs from multiple stages
+\t~w := zipStage(~w, []func([]Record) []Record{~w})", [OutVar, InVar, StageListStr]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

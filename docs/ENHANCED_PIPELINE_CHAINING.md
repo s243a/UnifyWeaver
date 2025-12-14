@@ -34,6 +34,9 @@ Enhanced pipeline chaining adds the following stage types to the standard predic
 | `timeout(Stage, Ms, Fallback)` | Execute stage with time limit, use fallback on timeout |
 | `rate_limit(N, Per)` | Limit throughput to N records per time unit |
 | `throttle(Ms)` | Add fixed delay between records |
+| `buffer(N)` | Collect N records into batches |
+| `debounce(Ms)` | Emit record only after Ms quiet period |
+| `zip(Stages)` | Run stages on same input, combine outputs |
 | `Pred/Arity` | Standard predicate stage (unchanged) |
 
 ### Fan-out vs Parallel
@@ -784,6 +787,81 @@ compile_enhanced_pipeline([
     ),
     output/1
 ], [pipeline_name(rate_limited_with_fallback)], Code).
+```
+
+### Buffer and Debounce (`buffer/1`, `debounce/1`)
+
+Control record batching and emission timing:
+
+```prolog
+% Collect 10 records into batches
+buffer(10)
+
+% Emit only after 100ms quiet period (no new records)
+debounce(100)
+```
+
+**How It Works:**
+- `buffer(N)` - Collects up to N records before emitting as a batch; flushes remainder at stream end
+- `debounce(Ms)` - Waits Ms milliseconds after receiving a record; if no new record arrives, emits it
+
+**Use Cases:**
+- Batch processing for bulk database inserts
+- Reducing API call frequency by batching requests
+- Debouncing rapid event streams (user input, sensor data)
+- Smoothing bursty traffic patterns
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    buffer(100),           % Collect 100 records
+    bulk_insert/1,         % Process as batch
+    output/1
+], [pipeline_name(batched_insert)], Code).
+```
+
+### Zip (`zip/1`)
+
+Run multiple stages on the same input and combine their outputs:
+
+```prolog
+% Run transform and enrich on each record, merge results
+zip([transform/1, enrich/1])
+```
+
+**How It Works:**
+- Each input record is passed to all stages in the zip list
+- Results from each stage are combined record-by-record
+- If stages produce different numbers of outputs, shorter results are padded
+
+**Use Cases:**
+- Parallel enrichment from multiple sources
+- Running multiple transformations and merging results
+- Computing multiple derived fields simultaneously
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    zip([
+        geocode/1,           % Add location data
+        sentiment_analyze/1, % Add sentiment score
+        categorize/1         % Add category
+    ]),
+    output/1
+], [pipeline_name(multi_enrich)], Code).
+```
+
+**Combined with Other Stages:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    buffer(10),
+    zip([transform/1, validate/1]),
+    rate_limit(100, second),
+    output/1
+], [pipeline_name(buffered_zip_throttled)], Code).
 ```
 
 ### Nested Error Handling

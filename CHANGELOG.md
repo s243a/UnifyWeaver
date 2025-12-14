@@ -106,6 +106,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_rate_limiting_stages.sh` — Integration tests (16 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Buffer and Zip Stages** - Record batching and stream combination
+  - `buffer(N)` — Collect N records into batches for bulk processing
+    - Flushes remaining records at stream end
+  - `debounce(Ms)` — Emit record only after Ms quiet period (no new records)
+    - Useful for smoothing bursty traffic
+  - `zip(Stages)` — Run multiple stages on same input, combine outputs record-by-record
+    - Enables parallel enrichment from multiple sources
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_buffer_zip_stages.sh` — Integration tests (18 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
