@@ -45,6 +45,7 @@
 - Added query-mode aggregates (`aggregate_all/3,4`, including correlated aggregates) via an `aggregate` plan node and C# `AggregateNode` runtime support.
   - Grouped aggregates now support multi-key grouping (group term containing multiple variables maps to multiple `group_indices`).
   - Aggregate goals can now be conjunctions/subplans (e.g. joins, comparisons, stratified negation) via an `aggregate_subplan` plan node and C# `AggregateSubplanNode` runtime support; simple single-predicate aggregate goals still use the faster `aggregate` node path.
+  - QueryRuntime memoizes correlated aggregate keys (pattern/parameter tuples) per execution to avoid repeated scans/subplan evaluation when keys repeat.
   - Rule bodies now support disjunction (`;/2`) by expanding into multiple clause variants and emitting a `union` plan node; `->`/`*->` and cut (`!`) remain unsupported.
   - Relation/recursive literals in query-mode bodies (including aggregate subplan goals) may now include simple constants (atomic/string); they are normalized to fresh variables plus equality constraints (e.g. `p(alice, X)` → `p(A, X), A = alice`).
 - Parameterised mutual recursion:
@@ -56,4 +57,4 @@
   - Aggregate goals may be a single predicate call, or a goal built from conjunction/disjunction of relations/constraints/negation/aggregates (compiled as a union-of-branches subplan); `->`/`*->` remain unsupported.
   - Aggregates over SCC predicates are rejected (stratification requirement).
   - Need-closure prefixes still reject aggregates (allowed after recursion in the clause body).
-- Next: broaden coverage (caching/memoization for correlated subplans, and optional memoized/procedural fallback once semantics are locked down).
+- Next: optional memoized/procedural fallback once semantics are locked down (and deeper indexing if needed).

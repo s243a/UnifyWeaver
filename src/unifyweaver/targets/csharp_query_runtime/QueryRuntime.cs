@@ -388,11 +388,44 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
+        private List<object[]> GetFactsList(PredicateId predicate, EvaluationContext? context)
+        {
+            if (context is null)
+            {
+                return (_provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>()).ToList();
+            }
+
+            if (context.Facts.TryGetValue(predicate, out var cached))
+            {
+                return cached;
+            }
+
+            var facts = (_provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>()).ToList();
+            context.Facts[predicate] = facts;
+            return facts;
+        }
+
+        private HashSet<object[]> GetFactsSet(PredicateId predicate, EvaluationContext? context)
+        {
+            if (context is null)
+            {
+                return new HashSet<object[]>(_provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>(), StructuralArrayComparer.Instance);
+            }
+
+            if (context.FactSets.TryGetValue(predicate, out var cached))
+            {
+                return cached;
+            }
+
+            var set = new HashSet<object[]>(GetFactsList(predicate, context), StructuralArrayComparer.Instance);
+            context.FactSets[predicate] = set;
+            return set;
+        }
+
         private IEnumerable<object[]> ExecuteNegation(NegationNode negation, EvaluationContext? context)
         {
             var input = Evaluate(negation.Input, context);
-            var facts = _provider.GetFacts(negation.Predicate) ?? Enumerable.Empty<object[]>();
-            var factSet = new HashSet<object[]>(facts, StructuralArrayComparer.Instance);
+            var factSet = GetFactsSet(negation.Predicate, context);
 
             foreach (var tuple in input)
             {
@@ -409,7 +442,7 @@ namespace UnifyWeaver.QueryRuntime
             if (aggregate is null) throw new ArgumentNullException(nameof(aggregate));
 
             var input = Evaluate(aggregate.Input, context);
-            var facts = (_provider.GetFacts(aggregate.Predicate) ?? Enumerable.Empty<object[]>()).ToList();
+            var facts = GetFactsList(aggregate.Predicate, context);
             var cache = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
             var groupCount = aggregate.GroupByIndices?.Count ?? 0;
             var extensionSize = groupCount + 1;
@@ -1478,6 +1511,10 @@ namespace UnifyWeaver.QueryRuntime
             public IReadOnlyList<object[]> Parameters { get; }
 
             public Dictionary<string, List<object[]>> Materialized { get; } = new();
+
+            public Dictionary<PredicateId, List<object[]>> Facts { get; } = new();
+
+            public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; } = new();
         }
 
         private sealed record RowWrapper(object[] Row);
