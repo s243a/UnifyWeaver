@@ -1,0 +1,136 @@
+{
+  "version": "1.1",
+  "description": "Q-A pairs for LDA projection training - UnifyWeaver playbook examples",
+  "notes": {
+    "query_lengths": "short (2-4 words), medium (5-15 words), long (15+ words)",
+    "answer_variants": "Different answer texts per embedding model based on context length"
+  },
+  "embedding_models": ["all-MiniLM-L6-v2", "e5-small-v2"],
+  "clusters": [
+    {
+      "id": "csv_data_source",
+      "answer_source": "playbooks/examples_library/csv_examples.md",
+      "answers": {
+        "default": "CSV Data Source Example - Demonstrates how to use UnifyWeaver's CSV source to read and process user data. Define a CSV source using source(csv, predicate_name, [csv_file(Path), has_header(true)]), then compile to bash using compile_dynamic_source/3.",
+        "all-MiniLM-L6-v2": "CSV source: source(csv, users, [csv_file(Path), has_header(true)]). Compile with compile_dynamic_source/3.",
+        "e5-small-v2": "CSV Data Source Example - Use UnifyWeaver's CSV source to read tabular data. Define with source(csv, predicate_name, [csv_file(Path), has_header(true)]), compile to bash using compile_dynamic_source/3."
+      },
+      "queries": {
+        "short": [
+          "csv source",
+          "read csv prolog",
+          "csv data loading"
+        ],
+        "medium": [
+          "How do I read CSV files in UnifyWeaver?",
+          "How to define a CSV data source?",
+          "Load CSV file as Prolog predicate"
+        ],
+        "long": [
+          "I want to load user data from a CSV file and filter records by name using Prolog predicates",
+          "How can I compile a CSV source to a bash script that processes tabular data?"
+        ]
+      }
+    },
+    {
+      "id": "mutual_recursion",
+      "answer_source": "playbooks/examples_library/recursion_examples.md",
+      "answers": {
+        "default": "Mutual Recursion Example - Demonstrates compiling mutually recursive predicates like is_even/is_odd. UnifyWeaver detects mutual recursion and compiles both predicates together, generating separate bash scripts that call each other.",
+        "all-MiniLM-L6-v2": "Mutual recursion: is_even/is_odd predicates compiled together. UnifyWeaver generates scripts that call each other.",
+        "e5-small-v2": "Mutual Recursion - Compile mutually recursive predicates like is_even/is_odd. UnifyWeaver detects mutual dependencies and generates interconnected bash scripts."
+      },
+      "queries": {
+        "short": [
+          "mutual recursion",
+          "even odd prolog",
+          "recursive predicates"
+        ],
+        "medium": [
+          "How to compile mutually recursive predicates?",
+          "Compile is_even and is_odd to bash",
+          "Handle predicates that call each other"
+        ],
+        "long": [
+          "I have two Prolog predicates that call each other recursively, how do I compile them to bash?",
+          "My predicates is_even and is_odd depend on each other, how does UnifyWeaver handle this?"
+        ]
+      }
+    },
+    {
+      "id": "xml_python_source",
+      "answer_source": "playbooks/examples_library/xml_examples.md",
+      "answers": {
+        "default": "XML Data Source Example - Demonstrates using Python source with XML processing. Define a Python source using source(python, predicate_name, [python_inline(Code)]) where the Python code uses xml.etree.ElementTree to parse and process XML data.",
+        "all-MiniLM-L6-v2": "Python XML source: source(python, pred, [python_inline(Code)]). Use xml.etree.ElementTree for parsing.",
+        "e5-small-v2": "XML Data Source - Use Python source with XML processing. Define using source(python, predicate_name, [python_inline(Code)]) with xml.etree.ElementTree."
+      },
+      "queries": {
+        "short": [
+          "xml parsing",
+          "python source xml",
+          "parse xml prolog"
+        ],
+        "medium": [
+          "How to parse XML in UnifyWeaver?",
+          "Use Python to process XML data",
+          "XML source with ElementTree"
+        ],
+        "long": [
+          "I need to sum prices from XML product data using Python and integrate with Prolog predicates",
+          "How can I use Python's xml.etree to parse XML and expose results as a Prolog predicate?"
+        ]
+      }
+    },
+    {
+      "id": "component_registry",
+      "answer_source": "docs/proposals/COMPONENT_REGISTRY.md",
+      "answers": {
+        "default": "Component Registry - Unified framework for registering, configuring, and invoking components across categories (runtime, source, binding). Use declare_component(Category, Name, Type, Config) to register, invoke_component(Category, Name, Input, Output) to call.",
+        "all-MiniLM-L6-v2": "Component registry: declare_component(Category, Name, Type, Config) to register, invoke_component/4 to call.",
+        "e5-small-v2": "Component Registry - Unified framework for components. Register with declare_component/4, invoke with invoke_component/4. Supports lazy/eager initialization."
+      },
+      "queries": {
+        "short": [
+          "component registry",
+          "register component",
+          "runtime components"
+        ],
+        "medium": [
+          "How to register a runtime component?",
+          "What is the component registry?",
+          "Declare and invoke components"
+        ],
+        "long": [
+          "I want to create a new runtime component that can be loaded lazily and has dependencies on other components",
+          "How do I register a custom component type and create instances with configuration?"
+        ]
+      }
+    },
+    {
+      "id": "lda_projection",
+      "answer_source": "docs/proposals/SEMANTIC_PROJECTION_LDA.md",
+      "answers": {
+        "default": "LDA Semantic Projection - Projects query embeddings to answer space using a learned transformation matrix W. Computed via W = A * Q_bar^T * (Q_bar*Q_bar^T + lambda*Delta_w*Delta_w^T + mu*I)^-1. Improves retrieval by mapping questions to their associated answers.",
+        "all-MiniLM-L6-v2": "LDA projection: W = A * Q_bar^T * inv(covariance). Maps query embeddings to answer space for better retrieval.",
+        "e5-small-v2": "LDA Semantic Projection - Transform query embeddings to answer space with learned W matrix. Computed from Q-A clusters using regularized regression."
+      },
+      "queries": {
+        "short": [
+          "lda projection",
+          "semantic projection",
+          "query embedding"
+        ],
+        "medium": [
+          "How does LDA projection work?",
+          "Project queries to answer space",
+          "Learn transformation matrix W"
+        ],
+        "long": [
+          "I want to improve RAG retrieval by learning a projection that maps query embeddings closer to relevant document embeddings",
+          "How can I train a transformation matrix from question-answer pairs to improve semantic search?"
+        ]
+      }
+    }
+  ]
+}
