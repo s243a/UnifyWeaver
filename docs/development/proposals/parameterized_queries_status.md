@@ -45,7 +45,7 @@
 - Added query-mode aggregates (`aggregate_all/3,4`, including correlated aggregates) via an `aggregate` plan node and C# `AggregateNode` runtime support.
   - Grouped aggregates now support multi-key grouping (group term containing multiple variables maps to multiple `group_indices`).
   - Aggregate goals can now be conjunctions/subplans (e.g. joins, comparisons, stratified negation) via an `aggregate_subplan` plan node and C# `AggregateSubplanNode` runtime support; simple single-predicate aggregate goals still use the faster `aggregate` node path.
-- QueryRuntime memoizes correlated aggregate keys (pattern/parameter tuples) per execution, caches base-relation materializations, and uses a per-predicate/per-column fact index when a pattern slot is bound (reduces full scans for grouped/correlated aggregates).
+- QueryRuntime memoizes correlated aggregate keys (pattern/parameter tuples) per execution, caches base-relation materializations, and uses cached per-predicate/per-column fact indices to pick a selective bound pattern slot (reduces full scans for grouped/correlated aggregates).
 - QueryRuntime now has a `KeyJoinNode` hash-join path for equi-joins with join keys (reduces nested-loop work for large joins).
   - Rule bodies now support disjunction (`;/2`) by expanding into multiple clause variants and emitting a `union` plan node; `->`/`*->` and cut (`!`) remain unsupported.
   - Relation/recursive literals in query-mode bodies (including aggregate subplan goals) may now include simple constants (atomic/string); they are normalized to fresh variables plus equality constraints (e.g. `p(alice, X)` → `p(A, X), A = alice`).

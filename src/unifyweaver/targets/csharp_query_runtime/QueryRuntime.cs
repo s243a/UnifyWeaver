@@ -565,6 +565,9 @@ namespace UnifyWeaver.QueryRuntime
                 return facts;
             }
 
+            List<object[]>? bestBucket = null;
+            var bestCount = int.MaxValue;
+
             for (var i = 0; i < pattern.Length; i++)
             {
                 var value = pattern[i];
@@ -575,7 +578,27 @@ namespace UnifyWeaver.QueryRuntime
 
                 var index = GetFactIndex(predicate, i, facts, context);
                 var key = value ?? NullFactIndexKey;
-                return index.TryGetValue(key, out var bucket) ? bucket : Array.Empty<object[]>();
+
+                if (!index.TryGetValue(key, out var bucket))
+                {
+                    return Array.Empty<object[]>();
+                }
+
+                if (bucket.Count < bestCount)
+                {
+                    bestCount = bucket.Count;
+                    bestBucket = bucket;
+
+                    if (bestCount <= 1)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (bestBucket is not null)
+            {
+                return bestBucket;
             }
 
             return facts;
