@@ -39,6 +39,7 @@
 :- dynamic user:test_sale_customers_set/1.
 :- dynamic user:test_sale_customers_bag/1.
 :- dynamic user:test_sale_alice_or_bob_count/1.
+:- dynamic user:test_sale_alice_or_bob_nested_count/1.
 :- dynamic user:test_banned/1.
 :- dynamic user:test_allowed/1.
 :- dynamic user:test_blocked/1.
@@ -98,6 +99,7 @@ test_csharp_query_target :-
         verify_aggregate_subplan_count_with_constraint_plan,
         verify_aggregate_subplan_banned_sale_count_plan,
         verify_aggregate_subplan_disjunction_count_plan,
+        verify_aggregate_subplan_nested_disjunction_count_plan,
         verify_aggregate_subplan_correlated_count_with_constraint_plan,
         verify_aggregate_subplan_grouped_count_with_negation_plan,
         verify_aggregate_subplan_sum_with_constraint_plan,
@@ -211,6 +213,12 @@ setup_test_data :-
         aggregate_all(count,
             ((test_sale(Customer, _), Customer = alice)
             ; (test_sale(Customer, _), Customer = bob)),
+            C)
+    )),
+    assertz(user:(test_sale_alice_or_bob_nested_count(C) :-
+        aggregate_all(count,
+            (test_sale(Customer, _),
+             (Customer = alice ; Customer = bob)),
             C)
     )),
     assertz(user:(test_sale_count_filtered_by_customer(Customer, Count) :-
@@ -370,6 +378,7 @@ cleanup_test_data :-
     retractall(user:test_sale_filtered_count(_)),
     retractall(user:test_banned_sale_count(_)),
     retractall(user:test_sale_alice_or_bob_count(_)),
+    retractall(user:test_sale_alice_or_bob_nested_count(_)),
     retractall(user:test_sale_count_filtered_by_customer(_, _)),
     retractall(user:test_non_banned_sale_count_grouped(_, _)),
     retractall(user:test_sale_filtered_sum(_)),
@@ -766,6 +775,21 @@ verify_aggregate_subplan_banned_sale_count_plan :-
 
 verify_aggregate_subplan_disjunction_count_plan :-
     csharp_query_target:build_query_plan(test_sale_alice_or_bob_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    get_dict(params, Agg, []),
+    get_dict(subplan, Agg, union{type:union, sources:Sources, width:0}),
+    length(Sources, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'UnionNode'),
+    maybe_run_query_runtime(Plan, ['3']).
+
+verify_aggregate_subplan_nested_disjunction_count_plan :-
+    csharp_query_target:build_query_plan(test_sale_alice_or_bob_nested_count/1, [target(csharp_query)], Plan),
     get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
     is_dict(Agg, aggregate_subplan),
     get_dict(op, Agg, count),

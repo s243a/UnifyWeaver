@@ -106,27 +106,27 @@ term_to_dependency(Term, Dep) :-
 aggregate_goal_dependency(Goal0, Dep) :-
     strip_module(Goal0, _, Goal),
     nonvar(Goal),
-    (   Goal = (A ; B)
-    ->  (   aggregate_goal_dependency(A, Dep)
-        ;   aggregate_goal_dependency(B, Dep)
-        )
-    ;   Goal = (A -> B)
-    ->  (   aggregate_goal_dependency(A, Dep)
-        ;   aggregate_goal_dependency(B, Dep)
-        )
-    ;   Goal = (A *-> B)
-    ->  (   aggregate_goal_dependency(A, Dep)
-        ;   aggregate_goal_dependency(B, Dep)
-        )
-    ),
-    !.
-aggregate_goal_dependency(Goal0, Dep) :-
-    strip_module(Goal0, _, Goal),
-    nonvar(Goal),
-    body_to_list(Goal, Terms),
-    member(Term, Terms),
-    \+ constraint_goal(Term),
-    term_to_dependency(Term, Dep).
+    aggregate_goal_dependency_(Goal, Dep).
+
+aggregate_goal_dependency_((A, B), Dep) :- !,
+    (   aggregate_goal_dependency_(A, Dep)
+    ;   aggregate_goal_dependency_(B, Dep)
+    ).
+aggregate_goal_dependency_((A ; B), Dep) :- !,
+    (   aggregate_goal_dependency_(A, Dep)
+    ;   aggregate_goal_dependency_(B, Dep)
+    ).
+aggregate_goal_dependency_((A -> B), Dep) :- !,
+    (   aggregate_goal_dependency_(A, Dep)
+    ;   aggregate_goal_dependency_(B, Dep)
+    ).
+aggregate_goal_dependency_((A *-> B), Dep) :- !,
+    (   aggregate_goal_dependency_(A, Dep)
+    ;   aggregate_goal_dependency_(B, Dep)
+    ).
+aggregate_goal_dependency_(Goal, Dep) :-
+    \+ constraint_goal(Goal),
+    term_to_dependency(Goal, Dep).
 
 gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses) :-
     findall(Head-Body,
@@ -1282,41 +1282,53 @@ build_aggregate_subplan_node(GroupSpecs, HeadSpec, Type, Op, Goal0, GroupTerm, V
 build_aggregate_subplan_plan(GroupSpecs, HeadSpec, Type, Op, GroupVars,
         SeedNode, SeedVarMap, CorrCount, RelationsIn, Goal0, ValueVar,
         PlanNode, RelationsOut) :-
-    strip_module(Goal0, _, Goal),
-    (   Goal = (_ ; _)
-    ->  disjunction_to_list(Goal, BranchGoals),
-        maplist(build_aggregate_subplan_branch(GroupSpecs, HeadSpec, Type, Op, GroupVars,
-                    SeedNode, SeedVarMap, CorrCount, RelationsIn, ValueVar),
-                BranchGoals, BranchNodes, BranchRelations),
-        (   BranchNodes = [Single]
-        ->  PlanNode = Single
-        ;   BranchNodes = [First|_],
-            get_dict(width, First, Width),
-            PlanNode = union{type:union, sources:BranchNodes, width:Width}
+    findall(variant(Node, RelList),
+        (   aggregate_goal_branch_terms(Goal0, Terms),
+            build_aggregate_subplan_branch_terms(GroupSpecs, HeadSpec, Type, Op, GroupVars,
+                SeedNode, SeedVarMap, CorrCount, RelationsIn, ValueVar,
+                Terms, Node, RelList)
         ),
+        VariantPairs),
+    VariantPairs \= [],
+    findall(Node, member(variant(Node, _), VariantPairs), BranchNodes),
+    findall(RelList, member(variant(_, RelList), VariantPairs), BranchRelations),
+    (   BranchNodes = [Single]
+    ->  PlanNode = Single,
+        BranchRelations = [RelationsOut]
+    ;   BranchNodes = [First|_],
+        get_dict(width, First, Width),
+        PlanNode = union{type:union, sources:BranchNodes, width:Width},
         append(BranchRelations, RelationsFlat0),
         dedup_relations(RelationsFlat0, RelationsOut)
-    ;   body_to_list(Goal, Terms),
-        Terms \= [],
-        aggregate_subplan_roles(Terms, Roles),
-        ensure_no_aggregate_subplan_recursion(GroupSpecs, Terms),
-        fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, CorrCount, RelationsIn,
-            InnerNode, InnerVarMap, _InnerWidth, RelationsMid),
-        aggregate_subplan_projection(Type, Op, GroupVars, ValueVar, InnerVarMap, InnerNode, PlanNode),
-        RelationsOut = RelationsMid
     ).
 
-disjunction_to_list((A ; B), Terms) :- !,
-    disjunction_to_list(A, Left),
-    disjunction_to_list(B, Right),
-    append(Left, Right, Terms).
-disjunction_to_list(Goal, [Goal]).
+aggregate_goal_branch_terms(Goal0, Terms) :-
+    strip_module(Goal0, _, Goal),
+    aggregate_goal_branch_terms_(Goal, Terms, []).
 
-build_aggregate_subplan_branch(GroupSpecs, HeadSpec, Type, Op, GroupVars,
+aggregate_goal_branch_terms_(true, Terms, Terms) :- !.
+aggregate_goal_branch_terms_((A, B), Terms0, Terms) :- !,
+    aggregate_goal_branch_terms_(A, Terms0, Terms1),
+    aggregate_goal_branch_terms_(B, Terms1, Terms).
+aggregate_goal_branch_terms_((A ; B), Terms0, Terms) :- !,
+    (   aggregate_goal_branch_terms_(A, Terms0, Terms)
+    ;   aggregate_goal_branch_terms_(B, Terms0, Terms)
+    ).
+aggregate_goal_branch_terms_((A -> B), _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: if-then-else inside aggregate goals is not supported (~q).~n',
+           [(A -> B)]),
+    fail.
+aggregate_goal_branch_terms_((A *-> B), _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: soft cut (*->) inside aggregate goals is not supported (~q).~n',
+           [(A *-> B)]),
+    fail.
+aggregate_goal_branch_terms_(Goal, [Goal|Terms], Terms).
+
+build_aggregate_subplan_branch_terms(GroupSpecs, HeadSpec, Type, Op, GroupVars,
         SeedNode, SeedVarMap, CorrCount, RelationsIn, ValueVar,
-        Goal0, BranchPlan, RelationsOut) :-
-    body_to_list(Goal0, Terms),
-    Terms \= [],
+        Terms, BranchPlan, RelationsOut) :-
     aggregate_subplan_roles(Terms, Roles),
     ensure_no_aggregate_subplan_recursion(GroupSpecs, Terms),
     fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, CorrCount, RelationsIn,
