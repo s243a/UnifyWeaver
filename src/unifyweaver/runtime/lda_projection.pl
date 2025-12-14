@@ -383,7 +383,9 @@ shutdown_component(Name) :-
 % REGISTRATION
 % ============================================================================
 
-:- use_module('../core/component_registry').
+:- use_module('../core/component_registry', [
+    register_component_type/4
+]).
 
 :- initialization((
     register_component_type(runtime, lda_projection, lda_projection, [
