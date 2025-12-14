@@ -99,6 +99,33 @@ Status history is tracked with timestamps for each transition:
       vector_search(ProjEmb, TopK, Results).
   ```
 
+## Multi-Head Projection (Implemented)
+
+Analogous to transformer attention heads, each cluster gets its own projection:
+
+- **Per-cluster heads**: Each cluster stores centroid (question mean) and answer embedding
+- **Soft routing**: Query similarity to centroids determines routing weights via softmax
+- **Temperature control**: Lower temperature = sharper routing (0.1 recommended)
+
+Results on novel queries:
+- Multi-head (temp=0.1): 76.7% Recall@1
+- Direct similarity: 70.0% Recall@1
+- **Improvement: +6.7%**
+
+```bash
+# Train multi-head projection
+python3 scripts/train_multi_head_projection.py \
+    --db playbooks/lda-training-data/lda.db \
+    --model all-MiniLM-L6-v2 \
+    --temperature 0.1 \
+    --validate
+
+# Validate with novel queries
+python3 scripts/validate_multi_head.py \
+    --db playbooks/lda-training-data/lda.db \
+    --mh-id 1
+```
+
 ## Future Enhancements
 
 - [ ] Go backend for LDA projection (avoid Python subprocess overhead)
@@ -106,7 +133,7 @@ Status history is tracked with timestamps for each transition:
 - [ ] MCP tool for Claude integration (useful for server-based deployments)
 - [ ] Hot-reload support for W matrix updates
 - [ ] Per-domain projection matrices
-- [ ] Multiple attention heads (separate input/output projections)
+- [x] Multiple attention heads (separate input/output projections)
 
 ## Notes
 
