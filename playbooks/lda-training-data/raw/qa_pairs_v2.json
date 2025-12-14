@@ -1,0 +1,211 @@
+{
+  "version": "2.0",
+  "description": "Expanded Q-A pairs for LDA projection training - UnifyWeaver playbooks",
+  "notes": {
+    "query_lengths": "short (2-4 words), medium (5-15 words), long (15+ words)",
+    "answer_variants": "Different answer texts per embedding model based on context length"
+  },
+  "embedding_models": ["all-MiniLM-L6-v2", "e5-small-v2"],
+  "clusters": [
+    {
+      "id": "sqlite_source",
+      "answer_source": "playbooks/examples_library/sqlite_source_examples.md",
+      "answers": {
+        "default": "SQLite Source - Query SQLite databases using UnifyWeaver's sqlite_source plugin. Configure with sqlite_file(Path), query(SQL), and output_format(tsv). Use sqlite_source:compile_source/4 to generate bash scripts that execute SQL queries. Supports parameterized queries, JOINs, and WHERE clause filtering.",
+        "all-MiniLM-L6-v2": "SQLite source: sqlite_source:compile_source(pred/1, [sqlite_file(Path), query(SQL), output_format(tsv)], [], Code). Generates bash for SQL queries.",
+        "e5-small-v2": "SQLite Source - Query databases with sqlite_source plugin. Use sqlite_file, query, output_format options. Compile to bash with compile_source/4."
+      },
+      "queries": {
+        "short": [
+          "sqlite source",
+          "query database prolog",
+          "sql data source"
+        ],
+        "medium": [
+          "How do I query SQLite from UnifyWeaver?",
+          "Execute SQL queries as data source",
+          "Load database records into Prolog"
+        ],
+        "long": [
+          "I need to fetch user records from a SQLite database and filter them by age using Prolog predicates",
+          "How can I compile SQL queries to bash scripts that return data for further processing?"
+        ]
+      }
+    },
+    {
+      "id": "http_source",
+      "answer_source": "playbooks/examples_library/http_source_examples.md",
+      "answers": {
+        "default": "HTTP Source - Fetch data from REST APIs using http_source plugin. Configure with url(URL), method(get/post), headers([...]), cache_duration(Seconds), and timeout(Seconds). Supports both curl and wget backends. Use http_source:compile_source/4 to generate bash scripts that fetch JSON data from APIs.",
+        "all-MiniLM-L6-v2": "HTTP source: http_source:compile_source(pred/1, [url(URL), method(get), cache_duration(300)], [], Code). Fetches from REST APIs.",
+        "e5-small-v2": "HTTP Source - Fetch REST API data with http_source. Configure url, method, headers, cache_duration. Compile to curl/wget scripts."
+      },
+      "queries": {
+        "short": [
+          "http source",
+          "rest api prolog",
+          "fetch url data"
+        ],
+        "medium": [
+          "How to fetch data from REST API?",
+          "HTTP GET request as data source",
+          "Cache API responses in UnifyWeaver"
+        ],
+        "long": [
+          "I need to fetch JSON data from an external API endpoint and process it with Prolog predicates",
+          "How can I make HTTP POST requests with custom headers and cache the responses?"
+        ]
+      }
+    },
+    {
+      "id": "json_source",
+      "answer_source": "playbooks/examples_library/json_source_examples.md",
+      "answers": {
+        "default": "JSON Source - Process JSON files using jq filters. Use dynamic_source/3 with json type, json_file(Path), and jq_filter(Filter). The jq filter can select fields (.[].name), filter arrays (.[] | select(.score > 90)), and transform data. Compile to bash scripts that pipe JSON through jq.",
+        "all-MiniLM-L6-v2": "JSON source: dynamic_source(pred/1, json, [json_file(Path), jq_filter('.[].name')]). Uses jq for filtering.",
+        "e5-small-v2": "JSON Source - Process JSON with jq filters. Configure json_file and jq_filter. Supports select, array iteration, field extraction."
+      },
+      "queries": {
+        "short": [
+          "json source",
+          "jq filter prolog",
+          "parse json data"
+        ],
+        "medium": [
+          "How to process JSON files in UnifyWeaver?",
+          "Filter JSON arrays with jq",
+          "Extract fields from JSON data"
+        ],
+        "long": [
+          "I have a JSON file with an array of objects and need to filter entries where score is above 90",
+          "How can I use jq to transform JSON data and expose the results as a Prolog predicate?"
+        ]
+      }
+    },
+    {
+      "id": "template_system",
+      "answer_source": "playbooks/examples_library/template_system_examples.md",
+      "answers": {
+        "default": "Template System - Generate code using placeholder substitution. Use render_template(Template, Values, Result) for direct rendering with {{placeholder}} syntax. Use render_named_template(Name, Values, Result) for predefined templates like bash_header, function. Templates can be composed and nested for complex code generation.",
+        "all-MiniLM-L6-v2": "Template system: render_template('Hello {{name}}!', [name='World'], Result). Uses {{placeholder}} substitution.",
+        "e5-small-v2": "Template System - Generate code with placeholder substitution. Use render_template/3 or render_named_template/3. Supports composition."
+      },
+      "queries": {
+        "short": [
+          "template system",
+          "code generation",
+          "placeholder substitution"
+        ],
+        "medium": [
+          "How to use template system for code gen?",
+          "Generate bash functions from templates",
+          "Render named templates in UnifyWeaver"
+        ],
+        "long": [
+          "I want to generate multiple bash functions using a template with placeholders for function name and body",
+          "How can I compose multiple templates together to generate complete scripts?"
+        ]
+      }
+    },
+    {
+      "id": "cross_target_glue",
+      "answer_source": "playbooks/examples_library/cross_target_glue_examples.md",
+      "answers": {
+        "default": "Cross-Target Glue - Build multi-language pipelines connecting AWK, Python, Bash, Go, and Rust. Use shell_glue module with generate_awk_script/4, generate_python_script/4, generate_bash_script/4. Each stage processes data and pipes to the next. Supports TSV format with headers for data exchange between languages.",
+        "all-MiniLM-L6-v2": "Cross-target glue: shell_glue module for AWK->Python->Bash pipelines. Use generate_awk_script/4, generate_python_script/4.",
+        "e5-small-v2": "Cross-Target Glue - Multi-language pipelines. Connect AWK, Python, Bash via shell_glue. Each stage generates scripts that pipe data."
+      },
+      "queries": {
+        "short": [
+          "cross target glue",
+          "multi language pipeline",
+          "awk python bash"
+        ],
+        "medium": [
+          "How to connect AWK and Python in pipeline?",
+          "Build multi-language data pipeline",
+          "Generate scripts for different languages"
+        ],
+        "long": [
+          "I need to filter data with AWK, aggregate with Python, then format output with Bash in a single pipeline",
+          "How can I create a cross-language pipeline that passes TSV data between AWK, Python and Bash stages?"
+        ]
+      }
+    },
+    {
+      "id": "bash_parallel",
+      "answer_source": "playbooks/examples_library/bash_parallel_examples.md",
+      "answers": {
+        "default": "Bash Parallel Execution - Run processing in parallel using bash fork backend. Use backend_init_impl/2 with Config containing workers(N). Create partitions with partition(Index, Data), then execute with backend_execute_impl/4. No GNU Parallel required - uses pure bash fork. Supports load balancing and result aggregation.",
+        "all-MiniLM-L6-v2": "Bash parallel: backend_init_impl([backend_args([workers(4)])], State), backend_execute_impl(State, Partitions, Script, Results).",
+        "e5-small-v2": "Bash Parallel - Pure bash fork for parallel execution. Initialize with workers count, create partitions, execute and aggregate results."
+      },
+      "queries": {
+        "short": [
+          "bash parallel",
+          "fork backend",
+          "parallel execution"
+        ],
+        "medium": [
+          "How to run bash scripts in parallel?",
+          "Process data partitions concurrently",
+          "Parallel execution without GNU Parallel"
+        ],
+        "long": [
+          "I want to process large data files in parallel using multiple workers without installing GNU Parallel",
+          "How can I partition data and execute a processing script on each partition concurrently?"
+        ]
+      }
+    },
+    {
+      "id": "awk_source",
+      "answer_source": "playbooks/examples_library/awk_source_examples.md",
+      "answers": {
+        "default": "AWK Source - Process delimited data using AWK scripts. Define sources with source(awk, predicate, [awk_script(Code), input_file(Path)]). AWK handles field parsing, filtering, and calculations. Output as TSV for further processing. Compile to bash scripts that execute awk commands.",
+        "all-MiniLM-L6-v2": "AWK source: source(awk, pred, [awk_script('{print $1, $2}'), input_file(Path)]). Processes delimited data.",
+        "e5-small-v2": "AWK Source - Process delimited data with AWK scripts. Configure awk_script and input_file. Compile to bash awk commands."
+      },
+      "queries": {
+        "short": [
+          "awk source",
+          "awk data processing",
+          "field parsing awk"
+        ],
+        "medium": [
+          "How to use AWK as data source?",
+          "Parse delimited files with AWK",
+          "Process TSV with awk in UnifyWeaver"
+        ],
+        "long": [
+          "I have a tab-separated file and need to extract specific columns and filter rows using AWK",
+          "How can I compile an AWK script to process log files and output selected fields?"
+        ]
+      }
+    },
+    {
+      "id": "yaml_source",
+      "answer_source": "playbooks/examples_library/yaml_source_examples.md",
+      "answers": {
+        "default": "YAML Source - Process YAML configuration files using yq or Python yaml module. Define sources with yaml_file(Path) and yq_filter(Filter). Similar to JSON source but for YAML format. Compile to bash scripts that parse YAML and extract values.",
+        "all-MiniLM-L6-v2": "YAML source: source(yaml, pred, [yaml_file(Path), yq_filter('.key.value')]). Processes YAML configs.",
+        "e5-small-v2": "YAML Source - Process YAML configs with yq filters. Configure yaml_file and yq_filter. Compile to bash yq commands."
+      },
+      "queries": {
+        "short": [
+          "yaml source",
+          "yaml config parsing",
+          "yq filter prolog"
+        ],
+        "medium": [
+          "How to parse YAML config files?",
+          "Extract values from YAML in UnifyWeaver",
+          "Process YAML with yq filters"
+        ],
+        "long": [
+          "I have a YAML configuration file and need to extract nested values for use in Prolog predicates",
+          "How can I parse YAML files and filter specific keys using yq in UnifyWeaver?"
+        ]
+      }
+    }
+  ]
+}

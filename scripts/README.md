@@ -295,6 +295,40 @@ python3 scripts/migrate_to_lda_db.py --list-batches
 
 See `docs/proposals/LDA_DATABASE_SCHEMA.md` for database schema details.
 
+### `train_multi_head_projection.py`
+**Train multi-head projection with per-cluster routing**
+
+Creates a multi-head projection where each cluster acts as an "attention head". Queries are routed to heads based on similarity to cluster centroids using softmax.
+
+```bash
+python3 scripts/train_multi_head_projection.py \
+    --db playbooks/lda-training-data/lda.db \
+    --model all-MiniLM-L6-v2 \
+    --temperature 0.1 \
+    --validate
+```
+
+**Key parameters:**
+- `--temperature`: Softmax temperature for routing (default: 1.0, recommended: 0.1)
+  - Lower = sharper routing (best match dominates)
+  - Higher = softer routing (more blending between heads)
+
+### `validate_multi_head.py`
+**Validate multi-head projection with novel queries**
+
+Compares multi-head projection against direct cosine similarity on queries not in training data.
+
+```bash
+python3 scripts/validate_multi_head.py \
+    --db playbooks/lda-training-data/lda.db \
+    --mh-id 1
+```
+
+**Results (temp=0.1):**
+- Multi-head: 76.7% Recall@1
+- Direct: 70.0% Recall@1
+- Improvement: +6.7%
+
 ---
 
 ## Legacy Scripts (LogiForge)
