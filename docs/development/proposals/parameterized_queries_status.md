@@ -43,6 +43,7 @@
 - Added end‑to‑end runtime coverage for parameterised Fibonacci and parameter‑passing plumbing in the dotnet harness.
 - Added bound-only stratified negation in query mode (`\+` / `not/1`) via a `negation` plan node and C# `NegationNode`, including need-closure support when negation appears before recursive calls.
 - Added query-mode aggregates (`aggregate_all/3,4`, including correlated aggregates) via an `aggregate` plan node and C# `AggregateNode` runtime support.
+  - Grouped aggregates now support multi-key grouping (group term containing multiple variables maps to multiple `group_indices`).
 - Parameterised mutual recursion:
   - Input modes are accepted for mutually-recursive SCCs (previously rejected).
   - When every predicate in the SCC declares compatible input modes (same input count), a tagged `$need` fixpoint is built and shared to seed each member’s base/recursive pipelines (demand-driven mutual SCC evaluation).
@@ -52,4 +53,4 @@
   - Aggregate goals must be a single predicate call (no conjunctions/subplans yet).
   - Aggregates over SCC predicates are rejected (stratification requirement).
   - Need-closure prefixes still reject aggregates (allowed after recursion in the clause body).
-- Next: broaden coverage (loosen SCC need-closure eligibility, richer aggregate forms like multi-key grouping, and optional memoized/procedural fallback once semantics are locked down).
+- Next: broaden coverage (richer aggregate goals like conjunctions/subplans, and optional memoized/procedural fallback once semantics are locked down).

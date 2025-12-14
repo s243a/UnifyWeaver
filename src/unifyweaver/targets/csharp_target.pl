@@ -1212,28 +1212,38 @@ build_aggregate_outputs(all, _GroupTerm, _Args, VarMapIn, WidthIn, ResVar,
     WidthOut is WidthIn + 1,
     VarMapOut = [ResVar-ResultIndex|VarMapIn].
 build_aggregate_outputs(group, GroupTerm, Args, VarMapIn, WidthIn, ResVar,
-        [GroupIdx], VarMapOut, WidthOut) :-
+        GroupIndices, VarMapOut, WidthOut) :-
     parse_group_term(GroupTerm, GroupVars),
-    (   GroupVars = [GroupVar]
+    (   GroupVars \= []
     ->  true
     ;   format(user_error, 'C# query target: aggregate group term ~q not supported.~n', [GroupTerm]),
         fail
     ),
-    aggregate_var_arg_index(GroupVar, Args, GroupIdx),
+    maplist(aggregate_var_arg_index_(Args), GroupVars, GroupIndices),
     must_be(var, ResVar),
     (   lookup_var_index(VarMapIn, ResVar, _)
     ->  format(user_error, 'C# query target: aggregate result variable ~w already bound.~n', [ResVar]),
         fail
     ;   true
     ),
-    GroupOutIndex is WidthIn,
-    ResultIndex is WidthIn + 1,
-    WidthOut is WidthIn + 2,
-    (   lookup_var_index(VarMapIn, GroupVar, _)
-    ->  VarMapMid = VarMapIn
-    ;   VarMapMid = [GroupVar-GroupOutIndex|VarMapIn]
-    ),
+    length(GroupVars, GroupCount),
+    ResultIndex is WidthIn + GroupCount,
+    WidthOut is WidthIn + GroupCount + 1,
+    bind_aggregate_group_vars(GroupVars, 0, WidthIn, VarMapIn, VarMapMid),
     VarMapOut = [ResVar-ResultIndex|VarMapMid].
+
+aggregate_var_arg_index_(Args, Var, Idx) :-
+    aggregate_var_arg_index(Var, Args, Idx).
+
+bind_aggregate_group_vars([], _Offset, _BaseIndex, VarMap, VarMap).
+bind_aggregate_group_vars([Var|Rest], Offset, BaseIndex, VarMapIn, VarMapOut) :-
+    Index is BaseIndex + Offset,
+    (   lookup_var_index(VarMapIn, Var, _)
+    ->  VarMapMid = VarMapIn
+    ;   VarMapMid = [Var-Index|VarMapIn]
+    ),
+    Offset1 is Offset + 1,
+    bind_aggregate_group_vars(Rest, Offset1, BaseIndex, VarMapMid, VarMapOut).
 
 aggregate_var_arg_index(Var, Args, Idx) :-
     nth0(Idx, Args, Arg),
@@ -2730,13 +2740,14 @@ parse_agg_op(bag(Var), bag, Var, _) :- !.
 parse_agg_op(OpTerm, Op, _, _) :-
     OpTerm =.. [Op|_].
 
-parse_group_term(Term, [Var]) :-
-    nonvar(Term),
-    Term = Var^_,
-    var(Var),
-    !.
 parse_group_term(Var, [Var]) :- var(Var), !.
-parse_group_term(_, []).
+parse_group_term(Term, Vars) :-
+    nonvar(Term),
+    Term = Left^_,
+    !,
+    parse_group_term(Left, Vars).
+parse_group_term(Term, Vars) :-
+    term_variables(Term, Vars).
 
 build_aggregate_filter(Pred, Args, _Config, Expr) :-
     length(Args, Arity),
