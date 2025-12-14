@@ -98,6 +98,9 @@ test_csharp_query_target :-
         verify_aggregate_subplan_banned_sale_count_plan,
         verify_aggregate_subplan_correlated_count_with_constraint_plan,
         verify_aggregate_subplan_grouped_count_with_negation_plan,
+        verify_aggregate_subplan_sum_with_constraint_plan,
+        verify_aggregate_subplan_set_with_negation_plan,
+        verify_aggregate_subplan_grouped_sum_with_negation_plan,
         verify_negation_plan,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
@@ -208,6 +211,15 @@ setup_test_data :-
     )),
     assertz(user:(test_non_banned_sale_count_grouped(Customer, Count) :-
         aggregate_all(count, (test_sale(Customer, _), \+ test_banned(Customer)), Customer, Count)
+    )),
+    assertz(user:(test_sale_filtered_sum(Sum) :-
+        aggregate_all(sum(Amount), (test_sale(_, Amount), Amount > 5), Sum)
+    )),
+    assertz(user:(test_non_banned_sale_customers_set(Set) :-
+        aggregate_all(set(Customer), (test_sale(Customer, _), \+ test_banned(Customer)), Set)
+    )),
+    assertz(user:(test_non_banned_sale_sum_grouped(Customer, Sum) :-
+        aggregate_all(sum(Amount), (test_sale(Customer, Amount), \+ test_banned(Customer)), Customer, Sum)
     )),
     assertz(user:test_banned(bob)),
     assertz(user:(test_allowed(X) :- test_fact(X, _), \+ test_banned(X))),
@@ -351,6 +363,9 @@ cleanup_test_data :-
     retractall(user:test_banned_sale_count(_)),
     retractall(user:test_sale_count_filtered_by_customer(_, _)),
     retractall(user:test_non_banned_sale_count_grouped(_, _)),
+    retractall(user:test_sale_filtered_sum(_)),
+    retractall(user:test_non_banned_sale_customers_set(_)),
+    retractall(user:test_non_banned_sale_sum_grouped(_, _)),
     retractall(user:test_factorial_input(_)),
     retractall(user:test_factorial(_, _)),
     retractall(user:test_fib_param(_, _)),
@@ -765,6 +780,50 @@ verify_aggregate_subplan_grouped_count_with_negation_plan :-
     sub_string(Source, _, _, _, 'AggregateSubplanNode'),
     sub_string(Source, _, _, _, 'NegationNode'),
     maybe_run_query_runtime(Plan, ['alice,2']).
+
+verify_aggregate_subplan_sum_with_constraint_plan :-
+    csharp_query_target:build_query_plan(test_sale_filtered_sum/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(input, Agg, unit{type:unit, width:0}),
+    get_dict(op, Agg, sum),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, 0),
+    get_dict(width, Agg, 1),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
+    sub_string(Source, _, _, _, 'SelectionNode'),
+    maybe_run_query_runtime(Plan, ['17']).
+
+verify_aggregate_subplan_set_with_negation_plan :-
+    csharp_query_target:build_query_plan(test_non_banned_sale_customers_set/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, set),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, 0),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Set'),
+    sub_string(Source, _, _, _, 'NegationNode').
+
+verify_aggregate_subplan_grouped_sum_with_negation_plan :-
+    csharp_query_target:build_query_plan(test_non_banned_sale_sum_grouped/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0, 1], width:2}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, sum),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, [0]),
+    get_dict(value_index, Agg, 1),
+    get_dict(width, Agg, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
+    sub_string(Source, _, _, _, 'NegationNode'),
+    maybe_run_query_runtime(Plan, ['alice,15']).
 
 verify_parameterized_fib_plan :-
     csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
