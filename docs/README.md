@@ -85,6 +85,29 @@ This applies to:
 
 ### Semantic Search and LDA Projection
 
+#### Usage Guide
+
+- **[usage/semantic_search.md](usage/semantic_search.md)** - Semantic Search Usage Guide
+  - Prolog API: `find_examples/3,4`, `semantic_search/3,4`
+  - Go API: `projection.LoadMultiHead`, `search.SearchWithOptions`
+  - Temperature tuning and search modes
+  - Example code and testing
+
+#### Runtime Components
+
+- **`src/unifyweaver/runtime/semantic_search.pl`** - Prolog Semantic Search API
+  - `find_examples/3,4` - Find playbook examples matching a query
+  - `semantic_search/3,4` - Low-level search with options
+  - Three search modes: direct, multi-head projection, global projection
+  - Component registration with `component_registry`
+
+- **`src/unifyweaver/targets/go_runtime/projection/`** - Go Multi-Head Projection
+  - Native Go implementation (no Python subprocess overhead)
+  - Softmax routing with configurable temperature
+  - NPY file loading for centroids and answer embeddings
+
+#### Theory and Design
+
 - **[proposals/SEMANTIC_PROJECTION_LDA.md](proposals/SEMANTIC_PROJECTION_LDA.md)** - LDA Projection Theory
   - Mathematical foundation for query-to-answer projection
   - Weighted centroid computation
