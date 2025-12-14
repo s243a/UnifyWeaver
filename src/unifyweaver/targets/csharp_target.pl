@@ -2110,12 +2110,13 @@ emit_plan_expression(Node, Expr) :-
     get_dict(right_keys, Node, RightKeys),
     get_dict(left_width, Node, LeftWidth),
     get_dict(right_width, Node, RightWidth),
+    get_dict(width, Node, Width),
     emit_plan_expression(Left, LeftExpr),
     emit_plan_expression(Right, RightExpr),
-    join_predicate_expression(LeftKeys, RightKeys, PredicateExpr),
-    join_projection_expression(LeftWidth, RightWidth, ProjectExpr),
-    format(atom(Expr), 'new JoinNode(~w, ~w, (left, right) => ~w, (left, right) => new object[]{ ~w })',
-        [LeftExpr, RightExpr, PredicateExpr, ProjectExpr]).
+    int_array_literal(LeftKeys, LeftKeysLiteral),
+    int_array_literal(RightKeys, RightKeysLiteral),
+    format(atom(Expr), 'new KeyJoinNode(~w, ~w, ~w, ~w, ~w, ~w, ~w)',
+        [LeftExpr, RightExpr, LeftKeysLiteral, RightKeysLiteral, LeftWidth, RightWidth, Width]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, union), !,
     get_dict(sources, Node, Sources),

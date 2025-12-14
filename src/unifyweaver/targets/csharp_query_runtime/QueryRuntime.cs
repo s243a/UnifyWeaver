@@ -124,6 +124,19 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record ProjectionNode(PlanNode Input, Func<object[], object[]> Project) : PlanNode;
 
     /// <summary>
+    /// Performs a key-based equi-join between two inputs.
+    /// </summary>
+    public sealed record KeyJoinNode(
+        PlanNode Left,
+        PlanNode Right,
+        IReadOnlyList<int> LeftKeys,
+        IReadOnlyList<int> RightKeys,
+        int LeftWidth,
+        int RightWidth,
+        int Width
+    ) : PlanNode;
+
+    /// <summary>
     /// Performs a nested-loop join between two inputs.
     /// </summary>
     public sealed record JoinNode(
@@ -339,6 +352,9 @@ namespace UnifyWeaver.QueryRuntime
                 case ProjectionNode projection:
                     return Evaluate(projection.Input, context).Select(tuple => projection.Project(tuple));
 
+                case KeyJoinNode keyJoin:
+                    return ExecuteKeyJoin(keyJoin, context);
+
                 case JoinNode join:
                     return ExecuteJoin(join, context);
 
@@ -386,6 +402,84 @@ namespace UnifyWeaver.QueryRuntime
                     }
                 }
             }
+        }
+
+        private IEnumerable<object[]> ExecuteKeyJoin(KeyJoinNode join, EvaluationContext? context)
+        {
+            var left = Evaluate(join.Left, context);
+            var rightRows = Evaluate(join.Right, context).ToList();
+
+            if (join.LeftKeys is null || join.RightKeys is null || join.LeftKeys.Count == 0 || join.RightKeys.Count == 0)
+            {
+                foreach (var leftTuple in left)
+                {
+                    if (leftTuple is null) continue;
+
+                    foreach (var rightTuple in rightRows)
+                    {
+                        if (rightTuple is null) continue;
+                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+                yield break;
+            }
+
+            if (join.LeftKeys.Count != join.RightKeys.Count)
+            {
+                throw new InvalidOperationException($"KeyJoinNode expects equal key arity (left={join.LeftKeys.Count}, right={join.RightKeys.Count}).");
+            }
+
+            var index = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+            foreach (var rightTuple in rightRows)
+            {
+                if (rightTuple is null) continue;
+
+                var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                var wrapper = new RowWrapper(key);
+
+                if (!index.TryGetValue(wrapper, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    index[wrapper] = bucket;
+                }
+
+                bucket.Add(rightTuple);
+            }
+
+            foreach (var leftTuple in left)
+            {
+                if (leftTuple is null) continue;
+
+                var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                var wrapper = new RowWrapper(key);
+
+                if (!index.TryGetValue(wrapper, out var bucket))
+                {
+                    continue;
+                }
+
+                foreach (var rightTuple in bucket)
+                {
+                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                }
+            }
+        }
+
+        private static object[] BuildJoinOutput(object[] leftTuple, object[] rightTuple, int leftWidth, int rightWidth, int width)
+        {
+            var output = new object[width];
+
+            if (leftWidth > 0)
+            {
+                Array.Copy(leftTuple, output, Math.Min(leftWidth, leftTuple.Length));
+            }
+
+            if (rightWidth > 0)
+            {
+                Array.Copy(rightTuple, 0, output, leftWidth, Math.Min(rightWidth, rightTuple.Length));
+            }
+
+            return output;
         }
 
         private List<object[]> GetFactsList(PredicateId predicate, EvaluationContext? context)
