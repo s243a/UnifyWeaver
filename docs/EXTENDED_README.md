@@ -19,10 +19,12 @@ This document provides comprehensive documentation for UnifyWeaver, including de
 6. [Firewall and Security](#firewall-and-security)
 7. [PowerShell Target](#powershell-target)
 8. [C# Target Family](#c-target-family)
-9. [Complete Examples](#complete-examples)
-10. [Architecture Deep Dive](#architecture-deep-dive)
-11. [Testing Guide](#testing-guide)
-12. [Troubleshooting](#troubleshooting)
+9. [JVM Targets](#jvm-targets)
+10. [Native Targets (C/C++)](#native-targets-cc)
+11. [Complete Examples](#complete-examples)
+12. [Architecture Deep Dive](#architecture-deep-dive)
+13. [Testing Guide](#testing-guide)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -1027,6 +1029,98 @@ UnifyWeaver provides a robust C# compilation system that integrates seamlessly w
   - `XmlStreamReader` for NUL- or LF-delimited XML fragments; matches both prefixes and fully-qualified names and projects elements/attributes into a dictionary per record.
 
 **See [DOTNET_COMPILATION.md](DOTNET_COMPILATION.md) for the complete guide.**
+
+---
+
+## JVM Targets
+
+UnifyWeaver supports multiple JVM-based languages with full transitive closure and fact export:
+
+### Supported Languages
+
+| Target | Transitive Closure | Fact Export | Key Features |
+|--------|-------------------|-------------|--------------|
+| Java | ✅ | ✅ | `HashSet`, `ArrayList`, Streams |
+| Kotlin | ✅ | ✅ | `sequence { yield() }`, null safety |
+| Scala | ✅ | ✅ | `LazyList`, pattern matching |
+| Clojure | ✅ | ✅ | `loop/recur`, lazy sequences |
+| Jython | ✅ | ✅ | Python 2.7 on JVM |
+
+### Quick Start
+
+```prolog
+% Transitive closure (ancestor query)
+?- compile_recursive(ancestor/2, [target(java)], Code).
+?- compile_recursive(ancestor/2, [target(kotlin)], Code).
+?- compile_recursive(ancestor/2, [target(scala)], Code).
+
+% Export facts as static data
+?- compile_facts_to_java(parent, 2, Code).
+?- compile_facts_to_kotlin(parent, 2, Code).
+```
+
+### Implementation Details
+
+All JVM targets use BFS (Breadth-First Search) for transitive closure:
+- **Java**: `HashSet<String>` for visited, `ArrayDeque<String>` for queue
+- **Kotlin**: `mutableSetOf()`, `ArrayDeque()`
+- **Scala**: `mutable.Set`, `mutable.Queue`
+- **Clojure**: `loop/recur` with persistent data structures
+
+**See the [education submodule](education/) for detailed tutorials per language.**
+
+---
+
+## Native Targets (C/C++)
+
+UnifyWeaver compiles Prolog to native C and C++ with full transitive closure support:
+
+### Features
+
+| Target | Transitive Closure | Fact Export | Key Features |
+|--------|-------------------|-------------|--------------|
+| C | ✅ | ✅ | Manual memory, adjacency list |
+| C++ | ✅ | ✅ | STL containers, `std::optional` |
+
+### Quick Start
+
+```prolog
+% Transitive closure
+?- compile_recursive(ancestor/2, [target(c)], Code).
+?- compile_recursive(ancestor/2, [target(cpp)], Code).
+
+% Export facts
+?- compile_facts_to_c(parent, 2, Code).
+?- compile_facts_to_cpp(parent, 2, Code).
+```
+
+### C Implementation
+
+```c
+/* BFS with manual adjacency list */
+typedef struct Edge { char* to; struct Edge* next; } Edge;
+typedef struct { char* from; Edge* edges; } Node;
+
+static void find_all(const char* start) {
+    char* queue[MAX_NODES];
+    int visited[MAX_NODES] = {0};
+    // BFS implementation...
+}
+```
+
+### C++ Implementation
+
+```cpp
+class AncestorQuery {
+    std::unordered_map<std::string, std::vector<std::string>> baseRelation;
+public:
+    std::vector<std::string> findAll(const std::string& start) {
+        std::unordered_set<std::string> visited;
+        std::queue<std::string> queue;
+        // BFS implementation...
+    }
+};
+```
 
 ---
 
