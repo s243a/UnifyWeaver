@@ -4929,6 +4929,81 @@ def on_error_stage(stream, handler_fn):
             for result in handler_fn([record], e):
                 yield result
 
+def timeout_stage(stream, stage_fn, timeout_ms):
+    '''
+    Timeout: Execute stage with time limit. Yields error record on timeout.
+    '''
+    import threading
+    import queue
+
+    for record in stream:
+        result_queue = queue.Queue()
+        exception_holder = [None]
+
+        def run_stage():
+            try:
+                results = list(stage_fn([record]))
+                result_queue.put(('success', results))
+            except Exception as e:
+                result_queue.put(('error', e))
+
+        thread = threading.Thread(target=run_stage)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=timeout_ms / 1000.0)
+
+        if thread.is_alive():
+            # Timeout occurred
+            yield {'_timeout': True, '_record': record, '_limit_ms': timeout_ms}
+        else:
+            try:
+                status, data = result_queue.get_nowait()
+                if status == 'success':
+                    for result in data:
+                        yield result
+                else:
+                    raise data
+            except queue.Empty:
+                yield {'_timeout': True, '_record': record, '_limit_ms': timeout_ms}
+
+def timeout_stage_with_fallback(stream, stage_fn, timeout_ms, fallback_fn):
+    '''
+    Timeout with fallback: Execute stage with time limit, use fallback on timeout.
+    '''
+    import threading
+    import queue
+
+    for record in stream:
+        result_queue = queue.Queue()
+
+        def run_stage():
+            try:
+                results = list(stage_fn([record]))
+                result_queue.put(('success', results))
+            except Exception as e:
+                result_queue.put(('error', e))
+
+        thread = threading.Thread(target=run_stage)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=timeout_ms / 1000.0)
+
+        if thread.is_alive():
+            # Timeout occurred - use fallback
+            for result in fallback_fn([record]):
+                yield result
+        else:
+            try:
+                status, data = result_queue.get_nowait()
+                if status == 'success':
+                    for result in data:
+                        yield result
+                else:
+                    raise data
+            except queue.Empty:
+                for result in fallback_fn([record]):
+                    yield result
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -4987,6 +5062,14 @@ generate_single_enhanced_stage(retry(Stage, _, _), Code) :-
 generate_single_enhanced_stage(on_error(Handler), Code) :-
     !,
     generate_single_enhanced_stage(Handler, Code).
+generate_single_enhanced_stage(timeout(Stage, _), Code) :-
+    !,
+    generate_single_enhanced_stage(Stage, Code).
+generate_single_enhanced_stage(timeout(Stage, _, Fallback), Code) :-
+    !,
+    generate_single_enhanced_stage(Stage, StageCode),
+    generate_single_enhanced_stage(Fallback, FallbackCode),
+    format(string(Code), "~w~w", [StageCode, FallbackCode]).
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5241,6 +5324,25 @@ generate_stage_flow(on_error(Handler), InVar, OutVar, Code) :-
     format(string(Code),
 "    # On-Error: route errors to ~w
     ~w = on_error_stage(~w, ~w)", [HandlerName, OutVar, InVar, HandlerName]).
+
+% Timeout stage: execute with time limit
+generate_stage_flow(timeout(Stage, Ms), InVar, OutVar, Code) :-
+    !,
+    extract_stage_name(Stage, StageName),
+    OutVar = "timeout_result",
+    format(string(Code),
+"    # Timeout: ~w with ~wms limit
+    ~w = timeout_stage(~w, ~w, ~w)", [StageName, Ms, OutVar, InVar, StageName, Ms]).
+
+% Timeout stage with fallback
+generate_stage_flow(timeout(Stage, Ms, Fallback), InVar, OutVar, Code) :-
+    !,
+    extract_stage_name(Stage, StageName),
+    extract_stage_name(Fallback, FallbackName),
+    OutVar = "timeout_result",
+    format(string(Code),
+"    # Timeout: ~w with ~wms limit, fallback to ~w
+    ~w = timeout_stage_with_fallback(~w, ~w, ~w, ~w)", [StageName, Ms, FallbackName, OutVar, InVar, StageName, Ms, FallbackName]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

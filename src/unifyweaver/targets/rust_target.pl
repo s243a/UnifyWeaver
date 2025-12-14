@@ -1675,6 +1675,77 @@ fn on_error_stage(records: &[Record], _handler: ErrorHandlerFunc) -> Vec<Record>
     // In Rust, we pass records through - errors are handled at stage level
     records.to_vec()
 }
+
+/// Timeout: Execute stage with time limit.
+fn timeout_stage(
+    records: &[Record],
+    stage: StageFunc,
+    timeout_ms: u64,
+) -> Vec<Record> {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    let mut result = Vec::new();
+    for record in records {
+        let record_clone = record.clone();
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let stage_result = stage(&[record_clone]);
+            let _ = tx.send(stage_result);
+        });
+
+        match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+            Ok(Ok(results)) => result.extend(results),
+            Ok(Err(_)) | Err(_) => {
+                // Timeout or error occurred
+                let mut timeout_record = Record::new();
+                timeout_record.insert(\"_timeout\".to_string(), Value::Bool(true));
+                timeout_record.insert(\"_record\".to_string(), serde_json::to_value(record).unwrap_or(Value::Null));
+                timeout_record.insert(\"_limit_ms\".to_string(), Value::Number(timeout_ms.into()));
+                result.push(timeout_record);
+            }
+        }
+    }
+    result
+}
+
+/// Timeout with fallback: Execute stage with time limit, use fallback on timeout.
+fn timeout_stage_with_fallback<F>(
+    records: &[Record],
+    stage: StageFunc,
+    timeout_ms: u64,
+    fallback: F,
+) -> Vec<Record>
+where
+    F: Fn(&[Record]) -> Vec<Record>,
+{
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    let mut result = Vec::new();
+    for record in records {
+        let record_clone = record.clone();
+        let (tx, rx) = mpsc::channel();
+
+        thread::spawn(move || {
+            let stage_result = stage(&[record_clone]);
+            let _ = tx.send(stage_result);
+        });
+
+        match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+            Ok(Ok(results)) => result.extend(results),
+            Ok(Err(_)) | Err(_) => {
+                // Timeout or error occurred, use fallback
+                let fallback_results = fallback(&[record.clone()]);
+                result.extend(fallback_results);
+            }
+        }
+    }
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -1865,6 +1936,14 @@ generate_rust_single_enhanced_stage(retry(Stage, _, _), Code) :-
 generate_rust_single_enhanced_stage(on_error(Handler), Code) :-
     !,
     generate_rust_single_enhanced_stage(Handler, Code).
+generate_rust_single_enhanced_stage(timeout(Stage, _), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(Stage, Code).
+generate_rust_single_enhanced_stage(timeout(Stage, _, Fallback), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(Stage, StageCode),
+    generate_rust_single_enhanced_stage(Fallback, FallbackCode),
+    format(string(Code), "~w~w", [StageCode, FallbackCode]).
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -2128,6 +2207,25 @@ generate_rust_stage_flow(on_error(Handler), InVar, OutVar, Code) :-
     format(string(Code),
 "    // On-Error: route errors to ~w
     let ~w = on_error_stage(&~w, ~w);", [HandlerName, OutVar, InVar, HandlerName]).
+
+% Timeout stage: execute with time limit
+generate_rust_stage_flow(timeout(Stage, Ms), InVar, OutVar, Code) :-
+    !,
+    extract_rust_stage_name(Stage, StageName),
+    OutVar = "timeout_result",
+    format(string(Code),
+"    // Timeout: ~w with ~wms limit
+    let ~w = timeout_stage(&~w, ~w, ~w);", [StageName, Ms, OutVar, InVar, StageName, Ms]).
+
+% Timeout stage with fallback
+generate_rust_stage_flow(timeout(Stage, Ms, Fallback), InVar, OutVar, Code) :-
+    !,
+    extract_rust_stage_name(Stage, StageName),
+    extract_rust_stage_name(Fallback, FallbackName),
+    OutVar = "timeout_result",
+    format(string(Code),
+"    // Timeout: ~w with ~wms limit, fallback to ~w
+    let ~w = timeout_stage_with_fallback(&~w, ~w, ~w, ~w);", [StageName, Ms, FallbackName, OutVar, InVar, StageName, Ms, FallbackName]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

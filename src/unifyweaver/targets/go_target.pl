@@ -8600,6 +8600,88 @@ func onErrorStage(records []Record, handler ErrorHandlerFunc) []Record {
 \treturn result
 }
 
+// timeoutStage executes a stage with a time limit
+func timeoutStage(records []Record, stage StageFunc, timeoutMs int) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tresultChan := make(chan []Record, 1)
+\t\terrChan := make(chan error, 1)
+
+\t\tgo func() {
+\t\t\tdefer func() {
+\t\t\t\tif r := recover(); r != nil {
+\t\t\t\t\terrChan <- fmt.Errorf(\"panic: %v\", r)
+\t\t\t\t}
+\t\t\t}()
+\t\t\tresults, err := stage([]Record{record})
+\t\t\tif err != nil {
+\t\t\t\terrChan <- err
+\t\t\t} else {
+\t\t\t\tresultChan <- results
+\t\t\t}
+\t\t}()
+
+\t\tselect {
+\t\tcase results := <-resultChan:
+\t\t\tresult = append(result, results...)
+\t\tcase <-errChan:
+\t\t\t// Error occurred, treat as timeout
+\t\t\ttimeoutRecord := Record{
+\t\t\t\t\"_timeout\":  true,
+\t\t\t\t\"_record\":   record,
+\t\t\t\t\"_limit_ms\": timeoutMs,
+\t\t\t}
+\t\t\tresult = append(result, timeoutRecord)
+\t\tcase <-time.After(time.Duration(timeoutMs) * time.Millisecond):
+\t\t\t// Timeout occurred
+\t\t\ttimeoutRecord := Record{
+\t\t\t\t\"_timeout\":  true,
+\t\t\t\t\"_record\":   record,
+\t\t\t\t\"_limit_ms\": timeoutMs,
+\t\t\t}
+\t\t\tresult = append(result, timeoutRecord)
+\t\t}
+\t}
+\treturn result
+}
+
+// timeoutStageWithFallback executes a stage with time limit, using fallback on timeout
+func timeoutStageWithFallback(records []Record, stage StageFunc, timeoutMs int, fallback func([]Record) []Record) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tresultChan := make(chan []Record, 1)
+\t\terrChan := make(chan error, 1)
+
+\t\tgo func() {
+\t\t\tdefer func() {
+\t\t\t\tif r := recover(); r != nil {
+\t\t\t\t\terrChan <- fmt.Errorf(\"panic: %v\", r)
+\t\t\t\t}
+\t\t\t}()
+\t\t\tresults, err := stage([]Record{record})
+\t\t\tif err != nil {
+\t\t\t\terrChan <- err
+\t\t\t} else {
+\t\t\t\tresultChan <- results
+\t\t\t}
+\t\t}()
+
+\t\tselect {
+\t\tcase results := <-resultChan:
+\t\t\tresult = append(result, results...)
+\t\tcase <-errChan:
+\t\t\t// Error occurred, use fallback
+\t\t\tfallbackResults := fallback([]Record{record})
+\t\t\tresult = append(result, fallbackResults...)
+\t\tcase <-time.After(time.Duration(timeoutMs) * time.Millisecond):
+\t\t\t// Timeout occurred, use fallback
+\t\t\tfallbackResults := fallback([]Record{record})
+\t\t\tresult = append(result, fallbackResults...)
+\t\t}
+\t}
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -8655,6 +8737,14 @@ generate_go_single_enhanced_stage(retry(Stage, _, _), Code) :-
 generate_go_single_enhanced_stage(on_error(Handler), Code) :-
     !,
     generate_go_single_enhanced_stage(Handler, Code).
+generate_go_single_enhanced_stage(timeout(Stage, _), Code) :-
+    !,
+    generate_go_single_enhanced_stage(Stage, Code).
+generate_go_single_enhanced_stage(timeout(Stage, _, Fallback), Code) :-
+    !,
+    generate_go_single_enhanced_stage(Stage, StageCode),
+    generate_go_single_enhanced_stage(Fallback, FallbackCode),
+    format(string(Code), "~w~w", [StageCode, FallbackCode]).
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -8929,6 +9019,25 @@ generate_go_stage_flow(on_error(Handler), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// On-Error: route errors to ~w
 \t~w := onErrorStage(~w, ~w)", [HandlerName, OutVar, InVar, HandlerName]).
+
+% Timeout stage: execute with time limit
+generate_go_stage_flow(timeout(Stage, Ms), InVar, OutVar, Code) :-
+    !,
+    extract_go_stage_name(Stage, StageName),
+    OutVar = "timeoutResult",
+    format(string(Code),
+"\t// Timeout: ~w with ~wms limit
+\t~w := timeoutStage(~w, ~w, ~w)", [StageName, Ms, OutVar, InVar, StageName, Ms]).
+
+% Timeout stage with fallback
+generate_go_stage_flow(timeout(Stage, Ms, Fallback), InVar, OutVar, Code) :-
+    !,
+    extract_go_stage_name(Stage, StageName),
+    extract_go_stage_name(Fallback, FallbackName),
+    OutVar = "timeoutResult",
+    format(string(Code),
+"\t// Timeout: ~w with ~wms limit, fallback to ~w
+\t~w := timeoutStageWithFallback(~w, ~w, ~w, ~w)", [StageName, Ms, FallbackName, OutVar, InVar, StageName, Ms, FallbackName]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

@@ -207,6 +207,16 @@ is_valid_stage(retry(Stage, N, Options)) :-
     maplist(is_valid_retry_option, Options).
 is_valid_stage(on_error(Handler)) :-
     is_valid_stage(Handler).
+% Timeout stages
+is_valid_stage(timeout(Stage, Ms)) :-
+    is_valid_stage(Stage),
+    integer(Ms),
+    Ms > 0.
+is_valid_stage(timeout(Stage, Ms, Fallback)) :-
+    is_valid_stage(Stage),
+    integer(Ms),
+    Ms > 0,
+    is_valid_stage(Fallback).
 
 %% is_valid_retry_option(+Option) is semidet.
 %  Validates retry options.
@@ -267,6 +277,8 @@ stage_type(try_catch(_, _), try_catch) :- !.
 stage_type(retry(_, _), retry) :- !.
 stage_type(retry(_, _, _), retry) :- !.
 stage_type(on_error(_), on_error) :- !.
+stage_type(timeout(_, _), timeout) :- !.
+stage_type(timeout(_, _, _), timeout) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -349,6 +361,28 @@ validate_stage_specific(retry(Stage, N, _Options), Errors) :-
 validate_stage_specific(on_error(Handler), Errors) :-
     !,
     validate_stage(Handler, Errors).
+validate_stage_specific(timeout(Stage, Ms), Errors) :-
+    !,
+    validate_stage(Stage, StageErrors),
+    ( integer(Ms), Ms > 0 ->
+        MsErrors = []
+    ;
+        format(atom(Msg), 'timeout must be a positive integer (ms), got: ~w', [Ms]),
+        MsErrors = [error(invalid_timeout, Msg)]
+    ),
+    append(StageErrors, MsErrors, Errors).
+validate_stage_specific(timeout(Stage, Ms, Fallback), Errors) :-
+    !,
+    validate_stage(Stage, StageErrors),
+    validate_stage(Fallback, FallbackErrors),
+    ( integer(Ms), Ms > 0 ->
+        MsErrors = []
+    ;
+        format(atom(Msg), 'timeout must be a positive integer (ms), got: ~w', [Ms]),
+        MsErrors = [error(invalid_timeout, Msg)]
+    ),
+    append(StageErrors, FallbackErrors, TmpErrors),
+    append(TmpErrors, MsErrors, Errors).
 validate_stage_specific(_, []).
 
 %% validate_batch(+BatchStage, -Errors) is det.
