@@ -231,6 +231,72 @@ See `legacy/conemu_logiforge.bat` for the original LogiForge ConEmu integration 
 
 ---
 
+## LDA Training Scripts
+
+Scripts for training and managing the LDA semantic projection system used by agents to find relevant playbook examples.
+
+### `train_lda_projection.py`
+**Train a W matrix from Q-A pairs**
+
+Computes the projection matrix that maps query embeddings to answer space for improved semantic search.
+
+```bash
+python3 scripts/train_lda_projection.py \
+    --input playbooks/lda-training-data/raw/qa_pairs_v1.json \
+    --model all-MiniLM-L6-v2 \
+    --output playbooks/lda-training-data/trained/all-MiniLM-L6-v2/W_matrix.npy
+```
+
+### `validate_lda_projection.py`
+**Validate projection with novel queries**
+
+Tests the trained W matrix with queries not in the training data, comparing projected vs direct cosine similarity.
+
+```bash
+python3 scripts/validate_lda_projection.py
+```
+
+### `migrate_to_lda_db.py`
+**Database migration and batch training**
+
+Manages Q-A training data in a SQLite database with batch tracking.
+
+**Single file import:**
+```bash
+python3 scripts/migrate_to_lda_db.py \
+    --input playbooks/lda-training-data/raw/qa_pairs_v1.json \
+    --db playbooks/lda-training-data/lda.db
+```
+
+**Batch operations:**
+```bash
+# Scan for new/modified JSON files
+python3 scripts/migrate_to_lda_db.py --scan --input playbooks/lda-training-data/raw/
+
+# Process all pending batches
+python3 scripts/migrate_to_lda_db.py --process-pending
+
+# Retry failed batches
+python3 scripts/migrate_to_lda_db.py --retry-failed
+
+# List batch status
+python3 scripts/migrate_to_lda_db.py --list-batches
+```
+
+**Features:**
+- SHA256 file hash detection (skips unchanged files)
+- Status tracking: pending → importing → embedding → training → completed
+- Failed batch retry with error logging
+- Full status history with timestamps
+
+**Requirements:**
+- `sentence-transformers` package: `pip install sentence-transformers`
+- NumPy
+
+See `docs/proposals/LDA_DATABASE_SCHEMA.md` for database schema details.
+
+---
+
 ## Legacy Scripts (LogiForge)
 
 The following scripts are from the LogiForge project and kept in `legacy/` for reference:

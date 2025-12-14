@@ -283,10 +283,68 @@ def test_search(db: LDAProjectionDB, projection_id: int, embedder):
             print(f"    {i+1}. [{r['score']:.3f}] {r['record_id']}: {r['text'][:60]}...")
 
 
+def process_batch(db: LDAProjectionDB, batch_id: int, source_file: str, model_name: str,
+                  lambda_reg: float, ridge: float, skip_train: bool, skip_test: bool):
+    """Process a single batch file through the full pipeline."""
+    embedder = None
+    projection_id = None
+
+    try:
+        # Load Q-A pairs
+        db.update_batch_status(batch_id, 'importing', f'Loading {source_file}')
+        qa_data = load_qa_pairs(source_file)
+        num_clusters = len(qa_data['clusters'])
+        print(f"  Found {num_clusters} clusters")
+
+        # Import data
+        clusters_info = import_to_database(db, qa_data, model_name)
+        num_questions = sum(len(qids) for _, _, qids in clusters_info)
+        db.update_batch_status(batch_id, 'importing',
+                               f'Imported {num_clusters} clusters, {num_questions} questions',
+                               num_clusters=num_clusters, num_questions=num_questions)
+
+        # Embed
+        db.update_batch_status(batch_id, 'embedding', 'Starting embedding')
+        result = embed_all(db, model_name, clusters_info)
+        if result is None:
+            db.update_batch_status(batch_id, 'failed', error_message='Embedding failed: sentence-transformers not installed')
+            return None, None
+        model_id, embedder = result
+        db.update_batch_status(batch_id, 'embedding', 'Embedding complete')
+
+        # Train projection
+        if not skip_train:
+            db.update_batch_status(batch_id, 'training', 'Training W matrix')
+            projection_id = train_projection(
+                db, model_id, clusters_info,
+                lambda_reg=lambda_reg,
+                ridge=ridge
+            )
+            if projection_id:
+                db.update_batch_status(batch_id, 'completed',
+                                       f'Training complete, projection_id={projection_id}',
+                                       projection_id=projection_id)
+            else:
+                db.update_batch_status(batch_id, 'failed', error_message='Training failed: no valid clusters')
+                return embedder, None
+        else:
+            db.update_batch_status(batch_id, 'completed', 'Skipped training')
+
+        # Test search
+        if not skip_test and projection_id is not None:
+            test_search(db, projection_id, embedder)
+
+        return embedder, projection_id
+
+    except Exception as e:
+        db.update_batch_status(batch_id, 'failed', error_message=str(e))
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description="Migrate Q-A pairs to LDA database")
     parser.add_argument('--input', default='playbooks/lda-training-data/raw/qa_pairs_v1.json',
-                        help='Path to Q-A pairs JSON file')
+                        help='Path to Q-A pairs JSON file (or directory with --scan)')
     parser.add_argument('--db', default='playbooks/lda-training-data/lda.db',
                         help='Output database path')
     parser.add_argument('--model', default='all-MiniLM-L6-v2',
@@ -299,43 +357,98 @@ def main():
                         help='Skip projection training')
     parser.add_argument('--skip-test', action='store_true',
                         help='Skip search test')
+    parser.add_argument('--scan', action='store_true',
+                        help='Scan directory for new/modified JSON files')
+    parser.add_argument('--process-pending', action='store_true',
+                        help='Process all pending batches')
+    parser.add_argument('--retry-failed', action='store_true',
+                        help='Retry failed batches')
+    parser.add_argument('--list-batches', action='store_true',
+                        help='List all batches and exit')
     args = parser.parse_args()
 
     print("=" * 60)
     print("LDA Database Migration")
     print("=" * 60)
 
-    # Load Q-A pairs
-    print(f"\nLoading Q-A pairs from: {args.input}")
-    qa_data = load_qa_pairs(args.input)
-    print(f"  Found {len(qa_data['clusters'])} clusters")
-
     # Create database
-    print(f"\nCreating database: {args.db}")
+    print(f"\nDatabase: {args.db}")
     db = LDAProjectionDB(args.db)
 
-    # Import data
-    print("\nImporting data...")
-    clusters_info = import_to_database(db, qa_data, args.model)
+    # List batches mode
+    if args.list_batches:
+        batches = db.list_batches()
+        if not batches:
+            print("\nNo batches found.")
+        else:
+            print(f"\n{'ID':<4} {'Status':<12} {'Clusters':<8} {'File':<50}")
+            print("-" * 80)
+            for b in batches:
+                clusters = b['num_clusters'] or '-'
+                fname = Path(b['source_file']).name[:48]
+                print(f"{b['batch_id']:<4} {b['status']:<12} {str(clusters):<8} {fname}")
+        db.close()
+        return 0
 
-    # Embed
-    result = embed_all(db, args.model, clusters_info)
-    if result is None:
-        return 1
-    model_id, embedder = result
+    # Scan mode: find new/modified files
+    if args.scan:
+        print(f"\nScanning directory: {args.input}")
+        results = db.scan_for_new_batches(args.input, args.model)
+        if not results:
+            print("  No new or modified files found.")
+        else:
+            for batch_id, status in results:
+                batch = db.get_batch(batch_id)
+                print(f"  [{status}] {Path(batch['source_file']).name} -> batch_id={batch_id}")
+        db.close()
+        return 0
 
-    # Train projection
-    projection_id = None
-    if not args.skip_train:
-        projection_id = train_projection(
-            db, model_id, clusters_info,
-            lambda_reg=args.lambda_reg,
-            ridge=args.ridge
+    # Get batches to process
+    batches_to_process = []
+
+    if args.process_pending:
+        batches_to_process = db.get_pending_batches()
+        print(f"\nFound {len(batches_to_process)} pending batches")
+
+    elif args.retry_failed:
+        batches_to_process = db.get_failed_batches()
+        print(f"\nFound {len(batches_to_process)} failed batches to retry")
+        # Reset status to pending for retry
+        for b in batches_to_process:
+            db.update_batch_status(b['batch_id'], 'pending', 'Retrying failed batch')
+
+    else:
+        # Single file mode
+        print(f"\nRegistering batch: {args.input}")
+        batch_id, status = db.register_batch(args.input, args.model)
+
+        if status == 'unchanged':
+            batch = db.get_batch(batch_id)
+            if batch['status'] == 'completed':
+                print(f"  File already processed (batch_id={batch_id}, status=completed)")
+                print("  Use --scan or modify the file to reprocess")
+                db.close()
+                return 0
+            else:
+                print(f"  Batch exists but not completed (status={batch['status']})")
+        else:
+            print(f"  Registered as {status} batch: id={batch_id}")
+
+        batches_to_process = [db.get_batch(batch_id)]
+
+    # Process batches
+    for batch in batches_to_process:
+        batch_id = batch['batch_id']
+        source_file = batch['source_file']
+        print(f"\n{'='*60}")
+        print(f"Processing batch {batch_id}: {Path(source_file).name}")
+        print("=" * 60)
+
+        embedder, projection_id = process_batch(
+            db, batch_id, source_file, args.model,
+            args.lambda_reg, args.ridge,
+            args.skip_train, args.skip_test
         )
-
-    # Test search
-    if not args.skip_test and projection_id is not None:
-        test_search(db, projection_id, embedder)
 
     # Print stats
     print("\n" + "=" * 60)
@@ -345,13 +458,13 @@ def main():
     for key, value in stats.items():
         print(f"  {key}: {value}")
 
-    # Print query log
-    print("\nQuery Log:")
-    for log in db.get_query_log(limit=5):
-        print(f"  [{log['log_id']}] \"{log['query_text'][:50]}...\"")
+    # Print recent batches
+    print("\nRecent Batches:")
+    for b in db.list_batches()[:5]:
+        print(f"  [{b['batch_id']}] {b['status']}: {Path(b['source_file']).name}")
 
     db.close()
-    print("\nMigration complete!")
+    print("\nDone!")
     return 0
 
 

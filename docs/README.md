@@ -83,6 +83,27 @@ This applies to:
 - **[playbooks/xml_data_source_playbook.md](../playbooks/xml_data_source_playbook.md)** - XML Data Source Playbook
   - Processing XML data using Python.
 
+### Semantic Search and LDA Projection
+
+- **[proposals/SEMANTIC_PROJECTION_LDA.md](proposals/SEMANTIC_PROJECTION_LDA.md)** - LDA Projection Theory
+  - Mathematical foundation for query-to-answer projection
+  - Weighted centroid computation
+  - Training from Q-A clusters
+
+- **[proposals/LDA_DATABASE_SCHEMA.md](proposals/LDA_DATABASE_SCHEMA.md)** - Database Schema
+  - Asymmetric embeddings (different models for queries vs answers)
+  - Answer relations graph (chunks, summaries, translations)
+  - Training batch tracking with file hash detection
+
+- **[proposals/COMPONENT_REGISTRY.md](proposals/COMPONENT_REGISTRY.md)** - Component Registry
+  - Unified component registration system
+  - Runtime, source, and binding categories
+  - Lazy/eager initialization
+
+- **[TODO_LDA_PROJECTION.md](TODO_LDA_PROJECTION.md)** - LDA Feature Progress
+  - Implementation status and next steps
+  - Quick test commands
+
 ### Testing
 
 - **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Testing infrastructure
