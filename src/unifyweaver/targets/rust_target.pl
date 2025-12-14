@@ -2185,6 +2185,45 @@ where
     }
     result
 }
+
+/// Rate limit: Limit throughput to count records per interval.
+fn rate_limit_stage(records: &[Record], count: usize, interval_ms: u64) -> Vec<Record> {
+    use std::time::{Duration, Instant};
+    use std::thread;
+
+    let mut result = Vec::new();
+    let interval = Duration::from_millis(interval_ms) / count as u32;
+    let mut last_time: Option<Instant> = None;
+
+    for record in records {
+        if let Some(last) = last_time {
+            let elapsed = last.elapsed();
+            if elapsed < interval {
+                thread::sleep(interval - elapsed);
+            }
+        }
+        last_time = Some(Instant::now());
+        result.push(record.clone());
+    }
+    result
+}
+
+/// Throttle: Add fixed delay between records.
+fn throttle_stage(records: &[Record], delay_ms: u64) -> Vec<Record> {
+    use std::time::Duration;
+    use std::thread;
+
+    let mut result = Vec::new();
+    let delay = Duration::from_millis(delay_ms);
+
+    for (i, record) in records.iter().enumerate() {
+        if i > 0 {
+            thread::sleep(delay);
+        }
+        result.push(record.clone());
+    }
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2383,6 +2422,8 @@ generate_rust_single_enhanced_stage(timeout(Stage, _, Fallback), Code) :-
     generate_rust_single_enhanced_stage(Stage, StageCode),
     generate_rust_single_enhanced_stage(Fallback, FallbackCode),
     format(string(Code), "~w~w", [StageCode, FallbackCode]).
+generate_rust_single_enhanced_stage(rate_limit(_, _), "") :- !.
+generate_rust_single_enhanced_stage(throttle(_), "") :- !.
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -2666,6 +2707,23 @@ generate_rust_stage_flow(timeout(Stage, Ms, Fallback), InVar, OutVar, Code) :-
 "    // Timeout: ~w with ~wms limit, fallback to ~w
     let ~w = timeout_stage_with_fallback(&~w, ~w, ~w, ~w);", [StageName, Ms, FallbackName, OutVar, InVar, StageName, Ms, FallbackName]).
 
+% Rate limit stage: limit throughput to N records per time unit
+generate_rust_stage_flow(rate_limit(N, Per), InVar, OutVar, Code) :-
+    !,
+    rust_time_unit_to_ms(Per, IntervalMs),
+    OutVar = "rate_limited",
+    format(string(Code),
+"    // Rate limit: ~w records per ~w
+    let ~w = rate_limit_stage(&~w, ~w, ~w);", [N, Per, OutVar, InVar, N, IntervalMs]).
+
+% Throttle stage: add fixed delay between records
+generate_rust_stage_flow(throttle(Ms), InVar, OutVar, Code) :-
+    !,
+    OutVar = "throttled",
+    format(string(Code),
+"    // Throttle: ~wms delay between records
+    let ~w = throttle_stage(&~w, ~w);", [Ms, OutVar, InVar, Ms]).
+
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -2699,6 +2757,15 @@ extract_rust_stage_name(_, unknown_stage).
 extract_rust_retry_options(Options, DelayMs, Backoff) :-
     ( member(delay(D), Options) -> DelayMs = D ; DelayMs = 0 ),
     ( member(backoff(B), Options) -> Backoff = B ; Backoff = none ).
+
+%% rust_time_unit_to_ms(+Unit, -Ms)
+%  Convert time unit to milliseconds for Rust rate limiting.
+rust_time_unit_to_ms(second, 1000) :- !.
+rust_time_unit_to_ms(minute, 60000) :- !.
+rust_time_unit_to_ms(hour, 3600000) :- !.
+rust_time_unit_to_ms(ms(X), X) :- !.
+rust_time_unit_to_ms(X, X) :- integer(X), !.
+rust_time_unit_to_ms(_, 1000).
 
 %% format_rust_stage_list(+Names, -ListStr)
 %  Format stage names as Rust function references.

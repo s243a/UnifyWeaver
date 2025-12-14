@@ -5090,6 +5090,48 @@ def timeout_stage_with_fallback(stream, stage_fn, timeout_ms, fallback_fn):
                 for result in fallback_fn([record]):
                     yield result
 
+def rate_limit_stage(stream, count, per_unit):
+    '''
+    Rate Limit: Limit throughput to count records per time unit.
+    per_unit: 'second', 'minute', 'hour', or milliseconds as int
+    '''
+    import time
+
+    # Calculate interval between records in seconds
+    if per_unit == 'second':
+        interval = 1.0 / count
+    elif per_unit == 'minute':
+        interval = 60.0 / count
+    elif per_unit == 'hour':
+        interval = 3600.0 / count
+    else:
+        # Assume milliseconds
+        interval = (per_unit / 1000.0) / count
+
+    last_time = None
+    for record in stream:
+        current_time = time.time()
+        if last_time is not None:
+            elapsed = current_time - last_time
+            if elapsed < interval:
+                time.sleep(interval - elapsed)
+        last_time = time.time()
+        yield record
+
+def throttle_stage(stream, delay_ms):
+    '''
+    Throttle: Add fixed delay between records.
+    '''
+    import time
+
+    delay_sec = delay_ms / 1000.0
+    first = True
+    for record in stream:
+        if not first:
+            time.sleep(delay_sec)
+        first = False
+        yield record
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5156,6 +5198,8 @@ generate_single_enhanced_stage(timeout(Stage, _, Fallback), Code) :-
     generate_single_enhanced_stage(Stage, StageCode),
     generate_single_enhanced_stage(Fallback, FallbackCode),
     format(string(Code), "~w~w", [StageCode, FallbackCode]).
+generate_single_enhanced_stage(rate_limit(_, _), "") :- !.
+generate_single_enhanced_stage(throttle(_), "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5430,6 +5474,23 @@ generate_stage_flow(timeout(Stage, Ms, Fallback), InVar, OutVar, Code) :-
 "    # Timeout: ~w with ~wms limit, fallback to ~w
     ~w = timeout_stage_with_fallback(~w, ~w, ~w, ~w)", [StageName, Ms, FallbackName, OutVar, InVar, StageName, Ms, FallbackName]).
 
+% Rate limit stage: limit throughput
+generate_stage_flow(rate_limit(N, Per), InVar, OutVar, Code) :-
+    !,
+    OutVar = "rate_limited_result",
+    format_time_unit(Per, PerStr),
+    format(string(Code),
+"    # Rate Limit: ~w per ~w
+    ~w = rate_limit_stage(~w, ~w, ~w)", [N, Per, OutVar, InVar, N, PerStr]).
+
+% Throttle stage: fixed delay between records
+generate_stage_flow(throttle(Ms), InVar, OutVar, Code) :-
+    !,
+    OutVar = "throttled_result",
+    format(string(Code),
+"    # Throttle: ~wms delay between records
+    ~w = throttle_stage(~w, ~w)", [Ms, OutVar, InVar, Ms]).
+
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     atom(Pred),
@@ -5539,6 +5600,14 @@ extract_stage_name(_, unknown_stage).
 extract_retry_options(Options, DelayMs, Backoff) :-
     ( member(delay(D), Options) -> DelayMs = D ; DelayMs = 0 ),
     ( member(backoff(B), Options) -> Backoff = B ; Backoff = none ).
+
+%% format_time_unit(+Unit, -Str)
+%  Format time unit for Python code generation.
+format_time_unit(second, "'second'") :- !.
+format_time_unit(minute, "'minute'") :- !.
+format_time_unit(hour, "'hour'") :- !.
+format_time_unit(ms(X), Str) :- !, format(atom(Str), "~w", [X]).
+format_time_unit(X, Str) :- format(atom(Str), "'~w'", [X]).
 
 % ============================================================================
 % Pipeline Chaining Tests (Phase 4)

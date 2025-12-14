@@ -217,6 +217,21 @@ is_valid_stage(timeout(Stage, Ms, Fallback)) :-
     integer(Ms),
     Ms > 0,
     is_valid_stage(Fallback).
+% Rate limiting stages
+is_valid_stage(rate_limit(N, Per)) :-
+    integer(N),
+    N > 0,
+    is_valid_time_unit(Per).
+is_valid_stage(throttle(Ms)) :-
+    integer(Ms),
+    Ms > 0.
+
+%% is_valid_time_unit(+Unit) is semidet.
+%  Validates time unit for rate limiting.
+is_valid_time_unit(second).
+is_valid_time_unit(minute).
+is_valid_time_unit(hour).
+is_valid_time_unit(ms(X)) :- integer(X), X > 0.
 
 %% is_valid_retry_option(+Option) is semidet.
 %  Validates retry options.
@@ -279,6 +294,8 @@ stage_type(retry(_, _, _), retry) :- !.
 stage_type(on_error(_), on_error) :- !.
 stage_type(timeout(_, _), timeout) :- !.
 stage_type(timeout(_, _, _), timeout) :- !.
+stage_type(rate_limit(_, _), rate_limit) :- !.
+stage_type(throttle(_), throttle) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -383,6 +400,29 @@ validate_stage_specific(timeout(Stage, Ms, Fallback), Errors) :-
     ),
     append(StageErrors, FallbackErrors, TmpErrors),
     append(TmpErrors, MsErrors, Errors).
+validate_stage_specific(rate_limit(N, Per), Errors) :-
+    !,
+    ( integer(N), N > 0 ->
+        NErrors = []
+    ;
+        format(atom(Msg), 'rate_limit count must be a positive integer, got: ~w', [N]),
+        NErrors = [error(invalid_rate_limit, Msg)]
+    ),
+    ( is_valid_time_unit(Per) ->
+        PerErrors = []
+    ;
+        format(atom(Msg2), 'rate_limit time unit must be second, minute, hour, or ms(X), got: ~w', [Per]),
+        PerErrors = [error(invalid_time_unit, Msg2)]
+    ),
+    append(NErrors, PerErrors, Errors).
+validate_stage_specific(throttle(Ms), Errors) :-
+    !,
+    ( integer(Ms), Ms > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'throttle delay must be a positive integer (ms), got: ~w', [Ms]),
+        Errors = [error(invalid_throttle, Msg)]
+    ).
 validate_stage_specific(_, []).
 
 %% validate_batch(+BatchStage, -Errors) is det.

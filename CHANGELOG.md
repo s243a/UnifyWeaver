@@ -96,6 +96,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_timeout_stage.sh` — Integration tests (12 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Rate Limiting Stages** - Throughput control for pipeline processing
+  - `rate_limit(N, Per)` — Limit throughput to N records per time unit
+    - Time units: `second`, `minute`, `hour`, `ms(X)`
+    - Uses interval-based timing for precise rate control
+  - `throttle(Ms)` — Add fixed delay of Ms milliseconds between records
+  - Combines with other stages: `try_catch(rate_limit(...), handler)`, `timeout(rate_limit(...), ms)`
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_rate_limiting_stages.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
