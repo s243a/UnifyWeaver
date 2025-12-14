@@ -45,6 +45,7 @@ Proposals serve several purposes:
 | [Parallel Architecture](parallel_architecture.md) | Draft | v0.0.4+ | High (Phase 4) |
 | [Component Registry](COMPONENT_REGISTRY.md) | Implemented | v0.0.3 | Medium |
 | [Semantic Projection LDA](SEMANTIC_PROJECTION_LDA.md) | Implemented | v0.0.3 | Medium |
+| [Multi-Head Projection Theory](MULTI_HEAD_PROJECTION_THEORY.md) | Implemented | v0.0.3 | Medium |
 | [LDA Database Schema](LDA_DATABASE_SCHEMA.md) | Implemented | v0.0.3 | Medium |
 | [LDA Training Approach](LDA_TRAINING_APPROACH.md) | Implemented | v0.0.3 | Medium |
 

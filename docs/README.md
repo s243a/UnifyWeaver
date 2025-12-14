@@ -90,6 +90,11 @@ This applies to:
   - Weighted centroid computation
   - Training from Q-A clusters
 
+- **[proposals/MULTI_HEAD_PROJECTION_THEORY.md](proposals/MULTI_HEAD_PROJECTION_THEORY.md)** - Multi-Head Projection
+  - Per-cluster attention heads with softmax routing
+  - Temperature parameter and its effect on routing sharpness
+  - Comparison to transformer attention mechanisms
+
 - **[proposals/LDA_DATABASE_SCHEMA.md](proposals/LDA_DATABASE_SCHEMA.md)** - Database Schema
   - Asymmetric embeddings (different models for queries vs answers)
   - Answer relations graph (chunks, summaries, translations)
