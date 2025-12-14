@@ -51,7 +51,7 @@
   - SCC members without explicit mode declarations can inherit the head predicate’s input positions (when arities permit), enabling `$need` closure for common patterns like even/odd; failures while building `$need` are treated as a silent fallback (no noisy `user_error` output).
   - Otherwise, SCC evaluation falls back to full mutual fixpoint + final parameter filtering.
 - Current aggregate constraints:
-  - Aggregate goals may be a single predicate call or a conjunction of relations/constraints; disjunction (`;/2`) and nested aggregates inside aggregate goals are not supported yet.
+  - Aggregate goals may be a single predicate call, a conjunction of relations/constraints, or a top-level disjunction (`GoalA ; GoalB`) compiled as a union subplan; disjunction inside a conjunction and `->`/`*->` are still rejected.
   - Aggregates over SCC predicates are rejected (stratification requirement).
   - Need-closure prefixes still reject aggregates (allowed after recursion in the clause body).
-- Next: broaden coverage (disjunction/nested aggregates, caching/memoization for correlated subplans, and optional memoized/procedural fallback once semantics are locked down).
+- Next: broaden coverage (nested aggregates, caching/memoization for correlated subplans, and optional memoized/procedural fallback once semantics are locked down).
