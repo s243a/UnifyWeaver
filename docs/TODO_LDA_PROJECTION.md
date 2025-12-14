@@ -59,10 +59,10 @@ See: `docs/proposals/SEMANTIC_PROJECTION_LDA.md` and `docs/proposals/COMPONENT_R
 - [x] SQLite + numpy files for vector storage
 - [x] Search API with projection and logging
 - [x] Training batch tracking with file hash detection
-- [ ] Prolog interface for `find_examples/3`:
+- [x] Prolog interface for `find_examples/3` (`src/unifyweaver/runtime/semantic_search.pl`):
   ```prolog
   find_examples(TaskDescription, TopK, Examples) :-
-      invoke_component(runtime, lda_search, search(TaskDescription, TopK), results(Examples)).
+      find_examples(TaskDescription, TopK, [], Examples).
   ```
 
 ### Training Batch Tracking (Implemented)
@@ -90,13 +90,12 @@ Status history is tracked with timestamps for each transition:
 ## Integration
 
 - [ ] Update PtSearcher to optionally use LDA projection
-- [ ] Add projected search mode to Go embedder
-- [ ] Create Prolog predicates for semantic search with projection:
+- [x] Add projected search mode to Go embedder (`src/unifyweaver/targets/go_runtime/projection/`)
+- [x] Create Prolog predicates for semantic search with projection (`src/unifyweaver/runtime/semantic_search.pl`):
   ```prolog
   semantic_search(Query, TopK, Results) :-
-      invoke_component(runtime, embedding_provider, embed(Query), embedding(QueryEmb)),
-      invoke_component(runtime, semantic_projection, query(QueryEmb), projected(ProjEmb)),
-      vector_search(ProjEmb, TopK, Results).
+      semantic_search(Query, TopK, [], Results).
+  % Supports options: use_projection(Bool), component(Name), min_score(Score)
   ```
 
 ## Multi-Head Projection (Implemented)
@@ -128,7 +127,7 @@ python3 scripts/validate_multi_head.py \
 
 ## Future Enhancements
 
-- [ ] Go backend for LDA projection (avoid Python subprocess overhead)
+- [x] Go backend for LDA projection (`src/unifyweaver/targets/go_runtime/projection/multi_head.go`)
 - [ ] Rust backend for LDA projection
 - [ ] MCP tool for Claude integration (useful for server-based deployments)
 - [ ] Hot-reload support for W matrix updates
@@ -147,6 +146,10 @@ python3 tests/core/test_lda_database.py
 # Run Prolog tests
 swipl tests/core/test_component_registry.pl
 swipl tests/core/test_lda_projection.pl
+swipl tests/core/test_semantic_search.pl
+
+# Run Go tests
+cd src/unifyweaver/targets/go_runtime && go test ./projection/... -v
 
 # Train W matrix from Q-A pairs
 python3 scripts/train_lda_projection.py \

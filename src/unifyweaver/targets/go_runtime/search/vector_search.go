@@ -3,25 +3,67 @@ package search
 import (
 	"math"
 	"sort"
+
+	"unifyweaver/targets/go_runtime/projection"
 )
 
-// Interface for storage to avoid circular dependency if needed, 
+// Interface for storage to avoid circular dependency if needed,
 // but here we just use a callback interface
 type VectorIterator interface {
 	IterateEmbeddings(func(id string, vector []float32) error) error
 }
 
 type Result struct {
-	ID    string
-	Score float32
+	ID             string
+	Score          float32
+	RoutingWeights map[int]float32 // Multi-head routing weights (optional)
 }
 
+// SearchOptions configures search behavior.
+type SearchOptions struct {
+	// Projection for multi-head LDA projection (optional)
+	Projection *projection.MultiHeadProjection
+
+	// UseProjection enables projection if Projection is set
+	UseProjection bool
+
+	// IncludeRoutingWeights adds routing weights to results
+	IncludeRoutingWeights bool
+}
+
+// Search performs basic cosine similarity search without projection.
 func Search(store VectorIterator, queryVec []float32, topK int) ([]Result, error) {
+	return SearchWithOptions(store, queryVec, topK, SearchOptions{})
+}
+
+// SearchWithOptions performs search with optional multi-head LDA projection.
+// When projection is enabled, the query is projected through the multi-head
+// model before computing similarities.
+func SearchWithOptions(store VectorIterator, queryVec []float32, topK int, opts SearchOptions) ([]Result, error) {
 	var results []Result
+	var routingWeights map[int]float32
+
+	// Apply projection if configured
+	searchVec := queryVec
+	if opts.UseProjection && opts.Projection != nil {
+		var err error
+		if opts.IncludeRoutingWeights {
+			searchVec, routingWeights, err = opts.Projection.ProjectWithWeights(queryVec)
+		} else {
+			searchVec, err = opts.Projection.Project(queryVec)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	err := store.IterateEmbeddings(func(id string, vec []float32) error {
-		score := CosineSimilarity(queryVec, vec)
-		results = append(results, Result{ID: id, Score: score})
+		score := CosineSimilarity(searchVec, vec)
+		result := Result{ID: id, Score: score}
+		if opts.IncludeRoutingWeights && routingWeights != nil {
+			result.RoutingWeights = routingWeights
+		}
+		results = append(results, result)
 		return nil
 	})
 

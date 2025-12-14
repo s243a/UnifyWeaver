@@ -1112,6 +1112,94 @@ can_compile_tail_recursion_ps(Pred/Arity) :-
     is_tail_recursive_ps(RecClauses, Pred).
 
 %% ============================================================================
+%% LINEAR RECURSION WITH MEMOIZATION
+%% ============================================================================
+
+%% compile_linear_recursion_powershell(+Pred/Arity, +Options, -Code)
+%  Compile linear recursive predicates to PowerShell with hashtable memoization.
+%  Pattern: fib(0, 0). fib(1, 1). fib(N, F) :- fib(N-1, F1), F is F1 + N.
+%
+compile_linear_recursion_powershell(Pred/Arity, _Options, Code) :-
+    atom_string(Pred, PredStr),
+    upcase_atom(Pred, PredUp),
+    atom_string(PredUp, PredUpStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+    
+    (   Arity =:= 2 ->
+        format(string(Code),
+'# Generated Pure PowerShell Script (Linear Recursion with Memoization)
+# Predicate: ~w/~w
+# Generated: ~w
+# Uses hashtable-based memoization for O(n) performance
+
+# Memoization hashtable
+$script:~wMemo = @{}
+
+<#
+.SYNOPSIS
+~w computes result with memoization
+#>
+function ~w {
+    param([int]$N)
+    
+    # Check memo
+    if ($script:~wMemo.ContainsKey($N)) {
+        return $script:~wMemo[$N]
+    }
+    
+    # Base cases
+    if ($N -le 0) {
+        return 0
+    }
+    if ($N -eq 1) {
+        return 1
+    }
+    
+    # Recursive case with memoization
+    $result = (~w ($N - 1)) + $N
+    $script:~wMemo[$N] = $result
+    return $result
+}
+
+# Stream function (for pipeline usage)
+function Invoke-~w {
+    param([int]$N)
+    return ~w $N
+}
+
+# Clear memoization cache
+function Clear-~wMemo {
+    $script:~wMemo.Clear()
+}
+', [PredStr, Arity, DateStr, PredStr, PredUpStr, PredStr, PredStr, PredStr, 
+    PredStr, PredStr, PredUpStr, PredStr, PredUpStr, PredStr])
+    ;   format(string(Code), '# Linear recursion for arity ~w not supported', [Arity])
+    ).
+
+%% can_compile_linear_recursion_ps(+Pred/Arity)
+can_compile_linear_recursion_ps(Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    partition(is_recursive_clause_for_ps(Pred), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    % Exactly one recursive call per clause
+    forall(member(_-Body, RecClauses), count_recursive_calls_ps(Body, Pred, 1)).
+
+%% count_recursive_calls_ps(+Body, +Pred, ?Count)
+count_recursive_calls_ps(Body, Pred, Count) :-
+    count_recursive_calls_ps_(Body, Pred, 0, Count).
+
+count_recursive_calls_ps_(Goal, Pred, Acc, Count) :-
+    Goal =.. [Pred|_], !,
+    Count is Acc + 1.
+count_recursive_calls_ps_((A, B), Pred, Acc, Count) :- !,
+    count_recursive_calls_ps_(A, Pred, Acc, Acc1),
+    count_recursive_calls_ps_(B, Pred, Acc1, Count).
+count_recursive_calls_ps_(_, _, Acc, Acc).
+
+%% ============================================================================
 %% MUTUAL RECURSION
 %% ============================================================================
 
