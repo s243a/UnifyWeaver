@@ -85,13 +85,11 @@ term_signature(Term0, Name/Arity) :-
     length(Args, Arity).
 
 term_to_dependency(aggregate_all(_, Goal, _), Dep) :- !,
-    term_signature(Goal, Dep).
+    aggregate_goal_dependency(Goal, Dep).
 term_to_dependency(aggregate_all(_, Goal, _, _), Dep) :- !,
-    nonvar(Goal),
-    term_signature(Goal, Dep).
+    aggregate_goal_dependency(Goal, Dep).
 term_to_dependency(aggregate(_, Goal, _, _), Dep) :- !,
-    nonvar(Goal),
-    term_signature(Goal, Dep).
+    aggregate_goal_dependency(Goal, Dep).
 term_to_dependency(Term, Dep) :-
     (   aggregate_goal(Term)
     ->  decompose_aggregate_goal(Term, _Type, _Op, Pred, Args, _GroupVar, _ValueVar, _ResultVar),
@@ -104,6 +102,14 @@ term_to_dependency(Term, Dep) :-
     ->  term_signature(Inner, Dep)
     ;   term_signature(Term, Dep)
     ).
+
+aggregate_goal_dependency(Goal0, Dep) :-
+    strip_module(Goal0, _, Goal),
+    nonvar(Goal),
+    body_to_list(Goal, Terms),
+    member(Term, Terms),
+    \+ constraint_goal(Term),
+    term_to_dependency(Term, Dep).
 
 gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses) :-
     findall(Head-Body,
@@ -1155,7 +1161,51 @@ normalize_comparison_operand(Term, InputNode, VarMapIn, WidthIn,
         WidthOut = WidthIn
     ).
 
-build_aggregate_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMapIn, WidthIn, RelationsIn,
+build_aggregate_node(GroupSpecs, HeadSpec, Term0, InputNode, VarMapIn, WidthIn, RelationsIn,
+        NodeOut, VarMapOut, WidthOut, RelationsOut) :-
+    strip_module(Term0, _, Term),
+    parse_query_aggregate_term(Term, Type, Op, Goal, GroupTerm, ValueVar, ResVar),
+    member(Op, [count, sum, min, max, set, bag]),
+    (   Op == count
+    ->  true
+    ;   var(ValueVar)
+    ->  true
+    ;   format(user_error, 'C# query target: aggregate value selector must be a variable (~q).~n', [ValueVar]),
+        fail
+    ),
+    (   plain_relation_goal(Goal, Pred, Args)
+    ->  build_simple_aggregate_node(GroupSpecs, HeadSpec, Type, Op, Pred, Args, GroupTerm, ValueVar, ResVar,
+            InputNode, VarMapIn, WidthIn, RelationsIn,
+            NodeOut, VarMapOut, WidthOut, RelationsOut)
+    ;   build_aggregate_subplan_node(GroupSpecs, HeadSpec, Type, Op, Goal, GroupTerm, ValueVar, ResVar,
+            InputNode, VarMapIn, WidthIn, RelationsIn,
+            NodeOut, VarMapOut, WidthOut, RelationsOut)
+    ).
+
+parse_query_aggregate_term(aggregate_all(OpTerm, Goal, Result), all, Op, Goal, _GroupTerm, ValueVar, Result) :-
+    nonvar(Goal),
+    parse_agg_op(OpTerm, Op, ValueVar, _).
+parse_query_aggregate_term(aggregate_all(OpTerm, Goal, GroupTerm, Result), group, Op, Goal, GroupTerm, ValueVar, Result) :-
+    nonvar(Goal),
+    parse_agg_op(OpTerm, Op, ValueVar, _).
+parse_query_aggregate_term(aggregate(OpTerm, Goal, GroupTerm, Result), group, Op, Goal, GroupTerm, ValueVar, Result) :-
+    nonvar(Goal),
+    parse_agg_op(OpTerm, Op, ValueVar, _).
+
+plain_relation_goal(Goal0, Pred, Args) :-
+    strip_module(Goal0, _, Goal),
+    nonvar(Goal),
+    \+ query_constraint_goal(Goal),
+    \+ aggregate_goal(Goal),
+    \+ (Goal = (_,_)),
+    \+ (Goal = (_;_)),
+    \+ (Goal = (_->_)),
+    \+ (Goal = (_*->_)),
+    Goal =.. [Pred|Args],
+    atom(Pred).
+
+build_simple_aggregate_node(GroupSpecs, _HeadSpec, Type, Op, Pred, Args, GroupTerm, ValueVar, ResVar,
+        InputNode, VarMapIn, WidthIn, RelationsIn,
         aggregate{
             type:aggregate,
             input:InputNode,
@@ -1169,9 +1219,6 @@ build_aggregate_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMapIn, WidthIn,
         VarMapOut,
         WidthOut,
         RelationsOut) :-
-    strip_module(Term0, _, Term),
-    decompose_aggregate_goal(Term, Type, Op, Pred, Args, GroupTerm, ValueVar, ResVar),
-    member(Op, [count, sum, min, max, set, bag]),
     length(Args, AggArity),
     signature_to_spec(Pred/AggArity, AggSpec),
     (   memberchk(AggSpec, GroupSpecs)
@@ -1189,6 +1236,151 @@ build_aggregate_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMapIn, WidthIn,
     build_aggregate_outputs(Type, GroupTerm, Args, VarMapIn, WidthIn, ResVar,
         GroupIndices, VarMapOut, WidthOut),
     RelationsOut = RelationsMid.
+
+build_aggregate_subplan_node(GroupSpecs, HeadSpec, Type, Op, Goal0, GroupTerm, ValueVar, ResVar,
+        InputNode, VarMapIn, WidthIn, RelationsIn,
+        aggregate_subplan{
+            type:aggregate_subplan,
+            input:InputNode,
+            subplan:SubplanNode,
+            op:Op,
+            params:ParamOperands,
+            group_indices:GroupIndices,
+            value_index:ValueIndex,
+            width:WidthOut
+        },
+        VarMapOut,
+        WidthOut,
+        RelationsOut) :-
+    strip_module(Goal0, _, Goal),
+    aggregate_subplan_group_vars(Type, GroupTerm, GroupVars, GroupCount),
+    aggregate_subplan_params(Goal, VarMapIn, CorrVars, ParamOperands),
+    aggregate_subplan_seed(CorrVars, SeedNode, SeedVarMap, CorrCount),
+    body_to_list(Goal, Terms),
+    Terms \= [],
+    aggregate_subplan_roles(Terms, Roles),
+    ensure_no_aggregate_subplan_recursion(GroupSpecs, Terms),
+    fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, CorrCount, RelationsIn,
+        InnerNode, InnerVarMap, _InnerWidth, RelationsOut),
+    aggregate_subplan_projection(Type, Op, GroupVars, ValueVar, InnerVarMap, InnerNode, SubplanNode),
+    aggregate_subplan_indices(Type, Op, GroupCount, GroupIndices, ValueIndex),
+    bind_aggregate_output_vars(Type, GroupVars, VarMapIn, WidthIn, ResVar, VarMapOut, WidthOut).
+
+aggregate_subplan_group_vars(all, _GroupTerm, [], 0).
+aggregate_subplan_group_vars(group, GroupTerm, GroupVars, GroupCount) :-
+    parse_group_term(GroupTerm, GroupVars),
+    (   GroupVars \= []
+    ->  true
+    ;   format(user_error, 'C# query target: aggregate group term ~q not supported.~n', [GroupTerm]),
+        fail
+    ),
+    length(GroupVars, GroupCount).
+
+aggregate_subplan_params(Goal, VarMap, CorrVars, Operands) :-
+    term_variables(Goal, Vars),
+    include(bound_var_in_map(VarMap), Vars, CorrVars),
+    maplist(var_to_param_operand(VarMap), CorrVars, Operands).
+
+bound_var_in_map(VarMap, Var) :-
+    lookup_var_index(VarMap, Var, _).
+
+var_to_param_operand(VarMap, Var, operand{kind:column, index:Index}) :-
+    lookup_var_index(VarMap, Var, Index).
+
+aggregate_subplan_seed(CorrVars, SeedNode, SeedVarMap, CorrCount) :-
+    length(CorrVars, CorrCount),
+    (   CorrCount =:= 0
+    ->  Positions = []
+    ;   End is CorrCount - 1,
+        numlist(0, End, Positions)
+    ),
+    SeedSpec = predicate{name:'$aggregate_params', arity:CorrCount},
+    SeedNode = param_seed{
+        type:param_seed,
+        predicate:SeedSpec,
+        input_positions:Positions,
+        width:CorrCount
+    },
+    init_var_map(CorrVars, 0, SeedVarMap).
+
+aggregate_subplan_roles([], []).
+aggregate_subplan_roles([Term|Rest], [Role|Roles]) :-
+    (   query_constraint_goal(Term)
+    ->  Role = constraint
+    ;   aggregate_goal(Term)
+    ->  format(user_error, 'C# query target: nested aggregate in aggregate goal not supported (~q).~n', [Term]),
+        fail
+    ;   Role = relation
+    ),
+    aggregate_subplan_roles(Rest, Roles).
+
+ensure_no_aggregate_subplan_recursion(GroupSpecs, Terms) :-
+    (   member(Term, Terms),
+        \+ query_constraint_goal(Term),
+        group_literal_spec(Term, GroupSpecs, PredSpec),
+        spec_signature(PredSpec, Name/Arity),
+        format(user_error,
+               'C# query target: aggregate over recursive predicate ~w/~w is not supported.~n',
+               [Name, Arity])
+    ->  fail
+    ;   true
+    ).
+
+aggregate_subplan_projection(Type, Op, GroupVars, ValueVar, VarMap, InputNode, ProjectionNode) :-
+    aggregate_projection_columns(Type, Op, GroupVars, ValueVar, VarMap, Columns),
+    length(Columns, Width),
+    ProjectionNode = projection{type:projection, input:InputNode, columns:Columns, width:Width}.
+
+aggregate_projection_columns(all, count, _GroupVars, _ValueVar, _VarMap, []) :- !.
+aggregate_projection_columns(all, Op, _GroupVars, ValueVar, VarMap, [ValueIdx]) :-
+    member(Op, [sum, min, max, set, bag]),
+    lookup_var_index(VarMap, ValueVar, ValueIdx),
+    !.
+aggregate_projection_columns(group, count, GroupVars, _ValueVar, VarMap, Columns) :-
+    maplist(variable_index(VarMap), GroupVars, Columns),
+    !.
+aggregate_projection_columns(group, Op, GroupVars, ValueVar, VarMap, Columns) :-
+    member(Op, [sum, min, max, set, bag]),
+    maplist(variable_index(VarMap), GroupVars, GroupCols),
+    lookup_var_index(VarMap, ValueVar, ValueIdx),
+    append(GroupCols, [ValueIdx], Columns),
+    !.
+aggregate_projection_columns(_Type, _Op, _GroupVars, ValueVar, _VarMap, _Columns) :-
+    format(user_error, 'C# query target: aggregate goal does not bind value variable ~w.~n', [ValueVar]),
+    fail.
+
+aggregate_subplan_indices(all, count, _GroupCount, [], -1) :- !.
+aggregate_subplan_indices(all, _Op, _GroupCount, [], 0) :- !.
+aggregate_subplan_indices(group, count, GroupCount, Indices, -1) :- !,
+    End is GroupCount - 1,
+    numlist(0, End, Indices).
+aggregate_subplan_indices(group, _Op, GroupCount, Indices, ValueIndex) :-
+    End is GroupCount - 1,
+    numlist(0, End, Indices),
+    ValueIndex is GroupCount.
+
+bind_aggregate_output_vars(all, _GroupVars, VarMapIn, WidthIn, ResVar, VarMapOut, WidthOut) :-
+    must_be(var, ResVar),
+    (   lookup_var_index(VarMapIn, ResVar, _)
+    ->  format(user_error, 'C# query target: aggregate result variable ~w already bound.~n', [ResVar]),
+        fail
+    ;   true
+    ),
+    ResultIndex is WidthIn,
+    WidthOut is WidthIn + 1,
+    VarMapOut = [ResVar-ResultIndex|VarMapIn].
+bind_aggregate_output_vars(group, GroupVars, VarMapIn, WidthIn, ResVar, VarMapOut, WidthOut) :-
+    must_be(var, ResVar),
+    (   lookup_var_index(VarMapIn, ResVar, _)
+    ->  format(user_error, 'C# query target: aggregate result variable ~w already bound.~n', [ResVar]),
+        fail
+    ;   true
+    ),
+    length(GroupVars, GroupCount),
+    ResultIndex is WidthIn + GroupCount,
+    WidthOut is WidthIn + GroupCount + 1,
+    bind_aggregate_group_vars(GroupVars, 0, WidthIn, VarMapIn, VarMapMid),
+    VarMapOut = [ResVar-ResultIndex|VarMapMid].
 
 aggregate_value_index(count, _Args, _ValueVar, -1) :- !.
 aggregate_value_index(Op, Args, ValueVar, ValueIndex) :-
@@ -1684,6 +1876,24 @@ emit_plan_expression(Node, Expr) :-
     format(atom(Expr),
            'new AggregateNode(~w, new PredicateId("~w", ~w), AggregateOperation.~w, tuple => new object[]{ ~w }, ~w, ~w, ~w)',
            [InputExpr, NameStr, Arity, OpAtom, ArgList, GroupLiteral, ValueIndex, Width]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, aggregate_subplan), !,
+    get_dict(input, Node, Input),
+    get_dict(subplan, Node, Subplan),
+    get_dict(op, Node, Op),
+    get_dict(params, Node, Params),
+    get_dict(group_indices, Node, GroupIndices),
+    get_dict(value_index, Node, ValueIndex),
+    get_dict(width, Node, Width),
+    emit_plan_expression(Input, InputExpr),
+    emit_plan_expression(Subplan, SubplanExpr),
+    maplist(operand_expression_with_tuple(tuple), Params, ParamExprs),
+    atomic_list_concat(ParamExprs, ', ', ParamList),
+    aggregate_op_atom(Op, OpAtom),
+    int_array_literal(GroupIndices, GroupLiteral),
+    format(atom(Expr),
+           'new AggregateSubplanNode(~w, ~w, AggregateOperation.~w, tuple => new object[]{ ~w }, ~w, ~w, ~w)',
+           [InputExpr, SubplanExpr, OpAtom, ParamList, GroupLiteral, ValueIndex, Width]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, arithmetic), !,
     get_dict(input, Node, Input),

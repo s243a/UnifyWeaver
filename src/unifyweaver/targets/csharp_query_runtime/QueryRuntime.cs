@@ -106,6 +106,19 @@ namespace UnifyWeaver.QueryRuntime
     ) : PlanNode;
 
     /// <summary>
+    /// Applies an aggregate operation to the results of a subplan, correlated with the input tuples.
+    /// </summary>
+    public sealed record AggregateSubplanNode(
+        PlanNode Input,
+        PlanNode Subplan,
+        AggregateOperation Operation,
+        Func<object[], object[]> ParameterSelector,
+        IReadOnlyList<int> GroupByIndices,
+        int ValueIndex,
+        int Width
+    ) : PlanNode;
+
+    /// <summary>
     /// Projects each tuple to a new shape.
     /// </summary>
     public sealed record ProjectionNode(PlanNode Input, Func<object[], object[]> Project) : PlanNode;
@@ -317,6 +330,9 @@ namespace UnifyWeaver.QueryRuntime
                 case AggregateNode aggregate:
                     return ExecuteAggregate(aggregate, context);
 
+                case AggregateSubplanNode aggregateSubplan:
+                    return ExecuteAggregateSubplan(aggregateSubplan, context);
+
                 case ArithmeticNode arithmetic:
                     return ExecuteArithmetic(arithmetic, context);
 
@@ -422,10 +438,59 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
+        private IEnumerable<object[]> ExecuteAggregateSubplan(AggregateSubplanNode aggregate, EvaluationContext? context)
+        {
+            if (aggregate is null) throw new ArgumentNullException(nameof(aggregate));
+
+            var input = Evaluate(aggregate.Input, context);
+            var cache = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+            var groupCount = aggregate.GroupByIndices?.Count ?? 0;
+            var extensionSize = groupCount + 1;
+            var inputWidth = aggregate.Width - extensionSize;
+
+            foreach (var tuple in input)
+            {
+                if (tuple is null) continue;
+
+                var parameters = aggregate.ParameterSelector(tuple) ?? Array.Empty<object>();
+                var wrapper = new RowWrapper(parameters);
+
+                if (!cache.TryGetValue(wrapper, out var extensions))
+                {
+                    var innerContext = new EvaluationContext(new[] { parameters });
+                    var rows = Evaluate(aggregate.Subplan, innerContext).ToList();
+                    extensions = ComputeAggregateExtensionsFromRows(rows, aggregate);
+                    cache[wrapper] = extensions;
+                }
+
+                foreach (var extension in extensions)
+                {
+                    var output = new object[aggregate.Width];
+                    Array.Copy(tuple, output, Math.Min(tuple.Length, inputWidth));
+                    Array.Copy(extension, 0, output, inputWidth, extension.Length);
+                    yield return output;
+                }
+            }
+        }
+
         private static IEnumerable<object[]> EvaluateUnit(UnitNode unit)
         {
             if (unit is null) throw new ArgumentNullException(nameof(unit));
             yield return new object[unit.Width];
+        }
+
+        private static List<object[]> ComputeAggregateExtensionsFromRows(
+            IReadOnlyList<object[]> rows,
+            AggregateSubplanNode aggregate)
+        {
+            var groupCount = aggregate.GroupByIndices?.Count ?? 0;
+
+            if (groupCount <= 0)
+            {
+                return ComputeGlobalAggregateFromRows(rows, aggregate);
+            }
+
+            return ComputeGroupedAggregateFromRows(rows, aggregate, groupCount);
         }
 
         private static List<object[]> ComputeAggregateExtensions(
@@ -441,6 +506,92 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return ComputeGroupedAggregate(facts, pattern, aggregate, groupCount);
+        }
+
+        private static List<object[]> ComputeGlobalAggregateFromRows(
+            IReadOnlyList<object[]> rows,
+            AggregateSubplanNode aggregate)
+        {
+            var count = 0;
+            var hasAny = false;
+            decimal sum = 0;
+            decimal? min = null;
+            decimal? max = null;
+            var bag = aggregate.Operation is AggregateOperation.Bag or AggregateOperation.Set ? new List<object?>() : null;
+            HashSet<object?>? set = aggregate.Operation == AggregateOperation.Set ? new HashSet<object?>() : null;
+
+            foreach (var row in rows)
+            {
+                if (row is null) continue;
+
+                count++;
+
+                switch (aggregate.Operation)
+                {
+                    case AggregateOperation.Count:
+                        break;
+
+                    case AggregateOperation.Sum:
+                        sum += ConvertToDecimal(row, aggregate.ValueIndex);
+                        hasAny = true;
+                        break;
+
+                    case AggregateOperation.Min:
+                    {
+                        var value = ConvertToDecimal(row, aggregate.ValueIndex);
+                        min = min is null ? value : Math.Min(min.Value, value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Max:
+                    {
+                        var value = ConvertToDecimal(row, aggregate.ValueIndex);
+                        max = max is null ? value : Math.Max(max.Value, value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Set:
+                    {
+                        var value = GetFactValue(row, aggregate.ValueIndex);
+                        set!.Add(value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Bag:
+                    {
+                        var value = GetFactValue(row, aggregate.ValueIndex);
+                        bag!.Add(value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    default:
+                        throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}");
+                }
+            }
+
+            if (aggregate.Operation == AggregateOperation.Count)
+            {
+                return new List<object[]> { new object[] { count } };
+            }
+
+            if (!hasAny)
+            {
+                return new List<object[]>();
+            }
+
+            return aggregate.Operation switch
+            {
+                AggregateOperation.Sum => new List<object[]> { new object[] { sum } },
+                AggregateOperation.Min => new List<object[]> { new object[] { min! } },
+                AggregateOperation.Max => new List<object[]> { new object[] { max! } },
+                AggregateOperation.Set => new List<object[]> { new object[] { set!.ToList() } },
+                AggregateOperation.Bag => new List<object[]> { new object[] { bag! } },
+                _ => throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}")
+            };
         }
 
         private static List<object[]> ComputeGlobalAggregate(
@@ -609,6 +760,141 @@ namespace UnifyWeaver.QueryRuntime
                     case AggregateOperation.Bag:
                     {
                         var value = GetFactValue(fact, aggregate.ValueIndex);
+                        state.Bag!.Add(value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    default:
+                        throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}");
+                }
+            }
+
+            var extensions = new List<object[]>();
+            foreach (var state in groups.Values)
+            {
+                var extension = new object[groupCount + 1];
+                Array.Copy(state.Key, extension, Math.Min(state.Key.Length, groupCount));
+
+                switch (aggregate.Operation)
+                {
+                    case AggregateOperation.Count:
+                        extension[groupCount] = state.Count;
+                        extensions.Add(extension);
+                        break;
+
+                    case AggregateOperation.Sum:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Sum;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Min:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Min!;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Max:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Max!;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Set:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Set!.ToList();
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Bag:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Bag!;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    default:
+                        throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}");
+                }
+            }
+
+            return extensions;
+        }
+
+        private static List<object[]> ComputeGroupedAggregateFromRows(
+            IReadOnlyList<object[]> rows,
+            AggregateSubplanNode aggregate,
+            int groupCount)
+        {
+            var groups = new Dictionary<RowWrapper, AggregateState>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            foreach (var row in rows)
+            {
+                if (row is null) continue;
+
+                var key = BuildGroupKey(row, aggregate.GroupByIndices);
+                var wrapper = new RowWrapper(key);
+
+                if (!groups.TryGetValue(wrapper, out var state))
+                {
+                    state = new AggregateState
+                    {
+                        Key = key,
+                        Bag = aggregate.Operation is AggregateOperation.Bag or AggregateOperation.Set ? new List<object?>() : null,
+                        Set = aggregate.Operation == AggregateOperation.Set ? new HashSet<object?>() : null
+                    };
+                    groups[wrapper] = state;
+                }
+
+                state.Count++;
+
+                switch (aggregate.Operation)
+                {
+                    case AggregateOperation.Count:
+                        break;
+
+                    case AggregateOperation.Sum:
+                        state.Sum += ConvertToDecimal(row, aggregate.ValueIndex);
+                        state.HasAny = true;
+                        break;
+
+                    case AggregateOperation.Min:
+                    {
+                        var value = ConvertToDecimal(row, aggregate.ValueIndex);
+                        state.Min = state.Min is null ? value : Math.Min(state.Min.Value, value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Max:
+                    {
+                        var value = ConvertToDecimal(row, aggregate.ValueIndex);
+                        state.Max = state.Max is null ? value : Math.Max(state.Max.Value, value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Set:
+                    {
+                        var value = GetFactValue(row, aggregate.ValueIndex);
+                        state.Set!.Add(value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Bag:
+                    {
+                        var value = GetFactValue(row, aggregate.ValueIndex);
                         state.Bag!.Add(value);
                         state.HasAny = true;
                         break;

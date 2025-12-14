@@ -94,6 +94,10 @@ test_csharp_query_target :-
         verify_correlated_aggregate_max_plan,
         verify_aggregate_set_plan,
         verify_aggregate_bag_plan,
+        verify_aggregate_subplan_count_with_constraint_plan,
+        verify_aggregate_subplan_banned_sale_count_plan,
+        verify_aggregate_subplan_correlated_count_with_constraint_plan,
+        verify_aggregate_subplan_grouped_count_with_negation_plan,
         verify_negation_plan,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
@@ -191,6 +195,19 @@ setup_test_data :-
     )),
     assertz(user:(test_sale_customers_bag(Bag) :-
         aggregate_all(bag(Customer), test_sale(Customer, _), Bag)
+    )),
+    assertz(user:(test_sale_filtered_count(C) :-
+        aggregate_all(count, (test_sale(_, Amount), Amount > 5), C)
+    )),
+    assertz(user:(test_banned_sale_count(C) :-
+        aggregate_all(count, (test_sale(Customer, _), test_banned(Customer)), C)
+    )),
+    assertz(user:(test_sale_count_filtered_by_customer(Customer, Count) :-
+        test_customer(Customer),
+        aggregate_all(count, (test_sale(Customer, Amount), Amount > 5), Count)
+    )),
+    assertz(user:(test_non_banned_sale_count_grouped(Customer, Count) :-
+        aggregate_all(count, (test_sale(Customer, _), \+ test_banned(Customer)), Customer, Count)
     )),
     assertz(user:test_banned(bob)),
     assertz(user:(test_allowed(X) :- test_fact(X, _), \+ test_banned(X))),
@@ -330,6 +347,10 @@ cleanup_test_data :-
     retractall(user:test_sale_count_grouped(_, _)),
     retractall(user:test_sale_customers_set(_)),
     retractall(user:test_sale_customers_bag(_)),
+    retractall(user:test_sale_filtered_count(_)),
+    retractall(user:test_banned_sale_count(_)),
+    retractall(user:test_sale_count_filtered_by_customer(_, _)),
+    retractall(user:test_non_banned_sale_count_grouped(_, _)),
     retractall(user:test_factorial_input(_)),
     retractall(user:test_factorial(_, _)),
     retractall(user:test_fib_param(_, _)),
@@ -690,6 +711,60 @@ verify_aggregate_bag_plan :-
     get_dict(op, Aggregate, bag),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'AggregateOperation.Bag').
+
+verify_aggregate_subplan_count_with_constraint_plan :-
+    csharp_query_target:build_query_plan(test_sale_filtered_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(input, Agg, unit{type:unit, width:0}),
+    get_dict(op, Agg, count),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    get_dict(width, Agg, 1),
+    get_dict(subplan, Agg, projection{type:projection, columns:[], width:0, input:_}),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Count'),
+    sub_string(Source, _, _, _, 'SelectionNode'),
+    maybe_run_query_runtime(Plan, ['2']).
+
+verify_aggregate_subplan_banned_sale_count_plan :-
+    csharp_query_target:build_query_plan(test_banned_sale_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    maybe_run_query_runtime(Plan, ['1']).
+
+verify_aggregate_subplan_correlated_count_with_constraint_plan :-
+    csharp_query_target:build_query_plan(test_sale_count_filtered_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Agg, Root),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    get_dict(params, Agg, [operand{kind:column, index:0}]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    maybe_run_query_runtime(Plan, ['alice,1', 'bob,1', 'charlie,0']).
+
+verify_aggregate_subplan_grouped_count_with_negation_plan :-
+    csharp_query_target:build_query_plan(test_non_banned_sale_count_grouped/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0, 1], width:2}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(group_indices, Agg, [0]),
+    get_dict(value_index, Agg, -1),
+    get_dict(params, Agg, []),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'NegationNode'),
+    maybe_run_query_runtime(Plan, ['alice,2']).
 
 verify_parameterized_fib_plan :-
     csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
