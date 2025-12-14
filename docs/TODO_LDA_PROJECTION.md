@@ -25,7 +25,7 @@ See: `docs/proposals/SEMANTIC_PROJECTION_LDA.md` and `docs/proposals/COMPONENT_R
 - [x] Update docs/README.md with LDA section
 - [x] Update scripts/README.md with training scripts
 - [x] Update proposals/README.md with new proposals
-- [ ] Add architecture diagram showing component registry flow
+- [x] Add architecture diagram showing component registry flow (`docs/ARCHITECTURE_DIAGRAMS.md`)
 
 ## Testing & Validation
 
