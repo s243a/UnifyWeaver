@@ -208,6 +208,35 @@ class LDAProjectionDB:
             )
         """)
 
+        # Multi-head projections (groups of per-cluster heads)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS multi_head_projections (
+                mh_projection_id INTEGER PRIMARY KEY,
+                model_id INTEGER REFERENCES embedding_models(model_id),
+                name TEXT,
+                temperature REAL DEFAULT 1.0,
+                num_heads INTEGER,
+                recall_at_1 REAL,
+                mrr REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Per-cluster heads (attention heads)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cluster_heads (
+                head_id INTEGER PRIMARY KEY,
+                mh_projection_id INTEGER REFERENCES multi_head_projections(mh_projection_id),
+                cluster_id INTEGER REFERENCES qa_clusters(cluster_id),
+                centroid_path TEXT NOT NULL,
+                answer_emb_path TEXT NOT NULL,
+                W_path TEXT,
+                num_questions INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(mh_projection_id, cluster_id)
+            )
+        """)
+
         # Indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(model_id, entity_type, entity_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_relations_from ON answer_relations(from_answer_id)")
@@ -1155,3 +1184,290 @@ class LDAProjectionDB:
             """)
 
         return [dict(row) for row in cursor.fetchall()]
+
+    # =========================================================================
+    # Multi-Head Projections
+    # =========================================================================
+
+    def _head_path(self, mh_id: int, cluster_id: int, kind: str) -> str:
+        """Generate path for cluster head vectors."""
+        return os.path.join(
+            self.embeddings_dir,
+            f"mh_{mh_id}_cluster_{cluster_id}_{kind}.npy"
+        )
+
+    def create_multi_head_projection(
+        self,
+        model_id: int,
+        name: str = None,
+        temperature: float = 1.0
+    ) -> int:
+        """Create a new multi-head projection.
+
+        Args:
+            model_id: The embedding model ID
+            name: Optional name for this projection
+            temperature: Softmax temperature for routing (default 1.0)
+
+        Returns:
+            The mh_projection_id
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO multi_head_projections (model_id, name, temperature, num_heads)
+            VALUES (?, ?, ?, 0)
+        """, (model_id, name, temperature))
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def add_cluster_head(
+        self,
+        mh_projection_id: int,
+        cluster_id: int,
+        centroid: np.ndarray,
+        answer_emb: np.ndarray,
+        W: np.ndarray = None,
+        num_questions: int = None
+    ) -> int:
+        """Add a cluster head to a multi-head projection.
+
+        Args:
+            mh_projection_id: The multi-head projection ID
+            cluster_id: The cluster this head represents
+            centroid: Question centroid vector (d,)
+            answer_emb: Answer embedding vector (d,)
+            W: Optional per-cluster projection matrix (d, d)
+            num_questions: Number of questions in cluster
+
+        Returns:
+            The head_id
+        """
+        cursor = self.conn.cursor()
+
+        # Save centroid
+        centroid_path = self._head_path(mh_projection_id, cluster_id, 'centroid')
+        np.save(centroid_path, centroid)
+
+        # Save answer embedding
+        answer_path = self._head_path(mh_projection_id, cluster_id, 'answer')
+        np.save(answer_path, answer_emb)
+
+        # Optionally save per-cluster W
+        W_path = None
+        if W is not None:
+            W_path = self._head_path(mh_projection_id, cluster_id, 'W')
+            np.save(W_path, W)
+
+        cursor.execute("""
+            INSERT INTO cluster_heads
+            (mh_projection_id, cluster_id, centroid_path, answer_emb_path, W_path, num_questions)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (mh_projection_id, cluster_id, centroid_path, answer_path, W_path, num_questions))
+        head_id = cursor.lastrowid
+
+        # Update head count
+        cursor.execute("""
+            UPDATE multi_head_projections
+            SET num_heads = num_heads + 1
+            WHERE mh_projection_id = ?
+        """, (mh_projection_id,))
+
+        self.conn.commit()
+        return head_id
+
+    def get_multi_head_projection(self, mh_projection_id: int) -> Optional[Dict]:
+        """Get multi-head projection metadata."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM multi_head_projections WHERE mh_projection_id = ?
+        """, (mh_projection_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_cluster_heads(self, mh_projection_id: int) -> List[Dict]:
+        """Get all cluster heads for a multi-head projection."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT ch.*, qc.name as cluster_name
+            FROM cluster_heads ch
+            LEFT JOIN qa_clusters qc ON ch.cluster_id = qc.cluster_id
+            WHERE ch.mh_projection_id = ?
+            ORDER BY ch.cluster_id
+        """, (mh_projection_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def load_multi_head_data(
+        self,
+        mh_projection_id: int
+    ) -> Tuple[np.ndarray, np.ndarray, List[int], Optional[List[np.ndarray]]]:
+        """Load all data needed for multi-head inference.
+
+        Returns:
+            Tuple of:
+            - centroids: (num_heads, d) matrix of cluster centroids
+            - answer_embs: (num_heads, d) matrix of answer embeddings
+            - cluster_ids: List of cluster IDs in same order
+            - W_matrices: Optional list of per-cluster W matrices
+        """
+        heads = self.get_cluster_heads(mh_projection_id)
+
+        if not heads:
+            return np.array([]), np.array([]), [], None
+
+        centroids = []
+        answer_embs = []
+        cluster_ids = []
+        W_matrices = []
+        has_W = False
+
+        for head in heads:
+            centroids.append(np.load(head['centroid_path']))
+            answer_embs.append(np.load(head['answer_emb_path']))
+            cluster_ids.append(head['cluster_id'])
+
+            if head['W_path']:
+                W_matrices.append(np.load(head['W_path']))
+                has_W = True
+            else:
+                W_matrices.append(None)
+
+        return (
+            np.stack(centroids),
+            np.stack(answer_embs),
+            cluster_ids,
+            W_matrices if has_W else None
+        )
+
+    def multi_head_search(
+        self,
+        query_embedding: np.ndarray,
+        mh_projection_id: int,
+        top_k: int = 5,
+        log: bool = True,
+        query_text: str = None
+    ) -> List[Dict]:
+        """Search using multi-head projection with soft routing.
+
+        The query is routed to cluster heads based on similarity to centroids,
+        then projected using weighted combination of per-cluster projections.
+
+        Args:
+            query_embedding: The query vector (d,)
+            mh_projection_id: Which multi-head projection to use
+            top_k: Number of results to return
+            log: Whether to log this query
+            query_text: Original query text (for logging)
+
+        Returns:
+            List of dicts with answer_id, score, routing_weights, and metadata
+        """
+        mh_proj = self.get_multi_head_projection(mh_projection_id)
+        if not mh_proj:
+            raise ValueError(f"Multi-head projection {mh_projection_id} not found")
+
+        centroids, answer_embs, cluster_ids, W_matrices = self.load_multi_head_data(mh_projection_id)
+
+        if len(cluster_ids) == 0:
+            return []
+
+        temperature = mh_proj.get('temperature', 1.0)
+        model_id = mh_proj['model_id']
+
+        # Normalize query
+        query_norm = np.linalg.norm(query_embedding)
+        if query_norm > 0:
+            query_normed = query_embedding / query_norm
+        else:
+            query_normed = query_embedding
+
+        # Normalize centroids
+        centroid_norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+        centroid_norms = np.where(centroid_norms > 0, centroid_norms, 1)
+        centroids_normed = centroids / centroid_norms
+
+        # Compute routing weights via softmax over centroid similarities
+        similarities = centroids_normed @ query_normed
+        scaled = similarities / temperature
+        exp_scaled = np.exp(scaled - np.max(scaled))  # Numerical stability
+        routing_weights = exp_scaled / np.sum(exp_scaled)
+
+        # Project query using weighted combination
+        if W_matrices:
+            # Use per-cluster W matrices
+            projected = np.zeros_like(query_embedding)
+            for i, (w, W) in enumerate(zip(routing_weights, W_matrices)):
+                if W is not None:
+                    projected += w * (W @ query_embedding)
+                else:
+                    # Fallback: project toward answer embedding
+                    projected += w * answer_embs[i]
+        else:
+            # No W matrices: project toward weighted combination of answer embeddings
+            projected = routing_weights @ answer_embs
+
+        # Normalize projected query
+        proj_norm = np.linalg.norm(projected)
+        if proj_norm > 0:
+            projected = projected / proj_norm
+
+        # Get all answer embeddings for comparison
+        answer_ids, answer_matrix = self.get_all_answer_embeddings(model_id)
+
+        if len(answer_ids) == 0:
+            return []
+
+        # Normalize answer matrix
+        answer_norms = np.linalg.norm(answer_matrix, axis=1, keepdims=True)
+        answer_norms = np.where(answer_norms > 0, answer_norms, 1)
+        answer_matrix_normed = answer_matrix / answer_norms
+
+        # Compute similarities
+        scores = answer_matrix_normed @ projected
+
+        # Get top-k
+        top_indices = np.argsort(-scores)[:top_k]
+
+        # Build results with routing info
+        results = []
+        routing_info = {
+            cluster_ids[i]: float(routing_weights[i])
+            for i in range(len(cluster_ids))
+        }
+
+        for idx in top_indices:
+            answer_id = answer_ids[idx]
+            answer = self.get_answer(answer_id)
+            results.append({
+                'answer_id': answer_id,
+                'score': float(scores[idx]),
+                'routing_weights': routing_info,
+                **answer
+            })
+
+        return results
+
+    def update_multi_head_metrics(
+        self,
+        mh_projection_id: int,
+        recall_at_1: float = None,
+        mrr: float = None
+    ):
+        """Update validation metrics for a multi-head projection."""
+        cursor = self.conn.cursor()
+        updates = []
+        params = []
+
+        if recall_at_1 is not None:
+            updates.append("recall_at_1 = ?")
+            params.append(recall_at_1)
+        if mrr is not None:
+            updates.append("mrr = ?")
+            params.append(mrr)
+
+        if updates:
+            params.append(mh_projection_id)
+            cursor.execute(f"""
+                UPDATE multi_head_projections SET {', '.join(updates)}
+                WHERE mh_projection_id = ?
+            """, params)
+            self.conn.commit()
