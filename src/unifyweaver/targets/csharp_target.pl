@@ -29,15 +29,19 @@
 %% modes_for_pred(+Pred/Arity, -Modes:list)
 %  Reads user:mode/1 declarations, e.g., mode(fib(+, -)).
 %  Modes is a list of atoms: input/output/any. Defaults to all output.
-modes_for_pred(Pred/Arity, Modes) :-
+declared_modes_for_pred(Pred/Arity, Declared, Modes) :-
     (   current_predicate(user:mode/1),
         user:mode(ModeSpec),
-        mode_term_signature(ModeSpec, Pred/Arity),
+        mode_term_signature(ModeSpec, Pred/Arity)
+    ->  Declared = true,
         parse_mode_spec(ModeSpec, Modes)
-    ->  true
-    ;   length(Modes, Arity),
+    ;   Declared = false,
+        length(Modes, Arity),
         maplist(=(output), Modes)
     ).
+
+modes_for_pred(Pred/Arity, Modes) :-
+    declared_modes_for_pred(Pred/Arity, _Declared, Modes).
 
 mode_term_signature(Term, Pred/Arity) :-
     compound(Term),
@@ -48,9 +52,9 @@ parse_mode_spec(Term, Modes) :-
     Term =.. [_|Args],
     maplist(mode_symbol_to_mode, Args, Modes).
 
-mode_symbol_to_mode(+, input).
-mode_symbol_to_mode(-, output).
-mode_symbol_to_mode(?, any).
+mode_symbol_to_mode(+, input) :- !.
+mode_symbol_to_mode(-, output) :- !.
+mode_symbol_to_mode(?, any) :- !.
 mode_symbol_to_mode(Atom, _) :-
     format(user_error, 'Unrecognised mode symbol in mode/1: ~w~n', [Atom]),
     fail.
@@ -309,8 +313,9 @@ build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _Modes, _SeedO
 
 build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Modes, Plan) :-
     get_dict(arity, HeadSpec, Arity),
-    (   eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes)
-    ->  build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositions),
+    (   eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes),
+        with_suppressed_user_error(build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositions))
+    ->  true,
         SeedOverride = seed(NeedMat, InputPositions)
     ;   NeedRelations = [],
         SeedOverride = none
@@ -699,31 +704,49 @@ build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositi
 eligible_for_mutual_need_closure(HeadSpec, GroupSpecs, Modes, NeedMat, NeedRelations, SeedOverrides) :-
     has_input_mode(Modes),
     GroupSpecs = [_First, _Second|_],
-    mutual_need_infos(GroupSpecs, Infos, InputCount),
     input_positions(Modes, HeadInputPositions),
+    mutual_need_infos(GroupSpecs, HeadInputPositions, Infos, InputCount),
     need_info_for_spec(Infos, HeadSpec, HeadInfo),
     get_dict(input_positions, HeadInfo, HeadInputPositions),
     safe_mutual_need_prefixes(GroupSpecs),
-    build_mutual_need_plan(HeadSpec, GroupSpecs, Infos, InputCount, NeedMat, NeedRelations),
-    build_mutual_need_seed_overrides(NeedMat, Infos, InputCount, SeedOverrides).
+    with_suppressed_user_error(
+        (   build_mutual_need_plan(HeadSpec, GroupSpecs, Infos, InputCount, NeedMat, NeedRelations),
+            build_mutual_need_seed_overrides(NeedMat, Infos, InputCount, SeedOverrides)
+        )).
 
-mutual_need_infos(GroupSpecs, Infos, InputCount) :-
+with_suppressed_user_error(Goal) :-
+    current_input(In),
+    current_output(Out),
+    stream_property(Err, alias(user_error)),
+    setup_call_cleanup(
+        open_null_stream(Null),
+        setup_call_cleanup(
+            set_prolog_IO(In, Out, Null),
+            catch(Goal, _Error, fail),
+            set_prolog_IO(In, Out, Err)
+        ),
+        close(Null)
+    ).
+
+mutual_need_infos(GroupSpecs, HeadInputPositions, Infos, InputCount) :-
+    length(HeadInputPositions, InputCount),
     findall(info{spec:Spec, sig:Sig, modes:Modes, input_positions:Positions, tag:Tag},
         (   nth0(Tag, GroupSpecs, Spec),
             spec_signature(Spec, Sig),
-            modes_for_pred(Sig, Modes),
-            input_positions(Modes, Positions),
-            Positions \= []
+            declared_modes_for_pred(Sig, Declared, Modes),
+            (   Declared == true
+            ->  input_positions(Modes, Positions0),
+                Positions0 \= [],
+                length(Positions0, InputCount),
+                Positions = Positions0
+            ;   Sig = _Pred/Arity,
+                max_list(HeadInputPositions, MaxPos),
+                MaxPos < Arity,
+                Positions = HeadInputPositions
+            )
         ),
         Infos),
-    same_length(Infos, GroupSpecs),
-    findall(Count,
-        (   member(Info, Infos),
-            get_dict(input_positions, Info, Positions),
-            length(Positions, Count)
-        ),
-        Counts),
-    sort(Counts, [InputCount]).
+    same_length(Infos, GroupSpecs).
 
 safe_mutual_need_prefixes(GroupSpecs) :-
     \+ (   member(PredSpec, GroupSpecs),
@@ -871,13 +894,11 @@ build_mutual_need_recursive_variants(GroupSpecs, NeedSpec, NeedArity, Infos, Inp
             Node = TagAppendNode
         ),
         VariantPairs),
-    (   VariantPairs == []
-    ->  Variants = [], Relations = []
-    ;   findall(Node, member(variant(Node, _), VariantPairs), Variants),
-        findall(RelList, member(variant(_, RelList), VariantPairs), RelLists),
-        append(RelLists, Flat),
-        dedup_relations(Flat, Relations)
-    ).
+    VariantPairs \= [],
+    findall(Node, member(variant(Node, _), VariantPairs), Variants),
+    findall(RelList, member(variant(_, RelList), VariantPairs), RelLists),
+    append(RelLists, Flat),
+    dedup_relations(Flat, Relations).
 
 build_need_recursive_variants(HeadSpec, NeedSpec, RecClauses, InputPositions, Variants, Relations) :-
     get_dict(name, HeadSpec, Pred),
@@ -905,13 +926,11 @@ build_need_recursive_variants(HeadSpec, NeedSpec, RecClauses, InputPositions, Va
             Node = projection{type:projection, input:PrefixNode, columns:Cols, width:InputCount}
         ),
         VariantPairs),
-    (   VariantPairs == []
-    ->  Variants = [], Relations = []
-    ;   findall(Node, member(variant(Node, _), VariantPairs), Variants),
-        findall(RelList, member(variant(_, RelList), VariantPairs), RelLists),
-        append(RelLists, Flat),
-        dedup_relations(Flat, Relations)
-    ).
+    VariantPairs \= [],
+    findall(Node, member(variant(Node, _), VariantPairs), Variants),
+    findall(RelList, member(variant(_, RelList), VariantPairs), RelLists),
+    append(RelLists, Flat),
+    dedup_relations(Flat, Relations).
 
 prefix_terms(Index, Terms, Pred, Arity, Prefix) :-
     length(Before, Index),

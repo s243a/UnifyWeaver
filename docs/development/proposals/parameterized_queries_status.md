@@ -46,6 +46,7 @@
 - Parameterised mutual recursion:
   - Input modes are accepted for mutually-recursive SCCs (previously rejected).
   - When every predicate in the SCC declares compatible input modes (same input count), a tagged `$need` fixpoint is built and shared to seed each member’s base/recursive pipelines (demand-driven mutual SCC evaluation).
+  - SCC members without explicit mode declarations can inherit the head predicate’s input positions (when arities permit), enabling `$need` closure for common patterns like even/odd; failures while building `$need` are treated as a silent fallback (no noisy `user_error` output).
   - Otherwise, SCC evaluation falls back to full mutual fixpoint + final parameter filtering.
 - Current aggregate constraints:
   - Aggregate goals must be a single predicate call (no conjunctions/subplans yet).

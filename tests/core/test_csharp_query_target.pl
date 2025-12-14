@@ -8,6 +8,7 @@
 :- use_module(library(apply)).
 :- use_module(library(filesex)).
 :- use_module(library(lists)).
+:- use_module(library(memfile)).
 :- use_module(library(process)).
 :- use_module(library(uuid)).
 :- use_module(library(csharp_query_target)).
@@ -45,6 +46,8 @@
 :- dynamic user:test_odd_param/1.
 :- dynamic user:test_even_param_partial/1.
 :- dynamic user:test_odd_param_partial/1.
+:- dynamic user:test_even_param_unbound/1.
+:- dynamic user:test_odd_param_unbound/1.
 :- dynamic user:test_parity_input/1.
 :- dynamic user:test_product_record/1.
 :- dynamic user:test_jsonpath_projection/2.
@@ -96,6 +99,7 @@ test_csharp_query_target :-
         verify_recursive_plan,
         verify_mutual_recursion_plan,
         verify_parameterized_mutual_recursion_plan,
+        verify_parameterized_mutual_recursion_inferred_plan,
         verify_parameterized_mutual_recursion_fallback_plan,
         verify_dynamic_source_plan,
         verify_tsv_dynamic_source_plan,
@@ -257,6 +261,19 @@ setup_test_data :-
         N1 is N - 1,
         test_even_param_partial(N1)
     )),
+    assertz(user:mode(test_even_param_unbound(+))),
+    assertz(user:test_even_param_unbound(0)),
+    assertz(user:test_odd_param_unbound(1)),
+    assertz(user:(test_even_param_unbound(N) :-
+        test_parity_input(N),
+        N > 0,
+        test_odd_param_unbound(_)
+    )),
+    assertz(user:(test_odd_param_unbound(N) :-
+        test_parity_input(N),
+        N > 1,
+        test_even_param_unbound(_)
+    )),
     assertz(user:(test_even(N) :-
         test_parity_input(N),
         N > 0,
@@ -320,6 +337,9 @@ cleanup_test_data :-
     retractall(user:test_even_param_partial(_)),
     retractall(user:test_odd_param_partial(_)),
     retractall(user:mode(test_even_param_partial(_))),
+    retractall(user:test_even_param_unbound(_)),
+    retractall(user:test_odd_param_unbound(_)),
+    retractall(user:mode(test_even_param_unbound(_))),
     retractall(user:test_reachable(_, _)),
     cleanup_csv_dynamic_source.
 
@@ -800,7 +820,7 @@ verify_parameterized_mutual_recursion_plan :-
     sub_string(Source, _, _, _, 'MaterializeNode'),
     maybe_run_query_runtime(Plan, ['4'], [[4]]).
 
-verify_parameterized_mutual_recursion_fallback_plan :-
+verify_parameterized_mutual_recursion_inferred_plan :-
     csharp_query_target:build_query_plan(test_even_param_partial/1, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
     get_dict(metadata, Plan, Meta),
@@ -809,6 +829,25 @@ verify_parameterized_mutual_recursion_fallback_plan :-
     get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even_param_partial, arity:1}, members:Members}),
     length(Members, 2),
     atom_concat(test_even_param_partial, '$need', NeedName),
+    sub_term(materialize{type:materialize, id:_, plan:fixpoint{type:fixpoint, head:predicate{name:NeedName, arity:2}, base:_, recursive:_, width:2}, width:2}, Members),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    sub_string(Source, _, _, _, NeedName),
+    sub_string(Source, _, _, _, 'MaterializeNode').
+
+verify_parameterized_mutual_recursion_fallback_plan :-
+    capture_user_error(
+        csharp_query_target:build_query_plan(test_even_param_unbound/1, [target(csharp_query)], Plan),
+        Err
+    ),
+    Err == "",
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input],
+    get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even_param_unbound, arity:1}, members:Members}),
+    length(Members, 2),
+    atom_concat(test_even_param_unbound, '$need', NeedName),
     \+ sub_term(predicate{name:NeedName, arity:_}, Members),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'new int[]{ 0 }'),
@@ -1270,6 +1309,24 @@ maybe_run_query_runtime(Plan, ExpectedRows, Params) :-
 % Fall back to plan-only verification if dotnet not available
 maybe_run_query_runtime(_Plan, _ExpectedRows, _Params) :-
     writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)').
+
+capture_user_error(Goal, Output) :-
+    current_input(In),
+    current_output(Out),
+    stream_property(Err, alias(user_error)),
+    new_memory_file(MemFile),
+    setup_call_cleanup(
+        open_memory_file(MemFile, write, Stream),
+        setup_call_cleanup(
+            set_prolog_IO(In, Out, Stream),
+            call(Goal),
+            set_prolog_IO(In, Out, Err)
+        ),
+        (   close(Stream),
+            memory_file_to_string(MemFile, Output),
+            free_memory_file(MemFile)
+        )
+    ).
 
 dotnet_cli(Path) :-
     catch(absolute_file_name(path(dotnet), Path, [access(execute)]), _, fail).
