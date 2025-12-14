@@ -300,6 +300,7 @@ namespace UnifyWeaver.QueryRuntime
     public sealed class QueryExecutor
     {
         private readonly IRelationProvider _provider;
+        private static readonly object NullFactIndexKey = new();
 
         public QueryExecutor(IRelationProvider provider)
         {
@@ -516,6 +517,70 @@ namespace UnifyWeaver.QueryRuntime
             return set;
         }
 
+        private Dictionary<object, List<object[]>> GetFactIndex(
+            PredicateId predicate,
+            int columnIndex,
+            IReadOnlyList<object[]> facts,
+            EvaluationContext context)
+        {
+            var cacheKey = (predicate, columnIndex);
+            if (context.FactIndices.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+
+            var index = new Dictionary<object, List<object[]>>();
+
+            foreach (var tuple in facts)
+            {
+                if (tuple is null) continue;
+
+                var value = columnIndex >= 0 && columnIndex < tuple.Length
+                    ? tuple[columnIndex]
+                    : null;
+
+                var key = value ?? NullFactIndexKey;
+
+                if (!index.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    index[key] = bucket;
+                }
+
+                bucket.Add(tuple);
+            }
+
+            context.FactIndices[cacheKey] = index;
+            return index;
+        }
+
+        private IReadOnlyList<object[]> SelectFactsForPattern(
+            PredicateId predicate,
+            IReadOnlyList<object[]> facts,
+            object[] pattern,
+            EvaluationContext? context)
+        {
+            if (context is null)
+            {
+                return facts;
+            }
+
+            for (var i = 0; i < pattern.Length; i++)
+            {
+                var value = pattern[i];
+                if (ReferenceEquals(value, Wildcard.Value))
+                {
+                    continue;
+                }
+
+                var index = GetFactIndex(predicate, i, facts, context);
+                var key = value ?? NullFactIndexKey;
+                return index.TryGetValue(key, out var bucket) ? bucket : Array.Empty<object[]>();
+            }
+
+            return facts;
+        }
+
         private IEnumerable<object[]> ExecuteNegation(NegationNode negation, EvaluationContext? context)
         {
             var input = Evaluate(negation.Input, context);
@@ -551,7 +616,8 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (!cache.TryGetValue(wrapper, out var extensions))
                 {
-                    extensions = ComputeAggregateExtensions(facts, pattern, aggregate);
+                    var candidates = SelectFactsForPattern(aggregate.Predicate, facts, pattern, context);
+                    extensions = ComputeAggregateExtensions(candidates, pattern, aggregate);
                     cache[wrapper] = extensions;
                 }
 
@@ -1595,6 +1661,7 @@ namespace UnifyWeaver.QueryRuntime
                 Parameters = parameters?.ToList() ?? new List<object[]>();
                 Facts = parent?.Facts ?? new Dictionary<PredicateId, List<object[]>>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
+                FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
             }
 
             public PredicateId Current { get; set; }
@@ -1611,6 +1678,8 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<PredicateId, List<object[]>> Facts { get; }
 
             public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; }
+
+            public Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>> FactIndices { get; }
         }
 
         private sealed record RowWrapper(object[] Row);
