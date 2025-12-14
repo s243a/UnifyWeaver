@@ -151,3 +151,27 @@ fn get_all_parent() -> Vec<PARENT> { ... }
 fn stream_parent() -> impl Iterator<Item = PARENT> { ... }
 fn contains_parent(target: &PARENT) -> bool { ... }
 ```
+
+### `compile_tail_recursion_rust/3`
+
+Compile tail recursive predicates to O(1) space for loops.
+
+```prolog
+compile_tail_recursion_rust(+Pred/Arity, +Options, -RustCode)
+```
+
+### `compile_linear_recursion_rust/3`
+
+Compile linear recursive predicates with HashMap memoization.
+
+```prolog
+compile_linear_recursion_rust(+Pred/Arity, +Options, -RustCode)
+```
+
+### `compile_mutual_recursion_rust/3`
+
+Compile mutually recursive predicates (is_even/is_odd) with thread_local! memo.
+
+```prolog
+compile_mutual_recursion_rust(+Predicates, +Options, -RustCode)
+```

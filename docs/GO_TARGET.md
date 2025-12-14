@@ -167,6 +167,30 @@ func StreamPARENT(fn func(PARENT)) { ... }
 func ContainsPARENT(target PARENT) bool { ... }
 ```
 
+### `compile_tail_recursion_go/3`
+
+Compile tail recursive predicates to O(1) space for loops.
+
+```prolog
+compile_tail_recursion_go(+Pred/Arity, +Options, -GoCode)
+```
+
+### `compile_linear_recursion_go/3`
+
+Compile linear recursive predicates with map-based memoization.
+
+```prolog
+compile_linear_recursion_go(+Pred/Arity, +Options, -GoCode)
+```
+
+### `compile_mutual_recursion_go/3`
+
+Compile mutually recursive predicates (is_even/is_odd) with shared memo.
+
+```prolog
+compile_mutual_recursion_go(+Predicates, +Options, -GoCode)
+```
+
 ---
 
 ## Compilation Modes

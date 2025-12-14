@@ -6,7 +6,8 @@
 :- encoding(utf8).
 
 :- use_module('../../src/unifyweaver/runtime/semantic_search').
-:- use_module('../../src/unifyweaver/core/component_registry').
+% Import only component_type/4 to avoid conflict with semantic_search exports
+:- use_module('../../src/unifyweaver/core/component_registry', [component_type/4]).
 
 %% ============================================
 %% Test Helpers
