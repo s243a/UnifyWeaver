@@ -466,6 +466,47 @@ class LDAProjectionDB:
 
         return result
 
+    def get_questions_for_answer(self, answer_id: int) -> List[Dict]:
+        """Reverse lookup: Get all training questions that map to an answer.
+
+        Args:
+            answer_id: The answer ID to look up
+
+        Returns:
+            List of question dicts with cluster info
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT q.*, qc.cluster_id, qc.name as cluster_name
+            FROM questions q
+            JOIN cluster_questions cq ON q.question_id = cq.question_id
+            JOIN cluster_answers ca ON cq.cluster_id = ca.cluster_id
+            JOIN qa_clusters qc ON cq.cluster_id = qc.cluster_id
+            WHERE ca.answer_id = ?
+            ORDER BY q.length_type, q.question_id
+        """, (answer_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def search_answers(self, text_pattern: str) -> List[Dict]:
+        """Search answers by text pattern.
+
+        Args:
+            text_pattern: SQL LIKE pattern (use % for wildcards)
+
+        Returns:
+            List of matching answer dicts
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT a.*, qc.name as cluster_name, qc.cluster_id
+            FROM answers a
+            LEFT JOIN cluster_answers ca ON a.answer_id = ca.answer_id
+            LEFT JOIN qa_clusters qc ON ca.cluster_id = qc.cluster_id
+            WHERE a.text LIKE ? OR a.record_id LIKE ?
+            ORDER BY a.answer_id
+        """, (text_pattern, text_pattern))
+        return [dict(row) for row in cursor.fetchall()]
+
     def list_clusters(self) -> List[Dict]:
         """List all clusters."""
         cursor = self.conn.cursor()
