@@ -5132,6 +5132,70 @@ def throttle_stage(stream, delay_ms):
         first = False
         yield record
 
+def buffer_stage(stream, size):
+    '''
+    Buffer: Collect up to N records before emitting as batch.
+    Flushes remaining records at end.
+    '''
+    buffer = []
+    for record in stream:
+        buffer.append(record)
+        if len(buffer) >= size:
+            yield buffer
+            buffer = []
+    if buffer:
+        yield buffer
+
+def debounce_stage(stream, delay_ms):
+    '''
+    Debounce: Emit record only if no new record within delay_ms.
+    Uses threading to implement proper debounce behavior.
+    '''
+    import time
+    import threading
+
+    delay_sec = delay_ms / 1000.0
+    pending = [None]
+    lock = threading.Lock()
+    timer = [None]
+    results = []
+    done = threading.Event()
+
+    def emit():
+        with lock:
+            if pending[0] is not None:
+                results.append(pending[0])
+                pending[0] = None
+
+    for record in stream:
+        with lock:
+            pending[0] = record
+            if timer[0] is not None:
+                timer[0].cancel()
+            timer[0] = threading.Timer(delay_sec, emit)
+            timer[0].start()
+
+    # Wait for final timer
+    if timer[0] is not None:
+        timer[0].join()
+
+    for result in results:
+        yield result
+
+def zip_stage(record, stage_funcs):
+    '''
+    Zip: Run multiple stages on same input, combine outputs record-by-record.
+    '''
+    results = [list(stage_fn([record])) for stage_fn in stage_funcs]
+    max_len = max(len(r) for r in results) if results else 0
+
+    for i in range(max_len):
+        combined = {}
+        for j, result_list in enumerate(results):
+            if i < len(result_list):
+                combined.update(result_list[i])
+        yield combined
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5200,6 +5264,11 @@ generate_single_enhanced_stage(timeout(Stage, _, Fallback), Code) :-
     format(string(Code), "~w~w", [StageCode, FallbackCode]).
 generate_single_enhanced_stage(rate_limit(_, _), "") :- !.
 generate_single_enhanced_stage(throttle(_), "") :- !.
+generate_single_enhanced_stage(buffer(_), "") :- !.
+generate_single_enhanced_stage(debounce(_), "") :- !.
+generate_single_enhanced_stage(zip(SubStages), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, Code).
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5490,6 +5559,36 @@ generate_stage_flow(throttle(Ms), InVar, OutVar, Code) :-
     format(string(Code),
 "    # Throttle: ~wms delay between records
     ~w = throttle_stage(~w, ~w)", [Ms, OutVar, InVar, Ms]).
+
+% Buffer stage: collect records into batches
+generate_stage_flow(buffer(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "buffered_result",
+    format(string(Code),
+"    # Buffer: collect ~w records into batches
+    ~w = buffer_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Debounce stage: emit only if no new record within delay
+generate_stage_flow(debounce(Ms), InVar, OutVar, Code) :-
+    !,
+    OutVar = "debounced_result",
+    format(string(Code),
+"    # Debounce: ~wms quiet period
+    ~w = debounce_stage(~w, ~w)", [Ms, OutVar, InVar, Ms]).
+
+% Zip stage: combine multiple stages record-by-record
+generate_stage_flow(zip(Stages), InVar, OutVar, Code) :-
+    !,
+    OutVar = "zipped_result",
+    extract_stage_names(Stages, Names),
+    format_stage_list(Names, StageListStr),
+    format(string(Code),
+"    # Zip: combine outputs from multiple stages
+    def zip_generator():
+        for record in ~w:
+            for result in zip_stage(record, [~w]):
+                yield result
+    ~w = zip_generator()", [InVar, StageListStr, OutVar]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

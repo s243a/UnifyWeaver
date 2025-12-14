@@ -226,6 +226,20 @@ is_valid_stage(throttle(Ms)) :-
     integer(Ms),
     Ms > 0.
 
+% Buffer stages
+is_valid_stage(buffer(N)) :-
+    integer(N),
+    N > 0.
+is_valid_stage(debounce(Ms)) :-
+    integer(Ms),
+    Ms > 0.
+
+% Zip/combine stages
+is_valid_stage(zip(Stages)) :-
+    is_list(Stages),
+    Stages \= [],
+    maplist(is_valid_stage, Stages).
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -296,6 +310,9 @@ stage_type(timeout(_, _), timeout) :- !.
 stage_type(timeout(_, _, _), timeout) :- !.
 stage_type(rate_limit(_, _), rate_limit) :- !.
 stage_type(throttle(_), throttle) :- !.
+stage_type(buffer(_), buffer) :- !.
+stage_type(debounce(_), debounce) :- !.
+stage_type(zip(_), zip) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -422,6 +439,29 @@ validate_stage_specific(throttle(Ms), Errors) :-
     ;
         format(atom(Msg), 'throttle delay must be a positive integer (ms), got: ~w', [Ms]),
         Errors = [error(invalid_throttle, Msg)]
+    ).
+validate_stage_specific(buffer(N), Errors) :-
+    !,
+    ( integer(N), N > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'buffer size must be a positive integer, got: ~w', [N]),
+        Errors = [error(invalid_buffer_size, Msg)]
+    ).
+validate_stage_specific(debounce(Ms), Errors) :-
+    !,
+    ( integer(Ms), Ms > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'debounce delay must be a positive integer (ms), got: ~w', [Ms]),
+        Errors = [error(invalid_debounce, Msg)]
+    ).
+validate_stage_specific(zip(Stages), Errors) :-
+    !,
+    ( is_list(Stages), Stages \= [] ->
+        validate_all_stages(Stages, 1, Errors)
+    ;
+        Errors = [error(invalid_zip, 'zip requires a non-empty list of stages')]
     ).
 validate_stage_specific(_, []).
 
