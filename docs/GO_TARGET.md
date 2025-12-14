@@ -130,6 +130,43 @@ write_go_program(+GoCode, +FilePath)
 ?- write_go_program(Code, 'output/child.go').
 ```
 
+### `compile_facts_to_go/3`
+
+Export Prolog facts as a standalone Go program with struct-based data.
+
+```prolog
+compile_facts_to_go(+Pred, +Arity, -GoCode)
+```
+
+**Parameters:**
+- `Pred`: Predicate name (atom)
+- `Arity`: Number of arguments
+- `GoCode`: Generated Go code as string
+
+**Features:**
+- Generates `struct` with typed `ArgN` fields
+- `GetAllPRED() []PRED` - Returns all facts
+- `StreamPRED(fn func(PRED))` - Iterator with callback
+- `ContainsPRED(target PRED) bool` - Membership check
+
+**Example:**
+```prolog
+?- ['examples/family_tree'].
+?- go_target:compile_facts_to_go(parent, 2, Code).
+```
+
+**Generated Go:**
+```go
+type PARENT struct {
+    Arg1 string
+    Arg2 string
+}
+
+func GetAllPARENT() []PARENT { ... }
+func StreamPARENT(fn func(PARENT)) { ... }
+func ContainsPARENT(target PARENT) bool { ... }
+```
+
 ---
 
 ## Compilation Modes
