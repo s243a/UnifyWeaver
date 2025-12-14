@@ -309,7 +309,7 @@ p(A, X), A = alice
 
 This can be done during clause preprocessing (before role assignment) without changing runtime semantics for pure constraints. It pairs naturally with the disjunction-expansion work now in place.
 
-**Status:** Implemented in `feat/parameterized-queries-querymode` by normalizing query-mode clause terms so relation/recursive literals with simple constants are rewritten to fresh variables plus equality constraints.
+**Status:** Implemented in `feat/parameterized-queries-querymode` by normalizing query-mode clause terms (including aggregate subplan goals) so relation/recursive literals with simple constants are rewritten to fresh variables plus equality constraints.
 
 ## Files Referenced
 

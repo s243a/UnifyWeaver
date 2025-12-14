@@ -1443,9 +1443,10 @@ aggregate_goal_branch_terms_(Goal, [Goal|Terms], Terms).
 build_aggregate_subplan_branch_terms(GroupSpecs, HeadSpec, Type, Op, GroupVars,
         SeedNode, SeedVarMap, CorrCount, RelationsIn, ValueVar,
         Terms, BranchPlan, RelationsOut) :-
-    aggregate_subplan_roles(Terms, Roles),
-    ensure_no_aggregate_subplan_recursion(GroupSpecs, Terms),
-    fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, CorrCount, RelationsIn,
+    normalize_query_terms(Terms, NormalizedTerms),
+    aggregate_subplan_roles(NormalizedTerms, Roles),
+    ensure_no_aggregate_subplan_recursion(GroupSpecs, NormalizedTerms),
+    fold_terms(GroupSpecs, NormalizedTerms, Roles, HeadSpec, SeedNode, SeedVarMap, CorrCount, RelationsIn,
         InnerNode, InnerVarMap, _InnerWidth, RelationsOut),
     aggregate_subplan_projection(Type, Op, GroupVars, ValueVar, InnerVarMap, InnerNode, BranchPlan).
 

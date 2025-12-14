@@ -38,6 +38,7 @@
 :- dynamic user:test_sale_min_by_customer/2.
 :- dynamic user:test_sale_max_by_customer/2.
 :- dynamic user:test_sale_count_grouped/2.
+:- dynamic user:test_sale_filtered_alice_count/1.
 :- dynamic user:test_sale_customers_set/1.
 :- dynamic user:test_sale_customers_bag/1.
 :- dynamic user:test_sale_alice_or_bob_count/1.
@@ -101,6 +102,7 @@ test_csharp_query_target :-
         verify_aggregate_set_plan,
         verify_aggregate_bag_plan,
         verify_aggregate_subplan_count_with_constraint_plan,
+        verify_aggregate_subplan_count_with_constant_arg_plan,
         verify_aggregate_subplan_banned_sale_count_plan,
         verify_aggregate_subplan_disjunction_count_plan,
         verify_aggregate_subplan_nested_disjunction_count_plan,
@@ -216,6 +218,9 @@ setup_test_data :-
     )),
     assertz(user:(test_sale_filtered_count(C) :-
         aggregate_all(count, (test_sale(_, Amount), Amount > 5), C)
+    )),
+    assertz(user:(test_sale_filtered_alice_count(C) :-
+        aggregate_all(count, (test_sale(alice, Amount), Amount > 5), C)
     )),
     assertz(user:(test_banned_sale_count(C) :-
         aggregate_all(count, (test_sale(Customer, _), test_banned(Customer)), C)
@@ -386,6 +391,7 @@ cleanup_test_data :-
     retractall(user:test_sale_min_by_customer(_, _)),
     retractall(user:test_sale_max_by_customer(_, _)),
     retractall(user:test_sale_count_grouped(_, _)),
+    retractall(user:test_sale_filtered_alice_count(_)),
     retractall(user:test_sale_customers_set(_)),
     retractall(user:test_sale_customers_bag(_)),
     retractall(user:test_sale_filtered_count(_)),
@@ -796,6 +802,24 @@ verify_aggregate_subplan_count_with_constraint_plan :-
     sub_string(Source, _, _, _, 'AggregateOperation.Count'),
     sub_string(Source, _, _, _, 'SelectionNode'),
     maybe_run_query_runtime(Plan, ['2']).
+
+verify_aggregate_subplan_count_with_constant_arg_plan :-
+    csharp_query_target:build_query_plan(test_sale_filtered_alice_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(input, Agg, unit{type:unit, width:0}),
+    get_dict(op, Agg, count),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    get_dict(width, Agg, 1),
+    get_dict(subplan, Agg, Subplan),
+    sub_term(selection{type:selection, predicate:condition{left:_, type:eq, right:operand{kind:value, value:alice}}, input:_, width:_}, Subplan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Count'),
+    sub_string(Source, _, _, _, 'SelectionNode'),
+    maybe_run_query_runtime(Plan, ['1']).
 
 verify_aggregate_subplan_banned_sale_count_plan :-
     csharp_query_target:build_query_plan(test_banned_sale_count/1, [target(csharp_query)], Plan),
