@@ -13,6 +13,12 @@ See: `docs/proposals/SEMANTIC_PROJECTION_LDA.md` and `docs/proposals/COMPONENT_R
 - [x] LDA projection type module (`src/unifyweaver/runtime/lda_projection.pl`)
 - [x] Python projection class (`src/unifyweaver/targets/python_runtime/projection.py`)
 - [x] Unit tests (Python and Prolog)
+- [x] LDA_DATABASE_SCHEMA.md proposal (asymmetric embeddings, graph relations)
+- [x] LDA_TRAINING_APPROACH.md documentation
+- [x] SQLite database layer (`src/unifyweaver/targets/python_runtime/lda_database.py`)
+- [x] Database unit tests (33 tests) (`tests/core/test_lda_database.py`)
+- [x] Migration script (`scripts/migrate_to_lda_db.py`)
+- [x] Q-A pairs migrated to database (`playbooks/lda-training-data/lda.db`)
 
 ## Documentation
 
@@ -46,6 +52,19 @@ See: `docs/proposals/SEMANTIC_PROJECTION_LDA.md` and `docs/proposals/COMPONENT_R
   - Script to extract Q-A pairs from playbook runs
   - Format: `{answer_doc_id, [question_texts]}`
 
+## Database
+
+- [x] Design schema with asymmetric embedding support (input_model/output_model)
+- [x] Implement answer relations graph (chunk_of, summarizes, translates, etc.)
+- [x] SQLite + numpy files for vector storage
+- [x] Search API with projection and logging
+- [ ] Prolog interface for `find_examples/3`:
+  ```prolog
+  find_examples(TaskDescription, TopK, Examples) :-
+      invoke_component(runtime, lda_search, search(TaskDescription, TopK), results(Examples)).
+  ```
+- [ ] MCP tool for Claude integration
+
 ## Integration
 
 - [ ] Update PtSearcher to optionally use LDA projection
@@ -73,6 +92,7 @@ See: `docs/proposals/SEMANTIC_PROJECTION_LDA.md` and `docs/proposals/COMPONENT_R
 ```bash
 # Run Python tests
 python3 tests/core/test_lda_projection.py
+python3 tests/core/test_lda_database.py
 
 # Run Prolog tests
 swipl tests/core/test_component_registry.pl
@@ -86,6 +106,19 @@ python3 scripts/train_lda_projection.py \
 
 # Validate with novel queries
 python3 scripts/validate_lda_projection.py
+
+# Migrate Q-A pairs to database
+python3 scripts/migrate_to_lda_db.py
+
+# Use database for search (Python API)
+python3 -c "
+from src.unifyweaver.targets.python_runtime.lda_database import LDAProjectionDB
+from sentence_transformers import SentenceTransformer
+db = LDAProjectionDB('playbooks/lda-training-data/lda.db')
+embedder = SentenceTransformer('all-MiniLM-L6-v2')
+results = db.search_with_embedder('How to read CSV?', 1, embedder, top_k=3, log=False)
+for r in results: print(f'{r[\"score\"]:.3f} {r[\"record_id\"]}')
+"
 ```
 
 ### Sample Training Data Format
