@@ -113,3 +113,41 @@ compile_predicate_to_rust(+Predicate, +Options, -RustCode)
 write_rust_project(+RustCode, +ProjectDir)
 ```
 Generates `Cargo.toml` and `src/main.rs` in `ProjectDir`. Automatically detects dependencies (`regex`, `serde`, `serde_json`) from the code.
+
+### `compile_facts_to_rust/3`
+
+Export Prolog facts as a standalone Rust program with struct-based data.
+
+```prolog
+compile_facts_to_rust(+Pred, +Arity, -RustCode)
+```
+
+**Parameters:**
+- `Pred`: Predicate name (atom)
+- `Arity`: Number of arguments
+- `RustCode`: Generated Rust code as string
+
+**Features:**
+- Generates `#[derive(Debug, Clone, PartialEq, Eq)] struct`
+- `get_all_pred() -> Vec<PRED>` - Returns all facts
+- `stream_pred() -> impl Iterator<Item = PRED>` - Iterator
+- `contains_pred(target: &PRED) -> bool` - Membership check
+
+**Example:**
+```prolog
+?- ['examples/family_tree'].
+?- rust_target:compile_facts_to_rust(parent, 2, Code).
+```
+
+**Generated Rust:**
+```rust
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PARENT {
+    arg1: String,
+    arg2: String,
+}
+
+fn get_all_parent() -> Vec<PARENT> { ... }
+fn stream_parent() -> impl Iterator<Item = PARENT> { ... }
+fn contains_parent(target: &PARENT) -> bool { ... }
+```
