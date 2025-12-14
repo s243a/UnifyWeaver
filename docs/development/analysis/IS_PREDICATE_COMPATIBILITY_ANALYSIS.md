@@ -4,6 +4,16 @@
 **Analyst:** Claude Opus 4.5
 **Request:** Review by Codex-5.1 for potential resolution
 
+## Status Update (2025-12-14)
+
+Since this analysis was written, the query-mode compiler/runtime has expanded support for:
+- `is/2` with a **bound** LHS (or numeric literal LHS) as a **check**: compile RHS into a temp column and filter by equality.
+- Arithmetic expressions inside comparisons (e.g. `X+1 =:= 6`) by rewriting through temp arithmetic columns.
+- Disjunction (`;/2`) in **rule bodies** by expanding into multiple clause variants and emitting a `union` plan node.
+- Disjunction in **aggregate goals** (including nested disjunction inside conjunction) by compiling the aggregate goal as a union-of-branches subplan.
+
+These changes improve practical compatibility, but they do not change the core limitation: all-output query mode still cannot compile Fibonacci-style recursion because it has no relation scan to seed bindings for `N`, and recursion arguments must be computed before recursive calls.
+
 ## Executive Summary
 
 While attempting to run `playbooks/csharp_query_playbook.md`, I discovered that the Fibonacci example fails to compile. After investigation, I found that:
@@ -13,6 +23,7 @@ While attempting to run `playbooks/csharp_query_playbook.md`, I discovered that 
 3. In **parameterized** query mode (via `mode/1` input positions), the C# query target seeds bindings from inputs and uses a bottom‑up demand‑closure (`pred$need`) fixpoint so Fibonacci‑style recursion can compile and run for eligible predicates (currently non‑mutual).
 4. A secondary bug (module prefix not being stripped) was fixed during investigation.
 5. Since this analysis was written, query mode gained **bound-only stratified negation** and **correlated/grouped aggregates**; these features still have safety/stratification restrictions and do not change the all-output Fibonacci limitation.
+6. Since this analysis was written, query mode also gained **bound-LHS `is/2` checks**, **arithmetic-in-comparisons**, and **disjunction support** (rule bodies and aggregate goals).
 
 > Note on `mode/1` syntax: SWI-Prolog does not provide `:- mode(...)` as a built-in directive. In this repo, modes are read from `user:mode/1` facts (e.g., `assertz(user:mode(fib(+, -))).` in tests).
 
@@ -270,13 +281,33 @@ Document that `csharp_stream_target` and `csharp_target` are for datalog-style q
 
 This does **not** solve all-output Fibonacci, but improves compatibility for non-recursive code and for parameterized code that uses `is/2` as a *check*.
 
-Today, query mode treats `Var is Expr` as “compute a new column” and rejects `Value is Expr` / `BoundVar is Expr`.
+Historically, query mode treated `Var is Expr` as “compute a new column” and rejected `Value is Expr` / `BoundVar is Expr`.
 
 Two incremental extensions:
-1. **Allow bound-LHS `is/2` as a filter**: compile `X is Expr` (where `X` is already bound) into “compute Expr into a temp column, then compare to X, then drop the temp column”.
+1. **Allow bound-LHS `is/2` as a filter**: compile `X is Expr` (where `X` is already bound) into “compute Expr into a temp column, then compare to X”.
 2. **Allow arithmetic expressions in comparisons** (`=:=`, `<`, `>`, etc.) by using the same temp-column rewrite.
 
 Downside: more planner complexity, and it encourages using `is/2` as a constraint rather than separating “compute” (`is/2`) from “compare” (`=:=`). The rewrite approach keeps runtime changes minimal.
+
+**Status:** Implemented in `feat/parameterized-queries-querymode` and covered by `tests/core/test_csharp_query_target.pl` (`verify_is_check_literal_plan`, `verify_is_check_bound_var_plan`, `verify_arith_expr_eq_plan`, etc.).
+
+### Option F: Allow Ground Constants in Relation Literals (Quality-of-Life)
+
+Query-mode joins currently expect relation call arguments to be variables; writing `p(alice, X)` (with a ground constant in a relation argument position) triggers a `domain_error(variable, alice)` during pipeline construction.
+
+To make query mode feel closer to normal Prolog usage (and reduce boilerplate), we can desugar:
+
+```prolog
+p(alice, X)
+```
+
+into:
+
+```prolog
+p(A, X), A = alice
+```
+
+This can be done during clause preprocessing (before role assignment) without changing runtime semantics for pure constraints. It pairs naturally with the disjunction-expansion work now in place.
 
 ## Files Referenced
 
@@ -309,4 +340,4 @@ The `is/2` predicate is supported for computing derived columns from bound tuple
 
 However, with explicit input modes (`mode/1`) the query target can treat head inputs as pre‑bound, compute argument deltas legally, and (via demand closure) restrict the fixpoint to the reachable subspace. This resolves the Fibonacci case without abandoning the bottom‑up query model, while preserving the existing datalog semantics for predicates without inputs.
 
-I recommend Codex-5.1 review Options B or C if supporting recursive arithmetic predicates is a priority, or Option D if the current scope should be limited to datalog-style queries.
+I recommend Codex-5.1 review Options B or C if supporting recursive arithmetic predicates in all-output mode is a priority, or Option D if the intended scope should remain datalog-style queries. Option F is a pragmatic improvement that would make query mode less strict about constant arguments while keeping the underlying join model unchanged.
