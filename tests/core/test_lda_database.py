@@ -471,5 +471,139 @@ class TestStats(unittest.TestCase):
                 self.assertEqual(stats['num_questions'], 1)
 
 
+class TestTrainingBatches(unittest.TestCase):
+    """Test training batch tracking."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = LDAProjectionDB(self.db_path)
+
+        # Create a test JSON file
+        self.test_file = os.path.join(self.tmpdir, "qa_pairs.json")
+        with open(self.test_file, 'w') as f:
+            f.write('{"clusters": []}')
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_register_new_batch(self):
+        """Can register a new batch."""
+        batch_id, status = self.db.register_batch(self.test_file, "test-model")
+        self.assertIsInstance(batch_id, int)
+        self.assertEqual(status, 'new')
+
+    def test_register_unchanged_batch(self):
+        """Detects unchanged file."""
+        batch_id1, status1 = self.db.register_batch(self.test_file)
+        batch_id2, status2 = self.db.register_batch(self.test_file)
+
+        self.assertEqual(batch_id1, batch_id2)
+        self.assertEqual(status1, 'new')
+        self.assertEqual(status2, 'unchanged')
+
+    def test_register_modified_batch(self):
+        """Detects modified file."""
+        batch_id1, status1 = self.db.register_batch(self.test_file)
+
+        # Modify the file
+        with open(self.test_file, 'w') as f:
+            f.write('{"clusters": [], "version": 2}')
+
+        batch_id2, status2 = self.db.register_batch(self.test_file)
+
+        self.assertNotEqual(batch_id1, batch_id2)
+        self.assertEqual(status2, 'modified')
+
+    def test_get_batch(self):
+        """Can retrieve batch by ID."""
+        batch_id, _ = self.db.register_batch(self.test_file, "test-model")
+        batch = self.db.get_batch(batch_id)
+
+        self.assertEqual(batch['source_file'], self.test_file)
+        self.assertEqual(batch['model_name'], "test-model")
+        self.assertEqual(batch['status'], 'pending')
+
+    def test_update_batch_status(self):
+        """Can update batch status."""
+        batch_id, _ = self.db.register_batch(self.test_file)
+
+        self.db.update_batch_status(batch_id, 'importing', 'Starting import')
+        batch = self.db.get_batch(batch_id)
+        self.assertEqual(batch['status'], 'importing')
+        self.assertIsNotNone(batch['started_at'])
+
+        self.db.update_batch_status(batch_id, 'completed', num_clusters=5, num_questions=20)
+        batch = self.db.get_batch(batch_id)
+        self.assertEqual(batch['status'], 'completed')
+        self.assertEqual(batch['num_clusters'], 5)
+        self.assertIsNotNone(batch['completed_at'])
+
+    def test_get_pending_batches(self):
+        """Can get pending batches."""
+        self.db.register_batch(self.test_file)
+        pending = self.db.get_pending_batches()
+        self.assertEqual(len(pending), 1)
+
+    def test_get_batch_history(self):
+        """Batch status history is tracked."""
+        batch_id, _ = self.db.register_batch(self.test_file)
+        self.db.update_batch_status(batch_id, 'importing')
+        self.db.update_batch_status(batch_id, 'embedding')
+        self.db.update_batch_status(batch_id, 'completed')
+
+        history = self.db.get_batch_history(batch_id)
+        self.assertEqual(len(history), 4)  # pending + 3 updates
+        self.assertEqual(history[0]['status'], 'pending')
+        self.assertEqual(history[-1]['status'], 'completed')
+
+    def test_scan_for_new_batches(self):
+        """Can scan directory for new files."""
+        # Create additional test files
+        for i in range(3):
+            path = os.path.join(self.tmpdir, f"qa_{i}.json")
+            with open(path, 'w') as f:
+                f.write(f'{{"id": {i}}}')
+
+        results = self.db.scan_for_new_batches(self.tmpdir, "test-model")
+        self.assertEqual(len(results), 4)  # 3 new + 1 from setUp
+        self.assertTrue(all(s == 'new' for _, s in results))
+
+    def test_list_batches(self):
+        """Can list batches with filter."""
+        batch_id, _ = self.db.register_batch(self.test_file)
+        self.db.update_batch_status(batch_id, 'completed')
+
+        all_batches = self.db.list_batches()
+        self.assertEqual(len(all_batches), 1)
+
+        pending = self.db.list_batches(status='pending')
+        self.assertEqual(len(pending), 0)
+
+        completed = self.db.list_batches(status='completed')
+        self.assertEqual(len(completed), 1)
+
+    def test_failed_batch_with_error(self):
+        """Failed batches record error message."""
+        batch_id, _ = self.db.register_batch(self.test_file)
+        self.db.update_batch_status(batch_id, 'failed', error_message="Import failed: invalid JSON")
+
+        batch = self.db.get_batch(batch_id)
+        self.assertEqual(batch['status'], 'failed')
+        self.assertEqual(batch['error_message'], "Import failed: invalid JSON")
+
+        failed = self.db.get_failed_batches()
+        self.assertEqual(len(failed), 1)
+
+    def test_file_hash(self):
+        """File hash is computed correctly."""
+        hash1 = LDAProjectionDB.compute_file_hash(self.test_file)
+        self.assertEqual(len(hash1), 64)  # SHA256 hex length
+
+        # Same content = same hash
+        hash2 = LDAProjectionDB.compute_file_hash(self.test_file)
+        self.assertEqual(hash1, hash2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

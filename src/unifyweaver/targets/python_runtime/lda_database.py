@@ -16,6 +16,7 @@ Supports:
 import sqlite3
 import json
 import os
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -173,6 +174,36 @@ class LDAProjectionDB:
                 results TEXT,
                 selected_answer_id INTEGER,
                 was_helpful BOOLEAN,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Training batches
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS training_batches (
+                batch_id INTEGER PRIMARY KEY,
+                source_file TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                status TEXT CHECK(status IN ('pending', 'importing', 'embedding', 'training', 'completed', 'failed')),
+                model_name TEXT,
+                num_clusters INTEGER,
+                num_questions INTEGER,
+                projection_id INTEGER REFERENCES projections(projection_id),
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_file, file_hash)
+            )
+        """)
+
+        # Batch status history (tracks all status transitions with timestamps)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS batch_status_history (
+                history_id INTEGER PRIMARY KEY,
+                batch_id INTEGER REFERENCES training_batches(batch_id),
+                status TEXT NOT NULL,
+                message TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -907,4 +938,220 @@ class LDAProjectionDB:
         cursor.execute("SELECT COUNT(*) FROM embedding_models")
         stats['num_models'] = cursor.fetchone()[0]
 
+        cursor.execute("SELECT COUNT(*) FROM training_batches")
+        stats['num_batches'] = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM training_batches WHERE status = 'completed'")
+        stats['num_batches_completed'] = cursor.fetchone()[0]
+
         return stats
+
+    # =========================================================================
+    # Training Batches
+    # =========================================================================
+
+    @staticmethod
+    def compute_file_hash(file_path: str) -> str:
+        """Compute SHA256 hash of a file."""
+        sha256 = hashlib.sha256()
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
+    def register_batch(
+        self,
+        source_file: str,
+        model_name: str = None
+    ) -> Tuple[int, str]:
+        """Register a training batch file.
+
+        Args:
+            source_file: Path to the Q-A pairs JSON file
+            model_name: Target embedding model name
+
+        Returns:
+            Tuple of (batch_id, status) where status is:
+            - 'new': New batch registered
+            - 'unchanged': File already processed with same hash
+            - 'modified': File changed, new batch registered
+        """
+        file_hash = self.compute_file_hash(source_file)
+        cursor = self.conn.cursor()
+
+        # Check if we have this exact file+hash
+        cursor.execute("""
+            SELECT batch_id, status FROM training_batches
+            WHERE source_file = ? AND file_hash = ?
+        """, (source_file, file_hash))
+        existing = cursor.fetchone()
+
+        if existing:
+            return existing['batch_id'], 'unchanged'
+
+        # Check if file exists with different hash
+        cursor.execute("""
+            SELECT batch_id FROM training_batches
+            WHERE source_file = ? AND file_hash != ?
+        """, (source_file, file_hash))
+        modified = cursor.fetchone()
+
+        # Insert new batch
+        cursor.execute("""
+            INSERT INTO training_batches (source_file, file_hash, status, model_name)
+            VALUES (?, ?, 'pending', ?)
+        """, (source_file, file_hash, model_name))
+        batch_id = cursor.lastrowid
+
+        # Log initial status
+        self._log_batch_status(batch_id, 'pending', 'Batch registered')
+
+        self.conn.commit()
+
+        status = 'modified' if modified else 'new'
+        return batch_id, status
+
+    def _log_batch_status(self, batch_id: int, status: str, message: str = None):
+        """Log a status change to batch history."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO batch_status_history (batch_id, status, message)
+            VALUES (?, ?, ?)
+        """, (batch_id, status, message))
+
+    def update_batch_status(
+        self,
+        batch_id: int,
+        status: str,
+        message: str = None,
+        num_clusters: int = None,
+        num_questions: int = None,
+        projection_id: int = None,
+        error_message: str = None
+    ):
+        """Update batch status and optionally other fields."""
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+
+        updates = ["status = ?"]
+        params = [status]
+
+        if status == 'importing' or status == 'embedding' or status == 'training':
+            updates.append("started_at = COALESCE(started_at, ?)")
+            params.append(now)
+
+        if status == 'completed':
+            updates.append("completed_at = ?")
+            params.append(now)
+
+        if num_clusters is not None:
+            updates.append("num_clusters = ?")
+            params.append(num_clusters)
+
+        if num_questions is not None:
+            updates.append("num_questions = ?")
+            params.append(num_questions)
+
+        if projection_id is not None:
+            updates.append("projection_id = ?")
+            params.append(projection_id)
+
+        if error_message is not None:
+            updates.append("error_message = ?")
+            params.append(error_message)
+
+        params.append(batch_id)
+        cursor.execute(f"""
+            UPDATE training_batches SET {', '.join(updates)}
+            WHERE batch_id = ?
+        """, params)
+
+        # Log to history
+        self._log_batch_status(batch_id, status, message or error_message)
+
+        self.conn.commit()
+
+    def get_batch(self, batch_id: int) -> Optional[Dict]:
+        """Get batch by ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM training_batches WHERE batch_id = ?", (batch_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_batch_by_file(self, source_file: str) -> List[Dict]:
+        """Get all batches for a source file (may have multiple hashes)."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM training_batches
+            WHERE source_file = ?
+            ORDER BY created_at DESC
+        """, (source_file,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_pending_batches(self) -> List[Dict]:
+        """Get all pending batches ready for processing."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM training_batches
+            WHERE status = 'pending'
+            ORDER BY created_at ASC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_failed_batches(self) -> List[Dict]:
+        """Get all failed batches that could be retried."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM training_batches
+            WHERE status = 'failed'
+            ORDER BY created_at DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_batch_history(self, batch_id: int) -> List[Dict]:
+        """Get status history for a batch."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM batch_status_history
+            WHERE batch_id = ?
+            ORDER BY created_at ASC
+        """, (batch_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def scan_for_new_batches(self, directory: str, model_name: str = None) -> List[Tuple[int, str]]:
+        """Scan a directory for new or modified Q-A JSON files.
+
+        Args:
+            directory: Path to scan for .json files
+            model_name: Target embedding model
+
+        Returns:
+            List of (batch_id, status) tuples for registered batches
+        """
+        results = []
+        dir_path = Path(directory)
+
+        for json_file in dir_path.glob("*.json"):
+            batch_id, status = self.register_batch(str(json_file), model_name)
+            if status != 'unchanged':
+                results.append((batch_id, status))
+
+        return results
+
+    def list_batches(self, status: str = None) -> List[Dict]:
+        """List all batches, optionally filtered by status."""
+        cursor = self.conn.cursor()
+
+        if status:
+            cursor.execute("""
+                SELECT * FROM training_batches
+                WHERE status = ?
+                ORDER BY created_at DESC
+            """, (status,))
+        else:
+            cursor.execute("""
+                SELECT * FROM training_batches
+                ORDER BY created_at DESC
+            """)
+
+        return [dict(row) for row in cursor.fetchall()]

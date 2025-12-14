@@ -22,9 +22,9 @@ See: `docs/proposals/SEMANTIC_PROJECTION_LDA.md` and `docs/proposals/COMPONENT_R
 
 ## Documentation
 
-- [ ] Update main README with component registry section
-- [ ] Add usage examples for LDA projection
-- [ ] Document how to train W matrix from Q-A pairs
+- [x] Update docs/README.md with LDA section
+- [x] Update scripts/README.md with training scripts
+- [x] Update proposals/README.md with new proposals
 - [ ] Add architecture diagram showing component registry flow
 
 ## Testing & Validation
@@ -58,12 +58,34 @@ See: `docs/proposals/SEMANTIC_PROJECTION_LDA.md` and `docs/proposals/COMPONENT_R
 - [x] Implement answer relations graph (chunk_of, summarizes, translates, etc.)
 - [x] SQLite + numpy files for vector storage
 - [x] Search API with projection and logging
+- [x] Training batch tracking with file hash detection
 - [ ] Prolog interface for `find_examples/3`:
   ```prolog
   find_examples(TaskDescription, TopK, Examples) :-
       invoke_component(runtime, lda_search, search(TaskDescription, TopK), results(Examples)).
   ```
-- [ ] MCP tool for Claude integration
+
+### Training Batch Tracking (Implemented)
+
+Tracks which Q-A data files have been trained on with SHA256 file hashes:
+
+```bash
+# Scan for new/modified files
+python3 scripts/migrate_to_lda_db.py --scan --input playbooks/lda-training-data/raw/
+
+# Process all pending batches
+python3 scripts/migrate_to_lda_db.py --process-pending
+
+# Retry failed batches
+python3 scripts/migrate_to_lda_db.py --retry-failed
+
+# List all batches
+python3 scripts/migrate_to_lda_db.py --list-batches
+```
+
+Status history is tracked with timestamps for each transition:
+- pending → importing → embedding → training → completed
+- Failed batches record error messages for debugging
 
 ## Integration
 
@@ -81,6 +103,7 @@ See: `docs/proposals/SEMANTIC_PROJECTION_LDA.md` and `docs/proposals/COMPONENT_R
 
 - [ ] Go backend for LDA projection (avoid Python subprocess overhead)
 - [ ] Rust backend for LDA projection
+- [ ] MCP tool for Claude integration (useful for server-based deployments)
 - [ ] Hot-reload support for W matrix updates
 - [ ] Per-domain projection matrices
 - [ ] Multiple attention heads (separate input/output projections)
