@@ -32,6 +32,8 @@ Enhanced pipeline chaining adds the following stage types to the standard predic
 | `on_error(Handler)` | Global error handler for the pipeline |
 | `timeout(Stage, Ms)` | Execute stage with time limit |
 | `timeout(Stage, Ms, Fallback)` | Execute stage with time limit, use fallback on timeout |
+| `rate_limit(N, Per)` | Limit throughput to N records per time unit |
+| `throttle(Ms)` | Add fixed delay between records |
 | `Pred/Arity` | Standard predicate stage (unchanged) |
 
 ### Fan-out vs Parallel
@@ -725,6 +727,63 @@ compile_enhanced_pipeline([
     timeout(call_external_api/1, 3000, use_cached_response/1),
     output/1
 ], [pipeline_name(api_with_timeout)], Code).
+```
+
+### Rate Limiting (`rate_limit/2`, `throttle/1`)
+
+Control the throughput of record processing:
+
+```prolog
+% Limit to 10 records per second
+rate_limit(10, second)
+
+% Limit to 100 records per minute
+rate_limit(100, minute)
+
+% Limit to 1000 records per hour
+rate_limit(1000, hour)
+
+% Custom: 5 records per 500ms
+rate_limit(5, ms(500))
+
+% Fixed delay of 100ms between records
+throttle(100)
+```
+
+**Time Units:** `second`, `minute`, `hour`, `ms(X)`
+
+**How It Works:**
+- `rate_limit(N, Per)` - Uses interval-based timing to ensure N records per time period
+- `throttle(Ms)` - Adds a fixed delay of Ms milliseconds between each record
+
+**Use Cases:**
+- API rate limiting to respect external service quotas
+- Database write throttling to prevent overwhelming backends
+- Event processing pacing for downstream systems
+- Preventing resource exhaustion in high-throughput pipelines
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    rate_limit(100, second),  % Max 100 records/second
+    call_api/1,
+    throttle(50),             % 50ms delay between API calls
+    output/1
+], [pipeline_name(throttled_api)], Code).
+```
+
+**Combined with Other Stages:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    rate_limit(10, second),
+    try_catch(
+        timeout(call_external_api/1, 3000),
+        use_cached_response/1
+    ),
+    output/1
+], [pipeline_name(rate_limited_with_fallback)], Code).
 ```
 
 ### Nested Error Handling

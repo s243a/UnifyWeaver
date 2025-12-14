@@ -8787,6 +8787,39 @@ func timeoutStageWithFallback(records []Record, stage StageFunc, timeoutMs int, 
 \treturn result
 }
 
+// rateLimitStage limits throughput to count records per interval
+func rateLimitStage(records []Record, count int, intervalMs int) []Record {
+\tvar result []Record
+\tinterval := time.Duration(intervalMs) * time.Millisecond / time.Duration(count)
+\tvar lastTime time.Time
+
+\tfor _, record := range records {
+\t\tif !lastTime.IsZero() {
+\t\t\telapsed := time.Since(lastTime)
+\t\t\tif elapsed < interval {
+\t\t\t\ttime.Sleep(interval - elapsed)
+\t\t\t}
+\t\t}
+\t\tlastTime = time.Now()
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
+// throttleStage adds fixed delay between records
+func throttleStage(records []Record, delayMs int) []Record {
+\tvar result []Record
+\tdelay := time.Duration(delayMs) * time.Millisecond
+
+\tfor i, record := range records {
+\t\tif i > 0 {
+\t\t\ttime.Sleep(delay)
+\t\t}
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -8850,6 +8883,8 @@ generate_go_single_enhanced_stage(timeout(Stage, _, Fallback), Code) :-
     generate_go_single_enhanced_stage(Stage, StageCode),
     generate_go_single_enhanced_stage(Fallback, FallbackCode),
     format(string(Code), "~w~w", [StageCode, FallbackCode]).
+generate_go_single_enhanced_stage(rate_limit(_, _), "") :- !.
+generate_go_single_enhanced_stage(throttle(_), "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -9144,6 +9179,23 @@ generate_go_stage_flow(timeout(Stage, Ms, Fallback), InVar, OutVar, Code) :-
 "\t// Timeout: ~w with ~wms limit, fallback to ~w
 \t~w := timeoutStageWithFallback(~w, ~w, ~w, ~w)", [StageName, Ms, FallbackName, OutVar, InVar, StageName, Ms, FallbackName]).
 
+% Rate limit stage: limit throughput
+generate_go_stage_flow(rate_limit(N, Per), InVar, OutVar, Code) :-
+    !,
+    OutVar = "rateLimitedResult",
+    time_unit_to_ms(Per, IntervalMs),
+    format(string(Code),
+"\t// Rate Limit: ~w per ~w
+\t~w := rateLimitStage(~w, ~w, ~w)", [N, Per, OutVar, InVar, N, IntervalMs]).
+
+% Throttle stage: fixed delay between records
+generate_go_stage_flow(throttle(Ms), InVar, OutVar, Code) :-
+    !,
+    OutVar = "throttledResult",
+    format(string(Code),
+"\t// Throttle: ~wms delay between records
+\t~w := throttleStage(~w, ~w)", [Ms, OutVar, InVar, Ms]).
+
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -9177,6 +9229,15 @@ extract_go_stage_name(_, unknown_stage).
 extract_go_retry_options(Options, DelayMs, Backoff) :-
     ( member(delay(D), Options) -> DelayMs = D ; DelayMs = 0 ),
     ( member(backoff(B), Options) -> Backoff = B ; Backoff = none ).
+
+%% time_unit_to_ms(+Unit, -Ms)
+%  Convert time unit to milliseconds.
+time_unit_to_ms(second, 1000) :- !.
+time_unit_to_ms(minute, 60000) :- !.
+time_unit_to_ms(hour, 3600000) :- !.
+time_unit_to_ms(ms(X), X) :- !.
+time_unit_to_ms(X, X) :- integer(X), !.
+time_unit_to_ms(_, 1000).
 
 %% format_go_stage_list(+Names, -ListStr)
 %  Format stage names as Go function references.
