@@ -1507,8 +1507,7 @@ aggregate_subplan_roles([Term|Rest], [Role|Roles]) :-
                [Term]),
         fail
     ;   aggregate_goal(Term)
-    ->  format(user_error, 'C# query target: nested aggregate in aggregate goal not supported (~q).~n', [Term]),
-        fail
+    ->  Role = aggregate
     ;   Role = relation
     ),
     aggregate_subplan_roles(Rest, Roles).
