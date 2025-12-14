@@ -556,7 +556,7 @@ compile_mutual_recursion_rust(Predicates, _Options, RustCode) :-
     % Generate functions for each predicate
     findall(FuncCode, (
         member(Pred/Arity, Predicates),
-        generate_mutual_function_rust(Pred, Arity, Predicates, FuncCode)
+        generate_mutual_function_rust(Pred, Arity, Predicates, GroupName, FuncCode)
     ), FuncCodes),
     atomic_list_concat(FuncCodes, '\n\n', FunctionsCode),
     
@@ -586,8 +586,8 @@ fn main() {
 }
 ', [GroupName, GroupName, FunctionsCode, generate_rust_match_arms(Predicates)]).
 
-%% generate_mutual_function_rust(+Pred, +Arity, +AllPredicates, -Code)
-generate_mutual_function_rust(Pred, Arity, AllPredicates, Code) :-
+%% generate_mutual_function_rust(+Pred, +Arity, +AllPredicates, +GroupName, -Code)
+generate_mutual_function_rust(Pred, Arity, AllPredicates, GroupName, Code) :-
     atom_string(Pred, PredStr),
     
     % Get clauses for this predicate
@@ -598,10 +598,10 @@ generate_mutual_function_rust(Pred, Arity, AllPredicates, Code) :-
     partition(is_mutual_recursive_clause_rust(AllPredicates), Clauses, RecClauses, BaseClauses),
     
     % Generate base case code
-    generate_mutual_base_cases_rust(BaseClauses, PredStr, BaseCaseCode),
+    generate_mutual_base_cases_rust(BaseClauses, GroupName, BaseCaseCode),
     
     % Generate recursive case code  
-    generate_mutual_recursive_cases_rust(RecClauses, AllPredicates, PredStr, RecCaseCode),
+    generate_mutual_recursive_cases_rust(RecClauses, AllPredicates, GroupName, RecCaseCode),
     
     format(string(Code),
 '/// ~w is part of mutual recursion group
@@ -617,7 +617,7 @@ fn ~w(n: i32) -> bool {
     
     // No match
     false
-}', [PredStr, PredStr, PredStr, PredStr, BaseCaseCode, RecCaseCode]).
+}', [PredStr, PredStr, PredStr, GroupName, BaseCaseCode, RecCaseCode]).
 
 %% is_mutual_recursive_clause_rust(+AllPredicates, +Clause)
 is_mutual_recursive_clause_rust(AllPredicates, _Head-Body) :-
@@ -636,28 +636,40 @@ body_contains_goal_rust(Body, Goal) :-
     functor(Body, F, A),
     functor(Goal, F, A).
 
-%% generate_mutual_base_cases_rust(+BaseClauses, +PredStr, -Code)
+%% generate_mutual_base_cases_rust(+BaseClauses, +GroupName, -Code)
 generate_mutual_base_cases_rust([], _, "    // No base cases").
-generate_mutual_base_cases_rust(BaseClauses, PredStr, Code) :-
+generate_mutual_base_cases_rust(BaseClauses, GroupName, Code) :-
     BaseClauses \= [],
     findall(CaseCode, (
         member(Head-true, BaseClauses),
         Head =.. [_|[Value]],
-        format(string(CaseCode), '    if n == ~w {\n        ~w_MEMO.with(|m| m.borrow_mut().insert(key.clone(), true));\n        return true;\n    }', [Value, PredStr])
+        format(string(CaseCode), '    if n == ~w {\n        ~w_MEMO.with(|m| m.borrow_mut().insert(key.clone(), true));\n        return true;\n    }', [Value, GroupName])
     ), CaseCodes),
     atomic_list_concat(CaseCodes, '\n', Code).
 
-%% generate_mutual_recursive_cases_rust(+RecClauses, +AllPredicates, +PredStr, -Code)
+%% generate_mutual_recursive_cases_rust(+RecClauses, +AllPredicates, +GroupName, -Code)
 generate_mutual_recursive_cases_rust([], _, _, "    // No recursive cases").
-generate_mutual_recursive_cases_rust(RecClauses, _AllPredicates, _PredStr, Code) :-
-    RecClauses \= [],
+generate_mutual_recursive_cases_rust([_Head-Body|_], AllPredicates, GroupName, Code) :-
+    % Extract the called predicate from the body
+    find_mutual_call_rust(Body, AllPredicates, CalledPred),
+    atom_string(CalledPred, CalledPredStr),
     format(string(Code),
 '    // Recursive case
     if n > 0 {
-        let result = /* call to other predicate */ false;
-        // Memoize and return
+        let result = ~w(n - 1);
+        ~w_MEMO.with(|m| m.borrow_mut().insert(key, result));
         return result;
-    }', []).
+    }', [CalledPredStr, GroupName]).
+
+%% find_mutual_call_rust(+Body, +AllPredicates, -CalledPred)
+find_mutual_call_rust((A, B), AllPredicates, CalledPred) :- !,
+    (   find_mutual_call_rust(A, AllPredicates, CalledPred)
+    ;   find_mutual_call_rust(B, AllPredicates, CalledPred)
+    ).
+find_mutual_call_rust(Goal, AllPredicates, CalledPred) :-
+    Goal =.. [Pred|_],
+    member(Pred/_Arity, AllPredicates),
+    CalledPred = Pred.
 
 %% generate_rust_match_arms(+Predicates)
 generate_rust_match_arms(Predicates) :-

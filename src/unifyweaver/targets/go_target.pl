@@ -2081,7 +2081,7 @@ compile_mutual_recursion_go(Predicates, _Options, GoCode) :-
     % Generate functions for each predicate
     findall(FuncCode, (
         member(Pred/Arity, Predicates),
-        generate_mutual_function_go(Pred, Arity, Predicates, FuncCode)
+        generate_mutual_function_go(Pred, Arity, Predicates, GroupName, FuncCode)
     ), FuncCodes),
     atomic_list_concat(FuncCodes, '\n\n', FunctionsCode),
     
@@ -2111,8 +2111,8 @@ func main() {
 }
 ', [GroupName, GroupName, FunctionsCode, generate_go_switch_cases(Predicates)]).
 
-%% generate_mutual_function_go(+Pred, +Arity, +AllPredicates, -Code)
-generate_mutual_function_go(Pred, Arity, AllPredicates, Code) :-
+%% generate_mutual_function_go(+Pred, +Arity, +AllPredicates, +GroupName, -Code)
+generate_mutual_function_go(Pred, Arity, AllPredicates, GroupName, Code) :-
     atom_string(Pred, PredStr),
     
     % Get clauses for this predicate
@@ -2123,10 +2123,10 @@ generate_mutual_function_go(Pred, Arity, AllPredicates, Code) :-
     partition(is_mutual_recursive_clause_go(AllPredicates), Clauses, RecClauses, BaseClauses),
     
     % Generate base case code
-    generate_mutual_base_cases_go(BaseClauses, BaseCaseCode),
+    generate_mutual_base_cases_go(BaseClauses, GroupName, BaseCaseCode),
     
     % Generate recursive case code
-    generate_mutual_recursive_cases_go(RecClauses, AllPredicates, RecCaseCode),
+    generate_mutual_recursive_cases_go(RecClauses, AllPredicates, GroupName, RecCaseCode),
     
     format(string(Code),
 '// ~w is part of mutual recursion group
@@ -2161,29 +2161,41 @@ body_contains_goal_go(Body, Goal) :-
     functor(Body, F, A),
     functor(Goal, F, A).
 
-%% generate_mutual_base_cases_go(+BaseClauses, -Code)
-generate_mutual_base_cases_go([], "\t// No base cases").
-generate_mutual_base_cases_go(BaseClauses, Code) :-
+%% generate_mutual_base_cases_go(+BaseClauses, +GroupName, -Code)
+generate_mutual_base_cases_go([], _, "\t// No base cases").
+generate_mutual_base_cases_go(BaseClauses, GroupName, Code) :-
     BaseClauses \= [],
     findall(CaseCode, (
         member(Head-true, BaseClauses),
         Head =.. [_|[Value]],
-        format(string(CaseCode), '\tif n == ~w {\n\t\t~wMemo[key] = true\n\t\treturn true\n\t}', [Value, PredStr])
+        format(string(CaseCode), '\tif n == ~w {\n\t\t~wMemo[key] = true\n\t\treturn true\n\t}', [Value, GroupName])
     ), CaseCodes),
     atomic_list_concat(CaseCodes, '\n', Code).
 
-%% generate_mutual_recursive_cases_go(+RecClauses, +AllPredicates, -Code)
-generate_mutual_recursive_cases_go([], _, "\t// No recursive cases").
-generate_mutual_recursive_cases_go(RecClauses, _AllPredicates, Code) :-
-    RecClauses \= [],
-    % For is_even/is_odd pattern: check n > 0, call other predicate with n-1
+%% generate_mutual_recursive_cases_go(+RecClauses, +AllPredicates, +GroupName, -Code)
+generate_mutual_recursive_cases_go([], _, _, "\t// No recursive cases").
+generate_mutual_recursive_cases_go([Head-Body|_], AllPredicates, GroupName, Code) :-
+    % Extract the called predicate from the body
+    find_mutual_call_go(Body, AllPredicates, CalledPred),
+    atom_string(CalledPred, CalledPredStr),
     format(string(Code),
 '\t// Recursive case
 \tif n > 0 {
-\t\tresult := /* call to other predicate */ false
-\t\t// Memoize and return
+\t\tresult := ~w(n - 1)
+\t\t~wMemo[key] = result
 \t\treturn result
-\t}', []).
+\t}', [CalledPredStr, GroupName]).
+
+%% find_mutual_call_go(+Body, +AllPredicates, -CalledPred)
+%  Find which predicate from the group is called in the body
+find_mutual_call_go((A, B), AllPredicates, CalledPred) :- !,
+    (   find_mutual_call_go(A, AllPredicates, CalledPred)
+    ;   find_mutual_call_go(B, AllPredicates, CalledPred)
+    ).
+find_mutual_call_go(Goal, AllPredicates, CalledPred) :-
+    Goal =.. [Pred|_],
+    member(Pred/_Arity, AllPredicates),
+    CalledPred = Pred.
 
 %% generate_go_switch_cases(+Predicates)
 generate_go_switch_cases(Predicates) :-
