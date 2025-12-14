@@ -463,6 +463,8 @@ verify_join_plan :-
         width:_
     },
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:_}]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'KeyJoinNode'),
     maybe_run_query_runtime(Plan, ['alice,charlie']).
 
 verify_selection_plan :-
