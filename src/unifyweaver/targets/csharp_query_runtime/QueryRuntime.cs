@@ -490,7 +490,7 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (!cache.TryGetValue(wrapper, out var extensions))
                 {
-                    var innerContext = new EvaluationContext(new[] { parameters });
+                    var innerContext = new EvaluationContext(new[] { parameters }, context);
                     var rows = Evaluate(aggregate.Subplan, innerContext).ToList();
                     extensions = ComputeAggregateExtensionsFromRows(rows, aggregate);
                     cache[wrapper] = extensions;
@@ -1496,9 +1496,11 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class EvaluationContext
         {
-            public EvaluationContext(IEnumerable<object[]>? parameters = null)
+            public EvaluationContext(IEnumerable<object[]>? parameters = null, EvaluationContext? parent = null)
             {
                 Parameters = parameters?.ToList() ?? new List<object[]>();
+                Facts = parent?.Facts ?? new Dictionary<PredicateId, List<object[]>>();
+                FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
             }
 
             public PredicateId Current { get; set; }
@@ -1512,9 +1514,9 @@ namespace UnifyWeaver.QueryRuntime
 
             public Dictionary<string, List<object[]>> Materialized { get; } = new();
 
-            public Dictionary<PredicateId, List<object[]>> Facts { get; } = new();
+            public Dictionary<PredicateId, List<object[]>> Facts { get; }
 
-            public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; } = new();
+            public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; }
         }
 
         private sealed record RowWrapper(object[] Row);
