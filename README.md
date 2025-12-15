@@ -50,14 +50,14 @@ Different targets support different recursion patterns. Choose based on your nee
 
 Additional language targets for native compilation, FFI, and functional programming:
 
-| Pattern | LLVM | WASM | Haskell | VB.NET | F# | Java | Jython | Kotlin |
-|---------|:----:|:----:|:-------:|:------:|:--:|:----:|:------:|:------:|
-| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Tree Recursion** | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Transitive Closure** | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Mutual Recursion** | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Aggregations** | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Pattern | LLVM | WASM | Haskell | TypeScript | VB.NET | F# | Java | Jython | Kotlin |
+|---------|:----:|:----:|:-------:|:----------:|:------:|:--:|:----:|:------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 **Key:**
 - ✅ Full support with optimizations (BFS, loops, memoization, semi-naive)
