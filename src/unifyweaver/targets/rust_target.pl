@@ -2460,6 +2460,32 @@ fn record_key(record: &Record) -> String {
         .collect::<Vec<_>>()
         .join(\",\")
 }
+
+/// Interleave: Round-robin interleave records from multiple streams.
+fn interleave_stage(streams: &[Vec<Record>]) -> Vec<Record> {
+    if streams.is_empty() {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let max_len = streams.iter().map(|s| s.len()).max().unwrap_or(0);
+    for i in 0..max_len {
+        for stream in streams {
+            if i < stream.len() {
+                result.push(stream[i].clone());
+            }
+        }
+    }
+    result
+}
+
+/// Concat: Concatenate multiple streams sequentially.
+fn concat_stage(streams: &[Vec<Record>]) -> Vec<Record> {
+    let mut result = Vec::new();
+    for stream in streams {
+        result.extend(stream.iter().cloned());
+    }
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2678,6 +2704,12 @@ generate_rust_single_enhanced_stage(distinct, "") :- !.
 generate_rust_single_enhanced_stage(distinct_by(_), "") :- !.
 generate_rust_single_enhanced_stage(dedup, "") :- !.
 generate_rust_single_enhanced_stage(dedup_by(_), "") :- !.
+generate_rust_single_enhanced_stage(interleave(SubStages), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(concat(SubStages), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -3108,6 +3140,36 @@ generate_rust_stage_flow(dedup_by(Field), InVar, OutVar, Code) :-
     format(string(Code),
 "    // Dedup By: remove consecutive duplicates based on '~w' field
     let ~w = dedup_by_stage(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
+
+% Interleave stage: round-robin interleave from multiple stage outputs
+generate_rust_stage_flow(interleave(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "interleaved_~w_result", [N]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    // Interleave: round-robin from ~w stage outputs
+    let interleave_streams_~w: Vec<Vec<Record>> = vec![~w]
+        .iter()
+        .map(|stage_fn| stage_fn(&~w))
+        .collect();
+    let ~w = interleave_stage(&interleave_streams_~w);", [N, N, StageListStr, InVar, OutVar, N]).
+
+% Concat stage: sequential concatenation of multiple stage outputs
+generate_rust_stage_flow(concat(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "concatenated_~w_result", [N]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    // Concat: sequential concatenation of ~w stage outputs
+    let concat_streams_~w: Vec<Vec<Record>> = vec![~w]
+        .iter()
+        .map(|stage_fn| stage_fn(&~w))
+        .collect();
+    let ~w = concat_stage(&concat_streams_~w);", [N, N, StageListStr, InVar, OutVar, N]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

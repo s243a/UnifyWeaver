@@ -282,6 +282,16 @@ is_valid_stage(dedup).
 is_valid_stage(dedup_by(Field)) :-
     atom(Field).
 
+% Interleave/concat stages
+is_valid_stage(interleave(Stages)) :-
+    is_list(Stages),
+    Stages \= [],
+    maplist(is_valid_stage, Stages).
+is_valid_stage(concat(Stages)) :-
+    is_list(Stages),
+    Stages \= [],
+    maplist(is_valid_stage, Stages).
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -368,6 +378,8 @@ stage_type(distinct, distinct) :- !.
 stage_type(distinct_by(_), distinct_by) :- !.
 stage_type(dedup, dedup) :- !.
 stage_type(dedup_by(_), dedup_by) :- !.
+stage_type(interleave(_), interleave) :- !.
+stage_type(concat(_), concat) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -607,6 +619,20 @@ validate_stage_specific(dedup_by(Field), Errors) :-
     ;
         format(atom(Msg), 'dedup_by field must be an atom, got: ~w', [Field]),
         Errors = [error(invalid_dedup_by, Msg)]
+    ).
+validate_stage_specific(interleave(Stages), Errors) :-
+    !,
+    ( is_list(Stages), Stages \= [] ->
+        validate_all_stages(Stages, 1, Errors)
+    ;
+        Errors = [error(invalid_interleave, 'interleave requires a non-empty list of stages')]
+    ).
+validate_stage_specific(concat(Stages), Errors) :-
+    !,
+    ( is_list(Stages), Stages \= [] ->
+        validate_all_stages(Stages, 1, Errors)
+    ;
+        Errors = [error(invalid_concat, 'concat requires a non-empty list of stages')]
     ).
 validate_stage_specific(_, []).
 

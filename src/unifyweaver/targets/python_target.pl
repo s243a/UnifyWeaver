@@ -5350,6 +5350,31 @@ def dedup_by_stage(stream, field):
             last_value = value
             yield record
 
+def interleave_stage(streams):
+    '''
+    Interleave: Round-robin interleave records from multiple streams.
+    Takes one record from each stream in turn until all are exhausted.
+    '''
+    iterators = [iter(s) for s in streams]
+    active = list(range(len(iterators)))
+    while active:
+        next_active = []
+        for i in active:
+            try:
+                yield next(iterators[i])
+                next_active.append(i)
+            except StopIteration:
+                pass
+        active = next_active
+
+def concat_stage(streams):
+    '''
+    Concat: Concatenate multiple streams sequentially.
+    Yields all records from first stream, then second, etc.
+    '''
+    for stream in streams:
+        yield from stream
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5436,6 +5461,12 @@ generate_single_enhanced_stage(distinct, "") :- !.
 generate_single_enhanced_stage(distinct_by(_), "") :- !.
 generate_single_enhanced_stage(dedup, "") :- !.
 generate_single_enhanced_stage(dedup_by(_), "") :- !.
+generate_single_enhanced_stage(interleave(SubStages), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(concat(SubStages), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, Code).
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5860,6 +5891,28 @@ generate_stage_flow(dedup_by(Field), InVar, OutVar, Code) :-
     format(string(Code),
 "    # Dedup By: remove consecutive duplicates based on '~w' field
     ~w = dedup_by_stage(~w, '~w')", [Field, OutVar, InVar, Field]).
+
+% Interleave stage: round-robin interleave from multiple stages
+generate_stage_flow(interleave(Stages), InVar, OutVar, Code) :-
+    !,
+    length(Stages, N),
+    format(atom(OutVar), "interleaved_~w", [N]),
+    extract_stage_names(Stages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Interleave: round-robin from ~w stages
+    ~w = interleave_stage([~w(~w) for stage_fn in [~w]])", [N, OutVar, "stage_fn", InVar, StageListStr]).
+
+% Concat stage: sequential concatenation of multiple stages
+generate_stage_flow(concat(Stages), InVar, OutVar, Code) :-
+    !,
+    length(Stages, N),
+    format(atom(OutVar), "concatenated_~w", [N]),
+    extract_stage_names(Stages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Concat: sequential concatenation of ~w stages
+    ~w = concat_stage([~w(~w) for stage_fn in [~w]])", [N, OutVar, "stage_fn", InVar, StageListStr]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
