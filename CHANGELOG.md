@@ -231,6 +231,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_debounce_stage.sh` — Integration tests (16 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Branch Stage** - Conditional routing within pipeline
+  - Branch syntax:
+    - `branch(Cond, TrueStage, FalseStage)` — Route records based on condition
+    - `branch(Cond/Arity, TrueStage, FalseStage)` — With explicit arity
+  - Behavior:
+    - Records matching condition go through TrueStage
+    - Records not matching go through FalseStage
+    - Results from both branches are combined in output
+    - Supports nested branches and complex sub-stages
+  - Use cases:
+    - A/B processing paths
+    - Conditional transformations
+    - Error vs success routing
+    - Type-based record handling
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_branch_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.

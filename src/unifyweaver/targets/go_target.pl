@@ -9673,6 +9673,29 @@ func debounceStage(records []Record, ms int64, timestampField string) []Record {
 \treturn result
 }
 
+// branchStage routes records through different stages based on condition
+// Records matching condition go through trueStage, others through falseStage
+func branchStage(records []Record, condFn func(Record) bool, trueFn func([]Record) []Record, falseFn func([]Record) []Record) []Record {
+\tvar trueRecords, falseRecords []Record
+
+\tfor _, record := range records {
+\t\tif condFn(record) {
+\t\t\ttrueRecords = append(trueRecords, record)
+\t\t} else {
+\t\t\tfalseRecords = append(falseRecords, record)
+\t\t}
+\t}
+
+\tvar result []Record
+\tif len(trueRecords) > 0 {
+\t\tresult = append(result, trueFn(trueRecords)...)
+\t}
+\tif len(falseRecords) > 0 {
+\t\tresult = append(result, falseFn(falseRecords)...)
+\t}
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9773,6 +9796,11 @@ generate_go_single_enhanced_stage(flatten, "") :- !.
 generate_go_single_enhanced_stage(flatten(_), "") :- !.
 generate_go_single_enhanced_stage(debounce(_), "") :- !.
 generate_go_single_enhanced_stage(debounce(_, _), "") :- !.
+generate_go_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
+    !,
+    generate_go_single_enhanced_stage(TrueStage, TrueCode),
+    generate_go_single_enhanced_stage(FalseStage, FalseCode),
+    format(string(Code), "~w~w", [TrueCode, FalseCode]).
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -10315,6 +10343,23 @@ generate_go_stage_flow(debounce(Ms, Field), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// Debounce: emit after ~wms silence (using '~w' timestamp field)
 \t~w := debounceStage(~w, ~w, \"~w\")", [Ms, Field, OutVar, InVar, Ms, Field]).
+
+% Branch stage: conditional routing
+generate_go_stage_flow(branch(Cond, TrueStage, FalseStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "branchResult",
+    % Extract condition predicate name
+    ( Cond = CondName/_ -> true ; CondName = Cond ),
+    % Extract true/false stage names
+    ( TrueStage = TrueName/_ -> true ; TrueName = TrueStage ),
+    ( FalseStage = FalseName/_ -> true ; FalseName = FalseStage ),
+    format(string(Code),
+"\t// Branch: if ~w then ~w else ~w
+\t~w := branchStage(~w,
+\t\tfunc(r Record) bool { return ~w(r) },
+\t\tfunc(rs []Record) []Record { return ~w(rs) },
+\t\tfunc(rs []Record) []Record { return ~w(rs) })",
+    [CondName, TrueName, FalseName, OutVar, InVar, CondName, TrueName, FalseName]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

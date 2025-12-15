@@ -327,6 +327,18 @@ is_valid_stage(debounce(Ms, Field)) :-
     Ms > 0,
     atom(Field).
 
+% Branch stage - conditional branching within pipeline
+is_valid_stage(branch(Cond, TrueStage, FalseStage)) :-
+    atom(Cond),
+    is_valid_stage(TrueStage),
+    is_valid_stage(FalseStage).
+is_valid_stage(branch(Cond/Arity, TrueStage, FalseStage)) :-
+    atom(Cond),
+    integer(Arity),
+    Arity >= 0,
+    is_valid_stage(TrueStage),
+    is_valid_stage(FalseStage).
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -422,6 +434,7 @@ stage_type(flatten, flatten) :- !.
 stage_type(flatten(_), flatten) :- !.
 stage_type(debounce(_), debounce) :- !.
 stage_type(debounce(_, _), debounce) :- !.
+stage_type(branch(_, _, _), branch) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -720,6 +733,15 @@ validate_stage_specific(debounce(Ms, Field), Errors) :-
         Errors = []
     ;
         Errors = [error(invalid_debounce, 'debounce(Ms, Field) requires positive integer ms and field atom')]
+    ).
+validate_stage_specific(branch(Cond, TrueStage, FalseStage), Errors) :-
+    !,
+    ( (atom(Cond) ; Cond = _/Arity, integer(Arity), Arity >= 0) ->
+        validate_stage_specific(TrueStage, TrueErrors),
+        validate_stage_specific(FalseStage, FalseErrors),
+        append(TrueErrors, FalseErrors, Errors)
+    ;
+        Errors = [error(invalid_branch, 'branch requires condition predicate, true stage, and false stage')]
     ).
 validate_stage_specific(_, []).
 
