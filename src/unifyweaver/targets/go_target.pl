@@ -9565,6 +9565,18 @@ func mergeSortedStage(streams [][]Record, field string, ascending bool) []Record
 \treturn result
 }
 
+// tapStage executes a side effect for each record without modifying the stream
+// Useful for logging, metrics, debugging, or other observations
+func tapStage(records []Record, sideEffect func(Record)) []Record {
+\tfor _, record := range records {
+\t\tfunc() {
+\t\t\tdefer func() { recover() }() // Side effects should not interrupt pipeline
+\t\t\tsideEffect(record)
+\t\t}()
+\t}
+\treturn records
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9660,6 +9672,7 @@ generate_go_single_enhanced_stage(merge_sorted(SubStages, _Field), Code) :-
 generate_go_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
     !,
     generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(tap(_), "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -10161,6 +10174,15 @@ generate_go_stage_flow(merge_sorted(SubStages, Field, Dir), InVar, OutVar, Code)
 \t\tmergeSortedStreams~w~w = append(mergeSortedStreams~w~w, stageFn(~w))
 \t}
 \t~w := mergeSortedStage(mergeSortedStreams~w~w, \"~w\", ~w)", [N, Field, Dir, N, Dir, StageListStr, N, Dir, N, Dir, InVar, OutVar, N, Dir, Field, Ascending]).
+
+% Tap stage: execute side effect without modifying stream
+generate_go_stage_flow(tap(Pred), InVar, OutVar, Code) :-
+    !,
+    ( Pred = PredName/_ -> true ; PredName = Pred ),
+    format(atom(OutVar), "tapped~wResult", [PredName]),
+    format(string(Code),
+"\t// Tap: execute ~w for side effects (logging/metrics)
+\t~w := tapStage(~w, ~w)", [PredName, OutVar, InVar, PredName]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

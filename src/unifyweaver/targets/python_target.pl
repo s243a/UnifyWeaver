@@ -5431,6 +5431,19 @@ def merge_sorted_stage(streams, field, reverse=False):
             except StopIteration:
                 iterators[stream_idx] = None
 
+def tap_stage(stream, side_effect_fn):
+    '''
+    Tap: Execute side effect for each record without modifying the stream.
+    Useful for logging, metrics, debugging, or other observations.
+    The side_effect_fn is called with each record but its return value is ignored.
+    '''
+    for record in stream:
+        try:
+            side_effect_fn(record)
+        except Exception:
+            pass  # Side effects should not interrupt the pipeline
+        yield record
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5529,6 +5542,7 @@ generate_single_enhanced_stage(merge_sorted(SubStages, _Field), Code) :-
 generate_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
     !,
     generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(tap(_), "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5998,6 +6012,15 @@ generate_stage_flow(merge_sorted(Stages, Field, Dir), InVar, OutVar, Code) :-
     format(string(Code),
 "    # Merge Sorted: merge ~w pre-sorted streams by '~w' (~w)
     ~w = merge_sorted_stage([stage_fn(~w) for stage_fn in [~w]], '~w', reverse=~w)", [N, Field, Dir, OutVar, InVar, StageListStr, Field, Reverse]).
+
+% Tap stage: execute side effect without modifying stream
+generate_stage_flow(tap(Pred), InVar, OutVar, Code) :-
+    !,
+    ( Pred = PredName/_ -> true ; PredName = Pred ),
+    format(atom(OutVar), "tapped_~w_result", [PredName]),
+    format(string(Code),
+"    # Tap: execute ~w for side effects (logging/metrics)
+    ~w = tap_stage(~w, ~w)", [PredName, OutVar, InVar, PredName]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
