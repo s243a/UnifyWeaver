@@ -138,9 +138,9 @@ Supporting `?` properly in query mode is not just a matter of final output filte
 
 Two pragmatic approaches:
 
-1. **Multiple explicit `user:mode/1` declarations per predicate** (recommended incremental path):
+1. **Multiple explicit `user:mode/1` declarations per predicate** (recommended incremental path; implemented):
    - Users declare the concrete modes they actually want (e.g., `mode(p(+, -)).`, `mode(p(-, +)).`).
-   - Codegen emits one entrypoint per declaration.
+   - Query-mode codegen emits one `Build...()` entrypoint per declaration (e.g., `BuildIn0()`, `BuildIn1()`), with `Build()` aliasing the most general variant.
 
 2. **Treat `?` as sugar that expands to concrete modes**:
    - Expand `mode(p(?, -)).` into a bounded set of concrete modes (e.g., `{mode(p(+, -)), mode(p(-, -))}`).

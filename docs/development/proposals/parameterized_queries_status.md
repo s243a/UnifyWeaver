@@ -32,6 +32,7 @@
 ## Progress update (current branch snapshot)
 - Modes are parsed and threaded through all query plans.
 - `?` (any) mode is parsed but currently rejected by the C# query target; use explicit `+`/`-` modes or multiple concrete `mode/1` facts (see `PARAMETERIZED_QUERIES_PROPOSAL.md` future section).
+- Multiple concrete `mode/1` facts for a predicate are supported for query-mode codegen: `compile_predicate_to_csharp/3` emits multiple `Build...()` entrypoints (e.g., `BuildIn0()`, `BuildIn1()`).
 - Implemented a `param_seed` plan node; pipelines now seed inputs (when declared) before body evaluation, preserving the existing all-output path when no inputs are declared.
 - Implemented bottom-up demand closure for non-mutual parameterised recursion: a synthetic `pred$need` fixpoint is built from recursive clause prefixes, materialized once, and used to seed/filter the main predicate’s base and recursive pipelines.
 - Broadened query-mode arithmetic constraints:

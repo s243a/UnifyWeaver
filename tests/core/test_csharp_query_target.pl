@@ -63,6 +63,7 @@
 :- dynamic user:test_orders_jsonl/3.
 :- dynamic user:test_json_null_skip/2.
 :- dynamic user:test_json_null_default/2.
+:- dynamic user:test_multi_mode/2.
 :- dynamic user:test_any_mode/2.
 :- dynamic user:mode/1.
 
@@ -117,6 +118,7 @@ test_csharp_query_target :-
         verify_negation_plan,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
+        verify_multi_mode_codegen_plan,
         verify_any_mode_rejected_plan,
         verify_parameterized_need_allows_post_agg,
         verify_parameterized_need_allows_prefix_negation,
@@ -277,6 +279,10 @@ setup_test_data :-
         test_factorial(N1, Prev),
         Result is Prev * N
     )),
+    assertz(user:mode(test_multi_mode(+, -))),
+    assertz(user:mode(test_multi_mode(-, +))),
+    assertz(user:test_multi_mode(alice, bob)),
+    assertz(user:test_multi_mode(bob, charlie)),
     assertz(user:mode(test_any_mode(?, -))),
     assertz(user:test_any_mode(alice, bob)),
     assertz(user:mode(test_fib_param(+, -))),
@@ -419,6 +425,8 @@ cleanup_test_data :-
     retractall(user:test_non_banned_sale_sum_grouped(_, _)),
     retractall(user:test_factorial_input(_)),
     retractall(user:test_factorial(_, _)),
+    retractall(user:test_multi_mode(_, _)),
+    retractall(user:mode(test_multi_mode(_, _))),
     retractall(user:test_any_mode(_, _)),
     retractall(user:mode(test_any_mode(_, _))),
     retractall(user:test_fib_param(_, _)),
@@ -981,6 +989,11 @@ verify_parameterized_fib_plan :-
 verify_parameterized_fib_runtime :-
     csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
     maybe_run_query_runtime(Plan, ['5,8'], [[5]]).
+
+verify_multi_mode_codegen_plan :-
+    csharp_target:compile_predicate_to_csharp(test_multi_mode/2, [mode(query)], Code),
+    sub_string(Code, _, _, _, 'BuildIn0'),
+    sub_string(Code, _, _, _, 'BuildIn1').
 
 verify_any_mode_rejected_plan :-
     \+ csharp_query_target:build_query_plan(test_any_mode/2, [target(csharp_query)], _Plan).
