@@ -440,9 +440,24 @@ The approach is:
 
 ## Unified Multi-Head Model
 
-In practice, data often arrives in batches (e.g., `qa_pairs_v1.json`, `qa_pairs_v2.json`, etc.). Instead of maintaining separate projections for each batch, we train a **Unified Multi-Head Model** that consolidates all valid clusters from the database into a single projection ID.
+In practice, data often arrives in batches (e.g., `qa_pairs_v1.json`, `qa_pairs_v2.json`). Instead of maintaining separate projections for each batch, we train a **Unified Multi-Head Model** that consolidates all valid clusters from the database into a single projection ID.
 
-This allows the search skill to query a single model that understands the relationships between all available topics (CSV, SQL, C#, etc.) simultaneously.
+### Mechanism: Flat Softmax Routing
+
+The Unified Multi-Head Model operates using the same **Softmax Routing over Centroid Similarities** mechanism described above, but scaled to the entire dataset. This mechanism is mathematically equivalent to the **Scaled Dot-Product Attention** as introduced in the Transformer architecture.
+
+1.  **Flattened Heads**: All clusters (topics) from all batches are treated as peer "attention heads" in a single flat layer. Each cluster's centroid acts as a **Key**, and its answer embedding as a **Value**.
+2.  **Global Softmax**: The routing probabilities are computed via a single softmax operation over *all* centroids simultaneously. This produces attention weights (similar to the Transformer's attention scores).
+3.  **Linear Projection**: The final query vector is a weighted sum of the answer embeddings, weighted by these routing probabilities. This forms the "projected query" in the combined answer space.
+
+The computational complexity of this "flat softmax" approach is **O(N \cdot d)**, where N is the number of clusters (heads) and d is the embedding dimension. For typical scales (hundreds or thousands of clusters), this performs very efficiently on modern hardware, benefiting from vectorized operations (matrix multiplication). This makes it fast and robust without the need for approximations.
+
+This approach explicitly **avoids**:
+*   **Hierarchical Softmax**: There is no tree structure or multi-step routing; it is a direct 1-to-N comparison.
+*   **MLPs (Multi-Layer Perceptrons)**: There are no hidden layers or non-linearities other than the softmax routing itself.
+*   **Negative Sampling**: Inference relies on direct similarity comparisons in the shared embedding space, not on a contrastively trained classifier.
+
+This design ensures the model remains interpretable (routing weights directly correspond to topic relevance) and computationally efficient (linear complexity with respect to the number of clusters).
 
 ### Training the Unified Model
 
