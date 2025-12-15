@@ -5375,6 +5375,62 @@ def concat_stage(streams):
     for stream in streams:
         yield from stream
 
+def merge_sorted_stage(streams, field, reverse=False):
+    '''
+    Merge Sorted: Merge multiple pre-sorted streams maintaining sort order.
+    Uses a min-heap (or max-heap if reverse) for efficient k-way merge.
+    Assumes each input stream is already sorted by the given field.
+    '''
+    import heapq
+
+    # Create iterators with initial values
+    heap = []
+    iterators = []
+    for i, stream in enumerate(streams):
+        it = iter(stream)
+        try:
+            record = next(it)
+            value = record.get(field)
+            # For reverse (descending), negate numeric values or use negative index
+            if reverse:
+                if isinstance(value, (int, float)):
+                    heap_val = (-value, i, record)
+                else:
+                    heap_val = (0, -i, record)  # For non-numeric, use FIFO order
+            else:
+                if isinstance(value, (int, float)):
+                    heap_val = (value, i, record)
+                else:
+                    heap_val = (str(value) if value else '', i, record)
+            heapq.heappush(heap, heap_val)
+            iterators.append(it)
+        except StopIteration:
+            iterators.append(None)
+
+    while heap:
+        _, stream_idx, record = heapq.heappop(heap)
+        yield record
+
+        # Try to get next record from same stream
+        it = iterators[stream_idx]
+        if it is not None:
+            try:
+                record = next(it)
+                value = record.get(field)
+                if reverse:
+                    if isinstance(value, (int, float)):
+                        heap_val = (-value, stream_idx, record)
+                    else:
+                        heap_val = (0, -stream_idx, record)
+                else:
+                    if isinstance(value, (int, float)):
+                        heap_val = (value, stream_idx, record)
+                    else:
+                        heap_val = (str(value) if value else '', stream_idx, record)
+                heapq.heappush(heap, heap_val)
+            except StopIteration:
+                iterators[stream_idx] = None
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5465,6 +5521,12 @@ generate_single_enhanced_stage(interleave(SubStages), Code) :-
     !,
     generate_enhanced_stage_functions(SubStages, Code).
 generate_single_enhanced_stage(concat(SubStages), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(merge_sorted(SubStages, _Field), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
     !,
     generate_enhanced_stage_functions(SubStages, Code).
 generate_single_enhanced_stage(Pred/Arity, Code) :-
@@ -5913,6 +5975,29 @@ generate_stage_flow(concat(Stages), InVar, OutVar, Code) :-
     format(string(Code),
 "    # Concat: sequential concatenation of ~w stages
     ~w = concat_stage([~w(~w) for stage_fn in [~w]])", [N, OutVar, "stage_fn", InVar, StageListStr]).
+
+% Merge sorted stage: merge pre-sorted streams maintaining order (ascending)
+generate_stage_flow(merge_sorted(Stages, Field), InVar, OutVar, Code) :-
+    !,
+    length(Stages, N),
+    format(atom(OutVar), "merge_sorted_~w_result", [Field]),
+    extract_stage_names(Stages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Merge Sorted: merge ~w pre-sorted streams by '~w' (ascending)
+    ~w = merge_sorted_stage([stage_fn(~w) for stage_fn in [~w]], '~w', reverse=False)", [N, Field, OutVar, InVar, StageListStr, Field]).
+
+% Merge sorted stage with direction: merge pre-sorted streams with specified order
+generate_stage_flow(merge_sorted(Stages, Field, Dir), InVar, OutVar, Code) :-
+    !,
+    length(Stages, N),
+    format(atom(OutVar), "merge_sorted_~w_~w_result", [Field, Dir]),
+    extract_stage_names(Stages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    ( Dir = desc -> Reverse = "True" ; Reverse = "False" ),
+    format(string(Code),
+"    # Merge Sorted: merge ~w pre-sorted streams by '~w' (~w)
+    ~w = merge_sorted_stage([stage_fn(~w) for stage_fn in [~w]], '~w', reverse=~w)", [N, Field, Dir, OutVar, InVar, StageListStr, Field, Reverse]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

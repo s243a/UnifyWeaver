@@ -2486,6 +2486,67 @@ fn concat_stage(streams: &[Vec<Record>]) -> Vec<Record> {
     }
     result
 }
+
+/// Merge Sorted: Merge multiple pre-sorted streams maintaining sort order.
+/// Uses a k-way merge algorithm for efficiency.
+fn merge_sorted_stage(streams: &[Vec<Record>], field: &str, ascending: bool) -> Vec<Record> {
+    use std::cmp::Ordering;
+
+    if streams.is_empty() {
+        return Vec::new();
+    }
+
+    // Track current index in each stream
+    let mut indices: Vec<usize> = vec![0; streams.len()];
+    let mut result = Vec::new();
+
+    loop {
+        // Find the stream with the best (smallest/largest) next value
+        let mut best_stream: Option<usize> = None;
+        let mut best_value: Option<&serde_json::Value> = None;
+
+        for (i, stream) in streams.iter().enumerate() {
+            if indices[i] >= stream.len() {
+                continue; // This stream is exhausted
+            }
+
+            let value = stream[indices[i]].get(field);
+            if best_stream.is_none() {
+                best_stream = Some(i);
+                best_value = value;
+                continue;
+            }
+
+            // Compare values
+            let is_better = match (value, best_value) {
+                (Some(serde_json::Value::Number(v)), Some(serde_json::Value::Number(bv))) => {
+                    let v_f = v.as_f64().unwrap_or(0.0);
+                    let bv_f = bv.as_f64().unwrap_or(0.0);
+                    if ascending { v_f < bv_f } else { v_f > bv_f }
+                }
+                (Some(serde_json::Value::String(v)), Some(serde_json::Value::String(bv))) => {
+                    if ascending { v < bv } else { v > bv }
+                }
+                _ => false,
+            };
+
+            if is_better {
+                best_stream = Some(i);
+                best_value = value;
+            }
+        }
+
+        match best_stream {
+            Some(idx) => {
+                result.push(streams[idx][indices[idx]].clone());
+                indices[idx] += 1;
+            }
+            None => break, // All streams exhausted
+        }
+    }
+
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2708,6 +2769,12 @@ generate_rust_single_enhanced_stage(interleave(SubStages), Code) :-
     !,
     generate_rust_enhanced_stage_functions(SubStages, Code).
 generate_rust_single_enhanced_stage(concat(SubStages), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(merge_sorted(SubStages, _Field), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
     !,
     generate_rust_enhanced_stage_functions(SubStages, Code).
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
@@ -3170,6 +3237,37 @@ generate_rust_stage_flow(concat(SubStages), InVar, OutVar, Code) :-
         .map(|stage_fn| stage_fn(&~w))
         .collect();
     let ~w = concat_stage(&concat_streams_~w);", [N, N, StageListStr, InVar, OutVar, N]).
+
+% Merge sorted stage: merge pre-sorted streams maintaining order (ascending)
+generate_rust_stage_flow(merge_sorted(SubStages, Field), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "merge_sorted_~w_result", [Field]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    // Merge Sorted: merge ~w pre-sorted streams by '~w' (ascending)
+    let merge_sorted_streams_~w: Vec<Vec<Record>> = vec![~w]
+        .iter()
+        .map(|stage_fn| stage_fn(&~w))
+        .collect();
+    let ~w = merge_sorted_stage(&merge_sorted_streams_~w, \"~w\", true);", [N, Field, N, StageListStr, InVar, OutVar, N, Field]).
+
+% Merge sorted stage with direction: merge pre-sorted streams with specified order
+generate_rust_stage_flow(merge_sorted(SubStages, Field, Dir), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "merge_sorted_~w_~w_result", [Field, Dir]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    ( Dir = asc -> Ascending = "true" ; Ascending = "false" ),
+    format(string(Code),
+"    // Merge Sorted: merge ~w pre-sorted streams by '~w' (~w)
+    let merge_sorted_streams_~w_~w: Vec<Vec<Record>> = vec![~w]
+        .iter()
+        .map(|stage_fn| stage_fn(&~w))
+        .collect();
+    let ~w = merge_sorted_stage(&merge_sorted_streams_~w_~w, \"~w\", ~w);", [N, Field, Dir, N, Dir, StageListStr, InVar, OutVar, N, Dir, Field, Ascending]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

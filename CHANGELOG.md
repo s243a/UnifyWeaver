@@ -164,6 +164,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_interleave_concat_stages.sh` — Integration tests (18 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Merge Sorted Stage** - Efficient k-way merge for pre-sorted streams
+  - Merge pre-sorted streams:
+    - `merge_sorted(Stages, Field)` — Merge streams sorted by field (ascending)
+    - `merge_sorted(Stages, Field, Dir)` — Merge with direction (asc/desc)
+  - Efficient k-way merge algorithm:
+    - Python: Heap-based merge using `heapq`
+    - Go: Index-tracking merge with type comparison
+    - Rust: Iterator-based merge with `serde_json::Value` comparison
+  - Use cases:
+    - Merging time-series data from multiple sources
+    - Combining sorted partitions for final output
+    - Efficient merge phase in external sort
+  - Assumes input streams are already sorted by the specified field
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_merge_sorted_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
