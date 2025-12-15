@@ -135,6 +135,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_window_sampling_stages.sh` — Integration tests (32 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Distinct/Dedup Stages** - Duplicate removal at pipeline level
+  - Global deduplication:
+    - `distinct` — Remove all duplicate records, keeping first occurrence
+    - `distinct_by(Field)` — Remove duplicates based on specific field value
+  - Consecutive deduplication:
+    - `dedup` — Remove consecutive duplicate records only
+    - `dedup_by(Field)` — Remove consecutive duplicates based on specific field
+  - Key differences:
+    - `distinct` uses hash set (memory: O(n) for seen records)
+    - `dedup` only compares adjacent records (memory: O(1))
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_distinct_dedup_stages.sh` — Integration tests (22 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.

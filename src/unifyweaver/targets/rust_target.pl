@@ -2392,6 +2392,74 @@ where
 {
     records.iter().skip_while(|r| pred(r)).cloned().collect()
 }
+
+/// Distinct: Remove all duplicate records (global dedup).
+fn distinct_stage(records: &[Record]) -> Vec<Record> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for record in records {
+        let key = record_key(record);
+        if !seen.contains(&key) {
+            seen.insert(key);
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Distinct By: Remove duplicates based on a specific field.
+fn distinct_by_stage(records: &[Record], field: &str) -> Vec<Record> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for record in records {
+        let key = format!(\"{:?}\", record.get(field));
+        if !seen.contains(&key) {
+            seen.insert(key);
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Dedup: Remove consecutive duplicate records.
+fn dedup_stage(records: &[Record]) -> Vec<Record> {
+    let mut result = Vec::new();
+    let mut last_key: Option<String> = None;
+    for record in records {
+        let key = record_key(record);
+        if last_key.as_ref() != Some(&key) {
+            last_key = Some(key);
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Dedup By: Remove consecutive duplicates based on a specific field.
+fn dedup_by_stage(records: &[Record], field: &str) -> Vec<Record> {
+    let mut result = Vec::new();
+    let mut last_value: Option<String> = None;
+    for record in records {
+        let value = format!(\"{:?}\", record.get(field));
+        if last_value.as_ref() != Some(&value) {
+            last_value = Some(value);
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Generate a unique key for a record (for dedup comparison).
+fn record_key(record: &Record) -> String {
+    let mut keys: Vec<&String> = record.keys().collect();
+    keys.sort();
+    keys.iter()
+        .map(|k| format!(\"{}={:?}\", k, record.get(*k)))
+        .collect::<Vec<_>>()
+        .join(\",\")
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2606,6 +2674,10 @@ generate_rust_single_enhanced_stage(take(_), "") :- !.
 generate_rust_single_enhanced_stage(skip(_), "") :- !.
 generate_rust_single_enhanced_stage(take_while(_), "") :- !.
 generate_rust_single_enhanced_stage(skip_while(_), "") :- !.
+generate_rust_single_enhanced_stage(distinct, "") :- !.
+generate_rust_single_enhanced_stage(distinct_by(_), "") :- !.
+generate_rust_single_enhanced_stage(dedup, "") :- !.
+generate_rust_single_enhanced_stage(dedup_by(_), "") :- !.
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -3004,6 +3076,38 @@ generate_rust_stage_flow(skip_while(Pred), InVar, OutVar, Code) :-
     format(string(Code),
 "    // Skip while: ~w is true
     let ~w = skip_while_stage(&~w, ~w);", [Pred, OutVar, InVar, Pred]).
+
+% Distinct stage: remove all duplicates (global)
+generate_rust_stage_flow(distinct, InVar, OutVar, Code) :-
+    !,
+    OutVar = "distinct_result",
+    format(string(Code),
+"    // Distinct: remove all duplicates (global dedup)
+    let ~w = distinct_stage(&~w);", [OutVar, InVar]).
+
+% Distinct by field: remove duplicates based on specific field
+generate_rust_stage_flow(distinct_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "distinct_~w_result", [Field]),
+    format(string(Code),
+"    // Distinct By: remove duplicates based on '~w' field
+    let ~w = distinct_by_stage(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
+
+% Dedup stage: remove consecutive duplicates only
+generate_rust_stage_flow(dedup, InVar, OutVar, Code) :-
+    !,
+    OutVar = "dedup_result",
+    format(string(Code),
+"    // Dedup: remove consecutive duplicates
+    let ~w = dedup_stage(&~w);", [OutVar, InVar]).
+
+% Dedup by field: remove consecutive duplicates based on specific field
+generate_rust_stage_flow(dedup_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "dedup_~w_result", [Field]),
+    format(string(Code),
+"    // Dedup By: remove consecutive duplicates based on '~w' field
+    let ~w = dedup_by_stage(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
