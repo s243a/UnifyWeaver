@@ -303,7 +303,7 @@ signature_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
 %  predicate. Plans are represented as dicts containing the head descriptor,
 %  root operator, materialised fact tables, and metadata.
 build_query_plan(Pred/Arity, Options, Plan) :-
-    modes_for_pred(Pred/Arity, Modes),
+    modes_for_pred_variants(Pred/Arity, [Modes|_]),
     build_query_plan(Pred/Arity, Options, Modes, Plan).
 
 build_query_plan(Pred/Arity, Options, Modes, Plan) :-
