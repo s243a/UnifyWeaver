@@ -62,6 +62,16 @@ test_llvm_facts :-
     ;   fail_test(Test, 'Missing string constants or count')
     ).
 
+test_llvm_transitive_closure :-
+    Test = 'LLVM: compile_transitive_closure',
+    (   llvm_target:compile_transitive_closure_llvm(reachable/2, [], Code),
+        sub_atom(Code, _, _, _, '@add_edge'),
+        sub_atom(Code, _, _, _, 'bfs_loop'),
+        sub_atom(Code, _, _, _, '@visited')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing BFS worklist constructs')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -72,6 +82,7 @@ run_tests :-
     test_llvm_tail_recursion_export,
     test_llvm_linear_recursion,
     test_llvm_mutual_recursion,
+    test_llvm_transitive_closure,
     test_llvm_facts,
     
     format('~n========================================~n'),
