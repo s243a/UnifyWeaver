@@ -274,6 +274,14 @@ is_valid_stage(take_while(Pred)) :-
 is_valid_stage(skip_while(Pred)) :-
     atom(Pred).
 
+% Distinct/dedup stages
+is_valid_stage(distinct).
+is_valid_stage(distinct_by(Field)) :-
+    atom(Field).
+is_valid_stage(dedup).
+is_valid_stage(dedup_by(Field)) :-
+    atom(Field).
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -356,6 +364,10 @@ stage_type(take(_), take) :- !.
 stage_type(skip(_), skip) :- !.
 stage_type(take_while(_), take_while) :- !.
 stage_type(skip_while(_), skip_while) :- !.
+stage_type(distinct, distinct) :- !.
+stage_type(distinct_by(_), distinct_by) :- !.
+stage_type(dedup, dedup) :- !.
+stage_type(dedup_by(_), dedup_by) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -577,6 +589,24 @@ validate_stage_specific(skip_while(Pred), Errors) :-
     ;
         format(atom(Msg), 'skip_while predicate must be an atom, got: ~w', [Pred]),
         Errors = [error(invalid_skip_while, Msg)]
+    ).
+validate_stage_specific(distinct, []) :- !.
+validate_stage_specific(distinct_by(Field), Errors) :-
+    !,
+    ( atom(Field) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'distinct_by field must be an atom, got: ~w', [Field]),
+        Errors = [error(invalid_distinct_by, Msg)]
+    ).
+validate_stage_specific(dedup, []) :- !.
+validate_stage_specific(dedup_by(Field), Errors) :-
+    !,
+    ( atom(Field) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'dedup_by field must be an atom, got: ~w', [Field]),
+        Errors = [error(invalid_dedup_by, Msg)]
     ).
 validate_stage_specific(_, []).
 

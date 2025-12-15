@@ -9387,6 +9387,79 @@ func skipWhileStage(records []Record, pred func(Record) bool) []Record {
 \treturn result
 }
 
+// distinctStage removes all duplicate records (global dedup)
+func distinctStage(records []Record) []Record {
+\tseen := make(map[string]bool)
+\tvar result []Record
+\tfor _, record := range records {
+\t\tkey := recordKey(record)
+\t\tif !seen[key] {
+\t\t\tseen[key] = true
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// distinctByStage removes duplicates based on a specific field
+func distinctByStage(records []Record, field string) []Record {
+\tseen := make(map[string]bool)
+\tvar result []Record
+\tfor _, record := range records {
+\t\tval, _ := record[field]
+\t\tkey := fmt.Sprintf(\"%v\", val)
+\t\tif !seen[key] {
+\t\t\tseen[key] = true
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// dedupStage removes consecutive duplicate records
+func dedupStage(records []Record) []Record {
+\tvar result []Record
+\tvar lastKey string
+\tfor _, record := range records {
+\t\tkey := recordKey(record)
+\t\tif key != lastKey {
+\t\t\tlastKey = key
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// dedupByStage removes consecutive duplicates based on a specific field
+func dedupByStage(records []Record, field string) []Record {
+\tvar result []Record
+\tvar lastValue interface{} = nil
+\tfirst := true
+\tfor _, record := range records {
+\t\tval, _ := record[field]
+\t\tif first || val != lastValue {
+\t\t\tlastValue = val
+\t\t\tfirst = false
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// recordKey generates a unique key for a record (for dedup comparison)
+func recordKey(record Record) string {
+\tkeys := make([]string, 0, len(record))
+\tfor k := range record {
+\t\tkeys = append(keys, k)
+\t}
+\tsort.Strings(keys)
+\tvar parts []string
+\tfor _, k := range keys {
+\t\tparts = append(parts, fmt.Sprintf(\"%s=%v\", k, record[k]))
+\t}
+\treturn strings.Join(parts, \",\")
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9466,6 +9539,10 @@ generate_go_single_enhanced_stage(take(_), "") :- !.
 generate_go_single_enhanced_stage(skip(_), "") :- !.
 generate_go_single_enhanced_stage(take_while(_), "") :- !.
 generate_go_single_enhanced_stage(skip_while(_), "") :- !.
+generate_go_single_enhanced_stage(distinct, "") :- !.
+generate_go_single_enhanced_stage(distinct_by(_), "") :- !.
+generate_go_single_enhanced_stage(dedup, "") :- !.
+generate_go_single_enhanced_stage(dedup_by(_), "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -9874,6 +9951,38 @@ generate_go_stage_flow(skip_while(Pred), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// Skip While: skip while ~w is true
 \t~w := skipWhileStage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Distinct stage: remove all duplicates (global)
+generate_go_stage_flow(distinct, InVar, OutVar, Code) :-
+    !,
+    OutVar = "distinctResult",
+    format(string(Code),
+"\t// Distinct: remove all duplicates (global dedup)
+\t~w := distinctStage(~w)", [OutVar, InVar]).
+
+% Distinct by field: remove duplicates based on specific field
+generate_go_stage_flow(distinct_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "distinct~wResult", [Field]),
+    format(string(Code),
+"\t// Distinct By: remove duplicates based on '~w' field
+\t~w := distinctByStage(~w, \"~w\")", [Field, OutVar, InVar, Field]).
+
+% Dedup stage: remove consecutive duplicates only
+generate_go_stage_flow(dedup, InVar, OutVar, Code) :-
+    !,
+    OutVar = "dedupResult",
+    format(string(Code),
+"\t// Dedup: remove consecutive duplicates
+\t~w := dedupStage(~w)", [OutVar, InVar]).
+
+% Dedup by field: remove consecutive duplicates based on specific field
+generate_go_stage_flow(dedup_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "dedup~wResult", [Field]),
+    format(string(Code),
+"\t// Dedup By: remove consecutive duplicates based on '~w' field
+\t~w := dedupByStage(~w, \"~w\")", [Field, OutVar, InVar, Field]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

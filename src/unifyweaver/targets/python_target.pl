@@ -5302,6 +5302,54 @@ def skip_while_stage(stream, pred_fn):
         skipping = False
         yield record
 
+def distinct_stage(stream):
+    '''
+    Distinct: Remove all duplicate records (global dedup), keeping first occurrence.
+    Uses JSON serialization for record comparison.
+    '''
+    import json
+    seen = set()
+    for record in stream:
+        key = json.dumps(record, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            yield record
+
+def distinct_by_stage(stream, field):
+    '''
+    Distinct By: Remove duplicates based on a specific field, keeping first occurrence.
+    '''
+    seen = set()
+    for record in stream:
+        key = record.get(field)
+        if key not in seen:
+            seen.add(key)
+            yield record
+
+def dedup_stage(stream):
+    '''
+    Dedup: Remove consecutive duplicate records only.
+    Uses JSON serialization for record comparison.
+    '''
+    import json
+    last_key = None
+    for record in stream:
+        key = json.dumps(record, sort_keys=True)
+        if key != last_key:
+            last_key = key
+            yield record
+
+def dedup_by_stage(stream, field):
+    '''
+    Dedup By: Remove consecutive duplicates based on a specific field.
+    '''
+    last_value = object()  # Sentinel that won't match any real value
+    for record in stream:
+        value = record.get(field)
+        if value != last_value:
+            last_value = value
+            yield record
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5384,6 +5432,10 @@ generate_single_enhanced_stage(take(_), "") :- !.
 generate_single_enhanced_stage(skip(_), "") :- !.
 generate_single_enhanced_stage(take_while(_), "") :- !.
 generate_single_enhanced_stage(skip_while(_), "") :- !.
+generate_single_enhanced_stage(distinct, "") :- !.
+generate_single_enhanced_stage(distinct_by(_), "") :- !.
+generate_single_enhanced_stage(dedup, "") :- !.
+generate_single_enhanced_stage(dedup_by(_), "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5776,6 +5828,38 @@ generate_stage_flow(skip_while(Pred), InVar, OutVar, Code) :-
     format(string(Code),
 "    # Skip While: skip while ~w is true
     ~w = skip_while_stage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Distinct stage: remove all duplicates (global)
+generate_stage_flow(distinct, InVar, OutVar, Code) :-
+    !,
+    OutVar = "distinct_result",
+    format(string(Code),
+"    # Distinct: remove all duplicates (global dedup)
+    ~w = distinct_stage(~w)", [OutVar, InVar]).
+
+% Distinct by field: remove duplicates based on specific field
+generate_stage_flow(distinct_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "distinct_~w_result", [Field]),
+    format(string(Code),
+"    # Distinct By: remove duplicates based on '~w' field
+    ~w = distinct_by_stage(~w, '~w')", [Field, OutVar, InVar, Field]).
+
+% Dedup stage: remove consecutive duplicates only
+generate_stage_flow(dedup, InVar, OutVar, Code) :-
+    !,
+    OutVar = "dedup_result",
+    format(string(Code),
+"    # Dedup: remove consecutive duplicates
+    ~w = dedup_stage(~w)", [OutVar, InVar]).
+
+% Dedup by field: remove consecutive duplicates based on specific field
+generate_stage_flow(dedup_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "dedup_~w_result", [Field]),
+    format(string(Code),
+"    # Dedup By: remove consecutive duplicates based on '~w' field
+    ~w = dedup_by_stage(~w, '~w')", [Field, OutVar, InVar, Field]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
