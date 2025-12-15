@@ -57,9 +57,19 @@ Multiple predicates in one module:
 compile_module_to_haskell(
     [pred(sum, 2, tail_recursion),
      pred(factorial, 1, factorial),
-     pred(fib, 2, linear_recursion)],
+     pred(fib, 2, linear_recursion),
+     pred(listSum, 2, list_fold),
+     pred(sumAcc, 3, list_tail_recursion)],
     [module_name('PrologMath')],
     Code).
+```
+
+### `compile_predicate_to_haskell/3`
+Generic dispatcher with type option:
+```prolog
+compile_predicate_to_haskell(parent/2, [type(facts)], Code)
+compile_predicate_to_haskell(ancestor/2, [type(rules)], Code)
+compile_predicate_to_haskell(sum/3, [type(recursion)], Code)
 ```
 
 ## Function Types
@@ -69,6 +79,8 @@ compile_module_to_haskell(
 | `tail_recursion` | O(1) stack | `f n !acc = ...` |
 | `factorial` | Simple recursion | `f n = n * f (n-1)` |
 | `linear_recursion` | e.g., Fibonacci | `f n = f(n-1) + f(n-2)` |
+| `list_fold` | List sum using foldr | `f = foldr (+) 0` |
+| `list_tail_recursion` | List with accumulator | `f [] !acc = acc` |
 
 ## Dependencies
 

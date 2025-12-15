@@ -247,6 +247,23 @@ generate_pred_code(Name, _Arity, linear_recursion, Code) :-
 ~w 1 = 1
 ~w n = ~w (n - 1) + ~w (n - 2)', [NameStr, NameStr, NameStr, NameStr, NameStr, NameStr, NameStr]).
 
+%% list_fold - generates foldr-based list operations
+generate_pred_code(Name, _Arity, list_fold, Code) :-
+    atom_string(Name, NameStr),
+    format(string(Code),
+'-- | ~w (list fold using foldr)
+~w :: [Int] -> Int
+~w = foldr (+) 0', [NameStr, NameStr, NameStr]).
+
+%% list_tail_recursion - tail recursive list operations with accumulator
+generate_pred_code(Name, _Arity, list_tail_recursion, Code) :-
+    atom_string(Name, NameStr),
+    format(string(Code),
+'-- | ~w (tail recursive list sum)
+~w :: [Int] -> Int -> Int
+~w [] !acc = acc
+~w (h:t) !acc = ~w t (acc + h)', [NameStr, NameStr, NameStr, NameStr, NameStr]).
+
 %% ============================================
 %% FILE OUTPUT
 %% ============================================

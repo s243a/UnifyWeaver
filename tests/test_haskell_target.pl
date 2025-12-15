@@ -61,6 +61,31 @@ test_haskell_factorial :-
     ;   fail_test(Test, 'Missing factorial patterns')
     ).
 
+test_haskell_list_fold :-
+    Test = 'Haskell: list_fold pattern',
+    (   haskell_target:compile_module_to_haskell(
+            [pred(listSum, 2, list_fold)],
+            [module_name('ListSum')],
+            Code),
+        sub_atom(Code, _, _, _, 'listSum :: [Int] -> Int'),
+        sub_atom(Code, _, _, _, 'foldr (+) 0')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing list_fold pattern')
+    ).
+
+test_haskell_list_tail_recursion :-
+    Test = 'Haskell: list_tail_recursion pattern',
+    (   haskell_target:compile_module_to_haskell(
+            [pred(sumAcc, 3, list_tail_recursion)],
+            [module_name('SumAcc')],
+            Code),
+        sub_atom(Code, _, _, _, 'sumAcc :: [Int] -> Int -> Int'),
+        sub_atom(Code, _, _, _, 'sumAcc [] !acc = acc'),
+        sub_atom(Code, _, _, _, 'sumAcc (h:t) !acc')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing list_tail_recursion pattern')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -71,6 +96,8 @@ run_tests :-
     test_haskell_rules,
     test_haskell_module,
     test_haskell_factorial,
+    test_haskell_list_fold,
+    test_haskell_list_tail_recursion,
     
     format('~n========================================~n'),
     format('All tests completed~n'),
