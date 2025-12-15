@@ -9268,6 +9268,125 @@ func zipStage(records []Record, stages []func([]Record) []Record) []Record {
 \treturn result
 }
 
+// windowStage collects records into non-overlapping windows
+func windowStage(records []Record, size int) [][]Record {
+\tvar result [][]Record
+\tvar window []Record
+\tfor _, record := range records {
+\t\twindow = append(window, record)
+\t\tif len(window) >= size {
+\t\t\tresult = append(result, window)
+\t\t\twindow = nil
+\t\t}
+\t}
+\tif len(window) > 0 {
+\t\tresult = append(result, window)
+\t}
+\treturn result
+}
+
+// slidingWindowStage creates sliding windows of records
+func slidingWindowStage(records []Record, size, step int) [][]Record {
+\tvar result [][]Record
+\tvar buffer []Record
+\tfor _, record := range records {
+\t\tbuffer = append(buffer, record)
+\t\tfor len(buffer) >= size {
+\t\t\twindow := make([]Record, size)
+\t\t\tcopy(window, buffer[:size])
+\t\t\tresult = append(result, window)
+\t\t\tbuffer = buffer[step:]
+\t\t}
+\t}
+\tif len(buffer) > 0 {
+\t\tresult = append(result, buffer)
+\t}
+\treturn result
+}
+
+// sampleStage randomly samples n records using reservoir sampling
+func sampleStage(records []Record, n int) []Record {
+\timport \"math/rand\"
+\treservoir := make([]Record, 0, n)
+\tfor i, record := range records {
+\t\tif i < n {
+\t\t\treservoir = append(reservoir, record)
+\t\t} else {
+\t\t\tj := rand.Intn(i + 1)
+\t\t\tif j < n {
+\t\t\t\treservoir[j] = record
+\t\t\t}
+\t\t}
+\t}
+\treturn reservoir
+}
+
+// takeEveryStage takes every nth record
+func takeEveryStage(records []Record, n int) []Record {
+\tvar result []Record
+\tfor i, record := range records {
+\t\tif i%n == 0 {
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// partitionStage splits records into matches and non-matches
+func partitionStage(records []Record, pred func(Record) bool) ([]Record, []Record) {
+\tvar matches, nonMatches []Record
+\tfor _, record := range records {
+\t\tif pred(record) {
+\t\t\tmatches = append(matches, record)
+\t\t} else {
+\t\t\tnonMatches = append(nonMatches, record)
+\t\t}
+\t}
+\treturn matches, nonMatches
+}
+
+// takeStage takes first n records
+func takeStage(records []Record, n int) []Record {
+\tif n >= len(records) {
+\t\treturn records
+\t}
+\treturn records[:n]
+}
+
+// skipStage skips first n records
+func skipStage(records []Record, n int) []Record {
+\tif n >= len(records) {
+\t\treturn nil
+\t}
+\treturn records[n:]
+}
+
+// takeWhileStage takes records while predicate is true
+func takeWhileStage(records []Record, pred func(Record) bool) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tif !pred(record) {
+\t\t\tbreak
+\t\t}
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
+// skipWhileStage skips records while predicate is true
+func skipWhileStage(records []Record, pred func(Record) bool) []Record {
+\tvar result []Record
+\tskipping := true
+\tfor _, record := range records {
+\t\tif skipping && pred(record) {
+\t\t\tcontinue
+\t\t}
+\t\tskipping = false
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9338,6 +9457,15 @@ generate_go_single_enhanced_stage(debounce(_), "") :- !.
 generate_go_single_enhanced_stage(zip(SubStages), Code) :-
     !,
     generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(window(_), "") :- !.
+generate_go_single_enhanced_stage(sliding_window(_, _), "") :- !.
+generate_go_single_enhanced_stage(sample(_), "") :- !.
+generate_go_single_enhanced_stage(take_every(_), "") :- !.
+generate_go_single_enhanced_stage(partition(_), "") :- !.
+generate_go_single_enhanced_stage(take(_), "") :- !.
+generate_go_single_enhanced_stage(skip(_), "") :- !.
+generate_go_single_enhanced_stage(take_while(_), "") :- !.
+generate_go_single_enhanced_stage(skip_while(_), "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -9674,6 +9802,78 @@ generate_go_stage_flow(zip(Stages), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// Zip: combine outputs from multiple stages
 \t~w := zipStage(~w, []func([]Record) []Record{~w})", [OutVar, InVar, StageListStr]).
+
+% Window stage: non-overlapping windows
+generate_go_stage_flow(window(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "windowedResult",
+    format(string(Code),
+"\t// Window: collect ~w records into windows
+\t~w := windowStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Sliding window stage
+generate_go_stage_flow(sliding_window(N, Step), InVar, OutVar, Code) :-
+    !,
+    OutVar = "slidingWindowResult",
+    format(string(Code),
+"\t// Sliding Window: size ~w, step ~w
+\t~w := slidingWindowStage(~w, ~w, ~w)", [N, Step, OutVar, InVar, N, Step]).
+
+% Sample stage: random sampling
+generate_go_stage_flow(sample(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "sampledResult",
+    format(string(Code),
+"\t// Sample: random ~w records
+\t~w := sampleStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Take every stage
+generate_go_stage_flow(take_every(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "takeEveryResult",
+    format(string(Code),
+"\t// Take Every: every ~wth record
+\t~w := takeEveryStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Partition stage
+generate_go_stage_flow(partition(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "partitionedResult",
+    format(string(Code),
+"\t// Partition: split by ~w
+\t~w, _ := partitionStage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Take stage
+generate_go_stage_flow(take(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "takeResult",
+    format(string(Code),
+"\t// Take: first ~w records
+\t~w := takeStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Skip stage
+generate_go_stage_flow(skip(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "skipResult",
+    format(string(Code),
+"\t// Skip: skip first ~w records
+\t~w := skipStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Take while stage
+generate_go_stage_flow(take_while(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "takeWhileResult",
+    format(string(Code),
+"\t// Take While: while ~w is true
+\t~w := takeWhileStage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Skip while stage
+generate_go_stage_flow(skip_while(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "skipWhileResult",
+    format(string(Code),
+"\t// Skip While: skip while ~w is true
+\t~w := skipWhileStage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

@@ -5196,6 +5196,112 @@ def zip_stage(record, stage_funcs):
                 combined.update(result_list[i])
         yield combined
 
+def window_stage(stream, size):
+    '''
+    Window: Collect records into non-overlapping windows of specified size.
+    '''
+    window = []
+    for record in stream:
+        window.append(record)
+        if len(window) >= size:
+            yield window
+            window = []
+    if window:
+        yield window
+
+def sliding_window_stage(stream, size, step):
+    '''
+    Sliding Window: Emit windows of size, advancing by step each time.
+    '''
+    buffer = []
+    for record in stream:
+        buffer.append(record)
+        while len(buffer) >= size:
+            yield buffer[:size]
+            buffer = buffer[step:]
+    if buffer:
+        yield buffer
+
+def sample_stage(stream, n):
+    '''
+    Sample: Randomly select n records from the stream (reservoir sampling).
+    '''
+    import random
+    reservoir = []
+    for i, record in enumerate(stream):
+        if i < n:
+            reservoir.append(record)
+        else:
+            j = random.randint(0, i)
+            if j < n:
+                reservoir[j] = record
+    for record in reservoir:
+        yield record
+
+def take_every_stage(stream, n):
+    '''
+    Take Every: Emit every nth record.
+    '''
+    for i, record in enumerate(stream):
+        if i % n == 0:
+            yield record
+
+def partition_stage(stream, pred_fn):
+    '''
+    Partition: Split stream into [matches, non-matches] based on predicate.
+    Returns a tuple of two lists.
+    '''
+    matches = []
+    non_matches = []
+    for record in stream:
+        if pred_fn(record):
+            matches.append(record)
+        else:
+            non_matches.append(record)
+    return (matches, non_matches)
+
+def take_stage(stream, n):
+    '''
+    Take: Emit only the first n records.
+    '''
+    count = 0
+    for record in stream:
+        if count >= n:
+            break
+        yield record
+        count += 1
+
+def skip_stage(stream, n):
+    '''
+    Skip: Skip the first n records, emit the rest.
+    '''
+    count = 0
+    for record in stream:
+        if count >= n:
+            yield record
+        count += 1
+
+def take_while_stage(stream, pred_fn):
+    '''
+    Take While: Emit records while predicate is true, stop when false.
+    '''
+    for record in stream:
+        if pred_fn(record):
+            yield record
+        else:
+            break
+
+def skip_while_stage(stream, pred_fn):
+    '''
+    Skip While: Skip records while predicate is true, emit once false.
+    '''
+    skipping = True
+    for record in stream:
+        if skipping and pred_fn(record):
+            continue
+        skipping = False
+        yield record
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5269,6 +5375,15 @@ generate_single_enhanced_stage(debounce(_), "") :- !.
 generate_single_enhanced_stage(zip(SubStages), Code) :-
     !,
     generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(window(_), "") :- !.
+generate_single_enhanced_stage(sliding_window(_, _), "") :- !.
+generate_single_enhanced_stage(sample(_), "") :- !.
+generate_single_enhanced_stage(take_every(_), "") :- !.
+generate_single_enhanced_stage(partition(_), "") :- !.
+generate_single_enhanced_stage(take(_), "") :- !.
+generate_single_enhanced_stage(skip(_), "") :- !.
+generate_single_enhanced_stage(take_while(_), "") :- !.
+generate_single_enhanced_stage(skip_while(_), "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5589,6 +5704,78 @@ generate_stage_flow(zip(Stages), InVar, OutVar, Code) :-
             for result in zip_stage(record, [~w]):
                 yield result
     ~w = zip_generator()", [InVar, StageListStr, OutVar]).
+
+% Window stage: non-overlapping windows
+generate_stage_flow(window(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "windowed_result",
+    format(string(Code),
+"    # Window: collect ~w records into windows
+    ~w = window_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Sliding window stage
+generate_stage_flow(sliding_window(N, Step), InVar, OutVar, Code) :-
+    !,
+    OutVar = "sliding_window_result",
+    format(string(Code),
+"    # Sliding Window: size ~w, step ~w
+    ~w = sliding_window_stage(~w, ~w, ~w)", [N, Step, OutVar, InVar, N, Step]).
+
+% Sample stage: random sampling
+generate_stage_flow(sample(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "sampled_result",
+    format(string(Code),
+"    # Sample: random ~w records
+    ~w = sample_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Take every stage
+generate_stage_flow(take_every(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "take_every_result",
+    format(string(Code),
+"    # Take Every: every ~wth record
+    ~w = take_every_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Partition stage
+generate_stage_flow(partition(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "partitioned_result",
+    format(string(Code),
+"    # Partition: split by ~w
+    ~w = partition_stage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Take stage
+generate_stage_flow(take(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "take_result",
+    format(string(Code),
+"    # Take: first ~w records
+    ~w = take_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Skip stage
+generate_stage_flow(skip(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "skip_result",
+    format(string(Code),
+"    # Skip: skip first ~w records
+    ~w = skip_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Take while stage
+generate_stage_flow(take_while(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "take_while_result",
+    format(string(Code),
+"    # Take While: while ~w is true
+    ~w = take_while_stage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Skip while stage
+generate_stage_flow(skip_while(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "skip_while_result",
+    format(string(Code),
+"    # Skip While: skip while ~w is true
+    ~w = skip_while_stage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
