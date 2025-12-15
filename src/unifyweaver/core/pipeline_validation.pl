@@ -240,6 +240,40 @@ is_valid_stage(zip(Stages)) :-
     Stages \= [],
     maplist(is_valid_stage, Stages).
 
+% Window stages
+is_valid_stage(window(N)) :-
+    integer(N),
+    N > 0.
+is_valid_stage(sliding_window(N, Step)) :-
+    integer(N),
+    N > 0,
+    integer(Step),
+    Step > 0.
+
+% Sampling stages
+is_valid_stage(sample(N)) :-
+    integer(N),
+    N > 0.
+is_valid_stage(take_every(N)) :-
+    integer(N),
+    N > 0.
+
+% Partition stage
+is_valid_stage(partition(Pred)) :-
+    atom(Pred).
+
+% Take/skip stages
+is_valid_stage(take(N)) :-
+    integer(N),
+    N >= 0.
+is_valid_stage(skip(N)) :-
+    integer(N),
+    N >= 0.
+is_valid_stage(take_while(Pred)) :-
+    atom(Pred).
+is_valid_stage(skip_while(Pred)) :-
+    atom(Pred).
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -313,6 +347,15 @@ stage_type(throttle(_), throttle) :- !.
 stage_type(buffer(_), buffer) :- !.
 stage_type(debounce(_), debounce) :- !.
 stage_type(zip(_), zip) :- !.
+stage_type(window(_), window) :- !.
+stage_type(sliding_window(_, _), sliding_window) :- !.
+stage_type(sample(_), sample) :- !.
+stage_type(take_every(_), take_every) :- !.
+stage_type(partition(_), partition) :- !.
+stage_type(take(_), take) :- !.
+stage_type(skip(_), skip) :- !.
+stage_type(take_while(_), take_while) :- !.
+stage_type(skip_while(_), skip_while) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -462,6 +505,78 @@ validate_stage_specific(zip(Stages), Errors) :-
         validate_all_stages(Stages, 1, Errors)
     ;
         Errors = [error(invalid_zip, 'zip requires a non-empty list of stages')]
+    ).
+validate_stage_specific(window(N), Errors) :-
+    !,
+    ( integer(N), N > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'window size must be a positive integer, got: ~w', [N]),
+        Errors = [error(invalid_window, Msg)]
+    ).
+validate_stage_specific(sliding_window(N, Step), Errors) :-
+    !,
+    ( integer(N), N > 0, integer(Step), Step > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'sliding_window requires positive integers for size and step, got: ~w, ~w', [N, Step]),
+        Errors = [error(invalid_sliding_window, Msg)]
+    ).
+validate_stage_specific(sample(N), Errors) :-
+    !,
+    ( integer(N), N > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'sample size must be a positive integer, got: ~w', [N]),
+        Errors = [error(invalid_sample, Msg)]
+    ).
+validate_stage_specific(take_every(N), Errors) :-
+    !,
+    ( integer(N), N > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'take_every interval must be a positive integer, got: ~w', [N]),
+        Errors = [error(invalid_take_every, Msg)]
+    ).
+validate_stage_specific(partition(Pred), Errors) :-
+    !,
+    ( atom(Pred) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'partition predicate must be an atom, got: ~w', [Pred]),
+        Errors = [error(invalid_partition, Msg)]
+    ).
+validate_stage_specific(take(N), Errors) :-
+    !,
+    ( integer(N), N >= 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'take count must be a non-negative integer, got: ~w', [N]),
+        Errors = [error(invalid_take, Msg)]
+    ).
+validate_stage_specific(skip(N), Errors) :-
+    !,
+    ( integer(N), N >= 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'skip count must be a non-negative integer, got: ~w', [N]),
+        Errors = [error(invalid_skip, Msg)]
+    ).
+validate_stage_specific(take_while(Pred), Errors) :-
+    !,
+    ( atom(Pred) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'take_while predicate must be an atom, got: ~w', [Pred]),
+        Errors = [error(invalid_take_while, Msg)]
+    ).
+validate_stage_specific(skip_while(Pred), Errors) :-
+    !,
+    ( atom(Pred) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'skip_while predicate must be an atom, got: ~w', [Pred]),
+        Errors = [error(invalid_skip_while, Msg)]
     ).
 validate_stage_specific(_, []).
 

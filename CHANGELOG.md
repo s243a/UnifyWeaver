@@ -117,6 +117,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_buffer_zip_stages.sh` — Integration tests (18 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Window/Sampling/Partition Stages** - Stream windowing and data reduction
+  - Window stages:
+    - `window(N)` — Collect records into non-overlapping windows of size N
+    - `sliding_window(N, Step)` — Create overlapping windows with step size
+  - Sampling stages:
+    - `sample(N)` — Randomly sample N records using reservoir sampling
+    - `take_every(N)` — Take every Nth record (deterministic sampling)
+  - Partition stage:
+    - `partition(Pred)` — Split stream into matches and non-matches based on predicate
+  - Take/Skip stages:
+    - `take(N)` — Take first N records
+    - `skip(N)` — Skip first N records
+    - `take_while(Pred)` — Take records while predicate is true
+    - `skip_while(Pred)` — Skip records while predicate is true
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_window_sampling_stages.sh` — Integration tests (32 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.

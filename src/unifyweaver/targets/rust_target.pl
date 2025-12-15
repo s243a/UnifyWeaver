@@ -2288,6 +2288,110 @@ where
     }
     result
 }
+
+/// Window: Collect records into non-overlapping windows.
+fn window_stage(records: &[Record], size: usize) -> Vec<Vec<Record>> {
+    let mut result = Vec::new();
+    let mut window = Vec::new();
+    for record in records {
+        window.push(record.clone());
+        if window.len() >= size {
+            result.push(window);
+            window = Vec::new();
+        }
+    }
+    if !window.is_empty() {
+        result.push(window);
+    }
+    result
+}
+
+/// Sliding Window: Create sliding windows of records.
+fn sliding_window_stage(records: &[Record], size: usize, step: usize) -> Vec<Vec<Record>> {
+    let mut result = Vec::new();
+    let mut buffer = Vec::new();
+    for record in records {
+        buffer.push(record.clone());
+        while buffer.len() >= size {
+            let window: Vec<Record> = buffer[..size].to_vec();
+            result.push(window);
+            buffer = buffer[step..].to_vec();
+        }
+    }
+    if !buffer.is_empty() {
+        result.push(buffer);
+    }
+    result
+}
+
+/// Sample: Randomly sample n records using reservoir sampling.
+fn sample_stage(records: &[Record], n: usize) -> Vec<Record> {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut reservoir = Vec::with_capacity(n);
+    for (i, record) in records.iter().enumerate() {
+        if i < n {
+            reservoir.push(record.clone());
+        } else {
+            let j = rng.gen_range(0..=i);
+            if j < n {
+                reservoir[j] = record.clone();
+            }
+        }
+    }
+    reservoir
+}
+
+/// Take Every: Take every nth record.
+fn take_every_stage(records: &[Record], n: usize) -> Vec<Record> {
+    records.iter().enumerate()
+        .filter(|(i, _)| i % n == 0)
+        .map(|(_, r)| r.clone())
+        .collect()
+}
+
+/// Partition: Split records into matches and non-matches.
+fn partition_stage<F>(records: &[Record], pred: F) -> (Vec<Record>, Vec<Record>)
+where
+    F: Fn(&Record) -> bool,
+{
+    let mut matches = Vec::new();
+    let mut non_matches = Vec::new();
+    for record in records {
+        if pred(record) {
+            matches.push(record.clone());
+        } else {
+            non_matches.push(record.clone());
+        }
+    }
+    (matches, non_matches)
+}
+
+/// Take: Take first n records.
+fn take_stage(records: &[Record], n: usize) -> Vec<Record> {
+    records.iter().take(n).cloned().collect()
+}
+
+/// Skip: Skip first n records.
+fn skip_stage(records: &[Record], n: usize) -> Vec<Record> {
+    records.iter().skip(n).cloned().collect()
+}
+
+/// Take While: Take records while predicate is true.
+fn take_while_stage<F>(records: &[Record], pred: F) -> Vec<Record>
+where
+    F: Fn(&Record) -> bool,
+{
+    records.iter().take_while(|r| pred(r)).cloned().collect()
+}
+
+/// Skip While: Skip records while predicate is true.
+fn skip_while_stage<F>(records: &[Record], pred: F) -> Vec<Record>
+where
+    F: Fn(&Record) -> bool,
+{
+    records.iter().skip_while(|r| pred(r)).cloned().collect()
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2493,6 +2597,15 @@ generate_rust_single_enhanced_stage(debounce(_), "") :- !.
 generate_rust_single_enhanced_stage(zip(SubStages), Code) :-
     !,
     generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(window(_), "") :- !.
+generate_rust_single_enhanced_stage(sliding_window(_, _), "") :- !.
+generate_rust_single_enhanced_stage(sample(_), "") :- !.
+generate_rust_single_enhanced_stage(take_every(_), "") :- !.
+generate_rust_single_enhanced_stage(partition(_), "") :- !.
+generate_rust_single_enhanced_stage(take(_), "") :- !.
+generate_rust_single_enhanced_stage(skip(_), "") :- !.
+generate_rust_single_enhanced_stage(take_while(_), "") :- !.
+generate_rust_single_enhanced_stage(skip_while(_), "") :- !.
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -2818,6 +2931,79 @@ generate_rust_stage_flow(zip(Stages), InVar, OutVar, Code) :-
     format(string(Code),
 "    // Zip: combine outputs from multiple stages
     let ~w = zip_stage(&~w, &[~w]);", [OutVar, InVar, StageListStr]).
+
+% Window stage: collect records into non-overlapping windows
+generate_rust_stage_flow(window(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "windowed_~w", [N]),
+    format(string(Code),
+"    // Window: collect into batches of ~w
+    let ~w = window_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Sliding window stage: create overlapping windows
+generate_rust_stage_flow(sliding_window(N, Step), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "sliding_~w_~w", [N, Step]),
+    format(string(Code),
+"    // Sliding window: size=~w, step=~w
+    let ~w = sliding_window_stage(&~w, ~w, ~w);", [N, Step, OutVar, InVar, N, Step]).
+
+% Sample stage: randomly sample n records
+generate_rust_stage_flow(sample(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "sampled_~w", [N]),
+    format(string(Code),
+"    // Sample: reservoir sampling of ~w records
+    let ~w = sample_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Take every stage: take every nth record
+generate_rust_stage_flow(take_every(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "every_~w", [N]),
+    format(string(Code),
+"    // Take every: every ~wth record
+    let ~w = take_every_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Partition stage: split records by predicate
+generate_rust_stage_flow(partition(Pred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "partitioned_~w", [Pred]),
+    format(string(Code),
+"    // Partition: split by ~w predicate
+    let (~w_matches, ~w_non_matches) = partition_stage(&~w, ~w);
+    let ~w = ~w_matches;  // Use matches (non-matches available as ~w_non_matches)", [Pred, OutVar, OutVar, InVar, Pred, OutVar, OutVar, OutVar]).
+
+% Take stage: take first n records
+generate_rust_stage_flow(take(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "taken_~w", [N]),
+    format(string(Code),
+"    // Take: first ~w records
+    let ~w = take_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Skip stage: skip first n records
+generate_rust_stage_flow(skip(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "skipped_~w", [N]),
+    format(string(Code),
+"    // Skip: first ~w records
+    let ~w = skip_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Take while stage: take while predicate is true
+generate_rust_stage_flow(take_while(Pred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "take_while_~w", [Pred]),
+    format(string(Code),
+"    // Take while: ~w is true
+    let ~w = take_while_stage(&~w, ~w);", [Pred, OutVar, InVar, Pred]).
+
+% Skip while stage: skip while predicate is true
+generate_rust_stage_flow(skip_while(Pred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "skip_while_~w", [Pred]),
+    format(string(Code),
+"    // Skip while: ~w is true
+    let ~w = skip_while_stage(&~w, ~w);", [Pred, OutVar, InVar, Pred]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
