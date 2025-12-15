@@ -9491,6 +9491,80 @@ func concatStage(streams [][]Record) []Record {
 \treturn result
 }
 
+// mergeSortedStage merges multiple pre-sorted streams maintaining sort order
+// Uses a heap-based k-way merge for efficiency
+func mergeSortedStage(streams [][]Record, field string, ascending bool) []Record {
+\tif len(streams) == 0 {
+\t\treturn nil
+\t}
+
+\t// Track current index in each stream
+\tindices := make([]int, len(streams))
+\tvar result []Record
+
+\tfor {
+\t\t// Find the stream with the smallest (or largest) next value
+\t\tbestStream := -1
+\t\tvar bestValue interface{}
+
+\t\tfor i, stream := range streams {
+\t\t\tif indices[i] >= len(stream) {
+\t\t\t\tcontinue // This stream is exhausted
+\t\t\t}
+
+\t\t\tvalue := stream[indices[i]][field]
+\t\t\tif bestStream == -1 {
+\t\t\t\tbestStream = i
+\t\t\t\tbestValue = value
+\t\t\t\tcontinue
+\t\t\t}
+
+\t\t\t// Compare values
+\t\t\tvar isBetter bool
+\t\t\tswitch v := value.(type) {
+\t\t\tcase int:
+\t\t\t\tif bv, ok := bestValue.(int); ok {
+\t\t\t\t\tif ascending {
+\t\t\t\t\t\tisBetter = v < bv
+\t\t\t\t\t} else {
+\t\t\t\t\t\tisBetter = v > bv
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\tcase float64:
+\t\t\t\tif bv, ok := bestValue.(float64); ok {
+\t\t\t\t\tif ascending {
+\t\t\t\t\t\tisBetter = v < bv
+\t\t\t\t\t} else {
+\t\t\t\t\t\tisBetter = v > bv
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\tcase string:
+\t\t\t\tif bv, ok := bestValue.(string); ok {
+\t\t\t\t\tif ascending {
+\t\t\t\t\t\tisBetter = v < bv
+\t\t\t\t\t} else {
+\t\t\t\t\t\tisBetter = v > bv
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+
+\t\t\tif isBetter {
+\t\t\t\tbestStream = i
+\t\t\t\tbestValue = value
+\t\t\t}
+\t\t}
+
+\t\tif bestStream == -1 {
+\t\t\tbreak // All streams exhausted
+\t\t}
+
+\t\tresult = append(result, streams[bestStream][indices[bestStream]])
+\t\tindices[bestStream]++
+\t}
+
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9578,6 +9652,12 @@ generate_go_single_enhanced_stage(interleave(SubStages), Code) :-
     !,
     generate_go_enhanced_stage_functions(SubStages, Code).
 generate_go_single_enhanced_stage(concat(SubStages), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(merge_sorted(SubStages, _Field), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
     !,
     generate_go_enhanced_stage_functions(SubStages, Code).
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
@@ -10050,6 +10130,37 @@ generate_go_stage_flow(concat(SubStages), InVar, OutVar, Code) :-
 \t\tconcatStreams~w = append(concatStreams~w, stageFn(~w))
 \t}
 \t~w := concatStage(concatStreams~w)", [N, N, StageListStr, N, N, InVar, OutVar, N]).
+
+% Merge sorted stage: merge pre-sorted streams maintaining order (ascending)
+generate_go_stage_flow(merge_sorted(SubStages, Field), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "mergeSorted~wResult", [Field]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"\t// Merge Sorted: merge ~w pre-sorted streams by '~w' (ascending)
+\tvar mergeSortedStreams~w [][]Record
+\tfor _, stageFn := range []func([]Record) []Record{~w} {
+\t\tmergeSortedStreams~w = append(mergeSortedStreams~w, stageFn(~w))
+\t}
+\t~w := mergeSortedStage(mergeSortedStreams~w, \"~w\", true)", [N, Field, N, StageListStr, N, N, InVar, OutVar, N, Field]).
+
+% Merge sorted stage with direction: merge pre-sorted streams with specified order
+generate_go_stage_flow(merge_sorted(SubStages, Field, Dir), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "mergeSorted~w~wResult", [Field, Dir]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    ( Dir = asc -> Ascending = "true" ; Ascending = "false" ),
+    format(string(Code),
+"\t// Merge Sorted: merge ~w pre-sorted streams by '~w' (~w)
+\tvar mergeSortedStreams~w~w [][]Record
+\tfor _, stageFn := range []func([]Record) []Record{~w} {
+\t\tmergeSortedStreams~w~w = append(mergeSortedStreams~w~w, stageFn(~w))
+\t}
+\t~w := mergeSortedStage(mergeSortedStreams~w~w, \"~w\", ~w)", [N, Field, Dir, N, Dir, StageListStr, N, Dir, N, Dir, InVar, OutVar, N, Dir, Field, Ascending]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

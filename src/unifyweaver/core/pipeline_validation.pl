@@ -292,6 +292,19 @@ is_valid_stage(concat(Stages)) :-
     Stages \= [],
     maplist(is_valid_stage, Stages).
 
+% Merge sorted stage - merge pre-sorted streams maintaining order
+is_valid_stage(merge_sorted(Stages, Field)) :-
+    is_list(Stages),
+    Stages \= [],
+    atom(Field),
+    maplist(is_valid_stage, Stages).
+is_valid_stage(merge_sorted(Stages, Field, Dir)) :-
+    is_list(Stages),
+    Stages \= [],
+    atom(Field),
+    is_valid_direction(Dir),
+    maplist(is_valid_stage, Stages).
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -380,6 +393,8 @@ stage_type(dedup, dedup) :- !.
 stage_type(dedup_by(_), dedup_by) :- !.
 stage_type(interleave(_), interleave) :- !.
 stage_type(concat(_), concat) :- !.
+stage_type(merge_sorted(_, _), merge_sorted) :- !.
+stage_type(merge_sorted(_, _, _), merge_sorted) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -633,6 +648,20 @@ validate_stage_specific(concat(Stages), Errors) :-
         validate_all_stages(Stages, 1, Errors)
     ;
         Errors = [error(invalid_concat, 'concat requires a non-empty list of stages')]
+    ).
+validate_stage_specific(merge_sorted(Stages, Field), Errors) :-
+    !,
+    ( is_list(Stages), Stages \= [], atom(Field) ->
+        validate_all_stages(Stages, 1, Errors)
+    ;
+        Errors = [error(invalid_merge_sorted, 'merge_sorted requires a non-empty list of stages and a field atom')]
+    ).
+validate_stage_specific(merge_sorted(Stages, Field, Dir), Errors) :-
+    !,
+    ( is_list(Stages), Stages \= [], atom(Field), is_valid_direction(Dir) ->
+        validate_all_stages(Stages, 1, Errors)
+    ;
+        Errors = [error(invalid_merge_sorted, 'merge_sorted requires a non-empty list of stages, a field atom, and direction (asc/desc)')]
     ).
 validate_stage_specific(_, []).
 
