@@ -2657,6 +2657,32 @@ fn debounce_stage(records: &[Record], ms: u64, timestamp_field: Option<&str>) ->
 
     result
 }
+
+/// Branch: Conditional routing within pipeline.
+/// Records matching condition go through true_fn, others through false_fn.
+fn branch_stage<F, T, E>(
+    records: &[Record],
+    cond_fn: F,
+    true_fn: T,
+    false_fn: E,
+) -> Vec<Record>
+where
+    F: Fn(&Record) -> bool,
+    T: Fn(&[Record]) -> Vec<Record>,
+    E: Fn(&[Record]) -> Vec<Record>,
+{
+    let (true_records, false_records): (Vec<_>, Vec<_>) =
+        records.iter().cloned().partition(|r| cond_fn(r));
+
+    let mut result = Vec::new();
+    if !true_records.is_empty() {
+        result.extend(true_fn(&true_records));
+    }
+    if !false_records.is_empty() {
+        result.extend(false_fn(&false_records));
+    }
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2892,6 +2918,11 @@ generate_rust_single_enhanced_stage(flatten, "") :- !.
 generate_rust_single_enhanced_stage(flatten(_), "") :- !.
 generate_rust_single_enhanced_stage(debounce(_), "") :- !.
 generate_rust_single_enhanced_stage(debounce(_, _), "") :- !.
+generate_rust_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(TrueStage, TrueCode),
+    generate_rust_single_enhanced_stage(FalseStage, FalseCode),
+    format(string(Code), "~w~w", [TrueCode, FalseCode]).
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -3424,6 +3455,24 @@ generate_rust_stage_flow(debounce(Ms, Field), InVar, OutVar, Code) :-
     format(string(Code),
 "    // Debounce: emit after ~wms silence (using '~w' timestamp field)
     let ~w = debounce_stage(&~w, ~w, Some(\"~w\"));", [Ms, Field, OutVar, InVar, Ms, Field]).
+
+% Branch stage: conditional routing
+generate_rust_stage_flow(branch(Cond, TrueStage, FalseStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "branch_result",
+    % Extract condition predicate name
+    ( Cond = CondName/_ -> true ; CondName = Cond ),
+    % Extract true/false stage names
+    ( TrueStage = TrueName/_ -> true ; TrueName = TrueStage ),
+    ( FalseStage = FalseName/_ -> true ; FalseName = FalseStage ),
+    format(string(Code),
+"    // Branch: if ~w then ~w else ~w
+    let ~w = branch_stage(
+        &~w,
+        |r| ~w(r),
+        |rs| ~w(rs),
+        |rs| ~w(rs),
+    );", [CondName, TrueName, FalseName, OutVar, InVar, CondName, TrueName, FalseName]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

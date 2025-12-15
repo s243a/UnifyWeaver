@@ -5518,6 +5518,26 @@ def debounce_stage(stream, ms, timestamp_field=None):
     if buffer:
         yield buffer[-1]
 
+def branch_stage(stream, condition_fn, true_fn, false_fn):
+    '''
+    Branch: Conditional routing within pipeline.
+    Records matching condition go through true_fn, others through false_fn.
+    Results from both branches are combined in the output.
+    '''
+    for record in stream:
+        try:
+            if condition_fn(record):
+                result = true_fn(iter([record]))
+                for item in result:
+                    yield item
+            else:
+                result = false_fn(iter([record]))
+                for item in result:
+                    yield item
+        except Exception:
+            # On condition error, pass through unchanged
+            yield record
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5621,6 +5641,11 @@ generate_single_enhanced_stage(flatten, "") :- !.
 generate_single_enhanced_stage(flatten(_), "") :- !.
 generate_single_enhanced_stage(debounce(_), "") :- !.
 generate_single_enhanced_stage(debounce(_, _), "") :- !.
+generate_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
+    !,
+    generate_single_enhanced_stage(TrueStage, TrueCode),
+    generate_single_enhanced_stage(FalseStage, FalseCode),
+    format(string(Code), "~w~w", [TrueCode, FalseCode]).
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -6131,6 +6156,26 @@ generate_stage_flow(debounce(Ms, Field), InVar, OutVar, Code) :-
     format(string(Code),
 "    # Debounce: emit after ~wms silence (using '~w' timestamp field)
     ~w = debounce_stage(~w, ~w, '~w')", [Ms, Field, OutVar, InVar, Ms, Field]).
+
+% Branch stage: conditional routing
+generate_stage_flow(branch(Cond, TrueStage, FalseStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "branch_result",
+    % Extract condition predicate name
+    ( Cond = CondName/_ -> true ; CondName = Cond ),
+    % Extract true/false stage names
+    ( TrueStage = TrueName/_ -> true ; TrueName = TrueStage ),
+    ( FalseStage = FalseName/_ -> true ; FalseName = FalseStage ),
+    format(string(Code),
+"    # Branch: if ~w then ~w else ~w
+    def _branch_cond(record):
+        return ~w(record)
+    def _branch_true(stream):
+        return ~w(stream)
+    def _branch_false(stream):
+        return ~w(stream)
+    ~w = branch_stage(~w, _branch_cond, _branch_true, _branch_false)",
+    [CondName, TrueName, FalseName, CondName, TrueName, FalseName, OutVar, InVar]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
