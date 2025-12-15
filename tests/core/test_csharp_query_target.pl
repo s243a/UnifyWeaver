@@ -63,6 +63,7 @@
 :- dynamic user:test_orders_jsonl/3.
 :- dynamic user:test_json_null_skip/2.
 :- dynamic user:test_json_null_default/2.
+:- dynamic user:test_any_mode/2.
 :- dynamic user:mode/1.
 
 :- dynamic progress_last_report/1.
@@ -116,6 +117,7 @@ test_csharp_query_target :-
         verify_negation_plan,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
+        verify_any_mode_rejected_plan,
         verify_parameterized_need_allows_post_agg,
         verify_parameterized_need_allows_prefix_negation,
         verify_recursive_plan,
@@ -275,6 +277,8 @@ setup_test_data :-
         test_factorial(N1, Prev),
         Result is Prev * N
     )),
+    assertz(user:mode(test_any_mode(?, -))),
+    assertz(user:test_any_mode(alice, bob)),
     assertz(user:mode(test_fib_param(+, -))),
     assertz(user:test_fib_param(0, 1)),
     assertz(user:test_fib_param(1, 1)),
@@ -415,6 +419,8 @@ cleanup_test_data :-
     retractall(user:test_non_banned_sale_sum_grouped(_, _)),
     retractall(user:test_factorial_input(_)),
     retractall(user:test_factorial(_, _)),
+    retractall(user:test_any_mode(_, _)),
+    retractall(user:mode(test_any_mode(_, _))),
     retractall(user:test_fib_param(_, _)),
     retractall(user:mode(test_fib_param(_,_))),
     retractall(user:test_post_agg_param(_, _)),
@@ -975,6 +981,9 @@ verify_parameterized_fib_plan :-
 verify_parameterized_fib_runtime :-
     csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
     maybe_run_query_runtime(Plan, ['5,8'], [[5]]).
+
+verify_any_mode_rejected_plan :-
+    \+ csharp_query_target:build_query_plan(test_any_mode/2, [target(csharp_query)], _Plan).
 
 verify_parameterized_need_allows_post_agg :-
     HeadSpec = predicate{name:test_post_agg_param, arity:2},

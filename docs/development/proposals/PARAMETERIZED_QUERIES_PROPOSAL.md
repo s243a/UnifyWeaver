@@ -61,7 +61,7 @@ mode(lookup(+, -)).         % Key is input, value is output
 Mode symbols:
 - `+` : Input - must be bound by caller
 - `-` : Output - bound by query execution
-- `?` : Either - can be input or output (generates multiple entry points)
+- `?` : Either - proposed future feature for multi-entrypoint compilation; currently the C# query target rejects `?` (use explicit `+`/`-`, or declare multiple concrete modes).
 
 ### 2. IR Extensions
 
@@ -131,6 +131,22 @@ param_recursive_ref{
 ```
 
 Implementation note: the current branch keeps the existing `recursive_ref` / `cross_ref` nodes and instead uses `$need` demand-closure seeding to restrict recursion to the reachable subspace for the given inputs.
+
+### Future: `?` (“any”) modes / multi-entrypoint compilation
+
+Supporting `?` properly in query mode is not just a matter of final output filtering: the declared **input positions** influence the seeded pipeline and the `$need` demand-closure that scopes recursion. As a result, `?` implies compiling **multiple concrete mode variants**.
+
+Two pragmatic approaches:
+
+1. **Multiple explicit `user:mode/1` declarations per predicate** (recommended incremental path):
+   - Users declare the concrete modes they actually want (e.g., `mode(p(+, -)).`, `mode(p(-, +)).`).
+   - Codegen emits one entrypoint per declaration.
+
+2. **Treat `?` as sugar that expands to concrete modes**:
+   - Expand `mode(p(?, -)).` into a bounded set of concrete modes (e.g., `{mode(p(+, -)), mode(p(-, -))}`).
+   - Emit one plan/entrypoint per expanded mode, optionally with a dispatcher that selects a plan based on which arguments are provided.
+
+Guardrails to avoid a `2^k` explosion (for `k` question-marks) may be required: explicit opt-in, a hard cap on expansions, or only expanding patterns observed in tests.
 
 ### 3. Compilation Changes
 

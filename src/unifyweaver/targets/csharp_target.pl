@@ -28,7 +28,8 @@
 
 %% modes_for_pred(+Pred/Arity, -Modes:list)
 %  Reads user:mode/1 declarations, e.g., mode(fib(+, -)).
-%  Modes is a list of atoms: input/output/any. Defaults to all output.
+%  Modes is a list of atoms: input/output (and `any` for `?`, parsed but
+%  currently rejected by the C# query target). Defaults to all output.
 declared_modes_for_pred(Pred/Arity, Declared, Modes) :-
     (   current_predicate(user:mode/1),
         user:mode(ModeSpec),
@@ -58,6 +59,20 @@ mode_symbol_to_mode(?, any) :- !.
 mode_symbol_to_mode(Atom, _) :-
     format(user_error, 'Unrecognised mode symbol in mode/1: ~w~n', [Atom]),
     fail.
+
+%% validate_query_modes_supported(+PredIndicator, +Modes) is semidet.
+%  Query-mode compilation currently supports only concrete input/output modes.
+%  The `?` mode is parsed as `any` but is not supported yet; see
+%  docs/development/proposals/PARAMETERIZED_QUERIES_PROPOSAL.md for a proposed
+%  future multi-entrypoint design.
+validate_query_modes_supported(Pred/Arity, Modes) :-
+    (   member(any, Modes)
+    ->  format(user_error,
+               'C# query target: mode/1 for ~w uses ? (any), which is not supported yet. Replace ? with + or -, or declare multiple concrete mode/1 facts.~n',
+               [Pred/Arity]),
+        fail
+    ;   true
+    ).
 
 %% compile_predicate_to_csharp(+PredIndicator, +Options, -Code)
 %  Compile a predicate to C# code.
@@ -250,6 +265,7 @@ build_query_plan(Pred/Arity, Options, Modes, Plan) :-
     must_be(atom, Pred),
     must_be(integer, Arity),
     Arity >= 0,
+    validate_query_modes_supported(Pred/Arity, Modes),
     HeadSpec = predicate{name:Pred, arity:Arity},
     compute_dependency_group(Pred/Arity, GroupSpecs),
     (   GroupSpecs = [HeadSpec]
