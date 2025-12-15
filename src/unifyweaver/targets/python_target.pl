@@ -1259,23 +1259,60 @@ translate_clause(Head, Body, Index, Arity, Code) :-
     ->  arg(Arity, Head, OutputVar)
     ;   OutputVar = RecordVar
     ),
-    var_to_python(OutputVar, PyOutputVar),
     
-    translate_body(Body, BodyCode),
+    % Translate body with indentation support
+    body_to_list(Body, BodyGoals),
+    % Append yield(OutputVar) to goals so it respects indentation/nesting
+    append(BodyGoals, [yield(OutputVar)], Goals),
+    
+    translate_goals_recursive(Goals, "    ", BodyCode),
     
     format(string(Code),
 "def _clause_~d(~w: Dict) -> Iterator[Dict]:
 ~s~s
-    yield ~w
-", [Index, PyRecordVar, MatchCode, BodyCode, PyOutputVar]).
+", [Index, PyRecordVar, MatchCode, BodyCode]).
 
-translate_body((Goal, Rest), Code) :-
-    !,
-    translate_goal(Goal, Code1),
-    translate_body(Rest, Code2),
-    string_concat(Code1, Code2, Code).
-translate_body(Goal, Code) :-
-    translate_goal(Goal, Code).
+%% body_to_list(+Body, -Goals)
+body_to_list((A, B), [A|Rest]) :- !, body_to_list(B, Rest).
+body_to_list(true, []) :- !.
+body_to_list(A, [A]).
+
+%% translate_goals_recursive(+Goals, +Indent, -Code)
+translate_goals_recursive([], _, "") :- !.
+translate_goals_recursive([Goal|Rest], Indent, Code) :-
+    (   Goal = json_array_member(List, Item)
+    ->  % Control flow goal: Array iteration
+        var_to_python(List, PyList),
+        var_to_python(Item, PyItem),
+        format(string(Header), "~sif isinstance(~w, list):\n~s    for ~w in ~w:\n", 
+               [Indent, PyList, Indent, PyItem, PyList]),
+        
+        string_concat(Indent, "        ", InnerIndent),
+        translate_goals_recursive(Rest, InnerIndent, BodyCode),
+        string_concat(Header, BodyCode, Code)
+    ;   Goal = yield(Var)
+    ->  % Output goal
+        var_to_python(Var, PyVar),
+        format(string(Code1), "~syield ~w\n", [Indent, PyVar]),
+        translate_goals_recursive(Rest, Indent, Code2),
+        string_concat(Code1, Code2, Code)
+    ;   % Standard goal
+        translate_goal_with_indent(Goal, Indent, Code1),
+        translate_goals_recursive(Rest, Indent, Code2),
+        string_concat(Code1, Code2, Code)
+    ).
+
+%% translate_goal_with_indent(+Goal, +Indent, -Code)
+%  Adapter for legacy translate_goal/2
+translate_goal_with_indent(Goal, Indent, Code) :-
+    translate_goal(Goal, LegacyCode),
+    % Replace the hardcoded 4 spaces with Indent
+    (   sub_string(LegacyCode, 0, 4, After, "    ")
+    ->  sub_string(LegacyCode, 4, After, 0, Suffix),
+        string_concat(Indent, Suffix, Code)
+    ;   % Fallback if no indentation found (e.g. empty string)
+        string_concat(Indent, LegacyCode, Code)
+    ).
 
 is_var_term(V) :- var(V), !.
 is_var_term('$VAR'(_)).
@@ -1283,6 +1320,8 @@ is_var_term('$VAR'(_)).
 translate_goal(_:Goal, Code) :-
     !,
     translate_goal(Goal, Code).
+
+
 
 translate_goal(get_dict(Key, Record, Value), Code) :-
     !,
@@ -1465,6 +1504,32 @@ translate_goal(generate_key(Strategy, KeyVar), Code) :-
 opt_to_py_pair(Term, Pair) :-
     Term =.. [Key, Value],
     format(string(Pair), "'~w': ~w", [Key, Value]).
+
+surround_quotes(S, Q) :- format(string(Q), "'~w'", [S]).
+
+translate_goal(json_get(Data, Field, Var), Code) :-
+    !,
+    var_to_python(Data, PyData),
+    var_to_python(Var, PyVar),
+    (   atom(Field)
+    ->  format(string(Code), "    ~w = ~w.get('~w')\n", [PyVar, PyData, Field])
+    ;   is_list(Field)
+    ->  maplist(atom_string, Field, PathStrs),
+        maplist(surround_quotes, PathStrs, QuotedPaths),
+        atomic_list_concat(QuotedPaths, ', ', PathListStr),
+        format(string(Code), "    ~w = _json_get_nested(~w, [~s])\n", [PyVar, PyData, PathListStr])
+    ).
+
+translate_goal(json_record(Fields), Code) :-
+    !,
+    maplist(translate_json_field, Fields, Codes),
+    atomic_list_concat(Codes, "", Code).
+
+translate_json_field(Name-Var, Code) :-
+    !,
+    var_to_python(Var, PyVar),
+    % Assume input is 'record' as per convention
+    format(string(Code), "    ~w = record.get('~w')\n", [PyVar, Name]).
 
 translate_goal(true, Code) :-
     !,
@@ -2165,6 +2230,18 @@ def read_xml_lxml(file_path: str, tags: set) -> Iterator[Dict[str, Any]]:
                 del elem.getparent()[0]
     del context
     root.clear()
+
+def _json_get_nested(data, path):
+    'Get nested value from dict using path list.'
+    current = data
+    for key in path:
+        if isinstance(current, dict):
+            current = current.get(key)
+        else:
+            return None
+        if current is None:
+            return None
+    return current
 \n").
 
 %% ============================================
