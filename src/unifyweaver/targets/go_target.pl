@@ -9696,6 +9696,16 @@ func branchStage(records []Record, condFn func(Record) bool, trueFn func([]Recor
 \treturn result
 }
 
+// teeStage runs side stage on records, discards results, returns original records
+// Like Unix tee - fork to side destination while main stream continues
+func teeStage(records []Record, sideFn func([]Record) []Record) []Record {
+\t// Run side stage (results discarded)
+\t_ = sideFn(records)
+
+\t// Return original records unchanged
+\treturn records
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9801,6 +9811,9 @@ generate_go_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
     generate_go_single_enhanced_stage(TrueStage, TrueCode),
     generate_go_single_enhanced_stage(FalseStage, FalseCode),
     format(string(Code), "~w~w", [TrueCode, FalseCode]).
+generate_go_single_enhanced_stage(tee(SideStage), Code) :-
+    !,
+    generate_go_single_enhanced_stage(SideStage, Code).
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -10360,6 +10373,17 @@ generate_go_stage_flow(branch(Cond, TrueStage, FalseStage), InVar, OutVar, Code)
 \t\tfunc(rs []Record) []Record { return ~w(rs) },
 \t\tfunc(rs []Record) []Record { return ~w(rs) })",
     [CondName, TrueName, FalseName, OutVar, InVar, CondName, TrueName, FalseName]).
+
+% Tee stage: run side stage, discard results, pass through
+generate_go_stage_flow(tee(SideStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "teeResult",
+    % Extract side stage name
+    ( SideStage = SideName/_ -> true ; SideName = SideStage ),
+    format(string(Code),
+"\t// Tee: fork to ~w (results discarded), pass original through
+\t~w := teeStage(~w, func(rs []Record) []Record { return ~w(rs) })",
+    [SideName, OutVar, InVar, SideName]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

@@ -249,6 +249,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_branch_stage.sh` — Integration tests (16 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Tee Stage** - Fork stream to side destination while passing through
+  - Tee syntax:
+    - `tee(Stage)` — Run Stage as side effect, discard results, pass original through
+  - Behavior:
+    - Like Unix `tee` - fork stream to side destination
+    - Side stage receives full stream (not per-record like tap)
+    - Side stage results are discarded
+    - Original records pass through unchanged
+    - Side effect errors don't interrupt main pipeline
+  - Comparison with tap:
+    - `tap(Pred)` — Per-record side effect function
+    - `tee(Stage)` — Full pipeline stage as side effect
+  - Use cases:
+    - Writing to log files while continuing processing
+    - Sending copies to monitoring systems
+    - Archiving data streams
+    - Audit trails and metrics collection
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_tee_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.

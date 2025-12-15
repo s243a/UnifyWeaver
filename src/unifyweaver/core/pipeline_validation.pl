@@ -313,6 +313,10 @@ is_valid_stage(tap(Pred/Arity)) :-
     integer(Arity),
     Arity >= 0.
 
+% Tee stage - run side stage, discard results, pass original through
+is_valid_stage(tee(Stage)) :-
+    is_valid_stage(Stage).
+
 % Flatten stage - flatten nested collections into individual records
 is_valid_stage(flatten).
 is_valid_stage(flatten(Field)) :-
@@ -430,6 +434,7 @@ stage_type(concat(_), concat) :- !.
 stage_type(merge_sorted(_, _), merge_sorted) :- !.
 stage_type(merge_sorted(_, _, _), merge_sorted) :- !.
 stage_type(tap(_), tap) :- !.
+stage_type(tee(_), tee) :- !.
 stage_type(flatten, flatten) :- !.
 stage_type(flatten(_), flatten) :- !.
 stage_type(debounce(_), debounce) :- !.
@@ -711,6 +716,13 @@ validate_stage_specific(tap(Pred), Errors) :-
         Errors = []
     ;
         Errors = [error(invalid_tap, 'tap requires a predicate atom or predicate/arity')]
+    ).
+validate_stage_specific(tee(Stage), Errors) :-
+    !,
+    ( is_valid_stage(Stage) ->
+        validate_stage_specific(Stage, Errors)
+    ;
+        Errors = [error(invalid_tee, 'tee requires a valid pipeline stage')]
     ).
 validate_stage_specific(flatten, []) :- !.
 validate_stage_specific(flatten(Field), Errors) :-

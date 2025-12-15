@@ -5755,6 +5755,26 @@ def branch_stage(stream, condition_fn, true_fn, false_fn):
             # On condition error, pass through unchanged
             yield record
 
+def tee_stage(stream, side_fn):
+    '''
+    Tee: Run side stage on stream copy, discard results, pass original through.
+    Like Unix tee - fork stream to side destination while main stream continues.
+    '''
+    # Collect records to allow side stage to process full stream
+    records = list(stream)
+
+    # Run side stage (results discarded)
+    try:
+        # Consume the side stage generator to execute it
+        for _ in side_fn(iter(records)):
+            pass
+    except Exception:
+        pass  # Side effects should not interrupt the main pipeline
+
+    # Yield original records unchanged
+    for record in records:
+        yield record
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5863,6 +5883,9 @@ generate_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
     generate_single_enhanced_stage(TrueStage, TrueCode),
     generate_single_enhanced_stage(FalseStage, FalseCode),
     format(string(Code), "~w~w", [TrueCode, FalseCode]).
+generate_single_enhanced_stage(tee(SideStage), Code) :-
+    !,
+    generate_single_enhanced_stage(SideStage, Code).
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -6393,6 +6416,19 @@ generate_stage_flow(branch(Cond, TrueStage, FalseStage), InVar, OutVar, Code) :-
         return ~w(stream)
     ~w = branch_stage(~w, _branch_cond, _branch_true, _branch_false)",
     [CondName, TrueName, FalseName, CondName, TrueName, FalseName, OutVar, InVar]).
+
+% Tee stage: run side stage, discard results, pass through
+generate_stage_flow(tee(SideStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "tee_result",
+    % Extract side stage name
+    ( SideStage = SideName/_ -> true ; SideName = SideStage ),
+    format(string(Code),
+"    # Tee: fork to ~w (results discarded), pass original through
+    def _tee_side(stream):
+        return ~w(stream)
+    ~w = tee_stage(~w, _tee_side)",
+    [SideName, SideName, OutVar, InVar]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
