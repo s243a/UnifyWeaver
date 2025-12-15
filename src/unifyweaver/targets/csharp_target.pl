@@ -127,11 +127,7 @@ compile_predicate_to_csharp(PredIndicator, Options, Code) :-
         (   ModesVariants = [Modes]
         ->  build_query_plan(Pred/Arity, Options, Modes, Plan),
             render_plan_to_csharp(Plan, Code)
-        ;   findall(Plan,
-                (   member(Modes, ModesVariants),
-                    build_query_plan(Pred/Arity, Options, Modes, Plan)
-                ),
-                Plans),
+        ;   maplist(build_query_plan_variant(Pred/Arity, Options), ModesVariants, Plans),
             render_plans_to_csharp(Plans, Code)
         )
     ;   format(user_error, 'Unknown mode ~w for C# target~n', [Mode]),
@@ -314,11 +310,10 @@ build_query_plan(Pred/Arity, Options, Plan) :-
 %  order as modes_for_pred_variants/2 (most general first).
 build_query_plans(Pred/Arity, Options, Plans) :-
     modes_for_pred_variants(Pred/Arity, ModesVariants),
-    findall(Plan,
-        (   member(Modes, ModesVariants),
-            build_query_plan(Pred/Arity, Options, Modes, Plan)
-        ),
-        Plans).
+    maplist(build_query_plan_variant(Pred/Arity, Options), ModesVariants, Plans).
+
+build_query_plan_variant(PredArity, Options, Modes, Plan) :-
+    build_query_plan(PredArity, Options, Modes, Plan).
 
 %% build_query_plan_for_inputs(+PredIndicator, +Options, +InputPositions, -Plan) is semidet.
 %  Selects the plan variant matching the given 0-based input argument positions.
