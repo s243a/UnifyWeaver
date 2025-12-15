@@ -91,8 +91,54 @@ define i64 @sum(i64 %n, i64 %acc) {
 sudo apt install llvm clang
 ```
 
+---
+
+## Phase 2: C ABI Integration
+
+### `compile_shared_library_llvm/3`
+Compile multiple functions to shared library:
+```prolog
+compile_shared_library_llvm(
+    [func(sum, 2, tail_recursion), func(factorial, 1, factorial)],
+    [library_name(prolog_math)],
+    Code).
+```
+
+### `generate_c_header/2`
+Generate C header file:
+```prolog
+generate_c_header(Functions, HeaderCode).
+% → prolog_math.h with int64_t declarations
+```
+
+### `generate_cgo_bindings/2`
+Generate Go cgo package:
+```prolog
+generate_cgo_bindings(Functions, GoCode).
+% → package prologmath with C.function() calls
+```
+
+### `generate_rust_ffi/2`
+Generate Rust FFI module:
+```prolog
+generate_rust_ffi(Functions, RustCode).
+% → mod ffi { extern "C" { ... } }
+```
+
+### Building
+```bash
+# Compile to shared library
+llc -filetype=obj -relocation-model=pic lib.ll -o lib.o
+clang -shared lib.o -o libprolog_math.so
+
+# Verify exports
+nm -D libprolog_math.so | grep "T sum"
+```
+
 ## See Also
 
 - [llvm_target_design.md](./proposals/llvm_target_design.md) - Design doc
+- [Cross-Target Glue Book](../education/book-07-cross-target-glue/) - FFI examples
 - [GO_TARGET.md](./GO_TARGET.md) - Go target
 - [RUST_TARGET.md](./RUST_TARGET.md) - Rust target
+

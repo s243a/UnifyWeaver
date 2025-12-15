@@ -72,18 +72,72 @@ test_llvm_transitive_closure :-
     ;   fail_test(Test, 'Missing BFS worklist constructs')
     ).
 
+%% Phase 2 Tests
+test_llvm_shared_library :-
+    Test = 'LLVM Phase 2: compile_shared_library',
+    (   llvm_target:compile_shared_library_llvm(
+            [func(sum, 2, tail_recursion), func(fib, 2, linear_recursion)],
+            [library_name(test_lib)],
+            Code),
+        sub_atom(Code, _, _, _, 'dllexport'),
+        sub_atom(Code, _, _, _, '@sum'),
+        sub_atom(Code, _, _, _, '@fib')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing exports or functions')
+    ).
+
+test_llvm_c_header :-
+    Test = 'LLVM Phase 2: generate_c_header',
+    (   llvm_target:generate_c_header(
+            [func(sum, 2, tail_recursion), func(factorial, 1, factorial)],
+            Header),
+        sub_atom(Header, _, _, _, 'int64_t sum'),
+        sub_atom(Header, _, _, _, 'PROLOG_MATH_H')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing header declarations')
+    ).
+
+test_llvm_cgo_bindings :-
+    Test = 'LLVM Phase 2: generate_cgo_bindings',
+    (   llvm_target:generate_cgo_bindings(
+            [func(sum, 2, tail_recursion)],
+            GoCode),
+        sub_atom(GoCode, _, _, _, 'package prologmath'),
+        sub_atom(GoCode, _, _, _, 'func sum')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing Go bindings')
+    ).
+
+test_llvm_rust_ffi :-
+    Test = 'LLVM Phase 2: generate_rust_ffi',
+    (   llvm_target:generate_rust_ffi(
+            [func(sum, 2, tail_recursion)],
+            RustCode),
+        sub_atom(RustCode, _, _, _, 'extern "C"'),
+        sub_atom(RustCode, _, _, _, 'pub fn sum')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing Rust FFI')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
     format('LLVM Target Test Suite~n'),
     format('========================================~n~n'),
     
+    format('--- Phase 1 Tests ---~n'),
     test_llvm_tail_recursion,
     test_llvm_tail_recursion_export,
     test_llvm_linear_recursion,
     test_llvm_mutual_recursion,
     test_llvm_transitive_closure,
     test_llvm_facts,
+    
+    format('~n--- Phase 2 Tests ---~n'),
+    test_llvm_shared_library,
+    test_llvm_c_header,
+    test_llvm_cgo_bindings,
+    test_llvm_rust_ffi,
     
     format('~n========================================~n'),
     format('All tests completed~n'),
