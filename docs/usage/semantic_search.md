@@ -251,6 +251,114 @@ The Rust loader supports both `float32` and `float64` numpy arrays, automaticall
 // - '<f8' (float64) - converted to float32
 ```
 
+## Python API
+
+The Python embedding module provides GPU-accelerated embeddings with flash attention support.
+
+### Installation
+
+```bash
+# Core dependencies
+pip install sentence-transformers torch numpy
+
+# Optional: Flash Attention 2 for faster inference (CUDA only)
+pip install flash-attn --no-build-isolation
+
+# Optional: For original ModernBERT (requires Python 3.10+)
+# pip install transformers>=4.48.0
+```
+
+**Python Version Notes:**
+- Python 3.8+: Use `nomic-ai/nomic-embed-text-v1.5` (default) - 8192 context, 768 dim
+- Python 3.10+: Can also use `answerdotai/ModernBERT-base` with transformers >= 4.48.0
+
+**Virtual Environment (recommended):**
+```bash
+python3 -m venv venv
+source venv/bin/activate  # Linux/macOS
+# venv\Scripts\activate   # Windows
+
+pip install sentence-transformers torch flash-attn --no-build-isolation
+```
+
+### Available Providers
+
+| Provider | Model | Dimension | Context | GPU |
+|----------|-------|-----------|---------|-----|
+| `ModernBertEmbeddingProvider` | nomic-ai/nomic-embed-text-v1.5 | 768 | 8192 | ✓ |
+| `ModernBertEmbeddingProvider` | intfloat/e5-large-v2 | 1024 | 512 | ✓ |
+| `SentenceTransformerProvider` | all-MiniLM-L6-v2 | 384 | 256 | ✓ |
+
+### Basic Usage
+
+```python
+from unifyweaver.targets.python_runtime.modernbert_embedding import (
+    ModernBertEmbeddingProvider,
+    create_embedding_provider,
+)
+
+# Auto-detect GPU, use default model (nomic-embed-text-v1.5)
+embedder = ModernBertEmbeddingProvider()
+
+# Use specific model with explicit device
+embedder = ModernBertEmbeddingProvider(
+    model_name="intfloat/e5-large-v2",
+    device="cuda",  # or "cpu", "mps", "auto"
+)
+
+# Get single embedding (query mode - adds "search_query: " prefix)
+embedding = embedder.get_embedding("How to query a database?")
+
+# Get document embedding (adds "search_document: " prefix)
+doc_embedding = embedder.get_embedding("Database documentation...", is_query=False)
+
+# Batch processing
+texts = ["query 1", "query 2", "query 3"]
+embeddings = embedder.get_embeddings(texts)
+
+# Encode documents in batch
+documents = ["doc 1", "doc 2"]
+doc_embeddings = embedder.encode_documents(documents)
+```
+
+### Query/Document Prefixes
+
+Different models use different prefixes for optimal performance:
+
+| Model | Query Prefix | Document Prefix |
+|-------|--------------|-----------------|
+| nomic-* | `search_query: ` | `search_document: ` |
+| e5-* | `query: ` | `passage: ` |
+| Others | (none) | (none) |
+
+Prefixes are applied automatically based on model name.
+
+### GPU Performance
+
+With CUDA GPU acceleration:
+- Single embedding: ~15ms (first call), ~1ms (cached)
+- Batch (100 texts): ~1.7ms per text
+- Memory: ~530MB for nomic-embed-text-v1.5
+
+### Flash Attention
+
+Flash Attention 2 is used automatically when available:
+
+```python
+from unifyweaver.targets.python_runtime.modernbert_embedding import (
+    check_flash_attention_available,
+    get_best_device,
+)
+
+print(f"Flash attention: {check_flash_attention_available()}")
+print(f"Best device: {get_best_device()}")  # cuda, mps, or cpu
+```
+
+Install flash-attn for optimal performance:
+```bash
+pip install flash-attn --no-build-isolation
+```
+
 ## Temperature Tuning
 
 The softmax temperature controls routing sharpness:
@@ -286,6 +394,9 @@ format_suggestion(Result, Suggestion) :-
 ```bash
 # Run Prolog tests
 swipl tests/core/test_semantic_search.pl
+
+# Run Python embedding provider test
+python3 src/unifyweaver/targets/python_runtime/modernbert_embedding.py
 
 # Run Go tests
 cd src/unifyweaver/targets/go_runtime && go test ./projection/... -v
