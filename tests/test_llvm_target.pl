@@ -119,6 +119,42 @@ test_llvm_rust_ffi :-
     ;   fail_test(Test, 'Missing Rust FFI')
     ).
 
+%% Phase 4 WASM Tests
+test_wasm_module :-
+    Test = 'LLVM Phase 4: compile_wasm_module',
+    (   llvm_target:compile_wasm_module(
+            [func(sum, 2, tail_recursion), func(factorial, 1, factorial)],
+            [module_name(test_wasm)],
+            Code),
+        sub_atom(Code, _, _, _, 'wasm32-unknown-unknown'),
+        sub_atom(Code, _, _, _, 'define i32 @sum'),
+        sub_atom(Code, _, _, _, 'define i32 @factorial')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing WASM target or functions')
+    ).
+
+test_wasm_js_bindings :-
+    Test = 'LLVM Phase 4: generate_js_bindings',
+    (   llvm_target:generate_js_bindings(
+            [func(sum, 2, tail_recursion), func(factorial, 1, factorial)],
+            JSCode),
+        sub_atom(JSCode, _, _, _, 'WebAssembly.instantiate'),
+        sub_atom(JSCode, _, _, _, 'instance.exports.sum')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing JS bindings')
+    ).
+
+test_wasm_ts_bindings :-
+    Test = 'LLVM Phase 4: generate_ts_bindings',
+    (   llvm_target:generate_ts_bindings(
+            [func(sum, 2, tail_recursion)],
+            TSCode),
+        sub_atom(TSCode, _, _, _, 'interface PrologMathExports'),
+        sub_atom(TSCode, _, _, _, 'Promise<PrologMathExports>')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Missing TS bindings')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -138,6 +174,11 @@ run_tests :-
     test_llvm_c_header,
     test_llvm_cgo_bindings,
     test_llvm_rust_ffi,
+    
+    format('~n--- Phase 4 WASM Tests ---~n'),
+    test_wasm_module,
+    test_wasm_js_bindings,
+    test_wasm_ts_bindings,
     
     format('~n========================================~n'),
     format('All tests completed~n'),
