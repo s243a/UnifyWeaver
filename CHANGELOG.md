@@ -198,6 +198,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_tap_stage.sh` — Integration tests (16 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Flatten Stage** - Flatten nested collections into individual records
+  - Collection flattening:
+    - `flatten` — Flatten nested lists/arrays into individual records
+    - `flatten(Field)` — Flatten a specific field within each record, expanding arrays
+  - Behavior:
+    - Simple flatten: Records containing `__items__` arrays are expanded
+    - Field flatten: Records where field contains an array become multiple records
+  - Use cases:
+    - Expanding nested JSON arrays
+    - Normalizing denormalized data
+    - Processing hierarchical structures
+    - Exploding array fields for analysis
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_flatten_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
