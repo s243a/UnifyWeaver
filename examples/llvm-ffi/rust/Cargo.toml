@@ -1,0 +1,9 @@
+[package]
+name = "llvm-ffi-test"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+
+# Link to the prolog_math shared library
+# The library must be in LD_LIBRARY_PATH or specified via -L
