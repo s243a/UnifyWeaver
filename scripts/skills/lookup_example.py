@@ -69,7 +69,7 @@ def main():
     parser = argparse.ArgumentParser(description="Look up UnifyWeaver examples using multi-head semantic search.")
     parser.add_argument("query", help="The search query (e.g., 'how to use csv source')")
     parser.add_argument("--top-k", type=int, default=3, help="Number of results to return")
-    parser.add_argument("--mh-proj", type=int, default=1, help="Multi-Head Projection ID to use (default: 1)")
+    parser.add_argument("--mh-proj", type=int, default=2, help="Multi-Head Projection ID to use (default: 2)")
     
     args = parser.parse_args()
     
