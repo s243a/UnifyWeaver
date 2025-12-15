@@ -168,6 +168,89 @@ for _, r := range results {
 }
 ```
 
+## Rust API
+
+The Rust projection module provides native multi-head LDA projection with candle-transformers for ModernBERT support and GPU acceleration.
+
+### Loading a Projection
+
+```rust
+use projection::{MultiHeadProjection, Config};
+use std::collections::HashMap;
+
+// Load with explicit file paths
+let mut head_files: HashMap<i32, (String, String)> = HashMap::new();
+head_files.insert(1, (
+    "embeddings/mh_2_cluster_1_centroid.npy".to_string(),
+    "embeddings/mh_2_cluster_1_answer.npy".to_string(),
+));
+head_files.insert(2, (
+    "embeddings/mh_2_cluster_2_centroid.npy".to_string(),
+    "embeddings/mh_2_cluster_2_answer.npy".to_string(),
+));
+
+let config = Config {
+    data_dir: None,
+    temperature: 0.1,
+    head_files: Some(head_files),
+};
+
+let mh = MultiHeadProjection::load(config)?;
+println!("Loaded {} heads, dimension={}", mh.num_heads(), mh.dimension);
+```
+
+### Projecting Queries
+
+```rust
+// Project a query embedding
+let query_emb: Vec<f32> = embedder.get_embedding("How to query SQLite?")?;
+let projected = mh.project(&query_emb)?;
+
+// Project with routing weights (for debugging/analysis)
+let (projected, weights) = mh.project_with_weights(&query_emb)?;
+// weights: HashMap<i32, f32> mapping cluster ID to softmax weight
+for (cluster_id, weight) in weights.iter() {
+    println!("Cluster {}: {:.4}", cluster_id, weight);
+}
+```
+
+### Search with Projection
+
+```rust
+use searcher::{PtSearcher, SearchOptions};
+use embedding::EmbeddingProvider;
+
+// Initialize embedder and searcher with projection
+let embedder = EmbeddingProvider::new(model_path, tokenizer_path)?;
+let mh = MultiHeadProjection::load(config)?;
+let searcher = PtSearcher::with_projection(db_path, embedder, mh)?;
+
+// Search with projection enabled
+let options = SearchOptions {
+    use_projection: true,
+    include_routing_weights: true,
+};
+
+let results = searcher.vector_search_with_options("database query", 10, options)?;
+
+for result in results {
+    println!("{}: {:.3}", result.id, result.score);
+    if let Some(weights) = result.routing_weights {
+        println!("  Routing: {:?}", weights);
+    }
+}
+```
+
+### NPY File Format Support
+
+The Rust loader supports both `float32` and `float64` numpy arrays, automatically converting to `float32` for consistency:
+
+```rust
+// Both formats work automatically:
+// - '<f4' (float32) - loaded directly
+// - '<f8' (float64) - converted to float32
+```
+
 ## Temperature Tuning
 
 The softmax temperature controls routing sharpness:
@@ -206,6 +289,12 @@ swipl tests/core/test_semantic_search.pl
 
 # Run Go tests
 cd src/unifyweaver/targets/go_runtime && go test ./projection/... -v
+
+# Run Rust unit tests
+cd examples/pearltrees && cargo test --bin demo_bookmark_filing
+
+# Run Rust integration test (requires NPY files)
+cd examples/pearltrees && cargo run --bin test_projection_integration
 ```
 
 ## See Also

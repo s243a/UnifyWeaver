@@ -301,7 +301,8 @@ fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
-/// Load a 1D numpy array of float32 values from a .npy file.
+/// Load a 1D numpy array as float32 values from a .npy file.
+/// Supports both float32 ('<f4') and float64 ('<f8') dtypes.
 fn load_npy_f32(path: &str) -> Result<Vec<f32>> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
@@ -342,17 +343,35 @@ fn load_npy_f32(path: &str) -> Result<Vec<f32>> {
     // Calculate total elements
     let total_elements: usize = shape.iter().product();
 
-    // Read data (assuming float32 little-endian)
-    let mut data = vec![0f32; total_elements];
-    let data_bytes = unsafe {
-        std::slice::from_raw_parts_mut(
-            data.as_mut_ptr() as *mut u8,
-            total_elements * 4,
-        )
-    };
-    reader.read_exact(data_bytes)?;
+    // Detect dtype from header
+    let is_float64 = header_str.contains("<f8") || header_str.contains("float64");
 
-    Ok(data)
+    if is_float64 {
+        // Read as float64 and convert to float32
+        let mut data_f64 = vec![0f64; total_elements];
+        let data_bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                data_f64.as_mut_ptr() as *mut u8,
+                total_elements * 8,
+            )
+        };
+        reader.read_exact(data_bytes)?;
+
+        // Convert to f32
+        let data: Vec<f32> = data_f64.iter().map(|&x| x as f32).collect();
+        Ok(data)
+    } else {
+        // Read as float32 little-endian
+        let mut data = vec![0f32; total_elements];
+        let data_bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                data.as_mut_ptr() as *mut u8,
+                total_elements * 4,
+            )
+        };
+        reader.read_exact(data_bytes)?;
+        Ok(data)
+    }
 }
 
 /// Parse shape from numpy header string.
