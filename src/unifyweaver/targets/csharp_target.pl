@@ -1171,7 +1171,9 @@ is_recursive_literal(Pred, Arity, Term0) :-
 build_initial_node(HeadSpec, _GroupSpecs, _Term, constraint, _Node, _Relations, _VarMap, _Width) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
-    format(user_error, 'C# query target: clause for ~w/~w begins with a constraint; reorder body literals.~n', [Pred, Arity]),
+    format(user_error,
+           'C# query target: clause for ~w/~w begins with a constraint; reorder body literals so a relation/recursive call comes first. If this predicate is meant to be called with inputs, declare input modes via user:mode/1 (parameterized query mode), or use mode(generator).~n',
+           [Pred, Arity]),
     fail.
 build_initial_node(HeadSpec, GroupSpecs, Term, aggregate, Node, Relations, VarMap, Width) :-
     Unit = unit{type:unit, width:0},

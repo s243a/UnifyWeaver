@@ -11,6 +11,7 @@ Since this analysis was written, the query-mode compiler/runtime has expanded su
 - Arithmetic expressions inside comparisons (e.g. `X+1 =:= 6`) by rewriting through temp arithmetic columns.
 - Disjunction (`;/2`) in **rule bodies** by expanding into multiple clause variants and emitting a `union` plan node.
 - Disjunction in **aggregate goals** (including nested disjunction inside conjunction) by compiling the aggregate goal as a union-of-branches subplan.
+- Multi-mode declarations (`user:mode/1`) for a predicate now result in multiple query-mode plans/entrypoints; Prolog helpers exist to build/select variants (`build_query_plans/3`, `build_query_plan_for_inputs/4`).
 
 These changes improve practical compatibility, but they do not change the core limitation: all-output query mode still cannot compile Fibonacci-style recursion because it has no relation scan to seed bindings for `N`, and recursion arguments must be computed before recursive calls.
 
@@ -342,4 +343,9 @@ The `is/2` predicate is supported for computing derived columns from bound tuple
 
 However, with explicit input modes (`mode/1`) the query target can treat head inputs as pre‑bound, compute argument deltas legally, and (via demand closure) restrict the fixpoint to the reachable subspace. This resolves the Fibonacci case without abandoning the bottom‑up query model, while preserving the existing datalog semantics for predicates without inputs.
 
-I recommend Codex-5.1 review Options B or C if supporting recursive arithmetic predicates in all-output mode is a priority, or Option D if the intended scope should remain datalog-style queries. Option F is now implemented and removes a common source of boilerplate/errors for query-mode bodies.
+Codex-5.2 recommendation:
+- Keep default query mode focused on the relation-first/datalog pipeline (all-output), and continue to reject Fibonacci-style recursion in that mode.
+- Support function-style recursive arithmetic via **parameterized query mode** (`user:mode/1`) plus demand-closure (`pred$need`), or use generator mode for patterns outside query mode’s scope.
+- Prefer incremental UX improvements (Option A: clearer errors) over invasive IR changes (Option C) unless all-output recursion over computed arguments becomes a hard requirement.
+
+Option F is now implemented and removes a common source of boilerplate/errors for query-mode bodies.

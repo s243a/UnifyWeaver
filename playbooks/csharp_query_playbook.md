@@ -18,6 +18,12 @@ If you declare multiple concrete `user:mode/1` facts for the same predicate (e.g
 - `Build()` aliases the most general variant
 - `BuildForInputs(...)` selects a variant by input positions (e.g., `BuildForInputs(0)`).
 
+On the Prolog side, you can also build/select the corresponding plan variants:
+```prolog
+?- csharp_target:build_query_plans(p/2, [target(csharp_query)], Plans).
+?- csharp_target:build_query_plan_for_inputs(p/2, [target(csharp_query)], [0], Plan).
+```
+
 Example usage (C#):
 ```csharp
 var (provider, plan) = YourPredicateQueryModule.BuildForInputs(0); // arg0 is an input
