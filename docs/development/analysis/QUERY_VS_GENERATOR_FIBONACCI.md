@@ -6,7 +6,7 @@
 ## Summary
 - **Generator mode** can compile and run recursive arithmetic (e.g., Fibonacci) because it emits standalone C# with a fixpoint loop; it is not constrained to relation-first pipelines.
 - **Query mode** in its default **all‑output** form cannot compile Fibonacci-style clauses because it expects a relation scan to seed variable bindings, and arithmetic (`is/2`) requires bound RHS variables. Clauses that begin with constraints/arithmetic have no bindings to work from, and recursive calls need arguments that aren’t produced by any relation.
-- **Parameterized query mode** (via `mode/1`, e.g. `:- mode(fib(+, -)).`) now supports Fibonacci‑style recursion for eligible predicates by seeding inputs and using a demand‑closure (`pred$need`) fixpoint to scope recursion. This preserves the bottom‑up query model while enabling function‑style calls.
+- **Parameterized query mode** (via `mode/1`, e.g. `mode(fib(+, -)).`) supports Fibonacci‑style recursion for eligible predicates/SCCs by seeding inputs and using a demand‑closure (`pred$need`) fixpoint to scope recursion. This preserves the bottom‑up query model while enabling function‑style calls.
 
 ## Observations
 - Query pipeline:
@@ -20,7 +20,7 @@
 ## Pros/Cons: Query Mode vs Generator Mode
 ### Query Mode
 - **Pros:** Integrates with managed QueryRuntime, LINQ-style pipelines, relation-centric; good for datalog-style joins, filters, aggregates on known data. Parameterized modes add function‑style entry points without breaking datalog behavior.
-- **Cons:** All‑output recursion still cannot synthesize arguments before recursion; constraints/arithmetic require bound vars. Parameterized recursion support is currently limited to non‑mutual recursion without negation/aggregates.
+- **Cons:** All‑output recursion still cannot synthesize arguments before recursion; constraints/arithmetic require bound vars. Parameterized recursion works for single recursion and (when modes are compatible) mutual recursion via `$need`, but has restrictions (e.g., aggregates are disallowed in need-closure prefixes; aggregates over SCC predicates are rejected; negation is bound-only/stratified).
 
 ### Generator Mode
 - **Pros:** Can handle recursive arithmetic; standalone C# (no runtime dependency); supports aggregates (aggregate_all/3 and grouped aggregate_all/4), arg0/arg1 indexing, early pruning of bound-only builtins.
@@ -34,6 +34,7 @@
 ## Current Actions Taken
 - Added generator playbook (`playbooks/csharp_generator_playbook.md`) showing Fibonacci works in generator mode and noting default query limitations.
 - Implemented parameterized query support in C# query mode (modes metadata, `param_seed`, demand‑closure `pred$need` with `materialize`, runtime support, and tests in `tests/core/test_csharp_query_target.pl`).
+- Expanded query mode coverage for practical programs (bound-only stratified negation, correlated/grouped aggregates including aggregate subplans and nested aggregates, disjunction expansion, and performance work like `KeyJoinNode` and per-execution caches).
 
 ## Recommendation
 - Keep default query mode focused on relation‑first datalog semantics; reject Fibonacci‑style recursion without inputs and point to generator mode or parameterized modes.
