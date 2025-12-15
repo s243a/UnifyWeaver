@@ -123,3 +123,4 @@ models/
 *.db
 *.db-shm
 *.db-wal
+*.npy

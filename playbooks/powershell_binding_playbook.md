@@ -26,6 +26,23 @@ Key features:
 - Complex algorithms that don't map to existing cmdlets
 - Performance-critical code requiring compilation
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "powershell_binding" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use powershell binding"
+
+
 ## Agent Inputs
 Reference the following artifacts:
 1. **Bash Executable Records** in `playbooks/examples_library/powershell_binding_examples.md`:

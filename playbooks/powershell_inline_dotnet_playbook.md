@@ -27,6 +27,22 @@ This approach compiles C# code inline within PowerShell using `Add-Type`, enabli
 
 See `playbooks/csharp_codegen_playbook.md` for the C# approach.
 
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "powershell_inline_dotnet" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use powershell inline dotnet"
+```
+
 ## Workflow
 
 ### Step 1: Define Inline .NET Source

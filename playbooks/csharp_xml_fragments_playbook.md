@@ -11,6 +11,22 @@ This playbook shows how to stream XML fragments into the C# query runtime using 
 - Optional: `pearltrees(true)` to set `pt`/`dcterms` prefixes and keep CDATA text
 - Optional: `namespace_prefixes([Uri-Prefix,...])`, `treat_cdata(true|false)`, `nested_projection(true)` for nested dictionaries
 
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "csharp_xml_fragments" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use csharp xml fragments"
+```
+
 ## Steps (Prolog)
 ```prolog
 :- source(xml, xml_rows, [

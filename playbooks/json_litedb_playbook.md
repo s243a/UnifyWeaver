@@ -3,6 +3,23 @@
 ## Audience
 This playbook guides coding agents in using UnifyWeaver to stream JSON data into a LiteDB NoSQL database using inline .NET code within PowerShell scripts.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "json_litedb" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use json litedb"
+
+
 ## Agent Inputs
 Reference the following artifacts:
 1. **Executable Record** – `unifyweaver.execution.json_to_litedb_bash` in `playbooks/examples_library/json_litedb_examples.md`.

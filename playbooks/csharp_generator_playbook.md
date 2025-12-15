@@ -13,6 +13,23 @@ This playbook shows how to use **generator mode** to emit standalone C# with a l
 - .NET SDK in PATH (`dotnet`).
 - From the repo root: `src/unifyweaver/targets/csharp_target.pl` available.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "csharp_generator" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use csharp generator"
+
+
 ## Workflow Overview
 
 1. Define Prolog predicates (including recursive ones)

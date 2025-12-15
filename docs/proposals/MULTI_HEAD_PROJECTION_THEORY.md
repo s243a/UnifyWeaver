@@ -437,3 +437,59 @@ The approach is:
 
 5. **Fisher, R.A.** (1936). "The use of multiple measurements in taxonomic problems."
    - Original Linear Discriminant Analysis
+
+## Unified Multi-Head Model
+
+In practice, data often arrives in batches (e.g., `qa_pairs_v1.json`, `qa_pairs_v2.json`, etc.). Instead of maintaining separate projections for each batch, we train a **Unified Multi-Head Model** that consolidates all valid clusters from the database into a single projection ID.
+
+This allows the search skill to query a single model that understands the relationships between all available topics (CSV, SQL, C#, etc.) simultaneously.
+
+### Training the Unified Model
+
+The training script iterates over all clusters in the database, regardless of their source batch, and adds them as heads to a new multi-head projection.
+
+```python
+# scripts/train_multi_head_projection.py (simplified)
+
+# Create one global projection
+mh_id = db.create_multi_head_projection(
+    model_id=model_id,
+    name="unified_multi_head",
+    temperature=0.1  # Sharp routing
+)
+
+# Iterate over ALL clusters in DB
+clusters = db.list_clusters()
+for cluster in clusters:
+    # Compute centroid from question embeddings
+    centroid, _ = compute_weighted_centroid(questions)
+    
+    # Add as head
+    db.add_cluster_head(
+        mh_projection_id=mh_id,
+        cluster_id=cluster['cluster_id'],
+        centroid=centroid,
+        answer_emb=answer_emb
+    )
+```
+
+### Searching the Unified Model
+
+The search skill (`lookup_example.py`) targets this unified projection (e.g., ID=1), enabling low-latency retrieval across the entire knowledge base without iterating through multiple models.
+
+```python
+# scripts/skills/lookup_example.py
+
+def lookup_example(query, mh_projection_id=1):
+    # ...
+    # Single call to search all topics
+    results = db.multi_head_search(
+        query_embedding=query_emb,
+        mh_projection_id=mh_projection_id,
+        top_k=3,
+        temperature=0.1  # Implicit in projection
+    )
+```
+
+This architecture ensures that as new training data is added, we simply re-run the training script to generate a fresh unified projection that incorporates the new knowledge, maintaining a simple inference interface.
+

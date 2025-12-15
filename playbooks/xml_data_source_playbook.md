@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents (Gemini CLI, Claude Code, etc.). Agents do not handwrite scripts here—they orchestrate UnifyWeaver to generate and run the XML processing pipeline by referencing example records and skills.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "xml_data_source" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use xml data source"
+
+
 ## Workflow Overview
 Use UnifyWeaver to synthesize the entire XML processing flow:
 1. Define a data source that uses a Python script to parse XML data.

@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents (Gemini CLI, Claude Code, etc.). Agents orchestrate UnifyWeaver to partition data and execute processing scripts in parallel.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "bash_parallel" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use bash parallel"
+
+
 ## Workflow Overview
 Use UnifyWeaver's parallel execution backends to:
 1. Partition input data for parallel processing

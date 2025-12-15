@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents. It demonstrates UnifyWeaver's firewall module for enforcing security policies on backend execution, service access, and resource usage.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "firewall" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use firewall"
+
+
 ## Workflow Overview
 Use the firewall module for security enforcement:
 1. Define security policies with rule_firewall/2 (execution backends, services, network/file access)

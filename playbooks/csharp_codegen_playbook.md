@@ -3,6 +3,23 @@
 ## Audience
 This playbook guides coding agents in using UnifyWeaver to compile non-recursive Prolog predicates to C# source code and execute them.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "csharp_codegen" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use csharp codegen"
+
+
 ## Workflow Overview
 This playbook demonstrates the compilation of a non-recursive predicate (`grandparent/2`) to C# and its execution.
 1. Define Prolog facts (`parent/2`) and a rule (`grandparent/2`).

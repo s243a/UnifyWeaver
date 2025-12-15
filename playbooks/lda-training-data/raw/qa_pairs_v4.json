@@ -1,0 +1,236 @@
+{
+  "version": "4.0",
+  "description": "Expanded Q-A pairs for LDA projection training - UnifyWeaver playbooks (Batch 4)",
+  "notes": {
+    "query_lengths": "short (2-4 words), medium (5-15 words), long (15+ words)",
+    "answer_variants": "Different answer texts per embedding model based on context length"
+  },
+  "embedding_models": ["all-MiniLM-L6-v2", "e5-small-v2"],
+  "clusters": [
+    {
+      "id": "csharp_examples",
+      "answer_source": "playbooks/examples_library/csharp_examples.md",
+      "answers": {
+        "default": "C# Examples - Demonstrate using csharp_target for arithmetic (sum_pair) and generator mode (Fibonacci). Compile Prolog predicates to C# classes that integrate with Bash or PowerShell. Shows handling of recursive arithmetic logic using generator mode.",
+        "all-MiniLM-L6-v2": "C# examples: sum_pair (arithmetic) and Fibonacci (generator mode). Compiles Prolog to C# for Bash/PowerShell.",
+        "e5-small-v2": "C# Examples - Use csharp_target for arithmetic and recursive generators. Compile Prolog to C# classes, demonstrating sum_pair and Fibonacci implementations."
+      },
+      "queries": {
+        "short": [
+          "c# prolog examples",
+          "csharp generator mode",
+          "compile fibonacci c#"
+        ],
+        "medium": [
+          "How to use C# generator mode in UnifyWeaver?",
+          "Compile Prolog arithmetic to C#",
+          "Recursive C# predicates example"
+        ],
+        "long": [
+          "I want to compile a recursive Prolog predicate like Fibonacci to C# using generator mode",
+          "How can I implement arithmetic operations like sum_pair in Prolog and compile them to C#?"
+        ]
+      }
+    },
+    {
+      "id": "prolog_code_generation",
+      "answer_source": "playbooks/examples_library/prolog_generation_examples.md",
+      "answers": {
+        "default": "Prolog Code Generation - Dynamically generate Prolog code and compile it to Bash. Example demonstrates generating a factorial/2 predicate string, writing it to a file, and then using the UnifyWeaver compiler to turn it into an executable bash script.",
+        "all-MiniLM-L6-v2": "Prolog generation: Generate Prolog code dynamically and compile to bash. Example: factorial/2.",
+        "e5-small-v2": "Prolog Code Generation - Create Prolog predicates dynamically and compile to bash. Demonstrates generating factorial/2 and invoking the compiler."
+      },
+      "queries": {
+        "short": [
+          "generate prolog code",
+          "dynamic prolog compilation",
+          "compile generated predicate"
+        ],
+        "medium": [
+          "How to generate and compile Prolog code?",
+          "Dynamically create Prolog predicates for compilation",
+          "Script to generate Prolog and compile to bash"
+        ],
+        "long": [
+          "I need to programmatically generate a Prolog predicate and then immediately compile it to a bash script",
+          "How can I automate the creation of Prolog files and their subsequent compilation in a pipeline?"
+        ]
+      }
+    },
+    {
+      "id": "awk_advanced_patterns",
+      "answer_source": "playbooks/examples_library/awk_advanced_examples.md",
+      "answers": {
+        "default": "AWK Advanced Patterns - Compile aggregations (sum, count, max, min, avg), tail-recursive predicates to while loops, and constraints to AWK. Shows how high-level Prolog patterns map to efficient AWK scripts for data processing.",
+        "all-MiniLM-L6-v2": "AWK advanced: Aggregations (sum/count/avg), tail recursion to loops, and constraints. Compiles Prolog to AWK.",
+        "e5-small-v2": "AWK Advanced Patterns - Compile aggregations, tail recursion, and constraints to AWK. optimized for data processing tasks like sum, count, and loops."
+      },
+      "queries": {
+        "short": [
+          "awk aggregations",
+          "tail recursion awk",
+          "awk constraints"
+        ],
+        "medium": [
+          "How to compile aggregations to AWK?",
+          "Convert tail recursion to AWK loops",
+          "Use constraints in AWK target"
+        ],
+        "long": [
+          "I want to calculate sum, count, and average of a dataset using compiled AWK scripts from Prolog",
+          "How does UnifyWeaver compile tail-recursive predicates into efficient AWK while loops?"
+        ]
+      }
+    },
+    {
+      "id": "sql_window_functions",
+      "answer_source": "playbooks/examples_library/sql_window_examples.md",
+      "answers": {
+        "default": "SQL Window Functions - Compile Prolog predicates using window functions (ROW_NUMBER, RANK, DENSE_RANK, SUM OVER) and recursive CTEs to SQL. Supports partitioning, ordering, and GROUP BY with HAVING clauses for complex analytical queries.",
+        "all-MiniLM-L6-v2": "SQL window functions: ROW_NUMBER, RANK, SUM OVER, recursive CTEs. Compiles Prolog to SQL analytics.",
+        "e5-small-v2": "SQL Window Functions - Compile window functions (ROW_NUMBER, RANK) and recursive CTEs to SQL. Supports complex analytics and GROUP BY."
+      },
+      "queries": {
+        "short": [
+          "sql window functions",
+          "recursive cte sql",
+          "prolog to sql analytics"
+        ],
+        "medium": [
+          "How to use SQL window functions in UnifyWeaver?",
+          "Compile recursive CTEs from Prolog",
+          "Generate RANK and ROW_NUMBER queries"
+        ],
+        "long": [
+          "I need to generate SQL queries that use window functions like ROW_NUMBER and running totals from Prolog predicates",
+          "How can I compile recursive Prolog predicates into SQL WITH RECURSIVE Common Table Expressions?"
+        ]
+      }
+    },
+    {
+      "id": "python_source",
+      "answer_source": "playbooks/examples_library/python_source_examples.md",
+      "answers": {
+        "default": "Python Source - Integrate Python code via python_source/3. Supports inline code, external files, and SQLite integration. Compiles to bash scripts that execute the Python code, bridging Prolog logic with Python's ecosystem.",
+        "all-MiniLM-L6-v2": "Python source: Inline code, files, SQLite integration. Compiles to bash scripts executing Python.",
+        "e5-small-v2": "Python Source - Integrate Python via inline code or files. Supports SQLite queries. Compiles to bash for execution."
+      },
+      "queries": {
+        "short": [
+          "python source",
+          "inline python prolog",
+          "python sqlite integration"
+        ],
+        "medium": [
+          "How to use Python source in UnifyWeaver?",
+          "Execute inline Python from Prolog",
+          "Query SQLite using Python source"
+        ],
+        "long": [
+          "I want to embed inline Python code in my Prolog file to process data or query a database",
+          "How can I use an external Python script as a data source for my UnifyWeaver pipeline?"
+        ]
+      }
+    },
+    {
+      "id": "powershell_binding_system",
+      "answer_source": "playbooks/examples_library/powershell_binding_examples.md",
+      "answers": {
+        "default": "PowerShell Binding System - Generate PowerShell code for .NET methods (Math, IO) and Cmdlets using bindings. Features `generate_binding_call/4` and `generate_cmdlet_from_binding/4`. Supports pipeline operations (ForEach, Where, Sort) and file system interactions.",
+        "all-MiniLM-L6-v2": "PowerShell bindings: Generate .NET/Cmdlet code. Supports Math, IO, Pipelines. Use generate_binding_call/4.",
+        "e5-small-v2": "PowerShell Binding System - Generate code for .NET and Cmdlets. Supports pipelines, file ops, and Math functions via bindings."
+      },
+      "queries": {
+        "short": [
+          "powershell bindings",
+          "generate cmdlet code",
+          "dotnet method binding"
+        ],
+        "medium": [
+          "How to use PowerShell bindings?",
+          "Generate .NET math calls in PowerShell",
+          "Create PowerShell cmdlets from bindings"
+        ],
+        "long": [
+          "I need to generate PowerShell code that calls .NET System.IO methods using the binding system",
+          "How can I use bindings to generate PowerShell pipeline operations like ForEach-Object and Where-Object?"
+        ]
+      }
+    },
+    {
+      "id": "semantic_source",
+      "answer_source": "playbooks/examples_library/semantic_source_examples.md",
+      "answers": {
+        "default": "Semantic Source - Perform vector-based semantic search. Configure `semantic` source with vector store, embedding backend (e.g., python_onnx), similarity threshold, and top_k results. Compiles to scripts that perform semantic retrieval.",
+        "all-MiniLM-L6-v2": "Semantic source: Vector search with thresholds and top_k. Uses embedding backends like python_onnx.",
+        "e5-small-v2": "Semantic Source - Vector-based semantic search. Configure vector store, backend, threshold, and top_k. Compiles to retrieval scripts."
+      },
+      "queries": {
+        "short": [
+          "semantic search source",
+          "vector search prolog",
+          "semantic query threshold"
+        ],
+        "medium": [
+          "How to use semantic search in UnifyWeaver?",
+          "Configure vector store for semantic source",
+          "Filter semantic results by threshold"
+        ],
+        "long": [
+          "I want to perform a semantic search against a vector store and retrieve the top 5 results",
+          "How can I configure a semantic source to use the python_onnx backend and a specific similarity threshold?"
+        ]
+      }
+    },
+    {
+      "id": "partitioning_strategies",
+      "answer_source": "playbooks/examples_library/partitioner_examples.md",
+      "answers": {
+        "default": "Partitioning Strategies - Split data for parallel processing using fixed-size, hash-based, or key-based partitioners. Use `partitioner_init/3`, `partitioner_partition/3`, and `partitioner_cleanup/1` to manage data distribution.",
+        "all-MiniLM-L6-v2": "Partitioning: fixed_size, hash_based, key_based strategies. Split data for parallel processing.",
+        "e5-small-v2": "Partitioning Strategies - Split data using fixed, hash, or key-based methods. APIs for init, partition, and cleanup."
+      },
+      "queries": {
+        "short": [
+          "data partitioning",
+          "hash based partitioner",
+          "fixed size chunks"
+        ],
+        "medium": [
+          "How to partition data in UnifyWeaver?",
+          "Use hash-based partitioning for parallelism",
+          "Split data into fixed-size chunks"
+        ],
+        "long": [
+          "I need to split a dataset into partitions based on a key field for parallel processing",
+          "How can I use the partitioner module to distribute data items among multiple workers using hashing?"
+        ]
+      }
+    },
+    {
+      "id": "bash_pipelines",
+      "answer_source": "playbooks/examples_library/bash_pipeline_examples.md",
+      "answers": {
+        "default": "Bash Pipelines - Construct multi-stage Unix pipelines (e.g., grep | awk | sort | uniq). Define `bash_pipeline` sources with ordered `stages`. Compiles to efficient bash scripts that pipe data through each tool.",
+        "all-MiniLM-L6-v2": "Bash pipelines: Multi-stage processing (grep, awk, sort). Define stages in bash_pipeline source.",
+        "e5-small-v2": "Bash Pipelines - Create multi-stage Unix pipelines. Define stages like grep, awk, sort. Compiles to piped bash commands."
+      },
+      "queries": {
+        "short": [
+          "bash pipeline source",
+          "multi stage pipeline",
+          "pipe grep awk"
+        ],
+        "medium": [
+          "How to create bash pipelines in UnifyWeaver?",
+          "Chain grep and awk stages",
+          "Define multi-stage data processing"
+        ],
+        "long": [
+          "I want to create a pipeline that greps for errors, extracts fields with awk, and sorts the output",
+          "How can I define a bash_pipeline source with multiple processing stages to filter and aggregate log data?"
+        ]
+      }
+    }
+  ]
+}
