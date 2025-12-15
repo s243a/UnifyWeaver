@@ -2562,6 +2562,42 @@ where
     }
     records.to_vec()
 }
+
+/// Flatten: Flatten nested collections into individual records.
+/// If a record contains an \"__items__\" key with an array, yields each item.
+fn flatten_stage(records: &[Record]) -> Vec<Record> {
+    let mut result = Vec::new();
+    for record in records {
+        if let Some(serde_json::Value::Array(items)) = record.get(\"__items__\") {
+            for item in items {
+                if let serde_json::Value::Object(map) = item {
+                    result.push(map.clone());
+                }
+            }
+        } else {
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Flatten Field: Flatten a specific field within each record.
+/// Expands records where field contains an array into multiple records.
+fn flatten_field_stage(records: &[Record], field: &str) -> Vec<Record> {
+    let mut result = Vec::new();
+    for record in records {
+        if let Some(serde_json::Value::Array(items)) = record.get(field) {
+            for item in items {
+                let mut new_record = record.clone();
+                new_record.insert(field.to_string(), item.clone());
+                result.push(new_record);
+            }
+        } else {
+            result.push(record.clone());
+        }
+    }
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2793,6 +2829,8 @@ generate_rust_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code)
     !,
     generate_rust_enhanced_stage_functions(SubStages, Code).
 generate_rust_single_enhanced_stage(tap(_), "") :- !.
+generate_rust_single_enhanced_stage(flatten, "") :- !.
+generate_rust_single_enhanced_stage(flatten(_), "") :- !.
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -3293,6 +3331,22 @@ generate_rust_stage_flow(tap(Pred), InVar, OutVar, Code) :-
     format(string(Code),
 "    // Tap: execute ~w for side effects (logging/metrics)
     let ~w = tap_stage(&~w, ~w);", [PredName, OutVar, InVar, PredName]).
+
+% Flatten stage: flatten nested collections
+generate_rust_stage_flow(flatten, InVar, OutVar, Code) :-
+    !,
+    OutVar = "flattened_result",
+    format(string(Code),
+"    // Flatten: expand nested collections into individual records
+    let ~w = flatten_stage(&~w);", [OutVar, InVar]).
+
+% Flatten field stage: flatten a specific field within records
+generate_rust_stage_flow(flatten(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "flattened_~w_result", [Field]),
+    format(string(Code),
+"    // Flatten Field: expand '~w' field into individual records
+    let ~w = flatten_field_stage(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

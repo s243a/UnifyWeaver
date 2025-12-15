@@ -9577,6 +9577,51 @@ func tapStage(records []Record, sideEffect func(Record)) []Record {
 \treturn records
 }
 
+// flattenStage flattens nested collections into individual records
+// If a record contains an array field \"__items__\", yields each item
+func flattenStage(records []Record) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tif items, ok := record[\"__items__\"]; ok {
+\t\t\tif arr, ok := items.([]interface{}); ok {
+\t\t\t\tfor _, item := range arr {
+\t\t\t\t\tif rec, ok := item.(Record); ok {
+\t\t\t\t\t\tresult = append(result, rec)
+\t\t\t\t\t} else if m, ok := item.(map[string]interface{}); ok {
+\t\t\t\t\t\tresult = append(result, Record(m))
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tcontinue
+\t\t\t}
+\t\t}
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
+// flattenFieldStage flattens a specific field within each record
+// Expands records where field contains an array into multiple records
+func flattenFieldStage(records []Record, field string) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tif fieldValue, ok := record[field]; ok {
+\t\t\tif arr, ok := fieldValue.([]interface{}); ok {
+\t\t\t\tfor _, item := range arr {
+\t\t\t\t\tnewRecord := make(Record)
+\t\t\t\t\tfor k, v := range record {
+\t\t\t\t\t\tnewRecord[k] = v
+\t\t\t\t\t}
+\t\t\t\t\tnewRecord[field] = item
+\t\t\t\t\tresult = append(result, newRecord)
+\t\t\t\t}
+\t\t\t\tcontinue
+\t\t\t}
+\t\t}
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9673,6 +9718,8 @@ generate_go_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :
     !,
     generate_go_enhanced_stage_functions(SubStages, Code).
 generate_go_single_enhanced_stage(tap(_), "") :- !.
+generate_go_single_enhanced_stage(flatten, "") :- !.
+generate_go_single_enhanced_stage(flatten(_), "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -10183,6 +10230,22 @@ generate_go_stage_flow(tap(Pred), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// Tap: execute ~w for side effects (logging/metrics)
 \t~w := tapStage(~w, ~w)", [PredName, OutVar, InVar, PredName]).
+
+% Flatten stage: flatten nested collections
+generate_go_stage_flow(flatten, InVar, OutVar, Code) :-
+    !,
+    OutVar = "flattenedResult",
+    format(string(Code),
+"\t// Flatten: expand nested collections into individual records
+\t~w := flattenStage(~w)", [OutVar, InVar]).
+
+% Flatten field stage: flatten a specific field within records
+generate_go_stage_flow(flatten(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "flattened~wResult", [Field]),
+    format(string(Code),
+"\t// Flatten Field: expand '~w' field into individual records
+\t~w := flattenFieldStage(~w, \"~w\")", [Field, OutVar, InVar, Field]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

@@ -5444,6 +5444,42 @@ def tap_stage(stream, side_effect_fn):
             pass  # Side effects should not interrupt the pipeline
         yield record
 
+def flatten_stage(stream):
+    '''
+    Flatten: Flatten nested collections into individual records.
+    If a record is a list/tuple, yields each element individually.
+    Non-iterable records are yielded as-is.
+    '''
+    for record in stream:
+        if isinstance(record, (list, tuple)):
+            for item in record:
+                yield item
+        elif isinstance(record, dict) and '__items__' in record:
+            # Handle dict with __items__ key containing list
+            for item in record['__items__']:
+                yield item
+        else:
+            yield record
+
+def flatten_field_stage(stream, field):
+    '''
+    Flatten Field: Flatten a specific field within each record.
+    Expands records where field contains a list into multiple records.
+    Each expanded record contains one item from the list.
+    '''
+    for record in stream:
+        if isinstance(record, dict) and field in record:
+            field_value = record[field]
+            if isinstance(field_value, (list, tuple)):
+                for item in field_value:
+                    new_record = record.copy()
+                    new_record[field] = item
+                    yield new_record
+            else:
+                yield record
+        else:
+            yield record
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5543,6 +5579,8 @@ generate_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
     !,
     generate_enhanced_stage_functions(SubStages, Code).
 generate_single_enhanced_stage(tap(_), "") :- !.
+generate_single_enhanced_stage(flatten, "") :- !.
+generate_single_enhanced_stage(flatten(_), "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -6021,6 +6059,22 @@ generate_stage_flow(tap(Pred), InVar, OutVar, Code) :-
     format(string(Code),
 "    # Tap: execute ~w for side effects (logging/metrics)
     ~w = tap_stage(~w, ~w)", [PredName, OutVar, InVar, PredName]).
+
+% Flatten stage: flatten nested collections
+generate_stage_flow(flatten, InVar, OutVar, Code) :-
+    !,
+    OutVar = "flattened_result",
+    format(string(Code),
+"    # Flatten: expand nested collections into individual records
+    ~w = flatten_stage(~w)", [OutVar, InVar]).
+
+% Flatten field stage: flatten a specific field within records
+generate_stage_flow(flatten(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "flattened_~w_result", [Field]),
+    format(string(Code),
+"    # Flatten Field: expand '~w' field into individual records
+    ~w = flatten_field_stage(~w, '~w')", [Field, OutVar, InVar, Field]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

@@ -313,6 +313,11 @@ is_valid_stage(tap(Pred/Arity)) :-
     integer(Arity),
     Arity >= 0.
 
+% Flatten stage - flatten nested collections into individual records
+is_valid_stage(flatten).
+is_valid_stage(flatten(Field)) :-
+    atom(Field).
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -404,6 +409,8 @@ stage_type(concat(_), concat) :- !.
 stage_type(merge_sorted(_, _), merge_sorted) :- !.
 stage_type(merge_sorted(_, _, _), merge_sorted) :- !.
 stage_type(tap(_), tap) :- !.
+stage_type(flatten, flatten) :- !.
+stage_type(flatten(_), flatten) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -680,6 +687,14 @@ validate_stage_specific(tap(Pred), Errors) :-
         Errors = []
     ;
         Errors = [error(invalid_tap, 'tap requires a predicate atom or predicate/arity')]
+    ).
+validate_stage_specific(flatten, []) :- !.
+validate_stage_specific(flatten(Field), Errors) :-
+    !,
+    ( atom(Field) ->
+        Errors = []
+    ;
+        Errors = [error(invalid_flatten, 'flatten(Field) requires a field atom')]
     ).
 validate_stage_specific(_, []).
 
