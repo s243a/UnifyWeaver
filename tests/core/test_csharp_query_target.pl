@@ -119,6 +119,7 @@ test_csharp_query_target :-
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
         verify_multi_mode_codegen_plan,
+        verify_multi_mode_plan_selection_api,
         verify_any_mode_rejected_plan,
         verify_parameterized_need_allows_post_agg,
         verify_parameterized_need_allows_prefix_negation,
@@ -996,8 +997,39 @@ verify_multi_mode_codegen_plan :-
     sub_string(Code, _, _, _, 'BuildIn1'),
     sub_string(Code, _, _, _, 'BuildForInputs').
 
+verify_multi_mode_plan_selection_api :-
+    csharp_query_target:build_query_plans(test_multi_mode/2, [target(csharp_query)], Plans),
+    length(Plans, 2),
+    Plans = [Plan0, Plan1],
+    get_dict(metadata, Plan0, Meta0),
+    get_dict(modes, Meta0, [input, output]),
+    get_dict(metadata, Plan1, Meta1),
+    get_dict(modes, Meta1, [output, input]),
+    csharp_query_target:build_query_plan_for_inputs(test_multi_mode/2, [target(csharp_query)], [0], Selected0),
+    get_dict(metadata, Selected0, SelectedMeta0),
+    get_dict(modes, SelectedMeta0, [input, output]),
+    csharp_query_target:build_query_plan_for_inputs(test_multi_mode/2, [target(csharp_query)], [1], Selected1),
+    get_dict(metadata, Selected1, SelectedMeta1),
+    get_dict(modes, SelectedMeta1, [output, input]).
+
+with_suppressed_user_error(Goal) :-
+    current_input(In),
+    current_output(Out),
+    stream_property(Err, alias(user_error)),
+    setup_call_cleanup(
+        open_null_stream(Null),
+        setup_call_cleanup(
+            set_prolog_IO(In, Out, Null),
+            catch(Goal, _Error, fail),
+            set_prolog_IO(In, Out, Err)
+        ),
+        close(Null)
+    ).
+
 verify_any_mode_rejected_plan :-
-    \+ csharp_query_target:build_query_plan(test_any_mode/2, [target(csharp_query)], _Plan).
+    with_suppressed_user_error(
+        \+ csharp_query_target:build_query_plan(test_any_mode/2, [target(csharp_query)], _Plan)
+    ).
 
 verify_parameterized_need_allows_post_agg :-
     HeadSpec = predicate{name:test_post_agg_param, arity:2},

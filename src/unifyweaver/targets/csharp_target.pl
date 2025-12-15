@@ -10,6 +10,8 @@
 :- module(csharp_target, [
     compile_predicate_to_csharp/3, % +PredIndicator, +Options, -CSharpCode
     build_query_plan/3,     % +PredIndicator, +Options, -PlanDict
+    build_query_plans/3,    % +PredIndicator, +Options, -PlanDicts
+    build_query_plan_for_inputs/4, % +PredIndicator, +Options, +InputPositions, -PlanDict
     render_plan_to_csharp/2,% +PlanDict, -CSharpSource
     plan_module_name/2      % +PlanDict, -ModuleName
 ]).
@@ -305,6 +307,33 @@ signature_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
 build_query_plan(Pred/Arity, Options, Plan) :-
     modes_for_pred_variants(Pred/Arity, [Modes|_]),
     build_query_plan(Pred/Arity, Options, Modes, Plan).
+
+%% build_query_plans(+PredIndicator, +Options, -Plans) is semidet.
+%  Builds one plan per declared mode/1 fact for the predicate (or a single
+%  all-output plan when no modes are declared). Plans are returned in the same
+%  order as modes_for_pred_variants/2 (most general first).
+build_query_plans(Pred/Arity, Options, Plans) :-
+    modes_for_pred_variants(Pred/Arity, ModesVariants),
+    findall(Plan,
+        (   member(Modes, ModesVariants),
+            build_query_plan(Pred/Arity, Options, Modes, Plan)
+        ),
+        Plans).
+
+%% build_query_plan_for_inputs(+PredIndicator, +Options, +InputPositions, -Plan) is semidet.
+%  Selects the plan variant matching the given 0-based input argument positions.
+build_query_plan_for_inputs(Pred/Arity, Options, InputPositions0, Plan) :-
+    must_be(list(integer), InputPositions0),
+    sort(InputPositions0, InputPositions),
+    modes_for_pred_variants(Pred/Arity, ModesVariants),
+    (   member(Modes, ModesVariants),
+        input_positions(Modes, InputPositions)
+    ->  build_query_plan(Pred/Arity, Options, Modes, Plan)
+    ;   format(user_error,
+               'C# query target: no mode/1 variant for ~w/~w matching input positions ~w.~n',
+               [Pred, Arity, InputPositions]),
+        fail
+    ).
 
 build_query_plan(Pred/Arity, Options, Modes, Plan) :-
     must_be(atom, Pred),
