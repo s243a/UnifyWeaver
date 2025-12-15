@@ -603,7 +603,8 @@ namespace UnifyWeaver.QueryRuntime
         {
             if (context is null)
             {
-                return (_provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>()).ToList();
+                var source = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+                return source as List<object[]> ?? source.ToList();
             }
 
             if (context.Facts.TryGetValue(predicate, out var cached))
@@ -611,7 +612,8 @@ namespace UnifyWeaver.QueryRuntime
                 return cached;
             }
 
-            var facts = (_provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>()).ToList();
+            var factsSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+            var facts = factsSource as List<object[]> ?? factsSource.ToList();
             context.Facts[predicate] = facts;
             return facts;
         }
