@@ -993,7 +993,8 @@ verify_parameterized_fib_runtime :-
 verify_multi_mode_codegen_plan :-
     csharp_target:compile_predicate_to_csharp(test_multi_mode/2, [mode(query)], Code),
     sub_string(Code, _, _, _, 'BuildIn0'),
-    sub_string(Code, _, _, _, 'BuildIn1').
+    sub_string(Code, _, _, _, 'BuildIn1'),
+    sub_string(Code, _, _, _, 'BuildForInputs').
 
 verify_any_mode_rejected_plan :-
     \+ csharp_query_target:build_query_plan(test_any_mode/2, [target(csharp_query)], _Plan).

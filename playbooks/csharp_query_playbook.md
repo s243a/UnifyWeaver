@@ -11,6 +11,20 @@ For recursive arithmetic (e.g., Fibonacci), query mode requires **parameterized 
 - `docs/development/analysis/IS_PREDICATE_COMPATIBILITY_ANALYSIS.md`
 - `playbooks/csharp_generator_playbook.md` (generator mode fallback)
 
+## Multiple mode entrypoints (query mode)
+If you declare multiple concrete `user:mode/1` facts for the same predicate (e.g., `mode(p(+, -)).` and `mode(p(-, +)).`), query-mode codegen emits multiple C# entrypoints in the generated module:
+- `BuildAllOutput()` for all-output mode (if declared or defaulted)
+- `BuildIn0()`, `BuildIn1()`, ... for input-position variants
+- `Build()` aliases the most general variant
+- `BuildForInputs(...)` selects a variant by input positions (e.g., `BuildForInputs(0)`).
+
+Example usage (C#):
+```csharp
+var (provider, plan) = YourPredicateQueryModule.BuildForInputs(0); // arg0 is an input
+var executor = new QueryExecutor(provider);
+var rows = executor.Execute(plan, new[] { new object[] { "alice" } });
+```
+
 ## Agent Inputs
 Reference the following artifacts:
 1. **Bash Executable Record** – `unifyweaver.execution.csharp_sum_pair` in `playbooks/examples_library/csharp_examples.md`.

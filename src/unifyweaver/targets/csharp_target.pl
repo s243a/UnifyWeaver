@@ -2090,6 +2090,7 @@ render_plans_to_csharp(Plans, Code) :-
     ),
     build_provider_method(ProviderSection, ProviderMethod),
     build_plan_methods(Plans, PredStr, Arity, DefaultMethod, PlanMethods),
+    build_for_inputs_method(Plans, DefaultMethod, BuildForInputs),
     format(atom(BuildAlias),
 '        public static (InMemoryRelationProvider Provider, QueryPlan Plan) Build() => ~w();
 
@@ -2105,9 +2106,9 @@ namespace UnifyWeaver.Generated
 {
 ~w    public static class ~w
     {
-~w~w~w    }
+~w~w~w~w    }
 }
-', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderMethod, BuildAlias, PlanMethods]).
+', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderMethod, BuildAlias, BuildForInputs, PlanMethods]).
 
 build_provider_method(ProviderSection, Method) :-
     format(atom(Method),
@@ -2124,6 +2125,78 @@ build_plan_methods(Plans, PredStr, Arity, DefaultMethod, MethodsOut) :-
     Pairs = [DefaultMethod-_|_],
     pairs_values(Pairs, Blocks),
     atomic_list_concat(Blocks, '', MethodsOut).
+
+build_for_inputs_method(Plans, DefaultMethod, Method) :-
+    findall(Key-entry(Inputs, MethodName),
+        (   member(Plan, Plans),
+            get_dict(metadata, Plan, Meta),
+            (   get_dict(modes, Meta, Modes)
+            ->  true
+            ;   Modes = []
+            ),
+            input_positions(Modes, Inputs),
+            length(Inputs, InputCount),
+            Key = InputCount-Inputs,
+            modes_build_method_name(Modes, MethodName)
+        ),
+        Entries0),
+    sort(Entries0, Entries),
+    pairs_values(Entries, SortedEntries),
+    (   member(entry([], EmptyMethod0), SortedEntries)
+    ->  EmptyMethod = EmptyMethod0
+    ;   EmptyMethod = DefaultMethod
+    ),
+    findall(IfBlock,
+        (   member(entry(Inputs, MethodName), SortedEntries),
+            Inputs \= [],
+            inputs_match_condition(Inputs, Cond),
+            format(atom(IfBlock),
+'            if (~w)
+            {
+                return ~w();
+            }
+
+', [Cond, MethodName])
+        ),
+        IfBlocks),
+    atomic_list_concat(IfBlocks, '', IfChain),
+    findall(Debug,
+        (   member(entry(Inputs, _), SortedEntries),
+            inputs_debug_string(Inputs, Debug)
+        ),
+        Debugs),
+    atomic_list_concat(Debugs, ', ', Supported),
+    format(atom(Method),
+'        public static (InMemoryRelationProvider Provider, QueryPlan Plan) BuildForInputs(params int[] inputPositions)
+        {
+            var normalized = inputPositions is null
+                ? Array.Empty<int>()
+                : inputPositions.Distinct().OrderBy(i => i).ToArray();
+
+            if (normalized.Length == 0)
+            {
+                return ~w();
+            }
+
+~w            throw new ArgumentException("Unsupported inputPositions; supported: ~w", nameof(inputPositions));
+        }
+
+', [EmptyMethod, IfChain, Supported]).
+
+inputs_debug_string([], '[]') :- !.
+inputs_debug_string(Inputs, Debug) :-
+    atomic_list_concat(Inputs, ',', Inner),
+    format(atom(Debug), '[~w]', [Inner]).
+
+inputs_match_condition(Inputs, Cond) :-
+    length(Inputs, N),
+    findall(Part,
+        (   nth0(Index, Inputs, Value),
+            format(atom(Part), 'normalized[~w] == ~w', [Index, Value])
+        ),
+        Parts),
+    atomic_list_concat(Parts, ' && ', IndexParts),
+    format(atom(Cond), 'normalized.Length == ~w && ~w', [N, IndexParts]).
 
 plan_method_pair(PredStr, Arity, Plan, MethodName-MethodBlock) :-
     get_dict(metadata, Plan, Meta),
