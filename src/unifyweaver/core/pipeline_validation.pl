@@ -318,6 +318,15 @@ is_valid_stage(flatten).
 is_valid_stage(flatten(Field)) :-
     atom(Field).
 
+% Debounce stage - emit only after silence period
+is_valid_stage(debounce(Ms)) :-
+    integer(Ms),
+    Ms > 0.
+is_valid_stage(debounce(Ms, Field)) :-
+    integer(Ms),
+    Ms > 0,
+    atom(Field).
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -411,6 +420,8 @@ stage_type(merge_sorted(_, _, _), merge_sorted) :- !.
 stage_type(tap(_), tap) :- !.
 stage_type(flatten, flatten) :- !.
 stage_type(flatten(_), flatten) :- !.
+stage_type(debounce(_), debounce) :- !.
+stage_type(debounce(_, _), debounce) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -695,6 +706,20 @@ validate_stage_specific(flatten(Field), Errors) :-
         Errors = []
     ;
         Errors = [error(invalid_flatten, 'flatten(Field) requires a field atom')]
+    ).
+validate_stage_specific(debounce(Ms), Errors) :-
+    !,
+    ( integer(Ms), Ms > 0 ->
+        Errors = []
+    ;
+        Errors = [error(invalid_debounce, 'debounce(Ms) requires a positive integer milliseconds')]
+    ).
+validate_stage_specific(debounce(Ms, Field), Errors) :-
+    !,
+    ( integer(Ms), Ms > 0, atom(Field) ->
+        Errors = []
+    ;
+        Errors = [error(invalid_debounce, 'debounce(Ms, Field) requires positive integer ms and field atom')]
     ).
 validate_stage_specific(_, []).
 

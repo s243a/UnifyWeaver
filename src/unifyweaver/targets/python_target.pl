@@ -5480,6 +5480,44 @@ def flatten_field_stage(stream, field):
         else:
             yield record
 
+def debounce_stage(stream, ms, timestamp_field=None):
+    '''
+    Debounce: Emit records only after a silence period.
+    Groups records by time windows and emits the last record in each window.
+    If timestamp_field is provided, uses that field for timing; otherwise uses arrival order.
+    For batch processing, this simulates debounce by grouping records within ms intervals.
+    '''
+    import time
+    buffer = []
+    last_time = None
+    threshold_sec = ms / 1000.0
+
+    for record in stream:
+        current_time = time.time()
+        if timestamp_field and isinstance(record, dict) and timestamp_field in record:
+            try:
+                current_time = float(record[timestamp_field])
+            except (ValueError, TypeError):
+                pass
+
+        if last_time is None:
+            buffer = [record]
+            last_time = current_time
+        elif current_time - last_time < threshold_sec:
+            # Within debounce window, replace buffer
+            buffer = [record]
+            last_time = current_time
+        else:
+            # Silence period exceeded, emit buffered and start new
+            if buffer:
+                yield buffer[-1]
+            buffer = [record]
+            last_time = current_time
+
+    # Emit final buffered record
+    if buffer:
+        yield buffer[-1]
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5581,6 +5619,8 @@ generate_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
 generate_single_enhanced_stage(tap(_), "") :- !.
 generate_single_enhanced_stage(flatten, "") :- !.
 generate_single_enhanced_stage(flatten(_), "") :- !.
+generate_single_enhanced_stage(debounce(_), "") :- !.
+generate_single_enhanced_stage(debounce(_, _), "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -6075,6 +6115,22 @@ generate_stage_flow(flatten(Field), InVar, OutVar, Code) :-
     format(string(Code),
 "    # Flatten Field: expand '~w' field into individual records
     ~w = flatten_field_stage(~w, '~w')", [Field, OutVar, InVar, Field]).
+
+% Debounce stage: emit only after silence period
+generate_stage_flow(debounce(Ms), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced_~w_result", [Ms]),
+    format(string(Code),
+"    # Debounce: emit after ~wms silence period
+    ~w = debounce_stage(~w, ~w)", [Ms, OutVar, InVar, Ms]).
+
+% Debounce stage with timestamp field
+generate_stage_flow(debounce(Ms, Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced_~w_~w_result", [Ms, Field]),
+    format(string(Code),
+"    # Debounce: emit after ~wms silence (using '~w' timestamp field)
+    ~w = debounce_stage(~w, ~w, '~w')", [Ms, Field, OutVar, InVar, Ms, Field]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

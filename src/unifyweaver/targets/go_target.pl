@@ -9622,6 +9622,53 @@ func flattenFieldStage(records []Record, field string) []Record {
 \treturn result
 }
 
+// debounceStage emits records only after a silence period
+// Groups records by time windows and emits the last record in each window
+func debounceStage(records []Record, ms int64, timestampField string) []Record {
+\tif len(records) == 0 {
+\t\treturn records
+\t}
+
+\tvar result []Record
+\tvar buffer Record
+\tvar lastTime float64 = -1
+\tthresholdSec := float64(ms) / 1000.0
+
+\tfor _, record := range records {
+\t\tcurrentTime := float64(time.Now().UnixNano()) / 1e9
+\t\tif timestampField != \"\" {
+\t\t\tif ts, ok := record[timestampField]; ok {
+\t\t\t\tswitch v := ts.(type) {
+\t\t\t\tcase float64:
+\t\t\t\t\tcurrentTime = v
+\t\t\t\tcase int64:
+\t\t\t\t\tcurrentTime = float64(v)
+\t\t\t\tcase int:
+\t\t\t\t\tcurrentTime = float64(v)
+\t\t\t\t}
+\t\t\t}
+\t\t}
+
+\t\tif lastTime < 0 {
+\t\t\tbuffer = record
+\t\t\tlastTime = currentTime
+\t\t} else if currentTime-lastTime < thresholdSec {
+\t\t\t// Within debounce window, replace buffer
+\t\t\tbuffer = record
+\t\t\tlastTime = currentTime
+\t\t} else {
+\t\t\t// Silence period exceeded, emit buffered and start new
+\t\t\tresult = append(result, buffer)
+\t\t\tbuffer = record
+\t\t\tlastTime = currentTime
+\t\t}
+\t}
+
+\t// Emit final buffered record
+\tresult = append(result, buffer)
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9720,6 +9767,8 @@ generate_go_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :
 generate_go_single_enhanced_stage(tap(_), "") :- !.
 generate_go_single_enhanced_stage(flatten, "") :- !.
 generate_go_single_enhanced_stage(flatten(_), "") :- !.
+generate_go_single_enhanced_stage(debounce(_), "") :- !.
+generate_go_single_enhanced_stage(debounce(_, _), "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -10246,6 +10295,22 @@ generate_go_stage_flow(flatten(Field), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// Flatten Field: expand '~w' field into individual records
 \t~w := flattenFieldStage(~w, \"~w\")", [Field, OutVar, InVar, Field]).
+
+% Debounce stage: emit only after silence period
+generate_go_stage_flow(debounce(Ms), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced~wResult", [Ms]),
+    format(string(Code),
+"\t// Debounce: emit after ~wms silence period
+\t~w := debounceStage(~w, ~w, \"\")", [Ms, OutVar, InVar, Ms]).
+
+% Debounce stage with timestamp field
+generate_go_stage_flow(debounce(Ms, Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced~w~wResult", [Ms, Field]),
+    format(string(Code),
+"\t// Debounce: emit after ~wms silence (using '~w' timestamp field)
+\t~w := debounceStage(~w, ~w, \"~w\")", [Ms, Field, OutVar, InVar, Ms, Field]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
