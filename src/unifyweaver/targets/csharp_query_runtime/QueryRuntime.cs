@@ -333,7 +333,9 @@ namespace UnifyWeaver.QueryRuntime
                     return EvaluateMaterialize(materialize, context);
 
                 case RelationScanNode scan:
-                    return _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>();
+                    return context is null
+                        ? _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>()
+                        : GetFactsList(scan.Relation, context);
 
                 case SelectionNode selection:
                     return Evaluate(selection.Input, context).Where(tuple => selection.Predicate(tuple));
@@ -407,11 +409,10 @@ namespace UnifyWeaver.QueryRuntime
 
         private IEnumerable<object[]> ExecuteKeyJoin(KeyJoinNode join, EvaluationContext? context)
         {
-            var left = Evaluate(join.Left, context);
-            var rightRows = Evaluate(join.Right, context).ToList();
-
             if (join.LeftKeys is null || join.RightKeys is null || join.LeftKeys.Count == 0 || join.RightKeys.Count == 0)
             {
+                var left = Evaluate(join.Left, context);
+                var rightRows = Evaluate(join.Right, context).ToList();
                 foreach (var leftTuple in left)
                 {
                     if (leftTuple is null) continue;
@@ -430,7 +431,122 @@ namespace UnifyWeaver.QueryRuntime
                 throw new InvalidOperationException($"KeyJoinNode expects equal key arity (left={join.LeftKeys.Count}, right={join.RightKeys.Count}).");
             }
 
-            var index = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+            if (context is not null && (join.Left is RelationScanNode || join.Right is RelationScanNode))
+            {
+                if (join.Left is RelationScanNode leftScan && join.Right is RelationScanNode rightScan)
+                {
+                    var leftFacts = GetFactsList(leftScan.Relation, context);
+                    var rightFacts = GetFactsList(rightScan.Relation, context);
+
+                    if (leftFacts.Count <= rightFacts.Count)
+                    {
+                        var index = GetJoinIndex(leftScan.Relation, join.LeftKeys, leftFacts, context);
+                        var probe = Evaluate(join.Right, context);
+
+                        foreach (var rightTuple in probe)
+                        {
+                            if (rightTuple is null) continue;
+
+                            var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                            var wrapper = new RowWrapper(key);
+
+                            if (!index.TryGetValue(wrapper, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var leftTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var index = GetJoinIndex(rightScan.Relation, join.RightKeys, rightFacts, context);
+                        var probe = Evaluate(join.Left, context);
+
+                        foreach (var leftTuple in probe)
+                        {
+                            if (leftTuple is null) continue;
+
+                            var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                            var wrapper = new RowWrapper(key);
+
+                            if (!index.TryGetValue(wrapper, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var rightTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+                    }
+
+                    yield break;
+                }
+
+                if (join.Right is RelationScanNode scan)
+                {
+                    var facts = GetFactsList(scan.Relation, context);
+                    var index = GetJoinIndex(scan.Relation, join.RightKeys, facts, context);
+                    var probe = Evaluate(join.Left, context);
+
+                    foreach (var leftTuple in probe)
+                    {
+                        if (leftTuple is null) continue;
+
+                        var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                        var wrapper = new RowWrapper(key);
+
+                        if (!index.TryGetValue(wrapper, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var rightTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+
+                if (join.Left is RelationScanNode leftOnlyScan)
+                {
+                    var facts = GetFactsList(leftOnlyScan.Relation, context);
+                    var index = GetJoinIndex(leftOnlyScan.Relation, join.LeftKeys, facts, context);
+                    var probe = Evaluate(join.Right, context);
+
+                    foreach (var rightTuple in probe)
+                    {
+                        if (rightTuple is null) continue;
+
+                        var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                        var wrapper = new RowWrapper(key);
+
+                        if (!index.TryGetValue(wrapper, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var leftTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+            }
+
+            var left = Evaluate(join.Left, context);
+            var rightRows = Evaluate(join.Right, context).ToList();
+            var indexFallback = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
             foreach (var rightTuple in rightRows)
             {
                 if (rightTuple is null) continue;
@@ -438,10 +554,10 @@ namespace UnifyWeaver.QueryRuntime
                 var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
                 var wrapper = new RowWrapper(key);
 
-                if (!index.TryGetValue(wrapper, out var bucket))
+                if (!indexFallback.TryGetValue(wrapper, out var bucket))
                 {
                     bucket = new List<object[]>();
-                    index[wrapper] = bucket;
+                    indexFallback[wrapper] = bucket;
                 }
 
                 bucket.Add(rightTuple);
@@ -454,7 +570,7 @@ namespace UnifyWeaver.QueryRuntime
                 var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
                 var wrapper = new RowWrapper(key);
 
-                if (!index.TryGetValue(wrapper, out var bucket))
+                if (!indexFallback.TryGetValue(wrapper, out var bucket))
                 {
                     continue;
                 }
@@ -515,6 +631,42 @@ namespace UnifyWeaver.QueryRuntime
             var set = new HashSet<object[]>(GetFactsList(predicate, context), StructuralArrayComparer.Instance);
             context.FactSets[predicate] = set;
             return set;
+        }
+
+        private Dictionary<RowWrapper, List<object[]>> GetJoinIndex(
+            PredicateId predicate,
+            IReadOnlyList<int> keyIndices,
+            IReadOnlyList<object[]> facts,
+            EvaluationContext context)
+        {
+            var signature = string.Join(",", keyIndices);
+            var cacheKey = (predicate, signature);
+
+            if (context.JoinIndices.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+
+            var index = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            foreach (var tuple in facts)
+            {
+                if (tuple is null) continue;
+
+                var key = BuildKeyFromTuple(tuple, keyIndices);
+                var wrapper = new RowWrapper(key);
+
+                if (!index.TryGetValue(wrapper, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    index[wrapper] = bucket;
+                }
+
+                bucket.Add(tuple);
+            }
+
+            context.JoinIndices[cacheKey] = index;
+            return index;
         }
 
         private Dictionary<object, List<object[]>> GetFactIndex(
@@ -1685,6 +1837,7 @@ namespace UnifyWeaver.QueryRuntime
                 Facts = parent?.Facts ?? new Dictionary<PredicateId, List<object[]>>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
+                JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
             }
 
             public PredicateId Current { get; set; }
@@ -1703,6 +1856,8 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; }
 
             public Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>> FactIndices { get; }
+
+            public Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>> JoinIndices { get; }
         }
 
         private sealed record RowWrapper(object[] Row);
