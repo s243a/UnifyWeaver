@@ -35,8 +35,10 @@ var rows = executor.Execute(plan, new[] { new object[] { "alice" } });
 Reference the following artifacts:
 1. **Bash Executable Record** – `unifyweaver.execution.csharp_sum_pair` in `playbooks/examples_library/csharp_examples.md`.
 2. **PowerShell Executable Record** – `unifyweaver.execution.csharp_sum_pair_ps` in `playbooks/examples_library/csharp_examples.md`.
-3. **Environment Setup Skill** – `skills/skill_unifyweaver_environment.md`.
-4. **Extraction Skill** – `skills/skill_extract_records.md`.
+3. **Bash Executable Record** – `unifyweaver.execution.csharp_fib_param_query` in `playbooks/examples_library/csharp_examples.md`.
+4. **PowerShell Executable Record** – `unifyweaver.execution.csharp_fib_param_query_ps` in `playbooks/examples_library/csharp_examples.md`.
+5. **Environment Setup Skill** – `skills/skill_unifyweaver_environment.md`.
+6. **Extraction Skill** – `skills/skill_extract_records.md`.
 
 ## Execution Guidance
 
