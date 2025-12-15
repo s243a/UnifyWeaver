@@ -136,15 +136,22 @@ Implementation note: the current branch keeps the existing `recursive_ref` / `cr
 
 Supporting `?` properly in query mode is not just a matter of final output filtering: the declared **input positions** influence the seeded pipeline and the `$need` demand-closure that scopes recursion. As a result, `?` implies compiling **multiple concrete mode variants**.
 
-Two pragmatic approaches:
+Currently, the C# query target **rejects** `?` and requires users to declare concrete `+/-` modes. This avoids accidentally generating mode variants that are unsupported (e.g., all-output Fibonacci) and keeps codegen predictable.
+
+Possible future directions (documented, not implemented):
 
 1. **Multiple explicit `user:mode/1` declarations per predicate** (recommended incremental path; implemented):
    - Users declare the concrete modes they actually want (e.g., `mode(p(+, -)).`, `mode(p(-, +)).`).
    - Query-mode codegen emits one `Build...()` entrypoint per declaration (e.g., `BuildIn0()`, `BuildIn1()`), with `Build()` aliasing the most general variant.
 
-2. **Treat `?` as sugar that expands to concrete modes**:
+2. **Treat `?` as guarded sugar that expands to concrete modes** (potentially useful for small arities):
    - Expand `mode(p(?, -)).` into a bounded set of concrete modes (e.g., `{mode(p(+, -)), mode(p(-, -))}`).
-   - Emit one plan/entrypoint per expanded mode, optionally with a dispatcher that selects a plan based on which arguments are provided.
+   - Guardrails are required to avoid both combinatorial explosion and “bad variants”:
+     - Cap expansion (`k` question-marks ⇒ up to `2^k` variants; enforce a hard max `k`).
+     - Decide how to handle expanded variants that do not compile:
+       - Strict: fail the whole declaration, requiring explicit `user:mode/1` facts instead.
+       - Lenient: skip unsupported variants and only emit the ones that compile (with a warning).
+     - For recursive SCCs, consider disallowing expansions that create all-output variants unless the predicate has a safe relation seed; otherwise the plan may be unsupported or attempt to enumerate an unbounded space.
 
 Guardrails to avoid a `2^k` explosion (for `k` question-marks) may be required: explicit opt-in, a hard cap on expansions, or only expanding patterns observed in tests.
 
