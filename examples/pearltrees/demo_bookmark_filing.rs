@@ -7,6 +7,7 @@
 
 mod importer;
 mod crawler;
+mod projection;
 mod searcher;
 mod embedding;
 

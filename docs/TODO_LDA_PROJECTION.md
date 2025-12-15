@@ -128,7 +128,10 @@ python3 scripts/validate_multi_head.py \
 ## Future Enhancements
 
 - [x] Go backend for LDA projection (`src/unifyweaver/targets/go_runtime/projection/multi_head.go`)
-- [ ] Rust backend for LDA projection
+- [x] Rust backend for LDA projection (`src/unifyweaver/targets/rust_runtime/projection.rs`)
+  - Native NPY loading with float32/float64 support
+  - Integrated with `PtSearcher.vector_search_with_options()`
+  - 7 unit tests + integration test
 - [ ] MCP tool for Claude integration (useful for server-based deployments)
 - [ ] Hot-reload support for W matrix updates
 - [ ] Per-domain projection matrices
@@ -150,6 +153,12 @@ swipl tests/core/test_semantic_search.pl
 
 # Run Go tests
 cd src/unifyweaver/targets/go_runtime && go test ./projection/... -v
+
+# Run Rust unit tests
+cd examples/pearltrees && cargo test --bin demo_bookmark_filing
+
+# Run Rust integration test (requires NPY files in playbooks/)
+cd examples/pearltrees && cargo run --bin test_projection_integration
 
 # Train W matrix from Q-A pairs
 python3 scripts/train_lda_projection.py \
