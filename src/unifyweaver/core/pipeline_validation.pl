@@ -305,6 +305,14 @@ is_valid_stage(merge_sorted(Stages, Field, Dir)) :-
     is_valid_direction(Dir),
     maplist(is_valid_stage, Stages).
 
+% Tap stage - execute side effect without modifying stream
+is_valid_stage(tap(Pred)) :-
+    atom(Pred).
+is_valid_stage(tap(Pred/Arity)) :-
+    atom(Pred),
+    integer(Arity),
+    Arity >= 0.
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -395,6 +403,7 @@ stage_type(interleave(_), interleave) :- !.
 stage_type(concat(_), concat) :- !.
 stage_type(merge_sorted(_, _), merge_sorted) :- !.
 stage_type(merge_sorted(_, _, _), merge_sorted) :- !.
+stage_type(tap(_), tap) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -662,6 +671,15 @@ validate_stage_specific(merge_sorted(Stages, Field, Dir), Errors) :-
         validate_all_stages(Stages, 1, Errors)
     ;
         Errors = [error(invalid_merge_sorted, 'merge_sorted requires a non-empty list of stages, a field atom, and direction (asc/desc)')]
+    ).
+validate_stage_specific(tap(Pred), Errors) :-
+    !,
+    ( atom(Pred) ->
+        Errors = []
+    ; Pred = _/Arity, integer(Arity), Arity >= 0 ->
+        Errors = []
+    ;
+        Errors = [error(invalid_tap, 'tap requires a predicate atom or predicate/arity')]
     ).
 validate_stage_specific(_, []).
 

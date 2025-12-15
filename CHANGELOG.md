@@ -181,6 +181,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_merge_sorted_stage.sh` — Integration tests (16 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Tap Stage** - Observe stream without modification for side effects
+  - Side-effect observation:
+    - `tap(Pred)` — Execute side effect predicate for each record without modifying stream
+    - `tap(Pred/Arity)` — Explicit arity specification supported
+  - Use cases:
+    - Logging pipeline progress
+    - Collecting metrics and telemetry
+    - Debugging intermediate values
+    - Audit trail generation
+  - Error isolation: Side effect errors don't interrupt the pipeline
+    - Python: Exception handling with pass
+    - Go: defer/recover pattern
+    - Rust: std::panic::catch_unwind
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_tap_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.

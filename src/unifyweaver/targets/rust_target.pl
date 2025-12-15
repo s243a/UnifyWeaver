@@ -2547,6 +2547,21 @@ fn merge_sorted_stage(streams: &[Vec<Record>], field: &str, ascending: bool) -> 
 
     result
 }
+
+/// Tap: Execute a side effect for each record without modifying the stream.
+/// Useful for logging, metrics, debugging, or other observations.
+fn tap_stage<F>(records: &[Record], side_effect: F) -> Vec<Record>
+where
+    F: Fn(&Record),
+{
+    for record in records {
+        // Use catch_unwind to prevent side effect errors from interrupting pipeline
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            side_effect(record);
+        }));
+    }
+    records.to_vec()
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2777,6 +2792,7 @@ generate_rust_single_enhanced_stage(merge_sorted(SubStages, _Field), Code) :-
 generate_rust_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
     !,
     generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(tap(_), "") :- !.
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -3268,6 +3284,15 @@ generate_rust_stage_flow(merge_sorted(SubStages, Field, Dir), InVar, OutVar, Cod
         .map(|stage_fn| stage_fn(&~w))
         .collect();
     let ~w = merge_sorted_stage(&merge_sorted_streams_~w_~w, \"~w\", ~w);", [N, Field, Dir, N, Dir, StageListStr, InVar, OutVar, N, Dir, Field, Ascending]).
+
+% Tap stage: execute side effect without modifying stream
+generate_rust_stage_flow(tap(Pred), InVar, OutVar, Code) :-
+    !,
+    ( Pred = PredName/_ -> true ; PredName = Pred ),
+    format(atom(OutVar), "tapped_~w_result", [PredName]),
+    format(string(Code),
+"    // Tap: execute ~w for side effects (logging/metrics)
+    let ~w = tap_stage(&~w, ~w);", [PredName, OutVar, InVar, PredName]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
