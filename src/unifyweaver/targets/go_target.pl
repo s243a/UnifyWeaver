@@ -9460,6 +9460,37 @@ func recordKey(record Record) string {
 \treturn strings.Join(parts, \",\")
 }
 
+// interleaveStage interleaves records from multiple stage outputs in round-robin fashion
+func interleaveStage(streams [][]Record) []Record {
+\tif len(streams) == 0 {
+\t\treturn nil
+\t}
+\tvar result []Record
+\tmaxLen := 0
+\tfor _, s := range streams {
+\t\tif len(s) > maxLen {
+\t\t\tmaxLen = len(s)
+\t\t}
+\t}
+\tfor i := 0; i < maxLen; i++ {
+\t\tfor _, stream := range streams {
+\t\t\tif i < len(stream) {
+\t\t\t\tresult = append(result, stream[i])
+\t\t\t}
+\t\t}
+\t}
+\treturn result
+}
+
+// concatStage concatenates multiple stage outputs sequentially
+func concatStage(streams [][]Record) []Record {
+\tvar result []Record
+\tfor _, stream := range streams {
+\t\tresult = append(result, stream...)
+\t}
+\treturn result
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9543,6 +9574,12 @@ generate_go_single_enhanced_stage(distinct, "") :- !.
 generate_go_single_enhanced_stage(distinct_by(_), "") :- !.
 generate_go_single_enhanced_stage(dedup, "") :- !.
 generate_go_single_enhanced_stage(dedup_by(_), "") :- !.
+generate_go_single_enhanced_stage(interleave(SubStages), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(concat(SubStages), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -9983,6 +10020,36 @@ generate_go_stage_flow(dedup_by(Field), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// Dedup By: remove consecutive duplicates based on '~w' field
 \t~w := dedupByStage(~w, \"~w\")", [Field, OutVar, InVar, Field]).
+
+% Interleave stage: round-robin interleave from multiple stage outputs
+generate_go_stage_flow(interleave(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "interleaved~wResult", [N]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"\t// Interleave: round-robin from ~w stage outputs
+\tvar interleaveStreams~w [][]Record
+\tfor _, stageFn := range []func([]Record) []Record{~w} {
+\t\tinterleaveStreams~w = append(interleaveStreams~w, stageFn(~w))
+\t}
+\t~w := interleaveStage(interleaveStreams~w)", [N, N, StageListStr, N, N, InVar, OutVar, N]).
+
+% Concat stage: sequential concatenation of multiple stage outputs
+generate_go_stage_flow(concat(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "concatenated~wResult", [N]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"\t// Concat: sequential concatenation of ~w stage outputs
+\tvar concatStreams~w [][]Record
+\tfor _, stageFn := range []func([]Record) []Record{~w} {
+\t\tconcatStreams~w = append(concatStreams~w, stageFn(~w))
+\t}
+\t~w := concatStage(concatStreams~w)", [N, N, StageListStr, N, N, InVar, OutVar, N]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

@@ -149,6 +149,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_distinct_dedup_stages.sh` — Integration tests (22 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Interleave/Concat Stages** - Stream combination at pipeline level
+  - Round-robin interleaving:
+    - `interleave(Stages)` — Alternate records from multiple stage outputs in round-robin fashion
+    - Takes one record from each stream in turn until all exhausted
+  - Sequential concatenation:
+    - `concat(Stages)` — Concatenate multiple stage outputs sequentially
+    - Yields all records from first stage, then second, etc.
+  - Use cases:
+    - `interleave` — Merge multiple data sources with fair ordering
+    - `concat` — Combine results from different transformations
+  - Composable with other stages: `distinct`, `filter_by`, `window`, `parallel`, etc.
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_interleave_concat_stages.sh` — Integration tests (18 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
