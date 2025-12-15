@@ -141,6 +141,7 @@ python3 scripts/validate_multi_head.py \
 - [ ] MCP tool for Claude integration (useful for server-based deployments)
 - [ ] Hot-reload support for W matrix updates
 - [ ] Per-domain projection matrices
+- [ ] Smoothness regularization for sparse answer clusters ([SMOOTHNESS_REGULARIZATION.md](proposals/SMOOTHNESS_REGULARIZATION.md))
 - [x] Multiple attention heads (separate input/output projections)
 
 ## Notes
