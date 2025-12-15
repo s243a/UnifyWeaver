@@ -544,10 +544,10 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             var left = Evaluate(join.Left, context);
-            var rightRows = Evaluate(join.Right, context).ToList();
+            var right = Evaluate(join.Right, context);
             var indexFallback = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
 
-            foreach (var rightTuple in rightRows)
+            foreach (var rightTuple in right)
             {
                 if (rightTuple is null) continue;
 
