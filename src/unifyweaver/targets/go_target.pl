@@ -164,6 +164,10 @@ valid_json_type(integer).
 valid_json_type(float).
 valid_json_type(boolean).
 valid_json_type(any).  % Fallback to interface{}
+valid_json_type(array(Type)) :-
+    valid_json_type(Type).
+valid_json_type(object(SchemaName)) :-
+    atom(SchemaName).
 
 %% get_json_schema(+SchemaName, -Fields)
 %  Retrieve a schema definition by name

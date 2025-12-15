@@ -2,6 +2,8 @@
     compile_predicate_to_python/3,
     compile_facts_to_python/3,        % +Pred, +Arity, -PythonCode  -- NEW
     init_python_target/0,
+    json_schema/2,                    % +SchemaName, +Fields (directive)
+    get_json_schema/2,                % +SchemaName, -Fields (lookup)
     % Pipeline mode exports (Phase 1)
     test_pipeline_mode/0,
     generate_default_arg_names/2,
@@ -70,6 +72,95 @@
 init_python_target :-
     retractall(required_import(_)),
     init_python_bindings.
+
+%% ============================================
+%% JSON SCHEMA SUPPORT
+%% ============================================
+
+:- dynamic json_schema_def/2.
+
+%% json_schema(+SchemaName, +Fields)
+%  Define a JSON schema with typed fields
+%  Used as a directive: :- json_schema(person, [field(name, string), field(age, integer)]).
+%
+json_schema(SchemaName, Fields) :-
+    % Validate schema fields
+    (   validate_schema_fields(Fields)
+    ->  % Store schema definition
+        retractall(json_schema_def(SchemaName, _)),
+        assertz(json_schema_def(SchemaName, Fields)),
+        format('Schema defined: ~w with ~w fields~n', [SchemaName, Fields])
+    ;   format('ERROR: Invalid schema definition for ~w: ~w~n', [SchemaName, Fields]),
+        fail
+    ).
+
+%% validate_schema_fields(+Fields)
+%  Validate that all fields have correct format: field(Name, Type)
+%
+validate_schema_fields([]).
+validate_schema_fields([field(Name, Type)|Rest]) :-
+    atom(Name),
+    valid_json_type(Type),
+    validate_schema_fields(Rest).
+validate_schema_fields([field(Name, Type, Options)|Rest]) :-
+    atom(Name),
+    valid_json_type(Type),
+    is_list(Options),
+    validate_field_options(Options),
+    validate_schema_fields(Rest).
+validate_schema_fields([Invalid|_]) :-
+    format('ERROR: Invalid field specification: ~w~n', [Invalid]),
+    fail.
+
+%% validate_field_options(+Options)
+%  Validate field options: min(N), max(N), format(F), required, optional
+validate_field_options([]).
+validate_field_options([Option|Rest]) :-
+    validate_field_option(Option),
+    validate_field_options(Rest).
+
+validate_field_option(min(N)) :- number(N).
+validate_field_option(max(N)) :- number(N).
+validate_field_option(format(F)) :- atom(F).
+validate_field_option(required).
+validate_field_option(optional).
+validate_field_option(Invalid) :-
+    format('ERROR: Invalid field option: ~w~n', [Invalid]),
+    fail.
+
+%% valid_json_type(+Type)
+%  Check if a type is valid for JSON schemas
+%
+valid_json_type(string).
+valid_json_type(integer).
+valid_json_type(float).
+valid_json_type(boolean).
+valid_json_type(any).  % Fallback to interface{}
+valid_json_type(array(Type)) :-
+    valid_json_type(Type).
+valid_json_type(object(SchemaName)) :-
+    atom(SchemaName).
+
+%% get_json_schema(+SchemaName, -Fields)
+%  Retrieve a schema definition by name
+%
+get_json_schema(SchemaName, Fields) :-
+    json_schema_def(SchemaName, Fields), !.
+get_json_schema(SchemaName, _) :-
+    format('ERROR: Schema not found: ~w~n', [SchemaName]),
+    fail.
+
+%% get_field_info(+SchemaName, +FieldName, -Type, -Options)
+%  Get the type and options of a specific field from a schema
+%
+get_field_info(SchemaName, FieldName, Type, Options) :-
+    get_json_schema(SchemaName, Fields),
+    (   member(field(FieldName, Type, Options), Fields) -> true
+    ;   member(field(FieldName, Type), Fields) -> Options = []
+    ), !.
+get_field_info(SchemaName, FieldName, any, []) :-
+    % Field not in schema - default to 'any'
+    format('WARNING: Field ~w not in schema ~w, defaulting to type ''any''~n', [FieldName, SchemaName]).
 
 /** <module> Python Target Compiler
  *
@@ -1254,6 +1345,13 @@ translate_clause(Head, Body, Index, Arity, Code) :-
         format(string(MatchCode), "    if ~w != ~w: return\n", [PyRecordVar, PyVal])
     ),
     
+    % Check for schema validation (NEW)
+    Head =.. [PredName|_],
+    (   get_json_schema(PredName, _)
+    ->  format(string(ValidationCode), "    if not _validate_~w(~w): return\n", [PredName, PyRecordVar])
+    ;   ValidationCode = ""
+    ),
+    
     % Determine output variable (Last argument if Arity > 1, else Input)
     (   Arity > 1
     ->  arg(Arity, Head, OutputVar)
@@ -1269,8 +1367,8 @@ translate_clause(Head, Body, Index, Arity, Code) :-
     
     format(string(Code),
 "def _clause_~d(~w: Dict) -> Iterator[Dict]:
-~s~s
-", [Index, PyRecordVar, MatchCode, BodyCode]).
+~s~s~s
+", [Index, PyRecordVar, MatchCode, ValidationCode, BodyCode]).
 
 %% body_to_list(+Body, -Goals)
 body_to_list((A, B), [A|Rest]) :- !, body_to_list(B, Rest).
@@ -2144,7 +2242,49 @@ clear_binding_imports :-
 helpers(Helpers) :-
     helpers_base(Base),
     semantic_runtime_helpers(Runtime),
-    format(string(Helpers), "~s\n~s", [Base, Runtime]).
+    generate_all_validators(Validators),
+    format(string(Helpers), "~s\n~s\n~s", [Base, Runtime, Validators]).
+
+%% generate_all_validators(-Code)
+generate_all_validators(Code) :-
+    findall(ValCode, (
+        json_schema_def(Name, Fields),
+        generate_validator_function(Name, Fields, ValCode)
+    ), ValidatorCodes),
+    atomic_list_concat(ValidatorCodes, "\n\n", Code).
+
+%% generate_validator_function(+SchemaName, +Fields, -Code)
+generate_validator_function(Name, Fields, Code) :-
+    maplist(generate_field_check, Fields, CheckCodes),
+    atomic_list_concat(CheckCodes, "", Checks),
+    format(string(Code), 
+"def _validate_~w(data):
+    if not isinstance(data, dict): return False
+~s    return True", [Name, Checks]).
+
+%% generate_field_check(+FieldSpec, -Code)
+generate_field_check(field(Name, Type), Code) :-
+    generate_field_check(field(Name, Type, []), Code).
+
+generate_field_check(field(Name, Type, _Opts), Code) :-
+    type_check_expr(Type, "val", Expr),
+    format(string(Code), 
+"    val = data.get('~w')
+    if val is not None:
+        if not (~s): return False
+", [Name, Expr]).
+
+%% type_check_expr(+Type, +VarName, -Expr)
+type_check_expr(string, Var, Expr) :- format(string(Expr), "isinstance(~w, str)", [Var]).
+type_check_expr(integer, Var, Expr) :- format(string(Expr), "isinstance(~w, int)", [Var]).
+type_check_expr(float, Var, Expr) :- format(string(Expr), "isinstance(~w, (int, float))", [Var]).
+type_check_expr(boolean, Var, Expr) :- format(string(Expr), "isinstance(~w, bool)", [Var]).
+type_check_expr(any, _, "True").
+type_check_expr(array(Type), Var, Expr) :-
+    type_check_expr(Type, "x", InnerExpr),
+    format(string(Expr), "isinstance(~w, list) and all(~s for x in ~w)", [Var, InnerExpr, Var]).
+type_check_expr(object(Schema), Var, Expr) :-
+    format(string(Expr), "_validate_~w(~w)", [Schema, Var]).
 
 helpers_base("
 def read_jsonl(stream) -> Iterator[Dict[str, Any]]:
