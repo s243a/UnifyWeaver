@@ -17,7 +17,96 @@ compile_predicate_to_python(my_pred/2, [
 
 ## Modes
 
-### 1. Procedural Mode (Default)
+### 1. Pipeline Mode (Streaming)
+
+Pipeline mode enables streaming JSONL I/O with typed object output, multiple runtime support, and predicate chaining.
+
+**Basic Usage:**
+```prolog
+compile_predicate_to_python(user_info/2, [
+    pipeline_input(true),           % Enable streaming input
+    output_format(object),          % Yield typed dicts
+    arg_names(['UserId', 'Email']), % Property names for output
+    runtime(cpython)                % or ironpython, pypy, jython
+], Code).
+```
+
+**Pipeline Chaining:**
+```prolog
+% Chain multiple predicates into a single pipeline
+compile_pipeline(
+    [parse_user/2, filter_adult/2, format_output/3],
+    [runtime(cpython), pipeline_name(user_pipeline)],
+    Code
+).
+```
+
+Generated Python uses efficient generator chaining:
+```python
+def user_pipeline(input_stream):
+    """Chained pipeline: [parse_user, filter_adult, format_output]"""
+    yield from format_output(filter_adult(parse_user(input_stream)))
+```
+
+**Cross-Runtime Pipelines:**
+
+For workflows mixing Python and C#:
+```prolog
+compile_pipeline(
+    [python:extract/1, csharp:validate/1, python:transform/1],
+    [pipeline_name(data_processor), glue_protocol(jsonl)],
+    Code
+).
+```
+
+This generates stage-based orchestration with automatic runtime grouping.
+
+**Enhanced Pipeline Chaining:**
+
+For complex data flow patterns beyond linear pipelines:
+```prolog
+compile_enhanced_pipeline([
+    extract/1,
+    filter_by(is_active),           % Filter stage
+    fan_out([validate/1, enrich/1]), % Broadcast to parallel stages
+    merge,                           % Combine parallel results
+    route_by(has_error, [            % Conditional routing
+        (true, error_handler/1),
+        (false, success/1)
+    ]),
+    output/1
+], [pipeline_name(enhanced_pipeline)], Code).
+```
+
+Enhanced stages:
+- `fan_out(Stages)` — Broadcast each record to multiple stages
+- `merge` — Combine results from parallel fan-out stages
+- `route_by(Pred, Routes)` — Route records based on predicate condition
+- `filter_by(Pred)` — Filter records by predicate
+
+**See [Enhanced Pipeline Chaining Guide](ENHANCED_PIPELINE_CHAINING.md) for complete documentation.**
+
+**Runtime Selection:**
+
+| Runtime | Use Case |
+|---------|----------|
+| `cpython` | Standard Python, default choice |
+| `ironpython` | .NET integration, C# hosting |
+| `pypy` | JIT-optimized for performance |
+| `jython` | Java ecosystem integration |
+| `auto` | Auto-select based on context |
+
+**Pipeline Options:**
+
+| Option | Values | Description |
+|--------|--------|-------------|
+| `pipeline_input(Bool)` | `true/false` | Enable streaming input |
+| `output_format(Format)` | `object/text` | Yield dicts or strings |
+| `arg_names(List)` | `['Name', ...]` | Property names for output |
+| `runtime(R)` | `cpython/ironpython/pypy/jython/auto` | Target runtime |
+| `glue_protocol(P)` | `jsonl/messagepack` | Serialization format |
+
+### 2. Procedural Mode (Default)
 Translates Prolog rules into Python generator functions (`yield`). This mode is ideal for streaming pipelines and general logic.
 
 - **Mapping:** Prolog `p(X) :- q(X), r(X)` becomes a nested generator loop: `for x in q(): yield from r(x)`.

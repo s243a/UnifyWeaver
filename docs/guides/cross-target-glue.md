@@ -2,6 +2,9 @@
 
 UnifyWeaver's cross-target glue system enables seamless communication between different programming languages and runtimes. This guide covers practical usage patterns.
 
+> [!TIP]
+> **New to cross-target glue?** Start with [Book 7, Chapter 1](file:///home/s243a/Projects/UnifyWeaver/education/book-07-cross-target-glue/01_introduction.md) which covers three approaches: high-level declarative, low-level explicit steps, and meta-interpreter inference.
+
 ## Quick Start
 
 ### Shell Pipeline (AWK + Python)
@@ -67,6 +70,118 @@ generate_server :-
         Code
     ).
 ```
+
+---
+
+## Transport-Aware Compilation
+
+UnifyWeaver automatically selects the optimal transport between pipeline steps based on target families.
+
+### How It Works
+
+When you compile a high-level goal to a pipeline, the compiler:
+1. Infers steps from target declarations
+2. Groups consecutive steps by transport type
+3. Generates appropriate glue code for each group
+
+```prolog
+:- use_module('src/unifyweaver/core/compiler_driver').
+
+% Automatically infers steps and chooses transports
+?- compile_goal_to_pipeline(
+       my_module:process_data(_, _),
+       [input('data.csv')],
+       Script,
+       Steps
+   ).
+```
+
+### Transport Selection
+
+| Source Target | Dest Target | Transport | Glue Module |
+|--------------|-------------|-----------|-------------|
+| bash, awk, python | bash, awk, python | `pipe` | shell_glue |
+| csharp, powershell | csharp, powershell | `direct` | dotnet_glue |
+| java, scala | java, scala | `direct` | (future) |
+| any | remote host | `http` | network_glue |
+
+### Example: Mixed-Target Pipeline
+
+```prolog
+% Define a pipeline with mixed targets
+process_analytics(Input, Output) :-
+    ingest(Input, Raw),           % bash
+    parse(Raw, Parsed),           % awk  
+    enrich(Parsed, Enriched),     % csharp
+    aggregate(Enriched, Stats),   % powershell
+    export(Stats, Output).        % python
+
+:- declare_target(ingest/2, bash, [file('ingest.sh')]).
+:- declare_target(parse/2, awk, [file('parse.awk')]).
+:- declare_target(enrich/2, csharp, [file('Enricher.cs')]).
+:- declare_target(aggregate/2, powershell, [file('aggregate.ps1')]).
+:- declare_target(export/2, python, [file('export.py')]).
+```
+
+**Result:** The compiler groups steps:
+- `group(pipe, [ingest, parse, enrich])` — shell targets via pipes
+- `group(direct, [enrich, aggregate])` — .NET targets in-process
+- `group(pipe, [aggregate, export])` — cross-family via pipes
+
+> [!NOTE]
+> Boundary steps (enrich, aggregate) appear in both adjacent groups for proper handoff.
+
+### Low-Level Transport Queries
+
+```prolog
+:- use_module('src/unifyweaver/glue/goal_inference').
+
+% Check transport between targets
+?- infer_transport_from_targets(csharp, powershell, T).
+T = direct.
+
+?- infer_transport_from_targets(bash, python, T).
+T = pipe.
+
+% Group steps manually
+?- group_steps_by_transport(Steps, Groups).
+```
+
+### HTTP Transport for Remote Hosts
+
+When pipeline steps target remote services, use the `http` transport:
+
+```prolog
+% Define steps that call remote services
+Steps = [
+    step(ml_predict, python, 'http://ml-service:8080/predict', []),
+    step(enrich, go, 'http://enricher:9000/enrich', [timeout(60)])
+],
+
+% Generate pipeline with HTTP calls
+generate_pipeline_for_groups([group(http, Steps)], [language(python)], Code).
+```
+
+**Generated Python code:**
+```python
+def step_ml_predict(data):
+    response = requests.post(
+        "http://ml-service:8080/predict",
+        json={"data": data},
+        timeout=30
+    )
+    response.raise_for_status()
+    return response.json().get("data")
+
+def run_pipeline(input_data):
+    data = input_data
+    data = step_ml_predict(data)
+    data = step_enrich(data)
+    return data
+```
+
+> [!TIP]
+> Use `[language(go)]` for Go pipelines with `http.Client`, or `[language(bash)]` for Bash pipelines with `curl`.
 
 ---
 

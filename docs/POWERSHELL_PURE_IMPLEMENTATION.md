@@ -1,8 +1,8 @@
 # Pure PowerShell Implementation
 
-**Status:** Implemented (Phase 1 + Phase 2 Recursion)
-**Version:** 2.0.0
-**Date:** 2025-12-08
+**Status:** Implemented (Phases 1-11: Sources, Recursion, Bindings, Automation, Joins, C# Hosting, Advanced Optimizations, Firewall, Object Pipeline)
+**Version:** 2.5.0
+**Date:** 2025-12-10
 **Branch:** main
 
 ---
@@ -101,6 +101,121 @@ The following recursion patterns are now implemented in pure PowerShell:
 - **Pattern:** Accumulator patterns with tail calls
 - **Example:** `count([], Acc, Acc). count([_|T], Acc, N) :- Acc1 is Acc+1, count(T, Acc1, N)`
 - **PowerShell:** Compiled to iterative `foreach` loops
+
+---
+
+## Phase 5 & 6: Binding System & Windows Automation ✅ (New in v2.1.0)
+
+The binding system enables automatic transpilation of Prolog rules to PowerShell code using registered bindings for cmdlets, .NET methods, and Windows automation operations.
+
+### 10. Binding System Architecture
+
+The binding system consists of three components:
+
+1. **Binding Registry** (`src/unifyweaver/core/binding_registry.pl`)
+   - Core `binding/6` predicate for declaring bindings
+   - Effect annotations (pure, io, state, throws)
+   - Design patterns (pipe_transform, cmdlet_output, exit_code_bool)
+
+2. **PowerShell Bindings** (`src/unifyweaver/bindings/powershell_bindings.pl`)
+   - 52 pre-registered bindings for PowerShell operations
+   - Cmdlet bindings (Write-Output, ForEach-Object, etc.)
+   - .NET method bindings ([Math]::Sqrt, [System.IO.File]::Exists, etc.)
+   - Windows automation bindings (services, registry, event logs)
+
+3. **Binding-Aware Compilation** (`src/unifyweaver/core/powershell_compiler.pl`)
+   - Classifies rule body goals as bound, fact-based, or builtin
+   - Generates code for pure bound rules (all goals have bindings)
+   - Generates code for mixed rules (facts + bindings with variable flow)
+
+### 11. Binding Categories (52 Total)
+
+#### Core Cmdlets (18 bindings)
+- Output: `write_output/1`, `write_host/1`, `write_verbose/1`, `write_warning/1`, `write_error/1`
+- Objects: `ps_object/2`, `select_object/2`
+- Pipeline: `foreach_object/2`, `where_object/2`, `sort_object/2`, `group_object/2`, `measure_object/2`
+- Type conversions: `to_string/2`, `to_int/2`, `to_array/2`, `to_hashtable/2`
+
+#### Windows Automation (22 bindings)
+- File system: `get_child_item/2`, `test_path/1`, `get_content/2`, `set_content/2`, `remove_item/1`, `new_item/2`
+- Services: `get_service/1`, `get_service/2`, `start_service/1`, `stop_service/1`, `restart_service/1`
+- Registry: `get_item_property/3`, `set_item_property/3`, `new_registry_key/1`
+- Event logs: `get_win_event/2`, `write_event_log/4`
+- WMI/CIM: `get_cim_instance/2`, `invoke_cim_method/4`
+- Processes: `get_process/1`, `get_process/2`, `stop_process/1`, `start_process/2`
+
+#### .NET Integration (12 bindings)
+- System.IO: `file_exists/1`, `file_read_all_text/2`, `file_write_all_text/2`, `path_get_full/2`, `path_combine/3`
+- System.Xml: `xml_reader_create/2`, `xml_document_load/2`
+- System.Math: `sqrt/2`, `round/2`, `abs/2`
+- String: `string_split/3`, `string_trim/2`, `string_replace/4`
+
+### 12. Auto-Transpilation Examples
+
+#### Pure Bound Rule
+```prolog
+compute_sqrt(X, Y) :- sqrt(X, Y).
+```
+Compiles to:
+```powershell
+function compute_sqrt {
+    param([string]$X, [string]$Y)
+    $Y = [Math]::Sqrt($X)
+}
+```
+
+#### Mixed Bound/Fact Rule (Single Fact)
+```prolog
+emp_sqrt(Name, SqrtSalary) :- employee(Name, Salary), sqrt(Salary, SqrtSalary).
+```
+Compiles to:
+```powershell
+function emp_sqrt {
+    param([string]$X, [string]$Y)
+    $employee_data = employee
+    $results = foreach ($fact in $employee_data) {
+        $X = $fact.X
+        $Y = $fact.Y
+        $result1 = [Math]::Sqrt($Y)
+        [PSCustomObject]@{ X = $X; Y = $result1 }
+    }
+    $results
+}
+```
+
+#### Multi-Fact Join with Binding
+```prolog
+combined(Name, SqrtQty) :- item(Name, Qty), price(Name, _), sqrt(Qty, SqrtQty).
+```
+Compiles to:
+```powershell
+function combined {
+    param([string]$X, [string]$Y)
+    $item_data = item
+    $price_data = price
+    $results = foreach ($r1 in $item_data) {
+        foreach ($r2 in $price_data) {
+            $r1_X = $r1.X; $r1_Y = $r1.Y
+            $r2_X = $r2.X; $r2_Y = $r2.Y
+            if ($r1_X -eq $r2_X) {  # Join on Name
+                $result1 = [Math]::Sqrt($r1_Y)
+                [PSCustomObject]@{ X = $r1_X; Y = $result1 }
+            }
+        }
+    }
+    $results
+}
+```
+
+### 13. Variable Flow Analysis
+
+The compiler automatically tracks variable flow between:
+- **Head arguments** → Parameter names
+- **Fact goal arguments** → Extracted field values
+- **Bound goal inputs** → Values from facts or previous bindings
+- **Bound goal outputs** → New result variables
+
+This enables seamless data flow through mixed rules without explicit plumbing.
 
 ---
 
@@ -408,24 +523,253 @@ pwsh -File test.ps1
 - [x] Mutual recursion
 - [x] Tail recursion optimization
 
-### Phase 3: Data Partitioning (Pending)
+### Phase 3: Data Partitioning (Implemented) ✅
 
-- [ ] Port bash_partitioning_target.pl to PowerShell
-- [ ] Fixed-size partitioning
-- [ ] Hash-based partitioning
-- [ ] Key-based partitioning
+- [x] Port bash_partitioning_target.pl to PowerShell
+- [x] Fixed-size partitioning (rows and bytes)
+- [x] Hash-based partitioning
+- [x] Key-based partitioning
 
-### Phase 4: PowerShell Object Pipeline
+### Phase 4: PowerShell Object Pipeline ✅ Complete (v2.5.0)
 
-- [ ] Return PowerShell objects instead of colon-separated strings
-- [ ] Support PowerShell pipeline chaining
-- [ ] Type annotations for better IntelliSense
+- [x] Return PowerShell objects instead of colon-separated strings
+- [x] Support PowerShell pipeline with `ValueFromPipeline` parameters
+- [x] Dynamic property names via `arg_names([...])` option
+- [x] Output format control: `output_format(object|text)`
 
-### Phase 5: Firewall Mode
+### Phase 5: Binding System Integration ✅ Complete (v2.1.0)
 
-- [ ] Firewall detection logic
-- [ ] Enforce pure mode when firewall detected
-- [ ] Clear error messages when pure mode unsupported
+- [x] Adopted `binding/6` proposal (see `docs/proposals/BINDING_PREDICATE_PROPOSAL.md`)
+- [x] Core binding registry (`src/unifyweaver/core/binding_registry.pl`)
+- [x] PowerShell bindings (52 bindings) (`src/unifyweaver/bindings/powershell_bindings.pl`)
+- [x] Binding-aware rule compilation
+- [x] Variable flow between fact goals and bound goals
+- [x] Multi-fact joins with automatic join condition detection
+
+### Phase 6: Windows Automation (Chapter 5) ✅ Complete (v2.1.0)
+
+- [x] 52 PowerShell bindings for Windows automation
+- [x] File system operations (Get-ChildItem, Test-Path, Get-Content, etc.)
+- [x] Windows services (Get-Service, Start-Service, Stop-Service, etc.)
+- [x] Registry operations (Get-ItemProperty, Set-ItemProperty)
+- [x] Event logs (Get-WinEvent, Write-EventLog)
+- [x] WMI/CIM queries (Get-CimInstance, Invoke-CimMethod)
+- [x] Process management (Get-Process, Start-Process, Stop-Process)
+- [x] .NET integration (System.Math, System.IO, System.Xml methods)
+
+### Phase 7: Multi-Fact Join Optimizations ✅ Complete (v2.2.0)
+
+- [x] Hash-based joins for large datasets - O(n+m) instead of O(n*m)
+- [x] Support for N-way joins (3+ fact goals)
+- [x] Automatic join key detection from shared variables
+- [x] Combined variable maps for multi-fact bound goal code generation
+
+### Phase 8: In-Process C# Hosting (Chapter 6) ✅ Complete (v2.2.0)
+
+- [x] Integration with `dotnet_glue.pl` for .NET bridge generation
+- [x] `compile_with_csharp_host/4` - dual PowerShell/C# output
+- [x] `generate_csharp_bridge/3` - PowerShell, IronPython, CPython bridges
+- [x] `compile_cross_target_pipeline/3` - multi-language pipelines
+- [x] 16 new C# hosting bindings (68 total PowerShell bindings)
+- [x] Runtime detection (.NET, PowerShell, IronPython)
+- [x] PowerShell runspace management from C#
+- [x] Book 12 Chapter 6 documentation
+
+### Phase 9: Advanced Join Optimizations ✅ Complete (v2.3.0)
+
+- [x] **Pipelined Hash Joins for N-Way Joins** - O(n+m+p+...) complexity
+  - Multi-stage pipeline: Build hash index → Probe → Build next index → Continue
+  - Each stage produces intermediate results for the next
+  - Falls back to nested loops for non-equi joins
+- [x] **Index-Based Lookups** - O(1) lookups on frequently-joined predicates
+  - `create_predicate_index/2` - Pre-build hash indices on specific fields
+  - `generate_indexed_lookup/4` - Generate indexed lookup code
+  - Composite index support (multi-field keys)
+- [x] **Automatic Strategy Selection**
+  - `generate_optimized_nway_join/7` - Chooses best strategy based on join keys
+  - `detect_consecutive_join_keys/2` - Finds equi-join opportunities
+  - `has_equijoin_keys/2` - Checks for hash-eligible joins
+- [x] **Test Suite** - 4 new tests for join optimizations
+
+#### Pipelined Hash Join Example
+
+For a 3-way join: `user(Id, Name), order(Id, Product), product(Product, Price)`
+
+**Before (Nested Loops):** O(n*m*p)
+```powershell
+foreach ($r1 in $user_data) {
+    foreach ($r2 in $order_data) {
+        foreach ($r3 in $product_data) {
+            if ($r1_X -eq $r2_X -and $r2_Y -eq $r3_X) {
+                # Output
+            }
+        }
+    }
+}
+```
+
+**After (Pipelined Hash Join):** O(n+m+p)
+```powershell
+# Stage 1: Build hash on user, probe with order
+$hashIndex_1 = @{}
+foreach ($r1 in $user_data) { $hashIndex_1[$r1.X] = ... }
+foreach ($r2 in $order_data) {
+    if ($hashIndex_1.ContainsKey($r2.X)) {
+        $pipeline_2.Add($joined)
+    }
+}
+
+# Stage 2: Build hash on product, probe with pipeline
+$hashIndex_2 = @{}
+foreach ($r3 in $product_data) { $hashIndex_2[$r3.X] = ... }
+foreach ($prev in $pipeline_2) {
+    if ($hashIndex_2.ContainsKey($prev.r2_Y)) {
+        $pipeline_3.Add($joined)
+    }
+}
+```
+
+### Phase 10: Firewall Mode & Security ✅ Complete (v2.4.0)
+
+- [x] **Default-level firewall policies** - Global rules for all predicates
+  - `set_firewall_mode/1` - strict | permissive | disabled
+  - `set_preferred_powershell_mode/1` - pure | baas | auto
+  - `denied_service/2` - Block services globally
+- [x] **Predicate-level firewall rules** - Fine-grained per-predicate control
+  - `set_predicate_firewall_mode/2` - Set mode for specific predicate
+  - `set_predicate_service_policy/4` - Allow/deny services per predicate
+  - `clear_predicate_firewall_mode/1` - Remove predicate rules
+- [x] **Priority enforcement** - Predicate rules override default rules
+  - Predicate-level denied_service (highest priority)
+  - Predicate-level firewall_mode
+  - Default-level denied_service
+  - Default-level firewall_mode
+- [x] **Clear error messages** - When compilation is denied or mode unsupported
+- [x] **6 new tests** for predicate-level firewall
+
+#### Usage Examples
+
+```prolog
+% Force pure PowerShell for sensitive predicates (no bash)
+?- set_predicate_firewall_mode(user_data/2, pure).
+
+% Allow bash for log parsing (even if default is pure)
+?- set_predicate_firewall_mode(log_parser/3, baas).
+
+% Deny bash for specific predicate
+?- set_predicate_service_policy(api_call/2, powershell, executable(bash), deny).
+
+% Clear predicate rules (inherit from default)
+?- clear_predicate_firewall_mode(user_data/2).
+```
+
+#### Enforcement Flow
+
+```
+compile_to_powershell(Predicate, Options, Code)
+    |
+    +--> resolve_powershell_mode_with_predicate/4
+    |       |
+    |       +--> Check predicate_firewall_mode/2 (explicit mode)
+    |       |       |
+    |       |       +--> pure → Use pure PowerShell
+    |       |       +--> baas → Check if bash allowed
+    |       |       +--> auto → Fall to default
+    |       |
+    |       +--> Check predicate_denied_service/3 (bash denied?)
+    |       |       |
+    |       |       +--> Yes, pure supported → Use pure
+    |       |       +--> Yes, pure not supported → DENY
+    |       |
+    |       +--> Fall back to resolve_powershell_mode/3 (default)
+    |
+    +--> If denied(Reason) → Fail with error message
+    |
+    +--> Otherwise → Compile with resolved mode
+```
+
+### Phase 11: Object Pipeline Support ✅ Complete (v2.5.0)
+
+- [x] **`pipeline_input(true)` option** - Enables ValueFromPipeline on first parameter
+  - `ValueFromPipeline=$true` for accepting piped input
+  - `ValueFromPipelineByPropertyName=$true` for property-based piping
+  - Automatic `[CmdletBinding()]` attribute generation
+- [x] **`output_format(object|text)` option** - Control output type
+  - `object`: Return `[PSCustomObject]` for pipeline chaining
+  - `text`: Return colon-separated strings (backward compatible)
+- [x] **`arg_names([...])` option** - Dynamic property names
+  - Custom property names instead of X, Y, Z
+  - Example: `arg_names(['UserId', 'UserName'])`
+- [x] **Begin/Process block structure** - Pipeline streaming support
+  - Facts loaded in `begin` block (once per pipeline)
+  - Filtering in `process` block (for each input)
+- [x] **Integration with facts and rules** - Works with all compilation paths
+- [x] **3 new tests** for object pipeline functionality
+
+#### Usage Examples
+
+```prolog
+% Generate function with pipeline input support
+?- compile_to_powershell(user/2, [
+    pipeline_input(true),
+    output_format(object),
+    arg_names(['UserId', 'UserName'])
+], Code).
+```
+
+**Generated PowerShell:**
+```powershell
+function user {
+    [CmdletBinding(SupportsShouldProcess=$false)]
+    param(
+        [Parameter(Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+        [string]$UserId,
+        [Parameter(Position=1)]
+        [string]$UserName
+    )
+    begin {
+        $facts = @(
+            [PSCustomObject]@{ UserId='alice'; UserName='Alice Smith' },
+            [PSCustomObject]@{ UserId='bob'; UserName='Bob Jones' }
+        )
+    }
+    process {
+        if ($UserId -and $UserName) {
+            $facts | Where-Object { $_.UserId -eq $UserId -and $_.UserName -eq $UserName }
+        } elseif ($UserId) {
+            $facts | Where-Object { $_.UserId -eq $UserId }
+        } elseif ($UserName) {
+            $facts | Where-Object { $_.UserName -eq $UserName }
+        } else {
+            $facts
+        }
+    }
+}
+```
+
+**PowerShell Usage:**
+```powershell
+# Direct invocation
+user -UserId "alice"
+
+# Pipeline chaining
+"alice", "bob" | user | Select-Object UserName
+
+# Object pipeline
+user | Where-Object { $_.UserName -like "*Smith*" }
+```
+
+### Future Enhancements
+
+#### Additional Bindings
+- [ ] Scheduled tasks (Register-ScheduledTask, Get-ScheduledTask)
+- [ ] Date/time operations (Get-Date, AddDays, AddHours)
+- [ ] Active Directory cmdlets (Get-ADUser, Get-ADGroup)
+- [ ] Network cmdlets (Test-Connection, Resolve-DnsName)
+
+#### Advanced Join Optimizations ✅ (Completed in Phase 9)
+- [x] Index-based lookups for frequently-joined predicates
+- [x] Pipelined hash joins for N-way joins
 
 ---
 

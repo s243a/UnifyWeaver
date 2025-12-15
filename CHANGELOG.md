@@ -8,6 +8,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Enhanced Pipeline Chaining** - Complex data flow patterns across all targets (#296-#300)
+  - `fan_out(Stages)` — Broadcast records to stages (sequential execution)
+  - `parallel(Stages)` — Execute stages concurrently using target-native parallelism
+  - `merge` — Combine results from fan_out or parallel stages
+  - `route_by(Pred, Routes)` — Conditional routing based on predicate
+  - `filter_by(Pred)` — Filter records by predicate condition
+  - `batch(N)` — Collect N records into batches for bulk processing
+  - `unbatch` — Flatten batches back to individual records
+  - Supported targets: Python, Go, C#, Rust, PowerShell, AWK, Bash, IronPython
+  - `docs/ENHANCED_PIPELINE_CHAINING.md` — Unified documentation
+  - Integration tests for all targets
+
+- **Parallel Stage Execution** - True concurrent processing for performance-critical workloads
+  - `parallel(Stages)` stage type for concurrent stage execution
+  - `parallel(Stages, Options)` with options support:
+    - `ordered(true)` — Preserve stage definition order in results (default: completion order)
+  - Target-native parallelism mechanisms:
+    - Python: `ThreadPoolExecutor`
+    - Go: Goroutines with `sync.WaitGroup`
+    - C#: `Task.WhenAll`
+    - Rust: `std::thread` by default, rayon with `parallel_mode(rayon)` option
+    - PowerShell: Runspace pools
+    - Bash: Background processes with `wait`
+    - IronPython: .NET `Task.Factory.StartNew` with `ConcurrentBag<T>`
+    - AWK: Sequential by default, GNU Parallel with `parallel_mode(gnu_parallel)` option
+  - Validation support: empty parallel detection, single-stage parallel warning, invalid option detection
+  - Clear distinction from `fan_out` (sequential) vs `parallel` (concurrent)
+
+- **Pipeline Validation** - Compile-time validation for enhanced pipeline stages
+  - `src/unifyweaver/core/pipeline_validation.pl` — Validation module
+  - Error detection: empty pipeline, invalid stages, empty fan_out, empty parallel, empty routes, invalid route format, invalid batch size
+  - Warning detection: fan_out/parallel without merge, merge without fan_out/parallel
+  - Options: `validate(Bool)` to enable/disable, `strict(Bool)` to treat warnings as errors
+  - Integrated into all enhanced pipeline compilation predicates
+  - `tests/integration/test_pipeline_validation.sh` — Integration tests
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Aggregation Stages** - Deduplication and grouping at pipeline level
+  - Deduplication stages:
+    - `unique(Field)` — Keep first occurrence of each unique field value
+    - `first(Field)` — Alias for unique, keep first occurrence
+    - `last(Field)` — Keep last occurrence of each unique field value
+  - Grouping stage:
+    - `group_by(Field, Aggregations)` — Group records by field with aggregations
+    - Built-in aggregations: `count`, `sum(F)`, `avg(F)`, `min(F)`, `max(F)`, `first(F)`, `last(F)`, `collect(F)`
+  - Sequential processing:
+    - `reduce(Pred, Init)` — Fold all records into single result with custom reducer
+    - `scan(Pred, Init)` — Like reduce but emits intermediate results
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_aggregation_stages.sh` — Integration tests (12 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Sorting Stages** - Ordering records at pipeline level
+  - Field-based ordering:
+    - `order_by(Field)` — Sort by field ascending
+    - `order_by(Field, Dir)` — Sort by field with direction (asc/desc)
+    - `order_by(FieldSpecs)` — Sort by multiple fields with individual directions
+  - Custom comparator:
+    - `sort_by(ComparePred)` — Sort using user-defined comparison function
+  - Key distinction: `order_by` is declarative (fields), `sort_by` is programmatic (comparator)
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_sorting_stages.sh` — Integration tests (12 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Error Handling Stages** - Resilient data processing with error recovery
+  - Try-catch pattern:
+    - `try_catch(Stage, Handler)` — Execute stage, route failures to handler
+  - Retry logic:
+    - `retry(Stage, N)` — Retry stage up to N times on failure
+    - `retry(Stage, N, Options)` — Retry with delay and backoff options
+    - Options: `delay(Ms)`, `backoff(linear)`, `backoff(exponential)`
+  - Global error handling:
+    - `on_error(Handler)` — Global error handler for the pipeline
+  - Nested error handling: `try_catch(retry(...), fallback)` for complex recovery
+  - Error records: Failed retries emit `{_error, _record, _retries}` for downstream handling
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_error_handling_stages.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Timeout Stage** - Time-limited stage execution
+  - `timeout(Stage, Ms)` — Execute stage with time limit, emit error record on timeout
+  - `timeout(Stage, Ms, Fallback)` — Execute stage with time limit, use fallback on timeout
+  - Timeout record: `{_timeout, _record, _limit_ms}` for downstream handling
+  - Combines with other error handling: `try_catch(timeout(...), handler)`
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_timeout_stage.sh` — Integration tests (12 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Rate Limiting Stages** - Throughput control for pipeline processing
+  - `rate_limit(N, Per)` — Limit throughput to N records per time unit
+    - Time units: `second`, `minute`, `hour`, `ms(X)`
+    - Uses interval-based timing for precise rate control
+  - `throttle(Ms)` — Add fixed delay of Ms milliseconds between records
+  - Combines with other stages: `try_catch(rate_limit(...), handler)`, `timeout(rate_limit(...), ms)`
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_rate_limiting_stages.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Buffer and Zip Stages** - Record batching and stream combination
+  - `buffer(N)` — Collect N records into batches for bulk processing
+    - Flushes remaining records at stream end
+  - `debounce(Ms)` — Emit record only after Ms quiet period (no new records)
+    - Useful for smoothing bursty traffic
+  - `zip(Stages)` — Run multiple stages on same input, combine outputs record-by-record
+    - Enables parallel enrichment from multiple sources
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_buffer_zip_stages.sh` — Integration tests (18 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.

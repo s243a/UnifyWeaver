@@ -15,6 +15,10 @@ path = "demo_bookmark_filing.rs"
 name = "test_rust_search"
 path = "../../test_rust_search.rs"
 
+[[bin]]
+name = "test_projection_integration"
+path = "test_projection_integration.rs"
+
 [dependencies]
 candle-core = "0.8"
 candle-nn = "0.8"
@@ -25,6 +29,9 @@ quick-xml = "0.36"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
+
+[dev-dependencies]
+tempfile = "3.10"
 
 [lib]
 path = "../../src/unifyweaver/targets/rust_runtime/importer.rs"

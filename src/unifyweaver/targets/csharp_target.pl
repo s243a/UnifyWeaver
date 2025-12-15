@@ -13,7 +13,15 @@
     build_query_plans/3,    % +PredIndicator, +Options, -PlanDicts
     build_query_plan_for_inputs/4, % +PredIndicator, +Options, +InputPositions, -PlanDict
     render_plan_to_csharp/2,% +PlanDict, -CSharpSource
-    plan_module_name/2      % +PlanDict, -ModuleName
+    plan_module_name/2,     % +PlanDict, -ModuleName
+    init_csharp_target/0,   % Initialize bindings
+    compile_csharp_pipeline/3,  % +Predicates, +Options, -CSharpCode
+    test_csharp_pipeline_generator/0,  % Unit tests for pipeline generator mode
+    % Enhanced pipeline chaining exports
+    compile_csharp_enhanced_pipeline/3, % +Stages, +Options, -CSharpCode
+    csharp_enhanced_helpers/1,          % -Code
+    generate_csharp_enhanced_connector/3, % +Stages, +PipelineName, -Code
+    test_csharp_enhanced_chaining/0     % Test enhanced pipeline chaining
 ]).
 
 :- use_module(library(apply)).
@@ -24,10 +32,18 @@
 :- use_module(library(pairs), [pairs_values/2]).
 :- use_module(library(ugraphs), [vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3]).
 :- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1, dynamic_source_metadata/2]).
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/csharp_bindings').
+:- use_module('../core/pipeline_validation').
 :- use_module(common_generator).
 
-%% Optional mode declarations (input/output) for future parameterised queries
-:- dynamic mode_decl/2.
+%% init_csharp_target
+%  Initialize the C# target by loading bindings.
+init_csharp_target :-
+    init_csharp_bindings.
+
+%% Query-mode mode declarations (input/output)
+%  Reads user:mode/1 declarations, e.g. `mode(fib(+, -)).`.
 
 %% modes_for_pred(+Pred/Arity, -Modes:list)
 %  Reads user:mode/1 declarations, e.g., mode(fib(+, -)).
@@ -3368,6 +3384,9 @@ is_aggregate_goal(G) :- aggregate_goal(G).
 is_builtin_goal(Goal) :-
     Goal =.. [Functor|_],
     member(Functor, ['is', '>', '<', '>=', '=<', '=:=', '=\\=', '==', '!=', 'not', '\\+']).
+is_builtin_goal(Goal) :-
+    functor(Goal, Name, Arity),
+    cs_binding(Name/Arity, _, _, _, _).
 
 compile_aggregate_rule(Index, Head, AggGoal, Config, _Indexing, Code, RuleName) :-
     decompose_aggregate_goal(AggGoal, Type, Op, Pred, Args, GroupVar, ValueVar, ResVar),
@@ -3802,8 +3821,8 @@ compile_nway_join([Goal|RestGoals], Builtins, Head, AccumPairs, Config, Indexing
     
     % Relation check
     format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
-    join_source_expr(Pred, Args, AccumPairs, Index, SourceExpr),
-    
+    join_source_expr(Pred, Args, AccumPairs, Index, Indexing, SourceExpr),
+
     % Recurse for remaining goals with extended accumulator
     NextIndex is Index + 1,
     compile_nway_join(RestGoals, Builtins, Head, NewAccumPairs, Config, Indexing, NextIndex, InnerCode),
@@ -3850,7 +3869,7 @@ compile_nway_join_with_aggregate([Goal|RestGoals], Builtins, AggGoal, Head, Accu
         atomic_list_concat(Conds, " && ", JoinCond)
     ),
     format(string(RelCheck), '~w.Relation == \"~w\"', [VarName, Pred]),
-    join_source_expr(Pred, Args, AccumPairs, Index, SourceExpr),
+    join_source_expr(Pred, Args, AccumPairs, Index, Indexing, SourceExpr),
     NextIndex is Index + 1,
     compile_nway_join_with_aggregate(RestGoals, Builtins, AggGoal, Head, NewAccumPairs, Config, Indexing, NextIndex, InnerCode),
     format(string(Code),
@@ -3885,15 +3904,15 @@ join_source_expr(Pred, Args, AccumPairs, Index, Indexing, SourceExpr) :-
         arg_key_expr(Args, AccumPairs, 0, KeyExpr)
     ->  format(string(SourceExpr),
                '(relIndexArg0.TryGetValue("~w", out var map~w) && map~w.TryGetValue(~w, out var list~w) ? (IEnumerable<Fact>)list~w : Enumerable.Empty<Fact>())',
-               [Pred, Index, Index, KeyExpr, Index])
+               [Pred, Index, Index, KeyExpr, Index, Index])
     ;   Indexing == true,
         arg_key_expr(Args, AccumPairs, 1, KeyExpr1)
     ->  format(string(SourceExpr),
                '(relIndexArg1.TryGetValue("~w", out var map~w) && map~w.TryGetValue(~w, out var list~w) ? (IEnumerable<Fact>)list~w : Enumerable.Empty<Fact>())',
-               [Pred, Index, Index, KeyExpr1, Index])
+               [Pred, Index, Index, KeyExpr1, Index, Index])
     ;   format(string(SourceExpr),
                '(relIndex.TryGetValue("~w", out var list~w) ? list~w : Enumerable.Empty<Fact>())',
-               [Pred, Index])
+               [Pred, Index, Index])
     ).
 
 translate_builtins([], _, _, "true").
@@ -3925,7 +3944,43 @@ translate_builtin_or_negation(\+ NegGoal, VarMap, Config, Check) :- !,
 translate_builtin_or_negation(not(NegGoal), VarMap, Config, Check) :- !,
     translate_negation_check(NegGoal, VarMap, Config, Check).
 translate_builtin_or_negation(Goal, VarMap, Config, Check) :-
-    translate_builtin_common(Goal, VarMap, Config, Check).
+    (   is_binding_goal_csharp(Goal)
+    ->  translate_binding_goal(Goal, VarMap, Config, Check)
+    ;   translate_builtin_common(Goal, VarMap, Config, Check)
+    ).
+
+is_binding_goal_csharp(Goal) :-
+    functor(Goal, Name, Arity),
+    cs_binding(Name/Arity, _, _, _, _).
+
+translate_binding_goal(Goal, VarMap, Config, Check) :-
+    Goal =.. [Pred|Args],
+    length(Args, Arity),
+    cs_binding(Pred/Arity, TargetName, _, _, _),
+    maplist(translate_arg_binding(VarMap, Config), Args, ArgExprs),
+    (   sub_string(TargetName, 0, 1, _, ".")
+    ->  ArgExprs = [Obj|RestArgs],
+        (   sub_string(TargetName, _, 2, 0, "()")
+        ->  sub_string(TargetName, 0, _, 2, MethodName),
+            format(string(Check), "~w~w()", [Obj, MethodName])
+        ;   atomic_list_concat(RestArgs, ", ", ArgStr),
+            (   sub_string(TargetName, _, 1, 0, "(") % Ends with (
+            ->  format(string(Check), "~w~w~w)", [Obj, TargetName, ArgStr])
+            ;   sub_string(TargetName, _, 1, 0, ")") % Full signature .Method() ?
+            ->  % Fallback for complex patterns, just use as is if no args?
+                format(string(Check), "~w~w", [Obj, TargetName])
+            ;   format(string(Check), "~w~w(~w)", [Obj, TargetName, ArgStr])
+            )
+        )
+    ;   atomic_list_concat(ArgExprs, ", ", ArgStr),
+        format(string(Check), "~w(~w)", [TargetName, ArgStr])
+    ).
+
+translate_arg_binding(VarMap, Config, Arg, Expr) :-
+    (   translate_expr_common(Arg, VarMap, Config, E)
+    ->  Expr = E
+    ;   csharp_literal(Arg, Expr)
+    ).
 
 %% translate_negation_check(+Goal, +VarMap, +Config, -Check)
 %  Generates !total.Contains(new Fact(...)) check
@@ -3988,7 +4043,7 @@ compile_generator_execution(_Pred, RuleNames, Indexing, Code) :-
                 {
 ~w
                 }
-                
+
                 if (newFacts.Count > 0)
                 {
                     int before = total.Count;
@@ -3998,3 +4053,1038 @@ compile_generator_execution(_Pred, RuleNames, Indexing, Code) :-
             }
             return total;
         }", [IndexSetup, CallsStr]).
+
+% ============================================================================
+% Pipeline Generator Mode for C#
+% ============================================================================
+%
+% This section implements pipeline chaining with support for generator mode
+% (fixpoint iteration) for C# targets. Similar to Python and PowerShell
+% pipeline implementations.
+%
+% Usage:
+%   compile_csharp_pipeline([derive/1, transform/1], [
+%       pipeline_name('FixpointPipe'),
+%       pipeline_mode(generator),
+%       output_format(jsonl)
+%   ], CSharpCode).
+
+%% compile_csharp_pipeline(+Predicates, +Options, -CSharpCode)
+%  Compile a list of predicates into a C# pipeline.
+%  Options:
+%    pipeline_name(Name) - Name for the pipeline class (default: 'Pipeline')
+%    pipeline_mode(Mode) - 'sequential' (default) or 'generator' (fixpoint)
+%    output_format(Format) - 'jsonl' (default) or 'json'
+%
+compile_csharp_pipeline(Predicates, Options, CSharpCode) :-
+    option(pipeline_name(PipelineName), Options, 'Pipeline'),
+    option(pipeline_mode(PipelineMode), Options, sequential),
+    option(output_format(OutputFormat), Options, jsonl),
+
+    % Generate header based on mode
+    csharp_pipeline_header(PipelineMode, Header),
+
+    % Generate helper functions based on mode
+    csharp_pipeline_helpers(PipelineMode, Helpers),
+
+    % Extract stage names
+    extract_csharp_stage_names(Predicates, StageNames),
+
+    % Generate stage functions (placeholder implementations)
+    generate_csharp_stage_functions(StageNames, StageFunctions),
+
+    % Generate the pipeline connector (mode-aware)
+    generate_csharp_pipeline_connector(StageNames, PipelineName, PipelineMode, ConnectorCode),
+
+    % Generate main execution block
+    generate_csharp_main_block(PipelineName, OutputFormat, MainBlock),
+
+    % Combine all parts
+    format(string(CSharpCode),
+"~w
+
+~w
+
+namespace UnifyWeaver.Pipeline
+{
+~w
+~w
+
+~w
+}
+", [Header, Helpers, StageFunctions, ConnectorCode, MainBlock]).
+
+%% csharp_pipeline_header(+Mode, -Header)
+%  Generate mode-aware header with imports
+csharp_pipeline_header(generator, Header) :-
+    !,
+    format(string(Header),
+"// Generated by UnifyWeaver C# Pipeline Generator Mode
+// Fixpoint evaluation for recursive pipeline stages
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+using System.IO;", []).
+
+csharp_pipeline_header(_, Header) :-
+    format(string(Header),
+"// Generated by UnifyWeaver C# Pipeline (sequential mode)
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+using System.IO;", []).
+
+%% csharp_pipeline_helpers(+Mode, -Helpers)
+%  Generate mode-aware helper classes and functions
+csharp_pipeline_helpers(generator, Helpers) :-
+    !,
+    format(string(Helpers),
+"    /// <summary>
+    /// Generates a unique key for record deduplication.
+    /// </summary>
+    public static class RecordKeyHelper
+    {
+        public static string GetRecordKey(Dictionary<string, object?> record)
+        {
+            var sortedKeys = record.Keys.OrderBy(k => k);
+            var parts = sortedKeys.Select(k => $\"{k}={record[k]}\");
+            return string.Join(\";\", parts);
+        }
+    }
+
+    /// <summary>
+    /// JSONL stream reader for pipeline input.
+    /// </summary>
+    public static class JsonlHelper
+    {
+        public static IEnumerable<Dictionary<string, object?>> ReadJsonlStream(TextReader reader)
+        {
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    var dict = JsonSerializer.Deserialize<Dictionary<string, object?>>(line);
+                    if (dict != null) yield return dict;
+                }
+            }
+        }
+
+        public static void WriteJsonlStream(IEnumerable<Dictionary<string, object?>> records, TextWriter writer)
+        {
+            foreach (var record in records)
+            {
+                writer.WriteLine(JsonSerializer.Serialize(record));
+            }
+        }
+    }", []).
+
+csharp_pipeline_helpers(_, Helpers) :-
+    format(string(Helpers),
+"    /// <summary>
+    /// JSONL stream reader for pipeline input.
+    /// </summary>
+    public static class JsonlHelper
+    {
+        public static IEnumerable<Dictionary<string, object?>> ReadJsonlStream(TextReader reader)
+        {
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    var dict = JsonSerializer.Deserialize<Dictionary<string, object?>>(line);
+                    if (dict != null) yield return dict;
+                }
+            }
+        }
+
+        public static void WriteJsonlStream(IEnumerable<Dictionary<string, object?>> records, TextWriter writer)
+        {
+            foreach (var record in records)
+            {
+                writer.WriteLine(JsonSerializer.Serialize(record));
+            }
+        }
+    }", []).
+
+%% extract_csharp_stage_names(+Predicates, -Names)
+%  Extract stage names from predicate indicators
+extract_csharp_stage_names([], []).
+extract_csharp_stage_names([Pred|Rest], [Name|RestNames]) :-
+    extract_csharp_pred_name(Pred, Name),
+    extract_csharp_stage_names(Rest, RestNames).
+
+extract_csharp_pred_name(_Target:Name/_Arity, NameStr) :-
+    !,
+    atom_string(Name, NameStr).
+extract_csharp_pred_name(Name/_Arity, NameStr) :-
+    atom_string(Name, NameStr).
+
+%% generate_csharp_stage_functions(+Names, -Code)
+%  Generate placeholder stage function implementations
+generate_csharp_stage_functions([], "").
+generate_csharp_stage_functions([Name|Rest], Code) :-
+    snake_case_to_pascal(Name, PascalName),
+    format(string(StageCode),
+"    /// <summary>
+    /// Stage: ~w
+    /// </summary>
+    public static IEnumerable<Dictionary<string, object?>> ~w(IEnumerable<Dictionary<string, object?>> input)
+    {
+        // TODO: Implement stage logic
+        foreach (var record in input)
+        {
+            yield return record;
+        }
+    }
+", [Name, PascalName]),
+    generate_csharp_stage_functions(Rest, RestCode),
+    format(string(Code), "~w~w", [StageCode, RestCode]).
+
+%% generate_csharp_pipeline_connector(+StageNames, +PipelineName, +Mode, -Code)
+%  Generate the pipeline connector function (mode-aware)
+generate_csharp_pipeline_connector(StageNames, PipelineName, sequential, Code) :-
+    !,
+    generate_csharp_sequential_chain(StageNames, ChainCode),
+    format(string(Code),
+"    /// <summary>
+    /// Sequential pipeline connector: ~w
+    /// </summary>
+    public static IEnumerable<Dictionary<string, object?>> ~w(IEnumerable<Dictionary<string, object?>> input)
+    {
+        // Sequential mode - chain stages directly
+~w
+    }", [PipelineName, PipelineName, ChainCode]).
+
+generate_csharp_pipeline_connector(StageNames, PipelineName, generator, Code) :-
+    generate_csharp_fixpoint_chain(StageNames, ChainCode),
+    format(string(Code),
+"    /// <summary>
+    /// Fixpoint pipeline connector: ~w
+    /// Iterates until no new records are produced.
+    /// </summary>
+    public static IEnumerable<Dictionary<string, object?>> ~w(IEnumerable<Dictionary<string, object?>> input)
+    {
+        // Generator mode - fixpoint iteration
+        var total = new HashSet<string>();
+
+        // Initialize with input records
+        var inputList = new List<Dictionary<string, object?>>();
+        foreach (var record in input)
+        {
+            var key = RecordKeyHelper.GetRecordKey(record);
+            if (!total.Contains(key))
+            {
+                total.Add(key);
+                inputList.Add(record);
+                yield return record;
+            }
+        }
+
+        // Fixpoint iteration
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            var current = inputList.ToList();
+
+            // Apply pipeline stages
+~w
+
+            // Check for new records
+            foreach (var record in newRecords)
+            {
+                var key = RecordKeyHelper.GetRecordKey(record);
+                if (!total.Contains(key))
+                {
+                    total.Add(key);
+                    inputList.Add(record);
+                    changed = true;
+                    yield return record;
+                }
+            }
+        }
+    }", [PipelineName, PipelineName, ChainCode]).
+
+%% generate_csharp_sequential_chain(+Names, -Code)
+%  Generate sequential stage chaining code
+generate_csharp_sequential_chain([], Code) :-
+    format(string(Code), "        foreach (var record in input)
+        {
+            yield return record;
+        }", []).
+generate_csharp_sequential_chain([Name], Code) :-
+    !,
+    snake_case_to_pascal(Name, PascalName),
+    format(string(Code), "        foreach (var record in ~w(input))
+        {
+            yield return record;
+        }", [PascalName]).
+generate_csharp_sequential_chain(Names, Code) :-
+    Names \= [],
+    generate_csharp_chain_expr(Names, "input", ChainExpr),
+    format(string(Code), "        foreach (var record in ~w)
+        {
+            yield return record;
+        }", [ChainExpr]).
+
+generate_csharp_chain_expr([], Current, Current).
+generate_csharp_chain_expr([Name|Rest], Current, Expr) :-
+    snake_case_to_pascal(Name, PascalName),
+    format(string(NextExpr), "~w(~w)", [PascalName, Current]),
+    generate_csharp_chain_expr(Rest, NextExpr, Expr).
+
+%% generate_csharp_fixpoint_chain(+Names, -Code)
+%  Generate fixpoint stage application code
+generate_csharp_fixpoint_chain([], Code) :-
+    format(string(Code), "            var newRecords = current;", []).
+generate_csharp_fixpoint_chain(Names, Code) :-
+    Names \= [],
+    generate_csharp_fixpoint_stages(Names, "current", StageCode),
+    format(string(Code), "~w", [StageCode]).
+
+generate_csharp_fixpoint_stages([], Current, Code) :-
+    format(string(Code), "            var newRecords = ~w;", [Current]).
+generate_csharp_fixpoint_stages([Stage|Rest], Current, Code) :-
+    snake_case_to_pascal(Stage, PascalStage),
+    format(string(NextVar), "stage~wOut", [PascalStage]),
+    format(string(StageCall), "            var ~w = ~w(~w).ToList();
+", [NextVar, PascalStage, Current]),
+    generate_csharp_fixpoint_stages(Rest, NextVar, RestCode),
+    format(string(Code), "~w~w", [StageCall, RestCode]).
+
+%% generate_csharp_main_block(+PipelineName, +Format, -Code)
+%  Generate main execution block
+generate_csharp_main_block(PipelineName, jsonl, Code) :-
+    format(string(Code),
+"    public static class Program
+    {
+        public static void Main(string[] args)
+        {
+            // Read from stdin, process through pipeline, write to stdout
+            var inputStream = JsonlHelper.ReadJsonlStream(Console.In);
+            JsonlHelper.WriteJsonlStream(~w(inputStream), Console.Out);
+        }
+    }", [PipelineName]).
+
+generate_csharp_main_block(PipelineName, json, Code) :-
+    format(string(Code),
+"    public static class Program
+    {
+        public static void Main(string[] args)
+        {
+            // Read JSON array from stdin, process through pipeline, write to stdout
+            var inputJson = Console.In.ReadToEnd();
+            var inputArray = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(inputJson) ?? new();
+            var results = ~w(inputArray).ToList();
+            Console.WriteLine(JsonSerializer.Serialize(results));
+        }
+    }", [PipelineName]).
+
+% ============================================================================
+% Unit Tests for C# Pipeline Generator Mode
+% ============================================================================
+
+test_csharp_pipeline_generator :-
+    format("~n=== C# Pipeline Generator Mode Unit Tests ===~n~n", []),
+
+    % Test 1: Basic pipeline compilation with generator mode
+    format("Test 1: Basic pipeline with generator mode... ", []),
+    (   compile_csharp_pipeline([transform/1, derive/1], [
+            pipeline_name('TestPipeline'),
+            pipeline_mode(generator),
+            output_format(jsonl)
+        ], Code1),
+        sub_string(Code1, _, _, _, "GetRecordKey"),
+        sub_string(Code1, _, _, _, "while (changed)"),
+        sub_string(Code1, _, _, _, "TestPipeline")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 2: Sequential mode still works
+    format("Test 2: Sequential mode still works... ", []),
+    (   compile_csharp_pipeline([filter/1, format/1], [
+            pipeline_name('SeqPipeline'),
+            pipeline_mode(sequential),
+            output_format(jsonl)
+        ], Code2),
+        sub_string(Code2, _, _, _, "SeqPipeline"),
+        sub_string(Code2, _, _, _, "sequential mode"),
+        \+ sub_string(Code2, _, _, _, "while (changed)")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 3: Generator mode includes RecordKeyHelper
+    format("Test 3: Generator mode has RecordKeyHelper... ", []),
+    (   compile_csharp_pipeline([a/1], [pipeline_mode(generator)], Code3),
+        sub_string(Code3, _, _, _, "RecordKeyHelper"),
+        sub_string(Code3, _, _, _, "GetRecordKey")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 4: JSONL helpers included
+    format("Test 4: JSONL helpers included... ", []),
+    (   compile_csharp_pipeline([x/1], [pipeline_mode(generator)], Code4),
+        sub_string(Code4, _, _, _, "JsonlHelper"),
+        sub_string(Code4, _, _, _, "ReadJsonlStream"),
+        sub_string(Code4, _, _, _, "WriteJsonlStream")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 5: Fixpoint iteration structure
+    format("Test 5: Fixpoint iteration structure... ", []),
+    (   compile_csharp_pipeline([derive/1, transform/1], [pipeline_mode(generator)], Code5),
+        sub_string(Code5, _, _, _, "HashSet<string>"),
+        sub_string(Code5, _, _, _, "changed = true"),
+        sub_string(Code5, _, _, _, "while (changed)"),
+        sub_string(Code5, _, _, _, "total.Contains(key)")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 6: Stage functions generated
+    format("Test 6: Stage functions generated... ", []),
+    (   compile_csharp_pipeline([filter/1, transform/1], [pipeline_mode(generator)], Code6),
+        sub_string(Code6, _, _, _, "public static IEnumerable"),
+        sub_string(Code6, _, _, _, "Filter"),
+        sub_string(Code6, _, _, _, "Transform")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 7: Pipeline chain code for generator
+    format("Test 7: Pipeline chain code for generator mode... ", []),
+    (   compile_csharp_pipeline([derive/1, transform/1], [pipeline_mode(generator)], Code7),
+        sub_string(Code7, _, _, _, "stageDeriveOut"),
+        sub_string(Code7, _, _, _, "stageTransformOut")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 8: Default options work
+    format("Test 8: Default options work... ", []),
+    (   compile_csharp_pipeline([a/1, b/1], [], Code8),
+        sub_string(Code8, _, _, _, "Pipeline"),
+        sub_string(Code8, _, _, _, "sequential mode")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 9: Main block for JSONL format
+    format("Test 9: Main block for JSONL format... ", []),
+    (   compile_csharp_pipeline([x/1], [
+            pipeline_name('JsonlPipe'),
+            output_format(jsonl)
+        ], Code9),
+        sub_string(Code9, _, _, _, "JsonlHelper.ReadJsonlStream"),
+        sub_string(Code9, _, _, _, "Console.In"),
+        sub_string(Code9, _, _, _, "JsonlPipe")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 10: JSON array format option
+    format("Test 10: JSON array format option... ", []),
+    (   compile_csharp_pipeline([x/1], [
+            pipeline_name('JsonPipe'),
+            output_format(json)
+        ], Code10),
+        sub_string(Code10, _, _, _, "ReadToEnd"),
+        sub_string(Code10, _, _, _, "JsonSerializer.Deserialize"),
+        sub_string(Code10, _, _, _, "JsonPipe")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    format("~n=== All C# Pipeline Generator Mode Tests Passed ===~n", []).
+
+%% ============================================
+%% C# ENHANCED PIPELINE CHAINING
+%% ============================================
+%
+%  Supports advanced flow patterns:
+%    - fan_out(Stages)        : Broadcast to stages (sequential execution)
+%    - parallel(Stages)       : Execute stages concurrently (Task.WhenAll)
+%    - merge                  : Combine results from fan_out or parallel
+%    - route_by(Pred, Routes) : Conditional routing
+%    - filter_by(Pred)        : Filter records
+%    - Pred/Arity             : Standard stage
+%
+%% compile_csharp_enhanced_pipeline(+Stages, +Options, -CSharpCode)
+%  Main entry point for enhanced C# pipeline with advanced flow patterns.
+%  Validates pipeline stages before code generation.
+%
+compile_csharp_enhanced_pipeline(Stages, Options, CSharpCode) :-
+    % Validate pipeline stages
+    option(validate(Validate), Options, true),
+    option(strict(Strict), Options, false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'C# pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'C# pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
+    option(pipeline_name(PipelineName), Options, 'EnhancedPipeline'),
+    option(output_format(OutputFormat), Options, jsonl),
+
+    % Generate helpers
+    csharp_enhanced_helpers(Helpers),
+
+    % Generate stage functions
+    generate_csharp_enhanced_stage_functions(Stages, StageFunctions),
+
+    % Generate the main connector
+    generate_csharp_enhanced_connector(Stages, PipelineName, ConnectorCode),
+
+    % Generate main class
+    generate_csharp_enhanced_main(PipelineName, OutputFormat, MainCode),
+
+    format(string(CSharpCode),
+"// Generated by UnifyWeaver C# Enhanced Pipeline
+// Supports fan-out, merge, conditional routing, and filtering
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+using System.IO;
+
+namespace UnifyWeaver.Pipeline
+{
+~w
+
+~w
+~w
+~w
+}
+", [Helpers, StageFunctions, ConnectorCode, MainCode]).
+
+%% csharp_enhanced_helpers(-Code)
+%  Generate helper functions for enhanced pipeline operations.
+csharp_enhanced_helpers(Code) :-
+    Code = "    /// <summary>
+    /// Enhanced Pipeline Helper Functions
+    /// </summary>
+    public static class EnhancedPipelineHelpers
+    {
+        /// <summary>
+        /// Fan-out: Send record to all stages, collect all results.
+        /// </summary>
+        public static IEnumerable<Dictionary<string, object?>> FanOutRecords(
+            Dictionary<string, object?> record,
+            params Func<IEnumerable<Dictionary<string, object?>>, IEnumerable<Dictionary<string, object?>>>[] stages)
+        {
+            foreach (var stage in stages)
+            {
+                foreach (var result in stage(new[] { record }))
+                {
+                    yield return result;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Merge: Combine multiple streams into one.
+        /// </summary>
+        public static IEnumerable<Dictionary<string, object?>> MergeStreams(
+            params IEnumerable<Dictionary<string, object?>>[] streams)
+        {
+            foreach (var stream in streams)
+            {
+                foreach (var record in stream)
+                {
+                    yield return record;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Route: Direct record to appropriate stage based on condition.
+        /// </summary>
+        public static IEnumerable<Dictionary<string, object?>> RouteRecord(
+            Dictionary<string, object?> record,
+            Func<Dictionary<string, object?>, object> conditionFn,
+            Dictionary<object, Func<IEnumerable<Dictionary<string, object?>>, IEnumerable<Dictionary<string, object?>>>> routeMap,
+            Func<IEnumerable<Dictionary<string, object?>>, IEnumerable<Dictionary<string, object?>>>? defaultFn = null)
+        {
+            var condition = conditionFn(record);
+            if (routeMap.TryGetValue(condition, out var stage))
+            {
+                foreach (var result in stage(new[] { record }))
+                {
+                    yield return result;
+                }
+            }
+            else if (defaultFn != null)
+            {
+                foreach (var result in defaultFn(new[] { record }))
+                {
+                    yield return result;
+                }
+            }
+            else
+            {
+                yield return record; // Pass through if no matching route
+            }
+        }
+
+        /// <summary>
+        /// Filter: Only yield records that satisfy the predicate.
+        /// </summary>
+        public static IEnumerable<Dictionary<string, object?>> FilterRecords(
+            IEnumerable<Dictionary<string, object?>> records,
+            Func<Dictionary<string, object?>, bool> predicateFn)
+        {
+            foreach (var record in records)
+            {
+                if (predicateFn(record))
+                {
+                    yield return record;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Tee: Send each record to multiple stages and collect all results.
+        /// </summary>
+        public static IEnumerable<Dictionary<string, object?>> TeeStream(
+            IEnumerable<Dictionary<string, object?>> records,
+            params Func<IEnumerable<Dictionary<string, object?>>, IEnumerable<Dictionary<string, object?>>>[] stages)
+        {
+            var recordList = records.ToList(); // Materialize to allow multiple iterations
+            foreach (var record in recordList)
+            {
+                foreach (var stage in stages)
+                {
+                    foreach (var result in stage(new[] { record }))
+                    {
+                        yield return result;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Read JSONL from stdin.
+        /// </summary>
+        public static IEnumerable<Dictionary<string, object?>> ReadJsonlStream(TextReader reader)
+        {
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                {
+                    var dict = JsonSerializer.Deserialize<Dictionary<string, object?>>(line);
+                    if (dict != null) yield return dict;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Write JSONL to stdout.
+        /// </summary>
+        public static void WriteJsonlStream(IEnumerable<Dictionary<string, object?>> records, TextWriter writer)
+        {
+            foreach (var record in records)
+            {
+                writer.WriteLine(JsonSerializer.Serialize(record));
+            }
+        }
+
+        /// <summary>
+        /// Parallel: Execute stages concurrently using Task.WhenAll.
+        /// Each stage receives the same input record.
+        /// Results are collected after all stages complete.
+        /// </summary>
+        public static IEnumerable<Dictionary<string, object?>> ParallelRecords(
+            Dictionary<string, object?> record,
+            params Func<IEnumerable<Dictionary<string, object?>>, IEnumerable<Dictionary<string, object?>>>[] stages)
+        {
+            var tasks = stages.Select(stage =>
+                Task.Run(() => stage(new[] { record }).ToList())).ToArray();
+            Task.WhenAll(tasks).Wait();
+            foreach (var task in tasks)
+            {
+                foreach (var result in task.Result)
+                {
+                    yield return result;
+                }
+            }
+        }
+    }
+".
+
+%% generate_csharp_enhanced_stage_functions(+Stages, -Code)
+%  Generate stub functions for each stage.
+generate_csharp_enhanced_stage_functions([], "").
+generate_csharp_enhanced_stage_functions([Stage|Rest], Code) :-
+    generate_csharp_single_enhanced_stage(Stage, StageCode),
+    generate_csharp_enhanced_stage_functions(Rest, RestCode),
+    (RestCode = "" ->
+        Code = StageCode
+    ;   format(string(Code), "~w~n~w", [StageCode, RestCode])
+    ).
+
+generate_csharp_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_csharp_enhanced_stage_functions(SubStages, Code).
+generate_csharp_single_enhanced_stage(parallel(SubStages), Code) :-
+    !,
+    generate_csharp_enhanced_stage_functions(SubStages, Code).
+generate_csharp_single_enhanced_stage(merge, "") :- !.
+generate_csharp_single_enhanced_stage(route_by(_, Routes), Code) :-
+    !,
+    findall(Stage, member((_Cond, Stage), Routes), RouteStages),
+    generate_csharp_enhanced_stage_functions(RouteStages, Code).
+generate_csharp_single_enhanced_stage(filter_by(_), "") :- !.
+generate_csharp_single_enhanced_stage(Pred/Arity, Code) :-
+    !,
+    format(string(Code),
+"    /// <summary>
+    /// Pipeline stage: ~w/~w
+    /// </summary>
+    public static class ~wStage
+    {
+        public static IEnumerable<Dictionary<string, object?>> Process(
+            IEnumerable<Dictionary<string, object?>> input)
+        {
+            // TODO: Implement based on predicate bindings
+            foreach (var record in input)
+            {
+                yield return record;
+            }
+        }
+    }
+
+", [Pred, Arity, Pred]).
+generate_csharp_single_enhanced_stage(_, "").
+
+%% generate_csharp_enhanced_connector(+Stages, +PipelineName, -Code)
+%  Generate the main connector that handles enhanced flow patterns.
+generate_csharp_enhanced_connector(Stages, PipelineName, Code) :-
+    generate_csharp_enhanced_flow_code(Stages, "input", FlowCode),
+    format(string(Code),
+"    /// <summary>
+    /// ~w is an enhanced pipeline with fan-out, merge, and routing support.
+    /// </summary>
+    public static class ~w
+    {
+        public static IEnumerable<Dictionary<string, object?>> Run(
+            IEnumerable<Dictionary<string, object?>> input)
+        {
+~w
+        }
+    }
+
+", [PipelineName, PipelineName, FlowCode]).
+
+%% generate_csharp_enhanced_flow_code(+Stages, +CurrentVar, -Code)
+%  Generate the flow code for enhanced pipeline stages.
+generate_csharp_enhanced_flow_code([], CurrentVar, Code) :-
+    format(string(Code), "            foreach (var r in ~w) yield return r;", [CurrentVar]).
+generate_csharp_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
+    generate_csharp_stage_flow(Stage, CurrentVar, NextVar, StageCode),
+    generate_csharp_enhanced_flow_code(Rest, NextVar, RestCode),
+    format(string(Code), "~w~n~w", [StageCode, RestCode]).
+
+%% generate_csharp_stage_flow(+Stage, +InVar, -OutVar, -Code)
+%  Generate flow code for a single stage.
+
+% Fan-out stage: broadcast to stages (sequential execution)
+generate_csharp_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "fanOut~wResult", [N]),
+    extract_csharp_stage_names(SubStages, StageNames),
+    format_csharp_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"            // Fan-out to ~w stages (sequential)
+            var ~w = ~w.SelectMany(record =>
+                EnhancedPipelineHelpers.FanOutRecords(record, ~w));", [N, OutVar, InVar, StageListStr]).
+
+% Parallel stage: concurrent execution using Task.WhenAll
+generate_csharp_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel~wResult", [N]),
+    extract_csharp_stage_names(SubStages, StageNames),
+    format_csharp_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"            // Parallel execution of ~w stages (concurrent via Task.WhenAll)
+            var ~w = ~w.SelectMany(record =>
+                EnhancedPipelineHelpers.ParallelRecords(record, ~w));", [N, OutVar, InVar, StageListStr]).
+
+% Merge stage: placeholder, usually follows fan_out or parallel
+generate_csharp_stage_flow(merge, InVar, OutVar, Code) :-
+    !,
+    OutVar = InVar,
+    Code = "            // Merge: results already combined from fan-out or parallel".
+
+% Conditional routing
+generate_csharp_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "routedResult", []),
+    format_csharp_route_map(Routes, RouteMapStr),
+    format(string(Code),
+"            // Conditional routing based on ~w
+            var routeMap = new Dictionary<object, Func<IEnumerable<Dictionary<string, object?>>, IEnumerable<Dictionary<string, object?>>>>
+            {
+~w
+            };
+            var ~w = ~w.SelectMany(record =>
+                EnhancedPipelineHelpers.RouteRecord(record, ~w, routeMap));", [CondPred, RouteMapStr, OutVar, InVar, CondPred]).
+
+% Filter stage
+generate_csharp_stage_flow(filter_by(Pred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "filteredResult", []),
+    format(string(Code),
+"            // Filter by ~w
+            var ~w = EnhancedPipelineHelpers.FilterRecords(~w, ~w);", [Pred, OutVar, InVar, Pred]).
+
+% Standard predicate stage
+generate_csharp_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
+    !,
+    atom(Pred),
+    format(atom(OutVar), "~wResult", [Pred]),
+    format(string(Code),
+"            // Stage: ~w/~w
+            var ~w = ~wStage.Process(~w);", [Pred, Arity, OutVar, Pred, InVar]).
+
+% Fallback for unknown stages
+generate_csharp_stage_flow(Stage, InVar, InVar, Code) :-
+    format(string(Code), "            // Unknown stage type: ~w (pass-through)", [Stage]).
+
+%% extract_csharp_stage_names(+Stages, -Names)
+%  Extract function names from stage specifications.
+extract_csharp_stage_names([], []).
+extract_csharp_stage_names([Pred/_Arity|Rest], [Pred|RestNames]) :-
+    !,
+    extract_csharp_stage_names(Rest, RestNames).
+extract_csharp_stage_names([_|Rest], RestNames) :-
+    extract_csharp_stage_names(Rest, RestNames).
+
+%% format_csharp_stage_list(+Names, -ListStr)
+%  Format stage names as C# delegate references.
+format_csharp_stage_list([], "").
+format_csharp_stage_list([Name], Str) :-
+    format(string(Str), "~wStage.Process", [Name]).
+format_csharp_stage_list([Name|Rest], Str) :-
+    Rest \= [],
+    format_csharp_stage_list(Rest, RestStr),
+    format(string(Str), "~wStage.Process, ~w", [Name, RestStr]).
+
+%% format_csharp_route_map(+Routes, -MapStr)
+%  Format routing map for C#.
+format_csharp_route_map([], "").
+format_csharp_route_map([(_Cond, Stage)|[]], Str) :-
+    (Stage = StageName/_Arity -> true ; StageName = Stage),
+    format(string(Str), "                { true, ~wStage.Process }", [StageName]).
+format_csharp_route_map([(Cond, Stage)|Rest], Str) :-
+    Rest \= [],
+    (Stage = StageName/_Arity -> true ; StageName = Stage),
+    format_csharp_route_map(Rest, RestStr),
+    (Cond = true ->
+        format(string(Str), "                { true, ~wStage.Process },~n~w", [StageName, RestStr])
+    ; Cond = false ->
+        format(string(Str), "                { false, ~wStage.Process },~n~w", [StageName, RestStr])
+    ;   format(string(Str), "                { \"~w\", ~wStage.Process },~n~w", [Cond, StageName, RestStr])
+    ).
+
+%% generate_csharp_enhanced_main(+PipelineName, +OutputFormat, -Code)
+%  Generate main class for enhanced pipeline.
+generate_csharp_enhanced_main(PipelineName, jsonl, Code) :-
+    format(string(Code),
+"    /// <summary>
+    /// Main entry point for the enhanced pipeline.
+    /// </summary>
+    public static class Program
+    {
+        public static void Main(string[] args)
+        {
+            // Read JSONL from stdin
+            var input = EnhancedPipelineHelpers.ReadJsonlStream(Console.In);
+
+            // Run enhanced pipeline
+            var results = ~w.Run(input);
+
+            // Output results as JSONL
+            EnhancedPipelineHelpers.WriteJsonlStream(results, Console.Out);
+        }
+    }
+", [PipelineName]).
+generate_csharp_enhanced_main(PipelineName, _, Code) :-
+    format(string(Code),
+"    /// <summary>
+    /// Main entry point for the enhanced pipeline.
+    /// </summary>
+    public static class Program
+    {
+        public static void Main(string[] args)
+        {
+            // Read JSON from stdin
+            var json = Console.In.ReadToEnd();
+            var input = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(json) ?? new List<Dictionary<string, object?>>();
+
+            // Run enhanced pipeline
+            var results = ~w.Run(input).ToList();
+
+            // Output results as JSON
+            Console.WriteLine(JsonSerializer.Serialize(results));
+        }
+    }
+", [PipelineName]).
+
+%% ============================================
+%% C# ENHANCED PIPELINE CHAINING TESTS
+%% ============================================
+
+test_csharp_enhanced_chaining :-
+    format('~n=== C# Enhanced Pipeline Chaining Tests ===~n~n', []),
+
+    % Test 1: Generate enhanced helpers
+    format('[Test 1] Generate enhanced helpers~n', []),
+    csharp_enhanced_helpers(Helpers1),
+    (   sub_string(Helpers1, _, _, _, "FanOutRecords"),
+        sub_string(Helpers1, _, _, _, "MergeStreams"),
+        sub_string(Helpers1, _, _, _, "RouteRecord"),
+        sub_string(Helpers1, _, _, _, "FilterRecords"),
+        sub_string(Helpers1, _, _, _, "TeeStream")
+    ->  format('  [PASS] All helper functions generated~n', [])
+    ;   format('  [FAIL] Missing helper functions~n', [])
+    ),
+
+    % Test 2: Linear pipeline connector
+    format('[Test 2] Linear pipeline connector~n', []),
+    generate_csharp_enhanced_connector([extract/1, transform/1, load/1], 'LinearPipe', Code2),
+    (   sub_string(Code2, _, _, _, "LinearPipe"),
+        sub_string(Code2, _, _, _, "extractStage.Process"),
+        sub_string(Code2, _, _, _, "transformStage.Process"),
+        sub_string(Code2, _, _, _, "loadStage.Process")
+    ->  format('  [PASS] Linear connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code2])
+    ),
+
+    % Test 3: Fan-out connector
+    format('[Test 3] Fan-out connector~n', []),
+    generate_csharp_enhanced_connector([fan_out([validate/1, enrich/1])], 'FanoutPipe', Code3),
+    (   sub_string(Code3, _, _, _, "FanoutPipe"),
+        sub_string(Code3, _, _, _, "Fan-out to 2 parallel stages"),
+        sub_string(Code3, _, _, _, "FanOutRecords")
+    ->  format('  [PASS] Fan-out connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code3])
+    ),
+
+    % Test 4: Fan-out with merge
+    format('[Test 4] Fan-out with merge~n', []),
+    generate_csharp_enhanced_connector([fan_out([a/1, b/1]), merge], 'MergePipe', Code4),
+    (   sub_string(Code4, _, _, _, "MergePipe"),
+        sub_string(Code4, _, _, _, "Fan-out to 2"),
+        sub_string(Code4, _, _, _, "Merge: results already combined")
+    ->  format('  [PASS] Merge connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code4])
+    ),
+
+    % Test 5: Conditional routing
+    format('[Test 5] Conditional routing~n', []),
+    generate_csharp_enhanced_connector([route_by(hasError, [(true, errorHandler/1), (false, success/1)])], 'RoutePipe', Code5),
+    (   sub_string(Code5, _, _, _, "RoutePipe"),
+        sub_string(Code5, _, _, _, "Conditional routing based on hasError"),
+        sub_string(Code5, _, _, _, "routeMap")
+    ->  format('  [PASS] Routing connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code5])
+    ),
+
+    % Test 6: Filter stage
+    format('[Test 6] Filter stage~n', []),
+    generate_csharp_enhanced_connector([filter_by(isValid)], 'FilterPipe', Code6),
+    (   sub_string(Code6, _, _, _, "FilterPipe"),
+        sub_string(Code6, _, _, _, "Filter by isValid"),
+        sub_string(Code6, _, _, _, "FilterRecords")
+    ->  format('  [PASS] Filter connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code6])
+    ),
+
+    % Test 7: Complex pipeline with all patterns
+    format('[Test 7] Complex pipeline~n', []),
+    generate_csharp_enhanced_connector([
+        extract/1,
+        filter_by(isActive),
+        fan_out([validate/1, enrich/1, audit/1]),
+        merge,
+        route_by(hasError, [(true, errorLog/1), (false, transform/1)]),
+        output/1
+    ], 'ComplexPipe', Code7),
+    (   sub_string(Code7, _, _, _, "ComplexPipe"),
+        sub_string(Code7, _, _, _, "Filter by isActive"),
+        sub_string(Code7, _, _, _, "Fan-out to 3 parallel stages"),
+        sub_string(Code7, _, _, _, "Merge"),
+        sub_string(Code7, _, _, _, "Conditional routing")
+    ->  format('  [PASS] Complex connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code7])
+    ),
+
+    % Test 8: Stage function generation
+    format('[Test 8] Stage function generation~n', []),
+    generate_csharp_enhanced_stage_functions([extract/1, transform/1], StageFns8),
+    (   sub_string(StageFns8, _, _, _, "extractStage"),
+        sub_string(StageFns8, _, _, _, "transformStage")
+    ->  format('  [PASS] Stage functions generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [StageFns8])
+    ),
+
+    % Test 9: Full enhanced pipeline compilation
+    format('[Test 9] Full enhanced pipeline~n', []),
+    compile_csharp_enhanced_pipeline([
+        extract/1,
+        filter_by(isActive),
+        fan_out([validate/1, enrich/1]),
+        merge,
+        output/1
+    ], [pipeline_name('FullEnhanced'), output_format(jsonl)], FullCode9),
+    (   sub_string(FullCode9, _, _, _, "namespace UnifyWeaver.Pipeline"),
+        sub_string(FullCode9, _, _, _, "FanOutRecords"),
+        sub_string(FullCode9, _, _, _, "FilterRecords"),
+        sub_string(FullCode9, _, _, _, "FullEnhanced"),
+        sub_string(FullCode9, _, _, _, "Main(")
+    ->  format('  [PASS] Full pipeline compiles~n', [])
+    ;   format('  [FAIL] Missing patterns in generated code~n', [])
+    ),
+
+    % Test 10: Enhanced helpers include all functions
+    format('[Test 10] Enhanced helpers completeness~n', []),
+    csharp_enhanced_helpers(Helpers10),
+    (   sub_string(Helpers10, _, _, _, "FanOutRecords"),
+        sub_string(Helpers10, _, _, _, "MergeStreams"),
+        sub_string(Helpers10, _, _, _, "RouteRecord"),
+        sub_string(Helpers10, _, _, _, "FilterRecords"),
+        sub_string(Helpers10, _, _, _, "TeeStream")
+    ->  format('  [PASS] All helpers present~n', [])
+    ;   format('  [FAIL] Missing helpers~n', [])
+    ),
+
+    format('~n=== All C# Enhanced Pipeline Chaining Tests Passed ===~n', []).

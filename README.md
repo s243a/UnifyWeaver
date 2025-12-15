@@ -46,6 +46,19 @@ Different targets support different recursion patterns. Choose based on your nee
 | **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
 | **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
+### Extended Targets
+
+Additional language targets for native compilation, FFI, and functional programming:
+
+| Pattern | LLVM | WASM | Haskell | VB.NET | F# | Java | Jython | Kotlin |
+|---------|:----:|:----:|:-------:|:------:|:--:|:----:|:------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+
 **Key:**
 - ✅ Full support with optimizations (BFS, loops, memoization, semi-naive)
 - — Not supported or limited
@@ -67,43 +80,57 @@ Different targets support different recursion patterns. Choose based on your nee
 
 ## Target Features
 
-### Bash Target
+### Bash Target (v0.2)
 Stream-based compilation to Unix shell scripts with pipes and process substitution.
 - BFS optimization for transitive closures
 - Cycle detection and duplicate prevention
 - Template-based code generation
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
 
-### Go Target (v0.5)
+**Docs:** [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
+
+### Go Target (v0.6)
 Standalone native binaries with no runtime dependencies.
 - JSON I/O with schemas and nested path extraction
 - Regex matching with capture groups
 - Embedded bbolt database storage
 - Parallel workers for high-throughput processing
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Binding System** — Map predicates to Go stdlib functions
 
-**Docs:** [Go Target Guide](docs/GO_TARGET.md) | [JSON Features](GO_JSON_FEATURES.md)
+**Docs:** [Go Target Guide](docs/GO_TARGET.md) | [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
 
-### Rust Target
+### Rust Target (v0.2)
 Memory-safe native binaries via Cargo.
 - Serde JSON integration
 - Semantic crawling support
 - Full Cargo project scaffolding
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Binding System** — Map predicates to Rust stdlib and crates
 
-### C# Target Family (v0.1)
+### C# Target Family (v0.2)
 Two compilation modes for different needs:
 - **Stream Target** (`csharp_codegen`) — LINQ pipelines for simple predicates
 - **Query Runtime** (`csharp_query`) — IR + semi-naive fixpoint for complex recursion
 
 Features: LiteDB integration, mutual recursion via SCC, arithmetic constraints.
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Binding System** — Map predicates to .NET APIs and LINQ
 
-**Docs:** [C# Compilation Guide](docs/DOTNET_COMPILATION.md)
+**Docs:** [C# Compilation Guide](docs/DOTNET_COMPILATION.md) | [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
 
-### Python Target (v0.2)
-Generator-based streaming with Python ecosystem integration.
-- Procedural and generator modes
-- Native XML via lxml, JSONL I/O
-- Semantic runtime with SQLite and vector search
+### Python Target (v0.4)
+Generator-based streaming with Python ecosystem integration and multi-runtime support.
+- **Pipeline Mode** — Streaming JSONL I/O with typed object output
+- **Runtime Selection** — Auto-select CPython, IronPython, PyPy, or Jython based on context
+- **Pipeline Chaining** — Connect multiple predicates with `yield from` composition
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Cross-Runtime Pipelines** — Stage-based orchestration for mixed Python/C# workflows
+- **C# Hosting** — IronPython in-process or CPython subprocess with JSONL glue
+- **Binding System** — Map predicates to Python built-ins and libraries
+- Native XML via lxml, semantic runtime with SQLite and vector search
 
-**Docs:** [Python Target Guide](docs/PYTHON_TARGET.md) | [Semantic Runtime](docs/PYTHON_RUNTIME.md)
+**Docs:** [Python Target Guide](docs/PYTHON_TARGET.md) | [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
 
 ### SQL Target (v0.3)
 Compiles predicates to SQL queries for database execution.
@@ -114,20 +141,29 @@ Compiles predicates to SQL queries for database execution.
 
 **Docs:** [SQL Target Design](SQL_TARGET_DESIGN.md)
 
-### PowerShell Target (v0.1)
-Windows automation and .NET orchestration.
+### PowerShell Target (v2.6)
+Windows automation and .NET orchestration with full object pipeline support.
 - Dual-mode: pure PowerShell or Bash-as-a-Service via WSL
 - Cross-platform (PowerShell 7+)
+- **Binding system**: 68+ bindings for cmdlets, .NET methods, Windows automation
+- **Auto-transpilation**: Rules like `sqrt(X, Y)` compile directly to `[Math]::Sqrt($X)`
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Object pipeline**: `ValueFromPipeline` parameters, `PSCustomObject` output
+- **Advanced joins**: Hash-based and pipelined N-way joins with O(n+m) complexity
+- **Firewall security**: Per-predicate mode control (pure/baas/auto)
 - Ideal for orchestrating .NET targets (C#, IronPython)
 
-**Docs:** [PowerShell Target Guide](docs/POWERSHELL_TARGET.md)
+**Docs:** [PowerShell Target Guide](docs/POWERSHELL_TARGET.md) | [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
 
-### AWK Target
+### AWK Target (v0.2)
 Lightweight, portable text processing.
 - Tail recursion to while loops
 - Aggregations (sum, count, max, min, avg)
 - Regex matching with capture groups
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
 - Runs on any POSIX system
+
+**Docs:** [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
 
 ### Prolog Target
 Prolog-to-Prolog transpilation for dialect compatibility.
@@ -143,6 +179,8 @@ Compose predicates across multiple languages in unified pipelines:
 
 - **Shell Integration** — TSV/CSV/JSON I/O between AWK, Python, Bash
 - **.NET Bridges** — In-process C# ↔ PowerShell ↔ IronPython
+- **Python/C# Glue** — IronPython in-process hosting or CPython subprocess with JSONL
+- **Pipeline Chaining** — Multi-stage orchestration with automatic runtime grouping
 - **Native Orchestration** — Go/Rust compilation with parallel workers
 - **Network Communication** — HTTP servers/clients, TCP streaming
 - **Service Registry** — Distributed service routing
@@ -312,6 +350,33 @@ sibling(X, Y)     % Same parent, different children
 
 **See [Extended Documentation](docs/EXTENDED_README.md) for complete examples.**
 
+### Python Pipeline Example
+
+```prolog
+% Compile predicates to a chained Python pipeline
+compile_pipeline(
+    [parse_user/2, filter_adult/2, format_output/3],
+    [runtime(cpython), pipeline_name(user_pipeline)],
+    PythonCode
+).
+```
+
+Generated Python uses efficient generator chaining:
+```python
+def user_pipeline(input_stream):
+    """Chained pipeline: [parse_user, filter_adult, format_output]"""
+    yield from format_output(filter_adult(parse_user(input_stream)))
+```
+
+For cross-runtime workflows (Python + C#):
+```prolog
+compile_pipeline(
+    [python:extract/1, csharp:validate/1, python:transform/1],
+    [pipeline_name(data_processor)],
+    Code
+).
+```
+
 ### Current Limitations
 
 - Divide-and-conquer patterns (quicksort, mergesort) not yet supported
@@ -341,6 +406,7 @@ In SWI-Prolog:
 | **[Educational Materials](education/README.md)** | 13-book series covering all targets and patterns |
 | [Extended Documentation](docs/EXTENDED_README.md) | Tutorials and advanced examples |
 | [Architecture](docs/ARCHITECTURE.md) | System design and compilation pipeline |
+| [Enhanced Pipeline Chaining](docs/ENHANCED_PIPELINE_CHAINING.md) | Fan-out, merge, routing, and filter stages |
 | [Cross-Target Glue](docs/guides/cross-target-glue.md) | Multi-language pipeline composition |
 | [Advanced Recursion](docs/ADVANCED_RECURSION.md) | Recursion patterns deep dive |
 | [Testing Guide](docs/TESTING_GUIDE.md) | Testing infrastructure |

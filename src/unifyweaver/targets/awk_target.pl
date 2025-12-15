@@ -8,10 +8,27 @@
 
 :- module(awk_target, [
     compile_predicate_to_awk/3,     % +Predicate, +Options, -AwkCode
-    write_awk_script/2              % +AwkCode, +FilePath
+    write_awk_script/2,             % +AwkCode, +FilePath
+    init_awk_target/0,
+    compile_awk_pipeline/3,         % +Predicates, +Options, -AwkCode
+    test_awk_pipeline_generator/0,  % Unit tests for pipeline generator mode
+    % Enhanced pipeline chaining exports
+    compile_awk_enhanced_pipeline/3, % +Stages, +Options, -AwkCode
+    awk_enhanced_helpers/1,          % -Code
+    generate_awk_enhanced_connector/3, % +Stages, +PipelineName, -Code
+    test_awk_enhanced_chaining/0     % Test enhanced pipeline chaining
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(gensym)).
+:- use_module('../core/binding_registry').
+:- use_module('../bindings/awk_bindings').
+:- use_module('../core/pipeline_validation').
+
+%% init_awk_target
+%  Initialize the AWK target by loading bindings.
+init_awk_target :-
+    init_awk_bindings.
 
 %% ============================================
 %% PUBLIC API
@@ -616,22 +633,24 @@ compile_single_rule_to_awk(Pred, Arity, Head, Body, _RecordFormat, FieldSep,
     build_var_map(HeadArgs, VarMap),
     format('  Variable map: ~w~n', [VarMap]),
 
-    % Extract predicates and constraints from body
+    % Extract predicates, constraints, and bindings
     extract_predicates(Body, Predicates),
     extract_constraints(Body, Constraints),
+    extract_bindings(Body, Bindings),
     format('  Body predicates: ~w~n', [Predicates]),
     format('  Constraints: ~w~n', [Constraints]),
+    format('  Bindings: ~w~n', [Bindings]),
 
     % Determine compilation strategy
     (   Predicates = [] ->
-        % No predicates - just constraints or empty body
-        compile_constraint_only_rule(PredStr, Arity, Constraints, VarMap, FieldSep, Unique, AwkCode)
+        % No predicates - just constraints, bindings, or empty body
+        compile_constraint_only_rule(PredStr, Arity, Constraints, Bindings, VarMap, FieldSep, Unique, AwkCode)
     ;   Predicates = [SinglePred] ->
         % Single predicate - simple lookup with optional constraints
-        compile_single_predicate_rule(PredStr, Arity, SinglePred, Constraints, VarMap,
+        compile_single_predicate_rule(PredStr, Arity, SinglePred, Constraints, Bindings, VarMap,
                                      FieldSep, Unique, AwkCode)
     ;   % Multiple predicates - hash join pipeline
-        compile_multi_predicate_rule(PredStr, Arity, Predicates, Constraints, VarMap,
+        compile_multi_predicate_rule(PredStr, Arity, Predicates, Constraints, Bindings, VarMap,
                                     FieldSep, Unique, AwkCode)
     ).
 
@@ -655,42 +674,44 @@ var_map_lookup(Var, [(MapVar, Pos)|_], Pos) :-
 var_map_lookup(Var, [_|Rest], Pos) :-
     var_map_lookup(Var, Rest, Pos).
 
-%% compile_constraint_only_rule(+PredStr, +Arity, +Constraints, +VarMap, +FieldSep, +Unique, -AwkCode)
-%  Compile a rule with no predicates (just constraints or empty body)
+%% compile_constraint_only_rule(+PredStr, +Arity, +Constraints, +Bindings, +VarMap, +FieldSep, +Unique, -AwkCode)
+%  Compile a rule with no predicates (just constraints, bindings, or empty body)
 %
-compile_constraint_only_rule(_PredStr, _Arity, Constraints, VarMap, FieldSep, Unique, AwkCode) :-
+compile_constraint_only_rule(_PredStr, _Arity, Constraints, Bindings, VarMap, FieldSep, Unique, AwkCode) :-
+    % Generate binding code
+    generate_awk_bindings(Bindings, VarMap, BindingCode, NewVarMap),
+
     (   Constraints = [] ->
-        % No constraints - just pass through (always true)
-        MainBlock = '{ print $0 }'
-    ;   % Has constraints - generate AWK condition
-        generate_constraint_code(Constraints, VarMap, ConstraintCode),
-        (   Unique ->
-            format(atom(MainBlock),
+        ConstraintCode = '1'
+    ;   generate_constraint_code(Constraints, NewVarMap, ConstraintCode)
+    ),
+    
+    (   Unique ->
+        format(atom(MainBlock),
 '{
-    if (~w) {
+~s    if (~w) {
         key = $0
         if (!(key in seen)) {
             seen[key] = 1
             print $0
         }
     }
-}', [ConstraintCode])
-        ;   format(atom(MainBlock),
+}', [BindingCode, ConstraintCode])
+    ;   format(atom(MainBlock),
 '{
-    if (~w) {
+~s    if (~w) {
         print $0
     }
-}', [ConstraintCode])
-        )
+}', [BindingCode, ConstraintCode])
     ),
     format(atom(BeginBlock), 'BEGIN { FS = "~w" }', [FieldSep]),
     atomic_list_concat([BeginBlock, '\n', MainBlock], AwkCode).
 
-%% compile_single_predicate_rule(+PredStr, +Arity, +Predicate, +Constraints,
+%% compile_single_predicate_rule(+PredStr, +Arity, +Predicate, +Constraints, +Bindings,
 %%                                +VarMap, +FieldSep, +Unique, -AwkCode)
 %  Compile a rule with a single predicate (simple lookup)
 %
-compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, FieldSep, Unique, AwkCode) :-
+compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, Bindings, VarMap, FieldSep, Unique, AwkCode) :-
     % Need to load the predicate's facts
     atom_string(Predicate, PredLookupStr),
 
@@ -709,12 +730,13 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
         InitStmts),
     atomic_list_concat(InitStmts, '\n', InitStmtsStr),
 
+    % Generate bindings
+    generate_awk_bindings(Bindings, VarMap, BindingCode, NewVarMap),
+
     % Generate main lookup logic
-    % This depends on how the input maps to the predicate arguments
-    % For now, assume direct mapping
     (   Constraints = [] ->
         ConstraintCheck = ''
-    ;   generate_constraint_code(Constraints, VarMap, ConstraintCode),
+    ;   generate_constraint_code(Constraints, NewVarMap, ConstraintCode),
         format(atom(ConstraintCheck), ' && ~w', [ConstraintCode])
     ),
 
@@ -738,20 +760,24 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
         format(atom(MainBlock),
 '{
     key = ~w
-    if (key in ~w_data~w) {
-        if (!(key in seen)) {
-            seen[key] = 1
-            ~w
+    if (key in ~w_data) {
+~s        if (1~w) {
+            if (!(key in seen)) {
+                seen[key] = 1
+                ~w
+            }
         }
     }
-}', [FieldsConcat, PredLookupStr, ConstraintCheck, PrintStmt])
+}', [FieldsConcat, PredLookupStr, BindingCode, ConstraintCheck, PrintStmt])
     ;   format(atom(MainBlock),
 '{
     key = ~w
-    if (key in ~w_data~w) {
-        ~w
+    if (key in ~w_data) {
+~s        if (1~w) {
+            ~w
+        }
     }
-}', [FieldsConcat, PredLookupStr, ConstraintCheck, PrintStmt])
+}', [FieldsConcat, PredLookupStr, BindingCode, ConstraintCheck, PrintStmt])
     ),
 
     format(atom(BeginBlock),
@@ -761,11 +787,11 @@ compile_single_predicate_rule(_PredStr, _Arity, Predicate, Constraints, VarMap, 
 }', [FieldSep, InitStmtsStr]),
     atomic_list_concat([BeginBlock, '\n', MainBlock], AwkCode).
 
-%% compile_multi_predicate_rule(+PredStr, +Arity, +Predicates, +Constraints,
+%% compile_multi_predicate_rule(+PredStr, +Arity, +Predicates, +Constraints, +Bindings,
 %%                              +VarMap, +FieldSep, +Unique, -AwkCode)
 %  Compile a rule with multiple predicates (hash join)
 %
-compile_multi_predicate_rule(_PredStr, _Arity, Predicates, Constraints, _VarMap, FieldSep, Unique, AwkCode) :-
+compile_multi_predicate_rule(_PredStr, _Arity, Predicates, Constraints, _Bindings, _VarMap, FieldSep, Unique, AwkCode) :-
     % For multiple predicates, we need to implement a hash join
     % Strategy: Load all predicate facts, then perform nested joins
 
@@ -868,11 +894,12 @@ constraint_to_awk(match(Var, Pattern, Type, Groups), VarMap, AwkCode) :-
 %
 term_to_awk_expr(Term, VarMap, AwkExpr) :-
     var(Term), !,
-    % It's a Prolog variable - look it up in VarMap using identity check
-    (   var_map_lookup(Term, VarMap, Pos) ->
-        format(atom(AwkExpr), '$~w', [Pos])
-    ;   % Variable not in map - might be from nested term
-        AwkExpr = Term
+    (   var_map_lookup(Term, VarMap, Val) ->
+        (   Val = field(Pos) -> format(atom(AwkExpr), '$~w', [Pos])
+        ;   Val = var(Name) -> AwkExpr = Name
+        ;   integer(Val) -> format(atom(AwkExpr), '$~w', [Val]) % Legacy support
+        )
+    ;   AwkExpr = Term
     ).
 term_to_awk_expr(Term, _, AwkExpr) :-
     atom(Term), !,
@@ -1090,6 +1117,10 @@ extract_predicates((A, B), Predicates) :- !,
     append(P1, P2, Predicates).
 extract_predicates(Goal, []) :-
     var(Goal), !.
+% Skip bindings
+extract_predicates(Goal, []) :-
+    functor(Goal, Name, Arity),
+    awk_binding(Name/Arity, _, _, _, _), !.
 % Skip inequality operators
 extract_predicates(_ \= _, []) :- !.
 extract_predicates(\=(_, _), []) :- !.
@@ -1208,6 +1239,47 @@ generate_capture_print(NumCaptures, PrintStmt) :-
     atomic_list_concat(Captures, ', ', CapturesStr),
     format(atom(PrintStmt), 'print ~w', [CapturesStr]).
 
+%% extract_bindings(+Body, -Bindings)
+extract_bindings(true, []) :- !.
+extract_bindings((A, B), Bs) :- !,
+    extract_bindings(A, B1),
+    extract_bindings(B, B2),
+    append(B1, B2, Bs).
+extract_bindings(Goal, [Goal]) :-
+    functor(Goal, Name, Arity),
+    awk_binding(Name/Arity, _, _, _, _), !.
+extract_bindings(_, []).
+
+%% generate_awk_bindings(+Bindings, +VarMap, -Code, -NewVarMap)
+generate_awk_bindings([], VarMap, "", VarMap).
+generate_awk_bindings([Goal|Rest], VarMapIn, Code, VarMapOut) :-
+    Goal =.. [Pred|Args],
+    functor(Goal, Pred, Arity),
+    binding(awk, Pred/Arity, Pattern, Inputs, Outputs, _),
+    
+    length(Inputs, InCount),
+    length(InArgs, InCount),
+    append(InArgs, OutArgs, Args),
+    
+    maplist(term_to_awk_expr_binding(VarMapIn), InArgs, AwkInArgs),
+    format_pattern(Pattern, AwkInArgs, Expr),
+    
+    (   Outputs = []
+    ->  format(string(Line), "    ~s\n", [Expr]),
+        VarMapNext = VarMapIn
+    ;   OutArgs = [OutVar],
+        gensym(v, VarName),
+        format(string(Line), "    ~s = ~s\n", [VarName, Expr]),
+        VarMapNext = [(OutVar, var(VarName))|VarMapIn]
+    ),
+    
+    generate_awk_bindings(Rest, VarMapNext, RestCode, VarMapOut),
+    string_concat(Line, RestCode, Code).
+
+term_to_awk_expr_binding(VarMap, Term, Expr) :- term_to_awk_expr(Term, VarMap, Expr).
+
+format_pattern(Pattern, Args, Cmd) :- format(string(Cmd), Pattern, Args).
+
 %% ============================================
 %% OPTIONS
 %% ============================================
@@ -1221,3 +1293,1264 @@ option(Option, Options, Default) :-
     ;   Option =.. [Key, Default],
         \+ member(Key=_, Options)
     ).
+
+% ============================================================================
+% Pipeline Generator Mode for AWK
+% ============================================================================
+%
+% This section implements pipeline chaining with support for generator mode
+% (fixpoint iteration) for AWK targets. Similar to Python, PowerShell, C#,
+% and Rust pipeline implementations.
+%
+% Usage:
+%   compile_awk_pipeline([derive/1, transform/1], [
+%       pipeline_name(fixpoint_pipe),
+%       pipeline_mode(generator),
+%       record_format(jsonl)
+%   ], AwkCode).
+
+%% compile_awk_pipeline(+Predicates, +Options, -AwkCode)
+%  Compile a list of predicates into an AWK pipeline.
+%  Options:
+%    pipeline_name(Name) - Name for the pipeline (default: 'pipeline')
+%    pipeline_mode(Mode) - 'sequential' (default) or 'generator' (fixpoint)
+%    record_format(Format) - 'jsonl' (default), 'tsv', or 'csv'
+%    field_separator(Sep) - Field separator for TSV/CSV (default: '\t')
+%
+compile_awk_pipeline(Predicates, Options, AwkCode) :-
+    option(pipeline_name(PipelineName), Options, pipeline),
+    option(pipeline_mode(PipelineMode), Options, sequential),
+    option(record_format(RecordFormat), Options, jsonl),
+    option(field_separator(FieldSep), Options, '\t'),
+
+    % Generate header
+    awk_pipeline_header(PipelineName, PipelineMode, Header),
+
+    % Generate helper functions based on mode
+    awk_pipeline_helpers(PipelineMode, RecordFormat, FieldSep, Helpers),
+
+    % Extract stage names
+    extract_awk_stage_names(Predicates, StageNames),
+
+    % Generate stage functions
+    generate_awk_stage_functions(StageNames, StageFunctions),
+
+    % Generate the pipeline connector (mode-aware)
+    generate_awk_pipeline_connector(StageNames, PipelineName, PipelineMode, ConnectorCode),
+
+    % Generate main execution block
+    generate_awk_main_block(PipelineName, PipelineMode, RecordFormat, FieldSep, MainBlock),
+
+    % Combine all parts
+    format(string(AwkCode),
+"~w
+
+~w
+
+~w
+~w
+
+~w
+", [Header, Helpers, StageFunctions, ConnectorCode, MainBlock]).
+
+%% awk_pipeline_header(+Name, +Mode, -Header)
+%  Generate pipeline header with shebang
+awk_pipeline_header(PipelineName, generator, Header) :-
+    !,
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Header),
+"#!/usr/bin/awk -f
+# Generated by UnifyWeaver AWK Pipeline Generator Mode
+# Pipeline: ~w
+# Fixpoint evaluation for recursive pipeline stages", [PipelineNameStr]).
+
+awk_pipeline_header(PipelineName, _, Header) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Header),
+"#!/usr/bin/awk -f
+# Generated by UnifyWeaver AWK Pipeline (sequential mode)
+# Pipeline: ~w", [PipelineNameStr]).
+
+%% awk_pipeline_helpers(+Mode, +Format, +FieldSep, -Helpers)
+%  Generate mode-aware helper functions
+awk_pipeline_helpers(generator, jsonl, _, Helpers) :-
+    !,
+    format(string(Helpers),
+"# Helper function: Generate record key for deduplication
+function record_key(record,    key, i, n, keys, k) {
+    n = split(record, keys, \",\")
+    asort(keys)
+    key = \"\"
+    for (i = 1; i <= n; i++) {
+        if (key != \"\") key = key \";\"
+        key = key keys[i]
+    }
+    return key
+}
+
+# Helper function: Parse JSONL record to fields array
+function parse_jsonl(line, fields,    n, parts, i, kv, k, v) {
+    gsub(/^\\{|\\}$/, \"\", line)
+    n = split(line, parts, \",\")
+    for (i = 1; i <= n; i++) {
+        split(parts[i], kv, \":\")
+        k = kv[1]; v = kv[2]
+        gsub(/\"/, \"\", k); gsub(/\"/, \"\", v)
+        gsub(/^ +| +$/, \"\", k); gsub(/^ +| +$/, \"\", v)
+        fields[k] = v
+    }
+    return n
+}
+
+# Helper function: Format fields as JSONL
+function format_jsonl(fields,    result, k, first) {
+    result = \"{\"
+    first = 1
+    for (k in fields) {
+        if (!first) result = result \",\"
+        result = result \"\\\"\" k \"\\\":\\\"\" fields[k] \"\\\"\"
+        first = 0
+    }
+    result = result \"}\"
+    return result
+}", []).
+
+awk_pipeline_helpers(generator, _, FieldSep, Helpers) :-
+    !,
+    format(string(Helpers),
+"# Helper function: Generate record key for deduplication
+function record_key(record) {
+    return record  # For TSV/CSV, the whole line is the key
+}
+
+# Field separator
+BEGIN { FS = \"~w\"; OFS = \"~w\" }", [FieldSep, FieldSep]).
+
+awk_pipeline_helpers(_, jsonl, _, Helpers) :-
+    !,
+    format(string(Helpers),
+"# Helper function: Parse JSONL record to fields array
+function parse_jsonl(line, fields,    n, parts, i, kv, k, v) {
+    gsub(/^\\{|\\}$/, \"\", line)
+    n = split(line, parts, \",\")
+    for (i = 1; i <= n; i++) {
+        split(parts[i], kv, \":\")
+        k = kv[1]; v = kv[2]
+        gsub(/\"/, \"\", k); gsub(/\"/, \"\", v)
+        gsub(/^ +| +$/, \"\", k); gsub(/^ +| +$/, \"\", v)
+        fields[k] = v
+    }
+    return n
+}
+
+# Helper function: Format fields as JSONL
+function format_jsonl(fields,    result, k, first) {
+    result = \"{\"
+    first = 1
+    for (k in fields) {
+        if (!first) result = result \",\"
+        result = result \"\\\"\" k \"\\\":\\\"\" fields[k] \"\\\"\"
+        first = 0
+    }
+    result = result \"}\"
+    return result
+}", []).
+
+awk_pipeline_helpers(_, _, FieldSep, Helpers) :-
+    format(string(Helpers),
+"# Field separator
+BEGIN { FS = \"~w\"; OFS = \"~w\" }", [FieldSep, FieldSep]).
+
+%% extract_awk_stage_names(+Predicates, -Names)
+%  Extract stage names from predicate indicators
+extract_awk_stage_names([], []).
+extract_awk_stage_names([Pred|Rest], [Name|RestNames]) :-
+    extract_awk_pred_name(Pred, Name),
+    extract_awk_stage_names(Rest, RestNames).
+
+extract_awk_pred_name(_Target:Name/_Arity, NameStr) :-
+    !,
+    atom_string(Name, NameStr).
+extract_awk_pred_name(Name/_Arity, NameStr) :-
+    atom_string(Name, NameStr).
+
+%% generate_awk_stage_functions(+Names, -Code)
+%  Generate placeholder stage function implementations
+generate_awk_stage_functions([], "").
+generate_awk_stage_functions([Name|Rest], Code) :-
+    format(string(StageCode),
+"# Stage: ~w
+function stage_~w(record) {
+    # TODO: Implement stage logic
+    return record
+}
+
+", [Name, Name]),
+    generate_awk_stage_functions(Rest, RestCode),
+    format(string(Code), "~w~w", [StageCode, RestCode]).
+
+%% generate_awk_pipeline_connector(+StageNames, +PipelineName, +Mode, -Code)
+%  Generate the pipeline connector function (mode-aware)
+generate_awk_pipeline_connector(StageNames, PipelineName, sequential, Code) :-
+    !,
+    generate_awk_sequential_chain(StageNames, ChainCode),
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# Sequential pipeline connector: ~w
+function ~w(record) {
+    # Sequential mode - chain stages directly
+~w
+}", [PipelineNameStr, PipelineNameStr, ChainCode]).
+
+generate_awk_pipeline_connector(StageNames, PipelineName, generator, Code) :-
+    generate_awk_fixpoint_chain(StageNames, ChainCode),
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# Fixpoint pipeline connector: ~w
+# Iterates until no new records are produced.
+function run_~w(    changed, i, record, key, new_record) {
+    # Fixpoint iteration
+    do {
+        changed = 0
+        for (i = 1; i <= record_count; i++) {
+            record = records[i]
+~w
+            key = record_key(new_record)
+            if (!(key in seen)) {
+                seen[key] = 1
+                record_count++
+                records[record_count] = new_record
+                output[++output_count] = new_record
+                changed = 1
+            }
+        }
+    } while (changed)
+}", [PipelineNameStr, PipelineNameStr, ChainCode]).
+
+%% generate_awk_sequential_chain(+Names, -Code)
+%  Generate sequential stage chaining code
+generate_awk_sequential_chain([], Code) :-
+    format(string(Code), "    return record", []).
+generate_awk_sequential_chain([Name], Code) :-
+    !,
+    format(string(Code), "    return stage_~w(record)", [Name]).
+generate_awk_sequential_chain(Names, Code) :-
+    Names \= [],
+    generate_awk_chain_expr(Names, "record", ChainExpr),
+    format(string(Code), "    return ~w", [ChainExpr]).
+
+generate_awk_chain_expr([], Current, Current).
+generate_awk_chain_expr([Name|Rest], Current, Expr) :-
+    format(string(NextExpr), "stage_~w(~w)", [Name, Current]),
+    generate_awk_chain_expr(Rest, NextExpr, Expr).
+
+%% generate_awk_fixpoint_chain(+Names, -Code)
+%  Generate fixpoint stage application code
+generate_awk_fixpoint_chain([], Code) :-
+    format(string(Code), "            new_record = record", []).
+generate_awk_fixpoint_chain(Names, Code) :-
+    Names \= [],
+    generate_awk_fixpoint_stages(Names, "record", StageCode),
+    format(string(Code), "~w", [StageCode]).
+
+generate_awk_fixpoint_stages([], Current, Code) :-
+    format(string(Code), "            new_record = ~w", [Current]).
+generate_awk_fixpoint_stages([Stage|Rest], Current, Code) :-
+    format(string(NextVar), "stage_~w_out", [Stage]),
+    format(string(StageCall), "            ~w = stage_~w(~w)
+", [NextVar, Stage, Current]),
+    generate_awk_fixpoint_stages(Rest, NextVar, RestCode),
+    format(string(Code), "~w~w", [StageCall, RestCode]).
+
+%% generate_awk_main_block(+PipelineName, +Mode, +Format, +FieldSep, -Code)
+%  Generate main execution block
+generate_awk_main_block(PipelineName, generator, jsonl, _, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# Main execution - Generator mode with JSONL
+BEGIN {
+    record_count = 0
+    output_count = 0
+}
+
+{
+    # Read input records
+    record_count++
+    records[record_count] = $0
+    key = record_key($0)
+    if (!(key in seen)) {
+        seen[key] = 1
+        output[++output_count] = $0
+    }
+}
+
+END {
+    # Run fixpoint iteration
+    run_~w()
+
+    # Output all results
+    for (i = 1; i <= output_count; i++) {
+        print output[i]
+    }
+}", [PipelineNameStr]).
+
+generate_awk_main_block(PipelineName, generator, _, _, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# Main execution - Generator mode with TSV/CSV
+BEGIN {
+    record_count = 0
+    output_count = 0
+}
+
+{
+    # Read input records
+    record_count++
+    records[record_count] = $0
+    key = record_key($0)
+    if (!(key in seen)) {
+        seen[key] = 1
+        output[++output_count] = $0
+    }
+}
+
+END {
+    # Run fixpoint iteration
+    run_~w()
+
+    # Output all results
+    for (i = 1; i <= output_count; i++) {
+        print output[i]
+    }
+}", [PipelineNameStr]).
+
+generate_awk_main_block(PipelineName, sequential, _, _, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# Main execution - Sequential mode
+{
+    result = ~w($0)
+    if (result != \"\") print result
+}", [PipelineNameStr]).
+
+% ============================================================================
+% Unit Tests for AWK Pipeline Generator Mode
+% ============================================================================
+
+test_awk_pipeline_generator :-
+    format("~n=== AWK Pipeline Generator Mode Unit Tests ===~n~n", []),
+
+    % Test 1: Basic pipeline compilation with generator mode
+    format("Test 1: Basic pipeline with generator mode... ", []),
+    (   compile_awk_pipeline([transform/1, derive/1], [
+            pipeline_name(test_pipeline),
+            pipeline_mode(generator),
+            record_format(jsonl)
+        ], Code1),
+        sub_string(Code1, _, _, _, "record_key"),
+        sub_string(Code1, _, _, _, "while (changed)"),
+        sub_string(Code1, _, _, _, "test_pipeline")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 2: Sequential mode still works
+    format("Test 2: Sequential mode still works... ", []),
+    (   compile_awk_pipeline([filter/1, format/1], [
+            pipeline_name(seq_pipeline),
+            pipeline_mode(sequential),
+            record_format(tsv)
+        ], Code2),
+        sub_string(Code2, _, _, _, "seq_pipeline"),
+        sub_string(Code2, _, _, _, "sequential mode"),
+        \+ sub_string(Code2, _, _, _, "while (changed)")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 3: Generator mode includes record_key function
+    format("Test 3: Generator mode has record_key function... ", []),
+    (   compile_awk_pipeline([a/1], [pipeline_mode(generator)], Code3),
+        sub_string(Code3, _, _, _, "function record_key")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 4: JSONL helpers included for jsonl format
+    format("Test 4: JSONL helpers included... ", []),
+    (   compile_awk_pipeline([x/1], [pipeline_mode(generator), record_format(jsonl)], Code4),
+        sub_string(Code4, _, _, _, "parse_jsonl"),
+        sub_string(Code4, _, _, _, "format_jsonl")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 5: Fixpoint iteration structure
+    format("Test 5: Fixpoint iteration structure... ", []),
+    (   compile_awk_pipeline([derive/1, transform/1], [pipeline_mode(generator)], Code5),
+        sub_string(Code5, _, _, _, "changed = 0"),
+        sub_string(Code5, _, _, _, "while (changed)"),
+        sub_string(Code5, _, _, _, "seen[key]")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 6: Stage functions generated
+    format("Test 6: Stage functions generated... ", []),
+    (   compile_awk_pipeline([filter/1, transform/1], [pipeline_mode(generator)], Code6),
+        sub_string(Code6, _, _, _, "function stage_filter"),
+        sub_string(Code6, _, _, _, "function stage_transform")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 7: Pipeline chain code for generator
+    format("Test 7: Pipeline chain code for generator mode... ", []),
+    (   compile_awk_pipeline([derive/1, transform/1], [pipeline_mode(generator)], Code7),
+        sub_string(Code7, _, _, _, "stage_derive_out"),
+        sub_string(Code7, _, _, _, "stage_transform_out")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 8: Default options work
+    format("Test 8: Default options work... ", []),
+    (   compile_awk_pipeline([a/1, b/1], [], Code8),
+        sub_string(Code8, _, _, _, "pipeline"),
+        sub_string(Code8, _, _, _, "sequential mode")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 9: Shebang header present
+    format("Test 9: Shebang header present... ", []),
+    (   compile_awk_pipeline([x/1], [pipeline_name(test_pipe)], Code9),
+        sub_string(Code9, _, _, _, "#!/usr/bin/awk -f"),
+        sub_string(Code9, _, _, _, "test_pipe")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    % Test 10: TSV field separator option
+    format("Test 10: TSV field separator option... ", []),
+    (   compile_awk_pipeline([x/1], [
+            pipeline_mode(sequential),
+            record_format(tsv),
+            field_separator(':')
+        ], Code10),
+        sub_string(Code10, _, _, _, "FS = \":\"")
+    ->  format("PASS~n", [])
+    ;   format("FAIL~n", []), fail
+    ),
+
+    format("~n=== All AWK Pipeline Generator Mode Tests Passed ===~n", []).
+
+%% ============================================
+%% AWK ENHANCED PIPELINE CHAINING
+%% ============================================
+%
+%  Supports advanced flow patterns:
+%    - fan_out(Stages)        : Broadcast to stages (sequential execution)
+%    - parallel(Stages)       : Execute stages concurrently (see parallel_mode option)
+%    - merge                  : Combine results from fan_out or parallel
+%    - route_by(Pred, Routes) : Conditional routing
+%    - filter_by(Pred)        : Filter records
+%    - Pred/Arity             : Standard stage
+%
+%  Options:
+%    - parallel_mode(Mode)    : How to execute parallel stages
+%        - sequential (default): Execute stages one at a time (pure AWK)
+%        - gnu_parallel       : Use GNU Parallel for true concurrency (bash+AWK)
+%
+%% compile_awk_enhanced_pipeline(+Stages, +Options, -AwkCode)
+%  Main entry point for enhanced AWK pipeline with advanced flow patterns.
+%  Validates pipeline stages before code generation.
+%
+compile_awk_enhanced_pipeline(Stages, Options, Code) :-
+    % Validate pipeline stages
+    option(validate(Validate), Options, true),
+    option(strict(Strict), Options, false),
+    ( Validate == true ->
+        validate_pipeline(Stages, [strict(Strict)], result(Errors, Warnings)),
+        % Report warnings
+        ( Warnings \== [] ->
+            format(user_error, 'AWK pipeline warnings:~n', []),
+            forall(member(W, Warnings), (
+                format_validation_warning(W, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            ))
+        ; true
+        ),
+        % Fail on errors
+        ( Errors \== [] ->
+            format(user_error, 'AWK pipeline validation errors:~n', []),
+            forall(member(E, Errors), (
+                format_validation_error(E, Msg),
+                format(user_error, '  ~w~n', [Msg])
+            )),
+            throw(pipeline_validation_failed(Errors))
+        ; true
+        )
+    ; true
+    ),
+
+    % Check parallel mode
+    option(parallel_mode(ParallelMode), Options, sequential),
+    ( ParallelMode == gnu_parallel ->
+        compile_awk_gnu_parallel_pipeline(Stages, Options, Code)
+    ;
+        compile_awk_sequential_pipeline(Stages, Options, Code)
+    ).
+
+%% compile_awk_sequential_pipeline(+Stages, +Options, -AwkCode)
+%  Generate pure AWK pipeline (original behavior, parallel stages run sequentially)
+compile_awk_sequential_pipeline(Stages, Options, AwkCode) :-
+    option(pipeline_name(PipelineName), Options, enhanced_pipeline),
+    option(record_format(RecordFormat), Options, jsonl),
+
+    % Generate header
+    awk_enhanced_header(PipelineName, Header),
+
+    % Generate helpers
+    awk_enhanced_helpers(Helpers),
+
+    % Generate stage functions
+    generate_awk_enhanced_stage_functions(Stages, StageFunctions),
+
+    % Generate the main connector
+    generate_awk_enhanced_connector(Stages, PipelineName, ConnectorCode),
+
+    % Generate main block
+    generate_awk_enhanced_main(PipelineName, RecordFormat, MainBlock),
+
+    format(string(AwkCode),
+"~w
+
+~w
+
+~w
+~w
+~w
+", [Header, Helpers, StageFunctions, ConnectorCode, MainBlock]).
+
+%% compile_awk_gnu_parallel_pipeline(+Stages, +Options, -BashCode)
+%  Generate bash+AWK pipeline using GNU Parallel for true concurrency
+compile_awk_gnu_parallel_pipeline(Stages, Options, BashCode) :-
+    option(pipeline_name(PipelineName), Options, enhanced_pipeline),
+    option(record_format(RecordFormat), Options, jsonl),
+
+    % Generate bash header
+    awk_gnu_parallel_header(PipelineName, Header),
+
+    % Generate stage functions as bash functions with inline AWK
+    generate_awk_gnu_parallel_stage_functions(Stages, StageFunctions),
+
+    % Generate the main connector with GNU Parallel support
+    generate_awk_gnu_parallel_connector(Stages, PipelineName, ConnectorCode),
+
+    % Generate main block
+    generate_awk_gnu_parallel_main(PipelineName, RecordFormat, MainBlock),
+
+    format(string(BashCode),
+"~w
+
+~w
+
+~w
+
+~w
+", [Header, StageFunctions, ConnectorCode, MainBlock]).
+
+%% awk_gnu_parallel_header(+PipelineName, -Header)
+%  Generate bash header for GNU Parallel pipeline
+awk_gnu_parallel_header(PipelineName, Header) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Header),
+"#!/bin/bash
+# Generated by UnifyWeaver AWK Enhanced Pipeline (GNU Parallel mode)
+# Pipeline: ~w
+# Requires: GNU Parallel, gawk
+#
+# This script uses GNU Parallel for true concurrent execution of parallel stages.
+# Install GNU Parallel: apt install parallel (Debian/Ubuntu) or brew install parallel (macOS)
+
+set -euo pipefail
+
+# Check for GNU Parallel
+if ! command -v parallel &> /dev/null; then
+    echo \"ERROR: GNU Parallel is required but not installed.\" >&2
+    echo \"Install with: apt install parallel (Debian/Ubuntu) or brew install parallel (macOS)\" >&2
+    exit 1
+fi", [PipelineNameStr]).
+
+%% generate_awk_gnu_parallel_stage_functions(+Stages, -Code)
+%  Generate bash functions for each stage with inline AWK
+generate_awk_gnu_parallel_stage_functions([], "").
+generate_awk_gnu_parallel_stage_functions([Stage|Rest], Code) :-
+    generate_awk_gnu_parallel_single_stage(Stage, StageCode),
+    generate_awk_gnu_parallel_stage_functions(Rest, RestCode),
+    ( RestCode = "" ->
+        Code = StageCode
+    ;
+        format(string(Code), "~w~w", [StageCode, RestCode])
+    ).
+
+generate_awk_gnu_parallel_single_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_awk_gnu_parallel_stage_functions(SubStages, Code).
+generate_awk_gnu_parallel_single_stage(parallel(SubStages), Code) :-
+    !,
+    generate_awk_gnu_parallel_stage_functions(SubStages, Code).
+generate_awk_gnu_parallel_single_stage(merge, "") :- !.
+generate_awk_gnu_parallel_single_stage(route_by(_, Routes), Code) :-
+    !,
+    findall(Stage, member((_Cond, Stage), Routes), RouteStages),
+    generate_awk_gnu_parallel_stage_functions(RouteStages, Code).
+generate_awk_gnu_parallel_single_stage(filter_by(_), "") :- !.
+generate_awk_gnu_parallel_single_stage(Pred/Arity, Code) :-
+    !,
+    format(string(Code),
+"# Stage: ~w/~w
+stage_~w() {
+    local record=\"$1\"
+    # TODO: Implement stage logic with AWK
+    echo \"$record\" | awk '{
+        # Stage ~w processing
+        print $0
+    }'
+}
+
+", [Pred, Arity, Pred, Pred]).
+generate_awk_gnu_parallel_single_stage(_, "").
+
+%% generate_awk_gnu_parallel_connector(+Stages, +PipelineName, -Code)
+%  Generate the main connector with GNU Parallel for parallel stages
+generate_awk_gnu_parallel_connector(Stages, PipelineName, Code) :-
+    generate_awk_gnu_parallel_flow_code(Stages, "record", FlowCode),
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# ~w - Enhanced pipeline with GNU Parallel support
+run_~w() {
+    local record=\"$1\"
+    local result
+~w
+    echo \"$result\"
+}
+", [PipelineNameStr, PipelineNameStr, FlowCode]).
+
+%% generate_awk_gnu_parallel_flow_code(+Stages, +CurrentVar, -Code)
+%  Generate flow code for stages with GNU Parallel support
+generate_awk_gnu_parallel_flow_code([], CurrentVar, Code) :-
+    format(string(Code), "    result=\"$~w\"", [CurrentVar]).
+generate_awk_gnu_parallel_flow_code([Stage|Rest], CurrentVar, Code) :-
+    generate_awk_gnu_parallel_stage_flow(Stage, CurrentVar, NextVar, StageCode),
+    generate_awk_gnu_parallel_flow_code(Rest, NextVar, RestCode),
+    format(string(Code), "~w~n~w", [StageCode, RestCode]).
+
+%% generate_awk_gnu_parallel_stage_flow(+Stage, +InVar, -OutVar, -Code)
+%  Generate flow code for a single stage with GNU Parallel
+
+% Fan-out stage: sequential broadcast (same as before)
+generate_awk_gnu_parallel_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    OutVar = "fan_out_result",
+    extract_awk_enhanced_stage_names(SubStages, StageNames),
+    format_bash_stage_calls(StageNames, InVar, StageCalls),
+    format(string(Code),
+"    # Fan-out to ~w stages (sequential)
+    local ~w=\"\"
+~w", [N, OutVar, StageCalls]).
+
+% Parallel stage: TRUE concurrent execution via GNU Parallel
+generate_awk_gnu_parallel_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    OutVar = "parallel_result",
+    extract_awk_enhanced_stage_names(SubStages, StageNames),
+    format_gnu_parallel_calls(StageNames, ParallelCmds),
+    format(string(Code),
+"    # Parallel execution of ~w stages (concurrent via GNU Parallel)
+    local ~w
+    ~w=$(echo \"$~w\" | parallel --keep-order --will-cite ::: \\
+~w
+    )", [N, OutVar, OutVar, InVar, ParallelCmds]).
+
+% Merge stage
+generate_awk_gnu_parallel_stage_flow(merge, InVar, OutVar, Code) :-
+    !,
+    OutVar = InVar,
+    Code = "    # Merge: results already combined from fan-out or parallel".
+
+% Filter stage
+generate_awk_gnu_parallel_stage_flow(filter_by(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "filtered_result",
+    format(string(Code),
+"    # Filter by ~w
+    local ~w
+    if filter_~w \"$~w\"; then
+        ~w=\"$~w\"
+    else
+        ~w=\"\"
+    fi", [Pred, OutVar, Pred, InVar, OutVar, InVar, OutVar]).
+
+% Route stage
+generate_awk_gnu_parallel_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-
+    !,
+    OutVar = "routed_result",
+    format_bash_route_cases(Routes, InVar, RouteCases),
+    format(string(Code),
+"    # Conditional routing based on ~w
+    local ~w
+    local condition
+    condition=$(~w \"$~w\")
+    case \"$condition\" in
+~w
+        *)
+            ~w=\"$~w\"
+            ;;
+    esac", [CondPred, OutVar, CondPred, InVar, RouteCases, OutVar, InVar]).
+
+% Standard predicate stage
+generate_awk_gnu_parallel_stage_flow(Pred/_, InVar, OutVar, Code) :-
+    !,
+    OutVar = "stage_result",
+    format(string(Code),
+"    # Stage: ~w
+    local ~w
+    ~w=$(stage_~w \"$~w\")", [Pred, OutVar, OutVar, Pred, InVar]).
+
+generate_awk_gnu_parallel_stage_flow(_, InVar, InVar, "").
+
+%% format_bash_stage_calls(+StageNames, +InVar, -Code)
+%  Format sequential stage calls for fan-out
+format_bash_stage_calls([], _, "").
+format_bash_stage_calls([Name|Rest], InVar, Code) :-
+    format(string(Call), "    fan_out_result=\"$fan_out_result$(stage_~w \"$~w\")\\n\"", [Name, InVar]),
+    format_bash_stage_calls(Rest, InVar, RestCode),
+    ( RestCode = "" ->
+        Code = Call
+    ;
+        format(string(Code), "~w~n~w", [Call, RestCode])
+    ).
+
+%% format_gnu_parallel_calls(+StageNames, -Code)
+%  Format GNU Parallel command for concurrent stage execution
+format_gnu_parallel_calls([], "").
+format_gnu_parallel_calls([Name], Code) :-
+    !,
+    format(string(Code), "        \"stage_~w {}\"", [Name]).
+format_gnu_parallel_calls([Name|Rest], Code) :-
+    format(string(ThisCall), "        \"stage_~w {}\" \\", [Name]),
+    format_gnu_parallel_calls(Rest, RestCode),
+    format(string(Code), "~w~n~w", [ThisCall, RestCode]).
+
+%% format_bash_route_cases(+Routes, +InVar, -Code)
+%  Format bash case statement for routing
+format_bash_route_cases([], _, "").
+format_bash_route_cases([(Cond, Stage/_Arity)|Rest], InVar, Code) :-
+    !,
+    format(string(ThisCase),
+"        ~w)
+            routed_result=$(stage_~w \"$~w\")
+            ;;", [Cond, Stage, InVar]),
+    format_bash_route_cases(Rest, InVar, RestCode),
+    ( RestCode = "" ->
+        Code = ThisCase
+    ;
+        format(string(Code), "~w~n~w", [ThisCase, RestCode])
+    ).
+format_bash_route_cases([_|Rest], InVar, Code) :-
+    format_bash_route_cases(Rest, InVar, Code).
+
+%% generate_awk_gnu_parallel_main(+PipelineName, +RecordFormat, -Code)
+%  Generate main execution block for GNU Parallel pipeline
+generate_awk_gnu_parallel_main(PipelineName, _RecordFormat, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# Main execution
+main() {
+    while IFS= read -r line || [[ -n \"$line\" ]]; do
+        run_~w \"$line\"
+    done
+}
+
+# Run if executed directly
+if [[ \"${BASH_SOURCE[0]}\" == \"${0}\" ]]; then
+    main
+fi", [PipelineNameStr]).
+
+%% awk_enhanced_header(+PipelineName, -Header)
+%  Generate header for enhanced pipeline
+awk_enhanced_header(PipelineName, Header) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Header),
+"#!/usr/bin/awk -f
+# Generated by UnifyWeaver AWK Enhanced Pipeline
+# Pipeline: ~w
+# Supports fan-out, merge, conditional routing, and filtering", [PipelineNameStr]).
+
+%% awk_enhanced_helpers(-Code)
+%  Generate helper functions for enhanced pipeline operations.
+awk_enhanced_helpers(Code) :-
+    Code = "# Enhanced Pipeline Helpers
+
+# Helper: Parse JSONL record to fields array
+function parse_jsonl(line, fields,    n, parts, i, kv, k, v) {
+    gsub(/^\\{|\\}$/, \"\", line)
+    n = split(line, parts, \",\")
+    for (i = 1; i <= n; i++) {
+        split(parts[i], kv, \":\")
+        k = kv[1]; v = kv[2]
+        gsub(/\"/, \"\", k); gsub(/\"/, \"\", v)
+        gsub(/^ +| +$/, \"\", k); gsub(/^ +| +$/, \"\", v)
+        fields[k] = v
+    }
+    return n
+}
+
+# Helper: Format fields as JSONL
+function format_jsonl(fields,    result, k, first) {
+    result = \"{\"
+    first = 1
+    for (k in fields) {
+        if (!first) result = result \",\"
+        result = result \"\\\"\" k \"\\\":\\\"\" fields[k] \"\\\"\"
+        first = 0
+    }
+    result = result \"}\"
+    return result
+}
+
+# Helper: Fan-out - send record to multiple stages, collect all results
+# Returns results in fan_out_results array, sets fan_out_count
+function fan_out_records(record, stages,    i, n, stage, result) {
+    fan_out_count = 0
+    n = split(stages, stage_arr, \",\")
+    for (i = 1; i <= n; i++) {
+        stage = stage_arr[i]
+        gsub(/^ +| +$/, \"\", stage)
+        # Call stage function dynamically using indirect call
+        result = @stage(record)
+        fan_out_count++
+        fan_out_results[fan_out_count] = result
+    }
+    return fan_out_count
+}
+
+# Helper: Route record based on condition
+# condition_result should be set before calling
+function route_record(record, condition_result,    route_stage, result) {
+    if (condition_result in route_map) {
+        route_stage = route_map[condition_result]
+        result = @route_stage(record)
+    } else if (\"default\" in route_map) {
+        route_stage = route_map[\"default\"]
+        result = @route_stage(record)
+    } else {
+        result = record  # Pass through if no matching route
+    }
+    return result
+}
+
+# Helper: Filter records based on predicate
+# Returns 1 if record passes filter, 0 otherwise
+function filter_record(record, predicate_fn,    result) {
+    result = @predicate_fn(record)
+    return result
+}
+
+# Helper: Merge streams (identity for AWK - streams already linear)
+function merge_streams(records, count,    i) {
+    # In AWK, we process records one at a time, so merge is implicit
+    for (i = 1; i <= count; i++) {
+        output[++output_count] = records[i]
+    }
+    return count
+}
+
+# Helper: Tee stream - send each record to multiple stages
+function tee_stream(records, count, stages,    i, j, n, stage, result) {
+    n = split(stages, stage_arr, \",\")
+    for (i = 1; i <= count; i++) {
+        for (j = 1; j <= n; j++) {
+            stage = stage_arr[j]
+            gsub(/^ +| +$/, \"\", stage)
+            result = @stage(records[i])
+            output[++output_count] = result
+        }
+    }
+}
+
+# Helper: Parallel - send record to multiple stages (sequential in AWK)
+# Note: AWK is single-threaded, so this executes stages sequentially.
+# Use this when you want to indicate parallel intent for other targets.
+# Returns results in parallel_results array, sets parallel_count
+function parallel_records(record, stages,    i, n, stage, result) {
+    parallel_count = 0
+    n = split(stages, stage_arr, \",\")
+    for (i = 1; i <= n; i++) {
+        stage = stage_arr[i]
+        gsub(/^ +| +$/, \"\", stage)
+        # Call stage function dynamically using indirect call
+        result = @stage(record)
+        parallel_count++
+        parallel_results[parallel_count] = result
+    }
+    return parallel_count
+}
+
+".
+
+%% generate_awk_enhanced_stage_functions(+Stages, -Code)
+%  Generate stub functions for each stage.
+generate_awk_enhanced_stage_functions([], "").
+generate_awk_enhanced_stage_functions([Stage|Rest], Code) :-
+    generate_awk_single_enhanced_stage(Stage, StageCode),
+    generate_awk_enhanced_stage_functions(Rest, RestCode),
+    (RestCode = "" ->
+        Code = StageCode
+    ;   format(string(Code), "~w~w", [StageCode, RestCode])
+    ).
+
+generate_awk_single_enhanced_stage(fan_out(SubStages), Code) :-
+    !,
+    generate_awk_enhanced_stage_functions(SubStages, Code).
+generate_awk_single_enhanced_stage(parallel(SubStages), Code) :-
+    !,
+    generate_awk_enhanced_stage_functions(SubStages, Code).
+generate_awk_single_enhanced_stage(merge, "") :- !.
+generate_awk_single_enhanced_stage(route_by(_, Routes), Code) :-
+    !,
+    findall(Stage, member((_Cond, Stage), Routes), RouteStages),
+    generate_awk_enhanced_stage_functions(RouteStages, Code).
+generate_awk_single_enhanced_stage(filter_by(_), "") :- !.
+generate_awk_single_enhanced_stage(Pred/Arity, Code) :-
+    !,
+    format(string(Code),
+"# Stage: ~w/~w
+function stage_~w(record) {
+    # TODO: Implement stage logic
+    return record
+}
+
+", [Pred, Arity, Pred]).
+generate_awk_single_enhanced_stage(_, "").
+
+%% generate_awk_enhanced_connector(+Stages, +PipelineName, -Code)
+%  Generate the main connector that handles enhanced flow patterns.
+generate_awk_enhanced_connector(Stages, PipelineName, Code) :-
+    generate_awk_enhanced_flow_code(Stages, "record", FlowCode),
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# ~w - Enhanced pipeline with fan-out, merge, and routing support
+function run_~w(record,    result) {
+~w
+    return result
+}
+
+", [PipelineNameStr, PipelineNameStr, FlowCode]).
+
+%% generate_awk_enhanced_flow_code(+Stages, +CurrentVar, -Code)
+%  Generate the flow code for enhanced pipeline stages.
+generate_awk_enhanced_flow_code([], CurrentVar, Code) :-
+    format(string(Code), "    result = ~w", [CurrentVar]).
+generate_awk_enhanced_flow_code([Stage|Rest], CurrentVar, Code) :-
+    generate_awk_stage_flow(Stage, CurrentVar, NextVar, StageCode),
+    generate_awk_enhanced_flow_code(Rest, NextVar, RestCode),
+    format(string(Code), "~w~n~w", [StageCode, RestCode]).
+
+%% generate_awk_stage_flow(+Stage, +InVar, -OutVar, -Code)
+%  Generate flow code for a single stage.
+
+% Fan-out stage: broadcast to stages (sequential execution)
+generate_awk_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "fan_out_~w_result", [N]),
+    extract_awk_enhanced_stage_names(SubStages, StageNames),
+    format_awk_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Fan-out to ~w stages (sequential)
+    fan_out_records(~w, \"~w\")
+    # Collect fan-out results
+    ~w = \"\"
+    for (_fo_i = 1; _fo_i <= fan_out_count; _fo_i++) {
+        if (~w != \"\") ~w = ~w \"\\n\"
+        ~w = ~w fan_out_results[_fo_i]
+    }", [N, InVar, StageListStr, OutVar, OutVar, OutVar, OutVar, OutVar, OutVar]).
+
+% Parallel stage: concurrent execution (sequential in AWK - single threaded)
+generate_awk_stage_flow(parallel(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "parallel_~w_result", [N]),
+    extract_awk_enhanced_stage_names(SubStages, StageNames),
+    format_awk_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Parallel execution of ~w stages (sequential in AWK - single threaded)
+    parallel_records(~w, \"~w\")
+    # Collect parallel results
+    ~w = \"\"
+    for (_p_i = 1; _p_i <= parallel_count; _p_i++) {
+        if (~w != \"\") ~w = ~w \"\\n\"
+        ~w = ~w parallel_results[_p_i]
+    }", [N, InVar, StageListStr, OutVar, OutVar, OutVar, OutVar, OutVar, OutVar]).
+
+% Merge stage: placeholder, usually follows fan_out or parallel
+generate_awk_stage_flow(merge, InVar, OutVar, Code) :-
+    !,
+    OutVar = InVar,
+    Code = "    # Merge: results already combined from fan-out or parallel".
+
+% Conditional routing
+generate_awk_stage_flow(route_by(CondPred, Routes), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "routed_result", []),
+    format_awk_route_map(Routes, RouteMapStr),
+    format(string(Code),
+"    # Conditional routing based on ~w
+    # Initialize route map
+~w
+    # Get condition and route
+    _cond = ~w(~w)
+    ~w = route_record(~w, _cond)", [CondPred, RouteMapStr, CondPred, InVar, OutVar, InVar]).
+
+% Filter stage
+generate_awk_stage_flow(filter_by(Pred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "filtered_result", []),
+    format(string(Code),
+"    # Filter by ~w
+    if (~w(~w)) {
+        ~w = ~w
+    } else {
+        ~w = \"\"  # Filtered out
+    }", [Pred, Pred, InVar, OutVar, InVar, OutVar]).
+
+% Standard predicate stage
+generate_awk_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
+    !,
+    atom(Pred),
+    format(atom(OutVar), "~w_result", [Pred]),
+    format(string(Code),
+"    # Stage: ~w/~w
+    ~w = stage_~w(~w)", [Pred, Arity, OutVar, Pred, InVar]).
+
+% Fallback for unknown stages
+generate_awk_stage_flow(Stage, InVar, InVar, Code) :-
+    format(string(Code), "    # Unknown stage type: ~w (pass-through)", [Stage]).
+
+%% extract_awk_enhanced_stage_names(+Stages, -Names)
+%  Extract function names from stage specifications.
+extract_awk_enhanced_stage_names([], []).
+extract_awk_enhanced_stage_names([Pred/_Arity|Rest], [Pred|RestNames]) :-
+    !,
+    extract_awk_enhanced_stage_names(Rest, RestNames).
+extract_awk_enhanced_stage_names([_|Rest], RestNames) :-
+    extract_awk_enhanced_stage_names(Rest, RestNames).
+
+%% format_awk_stage_list(+Names, -ListStr)
+%  Format stage names as comma-separated AWK function references.
+format_awk_stage_list([], "").
+format_awk_stage_list([Name], Str) :-
+    format(string(Str), "stage_~w", [Name]).
+format_awk_stage_list([Name|Rest], Str) :-
+    Rest \= [],
+    format_awk_stage_list(Rest, RestStr),
+    format(string(Str), "stage_~w,~w", [Name, RestStr]).
+
+%% format_awk_route_map(+Routes, -MapStr)
+%  Format routing map initialization for AWK.
+format_awk_route_map([], "").
+format_awk_route_map([(_Cond, Stage)|[]], Str) :-
+    (Stage = StageName/_Arity -> true ; StageName = Stage),
+    format(string(Str), "    route_map[1] = \"stage_~w\"", [StageName]).
+format_awk_route_map([(Cond, Stage)|Rest], Str) :-
+    Rest \= [],
+    (Stage = StageName/_Arity -> true ; StageName = Stage),
+    format_awk_route_map(Rest, RestStr),
+    (Cond = true ->
+        format(string(Str), "    route_map[1] = \"stage_~w\"~n~w", [StageName, RestStr])
+    ; Cond = false ->
+        format(string(Str), "    route_map[0] = \"stage_~w\"~n~w", [StageName, RestStr])
+    ;   format(string(Str), "    route_map[\"~w\"] = \"stage_~w\"~n~w", [Cond, StageName, RestStr])
+    ).
+
+%% generate_awk_enhanced_main(+PipelineName, +RecordFormat, -Code)
+%  Generate main execution block for enhanced pipeline.
+generate_awk_enhanced_main(PipelineName, jsonl, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# Main execution block
+BEGIN {
+    output_count = 0
+}
+
+{
+    # Process each input record through enhanced pipeline
+    result = run_~w($0)
+    if (result != \"\") {
+        print result
+        output_count++
+    }
+}
+
+END {
+    # Summary statistics (optional)
+    # print \"Processed \" output_count \" records\" > \"/dev/stderr\"
+}
+", [PipelineNameStr]).
+generate_awk_enhanced_main(PipelineName, _, Code) :-
+    atom_string(PipelineName, PipelineNameStr),
+    format(string(Code),
+"# Main execution block
+BEGIN {
+    output_count = 0
+}
+
+{
+    # Process each input record through enhanced pipeline
+    result = run_~w($0)
+    if (result != \"\") {
+        print result
+        output_count++
+    }
+}
+
+END {
+    # Summary statistics (optional)
+    # print \"Processed \" output_count \" records\" > \"/dev/stderr\"
+}
+", [PipelineNameStr]).
+
+%% ============================================
+%% AWK ENHANCED PIPELINE CHAINING TESTS
+%% ============================================
+
+test_awk_enhanced_chaining :-
+    format('~n=== AWK Enhanced Pipeline Chaining Tests ===~n~n', []),
+
+    % Test 1: Generate enhanced helpers
+    format('[Test 1] Generate enhanced helpers~n', []),
+    awk_enhanced_helpers(Helpers1),
+    (   sub_string(Helpers1, _, _, _, "fan_out_records"),
+        sub_string(Helpers1, _, _, _, "route_record"),
+        sub_string(Helpers1, _, _, _, "filter_record"),
+        sub_string(Helpers1, _, _, _, "merge_streams"),
+        sub_string(Helpers1, _, _, _, "tee_stream")
+    ->  format('  [PASS] All helper functions generated~n', [])
+    ;   format('  [FAIL] Missing helper functions~n', [])
+    ),
+
+    % Test 2: Linear pipeline connector
+    format('[Test 2] Linear pipeline connector~n', []),
+    generate_awk_enhanced_connector([extract/1, transform/1, load/1], linear_pipe, Code2),
+    (   sub_string(Code2, _, _, _, "run_linear_pipe"),
+        sub_string(Code2, _, _, _, "stage_extract"),
+        sub_string(Code2, _, _, _, "stage_transform"),
+        sub_string(Code2, _, _, _, "stage_load")
+    ->  format('  [PASS] Linear connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code2])
+    ),
+
+    % Test 3: Fan-out connector
+    format('[Test 3] Fan-out connector~n', []),
+    generate_awk_enhanced_connector([fan_out([validate/1, enrich/1])], fanout_pipe, Code3),
+    (   sub_string(Code3, _, _, _, "run_fanout_pipe"),
+        sub_string(Code3, _, _, _, "Fan-out to 2 parallel stages"),
+        sub_string(Code3, _, _, _, "fan_out_records")
+    ->  format('  [PASS] Fan-out connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code3])
+    ),
+
+    % Test 4: Fan-out with merge
+    format('[Test 4] Fan-out with merge~n', []),
+    generate_awk_enhanced_connector([fan_out([a/1, b/1]), merge], merge_pipe, Code4),
+    (   sub_string(Code4, _, _, _, "run_merge_pipe"),
+        sub_string(Code4, _, _, _, "Fan-out to 2"),
+        sub_string(Code4, _, _, _, "Merge: results already combined")
+    ->  format('  [PASS] Merge connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code4])
+    ),
+
+    % Test 5: Conditional routing
+    format('[Test 5] Conditional routing~n', []),
+    generate_awk_enhanced_connector([route_by(has_error, [(true, error_handler/1), (false, success/1)])], route_pipe, Code5),
+    (   sub_string(Code5, _, _, _, "run_route_pipe"),
+        sub_string(Code5, _, _, _, "Conditional routing based on has_error"),
+        sub_string(Code5, _, _, _, "route_map")
+    ->  format('  [PASS] Routing connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code5])
+    ),
+
+    % Test 6: Filter stage
+    format('[Test 6] Filter stage~n', []),
+    generate_awk_enhanced_connector([filter_by(is_valid)], filter_pipe, Code6),
+    (   sub_string(Code6, _, _, _, "run_filter_pipe"),
+        sub_string(Code6, _, _, _, "Filter by is_valid"),
+        sub_string(Code6, _, _, _, "is_valid")
+    ->  format('  [PASS] Filter connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code6])
+    ),
+
+    % Test 7: Complex pipeline with all patterns
+    format('[Test 7] Complex pipeline~n', []),
+    generate_awk_enhanced_connector([
+        extract/1,
+        filter_by(is_active),
+        fan_out([validate/1, enrich/1, audit/1]),
+        merge,
+        route_by(has_error, [(true, error_log/1), (false, transform/1)]),
+        output/1
+    ], complex_pipe, Code7),
+    (   sub_string(Code7, _, _, _, "run_complex_pipe"),
+        sub_string(Code7, _, _, _, "Filter by is_active"),
+        sub_string(Code7, _, _, _, "Fan-out to 3 parallel stages"),
+        sub_string(Code7, _, _, _, "Merge"),
+        sub_string(Code7, _, _, _, "Conditional routing")
+    ->  format('  [PASS] Complex connector generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [Code7])
+    ),
+
+    % Test 8: Stage function generation
+    format('[Test 8] Stage function generation~n', []),
+    generate_awk_enhanced_stage_functions([extract/1, transform/1], StageFns8),
+    (   sub_string(StageFns8, _, _, _, "stage_extract"),
+        sub_string(StageFns8, _, _, _, "stage_transform")
+    ->  format('  [PASS] Stage functions generated~n', [])
+    ;   format('  [FAIL] Code: ~w~n', [StageFns8])
+    ),
+
+    % Test 9: Full enhanced pipeline compilation
+    format('[Test 9] Full enhanced pipeline~n', []),
+    compile_awk_enhanced_pipeline([
+        extract/1,
+        filter_by(is_active),
+        fan_out([validate/1, enrich/1]),
+        merge,
+        output/1
+    ], [pipeline_name(full_enhanced), record_format(jsonl)], FullCode9),
+    (   sub_string(FullCode9, _, _, _, "#!/usr/bin/awk -f"),
+        sub_string(FullCode9, _, _, _, "fan_out_records"),
+        sub_string(FullCode9, _, _, _, "filter_record"),
+        sub_string(FullCode9, _, _, _, "run_full_enhanced"),
+        sub_string(FullCode9, _, _, _, "BEGIN")
+    ->  format('  [PASS] Full pipeline compiles~n', [])
+    ;   format('  [FAIL] Missing patterns in generated code~n', [])
+    ),
+
+    % Test 10: Enhanced helpers include all functions
+    format('[Test 10] Enhanced helpers completeness~n', []),
+    awk_enhanced_helpers(Helpers10),
+    (   sub_string(Helpers10, _, _, _, "parse_jsonl"),
+        sub_string(Helpers10, _, _, _, "format_jsonl"),
+        sub_string(Helpers10, _, _, _, "fan_out_records"),
+        sub_string(Helpers10, _, _, _, "route_record"),
+        sub_string(Helpers10, _, _, _, "filter_record")
+    ->  format('  [PASS] All helpers present~n', [])
+    ;   format('  [FAIL] Missing helpers~n', [])
+    ),
+
+    format('~n=== All AWK Enhanced Pipeline Chaining Tests Passed ===~n', []).

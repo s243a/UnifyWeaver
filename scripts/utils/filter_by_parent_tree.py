@@ -100,7 +100,8 @@ def main():
 
     if args.debug:
         print(f"# Filtering by parent tree ID: {args.tree_id}", file=sys.stderr)
-        print(f"# Delimiter: {'\\0 (null)' if args.delimiter == chr(0) else repr(args.delimiter)}", file=sys.stderr)
+        delimiter_str = '\\0 (null)' if args.delimiter == chr(0) else repr(args.delimiter)
+        print(f"# Delimiter: {delimiter_str}", file=sys.stderr)
 
     # Read null-delimited chunks from stdin
     buffer = sys.stdin.read()

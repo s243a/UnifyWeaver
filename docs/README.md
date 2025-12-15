@@ -83,6 +83,55 @@ This applies to:
 - **[playbooks/xml_data_source_playbook.md](../playbooks/xml_data_source_playbook.md)** - XML Data Source Playbook
   - Processing XML data using Python.
 
+### Semantic Search and LDA Projection
+
+#### Usage Guide
+
+- **[usage/semantic_search.md](usage/semantic_search.md)** - Semantic Search Usage Guide
+  - Prolog API: `find_examples/3,4`, `semantic_search/3,4`
+  - Go API: `projection.LoadMultiHead`, `search.SearchWithOptions`
+  - Temperature tuning and search modes
+  - Example code and testing
+
+#### Runtime Components
+
+- **`src/unifyweaver/runtime/semantic_search.pl`** - Prolog Semantic Search API
+  - `find_examples/3,4` - Find playbook examples matching a query
+  - `semantic_search/3,4` - Low-level search with options
+  - Three search modes: direct, multi-head projection, global projection
+  - Component registration with `component_registry`
+
+- **`src/unifyweaver/targets/go_runtime/projection/`** - Go Multi-Head Projection
+  - Native Go implementation (no Python subprocess overhead)
+  - Softmax routing with configurable temperature
+  - NPY file loading for centroids and answer embeddings
+
+#### Theory and Design
+
+- **[proposals/SEMANTIC_PROJECTION_LDA.md](proposals/SEMANTIC_PROJECTION_LDA.md)** - LDA Projection Theory
+  - Mathematical foundation for query-to-answer projection
+  - Weighted centroid computation
+  - Training from Q-A clusters
+
+- **[proposals/MULTI_HEAD_PROJECTION_THEORY.md](proposals/MULTI_HEAD_PROJECTION_THEORY.md)** - Multi-Head Projection
+  - Per-cluster attention heads with softmax routing
+  - Temperature parameter and its effect on routing sharpness
+  - Comparison to transformer attention mechanisms
+
+- **[proposals/LDA_DATABASE_SCHEMA.md](proposals/LDA_DATABASE_SCHEMA.md)** - Database Schema
+  - Asymmetric embeddings (different models for queries vs answers)
+  - Answer relations graph (chunks, summaries, translations)
+  - Training batch tracking with file hash detection
+
+- **[proposals/COMPONENT_REGISTRY.md](proposals/COMPONENT_REGISTRY.md)** - Component Registry
+  - Unified component registration system
+  - Runtime, source, and binding categories
+  - Lazy/eager initialization
+
+- **[TODO_LDA_PROJECTION.md](TODO_LDA_PROJECTION.md)** - LDA Feature Progress
+  - Implementation status and next steps
+  - Quick test commands
+
 ### Testing
 
 - **[TESTING_GUIDE.md](TESTING_GUIDE.md)** - Testing infrastructure

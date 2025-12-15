@@ -1,7 +1,9 @@
 use redb::{Database, ReadableTable, TableDefinition};
 use serde_json::Value;
 use std::sync::Arc;
+use std::collections::HashMap;
 use crate::embedding::EmbeddingProvider;
+use crate::projection::MultiHeadProjection;
 
 const OBJECTS: TableDefinition<&str, &str> = TableDefinition::new("objects");
 const LINKS: TableDefinition<&str, &str> = TableDefinition::new("links");
@@ -10,6 +12,26 @@ const EMBEDDINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("embedding
 pub struct PtSearcher {
     db: Arc<Database>,
     embedder: EmbeddingProvider,
+    projection: Option<MultiHeadProjection>,
+}
+
+/// Options for vector search with projection.
+#[derive(Debug, Clone, Default)]
+pub struct SearchOptions {
+    /// Use projection if available
+    pub use_projection: bool,
+    /// Include routing weights in results
+    pub include_routing_weights: bool,
+}
+
+/// Extended search result with optional routing weights.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExtendedSearchResult {
+    pub id: String,
+    pub score: f32,
+    pub data: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing_weights: Option<HashMap<i32, f32>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -20,9 +42,26 @@ pub struct SearchResult {
 }
 
 impl PtSearcher {
+    /// Create a new PtSearcher without projection.
     pub fn new(path: &str, embedder: EmbeddingProvider) -> Result<Self, Box<dyn std::error::Error>> {
         let db = Database::create(path)?; // Opens or creates
-        Ok(Self { db: Arc::new(db), embedder })
+        Ok(Self { db: Arc::new(db), embedder, projection: None })
+    }
+
+    /// Create a new PtSearcher with multi-head LDA projection.
+    pub fn with_projection(path: &str, embedder: EmbeddingProvider, projection: MultiHeadProjection) -> Result<Self, Box<dyn std::error::Error>> {
+        let db = Database::create(path)?;
+        Ok(Self { db: Arc::new(db), embedder, projection: Some(projection) })
+    }
+
+    /// Set the projection model.
+    pub fn set_projection(&mut self, projection: MultiHeadProjection) {
+        self.projection = Some(projection);
+    }
+
+    /// Check if projection is enabled.
+    pub fn has_projection(&self) -> bool {
+        self.projection.is_some()
     }
 
     pub fn text_search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResult>, Box<dyn std::error::Error>> {
@@ -100,6 +139,76 @@ impl PtSearcher {
                     id,
                     score,
                     data,
+                });
+            }
+        }
+
+        Ok(full_results)
+    }
+
+    /// Vector search with optional multi-head LDA projection.
+    /// When projection is enabled, the query embedding is projected through the
+    /// multi-head model before computing similarities.
+    pub fn vector_search_with_options(&self, query: &str, top_k: usize, options: SearchOptions) -> Result<Vec<ExtendedSearchResult>, Box<dyn std::error::Error>> {
+        // 1. Generate Query Embedding
+        let query_vec = self.embedder.get_embedding(query)?;
+
+        // 2. Apply projection if configured
+        let (search_vec, routing_weights) = if options.use_projection {
+            if let Some(ref projection) = self.projection {
+                if options.include_routing_weights {
+                    let (projected, weights) = projection.project_with_weights(&query_vec)?;
+                    (projected, Some(weights))
+                } else {
+                    let projected = projection.project(&query_vec)?;
+                    (projected, None)
+                }
+            } else {
+                (query_vec, None)
+            }
+        } else {
+            (query_vec, None)
+        };
+
+        // 3. Linear Scan & Compute Cosine Similarity
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(EMBEDDINGS)?;
+        let objects_table = read_txn.open_table(OBJECTS)?;
+
+        let mut results = Vec::new();
+
+        for result in table.iter()? {
+            let (id, blob) = result?;
+            let id = id.value();
+            let blob = blob.value();
+
+            // Convert blob to f32 vec
+            let vec_len = blob.len() / 4;
+            let mut vec = Vec::with_capacity(vec_len);
+            for chunk in blob.chunks_exact(4) {
+                let bytes: [u8; 4] = chunk.try_into()?;
+                vec.push(f32::from_ne_bytes(bytes));
+            }
+
+            // Cosine Similarity
+            let score = cosine_similarity(&search_vec, &vec);
+            results.push((score, id.to_string()));
+        }
+
+        // Sort descending
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(top_k);
+
+        // Fetch Objects
+        let mut full_results = Vec::new();
+        for (score, id) in results {
+            if let Ok(Some(data_str)) = objects_table.get(id.as_str()) {
+                let data: Value = serde_json::from_str(data_str.value())?;
+                full_results.push(ExtendedSearchResult {
+                    id,
+                    score,
+                    data,
+                    routing_weights: routing_weights.clone(),
                 });
             }
         }

@@ -130,6 +130,67 @@ write_go_program(+GoCode, +FilePath)
 ?- write_go_program(Code, 'output/child.go').
 ```
 
+### `compile_facts_to_go/3`
+
+Export Prolog facts as a standalone Go program with struct-based data.
+
+```prolog
+compile_facts_to_go(+Pred, +Arity, -GoCode)
+```
+
+**Parameters:**
+- `Pred`: Predicate name (atom)
+- `Arity`: Number of arguments
+- `GoCode`: Generated Go code as string
+
+**Features:**
+- Generates `struct` with typed `ArgN` fields
+- `GetAllPRED() []PRED` - Returns all facts
+- `StreamPRED(fn func(PRED))` - Iterator with callback
+- `ContainsPRED(target PRED) bool` - Membership check
+
+**Example:**
+```prolog
+?- ['examples/family_tree'].
+?- go_target:compile_facts_to_go(parent, 2, Code).
+```
+
+**Generated Go:**
+```go
+type PARENT struct {
+    Arg1 string
+    Arg2 string
+}
+
+func GetAllPARENT() []PARENT { ... }
+func StreamPARENT(fn func(PARENT)) { ... }
+func ContainsPARENT(target PARENT) bool { ... }
+```
+
+### `compile_tail_recursion_go/3`
+
+Compile tail recursive predicates to O(1) space for loops.
+
+```prolog
+compile_tail_recursion_go(+Pred/Arity, +Options, -GoCode)
+```
+
+### `compile_linear_recursion_go/3`
+
+Compile linear recursive predicates with map-based memoization.
+
+```prolog
+compile_linear_recursion_go(+Pred/Arity, +Options, -GoCode)
+```
+
+### `compile_mutual_recursion_go/3`
+
+Compile mutually recursive predicates (is_even/is_odd) with shared memo.
+
+```prolog
+compile_mutual_recursion_go(+Predicates, +Options, -GoCode)
+```
+
 ---
 
 ## Compilation Modes
@@ -696,6 +757,7 @@ See `test_go_target.pl` and `test_go_target_comprehensive.pl` for examples.
 
 ## See Also
 
+- [Go Embedder Backends](GO_EMBEDDER_BACKENDS.md) - Semantic search with Pure Go, Candle, ORT, and XLA backends
 - [AWK Target](AWK_TARGET_STATUS.md) - Similar record/field processing in AWK
 - [Match Predicate](MATCH_PREDICATE.md) - Regex matching across targets
 - [Python Target](../src/unifyweaver/targets/python_target.pl) - Alternative target

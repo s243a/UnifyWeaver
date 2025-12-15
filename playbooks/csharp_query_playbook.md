@@ -4,10 +4,15 @@
 This playbook is a high-level guide for coding agents to orchestrate UnifyWeaver for C# code generation, compilation, and execution using the `csharp_query` target.
 
 ## Workflow Overview
-This playbook demonstrates a Prolog-to-C# compilation workflow for a simple predicate using `is/2` (derived columns), which is supported by the query runtime when RHS variables are already bound.
+This playbook demonstrates the Prolog-to-C# compilation workflow for arithmetic predicates in query mode:
+1. Define a UnifyWeaver program with facts and arithmetic rules using `is/2`.
+2. Compile the predicate to C# using the `csharp_target` query compiler.
+3. Inspect the generated C# code.
 
-For recursive arithmetic (e.g., Fibonacci), query mode requires **parameterized query mode** (`mode/1` inputs) and currently has additional constraints; see:
-- `docs/development/proposals/parameterized_queries_status.md`
+`is/2` (derived columns) is supported by the query runtime when RHS variables are already bound.
+
+For recursive arithmetic (e.g., Fibonacci), query mode requires **parameterized query mode** (`user:mode/1` inputs) and currently has additional constraints; see:
+- `docs/development/proposals/PARAMETERIZED_QUERIES_STATUS.md`
 - `docs/development/analysis/IS_PREDICATE_COMPATIBILITY_ANALYSIS.md`
 - `playbooks/csharp_generator_playbook.md` (generator mode fallback)
 
@@ -95,17 +100,19 @@ perl scripts/utils/extract_records.pl -f content -q "unifyweaver.execution.cshar
 ```
 Compiling Prolog to C#...
 C# code generated successfully.
+[Generated C# code will be displayed]
 Success: C# program compiled successfully.
 ```
 
 ### What the Script Does
 The script will:
-1. Create a Prolog script in `tmp/sum_pair_csharp.pl` containing a small `num_pair/2` fact table and a rule using `is/2`.
-2. Compile `sum_pair/3` to C# using the `csharp_query` target.
-3. Write the generated code to `tmp/csharp_sum_project/sum_pair.cs` and print it.
+1. Create a Prolog script in `tmp/sum_pair_csharp.pl` containing facts and a rule using `is/2` arithmetic.
+2. Compile `sum_pair/3` to C# using the `csharp_query` target, writing `tmp/csharp_sum_project/sum_pair.cs`.
+3. Display the generated C# code.
 
 ## Expected Outcome
 - Successful execution will print "C# code generated successfully."
+- The generated C# code will be displayed.
 - Exit code 0.
 
 ## Citations

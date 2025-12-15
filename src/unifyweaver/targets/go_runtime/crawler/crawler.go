@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"unifyweaver/targets/go_runtime/utils"
 )
 
 // Interfaces to decouple from specific implementations
@@ -109,10 +111,19 @@ func (c *Crawler) processStream(r io.Reader) ([]string, error) {
 			
 			if id != "" {
 				c.store.UpsertObject(id, data)
-				
-				// Embed text
+
+				// Embed text - try title, about, then text (namespace-agnostic)
 				if c.embedder != nil {
-					if text, ok := data["text"].(string); ok && text != "" {
+					text := utils.GetLocalString(data, "title")
+					if text == "" {
+						text = utils.GetLocalString(data, "about")
+					}
+					if text == "" {
+						if t, ok := data["text"].(string); ok {
+							text = t
+						}
+					}
+					if text != "" {
 						vec, err := c.embedder.Embed(text)
 						if err == nil && vec != nil {
 							c.store.UpsertEmbedding(id, vec)
@@ -120,7 +131,7 @@ func (c *Crawler) processStream(r io.Reader) ([]string, error) {
 					}
 				}
 			}
-			
+
 			// Collect links (simplified)
 			// In real app, we'd inspect data for links
 		}
@@ -209,9 +220,18 @@ func (c *Crawler) processFragment(fragment []byte) error {
 					return fmt.Errorf("upsert object: %w", err)
 				}
 
-				// Embed text
+				// Embed text - try title, about, then text (namespace-agnostic)
 				if c.embedder != nil {
-					if text, ok := data["text"].(string); ok && text != "" {
+					text := utils.GetLocalString(data, "title")
+					if text == "" {
+						text = utils.GetLocalString(data, "about")
+					}
+					if text == "" {
+						if t, ok := data["text"].(string); ok {
+							text = t
+						}
+					}
+					if text != "" {
 						vec, err := c.embedder.Embed(text)
 						if err == nil && vec != nil {
 							c.store.UpsertEmbedding(id, vec)

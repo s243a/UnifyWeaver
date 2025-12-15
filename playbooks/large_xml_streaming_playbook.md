@@ -54,7 +54,7 @@ cd /path/to/UnifyWeaver
 # Extract tree facts
 awk -f scripts/utils/select_xml_elements.awk \
     -v tag="pt:Tree" \
-    context/PT/Example_pearltrees_rdf_export.rdf | \
+    tests/test_data/sample.rdf | \
 python3 scripts/utils/xml_to_prolog_facts.py \
     --element-type=tree \
     > output_trees.pl
@@ -65,7 +65,8 @@ cat output_trees.pl
 
 **Expected Output:**
 ```prolog
-tree(2492215, 'Hacktivism', 0, '2011-03-14T19:00:12').
+tree(1, 'Test Tree 1', null, null).
+tree(3, 'Test Tree 2', null, null).
 ```
 
 ### Example 2: Extract and Filter Pearls
@@ -74,9 +75,9 @@ tree(2492215, 'Hacktivism', 0, '2011-03-14T19:00:12').
 # Extract pearls for specific tree
 awk -f scripts/utils/select_xml_elements.awk \
     -v tag="pt:.*Pearl" \
-    context/PT/Example_pearltrees_rdf_export.rdf | \
+    tests/test_data/sample.rdf | \
 python3 scripts/utils/filter_by_parent_tree.py \
-    --tree-id=2492215 | \
+    --tree-id=1 | \
 python3 scripts/utils/xml_to_prolog_facts.py \
     --element-type=pearl \
     > output_pearls.pl
@@ -87,11 +88,12 @@ cat output_pearls.pl
 
 **Expected Output:**
 ```prolog
+(No pearls in sample.rdf - this example demonstrates the pipeline syntax)
+```
+
+**Note:** The sample test file doesn't contain Pearl elements. For real Pearltrees RDF exports with pearls, the output would look like:
+```prolog
 pearl(root, 2492215, 2492215, 1).
-parent_tree(2492215, 2492215).
-pearl(alias, 2492215, 2492215, 2).
-parent_tree(2492215, 2492215).
-pearl(ref, 2492215, 2492215, 4).
 parent_tree(2492215, 2492215).
 ```
 
@@ -100,7 +102,7 @@ parent_tree(2492215, 2492215).
 ```bash
 # Use the complete extraction script
 ./scripts/extract_pearltrees.sh \
-    context/PT/Example_pearltrees_rdf_export.rdf \
+    tests/test_data/sample.rdf \
     pearltrees_facts/
 
 # View combined facts
@@ -109,18 +111,24 @@ cat pearltrees_facts/all_facts.pl
 
 **Expected Output:**
 ```
-→ Extracting from: context/PT/Example_pearltrees_rdf_export.rdf
+→ Extracting from: tests/test_data/sample.rdf
 → Output directory: pearltrees_facts/
 → Extracting tree facts...
-✓ Extracted 1 tree(s) → trees.pl
+✓ Extracted 2 tree(s) → trees.pl
 → Extracting pearl facts...
-✓ Extracted 4 pearl(s) → pearls.pl
+✓ Extracted 0 pearl(s) → pearls.pl
 → Combining facts...
 ✓ Combined facts → all_facts.pl
 
 =========================================
 Extraction Complete
 =========================================
+Trees:  2
+Pearls: 0
+```
+
+**Note:** The sample test file contains only Tree elements, no Pearl elements. For real Pearltrees RDF exports with pearls, you would see pearl counts similar to:
+```
 Trees:  1
 Pearls: 4
 ```
@@ -136,11 +144,21 @@ swipl
 true.
 
 ?- tree(ID, Title, Privacy, LastUpdate).
-ID = 2492215,
-Title = 'Hacktivism',
-Privacy = 0,
-LastUpdate = '2011-03-14T19:00:12'.
+ID = 1,
+Title = 'Test Tree 1',
+Privacy = null,
+LastUpdate = null ;
+ID = 3,
+Title = 'Test Tree 2',
+Privacy = null,
+LastUpdate = null.
 
+?- findall(ID-Title, tree(ID, Title, _, _), Trees).
+Trees = [1-'Test Tree 1', 3-'Test Tree 2'].
+```
+
+**Note:** The sample test file doesn't contain Pearl elements. For real Pearltrees RDF exports with pearls, you would see queries like:
+```prolog
 ?- parent_tree(Child, Parent).
 Child = Parent, Parent = 2492215 ;
 Child = Parent, Parent = 2492215 ;

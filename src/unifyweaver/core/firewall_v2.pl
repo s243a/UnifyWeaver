@@ -38,6 +38,21 @@
     derive_powershell_mode/2,
     supports_pure_powershell/1,
 
+    % PowerShell mode preferences
+    preferred_powershell_mode/1,
+    set_preferred_powershell_mode/1,
+
+    % Predicate-level firewall rules (Phase 10)
+    predicate_firewall_mode/2,
+    set_predicate_firewall_mode/2,
+    clear_predicate_firewall_mode/1,
+    predicate_allowed_service/3,
+    predicate_denied_service/3,
+    set_predicate_service_policy/4,
+    check_predicate_firewall/3,
+    derive_predicate_powershell_mode/3,
+    effective_powershell_mode/3,
+
     % Tool availability predicates
     tool_availability_policy/1,
     require_tool/1,
@@ -63,11 +78,17 @@
     domain_matches_pattern/2,
 
     % Policy templates
-    load_firewall_policy/1
+    load_firewall_policy/1,
+
+    % Testing
+    test_predicate_firewall/0
 ]).
 
 :- use_module(library(lists)).
 :- use_module('tool_detection').
+
+% Discontiguous for supports_pure_powershell (source types + predicate indicators)
+:- discontiguous supports_pure_powershell/1.
 
 %% ============================================
 %% DYNAMIC PREDICATES
@@ -100,6 +121,15 @@
 :- dynamic allowed_domain/1.             % allowed_domain(Domain)
 :- dynamic denied_domain/1.              % denied_domain(Domain)
 
+%% PowerShell mode preferences
+:- dynamic preferred_powershell_mode/1.  % pure | baas | auto (default: auto)
+
+%% Predicate-level firewall rules (Phase 10)
+%% These override default-level rules for specific predicates
+:- dynamic predicate_firewall_mode/2.    % predicate_firewall_mode(Pred/Arity, Mode)
+:- dynamic predicate_allowed_service/3.  % predicate_allowed_service(Pred/Arity, Target, Service)
+:- dynamic predicate_denied_service/3.   % predicate_denied_service(Pred/Arity, Target, Service)
+
 %% ============================================
 %% DEFAULT CONFIGURATION
 %% ============================================
@@ -114,6 +144,24 @@ set_firewall_mode(Mode) :-
     retractall(firewall_mode(_)),
     assertz(firewall_mode(Mode)),
     format('[Firewall] Mode set to: ~w~n', [Mode]).
+
+%% set_preferred_powershell_mode(+Mode)
+%  Set preferred PowerShell compilation mode (pure|baas|auto)
+%
+%  - pure: Always use pure PowerShell when supported
+%  - baas: Always use Bash-as-a-Service when allowed
+%  - auto: Let firewall automatically decide (default)
+%
+%  Example:
+%    ?- set_preferred_powershell_mode(pure).  % Forces pure mode
+set_preferred_powershell_mode(Mode) :-
+    (   memberchk(Mode, [pure, baas, auto])
+    ->  retractall(preferred_powershell_mode(_)),
+        assertz(preferred_powershell_mode(Mode)),
+        format('[Firewall] PowerShell mode preference set to: ~w~n', [Mode])
+    ;   format('[Firewall Error] Invalid mode: ~w (expected: pure|baas|auto)~n', [Mode]),
+        fail
+    ).
 
 %% ============================================
 %% DEFAULT TARGET LANGUAGE POLICIES
@@ -279,9 +327,21 @@ derive_powershell_mode(SourceType, Mode) :-
     ).
 
 % Helper: Check if source type supports pure PowerShell
+% Phase 1: External data sources
 supports_pure_powershell(csv).
 supports_pure_powershell(json).
 supports_pure_powershell(http).
+
+% Phase 1: Internal predicates
+supports_pure_powershell(facts).         % Static facts
+supports_pure_powershell(rules).         % Rules with joins/negation
+
+% Phase 2: Recursion patterns
+supports_pure_powershell(recursion).     % All recursion patterns
+supports_pure_powershell(fixpoint).      % Transitive closure
+
+% Phase 3: Data partitioning
+supports_pure_powershell(partitioning).  % Data partitioning strategies
 
 %% ============================================
 %% POLICY TEMPLATES
@@ -594,6 +654,249 @@ extract_domain(URL, Domain) :-
     ->  sub_atom(URLNoProt, 0, DomainEnd, _, Domain)
     ;   Domain = URLNoProt
     ).
+
+%% ============================================
+%% PREDICATE-LEVEL FIREWALL RULES (Phase 10)
+%% ============================================
+%%
+%% Predicate-level rules override default-level rules for specific predicates.
+%% This allows fine-grained control over compilation modes and service access.
+%%
+%% Priority order (highest to lowest):
+%% 1. Predicate-level denied_service (always blocks)
+%% 2. Predicate-level firewall_mode (overrides default)
+%% 3. Default-level denied_service
+%% 4. Default-level firewall_mode
+%%
+%% Usage examples:
+%%   % Force pure PowerShell for user/2 (no bash allowed)
+%%   ?- set_predicate_firewall_mode(user/2, pure).
+%%
+%%   % Allow bash for log_parser/3 even if default is pure
+%%   ?- set_predicate_firewall_mode(log_parser/3, baas).
+%%
+%%   % Deny network access for sensitive_data/2
+%%   ?- set_predicate_service_policy(sensitive_data/2, powershell, network_access, deny).
+%%
+%% ============================================
+
+%% set_predicate_firewall_mode(+Predicate, +Mode)
+%  Set firewall mode for a specific predicate.
+%  Mode: pure | baas | auto | inherit (use default)
+%
+%  Example:
+%    ?- set_predicate_firewall_mode(user/2, pure).
+%    [Firewall] Predicate user/2 firewall mode set to: pure
+set_predicate_firewall_mode(Predicate, Mode) :-
+    (   memberchk(Mode, [pure, baas, auto, inherit])
+    ->  retractall(predicate_firewall_mode(Predicate, _)),
+        (   Mode = inherit
+        ->  % inherit means remove predicate-level rule
+            format('[Firewall] Predicate ~w will inherit default firewall mode~n', [Predicate])
+        ;   assertz(predicate_firewall_mode(Predicate, Mode)),
+            format('[Firewall] Predicate ~w firewall mode set to: ~w~n', [Predicate, Mode])
+        )
+    ;   format('[Firewall Error] Invalid mode: ~w (expected: pure|baas|auto|inherit)~n', [Mode]),
+        fail
+    ).
+
+%% clear_predicate_firewall_mode(+Predicate)
+%  Remove predicate-level firewall mode (inherit from default).
+clear_predicate_firewall_mode(Predicate) :-
+    retractall(predicate_firewall_mode(Predicate, _)),
+    retractall(predicate_allowed_service(Predicate, _, _)),
+    retractall(predicate_denied_service(Predicate, _, _)),
+    format('[Firewall] Predicate ~w firewall rules cleared~n', [Predicate]).
+
+%% set_predicate_service_policy(+Predicate, +Target, +Service, +Policy)
+%  Set service policy for a specific predicate.
+%  Policy: allow | deny
+%
+%  Example:
+%    ?- set_predicate_service_policy(api_call/2, powershell, executable(bash), deny).
+%    [Firewall] Predicate api_call/2: deny powershell service executable(bash)
+set_predicate_service_policy(Predicate, Target, Service, allow) :-
+    retractall(predicate_denied_service(Predicate, Target, Service)),
+    assertz(predicate_allowed_service(Predicate, Target, Service)),
+    format('[Firewall] Predicate ~w: allow ~w service ~w~n', [Predicate, Target, Service]).
+
+set_predicate_service_policy(Predicate, Target, Service, deny) :-
+    retractall(predicate_allowed_service(Predicate, Target, Service)),
+    assertz(predicate_denied_service(Predicate, Target, Service)),
+    format('[Firewall] Predicate ~w: deny ~w service ~w~n', [Predicate, Target, Service]).
+
+%% check_predicate_firewall(+Predicate, +Target, -Result)
+%  Check firewall rules for a specific predicate.
+%  Returns the effective mode considering predicate-level and default rules.
+%
+%  Result: allow(Mode) | deny(Reason)
+check_predicate_firewall(Predicate, Target, Result) :-
+    % Check predicate-level denied services first (highest priority)
+    (   predicate_denied_service(Predicate, Target, Service)
+    ->  Result = deny(predicate_service_denied(Service))
+
+    % Check predicate-level mode
+    ;   predicate_firewall_mode(Predicate, PredicateMode)
+    ->  (   PredicateMode = pure
+        ->  % Check if pure is supported
+            (   supports_pure_powershell(Predicate)
+            ->  Result = allow(pure)
+            ;   Result = deny(pure_not_supported)
+            )
+        ;   PredicateMode = baas
+        ->  % Check if bash service is allowed at default level
+            (   check_service(Target, executable(bash), ServiceResult),
+                ServiceResult = allow
+            ->  Result = allow(baas)
+            ;   Result = deny(bash_denied_at_default_level)
+            )
+        ;   PredicateMode = auto
+        ->  Result = allow(auto)
+        )
+
+    % Fall back to default-level rules
+    ;   check_service(Target, executable(bash), BashResult),
+        (   BashResult = deny(_)
+        ->  (   supports_pure_powershell(Predicate)
+            ->  Result = allow(pure)
+            ;   Result = deny(no_viable_mode)
+            )
+        ;   Result = allow(auto)
+        )
+    ).
+
+%% derive_predicate_powershell_mode(+Predicate, +SourceType, -Mode)
+%  Derive PowerShell compilation mode for a specific predicate.
+%  Considers both predicate-level and default-level rules.
+%
+%  Mode: pure | baas | auto_with_preference(pure|baas)
+derive_predicate_powershell_mode(Predicate, SourceType, Mode) :-
+    % Check predicate-level mode first
+    (   predicate_firewall_mode(Predicate, PredicateMode),
+        PredicateMode \= inherit
+    ->  % Predicate has explicit mode
+        (   PredicateMode = pure
+        ->  (   supports_pure_powershell(SourceType)
+            ->  Mode = pure
+            ;   format('[Firewall Error] ~w requires pure mode but ~w has no pure implementation~n',
+                       [Predicate, SourceType]),
+                fail
+            )
+        ;   PredicateMode = baas
+        ->  % Check if bash is allowed
+            (   \+ predicate_denied_service(Predicate, powershell, executable(bash)),
+                check_service(powershell, executable(bash), BashResult),
+                BashResult \= deny(_)
+            ->  Mode = baas
+            ;   format('[Firewall Error] ~w requires baas mode but bash is denied~n', [Predicate]),
+                fail
+            )
+        ;   PredicateMode = auto
+        ->  % Use default derivation
+            derive_powershell_mode(SourceType, Mode)
+        )
+
+    % Check predicate-level denied bash service
+    ;   predicate_denied_service(Predicate, powershell, executable(bash))
+    ->  % Bash denied for this predicate, must use pure
+        (   supports_pure_powershell(SourceType)
+        ->  Mode = pure,
+            format('[Firewall] ~w: bash denied, using pure PowerShell~n', [Predicate])
+        ;   format('[Firewall Error] ~w: bash denied but ~w has no pure implementation~n',
+                   [Predicate, SourceType]),
+            fail
+        )
+
+    % Fall back to default-level derivation
+    ;   derive_powershell_mode(SourceType, Mode)
+    ).
+
+%% effective_powershell_mode(+Predicate, +SourceType, -Mode)
+%  Get the effective PowerShell mode for a predicate.
+%  This is the main entry point for compilers to determine mode.
+%
+%  Respects priority: predicate-level > default-level > auto-detection
+effective_powershell_mode(Predicate, SourceType, Mode) :-
+    % Try predicate-level derivation first
+    (   derive_predicate_powershell_mode(Predicate, SourceType, DerivedMode)
+    ->  Mode = DerivedMode
+    % Fall back to default
+    ;   derive_powershell_mode(SourceType, Mode)
+    ).
+
+%% Helper: supports_pure_powershell for predicates
+%  Overload to check if a predicate supports pure PowerShell
+%  Note: This version just assumes pure is supported for predicates
+%  without a source type (rules/facts). The actual source type check
+%  happens in powershell_compiler.pl.
+supports_pure_powershell(Pred/Arity) :-
+    % For predicate indicators, assume pure is supported
+    % (the actual check happens in powershell_compiler with source_type)
+    atom(Pred),
+    integer(Arity),
+    Arity >= 0.
+
+%% ============================================
+%% PREDICATE-LEVEL FIREWALL TESTS
+%% ============================================
+
+test_predicate_firewall :-
+    format('~n=== Testing Predicate-Level Firewall (Phase 10) ===~n~n', []),
+
+    % Test 1: Set predicate firewall mode
+    format('[Test 1] Set predicate firewall mode~n', []),
+    set_predicate_firewall_mode(test_pred/2, pure),
+    (   predicate_firewall_mode(test_pred/2, pure)
+    ->  format('  [PASS] Predicate mode set correctly~n', [])
+    ;   format('  [FAIL] Predicate mode not set~n', [])
+    ),
+
+    % Test 2: Predicate-level service deny
+    format('[Test 2] Predicate-level service deny~n', []),
+    set_predicate_service_policy(secure_pred/3, powershell, executable(bash), deny),
+    (   predicate_denied_service(secure_pred/3, powershell, executable(bash))
+    ->  format('  [PASS] Service denial recorded~n', [])
+    ;   format('  [FAIL] Service denial not recorded~n', [])
+    ),
+
+    % Test 3: Check predicate firewall with explicit mode
+    format('[Test 3] Check predicate firewall with explicit mode~n', []),
+    check_predicate_firewall(test_pred/2, powershell, Result1),
+    (   Result1 = allow(pure)
+    ->  format('  [PASS] Predicate firewall check returned pure~n', [])
+    ;   format('  [FAIL] Expected allow(pure), got ~w~n', [Result1])
+    ),
+
+    % Test 4: Check predicate firewall with denied service
+    format('[Test 4] Check predicate firewall with denied service~n', []),
+    check_predicate_firewall(secure_pred/3, powershell, Result2),
+    (   Result2 = deny(predicate_service_denied(_))
+    ->  format('  [PASS] Service denial enforced~n', [])
+    ;   format('  [FAIL] Expected deny, got ~w~n', [Result2])
+    ),
+
+    % Test 5: Clear predicate firewall rules
+    format('[Test 5] Clear predicate firewall rules~n', []),
+    clear_predicate_firewall_mode(test_pred/2),
+    (   \+ predicate_firewall_mode(test_pred/2, _)
+    ->  format('  [PASS] Predicate rules cleared~n', [])
+    ;   format('  [FAIL] Predicate rules not cleared~n', [])
+    ),
+
+    % Test 6: Effective mode derivation
+    format('[Test 6] Effective mode derivation~n', []),
+    set_predicate_firewall_mode(csv_pred/2, pure),
+    effective_powershell_mode(csv_pred/2, csv, Mode1),
+    (   Mode1 = pure
+    ->  format('  [PASS] Effective mode = pure~n', [])
+    ;   format('  [FAIL] Expected pure, got ~w~n', [Mode1])
+    ),
+
+    % Cleanup
+    clear_predicate_firewall_mode(csv_pred/2),
+    clear_predicate_firewall_mode(secure_pred/3),
+
+    format('~n=== Predicate-Level Firewall Tests Complete ===~n', []).
 
 %% ============================================
 %% INITIALIZATION

@@ -26,6 +26,7 @@
     % Queries
     predicate_target/2,         % predicate_target(Pred/Arity, Target)
     predicate_target_options/3, % predicate_target_options(Pred/Arity, Target, Options)
+    target_options/2,           % target_options(Pred/Arity, Options) - convenience wrapper
     predicate_location/2,       % predicate_location(Pred/Arity, Location)
     connection_transport/3,     % connection_transport(Pred1, Pred2, Transport)
     connection_options/3,       % connection_options(Pred1, Pred2, Options)
@@ -176,6 +177,13 @@ predicate_target(Pred/Arity, Target) :-
 %
 predicate_target_options(Pred/Arity, Target, Options) :-
     user_target(Pred/Arity, Target, Options).
+
+%% target_options(?Pred/Arity, ?Options)
+%  Convenience wrapper: query options without caring about target.
+%  Useful for goal inference when you just need the file/name options.
+%
+target_options(Pred/Arity, Options) :-
+    predicate_target_options(Pred/Arity, _, Options).
 
 %% predicate_location(?Pred/Arity, ?Location)
 %  Query explicit location options for a predicate.

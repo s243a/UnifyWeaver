@@ -61,11 +61,29 @@ namespace UnifyWeaver.Generated.StringReverser {
 ### Step 2: Compile to PowerShell
 
 ```prolog
-:- compile_to_powershell(string_reverser/2, 'tmp/string_reverser.ps1').
+% Direct compilation using dotnet_source module
+:- use_module(library(dotnet_source)).
+
+% Define config and compile
+:- CSharpCode = '...your code...',
+   Config = [csharp_inline(CSharpCode), pre_compile(true)],
+   dotnet_source:compile_source(string_reverser/2, Config, [], PowerShellCode),
+   open('tmp/string_reverser.ps1', write, Stream),
+   write(Stream, PowerShellCode),
+   close(Stream).
+```
+
+Or using `compile_to_powershell/3` with the `output_file` option:
+
+```prolog
+:- use_module(library(powershell_compiler)).
+:- compile_to_powershell(string_reverser/2,
+                         [source_type(dotnet), output_file('tmp/string_reverser.ps1')],
+                         _).
 ```
 
 This generates a PowerShell script that:
-1. Compiles the C# code using `Add-Type`
+1. Compiles the C# code using `Add-Type` (or `dotnet build` for external compile)
 2. Calls the generated .NET class
 3. Returns results to PowerShell
 

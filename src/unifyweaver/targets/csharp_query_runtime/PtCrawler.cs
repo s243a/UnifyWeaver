@@ -175,8 +175,7 @@ namespace UnifyWeaver.QueryRuntime
             using var ms = new System.IO.MemoryStream(fragmentBytes);
             var config = new XmlSourceConfig
             {
-                StreamFactory = () => ms,
-                IsFile = false
+                InputStream = ms
             };
 
             var reader = new XmlStreamReader(config);

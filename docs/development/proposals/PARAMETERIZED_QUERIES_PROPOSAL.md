@@ -17,7 +17,7 @@ This proposal has been partially implemented (and, in places, superseded) on the
 - A **`materialize`** plan node to cache the `$need` closure result and share it across plans.
 - Existing **`arithmetic`** plan nodes for derived columns; no dedicated `bind_expr` IR node is required for the current approach.
 
-See `docs/development/proposals/parameterized_queries_status.md` for the up-to-date implementation status and current constraints.
+See `docs/development/proposals/PARAMETERIZED_QUERIES_STATUS.md` for the up-to-date implementation status and current constraints.
 
 ## Motivation
 

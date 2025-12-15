@@ -17,12 +17,21 @@
     % Pipeline generation
     generate_pipeline/3,        % generate_pipeline(Steps, Options, Script)
 
+    % Goal inference (re-exported from goal_inference)
+    infer_steps_from_goal/2,    % infer_steps_from_goal(+Goal, -Steps)
+    infer_steps_from_goal/3,    % infer_steps_from_goal(+Goal, +Options, -Steps)
+    % Note: compile_goal_to_pipeline/3 is now in compiler_driver
+
     % Format detection
     input_format/2,             % input_format(Options, Format)
     output_format/2             % output_format(Options, Format)
 ]).
 
 :- use_module(library(lists)).
+:- use_module(goal_inference, [
+    infer_steps_from_goal/2,
+    infer_steps_from_goal/3
+]).
 
 %% ============================================
 %% Format Detection

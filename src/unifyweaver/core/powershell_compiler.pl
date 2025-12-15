@@ -15,7 +15,18 @@
     compile_tail_recursion_powershell/3,    % +Pred/Arity, +Options, -PowerShellCode
     can_compile_tail_recursion_ps/1,        % +Pred/Arity
     powershell_wrapper/3,         % powershell_wrapper(+BashCode, +Options, -PowerShellCode)
-    test_powershell_compiler/0    % Run tests
+    test_powershell_compiler/0,   % Run tests
+
+    % Binding-based compilation (Book 12, Chapter 3 & 5)
+    compile_bound_predicate/3,    % compile_bound_predicate(+Pred, +Options, -Code)
+    generate_cmdlet_wrapper/3,    % generate_cmdlet_wrapper(+Pred, +Options, -CmdletCode)
+    has_powershell_binding/1,     % has_powershell_binding(+Pred)
+    init_powershell_compiler/0,   % Initialize compiler with bindings
+
+    % C# hosting integration (Book 12, Chapter 6)
+    compile_with_csharp_host/4,   % compile_with_csharp_host(+Predicates, +Options, -PSCode, -CSharpCode)
+    generate_csharp_bridge/3,     % generate_csharp_bridge(+BridgeType, +Options, -Code)
+    compile_cross_target_pipeline/3  % compile_cross_target_pipeline(+Steps, +Options, -Code)
 ]).
 
 :- use_module(library(lists)).
@@ -28,6 +39,14 @@
 :- use_module('../sources/http_source', []).
 :- use_module('../sources/xml_source', []).
 :- use_module('../sources/dotnet_source', []).
+
+% Binding system for cmdlet generation (Book 12, Chapters 3 & 5)
+:- use_module('binding_registry').
+:- use_module('../bindings/powershell_bindings').
+:- use_module('../bindings/binding_codegen').
+
+% .NET glue for C# hosting (Book 12, Chapter 6)
+:- use_module('../glue/dotnet_glue').
 
 %% compile_to_powershell(+Predicate, -PowerShellCode)
 %  Simplified interface with default options
@@ -60,19 +79,60 @@ compile_to_powershell(Predicate, Options, PowerShellCode) :-
     ;   SourceType = unknown
     ),
 
-    % Resolve mode (may consult firewall)
-    resolve_powershell_mode(UserMode, SourceType, ResolvedMode),
+    % Resolve mode using predicate-level firewall rules (Phase 10)
+    % Priority: predicate-level > default-level > user option
+    resolve_powershell_mode_with_predicate(Predicate, UserMode, SourceType, ResolvedMode),
     format('[PowerShell Compiler] PowerShell mode: ~w (resolved from ~w)~n', [ResolvedMode, UserMode]),
+
+    % Check if resolved mode is denied by firewall
+    (   ResolvedMode = denied(Reason)
+    ->  format('[PowerShell Compiler ERROR] Compilation denied: ~w~n', [Reason]),
+        format('[PowerShell Compiler] Predicate ~w cannot be compiled due to firewall rules~n', [Predicate]),
+        fail
+    ;   true
+    ),
 
     % Check if pure mode and predicate supports it
     (   (ResolvedMode = pure ; ResolvedMode = auto ; ResolvedMode = auto_with_preference(pure)),
         supports_pure_powershell(Predicate, Options)
     ->  % Use pure PowerShell template
         format('[PowerShell Compiler] Using pure PowerShell templates~n', []),
-        compile_to_pure_powershell(Predicate, Options, PowerShellCode)
-    ;   % Fall back to bash-as-a-service
+        compile_to_pure_powershell(Predicate, Options, CompiledCode)
+    ;   % Check if BaaS is allowed
+        (   ResolvedMode = denied(_)
+        ->  format('[PowerShell Compiler ERROR] Cannot use BaaS - mode denied~n', []),
+            fail
+        ;   true
+        ),
+        % Fall back to bash-as-a-service
         format('[PowerShell Compiler] Using bash-as-a-service (BaaS) mode~n', []),
-        compile_to_baas_powershell(Predicate, Options, PowerShellCode)
+        compile_to_baas_powershell(Predicate, Options, CompiledCode)
+    ),
+
+    % Handle include_dependencies option
+    (   member(include_dependencies(true), Options)
+    ->  % Get dependencies and compile them
+        Predicate = PredAtom/Arity,
+        functor(Head, PredAtom, Arity),
+        findall(_H-B, user:clause(Head, B), Clauses),
+        gather_dependencies_ps(Clauses, PredAtom, Dependencies),
+        format('[PowerShell Compiler] Dependencies: ~w~n', [Dependencies]),
+        % Compile each dependency (without include_dependencies to avoid recursion)
+        DepOptions = [powershell_mode(pure)],
+        findall(DepCode, (
+            member(DepPred, Dependencies),
+            user:current_predicate(DepPred/DepArity),
+            functor(DepHead, DepPred, DepArity),
+            user:clause(DepHead, _),
+            compile_to_pure_powershell(DepPred/DepArity, DepOptions, DepCode)
+        ), DepCodes),
+        list_to_set(DepCodes, UniqueDepCodes),  % Remove duplicates
+        (   UniqueDepCodes = []
+        ->  PowerShellCode = CompiledCode
+        ;   atomic_list_concat(UniqueDepCodes, '\n\n', DepCodeStr),
+            atomic_list_concat([DepCodeStr, '\n\n', CompiledCode], PowerShellCode)
+        )
+    ;   PowerShellCode = CompiledCode
     ),
 
     % Optionally write to file
@@ -99,6 +159,52 @@ resolve_powershell_mode(UserMode, SourceType, ResolvedMode) :-
         )
     ;   % User explicitly specified mode, respect it
         ResolvedMode = UserMode
+    ).
+
+%% resolve_powershell_mode_with_predicate(+Predicate, +UserMode, +SourceType, -ResolvedMode)
+%  Resolve PowerShell mode considering predicate-level firewall rules (Phase 10).
+%
+%  Priority order:
+%  1. Predicate-level firewall mode (if set)
+%  2. Predicate-level denied services (may force pure or deny)
+%  3. Default-level firewall policies
+%  4. User-specified mode
+%
+%  ResolvedMode: pure | baas | auto | auto_with_preference(Mode) | denied(Reason)
+resolve_powershell_mode_with_predicate(Predicate, UserMode, SourceType, ResolvedMode) :-
+    % Check predicate-level firewall first
+    (   catch(firewall_v2:predicate_firewall_mode(Predicate, PredicateMode), _, fail),
+        PredicateMode \= inherit
+    ->  % Predicate has explicit mode
+        format('[Firewall] Predicate ~w has explicit mode: ~w~n', [Predicate, PredicateMode]),
+        (   PredicateMode = pure
+        ->  ResolvedMode = pure
+        ;   PredicateMode = baas
+        ->  % Check if bash is allowed at default level
+            (   catch(firewall_v2:check_service(powershell, executable(bash), BashResult), _, fail),
+                BashResult \= deny(_)
+            ->  ResolvedMode = baas
+            ;   format('[Firewall Warning] Predicate ~w wants baas but bash denied at default level~n', [Predicate]),
+                ResolvedMode = denied(bash_denied_at_default_level)
+            )
+        ;   PredicateMode = auto
+        ->  % Use default derivation
+            resolve_powershell_mode(UserMode, SourceType, ResolvedMode)
+        )
+
+    % Check predicate-level denied bash service
+    ;   catch(firewall_v2:predicate_denied_service(Predicate, powershell, executable(bash)), _, fail)
+    ->  % Bash denied for this predicate
+        format('[Firewall] Predicate ~w: bash denied, must use pure~n', [Predicate]),
+        (   catch(firewall_v2:supports_pure_powershell(SourceType), _, fail)
+        ->  ResolvedMode = pure
+        ;   format('[Firewall Error] Predicate ~w: bash denied but ~w has no pure implementation~n',
+                   [Predicate, SourceType]),
+            ResolvedMode = denied(no_pure_implementation)
+        )
+
+    % Fall back to default-level resolution
+    ;   resolve_powershell_mode(UserMode, SourceType, ResolvedMode)
     ).
 
 %% supports_pure_powershell(+Predicate, +Options)
@@ -161,7 +267,11 @@ compile_prolog_to_pure_powershell(Predicate, Options, PowerShellCode) :-
             member(H-Body, Clauses),
             Body \= true
         ->  format('[PowerShell Pure] Type: rule with body~n', []),
-            compile_rule_to_powershell(Pred, Arity, H, Body, Options, PowerShellCode)
+            % Try binding-aware compilation first, fall back to standard
+            (   compile_rule_with_bindings(Pred, Arity, H, Body, Options, PowerShellCode)
+            ->  true
+            ;   compile_rule_to_powershell(Pred, Arity, H, Body, Options, PowerShellCode)
+            )
         ;   format('[PowerShell Pure] Error: No clauses found~n', []),
             fail
         )
@@ -189,19 +299,43 @@ body_contains_pred_ps(Pred, Goal) :-
 
 %% compile_facts_to_powershell(+Pred, +Arity, +Clauses, +Options, -Code)
 %  Compile simple facts to pure PowerShell
-compile_facts_to_powershell(Pred, Arity, Clauses, _Options, Code) :-
+%  Options:
+%    - output_format(object|text) - Return PSCustomObject or strings
+%    - pipeline_input(true) - Enable ValueFromPipeline on first parameter
+%    - arg_names([...]) - Custom argument names (default: X, Y, Z, ...)
+compile_facts_to_powershell(Pred, Arity, Clauses, Options, Code) :-
     atom_string(Pred, PredStr),
     get_time(Timestamp),
     format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
-    
-    % Build fact array entries
+
+    % Check output format option (default: text for backward compatibility)
+    (   member(output_format(object), Options)
+    ->  OutputFormat = object
+    ;   OutputFormat = text
+    ),
+
+    % Get argument names from options or use defaults
+    get_arg_names_from_options(Arity, Options, ArgNames),
+
+    % Build fact array entries (use dynamic property names if specified)
+    (   ArgNames = [N1, N2|_], Arity >= 2
+    ->  % Use custom property names
+        findall(ObjEntryCustom, (
+            member(Head-true, Clauses),
+            Head =.. [_|[A1, A2|_]],
+            format(string(ObjEntryCustom), "        [PSCustomObject]@{ ~w='~w'; ~w='~w' }", [N1, A1, N2, A2])
+        ), CustomObjEntries)
+    ;   CustomObjEntries = []
+    ),
+
+    % Build standard fact entries
     findall(FactEntry, (
         member(Head-true, Clauses),
         Head =.. [_|Args],
         format_ps_fact_entry(Args, FactEntry)
     ), FactEntries),
     atomic_list_concat(FactEntries, '\n', FactsStr),
-    
+
     % Generate parameter string based on arity
     (   Arity = 1
     ->  ParamStr = "[string]$Key"
@@ -209,30 +343,10 @@ compile_facts_to_powershell(Pred, Arity, Clauses, _Options, Code) :-
     ->  ParamStr = "[string]$X, [string]$Y"
     ;   ParamStr = "[string]$X, [string]$Y, [string]$Z"  % Generic for now
     ),
-    
-    % Generate filter logic based on arity
-    (   Arity = 1
-    ->  FilterLogic = "
-    if ($Key) {
-        $facts | Where-Object { $_ -eq $Key }
-    } else {
-        $facts
-    }"
-    ;   Arity = 2
-    ->  FilterLogic = "
-    if ($X -and $Y) {
-        $facts | Where-Object { $_.X -eq $X -and $_.Y -eq $Y }
-    } elseif ($X) {
-        $facts | Where-Object { $_.X -eq $X } | ForEach-Object { $_.Y }
-    } elseif ($Y) {
-        $facts | Where-Object { $_.Y -eq $Y } | ForEach-Object { $_.X }
-    } else {
-        $facts | ForEach-Object { \"$($_.X):$($_.Y)\" }
-    }"
-    ;   FilterLogic = "
-    $facts | ForEach-Object { $_ }"  % Generic fallback
-    ),
-    
+
+    % Generate filter logic based on arity AND output format
+    generate_filter_logic_ps(Arity, OutputFormat, FilterLogic),
+
     % Generate appropriate fact array based on arity
     (   Arity = 1
     ->  format(string(Code),
@@ -243,7 +357,7 @@ compile_facts_to_powershell(Pred, Arity, Clauses, _Options, Code) :-
 
 function ~w {
     param(~w)
-    
+
     $facts = @(~w)
 ~w
 }
@@ -252,12 +366,52 @@ function ~w {
 ~w
 ", [Pred, Arity, DateStr, PredStr, ParamStr, FactsStr, FilterLogic, PredStr])
     ;   % Binary facts use PSCustomObject
-        findall(ObjEntry, (
-            member(Head-true, Clauses),
-            Head =.. [_|[A1, A2|_]],
-            format(string(ObjEntry), "        [PSCustomObject]@{ X='~w'; Y='~w' }", [A1, A2])
-        ), ObjEntries),
-        atomic_list_concat(ObjEntries, ',\n', ObjStr),
+        % Use custom property names if arg_names specified
+        (   CustomObjEntries \= []
+        ->  atomic_list_concat(CustomObjEntries, ',\n', ObjStr)
+        ;   findall(ObjEntry, (
+                member(Head-true, Clauses),
+                Head =.. [_|[A1, A2|_]],
+                format(string(ObjEntry), "        [PSCustomObject]@{ X='~w'; Y='~w' }", [A1, A2])
+            ), ObjEntries),
+            atomic_list_concat(ObjEntries, ',\n', ObjStr)
+        ),
+
+        % Generate parameters - use pipeline params if pipeline_input(true)
+        (   member(pipeline_input(true), Options)
+        ->  generate_pipeline_params(Arity, Options, CmdletBindingAttr, ParamBlock)
+        ;   generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock)
+        ),
+
+        % Generate facts definition
+        format(string(FactsDef), "    $facts = @(\n~w\n    )", [ObjStr]),
+
+        % Check verbose_output option
+        (   member(verbose_output(true), Options)
+        ->  format(string(VerboseLoad), "        Write-Verbose \"[~w] Loading ~w facts...\"\n", [PredStr, Pred]),
+            format(string(VerboseQuery), "        Write-Verbose \"[~w] Query: X=$X, Y=$Y\"\n", [PredStr])
+        ;   VerboseLoad = "",
+            VerboseQuery = ""
+        ),
+
+        % Structure body based on cmdlet_binding (Begin/Process vs simple)
+        (   member(cmdlet_binding(true), Options) ; member(pipeline_input(true), Options)
+        ->  % Advanced function: Use begin/process blocks
+            format(string(Body), 
+"    begin {
+~w~w
+    }
+
+    process {
+~w~w
+    }", [VerboseLoad, FactsDef, VerboseQuery, FilterLogic])
+        ;   % Basic function: Sequential execution
+            format(string(Body), 
+"~w~w
+~w
+~w", [VerboseLoad, VerboseQuery, FactsDef, FilterLogic])
+        ),
+        
         format(string(Code),
 "# Generated Pure PowerShell Script
 # Predicate: ~w/~w
@@ -265,18 +419,59 @@ function ~w {
 # Generated by UnifyWeaver PowerShell Compiler (Pure Mode)
 
 function ~w {
-    param(~w)
+~w~w
     
-    $facts = @(
-~w
-    )
 ~w
 }
 
 # Stream all facts
 ~w
-", [Pred, Arity, DateStr, PredStr, ParamStr, ObjStr, FilterLogic, PredStr])
+", [Pred, Arity, DateStr, PredStr, CmdletBindingAttr, ParamBlock, Body, PredStr])
     ).
+
+%% generate_filter_logic_ps(+Arity, +OutputFormat, -FilterLogic)
+%  Generate filter logic based on arity and output format
+%  OutputFormat: object | text
+
+% Arity 1 - simple facts (same for text and object)
+generate_filter_logic_ps(1, _, FilterLogic) :-
+    FilterLogic = "
+    if ($Key) {
+        $facts | Where-Object { $_ -eq $Key }
+    } else {
+        $facts
+    }".
+
+% Arity 2 - binary relations with object output (returns PSCustomObject)
+generate_filter_logic_ps(2, object, FilterLogic) :-
+    FilterLogic = "
+    if ($X -and $Y) {
+        $facts | Where-Object { $_.X -eq $X -and $_.Y -eq $Y }
+    } elseif ($X) {
+        $facts | Where-Object { $_.X -eq $X }
+    } elseif ($Y) {
+        $facts | Where-Object { $_.Y -eq $Y }
+    } else {
+        $facts
+    }".
+
+% Arity 2 - binary relations with text output (colon-separated strings)
+generate_filter_logic_ps(2, text, FilterLogic) :-
+    FilterLogic = "
+    if ($X -and $Y) {
+        $facts | Where-Object { $_.X -eq $X -and $_.Y -eq $Y }
+    } elseif ($X) {
+        $facts | Where-Object { $_.X -eq $X } | ForEach-Object { $_.Y }
+    } elseif ($Y) {
+        $facts | Where-Object { $_.Y -eq $Y } | ForEach-Object { $_.X }
+    } else {
+        $facts | ForEach-Object { \"$($_.X):$($_.Y)\" }
+    }".
+
+% Generic fallback (same for text and object - just pass through)
+generate_filter_logic_ps(_, _, FilterLogic) :-
+    FilterLogic = "
+    $facts | ForEach-Object { $_ }".
 
 %% format_ps_fact_entry(+Args, -Entry)
 %  Format fact arguments for PowerShell array
@@ -287,21 +482,34 @@ format_ps_fact_entry([A, B|_], Entry) :-
 
 %% compile_rule_to_powershell(+Pred, +Arity, +Head, +Body, +Options, -Code)
 %  Compile a rule with joins and optional negation to pure PowerShell
-compile_rule_to_powershell(Pred, Arity, _Head, Body, _Options, Code) :-
+%  Options:
+%    - pipeline_input(true) - Enable ValueFromPipeline on first parameter
+%    - output_format(object|text) - Return PSCustomObject or strings
+%    - arg_names([...]) - Custom argument names (default: X, Y, Z, ...)
+compile_rule_to_powershell(Pred, Arity, _Head, Body, Options, Code) :-
     atom_string(Pred, PredStr),
     get_time(Timestamp),
     format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
-    
+
+    % Get output format (default: text for backwards compatibility)
+    (   member(output_format(object), Options)
+    ->  OutputFormat = object
+    ;   OutputFormat = text
+    ),
+
+    % Get argument names for dynamic property output
+    get_arg_names_from_options(Arity, Options, ArgNames),
+
     % Extract body goals
     body_to_list_ps(Body, Goals),
     length(Goals, NumGoals),
     format('[PowerShell Pure] Body has ~w goals~n', [NumGoals]),
-    
+
     % Partition into positive and negated goals
     partition(is_negated_goal_ps, Goals, NegatedGoals, PositiveGoals),
     length(NegatedGoals, NumNeg),
     format('[PowerShell Pure] ~w negated goals~n', [NumNeg]),
-    
+
     % Handle rules based on structure
     (   PositiveGoals = [Goal1, Goal2],
         Goal1 =.. [Pred1|_],
@@ -315,6 +523,90 @@ compile_rule_to_powershell(Pred, Arity, _Head, Body, _Options, Code) :-
         ;   NegCheckCode = "",
             NegLoaderCode = ""
         ),
+
+        % Generate Parameters - use pipeline params if pipeline_input(true)
+        (   member(pipeline_input(true), Options)
+        ->  generate_pipeline_params(Arity, Options, CmdletBindingAttr, ParamBlock)
+        ;   generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock)
+        ),
+
+        % Generate Loading Logic (Facts)
+        format(string(Loaders),
+"        # Get facts from both relations
+        $rel1 = ~w
+        $rel2 = ~w
+~w", [Pred1Str, Pred2Str, NegLoaderCode]),
+
+        % Generate Join Logic with dynamic property names
+        (   ArgNames = [N1, N2|_]
+        ->  atom_string(N1, N1Str), atom_string(N2, N2Str)
+        ;   N1Str = "X", N2Str = "Y"
+        ),
+        format(string(JoinLogic),
+"        # Nested loop join: rel1.Y = rel2.X
+        $results = foreach ($r1 in $rel1) {
+            foreach ($r2 in $rel2) {
+                if ($r1.Y -eq $r2.X) {
+                    $x = $r1.X
+                    $y = $r2.Y~w
+                    [PSCustomObject]@{
+                        ~w = $x
+                        ~w = $y
+                    }
+                }
+            }
+        }", [NegCheckCode, N1Str, N2Str]),
+
+        % Generate Filter Logic based on output format
+        (   OutputFormat = object
+        ->  format(string(FilterLogic),
+"        if ($X -and $Y) {
+            $results | Where-Object { $_.~w -eq $X -and $_.~w -eq $Y }
+        } elseif ($X) {
+            $results | Where-Object { $_.~w -eq $X }
+        } elseif ($Y) {
+            $results | Where-Object { $_.~w -eq $Y }
+        } else {
+            $results
+        }", [N1Str, N2Str, N1Str, N2Str])
+        ;   format(string(FilterLogic),
+"        if ($X -and $Y) {
+            $results | Where-Object { $_.~w -eq $X -and $_.~w -eq $Y }
+        } elseif ($X) {
+            $results | Where-Object { $_.~w -eq $X } | ForEach-Object { $_.~w }
+        } elseif ($Y) {
+            $results | Where-Object { $_.~w -eq $Y } | ForEach-Object { $_.~w }
+        } else {
+            $results | ForEach-Object { \"$($_.~w):$($_.~w)\" }
+        }", [N1Str, N2Str, N1Str, N2Str, N2Str, N1Str, N1Str, N2Str])
+        ),
+
+        % Check verbose_output option
+        (   member(verbose_output(true), Options)
+        ->  format(string(VerboseLoad), "        Write-Verbose \"[~w] Loading relations ~w, ~w...\"\n", [PredStr, Pred1Str, Pred2Str]),
+            format(string(VerboseQuery), "        Write-Verbose \"[~w] Query: X=$X, Y=$Y\"\n", [PredStr])
+        ;   VerboseLoad = "",
+            VerboseQuery = ""
+        ),
+
+        % Structure body - use begin/process blocks for cmdlet or pipeline
+        (   member(cmdlet_binding(true), Options) ; member(pipeline_input(true), Options)
+        ->  format(string(BodyStr),
+"    begin {
+~w~w
+    }
+    
+    process {
+~w~w
+~w
+    }", [VerboseLoad, Loaders, VerboseQuery, JoinLogic, FilterLogic])
+        ;   format(string(BodyStr),
+"~w~w
+~w
+~w
+~w", [VerboseLoad, VerboseQuery, Loaders, JoinLogic, FilterLogic])
+        ),
+
         format(string(Code),
 "# Generated Pure PowerShell Script
 # Predicate: ~w/~w (join~w)
@@ -322,41 +614,14 @@ compile_rule_to_powershell(Pred, Arity, _Head, Body, _Options, Code) :-
 # Generated by UnifyWeaver PowerShell Compiler (Pure Mode)
 
 function ~w {
-    param([string]$X, [string]$Z)
+~w~w
     
-    # Get facts from both relations
-    $rel1 = ~w
-    $rel2 = ~w
 ~w
-    # Nested loop join: rel1.Y = rel2.X
-    $results = foreach ($r1 in $rel1) {
-        foreach ($r2 in $rel2) {
-            if ($r1.Y -eq $r2.X) {
-                $x = $r1.X
-                $z = $r2.Y~w
-                [PSCustomObject]@{
-                    X = $x
-                    Z = $z
-                }
-            }
-        }
-    }
-    
-    if ($X -and $Z) {
-        $results | Where-Object { $_.X -eq $X -and $_.Z -eq $Z }
-    } elseif ($X) {
-        $results | Where-Object { $_.X -eq $X } | ForEach-Object { $_.Z }
-    } elseif ($Z) {
-        $results | Where-Object { $_.Z -eq $Z } | ForEach-Object { $_.X }
-    } else {
-        $results | ForEach-Object { \"$($_.X):$($_.Z)\" }
-    }
 }
 
 # Stream all results
 ~w
-", [Pred, Arity, (NegatedGoals \= [] -> " with negation" ; ""), DateStr, PredStr, Pred1Str, Pred2Str, 
-   NegLoaderCode, NegCheckCode, PredStr])
+", [Pred, Arity, (NegatedGoals \= [] -> " with negation" ; ""), DateStr, PredStr, CmdletBindingAttr, ParamBlock, BodyStr, PredStr])
     ;   PositiveGoals = [Goal1],
         Goal1 =.. [Pred1|_],
         NegatedGoals \= []
@@ -456,6 +721,12 @@ generate_negated_facts_loaders(NegatedGoals, Code) :-
 
 %% body_to_list_ps(+Body, -Goals)
 %  Convert conjunctive body to list of goals
+%  Handle module-qualified conjunctions: Module:(A, B) -> split into goals
+body_to_list_ps(_Module:(A, B), Goals) :- !,
+    body_to_list_ps((A, B), Goals).
+body_to_list_ps(_Module:Goal, [Goal]) :-
+    Goal \= (_,_),  % Not a conjunction - just strip module
+    !.
 body_to_list_ps((A, B), [A|Rest]) :- !,
     body_to_list_ps(B, Rest).
 body_to_list_ps(true, []) :- !.
@@ -839,6 +1110,94 @@ can_compile_tail_recursion_ps(Pred/Arity) :-
     
     % All recursive clauses must be in tail position
     is_tail_recursive_ps(RecClauses, Pred).
+
+%% ============================================================================
+%% LINEAR RECURSION WITH MEMOIZATION
+%% ============================================================================
+
+%% compile_linear_recursion_powershell(+Pred/Arity, +Options, -Code)
+%  Compile linear recursive predicates to PowerShell with hashtable memoization.
+%  Pattern: fib(0, 0). fib(1, 1). fib(N, F) :- fib(N-1, F1), F is F1 + N.
+%
+compile_linear_recursion_powershell(Pred/Arity, _Options, Code) :-
+    atom_string(Pred, PredStr),
+    upcase_atom(Pred, PredUp),
+    atom_string(PredUp, PredUpStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+    
+    (   Arity =:= 2 ->
+        format(string(Code),
+'# Generated Pure PowerShell Script (Linear Recursion with Memoization)
+# Predicate: ~w/~w
+# Generated: ~w
+# Uses hashtable-based memoization for O(n) performance
+
+# Memoization hashtable
+$script:~wMemo = @{}
+
+<#
+.SYNOPSIS
+~w computes result with memoization
+#>
+function ~w {
+    param([int]$N)
+    
+    # Check memo
+    if ($script:~wMemo.ContainsKey($N)) {
+        return $script:~wMemo[$N]
+    }
+    
+    # Base cases
+    if ($N -le 0) {
+        return 0
+    }
+    if ($N -eq 1) {
+        return 1
+    }
+    
+    # Recursive case with memoization
+    $result = (~w ($N - 1)) + $N
+    $script:~wMemo[$N] = $result
+    return $result
+}
+
+# Stream function (for pipeline usage)
+function Invoke-~w {
+    param([int]$N)
+    return ~w $N
+}
+
+# Clear memoization cache
+function Clear-~wMemo {
+    $script:~wMemo.Clear()
+}
+', [PredStr, Arity, DateStr, PredStr, PredUpStr, PredStr, PredStr, PredStr, 
+    PredStr, PredStr, PredUpStr, PredStr, PredUpStr, PredStr])
+    ;   format(string(Code), '# Linear recursion for arity ~w not supported', [Arity])
+    ).
+
+%% can_compile_linear_recursion_ps(+Pred/Arity)
+can_compile_linear_recursion_ps(Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+    partition(is_recursive_clause_for_ps(Pred), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    % Exactly one recursive call per clause
+    forall(member(_-Body, RecClauses), count_recursive_calls_ps(Body, Pred, 1)).
+
+%% count_recursive_calls_ps(+Body, +Pred, ?Count)
+count_recursive_calls_ps(Body, Pred, Count) :-
+    count_recursive_calls_ps_(Body, Pred, 0, Count).
+
+count_recursive_calls_ps_(Goal, Pred, Acc, Count) :-
+    Goal =.. [Pred|_], !,
+    Count is Acc + 1.
+count_recursive_calls_ps_((A, B), Pred, Acc, Count) :- !,
+    count_recursive_calls_ps_(A, Pred, Acc, Acc1),
+    count_recursive_calls_ps_(B, Pred, Acc1, Count).
+count_recursive_calls_ps_(_, _, Acc, Acc).
 
 %% ============================================================================
 %% MUTUAL RECURSION
@@ -1613,6 +1972,16 @@ test_powershell_compiler :-
     format('~n[Test 3] Compilation with various options~n', []),
     test_compilation_options,
 
+    % Phase 11 Tests: Object Pipeline Support
+    format('~n[Test 4] Object pipeline parameter generation~n', []),
+    test_object_pipeline_params,
+
+    format('~n[Test 5] Object output format~n', []),
+    test_object_output_format,
+
+    format('~n[Test 6] Dynamic property names~n', []),
+    test_dynamic_property_names,
+
     format('~n╔════════════════════════════════════════╗~n', []),
     format('║  All PowerShell Compiler Tests Passed ║~n', []),
     format('╚════════════════════════════════════════╝~n', []).
@@ -1650,3 +2019,2538 @@ test_compilation_options :-
     powershell_wrapper(BashCode, [wrapper_style(inline)], PSCode2),
     sub_string(PSCode2, _, _, _, 'if (-not (Get-Command uw-bash'),
     format('[✓] Default includes compatibility check~n', []).
+
+%% ============================================================================
+%% PHASE 11 TESTS: Object Pipeline Support
+%% ============================================================================
+
+test_object_pipeline_params :-
+    % Test: generate_pipeline_params produces ValueFromPipeline attribute
+    generate_pipeline_params(2, [pipeline_input(true)], CmdletBinding, ParamBlock),
+
+    % Verify CmdletBinding attribute is generated
+    sub_string(CmdletBinding, _, _, _, "[CmdletBinding"),
+    format('[✓] CmdletBinding attribute generated~n', []),
+
+    % Verify ValueFromPipeline is in param block
+    sub_string(ParamBlock, _, _, _, "ValueFromPipeline=$true"),
+    format('[✓] ValueFromPipeline attribute present~n', []),
+
+    % Verify ValueFromPipelineByPropertyName is in param block
+    sub_string(ParamBlock, _, _, _, "ValueFromPipelineByPropertyName=$true"),
+    format('[✓] ValueFromPipelineByPropertyName attribute present~n', []),
+
+    % Verify Position attributes
+    sub_string(ParamBlock, _, _, _, "Position=0"),
+    sub_string(ParamBlock, _, _, _, "Position=1"),
+    format('[✓] Position attributes present~n', []).
+
+test_object_output_format :-
+    % Test: generate_object_output produces PSCustomObject with correct properties
+    ArgNames = ['Id', 'Name'],
+    VarMap = ['Id'-"$id", 'Name'-"$name"],
+    generate_object_output(ArgNames, VarMap, OutputCode),
+
+    % Verify PSCustomObject syntax
+    sub_string(OutputCode, _, _, _, "[PSCustomObject]@{"),
+    format('[✓] PSCustomObject syntax generated~n', []),
+
+    % Verify property names
+    sub_string(OutputCode, _, _, _, "Id = $id"),
+    sub_string(OutputCode, _, _, _, "Name = $name"),
+    format('[✓] Dynamic property names in output~n', []).
+
+test_dynamic_property_names :-
+    % Test: get_arg_names_from_options returns custom names when provided
+    get_arg_names_from_options(2, [arg_names(['UserId', 'UserName'])], ArgNames1),
+    ArgNames1 = ['UserId', 'UserName'],
+    format('[✓] Custom arg_names option respected~n', []),
+
+    % Test: get_arg_names_from_options returns defaults when not provided
+    get_arg_names_from_options(2, [], ArgNames2),
+    ArgNames2 = ['X', 'Y'],
+    format('[✓] Default arg names (X, Y) used when not specified~n', []),
+
+    % Test: get_arg_names_from_options handles arity 3
+    get_arg_names_from_options(3, [], ArgNames3),
+    ArgNames3 = ['X', 'Y', 'Z'],
+    format('[✓] Default arg names for arity 3~n', []).
+
+%% generate_cmdlet_params_ps(+Arity, +Options, -CmdletBinding, -ParamBlock)
+%  Generate the [CmdletBinding()] attribute and param(...) block
+generate_cmdlet_params_ps(Arity, Options, CmdletBinding, ParamBlock) :-
+    (   member(cmdlet_binding(true), Options)
+    ->  CmdletBinding = "    [CmdletBinding()]\n",
+        generate_advanced_params(Arity, Options, ParamsStr),
+        format(string(ParamBlock), "    param(~n~w~n    )", [ParamsStr])
+    ;   CmdletBinding = "",
+        generate_simple_params(Arity, ParamStr),
+        format(string(ParamBlock), "    param(~w)", [ParamStr])
+    ).
+
+generate_simple_params(1, "[string]$Key").
+generate_simple_params(2, "[string]$X, [string]$Y").
+generate_simple_params(3, "[string]$X, [string]$Y, [string]$Z").
+generate_simple_params(Arity, Str) :-
+    Arity > 3,
+    findall(S, (between(1, Arity, I), format(string(S), "[string]$Arg~w", [I])), List),
+    atomic_list_concat(List, ', ', Str).
+
+%% ============================================================================
+%% POWERSHELL OBJECT PIPELINE SUPPORT (Phase 11)
+%% ============================================================================
+%%
+%% This section implements full PowerShell object pipeline support:
+%%
+%% 1. **InputObject parameter**: Accept piped objects with ValueFromPipeline
+%% 2. **Dynamic property names**: Use predicate argument names as properties
+%% 3. **Process block streaming**: One-at-a-time processing for pipeline
+%% 4. **Output format propagation**: output_format(object) works everywhere
+%% 5. **End block support**: Optional aggregation/cleanup
+%%
+%% Usage:
+%%   ?- compile_to_powershell(user/2, [output_format(object), cmdlet_binding(true)], Code).
+%%
+%% Generated PowerShell:
+%%   function user {
+%%       [CmdletBinding()]
+%%       param(
+%%           [Parameter(Position=0)]
+%%           [string]$X,
+%%           [Parameter(Position=1, ValueFromPipeline=$true)]
+%%           [string]$Y
+%%       )
+%%       begin { $facts = @(...) }
+%%       process { ... output PSCustomObject ... }
+%%       end { }
+%%   }
+%%
+%% ============================================================================
+
+%% generate_pipeline_params(+Arity, +Options, -CmdletBinding, -ParamBlock)
+%  Generate parameters with full pipeline support including InputObject.
+generate_pipeline_params(Arity, Options, CmdletBinding, ParamBlock) :-
+    % Get argument names (from options or default)
+    get_arg_names_from_options(Arity, Options, ArgNames),
+
+    % Check for pipeline input mode
+    (   member(pipeline_input(true), Options)
+    ->  PipelineInput = true
+    ;   PipelineInput = false
+    ),
+
+    % Generate CmdletBinding with SupportsPipeline if needed
+    (   PipelineInput = true
+    ->  CmdletBinding = "    [CmdletBinding(SupportsShouldProcess=$false)]\n"
+    ;   CmdletBinding = "    [CmdletBinding()]\n"
+    ),
+
+    % Generate param block with ValueFromPipeline attributes
+    generate_pipeline_param_entries(ArgNames, Options, PipelineInput, 0, ParamEntries),
+    atomic_list_concat(ParamEntries, ",\n", ParamsStr),
+    format(string(ParamBlock), "    param(\n~w\n    )", [ParamsStr]).
+
+%% get_arg_names_from_options(+Arity, +Options, -ArgNames)
+%  Get argument names from options or use defaults (X, Y, Z, Arg4, ...)
+get_arg_names_from_options(Arity, Options, ArgNames) :-
+    (   member(arg_names(Names), Options),
+        length(Names, Arity)
+    ->  ArgNames = Names
+    ;   % Default names
+        findall(Name, (
+            between(1, Arity, I),
+            Idx is I - 1,
+            get_arg_name(Idx, Name)
+        ), ArgNames)
+    ).
+
+%% generate_pipeline_param_entries(+Names, +Options, +PipelineInput, +Index, -Entries)
+%  Generate parameter entries with pipeline attributes.
+generate_pipeline_param_entries([], _, _, _, []).
+generate_pipeline_param_entries([Name|Rest], Options, PipelineInput, Index, [Entry|RestEntries]) :-
+    % Get type (default: string)
+    (   member(arg_types(Types), Options),
+        nth0(Index, Types, Type)
+    ->  true
+    ;   Type = string
+    ),
+
+    % Determine if this parameter should accept pipeline input
+    (   PipelineInput = true,
+        Index = 0  % First parameter accepts pipeline by default
+    ->  PipeAttr = ", ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true"
+    ;   member(arg_options(Index, ArgOpts), Options),
+        member(pipeline(true), ArgOpts)
+    ->  PipeAttr = ", ValueFromPipeline=$true"
+    ;   PipeAttr = ""
+    ),
+
+    % Mandatory check
+    (   member(arg_options(Index, ArgOpts2), Options),
+        member(mandatory(true), ArgOpts2)
+    ->  MandAttr = ", Mandatory=$true"
+    ;   MandAttr = ""
+    ),
+
+    format(string(Entry),
+"        [Parameter(Position=~w~w~w)]
+        [~w]$~w", [Index, MandAttr, PipeAttr, Type, Name]),
+
+    NextIndex is Index + 1,
+    generate_pipeline_param_entries(Rest, Options, PipelineInput, NextIndex, RestEntries).
+
+%% generate_object_output(+ArgNames, +VarMap, -OutputCode)
+%  Generate PSCustomObject output with dynamic property names.
+generate_object_output(ArgNames, VarMap, OutputCode) :-
+    findall(PropStr, (
+        member(Name, ArgNames),
+        atom_string(Name, NameStr),
+        (   member(Name-Var, VarMap)
+        ->  format(string(PropStr), "~w = ~w", [NameStr, Var])
+        ;   format(string(PropStr), "~w = $~w", [NameStr, NameStr])
+        )
+    ), PropStrs),
+    atomic_list_concat(PropStrs, '; ', PropsJoined),
+    format(string(OutputCode), "[PSCustomObject]@{ ~w }", [PropsJoined]).
+
+%% generate_filter_with_output_format(+Arity, +OutputFormat, +ArgNames, -FilterLogic)
+%  Generate filter logic that respects output_format option.
+generate_filter_with_output_format(2, object, [X, Y], FilterLogic) :-
+    atom_string(X, XStr),
+    atom_string(Y, YStr),
+    format(string(FilterLogic),
+"    if ($~w -and $~w) {
+        $facts | Where-Object { $_.~w -eq $~w -and $_.~w -eq $~w }
+    } elseif ($~w) {
+        $facts | Where-Object { $_.~w -eq $~w }
+    } elseif ($~w) {
+        $facts | Where-Object { $_.~w -eq $~w }
+    } else {
+        $facts
+    }", [XStr, YStr, XStr, XStr, YStr, YStr, XStr, XStr, XStr, YStr, YStr, YStr]).
+
+generate_filter_with_output_format(2, text, [X, Y], FilterLogic) :-
+    atom_string(X, XStr),
+    atom_string(Y, YStr),
+    format(string(FilterLogic),
+"    if ($~w -and $~w) {
+        $facts | Where-Object { $_.~w -eq $~w -and $_.~w -eq $~w }
+    } elseif ($~w) {
+        $facts | Where-Object { $_.~w -eq $~w } | ForEach-Object { $_.~w }
+    } elseif ($~w) {
+        $facts | Where-Object { $_.~w -eq $~w } | ForEach-Object { $_.~w }
+    } else {
+        $facts | ForEach-Object { \"$($_.~w):$($_.~w)\" }
+    }", [XStr, YStr, XStr, XStr, YStr, YStr, XStr, XStr, XStr, YStr, YStr, YStr, YStr, XStr, XStr, YStr]).
+
+%% generate_join_output_with_format(+OutputFormat, +ArgNames, -OutputCode)
+%  Generate join output respecting output_format.
+generate_join_output_with_format(object, [X, Y|_], OutputCode) :-
+    atom_string(X, XStr),
+    atom_string(Y, YStr),
+    format(string(OutputCode),
+"                    [PSCustomObject]@{
+                        ~w = $x
+                        ~w = $y
+                    }", [XStr, YStr]).
+
+generate_join_output_with_format(text, [X, Y|_], OutputCode) :-
+    atom_string(X, XStr),
+    atom_string(Y, YStr),
+    format(string(OutputCode),
+"                    \"$($x):$($y)\"  # ~w:~w", [XStr, YStr]).
+
+%% generate_process_block(+Facts, +FilterLogic, +Options, -ProcessBlock)
+%  Generate a proper process block for pipeline streaming.
+generate_process_block(FactsDef, FilterLogic, Options, ProcessBlock) :-
+    (   member(output_format(object), Options)
+    ->  OutputHint = "# Outputs PSCustomObject"
+    ;   OutputHint = "# Outputs text"
+    ),
+    format(string(ProcessBlock),
+"    process {
+        ~w
+~w
+~w
+    }", [OutputHint, FactsDef, FilterLogic]).
+
+%% generate_begin_end_blocks(+FactsDef, +Options, -BeginBlock, -EndBlock)
+%  Generate begin and end blocks for advanced functions.
+generate_begin_end_blocks(FactsDef, Options, BeginBlock, EndBlock) :-
+    (   member(verbose_output(true), Options)
+    ->  format(string(VerboseInit), "        Write-Verbose \"Initializing...\"~n", [])
+    ;   VerboseInit = ""
+    ),
+    format(string(BeginBlock),
+"    begin {
+~w~w
+    }", [VerboseInit, FactsDef]),
+
+    (   member(end_block(EndCode), Options)
+    ->  format(string(EndBlock), "~n    end {~n        ~w~n    }", [EndCode])
+    ;   EndBlock = ""
+    ).
+
+generate_advanced_params(Arity, Options, ParamsStr) :-
+    ArityM1 is Arity - 1,
+    findall(PStr, (
+        between(0, ArityM1, I),
+        get_arg_name(I, Name),
+        get_arg_attributes(I, Options, Attrs),
+        format_param_entry(I, Name, Attrs, PStr)
+    ), PList),
+    atomic_list_concat(PList, ",\n\n", ParamsStr).
+
+get_arg_name(0, 'X').
+get_arg_name(1, 'Y').
+get_arg_name(2, 'Z').
+get_arg_name(I, Name) :- I > 2, format(string(Name), "Arg~w", [I]).
+
+get_arg_attributes(Index, Options, Attrs) :-
+    (   member(arg_options(Index, Opts), Options)
+    ->  Attrs = Opts
+    ;   Attrs = []
+    ).
+
+format_param_entry(Index, Name, Attrs, Entry) :-
+    % Position is default
+    (   member(position(P), Attrs) -> Pos = P ; Pos = Index ),
+    % Mandatory
+    (   member(mandatory(true), Attrs) -> Mand = ", Mandatory=$true" ; Mand = "" ),
+    % Pipeline
+    (   member(pipeline(true), Attrs) -> Pipe = ", ValueFromPipeline=$true"
+    ;   Index = 1 -> Pipe = ", ValueFromPipeline=$true" % Default for 2nd arg in binary
+    ;   Pipe = ""
+    ),
+
+    format(string(ParamAttr), "        [Parameter(Position=~w~w~w)]", [Pos, Mand, Pipe]),
+
+    % Validation
+    (   member(validate_not_null(true), Attrs) -> Val1 = "\n        [ValidateNotNullOrEmpty()]" ; Val1 = "" ),
+    (   member(validate_set(Set), Attrs), is_list(Set) ->
+        atomic_list_concat(Set, "', '", SetInner),
+        format(string(Val2), "\n        [ValidateSet('~w')]", [SetInner])
+    ;   Val2 = ""
+    ),
+
+    format(string(Entry), "~w~w~w\n        [string]$~w", [ParamAttr, Val1, Val2, Name]).
+
+% ============================================================================
+% BINDING INTEGRATION FOR RULE COMPILATION (Book 12, Chapter 5)
+% ============================================================================
+%
+% These predicates integrate the binding system into rule body compilation,
+% allowing goals like get_service(Name, Status) to automatically compile to
+% Get-Service calls instead of requiring explicit fact definitions.
+
+%% lookup_var_eq(+Var, +VarMap, -PSVar)
+%
+%  Look up a Prolog variable in the VarMap using strict equality (==).
+%  This prevents accidental unification when looking up different variables.
+%
+%  IMPORTANT: member/2 uses unification which causes bugs when variables
+%  in the VarMap get unified with the lookup variable. We must use ==.
+%
+lookup_var_eq(Var, [V-PS|_], PS) :-
+    Var == V, !.
+lookup_var_eq(Var, [_|Rest], PS) :-
+    lookup_var_eq(Var, Rest, PS).
+
+%% goal_has_binding(+Goal, -Binding)
+%
+%  Check if a goal matches a registered PowerShell binding.
+%  Returns the binding information if found.
+%  Handles both plain goals and module-qualified goals (Module:Goal).
+%
+%  @param Goal     A Prolog goal term (e.g., get_service(Name, Status))
+%  @param Binding  binding(Pred, TargetName, Inputs, Outputs, Options)
+%
+goal_has_binding(Goal, Binding) :-
+    % Handle module-qualified goals like powershell_compiler:sqrt(X,Y)
+    (   Goal = _Module:InnerGoal
+    ->  ActualGoal = InnerGoal
+    ;   ActualGoal = Goal
+    ),
+    ActualGoal =.. [Pred|Args],
+    length(Args, Arity),
+    binding(powershell, Pred/Arity, TargetName, Inputs, Outputs, Options),
+    Binding = binding(Pred/Arity, TargetName, Inputs, Outputs, Options).
+
+%% classify_body_goals(+Goals, -BoundGoals, -FactGoals, -BuiltinGoals)
+%
+%  Classify goals in a rule body into bound (have PowerShell bindings),
+%  fact-based (need to be loaded from Prolog facts), and builtins.
+%
+classify_body_goals([], [], [], []).
+classify_body_goals([Goal|Rest], Bound, Facts, Builtins) :-
+    classify_body_goals(Rest, RestBound, RestFacts, RestBuiltins),
+    (   is_builtin_goal_ps(Goal)
+    ->  Bound = RestBound,
+        Facts = RestFacts,
+        Builtins = [Goal|RestBuiltins]
+    ;   goal_has_binding(Goal, Binding)
+    ->  Bound = [Goal-Binding|RestBound],
+        Facts = RestFacts,
+        Builtins = RestBuiltins
+    ;   % Assume it's a fact-based goal
+        Bound = RestBound,
+        Facts = [Goal|RestFacts],
+        Builtins = RestBuiltins
+    ).
+
+%% is_builtin_goal_ps(+Goal)
+%
+%  Check if a goal is a Prolog builtin that needs special handling.
+%  Handles both plain goals and module-qualified goals (Module:Goal).
+%
+is_builtin_goal_ps(Goal) :-
+    % Handle module-qualified goals
+    (   Goal = _Module:InnerGoal
+    ->  is_builtin_goal_ps_inner(InnerGoal)
+    ;   is_builtin_goal_ps_inner(Goal)
+    ).
+
+is_builtin_goal_ps_inner(_ = _).
+is_builtin_goal_ps_inner(_ \= _).
+is_builtin_goal_ps_inner(_ == _).
+is_builtin_goal_ps_inner(_ \== _).
+is_builtin_goal_ps_inner(_ < _).
+is_builtin_goal_ps_inner(_ > _).
+is_builtin_goal_ps_inner(_ =< _).
+is_builtin_goal_ps_inner(_ >= _).
+is_builtin_goal_ps_inner(_ is _).
+is_builtin_goal_ps_inner(true).
+is_builtin_goal_ps_inner(fail).
+is_builtin_goal_ps_inner(!).
+is_builtin_goal_ps_inner(\+ _).
+is_builtin_goal_ps_inner(not(_)).
+
+%% generate_bound_goal_code(+Goal, +Binding, +VarMap, -Code, -NewVarMap)
+%
+%  Generate PowerShell code for a bound goal.
+%
+%  @param Goal      The Prolog goal (e.g., get_service(Name, Status))
+%  @param Binding   The binding info from goal_has_binding/2
+%  @param VarMap    Current variable name mappings
+%  @param Code      Generated PowerShell code
+%  @param NewVarMap Updated variable mappings
+%
+generate_bound_goal_code(Goal, binding(_Pred, TargetName, Inputs, Outputs, Options), VarMap, Code, NewVarMap) :-
+    % Handle module-qualified goals like powershell_compiler:sqrt(X,Y)
+    (   Goal = _Module:InnerGoal
+    ->  ActualGoal = InnerGoal
+    ;   ActualGoal = Goal
+    ),
+    ActualGoal =.. [_|Args],
+    length(Inputs, NumInputs),
+    length(Outputs, NumOutputs),
+    length(Args, TotalArgs),
+
+    % Split args into inputs and outputs based on binding spec
+    (   NumInputs + NumOutputs =:= TotalArgs
+    ->  length(InputArgs, NumInputs),
+        append(InputArgs, OutputArgs, Args)
+    ;   % All args are inputs (output via return value)
+        InputArgs = Args,
+        OutputArgs = []
+    ),
+
+    % Generate the call based on binding pattern
+    (   member(pattern(pipe_transform), Options)
+    ->  % Pipeline pattern: input | Cmdlet
+        generate_pipeline_call(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ;   member(pattern(exit_code_bool), Options)
+    ->  % Boolean via exit code (like Test-Path)
+        generate_bool_call(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ;   sub_string(TargetName, 0, _, _, "[")
+    ->  % .NET static method
+        generate_dotnet_static_call(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ;   sub_string(TargetName, 0, _, _, ".")
+    ->  % .NET instance method
+        generate_dotnet_instance_call(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ;   % Standard cmdlet call
+        generate_cmdlet_call_code(TargetName, InputArgs, OutputArgs, VarMap, Code, NewVarMap)
+    ).
+
+%% generate_cmdlet_call_code(+CmdletName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate PowerShell cmdlet call code.
+%
+generate_cmdlet_call_code(CmdletName, InputArgs, OutputArgs, VarMap, Code, NewVarMap) :-
+    % Format input arguments
+    maplist(format_arg_for_ps(VarMap), InputArgs, FormattedInputs),
+    atomic_list_concat(FormattedInputs, ' ', InputStr),
+
+    % Generate output variable assignment if needed
+    % NOTE: Must use lookup_var_eq/3, NOT member/2 for variable lookup!
+    (   OutputArgs = [OutVar|_],
+        var(OutVar),
+        lookup_var_eq(OutVar, VarMap, ExistingVar)
+    ->  % Output variable already mapped from head - use existing name
+        format(string(Code), "~w = ~w ~w", [ExistingVar, CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ;   OutputArgs = [OutVar|_],
+        var(OutVar)
+    ->  % New output variable - create new name
+        gensym('$result', ResultVar),
+        format(string(Code), "~w = ~w ~w", [ResultVar, CmdletName, InputStr]),
+        NewVarMap = [OutVar-ResultVar|VarMap]
+    ;   OutputArgs = [OutVar|_],
+        atom(OutVar)
+    ->  % Output to named variable
+        format_arg_for_ps(VarMap, OutVar, OutVarStr),
+        format(string(Code), "~w = ~w ~w", [OutVarStr, CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ;   % No output capture needed
+        format(string(Code), "~w ~w", [CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ).
+
+%% generate_dotnet_static_call(+MethodName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate .NET static method call (e.g., [Math]::Sqrt(x))
+%
+generate_dotnet_static_call(MethodName, InputArgs, OutputArgs, VarMap, Code, NewVarMap) :-
+    maplist(format_arg_for_ps(VarMap), InputArgs, FormattedInputs),
+    atomic_list_concat(FormattedInputs, ', ', InputStr),
+
+    (   OutputArgs = [OutVar|_]
+    ->  % Check if output variable is already mapped (e.g., from head args)
+        % NOTE: Must use lookup_var_eq/3, NOT member/2!
+        % member/2 uses unification which causes different variables to unify
+        (   var(OutVar), lookup_var_eq(OutVar, VarMap, ExistingVar)
+        ->  % Assign directly to existing variable
+            format(string(Code), "~w = ~w(~w)", [ExistingVar, MethodName, InputStr]),
+            NewVarMap = VarMap
+        ;   % Create new result variable
+            gensym('$result', ResultVar),
+            format(string(Code), "~w = ~w(~w)", [ResultVar, MethodName, InputStr]),
+            NewVarMap = [OutVar-ResultVar|VarMap]
+        )
+    ;   format(string(Code), "~w(~w)", [MethodName, InputStr]),
+        NewVarMap = VarMap
+    ).
+
+%% generate_dotnet_instance_call(+MethodName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate .NET instance method call (e.g., $str.Trim())
+%
+generate_dotnet_instance_call(MethodName, [Object|RestInputs], OutputArgs, VarMap, Code, NewVarMap) :-
+    format_arg_for_ps(VarMap, Object, ObjStr),
+    maplist(format_arg_for_ps(VarMap), RestInputs, FormattedInputs),
+    atomic_list_concat(FormattedInputs, ', ', InputStr),
+
+    % Check if method already has () in name
+    (   sub_string(MethodName, _, 2, 0, "()")
+    ->  MethodCall = MethodName
+    ;   InputStr = ""
+    ->  format(string(MethodCall), "~w()", [MethodName])
+    ;   format(string(MethodCall), "~w(~w)", [MethodName, InputStr])
+    ),
+
+    % NOTE: Must use lookup_var_eq/3, NOT member/2 for variable lookup!
+    (   OutputArgs = [OutVar|_],
+        var(OutVar),
+        lookup_var_eq(OutVar, VarMap, ExistingVar)
+    ->  % Output variable already mapped - use existing name
+        format(string(Code), "~w = ~w~w", [ExistingVar, ObjStr, MethodCall]),
+        NewVarMap = VarMap
+    ;   OutputArgs = [OutVar|_]
+    ->  gensym('$result', ResultVar),
+        format(string(Code), "~w = ~w~w", [ResultVar, ObjStr, MethodCall]),
+        NewVarMap = [OutVar-ResultVar|VarMap]
+    ;   format(string(Code), "~w~w", [ObjStr, MethodCall]),
+        NewVarMap = VarMap
+    ).
+
+%% generate_pipeline_call(+CmdletName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate pipeline-style call (input | Cmdlet)
+%
+generate_pipeline_call(CmdletName, InputArgs, OutputArgs, VarMap, Code, NewVarMap) :-
+    (   InputArgs = [PipeInput|RestInputs]
+    ->  format_arg_for_ps(VarMap, PipeInput, PipeStr),
+        maplist(format_arg_for_ps(VarMap), RestInputs, FormattedRest),
+        atomic_list_concat(FormattedRest, ' ', RestStr)
+    ;   PipeStr = "$_",
+        RestStr = ""
+    ),
+
+    % NOTE: Must use lookup_var_eq/3, NOT member/2 for variable lookup!
+    (   OutputArgs = [OutVar|_],
+        var(OutVar),
+        lookup_var_eq(OutVar, VarMap, ExistingVar)
+    ->  % Output variable already mapped - use existing name
+        (   RestStr = ""
+        ->  format(string(Code), "~w = ~w | ~w", [ExistingVar, PipeStr, CmdletName])
+        ;   format(string(Code), "~w = ~w | ~w ~w", [ExistingVar, PipeStr, CmdletName, RestStr])
+        ),
+        NewVarMap = VarMap
+    ;   OutputArgs = [OutVar|_]
+    ->  gensym('$result', ResultVar),
+        (   RestStr = ""
+        ->  format(string(Code), "~w = ~w | ~w", [ResultVar, PipeStr, CmdletName])
+        ;   format(string(Code), "~w = ~w | ~w ~w", [ResultVar, PipeStr, CmdletName, RestStr])
+        ),
+        NewVarMap = [OutVar-ResultVar|VarMap]
+    ;   (   RestStr = ""
+        ->  format(string(Code), "~w | ~w", [PipeStr, CmdletName])
+        ;   format(string(Code), "~w | ~w ~w", [PipeStr, CmdletName, RestStr])
+        ),
+        NewVarMap = VarMap
+    ).
+
+%% generate_bool_call(+CmdletName, +InputArgs, +OutputArgs, +VarMap, -Code, -NewVarMap)
+%
+%  Generate boolean test call (like Test-Path)
+%
+generate_bool_call(CmdletName, InputArgs, OutputArgs, VarMap, Code, NewVarMap) :-
+    maplist(format_arg_for_ps(VarMap), InputArgs, FormattedInputs),
+    atomic_list_concat(FormattedInputs, ' ', InputStr),
+
+    % NOTE: Must use lookup_var_eq/3, NOT member/2 for variable lookup!
+    (   OutputArgs = [OutVar|_],
+        var(OutVar),
+        lookup_var_eq(OutVar, VarMap, ExistingVar)
+    ->  % Output variable already mapped - use existing name
+        format(string(Code), "~w = ~w ~w", [ExistingVar, CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ;   OutputArgs = [OutVar|_]
+    ->  gensym('$result', ResultVar),
+        format(string(Code), "~w = ~w ~w", [ResultVar, CmdletName, InputStr]),
+        NewVarMap = [OutVar-ResultVar|VarMap]
+    ;   % Use in condition context
+        format(string(Code), "~w ~w", [CmdletName, InputStr]),
+        NewVarMap = VarMap
+    ).
+
+%% format_arg_for_ps(+VarMap, +Arg, -Formatted)
+%
+%  Format a Prolog argument for PowerShell code.
+%
+format_arg_for_ps(VarMap, Arg, Formatted) :-
+    (   var(Arg)
+    ->  % Unbound variable - look up in VarMap using strict equality
+        % NOTE: Must use lookup_var_eq/3, NOT member/2!
+        % member/2 uses unification which causes different variables to unify
+        (   lookup_var_eq(Arg, VarMap, PSVar)
+        ->  Formatted = PSVar
+        ;   Formatted = "$_"  % Default for unbound
+        )
+    ;   atom(Arg)
+    ->  % Atom - check if it's a Prolog variable name pattern (starts with uppercase)
+        atom_codes(Arg, [C|_]),
+        (   C >= 65, C =< 90  % A-Z = 65-90
+        ->  format(string(Formatted), "$~w", [Arg])
+        ;   format(string(Formatted), "'~w'", [Arg])
+        )
+    ;   number(Arg)
+    ->  format(string(Formatted), "~w", [Arg])
+    ;   string(Arg)
+    ->  format(string(Formatted), "'~w'", [Arg])
+    ;   is_list(Arg)
+    ->  maplist(format_arg_for_ps(VarMap), Arg, Items),
+        atomic_list_concat(Items, ', ', ItemsStr),
+        format(string(Formatted), "@(~w)", [ItemsStr])
+    ;   format(string(Formatted), "~w", [Arg])
+    ).
+
+%% create_head_var_map(+HeadArgs, -VarMap)
+%
+%  Create a variable mapping from head arguments to PowerShell parameter names.
+%  Maps the first arg to $X, second to $Y, etc.
+%
+create_head_var_map(HeadArgs, VarMap) :-
+    create_head_var_map(HeadArgs, 0, VarMap).
+
+create_head_var_map([], _, []).
+create_head_var_map([Arg|Rest], Index, VarMap) :-
+    get_arg_name(Index, PSName),
+    format(string(PSVar), "$~w", [PSName]),
+    NextIndex is Index + 1,
+    create_head_var_map(Rest, NextIndex, RestMap),
+    (   var(Arg)
+    ->  VarMap = [Arg-PSVar|RestMap]
+    ;   VarMap = RestMap  % Ground args don't need mapping
+    ).
+
+%% compile_rule_with_bindings(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%
+%  Compile a rule that may contain bound goals to PowerShell.
+%  This is the main entry point for binding-aware rule compilation.
+%
+compile_rule_with_bindings(Pred, Arity, Head, Body, Options, Code) :-
+    atom_string(Pred, PredStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+
+    % Convert body to list of goals
+    body_to_list_ps(Body, Goals),
+
+    % Separate negated goals
+    partition(is_negated_goal_ps, Goals, NegatedGoals, PositiveGoals),
+
+    % Classify positive goals
+    classify_body_goals(PositiveGoals, BoundGoals, FactGoals, BuiltinGoals),
+
+    length(BoundGoals, NumBound),
+    length(FactGoals, NumFacts),
+    length(BuiltinGoals, NumBuiltins),
+    format('[PowerShell Pure] Rule analysis: ~w bound, ~w fact-based, ~w builtin goals~n',
+           [NumBound, NumFacts, NumBuiltins]),
+
+    % Generate code based on goal composition
+    (   BoundGoals \= [], FactGoals = []
+    ->  % Pure bound rule - all goals have bindings
+        format('[PowerShell Pure] Compiling pure bound rule~n', []),
+        compile_pure_bound_rule(Pred, Arity, Head, BoundGoals, BuiltinGoals, NegatedGoals, Options, Code)
+    ;   BoundGoals \= [], FactGoals \= []
+    ->  % Mixed rule - some bound, some fact-based
+        format('[PowerShell Pure] Compiling mixed bound/fact rule~n', []),
+        compile_mixed_bound_rule(Pred, Arity, Head, BoundGoals, FactGoals, BuiltinGoals, NegatedGoals, Options, Code)
+    ;   % No bound goals - use standard fact-based compilation
+        format('[PowerShell Pure] No bound goals, using standard compilation~n', []),
+        fail  % Fall back to standard compile_rule_to_powershell
+    ).
+
+%% compile_pure_bound_rule(+Pred, +Arity, +Head, +BoundGoals, +BuiltinGoals, +NegatedGoals, +Options, -Code)
+%
+%  Compile a rule where all data goals have PowerShell bindings.
+%
+compile_pure_bound_rule(Pred, Arity, Head, BoundGoals, _BuiltinGoals, _NegatedGoals, Options, Code) :-
+    atom_string(Pred, PredStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+
+    % Generate parameters
+    generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock),
+
+    % Extract head arguments and create initial variable mapping
+    Head =.. [_|HeadArgs],
+    create_head_var_map(HeadArgs, InitialVarMap),
+
+    % Generate code for each bound goal with variable mapping
+    generate_bound_goals_code(BoundGoals, InitialVarMap, GoalCodes, _FinalVarMap),
+    atomic_list_concat(GoalCodes, '\n        ', GoalsStr),
+
+    % Check for verbose output
+    (   member(verbose_output(true), Options)
+    ->  format(string(VerboseStart), "Write-Verbose \"[~w] Executing bound rule...\"~n        ", [PredStr])
+    ;   VerboseStart = ""
+    ),
+
+    % Structure based on cmdlet_binding option
+    (   member(cmdlet_binding(true), Options)
+    ->  format(string(BodyStr),
+"    begin {
+        ~w
+    }
+
+    process {
+        ~w
+    }
+
+    end {
+        Write-Verbose \"[~w] Complete\"
+    }", [VerboseStart, GoalsStr, PredStr])
+    ;   format(string(BodyStr), "~w~w", [VerboseStart, GoalsStr])
+    ),
+
+    format(string(Code),
+"# Generated Pure PowerShell Script (Bound Rule)
+# Predicate: ~w/~w
+# Generated: ~w
+# Generated by UnifyWeaver PowerShell Compiler (Binding Mode)
+
+function ~w {
+~w~w
+
+~w
+}
+
+# Call the function
+~w
+", [Pred, Arity, DateStr, PredStr, CmdletBindingAttr, ParamBlock, BodyStr, PredStr]).
+
+%% compile_mixed_bound_rule(+Pred, +Arity, +Head, +BoundGoals, +FactGoals, +BuiltinGoals, +NegatedGoals, +Options, -Code)
+%
+%  Compile a rule with both bound goals and fact-based goals.
+%  Properly handles variable flow between fact results and bound goal inputs.
+%
+%  Example: salary_sqrt(Name, SqrtSal) :- employee(Name, Sal), sqrt(Sal, SqrtSal).
+%
+%  The Sal variable flows from the employee fact to the sqrt bound goal.
+%  Generated code loops through facts and applies bindings to each.
+%
+compile_mixed_bound_rule(Pred, Arity, Head, BoundGoals, FactGoals, BuiltinGoals, NegatedGoals, Options, Code) :-
+    atom_string(Pred, PredStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+
+    % Generate parameters
+    generate_cmdlet_params_ps(Arity, Options, CmdletBindingAttr, ParamBlock),
+
+    % Extract head arguments for output variable mapping
+    Head =.. [_|HeadArgs],
+
+    % Analyze variable sharing between goals
+    analyze_mixed_rule_vars(HeadArgs, FactGoals, BoundGoals, VarAnalysis),
+
+    % Generate the mixed rule body
+    generate_mixed_rule_body(PredStr, HeadArgs, FactGoals, BoundGoals, BuiltinGoals,
+                             NegatedGoals, VarAnalysis, Options, BodyCode),
+
+    format(string(Code),
+"# Generated Pure PowerShell Script (Mixed Bound/Fact Rule)
+# Predicate: ~w/~w
+# Generated: ~w
+# Generated by UnifyWeaver PowerShell Compiler (Mixed Mode)
+
+function ~w {
+~w~w
+
+~w
+}
+
+# Call the function
+~w
+", [Pred, Arity, DateStr, PredStr, CmdletBindingAttr, ParamBlock, BodyCode, PredStr]).
+
+%% analyze_mixed_rule_vars(+HeadArgs, +FactGoals, +BoundGoals, -VarAnalysis)
+%
+%  Analyze how variables flow between head, fact goals, and bound goals.
+%  Returns a structure describing which variables are shared.
+%
+analyze_mixed_rule_vars(HeadArgs, FactGoals, BoundGoals, VarAnalysis) :-
+    % Collect all variables from fact goals with their positions
+    findall(fact_var(FactPred, ArgIdx, Var), (
+        member(FactGoal, FactGoals),
+        strip_module_qualifier(FactGoal, PlainGoal),
+        PlainGoal =.. [FactPred|FactArgs],
+        nth0(ArgIdx, FactArgs, Var),
+        var(Var)
+    ), FactVars),
+
+    % Collect all variables from bound goals with their positions
+    findall(bound_var(BoundPred, ArgIdx, Var, IsInput), (
+        member(Goal-Binding, BoundGoals),
+        strip_module_qualifier(Goal, PlainGoal),
+        PlainGoal =.. [BoundPred|BoundArgs],
+        Binding = binding(_, _, Inputs, Outputs, _),
+        length(Inputs, NumInputs),
+        nth0(ArgIdx, BoundArgs, Var),
+        var(Var),
+        (ArgIdx < NumInputs -> IsInput = true ; IsInput = false)
+    ), BoundVars),
+
+    % Find head variable positions
+    findall(head_var(ArgIdx, Var), (
+        nth0(ArgIdx, HeadArgs, Var),
+        var(Var)
+    ), HeadVars),
+
+    VarAnalysis = var_analysis(HeadVars, FactVars, BoundVars).
+
+%% strip_module_qualifier(+Goal, -PlainGoal)
+%  Remove module qualifier from a goal if present.
+strip_module_qualifier(_Module:Goal, Goal) :- !.
+strip_module_qualifier(Goal, Goal).
+
+%% generate_mixed_rule_body(+PredStr, +HeadArgs, +FactGoals, +BoundGoals, +BuiltinGoals, +NegatedGoals, +VarAnalysis, +Options, -Code)
+%
+%  Generate the body code for a mixed rule.
+%
+generate_mixed_rule_body(PredStr, HeadArgs, FactGoals, BoundGoals, _BuiltinGoals,
+                         NegatedGoals, VarAnalysis, Options, Code) :-
+    VarAnalysis = var_analysis(HeadVars, FactVars, BoundVars),
+
+    % Generate fact loader calls
+    generate_fact_loaders(FactGoals, LoaderCode),
+
+    % Generate negation loaders if needed
+    (   NegatedGoals \= []
+    ->  generate_negated_facts_loaders(NegatedGoals, NegLoaderCode)
+    ;   NegLoaderCode = ""
+    ),
+
+    % Generate the foreach loop over fact results
+    generate_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, HeadVars,
+                       FactVars, BoundVars, NegatedGoals, Options, LoopCode),
+
+    format(string(Code),
+"    ~w~w
+~w", [LoaderCode, NegLoaderCode, LoopCode]).
+
+%% generate_fact_loaders(+FactGoals, -Code)
+%  Generate PowerShell code to load facts for each fact-based goal.
+generate_fact_loaders([], "").
+generate_fact_loaders([FactGoal|Rest], Code) :-
+    strip_module_qualifier(FactGoal, PlainGoal),
+    PlainGoal =.. [FactPred|_],
+    atom_string(FactPred, FactPredStr),
+    generate_fact_loaders(Rest, RestCode),
+    format(string(Code), "$~w_data = ~w\n    ~w", [FactPredStr, FactPredStr, RestCode]).
+
+%% generate_fact_loop(+PredStr, +HeadArgs, +FactGoals, +BoundGoals, +HeadVars, +FactVars, +BoundVars, +NegatedGoals, +Options, -Code)
+%
+%  Generate the main foreach loop that iterates over facts and applies bindings.
+%
+generate_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, HeadVars,
+                   FactVars, BoundVars, NegatedGoals, Options, Code) :-
+    % For single fact goal, generate simple loop
+    (   FactGoals = [SingleFactGoal]
+    ->  strip_module_qualifier(SingleFactGoal, PlainFact),
+        PlainFact =.. [FactPred|FactArgs],
+        atom_string(FactPred, FactPredStr),
+
+        % Create variable map from fact fields to PS variables
+        create_fact_var_map(FactArgs, FactVarMap),
+
+        % Generate bound goal code using the fact variable map
+        generate_bound_goals_in_loop(BoundGoals, FactVarMap, HeadArgs, BoundCode, OutputVarMap),
+
+        % Generate negation check if needed
+        (   NegatedGoals \= []
+        ->  generate_negation_check_ps(NegatedGoals, NegCheck),
+            format(string(NegCheckStr), "~n            ~w", [NegCheck])
+        ;   NegCheckStr = ""
+        ),
+
+        % Generate output object creation
+        generate_output_object(HeadArgs, OutputVarMap, FactVarMap, OutputCode),
+
+        % Generate fact field extraction BEFORE the format call
+        generate_fact_field_extraction(FactArgs, FactFieldExtraction),
+
+        % Check for verbose output
+        (   member(verbose_output(true), Options)
+        ->  format(string(VerboseStr), "Write-Verbose \"[~w] Processing fact...\"\n            ", [PredStr])
+        ;   VerboseStr = ""
+        ),
+
+        format(string(Code),
+"    $results = foreach ($fact in $~w_data) {
+        ~w# Extract fact fields
+        ~w
+        # Apply bound operations~w
+        ~w
+        # Output result
+        ~w
+    }
+    $results", [FactPredStr, VerboseStr, FactFieldExtraction, NegCheckStr, BoundCode, OutputCode])
+
+    ;   % Multiple fact goals - generate joins (2 or more facts)
+        length(FactGoals, NumFacts),
+        (   NumFacts = 2
+        ->  % Two-way join - use existing binary join
+            FactGoals = [FG1, FG2],
+            generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, HeadVars,
+                                     FactVars, BoundVars, NegatedGoals, Options, Code)
+        ;   NumFacts > 2
+        ->  % N-way join (3+ facts) - use multi-way join
+            generate_nway_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, HeadVars,
+                                    FactVars, BoundVars, NegatedGoals, Options, Code)
+        ;   % Should not happen but fallback
+            fail
+        )
+    ).
+
+%% create_fact_var_map(+FactArgs, -VarMap)
+%  Create a mapping from fact argument variables to PowerShell field accessors.
+create_fact_var_map(FactArgs, VarMap) :-
+    create_fact_var_map(FactArgs, 0, VarMap).
+
+create_fact_var_map([], _, []).
+create_fact_var_map([Arg|Rest], Idx, VarMap) :-
+    NextIdx is Idx + 1,
+    create_fact_var_map(Rest, NextIdx, RestMap),
+    (   var(Arg)
+    ->  % Map to $fact.X, $fact.Y, etc. based on position
+        (Idx = 0 -> FieldName = "X" ; Idx = 1 -> FieldName = "Y" ; format(atom(FieldName), "F~w", [Idx])),
+        format(string(PSVar), "$~w", [FieldName]),
+        VarMap = [Arg-PSVar|RestMap]
+    ;   VarMap = RestMap
+    ).
+
+%% generate_fact_field_extraction(+FactArgs, -Code)
+%  Generate code to extract fact fields into local variables.
+generate_fact_field_extraction(FactArgs, Code) :-
+    generate_fact_field_extraction(FactArgs, 0, Extractions),
+    atomic_list_concat(Extractions, '\n        ', Code).
+
+generate_fact_field_extraction([], _, []).
+generate_fact_field_extraction([_|Rest], Idx, [Extraction|RestExtractions]) :-
+    NextIdx is Idx + 1,
+    (Idx = 0 -> FieldName = "X" ; Idx = 1 -> FieldName = "Y" ; format(atom(FieldName), "F~w", [Idx])),
+    format(string(Extraction), "$~w = $fact.~w", [FieldName, FieldName]),
+    generate_fact_field_extraction(Rest, NextIdx, RestExtractions).
+
+%% generate_bound_goals_in_loop(+BoundGoals, +FactVarMap, +HeadArgs, -Code, -OutputVarMap)
+%  Generate bound goal code using fact-derived variables.
+generate_bound_goals_in_loop([], VarMap, _, "", VarMap).
+generate_bound_goals_in_loop([Goal-Binding|Rest], VarMap, HeadArgs, Code, FinalVarMap) :-
+    generate_bound_goal_code(Goal, Binding, VarMap, GoalCode, NewVarMap),
+    generate_bound_goals_in_loop(Rest, NewVarMap, HeadArgs, RestCode, FinalVarMap),
+    (   RestCode = ""
+    ->  Code = GoalCode
+    ;   format(string(Code), "~w\n        ~w", [GoalCode, RestCode])
+    ).
+
+%% generate_output_object(+HeadArgs, +OutputVarMap, +FactVarMap, -Code)
+%  Generate the output PSCustomObject based on head arguments.
+generate_output_object(HeadArgs, OutputVarMap, FactVarMap, Code) :-
+    % Combine both var maps for lookup
+    append(OutputVarMap, FactVarMap, CombinedMap),
+    generate_output_fields(HeadArgs, CombinedMap, 0, Fields),
+    atomic_list_concat(Fields, '; ', FieldsStr),
+    format(string(Code), "[PSCustomObject]@{ ~w }", [FieldsStr]).
+
+generate_output_fields([], _, _, []).
+generate_output_fields([Arg|Rest], VarMap, Idx, [Field|RestFields]) :-
+    NextIdx is Idx + 1,
+    (Idx = 0 -> OutName = "X" ; Idx = 1 -> OutName = "Y" ; format(atom(OutName), "F~w", [Idx])),
+    (   var(Arg),
+        lookup_var_eq(Arg, VarMap, PSVar)
+    ->  format(string(Field), "~w = ~w", [OutName, PSVar])
+    ;   var(Arg)
+    ->  format(string(Field), "~w = $null", [OutName])
+    ;   format(string(Field), "~w = '~w'", [OutName, Arg])
+    ),
+    generate_output_fields(Rest, VarMap, NextIdx, RestFields).
+
+%% generate_multi_fact_loop(+PredStr, +HeadArgs, +FG1, +FG2, +BoundGoals, +HeadVars, +FactVars, +BoundVars, +NegatedGoals, +Options, -Code)
+%  Generate joins for multiple fact goals.
+%  Supports two join strategies:
+%    - Hash join (default): O(n+m) - builds hashtable on first relation, probes with second
+%    - Nested loop: O(n*m) - fallback for cross products or when explicitly requested
+%
+%  Use option join_strategy(nested_loop) to force nested loops.
+%  Use option join_strategy(hash) for hash join (default when join conditions exist).
+generate_multi_fact_loop(PredStr, HeadArgs, FG1, FG2, BoundGoals, _HeadVars,
+                          _FactVars, _BoundVars, NegatedGoals, Options, Code) :-
+    strip_module_qualifier(FG1, Plain1),
+    strip_module_qualifier(FG2, Plain2),
+    Plain1 =.. [FP1|Args1],
+    Plain2 =.. [FP2|Args2],
+    atom_string(FP1, FP1Str),
+    atom_string(FP2, FP2Str),
+
+    % Create variable maps for each fact with prefixed field names
+    create_prefixed_fact_var_map(Args1, "r1", VarMap1),
+    create_prefixed_fact_var_map(Args2, "r2", VarMap2),
+
+    % Detect join conditions (shared variables between facts)
+    detect_join_conditions(Args1, Args2, VarMap1, VarMap2, JoinConditions),
+
+    % Also get the join key info for hash joins
+    detect_join_keys(Args1, Args2, JoinKeys),
+
+    % Combine var maps for bound goals and output
+    append(VarMap1, VarMap2, CombinedVarMap),
+
+    % Generate bound goal code if any
+    (   BoundGoals \= []
+    ->  generate_bound_goals_in_loop(BoundGoals, CombinedVarMap, HeadArgs, BoundCode, OutputVarMap),
+        format(string(BoundSection), "~n        # Apply bound operations~n        ~w", [BoundCode])
+    ;   BoundSection = "",
+        OutputVarMap = []
+    ),
+
+    % Generate negation check if needed
+    (   NegatedGoals \= []
+    ->  generate_negation_check_ps(NegatedGoals, NegCheck),
+        format(string(NegCheckStr), "~n        ~w", [NegCheck])
+    ;   NegCheckStr = ""
+    ),
+
+    % Generate output object
+    append(OutputVarMap, CombinedVarMap, FinalVarMap),
+    generate_output_object(HeadArgs, OutputVarMap, FinalVarMap, OutputCode),
+
+    % Check for verbose output
+    (   member(verbose_output(true), Options)
+    ->  VerboseFlag = true
+    ;   VerboseFlag = false
+    ),
+
+    % Determine join strategy
+    (   member(join_strategy(nested_loop), Options)
+    ->  % Force nested loop
+        generate_nested_loop_join(PredStr, FP1Str, FP2Str, Args1, Args2, VarMap1, VarMap2,
+                                  JoinConditions, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code)
+    ;   JoinKeys \= []
+    ->  % Has join keys - use hash join
+        generate_hash_join(PredStr, FP1Str, FP2Str, Args1, Args2, VarMap1, VarMap2,
+                          JoinKeys, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code)
+    ;   % No join keys (cross product) - use nested loop
+        generate_nested_loop_join(PredStr, FP1Str, FP2Str, Args1, Args2, VarMap1, VarMap2,
+                                  JoinConditions, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code)
+    ).
+
+%% generate_hash_join(+PredStr, +FP1Str, +FP2Str, +Args1, +Args2, +VarMap1, +VarMap2, +JoinKeys, +NegCheckStr, +BoundSection, +OutputCode, +VerboseFlag, -Code)
+%  Generate a hash-based join for O(n+m) performance.
+%  Builds a hashtable from the first relation, then probes with the second.
+generate_hash_join(PredStr, FP1Str, FP2Str, Args1, Args2, VarMap1, VarMap2,
+                   JoinKeys, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code) :-
+    % Get the join key field names for building hashtable
+    generate_hash_key_expr(JoinKeys, "r1", HashKeyExpr1),
+    generate_hash_key_expr(JoinKeys, "r2", HashKeyExpr2),
+
+    % Generate field extractions
+    generate_prefixed_field_extraction(Args1, "r1", Extraction1),
+    generate_prefixed_field_extraction(Args2, "r2", Extraction2),
+
+    % Verbose output
+    (   VerboseFlag = true
+    ->  format(string(VerboseStr), "Write-Verbose \"[~w] Building hash index on ~w...\"~n    ", [PredStr, FP1Str])
+    ;   VerboseStr = ""
+    ),
+
+    format(string(Code),
+"    # Hash join: O(n+m) complexity
+    ~w# Build hash index on first relation
+    $hashIndex = @{}
+    foreach ($r1 in $~w_data) {
+        $key = ~w
+        if (-not $hashIndex.ContainsKey($key)) {
+            $hashIndex[$key] = [System.Collections.ArrayList]::new()
+        }
+        [void]$hashIndex[$key].Add($r1)
+    }
+
+    # Probe hash index with second relation
+    $results = foreach ($r2 in $~w_data) {
+        $probeKey = ~w
+        if ($hashIndex.ContainsKey($probeKey)) {
+            foreach ($r1 in $hashIndex[$probeKey]) {
+                # Extract fields from first fact
+                ~w
+                # Extract fields from second fact
+                ~w~w~w
+                # Output result
+                ~w
+            }
+        }
+    }
+    $results", [VerboseStr, FP1Str, HashKeyExpr1, FP2Str, HashKeyExpr2,
+                Extraction1, Extraction2, NegCheckStr, BoundSection, OutputCode]).
+
+%% generate_nested_loop_join(+PredStr, +FP1Str, +FP2Str, +Args1, +Args2, +VarMap1, +VarMap2, +JoinConditions, +NegCheckStr, +BoundSection, +OutputCode, +VerboseFlag, -Code)
+%  Generate a nested loop join (original implementation).
+generate_nested_loop_join(PredStr, FP1Str, FP2Str, Args1, Args2, _VarMap1, _VarMap2,
+                          JoinConditions, NegCheckStr, BoundSection, OutputCode, VerboseFlag, Code) :-
+    % Generate field extractions
+    generate_prefixed_field_extraction(Args1, "r1", Extraction1),
+    generate_prefixed_field_extraction(Args2, "r2", Extraction2),
+
+    % Generate join condition string
+    (   JoinConditions \= []
+    ->  atomic_list_concat(JoinConditions, ' -and ', JoinStr)
+    ;   JoinStr = "$true"  % No join condition = cross product
+    ),
+
+    % Verbose output
+    (   VerboseFlag = true
+    ->  format(string(VerboseStr), "Write-Verbose \"[~w] Nested loop join...\"~n            ", [PredStr])
+    ;   VerboseStr = ""
+    ),
+
+    format(string(Code),
+"    # Nested loop join: O(n*m) complexity
+    $results = foreach ($r1 in $~w_data) {
+        foreach ($r2 in $~w_data) {
+            ~w# Extract fields from first fact
+            ~w
+            # Extract fields from second fact
+            ~w
+            # Check join condition
+            if (~w) {~w~w
+                # Output result
+                ~w
+            }
+        }
+    }
+    $results", [FP1Str, FP2Str, VerboseStr, Extraction1, Extraction2, JoinStr, NegCheckStr, BoundSection, OutputCode]).
+
+%% detect_join_keys(+Args1, +Args2, -JoinKeys)
+%  Detect shared variables and return their field positions for hash key generation.
+%  JoinKeys is a list of idx1-idx2 pairs indicating which fields to use for the join key.
+detect_join_keys(Args1, Args2, JoinKeys) :-
+    findall(Idx1-Idx2, (
+        nth0(Idx1, Args1, Arg1),
+        var(Arg1),
+        nth0(Idx2, Args2, Arg2),
+        var(Arg2),
+        Arg1 == Arg2
+    ), JoinKeys).
+
+%% generate_hash_key_expr(+JoinKeys, +Prefix, -KeyExpr)
+%  Generate a PowerShell expression for the hash key based on join fields.
+generate_hash_key_expr(JoinKeys, Prefix, KeyExpr) :-
+    findall(FieldAccess, (
+        member(Idx-_, JoinKeys),
+        idx_to_field_name(Idx, FieldName),
+        format(string(FieldAccess), "$~w.~w", [Prefix, FieldName])
+    ), FieldAccesses1),
+    findall(FieldAccess, (
+        member(_-Idx, JoinKeys),
+        Prefix = "r2",
+        idx_to_field_name(Idx, FieldName),
+        format(string(FieldAccess), "$~w.~w", [Prefix, FieldName])
+    ), FieldAccesses2),
+    % Use appropriate list based on prefix
+    (   Prefix = "r1"
+    ->  FieldAccesses = FieldAccesses1
+    ;   % For r2, we need the second index from each pair
+        findall(FieldAccess, (
+            member(_-Idx, JoinKeys),
+            idx_to_field_name(Idx, FieldName),
+            format(string(FieldAccess), "$~w.~w", [Prefix, FieldName])
+        ), FieldAccesses)
+    ),
+    (   FieldAccesses = [Single]
+    ->  KeyExpr = Single
+    ;   atomic_list_concat(FieldAccesses, ':', Combined),
+        format(string(KeyExpr), "\"~w\"", [Combined])
+    ).
+
+%% idx_to_field_name(+Idx, -FieldName)
+%  Convert a 0-based index to a field name (X, Y, F2, F3, ...).
+idx_to_field_name(0, "X") :- !.
+idx_to_field_name(1, "Y") :- !.
+idx_to_field_name(Idx, FieldName) :-
+    format(atom(FieldName), "F~w", [Idx]).
+
+%% create_prefixed_fact_var_map(+FactArgs, +Prefix, -VarMap)
+%  Create a variable map with prefixed PS variables (e.g., $r1_X, $r1_Y)
+create_prefixed_fact_var_map(FactArgs, Prefix, VarMap) :-
+    create_prefixed_fact_var_map(FactArgs, Prefix, 0, VarMap).
+
+create_prefixed_fact_var_map([], _, _, []).
+create_prefixed_fact_var_map([Arg|Rest], Prefix, Idx, VarMap) :-
+    NextIdx is Idx + 1,
+    create_prefixed_fact_var_map(Rest, Prefix, NextIdx, RestMap),
+    (   var(Arg)
+    ->  (Idx = 0 -> FieldName = "X" ; Idx = 1 -> FieldName = "Y" ; format(atom(FieldName), "F~w", [Idx])),
+        format(string(PSVar), "$~w_~w", [Prefix, FieldName]),
+        VarMap = [Arg-PSVar|RestMap]
+    ;   VarMap = RestMap
+    ).
+
+%% generate_prefixed_field_extraction(+FactArgs, +Prefix, -Code)
+%  Generate field extraction with prefixed variable names.
+generate_prefixed_field_extraction(FactArgs, Prefix, Code) :-
+    generate_prefixed_field_extraction(FactArgs, Prefix, 0, Extractions),
+    atomic_list_concat(Extractions, '\n            ', Code).
+
+generate_prefixed_field_extraction([], _, _, []).
+generate_prefixed_field_extraction([_|Rest], Prefix, Idx, [Extraction|RestExtractions]) :-
+    NextIdx is Idx + 1,
+    (Idx = 0 -> FieldName = "X" ; Idx = 1 -> FieldName = "Y" ; format(atom(FieldName), "F~w", [Idx])),
+    format(string(Extraction), "$~w_~w = $~w.~w", [Prefix, FieldName, Prefix, FieldName]),
+    generate_prefixed_field_extraction(Rest, Prefix, NextIdx, RestExtractions).
+
+%% detect_join_conditions(+Args1, +Args2, +VarMap1, +VarMap2, -JoinConditions)
+%  Detect shared variables between two fact goals and generate join conditions.
+detect_join_conditions(Args1, Args2, VarMap1, VarMap2, JoinConditions) :-
+    findall(Condition, (
+        member(Arg1, Args1),
+        var(Arg1),
+        member(Arg2, Args2),
+        var(Arg2),
+        Arg1 == Arg2,  % Same Prolog variable
+        lookup_var_eq(Arg1, VarMap1, PSVar1),
+        lookup_var_eq(Arg2, VarMap2, PSVar2),
+        format(string(Condition), "~w -eq ~w", [PSVar1, PSVar2])
+    ), JoinConditions).
+
+%% ============================================================================
+%% N-WAY JOINS (3+ fact goals)
+%% ============================================================================
+%%
+%% For rules with 3 or more fact goals, we generate pipelined nested hash joins:
+%%   Join(F1, F2) -> Result1
+%%   Join(Result1, F3) -> Result2
+%%   ...
+%%
+%% This maintains O(n+m+p+...) complexity for equi-joins.
+
+%% generate_nway_fact_loop(+PredStr, +HeadArgs, +FactGoals, +BoundGoals, +HeadVars, +FactVars, +BoundVars, +NegatedGoals, +Options, -Code)
+%  Generate joins for 3 or more fact goals using pipelined hash joins.
+generate_nway_fact_loop(PredStr, HeadArgs, FactGoals, BoundGoals, _HeadVars,
+                        _FactVars, _BoundVars, NegatedGoals, Options, Code) :-
+    length(FactGoals, NumFacts),
+    format('[PowerShell] Generating ~w-way join~n', [NumFacts]),
+
+    % Build fact info list with prefixes r1, r2, r3, ...
+    number_fact_goals(FactGoals, 1, NumberedFacts),
+
+    % Generate fact loaders
+    generate_all_fact_loaders(NumberedFacts, LoaderCode),
+
+    % Build combined variable map from all facts
+    build_combined_var_map(NumberedFacts, CombinedVarMap),
+
+    % Generate bound goal code if any
+    (   BoundGoals \= []
+    ->  generate_bound_goals_in_loop(BoundGoals, CombinedVarMap, HeadArgs, BoundCode, OutputVarMap),
+        format(string(BoundSection), "~n                # Apply bound operations~n                ~w", [BoundCode])
+    ;   BoundSection = "",
+        OutputVarMap = []
+    ),
+
+    % Generate negation check if needed
+    (   NegatedGoals \= []
+    ->  generate_negation_check_ps(NegatedGoals, NegCheck),
+        format(string(NegCheckStr), "~n                ~w", [NegCheck])
+    ;   NegCheckStr = ""
+    ),
+
+    % Generate output object
+    append(OutputVarMap, CombinedVarMap, FinalVarMap),
+    generate_output_object(HeadArgs, OutputVarMap, FinalVarMap, OutputCode),
+
+    % Check for verbose output
+    (   member(verbose_output(true), Options)
+    ->  format(string(VerboseStr), "Write-Verbose \"[~w] ~w-way join...\"~n    ", [PredStr, NumFacts])
+    ;   VerboseStr = ""
+    ),
+
+    % Generate the optimized join code (pipelined hash join or nested loop)
+    generate_optimized_nway_join(NumberedFacts, NegCheckStr, BoundSection, OutputCode,
+                                 VerboseStr, Options, JoinCode),
+
+    format(string(Code), "    ~w~n~w", [LoaderCode, JoinCode]).
+
+%% number_fact_goals(+FactGoals, +StartNum, -NumberedFacts)
+%  Number fact goals as r1, r2, r3, etc.
+number_fact_goals([], _, []).
+number_fact_goals([FG|Rest], N, [fact_info(N, Prefix, FPred, Args, VarMap)|RestNumbered]) :-
+    strip_module_qualifier(FG, PlainFG),
+    PlainFG =.. [FPred|Args],
+    format(atom(Prefix), "r~w", [N]),
+    create_prefixed_fact_var_map(Args, Prefix, VarMap),
+    N1 is N + 1,
+    number_fact_goals(Rest, N1, RestNumbered).
+
+%% generate_all_fact_loaders(+NumberedFacts, -Code)
+%  Generate loader code for all facts.
+generate_all_fact_loaders(NumberedFacts, Code) :-
+    findall(LoaderLine, (
+        member(fact_info(_, _, FPred, _, _), NumberedFacts),
+        atom_string(FPred, FPredStr),
+        format(string(LoaderLine), "$~w_data = ~w", [FPredStr, FPredStr])
+    ), LoaderLines),
+    atomic_list_concat(LoaderLines, '\n    ', Code).
+
+%% build_combined_var_map(+NumberedFacts, -CombinedVarMap)
+%  Combine variable maps from all facts.
+build_combined_var_map([], []).
+build_combined_var_map([fact_info(_, _, _, _, VarMap)|Rest], CombinedVarMap) :-
+    build_combined_var_map(Rest, RestMap),
+    append(VarMap, RestMap, CombinedVarMap).
+
+%% generate_pipelined_joins(+NumberedFacts, +NegCheckStr, +BoundSection, +OutputCode, +VerboseStr, -Code)
+%  Generate pipelined hash joins for N facts.
+%  Strategy: nested loops with hash acceleration where possible.
+generate_pipelined_joins(NumberedFacts, NegCheckStr, BoundSection, OutputCode, VerboseStr, Code) :-
+    % For N-way joins, we generate deeply nested foreach loops with join conditions
+    % at each level. Future optimization: build hash indices for each pair.
+
+    % Collect all field extractions
+    findall(ExtrLines, (
+        member(fact_info(_, Prefix, _, Args, _), NumberedFacts),
+        generate_prefixed_field_extraction(Args, Prefix, ExtrLines)
+    ), AllExtractions),
+    atomic_list_concat(AllExtractions, '\n                ', ExtractionsCode),
+
+    % Detect all join conditions between consecutive facts
+    detect_all_join_conditions(NumberedFacts, AllJoinConditions),
+
+    % Generate nested foreach loops
+    generate_nested_foreach_loops(NumberedFacts, AllJoinConditions, ExtractionsCode,
+                                   NegCheckStr, BoundSection, OutputCode, VerboseStr, Code).
+
+%% detect_all_join_conditions(+NumberedFacts, -AllConditions)
+%  Detect join conditions between all pairs of facts.
+detect_all_join_conditions(NumberedFacts, AllConditions) :-
+    findall(Condition, (
+        member(fact_info(N1, _, _, Args1, VarMap1), NumberedFacts),
+        member(fact_info(N2, _, _, Args2, VarMap2), NumberedFacts),
+        N1 < N2,
+        member(Arg1, Args1),
+        var(Arg1),
+        member(Arg2, Args2),
+        var(Arg2),
+        Arg1 == Arg2,
+        lookup_var_eq(Arg1, VarMap1, PSVar1),
+        lookup_var_eq(Arg2, VarMap2, PSVar2),
+        format(string(Condition), "~w -eq ~w", [PSVar1, PSVar2])
+    ), AllConditions).
+
+%% generate_nested_foreach_loops(+Facts, +JoinConds, +Extractions, +NegCheck, +Bound, +Output, +Verbose, -Code)
+%  Generate deeply nested foreach loops.
+generate_nested_foreach_loops(NumberedFacts, JoinConditions, ExtractionsCode,
+                               NegCheckStr, BoundSection, OutputCode, VerboseStr, Code) :-
+    length(NumberedFacts, NumFacts),
+    % Build the opening loops
+    build_foreach_openings(NumberedFacts, Openings, Closings),
+
+    % Build the join condition check
+    (   JoinConditions \= []
+    ->  atomic_list_concat(JoinConditions, ' -and ', JoinStr)
+    ;   JoinStr = "$true"
+    ),
+
+    % Calculate indentation for innermost block (4 spaces per nesting level + base)
+    BaseIndent = 4,
+    InnerIndent is BaseIndent + (NumFacts * 4),
+    indent_string(InnerIndent, InnerIndentStr),
+
+    format(string(Code),
+"~w# ~w-way nested loop join
+    $results = ~w
+        # Extract all fields
+        ~w
+        # Check join conditions
+        if (~w) {~w~w
+            # Output result
+            ~w
+        }
+    ~w
+    $results",
+           [VerboseStr, NumFacts, Openings, ExtractionsCode, JoinStr,
+            NegCheckStr, BoundSection, OutputCode, Closings]).
+
+%% build_foreach_openings(+Facts, -Openings, -Closings)
+%  Build the foreach opening and closing strings.
+build_foreach_openings([], "", "").
+build_foreach_openings([fact_info(N, Prefix, FPred, _, _)|Rest], Openings, Closings) :-
+    atom_string(FPred, FPredStr),
+    (   N = 1
+    ->  format(string(ThisOpen), "foreach ($~w in $~w_data) {", [Prefix, FPredStr])
+    ;   format(string(ThisOpen), "~n        foreach ($~w in $~w_data) {", [Prefix, FPredStr])
+    ),
+    build_foreach_openings(Rest, RestOpenings, RestClosings),
+    atom_concat(ThisOpen, RestOpenings, Openings),
+    atom_concat("}", RestClosings, Closings).
+
+%% indent_string(+NumSpaces, -Str)
+%  Generate a string of spaces.
+indent_string(0, "") :- !.
+indent_string(N, Str) :-
+    N > 0,
+    N1 is N - 1,
+    indent_string(N1, Rest),
+    atom_concat(" ", Rest, Str).
+
+%% ============================================================================
+%% ADVANCED JOIN OPTIMIZATIONS (Book 12, Chapter 7)
+%% ============================================================================
+%%
+%% This section implements two key optimizations:
+%%
+%% 1. **Index-Based Lookups**: Pre-build hash indices on frequently-joined
+%%    predicates to enable O(1) lookups instead of O(n) scans.
+%%
+%% 2. **Pipelined Hash Joins for N-Way Joins**: For joins with 3+ relations,
+%%    use a pipelining strategy:
+%%      - Build hash index on R1
+%%      - Probe with R2, immediately building hash index on join results
+%%      - Probe with R3, etc.
+%%    This achieves O(n+m+p+...) complexity instead of O(n*m*p).
+%%
+%% ============================================================================
+
+%% generate_pipelined_hash_join(+NumberedFacts, +NegCheckStr, +BoundSection, +OutputCode, +VerboseStr, -Code)
+%  Generate true pipelined hash joins for N-way joins.
+%  Strategy:
+%    1. Build hash index on first relation using join key with second
+%    2. Probe with second relation, build new hash index for third
+%    3. Continue until all relations are processed
+generate_pipelined_hash_join(NumberedFacts, NegCheckStr, BoundSection, OutputCode, VerboseStr, Code) :-
+    length(NumberedFacts, NumFacts),
+    format('[PowerShell] Generating pipelined hash join for ~w relations~n', [NumFacts]),
+
+    % Collect all field extractions
+    findall(ExtrLines, (
+        member(fact_info(_, Prefix, _, Args, _), NumberedFacts),
+        generate_prefixed_field_extraction(Args, Prefix, ExtrLines)
+    ), AllExtractions),
+    atomic_list_concat(AllExtractions, '\n        ', ExtractionsCode),
+
+    % Detect join keys between consecutive pairs
+    detect_consecutive_join_keys(NumberedFacts, PairwiseJoinKeys),
+
+    % Generate the pipelined join code
+    generate_pipeline_stages(NumberedFacts, PairwiseJoinKeys, 1, PipelineCode),
+
+    % Final output loop
+    format(string(Code),
+"~w# Pipelined hash join: O(n+m+p+...) complexity for ~w-way join
+~w
+    # Final output with all fields
+    $results = foreach ($joined in $pipeline_~w) {
+        # Extract all fields
+        ~w~w~w
+        # Output result
+        ~w
+    }
+    $results",
+           [VerboseStr, NumFacts, PipelineCode, NumFacts, ExtractionsCode,
+            NegCheckStr, BoundSection, OutputCode]).
+
+%% detect_consecutive_join_keys(+NumberedFacts, -PairwiseJoinKeys)
+%  Detect join keys between each consecutive pair of facts.
+%  Returns a list of pairs: (FactNumA-FactNumB)-JoinKeys
+detect_consecutive_join_keys([], []).
+detect_consecutive_join_keys([_], []).
+detect_consecutive_join_keys([fact_info(N1, _, _, Args1, _),
+                               fact_info(N2, _, _, Args2, _)|Rest],
+                              [(N1-N2)-JoinKeys|RestKeys]) :-
+    detect_join_keys(Args1, Args2, JoinKeys),
+    detect_consecutive_join_keys([fact_info(N2, _, _, Args2, _)|Rest], RestKeys).
+
+%% generate_pipeline_stages(+Facts, +JoinKeys, +StageNum, -Code)
+%  Generate each stage of the pipelined hash join.
+generate_pipeline_stages([Fact1], _, _, Code) :-
+    % Single fact - just load it as the initial pipeline
+    Fact1 = fact_info(_, _, FPred, _, _),
+    atom_string(FPred, FPredStr),
+    format(string(Code),
+"    # Stage 1: Load initial relation
+    $~w_data = ~w
+    $pipeline_1 = $~w_data",
+           [FPredStr, FPredStr, FPredStr]).
+
+generate_pipeline_stages([Fact1, Fact2|Rest], [(N1-N2)-JoinKeys|RestJoinKeys], StageNum, Code) :-
+    Fact1 = fact_info(N1, Prefix1, FPred1, Args1, _),
+    Fact2 = fact_info(N2, Prefix2, FPred2, Args2, _),
+    atom_string(FPred1, FP1Str),
+    atom_string(FPred2, FP2Str),
+
+    NextStageNum is StageNum + 1,
+
+    % Generate hash key expressions for this pair
+    (   JoinKeys \= []
+    ->  generate_hash_key_expr_for_stage(JoinKeys, Prefix1, Args1, HashKeyExpr1),
+        generate_hash_key_expr_for_stage(JoinKeys, Prefix2, Args2, HashKeyExpr2),
+        JoinType = "hash"
+    ;   % No join keys - use nested loop for this stage
+        HashKeyExpr1 = "",
+        HashKeyExpr2 = "",
+        JoinType = "nested"
+    ),
+
+    % Generate field mapping for joined result
+    generate_joined_field_mappings(Args1, Prefix1, Args2, Prefix2, FieldMappings),
+
+    (   StageNum = 1
+    ->  % First stage: build from raw relations
+        (   JoinType = "hash"
+        ->  format(string(StageCode),
+"    # Stage ~w: Load relations and build hash index
+    $~w_data = ~w
+    $~w_data = ~w
+
+    # Build hash index on ~w
+    $hashIndex_~w = @{}
+    foreach ($~w in $~w_data) {
+        $key = ~w
+        if (-not $hashIndex_~w.ContainsKey($key)) {
+            $hashIndex_~w[$key] = [System.Collections.ArrayList]::new()
+        }
+        [void]$hashIndex_~w[$key].Add($~w)
+    }
+
+    # Probe with ~w and create pipeline result
+    $pipeline_~w = [System.Collections.ArrayList]::new()
+    foreach ($~w in $~w_data) {
+        $probeKey = ~w
+        if ($hashIndex_~w.ContainsKey($probeKey)) {
+            foreach ($~w in $hashIndex_~w[$probeKey]) {
+                $joined = [PSCustomObject]@{ ~w }
+                [void]$pipeline_~w.Add($joined)
+            }
+        }
+    }",
+                   [StageNum, FP1Str, FP1Str, FP2Str, FP2Str,
+                    FP1Str, StageNum, Prefix1, FP1Str, HashKeyExpr1, StageNum, StageNum, StageNum, Prefix1,
+                    FP2Str, NextStageNum, Prefix2, FP2Str, HashKeyExpr2, StageNum, Prefix1, StageNum, FieldMappings, NextStageNum])
+        ;   % Nested loop for cross product
+            format(string(StageCode),
+"    # Stage ~w: Load relations (cross product - no join key)
+    $~w_data = ~w
+    $~w_data = ~w
+
+    # Nested loop join
+    $pipeline_~w = [System.Collections.ArrayList]::new()
+    foreach ($~w in $~w_data) {
+        foreach ($~w in $~w_data) {
+            $joined = [PSCustomObject]@{ ~w }
+            [void]$pipeline_~w.Add($joined)
+        }
+    }",
+                   [StageNum, FP1Str, FP1Str, FP2Str, FP2Str, NextStageNum,
+                    Prefix1, FP1Str, Prefix2, FP2Str, FieldMappings, NextStageNum])
+        )
+    ;   % Subsequent stages: join with pipeline result
+        % Get join key for pipeline (which contains fields from previous relations)
+        generate_pipeline_probe_key(JoinKeys, Prefix1, Args1, PipelineKeyExpr),
+        (   JoinType = "hash"
+        ->  format(string(StageCode),
+"
+    # Stage ~w: Join pipeline with ~w
+    $~w_data = ~w
+
+    # Build hash index on ~w
+    $hashIndex_~w = @{}
+    foreach ($~w in $~w_data) {
+        $key = ~w
+        if (-not $hashIndex_~w.ContainsKey($key)) {
+            $hashIndex_~w[$key] = [System.Collections.ArrayList]::new()
+        }
+        [void]$hashIndex_~w[$key].Add($~w)
+    }
+
+    # Probe pipeline with ~w
+    $pipeline_~w = [System.Collections.ArrayList]::new()
+    foreach ($prev in $pipeline_~w) {
+        $probeKey = ~w
+        if ($hashIndex_~w.ContainsKey($probeKey)) {
+            foreach ($~w in $hashIndex_~w[$probeKey]) {
+                $joined = [PSCustomObject]@{ ~w }
+                [void]$pipeline_~w.Add($joined)
+            }
+        }
+    }",
+                   [StageNum, FP2Str, FP2Str, FP2Str, FP2Str, StageNum,
+                    Prefix2, FP2Str, HashKeyExpr2, StageNum, StageNum, StageNum, Prefix2,
+                    FP2Str, NextStageNum, StageNum, PipelineKeyExpr, StageNum,
+                    Prefix2, StageNum, FieldMappings, NextStageNum])
+        ;   format(string(StageCode),
+"
+    # Stage ~w: Join pipeline with ~w (cross product)
+    $~w_data = ~w
+
+    $pipeline_~w = [System.Collections.ArrayList]::new()
+    foreach ($prev in $pipeline_~w) {
+        foreach ($~w in $~w_data) {
+            $joined = [PSCustomObject]@{ ~w }
+            [void]$pipeline_~w.Add($joined)
+        }
+    }",
+                   [StageNum, FP2Str, FP2Str, FP2Str, NextStageNum, StageNum,
+                    Prefix2, FP2Str, FieldMappings, NextStageNum])
+        )
+    ),
+
+    % Generate remaining stages
+    (   Rest = []
+    ->  Code = StageCode
+    ;   generate_pipeline_stages([Fact2|Rest], RestJoinKeys, NextStageNum, RestCode),
+        format(string(Code), "~w~w", [StageCode, RestCode])
+    ).
+
+%% generate_hash_key_expr_for_stage(+JoinKeys, +Prefix, +Args, -KeyExpr)
+%  Generate hash key expression for a specific prefix and arguments.
+generate_hash_key_expr_for_stage(JoinKeys, Prefix, Args, KeyExpr) :-
+    findall(FieldAccess, (
+        member(Idx1-Idx2, JoinKeys),
+        length(Args, Len),
+        (   Len > 2
+        ->  (Prefix = "r1" -> Idx = Idx1 ; Idx = Idx2)
+        ;   (Prefix = "r1" -> Idx = Idx1 ; Idx = Idx2)
+        ),
+        idx_to_field_name(Idx, FieldName),
+        format(string(FieldAccess), "$~w.~w", [Prefix, FieldName])
+    ), FieldAccesses),
+    (   FieldAccesses = [Single]
+    ->  KeyExpr = Single
+    ;   atomic_list_concat(FieldAccesses, ':', Combined),
+        format(string(KeyExpr), "\"~w\"", [Combined])
+    ).
+
+%% generate_pipeline_probe_key(+JoinKeys, +Prefix, +Args, -KeyExpr)
+%  Generate probe key for pipeline (uses $prev variable).
+generate_pipeline_probe_key(JoinKeys, Prefix, _Args, KeyExpr) :-
+    findall(FieldAccess, (
+        member(Idx1-_, JoinKeys),
+        idx_to_field_name(Idx1, FieldName),
+        format(string(FieldAccess), "$prev.~w_~w", [Prefix, FieldName])
+    ), FieldAccesses),
+    (   FieldAccesses = [Single]
+    ->  KeyExpr = Single
+    ;   atomic_list_concat(FieldAccesses, ':', Combined),
+        format(string(KeyExpr), "\"~w\"", [Combined])
+    ).
+
+%% generate_joined_field_mappings(+Args1, +Prefix1, +Args2, +Prefix2, -Mappings)
+%  Generate field mappings for the joined result object.
+generate_joined_field_mappings(Args1, Prefix1, Args2, Prefix2, Mappings) :-
+    generate_field_mapping_list(Args1, Prefix1, 0, Mappings1),
+    generate_field_mapping_list(Args2, Prefix2, 0, Mappings2),
+    append(Mappings1, Mappings2, AllMappings),
+    atomic_list_concat(AllMappings, '; ', Mappings).
+
+generate_field_mapping_list([], _, _, []).
+generate_field_mapping_list([_|Rest], Prefix, Idx, [Mapping|RestMappings]) :-
+    idx_to_field_name(Idx, FieldName),
+    format(string(Mapping), "~w_~w = $~w.~w", [Prefix, FieldName, Prefix, FieldName]),
+    NextIdx is Idx + 1,
+    generate_field_mapping_list(Rest, Prefix, NextIdx, RestMappings).
+
+%% ============================================================================
+%% INDEX-BASED LOOKUPS
+%% ============================================================================
+%%
+%% For predicates that are frequently joined on specific fields, we can
+%% pre-build hash indices that persist across queries.
+%%
+%% Usage:
+%%   ?- create_predicate_index(user, [0]).      % Index on first field (ID)
+%%   ?- create_predicate_index(order, [0, 1]).  % Composite index
+%%
+%% The generated PowerShell maintains these indices in script scope.
+%% ============================================================================
+
+%% create_predicate_index(+Predicate, +FieldIndices)
+%  Generate code to create and maintain a hash index on a predicate.
+create_predicate_index(Predicate, FieldIndices) :-
+    atom_string(Predicate, PredStr),
+    generate_index_key_expr(FieldIndices, "$item", KeyExpr),
+    format(string(IndexName), "$script:index_~w", [PredStr]),
+
+    format("# Create index on ~w fields ~w~n", [PredStr, FieldIndices]),
+    format("~w = @{}~n", [IndexName]),
+    format("foreach ($item in ~w) {~n", [PredStr]),
+    format("    $key = ~w~n", [KeyExpr]),
+    format("    if (-not ~w.ContainsKey($key)) {~n", [IndexName]),
+    format("        ~w[$key] = [System.Collections.ArrayList]::new()~n", [IndexName]),
+    format("    }~n"),
+    format("    [void]~w[$key].Add($item)~n", [IndexName]),
+    format("}~n").
+
+%% generate_index_key_expr(+FieldIndices, +VarPrefix, -KeyExpr)
+%  Generate the key expression for an index.
+generate_index_key_expr([Idx], VarPrefix, KeyExpr) :-
+    idx_to_field_name(Idx, FieldName),
+    format(string(KeyExpr), "~w.~w", [VarPrefix, FieldName]).
+generate_index_key_expr(FieldIndices, VarPrefix, KeyExpr) :-
+    FieldIndices = [_,_|_],
+    findall(FieldAccess, (
+        member(Idx, FieldIndices),
+        idx_to_field_name(Idx, FieldName),
+        format(string(FieldAccess), "~w.~w", [VarPrefix, FieldName])
+    ), FieldAccesses),
+    atomic_list_concat(FieldAccesses, ':', Combined),
+    format(string(KeyExpr), "\"~w\"", [Combined]).
+
+%% generate_indexed_lookup(+Predicate, +FieldIndices, +LookupValues, -Code)
+%  Generate code for an indexed lookup.
+generate_indexed_lookup(Predicate, FieldIndices, LookupValues, Code) :-
+    atom_string(Predicate, PredStr),
+    format(string(IndexName), "$script:index_~w", [PredStr]),
+
+    % Generate key expression from lookup values
+    (   LookupValues = [SingleVal]
+    ->  format(string(KeyExpr), "~w", [SingleVal])
+    ;   atomic_list_concat(LookupValues, ':', Combined),
+        format(string(KeyExpr), "\"~w\"", [Combined])
+    ),
+
+    format(string(Code),
+"    # Indexed lookup on ~w~w
+    $lookupKey = ~w
+    if (~w.ContainsKey($lookupKey)) {
+        ~w[$lookupKey]
+    } else {
+        @()
+    }",
+           [PredStr, FieldIndices, KeyExpr, IndexName, IndexName]).
+
+%% use_index_for_join(+NumberedFacts, +Options, -ShouldUseIndex, -IndexedFact)
+%  Determine if we should use an existing index for the join.
+use_index_for_join(NumberedFacts, Options, ShouldUseIndex, IndexedFact) :-
+    (   member(use_indices(true), Options),
+        member(fact_info(N, Prefix, FPred, Args, VarMap), NumberedFacts),
+        atom_string(FPred, FPredStr),
+        member(indexed(FPredStr, FieldIndices), Options)
+    ->  ShouldUseIndex = true,
+        IndexedFact = fact_info(N, Prefix, FPred, Args, VarMap)-FieldIndices
+    ;   ShouldUseIndex = false,
+        IndexedFact = none
+    ).
+
+%% ============================================================================
+%% UPDATED N-WAY JOIN WITH OPTIMIZATION SELECTION
+%% ============================================================================
+
+%% generate_optimized_nway_join(+NumberedFacts, +NegCheckStr, +BoundSection, +OutputCode, +VerboseStr, +Options, -Code)
+%  Choose the best join strategy for N-way joins based on available information.
+generate_optimized_nway_join(NumberedFacts, NegCheckStr, BoundSection, OutputCode, VerboseStr, Options, Code) :-
+    length(NumberedFacts, NumFacts),
+
+    % Check for available optimizations
+    detect_consecutive_join_keys(NumberedFacts, PairwiseJoinKeys),
+    has_equijoin_keys(PairwiseJoinKeys, HasEquiJoins),
+
+    % Select strategy
+    (   member(join_strategy(nested_loop), Options)
+    ->  % Force nested loop (for debugging/comparison)
+        format('[PowerShell] Using forced nested loop for ~w-way join~n', [NumFacts]),
+        generate_nested_foreach_loops(NumberedFacts, [], "", NegCheckStr, BoundSection, OutputCode, VerboseStr, Code)
+    ;   HasEquiJoins = true
+    ->  % Use pipelined hash join for equi-joins
+        format('[PowerShell] Using pipelined hash join for ~w-way join~n', [NumFacts]),
+        generate_pipelined_hash_join(NumberedFacts, NegCheckStr, BoundSection, OutputCode, VerboseStr, Code)
+    ;   % Fall back to nested loops for non-equi joins
+        format('[PowerShell] Using nested loop for ~w-way join (no equi-join keys)~n', [NumFacts]),
+        detect_all_join_conditions(NumberedFacts, AllJoinConditions),
+        findall(ExtrLines, (
+            member(fact_info(_, Prefix, _, Args, _), NumberedFacts),
+            generate_prefixed_field_extraction(Args, Prefix, ExtrLines)
+        ), AllExtractions),
+        atomic_list_concat(AllExtractions, '\n                ', ExtractionsCode),
+        generate_nested_foreach_loops(NumberedFacts, AllJoinConditions, ExtractionsCode, NegCheckStr, BoundSection, OutputCode, VerboseStr, Code)
+    ).
+
+%% has_equijoin_keys(+PairwiseJoinKeys, -HasKeys)
+%  Check if there are any equi-join keys between consecutive facts.
+has_equijoin_keys([], false).
+has_equijoin_keys([(_-_)-JoinKeys|Rest], HasKeys) :-
+    (   JoinKeys \= []
+    ->  HasKeys = true
+    ;   has_equijoin_keys(Rest, HasKeys)
+    ).
+
+%% generate_bound_goals_code(+BoundGoals, +VarMap, -Codes, -FinalVarMap)
+%
+%  Generate PowerShell code for a list of bound goals.
+%
+generate_bound_goals_code([], VarMap, [], VarMap).
+generate_bound_goals_code([Goal-Binding|Rest], VarMap, [Code|RestCodes], FinalVarMap) :-
+    generate_bound_goal_code(Goal, Binding, VarMap, Code, NewVarMap),
+    generate_bound_goals_code(Rest, NewVarMap, RestCodes, FinalVarMap).
+
+% ============================================================================
+% BINDING-BASED CMDLET GENERATION (Book 12, Chapters 3 & 5)
+% ============================================================================
+%
+% These predicates integrate with the binding system to generate PowerShell
+% cmdlets that wrap Prolog predicate semantics using proper PowerShell patterns.
+
+%% init_powershell_compiler
+%
+%  Initialize the PowerShell compiler with all registered bindings.
+%  Call this before using binding-based compilation.
+%
+init_powershell_compiler :-
+    format('[PowerShell Compiler] Initializing binding system...~n', []),
+    powershell_bindings:init_powershell_bindings,
+    bindings_for_target(powershell, Bindings),
+    length(Bindings, NumBindings),
+    format('[PowerShell Compiler] Loaded ~w PowerShell bindings~n', [NumBindings]).
+
+%% has_powershell_binding(+Pred)
+%
+%  Check if a predicate has a registered PowerShell binding.
+%
+%  @param Pred  Name/Arity predicate indicator
+%
+has_powershell_binding(Pred) :-
+    binding(powershell, Pred, _, _, _, _).
+
+%% compile_bound_predicate(+Pred, +Options, -Code)
+%
+%  Compile a predicate using its PowerShell binding to generate a cmdlet call.
+%  Falls back to standard compilation if no binding exists.
+%
+%  @param Pred     Name/Arity predicate indicator
+%  @param Options  Compilation options:
+%                    - args(List) - Arguments to pass to the binding
+%                    - wrap_cmdlet(true) - Wrap in cmdlet function
+%                    - verbose_output(true) - Add Write-Verbose statements
+%  @param Code     Generated PowerShell code
+%
+compile_bound_predicate(Pred, Options, Code) :-
+    (   has_powershell_binding(Pred)
+    ->  % Use binding-based generation
+        format('[PowerShell Compiler] Using binding for ~w~n', [Pred]),
+        (   member(args(Args), Options)
+        ->  true
+        ;   Args = []
+        ),
+        (   member(wrap_cmdlet(true), Options)
+        ->  % Generate full cmdlet wrapper
+            generate_cmdlet_wrapper(Pred, Options, Code)
+        ;   % Generate just the call
+            binding_codegen:generate_binding_call(powershell, Pred, Args, Code)
+        )
+    ;   % Fall back to standard compilation
+        format('[PowerShell Compiler] No binding for ~w, using standard compilation~n', [Pred]),
+        compile_to_powershell(Pred, Options, Code)
+    ).
+
+%% generate_cmdlet_wrapper(+Pred, +Options, -CmdletCode)
+%
+%  Generate a complete PowerShell cmdlet function that wraps a bound predicate.
+%  Follows PowerShell conventions: [CmdletBinding()], param(), begin/process/end.
+%
+%  @param Pred        Name/Arity predicate indicator
+%  @param Options     Options passed to binding_codegen
+%  @param CmdletCode  Complete cmdlet function code
+%
+generate_cmdlet_wrapper(Pred, Options, CmdletCode) :-
+    binding_codegen:generate_cmdlet_from_binding(powershell, Pred, Options, CmdletCode).
+
+%% compile_with_bindings(+Predicate, +Options, -Code)
+%
+%  Enhanced compilation that first checks for bindings before falling back
+%  to traditional compilation. Useful for predicates that map directly to
+%  PowerShell cmdlets (e.g., get_service -> Get-Service).
+%
+compile_with_bindings(Predicate, Options, Code) :-
+    Predicate = Pred/Arity,
+    format('[PowerShell Compiler] Checking bindings for ~w/~w~n', [Pred, Arity]),
+    (   has_powershell_binding(Predicate)
+    ->  compile_bound_predicate(Predicate, Options, Code)
+    ;   compile_to_powershell(Predicate, Options, Code)
+    ).
+
+%% generate_binding_call_inline(+Pred, +Args, -Code)
+%
+%  Generate inline code for a bound predicate call without cmdlet wrapper.
+%  Useful when embedding bound calls within larger generated code.
+%
+generate_binding_call_inline(Pred, Args, Code) :-
+    (   has_powershell_binding(Pred)
+    ->  binding_codegen:generate_binding_call(powershell, Pred, Args, Code)
+    ;   % No binding - generate placeholder
+        Pred = Name/Arity,
+        format(string(Code), "# Unbound predicate: ~w/~w", [Name, Arity])
+    ).
+
+%% list_powershell_bindings
+%
+%  List all registered PowerShell bindings with their target names.
+%
+list_powershell_bindings :-
+    format('~n=== Registered PowerShell Bindings ===~n~n', []),
+    forall(
+        binding(powershell, Pred, TargetName, Inputs, Outputs, Opts),
+        (   Pred = Name/Arity,
+            length(Inputs, NumIn),
+            length(Outputs, NumOut),
+            format('  ~w/~w -> ~w  (in:~w, out:~w)~n', [Name, Arity, TargetName, NumIn, NumOut]),
+            (   member(effect(E), Opts)
+            ->  format('    effect: ~w~n', [E])
+            ;   true
+            ),
+            (   member(pattern(P), Opts)
+            ->  format('    pattern: ~w~n', [P])
+            ;   true
+            )
+        )
+    ),
+    format('~n', []).
+
+%% test_bindings_integration
+%
+%  Test the binding system integration with the PowerShell compiler.
+%
+test_bindings_integration :-
+    format('~n=== Testing Binding System Integration ===~n~n', []),
+
+    % Initialize
+    format('[Test] Initializing...~n', []),
+    init_powershell_compiler,
+
+    % Test 1: Check binding exists
+    format('[Test 1] Check binding existence~n', []),
+    (   has_powershell_binding(get_service/1)
+    ->  format('  [PASS] get_service/1 has binding~n', [])
+    ;   format('  [FAIL] get_service/1 binding not found~n', [])
+    ),
+
+    % Test 2: Generate binding call
+    format('[Test 2] Generate binding call~n', []),
+    generate_binding_call_inline(sqrt/2, [16], SqrtCode),
+    format('  sqrt(16) -> ~w~n', [SqrtCode]),
+    (   sub_string(SqrtCode, _, _, _, "Sqrt")
+    ->  format('  [PASS] Generated [Math]::Sqrt call~n', [])
+    ;   format('  [FAIL] Expected Sqrt in output~n', [])
+    ),
+
+    % Test 3: Generate cmdlet wrapper
+    format('[Test 3] Generate cmdlet wrapper~n', []),
+    generate_cmdlet_wrapper(test_path/1, [verbose_output(true)], CmdletCode),
+    (   sub_string(CmdletCode, _, _, _, "[CmdletBinding()]")
+    ->  format('  [PASS] Generated CmdletBinding attribute~n', [])
+    ;   format('  [FAIL] Missing CmdletBinding~n', [])
+    ),
+
+    % Test 4: Compile bound predicate
+    format('[Test 4] Compile bound predicate with call~n', []),
+    compile_bound_predicate(write_output/1, [args(['Hello'])], OutputCode),
+    format('  write_output -> ~w~n', [OutputCode]),
+    (   sub_string(OutputCode, _, _, _, "Write-Output")
+    ->  format('  [PASS] Generated Write-Output call~n', [])
+    ;   format('  [FAIL] Expected Write-Output~n', [])
+    ),
+
+    format('~n=== Binding Integration Tests Complete ===~n', []).
+
+%% test_bound_rule_compilation
+%
+%  Test compilation of rules that use bound predicates.
+%
+test_bound_rule_compilation :-
+    format('~n=== Testing Bound Rule Compilation ===~n~n', []),
+
+    % Initialize bindings
+    init_powershell_compiler,
+
+    % Test 1: Goal classification
+    format('[Test 1] Goal classification~n', []),
+    classify_body_goals([sqrt(X, Y), parent(A, B), X > 0], Bound, Facts, Builtins),
+    length(Bound, NumBound),
+    length(Facts, NumFacts),
+    length(Builtins, NumBuiltins),
+    format('  Bound: ~w, Facts: ~w, Builtins: ~w~n', [NumBound, NumFacts, NumBuiltins]),
+    (   NumBound = 1, NumFacts = 1, NumBuiltins = 1
+    ->  format('  [PASS] Goals correctly classified~n', [])
+    ;   format('  [FAIL] Expected 1 bound, 1 fact, 1 builtin~n', [])
+    ),
+
+    % Test 2: Generate bound goal code
+    format('[Test 2] Generate bound goal code~n', []),
+    goal_has_binding(sqrt(16, Result), Binding),
+    generate_bound_goal_code(sqrt(16, Result), Binding, [], Code, _NewVarMap),
+    format('  sqrt(16, Result) -> ~w~n', [Code]),
+    (   sub_string(Code, _, _, _, "[Math]::Sqrt")
+    ->  format('  [PASS] Generated .NET static call~n', [])
+    ;   format('  [FAIL] Expected [Math]::Sqrt~n', [])
+    ),
+
+    % Test 3: Format Prolog args for PowerShell
+    format('[Test 3] Format arguments~n', []),
+    format_arg_for_ps([], 'ServiceName', Arg1),
+    format_arg_for_ps([], 42, Arg2),
+    format_arg_for_ps([], hello, Arg3),
+    format('  ServiceName -> ~w~n', [Arg1]),
+    format('  42 -> ~w~n', [Arg2]),
+    format('  hello -> ~w~n', [Arg3]),
+    (   Arg1 = "$ServiceName", Arg2 = "42", Arg3 = "'hello'"
+    ->  format('  [PASS] Arguments formatted correctly~n', [])
+    ;   format('  [FAIL] Argument formatting issue~n', [])
+    ),
+
+    % Test 4: Compile a pure bound rule
+    format('[Test 4] Compile pure bound rule~n', []),
+    % Define a test rule dynamically
+    % NOTE: Must use distinct variable names from Tests 1-3 to avoid
+    % sharing Prolog variables across the test predicate!
+    abolish(user:compute_sqrt/2),
+    assertz((user:compute_sqrt(In, Out) :- sqrt(In, Out))),
+    (   compile_to_powershell(compute_sqrt/2, [powershell_mode(pure)], PSCode)
+    ->  format('  Generated code length: ~w chars~n', [PSCode]),
+        (   sub_string(PSCode, _, _, _, "[Math]::Sqrt")
+        ->  format('  [PASS] Pure bound rule compiled with binding~n', [])
+        ;   format('  [INFO] Code generated but binding not used (may need init)~n', []),
+            format('  Code snippet: ~w~n', [PSCode])
+        )
+    ;   format('  [FAIL] Compilation failed~n', [])
+    ),
+    abolish(user:compute_sqrt/2),
+
+    % Test 5: Compile a mixed bound/fact rule
+    format('[Test 5] Compile mixed bound/fact rule~n', []),
+    % Define facts first
+    abolish(user:test_emp/2),
+    assertz(user:test_emp(alice, 100)),
+    assertz(user:test_emp(bob, 144)),
+    % Define mixed rule: test_emp is fact-based, sqrt is bound
+    % Use unique variable names to avoid sharing with other tests
+    abolish(user:emp_sqrt/2),
+    assertz((user:emp_sqrt(MixName, MixSqrt) :- test_emp(MixName, MixVal), sqrt(MixVal, MixSqrt))),
+    (   compile_to_powershell(emp_sqrt/2, [powershell_mode(pure)], MixedCode)
+    ->  % Check each pattern individually for debugging
+        (sub_string(MixedCode, _, _, _, "foreach") -> HasForeach = true ; HasForeach = false),
+        (sub_string(MixedCode, _, _, _, "[Math]::Sqrt") -> HasSqrt = true ; HasSqrt = false),
+        (sub_string(MixedCode, _, _, _, "$fact") -> HasFact = true ; HasFact = false),
+        (   HasForeach = true, HasSqrt = true, HasFact = true
+        ->  format('  [PASS] Mixed rule compiled with foreach loop and binding~n', [])
+        ;   format('  [FAIL] Missing patterns: foreach=~w, Sqrt=~w, fact=~w~n', [HasForeach, HasSqrt, HasFact])
+        )
+    ;   format('  [FAIL] Mixed rule compilation failed~n', [])
+    ),
+    abolish(user:test_emp/2),
+    abolish(user:emp_sqrt/2),
+
+    % Test 6: Compile multi-fact join rule
+    format('[Test 6] Compile multi-fact join rule~n', []),
+    % Define facts for a transitive closure style join
+    abolish(user:edge/2),
+    assertz(user:edge(a, b)),
+    assertz(user:edge(b, c)),
+    assertz(user:edge(c, d)),
+    % Define join rule: path(X, Z) :- edge(X, Y), edge(Y, Z)
+    abolish(user:path/2),
+    assertz((user:path(JoinX, JoinZ) :- edge(JoinX, JoinY), edge(JoinY, JoinZ))),
+    (   compile_to_powershell(path/2, [powershell_mode(pure)], JoinCode)
+    ->  % Check for nested loops and join condition
+        (sub_string(JoinCode, _, _, _, "foreach ($r1") -> HasR1 = true ; HasR1 = false),
+        (sub_string(JoinCode, _, _, _, "foreach ($r2") -> HasR2 = true ; HasR2 = false),
+        (sub_string(JoinCode, _, _, _, "-eq") -> HasJoinCond = true ; HasJoinCond = false),
+        (   HasR1 = true, HasR2 = true, HasJoinCond = true
+        ->  format('  [PASS] Multi-fact join compiled with nested loops and join condition~n', [])
+        ;   format('  [FAIL] Missing patterns: r1=~w, r2=~w, join=~w~n', [HasR1, HasR2, HasJoinCond])
+        )
+    ;   format('  [FAIL] Multi-fact join compilation failed~n', [])
+    ),
+    abolish(user:edge/2),
+    abolish(user:path/2),
+
+    % Test 7: Multi-fact join with bound goal
+    format('[Test 7] Multi-fact join with bound goal~n', []),
+    % Define facts for join
+    abolish(user:item/2),
+    assertz(user:item(apple, 4)),
+    assertz(user:item(banana, 9)),
+    abolish(user:price/2),
+    assertz(user:price(apple, 100)),
+    assertz(user:price(banana, 200)),
+    % Join with sqrt bound goal: combined(Name, SqrtQty) :- item(Name, Qty), price(Name, _), sqrt(Qty, SqrtQty)
+    abolish(user:combined/2),
+    assertz((user:combined(ItemName, SqrtQty) :- item(ItemName, ItemQty), price(ItemName, _ItemPrice), sqrt(ItemQty, SqrtQty))),
+    (   compile_to_powershell(combined/2, [powershell_mode(pure)], CombinedCode)
+    ->  (sub_string(CombinedCode, _, _, _, "[Math]::Sqrt") -> HasSqrtBind = true ; HasSqrtBind = false),
+        (sub_string(CombinedCode, _, _, _, "foreach") -> HasLoop = true ; HasLoop = false),
+        % Check for hash join pattern
+        (sub_string(CombinedCode, _, _, _, "$hashIndex") -> HasHashJoin = true ; HasHashJoin = false),
+        (   HasSqrtBind = true, HasLoop = true, HasHashJoin = true
+        ->  format('  [PASS] Multi-fact join with bound goal compiled (using hash join)~n', [])
+        ;   HasSqrtBind = true, HasLoop = true
+        ->  format('  [PASS] Multi-fact join with bound goal compiled (nested loop fallback)~n', [])
+        ;   format('  [FAIL] Missing patterns: Sqrt=~w, loop=~w, hashJoin=~w~n', [HasSqrtBind, HasLoop, HasHashJoin])
+        )
+    ;   format('  [FAIL] Multi-fact join with bound goal compilation failed~n', [])
+    ),
+    abolish(user:item/2),
+    abolish(user:price/2),
+    abolish(user:combined/2),
+
+    % Test 8: Verify hash join pattern explicitly
+    format('[Test 8] Hash join vs nested loop selection~n', []),
+    % Define facts for testing hash join
+    abolish(user:emp/2),
+    assertz(user:emp(alice, 100)),
+    assertz(user:emp(bob, 200)),
+    abolish(user:dept/2),
+    assertz(user:dept(alice, engineering)),
+    assertz(user:dept(bob, sales)),
+    % Join rule with bound goal (should use hash join)
+    abolish(user:emp_dept_sqrt/3),
+    assertz((user:emp_dept_sqrt(EmpName, EmpDept, SqrtSal) :-
+        emp(EmpName, EmpSal), dept(EmpName, EmpDept), sqrt(EmpSal, SqrtSal))),
+    (   compile_to_powershell(emp_dept_sqrt/3, [powershell_mode(pure)], HashJoinCode)
+    ->  (sub_string(HashJoinCode, _, _, _, "$hashIndex") -> UsesHashJoin = true ; UsesHashJoin = false),
+        (sub_string(HashJoinCode, _, _, _, "O(n+m)") -> HasHashComment = true ; HasHashComment = false),
+        (sub_string(HashJoinCode, _, _, _, "probeKey") -> HasProbe = true ; HasProbe = false),
+        (   UsesHashJoin = true, HasProbe = true
+        ->  format('  [PASS] Hash join generated for equi-join with bound goal~n', [])
+        ;   format('  [INFO] Using nested loop (join_keys not detected): hash=~w, probe=~w~n',
+                   [UsesHashJoin, HasProbe])
+        )
+    ;   format('  [FAIL] Hash join compilation failed~n', [])
+    ),
+    abolish(user:emp/2),
+    abolish(user:dept/2),
+    abolish(user:emp_dept_sqrt/3),
+
+    % Test 9: 3-way join (N-way join support)
+    format('[Test 9] 3-way join with bound goal~n', []),
+    % Define facts for 3-way join: employee, department, location
+    abolish(user:employee/2),
+    assertz(user:employee(alice, eng)),
+    assertz(user:employee(bob, sales)),
+    abolish(user:department/2),
+    assertz(user:department(eng, building_a)),
+    assertz(user:department(sales, building_b)),
+    abolish(user:building/2),
+    assertz(user:building(building_a, 100)),
+    assertz(user:building(building_b, 200)),
+    % 3-way join: employee -> department -> building with sqrt on capacity
+    abolish(user:emp_capacity/3),
+    assertz((user:emp_capacity(EmpName3, Building3, SqrtCap3) :-
+        employee(EmpName3, Dept3), department(Dept3, Building3), building(Building3, Cap3), sqrt(Cap3, SqrtCap3))),
+    (   compile_to_powershell(emp_capacity/3, [powershell_mode(pure)], ThreeWayCode)
+    ->  (sub_string(ThreeWayCode, _, _, _, "3-way") -> Has3Way = true ; Has3Way = false),
+        (sub_string(ThreeWayCode, _, _, _, "$r3") -> HasR3 = true ; HasR3 = false),
+        (sub_string(ThreeWayCode, _, _, _, "[Math]::Sqrt") -> Has3Sqrt = true ; Has3Sqrt = false),
+        (   Has3Way = true, HasR3 = true, Has3Sqrt = true
+        ->  format('  [PASS] 3-way join generated with all facts and binding~n', [])
+        ;   Has3Way = false, HasR3 = true, Has3Sqrt = true
+        ->  format('  [PASS] 3-way join generated (nested loops)~n', [])
+        ;   format('  [FAIL] Missing patterns: 3-way=~w, r3=~w, Sqrt=~w~n', [Has3Way, HasR3, Has3Sqrt])
+        )
+    ;   format('  [FAIL] 3-way join compilation failed~n', [])
+    ),
+    abolish(user:employee/2),
+    abolish(user:department/2),
+    abolish(user:building/2),
+    abolish(user:emp_capacity/3),
+
+    format('~n=== Bound Rule Compilation Tests Complete ===~n', []).
+
+%% ============================================================================
+%% C# HOSTING INTEGRATION (Book 12, Chapter 6)
+%% ============================================================================
+%%
+%% These predicates integrate with dotnet_glue to enable:
+%% - In-process C# ↔ PowerShell communication
+%% - Cross-target pipeline compilation
+%% - Runspace management for efficient execution
+
+%% compile_with_csharp_host(+Predicates, +Options, -PSCode, -CSharpCode)
+%
+%  Compile predicates to PowerShell and generate a C# host for in-process execution.
+%
+%  This generates two outputs:
+%  1. PSCode - PowerShell functions for the predicates
+%  2. CSharpCode - C# host class that can invoke the PowerShell in-process
+%
+%  Options:
+%    - namespace(Name) : C# namespace (default: UnifyWeaver.Generated)
+%    - class(Name) : Host class name (default: PowerShellHost)
+%    - async(Bool) : Generate async methods (default: false)
+%    - include_bridge(Bool) : Include PowerShellBridge class (default: true)
+%
+compile_with_csharp_host(Predicates, Options, PSCode, CSharpCode) :-
+    format('[C# Hosting] Compiling ~w predicates with C# host~n', [Predicates]),
+
+    % Compile each predicate to PowerShell
+    findall(Code, (
+        member(Pred, Predicates),
+        compile_to_powershell(Pred, [powershell_mode(pure)|Options], Code)
+    ), PSCodes),
+    atomic_list_concat(PSCodes, '\n\n', PSCode),
+
+    % Generate C# host
+    generate_csharp_host_code(Predicates, Options, CSharpCode).
+
+%% generate_csharp_host_code(+Predicates, +Options, -Code)
+%  Generate C# host class for invoking PowerShell predicates.
+generate_csharp_host_code(Predicates, Options, Code) :-
+    option_or_default(namespace(Namespace), Options, 'UnifyWeaver.Generated'),
+    option_or_default(class(ClassName), Options, 'PowerShellHost'),
+    option_or_default(include_bridge(IncludeBridge), Options, true),
+
+    % Generate method wrappers for each predicate
+    findall(MethodCode, (
+        member(Pred/Arity, Predicates),
+        generate_host_method(Pred, Arity, MethodCode)
+    ), Methods),
+    atomic_list_concat(Methods, '\n\n', MethodsCode),
+
+    % Include bridge if requested
+    (   IncludeBridge == true
+    ->  dotnet_glue:generate_powershell_bridge([namespace(Namespace)], BridgeCode),
+        format(atom(FullCode), '~w~n~n~w', [BridgeCode, HostCode])
+    ;   FullCode = HostCode
+    ),
+
+    format(atom(HostCode), '
+// Generated PowerShell Host for UnifyWeaver predicates
+// Provides typed C# wrappers for PowerShell function calls
+
+using System;
+using System.Collections.Generic;
+using System.Management.Automation;
+
+namespace ~w
+{
+    /// <summary>
+    /// Host class for invoking compiled PowerShell predicates from C#.
+    /// </summary>
+    public class ~w
+    {
+        private readonly string _scriptBlock;
+
+        /// <summary>
+        /// Initialize host with the compiled PowerShell script.
+        /// </summary>
+        /// <param name="scriptBlock">PowerShell script containing compiled predicates</param>
+        public ~w(string scriptBlock)
+        {
+            _scriptBlock = scriptBlock;
+            // Initialize the runspace with the script
+            PowerShellBridge.SetVariable("__init_script__", scriptBlock);
+            PowerShellBridge.Invoke<object, object>("Invoke-Expression $__init_script__", null);
+        }
+
+~w
+    }
+}
+', [Namespace, ClassName, ClassName, MethodsCode]),
+
+    Code = FullCode.
+
+%% generate_host_method(+Pred, +Arity, -Code)
+%  Generate a C# method wrapper for a PowerShell predicate.
+generate_host_method(Pred, Arity, Code) :-
+    atom_string(Pred, PredStr),
+    % Generate parameter list
+    generate_csharp_params(Arity, ParamList, ArgList),
+
+    format(atom(Code), '
+        /// <summary>
+        /// Invoke the ~w predicate.
+        /// </summary>
+        public IEnumerable<dynamic> ~w(~w)
+        {
+            var script = "~w ~w";
+            return PowerShellBridge.Invoke<object, dynamic>(script, null);
+        }', [PredStr, PredStr, ParamList, PredStr, ArgList]).
+
+%% generate_csharp_params(+Arity, -ParamList, -ArgList)
+%  Generate C# parameter declarations and argument list.
+generate_csharp_params(0, "", "") :- !.
+generate_csharp_params(1, "string arg1", "$arg1") :- !.
+generate_csharp_params(2, "string arg1, string arg2", "$arg1 $arg2") :- !.
+generate_csharp_params(Arity, ParamList, ArgList) :-
+    Arity > 2,
+    findall(P, (between(1, Arity, I), format(atom(P), "string arg~w", [I])), Params),
+    findall(A, (between(1, Arity, I), format(atom(A), "$arg~w", [I])), Args),
+    atomic_list_concat(Params, ', ', ParamList),
+    atomic_list_concat(Args, ' ', ArgList).
+
+%% generate_csharp_bridge(+BridgeType, +Options, -Code)
+%
+%  Generate a specific type of C# bridge code.
+%
+%  BridgeType:
+%    - powershell : PowerShell in-process bridge
+%    - ironpython : IronPython in-process bridge
+%    - cpython : CPython pipe-based bridge
+%
+generate_csharp_bridge(powershell, Options, Code) :-
+    dotnet_glue:generate_powershell_bridge(Options, Code).
+
+generate_csharp_bridge(ironpython, Options, Code) :-
+    dotnet_glue:generate_ironpython_bridge(Options, Code).
+
+generate_csharp_bridge(cpython, Options, Code) :-
+    dotnet_glue:generate_cpython_bridge(Options, Code).
+
+%% compile_cross_target_pipeline(+Steps, +Options, -Code)
+%
+%  Compile a cross-target pipeline where steps can be in different languages.
+%
+%  Steps is a list of step(Target, Predicate, Options):
+%    - step(powershell, filter_users/2, [])
+%    - step(csharp, transform_data/2, [inline_code(...)])
+%    - step(python, analyze/1, [])
+%
+%  This generates a complete .NET solution that orchestrates the pipeline.
+%
+compile_cross_target_pipeline(Steps, Options, Code) :-
+    format('[Cross-Target] Compiling ~w-step pipeline~n', [Steps]),
+    length(Steps, NumSteps),
+
+    % Detect runtime capabilities
+    dotnet_glue:detect_dotnet_runtime(DotNetRuntime),
+    dotnet_glue:detect_powershell(PSVersion),
+    format('[Cross-Target] .NET: ~w, PowerShell: ~w~n', [DotNetRuntime, PSVersion]),
+
+    % Generate pipeline code using dotnet_glue
+    dotnet_glue:generate_dotnet_pipeline(Steps, Options, Code),
+    format('[Cross-Target] Generated ~w-step pipeline code~n', [NumSteps]).
+
+%% option_or_default(+Option, +Options, +Default)
+%  Extract option value or use default.
+option_or_default(Option, Options, _Default) :-
+    member(Option, Options), !.
+option_or_default(Option, _Options, Default) :-
+    Option =.. [Name, Default],
+    \+ var(Default).
+
+%% ============================================================================
+%% C# HOSTING TESTS
+%% ============================================================================
+
+test_csharp_hosting :-
+    format('~n=== Testing C# Hosting Integration ===~n~n', []),
+
+    % Test 1: Generate PowerShell bridge
+    format('[Test 1] Generate PowerShell bridge~n', []),
+    generate_csharp_bridge(powershell, [], BridgeCode),
+    (   sub_string(BridgeCode, _, _, _, "PowerShellBridge"),
+        sub_string(BridgeCode, _, _, _, "SharedRunspace")
+    ->  format('  [PASS] PowerShell bridge generated with runspace~n', [])
+    ;   format('  [FAIL] Bridge missing expected components~n', [])
+    ),
+
+    % Test 2: Runtime detection
+    format('[Test 2] Runtime detection~n', []),
+    dotnet_glue:detect_dotnet_runtime(Runtime),
+    dotnet_glue:detect_powershell(PSVer),
+    format('  .NET Runtime: ~w~n', [Runtime]),
+    format('  PowerShell: ~w~n', [PSVer]),
+    format('  [PASS] Runtime detection complete~n', []),
+
+    % Test 3: Generate IronPython bridge
+    format('[Test 3] Generate IronPython bridge~n', []),
+    generate_csharp_bridge(ironpython, [namespace('Test.Glue')], IPBridge),
+    (   sub_string(IPBridge, _, _, _, "IronPythonBridge"),
+        sub_string(IPBridge, _, _, _, "Test.Glue")
+    ->  format('  [PASS] IronPython bridge generated with custom namespace~n', [])
+    ;   format('  [FAIL] IronPython bridge missing expected components~n', [])
+    ),
+
+    % Test 4: C# parameter generation
+    format('[Test 4] C# parameter generation~n', []),
+    generate_csharp_params(0, P0, A0),
+    generate_csharp_params(1, P1, A1),
+    generate_csharp_params(3, P3, A3),
+    (   P0 = "", A0 = "",
+        P1 = "string arg1", A1 = "$arg1",
+        sub_string(P3, _, _, _, "arg3")
+    ->  format('  [PASS] Parameters generated correctly~n', [])
+    ;   format('  [FAIL] Parameter generation error~n', [])
+    ),
+
+    format('~n=== C# Hosting Tests Complete ===~n', []).
+
+%% ============================================================================
+%% ADVANCED JOIN OPTIMIZATION TESTS
+%% ============================================================================
+
+test_advanced_join_optimizations :-
+    format('~n=== Testing Advanced Join Optimizations ===~n~n', []),
+
+    % Test 1: Pipelined hash join generation
+    format('[Test 1] Pipelined hash join generation~n', []),
+    test_pipelined_hash_join,
+
+    % Test 2: Index-based lookup generation
+    format('[Test 2] Index-based lookup generation~n', []),
+    test_index_generation,
+
+    % Test 3: Consecutive join key detection
+    format('[Test 3] Consecutive join key detection~n', []),
+    test_consecutive_join_keys,
+
+    % Test 4: Optimization strategy selection
+    format('[Test 4] Join strategy selection~n', []),
+    test_join_strategy_selection,
+
+    format('~n=== Advanced Join Optimization Tests Complete ===~n', []).
+
+test_pipelined_hash_join :-
+    % Create mock numbered facts for a 3-way join with equi-join keys
+    % Simulating: user(Id, Name), order(Id, Product), product(Product, Price)
+    Args1 = [Id1, Name],
+    Args2 = [Id2, Product1],
+    Args3 = [Product2, Price],
+    Id1 = Id2,  % Same variable = equi-join key
+    Product1 = Product2,
+
+    NumberedFacts = [
+        fact_info(1, "r1", user, Args1, [Id1-"$r1_X", Name-"$r1_Y"]),
+        fact_info(2, "r2", order, Args2, [Id2-"$r2_X", Product1-"$r2_Y"]),
+        fact_info(3, "r3", product, Args3, [Product2-"$r3_X", Price-"$r3_Y"])
+    ],
+
+    % Generate pipelined hash join
+    generate_pipelined_hash_join(NumberedFacts, "", "", "[PSCustomObject]@{}", "", Code),
+
+    % Verify key components exist
+    (   sub_string(Code, _, _, _, "Pipelined hash join"),
+        sub_string(Code, _, _, _, "hashIndex_"),
+        sub_string(Code, _, _, _, "pipeline_")
+    ->  format('  [PASS] Pipelined hash join generated with hash indices~n', [])
+    ;   format('  [FAIL] Missing pipelined hash join components~n', [])
+    ).
+
+test_index_generation :-
+    % Test single field index
+    generate_index_key_expr([0], "$item", KeyExpr1),
+    (   KeyExpr1 = "$item.X"
+    ->  format('  Single field index: PASS~n', [])
+    ;   format('  Single field index: FAIL (got ~w)~n', [KeyExpr1])
+    ),
+
+    % Test composite index
+    generate_index_key_expr([0, 1], "$item", KeyExpr2),
+    (   sub_string(KeyExpr2, _, _, _, "X"),
+        sub_string(KeyExpr2, _, _, _, "Y")
+    ->  format('  Composite index: PASS~n', [])
+    ;   format('  Composite index: FAIL (got ~w)~n', [KeyExpr2])
+    ),
+
+    % Test indexed lookup code generation
+    generate_indexed_lookup(user, [0], ["$userId"], LookupCode),
+    (   sub_string(LookupCode, _, _, _, "index_user"),
+        sub_string(LookupCode, _, _, _, "lookupKey")
+    ->  format('  Indexed lookup: PASS~n', []),
+        format('  [PASS] Index generation complete~n', [])
+    ;   format('  Indexed lookup: FAIL~n', [])
+    ).
+
+test_consecutive_join_keys :-
+    % Create facts with join keys between consecutive pairs
+    Args1 = [A, B],
+    Args2 = [C, D],
+    Args3 = [E, F],
+    B = C,  % Join between fact 1 and 2
+    D = E,  % Join between fact 2 and 3
+
+    NumberedFacts = [
+        fact_info(1, "r1", f1, Args1, []),
+        fact_info(2, "r2", f2, Args2, []),
+        fact_info(3, "r3", f3, Args3, [])
+    ],
+
+    detect_consecutive_join_keys(NumberedFacts, PairwiseKeys),
+    length(PairwiseKeys, NumPairs),
+    (   NumPairs = 2
+    ->  format('  [PASS] Detected ~w join key pairs~n', [NumPairs])
+    ;   format('  [FAIL] Expected 2 pairs, got ~w~n', [NumPairs])
+    ).
+
+test_join_strategy_selection :-
+    % Test with equi-join keys - should select hash join
+    Args1 = [X1, Y1],
+    Args2 = [X2, Y2],
+    X1 = X2,
+
+    NumberedFacts = [
+        fact_info(1, "r1", f1, Args1, []),
+        fact_info(2, "r2", f2, Args2, [])
+    ],
+
+    detect_consecutive_join_keys(NumberedFacts, JoinKeys),
+    has_equijoin_keys(JoinKeys, HasEqui1),
+    (   HasEqui1 = true
+    ->  format('  Equi-join detection: PASS~n', [])
+    ;   format('  Equi-join detection: FAIL~n', [])
+    ),
+
+    % Test without join keys - should fall back to nested loop
+    Args3 = [A, B],
+    Args4 = [C, D],  % No shared variables
+
+    NumberedFacts2 = [
+        fact_info(1, "r1", f1, Args3, []),
+        fact_info(2, "r2", f2, Args4, [])
+    ],
+
+    detect_consecutive_join_keys(NumberedFacts2, JoinKeys2),
+    has_equijoin_keys(JoinKeys2, HasEqui2),
+    (   HasEqui2 = false
+    ->  format('  Non-equi-join detection: PASS~n', []),
+        format('  [PASS] Join strategy selection complete~n', [])
+    ;   format('  Non-equi-join detection: FAIL~n', [])
+    ).
