@@ -2598,6 +2598,65 @@ fn flatten_field_stage(records: &[Record], field: &str) -> Vec<Record> {
     }
     result
 }
+
+/// Debounce: Emit records only after a silence period.
+/// Groups records by time windows and emits the last record in each window.
+fn debounce_stage(records: &[Record], ms: u64, timestamp_field: Option<&str>) -> Vec<Record> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    if records.is_empty() {
+        return Vec::new();
+    }
+
+    let mut result = Vec::new();
+    let mut buffer: Option<Record> = None;
+    let mut last_time: Option<f64> = None;
+    let threshold_sec = ms as f64 / 1000.0;
+
+    for record in records {
+        let current_time = if let Some(field) = timestamp_field {
+            if let Some(ts) = record.get(field) {
+                match ts {
+                    serde_json::Value::Number(n) => n.as_f64().unwrap_or_else(|| {
+                        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+                    }),
+                    _ => SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64(),
+                }
+            } else {
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+            }
+        } else {
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+        };
+
+        match last_time {
+            None => {
+                buffer = Some(record.clone());
+                last_time = Some(current_time);
+            }
+            Some(lt) if current_time - lt < threshold_sec => {
+                // Within debounce window, replace buffer
+                buffer = Some(record.clone());
+                last_time = Some(current_time);
+            }
+            Some(_) => {
+                // Silence period exceeded, emit buffered and start new
+                if let Some(buf) = buffer.take() {
+                    result.push(buf);
+                }
+                buffer = Some(record.clone());
+                last_time = Some(current_time);
+            }
+        }
+    }
+
+    // Emit final buffered record
+    if let Some(buf) = buffer {
+        result.push(buf);
+    }
+
+    result
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2831,6 +2890,8 @@ generate_rust_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code)
 generate_rust_single_enhanced_stage(tap(_), "") :- !.
 generate_rust_single_enhanced_stage(flatten, "") :- !.
 generate_rust_single_enhanced_stage(flatten(_), "") :- !.
+generate_rust_single_enhanced_stage(debounce(_), "") :- !.
+generate_rust_single_enhanced_stage(debounce(_, _), "") :- !.
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -3347,6 +3408,22 @@ generate_rust_stage_flow(flatten(Field), InVar, OutVar, Code) :-
     format(string(Code),
 "    // Flatten Field: expand '~w' field into individual records
     let ~w = flatten_field_stage(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
+
+% Debounce stage: emit only after silence period
+generate_rust_stage_flow(debounce(Ms), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced_~w_result", [Ms]),
+    format(string(Code),
+"    // Debounce: emit after ~wms silence period
+    let ~w = debounce_stage(&~w, ~w, None);", [Ms, OutVar, InVar, Ms]).
+
+% Debounce stage with timestamp field
+generate_rust_stage_flow(debounce(Ms, Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced_~w_~w_result", [Ms, Field]),
+    format(string(Code),
+"    // Debounce: emit after ~wms silence (using '~w' timestamp field)
+    let ~w = debounce_stage(&~w, ~w, Some(\"~w\"));", [Ms, Field, OutVar, InVar, Ms, Field]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
