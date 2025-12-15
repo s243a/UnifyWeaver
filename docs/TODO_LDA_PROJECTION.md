@@ -132,6 +132,12 @@ python3 scripts/validate_multi_head.py \
   - Native NPY loading with float32/float64 support
   - Integrated with `PtSearcher.vector_search_with_options()`
   - 7 unit tests + integration test
+- [x] Python GPU embedding provider (`src/unifyweaver/targets/python_runtime/modernbert_embedding.py`)
+  - Flash Attention 2 support (auto-detected)
+  - CUDA/MPS/CPU device auto-selection
+  - nomic-ai/nomic-embed-text-v1.5 (768 dim, 8192 context)
+  - Query/document prefixes for asymmetric embeddings
+  - ~70 embeddings/sec batch throughput on GPU
 - [ ] MCP tool for Claude integration (useful for server-based deployments)
 - [ ] Hot-reload support for W matrix updates
 - [ ] Per-domain projection matrices
@@ -145,6 +151,9 @@ python3 scripts/validate_multi_head.py \
 # Run Python tests
 python3 tests/core/test_lda_projection.py
 python3 tests/core/test_lda_database.py
+
+# Test Python GPU embedding provider
+python3 src/unifyweaver/targets/python_runtime/modernbert_embedding.py
 
 # Run Prolog tests
 swipl tests/core/test_component_registry.pl
