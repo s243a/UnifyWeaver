@@ -47,6 +47,7 @@ Proposals serve several purposes:
 | [Semantic Projection LDA](SEMANTIC_PROJECTION_LDA.md) | Implemented | v0.0.3 | Medium |
 | [Multi-Head Projection Theory](MULTI_HEAD_PROJECTION_THEORY.md) | Implemented | v0.0.3 | Medium |
 | [Smoothness Regularization](SMOOTHNESS_REGULARIZATION.md) | Proposal | v0.0.4+ | Low |
+| [Transformer Distillation](TRANSFORMER_DISTILLATION.md) | Proposal | v0.0.5+ | Low |
 | [LDA Database Schema](LDA_DATABASE_SCHEMA.md) | Implemented | v0.0.3 | Medium |
 | [LDA Training Approach](LDA_TRAINING_APPROACH.md) | Implemented | v0.0.3 | Medium |
 

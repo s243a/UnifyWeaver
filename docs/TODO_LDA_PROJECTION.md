@@ -142,6 +142,7 @@ python3 scripts/validate_multi_head.py \
 - [ ] Hot-reload support for W matrix updates
 - [ ] Per-domain projection matrices
 - [ ] Smoothness regularization for sparse answer clusters ([SMOOTHNESS_REGULARIZATION.md](proposals/SMOOTHNESS_REGULARIZATION.md))
+- [ ] Transformer distillation for large-scale projection ([TRANSFORMER_DISTILLATION.md](proposals/TRANSFORMER_DISTILLATION.md))
 - [x] Multiple attention heads (separate input/output projections)
 
 ## Notes
