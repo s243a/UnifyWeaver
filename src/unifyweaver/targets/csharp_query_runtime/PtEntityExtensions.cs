@@ -27,12 +27,11 @@ namespace UnifyWeaver.QueryRuntime.Pearltrees
 
             try
             {
-                // LiteDB's BsonValue has AsType<T>() for convenient conversion
-                return bsonValue.AsType<T>();
+                // Use LiteDB's mapper for safe conversion across versions.
+                return BsonMapper.Global.Deserialize<T>(bsonValue);
             }
-            catch (Exception ex) // Catch all exceptions from AsType<T> to return default
+            catch (Exception)
             {
-                // Log the conversion error if desired: Console.WriteLine($"Conversion error for key '{key}': {ex.Message}");
                 return default(T);
             }
         }
@@ -94,7 +93,7 @@ namespace UnifyWeaver.QueryRuntime.Pearltrees
                 var jsonString = System.Text.Json.JsonSerializer.Serialize(obj);
                 return JsonNode.Parse(jsonString);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Log conversion error if desired
                 return null;

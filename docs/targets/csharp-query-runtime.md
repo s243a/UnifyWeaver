@@ -62,6 +62,18 @@ The current implementation emits static C# builders that assemble the plan via n
 - Plans currently materialise relation facts inside the generated module; external fact providers will arrive in later releases.
 - Runtime assumes in-process execution (`dotnet run`); distributed execution and persistence hooks remain future work.
 
+## Optional Integrations (No Hard Dependencies)
+The core query runtime is intended to stay dependency-free (no LiteDB, ONNX, etc.). Optional integrations live in separate C# files/projects so consumers only take on extra dependencies when they opt in.
+
+- Core library project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Core.csproj`
+  - Includes: `QueryRuntime.cs`, `IEmbeddingProvider.cs`
+  - External deps: none
+- Pearltrees + LiteDB project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Pearltrees.csproj`
+  - Includes: `Pt*.cs` + `PtHarness.cs`
+  - External deps: LiteDB (uses `lib/LiteDB.dll` when present; otherwise falls back to NuGet `LiteDB` package)
+- ONNX embeddings: `src/unifyweaver/targets/csharp_query_runtime/OnnxEmbeddingProvider.cs`
+  - External deps: `Microsoft.ML.OnnxRuntime` (not included in the default projects; opt in by adding the file + package reference)
+
 ## Configuration
 - New preference atom: `target(csharp_query)`.
 - Optional runtime hints:

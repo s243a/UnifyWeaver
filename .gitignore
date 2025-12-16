@@ -123,3 +123,7 @@ models/
 *.db
 *.db-shm
 *.db-wal
+
+# .NET build artifacts
+**/bin/
+**/obj/
