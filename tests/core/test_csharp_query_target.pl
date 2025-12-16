@@ -1680,8 +1680,18 @@ capture_user_error(Goal, Output) :-
         )
     ).
 
-dotnet_cli(Path) :-
-    catch(absolute_file_name(path(dotnet), Path, [access(execute)]), _, fail).
+dotnet_cli(path(dotnet)) :-
+    catch(
+        (   process_create(path(dotnet), ['--version'],
+                           [ stdout(null),
+                             stderr(null),
+                             process(PID)
+                           ]),
+            process_wait(PID, exit(0))
+        ),
+        _,
+        fail
+    ).
 
 % Create temp directory with test name from Plan
 prepare_temp_dir(Plan, Dir) :-

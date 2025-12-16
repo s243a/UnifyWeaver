@@ -11,8 +11,6 @@ using System.Text;
 using System.Text.Json;
 using System.Globalization;
 using System.Xml.Linq;
-using LiteDB;
-using UnifyWeaver.QueryRuntime.Pearltrees;
 
 namespace UnifyWeaver.QueryRuntime
 {
@@ -411,9 +409,9 @@ namespace UnifyWeaver.QueryRuntime
         {
             if (join.LeftKeys is null || join.RightKeys is null || join.LeftKeys.Count == 0 || join.RightKeys.Count == 0)
             {
-                var left = Evaluate(join.Left, context);
+                var leftRows = Evaluate(join.Left, context);
                 var rightRows = Evaluate(join.Right, context).ToList();
-                foreach (var leftTuple in left)
+                foreach (var leftTuple in leftRows)
                 {
                     if (leftTuple is null) continue;
 
