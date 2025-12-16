@@ -2683,6 +2683,19 @@ where
     }
     result
 }
+
+/// Tee: Run side stage on records, discard results, return original records.
+/// Like Unix tee - fork to side destination while main stream continues.
+fn tee_stage<F>(records: &[Record], side_fn: F) -> Vec<Record>
+where
+    F: Fn(&[Record]) -> Vec<Record>,
+{
+    // Run side stage (results discarded)
+    let _ = side_fn(records);
+
+    // Return original records unchanged
+    records.to_vec()
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2923,6 +2936,9 @@ generate_rust_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) 
     generate_rust_single_enhanced_stage(TrueStage, TrueCode),
     generate_rust_single_enhanced_stage(FalseStage, FalseCode),
     format(string(Code), "~w~w", [TrueCode, FalseCode]).
+generate_rust_single_enhanced_stage(tee(SideStage), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(SideStage, Code).
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -3473,6 +3489,17 @@ generate_rust_stage_flow(branch(Cond, TrueStage, FalseStage), InVar, OutVar, Cod
         |rs| ~w(rs),
         |rs| ~w(rs),
     );", [CondName, TrueName, FalseName, OutVar, InVar, CondName, TrueName, FalseName]).
+
+% Tee stage: run side stage, discard results, pass through
+generate_rust_stage_flow(tee(SideStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "tee_result",
+    % Extract side stage name
+    ( SideStage = SideName/_ -> true ; SideName = SideStage ),
+    format(string(Code),
+"    // Tee: fork to ~w (results discarded), pass original through
+    let ~w = tee_stage(&~w, |rs| ~w(rs));",
+    [SideName, OutVar, InVar, SideName]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
