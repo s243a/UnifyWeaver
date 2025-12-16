@@ -72,7 +72,8 @@ The core query runtime is intended to stay dependency-free (no LiteDB, ONNX, etc
   - Includes: `Pt*.cs` + `PtHarness.cs`
   - External deps: LiteDB (uses `lib/LiteDB.dll` when present; otherwise falls back to NuGet `LiteDB` package)
 - ONNX embeddings: `src/unifyweaver/targets/csharp_query_runtime/OnnxEmbeddingProvider.cs`
-  - External deps: `Microsoft.ML.OnnxRuntime` (not included in the default projects; opt in by adding the file + package reference)
+  - Project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Onnx.csproj`
+  - External deps: `Microsoft.ML.OnnxRuntime`
 
 ## Configuration
 - New preference atom: `target(csharp_query)`.
