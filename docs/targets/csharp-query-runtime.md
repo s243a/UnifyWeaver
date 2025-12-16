@@ -75,6 +75,16 @@ The core query runtime is intended to stay dependency-free (no LiteDB, ONNX, etc
   - Project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Onnx.csproj`
   - External deps: `Microsoft.ML.OnnxRuntime`
 
+## Smoke Testing (Runtime Execution)
+The Prolog test suite can generate per-plan C# console projects in codegen-only mode, and the PowerShell runner can then build/run them with dotnet and verify outputs.
+
+- Runner (recommended): `pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1`
+  - Options: `-KeepArtifacts`, `-OutputDir tmp\\csharp_query_smoke`, `-SkipCodegen`
+- Environment variables (used by the test harness):
+  - `SKIP_CSHARP_EXECUTION=1` (generate C# projects but do not execute via Prolog)
+  - `CSHARP_QUERY_OUTPUT_DIR=...` (where generated projects are written)
+  - `CSHARP_QUERY_KEEP_ARTIFACTS=1` (keep generated projects instead of auto-deleting)
+
 ## Configuration
 - New preference atom: `target(csharp_query)`.
 - Optional runtime hints:

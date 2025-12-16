@@ -2901,10 +2901,10 @@ metadata_null_policy_literals(Metadata, PolicyLiteral, DefaultLiteral) :-
     ;   DefaultLiteral = 'null'
     ).
 
-null_policy_enum(allow, 'Allow').
-null_policy_enum(fail, 'Fail').
-null_policy_enum(skip, 'Skip').
-null_policy_enum(default, 'Default').
+null_policy_enum(allow, 'Allow') :- !.
+null_policy_enum(fail, 'Fail') :- !.
+null_policy_enum(skip, 'Skip') :- !.
+null_policy_enum(default, 'Default') :- !.
 null_policy_enum(Value, Enum) :-
     atom_string(Value, ValueStr),
     capitalise_string(ValueStr, Enum).

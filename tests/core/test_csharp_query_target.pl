@@ -1637,30 +1637,45 @@ maybe_run_query_runtime(Plan, ExpectedRows) :-
     maybe_run_query_runtime(Plan, ExpectedRows, []).
 
 maybe_run_query_runtime(Plan, ExpectedRows, Params) :-
-    dotnet_cli(Dotnet),
-    !,
-    prepare_temp_dir(Plan, Dir),
     (   getenv('SKIP_CSHARP_EXECUTION', '1')
-    ->  % Generate code but skip execution (quiet)
-        (   generate_csharp_code_only(Dotnet, Plan, Params, Dir)
-        ->  true
+    ->  prepare_temp_dir(Plan, Dir),
+        (   generate_csharp_code_only(_Dotnet, Plan, Params, Dir)
+        ->  write_expected_rows_file(Dir, ExpectedRows, Params)
         ;   writeln('  (C# code generation: FAIL)'),
             finalize_temp_dir(Dir),
             fail
         ),
         finalize_temp_dir(Dir)
-    ;   % Full execution
+    ;   dotnet_cli(Dotnet)
+    ->  prepare_temp_dir(Plan, Dir),
         (   run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Params, Dir)
         ->  writeln('  (query runtime execution: PASS)'),
             finalize_temp_dir(Dir)
         ;   writeln('  (query runtime execution: FAIL - but plan structure verified)'),
             finalize_temp_dir(Dir)
         )
+    ;   writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)')
     ).
 
-% Fall back to plan-only verification if dotnet not available
-maybe_run_query_runtime(_Plan, _ExpectedRows, _Params) :-
-    writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)').
+write_expected_rows_file(Dir, ExpectedRows, Params) :-
+    directory_file_path(Dir, 'expected_rows.txt', RowsPath),
+    maplist(to_atom, ExpectedRows, ExpectedAtoms0),
+    sort(ExpectedAtoms0, ExpectedAtoms),
+    setup_call_cleanup(
+        open(RowsPath, write, Stream),
+        forall(member(Row, ExpectedAtoms),
+               format(Stream, '~w~n', [Row])),
+        close(Stream)
+    ),
+    (   Params == []
+    ->  true
+    ;   directory_file_path(Dir, 'params.txt', ParamsPath),
+        setup_call_cleanup(
+            open(ParamsPath, write, PStream),
+            format(PStream, '~q.~n', [Params]),
+            close(PStream)
+        )
+    ).
 
 capture_user_error(Goal, Output) :-
     current_input(In),
@@ -2133,8 +2148,8 @@ normalize_yes_no(Value0, Bool) :-
     ;   Value = Value0
     ),
     string_lower(Value, Lower),
-    (   member(Lower, ['1', 'true', 'yes', 'keep'])
+    (   member(Lower, ["1", "true", "yes", "keep"])
     ->  Bool = true
-    ;   member(Lower, ['0', 'false', 'no', 'delete', 'autodelete'])
+    ;   member(Lower, ["0", "false", "no", "delete", "autodelete"])
     ->  Bool = false
     ).
