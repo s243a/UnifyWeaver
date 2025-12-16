@@ -1,0 +1,113 @@
+{
+  "description": "Synthetic dataset for testing smoothing basis projection. Answers are grouped by topic (similar embeddings), but each cluster has only 1-2 questions (sparse).",
+  "clusters": [
+    {
+      "topic": "null_errors",
+      "answer": "NullPointerException occurs when accessing methods or fields on a null reference. Always check if object is null before use: if (obj != null) { obj.method(); }",
+      "answer_id": "null_java",
+      "questions": ["What causes NullPointerException?"]
+    },
+    {
+      "topic": "null_errors",
+      "answer": "NullReferenceException in C# happens when dereferencing null. Use null-conditional operator: obj?.Method() or null checks before access.",
+      "answer_id": "null_csharp",
+      "questions": ["How to fix NullReferenceException?"]
+    },
+    {
+      "topic": "null_errors",
+      "answer": "TypeError: NoneType has no attribute occurs when calling methods on None in Python. Check with: if x is not None: x.method()",
+      "answer_id": "null_python",
+      "questions": ["Why do I get NoneType error?"]
+    },
+    {
+      "topic": "file_io",
+      "answer": "Read file in Python: with open('file.txt', 'r') as f: content = f.read(). Using 'with' ensures file is properly closed.",
+      "answer_id": "file_python",
+      "questions": ["How to read a file in Python?"]
+    },
+    {
+      "topic": "file_io",
+      "answer": "Read file in Java: Files.readString(Path.of('file.txt')) for Java 11+, or BufferedReader with FileReader for older versions.",
+      "answer_id": "file_java",
+      "questions": ["Reading files in Java"]
+    },
+    {
+      "topic": "file_io",
+      "answer": "Read file in C#: File.ReadAllText('file.txt') for simple cases, or StreamReader for large files with buffering.",
+      "answer_id": "file_csharp",
+      "questions": ["C# file reading methods"]
+    },
+    {
+      "topic": "loops",
+      "answer": "Python for loop: for item in collection: process(item). Use enumerate() for index: for i, item in enumerate(collection).",
+      "answer_id": "loop_python",
+      "questions": ["Python loop syntax"]
+    },
+    {
+      "topic": "loops",
+      "answer": "Java for-each loop: for (Type item : collection) { process(item); }. Traditional: for (int i = 0; i < n; i++) {}",
+      "answer_id": "loop_java",
+      "questions": ["Java iteration syntax"]
+    },
+    {
+      "topic": "loops",
+      "answer": "C# foreach loop: foreach (var item in collection) { Process(item); }. LINQ alternative: collection.ForEach(x => Process(x));",
+      "answer_id": "loop_csharp",
+      "questions": ["Looping in C#"]
+    },
+    {
+      "topic": "async",
+      "answer": "Python async: async def fetch(): return await http_client.get(url). Run with asyncio.run(fetch()). Use gather() for parallel.",
+      "answer_id": "async_python",
+      "questions": ["How does async work in Python?"]
+    },
+    {
+      "topic": "async",
+      "answer": "Java async: CompletableFuture.supplyAsync(() -> compute()).thenApply(result -> process(result)). Use join() to wait.",
+      "answer_id": "async_java",
+      "questions": ["Java asynchronous programming"]
+    },
+    {
+      "topic": "async",
+      "answer": "C# async/await: async Task<T> FetchAsync() { return await httpClient.GetAsync(url); }. Don't block with .Result, use await.",
+      "answer_id": "async_csharp",
+      "questions": ["C# async await pattern"]
+    },
+    {
+      "topic": "json",
+      "answer": "Python JSON: import json; data = json.loads(json_string); json_out = json.dumps(data, indent=2). Use json.load(file) for files.",
+      "answer_id": "json_python",
+      "questions": ["Parse JSON in Python"]
+    },
+    {
+      "topic": "json",
+      "answer": "Java JSON with Jackson: ObjectMapper mapper = new ObjectMapper(); MyClass obj = mapper.readValue(json, MyClass.class);",
+      "answer_id": "json_java",
+      "questions": ["Java JSON parsing"]
+    },
+    {
+      "topic": "json",
+      "answer": "C# JSON: JsonSerializer.Deserialize<MyClass>(json) for System.Text.Json, or JsonConvert.DeserializeObject<T>() for Newtonsoft.",
+      "answer_id": "json_csharp",
+      "questions": ["Deserialize JSON in C#"]
+    },
+    {
+      "topic": "error_handling",
+      "answer": "Python exceptions: try: risky_code() except ValueError as e: handle(e) finally: cleanup(). Use specific exception types.",
+      "answer_id": "error_python",
+      "questions": ["Python exception handling"]
+    },
+    {
+      "topic": "error_handling",
+      "answer": "Java exceptions: try { riskyCode(); } catch (IOException e) { handle(e); } finally { cleanup(); }. Checked vs unchecked.",
+      "answer_id": "error_java",
+      "questions": ["Java try catch syntax"]
+    },
+    {
+      "topic": "error_handling",
+      "answer": "C# exceptions: try { RiskyCode(); } catch (Exception ex) when (ex is IOException) { Handle(ex); } finally { Cleanup(); }",
+      "answer_id": "error_csharp",
+      "questions": ["C# exception handling"]
+    }
+  ]
+}
