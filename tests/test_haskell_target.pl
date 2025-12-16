@@ -146,6 +146,42 @@ test_haskell_grammar_to_parsec :-
     ;   fail_test(Test, 'Missing grammar parsers')
     ).
 
+%% Test: Kleene operators
+test_haskell_kleene_many :-
+    Test = 'Haskell: Kleene many (*)',
+    (   haskell_target:dcg_body_to_parsec('*'(digit), Expr),
+        Expr = "many digit"
+    ->  pass(Test)
+    ;   fail_test(Test, 'Expected: many digit')
+    ).
+
+test_haskell_kleene_some :-
+    Test = 'Haskell: Kleene some (+)',
+    (   haskell_target:dcg_body_to_parsec('+'(letter), Expr),
+        Expr = "some letter"
+    ->  pass(Test)
+    ;   fail_test(Test, 'Expected: some letter')
+    ).
+
+test_haskell_optional :-
+    Test = 'Haskell: Optional (?)',
+    (   haskell_target:dcg_body_to_parsec('?'(space), Expr),
+        Expr = "optional space"
+    ->  pass(Test)
+    ;   fail_test(Test, 'Expected: optional space')
+    ).
+
+%% Test: Character classes
+test_haskell_char_classes :-
+    Test = 'Haskell: Character classes',
+    (   haskell_target:dcg_body_to_parsec(letter, E1),
+        haskell_target:dcg_body_to_parsec(digit, E2),
+        haskell_target:dcg_body_to_parsec(alpha_num, E3),
+        E1 = "letter", E2 = "digit", E3 = "alphaNum"
+    ->  pass(Test)
+    ;   fail_test(Test, 'Character class mismatch')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -163,6 +199,10 @@ run_tests :-
     test_haskell_dcg_to_parsec,
     test_haskell_dcg_sequence,
     test_haskell_grammar_to_parsec,
+    test_haskell_kleene_many,
+    test_haskell_kleene_some,
+    test_haskell_optional,
+    test_haskell_char_classes,
     
     format('~n========================================~n'),
     format('All tests completed~n'),
