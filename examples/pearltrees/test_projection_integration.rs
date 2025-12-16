@@ -53,6 +53,7 @@ fn main() {
         data_dir: None,
         temperature: 0.1,
         head_files: Some(head_files),
+        mh_projection_id: None,
     };
 
     match MultiHeadProjection::load(config) {
@@ -152,6 +153,7 @@ mod tests {
             data_dir: None,
             temperature: 0.1,
             head_files: Some(head_files.clone()),
+            mh_projection_id: None,
         };
 
         let mh = MultiHeadProjection::load(config).expect("Failed to load projection");

@@ -35,7 +35,7 @@ pub struct MultiHeadProjection {
 /// Configuration for loading multi-head projection.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Directory containing centroid_*.npy and answer_emb_*.npy files
+    /// Directory containing NPY files (unified model format)
     pub data_dir: Option<String>,
 
     /// Temperature for softmax routing (lower = sharper routing)
@@ -44,6 +44,10 @@ pub struct Config {
 
     /// Explicit head file pairs (cluster_id -> (centroid_path, answer_emb_path))
     pub head_files: Option<HashMap<i32, (String, String)>>,
+
+    /// Multi-head projection ID for unified model format
+    /// Files are named: mh_{mh_id}_cluster_{cluster_id}_centroid.npy
+    pub mh_projection_id: Option<i32>,
 }
 
 impl Default for Config {
@@ -52,12 +56,18 @@ impl Default for Config {
             data_dir: None,
             temperature: 0.1,
             head_files: None,
+            mh_projection_id: None,
         }
     }
 }
 
 impl MultiHeadProjection {
     /// Load a multi-head projection from numpy files.
+    ///
+    /// Supports two file naming conventions:
+    /// 1. Unified model format: `mh_{mh_id}_cluster_{cluster_id}_centroid.npy`
+    ///    (requires `mh_projection_id` in config)
+    /// 2. Legacy format: `centroid_{cluster_id}.npy`
     pub fn load(config: Config) -> Result<Self> {
         let temperature = if config.temperature <= 0.0 { 0.1 } else { config.temperature };
 
@@ -75,7 +85,7 @@ impl MultiHeadProjection {
             }
         } else if let Some(data_dir) = config.data_dir {
             // Auto-discover from data directory
-            heads = Self::discover_heads(&data_dir)?;
+            heads = Self::discover_heads(&data_dir, config.mh_projection_id)?;
             if let Some(first) = heads.first() {
                 dimension = first.centroid.len();
             }
@@ -95,7 +105,11 @@ impl MultiHeadProjection {
     }
 
     /// Auto-discover head files from a directory.
-    fn discover_heads(data_dir: &str) -> Result<Vec<Head>> {
+    ///
+    /// Supports two naming conventions:
+    /// - Unified model: `mh_{mh_id}_cluster_{cluster_id}_centroid.npy` (when mh_id provided)
+    /// - Legacy: `centroid_{cluster_id}.npy`
+    fn discover_heads(data_dir: &str, mh_id: Option<i32>) -> Result<Vec<Head>> {
         let dir = Path::new(data_dir);
         if !dir.is_dir() {
             return Err(anyhow!("Data directory does not exist: {}", data_dir));
@@ -103,29 +117,59 @@ impl MultiHeadProjection {
 
         let mut heads = Vec::new();
 
-        // Look for centroid_*.npy files
+        // Determine file pattern based on whether mh_id is provided
+        let (centroid_prefix, answer_prefix) = if let Some(id) = mh_id {
+            (format!("mh_{}_cluster_", id), format!("mh_{}_cluster_", id))
+        } else {
+            ("centroid_".to_string(), "answer_emb_".to_string())
+        };
+
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
 
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
-                if filename.starts_with("centroid_") && filename.ends_with(".npy") {
-                    // Extract cluster ID
-                    let id_str = filename
-                        .strip_prefix("centroid_")
-                        .and_then(|s| s.strip_suffix(".npy"))
-                        .unwrap_or("");
+                // Check for unified model format: mh_{id}_cluster_{cluster_id}_centroid.npy
+                if mh_id.is_some() {
+                    if filename.starts_with(&centroid_prefix) && filename.ends_with("_centroid.npy") {
+                        // Extract cluster ID from mh_{id}_cluster_{cluster_id}_centroid.npy
+                        let after_prefix = filename.strip_prefix(&centroid_prefix).unwrap_or("");
+                        let id_str = after_prefix.strip_suffix("_centroid.npy").unwrap_or("");
 
-                    if let Ok(cluster_id) = id_str.parse::<i32>() {
-                        let answer_path = dir.join(format!("answer_emb_{}.npy", cluster_id));
+                        if let Ok(cluster_id) = id_str.parse::<i32>() {
+                            let answer_filename = format!("{}{}_{}.npy",
+                                answer_prefix, cluster_id, "answer");
+                            let answer_path = dir.join(&answer_filename);
 
-                        if answer_path.exists() {
-                            let head = Self::load_head(
-                                cluster_id,
-                                path.to_str().unwrap_or(""),
-                                answer_path.to_str().unwrap_or(""),
-                            )?;
-                            heads.push(head);
+                            if answer_path.exists() {
+                                let head = Self::load_head(
+                                    cluster_id,
+                                    path.to_str().unwrap_or(""),
+                                    answer_path.to_str().unwrap_or(""),
+                                )?;
+                                heads.push(head);
+                            }
+                        }
+                    }
+                } else {
+                    // Legacy format: centroid_{cluster_id}.npy
+                    if filename.starts_with("centroid_") && filename.ends_with(".npy") {
+                        let id_str = filename
+                            .strip_prefix("centroid_")
+                            .and_then(|s| s.strip_suffix(".npy"))
+                            .unwrap_or("");
+
+                        if let Ok(cluster_id) = id_str.parse::<i32>() {
+                            let answer_path = dir.join(format!("answer_emb_{}.npy", cluster_id));
+
+                            if answer_path.exists() {
+                                let head = Self::load_head(
+                                    cluster_id,
+                                    path.to_str().unwrap_or(""),
+                                    answer_path.to_str().unwrap_or(""),
+                                )?;
+                                heads.push(head);
+                            }
                         }
                     }
                 }
@@ -250,6 +294,29 @@ impl MultiHeadProjection {
         if t > 0.0 {
             self.temperature = t;
         }
+    }
+
+    /// Load unified multi-head model from embeddings directory.
+    ///
+    /// This is the preferred way to load projections trained with
+    /// `train_multi_head_projection.py`, which stores files as:
+    /// `mh_{mh_id}_cluster_{cluster_id}_centroid.npy`
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mh = MultiHeadProjection::load_unified(
+    ///     "playbooks/lda-training-data/embeddings",
+    ///     1,  // multi-head projection ID
+    ///     0.1 // temperature
+    /// )?;
+    /// ```
+    pub fn load_unified(embeddings_dir: &str, mh_projection_id: i32, temperature: f32) -> Result<Self> {
+        Self::load(Config {
+            data_dir: Some(embeddings_dir.to_string()),
+            mh_projection_id: Some(mh_projection_id),
+            temperature,
+            head_files: None,
+        })
     }
 }
 
@@ -513,6 +580,19 @@ mod tests {
             let result = parse_npy_shape(header).unwrap();
             assert_eq!(result, expected, "parse_npy_shape({:?})", header);
         }
+    }
+
+    #[test]
+    fn test_config_with_mh_projection_id() {
+        // Test that config accepts mh_projection_id
+        let config = Config {
+            data_dir: Some("/tmp/test".to_string()),
+            temperature: 0.1,
+            head_files: None,
+            mh_projection_id: Some(1),
+        };
+        assert_eq!(config.mh_projection_id, Some(1));
+        assert_eq!(config.temperature, 0.1);
     }
 
     #[test]
