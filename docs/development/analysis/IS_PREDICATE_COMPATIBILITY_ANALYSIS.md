@@ -12,6 +12,10 @@ Since this analysis was written, the query-mode compiler/runtime has expanded su
 - Disjunction (`;/2`) in **rule bodies** by expanding into multiple clause variants and emitting a `union` plan node.
 - Disjunction in **aggregate goals** (including nested disjunction inside conjunction) by compiling the aggregate goal as a union-of-branches subplan.
 - Multi-mode declarations (`user:mode/1`) for a predicate now result in multiple query-mode plans/entrypoints; Prolog helpers exist to build/select variants (`build_query_plans/3`, `build_query_plan_for_inputs/4`).
+- The C# query runtime (`src/unifyweaver/targets/csharp_query_runtime/`) is now dependency-free at the core, with opt-in runtime bundles:
+  - `UnifyWeaver.QueryRuntime.Core.csproj` (no external deps)
+  - `UnifyWeaver.QueryRuntime.Pearltrees.csproj` (LiteDB integration)
+  - `UnifyWeaver.QueryRuntime.Onnx.csproj` (ONNX embedding provider)
 
 These changes improve practical compatibility, but they do not change the core limitation: all-output query mode still cannot compile Fibonacci-style recursion because it has no relation scan to seed bindings for `N`, and recursion arguments must be computed before recursive calls.
 
