@@ -44,6 +44,11 @@ When adding new questions to a cluster:
 *   **Property**: There will be **many** seed(0) questions, as this represents everything built before expansion began.
 *   **Usage**: The foundation from which the knowledge graph expands.
 
+**Clarification - What seed(0) is NOT:**
+*   NOT a single "anchor" question per answer
+*   NOT weighted higher than other seeds (no "highest semantic alignment" - all questions are equal)
+*   NOT the "primary key" for KG relations (relations are between Q-A pairs, not determined by seed level)
+
 ### Definition: Seed(n) - Expansion Depth
 *   **Role**: Questions discovered at expansion depth n from the origin.
 *   **Property**: NOT necessarily related to `seed(n-1)` - only related if the questions themselves are related.
