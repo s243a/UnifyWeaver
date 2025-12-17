@@ -20,7 +20,10 @@
     compile_rust_enhanced_pipeline/3, % +Stages, +Options, -RustCode
     rust_enhanced_helpers/2,          % +ParallelMode, -Code
     generate_rust_enhanced_connector/3, % +Stages, +PipelineName, -Code
-    test_rust_enhanced_chaining/0     % Test enhanced pipeline chaining
+    test_rust_enhanced_chaining/0,    % Test enhanced pipeline chaining
+    % Client-server architecture exports (Phase 9)
+    compile_service_to_rust/2,        % +Service, -RustCode
+    generate_service_handler_rust/2   % +HandlerSpec, -RustCode
 ]).
 
 :- use_module(library(lists)).
@@ -78,7 +81,176 @@ get_field_type(SchemaName, FieldName, Type) :-
     member(field(FieldName, Type), Fields), !.
 get_field_type(_SchemaName, _FieldName, serde_json_value).
 
-%% ============================================ 
+%% ============================================
+%% SERVICE COMPILATION (Client-Server Phase 1)
+%% ============================================
+
+%% compile_service_to_rust(+Service, -RustCode)
+%  Compile a service definition to a Rust struct and impl.
+compile_service_to_rust(service(Name, HandlerSpec), RustCode) :-
+    !,
+    compile_service_to_rust(service(Name, [], HandlerSpec), RustCode).
+
+compile_service_to_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    % Generate handler code
+    generate_service_handler_rust(HandlerSpec, HandlerCode),
+    % Format the struct name (capitalize first letter)
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Generate the service struct
+    ( Stateful = true ->
+        format(string(RustCode),
+"/// ~wService implements the Service trait for ~w.
+pub struct ~wService {
+    state: std::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            state: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn state_get(&self, key: &str) -> Option<serde_json::Value> {
+        self.state.read().ok()?.get(key).cloned()
+    }
+
+    fn state_put(&self, key: &str, value: serde_json::Value) {
+        if let Ok(mut state) = self.state.write() {
+            state.insert(key.to_string(), value);
+        }
+    }
+}
+
+impl Service for ~wService {
+    fn name(&self) -> &str {
+        \"~w\"
+    }
+
+    fn call(&self, request: serde_json::Value) -> Result<serde_json::Value, ServiceError> {
+~w
+    }
+}
+
+// Register ~w service
+lazy_static::lazy_static! {
+    static ref ~w_SERVICE: std::sync::Arc<~wService> = {
+        let service = std::sync::Arc::new(~wService::new());
+        register_service(\"~w\", service.clone());
+        service
+    };
+}
+", [StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, HandlerCode, Name, StructNameAtom, StructNameAtom, StructNameAtom, Name])
+    ;
+        format(string(RustCode),
+"/// ~wService implements the Service trait for ~w.
+pub struct ~wService;
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService
+    }
+}
+
+impl Service for ~wService {
+    fn name(&self) -> &str {
+        \"~w\"
+    }
+
+    fn call(&self, request: serde_json::Value) -> Result<serde_json::Value, ServiceError> {
+~w
+    }
+}
+
+// Register ~w service
+lazy_static::lazy_static! {
+    static ref ~w_SERVICE: std::sync::Arc<~wService> = {
+        let service = std::sync::Arc::new(~wService::new());
+        register_service(\"~w\", service.clone());
+        service
+    };
+}
+", [StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, HandlerCode, Name, StructNameAtom, StructNameAtom, StructNameAtom, Name])
+    ).
+
+%% generate_service_handler_rust(+HandlerSpec, -Code)
+%  Generate Rust handler code from handler specification.
+generate_service_handler_rust([], "        Ok(serde_json::Value::Null)").
+generate_service_handler_rust(HandlerSpec, Code) :-
+    HandlerSpec \= [],
+    generate_handler_ops_rust(HandlerSpec, OpsCode),
+    format(string(Code), "~w", [OpsCode]).
+
+%% generate_handler_ops_rust(+Ops, -Code)
+%  Generate Rust code for handler operations.
+generate_handler_ops_rust([], "").
+generate_handler_ops_rust([Op|Rest], Code) :-
+    generate_handler_op_rust(Op, OpCode),
+    generate_handler_ops_rust(Rest, RestCode),
+    ( RestCode = "" ->
+        Code = OpCode
+    ;
+        format(string(Code), "~w~n~w", [OpCode, RestCode])
+    ).
+
+%% generate_handler_op_rust(+Op, -Code)
+%  Generate Rust code for a single handler operation.
+generate_handler_op_rust(receive(_Var), Code) :-
+    format(string(Code), "        // Bind request", []).
+
+generate_handler_op_rust(respond(Value), Code) :-
+    ( var(Value) ->
+        format(string(Code), "        Ok(response)", [])
+    ; atom(Value) ->
+        format(string(Code), "        Ok(serde_json::json!(~w))", [Value])
+    ; number(Value) ->
+        format(string(Code), "        Ok(serde_json::json!(~w))", [Value])
+    ;
+        format(string(Code), "        Ok(request)", [])
+    ).
+
+generate_handler_op_rust(respond_error(Error), Code) :-
+    format(string(Code), "        Err(ServiceError { service: self.name().to_string(), message: \"~w\".to_string() })", [Error]).
+
+generate_handler_op_rust(transform(_In, _Out, Goal), Code) :-
+    format(string(Code), "        // transform: ~w", [Goal]).
+
+generate_handler_op_rust(transform(_In, _Out), Code) :-
+    format(string(Code), "        // transform", []).
+
+generate_handler_op_rust(state_get(Key, _Var), Code) :-
+    format(string(Code), "        let _ = self.state_get(\"~w\");", [Key]).
+
+generate_handler_op_rust(state_put(Key, Value), Code) :-
+    ( var(Value) ->
+        format(string(Code), "        self.state_put(\"~w\", request.clone());", [Key])
+    ;
+        format(string(Code), "        self.state_put(\"~w\", serde_json::json!(~w));", [Key, Value])
+    ).
+
+generate_handler_op_rust(call_service(ServiceName, _Req, _Resp), Code) :-
+    format(string(Code), "        let _ = call_service_impl(\"~w\", request.clone(), &CallServiceOptions::default());", [ServiceName]).
+
+generate_handler_op_rust(Pred/Arity, Code) :-
+    format(string(Code), "        // Call predicate: ~w/~w", [Pred, Arity]).
+
+generate_handler_op_rust(Pred, Code) :-
+    atom(Pred),
+    Pred \= receive, Pred \= respond, Pred \= respond_error,
+    format(string(Code), "        // Execute predicate: ~w", [Pred]).
+
+generate_handler_op_rust(_, "        // Unknown operation").
+
+%% ============================================
 %% PUBLIC API
 %% ============================================ 
 
@@ -2696,6 +2868,169 @@ where
     // Return original records unchanged
     records.to_vec()
 }
+
+// ============================================
+// SERVICE INFRASTRUCTURE (Client-Server Phase 1)
+// ============================================
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use std::error::Error;
+use std::fmt;
+
+/// ServiceError represents an error from a service call.
+#[derive(Debug, Clone)]
+pub struct ServiceError {
+    pub service: String,
+    pub message: String,
+}
+
+impl fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, \"service {}: {}\", self.service, self.message)
+    }
+}
+
+impl Error for ServiceError {}
+
+/// Service trait for in-process services.
+pub trait Service: Send + Sync {
+    fn name(&self) -> &str;
+    fn call(&self, request: serde_json::Value) -> Result<serde_json::Value, ServiceError>;
+}
+
+/// StatefulService provides state management for services.
+pub struct StatefulService {
+    name: String,
+    state: RwLock<HashMap<String, serde_json::Value>>,
+}
+
+impl StatefulService {
+    pub fn new(name: &str) -> Self {
+        StatefulService {
+            name: name.to_string(),
+            state: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn state_get(&self, key: &str) -> Option<serde_json::Value> {
+        self.state.read().ok()?.get(key).cloned()
+    }
+
+    pub fn state_put(&self, key: &str, value: serde_json::Value) {
+        if let Ok(mut state) = self.state.write() {
+            state.insert(key.to_string(), value);
+        }
+    }
+
+    pub fn state_modify<F>(&self, key: &str, f: F)
+    where
+        F: FnOnce(Option<serde_json::Value>) -> serde_json::Value,
+    {
+        if let Ok(mut state) = self.state.write() {
+            let current = state.get(key).cloned();
+            state.insert(key.to_string(), f(current));
+        }
+    }
+
+    pub fn state_delete(&self, key: &str) {
+        if let Ok(mut state) = self.state.write() {
+            state.remove(key);
+        }
+    }
+}
+
+/// Global service registry (lazy initialized)
+lazy_static::lazy_static! {
+    static ref SERVICES: RwLock<HashMap<String, Arc<dyn Service>>> = RwLock::new(HashMap::new());
+}
+
+/// Register a service in the global registry.
+pub fn register_service(name: &str, service: Arc<dyn Service>) {
+    if let Ok(mut services) = SERVICES.write() {
+        services.insert(name.to_string(), service);
+    }
+}
+
+/// Get a service from the registry.
+pub fn get_service(name: &str) -> Result<Arc<dyn Service>, ServiceError> {
+    let services = SERVICES.read().map_err(|_| ServiceError {
+        service: name.to_string(),
+        message: \"failed to acquire service registry lock\".to_string(),
+    })?;
+    services.get(name).cloned().ok_or(ServiceError {
+        service: name.to_string(),
+        message: \"service not found\".to_string(),
+    })
+}
+
+/// Options for service calls.
+#[derive(Default, Clone)]
+pub struct CallServiceOptions {
+    pub timeout_ms: Option<u64>,
+    pub retry: u32,
+    pub retry_delay_ms: u64,
+    pub fallback: Option<serde_json::Value>,
+}
+
+/// Call a service with options.
+pub fn call_service_impl(
+    service_name: &str,
+    request: serde_json::Value,
+    options: &CallServiceOptions,
+) -> Result<serde_json::Value, ServiceError> {
+    let service = get_service(service_name)?;
+
+    let mut last_error = None;
+    for attempt in 0..=options.retry {
+        match service.call(request.clone()) {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < options.retry && options.retry_delay_ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(options.retry_delay_ms));
+                }
+            }
+        }
+    }
+
+    if let Some(fallback) = &options.fallback {
+        return Ok(fallback.clone());
+    }
+
+    Err(last_error.unwrap_or(ServiceError {
+        service: service_name.to_string(),
+        message: \"service call failed\".to_string(),
+    }))
+}
+
+/// Pipeline stage that calls a service for each record.
+fn call_service_stage(
+    records: &[Record],
+    service_name: &str,
+    request_field: &str,
+    response_field: &str,
+    options: &CallServiceOptions,
+) -> Vec<Record> {
+    records
+        .iter()
+        .map(|record| {
+            let mut record = record.clone();
+            let request = record.get(request_field).cloned().unwrap_or(serde_json::Value::Null);
+            match call_service_impl(service_name, request, options) {
+                Ok(response) => {
+                    record.insert(response_field.to_string(), response);
+                }
+                Err(e) => {
+                    record.insert(\"__error__\".to_string(), serde_json::json!(true));
+                    record.insert(\"__type__\".to_string(), serde_json::json!(\"ServiceError\"));
+                    record.insert(\"__message__\".to_string(), serde_json::json!(e.message));
+                }
+            }
+            record
+        })
+        .collect()
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2939,6 +3274,8 @@ generate_rust_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) 
 generate_rust_single_enhanced_stage(tee(SideStage), Code) :-
     !,
     generate_rust_single_enhanced_stage(SideStage, Code).
+generate_rust_single_enhanced_stage(call_service(_, _, _), "") :- !.
+generate_rust_single_enhanced_stage(call_service(_, _, _, _), "") :- !.
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -3501,6 +3838,25 @@ generate_rust_stage_flow(tee(SideStage), InVar, OutVar, Code) :-
     let ~w = tee_stage(&~w, |rs| ~w(rs));",
     [SideName, OutVar, InVar, SideName]).
 
+% Call service stage (without options)
+generate_rust_stage_flow(call_service(ServiceName, RequestExpr, ResponseVar), InVar, OutVar, Code) :-
+    !,
+    OutVar = "service_result",
+    format(string(Code),
+"    // Call service: ~w
+    let ~w = call_service_stage(&~w, \"~w\", \"~w\", \"~w\", &CallServiceOptions::default());",
+    [ServiceName, OutVar, InVar, ServiceName, RequestExpr, ResponseVar]).
+
+% Call service stage (with options)
+generate_rust_stage_flow(call_service(ServiceName, RequestExpr, ResponseVar, Options), InVar, OutVar, Code) :-
+    !,
+    OutVar = "service_result",
+    format_rust_options(Options, OptionsStr),
+    format(string(Code),
+"    // Call service: ~w (with options)
+    let ~w = call_service_stage(&~w, \"~w\", \"~w\", \"~w\", &~w);",
+    [ServiceName, OutVar, InVar, ServiceName, RequestExpr, ResponseVar, OptionsStr]).
+
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -3513,6 +3869,40 @@ generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
 % Fallback for unknown stages
 generate_rust_stage_flow(Stage, InVar, InVar, Code) :-
     format(string(Code), "    // Unknown stage type: ~w (pass-through)", [Stage]).
+
+%% format_rust_options(+Options, -RustStruct)
+%  Format a list of Prolog options as a Rust struct initializer.
+format_rust_options([], "CallServiceOptions::default()").
+format_rust_options(Options, RustStruct) :-
+    Options \= [],
+    format_rust_option_fields(Options, Fields),
+    atomic_list_concat(Fields, ', ', FieldsStr),
+    format(string(RustStruct), "CallServiceOptions { ~w, ..Default::default() }", [FieldsStr]).
+
+format_rust_option_fields([], []).
+format_rust_option_fields([Opt|Rest], [Field|RestFields]) :-
+    format_rust_option_field(Opt, Field),
+    format_rust_option_fields(Rest, RestFields).
+
+format_rust_option_field(timeout(Ms), Field) :-
+    format(string(Field), "timeout_ms: Some(~w)", [Ms]).
+format_rust_option_field(retry(N), Field) :-
+    format(string(Field), "retry: ~w", [N]).
+format_rust_option_field(retry_delay(Ms), Field) :-
+    format(string(Field), "retry_delay_ms: ~w", [Ms]).
+format_rust_option_field(fallback(Value), Field) :-
+    ( atom(Value) ->
+        format(string(Field), "fallback: Some(serde_json::json!(\"~w\"))", [Value])
+    ; number(Value) ->
+        format(string(Field), "fallback: Some(serde_json::json!(~w))", [Value])
+    ;
+        format(string(Field), "fallback: None", [])
+    ).
+format_rust_option_field(transport(T), Field) :-
+    format(string(Field), "/* transport: ~w */", [T]).
+format_rust_option_field(Opt, Field) :-
+    % Fallback for unknown options
+    format(string(Field), "/* Unknown option: ~w */", [Opt]).
 
 %% extract_rust_stage_names(+Stages, -Names)
 %  Extract function names from stage specifications.

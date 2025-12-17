@@ -40,11 +40,19 @@
     format_validation_error/2,     % format_validation_error(+Error, -Message)
     format_validation_warning/2,   % format_validation_warning(+Warning, -Message)
 
+    % Client-server architecture (Phase 9)
+    is_valid_call_service_option/1, % is_valid_call_service_option(+Option)
+
     % Testing
     test_pipeline_validation/0
 ]).
 
 :- use_module(library(lists)).
+
+% Predicates with clauses spread across the file
+:- discontiguous is_valid_stage/1.
+:- discontiguous is_valid_call_service_option/1.
+:- discontiguous stage_type/2.
 
 % ============================================================================
 % MAIN VALIDATION API
@@ -317,6 +325,20 @@ is_valid_stage(tap(Pred/Arity)) :-
 is_valid_stage(tee(Stage)) :-
     is_valid_stage(Stage).
 
+% Call service - invoke a service and bind response
+is_valid_stage(call_service(ServiceName, _RequestExpr, _ResponseVar)) :-
+    atom(ServiceName).
+is_valid_stage(call_service(ServiceName, _RequestExpr, _ResponseVar, Options)) :-
+    atom(ServiceName),
+    is_list(Options),
+    maplist(is_valid_call_service_option, Options).
+
+is_valid_call_service_option(timeout(Ms)) :- integer(Ms), Ms > 0.
+is_valid_call_service_option(retry(N)) :- integer(N), N >= 0.
+is_valid_call_service_option(retry_delay(Ms)) :- integer(Ms), Ms >= 0.
+is_valid_call_service_option(fallback(_)).
+is_valid_call_service_option(transport(_)).
+
 % Flatten stage - flatten nested collections into individual records
 is_valid_stage(flatten).
 is_valid_stage(flatten(Field)) :-
@@ -435,6 +457,8 @@ stage_type(merge_sorted(_, _), merge_sorted) :- !.
 stage_type(merge_sorted(_, _, _), merge_sorted) :- !.
 stage_type(tap(_), tap) :- !.
 stage_type(tee(_), tee) :- !.
+stage_type(call_service(_, _, _), call_service) :- !.
+stage_type(call_service(_, _, _, _), call_service) :- !.
 stage_type(flatten, flatten) :- !.
 stage_type(flatten(_), flatten) :- !.
 stage_type(debounce(_), debounce) :- !.
@@ -754,6 +778,28 @@ validate_stage_specific(branch(Cond, TrueStage, FalseStage), Errors) :-
         append(TrueErrors, FalseErrors, Errors)
     ;
         Errors = [error(invalid_branch, 'branch requires condition predicate, true stage, and false stage')]
+    ).
+validate_stage_specific(call_service(ServiceName, _RequestExpr, _ResponseVar), Errors) :-
+    !,
+    ( atom(ServiceName) ->
+        Errors = []
+    ;
+        Errors = [error(invalid_call_service, 'call_service requires an atom service name')]
+    ).
+validate_stage_specific(call_service(ServiceName, _RequestExpr, _ResponseVar, Options), Errors) :-
+    !,
+    ( atom(ServiceName) ->
+        ( is_list(Options) ->
+            findall(OptError,
+                (member(Opt, Options),
+                 \+ is_valid_call_service_option(Opt),
+                 OptError = error(invalid_call_service_option, Opt)),
+                Errors)
+        ;
+            Errors = [error(invalid_call_service, 'call_service options must be a list')]
+        )
+    ;
+        Errors = [error(invalid_call_service, 'call_service requires an atom service name')]
     ).
 validate_stage_specific(_, []).
 

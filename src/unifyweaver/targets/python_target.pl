@@ -36,7 +36,10 @@
     % IronPython enhanced pipeline chaining exports (Phase 8)
     compile_ironpython_enhanced_pipeline/3,
     ironpython_enhanced_helpers/1,
-    test_ironpython_enhanced_chaining/0
+    test_ironpython_enhanced_chaining/0,
+    % Client-server architecture exports (Phase 9)
+    compile_service_to_python/2,
+    generate_service_handler_python/2
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -161,6 +164,134 @@ get_field_info(SchemaName, FieldName, Type, Options) :-
 get_field_info(SchemaName, FieldName, any, []) :-
     % Field not in schema - default to 'any'
     format('WARNING: Field ~w not in schema ~w, defaulting to type ''any''~n', [FieldName, SchemaName]).
+
+%% ============================================
+%% SERVICE COMPILATION (Client-Server Phase 1)
+%% ============================================
+
+%% compile_service_to_python(+Service, -PythonCode)
+%  Compile a service definition to a Python class.
+compile_service_to_python(service(Name, HandlerSpec), PythonCode) :-
+    !,
+    compile_service_to_python(service(Name, [], HandlerSpec), PythonCode).
+
+compile_service_to_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
+    % Generate handler code
+    generate_service_handler_python(HandlerSpec, HandlerCode),
+    % Format the class name (capitalize first letter)
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    % Generate the service class
+    format(string(PythonCode),
+"class ~wService(Service):
+    '''
+    Service: ~w
+    Auto-generated from Prolog service definition.
+    '''
+    def __init__(self):
+        super().__init__('~w', stateful=~w)
+
+    def call(self, request):
+        '''Process request and return response.'''
+~w
+
+# Register service
+register_service('~w', ~wService())
+", [ClassNameAtom, Name, Name, Stateful, HandlerCode, Name, ClassNameAtom]).
+
+%% generate_service_handler_python(+HandlerSpec, -Code)
+%  Generate Python handler code from handler specification.
+generate_service_handler_python([], "        return None").
+generate_service_handler_python(HandlerSpec, Code) :-
+    HandlerSpec \= [],
+    generate_handler_ops_python(HandlerSpec, OpsCode),
+    format(string(Code), "~w", [OpsCode]).
+
+%% generate_handler_ops_python(+Ops, -Code)
+%  Generate Python code for handler operations.
+generate_handler_ops_python([], "").
+generate_handler_ops_python([Op|Rest], Code) :-
+    generate_handler_op_python(Op, OpCode),
+    generate_handler_ops_python(Rest, RestCode),
+    ( RestCode = "" ->
+        Code = OpCode
+    ;
+        format(string(Code), "~w~n~w", [OpCode, RestCode])
+    ).
+
+%% generate_handler_op_python(+Op, -Code)
+%  Generate Python code for a single handler operation.
+generate_handler_op_python(receive(Var), Code) :-
+    ( var(Var) ->
+        VarName = "_request"
+    ;
+        VarName = Var
+    ),
+    format(string(Code), "        ~w = request  # Bind request", [VarName]).
+
+generate_handler_op_python(respond(Value), Code) :-
+    ( var(Value) ->
+        format(string(Code), "        return response", [])
+    ; atom(Value) ->
+        format(string(Code), "        return ~w", [Value])
+    ; number(Value) ->
+        format(string(Code), "        return ~w", [Value])
+    ;
+        format(string(Code), "        return ~w", [Value])
+    ).
+
+generate_handler_op_python(respond_error(Error), Code) :-
+    format(string(Code), "        raise ServiceError('~w')", [Error]).
+
+generate_handler_op_python(transform(In, Out, Goal), Code) :-
+    ( var(In) -> InName = "_in" ; InName = In ),
+    ( var(Out) -> OutName = "_out" ; OutName = Out ),
+    format(string(Code), "        ~w = ~w  # transform: ~w", [OutName, InName, Goal]).
+
+generate_handler_op_python(transform(In, Out), Code) :-
+    ( var(In) -> InName = "_in" ; InName = In ),
+    ( var(Out) -> OutName = "_out" ; OutName = Out ),
+    format(string(Code), "        ~w = ~w  # transform", [OutName, InName]).
+
+generate_handler_op_python(state_get(Key, Var), Code) :-
+    ( var(Var) -> VarName = "_val" ; VarName = Var ),
+    format(string(Code), "        ~w = self.state_get('~w')", [VarName, Key]).
+
+generate_handler_op_python(state_put(Key, Value), Code) :-
+    ( var(Value) ->
+        format(string(Code), "        self.state_put('~w', _val)", [Key])
+    ;
+        format(string(Code), "        self.state_put('~w', ~w)", [Key, Value])
+    ).
+
+generate_handler_op_python(state_modify(Key, Func), Code) :-
+    format(string(Code), "        self.state_modify('~w', ~w)", [Key, Func]).
+
+generate_handler_op_python(state_delete(Key), Code) :-
+    format(string(Code), "        self.state_delete('~w')", [Key]).
+
+generate_handler_op_python(call_service(ServiceName, Req, Resp), Code) :-
+    ( var(Req) -> ReqName = "_request" ; ReqName = Req ),
+    ( var(Resp) -> RespName = "_response" ; RespName = Resp ),
+    format(string(Code), "        ~w = call_service_impl('~w', ~w)", [RespName, ServiceName, ReqName]).
+
+generate_handler_op_python(Pred/Arity, Code) :-
+    format(string(Code), "        # Call predicate: ~w/~w", [Pred, Arity]).
+
+generate_handler_op_python(Pred, Code) :-
+    atom(Pred),
+    Pred \= receive, Pred \= respond, Pred \= respond_error,
+    format(string(Code), "        ~w(_request)  # Execute predicate", [Pred]).
+
+generate_handler_op_python(_, "        pass  # Unknown operation").
 
 /** <module> Python Target Compiler
  *
@@ -5775,6 +5906,133 @@ def tee_stage(stream, side_fn):
     for record in records:
         yield record
 
+# ============================================
+# SERVICE INFRASTRUCTURE (Client-Server Phase 1)
+# ============================================
+
+# Global service registry
+_services = {}
+
+class ServiceError(Exception):
+    '''Base exception for service errors.'''
+    pass
+
+class ServiceTimeoutError(ServiceError):
+    '''Service call timed out.'''
+    pass
+
+class ServiceNotFoundError(ServiceError):
+    '''Requested service not found in registry.'''
+    pass
+
+class Service:
+    '''
+    Base class for in-process services.
+    Services receive requests and return responses.
+    '''
+    def __init__(self, name, stateful=False):
+        self.name = name
+        self.state = {} if stateful else None
+        self._stateful = stateful
+
+    def call(self, request):
+        '''Process a request and return response. Override in subclass.'''
+        raise NotImplementedError('Service.call() must be implemented')
+
+    def state_get(self, key, default=None):
+        '''Get value from service state.'''
+        if self.state is None:
+            raise ServiceError(f'Service {self.name} is not stateful')
+        return self.state.get(key, default)
+
+    def state_put(self, key, value):
+        '''Set value in service state.'''
+        if self.state is None:
+            raise ServiceError(f'Service {self.name} is not stateful')
+        self.state[key] = value
+
+    def state_modify(self, key, func):
+        '''Modify value in service state using function.'''
+        if self.state is None:
+            raise ServiceError(f'Service {self.name} is not stateful')
+        self.state[key] = func(self.state.get(key))
+
+    def state_delete(self, key):
+        '''Delete key from service state.'''
+        if self.state is None:
+            raise ServiceError(f'Service {self.name} is not stateful')
+        if key in self.state:
+            del self.state[key]
+
+def register_service(name, service):
+    '''Register a service in the global registry.'''
+    _services[name] = service
+
+def get_service(name):
+    '''Get a service from the registry.'''
+    if name not in _services:
+        raise ServiceNotFoundError(f'Service not found: {name}')
+    return _services[name]
+
+def call_service_impl(service_name, request, options=None):
+    '''
+    Call a service and return the response.
+    Options can include: timeout, retry, retry_delay, fallback
+    '''
+    options = options or {}
+    timeout_ms = options.get('timeout')
+    max_retries = options.get('retry', 0)
+    retry_delay_ms = options.get('retry_delay', 100)
+    fallback = options.get('fallback')
+
+    service = get_service(service_name)
+
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            if timeout_ms:
+                import signal
+                def timeout_handler(signum, frame):
+                    raise ServiceTimeoutError(f'Service {service_name} timed out after {timeout_ms}ms')
+                old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                signal.setitimer(signal.ITIMER_REAL, timeout_ms / 1000.0)
+                try:
+                    result = service.call(request)
+                finally:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                    signal.signal(signal.SIGALRM, old_handler)
+            else:
+                result = service.call(request)
+            return result
+        except ServiceError as e:
+            last_error = e
+            if attempt < max_retries:
+                import time
+                time.sleep(retry_delay_ms / 1000.0)
+
+    if fallback is not None:
+        return fallback
+    if last_error:
+        raise last_error
+    raise ServiceError(f'Service call failed: {service_name}')
+
+def call_service_stage(stream, service_name, request_field, response_field, options=None):
+    '''
+    Pipeline stage that calls a service for each record.
+    Extracts request from request_field, stores response in response_field.
+    '''
+    for record in stream:
+        try:
+            request = record.get(request_field) if isinstance(request_field, str) else record
+            response = call_service_impl(service_name, request, options)
+            record[response_field] = response
+            yield record
+        except ServiceError as e:
+            record['__error__'] = True
+            record['__type__'] = type(e).__name__
+            record['__message__'] = str(e)
+            yield record
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5886,6 +6144,8 @@ generate_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
 generate_single_enhanced_stage(tee(SideStage), Code) :-
     !,
     generate_single_enhanced_stage(SideStage, Code).
+generate_single_enhanced_stage(call_service(_, _, _), "") :- !.
+generate_single_enhanced_stage(call_service(_, _, _, _), "") :- !.
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -6430,6 +6690,25 @@ generate_stage_flow(tee(SideStage), InVar, OutVar, Code) :-
     ~w = tee_stage(~w, _tee_side)",
     [SideName, SideName, OutVar, InVar]).
 
+% Call service stage (without options)
+generate_stage_flow(call_service(ServiceName, RequestExpr, ResponseVar), InVar, OutVar, Code) :-
+    !,
+    OutVar = "service_result",
+    format(string(Code),
+"    # Call service: ~w
+    ~w = call_service_stage(~w, '~w', '~w', '~w')",
+    [ServiceName, OutVar, InVar, ServiceName, RequestExpr, ResponseVar]).
+
+% Call service stage (with options)
+generate_stage_flow(call_service(ServiceName, RequestExpr, ResponseVar, Options), InVar, OutVar, Code) :-
+    !,
+    OutVar = "service_result",
+    format_python_options(Options, OptionsStr),
+    format(string(Code),
+"    # Call service: ~w (with options)
+    ~w = call_service_stage(~w, '~w', '~w', '~w', ~w)",
+    [ServiceName, OutVar, InVar, ServiceName, RequestExpr, ResponseVar, OptionsStr]).
+
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     atom(Pred),
@@ -6441,6 +6720,40 @@ generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
 % Fallback for unknown stages
 generate_stage_flow(Stage, InVar, InVar, Code) :-
     format(string(Code), "    # Unknown stage type: ~w (pass-through)", [Stage]).
+
+%% format_python_options(+Options, -PythonDict)
+%  Format a list of Prolog options as a Python dictionary string.
+format_python_options([], "{}").
+format_python_options(Options, Dict) :-
+    Options \= [],
+    format_python_option_pairs(Options, Pairs),
+    atomic_list_concat(Pairs, ', ', PairsStr),
+    format(string(Dict), "{~w}", [PairsStr]).
+
+format_python_option_pairs([], []).
+format_python_option_pairs([Opt|Rest], [Pair|RestPairs]) :-
+    format_python_option(Opt, Pair),
+    format_python_option_pairs(Rest, RestPairs).
+
+format_python_option(timeout(Ms), Pair) :-
+    format(string(Pair), "'timeout': ~w", [Ms]).
+format_python_option(retry(N), Pair) :-
+    format(string(Pair), "'retry': ~w", [N]).
+format_python_option(retry_delay(Ms), Pair) :-
+    format(string(Pair), "'retry_delay': ~w", [Ms]).
+format_python_option(fallback(Value), Pair) :-
+    ( atom(Value) ->
+        format(string(Pair), "'fallback': '~w'", [Value])
+    ; number(Value) ->
+        format(string(Pair), "'fallback': ~w", [Value])
+    ;
+        format(string(Pair), "'fallback': None", [])
+    ).
+format_python_option(transport(T), Pair) :-
+    format(string(Pair), "'transport': '~w'", [T]).
+format_python_option(Opt, Pair) :-
+    % Fallback for unknown options
+    format(string(Pair), "# Unknown option: ~w", [Opt]).
 
 %% extract_stage_names(+Stages, -Names)
 %  Extract function names from stage specifications.

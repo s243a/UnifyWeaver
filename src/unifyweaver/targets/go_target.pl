@@ -28,7 +28,10 @@
     compile_go_enhanced_pipeline/3, % +Stages, +Options, -GoCode
     go_enhanced_helpers/1,          % -Code
     generate_go_enhanced_connector/3, % +Stages, +PipelineName, -Code
-    test_go_enhanced_chaining/0     % Test enhanced pipeline chaining
+    test_go_enhanced_chaining/0,    % Test enhanced pipeline chaining
+    % Client-server architecture exports (Phase 9)
+    compile_service_to_go/2,        % +Service, -GoCode
+    generate_service_handler_go/2   % +HandlerSpec, -GoCode
 ]).
 
 :- use_module(library(lists)).
@@ -189,6 +192,163 @@ get_field_info(SchemaName, FieldName, Type, Options) :-
 get_field_info(SchemaName, FieldName, any, []) :-
     % Field not in schema - default to 'any' (interface{})
     format('WARNING: Field ~w not in schema ~w, defaulting to type ''any''~n', [FieldName, SchemaName]).
+
+%% ============================================
+%% SERVICE COMPILATION (Client-Server Phase 1)
+%% ============================================
+
+%% compile_service_to_go(+Service, -GoCode)
+%  Compile a service definition to a Go struct and methods.
+compile_service_to_go(service(Name, HandlerSpec), GoCode) :-
+    !,
+    compile_service_to_go(service(Name, [], HandlerSpec), GoCode).
+
+compile_service_to_go(service(Name, Options, HandlerSpec), GoCode) :-
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    % Generate handler code
+    generate_service_handler_go(HandlerSpec, HandlerCode),
+    % Format the struct name (capitalize first letter)
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Generate the service struct
+    ( Stateful = true ->
+        format(string(GoCode),
+"// ~wService implements the Service interface for ~w
+type ~wService struct {
+\t*StatefulService
+}
+
+// New~wService creates a new ~w service instance
+func New~wService() *~wService {
+\treturn &~wService{
+\t\tStatefulService: NewStatefulService(\"~w\"),
+\t}
+}
+
+// Name returns the service name
+func (s *~wService) Name() string {
+\treturn \"~w\"
+}
+
+// Call processes a request and returns a response
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+~w
+}
+
+// Register ~w service
+func init() {
+\tRegisterService(\"~w\", New~wService())
+}
+", [StructNameAtom, Name, StructNameAtom, StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom, Name, StructNameAtom, Name, StructNameAtom, HandlerCode, Name, Name, StructNameAtom])
+    ;
+        format(string(GoCode),
+"// ~wService implements the Service interface for ~w
+type ~wService struct {
+\tname string
+}
+
+// New~wService creates a new ~w service instance
+func New~wService() *~wService {
+\treturn &~wService{name: \"~w\"}
+}
+
+// Name returns the service name
+func (s *~wService) Name() string {
+\treturn s.name
+}
+
+// Call processes a request and returns a response
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+~w
+}
+
+// Register ~w service
+func init() {
+\tRegisterService(\"~w\", New~wService())
+}
+", [StructNameAtom, Name, StructNameAtom, StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom, Name, StructNameAtom, StructNameAtom, HandlerCode, Name, Name, StructNameAtom])
+    ).
+
+%% generate_service_handler_go(+HandlerSpec, -Code)
+%  Generate Go handler code from handler specification.
+generate_service_handler_go([], "\treturn nil, nil").
+generate_service_handler_go(HandlerSpec, Code) :-
+    HandlerSpec \= [],
+    generate_handler_ops_go(HandlerSpec, OpsCode),
+    format(string(Code), "~w", [OpsCode]).
+
+%% generate_handler_ops_go(+Ops, -Code)
+%  Generate Go code for handler operations.
+generate_handler_ops_go([], "").
+generate_handler_ops_go([Op|Rest], Code) :-
+    generate_handler_op_go(Op, OpCode),
+    generate_handler_ops_go(Rest, RestCode),
+    ( RestCode = "" ->
+        Code = OpCode
+    ;
+        format(string(Code), "~w~n~w", [OpCode, RestCode])
+    ).
+
+%% generate_handler_op_go(+Op, -Code)
+%  Generate Go code for a single handler operation.
+generate_handler_op_go(receive(_Var), Code) :-
+    format(string(Code), "\t// Bind request", []).
+
+generate_handler_op_go(respond(Value), Code) :-
+    ( var(Value) ->
+        format(string(Code), "\treturn response, nil", [])
+    ; atom(Value) ->
+        format(string(Code), "\treturn ~w, nil", [Value])
+    ; number(Value) ->
+        format(string(Code), "\treturn ~w, nil", [Value])
+    ;
+        format(string(Code), "\treturn request, nil", [])
+    ).
+
+generate_handler_op_go(respond_error(Error), Code) :-
+    format(string(Code), "\treturn nil, &ServiceError{Service: s.Name(), Message: \"~w\"}", [Error]).
+
+generate_handler_op_go(transform(_In, _Out, Goal), Code) :-
+    format(string(Code), "\t// transform: ~w", [Goal]).
+
+generate_handler_op_go(transform(_In, _Out), Code) :-
+    format(string(Code), "\t// transform", []).
+
+generate_handler_op_go(state_get(Key, _Var), Code) :-
+    format(string(Code), "\t_ = s.StateGet(\"~w\")", [Key]).
+
+generate_handler_op_go(state_put(Key, Value), Code) :-
+    ( var(Value) ->
+        format(string(Code), "\ts.StatePut(\"~w\", request)", [Key])
+    ;
+        format(string(Code), "\ts.StatePut(\"~w\", ~w)", [Key, Value])
+    ).
+
+generate_handler_op_go(state_modify(Key, Func), Code) :-
+    format(string(Code), "\ts.StateModify(\"~w\", func(v interface{}) interface{} { /* ~w */ return v })", [Key, Func]).
+
+generate_handler_op_go(state_delete(Key), Code) :-
+    format(string(Code), "\ts.StateDelete(\"~w\")", [Key]).
+
+generate_handler_op_go(call_service(ServiceName, _Req, _Resp), Code) :-
+    format(string(Code), "\t_, _ = CallServiceImpl(\"~w\", request, nil)", [ServiceName]).
+
+generate_handler_op_go(Pred/Arity, Code) :-
+    format(string(Code), "\t// Call predicate: ~w/~w", [Pred, Arity]).
+
+generate_handler_op_go(Pred, Code) :-
+    atom(Pred),
+    Pred \= receive, Pred \= respond, Pred \= respond_error,
+    format(string(Code), "\t// Execute predicate: ~w", [Pred]).
+
+generate_handler_op_go(_, "\t// Unknown operation").
 
 %% ============================================
 %% PUBLIC API
@@ -9706,6 +9866,135 @@ func teeStage(records []Record, sideFn func([]Record) []Record) []Record {
 \treturn records
 }
 
+// ============================================
+// SERVICE INFRASTRUCTURE (Client-Server Phase 1)
+// ============================================
+
+// ServiceError represents an error from a service call
+type ServiceError struct {
+\tService string
+\tMessage string
+}
+
+func (e *ServiceError) Error() string {
+\treturn fmt.Sprintf(\"service %s: %s\", e.Service, e.Message)
+}
+
+// Service is the interface for in-process services
+type Service interface {
+\tCall(request interface{}) (interface{}, error)
+\tName() string
+}
+
+// StatefulService is a service that maintains state between requests
+type StatefulService struct {
+\tname  string
+\tstate map[string]interface{}
+}
+
+func NewStatefulService(name string) *StatefulService {
+\treturn &StatefulService{
+\t\tname:  name,
+\t\tstate: make(map[string]interface{}),
+\t}
+}
+
+func (s *StatefulService) Name() string {
+\treturn s.name
+}
+
+func (s *StatefulService) StateGet(key string) interface{} {
+\treturn s.state[key]
+}
+
+func (s *StatefulService) StatePut(key string, value interface{}) {
+\ts.state[key] = value
+}
+
+func (s *StatefulService) StateModify(key string, fn func(interface{}) interface{}) {
+\ts.state[key] = fn(s.state[key])
+}
+
+func (s *StatefulService) StateDelete(key string) {
+\tdelete(s.state, key)
+}
+
+// Global service registry
+var services = make(map[string]Service)
+
+// RegisterService adds a service to the global registry
+func RegisterService(name string, service Service) {
+\tservices[name] = service
+}
+
+// GetService retrieves a service from the registry
+func GetService(name string) (Service, error) {
+\tservice, ok := services[name]
+\tif !ok {
+\t\treturn nil, &ServiceError{Service: name, Message: \"service not found\"}
+\t}
+\treturn service, nil
+}
+
+// CallServiceOptions contains options for service calls
+type CallServiceOptions struct {
+\tTimeout     int // milliseconds
+\tRetry       int // number of retries
+\tRetryDelay  int // milliseconds between retries
+\tFallback    interface{}
+}
+
+// CallServiceImpl calls a service with options
+func CallServiceImpl(serviceName string, request interface{}, options *CallServiceOptions) (interface{}, error) {
+\tservice, err := GetService(serviceName)
+\tif err != nil {
+\t\tif options != nil && options.Fallback != nil {
+\t\t\treturn options.Fallback, nil
+\t\t}
+\t\treturn nil, err
+\t}
+
+\tmaxRetries := 0
+\tif options != nil {
+\t\tmaxRetries = options.Retry
+\t}
+
+\tvar lastErr error
+\tfor attempt := 0; attempt <= maxRetries; attempt++ {
+\t\tresult, err := service.Call(request)
+\t\tif err == nil {
+\t\t\treturn result, nil
+\t\t}
+\t\tlastErr = err
+\t\tif attempt < maxRetries && options != nil && options.RetryDelay > 0 {
+\t\t\ttime.Sleep(time.Duration(options.RetryDelay) * time.Millisecond)
+\t\t}
+\t}
+
+\tif options != nil && options.Fallback != nil {
+\t\treturn options.Fallback, nil
+\t}
+\treturn nil, lastErr
+}
+
+// callServiceStage is a pipeline stage that calls a service for each record
+func callServiceStage(records []Record, serviceName, requestField, responseField string, options *CallServiceOptions) []Record {
+\tvar output []Record
+\tfor _, record := range records {
+\t\trequest := record[requestField]
+\t\tresponse, err := CallServiceImpl(serviceName, request, options)
+\t\tif err != nil {
+\t\t\trecord[\"__error__\"] = true
+\t\t\trecord[\"__type__\"] = \"ServiceError\"
+\t\t\trecord[\"__message__\"] = err.Error()
+\t\t} else {
+\t\t\trecord[responseField] = response
+\t\t}
+\t\toutput = append(output, record)
+\t}
+\treturn output
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9814,6 +10103,8 @@ generate_go_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
 generate_go_single_enhanced_stage(tee(SideStage), Code) :-
     !,
     generate_go_single_enhanced_stage(SideStage, Code).
+generate_go_single_enhanced_stage(call_service(_, _, _), "") :- !.
+generate_go_single_enhanced_stage(call_service(_, _, _, _), "") :- !.
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -10385,6 +10676,25 @@ generate_go_stage_flow(tee(SideStage), InVar, OutVar, Code) :-
 \t~w := teeStage(~w, func(rs []Record) []Record { return ~w(rs) })",
     [SideName, OutVar, InVar, SideName]).
 
+% Call service stage (without options)
+generate_go_stage_flow(call_service(ServiceName, RequestExpr, ResponseVar), InVar, OutVar, Code) :-
+    !,
+    OutVar = "serviceResult",
+    format(string(Code),
+"\t// Call service: ~w
+\t~w := callServiceStage(~w, \"~w\", \"~w\", \"~w\", nil)",
+    [ServiceName, OutVar, InVar, ServiceName, RequestExpr, ResponseVar]).
+
+% Call service stage (with options)
+generate_go_stage_flow(call_service(ServiceName, RequestExpr, ResponseVar, Options), InVar, OutVar, Code) :-
+    !,
+    OutVar = "serviceResult",
+    format_go_options(Options, OptionsStr),
+    format(string(Code),
+"\t// Call service: ~w (with options)
+\t~w := callServiceStage(~w, \"~w\", \"~w\", \"~w\", ~w)",
+    [ServiceName, OutVar, InVar, ServiceName, RequestExpr, ResponseVar, OptionsStr]).
+
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
     !,
@@ -10397,6 +10707,40 @@ generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
 % Fallback for unknown stages
 generate_go_stage_flow(Stage, InVar, InVar, Code) :-
     format(string(Code), "\t// Unknown stage type: ~w (pass-through)", [Stage]).
+
+%% format_go_options(+Options, -GoStruct)
+%  Format a list of Prolog options as a Go struct literal.
+format_go_options([], "nil").
+format_go_options(Options, GoStruct) :-
+    Options \= [],
+    format_go_option_fields(Options, Fields),
+    atomic_list_concat(Fields, ', ', FieldsStr),
+    format(string(GoStruct), "&CallServiceOptions{~w}", [FieldsStr]).
+
+format_go_option_fields([], []).
+format_go_option_fields([Opt|Rest], [Field|RestFields]) :-
+    format_go_option_field(Opt, Field),
+    format_go_option_fields(Rest, RestFields).
+
+format_go_option_field(timeout(Ms), Field) :-
+    format(string(Field), "Timeout: ~w", [Ms]).
+format_go_option_field(retry(N), Field) :-
+    format(string(Field), "Retry: ~w", [N]).
+format_go_option_field(retry_delay(Ms), Field) :-
+    format(string(Field), "RetryDelay: ~w", [Ms]).
+format_go_option_field(fallback(Value), Field) :-
+    ( atom(Value) ->
+        format(string(Field), "Fallback: \"~w\"", [Value])
+    ; number(Value) ->
+        format(string(Field), "Fallback: ~w", [Value])
+    ;
+        format(string(Field), "Fallback: nil", [])
+    ).
+format_go_option_field(transport(T), Field) :-
+    format(string(Field), "/* Transport: ~w */", [T]).
+format_go_option_field(Opt, Field) :-
+    % Fallback for unknown options
+    format(string(Field), "/* Unknown option: ~w */", [Opt]).
 
 %% extract_go_stage_names(+Stages, -Names)
 %  Extract function names from stage specifications.

@@ -276,6 +276,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/development/testing/playbooks/xml_data_source_playbook__reference.md` - The reference document for reviewers.
   - Updated `docs/EXTENDED_README.md` to include the new playbook.
 
+- **Client-Server Architecture Phase 1: In-Process Services** - Foundation for service-oriented pipeline composition
+  - Service Definition DSL:
+    - `service(Name, HandlerSpec)` — Define a stateless service with operations
+    - `service(Name, Options, HandlerSpec)` — Define service with options (stateful, transport, timeout)
+  - Service Operations:
+    - `receive(Var)` — Bind incoming request to variable
+    - `respond(Value)` — Send response to caller
+    - `respond_error(Error)` — Send error response
+    - `state_get(Key, Value)` — Get state value (stateful services)
+    - `state_put(Key, Value)` — Set state value (stateful services)
+    - `call_service(Name, Request, Response)` — Call another service
+    - `transform(In, Out, Goal)` — Transform data with predicate
+    - `branch(Cond, TrueOps, FalseOps)` — Conditional execution
+    - `route_by(Field, Routes)` — Route by field value
+  - Service Options:
+    - `stateful(Bool)` — Enable/disable state management
+    - `transport(Type)` — Transport type (in_process, unix_socket, tcp, http)
+    - `protocol(Format)` — Wire format (jsonl, json, messagepack, protobuf)
+    - `timeout(Ms)` — Request timeout in milliseconds
+    - `max_concurrent(N)` — Maximum concurrent requests
+    - `on_error(Handler)` — Error handler predicate
+  - Pipeline Integration:
+    - `call_service(Name, RequestExpr, ResponseVar)` — Pipeline stage for service calls
+    - `call_service(Name, Request, Response, Options)` — With options (timeout, retry, fallback)
+    - Call service options: `timeout(Ms)`, `retry(N)`, `retry_delay(Ms)`, `fallback(Value)`
+  - Multi-Target Compilation:
+    - Python: Service classes with `_services` registry
+    - Go: Service interfaces with struct implementations
+    - Rust: Service trait with lazy_static registration
+  - Validation:
+    - `src/unifyweaver/core/service_validation.pl` — Service definition validation
+    - Extended `src/unifyweaver/core/pipeline_validation.pl` — call_service stage validation
+  - `tests/integration/test_in_process_services.sh` — Integration tests (13 tests)
+  - Documentation in `docs/CLIENT_SERVER_DESIGN.md`
+
 ## [0.1] - 2025-11-15
 
 ### 🎉 Milestone Release: Initial Vision Achieved
