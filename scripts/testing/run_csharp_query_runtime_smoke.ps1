@@ -6,7 +6,7 @@
 # Usage:
 #   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1
 #   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1 -KeepArtifacts
-#   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1 -OutputDir tmp\csharp_query_smoke
+#   pwsh -File .\scripts\testing\run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke
 #
 # Notes:
 # - Requires SWI-Prolog and dotnet (net9.0 SDK) on PATH (or in common SWI locations).
@@ -15,7 +15,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$OutputDir = "tmp\\csharp_query_smoke",
+    [string]$OutputDir = "tmp/csharp_query_smoke",
 
     [Parameter(Mandatory = $false)]
     [switch]$KeepArtifacts,
@@ -26,12 +26,33 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Join-PathMany {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Base,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Parts
+    )
+
+    $path = $Base
+    foreach ($part in $Parts) {
+        $path = Join-Path $path $part
+    }
+    return $path
+}
+
 function Resolve-ProjectRoot {
-    $root = Resolve-Path (Join-Path $PSScriptRoot "..\\..")
+    $root = Resolve-Path (Join-PathMany -Base $PSScriptRoot -Parts @("..", ".."))
     return $root.Path
 }
 
 function Find-SwiplExe {
+    $cmd = Get-Command swipl -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return $cmd.Source
+    }
+
     $cmd = Get-Command swipl.exe -ErrorAction SilentlyContinue
     if ($cmd) {
         return $cmd.Source
@@ -51,13 +72,13 @@ function Find-SwiplExe {
         }
     }
 
-    throw "swipl.exe not found on PATH or in common install locations."
+    throw "swipl not found on PATH or in common install locations."
 }
 
 function Assert-DotnetAvailable {
-    $cmd = Get-Command dotnet.exe -ErrorAction SilentlyContinue
+    $cmd = Get-Command dotnet -ErrorAction SilentlyContinue
     if (-not $cmd) {
-        throw "dotnet.exe not found on PATH."
+        throw "dotnet not found on PATH."
     }
 }
 
@@ -69,6 +90,48 @@ function Normalize-Rows {
             Where-Object { $_ -ne "" } |
             Sort-Object
     )
+}
+
+function Invoke-NativeLogged {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$ArgumentList = @(),
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkingDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$LogPath
+    )
+
+    $stdoutPath = "$LogPath.stdout"
+    $stderrPath = "$LogPath.stderr"
+
+    foreach ($path in @($stdoutPath, $stderrPath, $LogPath)) {
+        if (Test-Path $path) {
+            Remove-Item -Force $path
+        }
+    }
+
+    $proc = Start-Process `
+        -FilePath $FilePath `
+        -ArgumentList $ArgumentList `
+        -WorkingDirectory $WorkingDirectory `
+        -NoNewWindow `
+        -Wait `
+        -PassThru `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath
+
+    $stdoutLines = if (Test-Path $stdoutPath) { Get-Content -Path $stdoutPath } else { @() }
+    $stderrLines = if (Test-Path $stderrPath) { Get-Content -Path $stderrPath } else { @() }
+    Set-Content -Path $LogPath -Value @($stdoutLines + $stderrLines)
+
+    return $proc.ExitCode
 }
 
 $projectRoot = Resolve-ProjectRoot
@@ -107,7 +170,7 @@ if (-not $SkipCodegen) {
     $env:CSHARP_QUERY_KEEP_ARTIFACTS = "1"
 
     $init = Join-Path $projectRoot "init.pl"
-    $testFile = Join-Path $projectRoot "tests\\core\\test_csharp_query_target.pl"
+    $testFile = Join-PathMany -Base $projectRoot -Parts @("tests", "core", "test_csharp_query_target.pl")
 
     & $swipl -q -f $init -s $testFile -g "test_csharp_query_target:test_csharp_query_target" -t halt -- `
         --csharp-query-output $outputPath --csharp-query-keep
@@ -128,75 +191,68 @@ foreach ($project in $projects) {
     $dir = $project.FullName
     Write-Host "=== $($project.Name) ==="
 
-    Push-Location $dir
-    try {
-        $buildLogName = "_dotnet_build.log"
-        $buildLogPath = Join-Path $dir $buildLogName
-        cmd /c "dotnet build > $buildLogName 2>&1"
-        if ($LASTEXITCODE -ne 0) {
-            $failures++
-            Write-Host "FAIL (build)" -ForegroundColor Red
-            if (Test-Path $buildLogPath) {
-                Get-Content -Path $buildLogPath | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
-            }
-            continue
+    $buildLogName = "_dotnet_build.log"
+    $buildLogPath = Join-Path $dir $buildLogName
+    $buildExitCode = Invoke-NativeLogged -FilePath "dotnet" -ArgumentList @("build", "--nologo") -WorkingDirectory $dir -LogPath $buildLogPath
+    if ($buildExitCode -ne 0) {
+        $failures++
+        Write-Host "FAIL (build)" -ForegroundColor Red
+        if (Test-Path $buildLogPath) {
+            Get-Content -Path $buildLogPath | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
         }
+        continue
+    }
 
-        $binDir = Join-Path $dir "bin\\Debug\\net9.0"
-        if (-not (Test-Path $binDir)) {
-            throw "Build output dir not found: $binDir"
+    $binDir = Join-PathMany -Base $dir -Parts @("bin", "Debug", "net9.0")
+    if (-not (Test-Path $binDir)) {
+        throw "Build output dir not found: $binDir"
+    }
+
+    $exe = Get-ChildItem -Path $binDir -File -Filter "*.exe" | Select-Object -First 1
+    $dll = Get-ChildItem -Path $binDir -File -Filter "*.dll" | Where-Object { $_.Name -notlike "*.deps.dll" } | Select-Object -First 1
+
+    $runLogName = "_query_output.log"
+    $runLogPath = Join-Path $dir $runLogName
+    if ($exe) {
+        $runExitCode = Invoke-NativeLogged -FilePath $exe.FullName -WorkingDirectory $dir -LogPath $runLogPath
+    } elseif ($dll) {
+        $runExitCode = Invoke-NativeLogged -FilePath "dotnet" -ArgumentList @($dll.FullName) -WorkingDirectory $dir -LogPath $runLogPath
+    } else {
+        throw "No executable or dll found in $binDir"
+    }
+
+    if ($runExitCode -ne 0) {
+        $failures++
+        Write-Host "FAIL (run)" -ForegroundColor Red
+        if (Test-Path $runLogPath) {
+            Get-Content -Path $runLogPath | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
         }
+        continue
+    }
 
-        $exe = Get-ChildItem -Path $binDir -File -Filter "*.exe" | Select-Object -First 1
-        $dll = Get-ChildItem -Path $binDir -File -Filter "*.dll" | Where-Object { $_.Name -notlike "*.deps.dll" } | Select-Object -First 1
+    $actual = Normalize-Rows -Lines (Get-Content -Path $runLogPath)
+    $expectedPath = Join-Path $dir "expected_rows.txt"
+    $expected = Normalize-Rows -Lines (Get-Content -Path $expectedPath)
 
-        $runLogName = "_query_output.log"
-        $runLogPath = Join-Path $dir $runLogName
-        if ($exe) {
-            $runCmd = "`"$($exe.FullName)`" > $runLogName 2>&1"
-            cmd /c $runCmd
-        } elseif ($dll) {
-            $runCmd = "dotnet `"$($dll.FullName)`" > $runLogName 2>&1"
-            cmd /c $runCmd
-        } else {
-            throw "No executable or dll found in $binDir"
-        }
-
-        if ($LASTEXITCODE -ne 0) {
-            $failures++
-            Write-Host "FAIL (run)" -ForegroundColor Red
-            if (Test-Path $runLogPath) {
-                Get-Content -Path $runLogPath | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
-            }
-            continue
-        }
-
-        $actual = Normalize-Rows -Lines (Get-Content -Path $runLogPath)
-        $expectedPath = Join-Path $dir "expected_rows.txt"
-        $expected = Normalize-Rows -Lines (Get-Content -Path $expectedPath)
-
-        $match = ($actual.Count -eq $expected.Count)
-        if ($match) {
-            for ($i = 0; $i -lt $actual.Count; $i++) {
-                if ($actual[$i] -ne $expected[$i]) {
-                    $match = $false
-                    break
-                }
+    $match = ($actual.Count -eq $expected.Count)
+    if ($match) {
+        for ($i = 0; $i -lt $actual.Count; $i++) {
+            if ($actual[$i] -ne $expected[$i]) {
+                $match = $false
+                break
             }
         }
+    }
 
-        if ($match) {
-            Write-Host "PASS"
-        } else {
-            $failures++
-            Write-Host "FAIL"
-            Write-Host "  Expected:" -ForegroundColor Yellow
-            $expected | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
-            Write-Host "  Actual:" -ForegroundColor Yellow
-            $actual | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
-        }
-    } finally {
-        Pop-Location
+    if ($match) {
+        Write-Host "PASS"
+    } else {
+        $failures++
+        Write-Host "FAIL"
+        Write-Host "  Expected:" -ForegroundColor Yellow
+        $expected | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+        Write-Host "  Actual:" -ForegroundColor Yellow
+        $actual | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
     }
 }
 

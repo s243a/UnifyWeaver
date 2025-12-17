@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install SWI-Prolog
         run: |
@@ -88,3 +88,34 @@ jobs:
           echo "✓ Inference test runner generation"
           echo "✓ Generated bash script validation"
           echo "=========================================="
+
+  csharp_query_runtime_smoke:
+    name: C# Query Runtime Smoke
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-add-repository ppa:swi-prolog/stable -y
+          sudo apt-get update -qq
+          sudo apt-get install -y swi-prolog
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Verify toolchain
+        run: |
+          swipl --version
+          dotnet --version
+          pwsh -v
+
+      - name: Run C# query runtime smoke runner
+        run: |
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci

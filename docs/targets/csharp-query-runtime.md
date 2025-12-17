@@ -79,7 +79,7 @@ The core query runtime is intended to stay dependency-free (no LiteDB, ONNX, etc
 The Prolog test suite can generate per-plan C# console projects in codegen-only mode, and the PowerShell runner can then build/run them with dotnet and verify outputs.
 
 - Runner (recommended): `pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1`
-  - Options: `-KeepArtifacts`, `-OutputDir tmp\\csharp_query_smoke`, `-SkipCodegen`
+  - Options: `-KeepArtifacts`, `-OutputDir tmp/csharp_query_smoke`, `-SkipCodegen`
 - Environment variables (used by the test harness):
   - `SKIP_CSHARP_EXECUTION=1` (generate C# projects but do not execute via Prolog)
   - `CSHARP_QUERY_OUTPUT_DIR=...` (where generated projects are written)
