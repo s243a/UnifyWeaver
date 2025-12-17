@@ -1196,7 +1196,8 @@ verify_parameterized_mutual_recursion_inferred_plan :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'new int[]{ 0 }'),
     sub_string(Source, _, _, _, NeedName),
-    sub_string(Source, _, _, _, 'MaterializeNode').
+    sub_string(Source, _, _, _, 'MaterializeNode'),
+    maybe_run_query_runtime(Plan, ['4'], [[4]]).
 
 verify_parameterized_mutual_recursion_fallback_plan :-
     capture_user_error(
@@ -1215,7 +1216,8 @@ verify_parameterized_mutual_recursion_fallback_plan :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'new int[]{ 0 }'),
     \+ sub_string(Source, _, _, _, NeedName),
-    \+ sub_string(Source, _, _, _, 'MaterializeNode').
+    \+ sub_string(Source, _, _, _, 'MaterializeNode'),
+    maybe_run_query_runtime(Plan, ['4'], [[4]]).
 
 verify_dynamic_source_plan :-
     setup_call_cleanup(
