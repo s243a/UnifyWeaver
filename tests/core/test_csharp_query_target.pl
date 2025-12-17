@@ -804,7 +804,8 @@ verify_aggregate_set_plan :-
     is_dict(Aggregate, aggregate),
     get_dict(op, Aggregate, set),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
-    sub_string(Source, _, _, _, 'AggregateOperation.Set').
+    sub_string(Source, _, _, _, 'AggregateOperation.Set'),
+    maybe_run_query_runtime(Plan, ['[alice|bob]']).
 
 verify_aggregate_bag_plan :-
     csharp_query_target:build_query_plan(test_sale_customers_bag/1, [target(csharp_query)], Plan),
@@ -812,7 +813,8 @@ verify_aggregate_bag_plan :-
     is_dict(Aggregate, aggregate),
     get_dict(op, Aggregate, bag),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
-    sub_string(Source, _, _, _, 'AggregateOperation.Bag').
+    sub_string(Source, _, _, _, 'AggregateOperation.Bag'),
+    maybe_run_query_runtime(Plan, ['[alice|alice|bob]']).
 
 verify_aggregate_subplan_count_with_constraint_plan :-
     csharp_query_target:build_query_plan(test_sale_filtered_count/1, [target(csharp_query)], Plan),
@@ -958,7 +960,8 @@ verify_aggregate_subplan_set_with_negation_plan :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'AggregateSubplanNode'),
     sub_string(Source, _, _, _, 'AggregateOperation.Set'),
-    sub_string(Source, _, _, _, 'NegationNode').
+    sub_string(Source, _, _, _, 'NegationNode'),
+    maybe_run_query_runtime(Plan, ['[alice]']).
 
 verify_aggregate_subplan_grouped_sum_with_negation_plan :-
     csharp_query_target:build_query_plan(test_non_banned_sale_sum_grouped/2, [target(csharp_query)], Plan),
@@ -2028,14 +2031,15 @@ var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(result.Provider);
 ~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
-string FormatValue(object? value) => value switch
-{
-    JsonNode node => node.ToJsonString(jsonOptions),
-    JsonElement element => element.GetRawText(),
-    _ => value?.ToString() ?? string.Empty
-};
-foreach (var row in ~w)
-{
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+     System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+     _ => value?.ToString() ?? string.Empty
+ };
+ foreach (var row in ~w)
+ {
     var projected = row.Take(result.Plan.Head.Arity)
                        .Select(FormatValue)
                        .ToArray();
@@ -2059,14 +2063,15 @@ using System.Text.Json.Nodes;
 
 var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
-string FormatValue(object? value) => value switch
-{
-    JsonNode node => node.ToJsonString(jsonOptions),
-    JsonElement element => element.GetRawText(),
-    _ => value?.ToString() ?? string.Empty
-};
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+     System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+     _ => value?.ToString() ?? string.Empty
+ };
 
-void PrintRows((InMemoryRelationProvider Provider, QueryPlan Plan) result, object[][] parameters)
+ void PrintRows((InMemoryRelationProvider Provider, QueryPlan Plan) result, object[][] parameters)
 {
     var executor = new QueryExecutor(result.Provider);
     foreach (var row in executor.Execute(result.Plan, parameters))
