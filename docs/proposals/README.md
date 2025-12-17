@@ -49,6 +49,7 @@ Proposals serve several purposes:
 | [Smoothness Regularization](SMOOTHNESS_REGULARIZATION.md) | Proposal | v0.0.4+ | Low |
 | [Smoothing Basis Projection](SMOOTHING_BASIS_PROJECTION.md) | Validated | v0.0.4+ | Medium |
 | [Q/A Knowledge Graph](QA_KNOWLEDGE_GRAPH.md) | Draft | v0.0.4+ | Medium |
+| [Seed Question Topology](SEED_QUESTION_TOPOLOGY.md) | Proposed | v0.0.4+ | Medium |
 | [Transformer Distillation](TRANSFORMER_DISTILLATION.md) | Implemented | v0.0.4 | Low |
 | [LDA Database Schema](LDA_DATABASE_SCHEMA.md) | Implemented | v0.0.3 | Medium |
 | [LDA Training Approach](LDA_TRAINING_APPROACH.md) | Implemented | v0.0.3 | Medium |

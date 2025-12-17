@@ -6,32 +6,63 @@
 
 ## Executive Summary
 
-This proposal structures the LDA training data from "flat clusters of synonyms" into a **topology of related questions**. We introduce the concept of **ordered seeds** (`seed(0)`, `seed(1)`, ... `seed(n)`), where `seed(0)` represents the direct intent of the answer, and subsequent seeds represent related questions that expand the search space and diversity.
+This proposal structures the LDA training data from "flat clusters of synonyms" into a **topology of related questions**. We introduce the concept of **seed levels** (`seed(0)`, `seed(1)`, ... `seed(n)`), where the level tracks **how far the knowledge graph has expanded from the original question**.
+
+**Key clarifications:**
+- Seed level tracks **expansion distance**, not importance
+- `seed(n)` and `seed(n+1)` are only related if they are actually related questions
+- All seed levels are equally valid for training - no weighting by level
+- Selecting questions by seed level helps ensure **diversity** when expanding clusters
 
 ## Motivation
 
 ### 1. The "Bag of Questions" Problem
-Currently, a cluster contains a flat list of queries (short, medium, long) assumed to mean roughly the same thing. This obscures the "center" of the topic and treats tangential queries the same as core queries.
+Currently, a cluster contains a flat list of queries (short, medium, long) with no provenance tracking. When adding new questions, we can't tell:
+- Which were the original seed questions
+- Which were generated/discovered later
+- How much diversity exists in the cluster
 
-### 2. Knowledge Graph Provenance
-When building the Knowledge Graph (KG), knowing the specific angle or nuance of a question is critical. Linking an answer to a generic cluster is less precise than linking it to the specific `seed(n)` variation that bridges two topics.
+### 2. Knowledge Graph Expansion Tracking
+The seed level tells us how much the knowledge graph has expanded from the original dataset:
+- `seed(0)`: The original Q-A pairs - **everything built first** (many questions)
+- `seed(1)`: Questions discovered by exploring from seed(0) questions
+- `seed(2)`: Questions discovered by exploring from seed(1) questions
+- And so on...
 
-### 3. Search Space Expansion
-`seed(n+1)` is not just a rephrasing of `seed(n)`; it is a **related question**. This explicitly expands the search space to cover adjacent semantic territory without forcing the system to hallucinate connections.
+This is **provenance tracking**, not a relationship chain. The existing dataset is all seed(0).
+
+### 3. Diversity Control
+When adding new questions to a cluster:
+- Picking only from `seed(n)` level ensures you're not duplicating existing variations
+- Higher seed levels represent more distant explorations
+- This prevents clusters from becoming echo chambers of similar questions
 
 ## The Seed Topology
 
-### Definition: Seed(0) - The Anchor
-*   **Role**: The direct, original question that the Playbook Answer was created to solve.
-*   **Property**: Highest semantic alignment with the Answer content.
-*   **Usage**: The primary key for "Foundational" KG relations.
+### Definition: Seed(0) - The Original Data
+*   **Role**: The original Q-A pairs that were built first - the existing dataset.
+*   **Property**: There will be **many** seed(0) questions, as this represents everything built before expansion began.
+*   **Usage**: The foundation from which the knowledge graph expands.
 
-### Definition: Seed(n) - The Expansion
-*   **Role**: A distinct question *related* to `seed(n-1)`.
-*   **Property**: Introduces diversity (new vocabulary, new use case, slightly different intent) while remaining relevant to the Cluster.
+### Definition: Seed(n) - Expansion Depth
+*   **Role**: Questions discovered at expansion depth n from the origin.
+*   **Property**: NOT necessarily related to `seed(n-1)` - only related if the questions themselves are related.
+*   **Meaning**: "This question was discovered n expansion steps from the original seed."
 *   **Usage**:
-    *   **Search**: Captures user queries that are "close but not exact" matches to the core intent.
-    *   **KG**: Acts as a bridge. `Cluster A: seed(2)` might be semantically identical to `Cluster B: seed(0)`, creating a transitional link that wouldn't exist at the cluster level.
+    *   **Diversity**: Selecting from a specific seed level helps ensure variety when adding new questions.
+    *   **Provenance**: Track how the cluster grew over time.
+    *   **KG bridging**: A `seed(2)` question might connect to another cluster's `seed(0)`, creating cross-cluster links.
+
+### Important: Seed Level ≠ Relationship
+
+```
+seed(0): "How do I read a CSV file?"
+seed(1): "How do I read CSV with headers?"      ← related to seed(0)
+seed(1): "How do I parse delimited data?"       ← related to seed(0), NOT to above seed(1)
+seed(2): "How do I handle CSV encoding issues?" ← related to some seed(1), expansion continues
+```
+
+The seed level tracks **when** a question was discovered, not **what** it relates to.
 
 ## Proposed Schema Change
 
@@ -80,5 +111,6 @@ This structure allows for **Multi-Resolution Linking**:
 
 ## Impact on Training
 
-*   **Weighting**: `seed(0)` can be weighted higher for the "Centroid" calculation to ensure the projection remains stable.
-*   **Smoothing**: `seed(n)` variants provide the "support" needed for the Smoothing Basis algorithm, defining the valid semantic boundaries of the cluster.
+*   **No Weighting by Seed Level**: All questions are equally valid training data regardless of seed level. The seed level is metadata for provenance, not importance.
+*   **Diversity for Expansion**: When generating new training questions, selecting from a specific seed level helps ensure the new questions explore different semantic territory.
+*   **Smoothing Basis Support**: All `seed(n)` questions contribute to defining the semantic boundaries of the cluster. More seed levels = broader coverage.
