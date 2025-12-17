@@ -23,7 +23,10 @@
     test_rust_enhanced_chaining/0,    % Test enhanced pipeline chaining
     % Client-server architecture exports (Phase 9)
     compile_service_to_rust/2,        % +Service, -RustCode
-    generate_service_handler_rust/2   % +HandlerSpec, -RustCode
+    generate_service_handler_rust/2,  % +HandlerSpec, -RustCode
+    % Phase 2: Cross-process services
+    compile_unix_socket_service_rust/2,   % +Service, -RustCode
+    compile_unix_socket_client_rust/3     % +ServiceName, +SocketPath, -RustCode
 ]).
 
 :- use_module(library(lists)).
@@ -33,6 +36,7 @@
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/rust_bindings').
 :- use_module('../core/pipeline_validation').
+:- use_module('../core/service_validation').
 
 %% init_rust_target
 %  Initialize the Rust target by loading bindings.
@@ -87,11 +91,20 @@ get_field_type(_SchemaName, _FieldName, serde_json_value).
 
 %% compile_service_to_rust(+Service, -RustCode)
 %  Compile a service definition to a Rust struct and impl.
+%  Dispatches based on transport type: in_process, unix_socket, etc.
 compile_service_to_rust(service(Name, HandlerSpec), RustCode) :-
     !,
     compile_service_to_rust(service(Name, [], HandlerSpec), RustCode).
 
+compile_service_to_rust(Service, RustCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(unix_socket(_Path)), Options),
+    !,
+    % Phase 2: Unix socket service
+    compile_unix_socket_service_rust(Service, RustCode).
+
 compile_service_to_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Phase 1: In-process service (default)
     % Determine if service is stateful
     ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
     % Generate handler code
@@ -249,6 +262,432 @@ generate_handler_op_rust(Pred, Code) :-
     format(string(Code), "        // Execute predicate: ~w", [Pred]).
 
 generate_handler_op_rust(_, "        // Unknown operation").
+
+%% ============================================
+%% PHASE 2: CROSS-PROCESS SERVICES (Unix Socket)
+%% ============================================
+
+%% compile_unix_socket_service_rust(+Service, -RustCode)
+%  Generate Rust code for a Unix socket service server.
+compile_unix_socket_service_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Extract socket path
+    member(transport(unix_socket(SocketPath)), Options),
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    % Extract timeout (default 30000ms)
+    ( member(timeout(TimeoutMs), Options) -> Timeout = TimeoutMs ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_rust(HandlerSpec, HandlerCode),
+    % Format the struct name (capitalize first letter)
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Generate upper case name for static
+    atom_codes(UpperName, StructName),
+    upcase_atom(Name, UpperAtom),
+    % Generate the Unix socket service
+    ( Stateful = true ->
+        format(string(RustCode),
+"use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::{Arc, Mutex, RwLock};
+use std::collections::HashMap;
+use std::thread;
+use std::time::Duration;
+use serde_json::{json, Value};
+
+/// ~wService implements a Unix socket server for ~w.
+pub struct ~wService {
+    state: RwLock<HashMap<String, Value>>,
+    socket_path: String,
+    timeout_ms: u64,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            state: RwLock::new(HashMap::new()),
+            socket_path: \"~w\".to_string(),
+            timeout_ms: ~w,
+        }
+    }
+
+    fn state_get(&self, key: &str) -> Option<Value> {
+        self.state.read().ok()?.get(key).cloned()
+    }
+
+    fn state_put(&self, key: &str, value: Value) {
+        if let Ok(mut state) = self.state.write() {
+            state.insert(key.to_string(), value);
+        }
+    }
+}
+
+impl Service for ~wService {
+    fn name(&self) -> &str {
+        \"~w\"
+    }
+
+    fn call(&self, request: Value) -> Result<Value, ServiceError> {
+~w
+    }
+}
+
+/// Unix socket server implementation
+impl ~wService {
+    pub fn start_server(&self) -> std::io::Result<()> {
+        // Remove existing socket file
+        let _ = std::fs::remove_file(&self.socket_path);
+
+        let listener = UnixListener::bind(&self.socket_path)?;
+        eprintln!(\"[~w] Server listening on {}\", self.socket_path);
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    let service = Arc::new(self);
+                    thread::spawn(move || {
+                        if let Err(e) = handle_connection(stream, service.as_ref()) {
+                            eprintln!(\"Connection error: {}\", e);
+                        }
+                    });
+                }
+                Err(e) => eprintln!(\"Accept error: {}\", e),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn handle_connection(stream: UnixStream, service: &~wService) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_millis(service.timeout_ms)))?;
+    let reader = BufReader::new(&stream);
+    let mut writer = &stream;
+
+    for line in reader.lines() {
+        match line {
+            Ok(line) => {
+                let request: Value = match serde_json::from_str(&line) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        send_error(&mut writer, \"parse_error\", &e.to_string())?;
+                        continue;
+                    }
+                };
+
+                let request_id = request.get(\"_id\").and_then(|v| v.as_str()).unwrap_or(\"\");
+                let payload = request.get(\"_payload\").cloned().unwrap_or(request.clone());
+
+                match service.call(payload) {
+                    Ok(response) => send_response(&mut writer, request_id, response)?,
+                    Err(e) => send_error(&mut writer, \"service_error\", &e.message)?,
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(())
+}
+
+fn send_response(writer: &mut &UnixStream, request_id: &str, response: Value) -> std::io::Result<()> {
+    let msg = json!({
+        \"_id\": request_id,
+        \"_status\": \"ok\",
+        \"_payload\": response
+    });
+    writeln!(writer, \"{}\", msg)?;
+    writer.flush()
+}
+
+fn send_error(writer: &mut &UnixStream, error_type: &str, message: &str) -> std::io::Result<()> {
+    let msg = json!({
+        \"_status\": \"error\",
+        \"_error_type\": error_type,
+        \"_message\": message
+    });
+    writeln!(writer, \"{}\", msg)?;
+    writer.flush()
+}
+
+lazy_static::lazy_static! {
+    static ref ~w_SERVICE: Arc<~wService> = Arc::new(~wService::new());
+}
+
+fn main() {
+    ctrlc::set_handler(|| {
+        eprintln!(\"\\n[~w] Shutting down...\");
+        std::process::exit(0);
+    }).expect(\"Error setting Ctrl-C handler\");
+
+    ~w_SERVICE.start_server().expect(\"Failed to start server\");
+}
+", [StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom, SocketPath, Timeout,
+    StructNameAtom, Name, HandlerCode, StructNameAtom, Name, StructNameAtom, UpperAtom, StructNameAtom, StructNameAtom, Name, UpperAtom])
+    ;
+        % Non-stateful version
+        format(string(RustCode),
+"use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+use serde_json::{json, Value};
+
+/// ~wService implements a Unix socket server for ~w.
+pub struct ~wService {
+    socket_path: String,
+    timeout_ms: u64,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            socket_path: \"~w\".to_string(),
+            timeout_ms: ~w,
+        }
+    }
+}
+
+impl Service for ~wService {
+    fn name(&self) -> &str {
+        \"~w\"
+    }
+
+    fn call(&self, request: Value) -> Result<Value, ServiceError> {
+~w
+    }
+}
+
+/// Unix socket server implementation
+impl ~wService {
+    pub fn start_server(&self) -> std::io::Result<()> {
+        // Remove existing socket file
+        let _ = std::fs::remove_file(&self.socket_path);
+
+        let listener = UnixListener::bind(&self.socket_path)?;
+        eprintln!(\"[~w] Server listening on {}\", self.socket_path);
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    let timeout_ms = self.timeout_ms;
+                    thread::spawn(move || {
+                        if let Err(e) = handle_connection_stateless(stream, timeout_ms) {
+                            eprintln!(\"Connection error: {}\", e);
+                        }
+                    });
+                }
+                Err(e) => eprintln!(\"Accept error: {}\", e),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn handle_connection_stateless(stream: UnixStream, timeout_ms: u64) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_millis(timeout_ms)))?;
+    let reader = BufReader::new(&stream);
+    let mut writer = &stream;
+    let service = ~wService::new();
+
+    for line in reader.lines() {
+        match line {
+            Ok(line) => {
+                let request: Value = match serde_json::from_str(&line) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        send_error_stateless(&mut writer, \"parse_error\", &e.to_string())?;
+                        continue;
+                    }
+                };
+
+                let request_id = request.get(\"_id\").and_then(|v| v.as_str()).unwrap_or(\"\");
+                let payload = request.get(\"_payload\").cloned().unwrap_or(request.clone());
+
+                match service.call(payload) {
+                    Ok(response) => send_response_stateless(&mut writer, request_id, response)?,
+                    Err(e) => send_error_stateless(&mut writer, \"service_error\", &e.message)?,
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(())
+}
+
+fn send_response_stateless(writer: &mut &UnixStream, request_id: &str, response: Value) -> std::io::Result<()> {
+    let msg = json!({
+        \"_id\": request_id,
+        \"_status\": \"ok\",
+        \"_payload\": response
+    });
+    writeln!(writer, \"{}\", msg)?;
+    writer.flush()
+}
+
+fn send_error_stateless(writer: &mut &UnixStream, error_type: &str, message: &str) -> std::io::Result<()> {
+    let msg = json!({
+        \"_status\": \"error\",
+        \"_error_type\": error_type,
+        \"_message\": message
+    });
+    writeln!(writer, \"{}\", msg)?;
+    writer.flush()
+}
+
+lazy_static::lazy_static! {
+    static ref ~w_SERVICE: Arc<~wService> = Arc::new(~wService::new());
+}
+
+fn main() {
+    ctrlc::set_handler(|| {
+        eprintln!(\"\\n[~w] Shutting down...\");
+        std::process::exit(0);
+    }).expect(\"Error setting Ctrl-C handler\");
+
+    ~w_SERVICE.start_server().expect(\"Failed to start server\");
+}
+", [StructNameAtom, Name, StructNameAtom, StructNameAtom, SocketPath, Timeout, StructNameAtom, Name, HandlerCode,
+    StructNameAtom, Name, StructNameAtom, UpperAtom, StructNameAtom, StructNameAtom, Name, UpperAtom, UpperAtom])
+    ).
+
+%% compile_unix_socket_client_rust(+ServiceName, +SocketPath, -RustCode)
+%  Generate Rust code for a Unix socket service client.
+compile_unix_socket_client_rust(Name, SocketPath, RustCode) :-
+    % Format the struct name (capitalize first letter)
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    upcase_atom(Name, UpperAtom),
+    format(string(RustCode),
+"use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::time::Duration;
+use serde_json::{json, Value};
+use uuid::Uuid;
+
+/// ~wClient is a client for the ~w Unix socket service.
+pub struct ~wClient {
+    socket_path: String,
+    timeout: Duration,
+    stream: Option<UnixStream>,
+}
+
+impl ~wClient {
+    pub fn new(socket_path: &str, timeout: Duration) -> Self {
+        ~wClient {
+            socket_path: socket_path.to_string(),
+            timeout,
+            stream: None,
+        }
+    }
+
+    pub fn connect(&mut self) -> std::io::Result<()> {
+        let stream = UnixStream::connect(&self.socket_path)?;
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
+        self.stream = Some(stream);
+        Ok(())
+    }
+
+    pub fn disconnect(&mut self) {
+        self.stream = None;
+    }
+
+    pub fn call(&mut self, request: Value) -> Result<Value, ServiceError> {
+        if self.stream.is_none() {
+            self.connect().map_err(|e| ServiceError {
+                service: \"~w\".to_string(),
+                message: e.to_string(),
+            })?;
+        }
+
+        let stream = self.stream.as_mut().unwrap();
+        let request_id = Uuid::new_v4().to_string();
+        let msg = json!({
+            \"_id\": request_id,
+            \"_payload\": request
+        });
+
+        writeln!(stream, \"{}\", msg).map_err(|e| ServiceError {
+            service: \"~w\".to_string(),
+            message: e.to_string(),
+        })?;
+        stream.flush().map_err(|e| ServiceError {
+            service: \"~w\".to_string(),
+            message: e.to_string(),
+        })?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(|e| ServiceError {
+            service: \"~w\".to_string(),
+            message: e.to_string(),
+        })?;
+
+        let response: Value = serde_json::from_str(&line).map_err(|e| ServiceError {
+            service: \"~w\".to_string(),
+            message: e.to_string(),
+        })?;
+
+        if response.get(\"_status\").and_then(|v| v.as_str()) == Some(\"ok\") {
+            Ok(response.get(\"_payload\").cloned().unwrap_or(Value::Null))
+        } else {
+            Err(ServiceError {
+                service: \"~w\".to_string(),
+                message: response.get(\"_message\")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(\"Unknown error\")
+                    .to_string(),
+            })
+        }
+    }
+}
+
+/// Convenience function to call ~w service.
+pub fn call_~w(request: Value, socket_path: &str, timeout: Duration) -> Result<Value, ServiceError> {
+    let mut client = ~wClient::new(socket_path, timeout);
+    client.call(request)
+}
+
+lazy_static::lazy_static! {
+    static ref DEFAULT_~w_CLIENT: std::sync::Mutex<~wClient> =
+        std::sync::Mutex::new(~wClient::new(\"~w\", Duration::from_secs(30)));
+}
+
+/// ~wRemoteService wraps the client for use with call_service_impl.
+pub struct ~wRemoteService {
+    socket_path: String,
+}
+
+impl ~wRemoteService {
+    pub fn new(socket_path: &str) -> Self {
+        ~wRemoteService {
+            socket_path: socket_path.to_string(),
+        }
+    }
+}
+
+impl Service for ~wRemoteService {
+    fn name(&self) -> &str {
+        \"~w\"
+    }
+
+    fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        call_~w(request, &self.socket_path, Duration::from_secs(30))
+    }
+}
+", [StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom, Name, Name, Name, Name, Name, Name, Name, Name, StructNameAtom, UpperAtom, StructNameAtom, StructNameAtom, SocketPath, StructNameAtom, StructNameAtom, StructNameAtom, Name, Name, Name, Name]).
 
 %% ============================================
 %% PUBLIC API

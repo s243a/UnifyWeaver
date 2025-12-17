@@ -39,7 +39,10 @@
     test_ironpython_enhanced_chaining/0,
     % Client-server architecture exports (Phase 9)
     compile_service_to_python/2,
-    generate_service_handler_python/2
+    generate_service_handler_python/2,
+    % Phase 2: Cross-process services
+    compile_unix_socket_service_python/2,
+    compile_unix_socket_client_python/3
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -55,6 +58,9 @@
 
 % Pipeline validation (Phase 9)
 :- use_module('../core/pipeline_validation').
+
+% Service validation (Client-Server Phase 2)
+:- use_module('../core/service_validation').
 
 % Control plane integration (Phase 2 - Runtime Selection)
 :- catch(use_module('../core/preferences'), _, true).
@@ -171,11 +177,20 @@ get_field_info(SchemaName, FieldName, any, []) :-
 
 %% compile_service_to_python(+Service, -PythonCode)
 %  Compile a service definition to a Python class.
+%  Dispatches based on transport type: in_process, unix_socket, etc.
 compile_service_to_python(service(Name, HandlerSpec), PythonCode) :-
     !,
     compile_service_to_python(service(Name, [], HandlerSpec), PythonCode).
 
+compile_service_to_python(Service, PythonCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(unix_socket(Path)), Options),
+    !,
+    % Phase 2: Unix socket service
+    compile_unix_socket_service_python(Service, PythonCode).
+
 compile_service_to_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Phase 1: In-process service (default)
     % Determine if service is stateful
     ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
     % Generate handler code
@@ -292,6 +307,270 @@ generate_handler_op_python(Pred, Code) :-
     format(string(Code), "        ~w(_request)  # Execute predicate", [Pred]).
 
 generate_handler_op_python(_, "        pass  # Unknown operation").
+
+%% ============================================
+%% PHASE 2: CROSS-PROCESS SERVICES (Unix Socket)
+%% ============================================
+
+%% compile_unix_socket_service_python(+Service, -PythonCode)
+%  Generate Python code for a Unix socket service server.
+compile_unix_socket_service_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Extract socket path
+    member(transport(unix_socket(SocketPath)), Options),
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
+    % Extract timeout (default 30000ms)
+    ( member(timeout(TimeoutMs), Options) -> Timeout = TimeoutMs ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_python(HandlerSpec, HandlerCode),
+    % Format the class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    % Generate the Unix socket service
+    format(string(PythonCode),
+"import socket
+import os
+import json
+import threading
+import signal
+import sys
+
+class ~wService(Service):
+    '''
+    Unix Socket Service: ~w
+    Socket Path: ~w
+    Auto-generated from Prolog service definition.
+    '''
+    def __init__(self):
+        super().__init__('~w', stateful=~w)
+        self.socket_path = '~w'
+        self.timeout = ~w / 1000.0  # Convert to seconds
+        self.server_socket = None
+        self.running = False
+        self._lock = threading.Lock()
+
+    def call(self, request):
+        '''Process request and return response.'''
+~w
+
+    def start_server(self):
+        '''Start the Unix socket server.'''
+        # Remove existing socket file
+        if os.path.exists(self.socket_path):
+            os.unlink(self.socket_path)
+
+        self.server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server_socket.bind(self.socket_path)
+        self.server_socket.listen(5)
+        self.server_socket.settimeout(1.0)  # Allow periodic check for shutdown
+        self.running = True
+
+        print(f'[~w] Server listening on {self.socket_path}', file=sys.stderr)
+
+        while self.running:
+            try:
+                conn, _ = self.server_socket.accept()
+                threading.Thread(target=self._handle_connection, args=(conn,), daemon=True).start()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+        self._cleanup()
+
+    def _handle_connection(self, conn):
+        '''Handle a client connection.'''
+        conn.settimeout(self.timeout)
+        buffer = b''
+        try:
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                buffer += data
+                # Process complete JSONL messages
+                while b'\\n' in buffer:
+                    line, buffer = buffer.split(b'\\n', 1)
+                    if line:
+                        self._process_request(conn, line)
+        except socket.timeout:
+            self._send_error(conn, 'timeout', 'Request timed out')
+        except Exception as e:
+            self._send_error(conn, 'error', str(e))
+        finally:
+            conn.close()
+
+    def _process_request(self, conn, line):
+        '''Process a single JSONL request.'''
+        try:
+            request = json.loads(line.decode('utf-8'))
+            request_id = request.get('_id')
+            payload = request.get('_payload', request)
+
+            with self._lock:
+                response = self.call(payload)
+
+            self._send_response(conn, request_id, response)
+        except json.JSONDecodeError as e:
+            self._send_error(conn, 'parse_error', f'Invalid JSON: {e}')
+        except ServiceError as e:
+            self._send_error(conn, 'service_error', str(e))
+        except Exception as e:
+            self._send_error(conn, 'error', str(e))
+
+    def _send_response(self, conn, request_id, response):
+        '''Send a JSONL response.'''
+        msg = {'_id': request_id, '_status': 'ok', '_payload': response}
+        conn.sendall((json.dumps(msg) + '\\n').encode('utf-8'))
+
+    def _send_error(self, conn, error_type, message):
+        '''Send a JSONL error response.'''
+        msg = {'_status': 'error', '_error_type': error_type, '_message': message}
+        try:
+            conn.sendall((json.dumps(msg) + '\\n').encode('utf-8'))
+        except:
+            pass
+
+    def stop_server(self):
+        '''Stop the Unix socket server.'''
+        self.running = False
+        if self.server_socket:
+            self.server_socket.close()
+
+    def _cleanup(self):
+        '''Clean up server resources.'''
+        if os.path.exists(self.socket_path):
+            try:
+                os.unlink(self.socket_path)
+            except:
+                pass
+        print(f'[~w] Server stopped', file=sys.stderr)
+
+# Create service instance
+_~w_service = ~wService()
+
+# Register for in-process calls
+register_service('~w', _~w_service)
+
+def run_~w_server():
+    '''Run the ~w service as a standalone server.'''
+    def signal_handler(sig, frame):
+        print(f'\\n[~w] Shutting down...', file=sys.stderr)
+        _~w_service.stop_server()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    _~w_service.start_server()
+
+if __name__ == '__main__':
+    run_~w_server()
+", [ClassNameAtom, Name, SocketPath, Name, Stateful, SocketPath, Timeout, HandlerCode,
+    Name, Name, Name, ClassNameAtom, Name, Name, Name, Name, Name, Name, Name, Name]).
+
+%% compile_unix_socket_client_python(+ServiceName, +SocketPath, -PythonCode)
+%  Generate Python code for a Unix socket service client.
+compile_unix_socket_client_python(Name, SocketPath, PythonCode) :-
+    % Format the class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    format(string(PythonCode),
+"import socket
+import json
+import uuid
+
+class ~wClient:
+    '''
+    Unix Socket Client for ~w service.
+    Socket Path: ~w
+    Auto-generated from Prolog service definition.
+    '''
+    def __init__(self, socket_path='~w', timeout=30.0):
+        self.socket_path = socket_path
+        self.timeout = timeout
+        self._socket = None
+
+    def connect(self):
+        '''Connect to the service.'''
+        self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._socket.settimeout(self.timeout)
+        self._socket.connect(self.socket_path)
+        return self
+
+    def disconnect(self):
+        '''Disconnect from the service.'''
+        if self._socket:
+            self._socket.close()
+            self._socket = None
+
+    def __enter__(self):
+        return self.connect()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+        return False
+
+    def call(self, request):
+        '''Send a request and receive a response.'''
+        if not self._socket:
+            self.connect()
+
+        request_id = str(uuid.uuid4())
+        msg = {'_id': request_id, '_payload': request}
+        self._socket.sendall((json.dumps(msg) + '\\n').encode('utf-8'))
+
+        # Read response
+        buffer = b''
+        while True:
+            data = self._socket.recv(4096)
+            if not data:
+                raise ConnectionError('Server closed connection')
+            buffer += data
+            if b'\\n' in buffer:
+                line, _ = buffer.split(b'\\n', 1)
+                response = json.loads(line.decode('utf-8'))
+                if response.get('_status') == 'ok':
+                    return response.get('_payload')
+                else:
+                    raise ServiceError(
+                        service='~w',
+                        message=response.get('_message', 'Unknown error')
+                    )
+
+def call_~w(request, socket_path='~w', timeout=30.0):
+    '''Convenience function to call ~w service.'''
+    with ~wClient(socket_path, timeout) as client:
+        return client.call(request)
+
+# Register remote service for call_service_impl
+class ~wRemoteService(Service):
+    '''Remote service wrapper for ~w.'''
+    def __init__(self, socket_path='~w'):
+        super().__init__('~w', stateful=False)
+        self.socket_path = socket_path
+
+    def call(self, request):
+        return call_~w(request, self.socket_path)
+
+# Auto-register remote service if server not local
+try:
+    if '~w' not in _services:
+        register_service('~w', ~wRemoteService())
+except:
+    pass
+", [ClassNameAtom, Name, SocketPath, SocketPath, Name, Name, SocketPath, Name, ClassNameAtom, ClassNameAtom, Name, SocketPath, Name, Name, Name, Name, ClassNameAtom]).
 
 /** <module> Python Target Compiler
  *

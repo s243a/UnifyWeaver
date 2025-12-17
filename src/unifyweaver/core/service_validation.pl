@@ -10,7 +10,13 @@
     is_valid_handler_spec/1,
     is_valid_service_operation/1,
     validate_service_options/2,
-    service_type/2
+    service_type/2,
+    % Phase 2: Transport helpers
+    get_service_transport/2,
+    get_service_protocol/2,
+    get_service_timeout/2,
+    is_cross_process_service/1,
+    is_network_service/1
 ]).
 
 :- use_module(library(lists)).
@@ -246,3 +252,49 @@ extract_receive_var([_|Rest], Var) :-
 extract_respond_value(HandlerSpec, Value) :-
     member(respond(Value), HandlerSpec),
     !.
+
+%% ============================================
+%% Phase 2: Transport Helper Predicates
+%% ============================================
+
+%% get_service_transport(+Service, -Transport)
+%  Extract transport configuration from service definition.
+get_service_transport(service(_, Options, _), Transport) :-
+    is_list(Options),
+    member(transport(Transport), Options),
+    !.
+get_service_transport(service(_, _), in_process).
+get_service_transport(service(_, Options, _), in_process) :-
+    is_list(Options),
+    \+ member(transport(_), Options).
+
+%% get_service_protocol(+Service, -Protocol)
+%  Extract protocol configuration from service definition.
+get_service_protocol(service(_, Options, _), Protocol) :-
+    is_list(Options),
+    member(protocol(Protocol), Options),
+    !.
+get_service_protocol(service(_, _), jsonl).
+get_service_protocol(service(_, Options, _), jsonl) :-
+    is_list(Options),
+    \+ member(protocol(_), Options).
+
+%% get_service_timeout(+Service, -Timeout)
+%  Extract timeout configuration from service definition.
+get_service_timeout(service(_, Options, _), Timeout) :-
+    is_list(Options),
+    member(timeout(Timeout), Options),
+    !.
+get_service_timeout(_, none).
+
+%% is_cross_process_service(+Service)
+%  Succeeds if service uses cross-process transport (Unix sockets).
+is_cross_process_service(Service) :-
+    get_service_transport(Service, Transport),
+    transport_category(Transport, cross_process).
+
+%% is_network_service(+Service)
+%  Succeeds if service uses network transport (TCP/HTTP).
+is_network_service(Service) :-
+    get_service_transport(Service, Transport),
+    transport_category(Transport, network).

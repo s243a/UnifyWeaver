@@ -201,19 +201,103 @@ lazy_static::lazy_static! {
 }
 ```
 
-## Future Phases
+## Phase 2: Cross-Process Services (Current)
 
-### Phase 2: Cross-Process Services (Planned)
+Phase 2 implements Unix socket transport for inter-process communication.
 
-Unix domain sockets for inter-process communication:
+### Definition
 
 ```prolog
+% Unix socket service definition
 service(worker, [transport(unix_socket('/tmp/worker.sock'))], [
     receive(Task),
     process_task(Task, Result),
     respond(Result)
 ]).
+
+% Stateful Unix socket service
+service(session, [transport(unix_socket('/tmp/session.sock')), stateful(true), timeout(60000)], [
+    receive(Cmd),
+    state_get(data, Current),
+    handle_cmd(Cmd, Current, New),
+    state_put(data, New),
+    respond(New)
+]).
 ```
+
+### JSONL Protocol
+
+Request/response uses JSONL (JSON Lines) format:
+
+```json
+// Request
+{"_id": "uuid-123", "_payload": {"action": "process", "data": [1,2,3]}}
+
+// Success Response
+{"_id": "uuid-123", "_status": "ok", "_payload": {"result": 6}}
+
+// Error Response
+{"_status": "error", "_error_type": "service_error", "_message": "Processing failed"}
+```
+
+### Generated Code Examples
+
+#### Python Server
+
+```python
+class WorkerService(Service):
+    def __init__(self):
+        super().__init__('worker', stateful=False)
+        self.socket_path = '/tmp/worker.sock'
+        self.timeout = 30.0
+
+    def start_server(self):
+        # Create Unix socket and listen
+        self.server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server_socket.bind(self.socket_path)
+        self.server_socket.listen(5)
+        # Handle connections in threads...
+
+    def _process_request(self, conn, line):
+        request = json.loads(line.decode('utf-8'))
+        request_id = request.get('_id')
+        payload = request.get('_payload', request)
+        response = self.call(payload)
+        self._send_response(conn, request_id, response)
+```
+
+#### Python Client
+
+```python
+class WorkerClient:
+    def connect(self):
+        self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._socket.connect(self.socket_path)
+
+    def call(self, request):
+        request_id = str(uuid.uuid4())
+        msg = {'_id': request_id, '_payload': request}
+        self._socket.sendall((json.dumps(msg) + '\n').encode('utf-8'))
+        # Read and return response...
+```
+
+### Helper Predicates
+
+```prolog
+% Extract transport configuration
+get_service_transport(service(_, [transport(unix_socket('/tmp/test.sock'))], _), T).
+% T = unix_socket('/tmp/test.sock')
+
+% Check if service is cross-process
+is_cross_process_service(service(test, [transport(unix_socket(_))], [])).
+% true
+
+% Get protocol (defaults to jsonl)
+get_service_protocol(service(_, [], _), P).
+% P = jsonl
+```
+
+## Future Phases
 
 ### Phase 3: Network Services (Planned)
 
@@ -331,5 +415,6 @@ Tests cover:
 | `src/unifyweaver/targets/python_target.pl` | Python service compilation |
 | `src/unifyweaver/targets/go_target.pl` | Go service compilation |
 | `src/unifyweaver/targets/rust_target.pl` | Rust service compilation |
-| `tests/integration/test_in_process_services.sh` | Integration tests |
+| `tests/integration/test_in_process_services.sh` | Phase 1 integration tests |
+| `tests/integration/test_unix_socket_services.sh` | Phase 2 integration tests |
 | `docs/CLIENT_SERVER_DESIGN.md` | This document |

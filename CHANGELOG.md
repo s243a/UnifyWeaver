@@ -311,6 +311,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_in_process_services.sh` — Integration tests (13 tests)
   - Documentation in `docs/CLIENT_SERVER_DESIGN.md`
 
+- **Client-Server Architecture Phase 2: Cross-Process Services** - Unix socket transport for inter-process communication
+  - Unix Socket Server:
+    - `transport(unix_socket(Path))` — Service option for Unix socket transport
+    - Multi-threaded connection handling
+    - JSONL request/response protocol with `_id`, `_payload`, `_status` fields
+    - Graceful shutdown with signal handling (SIGINT, SIGTERM)
+    - Configurable timeout per connection
+  - Unix Socket Client:
+    - Connection pooling with automatic reconnect
+    - Request/response correlation via `_id`
+    - Error propagation with structured error responses
+    - Convenience functions for one-shot calls
+  - Service Helpers:
+    - `get_service_transport/2` — Extract transport from service definition
+    - `get_service_protocol/2` — Extract protocol from service definition
+    - `get_service_timeout/2` — Extract timeout from service definition
+    - `is_cross_process_service/1` — Check if service uses Unix sockets
+    - `is_network_service/1` — Check if service uses network transport
+  - Multi-Target Support:
+    - Python: `socket.AF_UNIX`, threading, JSONL via `json` module
+    - Go: `net.Listen("unix", ...)`, goroutines, `encoding/json`
+    - Rust: `std::os::unix::net::UnixListener`, threads, `serde_json`
+  - Stateful Services:
+    - Thread-safe state with locks (Python: `threading.Lock`, Go: `sync.Mutex`, Rust: `RwLock`)
+    - State persists across connections for stateful services
+  - `tests/integration/test_unix_socket_services.sh` — Integration tests (18 tests)
+  - Documentation in `docs/CLIENT_SERVER_DESIGN.md`
+
 ## [0.1] - 2025-11-15
 
 ### 🎉 Milestone Release: Initial Vision Achieved
