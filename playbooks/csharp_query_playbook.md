@@ -21,17 +21,46 @@ python3 scripts/skills/lookup_example.py "how to use csharp query"
 
 
 ## Workflow Overview
-This playbook demonstrates the complete Prolog-to-C# compilation workflow for arithmetic predicates:
+This playbook demonstrates the Prolog-to-C# compilation workflow for arithmetic predicates in query mode:
 1. Define a UnifyWeaver program with facts and arithmetic rules using `is/2`.
-2. Compile the program to C# using the `csharp_target` compiler.
-3. Verify the generated C# code.
+2. Compile the predicate to C# using the `csharp_target` query compiler.
+3. Inspect the generated C# code.
+
+`is/2` (derived columns) is supported by the query runtime when RHS variables are already bound.
+
+For recursive arithmetic (e.g., Fibonacci), query mode requires **parameterized query mode** (`user:mode/1` inputs) and currently has additional constraints; see:
+- `docs/development/proposals/PARAMETERIZED_QUERIES_STATUS.md`
+- `docs/development/analysis/IS_PREDICATE_COMPATIBILITY_ANALYSIS.md`
+- `playbooks/csharp_generator_playbook.md` (generator mode fallback)
+
+## Multiple mode entrypoints (query mode)
+If you declare multiple concrete `user:mode/1` facts for the same predicate (e.g., `mode(p(+, -)).` and `mode(p(-, +)).`), query-mode codegen emits multiple C# entrypoints in the generated module:
+- `BuildAllOutput()` for all-output mode (if declared or defaulted)
+- `BuildIn0()`, `BuildIn1()`, ... for input-position variants
+- `Build()` aliases the most general variant
+- `BuildForInputs(...)` selects a variant by input positions (e.g., `BuildForInputs(0)`).
+
+On the Prolog side, you can also build/select the corresponding plan variants:
+```prolog
+?- csharp_target:build_query_plans(p/2, [target(csharp_query)], Plans).
+?- csharp_target:build_query_plan_for_inputs(p/2, [target(csharp_query)], [0], Plan).
+```
+
+Example usage (C#):
+```csharp
+var (provider, plan) = YourPredicateQueryModule.BuildForInputs(0); // arg0 is an input
+var executor = new QueryExecutor(provider);
+var rows = executor.Execute(plan, new[] { new object[] { "alice" } });
+```
 
 ## Agent Inputs
 Reference the following artifacts:
 1. **Bash Executable Record** – `unifyweaver.execution.csharp_sum_pair` in `playbooks/examples_library/csharp_examples.md`.
 2. **PowerShell Executable Record** – `unifyweaver.execution.csharp_sum_pair_ps` in `playbooks/examples_library/csharp_examples.md`.
-3. **Environment Setup Skill** – `skills/skill_unifyweaver_environment.md`.
-4. **Extraction Skill** – `skills/skill_extract_records.md`.
+3. **Bash Executable Record** – `unifyweaver.execution.csharp_fib_param_query` in `playbooks/examples_library/csharp_examples.md`.
+4. **PowerShell Executable Record** – `unifyweaver.execution.csharp_fib_param_query_ps` in `playbooks/examples_library/csharp_examples.md`.
+5. **Environment Setup Skill** – `skills/skill_unifyweaver_environment.md`.
+6. **Extraction Skill** – `skills/skill_extract_records.md`.
 
 ## Execution Guidance
 
@@ -48,6 +77,7 @@ cd /path/to/UnifyWeaver
 
 **Step 2: Extract the bash script**
 ```bash
+mkdir -p tmp
 perl scripts/utils/extract_records.pl \
   -f content \
   -q "unifyweaver.execution.csharp_sum_pair" \
@@ -74,6 +104,7 @@ cd C:\path\to\UnifyWeaver
 
 **Step 2: Extract the PowerShell script**
 ```powershell
+New-Item -ItemType Directory -Force -Path tmp | Out-Null
 perl scripts/utils/extract_records.pl -f content -q "unifyweaver.execution.csharp_sum_pair_ps" playbooks/examples_library/csharp_examples.md | Out-File -FilePath tmp/run_csharp_sum_pair.ps1
 ```
 
@@ -93,11 +124,11 @@ Success: C# program compiled successfully.
 ### What the Script Does
 The script will:
 1. Create a Prolog script in `tmp/sum_pair_csharp.pl` containing facts and a rule using `is/2` arithmetic.
-2. Compile the Prolog script to C# using `compile_predicate_to_csharp/3`, creating `tmp/csharp_sum_project/sum_pair.cs`.
+2. Compile `sum_pair/3` to C# using the `csharp_query` target, writing `tmp/csharp_sum_project/sum_pair.cs`.
 3. Display the generated C# code.
 
 ## Expected Outcome
-- Successful execution will print "Success: C# program compiled successfully."
+- Successful execution will print "C# code generated successfully."
 - The generated C# code will be displayed.
 - Exit code 0.
 

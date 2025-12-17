@@ -62,6 +62,29 @@ The current implementation emits static C# builders that assemble the plan via n
 - Plans currently materialise relation facts inside the generated module; external fact providers will arrive in later releases.
 - Runtime assumes in-process execution (`dotnet run`); distributed execution and persistence hooks remain future work.
 
+## Optional Integrations (No Hard Dependencies)
+The core query runtime is intended to stay dependency-free (no LiteDB, ONNX, etc.). Optional integrations live in separate C# files/projects so consumers only take on extra dependencies when they opt in.
+
+- Core library project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Core.csproj`
+  - Includes: `QueryRuntime.cs`, `IEmbeddingProvider.cs`
+  - External deps: none
+- Pearltrees + LiteDB project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Pearltrees.csproj`
+  - Includes: `Pt*.cs` + `PtHarness.cs`
+  - External deps: LiteDB (uses `lib/LiteDB.dll` when present; otherwise falls back to NuGet `LiteDB` package)
+- ONNX embeddings: `src/unifyweaver/targets/csharp_query_runtime/OnnxEmbeddingProvider.cs`
+  - Project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Onnx.csproj`
+  - External deps: `Microsoft.ML.OnnxRuntime`
+
+## Smoke Testing (Runtime Execution)
+The Prolog test suite can generate per-plan C# console projects in codegen-only mode, and the PowerShell runner can then build/run them with dotnet and verify outputs.
+
+- Runner (recommended): `pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1`
+  - Options: `-KeepArtifacts`, `-OutputDir tmp\\csharp_query_smoke`, `-SkipCodegen`
+- Environment variables (used by the test harness):
+  - `SKIP_CSHARP_EXECUTION=1` (generate C# projects but do not execute via Prolog)
+  - `CSHARP_QUERY_OUTPUT_DIR=...` (where generated projects are written)
+  - `CSHARP_QUERY_KEEP_ARTIFACTS=1` (keep generated projects instead of auto-deleting)
+
 ## Configuration
 - New preference atom: `target(csharp_query)`.
 - Optional runtime hints:

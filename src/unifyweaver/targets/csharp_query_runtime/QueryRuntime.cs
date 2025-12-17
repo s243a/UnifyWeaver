@@ -11,8 +11,6 @@ using System.Text;
 using System.Text.Json;
 using System.Globalization;
 using System.Xml.Linq;
-using LiteDB;
-using UnifyWeaver.QueryRuntime.Pearltrees;
 
 namespace UnifyWeaver.QueryRuntime
 {
@@ -38,6 +36,42 @@ namespace UnifyWeaver.QueryRuntime
     public abstract record PlanNode;
 
     /// <summary>
+    /// Represents a wildcard when matching tuples against a pattern.
+    /// </summary>
+    public static class Wildcard
+    {
+        public static readonly object Value = new();
+    }
+
+    public enum AggregateOperation
+    {
+        Count,
+        Sum,
+        Min,
+        Max,
+        Set,
+        Bag
+    }
+
+    /// <summary>
+    /// Seeds execution with caller-supplied parameter tuples.
+    /// </summary>
+    public sealed record ParamSeedNode(
+        PredicateId Predicate,
+        IReadOnlyList<int> InputPositions,
+        int Width
+    ) : PlanNode;
+
+    /// <summary>
+    /// Evaluates a subplan once and caches its tuples for reuse.
+    /// </summary>
+    public sealed record MaterializeNode(
+        string Id,
+        PlanNode Plan,
+        int Width
+    ) : PlanNode;
+
+    /// <summary>
     /// Scans a base relation provided by <see cref="IRelationProvider"/>.
     /// </summary>
     public sealed record RelationScanNode(PredicateId Relation) : PlanNode;
@@ -48,9 +82,57 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record SelectionNode(PlanNode Input, Func<object[], bool> Predicate) : PlanNode;
 
     /// <summary>
+    /// Filters tuples by requiring that a bound negated predicate has no matching fact.
+    /// </summary>
+    public sealed record NegationNode(
+        PlanNode Input,
+        PredicateId Predicate,
+        Func<object[], object[]> KeySelector
+    ) : PlanNode;
+
+    /// <summary>
+    /// Applies an aggregate_all-style operation to a base relation, correlated with the input tuples.
+    /// </summary>
+    public sealed record AggregateNode(
+        PlanNode Input,
+        PredicateId Predicate,
+        AggregateOperation Operation,
+        Func<object[], object[]> Pattern,
+        IReadOnlyList<int> GroupByIndices,
+        int ValueIndex,
+        int Width
+    ) : PlanNode;
+
+    /// <summary>
+    /// Applies an aggregate operation to the results of a subplan, correlated with the input tuples.
+    /// </summary>
+    public sealed record AggregateSubplanNode(
+        PlanNode Input,
+        PlanNode Subplan,
+        AggregateOperation Operation,
+        Func<object[], object[]> ParameterSelector,
+        IReadOnlyList<int> GroupByIndices,
+        int ValueIndex,
+        int Width
+    ) : PlanNode;
+
+    /// <summary>
     /// Projects each tuple to a new shape.
     /// </summary>
     public sealed record ProjectionNode(PlanNode Input, Func<object[], object[]> Project) : PlanNode;
+
+    /// <summary>
+    /// Performs a key-based equi-join between two inputs.
+    /// </summary>
+    public sealed record KeyJoinNode(
+        PlanNode Left,
+        PlanNode Right,
+        IReadOnlyList<int> LeftKeys,
+        IReadOnlyList<int> RightKeys,
+        int LeftWidth,
+        int RightWidth,
+        int Width
+    ) : PlanNode;
 
     /// <summary>
     /// Performs a nested-loop join between two inputs.
@@ -154,12 +236,18 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record EmptyNode(int Width) : PlanNode;
 
     /// <summary>
+    /// Produces exactly one tuple of the requested width.
+    /// </summary>
+    public sealed record UnitNode(int Width) : PlanNode;
+
+    /// <summary>
     /// Query metadata used by the engine.
     /// </summary>
     public sealed record QueryPlan(
         PredicateId Head,
         PlanNode Root,
-        bool IsRecursive = false
+        bool IsRecursive = false,
+        IReadOnlyList<int>? InputPositions = null
     );
 
     /// <summary>
@@ -210,33 +298,63 @@ namespace UnifyWeaver.QueryRuntime
     public sealed class QueryExecutor
     {
         private readonly IRelationProvider _provider;
+        private static readonly object NullFactIndexKey = new();
 
         public QueryExecutor(IRelationProvider provider)
         {
             _provider = provider ?? throw new ArgumentNullException(nameof(provider));
         }
 
-        public IEnumerable<object[]> Execute(QueryPlan plan)
+        public IEnumerable<object[]> Execute(QueryPlan plan, IEnumerable<object[]>? parameters = null)
         {
             if (plan is null) throw new ArgumentNullException(nameof(plan));
-            return Evaluate(plan.Root);
+            var paramList = parameters?.ToList() ?? new List<object[]>();
+            var context = new EvaluationContext(paramList);
+            var result = Evaluate(plan.Root, context);
+
+            if (plan.InputPositions is { Count: > 0 })
+            {
+                return FilterByParameters(result, plan.InputPositions, paramList);
+            }
+
+            return result;
         }
 
         private IEnumerable<object[]> Evaluate(PlanNode node, EvaluationContext? context = null)
         {
             switch (node)
             {
+                case ParamSeedNode seed:
+                    return EvaluateParamSeed(seed, context);
+
+                case MaterializeNode materialize:
+                    return EvaluateMaterialize(materialize, context);
+
                 case RelationScanNode scan:
-                    return _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>();
+                    return context is null
+                        ? _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>()
+                        : GetFactsList(scan.Relation, context);
 
                 case SelectionNode selection:
                     return Evaluate(selection.Input, context).Where(tuple => selection.Predicate(tuple));
+
+                case NegationNode negation:
+                    return ExecuteNegation(negation, context);
+
+                case AggregateNode aggregate:
+                    return ExecuteAggregate(aggregate, context);
+
+                case AggregateSubplanNode aggregateSubplan:
+                    return ExecuteAggregateSubplan(aggregateSubplan, context);
 
                 case ArithmeticNode arithmetic:
                     return ExecuteArithmetic(arithmetic, context);
 
                 case ProjectionNode projection:
                     return Evaluate(projection.Input, context).Select(tuple => projection.Project(tuple));
+
+                case KeyJoinNode keyJoin:
+                    return ExecuteKeyJoin(keyJoin, context);
 
                 case JoinNode join:
                     return ExecuteJoin(join, context);
@@ -248,10 +366,10 @@ namespace UnifyWeaver.QueryRuntime
                     return ExecuteDistinct(distinct, context);
 
                 case FixpointNode fixpoint:
-                    return ExecuteFixpoint(fixpoint);
+                    return ExecuteFixpoint(fixpoint, context);
 
                 case MutualFixpointNode mutualFixpoint:
-                    return ExecuteMutualFixpoint(mutualFixpoint);
+                    return ExecuteMutualFixpoint(mutualFixpoint, context);
 
                 case RecursiveRefNode recursiveRef:
                     return EvaluateRecursiveReference(recursiveRef, context);
@@ -261,6 +379,9 @@ namespace UnifyWeaver.QueryRuntime
 
                 case EmptyNode:
                     return Enumerable.Empty<object[]>();
+
+                case UnitNode unit:
+                    return EvaluateUnit(unit);
 
                 default:
                     throw new NotSupportedException($"Unsupported plan node: {node.GetType().Name}");
@@ -282,6 +403,990 @@ namespace UnifyWeaver.QueryRuntime
                     }
                 }
             }
+        }
+
+        private IEnumerable<object[]> ExecuteKeyJoin(KeyJoinNode join, EvaluationContext? context)
+        {
+            if (join.LeftKeys is null || join.RightKeys is null || join.LeftKeys.Count == 0 || join.RightKeys.Count == 0)
+            {
+                var leftRows = Evaluate(join.Left, context);
+                var rightRows = Evaluate(join.Right, context).ToList();
+                foreach (var leftTuple in leftRows)
+                {
+                    if (leftTuple is null) continue;
+
+                    foreach (var rightTuple in rightRows)
+                    {
+                        if (rightTuple is null) continue;
+                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+                yield break;
+            }
+
+            if (join.LeftKeys.Count != join.RightKeys.Count)
+            {
+                throw new InvalidOperationException($"KeyJoinNode expects equal key arity (left={join.LeftKeys.Count}, right={join.RightKeys.Count}).");
+            }
+
+            if (context is not null && (join.Left is RelationScanNode || join.Right is RelationScanNode))
+            {
+                if (join.Left is RelationScanNode leftScan && join.Right is RelationScanNode rightScan)
+                {
+                    var leftFacts = GetFactsList(leftScan.Relation, context);
+                    var rightFacts = GetFactsList(rightScan.Relation, context);
+
+                    if (leftFacts.Count <= rightFacts.Count)
+                    {
+                        var index = GetJoinIndex(leftScan.Relation, join.LeftKeys, leftFacts, context);
+                        var probe = Evaluate(join.Right, context);
+
+                        foreach (var rightTuple in probe)
+                        {
+                            if (rightTuple is null) continue;
+
+                            var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                            var wrapper = new RowWrapper(key);
+
+                            if (!index.TryGetValue(wrapper, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var leftTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var index = GetJoinIndex(rightScan.Relation, join.RightKeys, rightFacts, context);
+                        var probe = Evaluate(join.Left, context);
+
+                        foreach (var leftTuple in probe)
+                        {
+                            if (leftTuple is null) continue;
+
+                            var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                            var wrapper = new RowWrapper(key);
+
+                            if (!index.TryGetValue(wrapper, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var rightTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+                    }
+
+                    yield break;
+                }
+
+                if (join.Right is RelationScanNode scan)
+                {
+                    var facts = GetFactsList(scan.Relation, context);
+                    var index = GetJoinIndex(scan.Relation, join.RightKeys, facts, context);
+                    var probe = Evaluate(join.Left, context);
+
+                    foreach (var leftTuple in probe)
+                    {
+                        if (leftTuple is null) continue;
+
+                        var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                        var wrapper = new RowWrapper(key);
+
+                        if (!index.TryGetValue(wrapper, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var rightTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+
+                if (join.Left is RelationScanNode leftOnlyScan)
+                {
+                    var facts = GetFactsList(leftOnlyScan.Relation, context);
+                    var index = GetJoinIndex(leftOnlyScan.Relation, join.LeftKeys, facts, context);
+                    var probe = Evaluate(join.Right, context);
+
+                    foreach (var rightTuple in probe)
+                    {
+                        if (rightTuple is null) continue;
+
+                        var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                        var wrapper = new RowWrapper(key);
+
+                        if (!index.TryGetValue(wrapper, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var leftTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+            }
+
+            var left = Evaluate(join.Left, context);
+            var right = Evaluate(join.Right, context);
+            var indexFallback = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            foreach (var rightTuple in right)
+            {
+                if (rightTuple is null) continue;
+
+                var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                var wrapper = new RowWrapper(key);
+
+                if (!indexFallback.TryGetValue(wrapper, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    indexFallback[wrapper] = bucket;
+                }
+
+                bucket.Add(rightTuple);
+            }
+
+            foreach (var leftTuple in left)
+            {
+                if (leftTuple is null) continue;
+
+                var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                var wrapper = new RowWrapper(key);
+
+                if (!indexFallback.TryGetValue(wrapper, out var bucket))
+                {
+                    continue;
+                }
+
+                foreach (var rightTuple in bucket)
+                {
+                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                }
+            }
+        }
+
+        private static object[] BuildJoinOutput(object[] leftTuple, object[] rightTuple, int leftWidth, int rightWidth, int width)
+        {
+            var output = new object[width];
+
+            if (leftWidth > 0)
+            {
+                Array.Copy(leftTuple, output, Math.Min(leftWidth, leftTuple.Length));
+            }
+
+            if (rightWidth > 0)
+            {
+                Array.Copy(rightTuple, 0, output, leftWidth, Math.Min(rightWidth, rightTuple.Length));
+            }
+
+            return output;
+        }
+
+        private List<object[]> GetFactsList(PredicateId predicate, EvaluationContext? context)
+        {
+            if (context is null)
+            {
+                var source = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+                return source as List<object[]> ?? source.ToList();
+            }
+
+            if (context.Facts.TryGetValue(predicate, out var cached))
+            {
+                return cached;
+            }
+
+            var factsSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
+            var facts = factsSource as List<object[]> ?? factsSource.ToList();
+            context.Facts[predicate] = facts;
+            return facts;
+        }
+
+        private HashSet<object[]> GetFactsSet(PredicateId predicate, EvaluationContext? context)
+        {
+            if (context is null)
+            {
+                return new HashSet<object[]>(_provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>(), StructuralArrayComparer.Instance);
+            }
+
+            if (context.FactSets.TryGetValue(predicate, out var cached))
+            {
+                return cached;
+            }
+
+            var set = new HashSet<object[]>(GetFactsList(predicate, context), StructuralArrayComparer.Instance);
+            context.FactSets[predicate] = set;
+            return set;
+        }
+
+        private Dictionary<RowWrapper, List<object[]>> GetJoinIndex(
+            PredicateId predicate,
+            IReadOnlyList<int> keyIndices,
+            IReadOnlyList<object[]> facts,
+            EvaluationContext context)
+        {
+            var signature = string.Join(",", keyIndices);
+            var cacheKey = (predicate, signature);
+
+            if (context.JoinIndices.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+
+            var index = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            foreach (var tuple in facts)
+            {
+                if (tuple is null) continue;
+
+                var key = BuildKeyFromTuple(tuple, keyIndices);
+                var wrapper = new RowWrapper(key);
+
+                if (!index.TryGetValue(wrapper, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    index[wrapper] = bucket;
+                }
+
+                bucket.Add(tuple);
+            }
+
+            context.JoinIndices[cacheKey] = index;
+            return index;
+        }
+
+        private Dictionary<object, List<object[]>> GetFactIndex(
+            PredicateId predicate,
+            int columnIndex,
+            IReadOnlyList<object[]> facts,
+            EvaluationContext context)
+        {
+            var cacheKey = (predicate, columnIndex);
+            if (context.FactIndices.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+
+            var index = new Dictionary<object, List<object[]>>();
+
+            foreach (var tuple in facts)
+            {
+                if (tuple is null) continue;
+
+                var value = columnIndex >= 0 && columnIndex < tuple.Length
+                    ? tuple[columnIndex]
+                    : null;
+
+                var key = value ?? NullFactIndexKey;
+
+                if (!index.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    index[key] = bucket;
+                }
+
+                bucket.Add(tuple);
+            }
+
+            context.FactIndices[cacheKey] = index;
+            return index;
+        }
+
+        private IReadOnlyList<object[]> SelectFactsForPattern(
+            PredicateId predicate,
+            IReadOnlyList<object[]> facts,
+            object[] pattern,
+            EvaluationContext? context)
+        {
+            if (context is null)
+            {
+                return facts;
+            }
+
+            List<object[]>? bestBucket = null;
+            var bestCount = int.MaxValue;
+
+            for (var i = 0; i < pattern.Length; i++)
+            {
+                var value = pattern[i];
+                if (ReferenceEquals(value, Wildcard.Value))
+                {
+                    continue;
+                }
+
+                var index = GetFactIndex(predicate, i, facts, context);
+                var key = value ?? NullFactIndexKey;
+
+                if (!index.TryGetValue(key, out var bucket))
+                {
+                    return Array.Empty<object[]>();
+                }
+
+                if (bucket.Count < bestCount)
+                {
+                    bestCount = bucket.Count;
+                    bestBucket = bucket;
+
+                    if (bestCount <= 1)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (bestBucket is not null)
+            {
+                return bestBucket;
+            }
+
+            return facts;
+        }
+
+        private IEnumerable<object[]> ExecuteNegation(NegationNode negation, EvaluationContext? context)
+        {
+            var input = Evaluate(negation.Input, context);
+            var factSet = GetFactsSet(negation.Predicate, context);
+
+            foreach (var tuple in input)
+            {
+                var key = negation.KeySelector(tuple);
+                if (!factSet.Contains(key))
+                {
+                    yield return tuple;
+                }
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteAggregate(AggregateNode aggregate, EvaluationContext? context)
+        {
+            if (aggregate is null) throw new ArgumentNullException(nameof(aggregate));
+
+            var input = Evaluate(aggregate.Input, context);
+            var facts = GetFactsList(aggregate.Predicate, context);
+            var cache = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+            var groupCount = aggregate.GroupByIndices?.Count ?? 0;
+            var extensionSize = groupCount + 1;
+            var inputWidth = aggregate.Width - extensionSize;
+
+            foreach (var tuple in input)
+            {
+                if (tuple is null) continue;
+
+                var pattern = aggregate.Pattern(tuple) ?? Array.Empty<object>();
+                var wrapper = new RowWrapper(pattern);
+
+                if (!cache.TryGetValue(wrapper, out var extensions))
+                {
+                    var candidates = SelectFactsForPattern(aggregate.Predicate, facts, pattern, context);
+                    extensions = ComputeAggregateExtensions(candidates, pattern, aggregate);
+                    cache[wrapper] = extensions;
+                }
+
+                foreach (var extension in extensions)
+                {
+                    var output = new object[aggregate.Width];
+                    Array.Copy(tuple, output, Math.Min(tuple.Length, inputWidth));
+                    Array.Copy(extension, 0, output, inputWidth, extension.Length);
+                    yield return output;
+                }
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteAggregateSubplan(AggregateSubplanNode aggregate, EvaluationContext? context)
+        {
+            if (aggregate is null) throw new ArgumentNullException(nameof(aggregate));
+
+            var input = Evaluate(aggregate.Input, context);
+            var cache = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+            var groupCount = aggregate.GroupByIndices?.Count ?? 0;
+            var extensionSize = groupCount + 1;
+            var inputWidth = aggregate.Width - extensionSize;
+
+            foreach (var tuple in input)
+            {
+                if (tuple is null) continue;
+
+                var parameters = aggregate.ParameterSelector(tuple) ?? Array.Empty<object>();
+                var wrapper = new RowWrapper(parameters);
+
+                if (!cache.TryGetValue(wrapper, out var extensions))
+                {
+                    var innerContext = new EvaluationContext(new[] { parameters }, context);
+                    var rows = Evaluate(aggregate.Subplan, innerContext).ToList();
+                    extensions = ComputeAggregateExtensionsFromRows(rows, aggregate);
+                    cache[wrapper] = extensions;
+                }
+
+                foreach (var extension in extensions)
+                {
+                    var output = new object[aggregate.Width];
+                    Array.Copy(tuple, output, Math.Min(tuple.Length, inputWidth));
+                    Array.Copy(extension, 0, output, inputWidth, extension.Length);
+                    yield return output;
+                }
+            }
+        }
+
+        private static IEnumerable<object[]> EvaluateUnit(UnitNode unit)
+        {
+            if (unit is null) throw new ArgumentNullException(nameof(unit));
+            yield return new object[unit.Width];
+        }
+
+        private static List<object[]> ComputeAggregateExtensionsFromRows(
+            IReadOnlyList<object[]> rows,
+            AggregateSubplanNode aggregate)
+        {
+            var groupCount = aggregate.GroupByIndices?.Count ?? 0;
+
+            if (groupCount <= 0)
+            {
+                return ComputeGlobalAggregateFromRows(rows, aggregate);
+            }
+
+            return ComputeGroupedAggregateFromRows(rows, aggregate, groupCount);
+        }
+
+        private static List<object[]> ComputeAggregateExtensions(
+            IReadOnlyList<object[]> facts,
+            object[] pattern,
+            AggregateNode aggregate)
+        {
+            var groupCount = aggregate.GroupByIndices?.Count ?? 0;
+
+            if (groupCount <= 0)
+            {
+                return ComputeGlobalAggregate(facts, pattern, aggregate);
+            }
+
+            return ComputeGroupedAggregate(facts, pattern, aggregate, groupCount);
+        }
+
+        private static List<object[]> ComputeGlobalAggregateFromRows(
+            IReadOnlyList<object[]> rows,
+            AggregateSubplanNode aggregate)
+        {
+            var count = 0;
+            var hasAny = false;
+            decimal sum = 0;
+            decimal? min = null;
+            decimal? max = null;
+            var bag = aggregate.Operation is AggregateOperation.Bag or AggregateOperation.Set ? new List<object?>() : null;
+            HashSet<object?>? set = aggregate.Operation == AggregateOperation.Set ? new HashSet<object?>() : null;
+
+            foreach (var row in rows)
+            {
+                if (row is null) continue;
+
+                count++;
+
+                switch (aggregate.Operation)
+                {
+                    case AggregateOperation.Count:
+                        break;
+
+                    case AggregateOperation.Sum:
+                        sum += ConvertToDecimal(row, aggregate.ValueIndex);
+                        hasAny = true;
+                        break;
+
+                    case AggregateOperation.Min:
+                    {
+                        var value = ConvertToDecimal(row, aggregate.ValueIndex);
+                        min = min is null ? value : Math.Min(min.Value, value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Max:
+                    {
+                        var value = ConvertToDecimal(row, aggregate.ValueIndex);
+                        max = max is null ? value : Math.Max(max.Value, value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Set:
+                    {
+                        var value = GetFactValue(row, aggregate.ValueIndex);
+                        set!.Add(value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Bag:
+                    {
+                        var value = GetFactValue(row, aggregate.ValueIndex);
+                        bag!.Add(value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    default:
+                        throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}");
+                }
+            }
+
+            if (aggregate.Operation == AggregateOperation.Count)
+            {
+                return new List<object[]> { new object[] { count } };
+            }
+
+            if (!hasAny)
+            {
+                return new List<object[]>();
+            }
+
+            return aggregate.Operation switch
+            {
+                AggregateOperation.Sum => new List<object[]> { new object[] { sum } },
+                AggregateOperation.Min => new List<object[]> { new object[] { min! } },
+                AggregateOperation.Max => new List<object[]> { new object[] { max! } },
+                AggregateOperation.Set => new List<object[]> { new object[] { set!.ToList() } },
+                AggregateOperation.Bag => new List<object[]> { new object[] { bag! } },
+                _ => throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}")
+            };
+        }
+
+        private static List<object[]> ComputeGlobalAggregate(
+            IReadOnlyList<object[]> facts,
+            object[] pattern,
+            AggregateNode aggregate)
+        {
+            var count = 0;
+            var hasAny = false;
+            decimal sum = 0;
+            decimal? min = null;
+            decimal? max = null;
+            var bag = aggregate.Operation is AggregateOperation.Bag or AggregateOperation.Set ? new List<object?>() : null;
+            HashSet<object?>? set = aggregate.Operation == AggregateOperation.Set ? new HashSet<object?>() : null;
+
+            foreach (var fact in facts)
+            {
+                if (fact is null) continue;
+                if (!FactMatchesPattern(fact, pattern)) continue;
+
+                count++;
+
+                switch (aggregate.Operation)
+                {
+                    case AggregateOperation.Count:
+                        break;
+
+                    case AggregateOperation.Sum:
+                        sum += ConvertToDecimal(fact, aggregate.ValueIndex);
+                        hasAny = true;
+                        break;
+
+                    case AggregateOperation.Min:
+                    {
+                        var value = ConvertToDecimal(fact, aggregate.ValueIndex);
+                        min = min is null ? value : Math.Min(min.Value, value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Max:
+                    {
+                        var value = ConvertToDecimal(fact, aggregate.ValueIndex);
+                        max = max is null ? value : Math.Max(max.Value, value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Set:
+                    {
+                        var value = GetFactValue(fact, aggregate.ValueIndex);
+                        set!.Add(value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Bag:
+                    {
+                        var value = GetFactValue(fact, aggregate.ValueIndex);
+                        bag!.Add(value);
+                        hasAny = true;
+                        break;
+                    }
+
+                    default:
+                        throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}");
+                }
+            }
+
+            if (aggregate.Operation == AggregateOperation.Count)
+            {
+                return new List<object[]> { new object[] { count } };
+            }
+
+            if (!hasAny)
+            {
+                return new List<object[]>();
+            }
+
+            return aggregate.Operation switch
+            {
+                AggregateOperation.Sum => new List<object[]> { new object[] { sum } },
+                AggregateOperation.Min => new List<object[]> { new object[] { min! } },
+                AggregateOperation.Max => new List<object[]> { new object[] { max! } },
+                AggregateOperation.Set => new List<object[]> { new object[] { set!.ToList() } },
+                AggregateOperation.Bag => new List<object[]> { new object[] { bag! } },
+                _ => throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}")
+            };
+        }
+
+        private sealed class AggregateState
+        {
+            public required object[] Key { get; init; }
+            public int Count { get; set; }
+            public bool HasAny { get; set; }
+            public decimal Sum { get; set; }
+            public decimal? Min { get; set; }
+            public decimal? Max { get; set; }
+            public List<object?>? Bag { get; set; }
+            public HashSet<object?>? Set { get; set; }
+        }
+
+        private static List<object[]> ComputeGroupedAggregate(
+            IReadOnlyList<object[]> facts,
+            object[] pattern,
+            AggregateNode aggregate,
+            int groupCount)
+        {
+            var groups = new Dictionary<RowWrapper, AggregateState>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            foreach (var fact in facts)
+            {
+                if (fact is null) continue;
+                if (!FactMatchesPattern(fact, pattern)) continue;
+
+                var key = BuildGroupKey(fact, aggregate.GroupByIndices);
+                var wrapper = new RowWrapper(key);
+
+                if (!groups.TryGetValue(wrapper, out var state))
+                {
+                    state = new AggregateState
+                    {
+                        Key = key,
+                        Bag = aggregate.Operation is AggregateOperation.Bag or AggregateOperation.Set ? new List<object?>() : null,
+                        Set = aggregate.Operation == AggregateOperation.Set ? new HashSet<object?>() : null
+                    };
+                    groups[wrapper] = state;
+                }
+
+                state.Count++;
+
+                switch (aggregate.Operation)
+                {
+                    case AggregateOperation.Count:
+                        break;
+
+                    case AggregateOperation.Sum:
+                        state.Sum += ConvertToDecimal(fact, aggregate.ValueIndex);
+                        state.HasAny = true;
+                        break;
+
+                    case AggregateOperation.Min:
+                    {
+                        var value = ConvertToDecimal(fact, aggregate.ValueIndex);
+                        state.Min = state.Min is null ? value : Math.Min(state.Min.Value, value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Max:
+                    {
+                        var value = ConvertToDecimal(fact, aggregate.ValueIndex);
+                        state.Max = state.Max is null ? value : Math.Max(state.Max.Value, value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Set:
+                    {
+                        var value = GetFactValue(fact, aggregate.ValueIndex);
+                        state.Set!.Add(value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Bag:
+                    {
+                        var value = GetFactValue(fact, aggregate.ValueIndex);
+                        state.Bag!.Add(value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    default:
+                        throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}");
+                }
+            }
+
+            var extensions = new List<object[]>();
+            foreach (var state in groups.Values)
+            {
+                var extension = new object[groupCount + 1];
+                Array.Copy(state.Key, extension, Math.Min(state.Key.Length, groupCount));
+
+                switch (aggregate.Operation)
+                {
+                    case AggregateOperation.Count:
+                        extension[groupCount] = state.Count;
+                        extensions.Add(extension);
+                        break;
+
+                    case AggregateOperation.Sum:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Sum;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Min:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Min!;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Max:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Max!;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Set:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Set!.ToList();
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Bag:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Bag!;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    default:
+                        throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}");
+                }
+            }
+
+            return extensions;
+        }
+
+        private static List<object[]> ComputeGroupedAggregateFromRows(
+            IReadOnlyList<object[]> rows,
+            AggregateSubplanNode aggregate,
+            int groupCount)
+        {
+            var groups = new Dictionary<RowWrapper, AggregateState>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            foreach (var row in rows)
+            {
+                if (row is null) continue;
+
+                var key = BuildGroupKey(row, aggregate.GroupByIndices);
+                var wrapper = new RowWrapper(key);
+
+                if (!groups.TryGetValue(wrapper, out var state))
+                {
+                    state = new AggregateState
+                    {
+                        Key = key,
+                        Bag = aggregate.Operation is AggregateOperation.Bag or AggregateOperation.Set ? new List<object?>() : null,
+                        Set = aggregate.Operation == AggregateOperation.Set ? new HashSet<object?>() : null
+                    };
+                    groups[wrapper] = state;
+                }
+
+                state.Count++;
+
+                switch (aggregate.Operation)
+                {
+                    case AggregateOperation.Count:
+                        break;
+
+                    case AggregateOperation.Sum:
+                        state.Sum += ConvertToDecimal(row, aggregate.ValueIndex);
+                        state.HasAny = true;
+                        break;
+
+                    case AggregateOperation.Min:
+                    {
+                        var value = ConvertToDecimal(row, aggregate.ValueIndex);
+                        state.Min = state.Min is null ? value : Math.Min(state.Min.Value, value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Max:
+                    {
+                        var value = ConvertToDecimal(row, aggregate.ValueIndex);
+                        state.Max = state.Max is null ? value : Math.Max(state.Max.Value, value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Set:
+                    {
+                        var value = GetFactValue(row, aggregate.ValueIndex);
+                        state.Set!.Add(value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    case AggregateOperation.Bag:
+                    {
+                        var value = GetFactValue(row, aggregate.ValueIndex);
+                        state.Bag!.Add(value);
+                        state.HasAny = true;
+                        break;
+                    }
+
+                    default:
+                        throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}");
+                }
+            }
+
+            var extensions = new List<object[]>();
+            foreach (var state in groups.Values)
+            {
+                var extension = new object[groupCount + 1];
+                Array.Copy(state.Key, extension, Math.Min(state.Key.Length, groupCount));
+
+                switch (aggregate.Operation)
+                {
+                    case AggregateOperation.Count:
+                        extension[groupCount] = state.Count;
+                        extensions.Add(extension);
+                        break;
+
+                    case AggregateOperation.Sum:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Sum;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Min:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Min!;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Max:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Max!;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Set:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Set!.ToList();
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Bag:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Bag!;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    default:
+                        throw new NotSupportedException($"Unsupported aggregate operation: {aggregate.Operation}");
+                }
+            }
+
+            return extensions;
+        }
+
+        private static bool FactMatchesPattern(object[] fact, object[] pattern)
+        {
+            if (pattern.Length == 0)
+            {
+                return true;
+            }
+
+            if (fact.Length < pattern.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < pattern.Length; i++)
+            {
+                var expected = pattern[i];
+                if (ReferenceEquals(expected, Wildcard.Value))
+                {
+                    continue;
+                }
+
+                if (!Equals(fact[i], expected))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static object[] BuildGroupKey(object[] fact, IReadOnlyList<int> indices)
+        {
+            var key = new object[indices.Count];
+            for (var i = 0; i < indices.Count; i++)
+            {
+                var idx = indices[i];
+                key[i] = idx >= 0 && idx < fact.Length ? fact[idx] : null!;
+            }
+            return key;
+        }
+
+        private static object? GetFactValue(object[] fact, int index) =>
+            index >= 0 && index < fact.Length ? fact[index] : null;
+
+        private static decimal ConvertToDecimal(object[] fact, int index)
+        {
+            var value = GetFactValue(fact, index);
+            if (value is decimal dec) return dec;
+            if (value is int i) return i;
+            if (value is long l) return l;
+            if (value is double d) return (decimal)d;
+            if (value is float f) return (decimal)f;
+            if (value is string s) return decimal.Parse(s, NumberStyles.Any, CultureInfo.InvariantCulture);
+            return Convert.ToDecimal(value, CultureInfo.InvariantCulture);
         }
 
         private IEnumerable<object[]> ExecuteUnion(UnionNode union, EvaluationContext? context) =>
@@ -313,7 +1418,107 @@ namespace UnifyWeaver.QueryRuntime
             }
         }
 
-        private IEnumerable<object[]> ExecuteFixpoint(FixpointNode fixpoint)
+        private IEnumerable<object[]> EvaluateParamSeed(ParamSeedNode seed, EvaluationContext? context)
+        {
+            var parameters = context?.Parameters ?? Enumerable.Empty<object[]>();
+
+            foreach (var paramTuple in parameters)
+            {
+                if (paramTuple is null) continue;
+
+                var tuple = new object[seed.Width];
+
+                if (paramTuple.Length == seed.InputPositions.Count)
+                {
+                    for (var i = 0; i < seed.InputPositions.Count; i++)
+                    {
+                        tuple[seed.InputPositions[i]] = paramTuple[i];
+                    }
+                }
+                else if (paramTuple.Length == seed.Width)
+                {
+                    foreach (var pos in seed.InputPositions)
+                    {
+                        tuple[pos] = paramTuple[pos];
+                    }
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Parameter tuple length {paramTuple.Length} does not match input positions ({seed.InputPositions.Count}) or arity ({seed.Width}).");
+                }
+
+                yield return tuple;
+            }
+        }
+
+        private IEnumerable<object[]> EvaluateMaterialize(MaterializeNode node, EvaluationContext? context)
+        {
+            if (context is null)
+            {
+                return Evaluate(node.Plan, context).ToList();
+            }
+
+            if (context.Materialized.TryGetValue(node.Id, out var cached))
+            {
+                return cached;
+            }
+
+            var rows = Evaluate(node.Plan, context).ToList();
+            context.Materialized[node.Id] = rows;
+            return rows;
+        }
+
+        private static IEnumerable<object[]> FilterByParameters(
+            IEnumerable<object[]> source,
+            IReadOnlyList<int> inputPositions,
+            IReadOnlyList<object[]> parameters)
+        {
+            if (inputPositions.Count == 0)
+            {
+                return source;
+            }
+
+            if (parameters.Count == 0)
+            {
+                return Enumerable.Empty<object[]>();
+            }
+
+            var parameterSet = new HashSet<RowWrapper>(
+                parameters.Select(p => new RowWrapper(BuildKeyFromTuple(p, inputPositions))),
+                new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            return source.Where(tuple =>
+            {
+                if (tuple is null) return false;
+                var key = BuildKeyFromTuple(tuple, inputPositions);
+                return parameterSet.Contains(new RowWrapper(key));
+            });
+        }
+
+        private static object[] BuildKeyFromTuple(object[] tuple, IReadOnlyList<int> inputPositions)
+        {
+            var key = new object[inputPositions.Count];
+
+            if (tuple.Length == inputPositions.Count)
+            {
+                for (var i = 0; i < inputPositions.Count; i++)
+                {
+                    key[i] = tuple[i];
+                }
+                return key;
+            }
+
+            for (var i = 0; i < inputPositions.Count; i++)
+            {
+                var pos = inputPositions[i];
+                key[i] = pos >= 0 && pos < tuple.Length ? tuple[pos] : null!;
+            }
+
+            return key;
+        }
+
+        private IEnumerable<object[]> ExecuteFixpoint(FixpointNode fixpoint, EvaluationContext? parentContext)
         {
             if (fixpoint is null) throw new ArgumentNullException(nameof(fixpoint));
 
@@ -321,7 +1526,8 @@ namespace UnifyWeaver.QueryRuntime
             var predicate = fixpoint.Predicate;
             var totalSet = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
             var totalRows = new List<object[]>();
-            var baseRows = Evaluate(fixpoint.BasePlan).ToList();
+            var context = parentContext ?? new EvaluationContext();
+            var baseRows = Evaluate(fixpoint.BasePlan, context).ToList();
             var deltaRows = new List<object[]>();
 
             foreach (var tuple in baseRows)
@@ -333,10 +1539,7 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
-            var context = new EvaluationContext
-            {
-                Current = predicate
-            };
+            context.Current = predicate;
             context.Totals[predicate] = totalRows;
             context.Deltas[predicate] = deltaRows;
 
@@ -360,13 +1563,13 @@ namespace UnifyWeaver.QueryRuntime
             return totalRows;
         }
 
-        private IEnumerable<object[]> ExecuteMutualFixpoint(MutualFixpointNode node)
+        private IEnumerable<object[]> ExecuteMutualFixpoint(MutualFixpointNode node, EvaluationContext? parentContext)
         {
             if (node is null) throw new ArgumentNullException(nameof(node));
 
             var comparer = StructuralArrayComparer.Instance;
             var totalSets = new Dictionary<PredicateId, HashSet<RowWrapper>>();
-            var context = new EvaluationContext();
+            var context = parentContext ?? new EvaluationContext();
 
             foreach (var member in node.Members)
             {
@@ -379,7 +1582,7 @@ namespace UnifyWeaver.QueryRuntime
                 var set = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
                 totalSets[predicate] = set;
 
-                var baseRows = Evaluate(member.BasePlan).ToList();
+                var baseRows = Evaluate(member.BasePlan, context).ToList();
                 foreach (var tuple in baseRows)
                 {
                     if (TryAddRow(set, tuple))
@@ -628,12 +1831,33 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class EvaluationContext
         {
+            public EvaluationContext(IEnumerable<object[]>? parameters = null, EvaluationContext? parent = null)
+            {
+                Parameters = parameters?.ToList() ?? new List<object[]>();
+                Facts = parent?.Facts ?? new Dictionary<PredicateId, List<object[]>>();
+                FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
+                FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
+                JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
+            }
+
             public PredicateId Current { get; set; }
             = new PredicateId("", 0);
 
             public Dictionary<PredicateId, List<object[]>> Totals { get; } = new();
 
             public Dictionary<PredicateId, List<object[]>> Deltas { get; } = new();
+
+            public IReadOnlyList<object[]> Parameters { get; }
+
+            public Dictionary<string, List<object[]>> Materialized { get; } = new();
+
+            public Dictionary<PredicateId, List<object[]>> Facts { get; }
+
+            public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; }
+
+            public Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>> FactIndices { get; }
+
+            public Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>> JoinIndices { get; }
         }
 
         private sealed record RowWrapper(object[] Row);

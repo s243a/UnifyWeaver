@@ -8,6 +8,17 @@
 
 This proposal introduces **parameterized queries** to the C# query runtime, enabling support for predicates like Fibonacci where head arguments are provided as inputs rather than derived from relation scans. This extends the query model from pure enumeration to function-style invocation while maintaining compatibility with existing datalog patterns.
 
+## Implementation Update (Branch Snapshot)
+
+This proposal has been partially implemented (and, in places, superseded) on the working branch `feat/parameterized-queries-querymode`. The current branch design is centred on:
+- **Mode declarations** provided as `user:mode/1` facts (not a built-in `:- mode(...)` directive in SWI-Prolog).
+- A **`param_seed`** plan node to seed bindings from caller parameters.
+- A demand-driven **`$need` closure** (a synthetic fixpoint) that computes reachable input bindings and is then used to seed/filter the main predicate’s base/recursive pipelines.
+- A **`materialize`** plan node to cache the `$need` closure result and share it across plans.
+- Existing **`arithmetic`** plan nodes for derived columns; no dedicated `bind_expr` IR node is required for the current approach.
+
+See `docs/development/proposals/PARAMETERIZED_QUERIES_STATUS.md` for the up-to-date implementation status and current constraints.
+
 ## Motivation
 
 The current query runtime assumes all head variables are unbound and get bound only through relation scans. This works well for datalog-style queries:
@@ -38,15 +49,19 @@ The Fibonacci pattern requires:
 Introduce optional mode declarations to specify input/output arguments:
 
 ```prolog
-:- mode(fib(+, -)).      % First arg is input (+), second is output (-)
-:- mode(grandparent(-, -)).  % Both outputs (current behavior, default)
-:- mode(lookup(+, -)).   % Key is input, value is output
+% In this repo, modes are read from `user:mode/1` facts:
+mode(fib(+, -)).            % First arg is input (+), second is output (-)
+mode(grandparent(-, -)).    % Both outputs (current behavior, default)
+mode(lookup(+, -)).         % Key is input, value is output
+
+% Tests often set these dynamically:
+%   assertz(user:mode(fib(+, -))).
 ```
 
 Mode symbols:
 - `+` : Input - must be bound by caller
 - `-` : Output - bound by query execution
-- `?` : Either - can be input or output (generates multiple entry points)
+- `?` : Either - proposed future feature for multi-entrypoint compilation; currently the C# query target rejects `?` (use explicit `+`/`-`, or declare multiple concrete modes).
 
 ### 2. IR Extensions
 
@@ -69,7 +84,7 @@ Plan = plan{
 }.
 ```
 
-#### 2.2 New IR Node: BindExpression
+#### 2.2 Possible Future IR Node: BindExpression
 
 Add a node type that computes new bindings from existing bound variables:
 
@@ -92,7 +107,9 @@ This node:
 - Extends the tuple width with new columns
 - Outputs tuples with the computed values appended
 
-#### 2.3 Parameterized Recursive Reference
+Implementation note: the current branch uses existing `arithmetic` nodes to compute derived columns and does not introduce a separate `bind_expr` node yet.
+
+#### 2.3 Possible Future IR Node: Parameterized Recursive Reference
 
 Extend the recursive reference node to pass computed arguments:
 
@@ -112,6 +129,31 @@ param_recursive_ref{
     width: 2
 }
 ```
+
+Implementation note: the current branch keeps the existing `recursive_ref` / `cross_ref` nodes and instead uses `$need` demand-closure seeding to restrict recursion to the reachable subspace for the given inputs.
+
+### Future: `?` (“any”) modes / multi-entrypoint compilation
+
+Supporting `?` properly in query mode is not just a matter of final output filtering: the declared **input positions** influence the seeded pipeline and the `$need` demand-closure that scopes recursion. As a result, `?` implies compiling **multiple concrete mode variants**.
+
+Currently, the C# query target **rejects** `?` and requires users to declare concrete `+/-` modes. This avoids accidentally generating mode variants that are unsupported (e.g., all-output Fibonacci) and keeps codegen predictable.
+
+Possible future directions (documented, not implemented):
+
+1. **Multiple explicit `user:mode/1` declarations per predicate** (recommended incremental path; implemented):
+   - Users declare the concrete modes they actually want (e.g., `mode(p(+, -)).`, `mode(p(-, +)).`).
+   - Query-mode codegen emits one `Build...()` entrypoint per declaration (e.g., `BuildIn0()`, `BuildIn1()`), with `Build()` aliasing the most general variant.
+
+2. **Treat `?` as guarded sugar that expands to concrete modes** (potentially useful for small arities):
+   - Expand `mode(p(?, -)).` into a bounded set of concrete modes (e.g., `{mode(p(+, -)), mode(p(-, -))}`).
+   - Guardrails are required to avoid both combinatorial explosion and “bad variants”:
+     - Cap expansion (`k` question-marks ⇒ up to `2^k` variants; enforce a hard max `k`).
+     - Decide how to handle expanded variants that do not compile:
+       - Strict: fail the whole declaration, requiring explicit `user:mode/1` facts instead.
+       - Lenient: skip unsupported variants and only emit the ones that compile (with a warning).
+     - For recursive SCCs, consider disallowing expansions that create all-output variants unless the predicate has a safe relation seed; otherwise the plan may be unsupported or attempt to enumerate an unbounded space.
+
+Guardrails to avoid a `2^k` explosion (for `k` question-marks) may be required: explicit opt-in, a hard cap on expansions, or only expanding patterns observed in tests.
 
 ### 3. Compilation Changes
 

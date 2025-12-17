@@ -10,6 +10,8 @@
 :- module(csharp_target, [
     compile_predicate_to_csharp/3, % +PredIndicator, +Options, -CSharpCode
     build_query_plan/3,     % +PredIndicator, +Options, -PlanDict
+    build_query_plans/3,    % +PredIndicator, +Options, -PlanDicts
+    build_query_plan_for_inputs/4, % +PredIndicator, +Options, +InputPositions, -PlanDict
     render_plan_to_csharp/2,% +PlanDict, -CSharpSource
     plan_module_name/2,     % +PlanDict, -ModuleName
     init_csharp_target/0,   % Initialize bindings
@@ -24,8 +26,10 @@
 
 :- use_module(library(apply)).
 :- use_module(library(error)).
+:- use_module(library(gensym)).
 :- use_module(library(lists)).
 :- use_module(library(option)).
+:- use_module(library(pairs), [pairs_values/2]).
 :- use_module(library(ugraphs), [vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3]).
 :- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1, dynamic_source_metadata/2]).
 :- use_module('../core/binding_registry').
@@ -38,6 +42,93 @@
 init_csharp_target :-
     init_csharp_bindings.
 
+%% Query-mode mode declarations (input/output)
+%  Reads user:mode/1 declarations, e.g. `mode(fib(+, -)).`.
+
+%% modes_for_pred(+Pred/Arity, -Modes:list)
+%  Reads user:mode/1 declarations, e.g., mode(fib(+, -)).
+%  Modes is a list of atoms: input/output (and `any` for `?`, parsed but
+%  currently rejected by the C# query target). Defaults to all output.
+declared_modes_for_pred(Pred/Arity, Declared, Modes) :-
+    (   current_predicate(user:mode/1),
+        user:mode(ModeSpec),
+        mode_term_signature(ModeSpec, Pred/Arity)
+    ->  Declared = true,
+        parse_mode_spec(ModeSpec, Modes)
+    ;   Declared = false,
+        length(Modes, Arity),
+        maplist(=(output), Modes)
+    ).
+
+%% declared_modes_for_pred_variants(+Pred/Arity, -Declared, -ModesVariants) is det.
+%  Collects all declared mode/1 facts for a predicate. When there are none,
+%  returns a single all-output mode vector.
+declared_modes_for_pred_variants(Pred/Arity, Declared, ModesVariants) :-
+    (   current_predicate(user:mode/1)
+    ->  findall(Modes,
+            (   user:mode(ModeSpec),
+                mode_term_signature(ModeSpec, Pred/Arity),
+                parse_mode_spec(ModeSpec, Modes)
+            ),
+            ModesList0)
+    ;   ModesList0 = []
+    ),
+    (   ModesList0 == []
+    ->  Declared = false,
+        length(DefaultModes, Arity),
+        maplist(=(output), DefaultModes),
+        ModesVariants = [DefaultModes]
+    ;   Declared = true,
+        sort_modes_variants(ModesList0, ModesVariants)
+    ).
+
+modes_for_pred_variants(Pred/Arity, ModesVariants) :-
+    declared_modes_for_pred_variants(Pred/Arity, _Declared, ModesVariants).
+
+modes_for_pred(Pred/Arity, Modes) :-
+    declared_modes_for_pred(Pred/Arity, _Declared, Modes).
+
+mode_term_signature(Term, Pred/Arity) :-
+    compound(Term),
+    Term =.. [Pred|Args],
+    length(Args, Arity).
+
+parse_mode_spec(Term, Modes) :-
+    Term =.. [_|Args],
+    maplist(mode_symbol_to_mode, Args, Modes).
+
+mode_symbol_to_mode(+, input) :- !.
+mode_symbol_to_mode(-, output) :- !.
+mode_symbol_to_mode(?, any) :- !.
+mode_symbol_to_mode(Atom, _) :-
+    format(user_error, 'Unrecognised mode symbol in mode/1: ~w~n', [Atom]),
+    fail.
+
+sort_modes_variants(ModesList0, ModesVariants) :-
+    findall(Key-Modes,
+        (   member(Modes, ModesList0),
+            input_positions(Modes, Inputs),
+            length(Inputs, InputCount),
+            Key = InputCount-Inputs
+        ),
+        Pairs0),
+    sort(Pairs0, SortedPairs),
+    pairs_values(SortedPairs, ModesVariants).
+
+%% validate_query_modes_supported(+PredIndicator, +Modes) is semidet.
+%  Query-mode compilation currently supports only concrete input/output modes.
+%  The `?` mode is parsed as `any` but is not supported yet; see
+%  docs/development/proposals/PARAMETERIZED_QUERIES_PROPOSAL.md for a proposed
+%  future multi-entrypoint design.
+validate_query_modes_supported(Pred/Arity, Modes) :-
+    (   member(any, Modes)
+    ->  format(user_error,
+               'C# query target: mode/1 for ~w uses ? (any), which is not supported yet. Replace ? with + or -, or declare multiple concrete mode/1 facts.~n',
+               [Pred/Arity]),
+        fail
+    ;   true
+    ).
+
 %% compile_predicate_to_csharp(+PredIndicator, +Options, -Code)
 %  Compile a predicate to C# code.
 %  Options:
@@ -48,8 +139,13 @@ compile_predicate_to_csharp(PredIndicator, Options, Code) :-
     ->  compile_generator_mode(PredIndicator, Options, Code)
     ;   Mode == query
     ->  PredIndicator = Pred/Arity,
-        build_query_plan(Pred/Arity, Options, Plan),
-        render_plan_to_csharp(Plan, Code)
+        modes_for_pred_variants(Pred/Arity, ModesVariants),
+        (   ModesVariants = [Modes]
+        ->  build_query_plan(Pred/Arity, Options, Modes, Plan),
+            render_plan_to_csharp(Plan, Code)
+        ;   maplist(build_query_plan_variant(Pred/Arity, Options), ModesVariants, Plans),
+            render_plans_to_csharp(Plans, Code)
+        )
     ;   format(user_error, 'Unknown mode ~w for C# target~n', [Mode]),
         fail
     ).
@@ -62,14 +158,34 @@ term_signature(Term0, Name/Arity) :-
     Term =.. [Name|Args],
     length(Args, Arity).
 
+term_to_dependency(Term0, _Dep) :-
+    constraint_goal(Term0),
+    !,
+    fail.
+term_to_dependency((A, B), Dep) :- !,
+    (   term_to_dependency(A, Dep)
+    ;   term_to_dependency(B, Dep)
+    ).
+term_to_dependency((A ; B), Dep) :- !,
+    (   term_to_dependency(A, Dep)
+    ;   term_to_dependency(B, Dep)
+    ).
+term_to_dependency((A -> B), Dep) :- !,
+    (   term_to_dependency(A, Dep)
+    ;   term_to_dependency(B, Dep)
+    ).
+term_to_dependency((A *-> B), Dep) :- !,
+    (   term_to_dependency(A, Dep)
+    ;   term_to_dependency(B, Dep)
+    ).
+term_to_dependency(!, _Dep) :- !,
+    fail.
 term_to_dependency(aggregate_all(_, Goal, _), Dep) :- !,
-    term_signature(Goal, Dep).
+    aggregate_goal_dependency(Goal, Dep).
 term_to_dependency(aggregate_all(_, Goal, _, _), Dep) :- !,
-    nonvar(Goal),
-    term_signature(Goal, Dep).
+    aggregate_goal_dependency(Goal, Dep).
 term_to_dependency(aggregate(_, Goal, _, _), Dep) :- !,
-    nonvar(Goal),
-    term_signature(Goal, Dep).
+    aggregate_goal_dependency(Goal, Dep).
 term_to_dependency(Term, Dep) :-
     (   aggregate_goal(Term)
     ->  decompose_aggregate_goal(Term, _Type, _Op, Pred, Args, _GroupVar, _ValueVar, _ResultVar),
@@ -82,6 +198,31 @@ term_to_dependency(Term, Dep) :-
     ->  term_signature(Inner, Dep)
     ;   term_signature(Term, Dep)
     ).
+
+aggregate_goal_dependency(Goal0, Dep) :-
+    strip_module(Goal0, _, Goal),
+    nonvar(Goal),
+    aggregate_goal_dependency_(Goal, Dep).
+
+aggregate_goal_dependency_((A, B), Dep) :- !,
+    (   aggregate_goal_dependency_(A, Dep)
+    ;   aggregate_goal_dependency_(B, Dep)
+    ).
+aggregate_goal_dependency_((A ; B), Dep) :- !,
+    (   aggregate_goal_dependency_(A, Dep)
+    ;   aggregate_goal_dependency_(B, Dep)
+    ).
+aggregate_goal_dependency_((A -> B), Dep) :- !,
+    (   aggregate_goal_dependency_(A, Dep)
+    ;   aggregate_goal_dependency_(B, Dep)
+    ).
+aggregate_goal_dependency_((A *-> B), Dep) :- !,
+    (   aggregate_goal_dependency_(A, Dep)
+    ;   aggregate_goal_dependency_(B, Dep)
+    ).
+aggregate_goal_dependency_(Goal, Dep) :-
+    \+ constraint_goal(Goal),
+    term_to_dependency(Goal, Dep).
 
 gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses) :-
     findall(Head-Body,
@@ -171,25 +312,57 @@ sort_components(Pred/Arity, Specs, [HeadSpec|RestSpecs]) :-
 
 signature_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
 
-%% build_query_plan(+PredIndicator, +Options, -PlanDict) is semidet.
+%% build_query_plan(+PredIndicator, +Options, +Modes, -PlanDict) is semidet.
 %  Produce a declarative plan describing how to evaluate the requested
 %  predicate. Plans are represented as dicts containing the head descriptor,
 %  root operator, materialised fact tables, and metadata.
 build_query_plan(Pred/Arity, Options, Plan) :-
+    modes_for_pred_variants(Pred/Arity, [Modes|_]),
+    build_query_plan(Pred/Arity, Options, Modes, Plan).
+
+%% build_query_plans(+PredIndicator, +Options, -Plans) is semidet.
+%  Builds one plan per declared mode/1 fact for the predicate (or a single
+%  all-output plan when no modes are declared). Plans are returned in the same
+%  order as modes_for_pred_variants/2 (most general first).
+build_query_plans(Pred/Arity, Options, Plans) :-
+    modes_for_pred_variants(Pred/Arity, ModesVariants),
+    maplist(build_query_plan_variant(Pred/Arity, Options), ModesVariants, Plans).
+
+build_query_plan_variant(PredArity, Options, Modes, Plan) :-
+    build_query_plan(PredArity, Options, Modes, Plan).
+
+%% build_query_plan_for_inputs(+PredIndicator, +Options, +InputPositions, -Plan) is semidet.
+%  Selects the plan variant matching the given 0-based input argument positions.
+build_query_plan_for_inputs(Pred/Arity, Options, InputPositions0, Plan) :-
+    must_be(list(integer), InputPositions0),
+    sort(InputPositions0, InputPositions),
+    modes_for_pred_variants(Pred/Arity, ModesVariants),
+    (   member(Modes, ModesVariants),
+        input_positions(Modes, InputPositions)
+    ->  build_query_plan(Pred/Arity, Options, Modes, Plan)
+    ;   format(user_error,
+               'C# query target: no mode/1 variant for ~w/~w matching input positions ~w.~n',
+               [Pred, Arity, InputPositions]),
+        fail
+    ).
+
+build_query_plan(Pred/Arity, Options, Modes, Plan) :-
     must_be(atom, Pred),
     must_be(integer, Arity),
     Arity >= 0,
+    validate_query_modes_supported(Pred/Arity, Modes),
     HeadSpec = predicate{name:Pred, arity:Arity},
     compute_dependency_group(Pred/Arity, GroupSpecs),
     (   GroupSpecs = [HeadSpec]
     ->  gather_predicate_clauses(HeadSpec, Clauses),
-        partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses),
+        expand_disjunction_clauses(Clauses, ExpandedClauses),
+        partition_recursive_clauses(Pred, Arity, ExpandedClauses, BaseClauses, RecClauses),
         (   RecClauses == []
         ->  classify_clauses(BaseClauses, Classification),
-            build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Plan)
-        ;   build_recursive_plan(HeadSpec, [HeadSpec], BaseClauses, RecClauses, Options, Plan)
+            build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Modes, none, Plan)
+        ;   build_recursive_plan(HeadSpec, [HeadSpec], BaseClauses, RecClauses, Options, Modes, Plan)
         )
-    ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Plan)
+    ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan)
     ).
 
 partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses) :-
@@ -200,6 +373,96 @@ clause_is_recursive(Pred, Arity, _Head-Body) :-
     member(Term, Terms),
     functor(Term, Pred, TermArity),
     TermArity =:= Arity.
+
+expand_disjunction_clauses([], []).
+expand_disjunction_clauses([Head-Body0|Rest], Expanded) :-
+    findall(Head-Body,
+        expand_clause_disjunction(Body0, Body),
+        ClauseVariants),
+    expand_disjunction_clauses(Rest, ExpandedRest),
+    append(ClauseVariants, ExpandedRest, Expanded).
+
+expand_clause_disjunction(true, true) :- !.
+expand_clause_disjunction(Body0, Body) :-
+    body_branch_terms(Body0, Terms),
+    normalize_query_terms(Terms, NormalizedTerms),
+    terms_to_body(NormalizedTerms, Body).
+
+body_branch_terms(Body0, Terms) :-
+    strip_module(Body0, _, Body),
+    body_branch_terms_(Body, Terms, []).
+
+body_branch_terms_(true, Terms, Terms) :- !.
+body_branch_terms_((A, B), Terms0, Terms) :- !,
+    body_branch_terms_(A, Terms0, Terms1),
+    body_branch_terms_(B, Terms1, Terms).
+body_branch_terms_((A ; B), Terms0, Terms) :- !,
+    (   body_branch_terms_(A, Terms0, Terms)
+    ;   body_branch_terms_(B, Terms0, Terms)
+    ).
+body_branch_terms_((A -> B), _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: if-then-else inside rule bodies is not supported (~q).~n',
+           [(A -> B)]),
+    fail.
+body_branch_terms_((A *-> B), _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: soft cut (*->) inside rule bodies is not supported (~q).~n',
+           [(A *-> B)]),
+    fail.
+body_branch_terms_(!, _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: cut (!) inside rule bodies is not supported.~n',
+           []),
+    fail.
+body_branch_terms_(Goal, [Goal|Terms], Terms).
+
+normalize_query_terms([], []).
+normalize_query_terms([Term|Rest], Normalized) :-
+    normalize_query_term(Term, TermTerms),
+    normalize_query_terms(Rest, RestTerms),
+    append(TermTerms, RestTerms, Normalized).
+
+normalize_query_term(Term, [Term]) :-
+    query_constraint_goal(Term),
+    !.
+normalize_query_term(Term, [Term]) :-
+    aggregate_goal(Term),
+    !.
+normalize_query_term(Term0, [Term|Constraints]) :-
+    strip_module(Term0, _, Term1),
+    Term1 =.. [Pred|Args],
+    atom(Pred),
+    rewrite_literal_constants(Args, ArgsOut, Constraints),
+    Term =.. [Pred|ArgsOut].
+
+rewrite_literal_constants([], [], []).
+rewrite_literal_constants([Arg|Rest], [Arg|ArgsOut], ConstraintsOut) :-
+    var(Arg),
+    !,
+    rewrite_literal_constants(Rest, ArgsOut, ConstraintsOut).
+rewrite_literal_constants([Arg|Rest], [Var|ArgsOut], [Constraint|ConstraintsOut]) :-
+    simple_query_literal_constant(Arg),
+    !,
+    Var = _,
+    Constraint = (Var = Arg),
+    rewrite_literal_constants(Rest, ArgsOut, ConstraintsOut).
+rewrite_literal_constants([Arg|_Rest], _ArgsOut, _ConstraintsOut) :-
+    format(user_error,
+           'C# query target: relation argument must be a variable or simple constant (atomic/string), got ~q.~n',
+           [Arg]),
+    fail.
+
+simple_query_literal_constant(Value) :-
+    atomic(Value),
+    !.
+simple_query_literal_constant(Value) :-
+    string(Value).
+
+terms_to_body([], true) :- !.
+terms_to_body([Term], Term) :- !.
+terms_to_body([Term|Rest], (Term, Tail)) :-
+    terms_to_body(Rest, Tail).
 
 %% classify_clauses(+Clauses, -Classification) is det.
 classify_clauses([], none).
@@ -213,41 +476,61 @@ classify_clauses(Clauses, multiple_rules) :-
     Clauses \= [_-true], !.
 classify_clauses(_Clauses, unsupported).
 
-%% build_plan_by_class(+Class, +Pred, +Arity, +Clauses, +Options, -Plan) is semidet.
-build_plan_by_class(none, Pred, Arity, _Clauses, _Options, _) :-
+%% build_plan_by_class(+Class, +Pred, +Arity, +Clauses, +Options, +Modes, +SeedOverride, -Plan) is semidet.
+build_plan_by_class(none, Pred, Arity, _Clauses, _Options, _Modes, _SeedOverride, _) :-
     format(user_error, 'C# query target: no clauses found for ~w/~w.~n', [Pred, Arity]),
     fail.
-build_plan_by_class(unsupported, Pred, Arity, _Clauses, _Options, _) :-
+build_plan_by_class(unsupported, Pred, Arity, _Clauses, _Options, _Modes, _SeedOverride, _) :-
     format(user_error,
            'C# query target: predicate shape not yet supported (~w/~w).~n',
            [Pred, Arity]),
     fail.
-build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Plan) :-
+build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Modes, SeedOverride, Plan) :-
     ensure_relation(Pred, Arity, [], Relations),
     Relations = [relation{predicate:HeadSpec, facts:_}|_],
-    Root = relation_scan{type:relation_scan, predicate:HeadSpec, width:Arity},
+    Root0 = relation_scan{type:relation_scan, predicate:HeadSpec, width:Arity},
+    (   SeedOverride = seed(NeedMat, InputPositions)
+    ->  length(InputPositions, InputCount),
+        EndLeft is InputCount - 1,
+        numlist(0, EndLeft, LeftKeys),
+        RightKeys = InputPositions,
+        JoinNode = join{
+            type:join,
+            left:NeedMat,
+            right:Root0,
+            left_keys:LeftKeys,
+            right_keys:RightKeys,
+            left_width:InputCount,
+            right_width:Arity,
+            width:InputCount+Arity
+        },
+        EndFact is Arity - 1,
+        findall(Idx, (between(0, EndFact, I), Idx is InputCount+I), RightCols),
+        Root = projection{type:projection, input:JoinNode, columns:RightCols, width:Arity}
+    ;   Root = Root0
+    ),
     Plan = plan{
         head:HeadSpec,
         root:Root,
         relations:Relations,
-        metadata:_{classification:facts, options:Options},
+        metadata:_{classification:facts, options:Options, modes:Modes},
         is_recursive:false
     }.
-build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Plan) :-
+build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Modes, SeedOverride, Plan) :-
     Head =.. [Pred|HeadArgs],
     length(HeadArgs, Arity),
     HeadSpec = predicate{name:Pred, arity:Arity},
-    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Node, Relations),
+    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Modes, SeedOverride, Node, Relations),
     dedup_relations(Relations, UniqueRelations),
     Plan = plan{
         head:HeadSpec,
         root:Node,
         relations:UniqueRelations,
-        metadata:_{classification:single_rule, options:Options},
+        metadata:_{classification:single_rule, options:Options, modes:Modes},
         is_recursive:false
     }.
-build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Plan) :-
-    maplist(build_clause_node(Pred/Arity), Clauses, Nodes, RelationLists),
+build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Modes, SeedOverride, Plan) :-
+    maplist(build_clause_node(Pred/Arity, Modes, SeedOverride), Clauses, Nodes, RelationLists),
     append(RelationLists, RelationsFlat),
     dedup_relations(RelationsFlat, Relations),
     HeadSpec = predicate{name:Pred, arity:Arity},
@@ -256,20 +539,28 @@ build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Plan) :-
         head:HeadSpec,
         root:Root,
         relations:Relations,
-        metadata:_{classification:multiple_rules, options:Options},
+        metadata:_{classification:multiple_rules, options:Options, modes:Modes},
         is_recursive:false
     }.
-build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _) :-
+build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _Modes, _SeedOverride, _) :-
     format(user_error, 'C# query target: unexpected fact classified as rule (~w/~w).~n', [Pred, Arity]),
     fail.
 
 %% Recursive plan construction ----------------------------------------------
 
-build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Plan) :-
+build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Modes, Plan) :-
     get_dict(arity, HeadSpec, Arity),
-    build_base_root(HeadSpec, BaseClauses, Options, BaseRoot, BaseRelations),
-    build_recursive_variants(HeadSpec, GroupSpecs, RecClauses, RecursiveNodes, RecursiveRelations),
-    append(BaseRelations, RecursiveRelations, CombinedRelations0),
+    (   eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes),
+        with_suppressed_user_error(build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositions))
+    ->  true,
+        SeedOverride = seed(NeedMat, InputPositions)
+    ;   NeedRelations = [],
+        SeedOverride = none
+    ),
+    build_base_root(HeadSpec, BaseClauses, Options, Modes, SeedOverride, BaseRoot, BaseRelations),
+    build_recursive_variants(HeadSpec, GroupSpecs, RecClauses, Modes, SeedOverride, RecursiveNodes, RecursiveRelations),
+    append(BaseRelations, RecursiveRelations, MainRelations0),
+    append(NeedRelations, MainRelations0, CombinedRelations0),
     dedup_relations(CombinedRelations0, CombinedRelations),
     Root = fixpoint{
         type:fixpoint,
@@ -282,13 +573,20 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Pla
         head:HeadSpec,
         root:Root,
         relations:CombinedRelations,
-        metadata:_{classification:recursive, options:Options},
+        metadata:_{classification:recursive, options:Options, modes:Modes},
         is_recursive:true
     }.
 
-build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Plan) :-
-    maplist(build_member_plan(GroupSpecs, Options), GroupSpecs, MemberStructs, RelationLists),
-    append(RelationLists, RelationsFlat),
+build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
+    (   eligible_for_mutual_need_closure(HeadSpec, GroupSpecs, Modes, NeedMat, NeedRelations, SeedOverrides)
+    ->  true
+    ;   NeedMat = none,
+        NeedRelations = [],
+        SeedOverrides = []
+    ),
+    maplist(build_mutual_member_plan(GroupSpecs, Options, NeedMat, SeedOverrides), GroupSpecs, MemberStructs, RelationLists),
+    append(RelationLists, RelationsFlat0),
+    append(NeedRelations, RelationsFlat0, RelationsFlat),
     dedup_relations(RelationsFlat, CombinedRelations),
     Root = mutual_fixpoint{
         type:mutual_fixpoint,
@@ -299,11 +597,22 @@ build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Plan) :-
         head:HeadSpec,
         root:Root,
         relations:CombinedRelations,
-        metadata:_{classification:mutual_recursive, options:Options},
+        metadata:_{classification:mutual_recursive, options:Options, modes:Modes},
         is_recursive:true
     }.
 
-build_member_plan(GroupSpecs, Options, PredSpec, member{
+build_mutual_member_plan(GroupSpecs, Options, NeedMat, SeedOverrides, PredSpec, MemberStruct, Relations) :-
+    get_dict(arity, PredSpec, Arity),
+    length(MemberModes, Arity),
+    maplist(=(output), MemberModes),
+    (   NeedMat \= none,
+        memberchk(PredSpec-SeedOverride, SeedOverrides)
+    ->  true
+    ;   SeedOverride = none
+    ),
+    build_member_plan(GroupSpecs, Options, MemberModes, SeedOverride, PredSpec, MemberStruct, Relations).
+
+build_member_plan(GroupSpecs, Options, Modes, SeedOverride, PredSpec, member{
         type:member,
         predicate:PredSpec,
         base:BaseRoot,
@@ -311,10 +620,11 @@ build_member_plan(GroupSpecs, Options, PredSpec, member{
         width:Arity
     }, Relations) :-
     get_dict(arity, PredSpec, Arity),
-    gather_predicate_clauses(PredSpec, Clauses),
+    gather_predicate_clauses(PredSpec, Clauses0),
+    expand_disjunction_clauses(Clauses0, Clauses),
     partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses),
-    build_base_root(PredSpec, BaseClauses, Options, BaseRoot, BaseRelations),
-    build_recursive_variants(PredSpec, GroupSpecs, RecClauses, RecursiveNodes, RecursiveRelations),
+    build_base_root(PredSpec, BaseClauses, Options, Modes, SeedOverride, BaseRoot, BaseRelations),
+    build_recursive_variants(PredSpec, GroupSpecs, RecClauses, Modes, SeedOverride, RecursiveNodes, RecursiveRelations),
     append(BaseRelations, RecursiveRelations, Relations).
 
 partition_mutual_clauses(GroupSpecs, Clauses, BaseClauses, RecClauses) :-
@@ -325,25 +635,25 @@ clause_has_group_literal(GroupSpecs, _Head-Body) :-
     member(Term, Terms),
     group_literal_spec(Term, GroupSpecs, _).
 
-build_base_root(_HeadSpec, [], _Options, empty{type:empty, width:Arity}, []) :-
+build_base_root(_HeadSpec, [], _Options, _Modes, _SeedOverride, empty{type:empty, width:Arity}, []) :-
     Arity = 0.
-build_base_root(HeadSpec, [], _Options, empty{type:empty, width:Arity}, []) :-
+build_base_root(HeadSpec, [], _Options, _Modes, _SeedOverride, empty{type:empty, width:Arity}, []) :-
     get_dict(arity, HeadSpec, Arity).
-build_base_root(HeadSpec, Clauses, Options, BaseRoot, Relations) :-
+build_base_root(HeadSpec, Clauses, Options, Modes, SeedOverride, BaseRoot, Relations) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
     classify_clauses(Clauses, Class),
-    build_plan_by_class(Class, Pred, Arity, Clauses, Options, BasePlan),
+    build_plan_by_class(Class, Pred, Arity, Clauses, Options, Modes, SeedOverride, BasePlan),
     get_dict(root, BasePlan, BaseRoot),
     get_dict(relations, BasePlan, Relations).
 
-build_recursive_variants(_HeadSpec, _GroupSpecs, [], [], []) :- !.
-build_recursive_variants(HeadSpec, GroupSpecs, Clauses, Variants, Relations) :-
+build_recursive_variants(_HeadSpec, _GroupSpecs, [], _Modes, _SeedOverride, [], []) :- !.
+build_recursive_variants(HeadSpec, GroupSpecs, Clauses, Modes, SeedOverride, Variants, Relations) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
     findall(variant(Node, RelList),
         (   member(Head-Body, Clauses),
-            build_recursive_clause_variants(HeadSpec, GroupSpecs, Head-Body, VariantStructs),
+            build_recursive_clause_variants(HeadSpec, GroupSpecs, Modes, SeedOverride, Head-Body, VariantStructs),
             member(variant(Node, RelList), VariantStructs)
         ),
         VariantPairs),
@@ -356,19 +666,19 @@ build_recursive_variants(HeadSpec, GroupSpecs, Clauses, Variants, Relations) :-
         dedup_relations(RelationsFlat, Relations)
     ).
 
-build_recursive_clause_variants(HeadSpec, GroupSpecs, Head-Body, Variants) :-
+build_recursive_clause_variants(HeadSpec, GroupSpecs, Modes, SeedOverride, Head-Body, Variants) :-
     Head =.. [_|HeadArgs],
     body_to_list(Body, Terms),
     group_occurrence_positions(GroupSpecs, Terms, Occurrences),
     (   Occurrences = []
     ->  assign_roles_for_variant(HeadSpec, GroupSpecs, Terms, none, Roles),
-        build_pipeline(HeadSpec, GroupSpecs, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
+        build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
         project_to_head(HeadArgs, PipelineNode, VarMap, Node),
         Variants = [variant(Node, RelList)]
     ;   findall(variant(Node, RelList),
         (   member(occurrence(Index, PredSpec), Occurrences),
             assign_roles_for_variant(HeadSpec, GroupSpecs, Terms, delta(Index, PredSpec), Roles),
-            build_pipeline(HeadSpec, GroupSpecs, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
+            build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms, Roles, PipelineNode, RelList, VarMap, _Width),
             project_to_head(HeadArgs, PipelineNode, VarMap, Node)
         ),
         Variants)
@@ -389,8 +699,10 @@ assign_roles_for_variant(HeadSpec, GroupSpecs, Terms, DeltaSpec, Roles) :-
 
 assign_roles_for_variant_([], _GroupSpecs, _Pred, _Arity, _DeltaSpec, _Pos, []).
 assign_roles_for_variant_([Term|Rest], GroupSpecs, Pred, Arity, DeltaSpec, Pos, [Role|Roles]) :-
-    (   constraint_goal(Term)
+    (   query_constraint_goal(Term)
     ->  Role = constraint
+    ;   aggregate_goal(Term)
+    ->  Role = aggregate
     ;   term_signature(Term, Name/TermArity),
         TermArity =:= Arity,
         Pred == Name
@@ -417,8 +729,10 @@ roles_for_nonrecursive_terms(HeadSpec, Terms, Roles) :-
 
 roles_for_nonrecursive_terms_([], _Pred, _Arity, []).
 roles_for_nonrecursive_terms_([Term|Rest], Pred, Arity, [Role|Roles]) :-
-    (   constraint_goal(Term)
+    (   query_constraint_goal(Term)
     ->  Role = constraint
+    ;   aggregate_goal(Term)
+    ->  Role = aggregate
     ;   functor(Term, Pred, TermArity),
         TermArity =:= Arity
     ->  format(user_error, 'C# query target: recursive literal encountered in non-recursive clause (~w/~w).~n', [Pred, Arity]),
@@ -446,9 +760,14 @@ constraint_goal(Goal0) :-
         ;   Functor == >=
         ;   Functor == =<
         ;   Functor == =:=
+        ;   Functor == '=\\='
         ;   atom_codes(Functor, [92, 61])
         )
     ).
+
+%% Query-mode constraints (includes stratified negation as filters).
+query_constraint_goal(Goal) :- constraint_goal(Goal).
+query_constraint_goal(Goal) :- negation_goal(Goal).
 
 arithmetic_goal(Goal0) :-
     strip_module(Goal0, _, Goal),
@@ -456,25 +775,25 @@ arithmetic_goal(Goal0) :-
 
 %% Clause helpers -----------------------------------------------------------
 
-build_clause_node(_HeadSig, Head-true, Node, Relations) :-
+build_clause_node(_HeadSig, _Modes, _SeedOverride, Head-true, Node, Relations) :-
     Head =.. [Pred|Args],
     length(Args, Arity),
     ensure_relation(Pred, Arity, [], Relations),
     HeadSpec = predicate{name:Pred, arity:Arity},
     Node = relation_scan{type:relation_scan, predicate:HeadSpec, width:Arity}.
-build_clause_node(HeadSig, Head-Body, Node, Relations) :-
+build_clause_node(HeadSig, Modes, SeedOverride, Head-Body, Node, Relations) :-
     HeadSig = Pred/Arity,
     Head =.. [Pred|HeadArgs],
     HeadSpec = predicate{name:Pred, arity:Arity},
-    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Node, ClauseRelations),
+    build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Modes, SeedOverride, Node, ClauseRelations),
     Relations = ClauseRelations.
 
-build_rule_clause(GroupSpecs, HeadSpec, HeadArgs, Body, Root, Relations) :-
+build_rule_clause(GroupSpecs, HeadSpec, HeadArgs, Body, Modes, SeedOverride, Root, Relations) :-
     Body \= true,
     body_to_list(Body, Terms),
     Terms \= [],
     roles_for_nonrecursive_terms(HeadSpec, Terms, Roles),
-    build_pipeline(HeadSpec, GroupSpecs, Terms, Roles, PipelineNode, Relations, VarMap, Width),
+    build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms, Roles, PipelineNode, Relations, VarMap, Width),
     project_to_head(HeadArgs, PipelineNode, VarMap, Root),
     length(HeadArgs, WidthHead),
     Width >= WidthHead.
@@ -495,11 +814,382 @@ build_pipeline(HeadSpec, GroupSpecs, [Term|Rest], [Role|Roles], FinalNode, Final
     fold_terms(GroupSpecs, Rest, Roles, HeadSpec, Node0, VarMap0, Width0, Relations0,
                FinalNode, FinalVarMap, FinalWidth, FinalRelations).
 
+%% Parameterised pipeline seed ---------------------------------------------
+
+has_input_mode(Modes) :-
+    member(input, Modes).
+
+input_positions(Modes, Positions) :-
+    findall(Pos, (nth0(Pos, Modes, input)), Positions).
+
+build_parameter_seed_node(_HeadSpec, _HeadArgs, Modes, _Node, _VarMap, _Width) :-
+    \+ has_input_mode(Modes), !, fail.
+build_parameter_seed_node(HeadSpec, HeadArgs, Modes, param_seed{
+        type:param_seed,
+        predicate:HeadSpec,
+        input_positions:Positions,
+        width:Arity
+    }, VarMap, Arity) :-
+    get_dict(arity, HeadSpec, Arity),
+    length(HeadArgs, Arity),
+    input_positions(Modes, Positions),
+    Positions \= [],
+    seed_var_map(HeadArgs, Positions, VarMap).
+
+seed_var_map(HeadArgs, Positions, VarMap) :-
+    findall(Var-Pos,
+        (   member(Pos, Positions),
+            nth0(Pos, HeadArgs, Var),
+            (   var(Var)
+            ->  true
+            ;   format(user_error, 'C# query target: input mode position must be a variable (~w).~n', [Var]),
+                fail
+            )
+        ),
+        VarMap).
+
+%% build_pipeline_seeded(+HeadSpec,+GroupSpecs,+HeadArgs,+Modes,+SeedOverride,+Terms,+Roles,...)
+%  If input modes are declared, start the pipeline from a param_seed node that
+%  binds inputs prior to evaluating the body. Otherwise, fall back to the
+%  standard pipeline builder.
+build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms, Roles,
+        FinalNode, FinalRelations, FinalVarMap, FinalWidth) :-
+    (   SeedOverride = seed(SeedNode, InputPositions)
+    ->  select_positions(InputPositions, HeadArgs, SeedArgs),
+        init_var_map(SeedArgs, 0, SeedVarMap),
+        length(InputPositions, SeedWidth),
+        fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, SeedWidth, [],
+            FinalNode, FinalVarMap, FinalWidth, FinalRelations)
+    ;   build_parameter_seed_node(HeadSpec, HeadArgs, Modes, SeedNode, SeedVarMap, SeedWidth)
+    ->  fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, SeedWidth, [],
+            FinalNode, FinalVarMap, FinalWidth, FinalRelations)
+    ;   build_pipeline(HeadSpec, GroupSpecs, Terms, Roles,
+            FinalNode, FinalRelations, FinalVarMap, FinalWidth)
+    ).
+
+%% Demand ("need") closure for parameterised recursion --------------------
+
+eligible_for_need_closure(HeadSpec, GroupSpecs, RecClauses, Modes) :-
+    has_input_mode(Modes),
+    GroupSpecs = [HeadSpec],
+    safe_recursive_clauses_for_need(HeadSpec, RecClauses).
+
+safe_recursive_clauses_for_need(_HeadSpec, []) :- fail.
+safe_recursive_clauses_for_need(HeadSpec, [Clause|Rest]) :-
+    safe_recursive_clause_for_need(HeadSpec, Clause),
+    safe_recursive_clauses_for_need(HeadSpec, Rest).
+safe_recursive_clauses_for_need(HeadSpec, [Clause]) :-
+    safe_recursive_clause_for_need(HeadSpec, Clause).
+
+safe_recursive_clause_for_need(HeadSpec, _-Body) :-
+    get_dict(name, HeadSpec, Pred),
+    get_dict(arity, HeadSpec, Arity),
+    body_to_list(Body, Terms),
+    findall(Index,
+        (   nth0(Index, Terms, Term0),
+            strip_module(Term0, _, Term),
+            functor(Term, Pred, Arity)
+        ),
+        Occs),
+    Occs \= [],
+    forall(
+        member(Index, Occs),
+        (   prefix_terms(Index, Terms, Pred, Arity, Prefix),
+            \+ (member(T, Prefix), aggregate_goal(T))
+        )
+    ).
+
+negation_goal(Term0) :-
+    strip_module(Term0, _, Term),
+    (   Term =.. ['\\+', _]
+    ;   Term =.. [not, _]
+    ).
+
+select_positions(Positions, List, Selected) :-
+    maplist(nth0_in(List), Positions, Selected).
+
+nth0_in(List, Pos, Elem) :-
+    nth0(Pos, List, Elem).
+
+need_predicate_spec(predicate{name:Pred, arity:_}, InputCount, predicate{name:NeedPred, arity:InputCount}) :-
+    atom_concat(Pred, '$need', NeedPred).
+
+build_need_plan(HeadSpec, RecClauses, Modes, NeedMat, NeedRelations, InputPositions) :-
+    input_positions(Modes, InputPositions),
+    length(InputPositions, InputCount),
+    need_predicate_spec(HeadSpec, InputCount, NeedSpec),
+    EndNeed is InputCount - 1,
+    numlist(0, EndNeed, NeedInputPositions),
+    NeedSeed = param_seed{
+        type:param_seed,
+        predicate:NeedSpec,
+        input_positions:NeedInputPositions,
+        width:InputCount
+    },
+    build_need_recursive_variants(HeadSpec, NeedSpec, RecClauses, InputPositions, NeedRecNodes, NeedRelations),
+    NeedRoot = fixpoint{
+        type:fixpoint,
+        head:NeedSpec,
+        base:NeedSeed,
+        recursive:NeedRecNodes,
+        width:InputCount
+    },
+    gensym(need_mat_, Id),
+    NeedMat = materialize{type:materialize, id:Id, plan:NeedRoot, width:InputCount}.
+
+%% Demand closure for mutual recursion -------------------------------------
+
+eligible_for_mutual_need_closure(HeadSpec, GroupSpecs, Modes, NeedMat, NeedRelations, SeedOverrides) :-
+    has_input_mode(Modes),
+    GroupSpecs = [_First, _Second|_],
+    input_positions(Modes, HeadInputPositions),
+    mutual_need_infos(GroupSpecs, HeadInputPositions, Infos, InputCount),
+    need_info_for_spec(Infos, HeadSpec, HeadInfo),
+    get_dict(input_positions, HeadInfo, HeadInputPositions),
+    safe_mutual_need_prefixes(GroupSpecs),
+    with_suppressed_user_error(
+        (   build_mutual_need_plan(HeadSpec, GroupSpecs, Infos, InputCount, NeedMat, NeedRelations),
+            build_mutual_need_seed_overrides(NeedMat, Infos, InputCount, SeedOverrides)
+        )).
+
+with_suppressed_user_error(Goal) :-
+    current_input(In),
+    current_output(Out),
+    stream_property(Err, alias(user_error)),
+    setup_call_cleanup(
+        open_null_stream(Null),
+        setup_call_cleanup(
+            set_prolog_IO(In, Out, Null),
+            catch(Goal, _Error, fail),
+            set_prolog_IO(In, Out, Err)
+        ),
+        close(Null)
+    ).
+
+mutual_need_infos(GroupSpecs, HeadInputPositions, Infos, InputCount) :-
+    length(HeadInputPositions, InputCount),
+    findall(info{spec:Spec, sig:Sig, modes:Modes, input_positions:Positions, tag:Tag},
+        (   nth0(Tag, GroupSpecs, Spec),
+            spec_signature(Spec, Sig),
+            declared_modes_for_pred(Sig, Declared, Modes),
+            (   Declared == true
+            ->  input_positions(Modes, Positions0),
+                Positions0 \= [],
+                length(Positions0, InputCount),
+                Positions = Positions0
+            ;   Sig = _Pred/Arity,
+                max_list(HeadInputPositions, MaxPos),
+                MaxPos < Arity,
+                Positions = HeadInputPositions
+            )
+        ),
+        Infos),
+    same_length(Infos, GroupSpecs).
+
+safe_mutual_need_prefixes(GroupSpecs) :-
+    \+ (   member(PredSpec, GroupSpecs),
+           gather_predicate_clauses(PredSpec, Clauses),
+           partition_mutual_clauses(GroupSpecs, Clauses, _BaseClauses, RecClauses),
+           member(_Head-Body, RecClauses),
+           body_to_list(Body, Terms),
+           group_occurrence_positions(GroupSpecs, Terms, Occs),
+           member(occurrence(Index, _), Occs),
+           prefix_terms_scc(Index, Terms, GroupSpecs, Prefix),
+           member(Term, Prefix),
+           aggregate_goal(Term)
+       ).
+
+prefix_terms_scc(Index, Terms, GroupSpecs, Prefix) :-
+    length(Before, Index),
+    append(Before, _Rest, Terms),
+    exclude(group_literal_in(GroupSpecs), Before, Prefix).
+
+group_literal_in(GroupSpecs, Term) :-
+    group_literal_spec(Term, GroupSpecs, _).
+
+need_info_for_spec([Info|_], Spec, Info) :-
+    get_dict(spec, Info, Spec0),
+    Spec0 == Spec,
+    !.
+need_info_for_spec([_|Rest], Spec, Info) :-
+    need_info_for_spec(Rest, Spec, Info).
+
+build_mutual_need_plan(HeadSpec, GroupSpecs, Infos, InputCount, NeedMat, NeedRelations) :-
+    NeedArity is InputCount + 1,
+    need_predicate_spec(HeadSpec, NeedArity, NeedSpec),
+    EndNeed is InputCount - 1,
+    numlist(0, EndNeed, NeedKeyPositions),
+    need_info_for_spec(Infos, HeadSpec, HeadInfo),
+    get_dict(tag, HeadInfo, HeadTag),
+    Seed0 = param_seed{
+        type:param_seed,
+        predicate:NeedSpec,
+        input_positions:NeedKeyPositions,
+        width:InputCount
+    },
+    BaseSeed = arithmetic{
+        type:arithmetic,
+        input:Seed0,
+        expression:expr{type:value, value:HeadTag},
+        result_index:InputCount,
+        width:NeedArity
+    },
+    build_mutual_need_recursive_variants(GroupSpecs, NeedSpec, NeedArity, Infos, InputCount, NeedRecNodes, NeedRelations),
+    NeedRoot = fixpoint{
+        type:fixpoint,
+        head:NeedSpec,
+        base:BaseSeed,
+        recursive:NeedRecNodes,
+        width:NeedArity
+    },
+    gensym(need_mat_, Id),
+    NeedMat = materialize{type:materialize, id:Id, plan:NeedRoot, width:NeedArity}.
+
+build_mutual_need_seed_overrides(NeedMat, Infos, InputCount, SeedOverrides) :-
+    NeedArity is InputCount + 1,
+    TagIndex is InputCount,
+    EndKey is InputCount - 1,
+    numlist(0, EndKey, KeyCols),
+    findall(Spec-SeedOverride,
+        (   member(Info, Infos),
+            get_dict(spec, Info, Spec),
+            get_dict(tag, Info, Tag),
+            get_dict(input_positions, Info, InputPositions),
+            Condition = condition{
+                type:eq,
+                left:operand{kind:column, index:TagIndex},
+                right:operand{kind:value, value:Tag}
+            },
+            Selection = selection{
+                type:selection,
+                input:NeedMat,
+                predicate:Condition,
+                width:NeedArity
+            },
+            SeedNode = projection{
+                type:projection,
+                input:Selection,
+                columns:KeyCols,
+                width:InputCount
+            },
+            SeedOverride = seed(SeedNode, InputPositions)
+        ),
+        SeedOverrides).
+
+build_mutual_need_recursive_variants(GroupSpecs, NeedSpec, NeedArity, Infos, InputCount, Variants, Relations) :-
+    TagIndex is InputCount,
+    findall(variant(Node, RelList),
+        (   member(FromInfo, Infos),
+            get_dict(spec, FromInfo, FromSpec),
+            get_dict(tag, FromInfo, FromTag),
+            get_dict(input_positions, FromInfo, FromInputPositions),
+            gather_predicate_clauses(FromSpec, Clauses),
+            partition_mutual_clauses(GroupSpecs, Clauses, _BaseClauses, RecClauses),
+            member(Head-Body, RecClauses),
+            Head =.. [_|HeadArgs],
+            select_positions(FromInputPositions, HeadArgs, NeedArgs),
+            body_to_list(Body, Terms),
+            group_occurrence_positions(GroupSpecs, Terms, Occurrences),
+            member(occurrence(Index, ToSpec), Occurrences),
+            need_info_for_spec(Infos, ToSpec, ToInfo),
+            get_dict(tag, ToInfo, ToTag),
+            get_dict(input_positions, ToInfo, ToInputPositions),
+            nth0(Index, Terms, RecTerm),
+            prefix_terms_scc(Index, Terms, GroupSpecs, Prefix0),
+            \+ (member(T, Prefix0), aggregate_goal(T)),
+            roles_for_nonrecursive_terms(NeedSpec, Prefix0, PrefixRoles),
+            recursive_ref_node(NeedSpec, delta, SeedNode0),
+            TagCondition = condition{
+                type:eq,
+                left:operand{kind:column, index:TagIndex},
+                right:operand{kind:value, value:FromTag}
+            },
+            SeedNode = selection{
+                type:selection,
+                input:SeedNode0,
+                predicate:TagCondition,
+                width:NeedArity
+            },
+            init_var_map(NeedArgs, 0, SeedVarMap),
+            fold_terms([NeedSpec], Prefix0, PrefixRoles, NeedSpec, SeedNode, SeedVarMap, NeedArity, [],
+                PrefixNode, VarMapMid, _WidthMid, RelList),
+            RecTerm =.. [_|RecArgs],
+            select_positions(ToInputPositions, RecArgs, RecNeedArgs),
+            projection_indices(RecNeedArgs, VarMapMid, Cols),
+            ProjectionNode = projection{
+                type:projection,
+                input:PrefixNode,
+                columns:Cols,
+                width:InputCount
+            },
+            TagAppendNode = arithmetic{
+                type:arithmetic,
+                input:ProjectionNode,
+                expression:expr{type:value, value:ToTag},
+                result_index:InputCount,
+                width:NeedArity
+            },
+            Node = TagAppendNode
+        ),
+        VariantPairs),
+    VariantPairs \= [],
+    findall(Node, member(variant(Node, _), VariantPairs), Variants),
+    findall(RelList, member(variant(_, RelList), VariantPairs), RelLists),
+    append(RelLists, Flat),
+    dedup_relations(Flat, Relations).
+
+build_need_recursive_variants(HeadSpec, NeedSpec, RecClauses, InputPositions, Variants, Relations) :-
+    get_dict(name, HeadSpec, Pred),
+    get_dict(arity, HeadSpec, Arity),
+    length(InputPositions, InputCount),
+    findall(variant(Node, RelList),
+        (   member(Head-Body, RecClauses),
+            Head =.. [_|HeadArgs],
+            select_positions(InputPositions, HeadArgs, NeedArgs),
+            body_to_list(Body, Terms),
+            findall(Index,
+                (nth0(Index, Terms, Term), functor(Term, Pred, Arity)),
+                Occs),
+            member(Index, Occs),
+            nth0(Index, Terms, RecTerm),
+            prefix_terms(Index, Terms, Pred, Arity, Prefix0),
+            roles_for_nonrecursive_terms(NeedSpec, Prefix0, PrefixRoles),
+            recursive_ref_node(NeedSpec, delta, SeedNode),
+            init_var_map(NeedArgs, 0, SeedVarMap),
+            fold_terms([NeedSpec], Prefix0, PrefixRoles, NeedSpec, SeedNode, SeedVarMap, InputCount, [],
+                PrefixNode, VarMapMid, _WidthMid, RelList),
+            RecTerm =.. [_|RecArgs],
+            select_positions(InputPositions, RecArgs, RecNeedArgs),
+            projection_indices(RecNeedArgs, VarMapMid, Cols),
+            Node = projection{type:projection, input:PrefixNode, columns:Cols, width:InputCount}
+        ),
+        VariantPairs),
+    VariantPairs \= [],
+    findall(Node, member(variant(Node, _), VariantPairs), Variants),
+    findall(RelList, member(variant(_, RelList), VariantPairs), RelLists),
+    append(RelLists, Flat),
+    dedup_relations(Flat, Relations).
+
+prefix_terms(Index, Terms, Pred, Arity, Prefix) :-
+    length(Before, Index),
+    append(Before, _Rest, Terms),
+    exclude(is_recursive_literal(Pred, Arity), Before, Prefix).
+
+is_recursive_literal(Pred, Arity, Term0) :-
+    strip_module(Term0, _, Term),
+    functor(Term, Pred, Arity).
+
 build_initial_node(HeadSpec, _GroupSpecs, _Term, constraint, _Node, _Relations, _VarMap, _Width) :-
     get_dict(name, HeadSpec, Pred),
     get_dict(arity, HeadSpec, Arity),
-    format(user_error, 'C# query target: clause for ~w/~w begins with a constraint; reorder body literals.~n', [Pred, Arity]),
+    format(user_error,
+           'C# query target: clause for ~w/~w begins with a constraint; reorder body literals so a relation/recursive call comes first. If this predicate is meant to be called with inputs, declare input modes via user:mode/1 (parameterized query mode), or use mode(generator).~n',
+           [Pred, Arity]),
     fail.
+build_initial_node(HeadSpec, GroupSpecs, Term, aggregate, Node, Relations, VarMap, Width) :-
+    Unit = unit{type:unit, width:0},
+    build_aggregate_node(GroupSpecs, HeadSpec, Term, Unit, [], 0, [],
+        Node, VarMap, Width, Relations).
 build_initial_node(_HeadSpec, _GroupSpecs, Term, relation, Node, Relations, VarMap, Width) :-
     Term =.. [Pred|Args],
     length(Args, Arity),
@@ -533,10 +1223,15 @@ fold_terms(_GroupSpecs, [], [], _HeadSpec, Node, VarMap, Width, Relations, Node,
 fold_terms(GroupSpecs, [Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, WidthIn, RelationsIn,
            NodeOut, VarMapOut, WidthOut, RelationsOut) :-
     (   Role = constraint
-    ->  build_constraint_node(Term, AccNode, VarMapIn, WidthIn,
-                               ConstraintNode, VarMapMid, WidthMid),
-        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsIn,
-                   NodeOut, VarMapOut, WidthOut, RelationsOut)
+    ->  build_constraint_node(GroupSpecs, HeadSpec, Term, AccNode, VarMapIn, WidthIn, RelationsIn,
+                                ConstraintNode, VarMapMid, WidthMid, RelationsMid),
+        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, ConstraintNode, VarMapMid, WidthMid, RelationsMid,
+                    NodeOut, VarMapOut, WidthOut, RelationsOut)
+    ;   Role = aggregate
+    ->  build_aggregate_node(GroupSpecs, HeadSpec, Term, AccNode, VarMapIn, WidthIn, RelationsIn,
+            AggregateNode, VarMapMid, WidthMid, RelationsMid),
+        fold_terms(GroupSpecs, Rest, Roles, HeadSpec, AggregateNode, VarMapMid, WidthMid, RelationsMid,
+            NodeOut, VarMapOut, WidthOut, RelationsOut)
     ;   Role = relation
     ->  Term =.. [Pred|Args],
         length(Args, Arity),
@@ -584,11 +1279,21 @@ build_join_node(LeftNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapOut, 
         width:WidthOut
     }.
 
-build_constraint_node(Term, InputNode, VarMapIn, WidthIn,
-        NodeOut, VarMapOut, WidthOut) :-
+build_constraint_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, RelationsIn,
+        NodeOut, VarMapOut, WidthOut, RelationsOut) :-
     (   arithmetic_goal(Term)
-    ->  build_arithmetic_node(Term, InputNode, VarMapIn, WidthIn,
-            NodeOut, VarMapOut, WidthOut)
+    ->  build_is_goal_node(Term, InputNode, VarMapIn, WidthIn,
+            NodeOut, VarMapOut, WidthOut),
+        RelationsOut = RelationsIn
+    ;   negation_goal(Term)
+    ->  build_negation_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, RelationsIn,
+            NodeOut, RelationsOut),
+        VarMapOut = VarMapIn,
+        WidthOut = WidthIn
+    ;   comparison_goal_needs_arithmetic_nodes(Term)
+    ->  build_comparison_constraint_node(Term, InputNode, VarMapIn, WidthIn,
+            NodeOut, VarMapOut, WidthOut),
+        RelationsOut = RelationsIn
     ;   constraint_condition(Term, VarMapIn, Condition),
         NodeOut = selection{
             type:selection,
@@ -597,8 +1302,521 @@ build_constraint_node(Term, InputNode, VarMapIn, WidthIn,
             width:WidthIn
         },
         VarMapOut = VarMapIn,
+        WidthOut = WidthIn,
+        RelationsOut = RelationsIn
+    ).
+
+build_is_goal_node(Goal0, InputNode, VarMapIn, WidthIn, NodeOut, VarMapOut, WidthOut) :-
+    strip_module(Goal0, _, Goal),
+    Goal =.. [is, Left, ExprTerm],
+    (   var(Left),
+        \+ lookup_var_index(VarMapIn, Left, _)
+    ->  build_arithmetic_node(Goal, InputNode, VarMapIn, WidthIn,
+            NodeOut, VarMapOut, WidthOut)
+    ;   is_check_left_operand(Left, VarMapIn, LeftOperand),
+        TmpVar = _,
+        TmpGoal =.. [is, TmpVar, ExprTerm],
+        build_arithmetic_node(TmpGoal, InputNode, VarMapIn, WidthIn,
+            NodeMid, VarMapMid, WidthMid),
+        lookup_var_index(VarMapMid, TmpVar, TmpIndex),
+        Condition = condition{
+            type:eq,
+            left:operand{kind:column, index:TmpIndex},
+            right:LeftOperand
+        },
+        NodeOut = selection{
+            type:selection,
+            input:NodeMid,
+            predicate:Condition,
+            width:WidthMid
+        },
+        VarMapOut = VarMapMid,
+        WidthOut = WidthMid
+    ).
+
+is_check_left_operand(Left, VarMap, operand{kind:column, index:Index}) :-
+    var(Left),
+    lookup_var_index(VarMap, Left, Index),
+    !.
+is_check_left_operand(Left, _VarMap, operand{kind:value, value:Left}) :-
+    number(Left),
+    !.
+is_check_left_operand(Left, _VarMap, _Operand) :-
+    format(user_error,
+           'C# query target: left operand of is/2 must be an unbound/bound variable or number (~q).~n',
+           [Left]),
+    fail.
+
+comparison_goal_needs_arithmetic_nodes(Goal0) :-
+    comparison_goal(Goal0, _Functor, Left, Right),
+    (   compound(Left)
+    ;   compound(Right)
+    ).
+
+comparison_goal(Goal0, Functor, Left, Right) :-
+    strip_module(Goal0, _, Goal),
+    functor(Goal, Functor, 2),
+    arg(1, Goal, Left),
+    arg(2, Goal, Right),
+    memberchk(Functor, [>, <, >=, =<, =:=, '=\\=']).
+
+build_comparison_constraint_node(Goal0, InputNode, VarMapIn, WidthIn,
+        NodeOut, VarMapOut, WidthOut) :-
+    comparison_goal(Goal0, Functor, LeftTerm, RightTerm),
+    comparison_condition_type(Functor, ConditionType),
+    normalize_comparison_operand(LeftTerm, InputNode, VarMapIn, WidthIn,
+        NodeMid1, VarMapMid1, WidthMid1, LeftOperand),
+    normalize_comparison_operand(RightTerm, NodeMid1, VarMapMid1, WidthMid1,
+        NodeMid2, VarMapMid2, WidthMid2, RightOperand),
+    Condition = condition{type:ConditionType, left:LeftOperand, right:RightOperand},
+    NodeOut = selection{type:selection, input:NodeMid2, predicate:Condition, width:WidthMid2},
+    VarMapOut = VarMapMid2,
+    WidthOut = WidthMid2.
+
+comparison_condition_type(>, gt).
+comparison_condition_type(<, lt).
+comparison_condition_type(>=, ge).
+comparison_condition_type(=<, le).
+comparison_condition_type(=:=, arith_eq).
+comparison_condition_type('=\\=', arith_neq).
+
+normalize_comparison_operand(Term, InputNode, VarMapIn, WidthIn,
+        NodeOut, VarMapOut, WidthOut, Operand) :-
+    (   compound(Term)
+    ->  TmpVar = _,
+        TmpGoal =.. [is, TmpVar, Term],
+        build_arithmetic_node(TmpGoal, InputNode, VarMapIn, WidthIn,
+            NodeOut, VarMapOut, WidthOut),
+        lookup_var_index(VarMapOut, TmpVar, TmpIndex),
+        Operand = operand{kind:column, index:TmpIndex}
+    ;   constraint_operand(VarMapIn, Term, Operand),
+        NodeOut = InputNode,
+        VarMapOut = VarMapIn,
         WidthOut = WidthIn
     ).
+
+build_aggregate_node(GroupSpecs, HeadSpec, Term0, InputNode, VarMapIn, WidthIn, RelationsIn,
+        NodeOut, VarMapOut, WidthOut, RelationsOut) :-
+    strip_module(Term0, _, Term),
+    parse_query_aggregate_term(Term, Type, Op, Goal, GroupTerm, ValueVar, ResVar),
+    member(Op, [count, sum, min, max, set, bag]),
+    (   Op == count
+    ->  true
+    ;   var(ValueVar)
+    ->  true
+    ;   format(user_error, 'C# query target: aggregate value selector must be a variable (~q).~n', [ValueVar]),
+        fail
+    ),
+    (   plain_relation_goal(Goal, Pred, Args)
+    ->  build_simple_aggregate_node(GroupSpecs, HeadSpec, Type, Op, Pred, Args, GroupTerm, ValueVar, ResVar,
+            InputNode, VarMapIn, WidthIn, RelationsIn,
+            NodeOut, VarMapOut, WidthOut, RelationsOut)
+    ;   build_aggregate_subplan_node(GroupSpecs, HeadSpec, Type, Op, Goal, GroupTerm, ValueVar, ResVar,
+            InputNode, VarMapIn, WidthIn, RelationsIn,
+            NodeOut, VarMapOut, WidthOut, RelationsOut)
+    ).
+
+parse_query_aggregate_term(aggregate_all(OpTerm, Goal, Result), all, Op, Goal, _GroupTerm, ValueVar, Result) :-
+    nonvar(Goal),
+    parse_agg_op(OpTerm, Op, ValueVar, _).
+parse_query_aggregate_term(aggregate_all(OpTerm, Goal, GroupTerm, Result), group, Op, Goal, GroupTerm, ValueVar, Result) :-
+    nonvar(Goal),
+    parse_agg_op(OpTerm, Op, ValueVar, _).
+parse_query_aggregate_term(aggregate(OpTerm, Goal, GroupTerm, Result), group, Op, Goal, GroupTerm, ValueVar, Result) :-
+    nonvar(Goal),
+    parse_agg_op(OpTerm, Op, ValueVar, _).
+
+plain_relation_goal(Goal0, Pred, Args) :-
+    strip_module(Goal0, _, Goal),
+    nonvar(Goal),
+    \+ query_constraint_goal(Goal),
+    \+ aggregate_goal(Goal),
+    \+ (Goal = (_,_)),
+    \+ (Goal = (_;_)),
+    \+ (Goal = (_->_)),
+    \+ (Goal = (_*->_)),
+    Goal =.. [Pred|Args],
+    atom(Pred).
+
+build_simple_aggregate_node(GroupSpecs, _HeadSpec, Type, Op, Pred, Args, GroupTerm, ValueVar, ResVar,
+        InputNode, VarMapIn, WidthIn, RelationsIn,
+        aggregate{
+            type:aggregate,
+            input:InputNode,
+            predicate:AggSpec,
+            op:Op,
+            args:ArgOperands,
+            group_indices:GroupIndices,
+            value_index:ValueIndex,
+            width:WidthOut
+        },
+        VarMapOut,
+        WidthOut,
+        RelationsOut) :-
+    length(Args, AggArity),
+    signature_to_spec(Pred/AggArity, AggSpec),
+    (   memberchk(AggSpec, GroupSpecs)
+    ->  spec_signature(AggSpec, Name/Arity),
+        format(user_error,
+               'C# query target: aggregate over recursive predicate ~w/~w is not supported.~n',
+               [Name, Arity]),
+        fail
+    ;   true
+    ),
+    ensure_relation(Pred, AggArity, RelationsIn, RelationsMid),
+    ensure_no_unbound_repeated_vars(Args, VarMapIn),
+    maplist(aggregate_arg_operand(VarMapIn), Args, ArgOperands),
+    aggregate_value_index(Op, Args, ValueVar, ValueIndex),
+    build_aggregate_outputs(Type, GroupTerm, Args, VarMapIn, WidthIn, ResVar,
+        GroupIndices, VarMapOut, WidthOut),
+    RelationsOut = RelationsMid.
+
+build_aggregate_subplan_node(GroupSpecs, HeadSpec, Type, Op, Goal0, GroupTerm, ValueVar, ResVar,
+        InputNode, VarMapIn, WidthIn, RelationsIn,
+        aggregate_subplan{
+            type:aggregate_subplan,
+            input:InputNode,
+            subplan:SubplanNode,
+            op:Op,
+            params:ParamOperands,
+            group_indices:GroupIndices,
+            value_index:ValueIndex,
+            width:WidthOut
+        },
+        VarMapOut,
+        WidthOut,
+        RelationsOut) :-
+    strip_module(Goal0, _, Goal),
+    aggregate_subplan_group_vars(Type, GroupTerm, GroupVars, GroupCount),
+    aggregate_subplan_params(Goal, VarMapIn, CorrVars, ParamOperands),
+    aggregate_subplan_seed(CorrVars, SeedNode, SeedVarMap, CorrCount),
+    build_aggregate_subplan_plan(GroupSpecs, HeadSpec, Type, Op, GroupVars,
+        SeedNode, SeedVarMap, CorrCount, RelationsIn, Goal, ValueVar,
+        SubplanNode, RelationsOut),
+    aggregate_subplan_indices(Type, Op, GroupCount, GroupIndices, ValueIndex),
+    bind_aggregate_output_vars(Type, GroupVars, VarMapIn, WidthIn, ResVar, VarMapOut, WidthOut).
+
+build_aggregate_subplan_plan(GroupSpecs, HeadSpec, Type, Op, GroupVars,
+        SeedNode, SeedVarMap, CorrCount, RelationsIn, Goal0, ValueVar,
+        PlanNode, RelationsOut) :-
+    findall(variant(Node, RelList),
+        (   aggregate_goal_branch_terms(Goal0, Terms),
+            build_aggregate_subplan_branch_terms(GroupSpecs, HeadSpec, Type, Op, GroupVars,
+                SeedNode, SeedVarMap, CorrCount, RelationsIn, ValueVar,
+                Terms, Node, RelList)
+        ),
+        VariantPairs),
+    VariantPairs \= [],
+    findall(Node, member(variant(Node, _), VariantPairs), BranchNodes),
+    findall(RelList, member(variant(_, RelList), VariantPairs), BranchRelations),
+    (   BranchNodes = [Single]
+    ->  PlanNode = Single,
+        BranchRelations = [RelationsOut]
+    ;   BranchNodes = [First|_],
+        get_dict(width, First, Width),
+        PlanNode = union{type:union, sources:BranchNodes, width:Width},
+        append(BranchRelations, RelationsFlat0),
+        dedup_relations(RelationsFlat0, RelationsOut)
+    ).
+
+aggregate_goal_branch_terms(Goal0, Terms) :-
+    strip_module(Goal0, _, Goal),
+    aggregate_goal_branch_terms_(Goal, Terms, []).
+
+aggregate_goal_branch_terms_(true, Terms, Terms) :- !.
+aggregate_goal_branch_terms_((A, B), Terms0, Terms) :- !,
+    aggregate_goal_branch_terms_(A, Terms0, Terms1),
+    aggregate_goal_branch_terms_(B, Terms1, Terms).
+aggregate_goal_branch_terms_((A ; B), Terms0, Terms) :- !,
+    (   aggregate_goal_branch_terms_(A, Terms0, Terms)
+    ;   aggregate_goal_branch_terms_(B, Terms0, Terms)
+    ).
+aggregate_goal_branch_terms_((A -> B), _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: if-then-else inside aggregate goals is not supported (~q).~n',
+           [(A -> B)]),
+    fail.
+aggregate_goal_branch_terms_((A *-> B), _Terms0, _Terms) :- !,
+    format(user_error,
+           'C# query target: soft cut (*->) inside aggregate goals is not supported (~q).~n',
+           [(A *-> B)]),
+    fail.
+aggregate_goal_branch_terms_(Goal, [Goal|Terms], Terms).
+
+build_aggregate_subplan_branch_terms(GroupSpecs, HeadSpec, Type, Op, GroupVars,
+        SeedNode, SeedVarMap, CorrCount, RelationsIn, ValueVar,
+        Terms, BranchPlan, RelationsOut) :-
+    normalize_query_terms(Terms, NormalizedTerms),
+    aggregate_subplan_roles(NormalizedTerms, Roles),
+    ensure_no_aggregate_subplan_recursion(GroupSpecs, NormalizedTerms),
+    fold_terms(GroupSpecs, NormalizedTerms, Roles, HeadSpec, SeedNode, SeedVarMap, CorrCount, RelationsIn,
+        InnerNode, InnerVarMap, _InnerWidth, RelationsOut),
+    aggregate_subplan_projection(Type, Op, GroupVars, ValueVar, InnerVarMap, InnerNode, BranchPlan).
+
+aggregate_subplan_group_vars(all, _GroupTerm, [], 0).
+aggregate_subplan_group_vars(group, GroupTerm, GroupVars, GroupCount) :-
+    parse_group_term(GroupTerm, GroupVars),
+    (   GroupVars \= []
+    ->  true
+    ;   format(user_error, 'C# query target: aggregate group term ~q not supported.~n', [GroupTerm]),
+        fail
+    ),
+    length(GroupVars, GroupCount).
+
+aggregate_subplan_params(Goal, VarMap, CorrVars, Operands) :-
+    term_variables(Goal, Vars),
+    include(bound_var_in_map(VarMap), Vars, CorrVars),
+    maplist(var_to_param_operand(VarMap), CorrVars, Operands).
+
+bound_var_in_map(VarMap, Var) :-
+    lookup_var_index(VarMap, Var, _).
+
+var_to_param_operand(VarMap, Var, operand{kind:column, index:Index}) :-
+    lookup_var_index(VarMap, Var, Index).
+
+aggregate_subplan_seed(CorrVars, SeedNode, SeedVarMap, CorrCount) :-
+    length(CorrVars, CorrCount),
+    (   CorrCount =:= 0
+    ->  Positions = []
+    ;   End is CorrCount - 1,
+        numlist(0, End, Positions)
+    ),
+    SeedSpec = predicate{name:'$aggregate_params', arity:CorrCount},
+    SeedNode = param_seed{
+        type:param_seed,
+        predicate:SeedSpec,
+        input_positions:Positions,
+        width:CorrCount
+    },
+    init_var_map(CorrVars, 0, SeedVarMap).
+
+aggregate_subplan_roles([], []).
+aggregate_subplan_roles([Term|Rest], [Role|Roles]) :-
+    (   query_constraint_goal(Term)
+    ->  Role = constraint
+    ;   Term = (_ ; _)
+    ->  format(user_error,
+               'C# query target: disjunction inside an aggregate goal conjunction is not supported (~q).~n',
+               [Term]),
+        fail
+    ;   Term = (_ -> _)
+    ->  format(user_error,
+               'C# query target: if-then-else inside aggregate goals is not supported (~q).~n',
+               [Term]),
+        fail
+    ;   Term = (_ *-> _)
+    ->  format(user_error,
+               'C# query target: soft cut (*->) inside aggregate goals is not supported (~q).~n',
+               [Term]),
+        fail
+    ;   aggregate_goal(Term)
+    ->  Role = aggregate
+    ;   Role = relation
+    ),
+    aggregate_subplan_roles(Rest, Roles).
+
+ensure_no_aggregate_subplan_recursion(GroupSpecs, Terms) :-
+    (   member(Term, Terms),
+        \+ query_constraint_goal(Term),
+        group_literal_spec(Term, GroupSpecs, PredSpec),
+        spec_signature(PredSpec, Name/Arity),
+        format(user_error,
+               'C# query target: aggregate over recursive predicate ~w/~w is not supported.~n',
+               [Name, Arity])
+    ->  fail
+    ;   true
+    ).
+
+aggregate_subplan_projection(Type, Op, GroupVars, ValueVar, VarMap, InputNode, ProjectionNode) :-
+    aggregate_projection_columns(Type, Op, GroupVars, ValueVar, VarMap, Columns),
+    length(Columns, Width),
+    ProjectionNode = projection{type:projection, input:InputNode, columns:Columns, width:Width}.
+
+aggregate_projection_columns(all, count, _GroupVars, _ValueVar, _VarMap, []) :- !.
+aggregate_projection_columns(all, Op, _GroupVars, ValueVar, VarMap, [ValueIdx]) :-
+    member(Op, [sum, min, max, set, bag]),
+    lookup_var_index(VarMap, ValueVar, ValueIdx),
+    !.
+aggregate_projection_columns(group, count, GroupVars, _ValueVar, VarMap, Columns) :-
+    maplist(variable_index(VarMap), GroupVars, Columns),
+    !.
+aggregate_projection_columns(group, Op, GroupVars, ValueVar, VarMap, Columns) :-
+    member(Op, [sum, min, max, set, bag]),
+    maplist(variable_index(VarMap), GroupVars, GroupCols),
+    lookup_var_index(VarMap, ValueVar, ValueIdx),
+    append(GroupCols, [ValueIdx], Columns),
+    !.
+aggregate_projection_columns(_Type, _Op, _GroupVars, ValueVar, _VarMap, _Columns) :-
+    format(user_error, 'C# query target: aggregate goal does not bind value variable ~w.~n', [ValueVar]),
+    fail.
+
+aggregate_subplan_indices(all, count, _GroupCount, [], -1) :- !.
+aggregate_subplan_indices(all, _Op, _GroupCount, [], 0) :- !.
+aggregate_subplan_indices(group, count, GroupCount, Indices, -1) :- !,
+    End is GroupCount - 1,
+    numlist(0, End, Indices).
+aggregate_subplan_indices(group, _Op, GroupCount, Indices, ValueIndex) :-
+    End is GroupCount - 1,
+    numlist(0, End, Indices),
+    ValueIndex is GroupCount.
+
+bind_aggregate_output_vars(all, _GroupVars, VarMapIn, WidthIn, ResVar, VarMapOut, WidthOut) :-
+    must_be(var, ResVar),
+    (   lookup_var_index(VarMapIn, ResVar, _)
+    ->  format(user_error, 'C# query target: aggregate result variable ~w already bound.~n', [ResVar]),
+        fail
+    ;   true
+    ),
+    ResultIndex is WidthIn,
+    WidthOut is WidthIn + 1,
+    VarMapOut = [ResVar-ResultIndex|VarMapIn].
+bind_aggregate_output_vars(group, GroupVars, VarMapIn, WidthIn, ResVar, VarMapOut, WidthOut) :-
+    must_be(var, ResVar),
+    (   lookup_var_index(VarMapIn, ResVar, _)
+    ->  format(user_error, 'C# query target: aggregate result variable ~w already bound.~n', [ResVar]),
+        fail
+    ;   true
+    ),
+    length(GroupVars, GroupCount),
+    ResultIndex is WidthIn + GroupCount,
+    WidthOut is WidthIn + GroupCount + 1,
+    bind_aggregate_group_vars(GroupVars, 0, WidthIn, VarMapIn, VarMapMid),
+    VarMapOut = [ResVar-ResultIndex|VarMapMid].
+
+aggregate_value_index(count, _Args, _ValueVar, -1) :- !.
+aggregate_value_index(Op, Args, ValueVar, ValueIndex) :-
+    member(Op, [sum, min, max, set, bag]),
+    (   var(ValueVar)
+    ->  true
+    ;   format(user_error, 'C# query target: aggregate value selector must be a variable (~q).~n', [ValueVar]),
+        fail
+    ),
+    aggregate_var_arg_index(ValueVar, Args, ValueIndex).
+
+build_aggregate_outputs(all, _GroupTerm, _Args, VarMapIn, WidthIn, ResVar,
+        [], VarMapOut, WidthOut) :-
+    must_be(var, ResVar),
+    (   lookup_var_index(VarMapIn, ResVar, _)
+    ->  format(user_error, 'C# query target: aggregate result variable ~w already bound.~n', [ResVar]),
+        fail
+    ;   true
+    ),
+    ResultIndex is WidthIn,
+    WidthOut is WidthIn + 1,
+    VarMapOut = [ResVar-ResultIndex|VarMapIn].
+build_aggregate_outputs(group, GroupTerm, Args, VarMapIn, WidthIn, ResVar,
+        GroupIndices, VarMapOut, WidthOut) :-
+    parse_group_term(GroupTerm, GroupVars),
+    (   GroupVars \= []
+    ->  true
+    ;   format(user_error, 'C# query target: aggregate group term ~q not supported.~n', [GroupTerm]),
+        fail
+    ),
+    maplist(aggregate_var_arg_index_(Args), GroupVars, GroupIndices),
+    must_be(var, ResVar),
+    (   lookup_var_index(VarMapIn, ResVar, _)
+    ->  format(user_error, 'C# query target: aggregate result variable ~w already bound.~n', [ResVar]),
+        fail
+    ;   true
+    ),
+    length(GroupVars, GroupCount),
+    ResultIndex is WidthIn + GroupCount,
+    WidthOut is WidthIn + GroupCount + 1,
+    bind_aggregate_group_vars(GroupVars, 0, WidthIn, VarMapIn, VarMapMid),
+    VarMapOut = [ResVar-ResultIndex|VarMapMid].
+
+aggregate_var_arg_index_(Args, Var, Idx) :-
+    aggregate_var_arg_index(Var, Args, Idx).
+
+bind_aggregate_group_vars([], _Offset, _BaseIndex, VarMap, VarMap).
+bind_aggregate_group_vars([Var|Rest], Offset, BaseIndex, VarMapIn, VarMapOut) :-
+    Index is BaseIndex + Offset,
+    (   lookup_var_index(VarMapIn, Var, _)
+    ->  VarMapMid = VarMapIn
+    ;   VarMapMid = [Var-Index|VarMapIn]
+    ),
+    Offset1 is Offset + 1,
+    bind_aggregate_group_vars(Rest, Offset1, BaseIndex, VarMapMid, VarMapOut).
+
+aggregate_var_arg_index(Var, Args, Idx) :-
+    nth0(Idx, Args, Arg),
+    (   Var == Arg
+    ;   compound(Arg),
+        Arg =.. ['^', Var, _]
+    ),
+    !.
+aggregate_var_arg_index(Var, _Args, _Idx) :-
+    format(user_error, 'C# query target: aggregate variable ~w not found in goal arguments.~n', [Var]),
+    fail.
+
+aggregate_arg_operand(VarMap, Arg, operand{kind:column, index:Index}) :-
+    var(Arg),
+    lookup_var_index(VarMap, Arg, Index),
+    !.
+aggregate_arg_operand(_VarMap, Arg, operand{kind:wildcard}) :-
+    var(Arg),
+    !.
+aggregate_arg_operand(_VarMap, Arg, operand{kind:value, value:Arg}).
+
+ensure_no_unbound_repeated_vars(Args, VarMap) :-
+    findall(Var,
+        (   member(Var, Args),
+            var(Var),
+            \+ lookup_var_index(VarMap, Var, _)
+        ),
+        Unbound),
+    (   first_duplicate_var(Unbound, Dup)
+    ->  format(user_error,
+               'C# query target: aggregate goal repeats unbound variable ~w; rewrite using explicit equality constraints.~n',
+               [Dup]),
+        fail
+    ;   true
+    ).
+
+first_duplicate_var([Var|Rest], Var) :-
+    memberchk_eq(Var, Rest),
+    !.
+first_duplicate_var([_|Rest], Var) :-
+    first_duplicate_var(Rest, Var).
+
+memberchk_eq(Var, [Head|_]) :-
+    Var == Head,
+    !.
+memberchk_eq(Var, [_|Rest]) :-
+    memberchk_eq(Var, Rest).
+
+build_negation_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMap, Width, RelationsIn,
+        negation{type:negation, input:InputNode, predicate:NegSpec, args:Operands, width:Width},
+        RelationsOut) :-
+    strip_module(Term0, _, Term),
+    (   Term =.. ['\\+', Inner]
+    ;   Term =.. [not, Inner]
+    ),
+    term_signature(Inner, NegPI),
+    signature_to_spec(NegPI, NegSpec),
+    spec_signature(NegSpec, NegName/NegArity),
+    (   memberchk(NegSpec, GroupSpecs)
+    ->  spec_signature(NegSpec, Name/Arity),
+        format(user_error,
+               'C# query target: negation of recursive predicate ~w/~w is not supported.~n',
+               [Name, Arity]),
+        fail
+    ;   true
+    ),
+    ensure_relation(NegName, NegArity, RelationsIn, RelationsOut),
+    Inner =.. [_|Args],
+    maplist(negation_arg_operand(VarMap), Args, Operands).
+
+negation_arg_operand(VarMap, Arg, operand{kind:column, index:Index}) :-
+    var(Arg),
+    lookup_var_index(VarMap, Arg, Index),
+    !.
+negation_arg_operand(_VarMap, Arg, operand{kind:value, value:Arg}) :-
+    nonvar(Arg),
+    !.
+negation_arg_operand(_VarMap, Arg, _) :-
+    format(user_error, 'C# query target: variable ~w not bound before negation check.~n', [Arg]),
+    fail.
 
 build_arithmetic_node(Goal, InputNode, VarMapIn, WidthIn,
         arithmetic{
@@ -694,7 +1912,9 @@ constraint_condition(Goal0, VarMap, Condition) :-
     ;   Functor == =<
     ->  build_condition(le, Left, Right, VarMap, Condition)
     ;   Functor == =:=
-    ->  build_condition(eq, Left, Right, VarMap, Condition)
+    ->  build_condition(arith_eq, Left, Right, VarMap, Condition)
+    ;   Functor == '=\\='
+    ->  build_condition(arith_neq, Left, Right, VarMap, Condition)
     ;   format(user_error, 'C# query target: unsupported constraint goal ~q.~n', [Goal]),
         fail
     ).
@@ -832,6 +2052,7 @@ render_plan_to_csharp(Plan, Code) :-
     get_dict(root, Plan, Root),
     get_dict(relations, Plan, Relations),
     get_dict(is_recursive, Plan, IsRecursive),
+    get_dict(metadata, Plan, Meta),
     relation_blocks(Relations, ProviderBody, UsesDynamic),
     schema_declarations(Relations, SchemaDeclarations),
     (   ProviderBody == ''
@@ -841,9 +2062,19 @@ render_plan_to_csharp(Plan, Code) :-
     emit_plan_expression(Root, PlanExpr),
     plan_module_name(Plan, ModuleClass),
     atom_string(Pred, PredStr),
+    (   get_dict(modes, Meta, Modes)
+    ->  true
+    ;   Modes = []
+    ),
     (   IsRecursive == true
     ->  RecLiteral = 'true'
     ;   RecLiteral = 'false'
+    ),
+    (   input_positions(Modes, InputPosList),
+        InputPosList \= []
+    ->  atomic_list_concat(InputPosList, ', ', InputPosStr),
+        format(atom(InputPosLiteral), 'new int[]{ ~w }', [InputPosStr])
+    ;   InputPosLiteral = 'null'
     ),
     (   UsesDynamic == true
     ->  DynamicUsing = 'using UnifyWeaver.QueryRuntime.Dynamic;
@@ -867,14 +2098,223 @@ namespace UnifyWeaver.Generated
 ~w            var plan = new QueryPlan(
                 new PredicateId("~w", ~w),
                 ~w,
+                ~w,
                 ~w
             );
             return (provider, plan);
         }
     }
-}
-', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderSection, PredStr, Arity, PlanExpr, RecLiteral]).
+ }
+', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderSection, PredStr, Arity, PlanExpr, RecLiteral, InputPosLiteral]).
 
+render_plans_to_csharp(Plans, Code) :-
+    Plans = [FirstPlan|_],
+    get_dict(head, FirstPlan, predicate{name:Pred, arity:Arity}),
+    findall(Relations,
+        (   member(Plan, Plans),
+            get_dict(relations, Plan, Relations)
+        ),
+        RelationLists),
+    append(RelationLists, Relations0),
+    dedup_relations(Relations0, Relations),
+    relation_blocks(Relations, ProviderBody, UsesDynamic),
+    schema_declarations(Relations, SchemaDeclarations),
+    (   ProviderBody == ''
+    ->  ProviderSection = ''
+    ;   format(atom(ProviderSection), '~w~n', [ProviderBody])
+    ),
+    plan_module_name(FirstPlan, ModuleClass),
+    atom_string(Pred, PredStr),
+    (   UsesDynamic == true
+    ->  DynamicUsing = 'using UnifyWeaver.QueryRuntime.Dynamic;
+'
+    ;   DynamicUsing = ''
+    ),
+    build_provider_method(ProviderSection, ProviderMethod),
+    build_plan_methods(Plans, PredStr, Arity, DefaultMethod, PlanMethods),
+    build_for_inputs_method(Plans, DefaultMethod, BuildForInputs),
+    format(atom(BuildAlias),
+'        public static (InMemoryRelationProvider Provider, QueryPlan Plan) Build() => ~w();
+
+', [DefaultMethod]),
+    format(atom(Code),
+'// Auto-generated by UnifyWeaver
+using System;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+~w
+
+namespace UnifyWeaver.Generated
+{
+~w    public static class ~w
+    {
+~w~w~w~w    }
+}
+', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderMethod, BuildAlias, BuildForInputs, PlanMethods]).
+
+build_provider_method(ProviderSection, Method) :-
+    format(atom(Method),
+'        private static InMemoryRelationProvider BuildProvider()
+        {
+            var provider = new InMemoryRelationProvider();
+~w            return provider;
+        }
+
+', [ProviderSection]).
+
+build_plan_methods(Plans, PredStr, Arity, DefaultMethod, MethodsOut) :-
+    maplist(plan_method_pair(PredStr, Arity), Plans, Pairs),
+    Pairs = [DefaultMethod-_|_],
+    pairs_values(Pairs, Blocks),
+    atomic_list_concat(Blocks, '', MethodsOut).
+
+build_for_inputs_method(Plans, DefaultMethod, Method) :-
+    findall(Key-entry(Inputs, MethodName),
+        (   member(Plan, Plans),
+            get_dict(metadata, Plan, Meta),
+            (   get_dict(modes, Meta, Modes)
+            ->  true
+            ;   Modes = []
+            ),
+            input_positions(Modes, Inputs),
+            length(Inputs, InputCount),
+            Key = InputCount-Inputs,
+            modes_build_method_name(Modes, MethodName)
+        ),
+        Entries0),
+    sort(Entries0, Entries),
+    pairs_values(Entries, SortedEntries),
+    (   member(entry([], EmptyMethod0), SortedEntries)
+    ->  EmptyMethod = EmptyMethod0
+    ;   EmptyMethod = DefaultMethod
+    ),
+    findall(IfBlock,
+        (   member(entry(Inputs, MethodName), SortedEntries),
+            Inputs \= [],
+            inputs_match_condition(Inputs, Cond),
+            format(atom(IfBlock),
+'            if (~w)
+            {
+                return ~w();
+            }
+
+', [Cond, MethodName])
+        ),
+        IfBlocks),
+    atomic_list_concat(IfBlocks, '', IfChain),
+    findall(Debug,
+        (   member(entry(Inputs, _), SortedEntries),
+            inputs_debug_string(Inputs, Debug)
+        ),
+        Debugs),
+    atomic_list_concat(Debugs, ', ', Supported),
+    format(atom(Method),
+'        public static (InMemoryRelationProvider Provider, QueryPlan Plan) BuildForInputs(params int[] inputPositions)
+        {
+            var normalized = inputPositions is null
+                ? Array.Empty<int>()
+                : inputPositions.Distinct().OrderBy(i => i).ToArray();
+
+            if (normalized.Length == 0)
+            {
+                return ~w();
+            }
+
+~w            throw new ArgumentException("Unsupported inputPositions; supported: ~w", nameof(inputPositions));
+        }
+
+', [EmptyMethod, IfChain, Supported]).
+
+inputs_debug_string([], '[]') :- !.
+inputs_debug_string(Inputs, Debug) :-
+    atomic_list_concat(Inputs, ',', Inner),
+    format(atom(Debug), '[~w]', [Inner]).
+
+inputs_match_condition(Inputs, Cond) :-
+    length(Inputs, N),
+    findall(Part,
+        (   nth0(Index, Inputs, Value),
+            format(atom(Part), 'normalized[~w] == ~w', [Index, Value])
+        ),
+        Parts),
+    atomic_list_concat(Parts, ' && ', IndexParts),
+    format(atom(Cond), 'normalized.Length == ~w && ~w', [N, IndexParts]).
+
+plan_method_pair(PredStr, Arity, Plan, MethodName-MethodBlock) :-
+    get_dict(metadata, Plan, Meta),
+    (   get_dict(modes, Meta, Modes)
+    ->  true
+    ;   Modes = []
+    ),
+    modes_build_method_name(Modes, MethodName),
+    plan_method_block(Plan, PredStr, Arity, MethodName, MethodBlock).
+
+modes_build_method_name(Modes, MethodName) :-
+    input_positions(Modes, Inputs),
+    (   Inputs == []
+    ->  MethodName = 'BuildAllOutput'
+    ;   findall(Part,
+            (   member(I, Inputs),
+                format(atom(Part), 'In~w', [I])
+            ),
+            Parts),
+        atomic_list_concat(['Build'|Parts], '', MethodName)
+    ).
+
+plan_method_block(Plan, PredStr, Arity, MethodName, Block) :-
+    get_dict(root, Plan, Root),
+    get_dict(is_recursive, Plan, IsRecursive),
+    get_dict(metadata, Plan, Meta),
+    (   get_dict(modes, Meta, Modes)
+    ->  true
+    ;   Modes = []
+    ),
+    emit_plan_expression(Root, PlanExpr),
+    (   IsRecursive == true
+    ->  RecLiteral = 'true'
+    ;   RecLiteral = 'false'
+    ),
+    (   input_positions(Modes, InputPosList),
+        InputPosList \= []
+    ->  atomic_list_concat(InputPosList, ', ', InputPosStr),
+        format(atom(InputPosLiteral), 'new int[]{ ~w }', [InputPosStr])
+    ;   InputPosLiteral = 'null'
+    ),
+    format(atom(Block),
+'        public static (InMemoryRelationProvider Provider, QueryPlan Plan) ~w()
+        {
+            var provider = BuildProvider();
+            var plan = new QueryPlan(
+                new PredicateId("~w", ~w),
+                ~w,
+                ~w,
+                ~w
+            );
+            return (provider, plan);
+        }
+
+', [MethodName, PredStr, Arity, PlanExpr, RecLiteral, InputPosLiteral]).
+
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, param_seed), !,
+    get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
+    get_dict(input_positions, Node, Positions),
+    get_dict(width, Node, Width),
+    atom_string(Name, NameStr),
+    (   Positions == []
+    ->  PositionsLiteral = 'new int[]{}'
+    ;   atomic_list_concat(Positions, ', ', PosStr),
+        format(atom(PositionsLiteral), 'new int[]{ ~w }', [PosStr])
+    ),
+    format(atom(Expr), 'new ParamSeedNode(new PredicateId("~w", ~w), ~w, ~w)', [NameStr, Arity, PositionsLiteral, Width]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, materialize), !,
+    get_dict(id, Node, Id),
+    get_dict(plan, Node, PlanNode),
+    get_dict(width, Node, Width),
+    emit_plan_expression(PlanNode, PlanExpr),
+    atom_string(Id, IdStr),
+    format(atom(Expr), 'new MaterializeNode("~w", ~w, ~w)', [IdStr, PlanExpr, Width]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, relation_scan), !,
     get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
@@ -896,6 +2336,54 @@ emit_plan_expression(Node, Expr) :-
     selection_condition_expression(Condition, tuple, ConditionExpr),
     format(atom(Expr), 'new SelectionNode(~w, tuple => ~w)', [InputExpr, ConditionExpr]).
 emit_plan_expression(Node, Expr) :-
+    is_dict(Node, negation), !,
+    get_dict(input, Node, Input),
+    get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
+    get_dict(args, Node, Args),
+    emit_plan_expression(Input, InputExpr),
+    maplist(operand_expression_with_tuple(tuple), Args, ArgExprs),
+    atomic_list_concat(ArgExprs, ', ', ArgList),
+    atom_string(Name, NameStr),
+    format(atom(Expr),
+           'new NegationNode(~w, new PredicateId("~w", ~w), tuple => new object[]{ ~w })',
+           [InputExpr, NameStr, Arity, ArgList]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, aggregate), !,
+    get_dict(input, Node, Input),
+    get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
+    get_dict(op, Node, Op),
+    get_dict(args, Node, Args),
+    get_dict(group_indices, Node, GroupIndices),
+    get_dict(value_index, Node, ValueIndex),
+    get_dict(width, Node, Width),
+    emit_plan_expression(Input, InputExpr),
+    maplist(operand_expression_with_tuple(tuple), Args, ArgExprs),
+    atomic_list_concat(ArgExprs, ', ', ArgList),
+    aggregate_op_atom(Op, OpAtom),
+    int_array_literal(GroupIndices, GroupLiteral),
+    atom_string(Name, NameStr),
+    format(atom(Expr),
+           'new AggregateNode(~w, new PredicateId("~w", ~w), AggregateOperation.~w, tuple => new object[]{ ~w }, ~w, ~w, ~w)',
+           [InputExpr, NameStr, Arity, OpAtom, ArgList, GroupLiteral, ValueIndex, Width]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, aggregate_subplan), !,
+    get_dict(input, Node, Input),
+    get_dict(subplan, Node, Subplan),
+    get_dict(op, Node, Op),
+    get_dict(params, Node, Params),
+    get_dict(group_indices, Node, GroupIndices),
+    get_dict(value_index, Node, ValueIndex),
+    get_dict(width, Node, Width),
+    emit_plan_expression(Input, InputExpr),
+    emit_plan_expression(Subplan, SubplanExpr),
+    maplist(operand_expression_with_tuple(tuple), Params, ParamExprs),
+    atomic_list_concat(ParamExprs, ', ', ParamList),
+    aggregate_op_atom(Op, OpAtom),
+    int_array_literal(GroupIndices, GroupLiteral),
+    format(atom(Expr),
+           'new AggregateSubplanNode(~w, ~w, AggregateOperation.~w, tuple => new object[]{ ~w }, ~w, ~w, ~w)',
+           [InputExpr, SubplanExpr, OpAtom, ParamList, GroupLiteral, ValueIndex, Width]).
+emit_plan_expression(Node, Expr) :-
     is_dict(Node, arithmetic), !,
     get_dict(input, Node, Input),
     get_dict(expression, Node, Expression),
@@ -913,12 +2401,13 @@ emit_plan_expression(Node, Expr) :-
     get_dict(right_keys, Node, RightKeys),
     get_dict(left_width, Node, LeftWidth),
     get_dict(right_width, Node, RightWidth),
+    get_dict(width, Node, Width),
     emit_plan_expression(Left, LeftExpr),
     emit_plan_expression(Right, RightExpr),
-    join_predicate_expression(LeftKeys, RightKeys, PredicateExpr),
-    join_projection_expression(LeftWidth, RightWidth, ProjectExpr),
-    format(atom(Expr), 'new JoinNode(~w, ~w, (left, right) => ~w, (left, right) => new object[]{ ~w })',
-        [LeftExpr, RightExpr, PredicateExpr, ProjectExpr]).
+    int_array_literal(LeftKeys, LeftKeysLiteral),
+    int_array_literal(RightKeys, RightKeysLiteral),
+    format(atom(Expr), 'new KeyJoinNode(~w, ~w, ~w, ~w, ~w, ~w, ~w)',
+        [LeftExpr, RightExpr, LeftKeysLiteral, RightKeysLiteral, LeftWidth, RightWidth, Width]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, union), !,
     get_dict(sources, Node, Sources),
@@ -965,6 +2454,10 @@ emit_plan_expression(Node, Expr) :-
     is_dict(Node, empty), !,
     get_dict(width, Node, Width),
     format(atom(Expr), 'new EmptyNode(~w)', [Width]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, unit), !,
+    get_dict(width, Node, Width),
+    format(atom(Expr), 'new UnitNode(~w)', [Width]).
 emit_plan_expression(Node, _Expr) :-
     format(user_error, 'C# query target: cannot render plan node ~q.~n', [Node]),
     fail.
@@ -991,6 +2484,10 @@ selection_condition_expression(condition{type:neq, left:Left, right:Right}, Tupl
     operand_expression(Left, TupleVar, LeftExpr),
     operand_expression(Right, TupleVar, RightExpr),
     format(atom(Expr), '!(Equals(~w, ~w))', [LeftExpr, RightExpr]).
+selection_condition_expression(condition{type:arith_eq, left:Left, right:Right}, TupleVar, Expr) :-
+    comparison_condition_expression(Left, Right, TupleVar, ' == 0', Expr).
+selection_condition_expression(condition{type:arith_neq, left:Left, right:Right}, TupleVar, Expr) :-
+    comparison_condition_expression(Left, Right, TupleVar, ' != 0', Expr).
 selection_condition_expression(condition{type:gt, left:Left, right:Right}, TupleVar, Expr) :-
     comparison_condition_expression(Left, Right, TupleVar, ' > 0', Expr).
 selection_condition_expression(condition{type:ge, left:Left, right:Right}, TupleVar, Expr) :-
@@ -1031,10 +2528,26 @@ arithmetic_binary_operator_atom(divide, 'Divide').
 arithmetic_binary_operator_atom(int_divide, 'IntegerDivide').
 arithmetic_binary_operator_atom(modulo, 'Modulo').
 
+operand_expression_with_tuple(TupleVar, Operand, Expr) :-
+    operand_expression(Operand, TupleVar, Expr).
+
 operand_expression(operand{kind:column, index:Index}, TupleVar, Expr) :-
     format(atom(Expr), '~w[~w]', [TupleVar, Index]).
 operand_expression(operand{kind:value, value:Value}, _TupleVar, Expr) :-
     csharp_literal(Value, Expr).
+operand_expression(operand{kind:wildcard}, _TupleVar, 'Wildcard.Value').
+
+int_array_literal([], 'Array.Empty<int>()') :- !.
+int_array_literal(Ints, Literal) :-
+    atomic_list_concat(Ints, ', ', IntStr),
+    format(atom(Literal), 'new int[]{ ~w }', [IntStr]).
+
+aggregate_op_atom(count, 'Count').
+aggregate_op_atom(sum, 'Sum').
+aggregate_op_atom(min, 'Min').
+aggregate_op_atom(max, 'Max').
+aggregate_op_atom(set, 'Set').
+aggregate_op_atom(bag, 'Bag').
 
 column_expression(Prefix, Index, Expr) :-
     format(atom(Expr), '~w[~w]', [Prefix, Index]).
@@ -1388,10 +2901,10 @@ metadata_null_policy_literals(Metadata, PolicyLiteral, DefaultLiteral) :-
     ;   DefaultLiteral = 'null'
     ).
 
-null_policy_enum(allow, 'Allow').
-null_policy_enum(fail, 'Fail').
-null_policy_enum(skip, 'Skip').
-null_policy_enum(default, 'Default').
+null_policy_enum(allow, 'Allow') :- !.
+null_policy_enum(fail, 'Fail') :- !.
+null_policy_enum(skip, 'Skip') :- !.
+null_policy_enum(default, 'Default') :- !.
 null_policy_enum(Value, Enum) :-
     atom_string(Value, ValueStr),
     capitalise_string(ValueStr, Enum).
@@ -1930,9 +3443,14 @@ parse_agg_op(bag(Var), bag, Var, _) :- !.
 parse_agg_op(OpTerm, Op, _, _) :-
     OpTerm =.. [Op|_].
 
-parse_group_term(Var^_, [Var]) :- !.
 parse_group_term(Var, [Var]) :- var(Var), !.
-parse_group_term(_, []).
+parse_group_term(Term, Vars) :-
+    nonvar(Term),
+    Term = Left^_,
+    !,
+    parse_group_term(Left, Vars).
+parse_group_term(Term, Vars) :-
+    term_variables(Term, Vars).
 
 build_aggregate_filter(Pred, Args, _Config, Expr) :-
     length(Args, Arity),

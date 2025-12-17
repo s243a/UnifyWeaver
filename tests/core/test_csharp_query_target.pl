@@ -8,6 +8,7 @@
 :- use_module(library(apply)).
 :- use_module(library(filesex)).
 :- use_module(library(lists)).
+:- use_module(library(memfile)).
 :- use_module(library(process)).
 :- use_module(library(uuid)).
 :- use_module(library(csharp_query_target)).
@@ -20,8 +21,41 @@
 :- dynamic cqt_option/2.
 :- dynamic user:test_factorial/2.
 :- dynamic user:test_factorial_input/1.
+:- dynamic user:test_fib_param/2.
+:- dynamic user:test_post_agg_param/2.
+:- dynamic user:test_customer/1.
+:- dynamic user:test_customer_alice_or_bob/1.
+:- dynamic user:test_sale/2.
+:- dynamic user:test_sale_amount_for_alice/1.
+:- dynamic user:test_sale_item/3.
+:- dynamic user:test_sale_count/1.
+:- dynamic user:test_sales_by_customer/2.
+:- dynamic user:test_sales_by_customer_product/3.
+:- dynamic user:test_sale_count_by_customer/2.
+:- dynamic user:test_sale_sum_by_customer/2.
+:- dynamic user:test_sale_min/1.
+:- dynamic user:test_sale_max/1.
+:- dynamic user:test_sale_min_by_customer/2.
+:- dynamic user:test_sale_max_by_customer/2.
+:- dynamic user:test_sale_count_grouped/2.
+:- dynamic user:test_customer_high_sales_count/1.
+:- dynamic user:test_sale_filtered_alice_count/1.
+:- dynamic user:test_sale_customers_set/1.
+:- dynamic user:test_sale_customers_bag/1.
+:- dynamic user:test_sale_alice_or_bob_count/1.
+:- dynamic user:test_sale_alice_or_bob_nested_count/1.
+:- dynamic user:test_banned/1.
+:- dynamic user:test_allowed/1.
+:- dynamic user:test_blocked/1.
+:- dynamic user:test_countdown/2.
 :- dynamic user:test_even/1.
 :- dynamic user:test_odd/1.
+:- dynamic user:test_even_param/1.
+:- dynamic user:test_odd_param/1.
+:- dynamic user:test_even_param_partial/1.
+:- dynamic user:test_odd_param_partial/1.
+:- dynamic user:test_even_param_unbound/1.
+:- dynamic user:test_odd_param_unbound/1.
 :- dynamic user:test_parity_input/1.
 :- dynamic user:test_product_record/1.
 :- dynamic user:test_jsonpath_projection/2.
@@ -29,6 +63,9 @@
 :- dynamic user:test_orders_jsonl/3.
 :- dynamic user:test_json_null_skip/2.
 :- dynamic user:test_json_null_default/2.
+:- dynamic user:test_multi_mode/2.
+:- dynamic user:test_any_mode/2.
+:- dynamic user:mode/1.
 
 :- dynamic progress_last_report/1.
 :- dynamic progress_count/1.
@@ -44,11 +81,54 @@ test_csharp_query_target :-
         verify_fact_plan,
         verify_join_plan,
         verify_selection_plan,
+        verify_ground_relation_arg_plan,
+        verify_disjunction_body_union_plan,
         verify_arithmetic_plan,
         verify_recursive_arithmetic_plan,
         verify_comparison_plan,
+        verify_is_check_literal_plan,
+        verify_is_check_bound_var_plan,
+        verify_arith_expr_eq_plan,
+        verify_arith_expr_neq_plan,
+        verify_arith_eq_direct_plan,
+        verify_arith_neq_direct_plan,
+        verify_aggregate_count_plan,
+        verify_aggregate_min_plan,
+        verify_aggregate_max_plan,
+        verify_grouped_aggregate_sum_plan,
+        verify_multi_key_grouped_aggregate_sum_plan,
+        verify_grouped_aggregate_count_plan,
+        verify_correlated_aggregate_count_plan,
+        verify_correlated_aggregate_sum_plan,
+        verify_correlated_aggregate_min_plan,
+        verify_correlated_aggregate_max_plan,
+        verify_aggregate_set_plan,
+        verify_aggregate_bag_plan,
+        verify_aggregate_subplan_count_with_constraint_plan,
+        verify_aggregate_subplan_count_with_constant_arg_plan,
+        verify_aggregate_subplan_nested_aggregate_plan,
+        verify_aggregate_subplan_banned_sale_count_plan,
+        verify_aggregate_subplan_disjunction_count_plan,
+        verify_aggregate_subplan_nested_disjunction_count_plan,
+        verify_aggregate_subplan_correlated_count_with_constraint_plan,
+        verify_aggregate_subplan_grouped_count_with_negation_plan,
+        verify_aggregate_subplan_sum_with_constraint_plan,
+        verify_aggregate_subplan_set_with_negation_plan,
+        verify_aggregate_subplan_grouped_sum_with_negation_plan,
+        verify_negation_plan,
+        verify_parameterized_fib_plan,
+        verify_parameterized_fib_runtime,
+        verify_multi_mode_codegen_plan,
+        verify_multi_mode_plan_selection_api,
+        verify_multi_mode_runtime_dispatch,
+        verify_any_mode_rejected_plan,
+        verify_parameterized_need_allows_post_agg,
+        verify_parameterized_need_allows_prefix_negation,
         verify_recursive_plan,
         verify_mutual_recursion_plan,
+        verify_parameterized_mutual_recursion_plan,
+        verify_parameterized_mutual_recursion_inferred_plan,
+        verify_parameterized_mutual_recursion_fallback_plan,
         verify_dynamic_source_plan,
         verify_tsv_dynamic_source_plan,
         verify_json_dynamic_source_plan,
@@ -78,9 +158,118 @@ setup_test_data :-
     assertz(user:test_val(item1, 5)),
     assertz(user:test_val(item2, 2)),
     assertz(user:(test_increment(Id, Result) :- test_val(Id, Value), Result is Value + 1)),
+    assertz(user:(test_is_check_literal(Id) :- test_val(Id, Value), 6 is Value + 1)),
+    assertz(user:(test_is_check_bound_var(Id) :- test_val(Id, Value), W is Value + 1, W is 6)),
+    assertz(user:(test_arith_expr_eq(Id) :- test_val(Id, Value), Value + 1 =:= 6)),
+    assertz(user:(test_arith_expr_neq(Id) :- test_val(Id, Value), Value + 1 =\= 6)),
+    assertz(user:(test_arith_eq_direct(Id) :- test_val(Id, Value), Value =:= 5)),
+    assertz(user:(test_arith_neq_direct(Id) :- test_val(Id, Value), Value =\= 5)),
     assertz(user:test_num(item1, 5)),
     assertz(user:test_num(item2, -3)),
     assertz(user:(test_positive(Id) :- test_num(Id, Value), Value > 0)),
+    assertz(user:test_customer(alice)),
+    assertz(user:test_customer(bob)),
+    assertz(user:test_customer(charlie)),
+    assertz(user:(test_customer_alice_or_bob(Customer) :-
+        test_customer(Customer),
+        (Customer = alice ; Customer = bob)
+    )),
+    assertz(user:test_sale(alice, 10)),
+    assertz(user:test_sale(alice, 5)),
+    assertz(user:test_sale(bob, 7)),
+    assertz(user:(test_sale_amount_for_alice(Amount) :-
+        test_sale(alice, Amount)
+    )),
+    assertz(user:test_sale_item(alice, laptop, 10)),
+    assertz(user:test_sale_item(alice, laptop, 2)),
+    assertz(user:test_sale_item(alice, mouse, 5)),
+    assertz(user:test_sale_item(bob, laptop, 3)),
+    assertz(user:test_sale_item(bob, mouse, 7)),
+    assertz(user:test_sale_item(bob, mouse, 1)),
+    assertz(user:(test_sale_count(C) :- aggregate_all(count, test_sale(_, _), C))),
+    assertz(user:(test_sales_by_customer(Customer, Total) :-
+        aggregate_all(sum(Amount), test_sale(Customer, Amount), Customer, Total)
+    )),
+    assertz(user:(test_sales_by_customer_product(Customer, Product, Total) :-
+        aggregate_all(sum(Amount), test_sale_item(Customer, Product, Amount), Customer-Product, Total)
+    )),
+    assertz(user:(test_sale_count_by_customer(Customer, Count) :-
+        test_customer(Customer),
+        aggregate_all(count, test_sale(Customer, _), Count)
+    )),
+    assertz(user:(test_sale_sum_by_customer(Customer, Sum) :-
+        test_customer(Customer),
+        aggregate_all(sum(Amount), test_sale(Customer, Amount), Sum)
+    )),
+    assertz(user:(test_sale_min(Min) :-
+        aggregate_all(min(Amount), test_sale(_, Amount), Min)
+    )),
+    assertz(user:(test_sale_max(Max) :-
+        aggregate_all(max(Amount), test_sale(_, Amount), Max)
+    )),
+    assertz(user:(test_sale_min_by_customer(Customer, Min) :-
+        test_customer(Customer),
+        aggregate_all(min(Amount), test_sale(Customer, Amount), Min)
+    )),
+    assertz(user:(test_sale_max_by_customer(Customer, Max) :-
+        test_customer(Customer),
+        aggregate_all(max(Amount), test_sale(Customer, Amount), Max)
+    )),
+    assertz(user:(test_sale_count_grouped(Customer, Count) :-
+        aggregate_all(count, test_sale(Customer, _), Customer, Count)
+    )),
+    assertz(user:(test_sale_customers_set(Set) :-
+        aggregate_all(set(Customer), test_sale(Customer, _), Set)
+    )),
+    assertz(user:(test_sale_customers_bag(Bag) :-
+        aggregate_all(bag(Customer), test_sale(Customer, _), Bag)
+    )),
+    assertz(user:(test_sale_filtered_count(C) :-
+        aggregate_all(count, (test_sale(_, Amount), Amount > 5), C)
+    )),
+    assertz(user:(test_sale_filtered_alice_count(C) :-
+        aggregate_all(count, (test_sale(alice, Amount), Amount > 5), C)
+    )),
+    assertz(user:(test_customer_high_sales_count(C) :-
+        aggregate_all(count,
+            (test_customer(Customer),
+             aggregate_all(sum(Amount), test_sale(Customer, Amount), Total),
+             Total > 10),
+            C)
+    )),
+    assertz(user:(test_banned_sale_count(C) :-
+        aggregate_all(count, (test_sale(Customer, _), test_banned(Customer)), C)
+    )),
+    assertz(user:(test_sale_alice_or_bob_count(C) :-
+        aggregate_all(count,
+            ((test_sale(Customer, _), Customer = alice)
+            ; (test_sale(Customer, _), Customer = bob)),
+            C)
+    )),
+    assertz(user:(test_sale_alice_or_bob_nested_count(C) :-
+        aggregate_all(count,
+            (test_sale(Customer, _),
+             (Customer = alice ; Customer = bob)),
+            C)
+    )),
+    assertz(user:(test_sale_count_filtered_by_customer(Customer, Count) :-
+        test_customer(Customer),
+        aggregate_all(count, (test_sale(Customer, Amount), Amount > 5), Count)
+    )),
+    assertz(user:(test_non_banned_sale_count_grouped(Customer, Count) :-
+        aggregate_all(count, (test_sale(Customer, _), \+ test_banned(Customer)), Customer, Count)
+    )),
+    assertz(user:(test_sale_filtered_sum(Sum) :-
+        aggregate_all(sum(Amount), (test_sale(_, Amount), Amount > 5), Sum)
+    )),
+    assertz(user:(test_non_banned_sale_customers_set(Set) :-
+        aggregate_all(set(Customer), (test_sale(Customer, _), \+ test_banned(Customer)), Set)
+    )),
+    assertz(user:(test_non_banned_sale_sum_grouped(Customer, Sum) :-
+        aggregate_all(sum(Amount), (test_sale(Customer, Amount), \+ test_banned(Customer)), Customer, Sum)
+    )),
+    assertz(user:test_banned(bob)),
+    assertz(user:(test_allowed(X) :- test_fact(X, _), \+ test_banned(X))),
     assertz(user:test_factorial_input(1)),
     assertz(user:test_factorial_input(2)),
     assertz(user:test_factorial_input(3)),
@@ -92,6 +281,42 @@ setup_test_data :-
         test_factorial(N1, Prev),
         Result is Prev * N
     )),
+    assertz(user:mode(test_multi_mode(+, -))),
+    assertz(user:mode(test_multi_mode(-, +))),
+    assertz(user:test_multi_mode(alice, bob)),
+    assertz(user:test_multi_mode(bob, charlie)),
+    assertz(user:mode(test_any_mode(?, -))),
+    assertz(user:test_any_mode(alice, bob)),
+    assertz(user:mode(test_fib_param(+, -))),
+    assertz(user:test_fib_param(0, 1)),
+    assertz(user:test_fib_param(1, 1)),
+    assertz(user:(test_fib_param(N, F) :-
+        N > 1,
+        N1 is N - 1,
+        N2 is N - 2,
+        test_fib_param(N1, F1),
+        test_fib_param(N2, F2),
+        F is F1 + F2
+    )),
+    assertz(user:mode(test_post_agg_param(+, -))),
+    assertz(user:test_post_agg_param(0, 0)),
+    assertz(user:(test_post_agg_param(N, Sum) :-
+        N > 0,
+        N1 is N - 1,
+        test_post_agg_param(N1, Prev),
+        aggregate_all(count, test_num(_, _), C),
+        Sum is Prev + C
+    )),
+    assertz(user:mode(test_countdown(+, -))),
+    assertz(user:test_blocked(2)),
+    assertz(user:test_countdown(0, 0)),
+    assertz(user:(test_countdown(N, Out) :-
+        \+ test_blocked(N),
+        N > 0,
+        N1 is N - 1,
+        test_countdown(N1, Prev),
+        Out is Prev + 1
+    )),
     assertz(user:test_parity_input(0)),
     assertz(user:test_parity_input(1)),
     assertz(user:test_parity_input(2)),
@@ -99,6 +324,50 @@ setup_test_data :-
     assertz(user:test_parity_input(4)),
     assertz(user:test_even(0)),
     assertz(user:test_odd(1)),
+    assertz(user:mode(test_even_param(+))),
+    assertz(user:mode(test_odd_param(+))),
+    assertz(user:test_even_param(0)),
+    assertz(user:test_odd_param(1)),
+    assertz(user:(test_even_param(N) :-
+        test_parity_input(N),
+        N > 0,
+        N1 is N - 1,
+        test_odd_param(N1)
+    )),
+    assertz(user:(test_odd_param(N) :-
+        test_parity_input(N),
+        N > 1,
+        N1 is N - 1,
+        test_even_param(N1)
+    )),
+    assertz(user:mode(test_even_param_partial(+))),
+    assertz(user:test_even_param_partial(0)),
+    assertz(user:test_odd_param_partial(1)),
+    assertz(user:(test_even_param_partial(N) :-
+        test_parity_input(N),
+        N > 0,
+        N1 is N - 1,
+        test_odd_param_partial(N1)
+    )),
+    assertz(user:(test_odd_param_partial(N) :-
+        test_parity_input(N),
+        N > 1,
+        N1 is N - 1,
+        test_even_param_partial(N1)
+    )),
+    assertz(user:mode(test_even_param_unbound(+))),
+    assertz(user:test_even_param_unbound(0)),
+    assertz(user:test_odd_param_unbound(1)),
+    assertz(user:(test_even_param_unbound(N) :-
+        test_parity_input(N),
+        N > 0,
+        test_odd_param_unbound(_)
+    )),
+    assertz(user:(test_odd_param_unbound(N) :-
+        test_parity_input(N),
+        N > 1,
+        test_even_param_unbound(_)
+    )),
     assertz(user:(test_even(N) :-
         test_parity_input(N),
         N > 0,
@@ -120,13 +389,70 @@ cleanup_test_data :-
     retractall(user:test_filtered(_)),
     retractall(user:test_val(_, _)),
     retractall(user:test_increment(_, _)),
+    retractall(user:test_is_check_literal(_)),
+    retractall(user:test_is_check_bound_var(_)),
+    retractall(user:test_arith_expr_eq(_)),
+    retractall(user:test_arith_expr_neq(_)),
+    retractall(user:test_arith_eq_direct(_)),
+    retractall(user:test_arith_neq_direct(_)),
     retractall(user:test_num(_, _)),
     retractall(user:test_positive(_)),
+    retractall(user:test_customer(_)),
+    retractall(user:test_customer_alice_or_bob(_)),
+    retractall(user:test_sale(_, _)),
+    retractall(user:test_sale_amount_for_alice(_)),
+    retractall(user:test_sale_item(_, _, _)),
+    retractall(user:test_sale_count(_)),
+    retractall(user:test_sales_by_customer(_, _)),
+    retractall(user:test_sales_by_customer_product(_, _, _)),
+    retractall(user:test_sale_count_by_customer(_, _)),
+    retractall(user:test_sale_sum_by_customer(_, _)),
+    retractall(user:test_sale_min(_)),
+    retractall(user:test_sale_max(_)),
+    retractall(user:test_sale_min_by_customer(_, _)),
+    retractall(user:test_sale_max_by_customer(_, _)),
+    retractall(user:test_sale_count_grouped(_, _)),
+    retractall(user:test_sale_filtered_alice_count(_)),
+    retractall(user:test_customer_high_sales_count(_)),
+    retractall(user:test_sale_customers_set(_)),
+    retractall(user:test_sale_customers_bag(_)),
+    retractall(user:test_sale_filtered_count(_)),
+    retractall(user:test_banned_sale_count(_)),
+    retractall(user:test_sale_alice_or_bob_count(_)),
+    retractall(user:test_sale_alice_or_bob_nested_count(_)),
+    retractall(user:test_sale_count_filtered_by_customer(_, _)),
+    retractall(user:test_non_banned_sale_count_grouped(_, _)),
+    retractall(user:test_sale_filtered_sum(_)),
+    retractall(user:test_non_banned_sale_customers_set(_)),
+    retractall(user:test_non_banned_sale_sum_grouped(_, _)),
     retractall(user:test_factorial_input(_)),
     retractall(user:test_factorial(_, _)),
+    retractall(user:test_multi_mode(_, _)),
+    retractall(user:mode(test_multi_mode(_, _))),
+    retractall(user:test_any_mode(_, _)),
+    retractall(user:mode(test_any_mode(_, _))),
+    retractall(user:test_fib_param(_, _)),
+    retractall(user:mode(test_fib_param(_,_))),
+    retractall(user:test_post_agg_param(_, _)),
+    retractall(user:mode(test_post_agg_param(_,_))),
+    retractall(user:test_banned(_)),
+    retractall(user:test_allowed(_)),
+    retractall(user:test_blocked(_)),
+    retractall(user:test_countdown(_, _)),
+    retractall(user:mode(test_countdown(_,_))),
     retractall(user:test_parity_input(_)),
     retractall(user:test_even(_)),
     retractall(user:test_odd(_)),
+    retractall(user:test_even_param(_)),
+    retractall(user:test_odd_param(_)),
+    retractall(user:mode(test_even_param(_))),
+    retractall(user:mode(test_odd_param(_))),
+    retractall(user:test_even_param_partial(_)),
+    retractall(user:test_odd_param_partial(_)),
+    retractall(user:mode(test_even_param_partial(_))),
+    retractall(user:test_even_param_unbound(_)),
+    retractall(user:test_odd_param_unbound(_)),
+    retractall(user:mode(test_even_param_unbound(_))),
     retractall(user:test_reachable(_, _)),
     cleanup_csv_dynamic_source.
 
@@ -153,6 +479,8 @@ verify_join_plan :-
         width:_
     },
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:_}]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'KeyJoinNode'),
     maybe_run_query_runtime(Plan, ['alice,charlie']).
 
 verify_selection_plan :-
@@ -166,6 +494,28 @@ verify_selection_plan :-
     },
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:_}]),
     maybe_run_query_runtime(Plan, ['alice']).
+
+verify_ground_relation_arg_plan :-
+    csharp_query_target:build_query_plan(test_sale_amount_for_alice/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[1], width:1}),
+    Selection = selection{
+        type:selection,
+        input:relation_scan{predicate:predicate{name:test_sale, arity:2}, type:relation_scan, width:_},
+        predicate:condition{type:eq, left:operand{kind:column, index:0}, right:operand{kind:value, value:alice}},
+        width:_
+    },
+    maybe_run_query_runtime(Plan, ['10', '5']).
+
+verify_disjunction_body_union_plan :-
+    csharp_query_target:build_query_plan(test_customer_alice_or_bob/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    is_dict(Root, union),
+    get_dict(width, Root, 1),
+    get_dict(sources, Root, Sources),
+    length(Sources, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'UnionNode'),
+    maybe_run_query_runtime(Plan, ['alice', 'bob']).
 
 verify_arithmetic_plan :-
     csharp_query_target:build_query_plan(test_increment/2, [target(csharp_query)], Plan),
@@ -196,6 +546,525 @@ verify_comparison_plan :-
         width:_
     },
     maybe_run_query_runtime(Plan, ['item1']).
+
+verify_is_check_literal_plan :-
+    csharp_query_target:build_query_plan(test_is_check_literal/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:Arithmetic,
+        predicate:condition{type:eq, left:operand{kind:column, index:2}, right:operand{kind:value, value:6}},
+        width:3
+    },
+    Arithmetic = arithmetic{
+        type:arithmetic,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        expression:expr{type:binary, op:add, left:expr{type:column, index:1}, right:expr{type:value, value:1}},
+        result_index:2,
+        width:3
+    },
+    maybe_run_query_runtime(Plan, ['item1']).
+
+verify_is_check_bound_var_plan :-
+    csharp_query_target:build_query_plan(test_is_check_bound_var/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:ConstArithmetic,
+        predicate:condition{type:eq, left:operand{kind:column, index:3}, right:operand{kind:column, index:2}},
+        width:4
+    },
+    ConstArithmetic = arithmetic{
+        type:arithmetic,
+        input:Arithmetic,
+        expression:expr{type:value, value:6},
+        result_index:3,
+        width:4
+    },
+    Arithmetic = arithmetic{
+        type:arithmetic,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        expression:expr{type:binary, op:add, left:expr{type:column, index:1}, right:expr{type:value, value:1}},
+        result_index:2,
+        width:3
+    },
+    maybe_run_query_runtime(Plan, ['item1']).
+
+verify_arith_expr_eq_plan :-
+    csharp_query_target:build_query_plan(test_arith_expr_eq/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:Arithmetic,
+        predicate:condition{type:arith_eq, left:operand{kind:column, index:2}, right:operand{kind:value, value:6}},
+        width:3
+    },
+    Arithmetic = arithmetic{
+        type:arithmetic,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        expression:expr{type:binary, op:add, left:expr{type:column, index:1}, right:expr{type:value, value:1}},
+        result_index:2,
+        width:3
+    },
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'CompareValues'),
+    sub_string(Source, _, _, _, '== 0'),
+    maybe_run_query_runtime(Plan, ['item1']).
+
+verify_arith_expr_neq_plan :-
+    csharp_query_target:build_query_plan(test_arith_expr_neq/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:Arithmetic,
+        predicate:condition{type:arith_neq, left:operand{kind:column, index:2}, right:operand{kind:value, value:6}},
+        width:3
+    },
+    Arithmetic = arithmetic{
+        type:arithmetic,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        expression:expr{type:binary, op:add, left:expr{type:column, index:1}, right:expr{type:value, value:1}},
+        result_index:2,
+        width:3
+    },
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'CompareValues'),
+    sub_string(Source, _, _, _, '!= 0'),
+    maybe_run_query_runtime(Plan, ['item2']).
+
+verify_arith_eq_direct_plan :-
+    csharp_query_target:build_query_plan(test_arith_eq_direct/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        predicate:condition{type:arith_eq, left:operand{kind:column, index:1}, right:operand{kind:value, value:5}},
+        width:_
+    },
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'CompareValues'),
+    sub_string(Source, _, _, _, '== 0'),
+    maybe_run_query_runtime(Plan, ['item1']).
+
+verify_arith_neq_direct_plan :-
+    csharp_query_target:build_query_plan(test_arith_neq_direct/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
+    Selection = selection{
+        type:selection,
+        input:relation_scan{predicate:predicate{name:test_val, arity:2}, type:relation_scan, width:_},
+        predicate:condition{type:arith_neq, left:operand{kind:column, index:1}, right:operand{kind:value, value:5}},
+        width:_
+    },
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'CompareValues'),
+    sub_string(Source, _, _, _, '!= 0'),
+    maybe_run_query_runtime(Plan, ['item2']).
+
+verify_aggregate_count_plan :-
+    csharp_query_target:build_query_plan(test_sale_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0], width:1}),
+    is_dict(Aggregate, aggregate),
+    get_dict(input, Aggregate, unit{type:unit, width:0}),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, count),
+    get_dict(group_indices, Aggregate, []),
+    get_dict(value_index, Aggregate, -1),
+    get_dict(width, Aggregate, 1),
+    get_dict(args, Aggregate, [operand{kind:wildcard}, operand{kind:wildcard}]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Count'),
+    sub_string(Source, _, _, _, 'UnitNode'),
+    sub_string(Source, _, _, _, 'Wildcard.Value'),
+    maybe_run_query_runtime(Plan, ['3']).
+
+verify_aggregate_min_plan :-
+    csharp_query_target:build_query_plan(test_sale_min/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0], width:1}),
+    is_dict(Aggregate, aggregate),
+    get_dict(input, Aggregate, unit{type:unit, width:0}),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, min),
+    get_dict(group_indices, Aggregate, []),
+    get_dict(value_index, Aggregate, 1),
+    get_dict(width, Aggregate, 1),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Min'),
+    maybe_run_query_runtime(Plan, ['5']).
+
+verify_aggregate_max_plan :-
+    csharp_query_target:build_query_plan(test_sale_max/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0], width:1}),
+    is_dict(Aggregate, aggregate),
+    get_dict(input, Aggregate, unit{type:unit, width:0}),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, max),
+    get_dict(group_indices, Aggregate, []),
+    get_dict(value_index, Aggregate, 1),
+    get_dict(width, Aggregate, 1),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Max'),
+    maybe_run_query_runtime(Plan, ['10']).
+
+verify_grouped_aggregate_sum_plan :-
+    csharp_query_target:build_query_plan(test_sales_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0, 1], width:2}),
+    is_dict(Aggregate, aggregate),
+    get_dict(input, Aggregate, unit{type:unit, width:0}),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, sum),
+    get_dict(group_indices, Aggregate, [0]),
+    get_dict(value_index, Aggregate, 1),
+    get_dict(width, Aggregate, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
+    maybe_run_query_runtime(Plan, ['alice,15', 'bob,7']).
+
+verify_multi_key_grouped_aggregate_sum_plan :-
+    csharp_query_target:build_query_plan(test_sales_by_customer_product/3, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0, 1, 2], width:3}),
+    is_dict(Aggregate, aggregate),
+    get_dict(input, Aggregate, unit{type:unit, width:0}),
+    get_dict(predicate, Aggregate, predicate{name:test_sale_item, arity:3}),
+    get_dict(op, Aggregate, sum),
+    get_dict(group_indices, Aggregate, [0, 1]),
+    get_dict(value_index, Aggregate, 2),
+    get_dict(width, Aggregate, 3),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
+    sub_string(Source, _, _, _, 'new int[]{ 0, 1 }'),
+    maybe_run_query_runtime(Plan, ['alice,laptop,12', 'alice,mouse,5', 'bob,laptop,3', 'bob,mouse,8']).
+
+verify_grouped_aggregate_count_plan :-
+    csharp_query_target:build_query_plan(test_sale_count_grouped/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0, 1], width:2}),
+    is_dict(Aggregate, aggregate),
+    get_dict(input, Aggregate, unit{type:unit, width:0}),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, count),
+    get_dict(group_indices, Aggregate, [0]),
+    get_dict(value_index, Aggregate, -1),
+    get_dict(width, Aggregate, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Count'),
+    maybe_run_query_runtime(Plan, ['alice,2', 'bob,1']).
+
+verify_correlated_aggregate_count_plan :-
+    csharp_query_target:build_query_plan(test_sale_count_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Aggregate, Root),
+    is_dict(Aggregate, aggregate),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, count),
+    get_dict(group_indices, Aggregate, []),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Count'),
+    maybe_run_query_runtime(Plan, ['alice,2', 'bob,1', 'charlie,0']).
+
+verify_correlated_aggregate_sum_plan :-
+    csharp_query_target:build_query_plan(test_sale_sum_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Aggregate, Root),
+    is_dict(Aggregate, aggregate),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, sum),
+    get_dict(group_indices, Aggregate, []),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
+    maybe_run_query_runtime(Plan, ['alice,15', 'bob,7']).
+
+verify_correlated_aggregate_min_plan :-
+    csharp_query_target:build_query_plan(test_sale_min_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Aggregate, Root),
+    is_dict(Aggregate, aggregate),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, min),
+    get_dict(group_indices, Aggregate, []),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Min'),
+    maybe_run_query_runtime(Plan, ['alice,5', 'bob,7']).
+
+verify_correlated_aggregate_max_plan :-
+    csharp_query_target:build_query_plan(test_sale_max_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Aggregate, Root),
+    is_dict(Aggregate, aggregate),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, max),
+    get_dict(group_indices, Aggregate, []),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Max'),
+    maybe_run_query_runtime(Plan, ['alice,10', 'bob,7']).
+
+verify_aggregate_set_plan :-
+    csharp_query_target:build_query_plan(test_sale_customers_set/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0], width:1}),
+    is_dict(Aggregate, aggregate),
+    get_dict(op, Aggregate, set),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Set'),
+    maybe_run_query_runtime(Plan, ['[alice|bob]']).
+
+verify_aggregate_bag_plan :-
+    csharp_query_target:build_query_plan(test_sale_customers_bag/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Aggregate, columns:[0], width:1}),
+    is_dict(Aggregate, aggregate),
+    get_dict(op, Aggregate, bag),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Bag'),
+    maybe_run_query_runtime(Plan, ['[alice|alice|bob]']).
+
+verify_aggregate_subplan_count_with_constraint_plan :-
+    csharp_query_target:build_query_plan(test_sale_filtered_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(input, Agg, unit{type:unit, width:0}),
+    get_dict(op, Agg, count),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    get_dict(width, Agg, 1),
+    get_dict(subplan, Agg, projection{type:projection, columns:[], width:0, input:_}),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Count'),
+    sub_string(Source, _, _, _, 'SelectionNode'),
+    maybe_run_query_runtime(Plan, ['2']).
+
+verify_aggregate_subplan_count_with_constant_arg_plan :-
+    csharp_query_target:build_query_plan(test_sale_filtered_alice_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(input, Agg, unit{type:unit, width:0}),
+    get_dict(op, Agg, count),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    get_dict(width, Agg, 1),
+    get_dict(subplan, Agg, Subplan),
+    sub_term(selection{type:selection, predicate:condition{left:_, type:eq, right:operand{kind:value, value:alice}}, input:_, width:_}, Subplan),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Count'),
+    sub_string(Source, _, _, _, 'SelectionNode'),
+    maybe_run_query_runtime(Plan, ['1']).
+
+verify_aggregate_subplan_nested_aggregate_plan :-
+    csharp_query_target:build_query_plan(test_customer_high_sales_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(subplan, Agg, Subplan),
+    sub_term(InnerAgg, Subplan),
+    is_dict(InnerAgg, aggregate),
+    get_dict(op, InnerAgg, sum),
+    get_dict(predicate, InnerAgg, predicate{name:test_sale, arity:2}),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateNode'),
+    maybe_run_query_runtime(Plan, ['1']).
+
+verify_aggregate_subplan_banned_sale_count_plan :-
+    csharp_query_target:build_query_plan(test_banned_sale_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    maybe_run_query_runtime(Plan, ['1']).
+
+verify_aggregate_subplan_disjunction_count_plan :-
+    csharp_query_target:build_query_plan(test_sale_alice_or_bob_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    get_dict(params, Agg, []),
+    get_dict(subplan, Agg, union{type:union, sources:Sources, width:0}),
+    length(Sources, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'UnionNode'),
+    maybe_run_query_runtime(Plan, ['3']).
+
+verify_aggregate_subplan_nested_disjunction_count_plan :-
+    csharp_query_target:build_query_plan(test_sale_alice_or_bob_nested_count/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    get_dict(params, Agg, []),
+    get_dict(subplan, Agg, union{type:union, sources:Sources, width:0}),
+    length(Sources, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'UnionNode'),
+    maybe_run_query_runtime(Plan, ['3']).
+
+verify_aggregate_subplan_correlated_count_with_constraint_plan :-
+    csharp_query_target:build_query_plan(test_sale_count_filtered_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Agg, Root),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, -1),
+    get_dict(params, Agg, [operand{kind:column, index:0}]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    maybe_run_query_runtime(Plan, ['alice,1', 'bob,1', 'charlie,0']).
+
+verify_aggregate_subplan_grouped_count_with_negation_plan :-
+    csharp_query_target:build_query_plan(test_non_banned_sale_count_grouped/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0, 1], width:2}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, count),
+    get_dict(group_indices, Agg, [0]),
+    get_dict(value_index, Agg, -1),
+    get_dict(params, Agg, []),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'NegationNode'),
+    maybe_run_query_runtime(Plan, ['alice,2']).
+
+verify_aggregate_subplan_sum_with_constraint_plan :-
+    csharp_query_target:build_query_plan(test_sale_filtered_sum/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(input, Agg, unit{type:unit, width:0}),
+    get_dict(op, Agg, sum),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, 0),
+    get_dict(width, Agg, 1),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
+    sub_string(Source, _, _, _, 'SelectionNode'),
+    maybe_run_query_runtime(Plan, ['17']).
+
+verify_aggregate_subplan_set_with_negation_plan :-
+    csharp_query_target:build_query_plan(test_non_banned_sale_customers_set/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, set),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, 0),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Set'),
+    sub_string(Source, _, _, _, 'NegationNode'),
+    maybe_run_query_runtime(Plan, ['[alice]']).
+
+verify_aggregate_subplan_grouped_sum_with_negation_plan :-
+    csharp_query_target:build_query_plan(test_non_banned_sale_sum_grouped/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0, 1], width:2}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(op, Agg, sum),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, [0]),
+    get_dict(value_index, Agg, 1),
+    get_dict(width, Agg, 2),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
+    sub_string(Source, _, _, _, 'NegationNode'),
+    maybe_run_query_runtime(Plan, ['alice,15']).
+
+verify_parameterized_fib_plan :-
+    csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input, output],
+    get_dict(root, Plan, Root),
+    atom_concat(test_fib_param, '$need', NeedName),
+    sub_term(materialize{type:materialize, id:_, plan:fixpoint{type:fixpoint, head:predicate{name:NeedName, arity:1}, base:_, recursive:_, width:1}, width:1}, Root),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'MaterializeNode'),
+    sub_string(Source, _, _, _, 'ParamSeedNode').
+
+verify_parameterized_fib_runtime :-
+    csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
+    maybe_run_query_runtime(Plan, ['5,8'], [[5]]).
+
+verify_multi_mode_codegen_plan :-
+    csharp_target:compile_predicate_to_csharp(test_multi_mode/2, [mode(query)], Code),
+    sub_string(Code, _, _, _, 'BuildIn0'),
+    sub_string(Code, _, _, _, 'BuildIn1'),
+    sub_string(Code, _, _, _, 'BuildForInputs').
+
+verify_multi_mode_plan_selection_api :-
+    csharp_query_target:build_query_plans(test_multi_mode/2, [target(csharp_query)], Plans),
+    length(Plans, 2),
+    Plans = [Plan0, Plan1],
+    get_dict(metadata, Plan0, Meta0),
+    get_dict(modes, Meta0, [input, output]),
+    get_dict(metadata, Plan1, Meta1),
+    get_dict(modes, Meta1, [output, input]),
+    csharp_query_target:build_query_plan_for_inputs(test_multi_mode/2, [target(csharp_query)], [0], Selected0),
+    get_dict(metadata, Selected0, SelectedMeta0),
+    get_dict(modes, SelectedMeta0, [input, output]),
+    csharp_query_target:build_query_plan_for_inputs(test_multi_mode/2, [target(csharp_query)], [1], Selected1),
+    get_dict(metadata, Selected1, SelectedMeta1),
+    get_dict(modes, SelectedMeta1, [output, input]).
+
+verify_multi_mode_runtime_dispatch :-
+    csharp_target:compile_predicate_to_csharp(test_multi_mode/2, [mode(query)], ModuleSource),
+    csharp_query_target:build_query_plan_for_inputs(test_multi_mode/2, [target(csharp_query)], [0], Plan0),
+    csharp_query_target:plan_module_name(Plan0, ModuleClass),
+    harness_source_multi_mode_dispatch(ModuleClass, HarnessSource),
+    maybe_run_multi_mode_dispatch_runtime(ModuleClass, ModuleSource, HarnessSource, ['alice,bob', 'bob,charlie']).
+
+with_suppressed_user_error(Goal) :-
+    current_input(In),
+    current_output(Out),
+    stream_property(Err, alias(user_error)),
+    setup_call_cleanup(
+        open_null_stream(Null),
+        setup_call_cleanup(
+            set_prolog_IO(In, Out, Null),
+            catch(Goal, _Error, fail),
+            set_prolog_IO(In, Out, Err)
+        ),
+        close(Null)
+    ).
+
+verify_any_mode_rejected_plan :-
+    with_suppressed_user_error(
+        \+ csharp_query_target:build_query_plan(test_any_mode/2, [target(csharp_query)], _Plan)
+    ).
+
+verify_parameterized_need_allows_post_agg :-
+    HeadSpec = predicate{name:test_post_agg_param, arity:2},
+    csharp_target:gather_predicate_clauses(HeadSpec, Clauses),
+    csharp_target:partition_recursive_clauses(test_post_agg_param, 2, Clauses, _BaseClauses, RecClauses),
+    csharp_target:eligible_for_need_closure(HeadSpec, [HeadSpec], RecClauses, [input, output]).
+
+verify_negation_plan :-
+    csharp_query_target:build_query_plan(test_allowed/1, [target(csharp_query)], Plan),
+    get_dict(relations, Plan, Relations),
+    member(relation{predicate:predicate{name:test_banned, arity:1}, facts:_}, Relations),
+    get_dict(root, Plan, Root),
+    sub_term(negation{type:negation, predicate:predicate{name:test_banned, arity:1}, args:_, input:_, width:_}, Root),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'NegationNode'),
+    maybe_run_query_runtime(Plan, ['alice']).
+
+verify_parameterized_need_allows_prefix_negation :-
+    csharp_query_target:build_query_plan(test_countdown/2, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    atom_concat(test_countdown, '$need', NeedName),
+    sub_term(materialize{type:materialize, id:_, plan:fixpoint{type:fixpoint, head:predicate{name:NeedName, arity:1}, base:_, recursive:_, width:1}, width:1}, Root),
+    sub_term(negation{type:negation, predicate:predicate{name:test_blocked, arity:1}, args:_, input:_, width:_}, Root).
 
 verify_recursive_arithmetic_plan :-
     csharp_query_target:build_query_plan(test_factorial/2, [target(csharp_query)], Plan),
@@ -297,6 +1166,58 @@ verify_mutual_recursion_plan :-
     member(OddRecursive, OddVariants),
     sub_term(cross_ref{predicate:predicate{name:test_even, arity:1}, role:delta, type:cross_ref, width:_}, OddRecursive),
     maybe_run_query_runtime(Plan, ['0', '2', '4']).
+
+verify_parameterized_mutual_recursion_plan :-
+    csharp_query_target:build_query_plan(test_even_param/1, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input],
+    get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even_param, arity:1}, members:Members}),
+    length(Members, 2),
+    atom_concat(test_even_param, '$need', NeedName),
+    sub_term(materialize{type:materialize, id:_, plan:fixpoint{type:fixpoint, head:predicate{name:NeedName, arity:2}, base:_, recursive:_, width:2}, width:2}, Members),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    sub_string(Source, _, _, _, NeedName),
+    sub_string(Source, _, _, _, 'MaterializeNode'),
+    maybe_run_query_runtime(Plan, ['4'], [[4]]).
+
+verify_parameterized_mutual_recursion_inferred_plan :-
+    csharp_query_target:build_query_plan(test_even_param_partial/1, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input],
+    get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even_param_partial, arity:1}, members:Members}),
+    length(Members, 2),
+    atom_concat(test_even_param_partial, '$need', NeedName),
+    sub_term(materialize{type:materialize, id:_, plan:fixpoint{type:fixpoint, head:predicate{name:NeedName, arity:2}, base:_, recursive:_, width:2}, width:2}, Members),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    sub_string(Source, _, _, _, NeedName),
+    sub_string(Source, _, _, _, 'MaterializeNode'),
+    maybe_run_query_runtime(Plan, ['4'], [[4]]).
+
+verify_parameterized_mutual_recursion_fallback_plan :-
+    capture_user_error(
+        csharp_query_target:build_query_plan(test_even_param_unbound/1, [target(csharp_query)], Plan),
+        Err
+    ),
+    Err == "",
+    get_dict(is_recursive, Plan, true),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input],
+    get_dict(root, Plan, mutual_fixpoint{type:mutual_fixpoint, head:predicate{name:test_even_param_unbound, arity:1}, members:Members}),
+    length(Members, 2),
+    atom_concat(test_even_param_unbound, '$need', NeedName),
+    \+ sub_term(predicate{name:NeedName, arity:_}, Members),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'new int[]{ 0 }'),
+    \+ sub_string(Source, _, _, _, NeedName),
+    \+ sub_string(Source, _, _, _, 'MaterializeNode'),
+    maybe_run_query_runtime(Plan, ['4'], [[4]]).
 
 verify_dynamic_source_plan :-
     setup_call_cleanup(
@@ -726,33 +1647,100 @@ cleanup_json_object_source :-
 
 % Run with build-first approach, optionally skipping execution
 maybe_run_query_runtime(Plan, ExpectedRows) :-
-    dotnet_cli(Dotnet),
-    !,
-    prepare_temp_dir(Plan, Dir),
+    maybe_run_query_runtime(Plan, ExpectedRows, []).
+
+maybe_run_query_runtime(Plan, ExpectedRows, Params) :-
     (   getenv('SKIP_CSHARP_EXECUTION', '1')
-    ->  % Generate code but skip execution (quiet)
-        (   generate_csharp_code_only(Dotnet, Plan, Dir)
-        ->  true
+    ->  prepare_temp_dir(Plan, Dir),
+        (   generate_csharp_code_only(_Dotnet, Plan, Params, Dir)
+        ->  write_expected_rows_file(Dir, ExpectedRows, Params)
         ;   writeln('  (C# code generation: FAIL)'),
             finalize_temp_dir(Dir),
             fail
         ),
         finalize_temp_dir(Dir)
-    ;   % Full execution
-        (   run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir)
+    ;   dotnet_cli(Dotnet)
+    ->  prepare_temp_dir(Plan, Dir),
+        (   run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Params, Dir)
         ->  writeln('  (query runtime execution: PASS)'),
             finalize_temp_dir(Dir)
         ;   writeln('  (query runtime execution: FAIL - but plan structure verified)'),
             finalize_temp_dir(Dir)
         )
+    ;   writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)')
     ).
 
-% Fall back to plan-only verification if dotnet not available
-maybe_run_query_runtime(_Plan, _ExpectedRows) :-
-    writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)').
+maybe_run_multi_mode_dispatch_runtime(ModuleClass, ModuleSource, HarnessSource, ExpectedRows) :-
+    (   getenv('SKIP_CSHARP_EXECUTION', '1')
+    ->  prepare_temp_dir(Dir),
+        (   generate_csharp_multi_mode_dispatch_code_only(ModuleClass, ModuleSource, HarnessSource, Dir)
+        ->  write_expected_rows_file(Dir, ExpectedRows, [])
+        ;   writeln('  (C# code generation: FAIL)'),
+            finalize_temp_dir(Dir),
+            fail
+        ),
+        finalize_temp_dir(Dir)
+    ;   dotnet_cli(Dotnet)
+    ->  prepare_temp_dir(Dir),
+        (   run_dotnet_multi_mode_dispatch_build_first(Dotnet, ModuleClass, ModuleSource, HarnessSource, ExpectedRows, Dir)
+        ->  writeln('  (query runtime execution: PASS)'),
+            finalize_temp_dir(Dir)
+        ;   writeln('  (query runtime execution: FAIL - but plan structure verified)'),
+            finalize_temp_dir(Dir)
+        )
+    ;   writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)')
+    ).
 
-dotnet_cli(Path) :-
-    catch(absolute_file_name(path(dotnet), Path, [access(execute)]), _, fail).
+write_expected_rows_file(Dir, ExpectedRows, Params) :-
+    directory_file_path(Dir, 'expected_rows.txt', RowsPath),
+    maplist(to_atom, ExpectedRows, ExpectedAtoms0),
+    sort(ExpectedAtoms0, ExpectedAtoms),
+    setup_call_cleanup(
+        open(RowsPath, write, Stream),
+        forall(member(Row, ExpectedAtoms),
+               format(Stream, '~w~n', [Row])),
+        close(Stream)
+    ),
+    (   Params == []
+    ->  true
+    ;   directory_file_path(Dir, 'params.txt', ParamsPath),
+        setup_call_cleanup(
+            open(ParamsPath, write, PStream),
+            format(PStream, '~q.~n', [Params]),
+            close(PStream)
+        )
+    ).
+
+capture_user_error(Goal, Output) :-
+    current_input(In),
+    current_output(Out),
+    stream_property(Err, alias(user_error)),
+    new_memory_file(MemFile),
+    setup_call_cleanup(
+        open_memory_file(MemFile, write, Stream),
+        setup_call_cleanup(
+            set_prolog_IO(In, Out, Stream),
+            call(Goal),
+            set_prolog_IO(In, Out, Err)
+        ),
+        (   close(Stream),
+            memory_file_to_string(MemFile, Output),
+            free_memory_file(MemFile)
+        )
+    ).
+
+dotnet_cli(path(dotnet)) :-
+    catch(
+        (   process_create(path(dotnet), ['--version'],
+                           [ stdout(null),
+                             stderr(null),
+                             process(PID)
+                           ]),
+            process_wait(PID, exit(0))
+        ),
+        _,
+        fail
+    ).
 
 % Create temp directory with test name from Plan
 prepare_temp_dir(Plan, Dir) :-
@@ -794,6 +1782,9 @@ finalize_temp_dir(Dir) :-
 % Build-first approach (works around dotnet run hang)
 % See: docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md
 run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
+    run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, [], Dir).
+
+run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Params, Dir) :-
     % Step 1: Create project and write source files
     dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
     (   StatusNew =:= 0
@@ -814,7 +1805,7 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
     write_string(ModulePath, ModuleSource),
 
     % Write harness
-    harness_source(ModuleClass, HarnessSource),
+    harness_source(ModuleClass, Params, HarnessSource),
     directory_file_path(Dir, 'Program.cs', ProgramPath),
     write_string(ProgramPath, HarnessSource),
 
@@ -846,9 +1837,49 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Dir) :-
     ;   format('  (execution failed: ~s)~n', [Output]), fail
     ).
 
+run_dotnet_multi_mode_dispatch_build_first(Dotnet, ModuleClass, ModuleSource, HarnessSource, ExpectedRows, Dir) :-
+    dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
+    (   StatusNew =:= 0
+    ->  true
+    ;   writeln('  (dotnet new console failed; skipping runtime execution test)'), fail
+    ),
+    absolute_file_name('src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs', RuntimePath, []),
+    directory_file_path(Dir, 'QueryRuntime.cs', RuntimeCopy),
+    copy_file(RuntimePath, RuntimeCopy),
+    atom_concat(ModuleClass, '.cs', ModuleFile),
+    directory_file_path(Dir, ModuleFile, ModulePath),
+    write_string(ModulePath, ModuleSource),
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, HarnessSource),
+    dotnet_command(Dotnet, ['build','--no-restore'], Dir, StatusBuild, BuildOutput),
+    (   StatusBuild =:= 0
+    ->  true
+    ;   format('  (dotnet build failed: ~s)~n', [BuildOutput]), fail
+    ),
+    find_compiled_executable(Dir, ExePath),
+    (   ExePath \= ''
+    ->  true
+    ;   writeln('  (compiled executable not found)'), fail
+    ),
+    execute_compiled_binary(ExePath, Dir, StatusRun, Output),
+    (   StatusRun =:= 0
+    ->  extract_result_rows(Output, Rows),
+        sort(Rows, SortedRows),
+        maplist(to_atom, ExpectedRows, ExpectedAtoms),
+        sort(ExpectedAtoms, SortedExpected),
+        (   SortedRows == SortedExpected
+        ->  true
+        ;   format('  dotnet run output mismatch: ~w~n', [SortedRows]), fail
+        )
+    ;   format('  (execution failed: ~s)~n', [Output]), fail
+    ).
+
 % Generate C# code without execution (for SKIP_CSHARP_EXECUTION mode)
 % Skips all dotnet commands - just generates and writes C# source files
-generate_csharp_code_only(_Dotnet, Plan, Dir) :-
+generate_csharp_code_only(Dotnet, Plan, Dir) :-
+    generate_csharp_code_only(Dotnet, Plan, [], Dir).
+
+generate_csharp_code_only(_Dotnet, Plan, Params, Dir) :-
     % Create .csproj file manually (without calling dotnet new console)
     file_base_name(Dir, ProjectName),
     create_minimal_csproj(Dir, ProjectName),
@@ -866,10 +1897,22 @@ generate_csharp_code_only(_Dotnet, Plan, Dir) :-
     write_string(ModulePath, ModuleSource),
 
     % Write harness
-    harness_source(ModuleClass, HarnessSource),
+    harness_source(ModuleClass, Params, HarnessSource),
     directory_file_path(Dir, 'Program.cs', ProgramPath),
     write_string(ProgramPath, HarnessSource).
     % Note: dotnet execution commands (build, run) still skipped in this mode
+
+generate_csharp_multi_mode_dispatch_code_only(ModuleClass, ModuleSource, HarnessSource, Dir) :-
+    file_base_name(Dir, ProjectName),
+    create_minimal_csproj(Dir, ProjectName),
+    absolute_file_name('src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs', RuntimePath, []),
+    directory_file_path(Dir, 'QueryRuntime.cs', RuntimeCopy),
+    copy_file(RuntimePath, RuntimeCopy),
+    atom_concat(ModuleClass, '.cs', ModuleFile),
+    directory_file_path(Dir, ModuleFile, ModulePath),
+    write_string(ModulePath, ModuleSource),
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, HarnessSource).
 
 % Create a minimal .csproj file manually
 create_minimal_csproj(Dir, ProjectName) :-
@@ -969,6 +2012,16 @@ execute_compiled_binary(ExePath, Dir, Status, Output) :-
     string_concat(Stdout, Stderr, Output).
 
 harness_source(ModuleClass, Source) :-
+    harness_source(ModuleClass, [], Source).
+
+harness_source(ModuleClass, Params, Source) :-
+    (   Params == []
+    ->  ParamDecl = '',
+        ExecCall = 'executor.Execute(result.Plan)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters)'
+    ),
     format(atom(Source),
 'using System;
 using System.Linq;
@@ -978,16 +2031,17 @@ using System.Text.Json.Nodes;
 
 var result = UnifyWeaver.Generated.~w.Build();
 var executor = new QueryExecutor(result.Provider);
-var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
-string FormatValue(object? value) => value switch
-{
-    JsonNode node => node.ToJsonString(jsonOptions),
-    JsonElement element => element.GetRawText(),
-    _ => value?.ToString() ?? string.Empty
-};
-foreach (var row in executor.Execute(result.Plan))
-{
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+     System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+     _ => value?.ToString() ?? string.Empty
+ };
+ foreach (var row in ~w)
+ {
     var projected = row.Take(result.Plan.Head.Arity)
                        .Select(FormatValue)
                        .ToArray();
@@ -998,8 +2052,71 @@ foreach (var row in executor.Execute(result.Plan))
     }
 
     Console.WriteLine(string.Join(\",\", projected));
+ }
+ ', [ModuleClass, ParamDecl, ExecCall]).
+
+harness_source_multi_mode_dispatch(ModuleClass, Source) :-
+    format(atom(Source),
+'using System;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+     System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+     _ => value?.ToString() ?? string.Empty
+ };
+
+ void PrintRows((InMemoryRelationProvider Provider, QueryPlan Plan) result, object[][] parameters)
+{
+    var executor = new QueryExecutor(result.Provider);
+    foreach (var row in executor.Execute(result.Plan, parameters))
+    {
+        var projected = row.Take(result.Plan.Head.Arity)
+                           .Select(FormatValue)
+                           .ToArray();
+
+        if (projected.Length == 0)
+        {
+            continue;
+        }
+
+        Console.WriteLine(string.Join(\",\", projected));
+    }
 }
-', [ModuleClass]).
+
+var result0 = UnifyWeaver.Generated.~w.BuildForInputs(0);
+PrintRows(result0, new object[][] { new object[]{ \"alice\" } });
+
+var result1 = UnifyWeaver.Generated.~w.BuildForInputs(1);
+PrintRows(result1, new object[][] { new object[]{ \"charlie\" } });
+', [ModuleClass, ModuleClass]).
+
+csharp_params_literal(Params, Literal) :-
+    maplist(csharp_tuple_literal, Params, TupleLits),
+    atomic_list_concat(TupleLits, ", ", TuplesStr),
+    format(atom(Literal), 'new object[][]{ ~w }', [TuplesStr]).
+
+csharp_tuple_literal(Tuple, Literal) :-
+    maplist(csharp_value_literal, Tuple, Values),
+    atomic_list_concat(Values, ", ", ValuesStr),
+    format(atom(Literal), 'new object[]{ ~w }', [ValuesStr]).
+
+csharp_value_literal(Value, Literal) :-
+    (   number(Value)
+    ->  format(atom(Literal), '~w', [Value])
+    ;   string(Value)
+    ->  format(atom(Literal), '\"~w\"', [Value])
+    ;   atom(Value)
+    ->  format(atom(Literal), '\"~w\"', [Value])
+    ;   format(atom(Literal), '\"~w\"', [Value])
+    ).
 
 write_string(Path, String) :-
     setup_call_cleanup(open(Path, write, Stream),
@@ -1158,8 +2275,8 @@ normalize_yes_no(Value0, Bool) :-
     ;   Value = Value0
     ),
     string_lower(Value, Lower),
-    (   member(Lower, ['1', 'true', 'yes', 'keep'])
+    (   member(Lower, ["1", "true", "yes", "keep"])
     ->  Bool = true
-    ;   member(Lower, ['0', 'false', 'no', 'delete', 'autodelete'])
+    ;   member(Lower, ["0", "false", "no", "delete", "autodelete"])
     ->  Bool = false
     ).
