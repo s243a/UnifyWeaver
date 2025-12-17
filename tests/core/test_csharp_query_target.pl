@@ -120,6 +120,7 @@ test_csharp_query_target :-
         verify_parameterized_fib_runtime,
         verify_multi_mode_codegen_plan,
         verify_multi_mode_plan_selection_api,
+        verify_multi_mode_runtime_dispatch,
         verify_any_mode_rejected_plan,
         verify_parameterized_need_allows_post_agg,
         verify_parameterized_need_allows_prefix_negation,
@@ -1012,6 +1013,13 @@ verify_multi_mode_plan_selection_api :-
     get_dict(metadata, Selected1, SelectedMeta1),
     get_dict(modes, SelectedMeta1, [output, input]).
 
+verify_multi_mode_runtime_dispatch :-
+    csharp_target:compile_predicate_to_csharp(test_multi_mode/2, [mode(query)], ModuleSource),
+    csharp_query_target:build_query_plan_for_inputs(test_multi_mode/2, [target(csharp_query)], [0], Plan0),
+    csharp_query_target:plan_module_name(Plan0, ModuleClass),
+    harness_source_multi_mode_dispatch(ModuleClass, HarnessSource),
+    maybe_run_multi_mode_dispatch_runtime(ModuleClass, ModuleSource, HarnessSource, ['alice,bob', 'bob,charlie']).
+
 with_suppressed_user_error(Goal) :-
     current_input(In),
     current_output(Out),
@@ -1657,6 +1665,27 @@ maybe_run_query_runtime(Plan, ExpectedRows, Params) :-
     ;   writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)')
     ).
 
+maybe_run_multi_mode_dispatch_runtime(ModuleClass, ModuleSource, HarnessSource, ExpectedRows) :-
+    (   getenv('SKIP_CSHARP_EXECUTION', '1')
+    ->  prepare_temp_dir(Dir),
+        (   generate_csharp_multi_mode_dispatch_code_only(ModuleClass, ModuleSource, HarnessSource, Dir)
+        ->  write_expected_rows_file(Dir, ExpectedRows, [])
+        ;   writeln('  (C# code generation: FAIL)'),
+            finalize_temp_dir(Dir),
+            fail
+        ),
+        finalize_temp_dir(Dir)
+    ;   dotnet_cli(Dotnet)
+    ->  prepare_temp_dir(Dir),
+        (   run_dotnet_multi_mode_dispatch_build_first(Dotnet, ModuleClass, ModuleSource, HarnessSource, ExpectedRows, Dir)
+        ->  writeln('  (query runtime execution: PASS)'),
+            finalize_temp_dir(Dir)
+        ;   writeln('  (query runtime execution: FAIL - but plan structure verified)'),
+            finalize_temp_dir(Dir)
+        )
+    ;   writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)')
+    ).
+
 write_expected_rows_file(Dir, ExpectedRows, Params) :-
     directory_file_path(Dir, 'expected_rows.txt', RowsPath),
     maplist(to_atom, ExpectedRows, ExpectedAtoms0),
@@ -1803,6 +1832,43 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Params, Dir) :-
     ;   format('  (execution failed: ~s)~n', [Output]), fail
     ).
 
+run_dotnet_multi_mode_dispatch_build_first(Dotnet, ModuleClass, ModuleSource, HarnessSource, ExpectedRows, Dir) :-
+    dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
+    (   StatusNew =:= 0
+    ->  true
+    ;   writeln('  (dotnet new console failed; skipping runtime execution test)'), fail
+    ),
+    absolute_file_name('src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs', RuntimePath, []),
+    directory_file_path(Dir, 'QueryRuntime.cs', RuntimeCopy),
+    copy_file(RuntimePath, RuntimeCopy),
+    atom_concat(ModuleClass, '.cs', ModuleFile),
+    directory_file_path(Dir, ModuleFile, ModulePath),
+    write_string(ModulePath, ModuleSource),
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, HarnessSource),
+    dotnet_command(Dotnet, ['build','--no-restore'], Dir, StatusBuild, BuildOutput),
+    (   StatusBuild =:= 0
+    ->  true
+    ;   format('  (dotnet build failed: ~s)~n', [BuildOutput]), fail
+    ),
+    find_compiled_executable(Dir, ExePath),
+    (   ExePath \= ''
+    ->  true
+    ;   writeln('  (compiled executable not found)'), fail
+    ),
+    execute_compiled_binary(ExePath, Dir, StatusRun, Output),
+    (   StatusRun =:= 0
+    ->  extract_result_rows(Output, Rows),
+        sort(Rows, SortedRows),
+        maplist(to_atom, ExpectedRows, ExpectedAtoms),
+        sort(ExpectedAtoms, SortedExpected),
+        (   SortedRows == SortedExpected
+        ->  true
+        ;   format('  dotnet run output mismatch: ~w~n', [SortedRows]), fail
+        )
+    ;   format('  (execution failed: ~s)~n', [Output]), fail
+    ).
+
 % Generate C# code without execution (for SKIP_CSHARP_EXECUTION mode)
 % Skips all dotnet commands - just generates and writes C# source files
 generate_csharp_code_only(Dotnet, Plan, Dir) :-
@@ -1830,6 +1896,18 @@ generate_csharp_code_only(_Dotnet, Plan, Params, Dir) :-
     directory_file_path(Dir, 'Program.cs', ProgramPath),
     write_string(ProgramPath, HarnessSource).
     % Note: dotnet execution commands (build, run) still skipped in this mode
+
+generate_csharp_multi_mode_dispatch_code_only(ModuleClass, ModuleSource, HarnessSource, Dir) :-
+    file_base_name(Dir, ProjectName),
+    create_minimal_csproj(Dir, ProjectName),
+    absolute_file_name('src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs', RuntimePath, []),
+    directory_file_path(Dir, 'QueryRuntime.cs', RuntimeCopy),
+    copy_file(RuntimePath, RuntimeCopy),
+    atom_concat(ModuleClass, '.cs', ModuleFile),
+    directory_file_path(Dir, ModuleFile, ModulePath),
+    write_string(ModulePath, ModuleSource),
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, HarnessSource).
 
 % Create a minimal .csproj file manually
 create_minimal_csproj(Dir, ProjectName) :-
@@ -1968,8 +2046,50 @@ foreach (var row in ~w)
     }
 
     Console.WriteLine(string.Join(\",\", projected));
+ }
+ ', [ModuleClass, ParamDecl, ExecCall]).
+
+harness_source_multi_mode_dispatch(ModuleClass, Source) :-
+    format(atom(Source),
+'using System;
+using System.Linq;
+using UnifyWeaver.QueryRuntime;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+string FormatValue(object? value) => value switch
+{
+    JsonNode node => node.ToJsonString(jsonOptions),
+    JsonElement element => element.GetRawText(),
+    _ => value?.ToString() ?? string.Empty
+};
+
+void PrintRows((InMemoryRelationProvider Provider, QueryPlan Plan) result, object[][] parameters)
+{
+    var executor = new QueryExecutor(result.Provider);
+    foreach (var row in executor.Execute(result.Plan, parameters))
+    {
+        var projected = row.Take(result.Plan.Head.Arity)
+                           .Select(FormatValue)
+                           .ToArray();
+
+        if (projected.Length == 0)
+        {
+            continue;
+        }
+
+        Console.WriteLine(string.Join(\",\", projected));
+    }
 }
-', [ModuleClass, ParamDecl, ExecCall]).
+
+var result0 = UnifyWeaver.Generated.~w.BuildForInputs(0);
+PrintRows(result0, new object[][] { new object[]{ \"alice\" } });
+
+var result1 = UnifyWeaver.Generated.~w.BuildForInputs(1);
+PrintRows(result1, new object[][] { new object[]{ \"charlie\" } });
+', [ModuleClass, ModuleClass]).
 
 csharp_params_literal(Params, Literal) :-
     maplist(csharp_tuple_literal, Params, TupleLits),
