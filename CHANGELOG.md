@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Client-Server Phase 4: Service Mesh** - Load balancing, circuit breakers, and retry with backoff
+  - Load balancing strategies: `round_robin`, `random`, `least_connections`, `weighted`, `ip_hash`
+  - Circuit breaker pattern with `threshold`, `timeout`, `half_open_requests`, `success_threshold`
+  - Retry with backoff: `fixed`, `linear`, `exponential` strategies
+  - Retry options: `delay(Ms)`, `max_delay(Ms)`, `jitter(Bool)`
+  - Service discovery configuration: `static`, `dns`, `consul`, `etcd`
+  - Backend pool configuration for load balancing targets
+  - Service mesh validation in `service_validation.pl`
+  - Helper predicates: `get_load_balance_strategy/2`, `get_circuit_breaker_config/2`, `get_retry_config/2`, `has_load_balancing/1`, `has_circuit_breaker/1`, `has_retry/1`, `is_service_mesh_service/1`
+  - Service mesh compilation for Python, Go, and Rust targets
+  - Thread-safe implementations: Python threading.Lock, Go atomic operations, Rust RwLock/AtomicI32
+  - 61 integration tests in `tests/integration/test_service_mesh.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Client-Server Phase 3: Network Services** - TCP and HTTP transport support
+  - TCP transport for network socket communication (`transport(tcp(Host, Port))`)
+  - HTTP/REST transport for web API endpoints (`transport(http(Endpoint))`)
+  - JSONL protocol for TCP services (streaming JSON lines)
+  - JSON protocol for HTTP services (REST API style)
+  - Transport categorization: `is_network_service/1` predicate
+  - Full REST method support: GET, POST, PUT, DELETE, PATCH
+  - Stateful and stateless service variants for both TCP and HTTP
+  - Service compilation for Python, Go, and Rust targets
+  - Client generation for all three targets
+  - 26 integration tests in `tests/integration/test_network_services.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
 - **Enhanced Pipeline Chaining** - Complex data flow patterns across all targets (#296-#300)
   - `fan_out(Stages)` — Broadcast records to stages (sequential execution)
   - `parallel(Stages)` — Execute stages concurrently using target-native parallelism

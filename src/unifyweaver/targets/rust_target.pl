@@ -26,7 +26,15 @@
     generate_service_handler_rust/2,  % +HandlerSpec, -RustCode
     % Phase 2: Cross-process services
     compile_unix_socket_service_rust/2,   % +Service, -RustCode
-    compile_unix_socket_client_rust/3     % +ServiceName, +SocketPath, -RustCode
+    compile_unix_socket_client_rust/3,    % +ServiceName, +SocketPath, -RustCode
+    % Phase 3: Network services
+    compile_tcp_service_rust/2,           % +Service, -RustCode
+    compile_tcp_client_rust/4,            % +ServiceName, +Host, +Port, -RustCode
+    compile_http_service_rust/2,          % +Service, -RustCode
+    compile_http_client_rust/3,           % +ServiceName, +Endpoint, -RustCode
+    compile_http_client_rust/4,           % +ServiceName, +Endpoint, +Options, -RustCode
+    % Phase 4: Service mesh
+    compile_service_mesh_rust/2           % +Service, -RustCode
 ]).
 
 :- use_module(library(lists)).
@@ -102,6 +110,40 @@ compile_service_to_rust(Service, RustCode) :-
     !,
     % Phase 2: Unix socket service
     compile_unix_socket_service_rust(Service, RustCode).
+
+compile_service_to_rust(Service, RustCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(tcp(_Host, _Port)), Options),
+    !,
+    % Phase 3: TCP service
+    compile_tcp_service_rust(Service, RustCode).
+
+compile_service_to_rust(Service, RustCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(http(_Endpoint)), Options),
+    !,
+    % Phase 3: HTTP service
+    compile_http_service_rust(Service, RustCode).
+
+compile_service_to_rust(Service, RustCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(http(_Endpoint, _HttpOptions)), Options),
+    !,
+    % Phase 3: HTTP service with options
+    compile_http_service_rust(Service, RustCode).
+
+compile_service_to_rust(Service, RustCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(load_balance(_), Options)
+    ; member(load_balance(_, _), Options)
+    ; member(circuit_breaker(_, _), Options)
+    ; member(circuit_breaker(_), Options)
+    ; member(retry(_, _), Options)
+    ; member(retry(_, _, _), Options)
+    ),
+    !,
+    % Phase 4: Service mesh service
+    compile_service_mesh_rust(Service, RustCode).
 
 compile_service_to_rust(service(Name, Options, HandlerSpec), RustCode) :-
     % Phase 1: In-process service (default)
@@ -688,6 +730,794 @@ impl Service for ~wRemoteService {
     }
 }
 ", [StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom, Name, Name, Name, Name, Name, Name, Name, Name, StructNameAtom, UpperAtom, StructNameAtom, StructNameAtom, SocketPath, StructNameAtom, StructNameAtom, StructNameAtom, Name, Name, Name, Name]).
+
+%% ============================================
+%% PHASE 3: NETWORK SERVICES (TCP)
+%% ============================================
+
+%% compile_tcp_service_rust(+Service, -RustCode)
+%  Generate Rust code for a TCP network service server.
+compile_tcp_service_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Extract host and port
+    member(transport(tcp(Host, Port)), Options),
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    % Generate handler code
+    generate_service_handler_rust(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Generate the TCP service
+    ( Stateful = true ->
+        format(string(RustCode),
+"use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, RwLock};
+use std::thread;
+use serde_json::Value;
+
+pub struct ~wService {
+    name: String,
+    host: String,
+    port: u16,
+    state: Arc<RwLock<HashMap<String, Value>>>,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            name: \"~w\".to_string(),
+            host: \"~w\".to_string(),
+            port: ~w,
+            state: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub fn call(&self, request: Value) -> Result<Value, ServiceError> {
+~w
+    }
+
+    pub fn state_get(&self, key: &str) -> Option<Value> {
+        self.state.read().unwrap().get(key).cloned()
+    }
+
+    pub fn state_put(&self, key: &str, value: Value) {
+        self.state.write().unwrap().insert(key.to_string(), value);
+    }
+
+    pub fn start_server(&self) -> std::io::Result<()> {
+        let addr = format!(\"{}:{}\", self.host, self.port);
+        let listener = TcpListener::bind(&addr)?;
+        eprintln!(\"[~w] Server listening on {}\", addr);
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    let state = Arc::clone(&self.state);
+                    thread::spawn(move || {
+                        Self::handle_connection(stream, state);
+                    });
+                }
+                Err(e) => eprintln!(\"[~w] Accept error: {}\", e),
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_connection(mut stream: TcpStream, _state: Arc<RwLock<HashMap<String, Value>>>) {
+        let reader = BufReader::new(stream.try_clone().unwrap());
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    if let Ok(request) = serde_json::from_str::<Value>(&line) {
+                        let request_id = request.get(\"_id\").and_then(|v| v.as_str()).unwrap_or(\"\");
+                        let payload = request.get(\"_payload\").unwrap_or(&request);
+                        // Process request (simplified)
+                        let response = serde_json::json!({
+                            \"_id\": request_id,
+                            \"_status\": \"ok\",
+                            \"_payload\": payload
+                        });
+                        let _ = writeln!(stream, \"{}\", response);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+fn main() {
+    let service = ~wService::new();
+    if let Err(e) = service.start_server() {
+        eprintln!(\"Failed to start server: {}\", e);
+        std::process::exit(1);
+    }
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, Name, Host, Port, HandlerCode, Name, Name, StructNameAtom])
+    ;
+        format(string(RustCode),
+"use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+use serde_json::Value;
+
+pub struct ~wService {
+    name: String,
+    host: String,
+    port: u16,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            name: \"~w\".to_string(),
+            host: \"~w\".to_string(),
+            port: ~w,
+        }
+    }
+
+    pub fn call(&self, request: Value) -> Result<Value, ServiceError> {
+~w
+    }
+
+    pub fn start_server(&self) -> std::io::Result<()> {
+        let addr = format!(\"{}:{}\", self.host, self.port);
+        let listener = TcpListener::bind(&addr)?;
+        eprintln!(\"[~w] Server listening on {}\", addr);
+
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    thread::spawn(move || {
+                        Self::handle_connection(stream);
+                    });
+                }
+                Err(e) => eprintln!(\"[~w] Accept error: {}\", e),
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_connection(mut stream: TcpStream) {
+        let reader = BufReader::new(stream.try_clone().unwrap());
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    if let Ok(request) = serde_json::from_str::<Value>(&line) {
+                        let request_id = request.get(\"_id\").and_then(|v| v.as_str()).unwrap_or(\"\");
+                        let payload = request.get(\"_payload\").unwrap_or(&request);
+                        // Process request (simplified)
+                        let response = serde_json::json!({
+                            \"_id\": request_id,
+                            \"_status\": \"ok\",
+                            \"_payload\": payload
+                        });
+                        let _ = writeln!(stream, \"{}\", response);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+fn main() {
+    let service = ~wService::new();
+    if let Err(e) = service.start_server() {
+        eprintln!(\"Failed to start server: {}\", e);
+        std::process::exit(1);
+    }
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, Name, Host, Port, HandlerCode, Name, Name, StructNameAtom])
+    ).
+
+%% compile_tcp_client_rust(+ServiceName, +Host, +Port, -RustCode)
+%  Generate Rust code for a TCP network service client.
+compile_tcp_client_rust(Name, Host, Port, RustCode) :-
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    format(string(RustCode),
+"use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
+use std::time::Duration;
+use serde_json::Value;
+use uuid::Uuid;
+
+pub struct ~wClient {
+    host: String,
+    port: u16,
+    timeout: Duration,
+}
+
+impl ~wClient {
+    pub fn new(host: &str, port: u16) -> Self {
+        ~wClient {
+            host: host.to_string(),
+            port,
+            timeout: Duration::from_secs(30),
+        }
+    }
+
+    pub fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        let addr = format!(\"{}:{}\", self.host, self.port);
+        let mut stream = TcpStream::connect(&addr)?;
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
+
+        let request_id = Uuid::new_v4().to_string();
+        let msg = serde_json::json!({
+            \"_id\": request_id,
+            \"_payload\": request
+        });
+        writeln!(stream, \"{}\", msg)?;
+
+        let reader = BufReader::new(&stream);
+        if let Some(Ok(line)) = reader.lines().next() {
+            let response: Value = serde_json::from_str(&line)?;
+            if response.get(\"_status\").and_then(|v| v.as_str()) == Some(\"ok\") {
+                Ok(response.get(\"_payload\").cloned().unwrap_or(Value::Null))
+            } else {
+                Err(ServiceError::new(
+                    \"~w\",
+                    response.get(\"_message\").and_then(|v| v.as_str()).unwrap_or(\"Unknown error\")
+                ))
+            }
+        } else {
+            Err(ServiceError::new(\"~w\", \"No response from server\"))
+        }
+    }
+}
+
+pub fn call_~w(request: Value) -> Result<Value, ServiceError> {
+    let client = ~wClient::new(\"~w\", ~w);
+    client.call(request)
+}
+
+pub struct ~wRemoteService {
+    client: ~wClient,
+}
+
+impl ~wRemoteService {
+    pub fn new(host: &str, port: u16) -> Self {
+        ~wRemoteService {
+            client: ~wClient::new(host, port),
+        }
+    }
+}
+
+impl Service for ~wRemoteService {
+    fn name(&self) -> &str {
+        \"~w\"
+    }
+
+    fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        self.client.call(request)
+    }
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, Name, Name, Name, StructNameAtom, Host, Port,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name]).
+
+%% ============================================
+%% PHASE 3: NETWORK SERVICES (HTTP/REST)
+%% ============================================
+
+%% compile_http_service_rust(+Service, -RustCode)
+%  Generate Rust code for an HTTP REST service server.
+compile_http_service_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Extract endpoint (and optional HTTP options)
+    ( member(transport(http(Endpoint, HttpOptions)), Options) ->
+        true
+    ; member(transport(http(Endpoint)), Options) ->
+        HttpOptions = []
+    ),
+    % Extract host and port from options or use defaults
+    ( member(host(Host), HttpOptions) -> true ; Host = '0.0.0.0' ),
+    ( member(port(Port), HttpOptions) -> true ; Port = 8080 ),
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    % Generate handler code
+    generate_service_handler_rust(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Generate the HTTP service (using tiny_http for simplicity)
+    ( Stateful = true ->
+        format(string(RustCode),
+"use std::collections::HashMap;
+use std::io::Read;
+use std::sync::{Arc, RwLock};
+use serde_json::{json, Value};
+use tiny_http::{Server, Response, Method, Header};
+
+pub struct ~wService {
+    name: String,
+    host: String,
+    port: u16,
+    endpoint: String,
+    state: Arc<RwLock<HashMap<String, Value>>>,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            name: \"~w\".to_string(),
+            host: \"~w\".to_string(),
+            port: ~w,
+            endpoint: \"~w\".to_string(),
+            state: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub fn call(&self, request: Value) -> Result<Value, ServiceError> {
+~w
+    }
+
+    pub fn state_get(&self, key: &str) -> Option<Value> {
+        self.state.read().unwrap().get(key).cloned()
+    }
+
+    pub fn state_put(&self, key: &str, value: Value) {
+        self.state.write().unwrap().insert(key.to_string(), value);
+    }
+
+    pub fn start_server(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let addr = format!(\"{}:{}\", self.host, self.port);
+        let server = Server::http(&addr)?;
+        eprintln!(\"[~w] HTTP server listening on http://{}{}\", addr, self.endpoint);
+
+        for mut request in server.incoming_requests() {
+            let path = request.url().to_string();
+            if !path.starts_with(&self.endpoint) {
+                let response = Response::from_string(json!({\"error\": \"Not found\"}).to_string())
+                    .with_status_code(404)
+                    .with_header(Header::from_bytes(&b\"Content-Type\"[..], &b\"application/json\"[..]).unwrap());
+                let _ = request.respond(response);
+                continue;
+            }
+
+            let method = request.method().to_string();
+            let mut body = String::new();
+            if matches!(request.method(), Method::Post | Method::Put) {
+                let _ = request.as_reader().read_to_string(&mut body);
+            }
+
+            let req = json!({
+                \"method\": method,
+                \"path\": path,
+                \"body\": if body.is_empty() { Value::Null } else { serde_json::from_str(&body).unwrap_or(Value::Null) }
+            });
+
+            let result = self.call(req);
+            let (status, response_body) = match result {
+                Ok(payload) => (200, json!({\"_status\": \"ok\", \"_payload\": payload})),
+                Err(e) => (400, json!({\"_status\": \"error\", \"_message\": e.to_string()})),
+            };
+
+            let response = Response::from_string(response_body.to_string())
+                .with_status_code(status)
+                .with_header(Header::from_bytes(&b\"Content-Type\"[..], &b\"application/json\"[..]).unwrap());
+            let _ = request.respond(response);
+        }
+        Ok(())
+    }
+}
+
+fn main() {
+    let service = ~wService::new();
+    if let Err(e) = service.start_server() {
+        eprintln!(\"Failed to start server: {}\", e);
+        std::process::exit(1);
+    }
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, Name, Host, Port, Endpoint, HandlerCode, Name, StructNameAtom])
+    ;
+        format(string(RustCode),
+"use std::io::Read;
+use serde_json::{json, Value};
+use tiny_http::{Server, Response, Method, Header};
+
+pub struct ~wService {
+    name: String,
+    host: String,
+    port: u16,
+    endpoint: String,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            name: \"~w\".to_string(),
+            host: \"~w\".to_string(),
+            port: ~w,
+            endpoint: \"~w\".to_string(),
+        }
+    }
+
+    pub fn call(&self, request: Value) -> Result<Value, ServiceError> {
+~w
+    }
+
+    pub fn start_server(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let addr = format!(\"{}:{}\", self.host, self.port);
+        let server = Server::http(&addr)?;
+        eprintln!(\"[~w] HTTP server listening on http://{}{}\", addr, self.endpoint);
+
+        for mut request in server.incoming_requests() {
+            let path = request.url().to_string();
+            if !path.starts_with(&self.endpoint) {
+                let response = Response::from_string(json!({\"error\": \"Not found\"}).to_string())
+                    .with_status_code(404)
+                    .with_header(Header::from_bytes(&b\"Content-Type\"[..], &b\"application/json\"[..]).unwrap());
+                let _ = request.respond(response);
+                continue;
+            }
+
+            let method = request.method().to_string();
+            let mut body = String::new();
+            if matches!(request.method(), Method::Post | Method::Put) {
+                let _ = request.as_reader().read_to_string(&mut body);
+            }
+
+            let req = json!({
+                \"method\": method,
+                \"path\": path,
+                \"body\": if body.is_empty() { Value::Null } else { serde_json::from_str(&body).unwrap_or(Value::Null) }
+            });
+
+            let result = self.call(req);
+            let (status, response_body) = match result {
+                Ok(payload) => (200, json!({\"_status\": \"ok\", \"_payload\": payload})),
+                Err(e) => (400, json!({\"_status\": \"error\", \"_message\": e.to_string()})),
+            };
+
+            let response = Response::from_string(response_body.to_string())
+                .with_status_code(status)
+                .with_header(Header::from_bytes(&b\"Content-Type\"[..], &b\"application/json\"[..]).unwrap());
+            let _ = request.respond(response);
+        }
+        Ok(())
+    }
+}
+
+fn main() {
+    let service = ~wService::new();
+    if let Err(e) = service.start_server() {
+        eprintln!(\"Failed to start server: {}\", e);
+        std::process::exit(1);
+    }
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, Name, Host, Port, Endpoint, HandlerCode, Name, StructNameAtom])
+    ).
+
+%% compile_http_client_rust(+ServiceName, +Endpoint, -RustCode)
+%  Generate Rust code for an HTTP REST service client.
+compile_http_client_rust(Name, Endpoint, RustCode) :-
+    compile_http_client_rust(Name, Endpoint, [], RustCode).
+
+compile_http_client_rust(Name, Endpoint, HttpOptions, RustCode) :-
+    % Extract host and port from options or use defaults
+    ( member(host(Host), HttpOptions) -> true ; Host = 'localhost' ),
+    ( member(port(Port), HttpOptions) -> true ; Port = 8080 ),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    format(string(RustCode),
+"use reqwest::blocking::Client;
+use serde_json::Value;
+use std::time::Duration;
+
+pub struct ~wClient {
+    base_url: String,
+    client: Client,
+}
+
+impl ~wClient {
+    pub fn new(host: &str, port: u16) -> Self {
+        ~wClient {
+            base_url: format!(\"http://{}:{}~w\", host, port),
+            client: Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap(),
+        }
+    }
+
+    pub fn get(&self, path: &str) -> Result<Value, ServiceError> {
+        let url = format!(\"{}{}\", self.base_url, path);
+        let response = self.client.get(&url).send()?;
+        let result: Value = response.json()?;
+        if result.get(\"_status\").and_then(|v| v.as_str()) == Some(\"ok\") {
+            Ok(result.get(\"_payload\").cloned().unwrap_or(Value::Null))
+        } else {
+            Err(ServiceError::new(\"~w\", result.get(\"_message\").and_then(|v| v.as_str()).unwrap_or(\"Unknown error\")))
+        }
+    }
+
+    pub fn post(&self, path: &str, data: Value) -> Result<Value, ServiceError> {
+        let url = format!(\"{}{}\", self.base_url, path);
+        let response = self.client.post(&url).json(&data).send()?;
+        let result: Value = response.json()?;
+        if result.get(\"_status\").and_then(|v| v.as_str()) == Some(\"ok\") {
+            Ok(result.get(\"_payload\").cloned().unwrap_or(Value::Null))
+        } else {
+            Err(ServiceError::new(\"~w\", result.get(\"_message\").and_then(|v| v.as_str()).unwrap_or(\"Unknown error\")))
+        }
+    }
+
+    pub fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        let method = request.get(\"method\").and_then(|v| v.as_str()).unwrap_or(\"POST\");
+        let path = request.get(\"path\").and_then(|v| v.as_str()).unwrap_or(\"\");
+        let data = request.get(\"body\").cloned().or_else(|| request.get(\"data\").cloned());
+
+        match method {
+            \"GET\" => self.get(path),
+            _ => self.post(path, data.unwrap_or(Value::Null)),
+        }
+    }
+}
+
+pub fn call_~w(request: Value) -> Result<Value, ServiceError> {
+    let client = ~wClient::new(\"~w\", ~w);
+    client.call(request)
+}
+
+pub struct ~wRemoteService {
+    client: ~wClient,
+}
+
+impl ~wRemoteService {
+    pub fn new(host: &str, port: u16) -> Self {
+        ~wRemoteService {
+            client: ~wClient::new(host, port),
+        }
+    }
+}
+
+impl Service for ~wRemoteService {
+    fn name(&self) -> &str {
+        \"~w\"
+    }
+
+    fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        self.client.call(request)
+    }
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, Endpoint, Name, Name, Name, StructNameAtom, Host, Port,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name]).
+
+%% ============================================
+%% PHASE 4: SERVICE MESH
+%% ============================================
+
+%% compile_service_mesh_rust(+Service, -RustCode)
+%  Generate Rust code for a service mesh service.
+compile_service_mesh_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Generate handler code
+    generate_service_handler_rust(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Extract configurations
+    ( ( member(load_balance(LBStrategy), Options) ; member(load_balance(LBStrategy, _), Options) ) ->
+        atom_string(LBStrategy, LBStrategyStr)
+    ;
+        LBStrategyStr = "none"
+    ),
+    ( ( member(circuit_breaker(threshold(CBThreshold), timeout(CBTimeout)), Options)
+      ; ( member(circuit_breaker(CBOpts), Options), is_list(CBOpts),
+          ( member(threshold(CBThreshold), CBOpts) -> true ; CBThreshold = 5 ),
+          ( member(timeout(CBTimeout), CBOpts) -> true ; CBTimeout = 30000 ) ) ) ->
+        true
+    ;
+        CBThreshold = 5,
+        CBTimeout = 30000
+    ),
+    ( ( member(retry(RetryN, RetryStrategy, RetryOpts), Options) ->
+          ( member(delay(RetryDelay), RetryOpts) -> true ; RetryDelay = 100 ),
+          ( member(max_delay(RetryMaxDelay), RetryOpts) -> true ; RetryMaxDelay = 30000 )
+      ; member(retry(RetryN, RetryStrategy), Options) ->
+          RetryDelay = 100,
+          RetryMaxDelay = 30000
+      ) ->
+        atom_string(RetryStrategy, RetryStrategyStr)
+    ;
+        RetryN = 0,
+        RetryStrategyStr = "none",
+        RetryDelay = 100,
+        RetryMaxDelay = 30000
+    ),
+    format(string(RustCode),
+"use std::sync::atomic::{AtomicU32, AtomicI32, Ordering};
+use std::sync::RwLock;
+use std::time::{Duration, Instant};
+use std::thread;
+use serde_json::Value;
+use rand::Rng;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum CircuitState {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
+pub struct Backend {
+    pub name: String,
+    pub transport: String,
+}
+
+/// ~wService is a service mesh service
+pub struct ~wService {
+    name: String,
+    backends: Vec<Backend>,
+    lb_strategy: String,
+    cb_threshold: i32,
+    cb_timeout: Duration,
+    retry_max: i32,
+    retry_strategy: String,
+    retry_delay: Duration,
+    retry_max_delay: Duration,
+    circuit_state: RwLock<CircuitState>,
+    failure_count: AtomicI32,
+    last_failure_time: RwLock<Option<Instant>>,
+    rr_index: AtomicU32,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            name: \"~w\".to_string(),
+            backends: Vec::new(),
+            lb_strategy: \"~w\".to_string(),
+            cb_threshold: ~w,
+            cb_timeout: Duration::from_millis(~w),
+            retry_max: ~w,
+            retry_strategy: \"~w\".to_string(),
+            retry_delay: Duration::from_millis(~w),
+            retry_max_delay: Duration::from_millis(~w),
+            circuit_state: RwLock::new(CircuitState::Closed),
+            failure_count: AtomicI32::new(0),
+            last_failure_time: RwLock::new(None),
+            rr_index: AtomicU32::new(0),
+        }
+    }
+
+    fn select_backend(&self) -> Option<&Backend> {
+        if self.backends.is_empty() {
+            return None;
+        }
+        match self.lb_strategy.as_str() {
+            \"round_robin\" => {
+                let idx = self.rr_index.fetch_add(1, Ordering::SeqCst) as usize;
+                Some(&self.backends[idx %% self.backends.len()])
+            }
+            \"random\" => {
+                let idx = rand::thread_rng().gen_range(0..self.backends.len());
+                Some(&self.backends[idx])
+            }
+            _ => Some(&self.backends[0]),
+        }
+    }
+
+    fn check_circuit(&self) -> bool {
+        let state = *self.circuit_state.read().unwrap();
+        if state == CircuitState::Open {
+            if let Some(last_failure) = *self.last_failure_time.read().unwrap() {
+                if last_failure.elapsed() > self.cb_timeout {
+                    *self.circuit_state.write().unwrap() = CircuitState::HalfOpen;
+                    return true;
+                }
+            }
+            return false;
+        }
+        true
+    }
+
+    fn record_success(&self) {
+        let state = *self.circuit_state.read().unwrap();
+        if state == CircuitState::HalfOpen {
+            *self.circuit_state.write().unwrap() = CircuitState::Closed;
+        }
+        self.failure_count.store(0, Ordering::SeqCst);
+    }
+
+    fn record_failure(&self) {
+        let count = self.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.last_failure_time.write().unwrap() = Some(Instant::now());
+        if count >= self.cb_threshold {
+            *self.circuit_state.write().unwrap() = CircuitState::Open;
+        }
+    }
+
+    fn calculate_delay(&self, attempt: i32) -> Duration {
+        match self.retry_strategy.as_str() {
+            \"fixed\" => self.retry_delay,
+            \"linear\" => {
+                let d = self.retry_delay * (attempt + 1) as u32;
+                d.min(self.retry_max_delay)
+            }
+            \"exponential\" => {
+                let d = self.retry_delay * (1 << attempt) as u32;
+                d.min(self.retry_max_delay)
+            }
+            _ => self.retry_delay,
+        }
+    }
+
+    fn handle_request(&self, request: Value) -> Result<Value, ServiceError> {
+~w
+    }
+}
+
+impl Service for ~wService {
+    fn name(&self) -> &str {
+        \"~w\"
+    }
+
+    fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        if !self.check_circuit() {
+            return Err(ServiceError::new(\"~w\", \"circuit breaker is open\"));
+        }
+        let max_attempts = (self.retry_max + 1).max(1);
+        let mut last_err = None;
+        for attempt in 0..max_attempts {
+            let _ = self.select_backend();
+            match self.handle_request(request.clone()) {
+                Ok(result) => {
+                    self.record_success();
+                    return Ok(result);
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    self.record_failure();
+                    if attempt < max_attempts - 1 {
+                        thread::sleep(self.calculate_delay(attempt));
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| ServiceError::new(\"~w\", \"all retries exhausted\")))
+    }
+}
+
+lazy_static::lazy_static! {
+    static ref ~w_SERVICE: ~wService = ~wService::new();
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, LBStrategyStr, CBThreshold, CBTimeout, RetryN, RetryStrategyStr, RetryDelay, RetryMaxDelay,
+    HandlerCode, StructNameAtom, Name, Name, Name, StructNameAtom, StructNameAtom, StructNameAtom]).
 
 %% ============================================
 %% PUBLIC API
