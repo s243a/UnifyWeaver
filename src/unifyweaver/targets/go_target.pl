@@ -34,7 +34,15 @@
     generate_service_handler_go/2,  % +HandlerSpec, -GoCode
     % Phase 2: Cross-process services
     compile_unix_socket_service_go/2,   % +Service, -GoCode
-    compile_unix_socket_client_go/3     % +ServiceName, +SocketPath, -GoCode
+    compile_unix_socket_client_go/3,    % +ServiceName, +SocketPath, -GoCode
+    % Phase 3: Network services
+    compile_tcp_service_go/2,           % +Service, -GoCode
+    compile_tcp_client_go/4,            % +ServiceName, +Host, +Port, -GoCode
+    compile_http_service_go/2,          % +Service, -GoCode
+    compile_http_client_go/3,           % +ServiceName, +Endpoint, -GoCode
+    compile_http_client_go/4,           % +ServiceName, +Endpoint, +Options, -GoCode
+    % Phase 4: Service mesh
+    compile_service_mesh_go/2           % +Service, -GoCode
 ]).
 
 :- use_module(library(lists)).
@@ -216,6 +224,40 @@ compile_service_to_go(Service, GoCode) :-
     !,
     % Phase 2: Unix socket service
     compile_unix_socket_service_go(Service, GoCode).
+
+compile_service_to_go(Service, GoCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(tcp(_Host, _Port)), Options),
+    !,
+    % Phase 3: TCP service
+    compile_tcp_service_go(Service, GoCode).
+
+compile_service_to_go(Service, GoCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(http(_Endpoint)), Options),
+    !,
+    % Phase 3: HTTP service
+    compile_http_service_go(Service, GoCode).
+
+compile_service_to_go(Service, GoCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(http(_Endpoint, _HttpOptions)), Options),
+    !,
+    % Phase 3: HTTP service with options
+    compile_http_service_go(Service, GoCode).
+
+compile_service_to_go(Service, GoCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(load_balance(_), Options)
+    ; member(load_balance(_, _), Options)
+    ; member(circuit_breaker(_, _), Options)
+    ; member(circuit_breaker(_), Options)
+    ; member(retry(_, _), Options)
+    ; member(retry(_, _, _), Options)
+    ),
+    !,
+    % Phase 4: Service mesh service
+    compile_service_mesh_go(Service, GoCode).
 
 compile_service_to_go(service(Name, Options, HandlerSpec), GoCode) :-
     % Phase 1: In-process service (default)
@@ -871,6 +913,1355 @@ func init() {
     StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
     Name, StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom, SocketPath,
     StructNameAtom, StructNameAtom, StructNameAtom, Name, StructNameAtom, Name, Name, StructNameAtom, StructNameAtom]).
+
+%% ============================================
+%% PHASE 3: NETWORK SERVICES (TCP)
+%% ============================================
+
+%% compile_tcp_service_go(+Service, -GoCode)
+%  Generate Go code for a TCP network service server.
+compile_tcp_service_go(service(Name, Options, HandlerSpec), GoCode) :-
+    % Extract host and port
+    member(transport(tcp(Host, Port)), Options),
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    % Extract timeout (default 30000ms)
+    ( member(timeout(TimeoutMs), Options) -> Timeout = TimeoutMs ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_go(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Generate the TCP service (different for stateful/stateless)
+    ( Stateful = true ->
+        format(string(GoCode),
+"package main
+
+import (
+\t\"bufio\"
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"net\"
+\t\"os\"
+\t\"os/signal\"
+\t\"sync\"
+\t\"syscall\"
+)
+
+// ~wService is a TCP network service (stateful)
+type ~wService struct {
+\tname     string
+\thost     string
+\tport     int
+\ttimeout  int
+\tstate    map[string]interface{}
+\tstateMu  sync.RWMutex
+\tlistener net.Listener
+\trunning  bool
+\trunMu    sync.Mutex
+}
+
+// New~wService creates a new TCP service
+func New~wService() *~wService {
+\treturn &~wService{
+\t\tname:    \"~w\",
+\t\thost:    \"~w\",
+\t\tport:    ~w,
+\t\ttimeout: ~w,
+\t\tstate:   make(map[string]interface{}),
+\t}
+}
+
+func (s *~wService) Name() string { return s.name }
+
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+~w
+}
+
+func (s *~wService) StateGet(key string) interface{} {
+\ts.stateMu.RLock()
+\tdefer s.stateMu.RUnlock()
+\treturn s.state[key]
+}
+
+func (s *~wService) StatePut(key string, value interface{}) {
+\ts.stateMu.Lock()
+\tdefer s.stateMu.Unlock()
+\ts.state[key] = value
+}
+
+func (s *~wService) StartServer() error {
+\taddr := fmt.Sprintf(\"%%s:%%d\", s.host, s.port)
+\tlistener, err := net.Listen(\"tcp\", addr)
+\tif err != nil {
+\t\treturn err
+\t}
+\ts.listener = listener
+\ts.running = true
+
+\tfmt.Fprintf(os.Stderr, \"[~w] Server listening on %%s\\n\", addr)
+
+\tgo func() {
+\t\tfor s.running {
+\t\t\tconn, err := listener.Accept()
+\t\t\tif err != nil {
+\t\t\t\tif s.running {
+\t\t\t\t\tfmt.Fprintf(os.Stderr, \"[~w] Accept error: %%v\\n\", err)
+\t\t\t\t}
+\t\t\t\tcontinue
+\t\t\t}
+\t\t\tgo s.handleConnection(conn)
+\t\t}
+\t}()
+
+\treturn nil
+}
+
+func (s *~wService) handleConnection(conn net.Conn) {
+\tdefer conn.Close()
+\treader := bufio.NewReader(conn)
+
+\tfor {
+\t\tline, err := reader.ReadBytes('\\n')
+\t\tif err != nil {
+\t\t\treturn
+\t\t}
+\t\ts.processRequest(conn, line)
+\t}
+}
+
+func (s *~wService) processRequest(conn net.Conn, line []byte) {
+\tvar request map[string]interface{}
+\tif err := json.Unmarshal(line, &request); err != nil {
+\t\ts.sendError(conn, \"parse_error\", err.Error())
+\t\treturn
+\t}
+
+\trequestID, _ := request[\"_id\"].(string)
+\tpayload := request[\"_payload\"]
+\tif payload == nil {
+\t\tpayload = request
+\t}
+
+\tresponse, err := s.Call(payload)
+\tif err != nil {
+\t\ts.sendError(conn, \"service_error\", err.Error())
+\t\treturn
+\t}
+
+\ts.sendResponse(conn, requestID, response)
+}
+
+func (s *~wService) sendResponse(conn net.Conn, requestID string, response interface{}) {
+\tmsg := map[string]interface{}{
+\t\t\"_id\":      requestID,
+\t\t\"_status\":  \"ok\",
+\t\t\"_payload\": response,
+\t}
+\tdata, _ := json.Marshal(msg)
+\tconn.Write(append(data, '\\n'))
+}
+
+func (s *~wService) sendError(conn net.Conn, errType, message string) {
+\tmsg := map[string]interface{}{
+\t\t\"_status\":     \"error\",
+\t\t\"_error_type\": errType,
+\t\t\"_message\":    message,
+\t}
+\tdata, _ := json.Marshal(msg)
+\tconn.Write(append(data, '\\n'))
+}
+
+func (s *~wService) StopServer() {
+\ts.runMu.Lock()
+\ts.running = false
+\ts.runMu.Unlock()
+\tif s.listener != nil {
+\t\ts.listener.Close()
+\t}
+\tfmt.Fprintf(os.Stderr, \"[~w] Server stopped\\n\")
+}
+
+var _~wService = New~wService()
+
+func init() {
+\tRegisterService(\"~w\", _~wService)
+}
+
+func main() {
+\tsigChan := make(chan os.Signal, 1)
+\tsignal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+\tif err := _~wService.StartServer(); err != nil {
+\t\tfmt.Fprintf(os.Stderr, \"Failed to start server: %%v\\n\", err)
+\t\tos.Exit(1)
+\t}
+
+\t<-sigChan
+\tfmt.Fprintf(os.Stderr, \"\\n[~w] Shutting down...\\n\")
+\t_~wService.StopServer()
+}
+", [StructNameAtom, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, Host, Port, Timeout,
+    StructNameAtom, StructNameAtom, HandlerCode,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
+    Name, Name, StructNameAtom, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, Name,
+    Name, StructNameAtom, Name, Name, StructNameAtom, Name, StructNameAtom])
+    ;
+        format(string(GoCode),
+"package main
+
+import (
+\t\"bufio\"
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"net\"
+\t\"os\"
+\t\"os/signal\"
+\t\"sync\"
+\t\"syscall\"
+)
+
+// ~wService is a TCP network service
+type ~wService struct {
+\tname     string
+\thost     string
+\tport     int
+\ttimeout  int
+\tlistener net.Listener
+\trunning  bool
+\trunMu    sync.Mutex
+}
+
+// New~wService creates a new TCP service
+func New~wService() *~wService {
+\treturn &~wService{
+\t\tname:    \"~w\",
+\t\thost:    \"~w\",
+\t\tport:    ~w,
+\t\ttimeout: ~w,
+\t}
+}
+
+func (s *~wService) Name() string { return s.name }
+
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+~w
+}
+
+func (s *~wService) StartServer() error {
+\taddr := fmt.Sprintf(\"%%s:%%d\", s.host, s.port)
+\tlistener, err := net.Listen(\"tcp\", addr)
+\tif err != nil {
+\t\treturn err
+\t}
+\ts.listener = listener
+\ts.running = true
+
+\tfmt.Fprintf(os.Stderr, \"[~w] Server listening on %%s\\n\", addr)
+
+\tgo func() {
+\t\tfor s.running {
+\t\t\tconn, err := listener.Accept()
+\t\t\tif err != nil {
+\t\t\t\tif s.running {
+\t\t\t\t\tfmt.Fprintf(os.Stderr, \"[~w] Accept error: %%v\\n\", err)
+\t\t\t\t}
+\t\t\t\tcontinue
+\t\t\t}
+\t\t\tgo s.handleConnection(conn)
+\t\t}
+\t}()
+
+\treturn nil
+}
+
+func (s *~wService) handleConnection(conn net.Conn) {
+\tdefer conn.Close()
+\treader := bufio.NewReader(conn)
+
+\tfor {
+\t\tline, err := reader.ReadBytes('\\n')
+\t\tif err != nil {
+\t\t\treturn
+\t\t}
+\t\ts.processRequest(conn, line)
+\t}
+}
+
+func (s *~wService) processRequest(conn net.Conn, line []byte) {
+\tvar request map[string]interface{}
+\tif err := json.Unmarshal(line, &request); err != nil {
+\t\ts.sendError(conn, \"parse_error\", err.Error())
+\t\treturn
+\t}
+
+\trequestID, _ := request[\"_id\"].(string)
+\tpayload := request[\"_payload\"]
+\tif payload == nil {
+\t\tpayload = request
+\t}
+
+\tresponse, err := s.Call(payload)
+\tif err != nil {
+\t\ts.sendError(conn, \"service_error\", err.Error())
+\t\treturn
+\t}
+
+\ts.sendResponse(conn, requestID, response)
+}
+
+func (s *~wService) sendResponse(conn net.Conn, requestID string, response interface{}) {
+\tmsg := map[string]interface{}{
+\t\t\"_id\":      requestID,
+\t\t\"_status\":  \"ok\",
+\t\t\"_payload\": response,
+\t}
+\tdata, _ := json.Marshal(msg)
+\tconn.Write(append(data, '\\n'))
+}
+
+func (s *~wService) sendError(conn net.Conn, errType, message string) {
+\tmsg := map[string]interface{}{
+\t\t\"_status\":     \"error\",
+\t\t\"_error_type\": errType,
+\t\t\"_message\":    message,
+\t}
+\tdata, _ := json.Marshal(msg)
+\tconn.Write(append(data, '\\n'))
+}
+
+func (s *~wService) StopServer() {
+\ts.runMu.Lock()
+\ts.running = false
+\ts.runMu.Unlock()
+\tif s.listener != nil {
+\t\ts.listener.Close()
+\t}
+\tfmt.Fprintf(os.Stderr, \"[~w] Server stopped\\n\")
+}
+
+var _~wService = New~wService()
+
+func init() {
+\tRegisterService(\"~w\", _~wService)
+}
+
+func main() {
+\tsigChan := make(chan os.Signal, 1)
+\tsignal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+\tif err := _~wService.StartServer(); err != nil {
+\t\tfmt.Fprintf(os.Stderr, \"Failed to start server: %%v\\n\", err)
+\t\tos.Exit(1)
+\t}
+
+\t<-sigChan
+\tfmt.Fprintf(os.Stderr, \"\\n[~w] Shutting down...\\n\")
+\t_~wService.StopServer()
+}
+", [StructNameAtom, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, Host, Port, Timeout,
+    StructNameAtom, StructNameAtom, HandlerCode,
+    StructNameAtom, Name, Name, StructNameAtom, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, Name,
+    StructNameAtom, StructNameAtom, Name, StructNameAtom, StructNameAtom, Name, StructNameAtom])
+    ).
+
+%% compile_tcp_client_go(+ServiceName, +Host, +Port, -GoCode)
+%  Generate Go code for a TCP network service client.
+compile_tcp_client_go(Name, Host, Port, GoCode) :-
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    format(string(GoCode),
+"package main
+
+import (
+\t\"bufio\"
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"net\"
+
+\t\"github.com/google/uuid\"
+)
+
+// ~wClient is a TCP client for the ~w service
+type ~wClient struct {
+\thost    string
+\tport    int
+\ttimeout int
+\tconn    net.Conn
+}
+
+// New~wClient creates a new TCP client
+func New~wClient(host string, port int) *~wClient {
+\treturn &~wClient{
+\t\thost:    host,
+\t\tport:    port,
+\t\ttimeout: 30000,
+\t}
+}
+
+// Default~wClient is the default client instance
+var Default~wClient = New~wClient(\"~w\", ~w)
+
+func (c *~wClient) Connect() error {
+\taddr := fmt.Sprintf(\"%%s:%%d\", c.host, c.port)
+\tconn, err := net.Dial(\"tcp\", addr)
+\tif err != nil {
+\t\treturn err
+\t}
+\tc.conn = conn
+\treturn nil
+}
+
+func (c *~wClient) Disconnect() {
+\tif c.conn != nil {
+\t\tc.conn.Close()
+\t\tc.conn = nil
+\t}
+}
+
+func (c *~wClient) Call(request interface{}) (interface{}, error) {
+\tif c.conn == nil {
+\t\tif err := c.Connect(); err != nil {
+\t\t\treturn nil, err
+\t\t}
+\t}
+
+\trequestID := uuid.New().String()
+\tmsg := map[string]interface{}{
+\t\t\"_id\":      requestID,
+\t\t\"_payload\": request,
+\t}
+
+\tdata, err := json.Marshal(msg)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+
+\tif _, err := c.conn.Write(append(data, '\\n')); err != nil {
+\t\treturn nil, err
+\t}
+
+\treader := bufio.NewReader(c.conn)
+\tline, err := reader.ReadBytes('\\n')
+\tif err != nil {
+\t\treturn nil, err
+\t}
+
+\tvar response map[string]interface{}
+\tif err := json.Unmarshal(line, &response); err != nil {
+\t\treturn nil, err
+\t}
+
+\tif response[\"_status\"] == \"ok\" {
+\t\treturn response[\"_payload\"], nil
+\t}
+\treturn nil, fmt.Errorf(\"service error: %%v\", response[\"_message\"])
+}
+
+// Call~w calls the ~w service
+func Call~w(request interface{}) (interface{}, error) {
+\treturn Default~wClient.Call(request)
+}
+
+// ~wRemoteService wraps the client as a Service
+type ~wRemoteService struct {
+\tclient *~wClient
+}
+
+func (s *~wRemoteService) Name() string { return \"~w\" }
+
+func (s *~wRemoteService) Call(request interface{}) (interface{}, error) {
+\treturn s.client.Call(request)
+}
+
+func init() {
+\tif _, ok := services[\"~w\"]; !ok {
+\t\tRegisterService(\"~w\", &~wRemoteService{client: Default~wClient})
+\t}
+}
+", [StructNameAtom, Name, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, Host, Port,
+    StructNameAtom, StructNameAtom, StructNameAtom,
+    Name, Name, Name, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name,
+    StructNameAtom, Name, Name, StructNameAtom, StructNameAtom]).
+
+%% ============================================
+%% PHASE 3: NETWORK SERVICES (HTTP/REST)
+%% ============================================
+
+%% compile_http_service_go(+Service, -GoCode)
+%  Generate Go code for an HTTP REST service server.
+compile_http_service_go(service(Name, Options, HandlerSpec), GoCode) :-
+    % Extract endpoint (and optional HTTP options)
+    ( member(transport(http(Endpoint, HttpOptions)), Options) ->
+        true
+    ; member(transport(http(Endpoint)), Options) ->
+        HttpOptions = []
+    ),
+    % Extract host and port from options or use defaults
+    ( member(host(Host), HttpOptions) -> true ; Host = '0.0.0.0' ),
+    ( member(port(Port), HttpOptions) -> true ; Port = 8080 ),
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    % Extract timeout (default 30000ms)
+    ( member(timeout(TimeoutMs), Options) -> Timeout = TimeoutMs ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_go(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Generate the HTTP service
+    ( Stateful = true ->
+        format(string(GoCode),
+"package main
+
+import (
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"io\"
+\t\"net/http\"
+\t\"os\"
+\t\"os/signal\"
+\t\"sync\"
+\t\"syscall\"
+)
+
+// ~wService is an HTTP REST service (stateful)
+type ~wService struct {
+\tname     string
+\thost     string
+\tport     int
+\tendpoint string
+\ttimeout  int
+\tstate    map[string]interface{}
+\tstateMu  sync.RWMutex
+\tserver   *http.Server
+}
+
+// New~wService creates a new HTTP service
+func New~wService() *~wService {
+\treturn &~wService{
+\t\tname:     \"~w\",
+\t\thost:     \"~w\",
+\t\tport:     ~w,
+\t\tendpoint: \"~w\",
+\t\ttimeout:  ~w,
+\t\tstate:    make(map[string]interface{}),
+\t}
+}
+
+func (s *~wService) Name() string { return s.name }
+
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+~w
+}
+
+func (s *~wService) StateGet(key string) interface{} {
+\ts.stateMu.RLock()
+\tdefer s.stateMu.RUnlock()
+\treturn s.state[key]
+}
+
+func (s *~wService) StatePut(key string, value interface{}) {
+\ts.stateMu.Lock()
+\tdefer s.stateMu.Unlock()
+\ts.state[key] = value
+}
+
+func (s *~wService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+\tw.Header().Set(\"Content-Type\", \"application/json\")
+
+\t// Build request object
+\trequest := map[string]interface{}{
+\t\t\"method\":  r.Method,
+\t\t\"path\":    r.URL.Path,
+\t\t\"query\":   r.URL.Query(),
+\t\t\"headers\": r.Header,
+\t}
+
+\t// Read body for POST/PUT/PATCH
+\tif r.Method == \"POST\" || r.Method == \"PUT\" || r.Method == \"PATCH\" {
+\t\tbody, _ := io.ReadAll(r.Body)
+\t\tif len(body) > 0 {
+\t\t\tvar bodyData interface{}
+\t\t\tjson.Unmarshal(body, &bodyData)
+\t\t\trequest[\"body\"] = bodyData
+\t\t}
+\t}
+
+\tresponse, err := s.Call(request)
+\tif err != nil {
+\t\tw.WriteHeader(http.StatusBadRequest)
+\t\tjson.NewEncoder(w).Encode(map[string]interface{}{
+\t\t\t\"_status\":     \"error\",
+\t\t\t\"_error_type\": \"service_error\",
+\t\t\t\"_message\":    err.Error(),
+\t\t})
+\t\treturn
+\t}
+
+\tjson.NewEncoder(w).Encode(map[string]interface{}{
+\t\t\"_status\":  \"ok\",
+\t\t\"_payload\": response,
+\t})
+}
+
+func (s *~wService) StartServer() error {
+\taddr := fmt.Sprintf(\"%%s:%%d\", s.host, s.port)
+\tmux := http.NewServeMux()
+\tmux.Handle(s.endpoint, s)
+\tmux.Handle(s.endpoint+\"/\", s)
+
+\ts.server = &http.Server{
+\t\tAddr:    addr,
+\t\tHandler: mux,
+\t}
+
+\tfmt.Fprintf(os.Stderr, \"[~w] HTTP server listening on http://%%s%%s\\n\", addr, s.endpoint)
+
+\tgo func() {
+\t\tif err := s.server.ListenAndServe(); err != http.ErrServerClosed {
+\t\t\tfmt.Fprintf(os.Stderr, \"[~w] Server error: %%v\\n\", err)
+\t\t}
+\t}()
+
+\treturn nil
+}
+
+func (s *~wService) StopServer() {
+\tif s.server != nil {
+\t\ts.server.Close()
+\t}
+\tfmt.Fprintf(os.Stderr, \"[~w] HTTP server stopped\\n\")
+}
+
+var _~wService = New~wService()
+
+func init() {
+\tRegisterService(\"~w\", _~wService)
+}
+
+func main() {
+\tsigChan := make(chan os.Signal, 1)
+\tsignal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+\tif err := _~wService.StartServer(); err != nil {
+\t\tfmt.Fprintf(os.Stderr, \"Failed to start server: %%v\\n\", err)
+\t\tos.Exit(1)
+\t}
+
+\t<-sigChan
+\tfmt.Fprintf(os.Stderr, \"\\n[~w] Shutting down...\\n\")
+\t_~wService.StopServer()
+}
+", [StructNameAtom, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, Host, Port, Endpoint, Timeout,
+    StructNameAtom, StructNameAtom, HandlerCode,
+    StructNameAtom, StructNameAtom, StructNameAtom,
+    StructNameAtom, Name, Name, StructNameAtom, Name,
+    StructNameAtom, StructNameAtom, Name, StructNameAtom, StructNameAtom, Name, StructNameAtom])
+    ;
+        format(string(GoCode),
+"package main
+
+import (
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"io\"
+\t\"net/http\"
+\t\"os\"
+\t\"os/signal\"
+\t\"syscall\"
+)
+
+// ~wService is an HTTP REST service
+type ~wService struct {
+\tname     string
+\thost     string
+\tport     int
+\tendpoint string
+\ttimeout  int
+\tserver   *http.Server
+}
+
+// New~wService creates a new HTTP service
+func New~wService() *~wService {
+\treturn &~wService{
+\t\tname:     \"~w\",
+\t\thost:     \"~w\",
+\t\tport:     ~w,
+\t\tendpoint: \"~w\",
+\t\ttimeout:  ~w,
+\t}
+}
+
+func (s *~wService) Name() string { return s.name }
+
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+~w
+}
+
+func (s *~wService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+\tw.Header().Set(\"Content-Type\", \"application/json\")
+
+\t// Build request object
+\trequest := map[string]interface{}{
+\t\t\"method\":  r.Method,
+\t\t\"path\":    r.URL.Path,
+\t\t\"query\":   r.URL.Query(),
+\t\t\"headers\": r.Header,
+\t}
+
+\t// Read body for POST/PUT/PATCH
+\tif r.Method == \"POST\" || r.Method == \"PUT\" || r.Method == \"PATCH\" {
+\t\tbody, _ := io.ReadAll(r.Body)
+\t\tif len(body) > 0 {
+\t\t\tvar bodyData interface{}
+\t\t\tjson.Unmarshal(body, &bodyData)
+\t\t\trequest[\"body\"] = bodyData
+\t\t}
+\t}
+
+\tresponse, err := s.Call(request)
+\tif err != nil {
+\t\tw.WriteHeader(http.StatusBadRequest)
+\t\tjson.NewEncoder(w).Encode(map[string]interface{}{
+\t\t\t\"_status\":     \"error\",
+\t\t\t\"_error_type\": \"service_error\",
+\t\t\t\"_message\":    err.Error(),
+\t\t})
+\t\treturn
+\t}
+
+\tjson.NewEncoder(w).Encode(map[string]interface{}{
+\t\t\"_status\":  \"ok\",
+\t\t\"_payload\": response,
+\t})
+}
+
+func (s *~wService) StartServer() error {
+\taddr := fmt.Sprintf(\"%%s:%%d\", s.host, s.port)
+\tmux := http.NewServeMux()
+\tmux.Handle(s.endpoint, s)
+\tmux.Handle(s.endpoint+\"/\", s)
+
+\ts.server = &http.Server{
+\t\tAddr:    addr,
+\t\tHandler: mux,
+\t}
+
+\tfmt.Fprintf(os.Stderr, \"[~w] HTTP server listening on http://%%s%%s\\n\", addr, s.endpoint)
+
+\tgo func() {
+\t\tif err := s.server.ListenAndServe(); err != http.ErrServerClosed {
+\t\t\tfmt.Fprintf(os.Stderr, \"[~w] Server error: %%v\\n\", err)
+\t\t}
+\t}()
+
+\treturn nil
+}
+
+func (s *~wService) StopServer() {
+\tif s.server != nil {
+\t\ts.server.Close()
+\t}
+\tfmt.Fprintf(os.Stderr, \"[~w] HTTP server stopped\\n\")
+}
+
+var _~wService = New~wService()
+
+func init() {
+\tRegisterService(\"~w\", _~wService)
+}
+
+func main() {
+\tsigChan := make(chan os.Signal, 1)
+\tsignal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+\tif err := _~wService.StartServer(); err != nil {
+\t\tfmt.Fprintf(os.Stderr, \"Failed to start server: %%v\\n\", err)
+\t\tos.Exit(1)
+\t}
+
+\t<-sigChan
+\tfmt.Fprintf(os.Stderr, \"\\n[~w] Shutting down...\\n\")
+\t_~wService.StopServer()
+}
+", [StructNameAtom, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, Host, Port, Endpoint, Timeout,
+    StructNameAtom, StructNameAtom, HandlerCode,
+    StructNameAtom, StructNameAtom, Name, Name, StructNameAtom, Name,
+    StructNameAtom, StructNameAtom, Name, StructNameAtom, StructNameAtom, Name, StructNameAtom])
+    ).
+
+%% compile_http_client_go(+ServiceName, +Endpoint, -GoCode)
+%  Generate Go code for an HTTP REST service client.
+compile_http_client_go(Name, Endpoint, GoCode) :-
+    compile_http_client_go(Name, Endpoint, [], GoCode).
+
+compile_http_client_go(Name, Endpoint, HttpOptions, GoCode) :-
+    % Extract host and port from options or use defaults
+    ( member(host(Host), HttpOptions) -> true ; Host = 'localhost' ),
+    ( member(port(Port), HttpOptions) -> true ; Port = 8080 ),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    format(string(GoCode),
+"package main
+
+import (
+\t\"bytes\"
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"io\"
+\t\"net/http\"
+\t\"net/url\"
+)
+
+// ~wClient is an HTTP client for the ~w service
+type ~wClient struct {
+\tbaseURL string
+\ttimeout int
+\tclient  *http.Client
+}
+
+// New~wClient creates a new HTTP client
+func New~wClient(host string, port int) *~wClient {
+\treturn &~wClient{
+\t\tbaseURL: fmt.Sprintf(\"http://%%s:%%d~w\", host, port),
+\t\ttimeout: 30000,
+\t\tclient:  &http.Client{},
+\t}
+}
+
+// Default~wClient is the default client instance
+var Default~wClient = New~wClient(\"~w\", ~w)
+
+func (c *~wClient) makeRequest(method, path string, data interface{}, query url.Values) (interface{}, error) {
+\tfullURL := c.baseURL + path
+\tif len(query) > 0 {
+\t\tfullURL += \"?\" + query.Encode()
+\t}
+
+\tvar body io.Reader
+\tif data != nil {
+\t\tjsonData, err := json.Marshal(data)
+\t\tif err != nil {
+\t\t\treturn nil, err
+\t\t}
+\t\tbody = bytes.NewReader(jsonData)
+\t}
+
+\treq, err := http.NewRequest(method, fullURL, body)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+\treq.Header.Set(\"Content-Type\", \"application/json\")
+
+\tresp, err := c.client.Do(req)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+\tdefer resp.Body.Close()
+
+\trespBody, err := io.ReadAll(resp.Body)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+
+\tvar result map[string]interface{}
+\tif err := json.Unmarshal(respBody, &result); err != nil {
+\t\treturn nil, err
+\t}
+
+\tif result[\"_status\"] == \"ok\" {
+\t\treturn result[\"_payload\"], nil
+\t}
+\treturn nil, fmt.Errorf(\"service error: %%v\", result[\"_message\"])
+}
+
+func (c *~wClient) Get(path string, query url.Values) (interface{}, error) {
+\treturn c.makeRequest(\"GET\", path, nil, query)
+}
+
+func (c *~wClient) Post(path string, data interface{}) (interface{}, error) {
+\treturn c.makeRequest(\"POST\", path, data, nil)
+}
+
+func (c *~wClient) Put(path string, data interface{}) (interface{}, error) {
+\treturn c.makeRequest(\"PUT\", path, data, nil)
+}
+
+func (c *~wClient) Delete(path string) (interface{}, error) {
+\treturn c.makeRequest(\"DELETE\", path, nil, nil)
+}
+
+func (c *~wClient) Call(request interface{}) (interface{}, error) {
+\treq, ok := request.(map[string]interface{})
+\tif !ok {
+\t\treturn c.Post(\"\", request)
+\t}
+
+\tmethod, _ := req[\"method\"].(string)
+\tif method == \"\" {
+\t\tmethod = \"POST\"
+\t}
+\tpath, _ := req[\"path\"].(string)
+\tdata := req[\"body\"]
+\tif data == nil {
+\t\tdata = req[\"data\"]
+\t}
+
+\treturn c.makeRequest(method, path, data, nil)
+}
+
+// Call~w calls the ~w service
+func Call~w(request interface{}) (interface{}, error) {
+\treturn Default~wClient.Call(request)
+}
+
+// ~wRemoteService wraps the client as a Service
+type ~wRemoteService struct {
+\tclient *~wClient
+}
+
+func (s *~wRemoteService) Name() string { return \"~w\" }
+
+func (s *~wRemoteService) Call(request interface{}) (interface{}, error) {
+\treturn s.client.Call(request)
+}
+
+func init() {
+\tif _, ok := services[\"~w\"]; !ok {
+\t\tRegisterService(\"~w\", &~wRemoteService{client: Default~wClient})
+\t}
+}
+", [StructNameAtom, Name, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Endpoint,
+    StructNameAtom, StructNameAtom, StructNameAtom, Host, Port,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
+    Name, Name, Name, StructNameAtom,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name,
+    StructNameAtom, Name, Name, StructNameAtom, StructNameAtom]).
+
+%% ============================================
+%% PHASE 4: SERVICE MESH
+%% ============================================
+
+%% compile_service_mesh_go(+Service, -GoCode)
+%  Generate Go code for a service mesh service with load balancing,
+%  circuit breaker, and retry capabilities.
+compile_service_mesh_go(service(Name, Options, HandlerSpec), GoCode) :-
+    % Generate handler code
+    generate_service_handler_go(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Extract configurations
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    % Load balancing
+    ( ( member(load_balance(LBStrategy), Options) ; member(load_balance(LBStrategy, _), Options) ) ->
+        atom_string(LBStrategy, LBStrategyStr)
+    ;
+        LBStrategyStr = "none"
+    ),
+    % Circuit breaker
+    ( ( member(circuit_breaker(threshold(CBThreshold), timeout(CBTimeout)), Options)
+      ; ( member(circuit_breaker(CBOpts), Options), is_list(CBOpts),
+          ( member(threshold(CBThreshold), CBOpts) -> true ; CBThreshold = 5 ),
+          ( member(timeout(CBTimeout), CBOpts) -> true ; CBTimeout = 30000 ) ) ) ->
+        true
+    ;
+        CBThreshold = 5,
+        CBTimeout = 30000
+    ),
+    % Retry
+    ( ( member(retry(RetryN, RetryStrategy, RetryOpts), Options) ->
+          ( member(delay(RetryDelay), RetryOpts) -> true ; RetryDelay = 100 ),
+          ( member(max_delay(RetryMaxDelay), RetryOpts) -> true ; RetryMaxDelay = 30000 )
+      ; member(retry(RetryN, RetryStrategy), Options) ->
+          RetryDelay = 100,
+          RetryMaxDelay = 30000
+      ) ->
+        atom_string(RetryStrategy, RetryStrategyStr)
+    ;
+        RetryN = 0,
+        RetryStrategyStr = "none",
+        RetryDelay = 100,
+        RetryMaxDelay = 30000
+    ),
+    % Generate code based on stateful or not
+    ( Stateful = true ->
+        format(string(GoCode),
+"package main
+
+import (
+\t\"fmt\"
+\t\"math/rand\"
+\t\"sync\"
+\t\"sync/atomic\"
+\t\"time\"
+)
+
+type CircuitState int
+
+const (
+\tCircuitClosed CircuitState = iota
+\tCircuitOpen
+\tCircuitHalfOpen
+)
+
+type Backend struct {
+\tName      string
+\tTransport string
+}
+
+// ~wService is a service mesh service (stateful)
+type ~wService struct {
+\tname            string
+\tbackends        []Backend
+\tlbStrategy      string
+\tcbThreshold     int
+\tcbTimeout       time.Duration
+\tretryMax        int
+\tretryStrategy   string
+\tretryDelay      time.Duration
+\tretryMaxDelay   time.Duration
+\tstate           map[string]interface{}
+\tstateMu         sync.RWMutex
+\tcircuitState    CircuitState
+\tfailureCount    int32
+\tlastFailureTime time.Time
+\trrIndex         uint32
+}
+
+func New~wService() *~wService {
+\treturn &~wService{
+\t\tname:          \"~w\",
+\t\tbackends:      []Backend{},
+\t\tlbStrategy:    \"~w\",
+\t\tcbThreshold:   ~w,
+\t\tcbTimeout:     ~w * time.Millisecond,
+\t\tretryMax:      ~w,
+\t\tretryStrategy: \"~w\",
+\t\tretryDelay:    ~w * time.Millisecond,
+\t\tretryMaxDelay: ~w * time.Millisecond,
+\t\tstate:         make(map[string]interface{}),
+\t\tcircuitState:  CircuitClosed,
+\t}
+}
+
+func (s *~wService) Name() string { return s.name }
+
+func (s *~wService) selectBackend() *Backend {
+\tif len(s.backends) == 0 {
+\t\treturn nil
+\t}
+\tswitch s.lbStrategy {
+\tcase \"round_robin\":
+\t\tidx := atomic.AddUint32(&s.rrIndex, 1) - 1
+\t\treturn &s.backends[idx%%uint32(len(s.backends))]
+\tcase \"random\":
+\t\treturn &s.backends[rand.Intn(len(s.backends))]
+\tdefault:
+\t\treturn &s.backends[0]
+\t}
+}
+
+func (s *~wService) checkCircuit() bool {
+\tif s.circuitState == CircuitOpen {
+\t\ts.stateMu.RLock()
+\t\telapsed := time.Since(s.lastFailureTime)
+\t\ts.stateMu.RUnlock()
+\t\tif elapsed > s.cbTimeout {
+\t\t\ts.circuitState = CircuitHalfOpen
+\t\t\treturn true
+\t\t}
+\t\treturn false
+\t}
+\treturn true
+}
+
+func (s *~wService) recordSuccess() {
+\tif s.circuitState == CircuitHalfOpen {
+\t\ts.circuitState = CircuitClosed
+\t}
+\tatomic.StoreInt32(&s.failureCount, 0)
+}
+
+func (s *~wService) recordFailure() {
+\tcount := atomic.AddInt32(&s.failureCount, 1)
+\ts.stateMu.Lock()
+\ts.lastFailureTime = time.Now()
+\ts.stateMu.Unlock()
+\tif int(count) >= s.cbThreshold {
+\t\ts.circuitState = CircuitOpen
+\t}
+}
+
+func (s *~wService) calculateDelay(attempt int) time.Duration {
+\tswitch s.retryStrategy {
+\tcase \"fixed\":
+\t\treturn s.retryDelay
+\tcase \"linear\":
+\t\td := s.retryDelay * time.Duration(attempt+1)
+\t\tif d > s.retryMaxDelay {
+\t\t\treturn s.retryMaxDelay
+\t\t}
+\t\treturn d
+\tcase \"exponential\":
+\t\td := s.retryDelay * time.Duration(1<<uint(attempt))
+\t\tif d > s.retryMaxDelay {
+\t\t\treturn s.retryMaxDelay
+\t\t}
+\t\treturn d
+\t}
+\treturn s.retryDelay
+}
+
+func (s *~wService) StateGet(key string) interface{} {
+\ts.stateMu.RLock()
+\tdefer s.stateMu.RUnlock()
+\treturn s.state[key]
+}
+
+func (s *~wService) StatePut(key string, value interface{}) {
+\ts.stateMu.Lock()
+\tdefer s.stateMu.Unlock()
+\ts.state[key] = value
+}
+
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+\tif !s.checkCircuit() {
+\t\treturn nil, fmt.Errorf(\"circuit breaker is open\")
+\t}
+\tmaxAttempts := s.retryMax + 1
+\tif maxAttempts < 1 {
+\t\tmaxAttempts = 1
+\t}
+\tvar lastErr error
+\tfor attempt := 0; attempt < maxAttempts; attempt++ {
+\t\t_ = s.selectBackend()
+\t\tresult, err := s.handleRequest(request)
+\t\tif err == nil {
+\t\t\ts.recordSuccess()
+\t\t\treturn result, nil
+\t\t}
+\t\tlastErr = err
+\t\ts.recordFailure()
+\t\tif attempt < maxAttempts-1 {
+\t\t\ttime.Sleep(s.calculateDelay(attempt))
+\t\t}
+\t}
+\treturn nil, lastErr
+}
+
+func (s *~wService) handleRequest(request interface{}) (interface{}, error) {
+~w
+}
+
+var _~wService = New~wService()
+
+func init() {
+\tRegisterService(\"~w\", _~wService)
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, LBStrategyStr, CBThreshold, CBTimeout, RetryN, RetryStrategyStr, RetryDelay, RetryMaxDelay,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
+    HandlerCode, StructNameAtom, StructNameAtom, Name, StructNameAtom])
+    ;
+        format(string(GoCode),
+"package main
+
+import (
+\t\"fmt\"
+\t\"math/rand\"
+\t\"sync/atomic\"
+\t\"time\"
+)
+
+type CircuitState int
+
+const (
+\tCircuitClosed CircuitState = iota
+\tCircuitOpen
+\tCircuitHalfOpen
+)
+
+type Backend struct {
+\tName      string
+\tTransport string
+}
+
+// ~wService is a service mesh service
+type ~wService struct {
+\tname            string
+\tbackends        []Backend
+\tlbStrategy      string
+\tcbThreshold     int
+\tcbTimeout       time.Duration
+\tretryMax        int
+\tretryStrategy   string
+\tretryDelay      time.Duration
+\tretryMaxDelay   time.Duration
+\tcircuitState    CircuitState
+\tfailureCount    int32
+\tlastFailureTime time.Time
+\trrIndex         uint32
+}
+
+func New~wService() *~wService {
+\treturn &~wService{
+\t\tname:          \"~w\",
+\t\tbackends:      []Backend{},
+\t\tlbStrategy:    \"~w\",
+\t\tcbThreshold:   ~w,
+\t\tcbTimeout:     ~w * time.Millisecond,
+\t\tretryMax:      ~w,
+\t\tretryStrategy: \"~w\",
+\t\tretryDelay:    ~w * time.Millisecond,
+\t\tretryMaxDelay: ~w * time.Millisecond,
+\t\tcircuitState:  CircuitClosed,
+\t}
+}
+
+func (s *~wService) Name() string { return s.name }
+
+func (s *~wService) selectBackend() *Backend {
+\tif len(s.backends) == 0 {
+\t\treturn nil
+\t}
+\tswitch s.lbStrategy {
+\tcase \"round_robin\":
+\t\tidx := atomic.AddUint32(&s.rrIndex, 1) - 1
+\t\treturn &s.backends[idx%%uint32(len(s.backends))]
+\tcase \"random\":
+\t\treturn &s.backends[rand.Intn(len(s.backends))]
+\tdefault:
+\t\treturn &s.backends[0]
+\t}
+}
+
+func (s *~wService) checkCircuit() bool {
+\tif s.circuitState == CircuitOpen {
+\t\tif time.Since(s.lastFailureTime) > s.cbTimeout {
+\t\t\ts.circuitState = CircuitHalfOpen
+\t\t\treturn true
+\t\t}
+\t\treturn false
+\t}
+\treturn true
+}
+
+func (s *~wService) recordSuccess() {
+\tif s.circuitState == CircuitHalfOpen {
+\t\ts.circuitState = CircuitClosed
+\t}
+\tatomic.StoreInt32(&s.failureCount, 0)
+}
+
+func (s *~wService) recordFailure() {
+\tcount := atomic.AddInt32(&s.failureCount, 1)
+\ts.lastFailureTime = time.Now()
+\tif int(count) >= s.cbThreshold {
+\t\ts.circuitState = CircuitOpen
+\t}
+}
+
+func (s *~wService) calculateDelay(attempt int) time.Duration {
+\tswitch s.retryStrategy {
+\tcase \"fixed\":
+\t\treturn s.retryDelay
+\tcase \"linear\":
+\t\td := s.retryDelay * time.Duration(attempt+1)
+\t\tif d > s.retryMaxDelay {
+\t\t\treturn s.retryMaxDelay
+\t\t}
+\t\treturn d
+\tcase \"exponential\":
+\t\td := s.retryDelay * time.Duration(1<<uint(attempt))
+\t\tif d > s.retryMaxDelay {
+\t\t\treturn s.retryMaxDelay
+\t\t}
+\t\treturn d
+\t}
+\treturn s.retryDelay
+}
+
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+\tif !s.checkCircuit() {
+\t\treturn nil, fmt.Errorf(\"circuit breaker is open\")
+\t}
+\tmaxAttempts := s.retryMax + 1
+\tif maxAttempts < 1 {
+\t\tmaxAttempts = 1
+\t}
+\tvar lastErr error
+\tfor attempt := 0; attempt < maxAttempts; attempt++ {
+\t\t_ = s.selectBackend()
+\t\tresult, err := s.handleRequest(request)
+\t\tif err == nil {
+\t\t\ts.recordSuccess()
+\t\t\treturn result, nil
+\t\t}
+\t\tlastErr = err
+\t\ts.recordFailure()
+\t\tif attempt < maxAttempts-1 {
+\t\t\ttime.Sleep(s.calculateDelay(attempt))
+\t\t}
+\t}
+\treturn nil, lastErr
+}
+
+func (s *~wService) handleRequest(request interface{}) (interface{}, error) {
+~w
+}
+
+var _~wService = New~wService()
+
+func init() {
+\tRegisterService(\"~w\", _~wService)
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, LBStrategyStr, CBThreshold, CBTimeout, RetryN, RetryStrategyStr, RetryDelay, RetryMaxDelay,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
+    HandlerCode, StructNameAtom, StructNameAtom, Name, StructNameAtom])
+    ).
 
 %% ============================================
 %% PUBLIC API

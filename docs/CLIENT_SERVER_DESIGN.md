@@ -297,43 +297,425 @@ get_service_protocol(service(_, [], _), P).
 % P = jsonl
 ```
 
-## Future Phases
+## Phase 3: Network Services (Current)
 
-### Phase 3: Network Services (Planned)
+Phase 3 implements TCP and HTTP transports for network service communication.
 
-TCP and HTTP transports:
+### TCP Services
+
+TCP services use JSONL protocol for streaming communication over network sockets.
 
 ```prolog
+% TCP service definition
 service(api, [transport(tcp('0.0.0.0', 8080)), protocol(jsonl)], [
     receive(Request),
     handle_request(Request, Response),
     respond(Response)
 ]).
 
+% Stateful TCP service
+service(counter, [transport(tcp('0.0.0.0', 8081)), stateful(true)], [
+    receive(Cmd),
+    state_get(count, Current),
+    handle_cmd(Cmd, Current, New),
+    state_put(count, New),
+    respond(New)
+]).
+```
+
+### HTTP/REST Services
+
+HTTP services provide REST API endpoints with method routing.
+
+```prolog
+% HTTP REST service
 service(rest, [transport(http('/api/v1')), protocol(json)], [
     receive(Request),
     route_by(method, [
         (get, handle_get),
-        (post, handle_post)
+        (post, handle_post),
+        (put, handle_put),
+        (delete, handle_delete)
     ])
+]).
+
+% HTTP service with custom options
+service(webapp, [transport(http('/app', [host('0.0.0.0'), port(3000)])), stateful(true)], [
+    receive(Request),
+    handle_web_request(Request, Response),
+    respond(Response)
 ]).
 ```
 
-### Phase 4: Service Mesh (Planned)
+### Generated Code Examples
 
-Load balancing, circuit breakers, service discovery:
+#### Python TCP Server
+
+```python
+class ApiService(Service):
+    def __init__(self):
+        super().__init__('api', stateful=False)
+        self.host = '0.0.0.0'
+        self.port = 8080
+        self.timeout = 30000
+
+    def start_server(self):
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(5)
+        # Handle connections with JSONL protocol...
+```
+
+#### Go HTTP Server
+
+```go
+type RestService struct {
+    name     string
+    host     string
+    port     int
+    endpoint string
+    server   *http.Server
+}
+
+func (s *RestService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+    // Handle GET, POST, PUT, DELETE, PATCH methods
+    request := map[string]interface{}{
+        "method":  r.Method,
+        "path":    r.URL.Path,
+        "query":   r.URL.Query(),
+        "headers": r.Header,
+    }
+    response, err := s.Call(request)
+    // Return JSON response...
+}
+```
+
+#### Rust TCP Client
+
+```rust
+pub struct ApiClient {
+    host: String,
+    port: u16,
+    timeout: Duration,
+}
+
+impl ApiClient {
+    pub fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        let addr = format!("{}:{}", self.host, self.port);
+        let mut stream = TcpStream::connect(&addr)?;
+        // Send JSONL request, receive response...
+    }
+}
+```
+
+### Transport Categorization
+
+| Transport | Category | Protocol |
+|-----------|----------|----------|
+| `in_process` | in_process | Direct calls |
+| `unix_socket(Path)` | cross_process | JSONL |
+| `tcp(Host, Port)` | network | JSONL |
+| `http(Endpoint)` | network | JSON |
+
+### Helper Predicates
 
 ```prolog
+% Check if service is network-based
+is_network_service(service(test, [transport(tcp('0.0.0.0', 8080))], [])).
+% true
+
+is_network_service(service(test, [transport(http('/api'))], [])).
+% true
+
+% TCP service is NOT cross-process (it's network)
+is_cross_process_service(service(test, [transport(tcp('0.0.0.0', 8080))], [])).
+% false
+```
+
+## Phase 4: Service Mesh (Current)
+
+Phase 4 implements service mesh capabilities: load balancing, circuit breakers, and retry with backoff.
+
+### Definition
+
+```prolog
+% Service mesh with all features
 service(gateway, [
     load_balance(round_robin),
     circuit_breaker(threshold(5), timeout(30000)),
     retry(3, exponential)
 ], [
     receive(Request),
-    route_to_backend(Request, Response),
+    handle_request(Request, Response),
     respond(Response)
 ]).
+
+% Service mesh with custom retry delays
+service(resilient_api, [
+    load_balance(least_connections),
+    circuit_breaker(threshold(3), timeout(10000), half_open_requests(2)),
+    retry(5, exponential, [delay(100), max_delay(5000)])
+], [
+    receive(X),
+    process(X, Y),
+    respond(Y)
+]).
 ```
+
+### Load Balancing Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| `round_robin` | Distribute requests evenly across backends |
+| `random` | Random backend selection |
+| `least_connections` | Select backend with fewest active connections |
+| `weighted` | Weight-based distribution |
+| `ip_hash` | Consistent hashing based on client IP |
+
+### Circuit Breaker Options
+
+| Option | Description |
+|--------|-------------|
+| `threshold(N)` | Open circuit after N failures |
+| `timeout(Ms)` | Time before attempting half-open state |
+| `half_open_requests(N)` | Requests to allow in half-open state |
+| `success_threshold(N)` | Successes needed to close circuit |
+
+### Retry Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| `fixed` | Fixed delay between retries |
+| `linear` | Linearly increasing delay |
+| `exponential` | Exponentially increasing delay |
+
+### Retry Options
+
+| Option | Description |
+|--------|-------------|
+| `delay(Ms)` | Base delay between retries (default: 100ms) |
+| `max_delay(Ms)` | Maximum delay cap (default: 30000ms) |
+| `jitter(true/false)` | Add randomization to delay |
+
+### Generated Code Examples
+
+#### Python Service Mesh
+
+```python
+class CircuitState(Enum):
+    CLOSED = auto()
+    OPEN = auto()
+    HALF_OPEN = auto()
+
+class GatewayService(Service):
+    def __init__(self):
+        super().__init__('gateway', stateful=False)
+        self.backends = []
+        self.lb_strategy = 'round_robin'
+        self.cb_config = CircuitBreakerConfig(5, 30000)
+        self.retry_config = RetryConfig(3, 'exponential', 100, 30000)
+        self._circuit_state = CircuitState.CLOSED
+        self._failure_count = 0
+        self._rr_index = 0
+
+    def _select_backend(self):
+        if not self.backends:
+            return None
+        if self.lb_strategy == 'round_robin':
+            idx = self._rr_index % len(self.backends)
+            self._rr_index += 1
+            return self.backends[idx]
+        elif self.lb_strategy == 'random':
+            return random.choice(self.backends)
+        # ...
+
+    def _check_circuit(self):
+        if self._circuit_state == CircuitState.OPEN:
+            if time.time() - self._last_failure_time > self.cb_config.timeout / 1000:
+                self._circuit_state = CircuitState.HALF_OPEN
+                return True
+            return False
+        return True
+
+    def _calculate_delay(self, attempt):
+        if self.retry_config.strategy == 'fixed':
+            return self.retry_config.delay
+        elif self.retry_config.strategy == 'linear':
+            return self.retry_config.delay * attempt
+        else:  # exponential
+            return min(self.retry_config.delay * (2 ** attempt),
+                      self.retry_config.max_delay)
+
+    def call(self, request):
+        if not self._check_circuit():
+            raise CircuitOpenError("Circuit breaker is open")
+
+        for attempt in range(self.retry_config.max_retries + 1):
+            try:
+                result = self._handle_request(request)
+                self._record_success()
+                return result
+            except Exception as e:
+                self._record_failure()
+                if attempt < self.retry_config.max_retries:
+                    time.sleep(self._calculate_delay(attempt) / 1000)
+                else:
+                    raise
+```
+
+#### Go Service Mesh
+
+```go
+type CircuitState int
+
+const (
+    CircuitClosed CircuitState = iota
+    CircuitOpen
+    CircuitHalfOpen
+)
+
+type GatewayService struct {
+    name            string
+    backends        []Backend
+    lbStrategy      string
+    cbThreshold     int
+    cbTimeout       time.Duration
+    retryMax        int
+    retryStrategy   string
+    retryDelay      time.Duration
+    circuitState    CircuitState
+    failureCount    int32
+    lastFailureTime time.Time
+    rrIndex         uint32
+}
+
+func (s *GatewayService) selectBackend() *Backend {
+    if len(s.backends) == 0 {
+        return nil
+    }
+    switch s.lbStrategy {
+    case "round_robin":
+        idx := atomic.AddUint32(&s.rrIndex, 1) - 1
+        return &s.backends[idx%uint32(len(s.backends))]
+    case "random":
+        return &s.backends[rand.Intn(len(s.backends))]
+    default:
+        return &s.backends[0]
+    }
+}
+
+func (s *GatewayService) checkCircuit() bool {
+    if s.circuitState == CircuitOpen {
+        if time.Since(s.lastFailureTime) > s.cbTimeout {
+            s.circuitState = CircuitHalfOpen
+            return true
+        }
+        return false
+    }
+    return true
+}
+```
+
+#### Rust Service Mesh
+
+```rust
+#[derive(Clone, Copy, PartialEq)]
+pub enum CircuitState {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
+pub struct GatewayService {
+    name: String,
+    backends: Vec<Backend>,
+    lb_strategy: String,
+    cb_threshold: i32,
+    cb_timeout: Duration,
+    retry_max: i32,
+    retry_strategy: String,
+    circuit_state: RwLock<CircuitState>,
+    failure_count: AtomicI32,
+    last_failure_time: RwLock<Option<Instant>>,
+    rr_index: AtomicU32,
+}
+
+impl GatewayService {
+    fn select_backend(&self) -> Option<&Backend> {
+        if self.backends.is_empty() {
+            return None;
+        }
+        match self.lb_strategy.as_str() {
+            "round_robin" => {
+                let idx = self.rr_index.fetch_add(1, Ordering::SeqCst);
+                Some(&self.backends[idx as usize % self.backends.len()])
+            }
+            "random" => {
+                let mut rng = rand::thread_rng();
+                Some(&self.backends[rng.gen_range(0..self.backends.len())])
+            }
+            _ => Some(&self.backends[0]),
+        }
+    }
+
+    fn check_circuit(&self) -> bool {
+        let state = *self.circuit_state.read().unwrap();
+        if state == CircuitState::Open {
+            if let Some(last) = *self.last_failure_time.read().unwrap() {
+                if last.elapsed() > self.cb_timeout {
+                    *self.circuit_state.write().unwrap() = CircuitState::HalfOpen;
+                    return true;
+                }
+            }
+            return false;
+        }
+        true
+    }
+}
+```
+
+### Helper Predicates
+
+```prolog
+% Extract load balance strategy
+get_load_balance_strategy(service(_, [load_balance(round_robin)], _), S).
+% S = round_robin
+
+% Extract circuit breaker config
+get_circuit_breaker_config(service(_, [circuit_breaker(threshold(5), timeout(30000))], _), C).
+% C = config(5, 30000)
+
+% Extract retry config
+get_retry_config(service(_, [retry(3, exponential)], _), R).
+% R = config(3, exponential, 100, 30000, false)
+
+% Check if service has service mesh features
+is_service_mesh_service(service(test, [load_balance(round_robin)], [])).
+% true
+
+has_load_balancing(service(test, [load_balance(random)], [])).
+% true
+
+has_circuit_breaker(service(test, [circuit_breaker(threshold(5), timeout(30000))], [])).
+% true
+
+has_retry(service(test, [retry(3, exponential)], [])).
+% true
+```
+
+### Phase 4 Tests
+
+All 61 tests pass:
+
+- **Validation Tests (20)**: Load balance strategies, circuit breaker options, retry options, discovery methods, backends validation
+- **Helper Predicate Tests (10)**: Strategy extraction, config extraction, feature detection
+- **Python Compilation Tests (7)**: Service mesh generation with all features
+- **Go Compilation Tests (8)**: Service mesh with atomic operations
+- **Rust Compilation Tests (8)**: Service mesh with RwLock and lazy_static
+- **Cross-Target Consistency Tests (3)**: CircuitState enum, backends, select_backend across all targets
+- **Edge Case Tests (5)**: Single feature services, default configs
+
+## Future Phases
 
 ### Phase 5: Multi-Language Polyglot Services (Planned)
 
@@ -385,26 +767,47 @@ The system validates service definitions at compile time:
 
 ## Testing
 
-Integration tests verify the implementation:
+Integration tests verify the implementation for each phase:
 
 ```bash
+# Phase 1: In-process services
 ./tests/integration/test_in_process_services.sh
+
+# Phase 2: Unix socket services
+./tests/integration/test_unix_socket_services.sh
+
+# Phase 3: Network services (TCP/HTTP)
+./tests/integration/test_network_services.sh
 ```
 
-Tests cover:
-1. Service validation module loads
-2. Valid service definitions accepted
-3. Service with options validates
-4. Service operations validated
-5. call_service stage validates in pipeline
-6. call_service options validated
-7. Python service compilation
-8. Go service compilation
-9. Rust service compilation
-10. Python infrastructure included
-11. Go infrastructure included
-12. Rust infrastructure included
-13. Invalid services rejected
+### Phase 3 Tests Cover:
+
+1. is_network_service identifies TCP services
+2. is_network_service identifies HTTP services
+3. TCP service is network, not cross-process
+4. Python TCP service compilation
+5. Python TCP service has JSONL protocol
+6. Python HTTP service compilation
+7. Python HTTP service handles REST methods
+8. Go TCP service compilation
+9. Go TCP service has JSONL protocol
+10. Go HTTP service compilation
+11. Go HTTP service handles REST methods
+12. Rust TCP service compilation
+13. Rust TCP service has JSONL protocol
+14. Rust HTTP service compilation
+15. Rust HTTP service handles REST methods
+16. Python TCP client compilation
+17. Python HTTP client compilation
+18. Go TCP client compilation
+19. Go HTTP client compilation
+20. Rust TCP client compilation
+21. Rust HTTP client compilation
+22. Stateful TCP service (Python)
+23. Stateful HTTP service (Go)
+24. Service dispatch through compile_service_to_python (TCP)
+25. Service dispatch through compile_service_to_go (HTTP)
+26. In-process service still works (regression test)
 
 ## Files
 
@@ -412,9 +815,10 @@ Tests cover:
 |------|-------------|
 | `src/unifyweaver/core/service_validation.pl` | Service definition validation |
 | `src/unifyweaver/core/pipeline_validation.pl` | Extended with call_service validation |
-| `src/unifyweaver/targets/python_target.pl` | Python service compilation |
-| `src/unifyweaver/targets/go_target.pl` | Go service compilation |
-| `src/unifyweaver/targets/rust_target.pl` | Rust service compilation |
+| `src/unifyweaver/targets/python_target.pl` | Python service compilation (in-process, Unix socket, TCP, HTTP) |
+| `src/unifyweaver/targets/go_target.pl` | Go service compilation (in-process, Unix socket, TCP, HTTP) |
+| `src/unifyweaver/targets/rust_target.pl` | Rust service compilation (in-process, Unix socket, TCP, HTTP) |
 | `tests/integration/test_in_process_services.sh` | Phase 1 integration tests |
 | `tests/integration/test_unix_socket_services.sh` | Phase 2 integration tests |
+| `tests/integration/test_network_services.sh` | Phase 3 integration tests |
 | `docs/CLIENT_SERVER_DESIGN.md` | This document |

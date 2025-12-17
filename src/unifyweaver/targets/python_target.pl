@@ -42,7 +42,18 @@
     generate_service_handler_python/2,
     % Phase 2: Cross-process services
     compile_unix_socket_service_python/2,
-    compile_unix_socket_client_python/3
+    compile_unix_socket_client_python/3,
+    % Phase 3: Network services
+    compile_tcp_service_python/2,
+    compile_tcp_client_python/4,
+    compile_http_service_python/2,
+    compile_http_client_python/3,
+    compile_http_client_python/4,
+    % Phase 4: Service mesh
+    compile_service_mesh_python/2,
+    generate_load_balancer_python/2,
+    generate_circuit_breaker_python/2,
+    generate_retry_python/2
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -184,10 +195,44 @@ compile_service_to_python(service(Name, HandlerSpec), PythonCode) :-
 
 compile_service_to_python(Service, PythonCode) :-
     Service = service(_Name, Options, _HandlerSpec),
-    member(transport(unix_socket(Path)), Options),
+    member(transport(unix_socket(_Path)), Options),
     !,
     % Phase 2: Unix socket service
     compile_unix_socket_service_python(Service, PythonCode).
+
+compile_service_to_python(Service, PythonCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(tcp(_Host, _Port)), Options),
+    !,
+    % Phase 3: TCP service
+    compile_tcp_service_python(Service, PythonCode).
+
+compile_service_to_python(Service, PythonCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(http(_Endpoint)), Options),
+    !,
+    % Phase 3: HTTP service
+    compile_http_service_python(Service, PythonCode).
+
+compile_service_to_python(Service, PythonCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    member(transport(http(_Endpoint, _HttpOptions)), Options),
+    !,
+    % Phase 3: HTTP service with options
+    compile_http_service_python(Service, PythonCode).
+
+compile_service_to_python(Service, PythonCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(load_balance(_), Options)
+    ; member(load_balance(_, _), Options)
+    ; member(circuit_breaker(_, _), Options)
+    ; member(circuit_breaker(_), Options)
+    ; member(retry(_, _), Options)
+    ; member(retry(_, _, _), Options)
+    ),
+    !,
+    % Phase 4: Service mesh service
+    compile_service_mesh_python(Service, PythonCode).
 
 compile_service_to_python(service(Name, Options, HandlerSpec), PythonCode) :-
     % Phase 1: In-process service (default)
@@ -571,6 +616,806 @@ try:
 except:
     pass
 ", [ClassNameAtom, Name, SocketPath, SocketPath, Name, Name, SocketPath, Name, ClassNameAtom, ClassNameAtom, Name, SocketPath, Name, Name, Name, Name, ClassNameAtom]).
+
+%% ============================================
+%% PHASE 3: NETWORK SERVICES (TCP)
+%% ============================================
+
+%% compile_tcp_service_python(+Service, -PythonCode)
+%  Generate Python code for a TCP network service server.
+compile_tcp_service_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Extract host and port
+    member(transport(tcp(Host, Port)), Options),
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
+    % Extract timeout (default 30000ms)
+    ( member(timeout(TimeoutMs), Options) -> Timeout = TimeoutMs ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_python(HandlerSpec, HandlerCode),
+    % Format the class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    % Generate the TCP service
+    format(string(PythonCode),
+"import socket
+import json
+import threading
+import signal
+import sys
+
+class ~wService(Service):
+    '''
+    TCP Network Service: ~w
+    Host: ~w, Port: ~w
+    Auto-generated from Prolog service definition.
+    '''
+    def __init__(self):
+        super().__init__('~w', stateful=~w)
+        self.host = '~w'
+        self.port = ~w
+        self.timeout = ~w / 1000.0  # Convert to seconds
+        self.server_socket = None
+        self.running = False
+        self._lock = threading.Lock()
+
+    def call(self, request):
+        '''Process request and return response.'''
+~w
+
+    def start_server(self):
+        '''Start the TCP server.'''
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(5)
+        self.server_socket.settimeout(1.0)  # Allow periodic check for shutdown
+        self.running = True
+
+        print(f'[~w] Server listening on {self.host}:{self.port}', file=sys.stderr)
+
+        while self.running:
+            try:
+                conn, addr = self.server_socket.accept()
+                print(f'[~w] Connection from {addr}', file=sys.stderr)
+                threading.Thread(target=self._handle_connection, args=(conn, addr), daemon=True).start()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+
+        self._cleanup()
+
+    def _handle_connection(self, conn, addr):
+        '''Handle a client connection.'''
+        conn.settimeout(self.timeout)
+        buffer = b''
+        try:
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                buffer += data
+                # Process complete JSONL messages
+                while b'\\n' in buffer:
+                    line, buffer = buffer.split(b'\\n', 1)
+                    if line:
+                        self._process_request(conn, line)
+        except socket.timeout:
+            self._send_error(conn, 'timeout', 'Request timed out')
+        except Exception as e:
+            self._send_error(conn, 'error', str(e))
+        finally:
+            conn.close()
+
+    def _process_request(self, conn, line):
+        '''Process a single JSONL request.'''
+        try:
+            request = json.loads(line.decode('utf-8'))
+            request_id = request.get('_id')
+            payload = request.get('_payload', request)
+
+            with self._lock:
+                response = self.call(payload)
+
+            self._send_response(conn, request_id, response)
+        except json.JSONDecodeError as e:
+            self._send_error(conn, 'parse_error', f'Invalid JSON: {e}')
+        except ServiceError as e:
+            self._send_error(conn, 'service_error', str(e))
+        except Exception as e:
+            self._send_error(conn, 'error', str(e))
+
+    def _send_response(self, conn, request_id, response):
+        '''Send a JSONL response.'''
+        msg = {'_id': request_id, '_status': 'ok', '_payload': response}
+        conn.sendall((json.dumps(msg) + '\\n').encode('utf-8'))
+
+    def _send_error(self, conn, error_type, message):
+        '''Send a JSONL error response.'''
+        msg = {'_status': 'error', '_error_type': error_type, '_message': message}
+        try:
+            conn.sendall((json.dumps(msg) + '\\n').encode('utf-8'))
+        except:
+            pass
+
+    def stop_server(self):
+        '''Stop the TCP server.'''
+        self.running = False
+        if self.server_socket:
+            self.server_socket.close()
+
+    def _cleanup(self):
+        '''Clean up server resources.'''
+        print(f'[~w] Server stopped', file=sys.stderr)
+
+# Create service instance
+_~w_service = ~wService()
+
+# Register for in-process calls
+register_service('~w', _~w_service)
+
+def run_~w_server():
+    '''Run the ~w service as a standalone TCP server.'''
+    def signal_handler(sig, frame):
+        print(f'\\n[~w] Shutting down...', file=sys.stderr)
+        _~w_service.stop_server()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    _~w_service.start_server()
+
+if __name__ == '__main__':
+    run_~w_server()
+", [ClassNameAtom, Name, Host, Port, Name, Stateful, Host, Port, Timeout, HandlerCode,
+    Name, Name, Name, Name, ClassNameAtom, Name, Name, Name, Name, Name, Name, Name, Name]).
+
+%% compile_tcp_client_python(+ServiceName, +Host, +Port, -PythonCode)
+%  Generate Python code for a TCP network service client.
+compile_tcp_client_python(Name, Host, Port, PythonCode) :-
+    % Format the class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    format(string(PythonCode),
+"import socket
+import json
+import uuid
+
+class ~wClient:
+    '''
+    TCP Network Client for ~w service.
+    Host: ~w, Port: ~w
+    Auto-generated from Prolog service definition.
+    '''
+    def __init__(self, host='~w', port=~w, timeout=30.0):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self._socket = None
+
+    def connect(self):
+        '''Connect to the service.'''
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.settimeout(self.timeout)
+        self._socket.connect((self.host, self.port))
+        return self
+
+    def disconnect(self):
+        '''Disconnect from the service.'''
+        if self._socket:
+            self._socket.close()
+            self._socket = None
+
+    def __enter__(self):
+        return self.connect()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+        return False
+
+    def call(self, request):
+        '''Send a request and receive a response.'''
+        if not self._socket:
+            self.connect()
+
+        request_id = str(uuid.uuid4())
+        msg = {'_id': request_id, '_payload': request}
+        self._socket.sendall((json.dumps(msg) + '\\n').encode('utf-8'))
+
+        # Read response
+        buffer = b''
+        while True:
+            data = self._socket.recv(4096)
+            if not data:
+                raise ConnectionError('Server closed connection')
+            buffer += data
+            if b'\\n' in buffer:
+                line, _ = buffer.split(b'\\n', 1)
+                response = json.loads(line.decode('utf-8'))
+                if response.get('_status') == 'ok':
+                    return response.get('_payload')
+                else:
+                    raise ServiceError(
+                        service='~w',
+                        message=response.get('_message', 'Unknown error')
+                    )
+
+def call_~w(request, host='~w', port=~w, timeout=30.0):
+    '''Convenience function to call ~w service over TCP.'''
+    with ~wClient(host, port, timeout) as client:
+        return client.call(request)
+
+# Register remote service for call_service_impl
+class ~wRemoteService(Service):
+    '''Remote service wrapper for ~w (TCP).'''
+    def __init__(self, host='~w', port=~w):
+        super().__init__('~w', stateful=False)
+        self.host = host
+        self.port = port
+
+    def call(self, request):
+        return call_~w(request, self.host, self.port)
+
+# Auto-register remote service if server not local
+try:
+    if '~w' not in _services:
+        register_service('~w', ~wRemoteService())
+except:
+    pass
+", [ClassNameAtom, Name, Host, Port, Host, Port, Name, Name, Host, Port, Name, ClassNameAtom,
+    ClassNameAtom, Name, Host, Port, Name, Name, Name, Name, ClassNameAtom]).
+
+%% ============================================
+%% PHASE 3: NETWORK SERVICES (HTTP/REST)
+%% ============================================
+
+%% compile_http_service_python(+Service, -PythonCode)
+%  Generate Python code for an HTTP REST service server.
+compile_http_service_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Extract endpoint (and optional HTTP options)
+    ( member(transport(http(Endpoint, HttpOptions)), Options) ->
+        true
+    ; member(transport(http(Endpoint)), Options) ->
+        HttpOptions = []
+    ),
+    % Extract host and port from options or use defaults
+    ( member(host(Host), HttpOptions) -> true ; Host = '0.0.0.0' ),
+    ( member(port(Port), HttpOptions) -> true ; Port = 8080 ),
+    % Determine if service is stateful
+    ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
+    % Extract timeout (default 30000ms)
+    ( member(timeout(TimeoutMs), Options) -> Timeout = TimeoutMs ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_python(HandlerSpec, HandlerCode),
+    % Format the class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    % Generate the HTTP service
+    format(string(PythonCode),
+"from http.server import HTTPServer, BaseHTTPRequestHandler
+import json
+import threading
+import signal
+import sys
+import urllib.parse
+
+class ~wHandler(BaseHTTPRequestHandler):
+    '''HTTP request handler for ~w service.'''
+
+    service = None  # Set by server initialization
+
+    def log_message(self, format, *args):
+        '''Log to stderr.'''
+        print(f'[~w] {args[0]}', file=sys.stderr)
+
+    def _send_json_response(self, status_code, data):
+        '''Send JSON response.'''
+        body = json.dumps(data).encode('utf-8')
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self):
+        '''Read and parse JSON request body.'''
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length > 0:
+            body = self.rfile.read(content_length)
+            return json.loads(body.decode('utf-8'))
+        return {}
+
+    def _handle_request(self, method):
+        '''Handle HTTP request.'''
+        try:
+            # Parse URL
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            query = dict(urllib.parse.parse_qsl(parsed.query))
+
+            # Check endpoint match
+            if not path.startswith('~w'):
+                self._send_json_response(404, {'error': 'Not found'})
+                return
+
+            # Build request object
+            request = {
+                'method': method,
+                'path': path,
+                'query': query,
+                'headers': dict(self.headers)
+            }
+
+            # Add body for POST/PUT/PATCH
+            if method in ('POST', 'PUT', 'PATCH'):
+                request['body'] = self._read_json_body()
+
+            # Call service
+            response = self.service.call(request)
+            self._send_json_response(200, {'_status': 'ok', '_payload': response})
+
+        except ServiceError as e:
+            self._send_json_response(400, {'_status': 'error', '_error_type': 'service_error', '_message': str(e)})
+        except Exception as e:
+            self._send_json_response(500, {'_status': 'error', '_error_type': 'internal_error', '_message': str(e)})
+
+    def do_GET(self):
+        self._handle_request('GET')
+
+    def do_POST(self):
+        self._handle_request('POST')
+
+    def do_PUT(self):
+        self._handle_request('PUT')
+
+    def do_DELETE(self):
+        self._handle_request('DELETE')
+
+    def do_PATCH(self):
+        self._handle_request('PATCH')
+
+class ~wService(Service):
+    '''
+    HTTP REST Service: ~w
+    Endpoint: ~w
+    Host: ~w, Port: ~w
+    Auto-generated from Prolog service definition.
+    '''
+    def __init__(self):
+        super().__init__('~w', stateful=~w)
+        self.host = '~w'
+        self.port = ~w
+        self.endpoint = '~w'
+        self.timeout = ~w / 1000.0
+        self.server = None
+        self.running = False
+        self._lock = threading.Lock()
+
+    def call(self, request):
+        '''Process request and return response.'''
+        with self._lock:
+~w
+
+    def start_server(self):
+        '''Start the HTTP server.'''
+        ~wHandler.service = self
+        self.server = HTTPServer((self.host, self.port), ~wHandler)
+        self.server.timeout = 1.0
+        self.running = True
+
+        print(f'[~w] HTTP server listening on http://{self.host}:{self.port}~w', file=sys.stderr)
+
+        while self.running:
+            try:
+                self.server.handle_request()
+            except Exception as e:
+                if self.running:
+                    print(f'[~w] Error: {e}', file=sys.stderr)
+
+        self._cleanup()
+
+    def stop_server(self):
+        '''Stop the HTTP server.'''
+        self.running = False
+        if self.server:
+            self.server.server_close()
+
+    def _cleanup(self):
+        '''Clean up server resources.'''
+        print(f'[~w] HTTP server stopped', file=sys.stderr)
+
+# Create service instance
+_~w_service = ~wService()
+
+# Register for in-process calls
+register_service('~w', _~w_service)
+
+def run_~w_server():
+    '''Run the ~w HTTP service as a standalone server.'''
+    def signal_handler(sig, frame):
+        print(f'\\n[~w] Shutting down...', file=sys.stderr)
+        _~w_service.stop_server()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    _~w_service.start_server()
+
+if __name__ == '__main__':
+    run_~w_server()
+", [ClassNameAtom, Name, Name, Endpoint, ClassNameAtom, Name, Endpoint, Host, Port,
+    Name, Stateful, Host, Port, Endpoint, Timeout, HandlerCode,
+    ClassNameAtom, ClassNameAtom, Name, Endpoint, Name, Name,
+    Name, ClassNameAtom, Name, Name, Name, Name, Name, Name, Name, Name]).
+
+%% compile_http_client_python(+ServiceName, +Endpoint, -PythonCode)
+%  Generate Python code for an HTTP REST service client.
+compile_http_client_python(Name, Endpoint, PythonCode) :-
+    compile_http_client_python(Name, Endpoint, [], PythonCode).
+
+compile_http_client_python(Name, Endpoint, HttpOptions, PythonCode) :-
+    % Extract host and port from options or use defaults
+    ( member(host(Host), HttpOptions) -> true ; Host = 'localhost' ),
+    ( member(port(Port), HttpOptions) -> true ; Port = 8080 ),
+    % Format the class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    format(string(PythonCode),
+"import urllib.request
+import urllib.parse
+import json
+
+class ~wClient:
+    '''
+    HTTP REST Client for ~w service.
+    Endpoint: ~w
+    Default Host: ~w, Port: ~w
+    Auto-generated from Prolog service definition.
+    '''
+    def __init__(self, host='~w', port=~w, timeout=30.0):
+        self.base_url = f'http://{host}:{port}~w'
+        self.timeout = timeout
+
+    def _make_request(self, method, path='', data=None, query=None):
+        '''Make HTTP request to service.'''
+        url = self.base_url + path
+        if query:
+            url += '?' + urllib.parse.urlencode(query)
+
+        headers = {'Content-Type': 'application/json'}
+        body = json.dumps(data).encode('utf-8') if data else None
+
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                if result.get('_status') == 'ok':
+                    return result.get('_payload')
+                else:
+                    raise ServiceError(
+                        service='~w',
+                        message=result.get('_message', 'Unknown error')
+                    )
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8')
+            try:
+                result = json.loads(body)
+                raise ServiceError(service='~w', message=result.get('_message', str(e)))
+            except json.JSONDecodeError:
+                raise ServiceError(service='~w', message=str(e))
+
+    def get(self, path='', query=None):
+        '''HTTP GET request.'''
+        return self._make_request('GET', path, query=query)
+
+    def post(self, path='', data=None):
+        '''HTTP POST request.'''
+        return self._make_request('POST', path, data=data)
+
+    def put(self, path='', data=None):
+        '''HTTP PUT request.'''
+        return self._make_request('PUT', path, data=data)
+
+    def delete(self, path=''):
+        '''HTTP DELETE request.'''
+        return self._make_request('DELETE', path)
+
+    def call(self, request):
+        '''Generic call method for service compatibility.'''
+        method = request.get('method', 'POST')
+        path = request.get('path', '')
+        data = request.get('body', request.get('data'))
+        query = request.get('query')
+        return self._make_request(method, path, data, query)
+
+def call_~w(request, host='~w', port=~w, timeout=30.0):
+    '''Convenience function to call ~w service over HTTP.'''
+    client = ~wClient(host, port, timeout)
+    return client.call(request)
+
+# Register remote service for call_service_impl
+class ~wRemoteService(Service):
+    '''Remote service wrapper for ~w (HTTP).'''
+    def __init__(self, host='~w', port=~w):
+        super().__init__('~w', stateful=False)
+        self.host = host
+        self.port = port
+
+    def call(self, request):
+        return call_~w(request, self.host, self.port)
+
+# Auto-register remote service if server not local
+try:
+    if '~w' not in _services:
+        register_service('~w', ~wRemoteService())
+except:
+    pass
+", [ClassNameAtom, Name, Endpoint, Host, Port, Host, Port, Endpoint,
+    Name, Name, Name, Name, Host, Port, Name, ClassNameAtom,
+    ClassNameAtom, Name, Host, Port, Name, Name, Name, Name, ClassNameAtom]).
+
+%% ============================================
+%% PHASE 4: SERVICE MESH
+%% ============================================
+
+%% compile_service_mesh_python(+Service, -PythonCode)
+%  Generate Python code for a service mesh service with load balancing,
+%  circuit breaker, and retry capabilities.
+compile_service_mesh_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Generate handler code
+    generate_service_handler_python(HandlerSpec, HandlerCode),
+    % Format the class name (capitalize first letter)
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    % Extract service mesh configurations
+    ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
+    % Load balancing
+    ( ( member(load_balance(LBStrategy), Options) ; member(load_balance(LBStrategy, _), Options) ) ->
+        generate_load_balancer_python(LBStrategy, LoadBalancerCode),
+        atom_string(LBStrategy, LBStrategyStr)
+    ;
+        LoadBalancerCode = "",
+        LBStrategyStr = "none"
+    ),
+    % Circuit breaker
+    ( ( member(circuit_breaker(threshold(CBThreshold), timeout(CBTimeout)), Options)
+      ; ( member(circuit_breaker(CBOpts), Options), is_list(CBOpts),
+          ( member(threshold(CBThreshold), CBOpts) -> true ; CBThreshold = 5 ),
+          ( member(timeout(CBTimeout), CBOpts) -> true ; CBTimeout = 30000 ) ) ) ->
+        generate_circuit_breaker_python(config(CBThreshold, CBTimeout), CircuitBreakerCode),
+        format(string(CBConfig), "CircuitBreakerConfig(~w, ~w)", [CBThreshold, CBTimeout])
+    ;
+        CircuitBreakerCode = "",
+        CBConfig = "None",
+        CBThreshold = 5,
+        CBTimeout = 30000
+    ),
+    % Retry with backoff
+    ( ( member(retry(RetryN, RetryStrategy, RetryOpts), Options) ->
+          ( member(delay(RetryDelay), RetryOpts) -> true ; RetryDelay = 100 ),
+          ( member(max_delay(RetryMaxDelay), RetryOpts) -> true ; RetryMaxDelay = 30000 )
+      ; member(retry(RetryN, RetryStrategy), Options) ->
+          RetryDelay = 100,
+          RetryMaxDelay = 30000
+      ) ->
+        generate_retry_python(config(RetryN, RetryStrategy, RetryDelay, RetryMaxDelay), RetryCode),
+        atom_string(RetryStrategy, RetryStrategyStr),
+        format(string(RetryConfig), "RetryConfig(~w, '~w', ~w, ~w)", [RetryN, RetryStrategyStr, RetryDelay, RetryMaxDelay])
+    ;
+        RetryCode = "",
+        RetryConfig = "None",
+        RetryN = 0,
+        RetryDelay = 100,
+        RetryMaxDelay = 30000
+    ),
+    % Backends
+    ( member(backends(Backends), Options) ->
+        generate_backends_python(Backends, BackendsCode)
+    ;
+        BackendsCode = "[]"
+    ),
+    % Generate the service mesh service class
+    format(string(PythonCode),
+"import time
+import random
+import threading
+from collections import namedtuple
+from enum import Enum, auto
+
+~w
+~w
+~w
+
+class CircuitState(Enum):
+    CLOSED = auto()
+    OPEN = auto()
+    HALF_OPEN = auto()
+
+CircuitBreakerConfig = namedtuple('CircuitBreakerConfig', ['threshold', 'timeout'])
+RetryConfig = namedtuple('RetryConfig', ['max_retries', 'strategy', 'delay', 'max_delay'])
+
+class ~wService(Service):
+    '''
+    Service Mesh Service: ~w
+    Load Balancing: ~w
+    Circuit Breaker: threshold=~w, timeout=~w
+    Retry: ~w attempts
+    '''
+    def __init__(self):
+        super().__init__('~w', stateful=~w)
+        self.backends = ~w
+        self.lb_strategy = '~w'
+        self.cb_config = ~w
+        self.retry_config = ~w
+        self._circuit_state = CircuitState.CLOSED
+        self._failure_count = 0
+        self._last_failure_time = None
+        self._lock = threading.Lock()
+        self._rr_index = 0
+
+    def _select_backend(self):
+        '''Select a backend using the configured load balancing strategy.'''
+        if not self.backends:
+            return None
+        if self.lb_strategy == 'round_robin':
+            backend = self.backends[self._rr_index %% len(self.backends)]
+            self._rr_index += 1
+            return backend
+        elif self.lb_strategy == 'random':
+            return random.choice(self.backends)
+        elif self.lb_strategy == 'least_connections':
+            # For simplicity, round-robin (real impl would track connections)
+            backend = self.backends[self._rr_index %% len(self.backends)]
+            self._rr_index += 1
+            return backend
+        else:
+            return self.backends[0]
+
+    def _check_circuit(self):
+        '''Check circuit breaker state.'''
+        if self.cb_config is None:
+            return True
+        with self._lock:
+            if self._circuit_state == CircuitState.OPEN:
+                if self._last_failure_time and \\
+                   (time.time() - self._last_failure_time) * 1000 > self.cb_config.timeout:
+                    self._circuit_state = CircuitState.HALF_OPEN
+                    return True
+                return False
+            return True
+
+    def _record_success(self):
+        '''Record a successful call.'''
+        with self._lock:
+            if self._circuit_state == CircuitState.HALF_OPEN:
+                self._circuit_state = CircuitState.CLOSED
+            self._failure_count = 0
+
+    def _record_failure(self):
+        '''Record a failed call.'''
+        if self.cb_config is None:
+            return
+        with self._lock:
+            self._failure_count += 1
+            self._last_failure_time = time.time()
+            if self._failure_count >= self.cb_config.threshold:
+                self._circuit_state = CircuitState.OPEN
+
+    def _calculate_delay(self, attempt):
+        '''Calculate retry delay based on strategy.'''
+        if self.retry_config is None:
+            return 0
+        base_delay = self.retry_config.delay
+        if self.retry_config.strategy == 'fixed':
+            return base_delay
+        elif self.retry_config.strategy == 'linear':
+            return min(base_delay * (attempt + 1), self.retry_config.max_delay)
+        elif self.retry_config.strategy == 'exponential':
+            return min(base_delay * (2 ** attempt), self.retry_config.max_delay)
+        return base_delay
+
+    def call(self, request):
+        '''Process request with service mesh features.'''
+        # Check circuit breaker
+        if not self._check_circuit():
+            raise Exception('Circuit breaker is open')
+
+        max_attempts = self.retry_config.max_retries + 1 if self.retry_config else 1
+        last_error = None
+
+        for attempt in range(max_attempts):
+            try:
+                # Select backend if load balancing
+                backend = self._select_backend()
+                if backend:
+                    # Route to backend (simplified - real impl would call backend)
+                    pass
+
+                # Execute handler
+                result = self._handle_request(request)
+                self._record_success()
+                return result
+
+            except Exception as e:
+                last_error = e
+                self._record_failure()
+                if attempt < max_attempts - 1:
+                    delay = self._calculate_delay(attempt)
+                    if delay > 0:
+                        time.sleep(delay / 1000.0)
+
+        raise last_error or Exception('All retries exhausted')
+
+    def _handle_request(self, request):
+        '''Execute the actual handler logic.'''
+~w
+
+# Register service
+register_service('~w', ~wService())
+", [LoadBalancerCode, CircuitBreakerCode, RetryCode,
+    ClassNameAtom, Name, LBStrategyStr, CBThreshold, CBTimeout, RetryN,
+    Name, Stateful, BackendsCode, LBStrategyStr, CBConfig, RetryConfig,
+    HandlerCode, Name, ClassNameAtom]).
+
+%% generate_load_balancer_python(+Strategy, -Code)
+%  Generate Python load balancer infrastructure.
+generate_load_balancer_python(_, "# Load balancer strategies: round_robin, random, least_connections, weighted, ip_hash").
+
+%% generate_circuit_breaker_python(+Config, -Code)
+%  Generate Python circuit breaker infrastructure.
+generate_circuit_breaker_python(_, "# Circuit breaker with configurable threshold and timeout").
+
+%% generate_retry_python(+Config, -Code)
+%  Generate Python retry with backoff infrastructure.
+generate_retry_python(_, "# Retry with backoff strategies: fixed, linear, exponential").
+
+%% generate_backends_python(+Backends, -Code)
+%  Generate Python backend list.
+generate_backends_python([], "[]").
+generate_backends_python(Backends, Code) :-
+    Backends \= [],
+    generate_backend_list_python(Backends, BackendStrs),
+    atomic_list_concat(BackendStrs, ', ', BackendList),
+    format(string(Code), "[~w]", [BackendList]).
+
+generate_backend_list_python([], []).
+generate_backend_list_python([backend(Name, Transport)|Rest], [Str|RestStrs]) :-
+    format(string(Str), "{'name': '~w', 'transport': '~w'}", [Name, Transport]),
+    generate_backend_list_python(Rest, RestStrs).
+generate_backend_list_python([backend(Name, Transport, _Opts)|Rest], [Str|RestStrs]) :-
+    format(string(Str), "{'name': '~w', 'transport': '~w'}", [Name, Transport]),
+    generate_backend_list_python(Rest, RestStrs).
 
 /** <module> Python Target Compiler
  *
