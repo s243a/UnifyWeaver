@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents. It demonstrates composing multi-stage bash pipelines as UnifyWeaver data sources.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "bash_pipeline_source" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use bash pipeline source"
+
+
 ## Workflow Overview
 Use UnifyWeaver to compose bash pipelines:
 1. Declare a data source using the `bash_pipeline` plugin with pipeline stages

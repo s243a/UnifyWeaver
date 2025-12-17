@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents (Gemini CLI, Claude Code, etc.). Agents orchestrate UnifyWeaver to generate cross-target pipeline scripts that combine AWK, Python, Bash, Go, and Rust processors.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "cross_target_glue" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use cross target glue"
+
+
 ## Workflow Overview
 Use UnifyWeaver's glue modules to:
 1. Generate pipeline scripts that combine multiple target languages

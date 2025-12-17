@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents (Gemini CLI, Claude Code, etc.). Agents orchestrate UnifyWeaver to call AWK scripts as foreign functions, binding existing AWK tools to Prolog predicates.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "awk_source" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use awk source"
+
+
 ## Workflow Overview
 Use UnifyWeaver to bind AWK as a foreign function:
 1. Declare a data source using the `awk_source` plugin with `awk_command` or `awk_file`

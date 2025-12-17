@@ -1,0 +1,86 @@
+{
+  "version": "3.0",
+  "description": "Expanded Q-A pairs for LDA projection training - UnifyWeaver playbooks (Batch 3)",
+  "notes": {
+    "query_lengths": "short (2-4 words), medium (5-15 words), long (15+ words)",
+    "answer_variants": "Different answer texts per embedding model based on context length"
+  },
+  "embedding_models": ["all-MiniLM-L6-v2", "e5-small-v2"],
+  "clusters": [
+    {
+      "id": "firewall_security",
+      "answer_source": "docs/FIREWALL_GUIDE.md",
+      "answers": {
+        "default": "Firewall and Security - UnifyWeaver's firewall system controls access to external tools, network resources, and file operations. Features strict/permissive modes, whitelist/blacklist policies for domains and tools, and Python module restrictions. Uses fundamental policies like allowed_service/2 and network_access/1 to derive security rules.",
+        "all-MiniLM-L6-v2": "Firewall system: Controls tool/network access via policies. Supports strict/permissive modes, whitelisting, and Python module restrictions.",
+        "e5-small-v2": "Firewall Security - Control access to tools and network. Configure strict/permissive modes, whitelist domains, restrict Python modules. Uses fundamental policies to derive rules."
+      },
+      "queries": {
+        "short": [
+          "firewall security",
+          "network access control",
+          "allowed service policy"
+        ],
+        "medium": [
+          "How to configure firewall policies?",
+          "Restrict network access in UnifyWeaver",
+          "Whitelist Python modules for security"
+        ],
+        "long": [
+          "I need to restrict my pipeline to only access specific internal domains and block all other network traffic",
+          "How can I configure the firewall to allow specific external tools while denying others in a production environment?"
+        ]
+      }
+    },
+    {
+      "id": "powershell_target",
+      "answer_source": "docs/POWERSHELL_TARGET.md",
+      "answers": {
+        "default": "PowerShell Target - Compile Prolog predicates to PowerShell scripts using pure mode or Bash-as-a-Service (BaaS). Supports object pipelines, .NET bindings, and advanced joins. Use compile_to_powershell/3 with options like powershell_mode(pure|baas) and output_format(object).",
+        "all-MiniLM-L6-v2": "PowerShell target: compile_to_powershell/3. Supports pure/BaaS modes, object pipelines, and .NET bindings.",
+        "e5-small-v2": "PowerShell Target - Compile to PowerShell with pure/BaaS modes. Supports object pipelines, .NET bindings, advanced joins. Use compile_to_powershell/3."
+      },
+      "queries": {
+        "short": [
+          "powershell target",
+          "compile to powershell",
+          "prolog to powershell"
+        ],
+        "medium": [
+          "How to compile Prolog to PowerShell?",
+          "Use PowerShell object pipeline with Prolog",
+          "Pure PowerShell vs BaaS mode"
+        ],
+        "long": [
+          "I want to compile a Prolog predicate to a native PowerShell script that outputs objects to the pipeline",
+          "How can I integrate compiled Prolog code with existing PowerShell modules and cmdlets?"
+        ]
+      }
+    },
+    {
+      "id": "dotnet_compilation",
+      "answer_source": "docs/DOTNET_COMPILATION.md",
+      "answers": {
+        "default": "C# Compilation and .NET Integration - Compile C# code for Prolog pipelines using external compilation (dotnet build) or pre-compilation (Add-Type). Supports NuGet dependencies and LiteDB integration. Solves DLL file locking issues by using unique build directories.",
+        "all-MiniLM-L6-v2": "C# compilation: external_compile (dotnet build) or pre_compile (Add-Type). Supports NuGet and LiteDB. Handles file locking.",
+        "e5-small-v2": "C# Compilation - Integrate C# in pipelines. Use external_compile for SDK builds or pre_compile for Add-Type. Features LiteDB support and file locking solutions."
+      },
+      "queries": {
+        "short": [
+          "c# compilation",
+          "dotnet integration",
+          "litedb prolog"
+        ],
+        "medium": [
+          "How to compile C# code in UnifyWeaver?",
+          "Integrate LiteDB with Prolog pipeline",
+          "Solve DLL file locking in PowerShell"
+        ],
+        "long": [
+          "I need to use a C# library with NuGet dependencies in my data pipeline",
+          "How does UnifyWeaver handle C# compilation to avoid file locking issues during iterative development?"
+        ]
+      }
+    }
+  ]
+}

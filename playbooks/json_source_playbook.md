@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents. It demonstrates JSON processing using jq through UnifyWeaver's json_source plugin.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "json_source" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use json source"
+
+
 ## Workflow Overview
 Use UnifyWeaver to process JSON with jq:
 1. Declare a data source using the `json_source` plugin with jq filter

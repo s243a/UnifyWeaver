@@ -2288,6 +2288,414 @@ where
     }
     result
 }
+
+/// Window: Collect records into non-overlapping windows.
+fn window_stage(records: &[Record], size: usize) -> Vec<Vec<Record>> {
+    let mut result = Vec::new();
+    let mut window = Vec::new();
+    for record in records {
+        window.push(record.clone());
+        if window.len() >= size {
+            result.push(window);
+            window = Vec::new();
+        }
+    }
+    if !window.is_empty() {
+        result.push(window);
+    }
+    result
+}
+
+/// Sliding Window: Create sliding windows of records.
+fn sliding_window_stage(records: &[Record], size: usize, step: usize) -> Vec<Vec<Record>> {
+    let mut result = Vec::new();
+    let mut buffer = Vec::new();
+    for record in records {
+        buffer.push(record.clone());
+        while buffer.len() >= size {
+            let window: Vec<Record> = buffer[..size].to_vec();
+            result.push(window);
+            buffer = buffer[step..].to_vec();
+        }
+    }
+    if !buffer.is_empty() {
+        result.push(buffer);
+    }
+    result
+}
+
+/// Sample: Randomly sample n records using reservoir sampling.
+fn sample_stage(records: &[Record], n: usize) -> Vec<Record> {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut reservoir = Vec::with_capacity(n);
+    for (i, record) in records.iter().enumerate() {
+        if i < n {
+            reservoir.push(record.clone());
+        } else {
+            let j = rng.gen_range(0..=i);
+            if j < n {
+                reservoir[j] = record.clone();
+            }
+        }
+    }
+    reservoir
+}
+
+/// Take Every: Take every nth record.
+fn take_every_stage(records: &[Record], n: usize) -> Vec<Record> {
+    records.iter().enumerate()
+        .filter(|(i, _)| i % n == 0)
+        .map(|(_, r)| r.clone())
+        .collect()
+}
+
+/// Partition: Split records into matches and non-matches.
+fn partition_stage<F>(records: &[Record], pred: F) -> (Vec<Record>, Vec<Record>)
+where
+    F: Fn(&Record) -> bool,
+{
+    let mut matches = Vec::new();
+    let mut non_matches = Vec::new();
+    for record in records {
+        if pred(record) {
+            matches.push(record.clone());
+        } else {
+            non_matches.push(record.clone());
+        }
+    }
+    (matches, non_matches)
+}
+
+/// Take: Take first n records.
+fn take_stage(records: &[Record], n: usize) -> Vec<Record> {
+    records.iter().take(n).cloned().collect()
+}
+
+/// Skip: Skip first n records.
+fn skip_stage(records: &[Record], n: usize) -> Vec<Record> {
+    records.iter().skip(n).cloned().collect()
+}
+
+/// Take While: Take records while predicate is true.
+fn take_while_stage<F>(records: &[Record], pred: F) -> Vec<Record>
+where
+    F: Fn(&Record) -> bool,
+{
+    records.iter().take_while(|r| pred(r)).cloned().collect()
+}
+
+/// Skip While: Skip records while predicate is true.
+fn skip_while_stage<F>(records: &[Record], pred: F) -> Vec<Record>
+where
+    F: Fn(&Record) -> bool,
+{
+    records.iter().skip_while(|r| pred(r)).cloned().collect()
+}
+
+/// Distinct: Remove all duplicate records (global dedup).
+fn distinct_stage(records: &[Record]) -> Vec<Record> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for record in records {
+        let key = record_key(record);
+        if !seen.contains(&key) {
+            seen.insert(key);
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Distinct By: Remove duplicates based on a specific field.
+fn distinct_by_stage(records: &[Record], field: &str) -> Vec<Record> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for record in records {
+        let key = format!(\"{:?}\", record.get(field));
+        if !seen.contains(&key) {
+            seen.insert(key);
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Dedup: Remove consecutive duplicate records.
+fn dedup_stage(records: &[Record]) -> Vec<Record> {
+    let mut result = Vec::new();
+    let mut last_key: Option<String> = None;
+    for record in records {
+        let key = record_key(record);
+        if last_key.as_ref() != Some(&key) {
+            last_key = Some(key);
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Dedup By: Remove consecutive duplicates based on a specific field.
+fn dedup_by_stage(records: &[Record], field: &str) -> Vec<Record> {
+    let mut result = Vec::new();
+    let mut last_value: Option<String> = None;
+    for record in records {
+        let value = format!(\"{:?}\", record.get(field));
+        if last_value.as_ref() != Some(&value) {
+            last_value = Some(value);
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Generate a unique key for a record (for dedup comparison).
+fn record_key(record: &Record) -> String {
+    let mut keys: Vec<&String> = record.keys().collect();
+    keys.sort();
+    keys.iter()
+        .map(|k| format!(\"{}={:?}\", k, record.get(*k)))
+        .collect::<Vec<_>>()
+        .join(\",\")
+}
+
+/// Interleave: Round-robin interleave records from multiple streams.
+fn interleave_stage(streams: &[Vec<Record>]) -> Vec<Record> {
+    if streams.is_empty() {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let max_len = streams.iter().map(|s| s.len()).max().unwrap_or(0);
+    for i in 0..max_len {
+        for stream in streams {
+            if i < stream.len() {
+                result.push(stream[i].clone());
+            }
+        }
+    }
+    result
+}
+
+/// Concat: Concatenate multiple streams sequentially.
+fn concat_stage(streams: &[Vec<Record>]) -> Vec<Record> {
+    let mut result = Vec::new();
+    for stream in streams {
+        result.extend(stream.iter().cloned());
+    }
+    result
+}
+
+/// Merge Sorted: Merge multiple pre-sorted streams maintaining sort order.
+/// Uses a k-way merge algorithm for efficiency.
+fn merge_sorted_stage(streams: &[Vec<Record>], field: &str, ascending: bool) -> Vec<Record> {
+    use std::cmp::Ordering;
+
+    if streams.is_empty() {
+        return Vec::new();
+    }
+
+    // Track current index in each stream
+    let mut indices: Vec<usize> = vec![0; streams.len()];
+    let mut result = Vec::new();
+
+    loop {
+        // Find the stream with the best (smallest/largest) next value
+        let mut best_stream: Option<usize> = None;
+        let mut best_value: Option<&serde_json::Value> = None;
+
+        for (i, stream) in streams.iter().enumerate() {
+            if indices[i] >= stream.len() {
+                continue; // This stream is exhausted
+            }
+
+            let value = stream[indices[i]].get(field);
+            if best_stream.is_none() {
+                best_stream = Some(i);
+                best_value = value;
+                continue;
+            }
+
+            // Compare values
+            let is_better = match (value, best_value) {
+                (Some(serde_json::Value::Number(v)), Some(serde_json::Value::Number(bv))) => {
+                    let v_f = v.as_f64().unwrap_or(0.0);
+                    let bv_f = bv.as_f64().unwrap_or(0.0);
+                    if ascending { v_f < bv_f } else { v_f > bv_f }
+                }
+                (Some(serde_json::Value::String(v)), Some(serde_json::Value::String(bv))) => {
+                    if ascending { v < bv } else { v > bv }
+                }
+                _ => false,
+            };
+
+            if is_better {
+                best_stream = Some(i);
+                best_value = value;
+            }
+        }
+
+        match best_stream {
+            Some(idx) => {
+                result.push(streams[idx][indices[idx]].clone());
+                indices[idx] += 1;
+            }
+            None => break, // All streams exhausted
+        }
+    }
+
+    result
+}
+
+/// Tap: Execute a side effect for each record without modifying the stream.
+/// Useful for logging, metrics, debugging, or other observations.
+fn tap_stage<F>(records: &[Record], side_effect: F) -> Vec<Record>
+where
+    F: Fn(&Record),
+{
+    for record in records {
+        // Use catch_unwind to prevent side effect errors from interrupting pipeline
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            side_effect(record);
+        }));
+    }
+    records.to_vec()
+}
+
+/// Flatten: Flatten nested collections into individual records.
+/// If a record contains an \"__items__\" key with an array, yields each item.
+fn flatten_stage(records: &[Record]) -> Vec<Record> {
+    let mut result = Vec::new();
+    for record in records {
+        if let Some(serde_json::Value::Array(items)) = record.get(\"__items__\") {
+            for item in items {
+                if let serde_json::Value::Object(map) = item {
+                    result.push(map.clone());
+                }
+            }
+        } else {
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Flatten Field: Flatten a specific field within each record.
+/// Expands records where field contains an array into multiple records.
+fn flatten_field_stage(records: &[Record], field: &str) -> Vec<Record> {
+    let mut result = Vec::new();
+    for record in records {
+        if let Some(serde_json::Value::Array(items)) = record.get(field) {
+            for item in items {
+                let mut new_record = record.clone();
+                new_record.insert(field.to_string(), item.clone());
+                result.push(new_record);
+            }
+        } else {
+            result.push(record.clone());
+        }
+    }
+    result
+}
+
+/// Debounce: Emit records only after a silence period.
+/// Groups records by time windows and emits the last record in each window.
+fn debounce_stage(records: &[Record], ms: u64, timestamp_field: Option<&str>) -> Vec<Record> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    if records.is_empty() {
+        return Vec::new();
+    }
+
+    let mut result = Vec::new();
+    let mut buffer: Option<Record> = None;
+    let mut last_time: Option<f64> = None;
+    let threshold_sec = ms as f64 / 1000.0;
+
+    for record in records {
+        let current_time = if let Some(field) = timestamp_field {
+            if let Some(ts) = record.get(field) {
+                match ts {
+                    serde_json::Value::Number(n) => n.as_f64().unwrap_or_else(|| {
+                        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+                    }),
+                    _ => SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64(),
+                }
+            } else {
+                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+            }
+        } else {
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+        };
+
+        match last_time {
+            None => {
+                buffer = Some(record.clone());
+                last_time = Some(current_time);
+            }
+            Some(lt) if current_time - lt < threshold_sec => {
+                // Within debounce window, replace buffer
+                buffer = Some(record.clone());
+                last_time = Some(current_time);
+            }
+            Some(_) => {
+                // Silence period exceeded, emit buffered and start new
+                if let Some(buf) = buffer.take() {
+                    result.push(buf);
+                }
+                buffer = Some(record.clone());
+                last_time = Some(current_time);
+            }
+        }
+    }
+
+    // Emit final buffered record
+    if let Some(buf) = buffer {
+        result.push(buf);
+    }
+
+    result
+}
+
+/// Branch: Conditional routing within pipeline.
+/// Records matching condition go through true_fn, others through false_fn.
+fn branch_stage<F, T, E>(
+    records: &[Record],
+    cond_fn: F,
+    true_fn: T,
+    false_fn: E,
+) -> Vec<Record>
+where
+    F: Fn(&Record) -> bool,
+    T: Fn(&[Record]) -> Vec<Record>,
+    E: Fn(&[Record]) -> Vec<Record>,
+{
+    let (true_records, false_records): (Vec<_>, Vec<_>) =
+        records.iter().cloned().partition(|r| cond_fn(r));
+
+    let mut result = Vec::new();
+    if !true_records.is_empty() {
+        result.extend(true_fn(&true_records));
+    }
+    if !false_records.is_empty() {
+        result.extend(false_fn(&false_records));
+    }
+    result
+}
+
+/// Tee: Run side stage on records, discard results, return original records.
+/// Like Unix tee - fork to side destination while main stream continues.
+fn tee_stage<F>(records: &[Record], side_fn: F) -> Vec<Record>
+where
+    F: Fn(&[Record]) -> Vec<Record>,
+{
+    // Run side stage (results discarded)
+    let _ = side_fn(records);
+
+    // Return original records unchanged
+    records.to_vec()
+}
 ".
 
 %% rust_parallel_helper(+ParallelMode, -Code)
@@ -2493,6 +2901,44 @@ generate_rust_single_enhanced_stage(debounce(_), "") :- !.
 generate_rust_single_enhanced_stage(zip(SubStages), Code) :-
     !,
     generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(window(_), "") :- !.
+generate_rust_single_enhanced_stage(sliding_window(_, _), "") :- !.
+generate_rust_single_enhanced_stage(sample(_), "") :- !.
+generate_rust_single_enhanced_stage(take_every(_), "") :- !.
+generate_rust_single_enhanced_stage(partition(_), "") :- !.
+generate_rust_single_enhanced_stage(take(_), "") :- !.
+generate_rust_single_enhanced_stage(skip(_), "") :- !.
+generate_rust_single_enhanced_stage(take_while(_), "") :- !.
+generate_rust_single_enhanced_stage(skip_while(_), "") :- !.
+generate_rust_single_enhanced_stage(distinct, "") :- !.
+generate_rust_single_enhanced_stage(distinct_by(_), "") :- !.
+generate_rust_single_enhanced_stage(dedup, "") :- !.
+generate_rust_single_enhanced_stage(dedup_by(_), "") :- !.
+generate_rust_single_enhanced_stage(interleave(SubStages), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(concat(SubStages), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(merge_sorted(SubStages, _Field), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
+    !,
+    generate_rust_enhanced_stage_functions(SubStages, Code).
+generate_rust_single_enhanced_stage(tap(_), "") :- !.
+generate_rust_single_enhanced_stage(flatten, "") :- !.
+generate_rust_single_enhanced_stage(flatten(_), "") :- !.
+generate_rust_single_enhanced_stage(debounce(_), "") :- !.
+generate_rust_single_enhanced_stage(debounce(_, _), "") :- !.
+generate_rust_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(TrueStage, TrueCode),
+    generate_rust_single_enhanced_stage(FalseStage, FalseCode),
+    format(string(Code), "~w~w", [TrueCode, FalseCode]).
+generate_rust_single_enhanced_stage(tee(SideStage), Code) :-
+    !,
+    generate_rust_single_enhanced_stage(SideStage, Code).
 generate_rust_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -2818,6 +3264,242 @@ generate_rust_stage_flow(zip(Stages), InVar, OutVar, Code) :-
     format(string(Code),
 "    // Zip: combine outputs from multiple stages
     let ~w = zip_stage(&~w, &[~w]);", [OutVar, InVar, StageListStr]).
+
+% Window stage: collect records into non-overlapping windows
+generate_rust_stage_flow(window(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "windowed_~w", [N]),
+    format(string(Code),
+"    // Window: collect into batches of ~w
+    let ~w = window_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Sliding window stage: create overlapping windows
+generate_rust_stage_flow(sliding_window(N, Step), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "sliding_~w_~w", [N, Step]),
+    format(string(Code),
+"    // Sliding window: size=~w, step=~w
+    let ~w = sliding_window_stage(&~w, ~w, ~w);", [N, Step, OutVar, InVar, N, Step]).
+
+% Sample stage: randomly sample n records
+generate_rust_stage_flow(sample(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "sampled_~w", [N]),
+    format(string(Code),
+"    // Sample: reservoir sampling of ~w records
+    let ~w = sample_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Take every stage: take every nth record
+generate_rust_stage_flow(take_every(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "every_~w", [N]),
+    format(string(Code),
+"    // Take every: every ~wth record
+    let ~w = take_every_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Partition stage: split records by predicate
+generate_rust_stage_flow(partition(Pred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "partitioned_~w", [Pred]),
+    format(string(Code),
+"    // Partition: split by ~w predicate
+    let (~w_matches, ~w_non_matches) = partition_stage(&~w, ~w);
+    let ~w = ~w_matches;  // Use matches (non-matches available as ~w_non_matches)", [Pred, OutVar, OutVar, InVar, Pred, OutVar, OutVar, OutVar]).
+
+% Take stage: take first n records
+generate_rust_stage_flow(take(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "taken_~w", [N]),
+    format(string(Code),
+"    // Take: first ~w records
+    let ~w = take_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Skip stage: skip first n records
+generate_rust_stage_flow(skip(N), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "skipped_~w", [N]),
+    format(string(Code),
+"    // Skip: first ~w records
+    let ~w = skip_stage(&~w, ~w);", [N, OutVar, InVar, N]).
+
+% Take while stage: take while predicate is true
+generate_rust_stage_flow(take_while(Pred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "take_while_~w", [Pred]),
+    format(string(Code),
+"    // Take while: ~w is true
+    let ~w = take_while_stage(&~w, ~w);", [Pred, OutVar, InVar, Pred]).
+
+% Skip while stage: skip while predicate is true
+generate_rust_stage_flow(skip_while(Pred), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "skip_while_~w", [Pred]),
+    format(string(Code),
+"    // Skip while: ~w is true
+    let ~w = skip_while_stage(&~w, ~w);", [Pred, OutVar, InVar, Pred]).
+
+% Distinct stage: remove all duplicates (global)
+generate_rust_stage_flow(distinct, InVar, OutVar, Code) :-
+    !,
+    OutVar = "distinct_result",
+    format(string(Code),
+"    // Distinct: remove all duplicates (global dedup)
+    let ~w = distinct_stage(&~w);", [OutVar, InVar]).
+
+% Distinct by field: remove duplicates based on specific field
+generate_rust_stage_flow(distinct_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "distinct_~w_result", [Field]),
+    format(string(Code),
+"    // Distinct By: remove duplicates based on '~w' field
+    let ~w = distinct_by_stage(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
+
+% Dedup stage: remove consecutive duplicates only
+generate_rust_stage_flow(dedup, InVar, OutVar, Code) :-
+    !,
+    OutVar = "dedup_result",
+    format(string(Code),
+"    // Dedup: remove consecutive duplicates
+    let ~w = dedup_stage(&~w);", [OutVar, InVar]).
+
+% Dedup by field: remove consecutive duplicates based on specific field
+generate_rust_stage_flow(dedup_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "dedup_~w_result", [Field]),
+    format(string(Code),
+"    // Dedup By: remove consecutive duplicates based on '~w' field
+    let ~w = dedup_by_stage(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
+
+% Interleave stage: round-robin interleave from multiple stage outputs
+generate_rust_stage_flow(interleave(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "interleaved_~w_result", [N]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    // Interleave: round-robin from ~w stage outputs
+    let interleave_streams_~w: Vec<Vec<Record>> = vec![~w]
+        .iter()
+        .map(|stage_fn| stage_fn(&~w))
+        .collect();
+    let ~w = interleave_stage(&interleave_streams_~w);", [N, N, StageListStr, InVar, OutVar, N]).
+
+% Concat stage: sequential concatenation of multiple stage outputs
+generate_rust_stage_flow(concat(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "concatenated_~w_result", [N]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    // Concat: sequential concatenation of ~w stage outputs
+    let concat_streams_~w: Vec<Vec<Record>> = vec![~w]
+        .iter()
+        .map(|stage_fn| stage_fn(&~w))
+        .collect();
+    let ~w = concat_stage(&concat_streams_~w);", [N, N, StageListStr, InVar, OutVar, N]).
+
+% Merge sorted stage: merge pre-sorted streams maintaining order (ascending)
+generate_rust_stage_flow(merge_sorted(SubStages, Field), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "merge_sorted_~w_result", [Field]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    // Merge Sorted: merge ~w pre-sorted streams by '~w' (ascending)
+    let merge_sorted_streams_~w: Vec<Vec<Record>> = vec![~w]
+        .iter()
+        .map(|stage_fn| stage_fn(&~w))
+        .collect();
+    let ~w = merge_sorted_stage(&merge_sorted_streams_~w, \"~w\", true);", [N, Field, N, StageListStr, InVar, OutVar, N, Field]).
+
+% Merge sorted stage with direction: merge pre-sorted streams with specified order
+generate_rust_stage_flow(merge_sorted(SubStages, Field, Dir), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "merge_sorted_~w_~w_result", [Field, Dir]),
+    extract_rust_stage_names(SubStages, StageNames),
+    format_rust_stage_list(StageNames, StageListStr),
+    ( Dir = asc -> Ascending = "true" ; Ascending = "false" ),
+    format(string(Code),
+"    // Merge Sorted: merge ~w pre-sorted streams by '~w' (~w)
+    let merge_sorted_streams_~w_~w: Vec<Vec<Record>> = vec![~w]
+        .iter()
+        .map(|stage_fn| stage_fn(&~w))
+        .collect();
+    let ~w = merge_sorted_stage(&merge_sorted_streams_~w_~w, \"~w\", ~w);", [N, Field, Dir, N, Dir, StageListStr, InVar, OutVar, N, Dir, Field, Ascending]).
+
+% Tap stage: execute side effect without modifying stream
+generate_rust_stage_flow(tap(Pred), InVar, OutVar, Code) :-
+    !,
+    ( Pred = PredName/_ -> true ; PredName = Pred ),
+    format(atom(OutVar), "tapped_~w_result", [PredName]),
+    format(string(Code),
+"    // Tap: execute ~w for side effects (logging/metrics)
+    let ~w = tap_stage(&~w, ~w);", [PredName, OutVar, InVar, PredName]).
+
+% Flatten stage: flatten nested collections
+generate_rust_stage_flow(flatten, InVar, OutVar, Code) :-
+    !,
+    OutVar = "flattened_result",
+    format(string(Code),
+"    // Flatten: expand nested collections into individual records
+    let ~w = flatten_stage(&~w);", [OutVar, InVar]).
+
+% Flatten field stage: flatten a specific field within records
+generate_rust_stage_flow(flatten(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "flattened_~w_result", [Field]),
+    format(string(Code),
+"    // Flatten Field: expand '~w' field into individual records
+    let ~w = flatten_field_stage(&~w, \"~w\");", [Field, OutVar, InVar, Field]).
+
+% Debounce stage: emit only after silence period
+generate_rust_stage_flow(debounce(Ms), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced_~w_result", [Ms]),
+    format(string(Code),
+"    // Debounce: emit after ~wms silence period
+    let ~w = debounce_stage(&~w, ~w, None);", [Ms, OutVar, InVar, Ms]).
+
+% Debounce stage with timestamp field
+generate_rust_stage_flow(debounce(Ms, Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced_~w_~w_result", [Ms, Field]),
+    format(string(Code),
+"    // Debounce: emit after ~wms silence (using '~w' timestamp field)
+    let ~w = debounce_stage(&~w, ~w, Some(\"~w\"));", [Ms, Field, OutVar, InVar, Ms, Field]).
+
+% Branch stage: conditional routing
+generate_rust_stage_flow(branch(Cond, TrueStage, FalseStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "branch_result",
+    % Extract condition predicate name
+    ( Cond = CondName/_ -> true ; CondName = Cond ),
+    % Extract true/false stage names
+    ( TrueStage = TrueName/_ -> true ; TrueName = TrueStage ),
+    ( FalseStage = FalseName/_ -> true ; FalseName = FalseStage ),
+    format(string(Code),
+"    // Branch: if ~w then ~w else ~w
+    let ~w = branch_stage(
+        &~w,
+        |r| ~w(r),
+        |rs| ~w(rs),
+        |rs| ~w(rs),
+    );", [CondName, TrueName, FalseName, OutVar, InVar, CondName, TrueName, FalseName]).
+
+% Tee stage: run side stage, discard results, pass through
+generate_rust_stage_flow(tee(SideStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "tee_result",
+    % Extract side stage name
+    ( SideStage = SideName/_ -> true ; SideName = SideStage ),
+    format(string(Code),
+"    // Tee: fork to ~w (results discarded), pass original through
+    let ~w = tee_stage(&~w, |rs| ~w(rs));",
+    [SideName, OutVar, InVar, SideName]).
 
 % Standard predicate stage
 generate_rust_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

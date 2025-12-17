@@ -127,3 +127,6 @@ models/
 # .NET build artifacts
 **/bin/
 **/obj/
+
+# Numpy arrays
+*.npy

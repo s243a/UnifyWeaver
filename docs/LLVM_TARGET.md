@@ -135,10 +135,41 @@ clang -shared lib.o -o libprolog_math.so
 nm -D libprolog_math.so | grep "T sum"
 ```
 
+---
+
+## Phase 5: WASM String Support
+
+Generate WASM modules with string handling for graph visualization.
+
+### `compile_wasm_string_module/3`
+Compile with string and edge storage support:
+```prolog
+compile_wasm_string_module(
+    [func(ancestor, 2, transitive_closure)],
+    [module_name(family_graph)],
+    Code).
+```
+
+### `generate_ts_string_bindings/2`
+Generate TypeScript bindings with `GraphWasm` class:
+```prolog
+generate_ts_string_bindings(Functions, TSCode).
+```
+
+Generated API:
+```typescript
+const graph = await GraphWasm.load('family_graph.wasm');
+graph.addEdge('tom', 'bob');
+graph.getEdges(); // [['tom', 'bob']]
+```
+
+### Example
+See [examples/wasm-graph/](../examples/wasm-graph/) for complete Cytoscape.js demo.
+
 ## See Also
 
 - [llvm_target_design.md](./proposals/llvm_target_design.md) - Design doc
+- [wasm_string_support.md](./proposals/wasm_string_support.md) - WASM string proposal
 - [Cross-Target Glue Book](../education/book-07-cross-target-glue/) - FFI examples
 - [GO_TARGET.md](./GO_TARGET.md) - Go target
 - [RUST_TARGET.md](./RUST_TARGET.md) - Rust target
-

@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents. Agents orchestrate UnifyWeaver to demonstrate mutual recursion compilation.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "mutual_recursion" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use mutual recursion"
+
+
 ## Workflow Overview
 Use UnifyWeaver to compile mutually recursive predicates:
 1. Generate Prolog code for is_even/1 and is_odd/1 (mutually recursive).

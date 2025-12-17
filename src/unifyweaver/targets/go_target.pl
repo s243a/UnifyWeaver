@@ -164,6 +164,10 @@ valid_json_type(integer).
 valid_json_type(float).
 valid_json_type(boolean).
 valid_json_type(any).  % Fallback to interface{}
+valid_json_type(array(Type)) :-
+    valid_json_type(Type).
+valid_json_type(object(SchemaName)) :-
+    atom(SchemaName).
 
 %% get_json_schema(+SchemaName, -Fields)
 %  Retrieve a schema definition by name
@@ -9268,6 +9272,440 @@ func zipStage(records []Record, stages []func([]Record) []Record) []Record {
 \treturn result
 }
 
+// windowStage collects records into non-overlapping windows
+func windowStage(records []Record, size int) [][]Record {
+\tvar result [][]Record
+\tvar window []Record
+\tfor _, record := range records {
+\t\twindow = append(window, record)
+\t\tif len(window) >= size {
+\t\t\tresult = append(result, window)
+\t\t\twindow = nil
+\t\t}
+\t}
+\tif len(window) > 0 {
+\t\tresult = append(result, window)
+\t}
+\treturn result
+}
+
+// slidingWindowStage creates sliding windows of records
+func slidingWindowStage(records []Record, size, step int) [][]Record {
+\tvar result [][]Record
+\tvar buffer []Record
+\tfor _, record := range records {
+\t\tbuffer = append(buffer, record)
+\t\tfor len(buffer) >= size {
+\t\t\twindow := make([]Record, size)
+\t\t\tcopy(window, buffer[:size])
+\t\t\tresult = append(result, window)
+\t\t\tbuffer = buffer[step:]
+\t\t}
+\t}
+\tif len(buffer) > 0 {
+\t\tresult = append(result, buffer)
+\t}
+\treturn result
+}
+
+// sampleStage randomly samples n records using reservoir sampling
+func sampleStage(records []Record, n int) []Record {
+\timport \"math/rand\"
+\treservoir := make([]Record, 0, n)
+\tfor i, record := range records {
+\t\tif i < n {
+\t\t\treservoir = append(reservoir, record)
+\t\t} else {
+\t\t\tj := rand.Intn(i + 1)
+\t\t\tif j < n {
+\t\t\t\treservoir[j] = record
+\t\t\t}
+\t\t}
+\t}
+\treturn reservoir
+}
+
+// takeEveryStage takes every nth record
+func takeEveryStage(records []Record, n int) []Record {
+\tvar result []Record
+\tfor i, record := range records {
+\t\tif i%n == 0 {
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// partitionStage splits records into matches and non-matches
+func partitionStage(records []Record, pred func(Record) bool) ([]Record, []Record) {
+\tvar matches, nonMatches []Record
+\tfor _, record := range records {
+\t\tif pred(record) {
+\t\t\tmatches = append(matches, record)
+\t\t} else {
+\t\t\tnonMatches = append(nonMatches, record)
+\t\t}
+\t}
+\treturn matches, nonMatches
+}
+
+// takeStage takes first n records
+func takeStage(records []Record, n int) []Record {
+\tif n >= len(records) {
+\t\treturn records
+\t}
+\treturn records[:n]
+}
+
+// skipStage skips first n records
+func skipStage(records []Record, n int) []Record {
+\tif n >= len(records) {
+\t\treturn nil
+\t}
+\treturn records[n:]
+}
+
+// takeWhileStage takes records while predicate is true
+func takeWhileStage(records []Record, pred func(Record) bool) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tif !pred(record) {
+\t\t\tbreak
+\t\t}
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
+// skipWhileStage skips records while predicate is true
+func skipWhileStage(records []Record, pred func(Record) bool) []Record {
+\tvar result []Record
+\tskipping := true
+\tfor _, record := range records {
+\t\tif skipping && pred(record) {
+\t\t\tcontinue
+\t\t}
+\t\tskipping = false
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
+// distinctStage removes all duplicate records (global dedup)
+func distinctStage(records []Record) []Record {
+\tseen := make(map[string]bool)
+\tvar result []Record
+\tfor _, record := range records {
+\t\tkey := recordKey(record)
+\t\tif !seen[key] {
+\t\t\tseen[key] = true
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// distinctByStage removes duplicates based on a specific field
+func distinctByStage(records []Record, field string) []Record {
+\tseen := make(map[string]bool)
+\tvar result []Record
+\tfor _, record := range records {
+\t\tval, _ := record[field]
+\t\tkey := fmt.Sprintf(\"%v\", val)
+\t\tif !seen[key] {
+\t\t\tseen[key] = true
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// dedupStage removes consecutive duplicate records
+func dedupStage(records []Record) []Record {
+\tvar result []Record
+\tvar lastKey string
+\tfor _, record := range records {
+\t\tkey := recordKey(record)
+\t\tif key != lastKey {
+\t\t\tlastKey = key
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// dedupByStage removes consecutive duplicates based on a specific field
+func dedupByStage(records []Record, field string) []Record {
+\tvar result []Record
+\tvar lastValue interface{} = nil
+\tfirst := true
+\tfor _, record := range records {
+\t\tval, _ := record[field]
+\t\tif first || val != lastValue {
+\t\t\tlastValue = val
+\t\t\tfirst = false
+\t\t\tresult = append(result, record)
+\t\t}
+\t}
+\treturn result
+}
+
+// recordKey generates a unique key for a record (for dedup comparison)
+func recordKey(record Record) string {
+\tkeys := make([]string, 0, len(record))
+\tfor k := range record {
+\t\tkeys = append(keys, k)
+\t}
+\tsort.Strings(keys)
+\tvar parts []string
+\tfor _, k := range keys {
+\t\tparts = append(parts, fmt.Sprintf(\"%s=%v\", k, record[k]))
+\t}
+\treturn strings.Join(parts, \",\")
+}
+
+// interleaveStage interleaves records from multiple stage outputs in round-robin fashion
+func interleaveStage(streams [][]Record) []Record {
+\tif len(streams) == 0 {
+\t\treturn nil
+\t}
+\tvar result []Record
+\tmaxLen := 0
+\tfor _, s := range streams {
+\t\tif len(s) > maxLen {
+\t\t\tmaxLen = len(s)
+\t\t}
+\t}
+\tfor i := 0; i < maxLen; i++ {
+\t\tfor _, stream := range streams {
+\t\t\tif i < len(stream) {
+\t\t\t\tresult = append(result, stream[i])
+\t\t\t}
+\t\t}
+\t}
+\treturn result
+}
+
+// concatStage concatenates multiple stage outputs sequentially
+func concatStage(streams [][]Record) []Record {
+\tvar result []Record
+\tfor _, stream := range streams {
+\t\tresult = append(result, stream...)
+\t}
+\treturn result
+}
+
+// mergeSortedStage merges multiple pre-sorted streams maintaining sort order
+// Uses a heap-based k-way merge for efficiency
+func mergeSortedStage(streams [][]Record, field string, ascending bool) []Record {
+\tif len(streams) == 0 {
+\t\treturn nil
+\t}
+
+\t// Track current index in each stream
+\tindices := make([]int, len(streams))
+\tvar result []Record
+
+\tfor {
+\t\t// Find the stream with the smallest (or largest) next value
+\t\tbestStream := -1
+\t\tvar bestValue interface{}
+
+\t\tfor i, stream := range streams {
+\t\t\tif indices[i] >= len(stream) {
+\t\t\t\tcontinue // This stream is exhausted
+\t\t\t}
+
+\t\t\tvalue := stream[indices[i]][field]
+\t\t\tif bestStream == -1 {
+\t\t\t\tbestStream = i
+\t\t\t\tbestValue = value
+\t\t\t\tcontinue
+\t\t\t}
+
+\t\t\t// Compare values
+\t\t\tvar isBetter bool
+\t\t\tswitch v := value.(type) {
+\t\t\tcase int:
+\t\t\t\tif bv, ok := bestValue.(int); ok {
+\t\t\t\t\tif ascending {
+\t\t\t\t\t\tisBetter = v < bv
+\t\t\t\t\t} else {
+\t\t\t\t\t\tisBetter = v > bv
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\tcase float64:
+\t\t\t\tif bv, ok := bestValue.(float64); ok {
+\t\t\t\t\tif ascending {
+\t\t\t\t\t\tisBetter = v < bv
+\t\t\t\t\t} else {
+\t\t\t\t\t\tisBetter = v > bv
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\tcase string:
+\t\t\t\tif bv, ok := bestValue.(string); ok {
+\t\t\t\t\tif ascending {
+\t\t\t\t\t\tisBetter = v < bv
+\t\t\t\t\t} else {
+\t\t\t\t\t\tisBetter = v > bv
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t}
+
+\t\t\tif isBetter {
+\t\t\t\tbestStream = i
+\t\t\t\tbestValue = value
+\t\t\t}
+\t\t}
+
+\t\tif bestStream == -1 {
+\t\t\tbreak // All streams exhausted
+\t\t}
+
+\t\tresult = append(result, streams[bestStream][indices[bestStream]])
+\t\tindices[bestStream]++
+\t}
+
+\treturn result
+}
+
+// tapStage executes a side effect for each record without modifying the stream
+// Useful for logging, metrics, debugging, or other observations
+func tapStage(records []Record, sideEffect func(Record)) []Record {
+\tfor _, record := range records {
+\t\tfunc() {
+\t\t\tdefer func() { recover() }() // Side effects should not interrupt pipeline
+\t\t\tsideEffect(record)
+\t\t}()
+\t}
+\treturn records
+}
+
+// flattenStage flattens nested collections into individual records
+// If a record contains an array field \"__items__\", yields each item
+func flattenStage(records []Record) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tif items, ok := record[\"__items__\"]; ok {
+\t\t\tif arr, ok := items.([]interface{}); ok {
+\t\t\t\tfor _, item := range arr {
+\t\t\t\t\tif rec, ok := item.(Record); ok {
+\t\t\t\t\t\tresult = append(result, rec)
+\t\t\t\t\t} else if m, ok := item.(map[string]interface{}); ok {
+\t\t\t\t\t\tresult = append(result, Record(m))
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tcontinue
+\t\t\t}
+\t\t}
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
+// flattenFieldStage flattens a specific field within each record
+// Expands records where field contains an array into multiple records
+func flattenFieldStage(records []Record, field string) []Record {
+\tvar result []Record
+\tfor _, record := range records {
+\t\tif fieldValue, ok := record[field]; ok {
+\t\t\tif arr, ok := fieldValue.([]interface{}); ok {
+\t\t\t\tfor _, item := range arr {
+\t\t\t\t\tnewRecord := make(Record)
+\t\t\t\t\tfor k, v := range record {
+\t\t\t\t\t\tnewRecord[k] = v
+\t\t\t\t\t}
+\t\t\t\t\tnewRecord[field] = item
+\t\t\t\t\tresult = append(result, newRecord)
+\t\t\t\t}
+\t\t\t\tcontinue
+\t\t\t}
+\t\t}
+\t\tresult = append(result, record)
+\t}
+\treturn result
+}
+
+// debounceStage emits records only after a silence period
+// Groups records by time windows and emits the last record in each window
+func debounceStage(records []Record, ms int64, timestampField string) []Record {
+\tif len(records) == 0 {
+\t\treturn records
+\t}
+
+\tvar result []Record
+\tvar buffer Record
+\tvar lastTime float64 = -1
+\tthresholdSec := float64(ms) / 1000.0
+
+\tfor _, record := range records {
+\t\tcurrentTime := float64(time.Now().UnixNano()) / 1e9
+\t\tif timestampField != \"\" {
+\t\t\tif ts, ok := record[timestampField]; ok {
+\t\t\t\tswitch v := ts.(type) {
+\t\t\t\tcase float64:
+\t\t\t\t\tcurrentTime = v
+\t\t\t\tcase int64:
+\t\t\t\t\tcurrentTime = float64(v)
+\t\t\t\tcase int:
+\t\t\t\t\tcurrentTime = float64(v)
+\t\t\t\t}
+\t\t\t}
+\t\t}
+
+\t\tif lastTime < 0 {
+\t\t\tbuffer = record
+\t\t\tlastTime = currentTime
+\t\t} else if currentTime-lastTime < thresholdSec {
+\t\t\t// Within debounce window, replace buffer
+\t\t\tbuffer = record
+\t\t\tlastTime = currentTime
+\t\t} else {
+\t\t\t// Silence period exceeded, emit buffered and start new
+\t\t\tresult = append(result, buffer)
+\t\t\tbuffer = record
+\t\t\tlastTime = currentTime
+\t\t}
+\t}
+
+\t// Emit final buffered record
+\tresult = append(result, buffer)
+\treturn result
+}
+
+// branchStage routes records through different stages based on condition
+// Records matching condition go through trueStage, others through falseStage
+func branchStage(records []Record, condFn func(Record) bool, trueFn func([]Record) []Record, falseFn func([]Record) []Record) []Record {
+\tvar trueRecords, falseRecords []Record
+
+\tfor _, record := range records {
+\t\tif condFn(record) {
+\t\t\ttrueRecords = append(trueRecords, record)
+\t\t} else {
+\t\t\tfalseRecords = append(falseRecords, record)
+\t\t}
+\t}
+
+\tvar result []Record
+\tif len(trueRecords) > 0 {
+\t\tresult = append(result, trueFn(trueRecords)...)
+\t}
+\tif len(falseRecords) > 0 {
+\t\tresult = append(result, falseFn(falseRecords)...)
+\t}
+\treturn result
+}
+
+// teeStage runs side stage on records, discards results, returns original records
+// Like Unix tee - fork to side destination while main stream continues
+func teeStage(records []Record, sideFn func([]Record) []Record) []Record {
+\t// Run side stage (results discarded)
+\t_ = sideFn(records)
+
+\t// Return original records unchanged
+\treturn records
+}
+
 '.
 
 %% generate_go_enhanced_stage_functions(+Stages, -Code)
@@ -9338,6 +9776,44 @@ generate_go_single_enhanced_stage(debounce(_), "") :- !.
 generate_go_single_enhanced_stage(zip(SubStages), Code) :-
     !,
     generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(window(_), "") :- !.
+generate_go_single_enhanced_stage(sliding_window(_, _), "") :- !.
+generate_go_single_enhanced_stage(sample(_), "") :- !.
+generate_go_single_enhanced_stage(take_every(_), "") :- !.
+generate_go_single_enhanced_stage(partition(_), "") :- !.
+generate_go_single_enhanced_stage(take(_), "") :- !.
+generate_go_single_enhanced_stage(skip(_), "") :- !.
+generate_go_single_enhanced_stage(take_while(_), "") :- !.
+generate_go_single_enhanced_stage(skip_while(_), "") :- !.
+generate_go_single_enhanced_stage(distinct, "") :- !.
+generate_go_single_enhanced_stage(distinct_by(_), "") :- !.
+generate_go_single_enhanced_stage(dedup, "") :- !.
+generate_go_single_enhanced_stage(dedup_by(_), "") :- !.
+generate_go_single_enhanced_stage(interleave(SubStages), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(concat(SubStages), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(merge_sorted(SubStages, _Field), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
+    !,
+    generate_go_enhanced_stage_functions(SubStages, Code).
+generate_go_single_enhanced_stage(tap(_), "") :- !.
+generate_go_single_enhanced_stage(flatten, "") :- !.
+generate_go_single_enhanced_stage(flatten(_), "") :- !.
+generate_go_single_enhanced_stage(debounce(_), "") :- !.
+generate_go_single_enhanced_stage(debounce(_, _), "") :- !.
+generate_go_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
+    !,
+    generate_go_single_enhanced_stage(TrueStage, TrueCode),
+    generate_go_single_enhanced_stage(FalseStage, FalseCode),
+    format(string(Code), "~w~w", [TrueCode, FalseCode]).
+generate_go_single_enhanced_stage(tee(SideStage), Code) :-
+    !,
+    generate_go_single_enhanced_stage(SideStage, Code).
 generate_go_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -9674,6 +10150,240 @@ generate_go_stage_flow(zip(Stages), InVar, OutVar, Code) :-
     format(string(Code),
 "\t// Zip: combine outputs from multiple stages
 \t~w := zipStage(~w, []func([]Record) []Record{~w})", [OutVar, InVar, StageListStr]).
+
+% Window stage: non-overlapping windows
+generate_go_stage_flow(window(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "windowedResult",
+    format(string(Code),
+"\t// Window: collect ~w records into windows
+\t~w := windowStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Sliding window stage
+generate_go_stage_flow(sliding_window(N, Step), InVar, OutVar, Code) :-
+    !,
+    OutVar = "slidingWindowResult",
+    format(string(Code),
+"\t// Sliding Window: size ~w, step ~w
+\t~w := slidingWindowStage(~w, ~w, ~w)", [N, Step, OutVar, InVar, N, Step]).
+
+% Sample stage: random sampling
+generate_go_stage_flow(sample(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "sampledResult",
+    format(string(Code),
+"\t// Sample: random ~w records
+\t~w := sampleStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Take every stage
+generate_go_stage_flow(take_every(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "takeEveryResult",
+    format(string(Code),
+"\t// Take Every: every ~wth record
+\t~w := takeEveryStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Partition stage
+generate_go_stage_flow(partition(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "partitionedResult",
+    format(string(Code),
+"\t// Partition: split by ~w
+\t~w, _ := partitionStage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Take stage
+generate_go_stage_flow(take(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "takeResult",
+    format(string(Code),
+"\t// Take: first ~w records
+\t~w := takeStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Skip stage
+generate_go_stage_flow(skip(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "skipResult",
+    format(string(Code),
+"\t// Skip: skip first ~w records
+\t~w := skipStage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Take while stage
+generate_go_stage_flow(take_while(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "takeWhileResult",
+    format(string(Code),
+"\t// Take While: while ~w is true
+\t~w := takeWhileStage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Skip while stage
+generate_go_stage_flow(skip_while(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "skipWhileResult",
+    format(string(Code),
+"\t// Skip While: skip while ~w is true
+\t~w := skipWhileStage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Distinct stage: remove all duplicates (global)
+generate_go_stage_flow(distinct, InVar, OutVar, Code) :-
+    !,
+    OutVar = "distinctResult",
+    format(string(Code),
+"\t// Distinct: remove all duplicates (global dedup)
+\t~w := distinctStage(~w)", [OutVar, InVar]).
+
+% Distinct by field: remove duplicates based on specific field
+generate_go_stage_flow(distinct_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "distinct~wResult", [Field]),
+    format(string(Code),
+"\t// Distinct By: remove duplicates based on '~w' field
+\t~w := distinctByStage(~w, \"~w\")", [Field, OutVar, InVar, Field]).
+
+% Dedup stage: remove consecutive duplicates only
+generate_go_stage_flow(dedup, InVar, OutVar, Code) :-
+    !,
+    OutVar = "dedupResult",
+    format(string(Code),
+"\t// Dedup: remove consecutive duplicates
+\t~w := dedupStage(~w)", [OutVar, InVar]).
+
+% Dedup by field: remove consecutive duplicates based on specific field
+generate_go_stage_flow(dedup_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "dedup~wResult", [Field]),
+    format(string(Code),
+"\t// Dedup By: remove consecutive duplicates based on '~w' field
+\t~w := dedupByStage(~w, \"~w\")", [Field, OutVar, InVar, Field]).
+
+% Interleave stage: round-robin interleave from multiple stage outputs
+generate_go_stage_flow(interleave(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "interleaved~wResult", [N]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"\t// Interleave: round-robin from ~w stage outputs
+\tvar interleaveStreams~w [][]Record
+\tfor _, stageFn := range []func([]Record) []Record{~w} {
+\t\tinterleaveStreams~w = append(interleaveStreams~w, stageFn(~w))
+\t}
+\t~w := interleaveStage(interleaveStreams~w)", [N, N, StageListStr, N, N, InVar, OutVar, N]).
+
+% Concat stage: sequential concatenation of multiple stage outputs
+generate_go_stage_flow(concat(SubStages), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "concatenated~wResult", [N]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"\t// Concat: sequential concatenation of ~w stage outputs
+\tvar concatStreams~w [][]Record
+\tfor _, stageFn := range []func([]Record) []Record{~w} {
+\t\tconcatStreams~w = append(concatStreams~w, stageFn(~w))
+\t}
+\t~w := concatStage(concatStreams~w)", [N, N, StageListStr, N, N, InVar, OutVar, N]).
+
+% Merge sorted stage: merge pre-sorted streams maintaining order (ascending)
+generate_go_stage_flow(merge_sorted(SubStages, Field), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "mergeSorted~wResult", [Field]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"\t// Merge Sorted: merge ~w pre-sorted streams by '~w' (ascending)
+\tvar mergeSortedStreams~w [][]Record
+\tfor _, stageFn := range []func([]Record) []Record{~w} {
+\t\tmergeSortedStreams~w = append(mergeSortedStreams~w, stageFn(~w))
+\t}
+\t~w := mergeSortedStage(mergeSortedStreams~w, \"~w\", true)", [N, Field, N, StageListStr, N, N, InVar, OutVar, N, Field]).
+
+% Merge sorted stage with direction: merge pre-sorted streams with specified order
+generate_go_stage_flow(merge_sorted(SubStages, Field, Dir), InVar, OutVar, Code) :-
+    !,
+    length(SubStages, N),
+    format(atom(OutVar), "mergeSorted~w~wResult", [Field, Dir]),
+    extract_go_stage_names(SubStages, StageNames),
+    format_go_stage_list(StageNames, StageListStr),
+    ( Dir = asc -> Ascending = "true" ; Ascending = "false" ),
+    format(string(Code),
+"\t// Merge Sorted: merge ~w pre-sorted streams by '~w' (~w)
+\tvar mergeSortedStreams~w~w [][]Record
+\tfor _, stageFn := range []func([]Record) []Record{~w} {
+\t\tmergeSortedStreams~w~w = append(mergeSortedStreams~w~w, stageFn(~w))
+\t}
+\t~w := mergeSortedStage(mergeSortedStreams~w~w, \"~w\", ~w)", [N, Field, Dir, N, Dir, StageListStr, N, Dir, N, Dir, InVar, OutVar, N, Dir, Field, Ascending]).
+
+% Tap stage: execute side effect without modifying stream
+generate_go_stage_flow(tap(Pred), InVar, OutVar, Code) :-
+    !,
+    ( Pred = PredName/_ -> true ; PredName = Pred ),
+    format(atom(OutVar), "tapped~wResult", [PredName]),
+    format(string(Code),
+"\t// Tap: execute ~w for side effects (logging/metrics)
+\t~w := tapStage(~w, ~w)", [PredName, OutVar, InVar, PredName]).
+
+% Flatten stage: flatten nested collections
+generate_go_stage_flow(flatten, InVar, OutVar, Code) :-
+    !,
+    OutVar = "flattenedResult",
+    format(string(Code),
+"\t// Flatten: expand nested collections into individual records
+\t~w := flattenStage(~w)", [OutVar, InVar]).
+
+% Flatten field stage: flatten a specific field within records
+generate_go_stage_flow(flatten(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "flattened~wResult", [Field]),
+    format(string(Code),
+"\t// Flatten Field: expand '~w' field into individual records
+\t~w := flattenFieldStage(~w, \"~w\")", [Field, OutVar, InVar, Field]).
+
+% Debounce stage: emit only after silence period
+generate_go_stage_flow(debounce(Ms), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced~wResult", [Ms]),
+    format(string(Code),
+"\t// Debounce: emit after ~wms silence period
+\t~w := debounceStage(~w, ~w, \"\")", [Ms, OutVar, InVar, Ms]).
+
+% Debounce stage with timestamp field
+generate_go_stage_flow(debounce(Ms, Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced~w~wResult", [Ms, Field]),
+    format(string(Code),
+"\t// Debounce: emit after ~wms silence (using '~w' timestamp field)
+\t~w := debounceStage(~w, ~w, \"~w\")", [Ms, Field, OutVar, InVar, Ms, Field]).
+
+% Branch stage: conditional routing
+generate_go_stage_flow(branch(Cond, TrueStage, FalseStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "branchResult",
+    % Extract condition predicate name
+    ( Cond = CondName/_ -> true ; CondName = Cond ),
+    % Extract true/false stage names
+    ( TrueStage = TrueName/_ -> true ; TrueName = TrueStage ),
+    ( FalseStage = FalseName/_ -> true ; FalseName = FalseStage ),
+    format(string(Code),
+"\t// Branch: if ~w then ~w else ~w
+\t~w := branchStage(~w,
+\t\tfunc(r Record) bool { return ~w(r) },
+\t\tfunc(rs []Record) []Record { return ~w(rs) },
+\t\tfunc(rs []Record) []Record { return ~w(rs) })",
+    [CondName, TrueName, FalseName, OutVar, InVar, CondName, TrueName, FalseName]).
+
+% Tee stage: run side stage, discard results, pass through
+generate_go_stage_flow(tee(SideStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "teeResult",
+    % Extract side stage name
+    ( SideStage = SideName/_ -> true ; SideName = SideStage ),
+    format(string(Code),
+"\t// Tee: fork to ~w (results discarded), pass original through
+\t~w := teeStage(~w, func(rs []Record) []Record { return ~w(rs) })",
+    [SideName, OutVar, InVar, SideName]).
 
 % Standard predicate stage
 generate_go_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

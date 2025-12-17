@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents (Gemini CLI, Claude Code, etc.). Agents do not handwrite scripts here—they orchestrate UnifyWeaver to generate and run the MapReduce pipeline by referencing example records and skills.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "parallel_execution" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use parallel execution"
+
+
 ## Workflow Overview
 Use UnifyWeaver to synthesize the entire MapReduce flow:
 1. Partition the logical input stream (1..1000) into fixed-size chunks; each chunk becomes one worker invocation.

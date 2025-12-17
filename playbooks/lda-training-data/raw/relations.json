@@ -1,0 +1,186 @@
+{
+  "description": "Knowledge graph relations for Q/A playbook examples",
+  "note": "References can be hash (abc123...) or cluster_id (json_litedb_streaming)",
+  "relation_types": {
+    "foundational": "Concepts this example depends on",
+    "preliminary": "Setup steps required before this example",
+    "compositional": "Examples that extend/build upon this one",
+    "transitional": "Natural next steps after this example"
+  },
+  "answers": [
+    {
+      "hash": "c2476d06d3e9",
+      "id": "awk_advanced_patterns",
+      "source": "playbooks/examples_library/awk_advanced_examples.md"
+    },
+    {
+      "hash": "d04dfc23ea35",
+      "id": "awk_source",
+      "source": "playbooks/examples_library/awk_source_examples.md"
+    },
+    {
+      "hash": "49baff8d7de3",
+      "id": "bash_parallel",
+      "source": "playbooks/examples_library/bash_parallel_examples.md"
+    },
+    {
+      "hash": "311543edb944",
+      "id": "bash_pipelines",
+      "source": "playbooks/examples_library/bash_pipeline_examples.md"
+    },
+    {
+      "hash": "91fd7f6a7e73",
+      "id": "component_registry",
+      "source": "docs/proposals/COMPONENT_REGISTRY.md"
+    },
+    {
+      "hash": "3d85e8d4d717",
+      "id": "cross_target_glue",
+      "source": "playbooks/examples_library/cross_target_glue_examples.md"
+    },
+    {
+      "hash": "2e1f8ca558bc",
+      "id": "csharp_examples",
+      "source": "playbooks/examples_library/csharp_examples.md"
+    },
+    {
+      "hash": "e04b98ab26ac",
+      "id": "csharp_xml_fragments",
+      "source": "playbooks/csharp_xml_fragments_playbook.md"
+    },
+    {
+      "hash": "7b6b8d64198b",
+      "id": "csv_data_source",
+      "source": "playbooks/examples_library/csv_examples.md"
+    },
+    {
+      "hash": "fc306b6de1dd",
+      "id": "deployment_glue",
+      "source": "playbooks/deployment_glue_playbook.md"
+    },
+    {
+      "hash": "d8367f9dc471",
+      "id": "dotnet_compilation",
+      "source": "docs/DOTNET_COMPILATION.md"
+    },
+    {
+      "hash": "82634cde930a",
+      "id": "firewall_security",
+      "source": "docs/FIREWALL_GUIDE.md"
+    },
+    {
+      "hash": "13795456b040",
+      "id": "http_source",
+      "source": "playbooks/examples_library/http_source_examples.md"
+    },
+    {
+      "hash": "36c2661e7532",
+      "id": "json_litedb_streaming",
+      "source": "playbooks/examples_library/json_litedb_examples.md"
+    },
+    {
+      "hash": "88004af764db",
+      "id": "json_source",
+      "source": "playbooks/examples_library/json_source_examples.md"
+    },
+    {
+      "hash": "71124a911730",
+      "id": "lda_projection",
+      "source": "docs/proposals/SEMANTIC_PROJECTION_LDA.md"
+    },
+    {
+      "hash": "e4478a02a479",
+      "id": "mutual_recursion",
+      "source": "playbooks/examples_library/recursion_examples.md"
+    },
+    {
+      "hash": "ac0db0413bc5",
+      "id": "partitioning_strategies",
+      "source": "playbooks/examples_library/partitioner_examples.md"
+    },
+    {
+      "hash": "d2f9b2945dd4",
+      "id": "powershell_binding_system",
+      "source": "playbooks/examples_library/powershell_binding_examples.md"
+    },
+    {
+      "hash": "50dac68a5c74",
+      "id": "powershell_inline_dotnet",
+      "source": "playbooks/powershell_inline_dotnet_playbook.md"
+    },
+    {
+      "hash": "6cf7cef06dca",
+      "id": "powershell_target",
+      "source": "docs/POWERSHELL_TARGET.md"
+    },
+    {
+      "hash": "02a553e049b7",
+      "id": "prolog_code_generation",
+      "source": "playbooks/examples_library/prolog_generation_examples.md"
+    },
+    {
+      "hash": "5c42927721ea",
+      "id": "python_source",
+      "source": "playbooks/examples_library/python_source_examples.md"
+    },
+    {
+      "hash": "d41d2aa458a2",
+      "id": "semantic_source",
+      "source": "playbooks/examples_library/semantic_source_examples.md"
+    },
+    {
+      "hash": "4cc395cedacb",
+      "id": "sql_window_functions",
+      "source": "playbooks/examples_library/sql_window_examples.md"
+    },
+    {
+      "hash": "b91efe7830f2",
+      "id": "sqlite_source",
+      "source": "playbooks/examples_library/sqlite_source_examples.md"
+    },
+    {
+      "hash": "e809aeb803d1",
+      "id": "template_system",
+      "source": "playbooks/examples_library/template_system_examples.md"
+    },
+    {
+      "hash": "0658870e62a0",
+      "id": "tree_recursion",
+      "source": "playbooks/tree_recursion_playbook.md"
+    },
+    {
+      "hash": "eb99d605038b",
+      "id": "xml_python_source",
+      "source": "playbooks/examples_library/xml_examples.md"
+    },
+    {
+      "hash": "6fdab71f9f2f",
+      "id": "yaml_source",
+      "source": "playbooks/examples_library/yaml_source_examples.md"
+    }
+  ],
+  "relations": [
+    {"from": "awk_source", "to": "awk_advanced_patterns", "type": "compositional"},
+    {"from": "bash_pipelines", "to": "bash_parallel", "type": "compositional"},
+
+    {"from": "csv_data_source", "to": "json_source", "type": "transitional"},
+    {"from": "json_source", "to": "json_litedb_streaming", "type": "compositional"},
+    {"from": "sqlite_source", "to": "sql_window_functions", "type": "compositional"},
+
+    {"from": "csharp_examples", "to": "csharp_xml_fragments", "type": "compositional"},
+    {"from": "dotnet_compilation", "to": "csharp_examples", "type": "foundational"},
+    {"from": "dotnet_compilation", "to": "powershell_inline_dotnet", "type": "foundational"},
+
+    {"from": "powershell_target", "to": "powershell_binding_system", "type": "compositional"},
+    {"from": "powershell_binding_system", "to": "powershell_inline_dotnet", "type": "compositional"},
+
+    {"from": "mutual_recursion", "to": "tree_recursion", "type": "compositional"},
+
+    {"from": "component_registry", "to": "semantic_source", "type": "foundational"},
+    {"from": "component_registry", "to": "template_system", "type": "foundational"},
+
+    {"from": "lda_projection", "to": "semantic_source", "type": "transitional"},
+
+    {"from": "cross_target_glue", "to": "deployment_glue", "type": "transitional"}
+  ]
+}

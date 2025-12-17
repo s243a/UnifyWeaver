@@ -1,0 +1,136 @@
+{
+  "version": "5.0",
+  "description": "Expanded Q-A pairs for LDA projection training - UnifyWeaver playbooks (Batch 5)",
+  "notes": {
+    "query_lengths": "short (2-4 words), medium (5-15 words), long (15+ words)",
+    "answer_variants": "Different answer texts per embedding model based on context length"
+  },
+  "embedding_models": ["all-MiniLM-L6-v2", "e5-small-v2"],
+  "clusters": [
+    {
+      "id": "json_litedb_streaming",
+      "answer_source": "playbooks/examples_library/json_litedb_examples.md",
+      "answers": {
+        "default": "JSON to LiteDB Streaming - Stream large JSON datasets into LiteDB using inline C# sources. Demonstrates reading JSON files, parsing with System.Text.Json, and inserting BsonDocuments into LiteDB collections efficiently. Supports querying the populated database via .NET.",
+        "all-MiniLM-L6-v2": "JSON to LiteDB: Stream JSON data into LiteDB using inline C#. Parses with System.Text.Json and inserts BsonDocuments.",
+        "e5-small-v2": "JSON to LiteDB Streaming - Efficiently load JSON data into LiteDB using C# inline sources. Parse JSON, create BsonDocuments, and insert into collections."
+      },
+      "queries": {
+        "short": [
+          "json litedb stream",
+          "litedb prolog",
+          "load json database"
+        ],
+        "medium": [
+          "How to stream JSON into LiteDB?",
+          "Use C# to load LiteDB from Prolog",
+          "Process large JSON files with LiteDB"
+        ],
+        "long": [
+          "I want to load a large JSON dataset into a LiteDB database using an efficient streaming approach with C# inline code",
+          "How can I use UnifyWeaver to parse JSON files and insert records into a local NoSQL LiteDB database?"
+        ]
+      }
+    },
+    {
+      "id": "tree_recursion",
+      "answer_source": "playbooks/tree_recursion_playbook.md",
+      "answers": {
+        "default": "Tree Recursion - Compile tree-recursive predicates (like tree_sum) that operate on hierarchical data structures. UnifyWeaver transforms recursive logic handling list-represented trees (e.g., [Val, Left, Right]) into executable bash scripts.",
+        "all-MiniLM-L6-v2": "Tree recursion: Compile predicates for tree structures (tree_sum). Handles hierarchical list data like [Val, L, R].",
+        "e5-small-v2": "Tree Recursion - Compile tree-recursive predicates. Support for hierarchical data processing and tree traversal algorithms like tree summation."
+      },
+      "queries": {
+        "short": [
+          "tree recursion",
+          "tree sum prolog",
+          "recursive tree processing"
+        ],
+        "medium": [
+          "How to compile tree recursion?",
+          "Process tree structures in UnifyWeaver",
+          "Implement tree_sum in Prolog"
+        ],
+        "long": [
+          "I need to compile a Prolog predicate that recursively traverses a binary tree structure represented as lists",
+          "How does UnifyWeaver handle tree recursion where a function calls itself multiple times on branches?"
+        ]
+      }
+    },
+    {
+      "id": "csharp_xml_fragments",
+      "answer_source": "playbooks/csharp_xml_fragments_playbook.md",
+      "answers": {
+        "default": "C# XML Fragments - Stream and process XML fragments using C# XmlStreamReader. Supports NUL or LF delimited fragments, preserving CDATA, and handling namespaces (including Pearltrees prefixes). Projects elements and attributes into dictionaries.",
+        "all-MiniLM-L6-v2": "C# XML fragments: Stream XML with XmlStreamReader. Supports NUL/LF delimiters, CDATA, and namespace projection.",
+        "e5-small-v2": "C# XML Fragments - Process XML data streams. Use XmlStreamReader for fragment parsing, namespace handling, and CDATA preservation."
+      },
+      "queries": {
+        "short": [
+          "xml fragments c#",
+          "stream xml parsing",
+          "c# xml reader"
+        ],
+        "medium": [
+          "How to process XML fragments in C#?",
+          "Stream XML data with XmlStreamReader",
+          "Handle CDATA in XML streams"
+        ],
+        "long": [
+          "I want to stream and parse XML fragments separated by newlines using C# integration in UnifyWeaver",
+          "How can I process XML data preserving CDATA sections and handling specific namespace prefixes?"
+        ]
+      }
+    },
+    {
+      "id": "powershell_inline_dotnet",
+      "answer_source": "playbooks/powershell_inline_dotnet_playbook.md",
+      "answers": {
+        "default": "PowerShell Inline .NET - Embed C# code within PowerShell scripts using Add-Type for high performance (138x speedup with caching). Ideal for automation requiring .NET libraries or tight loops. Supports pre-compilation to cache DLLs and avoid compilation overhead on subsequent runs.",
+        "all-MiniLM-L6-v2": "PowerShell inline .NET: Embed C# via Add-Type. Enables 138x speedup with DLL caching. access .NET libraries directly.",
+        "e5-small-v2": "PowerShell Inline .NET - High-performance C# embedding. Use Add-Type with caching for speedups. Integrates .NET libraries into PowerShell workflows."
+      },
+      "queries": {
+        "short": [
+          "powershell inline c#",
+          "add-type caching",
+          "fast powershell dotnet"
+        ],
+        "medium": [
+          "How to embed C# in PowerShell?",
+          "Speed up PowerShell with inline .NET",
+          "Cache compiled C# DLLs in PowerShell"
+        ],
+        "long": [
+          "I need to optimize a PowerShell script by embedding performance-critical C# code using Add-Type",
+          "How can I compile and cache inline .NET code in PowerShell to achieve faster execution times?"
+        ]
+      }
+    },
+    {
+      "id": "deployment_glue",
+      "answer_source": "playbooks/deployment_glue_playbook.md",
+      "answers": {
+        "default": "Deployment Glue - Manage service deployment via SSH, Docker, Kubernetes, and Cloud Functions. Declare services and deployment methods (ssh, docker, k8s) in Prolog. Generates deployment scripts and manifests for lifecycle management.",
+        "all-MiniLM-L6-v2": "Deployment glue: Deploy services via SSH, Docker, K8s. Generate scripts/manifests from Prolog declarations.",
+        "e5-small-v2": "Deployment Glue - Service deployment automation. Support for SSH, Docker, Kubernetes, and Cloud Functions. Generate infrastructure code."
+      },
+      "queries": {
+        "short": [
+          "deployment glue",
+          "deploy service ssh",
+          "docker kubernetes prolog"
+        ],
+        "medium": [
+          "How to deploy services with UnifyWeaver?",
+          "Generate Kubernetes manifests from Prolog",
+          "Deploy via SSH using deployment glue"
+        ],
+        "long": [
+          "I want to automate service deployment to remote servers via SSH or generate Docker Compose files",
+          "How can I declare service configurations and generate deployment scripts for Kubernetes or Cloud Functions?"
+        ]
+      }
+    }
+  ]
+}

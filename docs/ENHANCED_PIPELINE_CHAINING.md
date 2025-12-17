@@ -37,6 +37,8 @@ Enhanced pipeline chaining adds the following stage types to the standard predic
 | `buffer(N)` | Collect N records into batches |
 | `debounce(Ms)` | Emit record only after Ms quiet period |
 | `zip(Stages)` | Run stages on same input, combine outputs |
+| `interleave(Stages)` | Round-robin alternate records from multiple stage outputs |
+| `concat(Stages)` | Sequentially concatenate multiple stage outputs |
 | `Pred/Arity` | Standard predicate stage (unchanged) |
 
 ### Fan-out vs Parallel
@@ -862,6 +864,108 @@ compile_enhanced_pipeline([
     rate_limit(100, second),
     output/1
 ], [pipeline_name(buffered_zip_throttled)], Code).
+```
+
+### Interleave (`interleave/1`)
+
+Round-robin alternate records from multiple stage outputs:
+
+```prolog
+% Interleave records from two filters
+interleave([filter_active/1, filter_pending/1])
+```
+
+**How It Works:**
+- Each stage in the list is run on the input
+- Records are taken one at a time from each stage output in round-robin fashion
+- Continues until all stage outputs are exhausted
+- If one stage produces fewer records, the round-robin continues with remaining stages
+
+**Data Flow:**
+```
+Stage A outputs: [A1, A2, A3]
+Stage B outputs: [B1, B2]
+                    ↓
+interleave([A, B]) → [A1, B1, A2, B2, A3]
+```
+
+**Use Cases:**
+- Merging multiple data sources with fair ordering
+- Combining results from different filters while maintaining balance
+- Load balancing across multiple processing paths
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    interleave([
+        filter_by(is_priority),     % High priority items
+        filter_by(is_standard)      % Standard items
+    ]),
+    process/1,
+    output/1
+], [pipeline_name(balanced_processing)], Code).
+```
+
+### Concat (`concat/1`)
+
+Sequentially concatenate multiple stage outputs:
+
+```prolog
+% Concatenate results from multiple sources
+concat([source_a/1, source_b/1, source_c/1])
+```
+
+**How It Works:**
+- Each stage in the list is run on the input
+- All records from the first stage are yielded
+- Then all records from the second stage, and so on
+- Order is preserved within each stage's output
+
+**Data Flow:**
+```
+Stage A outputs: [A1, A2]
+Stage B outputs: [B1, B2, B3]
+                    ↓
+concat([A, B]) → [A1, A2, B1, B2, B3]
+```
+
+**Use Cases:**
+- Combining results from different transformations
+- Union of filtered subsets
+- Appending fallback results to primary results
+
+**Example:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    concat([
+        filter_by(is_active),       % Active records first
+        filter_by(is_archived)      % Then archived records
+    ]),
+    distinct,                       % Remove any duplicates
+    output/1
+], [pipeline_name(all_records)], Code).
+```
+
+**Interleave vs Concat:**
+
+| Aspect | `interleave` | `concat` |
+|--------|--------------|----------|
+| Order | Round-robin alternating | Sequential (all of A, then all of B) |
+| Fairness | Balanced across sources | First source gets priority |
+| Use case | Fair merging | Union/append |
+
+**Nested Combination:**
+```prolog
+compile_enhanced_pipeline([
+    parse/1,
+    concat([
+        interleave([priority_a/1, priority_b/1]),  % Interleaved priorities first
+        standard/1                                  % Then standard items
+    ]),
+    output/1
+], [pipeline_name(complex_merge)], Code).
 ```
 
 ### Nested Error Handling

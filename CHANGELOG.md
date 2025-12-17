@@ -117,6 +117,159 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/integration/test_buffer_zip_stages.sh` — Integration tests (18 tests)
   - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
 
+- **Pipeline Window/Sampling/Partition Stages** - Stream windowing and data reduction
+  - Window stages:
+    - `window(N)` — Collect records into non-overlapping windows of size N
+    - `sliding_window(N, Step)` — Create overlapping windows with step size
+  - Sampling stages:
+    - `sample(N)` — Randomly sample N records using reservoir sampling
+    - `take_every(N)` — Take every Nth record (deterministic sampling)
+  - Partition stage:
+    - `partition(Pred)` — Split stream into matches and non-matches based on predicate
+  - Take/Skip stages:
+    - `take(N)` — Take first N records
+    - `skip(N)` — Skip first N records
+    - `take_while(Pred)` — Take records while predicate is true
+    - `skip_while(Pred)` — Skip records while predicate is true
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_window_sampling_stages.sh` — Integration tests (32 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Distinct/Dedup Stages** - Duplicate removal at pipeline level
+  - Global deduplication:
+    - `distinct` — Remove all duplicate records, keeping first occurrence
+    - `distinct_by(Field)` — Remove duplicates based on specific field value
+  - Consecutive deduplication:
+    - `dedup` — Remove consecutive duplicate records only
+    - `dedup_by(Field)` — Remove consecutive duplicates based on specific field
+  - Key differences:
+    - `distinct` uses hash set (memory: O(n) for seen records)
+    - `dedup` only compares adjacent records (memory: O(1))
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_distinct_dedup_stages.sh` — Integration tests (22 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Interleave/Concat Stages** - Stream combination at pipeline level
+  - Round-robin interleaving:
+    - `interleave(Stages)` — Alternate records from multiple stage outputs in round-robin fashion
+    - Takes one record from each stream in turn until all exhausted
+  - Sequential concatenation:
+    - `concat(Stages)` — Concatenate multiple stage outputs sequentially
+    - Yields all records from first stage, then second, etc.
+  - Use cases:
+    - `interleave` — Merge multiple data sources with fair ordering
+    - `concat` — Combine results from different transformations
+  - Composable with other stages: `distinct`, `filter_by`, `window`, `parallel`, etc.
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_interleave_concat_stages.sh` — Integration tests (18 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Merge Sorted Stage** - Efficient k-way merge for pre-sorted streams
+  - Merge pre-sorted streams:
+    - `merge_sorted(Stages, Field)` — Merge streams sorted by field (ascending)
+    - `merge_sorted(Stages, Field, Dir)` — Merge with direction (asc/desc)
+  - Efficient k-way merge algorithm:
+    - Python: Heap-based merge using `heapq`
+    - Go: Index-tracking merge with type comparison
+    - Rust: Iterator-based merge with `serde_json::Value` comparison
+  - Use cases:
+    - Merging time-series data from multiple sources
+    - Combining sorted partitions for final output
+    - Efficient merge phase in external sort
+  - Assumes input streams are already sorted by the specified field
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_merge_sorted_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Tap Stage** - Observe stream without modification for side effects
+  - Side-effect observation:
+    - `tap(Pred)` — Execute side effect predicate for each record without modifying stream
+    - `tap(Pred/Arity)` — Explicit arity specification supported
+  - Use cases:
+    - Logging pipeline progress
+    - Collecting metrics and telemetry
+    - Debugging intermediate values
+    - Audit trail generation
+  - Error isolation: Side effect errors don't interrupt the pipeline
+    - Python: Exception handling with pass
+    - Go: defer/recover pattern
+    - Rust: std::panic::catch_unwind
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_tap_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Flatten Stage** - Flatten nested collections into individual records
+  - Collection flattening:
+    - `flatten` — Flatten nested lists/arrays into individual records
+    - `flatten(Field)` — Flatten a specific field within each record, expanding arrays
+  - Behavior:
+    - Simple flatten: Records containing `__items__` arrays are expanded
+    - Field flatten: Records where field contains an array become multiple records
+  - Use cases:
+    - Expanding nested JSON arrays
+    - Normalizing denormalized data
+    - Processing hierarchical structures
+    - Exploding array fields for analysis
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_flatten_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Debounce Stage** - Rate-limit noisy streams by emitting only after silence
+  - Debounce variants:
+    - `debounce(Ms)` — Emit record only after Ms milliseconds of silence
+    - `debounce(Ms, Field)` — Use specified timestamp field for timing
+  - Behavior:
+    - Groups records by time windows
+    - Emits only the last record when silence period is reached
+    - Useful for suppressing rapid successive updates
+  - Use cases:
+    - Rate-limiting sensor data
+    - Suppressing duplicate events
+    - Coalescing rapid updates
+    - Smoothing noisy time-series data
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_debounce_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Branch Stage** - Conditional routing within pipeline
+  - Branch syntax:
+    - `branch(Cond, TrueStage, FalseStage)` — Route records based on condition
+    - `branch(Cond/Arity, TrueStage, FalseStage)` — With explicit arity
+  - Behavior:
+    - Records matching condition go through TrueStage
+    - Records not matching go through FalseStage
+    - Results from both branches are combined in output
+    - Supports nested branches and complex sub-stages
+  - Use cases:
+    - A/B processing paths
+    - Conditional transformations
+    - Error vs success routing
+    - Type-based record handling
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_branch_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Tee Stage** - Fork stream to side destination while passing through
+  - Tee syntax:
+    - `tee(Stage)` — Run Stage as side effect, discard results, pass original through
+  - Behavior:
+    - Like Unix `tee` - fork stream to side destination
+    - Side stage receives full stream (not per-record like tap)
+    - Side stage results are discarded
+    - Original records pass through unchanged
+    - Side effect errors don't interrupt main pipeline
+  - Comparison with tap:
+    - `tap(Pred)` — Per-record side effect function
+    - `tee(Stage)` — Full pipeline stage as side effect
+  - Use cases:
+    - Writing to log files while continuing processing
+    - Sending copies to monitoring systems
+    - Archiving data streams
+    - Audit trails and metrics collection
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_tee_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.

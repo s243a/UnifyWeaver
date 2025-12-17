@@ -1,0 +1,12 @@
+#!/bin/bash
+# UnifyWeaver CLI wrapper
+
+if [ "$1" == "search" ]; then
+    shift
+    python3 scripts/skills/lookup_example.py "$@"
+else
+    echo "UnifyWeaver CLI"
+    echo "Usage:"
+    echo "  ./unifyweaver search <query>   Search examples using semantic search"
+    exit 1
+fi

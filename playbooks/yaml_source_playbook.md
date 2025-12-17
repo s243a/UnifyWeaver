@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents. It demonstrates processing YAML files as data sources using UnifyWeaver's yaml_source plugin via Python PyYAML.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "yaml_source" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use yaml source"
+
+
 ## Workflow Overview
 Use UnifyWeaver to process YAML data:
 1. Declare a data source using the `yaml_source` plugin with YAML file and optional filter

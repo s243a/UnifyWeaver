@@ -221,3 +221,33 @@ Ideas from the community are welcome! If you want to work on any of these:
 - Go database comparison: https://github.com/avelino/awesome-go#database
 - Rust database ecosystem: https://lib.rs/database
 - Embedded databases overview: https://dbdb.io/browse?type=embedded
+
+## Semantic Search Enhancements and Validation
+
+### Held-Out Test Set Evaluation
+**Description**: Conduct a rigorous evaluation of the multi-head semantic search model's performance on a held-out test set of queries. This involves creating a dedicated test set with novel queries and their expected answers to assess generalization beyond training data.
+**Goal**: Obtain realistic Recall@1 and MRR metrics for the unified multi-head model.
+**Related**: `scripts/validate_multi_head_search.py` (to be created), `playbooks/lda-training-data/raw/qa_pairs_test.json` (to be created).
+
+### Hyperparameter Tuning
+**Description**: Experiment with different `temperature` values (τ) for the multi-head model to optimize retrieval performance (Recall@1, MRR) on a held-out validation set.
+**Goal**: Fine-tune the multi-head model for optimal balance between sharp and diffuse routing.
+**Related**: `scripts/train_multi_head_projection.py` (`--temperature` flag).
+
+### Advanced Multi-Head Architectures
+**Description**: Explore "Future Work" ideas from the Multi-Head LDA Projection Theory document, such as "Learnable Temperature" or "Hierarchical Multi-Head" routing for scenarios with very large numbers of clusters.
+**Goal**: Enhance model capacity and accuracy for more complex or larger knowledge bases.
+**Related**: `docs/proposals/MULTI_HEAD_PROJECTION_THEORY.md`.
+
+### User-Friendly CLI Tool
+**Description**: Create a more streamlined command-line interface or sub-command (e.g., `unifyweaver search`) for accessing the semantic search functionality provided by `scripts/skills/lookup_example.py`.
+**Goal**: Improve developer experience and direct usability of the search feature.
+
+### Database Cleanup
+**Description**: Implement a utility to identify and purge "broken" clusters (those with imported structure but no associated embeddings) from the `lda.db` database. This occurred due to initial failures in the embedding process.
+**Goal**: Maintain a clean and consistent database state.
+**Related**: `scripts/migrate_to_lda_db.py`.
+
+### Playbook Clarity Review
+**Description**: Review all updated playbooks (`playbooks/*_playbook.md`) for clarity and consistency in their instructions, especially regarding the new "Finding Examples" section. Ensure example IDs and semantic search queries are accurate and helpful.
+**Goal**: Optimize agent understanding and execution reliability.

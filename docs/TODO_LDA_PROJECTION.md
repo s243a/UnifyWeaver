@@ -141,6 +141,11 @@ python3 scripts/validate_multi_head.py \
 - [ ] MCP tool for Claude integration (useful for server-based deployments)
 - [ ] Hot-reload support for W matrix updates
 - [ ] Per-domain projection matrices
+- [ ] Smoothness regularization for sparse answer clusters ([SMOOTHNESS_REGULARIZATION.md](proposals/SMOOTHNESS_REGULARIZATION.md))
+- [x] Transformer distillation for large-scale projection ([TRANSFORMER_DISTILLATION.md](proposals/TRANSFORMER_DISTILLATION.md))
+  - ProjectionTransformer implementation with H^L = N equivalence
+  - Combined MSE + cosine loss (cosine_weight=0.7 recommended)
+  - Validated: 99.28% cosine similarity on test set
 - [x] Multiple attention heads (separate input/output projections)
 
 ## Notes
@@ -177,6 +182,12 @@ python3 scripts/train_lda_projection.py \
 
 # Validate with novel queries
 python3 scripts/validate_lda_projection.py
+
+# Test transformer distillation from LDA
+python3 scripts/test_transformer_distillation.py \
+    --db playbooks/lda-training-data/lda.db \
+    --epochs 200 \
+    --cosine-weight 0.7
 
 # Migrate Q-A pairs to database
 python3 scripts/migrate_to_lda_db.py

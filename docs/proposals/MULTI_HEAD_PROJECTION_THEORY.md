@@ -379,6 +379,87 @@ results = db.multi_head_search(
 # Results include routing_weights for interpretability
 ```
 
+## Scaling Strategies
+
+The flat softmax routing over all heads is efficient for moderate cluster counts (tested up to 55 heads). The computation is fast because:
+- It's a single matrix multiply: `query @ centroids.T` → similarities
+- Followed by softmax + weighted sum: `weights @ answer_embeddings`
+- NumPy/Rust perform this without per-element interpreter overhead
+- 55 heads × 384 dims ≈ 42K floats is trivial for modern CPUs
+
+For larger scales (thousands of clusters), consider these strategies:
+
+### Negative Sampling
+
+Instead of computing similarity to all centroids, sample a subset:
+```python
+# Sample k negative centroids + 1 positive (if known)
+sampled_indices = random.sample(range(num_heads), k=32)
+similarities = query @ centroids[sampled_indices].T
+```
+
+**Trade-off:** Faster routing but may miss relevant heads. Works well when heads are relatively distinct.
+
+### Hierarchical Softmax
+
+Organize heads in a tree structure (log(n) routing instead of O(n)):
+```
+Level 1: Route to coarse topic (e.g., "data sources" vs "generators")
+Level 2: Route within topic (e.g., "sqlite" vs "http" within "data sources")
+Level 3: Final cluster selection
+```
+
+**Implementation:**
+```python
+# Two-level hierarchy
+coarse_centroids = [mean(centroids[group]) for group in groups]
+coarse_weights = softmax(query @ coarse_centroids.T / τ)
+
+# Only compute fine routing for top-k coarse groups
+top_groups = topk(coarse_weights, k=3)
+for group in top_groups:
+    fine_weights = softmax(query @ centroids[group].T / τ)
+    # Combine coarse and fine weights
+```
+
+**Trade-off:** Requires pre-clustering heads; routing quality depends on cluster hierarchy quality.
+
+### MLP Router
+
+Replace centroid similarity with a learned routing network:
+```python
+# Small MLP predicts routing weights directly
+router = MLP(input_dim=384, hidden_dim=128, output_dim=num_heads)
+weights = softmax(router(query) / τ)
+```
+
+**Trade-off:** More expressive routing but requires training data for the router itself. May overfit with limited Q-A pairs.
+
+### Approximate Nearest Neighbor (ANN)
+
+Use FAISS, Annoy, or ScaNN to find top-k nearest centroids:
+```python
+# Build ANN index over centroids
+index = faiss.IndexFlatIP(dim)
+index.add(centroids)
+
+# At query time, find top-k nearest centroids
+_, top_k_indices = index.search(query, k=10)
+# Only compute softmax over top-k
+```
+
+**Trade-off:** Requires index maintenance; approximate results may miss relevant clusters.
+
+### Recommendation
+
+| Scale | Strategy | Rationale |
+|-------|----------|-----------|
+| < 100 heads | Flat softmax | Fast enough, exact |
+| 100-1000 heads | Hierarchical or ANN | O(log n) or O(k) vs O(n) |
+| > 1000 heads | ANN + MLP router | Scalability + expressiveness |
+
+The current implementation uses flat softmax, which is appropriate for the current scale (~55 clusters).
+
 ## Future Work
 
 ### Learnable Temperature
@@ -387,13 +468,18 @@ Currently τ is a hyperparameter. Could be learned:
 - Per-cluster temperature τₖ
 - Query-dependent temperature τ(q)
 
-### Hierarchical Multi-Head
+### Hierarchical Multi-Head (Expanded)
 
-For large numbers of clusters, hierarchical routing:
+For large numbers of clusters, hierarchical routing with automatic tree construction:
 ```
 Level 1: Route to coarse topic (e.g., "data sources")
 Level 2: Route within topic (e.g., "sqlite" vs "http")
 ```
+
+The hierarchy could be learned via:
+- K-means clustering of centroids
+- Agglomerative clustering based on answer similarity
+- Manual domain organization
 
 ### Cross-Attention Heads
 
@@ -437,3 +523,74 @@ The approach is:
 
 5. **Fisher, R.A.** (1936). "The use of multiple measurements in taxonomic problems."
    - Original Linear Discriminant Analysis
+
+## Unified Multi-Head Model
+
+In practice, data often arrives in batches (e.g., `qa_pairs_v1.json`, `qa_pairs_v2.json`). Instead of maintaining separate projections for each batch, we train a **Unified Multi-Head Model** that consolidates all valid clusters from the database into a single projection ID.
+
+### Mechanism: Flat Softmax Routing
+
+The Unified Multi-Head Model operates using the same **Softmax Routing over Centroid Similarities** mechanism described above, but scaled to the entire dataset. This mechanism is mathematically equivalent to the **Scaled Dot-Product Attention** as introduced in the Transformer architecture.
+
+1.  **Flattened Heads**: All clusters (topics) from all batches are treated as peer "attention heads" in a single flat layer. Each cluster's centroid acts as a **Key**, and its answer embedding as a **Value**.
+2.  **Global Softmax**: The routing probabilities are computed via a single softmax operation over *all* centroids simultaneously. This produces attention weights (similar to the Transformer's attention scores).
+3.  **Linear Projection**: The final query vector is a weighted sum of the answer embeddings, weighted by these routing probabilities. This forms the "projected query" in the combined answer space.
+
+The computational complexity of this "flat softmax" approach is **O(N \cdot d)**, where N is the number of clusters (heads) and d is the embedding dimension. For typical scales (hundreds or thousands of clusters), this performs very efficiently on modern hardware, benefiting from vectorized operations (matrix multiplication). This makes it fast and robust without the need for approximations.
+
+This approach explicitly **avoids**:
+*   **Hierarchical Softmax**: There is no tree structure or multi-step routing; it is a direct 1-to-N comparison.
+*   **MLPs (Multi-Layer Perceptrons)**: There are no hidden layers or non-linearities other than the softmax routing itself.
+*   **Negative Sampling**: Inference relies on direct similarity comparisons in the shared embedding space, not on a contrastively trained classifier.
+
+This design ensures the model remains interpretable (routing weights directly correspond to topic relevance) and computationally efficient (linear complexity with respect to the number of clusters).
+
+### Training the Unified Model
+
+The training script iterates over all clusters in the database, regardless of their source batch, and adds them as heads to a new multi-head projection.
+
+```python
+# scripts/train_multi_head_projection.py (simplified)
+
+# Create one global projection
+mh_id = db.create_multi_head_projection(
+    model_id=model_id,
+    name="unified_multi_head",
+    temperature=0.1  # Sharp routing
+)
+
+# Iterate over ALL clusters in DB
+clusters = db.list_clusters()
+for cluster in clusters:
+    # Compute centroid from question embeddings
+    centroid, _ = compute_weighted_centroid(questions)
+    
+    # Add as head
+    db.add_cluster_head(
+        mh_projection_id=mh_id,
+        cluster_id=cluster['cluster_id'],
+        centroid=centroid,
+        answer_emb=answer_emb
+    )
+```
+
+### Searching the Unified Model
+
+The search skill (`lookup_example.py`) targets this unified projection (e.g., ID=1), enabling low-latency retrieval across the entire knowledge base without iterating through multiple models.
+
+```python
+# scripts/skills/lookup_example.py
+
+def lookup_example(query, mh_projection_id=1):
+    # ...
+    # Single call to search all topics
+    results = db.multi_head_search(
+        query_embedding=query_emb,
+        mh_projection_id=mh_projection_id,
+        top_k=3,
+        temperature=0.1  # Implicit in projection
+    )
+```
+
+This architecture ensures that as new training data is added, we simply re-run the training script to generate a fresh unified projection that incorporates the new knowledge, maintaining a simple inference interface.
+

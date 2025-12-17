@@ -82,11 +82,56 @@ compile_predicate_to_haskell(sum/3, [type(recursion)], Code)
 | `list_fold` | List sum using foldr | `f = foldr (+) 0` |
 | `list_tail_recursion` | List with accumulator | `f [] !acc = acc` |
 
+## Parsec: DCG to Parser Combinators
+
+Compile Prolog DCGs to Haskell Parsec parsers:
+
+```prolog
+?- compile_dcg_to_parsec((digit --> [d]), [module_name('DigitParser')], Code).
+```
+
+Generates:
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+module DigitParser where
+
+import Text.Parsec
+import Text.Parsec.String (Parser)
+
+digit :: Parser String
+digit = string "d"
+```
+
+### Multiple DCG Rules
+
+```prolog
+?- compile_grammar_to_parsec(
+       [(expr --> term),
+        (term --> digit),
+        (digit --> [x])],
+       [module_name('ExprParser'), start_symbol(expr)],
+       Code).
+```
+
+### DCG Pattern Mapping
+
+| DCG | Parsec |
+|-----|--------|
+| `[char]` | `string "char"` |
+| `a, b` | `a *> b` |
+| `a ; b` | `try a <|> b` |
+| `{goal}` | `pure ()` |
+| Non-terminal | Recursive call |
+
 ## Dependencies
 
 ```bash
 # Ubuntu/Debian
 sudo apt install ghc
+
+# Parsec (if not bundled)
+cabal install parsec
 
 # Or GHCup
 curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | sh

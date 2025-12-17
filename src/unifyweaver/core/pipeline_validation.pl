@@ -240,6 +240,109 @@ is_valid_stage(zip(Stages)) :-
     Stages \= [],
     maplist(is_valid_stage, Stages).
 
+% Window stages
+is_valid_stage(window(N)) :-
+    integer(N),
+    N > 0.
+is_valid_stage(sliding_window(N, Step)) :-
+    integer(N),
+    N > 0,
+    integer(Step),
+    Step > 0.
+
+% Sampling stages
+is_valid_stage(sample(N)) :-
+    integer(N),
+    N > 0.
+is_valid_stage(take_every(N)) :-
+    integer(N),
+    N > 0.
+
+% Partition stage
+is_valid_stage(partition(Pred)) :-
+    atom(Pred).
+
+% Take/skip stages
+is_valid_stage(take(N)) :-
+    integer(N),
+    N >= 0.
+is_valid_stage(skip(N)) :-
+    integer(N),
+    N >= 0.
+is_valid_stage(take_while(Pred)) :-
+    atom(Pred).
+is_valid_stage(skip_while(Pred)) :-
+    atom(Pred).
+
+% Distinct/dedup stages
+is_valid_stage(distinct).
+is_valid_stage(distinct_by(Field)) :-
+    atom(Field).
+is_valid_stage(dedup).
+is_valid_stage(dedup_by(Field)) :-
+    atom(Field).
+
+% Interleave/concat stages
+is_valid_stage(interleave(Stages)) :-
+    is_list(Stages),
+    Stages \= [],
+    maplist(is_valid_stage, Stages).
+is_valid_stage(concat(Stages)) :-
+    is_list(Stages),
+    Stages \= [],
+    maplist(is_valid_stage, Stages).
+
+% Merge sorted stage - merge pre-sorted streams maintaining order
+is_valid_stage(merge_sorted(Stages, Field)) :-
+    is_list(Stages),
+    Stages \= [],
+    atom(Field),
+    maplist(is_valid_stage, Stages).
+is_valid_stage(merge_sorted(Stages, Field, Dir)) :-
+    is_list(Stages),
+    Stages \= [],
+    atom(Field),
+    is_valid_direction(Dir),
+    maplist(is_valid_stage, Stages).
+
+% Tap stage - execute side effect without modifying stream
+is_valid_stage(tap(Pred)) :-
+    atom(Pred).
+is_valid_stage(tap(Pred/Arity)) :-
+    atom(Pred),
+    integer(Arity),
+    Arity >= 0.
+
+% Tee stage - run side stage, discard results, pass original through
+is_valid_stage(tee(Stage)) :-
+    is_valid_stage(Stage).
+
+% Flatten stage - flatten nested collections into individual records
+is_valid_stage(flatten).
+is_valid_stage(flatten(Field)) :-
+    atom(Field).
+
+% Debounce stage - emit only after silence period
+is_valid_stage(debounce(Ms)) :-
+    integer(Ms),
+    Ms > 0.
+is_valid_stage(debounce(Ms, Field)) :-
+    integer(Ms),
+    Ms > 0,
+    atom(Field).
+
+% Branch stage - conditional branching within pipeline
+is_valid_stage(branch(Cond, TrueStage, FalseStage)) :-
+    atom(Cond),
+    is_valid_stage(TrueStage),
+    is_valid_stage(FalseStage).
+is_valid_stage(branch(Cond/Arity, TrueStage, FalseStage)) :-
+    atom(Cond),
+    integer(Arity),
+    Arity >= 0,
+    is_valid_stage(TrueStage),
+    is_valid_stage(FalseStage).
+
 %% is_valid_time_unit(+Unit) is semidet.
 %  Validates time unit for rate limiting.
 is_valid_time_unit(second).
@@ -313,6 +416,30 @@ stage_type(throttle(_), throttle) :- !.
 stage_type(buffer(_), buffer) :- !.
 stage_type(debounce(_), debounce) :- !.
 stage_type(zip(_), zip) :- !.
+stage_type(window(_), window) :- !.
+stage_type(sliding_window(_, _), sliding_window) :- !.
+stage_type(sample(_), sample) :- !.
+stage_type(take_every(_), take_every) :- !.
+stage_type(partition(_), partition) :- !.
+stage_type(take(_), take) :- !.
+stage_type(skip(_), skip) :- !.
+stage_type(take_while(_), take_while) :- !.
+stage_type(skip_while(_), skip_while) :- !.
+stage_type(distinct, distinct) :- !.
+stage_type(distinct_by(_), distinct_by) :- !.
+stage_type(dedup, dedup) :- !.
+stage_type(dedup_by(_), dedup_by) :- !.
+stage_type(interleave(_), interleave) :- !.
+stage_type(concat(_), concat) :- !.
+stage_type(merge_sorted(_, _), merge_sorted) :- !.
+stage_type(merge_sorted(_, _, _), merge_sorted) :- !.
+stage_type(tap(_), tap) :- !.
+stage_type(tee(_), tee) :- !.
+stage_type(flatten, flatten) :- !.
+stage_type(flatten(_), flatten) :- !.
+stage_type(debounce(_), debounce) :- !.
+stage_type(debounce(_, _), debounce) :- !.
+stage_type(branch(_, _, _), branch) :- !.
 stage_type(_, unknown).
 
 %% validate_stage_type(+Stage, -Type) is det.
@@ -462,6 +589,171 @@ validate_stage_specific(zip(Stages), Errors) :-
         validate_all_stages(Stages, 1, Errors)
     ;
         Errors = [error(invalid_zip, 'zip requires a non-empty list of stages')]
+    ).
+validate_stage_specific(window(N), Errors) :-
+    !,
+    ( integer(N), N > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'window size must be a positive integer, got: ~w', [N]),
+        Errors = [error(invalid_window, Msg)]
+    ).
+validate_stage_specific(sliding_window(N, Step), Errors) :-
+    !,
+    ( integer(N), N > 0, integer(Step), Step > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'sliding_window requires positive integers for size and step, got: ~w, ~w', [N, Step]),
+        Errors = [error(invalid_sliding_window, Msg)]
+    ).
+validate_stage_specific(sample(N), Errors) :-
+    !,
+    ( integer(N), N > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'sample size must be a positive integer, got: ~w', [N]),
+        Errors = [error(invalid_sample, Msg)]
+    ).
+validate_stage_specific(take_every(N), Errors) :-
+    !,
+    ( integer(N), N > 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'take_every interval must be a positive integer, got: ~w', [N]),
+        Errors = [error(invalid_take_every, Msg)]
+    ).
+validate_stage_specific(partition(Pred), Errors) :-
+    !,
+    ( atom(Pred) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'partition predicate must be an atom, got: ~w', [Pred]),
+        Errors = [error(invalid_partition, Msg)]
+    ).
+validate_stage_specific(take(N), Errors) :-
+    !,
+    ( integer(N), N >= 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'take count must be a non-negative integer, got: ~w', [N]),
+        Errors = [error(invalid_take, Msg)]
+    ).
+validate_stage_specific(skip(N), Errors) :-
+    !,
+    ( integer(N), N >= 0 ->
+        Errors = []
+    ;
+        format(atom(Msg), 'skip count must be a non-negative integer, got: ~w', [N]),
+        Errors = [error(invalid_skip, Msg)]
+    ).
+validate_stage_specific(take_while(Pred), Errors) :-
+    !,
+    ( atom(Pred) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'take_while predicate must be an atom, got: ~w', [Pred]),
+        Errors = [error(invalid_take_while, Msg)]
+    ).
+validate_stage_specific(skip_while(Pred), Errors) :-
+    !,
+    ( atom(Pred) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'skip_while predicate must be an atom, got: ~w', [Pred]),
+        Errors = [error(invalid_skip_while, Msg)]
+    ).
+validate_stage_specific(distinct, []) :- !.
+validate_stage_specific(distinct_by(Field), Errors) :-
+    !,
+    ( atom(Field) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'distinct_by field must be an atom, got: ~w', [Field]),
+        Errors = [error(invalid_distinct_by, Msg)]
+    ).
+validate_stage_specific(dedup, []) :- !.
+validate_stage_specific(dedup_by(Field), Errors) :-
+    !,
+    ( atom(Field) ->
+        Errors = []
+    ;
+        format(atom(Msg), 'dedup_by field must be an atom, got: ~w', [Field]),
+        Errors = [error(invalid_dedup_by, Msg)]
+    ).
+validate_stage_specific(interleave(Stages), Errors) :-
+    !,
+    ( is_list(Stages), Stages \= [] ->
+        validate_all_stages(Stages, 1, Errors)
+    ;
+        Errors = [error(invalid_interleave, 'interleave requires a non-empty list of stages')]
+    ).
+validate_stage_specific(concat(Stages), Errors) :-
+    !,
+    ( is_list(Stages), Stages \= [] ->
+        validate_all_stages(Stages, 1, Errors)
+    ;
+        Errors = [error(invalid_concat, 'concat requires a non-empty list of stages')]
+    ).
+validate_stage_specific(merge_sorted(Stages, Field), Errors) :-
+    !,
+    ( is_list(Stages), Stages \= [], atom(Field) ->
+        validate_all_stages(Stages, 1, Errors)
+    ;
+        Errors = [error(invalid_merge_sorted, 'merge_sorted requires a non-empty list of stages and a field atom')]
+    ).
+validate_stage_specific(merge_sorted(Stages, Field, Dir), Errors) :-
+    !,
+    ( is_list(Stages), Stages \= [], atom(Field), is_valid_direction(Dir) ->
+        validate_all_stages(Stages, 1, Errors)
+    ;
+        Errors = [error(invalid_merge_sorted, 'merge_sorted requires a non-empty list of stages, a field atom, and direction (asc/desc)')]
+    ).
+validate_stage_specific(tap(Pred), Errors) :-
+    !,
+    ( atom(Pred) ->
+        Errors = []
+    ; Pred = _/Arity, integer(Arity), Arity >= 0 ->
+        Errors = []
+    ;
+        Errors = [error(invalid_tap, 'tap requires a predicate atom or predicate/arity')]
+    ).
+validate_stage_specific(tee(Stage), Errors) :-
+    !,
+    ( is_valid_stage(Stage) ->
+        validate_stage_specific(Stage, Errors)
+    ;
+        Errors = [error(invalid_tee, 'tee requires a valid pipeline stage')]
+    ).
+validate_stage_specific(flatten, []) :- !.
+validate_stage_specific(flatten(Field), Errors) :-
+    !,
+    ( atom(Field) ->
+        Errors = []
+    ;
+        Errors = [error(invalid_flatten, 'flatten(Field) requires a field atom')]
+    ).
+validate_stage_specific(debounce(Ms), Errors) :-
+    !,
+    ( integer(Ms), Ms > 0 ->
+        Errors = []
+    ;
+        Errors = [error(invalid_debounce, 'debounce(Ms) requires a positive integer milliseconds')]
+    ).
+validate_stage_specific(debounce(Ms, Field), Errors) :-
+    !,
+    ( integer(Ms), Ms > 0, atom(Field) ->
+        Errors = []
+    ;
+        Errors = [error(invalid_debounce, 'debounce(Ms, Field) requires positive integer ms and field atom')]
+    ).
+validate_stage_specific(branch(Cond, TrueStage, FalseStage), Errors) :-
+    !,
+    ( (atom(Cond) ; Cond = _/Arity, integer(Arity), Arity >= 0) ->
+        validate_stage_specific(TrueStage, TrueErrors),
+        validate_stage_specific(FalseStage, FalseErrors),
+        append(TrueErrors, FalseErrors, Errors)
+    ;
+        Errors = [error(invalid_branch, 'branch requires condition predicate, true stage, and false stage')]
     ).
 validate_stage_specific(_, []).
 

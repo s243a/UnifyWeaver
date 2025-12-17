@@ -29,7 +29,15 @@
 
     % Location defaults
     default_location/2,         % default_location(Target, Location)
-    default_transport/3         % default_transport(Location1, Location2, Transport)
+    default_transport/3,        % default_transport(Location1, Location2, Transport)
+
+    % Target module linking
+    target_module/2,            % target_module(Target, Module)
+    compile_to_target/4,        % compile_to_target(Target, Pred/Arity, Options, Code)
+    
+    % Capability queries
+    target_has_capability/2,    % target_has_capability(Target, Capability)
+    targets_with_capability/2   % targets_with_capability(Capability, Targets)
 ]).
 
 :- use_module(library(lists)).
@@ -185,10 +193,78 @@ register_builtin_targets :-
     register_target(rust, native, [compiled, streaming, memory_safe, performance]),
     register_target(c, native, [compiled, performance, low_level]),
 
+    % JavaScript family - runtime selection via js_runtime_choice/2
+    register_target(typescript, javascript, [types, async, modules, generics]),
+    register_target(node, javascript, [streaming, npm, filesystem, async]),
+    register_target(deno, javascript, [typescript, permissions, secure, async]),
+    register_target(bun, javascript, [fast, npm_compat, bundled, async]),
+    register_target(browser, javascript, [dom, async, web_apis, fetch]),
+
+    % Functional family
+    register_target(haskell, functional, [compiled, types, lazy, pattern_matching]),
+
+    % Low-level family
+    register_target(llvm, lowlevel, [compiled, native, optimization]),
+    register_target(wasm, lowlevel, [browser, sandboxed, portable]),
+
     % Database
     register_target(sql, database, [queries, transactions, relational]).
 
 :- register_builtin_targets.
+
+%% ============================================
+%% Target Module Linking
+%% ============================================
+
+:- dynamic target_module/2.  % target_module(Name, Module)
+
+%% Link targets to their implementation modules
+register_target_modules :-
+    % Native
+    target_module(go, go_target),
+    target_module(rust, rust_target),
+    target_module(c, c_target),
+    
+    % .NET
+    target_module(csharp, csharp_target),
+    target_module(fsharp, fsharp_target),
+    target_module(powershell, powershell_target),
+    
+    % JVM
+    target_module(java, java_target),
+    target_module(scala, scala_target),
+    target_module(kotlin, kotlin_target),
+    target_module(clojure, clojure_target),
+    target_module(jython, jython_target),
+    
+    % Shell
+    target_module(bash, bash_target),
+    target_module(awk, awk_target),
+    
+    % Python
+    target_module(python, python_target),
+    
+    % JavaScript (to be implemented)
+    target_module(typescript, typescript_target),
+    
+    % Functional
+    target_module(haskell, haskell_target),
+    
+    % Low-level
+    target_module(llvm, llvm_target),
+    
+    % Database
+    target_module(sql, sql_target).
+
+%% compile_to_target(+Target, +Pred/Arity, +Options, -Code)
+%  Unified dispatch to target modules.
+%
+compile_to_target(Target, PredArity, Options, Code) :-
+    (   target_module(Target, Module)
+    ->  Module:compile_predicate(PredArity, Options, Code)
+    ;   format('Error: No module registered for target ~w~n', [Target]),
+        fail
+    ).
 
 %% ============================================
 %% Capability Queries

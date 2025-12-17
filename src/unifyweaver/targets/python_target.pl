@@ -2,6 +2,8 @@
     compile_predicate_to_python/3,
     compile_facts_to_python/3,        % +Pred, +Arity, -PythonCode  -- NEW
     init_python_target/0,
+    json_schema/2,                    % +SchemaName, +Fields (directive)
+    get_json_schema/2,                % +SchemaName, -Fields (lookup)
     % Pipeline mode exports (Phase 1)
     test_pipeline_mode/0,
     generate_default_arg_names/2,
@@ -70,6 +72,95 @@
 init_python_target :-
     retractall(required_import(_)),
     init_python_bindings.
+
+%% ============================================
+%% JSON SCHEMA SUPPORT
+%% ============================================
+
+:- dynamic json_schema_def/2.
+
+%% json_schema(+SchemaName, +Fields)
+%  Define a JSON schema with typed fields
+%  Used as a directive: :- json_schema(person, [field(name, string), field(age, integer)]).
+%
+json_schema(SchemaName, Fields) :-
+    % Validate schema fields
+    (   validate_schema_fields(Fields)
+    ->  % Store schema definition
+        retractall(json_schema_def(SchemaName, _)),
+        assertz(json_schema_def(SchemaName, Fields)),
+        format('Schema defined: ~w with ~w fields~n', [SchemaName, Fields])
+    ;   format('ERROR: Invalid schema definition for ~w: ~w~n', [SchemaName, Fields]),
+        fail
+    ).
+
+%% validate_schema_fields(+Fields)
+%  Validate that all fields have correct format: field(Name, Type)
+%
+validate_schema_fields([]).
+validate_schema_fields([field(Name, Type)|Rest]) :-
+    atom(Name),
+    valid_json_type(Type),
+    validate_schema_fields(Rest).
+validate_schema_fields([field(Name, Type, Options)|Rest]) :-
+    atom(Name),
+    valid_json_type(Type),
+    is_list(Options),
+    validate_field_options(Options),
+    validate_schema_fields(Rest).
+validate_schema_fields([Invalid|_]) :-
+    format('ERROR: Invalid field specification: ~w~n', [Invalid]),
+    fail.
+
+%% validate_field_options(+Options)
+%  Validate field options: min(N), max(N), format(F), required, optional
+validate_field_options([]).
+validate_field_options([Option|Rest]) :-
+    validate_field_option(Option),
+    validate_field_options(Rest).
+
+validate_field_option(min(N)) :- number(N).
+validate_field_option(max(N)) :- number(N).
+validate_field_option(format(F)) :- atom(F).
+validate_field_option(required).
+validate_field_option(optional).
+validate_field_option(Invalid) :-
+    format('ERROR: Invalid field option: ~w~n', [Invalid]),
+    fail.
+
+%% valid_json_type(+Type)
+%  Check if a type is valid for JSON schemas
+%
+valid_json_type(string).
+valid_json_type(integer).
+valid_json_type(float).
+valid_json_type(boolean).
+valid_json_type(any).  % Fallback to interface{}
+valid_json_type(array(Type)) :-
+    valid_json_type(Type).
+valid_json_type(object(SchemaName)) :-
+    atom(SchemaName).
+
+%% get_json_schema(+SchemaName, -Fields)
+%  Retrieve a schema definition by name
+%
+get_json_schema(SchemaName, Fields) :-
+    json_schema_def(SchemaName, Fields), !.
+get_json_schema(SchemaName, _) :-
+    format('ERROR: Schema not found: ~w~n', [SchemaName]),
+    fail.
+
+%% get_field_info(+SchemaName, +FieldName, -Type, -Options)
+%  Get the type and options of a specific field from a schema
+%
+get_field_info(SchemaName, FieldName, Type, Options) :-
+    get_json_schema(SchemaName, Fields),
+    (   member(field(FieldName, Type, Options), Fields) -> true
+    ;   member(field(FieldName, Type), Fields) -> Options = []
+    ), !.
+get_field_info(SchemaName, FieldName, any, []) :-
+    % Field not in schema - default to 'any'
+    format('WARNING: Field ~w not in schema ~w, defaulting to type ''any''~n', [FieldName, SchemaName]).
 
 /** <module> Python Target Compiler
  *
@@ -1254,28 +1345,72 @@ translate_clause(Head, Body, Index, Arity, Code) :-
         format(string(MatchCode), "    if ~w != ~w: return\n", [PyRecordVar, PyVal])
     ),
     
+    % Check for schema validation (NEW)
+    Head =.. [PredName|_],
+    (   get_json_schema(PredName, _)
+    ->  format(string(ValidationCode), "    if not _validate_~w(~w): return\n", [PredName, PyRecordVar])
+    ;   ValidationCode = ""
+    ),
+    
     % Determine output variable (Last argument if Arity > 1, else Input)
     (   Arity > 1
     ->  arg(Arity, Head, OutputVar)
     ;   OutputVar = RecordVar
     ),
-    var_to_python(OutputVar, PyOutputVar),
     
-    translate_body(Body, BodyCode),
+    % Translate body with indentation support
+    body_to_list(Body, BodyGoals),
+    % Append yield(OutputVar) to goals so it respects indentation/nesting
+    append(BodyGoals, [yield(OutputVar)], Goals),
+    
+    translate_goals_recursive(Goals, "    ", BodyCode),
     
     format(string(Code),
 "def _clause_~d(~w: Dict) -> Iterator[Dict]:
-~s~s
-    yield ~w
-", [Index, PyRecordVar, MatchCode, BodyCode, PyOutputVar]).
+~s~s~s
+", [Index, PyRecordVar, MatchCode, ValidationCode, BodyCode]).
 
-translate_body((Goal, Rest), Code) :-
-    !,
-    translate_goal(Goal, Code1),
-    translate_body(Rest, Code2),
-    string_concat(Code1, Code2, Code).
-translate_body(Goal, Code) :-
-    translate_goal(Goal, Code).
+%% body_to_list(+Body, -Goals)
+body_to_list((A, B), [A|Rest]) :- !, body_to_list(B, Rest).
+body_to_list(true, []) :- !.
+body_to_list(A, [A]).
+
+%% translate_goals_recursive(+Goals, +Indent, -Code)
+translate_goals_recursive([], _, "") :- !.
+translate_goals_recursive([Goal|Rest], Indent, Code) :-
+    (   Goal = json_array_member(List, Item)
+    ->  % Control flow goal: Array iteration
+        var_to_python(List, PyList),
+        var_to_python(Item, PyItem),
+        format(string(Header), "~sif isinstance(~w, list):\n~s    for ~w in ~w:\n", 
+               [Indent, PyList, Indent, PyItem, PyList]),
+        
+        string_concat(Indent, "        ", InnerIndent),
+        translate_goals_recursive(Rest, InnerIndent, BodyCode),
+        string_concat(Header, BodyCode, Code)
+    ;   Goal = yield(Var)
+    ->  % Output goal
+        var_to_python(Var, PyVar),
+        format(string(Code1), "~syield ~w\n", [Indent, PyVar]),
+        translate_goals_recursive(Rest, Indent, Code2),
+        string_concat(Code1, Code2, Code)
+    ;   % Standard goal
+        translate_goal_with_indent(Goal, Indent, Code1),
+        translate_goals_recursive(Rest, Indent, Code2),
+        string_concat(Code1, Code2, Code)
+    ).
+
+%% translate_goal_with_indent(+Goal, +Indent, -Code)
+%  Adapter for legacy translate_goal/2
+translate_goal_with_indent(Goal, Indent, Code) :-
+    translate_goal(Goal, LegacyCode),
+    % Replace the hardcoded 4 spaces with Indent
+    (   sub_string(LegacyCode, 0, 4, After, "    ")
+    ->  sub_string(LegacyCode, 4, After, 0, Suffix),
+        string_concat(Indent, Suffix, Code)
+    ;   % Fallback if no indentation found (e.g. empty string)
+        string_concat(Indent, LegacyCode, Code)
+    ).
 
 is_var_term(V) :- var(V), !.
 is_var_term('$VAR'(_)).
@@ -1283,6 +1418,8 @@ is_var_term('$VAR'(_)).
 translate_goal(_:Goal, Code) :-
     !,
     translate_goal(Goal, Code).
+
+
 
 translate_goal(get_dict(Key, Record, Value), Code) :-
     !,
@@ -1465,6 +1602,32 @@ translate_goal(generate_key(Strategy, KeyVar), Code) :-
 opt_to_py_pair(Term, Pair) :-
     Term =.. [Key, Value],
     format(string(Pair), "'~w': ~w", [Key, Value]).
+
+surround_quotes(S, Q) :- format(string(Q), "'~w'", [S]).
+
+translate_goal(json_get(Data, Field, Var), Code) :-
+    !,
+    var_to_python(Data, PyData),
+    var_to_python(Var, PyVar),
+    (   atom(Field)
+    ->  format(string(Code), "    ~w = ~w.get('~w')\n", [PyVar, PyData, Field])
+    ;   is_list(Field)
+    ->  maplist(atom_string, Field, PathStrs),
+        maplist(surround_quotes, PathStrs, QuotedPaths),
+        atomic_list_concat(QuotedPaths, ', ', PathListStr),
+        format(string(Code), "    ~w = _json_get_nested(~w, [~s])\n", [PyVar, PyData, PathListStr])
+    ).
+
+translate_goal(json_record(Fields), Code) :-
+    !,
+    maplist(translate_json_field, Fields, Codes),
+    atomic_list_concat(Codes, "", Code).
+
+translate_json_field(Name-Var, Code) :-
+    !,
+    var_to_python(Var, PyVar),
+    % Assume input is 'record' as per convention
+    format(string(Code), "    ~w = record.get('~w')\n", [PyVar, Name]).
 
 translate_goal(true, Code) :-
     !,
@@ -2079,7 +2242,49 @@ clear_binding_imports :-
 helpers(Helpers) :-
     helpers_base(Base),
     semantic_runtime_helpers(Runtime),
-    format(string(Helpers), "~s\n~s", [Base, Runtime]).
+    generate_all_validators(Validators),
+    format(string(Helpers), "~s\n~s\n~s", [Base, Runtime, Validators]).
+
+%% generate_all_validators(-Code)
+generate_all_validators(Code) :-
+    findall(ValCode, (
+        json_schema_def(Name, Fields),
+        generate_validator_function(Name, Fields, ValCode)
+    ), ValidatorCodes),
+    atomic_list_concat(ValidatorCodes, "\n\n", Code).
+
+%% generate_validator_function(+SchemaName, +Fields, -Code)
+generate_validator_function(Name, Fields, Code) :-
+    maplist(generate_field_check, Fields, CheckCodes),
+    atomic_list_concat(CheckCodes, "", Checks),
+    format(string(Code), 
+"def _validate_~w(data):
+    if not isinstance(data, dict): return False
+~s    return True", [Name, Checks]).
+
+%% generate_field_check(+FieldSpec, -Code)
+generate_field_check(field(Name, Type), Code) :-
+    generate_field_check(field(Name, Type, []), Code).
+
+generate_field_check(field(Name, Type, _Opts), Code) :-
+    type_check_expr(Type, "val", Expr),
+    format(string(Code), 
+"    val = data.get('~w')
+    if val is not None:
+        if not (~s): return False
+", [Name, Expr]).
+
+%% type_check_expr(+Type, +VarName, -Expr)
+type_check_expr(string, Var, Expr) :- format(string(Expr), "isinstance(~w, str)", [Var]).
+type_check_expr(integer, Var, Expr) :- format(string(Expr), "isinstance(~w, int)", [Var]).
+type_check_expr(float, Var, Expr) :- format(string(Expr), "isinstance(~w, (int, float))", [Var]).
+type_check_expr(boolean, Var, Expr) :- format(string(Expr), "isinstance(~w, bool)", [Var]).
+type_check_expr(any, _, "True").
+type_check_expr(array(Type), Var, Expr) :-
+    type_check_expr(Type, "x", InnerExpr),
+    format(string(Expr), "isinstance(~w, list) and all(~s for x in ~w)", [Var, InnerExpr, Var]).
+type_check_expr(object(Schema), Var, Expr) :-
+    format(string(Expr), "_validate_~w(~w)", [Schema, Var]).
 
 helpers_base("
 def read_jsonl(stream) -> Iterator[Dict[str, Any]]:
@@ -2165,6 +2370,18 @@ def read_xml_lxml(file_path: str, tags: set) -> Iterator[Dict[str, Any]]:
                 del elem.getparent()[0]
     del context
     root.clear()
+
+def _json_get_nested(data, path):
+    'Get nested value from dict using path list.'
+    current = data
+    for key in path:
+        if isinstance(current, dict):
+            current = current.get(key)
+        else:
+            return None
+        if current is None:
+            return None
+    return current
 \n").
 
 %% ============================================
@@ -5196,6 +5413,368 @@ def zip_stage(record, stage_funcs):
                 combined.update(result_list[i])
         yield combined
 
+def window_stage(stream, size):
+    '''
+    Window: Collect records into non-overlapping windows of specified size.
+    '''
+    window = []
+    for record in stream:
+        window.append(record)
+        if len(window) >= size:
+            yield window
+            window = []
+    if window:
+        yield window
+
+def sliding_window_stage(stream, size, step):
+    '''
+    Sliding Window: Emit windows of size, advancing by step each time.
+    '''
+    buffer = []
+    for record in stream:
+        buffer.append(record)
+        while len(buffer) >= size:
+            yield buffer[:size]
+            buffer = buffer[step:]
+    if buffer:
+        yield buffer
+
+def sample_stage(stream, n):
+    '''
+    Sample: Randomly select n records from the stream (reservoir sampling).
+    '''
+    import random
+    reservoir = []
+    for i, record in enumerate(stream):
+        if i < n:
+            reservoir.append(record)
+        else:
+            j = random.randint(0, i)
+            if j < n:
+                reservoir[j] = record
+    for record in reservoir:
+        yield record
+
+def take_every_stage(stream, n):
+    '''
+    Take Every: Emit every nth record.
+    '''
+    for i, record in enumerate(stream):
+        if i % n == 0:
+            yield record
+
+def partition_stage(stream, pred_fn):
+    '''
+    Partition: Split stream into [matches, non-matches] based on predicate.
+    Returns a tuple of two lists.
+    '''
+    matches = []
+    non_matches = []
+    for record in stream:
+        if pred_fn(record):
+            matches.append(record)
+        else:
+            non_matches.append(record)
+    return (matches, non_matches)
+
+def take_stage(stream, n):
+    '''
+    Take: Emit only the first n records.
+    '''
+    count = 0
+    for record in stream:
+        if count >= n:
+            break
+        yield record
+        count += 1
+
+def skip_stage(stream, n):
+    '''
+    Skip: Skip the first n records, emit the rest.
+    '''
+    count = 0
+    for record in stream:
+        if count >= n:
+            yield record
+        count += 1
+
+def take_while_stage(stream, pred_fn):
+    '''
+    Take While: Emit records while predicate is true, stop when false.
+    '''
+    for record in stream:
+        if pred_fn(record):
+            yield record
+        else:
+            break
+
+def skip_while_stage(stream, pred_fn):
+    '''
+    Skip While: Skip records while predicate is true, emit once false.
+    '''
+    skipping = True
+    for record in stream:
+        if skipping and pred_fn(record):
+            continue
+        skipping = False
+        yield record
+
+def distinct_stage(stream):
+    '''
+    Distinct: Remove all duplicate records (global dedup), keeping first occurrence.
+    Uses JSON serialization for record comparison.
+    '''
+    import json
+    seen = set()
+    for record in stream:
+        key = json.dumps(record, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            yield record
+
+def distinct_by_stage(stream, field):
+    '''
+    Distinct By: Remove duplicates based on a specific field, keeping first occurrence.
+    '''
+    seen = set()
+    for record in stream:
+        key = record.get(field)
+        if key not in seen:
+            seen.add(key)
+            yield record
+
+def dedup_stage(stream):
+    '''
+    Dedup: Remove consecutive duplicate records only.
+    Uses JSON serialization for record comparison.
+    '''
+    import json
+    last_key = None
+    for record in stream:
+        key = json.dumps(record, sort_keys=True)
+        if key != last_key:
+            last_key = key
+            yield record
+
+def dedup_by_stage(stream, field):
+    '''
+    Dedup By: Remove consecutive duplicates based on a specific field.
+    '''
+    last_value = object()  # Sentinel that won't match any real value
+    for record in stream:
+        value = record.get(field)
+        if value != last_value:
+            last_value = value
+            yield record
+
+def interleave_stage(streams):
+    '''
+    Interleave: Round-robin interleave records from multiple streams.
+    Takes one record from each stream in turn until all are exhausted.
+    '''
+    iterators = [iter(s) for s in streams]
+    active = list(range(len(iterators)))
+    while active:
+        next_active = []
+        for i in active:
+            try:
+                yield next(iterators[i])
+                next_active.append(i)
+            except StopIteration:
+                pass
+        active = next_active
+
+def concat_stage(streams):
+    '''
+    Concat: Concatenate multiple streams sequentially.
+    Yields all records from first stream, then second, etc.
+    '''
+    for stream in streams:
+        yield from stream
+
+def merge_sorted_stage(streams, field, reverse=False):
+    '''
+    Merge Sorted: Merge multiple pre-sorted streams maintaining sort order.
+    Uses a min-heap (or max-heap if reverse) for efficient k-way merge.
+    Assumes each input stream is already sorted by the given field.
+    '''
+    import heapq
+
+    # Create iterators with initial values
+    heap = []
+    iterators = []
+    for i, stream in enumerate(streams):
+        it = iter(stream)
+        try:
+            record = next(it)
+            value = record.get(field)
+            # For reverse (descending), negate numeric values or use negative index
+            if reverse:
+                if isinstance(value, (int, float)):
+                    heap_val = (-value, i, record)
+                else:
+                    heap_val = (0, -i, record)  # For non-numeric, use FIFO order
+            else:
+                if isinstance(value, (int, float)):
+                    heap_val = (value, i, record)
+                else:
+                    heap_val = (str(value) if value else '', i, record)
+            heapq.heappush(heap, heap_val)
+            iterators.append(it)
+        except StopIteration:
+            iterators.append(None)
+
+    while heap:
+        _, stream_idx, record = heapq.heappop(heap)
+        yield record
+
+        # Try to get next record from same stream
+        it = iterators[stream_idx]
+        if it is not None:
+            try:
+                record = next(it)
+                value = record.get(field)
+                if reverse:
+                    if isinstance(value, (int, float)):
+                        heap_val = (-value, stream_idx, record)
+                    else:
+                        heap_val = (0, -stream_idx, record)
+                else:
+                    if isinstance(value, (int, float)):
+                        heap_val = (value, stream_idx, record)
+                    else:
+                        heap_val = (str(value) if value else '', stream_idx, record)
+                heapq.heappush(heap, heap_val)
+            except StopIteration:
+                iterators[stream_idx] = None
+
+def tap_stage(stream, side_effect_fn):
+    '''
+    Tap: Execute side effect for each record without modifying the stream.
+    Useful for logging, metrics, debugging, or other observations.
+    The side_effect_fn is called with each record but its return value is ignored.
+    '''
+    for record in stream:
+        try:
+            side_effect_fn(record)
+        except Exception:
+            pass  # Side effects should not interrupt the pipeline
+        yield record
+
+def flatten_stage(stream):
+    '''
+    Flatten: Flatten nested collections into individual records.
+    If a record is a list/tuple, yields each element individually.
+    Non-iterable records are yielded as-is.
+    '''
+    for record in stream:
+        if isinstance(record, (list, tuple)):
+            for item in record:
+                yield item
+        elif isinstance(record, dict) and '__items__' in record:
+            # Handle dict with __items__ key containing list
+            for item in record['__items__']:
+                yield item
+        else:
+            yield record
+
+def flatten_field_stage(stream, field):
+    '''
+    Flatten Field: Flatten a specific field within each record.
+    Expands records where field contains a list into multiple records.
+    Each expanded record contains one item from the list.
+    '''
+    for record in stream:
+        if isinstance(record, dict) and field in record:
+            field_value = record[field]
+            if isinstance(field_value, (list, tuple)):
+                for item in field_value:
+                    new_record = record.copy()
+                    new_record[field] = item
+                    yield new_record
+            else:
+                yield record
+        else:
+            yield record
+
+def debounce_stage(stream, ms, timestamp_field=None):
+    '''
+    Debounce: Emit records only after a silence period.
+    Groups records by time windows and emits the last record in each window.
+    If timestamp_field is provided, uses that field for timing; otherwise uses arrival order.
+    For batch processing, this simulates debounce by grouping records within ms intervals.
+    '''
+    import time
+    buffer = []
+    last_time = None
+    threshold_sec = ms / 1000.0
+
+    for record in stream:
+        current_time = time.time()
+        if timestamp_field and isinstance(record, dict) and timestamp_field in record:
+            try:
+                current_time = float(record[timestamp_field])
+            except (ValueError, TypeError):
+                pass
+
+        if last_time is None:
+            buffer = [record]
+            last_time = current_time
+        elif current_time - last_time < threshold_sec:
+            # Within debounce window, replace buffer
+            buffer = [record]
+            last_time = current_time
+        else:
+            # Silence period exceeded, emit buffered and start new
+            if buffer:
+                yield buffer[-1]
+            buffer = [record]
+            last_time = current_time
+
+    # Emit final buffered record
+    if buffer:
+        yield buffer[-1]
+
+def branch_stage(stream, condition_fn, true_fn, false_fn):
+    '''
+    Branch: Conditional routing within pipeline.
+    Records matching condition go through true_fn, others through false_fn.
+    Results from both branches are combined in the output.
+    '''
+    for record in stream:
+        try:
+            if condition_fn(record):
+                result = true_fn(iter([record]))
+                for item in result:
+                    yield item
+            else:
+                result = false_fn(iter([record]))
+                for item in result:
+                    yield item
+        except Exception:
+            # On condition error, pass through unchanged
+            yield record
+
+def tee_stage(stream, side_fn):
+    '''
+    Tee: Run side stage on stream copy, discard results, pass original through.
+    Like Unix tee - fork stream to side destination while main stream continues.
+    '''
+    # Collect records to allow side stage to process full stream
+    records = list(stream)
+
+    # Run side stage (results discarded)
+    try:
+        # Consume the side stage generator to execute it
+        for _ in side_fn(iter(records)):
+            pass
+    except Exception:
+        pass  # Side effects should not interrupt the main pipeline
+
+    # Yield original records unchanged
+    for record in records:
+        yield record
+
 ".
 
 %% generate_enhanced_stage_functions(+Stages, -Code)
@@ -5269,6 +5848,44 @@ generate_single_enhanced_stage(debounce(_), "") :- !.
 generate_single_enhanced_stage(zip(SubStages), Code) :-
     !,
     generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(window(_), "") :- !.
+generate_single_enhanced_stage(sliding_window(_, _), "") :- !.
+generate_single_enhanced_stage(sample(_), "") :- !.
+generate_single_enhanced_stage(take_every(_), "") :- !.
+generate_single_enhanced_stage(partition(_), "") :- !.
+generate_single_enhanced_stage(take(_), "") :- !.
+generate_single_enhanced_stage(skip(_), "") :- !.
+generate_single_enhanced_stage(take_while(_), "") :- !.
+generate_single_enhanced_stage(skip_while(_), "") :- !.
+generate_single_enhanced_stage(distinct, "") :- !.
+generate_single_enhanced_stage(distinct_by(_), "") :- !.
+generate_single_enhanced_stage(dedup, "") :- !.
+generate_single_enhanced_stage(dedup_by(_), "") :- !.
+generate_single_enhanced_stage(interleave(SubStages), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(concat(SubStages), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(merge_sorted(SubStages, _Field), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(merge_sorted(SubStages, _Field, _Dir), Code) :-
+    !,
+    generate_enhanced_stage_functions(SubStages, Code).
+generate_single_enhanced_stage(tap(_), "") :- !.
+generate_single_enhanced_stage(flatten, "") :- !.
+generate_single_enhanced_stage(flatten(_), "") :- !.
+generate_single_enhanced_stage(debounce(_), "") :- !.
+generate_single_enhanced_stage(debounce(_, _), "") :- !.
+generate_single_enhanced_stage(branch(_Cond, TrueStage, FalseStage), Code) :-
+    !,
+    generate_single_enhanced_stage(TrueStage, TrueCode),
+    generate_single_enhanced_stage(FalseStage, FalseCode),
+    format(string(Code), "~w~w", [TrueCode, FalseCode]).
+generate_single_enhanced_stage(tee(SideStage), Code) :-
+    !,
+    generate_single_enhanced_stage(SideStage, Code).
 generate_single_enhanced_stage(Pred/Arity, Code) :-
     !,
     format(string(Code),
@@ -5589,6 +6206,229 @@ generate_stage_flow(zip(Stages), InVar, OutVar, Code) :-
             for result in zip_stage(record, [~w]):
                 yield result
     ~w = zip_generator()", [InVar, StageListStr, OutVar]).
+
+% Window stage: non-overlapping windows
+generate_stage_flow(window(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "windowed_result",
+    format(string(Code),
+"    # Window: collect ~w records into windows
+    ~w = window_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Sliding window stage
+generate_stage_flow(sliding_window(N, Step), InVar, OutVar, Code) :-
+    !,
+    OutVar = "sliding_window_result",
+    format(string(Code),
+"    # Sliding Window: size ~w, step ~w
+    ~w = sliding_window_stage(~w, ~w, ~w)", [N, Step, OutVar, InVar, N, Step]).
+
+% Sample stage: random sampling
+generate_stage_flow(sample(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "sampled_result",
+    format(string(Code),
+"    # Sample: random ~w records
+    ~w = sample_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Take every stage
+generate_stage_flow(take_every(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "take_every_result",
+    format(string(Code),
+"    # Take Every: every ~wth record
+    ~w = take_every_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Partition stage
+generate_stage_flow(partition(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "partitioned_result",
+    format(string(Code),
+"    # Partition: split by ~w
+    ~w = partition_stage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Take stage
+generate_stage_flow(take(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "take_result",
+    format(string(Code),
+"    # Take: first ~w records
+    ~w = take_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Skip stage
+generate_stage_flow(skip(N), InVar, OutVar, Code) :-
+    !,
+    OutVar = "skip_result",
+    format(string(Code),
+"    # Skip: skip first ~w records
+    ~w = skip_stage(~w, ~w)", [N, OutVar, InVar, N]).
+
+% Take while stage
+generate_stage_flow(take_while(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "take_while_result",
+    format(string(Code),
+"    # Take While: while ~w is true
+    ~w = take_while_stage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Skip while stage
+generate_stage_flow(skip_while(Pred), InVar, OutVar, Code) :-
+    !,
+    OutVar = "skip_while_result",
+    format(string(Code),
+"    # Skip While: skip while ~w is true
+    ~w = skip_while_stage(~w, ~w)", [Pred, OutVar, InVar, Pred]).
+
+% Distinct stage: remove all duplicates (global)
+generate_stage_flow(distinct, InVar, OutVar, Code) :-
+    !,
+    OutVar = "distinct_result",
+    format(string(Code),
+"    # Distinct: remove all duplicates (global dedup)
+    ~w = distinct_stage(~w)", [OutVar, InVar]).
+
+% Distinct by field: remove duplicates based on specific field
+generate_stage_flow(distinct_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "distinct_~w_result", [Field]),
+    format(string(Code),
+"    # Distinct By: remove duplicates based on '~w' field
+    ~w = distinct_by_stage(~w, '~w')", [Field, OutVar, InVar, Field]).
+
+% Dedup stage: remove consecutive duplicates only
+generate_stage_flow(dedup, InVar, OutVar, Code) :-
+    !,
+    OutVar = "dedup_result",
+    format(string(Code),
+"    # Dedup: remove consecutive duplicates
+    ~w = dedup_stage(~w)", [OutVar, InVar]).
+
+% Dedup by field: remove consecutive duplicates based on specific field
+generate_stage_flow(dedup_by(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "dedup_~w_result", [Field]),
+    format(string(Code),
+"    # Dedup By: remove consecutive duplicates based on '~w' field
+    ~w = dedup_by_stage(~w, '~w')", [Field, OutVar, InVar, Field]).
+
+% Interleave stage: round-robin interleave from multiple stages
+generate_stage_flow(interleave(Stages), InVar, OutVar, Code) :-
+    !,
+    length(Stages, N),
+    format(atom(OutVar), "interleaved_~w", [N]),
+    extract_stage_names(Stages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Interleave: round-robin from ~w stages
+    ~w = interleave_stage([~w(~w) for stage_fn in [~w]])", [N, OutVar, "stage_fn", InVar, StageListStr]).
+
+% Concat stage: sequential concatenation of multiple stages
+generate_stage_flow(concat(Stages), InVar, OutVar, Code) :-
+    !,
+    length(Stages, N),
+    format(atom(OutVar), "concatenated_~w", [N]),
+    extract_stage_names(Stages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Concat: sequential concatenation of ~w stages
+    ~w = concat_stage([~w(~w) for stage_fn in [~w]])", [N, OutVar, "stage_fn", InVar, StageListStr]).
+
+% Merge sorted stage: merge pre-sorted streams maintaining order (ascending)
+generate_stage_flow(merge_sorted(Stages, Field), InVar, OutVar, Code) :-
+    !,
+    length(Stages, N),
+    format(atom(OutVar), "merge_sorted_~w_result", [Field]),
+    extract_stage_names(Stages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    format(string(Code),
+"    # Merge Sorted: merge ~w pre-sorted streams by '~w' (ascending)
+    ~w = merge_sorted_stage([stage_fn(~w) for stage_fn in [~w]], '~w', reverse=False)", [N, Field, OutVar, InVar, StageListStr, Field]).
+
+% Merge sorted stage with direction: merge pre-sorted streams with specified order
+generate_stage_flow(merge_sorted(Stages, Field, Dir), InVar, OutVar, Code) :-
+    !,
+    length(Stages, N),
+    format(atom(OutVar), "merge_sorted_~w_~w_result", [Field, Dir]),
+    extract_stage_names(Stages, StageNames),
+    format_stage_list(StageNames, StageListStr),
+    ( Dir = desc -> Reverse = "True" ; Reverse = "False" ),
+    format(string(Code),
+"    # Merge Sorted: merge ~w pre-sorted streams by '~w' (~w)
+    ~w = merge_sorted_stage([stage_fn(~w) for stage_fn in [~w]], '~w', reverse=~w)", [N, Field, Dir, OutVar, InVar, StageListStr, Field, Reverse]).
+
+% Tap stage: execute side effect without modifying stream
+generate_stage_flow(tap(Pred), InVar, OutVar, Code) :-
+    !,
+    ( Pred = PredName/_ -> true ; PredName = Pred ),
+    format(atom(OutVar), "tapped_~w_result", [PredName]),
+    format(string(Code),
+"    # Tap: execute ~w for side effects (logging/metrics)
+    ~w = tap_stage(~w, ~w)", [PredName, OutVar, InVar, PredName]).
+
+% Flatten stage: flatten nested collections
+generate_stage_flow(flatten, InVar, OutVar, Code) :-
+    !,
+    OutVar = "flattened_result",
+    format(string(Code),
+"    # Flatten: expand nested collections into individual records
+    ~w = flatten_stage(~w)", [OutVar, InVar]).
+
+% Flatten field stage: flatten a specific field within records
+generate_stage_flow(flatten(Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "flattened_~w_result", [Field]),
+    format(string(Code),
+"    # Flatten Field: expand '~w' field into individual records
+    ~w = flatten_field_stage(~w, '~w')", [Field, OutVar, InVar, Field]).
+
+% Debounce stage: emit only after silence period
+generate_stage_flow(debounce(Ms), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced_~w_result", [Ms]),
+    format(string(Code),
+"    # Debounce: emit after ~wms silence period
+    ~w = debounce_stage(~w, ~w)", [Ms, OutVar, InVar, Ms]).
+
+% Debounce stage with timestamp field
+generate_stage_flow(debounce(Ms, Field), InVar, OutVar, Code) :-
+    !,
+    format(atom(OutVar), "debounced_~w_~w_result", [Ms, Field]),
+    format(string(Code),
+"    # Debounce: emit after ~wms silence (using '~w' timestamp field)
+    ~w = debounce_stage(~w, ~w, '~w')", [Ms, Field, OutVar, InVar, Ms, Field]).
+
+% Branch stage: conditional routing
+generate_stage_flow(branch(Cond, TrueStage, FalseStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "branch_result",
+    % Extract condition predicate name
+    ( Cond = CondName/_ -> true ; CondName = Cond ),
+    % Extract true/false stage names
+    ( TrueStage = TrueName/_ -> true ; TrueName = TrueStage ),
+    ( FalseStage = FalseName/_ -> true ; FalseName = FalseStage ),
+    format(string(Code),
+"    # Branch: if ~w then ~w else ~w
+    def _branch_cond(record):
+        return ~w(record)
+    def _branch_true(stream):
+        return ~w(stream)
+    def _branch_false(stream):
+        return ~w(stream)
+    ~w = branch_stage(~w, _branch_cond, _branch_true, _branch_false)",
+    [CondName, TrueName, FalseName, CondName, TrueName, FalseName, OutVar, InVar]).
+
+% Tee stage: run side stage, discard results, pass through
+generate_stage_flow(tee(SideStage), InVar, OutVar, Code) :-
+    !,
+    OutVar = "tee_result",
+    % Extract side stage name
+    ( SideStage = SideName/_ -> true ; SideName = SideStage ),
+    format(string(Code),
+"    # Tee: fork to ~w (results discarded), pass original through
+    def _tee_side(stream):
+        return ~w(stream)
+    ~w = tee_stage(~w, _tee_side)",
+    [SideName, SideName, OutVar, InVar]).
 
 % Standard predicate stage
 generate_stage_flow(Pred/Arity, InVar, OutVar, Code) :-

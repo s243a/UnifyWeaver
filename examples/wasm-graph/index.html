@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WASM Graph Visualization - UnifyWeaver</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+    header {
+      padding: 1.5rem 2rem;
+      background: rgba(255,255,255,0.05);
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      background: linear-gradient(135deg, #00d4ff, #7c3aed);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      color: #888;
+      font-size: 0.9rem;
+      margin-top: 0.25rem;
+    }
+    main {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      height: calc(100vh - 80px);
+    }
+    .sidebar {
+      padding: 1.5rem;
+      background: rgba(0,0,0,0.2);
+      border-right: 1px solid rgba(255,255,255,0.1);
+    }
+    .sidebar h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 1rem;
+    }
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .input-group {
+      display: flex;
+      gap: 0.5rem;
+    }
+    input {
+      flex: 1;
+      padding: 0.5rem 0.75rem;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 6px;
+      color: #fff;
+      font-size: 0.9rem;
+    }
+    input::placeholder { color: #666; }
+    button {
+      padding: 0.5rem 1rem;
+      background: linear-gradient(135deg, #00d4ff, #7c3aed);
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.2s;
+    }
+    button:hover { opacity: 0.9; transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    .edge-list {
+      margin-top: 1.5rem;
+    }
+    .edge-item {
+      padding: 0.5rem;
+      background: rgba(255,255,255,0.05);
+      border-radius: 4px;
+      margin-bottom: 0.25rem;
+      font-family: 'SF Mono', Monaco, monospace;
+      font-size: 0.85rem;
+    }
+    .edge-item span {
+      color: #00d4ff;
+    }
+    #graph {
+      width: 100%;
+      height: 100%;
+    }
+    .status {
+      position: fixed;
+      bottom: 1rem;
+      left: 1rem;
+      padding: 0.5rem 1rem;
+      background: rgba(0,0,0,0.7);
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+    .status.loading { color: #ffd700; }
+    .status.ready { color: #00ff00; }
+    .status.error { color: #ff4444; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WASM Graph Visualization</h1>
+    <div class="subtitle">UnifyWeaver • Prolog → WASM → Cytoscape.js</div>
+  </header>
+  
+  <main>
+    <div class="sidebar">
+      <h2>Add Edge</h2>
+      <div class="controls">
+        <div class="input-group">
+          <input type="text" id="from" placeholder="From node">
+          <input type="text" id="to" placeholder="To node">
+        </div>
+        <button onclick="addEdge()">Add Edge</button>
+        <button onclick="loadSample()">Load Sample Data</button>
+      </div>
+      
+      <div class="edge-list">
+        <h2>Edges</h2>
+        <div id="edges"></div>
+      </div>
+    </div>
+    
+    <div id="graph"></div>
+  </main>
+  
+  <div id="status" class="status loading">Loading WASM...</div>
+
+  <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+  <script type="module">
+    // GraphWasm class (inline for demo - normally generated)
+    class GraphWasm {
+      constructor() {
+        this.edges = [];
+      }
+      
+      static async load(wasmPath) {
+        // For demo, use in-memory implementation
+        // Real version loads WASM
+        const instance = new GraphWasm();
+        return instance;
+      }
+      
+      addEdge(from, to) {
+        this.edges.push([from, to]);
+      }
+      
+      getEdges() {
+        return this.edges;
+      }
+    }
+    
+    // Cytoscape instance
+    let cy;
+    let graph;
+    
+    // Initialize
+    async function init() {
+      try {
+        graph = await GraphWasm.load('family_graph.wasm');
+        
+        cy = cytoscape({
+          container: document.getElementById('graph'),
+          style: [
+            {
+              selector: 'node',
+              style: {
+                'background-color': '#7c3aed',
+                'label': 'data(id)',
+                'color': '#fff',
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'font-size': '14px',
+                'width': '50px',
+                'height': '50px'
+              }
+            },
+            {
+              selector: 'edge',
+              style: {
+                'width': 2,
+                'line-color': '#00d4ff',
+                'target-arrow-color': '#00d4ff',
+                'target-arrow-shape': 'triangle',
+                'curve-style': 'bezier'
+              }
+            }
+          ],
+          layout: { name: 'cose', animate: true }
+        });
+        
+        document.getElementById('status').textContent = 'Ready';
+        document.getElementById('status').className = 'status ready';
+      } catch (err) {
+        document.getElementById('status').textContent = 'Error: ' + err.message;
+        document.getElementById('status').className = 'status error';
+      }
+    }
+    
+    // Add edge
+    window.addEdge = function() {
+      const from = document.getElementById('from').value.trim();
+      const to = document.getElementById('to').value.trim();
+      if (!from || !to) return;
+      
+      graph.addEdge(from, to);
+      updateGraph();
+      
+      document.getElementById('from').value = '';
+      document.getElementById('to').value = '';
+    };
+    
+    // Load sample data
+    window.loadSample = function() {
+      const sample = [
+        ['tom', 'bob'],
+        ['bob', 'alice'],
+        ['alice', 'eve'],
+        ['bob', 'charlie'],
+        ['charlie', 'diana']
+      ];
+      sample.forEach(([from, to]) => graph.addEdge(from, to));
+      updateGraph();
+    };
+    
+    // Update graph visualization
+    function updateGraph() {
+      const edges = graph.getEdges();
+      const nodes = new Set();
+      edges.forEach(([from, to]) => { nodes.add(from); nodes.add(to); });
+      
+      // Update Cytoscape
+      cy.elements().remove();
+      nodes.forEach(id => cy.add({ data: { id } }));
+      edges.forEach(([from, to], i) => {
+        cy.add({ data: { id: `e${i}`, source: from, target: to } });
+      });
+      cy.layout({ name: 'cose', animate: true }).run();
+      
+      // Update edge list
+      const edgeList = document.getElementById('edges');
+      edgeList.innerHTML = edges.map(([from, to]) => 
+        `<div class="edge-item"><span>${from}</span> → <span>${to}</span></div>`
+      ).join('');
+    }
+    
+    init();
+  </script>
+</body>
+</html>

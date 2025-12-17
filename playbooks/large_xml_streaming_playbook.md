@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents (Gemini CLI, Claude Code, etc.). It demonstrates memory-efficient processing of large XML files (100MB+) using streaming pipelines.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "large_xml_streaming" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+python3 scripts/skills/lookup_example.py "how to use large xml streaming"
+
+
 ## Workflow Overview
 Process large XML files without loading them entirely into memory:
 1. **Select** - Extract specific XML elements using awk (streaming, pattern-based)
