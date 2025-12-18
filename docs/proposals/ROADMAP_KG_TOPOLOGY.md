@@ -33,13 +33,14 @@ From QA_KNOWLEDGE_GRAPH.md, we have 11 relation types:
 
 ### Phase 1: Single Local Model (Current Focus)
 
-**Goal:** Implement knowledge graph on a single node without networking.
+**Goal:** Implement knowledge graph on a single node using softmax routing.
 
 **Components:**
 1. **Schema Implementation**
    - [ ] Extend `answer_relations` table with all 11 relation types
    - [ ] Add hash-based anchor linking (from SEED_QUESTION_TOPOLOGY)
    - [ ] Implement seed level provenance tracking
+   - [ ] Folder structure by seed level for training data
 
 2. **Graph Traversal API**
    - [ ] `get_foundational()`, `get_prerequisites()`, `get_extensions()`, `get_next_steps()`
@@ -47,32 +48,34 @@ From QA_KNOWLEDGE_GRAPH.md, we have 11 relation types:
    - [ ] `get_generalizations()`, `get_implementations()`, `get_instances()`, `get_examples()`
    - [ ] `search_with_context()` - semantic search with graph context
 
-3. **Small-World Link Distribution**
-   - [ ] Implement link distance calculation (embedding space)
-   - [ ] Target distribution: 70% short / 20% medium / 10% long-range
-   - [ ] Path folding after successful matches
-
-4. **Local Routing**
-   - [ ] Greedy routing to cluster centroids
-   - [ ] Backtracking on match failure
-   - [ ] Maximum hops limit
+3. **Softmax Routing**
+   - [ ] Embedding-based similarity to cluster centroids
+   - [ ] Softmax probability distribution over clusters
+   - [ ] Top-k cluster selection
 
 **No networking in Phase 1** - all operations are in-process.
+**No Kleinberg routing** - softmax routing is sufficient for local model.
 
 ### Phase 2: Multi-Interface Local Model
 
-**Goal:** Enable one expert system to present multiple semantic identities.
+**Goal:** Expose multiple semantic interfaces to the SAME underlying knowledge base and routing.
+
+**Key insight:** Phase 2 does NOT change the routing algorithm. It adds an interface layer that presents focused semantic identities to external clients while using the same softmax routing internally.
 
 **Components:**
 1. **Logical Interface Layer**
-   - [ ] Define interface schema (centroid, location, topics, link_topology)
-   - [ ] Route queries to specific interfaces
-   - [ ] Per-interface path folding
+   - [ ] Define interface schema (centroid, topics, exposed clusters)
+   - [ ] Map incoming queries to appropriate interface
+   - [ ] Each interface presents a subset/view of the knowledge base
 
 2. **Interface Management**
    - [ ] Auto-generate interfaces from cluster analysis
    - [ ] Manual interface curation
    - [ ] Interface health/coverage metrics
+
+**Same routing as Phase 1** - interfaces are a presentation layer, not a routing change.
+
+**Feedback loop:** Multiple interfaces may inform KG expansion priorities (see "Knowledge Graph Expansion" below).
 
 ### Phase 3: Distributed Network
 
@@ -147,9 +150,42 @@ The following existing components can be leveraged:
 - Embedding generation service
 - Can be extended for distributed embeddings
 
-## Key Parameters
+## Knowledge Graph Expansion (Separate Concern)
 
-From Kleinberg's research, the critical parameters are:
+KG expansion is a **separate concern** from the serving/querying infrastructure above. It may warrant its own roadmap.
+
+### Expansion Strategies
+
+Two main approaches to growing the knowledge base:
+
+1. **Relation-based expansion**: Add related questions using the 11 relation types
+   - Discover `refined` variants of existing questions
+   - Find `foundational` concepts that are missing
+   - Generate `example` instances of patterns
+
+2. **Answer smoothing migration**: Move from cluster-based to per-question answers
+   - Phase 1 of SEED_QUESTION_TOPOLOGY: Many questions → one answer
+   - Phase 2 of SEED_QUESTION_TOPOLOGY: Each question → tailored answer
+   - Apply output smoothing constraints for consistency
+
+### Open Questions for Expansion
+
+- How much to focus on relation-based expansion vs answer smoothing?
+- Should expansion priorities be informed by interface coverage gaps?
+- How to balance human curation vs automated discovery?
+
+### Dependency on Interfaces
+
+Once multiple interfaces are exposed (Phase 2), they may reveal:
+- Which semantic regions need more coverage
+- Where relation links are sparse
+- Which `refined`/`general` variants are most requested
+
+This feedback should inform expansion priorities.
+
+## Key Parameters (Phase 3 Only)
+
+From Kleinberg's research, the critical parameters for **distributed routing** are:
 
 | Parameter | Description | Guidance |
 |-----------|-------------|----------|
@@ -163,7 +199,8 @@ From Kleinberg's research, the critical parameters are:
 ### Phase 1
 - [ ] All 11 relation types implemented and tested
 - [ ] `search_with_context()` returns relevant graph context
-- [ ] Path folding reduces average lookup time over repeated queries
+- [ ] Softmax routing returns appropriate top-k clusters
+- [ ] Seed-level folder structure for training data
 
 ### Phase 2
 - [ ] Queries route to appropriate interface
