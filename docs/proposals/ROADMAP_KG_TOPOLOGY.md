@@ -106,6 +106,26 @@ From QA_KNOWLEDGE_GRAPH.md, we have 11 relation types:
    - [ ] Encrypted inter-node communication
    - [ ] Plausible deniability
 
+## Related Work
+
+### Pearltrees Hierarchical Categorization
+
+The `examples/pearltrees/` work has built a **hierarchical categorization knowledge base** similar to Wikipedia's category system. This is relevant to:
+
+- **Phase 2 (Interfaces)**: Hierarchical categories could inform how to diversify semantic interfaces, making each interface more topically localized
+- **Phase 3 (Distributed)**: Category hierarchy could guide node specialization and location assignment
+
+The category structure provides a human-curated taxonomy that complements embedding-based clustering.
+
+### UnifyWeaver Client-Server Infrastructure
+
+The existing UnifyWeaver client-server infrastructure should be leveraged for implementation, particularly:
+
+- **Phase 2**: Service interfaces could use `prolog_service_target` or `network_glue` patterns
+- **Phase 3**: Distributed nodes could use the HTTP server/client generation
+
+This avoids reinventing networking infrastructure.
+
 ## Existing Infrastructure
 
 The following existing components can be leveraged:
