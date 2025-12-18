@@ -1,9 +1,10 @@
 # Proposal: Q/A Knowledge Graph for Learning Paths
 
-**Status:** Draft
-**Version:** 0.1
-**Date:** 2025-12-16
+**Status:** Implemented (Phase 1 & 2)
+**Version:** 1.0
+**Date:** 2025-12-17
 **Extends:** [LDA_DATABASE_SCHEMA.md](LDA_DATABASE_SCHEMA.md)
+**Implementation:** `src/unifyweaver/targets/python_runtime/kg_topology_api.py`
 
 ## Executive Summary
 
@@ -558,23 +559,29 @@ The knowledge graph structure could enhance smoothing basis projection:
 
 This is speculative but worth exploring.
 
-## Implementation Roadmap
+## Implementation Status
 
-### Phase 1: Schema
-- [ ] Add `qa_relations` table to schema
-- [ ] Create migration script for existing databases
-- [ ] Add indexes for efficient traversal
+### Phase 1: Schema & API (Complete)
+- [x] `answer_relations` table extended with 11 relation types
+- [x] Indexes for efficient traversal
+- [x] `add_kg_relation()` - create relations between answers
+- [x] `get_relations()` - query relations by type and direction
+- [x] Convenience methods: `get_foundational()`, `get_prerequisites()`, `get_extensions()`, `get_next_steps()`, `get_refined()`, `get_general()`, `get_generalizations()`, `get_implementations()`, `get_instances()`, `get_examples()`
+- [x] `search_with_context()` - semantic search with graph context
+- [x] `get_learning_path()` - ordered path including prerequisites
 
-### Phase 2: API
-- [ ] Implement `add_qa_relation()`
-- [ ] Implement relation query methods
-- [ ] Implement `search_with_context()`
+### Phase 2: Semantic Interfaces (Complete)
+- [x] Interface schema with centroids and topics
+- [x] `create_interface()`, `update_interface()`, `delete_interface()`
+- [x] `map_query_to_interface()` - softmax routing over interface centroids
+- [x] `search_via_interface()` - search with optional optimizations
+- [x] Interface metrics and health monitoring
 
-### Phase 3: Data Population
+### Phase 3: Data Population (Future)
 - [ ] Define relations for existing playbook clusters
 - [ ] Create tooling to suggest relations based on content similarity
 
-### Phase 4: Agent Integration
+### Phase 4: Agent Integration (Future)
 - [ ] Expose graph traversal via MCP tools
 - [ ] Add learning path suggestions to search results
 
