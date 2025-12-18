@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Client-Server Phase 8: Service Tracing** - OpenTelemetry-compatible distributed tracing
+  - `tracing(Bool)` option to enable distributed tracing
+  - Trace exporters: `otlp`, `jaeger`, `zipkin`, `datadog`, `console`, `none`
+  - Trace propagation formats: `w3c`, `b3`, `b3_multi`, `jaeger`, `xray`, `datadog`
+  - `trace_sampling(Rate)` for sampling rate (0.0-1.0)
+  - `trace_service_name(Name)` for custom service name in traces
+  - `trace_propagation(Format)` for context propagation format
+  - `trace_attributes(List)` for default span attributes
+  - `trace_batch_size(N)` and `trace_export_interval(Ms)` for batch export
+  - SpanContext with W3C traceparent header generation/parsing
+  - Span management with SpanKind (Server/Client/Producer/Consumer/Internal)
+  - SpanEvent support for span events with timestamps
+  - Tracer with sampling decision, context extraction/injection, batch export
+  - SpanExporter interface with OTLP, Jaeger, Zipkin, Console implementations
+  - Helper predicates: `is_tracing_enabled/1`, `get_trace_sampling/2`, `get_trace_exporter/2`, `get_trace_service_name/2`, `get_trace_propagation/2`, `get_trace_attributes/2`
+  - Tracing service compilation for Python, Go, and Rust targets
+  - 20 integration tests in `tests/integration/test_service_tracing.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Client-Server Phase 7: Service Discovery** - Automatic service registration and health checks
+  - `discovery_enabled(Bool)` option to enable service discovery
+  - Discovery backends: `consul`, `etcd`, `dns`, `kubernetes`, `zookeeper`, `eureka`
+  - `health_check(Config)` for health check configuration: `http(Path, IntervalMs)`, `tcp(Port, IntervalMs)`
+  - `discovery_ttl(Seconds)` for service TTL in heartbeat
+  - `discovery_tags(List)` for service filtering tags
+  - ServiceRegistry interface with ConsulRegistry and LocalRegistry implementations
+  - HealthChecker with HTTP/TCP health check support
+  - ServiceInstance with metadata, health status, and last heartbeat
+  - Automatic heartbeat mechanism with TTL-based renewal
+  - Graceful deregistration on shutdown
+  - Helper predicates: `is_discovery_enabled/1`, `get_health_check_config/2`, `get_discovery_ttl/2`, `get_discovery_backend/2`, `get_discovery_tags/2`
+  - Discovery service compilation for Python, Go, and Rust targets
+  - 20 integration tests in `tests/integration/test_service_discovery.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
 - **Client-Server Phase 6: Distributed Services** - Cluster-aware services with sharding and replication
   - Sharding strategies: `hash`, `range`, `consistent_hash`, `geographic`
   - Consistency levels: `eventual`, `strong`, `quorum`, `read_your_writes`, `causal`

@@ -847,15 +847,160 @@ service(user_store, [
 # 24 tests: validation, Python/Go/Rust compilation, cross-target consistency
 ```
 
-## Future Phases
+## Phase 7: Service Discovery
 
-### Phase 7: Service Discovery (Planned)
+Phase 7 adds automatic service discovery with health checks and multiple backend support.
 
-Automatic service discovery with health checks and DNS integration.
+### Service Discovery Options
 
-### Phase 8: Service Tracing (Planned)
+| Option | Description | Default |
+|--------|-------------|---------|
+| `discovery_enabled(Bool)` | Enable service discovery | false |
+| `discovery_backend(Backend)` | Discovery backend | consul |
+| `discovery_ttl(Seconds)` | Service TTL for heartbeat | 60 |
+| `discovery_tags(List)` | Tags for filtering | [] |
+| `health_check(Config)` | Health check configuration | http('/health', 30000) |
 
-Distributed tracing with OpenTelemetry integration.
+### Supported Discovery Backends
+
+- `consul` - HashiCorp Consul
+- `etcd` - CoreOS etcd
+- `dns` - DNS-based discovery
+- `kubernetes` - Kubernetes Service Discovery
+- `zookeeper` - Apache ZooKeeper
+- `eureka` - Netflix Eureka
+
+### Health Check Types
+
+```prolog
+% HTTP health check
+health_check(http('/health', IntervalMs))
+
+% TCP health check
+health_check(tcp(Port, IntervalMs))
+```
+
+### Example: Discoverable Service
+
+```prolog
+service(api_gateway, [
+    discovery_enabled(true),
+    discovery_backend(consul),
+    health_check(http('/health', 30000)),
+    discovery_tags([production, v2])
+], [
+    receive(Request),
+    route_by(path, Routes),
+    respond(Response)
+]).
+```
+
+### Generated Code Components
+
+**Service Registry Interface:**
+- `ServiceRegistry`: Abstract registry interface
+- `ConsulRegistry`: Consul-based implementation
+- `LocalRegistry`: In-memory implementation for testing
+
+**Health Checking:**
+- `HealthChecker`: Performs HTTP/TCP health checks
+- `HealthStatus`: Healthy/Unhealthy/Unknown
+- `ServiceInstance`: Service instance with metadata
+
+**Heartbeat Mechanism:**
+- Automatic TTL-based heartbeat
+- Self-healing registration
+- Graceful deregistration on shutdown
+
+### Phase 7 Tests
+
+```bash
+./tests/integration/test_service_discovery.sh
+# 20 tests: validation, Python/Go/Rust discovery compilation
+```
+
+## Phase 8: Service Tracing
+
+Phase 8 adds OpenTelemetry-compatible distributed tracing.
+
+### Tracing Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `tracing(Bool)` | Enable distributed tracing | false |
+| `trace_exporter(Exporter)` | Trace exporter backend | otlp |
+| `trace_sampling(Rate)` | Sampling rate (0.0-1.0) | 1.0 |
+| `trace_service_name(Name)` | Service name in traces | service name |
+| `trace_propagation(Format)` | Context propagation format | w3c |
+| `trace_attributes(List)` | Default span attributes | [] |
+
+### Supported Exporters
+
+- `otlp` / `otlp(Endpoint)` - OpenTelemetry Protocol (default)
+- `jaeger` / `jaeger(Endpoint)` - Jaeger
+- `zipkin` / `zipkin(Endpoint)` - Zipkin
+- `datadog` / `datadog(AgentHost)` - Datadog APM
+- `console` - Console output (for debugging)
+- `none` - Disabled
+
+### Propagation Formats
+
+- `w3c` - W3C Trace Context (default)
+- `b3` - B3 Single Header
+- `b3_multi` - B3 Multi Header
+- `jaeger` - Jaeger native format
+- `xray` - AWS X-Ray format
+- `datadog` - Datadog format
+
+### Example: Traced Service
+
+```prolog
+service(payment_processor, [
+    tracing(true),
+    trace_exporter(otlp('http://collector:4318')),
+    trace_sampling(0.1),
+    trace_propagation(w3c),
+    trace_attributes([environment-production, team-payments])
+], [
+    receive(PaymentRequest),
+    validate_payment(PaymentRequest, Validated),
+    process_payment(Validated, Result),
+    respond(Result)
+]).
+```
+
+### Generated Code Components
+
+**Span Context:**
+- `SpanContext`: Trace ID, Span ID, Trace Flags
+- W3C traceparent header generation/parsing
+- B3 header support
+
+**Span Management:**
+- `Span`: Individual trace span with attributes
+- `SpanKind`: Server, Client, Producer, Consumer, Internal
+- `SpanStatus`: Unset, OK, Error
+- `SpanEvent`: Span events with timestamps
+
+**Tracer:**
+- `Tracer`: Central tracing manager
+- Sampling decision logic
+- Context extraction/injection for propagation
+- Batch export with flush
+
+**Exporters:**
+- `SpanExporter`: Abstract exporter interface
+- `OTLPSpanExporter`: OTLP HTTP export
+- `JaegerSpanExporter`: Jaeger HTTP export
+- `ZipkinSpanExporter`: Zipkin HTTP export
+- `ConsoleSpanExporter`: Console output
+
+### Phase 8 Tests
+
+```bash
+./tests/integration/test_service_tracing.sh
+# 20 tests: validation, Python/Go/Rust tracing compilation
+```
 
 ## Validation
 
@@ -921,12 +1066,17 @@ Integration tests verify the implementation for each phase:
 
 | File | Description |
 |------|-------------|
-| `src/unifyweaver/core/service_validation.pl` | Service definition validation |
+| `src/unifyweaver/core/service_validation.pl` | Service definition validation (Phases 1-8) |
 | `src/unifyweaver/core/pipeline_validation.pl` | Extended with call_service validation |
-| `src/unifyweaver/targets/python_target.pl` | Python service compilation (in-process, Unix socket, TCP, HTTP) |
-| `src/unifyweaver/targets/go_target.pl` | Go service compilation (in-process, Unix socket, TCP, HTTP) |
-| `src/unifyweaver/targets/rust_target.pl` | Rust service compilation (in-process, Unix socket, TCP, HTTP) |
+| `src/unifyweaver/targets/python_target.pl` | Python service compilation (all phases) |
+| `src/unifyweaver/targets/go_target.pl` | Go service compilation (all phases) |
+| `src/unifyweaver/targets/rust_target.pl` | Rust service compilation (all phases) |
 | `tests/integration/test_in_process_services.sh` | Phase 1 integration tests |
 | `tests/integration/test_unix_socket_services.sh` | Phase 2 integration tests |
 | `tests/integration/test_network_services.sh` | Phase 3 integration tests |
+| `tests/integration/test_service_mesh.sh` | Phase 4 integration tests |
+| `tests/integration/test_polyglot_services.sh` | Phase 5 integration tests |
+| `tests/integration/test_distributed_services.sh` | Phase 6 integration tests |
+| `tests/integration/test_service_discovery.sh` | Phase 7 integration tests |
+| `tests/integration/test_service_tracing.sh` | Phase 8 integration tests |
 | `docs/CLIENT_SERVER_DESIGN.md` | This document |

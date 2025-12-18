@@ -43,7 +43,24 @@
     get_cluster_config/2,
     is_distributed_service/1,
     is_valid_consistency_level/1,
-    is_valid_sharding_strategy/1
+    is_valid_sharding_strategy/1,
+    % Phase 7: Service Discovery helpers
+    is_discovery_enabled/1,
+    get_health_check_config/2,
+    get_discovery_ttl/2,
+    get_discovery_backend/2,
+    get_discovery_tags/2,
+    is_valid_health_check_config/1,
+    is_valid_discovery_backend/1,
+    % Phase 8: Service Tracing helpers
+    is_tracing_enabled/1,
+    get_trace_sampling/2,
+    get_trace_exporter/2,
+    get_trace_service_name/2,
+    get_trace_propagation/2,
+    get_trace_attributes/2,
+    is_valid_trace_exporter/1,
+    is_valid_trace_propagation/1
 ]).
 
 :- use_module(library(lists)).
@@ -744,3 +761,251 @@ is_distributed_service(service(_, Options, _)) :-
     ; member(cluster(_), Options)
     ),
     !.
+
+%% ============================================
+%% Phase 7: Service Discovery Options
+%% ============================================
+
+%% discovery_enabled - Enable service discovery
+is_valid_service_option(discovery_enabled(Bool)) :-
+    ( Bool = true ; Bool = false ).
+
+%% health_check - Health check configuration
+is_valid_service_option(health_check(Config)) :-
+    is_valid_health_check_config(Config).
+
+%% discovery_ttl - Time-to-live for service registration
+is_valid_service_option(discovery_ttl(Seconds)) :-
+    integer(Seconds),
+    Seconds > 0.
+
+%% discovery_backend - Service discovery backend
+is_valid_service_option(discovery_backend(Backend)) :-
+    is_valid_discovery_backend(Backend).
+
+%% discovery_tags - Tags for service filtering
+is_valid_service_option(discovery_tags(Tags)) :-
+    is_list(Tags),
+    maplist(atom, Tags).
+
+%% discovery_metadata - Additional metadata for registration
+is_valid_service_option(discovery_metadata(Metadata)) :-
+    is_list(Metadata).
+
+%% Health check configuration validation
+is_valid_health_check_config(http(Path, Interval)) :-
+    atom(Path),
+    integer(Interval),
+    Interval > 0.
+is_valid_health_check_config(http(Path, Interval, Timeout)) :-
+    atom(Path),
+    integer(Interval),
+    Interval > 0,
+    integer(Timeout),
+    Timeout > 0.
+is_valid_health_check_config(tcp(Port, Interval)) :-
+    integer(Port),
+    Port > 0,
+    integer(Interval),
+    Interval > 0.
+is_valid_health_check_config(grpc(Interval)) :-
+    integer(Interval),
+    Interval > 0.
+is_valid_health_check_config(script(Command, Interval)) :-
+    atom(Command),
+    integer(Interval),
+    Interval > 0.
+is_valid_health_check_config(config(Options)) :-
+    is_list(Options).
+
+%% Discovery backend validation
+is_valid_discovery_backend(consul).
+is_valid_discovery_backend(consul(Host, Port)) :-
+    atom(Host),
+    integer(Port),
+    Port > 0.
+is_valid_discovery_backend(etcd).
+is_valid_discovery_backend(etcd(Endpoints)) :-
+    is_list(Endpoints).
+is_valid_discovery_backend(dns).
+is_valid_discovery_backend(dns(Domain)) :-
+    atom(Domain).
+is_valid_discovery_backend(kubernetes).
+is_valid_discovery_backend(kubernetes(Namespace)) :-
+    atom(Namespace).
+is_valid_discovery_backend(zookeeper(Hosts)) :-
+    is_list(Hosts).
+is_valid_discovery_backend(eureka(Url)) :-
+    atom(Url).
+
+%% ============================================
+%% Phase 7: Service Discovery Helper Predicates
+%% ============================================
+
+%% is_discovery_enabled(+Service)
+%  Succeeds if service has discovery enabled.
+is_discovery_enabled(service(_, Options, _)) :-
+    is_list(Options),
+    ( member(discovery_enabled(true), Options)
+    ; member(discovery_backend(_), Options)
+    ; member(health_check(_), Options)
+    ),
+    !.
+
+%% get_health_check_config(+Service, -Config)
+%  Extract health check configuration from service definition.
+get_health_check_config(service(_, Options, _), Config) :-
+    is_list(Options),
+    member(health_check(Config), Options),
+    !.
+get_health_check_config(_, http('/health', 30000)).
+
+%% get_discovery_ttl(+Service, -TTL)
+%  Extract discovery TTL from service definition.
+get_discovery_ttl(service(_, Options, _), TTL) :-
+    is_list(Options),
+    member(discovery_ttl(TTL), Options),
+    !.
+get_discovery_ttl(_, 60).
+
+%% get_discovery_backend(+Service, -Backend)
+%  Extract discovery backend from service definition.
+get_discovery_backend(service(_, Options, _), Backend) :-
+    is_list(Options),
+    member(discovery_backend(Backend), Options),
+    !.
+get_discovery_backend(_, consul).
+
+%% get_discovery_tags(+Service, -Tags)
+%  Extract discovery tags from service definition.
+get_discovery_tags(service(_, Options, _), Tags) :-
+    is_list(Options),
+    member(discovery_tags(Tags), Options),
+    !.
+get_discovery_tags(_, []).
+
+%% ============================================
+%% Phase 8: Service Tracing Options
+%% ============================================
+
+%% tracing - Enable distributed tracing
+is_valid_service_option(tracing(Bool)) :-
+    ( Bool = true ; Bool = false ).
+
+%% trace_sampling - Sampling rate (0.0 to 1.0)
+is_valid_service_option(trace_sampling(Rate)) :-
+    number(Rate),
+    Rate >= 0.0,
+    Rate =< 1.0.
+
+%% trace_exporter - Tracing exporter backend
+is_valid_service_option(trace_exporter(Exporter)) :-
+    is_valid_trace_exporter(Exporter).
+
+%% trace_service_name - Service name for tracing
+is_valid_service_option(trace_service_name(Name)) :-
+    atom(Name).
+
+%% trace_propagation - Context propagation format
+is_valid_service_option(trace_propagation(Format)) :-
+    is_valid_trace_propagation(Format).
+
+%% trace_attributes - Additional span attributes
+is_valid_service_option(trace_attributes(Attrs)) :-
+    is_list(Attrs).
+
+%% trace_batch_size - Batch size for exporting spans
+is_valid_service_option(trace_batch_size(Size)) :-
+    integer(Size),
+    Size > 0.
+
+%% trace_export_interval - Export interval in milliseconds
+is_valid_service_option(trace_export_interval(Ms)) :-
+    integer(Ms),
+    Ms > 0.
+
+%% Trace exporter validation
+is_valid_trace_exporter(jaeger).
+is_valid_trace_exporter(jaeger(Endpoint)) :-
+    atom(Endpoint).
+is_valid_trace_exporter(jaeger(Host, Port)) :-
+    atom(Host),
+    integer(Port),
+    Port > 0.
+is_valid_trace_exporter(zipkin).
+is_valid_trace_exporter(zipkin(Endpoint)) :-
+    atom(Endpoint).
+is_valid_trace_exporter(otlp).
+is_valid_trace_exporter(otlp(Endpoint)) :-
+    atom(Endpoint).
+is_valid_trace_exporter(otlp(Endpoint, Options)) :-
+    atom(Endpoint),
+    is_list(Options).
+is_valid_trace_exporter(datadog).
+is_valid_trace_exporter(datadog(AgentHost)) :-
+    atom(AgentHost).
+is_valid_trace_exporter(console).
+is_valid_trace_exporter(none).
+
+%% Trace propagation format validation
+is_valid_trace_propagation(w3c).
+is_valid_trace_propagation(b3).
+is_valid_trace_propagation(b3_multi).
+is_valid_trace_propagation(jaeger).
+is_valid_trace_propagation(xray).
+is_valid_trace_propagation(datadog).
+
+%% ============================================
+%% Phase 8: Service Tracing Helper Predicates
+%% ============================================
+
+%% is_tracing_enabled(+Service)
+%  Succeeds if service has tracing enabled.
+is_tracing_enabled(service(_, Options, _)) :-
+    is_list(Options),
+    ( member(tracing(true), Options)
+    ; member(trace_exporter(_), Options)
+    ; member(trace_sampling(_), Options)
+    ),
+    !.
+
+%% get_trace_sampling(+Service, -Rate)
+%  Extract trace sampling rate from service definition.
+get_trace_sampling(service(_, Options, _), Rate) :-
+    is_list(Options),
+    member(trace_sampling(Rate), Options),
+    !.
+get_trace_sampling(_, 1.0).
+
+%% get_trace_exporter(+Service, -Exporter)
+%  Extract trace exporter from service definition.
+get_trace_exporter(service(_, Options, _), Exporter) :-
+    is_list(Options),
+    member(trace_exporter(Exporter), Options),
+    !.
+get_trace_exporter(_, otlp).
+
+%% get_trace_service_name(+Service, -Name)
+%  Extract trace service name from service definition.
+get_trace_service_name(service(Name, Options, _), ServiceName) :-
+    is_list(Options),
+    member(trace_service_name(ServiceName), Options),
+    !.
+get_trace_service_name(service(Name, _, _), Name) :- !.
+get_trace_service_name(service(Name, _), Name).
+
+%% get_trace_propagation(+Service, -Format)
+%  Extract trace propagation format from service definition.
+get_trace_propagation(service(_, Options, _), Format) :-
+    is_list(Options),
+    member(trace_propagation(Format), Options),
+    !.
+get_trace_propagation(_, w3c).
+
+%% get_trace_attributes(+Service, -Attributes)
+%  Extract trace attributes from service definition.
+get_trace_attributes(service(_, Options, _), Attrs) :-
+    is_list(Options),
+    member(trace_attributes(Attrs), Options),
+    !.
+get_trace_attributes(_, []).

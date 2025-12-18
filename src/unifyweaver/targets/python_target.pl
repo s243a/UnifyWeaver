@@ -60,7 +60,15 @@
     % Phase 6: Distributed services
     compile_distributed_service_python/2,
     generate_sharding_python/2,
-    generate_replication_python/2
+    generate_replication_python/2,
+    % Phase 7: Service Discovery
+    compile_discovery_service_python/2,
+    generate_health_check_python/2,
+    generate_service_registry_python/2,
+    % Phase 8: Service Tracing
+    compile_traced_service_python/2,
+    generate_tracer_python/2,
+    generate_span_context_python/2
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -247,6 +255,26 @@ compile_service_to_python(Service, PythonCode) :-
     !,
     % Phase 6: Distributed service
     compile_distributed_service_python(Service, PythonCode).
+
+compile_service_to_python(Service, PythonCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(discovery_enabled(true), Options)
+    ; member(discovery_backend(_), Options)
+    ; member(health_check(_), Options)
+    ),
+    !,
+    % Phase 7: Service Discovery
+    compile_discovery_service_python(Service, PythonCode).
+
+compile_service_to_python(Service, PythonCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(tracing(true), Options)
+    ; member(trace_exporter(_), Options)
+    ; member(trace_sampling(_), Options)
+    ),
+    !,
+    % Phase 8: Service Tracing
+    compile_traced_service_python(Service, PythonCode).
 
 compile_service_to_python(Service, PythonCode) :-
     Service = service(_Name, Options, _HandlerSpec),
@@ -1890,6 +1918,864 @@ generate_node_init_python(node(Id, Host, Port), Code) :-
 generate_node_init_python(node(Id, Host, Port, Region), Code) :-
     format(string(Code), "~w_service.add_node(ClusterNode('~w', '~w', ~w, '~w'))", [Id, Id, Host, Port, Region]).
 generate_node_init_python(_, "        # Unknown node format").
+
+%% ============================================
+%% SERVICE DISCOVERY (Phase 7)
+%% ============================================
+
+%% compile_discovery_service_python(+Service, -PythonCode)
+%  Generate Python code for a service with discovery capabilities.
+compile_discovery_service_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Extract discovery configuration
+    ( member(discovery_backend(Backend), Options) -> true ; Backend = consul ),
+    ( member(health_check(HealthConfig), Options) -> true ; HealthConfig = http('/health', 30000) ),
+    ( member(discovery_ttl(TTL), Options) -> true ; TTL = 60 ),
+    ( member(discovery_tags(Tags), Options) -> true ; Tags = [] ),
+    ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_python(HandlerSpec, HandlerCode),
+    % Format the class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    % Convert atoms to strings
+    backend_to_string(Backend, BackendStr),
+    health_config_to_string(HealthConfig, HealthStr),
+    tags_to_python_list(Tags, TagsStr),
+    % Generate the discovery service
+    format(string(PythonCode),
+"import json
+import time
+import threading
+import urllib.request
+import urllib.error
+import socket
+from typing import Any, Dict, List, Optional, Callable
+from dataclasses import dataclass, field
+from enum import Enum
+from abc import ABC, abstractmethod
+
+# Phase 7: Service Discovery Support
+
+class DiscoveryBackend(Enum):
+    CONSUL = 'consul'
+    ETCD = 'etcd'
+    DNS = 'dns'
+    KUBERNETES = 'kubernetes'
+    ZOOKEEPER = 'zookeeper'
+    EUREKA = 'eureka'
+
+class HealthStatus(Enum):
+    HEALTHY = 'healthy'
+    UNHEALTHY = 'unhealthy'
+    UNKNOWN = 'unknown'
+
+@dataclass
+class ServiceInstance:
+    '''Represents a registered service instance.'''
+    service_id: str
+    service_name: str
+    host: str
+    port: int
+    tags: List[str] = field(default_factory=list)
+    metadata: Dict[str, str] = field(default_factory=dict)
+    health_status: HealthStatus = HealthStatus.UNKNOWN
+    last_heartbeat: float = 0.0
+
+@dataclass
+class HealthCheckConfig:
+    '''Health check configuration.'''
+    check_type: str  # http, tcp, grpc, script
+    endpoint: str
+    interval_ms: int
+    timeout_ms: int = 5000
+    deregister_after_ms: int = 60000
+
+class ServiceRegistry(ABC):
+    '''Abstract base class for service registries.'''
+    @abstractmethod
+    def register(self, instance: ServiceInstance) -> bool:
+        pass
+
+    @abstractmethod
+    def deregister(self, service_id: str) -> bool:
+        pass
+
+    @abstractmethod
+    def discover(self, service_name: str, tags: List[str] = None) -> List[ServiceInstance]:
+        pass
+
+    @abstractmethod
+    def health_check(self, service_id: str) -> HealthStatus:
+        pass
+
+class ConsulRegistry(ServiceRegistry):
+    '''Consul-based service registry.'''
+    def __init__(self, host: str = 'localhost', port: int = 8500):
+        self.host = host
+        self.port = port
+        self.base_url = f'http://{host}:{port}/v1'
+        self._registered: Dict[str, ServiceInstance] = {}
+
+    def register(self, instance: ServiceInstance) -> bool:
+        try:
+            payload = {
+                'ID': instance.service_id,
+                'Name': instance.service_name,
+                'Address': instance.host,
+                'Port': instance.port,
+                'Tags': instance.tags,
+                'Meta': instance.metadata
+            }
+            data = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(
+                f'{self.base_url}/agent/service/register',
+                data=data,
+                headers={'Content-Type': 'application/json'},
+                method='PUT'
+            )
+            urllib.request.urlopen(req, timeout=5)
+            self._registered[instance.service_id] = instance
+            return True
+        except Exception as e:
+            print(f'Failed to register service: {e}')
+            return False
+
+    def deregister(self, service_id: str) -> bool:
+        try:
+            req = urllib.request.Request(
+                f'{self.base_url}/agent/service/deregister/{service_id}',
+                method='PUT'
+            )
+            urllib.request.urlopen(req, timeout=5)
+            self._registered.pop(service_id, None)
+            return True
+        except Exception:
+            return False
+
+    def discover(self, service_name: str, tags: List[str] = None) -> List[ServiceInstance]:
+        try:
+            url = f'{self.base_url}/catalog/service/{service_name}'
+            if tags:
+                url += '?tag=' + '&tag='.join(tags)
+            req = urllib.request.Request(url)
+            response = urllib.request.urlopen(req, timeout=5)
+            services = json.loads(response.read().decode('utf-8'))
+            return [
+                ServiceInstance(
+                    service_id=s.get('ServiceID', ''),
+                    service_name=s.get('ServiceName', ''),
+                    host=s.get('ServiceAddress', s.get('Address', '')),
+                    port=s.get('ServicePort', 0),
+                    tags=s.get('ServiceTags', []),
+                    metadata=s.get('ServiceMeta', {})
+                )
+                for s in services
+            ]
+        except Exception:
+            return []
+
+    def health_check(self, service_id: str) -> HealthStatus:
+        try:
+            req = urllib.request.Request(f'{self.base_url}/health/service/{service_id}')
+            response = urllib.request.urlopen(req, timeout=5)
+            health = json.loads(response.read().decode('utf-8'))
+            if health and all(c.get('Status') == 'passing' for h in health for c in h.get('Checks', [])):
+                return HealthStatus.HEALTHY
+            return HealthStatus.UNHEALTHY
+        except Exception:
+            return HealthStatus.UNKNOWN
+
+class LocalRegistry(ServiceRegistry):
+    '''In-memory service registry for testing and development.'''
+    _instances: Dict[str, ServiceInstance] = {}
+    _lock = threading.Lock()
+
+    def register(self, instance: ServiceInstance) -> bool:
+        with self._lock:
+            self._instances[instance.service_id] = instance
+            instance.last_heartbeat = time.time()
+            return True
+
+    def deregister(self, service_id: str) -> bool:
+        with self._lock:
+            return self._instances.pop(service_id, None) is not None
+
+    def discover(self, service_name: str, tags: List[str] = None) -> List[ServiceInstance]:
+        with self._lock:
+            results = [
+                i for i in self._instances.values()
+                if i.service_name == service_name
+            ]
+            if tags:
+                results = [i for i in results if all(t in i.tags for t in tags)]
+            return results
+
+    def health_check(self, service_id: str) -> HealthStatus:
+        with self._lock:
+            instance = self._instances.get(service_id)
+            if not instance:
+                return HealthStatus.UNKNOWN
+            # Check if heartbeat is recent (within 2x TTL)
+            if time.time() - instance.last_heartbeat < 120:
+                return HealthStatus.HEALTHY
+            return HealthStatus.UNHEALTHY
+
+class HealthChecker:
+    '''Performs health checks on services.'''
+    def __init__(self, config: HealthCheckConfig):
+        self.config = config
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def check_http(self, host: str, port: int) -> HealthStatus:
+        try:
+            url = f'http://{host}:{port}{self.config.endpoint}'
+            req = urllib.request.Request(url)
+            response = urllib.request.urlopen(req, timeout=self.config.timeout_ms / 1000)
+            if response.getcode() == 200:
+                return HealthStatus.HEALTHY
+            return HealthStatus.UNHEALTHY
+        except Exception:
+            return HealthStatus.UNHEALTHY
+
+    def check_tcp(self, host: str, port: int) -> HealthStatus:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.config.timeout_ms / 1000)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            return HealthStatus.HEALTHY if result == 0 else HealthStatus.UNHEALTHY
+        except Exception:
+            return HealthStatus.UNHEALTHY
+
+    def check(self, host: str, port: int) -> HealthStatus:
+        if self.config.check_type == 'http':
+            return self.check_http(host, port)
+        elif self.config.check_type == 'tcp':
+            return self.check_tcp(host, port)
+        return HealthStatus.UNKNOWN
+
+class ~wService:
+    '''
+    Discoverable Service: ~w
+    Backend: ~w
+    TTL: ~w seconds
+    Tags: ~w
+    '''
+    def __init__(self, host: str = 'localhost', port: int = 8080):
+        self.name = '~w'
+        self.host = host
+        self.port = port
+        self.stateful = ~w
+        self.timeout_ms = ~w
+        self.ttl = ~w
+        self.tags = ~w
+        self._state: Dict[str, Any] = {}
+        self._lock = threading.Lock()
+        self._running = False
+        self._heartbeat_thread: Optional[threading.Thread] = None
+
+        # Initialize registry based on backend
+        self.registry: ServiceRegistry = ~w
+        self.health_config = HealthCheckConfig(
+            check_type='~w',
+            endpoint='~w',
+            interval_ms=~w
+        )
+        self.health_checker = HealthChecker(self.health_config)
+
+        # Create service instance
+        self.instance = ServiceInstance(
+            service_id=f'{self.name}-{host}-{port}',
+            service_name=self.name,
+            host=host,
+            port=port,
+            tags=self.tags
+        )
+
+    def register(self) -> bool:
+        '''Register this service with the discovery backend.'''
+        success = self.registry.register(self.instance)
+        if success:
+            self._start_heartbeat()
+        return success
+
+    def deregister(self) -> bool:
+        '''Deregister this service from the discovery backend.'''
+        self._stop_heartbeat()
+        return self.registry.deregister(self.instance.service_id)
+
+    def discover_peers(self) -> List[ServiceInstance]:
+        '''Discover other instances of this service.'''
+        return self.registry.discover(self.name, self.tags)
+
+    def _start_heartbeat(self) -> None:
+        '''Start the heartbeat thread.'''
+        if self._running:
+            return
+        self._running = True
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        '''Stop the heartbeat thread.'''
+        self._running = False
+        if self._heartbeat_thread:
+            self._heartbeat_thread.join(timeout=1)
+
+    def _heartbeat_loop(self) -> None:
+        '''Send periodic heartbeats to maintain registration.'''
+        while self._running:
+            self.instance.last_heartbeat = time.time()
+            self.instance.health_status = self.health_checker.check(self.host, self.port)
+            time.sleep(self.ttl / 2)
+
+    def call(self, request: Any) -> Any:
+        '''Process a request through the service.'''
+        return self._handle_request(request)
+
+    def _handle_request(self, request: Any) -> Any:
+~w
+
+# Service instance
+~w_service = ~wService()
+", [ClassNameAtom, Name, BackendStr, TTL, TagsStr,
+    Name, Stateful, Timeout, TTL, TagsStr,
+    BackendStr, HealthStr, HealthStr, TTL,
+    HandlerCode, Name, ClassNameAtom]).
+
+%% backend_to_string(+Backend, -String)
+%  Convert discovery backend to Python code string.
+backend_to_string(consul, "ConsulRegistry()").
+backend_to_string(consul(Host, Port), Code) :-
+    format(string(Code), "ConsulRegistry('~w', ~w)", [Host, Port]).
+backend_to_string(etcd, "LocalRegistry()").  % Fallback for now
+backend_to_string(dns, "LocalRegistry()").
+backend_to_string(kubernetes, "LocalRegistry()").
+backend_to_string(_, "LocalRegistry()").
+
+%% health_config_to_string(+Config, -TypeString)
+%  Extract health check type from config.
+health_config_to_string(http(Path, _), Path) :- !.
+health_config_to_string(http(Path, _, _), Path) :- !.
+health_config_to_string(tcp(_, _), "tcp") :- !.
+health_config_to_string(grpc(_), "grpc") :- !.
+health_config_to_string(_, "/health").
+
+%% tags_to_python_list(+Tags, -String)
+%  Convert Prolog list of tags to Python list string.
+tags_to_python_list([], "[]").
+tags_to_python_list(Tags, Code) :-
+    Tags \= [],
+    maplist(quote_string, Tags, QuotedTags),
+    atomic_list_concat(QuotedTags, ', ', Inner),
+    format(string(Code), "[~w]", [Inner]).
+
+quote_string(Atom, Quoted) :-
+    format(string(Quoted), "'~w'", [Atom]).
+
+%% generate_health_check_python(+Config, -Code)
+%  Generate Python health check configuration code.
+generate_health_check_python(http(Path, Interval), Code) :-
+    format(string(Code), "HealthCheckConfig('http', '~w', ~w)", [Path, Interval]).
+generate_health_check_python(http(Path, Interval, Timeout), Code) :-
+    format(string(Code), "HealthCheckConfig('http', '~w', ~w, ~w)", [Path, Interval, Timeout]).
+generate_health_check_python(tcp(Port, Interval), Code) :-
+    format(string(Code), "HealthCheckConfig('tcp', '~w', ~w)", [Port, Interval]).
+generate_health_check_python(_, "HealthCheckConfig('http', '/health', 30000)").
+
+%% generate_service_registry_python(+Backend, -Code)
+%  Generate Python service registry initialization code.
+generate_service_registry_python(consul, "ConsulRegistry()").
+generate_service_registry_python(consul(Host, Port), Code) :-
+    format(string(Code), "ConsulRegistry('~w', ~w)", [Host, Port]).
+generate_service_registry_python(_, "LocalRegistry()").
+
+%% ============================================
+%% SERVICE TRACING (Phase 8)
+%% ============================================
+
+%% compile_traced_service_python(+Service, -PythonCode)
+%  Generate Python code for a service with distributed tracing.
+compile_traced_service_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Extract tracing configuration
+    ( member(trace_exporter(Exporter), Options) -> true ; Exporter = otlp ),
+    ( member(trace_sampling(SamplingRate), Options) -> true ; SamplingRate = 1.0 ),
+    ( member(trace_service_name(ServiceName), Options) -> true ; ServiceName = Name ),
+    ( member(trace_propagation(Propagation), Options) -> true ; Propagation = w3c ),
+    ( member(trace_attributes(Attributes), Options) -> true ; Attributes = [] ),
+    ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_python(HandlerSpec, HandlerCode),
+    % Format the class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    % Convert to strings
+    exporter_to_string(Exporter, ExporterStr),
+    propagation_to_string(Propagation, PropagationStr),
+    attributes_to_python_dict(Attributes, AttrsStr),
+    atom_string(ServiceName, ServiceNameStr),
+    % Generate the traced service
+    format(string(PythonCode),
+"import json
+import time
+import random
+import threading
+import urllib.request
+import urllib.error
+from typing import Any, Dict, List, Optional, Callable, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
+from contextlib import contextmanager
+import uuid
+
+# Phase 8: Service Tracing Support (OpenTelemetry-compatible)
+
+class TraceExporter(Enum):
+    OTLP = 'otlp'
+    JAEGER = 'jaeger'
+    ZIPKIN = 'zipkin'
+    DATADOG = 'datadog'
+    CONSOLE = 'console'
+    NONE = 'none'
+
+class PropagationFormat(Enum):
+    W3C = 'w3c'  # W3C Trace Context
+    B3 = 'b3'    # Zipkin B3
+    B3_MULTI = 'b3_multi'
+    JAEGER = 'jaeger'
+    XRAY = 'xray'
+    DATADOG = 'datadog'
+
+class SpanKind(Enum):
+    INTERNAL = 'internal'
+    SERVER = 'server'
+    CLIENT = 'client'
+    PRODUCER = 'producer'
+    CONSUMER = 'consumer'
+
+class SpanStatus(Enum):
+    UNSET = 'unset'
+    OK = 'ok'
+    ERROR = 'error'
+
+@dataclass
+class SpanContext:
+    '''W3C Trace Context compatible span context.'''
+    trace_id: str
+    span_id: str
+    trace_flags: int = 1  # sampled
+    trace_state: str = ''
+
+    @classmethod
+    def generate(cls) -> 'SpanContext':
+        return cls(
+            trace_id=uuid.uuid4().hex + uuid.uuid4().hex[:16],
+            span_id=uuid.uuid4().hex[:16]
+        )
+
+    def to_traceparent(self) -> str:
+        '''Format as W3C traceparent header.'''
+        return f'00-{self.trace_id}-{self.span_id}-{self.trace_flags:02x}'
+
+    @classmethod
+    def from_traceparent(cls, header: str) -> Optional['SpanContext']:
+        '''Parse W3C traceparent header.'''
+        try:
+            parts = header.split('-')
+            if len(parts) >= 4:
+                return cls(
+                    trace_id=parts[1],
+                    span_id=parts[2],
+                    trace_flags=int(parts[3], 16)
+                )
+        except Exception:
+            pass
+        return None
+
+    def to_b3(self) -> Dict[str, str]:
+        '''Format as B3 headers.'''
+        return {
+            'X-B3-TraceId': self.trace_id,
+            'X-B3-SpanId': self.span_id,
+            'X-B3-Sampled': '1' if self.trace_flags else '0'
+        }
+
+@dataclass
+class Span:
+    '''Represents a single span in a trace.'''
+    name: str
+    context: SpanContext
+    parent_context: Optional[SpanContext] = None
+    kind: SpanKind = SpanKind.INTERNAL
+    status: SpanStatus = SpanStatus.UNSET
+    start_time_ns: int = 0
+    end_time_ns: int = 0
+    attributes: Dict[str, Any] = field(default_factory=dict)
+    events: List[Dict[str, Any]] = field(default_factory=list)
+    links: List[SpanContext] = field(default_factory=list)
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        self.attributes[key] = value
+
+    def add_event(self, name: str, attributes: Dict[str, Any] = None) -> None:
+        self.events.append({
+            'name': name,
+            'timestamp_ns': time.time_ns(),
+            'attributes': attributes or {}
+        })
+
+    def set_status(self, status: SpanStatus, description: str = '') -> None:
+        self.status = status
+        if description:
+            self.attributes['status.description'] = description
+
+    def end(self) -> None:
+        self.end_time_ns = time.time_ns()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'name': self.name,
+            'trace_id': self.context.trace_id,
+            'span_id': self.context.span_id,
+            'parent_span_id': self.parent_context.span_id if self.parent_context else None,
+            'kind': self.kind.value,
+            'status': self.status.value,
+            'start_time_ns': self.start_time_ns,
+            'end_time_ns': self.end_time_ns,
+            'duration_ms': (self.end_time_ns - self.start_time_ns) / 1_000_000,
+            'attributes': self.attributes,
+            'events': self.events
+        }
+
+class SpanExporter:
+    '''Base class for span exporters.'''
+    def export(self, spans: List[Span]) -> bool:
+        raise NotImplementedError
+
+class ConsoleExporter(SpanExporter):
+    '''Exports spans to console for debugging.'''
+    def export(self, spans: List[Span]) -> bool:
+        for span in spans:
+            print(f'[TRACE] {span.to_dict()}')
+        return True
+
+class OTLPExporter(SpanExporter):
+    '''OTLP HTTP exporter.'''
+    def __init__(self, endpoint: str = 'http://localhost:4318/v1/traces'):
+        self.endpoint = endpoint
+
+    def export(self, spans: List[Span]) -> bool:
+        try:
+            payload = {
+                'resourceSpans': [{
+                    'scopeSpans': [{
+                        'spans': [span.to_dict() for span in spans]
+                    }]
+                }]
+            }
+            data = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(
+                self.endpoint,
+                data=data,
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            urllib.request.urlopen(req, timeout=5)
+            return True
+        except Exception as e:
+            print(f'Failed to export spans: {e}')
+            return False
+
+class JaegerExporter(SpanExporter):
+    '''Jaeger HTTP exporter.'''
+    def __init__(self, endpoint: str = 'http://localhost:14268/api/traces'):
+        self.endpoint = endpoint
+
+    def export(self, spans: List[Span]) -> bool:
+        try:
+            # Convert to Jaeger format
+            for span in spans:
+                payload = {
+                    'traceIdLow': int(span.context.trace_id[:16], 16),
+                    'traceIdHigh': int(span.context.trace_id[16:], 16) if len(span.context.trace_id) > 16 else 0,
+                    'spanId': int(span.context.span_id, 16),
+                    'operationName': span.name,
+                    'startTime': span.start_time_ns // 1000,
+                    'duration': (span.end_time_ns - span.start_time_ns) // 1000,
+                    'tags': [{'key': k, 'value': str(v)} for k, v in span.attributes.items()]
+                }
+                data = json.dumps(payload).encode('utf-8')
+                req = urllib.request.Request(
+                    self.endpoint,
+                    data=data,
+                    headers={'Content-Type': 'application/json'},
+                    method='POST'
+                )
+                urllib.request.urlopen(req, timeout=5)
+            return True
+        except Exception:
+            return False
+
+class ZipkinExporter(SpanExporter):
+    '''Zipkin HTTP exporter.'''
+    def __init__(self, endpoint: str = 'http://localhost:9411/api/v2/spans'):
+        self.endpoint = endpoint
+
+    def export(self, spans: List[Span]) -> bool:
+        try:
+            zipkin_spans = []
+            for span in spans:
+                zipkin_spans.append({
+                    'traceId': span.context.trace_id,
+                    'id': span.context.span_id,
+                    'parentId': span.parent_context.span_id if span.parent_context else None,
+                    'name': span.name,
+                    'timestamp': span.start_time_ns // 1000,
+                    'duration': (span.end_time_ns - span.start_time_ns) // 1000,
+                    'tags': {k: str(v) for k, v in span.attributes.items()}
+                })
+            data = json.dumps(zipkin_spans).encode('utf-8')
+            req = urllib.request.Request(
+                self.endpoint,
+                data=data,
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            urllib.request.urlopen(req, timeout=5)
+            return True
+        except Exception:
+            return False
+
+class Tracer:
+    '''Distributed tracer with sampling and export.'''
+    def __init__(self, service_name: str, sampling_rate: float = 1.0,
+                 exporter: SpanExporter = None, propagation: PropagationFormat = PropagationFormat.W3C):
+        self.service_name = service_name
+        self.sampling_rate = sampling_rate
+        self.exporter = exporter or ConsoleExporter()
+        self.propagation = propagation
+        self._current_span: Optional[Span] = None
+        self._spans: List[Span] = []
+        self._lock = threading.Lock()
+        self._local = threading.local()
+
+    def should_sample(self) -> bool:
+        return random.random() < self.sampling_rate
+
+    def get_current_span(self) -> Optional[Span]:
+        return getattr(self._local, 'current_span', None)
+
+    def set_current_span(self, span: Optional[Span]) -> None:
+        self._local.current_span = span
+
+    @contextmanager
+    def start_span(self, name: str, kind: SpanKind = SpanKind.INTERNAL,
+                   parent: SpanContext = None, attributes: Dict[str, Any] = None):
+        '''Context manager for creating spans.'''
+        if not self.should_sample():
+            yield None
+            return
+
+        # Create span context
+        context = SpanContext.generate()
+        if parent is None:
+            current = self.get_current_span()
+            parent_context = current.context if current else None
+        else:
+            parent_context = parent
+
+        # Create span
+        span = Span(
+            name=name,
+            context=context,
+            parent_context=parent_context,
+            kind=kind,
+            start_time_ns=time.time_ns(),
+            attributes=attributes or {}
+        )
+        span.set_attribute('service.name', self.service_name)
+
+        # Set as current
+        previous = self.get_current_span()
+        self.set_current_span(span)
+
+        try:
+            yield span
+            span.set_status(SpanStatus.OK)
+        except Exception as e:
+            span.set_status(SpanStatus.ERROR, str(e))
+            raise
+        finally:
+            span.end()
+            with self._lock:
+                self._spans.append(span)
+            self.set_current_span(previous)
+
+    def extract_context(self, headers: Dict[str, str]) -> Optional[SpanContext]:
+        '''Extract span context from request headers.'''
+        if self.propagation == PropagationFormat.W3C:
+            traceparent = headers.get('traceparent', headers.get('Traceparent', ''))
+            return SpanContext.from_traceparent(traceparent)
+        elif self.propagation in (PropagationFormat.B3, PropagationFormat.B3_MULTI):
+            trace_id = headers.get('X-B3-TraceId', '')
+            span_id = headers.get('X-B3-SpanId', '')
+            sampled = headers.get('X-B3-Sampled', '1')
+            if trace_id and span_id:
+                return SpanContext(trace_id, span_id, int(sampled))
+        return None
+
+    def inject_context(self, span: Span, headers: Dict[str, str]) -> None:
+        '''Inject span context into request headers.'''
+        if self.propagation == PropagationFormat.W3C:
+            headers['traceparent'] = span.context.to_traceparent()
+        elif self.propagation in (PropagationFormat.B3, PropagationFormat.B3_MULTI):
+            headers.update(span.context.to_b3())
+
+    def flush(self) -> None:
+        '''Export all pending spans.'''
+        with self._lock:
+            if self._spans:
+                self.exporter.export(self._spans)
+                self._spans.clear()
+
+class ~wService:
+    '''
+    Traced Service: ~w
+    Service Name: ~w
+    Exporter: ~w
+    Sampling Rate: ~w
+    Propagation: ~w
+    '''
+    def __init__(self):
+        self.name = '~w'
+        self.stateful = ~w
+        self.timeout_ms = ~w
+        self._state: Dict[str, Any] = {}
+        self._lock = threading.Lock()
+
+        # Initialize tracer
+        self.tracer = Tracer(
+            service_name='~w',
+            sampling_rate=~w,
+            exporter=~w,
+            propagation=PropagationFormat.~w
+        )
+        self.default_attributes = ~w
+
+    def call(self, request: Any, headers: Dict[str, str] = None) -> Any:
+        '''Process a request with tracing.'''
+        headers = headers or {}
+
+        # Extract parent context from headers
+        parent_ctx = self.tracer.extract_context(headers)
+
+        # Create span for this request
+        with self.tracer.start_span(
+            f'{self.name}.call',
+            kind=SpanKind.SERVER,
+            parent=parent_ctx,
+            attributes=self.default_attributes
+        ) as span:
+            if span:
+                span.set_attribute('request.type', type(request).__name__)
+            result = self._handle_request(request)
+            if span:
+                span.set_attribute('response.type', type(result).__name__)
+            return result
+
+    def call_with_trace(self, request: Any, parent_span: Span = None) -> Tuple[Any, Optional[Span]]:
+        '''Process request and return result with span for propagation.'''
+        parent_ctx = parent_span.context if parent_span else None
+
+        with self.tracer.start_span(
+            f'{self.name}.call',
+            kind=SpanKind.SERVER,
+            parent=parent_ctx
+        ) as span:
+            result = self._handle_request(request)
+            return result, span
+
+    def flush_traces(self) -> None:
+        '''Flush pending traces to exporter.'''
+        self.tracer.flush()
+
+    def _handle_request(self, request: Any) -> Any:
+~w
+
+# Service instance
+~w_service = ~wService()
+", [ClassNameAtom, Name, ServiceNameStr, ExporterStr, SamplingRate, PropagationStr,
+    Name, Stateful, Timeout,
+    ServiceNameStr, SamplingRate, ExporterStr, PropagationStr, AttrsStr,
+    HandlerCode, Name, ClassNameAtom]).
+
+%% exporter_to_string(+Exporter, -String)
+%  Convert trace exporter to Python code string.
+exporter_to_string(otlp, "OTLPExporter()").
+exporter_to_string(otlp(Endpoint), Code) :-
+    format(string(Code), "OTLPExporter('~w')", [Endpoint]).
+exporter_to_string(jaeger, "JaegerExporter()").
+exporter_to_string(jaeger(Endpoint), Code) :-
+    format(string(Code), "JaegerExporter('~w')", [Endpoint]).
+exporter_to_string(jaeger(Host, Port), Code) :-
+    format(string(Code), "JaegerExporter('http://~w:~w/api/traces')", [Host, Port]).
+exporter_to_string(zipkin, "ZipkinExporter()").
+exporter_to_string(zipkin(Endpoint), Code) :-
+    format(string(Code), "ZipkinExporter('~w')", [Endpoint]).
+exporter_to_string(console, "ConsoleExporter()").
+exporter_to_string(none, "ConsoleExporter()").
+exporter_to_string(_, "ConsoleExporter()").
+
+%% propagation_to_string(+Propagation, -String)
+%  Convert propagation format to Python enum string.
+propagation_to_string(w3c, "W3C").
+propagation_to_string(b3, "B3").
+propagation_to_string(b3_multi, "B3_MULTI").
+propagation_to_string(jaeger, "JAEGER").
+propagation_to_string(xray, "XRAY").
+propagation_to_string(datadog, "DATADOG").
+propagation_to_string(_, "W3C").
+
+%% attributes_to_python_dict(+Attributes, -String)
+%  Convert attribute list to Python dict string.
+attributes_to_python_dict([], "{}").
+attributes_to_python_dict(Attrs, Code) :-
+    Attrs \= [],
+    maplist(attr_to_python, Attrs, AttrStrs),
+    atomic_list_concat(AttrStrs, ', ', Inner),
+    format(string(Code), "{~w}", [Inner]).
+
+attr_to_python(Key=Value, Code) :-
+    format(string(Code), "'~w': '~w'", [Key, Value]).
+attr_to_python(Key-Value, Code) :-
+    format(string(Code), "'~w': '~w'", [Key, Value]).
+
+%% generate_tracer_python(+Config, -Code)
+%  Generate Python tracer initialization code.
+generate_tracer_python(config(ServiceName, SamplingRate, Exporter), Code) :-
+    exporter_to_string(Exporter, ExporterStr),
+    format(string(Code), "Tracer('~w', ~w, ~w)", [ServiceName, SamplingRate, ExporterStr]).
+
+%% generate_span_context_python(+Context, -Code)
+%  Generate Python span context code.
+generate_span_context_python(context(TraceId, SpanId), Code) :-
+    format(string(Code), "SpanContext('~w', '~w')", [TraceId, SpanId]).
+generate_span_context_python(_, "SpanContext.generate()").
 
 /** <module> Python Target Compiler
  *

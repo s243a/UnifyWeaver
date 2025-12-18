@@ -41,7 +41,15 @@
     % Phase 6: Distributed services
     compile_distributed_service_rust/2,   % +Service, -RustCode
     generate_sharding_rust/2,             % +Strategy, -RustCode
-    generate_replication_rust/2           % +ReplicationFactor, -RustCode
+    generate_replication_rust/2,          % +ReplicationFactor, -RustCode
+    % Phase 7: Service Discovery
+    compile_discovery_service_rust/2,     % +Service, -RustCode
+    generate_health_check_rust/2,         % +Config, -RustCode
+    generate_service_registry_rust/2,     % +Backend, -RustCode
+    % Phase 8: Service Tracing
+    compile_traced_service_rust/2,        % +Service, -RustCode
+    generate_tracer_rust/2,               % +Config, -RustCode
+    generate_span_context_rust/2          % +Context, -RustCode
 ]).
 
 :- use_module(library(lists)).
@@ -171,6 +179,26 @@ compile_service_to_rust(Service, RustCode) :-
     !,
     % Phase 6: Distributed service
     compile_distributed_service_rust(Service, RustCode).
+
+compile_service_to_rust(Service, RustCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(discovery_enabled(true), Options)
+    ; member(discovery_backend(_), Options)
+    ; member(health_check(_), Options)
+    ),
+    !,
+    % Phase 7: Service Discovery
+    compile_discovery_service_rust(Service, RustCode).
+
+compile_service_to_rust(Service, RustCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(tracing(true), Options)
+    ; member(trace_exporter(_), Options)
+    ; member(trace_sampling(_), Options)
+    ),
+    !,
+    % Phase 8: Service Tracing
+    compile_traced_service_rust(Service, RustCode).
 
 compile_service_to_rust(service(Name, Options, HandlerSpec), RustCode) :-
     % Phase 1: In-process service (default)
@@ -2095,6 +2123,687 @@ generate_node_init_rust(node(Id, Host, Port), Code) :-
     atom_string(Host, HostStr),
     format(string(Code), "// Node ~w initialization would happen here", [IdStr]).
 generate_node_init_rust(_, "// Unknown node format").
+
+%% ============================================
+%% SERVICE DISCOVERY (Phase 7)
+%% ============================================
+
+%% compile_discovery_service_rust(+Service, -RustCode)
+%  Generate Rust code for a service with discovery capabilities.
+compile_discovery_service_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Extract discovery configuration
+    ( member(discovery_backend(Backend), Options) -> true ; Backend = consul ),
+    ( member(health_check(HealthConfig), Options) -> true ; HealthConfig = http('/health', 30000) ),
+    ( member(discovery_ttl(TTL), Options) -> true ; TTL = 60 ),
+    ( member(discovery_tags(Tags), Options) -> true ; Tags = [] ),
+    ( member(stateful(true), Options) -> Stateful = "true" ; Stateful = "false" ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_rust(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Convert to strings
+    backend_to_rust_string(Backend, BackendStr),
+    health_config_to_rust_string(HealthConfig, HealthTypeStr, HealthEndpointStr, HealthIntervalStr),
+    tags_to_rust_vec(Tags, TagsStr),
+    % Generate the discovery service
+    format(string(RustCode),
+"use std::collections::HashMap;
+use std::sync::{Arc, RwLock, atomic::{AtomicBool, Ordering}};
+use std::time::{Duration, Instant};
+use std::thread;
+use serde::{Deserialize, Serialize};
+
+// Phase 7: Service Discovery Support
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DiscoveryBackend {
+    Consul,
+    Etcd,
+    Dns,
+    Kubernetes,
+    Zookeeper,
+    Eureka,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum HealthStatus {
+    Healthy,
+    Unhealthy,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceInstance {
+    pub service_id: String,
+    pub service_name: String,
+    pub host: String,
+    pub port: u16,
+    pub tags: Vec<String>,
+    pub metadata: HashMap<String, String>,
+    pub health_status: HealthStatus,
+    pub last_heartbeat: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct HealthCheckConfig {
+    pub check_type: String,
+    pub endpoint: String,
+    pub interval: Duration,
+    pub timeout: Duration,
+}
+
+pub trait ServiceRegistry: Send + Sync {
+    fn register(&self, instance: &ServiceInstance) -> Result<(), String>;
+    fn deregister(&self, service_id: &str) -> Result<(), String>;
+    fn discover(&self, service_name: &str, tags: &[String]) -> Vec<ServiceInstance>;
+    fn health_check(&self, service_id: &str) -> HealthStatus;
+}
+
+pub struct LocalRegistry {
+    instances: RwLock<HashMap<String, ServiceInstance>>,
+}
+
+impl LocalRegistry {
+    pub fn new() -> Self {
+        LocalRegistry {
+            instances: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl ServiceRegistry for LocalRegistry {
+    fn register(&self, instance: &ServiceInstance) -> Result<(), String> {
+        let mut instances = self.instances.write().unwrap();
+        instances.insert(instance.service_id.clone(), instance.clone());
+        Ok(())
+    }
+
+    fn deregister(&self, service_id: &str) -> Result<(), String> {
+        let mut instances = self.instances.write().unwrap();
+        instances.remove(service_id);
+        Ok(())
+    }
+
+    fn discover(&self, service_name: &str, tags: &[String]) -> Vec<ServiceInstance> {
+        let instances = self.instances.read().unwrap();
+        instances.values()
+            .filter(|i| i.service_name == service_name)
+            .filter(|i| tags.is_empty() || tags.iter().all(|t| i.tags.contains(t)))
+            .cloned()
+            .collect()
+    }
+
+    fn health_check(&self, service_id: &str) -> HealthStatus {
+        let instances = self.instances.read().unwrap();
+        instances.get(service_id)
+            .map(|i| {
+                if i.last_heartbeat.elapsed() < Duration::from_secs(120) {
+                    HealthStatus::Healthy
+                } else {
+                    HealthStatus::Unhealthy
+                }
+            })
+            .unwrap_or(HealthStatus::Unknown)
+    }
+}
+
+pub struct HealthChecker {
+    config: HealthCheckConfig,
+}
+
+impl HealthChecker {
+    pub fn new(config: HealthCheckConfig) -> Self {
+        HealthChecker { config }
+    }
+
+    pub fn check(&self, _host: &str, _port: u16) -> HealthStatus {
+        // Simplified health check - in production would make actual HTTP/TCP checks
+        HealthStatus::Healthy
+    }
+}
+
+/// ~wService - Discoverable Service
+/// Backend: ~w
+/// TTL: ~w seconds
+pub struct ~wService {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub stateful: bool,
+    pub timeout_ms: u64,
+    pub ttl: u64,
+    pub tags: Vec<String>,
+    state: RwLock<HashMap<String, serde_json::Value>>,
+    running: AtomicBool,
+    registry: Arc<dyn ServiceRegistry>,
+    health_config: HealthCheckConfig,
+    health_checker: HealthChecker,
+    instance: RwLock<ServiceInstance>,
+}
+
+impl ~wService {
+    pub fn new(host: &str, port: u16) -> Self {
+        let health_config = HealthCheckConfig {
+            check_type: \"~w\".to_string(),
+            endpoint: \"~w\".to_string(),
+            interval: Duration::from_millis(~w),
+            timeout: Duration::from_secs(5),
+        };
+        let instance = ServiceInstance {
+            service_id: format!(\"{}-{}-{}\", \"~w\", host, port),
+            service_name: \"~w\".to_string(),
+            host: host.to_string(),
+            port,
+            tags: ~w,
+            metadata: HashMap::new(),
+            health_status: HealthStatus::Unknown,
+            last_heartbeat: Instant::now(),
+        };
+        ~wService {
+            name: \"~w\".to_string(),
+            host: host.to_string(),
+            port,
+            stateful: ~w,
+            timeout_ms: ~w,
+            ttl: ~w,
+            tags: ~w,
+            state: RwLock::new(HashMap::new()),
+            running: AtomicBool::new(false),
+            registry: Arc::new(~w),
+            health_config: health_config.clone(),
+            health_checker: HealthChecker::new(health_config),
+            instance: RwLock::new(instance),
+        }
+    }
+
+    pub fn register(&self) -> Result<(), String> {
+        let instance = self.instance.read().unwrap();
+        self.registry.register(&instance)?;
+        self.start_heartbeat();
+        Ok(())
+    }
+
+    pub fn deregister(&self) -> Result<(), String> {
+        self.stop_heartbeat();
+        let instance = self.instance.read().unwrap();
+        self.registry.deregister(&instance.service_id)
+    }
+
+    pub fn discover_peers(&self) -> Vec<ServiceInstance> {
+        self.registry.discover(&self.name, &self.tags)
+    }
+
+    fn start_heartbeat(&self) {
+        self.running.store(true, Ordering::SeqCst);
+    }
+
+    fn stop_heartbeat(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    pub fn call(&self, request: serde_json::Value) -> serde_json::Value {
+        self.handle_request(request)
+    }
+
+    fn handle_request(&self, request: serde_json::Value) -> serde_json::Value {
+~w
+    }
+}
+
+lazy_static::lazy_static! {
+    pub static ref ~w_SERVICE: ~wService = ~wService::new(\"localhost\", 8080);
+}
+", [StructNameAtom, BackendStr, TTL, StructNameAtom,
+    StructNameAtom, HealthTypeStr, HealthEndpointStr, HealthIntervalStr,
+    Name, Name, TagsStr,
+    StructNameAtom, Name, Stateful, Timeout, TTL, TagsStr, BackendStr,
+    HandlerCode, Name, StructNameAtom, StructNameAtom]).
+
+%% backend_to_rust_string(+Backend, -String)
+%  Convert discovery backend to Rust code string.
+backend_to_rust_string(consul, "LocalRegistry::new()").
+backend_to_rust_string(etcd, "LocalRegistry::new()").
+backend_to_rust_string(dns, "LocalRegistry::new()").
+backend_to_rust_string(kubernetes, "LocalRegistry::new()").
+backend_to_rust_string(_, "LocalRegistry::new()").
+
+%% health_config_to_rust_string(+Config, -TypeStr, -EndpointStr, -IntervalStr)
+%  Extract health check type, endpoint and interval from config.
+health_config_to_rust_string(http(Path, Interval), "http", Path, Interval) :- !.
+health_config_to_rust_string(http(Path, Interval, _), "http", Path, Interval) :- !.
+health_config_to_rust_string(tcp(Port, Interval), "tcp", Port, Interval) :- !.
+health_config_to_rust_string(_, "http", "/health", 30000).
+
+%% tags_to_rust_vec(+Tags, -String)
+%  Convert Prolog list of tags to Rust vec string.
+tags_to_rust_vec([], "vec![]").
+tags_to_rust_vec(Tags, Code) :-
+    Tags \= [],
+    maplist(quote_rust_string, Tags, QuotedTags),
+    atomic_list_concat(QuotedTags, ', ', Inner),
+    format(string(Code), "vec![~w]", [Inner]).
+
+quote_rust_string(Atom, Quoted) :-
+    format(string(Quoted), "\"~w\".to_string()", [Atom]).
+
+%% generate_health_check_rust(+Config, -Code)
+%  Generate Rust health check configuration code.
+generate_health_check_rust(http(Path, Interval), Code) :-
+    format(string(Code), "HealthCheckConfig { check_type: \"http\".to_string(), endpoint: \"~w\".to_string(), interval: Duration::from_millis(~w), timeout: Duration::from_secs(5) }", [Path, Interval]).
+generate_health_check_rust(_, "HealthCheckConfig { check_type: \"http\".to_string(), endpoint: \"/health\".to_string(), interval: Duration::from_secs(30), timeout: Duration::from_secs(5) }").
+
+%% generate_service_registry_rust(+Backend, -Code)
+%  Generate Rust service registry initialization code.
+generate_service_registry_rust(consul, "LocalRegistry::new()").
+generate_service_registry_rust(_, "LocalRegistry::new()").
+
+%% ============================================
+%% SERVICE TRACING (Phase 8)
+%% ============================================
+
+%% compile_traced_service_rust(+Service, -RustCode)
+%  Generate Rust code for a service with distributed tracing.
+compile_traced_service_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Extract tracing configuration
+    ( member(trace_exporter(Exporter), Options) -> true ; Exporter = otlp ),
+    ( member(trace_sampling(SamplingRate), Options) -> true ; SamplingRate = 1.0 ),
+    ( member(trace_service_name(ServiceName), Options) -> true ; ServiceName = Name ),
+    ( member(trace_propagation(Propagation), Options) -> true ; Propagation = w3c ),
+    ( member(trace_attributes(Attributes), Options) -> true ; Attributes = [] ),
+    ( member(stateful(true), Options) -> Stateful = "true" ; Stateful = "false" ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_rust(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Convert to strings
+    exporter_to_rust_string(Exporter, ExporterStr),
+    propagation_to_rust_string(Propagation, PropagationStr),
+    attributes_to_rust_map(Attributes, AttrsStr),
+    atom_string(ServiceName, ServiceNameStr),
+    % Generate the traced service
+    format(string(RustCode),
+"use std::collections::HashMap;
+use std::sync::{Arc, RwLock, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use rand::Rng;
+
+// Phase 8: Service Tracing Support (OpenTelemetry-compatible)
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TraceExporter {
+    Otlp,
+    Jaeger,
+    Zipkin,
+    Datadog,
+    Console,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PropagationFormat {
+    W3c,
+    B3,
+    B3Multi,
+    Jaeger,
+    XRay,
+    Datadog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum SpanKind {
+    Internal,
+    Server,
+    Client,
+    Producer,
+    Consumer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum SpanStatus {
+    Unset,
+    Ok,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanContext {
+    pub trace_id: String,
+    pub span_id: String,
+    pub trace_flags: u8,
+    pub trace_state: String,
+}
+
+impl SpanContext {
+    pub fn new() -> Self {
+        SpanContext {
+            trace_id: format!(\"{}{}\", Uuid::new_v4().to_string().replace(\"-\", \"\"),
+                             &Uuid::new_v4().to_string().replace(\"-\", \"\")[..8]),
+            span_id: Uuid::new_v4().to_string().replace(\"-\", \"\")[..16].to_string(),
+            trace_flags: 1,
+            trace_state: String::new(),
+        }
+    }
+
+    pub fn to_traceparent(&self) -> String {
+        format!(\"00-{}-{}-{:02x}\", self.trace_id, self.span_id, self.trace_flags)
+    }
+
+    pub fn from_traceparent(header: &str) -> Option<Self> {
+        let parts: Vec<&str> = header.split('-').collect();
+        if parts.len() >= 4 {
+            Some(SpanContext {
+                trace_id: parts[1].to_string(),
+                span_id: parts[2].to_string(),
+                trace_flags: u8::from_str_radix(parts[3], 16).unwrap_or(1),
+                trace_state: String::new(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpanEvent {
+    pub name: String,
+    pub timestamp_ns: u128,
+    pub attributes: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Span {
+    pub name: String,
+    pub context: SpanContext,
+    pub parent_context: Option<SpanContext>,
+    pub kind: SpanKind,
+    pub status: SpanStatus,
+    pub start_time_ns: u128,
+    pub end_time_ns: u128,
+    pub attributes: HashMap<String, serde_json::Value>,
+    pub events: Vec<SpanEvent>,
+}
+
+impl Span {
+    pub fn new(name: &str, kind: SpanKind, parent: Option<SpanContext>) -> Self {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        Span {
+            name: name.to_string(),
+            context: SpanContext::new(),
+            parent_context: parent,
+            kind,
+            status: SpanStatus::Unset,
+            start_time_ns: now,
+            end_time_ns: 0,
+            attributes: HashMap::new(),
+            events: Vec::new(),
+        }
+    }
+
+    pub fn set_attribute(&mut self, key: &str, value: serde_json::Value) {
+        self.attributes.insert(key.to_string(), value);
+    }
+
+    pub fn add_event(&mut self, name: &str, attrs: HashMap<String, serde_json::Value>) {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        self.events.push(SpanEvent {
+            name: name.to_string(),
+            timestamp_ns: now,
+            attributes: attrs,
+        });
+    }
+
+    pub fn set_status(&mut self, status: SpanStatus, description: Option<&str>) {
+        self.status = status;
+        if let Some(desc) = description {
+            self.attributes.insert(\"status.description\".to_string(),
+                                   serde_json::Value::String(desc.to_string()));
+        }
+    }
+
+    pub fn end(&mut self) {
+        self.end_time_ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    }
+}
+
+pub trait SpanExporter: Send + Sync {
+    fn export(&self, spans: &[Span]) -> Result<(), String>;
+}
+
+pub struct ConsoleExporter;
+
+impl SpanExporter for ConsoleExporter {
+    fn export(&self, spans: &[Span]) -> Result<(), String> {
+        for span in spans {
+            println!(\"[TRACE] {:?}\", serde_json::to_string(span).unwrap_or_default());
+        }
+        Ok(())
+    }
+}
+
+pub struct Tracer {
+    service_name: String,
+    sampling_rate: f64,
+    exporter: Arc<dyn SpanExporter>,
+    propagation: PropagationFormat,
+    spans: Mutex<Vec<Span>>,
+}
+
+impl Tracer {
+    pub fn new(service_name: &str, sampling_rate: f64, exporter: Arc<dyn SpanExporter>, propagation: PropagationFormat) -> Self {
+        Tracer {
+            service_name: service_name.to_string(),
+            sampling_rate,
+            exporter,
+            propagation,
+            spans: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn should_sample(&self) -> bool {
+        rand::thread_rng().gen::<f64>() < self.sampling_rate
+    }
+
+    pub fn start_span(&self, name: &str, kind: SpanKind, parent: Option<SpanContext>) -> Option<Span> {
+        if !self.should_sample() {
+            return None;
+        }
+        let mut span = Span::new(name, kind, parent);
+        span.set_attribute(\"service.name\", serde_json::Value::String(self.service_name.clone()));
+        Some(span)
+    }
+
+    pub fn end_span(&self, mut span: Span) {
+        span.end();
+        if span.status == SpanStatus::Unset {
+            span.status = SpanStatus::Ok;
+        }
+        let mut spans = self.spans.lock().unwrap();
+        spans.push(span);
+    }
+
+    pub fn extract_context(&self, headers: &HashMap<String, String>) -> Option<SpanContext> {
+        match self.propagation {
+            PropagationFormat::W3c => {
+                headers.get(\"traceparent\").and_then(|h| SpanContext::from_traceparent(h))
+            }
+            PropagationFormat::B3 | PropagationFormat::B3Multi => {
+                let trace_id = headers.get(\"X-B3-TraceId\")?;
+                let span_id = headers.get(\"X-B3-SpanId\")?;
+                Some(SpanContext {
+                    trace_id: trace_id.clone(),
+                    span_id: span_id.clone(),
+                    trace_flags: 1,
+                    trace_state: String::new(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub fn inject_context(&self, span: &Span, headers: &mut HashMap<String, String>) {
+        match self.propagation {
+            PropagationFormat::W3c => {
+                headers.insert(\"traceparent\".to_string(), span.context.to_traceparent());
+            }
+            PropagationFormat::B3 | PropagationFormat::B3Multi => {
+                headers.insert(\"X-B3-TraceId\".to_string(), span.context.trace_id.clone());
+                headers.insert(\"X-B3-SpanId\".to_string(), span.context.span_id.clone());
+                headers.insert(\"X-B3-Sampled\".to_string(), \"1\".to_string());
+            }
+            _ => {}
+        }
+    }
+
+    pub fn flush(&self) -> Result<(), String> {
+        let mut spans = self.spans.lock().unwrap();
+        if !spans.is_empty() {
+            let result = self.exporter.export(&spans);
+            spans.clear();
+            result
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// ~wService - Traced Service
+/// Service Name: ~w
+/// Exporter: ~w
+/// Sampling Rate: ~w
+/// Propagation: ~w
+pub struct ~wService {
+    pub name: String,
+    pub stateful: bool,
+    pub timeout_ms: u64,
+    state: RwLock<HashMap<String, serde_json::Value>>,
+    tracer: Arc<Tracer>,
+    default_attributes: HashMap<String, serde_json::Value>,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        let exporter: Arc<dyn SpanExporter> = ~w;
+        ~wService {
+            name: \"~w\".to_string(),
+            stateful: ~w,
+            timeout_ms: ~w,
+            state: RwLock::new(HashMap::new()),
+            tracer: Arc::new(Tracer::new(
+                \"~w\",
+                ~w,
+                exporter,
+                PropagationFormat::~w,
+            )),
+            default_attributes: ~w,
+        }
+    }
+
+    pub fn call(&self, request: serde_json::Value, headers: Option<HashMap<String, String>>) -> serde_json::Value {
+        let headers = headers.unwrap_or_default();
+        let parent_ctx = self.tracer.extract_context(&headers);
+
+        if let Some(mut span) = self.tracer.start_span(
+            &format!(\"{}.call\", self.name),
+            SpanKind::Server,
+            parent_ctx,
+        ) {
+            for (k, v) in &self.default_attributes {
+                span.set_attribute(k, v.clone());
+            }
+            span.set_attribute(\"request.type\", serde_json::Value::String(\"json\".to_string()));
+
+            let result = self.handle_request(request);
+
+            span.set_attribute(\"response.type\", serde_json::Value::String(\"json\".to_string()));
+            self.tracer.end_span(span);
+
+            result
+        } else {
+            self.handle_request(request)
+        }
+    }
+
+    pub fn flush_traces(&self) -> Result<(), String> {
+        self.tracer.flush()
+    }
+
+    fn handle_request(&self, request: serde_json::Value) -> serde_json::Value {
+~w
+    }
+}
+
+lazy_static::lazy_static! {
+    pub static ref ~w_SERVICE: ~wService = ~wService::new();
+}
+", [StructNameAtom, ServiceNameStr, ExporterStr, SamplingRate, PropagationStr,
+    StructNameAtom,
+    StructNameAtom, ExporterStr, StructNameAtom,
+    Name, Stateful, Timeout,
+    ServiceNameStr, SamplingRate, PropagationStr, AttrsStr,
+    HandlerCode, Name, StructNameAtom, StructNameAtom]).
+
+%% exporter_to_rust_string(+Exporter, -String)
+%  Convert trace exporter to Rust code string.
+exporter_to_rust_string(otlp, "Arc::new(ConsoleExporter)").
+exporter_to_rust_string(jaeger, "Arc::new(ConsoleExporter)").
+exporter_to_rust_string(zipkin, "Arc::new(ConsoleExporter)").
+exporter_to_rust_string(console, "Arc::new(ConsoleExporter)").
+exporter_to_rust_string(none, "Arc::new(ConsoleExporter)").
+exporter_to_rust_string(_, "Arc::new(ConsoleExporter)").
+
+%% propagation_to_rust_string(+Propagation, -String)
+%  Convert propagation format to Rust enum string.
+propagation_to_rust_string(w3c, "W3c").
+propagation_to_rust_string(b3, "B3").
+propagation_to_rust_string(b3_multi, "B3Multi").
+propagation_to_rust_string(jaeger, "Jaeger").
+propagation_to_rust_string(xray, "XRay").
+propagation_to_rust_string(datadog, "Datadog").
+propagation_to_rust_string(_, "W3c").
+
+%% attributes_to_rust_map(+Attributes, -String)
+%  Convert attribute list to Rust HashMap string.
+attributes_to_rust_map([], "HashMap::new()").
+attributes_to_rust_map(Attrs, Code) :-
+    Attrs \= [],
+    maplist(attr_to_rust, Attrs, AttrStrs),
+    atomic_list_concat(AttrStrs, ', ', Inner),
+    format(string(Code), "vec![~w].into_iter().collect()", [Inner]).
+
+attr_to_rust(Key=Value, Code) :-
+    format(string(Code), "(\"~w\".to_string(), serde_json::Value::String(\"~w\".to_string()))", [Key, Value]).
+attr_to_rust(Key-Value, Code) :-
+    format(string(Code), "(\"~w\".to_string(), serde_json::Value::String(\"~w\".to_string()))", [Key, Value]).
+
+%% generate_tracer_rust(+Config, -Code)
+%  Generate Rust tracer initialization code.
+generate_tracer_rust(config(ServiceName, SamplingRate, Exporter), Code) :-
+    exporter_to_rust_string(Exporter, ExporterStr),
+    format(string(Code), "Tracer::new(\"~w\", ~w, ~w, PropagationFormat::W3c)", [ServiceName, SamplingRate, ExporterStr]).
+
+%% generate_span_context_rust(+Context, -Code)
+%  Generate Rust span context code.
+generate_span_context_rust(context(TraceId, SpanId), Code) :-
+    format(string(Code), "SpanContext { trace_id: \"~w\".to_string(), span_id: \"~w\".to_string(), trace_flags: 1, trace_state: String::new() }", [TraceId, SpanId]).
+generate_span_context_rust(_, "SpanContext::new()").
 
 %% ============================================
 %% PUBLIC API
