@@ -10,7 +10,7 @@ Roadmap: `docs/targets/csharp-query-runtime-roadmap.md`
 - **Recursive predicates** – semi-naive fixpoint driver supports single-predicate recursion (e.g., reachability, factorial).
 - **Mutual recursion** – strongly connected predicate groups emit `mutual_fixpoint` plans composed of `cross_ref` nodes, enabling even/odd style dependencies.
 - **Deduplication** – per-predicate `HashSet<object[]>` mirrors Bash distinct semantics.
-- **Diagnostics** – generated modules build a `QueryPlan` tree that is easy to inspect and trace during execution.
+- **Diagnostics** – `QueryPlanExplainer.Explain(plan)` and `QueryExecutionTrace` provide plan inspection and basic per-node execution stats.
 
 ## Objectives
 - Declarative IR: Represent clause bodies as structured query plans instead of hard-coded C# statements.
@@ -86,6 +86,13 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
   - `SKIP_CSHARP_EXECUTION=1` (generate C# projects but do not execute via Prolog)
   - `CSHARP_QUERY_OUTPUT_DIR=...` (where generated projects are written)
   - `CSHARP_QUERY_KEEP_ARTIFACTS=1` (keep generated projects instead of auto-deleting)
+
+## Diagnostics
+- Plan inspection: `Console.WriteLine(QueryPlanExplainer.Explain(plan));`
+- Execution stats (rows/time per node):
+  - `var trace = new QueryExecutionTrace();`
+  - `foreach (var row in executor.Execute(plan, parameters, trace)) { ... }`
+  - `Console.WriteLine(trace.ToString());`
 
 ## Configuration
 - New preference atom: `target(csharp_query)`.
