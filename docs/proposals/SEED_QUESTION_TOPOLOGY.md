@@ -119,3 +119,52 @@ This structure allows for **Multi-Resolution Linking**:
 *   **No Weighting by Seed Level**: All questions are equally valid training data regardless of seed level. The seed level is metadata for provenance, not importance.
 *   **Diversity for Expansion**: When generating new training questions, selecting from a specific seed level helps ensure the new questions explore different semantic territory.
 *   **Smoothing Basis Support**: All `seed(n)` questions contribute to defining the semantic boundaries of the cluster. More seed levels = broader coverage.
+
+## Revised Approach: Hash-Based Anchor Linking
+
+### The Problem with seed(n) for Anchors
+
+Using `seed(n)` to tag anchor questions conflates two separate concerns:
+1. **Provenance** - how far from the original dataset (expansion depth)
+2. **Anchor identity** - which question generated which answer
+
+This coupling prevents us from evolving from "many questions → one answer" to "one question → one answer" mappings.
+
+### Solution: Content-Addressable Links
+
+Instead of tagging anchors with seed levels, use **hash-based links** from answers back to their anchor questions:
+
+```json
+{
+  "answer_id": "hash(answer_content)",
+  "anchor_question_hash": "hash(Q1)",
+  "content": "The answer text...",
+  "seed_level": 0
+}
+```
+
+The `seed_level` remains for **provenance tracking only**, not for anchor identification.
+
+### Two-Phase Expansion Model
+
+This decoupling enables a two-phase expansion:
+
+**Phase 1: Many Questions → One Answer (Clustering)**
+```
+Q1 ─┐
+Q2 ─┼──→ Answer A ←── anchor_hash points to Q1
+Q3 ─┘
+```
+Multiple questions cluster to a single answer. The anchor_hash identifies which question originated the answer.
+
+**Phase 2: Expand to 1:1 Mapping**
+```
+Q1 ──→ Answer A₁ ←── hash(Q1)
+Q2 ──→ Answer A₂ ←── hash(Q2)
+Q3 ──→ Answer A₃ ←── hash(Q3)
+```
+After output smoothing constraints are applied, each question can get its own tailored answer while maintaining consistency.
+
+## Related Proposals
+
+- **[SMALL_WORLD_ROUTING.md](SMALL_WORLD_ROUTING.md)**: Distributed routing architecture using small-world topology, inspired by Hyphanet/Freenet and Kleinberg's research. Covers greedy routing, path folding, and the critical α parameter for link distribution.
