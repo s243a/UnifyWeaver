@@ -72,32 +72,47 @@ From QA_KNOWLEDGE_GRAPH.md, we have 11 relation types:
 **No networking in Phase 1** - all operations are in-process.
 **No Kleinberg routing** - softmax routing is sufficient for local model.
 
-### Scale Optimizations (Optional)
+### Scale Optimizations ✅ Implemented
 
-These optimizations are NOT required unless the Q-A knowledge base grows very large:
+These optimizations are automatically enabled based on data scale:
 
-1. **Transformer Distillation**
-   - Distill the embedding + softmax into a smaller, faster model
-   - Triggered when: Q-A count exceeds threshold (configurable)
+1. **Transformer Distillation** ✅
+   - Full implementation: `projection_transformer.py`
+   - API: `check_distillation_recommended()`, `get_distillation_training_embeddings()`
+   - Threshold: 100,000 Q-A pairs (configurable)
 
-2. **Interface-First Routing (Phase 2 as optimization)**
-   - Route query to closest semantic interface first (coarse filter)
-   - Then search only within that interface's Q-A subset
-   - Effectively a "mega-cluster" approach
-   - Triggered when: Multiple interfaces defined AND Q-A count is large
+2. **Interface-First Routing** ✅
+   - Pre-filter answers by similarity to interface centroid
+   - API: `search_via_interface(use_interface_first_routing=True)`
+   - Threshold: 50,000 Q-A pairs (configurable)
 
-**Configuration:**
-```yaml
-scale_optimizations:
-  transformer_distillation:
-    enabled: auto  # or: true, false
-    threshold: 100000  # Q-A pairs before considering distillation
-  interface_first_routing:
-    enabled: auto
-    threshold: 50000   # Q-A pairs before routing via interface first
+3. **Max Distance Filtering** ✅ (convenience option)
+   - Post-filter results by maximum distance from interface centroid
+   - API: `search_via_interface(max_distance=0.5)`
+
+**Configuration API:**
+```python
+# Get current config
+config = db.get_scale_config()
+
+# Set thresholds
+db.set_scale_config(
+    interface_first_routing_enabled='auto',  # or 'true', 'false'
+    interface_first_routing_threshold=50000,
+    transformer_distillation_enabled='auto',
+    transformer_distillation_threshold=100000
+)
+
+# Check what should be used
+status = db.get_optimization_status()
+# Returns: {
+#   'config': {...},
+#   'interface_first_routing': {'use': bool, 'reason': str, ...},
+#   'transformer_distillation': {'use': bool, 'reason': str, ...}
+# }
 ```
 
-Default behavior: No optimizations (direct matrix multiplication scales well).
+Default behavior: Auto-detect based on Q-A count.
 
 ### Phase 2: Multi-Interface Local Model ✅ Complete
 

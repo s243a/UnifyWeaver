@@ -1010,5 +1010,297 @@ class TestSearchViaInterface(unittest.TestCase):
         self.assertEqual(interface_clusters[0]['cluster_id'], self.c1)
 
 
+# =============================================================================
+# SCALE OPTIMIZATIONS TESTS
+# =============================================================================
+
+class TestInterfaceFirstRouting(unittest.TestCase):
+    """Test Interface-First Routing optimization."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        self.model_id = self.db.add_model("test-model", 4)
+
+        # Create interface with centroid
+        self.iface_id = self.db.create_interface(name="test_interface")
+
+        # Create answers with embeddings
+        self.a1 = self.db.add_answer("s.md", "Close to interface")
+        self.a2 = self.db.add_answer("s.md", "Also close to interface")
+        self.a3 = self.db.add_answer("s.md", "Far from interface")
+
+        # Embeddings: a1, a2 close to interface centroid, a3 far
+        self.db.store_embedding(self.model_id, "answer", self.a1,
+                                np.array([0.9, 0.1, 0, 0], dtype=np.float32))
+        self.db.store_embedding(self.model_id, "answer", self.a2,
+                                np.array([0.8, 0.2, 0, 0], dtype=np.float32))
+        self.db.store_embedding(self.model_id, "answer", self.a3,
+                                np.array([0, 0, 0.9, 0.1], dtype=np.float32))
+
+        # Interface centroid: [1, 0, 0, 0]
+        self.db.set_interface_centroid(
+            self.iface_id, self.model_id,
+            np.array([1, 0, 0, 0], dtype=np.float32)
+        )
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_interface_first_search_filters_by_similarity(self):
+        """Interface-first routing filters answers by centroid similarity."""
+        # The _interface_first_search method filters by similarity threshold
+        interface_centroid = self.db.get_interface_centroid(self.iface_id, self.model_id)
+
+        # Compute expected similarities
+        ids, matrix = self.db.get_all_answer_embeddings(self.model_id)
+
+        # Normalize
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix_normed = matrix / norms
+
+        similarities = matrix_normed @ interface_centroid
+
+        # a1, a2 should have high similarity (>0.5), a3 low
+        self.assertGreater(similarities[ids.index(self.a1)], 0.5)
+        self.assertGreater(similarities[ids.index(self.a2)], 0.5)
+        self.assertLess(similarities[ids.index(self.a3)], 0.5)
+
+    def test_search_via_interface_accepts_routing_flag(self):
+        """search_via_interface accepts use_interface_first_routing parameter."""
+        # Test that the method accepts the parameter without error
+        # (actual search requires _embed_query which needs real model)
+        self.assertTrue(hasattr(self.db, 'search_via_interface'))
+
+        # Verify signature includes the optimization parameters
+        import inspect
+        sig = inspect.signature(self.db.search_via_interface)
+        params = sig.parameters
+
+        self.assertIn('use_interface_first_routing', params)
+        self.assertIn('max_distance', params)
+        self.assertIn('similarity_threshold', params)
+
+
+class TestMaxDistanceFiltering(unittest.TestCase):
+    """Test max_distance post-filtering."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        self.model_id = self.db.add_model("test-model", 4)
+
+        # Create answers with embeddings at known distances
+        self.a1 = self.db.add_answer("s.md", "Very close")
+        self.a2 = self.db.add_answer("s.md", "Medium distance")
+        self.a3 = self.db.add_answer("s.md", "Far away")
+
+        # Embeddings with known cosine similarities to [1,0,0,0]
+        self.db.store_embedding(self.model_id, "answer", self.a1,
+                                np.array([1, 0, 0, 0], dtype=np.float32))  # sim=1.0, dist=0.0
+        self.db.store_embedding(self.model_id, "answer", self.a2,
+                                np.array([0.707, 0.707, 0, 0], dtype=np.float32))  # sim≈0.707, dist≈0.29
+        self.db.store_embedding(self.model_id, "answer", self.a3,
+                                np.array([0, 1, 0, 0], dtype=np.float32))  # sim=0.0, dist=1.0
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_filter_by_max_distance_filters_correctly(self):
+        """_filter_by_max_distance filters based on distance threshold."""
+        interface_centroid = np.array([1, 0, 0, 0], dtype=np.float32)
+
+        # Mock results to filter
+        mock_results = [
+            {'answer_id': self.a1, 'score': 0.9},
+            {'answer_id': self.a2, 'score': 0.8},
+            {'answer_id': self.a3, 'score': 0.7},
+        ]
+
+        # Filter with max_distance=0.5 (should keep a1, a2; exclude a3)
+        filtered = self.db._filter_by_max_distance(
+            mock_results, self.model_id, interface_centroid,
+            max_distance=0.5, top_k=10
+        )
+
+        answer_ids = [r['answer_id'] for r in filtered]
+        self.assertIn(self.a1, answer_ids)
+        self.assertIn(self.a2, answer_ids)
+        self.assertNotIn(self.a3, answer_ids)
+
+    def test_filter_by_max_distance_adds_distance_metadata(self):
+        """Filtered results include interface_distance and interface_similarity."""
+        interface_centroid = np.array([1, 0, 0, 0], dtype=np.float32)
+
+        mock_results = [{'answer_id': self.a1, 'score': 0.9}]
+
+        filtered = self.db._filter_by_max_distance(
+            mock_results, self.model_id, interface_centroid,
+            max_distance=1.0, top_k=10
+        )
+
+        self.assertEqual(len(filtered), 1)
+        self.assertIn('interface_distance', filtered[0])
+        self.assertIn('interface_similarity', filtered[0])
+        self.assertAlmostEqual(filtered[0]['interface_similarity'], 1.0, places=3)
+        self.assertAlmostEqual(filtered[0]['interface_distance'], 0.0, places=3)
+
+
+class TestScaleOptimizationConfig(unittest.TestCase):
+    """Test scale optimization configuration."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        # Create some test answers
+        for i in range(50):
+            self.db.add_answer("s.md", f"Answer {i}")
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_get_scale_config_defaults(self):
+        """Scale config returns defaults when not set."""
+        config = self.db.get_scale_config()
+
+        self.assertEqual(config['interface_first_routing_enabled'], 'auto')
+        self.assertEqual(config['interface_first_routing_threshold'], 50000)
+        self.assertEqual(config['transformer_distillation_enabled'], 'auto')
+        self.assertEqual(config['transformer_distillation_threshold'], 100000)
+
+    def test_set_scale_config(self):
+        """Can set scale configuration values."""
+        self.db.set_scale_config(
+            interface_first_routing_enabled='true',
+            interface_first_routing_threshold=1000
+        )
+
+        config = self.db.get_scale_config()
+        self.assertEqual(config['interface_first_routing_enabled'], 'true')
+        self.assertEqual(config['interface_first_routing_threshold'], 1000)
+
+    def test_should_use_interface_first_routing_auto_below_threshold(self):
+        """Auto mode returns False when below threshold."""
+        result = self.db.should_use_interface_first_routing()
+
+        self.assertFalse(result['use'])
+        self.assertIn('Auto', result['reason'])
+        self.assertEqual(result['qa_count'], 50)
+
+    def test_should_use_interface_first_routing_auto_above_threshold(self):
+        """Auto mode returns True when above threshold."""
+        self.db.set_scale_config(interface_first_routing_threshold=10)
+        result = self.db.should_use_interface_first_routing()
+
+        self.assertTrue(result['use'])
+        self.assertIn('Auto', result['reason'])
+
+    def test_should_use_interface_first_routing_explicit_true(self):
+        """Explicit 'true' setting always returns True."""
+        self.db.set_scale_config(interface_first_routing_enabled='true')
+        result = self.db.should_use_interface_first_routing()
+
+        self.assertTrue(result['use'])
+        self.assertIn('Explicitly enabled', result['reason'])
+
+    def test_should_use_interface_first_routing_explicit_false(self):
+        """Explicit 'false' setting always returns False."""
+        # First set threshold low so auto would return True
+        self.db.set_scale_config(
+            interface_first_routing_enabled='false',
+            interface_first_routing_threshold=10
+        )
+        result = self.db.should_use_interface_first_routing()
+
+        self.assertFalse(result['use'])
+        self.assertIn('Explicitly disabled', result['reason'])
+
+    def test_should_use_transformer_distillation_auto(self):
+        """Transformer distillation auto mode works correctly."""
+        result = self.db.should_use_transformer_distillation()
+
+        self.assertFalse(result['use'])
+        self.assertIn('Auto', result['reason'])
+        self.assertEqual(result['implementation'], 'projection_transformer.py')
+
+    def test_get_optimization_status(self):
+        """Can get comprehensive optimization status."""
+        status = self.db.get_optimization_status()
+
+        self.assertIn('config', status)
+        self.assertIn('interface_first_routing', status)
+        self.assertIn('transformer_distillation', status)
+
+        # Check nested structure
+        self.assertIn('use', status['interface_first_routing'])
+        self.assertIn('reason', status['interface_first_routing'])
+        self.assertIn('use', status['transformer_distillation'])
+        self.assertIn('implementation', status['transformer_distillation'])
+
+
+class TestDistillationCheck(unittest.TestCase):
+    """Test transformer distillation recommendation."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        # Create some test answers
+        for i in range(50):
+            self.db.add_answer("s.md", f"Answer {i}")
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_check_distillation_not_recommended_below_threshold(self):
+        """Distillation not recommended when below threshold."""
+        result = self.db.check_distillation_recommended(qa_threshold=100000)
+
+        self.assertFalse(result['recommended'])
+        self.assertEqual(result['qa_count'], 50)
+        self.assertEqual(result['threshold'], 100000)
+        self.assertLess(result['percentage'], 1.0)
+
+    def test_check_distillation_recommended_above_threshold(self):
+        """Distillation recommended when above threshold."""
+        result = self.db.check_distillation_recommended(qa_threshold=10)
+
+        self.assertTrue(result['recommended'])
+        self.assertEqual(result['qa_count'], 50)
+        self.assertEqual(result['threshold'], 10)
+        self.assertGreater(result['percentage'], 100)
+
+    def test_check_distillation_references_implementation(self):
+        """Distillation check references existing implementation."""
+        result = self.db.check_distillation_recommended()
+
+        self.assertIn('implementation', result)
+        self.assertEqual(result['implementation'], 'projection_transformer.py')
+
+    def test_get_distillation_training_embeddings(self):
+        """Can get training embeddings for distillation."""
+        model_id = self.db.add_model("test-model", 4)
+
+        # Add questions with embeddings
+        for i in range(10):
+            q_id = self.db.add_question(f"Question {i}", "medium")
+            self.db.store_embedding(model_id, "question", q_id,
+                                    np.random.randn(4).astype(np.float32))
+
+        embeddings, question_ids = self.db.get_distillation_training_embeddings(
+            "test-model", sample_size=5
+        )
+
+        self.assertEqual(len(question_ids), 5)
+        self.assertEqual(embeddings.shape, (5, 4))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

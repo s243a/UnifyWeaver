@@ -1149,14 +1149,25 @@ class KGTopologyAPI(LDAProjectionDB):
         interface_id: int,
         model_name: str,
         mh_projection_id: int = None,
-        top_k: int = 5
+        top_k: int = 5,
+        use_interface_first_routing: bool = False,
+        max_distance: float = None,
+        similarity_threshold: float = None
     ) -> List[Dict[str, Any]]:
         """
-        Search within a specific interface's cluster subset.
+        Search within a specific interface's context.
 
-        This implements "Interface-First Routing" - an optional optimization
-        that first routes to an interface, then searches only within
-        that interface's clusters.
+        Supports multiple modes:
+
+        1. **Default mode**: Regular search, results naturally match interface
+           topics due to semantic similarity.
+
+        2. **Interface-First Routing** (optimization): Pre-filter answers by
+           similarity to interface centroid, then search only that subset.
+           Enable with `use_interface_first_routing=True`.
+
+        3. **Max distance filtering** (convenience): Post-filter results to
+           only include answers within `max_distance` of interface centroid.
 
         Args:
             query_text: The search query
@@ -1164,10 +1175,189 @@ class KGTopologyAPI(LDAProjectionDB):
             model_name: Embedding model name
             mh_projection_id: Multi-head projection ID
             top_k: Number of results
+            use_interface_first_routing: If True, pre-filter answers by
+                similarity to interface centroid before searching (optimization)
+            max_distance: If set, post-filter results to only include answers
+                within this cosine distance (1 - similarity) from interface centroid
+            similarity_threshold: For interface-first routing, minimum similarity
+                to interface centroid to include an answer (default: 0.5)
 
         Returns:
-            Search results filtered to interface's clusters
+            Search results, optionally filtered by interface proximity
         """
+        model_info = self.get_model(model_name)
+        if not model_info:
+            return []
+        model_id = model_info['model_id']
+
+        # Get interface centroid for filtering modes
+        interface_centroid = None
+        if use_interface_first_routing or max_distance is not None:
+            interface_centroid = self.get_interface_centroid(interface_id, model_id)
+            if interface_centroid is None:
+                # Fall back to computing it
+                interface_centroid = self.compute_interface_centroid(interface_id, model_id)
+
+        # Interface-First Routing: pre-filter answers by similarity to interface centroid
+        if use_interface_first_routing and interface_centroid is not None:
+            results = self._interface_first_search(
+                query_text=query_text,
+                model_name=model_name,
+                model_id=model_id,
+                interface_centroid=interface_centroid,
+                mh_projection_id=mh_projection_id,
+                top_k=top_k,
+                similarity_threshold=similarity_threshold or 0.5
+            )
+        else:
+            # Default: regular search
+            results = self.search_with_context(
+                query_text=query_text,
+                model_name=model_name,
+                mh_projection_id=mh_projection_id,
+                top_k=top_k if max_distance is None else top_k * 3,
+                include_foundational=False,
+                include_prerequisites=False,
+                include_extensions=False,
+                include_next_steps=False
+            )
+
+        # Max distance post-filtering (convenience option)
+        if max_distance is not None and interface_centroid is not None:
+            results = self._filter_by_max_distance(
+                results, model_id, interface_centroid, max_distance, top_k
+            )
+
+        return results
+
+    def _interface_first_search(
+        self,
+        query_text: str,
+        model_name: str,
+        model_id: int,
+        interface_centroid: np.ndarray,
+        mh_projection_id: int,
+        top_k: int,
+        similarity_threshold: float
+    ) -> List[Dict[str, Any]]:
+        """
+        Interface-First Routing optimization.
+
+        1. Filter answers by similarity to interface centroid
+        2. Run multi_head_search on filtered subset
+
+        This reduces computation for large Q-A databases by narrowing
+        the search space before applying the more expensive multi-head routing.
+        """
+        # Get all answer embeddings
+        answer_ids, answer_matrix = self.get_all_answer_embeddings(model_id)
+
+        if len(answer_ids) == 0:
+            return []
+
+        # Normalize answer embeddings
+        answer_norms = np.linalg.norm(answer_matrix, axis=1, keepdims=True)
+        answer_norms = np.where(answer_norms > 0, answer_norms, 1)
+        answer_matrix_normed = answer_matrix / answer_norms
+
+        # Compute similarity to interface centroid
+        interface_similarities = answer_matrix_normed @ interface_centroid
+
+        # Filter to answers above threshold
+        mask = interface_similarities >= similarity_threshold
+        filtered_indices = np.where(mask)[0]
+
+        if len(filtered_indices) == 0:
+            # No answers meet threshold, fall back to top answers by interface similarity
+            top_by_interface = np.argsort(-interface_similarities)[:top_k * 2]
+            filtered_indices = top_by_interface
+
+        filtered_answer_ids = [answer_ids[i] for i in filtered_indices]
+        filtered_embeddings = answer_matrix[filtered_indices]
+
+        # Now search within filtered subset
+        query_emb = self._embed_query(query_text, model_name)
+
+        # Normalize
+        query_norm = np.linalg.norm(query_emb)
+        if query_norm > 0:
+            query_emb = query_emb / query_norm
+
+        filtered_norms = np.linalg.norm(filtered_embeddings, axis=1, keepdims=True)
+        filtered_norms = np.where(filtered_norms > 0, filtered_norms, 1)
+        filtered_normed = filtered_embeddings / filtered_norms
+
+        # Direct search on filtered subset
+        scores = filtered_normed @ query_emb
+
+        # Get top-k from filtered set
+        top_indices = np.argsort(-scores)[:top_k]
+
+        results = []
+        for idx in top_indices:
+            answer_id = filtered_answer_ids[idx]
+            answer = self.get_answer(answer_id)
+            results.append({
+                'answer_id': answer_id,
+                'score': float(scores[idx]),
+                'interface_similarity': float(interface_similarities[filtered_indices[idx]]),
+                'text': answer['text'][:500] if answer else '',
+                'record_id': answer.get('record_id', '') if answer else '',
+                'source_file': answer.get('source_file', '') if answer else ''
+            })
+
+        return results
+
+    def _filter_by_max_distance(
+        self,
+        results: List[Dict[str, Any]],
+        model_id: int,
+        interface_centroid: np.ndarray,
+        max_distance: float,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Post-filter results by maximum distance from interface centroid.
+
+        Distance is computed as (1 - cosine_similarity).
+        """
+        filtered = []
+
+        for result in results:
+            answer_id = result['answer_id']
+
+            # Get answer embedding using parent class method
+            answer_emb = self.get_embedding(model_id, 'answer', answer_id)
+
+            if answer_emb is not None:
+                # Normalize
+                norm = np.linalg.norm(answer_emb)
+                if norm > 0:
+                    answer_emb = answer_emb / norm
+
+                # Compute distance (1 - similarity)
+                similarity = float(np.dot(answer_emb, interface_centroid))
+                distance = 1.0 - similarity
+
+                if distance <= max_distance:
+                    result['interface_distance'] = distance
+                    result['interface_similarity'] = similarity
+                    filtered.append(result)
+
+                    if len(filtered) >= top_k:
+                        break
+
+        return filtered
+
+    def _legacy_search_via_interface(
+        self,
+        query_text: str,
+        interface_id: int,
+        model_name: str,
+        mh_projection_id: int = None,
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Legacy: Search filtered to interface's explicit cluster membership."""
         # Get interface clusters
         interface_clusters = self.get_interface_clusters(interface_id)
         if not interface_clusters:
@@ -1240,7 +1430,7 @@ class KGTopologyAPI(LDAProjectionDB):
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT c.cluster_id, c.name
-            FROM clusters c
+            FROM qa_clusters c
         """)
 
         clusters = []
@@ -1301,6 +1491,292 @@ class KGTopologyAPI(LDAProjectionDB):
                 self.delete_interface(iface_id)
 
         return final_interfaces
+
+    # =========================================================================
+    # SCALE OPTIMIZATIONS CONFIGURATION
+    # =========================================================================
+    #
+    # Configuration for automatic optimization selection based on data scale.
+    #
+    # Default thresholds:
+    #   - interface_first_routing: 50,000 Q-A pairs
+    #   - transformer_distillation: 100,000 Q-A pairs
+    #
+    # See: docs/proposals/TRANSFORMER_DISTILLATION.md
+    #      projection_transformer.py
+
+    def get_scale_config(self) -> Dict[str, Any]:
+        """
+        Get current scale optimization configuration.
+
+        Configuration is stored in a settings table, with defaults if not set.
+        """
+        cursor = self.conn.cursor()
+
+        # Create settings table if not exists
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS kg_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        self.conn.commit()
+
+        # Default configuration
+        defaults = {
+            'interface_first_routing_enabled': 'auto',
+            'interface_first_routing_threshold': '50000',
+            'transformer_distillation_enabled': 'auto',
+            'transformer_distillation_threshold': '100000',
+        }
+
+        config = {}
+        for key, default in defaults.items():
+            cursor.execute("SELECT value FROM kg_settings WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            value = row['value'] if row else default
+
+            # Convert types
+            if key.endswith('_threshold'):
+                config[key] = int(value)
+            elif key.endswith('_enabled'):
+                config[key] = value  # 'auto', 'true', 'false'
+            else:
+                config[key] = value
+
+        return config
+
+    def set_scale_config(self, **kwargs):
+        """
+        Set scale optimization configuration.
+
+        Args:
+            interface_first_routing_enabled: 'auto', 'true', or 'false'
+            interface_first_routing_threshold: Q-A count threshold
+            transformer_distillation_enabled: 'auto', 'true', or 'false'
+            transformer_distillation_threshold: Q-A count threshold
+        """
+        cursor = self.conn.cursor()
+
+        # Create settings table if not exists
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS kg_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        valid_keys = {
+            'interface_first_routing_enabled',
+            'interface_first_routing_threshold',
+            'transformer_distillation_enabled',
+            'transformer_distillation_threshold',
+        }
+
+        for key, value in kwargs.items():
+            if key in valid_keys:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO kg_settings (key, value, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                """, (key, str(value)))
+
+        self.conn.commit()
+
+    def should_use_interface_first_routing(self) -> Dict[str, Any]:
+        """
+        Check if interface-first routing should be used based on configuration.
+
+        Returns decision and reasoning.
+        """
+        config = self.get_scale_config()
+        cursor = self.conn.cursor()
+
+        cursor.execute("SELECT COUNT(*) as count FROM answers")
+        qa_count = cursor.fetchone()['count']
+
+        enabled_setting = config['interface_first_routing_enabled']
+        threshold = config['interface_first_routing_threshold']
+
+        if enabled_setting == 'true':
+            return {
+                'use': True,
+                'reason': 'Explicitly enabled in configuration',
+                'qa_count': qa_count,
+                'threshold': threshold
+            }
+        elif enabled_setting == 'false':
+            return {
+                'use': False,
+                'reason': 'Explicitly disabled in configuration',
+                'qa_count': qa_count,
+                'threshold': threshold
+            }
+        else:  # auto
+            use = qa_count >= threshold
+            return {
+                'use': use,
+                'reason': f"Auto: {qa_count:,} Q-A pairs {'≥' if use else '<'} {threshold:,} threshold",
+                'qa_count': qa_count,
+                'threshold': threshold
+            }
+
+    def should_use_transformer_distillation(self) -> Dict[str, Any]:
+        """
+        Check if transformer distillation should be used based on configuration.
+
+        Returns decision and reasoning.
+        """
+        config = self.get_scale_config()
+        cursor = self.conn.cursor()
+
+        cursor.execute("SELECT COUNT(*) as count FROM answers")
+        qa_count = cursor.fetchone()['count']
+
+        enabled_setting = config['transformer_distillation_enabled']
+        threshold = config['transformer_distillation_threshold']
+
+        if enabled_setting == 'true':
+            return {
+                'use': True,
+                'reason': 'Explicitly enabled in configuration',
+                'qa_count': qa_count,
+                'threshold': threshold,
+                'implementation': 'projection_transformer.py'
+            }
+        elif enabled_setting == 'false':
+            return {
+                'use': False,
+                'reason': 'Explicitly disabled in configuration',
+                'qa_count': qa_count,
+                'threshold': threshold,
+                'implementation': 'projection_transformer.py'
+            }
+        else:  # auto
+            use = qa_count >= threshold
+            return {
+                'use': use,
+                'reason': f"Auto: {qa_count:,} Q-A pairs {'≥' if use else '<'} {threshold:,} threshold",
+                'qa_count': qa_count,
+                'threshold': threshold,
+                'implementation': 'projection_transformer.py'
+            }
+
+    def get_optimization_status(self) -> Dict[str, Any]:
+        """
+        Get comprehensive status of all scale optimizations.
+
+        Use this during training/deployment to determine which optimizations
+        to enable based on current data scale and configuration.
+        """
+        return {
+            'config': self.get_scale_config(),
+            'interface_first_routing': self.should_use_interface_first_routing(),
+            'transformer_distillation': self.should_use_transformer_distillation(),
+        }
+
+    # =========================================================================
+    # TRANSFORMER DISTILLATION (Scale Optimization)
+    # =========================================================================
+    #
+    # Full implementation in: projection_transformer.py
+    #
+    # Usage:
+    #     from projection_transformer import (
+    #         ProjectionTransformer,
+    #         train_distillation,
+    #         evaluate_equivalence,
+    #         optimal_architecture
+    #     )
+    #
+    # This section provides database integration for tracking distillation status.
+
+    def check_distillation_recommended(self, qa_threshold: int = 100000) -> Dict[str, Any]:
+        """
+        Check if transformer distillation is recommended based on Q-A count.
+
+        Transformer distillation compresses the embedding + softmax routing
+        into a smaller, faster model. See projection_transformer.py for the
+        actual implementation.
+
+        Args:
+            qa_threshold: Q-A count threshold before distillation is recommended
+
+        Returns:
+            Dict with recommendation status and metrics
+        """
+        cursor = self.conn.cursor()
+
+        # Get Q-A count
+        cursor.execute("SELECT COUNT(*) as count FROM answers")
+        qa_count = cursor.fetchone()['count']
+
+        recommended = qa_count >= qa_threshold
+        percentage = (qa_count / qa_threshold * 100) if qa_threshold > 0 else 0
+
+        return {
+            'recommended': recommended,
+            'qa_count': qa_count,
+            'threshold': qa_threshold,
+            'percentage': round(percentage, 1),
+            'message': f"Distillation {'recommended' if recommended else 'not needed'}: "
+                      f"{qa_count:,} Q-A pairs ({percentage:.1f}% of {qa_threshold:,} threshold)",
+            'implementation': 'projection_transformer.py'
+        }
+
+    def get_distillation_training_embeddings(
+        self,
+        model_name: str,
+        sample_size: int = None
+    ) -> Tuple[np.ndarray, List[int]]:
+        """
+        Get query embeddings for transformer distillation training.
+
+        Use with projection_transformer.train_distillation():
+
+            embeddings, question_ids = db.get_distillation_training_embeddings(model_name)
+            train_distillation(transformer, lda_projection, embeddings)
+
+        Args:
+            model_name: Embedding model name
+            sample_size: Optional limit on training examples
+
+        Returns:
+            Tuple of (embeddings array, question_ids list)
+        """
+        model_info = self.get_model(model_name)
+        if not model_info:
+            return np.array([]), []
+
+        model_id = model_info['model_id']
+        cursor = self.conn.cursor()
+
+        # Get questions that have embeddings stored
+        query = """
+            SELECT e.entity_id as question_id
+            FROM embeddings e
+            JOIN questions q ON e.entity_id = q.question_id
+            WHERE e.model_id = ? AND e.entity_type = 'question'
+        """
+
+        if sample_size:
+            query += f" LIMIT {sample_size}"
+
+        cursor.execute(query, (model_id,))
+
+        embeddings = []
+        question_ids = []
+        for row in cursor.fetchall():
+            q_id = row['question_id']
+            emb = self.get_embedding(model_id, 'question', q_id)
+            if emb is not None:
+                embeddings.append(emb)
+                question_ids.append(q_id)
+
+        if embeddings:
+            return np.stack(embeddings), question_ids
+        return np.array([]), []
 
     # =========================================================================
     # INTERFACE METRICS
