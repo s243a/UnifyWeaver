@@ -359,11 +359,19 @@ build_query_plan(Pred/Arity, Options, Modes, Plan) :-
         partition_recursive_clauses(Pred, Arity, ExpandedClauses, BaseClauses, RecClauses),
         (   RecClauses == []
         ->  classify_clauses(BaseClauses, Classification),
-            build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Modes, none, Plan)
-        ;   build_recursive_plan(HeadSpec, [HeadSpec], BaseClauses, RecClauses, Options, Modes, Plan)
+            build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Modes, none, Plan0)
+        ;   build_recursive_plan(HeadSpec, [HeadSpec], BaseClauses, RecClauses, Options, Modes, Plan0)
         )
-    ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan)
-    ).
+    ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan0)
+    ),
+    apply_query_modifiers_to_plan(Options, Plan0, Plan).
+
+apply_query_modifiers_to_plan(Options, Plan0, Plan) :-
+    get_dict(root, Plan0, Root0),
+    get_dict(head, Plan0, HeadSpec),
+    get_dict(arity, HeadSpec, Arity),
+    apply_query_modifiers(Options, Arity, Root0, Root),
+    put_dict(root, Plan0, Root, Plan).
 
 partition_recursive_clauses(Pred, Arity, Clauses, BaseClauses, RecClauses) :-
     partition(clause_is_recursive(Pred, Arity), Clauses, RecClauses, BaseClauses).
@@ -506,10 +514,9 @@ build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Modes, SeedOverride, 
         },
         EndFact is Arity - 1,
         findall(Idx, (between(0, EndFact, I), Idx is InputCount+I), RightCols),
-        Root1 = projection{type:projection, input:JoinNode, columns:RightCols, width:Arity}
-    ;   Root1 = Root0
+        Root = projection{type:projection, input:JoinNode, columns:RightCols, width:Arity}
+    ;   Root = Root0
     ),
-    apply_query_modifiers(Options, Arity, Root1, Root),
     Plan = plan{
         head:HeadSpec,
         root:Root,
@@ -523,10 +530,9 @@ build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Modes, SeedO
     HeadSpec = predicate{name:Pred, arity:Arity},
     build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Modes, SeedOverride, Node, Relations),
     dedup_relations(Relations, UniqueRelations),
-    apply_query_modifiers(Options, Arity, Node, Root),
     Plan = plan{
         head:HeadSpec,
-        root:Root,
+        root:Node,
         relations:UniqueRelations,
         metadata:_{classification:single_rule, options:Options, modes:Modes},
         is_recursive:false
@@ -536,8 +542,7 @@ build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Modes, SeedOv
     append(RelationLists, RelationsFlat),
     dedup_relations(RelationsFlat, Relations),
     HeadSpec = predicate{name:Pred, arity:Arity},
-    Root0 = union{type:union, sources:Nodes, width:Arity},
-    apply_query_modifiers(Options, Arity, Root0, Root),
+    Root = union{type:union, sources:Nodes, width:Arity},
     Plan = plan{
         head:HeadSpec,
         root:Root,
@@ -621,14 +626,13 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
     append(BaseRelations, RecursiveRelations, MainRelations0),
     append(NeedRelations, MainRelations0, CombinedRelations0),
     dedup_relations(CombinedRelations0, CombinedRelations),
-    Root0 = fixpoint{
+    Root = fixpoint{
         type:fixpoint,
         head:HeadSpec,
         base:BaseRoot,
         recursive:RecursiveNodes,
         width:Arity
     },
-    apply_query_modifiers(Options, Arity, Root0, Root),
     Plan = plan{
         head:HeadSpec,
         root:Root,
@@ -648,13 +652,11 @@ build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
     append(RelationLists, RelationsFlat0),
     append(NeedRelations, RelationsFlat0, RelationsFlat),
     dedup_relations(RelationsFlat, CombinedRelations),
-    Root0 = mutual_fixpoint{
+    Root = mutual_fixpoint{
         type:mutual_fixpoint,
         head:HeadSpec,
         members:MemberStructs
     },
-    get_dict(arity, HeadSpec, Arity),
-    apply_query_modifiers(Options, Arity, Root0, Root),
     Plan = plan{
         head:HeadSpec,
         root:Root,
