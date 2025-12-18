@@ -2016,21 +2016,21 @@ harness_source(ModuleClass, Source) :-
 
 harness_source(ModuleClass, Params, Source) :-
     (   Params == []
-    ->  ParamDecl = '',
-        ExecCall = 'executor.Execute(result.Plan)'
+    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\nvar trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
     ;   csharp_params_literal(Params, ParamsLiteral),
-        format(atom(ParamDecl), 'var parameters = ~w;~n', [ParamsLiteral]),
-        ExecCall = 'executor.Execute(result.Plan, parameters)'
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
     ),
     format(atom(Source),
-'using System;
-using System.Linq;
-using UnifyWeaver.QueryRuntime;
-using System.Text.Json;
-using System.Text.Json.Nodes;
+ 'using System;
+ using System.Linq;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
 
 var result = UnifyWeaver.Generated.~w.Build();
-var executor = new QueryExecutor(result.Provider);
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
 ~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
  string FormatValue(object? value) => value switch
@@ -2051,9 +2051,9 @@ var executor = new QueryExecutor(result.Provider);
         continue;
     }
 
-    Console.WriteLine(string.Join(\",\", projected));
- }
- ', [ModuleClass, ParamDecl, ExecCall]).
+     Console.WriteLine(string.Join(\",\", projected));
+  }
+  ', [ModuleClass, ParamDecl, ExecCall]).
 
 harness_source_multi_mode_dispatch(ModuleClass, Source) :-
     format(atom(Source),
@@ -2074,22 +2074,24 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
  };
 
  void PrintRows((InMemoryRelationProvider Provider, QueryPlan Plan) result, object[][] parameters)
-{
-    var executor = new QueryExecutor(result.Provider);
-    foreach (var row in executor.Execute(result.Plan, parameters))
-    {
-        var projected = row.Take(result.Plan.Head.Arity)
-                           .Select(FormatValue)
-                           .ToArray();
+ {
+     var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+     var _planText = QueryPlanExplainer.Explain(result.Plan);
+     var trace = new QueryExecutionTrace();
+     foreach (var row in executor.Execute(result.Plan, parameters, trace))
+     {
+         var projected = row.Take(result.Plan.Head.Arity)
+                            .Select(FormatValue)
+                            .ToArray();
 
         if (projected.Length == 0)
         {
             continue;
         }
 
-        Console.WriteLine(string.Join(\",\", projected));
-    }
-}
+         Console.WriteLine(string.Join(\",\", projected));
+     }
+ }
 
 var result0 = UnifyWeaver.Generated.~w.BuildForInputs(0);
 PrintRows(result0, new object[][] { new object[]{ \"alice\" } });

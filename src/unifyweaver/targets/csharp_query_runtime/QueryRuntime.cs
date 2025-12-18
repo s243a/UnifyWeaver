@@ -6,10 +6,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Xml.Linq;
 
 namespace UnifyWeaver.QueryRuntime
@@ -250,6 +252,317 @@ namespace UnifyWeaver.QueryRuntime
         IReadOnlyList<int>? InputPositions = null
     );
 
+    public sealed record QueryExecutorOptions(bool ReuseCaches = false);
+
+    public sealed record QueryNodeTrace(
+        int Id,
+        string NodeType,
+        long Invocations,
+        long Enumerations,
+        long Rows,
+        TimeSpan Elapsed
+    );
+
+    public sealed class QueryExecutionTrace
+    {
+        private sealed class NodeStats
+        {
+            public int Id { get; init; }
+
+            public long Invocations;
+
+            public long Enumerations;
+
+            public long Rows;
+
+            public TimeSpan Elapsed;
+        }
+
+        private sealed class ReferencePlanNodeComparer : IEqualityComparer<PlanNode>
+        {
+            public static readonly ReferencePlanNodeComparer Instance = new();
+
+            public bool Equals(PlanNode? x, PlanNode? y) => ReferenceEquals(x, y);
+
+            public int GetHashCode(PlanNode obj) => RuntimeHelpers.GetHashCode(obj);
+        }
+
+        private readonly Dictionary<PlanNode, NodeStats> _stats = new(ReferencePlanNodeComparer.Instance);
+        private int _nextId = 1;
+
+        private NodeStats GetOrAdd(PlanNode node)
+        {
+            if (!_stats.TryGetValue(node, out var stats))
+            {
+                stats = new NodeStats { Id = _nextId++ };
+                _stats.Add(node, stats);
+            }
+
+            return stats;
+        }
+
+        internal void RecordInvocation(PlanNode node)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+            GetOrAdd(node).Invocations++;
+        }
+
+        internal IEnumerable<object[]> WrapEnumeration(PlanNode node, IEnumerable<object[]> source)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+            if (source is null) throw new ArgumentNullException(nameof(source));
+
+            var stats = GetOrAdd(node);
+
+            return Iterator();
+
+            IEnumerable<object[]> Iterator()
+            {
+                stats.Enumerations++;
+                var stopwatch = Stopwatch.StartNew();
+                long rows = 0;
+                try
+                {
+                    foreach (var row in source)
+                    {
+                        rows++;
+                        yield return row;
+                    }
+                }
+                finally
+                {
+                    stopwatch.Stop();
+                    stats.Rows += rows;
+                    stats.Elapsed += stopwatch.Elapsed;
+                }
+            }
+        }
+
+        public IReadOnlyList<QueryNodeTrace> Snapshot()
+        {
+            return _stats
+                .Select(kvp =>
+                {
+                    var stats = kvp.Value;
+                    return new QueryNodeTrace(
+                        stats.Id,
+                        kvp.Key.GetType().Name,
+                        stats.Invocations,
+                        stats.Enumerations,
+                        stats.Rows,
+                        stats.Elapsed);
+                })
+                .OrderBy(s => s.Id)
+                .ToList();
+        }
+
+        public override string ToString()
+        {
+            var lines = Snapshot()
+                .Select(s =>
+                    $"[{s.Id}] {s.NodeType} invocations={s.Invocations} enumerations={s.Enumerations} rows={s.Rows} elapsed={s.Elapsed}");
+            return string.Join(Environment.NewLine, lines);
+        }
+    }
+
+    public static class QueryPlanExplainer
+    {
+        private sealed class ReferencePlanNodeComparer : IEqualityComparer<PlanNode>
+        {
+            public static readonly ReferencePlanNodeComparer Instance = new();
+
+            public bool Equals(PlanNode? x, PlanNode? y) => ReferenceEquals(x, y);
+
+            public int GetHashCode(PlanNode obj) => RuntimeHelpers.GetHashCode(obj);
+        }
+
+        public static string Explain(QueryPlan plan)
+        {
+            if (plan is null) throw new ArgumentNullException(nameof(plan));
+
+            var builder = new StringBuilder();
+            builder.AppendLine($"QueryPlan head={plan.Head} recursive={plan.IsRecursive}");
+            if (plan.InputPositions is { Count: > 0 })
+            {
+                builder.AppendLine($"InputPositions=[{string.Join(",", plan.InputPositions)}]");
+            }
+
+            var ids = new Dictionary<PlanNode, int>(ReferencePlanNodeComparer.Instance);
+            var expanded = new HashSet<PlanNode>(ReferencePlanNodeComparer.Instance);
+            var nextId = 1;
+
+            void WriteNode(string indent, string label, PlanNode node)
+            {
+                if (!ids.TryGetValue(node, out var id))
+                {
+                    id = nextId++;
+                    ids[node] = id;
+                }
+
+                var alreadyExpanded = expanded.Contains(node);
+                builder.Append(indent)
+                    .Append(label)
+                    .Append(": [")
+                    .Append(id)
+                    .Append("] ")
+                    .Append(DescribeNode(node));
+                if (alreadyExpanded)
+                {
+                    builder.AppendLine(" (ref)");
+                    return;
+                }
+
+                builder.AppendLine();
+                expanded.Add(node);
+
+                var childIndent = indent + "  ";
+                switch (node)
+                {
+                    case ParamSeedNode:
+                    case RelationScanNode:
+                    case RecursiveRefNode:
+                    case CrossRefNode:
+                    case EmptyNode:
+                    case UnitNode:
+                        return;
+
+                    case SelectionNode selection:
+                        WriteNode(childIndent, "input", selection.Input);
+                        return;
+
+                    case NegationNode negation:
+                        WriteNode(childIndent, "input", negation.Input);
+                        return;
+
+                    case AggregateNode aggregate:
+                        WriteNode(childIndent, "input", aggregate.Input);
+                        return;
+
+                    case ProjectionNode projection:
+                        WriteNode(childIndent, "input", projection.Input);
+                        return;
+
+                    case MaterializeNode materialize:
+                        WriteNode(childIndent, "plan", materialize.Plan);
+                        return;
+
+                    case KeyJoinNode keyJoin:
+                        WriteNode(childIndent, "left", keyJoin.Left);
+                        WriteNode(childIndent, "right", keyJoin.Right);
+                        return;
+
+                    case JoinNode join:
+                        WriteNode(childIndent, "left", join.Left);
+                        WriteNode(childIndent, "right", join.Right);
+                        return;
+
+                    case UnionNode union:
+                        for (var i = 0; i < union.Sources.Count; i++)
+                        {
+                            WriteNode(childIndent, $"source[{i}]", union.Sources[i]);
+                        }
+                        return;
+
+                    case DistinctNode distinct:
+                        WriteNode(childIndent, "input", distinct.Input);
+                        return;
+
+                    case FixpointNode fixpoint:
+                        WriteNode(childIndent, "base", fixpoint.BasePlan);
+                        for (var i = 0; i < fixpoint.RecursivePlans.Count; i++)
+                        {
+                            WriteNode(childIndent, $"recursive[{i}]", fixpoint.RecursivePlans[i]);
+                        }
+                        return;
+
+                    case MutualFixpointNode mutual:
+                        for (var i = 0; i < mutual.Members.Count; i++)
+                        {
+                            var member = mutual.Members[i];
+                            builder.AppendLine($"{childIndent}member[{i}] predicate={member.Predicate}");
+                            WriteNode(childIndent + "  ", "base", member.BasePlan);
+                            for (var j = 0; j < member.RecursivePlans.Count; j++)
+                            {
+                                WriteNode(childIndent + "  ", $"recursive[{j}]", member.RecursivePlans[j]);
+                            }
+                        }
+                        return;
+
+                    case AggregateSubplanNode aggregateSubplan:
+                        WriteNode(childIndent, "input", aggregateSubplan.Input);
+                        WriteNode(childIndent, "subplan", aggregateSubplan.Subplan);
+                        return;
+
+                    case ArithmeticNode arithmetic:
+                        WriteNode(childIndent, "input", arithmetic.Input);
+                        return;
+
+                    default:
+                        builder.AppendLine($"{childIndent}(children omitted for unsupported node type)");
+                        return;
+                }
+            }
+
+            WriteNode("", "root", plan.Root);
+            return builder.ToString();
+        }
+
+        private static string DescribeNode(PlanNode node) =>
+            node switch
+            {
+                ParamSeedNode seed => $"ParamSeed predicate={seed.Predicate} width={seed.Width} inputs=[{string.Join(",", seed.InputPositions)}]",
+                MaterializeNode materialize => $"Materialize id=\"{materialize.Id}\" width={materialize.Width}",
+                RelationScanNode scan => $"RelationScan relation={scan.Relation}",
+                SelectionNode => "Selection",
+                NegationNode negation => $"Negation predicate={negation.Predicate}",
+                AggregateNode aggregate => $"Aggregate predicate={aggregate.Predicate} op={aggregate.Operation} groupBy=[{string.Join(",", aggregate.GroupByIndices)}] valueIndex={aggregate.ValueIndex} width={aggregate.Width}",
+                AggregateSubplanNode aggregateSubplan => $"AggregateSubplan op={aggregateSubplan.Operation} groupBy=[{string.Join(",", aggregateSubplan.GroupByIndices)}] valueIndex={aggregateSubplan.ValueIndex} width={aggregateSubplan.Width}",
+                ProjectionNode => "Projection",
+                KeyJoinNode join => $"KeyJoin leftKeys=[{string.Join(",", join.LeftKeys)}] rightKeys=[{string.Join(",", join.RightKeys)}] width={join.Width}",
+                JoinNode => "Join",
+                UnionNode union => $"Union sources={union.Sources.Count}",
+                DistinctNode distinct => $"Distinct comparer={(distinct.Comparer?.GetType().Name ?? "default")}",
+                FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
+                MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
+                RecursiveRefNode recursiveRef => $"RecursiveRef predicate={recursiveRef.Predicate} kind={recursiveRef.Kind}",
+                CrossRefNode crossRef => $"CrossRef predicate={crossRef.Predicate} kind={crossRef.Kind}",
+                ArithmeticNode arithmetic => $"Arithmetic resultIndex={arithmetic.ResultIndex} width={arithmetic.Width} expr={DescribeArithmetic(arithmetic.Expression)}",
+                EmptyNode empty => $"Empty width={empty.Width}",
+                UnitNode unit => $"Unit width={unit.Width}",
+                _ => node.GetType().Name
+            };
+
+        private static string DescribeArithmetic(ArithmeticExpression expression) =>
+            expression switch
+            {
+                ColumnExpression col => $"col({col.Index})",
+                ConstantExpression constant => $"const({FormatValue(constant.Value)})",
+                UnaryArithmeticExpression unary => $"{unary.Operator}({DescribeArithmetic(unary.Operand)})",
+                BinaryArithmeticExpression binary => $"({DescribeArithmetic(binary.Left)} {FormatOperator(binary.Operator)} {DescribeArithmetic(binary.Right)})",
+                _ => expression.GetType().Name
+            };
+
+        private static string FormatValue(object value) =>
+            value switch
+            {
+                null => "null",
+                string s => $"\"{s}\"",
+                _ => value.ToString() ?? string.Empty
+            };
+
+        private static string FormatOperator(ArithmeticBinaryOperator op) =>
+            op switch
+            {
+                ArithmeticBinaryOperator.Add => "+",
+                ArithmeticBinaryOperator.Subtract => "-",
+                ArithmeticBinaryOperator.Multiply => "*",
+                ArithmeticBinaryOperator.Divide => "/",
+                ArithmeticBinaryOperator.IntegerDivide => "//",
+                ArithmeticBinaryOperator.Modulo => "mod",
+                _ => op.ToString()
+            };
+    }
+
     /// <summary>
     /// Executes <see cref="QueryPlan"/> instances.
     /// Currently supports non-recursive plans; recursion-aware fixpoint
@@ -299,17 +612,22 @@ namespace UnifyWeaver.QueryRuntime
     {
         private readonly IRelationProvider _provider;
         private static readonly object NullFactIndexKey = new();
+        private readonly EvaluationContext? _cacheContext;
 
-        public QueryExecutor(IRelationProvider provider)
+        public QueryExecutor(IRelationProvider provider, QueryExecutorOptions? options = null)
         {
             _provider = provider ?? throw new ArgumentNullException(nameof(provider));
+            options ??= new QueryExecutorOptions();
+            _cacheContext = options.ReuseCaches ? new EvaluationContext() : null;
         }
 
-        public IEnumerable<object[]> Execute(QueryPlan plan, IEnumerable<object[]>? parameters = null)
+        public IEnumerable<object[]> Execute(QueryPlan plan, IEnumerable<object[]>? parameters = null, QueryExecutionTrace? trace = null)
         {
             if (plan is null) throw new ArgumentNullException(nameof(plan));
             var paramList = parameters?.ToList() ?? new List<object[]>();
-            var context = new EvaluationContext(paramList);
+            var context = _cacheContext is null
+                ? new EvaluationContext(paramList, trace: trace)
+                : new EvaluationContext(paramList, parent: _cacheContext, trace: trace);
             var result = Evaluate(plan.Root, context);
 
             if (plan.InputPositions is { Count: > 0 })
@@ -320,72 +638,110 @@ namespace UnifyWeaver.QueryRuntime
             return result;
         }
 
+        public void ClearCaches()
+        {
+            if (_cacheContext is null)
+            {
+                return;
+            }
+
+            _cacheContext.Facts.Clear();
+            _cacheContext.FactSets.Clear();
+            _cacheContext.FactIndices.Clear();
+            _cacheContext.JoinIndices.Clear();
+        }
+
         private IEnumerable<object[]> Evaluate(PlanNode node, EvaluationContext? context = null)
         {
+            var trace = context?.Trace;
+            trace?.RecordInvocation(node);
+
+            IEnumerable<object[]> result;
             switch (node)
             {
                 case ParamSeedNode seed:
-                    return EvaluateParamSeed(seed, context);
+                    result = EvaluateParamSeed(seed, context);
+                    break;
 
                 case MaterializeNode materialize:
-                    return EvaluateMaterialize(materialize, context);
+                    result = EvaluateMaterialize(materialize, context);
+                    break;
 
                 case RelationScanNode scan:
-                    return context is null
+                    result = context is null
                         ? _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>()
                         : GetFactsList(scan.Relation, context);
+                    break;
 
                 case SelectionNode selection:
-                    return Evaluate(selection.Input, context).Where(tuple => selection.Predicate(tuple));
+                    result = Evaluate(selection.Input, context).Where(tuple => selection.Predicate(tuple));
+                    break;
 
                 case NegationNode negation:
-                    return ExecuteNegation(negation, context);
+                    result = ExecuteNegation(negation, context);
+                    break;
 
                 case AggregateNode aggregate:
-                    return ExecuteAggregate(aggregate, context);
+                    result = ExecuteAggregate(aggregate, context);
+                    break;
 
                 case AggregateSubplanNode aggregateSubplan:
-                    return ExecuteAggregateSubplan(aggregateSubplan, context);
+                    result = ExecuteAggregateSubplan(aggregateSubplan, context);
+                    break;
 
                 case ArithmeticNode arithmetic:
-                    return ExecuteArithmetic(arithmetic, context);
+                    result = ExecuteArithmetic(arithmetic, context);
+                    break;
 
                 case ProjectionNode projection:
-                    return Evaluate(projection.Input, context).Select(tuple => projection.Project(tuple));
+                    result = Evaluate(projection.Input, context).Select(tuple => projection.Project(tuple));
+                    break;
 
                 case KeyJoinNode keyJoin:
-                    return ExecuteKeyJoin(keyJoin, context);
+                    result = ExecuteKeyJoin(keyJoin, context);
+                    break;
 
                 case JoinNode join:
-                    return ExecuteJoin(join, context);
+                    result = ExecuteJoin(join, context);
+                    break;
 
                 case UnionNode union:
-                    return ExecuteUnion(union, context);
+                    result = ExecuteUnion(union, context);
+                    break;
 
                 case DistinctNode distinct:
-                    return ExecuteDistinct(distinct, context);
+                    result = ExecuteDistinct(distinct, context);
+                    break;
 
                 case FixpointNode fixpoint:
-                    return ExecuteFixpoint(fixpoint, context);
+                    result = ExecuteFixpoint(fixpoint, context);
+                    break;
 
                 case MutualFixpointNode mutualFixpoint:
-                    return ExecuteMutualFixpoint(mutualFixpoint, context);
+                    result = ExecuteMutualFixpoint(mutualFixpoint, context);
+                    break;
 
                 case RecursiveRefNode recursiveRef:
-                    return EvaluateRecursiveReference(recursiveRef, context);
+                    result = EvaluateRecursiveReference(recursiveRef, context);
+                    break;
 
                 case CrossRefNode crossRef:
-                    return EvaluateCrossReference(crossRef, context);
+                    result = EvaluateCrossReference(crossRef, context);
+                    break;
 
                 case EmptyNode:
-                    return Enumerable.Empty<object[]>();
+                    result = Enumerable.Empty<object[]>();
+                    break;
 
                 case UnitNode unit:
-                    return EvaluateUnit(unit);
+                    result = EvaluateUnit(unit);
+                    break;
 
                 default:
                     throw new NotSupportedException($"Unsupported plan node: {node.GetType().Name}");
             }
+
+            return trace is null ? result : trace.WrapEnumeration(node, result);
         }
 
         private IEnumerable<object[]> ExecuteJoin(JoinNode join, EvaluationContext? context)
@@ -1831,9 +2187,10 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class EvaluationContext
         {
-            public EvaluationContext(IEnumerable<object[]>? parameters = null, EvaluationContext? parent = null)
+            public EvaluationContext(IEnumerable<object[]>? parameters = null, EvaluationContext? parent = null, QueryExecutionTrace? trace = null)
             {
                 Parameters = parameters?.ToList() ?? new List<object[]>();
+                Trace = trace ?? parent?.Trace;
                 Facts = parent?.Facts ?? new Dictionary<PredicateId, List<object[]>>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
@@ -1848,6 +2205,8 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<PredicateId, List<object[]>> Deltas { get; } = new();
 
             public IReadOnlyList<object[]> Parameters { get; }
+
+            public QueryExecutionTrace? Trace { get; }
 
             public Dictionary<string, List<object[]>> Materialized { get; } = new();
 
