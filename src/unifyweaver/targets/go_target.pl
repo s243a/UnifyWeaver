@@ -49,7 +49,15 @@
     % Phase 6: Distributed services
     compile_distributed_service_go/2,   % +Service, -GoCode
     generate_sharding_go/2,             % +Strategy, -GoCode
-    generate_replication_go/2           % +ReplicationFactor, -GoCode
+    generate_replication_go/2,          % +ReplicationFactor, -GoCode
+    % Phase 7: Service Discovery
+    compile_discovery_service_go/2,     % +Service, -GoCode
+    generate_health_check_go/2,         % +Config, -GoCode
+    generate_service_registry_go/2,     % +Backend, -GoCode
+    % Phase 8: Service Tracing
+    compile_traced_service_go/2,        % +Service, -GoCode
+    generate_tracer_go/2,               % +Config, -GoCode
+    generate_span_context_go/2          % +Context, -GoCode
 ]).
 
 :- use_module(library(lists)).
@@ -272,6 +280,26 @@ compile_service_to_go(Service, GoCode) :-
     !,
     % Phase 6: Distributed service
     compile_distributed_service_go(Service, GoCode).
+
+compile_service_to_go(Service, GoCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(discovery_enabled(true), Options)
+    ; member(discovery_backend(_), Options)
+    ; member(health_check(_), Options)
+    ),
+    !,
+    % Phase 7: Service Discovery
+    compile_discovery_service_go(Service, GoCode).
+
+compile_service_to_go(Service, GoCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(tracing(true), Options)
+    ; member(trace_exporter(_), Options)
+    ; member(trace_sampling(_), Options)
+    ),
+    !,
+    % Phase 8: Service Tracing
+    compile_traced_service_go(Service, GoCode).
 
 compile_service_to_go(Service, GoCode) :-
     Service = service(_Name, Options, _HandlerSpec),
@@ -2943,6 +2971,952 @@ generate_node_init_go(ServiceName, node(Id, Host, Port, Region), Code) :-
     format(string(Code), "~wServiceInstance.AddNode(&ClusterNode{NodeID: \"~w\", Host: \"~w\", Port: ~w, Region: \"~w\", Healthy: true})",
            [ServiceName, Id, Host, Port, Region]).
 generate_node_init_go(_, _, "// Unknown node format").
+
+%% ============================================
+%% SERVICE DISCOVERY (Phase 7)
+%% ============================================
+
+%% compile_discovery_service_go(+Service, -GoCode)
+%  Generate Go code for a service with discovery capabilities.
+compile_discovery_service_go(service(Name, Options, HandlerSpec), GoCode) :-
+    % Extract discovery configuration
+    ( member(discovery_backend(Backend), Options) -> true ; Backend = consul ),
+    ( member(health_check(HealthConfig), Options) -> true ; HealthConfig = http('/health', 30000) ),
+    ( member(discovery_ttl(TTL), Options) -> true ; TTL = 60 ),
+    ( member(discovery_tags(Tags), Options) -> true ; Tags = [] ),
+    ( member(stateful(true), Options) -> Stateful = "true" ; Stateful = "false" ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_go(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Convert to strings
+    backend_to_go_string(Backend, BackendStr),
+    health_config_to_go_string(HealthConfig, HealthStr, HealthIntervalStr),
+    tags_to_go_slice(Tags, TagsStr),
+    % Generate the discovery service
+    format(string(GoCode),
+"package main
+
+import (
+\t\"bytes\"
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"net\"
+\t\"net/http\"
+\t\"sync\"
+\t\"time\"
+)
+
+// Phase 7: Service Discovery Support
+
+// DiscoveryBackend represents supported discovery backends
+type DiscoveryBackend string
+
+const (
+\tDiscoveryConsul     DiscoveryBackend = \"consul\"
+\tDiscoveryEtcd       DiscoveryBackend = \"etcd\"
+\tDiscoveryDNS        DiscoveryBackend = \"dns\"
+\tDiscoveryKubernetes DiscoveryBackend = \"kubernetes\"
+\tDiscoveryZookeeper  DiscoveryBackend = \"zookeeper\"
+\tDiscoveryEureka     DiscoveryBackend = \"eureka\"
+)
+
+// HealthStatus represents service health
+type HealthStatus string
+
+const (
+\tHealthStatusHealthy   HealthStatus = \"healthy\"
+\tHealthStatusUnhealthy HealthStatus = \"unhealthy\"
+\tHealthStatusUnknown   HealthStatus = \"unknown\"
+)
+
+// ServiceInstance represents a registered service instance
+type ServiceInstance struct {
+\tServiceID     string            `json:\"service_id\"`
+\tServiceName   string            `json:\"service_name\"`
+\tHost          string            `json:\"host\"`
+\tPort          int               `json:\"port\"`
+\tTags          []string          `json:\"tags\"`
+\tMetadata      map[string]string `json:\"metadata\"`
+\tHealthStatus  HealthStatus      `json:\"health_status\"`
+\tLastHeartbeat time.Time         `json:\"last_heartbeat\"`
+}
+
+// HealthCheckConfig configures health checks
+type HealthCheckConfig struct {
+\tCheckType          string        `json:\"check_type\"`
+\tEndpoint           string        `json:\"endpoint\"`
+\tInterval           time.Duration `json:\"interval\"`
+\tTimeout            time.Duration `json:\"timeout\"`
+\tDeregisterAfter    time.Duration `json:\"deregister_after\"`
+}
+
+// ServiceRegistry interface for service registries
+type ServiceRegistry interface {
+\tRegister(instance *ServiceInstance) error
+\tDeregister(serviceID string) error
+\tDiscover(serviceName string, tags []string) ([]*ServiceInstance, error)
+\tHealthCheck(serviceID string) HealthStatus
+}
+
+// ConsulRegistry implements ServiceRegistry for Consul
+type ConsulRegistry struct {
+\tHost       string
+\tPort       int
+\tbaseURL    string
+\tregistered map[string]*ServiceInstance
+\tmu         sync.RWMutex
+}
+
+// NewConsulRegistry creates a new Consul registry
+func NewConsulRegistry(host string, port int) *ConsulRegistry {
+\treturn &ConsulRegistry{
+\t\tHost:       host,
+\t\tPort:       port,
+\t\tbaseURL:    fmt.Sprintf(\"http://%%s:%%d/v1\", host, port),
+\t\tregistered: make(map[string]*ServiceInstance),
+\t}
+}
+
+func (c *ConsulRegistry) Register(instance *ServiceInstance) error {
+\tpayload := map[string]interface{}{
+\t\t\"ID\":      instance.ServiceID,
+\t\t\"Name\":    instance.ServiceName,
+\t\t\"Address\": instance.Host,
+\t\t\"Port\":    instance.Port,
+\t\t\"Tags\":    instance.Tags,
+\t\t\"Meta\":    instance.Metadata,
+\t}
+\tdata, _ := json.Marshal(payload)
+\treq, _ := http.NewRequest(\"PUT\", c.baseURL+\"/agent/service/register\", bytes.NewReader(data))
+\treq.Header.Set(\"Content-Type\", \"application/json\")
+\tclient := &http.Client{Timeout: 5 * time.Second}
+\tresp, err := client.Do(req)
+\tif err != nil {
+\t\treturn err
+\t}
+\tdefer resp.Body.Close()
+\tc.mu.Lock()
+\tc.registered[instance.ServiceID] = instance
+\tc.mu.Unlock()
+\treturn nil
+}
+
+func (c *ConsulRegistry) Deregister(serviceID string) error {
+\treq, _ := http.NewRequest(\"PUT\", c.baseURL+\"/agent/service/deregister/\"+serviceID, nil)
+\tclient := &http.Client{Timeout: 5 * time.Second}
+\t_, err := client.Do(req)
+\tc.mu.Lock()
+\tdelete(c.registered, serviceID)
+\tc.mu.Unlock()
+\treturn err
+}
+
+func (c *ConsulRegistry) Discover(serviceName string, tags []string) ([]*ServiceInstance, error) {
+\turl := c.baseURL + \"/catalog/service/\" + serviceName
+\tresp, err := http.Get(url)
+\tif err != nil {
+\t\treturn nil, err
+\t}
+\tdefer resp.Body.Close()
+\tvar services []map[string]interface{}
+\tjson.NewDecoder(resp.Body).Decode(&services)
+\tvar instances []*ServiceInstance
+\tfor _, s := range services {
+\t\tinstance := &ServiceInstance{
+\t\t\tServiceID:   s[\"ServiceID\"].(string),
+\t\t\tServiceName: s[\"ServiceName\"].(string),
+\t\t\tHost:        s[\"ServiceAddress\"].(string),
+\t\t\tPort:        int(s[\"ServicePort\"].(float64)),
+\t\t}
+\t\tinstances = append(instances, instance)
+\t}
+\treturn instances, nil
+}
+
+func (c *ConsulRegistry) HealthCheck(serviceID string) HealthStatus {
+\tresp, err := http.Get(c.baseURL + \"/health/service/\" + serviceID)
+\tif err != nil {
+\t\treturn HealthStatusUnknown
+\t}
+\tdefer resp.Body.Close()
+\treturn HealthStatusHealthy
+}
+
+// LocalRegistry implements in-memory service registry
+type LocalRegistry struct {
+\tinstances map[string]*ServiceInstance
+\tmu        sync.RWMutex
+}
+
+// NewLocalRegistry creates a new local registry
+func NewLocalRegistry() *LocalRegistry {
+\treturn &LocalRegistry{
+\t\tinstances: make(map[string]*ServiceInstance),
+\t}
+}
+
+func (l *LocalRegistry) Register(instance *ServiceInstance) error {
+\tl.mu.Lock()
+\tdefer l.mu.Unlock()
+\tinstance.LastHeartbeat = time.Now()
+\tl.instances[instance.ServiceID] = instance
+\treturn nil
+}
+
+func (l *LocalRegistry) Deregister(serviceID string) error {
+\tl.mu.Lock()
+\tdefer l.mu.Unlock()
+\tdelete(l.instances, serviceID)
+\treturn nil
+}
+
+func (l *LocalRegistry) Discover(serviceName string, tags []string) ([]*ServiceInstance, error) {
+\tl.mu.RLock()
+\tdefer l.mu.RUnlock()
+\tvar results []*ServiceInstance
+\tfor _, instance := range l.instances {
+\t\tif instance.ServiceName == serviceName {
+\t\t\tresults = append(results, instance)
+\t\t}
+\t}
+\treturn results, nil
+}
+
+func (l *LocalRegistry) HealthCheck(serviceID string) HealthStatus {
+\tl.mu.RLock()
+\tdefer l.mu.RUnlock()
+\tinstance, ok := l.instances[serviceID]
+\tif !ok {
+\t\treturn HealthStatusUnknown
+\t}
+\tif time.Since(instance.LastHeartbeat) < 2*time.Minute {
+\t\treturn HealthStatusHealthy
+\t}
+\treturn HealthStatusUnhealthy
+}
+
+// HealthChecker performs health checks
+type HealthChecker struct {
+\tConfig  HealthCheckConfig
+\trunning bool
+\tstopCh  chan struct{}
+}
+
+// NewHealthChecker creates a new health checker
+func NewHealthChecker(config HealthCheckConfig) *HealthChecker {
+\treturn &HealthChecker{
+\t\tConfig: config,
+\t\tstopCh: make(chan struct{}),
+\t}
+}
+
+func (h *HealthChecker) CheckHTTP(host string, port int) HealthStatus {
+\turl := fmt.Sprintf(\"http://%%s:%%d%%s\", host, port, h.Config.Endpoint)
+\tclient := &http.Client{Timeout: h.Config.Timeout}
+\tresp, err := client.Get(url)
+\tif err != nil {
+\t\treturn HealthStatusUnhealthy
+\t}
+\tdefer resp.Body.Close()
+\tif resp.StatusCode == 200 {
+\t\treturn HealthStatusHealthy
+\t}
+\treturn HealthStatusUnhealthy
+}
+
+func (h *HealthChecker) CheckTCP(host string, port int) HealthStatus {
+\taddr := fmt.Sprintf(\"%%s:%%d\", host, port)
+\tconn, err := net.DialTimeout(\"tcp\", addr, h.Config.Timeout)
+\tif err != nil {
+\t\treturn HealthStatusUnhealthy
+\t}
+\tconn.Close()
+\treturn HealthStatusHealthy
+}
+
+func (h *HealthChecker) Check(host string, port int) HealthStatus {
+\tif h.Config.CheckType == \"http\" {
+\t\treturn h.CheckHTTP(host, port)
+\t}
+\treturn h.CheckTCP(host, port)
+}
+
+// ~wService is a discoverable service
+// Backend: ~w
+// TTL: ~w seconds
+type ~wService struct {
+\tName            string
+\tHost            string
+\tPort            int
+\tStateful        bool
+\tTimeoutMs       int
+\tTTL             int
+\tTags            []string
+\tState           map[string]interface{}
+\tmu              sync.RWMutex
+\trunning         bool
+\theartbeatStopCh chan struct{}
+\tRegistry        ServiceRegistry
+\tHealthConfig    HealthCheckConfig
+\tHealthChecker   *HealthChecker
+\tInstance        *ServiceInstance
+}
+
+// New~wService creates a new ~w service instance
+func New~wService(host string, port int) *~wService {
+\ts := &~wService{
+\t\tName:            \"~w\",
+\t\tHost:            host,
+\t\tPort:            port,
+\t\tStateful:        ~w,
+\t\tTimeoutMs:       ~w,
+\t\tTTL:             ~w,
+\t\tTags:            ~w,
+\t\tState:           make(map[string]interface{}),
+\t\theartbeatStopCh: make(chan struct{}),
+\t\tRegistry:        ~w,
+\t\tHealthConfig: HealthCheckConfig{
+\t\t\tCheckType: \"~w\",
+\t\t\tEndpoint:  \"~w\",
+\t\t\tInterval:  ~w,
+\t\t\tTimeout:   5 * time.Second,
+\t\t},
+\t}
+\ts.HealthChecker = NewHealthChecker(s.HealthConfig)
+\ts.Instance = &ServiceInstance{
+\t\tServiceID:   fmt.Sprintf(\"%%s-%%s-%%d\", s.Name, host, port),
+\t\tServiceName: s.Name,
+\t\tHost:        host,
+\t\tPort:        port,
+\t\tTags:        s.Tags,
+\t\tMetadata:    make(map[string]string),
+\t}
+\treturn s
+}
+
+// Register registers the service with the discovery backend
+func (s *~wService) Register() error {
+\terr := s.Registry.Register(s.Instance)
+\tif err == nil {
+\t\ts.startHeartbeat()
+\t}
+\treturn err
+}
+
+// Deregister deregisters the service
+func (s *~wService) Deregister() error {
+\ts.stopHeartbeat()
+\treturn s.Registry.Deregister(s.Instance.ServiceID)
+}
+
+// DiscoverPeers discovers other instances of this service
+func (s *~wService) DiscoverPeers() ([]*ServiceInstance, error) {
+\treturn s.Registry.Discover(s.Name, s.Tags)
+}
+
+func (s *~wService) startHeartbeat() {
+\tif s.running {
+\t\treturn
+\t}
+\ts.running = true
+\tgo func() {
+\t\tticker := time.NewTicker(time.Duration(s.TTL/2) * time.Second)
+\t\tdefer ticker.Stop()
+\t\tfor {
+\t\t\tselect {
+\t\t\tcase <-ticker.C:
+\t\t\t\ts.Instance.LastHeartbeat = time.Now()
+\t\t\t\ts.Instance.HealthStatus = s.HealthChecker.Check(s.Host, s.Port)
+\t\t\tcase <-s.heartbeatStopCh:
+\t\t\t\treturn
+\t\t\t}
+\t\t}
+\t}()
+}
+
+func (s *~wService) stopHeartbeat() {
+\tif s.running {
+\t\ts.running = false
+\t\tclose(s.heartbeatStopCh)
+\t}
+}
+
+// Call processes a request through the service
+func (s *~wService) Call(request interface{}) interface{} {
+\treturn s.handleRequest(request)
+}
+
+func (s *~wService) handleRequest(request interface{}) interface{} {
+~w
+}
+
+// Service instance
+var ~wServiceInstance = New~wService(\"localhost\", 8080)
+", [StructNameAtom, BackendStr, TTL,
+    StructNameAtom,
+    StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom,
+    Name, Stateful, Timeout, TTL, TagsStr,
+    BackendStr, HealthStr, HealthStr, HealthIntervalStr,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
+    HandlerCode, StructNameAtom, StructNameAtom]).
+
+%% backend_to_go_string(+Backend, -String)
+%  Convert discovery backend to Go code string.
+backend_to_go_string(consul, "NewConsulRegistry(\"localhost\", 8500)").
+backend_to_go_string(consul(Host, Port), Code) :-
+    format(string(Code), "NewConsulRegistry(\"~w\", ~w)", [Host, Port]).
+backend_to_go_string(etcd, "NewLocalRegistry()").
+backend_to_go_string(dns, "NewLocalRegistry()").
+backend_to_go_string(kubernetes, "NewLocalRegistry()").
+backend_to_go_string(_, "NewLocalRegistry()").
+
+%% health_config_to_go_string(+Config, -TypeString, -IntervalString)
+%  Extract health check type and interval from config.
+health_config_to_go_string(http(Path, Interval), Path, IntervalStr) :-
+    Ms is Interval / 1000,
+    format(string(IntervalStr), "~w * time.Second", [Ms]), !.
+health_config_to_go_string(http(Path, Interval, _), Path, IntervalStr) :-
+    Ms is Interval / 1000,
+    format(string(IntervalStr), "~w * time.Second", [Ms]), !.
+health_config_to_go_string(tcp(_, Interval), "tcp", IntervalStr) :-
+    Ms is Interval / 1000,
+    format(string(IntervalStr), "~w * time.Second", [Ms]), !.
+health_config_to_go_string(_, "/health", "30 * time.Second").
+
+%% tags_to_go_slice(+Tags, -String)
+%  Convert Prolog list of tags to Go slice string.
+tags_to_go_slice([], "[]string{}").
+tags_to_go_slice(Tags, Code) :-
+    Tags \= [],
+    maplist(quote_go_string, Tags, QuotedTags),
+    atomic_list_concat(QuotedTags, ', ', Inner),
+    format(string(Code), "[]string{~w}", [Inner]).
+
+quote_go_string(Atom, Quoted) :-
+    format(string(Quoted), "\"~w\"", [Atom]).
+
+%% generate_health_check_go(+Config, -Code)
+%  Generate Go health check configuration code.
+generate_health_check_go(http(Path, Interval), Code) :-
+    format(string(Code), "HealthCheckConfig{CheckType: \"http\", Endpoint: \"~w\", Interval: ~w * time.Millisecond}", [Path, Interval]).
+generate_health_check_go(tcp(Port, Interval), Code) :-
+    format(string(Code), "HealthCheckConfig{CheckType: \"tcp\", Endpoint: \"~w\", Interval: ~w * time.Millisecond}", [Port, Interval]).
+generate_health_check_go(_, "HealthCheckConfig{CheckType: \"http\", Endpoint: \"/health\", Interval: 30 * time.Second}").
+
+%% generate_service_registry_go(+Backend, -Code)
+%  Generate Go service registry initialization code.
+generate_service_registry_go(consul, "NewConsulRegistry(\"localhost\", 8500)").
+generate_service_registry_go(consul(Host, Port), Code) :-
+    format(string(Code), "NewConsulRegistry(\"~w\", ~w)", [Host, Port]).
+generate_service_registry_go(_, "NewLocalRegistry()").
+
+%% ============================================
+%% SERVICE TRACING (Phase 8)
+%% ============================================
+
+%% compile_traced_service_go(+Service, -GoCode)
+%  Generate Go code for a service with distributed tracing.
+compile_traced_service_go(service(Name, Options, HandlerSpec), GoCode) :-
+    % Extract tracing configuration
+    ( member(trace_exporter(Exporter), Options) -> true ; Exporter = otlp ),
+    ( member(trace_sampling(SamplingRate), Options) -> true ; SamplingRate = 1.0 ),
+    ( member(trace_service_name(ServiceName), Options) -> true ; ServiceName = Name ),
+    ( member(trace_propagation(Propagation), Options) -> true ; Propagation = w3c ),
+    ( member(trace_attributes(Attributes), Options) -> true ; Attributes = [] ),
+    ( member(stateful(true), Options) -> Stateful = "true" ; Stateful = "false" ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_go(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Convert to strings
+    exporter_to_go_string(Exporter, ExporterStr),
+    propagation_to_go_string(Propagation, PropagationStr),
+    attributes_to_go_map(Attributes, AttrsStr),
+    atom_string(ServiceName, ServiceNameStr),
+    % Generate the traced service
+    format(string(GoCode),
+"package main
+
+import (
+\t\"bytes\"
+\t\"context\"
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"math/rand\"
+\t\"net/http\"
+\t\"strings\"
+\t\"sync\"
+\t\"time\"
+
+\t\"github.com/google/uuid\"
+)
+
+// Phase 8: Service Tracing Support (OpenTelemetry-compatible)
+
+// TraceExporter types
+type TraceExporter string
+
+const (
+\tExporterOTLP    TraceExporter = \"otlp\"
+\tExporterJaeger  TraceExporter = \"jaeger\"
+\tExporterZipkin  TraceExporter = \"zipkin\"
+\tExporterDatadog TraceExporter = \"datadog\"
+\tExporterConsole TraceExporter = \"console\"
+\tExporterNone    TraceExporter = \"none\"
+)
+
+// PropagationFormat types
+type PropagationFormat string
+
+const (
+\tPropagationW3C     PropagationFormat = \"w3c\"
+\tPropagationB3      PropagationFormat = \"b3\"
+\tPropagationB3Multi PropagationFormat = \"b3_multi\"
+\tPropagationJaeger  PropagationFormat = \"jaeger\"
+\tPropagationXRay    PropagationFormat = \"xray\"
+\tPropagationDatadog PropagationFormat = \"datadog\"
+)
+
+// SpanKind types
+type SpanKind string
+
+const (
+\tSpanKindInternal SpanKind = \"internal\"
+\tSpanKindServer   SpanKind = \"server\"
+\tSpanKindClient   SpanKind = \"client\"
+\tSpanKindProducer SpanKind = \"producer\"
+\tSpanKindConsumer SpanKind = \"consumer\"
+)
+
+// SpanStatus types
+type SpanStatus string
+
+const (
+\tSpanStatusUnset SpanStatus = \"unset\"
+\tSpanStatusOK    SpanStatus = \"ok\"
+\tSpanStatusError SpanStatus = \"error\"
+)
+
+// SpanContext holds trace context
+type SpanContext struct {
+\tTraceID    string `json:\"trace_id\"`
+\tSpanID     string `json:\"span_id\"`
+\tTraceFlags int    `json:\"trace_flags\"`
+\tTraceState string `json:\"trace_state\"`
+}
+
+// NewSpanContext generates a new span context
+func NewSpanContext() *SpanContext {
+\treturn &SpanContext{
+\t\tTraceID:    uuid.New().String() + uuid.New().String()[:8],
+\t\tSpanID:     uuid.New().String()[:16],
+\t\tTraceFlags: 1,
+\t}
+}
+
+// ToTraceparent formats as W3C traceparent header
+func (c *SpanContext) ToTraceparent() string {
+\treturn fmt.Sprintf(\"00-%%s-%%s-%%02x\", c.TraceID, c.SpanID, c.TraceFlags)
+}
+
+// ParseTraceparent parses W3C traceparent header
+func ParseTraceparent(header string) *SpanContext {
+\tparts := strings.Split(header, \"-\")
+\tif len(parts) >= 4 {
+\t\treturn &SpanContext{
+\t\t\tTraceID:    parts[1],
+\t\t\tSpanID:     parts[2],
+\t\t\tTraceFlags: 1,
+\t\t}
+\t}
+\treturn nil
+}
+
+// Span represents a single span in a trace
+type Span struct {
+\tName          string                 `json:\"name\"`
+\tContext       *SpanContext           `json:\"context\"`
+\tParentContext *SpanContext           `json:\"parent_context,omitempty\"`
+\tKind          SpanKind               `json:\"kind\"`
+\tStatus        SpanStatus             `json:\"status\"`
+\tStartTime     time.Time              `json:\"start_time\"`
+\tEndTime       time.Time              `json:\"end_time\"`
+\tAttributes    map[string]interface{} `json:\"attributes\"`
+\tEvents        []SpanEvent            `json:\"events\"`
+}
+
+// SpanEvent represents an event within a span
+type SpanEvent struct {
+\tName       string                 `json:\"name\"`
+\tTimestamp  time.Time              `json:\"timestamp\"`
+\tAttributes map[string]interface{} `json:\"attributes\"`
+}
+
+// SetAttribute sets an attribute on the span
+func (s *Span) SetAttribute(key string, value interface{}) {
+\tif s.Attributes == nil {
+\t\ts.Attributes = make(map[string]interface{})
+\t}
+\ts.Attributes[key] = value
+}
+
+// AddEvent adds an event to the span
+func (s *Span) AddEvent(name string, attrs map[string]interface{}) {
+\ts.Events = append(s.Events, SpanEvent{
+\t\tName:       name,
+\t\tTimestamp:  time.Now(),
+\t\tAttributes: attrs,
+\t})
+}
+
+// SetStatus sets the span status
+func (s *Span) SetStatus(status SpanStatus, description string) {
+\ts.Status = status
+\tif description != \"\" {
+\t\ts.SetAttribute(\"status.description\", description)
+\t}
+}
+
+// End ends the span
+func (s *Span) End() {
+\ts.EndTime = time.Now()
+}
+
+// SpanExporter interface
+type SpanExporter interface {
+\tExport(spans []*Span) error
+}
+
+// ConsoleSpanExporter exports spans to console
+type ConsoleSpanExporter struct{}
+
+func (e *ConsoleSpanExporter) Export(spans []*Span) error {
+\tfor _, span := range spans {
+\t\tdata, _ := json.Marshal(span)
+\t\tfmt.Printf(\"[TRACE] %%s\\n\", string(data))
+\t}
+\treturn nil
+}
+
+// OTLPSpanExporter exports spans via OTLP HTTP
+type OTLPSpanExporter struct {
+\tEndpoint string
+}
+
+func NewOTLPExporter(endpoint string) *OTLPSpanExporter {
+\tif endpoint == \"\" {
+\t\tendpoint = \"http://localhost:4318/v1/traces\"
+\t}
+\treturn &OTLPSpanExporter{Endpoint: endpoint}
+}
+
+func (e *OTLPSpanExporter) Export(spans []*Span) error {
+\tpayload := map[string]interface{}{
+\t\t\"resourceSpans\": []map[string]interface{}{{
+\t\t\t\"scopeSpans\": []map[string]interface{}{{
+\t\t\t\t\"spans\": spans,
+\t\t\t}},
+\t\t}},
+\t}
+\tdata, _ := json.Marshal(payload)
+\treq, _ := http.NewRequest(\"POST\", e.Endpoint, bytes.NewReader(data))
+\treq.Header.Set(\"Content-Type\", \"application/json\")
+\tclient := &http.Client{Timeout: 5 * time.Second}
+\t_, err := client.Do(req)
+\treturn err
+}
+
+// JaegerSpanExporter exports spans to Jaeger
+type JaegerSpanExporter struct {
+\tEndpoint string
+}
+
+func NewJaegerExporter(endpoint string) *JaegerSpanExporter {
+\tif endpoint == \"\" {
+\t\tendpoint = \"http://localhost:14268/api/traces\"
+\t}
+\treturn &JaegerSpanExporter{Endpoint: endpoint}
+}
+
+func (e *JaegerSpanExporter) Export(spans []*Span) error {
+\tfor _, span := range spans {
+\t\tdata, _ := json.Marshal(span)
+\t\treq, _ := http.NewRequest(\"POST\", e.Endpoint, bytes.NewReader(data))
+\t\treq.Header.Set(\"Content-Type\", \"application/json\")
+\t\tclient := &http.Client{Timeout: 5 * time.Second}
+\t\tclient.Do(req)
+\t}
+\treturn nil
+}
+
+// ZipkinSpanExporter exports spans to Zipkin
+type ZipkinSpanExporter struct {
+\tEndpoint string
+}
+
+func NewZipkinExporter(endpoint string) *ZipkinSpanExporter {
+\tif endpoint == \"\" {
+\t\tendpoint = \"http://localhost:9411/api/v2/spans\"
+\t}
+\treturn &ZipkinSpanExporter{Endpoint: endpoint}
+}
+
+func (e *ZipkinSpanExporter) Export(spans []*Span) error {
+\tdata, _ := json.Marshal(spans)
+\treq, _ := http.NewRequest(\"POST\", e.Endpoint, bytes.NewReader(data))
+\treq.Header.Set(\"Content-Type\", \"application/json\")
+\tclient := &http.Client{Timeout: 5 * time.Second}
+\t_, err := client.Do(req)
+\treturn err
+}
+
+// Tracer manages distributed tracing
+type Tracer struct {
+\tServiceName  string
+\tSamplingRate float64
+\tExporter     SpanExporter
+\tPropagation  PropagationFormat
+\tspans        []*Span
+\tmu           sync.Mutex
+\tcurrentSpan  *Span
+}
+
+// NewTracer creates a new tracer
+func NewTracer(serviceName string, samplingRate float64, exporter SpanExporter, propagation PropagationFormat) *Tracer {
+\treturn &Tracer{
+\t\tServiceName:  serviceName,
+\t\tSamplingRate: samplingRate,
+\t\tExporter:     exporter,
+\t\tPropagation:  propagation,
+\t\tspans:        make([]*Span, 0),
+\t}
+}
+
+// ShouldSample determines if this request should be sampled
+func (t *Tracer) ShouldSample() bool {
+\treturn rand.Float64() < t.SamplingRate
+}
+
+// StartSpan starts a new span
+func (t *Tracer) StartSpan(name string, kind SpanKind, parent *SpanContext, attrs map[string]interface{}) *Span {
+\tif !t.ShouldSample() {
+\t\treturn nil
+\t}
+\tspan := &Span{
+\t\tName:          name,
+\t\tContext:       NewSpanContext(),
+\t\tParentContext: parent,
+\t\tKind:          kind,
+\t\tStatus:        SpanStatusUnset,
+\t\tStartTime:     time.Now(),
+\t\tAttributes:    attrs,
+\t\tEvents:        make([]SpanEvent, 0),
+\t}
+\tspan.SetAttribute(\"service.name\", t.ServiceName)
+\tt.currentSpan = span
+\treturn span
+}
+
+// EndSpan ends a span and adds it to the export queue
+func (t *Tracer) EndSpan(span *Span) {
+\tif span == nil {
+\t\treturn
+\t}
+\tspan.End()
+\tif span.Status == SpanStatusUnset {
+\t\tspan.Status = SpanStatusOK
+\t}
+\tt.mu.Lock()
+\tt.spans = append(t.spans, span)
+\tt.mu.Unlock()
+}
+
+// ExtractContext extracts span context from headers
+func (t *Tracer) ExtractContext(headers map[string]string) *SpanContext {
+\tif t.Propagation == PropagationW3C {
+\t\tif tp, ok := headers[\"traceparent\"]; ok {
+\t\t\treturn ParseTraceparent(tp)
+\t\t}
+\t}
+\tif t.Propagation == PropagationB3 || t.Propagation == PropagationB3Multi {
+\t\ttraceID := headers[\"X-B3-TraceId\"]
+\t\tspanID := headers[\"X-B3-SpanId\"]
+\t\tif traceID != \"\" && spanID != \"\" {
+\t\t\treturn &SpanContext{TraceID: traceID, SpanID: spanID, TraceFlags: 1}
+\t\t}
+\t}
+\treturn nil
+}
+
+// InjectContext injects span context into headers
+func (t *Tracer) InjectContext(span *Span, headers map[string]string) {
+\tif span == nil {
+\t\treturn
+\t}
+\tif t.Propagation == PropagationW3C {
+\t\theaders[\"traceparent\"] = span.Context.ToTraceparent()
+\t} else if t.Propagation == PropagationB3 || t.Propagation == PropagationB3Multi {
+\t\theaders[\"X-B3-TraceId\"] = span.Context.TraceID
+\t\theaders[\"X-B3-SpanId\"] = span.Context.SpanID
+\t\theaders[\"X-B3-Sampled\"] = \"1\"
+\t}
+}
+
+// Flush exports all pending spans
+func (t *Tracer) Flush() error {
+\tt.mu.Lock()
+\tspans := t.spans
+\tt.spans = make([]*Span, 0)
+\tt.mu.Unlock()
+\tif len(spans) > 0 {
+\t\treturn t.Exporter.Export(spans)
+\t}
+\treturn nil
+}
+
+// ~wService is a traced service
+// Service Name: ~w
+// Exporter: ~w
+// Sampling Rate: ~w
+// Propagation: ~w
+type ~wService struct {
+\tName              string
+\tStateful          bool
+\tTimeoutMs         int
+\tState             map[string]interface{}
+\tmu                sync.RWMutex
+\tTracer            *Tracer
+\tDefaultAttributes map[string]interface{}
+}
+
+// New~wService creates a new traced ~w service
+func New~wService() *~wService {
+\treturn &~wService{
+\t\tName:      \"~w\",
+\t\tStateful:  ~w,
+\t\tTimeoutMs: ~w,
+\t\tState:     make(map[string]interface{}),
+\t\tTracer: NewTracer(
+\t\t\t\"~w\",
+\t\t\t~w,
+\t\t\t~w,
+\t\t\tPropagation~w,
+\t\t),
+\t\tDefaultAttributes: ~w,
+\t}
+}
+
+// Call processes a request with tracing
+func (s *~wService) Call(ctx context.Context, request interface{}, headers map[string]string) interface{} {
+\tif headers == nil {
+\t\theaders = make(map[string]string)
+\t}
+\tparentCtx := s.Tracer.ExtractContext(headers)
+\tspan := s.Tracer.StartSpan(
+\t\tfmt.Sprintf(\"%%s.call\", s.Name),
+\t\tSpanKindServer,
+\t\tparentCtx,
+\t\ts.DefaultAttributes,
+\t)
+\tif span != nil {
+\t\tspan.SetAttribute(\"request.type\", fmt.Sprintf(\"%%T\", request))
+\t}
+\tresult := s.handleRequest(request)
+\tif span != nil {
+\t\tspan.SetAttribute(\"response.type\", fmt.Sprintf(\"%%T\", result))
+\t\ts.Tracer.EndSpan(span)
+\t}
+\treturn result
+}
+
+// FlushTraces exports pending traces
+func (s *~wService) FlushTraces() error {
+\treturn s.Tracer.Flush()
+}
+
+func (s *~wService) handleRequest(request interface{}) interface{} {
+~w
+}
+
+// Service instance
+var ~wServiceInstance = New~wService()
+", [StructNameAtom, ServiceNameStr, ExporterStr, SamplingRate, PropagationStr,
+    StructNameAtom,
+    StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom,
+    Name, Stateful, Timeout,
+    ServiceNameStr, SamplingRate, ExporterStr, PropagationStr, AttrsStr,
+    StructNameAtom, StructNameAtom, StructNameAtom,
+    HandlerCode, Name, StructNameAtom]).
+
+%% exporter_to_go_string(+Exporter, -String)
+%  Convert trace exporter to Go code string.
+exporter_to_go_string(otlp, "NewOTLPExporter(\"\")").
+exporter_to_go_string(otlp(Endpoint), Code) :-
+    format(string(Code), "NewOTLPExporter(\"~w\")", [Endpoint]).
+exporter_to_go_string(jaeger, "NewJaegerExporter(\"\")").
+exporter_to_go_string(jaeger(Endpoint), Code) :-
+    format(string(Code), "NewJaegerExporter(\"~w\")", [Endpoint]).
+exporter_to_go_string(jaeger(Host, Port), Code) :-
+    format(string(Code), "NewJaegerExporter(\"http://~w:~w/api/traces\")", [Host, Port]).
+exporter_to_go_string(zipkin, "NewZipkinExporter(\"\")").
+exporter_to_go_string(zipkin(Endpoint), Code) :-
+    format(string(Code), "NewZipkinExporter(\"~w\")", [Endpoint]).
+exporter_to_go_string(console, "&ConsoleSpanExporter{}").
+exporter_to_go_string(none, "&ConsoleSpanExporter{}").
+exporter_to_go_string(_, "&ConsoleSpanExporter{}").
+
+%% propagation_to_go_string(+Propagation, -String)
+%  Convert propagation format to Go const string.
+propagation_to_go_string(w3c, "W3C").
+propagation_to_go_string(b3, "B3").
+propagation_to_go_string(b3_multi, "B3Multi").
+propagation_to_go_string(jaeger, "Jaeger").
+propagation_to_go_string(xray, "XRay").
+propagation_to_go_string(datadog, "Datadog").
+propagation_to_go_string(_, "W3C").
+
+%% attributes_to_go_map(+Attributes, -String)
+%  Convert attribute list to Go map string.
+attributes_to_go_map([], "map[string]interface{}{}").
+attributes_to_go_map(Attrs, Code) :-
+    Attrs \= [],
+    maplist(attr_to_go, Attrs, AttrStrs),
+    atomic_list_concat(AttrStrs, ', ', Inner),
+    format(string(Code), "map[string]interface{}{~w}", [Inner]).
+
+attr_to_go(Key=Value, Code) :-
+    format(string(Code), "\"~w\": \"~w\"", [Key, Value]).
+attr_to_go(Key-Value, Code) :-
+    format(string(Code), "\"~w\": \"~w\"", [Key, Value]).
+
+%% generate_tracer_go(+Config, -Code)
+%  Generate Go tracer initialization code.
+generate_tracer_go(config(ServiceName, SamplingRate, Exporter), Code) :-
+    exporter_to_go_string(Exporter, ExporterStr),
+    format(string(Code), "NewTracer(\"~w\", ~w, ~w, PropagationW3C)", [ServiceName, SamplingRate, ExporterStr]).
+
+%% generate_span_context_go(+Context, -Code)
+%  Generate Go span context code.
+generate_span_context_go(context(TraceId, SpanId), Code) :-
+    format(string(Code), "&SpanContext{TraceID: \"~w\", SpanID: \"~w\", TraceFlags: 1}", [TraceId, SpanId]).
+generate_span_context_go(_, "NewSpanContext()").
 
 %% ============================================
 %% PUBLIC API
