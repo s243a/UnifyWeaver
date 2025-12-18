@@ -6,12 +6,20 @@
 """
 Knowledge Graph Topology API extending LDA Projection Database.
 
-Implements Phase 1 of the KG Topology Roadmap:
+Implements Phase 1 & 2 of the KG Topology Roadmap:
+
+Phase 1:
 - 11 relation types across 3 categories
 - Hash-based anchor linking
 - Seed level provenance tracking
 - Graph traversal API
 - Search with knowledge graph context
+
+Phase 2:
+- Semantic interfaces (presentation layer for focused identities)
+- Interface schema (centroid, topics, exposed clusters)
+- Query-to-interface mapping
+- Interface management (auto-generate, curation, metrics)
 
 See: docs/proposals/ROADMAP_KG_TOPOLOGY.md
      docs/proposals/QA_KNOWLEDGE_GRAPH.md
@@ -73,15 +81,21 @@ class KGTopologyAPI(LDAProjectionDB):
     """
     Knowledge Graph Topology API extending LDA Projection Database.
 
-    Adds:
+    Phase 1 Features:
     - 11 relation types for Q-A knowledge graphs
     - Hash-based anchor linking
     - Seed level provenance tracking
     - Graph traversal API
     - Search with knowledge graph context
+
+    Phase 2 Features:
+    - Semantic interfaces (focused presentation layer)
+    - Interface schema with centroids and topics
+    - Query-to-interface mapping
+    - Interface management (auto-generate, curation, metrics)
     """
 
-    SCHEMA_VERSION = 2  # Extends v1 with KG topology
+    SCHEMA_VERSION = 3  # v2 = Phase 1, v3 = Phase 2 interfaces
 
     def __init__(self, db_path: str, embeddings_dir: str = None):
         """Initialize with KG topology extensions."""
@@ -123,6 +137,63 @@ class KGTopologyAPI(LDAProjectionDB):
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_question_seed_cluster
             ON question_seed_levels(seed_level)
+        """)
+
+        # =====================================================================
+        # PHASE 2: SEMANTIC INTERFACES
+        # =====================================================================
+
+        # Semantic interfaces: presentation layer for focused identities
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS semantic_interfaces (
+                interface_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                description TEXT,
+                topics TEXT,  -- JSON array of topic keywords
+                centroid_model_id INTEGER REFERENCES embedding_models(model_id),
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Interface centroids: embedding vectors for each interface
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS interface_centroids (
+                interface_id INTEGER REFERENCES semantic_interfaces(interface_id),
+                model_id INTEGER REFERENCES embedding_models(model_id),
+                centroid BLOB NOT NULL,  -- numpy array serialized
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (interface_id, model_id)
+            )
+        """)
+
+        # Interface-cluster mapping: which clusters belong to which interface
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS interface_clusters (
+                interface_id INTEGER REFERENCES semantic_interfaces(interface_id),
+                cluster_id INTEGER REFERENCES clusters(cluster_id),
+                weight REAL DEFAULT 1.0,  -- how strongly this cluster belongs
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (interface_id, cluster_id)
+            )
+        """)
+
+        # Interface metrics: health and coverage tracking
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS interface_metrics (
+                interface_id INTEGER REFERENCES semantic_interfaces(interface_id),
+                metric_name TEXT NOT NULL,
+                metric_value REAL,
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (interface_id, metric_name)
+            )
+        """)
+
+        # Index for active interfaces
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_active_interfaces
+            ON semantic_interfaces(is_active)
         """)
 
         self.conn.commit()
@@ -631,6 +702,734 @@ class KGTopologyAPI(LDAProjectionDB):
 
         # Reverse to get learning order (deepest dependencies first)
         return list(reversed(path))
+
+    # =========================================================================
+    # PHASE 2: SEMANTIC INTERFACES
+    # =========================================================================
+
+    def create_interface(
+        self,
+        name: str,
+        description: str = None,
+        topics: List[str] = None
+    ) -> int:
+        """
+        Create a new semantic interface.
+
+        An interface is a presentation layer that exposes a focused subset
+        of the knowledge base. It has its own centroid and can route queries
+        to relevant clusters.
+
+        Args:
+            name: Unique interface name
+            description: Human-readable description
+            topics: List of topic keywords
+
+        Returns:
+            interface_id of the created interface
+        """
+        cursor = self.conn.cursor()
+        topics_json = json.dumps(topics) if topics else None
+
+        cursor.execute("""
+            INSERT INTO semantic_interfaces (name, description, topics)
+            VALUES (?, ?, ?)
+        """, (name, description, topics_json))
+
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_interface(self, interface_id: int) -> Optional[Dict[str, Any]]:
+        """Get interface by ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT interface_id, name, description, topics,
+                   centroid_model_id, is_active, created_at, updated_at
+            FROM semantic_interfaces
+            WHERE interface_id = ?
+        """, (interface_id,))
+
+        row = cursor.fetchone()
+        if row:
+            result = dict(row)
+            if result['topics']:
+                result['topics'] = json.loads(result['topics'])
+            return result
+        return None
+
+    def get_interface_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get interface by name."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT interface_id, name, description, topics,
+                   centroid_model_id, is_active, created_at, updated_at
+            FROM semantic_interfaces
+            WHERE name = ?
+        """, (name,))
+
+        row = cursor.fetchone()
+        if row:
+            result = dict(row)
+            if result['topics']:
+                result['topics'] = json.loads(result['topics'])
+            return result
+        return None
+
+    def list_interfaces(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        """List all interfaces."""
+        cursor = self.conn.cursor()
+
+        if active_only:
+            cursor.execute("""
+                SELECT interface_id, name, description, topics,
+                       centroid_model_id, is_active, created_at
+                FROM semantic_interfaces
+                WHERE is_active = 1
+                ORDER BY name
+            """)
+        else:
+            cursor.execute("""
+                SELECT interface_id, name, description, topics,
+                       centroid_model_id, is_active, created_at
+                FROM semantic_interfaces
+                ORDER BY name
+            """)
+
+        results = []
+        for row in cursor.fetchall():
+            result = dict(row)
+            if result['topics']:
+                result['topics'] = json.loads(result['topics'])
+            results.append(result)
+
+        return results
+
+    def update_interface(
+        self,
+        interface_id: int,
+        name: str = None,
+        description: str = None,
+        topics: List[str] = None,
+        is_active: bool = None
+    ):
+        """Update interface properties."""
+        cursor = self.conn.cursor()
+
+        updates = []
+        params = []
+
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        if topics is not None:
+            updates.append("topics = ?")
+            params.append(json.dumps(topics))
+        if is_active is not None:
+            updates.append("is_active = ?")
+            params.append(is_active)
+
+        if updates:
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(interface_id)
+
+            cursor.execute(f"""
+                UPDATE semantic_interfaces
+                SET {', '.join(updates)}
+                WHERE interface_id = ?
+            """, params)
+            self.conn.commit()
+
+    def delete_interface(self, interface_id: int):
+        """Delete an interface and its associated data."""
+        cursor = self.conn.cursor()
+
+        # Delete in order: metrics, clusters mapping, centroids, interface
+        cursor.execute("DELETE FROM interface_metrics WHERE interface_id = ?",
+                      (interface_id,))
+        cursor.execute("DELETE FROM interface_clusters WHERE interface_id = ?",
+                      (interface_id,))
+        cursor.execute("DELETE FROM interface_centroids WHERE interface_id = ?",
+                      (interface_id,))
+        cursor.execute("DELETE FROM semantic_interfaces WHERE interface_id = ?",
+                      (interface_id,))
+
+        self.conn.commit()
+
+    # =========================================================================
+    # INTERFACE-CLUSTER MAPPING
+    # =========================================================================
+
+    def add_cluster_to_interface(
+        self,
+        interface_id: int,
+        cluster_id: int,
+        weight: float = 1.0
+    ):
+        """
+        Add a cluster to an interface.
+
+        Args:
+            interface_id: Target interface
+            cluster_id: Cluster to add
+            weight: How strongly this cluster belongs (0-1)
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO interface_clusters
+            (interface_id, cluster_id, weight)
+            VALUES (?, ?, ?)
+        """, (interface_id, cluster_id, weight))
+        self.conn.commit()
+
+    def remove_cluster_from_interface(self, interface_id: int, cluster_id: int):
+        """Remove a cluster from an interface."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            DELETE FROM interface_clusters
+            WHERE interface_id = ? AND cluster_id = ?
+        """, (interface_id, cluster_id))
+        self.conn.commit()
+
+    def get_interface_clusters(self, interface_id: int) -> List[Dict[str, Any]]:
+        """Get all clusters belonging to an interface."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT ic.cluster_id, ic.weight, c.name as cluster_name
+            FROM interface_clusters ic
+            JOIN qa_clusters c ON ic.cluster_id = c.cluster_id
+            WHERE ic.interface_id = ?
+            ORDER BY ic.weight DESC
+        """, (interface_id,))
+
+        return [dict(row) for row in cursor.fetchall()]
+
+    # =========================================================================
+    # CLUSTER CENTROIDS (Phase 2 extension)
+    # =========================================================================
+
+    def set_cluster_centroid(
+        self,
+        cluster_id: int,
+        model_id: int,
+        centroid: np.ndarray
+    ):
+        """
+        Set the centroid embedding for a cluster.
+
+        This is a simple centroid storage separate from multi-head projections.
+        Used for Phase 2 interface centroid computation.
+
+        Args:
+            cluster_id: Cluster to set centroid for
+            model_id: Embedding model ID
+            centroid: Centroid embedding vector
+        """
+        cursor = self.conn.cursor()
+
+        # Create table if not exists
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cluster_centroids (
+                cluster_id INTEGER REFERENCES qa_clusters(cluster_id),
+                model_id INTEGER REFERENCES embedding_models(model_id),
+                centroid BLOB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (cluster_id, model_id)
+            )
+        """)
+
+        centroid_blob = centroid.tobytes()
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO cluster_centroids
+            (cluster_id, model_id, centroid)
+            VALUES (?, ?, ?)
+        """, (cluster_id, model_id, centroid_blob))
+
+        self.conn.commit()
+
+    def get_cluster_centroid(
+        self,
+        cluster_id: int,
+        model_id: int
+    ) -> Optional[np.ndarray]:
+        """Get the centroid embedding for a cluster."""
+        cursor = self.conn.cursor()
+
+        # Check if table exists
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='cluster_centroids'
+        """)
+        if not cursor.fetchone():
+            return None
+
+        cursor.execute("""
+            SELECT centroid
+            FROM cluster_centroids
+            WHERE cluster_id = ? AND model_id = ?
+        """, (cluster_id, model_id))
+
+        row = cursor.fetchone()
+        if row and row['centroid']:
+            return np.frombuffer(row['centroid'], dtype=np.float32)
+        return None
+
+    # =========================================================================
+    # INTERFACE CENTROIDS
+    # =========================================================================
+
+    def set_interface_centroid(
+        self,
+        interface_id: int,
+        model_id: int,
+        centroid: np.ndarray
+    ):
+        """
+        Set the centroid embedding for an interface.
+
+        Args:
+            interface_id: Interface to update
+            model_id: Embedding model ID
+            centroid: Centroid embedding vector
+        """
+        cursor = self.conn.cursor()
+
+        # Serialize numpy array
+        centroid_blob = centroid.tobytes()
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO interface_centroids
+            (interface_id, model_id, centroid)
+            VALUES (?, ?, ?)
+        """, (interface_id, model_id, centroid_blob))
+
+        # Update the interface's primary centroid model
+        cursor.execute("""
+            UPDATE semantic_interfaces
+            SET centroid_model_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE interface_id = ?
+        """, (model_id, interface_id))
+
+        self.conn.commit()
+
+    def get_interface_centroid(
+        self,
+        interface_id: int,
+        model_id: int
+    ) -> Optional[np.ndarray]:
+        """Get the centroid embedding for an interface."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT centroid
+            FROM interface_centroids
+            WHERE interface_id = ? AND model_id = ?
+        """, (interface_id, model_id))
+
+        row = cursor.fetchone()
+        if row and row['centroid']:
+            return np.frombuffer(row['centroid'], dtype=np.float32)
+        return None
+
+    def compute_interface_centroid(
+        self,
+        interface_id: int,
+        model_id: int
+    ) -> Optional[np.ndarray]:
+        """
+        Compute interface centroid from its clusters' centroids.
+
+        Weighted average of cluster centroids.
+        """
+        clusters = self.get_interface_clusters(interface_id)
+        if not clusters:
+            return None
+
+        centroids = []
+        weights = []
+
+        for cluster_info in clusters:
+            cluster_id = cluster_info['cluster_id']
+            weight = cluster_info['weight']
+
+            # Get cluster centroid
+            cluster_centroid = self.get_cluster_centroid(cluster_id, model_id)
+            if cluster_centroid is not None:
+                centroids.append(cluster_centroid)
+                weights.append(weight)
+
+        if not centroids:
+            return None
+
+        # Weighted average
+        weights = np.array(weights)
+        weights = weights / weights.sum()  # Normalize
+
+        centroid = np.zeros_like(centroids[0])
+        for c, w in zip(centroids, weights):
+            centroid += w * c
+
+        # Normalize the resulting centroid
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+
+        # Store and return
+        self.set_interface_centroid(interface_id, model_id, centroid)
+        return centroid
+
+    # =========================================================================
+    # QUERY-TO-INTERFACE MAPPING
+    # =========================================================================
+
+    def map_query_to_interface(
+        self,
+        query_text: str,
+        model_name: str,
+        temperature: float = 0.1
+    ) -> List[Dict[str, Any]]:
+        """
+        Map a query to the most relevant interface(s).
+
+        Uses softmax over interface centroids to determine routing.
+
+        Args:
+            query_text: The query to map
+            model_name: Embedding model name
+            temperature: Softmax temperature (lower = sharper routing)
+
+        Returns:
+            List of interfaces with routing weights, sorted by weight
+        """
+        query_emb = self._embed_query(query_text, model_name)
+
+        model_info = self.get_model(model_name)
+        if not model_info:
+            return []
+        model_id = model_info['model_id']
+
+        # Get all active interfaces with centroids
+        interfaces = self.list_interfaces(active_only=True)
+
+        interface_similarities = []
+        for iface in interfaces:
+            centroid = self.get_interface_centroid(iface['interface_id'], model_id)
+            if centroid is not None:
+                # Cosine similarity
+                similarity = float(np.dot(query_emb, centroid))
+                interface_similarities.append({
+                    'interface_id': iface['interface_id'],
+                    'name': iface['name'],
+                    'description': iface['description'],
+                    'similarity': similarity
+                })
+
+        if not interface_similarities:
+            return []
+
+        # Softmax routing
+        similarities = np.array([i['similarity'] for i in interface_similarities])
+        exp_sims = np.exp(similarities / temperature)
+        weights = exp_sims / exp_sims.sum()
+
+        # Add routing weights
+        for i, w in enumerate(weights):
+            interface_similarities[i]['routing_weight'] = float(w)
+
+        # Sort by routing weight
+        interface_similarities.sort(key=lambda x: x['routing_weight'], reverse=True)
+
+        return interface_similarities
+
+    def search_via_interface(
+        self,
+        query_text: str,
+        interface_id: int,
+        model_name: str,
+        mh_projection_id: int = None,
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Search within a specific interface's cluster subset.
+
+        This implements "Interface-First Routing" - an optional optimization
+        that first routes to an interface, then searches only within
+        that interface's clusters.
+
+        Args:
+            query_text: The search query
+            interface_id: Interface to search within
+            model_name: Embedding model name
+            mh_projection_id: Multi-head projection ID
+            top_k: Number of results
+
+        Returns:
+            Search results filtered to interface's clusters
+        """
+        # Get interface clusters
+        interface_clusters = self.get_interface_clusters(interface_id)
+        if not interface_clusters:
+            return []
+
+        cluster_ids = [c['cluster_id'] for c in interface_clusters]
+
+        # Perform regular search
+        all_results = self.search_with_context(
+            query_text=query_text,
+            model_name=model_name,
+            mh_projection_id=mh_projection_id,
+            top_k=top_k * 3,  # Get more, then filter
+            include_foundational=False,
+            include_prerequisites=False,
+            include_extensions=False,
+            include_next_steps=False
+        )
+
+        # Filter to interface clusters
+        filtered_results = []
+        for result in all_results:
+            answer_id = result['answer_id']
+
+            # Check if answer belongs to any interface cluster
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT ca.cluster_id
+                FROM cluster_answers ca
+                WHERE ca.answer_id = ? AND ca.cluster_id IN ({})
+            """.format(','.join('?' * len(cluster_ids))),
+            [answer_id] + cluster_ids)
+
+            if cursor.fetchone():
+                filtered_results.append(result)
+                if len(filtered_results) >= top_k:
+                    break
+
+        return filtered_results
+
+    # =========================================================================
+    # INTERFACE MANAGEMENT - AUTO-GENERATION
+    # =========================================================================
+
+    def auto_generate_interfaces(
+        self,
+        model_name: str,
+        min_clusters_per_interface: int = 3,
+        similarity_threshold: float = 0.7
+    ) -> List[int]:
+        """
+        Auto-generate interfaces from cluster analysis.
+
+        Groups semantically similar clusters into interfaces.
+
+        Args:
+            model_name: Embedding model for computing similarities
+            min_clusters_per_interface: Minimum clusters per interface
+            similarity_threshold: Minimum similarity to group clusters
+
+        Returns:
+            List of created interface IDs
+        """
+        model_info = self.get_model(model_name)
+        if not model_info:
+            return []
+        model_id = model_info['model_id']
+
+        # Get all clusters with centroids
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT c.cluster_id, c.name
+            FROM clusters c
+        """)
+
+        clusters = []
+        for row in cursor.fetchall():
+            centroid = self.get_cluster_centroid(row['cluster_id'], model_id)
+            if centroid is not None:
+                clusters.append({
+                    'cluster_id': row['cluster_id'],
+                    'name': row['name'],
+                    'centroid': centroid
+                })
+
+        if len(clusters) < min_clusters_per_interface:
+            return []
+
+        # Simple greedy clustering: assign each cluster to most similar interface
+        # or create a new interface if no similar one exists
+        interfaces_created = []
+        interface_clusters_map = {}  # interface_id -> list of cluster_ids
+
+        for cluster in clusters:
+            best_interface = None
+            best_similarity = similarity_threshold
+
+            # Check existing interfaces
+            for iface_id, assigned_clusters in interface_clusters_map.items():
+                iface_centroid = self.get_interface_centroid(iface_id, model_id)
+                if iface_centroid is not None:
+                    sim = float(np.dot(cluster['centroid'], iface_centroid))
+                    if sim > best_similarity:
+                        best_similarity = sim
+                        best_interface = iface_id
+
+            if best_interface is not None:
+                # Add to existing interface
+                self.add_cluster_to_interface(best_interface, cluster['cluster_id'])
+                interface_clusters_map[best_interface].append(cluster['cluster_id'])
+                # Recompute centroid
+                self.compute_interface_centroid(best_interface, model_id)
+            else:
+                # Create new interface
+                iface_name = f"auto_interface_{len(interfaces_created) + 1}"
+                iface_id = self.create_interface(
+                    name=iface_name,
+                    description=f"Auto-generated from cluster {cluster['name']}"
+                )
+                self.add_cluster_to_interface(iface_id, cluster['cluster_id'])
+                self.set_interface_centroid(iface_id, model_id, cluster['centroid'])
+                interface_clusters_map[iface_id] = [cluster['cluster_id']]
+                interfaces_created.append(iface_id)
+
+        # Remove interfaces with too few clusters
+        final_interfaces = []
+        for iface_id, assigned in interface_clusters_map.items():
+            if len(assigned) >= min_clusters_per_interface:
+                final_interfaces.append(iface_id)
+            else:
+                self.delete_interface(iface_id)
+
+        return final_interfaces
+
+    # =========================================================================
+    # INTERFACE METRICS
+    # =========================================================================
+
+    def set_interface_metric(
+        self,
+        interface_id: int,
+        metric_name: str,
+        metric_value: float
+    ):
+        """Set a metric value for an interface."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO interface_metrics
+            (interface_id, metric_name, metric_value)
+            VALUES (?, ?, ?)
+        """, (interface_id, metric_name, metric_value))
+        self.conn.commit()
+
+    def get_interface_metrics(self, interface_id: int) -> Dict[str, float]:
+        """Get all metrics for an interface."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT metric_name, metric_value
+            FROM interface_metrics
+            WHERE interface_id = ?
+        """, (interface_id,))
+
+        return {row['metric_name']: row['metric_value']
+                for row in cursor.fetchall()}
+
+    def compute_interface_coverage(self, interface_id: int) -> Dict[str, float]:
+        """
+        Compute coverage metrics for an interface.
+
+        Metrics:
+        - cluster_count: Number of clusters
+        - answer_count: Total answers accessible
+        - question_count: Total questions accessible
+        - avg_cluster_size: Average answers per cluster
+        """
+        cursor = self.conn.cursor()
+
+        # Cluster count
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM interface_clusters
+            WHERE interface_id = ?
+        """, (interface_id,))
+        cluster_count = cursor.fetchone()['count']
+
+        # Answer and question counts
+        cursor.execute("""
+            SELECT
+                COUNT(DISTINCT ca.answer_id) as answer_count,
+                COUNT(DISTINCT cq.question_id) as question_count
+            FROM interface_clusters ic
+            LEFT JOIN cluster_answers ca ON ic.cluster_id = ca.cluster_id
+            LEFT JOIN cluster_questions cq ON ic.cluster_id = cq.cluster_id
+            WHERE ic.interface_id = ?
+        """, (interface_id,))
+
+        row = cursor.fetchone()
+        answer_count = row['answer_count'] or 0
+        question_count = row['question_count'] or 0
+
+        # Compute metrics
+        avg_cluster_size = answer_count / cluster_count if cluster_count > 0 else 0
+
+        metrics = {
+            'cluster_count': float(cluster_count),
+            'answer_count': float(answer_count),
+            'question_count': float(question_count),
+            'avg_cluster_size': avg_cluster_size
+        }
+
+        # Store metrics
+        for name, value in metrics.items():
+            self.set_interface_metric(interface_id, name, value)
+
+        return metrics
+
+    def get_interface_health(self, interface_id: int) -> Dict[str, Any]:
+        """
+        Get comprehensive health status of an interface.
+
+        Returns coverage metrics plus health indicators.
+        """
+        interface = self.get_interface(interface_id)
+        if not interface:
+            return {'error': 'Interface not found'}
+
+        metrics = self.compute_interface_coverage(interface_id)
+
+        # Health indicators
+        health = {
+            'interface_id': interface_id,
+            'name': interface['name'],
+            'is_active': interface['is_active'],
+            'metrics': metrics,
+            'health_status': 'healthy'
+        }
+
+        # Check for issues (unhealthy > warning > healthy)
+        issues = []
+        status = 'healthy'
+
+        if metrics['cluster_count'] == 0:
+            issues.append('No clusters assigned')
+            status = 'unhealthy'
+        elif metrics['cluster_count'] < 3:
+            issues.append('Few clusters (consider adding more)')
+            if status != 'unhealthy':
+                status = 'warning'
+
+        if metrics['answer_count'] == 0:
+            issues.append('No answers accessible')
+            status = 'unhealthy'
+
+        if not interface.get('centroid_model_id'):
+            issues.append('No centroid computed')
+            if status != 'unhealthy':
+                status = 'warning'
+
+        health['health_status'] = status
+        health['issues'] = issues
+
+        return health
 
 
 # =============================================================================
