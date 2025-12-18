@@ -103,7 +103,7 @@ Default behavior: No optimizations (direct matrix multiplication scales well).
    - [ ] Manual interface curation
    - [ ] Interface health/coverage metrics
 
-**Same routing as Phase 1** - interfaces are a presentation layer, not a routing change.
+**Same routing as Phase 1 (default)** - interfaces are a presentation layer, not a routing change. However, if "Interface-First Routing" optimization is enabled (see Scale Optimizations above), queries route to the closest interface first, then search only within that interface's Q-A subset.
 
 **Feedback loop:** Multiple interfaces may inform KG expansion priorities (see "Knowledge Graph Expansion" below).
 
