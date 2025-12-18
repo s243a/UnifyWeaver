@@ -2249,11 +2249,11 @@ namespace UnifyWeaver.QueryRuntime
                     {
                         if (TryAddRow(totalSet, tuple))
                         {
-                            totalRows.Add(tuple);
                             nextDelta.Add(tuple);
                         }
                     }
                 }
+                totalRows.AddRange(nextDelta);
                 context.Deltas[predicate] = nextDelta;
             }
 
@@ -2308,11 +2308,12 @@ namespace UnifyWeaver.QueryRuntime
                         {
                             if (TryAddRow(totalSet, tuple))
                             {
-                                totalList.Add(tuple);
                                 memberNext.Add(tuple);
                             }
                         }
                     }
+
+                    totalList.AddRange(memberNext);
                 }
 
                 foreach (var pair in nextDeltas)
