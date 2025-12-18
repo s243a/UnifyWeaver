@@ -2,6 +2,8 @@
 
 This document describes the Query IR approach for the managed C# backend. The goal is to reuse UnifyWeaver’s clause analysis while executing via a reusable runtime that interprets relational plans using LINQ.
 
+Roadmap: `docs/targets/csharp-query-runtime-roadmap.md`
+
 ## Status (v0.1)
 - **Non-recursive clauses** – fact scans, joins, selections, projections, and unions translate to query nodes executed via LINQ.
 - **Arithmetic & comparisons** – `is/2`, inequality operators, and `dif/2` become arithmetic or selection nodes with runtime evaluation.
