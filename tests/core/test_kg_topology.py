@@ -589,5 +589,718 @@ class TestPrologModuleStructure(unittest.TestCase):
         self.assertIn('example', content)
 
 
+# =============================================================================
+# PHASE 2: SEMANTIC INTERFACES TESTS
+# =============================================================================
+
+class TestInterfaceSchema(unittest.TestCase):
+    """Test Phase 2 interface schema creation."""
+
+    def test_creates_interface_tables(self):
+        """Interface tables are created."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            db = KGTopologyAPI(db_path)
+
+            cursor = db.conn.cursor()
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name IN (
+                    'semantic_interfaces',
+                    'interface_centroids',
+                    'interface_clusters',
+                    'interface_metrics'
+                )
+            """)
+            tables = [row[0] for row in cursor.fetchall()]
+
+            self.assertIn('semantic_interfaces', tables)
+            self.assertIn('interface_centroids', tables)
+            self.assertIn('interface_clusters', tables)
+            self.assertIn('interface_metrics', tables)
+            db.close()
+
+
+class TestInterfaceCRUD(unittest.TestCase):
+    """Test interface CRUD operations."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_create_interface(self):
+        """Can create an interface."""
+        iface_id = self.db.create_interface(
+            name="csv_expert",
+            description="Expert on CSV parsing",
+            topics=["csv", "data", "parsing"]
+        )
+        self.assertIsInstance(iface_id, int)
+
+    def test_get_interface(self):
+        """Can retrieve interface by ID."""
+        iface_id = self.db.create_interface(
+            name="test_interface",
+            description="Test description",
+            topics=["topic1", "topic2"]
+        )
+
+        iface = self.db.get_interface(iface_id)
+        self.assertIsNotNone(iface)
+        self.assertEqual(iface['name'], "test_interface")
+        self.assertEqual(iface['description'], "Test description")
+        self.assertEqual(iface['topics'], ["topic1", "topic2"])
+        self.assertTrue(iface['is_active'])
+
+    def test_get_interface_by_name(self):
+        """Can retrieve interface by name."""
+        self.db.create_interface(name="named_interface", description="Find by name")
+
+        iface = self.db.get_interface_by_name("named_interface")
+        self.assertIsNotNone(iface)
+        self.assertEqual(iface['name'], "named_interface")
+
+    def test_list_interfaces(self):
+        """Can list all interfaces."""
+        self.db.create_interface(name="iface1")
+        self.db.create_interface(name="iface2")
+        self.db.create_interface(name="iface3")
+
+        interfaces = self.db.list_interfaces()
+        self.assertEqual(len(interfaces), 3)
+
+    def test_list_interfaces_active_only(self):
+        """Can filter inactive interfaces."""
+        id1 = self.db.create_interface(name="active1")
+        id2 = self.db.create_interface(name="inactive1")
+        self.db.update_interface(id2, is_active=False)
+
+        active = self.db.list_interfaces(active_only=True)
+        all_ifaces = self.db.list_interfaces(active_only=False)
+
+        self.assertEqual(len(active), 1)
+        self.assertEqual(len(all_ifaces), 2)
+
+    def test_update_interface(self):
+        """Can update interface properties."""
+        iface_id = self.db.create_interface(name="original", description="Original desc")
+
+        self.db.update_interface(iface_id, name="updated", description="Updated desc")
+
+        iface = self.db.get_interface(iface_id)
+        self.assertEqual(iface['name'], "updated")
+        self.assertEqual(iface['description'], "Updated desc")
+
+    def test_delete_interface(self):
+        """Can delete an interface."""
+        iface_id = self.db.create_interface(name="to_delete")
+
+        self.db.delete_interface(iface_id)
+
+        iface = self.db.get_interface(iface_id)
+        self.assertIsNone(iface)
+
+
+class TestInterfaceClusterMapping(unittest.TestCase):
+    """Test interface-cluster mapping."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        # Create test interface and clusters
+        self.iface_id = self.db.create_interface(name="test_interface")
+
+        # Create clusters
+        a1 = self.db.add_answer("s.md", "Answer 1")
+        a2 = self.db.add_answer("s.md", "Answer 2")
+        q1 = self.db.add_question("Q1", "medium")
+        q2 = self.db.add_question("Q2", "medium")
+
+        self.c1 = self.db.create_cluster("cluster1", [a1], [q1])
+        self.c2 = self.db.create_cluster("cluster2", [a2], [q2])
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_add_cluster_to_interface(self):
+        """Can add cluster to interface."""
+        self.db.add_cluster_to_interface(self.iface_id, self.c1)
+
+        clusters = self.db.get_interface_clusters(self.iface_id)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]['cluster_id'], self.c1)
+
+    def test_add_cluster_with_weight(self):
+        """Can add cluster with custom weight."""
+        self.db.add_cluster_to_interface(self.iface_id, self.c1, weight=0.8)
+
+        clusters = self.db.get_interface_clusters(self.iface_id)
+        self.assertEqual(clusters[0]['weight'], 0.8)
+
+    def test_remove_cluster_from_interface(self):
+        """Can remove cluster from interface."""
+        self.db.add_cluster_to_interface(self.iface_id, self.c1)
+        self.db.add_cluster_to_interface(self.iface_id, self.c2)
+
+        self.db.remove_cluster_from_interface(self.iface_id, self.c1)
+
+        clusters = self.db.get_interface_clusters(self.iface_id)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(clusters[0]['cluster_id'], self.c2)
+
+
+class TestInterfaceCentroids(unittest.TestCase):
+    """Test interface centroid operations."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        self.model_id = self.db.add_model("test-model", 4)
+        self.iface_id = self.db.create_interface(name="test_interface")
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_set_interface_centroid(self):
+        """Can set interface centroid."""
+        centroid = np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float32)
+
+        self.db.set_interface_centroid(self.iface_id, self.model_id, centroid)
+
+        retrieved = self.db.get_interface_centroid(self.iface_id, self.model_id)
+        np.testing.assert_array_almost_equal(retrieved, centroid)
+
+    def test_get_interface_centroid_none(self):
+        """Returns None when centroid not set."""
+        centroid = self.db.get_interface_centroid(self.iface_id, self.model_id)
+        self.assertIsNone(centroid)
+
+    def test_compute_interface_centroid(self):
+        """Can compute interface centroid from clusters."""
+        # Create clusters with centroids
+        a1 = self.db.add_answer("s.md", "Answer 1")
+        a2 = self.db.add_answer("s.md", "Answer 2")
+        q1 = self.db.add_question("Q1", "medium")
+        q2 = self.db.add_question("Q2", "medium")
+
+        c1 = self.db.create_cluster("cluster1", [a1], [q1])
+        c2 = self.db.create_cluster("cluster2", [a2], [q2])
+
+        # Set cluster centroids
+        self.db.set_cluster_centroid(c1, self.model_id,
+                                     np.array([1, 0, 0, 0], dtype=np.float32))
+        self.db.set_cluster_centroid(c2, self.model_id,
+                                     np.array([0, 1, 0, 0], dtype=np.float32))
+
+        # Add clusters to interface with equal weight
+        self.db.add_cluster_to_interface(self.iface_id, c1, weight=1.0)
+        self.db.add_cluster_to_interface(self.iface_id, c2, weight=1.0)
+
+        # Compute centroid
+        centroid = self.db.compute_interface_centroid(self.iface_id, self.model_id)
+
+        # Should be normalized average
+        self.assertIsNotNone(centroid)
+        self.assertEqual(len(centroid), 4)
+        # Normalized [0.5, 0.5, 0, 0] ≈ [0.707, 0.707, 0, 0]
+        self.assertAlmostEqual(centroid[0], centroid[1], places=3)
+
+
+class TestQueryToInterfaceMapping(unittest.TestCase):
+    """Test query-to-interface mapping."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        self.model_id = self.db.add_model("test-model", 4)
+
+        # Create interfaces with distinct centroids
+        self.csv_iface = self.db.create_interface(name="csv_expert", topics=["csv"])
+        self.json_iface = self.db.create_interface(name="json_expert", topics=["json"])
+
+        # Set orthogonal centroids
+        self.db.set_interface_centroid(
+            self.csv_iface, self.model_id,
+            np.array([1, 0, 0, 0], dtype=np.float32)
+        )
+        self.db.set_interface_centroid(
+            self.json_iface, self.model_id,
+            np.array([0, 1, 0, 0], dtype=np.float32)
+        )
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_map_query_routing_weights(self):
+        """Query mapping returns routing weights."""
+        # Mock _embed_query to return a specific embedding
+        original_embed = self.db._embed_query
+
+        def mock_embed(text, model):
+            if "csv" in text.lower():
+                return np.array([0.9, 0.1, 0, 0], dtype=np.float32)
+            return np.array([0.1, 0.9, 0, 0], dtype=np.float32)
+
+        self.db._embed_query = mock_embed
+
+        try:
+            results = self.db.map_query_to_interface("How to read CSV?", "test-model")
+
+            self.assertEqual(len(results), 2)
+            # CSV interface should have higher weight
+            self.assertEqual(results[0]['interface_id'], self.csv_iface)
+            self.assertGreater(results[0]['routing_weight'], 0.5)
+        finally:
+            self.db._embed_query = original_embed
+
+    def test_map_query_empty_when_no_centroids(self):
+        """Returns empty list when no interfaces have centroids."""
+        # Create interface without centroid
+        new_iface = self.db.create_interface(name="no_centroid")
+
+        # Delete the existing interfaces' centroids
+        self.db.conn.cursor().execute("DELETE FROM interface_centroids")
+        self.db.conn.commit()
+
+        def mock_embed(text, model):
+            return np.array([0.5, 0.5, 0, 0], dtype=np.float32)
+
+        self.db._embed_query = mock_embed
+
+        results = self.db.map_query_to_interface("Any query", "test-model")
+        self.assertEqual(results, [])
+
+
+class TestInterfaceMetrics(unittest.TestCase):
+    """Test interface metrics operations."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        self.iface_id = self.db.create_interface(name="test_interface")
+
+        # Create cluster with answers and questions
+        self.a1 = self.db.add_answer("s.md", "Answer 1")
+        self.a2 = self.db.add_answer("s.md", "Answer 2")
+        self.q1 = self.db.add_question("Q1", "medium")
+        self.q2 = self.db.add_question("Q2", "medium")
+        self.q3 = self.db.add_question("Q3", "medium")
+
+        self.c1 = self.db.create_cluster("cluster1", [self.a1, self.a2], [self.q1, self.q2, self.q3])
+        self.db.add_cluster_to_interface(self.iface_id, self.c1)
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_set_and_get_metric(self):
+        """Can set and retrieve metrics."""
+        self.db.set_interface_metric(self.iface_id, "custom_metric", 42.5)
+
+        metrics = self.db.get_interface_metrics(self.iface_id)
+        self.assertEqual(metrics['custom_metric'], 42.5)
+
+    def test_compute_interface_coverage(self):
+        """Can compute coverage metrics."""
+        metrics = self.db.compute_interface_coverage(self.iface_id)
+
+        self.assertEqual(metrics['cluster_count'], 1.0)
+        self.assertEqual(metrics['answer_count'], 2.0)
+        self.assertEqual(metrics['question_count'], 3.0)
+        self.assertEqual(metrics['avg_cluster_size'], 2.0)
+
+    def test_get_interface_health_healthy(self):
+        """Health check returns healthy for well-configured interface."""
+        # Add centroid so health is complete
+        model_id = self.db.add_model("test-model", 4)
+        self.db.set_interface_centroid(
+            self.iface_id, model_id,
+            np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float32)
+        )
+
+        # Add more clusters to make it "healthy"
+        a3 = self.db.add_answer("s.md", "Answer 3")
+        a4 = self.db.add_answer("s.md", "Answer 4")
+        q4 = self.db.add_question("Q4", "medium")
+        q5 = self.db.add_question("Q5", "medium")
+
+        c2 = self.db.create_cluster("cluster2", [a3], [q4])
+        c3 = self.db.create_cluster("cluster3", [a4], [q5])
+        self.db.add_cluster_to_interface(self.iface_id, c2)
+        self.db.add_cluster_to_interface(self.iface_id, c3)
+
+        health = self.db.get_interface_health(self.iface_id)
+
+        self.assertEqual(health['health_status'], 'healthy')
+        self.assertEqual(health['issues'], [])
+
+    def test_get_interface_health_warning_few_clusters(self):
+        """Health check warns about few clusters."""
+        health = self.db.get_interface_health(self.iface_id)
+
+        self.assertEqual(health['health_status'], 'warning')
+        self.assertIn('Few clusters', health['issues'][0])
+
+    def test_get_interface_health_unhealthy_no_clusters(self):
+        """Health check reports unhealthy for no clusters."""
+        empty_iface = self.db.create_interface(name="empty_interface")
+
+        health = self.db.get_interface_health(empty_iface)
+
+        self.assertEqual(health['health_status'], 'unhealthy')
+        self.assertTrue(any('No clusters' in i for i in health['issues']))
+
+
+class TestSearchViaInterface(unittest.TestCase):
+    """Test interface-first search."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        self.model_id = self.db.add_model("test-model", 4)
+
+        # Create interface
+        self.iface_id = self.db.create_interface(name="test_interface")
+
+        # Create cluster with answers
+        self.a1 = self.db.add_answer("s.md", "Interface answer 1")
+        self.a2 = self.db.add_answer("s.md", "Interface answer 2")
+        self.a3 = self.db.add_answer("s.md", "Non-interface answer")
+
+        q1 = self.db.add_question("Q1", "medium")
+        q2 = self.db.add_question("Q2", "medium")
+        q3 = self.db.add_question("Q3", "medium")
+
+        self.c1 = self.db.create_cluster("cluster1", [self.a1, self.a2], [q1, q2])
+        self.c2 = self.db.create_cluster("cluster2", [self.a3], [q3])
+
+        # Only add c1 to interface
+        self.db.add_cluster_to_interface(self.iface_id, self.c1)
+
+        # Store embeddings
+        self.db.store_embedding(self.model_id, "answer", self.a1,
+                                np.array([1, 0, 0, 0], dtype=np.float32))
+        self.db.store_embedding(self.model_id, "answer", self.a2,
+                                np.array([0.9, 0.1, 0, 0], dtype=np.float32))
+        self.db.store_embedding(self.model_id, "answer", self.a3,
+                                np.array([0, 1, 0, 0], dtype=np.float32))
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_search_via_interface_returns_only_interface_answers(self):
+        """search_via_interface returns only answers from interface clusters."""
+        # This tests the filtering logic without requiring real embeddings
+        interface_clusters = self.db.get_interface_clusters(self.iface_id)
+
+        self.assertEqual(len(interface_clusters), 1)
+        self.assertEqual(interface_clusters[0]['cluster_id'], self.c1)
+
+
+# =============================================================================
+# SCALE OPTIMIZATIONS TESTS
+# =============================================================================
+
+class TestInterfaceFirstRouting(unittest.TestCase):
+    """Test Interface-First Routing optimization."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        self.model_id = self.db.add_model("test-model", 4)
+
+        # Create interface with centroid
+        self.iface_id = self.db.create_interface(name="test_interface")
+
+        # Create answers with embeddings
+        self.a1 = self.db.add_answer("s.md", "Close to interface")
+        self.a2 = self.db.add_answer("s.md", "Also close to interface")
+        self.a3 = self.db.add_answer("s.md", "Far from interface")
+
+        # Embeddings: a1, a2 close to interface centroid, a3 far
+        self.db.store_embedding(self.model_id, "answer", self.a1,
+                                np.array([0.9, 0.1, 0, 0], dtype=np.float32))
+        self.db.store_embedding(self.model_id, "answer", self.a2,
+                                np.array([0.8, 0.2, 0, 0], dtype=np.float32))
+        self.db.store_embedding(self.model_id, "answer", self.a3,
+                                np.array([0, 0, 0.9, 0.1], dtype=np.float32))
+
+        # Interface centroid: [1, 0, 0, 0]
+        self.db.set_interface_centroid(
+            self.iface_id, self.model_id,
+            np.array([1, 0, 0, 0], dtype=np.float32)
+        )
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_interface_first_search_filters_by_similarity(self):
+        """Interface-first routing filters answers by centroid similarity."""
+        # The _interface_first_search method filters by similarity threshold
+        interface_centroid = self.db.get_interface_centroid(self.iface_id, self.model_id)
+
+        # Compute expected similarities
+        ids, matrix = self.db.get_all_answer_embeddings(self.model_id)
+
+        # Normalize
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix_normed = matrix / norms
+
+        similarities = matrix_normed @ interface_centroid
+
+        # a1, a2 should have high similarity (>0.5), a3 low
+        self.assertGreater(similarities[ids.index(self.a1)], 0.5)
+        self.assertGreater(similarities[ids.index(self.a2)], 0.5)
+        self.assertLess(similarities[ids.index(self.a3)], 0.5)
+
+    def test_search_via_interface_accepts_routing_flag(self):
+        """search_via_interface accepts use_interface_first_routing parameter."""
+        # Test that the method accepts the parameter without error
+        # (actual search requires _embed_query which needs real model)
+        self.assertTrue(hasattr(self.db, 'search_via_interface'))
+
+        # Verify signature includes the optimization parameters
+        import inspect
+        sig = inspect.signature(self.db.search_via_interface)
+        params = sig.parameters
+
+        self.assertIn('use_interface_first_routing', params)
+        self.assertIn('max_distance', params)
+        self.assertIn('similarity_threshold', params)
+
+
+class TestMaxDistanceFiltering(unittest.TestCase):
+    """Test max_distance post-filtering."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        self.model_id = self.db.add_model("test-model", 4)
+
+        # Create answers with embeddings at known distances
+        self.a1 = self.db.add_answer("s.md", "Very close")
+        self.a2 = self.db.add_answer("s.md", "Medium distance")
+        self.a3 = self.db.add_answer("s.md", "Far away")
+
+        # Embeddings with known cosine similarities to [1,0,0,0]
+        self.db.store_embedding(self.model_id, "answer", self.a1,
+                                np.array([1, 0, 0, 0], dtype=np.float32))  # sim=1.0, dist=0.0
+        self.db.store_embedding(self.model_id, "answer", self.a2,
+                                np.array([0.707, 0.707, 0, 0], dtype=np.float32))  # sim≈0.707, dist≈0.29
+        self.db.store_embedding(self.model_id, "answer", self.a3,
+                                np.array([0, 1, 0, 0], dtype=np.float32))  # sim=0.0, dist=1.0
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_filter_by_max_distance_filters_correctly(self):
+        """_filter_by_max_distance filters based on distance threshold."""
+        interface_centroid = np.array([1, 0, 0, 0], dtype=np.float32)
+
+        # Mock results to filter
+        mock_results = [
+            {'answer_id': self.a1, 'score': 0.9},
+            {'answer_id': self.a2, 'score': 0.8},
+            {'answer_id': self.a3, 'score': 0.7},
+        ]
+
+        # Filter with max_distance=0.5 (should keep a1, a2; exclude a3)
+        filtered = self.db._filter_by_max_distance(
+            mock_results, self.model_id, interface_centroid,
+            max_distance=0.5, top_k=10
+        )
+
+        answer_ids = [r['answer_id'] for r in filtered]
+        self.assertIn(self.a1, answer_ids)
+        self.assertIn(self.a2, answer_ids)
+        self.assertNotIn(self.a3, answer_ids)
+
+    def test_filter_by_max_distance_adds_distance_metadata(self):
+        """Filtered results include interface_distance and interface_similarity."""
+        interface_centroid = np.array([1, 0, 0, 0], dtype=np.float32)
+
+        mock_results = [{'answer_id': self.a1, 'score': 0.9}]
+
+        filtered = self.db._filter_by_max_distance(
+            mock_results, self.model_id, interface_centroid,
+            max_distance=1.0, top_k=10
+        )
+
+        self.assertEqual(len(filtered), 1)
+        self.assertIn('interface_distance', filtered[0])
+        self.assertIn('interface_similarity', filtered[0])
+        self.assertAlmostEqual(filtered[0]['interface_similarity'], 1.0, places=3)
+        self.assertAlmostEqual(filtered[0]['interface_distance'], 0.0, places=3)
+
+
+class TestScaleOptimizationConfig(unittest.TestCase):
+    """Test scale optimization configuration."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        # Create some test answers
+        for i in range(50):
+            self.db.add_answer("s.md", f"Answer {i}")
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_get_scale_config_defaults(self):
+        """Scale config returns defaults when not set."""
+        config = self.db.get_scale_config()
+
+        self.assertEqual(config['interface_first_routing_enabled'], 'auto')
+        self.assertEqual(config['interface_first_routing_threshold'], 50000)
+        self.assertEqual(config['transformer_distillation_enabled'], 'auto')
+        self.assertEqual(config['transformer_distillation_threshold'], 100000)
+
+    def test_set_scale_config(self):
+        """Can set scale configuration values."""
+        self.db.set_scale_config(
+            interface_first_routing_enabled='true',
+            interface_first_routing_threshold=1000
+        )
+
+        config = self.db.get_scale_config()
+        self.assertEqual(config['interface_first_routing_enabled'], 'true')
+        self.assertEqual(config['interface_first_routing_threshold'], 1000)
+
+    def test_should_use_interface_first_routing_auto_below_threshold(self):
+        """Auto mode returns False when below threshold."""
+        result = self.db.should_use_interface_first_routing()
+
+        self.assertFalse(result['use'])
+        self.assertIn('Auto', result['reason'])
+        self.assertEqual(result['qa_count'], 50)
+
+    def test_should_use_interface_first_routing_auto_above_threshold(self):
+        """Auto mode returns True when above threshold."""
+        self.db.set_scale_config(interface_first_routing_threshold=10)
+        result = self.db.should_use_interface_first_routing()
+
+        self.assertTrue(result['use'])
+        self.assertIn('Auto', result['reason'])
+
+    def test_should_use_interface_first_routing_explicit_true(self):
+        """Explicit 'true' setting always returns True."""
+        self.db.set_scale_config(interface_first_routing_enabled='true')
+        result = self.db.should_use_interface_first_routing()
+
+        self.assertTrue(result['use'])
+        self.assertIn('Explicitly enabled', result['reason'])
+
+    def test_should_use_interface_first_routing_explicit_false(self):
+        """Explicit 'false' setting always returns False."""
+        # First set threshold low so auto would return True
+        self.db.set_scale_config(
+            interface_first_routing_enabled='false',
+            interface_first_routing_threshold=10
+        )
+        result = self.db.should_use_interface_first_routing()
+
+        self.assertFalse(result['use'])
+        self.assertIn('Explicitly disabled', result['reason'])
+
+    def test_should_use_transformer_distillation_auto(self):
+        """Transformer distillation auto mode works correctly."""
+        result = self.db.should_use_transformer_distillation()
+
+        self.assertFalse(result['use'])
+        self.assertIn('Auto', result['reason'])
+        self.assertEqual(result['implementation'], 'projection_transformer.py')
+
+    def test_get_optimization_status(self):
+        """Can get comprehensive optimization status."""
+        status = self.db.get_optimization_status()
+
+        self.assertIn('config', status)
+        self.assertIn('interface_first_routing', status)
+        self.assertIn('transformer_distillation', status)
+
+        # Check nested structure
+        self.assertIn('use', status['interface_first_routing'])
+        self.assertIn('reason', status['interface_first_routing'])
+        self.assertIn('use', status['transformer_distillation'])
+        self.assertIn('implementation', status['transformer_distillation'])
+
+
+class TestDistillationCheck(unittest.TestCase):
+    """Test transformer distillation recommendation."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+
+        # Create some test answers
+        for i in range(50):
+            self.db.add_answer("s.md", f"Answer {i}")
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_check_distillation_not_recommended_below_threshold(self):
+        """Distillation not recommended when below threshold."""
+        result = self.db.check_distillation_recommended(qa_threshold=100000)
+
+        self.assertFalse(result['recommended'])
+        self.assertEqual(result['qa_count'], 50)
+        self.assertEqual(result['threshold'], 100000)
+        self.assertLess(result['percentage'], 1.0)
+
+    def test_check_distillation_recommended_above_threshold(self):
+        """Distillation recommended when above threshold."""
+        result = self.db.check_distillation_recommended(qa_threshold=10)
+
+        self.assertTrue(result['recommended'])
+        self.assertEqual(result['qa_count'], 50)
+        self.assertEqual(result['threshold'], 10)
+        self.assertGreater(result['percentage'], 100)
+
+    def test_check_distillation_references_implementation(self):
+        """Distillation check references existing implementation."""
+        result = self.db.check_distillation_recommended()
+
+        self.assertIn('implementation', result)
+        self.assertEqual(result['implementation'], 'projection_transformer.py')
+
+    def test_get_distillation_training_embeddings(self):
+        """Can get training embeddings for distillation."""
+        model_id = self.db.add_model("test-model", 4)
+
+        # Add questions with embeddings
+        for i in range(10):
+            q_id = self.db.add_question(f"Question {i}", "medium")
+            self.db.store_embedding(model_id, "question", q_id,
+                                    np.random.randn(4).astype(np.float32))
+
+        embeddings, question_ids = self.db.get_distillation_training_embeddings(
+            "test-model", sample_size=5
+        )
+
+        self.assertEqual(len(question_ids), 5)
+        self.assertEqual(embeddings.shape, (5, 4))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

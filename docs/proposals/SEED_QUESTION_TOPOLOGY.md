@@ -1,8 +1,10 @@
 # Proposal: Seed Question Topology
 
-**Status:** Proposed
+**Status:** Implemented (Phase 1 & 2)
+**Version:** 1.0
 **Date:** 2025-12-17
 **Context:** Extends [SEMANTIC_PROJECTION_LDA.md](SEMANTIC_PROJECTION_LDA.md) and Knowledge Graph initiatives.
+**Implementation:** `src/unifyweaver/targets/python_runtime/kg_topology_api.py`
 
 ## Executive Summary
 
@@ -207,6 +209,24 @@ training_data/
 - **Selective loading**: Train on seed(0)+seed(1) only for high-quality focus
 - **Storage tiering**: Keep seed(0) on fast storage, higher seeds on cold storage
 - **Backup priority**: Backup seed(0) more frequently
+
+## Implementation Status
+
+### Seed Level Tracking (Complete)
+- [x] `question_seed_levels` table for provenance tracking
+- [x] `set_seed_level()` - set seed level for a question
+- [x] `get_seed_level()` - get seed level for a question
+- [x] `get_questions_at_seed_level()` - query questions by seed level
+- [x] Optional cluster filtering for seed level queries
+
+### Hash-Based Anchor Linking (Complete)
+- [x] `answer_anchors` table with `anchor_question_hash`
+- [x] `compute_content_hash()` - static method for SHA-256 hashing
+- [x] `set_anchor_question()` - link answer to anchor question hash
+- [x] `get_anchor_question()` - retrieve anchor hash for answer
+
+### Training Data Organization (Available)
+- [x] `training_data_organizer.py` - separate utility for folder structure
 
 ## Related Proposals
 
