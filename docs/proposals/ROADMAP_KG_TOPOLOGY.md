@@ -48,13 +48,24 @@ From QA_KNOWLEDGE_GRAPH.md, we have 11 relation types:
    - [ ] `get_generalizations()`, `get_implementations()`, `get_instances()`, `get_examples()`
    - [ ] `search_with_context()` - semantic search with graph context
 
-3. **Softmax Routing**
-   - [ ] Direct matrix multiplication: query embedding × all Q-A embeddings
-   - [ ] Softmax probability distribution over ALL answers (not clusters)
-   - [ ] Top-k answer selection
-   - [ ] Fast on modest hardware (e.g., Samsung S24+) due to efficient matrix ops
+3. **Softmax Routing** *(Already Implemented)*
 
-**Key clarification:** Softmax routing is NOT cluster-based. Clusters exist only at training time to group questions for initial "many questions → one answer" mappings. At inference time, we compute similarity to all Q-A pairs directly.
+   **Current Implementation (`multi_head_search` in lda_database.py):**
+   - [x] Softmax routing over cluster centroids (temperature-controlled)
+   - [x] Projects query via weighted combination of answer embeddings
+   - [x] Then searches all answers against projected query
+   - [x] Achieves +6.7% Recall@1 over direct similarity (see MULTI_HEAD_PROJECTION_THEORY.md)
+
+   **Baseline (`_direct_search` in kg_topology_api.py):**
+   - [x] Direct matrix multiplication: query embedding × all Q-A embeddings
+   - [x] No learned projection (raw cosine similarity)
+   - [x] Use case: comparison baseline, fallback when no projection defined
+
+   **Future (after answer smoothing):**
+   - [ ] Transition from cluster-based to 1:1 Q-A mappings
+   - [ ] Direct routing may become primary approach once clusters dissolve
+
+**Key clarification:** The current `multi_head_search` uses cluster centroids for routing, but clusters are a training artifact for "many questions → one answer" grouping. As answer smoothing creates 1:1 mappings, the direct search approach may become more appropriate. Both methods are available.
 
 **No networking in Phase 1** - all operations are in-process.
 **No Kleinberg routing** - softmax routing is sufficient for local model.
@@ -276,11 +287,12 @@ From Kleinberg's research, the critical parameters for **distributed routing** a
 ## Success Metrics
 
 ### Phase 1
+- [x] Softmax routing implemented (`multi_head_search` - cluster-based projection)
+- [x] Direct search baseline implemented (`_direct_search` - raw cosine similarity)
+- [x] Performance acceptable on modest hardware (matrix ops are fast)
 - [ ] All 11 relation types implemented and tested
 - [ ] `search_with_context()` returns relevant graph context
-- [ ] Softmax routing returns appropriate top-k answers via direct matrix multiplication
 - [ ] Seed-level folder structure for training data
-- [ ] Performance acceptable on modest hardware (e.g., mobile devices)
 
 ### Phase 2
 - [ ] Queries route to appropriate interface
