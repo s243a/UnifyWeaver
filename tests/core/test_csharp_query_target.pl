@@ -2030,7 +2030,7 @@ harness_source(ModuleClass, Params, Source) :-
  using System.Text.Json.Nodes;
 
 var result = UnifyWeaver.Generated.~w.Build();
-var executor = new QueryExecutor(result.Provider);
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
 ~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
  string FormatValue(object? value) => value switch
@@ -2075,7 +2075,7 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
  void PrintRows((InMemoryRelationProvider Provider, QueryPlan Plan) result, object[][] parameters)
  {
-     var executor = new QueryExecutor(result.Provider);
+     var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
      var _planText = QueryPlanExplainer.Explain(result.Plan);
      var trace = new QueryExecutionTrace();
      foreach (var row in executor.Execute(result.Plan, parameters, trace))

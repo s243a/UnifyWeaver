@@ -93,6 +93,9 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
   - `var trace = new QueryExecutionTrace();`
   - `foreach (var row in executor.Execute(plan, parameters, trace)) { ... }`
   - `Console.WriteLine(trace.ToString());`
+- Prepared-style cache reuse (useful for repeated parameterized calls):
+  - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));`
+  - `executor.ClearCaches();` (if underlying facts change)
 
 ## Configuration
 - New preference atom: `target(csharp_query)`.
