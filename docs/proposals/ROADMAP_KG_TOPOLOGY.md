@@ -147,14 +147,34 @@ The `examples/pearltrees/` work has built a **hierarchical categorization knowle
 
 The category structure provides a human-curated taxonomy that complements embedding-based clustering.
 
-### UnifyWeaver Client-Server Infrastructure
+### UnifyWeaver Client-Server Architecture
 
-The existing UnifyWeaver client-server infrastructure should be leveraged for implementation, particularly:
+The existing UnifyWeaver client-server architecture (see `docs/design/CLIENT_SERVER_*.md`) provides a comprehensive foundation. The core insight: **client-server is "two opposing pipes"** - extending the pipeline model to bidirectional communication.
 
-- **Phase 2**: Service interfaces could use `prolog_service_target` or `network_glue` patterns
-- **Phase 3**: Distributed nodes could use the HTTP server/client generation
+**Key design principles:**
+- **Transport independence**: Same service definition works in-process → cross-process (Unix sockets) → network (HTTP)
+- **Location transparency**: Caller doesn't know if service is local function, separate process, or remote server
+- **Protocol consistency**: JSONL request/response with `__type`, `__id`, `__status`, `payload`
 
-This avoids reinventing networking infrastructure.
+**How this maps to KG topology phases:**
+
+| Phase | Transport | Use Case |
+|-------|-----------|----------|
+| Phase 1 | In-process | Direct softmax routing, no network overhead |
+| Phase 2 | In-process or Unix socket | Interfaces as services, same process or split for isolation |
+| Phase 3 | HTTP/TCP | Distributed nodes, inter-node Kleinberg routing |
+
+**Service definition for a semantic interface (Phase 2 example):**
+```prolog
+service(csv_interface, [
+    transport(in_process),      % Or unix_socket for isolation
+    stateful(false)
+], [
+    receive(Query),
+    route_to_closest_cluster/1, % Softmax over this interface's clusters
+    respond(Answer)
+]).
+```
 
 ## Existing Infrastructure
 
@@ -162,30 +182,39 @@ The following existing components can be leveraged:
 
 ### Client-Server Infrastructure
 
+**Design Documents (`docs/design/`):**
+- `CLIENT_SERVER_PHILOSOPHY.md` - Vision: "two opposing pipes"
+- `CLIENT_SERVER_SPECIFICATION.md` - Syntax, protocol, transport specs
+- `CLIENT_SERVER_IMPLEMENTATION.md` - Phased implementation plan
+
 **`src/unifyweaver/targets/prolog_service_target.pl`:**
 - Prolog-as-Service pattern
 - Bash script generation with service functions
 - Cross-platform support (Linux/Windows/Darwin)
 
-**`src/unifyweaver/glue/network_glue.pl`** (documented in book-07):
+**`src/unifyweaver/glue/network_glue.pl`:**
 ```prolog
 :- module(network_glue, [
-    % Service registry
+    % Service registry (Phase 2-3: interface/node discovery)
     register_service/3,
     service/2,
     endpoint_url/3,
 
-    % HTTP server generation
+    % HTTP server generation (Phase 3: node endpoints)
     generate_http_server/4,
     generate_go_http_server/3,
     generate_python_http_server/3,
     generate_rust_http_server/3,
 
-    % HTTP client generation
+    % HTTP client generation (Phase 3: inter-node routing)
     generate_http_client/4,
     generate_go_http_client/3,
     generate_python_http_client/3,
-    generate_bash_http_client/3
+    generate_bash_http_client/3,
+
+    % Socket communication (Phase 2-3: low-latency option)
+    generate_socket_server/4,
+    generate_socket_client/4
 ]).
 ```
 
