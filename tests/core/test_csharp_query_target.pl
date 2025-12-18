@@ -82,6 +82,9 @@ test_csharp_query_target :-
         verify_join_plan,
         verify_selection_plan,
         verify_ground_relation_arg_plan,
+        verify_order_by_limit_plan,
+        verify_order_by_desc_limit_runtime,
+        verify_order_by_offset_limit_runtime,
         verify_disjunction_body_union_plan,
         verify_arithmetic_plan,
         verify_recursive_arithmetic_plan,
@@ -505,6 +508,24 @@ verify_ground_relation_arg_plan :-
         width:_
     },
     maybe_run_query_runtime(Plan, ['10', '5']).
+
+verify_order_by_limit_plan :-
+    csharp_query_target:build_query_plan(test_sale_amount_for_alice/1, [target(csharp_query), order_by(0), limit(1)], Plan),
+    get_dict(root, Plan, limit{type:limit, input:Order, count:1, width:1}),
+    get_dict(type, Order, order_by),
+    get_dict(keys, Order, [order_key{index:0, dir:asc}]),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'OrderByNode'),
+    sub_string(Source, _, _, _, 'LimitNode'),
+    maybe_run_query_runtime(Plan, ['5']).
+
+verify_order_by_desc_limit_runtime :-
+    csharp_query_target:build_query_plan(test_sale_amount_for_alice/1, [target(csharp_query), order_by(0, desc), limit(1)], Plan),
+    maybe_run_query_runtime(Plan, ['10']).
+
+verify_order_by_offset_limit_runtime :-
+    csharp_query_target:build_query_plan(test_sale_amount_for_alice/1, [target(csharp_query), order_by(0), offset(1), limit(1)], Plan),
+    maybe_run_query_runtime(Plan, ['10']).
 
 verify_disjunction_body_union_plan :-
     csharp_query_target:build_query_plan(test_customer_alice_or_bob/1, [target(csharp_query)], Plan),

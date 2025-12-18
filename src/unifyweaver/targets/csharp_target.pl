@@ -506,9 +506,10 @@ build_plan_by_class(facts, Pred, Arity, _Clauses, Options, Modes, SeedOverride, 
         },
         EndFact is Arity - 1,
         findall(Idx, (between(0, EndFact, I), Idx is InputCount+I), RightCols),
-        Root = projection{type:projection, input:JoinNode, columns:RightCols, width:Arity}
-    ;   Root = Root0
+        Root1 = projection{type:projection, input:JoinNode, columns:RightCols, width:Arity}
+    ;   Root1 = Root0
     ),
+    apply_query_modifiers(Options, Arity, Root1, Root),
     Plan = plan{
         head:HeadSpec,
         root:Root,
@@ -522,9 +523,10 @@ build_plan_by_class(single_rule, Pred, Arity, [Head-Body], Options, Modes, SeedO
     HeadSpec = predicate{name:Pred, arity:Arity},
     build_rule_clause([HeadSpec], HeadSpec, HeadArgs, Body, Modes, SeedOverride, Node, Relations),
     dedup_relations(Relations, UniqueRelations),
+    apply_query_modifiers(Options, Arity, Node, Root),
     Plan = plan{
         head:HeadSpec,
-        root:Node,
+        root:Root,
         relations:UniqueRelations,
         metadata:_{classification:single_rule, options:Options, modes:Modes},
         is_recursive:false
@@ -534,7 +536,8 @@ build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Modes, SeedOv
     append(RelationLists, RelationsFlat),
     dedup_relations(RelationsFlat, Relations),
     HeadSpec = predicate{name:Pred, arity:Arity},
-    Root = union{type:union, sources:Nodes, width:Arity},
+    Root0 = union{type:union, sources:Nodes, width:Arity},
+    apply_query_modifiers(Options, Arity, Root0, Root),
     Plan = plan{
         head:HeadSpec,
         root:Root,
@@ -545,6 +548,62 @@ build_plan_by_class(multiple_rules, Pred, Arity, Clauses, Options, Modes, SeedOv
 build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _Modes, _SeedOverride, _) :-
     format(user_error, 'C# query target: unexpected fact classified as rule (~w/~w).~n', [Pred, Arity]),
     fail.
+
+apply_query_modifiers(Options, Width, Root0, Root) :-
+    apply_query_order_by(Options, Width, Root0, Root1),
+    apply_query_offset(Options, Width, Root1, Root2),
+    apply_query_limit(Options, Width, Root2, Root).
+
+apply_query_order_by(Options, Width, Root0, Root) :-
+    (   member(order_by(Spec, Dir), Options)
+    ->  parse_query_order_keys(Spec, Dir, Width, Keys),
+        Root = order_by{type:order_by, input:Root0, keys:Keys, width:Width}
+    ;   member(order_by(Spec), Options)
+    ->  parse_query_order_keys(Spec, asc, Width, Keys),
+        Root = order_by{type:order_by, input:Root0, keys:Keys, width:Width}
+    ;   Root = Root0
+    ).
+
+apply_query_limit(Options, Width, Root0, Root) :-
+    (   member(limit(Count), Options)
+    ->  must_be(integer, Count),
+        Count >= 0,
+        Root = limit{type:limit, input:Root0, count:Count, width:Width}
+    ;   Root = Root0
+    ).
+
+apply_query_offset(Options, Width, Root0, Root) :-
+    (   member(offset(Count), Options)
+    ->  must_be(integer, Count),
+        Count >= 0,
+        Root = offset{type:offset, input:Root0, count:Count, width:Width}
+    ;   Root = Root0
+    ).
+
+parse_query_order_keys(Spec, DefaultDir, Width, Keys) :-
+    must_be(atom, DefaultDir),
+    must_be(integer, Width),
+    Width >= 0,
+    (   is_list(Spec)
+    ->  maplist(parse_query_order_key(DefaultDir, Width), Spec, Keys)
+    ;   parse_query_order_key(DefaultDir, Width, Spec, Key),
+        Keys = [Key]
+    ).
+
+parse_query_order_key(DefaultDir, Width, Item, Key) :-
+    (   Item = (Index, Dir)
+    ->  true
+    ;   Index = Item,
+        Dir = DefaultDir
+    ),
+    must_be(integer, Index),
+    Index >= 0,
+    Index < Width,
+    must_be(atom, Dir),
+    (   Dir == asc
+    ;   Dir == desc
+    ),
+    Key = order_key{index:Index, dir:Dir}.
 
 %% Recursive plan construction ----------------------------------------------
 
@@ -562,13 +621,14 @@ build_recursive_plan(HeadSpec, GroupSpecs, BaseClauses, RecClauses, Options, Mod
     append(BaseRelations, RecursiveRelations, MainRelations0),
     append(NeedRelations, MainRelations0, CombinedRelations0),
     dedup_relations(CombinedRelations0, CombinedRelations),
-    Root = fixpoint{
+    Root0 = fixpoint{
         type:fixpoint,
         head:HeadSpec,
         base:BaseRoot,
         recursive:RecursiveNodes,
         width:Arity
     },
+    apply_query_modifiers(Options, Arity, Root0, Root),
     Plan = plan{
         head:HeadSpec,
         root:Root,
@@ -588,11 +648,13 @@ build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan) :-
     append(RelationLists, RelationsFlat0),
     append(NeedRelations, RelationsFlat0, RelationsFlat),
     dedup_relations(RelationsFlat, CombinedRelations),
-    Root = mutual_fixpoint{
+    Root0 = mutual_fixpoint{
         type:mutual_fixpoint,
         head:HeadSpec,
         members:MemberStructs
     },
+    get_dict(arity, HeadSpec, Arity),
+    apply_query_modifiers(Options, Arity, Root0, Root),
     Plan = plan{
         head:HeadSpec,
         root:Root,
@@ -2336,6 +2398,30 @@ emit_plan_expression(Node, Expr) :-
     selection_condition_expression(Condition, tuple, ConditionExpr),
     format(atom(Expr), 'new SelectionNode(~w, tuple => ~w)', [InputExpr, ConditionExpr]).
 emit_plan_expression(Node, Expr) :-
+    is_dict(Node, order_by), !,
+    get_dict(input, Node, Input),
+    get_dict(keys, Node, Keys),
+    emit_plan_expression(Input, InputExpr),
+    (   Keys == []
+    ->  KeysLiteral = 'Array.Empty<OrderKey>()'
+    ;   maplist(emit_order_key_expression, Keys, KeyExprs),
+        atomic_list_concat(KeyExprs, ', ', KeyList),
+        format(atom(KeysLiteral), 'new OrderKey[]{ ~w }', [KeyList])
+    ),
+    format(atom(Expr), 'new OrderByNode(~w, ~w)', [InputExpr, KeysLiteral]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, limit), !,
+    get_dict(input, Node, Input),
+    get_dict(count, Node, Count),
+    emit_plan_expression(Input, InputExpr),
+    format(atom(Expr), 'new LimitNode(~w, ~w)', [InputExpr, Count]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, offset), !,
+    get_dict(input, Node, Input),
+    get_dict(count, Node, Count),
+    emit_plan_expression(Input, InputExpr),
+    format(atom(Expr), 'new OffsetNode(~w, ~w)', [InputExpr, Count]).
+emit_plan_expression(Node, Expr) :-
     is_dict(Node, negation), !,
     get_dict(input, Node, Input),
     get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
@@ -2464,6 +2550,15 @@ emit_plan_expression(Node, _Expr) :-
 
 recursive_role_atom(delta, 'Delta').
 recursive_role_atom(total, 'Total').
+
+order_direction_atom(asc, 'Asc').
+order_direction_atom(desc, 'Desc').
+
+emit_order_key_expression(Key, Expr) :-
+    get_dict(index, Key, Index),
+    get_dict(dir, Key, Dir),
+    order_direction_atom(Dir, DirAtom),
+    format(atom(Expr), 'new OrderKey(~w, OrderDirection.~w)', [Index, DirAtom]).
 
 emit_mutual_member_expression(Member, Expr) :-
     get_dict(predicate, Member, predicate{name:Name, arity:Arity}),

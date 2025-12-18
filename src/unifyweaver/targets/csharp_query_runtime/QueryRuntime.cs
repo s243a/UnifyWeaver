@@ -156,6 +156,29 @@ namespace UnifyWeaver.QueryRuntime
     /// </summary>
     public sealed record DistinctNode(PlanNode Input, IEqualityComparer<object[]>? Comparer = null) : PlanNode;
 
+    public enum OrderDirection
+    {
+        Asc,
+        Desc
+    }
+
+    public sealed record OrderKey(int Index, OrderDirection Direction = OrderDirection.Asc);
+
+    /// <summary>
+    /// Sorts tuples deterministically using a sequence of key columns.
+    /// </summary>
+    public sealed record OrderByNode(PlanNode Input, IReadOnlyList<OrderKey> Keys) : PlanNode;
+
+    /// <summary>
+    /// Limits output to the first N tuples.
+    /// </summary>
+    public sealed record LimitNode(PlanNode Input, int Count) : PlanNode;
+
+    /// <summary>
+    /// Skips the first N tuples.
+    /// </summary>
+    public sealed record OffsetNode(PlanNode Input, int Count) : PlanNode;
+
     /// <summary>
     /// Represents a fixpoint evaluation consisting of base and recursive plans.
     /// </summary>
@@ -467,6 +490,18 @@ namespace UnifyWeaver.QueryRuntime
                         WriteNode(childIndent, "input", distinct.Input);
                         return;
 
+                    case OrderByNode orderBy:
+                        WriteNode(childIndent, "input", orderBy.Input);
+                        return;
+
+                    case LimitNode limit:
+                        WriteNode(childIndent, "input", limit.Input);
+                        return;
+
+                    case OffsetNode offset:
+                        WriteNode(childIndent, "input", offset.Input);
+                        return;
+
                     case FixpointNode fixpoint:
                         WriteNode(childIndent, "base", fixpoint.BasePlan);
                         for (var i = 0; i < fixpoint.RecursivePlans.Count; i++)
@@ -522,6 +557,9 @@ namespace UnifyWeaver.QueryRuntime
                 JoinNode => "Join",
                 UnionNode union => $"Union sources={union.Sources.Count}",
                 DistinctNode distinct => $"Distinct comparer={(distinct.Comparer?.GetType().Name ?? "default")}",
+                OrderByNode orderBy => $"OrderBy keys=[{string.Join(",", orderBy.Keys.Select(k => $"{k.Index}:{k.Direction}"))}]",
+                LimitNode limit => $"Limit count={limit.Count}",
+                OffsetNode offset => $"Offset count={offset.Count}",
                 FixpointNode fixpoint => $"Fixpoint predicate={fixpoint.Predicate} recursivePlans={fixpoint.RecursivePlans.Count}",
                 MutualFixpointNode mutual => $"MutualFixpoint head={mutual.Head} members={mutual.Members.Count}",
                 RecursiveRefNode recursiveRef => $"RecursiveRef predicate={recursiveRef.Predicate} kind={recursiveRef.Kind}",
@@ -724,6 +762,18 @@ namespace UnifyWeaver.QueryRuntime
 
                 case DistinctNode distinct:
                     result = ExecuteDistinct(distinct, context);
+                    break;
+
+                case OrderByNode orderBy:
+                    result = ExecuteOrderBy(orderBy, context);
+                    break;
+
+                case LimitNode limit:
+                    result = ExecuteLimit(limit, context);
+                    break;
+
+                case OffsetNode offset:
+                    result = ExecuteOffset(offset, context);
                     break;
 
                 case FixpointNode fixpoint:
@@ -2017,6 +2067,152 @@ namespace UnifyWeaver.QueryRuntime
                     yield return tuple;
                 }
             }
+        }
+
+        private IEnumerable<object[]> ExecuteLimit(LimitNode limit, EvaluationContext? context)
+        {
+            if (limit is null) throw new ArgumentNullException(nameof(limit));
+            if (limit.Count < 0) throw new ArgumentOutOfRangeException(nameof(limit), limit.Count, "Limit count must be non-negative.");
+            return Evaluate(limit.Input, context).Take(limit.Count);
+        }
+
+        private IEnumerable<object[]> ExecuteOffset(OffsetNode offset, EvaluationContext? context)
+        {
+            if (offset is null) throw new ArgumentNullException(nameof(offset));
+            if (offset.Count < 0) throw new ArgumentOutOfRangeException(nameof(offset), offset.Count, "Offset count must be non-negative.");
+            return Evaluate(offset.Input, context).Skip(offset.Count);
+        }
+
+        private sealed class OrderByRowComparer : IComparer<object[]>
+        {
+            private readonly IReadOnlyList<OrderKey> _keys;
+
+            public OrderByRowComparer(IReadOnlyList<OrderKey> keys)
+            {
+                _keys = keys;
+            }
+
+            public int Compare(object[]? x, object[]? y)
+            {
+                if (ReferenceEquals(x, y)) return 0;
+                if (x is null) return -1;
+                if (y is null) return 1;
+
+                foreach (var key in _keys)
+                {
+                    var index = key.Index;
+                    var left = index >= 0 && index < x.Length ? x[index] : null;
+                    var right = index >= 0 && index < y.Length ? y[index] : null;
+                    var cmp = CompareSortValues(left, right);
+                    if (cmp == 0)
+                    {
+                        continue;
+                    }
+
+                    return key.Direction == OrderDirection.Desc ? -cmp : cmp;
+                }
+
+                if (x.Length != y.Length)
+                {
+                    return x.Length.CompareTo(y.Length);
+                }
+
+                for (var i = 0; i < x.Length; i++)
+                {
+                    var cmp = CompareSortValues(x[i], y[i]);
+                    if (cmp != 0)
+                    {
+                        return cmp;
+                    }
+                }
+
+                return 0;
+            }
+
+            private static int CompareSortValues(object? left, object? right)
+            {
+                if (ReferenceEquals(left, right)) return 0;
+                if (left is null) return -1;
+                if (right is null) return 1;
+
+                var leftRank = GetSortRank(left);
+                var rightRank = GetSortRank(right);
+                if (leftRank != rightRank)
+                {
+                    return leftRank.CompareTo(rightRank);
+                }
+
+                switch (leftRank)
+                {
+                    case 1:
+                        return ((bool)left).CompareTo((bool)right);
+                    case 2:
+                        if (TryConvertToDecimal(left, out var leftNumber) && TryConvertToDecimal(right, out var rightNumber))
+                        {
+                            return leftNumber.CompareTo(rightNumber);
+                        }
+                        break;
+                    case 3:
+                        return string.Compare((string)left, (string)right, StringComparison.Ordinal);
+                    case 4:
+                        return string.Compare(((JsonElement)left).ToString(), ((JsonElement)right).ToString(), StringComparison.Ordinal);
+                }
+
+                if (left is IComparable comparableLeft &&
+                    right is IComparable &&
+                    left.GetType() == right.GetType())
+                {
+                    return comparableLeft.CompareTo(right);
+                }
+
+                var typeCompare = string.Compare(left.GetType().FullName, right.GetType().FullName, StringComparison.Ordinal);
+                if (typeCompare != 0)
+                {
+                    return typeCompare;
+                }
+
+                return string.Compare(
+                    Convert.ToString(left, CultureInfo.InvariantCulture),
+                    Convert.ToString(right, CultureInfo.InvariantCulture),
+                    StringComparison.Ordinal);
+            }
+
+            private static int GetSortRank(object value) =>
+                value switch
+                {
+                    bool => 1,
+                    sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal => 2,
+                    string => 3,
+                    JsonElement => 4,
+                    _ => 5
+                };
+
+            private static bool TryConvertToDecimal(object value, out decimal number)
+            {
+                try
+                {
+                    number = Convert.ToDecimal(value, CultureInfo.InvariantCulture);
+                    return true;
+                }
+                catch
+                {
+                    number = 0;
+                    return false;
+                }
+            }
+        }
+
+        private IEnumerable<object[]> ExecuteOrderBy(OrderByNode orderBy, EvaluationContext? context)
+        {
+            if (orderBy is null) throw new ArgumentNullException(nameof(orderBy));
+            if (orderBy.Keys is null || orderBy.Keys.Count == 0)
+            {
+                return Evaluate(orderBy.Input, context);
+            }
+
+            var rows = Evaluate(orderBy.Input, context).ToList();
+            rows.Sort(new OrderByRowComparer(orderBy.Keys));
+            return rows;
         }
 
         private IEnumerable<object[]> EvaluateParamSeed(ParamSeedNode seed, EvaluationContext? context)
