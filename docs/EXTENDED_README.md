@@ -21,10 +21,11 @@ This document provides comprehensive documentation for UnifyWeaver, including de
 8. [C# Target Family](#c-target-family)
 9. [JVM Targets](#jvm-targets)
 10. [Native Targets (C/C++)](#native-targets-cc)
-11. [Complete Examples](#complete-examples)
-12. [Architecture Deep Dive](#architecture-deep-dive)
-13. [Testing Guide](#testing-guide)
-14. [Troubleshooting](#troubleshooting)
+11. [Client-Server Architecture](#client-server-architecture)
+12. [Complete Examples](#complete-examples)
+13. [Architecture Deep Dive](#architecture-deep-dive)
+14. [Testing Guide](#testing-guide)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -1124,7 +1125,133 @@ public:
 
 ---
 
+## Client-Server Architecture
 
+UnifyWeaver v0.9 introduces a comprehensive client-server architecture for building production-grade distributed services. The architecture spans 8 phases, from simple in-process services to fully distributed systems with observability.
+
+### Overview
+
+The client-server system uses a unified `service/3` predicate that separates business logic from transport and infrastructure concerns:
+
+```prolog
+service(ServiceName, Options, Operations).
+```
+
+### Architecture Layers
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Application Layer                               │
+│              service(name, options, operations)                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                      Service Mesh Layer                              │
+│         Load Balancing │ Circuit Breaker │ Retry │ Rate Limit       │
+├─────────────────────────────────────────────────────────────────────┤
+│                      Discovery Layer                                 │
+│              Consul │ etcd │ DNS │ Kubernetes                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                      Transport Layer                                 │
+│           In-Process │ Unix Socket │ TCP │ HTTP                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                      Observability Layer                             │
+│              OpenTelemetry │ Jaeger │ Zipkin │ Prometheus            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Phase Summary
+
+| Phase | Feature | Description |
+|-------|---------|-------------|
+| 1 | In-Process Services | Direct function calls within same process |
+| 2 | Unix Socket Services | IPC for local inter-process communication |
+| 3 | Network Services | TCP/HTTP for distributed deployment |
+| 4 | Service Mesh | Load balancing, circuit breaker, retry |
+| 5 | Polyglot Services | Cross-language service communication |
+| 6 | Distributed Services | Sharding, replication, consistency |
+| 7 | Service Discovery | Runtime service registration and lookup |
+| 8 | Distributed Tracing | Request tracking across service boundaries |
+
+### Quick Start Example
+
+```prolog
+% Define a user service with full production features
+service(user_service, [
+    % Transport
+    transport(http(8080)),
+
+    % Resilience
+    load_balancing(round_robin),
+    circuit_breaker(true),
+    retry_strategy(exponential),
+
+    % Distributed
+    sharding(consistent_hash),
+    replication(3),
+    consistency(quorum),
+
+    % Discovery & Tracing
+    discovery_backend(consul),
+    health_check(http('/health', 30000)),
+    tracing(true),
+    trace_exporter(otlp)
+], [
+    receive(Request),
+    state_get(users, Users),
+    respond(Response)
+]).
+```
+
+### Service Options Reference
+
+#### Transport Options
+| Option | Values | Description |
+|--------|--------|-------------|
+| `transport(T)` | `in_process`, `unix_socket(Path)`, `tcp(Port)`, `http(Port)` | Service transport |
+
+#### Resilience Options
+| Option | Values | Description |
+|--------|--------|-------------|
+| `load_balancing(S)` | `round_robin`, `random`, `least_connections`, `weighted`, `ip_hash` | Load balancing strategy |
+| `circuit_breaker(B)` | `true`, `false` | Enable circuit breaker |
+| `retry_strategy(S)` | `fixed`, `linear`, `exponential` | Retry backoff strategy |
+
+#### Distributed Options
+| Option | Values | Description |
+|--------|--------|-------------|
+| `sharding(S)` | `hash`, `range`, `consistent_hash`, `geographic` | Data partitioning |
+| `replication(N)` | Integer | Number of replicas |
+| `consistency(L)` | `eventual`, `strong`, `quorum`, `causal` | Consistency level |
+
+#### Discovery & Tracing Options
+| Option | Values | Description |
+|--------|--------|-------------|
+| `discovery_backend(B)` | `consul`, `etcd`, `dns`, `kubernetes` | Service discovery backend |
+| `health_check(C)` | `http(Path, Interval)`, `tcp(Port, Interval)` | Health check configuration |
+| `tracing(B)` | `true`, `false` | Enable distributed tracing |
+| `trace_exporter(E)` | `otlp`, `jaeger`, `zipkin`, `console` | Trace export destination |
+
+### Target Language Support
+
+The client-server architecture generates idiomatic code for:
+
+| Target | Transport | Mesh | Polyglot | Distributed | Discovery | Tracing |
+|--------|-----------|------|----------|-------------|-----------|---------|
+| Python | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Go | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Rust | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+### Documentation
+
+For comprehensive documentation, see the **Education Project** Book 7: Cross-Target Glue:
+
+- **Chapter 11a**: Service Architecture (Phases 1-3)
+- **Chapter 12a**: Service Mesh (Phase 4)
+- **Chapter 12b**: Polyglot and Distributed Services (Phases 5-6)
+- **Chapter 12c**: Service Discovery and Tracing (Phases 7-8)
+
+Design documentation is also available at [CLIENT_SERVER_DESIGN.md](CLIENT_SERVER_DESIGN.md).
+
+---
 
 ## Complete Examples
 
@@ -1551,5 +1678,5 @@ at your option.
 
 ---
 
-**Last Updated:** 2025-10-26
-**Version:** 0.0.2
+**Last Updated:** 2025-12-17
+**Version:** 0.9.0
