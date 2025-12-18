@@ -1012,9 +1012,139 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
+            static int EstimateBuildCost(PlanNode node) => node switch
+            {
+                ParamSeedNode => 0,
+                UnitNode => 1,
+                EmptyNode => 1,
+                MaterializeNode => 5,
+                RelationScanNode => 20,
+                RecursiveRefNode => 50,
+                CrossRefNode => 50,
+                FixpointNode => 100,
+                MutualFixpointNode => 100,
+                _ => 25,
+            };
+
+            var buildLeft = EstimateBuildCost(join.Left) < EstimateBuildCost(join.Right);
+            var joinKeyCount = join.LeftKeys.Count;
             var left = Evaluate(join.Left, context);
             var right = Evaluate(join.Right, context);
+
+            if (joinKeyCount == 1)
+            {
+                if (buildLeft)
+                {
+                    var indexSingle = new Dictionary<object, List<object[]>>();
+
+                    foreach (var leftTuple in left)
+                    {
+                        if (leftTuple is null) continue;
+
+                        var key = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
+                        if (!indexSingle.TryGetValue(key, out var bucket))
+                        {
+                            bucket = new List<object[]>();
+                            indexSingle[key] = bucket;
+                        }
+
+                        bucket.Add(leftTuple);
+                    }
+
+                    foreach (var rightTuple in right)
+                    {
+                        if (rightTuple is null) continue;
+
+                        var key = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
+                        if (!indexSingle.TryGetValue(key, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var leftTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+
+                var indexSingleFallback = new Dictionary<object, List<object[]>>();
+
+                foreach (var rightTuple in right)
+                {
+                    if (rightTuple is null) continue;
+
+                    var key = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
+                    if (!indexSingleFallback.TryGetValue(key, out var bucket))
+                    {
+                        bucket = new List<object[]>();
+                        indexSingleFallback[key] = bucket;
+                    }
+
+                    bucket.Add(rightTuple);
+                }
+
+                foreach (var leftTuple in left)
+                {
+                    if (leftTuple is null) continue;
+
+                    var key = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
+                    if (!indexSingleFallback.TryGetValue(key, out var bucket))
+                    {
+                        continue;
+                    }
+
+                    foreach (var rightTuple in bucket)
+                    {
+                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+
+                yield break;
+            }
+
             var indexFallback = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            if (buildLeft)
+            {
+                foreach (var leftTuple in left)
+                {
+                    if (leftTuple is null) continue;
+
+                    var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                    var wrapper = new RowWrapper(key);
+
+                    if (!indexFallback.TryGetValue(wrapper, out var bucket))
+                    {
+                        bucket = new List<object[]>();
+                        indexFallback[wrapper] = bucket;
+                    }
+
+                    bucket.Add(leftTuple);
+                }
+
+                foreach (var rightTuple in right)
+                {
+                    if (rightTuple is null) continue;
+
+                    var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                    var wrapper = new RowWrapper(key);
+
+                    if (!indexFallback.TryGetValue(wrapper, out var bucket))
+                    {
+                        continue;
+                    }
+
+                    foreach (var leftTuple in bucket)
+                    {
+                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+
+                yield break;
+            }
 
             foreach (var rightTuple in right)
             {
@@ -1998,8 +2128,17 @@ namespace UnifyWeaver.QueryRuntime
                 foreach (var paramTuple in parameters)
                 {
                     if (paramTuple is null) continue;
-                    var keyTuple = BuildKeyFromTuple(paramTuple, inputPositions);
-                    keys.Add(keyTuple.Length > 0 ? keyTuple[0] ?? NullFactIndexKey : NullFactIndexKey);
+                    object? value = null;
+                    if (paramTuple.Length == 1)
+                    {
+                        value = paramTuple[0];
+                    }
+                    else if (columnIndex >= 0 && columnIndex < paramTuple.Length)
+                    {
+                        value = paramTuple[columnIndex];
+                    }
+
+                    keys.Add(value ?? NullFactIndexKey);
                 }
 
                 return EnumerateBuckets(index, keys);
