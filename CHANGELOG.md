@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Client-Server Phase 6: Distributed Services** - Cluster-aware services with sharding and replication
+  - Sharding strategies: `hash`, `range`, `consistent_hash`, `geographic`
+  - Consistency levels: `eventual`, `strong`, `quorum`, `read_your_writes`, `causal`
+  - Partition key routing with `partition_key(Field)` option
+  - Replication factor with `replication(N)` option
+  - Cluster configuration with `cluster([node(Id, Host, Port)])` option
+  - ConsistentHashRing implementation with virtual nodes for all targets
+  - ShardRouter with configurable sharding strategies
+  - ReplicationManager with write/read quorum support
+  - Distributed service validation in `service_validation.pl`
+  - Helper predicates: `get_replication_factor/2`, `get_consistency_level/2`, `get_sharding_strategy/2`, `get_partition_key/2`, `get_cluster_config/2`, `is_distributed_service/1`
+  - Distributed service compilation for Python, Go, and Rust targets
+  - Thread-safe implementations: Python threading.Lock, Go sync.RWMutex/atomic, Rust RwLock/AtomicU64
+  - 24 integration tests in `tests/integration/test_distributed_services.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Client-Server Phase 5: Polyglot Services** - Cross-language service calls
+  - `polyglot(true)` option for cross-language services
+  - `target_language(Lang)` option (python, go, rust, javascript, csharp)
+  - `depends_on([dep(Name, Lang, Transport)])` for service dependencies
+  - ServiceClient class/struct for HTTP-based cross-language calls
+  - ServiceRegistry for local and remote service management
+  - Automatic endpoint extraction from transport configurations
+  - Polyglot service validation in `service_validation.pl`
+  - Helper predicates: `get_target_language/2`, `get_service_dependencies/2`, `get_service_endpoint/2`, `is_polyglot_service/1`, `is_valid_target_language/1`, `is_valid_service_dependency/1`
+  - Polyglot service compilation for Python, Go, and Rust targets
+  - Thread-safe implementations with HTTP clients: Python urllib.request, Go net/http, Rust reqwest
+  - 22 integration tests in `tests/integration/test_polyglot_services.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
 - **Client-Server Phase 4: Service Mesh** - Load balancing, circuit breakers, and retry with backoff
   - Load balancing strategies: `round_robin`, `random`, `least_connections`, `weighted`, `ip_hash`
   - Circuit breaker pattern with `threshold`, `timeout`, `half_open_requests`, `success_threshold`

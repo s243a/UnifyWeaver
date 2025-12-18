@@ -42,7 +42,14 @@
     compile_http_client_go/3,           % +ServiceName, +Endpoint, -GoCode
     compile_http_client_go/4,           % +ServiceName, +Endpoint, +Options, -GoCode
     % Phase 4: Service mesh
-    compile_service_mesh_go/2           % +Service, -GoCode
+    compile_service_mesh_go/2,          % +Service, -GoCode
+    % Phase 5: Polyglot services
+    compile_polyglot_service_go/2,      % +Service, -GoCode
+    generate_service_client_go/3,       % +ServiceName, +Endpoint, -GoCode
+    % Phase 6: Distributed services
+    compile_distributed_service_go/2,   % +Service, -GoCode
+    generate_sharding_go/2,             % +Strategy, -GoCode
+    generate_replication_go/2           % +ReplicationFactor, -GoCode
 ]).
 
 :- use_module(library(lists)).
@@ -245,6 +252,26 @@ compile_service_to_go(Service, GoCode) :-
     !,
     % Phase 3: HTTP service with options
     compile_http_service_go(Service, GoCode).
+
+compile_service_to_go(Service, GoCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(polyglot(true), Options)
+    ; member(depends_on(Deps), Options), Deps \= []
+    ),
+    !,
+    % Phase 5: Polyglot service
+    compile_polyglot_service_go(Service, GoCode).
+
+compile_service_to_go(Service, GoCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(distributed(true), Options)
+    ; member(sharding(_), Options)
+    ; member(replication(_), Options)
+    ; member(cluster(_), Options)
+    ),
+    !,
+    % Phase 6: Distributed service
+    compile_distributed_service_go(Service, GoCode).
 
 compile_service_to_go(Service, GoCode) :-
     Service = service(_Name, Options, _HandlerSpec),
@@ -2262,6 +2289,660 @@ func init() {
     StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
     HandlerCode, StructNameAtom, StructNameAtom, Name, StructNameAtom])
     ).
+
+%% ============================================
+%% PHASE 5: POLYGLOT SERVICES
+%% ============================================
+
+%% compile_polyglot_service_go(+Service, -GoCode)
+%  Generate Go code for a polyglot service that can call services in other languages.
+compile_polyglot_service_go(service(Name, Options, HandlerSpec), GoCode) :-
+    % Generate handler code
+    generate_service_handler_go(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Get dependencies
+    ( member(depends_on(Dependencies), Options) -> Dependencies = Deps ; Deps = [] ),
+    % Get target language
+    ( member(target_language(Lang), Options) -> atom_string(Lang, LangStr) ; LangStr = "go" ),
+    % Generate dependency client registrations
+    generate_dependency_clients_go(Deps, ClientsCode),
+    % Determine if stateful
+    ( member(stateful(true), Options) -> Stateful = "true" ; Stateful = "false" ),
+    % Get timeout
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Format dependencies list
+    format_deps_list_go(Deps, DepsListStr),
+    % Generate the polyglot service
+    format(string(GoCode), "package main
+
+import (
+\t\"bytes\"
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"io\"
+\t\"net/http\"
+\t\"sync\"
+\t\"time\"
+)
+
+// Phase 5: Polyglot Service Support
+// Target language: ~w
+
+// ServiceClient is a client for calling remote services
+type ServiceClient struct {
+\tName     string
+\tEndpoint string
+\tTimeout  time.Duration
+\tclient   *http.Client
+}
+
+// NewServiceClient creates a new service client
+func NewServiceClient(name, endpoint string, timeout time.Duration) *ServiceClient {
+\treturn &ServiceClient{
+\t\tName:     name,
+\t\tEndpoint: endpoint,
+\t\tTimeout:  timeout,
+\t\tclient:   &http.Client{Timeout: timeout},
+\t}
+}
+
+// Call makes an HTTP call to the remote service
+func (c *ServiceClient) Call(request interface{}) (interface{}, error) {
+\tpayload := map[string]interface{}{\"_payload\": request}
+\tdata, err := json.Marshal(payload)
+\tif err != nil {
+\t\treturn nil, fmt.Errorf(\"failed to marshal request: %w\", err)
+\t}
+
+\tresp, err := c.client.Post(c.Endpoint, \"application/json\", bytes.NewReader(data))
+\tif err != nil {
+\t\treturn nil, fmt.Errorf(\"failed to call service %s: %w\", c.Name, err)
+\t}
+\tdefer resp.Body.Close()
+
+\tbody, err := io.ReadAll(resp.Body)
+\tif err != nil {
+\t\treturn nil, fmt.Errorf(\"failed to read response: %w\", err)
+\t}
+
+\tvar result map[string]interface{}
+\tif err := json.Unmarshal(body, &result); err != nil {
+\t\treturn nil, fmt.Errorf(\"failed to unmarshal response: %w\", err)
+\t}
+
+\tif status, ok := result[\"_status\"].(string); ok && status == \"error\" {
+\t\tmsg, _ := result[\"_message\"].(string)
+\t\treturn nil, fmt.Errorf(\"remote service error: %s\", msg)
+\t}
+
+\treturn result[\"_payload\"], nil
+}
+
+// ServiceRegistry manages local and remote services
+type ServiceRegistry struct {
+\tmu       sync.RWMutex
+\tremote   map[string]*ServiceClient
+\tlocal    map[string]Service
+}
+
+var registry = &ServiceRegistry{
+\tremote: make(map[string]*ServiceClient),
+\tlocal:  make(map[string]Service),
+}
+
+// RegisterRemote registers a remote service
+func (r *ServiceRegistry) RegisterRemote(name, endpoint string, timeout time.Duration) {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tr.remote[name] = NewServiceClient(name, endpoint, timeout)
+}
+
+// RegisterLocal registers a local service
+func (r *ServiceRegistry) RegisterLocal(name string, svc Service) {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tr.local[name] = svc
+}
+
+// CallService calls a service by name (local or remote)
+func (r *ServiceRegistry) CallService(name string, request interface{}) (interface{}, error) {
+\tr.mu.RLock()
+\tdefer r.mu.RUnlock()
+
+\tif svc, ok := r.local[name]; ok {
+\t\treturn svc.Call(request)
+\t}
+\tif client, ok := r.remote[name]; ok {
+\t\treturn client.Call(request)
+\t}
+\treturn nil, fmt.Errorf(\"service not found: %s\", name)
+}
+
+~w
+
+// ~wService is a polyglot service
+// Target Language: ~w
+// Dependencies: ~w
+type ~wService struct {
+\tname     string
+\tstateful bool
+\ttimeout  time.Duration
+\tstate    map[string]interface{}
+}
+
+var _~wService = &~wService{
+\tname:     \"~w\",
+\tstateful: ~w,
+\ttimeout:  ~w * time.Millisecond,
+\tstate:    make(map[string]interface{}),
+}
+
+func (s *~wService) Name() string { return s.name }
+
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+~w
+}
+
+// CallService calls another service (local or remote)
+func (s *~wService) CallService(name string, request interface{}) (interface{}, error) {
+\treturn registry.CallService(name, request)
+}
+
+func init() {
+\tregistry.RegisterLocal(\"~w\", _~wService)
+}
+", [LangStr, ClientsCode, StructNameAtom, LangStr, DepsListStr, StructNameAtom,
+    StructNameAtom, StructNameAtom, Name, Stateful, Timeout,
+    StructNameAtom, StructNameAtom, HandlerCode, StructNameAtom, Name, StructNameAtom]).
+
+%% generate_dependency_clients_go(+Dependencies, -Code)
+%  Generate Go code to register remote service clients.
+generate_dependency_clients_go([], "// No remote service dependencies").
+generate_dependency_clients_go(Deps, Code) :-
+    Deps \= [],
+    generate_dep_registrations_go(Deps, RegStrs),
+    atomic_list_concat(RegStrs, '\n', Code).
+
+generate_dep_registrations_go([], []).
+generate_dep_registrations_go([Dep|Rest], [Str|RestStrs]) :-
+    ( Dep = dep(Name, Lang, Transport) ->
+        transport_to_endpoint_str_go(Transport, Endpoint),
+        format(string(Str), "// ~w service (~w)~nfunc init() { registry.RegisterRemote(\"~w\", \"~w\", 30*time.Second) }",
+               [Name, Lang, Name, Endpoint])
+    ; Dep = dep(Name, Lang) ->
+        format(string(Str), "// ~w service (~w)~nfunc init() { registry.RegisterRemote(\"~w\", \"http://localhost:8080/~w\", 30*time.Second) }",
+               [Name, Lang, Name, Name])
+    ; atom(Dep) ->
+        format(string(Str), "// ~w service~nfunc init() { registry.RegisterRemote(\"~w\", \"http://localhost:8080/~w\", 30*time.Second) }",
+               [Dep, Dep, Dep])
+    ;
+        Str = "// Unknown dependency format"
+    ),
+    generate_dep_registrations_go(Rest, RestStrs).
+
+%% transport_to_endpoint_str_go(+Transport, -Endpoint)
+transport_to_endpoint_str_go(tcp(Host, Port), Endpoint) :-
+    format(string(Endpoint), "http://~w:~w", [Host, Port]).
+transport_to_endpoint_str_go(http(Path), Endpoint) :-
+    format(string(Endpoint), "http://localhost:8080~w", [Path]).
+transport_to_endpoint_str_go(http(Host, Port), Endpoint) :-
+    format(string(Endpoint), "http://~w:~w", [Host, Port]).
+transport_to_endpoint_str_go(http(Host, Port, Path), Endpoint) :-
+    format(string(Endpoint), "http://~w:~w~w", [Host, Port, Path]).
+transport_to_endpoint_str_go(_, "http://localhost:8080").
+
+%% format_deps_list_go(+Deps, -Str)
+format_deps_list_go([], "[]").
+format_deps_list_go(Deps, Str) :-
+    Deps \= [],
+    format_dep_names(Deps, Names),
+    atomic_list_concat(Names, ', ', NamesStr),
+    format(string(Str), "[~w]", [NamesStr]).
+
+format_dep_names([], []).
+format_dep_names([dep(Name, _, _)|Rest], [Name|RestNames]) :- format_dep_names(Rest, RestNames).
+format_dep_names([dep(Name, _)|Rest], [Name|RestNames]) :- format_dep_names(Rest, RestNames).
+format_dep_names([Name|Rest], [Name|RestNames]) :- atom(Name), format_dep_names(Rest, RestNames).
+
+%% generate_service_client_go(+ServiceName, +Endpoint, -Code)
+%  Generate a standalone Go service client.
+generate_service_client_go(ServiceName, Endpoint, Code) :-
+    atom_codes(ServiceName, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    format(string(Code), "package main
+
+import (
+\t\"bytes\"
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"io\"
+\t\"net/http\"
+\t\"time\"
+)
+
+// ~wClient is a client for the ~w service
+type ~wClient struct {
+\tendpoint string
+\ttimeout  time.Duration
+\tclient   *http.Client
+}
+
+// New~wClient creates a new client
+func New~wClient(endpoint string, timeout time.Duration) *~wClient {
+\treturn &~wClient{
+\t\tendpoint: endpoint,
+\t\ttimeout:  timeout,
+\t\tclient:   &http.Client{Timeout: timeout},
+\t}
+}
+
+// Call calls the ~w service
+func (c *~wClient) Call(request interface{}) (interface{}, error) {
+\tpayload := map[string]interface{}{\"_payload\": request}
+\tdata, err := json.Marshal(payload)
+\tif err != nil {
+\t\treturn nil, fmt.Errorf(\"failed to marshal request: %%w\", err)
+\t}
+
+\tresp, err := c.client.Post(c.endpoint, \"application/json\", bytes.NewReader(data))
+\tif err != nil {
+\t\treturn nil, fmt.Errorf(\"failed to call ~w service: %%w\", err)
+\t}
+\tdefer resp.Body.Close()
+
+\tbody, err := io.ReadAll(resp.Body)
+\tif err != nil {
+\t\treturn nil, fmt.Errorf(\"failed to read response: %%w\", err)
+\t}
+
+\tvar result map[string]interface{}
+\tif err := json.Unmarshal(body, &result); err != nil {
+\t\treturn nil, fmt.Errorf(\"failed to unmarshal response: %%w\", err)
+\t}
+
+\tif status, ok := result[\"_status\"].(string); ok && status == \"error\" {
+\t\tmsg, _ := result[\"_message\"].(string)
+\t\treturn nil, fmt.Errorf(\"remote service error: %%s\", msg)
+\t}
+
+\treturn result[\"_payload\"], nil
+}
+
+// Default client for ~w service
+var Default~wClient = New~wClient(\"~w\", 30*time.Second)
+", [StructNameAtom, ServiceName, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
+    ServiceName, StructNameAtom, ServiceName, ServiceName, StructNameAtom, Endpoint]).
+
+%% ============================================
+%% DISTRIBUTED SERVICES (Phase 6)
+%% ============================================
+
+%% compile_distributed_service_go(+Service, -GoCode)
+%  Generate Go code for a distributed service with sharding and replication.
+compile_distributed_service_go(service(Name, Options, HandlerSpec), GoCode) :-
+    % Extract distributed configuration
+    ( member(sharding(ShardStrategy), Options) -> true ; ShardStrategy = hash ),
+    ( member(partition_key(PartitionKey), Options) -> true ; PartitionKey = id ),
+    ( member(replication(ReplicationFactor), Options) -> true ; ReplicationFactor = 1 ),
+    ( member(consistency(ConsistencyLevel), Options) -> true ; ConsistencyLevel = eventual ),
+    ( member(cluster(ClusterConfig), Options) -> true ; ClusterConfig = [] ),
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_go(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Convert atoms to strings
+    atom_string(ShardStrategy, ShardStrategyStr),
+    atom_string(PartitionKey, PartitionKeyStr),
+    atom_string(ConsistencyLevel, ConsistencyStr),
+    % Generate cluster nodes
+    generate_cluster_nodes_go(ClusterConfig, Name, NodesCode),
+    % Generate the distributed service
+    format(string(GoCode),
+"package main
+
+import (
+\t\"crypto/md5\"
+\t\"encoding/hex\"
+\t\"encoding/json\"
+\t\"fmt\"
+\t\"sort\"
+\t\"sync\"
+\t\"sync/atomic\"
+\t\"time\"
+)
+
+// Phase 6: Distributed Service Support
+
+type ShardingStrategy int
+
+const (
+\tShardHash ShardingStrategy = iota
+\tShardRange
+\tShardConsistentHash
+\tShardGeographic
+)
+
+type ConsistencyLevel int
+
+const (
+\tConsistencyEventual ConsistencyLevel = iota
+\tConsistencyStrong
+\tConsistencyQuorum
+\tConsistencyReadYourWrites
+\tConsistencyCausal
+)
+
+type ClusterNode struct {
+\tNodeID  string
+\tHost    string
+\tPort    int
+\tRegion  string
+\tWeight  int
+\tHealthy bool
+}
+
+type ShardInfo struct {
+\tShardID      int
+\tPrimaryNode  string
+\tReplicaNodes []string
+\tKeyRange     [2]interface{}
+}
+
+// ConsistentHashRing implements consistent hashing for distributed routing
+type ConsistentHashRing struct {
+\treplicas   int
+\tring       map[uint32]string
+\tsortedKeys []uint32
+\tmu         sync.RWMutex
+}
+
+func NewConsistentHashRing(replicas int) *ConsistentHashRing {
+\treturn &ConsistentHashRing{
+\t\treplicas:   replicas,
+\t\tring:       make(map[uint32]string),
+\t\tsortedKeys: make([]uint32, 0),
+\t}
+}
+
+func (r *ConsistentHashRing) hash(key string) uint32 {
+\th := md5.Sum([]byte(key))
+\treturn uint32(h[0])<<24 | uint32(h[1])<<16 | uint32(h[2])<<8 | uint32(h[3])
+}
+
+func (r *ConsistentHashRing) AddNode(nodeID string) {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tfor i := 0; i < r.replicas; i++ {
+\t\tkey := r.hash(fmt.Sprintf(\"%s:%d\", nodeID, i))
+\t\tr.ring[key] = nodeID
+\t\tr.sortedKeys = append(r.sortedKeys, key)
+\t}
+\tsort.Slice(r.sortedKeys, func(i, j int) bool { return r.sortedKeys[i] < r.sortedKeys[j] })
+}
+
+func (r *ConsistentHashRing) RemoveNode(nodeID string) {
+\tr.mu.Lock()
+\tdefer r.mu.Unlock()
+\tfor i := 0; i < r.replicas; i++ {
+\t\tkey := r.hash(fmt.Sprintf(\"%s:%d\", nodeID, i))
+\t\tdelete(r.ring, key)
+\t}
+\tnewKeys := make([]uint32, 0)
+\tfor _, k := range r.sortedKeys {
+\t\tif _, exists := r.ring[k]; exists {
+\t\t\tnewKeys = append(newKeys, k)
+\t\t}
+\t}
+\tr.sortedKeys = newKeys
+}
+
+func (r *ConsistentHashRing) GetNode(key string) string {
+\tr.mu.RLock()
+\tdefer r.mu.RUnlock()
+\tif len(r.ring) == 0 {
+\t\treturn \"\"
+\t}
+\th := r.hash(key)
+\tfor _, k := range r.sortedKeys {
+\t\tif k >= h {
+\t\t\treturn r.ring[k]
+\t\t}
+\t}
+\treturn r.ring[r.sortedKeys[0]]
+}
+
+// ShardRouter routes requests to appropriate shards
+type ShardRouter struct {
+\tStrategy        ShardingStrategy
+\tNumShards       int
+\tHashRing        *ConsistentHashRing
+\tRangeBoundaries []interface{}
+}
+
+func NewShardRouter(strategy ShardingStrategy, numShards int) *ShardRouter {
+\treturn &ShardRouter{
+\t\tStrategy:  strategy,
+\t\tNumShards: numShards,
+\t\tHashRing:  NewConsistentHashRing(100),
+\t}
+}
+
+func (sr *ShardRouter) GetShard(partitionKey interface{}) int {
+\tswitch sr.Strategy {
+\tcase ShardHash:
+\t\treturn sr.hashShard(partitionKey)
+\tcase ShardConsistentHash:
+\t\treturn sr.consistentHashShard(partitionKey)
+\tcase ShardRange:
+\t\treturn sr.rangeShard(partitionKey)
+\tdefault:
+\t\treturn sr.hashShard(partitionKey)
+\t}
+}
+
+func (sr *ShardRouter) hashShard(key interface{}) int {
+\th := md5.Sum([]byte(fmt.Sprintf(\"%v\", key)))
+\thex := hex.EncodeToString(h[:])
+\tvar sum uint64
+\tfor _, c := range hex[:8] {
+\t\tsum = sum*16 + uint64(c)
+\t}
+\treturn int(sum %% uint64(sr.NumShards))
+}
+
+func (sr *ShardRouter) consistentHashShard(key interface{}) int {
+\tnode := sr.HashRing.GetNode(fmt.Sprintf(\"%v\", key))
+\tif node == \"\" {
+\t\treturn 0
+\t}
+\th := md5.Sum([]byte(node))
+\treturn int(h[0]) %% sr.NumShards
+}
+
+func (sr *ShardRouter) rangeShard(key interface{}) int {
+\tfor i, boundary := range sr.RangeBoundaries {
+\t\tif fmt.Sprintf(\"%v\", key) < fmt.Sprintf(\"%v\", boundary) {
+\t\t\treturn i
+\t\t}
+\t}
+\treturn len(sr.RangeBoundaries)
+}
+
+// ReplicationManager manages data replication
+type ReplicationManager struct {
+\tReplicationFactor int
+\tConsistency       ConsistencyLevel
+\tmu                sync.RWMutex
+}
+
+func NewReplicationManager(factor int, consistency ConsistencyLevel) *ReplicationManager {
+\treturn &ReplicationManager{
+\t\tReplicationFactor: factor,
+\t\tConsistency:       consistency,
+\t}
+}
+
+func (rm *ReplicationManager) WriteQuorum() int {
+\tswitch rm.Consistency {
+\tcase ConsistencyStrong:
+\t\treturn rm.ReplicationFactor
+\tcase ConsistencyQuorum:
+\t\treturn (rm.ReplicationFactor / 2) + 1
+\tdefault:
+\t\treturn 1
+\t}
+}
+
+func (rm *ReplicationManager) ReadQuorum() int {
+\tswitch rm.Consistency {
+\tcase ConsistencyStrong:
+\t\treturn rm.ReplicationFactor
+\tcase ConsistencyQuorum:
+\t\treturn (rm.ReplicationFactor / 2) + 1
+\tdefault:
+\t\treturn 1
+\t}
+}
+
+// ~wService is a distributed service
+type ~wService struct {
+\tName              string
+\tStateful          bool
+\tTimeoutMs         int64
+\tShardingStrategy  ShardingStrategy
+\tPartitionKey      string
+\tReplicationFactor int
+\tConsistency       ConsistencyLevel
+\tNodes             map[string]*ClusterNode
+\tShards            map[int]*ShardInfo
+\tRouter            *ShardRouter
+\tReplication       *ReplicationManager
+\tstate             map[string]interface{}
+\tmu                sync.RWMutex
+\trequestCount      atomic.Int64
+}
+
+func New~wService() *~wService {
+\tsvc := &~wService{
+\t\tName:              \"~w\",
+\t\tStateful:          ~w,
+\t\tTimeoutMs:         ~w,
+\t\tShardingStrategy:  Shard~w,
+\t\tPartitionKey:      \"~w\",
+\t\tReplicationFactor: ~w,
+\t\tConsistency:       Consistency~w,
+\t\tNodes:             make(map[string]*ClusterNode),
+\t\tShards:            make(map[int]*ShardInfo),
+\t\tRouter:            NewShardRouter(Shard~w, 16),
+\t\tReplication:       NewReplicationManager(~w, Consistency~w),
+\t\tstate:             make(map[string]interface{}),
+\t}
+\treturn svc
+}
+
+func (s *~wService) AddNode(node *ClusterNode) {
+\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\ts.Nodes[node.NodeID] = node
+\ts.Router.HashRing.AddNode(node.NodeID)
+}
+
+func (s *~wService) RemoveNode(nodeID string) {
+\ts.mu.Lock()
+\tdefer s.mu.Unlock()
+\tdelete(s.Nodes, nodeID)
+\ts.Router.HashRing.RemoveNode(nodeID)
+}
+
+func (s *~wService) GetPartitionKey(request map[string]interface{}) interface{} {
+\tif val, ok := request[s.PartitionKey]; ok {
+\t\treturn val
+\t}
+\treturn fmt.Sprintf(\"%p\", &request)
+}
+
+func (s *~wService) RouteRequest(request map[string]interface{}) int {
+\tkey := s.GetPartitionKey(request)
+\treturn s.Router.GetShard(key)
+}
+
+func (s *~wService) Call(request interface{}) (interface{}, error) {
+\ts.requestCount.Add(1)
+\tif reqMap, ok := request.(map[string]interface{}); ok {
+\t\tshardID := s.RouteRequest(reqMap)
+\t\treturn s.handleRequest(request, shardID)
+\t}
+\treturn s.handleRequest(request, 0)
+}
+
+func (s *~wService) handleRequest(request interface{}, shardID int) (interface{}, error) {
+~w
+}
+
+// Initialize cluster nodes
+~w
+
+// Service instance
+var ~wServiceInstance = New~wService()
+", [StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, Stateful, Timeout,
+    ShardStrategyStr, PartitionKeyStr, ReplicationFactor, ConsistencyStr,
+    ShardStrategyStr, ReplicationFactor, ConsistencyStr,
+    StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom,
+    HandlerCode, NodesCode, StructNameAtom, StructNameAtom]).
+
+%% generate_sharding_go(+Strategy, -Code)
+%  Generate Go code for a specific sharding strategy.
+generate_sharding_go(hash, "ShardHash").
+generate_sharding_go(range, "ShardRange").
+generate_sharding_go(consistent_hash, "ShardConsistentHash").
+generate_sharding_go(geographic, "ShardGeographic").
+generate_sharding_go(_, "ShardHash").
+
+%% generate_replication_go(+Factor, -Code)
+%  Generate Go replication configuration code.
+generate_replication_go(Factor, Code) :-
+    integer(Factor),
+    format(string(Code), "replicationFactor: ~w", [Factor]).
+generate_replication_go(_, "replicationFactor: 1").
+
+%% generate_cluster_nodes_go(+Config, +ServiceName, -Code)
+%  Generate Go code for cluster node initialization.
+generate_cluster_nodes_go([], _, "// No initial cluster nodes").
+generate_cluster_nodes_go(Nodes, ServiceName, Code) :-
+    Nodes \= [],
+    maplist(generate_node_init_go(ServiceName), Nodes, NodeCodes),
+    atomic_list_concat(NodeCodes, '\n', Code).
+
+generate_node_init_go(ServiceName, node(Id, Host, Port), Code) :-
+    format(string(Code), "~wServiceInstance.AddNode(&ClusterNode{NodeID: \"~w\", Host: \"~w\", Port: ~w, Healthy: true})",
+           [ServiceName, Id, Host, Port]).
+generate_node_init_go(ServiceName, node(Id, Host, Port, Region), Code) :-
+    format(string(Code), "~wServiceInstance.AddNode(&ClusterNode{NodeID: \"~w\", Host: \"~w\", Port: ~w, Region: \"~w\", Healthy: true})",
+           [ServiceName, Id, Host, Port, Region]).
+generate_node_init_go(_, _, "// Unknown node format").
 
 %% ============================================
 %% PUBLIC API

@@ -34,7 +34,14 @@
     compile_http_client_rust/3,           % +ServiceName, +Endpoint, -RustCode
     compile_http_client_rust/4,           % +ServiceName, +Endpoint, +Options, -RustCode
     % Phase 4: Service mesh
-    compile_service_mesh_rust/2           % +Service, -RustCode
+    compile_service_mesh_rust/2,          % +Service, -RustCode
+    % Phase 5: Polyglot services
+    compile_polyglot_service_rust/2,      % +Service, -RustCode
+    generate_service_client_rust/3,       % +ServiceName, +Endpoint, -RustCode
+    % Phase 6: Distributed services
+    compile_distributed_service_rust/2,   % +Service, -RustCode
+    generate_sharding_rust/2,             % +Strategy, -RustCode
+    generate_replication_rust/2           % +ReplicationFactor, -RustCode
 ]).
 
 :- use_module(library(lists)).
@@ -144,6 +151,26 @@ compile_service_to_rust(Service, RustCode) :-
     !,
     % Phase 4: Service mesh service
     compile_service_mesh_rust(Service, RustCode).
+
+compile_service_to_rust(Service, RustCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(polyglot(true), Options)
+    ; member(depends_on(Deps), Options), Deps \= []
+    ),
+    !,
+    % Phase 5: Polyglot service
+    compile_polyglot_service_rust(Service, RustCode).
+
+compile_service_to_rust(Service, RustCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(distributed(true), Options)
+    ; member(sharding(_), Options)
+    ; member(replication(_), Options)
+    ; member(cluster(_), Options)
+    ),
+    !,
+    % Phase 6: Distributed service
+    compile_distributed_service_rust(Service, RustCode).
 
 compile_service_to_rust(service(Name, Options, HandlerSpec), RustCode) :-
     % Phase 1: In-process service (default)
@@ -1518,6 +1545,556 @@ lazy_static::lazy_static! {
 }
 ", [StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, LBStrategyStr, CBThreshold, CBTimeout, RetryN, RetryStrategyStr, RetryDelay, RetryMaxDelay,
     HandlerCode, StructNameAtom, Name, Name, Name, StructNameAtom, StructNameAtom, StructNameAtom]).
+
+%% ============================================
+%% POLYGLOT SERVICES (Phase 5)
+%% ============================================
+
+%% compile_polyglot_service_rust(+Service, -RustCode)
+%  Generate Rust code for a polyglot service that can call services in other languages.
+compile_polyglot_service_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Extract target language and dependencies
+    ( member(target_language(Lang), Options) -> atom_string(Lang, LangStr) ; LangStr = "rust" ),
+    ( member(depends_on(Deps), Options) -> Deps = Dependencies ; Dependencies = [] ),
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_rust(HandlerSpec, HandlerCode),
+    % Format the struct name (capitalize first letter)
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Generate service client code for each dependency
+    generate_dependency_clients_rust(Dependencies, ClientsCode),
+    % Build dependency list string
+    build_deps_list_rust(Dependencies, DepsListStr),
+    % Build state field and initialization
+    ( Stateful = true ->
+        StateField = "    state: RwLock<HashMap<String, Value>>,",
+        StateInit = "            state: RwLock::new(HashMap::new()),\n"
+    ;
+        StateField = "",
+        StateInit = ""
+    ),
+    % Generate the polyglot service
+    format(string(RustCode),
+"use std::collections::HashMap;
+use std::sync::RwLock;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// ServiceClient for calling remote services via HTTP
+pub struct ServiceClient {
+    name: String,
+    endpoint: String,
+    language: String,
+    client: reqwest::blocking::Client,
+}
+
+impl ServiceClient {
+    pub fn new(name: &str, endpoint: &str, language: &str) -> Self {
+        ServiceClient {
+            name: name.to_string(),
+            endpoint: endpoint.to_string(),
+            language: language.to_string(),
+            client: reqwest::blocking::Client::new(),
+        }
+    }
+
+    pub fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        let response = self.client
+            .post(&self.endpoint)
+            .json(&request)
+            .send()
+            .map_err(|e| ServiceError::new(&self.name, &e.to_string()))?;
+
+        if response.status().is_success() {
+            response.json::<Value>()
+                .map_err(|e| ServiceError::new(&self.name, &e.to_string()))
+        } else {
+            Err(ServiceError::new(&self.name, &format!(\"HTTP error: {}\", response.status())))
+        }
+    }
+}
+
+/// ServiceRegistry for managing local and remote services
+pub struct ServiceRegistry {
+    local_services: RwLock<HashMap<String, Box<dyn Service + Send + Sync>>>,
+    remote_services: RwLock<HashMap<String, ServiceClient>>,
+}
+
+impl ServiceRegistry {
+    pub fn new() -> Self {
+        ServiceRegistry {
+            local_services: RwLock::new(HashMap::new()),
+            remote_services: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub fn register_local<S: Service + Send + Sync + 'static>(&self, name: &str, service: S) {
+        self.local_services.write().unwrap()
+            .insert(name.to_string(), Box::new(service));
+    }
+
+    pub fn register_remote(&self, name: &str, endpoint: &str, language: &str) {
+        self.remote_services.write().unwrap()
+            .insert(name.to_string(), ServiceClient::new(name, endpoint, language));
+    }
+
+    pub fn call_service(&self, name: &str, request: Value) -> Result<Value, ServiceError> {
+        // Try local first
+        if let Some(service) = self.local_services.read().unwrap().get(name) {
+            return service.call(request);
+        }
+        // Try remote
+        if let Some(client) = self.remote_services.read().unwrap().get(name) {
+            return client.call(request);
+        }
+        Err(ServiceError::new(name, \"Service not found\"))
+    }
+}
+
+lazy_static::lazy_static! {
+    pub static ref SERVICE_REGISTRY: ServiceRegistry = ServiceRegistry::new();
+}
+
+~w
+
+/// ~wService is a polyglot service (language: ~w)
+pub struct ~wService {
+    name: String,
+    language: String,
+    dependencies: Vec<String>,
+    stateful: bool,
+    timeout_ms: u64,
+~w}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            name: \"~w\".to_string(),
+            language: \"~w\".to_string(),
+            dependencies: vec![~w],
+            stateful: ~w,
+            timeout_ms: ~w,
+~w        }
+    }
+
+    fn call_service(&self, name: &str, request: Value) -> Result<Value, ServiceError> {
+        SERVICE_REGISTRY.call_service(name, request)
+    }
+
+    fn handle_request(&self, request: Value) -> Result<Value, ServiceError> {
+~w
+    }
+}
+
+impl Service for ~wService {
+    fn name(&self) -> &str {
+        \"~w\"
+    }
+
+    fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        self.handle_request(request)
+    }
+}
+
+lazy_static::lazy_static! {
+    pub static ref ~w_SERVICE: ~wService = ~wService::new();
+}
+", [ClientsCode, StructNameAtom, LangStr, StructNameAtom,
+    StateField,
+    StructNameAtom, StructNameAtom, Name, LangStr, DepsListStr, Stateful, Timeout,
+    StateInit,
+    HandlerCode, StructNameAtom, Name, StructNameAtom, StructNameAtom, StructNameAtom]).
+
+%% generate_service_client_rust(+ServiceName, +Endpoint, -RustCode)
+%  Generate Rust code for a service client.
+generate_service_client_rust(ServiceName, Endpoint, RustCode) :-
+    atom_string(ServiceName, ServiceNameStr),
+    format(string(RustCode),
+"ServiceClient::new(\"~w\", \"~w\", \"remote\")
+", [ServiceNameStr, Endpoint]).
+
+%% generate_dependency_clients_rust(+Dependencies, -Code)
+%  Generate service client initialization code for dependencies.
+generate_dependency_clients_rust([], "").
+generate_dependency_clients_rust(Dependencies, Code) :-
+    Dependencies \= [],
+    maplist(generate_dep_registration_rust, Dependencies, RegCodes),
+    atomic_list_concat(RegCodes, '\n', Code).
+
+generate_dep_registration_rust(dep(Name, Lang, Transport), Code) :-
+    atom_string(Name, NameStr),
+    atom_string(Lang, LangStr),
+    extract_endpoint_rust(Transport, Endpoint),
+    format(string(Code),
+"// Register ~w service (~w)
+lazy_static::lazy_static! {
+    static ref INIT_~w: () = {
+        SERVICE_REGISTRY.register_remote(\"~w\", \"~w\", \"~w\");
+        ()
+    };
+}
+", [NameStr, LangStr, Name, NameStr, Endpoint, LangStr]).
+
+extract_endpoint_rust(tcp(Host, Port), Endpoint) :-
+    format(string(Endpoint), "http://~w:~w", [Host, Port]).
+extract_endpoint_rust(http(Path), Endpoint) :-
+    format(string(Endpoint), "http://localhost~w", [Path]).
+extract_endpoint_rust(http(Host, Port, Path), Endpoint) :-
+    format(string(Endpoint), "http://~w:~w~w", [Host, Port, Path]).
+extract_endpoint_rust(unix_socket(Path), Endpoint) :-
+    format(string(Endpoint), "unix://~w", [Path]).
+extract_endpoint_rust(_, "http://localhost:8080").
+
+%% build_deps_list_rust(+Dependencies, -ListStr)
+%  Build a Rust vector literal of dependency names.
+build_deps_list_rust([], "").
+build_deps_list_rust(Dependencies, ListStr) :-
+    Dependencies \= [],
+    maplist(dep_to_rust_string, Dependencies, DepStrs),
+    atomic_list_concat(DepStrs, ', ', ListStr).
+
+dep_to_rust_string(dep(Name, _, _), Str) :-
+    format(string(Str), "\"~w\".to_string()", [Name]).
+
+%% ============================================
+%% DISTRIBUTED SERVICES (Phase 6)
+%% ============================================
+
+%% compile_distributed_service_rust(+Service, -RustCode)
+%  Generate Rust code for a distributed service with sharding and replication.
+compile_distributed_service_rust(service(Name, Options, HandlerSpec), RustCode) :-
+    % Extract distributed configuration
+    ( member(sharding(ShardStrategy), Options) -> true ; ShardStrategy = hash ),
+    ( member(partition_key(PartitionKey), Options) -> true ; PartitionKey = id ),
+    ( member(replication(ReplicationFactor), Options) -> true ; ReplicationFactor = 1 ),
+    ( member(consistency(ConsistencyLevel), Options) -> true ; ConsistencyLevel = eventual ),
+    ( member(cluster(ClusterConfig), Options) -> true ; ClusterConfig = [] ),
+    ( member(stateful(true), Options) -> Stateful = true ; Stateful = false ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_rust(HandlerSpec, HandlerCode),
+    % Format the struct name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        StructName = [Upper|Rest]
+    ;
+        StructName = [First|Rest]
+    ),
+    atom_codes(StructNameAtom, StructName),
+    % Convert atoms to strings
+    atom_string(ShardStrategy, ShardStrategyStr),
+    atom_string(PartitionKey, PartitionKeyStr),
+    atom_string(ConsistencyLevel, ConsistencyStr),
+    % Generate cluster nodes
+    generate_cluster_nodes_rust(ClusterConfig, NodesCode),
+    % Generate the distributed service
+    format(string(RustCode),
+"use std::collections::{HashMap, BTreeMap};
+use std::sync::{Arc, RwLock, atomic::{AtomicU64, AtomicI64, Ordering}};
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+// Phase 6: Distributed Service Support
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ShardingStrategy {
+    Hash,
+    Range,
+    ConsistentHash,
+    Geographic,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ConsistencyLevel {
+    Eventual,
+    Strong,
+    Quorum,
+    ReadYourWrites,
+    Causal,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClusterNode {
+    pub node_id: String,
+    pub host: String,
+    pub port: u16,
+    pub region: String,
+    pub weight: u32,
+    pub healthy: bool,
+}
+
+impl ClusterNode {
+    pub fn new(node_id: &str, host: &str, port: u16) -> Self {
+        ClusterNode {
+            node_id: node_id.to_string(),
+            host: host.to_string(),
+            port,
+            region: \"default\".to_string(),
+            weight: 1,
+            healthy: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ShardInfo {
+    pub shard_id: u32,
+    pub primary_node: String,
+    pub replica_nodes: Vec<String>,
+    pub key_range: Option<(Value, Value)>,
+}
+
+/// Consistent hash ring for distributed routing
+pub struct ConsistentHashRing {
+    replicas: usize,
+    ring: BTreeMap<u64, String>,
+}
+
+impl ConsistentHashRing {
+    pub fn new(replicas: usize) -> Self {
+        ConsistentHashRing {
+            replicas,
+            ring: BTreeMap::new(),
+        }
+    }
+
+    fn hash(&self, key: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub fn add_node(&mut self, node_id: &str) {
+        for i in 0..self.replicas {
+            let key = self.hash(&format!(\"{}:{}\", node_id, i));
+            self.ring.insert(key, node_id.to_string());
+        }
+    }
+
+    pub fn remove_node(&mut self, node_id: &str) {
+        for i in 0..self.replicas {
+            let key = self.hash(&format!(\"{}:{}\", node_id, i));
+            self.ring.remove(&key);
+        }
+    }
+
+    pub fn get_node(&self, key: &str) -> Option<&String> {
+        if self.ring.is_empty() {
+            return None;
+        }
+        let h = self.hash(key);
+        self.ring.range(h..).next()
+            .or_else(|| self.ring.iter().next())
+            .map(|(_, v)| v)
+    }
+}
+
+/// Routes requests to appropriate shards
+pub struct ShardRouter {
+    pub strategy: ShardingStrategy,
+    pub num_shards: u32,
+    pub hash_ring: ConsistentHashRing,
+    pub range_boundaries: Vec<Value>,
+}
+
+impl ShardRouter {
+    pub fn new(strategy: ShardingStrategy, num_shards: u32) -> Self {
+        ShardRouter {
+            strategy,
+            num_shards,
+            hash_ring: ConsistentHashRing::new(100),
+            range_boundaries: Vec::new(),
+        }
+    }
+
+    pub fn get_shard(&self, partition_key: &Value) -> u32 {
+        match self.strategy {
+            ShardingStrategy::Hash => self.hash_shard(partition_key),
+            ShardingStrategy::ConsistentHash => self.consistent_hash_shard(partition_key),
+            ShardingStrategy::Range => self.range_shard(partition_key),
+            ShardingStrategy::Geographic => self.hash_shard(partition_key),
+        }
+    }
+
+    fn hash_shard(&self, key: &Value) -> u32 {
+        let mut hasher = DefaultHasher::new();
+        format!(\"{}\", key).hash(&mut hasher);
+        (hasher.finish() %% self.num_shards as u64) as u32
+    }
+
+    fn consistent_hash_shard(&self, key: &Value) -> u32 {
+        if let Some(node) = self.hash_ring.get_node(&format!(\"{}\", key)) {
+            let mut hasher = DefaultHasher::new();
+            node.hash(&mut hasher);
+            (hasher.finish() %% self.num_shards as u64) as u32
+        } else {
+            0
+        }
+    }
+
+    fn range_shard(&self, key: &Value) -> u32 {
+        for (i, boundary) in self.range_boundaries.iter().enumerate() {
+            if format!(\"{}\", key) < format!(\"{}\", boundary) {
+                return i as u32;
+            }
+        }
+        self.range_boundaries.len() as u32
+    }
+}
+
+/// Manages data replication
+pub struct ReplicationManager {
+    pub replication_factor: u32,
+    pub consistency: ConsistencyLevel,
+}
+
+impl ReplicationManager {
+    pub fn new(factor: u32, consistency: ConsistencyLevel) -> Self {
+        ReplicationManager {
+            replication_factor: factor,
+            consistency,
+        }
+    }
+
+    pub fn write_quorum(&self) -> u32 {
+        match self.consistency {
+            ConsistencyLevel::Strong => self.replication_factor,
+            ConsistencyLevel::Quorum => (self.replication_factor / 2) + 1,
+            _ => 1,
+        }
+    }
+
+    pub fn read_quorum(&self) -> u32 {
+        match self.consistency {
+            ConsistencyLevel::Strong => self.replication_factor,
+            ConsistencyLevel::Quorum => (self.replication_factor / 2) + 1,
+            _ => 1,
+        }
+    }
+}
+
+/// ~wService is a distributed service
+pub struct ~wService {
+    pub name: String,
+    pub stateful: bool,
+    pub timeout_ms: u64,
+    pub sharding_strategy: ShardingStrategy,
+    pub partition_key: String,
+    pub replication_factor: u32,
+    pub consistency: ConsistencyLevel,
+    pub nodes: RwLock<HashMap<String, ClusterNode>>,
+    pub shards: RwLock<HashMap<u32, ShardInfo>>,
+    pub router: RwLock<ShardRouter>,
+    pub replication: ReplicationManager,
+    state: RwLock<HashMap<String, Value>>,
+    request_count: AtomicU64,
+}
+
+impl ~wService {
+    pub fn new() -> Self {
+        ~wService {
+            name: \"~w\".to_string(),
+            stateful: ~w,
+            timeout_ms: ~w,
+            sharding_strategy: ShardingStrategy::~w,
+            partition_key: \"~w\".to_string(),
+            replication_factor: ~w,
+            consistency: ConsistencyLevel::~w,
+            nodes: RwLock::new(HashMap::new()),
+            shards: RwLock::new(HashMap::new()),
+            router: RwLock::new(ShardRouter::new(ShardingStrategy::~w, 16)),
+            replication: ReplicationManager::new(~w, ConsistencyLevel::~w),
+            state: RwLock::new(HashMap::new()),
+            request_count: AtomicU64::new(0),
+        }
+    }
+
+    pub fn add_node(&self, node: ClusterNode) {
+        let node_id = node.node_id.clone();
+        self.nodes.write().unwrap().insert(node_id.clone(), node);
+        self.router.write().unwrap().hash_ring.add_node(&node_id);
+    }
+
+    pub fn remove_node(&self, node_id: &str) {
+        self.nodes.write().unwrap().remove(node_id);
+        self.router.write().unwrap().hash_ring.remove_node(node_id);
+    }
+
+    pub fn get_partition_key(&self, request: &Value) -> Value {
+        if let Value::Object(obj) = request {
+            if let Some(val) = obj.get(&self.partition_key) {
+                return val.clone();
+            }
+        }
+        Value::String(format!(\"{:p}\", request))
+    }
+
+    pub fn route_request(&self, request: &Value) -> u32 {
+        let key = self.get_partition_key(request);
+        self.router.read().unwrap().get_shard(&key)
+    }
+
+    pub fn call(&self, request: Value) -> Result<Value, ServiceError> {
+        self.request_count.fetch_add(1, Ordering::SeqCst);
+        let shard_id = self.route_request(&request);
+        self.handle_request(request, shard_id)
+    }
+
+    fn handle_request(&self, request: Value, _shard_id: u32) -> Result<Value, ServiceError> {
+~w
+    }
+}
+
+// Initialize cluster nodes
+~w
+
+lazy_static::lazy_static! {
+    pub static ref ~w_SERVICE: ~wService = ~wService::new();
+}
+", [StructNameAtom, StructNameAtom, StructNameAtom, StructNameAtom, Name, Stateful, Timeout,
+    ShardStrategyStr, PartitionKeyStr, ReplicationFactor, ConsistencyStr,
+    ShardStrategyStr, ReplicationFactor, ConsistencyStr,
+    HandlerCode, NodesCode, StructNameAtom, StructNameAtom, StructNameAtom]).
+
+%% generate_sharding_rust(+Strategy, -Code)
+%  Generate Rust code for a specific sharding strategy.
+generate_sharding_rust(hash, "ShardingStrategy::Hash").
+generate_sharding_rust(range, "ShardingStrategy::Range").
+generate_sharding_rust(consistent_hash, "ShardingStrategy::ConsistentHash").
+generate_sharding_rust(geographic, "ShardingStrategy::Geographic").
+generate_sharding_rust(_, "ShardingStrategy::Hash").
+
+%% generate_replication_rust(+Factor, -Code)
+%  Generate Rust replication configuration code.
+generate_replication_rust(Factor, Code) :-
+    integer(Factor),
+    format(string(Code), "replication_factor: ~w", [Factor]).
+generate_replication_rust(_, "replication_factor: 1").
+
+%% generate_cluster_nodes_rust(+Config, -Code)
+%  Generate Rust code for cluster node initialization.
+generate_cluster_nodes_rust([], "// No initial cluster nodes").
+generate_cluster_nodes_rust(Nodes, Code) :-
+    Nodes \= [],
+    maplist(generate_node_init_rust, Nodes, NodeCodes),
+    atomic_list_concat(NodeCodes, '\n', Code).
+
+generate_node_init_rust(node(Id, Host, Port), Code) :-
+    atom_string(Id, IdStr),
+    atom_string(Host, HostStr),
+    format(string(Code), "// Node ~w initialization would happen here", [IdStr]).
+generate_node_init_rust(_, "// Unknown node format").
 
 %% ============================================
 %% PUBLIC API

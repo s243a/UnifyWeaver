@@ -26,7 +26,24 @@
     has_load_balancing/1,
     has_circuit_breaker/1,
     has_retry/1,
-    is_service_mesh_service/1
+    is_service_mesh_service/1,
+    % Phase 5: Polyglot service helpers
+    get_target_language/2,
+    get_service_dependencies/2,
+    get_service_endpoint/2,
+    is_polyglot_service/1,
+    is_valid_target_language/1,
+    is_valid_service_dependency/1,
+    is_valid_endpoint_spec/1,
+    % Phase 6: Distributed service helpers
+    get_replication_factor/2,
+    get_consistency_level/2,
+    get_sharding_strategy/2,
+    get_partition_key/2,
+    get_cluster_config/2,
+    is_distributed_service/1,
+    is_valid_consistency_level/1,
+    is_valid_sharding_strategy/1
 ]).
 
 :- use_module(library(lists)).
@@ -267,6 +284,52 @@ is_valid_service_option(backends(Backends)) :-
     is_list(Backends),
     maplist(is_valid_backend, Backends).
 
+%% Phase 5: Polyglot Service Options
+
+% Target language for cross-language service calls
+is_valid_service_option(target_language(Lang)) :-
+    is_valid_target_language(Lang).
+
+% Service dependencies (other services this service calls)
+is_valid_service_option(depends_on(Services)) :-
+    is_list(Services),
+    maplist(is_valid_service_dependency, Services).
+
+% Mark as polyglot-aware service
+is_valid_service_option(polyglot(Bool)) :-
+    ( Bool = true ; Bool = false ).
+
+% Service endpoint for cross-language calls
+is_valid_service_option(endpoint(Endpoint)) :-
+    ( atom(Endpoint) ; is_valid_endpoint_spec(Endpoint) ).
+
+%% Phase 6: Distributed Service Options
+
+% Mark as distributed service
+is_valid_service_option(distributed(Bool)) :-
+    ( Bool = true ; Bool = false ).
+
+% Replication factor
+is_valid_service_option(replication(N)) :-
+    integer(N),
+    N > 0.
+
+% Consistency level
+is_valid_service_option(consistency(Level)) :-
+    is_valid_consistency_level(Level).
+
+% Sharding strategy
+is_valid_service_option(sharding(Strategy)) :-
+    is_valid_sharding_strategy(Strategy).
+
+% Partition key for sharding
+is_valid_service_option(partition_key(Key)) :-
+    atom(Key).
+
+% Cluster configuration
+is_valid_service_option(cluster(Config)) :-
+    is_valid_cluster_config(Config).
+
 %% Load balance validation
 is_valid_load_balance_strategy(round_robin).
 is_valid_load_balance_strategy(random).
@@ -322,6 +385,78 @@ is_valid_protocol(jsonl).
 is_valid_protocol(json).
 is_valid_protocol(messagepack).
 is_valid_protocol(protobuf(Schema)) :- atom(Schema).
+
+%% Phase 5: Polyglot Service Validation
+
+% Valid target languages
+is_valid_target_language(python).
+is_valid_target_language(go).
+is_valid_target_language(rust).
+is_valid_target_language(csharp).
+is_valid_target_language(java).
+is_valid_target_language(javascript).
+is_valid_target_language(typescript).
+
+% Service dependency validation
+is_valid_service_dependency(ServiceName) :- atom(ServiceName).
+is_valid_service_dependency(dep(ServiceName, Lang)) :-
+    atom(ServiceName),
+    is_valid_target_language(Lang).
+is_valid_service_dependency(dep(ServiceName, Lang, Transport)) :-
+    atom(ServiceName),
+    is_valid_target_language(Lang),
+    is_valid_transport(Transport).
+
+% Endpoint specification validation
+is_valid_endpoint_spec(http(Host, Port)) :-
+    atom(Host),
+    integer(Port),
+    Port > 0.
+is_valid_endpoint_spec(http(Host, Port, Path)) :-
+    atom(Host),
+    integer(Port),
+    Port > 0,
+    atom(Path).
+is_valid_endpoint_spec(grpc(Host, Port)) :-
+    atom(Host),
+    integer(Port),
+    Port > 0.
+
+%% Phase 6: Distributed Service Validation
+
+% Consistency levels
+is_valid_consistency_level(eventual).
+is_valid_consistency_level(strong).
+is_valid_consistency_level(causal).
+is_valid_consistency_level(read_your_writes).
+is_valid_consistency_level(monotonic_reads).
+is_valid_consistency_level(quorum).
+
+% Sharding strategies
+is_valid_sharding_strategy(hash).
+is_valid_sharding_strategy(range).
+is_valid_sharding_strategy(consistent_hash).
+is_valid_sharding_strategy(geographic).
+is_valid_sharding_strategy(custom(Pred)) :- atom(Pred).
+
+% Cluster configuration validation
+is_valid_cluster_config(nodes(Nodes)) :-
+    is_list(Nodes),
+    maplist(is_valid_node_spec, Nodes).
+is_valid_cluster_config(discovery(Method)) :-
+    is_valid_discovery_method(Method).
+is_valid_cluster_config(config(Options)) :-
+    is_list(Options).
+
+% Node specification validation
+is_valid_node_spec(node(Name, Host, Port)) :-
+    atom(Name),
+    atom(Host),
+    integer(Port),
+    Port > 0.
+is_valid_node_spec(node(Name, Endpoint)) :-
+    atom(Name),
+    ( atom(Endpoint) ; is_valid_endpoint_spec(Endpoint) ).
 
 %% service_type(+Service, -Type)
 %  Determines the type of service (stateful/stateless, transport type).
@@ -502,5 +637,110 @@ is_service_mesh_service(Service) :-
     ( has_load_balancing(Service)
     ; has_circuit_breaker(Service)
     ; has_retry(Service)
+    ),
+    !.
+
+%% ============================================
+%% Phase 5: Polyglot Service Helper Predicates
+%% ============================================
+
+%% get_target_language(+Service, -Language)
+%  Extract target language from service definition.
+get_target_language(service(_, Options, _), Language) :-
+    is_list(Options),
+    member(target_language(Language), Options),
+    !.
+get_target_language(_, none).
+
+%% get_service_dependencies(+Service, -Dependencies)
+%  Extract service dependencies from service definition.
+get_service_dependencies(service(_, Options, _), Dependencies) :-
+    is_list(Options),
+    member(depends_on(Dependencies), Options),
+    !.
+get_service_dependencies(_, []).
+
+%% is_polyglot_service(+Service)
+%  Succeeds if service is marked as polyglot or has cross-language dependencies.
+is_polyglot_service(service(_, Options, _)) :-
+    is_list(Options),
+    ( member(polyglot(true), Options)
+    ; member(depends_on(Deps), Options), Deps \= []
+    ; member(target_language(_), Options)
+    ),
+    !.
+
+%% get_service_endpoint(+Service, -Endpoint)
+%  Extract endpoint configuration from service definition.
+get_service_endpoint(service(_, Options, _), Endpoint) :-
+    is_list(Options),
+    member(endpoint(Endpoint), Options),
+    !.
+get_service_endpoint(Service, Endpoint) :-
+    % Fall back to transport-derived endpoint
+    get_service_transport(Service, Transport),
+    transport_to_endpoint(Transport, Endpoint),
+    !.
+get_service_endpoint(_, none).
+
+%% transport_to_endpoint(+Transport, -Endpoint)
+%  Convert transport to endpoint specification.
+transport_to_endpoint(tcp(Host, Port), http(Host, Port)) :- !.
+transport_to_endpoint(http(Path), http(localhost, 8080, Path)) :- !.
+transport_to_endpoint(http(Path, _Options), http(localhost, 8080, Path)) :- !.
+transport_to_endpoint(_, none).
+
+%% ============================================
+%% Phase 6: Distributed Service Helper Predicates
+%% ============================================
+
+%% get_replication_factor(+Service, -Factor)
+%  Extract replication factor from service definition.
+get_replication_factor(service(_, Options, _), Factor) :-
+    is_list(Options),
+    member(replication(Factor), Options),
+    !.
+get_replication_factor(_, 1).
+
+%% get_consistency_level(+Service, -Level)
+%  Extract consistency level from service definition.
+get_consistency_level(service(_, Options, _), Level) :-
+    is_list(Options),
+    member(consistency(Level), Options),
+    !.
+get_consistency_level(_, eventual).
+
+%% get_sharding_strategy(+Service, -Strategy)
+%  Extract sharding strategy from service definition.
+get_sharding_strategy(service(_, Options, _), Strategy) :-
+    is_list(Options),
+    member(sharding(Strategy), Options),
+    !.
+get_sharding_strategy(_, hash).
+
+%% get_partition_key(+Service, -Key)
+%  Extract partition key from service definition.
+get_partition_key(service(_, Options, _), Key) :-
+    is_list(Options),
+    member(partition_key(Key), Options),
+    !.
+get_partition_key(_, id).
+
+%% get_cluster_config(+Service, -Config)
+%  Extract cluster configuration from service definition.
+get_cluster_config(service(_, Options, _), Config) :-
+    is_list(Options),
+    member(cluster(Config), Options),
+    !.
+get_cluster_config(_, none).
+
+%% is_distributed_service(+Service)
+%  Succeeds if service is marked as distributed.
+is_distributed_service(service(_, Options, _)) :-
+    is_list(Options),
+    ( member(distributed(true), Options)
+    ; member(replication(N), Options), N > 1
+    ; member(sharding(_), Options)
+    ; member(cluster(_), Options)
     ),
     !.
