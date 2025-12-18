@@ -299,12 +299,18 @@ api.close()
 %  Semantic search with knowledge graph context.
 %  Returns results enriched with related answers.
 %
+%  Search Methods (from MULTI_HEAD_PROJECTION_THEORY.md):
+%    - multi_head_search (default): Softmax routing over cluster centroids,
+%      then LDA projection. Better accuracy through learned projection.
+%    - direct_search: Raw cosine similarity (baseline, no projection).
+%
 %  Options:
 %    - include_foundational(Bool): Include foundational concepts
 %    - include_prerequisites(Bool): Include prerequisites
 %    - include_extensions(Bool): Include extensions
 %    - include_next_steps(Bool): Include next steps
 %    - context_depth(N): How many hops to traverse (default: 1)
+%    - use_direct_search(Bool): Use baseline direct search (default: false)
 %
 search_with_context(Config, Query, TopK, Options, Results) :-
     member(db_path(DbPath), Config),
@@ -313,12 +319,10 @@ search_with_context(Config, Query, TopK, Options, Results) :-
     ->  true
     ;   ModelName = 'all-MiniLM-L6-v2'
     ),
-    % Get projection ID
-    (   member(mh_projection_id(ProjId), Config)
-    ->  true
-    ;   member(projection_id(ProjId), Config)
-    ->  true
-    ;   ProjId = 1
+    % Get multi-head projection ID (None triggers direct search)
+    (   member(mh_projection_id(MhProjId), Config)
+    ->  MhProjIdPy = MhProjId
+    ;   MhProjIdPy = 'None'
     ),
     % Get options
     option(include_foundational(InclFound), Options, true),
@@ -326,6 +330,7 @@ search_with_context(Config, Query, TopK, Options, Results) :-
     option(include_extensions(InclExt), Options, true),
     option(include_next_steps(InclNext), Options, true),
     option(context_depth(Depth), Options, 1),
+    option(use_direct_search(UseDirectSearch), Options, false),
     % Escape query
     escape_for_python_kg(Query, EscapedQuery),
     % Build Python code
@@ -339,18 +344,19 @@ api = KGTopologyAPI("~w")
 results = api.search_with_context(
     query_text="~w",
     model_name="~w",
-    projection_id=~w,
+    mh_projection_id=~w,
     top_k=~w,
     include_foundational=~w,
     include_prerequisites=~w,
     include_extensions=~w,
     include_next_steps=~w,
-    context_depth=~w
+    context_depth=~w,
+    use_direct_search=~w
 )
 print(json.dumps(results))
 api.close()
-', [DbPath, EscapedQuery, ModelName, ProjId, TopK,
-    InclFound, InclPre, InclExt, InclNext, Depth]),
+', [DbPath, EscapedQuery, ModelName, MhProjIdPy, TopK,
+    InclFound, InclPre, InclExt, InclNext, Depth, UseDirectSearch]),
     run_python_kg(PythonCode, Results).
 
 % ============================================================================

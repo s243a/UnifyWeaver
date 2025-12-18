@@ -389,44 +389,59 @@ class KGTopologyAPI(LDAProjectionDB):
         self,
         query_text: str,
         model_name: str,
-        projection_id: int = None,
+        mh_projection_id: int = None,
         top_k: int = 5,
         include_foundational: bool = True,
         include_prerequisites: bool = True,
         include_extensions: bool = True,
         include_next_steps: bool = True,
-        context_depth: int = 1
+        context_depth: int = 1,
+        use_direct_search: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Semantic search with knowledge graph context.
 
-        Performs standard semantic search, then enriches results
-        with related answers from the knowledge graph.
+        Performs semantic search, then enriches results with related
+        answers from the knowledge graph.
+
+        Search Methods:
+        - **multi_head_search** (default): Uses softmax routing over cluster
+          centroids to project the query, then searches. This is the LDA
+          projection approach from MULTI_HEAD_PROJECTION_THEORY.md.
+        - **direct_search**: Raw cosine similarity without projection.
+          Useful as baseline or when no projection is defined.
 
         Args:
             query_text: The search query
             model_name: Embedding model name
-            projection_id: Projection ID (optional)
+            mh_projection_id: Multi-head projection ID (uses multi_head_search)
             top_k: Number of results
             include_foundational: Include foundational concepts
             include_prerequisites: Include prerequisites
             include_extensions: Include extensions
             include_next_steps: Include next steps
             context_depth: How many hops to traverse (default: 1)
+            use_direct_search: Force direct search without projection (baseline)
 
         Returns:
             List of results with knowledge graph context
         """
-        # First, do standard search
-        if projection_id:
-            base_results = self.search(
-                query_embedding=self._embed_query(query_text, model_name),
-                projection_id=projection_id,
-                top_k=top_k
-            )
-        else:
-            # Direct embedding search without projection
+        query_embedding = self._embed_query(query_text, model_name)
+
+        # Choose search method
+        if use_direct_search or mh_projection_id is None:
+            # Direct search: raw cosine similarity (baseline, no projection)
             base_results = self._direct_search(query_text, model_name, top_k)
+        else:
+            # Multi-head search: softmax routing + projection (recommended)
+            # This uses the existing implementation from lda_database.py
+            base_results = self.multi_head_search(
+                query_embedding=query_embedding,
+                mh_projection_id=mh_projection_id,
+                top_k=top_k,
+                log=False,
+                query_text=query_text
+            )
 
         # Enrich with graph context
         enriched_results = []
@@ -510,10 +525,19 @@ class KGTopologyAPI(LDAProjectionDB):
         top_k: int
     ) -> List[Dict[str, Any]]:
         """
-        Direct semantic search via matrix multiplication.
+        Direct semantic search via matrix multiplication (BASELINE).
 
-        This is the Phase 1 softmax routing: query × all_answers.
-        Fast on modest hardware due to efficient matrix ops.
+        This computes raw cosine similarity: query × all_answers.
+        No learned projection is applied.
+
+        Use cases:
+        - Baseline comparison against multi_head_search
+        - When no multi-head projection is defined
+        - Future: 1:1 Q-A mappings after answer smoothing
+
+        For production use, prefer multi_head_search() which applies
+        learned LDA projection for better retrieval accuracy.
+        See: MULTI_HEAD_PROJECTION_THEORY.md
         """
         query_emb = self._embed_query(query_text, model_name)
 
