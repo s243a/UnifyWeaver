@@ -6752,3 +6752,235 @@ test_rust_enhanced_chaining :-
     ),
 
     format('~n=== All Rust Enhanced Pipeline Chaining Tests Passed ===~n', []).
+
+%% ============================================
+%% KG Topology Phase 3: Kleinberg Router Code Generation
+%% ============================================
+
+%% compile_kleinberg_router_rust(+Options, -Code)
+%  Generate Rust KleinbergRouter struct with configurable options.
+
+compile_kleinberg_router_rust(Options, Code) :-
+    ( member(alpha(Alpha), Options) -> true ; Alpha = 2.0 ),
+    ( member(max_hops(MaxHops), Options) -> true ; MaxHops = 10 ),
+    ( member(parallel_paths(ParallelPaths), Options) -> true ; ParallelPaths = 1 ),
+    ( member(similarity_threshold(Threshold), Options) -> true ; Threshold = 0.5 ),
+    ( member(path_folding(PathFolding), Options) -> true ; PathFolding = true ),
+
+    format(string(Code), '
+// KG Topology Phase 3: Kleinberg Router
+// Generated from Prolog service definition
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+
+/// KGNode represents a discovered node in the distributed KG network
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KGNode {
+    pub node_id: String,
+    pub endpoint: String,
+    pub centroid: Vec<f32>,
+    pub topics: Vec<String>,
+    pub embedding_model: String,
+    pub similarity: f64,
+}
+
+/// RoutingEnvelope carries routing information between nodes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingEnvelope {
+    pub origin_node: String,
+    pub htl: i32,
+    pub visited: Vec<String>,
+    pub path_folding_enabled: bool,
+}
+
+impl Default for RoutingEnvelope {
+    fn default() -> Self {
+        Self {
+            origin_node: String::new(),
+            htl: 10,
+            visited: Vec::new(),
+            path_folding_enabled: true,
+        }
+    }
+}
+
+/// KleinbergRouter implements small-world routing for distributed KG topology
+pub struct KleinbergRouter {
+    local_node_id: String,
+    discovery_client: Arc<dyn ServiceRegistry>,
+    alpha: f64,
+    max_hops: i32,
+    parallel_paths: i32,
+    similarity_threshold: f64,
+    path_folding_enabled: bool,
+    node_cache: RwLock<HashMap<String, KGNode>>,
+    cache_timestamp: RwLock<Instant>,
+    cache_ttl: Duration,
+    shortcuts: RwLock<HashMap<String, String>>,
+}
+
+impl KleinbergRouter {
+    /// Create a new router with default configuration
+    pub fn new(node_id: String, discovery: Arc<dyn ServiceRegistry>) -> Self {
+        Self {
+            local_node_id: node_id,
+            discovery_client: discovery,
+            alpha: ~w,
+            max_hops: ~w,
+            parallel_paths: ~w,
+            similarity_threshold: ~w,
+            path_folding_enabled: ~w,
+            node_cache: RwLock::new(HashMap::new()),
+            cache_timestamp: RwLock::new(Instant::now()),
+            cache_ttl: Duration::from_secs(60),
+            shortcuts: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Get the local node ID
+    pub fn node_id(&self) -> &str {
+        &self.local_node_id
+    }
+
+    /// Discover KG nodes from service registry
+    pub fn discover_nodes(&self, tags: Option<Vec<String>>) -> Result<Vec<KGNode>, Box<dyn std::error::Error>> {
+        // Check cache
+        {
+            let timestamp = self.cache_timestamp.read().unwrap();
+            if timestamp.elapsed() < self.cache_ttl {
+                let cache = self.node_cache.read().unwrap();
+                return Ok(cache.values().cloned().collect());
+            }
+        }
+
+        let tags = tags.unwrap_or_else(|| vec!["kg_node".to_string()]);
+        let instances = self.discovery_client.discover("kg_topology", &tags)?;
+
+        let mut nodes = Vec::new();
+        let mut cache = self.node_cache.write().unwrap();
+
+        for inst in instances {
+            let metadata = &inst.metadata;
+
+            let centroid_b64 = match metadata.get("semantic_centroid") {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                _ => continue,
+            };
+
+            let centroid_bytes = match base64::engine::general_purpose::STANDARD.decode(&centroid_b64) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+
+            // Convert bytes to f32 slice
+            let centroid: Vec<f32> = centroid_bytes
+                .chunks(4)
+                .filter_map(|chunk| {
+                    if chunk.len() == 4 {
+                        Some(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let topics = metadata
+                .get("interface_topics")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let model = metadata
+                .get("embedding_model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let node = KGNode {
+                node_id: inst.service_id.clone(),
+                endpoint: format!("http://{}:{}", inst.host, inst.port),
+                centroid,
+                topics,
+                embedding_model: model,
+                similarity: 0.0,
+            };
+
+            cache.insert(node.node_id.clone(), node.clone());
+            nodes.push(node);
+        }
+
+        *self.cache_timestamp.write().unwrap() = Instant::now();
+        Ok(nodes)
+    }
+
+    /// Check if a shortcut exists for the given query
+    pub fn check_shortcut(&self, query_text: &str) -> Option<String> {
+        let hash = self.hash_query(query_text);
+        self.shortcuts.read().unwrap().get(&hash).cloned()
+    }
+
+    /// Create a shortcut for the given query
+    pub fn create_shortcut(&self, query_text: &str, target_node_id: &str) {
+        let hash = self.hash_query(query_text);
+        self.shortcuts.write().unwrap().insert(hash, target_node_id.to_string());
+    }
+
+    fn hash_query(&self, query_text: &str) -> String {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(query_text.as_bytes());
+        format!("{:x}", hasher.finalize())[..16].to_string()
+    }
+
+    /// Get router statistics
+    pub fn get_stats(&self) -> serde_json::Value {
+        let cache = self.node_cache.read().unwrap();
+        let shortcuts = self.shortcuts.read().unwrap();
+
+        serde_json::json!({
+            "local_node_id": self.local_node_id,
+            "cached_nodes": cache.len(),
+            "shortcuts": shortcuts.len(),
+            "config": {
+                "alpha": self.alpha,
+                "max_hops": self.max_hops,
+                "parallel_paths": self.parallel_paths,
+                "similarity_threshold": self.similarity_threshold,
+                "path_folding_enabled": self.path_folding_enabled,
+            }
+        })
+    }
+}
+
+/// Compute cosine similarity between two vectors
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+
+    let (dot, norm_a, norm_b) = a.iter().zip(b.iter()).fold(
+        (0.0f64, 0.0f64, 0.0f64),
+        |(dot, na, nb), (&ai, &bi)| {
+            (
+                dot + (ai as f64 * bi as f64),
+                na + (ai as f64 * ai as f64),
+                nb + (bi as f64 * bi as f64),
+            )
+        },
+    );
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+
+    dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+', [Alpha, MaxHops, ParallelPaths, Threshold, PathFolding]).

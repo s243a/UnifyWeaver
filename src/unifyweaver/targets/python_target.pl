@@ -10359,3 +10359,139 @@ test_ironpython_enhanced_chaining :-
     ),
 
     format('~n=== All IronPython Enhanced Pipeline Chaining Tests Passed ===~n', []).
+
+%% ============================================
+%% KG Topology Phase 3: Kleinberg Router Code Generation
+%% ============================================
+
+%% compile_kleinberg_router_python(+Options, -Code)
+%  Generate Python KleinbergRouter class with configurable options.
+%  This is for embedding in generated services; the runtime module
+%  is in python_runtime/kleinberg_router.py.
+
+compile_kleinberg_router_python(Options, Code) :-
+    ( member(alpha(Alpha), Options) -> true ; Alpha = 2.0 ),
+    ( member(max_hops(MaxHops), Options) -> true ; MaxHops = 10 ),
+    ( member(parallel_paths(ParallelPaths), Options) -> true ; ParallelPaths = 1 ),
+    ( member(similarity_threshold(Threshold), Options) -> true ; Threshold = 0.5 ),
+    ( member(path_folding(PathFolding), Options) -> true ; PathFolding = true ),
+    ( PathFolding = true -> PFBool = 'True' ; PFBool = 'False' ),
+
+    format(string(Code), '
+# KG Topology Phase 3: Kleinberg Router Configuration
+# Generated from Prolog service definition
+
+from kleinberg_router import KleinbergRouter
+from discovery_clients import create_discovery_client
+
+def create_kleinberg_router(node_id, discovery_backend="local", **discovery_config):
+    """Create a configured KleinbergRouter instance."""
+    discovery_client = create_discovery_client(discovery_backend, **discovery_config)
+
+    return KleinbergRouter(
+        local_node_id=node_id,
+        discovery_client=discovery_client,
+        alpha=~w,
+        max_hops=~w,
+        parallel_paths=~w,
+        similarity_threshold=~w,
+        path_folding_enabled=~w
+    )
+', [Alpha, MaxHops, ParallelPaths, Threshold, PFBool]).
+
+
+%% compile_distributed_kg_service_python(+Service, -Code)
+%  Generate a distributed KG topology service from Prolog definition.
+
+compile_distributed_kg_service_python(service(Name, Options, _Handler), Code) :-
+    % Extract Kleinberg options
+    ( member(routing(kleinberg(KleinbergOpts)), Options) -> true
+    ; member(routing(kleinberg), Options) -> KleinbergOpts = []
+    ; KleinbergOpts = []
+    ),
+
+    % Extract discovery options
+    ( member(discovery_backend(Backend), Options) -> true ; Backend = local ),
+    ( member(discovery_tags(Tags), Options) -> true ; Tags = ['kg_node'] ),
+
+    % Extract network options
+    ( member(transport(http(_, TransportOpts)), Options) ->
+        ( member(host(Host), TransportOpts) -> true ; Host = '0.0.0.0' ),
+        ( member(port(Port), TransportOpts) -> true ; Port = 8080 )
+    ; Host = '0.0.0.0', Port = 8080
+    ),
+
+    % Generate Kleinberg router config
+    compile_kleinberg_router_python(KleinbergOpts, RouterCode),
+
+    % Generate tags list
+    format_python_list(Tags, TagsStr),
+
+    format(string(Code), '
+# Distributed KG Topology Service: ~w
+# Generated from Prolog service definition
+
+from flask import Flask, request, jsonify
+from kg_topology_api import DistributedKGTopologyAPI
+
+app = Flask(__name__)
+
+# Router configuration
+~w
+
+# Initialize distributed KG API
+kg_api = DistributedKGTopologyAPI(
+    db_path="~w.db",
+    node_id="~w",
+    discovery_backend="~w"
+)
+
+# Register node on startup
+@app.before_first_request
+def register_with_discovery():
+    kg_api.register_node(
+        host="~w",
+        port=~w,
+        tags=~w
+    )
+
+# KG Query endpoint
+@app.route("/kg/query", methods=["POST"])
+def handle_kg_query():
+    try:
+        request_data = request.json
+        if request_data.get("__type") != "kg_query":
+            return jsonify({"error": "Invalid request type"}), 400
+        result = kg_api.handle_remote_query(request_data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Health endpoint
+@app.route("/kg/health", methods=["GET"])
+def handle_kg_health():
+    interfaces = kg_api.list_interfaces(active_only=True)
+    stats = kg_api.get_query_stats()
+    return jsonify({
+        "status": "healthy",
+        "node_id": kg_api.node_id,
+        "interfaces": len(interfaces),
+        "stats": stats
+    })
+
+if __name__ == "__main__":
+    app.run(host="~w", port=~w)
+', [Name, RouterCode, Name, Name, Backend, Host, Port, TagsStr, Host, Port]).
+
+
+%% format_python_list(+List, -String)
+%  Format a Prolog list as a Python list literal.
+format_python_list([], '[]').
+format_python_list(List, String) :-
+    List \= [],
+    maplist(format_python_item, List, Items),
+    atomic_list_concat(Items, ', ', Inner),
+    format(string(String), '[~w]', [Inner]).
+
+format_python_item(Item, Quoted) :-
+    format(string(Quoted), '"~w"', [Item]).

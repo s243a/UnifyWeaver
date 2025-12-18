@@ -137,34 +137,103 @@ Default behavior: Auto-detect based on Q-A count.
 
 **Feedback loop:** Multiple interfaces may inform KG expansion priorities (see "Knowledge Graph Expansion" below).
 
-### Phase 3: Distributed Network (Future)
+### Phase 3: Distributed Network ✅ Core Implementation Complete
 
 **Goal:** Enable multiple nodes to form a small-world network.
 
 **Prerequisites:**
-- Phase 1 & 2 complete
-- Actual need for distribution (scale, geographic, organizational)
+- Phase 1 & 2 complete ✅
+- UnifyWeaver client-server Phases 7-8 (Service Discovery, Tracing) ✅
 
 **Components:**
-1. **Node Discovery & Registration**
-   - [ ] Service registry integration
-   - [ ] Interface advertisement
-   - [ ] Location assignment (Kleinberg-compatible)
+1. **Node Discovery & Registration** ✅
+   - [x] Service registry integration (`discovery_clients.py`)
+   - [x] Interface advertisement via discovery metadata (`semantic_centroid`, `interface_topics`)
+   - [x] Prolog validation for routing options (`service_validation.pl` lines 1013-1135)
+   - [x] Multiple backends: Local (in-memory), Consul, etcd (stub), DNS (stub)
 
-2. **Inter-Node Routing**
-   - [ ] Greedy forwarding to closest interface
-   - [ ] Cross-node backtracking
-   - [ ] HTL (Hops-To-Live) limits
+2. **Inter-Node Routing** ✅
+   - [x] Kleinberg router (`kleinberg_router.py`)
+   - [x] Greedy forwarding to closest interface centroid
+   - [x] HTL (Hops-To-Live) limits with configurable max_hops
+   - [x] Routing envelope protocol (`__routing` in JSONL requests)
 
-3. **Parallel Query Strategies** (optional)
-   - [ ] Probability-weighted path selection (β < α)
-   - [ ] Stratified sampling across distance bands
-   - [ ] Adaptive dispersion
+3. **Path Folding** ✅
+   - [x] Query shortcuts persisted in `query_shortcuts` table
+   - [x] Hit count tracking for shortcut optimization
+   - [x] Shortcut pruning API (`prune_shortcuts()`)
 
-4. **Privacy Features** (optional, deferred)
+4. **Parallel Query Strategies** ✅ (configurable)
+   - [x] `parallel_paths` option for concurrent forwarding
+   - [x] Softmax routing probability computation
+   - [x] Similarity threshold filtering
+
+5. **Code Generation** ✅
+   - [x] Python router code generation (`python_target.pl`)
+   - [x] Go router code generation (`go_target.pl`)
+   - [x] Rust router code generation (`rust_target.pl`)
+   - [x] HTTP endpoint generation (`network_glue.pl`)
+
+6. **Privacy Features** (optional, deferred)
    - [ ] Request origin obfuscation
    - [ ] Encrypted inter-node communication
    - [ ] Plausible deniability
+
+**Implementation Files:**
+- `src/unifyweaver/core/service_validation.pl` - Kleinberg routing validation
+- `src/unifyweaver/targets/python_runtime/discovery_clients.py` - Discovery client implementations
+- `src/unifyweaver/targets/python_runtime/kleinberg_router.py` - Core routing logic
+- `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - DistributedKGTopologyAPI class
+- `src/unifyweaver/glue/network_glue.pl` - KG endpoint generation
+- `tests/core/test_kg_distributed.py` - Unit tests
+- `tests/integration/test_kg_distributed.sh` - Integration tests
+
+**Query Protocol:**
+```json
+{
+    "__type": "kg_query",
+    "__id": "uuid-123",
+    "__routing": {
+        "origin_node": "node_a",
+        "htl": 8,
+        "visited": ["node_a"],
+        "path_folding_enabled": true
+    },
+    "__embedding": {
+        "model": "all-MiniLM-L6-v2",
+        "vector": [0.1, 0.2, ...]
+    },
+    "payload": {
+        "query_text": "How do I parse CSV?",
+        "top_k": 5
+    }
+}
+```
+
+**Example Service Definition:**
+```prolog
+service(csv_expert_node, [
+    transport(http('/kg', [host('0.0.0.0'), port(8081)])),
+    discovery_enabled(true),
+    discovery_backend(consul),
+    discovery_tags([kg_node, expert_system]),
+    discovery_metadata([
+        semantic_centroid("base64_encoded_vector..."),
+        embedding_model('all-MiniLM-L6-v2'),
+        interface_topics([csv, delimited, tabular])
+    ]),
+    routing(kleinberg([
+        alpha(2.0),
+        max_hops(10),
+        similarity_threshold(0.5),
+        path_folding(true)
+    ]))
+], [
+    receive(Query),
+    handle_kg_query(Query, Response),
+    respond(Response)
+]).
+```
 
 ## Related Work
 
