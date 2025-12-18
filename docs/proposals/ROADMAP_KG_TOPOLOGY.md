@@ -31,22 +31,24 @@ From QA_KNOWLEDGE_GRAPH.md, we have 11 relation types:
 
 ## Phases
 
-### Phase 1: Single Local Model (Current Focus)
+### Phase 1: Single Local Model ✅ Complete
 
 **Goal:** Implement knowledge graph on a single node using softmax routing.
 
 **Components:**
 1. **Schema Implementation**
-   - [ ] Extend `answer_relations` table with all 11 relation types
-   - [ ] Add hash-based anchor linking (from SEED_QUESTION_TOPOLOGY)
-   - [ ] Implement seed level provenance tracking
-   - [ ] Folder structure by seed level for training data
+   - [x] Extend `answer_relations` table with all 11 relation types
+   - [x] Add hash-based anchor linking (from SEED_QUESTION_TOPOLOGY)
+   - [x] Implement seed level provenance tracking
+   - [x] Folder structure by seed level for training data
 
 2. **Graph Traversal API**
-   - [ ] `get_foundational()`, `get_prerequisites()`, `get_extensions()`, `get_next_steps()`
-   - [ ] `get_refined()`, `get_general()`
-   - [ ] `get_generalizations()`, `get_implementations()`, `get_instances()`, `get_examples()`
-   - [ ] `search_with_context()` - semantic search with graph context
+   - [x] `get_foundational()`, `get_prerequisites()`, `get_extensions()`, `get_next_steps()`
+   - [x] `get_refined()`, `get_general()`
+   - [x] `get_generalizations()`, `get_implementations()`, `get_instances()`, `get_examples()`
+   - [x] `search_with_context()` - semantic search with graph context
+
+**Implementation:** See `kg_topology_api.py`, `kg_topology.pl`, `training_data_organizer.py`
 
 3. **Softmax Routing** *(Already Implemented)*
 
@@ -97,7 +99,7 @@ scale_optimizations:
 
 Default behavior: No optimizations (direct matrix multiplication scales well).
 
-### Phase 2: Multi-Interface Local Model
+### Phase 2: Multi-Interface Local Model (Current Focus)
 
 **Goal:** Expose multiple semantic interfaces to the SAME underlying knowledge base and routing.
 
@@ -286,13 +288,13 @@ From Kleinberg's research, the critical parameters for **distributed routing** a
 
 ## Success Metrics
 
-### Phase 1
+### Phase 1 ✅
 - [x] Softmax routing implemented (`multi_head_search` - cluster-based projection)
 - [x] Direct search baseline implemented (`_direct_search` - raw cosine similarity)
 - [x] Performance acceptable on modest hardware (matrix ops are fast)
-- [ ] All 11 relation types implemented and tested
-- [ ] `search_with_context()` returns relevant graph context
-- [ ] Seed-level folder structure for training data
+- [x] All 11 relation types implemented and tested (52 unit tests)
+- [x] `search_with_context()` returns relevant graph context
+- [x] Seed-level folder structure for training data (`training_data_organizer.py`)
 
 ### Phase 2
 - [ ] Queries route to appropriate interface
