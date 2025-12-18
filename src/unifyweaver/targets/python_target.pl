@@ -53,7 +53,14 @@
     compile_service_mesh_python/2,
     generate_load_balancer_python/2,
     generate_circuit_breaker_python/2,
-    generate_retry_python/2
+    generate_retry_python/2,
+    % Phase 5: Polyglot services
+    compile_polyglot_service_python/2,
+    generate_service_client_python/3,
+    % Phase 6: Distributed services
+    compile_distributed_service_python/2,
+    generate_sharding_python/2,
+    generate_replication_python/2
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -220,6 +227,26 @@ compile_service_to_python(Service, PythonCode) :-
     !,
     % Phase 3: HTTP service with options
     compile_http_service_python(Service, PythonCode).
+
+compile_service_to_python(Service, PythonCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(polyglot(true), Options)
+    ; member(depends_on(Deps), Options), Deps \= []
+    ),
+    !,
+    % Phase 5: Polyglot service
+    compile_polyglot_service_python(Service, PythonCode).
+
+compile_service_to_python(Service, PythonCode) :-
+    Service = service(_Name, Options, _HandlerSpec),
+    ( member(distributed(true), Options)
+    ; member(sharding(_), Options)
+    ; member(replication(_), Options)
+    ; member(cluster(_), Options)
+    ),
+    !,
+    % Phase 6: Distributed service
+    compile_distributed_service_python(Service, PythonCode).
 
 compile_service_to_python(Service, PythonCode) :-
     Service = service(_Name, Options, _HandlerSpec),
@@ -1416,6 +1443,453 @@ generate_backend_list_python([backend(Name, Transport)|Rest], [Str|RestStrs]) :-
 generate_backend_list_python([backend(Name, Transport, _Opts)|Rest], [Str|RestStrs]) :-
     format(string(Str), "{'name': '~w', 'transport': '~w'}", [Name, Transport]),
     generate_backend_list_python(Rest, RestStrs).
+
+%% ============================================
+%% Phase 5: Polyglot Service Compilation
+%% ============================================
+
+%% compile_polyglot_service_python(+Service, -PythonCode)
+%  Compiles a polyglot service that can call services in other languages.
+compile_polyglot_service_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Get service class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    % Get dependencies
+    ( member(depends_on(Dependencies), Options) -> Dependencies = Deps ; Deps = [] ),
+    % Get target language if specified
+    ( member(target_language(Lang), Options) -> atom_string(Lang, LangStr) ; LangStr = "python" ),
+    % Generate client code for each dependency
+    generate_dependency_clients_python(Deps, ClientsCode),
+    % Determine if stateful
+    ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
+    % Get timeout
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_python(HandlerSpec, HandlerCode),
+    % Format the complete polyglot service
+    format(string(PythonCode), "import json
+import time
+import urllib.request
+import urllib.error
+from typing import Any, Dict, Optional, List
+
+# Phase 5: Polyglot Service Support
+# Target language: ~w
+
+class ServiceClient:
+    '''Base class for cross-language service clients.'''
+    def __init__(self, name: str, endpoint: str, timeout: float = 30.0):
+        self.name = name
+        self.endpoint = endpoint
+        self.timeout = timeout
+
+    def call(self, request: Any) -> Any:
+        '''Make HTTP call to remote service.'''
+        url = self.endpoint
+        data = json.dumps({'_payload': request}).encode('utf-8')
+        headers = {'Content-Type': 'application/json'}
+        req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                if result.get('_status') == 'error':
+                    raise Exception(result.get('_message', 'Remote service error'))
+                return result.get('_payload', result)
+        except urllib.error.URLError as e:
+            raise Exception(f'Failed to call service {self.name}: {e}')
+
+class ServiceRegistry:
+    '''Registry for cross-language services.'''
+    _services: Dict[str, 'ServiceClient'] = {}
+    _local_services: Dict[str, Any] = {}
+
+    @classmethod
+    def register_remote(cls, name: str, endpoint: str, timeout: float = 30.0):
+        '''Register a remote service.'''
+        cls._services[name] = ServiceClient(name, endpoint, timeout)
+
+    @classmethod
+    def register_local(cls, name: str, service: Any):
+        '''Register a local service.'''
+        cls._local_services[name] = service
+
+    @classmethod
+    def get(cls, name: str) -> Optional[Any]:
+        '''Get a service by name (local or remote).'''
+        if name in cls._local_services:
+            return cls._local_services[name]
+        return cls._services.get(name)
+
+    @classmethod
+    def call_service(cls, name: str, request: Any) -> Any:
+        '''Call a service by name.'''
+        service = cls.get(name)
+        if service is None:
+            raise Exception(f'Service not found: {name}')
+        return service.call(request)
+
+~w
+
+class ~wService:
+    '''
+    Polyglot Service: ~w
+    Target Language: ~w
+    Dependencies: ~w
+    '''
+    def __init__(self):
+        self.name = '~w'
+        self.stateful = ~w
+        self.timeout = ~w / 1000.0
+        self._state = {} if self.stateful else None
+
+    def call(self, request):
+        '''Process request, calling remote services as needed.'''
+~w
+
+    def call_service(self, name: str, request: Any) -> Any:
+        '''Call another service (local or remote).'''
+        return ServiceRegistry.call_service(name, request)
+
+# Register this service
+ServiceRegistry.register_local('~w', ~wService())
+", [LangStr, ClientsCode, ClassNameAtom, Name, LangStr, Deps, Name, Stateful, Timeout, HandlerCode, Name, ClassNameAtom]).
+
+%% generate_dependency_clients_python(+Dependencies, -Code)
+%  Generate client registrations for service dependencies.
+generate_dependency_clients_python([], "# No remote service dependencies").
+generate_dependency_clients_python(Deps, Code) :-
+    Deps \= [],
+    generate_dep_registrations_python(Deps, RegStrs),
+    atomic_list_concat(RegStrs, '\n', Code).
+
+generate_dep_registrations_python([], []).
+generate_dep_registrations_python([Dep|Rest], [Str|RestStrs]) :-
+    ( Dep = dep(Name, Lang, Transport) ->
+        transport_to_endpoint_str(Transport, Endpoint),
+        format(string(Str), "# ~w service (~w)~nServiceRegistry.register_remote('~w', '~w')",
+               [Name, Lang, Name, Endpoint])
+    ; Dep = dep(Name, Lang) ->
+        format(string(Str), "# ~w service (~w) - endpoint TBD~nServiceRegistry.register_remote('~w', 'http://localhost:8080/~w')",
+               [Name, Lang, Name, Name])
+    ; atom(Dep) ->
+        format(string(Str), "# ~w service~nServiceRegistry.register_remote('~w', 'http://localhost:8080/~w')",
+               [Dep, Dep, Dep])
+    ;
+        Str = "# Unknown dependency format"
+    ),
+    generate_dep_registrations_python(Rest, RestStrs).
+
+%% transport_to_endpoint_str(+Transport, -Endpoint)
+transport_to_endpoint_str(tcp(Host, Port), Endpoint) :-
+    format(string(Endpoint), "http://~w:~w", [Host, Port]).
+transport_to_endpoint_str(http(Path), Endpoint) :-
+    format(string(Endpoint), "http://localhost:8080~w", [Path]).
+transport_to_endpoint_str(http(Host, Port), Endpoint) :-
+    format(string(Endpoint), "http://~w:~w", [Host, Port]).
+transport_to_endpoint_str(http(Host, Port, Path), Endpoint) :-
+    format(string(Endpoint), "http://~w:~w~w", [Host, Port, Path]).
+transport_to_endpoint_str(_, "http://localhost:8080").
+
+%% generate_service_client_python(+ServiceName, +Endpoint, -Code)
+%  Generate a standalone service client.
+generate_service_client_python(ServiceName, Endpoint, Code) :-
+    atom_codes(ServiceName, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    format(string(Code), "import json
+import urllib.request
+import urllib.error
+
+class ~wClient:
+    '''Client for ~w service.'''
+    def __init__(self, endpoint: str = '~w', timeout: float = 30.0):
+        self.endpoint = endpoint
+        self.timeout = timeout
+
+    def call(self, request):
+        '''Call the ~w service.'''
+        data = json.dumps({'_payload': request}).encode('utf-8')
+        headers = {'Content-Type': 'application/json'}
+        req = urllib.request.Request(self.endpoint, data=data, headers=headers, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                if result.get('_status') == 'error':
+                    raise Exception(result.get('_message', 'Remote service error'))
+                return result.get('_payload', result)
+        except urllib.error.URLError as e:
+            raise Exception(f'Failed to call ~w service: {e}')
+", [ClassNameAtom, ServiceName, Endpoint, ServiceName, ServiceName]).
+
+%% ============================================
+%% DISTRIBUTED SERVICES (Phase 6)
+%% ============================================
+
+%% compile_distributed_service_python(+Service, -PythonCode)
+%  Generate Python code for a distributed service with sharding and replication.
+compile_distributed_service_python(service(Name, Options, HandlerSpec), PythonCode) :-
+    % Extract distributed configuration
+    ( member(sharding(ShardStrategy), Options) -> true ; ShardStrategy = hash ),
+    ( member(partition_key(PartitionKey), Options) -> true ; PartitionKey = id ),
+    ( member(replication(ReplicationFactor), Options) -> true ; ReplicationFactor = 1 ),
+    ( member(consistency(ConsistencyLevel), Options) -> true ; ConsistencyLevel = eventual ),
+    ( member(cluster(ClusterConfig), Options) -> true ; ClusterConfig = [] ),
+    ( member(stateful(true), Options) -> Stateful = "True" ; Stateful = "False" ),
+    ( member(timeout(Timeout), Options) -> true ; Timeout = 30000 ),
+    % Generate handler code
+    generate_service_handler_python(HandlerSpec, HandlerCode),
+    % Format the class name
+    atom_codes(Name, [First|Rest]),
+    ( First >= 0'a, First =< 0'z ->
+        Upper is First - 32,
+        ClassName = [Upper|Rest]
+    ;
+        ClassName = [First|Rest]
+    ),
+    atom_codes(ClassNameAtom, ClassName),
+    % Convert atoms to strings
+    atom_string(ShardStrategy, ShardStrategyStr),
+    atom_string(PartitionKey, PartitionKeyStr),
+    atom_string(ConsistencyLevel, ConsistencyStr),
+    % Generate cluster nodes list
+    generate_cluster_nodes_python(ClusterConfig, NodesCode),
+    % Generate the distributed service
+    format(string(PythonCode),
+"import json
+import time
+import hashlib
+import random
+import threading
+from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from enum import Enum
+
+# Phase 6: Distributed Service Support
+
+class ShardingStrategy(Enum):
+    HASH = 'hash'
+    RANGE = 'range'
+    CONSISTENT_HASH = 'consistent_hash'
+    GEOGRAPHIC = 'geographic'
+
+class ConsistencyLevel(Enum):
+    EVENTUAL = 'eventual'
+    STRONG = 'strong'
+    QUORUM = 'quorum'
+    READ_YOUR_WRITES = 'read_your_writes'
+    CAUSAL = 'causal'
+
+@dataclass
+class ClusterNode:
+    '''Represents a node in the distributed cluster.'''
+    node_id: str
+    host: str
+    port: int
+    region: str = 'default'
+    weight: int = 1
+    healthy: bool = True
+
+@dataclass
+class ShardInfo:
+    '''Shard metadata.'''
+    shard_id: int
+    primary_node: str
+    replica_nodes: List[str] = field(default_factory=list)
+    key_range: Optional[Tuple[Any, Any]] = None
+
+class ConsistentHashRing:
+    '''Consistent hash ring for distributed routing.'''
+    def __init__(self, replicas: int = 100):
+        self.replicas = replicas
+        self.ring: Dict[int, str] = {}
+        self.sorted_keys: List[int] = []
+
+    def add_node(self, node_id: str) -> None:
+        for i in range(self.replicas):
+            key = self._hash(f'{node_id}:{i}')
+            self.ring[key] = node_id
+            self.sorted_keys.append(key)
+        self.sorted_keys.sort()
+
+    def remove_node(self, node_id: str) -> None:
+        for i in range(self.replicas):
+            key = self._hash(f'{node_id}:{i}')
+            if key in self.ring:
+                del self.ring[key]
+                self.sorted_keys.remove(key)
+
+    def get_node(self, key: str) -> Optional[str]:
+        if not self.ring:
+            return None
+        h = self._hash(key)
+        for k in self.sorted_keys:
+            if k >= h:
+                return self.ring[k]
+        return self.ring[self.sorted_keys[0]]
+
+    def _hash(self, key: str) -> int:
+        return int(hashlib.md5(key.encode()).hexdigest(), 16)
+
+class ShardRouter:
+    '''Routes requests to appropriate shards based on partition key.'''
+    def __init__(self, strategy: ShardingStrategy, num_shards: int = 16):
+        self.strategy = strategy
+        self.num_shards = num_shards
+        self.hash_ring = ConsistentHashRing()
+        self.range_boundaries: List[Any] = []
+
+    def get_shard(self, partition_key: Any) -> int:
+        if self.strategy == ShardingStrategy.HASH:
+            return self._hash_shard(partition_key)
+        elif self.strategy == ShardingStrategy.CONSISTENT_HASH:
+            return self._consistent_hash_shard(partition_key)
+        elif self.strategy == ShardingStrategy.RANGE:
+            return self._range_shard(partition_key)
+        else:
+            return self._hash_shard(partition_key)
+
+    def _hash_shard(self, key: Any) -> int:
+        h = hashlib.md5(str(key).encode()).hexdigest()
+        return int(h, 16) %% self.num_shards
+
+    def _consistent_hash_shard(self, key: Any) -> int:
+        node = self.hash_ring.get_node(str(key))
+        return hash(node) %% self.num_shards if node else 0
+
+    def _range_shard(self, key: Any) -> int:
+        for i, boundary in enumerate(self.range_boundaries):
+            if key < boundary:
+                return i
+        return len(self.range_boundaries)
+
+class ReplicationManager:
+    '''Manages data replication across nodes.'''
+    def __init__(self, replication_factor: int, consistency: ConsistencyLevel):
+        self.replication_factor = replication_factor
+        self.consistency = consistency
+        self._lock = threading.Lock()
+
+    def write_quorum(self) -> int:
+        if self.consistency == ConsistencyLevel.STRONG:
+            return self.replication_factor
+        elif self.consistency == ConsistencyLevel.QUORUM:
+            return (self.replication_factor // 2) + 1
+        else:
+            return 1
+
+    def read_quorum(self) -> int:
+        if self.consistency == ConsistencyLevel.STRONG:
+            return self.replication_factor
+        elif self.consistency == ConsistencyLevel.QUORUM:
+            return (self.replication_factor // 2) + 1
+        else:
+            return 1
+
+class ~wService:
+    '''
+    Distributed Service: ~w
+    Sharding: ~w (partition_key: ~w)
+    Replication: ~w replicas
+    Consistency: ~w
+    '''
+    def __init__(self):
+        self.name = '~w'
+        self.stateful = ~w
+        self.timeout_ms = ~w
+        self.sharding_strategy = ShardingStrategy.~w
+        self.partition_key = '~w'
+        self.replication_factor = ~w
+        self.consistency = ConsistencyLevel.~w
+        self.nodes: Dict[str, ClusterNode] = {}
+        self.shards: Dict[int, ShardInfo] = {}
+        self.router = ShardRouter(self.sharding_strategy)
+        self.replication = ReplicationManager(self.replication_factor, self.consistency)
+        self._state: Dict[str, Any] = {}
+        self._lock = threading.Lock()
+~w
+
+    def add_node(self, node: ClusterNode) -> None:
+        '''Add a node to the cluster.'''
+        self.nodes[node.node_id] = node
+        self.router.hash_ring.add_node(node.node_id)
+
+    def remove_node(self, node_id: str) -> None:
+        '''Remove a node from the cluster.'''
+        if node_id in self.nodes:
+            del self.nodes[node_id]
+            self.router.hash_ring.remove_node(node_id)
+
+    def get_partition_key(self, request: Dict[str, Any]) -> Any:
+        '''Extract partition key from request.'''
+        return request.get(self.partition_key, str(id(request)))
+
+    def route_request(self, request: Dict[str, Any]) -> int:
+        '''Route request to appropriate shard.'''
+        key = self.get_partition_key(request)
+        return self.router.get_shard(key)
+
+    def call(self, request: Any) -> Any:
+        '''Process a request through the distributed service.'''
+        shard_id = self.route_request(request) if isinstance(request, dict) else 0
+        return self._handle_request(request, shard_id)
+
+    def _handle_request(self, request: Any, shard_id: int) -> Any:
+~w
+
+# Initialize cluster nodes
+~w
+
+# Service instance
+~w_service = ~wService()
+", [ClassNameAtom, Name, ShardStrategyStr, PartitionKeyStr, ReplicationFactor, ConsistencyStr,
+    Name, Stateful, Timeout,
+    ShardStrategyStr, PartitionKeyStr, ReplicationFactor, ConsistencyStr,
+    NodesCode, HandlerCode, NodesCode, Name, ClassNameAtom]).
+
+%% generate_sharding_python(+Strategy, -Code)
+%  Generate Python code for a specific sharding strategy.
+generate_sharding_python(hash, Code) :-
+    Code = "ShardingStrategy.HASH".
+generate_sharding_python(range, Code) :-
+    Code = "ShardingStrategy.RANGE".
+generate_sharding_python(consistent_hash, Code) :-
+    Code = "ShardingStrategy.CONSISTENT_HASH".
+generate_sharding_python(geographic, Code) :-
+    Code = "ShardingStrategy.GEOGRAPHIC".
+generate_sharding_python(_, Code) :-
+    Code = "ShardingStrategy.HASH".
+
+%% generate_replication_python(+ReplicationFactor, -Code)
+%  Generate Python replication configuration code.
+generate_replication_python(Factor, Code) :-
+    integer(Factor),
+    format(string(Code), "replication_factor = ~w", [Factor]).
+generate_replication_python(_, "replication_factor = 1").
+
+%% generate_cluster_nodes_python(+Config, -Code)
+%  Generate Python code for cluster node initialization.
+generate_cluster_nodes_python([], "        # No initial cluster nodes").
+generate_cluster_nodes_python(Nodes, Code) :-
+    Nodes \= [],
+    maplist(generate_node_init_python, Nodes, NodeCodes),
+    atomic_list_concat(NodeCodes, '\n', Code).
+
+generate_node_init_python(node(Id, Host, Port), Code) :-
+    format(string(Code), "~w_service.add_node(ClusterNode('~w', '~w', ~w))", [Id, Id, Host, Port]).
+generate_node_init_python(node(Id, Host, Port, Region), Code) :-
+    format(string(Code), "~w_service.add_node(ClusterNode('~w', '~w', ~w, '~w'))", [Id, Id, Host, Port, Region]).
+generate_node_init_python(_, "        # Unknown node format").
 
 /** <module> Python Target Compiler
  *

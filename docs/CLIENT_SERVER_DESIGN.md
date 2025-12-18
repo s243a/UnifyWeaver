@@ -715,39 +715,147 @@ All 61 tests pass:
 - **Cross-Target Consistency Tests (3)**: CircuitState enum, backends, select_backend across all targets
 - **Edge Case Tests (5)**: Single feature services, default configs
 
-## Future Phases
+## Phase 5: Multi-Language Polyglot Services (Current)
 
-### Phase 5: Multi-Language Polyglot Services (Planned)
+Phase 5 implements seamless calls between services written in different languages.
 
-Seamless calls between services written in different languages:
+### Polyglot Service Definition
 
 ```prolog
-% Prolog service definition
+% Service that calls services in other languages
 service(coordinator, [
+    polyglot(true),
+    target_language(python),
+    depends_on([
+        dep(ml_model, python, tcp('localhost', 8001)),
+        dep(validator, go, tcp('localhost', 8002)),
+        dep(database, rust, tcp('localhost', 8003))
+    ])
+], [
     receive(Job),
-    call_service(python_ml_model, Job, Prediction),    % Python ML service
-    call_service(go_validator, Prediction, Validated), % Go validation service
-    call_service(rust_db, Validated, Stored),          % Rust database service
+    call_service(ml_model, Job, Prediction),
+    call_service(validator, Prediction, Validated),
+    call_service(database, Validated, Stored),
     respond(Stored)
 ]).
 ```
 
-### Phase 6: Distributed Services (Planned)
+### Polyglot Options
 
-Cluster-aware services with automatic routing:
+| Option | Description |
+|--------|-------------|
+| `polyglot(true)` | Enable polyglot service mode |
+| `target_language(Lang)` | Target language (python, go, rust, javascript, csharp) |
+| `depends_on([...])` | List of service dependencies |
+| `endpoint(Endpoint)` | Service endpoint URL |
+
+### Dependency Specification
 
 ```prolog
-service(distributed_cache, [
+dep(ServiceName, Language, Transport)
+```
+
+- `ServiceName`: Name of the service to call
+- `Language`: Implementation language (python, go, rust, etc.)
+- `Transport`: How to connect (tcp(Host, Port), http(Path), unix_socket(Path))
+
+### Generated Code Features
+
+**Python**: `ServiceClient` class with `requests.post`, `ServiceRegistry` with remote/local lookup
+**Go**: `ServiceClient` struct with `net/http`, `ServiceRegistry` with `sync.RWMutex`
+**Rust**: `ServiceClient` with `reqwest`, `ServiceRegistry` with `RwLock<HashMap<>>`
+
+### Phase 5 Tests
+
+```bash
+./tests/integration/test_polyglot_services.sh
+# 22 tests: validation, Python/Go/Rust compilation
+```
+
+## Phase 6: Distributed Services (Current)
+
+Phase 6 implements cluster-aware services with sharding, replication, and routing.
+
+### Distributed Service Definition
+
+```prolog
+service(user_store, [
     distributed(true),
+    sharding(consistent_hash),
+    partition_key(user_id),
     replication(3),
-    consistency(eventual)
+    consistency(quorum),
+    cluster([
+        node(node1, 'localhost', 8001),
+        node(node2, 'localhost', 8002),
+        node(node3, 'localhost', 8003)
+    ])
 ], [
-    receive(Op),
-    route_to_shard(Op, Node),
-    execute_on_node(Node, Op, Result),
-    respond(Result)
+    receive(Request),
+    handle_request(Request, Response),
+    respond(Response)
 ]).
 ```
+
+### Distributed Service Options
+
+| Option | Description |
+|--------|-------------|
+| `distributed(true)` | Enable distributed mode |
+| `sharding(Strategy)` | Sharding strategy |
+| `partition_key(Key)` | Field to use for partitioning |
+| `replication(N)` | Number of replicas |
+| `consistency(Level)` | Consistency level |
+| `cluster([...])` | List of cluster nodes |
+
+### Sharding Strategies
+
+| Strategy | Description |
+|----------|-------------|
+| `hash` | Hash-based partitioning (default) |
+| `range` | Range-based partitioning |
+| `consistent_hash` | Consistent hashing with virtual nodes |
+| `geographic` | Geographic/region-based partitioning |
+
+### Consistency Levels
+
+| Level | Description |
+|-------|-------------|
+| `eventual` | Eventually consistent (default) |
+| `strong` | Strong consistency (all replicas) |
+| `quorum` | Quorum-based ((N/2)+1 nodes) |
+| `read_your_writes` | Read-your-writes consistency |
+| `causal` | Causal consistency |
+
+### Generated Code Features
+
+**All targets generate:**
+- `ConsistentHashRing`: Virtual node ring for consistent hashing
+- `ShardRouter`: Routes requests to appropriate shards
+- `ReplicationManager`: Manages write/read quorums
+- `ClusterNode`: Node representation with health status
+
+**Thread Safety:**
+- Python: `threading.Lock`, `RwLock`
+- Go: `sync.RWMutex`, `atomic`
+- Rust: `RwLock`, `AtomicU64`
+
+### Phase 6 Tests
+
+```bash
+./tests/integration/test_distributed_services.sh
+# 24 tests: validation, Python/Go/Rust compilation, cross-target consistency
+```
+
+## Future Phases
+
+### Phase 7: Service Discovery (Planned)
+
+Automatic service discovery with health checks and DNS integration.
+
+### Phase 8: Service Tracing (Planned)
+
+Distributed tracing with OpenTelemetry integration.
 
 ## Validation
 
