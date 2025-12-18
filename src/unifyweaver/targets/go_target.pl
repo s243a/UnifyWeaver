@@ -14601,3 +14601,188 @@ test_go_enhanced_chaining :-
     ),
 
     format('~n=== All Go Enhanced Pipeline Chaining Tests Passed ===~n', []).
+
+%% ============================================
+%% KG Topology Phase 3: Kleinberg Router Code Generation
+%% ============================================
+
+%% compile_kleinberg_router_go(+Options, -Code)
+%  Generate Go KleinbergRouter struct with configurable options.
+
+compile_kleinberg_router_go(Options, Code) :-
+    ( member(alpha(Alpha), Options) -> true ; Alpha = 2.0 ),
+    ( member(max_hops(MaxHops), Options) -> true ; MaxHops = 10 ),
+    ( member(parallel_paths(ParallelPaths), Options) -> true ; ParallelPaths = 1 ),
+    ( member(similarity_threshold(Threshold), Options) -> true ; Threshold = 0.5 ),
+    ( member(path_folding(PathFolding), Options) -> true ; PathFolding = true ),
+
+    format(string(Code), '
+// KG Topology Phase 3: Kleinberg Router
+// Generated from Prolog service definition
+
+package kg
+
+import (
+    "encoding/base64"
+    "encoding/binary"
+    "encoding/json"
+    "fmt"
+    "math"
+    "net/http"
+    "sort"
+    "sync"
+    "time"
+)
+
+// KGNode represents a discovered node in the distributed KG network
+type KGNode struct {
+    NodeID         string
+    Endpoint       string
+    Centroid       []float32
+    Topics         []string
+    EmbeddingModel string
+    Similarity     float64
+}
+
+// RoutingEnvelope carries routing information between nodes
+type RoutingEnvelope struct {
+    OriginNode         string   `json:"origin_node"`
+    HTL                int      `json:"htl"`
+    Visited            []string `json:"visited"`
+    PathFoldingEnabled bool     `json:"path_folding_enabled"`
+}
+
+// KleinbergRouter implements small-world routing for distributed KG topology
+type KleinbergRouter struct {
+    LocalNodeID         string
+    DiscoveryClient     ServiceRegistry
+    Alpha               float64
+    MaxHops             int
+    ParallelPaths       int
+    SimilarityThreshold float64
+    PathFoldingEnabled  bool
+
+    nodeCache      map[string]*KGNode
+    cacheTimestamp time.Time
+    cacheTTL       time.Duration
+    shortcuts      map[string]string
+    mu             sync.RWMutex
+}
+
+// NewKleinbergRouter creates a new router with default configuration
+func NewKleinbergRouter(nodeID string, discovery ServiceRegistry) *KleinbergRouter {
+    return &KleinbergRouter{
+        LocalNodeID:         nodeID,
+        DiscoveryClient:     discovery,
+        Alpha:               ~w,
+        MaxHops:             ~w,
+        ParallelPaths:       ~w,
+        SimilarityThreshold: ~w,
+        PathFoldingEnabled:  ~w,
+        nodeCache:           make(map[string]*KGNode),
+        cacheTTL:            60 * time.Second,
+        shortcuts:           make(map[string]string),
+    }
+}
+
+// DiscoverNodes finds KG nodes from service registry
+func (r *KleinbergRouter) DiscoverNodes(tags []string) ([]*KGNode, error) {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+
+    // Check cache
+    if time.Since(r.cacheTimestamp) < r.cacheTTL {
+        nodes := make([]*KGNode, 0, len(r.nodeCache))
+        for _, n := range r.nodeCache {
+            nodes = append(nodes, n)
+        }
+        return nodes, nil
+    }
+
+    if tags == nil {
+        tags = []string{"kg_node"}
+    }
+
+    instances, err := r.DiscoveryClient.Discover("kg_topology", tags)
+    if err != nil {
+        return nil, err
+    }
+
+    nodes := make([]*KGNode, 0)
+    for _, inst := range instances {
+        metadata := inst.Metadata
+
+        centroidB64, ok := metadata["semantic_centroid"].(string)
+        if !ok {
+            continue
+        }
+
+        centroidBytes, err := base64.StdEncoding.DecodeString(centroidB64)
+        if err != nil {
+            continue
+        }
+
+        // Convert bytes to float32 slice
+        centroid := make([]float32, len(centroidBytes)/4)
+        for i := range centroid {
+            bits := binary.LittleEndian.Uint32(centroidBytes[i*4:])
+            centroid[i] = math.Float32frombits(bits)
+        }
+
+        topics, _ := metadata["interface_topics"].([]string)
+        model, _ := metadata["embedding_model"].(string)
+
+        node := &KGNode{
+            NodeID:         inst.ServiceID,
+            Endpoint:       fmt.Sprintf("http://%%s:%%d", inst.Host, inst.Port),
+            Centroid:       centroid,
+            Topics:         topics,
+            EmbeddingModel: model,
+        }
+        nodes = append(nodes, node)
+        r.nodeCache[node.NodeID] = node
+    }
+
+    r.cacheTimestamp = time.Now()
+    return nodes, nil
+}
+
+// CosineSimilarity computes cosine similarity between two vectors
+func CosineSimilarity(a, b []float32) float64 {
+    if len(a) != len(b) {
+        return 0
+    }
+
+    var dot, normA, normB float64
+    for i := range a {
+        dot += float64(a[i] * b[i])
+        normA += float64(a[i] * a[i])
+        normB += float64(b[i] * b[i])
+    }
+
+    if normA == 0 || normB == 0 {
+        return 0
+    }
+
+    return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// GetStats returns router statistics
+func (r *KleinbergRouter) GetStats() map[string]interface{} {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    return map[string]interface{}{
+        "local_node_id":  r.LocalNodeID,
+        "cached_nodes":   len(r.nodeCache),
+        "shortcuts":      len(r.shortcuts),
+        "config": map[string]interface{}{
+            "alpha":                r.Alpha,
+            "max_hops":             r.MaxHops,
+            "parallel_paths":       r.ParallelPaths,
+            "similarity_threshold": r.SimilarityThreshold,
+            "path_folding_enabled": r.PathFoldingEnabled,
+        },
+    }
+}
+', [Alpha, MaxHops, ParallelPaths, Threshold, PathFolding]).

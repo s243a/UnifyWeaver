@@ -6,7 +6,7 @@
 """
 Knowledge Graph Topology API extending LDA Projection Database.
 
-Implements Phase 1 & 2 of the KG Topology Roadmap:
+Implements Phases 1, 2 & 3 of the KG Topology Roadmap:
 
 Phase 1:
 - 11 relation types across 3 categories
@@ -21,6 +21,12 @@ Phase 2:
 - Query-to-interface mapping
 - Interface management (auto-generate, curation, metrics)
 
+Phase 3:
+- Distributed network with Kleinberg routing
+- Node discovery and registration
+- Inter-node query routing with HTL limits
+- Path folding for shortcut creation
+
 See: docs/proposals/ROADMAP_KG_TOPOLOGY.md
      docs/proposals/QA_KNOWLEDGE_GRAPH.md
      docs/proposals/SEED_QUESTION_TOPOLOGY.md
@@ -29,7 +35,8 @@ See: docs/proposals/ROADMAP_KG_TOPOLOGY.md
 import sqlite3
 import json
 import hashlib
-from typing import List, Dict, Any, Optional, Tuple
+import base64
+from typing import List, Dict, Any, Optional, Tuple, Set
 from datetime import datetime
 
 import numpy as np
@@ -1915,3 +1922,540 @@ class KGTopologyAPI(LDAProjectionDB):
 def create_kg_database(db_path: str, embeddings_dir: str = None) -> KGTopologyAPI:
     """Create a new KG topology database."""
     return KGTopologyAPI(db_path, embeddings_dir)
+
+
+# =============================================================================
+# PHASE 3: DISTRIBUTED KG TOPOLOGY API
+# =============================================================================
+
+class DistributedKGTopologyAPI(KGTopologyAPI):
+    """
+    Distributed KG Topology API with Kleinberg routing support.
+
+    Extends KGTopologyAPI with:
+    - Node discovery and registration
+    - Inter-node query routing via Kleinberg small-world routing
+    - Path folding for shortcut creation
+    - HTL-limited query propagation
+
+    See: docs/proposals/ROADMAP_KG_TOPOLOGY.md (Phase 3)
+    """
+
+    SCHEMA_VERSION = 4  # v3 = Phase 2, v4 = Phase 3 distributed
+
+    def __init__(
+        self,
+        db_path: str,
+        embeddings_dir: str = None,
+        node_id: str = None,
+        discovery_backend: str = 'local',
+        discovery_config: Dict[str, Any] = None
+    ):
+        """
+        Initialize distributed KG topology API.
+
+        Args:
+            db_path: Path to SQLite database
+            embeddings_dir: Directory for embedding files
+            node_id: Unique identifier for this node (auto-generated if None)
+            discovery_backend: Discovery backend ('local', 'consul', 'etcd')
+            discovery_config: Backend-specific configuration
+        """
+        super().__init__(db_path, embeddings_dir)
+
+        # Generate node ID from db_path if not provided
+        self.node_id = node_id or f"node_{hashlib.sha256(db_path.encode()).hexdigest()[:8]}"
+        self.discovery_backend = discovery_backend
+        self.discovery_config = discovery_config or {}
+
+        self._router = None
+        self._discovery_client = None
+        self._init_distributed_schema()
+
+    def _init_distributed_schema(self):
+        """Create distributed-specific tables."""
+        cursor = self.conn.cursor()
+
+        # Query shortcuts from path folding
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS query_shortcuts (
+                query_hash TEXT PRIMARY KEY,
+                target_node_id TEXT NOT NULL,
+                target_interface_id INTEGER,
+                hit_count INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Remote node cache
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS remote_nodes (
+                node_id TEXT PRIMARY KEY,
+                endpoint TEXT NOT NULL,
+                centroid BLOB,
+                topics TEXT,
+                embedding_model TEXT,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                health_status TEXT DEFAULT 'unknown'
+            )
+        """)
+
+        # Distributed query log
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS distributed_query_log (
+                query_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_text TEXT,
+                query_hash TEXT,
+                origin_node TEXT,
+                hops INTEGER,
+                result_count INTEGER,
+                response_time_ms REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Index for shortcut lookups
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_shortcut_hash
+            ON query_shortcuts(query_hash)
+        """)
+
+        self.conn.commit()
+
+    def _get_discovery_client(self):
+        """Get or create discovery client."""
+        if self._discovery_client is None:
+            from .discovery_clients import create_discovery_client
+            self._discovery_client = create_discovery_client(
+                self.discovery_backend,
+                **self.discovery_config
+            )
+        return self._discovery_client
+
+    def get_router(self):
+        """
+        Get or create Kleinberg router instance.
+
+        Returns:
+            KleinbergRouter instance configured for this node
+        """
+        if self._router is None:
+            from .kleinberg_router import KleinbergRouter
+            self._router = KleinbergRouter(
+                local_node_id=self.node_id,
+                discovery_client=self._get_discovery_client()
+            )
+        return self._router
+
+    def register_node(
+        self,
+        interface_id: int = None,
+        host: str = 'localhost',
+        port: int = 8080,
+        tags: List[str] = None
+    ) -> bool:
+        """
+        Register this node with service discovery.
+
+        Advertises interface centroid for routing.
+
+        Args:
+            interface_id: Interface to advertise (uses first if None)
+            host: Host address to advertise
+            port: Port to advertise
+            tags: Additional tags
+
+        Returns:
+            True if registration succeeded
+        """
+        # Get interface(s) to advertise
+        if interface_id:
+            interfaces = [self.get_interface(interface_id)]
+        else:
+            interfaces = self.list_interfaces(active_only=True)
+
+        if not interfaces or not interfaces[0]:
+            return False
+
+        interface = interfaces[0]
+
+        # Get centroid for the interface
+        centroid = None
+        centroid_model_id = interface.get('centroid_model_id')
+        if centroid_model_id:
+            centroid = self.get_interface_centroid(
+                interface['interface_id'],
+                centroid_model_id
+            )
+
+        # Prepare metadata
+        metadata = {
+            'interface_id': interface['interface_id'],
+            'interface_name': interface['name'],
+            'interface_topics': json.dumps(interface.get('topics', [])),
+            'embedding_model': 'all-MiniLM-L6-v2'  # TODO: get from config
+        }
+
+        if centroid is not None:
+            metadata['semantic_centroid'] = base64.b64encode(
+                centroid.astype(np.float32).tobytes()
+            ).decode()
+
+        # Register with discovery
+        discovery = self._get_discovery_client()
+        return discovery.register(
+            service_name='kg_topology',
+            service_id=self.node_id,
+            host=host,
+            port=port,
+            tags=tags or ['kg_node'],
+            metadata=metadata
+        )
+
+    def deregister_node(self) -> bool:
+        """Deregister this node from service discovery."""
+        discovery = self._get_discovery_client()
+        return discovery.deregister(self.node_id)
+
+    def distributed_search(
+        self,
+        query_text: str,
+        model_name: str = 'all-MiniLM-L6-v2',
+        top_k: int = 5,
+        max_hops: int = 10,
+        local_first: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Search across distributed KG network.
+
+        Args:
+            query_text: The search query
+            model_name: Embedding model name
+            top_k: Number of results
+            max_hops: Maximum routing hops (HTL)
+            local_first: Try local search before routing
+
+        Returns:
+            Combined results from local and remote nodes
+        """
+        import time
+        start_time = time.time()
+
+        results = []
+
+        # Embed query
+        query_emb = self._embed_query(query_text, model_name)
+        query_hash = hashlib.sha256(query_text.encode()).hexdigest()[:16]
+
+        # Check for shortcut
+        shortcut = self._get_shortcut(query_hash)
+        if shortcut:
+            remote_results = self._query_via_shortcut(
+                shortcut,
+                query_emb,
+                query_text,
+                top_k
+            )
+            if remote_results:
+                self._update_shortcut_usage(query_hash)
+                self._log_query(query_text, query_hash, 'local', 1,
+                               len(remote_results), time.time() - start_time)
+                return remote_results
+
+        # Local search first (if enabled)
+        if local_first:
+            local_results = self.search_with_context(
+                query_text=query_text,
+                model_name=model_name,
+                top_k=top_k
+            )
+
+            # If local results are good, return them
+            if local_results and local_results[0].get('score', 0) > 0.7:
+                for r in local_results:
+                    r['source_node'] = self.node_id
+                    r['hops'] = 0
+                self._log_query(query_text, query_hash, self.node_id, 0,
+                               len(local_results), time.time() - start_time)
+                return local_results
+
+            results.extend(local_results)
+
+        # Route to network
+        router = self.get_router()
+        from .kleinberg_router import RoutingEnvelope
+
+        envelope = RoutingEnvelope(
+            origin_node=self.node_id,
+            htl=max_hops,
+            path_folding_enabled=True
+        )
+
+        remote_results = router.route_query(
+            query_embedding=query_emb,
+            query_text=query_text,
+            envelope=envelope,
+            top_k=top_k
+        )
+        results.extend(remote_results)
+
+        # Deduplicate and sort
+        seen: Set[Tuple[int, str]] = set()
+        unique_results = []
+        for r in sorted(results, key=lambda x: x.get('score', 0), reverse=True):
+            key = (r.get('answer_id'), r.get('source_node', 'local'))
+            if key not in seen:
+                seen.add(key)
+                unique_results.append(r)
+
+        final_results = unique_results[:top_k]
+
+        # Log query
+        max_hop = max((r.get('hops', 0) for r in final_results), default=0)
+        self._log_query(query_text, query_hash, self.node_id, max_hop,
+                       len(final_results), time.time() - start_time)
+
+        return final_results
+
+    def handle_remote_query(
+        self,
+        request: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Handle incoming query from another node.
+
+        This is the HTTP endpoint handler for /kg/query.
+
+        Args:
+            request: Incoming request with routing envelope
+
+        Returns:
+            Response with results
+        """
+        routing = request.get('__routing', {})
+        embedding_info = request.get('__embedding', {})
+        payload = request.get('payload', {})
+
+        htl = routing.get('htl', 0)
+        visited = set(routing.get('visited', []))
+        query_text = payload.get('query_text', '')
+        top_k = payload.get('top_k', 5)
+
+        # Extract query embedding
+        vector = embedding_info.get('vector', [])
+        if vector:
+            query_emb = np.array(vector, dtype=np.float32)
+        else:
+            # Need to re-embed
+            model_name = embedding_info.get('model', 'all-MiniLM-L6-v2')
+            query_emb = self._embed_query(query_text, model_name)
+
+        # Local search
+        results = self.search_with_context(
+            query_text=query_text,
+            model_name=embedding_info.get('model', 'all-MiniLM-L6-v2'),
+            top_k=top_k
+        )
+
+        # Add source node info
+        for r in results:
+            r['source_node'] = self.node_id
+            r['hops'] = 0
+
+        # If results are weak and HTL allows, forward to network
+        if htl > 0 and (not results or results[0].get('score', 0) < 0.5):
+            router = self.get_router()
+            from .kleinberg_router import RoutingEnvelope
+
+            envelope = RoutingEnvelope(
+                origin_node=routing.get('origin_node', 'unknown'),
+                htl=htl,
+                visited=visited,
+                path_folding_enabled=routing.get('path_folding_enabled', True)
+            )
+            envelope.visited.add(self.node_id)
+
+            remote_results = router.route_query(
+                query_embedding=query_emb,
+                query_text=query_text,
+                envelope=envelope,
+                top_k=top_k
+            )
+            results.extend(remote_results)
+
+        return {
+            '__type': 'kg_response',
+            '__id': request.get('__id'),
+            'results': results[:top_k],
+            'source_node': self.node_id
+        }
+
+    def _get_shortcut(self, query_hash: str) -> Optional[Dict[str, Any]]:
+        """Get shortcut for query hash."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT target_node_id, target_interface_id
+            FROM query_shortcuts
+            WHERE query_hash = ?
+        """, (query_hash,))
+        row = cursor.fetchone()
+        if row:
+            return {
+                'target_node_id': row[0],
+                'target_interface_id': row[1]
+            }
+        return None
+
+    def _update_shortcut_usage(self, query_hash: str):
+        """Update shortcut usage statistics."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE query_shortcuts
+            SET hit_count = hit_count + 1,
+                last_used_at = CURRENT_TIMESTAMP
+            WHERE query_hash = ?
+        """, (query_hash,))
+        self.conn.commit()
+
+    def _query_via_shortcut(
+        self,
+        shortcut: Dict[str, Any],
+        query_emb: np.ndarray,
+        query_text: str,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """Query a node directly via shortcut."""
+        target_node = shortcut['target_node_id']
+
+        # If it's us, do local search
+        if target_node == self.node_id:
+            results = self.search_with_context(
+                query_text=query_text,
+                model_name='all-MiniLM-L6-v2',
+                top_k=top_k
+            )
+            for r in results:
+                r['source_node'] = self.node_id
+                r['hops'] = 0
+            return results
+
+        # Otherwise, look up node and forward
+        router = self.get_router()
+        nodes = router.discover_nodes()
+
+        for node in nodes:
+            if node.node_id == target_node:
+                from .kleinberg_router import RoutingEnvelope
+                envelope = RoutingEnvelope(
+                    origin_node=self.node_id,
+                    htl=1,  # Direct query, no further routing
+                    path_folding_enabled=False
+                )
+                return router._forward_to_node(
+                    node, query_emb, query_text, envelope, top_k
+                )
+
+        return []
+
+    def create_shortcut(
+        self,
+        query_text: str,
+        target_node_id: str,
+        target_interface_id: int = None
+    ):
+        """Create a path-folded shortcut."""
+        query_hash = hashlib.sha256(query_text.encode()).hexdigest()[:16]
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO query_shortcuts
+            (query_hash, target_node_id, target_interface_id)
+            VALUES (?, ?, ?)
+        """, (query_hash, target_node_id, target_interface_id))
+        self.conn.commit()
+
+    def _log_query(
+        self,
+        query_text: str,
+        query_hash: str,
+        origin_node: str,
+        hops: int,
+        result_count: int,
+        response_time: float
+    ):
+        """Log a distributed query for analytics."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO distributed_query_log
+            (query_text, query_hash, origin_node, hops, result_count, response_time_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (query_text, query_hash, origin_node, hops, result_count,
+              response_time * 1000))
+        self.conn.commit()
+
+    def get_query_stats(self) -> Dict[str, Any]:
+        """Get distributed query statistics."""
+        cursor = self.conn.cursor()
+
+        # Total queries
+        cursor.execute("SELECT COUNT(*) FROM distributed_query_log")
+        total_queries = cursor.fetchone()[0]
+
+        # Average hops
+        cursor.execute("SELECT AVG(hops) FROM distributed_query_log")
+        avg_hops = cursor.fetchone()[0] or 0
+
+        # Average response time
+        cursor.execute("SELECT AVG(response_time_ms) FROM distributed_query_log")
+        avg_response_ms = cursor.fetchone()[0] or 0
+
+        # Shortcut stats
+        cursor.execute("SELECT COUNT(*), SUM(hit_count) FROM query_shortcuts")
+        row = cursor.fetchone()
+        shortcut_count = row[0] or 0
+        shortcut_hits = row[1] or 0
+
+        return {
+            'total_queries': total_queries,
+            'avg_hops': round(avg_hops, 2),
+            'avg_response_ms': round(avg_response_ms, 2),
+            'shortcuts': {
+                'count': shortcut_count,
+                'total_hits': shortcut_hits
+            },
+            'node_id': self.node_id
+        }
+
+    def prune_shortcuts(self, max_age_days: int = 30, min_hits: int = 1):
+        """
+        Prune old or unused shortcuts.
+
+        Args:
+            max_age_days: Remove shortcuts older than this
+            min_hits: Remove shortcuts with fewer hits
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            DELETE FROM query_shortcuts
+            WHERE last_used_at < datetime('now', '-' || ? || ' days')
+               OR hit_count < ?
+        """, (max_age_days, min_hits))
+        self.conn.commit()
+        return cursor.rowcount
+
+
+def create_distributed_kg_database(
+    db_path: str,
+    embeddings_dir: str = None,
+    node_id: str = None,
+    discovery_backend: str = 'local',
+    discovery_config: Dict[str, Any] = None
+) -> DistributedKGTopologyAPI:
+    """Create a new distributed KG topology database."""
+    return DistributedKGTopologyAPI(
+        db_path,
+        embeddings_dir,
+        node_id,
+        discovery_backend,
+        discovery_config
+    )

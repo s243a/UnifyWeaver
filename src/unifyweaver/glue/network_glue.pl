@@ -1063,3 +1063,285 @@ sanitize_char('/', '_') :- !.
 sanitize_char('-', '_') :- !.
 sanitize_char('.', '_') :- !.
 sanitize_char(C, C).
+
+%% ============================================
+%% KG Topology Phase 3: Distributed Query Endpoints
+%% ============================================
+
+%% generate_kg_query_endpoint(+Target, +Options, -Code)
+%  Generate HTTP endpoint handlers for distributed KG queries.
+%  Endpoints:
+%    - POST /kg/query   - Handle distributed KG query
+%    - POST /kg/register - Register node with discovery
+%    - GET  /kg/health  - Health check for KG node
+
+generate_kg_query_endpoint(python, Options, Code) :-
+    ( member(api_instance(APIVar), Options) -> true ; APIVar = 'kg_api' ),
+    format(string(Code), "
+# KG Topology Phase 3: Distributed Query Endpoints
+
+@app.route('/kg/query', methods=['POST'])
+def handle_kg_query():
+    '''Handle distributed KG query from another node.'''
+    try:
+        request_data = request.json
+
+        if request_data.get('__type') != 'kg_query':
+            return jsonify({'error': 'Invalid request type'}), 400
+
+        result = ~w.handle_remote_query(request_data)
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({
+            '__type': 'kg_response',
+            'error': str(e),
+            'source_node': ~w.node_id
+        }), 500
+
+
+@app.route('/kg/register', methods=['POST'])
+def handle_kg_register():
+    '''Register this node with discovery service.'''
+    try:
+        data = request.json or {}
+        host = data.get('host', 'localhost')
+        port = data.get('port', 8080)
+        tags = data.get('tags', ['kg_node'])
+
+        success = ~w.register_node(host=host, port=port, tags=tags)
+
+        return jsonify({
+            'status': 'registered' if success else 'failed',
+            'node_id': ~w.node_id
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/kg/health', methods=['GET'])
+def handle_kg_health():
+    '''Health check for KG node.'''
+    try:
+        interfaces = ~w.list_interfaces(active_only=True)
+        stats = ~w.get_query_stats()
+
+        return jsonify({
+            'status': 'healthy',
+            'node_id': ~w.node_id,
+            'interfaces': len(interfaces),
+            'stats': stats
+        })
+
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
+", [APIVar, APIVar, APIVar, APIVar, APIVar, APIVar, APIVar]).
+
+
+generate_kg_query_endpoint(go, Options, Code) :-
+    ( member(api_instance(APIVar), Options) -> true ; APIVar = 'kgAPI' ),
+    format(string(Code), '
+// KG Topology Phase 3: Distributed Query Endpoints
+
+// handleKGQuery handles distributed KG queries from other nodes
+func handleKGQuery(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+
+    var request map[string]interface{}
+    if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+        json.NewEncoder(w).Encode(map[string]interface{}{
+            "__type": "kg_response",
+            "error":  "Invalid JSON",
+        })
+        return
+    }
+
+    reqType, _ := request["__type"].(string)
+    if reqType != "kg_query" {
+        json.NewEncoder(w).Encode(map[string]interface{}{
+            "__type": "kg_response",
+            "error":  "Invalid request type",
+        })
+        return
+    }
+
+    result, err := ~w.HandleRemoteQuery(request)
+    if err != nil {
+        json.NewEncoder(w).Encode(map[string]interface{}{
+            "__type":      "kg_response",
+            "error":       err.Error(),
+            "source_node": ~w.NodeID,
+        })
+        return
+    }
+
+    json.NewEncoder(w).Encode(result)
+}
+
+// handleKGRegister registers this node with discovery service
+func handleKGRegister(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+
+    var data struct {
+        Host string   `json:"host"`
+        Port int      `json:"port"`
+        Tags []string `json:"tags"`
+    }
+
+    if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+        data.Host = "localhost"
+        data.Port = 8080
+        data.Tags = []string{"kg_node"}
+    }
+
+    success := ~w.RegisterNode(data.Host, data.Port, data.Tags)
+
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "status":  map[bool]string{true: "registered", false: "failed"}[success],
+        "node_id": ~w.NodeID,
+    })
+}
+
+// handleKGHealth returns health check for KG node
+func handleKGHealth(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+
+    interfaces := ~w.ListInterfaces(true)
+    stats := ~w.GetQueryStats()
+
+    json.NewEncoder(w).Encode(map[string]interface{}{
+        "status":     "healthy",
+        "node_id":    ~w.NodeID,
+        "interfaces": len(interfaces),
+        "stats":      stats,
+    })
+}
+
+// RegisterKGRoutes adds KG topology routes to the given mux
+func RegisterKGRoutes(mux *http.ServeMux) {
+    mux.HandleFunc("POST /kg/query", handleKGQuery)
+    mux.HandleFunc("POST /kg/register", handleKGRegister)
+    mux.HandleFunc("GET /kg/health", handleKGHealth)
+}
+', [APIVar, APIVar, APIVar, APIVar, APIVar, APIVar]).
+
+
+generate_kg_query_endpoint(rust, Options, Code) :-
+    ( member(api_instance(APIVar), Options) -> true ; APIVar = 'kg_api' ),
+    format(string(Code), '
+// KG Topology Phase 3: Distributed Query Endpoints
+
+use axum::{
+    extract::State,
+    http::StatusCode,
+    Json,
+    routing::{get, post},
+    Router,
+};
+use serde_json::{json, Value};
+use std::sync::Arc;
+
+/// Handle distributed KG query from another node
+async fn handle_kg_query(
+    State(~w): State<Arc<DistributedKGTopologyAPI>>,
+    Json(request): Json<Value>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let req_type = request.get("__type").and_then(|v| v.as_str());
+
+    if req_type != Some("kg_query") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "__type": "kg_response",
+                "error": "Invalid request type"
+            })),
+        ));
+    }
+
+    match ~w.handle_remote_query(&request) {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "__type": "kg_response",
+                "error": e.to_string(),
+                "source_node": ~w.node_id()
+            })),
+        )),
+    }
+}
+
+/// Register this node with discovery service
+async fn handle_kg_register(
+    State(~w): State<Arc<DistributedKGTopologyAPI>>,
+    Json(data): Json<Value>,
+) -> Json<Value> {
+    let host = data.get("host")
+        .and_then(|v| v.as_str())
+        .unwrap_or("localhost");
+    let port = data.get("port")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(8080) as u16;
+    let tags: Vec<String> = data.get("tags")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_else(|| vec!["kg_node".to_string()]);
+
+    let success = ~w.register_node(host, port, &tags);
+
+    Json(json!({
+        "status": if success { "registered" } else { "failed" },
+        "node_id": ~w.node_id()
+    }))
+}
+
+/// Health check for KG node
+async fn handle_kg_health(
+    State(~w): State<Arc<DistributedKGTopologyAPI>>,
+) -> Json<Value> {
+    let interfaces = ~w.list_interfaces(true);
+    let stats = ~w.get_query_stats();
+
+    Json(json!({
+        "status": "healthy",
+        "node_id": ~w.node_id(),
+        "interfaces": interfaces.len(),
+        "stats": stats
+    }))
+}
+
+/// Create router with KG topology routes
+pub fn kg_routes(api: Arc<DistributedKGTopologyAPI>) -> Router {
+    Router::new()
+        .route("/kg/query", post(handle_kg_query))
+        .route("/kg/register", post(handle_kg_register))
+        .route("/kg/health", get(handle_kg_health))
+        .with_state(api)
+}
+', [APIVar, APIVar, APIVar, APIVar, APIVar, APIVar, APIVar, APIVar]).
+
+
+%% generate_kg_routes(+Target, +Options, -Code)
+%  Generate route registration code.
+
+generate_kg_routes(python, Options, Code) :-
+    format(string(Code), "
+# Add KG routes to Flask app
+# Note: Use generate_kg_query_endpoint to get the endpoint handlers
+", []).
+
+generate_kg_routes(go, _Options, Code) :-
+    format(string(Code), '
+// Add KG routes to HTTP mux:
+//   RegisterKGRoutes(mux)
+', []).
+
+generate_kg_routes(rust, _Options, Code) :-
+    format(string(Code), '
+// Add KG routes to Axum router:
+//   let app = Router::new().merge(kg_routes(api));
+', []).

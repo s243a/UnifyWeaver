@@ -1009,3 +1009,127 @@ get_trace_attributes(service(_, Options, _), Attrs) :-
     member(trace_attributes(Attrs), Options),
     !.
 get_trace_attributes(_, []).
+
+%% ============================================
+%% KG Topology Phase 3: Kleinberg Routing Options
+%% ============================================
+
+%% routing - Query routing strategy for distributed KG topology
+is_valid_service_option(routing(Strategy)) :-
+    is_valid_routing_strategy(Strategy).
+
+%% Valid routing strategies
+is_valid_routing_strategy(direct).           % No routing, local only
+is_valid_routing_strategy(round_robin).      % Simple load balancing
+is_valid_routing_strategy(kleinberg).        % Semantic small-world routing
+is_valid_routing_strategy(kleinberg(Opts)) :-
+    is_list(Opts),
+    maplist(is_valid_kleinberg_option, Opts).
+
+%% Kleinberg routing options
+is_valid_kleinberg_option(alpha(A)) :-
+    number(A), A > 0.
+is_valid_kleinberg_option(max_hops(N)) :-
+    integer(N), N > 0.
+is_valid_kleinberg_option(parallel_paths(N)) :-
+    integer(N), N > 0.
+is_valid_kleinberg_option(similarity_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_kleinberg_option(path_folding(Bool)) :-
+    ( Bool = true ; Bool = false ).
+is_valid_kleinberg_option(embedding_model(Model)) :-
+    atom(Model).
+
+%% Semantic discovery metadata entries (for interface centroid publishing)
+is_valid_discovery_metadata_entry(semantic_centroid(Centroid)) :-
+    ( is_list(Centroid) ; atom(Centroid) ).  % List of floats or base64 string
+is_valid_discovery_metadata_entry(interface_topics(Topics)) :-
+    is_list(Topics),
+    maplist(atom, Topics).
+is_valid_discovery_metadata_entry(embedding_model(Model)) :-
+    atom(Model).
+
+%% ============================================
+%% KG Topology Phase 3: Kleinberg Routing Helper Predicates
+%% ============================================
+
+%% is_kleinberg_routed(+Service)
+%  Succeeds if service uses Kleinberg routing.
+is_kleinberg_routed(service(_, Options, _)) :-
+    is_list(Options),
+    ( member(routing(kleinberg), Options)
+    ; member(routing(kleinberg(_)), Options)
+    ),
+    !.
+
+%% get_kleinberg_options(+Service, -Options)
+%  Extract Kleinberg routing options from service definition.
+get_kleinberg_options(service(_, Options, _), KleinbergOpts) :-
+    is_list(Options),
+    member(routing(kleinberg(KleinbergOpts)), Options),
+    !.
+get_kleinberg_options(service(_, Options, _), []) :-
+    is_list(Options),
+    member(routing(kleinberg), Options),
+    !.
+get_kleinberg_options(_, []).
+
+%% get_kleinberg_alpha(+Service, -Alpha)
+%  Extract Kleinberg alpha parameter (link distribution exponent).
+get_kleinberg_alpha(Service, Alpha) :-
+    get_kleinberg_options(Service, Opts),
+    member(alpha(Alpha), Opts),
+    !.
+get_kleinberg_alpha(_, 2.0).
+
+%% get_kleinberg_max_hops(+Service, -MaxHops)
+%  Extract maximum hops (HTL) for Kleinberg routing.
+get_kleinberg_max_hops(Service, MaxHops) :-
+    get_kleinberg_options(Service, Opts),
+    member(max_hops(MaxHops), Opts),
+    !.
+get_kleinberg_max_hops(_, 10).
+
+%% get_kleinberg_parallel_paths(+Service, -Paths)
+%  Extract number of parallel paths for Kleinberg routing.
+get_kleinberg_parallel_paths(Service, Paths) :-
+    get_kleinberg_options(Service, Opts),
+    member(parallel_paths(Paths), Opts),
+    !.
+get_kleinberg_parallel_paths(_, 1).
+
+%% get_kleinberg_similarity_threshold(+Service, -Threshold)
+%  Extract similarity threshold for Kleinberg routing.
+get_kleinberg_similarity_threshold(Service, Threshold) :-
+    get_kleinberg_options(Service, Opts),
+    member(similarity_threshold(Threshold), Opts),
+    !.
+get_kleinberg_similarity_threshold(_, 0.5).
+
+%% get_kleinberg_path_folding(+Service, -Enabled)
+%  Check if path folding is enabled for Kleinberg routing.
+get_kleinberg_path_folding(Service, Enabled) :-
+    get_kleinberg_options(Service, Opts),
+    member(path_folding(Enabled), Opts),
+    !.
+get_kleinberg_path_folding(_, true).
+
+%% get_semantic_centroid(+Service, -Centroid)
+%  Extract semantic centroid from discovery metadata.
+get_semantic_centroid(service(_, Options, _), Centroid) :-
+    is_list(Options),
+    member(discovery_metadata(Metadata), Options),
+    is_list(Metadata),
+    member(semantic_centroid(Centroid), Metadata),
+    !.
+get_semantic_centroid(_, none).
+
+%% get_interface_topics(+Service, -Topics)
+%  Extract interface topics from discovery metadata.
+get_interface_topics(service(_, Options, _), Topics) :-
+    is_list(Options),
+    member(discovery_metadata(Metadata), Options),
+    is_list(Metadata),
+    member(interface_topics(Topics), Metadata),
+    !.
+get_interface_topics(_, []).
