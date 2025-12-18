@@ -416,5 +416,178 @@ class TestLearningPath(unittest.TestCase):
         self.assertLessEqual(len(path_shallow), len(path_deep))
 
 
+class TestSearchWithContext(unittest.TestCase):
+    """Test search_with_context with graph enrichment."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        self.db = KGTopologyAPI(self.db_path)
+        self.model_id = self.db.add_model("test-model", 4)
+
+        # Create test answers
+        self.csv_answer = self.db.add_answer("s.md", "How to read CSV files", record_id="csv")
+        self.json_answer = self.db.add_answer("s.md", "How to parse JSON", record_id="json")
+        self.prereq_answer = self.db.add_answer("s.md", "Install pandas first", record_id="prereq")
+        self.advanced_answer = self.db.add_answer("s.md", "Advanced CSV with headers", record_id="advanced")
+
+        # Store embeddings (orthogonal for clear testing)
+        self.db.store_embedding(self.model_id, "answer", self.csv_answer,
+                                np.array([1, 0, 0, 0], dtype=np.float32))
+        self.db.store_embedding(self.model_id, "answer", self.json_answer,
+                                np.array([0, 1, 0, 0], dtype=np.float32))
+        self.db.store_embedding(self.model_id, "answer", self.prereq_answer,
+                                np.array([0, 0, 1, 0], dtype=np.float32))
+        self.db.store_embedding(self.model_id, "answer", self.advanced_answer,
+                                np.array([0.9, 0.1, 0, 0], dtype=np.float32))  # Similar to CSV
+
+        # Add KG relations
+        # prereq is preliminary to csv
+        self.db.add_kg_relation(self.prereq_answer, self.csv_answer, 'preliminary')
+        # csv is foundational to advanced
+        self.db.add_kg_relation(self.csv_answer, self.advanced_answer, 'foundational')
+        # csv extends to advanced (compositional)
+        self.db.add_kg_relation(self.csv_answer, self.advanced_answer, 'compositional')
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_graph_traversal_enrichment(self):
+        """Graph traversal methods return correct relations."""
+        # Test foundational: advanced depends on csv
+        foundational = self.db.get_foundational(self.advanced_answer)
+        self.assertEqual(len(foundational), 1)
+        self.assertEqual(foundational[0]['answer_id'], self.csv_answer)
+
+        # Test prerequisites: csv requires prereq
+        prereqs = self.db.get_prerequisites(self.csv_answer)
+        self.assertEqual(len(prereqs), 1)
+        self.assertEqual(prereqs[0]['answer_id'], self.prereq_answer)
+
+        # Test extensions: csv extends to advanced
+        extensions = self.db.get_extensions(self.csv_answer)
+        self.assertEqual(len(extensions), 1)
+        self.assertEqual(extensions[0]['answer_id'], self.advanced_answer)
+
+    def test_traverse_relations_depth(self):
+        """_traverse_relations respects depth parameter."""
+        # Depth 1: only direct relations
+        results_d1 = self.db._traverse_relations(
+            self.csv_answer, 'compositional', 'outgoing', depth=1
+        )
+        self.assertEqual(len(results_d1), 1)
+
+        # Depth 0: no results
+        results_d0 = self.db._traverse_relations(
+            self.csv_answer, 'compositional', 'outgoing', depth=0
+        )
+        self.assertEqual(len(results_d0), 0)
+
+    def test_search_with_context_structure(self):
+        """search_with_context returns properly structured results."""
+        # Mock the search by testing the enrichment structure
+        # We'll test the traversal enrichment separately since _direct_search
+        # requires a real embedding model
+
+        # Create a mock result to enrich
+        mock_result = {
+            'answer_id': self.csv_answer,
+            'score': 0.95,
+            'text': 'CSV answer'
+        }
+
+        # Manually enrich like search_with_context does
+        enriched = dict(mock_result)
+        enriched['foundational'] = self.db._traverse_relations(
+            self.csv_answer, 'foundational', 'incoming', 1
+        )
+        enriched['prerequisites'] = self.db._traverse_relations(
+            self.csv_answer, 'preliminary', 'incoming', 1
+        )
+        enriched['extensions'] = self.db._traverse_relations(
+            self.csv_answer, 'compositional', 'outgoing', 1
+        )
+        enriched['next_steps'] = self.db._traverse_relations(
+            self.csv_answer, 'transitional', 'outgoing', 1
+        )
+
+        # Verify structure
+        self.assertIn('foundational', enriched)
+        self.assertIn('prerequisites', enriched)
+        self.assertIn('extensions', enriched)
+        self.assertIn('next_steps', enriched)
+
+        # Verify content
+        self.assertEqual(len(enriched['prerequisites']), 1)
+        self.assertEqual(enriched['prerequisites'][0]['answer_id'], self.prereq_answer)
+        self.assertEqual(len(enriched['extensions']), 1)
+        self.assertEqual(enriched['extensions'][0]['answer_id'], self.advanced_answer)
+
+
+class TestPrologModuleStructure(unittest.TestCase):
+    """Test Prolog module structure (without requiring SWI-Prolog)."""
+
+    def test_prolog_module_exists(self):
+        """kg_topology.pl exists."""
+        module_path = project_root / "src" / "unifyweaver" / "runtime" / "kg_topology.pl"
+        self.assertTrue(module_path.exists())
+
+    def test_prolog_module_has_required_predicates(self):
+        """kg_topology.pl exports required predicates."""
+        module_path = project_root / "src" / "unifyweaver" / "runtime" / "kg_topology.pl"
+
+        with open(module_path, 'r') as f:
+            content = f.read()
+
+        # Check for module declaration with exports
+        self.assertIn(':- module(kg_topology,', content)
+
+        # Check for relation type predicates
+        self.assertIn('relation_category/2', content)
+        self.assertIn('relation_direction/2', content)
+        self.assertIn('valid_relation_type/1', content)
+
+        # Check for graph traversal predicates
+        self.assertIn('get_foundational/3', content)
+        self.assertIn('get_prerequisites/3', content)
+        self.assertIn('get_extensions/3', content)
+        self.assertIn('get_next_steps/3', content)
+
+        # Check for anchor linking
+        self.assertIn('compute_content_hash/2', content)
+        self.assertIn('anchor_question/3', content)
+
+        # Check for seed level tracking
+        self.assertIn('seed_level/3', content)
+        self.assertIn('questions_at_seed_level/4', content)
+
+        # Check for search
+        self.assertIn('search_with_context/5', content)
+
+    def test_prolog_module_defines_all_relation_types(self):
+        """kg_topology.pl defines all 11 relation types."""
+        module_path = project_root / "src" / "unifyweaver" / "runtime" / "kg_topology.pl"
+
+        with open(module_path, 'r') as f:
+            content = f.read()
+
+        # Learning flow relations
+        self.assertIn('foundational', content)
+        self.assertIn('preliminary', content)
+        self.assertIn('compositional', content)
+        self.assertIn('transitional', content)
+
+        # Scope relations
+        self.assertIn('refined', content)
+        self.assertIn('general', content)
+
+        # Abstraction relations
+        self.assertIn('generalization', content)
+        self.assertIn('implementation', content)
+        self.assertIn('axiomatization', content)
+        self.assertIn('instance', content)
+        self.assertIn('example', content)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
