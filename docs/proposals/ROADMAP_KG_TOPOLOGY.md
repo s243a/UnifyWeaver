@@ -49,12 +49,42 @@ From QA_KNOWLEDGE_GRAPH.md, we have 11 relation types:
    - [ ] `search_with_context()` - semantic search with graph context
 
 3. **Softmax Routing**
-   - [ ] Embedding-based similarity to cluster centroids
-   - [ ] Softmax probability distribution over clusters
-   - [ ] Top-k cluster selection
+   - [ ] Direct matrix multiplication: query embedding × all Q-A embeddings
+   - [ ] Softmax probability distribution over ALL answers (not clusters)
+   - [ ] Top-k answer selection
+   - [ ] Fast on modest hardware (e.g., Samsung S24+) due to efficient matrix ops
+
+**Key clarification:** Softmax routing is NOT cluster-based. Clusters exist only at training time to group questions for initial "many questions → one answer" mappings. At inference time, we compute similarity to all Q-A pairs directly.
 
 **No networking in Phase 1** - all operations are in-process.
 **No Kleinberg routing** - softmax routing is sufficient for local model.
+
+### Scale Optimizations (Optional)
+
+These optimizations are NOT required unless the Q-A knowledge base grows very large:
+
+1. **Transformer Distillation**
+   - Distill the embedding + softmax into a smaller, faster model
+   - Triggered when: Q-A count exceeds threshold (configurable)
+
+2. **Interface-First Routing (Phase 2 as optimization)**
+   - Route query to closest semantic interface first (coarse filter)
+   - Then search only within that interface's Q-A subset
+   - Effectively a "mega-cluster" approach
+   - Triggered when: Multiple interfaces defined AND Q-A count is large
+
+**Configuration:**
+```yaml
+scale_optimizations:
+  transformer_distillation:
+    enabled: auto  # or: true, false
+    threshold: 100000  # Q-A pairs before considering distillation
+  interface_first_routing:
+    enabled: auto
+    threshold: 50000   # Q-A pairs before routing via interface first
+```
+
+Default behavior: No optimizations (direct matrix multiplication scales well).
 
 ### Phase 2: Multi-Interface Local Model
 
@@ -219,8 +249,9 @@ From Kleinberg's research, the critical parameters for **distributed routing** a
 ### Phase 1
 - [ ] All 11 relation types implemented and tested
 - [ ] `search_with_context()` returns relevant graph context
-- [ ] Softmax routing returns appropriate top-k clusters
+- [ ] Softmax routing returns appropriate top-k answers via direct matrix multiplication
 - [ ] Seed-level folder structure for training data
+- [ ] Performance acceptable on modest hardware (e.g., mobile devices)
 
 ### Phase 2
 - [ ] Queries route to appropriate interface

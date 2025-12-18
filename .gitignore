@@ -130,3 +130,12 @@ models/
 
 # Numpy arrays
 *.npy
+
+# Rust build artifacts
+**/target/
+
+# Go binaries (in examples)
+examples/**/pearltrees_go_*
+
+# Shared libraries
+*.so
