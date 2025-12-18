@@ -59,6 +59,61 @@ Query → Find nearest Q/A → Traverse graph → Understand context
 | **compositional** | A → B | B extends or builds upon A | basic query → query with joins |
 | **transitional** | A → B | B is a natural next step after A | create user → assign permissions |
 
+### Scope Relations (Specificity)
+
+| Type | Direction | Description | Example |
+|------|-----------|-------------|---------|
+| **refined** | A → B | B is a more specific variant of A | read CSV → read CSV with headers |
+| **general** | A ← B | A is broader in scope than B | parse delimited data ← parse CSV |
+
+**Scope** is about breadth of applicability:
+- `refined`: Same domain, narrower focus (CSV → CSV edge cases)
+- `general`: Same domain, broader applicability (CSV → all delimited formats)
+
+### Abstraction Relations
+
+| Type | Direction | Description | Example |
+|------|-----------|-------------|---------|
+| **generalization** | A → B | B is an abstract pattern derived from A | JWT refresh → Token refresh pattern |
+| **implementation** | A ← B | A is code that realizes pattern B | JWT refresh code ← Token pattern |
+| **axiomatization** | A → B | B is abstract theory derived from A | Arithmetic → Ring theory |
+| **instance** | A ← B | A is a domain that satisfies theory B | Arithmetic ← Ring theory |
+| **example** | A ← B | A illustrates/demonstrates concept B | JWT tutorial ← Token-based auth |
+
+**Abstraction** has multiple dimensions:
+
+- `generalization` / `implementation`: **Pattern ↔ Code** (design patterns, architectural patterns)
+- `axiomatization` / `instance`: **Theory ↔ Domain** (mathematical structures, formal systems)
+- `example`: **Pedagogical** (this demonstrates that concept for learning)
+
+### Scope vs Abstraction: Key Distinction
+
+These are orthogonal dimensions:
+
+```
+                    Abstraction Level
+                    (pattern ↔ implementation)
+                           ↑
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+        │  "Token Pattern" │  "Auth Pattern"  │  ← more abstract
+        │        │         │        │         │
+        │        │ instance│        │         │
+        │        ▼         │        ▼         │
+        │   "JWT Refresh"  │  "OAuth Flow"   │  ← concrete
+        │        │         │        │         │
+        │        │ refined │        │         │
+        │        ▼         │        ▼         │
+        │  "JWT Refresh    │  "OAuth with    │  ← more specific
+        │   with Rotation" │   PKCE"         │
+        │                  │                  │
+        └──────────────────┼──────────────────┘
+                           │
+               ◀───────────┴───────────▶
+                     Scope
+               (general ↔ refined)
+
 ### Directionality
 
 Relations are stored as directed edges from source to target:
@@ -87,6 +142,41 @@ Relations are stored as directed edges from source to target:
 - "After doing X, you typically do Y"
 - Example: Write tests → run tests → deploy
 
+**Refined** - More specific variant:
+- Narrower scope, same domain
+- "X, but with additional constraints or edge cases"
+- Example: Read CSV → Read CSV with custom delimiters
+
+**General** - Broader scope:
+- Wider applicability, same domain
+- "The broader category that X belongs to"
+- Example: Parse delimited data ← Parse CSV
+
+**Generalization** - Abstract pattern:
+- Moving up the abstraction ladder (pattern level)
+- "The abstract pattern behind X"
+- Example: JWT refresh → Token refresh pattern
+
+**Implementation** - Code realizing pattern:
+- Code that follows a design pattern
+- "This code realizes pattern X"
+- Example: JWT refresh code ← Token pattern
+
+**Axiomatization** - Abstract theory:
+- Moving up the abstraction ladder (theory level)
+- "The formal theory behind X"
+- Example: Arithmetic → Ring theory
+
+**Instance** - Domain satisfying theory:
+- A concrete domain that satisfies abstract axioms
+- "X is an instance of theory Y"
+- Example: Arithmetic ← Ring theory
+
+**Example** - Pedagogical illustration:
+- Demonstrates a concept for learning
+- "This illustrates how to do X"
+- Example: JWT tutorial ← Token-based auth concept
+
 ## Database Schema
 
 ### Recommended Approach: Bind to Answers (Examples)
@@ -103,10 +193,20 @@ Since examples are the primary unit being curated, relations should bind to answ
 -- This reuses the existing table structure from LDA_DATABASE_SCHEMA.md
 
 -- New relation types to add:
---   'foundational'  - source is a foundational concept for target
---   'preliminary'   - source is a prerequisite step for target
---   'compositional' - target extends/builds upon source
---   'transitional'  - target is a natural next step after source
+--   Learning flow:
+--     'foundational'    - source is a foundational concept for target
+--     'preliminary'     - source is a prerequisite step for target
+--     'compositional'   - target extends/builds upon source
+--     'transitional'    - target is a natural next step after source
+--   Scope:
+--     'refined'         - target is a more specific variant of source
+--     'general'         - source is broader in scope than target
+--   Abstraction:
+--     'generalization'  - target is an abstract pattern of source
+--     'implementation'  - source is code that realizes pattern target
+--     'axiomatization'  - target is abstract theory of source
+--     'instance'        - source is domain satisfying theory target
+--     'example'         - source illustrates/demonstrates target
 
 -- The existing answer_relations table already supports this:
 CREATE TABLE answer_relations (
@@ -151,10 +251,23 @@ The existing `answer_relations` already handles **document structure**:
 - `variant_of` - different text representations
 
 The new relation types handle **conceptual structure**:
+
+*Learning flow:*
 - `foundational` - learning dependencies
 - `preliminary` - practical prerequisites
 - `compositional` - extensions
 - `transitional` - workflow progression
+
+*Scope:*
+- `refined` - more specific variants
+- `general` - broader scope
+
+*Abstraction:*
+- `generalization` - abstract patterns (design level)
+- `implementation` - code realizing patterns
+- `axiomatization` - abstract theories (formal level)
+- `instance` - domains satisfying theories
+- `example` - pedagogical illustrations
 
 These coexist naturally in the same table - just different relation_type values.
 
@@ -176,10 +289,20 @@ CREATE TABLE knowledge_relations (
     target_id INTEGER NOT NULL,
 
     relation_type TEXT NOT NULL CHECK(relation_type IN (
+        -- Learning flow
         'foundational',
         'preliminary',
         'compositional',
-        'transitional'
+        'transitional',
+        -- Scope
+        'refined',
+        'general',
+        -- Abstraction
+        'generalization',
+        'implementation',
+        'axiomatization',
+        'instance',
+        'example'
     )),
     strength REAL DEFAULT 1.0,
     metadata TEXT,
@@ -473,4 +596,6 @@ This is speculative but worth exploring.
 
 - [LDA_DATABASE_SCHEMA.md](LDA_DATABASE_SCHEMA.md) - Base schema this extends
 - [SMOOTHING_BASIS_PROJECTION.md](SMOOTHING_BASIS_PROJECTION.md) - Potential integration
+- [SEED_QUESTION_TOPOLOGY.md](SEED_QUESTION_TOPOLOGY.md) - Hash-based anchor linking and provenance
+- [SMALL_WORLD_ROUTING.md](SMALL_WORLD_ROUTING.md) - Distributed routing using relation topology
 - Knowledge graphs in QA systems literature

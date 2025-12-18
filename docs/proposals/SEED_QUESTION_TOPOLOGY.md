@@ -165,6 +165,50 @@ Q3 ──→ Answer A₃ ←── hash(Q3)
 ```
 After output smoothing constraints are applied, each question can get its own tailored answer while maintaining consistency.
 
+## Training Data Organization
+
+### Folder Structure by Seed Level
+
+Training data should be organized into separate folders by seed level:
+
+```
+training_data/
+├── seed_0/           # Original Q-A pairs (curated, highest value)
+│   ├── cluster_001/
+│   ├── cluster_002/
+│   └── ...
+├── seed_1/           # First expansion (discovered from seed_0)
+│   ├── cluster_001/
+│   └── ...
+├── seed_2/           # Second expansion
+│   └── ...
+└── seed_n/           # Nth expansion (most distant, lowest priority)
+```
+
+### Rationale: Data Growth & Pruning Strategy
+
+1. **Exponential growth**: Data volume typically grows quickly with seed level
+   - seed(0): Original curated dataset (e.g., 1,000 Q-A pairs)
+   - seed(1): ~3-5x expansion (e.g., 3,000-5,000 pairs)
+   - seed(n): Potentially 3-5^n growth
+
+2. **Pruning priority**: When storage or quality constraints require deletion:
+   - Delete seed(n) first (most distant, least curated)
+   - Preserve seed(0) (original, highest value)
+   - Work backwards: seed(n) → seed(n-1) → ... → seed(1)
+
+3. **Quality gradient**: Lower seed levels are typically higher quality
+   - seed(0): Human-curated original data
+   - Higher seeds: Increasingly machine-generated/discovered
+
+### Benefits of Folder Separation
+
+- **Easy pruning**: `rm -rf training_data/seed_3/` removes all seed(3) data
+- **Selective loading**: Train on seed(0)+seed(1) only for high-quality focus
+- **Storage tiering**: Keep seed(0) on fast storage, higher seeds on cold storage
+- **Backup priority**: Backup seed(0) more frequently
+
 ## Related Proposals
 
 - **[SMALL_WORLD_ROUTING.md](SMALL_WORLD_ROUTING.md)**: Distributed routing architecture using small-world topology, inspired by Hyphanet/Freenet and Kleinberg's research. Covers greedy routing, path folding, and the critical α parameter for link distribution.
+- **[ROADMAP_KG_TOPOLOGY.md](ROADMAP_KG_TOPOLOGY.md)**: Master roadmap coordinating all KG topology proposals.
