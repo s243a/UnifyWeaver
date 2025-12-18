@@ -90,7 +90,7 @@
 
 % Control plane integration (Phase 2 - Runtime Selection)
 :- catch(use_module('../core/preferences'), _, true).
-:- catch(use_module('../core/firewall'), _, true).
+:- catch(use_module('../core/firewall', except([validate_service/2])), _, true).
 :- catch(use_module('../glue/dotnet_glue'), _, true).
 
 % Track required imports from bindings
@@ -8674,7 +8674,7 @@ generate_stage_flow(fan_out(SubStages), InVar, OutVar, Code) :-
     extract_stage_names(SubStages, StageNames),
     format_stage_list(StageNames, StageListStr),
     format(string(Code),
-"    # Fan-out to ~w stages (sequential broadcast)
+"    # Fan-out to ~w parallel stages
     def fan_out_generator():
         for record in ~w:
             for result in fan_out_records(record, [~w]):
