@@ -60,7 +60,8 @@ The current implementation emits static C# builders that assemble the plan via n
 
 ## Current Limitations
 - Tail-recursive optimisation and memoised aggregates still fall back to iterative evaluation without specialised nodes.
-- Ordered outputs (`sort`, stable dedup) are not yet implemented; results follow hash-set semantics.
+- Ordering/paging are opt-in via query plan modifiers (`order_by/1`, `order_by/2`, `limit/1`, `offset/1`); default results follow hash-set semantics.
+- Stable ordered deduplication is not yet implemented.
 - Plans currently materialise relation facts inside the generated module; external fact providers will arrive in later releases.
 - Runtime assumes in-process execution (`dotnet run`); distributed execution and persistence hooks remain future work.
 
@@ -103,6 +104,9 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
   - `fixpoint(strategy(semi_naive|naive))`
   - `distinct(strategy(hash|ordered|none))`
   - `materialize(full|lazy)` to control when results are generated.
+- Query modifiers:
+  - `order_by(Index)`, `order_by(Index, asc|desc)`, `order_by([(Index, asc|desc), ...])` (0-based output column indices)
+  - `limit(N)`, `offset(N)`
 - The generic `target(csharp)` option will initially alias `csharp_query` for recursion-heavy workloads while allowing smart fallback (see comparison doc).
 
 ## Security & Isolation
