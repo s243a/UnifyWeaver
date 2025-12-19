@@ -1,8 +1,13 @@
 # Proposal: Small-World Routing for Q-A Topology
 
-**Status:** Proposed
-**Date:** 2025-12-17
+**Status:** Core Implementation Complete (Phase 3)
+**Version:** 1.1
+**Date:** 2025-12-18
 **Context:** Extends [SEED_QUESTION_TOPOLOGY.md](SEED_QUESTION_TOPOLOGY.md) with distributed routing architecture.
+**Implementation:**
+- `src/unifyweaver/targets/python_runtime/kleinberg_router.py` - Core router
+- `src/unifyweaver/targets/python_runtime/discovery_clients.py` - Service discovery
+- `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - DistributedKGTopologyAPI
 
 ## Executive Summary
 
@@ -280,9 +285,114 @@ This is analogous to running multiple Hyphanet nodes in a darknet cluster — ea
 - **Hyphanet**: Multiple actual nodes, each with its own state
 - **Our model**: One principal node, multiple virtual interfaces sharing state
 
+## Implementation Status
+
+### Phase 3: Core Distributed Routing (Complete)
+
+The following components are now implemented and tested:
+
+#### KleinbergRouter Class (`kleinberg_router.py`)
+```python
+router = KleinbergRouter(
+    discovery_client=LocalDiscoveryClient(),
+    alpha=2.0,           # Link distance exponent
+    max_hops=10,         # HTL limit
+    similarity_threshold=0.5,
+    path_folding_enabled=True
+)
+
+# Discover nodes via service discovery
+nodes = router.discover_nodes(tags=['kg_node'])
+
+# Route query with greedy forwarding
+results = router.route_query(query_embedding, query_text, envelope, top_k=5)
+
+# Path folding shortcuts
+router.create_shortcut(query_text, node_id, interface_id)
+cached = router.check_shortcut(query_text)
+```
+
+#### RoutingEnvelope Class
+```python
+envelope = RoutingEnvelope(
+    origin_node="node_a",
+    htl=10,                    # Hops-To-Live
+    visited={"node_a"},        # Cycle detection
+    path_folding_enabled=True
+)
+```
+
+#### Multi-Interface Nodes (DistributedKGTopologyAPI)
+```python
+api = DistributedKGTopologyAPI(db_path, embeddings_path)
+
+# Register node with discovery service
+api.register_node(
+    interface_id="csv_specialist",
+    host="0.0.0.0",
+    port=8081,
+    tags=["kg_node", "expert_system"]
+)
+
+# Centroids are published in discovery_metadata
+# Other nodes can route to specific interfaces
+```
+
+#### Service Discovery Abstraction
+```python
+# Multiple backends supported
+client = create_discovery_client("local")   # In-memory for testing
+client = create_discovery_client("consul", host="consul.local")
+
+# Register/discover/heartbeat
+client.register(name, id, host, port, tags, metadata)
+instances = client.discover(name, tags=["kg_node"])
+client.heartbeat(service_id)
+```
+
+#### Prolog Validation
+```prolog
+% Kleinberg routing options
+routing(kleinberg([
+    alpha(2.0),
+    max_hops(10),
+    similarity_threshold(0.5),
+    path_folding(true)
+]))
+
+% Discovery metadata with centroids
+discovery_metadata([
+    semantic_centroid("base64_encoded_vector..."),
+    embedding_model('all-MiniLM-L6-v2'),
+    interface_topics([csv, delimited, tabular])
+])
+```
+
+### Phase 4: Federated Query Aggregation (Complete)
+
+Phase 4 extends routing with SQL-like aggregation semantics:
+
+- **FederatedQueryEngine**: Parallel queries to multiple nodes with pluggable aggregation
+- **Diversity-weighted scoring**: SUM for independent corpora, MAX for shared data
+- **Prolog code generation**: `compile_federated_query_python/2`, `compile_federated_query_go/2`
+
+See [FEDERATED_QUERY_ALGEBRA.md](FEDERATED_QUERY_ALGEBRA.md) for details.
+
+### Phase 4d: Density-Based Confidence (Proposed)
+
+Extends aggregation with kernel density estimation for consensus detection:
+
+- **Two-stage pipeline**: Cluster results first, then compute density within clusters
+- **Distributed cluster aggregators**: Semantic DHT with Freenet-style routing
+- **Transaction management**: Aggregator lifecycle with timeouts
+
+See [DENSITY_SCORING_PROPOSAL.md](DENSITY_SCORING_PROPOSAL.md) for details.
+
 ## Open Questions & Future Work
 
-### TODO: Explore Parallel Request Strategies
+### Parallel Request Strategies (Partially Addressed)
+
+**Status:** Core parallelism implemented in Phase 4; advanced strategies remain open.
 
 Hyphanet uses sequential routing (one peer at a time) likely to **prevent network flooding** — a critical concern in a public P2P network where malicious actors could overwhelm nodes with parallel requests.
 

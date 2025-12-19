@@ -232,3 +232,17 @@ training_data/
 
 - **[SMALL_WORLD_ROUTING.md](SMALL_WORLD_ROUTING.md)**: Distributed routing architecture using small-world topology, inspired by Hyphanet/Freenet and Kleinberg's research. Covers greedy routing, path folding, and the critical α parameter for link distribution.
 - **[ROADMAP_KG_TOPOLOGY.md](ROADMAP_KG_TOPOLOGY.md)**: Master roadmap coordinating all KG topology proposals.
+- **[FEDERATED_QUERY_ALGEBRA.md](FEDERATED_QUERY_ALGEBRA.md)**: SQL-like aggregation for distributed queries with diversity weighting.
+- **[DENSITY_SCORING_PROPOSAL.md](DENSITY_SCORING_PROPOSAL.md)**: Two-stage density scoring with distributed cluster aggregators.
+
+## Related Implementation
+
+- `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - Seed level tracking API
+- `src/unifyweaver/targets/python_runtime/kleinberg_router.py` - Distributed routing
+- `src/unifyweaver/core/service_validation.pl` - Prolog validation predicates
+
+## Related Education
+
+- [Book 7, Chapter 12d](../../education/book-07-cross-target-glue/12d_kg_topology.md) - Infrastructure details
+- [Book 13, Chapter 6](../../education/book-13-semantic-search/06_distributed_search.md) - Distributed search
+- [Book 14, Chapter 9](../../education/book-14-ai-training/09_kg_topology.md) - KG topology for training

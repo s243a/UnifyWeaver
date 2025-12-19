@@ -605,4 +605,13 @@ This is speculative but worth exploring.
 - [SMOOTHING_BASIS_PROJECTION.md](SMOOTHING_BASIS_PROJECTION.md) - Potential integration
 - [SEED_QUESTION_TOPOLOGY.md](SEED_QUESTION_TOPOLOGY.md) - Hash-based anchor linking and provenance
 - [SMALL_WORLD_ROUTING.md](SMALL_WORLD_ROUTING.md) - Distributed routing using relation topology
+- [FEDERATED_QUERY_ALGEBRA.md](FEDERATED_QUERY_ALGEBRA.md) - Aggregation for distributed queries
+- [DENSITY_SCORING_PROPOSAL.md](DENSITY_SCORING_PROPOSAL.md) - Confidence scoring for federated results
 - Knowledge graphs in QA systems literature
+
+## Related Implementation
+
+- `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - Core API
+- `src/unifyweaver/targets/python_runtime/kleinberg_router.py` - Distributed routing
+- `src/unifyweaver/targets/python_runtime/federated_query.py` - Federated aggregation
+- `src/unifyweaver/core/service_validation.pl` - Prolog validation predicates
