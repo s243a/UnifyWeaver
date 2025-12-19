@@ -57,7 +57,9 @@
     % Phase 8: Service Tracing
     compile_traced_service_go/2,        % +Service, -GoCode
     generate_tracer_go/2,               % +Config, -GoCode
-    generate_span_context_go/2          % +Context, -GoCode
+    generate_span_context_go/2,         % +Context, -GoCode
+    % KG Topology Phase 3: Kleinberg routing
+    compile_kleinberg_router_go/2       % +Options, -GoCode
 ]).
 
 :- use_module(library(lists)).

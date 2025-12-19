@@ -60,7 +60,20 @@
     get_trace_propagation/2,
     get_trace_attributes/2,
     is_valid_trace_exporter/1,
-    is_valid_trace_propagation/1
+    is_valid_trace_propagation/1,
+    % Phase 3 KG Topology: Kleinberg routing helpers
+    is_valid_routing_strategy/1,
+    is_valid_kleinberg_option/1,
+    is_valid_discovery_metadata_entry/1,
+    is_kleinberg_routed/1,
+    get_kleinberg_options/2,
+    get_kleinberg_alpha/2,
+    get_kleinberg_max_hops/2,
+    get_kleinberg_parallel_paths/2,
+    get_kleinberg_similarity_threshold/2,
+    get_kleinberg_path_folding/2,
+    get_semantic_centroid/2,
+    get_interface_topics/2
 ]).
 
 :- use_module(library(lists)).

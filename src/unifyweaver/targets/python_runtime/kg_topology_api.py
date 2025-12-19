@@ -2026,7 +2026,10 @@ class DistributedKGTopologyAPI(KGTopologyAPI):
     def _get_discovery_client(self):
         """Get or create discovery client."""
         if self._discovery_client is None:
-            from .discovery_clients import create_discovery_client
+            try:
+                from .discovery_clients import create_discovery_client
+            except ImportError:
+                from discovery_clients import create_discovery_client
             self._discovery_client = create_discovery_client(
                 self.discovery_backend,
                 **self.discovery_config
@@ -2041,7 +2044,10 @@ class DistributedKGTopologyAPI(KGTopologyAPI):
             KleinbergRouter instance configured for this node
         """
         if self._router is None:
-            from .kleinberg_router import KleinbergRouter
+            try:
+                from .kleinberg_router import KleinbergRouter
+            except ImportError:
+                from kleinberg_router import KleinbergRouter
             self._router = KleinbergRouter(
                 local_node_id=self.node_id,
                 discovery_client=self._get_discovery_client()

@@ -38,7 +38,11 @@
     generate_network_pipeline/3,    % generate_network_pipeline(+Steps, +Options, -Code)
 
     % Utilities
-    endpoint_url/3                  % endpoint_url(+Service, +Endpoint, -URL)
+    endpoint_url/3,                 % endpoint_url(+Service, +Endpoint, -URL)
+
+    % KG Topology Phase 3: Distributed routing endpoints
+    generate_kg_query_endpoint/3,   % generate_kg_query_endpoint(+Target, +Options, -Code)
+    generate_kg_routes/3            % generate_kg_routes(+Target, +Options, -Code)
 ]).
 
 :- use_module(library(lists)).
@@ -1227,7 +1231,7 @@ func RegisterKGRoutes(mux *http.ServeMux) {
     mux.HandleFunc("POST /kg/register", handleKGRegister)
     mux.HandleFunc("GET /kg/health", handleKGHealth)
 }
-', [APIVar, APIVar, APIVar, APIVar, APIVar, APIVar]).
+', [APIVar, APIVar, APIVar, APIVar, APIVar, APIVar, APIVar]).
 
 
 generate_kg_query_endpoint(rust, Options, Code) :-

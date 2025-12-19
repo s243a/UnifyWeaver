@@ -31,7 +31,10 @@ import json
 
 import numpy as np
 
-from .discovery_clients import DiscoveryClient, ServiceInstance
+try:
+    from .discovery_clients import DiscoveryClient, ServiceInstance
+except ImportError:
+    from discovery_clients import DiscoveryClient, ServiceInstance
 
 
 @dataclass

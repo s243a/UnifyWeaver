@@ -49,7 +49,9 @@
     % Phase 8: Service Tracing
     compile_traced_service_rust/2,        % +Service, -RustCode
     generate_tracer_rust/2,               % +Config, -RustCode
-    generate_span_context_rust/2          % +Context, -RustCode
+    generate_span_context_rust/2,         % +Context, -RustCode
+    % KG Topology Phase 3: Kleinberg routing
+    compile_kleinberg_router_rust/2       % +Options, -RustCode
 ]).
 
 :- use_module(library(lists)).

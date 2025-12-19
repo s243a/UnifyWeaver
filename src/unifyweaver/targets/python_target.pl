@@ -68,7 +68,11 @@
     % Phase 8: Service Tracing
     compile_traced_service_python/2,
     generate_tracer_python/2,
-    generate_span_context_python/2
+    generate_span_context_python/2,
+    % KG Topology Phase 3: Kleinberg routing
+    compile_kleinberg_router_python/2,
+    compile_distributed_kg_service_python/2,
+    format_python_list/2
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).

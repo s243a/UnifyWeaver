@@ -23,14 +23,14 @@ import base64
 
 import numpy as np
 
-# Add source directories to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src', 'unifyweaver', 'targets', 'python_runtime'))
+# Add source directories to path - use package structure
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 
-from discovery_clients import (
+from unifyweaver.targets.python_runtime.discovery_clients import (
     DiscoveryClient, LocalDiscoveryClient, ConsulDiscoveryClient,
     ServiceInstance, HealthStatus, create_discovery_client
 )
-from kleinberg_router import (
+from unifyweaver.targets.python_runtime.kleinberg_router import (
     KleinbergRouter, KGNode, RoutingEnvelope, QueryResult
 )
 
