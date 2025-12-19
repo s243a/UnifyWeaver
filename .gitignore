@@ -139,3 +139,4 @@ examples/**/pearltrees_go_*
 
 # Shared libraries
 *.so
+training-data/
