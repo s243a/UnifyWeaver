@@ -2059,18 +2059,23 @@ class DistributedKGTopologyAPI(KGTopologyAPI):
         interface_id: int = None,
         host: str = 'localhost',
         port: int = 8080,
-        tags: List[str] = None
+        tags: List[str] = None,
+        corpus_id: str = None,
+        data_sources: List[str] = None
     ) -> bool:
         """
         Register this node with service discovery.
 
-        Advertises interface centroid for routing.
+        Advertises interface centroid for routing and corpus info for
+        diversity-weighted aggregation.
 
         Args:
             interface_id: Interface to advertise (uses first if None)
             host: Host address to advertise
             port: Port to advertise
             tags: Additional tags
+            corpus_id: Unique identifier for this node's data corpus
+            data_sources: List of upstream data sources
 
         Returns:
             True if registration succeeded
@@ -2095,18 +2100,30 @@ class DistributedKGTopologyAPI(KGTopologyAPI):
                 centroid_model_id
             )
 
-        # Prepare metadata
+        # Auto-generate corpus_id if not provided
+        if corpus_id is None:
+            corpus_id = self._generate_corpus_id()
+
+        # Prepare metadata with Phase 4 corpus tracking
         metadata = {
             'interface_id': interface['interface_id'],
             'interface_name': interface['name'],
             'interface_topics': json.dumps(interface.get('topics', [])),
-            'embedding_model': 'all-MiniLM-L6-v2'  # TODO: get from config
+            'embedding_model': 'all-MiniLM-L6-v2',  # TODO: get from config
+            # Phase 4: Corpus tracking for diversity-weighted aggregation
+            'corpus_id': corpus_id,
+            'data_sources': json.dumps(data_sources or []),
+            'last_updated': datetime.now().isoformat()
         }
 
         if centroid is not None:
             metadata['semantic_centroid'] = base64.b64encode(
                 centroid.astype(np.float32).tobytes()
             ).decode()
+
+        # Store corpus info locally for provenance tracking
+        self._corpus_id = corpus_id
+        self._data_sources = data_sources or []
 
         # Register with discovery
         discovery = self._get_discovery_client()
@@ -2118,6 +2135,37 @@ class DistributedKGTopologyAPI(KGTopologyAPI):
             tags=tags or ['kg_node'],
             metadata=metadata
         )
+
+    def _generate_corpus_id(self) -> str:
+        """Generate a corpus ID based on database content."""
+        cursor = self.conn.cursor()
+
+        # Hash based on source files and answer count
+        cursor.execute("SELECT COUNT(*) FROM answers")
+        answer_count = cursor.fetchone()[0]
+
+        cursor.execute("SELECT DISTINCT source_file FROM answers LIMIT 10")
+        sources = [row[0] for row in cursor.fetchall() if row[0]]
+
+        content = f"{self.node_id}:{answer_count}:{','.join(sorted(sources))}"
+        return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+    def get_corpus_info(self) -> Dict[str, Any]:
+        """Get corpus information for this node."""
+        return {
+            'corpus_id': getattr(self, '_corpus_id', None),
+            'data_sources': getattr(self, '_data_sources', []),
+            'node_id': self.node_id
+        }
+
+    def set_corpus_info(
+        self,
+        corpus_id: str,
+        data_sources: List[str] = None
+    ):
+        """Set corpus information for diversity tracking."""
+        self._corpus_id = corpus_id
+        self._data_sources = data_sources or []
 
     def deregister_node(self) -> bool:
         """Deregister this node from service discovery."""
@@ -2510,12 +2558,17 @@ class DistributedKGTopologyAPI(KGTopologyAPI):
                 }
             })
 
-        # Get corpus_id from interfaces if available
-        corpus_id = None
-        interfaces = self.list_interfaces(active_only=True)
-        if interfaces:
-            # Use first interface's topics as proxy for corpus
-            corpus_id = '_'.join(interfaces[0].get('topics', [])[:3])
+        # Get corpus info - prefer explicit corpus_id, fall back to generated
+        corpus_id = getattr(self, '_corpus_id', None)
+        data_sources = getattr(self, '_data_sources', [])
+
+        if corpus_id is None:
+            # Fall back to topic-based corpus ID
+            interfaces = self.list_interfaces(active_only=True)
+            if interfaces:
+                corpus_id = '_'.join(interfaces[0].get('topics', [])[:3])
+        else:
+            interfaces = self.list_interfaces(active_only=True)
 
         return {
             '__type': 'kg_federated_response',
@@ -2525,8 +2578,9 @@ class DistributedKGTopologyAPI(KGTopologyAPI):
             'partition_sum': partition_sum,
             'node_metadata': {
                 'corpus_id': corpus_id,
+                'data_sources': data_sources,
                 'embedding_model': embedding_info.get('model', 'all-MiniLM-L6-v2'),
-                'interface_count': len(interfaces)
+                'interface_count': len(interfaces) if interfaces else 0
             }
         }
 

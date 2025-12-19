@@ -256,12 +256,24 @@ class NodeResponse:
 
 @dataclass
 class ResultProvenance:
-    """Tracks where a result came from."""
+    """Tracks where a result came from for diversity analysis."""
     node_id: str
     exp_score: float
     corpus_id: Optional[str] = None
+    data_sources: List[str] = field(default_factory=list)
     interface_id: Optional[int] = None
+    embedding_model: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'node_id': self.node_id,
+            'exp_score': self.exp_score,
+            'corpus_id': self.corpus_id,
+            'data_sources': self.data_sources,
+            'interface_id': self.interface_id,
+            'embedding_model': self.embedding_model
+        }
 
 
 @dataclass
@@ -287,12 +299,20 @@ class AggregatedResult:
                 node_id=node_id,
                 exp_score=result.exp_score,
                 corpus_id=node_metadata.get('corpus_id'),
-                interface_id=node_metadata.get('interface_id')
+                data_sources=node_metadata.get('data_sources', []),
+                interface_id=node_metadata.get('interface_id'),
+                embedding_model=node_metadata.get('embedding_model')
             )],
             metadata=result.metadata.copy()
         )
 
     def to_dict(self, normalized_prob: float = 0.0) -> Dict[str, Any]:
+        # Calculate diversity score based on unique corpus_ids
+        unique_corpora = set(
+            p.corpus_id for p in self.provenance if p.corpus_id is not None
+        )
+        diversity_score = len(unique_corpora) / len(self.provenance) if self.provenance else 0.0
+
         return {
             'answer_text': self.answer_text,
             'answer_hash': self.answer_hash,
@@ -301,11 +321,9 @@ class AggregatedResult:
             'normalized_prob': normalized_prob,
             'source_nodes': self.source_nodes,
             'node_count': len(self.source_nodes),
-            'provenance': [
-                {'node': p.node_id, 'exp_score': p.exp_score,
-                 'corpus_id': p.corpus_id}
-                for p in self.provenance
-            ],
+            'diversity_score': round(diversity_score, 3),
+            'unique_corpora': len(unique_corpora),
+            'provenance': [p.to_dict() for p in self.provenance],
             'metadata': self.metadata
         }
 
@@ -614,7 +632,9 @@ class FederatedQueryEngine:
                         node_id=resp.source_node,
                         exp_score=r.exp_score,
                         corpus_id=resp.node_metadata.get('corpus_id'),
-                        interface_id=resp.node_metadata.get('interface_id')
+                        data_sources=resp.node_metadata.get('data_sources', []),
+                        interface_id=resp.node_metadata.get('interface_id'),
+                        embedding_model=resp.node_metadata.get('embedding_model')
                     ))
                 else:
                     results[key] = AggregatedResult.from_single(
@@ -636,22 +656,47 @@ class FederatedQueryEngine:
         node_id: str,
         node_metadata: Dict[str, Any]
     ) -> float:
-        """Merge with diversity weighting - boost only if sources differ."""
-        new_corpus = node_metadata.get(self.config.diversity_field)
+        """
+        Merge with diversity weighting - boost only if sources differ.
 
-        # Check if any existing provenance has different corpus
-        is_diverse = any(
+        Diversity is determined by:
+        1. Different corpus_id -> fully diverse -> full boost
+        2. Same corpus_id but different data_sources -> partially diverse -> partial boost
+        3. Same corpus_id and overlapping data_sources -> not diverse -> no boost
+
+        Note: A related concept is result density (semantic clustering).
+        High density of semantically similar results indicates stronger consensus.
+        TODO: Add density-based confidence scoring in future phase.
+        """
+        new_corpus = node_metadata.get(self.config.diversity_field)
+        new_data_sources = set(node_metadata.get('data_sources', []))
+
+        # Check corpus diversity
+        corpus_diverse = any(
             p.corpus_id != new_corpus
             for p in existing.provenance
             if p.corpus_id is not None
         )
 
-        if is_diverse or new_corpus is None:
-            # Diverse sources - boost with SUM
+        if corpus_diverse or new_corpus is None:
+            # Different corpus - fully diverse, full boost
             return existing.combined_score + new_result.exp_score
-        else:
-            # Same source - no boost, take MAX
-            return max(existing.combined_score, new_result.exp_score)
+
+        # Same corpus - check data source overlap
+        if new_data_sources:
+            existing_sources = set()
+            for p in existing.provenance:
+                if hasattr(p, 'data_sources'):
+                    existing_sources.update(p.data_sources)
+
+            if existing_sources and not existing_sources.intersection(new_data_sources):
+                # Same corpus but disjoint data sources - partial boost (average of sum and max)
+                sum_score = existing.combined_score + new_result.exp_score
+                max_score = max(existing.combined_score, new_result.exp_score)
+                return (sum_score + max_score) / 2
+
+        # Same source - no boost, take MAX
+        return max(existing.combined_score, new_result.exp_score)
 
     def _normalize_and_rank(
         self,

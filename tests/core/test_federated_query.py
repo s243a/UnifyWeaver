@@ -42,6 +42,7 @@ from unifyweaver.targets.python_runtime.federated_query import (
     ResultProvenance,
     AggregatedResult,
     AggregatedResponse,
+    FederatedQueryEngine,
     compute_answer_hash,
     compute_exp_scores,
     create_federated_engine,
@@ -512,6 +513,162 @@ class TestFederatedQueryEngineAggregation(unittest.TestCase):
         self.assertEqual(stats['query_count'], 0)
         self.assertEqual(stats['federation_k'], 3)
         self.assertEqual(stats['aggregation_strategy'], 'sum')
+
+
+class TestResultProvenance(unittest.TestCase):
+    """Tests for ResultProvenance dataclass."""
+
+    def test_to_dict(self):
+        """Test serialization."""
+        prov = ResultProvenance(
+            node_id='node-a',
+            exp_score=2.5,
+            corpus_id='corpus_a',
+            data_sources=['wiki', 'stackoverflow'],
+            interface_id=1,
+            embedding_model='all-MiniLM-L6-v2'
+        )
+        d = prov.to_dict()
+
+        self.assertEqual(d['node_id'], 'node-a')
+        self.assertEqual(d['corpus_id'], 'corpus_a')
+        self.assertEqual(d['data_sources'], ['wiki', 'stackoverflow'])
+        self.assertEqual(d['embedding_model'], 'all-MiniLM-L6-v2')
+
+
+class TestDiversityScoring(unittest.TestCase):
+    """Tests for diversity scoring in AggregatedResult."""
+
+    def test_diversity_score_single_source(self):
+        """Test diversity score with single source."""
+        result = AggregatedResult(
+            answer_text="Test",
+            answer_hash="hash1",
+            combined_score=2.0,
+            source_nodes=['node-a'],
+            provenance=[
+                ResultProvenance('node-a', 2.0, corpus_id='corpus_a')
+            ]
+        )
+        d = result.to_dict()
+
+        self.assertEqual(d['unique_corpora'], 1)
+        self.assertEqual(d['diversity_score'], 1.0)  # 1/1 = 1.0
+
+    def test_diversity_score_same_corpus(self):
+        """Test diversity score with same corpus from multiple nodes."""
+        result = AggregatedResult(
+            answer_text="Test",
+            answer_hash="hash1",
+            combined_score=4.0,
+            source_nodes=['node-a', 'node-b'],
+            provenance=[
+                ResultProvenance('node-a', 2.0, corpus_id='corpus_a'),
+                ResultProvenance('node-b', 2.0, corpus_id='corpus_a')  # Same corpus
+            ]
+        )
+        d = result.to_dict()
+
+        self.assertEqual(d['unique_corpora'], 1)
+        self.assertEqual(d['diversity_score'], 0.5)  # 1/2 = 0.5
+
+    def test_diversity_score_different_corpora(self):
+        """Test diversity score with different corpora."""
+        result = AggregatedResult(
+            answer_text="Test",
+            answer_hash="hash1",
+            combined_score=4.0,
+            source_nodes=['node-a', 'node-b'],
+            provenance=[
+                ResultProvenance('node-a', 2.0, corpus_id='corpus_a'),
+                ResultProvenance('node-b', 2.0, corpus_id='corpus_b')  # Different corpus
+            ]
+        )
+        d = result.to_dict()
+
+        self.assertEqual(d['unique_corpora'], 2)
+        self.assertEqual(d['diversity_score'], 1.0)  # 2/2 = 1.0
+
+
+class TestDiversityWeightedAggregation(unittest.TestCase):
+    """Tests for diversity-weighted aggregation."""
+
+    def setUp(self):
+        """Set up test engine."""
+        from unifyweaver.targets.python_runtime.federated_query import FederatedQueryEngine
+
+        discovery = LocalDiscoveryClient()
+        self.router = KleinbergRouter('test-node', discovery)
+        self.engine = FederatedQueryEngine(
+            router=self.router,
+            aggregation_config=AggregationConfig(
+                strategy=AggregationStrategy.DIVERSITY_WEIGHTED
+            )
+        )
+
+    def test_diversity_merge_different_corpus(self):
+        """Test boost when corpora differ."""
+        existing = AggregatedResult(
+            answer_text="Test",
+            answer_hash="hash1",
+            combined_score=2.0,
+            source_nodes=['node-a'],
+            provenance=[
+                ResultProvenance('node-a', 2.0, corpus_id='corpus_a')
+            ]
+        )
+        new_result = NodeResult(1, "Test", "hash1", 0.8, 1.5)
+
+        score = self.engine._diversity_merge(
+            existing, new_result, 'node-b',
+            {'corpus_id': 'corpus_b'}  # Different corpus
+        )
+
+        # Should be SUM: 2.0 + 1.5 = 3.5
+        self.assertEqual(score, 3.5)
+
+    def test_diversity_merge_same_corpus(self):
+        """Test no boost when same corpus."""
+        existing = AggregatedResult(
+            answer_text="Test",
+            answer_hash="hash1",
+            combined_score=2.0,
+            source_nodes=['node-a'],
+            provenance=[
+                ResultProvenance('node-a', 2.0, corpus_id='corpus_a')
+            ]
+        )
+        new_result = NodeResult(1, "Test", "hash1", 0.8, 1.5)
+
+        score = self.engine._diversity_merge(
+            existing, new_result, 'node-b',
+            {'corpus_id': 'corpus_a'}  # Same corpus
+        )
+
+        # Should be MAX: max(2.0, 1.5) = 2.0
+        self.assertEqual(score, 2.0)
+
+    def test_diversity_merge_disjoint_data_sources(self):
+        """Test partial boost when same corpus but disjoint data sources."""
+        existing = AggregatedResult(
+            answer_text="Test",
+            answer_hash="hash1",
+            combined_score=2.0,
+            source_nodes=['node-a'],
+            provenance=[
+                ResultProvenance('node-a', 2.0, corpus_id='corpus_a',
+                                data_sources=['wiki'])
+            ]
+        )
+        new_result = NodeResult(1, "Test", "hash1", 0.8, 1.5)
+
+        score = self.engine._diversity_merge(
+            existing, new_result, 'node-b',
+            {'corpus_id': 'corpus_a', 'data_sources': ['stackoverflow']}  # Disjoint sources
+        )
+
+        # Should be average of SUM and MAX: (3.5 + 2.0) / 2 = 2.75
+        self.assertEqual(score, 2.75)
 
 
 if __name__ == '__main__':
