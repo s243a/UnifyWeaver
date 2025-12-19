@@ -59,7 +59,9 @@
     generate_tracer_go/2,               % +Config, -GoCode
     generate_span_context_go/2,         % +Context, -GoCode
     % KG Topology Phase 3: Kleinberg routing
-    compile_kleinberg_router_go/2       % +Options, -GoCode
+    compile_kleinberg_router_go/2,      % +Options, -GoCode
+    % KG Topology Phase 4: Federated queries
+    compile_federated_query_go/2        % +Options, -GoCode
 ]).
 
 :- use_module(library(lists)).
@@ -14788,3 +14790,442 @@ func (r *KleinbergRouter) GetStats() map[string]interface{} {
     }
 }
 ', [Alpha, MaxHops, ParallelPaths, Threshold, PathFolding]).
+
+
+% =============================================================================
+% KG TOPOLOGY PHASE 4: FEDERATED QUERY CODE GENERATION (Go)
+% =============================================================================
+
+%% compile_federated_query_go(+Options, -Code)
+%  Generate Go FederatedQueryEngine configuration and types.
+%  Creates structs and methods for federated query aggregation.
+
+compile_federated_query_go(Options, Code) :-
+    % Extract federation options with defaults
+    ( member(federation_k(K), Options) -> true ; K = 3 ),
+    ( member(timeout_ms(Timeout), Options) -> true ; Timeout = 5000 ),
+    ( member(diversity_field(DivField), Options) -> true ; DivField = corpus_id ),
+
+    % Extract aggregation strategy
+    ( member(aggregation(Strategy), Options) -> true
+    ; member(aggregation(Strategy, _), Options) -> true
+    ; Strategy = sum
+    ),
+    strategy_to_go_const(Strategy, StrategyConst),
+
+    % Extract dedup key if specified
+    ( member(aggregation(_, AggOpts), Options),
+      member(dedup_key(DedupKey), AggOpts) -> true
+    ; DedupKey = answer_hash
+    ),
+
+    format(string(Code), '
+// KG Topology Phase 4: Federated Query Types and Engine
+// Generated from Prolog service definition
+
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "math"
+    "net/http"
+    "sync"
+    "time"
+)
+
+// AggregationStrategy defines how to merge results from multiple nodes
+type AggregationStrategy int
+
+const (
+    AggregationSum AggregationStrategy = iota
+    AggregationMax
+    AggregationMin
+    AggregationAvg
+    AggregationCount
+    AggregationFirst
+    AggregationDiversityWeighted
+)
+
+// AggregationConfig holds configuration for result aggregation
+type AggregationConfig struct {
+    Strategy       AggregationStrategy
+    DedupKey       string
+    DiversityField string
+}
+
+// ResultProvenance tracks where a result came from
+type ResultProvenance struct {
+    NodeID         string    `json:"node_id"`
+    ExpScore       float64   `json:"exp_score"`
+    CorpusID       string    `json:"corpus_id"`
+    DataSources    []string  `json:"data_sources"`
+    InterfaceID    int       `json:"interface_id"`
+    EmbeddingModel string    `json:"embedding_model"`
+    Timestamp      time.Time `json:"timestamp"`
+}
+
+// AggregatedResult is a result merged from multiple nodes
+type AggregatedResult struct {
+    AnswerText     string             `json:"answer_text"`
+    AnswerHash     string             `json:"answer_hash"`
+    CombinedScore  float64            `json:"combined_score"`
+    SourceNodes    []string           `json:"source_nodes"`
+    Provenance     []ResultProvenance `json:"provenance"`
+    DiversityScore float64            `json:"diversity_score"`
+    UniqueCorpora  int                `json:"unique_corpora"`
+}
+
+// NodeResponse is a response from a single node
+type NodeResponse struct {
+    SourceNode    string                 `json:"source_node"`
+    Results       []NodeResult           `json:"results"`
+    PartitionSum  float64                `json:"partition_sum"`
+    NodeMetadata  map[string]interface{} `json:"node_metadata"`
+    ResponseTime  time.Duration          `json:"response_time_ms"`
+    Error         string                 `json:"error,omitempty"`
+}
+
+// NodeResult is a single result from a node
+type NodeResult struct {
+    AnswerID   int                    `json:"answer_id"`
+    AnswerText string                 `json:"answer_text"`
+    AnswerHash string                 `json:"answer_hash"`
+    RawScore   float64                `json:"raw_score"`
+    ExpScore   float64                `json:"exp_score"`
+    Metadata   map[string]interface{} `json:"metadata"`
+}
+
+// FederatedQueryEngine coordinates distributed queries
+type FederatedQueryEngine struct {
+    Router       *KleinbergRouter
+    Config       AggregationConfig
+    FederationK  int
+    TimeoutMs    int
+    mu           sync.RWMutex
+    queryCount   int64
+    totalTimeMs  float64
+}
+
+// Default configuration
+var DefaultFederationConfig = AggregationConfig{
+    Strategy:       ~w,
+    DedupKey:       "~w",
+    DiversityField: "~w",
+}
+
+const (
+    DefaultFederationK = ~w
+    DefaultTimeoutMs   = ~w
+)
+
+// NewFederatedQueryEngine creates a configured engine
+func NewFederatedQueryEngine(router *KleinbergRouter) *FederatedQueryEngine {
+    return &FederatedQueryEngine{
+        Router:      router,
+        Config:      DefaultFederationConfig,
+        FederationK: DefaultFederationK,
+        TimeoutMs:   DefaultTimeoutMs,
+    }
+}
+
+// FederatedQuery executes a query across multiple nodes
+func (e *FederatedQueryEngine) FederatedQuery(
+    ctx context.Context,
+    queryText string,
+    queryEmbedding []float32,
+    topK int,
+) (*AggregatedResponse, error) {
+    startTime := time.Now()
+
+    // Discover nodes
+    nodes, err := e.Router.DiscoverNodes([]string{"kg_node"})
+    if err != nil {
+        return nil, fmt.Errorf("node discovery failed: %%w", err)
+    }
+
+    // Select top-k nodes by similarity
+    if len(nodes) > e.FederationK {
+        nodes = nodes[:e.FederationK]
+    }
+
+    // Query nodes in parallel
+    responses := e.parallelQuery(ctx, nodes, queryText, queryEmbedding)
+
+    // Aggregate results
+    aggregated, totalPartition := e.aggregate(responses)
+
+    // Normalize and rank
+    results := e.normalizeAndRank(aggregated, totalPartition, topK)
+
+    // Update stats
+    e.mu.Lock()
+    e.queryCount++
+    e.totalTimeMs += float64(time.Since(startTime).Milliseconds())
+    e.mu.Unlock()
+
+    return &AggregatedResponse{
+        QueryID:           fmt.Sprintf("%%d", time.Now().UnixNano()),
+        Results:           results,
+        TotalPartitionSum: totalPartition,
+        NodesQueried:      len(nodes),
+        NodesResponded:    len(responses),
+        TotalTimeMs:       float64(time.Since(startTime).Milliseconds()),
+    }, nil
+}
+
+// parallelQuery sends queries to nodes concurrently
+func (e *FederatedQueryEngine) parallelQuery(
+    ctx context.Context,
+    nodes []KGNode,
+    queryText string,
+    queryEmbedding []float32,
+) []NodeResponse {
+    var wg sync.WaitGroup
+    responses := make([]NodeResponse, len(nodes))
+
+    for i, node := range nodes {
+        wg.Add(1)
+        go func(idx int, n KGNode) {
+            defer wg.Done()
+            resp := e.queryNode(ctx, n, queryText, queryEmbedding)
+            responses[idx] = resp
+        }(i, node)
+    }
+
+    wg.Wait()
+    return responses
+}
+
+// aggregate merges results from multiple nodes
+func (e *FederatedQueryEngine) aggregate(
+    responses []NodeResponse,
+) (map[string]*AggregatedResult, float64) {
+    results := make(map[string]*AggregatedResult)
+    var totalPartition float64
+
+    for _, resp := range responses {
+        if resp.Error != "" {
+            continue
+        }
+        totalPartition += resp.PartitionSum
+
+        for _, r := range resp.Results {
+            key := r.AnswerHash
+            if existing, ok := results[key]; ok {
+                // Merge with existing
+                existing.CombinedScore = e.mergeScore(
+                    existing.CombinedScore,
+                    r.ExpScore,
+                    existing,
+                    resp.NodeMetadata,
+                )
+                existing.SourceNodes = append(existing.SourceNodes, resp.SourceNode)
+                existing.Provenance = append(existing.Provenance, ResultProvenance{
+                    NodeID:    resp.SourceNode,
+                    ExpScore:  r.ExpScore,
+                    CorpusID:  getStringFromMeta(resp.NodeMetadata, "corpus_id"),
+                    Timestamp: time.Now(),
+                })
+            } else {
+                results[key] = &AggregatedResult{
+                    AnswerText:    r.AnswerText,
+                    AnswerHash:    r.AnswerHash,
+                    CombinedScore: r.ExpScore,
+                    SourceNodes:   []string{resp.SourceNode},
+                    Provenance: []ResultProvenance{{
+                        NodeID:    resp.SourceNode,
+                        ExpScore:  r.ExpScore,
+                        CorpusID:  getStringFromMeta(resp.NodeMetadata, "corpus_id"),
+                        Timestamp: time.Now(),
+                    }},
+                }
+            }
+        }
+    }
+
+    // Calculate diversity scores
+    for _, result := range results {
+        corpora := make(map[string]bool)
+        for _, p := range result.Provenance {
+            if p.CorpusID != "" {
+                corpora[p.CorpusID] = true
+            }
+        }
+        result.UniqueCorpora = len(corpora)
+        if len(result.Provenance) > 0 {
+            result.DiversityScore = float64(len(corpora)) / float64(len(result.Provenance))
+        }
+    }
+
+    return results, totalPartition
+}
+
+// mergeScore combines scores based on strategy
+func (e *FederatedQueryEngine) mergeScore(
+    existing, new float64,
+    result *AggregatedResult,
+    nodeMeta map[string]interface{},
+) float64 {
+    switch e.Config.Strategy {
+    case AggregationSum:
+        return existing + new
+    case AggregationMax:
+        return math.Max(existing, new)
+    case AggregationMin:
+        return math.Min(existing, new)
+    case AggregationDiversityWeighted:
+        // Check if corpus is different
+        newCorpus := getStringFromMeta(nodeMeta, "corpus_id")
+        for _, p := range result.Provenance {
+            if p.CorpusID != newCorpus {
+                return existing + new  // Diverse, full boost
+            }
+        }
+        return math.Max(existing, new)  // Same corpus, no boost
+    default:
+        return existing + new
+    }
+}
+
+// queryNode sends a query to a single node
+func (e *FederatedQueryEngine) queryNode(
+    ctx context.Context,
+    node KGNode,
+    queryText string,
+    queryEmbedding []float32,
+) NodeResponse {
+    startTime := time.Now()
+
+    // Build request
+    reqBody, _ := json.Marshal(map[string]interface{}{
+        "__type": "kg_federated_query",
+        "payload": map[string]interface{}{
+            "query_text": queryText,
+            "top_k":      10,
+        },
+    })
+
+    // Create HTTP request with timeout
+    timeoutCtx, cancel := context.WithTimeout(ctx, time.Duration(e.TimeoutMs)*time.Millisecond)
+    defer cancel()
+
+    req, err := http.NewRequestWithContext(
+        timeoutCtx,
+        "POST",
+        node.Endpoint+"/kg/federated",
+        nil,
+    )
+    if err != nil {
+        return NodeResponse{SourceNode: node.NodeID, Error: err.Error()}
+    }
+    req.Header.Set("Content-Type", "application/json")
+
+    // Send request
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        return NodeResponse{SourceNode: node.NodeID, Error: err.Error()}
+    }
+    defer resp.Body.Close()
+
+    // Parse response
+    var nodeResp NodeResponse
+    if err := json.NewDecoder(resp.Body).Decode(&nodeResp); err != nil {
+        return NodeResponse{SourceNode: node.NodeID, Error: err.Error()}
+    }
+
+    nodeResp.ResponseTime = time.Since(startTime)
+    _ = reqBody  // Suppress unused variable warning
+    return nodeResp
+}
+
+// normalizeAndRank sorts results by normalized probability
+func (e *FederatedQueryEngine) normalizeAndRank(
+    aggregated map[string]*AggregatedResult,
+    totalPartition float64,
+    topK int,
+) []AggregatedResult {
+    results := make([]AggregatedResult, 0, len(aggregated))
+
+    for _, r := range aggregated {
+        results = append(results, *r)
+    }
+
+    // Sort by combined score descending
+    for i := 0; i < len(results)-1; i++ {
+        for j := i + 1; j < len(results); j++ {
+            if results[j].CombinedScore > results[i].CombinedScore {
+                results[i], results[j] = results[j], results[i]
+            }
+        }
+    }
+
+    if len(results) > topK {
+        results = results[:topK]
+    }
+
+    return results
+}
+
+// GetStats returns engine statistics
+func (e *FederatedQueryEngine) GetStats() map[string]interface{} {
+    e.mu.RLock()
+    defer e.mu.RUnlock()
+
+    avgTime := 0.0
+    if e.queryCount > 0 {
+        avgTime = e.totalTimeMs / float64(e.queryCount)
+    }
+
+    return map[string]interface{}{
+        "query_count":        e.queryCount,
+        "avg_response_ms":    avgTime,
+        "federation_k":       e.FederationK,
+        "aggregation_strategy": e.Config.Strategy,
+    }
+}
+
+// AggregatedResponse is the final response from a federated query
+type AggregatedResponse struct {
+    QueryID           string             `json:"query_id"`
+    Results           []AggregatedResult `json:"results"`
+    TotalPartitionSum float64            `json:"total_partition_sum"`
+    NodesQueried      int                `json:"nodes_queried"`
+    NodesResponded    int                `json:"nodes_responded"`
+    TotalTimeMs       float64            `json:"total_time_ms"`
+}
+
+func (r *AggregatedResponse) ToDict() map[string]interface{} {
+    return map[string]interface{}{
+        "query_id":            r.QueryID,
+        "results":             r.Results,
+        "total_partition_sum": r.TotalPartitionSum,
+        "nodes_queried":       r.NodesQueried,
+        "nodes_responded":     r.NodesResponded,
+        "total_time_ms":       r.TotalTimeMs,
+    }
+}
+
+func getStringFromMeta(meta map[string]interface{}, key string) string {
+    if v, ok := meta[key]; ok {
+        if s, ok := v.(string); ok {
+            return s
+        }
+    }
+    return ""
+}
+', [StrategyConst, DedupKey, DivField, K, Timeout]).
+
+%% strategy_to_go_const(+Strategy, -Const)
+%  Convert Prolog strategy atom to Go constant name.
+strategy_to_go_const(sum, 'AggregationSum').
+strategy_to_go_const(max, 'AggregationMax').
+strategy_to_go_const(min, 'AggregationMin').
+strategy_to_go_const(avg, 'AggregationAvg').
+strategy_to_go_const(count, 'AggregationCount').
+strategy_to_go_const(first, 'AggregationFirst').
+strategy_to_go_const(diversity, 'AggregationDiversityWeighted').
+strategy_to_go_const(diversity_weighted, 'AggregationDiversityWeighted').
+strategy_to_go_const(_, 'AggregationSum').  % Default fallback

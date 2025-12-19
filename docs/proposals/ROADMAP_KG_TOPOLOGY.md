@@ -235,6 +235,128 @@ service(csv_expert_node, [
 ]).
 ```
 
+### Phase 4: Federated Query Algebra ✅ Core Implementation Complete
+
+**Goal:** Enable multi-node queries with distributed result aggregation.
+
+**Prerequisites:**
+- Phase 3 (Distributed Network) complete ✅
+
+**Design Insight:** Deduplication is just aggregation. Federated KG queries are essentially **distributed GROUP BY with pluggable aggregation functions** - the same operations used in SQL, MapReduce, and Datalog.
+
+**Components:**
+
+1. **Core Federation Engine** ✅ (Phase 4a)
+   - [x] `FederatedQueryEngine` class with parallel node querying
+   - [x] 6 monoid-based aggregators: SUM, MAX, MIN, AVG, COUNT, FIRST
+   - [x] Distributed softmax: each node returns `exp_scores[]` + `partition_sum`
+   - [x] Protocol messages: `NodeResult`, `NodeResponse`, `AggregatedResult`
+   - [x] 9 Prolog validation predicates
+
+2. **Diversity Tracking** ✅ (Phase 4b)
+   - [x] `corpus_id` and `data_sources` in discovery metadata
+   - [x] Auto-generated corpus_id from database content hash
+   - [x] Three-tier diversity-weighted aggregation:
+     - Different corpus → full boost (SUM)
+     - Same corpus, disjoint sources → partial boost
+     - Same corpus, overlapping sources → no boost (MAX)
+   - [x] `ResultProvenance` tracking (node_id, corpus_id, data_sources, embedding_model)
+   - [x] `diversity_score` in aggregated responses
+
+3. **Prolog Code Generation** ✅ (Phase 4c)
+   - [x] `compile_federated_query_python/2` - Python engine factory
+   - [x] `compile_federated_service_python/2` - Complete Flask service
+   - [x] `compile_federated_query_go/2` - Go engine with full types
+   - [x] `generate_federation_endpoint/3` - HTTP endpoints (Python/Go/Rust)
+
+4. **Advanced Features** (Phase 4d - Future)
+   - [ ] Hierarchical federation
+   - [ ] Adaptive federation-k
+   - [ ] Query plan optimization
+   - [ ] Density-based confidence scoring
+
+**Implementation Files:**
+- `src/unifyweaver/targets/python_runtime/federated_query.py` - Core engine (~700 lines)
+- `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - Extended API
+- `src/unifyweaver/targets/python_target.pl` - Python code generation
+- `src/unifyweaver/targets/go_target.pl` - Go code generation
+- `src/unifyweaver/glue/network_glue.pl` - Federation endpoints
+- `src/unifyweaver/core/service_validation.pl` - Federation validation
+- `tests/core/test_federated_query.py` - 45 unit tests
+
+**Federated Query Protocol:**
+```json
+{
+    "__type": "kg_federated_query",
+    "__id": "uuid-456",
+    "__routing": {
+        "origin_node": "node_a",
+        "federation_k": 3,
+        "aggregation": {
+            "score_function": "diversity",
+            "dedup_key": "answer_hash"
+        }
+    },
+    "payload": {
+        "query_text": "How do I parse CSV?",
+        "top_k": 5
+    }
+}
+```
+
+**Response Protocol:**
+```json
+{
+    "__type": "kg_federated_response",
+    "__id": "uuid-456",
+    "source_node": "node_b",
+    "results": [
+        {
+            "answer_id": 42,
+            "answer_text": "Use csv.reader()...",
+            "answer_hash": "abc123",
+            "exp_score": 2.718,
+            "metadata": {}
+        }
+    ],
+    "partition_sum": 15.5,
+    "node_metadata": {
+        "corpus_id": "stackoverflow_2024",
+        "data_sources": ["stackoverflow", "github"],
+        "embedding_model": "all-MiniLM-L6-v2"
+    }
+}
+```
+
+**Example Federated Service Definition:**
+```prolog
+service(federated_kg_node, [
+    transport(http('/kg', [host('0.0.0.0'), port(8081)])),
+    discovery_enabled(true),
+    discovery_backend(consul),
+    discovery_tags([kg_node, federated]),
+    discovery_metadata([
+        semantic_centroid("base64_encoded_vector..."),
+        embedding_model('all-MiniLM-L6-v2'),
+        corpus_id(stackoverflow_2024),
+        data_sources([stackoverflow, github])
+    ]),
+    routing(kleinberg([alpha(2.0), max_hops(10)])),
+    federation([
+        federation_k(3),
+        aggregation(diversity, [dedup_key(answer_hash)]),
+        timeout_ms(5000),
+        diversity_field(corpus_id)
+    ])
+], [
+    receive(Query),
+    handle_federated_query(Query, Response),
+    respond(Response)
+]).
+```
+
+**See Also:** `docs/proposals/FEDERATED_QUERY_ALGEBRA.md` for full design rationale.
+
 ## Related Work
 
 ### Pearltrees Hierarchical Categorization

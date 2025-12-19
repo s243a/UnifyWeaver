@@ -42,7 +42,9 @@
 
     % KG Topology Phase 3: Distributed routing endpoints
     generate_kg_query_endpoint/3,   % generate_kg_query_endpoint(+Target, +Options, -Code)
-    generate_kg_routes/3            % generate_kg_routes(+Target, +Options, -Code)
+    generate_kg_routes/3,           % generate_kg_routes(+Target, +Options, -Code)
+    % KG Topology Phase 4: Federated query endpoints
+    generate_federation_endpoint/3  % generate_federation_endpoint(+Target, +Options, -Code)
 ]).
 
 :- use_module(library(lists)).
@@ -1349,3 +1351,366 @@ generate_kg_routes(rust, _Options, Code) :-
 // Add KG routes to Axum router:
 //   let app = Router::new().merge(kg_routes(api));
 ', []).
+
+
+% =============================================================================
+% KG TOPOLOGY PHASE 4: FEDERATED QUERY ENDPOINTS
+% =============================================================================
+
+%% generate_federation_endpoint(+Target, +Options, -Code)
+%  Generate federation-specific HTTP endpoints for distributed queries.
+%  These endpoints handle incoming federated queries and initiate outgoing federation.
+
+generate_federation_endpoint(python, Options, Code) :-
+    % Extract federation options
+    ( member(federation_k(K), Options) -> true ; K = 3 ),
+    ( member(aggregation(Strategy), Options) -> true ; Strategy = sum ),
+    ( member(timeout_ms(Timeout), Options) -> true ; Timeout = 5000 ),
+
+    format(string(Code), '
+# KG Topology Phase 4: Federated Query Endpoints
+# Generated from Prolog service definition
+
+from flask import Flask, request, jsonify
+from federated_query import (
+    FederatedQueryEngine,
+    AggregationStrategy,
+    AggregationConfig,
+)
+
+# Federation configuration
+FEDERATION_K = ~w
+AGGREGATION_STRATEGY = "~w"
+TIMEOUT_MS = ~w
+
+@app.route("/kg/federated", methods=["POST"])
+def handle_federated_query():
+    """
+    Handle incoming federated query from another node.
+
+    This endpoint is called by other nodes during federation.
+    It executes a local search and returns exp_scores + partition_sum
+    for distributed softmax aggregation.
+    """
+    data = request.get_json()
+
+    if data.get("__type") != "kg_federated_query":
+        return jsonify({"error": "Invalid request type"}), 400
+
+    try:
+        response = kg_api.handle_federated_query(data)
+        return jsonify(response)
+    except Exception as e:
+        return jsonify({
+            "__type": "kg_federated_response",
+            "__id": data.get("__id"),
+            "source_node": kg_api.node_id,
+            "error": str(e),
+            "results": [],
+            "partition_sum": 0.0
+        }), 500
+
+
+@app.route("/kg/federate", methods=["POST"])
+def initiate_federation():
+    """
+    Initiate a federated query across the KG network.
+
+    This endpoint is called by clients to query across all nodes.
+    It coordinates with other nodes and aggregates results.
+    """
+    data = request.get_json()
+    query_text = data.get("query_text", "")
+    top_k = data.get("top_k", 5)
+
+    if not query_text:
+        return jsonify({"error": "query_text is required"}), 400
+
+    try:
+        response = federation_engine.federated_query(
+            query_text=query_text,
+            top_k=top_k
+        )
+        return jsonify(response.to_dict())
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "results": []
+        }), 500
+
+
+@app.route("/kg/federation/stats", methods=["GET"])
+def federation_stats():
+    """Return federation statistics."""
+    stats = federation_engine.get_stats()
+    corpus_info = kg_api.get_corpus_info()
+
+    return jsonify({
+        "federation": stats,
+        "corpus": corpus_info,
+        "node_id": kg_api.node_id
+    })
+', [K, Strategy, Timeout]).
+
+
+generate_federation_endpoint(go, Options, Code) :-
+    % Extract federation options
+    ( member(federation_k(K), Options) -> true ; K = 3 ),
+    ( member(aggregation(Strategy), Options) -> true ; Strategy = sum ),
+    ( member(timeout_ms(Timeout), Options) -> true ; Timeout = 5000 ),
+
+    format(string(Code), '
+// KG Topology Phase 4: Federated Query Endpoints
+// Generated from Prolog service definition
+
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "net/http"
+    "time"
+)
+
+// Federation configuration
+const (
+    FederationK       = ~w
+    AggregationMethod = "~w"
+    FederationTimeout = ~w * time.Millisecond
+)
+
+// HandleFederatedQuery handles incoming federated queries from other nodes
+func (s *Server) HandleFederatedQuery(w http.ResponseWriter, r *http.Request) {
+    var req map[string]interface{}
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    reqType, _ := req["__type"].(string)
+    if reqType != "kg_federated_query" {
+        http.Error(w, "Invalid request type", http.StatusBadRequest)
+        return
+    }
+
+    response, err := s.kgAPI.HandleFederatedQuery(req)
+    if err != nil {
+        errorResp := map[string]interface{}{
+            "__type":        "kg_federated_response",
+            "__id":          req["__id"],
+            "source_node":   s.kgAPI.NodeID,
+            "error":         err.Error(),
+            "results":       []interface{}{},
+            "partition_sum": 0.0,
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(errorResp)
+        return
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+// InitiateFederation starts a federated query across the network
+func (s *Server) InitiateFederation(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        QueryText string `json:"query_text"`
+        TopK      int    `json:"top_k"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    if req.QueryText == "" {
+        http.Error(w, "query_text is required", http.StatusBadRequest)
+        return
+    }
+
+    if req.TopK == 0 {
+        req.TopK = 5
+    }
+
+    ctx, cancel := context.WithTimeout(r.Context(), FederationTimeout)
+    defer cancel()
+
+    response, err := s.federationEngine.FederatedQuery(
+        ctx,
+        req.QueryText,
+        nil,  // embedding computed by engine
+        req.TopK,
+    )
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response.ToDict())
+}
+
+// FederationStats returns federation statistics
+func (s *Server) FederationStats(w http.ResponseWriter, r *http.Request) {
+    stats := s.federationEngine.GetStats()
+    corpusInfo := s.kgAPI.GetCorpusInfo()
+
+    response := map[string]interface{}{
+        "federation": stats,
+        "corpus":     corpusInfo,
+        "node_id":    s.kgAPI.NodeID,
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+// RegisterFederationRoutes registers federation endpoints
+func RegisterFederationRoutes(mux *http.ServeMux, server *Server) {
+    mux.HandleFunc("/kg/federated", server.HandleFederatedQuery)
+    mux.HandleFunc("/kg/federate", server.InitiateFederation)
+    mux.HandleFunc("/kg/federation/stats", server.FederationStats)
+}
+', [K, Strategy, Timeout]).
+
+
+generate_federation_endpoint(rust, Options, Code) :-
+    % Extract federation options
+    ( member(federation_k(K), Options) -> true ; K = 3 ),
+    ( member(aggregation(Strategy), Options) -> true ; Strategy = sum ),
+    ( member(timeout_ms(Timeout), Options) -> true ; Timeout = 5000 ),
+
+    format(string(Code), '
+// KG Topology Phase 4: Federated Query Endpoints
+// Generated from Prolog service definition
+
+use axum::{
+    extract::{Json, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Router,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::time::{timeout, Duration};
+
+// Federation configuration
+pub const FEDERATION_K: usize = ~w;
+pub const AGGREGATION_METHOD: &str = "~w";
+pub const FEDERATION_TIMEOUT_MS: u64 = ~w;
+
+#[derive(Deserialize)]
+pub struct FederatedQueryRequest {
+    #[serde(rename = "__type")]
+    pub request_type: String,
+    #[serde(rename = "__id")]
+    pub request_id: Option<String>,
+    pub payload: Option<QueryPayload>,
+}
+
+#[derive(Deserialize)]
+pub struct QueryPayload {
+    pub query_text: String,
+    pub top_k: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct FederateRequest {
+    pub query_text: String,
+    pub top_k: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct FederationStatsResponse {
+    pub federation: serde_json::Value,
+    pub corpus: serde_json::Value,
+    pub node_id: String,
+}
+
+/// Handle incoming federated query from another node
+pub async fn handle_federated_query(
+    State(api): State<Arc<DistributedKGTopologyAPI>>,
+    Json(req): Json<FederatedQueryRequest>,
+) -> impl IntoResponse {
+    if req.request_type != "kg_federated_query" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid request type"})),
+        );
+    }
+
+    match api.handle_federated_query(&req).await {
+        Ok(response) => (StatusCode::OK, Json(response)),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "__type": "kg_federated_response",
+                "__id": req.request_id,
+                "source_node": api.node_id(),
+                "error": e.to_string(),
+                "results": [],
+                "partition_sum": 0.0
+            })),
+        ),
+    }
+}
+
+/// Initiate a federated query across the network
+pub async fn initiate_federation(
+    State(engine): State<Arc<FederatedQueryEngine>>,
+    Json(req): Json<FederateRequest>,
+) -> impl IntoResponse {
+    if req.query_text.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "query_text is required"})),
+        );
+    }
+
+    let top_k = req.top_k.unwrap_or(5);
+    let timeout_duration = Duration::from_millis(FEDERATION_TIMEOUT_MS);
+
+    match timeout(
+        timeout_duration,
+        engine.federated_query(&req.query_text, top_k),
+    )
+    .await
+    {
+        Ok(Ok(response)) => (StatusCode::OK, Json(response.to_dict())),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string(), "results": []})),
+        ),
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(serde_json::json!({"error": "Federation timeout", "results": []})),
+        ),
+    }
+}
+
+/// Return federation statistics
+pub async fn federation_stats(
+    State(api): State<Arc<DistributedKGTopologyAPI>>,
+    State(engine): State<Arc<FederatedQueryEngine>>,
+) -> impl IntoResponse {
+    Json(FederationStatsResponse {
+        federation: engine.get_stats(),
+        corpus: api.get_corpus_info(),
+        node_id: api.node_id().to_string(),
+    })
+}
+
+/// Create router with federation routes
+pub fn federation_routes(
+    api: Arc<DistributedKGTopologyAPI>,
+    engine: Arc<FederatedQueryEngine>,
+) -> Router {
+    Router::new()
+        .route("/kg/federated", post(handle_federated_query))
+        .route("/kg/federate", post(initiate_federation))
+        .route("/kg/federation/stats", get(federation_stats))
+        .with_state(api)
+        .with_state(engine)
+}
+', [K, Strategy, Timeout]).

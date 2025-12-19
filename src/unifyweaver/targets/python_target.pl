@@ -72,7 +72,10 @@
     % KG Topology Phase 3: Kleinberg routing
     compile_kleinberg_router_python/2,
     compile_distributed_kg_service_python/2,
-    format_python_list/2
+    format_python_list/2,
+    % KG Topology Phase 4: Federated queries
+    compile_federated_query_python/2,
+    compile_federated_service_python/2
 ]).
 
 :- meta_predicate compile_predicate_to_python(:, +, -).
@@ -10499,3 +10502,225 @@ format_python_list(List, String) :-
 
 format_python_item(Item, Quoted) :-
     format(string(Quoted), '"~w"', [Item]).
+
+
+% =============================================================================
+% KG TOPOLOGY PHASE 4: FEDERATED QUERY CODE GENERATION
+% =============================================================================
+
+%% compile_federated_query_python(+Options, -Code)
+%  Generate Python FederatedQueryEngine configuration from Prolog options.
+%  This creates a factory function with the specified federation settings.
+
+compile_federated_query_python(Options, Code) :-
+    % Extract federation options with defaults
+    ( member(federation_k(K), Options) -> true ; K = 3 ),
+    ( member(timeout_ms(Timeout), Options) -> true ; Timeout = 5000 ),
+    ( member(consensus_threshold(Consensus), Options) -> ConsensusStr = Consensus
+    ; ConsensusStr = 'None'
+    ),
+    ( member(diversity_field(DivField), Options) -> true ; DivField = corpus_id ),
+
+    % Extract aggregation strategy
+    ( member(aggregation(Strategy), Options) -> true
+    ; member(aggregation(Strategy, _), Options) -> true
+    ; Strategy = sum
+    ),
+    strategy_to_python_enum(Strategy, StrategyEnum),
+
+    % Extract dedup key if specified
+    ( member(aggregation(_, AggOpts), Options),
+      member(dedup_key(DedupKey), AggOpts) -> true
+    ; DedupKey = answer_hash
+    ),
+
+    format(string(Code), '
+# KG Topology Phase 4: Federated Query Configuration
+# Generated from Prolog service definition
+
+from federated_query import (
+    FederatedQueryEngine,
+    AggregationStrategy,
+    AggregationConfig,
+    create_federated_engine
+)
+
+def create_federated_query_engine(router, discovery_client=None):
+    """Create a configured FederatedQueryEngine instance."""
+    config = AggregationConfig(
+        strategy=AggregationStrategy.~w,
+        dedup_key="~w",
+        diversity_field="~w"
+    )
+
+    return FederatedQueryEngine(
+        router=router,
+        aggregation_config=config,
+        federation_k=~w,
+        timeout_ms=~w
+    )
+
+# Federation settings
+FEDERATION_K = ~w
+AGGREGATION_STRATEGY = "~w"
+CONSENSUS_THRESHOLD = ~w
+DIVERSITY_FIELD = "~w"
+', [StrategyEnum, DedupKey, DivField, K, Timeout, K, Strategy, ConsensusStr, DivField]).
+
+%% strategy_to_python_enum(+Strategy, -Enum)
+%  Convert Prolog strategy atom to Python enum name.
+strategy_to_python_enum(sum, 'SUM').
+strategy_to_python_enum(max, 'MAX').
+strategy_to_python_enum(min, 'MIN').
+strategy_to_python_enum(avg, 'AVG').
+strategy_to_python_enum(count, 'COUNT').
+strategy_to_python_enum(first, 'FIRST').
+strategy_to_python_enum(collect, 'COLLECT').
+strategy_to_python_enum(diversity, 'DIVERSITY_WEIGHTED').
+strategy_to_python_enum(diversity_weighted, 'DIVERSITY_WEIGHTED').
+strategy_to_python_enum(_, 'SUM').  % Default fallback
+
+
+%% compile_federated_service_python(+Service, -Code)
+%  Generate a complete federated KG topology service from Prolog definition.
+%  Combines Kleinberg routing (Phase 3) with federation (Phase 4).
+
+compile_federated_service_python(service(Name, Options, _Handler), Code) :-
+    % Extract Kleinberg options for routing
+    ( member(routing(kleinberg(KleinbergOpts)), Options) -> true
+    ; member(routing(kleinberg), Options) -> KleinbergOpts = []
+    ; KleinbergOpts = []
+    ),
+
+    % Extract federation options
+    ( member(federation(FedOpts), Options) -> true
+    ; FedOpts = []
+    ),
+
+    % Extract discovery options
+    ( member(discovery_backend(Backend), Options) -> true ; Backend = local ),
+    ( member(discovery_tags(Tags), Options) -> true ; Tags = ['kg_node'] ),
+
+    % Extract corpus info for diversity tracking
+    ( member(discovery_metadata(Metadata), Options),
+      member(corpus_id(CorpusId), Metadata) -> true
+    ; CorpusId = 'auto'
+    ),
+    ( member(discovery_metadata(Metadata2), Options),
+      member(data_sources(DataSources), Metadata2) -> true
+    ; DataSources = []
+    ),
+
+    % Extract network options
+    ( member(transport(http(_, TransportOpts)), Options) ->
+        ( member(host(Host), TransportOpts) -> true ; Host = '0.0.0.0' ),
+        ( member(port(Port), TransportOpts) -> true ; Port = 8080 )
+    ; Host = '0.0.0.0', Port = 8080
+    ),
+
+    % Generate Kleinberg router config
+    compile_kleinberg_router_python(KleinbergOpts, RouterCode),
+
+    % Generate federated query config
+    compile_federated_query_python(FedOpts, FederationCode),
+
+    % Generate lists
+    format_python_list(Tags, TagsStr),
+    format_python_list(DataSources, DataSourcesStr),
+
+    % Determine corpus_id handling
+    ( CorpusId = auto -> CorpusIdCode = 'None  # Will auto-generate from DB content'
+    ; format(string(CorpusIdCode), '"~w"', [CorpusId])
+    ),
+
+    format(string(Code), '
+# Federated KG Topology Service: ~w
+# Generated from Prolog service definition
+# Combines Phase 3 (Kleinberg routing) + Phase 4 (Federation)
+
+from flask import Flask, request, jsonify
+from kg_topology_api import DistributedKGTopologyAPI
+from federated_query import FederatedQueryEngine, AggregationConfig, AggregationStrategy
+
+app = Flask(__name__)
+
+# Phase 3: Router configuration
+~w
+
+# Phase 4: Federation configuration
+~w
+
+# Initialize distributed KG API with corpus tracking
+kg_api = DistributedKGTopologyAPI(
+    db_path="~w.db",
+    node_id="~w",
+    discovery_backend="~w"
+)
+
+# Initialize federated query engine
+router = create_kleinberg_router("~w", "~w")
+federation_engine = create_federated_query_engine(router)
+
+@app.before_first_request
+def register_with_discovery():
+    """Register node with service discovery on startup."""
+    kg_api.register_node(
+        host="~w",
+        port=~w,
+        tags=~w,
+        corpus_id=~w,
+        data_sources=~w
+    )
+
+@app.route("/kg/query", methods=["POST"])
+def kg_query():
+    """Handle local KG queries."""
+    data = request.get_json()
+    query_text = data.get("query_text", "")
+    top_k = data.get("top_k", 5)
+
+    results = kg_api.semantic_search(query_text, top_k=top_k)
+    return jsonify({"results": results})
+
+@app.route("/kg/federated", methods=["POST"])
+def kg_federated_query():
+    """Handle federated KG queries from other nodes."""
+    data = request.get_json()
+    response = kg_api.handle_federated_query(data)
+    return jsonify(response)
+
+@app.route("/kg/federate", methods=["POST"])
+def kg_initiate_federation():
+    """Initiate a federated query across the network."""
+    data = request.get_json()
+    query_text = data.get("query_text", "")
+    top_k = data.get("top_k", 5)
+
+    # Use federation engine to query network
+    response = federation_engine.federated_query(
+        query_text=query_text,
+        top_k=top_k
+    )
+    return jsonify(response.to_dict())
+
+@app.route("/kg/health", methods=["GET"])
+def kg_health():
+    """Health check endpoint."""
+    interfaces = kg_api.list_interfaces(active_only=True)
+    stats = kg_api.get_query_stats()
+    corpus_info = kg_api.get_corpus_info()
+    fed_stats = federation_engine.get_stats()
+
+    return jsonify({
+        "status": "healthy",
+        "node_id": kg_api.node_id,
+        "interfaces": len(interfaces),
+        "corpus_id": corpus_info.get("corpus_id"),
+        "query_stats": stats,
+        "federation_stats": fed_stats
+    })
+
+if __name__ == "__main__":
+    app.run(host="~w", port=~w)
+', [Name, RouterCode, FederationCode, Name, Name, Backend, Name, Backend,
+    Host, Port, TagsStr, CorpusIdCode, DataSourcesStr, Host, Port]).

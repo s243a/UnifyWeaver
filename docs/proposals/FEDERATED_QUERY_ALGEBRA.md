@@ -1,6 +1,6 @@
 # Federated Query Algebra for Distributed KG Topology
 
-## Status: Draft Proposal
+## Status: Implemented (Phase 4a-4c)
 
 ## Overview
 
@@ -393,26 +393,48 @@ Optimize federation strategy based on query characteristics:
 
 ## Implementation Phases
 
-### Phase 4a: Core Federation
-- [ ] `FederatedQueryEngine` class
-- [ ] Basic aggregation functions (SUM, MAX, AVG)
-- [ ] Parallel node querying
-- [ ] Protocol messages
+### Phase 4a: Core Federation ✅ Complete
+- [x] `FederatedQueryEngine` class (`federated_query.py`)
+- [x] 6 aggregation functions: SUM, MAX, MIN, AVG, COUNT, FIRST (monoid-based)
+- [x] Parallel node querying with ThreadPoolExecutor
+- [x] Protocol messages: `NodeResult`, `NodeResponse`, `AggregatedResult`, `AggregatedResponse`
+- [x] Distributed softmax with `exp_scores[]` + `partition_sum`
+- [x] 9 Prolog validation predicates in `service_validation.pl`
+- [x] 38 unit tests
 
-### Phase 4b: Diversity Tracking
-- [ ] Corpus ID in discovery metadata
-- [ ] Diversity-weighted aggregation
-- [ ] Provenance tracking in responses
+### Phase 4b: Diversity Tracking ✅ Complete
+- [x] `corpus_id` and `data_sources` in discovery metadata
+- [x] Auto-generation of corpus_id from database content hash
+- [x] Three-tier diversity-weighted aggregation:
+  - Different corpus → full boost (SUM)
+  - Same corpus, disjoint data_sources → partial boost (AVG of SUM/MAX)
+  - Same corpus, overlapping sources → no boost (MAX)
+- [x] `ResultProvenance` with full tracking (node_id, exp_score, corpus_id, data_sources, embedding_model)
+- [x] `diversity_score` and `unique_corpora` in aggregated responses
+- [x] 7 additional unit tests (45 total)
 
-### Phase 4c: Prolog Integration
-- [ ] `federated_query/3` predicate
-- [ ] Code generation for federation endpoints
-- [ ] Integration with existing query compilation
+### Phase 4c: Prolog Integration ✅ Complete
+- [x] `compile_federated_query_python/2` - Python FederatedQueryEngine factory
+- [x] `compile_federated_service_python/2` - Complete Flask service with federation
+- [x] `compile_federated_query_go/2` - Go FederatedQueryEngine with full types
+- [x] `generate_federation_endpoint/3` - HTTP endpoints for Python/Go/Rust
+- [x] Endpoints: `/kg/federated`, `/kg/federate`, `/kg/federation/stats`
+- [x] Integration with Phase 3 Kleinberg routing
 
-### Phase 4d: Advanced Features
-- [ ] Hierarchical federation
-- [ ] Adaptive federation-k
-- [ ] Query plan optimization
+**Implementation Files:**
+- `src/unifyweaver/targets/python_runtime/federated_query.py` - Core engine (~700 lines)
+- `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - Extended with federation
+- `src/unifyweaver/targets/python_target.pl` - Python code generation
+- `src/unifyweaver/targets/go_target.pl` - Go code generation
+- `src/unifyweaver/glue/network_glue.pl` - Federation endpoints
+- `src/unifyweaver/core/service_validation.pl` - Federation validation
+- `tests/core/test_federated_query.py` - 45 unit tests
+
+### Phase 4d: Advanced Features (Future)
+- [ ] Hierarchical federation (tree-structured aggregation)
+- [ ] Adaptive federation-k (adjust based on query complexity)
+- [ ] Query plan optimization (push-down predicates)
+- [ ] Density-based confidence scoring (semantic clustering)
 
 ## References
 
