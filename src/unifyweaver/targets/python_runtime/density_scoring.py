@@ -26,6 +26,20 @@ class BandwidthMethod(Enum):
     FIXED = "fixed"
 
 
+class ClusterMethod(Enum):
+    """Methods for semantic clustering."""
+    GREEDY = "greedy"  # Simple greedy centroid-based
+    HDBSCAN = "hdbscan"  # Hierarchical density-based
+
+
+# Try to import HDBSCAN
+try:
+    import hdbscan
+    HDBSCAN_AVAILABLE = True
+except ImportError:
+    HDBSCAN_AVAILABLE = False
+
+
 @dataclass
 class DensityConfig:
     """Configuration for density estimation."""
@@ -34,8 +48,12 @@ class DensityConfig:
     density_weight: float = 0.3  # Weight in flux-softmax (0 = ignore density)
     min_cluster_size: int = 2
     clustering_enabled: bool = True
-    similarity_threshold: float = 0.7  # For cluster assignment
+    similarity_threshold: float = 0.7  # For greedy cluster assignment
     normalize_scores: bool = True
+    # Phase 4d-ii: HDBSCAN options
+    cluster_method: ClusterMethod = ClusterMethod.GREEDY
+    hdbscan_min_samples: int = 2  # Core point neighborhood size
+    hdbscan_cluster_selection_epsilon: float = 0.0  # Merge clusters below this distance
 
 
 @dataclass
@@ -336,6 +354,105 @@ def cluster_by_similarity(
     return labels, valid_centroids
 
 
+def cluster_by_hdbscan(
+    embeddings: np.ndarray,
+    min_cluster_size: int = 2,
+    min_samples: int = 2,
+    cluster_selection_epsilon: float = 0.0
+) -> Tuple[np.ndarray, List[np.ndarray]]:
+    """Cluster embeddings using HDBSCAN.
+
+    HDBSCAN (Hierarchical Density-Based Spatial Clustering of Applications
+    with Noise) is a density-based clustering algorithm that:
+    - Doesn't require specifying number of clusters
+    - Handles noise/outliers naturally
+    - Works well with varying cluster densities
+    - Produces soft cluster membership probabilities
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        min_cluster_size: Minimum points to form a cluster
+        min_samples: Core point neighborhood size (higher = more conservative)
+        cluster_selection_epsilon: Distance threshold for merging clusters
+
+    Returns:
+        labels: (n,) array of cluster labels (-1 for noise)
+        centroids: List of cluster centroid arrays
+    """
+    n = len(embeddings)
+    if n == 0:
+        return np.array([]), []
+    if n < min_cluster_size:
+        return np.full(n, -1, dtype=int), []
+
+    if not HDBSCAN_AVAILABLE:
+        # Fallback to greedy clustering
+        return cluster_by_similarity(
+            embeddings,
+            threshold=0.7,
+            min_cluster_size=min_cluster_size
+        )
+
+    # Compute cosine distance matrix for HDBSCAN
+    # HDBSCAN works better with precomputed distances for cosine
+    distances = pairwise_cosine_distances(embeddings)
+
+    # Run HDBSCAN
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        cluster_selection_epsilon=cluster_selection_epsilon,
+        metric='precomputed',
+        cluster_selection_method='eom'  # Excess of Mass (default, better for varying sizes)
+    )
+    labels = clusterer.fit_predict(distances)
+
+    # Compute centroids for each cluster
+    unique_labels = sorted(set(labels) - {-1})
+    centroids = []
+    for label in unique_labels:
+        mask = labels == label
+        centroid = embeddings[mask].mean(axis=0)
+        centroids.append(centroid)
+
+    return labels, centroids
+
+
+def get_hdbscan_probabilities(
+    embeddings: np.ndarray,
+    min_cluster_size: int = 2,
+    min_samples: int = 2
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Get soft cluster membership probabilities from HDBSCAN.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        min_cluster_size: Minimum points to form a cluster
+        min_samples: Core point neighborhood size
+
+    Returns:
+        labels: (n,) array of cluster labels
+        probabilities: (n,) array of cluster membership probabilities
+    """
+    if not HDBSCAN_AVAILABLE:
+        labels, _ = cluster_by_similarity(embeddings, min_cluster_size=min_cluster_size)
+        # Assign probability 1.0 for clustered points, 0.0 for noise
+        probs = np.where(labels >= 0, 1.0, 0.0)
+        return labels, probs
+
+    distances = pairwise_cosine_distances(embeddings)
+
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric='precomputed'
+    )
+    labels = clusterer.fit_predict(distances)
+    probabilities = clusterer.probabilities_
+
+    return labels, probabilities
+
+
 def compute_cluster_density(
     embeddings: np.ndarray,
     cluster_labels: np.ndarray,
@@ -413,11 +530,20 @@ def two_stage_density_pipeline(
 
     # Stage 1: Cluster
     if config.clustering_enabled:
-        labels, centroids = cluster_by_similarity(
-            embeddings,
-            threshold=config.similarity_threshold,
-            min_cluster_size=config.min_cluster_size
-        )
+        if config.cluster_method == ClusterMethod.HDBSCAN:
+            labels, centroids = cluster_by_hdbscan(
+                embeddings,
+                min_cluster_size=config.min_cluster_size,
+                min_samples=config.hdbscan_min_samples,
+                cluster_selection_epsilon=config.hdbscan_cluster_selection_epsilon
+            )
+        else:
+            # Default: greedy clustering
+            labels, centroids = cluster_by_similarity(
+                embeddings,
+                threshold=config.similarity_threshold,
+                min_cluster_size=config.min_cluster_size
+            )
     else:
         # No clustering - treat all as one cluster
         labels = np.zeros(n, dtype=int)

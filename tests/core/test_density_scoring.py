@@ -263,6 +263,85 @@ class TestClustering(unittest.TestCase):
         self.assertEqual(labels[2], -1)
 
 
+class TestHDBSCANClustering(unittest.TestCase):
+    """Tests for HDBSCAN clustering (Phase 4d-ii)."""
+
+    def test_hdbscan_fallback_when_unavailable(self):
+        """HDBSCAN falls back to greedy when library unavailable."""
+        from density_scoring import cluster_by_hdbscan, HDBSCAN_AVAILABLE
+
+        embeddings = np.array([
+            [1.0, 0.0],
+            [0.95, 0.05],
+            [0.0, 1.0],
+            [0.05, 0.95],
+        ])
+        labels, centroids = cluster_by_hdbscan(
+            embeddings, min_cluster_size=2
+        )
+
+        # Should still return valid results (either HDBSCAN or fallback)
+        self.assertEqual(len(labels), 4)
+
+    def test_hdbscan_handles_small_input(self):
+        """HDBSCAN handles inputs smaller than min_cluster_size."""
+        from density_scoring import cluster_by_hdbscan
+
+        embeddings = np.array([[1.0, 0.0]])  # Single point
+        labels, centroids = cluster_by_hdbscan(embeddings, min_cluster_size=2)
+
+        # Should mark as noise
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0], -1)
+
+    def test_hdbscan_empty_input(self):
+        """HDBSCAN handles empty input."""
+        from density_scoring import cluster_by_hdbscan
+
+        labels, centroids = cluster_by_hdbscan(np.array([]).reshape(0, 3))
+        self.assertEqual(len(labels), 0)
+        self.assertEqual(len(centroids), 0)
+
+    def test_pipeline_with_hdbscan_method(self):
+        """Two-stage pipeline works with HDBSCAN cluster method."""
+        from density_scoring import (
+            two_stage_density_pipeline,
+            DensityConfig,
+            ClusterMethod
+        )
+
+        embeddings = np.random.randn(10, 8)
+        scores = np.random.rand(10)
+
+        config = DensityConfig(
+            cluster_method=ClusterMethod.HDBSCAN,
+            min_cluster_size=2,
+            hdbscan_min_samples=2
+        )
+
+        flux_probs, densities, labels, centroids = two_stage_density_pipeline(
+            embeddings, scores, config
+        )
+
+        # Should return valid shapes
+        self.assertEqual(len(flux_probs), 10)
+        self.assertEqual(len(densities), 10)
+        self.assertEqual(len(labels), 10)
+        # Probabilities should sum to 1
+        self.assertAlmostEqual(np.sum(flux_probs), 1.0)
+
+
+class TestClusterMethodEnum(unittest.TestCase):
+    """Tests for ClusterMethod enum."""
+
+    def test_enum_values(self):
+        """ClusterMethod has expected values."""
+        from density_scoring import ClusterMethod
+
+        self.assertEqual(ClusterMethod.GREEDY.value, "greedy")
+        self.assertEqual(ClusterMethod.HDBSCAN.value, "hdbscan")
+
+
 class TestTwoStagePipeline(unittest.TestCase):
     """Tests for two-stage density pipeline."""
 
