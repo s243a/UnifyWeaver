@@ -1,6 +1,6 @@
 # Density-Based Confidence Scoring for Federated KG Queries
 
-## Status: Draft Proposal
+## Status: Phase 4d-i Complete (Basic Density Scoring)
 
 ## Overview
 
@@ -1073,16 +1073,26 @@ is_valid_aggregation_strategy(density_weighted(Opts)) :-
 
 ## Implementation Phases
 
-### Phase 4d-i: Basic Density Scoring
-- [ ] Add `embedding` field to result protocol
-- [ ] Implement `federated_density_estimate()`
-- [ ] Add `density_score` to `AggregatedResult`
-- [ ] Silverman's rule bandwidth selection
+### Phase 4d-i: Basic Density Scoring ✅ COMPLETE
+- [x] Add `embedding` field to result protocol (`NodeResult.embedding`, `AggregatedResult.semantic_centroid`)
+- [x] Implement KDE with `compute_density_scores()` and `two_stage_density_pipeline()`
+- [x] Add `density_score`, `cluster_id`, `cluster_confidence` to `AggregatedResult`
+- [x] Silverman's rule bandwidth selection (`silverman_bandwidth()`)
+- [x] Flux-softmax: `P(i) = exp(sᵢ/τ) * (1 + w * dᵢ) / Z`
+- [x] `DensityAwareFederatedEngine` with `DENSITY_FLUX` strategy
+- [x] Greedy centroid-based clustering (`cluster_by_similarity()`)
+- [x] Transaction management (`TransactionManager`, `ClusterAggregator`, `AggregatorRegistry`)
+- [x] Prolog validation for density options
+- [x] 35 unit tests
+
+**Implementation:**
+- `density_scoring.py` (~800 lines)
+- `federated_query.py` extended (~1100 lines)
+- `service_validation.pl` extended
 
 ### Phase 4d-ii: Semantic Clustering
-- [ ] HDBSCAN integration for result clustering
+- [ ] HDBSCAN integration for hierarchical clustering
 - [ ] `merge_cluster()` for semantic dedup
-- [ ] `cluster_confidence` metric
 - [ ] Cluster visualization utilities
 
 ### Phase 4d-iii: Adaptive Methods

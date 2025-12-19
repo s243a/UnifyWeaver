@@ -299,20 +299,35 @@ service(csv_expert_node, [
    - [x] `compile_federated_query_go/2` - Go engine with full types
    - [x] `generate_federation_endpoint/3` - HTTP endpoints (Python/Go/Rust)
 
-4. **Advanced Features** (Phase 4d - Future)
+4. **Density-Based Scoring** ✅ (Phase 4d-i Complete)
+   - [x] Kernel Density Estimation (KDE) with Silverman bandwidth
+   - [x] Flux-softmax: `P(i) = exp(sᵢ/τ) * (1 + w * dᵢ) / Z`
+   - [x] Two-stage pipeline: cluster by similarity, then intra-cluster density
+   - [x] `DensityAwareFederatedEngine` class
+   - [x] `DENSITY_FLUX` aggregation strategy
+   - [x] Prolog validation for density options
+   - [x] 35 unit tests
+
+   **Pending sub-phases:**
+   - [ ] Phase 4d-ii: HDBSCAN hierarchical clustering
+   - [ ] Phase 4d-iii: Adaptive bandwidth (cross-validation, balloon estimator)
+   - [ ] Phase 4d-iv: Efficiency (sketching, ANN for large result sets)
+
+5. **Advanced Features** (Future)
    - [ ] Hierarchical federation
    - [ ] Adaptive federation-k
    - [ ] Query plan optimization
-   - [ ] Density-based confidence scoring
 
 **Implementation Files:**
-- `src/unifyweaver/targets/python_runtime/federated_query.py` - Core engine (~700 lines)
+- `src/unifyweaver/targets/python_runtime/federated_query.py` - Core engine (~1100 lines)
+- `src/unifyweaver/targets/python_runtime/density_scoring.py` - Density scoring (~800 lines)
 - `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - Extended API
 - `src/unifyweaver/targets/python_target.pl` - Python code generation
 - `src/unifyweaver/targets/go_target.pl` - Go code generation
 - `src/unifyweaver/glue/network_glue.pl` - Federation endpoints
-- `src/unifyweaver/core/service_validation.pl` - Federation validation
-- `tests/core/test_federated_query.py` - 45 unit tests
+- `src/unifyweaver/core/service_validation.pl` - Federation + density validation
+- `tests/core/test_federated_query.py` - 45 unit tests (federation)
+- `tests/core/test_density_scoring.py` - 35 unit tests (density)
 
 **Federated Query Protocol:**
 ```json
