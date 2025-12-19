@@ -2432,6 +2432,104 @@ class DistributedKGTopologyAPI(KGTopologyAPI):
             'node_id': self.node_id
         }
 
+    def handle_federated_query(
+        self,
+        request: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Handle incoming federated query from another node.
+
+        This is the HTTP endpoint handler for /kg/federated.
+        Returns results with exp_scores and partition_sum for distributed
+        softmax aggregation.
+
+        Args:
+            request: Incoming request with routing and aggregation config
+
+        Returns:
+            Response with results, exp_scores, and partition_sum
+        """
+        import math
+
+        routing = request.get('__routing', {})
+        embedding_info = request.get('__embedding', {})
+        payload = request.get('payload', {})
+        aggregation = routing.get('aggregation', {})
+
+        query_text = payload.get('query_text', '')
+        top_k = payload.get('top_k', 10)
+
+        # Extract query embedding
+        vector = embedding_info.get('vector', [])
+        if vector:
+            query_emb = np.array(vector, dtype=np.float32)
+        else:
+            model_name = embedding_info.get('model', 'all-MiniLM-L6-v2')
+            query_emb = self._embed_query(query_text, model_name)
+
+        # Local search
+        results = self.search_with_context(
+            query_text=query_text,
+            model_name=embedding_info.get('model', 'all-MiniLM-L6-v2'),
+            top_k=top_k
+        )
+
+        # Compute exp scores and partition sum for distributed softmax
+        raw_scores = [r.get('score', 0.0) for r in results]
+
+        # Log-sum-exp trick for numerical stability
+        if raw_scores:
+            max_score = max(raw_scores)
+            exp_scores = [math.exp(s - max_score) for s in raw_scores]
+            partition_sum = sum(exp_scores)
+            # Scale back
+            scale = math.exp(max_score)
+            exp_scores = [e * scale for e in exp_scores]
+            partition_sum *= scale
+        else:
+            exp_scores = []
+            partition_sum = 0.0
+
+        # Format results with exp_scores
+        formatted_results = []
+        for i, r in enumerate(results):
+            answer_text = r.get('answer_text', r.get('text', ''))
+            answer_hash = hashlib.sha256(answer_text.encode()).hexdigest()[:16]
+
+            formatted_results.append({
+                'answer_id': r.get('answer_id', r.get('id', i)),
+                'answer_text': answer_text,
+                'answer_hash': answer_hash,
+                'raw_score': r.get('score', 0.0),
+                'exp_score': exp_scores[i] if i < len(exp_scores) else 0.0,
+                'metadata': {
+                    'source_file': r.get('source_file'),
+                    'record_id': r.get('record_id'),
+                    'question_text': r.get('question_text'),
+                    'interface_id': r.get('interface_id')
+                }
+            })
+
+        # Get corpus_id from interfaces if available
+        corpus_id = None
+        interfaces = self.list_interfaces(active_only=True)
+        if interfaces:
+            # Use first interface's topics as proxy for corpus
+            corpus_id = '_'.join(interfaces[0].get('topics', [])[:3])
+
+        return {
+            '__type': 'kg_federated_response',
+            '__id': request.get('__id'),
+            'source_node': self.node_id,
+            'results': formatted_results,
+            'partition_sum': partition_sum,
+            'node_metadata': {
+                'corpus_id': corpus_id,
+                'embedding_model': embedding_info.get('model', 'all-MiniLM-L6-v2'),
+                'interface_count': len(interfaces)
+            }
+        }
+
     def prune_shortcuts(self, max_age_days: int = 30, min_hits: int = 1):
         """
         Prune old or unused shortcuts.

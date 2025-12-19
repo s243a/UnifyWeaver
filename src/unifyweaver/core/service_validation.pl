@@ -73,7 +73,17 @@
     get_kleinberg_similarity_threshold/2,
     get_kleinberg_path_folding/2,
     get_semantic_centroid/2,
-    get_interface_topics/2
+    get_interface_topics/2,
+    % Phase 4 KG Topology: Federation helpers
+    is_valid_federation_option/1,
+    is_valid_aggregation_strategy/1,
+    is_valid_aggregation_option/1,
+    is_federation_enabled/1,
+    get_federation_options/2,
+    get_federation_k/2,
+    get_aggregation_strategy/2,
+    get_consensus_threshold/2,
+    get_diversity_field/2
 ]).
 
 :- use_module(library(lists)).
@@ -1146,3 +1156,105 @@ get_interface_topics(service(_, Options, _), Topics) :-
     member(interface_topics(Topics), Metadata),
     !.
 get_interface_topics(_, []).
+
+
+% =============================================================================
+% KG TOPOLOGY PHASE 4: FEDERATED QUERY VALIDATION
+% =============================================================================
+
+%% is_valid_federation_option(+Option)
+%  Validate federation options for distributed queries.
+is_valid_federation_option(federation_k(K)) :-
+    integer(K), K > 0.
+is_valid_federation_option(aggregation(Strategy)) :-
+    is_valid_aggregation_strategy(Strategy).
+is_valid_federation_option(aggregation(Strategy, Opts)) :-
+    is_valid_aggregation_strategy(Strategy),
+    is_list(Opts),
+    maplist(is_valid_aggregation_option, Opts).
+is_valid_federation_option(timeout_ms(T)) :-
+    integer(T), T > 0.
+is_valid_federation_option(consensus_threshold(N)) :-
+    integer(N), N > 0.
+is_valid_federation_option(diversity_field(Field)) :-
+    atom(Field).
+
+%% is_valid_aggregation_strategy(+Strategy)
+%  Validate aggregation strategy for result merging.
+is_valid_aggregation_strategy(sum).
+is_valid_aggregation_strategy(max).
+is_valid_aggregation_strategy(min).
+is_valid_aggregation_strategy(avg).
+is_valid_aggregation_strategy(count).
+is_valid_aggregation_strategy(first).
+is_valid_aggregation_strategy(collect).
+is_valid_aggregation_strategy(diversity).
+
+%% is_valid_aggregation_option(+Option)
+%  Validate aggregation sub-options.
+is_valid_aggregation_option(dedup_key(Key)) :-
+    atom(Key).
+is_valid_aggregation_option(diversity_field(Field)) :-
+    atom(Field).
+is_valid_aggregation_option(consensus_threshold(N)) :-
+    integer(N), N > 0.
+
+%% is_federation_enabled(+Service)
+%  Check if service has federation enabled.
+is_federation_enabled(service(_, Options, _)) :-
+    is_list(Options),
+    member(federation(FedOpts), Options),
+    is_list(FedOpts),
+    FedOpts \= [].
+
+%% get_federation_options(+Service, -Options)
+%  Extract federation options from service definition.
+get_federation_options(service(_, Options, _), FedOpts) :-
+    is_list(Options),
+    member(federation(FedOpts), Options),
+    is_list(FedOpts),
+    !.
+get_federation_options(_, []).
+
+%% get_federation_k(+Service, -K)
+%  Get number of nodes to query in federation.
+get_federation_k(Service, K) :-
+    get_federation_options(Service, Opts),
+    member(federation_k(K), Opts),
+    !.
+get_federation_k(_, 3).  % Default: query 3 nodes
+
+%% get_aggregation_strategy(+Service, -Strategy)
+%  Get aggregation strategy for result merging.
+get_aggregation_strategy(Service, Strategy) :-
+    get_federation_options(Service, Opts),
+    member(aggregation(Strategy), Opts),
+    !.
+get_aggregation_strategy(Service, Strategy) :-
+    get_federation_options(Service, Opts),
+    member(aggregation(Strategy, _), Opts),
+    !.
+get_aggregation_strategy(_, sum).  % Default: sum (boost consensus)
+
+%% get_consensus_threshold(+Service, -Threshold)
+%  Get minimum node agreement for results.
+get_consensus_threshold(Service, N) :-
+    get_federation_options(Service, Opts),
+    member(consensus_threshold(N), Opts),
+    !.
+get_consensus_threshold(_, none).  % Default: no threshold
+
+%% get_diversity_field(+Service, -Field)
+%  Get field used for diversity-weighted aggregation.
+get_diversity_field(Service, Field) :-
+    get_federation_options(Service, Opts),
+    member(diversity_field(Field), Opts),
+    !.
+get_diversity_field(_, corpus_id).  % Default: corpus_id
+
+%% is_valid_discovery_metadata_entry(+Entry) - Phase 4 additions
+%  Additional metadata entries for federation.
+is_valid_discovery_metadata_entry(corpus_id(Id)) :- atom(Id).
+is_valid_discovery_metadata_entry(data_sources(Sources)) :-
+    is_list(Sources), maplist(atom, Sources).
+is_valid_discovery_metadata_entry(last_updated(Date)) :- atom(Date).
