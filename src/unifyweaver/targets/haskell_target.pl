@@ -472,6 +472,23 @@ dcg_body_to_parsec('?'(A), Expr) :-
     dcg_body_to_parsec(A, EA),
     format(string(Expr), 'optional ~w', [EA]).
 
+% Character classes (special atoms)
+dcg_body_to_parsec(letter, "letter").
+dcg_body_to_parsec(digit, "digit").
+dcg_body_to_parsec(alpha_num, "alphaNum").
+dcg_body_to_parsec(space, "space").
+dcg_body_to_parsec(any_char, "anyChar").
+
+% Negation: not(A)
+dcg_body_to_parsec(not(A), Expr) :-
+    dcg_body_to_parsec(A, EA),
+    format(string(Expr), 'notFollowedBy ~w', [EA]).
+
+% Lookahead: lookahead(A)
+dcg_body_to_parsec(lookahead(A), Expr) :-
+    dcg_body_to_parsec(A, EA),
+    format(string(Expr), 'lookAhead ~w', [EA]).
+
 %% term_to_haskell_guard(+Term, -HaskellExpr)
 %  Convert Prolog term to Haskell expression (for guards).
 %

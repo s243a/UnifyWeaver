@@ -116,13 +116,22 @@ digit = string "d"
 
 ### DCG Pattern Mapping
 
-| DCG | Parsec |
-|-----|--------|
-| `[char]` | `string "char"` |
-| `a, b` | `a *> b` |
-| `a ; b` | `try a <|> b` |
-| `{goal}` | `pure ()` |
-| Non-terminal | Recursive call |
+| DCG | Parsec | Description |
+|-----|--------|-------------|
+| `[char]` | `string "char"` | Terminal |
+| `a, b` | `a *> b` | Sequence |
+| `a ; b` | `try a <|> b` | Alternative |
+| `{goal}` | `pure ()` | Prolog goal |
+| Non-terminal | Recursive call | Rule reference |
+| `*(A)` | `many A` | Zero or more |
+| `+(A)` | `some A` | One or more |
+| `?(A)` | `optional A` | Optional |
+| `letter` | `letter` | Any letter |
+| `digit` | `digit` | Any digit |
+| `alpha_num` | `alphaNum` | Letter or digit |
+| `space` | `space` | Whitespace |
+| `not(A)` | `notFollowedBy A` | Negation |
+| `lookahead(A)` | `lookAhead A` | Positive lookahead |
 
 ## Dependencies
 
