@@ -147,6 +147,30 @@ Instead of tagging anchors with seed levels, use **hash-based links** from answe
 
 The `seed_level` remains for **provenance tracking only**, not for anchor identification.
 
+### Anchor Question Convention
+
+When storing multiple questions for a cluster, the **anchor question** (the one that generated the answer) is identified by:
+
+1. **Position**: The anchor question is always **first** in the questions list
+2. **Hash**: The `anchor_question_hash` in the answer is `SHA-256(anchor_question_text)`
+
+```json
+{
+  "cluster_id": "csv-reading",
+  "answer": {
+    "text": "To read a CSV file...",
+    "anchor_question_hash": "sha256('How do I read a CSV file?')"
+  },
+  "questions": [
+    {"text": "How do I read a CSV file?", "type": "practical"},
+    {"text": "What is CSV parsing?", "type": "concept"},
+    {"text": "Show me CSV reading code", "type": "example"}
+  ]
+}
+```
+
+The first question ("How do I read a CSV file?") is the anchor. All other questions are variants/expansions that map to the same answer.
+
 ### Two-Phase Expansion Model
 
 This decoupling enables a two-phase expansion:
