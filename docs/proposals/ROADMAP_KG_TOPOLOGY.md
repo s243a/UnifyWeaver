@@ -137,6 +137,36 @@ Default behavior: Auto-detect based on Q-A count.
 
 **Feedback loop:** Multiple interfaces may inform KG expansion priorities (see "Knowledge Graph Expansion" below).
 
+3. **Prerequisites Centroids** ✅
+   - [x] Per-answer prerequisites centroid storage (`answer_prerequisites_centroids` table)
+   - [x] Compute from metadata relations (`compute_prerequisites_centroid_from_metadata()`)
+   - [x] Compute from semantic interface search (`compute_prerequisites_centroid_from_interface()`)
+   - [x] Hybrid computation combining both methods
+   - [x] Search by prerequisites centroid (`search_by_prerequisites_centroid()`)
+   - [x] Batch update all prerequisites centroids (`update_all_prerequisites_centroids()`)
+
+   **Use case:** Each chapter/answer can have a "prerequisites centroid" that represents the semantic space of its prerequisites. This enables:
+   - Finding prerequisite-like content for a chapter without explicit relations
+   - Searching the prerequisites interface using the chapter's prerequisites centroid
+   - Hybrid retrieval combining metadata relations and semantic similarity
+
+   **API:**
+   ```python
+   # Compute prerequisites centroid from metadata (preliminary/foundational relations)
+   db.update_prerequisites_centroid(chapter_id, model_id, method='metadata')
+
+   # Compute from semantic search of prerequisites interface
+   db.update_prerequisites_centroid(chapter_id, model_id, method='semantic',
+                                     prerequisites_interface_id=prereq_if_id)
+
+   # Search for prerequisite-like content
+   results = db.search_by_prerequisites_centroid(chapter_id, model_id, top_k=5)
+   ```
+
+4. **Interface Update Methods** ✅
+   - [x] Update interface properties (`update_interface()`)
+   - [x] Refresh interface centroid (`refresh_interface_centroid()`)
+
 ### Phase 3: Distributed Network ✅ Core Implementation Complete
 
 **Goal:** Enable multiple nodes to form a small-world network.

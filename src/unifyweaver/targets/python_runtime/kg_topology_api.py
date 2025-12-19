@@ -32,6 +32,7 @@ See: docs/proposals/ROADMAP_KG_TOPOLOGY.md
      docs/proposals/SEED_QUESTION_TOPOLOGY.md
 """
 
+import os
 import sqlite3
 import json
 import hashlib
@@ -201,6 +202,23 @@ class KGTopologyAPI(LDAProjectionDB):
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_active_interfaces
             ON semantic_interfaces(is_active)
+        """)
+
+        # =====================================================================
+        # ANSWER PREREQUISITES CENTROIDS
+        # =====================================================================
+
+        # Per-answer prerequisites centroids: computed from prerequisite relations
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS answer_prerequisites_centroids (
+                answer_id INTEGER REFERENCES answers(answer_id),
+                model_id INTEGER REFERENCES embedding_models(model_id),
+                centroid BLOB NOT NULL,
+                source_type TEXT DEFAULT 'metadata',  -- 'metadata', 'semantic', 'hybrid'
+                source_answers TEXT,  -- JSON array of answer_ids used to compute
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (answer_id, model_id)
+            )
         """)
 
         self.conn.commit()
@@ -1086,6 +1104,493 @@ class KGTopologyAPI(LDAProjectionDB):
         # Store and return
         self.set_interface_centroid(interface_id, model_id, centroid)
         return centroid
+
+    # =========================================================================
+    # ANSWER PREREQUISITES CENTROIDS
+    # =========================================================================
+
+    def set_prerequisites_centroid(
+        self,
+        answer_id: int,
+        model_id: int,
+        centroid: np.ndarray,
+        source_type: str = 'metadata',
+        source_answers: List[int] = None
+    ) -> None:
+        """
+        Store a prerequisites centroid for an answer (chapter).
+
+        Args:
+            answer_id: The answer (chapter) to store centroid for
+            model_id: Embedding model ID
+            centroid: The centroid embedding vector
+            source_type: How centroid was computed ('metadata', 'semantic', 'hybrid')
+            source_answers: List of answer IDs used to compute this centroid
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO answer_prerequisites_centroids
+            (answer_id, model_id, centroid, source_type, source_answers, computed_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (
+            answer_id,
+            model_id,
+            centroid.astype(np.float32).tobytes(),
+            source_type,
+            json.dumps(source_answers) if source_answers else None
+        ))
+        self.conn.commit()
+
+    def get_prerequisites_centroid(
+        self,
+        answer_id: int,
+        model_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the prerequisites centroid for an answer (chapter).
+
+        Returns:
+            Dict with 'centroid', 'source_type', 'source_answers', 'computed_at'
+            or None if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT centroid, source_type, source_answers, computed_at
+            FROM answer_prerequisites_centroids
+            WHERE answer_id = ? AND model_id = ?
+        """, (answer_id, model_id))
+
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        return {
+            'centroid': np.frombuffer(row['centroid'], dtype=np.float32),
+            'source_type': row['source_type'],
+            'source_answers': json.loads(row['source_answers']) if row['source_answers'] else [],
+            'computed_at': row['computed_at']
+        }
+
+    def compute_prerequisites_centroid_from_metadata(
+        self,
+        answer_id: int,
+        model_id: int
+    ) -> Optional[np.ndarray]:
+        """
+        Compute prerequisites centroid from metadata relations.
+
+        Uses 'preliminary' and 'foundational' relations to find prerequisites,
+        then averages their embeddings.
+
+        Args:
+            answer_id: The answer (chapter) to compute prerequisites for
+            model_id: Embedding model ID
+
+        Returns:
+            Computed centroid or None if no prerequisites found
+        """
+        # Get prerequisites via relations
+        preliminary = self.get_prerequisites(answer_id)  # preliminary relations
+        foundational = self.get_foundational(answer_id)  # foundational relations
+
+        prereq_answer_ids = set()
+        for rel in preliminary + foundational:
+            prereq_answer_ids.add(rel['answer_id'])
+
+        if not prereq_answer_ids:
+            return None
+
+        # Collect embeddings for prerequisites
+        embeddings = []
+        source_answers = []
+
+        for prereq_id in prereq_answer_ids:
+            emb = self._get_answer_embedding(prereq_id, model_id)
+            if emb is not None:
+                embeddings.append(emb)
+                source_answers.append(prereq_id)
+
+        if not embeddings:
+            return None
+
+        # Average embeddings
+        centroid = np.mean(embeddings, axis=0)
+
+        # Normalize
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+
+        # Store
+        self.set_prerequisites_centroid(
+            answer_id, model_id, centroid,
+            source_type='metadata',
+            source_answers=source_answers
+        )
+
+        return centroid
+
+    def compute_prerequisites_centroid_from_interface(
+        self,
+        answer_id: int,
+        model_id: int,
+        prerequisites_interface_id: int
+    ) -> Optional[np.ndarray]:
+        """
+        Compute prerequisites centroid by searching the prerequisites interface.
+
+        Uses the answer's content to search the prerequisites interface,
+        then averages top matches.
+
+        Args:
+            answer_id: The answer (chapter) to compute prerequisites for
+            model_id: Embedding model ID
+            prerequisites_interface_id: ID of the prerequisites interface
+
+        Returns:
+            Computed centroid or None
+        """
+        # Get answer text
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT text FROM answers WHERE answer_id = ?", (answer_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        answer_text = row['text']
+
+        # Get prerequisites interface centroid
+        interface_centroid = self.get_interface_centroid(
+            prerequisites_interface_id, model_id
+        )
+        if interface_centroid is None:
+            interface_centroid = self.compute_interface_centroid(
+                prerequisites_interface_id, model_id
+            )
+
+        if interface_centroid is None:
+            return None
+
+        # Search for semantically similar prerequisites
+        # Get answer embedding
+        answer_emb = self._get_answer_embedding(answer_id, model_id)
+        if answer_emb is None:
+            return None
+
+        # Find prerequisites closest to both the answer and the interface
+        # This is a simplified approach - search interface clusters
+        interface_clusters = self.get_interface_clusters(prerequisites_interface_id)
+
+        prereq_embeddings = []
+        source_answers = []
+
+        for cluster_info in interface_clusters:
+            cluster_id = cluster_info['cluster_id']
+            cluster_centroid = self.get_cluster_centroid(cluster_id, model_id)
+            if cluster_centroid is not None:
+                # Check similarity to answer
+                similarity = np.dot(answer_emb, cluster_centroid)
+                if similarity > 0.3:  # Threshold for relevance
+                    prereq_embeddings.append(cluster_centroid)
+                    # Get answer IDs from cluster
+                    cursor.execute("""
+                        SELECT answer_id FROM cluster_answers WHERE cluster_id = ?
+                    """, (cluster_id,))
+                    for r in cursor.fetchall():
+                        source_answers.append(r['answer_id'])
+
+        if not prereq_embeddings:
+            return None
+
+        # Average embeddings
+        centroid = np.mean(prereq_embeddings, axis=0)
+
+        # Normalize
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+
+        # Store
+        self.set_prerequisites_centroid(
+            answer_id, model_id, centroid,
+            source_type='semantic',
+            source_answers=list(set(source_answers))
+        )
+
+        return centroid
+
+    def update_prerequisites_centroid(
+        self,
+        answer_id: int,
+        model_id: int,
+        method: str = 'metadata',
+        prerequisites_interface_id: int = None
+    ) -> Optional[np.ndarray]:
+        """
+        Update (recompute) the prerequisites centroid for an answer.
+
+        Args:
+            answer_id: The answer (chapter) to update
+            model_id: Embedding model ID
+            method: 'metadata' (from relations), 'semantic' (from interface), 'hybrid'
+            prerequisites_interface_id: Required if method is 'semantic' or 'hybrid'
+
+        Returns:
+            Updated centroid or None
+        """
+        if method == 'metadata':
+            return self.compute_prerequisites_centroid_from_metadata(answer_id, model_id)
+        elif method == 'semantic':
+            if prerequisites_interface_id is None:
+                raise ValueError("prerequisites_interface_id required for semantic method")
+            return self.compute_prerequisites_centroid_from_interface(
+                answer_id, model_id, prerequisites_interface_id
+            )
+        elif method == 'hybrid':
+            if prerequisites_interface_id is None:
+                raise ValueError("prerequisites_interface_id required for hybrid method")
+            # Compute both
+            meta_centroid = self.compute_prerequisites_centroid_from_metadata(answer_id, model_id)
+            sem_centroid = self.compute_prerequisites_centroid_from_interface(
+                answer_id, model_id, prerequisites_interface_id
+            )
+            if meta_centroid is None and sem_centroid is None:
+                return None
+            elif meta_centroid is None:
+                return sem_centroid
+            elif sem_centroid is None:
+                return meta_centroid
+            else:
+                # Average both
+                centroid = (meta_centroid + sem_centroid) / 2
+                norm = np.linalg.norm(centroid)
+                if norm > 0:
+                    centroid = centroid / norm
+                # Store hybrid result
+                self.set_prerequisites_centroid(
+                    answer_id, model_id, centroid,
+                    source_type='hybrid',
+                    source_answers=None
+                )
+                return centroid
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+    def search_by_prerequisites_centroid(
+        self,
+        answer_id: int,
+        model_id: int,
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for content similar to an answer's prerequisites centroid.
+
+        This finds content that is "prerequisite-like" for the given answer.
+
+        Args:
+            answer_id: The answer (chapter) whose prerequisites to search by
+            model_id: Embedding model ID
+            top_k: Number of results
+
+        Returns:
+            List of similar answers
+        """
+        prereq_info = self.get_prerequisites_centroid(answer_id, model_id)
+        if prereq_info is None:
+            # Try computing
+            centroid = self.compute_prerequisites_centroid_from_metadata(answer_id, model_id)
+            if centroid is None:
+                return []
+        else:
+            centroid = prereq_info['centroid']
+
+        # Search using centroid
+        return self._search_by_embedding(centroid, model_id, top_k)
+
+    def _get_answer_embedding(self, answer_id: int, model_id: int) -> Optional[np.ndarray]:
+        """Get embedding for an answer."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT vector_path FROM embeddings
+            WHERE entity_type = 'answer' AND entity_id = ? AND model_id = ?
+        """, (answer_id, model_id))
+
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        vector_path = row['vector_path']
+        if self.embeddings_dir:
+            vector_path = os.path.join(self.embeddings_dir, vector_path)
+
+        try:
+            return np.load(vector_path)
+        except Exception:
+            return None
+
+    def _search_by_embedding(
+        self,
+        query_embedding: np.ndarray,
+        model_id: int,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """Search for answers similar to a query embedding."""
+        cursor = self.conn.cursor()
+
+        # Get all answer embeddings
+        cursor.execute("""
+            SELECT e.entity_id as answer_id, e.vector_path, a.text, a.source_file, a.record_id
+            FROM embeddings e
+            JOIN answers a ON e.entity_id = a.answer_id
+            WHERE e.entity_type = 'answer' AND e.model_id = ?
+        """, (model_id,))
+
+        results = []
+        for row in cursor.fetchall():
+            vector_path = row['vector_path']
+            if self.embeddings_dir:
+                vector_path = os.path.join(self.embeddings_dir, vector_path)
+
+            try:
+                emb = np.load(vector_path)
+                similarity = float(np.dot(query_embedding, emb))
+                results.append({
+                    'answer_id': row['answer_id'],
+                    'text': row['text'][:500] if row['text'] else '',
+                    'source_file': row['source_file'],
+                    'record_id': row['record_id'],
+                    'similarity': similarity
+                })
+            except Exception:
+                continue
+
+        # Sort by similarity
+        results.sort(key=lambda x: x['similarity'], reverse=True)
+        return results[:top_k]
+
+    # =========================================================================
+    # INTERFACE UPDATE METHODS
+    # =========================================================================
+
+    def update_interface(
+        self,
+        interface_id: int,
+        name: str = None,
+        description: str = None,
+        topics: List[str] = None,
+        is_active: bool = None
+    ) -> bool:
+        """
+        Update an existing interface's properties.
+
+        Args:
+            interface_id: Interface to update
+            name: New name (optional)
+            description: New description (optional)
+            topics: New topics list (optional)
+            is_active: New active status (optional)
+
+        Returns:
+            True if updated, False if interface not found
+        """
+        cursor = self.conn.cursor()
+
+        # Check interface exists
+        cursor.execute("SELECT interface_id FROM semantic_interfaces WHERE interface_id = ?",
+                      (interface_id,))
+        if not cursor.fetchone():
+            return False
+
+        # Build update query
+        updates = []
+        params = []
+
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+        if topics is not None:
+            updates.append("topics = ?")
+            params.append(json.dumps(topics))
+        if is_active is not None:
+            updates.append("is_active = ?")
+            params.append(is_active)
+
+        if not updates:
+            return True  # Nothing to update
+
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(interface_id)
+
+        cursor.execute(f"""
+            UPDATE semantic_interfaces
+            SET {', '.join(updates)}
+            WHERE interface_id = ?
+        """, params)
+
+        self.conn.commit()
+        return True
+
+    def refresh_interface_centroid(
+        self,
+        interface_id: int,
+        model_id: int
+    ) -> Optional[np.ndarray]:
+        """
+        Refresh (recompute) an interface's centroid from its clusters.
+
+        Args:
+            interface_id: Interface to refresh
+            model_id: Embedding model ID
+
+        Returns:
+            New centroid or None
+        """
+        return self.compute_interface_centroid(interface_id, model_id)
+
+    def update_all_prerequisites_centroids(
+        self,
+        model_id: int,
+        method: str = 'metadata',
+        prerequisites_interface_id: int = None
+    ) -> Dict[str, int]:
+        """
+        Update prerequisites centroids for all answers that have prerequisites.
+
+        Args:
+            model_id: Embedding model ID
+            method: 'metadata', 'semantic', or 'hybrid'
+            prerequisites_interface_id: Required for semantic/hybrid
+
+        Returns:
+            Stats dict with 'updated', 'skipped', 'errors'
+        """
+        stats = {'updated': 0, 'skipped': 0, 'errors': 0}
+
+        cursor = self.conn.cursor()
+
+        # Find all answers that have prerequisites relations
+        cursor.execute("""
+            SELECT DISTINCT to_answer_id as answer_id
+            FROM answer_relations
+            WHERE relation_type IN ('preliminary', 'foundational')
+        """)
+
+        for row in cursor.fetchall():
+            try:
+                result = self.update_prerequisites_centroid(
+                    row['answer_id'], model_id, method, prerequisites_interface_id
+                )
+                if result is not None:
+                    stats['updated'] += 1
+                else:
+                    stats['skipped'] += 1
+            except Exception as e:
+                stats['errors'] += 1
+
+        return stats
 
     # =========================================================================
     # QUERY-TO-INTERFACE MAPPING
