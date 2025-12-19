@@ -18,6 +18,9 @@ param(
     [string]$OutputDir = "tmp/csharp_query_smoke",
 
     [Parameter(Mandatory = $false)]
+    [string]$ProjectFilter = "csharp_query_*",
+
+    [Parameter(Mandatory = $false)]
     [switch]$KeepArtifacts,
 
     [Parameter(Mandatory = $false)]
@@ -135,7 +138,12 @@ function Invoke-NativeLogged {
 }
 
 $projectRoot = Resolve-ProjectRoot
-$outputPath = Join-Path $projectRoot $OutputDir
+
+$outputPath = if ([System.IO.Path]::IsPathRooted($OutputDir)) {
+    [System.IO.Path]::GetFullPath($OutputDir)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDir))
+}
 
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 
@@ -178,7 +186,7 @@ if (-not $SkipCodegen) {
 
 Assert-DotnetAvailable
 
-$projects = Get-ChildItem -Path $outputPath -Directory -Filter "csharp_query_*" | Where-Object {
+$projects = Get-ChildItem -Path $outputPath -Directory -Filter $ProjectFilter | Where-Object {
     Test-Path (Join-Path $_.FullName "expected_rows.txt")
 }
 
