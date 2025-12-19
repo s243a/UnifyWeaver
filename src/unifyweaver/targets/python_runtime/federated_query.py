@@ -54,6 +54,7 @@ class AggregationStrategy(Enum):
     FIRST = "first"               # keep first seen
     COLLECT = "collect"           # keep all (no dedup)
     DIVERSITY_WEIGHTED = "diversity"  # boost only if sources differ
+    DENSITY_FLUX = "density_flux"     # Phase 4d: density-weighted softmax
 
 
 @dataclass
@@ -63,6 +64,11 @@ class AggregationConfig:
     dedup_key: str = "answer_hash"  # Field to group by
     consensus_threshold: Optional[int] = None  # Minimum node agreement
     diversity_field: str = "corpus_id"  # Field for diversity checking
+    # Phase 4d: Density scoring options
+    density_weight: float = 0.3  # Weight for density in flux-softmax (0 = ignore)
+    clustering_enabled: bool = True  # Enable two-stage clustering
+    similarity_threshold: float = 0.7  # Cluster assignment threshold
+    min_cluster_size: int = 2  # Minimum cluster size (smaller = noise)
 
 
 # =============================================================================
@@ -198,26 +204,38 @@ class NodeResult:
     raw_score: float
     exp_score: float
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Phase 4d: Embedding for density computation
+    embedding: Optional[np.ndarray] = None
+    local_density: float = 0.0  # Density computed at source node
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             'answer_id': self.answer_id,
             'answer_text': self.answer_text,
             'answer_hash': self.answer_hash,
             'raw_score': self.raw_score,
             'exp_score': self.exp_score,
-            'metadata': self.metadata
+            'metadata': self.metadata,
+            'local_density': self.local_density
         }
+        if self.embedding is not None:
+            result['embedding'] = self.embedding.tolist()
+        return result
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'NodeResult':
+        embedding = None
+        if 'embedding' in d and d['embedding'] is not None:
+            embedding = np.array(d['embedding'])
         return cls(
             answer_id=d['answer_id'],
             answer_text=d['answer_text'],
             answer_hash=d['answer_hash'],
             raw_score=d['raw_score'],
             exp_score=d['exp_score'],
-            metadata=d.get('metadata', {})
+            metadata=d.get('metadata', {}),
+            embedding=embedding,
+            local_density=d.get('local_density', 0.0)
         )
 
 
@@ -264,16 +282,23 @@ class ResultProvenance:
     interface_id: Optional[int] = None
     embedding_model: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
+    # Phase 4d: Density information
+    embedding: Optional[np.ndarray] = None
+    density_score: float = 0.0
+    cluster_id: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             'node_id': self.node_id,
             'exp_score': self.exp_score,
             'corpus_id': self.corpus_id,
             'data_sources': self.data_sources,
             'interface_id': self.interface_id,
-            'embedding_model': self.embedding_model
+            'embedding_model': self.embedding_model,
+            'density_score': self.density_score,
+            'cluster_id': self.cluster_id
         }
+        return result
 
 
 @dataclass
@@ -285,6 +310,11 @@ class AggregatedResult:
     source_nodes: List[str] = field(default_factory=list)
     provenance: List[ResultProvenance] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Phase 4d: Density information
+    semantic_centroid: Optional[np.ndarray] = None  # Mean embedding
+    density_score: float = 0.0  # Global density after aggregation
+    cluster_id: Optional[int] = None
+    cluster_confidence: float = 0.0  # density * cluster_size
 
     @classmethod
     def from_single(cls, result: NodeResult, node_id: str,
@@ -301,9 +331,13 @@ class AggregatedResult:
                 corpus_id=node_metadata.get('corpus_id'),
                 data_sources=node_metadata.get('data_sources', []),
                 interface_id=node_metadata.get('interface_id'),
-                embedding_model=node_metadata.get('embedding_model')
+                embedding_model=node_metadata.get('embedding_model'),
+                embedding=result.embedding,
+                density_score=result.local_density
             )],
-            metadata=result.metadata.copy()
+            metadata=result.metadata.copy(),
+            semantic_centroid=result.embedding.copy() if result.embedding is not None else None,
+            density_score=result.local_density
         )
 
     def to_dict(self, normalized_prob: float = 0.0) -> Dict[str, Any]:
@@ -324,7 +358,11 @@ class AggregatedResult:
             'diversity_score': round(diversity_score, 3),
             'unique_corpora': len(unique_corpora),
             'provenance': [p.to_dict() for p in self.provenance],
-            'metadata': self.metadata
+            'metadata': self.metadata,
+            # Phase 4d: Density metrics
+            'density_score': round(self.density_score, 4),
+            'cluster_id': self.cluster_id,
+            'cluster_confidence': round(self.cluster_confidence, 4)
         }
 
 
@@ -795,7 +833,11 @@ def create_federated_engine(
     federation_k: int = 3,
     timeout_ms: int = 5000,
     consensus_threshold: Optional[int] = None,
-    diversity_field: str = "corpus_id"
+    diversity_field: str = "corpus_id",
+    # Phase 4d: Density options
+    density_weight: float = 0.3,
+    clustering_enabled: bool = True,
+    similarity_threshold: float = 0.7
 ) -> FederatedQueryEngine:
     """Factory function to create a FederatedQueryEngine."""
     strategy_enum = AggregationStrategy(strategy)
@@ -803,10 +845,268 @@ def create_federated_engine(
     config = AggregationConfig(
         strategy=strategy_enum,
         consensus_threshold=consensus_threshold,
-        diversity_field=diversity_field
+        diversity_field=diversity_field,
+        density_weight=density_weight,
+        clustering_enabled=clustering_enabled,
+        similarity_threshold=similarity_threshold
     )
 
     return FederatedQueryEngine(
+        router=router,
+        aggregation_config=config,
+        federation_k=federation_k,
+        timeout_ms=timeout_ms
+    )
+
+
+# =============================================================================
+# PHASE 4D: DENSITY-WEIGHTED AGGREGATION
+# =============================================================================
+
+try:
+    from .density_scoring import (
+        DensityConfig,
+        compute_density_scores,
+        flux_softmax,
+        cluster_by_similarity,
+        compute_cluster_density,
+        two_stage_density_pipeline,
+        compute_cluster_stats,
+        TransactionManager,
+        get_transaction_manager
+    )
+    DENSITY_AVAILABLE = True
+except ImportError:
+    try:
+        from density_scoring import (
+            DensityConfig,
+            compute_density_scores,
+            flux_softmax,
+            cluster_by_similarity,
+            compute_cluster_density,
+            two_stage_density_pipeline,
+            compute_cluster_stats,
+            TransactionManager,
+            get_transaction_manager
+        )
+        DENSITY_AVAILABLE = True
+    except ImportError:
+        DENSITY_AVAILABLE = False
+
+
+def apply_density_scoring(
+    results: List[AggregatedResult],
+    config: AggregationConfig
+) -> List[AggregatedResult]:
+    """
+    Apply two-stage density scoring to aggregated results.
+
+    Stage 1: Cluster results by semantic similarity
+    Stage 2: Compute density within each cluster
+
+    This implements the "flux-based softmax" where density acts as a
+    multiplicative factor that concentrates probability in coherent regions.
+
+    Args:
+        results: List of aggregated results with embeddings
+        config: Aggregation configuration with density options
+
+    Returns:
+        Results with updated density_score, cluster_id, cluster_confidence
+    """
+    if not DENSITY_AVAILABLE:
+        return results
+
+    if not results:
+        return results
+
+    # Extract embeddings
+    embeddings = []
+    scores = []
+    valid_indices = []
+
+    for i, r in enumerate(results):
+        if r.semantic_centroid is not None:
+            embeddings.append(r.semantic_centroid)
+            score = r.combined_score
+            if isinstance(score, tuple):
+                score = score[0]
+            scores.append(float(score))
+            valid_indices.append(i)
+
+    if len(embeddings) < 2:
+        # Not enough embeddings for density
+        return results
+
+    embeddings = np.array(embeddings)
+    scores = np.array(scores)
+
+    # Create density config from aggregation config
+    density_config = DensityConfig(
+        density_weight=config.density_weight,
+        clustering_enabled=config.clustering_enabled,
+        similarity_threshold=config.similarity_threshold,
+        min_cluster_size=config.min_cluster_size
+    )
+
+    # Run two-stage pipeline
+    flux_probs, densities, labels, centroids = two_stage_density_pipeline(
+        embeddings, scores, density_config
+    )
+
+    # Update results with density information
+    for j, i in enumerate(valid_indices):
+        results[i].density_score = float(densities[j])
+        results[i].cluster_id = int(labels[j]) if labels[j] >= 0 else None
+
+        # Cluster confidence = density * cluster_size
+        if labels[j] >= 0:
+            cluster_size = int((labels == labels[j]).sum())
+            results[i].cluster_confidence = float(densities[j] * cluster_size)
+        else:
+            results[i].cluster_confidence = 0.0
+
+    return results
+
+
+def density_flux_normalize(
+    results: List[AggregatedResult],
+    config: AggregationConfig
+) -> List[Tuple[AggregatedResult, float]]:
+    """
+    Normalize results using flux-softmax (density-weighted probabilities).
+
+    P(i) = exp(sᵢ) * (1 + w * dᵢ) / Z
+
+    Args:
+        results: Aggregated results with density scores
+        config: Aggregation config
+
+    Returns:
+        List of (result, probability) tuples sorted by probability
+    """
+    if not DENSITY_AVAILABLE or not results:
+        # Fallback to standard softmax
+        total = sum(
+            r.combined_score if not isinstance(r.combined_score, tuple)
+            else r.combined_score[0]
+            for r in results
+        )
+        return [
+            (r, (r.combined_score if not isinstance(r.combined_score, tuple)
+                 else r.combined_score[0]) / total if total > 0 else 0.0)
+            for r in results
+        ]
+
+    scores = np.array([
+        r.combined_score if not isinstance(r.combined_score, tuple)
+        else r.combined_score[0]
+        for r in results
+    ])
+    densities = np.array([r.density_score for r in results])
+
+    probs = flux_softmax(scores, densities, config.density_weight)
+
+    result_probs = list(zip(results, probs.tolist()))
+    result_probs.sort(key=lambda x: x[1], reverse=True)
+
+    return result_probs
+
+
+class DensityAwareFederatedEngine(FederatedQueryEngine):
+    """
+    Extended federated query engine with density-based scoring.
+
+    Implements Phase 4d density scoring:
+    - Two-stage clustering pipeline
+    - Flux-softmax normalization
+    - Cluster confidence metrics
+    """
+
+    def federated_query(
+        self,
+        query_text: str,
+        query_embedding: np.ndarray,
+        top_k: int = 10,
+        federation_k: Optional[int] = None,
+        aggregation_strategy: Optional[AggregationStrategy] = None,
+        return_embeddings: bool = True
+    ) -> AggregatedResponse:
+        """
+        Execute federated query with density scoring.
+
+        Args:
+            query_text: Query text
+            query_embedding: Query embedding vector
+            top_k: Number of results
+            federation_k: Number of nodes to query
+            aggregation_strategy: Override strategy
+            return_embeddings: Request embeddings from nodes for density
+
+        Returns:
+            AggregatedResponse with density-enhanced results
+        """
+        # Use parent implementation for basic query
+        response = super().federated_query(
+            query_text, query_embedding, top_k * 2,  # Get more for clustering
+            federation_k, aggregation_strategy
+        )
+
+        # Apply density scoring if using DENSITY_FLUX strategy
+        strategy = aggregation_strategy or self.config.strategy
+        if strategy == AggregationStrategy.DENSITY_FLUX and DENSITY_AVAILABLE:
+            # Convert dict results back to AggregatedResult for processing
+            # This is a simplified version - full implementation would
+            # preserve AggregatedResult objects through the pipeline
+            pass
+
+        return response
+
+    def _normalize_and_rank(
+        self,
+        aggregated: Dict[str, AggregatedResult],
+        total_partition: float,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """Override to use flux-softmax when DENSITY_FLUX strategy is set."""
+        results_list = list(aggregated.values())
+
+        if self.config.strategy == AggregationStrategy.DENSITY_FLUX:
+            # Apply density scoring
+            results_list = apply_density_scoring(results_list, self.config)
+
+            # Use flux-softmax normalization
+            result_probs = density_flux_normalize(results_list, self.config)
+
+            results = []
+            for result, prob in result_probs[:top_k]:
+                results.append(result.to_dict(normalized_prob=prob))
+
+            return results
+
+        # Fallback to parent implementation
+        return super()._normalize_and_rank(aggregated, total_partition, top_k)
+
+
+def create_density_aware_engine(
+    router: KleinbergRouter,
+    federation_k: int = 3,
+    timeout_ms: int = 5000,
+    density_weight: float = 0.3,
+    clustering_enabled: bool = True,
+    similarity_threshold: float = 0.7,
+    consensus_threshold: Optional[int] = None
+) -> DensityAwareFederatedEngine:
+    """Factory for density-aware federated engine."""
+    config = AggregationConfig(
+        strategy=AggregationStrategy.DENSITY_FLUX,
+        consensus_threshold=consensus_threshold,
+        density_weight=density_weight,
+        clustering_enabled=clustering_enabled,
+        similarity_threshold=similarity_threshold
+    )
+
+    return DensityAwareFederatedEngine(
         router=router,
         aggregation_config=config,
         federation_k=federation_k,

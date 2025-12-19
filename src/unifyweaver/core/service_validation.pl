@@ -78,6 +78,7 @@
     is_valid_federation_option/1,
     is_valid_aggregation_strategy/1,
     is_valid_aggregation_option/1,
+    is_valid_density_option/1,
     is_federation_enabled/1,
     get_federation_options/2,
     get_federation_k/2,
@@ -1189,6 +1190,10 @@ is_valid_aggregation_strategy(count).
 is_valid_aggregation_strategy(first).
 is_valid_aggregation_strategy(collect).
 is_valid_aggregation_strategy(diversity).
+% Phase 4d: Density-weighted aggregation
+is_valid_aggregation_strategy(density_flux).
+is_valid_aggregation_strategy(density_flux(Opts)) :-
+    is_list(Opts), maplist(is_valid_density_option, Opts).
 
 %% is_valid_aggregation_option(+Option)
 %  Validate aggregation sub-options.
@@ -1198,6 +1203,26 @@ is_valid_aggregation_option(diversity_field(Field)) :-
     atom(Field).
 is_valid_aggregation_option(consensus_threshold(N)) :-
     integer(N), N > 0.
+% Phase 4d: Density options
+is_valid_aggregation_option(density_weight(W)) :-
+    number(W), W >= 0, W =< 1.
+is_valid_aggregation_option(clustering_enabled(Bool)) :-
+    (Bool = true ; Bool = false).
+is_valid_aggregation_option(similarity_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_aggregation_option(min_cluster_size(N)) :-
+    integer(N), N >= 2.
+
+%% is_valid_density_option(+Option)
+%  Validate density scoring sub-options.
+is_valid_density_option(bandwidth(auto)).
+is_valid_density_option(bandwidth(silverman)).
+is_valid_density_option(bandwidth(scott)).
+is_valid_density_option(bandwidth(B)) :- number(B), B > 0.
+is_valid_density_option(clustering(Bool)) :- (Bool = true ; Bool = false).
+is_valid_density_option(min_cluster_size(N)) :- integer(N), N >= 2.
+is_valid_density_option(density_weight(W)) :- number(W), W >= 0, W =< 1.
+is_valid_density_option(similarity_threshold(T)) :- number(T), T >= 0, T =< 1.
 
 %% is_federation_enabled(+Service)
 %  Check if service has federation enabled.
