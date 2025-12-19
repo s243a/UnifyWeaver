@@ -564,7 +564,7 @@ template('facts/array_binary', [
 template('facts/lookup_unary', [
 "{{pred}}() {",
 "  local query=\"$1\"",
-"  for item in \"${{pred}}_data[@]}\"; do",
+"  for item in \"${{{pred}}_data[@]}\"; do",
 "    [[ \"$item\" == \"$query\" ]] && echo \"$item\"",
 "  done",
 "}",
@@ -574,7 +574,7 @@ template('facts/lookup_unary', [
 template('facts/lookup_binary', [
 "{{pred}}() {",
 "  local key=\"$1:$2\"",
-"  [[ -n \"${{pred}}_data[$key]}\" ]] && echo \"$key\"",
+"  [[ -n \"${{{pred}}_data[$key]}\" ]] && echo \"$key\"",
 "}",
 ""
 ]).
@@ -582,7 +582,7 @@ template('facts/lookup_binary', [
 % Stream functions
 template('facts/stream_unary', [
 "{{pred}}_stream() {",
-"  for item in \"${{pred}}_data[@]}\"; do",
+"  for item in \"${{{pred}}_data[@]}\"; do",
 "    echo \"$item\"",
 "  done",
 "}",
