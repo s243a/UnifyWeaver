@@ -18,11 +18,20 @@ The current federated KG topology assumes honest nodes. In open or semi-trusted 
 
 This document explores defense mechanisms, acknowledging that **robust approaches trade performance for security**. These techniques are more valuable for high-stakes information aggregation than for efficiency-focused deployments.
 
-## Approach 1: Output Smoothing (Outlier Rejection)
+## Approach 1: Output Smoothing (Soft Collision Detection)
 
 ### Concept
 
 Use statistical methods to reject results that deviate significantly from the consensus. Similar to robust statistics (trimmed means, Winsorized estimators).
+
+**Key Insight:** Outliers are **soft collisions** with the established consensus. This connects directly to the KSK-style hard collision detection in Approach 2:
+
+| Collision Type | Mechanism | Rejection |
+|---------------|-----------|-----------|
+| **Soft** (outliers) | Statistical deviation from consensus | Gradual (Z-score, MAD) |
+| **Hard** (KSK-style) | Different answer in locked region | Binary (reject/accept) |
+
+Both protect established consensus - outlier smoothing is the "soft" first line of defense, while collision detection is the "hard" lock once consensus is strong enough.
 
 ### Implementation
 
@@ -567,33 +576,74 @@ class TransitiveTrustManager:
 
 #### 3c. FMS-style Trust (Efficient Web of Trust)
 
-The Freenet Messaging System (FMS) used an efficient trust propagation approach:
+The Freenet Messaging System (FMS) used an efficient trust propagation approach with a **two-dimensional trust model**:
+
+**Two Trust Dimensions (from FMS design):**
+
+| Dimension | Purpose | Semantic Search Analogy |
+|-----------|---------|------------------------|
+| **Local Message Trust** | Trust content quality (not spam/malicious) | Trust node's results are accurate |
+| **Local Trust List Trust** | Trust judgment about other users | Trust node's trust ratings of peers |
+
+This separation is crucial: a node might return good results (high message trust) but have poor judgment about which other nodes to trust (low trust list trust). Or vice versa.
+
+**Efficiency from FMS:**
+- You only download messages from: (1) directly trusted identities, (2) identities trusted by people you trust
+- Spam/malicious actors naturally excluded from your view
+- No centralized moderation needed
 
 ```python
+@dataclass
+class TwoDimensionalTrust:
+    """FMS-style two-dimensional trust score."""
+    message_trust: int      # -100 to +100: trust for content quality
+    trust_list_trust: int   # -100 to +100: trust for judgment of others
+
+    def effective_trust(self) -> int:
+        """Combined trust score for simple operations."""
+        return (self.message_trust + self.trust_list_trust) // 2
+
+
 class FMSTrustManager:
     """
-    FMS-style trust management.
+    FMS-style trust management with two-dimensional trust.
 
     Key insights from FMS:
-    1. Trust is message-based, not identity-based
+    1. Two separate trust dimensions (message vs trust list)
     2. Positive trust requires explicit action
     3. Negative trust (distrust) propagates faster
     4. Trust scores are integers (-100 to +100) for efficiency
+    5. Download from trusted + trusted-by-trusted (transitive)
+
+    References:
+    - https://github.com/SeekingFor/FMS
+    - https://freesocial.draketo.de/fms_en.html
     """
 
     def __init__(self):
-        # Trust lists: node -> (trustee -> score)
-        self.trust_lists: Dict[str, Dict[str, int]] = {}
+        # Trust lists: node -> (trustee -> TwoDimensionalTrust)
+        self.trust_lists: Dict[str, Dict[str, TwoDimensionalTrust]] = {}
         # Cached computed trust
-        self.trust_cache: Dict[Tuple[str, str], int] = {}
+        self.trust_cache: Dict[Tuple[str, str], TwoDimensionalTrust] = {}
 
-    def publish_trust_list(self, node_id: str, trust_list: Dict[str, int]):
-        """Node publishes its trust list (like FMS trust messages)."""
-        # Validate scores in range
-        validated = {
-            k: max(-100, min(100, v))
-            for k, v in trust_list.items()
-        }
+    def publish_trust_list(
+        self,
+        node_id: str,
+        trust_list: Dict[str, Tuple[int, int]]
+    ):
+        """
+        Node publishes its trust list (like FMS trust messages).
+
+        Args:
+            node_id: Publishing node
+            trust_list: Dict of trustee -> (message_trust, trust_list_trust)
+        """
+        validated = {}
+        for trustee, (msg_trust, list_trust) in trust_list.items():
+            validated[trustee] = TwoDimensionalTrust(
+                message_trust=max(-100, min(100, msg_trust)),
+                trust_list_trust=max(-100, min(100, list_trust))
+            )
         self.trust_lists[node_id] = validated
         # Invalidate cache
         self.trust_cache = {}
@@ -603,72 +653,99 @@ class FMSTrustManager:
         my_node: str,
         target_node: str,
         trusted_introducers: Optional[List[str]] = None
-    ) -> int:
+    ) -> TwoDimensionalTrust:
         """
-        Compute trust score for target.
+        Compute two-dimensional trust score for target.
 
-        Uses weighted average of trusted introducers' opinions.
+        Uses weighted average of trusted introducers' opinions,
+        weighted by introducers' trust_list_trust (their judgment quality).
         """
         cache_key = (my_node, target_node)
         if cache_key in self.trust_cache:
             return self.trust_cache[cache_key]
 
         if my_node == target_node:
-            return 100
+            return TwoDimensionalTrust(100, 100)
 
         # Direct trust
         if my_node in self.trust_lists:
             if target_node in self.trust_lists[my_node]:
-                score = self.trust_lists[my_node][target_node]
-                self.trust_cache[cache_key] = score
-                return score
+                trust = self.trust_lists[my_node][target_node]
+                self.trust_cache[cache_key] = trust
+                return trust
 
         # Transitive trust through introducers
         if trusted_introducers is None:
-            # Use nodes I directly trust as introducers
+            # Use nodes I directly trust (positive trust_list_trust) as introducers
             trusted_introducers = [
-                n for n, s in self.trust_lists.get(my_node, {}).items()
-                if s > 0
+                n for n, t in self.trust_lists.get(my_node, {}).items()
+                if t.trust_list_trust > 0  # Trust their judgment
             ]
 
         if not trusted_introducers:
-            return 0
+            return TwoDimensionalTrust(0, 0)
 
         # Weighted average of introducer opinions
-        weighted_sum = 0
+        # Key: weight by trust_list_trust (how much I trust their judgment)
+        msg_weighted_sum = 0
+        list_weighted_sum = 0
         weight_total = 0
 
         for introducer in trusted_introducers:
-            # How much do I trust this introducer?
-            introducer_trust = self.trust_lists.get(my_node, {}).get(introducer, 0)
-            if introducer_trust <= 0:
+            my_trust_of_introducer = self.trust_lists.get(my_node, {}).get(introducer)
+            if my_trust_of_introducer is None:
+                continue
+
+            # Weight by how much I trust introducer's JUDGMENT
+            introducer_weight = my_trust_of_introducer.trust_list_trust
+            if introducer_weight <= 0:
                 continue
 
             # What does introducer think of target?
-            target_opinion = self.trust_lists.get(introducer, {}).get(target_node, 0)
+            target_trust = self.trust_lists.get(introducer, {}).get(target_node)
+            if target_trust is None:
+                continue
 
-            # Weight by introducer trust
-            weighted_sum += introducer_trust * target_opinion
-            weight_total += introducer_trust
+            # Weighted contribution
+            msg_weighted_sum += introducer_weight * target_trust.message_trust
+            list_weighted_sum += introducer_weight * target_trust.trust_list_trust
+            weight_total += introducer_weight
 
         if weight_total == 0:
-            return 0
+            return TwoDimensionalTrust(0, 0)
 
-        score = weighted_sum // weight_total
-        self.trust_cache[cache_key] = score
-        return score
+        result = TwoDimensionalTrust(
+            message_trust=msg_weighted_sum // weight_total,
+            trust_list_trust=list_weighted_sum // weight_total
+        )
+        self.trust_cache[cache_key] = result
+        return result
 
     def filter_by_trust(
         self,
         my_node: str,
         responses: List[NodeResponse],
-        min_trust: int = 0
+        min_message_trust: int = 0
     ) -> List[NodeResponse]:
-        """Filter responses to only include trusted nodes."""
+        """Filter responses to only include nodes with sufficient message trust."""
         return [
             r for r in responses
-            if self.compute_trust(my_node, r.source_node) >= min_trust
+            if self.compute_trust(my_node, r.source_node).message_trust >= min_message_trust
         ]
+
+    def weight_by_trust(
+        self,
+        my_node: str,
+        responses: List[NodeResponse]
+    ) -> List[Tuple[NodeResponse, float]]:
+        """Weight responses by message trust (result quality)."""
+        weighted = []
+        for r in responses:
+            trust = self.compute_trust(my_node, r.source_node)
+            # Normalize -100..+100 to 0..1
+            weight = (trust.message_trust + 100) / 200.0
+            weighted.append((r, weight))
+        return weighted
 ```
 
 ### Pros/Cons
@@ -805,31 +882,100 @@ class SigningNode:
 
 ---
 
+## Approach 6: Cryptocurrency/Blockchain Insights
+
+Cryptocurrency networks have developed robust mechanisms for achieving consensus among untrusted parties. Key insights applicable to semantic search:
+
+### Proof-of-Stake Parallels
+
+| Crypto Concept | Semantic Search Analog |
+|---------------|----------------------|
+| **Stake as collateral** | Node invests resources (storage, compute) |
+| **Slashing** | Reduce trust score for bad behavior |
+| **Validator selection** | Weight node voting by stake/trust |
+| **Finality** | Lock answer after sufficient consensus |
+
+### Nakamoto Consensus Insights
+
+- **Longest chain wins**: In semantic search, "most nodes agree" wins
+- **51% attack**: Need majority to corrupt consensus → our quorum mechanisms
+- **Economic incentive**: Make attacks expensive → stake-weighted voting
+
+### Delegated Proof of Stake (DPoS) Parallel
+
+DPoS elects "witnesses" who validate - similar to FMS's trust list trust:
+- Nodes with high `trust_list_trust` are like elected witnesses
+- Their opinions on other nodes carry more weight
+- Reduces computation by focusing on trusted introducers
+
+### Byzantine Fault Tolerance Insights
+
+- BFT tolerates up to 1/3 malicious nodes → our `quorum` and `supersede_margin`
+- Practical BFT uses pre-prepare/prepare/commit phases → our soft collision → hard lock progression
+- View change protocol → our `supersede_margin` allowing new consensus to override old
+
+### Applicable Mechanisms
+
+```python
+class StakeAwareConsensus:
+    """Combine stake-weighted voting with collision detection."""
+
+    def __init__(self, stakes: Dict[str, NodeStake], collision_detector: ConsensusCollisionDetector):
+        self.stakes = stakes
+        self.detector = collision_detector
+
+    def register_stake_weighted_vote(
+        self,
+        result: AggregatedResult,
+        embedding: np.ndarray,
+        node_id: str
+    ):
+        """Vote weight = sqrt(effective_stake) to reduce plutocracy."""
+        stake = self.stakes.get(node_id, NodeStake(node_id, 0, 0))
+        vote_weight = max(1, int(math.sqrt(stake.effective_stake)))
+
+        # Register multiple "virtual votes" based on stake
+        for _ in range(vote_weight):
+            self.detector.register_vote(result, embedding, f"{node_id}_{_}")
+```
+
+---
+
 ## Recommended Phased Implementation
 
-Given the performance costs, we recommend a phased approach:
+Given the performance costs and user preference for consensus-based approaches first, we recommend:
 
-### Phase 6f-i: Output Smoothing (Low Cost)
+### Phase 6f-i: Output Smoothing (Low Cost) - Soft Collisions
 
 - Implement Z-score and MAD outlier rejection
 - Add to aggregation pipeline as optional filter
 - Minimal performance impact
+- **Conceptual foundation**: Outliers = soft collisions with consensus
 
-### Phase 6f-ii: Direct Trust (Medium Cost)
+### Phase 6f-ii: Consensus Collision Detection (Low Cost) - Hard Collisions
+
+**IMPLEMENT FIRST** - Core KSK-style mechanism:
+- `SemanticCollisionDetector` with region locking
+- `ConsensusCollisionDetector` with quorum-based voting
+- `TrustWeightedConsensusDetector` for integration with trust
+- No external dependencies, pure consensus
+
+### Phase 6f-iii: Direct Trust (Medium Cost)
 
 - Track per-node success/failure rates
 - Weight responses by trust score
 - Optional verification sampling
 
-### Phase 6f-iii: FMS-style Web of Trust (Higher Cost)
+### Phase 6f-iv: FMS-style Web of Trust (Higher Cost)
 
+- Two-dimensional trust (message trust + trust list trust)
 - Trust list publication via discovery metadata
-- Transitive trust computation
+- Transitive trust computation weighted by trust_list_trust
 - Trust-filtered federation
 
-### Phase 6f-iv: Full Attestation (Highest Cost)
+### Phase 6f-v: Full Attestation (Highest Cost)
 
-- Cryptographic signatures on results
+- Cryptographic signatures on results (optional for KSK-style)
 - Content-addressable verification
 - Key-based reputation tracking
 
@@ -878,14 +1024,161 @@ service(secure_kg_node, [
 ## References
 
 - Freenet KSK design: https://freenetproject.org/
-- FMS trust system: Historical Freenet forums
+- KSK Wiki: https://github.com/hyphanet/wiki/wiki/Keyword-Signed-Key
+- Fred source code: https://github.com/hyphanet/fred
+  - `ClientKSK.java` - KSK key handling
+  - `SingleBlockInserter.java` - Collision detection
+  - `SSKInsertSender.java` - Insert protocol
+- FMS source: https://github.com/SeekingFor/FMS
+- FMS documentation: https://freesocial.draketo.de/fms_en.html
+- Web of Trust plugin: https://github.com/hyphanet/plugin-WebOfTrust
 - PGP Web of Trust: RFC 4880
 - Robust Statistics: Huber, P.J. "Robust Statistics" (1981)
 - Local Outlier Factor: Breunig et al. (2000)
+- Practical BFT: Castro & Liskov (1999)
+- Proof of Stake: Ethereum 2.0 specification
+
+## Implementation Plan
+
+Starting with the easiest methods first:
+
+### Step 1: Core Data Structures (30 min)
+
+Create `src/unifyweaver/targets/python_runtime/adversarial_robustness.py`:
+
+```python
+# Basic dataclasses
+- EstablishedAnswer
+- VersionedAnswer
+- TwoDimensionalTrust (for later)
+```
+
+### Step 2: Output Smoothing - Soft Collisions (1 hour)
+
+Easiest to implement, no state management:
+
+```python
+# Functions to implement:
+- smooth_outliers(results, method='zscore', threshold=2.5)
+- robust_aggregate(responses, trim_fraction=0.1)
+- embedding_outlier_detection(embeddings, method='lof')  # Optional, needs sklearn
+```
+
+Tests:
+- `test_zscore_outlier_rejection`
+- `test_mad_outlier_rejection`
+- `test_iqr_outlier_rejection`
+- `test_trimmed_mean_aggregation`
+
+### Step 3: Semantic Collision Detector - Hard Collisions (1.5 hours)
+
+Core KSK-style mechanism:
+
+```python
+# Classes to implement:
+- SemanticCollisionDetector
+  - _compute_region(embedding) -> str
+  - check_collision(result, embedding) -> (allowed, reason)
+  - register_result(result, embedding, confidence, node_count)
+
+- collision_aware_aggregate(responses, detector) -> List[AggregatedResult]
+```
+
+Tests:
+- `test_region_computation`
+- `test_first_answer_establishes`
+- `test_same_answer_reinforces`
+- `test_different_answer_rejected_in_locked_region`
+- `test_unlocked_region_accepts_different`
+
+### Step 4: Consensus Collision Detector (1 hour)
+
+Multi-node voting:
+
+```python
+# Classes to implement:
+- ConsensusCollisionDetector(SemanticCollisionDetector)
+  - register_vote(result, embedding, node_id)
+  - _update_established(region)
+```
+
+Tests:
+- `test_quorum_required_to_lock`
+- `test_supersede_margin_required`
+- `test_multiple_versions_tracked`
+
+### Step 5: Direct Trust Manager (45 min)
+
+Simple per-node trust:
+
+```python
+# Classes to implement:
+- NodeTrust
+- DirectTrustManager
+  - get_trust(node_id) -> float
+  - update_trust(node_id, success: bool)
+  - weight_by_trust(responses) -> List[(response, weight)]
+```
+
+Tests:
+- `test_default_trust`
+- `test_trust_update_ema`
+- `test_weight_by_trust`
+
+### Step 6: Trust-Weighted Consensus (30 min)
+
+Combine Steps 4 + 5:
+
+```python
+# Classes to implement:
+- TrustWeightedConsensusDetector(ConsensusCollisionDetector)
+  - register_vote with trust weighting
+  - _update_established_by_trust
+```
+
+Tests:
+- `test_high_trust_locks_faster`
+- `test_low_trust_cant_outvote_trusted`
+
+### Step 7: Prolog Validation Predicates (30 min)
+
+Add to `service_validation.pl`:
+
+```prolog
+- is_valid_adversarial_option/1
+- is_valid_outlier_method/1
+- is_valid_trust_model/1
+```
+
+### Step 8: Integration with Federated Query (1 hour)
+
+Wire into `federated_query.py`:
+
+```python
+# Extend FederatedQueryEngine:
+- Optional adversarial_config parameter
+- Apply smoothing in aggregation pipeline
+- Track collision detector state
+```
+
+### Total Estimate: ~7 hours
+
+| Step | Difficulty | Dependencies |
+|------|------------|--------------|
+| 1. Data structures | Easy | None |
+| 2. Output smoothing | Easy | Step 1 |
+| 3. Semantic collision | Medium | Steps 1, 2 |
+| 4. Consensus collision | Medium | Step 3 |
+| 5. Direct trust | Easy | Step 1 |
+| 6. Trust-weighted | Medium | Steps 4, 5 |
+| 7. Prolog validation | Easy | None |
+| 8. Integration | Medium | Steps 2-6 |
 
 ## Next Steps
 
 After this proposal is reviewed:
-1. Implement Phase 6f-i (output smoothing) as proof of concept
-2. Benchmark performance impact
-3. Decide on trust model complexity based on deployment requirements
+1. Create feature branch `feat/kg-topology-phase6f-adversarial`
+2. Implement Steps 1-4 (core collision detection)
+3. Run tests, benchmark performance
+4. Implement Steps 5-6 (trust integration)
+5. Add Prolog validation and integration
