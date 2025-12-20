@@ -655,5 +655,122 @@ class TestPoolRouter(unittest.TestCase):
         self.assertEqual(nodes[0].node_id, 'n1')
 
 
+class TestAdaptiveModelWeightsPersistence(unittest.TestCase):
+    """Test AdaptiveModelWeights persistence features."""
+
+    def setUp(self):
+        """Set up temp file for tests."""
+        import tempfile
+        self.temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+        self.temp_file.close()
+        self.temp_path = self.temp_file.name
+
+    def tearDown(self):
+        """Clean up temp file."""
+        import os
+        if os.path.exists(self.temp_path):
+            os.unlink(self.temp_path)
+
+    def test_save_and_load(self):
+        """Weights can be saved and loaded from file."""
+        weights = AdaptiveModelWeights(["model-a", "model-b", "model-c"])
+        weights.update("ans1", {"model-a": ["ans1"], "model-b": ["ans2", "ans1"]})
+
+        # Save to file
+        weights.save_to_file(self.temp_path)
+
+        # Load from file
+        loaded = AdaptiveModelWeights.load_from_file(self.temp_path)
+
+        self.assertEqual(loaded.get_weights(), weights.get_weights())
+        self.assertEqual(loaded.feedback_count, weights.feedback_count)
+        self.assertEqual(loaded.learning_rate, weights.learning_rate)
+
+    def test_reset_weights(self):
+        """reset_weights restores uniform distribution."""
+        weights = AdaptiveModelWeights(["a", "b"], initial_weights={"a": 0.8, "b": 0.2})
+        weights.feedback_count = 10
+
+        weights.reset_weights()
+
+        self.assertAlmostEqual(weights.weights["a"], 0.5)
+        self.assertAlmostEqual(weights.weights["b"], 0.5)
+        self.assertEqual(weights.feedback_count, 0)
+
+    def test_set_weights(self):
+        """set_weights updates and normalizes."""
+        weights = AdaptiveModelWeights(["a", "b", "c"])
+
+        weights.set_weights({"a": 3.0, "b": 1.0})
+
+        # Should be normalized: a=0.6, b=0.2 (c unchanged at ~0.333, then renormalized)
+        total = sum(weights.weights.values())
+        self.assertAlmostEqual(total, 1.0)
+
+    def test_set_weights_ignores_unknown(self):
+        """set_weights ignores unknown model names."""
+        weights = AdaptiveModelWeights(["a", "b"])
+
+        weights.set_weights({"a": 0.9, "unknown": 0.5})
+
+        # unknown should be ignored
+        self.assertNotIn("unknown", weights.weights)
+
+
+class TestPrologValidation(unittest.TestCase):
+    """Test Prolog validation predicates load correctly."""
+
+    def test_prolog_module_loads(self):
+        """Service validation module loads without errors."""
+        import subprocess
+        result = subprocess.run(
+            ['swipl', '-g',
+             "use_module('src/unifyweaver/core/service_validation'), "
+             "is_valid_cross_model_option(fusion_method(consensus)), "
+             "is_valid_pool_config(pool('test-model', [weight(0.5)])), "
+             "halt."],
+            capture_output=True,
+            text=True,
+            cwd='/home/s243a/Projects/UnifyWeaver/context/claude/UnifyWeaver'
+        )
+        # Should exit successfully (no ERROR in output)
+        self.assertNotIn('ERROR:', result.stderr)
+
+
+class TestGeometricMeanFusion(unittest.TestCase):
+    """Test geometric_mean_fusion function."""
+
+    def test_rewards_consistency(self):
+        """Geometric mean rewards consistent probabilities across pools."""
+        config = CrossModelConfig()
+        # Answer with consistent high scores in both pools
+        pool_responses = {
+            "model-a": PoolResponse(
+                model_name="model-a",
+                results=[
+                    PoolResult(
+                        answer_id="1", answer_text="A1", answer_hash="h1",
+                        raw_score=0.9, exp_score=2.5, density_adjusted_score=0.9
+                    )
+                ]
+            ),
+            "model-b": PoolResponse(
+                model_name="model-b",
+                results=[
+                    PoolResult(
+                        answer_id="1", answer_text="A1", answer_hash="h1",
+                        raw_score=0.9, exp_score=2.5, density_adjusted_score=0.9
+                    )
+                ]
+            )
+        }
+
+        results = geometric_mean_fusion(pool_responses, config, top_k=5)
+
+        self.assertEqual(len(results), 1)
+        # Both pools have same answer at 100% probability
+        self.assertAlmostEqual(results[0].fused_score, 1.0)
+
+
 if __name__ == '__main__':
     unittest.main()

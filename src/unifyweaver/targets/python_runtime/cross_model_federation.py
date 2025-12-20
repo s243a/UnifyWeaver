@@ -1034,3 +1034,51 @@ class AdaptiveModelWeights:
         )
         obj.feedback_count = d.get('feedback_count', 0)
         return obj
+
+    def save_to_file(self, filepath: str) -> None:
+        """
+        Persist weights to a JSON file.
+
+        Args:
+            filepath: Path to save weights to
+        """
+        import json
+        with open(filepath, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def load_from_file(cls, filepath: str) -> 'AdaptiveModelWeights':
+        """
+        Load weights from a JSON file.
+
+        Args:
+            filepath: Path to load weights from
+
+        Returns:
+            AdaptiveModelWeights instance
+        """
+        import json
+        with open(filepath, 'r') as f:
+            return cls.from_dict(json.load(f))
+
+    def reset_weights(self) -> None:
+        """Reset weights to uniform distribution."""
+        n = len(self.weights)
+        self.weights = {m: 1.0 / n for m in self.weights}
+        self.feedback_count = 0
+
+    def set_weights(self, new_weights: Dict[str, float]) -> None:
+        """
+        Manually set model weights.
+
+        Args:
+            new_weights: Dict mapping model -> weight (will be normalized)
+        """
+        for model, weight in new_weights.items():
+            if model in self.weights:
+                self.weights[model] = weight
+
+        # Renormalize
+        total = sum(self.weights.values())
+        if total > 0:
+            self.weights = {m: w / total for m, w in self.weights.items()}
