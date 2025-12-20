@@ -26,6 +26,20 @@ class BandwidthMethod(Enum):
     FIXED = "fixed"
 
 
+class ClusterMethod(Enum):
+    """Methods for semantic clustering."""
+    GREEDY = "greedy"  # Simple greedy centroid-based
+    HDBSCAN = "hdbscan"  # Hierarchical density-based
+
+
+# Try to import HDBSCAN
+try:
+    import hdbscan
+    HDBSCAN_AVAILABLE = True
+except ImportError:
+    HDBSCAN_AVAILABLE = False
+
+
 @dataclass
 class DensityConfig:
     """Configuration for density estimation."""
@@ -34,8 +48,21 @@ class DensityConfig:
     density_weight: float = 0.3  # Weight in flux-softmax (0 = ignore density)
     min_cluster_size: int = 2
     clustering_enabled: bool = True
-    similarity_threshold: float = 0.7  # For cluster assignment
+    similarity_threshold: float = 0.7  # For greedy cluster assignment
     normalize_scores: bool = True
+    # Phase 4d-ii: HDBSCAN options
+    cluster_method: ClusterMethod = ClusterMethod.GREEDY
+    hdbscan_min_samples: int = 2  # Core point neighborhood size
+    hdbscan_cluster_selection_epsilon: float = 0.0  # Merge clusters below this distance
+    # Phase 4d-iii: Adaptive bandwidth options
+    use_adaptive_bandwidth: bool = False  # Enable per-point bandwidth
+    adaptive_alpha: float = 0.5  # Sensitivity for adaptive bandwidth (0.5 is typical)
+    cv_n_candidates: int = 10  # Number of candidates for cross-validation
+    # Phase 4d-iv: Efficiency options
+    use_sketching: bool = False  # Enable random projection for large datasets
+    sketch_dim: int = 32  # Target dimension for random projection
+    large_dataset_threshold: int = 100  # Use ANN above this size
+    cache_distances: bool = True  # Cache pairwise distances
 
 
 @dataclass
@@ -46,6 +73,199 @@ class DensityResult:
     cluster_id: Optional[int] = None
     cluster_size: int = 1
     is_cluster_center: bool = False
+
+
+# =============================================================================
+# PHASE 4d-iv: EFFICIENCY UTILITIES
+# =============================================================================
+
+class DistanceCache:
+    """LRU cache for pairwise distances.
+
+    Caches distance matrices keyed by embedding hash to avoid recomputation.
+    """
+
+    def __init__(self, max_size: int = 10):
+        self._cache: Dict[str, np.ndarray] = {}
+        self._order: List[str] = []
+        self.max_size = max_size
+        self.hits = 0
+        self.misses = 0
+
+    def _hash_embeddings(self, embeddings: np.ndarray) -> str:
+        """Create hash key from embeddings."""
+        return hashlib.md5(embeddings.tobytes()).hexdigest()
+
+    def get(self, embeddings: np.ndarray) -> Optional[np.ndarray]:
+        """Get cached distances if available."""
+        key = self._hash_embeddings(embeddings)
+        if key in self._cache:
+            self.hits += 1
+            # Move to end (most recently used)
+            self._order.remove(key)
+            self._order.append(key)
+            return self._cache[key]
+        self.misses += 1
+        return None
+
+    def put(self, embeddings: np.ndarray, distances: np.ndarray) -> None:
+        """Cache distance matrix."""
+        key = self._hash_embeddings(embeddings)
+        if key in self._cache:
+            return  # Already cached
+
+        # Evict oldest if at capacity
+        if len(self._cache) >= self.max_size:
+            oldest = self._order.pop(0)
+            del self._cache[oldest]
+
+        self._cache[key] = distances
+        self._order.append(key)
+
+    def clear(self) -> None:
+        """Clear the cache."""
+        self._cache.clear()
+        self._order.clear()
+        self.hits = 0
+        self.misses = 0
+
+    def stats(self) -> Dict[str, int]:
+        """Return cache statistics."""
+        total = self.hits + self.misses
+        hit_rate = self.hits / total if total > 0 else 0
+        return {
+            'hits': self.hits,
+            'misses': self.misses,
+            'size': len(self._cache),
+            'hit_rate': hit_rate
+        }
+
+
+# Global distance cache
+_distance_cache = DistanceCache()
+
+
+def random_projection_matrix(d_original: int, d_target: int, seed: int = 42) -> np.ndarray:
+    """Generate a random projection matrix for dimensionality reduction.
+
+    Uses Gaussian random projection which preserves distances with high probability
+    (Johnson-Lindenstrauss lemma).
+
+    Args:
+        d_original: Original embedding dimension
+        d_target: Target reduced dimension
+        seed: Random seed for reproducibility
+
+    Returns:
+        (d_target, d_original) projection matrix
+    """
+    rng = np.random.RandomState(seed)
+    # Gaussian random projection with scaling
+    projection = rng.randn(d_target, d_original) / np.sqrt(d_target)
+    return projection
+
+
+def sketch_embeddings(
+    embeddings: np.ndarray,
+    target_dim: int = 32,
+    seed: int = 42
+) -> np.ndarray:
+    """Reduce embedding dimensionality using random projection.
+
+    For large embeddings, this trades accuracy for speed in distance computations.
+    Johnson-Lindenstrauss guarantees distances are preserved within (1 ± ε) factor
+    with high probability.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        target_dim: Target reduced dimension
+        seed: Random seed
+
+    Returns:
+        (n, target_dim) array of sketched embeddings
+    """
+    n, d = embeddings.shape
+    if d <= target_dim:
+        return embeddings  # No reduction needed
+
+    projection = random_projection_matrix(d, target_dim, seed)
+    return embeddings @ projection.T
+
+
+def approximate_nearest_neighbors(
+    embeddings: np.ndarray,
+    k: int = 10,
+    n_projections: int = 5,
+    seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Find approximate k-nearest neighbors using random projections.
+
+    Uses multiple random projections and takes union of candidates,
+    then refines with exact distances. Much faster than O(n²) for large n.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        k: Number of nearest neighbors
+        n_projections: Number of random projections to use
+        seed: Random seed
+
+    Returns:
+        indices: (n, k) array of neighbor indices
+        distances: (n, k) array of neighbor distances
+    """
+    n, d = embeddings.shape
+    if n <= k * 2:
+        # Small enough for exact computation
+        dist_matrix = pairwise_cosine_distances(embeddings)
+        indices = np.argsort(dist_matrix, axis=1)[:, 1:k+1]  # Skip self
+        distances = np.take_along_axis(dist_matrix, indices, axis=1)
+        return indices, distances
+
+    rng = np.random.RandomState(seed)
+    all_candidates = [set() for _ in range(n)]
+
+    # Generate candidates from multiple projections
+    for proj_idx in range(n_projections):
+        # Project to 1D
+        projection = rng.randn(d)
+        projection /= np.linalg.norm(projection)
+        projected = embeddings @ projection
+
+        # Sort by projected value
+        sorted_indices = np.argsort(projected)
+
+        # For each point, add nearby points in sorted order as candidates
+        for i, idx in enumerate(sorted_indices):
+            # Add neighbors in sorted space
+            window = k * 2  # Search window
+            start = max(0, i - window)
+            end = min(n, i + window + 1)
+            for j in range(start, end):
+                if sorted_indices[j] != idx:
+                    all_candidates[idx].add(sorted_indices[j])
+
+    # Refine candidates with exact distances
+    result_indices = np.zeros((n, k), dtype=int)
+    result_distances = np.zeros((n, k))
+
+    for i in range(n):
+        candidates = list(all_candidates[i])
+        if len(candidates) < k:
+            # Not enough candidates, add random points
+            remaining = list(set(range(n)) - {i} - set(candidates))
+            candidates.extend(remaining[:k - len(candidates)])
+
+        # Compute exact distances to candidates
+        cand_embeddings = embeddings[candidates]
+        dists = np.array([cosine_distance(embeddings[i], cand_embeddings[j])
+                          for j in range(len(candidates))])
+
+        # Take top k
+        top_k_idx = np.argsort(dists)[:k]
+        result_indices[i] = [candidates[j] for j in top_k_idx]
+        result_distances[i] = dists[top_k_idx]
+
+    return result_indices, result_distances
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -62,15 +282,25 @@ def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
     return 1.0 - cosine_similarity(a, b)
 
 
-def pairwise_cosine_distances(embeddings: np.ndarray) -> np.ndarray:
+def pairwise_cosine_distances(
+    embeddings: np.ndarray,
+    use_cache: bool = False
+) -> np.ndarray:
     """Compute pairwise cosine distances for a set of embeddings.
 
     Args:
         embeddings: (n, d) array of n embeddings with dimension d
+        use_cache: Whether to use/update the global distance cache
 
     Returns:
         (n, n) distance matrix
     """
+    # Check cache first
+    if use_cache:
+        cached = _distance_cache.get(embeddings)
+        if cached is not None:
+            return cached
+
     # Normalize embeddings
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
@@ -85,7 +315,77 @@ def pairwise_cosine_distances(embeddings: np.ndarray) -> np.ndarray:
     # Ensure diagonal is 0 (numerical precision)
     np.fill_diagonal(distances, 0.0)
 
+    # Cache result
+    if use_cache:
+        _distance_cache.put(embeddings, distances)
+
     return distances
+
+
+def compute_efficient_density_scores(
+    embeddings: np.ndarray,
+    config: 'DensityConfig' = None
+) -> np.ndarray:
+    """Compute density scores with efficiency optimizations.
+
+    For large datasets:
+    - Uses random projection (sketching) to reduce dimensionality
+    - Uses approximate nearest neighbors instead of full distance matrix
+    - Caches intermediate results
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        config: Density configuration
+
+    Returns:
+        (n,) array of density scores
+    """
+    if config is None:
+        config = DensityConfig()
+
+    n, d = embeddings.shape
+    if n == 0:
+        return np.array([])
+    if n == 1:
+        return np.array([1.0])
+
+    # Apply sketching for high-dimensional embeddings
+    work_embeddings = embeddings
+    if config.use_sketching and d > config.sketch_dim:
+        work_embeddings = sketch_embeddings(embeddings, config.sketch_dim)
+
+    # For large datasets, use ANN-based density estimation
+    if n > config.large_dataset_threshold:
+        # Use k-NN density: density(x) = k / (volume of k-NN ball)
+        # Approximated as 1 / (mean distance to k neighbors)
+        k = min(10, n - 1)
+        nn_indices, nn_distances = approximate_nearest_neighbors(
+            work_embeddings, k=k
+        )
+
+        # Density estimate: inverse of mean distance to neighbors
+        mean_nn_dist = nn_distances.mean(axis=1)
+        densities = 1.0 / (mean_nn_dist + 1e-10)
+    else:
+        # Standard KDE for smaller datasets
+        distances = pairwise_cosine_distances(
+            work_embeddings,
+            use_cache=config.cache_distances
+        )
+        flat_distances = distances[np.triu_indices(n, k=1)]
+
+        bandwidth = silverman_bandwidth(flat_distances, n)
+
+        densities = np.zeros(n)
+        for i in range(n):
+            kernel_values = gaussian_kernel(distances[i], bandwidth)
+            densities[i] = kernel_values.mean()
+
+    # Normalize to [0, 1]
+    if config.normalize_scores and densities.max() > 0:
+        densities = densities / densities.max()
+
+    return densities
 
 
 def silverman_bandwidth(distances: np.ndarray, n: int) -> float:
@@ -160,6 +460,190 @@ def gaussian_kernel(distance: float, bandwidth: float) -> float:
     return np.exp(-(distance ** 2) / (2 * bandwidth ** 2))
 
 
+# =============================================================================
+# PHASE 4d-iii: ADAPTIVE BANDWIDTH METHODS
+# =============================================================================
+
+def leave_one_out_cv_score(distances: np.ndarray, bandwidth: float) -> float:
+    """Compute leave-one-out cross-validation score for KDE bandwidth.
+
+    Uses pseudo-likelihood: sum of log densities computed with each point
+    left out.
+
+    Args:
+        distances: (n, n) pairwise distance matrix
+        bandwidth: Bandwidth to evaluate
+
+    Returns:
+        Log-likelihood score (higher is better)
+    """
+    n = distances.shape[0]
+    if n < 2:
+        return 0.0
+
+    total_score = 0.0
+    for i in range(n):
+        # Compute density at point i using all other points
+        other_distances = np.delete(distances[i], i)
+        kernel_vals = np.exp(-(other_distances ** 2) / (2 * bandwidth ** 2))
+        density = kernel_vals.sum() / (n - 1)
+
+        # Add log-likelihood (with small epsilon to avoid log(0))
+        if density > 0:
+            total_score += np.log(density + 1e-10)
+
+    return total_score
+
+
+def cross_validation_bandwidth(
+    embeddings: np.ndarray,
+    n_candidates: int = 10,
+    bandwidth_range: Tuple[float, float] = (0.01, 1.0)
+) -> float:
+    """Select bandwidth via leave-one-out cross-validation.
+
+    Tests multiple bandwidth values and selects the one with highest
+    cross-validation score.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        n_candidates: Number of bandwidth values to test
+        bandwidth_range: (min, max) bandwidth range to search
+
+    Returns:
+        Optimal bandwidth
+    """
+    n = len(embeddings)
+    if n < 2:
+        return 0.1
+
+    distances = pairwise_cosine_distances(embeddings)
+
+    # Generate candidate bandwidths (log-spaced)
+    candidates = np.logspace(
+        np.log10(bandwidth_range[0]),
+        np.log10(bandwidth_range[1]),
+        n_candidates
+    )
+
+    best_bandwidth = candidates[0]
+    best_score = float('-inf')
+
+    for h in candidates:
+        score = leave_one_out_cv_score(distances, h)
+        if score > best_score:
+            best_score = score
+            best_bandwidth = h
+
+    return best_bandwidth
+
+
+def adaptive_local_bandwidth(
+    embeddings: np.ndarray,
+    global_bandwidth: float,
+    k_neighbors: int = 5,
+    alpha: float = 0.5
+) -> np.ndarray:
+    """Compute adaptive (balloon) bandwidth for each point.
+
+    Uses local density to adjust bandwidth:
+    h(x) = h₀ × (p̂_pilot(x))^(-α)
+
+    Points in dense regions get smaller bandwidth (sharper),
+    points in sparse regions get larger bandwidth (smoother).
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        global_bandwidth: Base bandwidth h₀
+        k_neighbors: Number of neighbors for local density
+        alpha: Sensitivity parameter (typically 0.5)
+
+    Returns:
+        (n,) array of per-point bandwidths
+    """
+    n = len(embeddings)
+    if n < 2:
+        return np.full(n, global_bandwidth)
+
+    distances = pairwise_cosine_distances(embeddings)
+
+    # Pilot density estimate using global bandwidth
+    pilot_densities = np.zeros(n)
+    for i in range(n):
+        kernel_vals = np.exp(-(distances[i] ** 2) / (2 * global_bandwidth ** 2))
+        pilot_densities[i] = kernel_vals.sum() / n
+
+    # Normalize to prevent extreme values
+    pilot_densities = np.clip(pilot_densities, 1e-10, None)
+    geometric_mean = np.exp(np.mean(np.log(pilot_densities)))
+
+    # Adaptive bandwidth: h(x) = h₀ × (p̂(x) / g)^(-α)
+    # where g is geometric mean of pilot densities
+    local_bandwidths = global_bandwidth * (pilot_densities / geometric_mean) ** (-alpha)
+
+    # Clamp to reasonable range
+    min_h = global_bandwidth * 0.1
+    max_h = global_bandwidth * 10
+    local_bandwidths = np.clip(local_bandwidths, min_h, max_h)
+
+    return local_bandwidths
+
+
+def compute_adaptive_density_scores(
+    embeddings: np.ndarray,
+    config: 'DensityConfig' = None
+) -> np.ndarray:
+    """Compute density scores using adaptive bandwidth.
+
+    Each point has its own bandwidth based on local density,
+    providing better estimates in both dense and sparse regions.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        config: Density configuration
+
+    Returns:
+        (n,) array of normalized density scores
+    """
+    if config is None:
+        config = DensityConfig()
+
+    n = len(embeddings)
+    if n == 0:
+        return np.array([])
+    if n == 1:
+        return np.array([1.0])
+
+    # Get global bandwidth
+    distances = pairwise_cosine_distances(embeddings)
+    flat_distances = distances.flatten()
+
+    if config.bandwidth_method == BandwidthMethod.AUTO:
+        global_h = cross_validation_bandwidth(embeddings)
+    elif config.bandwidth_method == BandwidthMethod.SCOTT:
+        global_h = scott_bandwidth(flat_distances, n)
+    elif config.bandwidth_method == BandwidthMethod.FIXED:
+        global_h = config.fixed_bandwidth
+    else:
+        global_h = silverman_bandwidth(flat_distances, n)
+
+    # Compute adaptive bandwidths
+    local_bandwidths = adaptive_local_bandwidth(embeddings, global_h)
+
+    # Compute density at each point using its local bandwidth
+    densities = np.zeros(n)
+    for i in range(n):
+        h_i = local_bandwidths[i]
+        kernel_vals = np.exp(-(distances[i] ** 2) / (2 * h_i ** 2))
+        densities[i] = kernel_vals.sum() / n
+
+    # Normalize to [0, 1]
+    if config.normalize_scores and densities.max() > 0:
+        densities = densities / densities.max()
+
+    return densities
+
+
 def compute_density_scores(
     embeddings: np.ndarray,
     config: DensityConfig = None
@@ -167,6 +651,11 @@ def compute_density_scores(
     """Compute density scores for each embedding using KDE.
 
     density(eᵢ) = (1/n) Σⱼ K_h(d(eᵢ, eⱼ))
+
+    Supports three bandwidth modes:
+    - Fixed bandwidth (same for all points)
+    - Adaptive bandwidth (per-point based on local density)
+    - Cross-validation selected bandwidth
 
     Args:
         embeddings: (n, d) array of embeddings
@@ -184,6 +673,10 @@ def compute_density_scores(
     if n == 1:
         return np.array([1.0])
 
+    # Use adaptive density if configured
+    if config.use_adaptive_bandwidth:
+        return compute_adaptive_density_scores(embeddings, config)
+
     # Compute pairwise distances
     distances = pairwise_cosine_distances(embeddings)
     flat_distances = distances[np.triu_indices(n, k=1)]
@@ -193,7 +686,11 @@ def compute_density_scores(
         bandwidth = config.fixed_bandwidth
     elif config.bandwidth_method == BandwidthMethod.SCOTT:
         bandwidth = scott_bandwidth(flat_distances, n)
-    else:  # SILVERMAN or AUTO
+    elif config.bandwidth_method == BandwidthMethod.AUTO:
+        bandwidth = cross_validation_bandwidth(
+            embeddings, n_candidates=config.cv_n_candidates
+        )
+    else:  # SILVERMAN (default)
         bandwidth = silverman_bandwidth(flat_distances, n)
 
     # Compute density for each point
@@ -336,6 +833,105 @@ def cluster_by_similarity(
     return labels, valid_centroids
 
 
+def cluster_by_hdbscan(
+    embeddings: np.ndarray,
+    min_cluster_size: int = 2,
+    min_samples: int = 2,
+    cluster_selection_epsilon: float = 0.0
+) -> Tuple[np.ndarray, List[np.ndarray]]:
+    """Cluster embeddings using HDBSCAN.
+
+    HDBSCAN (Hierarchical Density-Based Spatial Clustering of Applications
+    with Noise) is a density-based clustering algorithm that:
+    - Doesn't require specifying number of clusters
+    - Handles noise/outliers naturally
+    - Works well with varying cluster densities
+    - Produces soft cluster membership probabilities
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        min_cluster_size: Minimum points to form a cluster
+        min_samples: Core point neighborhood size (higher = more conservative)
+        cluster_selection_epsilon: Distance threshold for merging clusters
+
+    Returns:
+        labels: (n,) array of cluster labels (-1 for noise)
+        centroids: List of cluster centroid arrays
+    """
+    n = len(embeddings)
+    if n == 0:
+        return np.array([]), []
+    if n < min_cluster_size:
+        return np.full(n, -1, dtype=int), []
+
+    if not HDBSCAN_AVAILABLE:
+        # Fallback to greedy clustering
+        return cluster_by_similarity(
+            embeddings,
+            threshold=0.7,
+            min_cluster_size=min_cluster_size
+        )
+
+    # Compute cosine distance matrix for HDBSCAN
+    # HDBSCAN works better with precomputed distances for cosine
+    distances = pairwise_cosine_distances(embeddings)
+
+    # Run HDBSCAN
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        cluster_selection_epsilon=cluster_selection_epsilon,
+        metric='precomputed',
+        cluster_selection_method='eom'  # Excess of Mass (default, better for varying sizes)
+    )
+    labels = clusterer.fit_predict(distances)
+
+    # Compute centroids for each cluster
+    unique_labels = sorted(set(labels) - {-1})
+    centroids = []
+    for label in unique_labels:
+        mask = labels == label
+        centroid = embeddings[mask].mean(axis=0)
+        centroids.append(centroid)
+
+    return labels, centroids
+
+
+def get_hdbscan_probabilities(
+    embeddings: np.ndarray,
+    min_cluster_size: int = 2,
+    min_samples: int = 2
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Get soft cluster membership probabilities from HDBSCAN.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        min_cluster_size: Minimum points to form a cluster
+        min_samples: Core point neighborhood size
+
+    Returns:
+        labels: (n,) array of cluster labels
+        probabilities: (n,) array of cluster membership probabilities
+    """
+    if not HDBSCAN_AVAILABLE:
+        labels, _ = cluster_by_similarity(embeddings, min_cluster_size=min_cluster_size)
+        # Assign probability 1.0 for clustered points, 0.0 for noise
+        probs = np.where(labels >= 0, 1.0, 0.0)
+        return labels, probs
+
+    distances = pairwise_cosine_distances(embeddings)
+
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric='precomputed'
+    )
+    labels = clusterer.fit_predict(distances)
+    probabilities = clusterer.probabilities_
+
+    return labels, probabilities
+
+
 def compute_cluster_density(
     embeddings: np.ndarray,
     cluster_labels: np.ndarray,
@@ -413,11 +1009,20 @@ def two_stage_density_pipeline(
 
     # Stage 1: Cluster
     if config.clustering_enabled:
-        labels, centroids = cluster_by_similarity(
-            embeddings,
-            threshold=config.similarity_threshold,
-            min_cluster_size=config.min_cluster_size
-        )
+        if config.cluster_method == ClusterMethod.HDBSCAN:
+            labels, centroids = cluster_by_hdbscan(
+                embeddings,
+                min_cluster_size=config.min_cluster_size,
+                min_samples=config.hdbscan_min_samples,
+                cluster_selection_epsilon=config.hdbscan_cluster_selection_epsilon
+            )
+        else:
+            # Default: greedy clustering
+            labels, centroids = cluster_by_similarity(
+                embeddings,
+                threshold=config.similarity_threshold,
+                min_cluster_size=config.min_cluster_size
+            )
     else:
         # No clustering - treat all as one cluster
         labels = np.zeros(n, dtype=int)

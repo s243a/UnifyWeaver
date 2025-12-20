@@ -1223,6 +1223,20 @@ is_valid_density_option(clustering(Bool)) :- (Bool = true ; Bool = false).
 is_valid_density_option(min_cluster_size(N)) :- integer(N), N >= 2.
 is_valid_density_option(density_weight(W)) :- number(W), W >= 0, W =< 1.
 is_valid_density_option(similarity_threshold(T)) :- number(T), T >= 0, T =< 1.
+% Phase 4d-ii: HDBSCAN clustering options
+is_valid_density_option(cluster_method(greedy)).
+is_valid_density_option(cluster_method(hdbscan)).
+is_valid_density_option(hdbscan_min_samples(N)) :- integer(N), N >= 1.
+is_valid_density_option(hdbscan_cluster_selection_epsilon(E)) :- number(E), E >= 0.
+% Phase 4d-iii: Adaptive bandwidth options
+is_valid_density_option(adaptive_bandwidth(Bool)) :- (Bool = true ; Bool = false).
+is_valid_density_option(adaptive_alpha(A)) :- number(A), A > 0, A =< 1.
+is_valid_density_option(cv_n_candidates(N)) :- integer(N), N >= 2.
+% Phase 4d-iv: Efficiency options
+is_valid_density_option(use_sketching(Bool)) :- (Bool = true ; Bool = false).
+is_valid_density_option(sketch_dim(N)) :- integer(N), N >= 8.
+is_valid_density_option(large_dataset_threshold(N)) :- integer(N), N >= 10.
+is_valid_density_option(cache_distances(Bool)) :- (Bool = true ; Bool = false).
 
 %% is_federation_enabled(+Service)
 %  Check if service has federation enabled.
