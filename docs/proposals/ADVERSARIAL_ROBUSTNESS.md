@@ -100,97 +100,184 @@ def embedding_outlier_detection(
 
 ---
 
-## Approach 2: Content-Addressable Keys (Freenet KSK-style)
+## Approach 2: Voluntary Collision Detection (Freenet KSK-style)
 
 ### Concept
 
-In Freenet, **Keyword-Signed Keys (KSKs)** derive the storage location from the content itself. This makes it computationally expensive to create content that maps to a specific location while saying something different.
+In Freenet, **Keyword-Signed Keys (KSKs)** derive both the public and private keys from a human-readable keyword. Anyone who knows the keyword can derive the keypair and insert content. The protection mechanism is **voluntary collision detection**: once content is inserted at a KSK location, nodes refuse to overwrite it with different content.
 
-For semantic search, we can apply a similar principle: **derive a verification hash from the semantic content**, making it expensive to create adversarial content that passes verification.
+From the [Freenet wiki](https://github.com/hyphanet/wiki/wiki/Keyword-Signed-Key):
+> "There is voluntary collision detection in fred, which tries to prevent overwriting of a once-inserted page."
+
+### Semantic Search Analogy
+
+For federated semantic search, we can apply the same principle: **once an answer is established with high confidence in a semantic region, new conflicting results shouldn't easily displace it**.
+
+This is "semantic collision detection" - protecting established consensus from late-arriving adversarial results.
 
 ### Implementation
 
 ```python
+from dataclasses import dataclass, field
+from typing import Dict, Optional
 import hashlib
-from dataclasses import dataclass
 
 @dataclass
-class VerifiedResult:
-    """Result with content-addressable verification."""
-    answer_text: str
+class EstablishedAnswer:
+    """An answer that has been established with sufficient confidence."""
     answer_hash: str
-    embedding: np.ndarray
+    answer_text: str
+    semantic_region: str  # Hash of quantized centroid
+    confidence: float
+    first_seen: float
+    node_count: int
+    locked: bool = False  # Once locked, cannot be displaced
 
-    # Verification fields
-    content_hash: str  # SHA-256 of normalized text
-    embedding_hash: str  # Hash of quantized embedding
-    combined_key: str  # Derived from both
+    def should_lock(self, min_confidence: float = 0.8, min_nodes: int = 3) -> bool:
+        """Determine if this answer should be locked."""
+        return self.confidence >= min_confidence and self.node_count >= min_nodes
 
-    @classmethod
-    def create(cls, text: str, embedding: np.ndarray) -> 'VerifiedResult':
-        # Normalize text (lowercase, strip, collapse whitespace)
-        normalized = ' '.join(text.lower().split())
-        content_hash = hashlib.sha256(normalized.encode()).hexdigest()
 
-        # Quantize embedding to reduce floating point variance
-        quantized = np.round(embedding * 1000).astype(np.int32)
-        embedding_hash = hashlib.sha256(quantized.tobytes()).hexdigest()
+class SemanticCollisionDetector:
+    """
+    Voluntary collision detection for semantic search.
 
-        # Combined key binds text to embedding
-        combined = hashlib.sha256(
-            (content_hash + embedding_hash).encode()
-        ).hexdigest()
+    Once an answer achieves high confidence in a semantic region,
+    it becomes "established" and new conflicting answers are rejected.
+    """
 
-        return cls(
-            answer_text=text,
-            answer_hash=content_hash[:16],
-            embedding=embedding,
-            content_hash=content_hash,
-            embedding_hash=embedding_hash,
-            combined_key=combined
-        )
+    def __init__(
+        self,
+        lock_threshold: float = 0.8,
+        min_nodes_to_lock: int = 3,
+        region_granularity: int = 100  # Quantization level
+    ):
+        self.lock_threshold = lock_threshold
+        self.min_nodes_to_lock = min_nodes_to_lock
+        self.region_granularity = region_granularity
 
-    def verify(self, embedding_model) -> bool:
-        """Verify that the embedding matches the content."""
-        recomputed = embedding_model.encode(self.answer_text)
-        quantized = np.round(recomputed * 1000).astype(np.int32)
-        expected_hash = hashlib.sha256(quantized.tobytes()).hexdigest()
-        return expected_hash == self.embedding_hash
-```
+        # Established answers by semantic region
+        self.established: Dict[str, EstablishedAnswer] = {}
 
-### Verification at Aggregation
+    def _compute_region(self, embedding: np.ndarray) -> str:
+        """Compute semantic region hash from embedding."""
+        # Quantize to region
+        quantized = np.round(
+            embedding * self.region_granularity
+        ).astype(np.int32)
+        return hashlib.sha256(quantized.tobytes()).hexdigest()[:16]
 
-```python
-def verified_aggregate(
+    def check_collision(
+        self,
+        new_result: AggregatedResult,
+        embedding: np.ndarray
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Check if new result collides with established answer.
+
+        Returns:
+            (allowed, reason) - allowed=True if result should be accepted
+        """
+        region = self._compute_region(embedding)
+
+        if region not in self.established:
+            return True, None
+
+        established = self.established[region]
+
+        if not established.locked:
+            return True, None
+
+        # Region is locked - check if same answer or collision
+        if new_result.answer_hash == established.answer_hash:
+            # Same answer, allow (reinforces consensus)
+            return True, None
+        else:
+            # Different answer trying to enter locked region
+            return False, f"Collision with established answer in region {region}"
+
+    def register_result(
+        self,
+        result: AggregatedResult,
+        embedding: np.ndarray,
+        confidence: float,
+        node_count: int
+    ):
+        """Register a result, potentially establishing it."""
+        region = self._compute_region(embedding)
+
+        if region not in self.established:
+            # First answer in this region
+            answer = EstablishedAnswer(
+                answer_hash=result.answer_hash,
+                answer_text=result.answer_text,
+                semantic_region=region,
+                confidence=confidence,
+                first_seen=time.time(),
+                node_count=node_count
+            )
+            if answer.should_lock(self.lock_threshold, self.min_nodes_to_lock):
+                answer.locked = True
+            self.established[region] = answer
+
+        else:
+            established = self.established[region]
+            if result.answer_hash == established.answer_hash:
+                # Same answer - update confidence
+                established.confidence = max(established.confidence, confidence)
+                established.node_count = max(established.node_count, node_count)
+                if not established.locked and established.should_lock(
+                    self.lock_threshold, self.min_nodes_to_lock
+                ):
+                    established.locked = True
+
+
+def collision_aware_aggregate(
     responses: List[NodeResponse],
-    embedding_model,
-    verification_sample_rate: float = 0.1
+    detector: SemanticCollisionDetector
 ) -> List[AggregatedResult]:
-    """Aggregate with probabilistic verification."""
+    """Aggregate with collision detection."""
 
-    verified_results = []
+    results = standard_aggregate(responses)
+    filtered = []
 
-    for response in responses:
-        for result in response.results:
-            # Probabilistically verify
-            if random.random() < verification_sample_rate:
-                if not result.verify(embedding_model):
-                    # Log and reject
-                    log_verification_failure(response.source_node, result)
-                    continue
+    for result in results:
+        embedding = result.semantic_centroid
+        if embedding is None:
+            filtered.append(result)
+            continue
 
-            verified_results.append(result)
+        allowed, reason = detector.check_collision(result, embedding)
+        if allowed:
+            detector.register_result(
+                result, embedding,
+                confidence=result.density_score,
+                node_count=len(result.source_nodes)
+            )
+            filtered.append(result)
+        else:
+            log_collision_rejection(result, reason)
 
-    return standard_aggregate(verified_results)
+    return filtered
 ```
+
+### Key Differences from My Original Description
+
+| Aspect | Wrong (my original) | Correct (KSK-style) |
+|--------|---------------------|---------------------|
+| Protection mechanism | Computational difficulty | Voluntary collision detection |
+| Who can insert | Only content creator | Anyone who knows keyword |
+| What prevents attacks | Hash binding | Nodes refuse to overwrite |
+| Analogy for us | Make adversarial content expensive | Protect established consensus |
 
 ### Pros/Cons
 
 | Pros | Cons |
 |------|------|
-| Cryptographic binding of content to embedding | Requires re-embedding to verify |
-| Makes embedding poisoning expensive | Verification is slow |
-| Deterministic verification | Different models = different hashes |
+| Simple to implement | First-mover advantage |
+| Protects established consensus | Legitimate updates blocked |
+| Low computational overhead | Region granularity tuning |
+| Matches Freenet's proven approach | Requires coordination on locking policy |
 
 ---
 
