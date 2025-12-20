@@ -54,6 +54,10 @@ class DensityConfig:
     cluster_method: ClusterMethod = ClusterMethod.GREEDY
     hdbscan_min_samples: int = 2  # Core point neighborhood size
     hdbscan_cluster_selection_epsilon: float = 0.0  # Merge clusters below this distance
+    # Phase 4d-iii: Adaptive bandwidth options
+    use_adaptive_bandwidth: bool = False  # Enable per-point bandwidth
+    adaptive_alpha: float = 0.5  # Sensitivity for adaptive bandwidth (0.5 is typical)
+    cv_n_candidates: int = 10  # Number of candidates for cross-validation
 
 
 @dataclass
@@ -178,6 +182,190 @@ def gaussian_kernel(distance: float, bandwidth: float) -> float:
     return np.exp(-(distance ** 2) / (2 * bandwidth ** 2))
 
 
+# =============================================================================
+# PHASE 4d-iii: ADAPTIVE BANDWIDTH METHODS
+# =============================================================================
+
+def leave_one_out_cv_score(distances: np.ndarray, bandwidth: float) -> float:
+    """Compute leave-one-out cross-validation score for KDE bandwidth.
+
+    Uses pseudo-likelihood: sum of log densities computed with each point
+    left out.
+
+    Args:
+        distances: (n, n) pairwise distance matrix
+        bandwidth: Bandwidth to evaluate
+
+    Returns:
+        Log-likelihood score (higher is better)
+    """
+    n = distances.shape[0]
+    if n < 2:
+        return 0.0
+
+    total_score = 0.0
+    for i in range(n):
+        # Compute density at point i using all other points
+        other_distances = np.delete(distances[i], i)
+        kernel_vals = np.exp(-(other_distances ** 2) / (2 * bandwidth ** 2))
+        density = kernel_vals.sum() / (n - 1)
+
+        # Add log-likelihood (with small epsilon to avoid log(0))
+        if density > 0:
+            total_score += np.log(density + 1e-10)
+
+    return total_score
+
+
+def cross_validation_bandwidth(
+    embeddings: np.ndarray,
+    n_candidates: int = 10,
+    bandwidth_range: Tuple[float, float] = (0.01, 1.0)
+) -> float:
+    """Select bandwidth via leave-one-out cross-validation.
+
+    Tests multiple bandwidth values and selects the one with highest
+    cross-validation score.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        n_candidates: Number of bandwidth values to test
+        bandwidth_range: (min, max) bandwidth range to search
+
+    Returns:
+        Optimal bandwidth
+    """
+    n = len(embeddings)
+    if n < 2:
+        return 0.1
+
+    distances = pairwise_cosine_distances(embeddings)
+
+    # Generate candidate bandwidths (log-spaced)
+    candidates = np.logspace(
+        np.log10(bandwidth_range[0]),
+        np.log10(bandwidth_range[1]),
+        n_candidates
+    )
+
+    best_bandwidth = candidates[0]
+    best_score = float('-inf')
+
+    for h in candidates:
+        score = leave_one_out_cv_score(distances, h)
+        if score > best_score:
+            best_score = score
+            best_bandwidth = h
+
+    return best_bandwidth
+
+
+def adaptive_local_bandwidth(
+    embeddings: np.ndarray,
+    global_bandwidth: float,
+    k_neighbors: int = 5,
+    alpha: float = 0.5
+) -> np.ndarray:
+    """Compute adaptive (balloon) bandwidth for each point.
+
+    Uses local density to adjust bandwidth:
+    h(x) = h₀ × (p̂_pilot(x))^(-α)
+
+    Points in dense regions get smaller bandwidth (sharper),
+    points in sparse regions get larger bandwidth (smoother).
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        global_bandwidth: Base bandwidth h₀
+        k_neighbors: Number of neighbors for local density
+        alpha: Sensitivity parameter (typically 0.5)
+
+    Returns:
+        (n,) array of per-point bandwidths
+    """
+    n = len(embeddings)
+    if n < 2:
+        return np.full(n, global_bandwidth)
+
+    distances = pairwise_cosine_distances(embeddings)
+
+    # Pilot density estimate using global bandwidth
+    pilot_densities = np.zeros(n)
+    for i in range(n):
+        kernel_vals = np.exp(-(distances[i] ** 2) / (2 * global_bandwidth ** 2))
+        pilot_densities[i] = kernel_vals.sum() / n
+
+    # Normalize to prevent extreme values
+    pilot_densities = np.clip(pilot_densities, 1e-10, None)
+    geometric_mean = np.exp(np.mean(np.log(pilot_densities)))
+
+    # Adaptive bandwidth: h(x) = h₀ × (p̂(x) / g)^(-α)
+    # where g is geometric mean of pilot densities
+    local_bandwidths = global_bandwidth * (pilot_densities / geometric_mean) ** (-alpha)
+
+    # Clamp to reasonable range
+    min_h = global_bandwidth * 0.1
+    max_h = global_bandwidth * 10
+    local_bandwidths = np.clip(local_bandwidths, min_h, max_h)
+
+    return local_bandwidths
+
+
+def compute_adaptive_density_scores(
+    embeddings: np.ndarray,
+    config: 'DensityConfig' = None
+) -> np.ndarray:
+    """Compute density scores using adaptive bandwidth.
+
+    Each point has its own bandwidth based on local density,
+    providing better estimates in both dense and sparse regions.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        config: Density configuration
+
+    Returns:
+        (n,) array of normalized density scores
+    """
+    if config is None:
+        config = DensityConfig()
+
+    n = len(embeddings)
+    if n == 0:
+        return np.array([])
+    if n == 1:
+        return np.array([1.0])
+
+    # Get global bandwidth
+    distances = pairwise_cosine_distances(embeddings)
+    flat_distances = distances.flatten()
+
+    if config.bandwidth_method == BandwidthMethod.AUTO:
+        global_h = cross_validation_bandwidth(embeddings)
+    elif config.bandwidth_method == BandwidthMethod.SCOTT:
+        global_h = scott_bandwidth(flat_distances, n)
+    elif config.bandwidth_method == BandwidthMethod.FIXED:
+        global_h = config.fixed_bandwidth
+    else:
+        global_h = silverman_bandwidth(flat_distances, n)
+
+    # Compute adaptive bandwidths
+    local_bandwidths = adaptive_local_bandwidth(embeddings, global_h)
+
+    # Compute density at each point using its local bandwidth
+    densities = np.zeros(n)
+    for i in range(n):
+        h_i = local_bandwidths[i]
+        kernel_vals = np.exp(-(distances[i] ** 2) / (2 * h_i ** 2))
+        densities[i] = kernel_vals.sum() / n
+
+    # Normalize to [0, 1]
+    if config.normalize_scores and densities.max() > 0:
+        densities = densities / densities.max()
+
+    return densities
+
+
 def compute_density_scores(
     embeddings: np.ndarray,
     config: DensityConfig = None
@@ -185,6 +373,11 @@ def compute_density_scores(
     """Compute density scores for each embedding using KDE.
 
     density(eᵢ) = (1/n) Σⱼ K_h(d(eᵢ, eⱼ))
+
+    Supports three bandwidth modes:
+    - Fixed bandwidth (same for all points)
+    - Adaptive bandwidth (per-point based on local density)
+    - Cross-validation selected bandwidth
 
     Args:
         embeddings: (n, d) array of embeddings
@@ -202,6 +395,10 @@ def compute_density_scores(
     if n == 1:
         return np.array([1.0])
 
+    # Use adaptive density if configured
+    if config.use_adaptive_bandwidth:
+        return compute_adaptive_density_scores(embeddings, config)
+
     # Compute pairwise distances
     distances = pairwise_cosine_distances(embeddings)
     flat_distances = distances[np.triu_indices(n, k=1)]
@@ -211,7 +408,11 @@ def compute_density_scores(
         bandwidth = config.fixed_bandwidth
     elif config.bandwidth_method == BandwidthMethod.SCOTT:
         bandwidth = scott_bandwidth(flat_distances, n)
-    else:  # SILVERMAN or AUTO
+    elif config.bandwidth_method == BandwidthMethod.AUTO:
+        bandwidth = cross_validation_bandwidth(
+            embeddings, n_candidates=config.cv_n_candidates
+        )
+    else:  # SILVERMAN (default)
         bandwidth = silverman_bandwidth(flat_distances, n)
 
     # Compute density for each point
