@@ -123,30 +123,35 @@ We have 200+ tests verifying correctness, but no performance data. Users need gu
 
 **Priority:** Low
 **Complexity:** High
-**Status:** Proposed
+**Status:** Complete ✅
 
 ### Problem
 
 Currently, all nodes must use the same embedding model. Real deployments might have legacy nodes with older models, or specialized nodes using domain-specific embeddings. Cosine similarity between vectors from different models is meaningless.
 
-### Approaches
+### Solution Implemented
 
-1. **Simple (Recommended First):** Reject cross-model queries, require model match in routing
-2. **Medium:** Group nodes by model, query each group separately, merge by raw scores
-3. **Complex:** Learn projection matrices between embedding spaces using shared anchor vocabulary
+Two-phase architecture that preserves density scoring within model pools:
+1. **Phase 1:** Query each model pool separately with full density/HDBSCAN support
+2. **Phase 2:** Fuse density-adjusted scores across pools (no embeddings needed)
 
-### Implementation Notes
+Key insight: After softmax normalization, scores become probabilities that ARE comparable across models.
 
-Nodes already advertise `embedding_model` in discovery metadata. The federation engine could:
-1. Filter nodes by model compatibility before routing
-2. Maintain model-specific aggregation pools
-3. Use score normalization rather than embedding comparison for cross-model merging
+### Deliverables
 
-### Open Questions (from DENSITY_SCORING_PROPOSAL.md)
+- [x] `cross_model_federation.py` - Core engine with 5 fusion methods
+- [x] `FusionMethod` enum: weighted_sum, rrf, consensus, geometric_mean, max
+- [x] `CrossModelFederatedEngine` with parallel pool querying
+- [x] `PoolRouter` - filters nodes by embedding_model metadata
+- [x] `AdaptiveModelWeights` - learns weights from feedback with persistence
+- [x] Prolog validation: 9 new predicates for cross_model options
+- [x] HTTP endpoints: /kg/cross-model, /kg/cross-model/pools, /kg/cross-model/weights, /kg/cross-model/feedback
+- [x] Python code generation: compile_cross_model_engine_python/2, compile_cross_model_service_python/2
+- [x] 39 unit tests passing
 
-- How to compare densities across incompatible embedding spaces?
-- Can we use dimensionality reduction (PCA/UMAP) to create compatible subspaces?
-- What's the quality loss from score-only aggregation?
+### See Also
+
+- `docs/proposals/CROSS_MODEL_FEDERATION.md` - Detailed design proposal
 
 ---
 
@@ -215,11 +220,11 @@ The `QA_KNOWLEDGE_GRAPH.md` proposal describes learning path generation that cou
 
 | Phase | Work Item | Priority | Complexity | Status |
 |-------|-----------|----------|------------|--------|
-| 6a | Production Deployment Guide | High | Medium | **Complete** |
+| 6a | Production Deployment Guide | High | Medium | **Complete** ✅ |
 | 6b | Performance Benchmarking | Medium | Medium | Pending |
 | 6c | Go Phase 5 | Medium | High | Pending |
 | 6d | Rust Phase 5 | Medium | High | Pending |
-| 6e | Cross-Model Federation | Low | High | Pending |
+| 6e | Cross-Model Federation | Low | High | **Complete** ✅ |
 | 6f | Adversarial Robustness | Low | High | Pending |
 
 ## References
