@@ -65,7 +65,11 @@
     % KG Topology Phase 5b: Adaptive federation-k
     compile_adaptive_federation_go/2,   % +Options, -GoCode
     % KG Topology Phase 5c: Query plan optimization
-    compile_query_planner_go/2          % +Options, -GoCode
+    compile_query_planner_go/2,         % +Options, -GoCode
+    % KG Topology Phase 5a: Hierarchical federation
+    compile_hierarchical_federation_go/2, % +Options, -GoCode
+    % KG Topology Phase 5d: Streaming federation
+    compile_streaming_federation_go/2   % +Options, -GoCode
 ]).
 
 :- use_module(library(lists)).
@@ -15924,3 +15928,334 @@ func (e *PlannedQueryEngine) PlannedQuery(ctx context.Context, queryText string,
     return response, err
 }
 ', [SpecT, ExplVar, ConsMin, SpecMax, ExplMax, ConsS1, ConsS2, DefLat]).
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5a: HIERARCHICAL FEDERATION CODE GENERATION (Go)
+% =============================================================================
+
+%% compile_hierarchical_federation_go(+Options, -Code)
+%  Generate Go HierarchicalFederatedEngine with multi-level query routing.
+%  Queries regional aggregators first, then drills down to best regions.
+
+compile_hierarchical_federation_go(Options, Code) :-
+    % Extract hierarchical options with defaults
+    ( member(hierarchical(HierOpts), Options),
+      is_list(HierOpts) -> true
+    ; HierOpts = []
+    ),
+    ( member(max_levels(MaxLevels), HierOpts) -> true ; MaxLevels = 3 ),
+    ( member(min_nodes_per_region(MinNodes), HierOpts) -> true ; MinNodes = 2 ),
+    ( member(centroid_similarity_threshold(SimThresh), HierOpts) -> true ; SimThresh = 0.5 ),
+    ( member(drill_down_k(DrillK), HierOpts) -> true ; DrillK = 2 ),
+
+    format(string(Code), '
+// KG Topology Phase 5a: Hierarchical Federation
+// Generated from Prolog service definition
+
+// HierarchyConfig holds configuration for hierarchy building
+type HierarchyConfig struct {
+    MaxLevels                  int     `json:"max_levels"`
+    MinNodesPerRegion          int     `json:"min_nodes_per_region"`
+    CentroidSimilarityThreshold float64 `json:"centroid_similarity_threshold"`
+}
+
+// DefaultHierarchyConfig returns the default configuration
+var DefaultHierarchyConfig = HierarchyConfig{
+    MaxLevels:                  ~w,
+    MinNodesPerRegion:          ~w,
+    CentroidSimilarityThreshold: ~w,
+}
+
+// RegionalNode represents a node that aggregates child nodes
+type RegionalNode struct {
+    RegionID     string    `json:"region_id"`
+    Centroid     []float32 `json:"centroid"`
+    Topics       []string  `json:"topics"`
+    ChildNodes   []string  `json:"child_nodes"`
+    ParentRegion string    `json:"parent_region,omitempty"`
+    Level        int       `json:"level"`
+}
+
+// NodeHierarchy manages hierarchical node relationships
+type NodeHierarchy struct {
+    Config       HierarchyConfig
+    Regions      map[string]*RegionalNode
+    NodeToRegion map[string]string
+    LeafNodes    map[string]*KGNode
+    mu           sync.RWMutex
+}
+
+// NewNodeHierarchy creates a new hierarchy
+func NewNodeHierarchy(config *HierarchyConfig) *NodeHierarchy {
+    cfg := DefaultHierarchyConfig
+    if config != nil { cfg = *config }
+    return &NodeHierarchy{Config: cfg, Regions: make(map[string]*RegionalNode), NodeToRegion: make(map[string]string), LeafNodes: make(map[string]*KGNode)}
+}
+
+// BuildFromNodes builds hierarchy from leaf nodes using centroid clustering
+func (h *NodeHierarchy) BuildFromNodes(nodes []*KGNode) {
+    h.mu.Lock(); defer h.mu.Unlock()
+    h.LeafNodes = make(map[string]*KGNode); h.Regions = make(map[string]*RegionalNode); h.NodeToRegion = make(map[string]string)
+    if len(nodes) == 0 { return }
+    for _, n := range nodes { h.LeafNodes[n.NodeID] = n }
+    // Simple clustering by similarity - nodes with similar centroids form regions
+    assigned := make(map[string]bool)
+    groupID := 0
+    for _, node := range nodes {
+        if assigned[node.NodeID] || len(node.Centroid) == 0 { continue }
+        cluster := []*KGNode{node}; assigned[node.NodeID] = true
+        for _, other := range nodes {
+            if assigned[other.NodeID] || len(other.Centroid) == 0 { continue }
+            if cosineSimilarity(node.Centroid, other.Centroid) >= h.Config.CentroidSimilarityThreshold {
+                cluster = append(cluster, other); assigned[other.NodeID] = true
+            }
+        }
+        if len(cluster) >= h.Config.MinNodesPerRegion {
+            h.createRegion(fmt.Sprintf("region_%%d", groupID), cluster, 0, ""); groupID++
+        } else {
+            for _, n := range cluster { h.createRegion(fmt.Sprintf("singleton_%%s", n.NodeID), []*KGNode{n}, 0, "") }
+        }
+    }
+}
+
+func (h *NodeHierarchy) createRegion(regionID string, nodes []*KGNode, level int, parent string) {
+    var sumCentroid []float64; var count int
+    for _, n := range nodes {
+        if len(n.Centroid) > 0 {
+            if sumCentroid == nil { sumCentroid = make([]float64, len(n.Centroid)) }
+            for i, v := range n.Centroid { sumCentroid[i] += float64(v) }
+            count++
+        }
+    }
+    var avgCentroid []float32
+    if count > 0 {
+        avgCentroid = make([]float32, len(sumCentroid))
+        for i, v := range sumCentroid { avgCentroid[i] = float32(v / float64(count)) }
+    }
+    topicSet := make(map[string]bool)
+    for _, n := range nodes { for _, t := range n.Topics { topicSet[t] = true } }
+    topics := make([]string, 0, len(topicSet)); for t := range topicSet { topics = append(topics, t) }
+    childNodes := make([]string, len(nodes)); for i, n := range nodes { childNodes[i] = n.NodeID }
+    h.Regions[regionID] = &RegionalNode{RegionID: regionID, Centroid: avgCentroid, Topics: topics, ChildNodes: childNodes, ParentRegion: parent, Level: level}
+    for _, n := range nodes { h.NodeToRegion[n.NodeID] = regionID }
+}
+
+// GetRegionalNodes returns regions at a specific level
+func (h *NodeHierarchy) GetRegionalNodes(level int) []*RegionalNode {
+    h.mu.RLock(); defer h.mu.RUnlock()
+    var result []*RegionalNode
+    for _, r := range h.Regions { if r.Level == level { result = append(result, r) } }
+    return result
+}
+
+// GetChildren returns child node IDs for a region
+func (h *NodeHierarchy) GetChildren(regionID string) []string {
+    h.mu.RLock(); defer h.mu.RUnlock()
+    if r, ok := h.Regions[regionID]; ok { return r.ChildNodes }
+    return nil
+}
+
+// GetChildNodes returns actual KGNode objects for region children
+func (h *NodeHierarchy) GetChildNodes(regionID string) []*KGNode {
+    childIDs := h.GetChildren(regionID)
+    h.mu.RLock(); defer h.mu.RUnlock()
+    result := make([]*KGNode, 0, len(childIDs))
+    for _, id := range childIDs { if n, ok := h.LeafNodes[id]; ok { result = append(result, n) } }
+    return result
+}
+
+// HierarchicalFederatedEngine executes queries through hierarchy
+type HierarchicalFederatedEngine struct {
+    *FederatedQueryEngine
+    Hierarchy   *NodeHierarchy
+    DrillDownK  int
+    hierarchyBuilt bool
+}
+
+// NewHierarchicalFederatedEngine creates engine with hierarchical routing
+func NewHierarchicalFederatedEngine(router *KleinbergRouter) *HierarchicalFederatedEngine {
+    return &HierarchicalFederatedEngine{FederatedQueryEngine: NewFederatedQueryEngine(router), Hierarchy: NewNodeHierarchy(nil), DrillDownK: ~w}
+}
+
+// HierarchicalQuery executes a query through the hierarchy
+func (e *HierarchicalFederatedEngine) HierarchicalQuery(ctx context.Context, queryText string, queryEmbedding []float32, topK int) (*AggregatedResponse, error) {
+    e.ensureHierarchy()
+    if e.Hierarchy == nil || len(e.Hierarchy.Regions) == 0 {
+        return e.FederatedQuery(ctx, queryText, queryEmbedding, topK) // Fallback to flat
+    }
+    // Level 1: Query regional aggregators
+    regions := e.Hierarchy.GetRegionalNodes(0)
+    if len(regions) == 0 { return e.FederatedQuery(ctx, queryText, queryEmbedding, topK) }
+    // Find best regions by centroid similarity
+    type regionSim struct { region *RegionalNode; sim float64 }
+    similarities := make([]regionSim, len(regions))
+    for i, r := range regions { similarities[i] = regionSim{r, cosineSimilarity(queryEmbedding, r.Centroid)} }
+    for i := 0; i < len(similarities)-1; i++ {
+        for j := i + 1; j < len(similarities); j++ {
+            if similarities[j].sim > similarities[i].sim { similarities[i], similarities[j] = similarities[j], similarities[i] }
+        }
+    }
+    // Level 2: Query children of top regions
+    drillK := e.DrillDownK; if drillK > len(similarities) { drillK = len(similarities) }
+    var allNodeIDs []string
+    for i := 0; i < drillK; i++ { allNodeIDs = append(allNodeIDs, e.Hierarchy.GetChildren(similarities[i].region.RegionID)...) }
+    // Execute federated query on selected nodes
+    originalK := e.FederationK; e.FederationK = len(allNodeIDs)
+    response, err := e.FederatedQuery(ctx, queryText, queryEmbedding, topK)
+    e.FederationK = originalK
+    return response, err
+}
+
+func (e *HierarchicalFederatedEngine) ensureHierarchy() {
+    if e.hierarchyBuilt { return }
+    nodes, _ := e.Router.DiscoverNodes([]string{"kg_node"})
+    if len(nodes) > 0 {
+        kgNodes := make([]*KGNode, len(nodes))
+        for i, n := range nodes { kgNodes[i] = &KGNode{NodeID: n.ServiceID, Endpoint: n.Address} }
+        e.Hierarchy.BuildFromNodes(kgNodes)
+        e.hierarchyBuilt = true
+    }
+}
+', [MaxLevels, MinNodes, SimThresh, DrillK]).
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5d: STREAMING FEDERATION CODE GENERATION (Go)
+% =============================================================================
+
+%% compile_streaming_federation_go(+Options, -Code)
+%  Generate Go StreamingFederatedEngine with async partial results.
+%  Streams results as nodes respond rather than waiting for all.
+
+compile_streaming_federation_go(Options, Code) :-
+    % Extract streaming options with defaults
+    ( member(streaming(StreamOpts), Options),
+      is_list(StreamOpts) -> true
+    ; StreamOpts = []
+    ),
+    ( member(yield_interval_ms(YieldMs), StreamOpts) -> true ; YieldMs = 100 ),
+    ( member(min_confidence(MinConf), StreamOpts) -> true ; MinConf = 0.3 ),
+
+    format(string(Code), '
+// KG Topology Phase 5d: Streaming Federation
+// Generated from Prolog service definition
+
+// StreamingConfig holds configuration for streaming queries
+type StreamingConfig struct {
+    YieldIntervalMs int     `json:"yield_interval_ms"`
+    MinConfidence   float64 `json:"min_confidence"`
+}
+
+// DefaultStreamingConfig returns the default configuration
+var DefaultStreamingConfig = StreamingConfig{
+    YieldIntervalMs: ~w,
+    MinConfidence:   ~w,
+}
+
+// PartialResult represents an intermediate result during streaming
+type PartialResult struct {
+    Results        []AggregatedResult `json:"results"`
+    Confidence     float64            `json:"confidence"`
+    NodesResponded int                `json:"nodes_responded"`
+    NodesTotal     int                `json:"nodes_total"`
+    IsFinal        bool               `json:"is_final"`
+}
+
+// StreamingFederatedEngine supports streaming partial results
+type StreamingFederatedEngine struct {
+    *FederatedQueryEngine
+    StreamConfig StreamingConfig
+}
+
+// NewStreamingFederatedEngine creates engine with streaming support
+func NewStreamingFederatedEngine(router *KleinbergRouter) *StreamingFederatedEngine {
+    return &StreamingFederatedEngine{FederatedQueryEngine: NewFederatedQueryEngine(router), StreamConfig: DefaultStreamingConfig}
+}
+
+// StreamingQuery streams partial results as nodes respond
+func (e *StreamingFederatedEngine) StreamingQuery(ctx context.Context, queryText string, queryEmbedding []float32, topK int) (<-chan PartialResult, error) {
+    nodes, err := e.Router.DiscoverNodes([]string{"kg_node"})
+    if err != nil { return nil, err }
+    resultChan := make(chan PartialResult, len(nodes)+1)
+    go func() {
+        defer close(resultChan)
+        if len(nodes) == 0 { resultChan <- PartialResult{Results: []AggregatedResult{}, Confidence: 1.0, NodesResponded: 0, NodesTotal: 0, IsFinal: true}; return }
+        // Query nodes in parallel
+        nodeChan := make(chan *NodeResponse, len(nodes))
+        var wg sync.WaitGroup
+        for _, n := range nodes {
+            wg.Add(1)
+            go func(node ServiceInstance) {
+                defer wg.Done()
+                resp := e.queryNodeAsync(ctx, &KGNode{NodeID: node.ServiceID, Endpoint: node.Address}, queryText, queryEmbedding, topK)
+                nodeChan <- resp
+            }(n)
+        }
+        go func() { wg.Wait(); close(nodeChan) }()
+        // Aggregate and stream partial results
+        aggregated := make(map[string]*AggregatedResult)
+        responded := 0
+        for resp := range nodeChan {
+            if resp == nil || resp.Error != "" { continue }
+            responded++
+            for _, r := range resp.Results {
+                if existing, ok := aggregated[r.AnswerHash]; ok {
+                    existing.CombinedScore = e.mergeScore(existing.CombinedScore, r.ExpScore)
+                    existing.SourceNodes = append(existing.SourceNodes, resp.SourceNode)
+                } else {
+                    aggregated[r.AnswerHash] = &AggregatedResult{AnswerText: r.AnswerText, AnswerHash: r.AnswerHash, CombinedScore: r.ExpScore, SourceNodes: []string{resp.SourceNode}}
+                }
+            }
+            // Emit partial result
+            results := make([]AggregatedResult, 0, len(aggregated))
+            for _, r := range aggregated { results = append(results, *r) }
+            for i := 0; i < len(results)-1; i++ {
+                for j := i + 1; j < len(results); j++ {
+                    if results[j].CombinedScore > results[i].CombinedScore { results[i], results[j] = results[j], results[i] }
+                }
+            }
+            if len(results) > topK { results = results[:topK] }
+            confidence := float64(responded) / float64(len(nodes))
+            if confidence >= e.StreamConfig.MinConfidence {
+                resultChan <- PartialResult{Results: results, Confidence: confidence, NodesResponded: responded, NodesTotal: len(nodes), IsFinal: false}
+            }
+        }
+        // Final result
+        results := make([]AggregatedResult, 0, len(aggregated))
+        for _, r := range aggregated { results = append(results, *r) }
+        for i := 0; i < len(results)-1; i++ {
+            for j := i + 1; j < len(results); j++ {
+                if results[j].CombinedScore > results[i].CombinedScore { results[i], results[j] = results[j], results[i] }
+            }
+        }
+        if len(results) > topK { results = results[:topK] }
+        resultChan <- PartialResult{Results: results, Confidence: float64(responded) / float64(len(nodes)), NodesResponded: responded, NodesTotal: len(nodes), IsFinal: true}
+    }()
+    return resultChan, nil
+}
+
+func (e *StreamingFederatedEngine) queryNodeAsync(ctx context.Context, node *KGNode, queryText string, queryEmbedding []float32, topK int) *NodeResponse {
+    // Create HTTP request
+    reqBody := map[string]interface{}{"__type": "kg_query", "payload": map[string]interface{}{"query_text": queryText, "top_k": topK}}
+    jsonBody, _ := json.Marshal(reqBody)
+    req, _ := http.NewRequestWithContext(ctx, "POST", node.Endpoint+"/kg/query", bytes.NewReader(jsonBody))
+    req.Header.Set("Content-Type", "application/json")
+    client := &http.Client{Timeout: time.Duration(e.TimeoutMs) * time.Millisecond}
+    start := time.Now()
+    resp, err := client.Do(req)
+    if err != nil { return &NodeResponse{SourceNode: node.NodeID, Error: err.Error()} }
+    defer resp.Body.Close()
+    var nodeResp NodeResponse
+    if err := json.NewDecoder(resp.Body).Decode(&nodeResp); err != nil { return &NodeResponse{SourceNode: node.NodeID, Error: err.Error()} }
+    nodeResp.SourceNode = node.NodeID
+    nodeResp.ResponseTime = time.Since(start)
+    return &nodeResp
+}
+
+func (e *StreamingFederatedEngine) mergeScore(existing, new float64) float64 {
+    switch e.Config.Strategy {
+    case AggregationMax: if new > existing { return new }; return existing
+    case AggregationMin: if new < existing { return new }; return existing
+    default: return existing + new // SUM
+    }
+}
+', [YieldMs, MinConf]).
