@@ -1112,3 +1112,432 @@ def create_density_aware_engine(
         federation_k=federation_k,
         timeout_ms=timeout_ms
     )
+
+
+# =============================================================================
+# PHASE 5b: ADAPTIVE FEDERATION-K
+# =============================================================================
+
+@dataclass
+class QueryMetrics:
+    """Metrics for adaptive k selection.
+
+    These metrics help determine how many nodes to query based on
+    query characteristics and historical performance.
+    """
+    entropy: float              # Semantic diversity/ambiguity of query (0-1)
+    top_similarity: float       # Max similarity to any node centroid (0-1)
+    similarity_variance: float  # Variance in node similarities
+    historical_consensus: float  # Avg consensus from similar queries (0-1)
+    avg_node_latency_ms: float  # Expected response time per node
+
+
+@dataclass
+class AdaptiveKConfig:
+    """Configuration for adaptive federation-k selection."""
+    base_k: int = 3                   # Default number of nodes
+    min_k: int = 1                    # Minimum nodes to query
+    max_k: int = 10                   # Maximum nodes to query
+    entropy_weight: float = 0.3       # Weight for entropy factor
+    latency_weight: float = 0.2       # Weight for latency factor
+    consensus_weight: float = 0.5     # Weight for consensus factor
+    entropy_threshold: float = 0.7    # High entropy triggers more nodes
+    similarity_threshold: float = 0.5  # Low similarity triggers more nodes
+    consensus_threshold: float = 0.6  # Low consensus triggers more nodes
+    history_size: int = 100           # Max queries to keep in history
+
+
+class AdaptiveKCalculator:
+    """Computes optimal federation_k based on query metrics.
+
+    Uses multiple factors to dynamically adjust how many nodes to query:
+    - High entropy (ambiguous query) → more nodes needed
+    - Low top similarity (no strong match) → more nodes needed
+    - Historical low consensus → more nodes needed
+    - Tight latency budget → fewer nodes
+
+    Implements a feedback loop: records query outcomes to improve future
+    k selection for similar queries.
+    """
+
+    def __init__(self, config: Optional[AdaptiveKConfig] = None):
+        """
+        Initialize adaptive k calculator.
+
+        Args:
+            config: Configuration for k selection. Uses defaults if None.
+        """
+        self.config = config or AdaptiveKConfig()
+        self.query_history: List[Tuple[np.ndarray, float, int]] = []  # (embedding, consensus, k_used)
+        self._latency_cache: Dict[str, List[float]] = {}  # node_id -> latencies
+
+    def compute_k(
+        self,
+        query_embedding: np.ndarray,
+        nodes: List[KGNode],
+        latency_budget_ms: Optional[int] = None
+    ) -> int:
+        """
+        Compute optimal federation_k based on query characteristics.
+
+        Args:
+            query_embedding: The query embedding vector
+            nodes: Available KG nodes to query
+            latency_budget_ms: Optional time budget for query
+
+        Returns:
+            Optimal number of nodes to query
+        """
+        if not nodes:
+            return self.config.min_k
+
+        metrics = self._compute_metrics(query_embedding, nodes)
+
+        # Start with base k
+        k = self.config.base_k
+
+        # Adjust based on entropy (ambiguity)
+        if metrics.entropy > self.config.entropy_threshold:
+            k += int(2 * self.config.entropy_weight * 10)  # Up to +2 nodes
+
+        # Adjust based on similarity distribution
+        if metrics.top_similarity < self.config.similarity_threshold:
+            k += 1  # No strong match, query more
+
+        if metrics.similarity_variance > 0.1:
+            k += 1  # High variance suggests need for exploration
+
+        # Adjust based on historical consensus
+        if metrics.historical_consensus < self.config.consensus_threshold:
+            k += int(self.config.consensus_weight * 2)  # Past queries needed more nodes
+
+        # Adjust based on latency budget
+        if latency_budget_ms and metrics.avg_node_latency_ms > 0:
+            max_nodes_in_budget = int(latency_budget_ms / metrics.avg_node_latency_ms)
+            k = min(k, max(self.config.min_k, max_nodes_in_budget))
+
+        # Clamp to valid range
+        return max(self.config.min_k, min(k, self.config.max_k, len(nodes)))
+
+    def _compute_metrics(
+        self,
+        query_embedding: np.ndarray,
+        nodes: List[KGNode]
+    ) -> QueryMetrics:
+        """Compute metrics for k selection."""
+        # Compute similarities to all nodes
+        similarities = []
+        for node in nodes:
+            if node.centroid is not None:
+                sim = self._cosine_similarity(query_embedding, node.centroid)
+                similarities.append(sim)
+            else:
+                similarities.append(0.0)
+
+        similarities = np.array(similarities)
+
+        # Entropy: normalized entropy of similarity distribution
+        # High entropy = query is ambiguous (similar to many topics)
+        if len(similarities) > 1 and similarities.sum() > 0:
+            probs = np.abs(similarities) / (np.abs(similarities).sum() + 1e-10)
+            probs = probs + 1e-10  # Avoid log(0)
+            entropy = -np.sum(probs * np.log(probs)) / np.log(len(probs))
+        else:
+            entropy = 0.5  # Default for single node
+
+        # Top similarity
+        top_sim = float(np.max(similarities)) if len(similarities) > 0 else 0.0
+
+        # Variance
+        variance = float(np.var(similarities)) if len(similarities) > 1 else 0.0
+
+        # Historical consensus from similar queries
+        historical_consensus = self._get_historical_consensus(query_embedding)
+
+        # Average node latency
+        avg_latency = self._get_avg_latency(nodes)
+
+        return QueryMetrics(
+            entropy=float(entropy),
+            top_similarity=top_sim,
+            similarity_variance=variance,
+            historical_consensus=historical_consensus,
+            avg_node_latency_ms=avg_latency
+        )
+
+    def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
+        """Compute cosine similarity between two vectors."""
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a < 1e-10 or norm_b < 1e-10:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+
+    def _get_historical_consensus(self, query_embedding: np.ndarray) -> float:
+        """Get average consensus from similar past queries."""
+        if not self.query_history:
+            return 0.8  # Optimistic default
+
+        # Find similar queries in history
+        similar_consensus = []
+        for hist_emb, consensus, _ in self.query_history[-self.config.history_size:]:
+            sim = self._cosine_similarity(query_embedding, hist_emb)
+            if sim > 0.7:  # Similar query
+                similar_consensus.append(consensus)
+
+        if similar_consensus:
+            return float(np.mean(similar_consensus))
+        return 0.8  # Default if no similar queries
+
+    def _get_avg_latency(self, nodes: List[KGNode]) -> float:
+        """Get average latency for the given nodes."""
+        latencies = []
+        for node in nodes:
+            if node.node_id in self._latency_cache:
+                node_latencies = self._latency_cache[node.node_id]
+                if node_latencies:
+                    latencies.append(np.mean(node_latencies))
+
+        if latencies:
+            return float(np.mean(latencies))
+        return 100.0  # Default 100ms if no data
+
+    def record_query_outcome(
+        self,
+        query_embedding: np.ndarray,
+        consensus_score: float,
+        k_used: int,
+        node_latencies: Optional[Dict[str, float]] = None
+    ) -> None:
+        """
+        Record query outcome for future adaptive decisions.
+
+        Args:
+            query_embedding: The query embedding used
+            consensus_score: Resulting consensus (0-1, higher = better)
+            k_used: Number of nodes that were queried
+            node_latencies: Optional dict of node_id -> latency_ms
+        """
+        # Add to history
+        self.query_history.append((query_embedding.copy(), consensus_score, k_used))
+
+        # Trim history if needed
+        if len(self.query_history) > self.config.history_size:
+            self.query_history = self.query_history[-self.config.history_size:]
+
+        # Update latency cache
+        if node_latencies:
+            for node_id, latency in node_latencies.items():
+                if node_id not in self._latency_cache:
+                    self._latency_cache[node_id] = []
+                self._latency_cache[node_id].append(latency)
+                # Keep only recent latencies
+                if len(self._latency_cache[node_id]) > 20:
+                    self._latency_cache[node_id] = self._latency_cache[node_id][-20:]
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get statistics about adaptive k selection."""
+        if not self.query_history:
+            return {
+                'queries_recorded': 0,
+                'avg_k_used': self.config.base_k,
+                'avg_consensus': 0.0,
+                'nodes_tracked': 0
+            }
+
+        k_values = [k for _, _, k in self.query_history]
+        consensus_values = [c for _, c, _ in self.query_history]
+
+        return {
+            'queries_recorded': len(self.query_history),
+            'avg_k_used': float(np.mean(k_values)),
+            'avg_consensus': float(np.mean(consensus_values)),
+            'nodes_tracked': len(self._latency_cache),
+            'config': {
+                'base_k': self.config.base_k,
+                'min_k': self.config.min_k,
+                'max_k': self.config.max_k
+            }
+        }
+
+
+class AdaptiveFederatedEngine(FederatedQueryEngine):
+    """Federated query engine with adaptive federation_k selection.
+
+    Dynamically adjusts the number of nodes queried based on:
+    - Query ambiguity (entropy of similarity distribution)
+    - Historical query performance
+    - Node latency characteristics
+    - Optional latency budget constraints
+
+    Includes a feedback loop to improve k selection over time.
+    """
+
+    def __init__(
+        self,
+        router: KleinbergRouter,
+        aggregation_config: Optional[AggregationConfig] = None,
+        adaptive_config: Optional[AdaptiveKConfig] = None,
+        timeout_ms: int = 5000,
+        max_workers: int = 10
+    ):
+        """
+        Initialize adaptive federated engine.
+
+        Args:
+            router: KleinbergRouter for node discovery
+            aggregation_config: Configuration for result aggregation
+            adaptive_config: Configuration for adaptive k selection
+            timeout_ms: Query timeout in milliseconds
+            max_workers: Max parallel workers for queries
+        """
+        # Use base_k from adaptive config as default federation_k
+        adaptive_cfg = adaptive_config or AdaptiveKConfig()
+        super().__init__(
+            router=router,
+            aggregation_config=aggregation_config,
+            federation_k=adaptive_cfg.base_k,
+            timeout_ms=timeout_ms,
+            max_workers=max_workers
+        )
+        self.adaptive = AdaptiveKCalculator(adaptive_cfg)
+
+    def federated_query(
+        self,
+        query_text: str,
+        query_embedding: np.ndarray,
+        top_k: int = 10,
+        federation_k: Optional[int] = None,
+        latency_budget_ms: Optional[int] = None,
+        aggregation_strategy: Optional[AggregationStrategy] = None
+    ) -> AggregatedResponse:
+        """
+        Execute a federated query with adaptive k selection.
+
+        Args:
+            query_text: The query text
+            query_embedding: Query embedding vector
+            top_k: Number of results to return
+            federation_k: Override adaptive k (None = use adaptive)
+            latency_budget_ms: Optional time budget for query
+            aggregation_strategy: Override default aggregation strategy
+
+        Returns:
+            AggregatedResponse with merged results from all nodes
+        """
+        # Discover nodes
+        nodes = self.router.discover_nodes()
+
+        # Compute adaptive k if not overridden
+        if federation_k is None:
+            k = self.adaptive.compute_k(query_embedding, nodes, latency_budget_ms)
+        else:
+            k = federation_k
+
+        # Execute query with computed k
+        start_time = time.time()
+        response = super().federated_query(
+            query_text=query_text,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            federation_k=k,
+            aggregation_strategy=aggregation_strategy
+        )
+        elapsed_ms = (time.time() - start_time) * 1000
+
+        # Record outcome for learning
+        # Compute consensus score from response
+        consensus_score = self._compute_consensus_score(response)
+        self.adaptive.record_query_outcome(
+            query_embedding=query_embedding,
+            consensus_score=consensus_score,
+            k_used=k,
+            node_latencies=self._get_recent_latencies()
+        )
+
+        return response
+
+    def _compute_consensus_score(self, response: AggregatedResponse) -> float:
+        """Compute consensus score from response."""
+        if not response.results:
+            return 0.0
+
+        # Use diversity score if available
+        if hasattr(response, 'diversity_score'):
+            # Higher diversity = lower consensus (from different sources)
+            # But for adaptive k, we want to measure result quality
+            pass
+
+        # Simple heuristic: ratio of top result score to total
+        if len(response.results) >= 2:
+            top_score = response.results[0].get('normalized_prob', 0.5)
+            second_score = response.results[1].get('normalized_prob', 0.0)
+            # High gap = high consensus on top result
+            return min(1.0, top_score / (second_score + 0.1))
+
+        return 0.5  # Default
+
+    def _get_recent_latencies(self) -> Dict[str, float]:
+        """Get recent node latencies from parent class stats."""
+        latencies = {}
+        for node_id, times in self._node_response_times.items():
+            if times:
+                latencies[node_id] = times[-1]  # Most recent
+        return latencies
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get combined engine and adaptive k statistics."""
+        base_stats = super().get_stats()
+        adaptive_stats = self.adaptive.get_stats()
+        return {
+            **base_stats,
+            'adaptive': adaptive_stats
+        }
+
+
+def create_adaptive_engine(
+    router: KleinbergRouter,
+    base_k: int = 3,
+    min_k: int = 1,
+    max_k: int = 10,
+    entropy_weight: float = 0.3,
+    latency_weight: float = 0.2,
+    consensus_weight: float = 0.5,
+    timeout_ms: int = 5000,
+    aggregation_strategy: AggregationStrategy = AggregationStrategy.SUM
+) -> AdaptiveFederatedEngine:
+    """Factory for adaptive federated engine.
+
+    Args:
+        router: KleinbergRouter for node discovery
+        base_k: Default number of nodes to query
+        min_k: Minimum nodes to query
+        max_k: Maximum nodes to query
+        entropy_weight: Weight for entropy factor in k computation
+        latency_weight: Weight for latency factor in k computation
+        consensus_weight: Weight for consensus factor in k computation
+        timeout_ms: Query timeout in milliseconds
+        aggregation_strategy: Default aggregation strategy
+
+    Returns:
+        AdaptiveFederatedEngine configured with given parameters
+    """
+    adaptive_config = AdaptiveKConfig(
+        base_k=base_k,
+        min_k=min_k,
+        max_k=max_k,
+        entropy_weight=entropy_weight,
+        latency_weight=latency_weight,
+        consensus_weight=consensus_weight
+    )
+
+    aggregation_config = AggregationConfig(
+        strategy=aggregation_strategy
+    )
+
+    return AdaptiveFederatedEngine(
+        router=router,
+        aggregation_config=aggregation_config,
+        adaptive_config=adaptive_config,
+        timeout_ms=timeout_ms
+    )

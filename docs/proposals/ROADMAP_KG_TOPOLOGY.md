@@ -314,21 +314,32 @@ service(csv_expert_node, [
    - [x] Phase 4d-iii: Adaptive bandwidth (`cross_validation_bandwidth()`, `adaptive_local_bandwidth()`)
    - [x] Phase 4d-iv: Efficiency (`DistanceCache`, `sketch_embeddings()`, `approximate_nearest_neighbors()`)
 
-5. **Advanced Features** (Future)
-   - [ ] Hierarchical federation
-   - [ ] Adaptive federation-k
-   - [ ] Query plan optimization
+5. **Advanced Features** (Phase 5 In Progress)
+   - [ ] Hierarchical federation (5a - pending)
+   - [x] Adaptive federation-k (5b - complete)
+   - [ ] Query plan optimization (5c - pending)
+   - [ ] Streaming aggregation (5d - pending)
+
+   **Phase 5b Implementation (Adaptive Federation-K):**
+   - `QueryMetrics` dataclass: entropy, top_similarity, similarity_variance, historical_consensus, avg_node_latency_ms
+   - `AdaptiveKConfig` dataclass: configurable thresholds and weights
+   - `AdaptiveKCalculator` class: `compute_k()` with multi-factor adjustment, feedback loop via `record_query_outcome()`
+   - `AdaptiveFederatedEngine(FederatedQueryEngine)`: dynamic k selection with latency budget support
+   - `create_adaptive_engine()` factory function
+   - Prolog validation: `is_valid_adaptive_k_option/1` (11 predicates)
+   - Unit tests: 23 tests in `test_adaptive_federation.py`
 
 **Implementation Files:**
-- `src/unifyweaver/targets/python_runtime/federated_query.py` - Core engine (~1100 lines)
+- `src/unifyweaver/targets/python_runtime/federated_query.py` - Core engine (~1550 lines, +430 Phase 5b)
 - `src/unifyweaver/targets/python_runtime/density_scoring.py` - Density scoring (~1200 lines)
 - `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - Extended API
 - `src/unifyweaver/targets/python_target.pl` - Python code generation
 - `src/unifyweaver/targets/go_target.pl` - Go code generation
 - `src/unifyweaver/glue/network_glue.pl` - Federation endpoints
-- `src/unifyweaver/core/service_validation.pl` - Federation + density validation
+- `src/unifyweaver/core/service_validation.pl` - Federation + density + adaptive-k validation
 - `tests/core/test_federated_query.py` - 45 unit tests (federation)
 - `tests/core/test_density_scoring.py` - 56 unit tests (density)
+- `tests/core/test_adaptive_federation.py` - 23 unit tests (Phase 5b adaptive-k)
 - `tests/e2e/test_multinode_federation_e2e.py` - 7 E2E tests (multi-node)
 
 **Federated Query Protocol:**

@@ -79,6 +79,8 @@
     is_valid_aggregation_strategy/1,
     is_valid_aggregation_option/1,
     is_valid_density_option/1,
+    % Phase 5b: Adaptive federation-k
+    is_valid_adaptive_k_option/1,
     is_federation_enabled/1,
     get_federation_options/2,
     get_federation_k/2,
@@ -1179,6 +1181,37 @@ is_valid_federation_option(consensus_threshold(N)) :-
     integer(N), N > 0.
 is_valid_federation_option(diversity_field(Field)) :-
     atom(Field).
+
+% Phase 5b: Adaptive federation-k options
+is_valid_federation_option(adaptive_k(true)).
+is_valid_federation_option(adaptive_k(false)).
+is_valid_federation_option(adaptive_k(Opts)) :-
+    is_list(Opts), maplist(is_valid_adaptive_k_option, Opts).
+
+%% is_valid_adaptive_k_option(+Option)
+%  Validate adaptive-k configuration options for dynamic node selection.
+is_valid_adaptive_k_option(base_k(K)) :-
+    integer(K), K > 0.
+is_valid_adaptive_k_option(min_k(K)) :-
+    integer(K), K > 0.
+is_valid_adaptive_k_option(max_k(K)) :-
+    integer(K), K > 0.
+is_valid_adaptive_k_option(entropy_weight(W)) :-
+    number(W), W >= 0, W =< 1.
+is_valid_adaptive_k_option(latency_weight(W)) :-
+    number(W), W >= 0, W =< 1.
+is_valid_adaptive_k_option(consensus_weight(W)) :-
+    number(W), W >= 0, W =< 1.
+is_valid_adaptive_k_option(entropy_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_adaptive_k_option(similarity_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_adaptive_k_option(consensus_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_adaptive_k_option(latency_budget_ms(N)) :-
+    integer(N), N > 0.
+is_valid_adaptive_k_option(history_size(N)) :-
+    integer(N), N > 0.
 
 %% is_valid_aggregation_strategy(+Strategy)
 %  Validate aggregation strategy for result merging.
