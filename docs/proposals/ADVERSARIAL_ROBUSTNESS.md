@@ -231,6 +231,69 @@ class ConsensusCollisionDetector(SemanticCollisionDetector):
                 )
 ```
 
+### Combining Consensus with Trust Rankings
+
+With network redundancy and trust rankings from Approach 3/4, votes can be **trust-weighted**:
+
+```python
+class TrustWeightedConsensusDetector(ConsensusCollisionDetector):
+    """Consensus voting weighted by node trust scores."""
+
+    def __init__(self, trust_manager: 'DirectTrustManager', **kwargs):
+        super().__init__(**kwargs)
+        self.trust_manager = trust_manager
+
+    def register_vote(
+        self,
+        result: AggregatedResult,
+        embedding: np.ndarray,
+        node_id: str
+    ):
+        """Register trust-weighted vote."""
+        region = self._compute_region(embedding)
+        trust = self.trust_manager.get_trust(node_id)
+
+        if region not in self.versions:
+            self.versions[region] = {}
+
+        versions = self.versions[region]
+        ahash = result.answer_hash
+
+        if ahash not in versions:
+            versions[ahash] = VersionedAnswer(
+                answer_hash=ahash,
+                answer_text=result.answer_text,
+                node_votes={node_id},
+                first_seen=time.time()
+            )
+            versions[ahash].trust_sum = trust  # Track weighted sum
+        else:
+            versions[ahash].node_votes.add(node_id)
+            versions[ahash].trust_sum += trust
+
+        self._update_established_by_trust(region)
+
+    def _update_established_by_trust(self, region: str):
+        """Lock based on trust-weighted votes, not raw count."""
+        versions = self.versions.get(region, {})
+        if not versions:
+            return
+
+        # Find version with highest trust-weighted score
+        best = max(versions.values(),
+                   key=lambda v: getattr(v, 'trust_sum', v.vote_count))
+
+        trust_quorum = self.quorum * 0.5  # Trust score threshold
+        if getattr(best, 'trust_sum', 0) >= trust_quorum:
+            # Highly trusted nodes agreeing = lock sooner
+            self._lock_answer(region, best)
+```
+
+This synergy means:
+- **High-trust nodes** can establish consensus faster (trust_quorum instead of raw count)
+- **Low-trust nodes** need more agreement to overcome trusted consensus
+- **Sybil resistance**: Many untrusted nodes can't outvote few trusted ones
+
 ### Implementation
 
 ```python
