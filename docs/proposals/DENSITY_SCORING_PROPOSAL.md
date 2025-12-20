@@ -759,6 +759,9 @@ class AggregatorTimeouts:
 
 ### Streaming Architecture
 
+> **Note:** Phase 5d implements the streaming infrastructure (`StreamingFederatedEngine`,
+> `PartialResult`, `federated_query_sse()`). See `ROADMAP_KG_TOPOLOGY.md` for details.
+
 For high-throughput scenarios, use streaming aggregation:
 
 ```
@@ -1186,3 +1189,4 @@ The smoothness assumption connects to:
 - Campello et al. (2013). HDBSCAN: Density-Based Clustering
 - Scott, D.W. (2015). Multivariate Density Estimation
 - Phase 4: Federated Query Algebra (FEDERATED_QUERY_ALGEBRA.md)
+- Phase 5: Advanced Federation Features (ROADMAP_KG_TOPOLOGY.md) - hierarchical, adaptive-k, streaming, query planning

@@ -314,21 +314,65 @@ service(csv_expert_node, [
    - [x] Phase 4d-iii: Adaptive bandwidth (`cross_validation_bandwidth()`, `adaptive_local_bandwidth()`)
    - [x] Phase 4d-iv: Efficiency (`DistanceCache`, `sketch_embeddings()`, `approximate_nearest_neighbors()`)
 
-5. **Advanced Features** (Future)
-   - [ ] Hierarchical federation
-   - [ ] Adaptive federation-k
-   - [ ] Query plan optimization
+5. **Advanced Features** (Phase 5 Complete)
+   - [x] Hierarchical federation (5a - complete)
+   - [x] Adaptive federation-k (5b - complete)
+   - [x] Query plan optimization (5c - complete)
+   - [x] Streaming aggregation (5d - complete)
+
+   **Phase 5d Streaming Aggregation:**
+   - `PartialResult`: Data structure for incremental results (confidence, nodes_responded, elapsed_ms, is_final)
+   - `StreamingConfig`: Configuration (yield_interval_ms, min_confidence, eager_yield)
+   - `StreamingFederatedEngine`: AsyncGenerator-based streaming with as_completed
+   - `federated_query_streaming()`: Yields PartialResult as nodes respond
+   - `federated_query_sse()`: Server-Sent Events formatter for HTTP/2
+   - `create_streaming_engine()`: Factory function
+   - Prolog: `is_valid_streaming_option/1` (8 predicates)
+
+   **Phase 5a Hierarchical Federation:**
+   - `RegionalNode`: Data structure for regional aggregator nodes
+   - `HierarchyConfig`: Configuration (max_levels, min/max_nodes_per_region, thresholds)
+   - `NodeHierarchy`: Build hierarchy from topics or centroid similarity
+   - `HierarchicalFederatedEngine`: Two-level query routing (regions → children)
+   - `create_hierarchical_engine()`: Factory function
+   - Prolog: `is_valid_hierarchy_option/1` (7 predicates)
+
+   **Phase 5b Implementation (Adaptive Federation-K):**
+   - `QueryMetrics` dataclass: entropy, top_similarity, similarity_variance, historical_consensus, avg_node_latency_ms
+   - `AdaptiveKConfig` dataclass: configurable thresholds and weights
+   - `AdaptiveKCalculator` class: `compute_k()` with multi-factor adjustment, feedback loop via `record_query_outcome()`
+   - `AdaptiveFederatedEngine(FederatedQueryEngine)`: dynamic k selection with latency budget support
+   - `create_adaptive_engine()` factory function
+   - Prolog validation: `is_valid_adaptive_k_option/1` (11 predicates)
+   - Unit tests: 23 tests in `test_adaptive_federation.py`
+
+   **Phase 5c Implementation (Query Plan Optimization):**
+   - `QueryType` enum: SPECIFIC, EXPLORATORY, CONSENSUS
+   - `QueryClassification`: query analysis with max_similarity, variance, top_nodes
+   - `QueryPlanStage`: stage_id, nodes, strategy, parallel, depends_on, cost estimation
+   - `QueryPlan`: DAG of stages with `get_execution_order()` for dependency resolution
+   - `QueryPlanner`: `classify_query()`, `build_plan()` for SPECIFIC/EXPLORATORY/CONSENSUS
+   - `PlanExecutor`: multi-stage execution with parallel level handling
+   - `PlannedQueryEngine`: combines planner + executor for automatic optimization
+   - `create_planned_engine()` factory function
+   - Prolog validation: `is_valid_query_planning_option/1` (9 predicates)
+   - Unit tests: 31 tests in `test_query_planner.py`
 
 **Implementation Files:**
-- `src/unifyweaver/targets/python_runtime/federated_query.py` - Core engine (~1100 lines)
+- `src/unifyweaver/targets/python_runtime/federated_query.py` - Core engine (~1550 lines, +430 Phase 5b)
+- `src/unifyweaver/targets/python_runtime/query_planner.py` - Query plan optimization (~560 lines, Phase 5c)
 - `src/unifyweaver/targets/python_runtime/density_scoring.py` - Density scoring (~1200 lines)
 - `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - Extended API
 - `src/unifyweaver/targets/python_target.pl` - Python code generation
 - `src/unifyweaver/targets/go_target.pl` - Go code generation
 - `src/unifyweaver/glue/network_glue.pl` - Federation endpoints
-- `src/unifyweaver/core/service_validation.pl` - Federation + density validation
+- `src/unifyweaver/core/service_validation.pl` - Federation + density + adaptive-k + query planning validation
 - `tests/core/test_federated_query.py` - 45 unit tests (federation)
 - `tests/core/test_density_scoring.py` - 56 unit tests (density)
+- `tests/core/test_adaptive_federation.py` - 23 unit tests (Phase 5b adaptive-k)
+- `tests/core/test_query_planner.py` - 31 unit tests (Phase 5c query planning)
+- `tests/core/test_hierarchical_federation.py` - 31 unit tests (Phase 5a hierarchical)
+- `tests/core/test_streaming_federation.py` - 24 unit tests (Phase 5d streaming)
 - `tests/e2e/test_multinode_federation_e2e.py` - 7 E2E tests (multi-node)
 
 **Federated Query Protocol:**

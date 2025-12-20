@@ -352,9 +352,11 @@ federated_result(AnswerHash, Text, TotalScore, NodeCount) :-
     NodeCount = count(Node : local_result(Node, AnswerHash, _, _)).
 ```
 
-## Future Extensions
+## Phase 5: Advanced Features ✅ Complete
 
-### 1. Hierarchical Federation
+These extensions have been implemented in Phase 5. See `ROADMAP_KG_TOPOLOGY.md` for details.
+
+### 1. Hierarchical Federation ✅ (Phase 5a)
 
 Networks of networks with representative centroids:
 
@@ -368,14 +370,18 @@ Global Query
         └── Node B2
 ```
 
-### 2. Adaptive Federation-K
+**Implementation:** `NodeHierarchy`, `RegionalNode`, `HierarchicalFederatedEngine`
+
+### 2. Adaptive Federation-K ✅ (Phase 5b)
 
 Dynamically adjust `federation_k` based on:
 - Query ambiguity (low top similarity → query more nodes)
 - Historical consensus patterns
 - Response latency constraints
 
-### 3. Streaming Aggregation
+**Implementation:** `AdaptiveKCalculator`, `AdaptiveFederatedEngine`, `QueryMetrics`
+
+### 3. Streaming Aggregation ✅ (Phase 5d)
 
 For long-running queries, stream partial aggregates:
 
@@ -385,11 +391,15 @@ async def streaming_federated_query(query):
         yield incremental_aggregate(partial)
 ```
 
-### 4. Query Plan Optimization
+**Implementation:** `StreamingFederatedEngine`, `PartialResult`, `federated_query_sse()`
+
+### 4. Query Plan Optimization ✅ (Phase 5c)
 
 Optimize federation strategy based on query characteristics:
 - High-specificity queries → fewer nodes, greedy routing
 - Exploratory queries → more nodes, broader federation
+
+**Implementation:** `QueryPlanner`, `PlanExecutor`, `PlannedQueryEngine`, `QueryType` enum
 
 ## Implementation Phases
 

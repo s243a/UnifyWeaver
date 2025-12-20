@@ -79,6 +79,14 @@
     is_valid_aggregation_strategy/1,
     is_valid_aggregation_option/1,
     is_valid_density_option/1,
+    % Phase 5b: Adaptive federation-k
+    is_valid_adaptive_k_option/1,
+    % Phase 5c: Query planning
+    is_valid_query_planning_option/1,
+    % Phase 5a: Hierarchical federation
+    is_valid_hierarchy_option/1,
+    % Phase 5d: Streaming aggregation
+    is_valid_streaming_option/1,
     is_federation_enabled/1,
     get_federation_options/2,
     get_federation_k/2,
@@ -1179,6 +1187,108 @@ is_valid_federation_option(consensus_threshold(N)) :-
     integer(N), N > 0.
 is_valid_federation_option(diversity_field(Field)) :-
     atom(Field).
+
+% Phase 5b: Adaptive federation-k options
+is_valid_federation_option(adaptive_k(true)).
+is_valid_federation_option(adaptive_k(false)).
+is_valid_federation_option(adaptive_k(Opts)) :-
+    is_list(Opts), maplist(is_valid_adaptive_k_option, Opts).
+
+%% is_valid_adaptive_k_option(+Option)
+%  Validate adaptive-k configuration options for dynamic node selection.
+is_valid_adaptive_k_option(base_k(K)) :-
+    integer(K), K > 0.
+is_valid_adaptive_k_option(min_k(K)) :-
+    integer(K), K > 0.
+is_valid_adaptive_k_option(max_k(K)) :-
+    integer(K), K > 0.
+is_valid_adaptive_k_option(entropy_weight(W)) :-
+    number(W), W >= 0, W =< 1.
+is_valid_adaptive_k_option(latency_weight(W)) :-
+    number(W), W >= 0, W =< 1.
+is_valid_adaptive_k_option(consensus_weight(W)) :-
+    number(W), W >= 0, W =< 1.
+is_valid_adaptive_k_option(entropy_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_adaptive_k_option(similarity_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_adaptive_k_option(consensus_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_adaptive_k_option(latency_budget_ms(N)) :-
+    integer(N), N > 0.
+is_valid_adaptive_k_option(history_size(N)) :-
+    integer(N), N > 0.
+
+% Phase 5c: Query planning options
+is_valid_federation_option(query_planning(enabled)).
+is_valid_federation_option(query_planning(disabled)).
+is_valid_federation_option(query_planning(Opts)) :-
+    is_list(Opts), maplist(is_valid_query_planning_option, Opts).
+
+%% is_valid_query_planning_option(+Option)
+%  Validate query planning configuration options.
+is_valid_query_planning_option(specific_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_query_planning_option(exploratory_variance(V)) :-
+    number(V), V >= 0.
+is_valid_query_planning_option(consensus_min_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(specific_max_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(exploratory_max_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(consensus_stage1_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(consensus_stage2_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(default_latency_ms(L)) :-
+    number(L), L > 0.
+is_valid_query_planning_option(parallel_overhead_ms(O)) :-
+    number(O), O >= 0.
+
+% Phase 5a: Hierarchical federation options
+is_valid_federation_option(hierarchical(true)).
+is_valid_federation_option(hierarchical(false)).
+is_valid_federation_option(hierarchical(Opts)) :-
+    is_list(Opts), maplist(is_valid_hierarchy_option, Opts).
+
+%% is_valid_hierarchy_option(+Option)
+%  Validate hierarchy configuration options.
+is_valid_hierarchy_option(max_levels(N)) :-
+    integer(N), N > 0, N =< 10.
+is_valid_hierarchy_option(min_nodes_per_region(N)) :-
+    integer(N), N > 0.
+is_valid_hierarchy_option(max_nodes_per_region(N)) :-
+    integer(N), N > 0.
+is_valid_hierarchy_option(topic_similarity_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_hierarchy_option(centroid_similarity_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_hierarchy_option(drill_down_k(K)) :-
+    integer(K), K > 0.
+is_valid_hierarchy_option(regional_aggregation(Strategy)) :-
+    is_valid_aggregation_strategy(Strategy).
+
+% Phase 5d: Streaming aggregation options
+is_valid_federation_option(streaming(true)).
+is_valid_federation_option(streaming(false)).
+is_valid_federation_option(streaming(Opts)) :-
+    is_list(Opts), maplist(is_valid_streaming_option, Opts).
+
+%% is_valid_streaming_option(+Option)
+%  Validate streaming configuration options.
+is_valid_streaming_option(yield_interval_ms(N)) :-
+    integer(N), N >= 0.
+is_valid_streaming_option(min_confidence(C)) :-
+    number(C), C >= 0, C =< 1.
+is_valid_streaming_option(max_wait_ms(N)) :-
+    integer(N), N > 0.
+is_valid_streaming_option(eager_yield(true)).
+is_valid_streaming_option(eager_yield(false)).
+is_valid_streaming_option(sse_enabled(true)).
+is_valid_streaming_option(sse_enabled(false)).
+is_valid_streaming_option(websocket_enabled(true)).
+is_valid_streaming_option(websocket_enabled(false)).
 
 %% is_valid_aggregation_strategy(+Strategy)
 %  Validate aggregation strategy for result merging.

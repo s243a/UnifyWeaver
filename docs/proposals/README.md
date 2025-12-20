@@ -42,6 +42,10 @@ Proposals serve several purposes:
 
 | Proposal | Status | Target Version | Priority |
 |----------|--------|----------------|----------|
+| [KG Topology Roadmap](ROADMAP_KG_TOPOLOGY.md) | Phase 5 Complete | v0.0.4+ | High |
+| [Federated Query Algebra](FEDERATED_QUERY_ALGEBRA.md) | Implemented | v0.0.4 | High |
+| [Density Scoring](DENSITY_SCORING_PROPOSAL.md) | Implemented | v0.0.4 | High |
+| [Small World Routing](SMALL_WORLD_ROUTING.md) | Implemented | v0.0.4 | High |
 | [Parallel Architecture](parallel_architecture.md) | Draft | v0.0.4+ | High (Phase 4) |
 | [Component Registry](COMPONENT_REGISTRY.md) | Implemented | v0.0.3 | Medium |
 | [Semantic Projection LDA](SEMANTIC_PROJECTION_LDA.md) | Implemented | v0.0.3 | Medium |
