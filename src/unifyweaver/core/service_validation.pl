@@ -92,7 +92,17 @@
     get_federation_k/2,
     get_aggregation_strategy/2,
     get_consensus_threshold/2,
-    get_diversity_field/2
+    get_diversity_field/2,
+    % Phase 6e: Cross-model federation
+    is_valid_cross_model_option/1,
+    is_valid_pool_config/1,
+    is_valid_pool_option/1,
+    is_cross_model_enabled/1,
+    get_cross_model_options/2,
+    get_fusion_method/2,
+    get_model_pools/2,
+    get_pool_weight/2,
+    get_pool_model/2
 ]).
 
 :- use_module(library(lists)).
@@ -1407,3 +1417,106 @@ is_valid_discovery_metadata_entry(corpus_id(Id)) :- atom(Id).
 is_valid_discovery_metadata_entry(data_sources(Sources)) :-
     is_list(Sources), maplist(atom, Sources).
 is_valid_discovery_metadata_entry(last_updated(Date)) :- atom(Date).
+
+
+% =============================================================================
+% KG TOPOLOGY PHASE 6e: CROSS-MODEL FEDERATION VALIDATION
+% =============================================================================
+
+%% is_valid_federation_option(cross_model(+Opts))
+%  Validate cross-model federation options.
+is_valid_federation_option(cross_model(true)).
+is_valid_federation_option(cross_model(false)).
+is_valid_federation_option(cross_model(Opts)) :-
+    is_list(Opts), maplist(is_valid_cross_model_option, Opts).
+
+%% is_valid_cross_model_option(+Option)
+%  Validate individual cross-model configuration options.
+is_valid_cross_model_option(fusion_method(M)) :-
+    member(M, [weighted_sum, rrf, consensus, geometric_mean, max, learned]).
+is_valid_cross_model_option(rrf_k(K)) :-
+    integer(K), K > 0.
+is_valid_cross_model_option(consensus_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_cross_model_option(consensus_boost(B)) :-
+    number(B), B >= 1.
+is_valid_cross_model_option(min_pools(N)) :-
+    integer(N), N >= 1.
+is_valid_cross_model_option(learn_weights(true)).
+is_valid_cross_model_option(learn_weights(false)).
+is_valid_cross_model_option(pool_timeout_ms(T)) :-
+    integer(T), T > 0.
+is_valid_cross_model_option(max_workers(N)) :-
+    integer(N), N > 0.
+
+%% is_valid_cross_model_option(pools(+Pools))
+%  Validate model pool configurations.
+is_valid_cross_model_option(pools(Pools)) :-
+    is_list(Pools), maplist(is_valid_pool_config, Pools).
+
+%% is_valid_pool_config(+PoolConfig)
+%  Validate a single model pool configuration.
+is_valid_pool_config(pool(Model, Opts)) :-
+    atom(Model),
+    is_list(Opts),
+    maplist(is_valid_pool_option, Opts).
+
+%% is_valid_pool_option(+Option)
+%  Validate individual pool configuration options.
+is_valid_pool_option(weight(W)) :-
+    number(W), W > 0.
+is_valid_pool_option(federation_k(K)) :-
+    integer(K), K > 0.
+is_valid_pool_option(strategy(S)) :-
+    is_valid_aggregation_strategy(S).
+is_valid_pool_option(adaptive_k(true)).
+is_valid_pool_option(adaptive_k(false)).
+is_valid_pool_option(hierarchical(true)).
+is_valid_pool_option(hierarchical(false)).
+
+%% Helper predicates for cross-model configuration extraction
+
+%% is_cross_model_enabled(+Service)
+%  Check if cross-model federation is enabled.
+is_cross_model_enabled(service(_, Options, _)) :-
+    is_list(Options),
+    (member(cross_model(true), Options) ;
+     member(cross_model(Opts), Options), is_list(Opts)),
+    !.
+
+%% get_cross_model_options(+Service, -Options)
+%  Extract cross-model options from service definition.
+get_cross_model_options(service(_, Options, _), CrossModelOpts) :-
+    is_list(Options),
+    member(cross_model(CrossModelOpts), Options),
+    is_list(CrossModelOpts),
+    !.
+get_cross_model_options(_, []).
+
+%% get_fusion_method(+Service, -Method)
+%  Get fusion method for cross-model federation.
+get_fusion_method(Service, Method) :-
+    get_cross_model_options(Service, Opts),
+    member(fusion_method(Method), Opts),
+    !.
+get_fusion_method(_, weighted_sum).  % Default: weighted_sum
+
+%% get_model_pools(+Service, -Pools)
+%  Extract model pool configurations.
+get_model_pools(Service, Pools) :-
+    get_cross_model_options(Service, Opts),
+    member(pools(Pools), Opts),
+    !.
+get_model_pools(_, []).
+
+%% get_pool_weight(+PoolConfig, -Weight)
+%  Get weight for a model pool.
+get_pool_weight(pool(_, Opts), Weight) :-
+    is_list(Opts),
+    member(weight(Weight), Opts),
+    !.
+get_pool_weight(_, 1.0).  % Default: equal weight
+
+%% get_pool_model(+PoolConfig, -Model)
+%  Get model name from pool config.
+get_pool_model(pool(Model, _), Model).
