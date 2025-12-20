@@ -1,0 +1,158 @@
+# KG Topology Development Cluster
+# docker-compose up -d
+
+version: '3.8'
+
+services:
+  consul:
+    image: consul:1.15
+    container_name: kg-consul
+    ports:
+      - "8500:8500"
+      - "8600:8600/udp"
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
+    healthcheck:
+      test: ["CMD", "consul", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - kg-network
+
+  kg-node-csv:
+    build:
+      context: ../..
+      dockerfile: docker/kg-topology/Dockerfile.kg-node
+    container_name: kg-node-csv
+    environment:
+      - NODE_ID=csv-node
+      - NODE_PORT=8081
+      - INTERFACE_TOPICS=csv,delimited,tabular
+      - CONSUL_HOST=consul
+      - CONSUL_PORT=8500
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8081:8081"
+    depends_on:
+      consul:
+        condition: service_healthy
+    volumes:
+      - csv-data:/app/data
+      - csv-embeddings:/app/embeddings
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/kg/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - kg-network
+
+  kg-node-json:
+    build:
+      context: ../..
+      dockerfile: docker/kg-topology/Dockerfile.kg-node
+    container_name: kg-node-json
+    environment:
+      - NODE_ID=json-node
+      - NODE_PORT=8082
+      - INTERFACE_TOPICS=json,serialization,api
+      - CONSUL_HOST=consul
+      - CONSUL_PORT=8500
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8082:8082"
+    depends_on:
+      consul:
+        condition: service_healthy
+    volumes:
+      - json-data:/app/data
+      - json-embeddings:/app/embeddings
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8082/kg/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - kg-network
+
+  kg-node-sql:
+    build:
+      context: ../..
+      dockerfile: docker/kg-topology/Dockerfile.kg-node
+    container_name: kg-node-sql
+    environment:
+      - NODE_ID=sql-node
+      - NODE_PORT=8083
+      - INTERFACE_TOPICS=sql,database,queries
+      - CONSUL_HOST=consul
+      - CONSUL_PORT=8500
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8083:8083"
+    depends_on:
+      consul:
+        condition: service_healthy
+    volumes:
+      - sql-data:/app/data
+      - sql-embeddings:/app/embeddings
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8083/kg/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - kg-network
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: kg-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - kg-network
+    depends_on:
+      - consul
+
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: kg-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - kg-network
+    depends_on:
+      - prometheus
+
+networks:
+  kg-network:
+    driver: bridge
+
+volumes:
+  csv-data:
+  csv-embeddings:
+  json-data:
+  json-embeddings:
+  sql-data:
+  sql-embeddings:
+  prometheus-data:
+  grafana-data:

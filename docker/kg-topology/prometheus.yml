@@ -1,0 +1,71 @@
+# Prometheus configuration for KG Topology cluster
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers: []
+
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Consul service discovery
+  - job_name: 'consul'
+    static_configs:
+      - targets: ['consul:8500']
+
+  # KG nodes discovered via Consul
+  - job_name: 'kg-nodes'
+    consul_sd_configs:
+      - server: 'consul:8500'
+        services:
+          - 'kg_node'
+    relabel_configs:
+      # Only keep services with kg_node tag
+      - source_labels: [__meta_consul_tags]
+        regex: '.*,kg_node,.*'
+        action: keep
+      # Extract topics from metadata
+      - source_labels: [__meta_consul_service_metadata_interface_topics]
+        target_label: topics
+      # Use service name as job label
+      - source_labels: [__meta_consul_service]
+        target_label: service
+      # Extract node_id from service_id
+      - source_labels: [__meta_consul_service_id]
+        target_label: node_id
+
+  # KG node metrics endpoint (separate from health)
+  - job_name: 'kg-nodes-metrics'
+    consul_sd_configs:
+      - server: 'consul:8500'
+        services:
+          - 'kg_node'
+    metrics_path: '/kg/metrics'
+    relabel_configs:
+      - source_labels: [__meta_consul_tags]
+        regex: '.*,kg_node,.*'
+        action: keep
+      - source_labels: [__meta_consul_service_id]
+        target_label: node_id
+
+  # Static configuration for development (fallback if Consul not available)
+  - job_name: 'kg-nodes-static'
+    static_configs:
+      - targets:
+          - 'kg-node-csv:8081'
+          - 'kg-node-json:8082'
+          - 'kg-node-sql:8083'
+    metrics_path: '/kg/metrics'
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: 'kg-node-(.+):.*'
+        replacement: '${1}-node'
+        target_label: node_id
