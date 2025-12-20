@@ -35,9 +35,23 @@ import numpy as np
 try:
     from .kleinberg_router import KleinbergRouter, KGNode, RoutingEnvelope
     from .discovery_clients import DiscoveryClient
+    from .adversarial_robustness import (
+        OutlierSmoother,
+        SemanticCollisionDetector,
+        ConsensusCollisionDetector,
+        DirectTrustManager,
+        TrustWeightedConsensusDetector,
+    )
 except ImportError:
     from kleinberg_router import KleinbergRouter, KGNode, RoutingEnvelope
     from discovery_clients import DiscoveryClient
+    from adversarial_robustness import (
+        OutlierSmoother,
+        SemanticCollisionDetector,
+        ConsensusCollisionDetector,
+        DirectTrustManager,
+        TrustWeightedConsensusDetector,
+    )
 
 
 # =============================================================================
@@ -58,6 +72,31 @@ class AggregationStrategy(Enum):
 
 
 @dataclass
+class AdversarialConfig:
+    """Configuration for adversarial robustness (Phase 6f).
+
+    Provides both soft collision detection (outlier smoothing) and
+    hard collision detection (KSK-style region locking).
+    """
+    # Output smoothing (soft collisions)
+    outlier_rejection: bool = False
+    outlier_method: str = "mad"  # zscore, iqr, mad
+    outlier_threshold: float = 2.5
+
+    # Collision detection (hard collisions)
+    collision_detection: bool = False
+    collision_quorum: int = 3
+    collision_supersede_margin: int = 2
+    collision_lock_threshold: float = 0.8
+    region_granularity: int = 100
+
+    # Trust weighting
+    trust_enabled: bool = False
+    trust_default: float = 0.5
+    trust_quorum_factor: float = 0.5
+
+
+@dataclass
 class AggregationConfig:
     """Configuration for result aggregation."""
     strategy: AggregationStrategy = AggregationStrategy.SUM
@@ -69,6 +108,8 @@ class AggregationConfig:
     clustering_enabled: bool = True  # Enable two-stage clustering
     similarity_threshold: float = 0.7  # Cluster assignment threshold
     min_cluster_size: int = 2  # Minimum cluster size (smaller = noise)
+    # Phase 6f: Adversarial robustness options
+    adversarial: Optional[AdversarialConfig] = None
 
 
 # =============================================================================
@@ -430,6 +471,52 @@ class FederatedQueryEngine:
         self._total_time_ms = 0.0
         self._node_response_times: Dict[str, List[float]] = {}
 
+        # Phase 6f: Adversarial robustness components
+        self._outlier_smoother: Optional[OutlierSmoother] = None
+        self._collision_detector: Optional[SemanticCollisionDetector] = None
+        self._trust_manager: Optional[DirectTrustManager] = None
+        self._init_adversarial()
+
+    def _init_adversarial(self):
+        """Initialize adversarial robustness components based on config."""
+        adv = self.config.adversarial
+        if adv is None:
+            return
+
+        # Output smoothing (soft collisions)
+        if adv.outlier_rejection:
+            self._outlier_smoother = OutlierSmoother(
+                method=adv.outlier_method,
+                threshold=adv.outlier_threshold
+            )
+
+        # Trust management
+        if adv.trust_enabled:
+            self._trust_manager = DirectTrustManager(
+                default_trust=adv.trust_default
+            )
+
+        # Collision detection (hard collisions)
+        if adv.collision_detection:
+            if adv.trust_enabled and self._trust_manager:
+                # Trust-weighted consensus
+                self._collision_detector = TrustWeightedConsensusDetector(
+                    trust_manager=self._trust_manager,
+                    quorum=adv.collision_quorum,
+                    supersede_margin=adv.collision_supersede_margin,
+                    lock_threshold=adv.collision_lock_threshold,
+                    region_granularity=adv.region_granularity,
+                    trust_quorum_factor=adv.trust_quorum_factor
+                )
+            else:
+                # Standard consensus detection
+                self._collision_detector = ConsensusCollisionDetector(
+                    quorum=adv.collision_quorum,
+                    supersede_margin=adv.collision_supersede_margin,
+                    lock_threshold=adv.collision_lock_threshold,
+                    region_granularity=adv.region_granularity
+                )
+
     def federated_query(
         self,
         query_text: str,
@@ -473,10 +560,15 @@ class FederatedQueryEngine:
         # 3. Aggregate results
         aggregated, total_partition = self._aggregate(responses, strategy)
 
-        # 4. Normalize and rank
+        # 4. Apply adversarial protection (Phase 6f)
+        aggregated = self._apply_adversarial_protection(
+            aggregated, responses, query_embedding
+        )
+
+        # 5. Normalize and rank
         results = self._normalize_and_rank(aggregated, total_partition, top_k)
 
-        # 5. Apply consensus threshold if configured
+        # 6. Apply consensus threshold if configured
         if self.config.consensus_threshold:
             results = [
                 r for r in results
@@ -735,6 +827,93 @@ class FederatedQueryEngine:
 
         # Same source - no boost, take MAX
         return max(existing.combined_score, new_result.exp_score)
+
+    def _apply_adversarial_protection(
+        self,
+        aggregated: Dict[str, AggregatedResult],
+        responses: List[NodeResponse],
+        query_embedding: np.ndarray
+    ) -> Dict[str, AggregatedResult]:
+        """
+        Apply adversarial protection to aggregated results (Phase 6f).
+
+        Implements:
+        1. Outlier smoothing (soft collisions) - reject statistical outliers
+        2. Collision detection (hard collisions) - protect established consensus
+
+        Args:
+            aggregated: Dict of answer_hash -> AggregatedResult
+            responses: Original node responses (for trust updates)
+            query_embedding: Query embedding for region computation
+
+        Returns:
+            Filtered aggregated results
+        """
+        if not aggregated:
+            return aggregated
+
+        # No adversarial config - return unchanged
+        if self.config.adversarial is None:
+            return aggregated
+
+        # Step 1: Outlier smoothing (soft collisions)
+        if self._outlier_smoother:
+            # Get scores and filter outliers
+            items = list(aggregated.items())
+            scores = np.array([r.combined_score for _, r in items])
+
+            if len(scores) >= self._outlier_smoother.min_samples:
+                from adversarial_robustness import smooth_outliers
+                mask = smooth_outliers(
+                    scores,
+                    method=self._outlier_smoother.method,
+                    threshold=self._outlier_smoother.threshold
+                )
+                aggregated = {
+                    k: v for (k, v), keep in zip(items, mask) if keep
+                }
+
+        # Step 2: Collision detection (hard collisions)
+        if self._collision_detector and isinstance(self._collision_detector, ConsensusCollisionDetector):
+            filtered = {}
+            for answer_hash, result in aggregated.items():
+                # Register votes from each source node
+                for node_id in result.source_nodes:
+                    self._collision_detector.register_vote(
+                        answer_hash=answer_hash,
+                        answer_text=result.answer_text,
+                        embedding=query_embedding,
+                        node_id=node_id
+                    )
+
+                # Check if this answer is allowed
+                allowed, reason = self._collision_detector.check_collision(
+                    answer_hash, query_embedding
+                )
+                if allowed:
+                    filtered[answer_hash] = result
+
+            aggregated = filtered
+
+        return aggregated
+
+    def get_adversarial_stats(self) -> Dict[str, Any]:
+        """Get statistics from adversarial components."""
+        stats = {"enabled": self.config.adversarial is not None}
+
+        if self._outlier_smoother:
+            stats["outlier_smoother"] = {
+                "method": self._outlier_smoother.method,
+                "threshold": self._outlier_smoother.threshold
+            }
+
+        if self._collision_detector:
+            stats["collision_detector"] = self._collision_detector.get_stats()
+
+        if self._trust_manager:
+            stats["trust_manager"] = self._trust_manager.get_stats()
+
+        return stats
 
     def _normalize_and_rank(
         self,

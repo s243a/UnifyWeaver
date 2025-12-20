@@ -102,7 +102,18 @@
     get_fusion_method/2,
     get_model_pools/2,
     get_pool_weight/2,
-    get_pool_model/2
+    get_pool_model/2,
+    % Phase 6f: Adversarial robustness
+    is_valid_adversarial_option/1,
+    is_valid_outlier_method/1,
+    is_valid_trust_model/1,
+    is_valid_collision_option/1,
+    is_adversarial_enabled/1,
+    get_adversarial_options/2,
+    get_outlier_method/2,
+    get_outlier_threshold/2,
+    get_trust_model/2,
+    get_collision_quorum/2
 ]).
 
 :- use_module(library(lists)).
@@ -1520,3 +1531,138 @@ get_pool_weight(_, 1.0).  % Default: equal weight
 %% get_pool_model(+PoolConfig, -Model)
 %  Get model name from pool config.
 get_pool_model(pool(Model, _), Model).
+
+% =============================================================================
+% PHASE 6f: ADVERSARIAL ROBUSTNESS VALIDATION
+% =============================================================================
+
+%% is_valid_federation_option(adversarial_protection(+Opts))
+%  Validate adversarial protection configuration.
+is_valid_federation_option(adversarial_protection(true)).
+is_valid_federation_option(adversarial_protection(false)).
+is_valid_federation_option(adversarial_protection(Opts)) :-
+    is_list(Opts), maplist(is_valid_adversarial_option, Opts).
+
+%% is_valid_adversarial_option(+Option)
+%  Validate individual adversarial protection options.
+
+% Output smoothing options (soft collisions)
+is_valid_adversarial_option(outlier_rejection(enabled)).
+is_valid_adversarial_option(outlier_rejection(disabled)).
+is_valid_adversarial_option(outlier_method(Method)) :-
+    is_valid_outlier_method(Method).
+is_valid_adversarial_option(outlier_threshold(T)) :-
+    number(T), T > 0.
+
+% Collision detection options (hard collisions)
+is_valid_adversarial_option(collision_detection(enabled)).
+is_valid_adversarial_option(collision_detection(disabled)).
+is_valid_adversarial_option(collision_detection(Opts)) :-
+    is_list(Opts), maplist(is_valid_collision_option, Opts).
+
+% Trust model options
+is_valid_adversarial_option(trust_model(Model)) :-
+    is_valid_trust_model(Model).
+is_valid_adversarial_option(min_trust_score(S)) :-
+    integer(S), S >= -100, S =< 100.
+is_valid_adversarial_option(default_trust(T)) :-
+    number(T), T >= 0, T =< 1.
+
+% Verification options
+is_valid_adversarial_option(verification_sampling(S)) :-
+    number(S), S >= 0, S =< 1.
+is_valid_adversarial_option(require_signatures(true)).
+is_valid_adversarial_option(require_signatures(false)).
+
+%% is_valid_outlier_method(+Method)
+%  Valid outlier detection methods.
+is_valid_outlier_method(zscore).
+is_valid_outlier_method(mad).
+is_valid_outlier_method(iqr).
+is_valid_outlier_method(lof).  % Local Outlier Factor
+
+%% is_valid_trust_model(+Model)
+%  Valid trust model types.
+is_valid_trust_model(none).
+is_valid_trust_model(direct).
+is_valid_trust_model(transitive).
+is_valid_trust_model(fms).  % FMS-style two-dimensional trust
+
+%% is_valid_collision_option(+Option)
+%  Validate collision detection sub-options.
+is_valid_collision_option(quorum(N)) :-
+    integer(N), N > 0.
+is_valid_collision_option(supersede_margin(N)) :-
+    integer(N), N >= 0.
+is_valid_collision_option(lock_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_collision_option(region_granularity(N)) :-
+    integer(N), N > 0.
+is_valid_collision_option(trust_weighted(true)).
+is_valid_collision_option(trust_weighted(false)).
+is_valid_collision_option(trust_quorum_factor(F)) :-
+    number(F), F > 0, F =< 1.
+
+%% is_adversarial_enabled(+Service)
+%  Check if adversarial protection is enabled for a service.
+is_adversarial_enabled(service(_, Options, _)) :-
+    is_list(Options),
+    member(federation(FedOpts), Options),
+    is_list(FedOpts),
+    member(adversarial_protection(AP), FedOpts),
+    AP \= false,
+    !.
+is_adversarial_enabled(service(_, Options, _)) :-
+    is_list(Options),
+    member(adversarial_protection(AP), Options),
+    AP \= false.
+
+%% get_adversarial_options(+Service, -Options)
+%  Extract adversarial protection options from service.
+get_adversarial_options(service(_, Options, _), AdvOpts) :-
+    is_list(Options),
+    member(federation(FedOpts), Options),
+    is_list(FedOpts),
+    member(adversarial_protection(AdvOpts), FedOpts),
+    is_list(AdvOpts),
+    !.
+get_adversarial_options(service(_, Options, _), AdvOpts) :-
+    is_list(Options),
+    member(adversarial_protection(AdvOpts), Options),
+    is_list(AdvOpts),
+    !.
+get_adversarial_options(_, []).
+
+%% get_outlier_method(+Service, -Method)
+%  Get configured outlier detection method.
+get_outlier_method(Service, Method) :-
+    get_adversarial_options(Service, Opts),
+    member(outlier_method(Method), Opts),
+    !.
+get_outlier_method(_, mad).  % Default: MAD (most robust)
+
+%% get_outlier_threshold(+Service, -Threshold)
+%  Get configured outlier rejection threshold.
+get_outlier_threshold(Service, Threshold) :-
+    get_adversarial_options(Service, Opts),
+    member(outlier_threshold(Threshold), Opts),
+    !.
+get_outlier_threshold(_, 2.5).  % Default: 2.5
+
+%% get_trust_model(+Service, -Model)
+%  Get configured trust model.
+get_trust_model(Service, Model) :-
+    get_adversarial_options(Service, Opts),
+    member(trust_model(Model), Opts),
+    !.
+get_trust_model(_, none).  % Default: no trust model
+
+%% get_collision_quorum(+Service, -Quorum)
+%  Get collision detection quorum.
+get_collision_quorum(Service, Quorum) :-
+    get_adversarial_options(Service, Opts),
+    member(collision_detection(CollOpts), Opts),
+    is_list(CollOpts),
+    member(quorum(Quorum), CollOpts),
+    !.
+get_collision_quorum(_, 3).  % Default: 3 nodes
