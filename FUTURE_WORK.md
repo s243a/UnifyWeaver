@@ -4,18 +4,7 @@ This document captures ideas for future development of UnifyWeaver targets and f
 
 ## Known Issues
 
-### Go Target: test_go_group_by.pl Failure
-
-**Status:** Open
-**File:** `tests/test_go_group_by.pl`
-**Error:** `Goal (directive) failed: user:(run_test,halt)`
-
-The `test_go_group_by.pl` test fails during the group-by aggregation code generation phase. The test compiles `run_count_by_role` but fails before completion. Other Go aggregation tests (`test_go_multi_agg.pl`, `test_go_validation.pl`) pass successfully.
-
-**To investigate:**
-- Check if this is a regression or longstanding issue
-- Compare with working aggregation tests
-- Review group-by field mapping logic
+(None currently open)
 
 ---
 

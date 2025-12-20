@@ -6,12 +6,12 @@
 % 1. Count users by role (using simple key)
 % Data: {"name": "A", "role": "admin"}, {"name": "B", "role": "user"}, ...
 count_by_role(Key, Count) :-
-    group_by(run_count_by_role, json_record([role-Key]), count, Count).
+    group_by(Key, json_record([role-Key]), count, Count).
 
 % 2. Sum salary by department
 % Data: {"dept": "eng", "salary": 100}, {"dept": "sales", "salary": 200}, ...
 sum_salary_by_dept(Dept, TotalSalary) :-
-    group_by(run_sum_by_dept, json_record([dept-Dept, salary-Salary]), sum(Salary), TotalSalary).
+    group_by(Dept, json_record([dept-Dept, salary-Salary]), sum(Salary), TotalSalary).
 
 % Test runner
 run_test :-
