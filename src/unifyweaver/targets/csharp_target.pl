@@ -1463,7 +1463,7 @@ build_aggregate_node(GroupSpecs, HeadSpec, Term0, InputNode, VarMapIn, WidthIn, 
         NodeOut, VarMapOut, WidthOut, RelationsOut) :-
     strip_module(Term0, _, Term),
     parse_query_aggregate_term(Term, Type, Op, Goal, GroupTerm, ValueVar, ResVar),
-    member(Op, [count, sum, min, max, set, bag]),
+    member(Op, [count, sum, avg, min, max, set, bag]),
     (   Op == count
     ->  true
     ;   var(ValueVar)
@@ -1698,14 +1698,14 @@ aggregate_subplan_projection(Type, Op, GroupVars, ValueVar, VarMap, InputNode, P
 
 aggregate_projection_columns(all, count, _GroupVars, _ValueVar, _VarMap, []) :- !.
 aggregate_projection_columns(all, Op, _GroupVars, ValueVar, VarMap, [ValueIdx]) :-
-    member(Op, [sum, min, max, set, bag]),
+    member(Op, [sum, avg, min, max, set, bag]),
     lookup_var_index(VarMap, ValueVar, ValueIdx),
     !.
 aggregate_projection_columns(group, count, GroupVars, _ValueVar, VarMap, Columns) :-
     maplist(variable_index(VarMap), GroupVars, Columns),
     !.
 aggregate_projection_columns(group, Op, GroupVars, ValueVar, VarMap, Columns) :-
-    member(Op, [sum, min, max, set, bag]),
+    member(Op, [sum, avg, min, max, set, bag]),
     maplist(variable_index(VarMap), GroupVars, GroupCols),
     lookup_var_index(VarMap, ValueVar, ValueIdx),
     append(GroupCols, [ValueIdx], Columns),
@@ -1749,7 +1749,7 @@ bind_aggregate_output_vars(group, GroupVars, VarMapIn, WidthIn, ResVar, VarMapOu
 
 aggregate_value_index(count, _Args, _ValueVar, -1) :- !.
 aggregate_value_index(Op, Args, ValueVar, ValueIndex) :-
-    member(Op, [sum, min, max, set, bag]),
+    member(Op, [sum, avg, min, max, set, bag]),
     (   var(ValueVar)
     ->  true
     ;   format(user_error, 'C# query target: aggregate value selector must be a variable (~q).~n', [ValueVar]),
@@ -2641,6 +2641,7 @@ int_array_literal(Ints, Literal) :-
 
 aggregate_op_atom(count, 'Count').
 aggregate_op_atom(sum, 'Sum').
+aggregate_op_atom(avg, 'Avg').
 aggregate_op_atom(min, 'Min').
 aggregate_op_atom(max, 'Max').
 aggregate_op_atom(set, 'Set').
@@ -3490,7 +3491,7 @@ compile_aggregate_rule(Index, Head, AggGoal, Config, _Indexing, Code, RuleName) 
     format(string(RuleName), "ApplyRule_~w", [Index]),
     Head =.. [HeadPred|HeadArgs],
     (   Type = all,
-        member(Op, [count, sum, min, max, set, bag])
+        member(Op, [count, sum, avg, min, max, set, bag])
     ->  build_aggregate_filter(Pred, Args, Config, FilterExpr),
         build_value_expr(Op, Args, ValueVar, ValueExpr),
         bind_count_head(HeadArgs, ResVar, Config, Assigns),
@@ -3510,7 +3511,7 @@ compile_aggregate_rule(Index, Head, AggGoal, Config, _Indexing, Code, RuleName) 
             }
         }", [RuleName, Index, Head, Op, Pred, Args, ResVar, Pred, FilterExpr, EmitCond, AggExpr, HeadPred, AssignStr])
     ;   Type = group,
-        member(Op, [count, sum, min, max, set, bag])
+        member(Op, [count, sum, avg, min, max, set, bag])
     ->  build_group_aggregate(Op, Pred, Args, GroupVar, ValueVar, ResVar, Config, HeadPred, HeadArgs, RuleName, Code)
     ;   format(user_error,
                'C# generator mode: aggregate ~w/~w not supported in generator codegen.~n',
@@ -3532,6 +3533,7 @@ decompose_aggregate_goal(aggregate(OpTerm, Goal, GroupVar, Result), group, Op, P
     parse_agg_op(OpTerm, Op, ValueVar, Args).
 
 parse_agg_op(sum(Var), sum, Var, _) :- !.
+parse_agg_op(avg(Var), avg, Var, _) :- !.
 parse_agg_op(min(Var), min, Var, _) :- !.
 parse_agg_op(max(Var), max, Var, _) :- !.
 parse_agg_op(count, count, _, _) :- !.
@@ -3567,6 +3569,9 @@ build_value_expr(count, _Args, _ValVar, "1").
 build_value_expr(sum, Args, ValVar, Expr) :-
     find_var_index(ValVar, Args, ValIdx),
     format(string(Expr), "Convert.ToDecimal(f.Args[\"arg~w\"])", [ValIdx]).
+build_value_expr(avg, Args, ValVar, Expr) :-
+    find_var_index(ValVar, Args, ValIdx),
+    format(string(Expr), "Convert.ToDecimal(f.Args[\"arg~w\"])", [ValIdx]).
 build_value_expr(min, Args, ValVar, Expr) :-
     find_var_index(ValVar, Args, ValIdx),
     format(string(Expr), "Convert.ToDecimal(f.Args[\"arg~w\"])", [ValIdx]).
@@ -3583,6 +3588,8 @@ build_value_expr(bag, Args, ValVar, Expr) :-
 agg_expr(count, _ValExpr, "aggQuery.Count()").
 agg_expr(sum, ValExpr, AggExpr) :-
     format(string(AggExpr), "aggQuery.Sum(f => ~w)", [ValExpr]).
+agg_expr(avg, ValExpr, AggExpr) :-
+    format(string(AggExpr), "aggQuery.Average(f => ~w)", [ValExpr]).
 agg_expr(min, ValExpr, AggExpr) :-
     format(string(AggExpr), "aggQuery.Min(f => ~w)", [ValExpr]).
 agg_expr(max, ValExpr, AggExpr) :-
@@ -3772,7 +3779,7 @@ build_aggregate_filter_with_vars(Pred, Args, VarMap, Config, Expr) :-
 compile_aggregate_from_bindings(HeadPred, HeadArgs, AggGoal, VarMap, AccumPairs, Config, ConstraintChecks, Code) :-
     decompose_aggregate_goal(AggGoal, Type, Op, Pred, Args, _GroupVar, ValueVar, ResVar),
     Type = all,
-    member(Op, [count, sum, min, max, set, bag]),
+    member(Op, [count, sum, avg, min, max, set, bag]),
     build_aggregate_filter_with_vars(Pred, Args, VarMap, Config, FilterExpr),
     build_value_expr(Op, Args, ValueVar, ValueExpr),
     agg_expr(Op, ValueExpr, AggExpr),

@@ -107,6 +107,8 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
 - Query modifiers:
   - `order_by(Index)`, `order_by(Index, asc|desc)`, `order_by([(Index, asc|desc), ...])` (0-based output column indices)
   - `limit(N)`, `offset(N)`
+- Aggregates:
+  - `count`, `sum(Var)`, `avg(Var)`, `min(Var)`, `max(Var)`, `set(Var)`, `bag(Var)` via `aggregate_all/3,4` and `aggregate/4`
 - The generic `target(csharp)` option will initially alias `csharp_query` for recursion-heavy workloads while allowing smart fallback (see comparison doc).
 
 ## Security & Isolation
