@@ -61,7 +61,15 @@
     % KG Topology Phase 3: Kleinberg routing
     compile_kleinberg_router_go/2,      % +Options, -GoCode
     % KG Topology Phase 4: Federated queries
-    compile_federated_query_go/2        % +Options, -GoCode
+    compile_federated_query_go/2,       % +Options, -GoCode
+    % KG Topology Phase 5b: Adaptive federation-k
+    compile_adaptive_federation_go/2,   % +Options, -GoCode
+    % KG Topology Phase 5c: Query plan optimization
+    compile_query_planner_go/2,         % +Options, -GoCode
+    % KG Topology Phase 5a: Hierarchical federation
+    compile_hierarchical_federation_go/2, % +Options, -GoCode
+    % KG Topology Phase 5d: Streaming federation
+    compile_streaming_federation_go/2   % +Options, -GoCode
 ]).
 
 :- use_module(library(lists)).
@@ -15229,3 +15237,1025 @@ strategy_to_go_const(first, 'AggregationFirst').
 strategy_to_go_const(diversity, 'AggregationDiversityWeighted').
 strategy_to_go_const(diversity_weighted, 'AggregationDiversityWeighted').
 strategy_to_go_const(_, 'AggregationSum').  % Default fallback
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5b: ADAPTIVE FEDERATION-K CODE GENERATION (Go)
+% =============================================================================
+
+%% compile_adaptive_federation_go(+Options, -Code)
+%  Generate Go AdaptiveFederatedEngine with dynamic k selection.
+%  Adjusts number of nodes queried based on query characteristics.
+
+compile_adaptive_federation_go(Options, Code) :-
+    % Extract adaptive-k options with defaults
+    ( member(adaptive_k(AdaptiveOpts), Options),
+      is_list(AdaptiveOpts) -> true
+    ; AdaptiveOpts = []
+    ),
+    ( member(base_k(BaseK), AdaptiveOpts) -> true ; BaseK = 3 ),
+    ( member(min_k(MinK), AdaptiveOpts) -> true ; MinK = 1 ),
+    ( member(max_k(MaxK), AdaptiveOpts) -> true ; MaxK = 10 ),
+    ( member(entropy_weight(EntropyW), AdaptiveOpts) -> true ; EntropyW = 0.3 ),
+    ( member(latency_weight(LatencyW), AdaptiveOpts) -> true ; LatencyW = 0.2 ),
+    ( member(consensus_weight(ConsensusW), AdaptiveOpts) -> true ; ConsensusW = 0.5 ),
+    ( member(entropy_threshold(EntropyT), AdaptiveOpts) -> true ; EntropyT = 0.7 ),
+    ( member(similarity_threshold(SimT), AdaptiveOpts) -> true ; SimT = 0.5 ),
+    ( member(consensus_threshold(ConsensusT), AdaptiveOpts) -> true ; ConsensusT = 0.6 ),
+    ( member(history_size(HistSize), AdaptiveOpts) -> true ; HistSize = 100 ),
+
+    format(string(Code), '
+// KG Topology Phase 5b: Adaptive Federation-K
+// Generated from Prolog service definition
+
+// AdaptiveKConfig holds configuration for adaptive k selection
+type AdaptiveKConfig struct {
+    BaseK              int     `json:"base_k"`
+    MinK               int     `json:"min_k"`
+    MaxK               int     `json:"max_k"`
+    EntropyWeight      float64 `json:"entropy_weight"`
+    LatencyWeight      float64 `json:"latency_weight"`
+    ConsensusWeight    float64 `json:"consensus_weight"`
+    EntropyThreshold   float64 `json:"entropy_threshold"`
+    SimilarityThreshold float64 `json:"similarity_threshold"`
+    ConsensusThreshold float64 `json:"consensus_threshold"`
+    HistorySize        int     `json:"history_size"`
+}
+
+// DefaultAdaptiveKConfig returns the default configuration
+var DefaultAdaptiveKConfig = AdaptiveKConfig{
+    BaseK:              ~w,
+    MinK:               ~w,
+    MaxK:               ~w,
+    EntropyWeight:      ~w,
+    LatencyWeight:      ~w,
+    ConsensusWeight:    ~w,
+    EntropyThreshold:   ~w,
+    SimilarityThreshold: ~w,
+    ConsensusThreshold: ~w,
+    HistorySize:        ~w,
+}
+
+// QueryMetrics holds metrics for adaptive k computation
+type QueryMetrics struct {
+    Entropy            float64 `json:"entropy"`
+    TopSimilarity      float64 `json:"top_similarity"`
+    SimilarityVariance float64 `json:"similarity_variance"`
+    HistoricalConsensus float64 `json:"historical_consensus"`
+    AvgNodeLatencyMs   float64 `json:"avg_node_latency_ms"`
+}
+
+// QueryHistoryEntry stores past query outcomes
+type QueryHistoryEntry struct {
+    Embedding  []float32
+    Consensus  float64
+    KUsed      int
+}
+
+// AdaptiveKCalculator computes optimal federation_k based on query metrics
+type AdaptiveKCalculator struct {
+    Config       AdaptiveKConfig
+    QueryHistory []QueryHistoryEntry
+    LatencyCache map[string][]float64  // node_id -> latencies
+    mu           sync.RWMutex
+}
+
+// NewAdaptiveKCalculator creates a new calculator with default config
+func NewAdaptiveKCalculator() *AdaptiveKCalculator {
+    return &AdaptiveKCalculator{
+        Config:       DefaultAdaptiveKConfig,
+        QueryHistory: make([]QueryHistoryEntry, 0),
+        LatencyCache: make(map[string][]float64),
+    }
+}
+
+// ComputeK computes optimal k based on query characteristics
+func (c *AdaptiveKCalculator) ComputeK(
+    queryEmbedding []float32,
+    nodes []*KGNode,
+    latencyBudgetMs *int,
+) int {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+
+    if len(nodes) == 0 {
+        return c.Config.MinK
+    }
+
+    metrics := c.computeMetrics(queryEmbedding, nodes)
+    k := c.Config.BaseK
+
+    // Adjust based on entropy (ambiguity)
+    if metrics.Entropy > c.Config.EntropyThreshold {
+        k += int(2 * c.Config.EntropyWeight * 10) // Up to +2 nodes
+    }
+
+    // Adjust based on similarity distribution
+    if metrics.TopSimilarity < c.Config.SimilarityThreshold {
+        k++ // No strong match, query more
+    }
+    if metrics.SimilarityVariance > 0.1 {
+        k++ // High variance suggests need for exploration
+    }
+
+    // Adjust based on historical consensus
+    if metrics.HistoricalConsensus < c.Config.ConsensusThreshold {
+        k += int(c.Config.ConsensusWeight * 2)
+    }
+
+    // Adjust based on latency budget
+    if latencyBudgetMs != nil && metrics.AvgNodeLatencyMs > 0 {
+        maxNodesInBudget := int(float64(*latencyBudgetMs) / metrics.AvgNodeLatencyMs)
+        if maxNodesInBudget < k {
+            k = max(c.Config.MinK, maxNodesInBudget)
+        }
+    }
+
+    // Clamp to valid range
+    if k < c.Config.MinK {
+        k = c.Config.MinK
+    }
+    if k > c.Config.MaxK {
+        k = c.Config.MaxK
+    }
+    if k > len(nodes) {
+        k = len(nodes)
+    }
+    return k
+}
+
+func (c *AdaptiveKCalculator) computeMetrics(
+    queryEmbedding []float32,
+    nodes []*KGNode,
+) QueryMetrics {
+    similarities := make([]float64, len(nodes))
+    for i, node := range nodes {
+        if len(node.Centroid) > 0 {
+            similarities[i] = cosineSimilarity(queryEmbedding, node.Centroid)
+        }
+    }
+
+    // Entropy: normalized entropy of similarity distribution
+    var entropy float64
+    if len(similarities) > 1 {
+        var sum float64
+        for _, s := range similarities {
+            sum += math.Abs(s)
+        }
+        if sum > 0 {
+            var h float64
+            for _, s := range similarities {
+                p := math.Abs(s) / (sum + 1e-10)
+                if p > 1e-10 {
+                    h -= p * math.Log(p)
+                }
+            }
+            entropy = h / math.Log(float64(len(similarities)))
+        }
+    } else {
+        entropy = 0.5
+    }
+
+    // Top similarity
+    var topSim float64
+    for _, s := range similarities {
+        if s > topSim {
+            topSim = s
+        }
+    }
+
+    // Variance
+    var variance float64
+    if len(similarities) > 1 {
+        var sum, mean float64
+        for _, s := range similarities {
+            sum += s
+        }
+        mean = sum / float64(len(similarities))
+        for _, s := range similarities {
+            variance += (s - mean) * (s - mean)
+        }
+        variance /= float64(len(similarities))
+    }
+
+    // Historical consensus
+    historicalConsensus := c.getHistoricalConsensus(queryEmbedding)
+
+    // Average node latency
+    avgLatency := c.getAvgLatency(nodes)
+
+    return QueryMetrics{
+        Entropy:            entropy,
+        TopSimilarity:      topSim,
+        SimilarityVariance: variance,
+        HistoricalConsensus: historicalConsensus,
+        AvgNodeLatencyMs:   avgLatency,
+    }
+}
+
+func (c *AdaptiveKCalculator) getHistoricalConsensus(queryEmbedding []float32) float64 {
+    if len(c.QueryHistory) == 0 {
+        return 0.8 // Optimistic default
+    }
+
+    var similarConsensus []float64
+    start := len(c.QueryHistory) - c.Config.HistorySize
+    if start < 0 {
+        start = 0
+    }
+
+    for _, entry := range c.QueryHistory[start:] {
+        sim := cosineSimilarity(queryEmbedding, entry.Embedding)
+        if sim > 0.7 {
+            similarConsensus = append(similarConsensus, entry.Consensus)
+        }
+    }
+
+    if len(similarConsensus) > 0 {
+        var sum float64
+        for _, c := range similarConsensus {
+            sum += c
+        }
+        return sum / float64(len(similarConsensus))
+    }
+    return 0.8
+}
+
+func (c *AdaptiveKCalculator) getAvgLatency(nodes []*KGNode) float64 {
+    var latencies []float64
+    for _, node := range nodes {
+        if cached, ok := c.LatencyCache[node.NodeID]; ok && len(cached) > 0 {
+            var sum float64
+            for _, l := range cached {
+                sum += l
+            }
+            latencies = append(latencies, sum/float64(len(cached)))
+        }
+    }
+    if len(latencies) > 0 {
+        var sum float64
+        for _, l := range latencies {
+            sum += l
+        }
+        return sum / float64(len(latencies))
+    }
+    return 100.0 // Default 100ms if no data
+}
+
+// RecordQueryOutcome records query outcome for future adaptive decisions
+func (c *AdaptiveKCalculator) RecordQueryOutcome(
+    queryEmbedding []float32,
+    consensusScore float64,
+    kUsed int,
+    nodeLatencies map[string]float64,
+) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    // Add to history
+    embCopy := make([]float32, len(queryEmbedding))
+    copy(embCopy, queryEmbedding)
+    c.QueryHistory = append(c.QueryHistory, QueryHistoryEntry{
+        Embedding: embCopy,
+        Consensus: consensusScore,
+        KUsed:     kUsed,
+    })
+
+    // Trim history if needed
+    if len(c.QueryHistory) > c.Config.HistorySize {
+        c.QueryHistory = c.QueryHistory[len(c.QueryHistory)-c.Config.HistorySize:]
+    }
+
+    // Update latency cache
+    for nodeID, latency := range nodeLatencies {
+        c.LatencyCache[nodeID] = append(c.LatencyCache[nodeID], latency)
+        if len(c.LatencyCache[nodeID]) > 20 {
+            c.LatencyCache[nodeID] = c.LatencyCache[nodeID][len(c.LatencyCache[nodeID])-20:]
+        }
+    }
+}
+
+// GetStats returns statistics about adaptive k selection
+func (c *AdaptiveKCalculator) GetStats() map[string]interface{} {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+
+    if len(c.QueryHistory) == 0 {
+        return map[string]interface{}{
+            "queries_recorded": 0,
+            "avg_k_used":       c.Config.BaseK,
+            "avg_consensus":    0.0,
+            "nodes_tracked":    0,
+        }
+    }
+
+    var kSum, consensusSum float64
+    for _, entry := range c.QueryHistory {
+        kSum += float64(entry.KUsed)
+        consensusSum += entry.Consensus
+    }
+
+    return map[string]interface{}{
+        "queries_recorded": len(c.QueryHistory),
+        "avg_k_used":       kSum / float64(len(c.QueryHistory)),
+        "avg_consensus":    consensusSum / float64(len(c.QueryHistory)),
+        "nodes_tracked":    len(c.LatencyCache),
+        "config": map[string]interface{}{
+            "base_k": c.Config.BaseK,
+            "min_k":  c.Config.MinK,
+            "max_k":  c.Config.MaxK,
+        },
+    }
+}
+
+// AdaptiveFederatedEngine extends FederatedQueryEngine with adaptive k
+type AdaptiveFederatedEngine struct {
+    *FederatedQueryEngine
+    Adaptive *AdaptiveKCalculator
+}
+
+// NewAdaptiveFederatedEngine creates an engine with adaptive k selection
+func NewAdaptiveFederatedEngine(router *KleinbergRouter) *AdaptiveFederatedEngine {
+    return &AdaptiveFederatedEngine{
+        FederatedQueryEngine: NewFederatedQueryEngine(router),
+        Adaptive:             NewAdaptiveKCalculator(),
+    }
+}
+
+// AdaptiveQuery executes a query with adaptive k selection
+func (e *AdaptiveFederatedEngine) AdaptiveQuery(
+    ctx context.Context,
+    queryText string,
+    queryEmbedding []float32,
+    topK int,
+    latencyBudgetMs *int,
+) (*AggregatedResponse, error) {
+    // Discover nodes
+    nodes, err := e.Router.DiscoverNodes([]string{"kg_node"})
+    if err != nil {
+        return nil, err
+    }
+
+    // Convert to KGNode slice
+    kgNodes := make([]*KGNode, len(nodes))
+    for i, n := range nodes {
+        kgNodes[i] = &KGNode{NodeID: n.ServiceID, Endpoint: n.Address}
+    }
+
+    // Compute adaptive k
+    k := e.Adaptive.ComputeK(queryEmbedding, kgNodes, latencyBudgetMs)
+
+    // Execute query with computed k
+    originalK := e.FederationK
+    e.FederationK = k
+    response, err := e.FederatedQuery(ctx, queryText, queryEmbedding, topK)
+    e.FederationK = originalK
+
+    if err != nil {
+        return nil, err
+    }
+
+    // Record outcome for future learning
+    consensusScore := 0.0
+    if len(response.Results) > 0 {
+        consensusScore = response.Results[0].DiversityScore
+    }
+    e.Adaptive.RecordQueryOutcome(queryEmbedding, consensusScore, k, nil)
+
+    return response, nil
+}
+
+// Helper function for cosine similarity
+func cosineSimilarity(a, b []float32) float64 {
+    if len(a) != len(b) || len(a) == 0 {
+        return 0.0
+    }
+    var dot, normA, normB float64
+    for i := range a {
+        dot += float64(a[i]) * float64(b[i])
+        normA += float64(a[i]) * float64(a[i])
+        normB += float64(b[i]) * float64(b[i])
+    }
+    normA = math.Sqrt(normA)
+    normB = math.Sqrt(normB)
+    if normA < 1e-10 || normB < 1e-10 {
+        return 0.0
+    }
+    return dot / (normA * normB)
+}
+', [BaseK, MinK, MaxK, EntropyW, LatencyW, ConsensusW, EntropyT, SimT, ConsensusT, HistSize]).
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5c: QUERY PLAN OPTIMIZATION CODE GENERATION (Go)
+% =============================================================================
+
+%% compile_query_planner_go(+Options, -Code)
+%  Generate Go QueryPlanner with cost-based query plan optimization.
+%  Classifies queries and builds optimal execution plans.
+
+compile_query_planner_go(Options, Code) :-
+    % Extract planner options with defaults
+    ( member(query_planning(PlanOpts), Options),
+      is_list(PlanOpts) -> true
+    ; PlanOpts = []
+    ),
+    ( member(specific_threshold(SpecT), PlanOpts) -> true ; SpecT = 0.8 ),
+    ( member(exploratory_variance(ExplVar), PlanOpts) -> true ; ExplVar = 0.1 ),
+    ( member(consensus_min_nodes(ConsMin), PlanOpts) -> true ; ConsMin = 3 ),
+    ( member(specific_max_nodes(SpecMax), PlanOpts) -> true ; SpecMax = 2 ),
+    ( member(exploratory_max_nodes(ExplMax), PlanOpts) -> true ; ExplMax = 7 ),
+    ( member(consensus_stage1_nodes(ConsS1), PlanOpts) -> true ; ConsS1 = 5 ),
+    ( member(consensus_stage2_nodes(ConsS2), PlanOpts) -> true ; ConsS2 = 3 ),
+    ( member(default_latency_ms(DefLat), PlanOpts) -> true ; DefLat = 100.0 ),
+
+    format(string(Code), '
+// KG Topology Phase 5c: Query Plan Optimization
+// Generated from Prolog service definition
+
+// QueryType classifies query characteristics
+type QueryType int
+
+const (
+    QueryTypeSpecific QueryType = iota     // High similarity, few nodes
+    QueryTypeExploratory                   // Low/varied similarity, broad search
+    QueryTypeConsensus                     // Medium similarity, density-focused
+)
+
+func (qt QueryType) String() string {
+    switch qt {
+    case QueryTypeSpecific:
+        return "specific"
+    case QueryTypeExploratory:
+        return "exploratory"
+    case QueryTypeConsensus:
+        return "consensus"
+    default:
+        return "unknown"
+    }
+}
+
+// QueryClassification holds query analysis results
+type QueryClassification struct {
+    QueryType          QueryType `json:"query_type"`
+    MaxSimilarity      float64   `json:"max_similarity"`
+    SimilarityVariance float64   `json:"similarity_variance"`
+    TopNodes           []string  `json:"top_nodes"`
+    Confidence         float64   `json:"confidence"`
+}
+
+// PlannerConfig holds query planner configuration
+type PlannerConfig struct {
+    SpecificThreshold    float64 `json:"specific_threshold"`
+    ExploratoryVariance  float64 `json:"exploratory_variance"`
+    ConsensusMinNodes    int     `json:"consensus_min_nodes"`
+    SpecificMaxNodes     int     `json:"specific_max_nodes"`
+    ExploratoryMaxNodes  int     `json:"exploratory_max_nodes"`
+    ConsensusStage1Nodes int     `json:"consensus_stage1_nodes"`
+    ConsensusStage2Nodes int     `json:"consensus_stage2_nodes"`
+    DefaultLatencyMs     float64 `json:"default_latency_ms"`
+}
+
+// DefaultPlannerConfig returns the default configuration
+var DefaultPlannerConfig = PlannerConfig{
+    SpecificThreshold:    ~w,
+    ExploratoryVariance:  ~w,
+    ConsensusMinNodes:    ~w,
+    SpecificMaxNodes:     ~w,
+    ExploratoryMaxNodes:  ~w,
+    ConsensusStage1Nodes: ~w,
+    ConsensusStage2Nodes: ~w,
+    DefaultLatencyMs:     ~w,
+}
+
+// QueryPlanStage is a stage in the execution plan
+type QueryPlanStage struct {
+    StageID          int                 `json:"stage_id"`
+    Nodes            []string            `json:"nodes"`
+    Strategy         AggregationStrategy `json:"strategy"`
+    Parallel         bool                `json:"parallel"`
+    DependsOn        []int               `json:"depends_on"`
+    EstimatedCostMs  float64             `json:"estimated_cost_ms"`
+    EstimatedResults int                 `json:"estimated_results"`
+    Description      string              `json:"description"`
+}
+
+// QueryPlan is a DAG of execution stages
+type QueryPlan struct {
+    PlanID              string           `json:"plan_id"`
+    QueryType           QueryType        `json:"query_type"`
+    Stages              []QueryPlanStage `json:"stages"`
+    TotalEstimatedCostMs float64         `json:"total_estimated_cost_ms"`
+    CreatedAt           time.Time        `json:"created_at"`
+}
+
+// GetExecutionOrder returns stages grouped by dependency level
+func (p *QueryPlan) GetExecutionOrder() [][]QueryPlanStage {
+    if len(p.Stages) == 0 {
+        return nil
+    }
+    completed := make(map[int]bool)
+    var levels [][]QueryPlanStage
+    remaining := make([]QueryPlanStage, len(p.Stages))
+    copy(remaining, p.Stages)
+    for len(remaining) > 0 {
+        var ready, notReady []QueryPlanStage
+        for _, stage := range remaining {
+            allDepsComplete := true
+            for _, dep := range stage.DependsOn {
+                if !completed[dep] { allDepsComplete = false; break }
+            }
+            if allDepsComplete { ready = append(ready, stage) } else { notReady = append(notReady, stage) }
+        }
+        if len(ready) == 0 { levels = append(levels, remaining); break }
+        levels = append(levels, ready)
+        for _, stage := range ready { completed[stage.StageID] = true }
+        remaining = notReady
+    }
+    return levels
+}
+
+// QueryPlanner builds optimized query execution plans
+type QueryPlanner struct {
+    Router    *KleinbergRouter
+    Config    PlannerConfig
+    planCount int64
+    mu        sync.RWMutex
+}
+
+// NewQueryPlanner creates a new planner with default config
+func NewQueryPlanner(router *KleinbergRouter) *QueryPlanner {
+    return &QueryPlanner{Router: router, Config: DefaultPlannerConfig}
+}
+
+// ClassifyQuery analyzes query characteristics
+func (p *QueryPlanner) ClassifyQuery(queryEmbedding []float32, nodes []*KGNode) *QueryClassification {
+    if len(nodes) == 0 {
+        return &QueryClassification{QueryType: QueryTypeSpecific, TopNodes: []string{}, Confidence: 0.0}
+    }
+    type nodeSim struct { nodeID string; sim float64 }
+    similarities := make([]nodeSim, len(nodes))
+    for i, node := range nodes {
+        var sim float64
+        if len(node.Centroid) > 0 { sim = cosineSimilarity(queryEmbedding, node.Centroid) }
+        similarities[i] = nodeSim{node.NodeID, sim}
+    }
+    for i := 0; i < len(similarities)-1; i++ {
+        for j := i + 1; j < len(similarities); j++ {
+            if similarities[j].sim > similarities[i].sim { similarities[i], similarities[j] = similarities[j], similarities[i] }
+        }
+    }
+    maxSim := similarities[0].sim
+    var sum float64
+    for _, ns := range similarities { sum += ns.sim }
+    mean := sum / float64(len(similarities))
+    var variance float64
+    for _, ns := range similarities { variance += (ns.sim - mean) * (ns.sim - mean) }
+    variance /= float64(len(similarities))
+    topN := 5; if topN > len(similarities) { topN = len(similarities) }
+    topNodes := make([]string, topN)
+    for i := 0; i < topN; i++ { topNodes[i] = similarities[i].nodeID }
+    var queryType QueryType; var confidence float64
+    if maxSim >= p.Config.SpecificThreshold { queryType = QueryTypeSpecific; confidence = math.Min(1.0, maxSim)
+    } else if variance >= p.Config.ExploratoryVariance { queryType = QueryTypeExploratory; confidence = math.Min(1.0, variance*5)
+    } else { queryType = QueryTypeConsensus; confidence = 0.7 }
+    return &QueryClassification{QueryType: queryType, MaxSimilarity: maxSim, SimilarityVariance: variance, TopNodes: topNodes, Confidence: confidence}
+}
+
+// BuildPlan creates an execution plan for the query
+func (p *QueryPlanner) BuildPlan(queryEmbedding []float32, nodes []*KGNode, latencyBudgetMs *float64, forceType *QueryType) *QueryPlan {
+    if len(nodes) == 0 { return p.buildEmptyPlan() }
+    classification := p.ClassifyQuery(queryEmbedding, nodes)
+    queryType := classification.QueryType
+    if forceType != nil { queryType = *forceType }
+    var plan *QueryPlan
+    switch queryType {
+    case QueryTypeSpecific: plan = p.buildSpecificPlan(classification)
+    case QueryTypeExploratory: plan = p.buildExploratoryPlan(classification, nodes)
+    default: plan = p.buildConsensusPlan(classification, nodes)
+    }
+    if latencyBudgetMs != nil { plan = p.applyLatencyBudget(plan, *latencyBudgetMs) }
+    p.mu.Lock(); p.planCount++; p.mu.Unlock()
+    return plan
+}
+
+func (p *QueryPlanner) buildSpecificPlan(classification *QueryClassification) *QueryPlan {
+    numNodes := p.Config.SpecificMaxNodes
+    if numNodes > len(classification.TopNodes) { numNodes = len(classification.TopNodes) }
+    selectedNodes := classification.TopNodes[:numNodes]
+    stage := QueryPlanStage{StageID: 0, Nodes: selectedNodes, Strategy: AggregationMax, Parallel: true, EstimatedCostMs: p.Config.DefaultLatencyMs + 10, EstimatedResults: 10, Description: "Greedy query to top matching nodes"}
+    return &QueryPlan{PlanID: p.generatePlanID(), QueryType: QueryTypeSpecific, Stages: []QueryPlanStage{stage}, TotalEstimatedCostMs: stage.EstimatedCostMs, CreatedAt: time.Now()}
+}
+
+func (p *QueryPlanner) buildExploratoryPlan(classification *QueryClassification, nodes []*KGNode) *QueryPlan {
+    numNodes := p.Config.ExploratoryMaxNodes
+    if numNodes > len(nodes) { numNodes = len(nodes) }
+    selectedNodes := make([]string, 0, numNodes)
+    selectedNodes = append(selectedNodes, classification.TopNodes...)
+    if len(selectedNodes) < numNodes {
+        for _, n := range nodes {
+            found := false
+            for _, s := range selectedNodes { if s == n.NodeID { found = true; break } }
+            if !found { selectedNodes = append(selectedNodes, n.NodeID); if len(selectedNodes) >= numNodes { break } }
+        }
+    }
+    stage := QueryPlanStage{StageID: 0, Nodes: selectedNodes, Strategy: AggregationSum, Parallel: true, EstimatedCostMs: p.Config.DefaultLatencyMs + 10, EstimatedResults: len(selectedNodes) * 5, Description: "Broad exploration across diverse nodes"}
+    return &QueryPlan{PlanID: p.generatePlanID(), QueryType: QueryTypeExploratory, Stages: []QueryPlanStage{stage}, TotalEstimatedCostMs: stage.EstimatedCostMs, CreatedAt: time.Now()}
+}
+
+func (p *QueryPlanner) buildConsensusPlan(classification *QueryClassification, nodes []*KGNode) *QueryPlan {
+    stage1Nodes := p.Config.ConsensusStage1Nodes
+    if stage1Nodes > len(nodes) { stage1Nodes = len(nodes) }
+    stage1NodeIDs := make([]string, 0, stage1Nodes)
+    stage1NodeIDs = append(stage1NodeIDs, classification.TopNodes...)
+    if len(stage1NodeIDs) < stage1Nodes {
+        for _, n := range nodes {
+            found := false
+            for _, s := range stage1NodeIDs { if s == n.NodeID { found = true; break } }
+            if !found { stage1NodeIDs = append(stage1NodeIDs, n.NodeID); if len(stage1NodeIDs) >= stage1Nodes { break } }
+        }
+    }
+    stage1 := QueryPlanStage{StageID: 0, Nodes: stage1NodeIDs, Strategy: AggregationSum, Parallel: true, EstimatedCostMs: p.Config.DefaultLatencyMs + 10, EstimatedResults: stage1Nodes * 5, Description: "Initial broad query for consensus candidates"}
+    stage2Set := make(map[string]bool); for _, nid := range stage1NodeIDs { stage2Set[nid] = true }
+    var stage2NodeIDs []string
+    for _, nid := range classification.TopNodes { if !stage2Set[nid] { stage2NodeIDs = append(stage2NodeIDs, nid); if len(stage2NodeIDs) >= p.Config.ConsensusStage2Nodes { break } } }
+    stage2 := QueryPlanStage{StageID: 1, Nodes: stage2NodeIDs, Strategy: AggregationDiversityWeighted, Parallel: true, DependsOn: []int{0}, EstimatedCostMs: p.Config.DefaultLatencyMs + 10, EstimatedResults: len(stage2NodeIDs) * 3, Description: "Density refinement on consensus clusters"}
+    return &QueryPlan{PlanID: p.generatePlanID(), QueryType: QueryTypeConsensus, Stages: []QueryPlanStage{stage1, stage2}, TotalEstimatedCostMs: stage1.EstimatedCostMs + stage2.EstimatedCostMs, CreatedAt: time.Now()}
+}
+
+func (p *QueryPlanner) buildEmptyPlan() *QueryPlan {
+    return &QueryPlan{PlanID: p.generatePlanID(), QueryType: QueryTypeSpecific, Stages: []QueryPlanStage{}, TotalEstimatedCostMs: 0, CreatedAt: time.Now()}
+}
+
+func (p *QueryPlanner) applyLatencyBudget(plan *QueryPlan, budgetMs float64) *QueryPlan {
+    if plan.TotalEstimatedCostMs <= budgetMs { return plan }
+    ratio := budgetMs / plan.TotalEstimatedCostMs
+    newStages := make([]QueryPlanStage, len(plan.Stages))
+    for i, stage := range plan.Stages {
+        newNodeCount := int(float64(len(stage.Nodes)) * ratio); if newNodeCount < 1 { newNodeCount = 1 }
+        newStages[i] = QueryPlanStage{StageID: stage.StageID, Nodes: stage.Nodes[:newNodeCount], Strategy: stage.Strategy, Parallel: stage.Parallel, DependsOn: stage.DependsOn, EstimatedCostMs: p.Config.DefaultLatencyMs + 10, EstimatedResults: int(float64(stage.EstimatedResults) * ratio), Description: stage.Description + " (budget-constrained)"}
+    }
+    var totalCost float64; for _, s := range newStages { totalCost += s.EstimatedCostMs }
+    return &QueryPlan{PlanID: plan.PlanID, QueryType: plan.QueryType, Stages: newStages, TotalEstimatedCostMs: totalCost, CreatedAt: plan.CreatedAt}
+}
+
+func (p *QueryPlanner) generatePlanID() string {
+    p.mu.Lock(); defer p.mu.Unlock()
+    return fmt.Sprintf("plan-%%d-%%d", time.Now().UnixNano(), p.planCount)
+}
+
+// PlannedQueryEngine executes queries using optimized plans
+type PlannedQueryEngine struct {
+    *FederatedQueryEngine
+    Planner *QueryPlanner
+}
+
+// NewPlannedQueryEngine creates an engine with query planning
+func NewPlannedQueryEngine(router *KleinbergRouter) *PlannedQueryEngine {
+    return &PlannedQueryEngine{FederatedQueryEngine: NewFederatedQueryEngine(router), Planner: NewQueryPlanner(router)}
+}
+
+// PlannedQuery executes a query using an optimized plan
+func (e *PlannedQueryEngine) PlannedQuery(ctx context.Context, queryText string, queryEmbedding []float32, topK int, latencyBudgetMs *float64) (*AggregatedResponse, error) {
+    nodes, err := e.Router.DiscoverNodes([]string{"kg_node"})
+    if err != nil { return nil, err }
+    kgNodes := make([]*KGNode, len(nodes))
+    for i, n := range nodes { kgNodes[i] = &KGNode{NodeID: n.ServiceID, Endpoint: n.Address} }
+    plan := e.Planner.BuildPlan(queryEmbedding, kgNodes, latencyBudgetMs, nil)
+    if len(plan.Stages) == 0 { return &AggregatedResponse{QueryID: plan.PlanID, Results: []AggregatedResult{}, NodesQueried: 0, NodesResponded: 0}, nil }
+    stage := plan.Stages[0]
+    originalK := e.FederationK; e.FederationK = len(stage.Nodes); e.Config.Strategy = stage.Strategy
+    response, err := e.FederatedQuery(ctx, queryText, queryEmbedding, topK)
+    e.FederationK = originalK
+    return response, err
+}
+', [SpecT, ExplVar, ConsMin, SpecMax, ExplMax, ConsS1, ConsS2, DefLat]).
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5a: HIERARCHICAL FEDERATION CODE GENERATION (Go)
+% =============================================================================
+
+%% compile_hierarchical_federation_go(+Options, -Code)
+%  Generate Go HierarchicalFederatedEngine with multi-level query routing.
+%  Queries regional aggregators first, then drills down to best regions.
+
+compile_hierarchical_federation_go(Options, Code) :-
+    % Extract hierarchical options with defaults
+    ( member(hierarchical(HierOpts), Options),
+      is_list(HierOpts) -> true
+    ; HierOpts = []
+    ),
+    ( member(max_levels(MaxLevels), HierOpts) -> true ; MaxLevels = 3 ),
+    ( member(min_nodes_per_region(MinNodes), HierOpts) -> true ; MinNodes = 2 ),
+    ( member(centroid_similarity_threshold(SimThresh), HierOpts) -> true ; SimThresh = 0.5 ),
+    ( member(drill_down_k(DrillK), HierOpts) -> true ; DrillK = 2 ),
+
+    format(string(Code), '
+// KG Topology Phase 5a: Hierarchical Federation
+// Generated from Prolog service definition
+
+// HierarchyConfig holds configuration for hierarchy building
+type HierarchyConfig struct {
+    MaxLevels                  int     `json:"max_levels"`
+    MinNodesPerRegion          int     `json:"min_nodes_per_region"`
+    CentroidSimilarityThreshold float64 `json:"centroid_similarity_threshold"`
+}
+
+// DefaultHierarchyConfig returns the default configuration
+var DefaultHierarchyConfig = HierarchyConfig{
+    MaxLevels:                  ~w,
+    MinNodesPerRegion:          ~w,
+    CentroidSimilarityThreshold: ~w,
+}
+
+// RegionalNode represents a node that aggregates child nodes
+type RegionalNode struct {
+    RegionID     string    `json:"region_id"`
+    Centroid     []float32 `json:"centroid"`
+    Topics       []string  `json:"topics"`
+    ChildNodes   []string  `json:"child_nodes"`
+    ParentRegion string    `json:"parent_region,omitempty"`
+    Level        int       `json:"level"`
+}
+
+// NodeHierarchy manages hierarchical node relationships
+type NodeHierarchy struct {
+    Config       HierarchyConfig
+    Regions      map[string]*RegionalNode
+    NodeToRegion map[string]string
+    LeafNodes    map[string]*KGNode
+    mu           sync.RWMutex
+}
+
+// NewNodeHierarchy creates a new hierarchy
+func NewNodeHierarchy(config *HierarchyConfig) *NodeHierarchy {
+    cfg := DefaultHierarchyConfig
+    if config != nil { cfg = *config }
+    return &NodeHierarchy{Config: cfg, Regions: make(map[string]*RegionalNode), NodeToRegion: make(map[string]string), LeafNodes: make(map[string]*KGNode)}
+}
+
+// BuildFromNodes builds hierarchy from leaf nodes using centroid clustering
+func (h *NodeHierarchy) BuildFromNodes(nodes []*KGNode) {
+    h.mu.Lock(); defer h.mu.Unlock()
+    h.LeafNodes = make(map[string]*KGNode); h.Regions = make(map[string]*RegionalNode); h.NodeToRegion = make(map[string]string)
+    if len(nodes) == 0 { return }
+    for _, n := range nodes { h.LeafNodes[n.NodeID] = n }
+    // Simple clustering by similarity - nodes with similar centroids form regions
+    assigned := make(map[string]bool)
+    groupID := 0
+    for _, node := range nodes {
+        if assigned[node.NodeID] || len(node.Centroid) == 0 { continue }
+        cluster := []*KGNode{node}; assigned[node.NodeID] = true
+        for _, other := range nodes {
+            if assigned[other.NodeID] || len(other.Centroid) == 0 { continue }
+            if cosineSimilarity(node.Centroid, other.Centroid) >= h.Config.CentroidSimilarityThreshold {
+                cluster = append(cluster, other); assigned[other.NodeID] = true
+            }
+        }
+        if len(cluster) >= h.Config.MinNodesPerRegion {
+            h.createRegion(fmt.Sprintf("region_%%d", groupID), cluster, 0, ""); groupID++
+        } else {
+            for _, n := range cluster { h.createRegion(fmt.Sprintf("singleton_%%s", n.NodeID), []*KGNode{n}, 0, "") }
+        }
+    }
+}
+
+func (h *NodeHierarchy) createRegion(regionID string, nodes []*KGNode, level int, parent string) {
+    var sumCentroid []float64; var count int
+    for _, n := range nodes {
+        if len(n.Centroid) > 0 {
+            if sumCentroid == nil { sumCentroid = make([]float64, len(n.Centroid)) }
+            for i, v := range n.Centroid { sumCentroid[i] += float64(v) }
+            count++
+        }
+    }
+    var avgCentroid []float32
+    if count > 0 {
+        avgCentroid = make([]float32, len(sumCentroid))
+        for i, v := range sumCentroid { avgCentroid[i] = float32(v / float64(count)) }
+    }
+    topicSet := make(map[string]bool)
+    for _, n := range nodes { for _, t := range n.Topics { topicSet[t] = true } }
+    topics := make([]string, 0, len(topicSet)); for t := range topicSet { topics = append(topics, t) }
+    childNodes := make([]string, len(nodes)); for i, n := range nodes { childNodes[i] = n.NodeID }
+    h.Regions[regionID] = &RegionalNode{RegionID: regionID, Centroid: avgCentroid, Topics: topics, ChildNodes: childNodes, ParentRegion: parent, Level: level}
+    for _, n := range nodes { h.NodeToRegion[n.NodeID] = regionID }
+}
+
+// GetRegionalNodes returns regions at a specific level
+func (h *NodeHierarchy) GetRegionalNodes(level int) []*RegionalNode {
+    h.mu.RLock(); defer h.mu.RUnlock()
+    var result []*RegionalNode
+    for _, r := range h.Regions { if r.Level == level { result = append(result, r) } }
+    return result
+}
+
+// GetChildren returns child node IDs for a region
+func (h *NodeHierarchy) GetChildren(regionID string) []string {
+    h.mu.RLock(); defer h.mu.RUnlock()
+    if r, ok := h.Regions[regionID]; ok { return r.ChildNodes }
+    return nil
+}
+
+// GetChildNodes returns actual KGNode objects for region children
+func (h *NodeHierarchy) GetChildNodes(regionID string) []*KGNode {
+    childIDs := h.GetChildren(regionID)
+    h.mu.RLock(); defer h.mu.RUnlock()
+    result := make([]*KGNode, 0, len(childIDs))
+    for _, id := range childIDs { if n, ok := h.LeafNodes[id]; ok { result = append(result, n) } }
+    return result
+}
+
+// HierarchicalFederatedEngine executes queries through hierarchy
+type HierarchicalFederatedEngine struct {
+    *FederatedQueryEngine
+    Hierarchy   *NodeHierarchy
+    DrillDownK  int
+    hierarchyBuilt bool
+}
+
+// NewHierarchicalFederatedEngine creates engine with hierarchical routing
+func NewHierarchicalFederatedEngine(router *KleinbergRouter) *HierarchicalFederatedEngine {
+    return &HierarchicalFederatedEngine{FederatedQueryEngine: NewFederatedQueryEngine(router), Hierarchy: NewNodeHierarchy(nil), DrillDownK: ~w}
+}
+
+// HierarchicalQuery executes a query through the hierarchy
+func (e *HierarchicalFederatedEngine) HierarchicalQuery(ctx context.Context, queryText string, queryEmbedding []float32, topK int) (*AggregatedResponse, error) {
+    e.ensureHierarchy()
+    if e.Hierarchy == nil || len(e.Hierarchy.Regions) == 0 {
+        return e.FederatedQuery(ctx, queryText, queryEmbedding, topK) // Fallback to flat
+    }
+    // Level 1: Query regional aggregators
+    regions := e.Hierarchy.GetRegionalNodes(0)
+    if len(regions) == 0 { return e.FederatedQuery(ctx, queryText, queryEmbedding, topK) }
+    // Find best regions by centroid similarity
+    type regionSim struct { region *RegionalNode; sim float64 }
+    similarities := make([]regionSim, len(regions))
+    for i, r := range regions { similarities[i] = regionSim{r, cosineSimilarity(queryEmbedding, r.Centroid)} }
+    for i := 0; i < len(similarities)-1; i++ {
+        for j := i + 1; j < len(similarities); j++ {
+            if similarities[j].sim > similarities[i].sim { similarities[i], similarities[j] = similarities[j], similarities[i] }
+        }
+    }
+    // Level 2: Query children of top regions
+    drillK := e.DrillDownK; if drillK > len(similarities) { drillK = len(similarities) }
+    var allNodeIDs []string
+    for i := 0; i < drillK; i++ { allNodeIDs = append(allNodeIDs, e.Hierarchy.GetChildren(similarities[i].region.RegionID)...) }
+    // Execute federated query on selected nodes
+    originalK := e.FederationK; e.FederationK = len(allNodeIDs)
+    response, err := e.FederatedQuery(ctx, queryText, queryEmbedding, topK)
+    e.FederationK = originalK
+    return response, err
+}
+
+func (e *HierarchicalFederatedEngine) ensureHierarchy() {
+    if e.hierarchyBuilt { return }
+    nodes, _ := e.Router.DiscoverNodes([]string{"kg_node"})
+    if len(nodes) > 0 {
+        kgNodes := make([]*KGNode, len(nodes))
+        for i, n := range nodes { kgNodes[i] = &KGNode{NodeID: n.ServiceID, Endpoint: n.Address} }
+        e.Hierarchy.BuildFromNodes(kgNodes)
+        e.hierarchyBuilt = true
+    }
+}
+', [MaxLevels, MinNodes, SimThresh, DrillK]).
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5d: STREAMING FEDERATION CODE GENERATION (Go)
+% =============================================================================
+
+%% compile_streaming_federation_go(+Options, -Code)
+%  Generate Go StreamingFederatedEngine with async partial results.
+%  Streams results as nodes respond rather than waiting for all.
+
+compile_streaming_federation_go(Options, Code) :-
+    % Extract streaming options with defaults
+    ( member(streaming(StreamOpts), Options),
+      is_list(StreamOpts) -> true
+    ; StreamOpts = []
+    ),
+    ( member(yield_interval_ms(YieldMs), StreamOpts) -> true ; YieldMs = 100 ),
+    ( member(min_confidence(MinConf), StreamOpts) -> true ; MinConf = 0.3 ),
+
+    format(string(Code), '
+// KG Topology Phase 5d: Streaming Federation
+// Generated from Prolog service definition
+
+// StreamingConfig holds configuration for streaming queries
+type StreamingConfig struct {
+    YieldIntervalMs int     `json:"yield_interval_ms"`
+    MinConfidence   float64 `json:"min_confidence"`
+}
+
+// DefaultStreamingConfig returns the default configuration
+var DefaultStreamingConfig = StreamingConfig{
+    YieldIntervalMs: ~w,
+    MinConfidence:   ~w,
+}
+
+// PartialResult represents an intermediate result during streaming
+type PartialResult struct {
+    Results        []AggregatedResult `json:"results"`
+    Confidence     float64            `json:"confidence"`
+    NodesResponded int                `json:"nodes_responded"`
+    NodesTotal     int                `json:"nodes_total"`
+    IsFinal        bool               `json:"is_final"`
+}
+
+// StreamingFederatedEngine supports streaming partial results
+type StreamingFederatedEngine struct {
+    *FederatedQueryEngine
+    StreamConfig StreamingConfig
+}
+
+// NewStreamingFederatedEngine creates engine with streaming support
+func NewStreamingFederatedEngine(router *KleinbergRouter) *StreamingFederatedEngine {
+    return &StreamingFederatedEngine{FederatedQueryEngine: NewFederatedQueryEngine(router), StreamConfig: DefaultStreamingConfig}
+}
+
+// StreamingQuery streams partial results as nodes respond
+func (e *StreamingFederatedEngine) StreamingQuery(ctx context.Context, queryText string, queryEmbedding []float32, topK int) (<-chan PartialResult, error) {
+    nodes, err := e.Router.DiscoverNodes([]string{"kg_node"})
+    if err != nil { return nil, err }
+    resultChan := make(chan PartialResult, len(nodes)+1)
+    go func() {
+        defer close(resultChan)
+        if len(nodes) == 0 { resultChan <- PartialResult{Results: []AggregatedResult{}, Confidence: 1.0, NodesResponded: 0, NodesTotal: 0, IsFinal: true}; return }
+        // Query nodes in parallel
+        nodeChan := make(chan *NodeResponse, len(nodes))
+        var wg sync.WaitGroup
+        for _, n := range nodes {
+            wg.Add(1)
+            go func(node ServiceInstance) {
+                defer wg.Done()
+                resp := e.queryNodeAsync(ctx, &KGNode{NodeID: node.ServiceID, Endpoint: node.Address}, queryText, queryEmbedding, topK)
+                nodeChan <- resp
+            }(n)
+        }
+        go func() { wg.Wait(); close(nodeChan) }()
+        // Aggregate and stream partial results
+        aggregated := make(map[string]*AggregatedResult)
+        responded := 0
+        for resp := range nodeChan {
+            if resp == nil || resp.Error != "" { continue }
+            responded++
+            for _, r := range resp.Results {
+                if existing, ok := aggregated[r.AnswerHash]; ok {
+                    existing.CombinedScore = e.mergeScore(existing.CombinedScore, r.ExpScore)
+                    existing.SourceNodes = append(existing.SourceNodes, resp.SourceNode)
+                } else {
+                    aggregated[r.AnswerHash] = &AggregatedResult{AnswerText: r.AnswerText, AnswerHash: r.AnswerHash, CombinedScore: r.ExpScore, SourceNodes: []string{resp.SourceNode}}
+                }
+            }
+            // Emit partial result
+            results := make([]AggregatedResult, 0, len(aggregated))
+            for _, r := range aggregated { results = append(results, *r) }
+            for i := 0; i < len(results)-1; i++ {
+                for j := i + 1; j < len(results); j++ {
+                    if results[j].CombinedScore > results[i].CombinedScore { results[i], results[j] = results[j], results[i] }
+                }
+            }
+            if len(results) > topK { results = results[:topK] }
+            confidence := float64(responded) / float64(len(nodes))
+            if confidence >= e.StreamConfig.MinConfidence {
+                resultChan <- PartialResult{Results: results, Confidence: confidence, NodesResponded: responded, NodesTotal: len(nodes), IsFinal: false}
+            }
+        }
+        // Final result
+        results := make([]AggregatedResult, 0, len(aggregated))
+        for _, r := range aggregated { results = append(results, *r) }
+        for i := 0; i < len(results)-1; i++ {
+            for j := i + 1; j < len(results); j++ {
+                if results[j].CombinedScore > results[i].CombinedScore { results[i], results[j] = results[j], results[i] }
+            }
+        }
+        if len(results) > topK { results = results[:topK] }
+        resultChan <- PartialResult{Results: results, Confidence: float64(responded) / float64(len(nodes)), NodesResponded: responded, NodesTotal: len(nodes), IsFinal: true}
+    }()
+    return resultChan, nil
+}
+
+func (e *StreamingFederatedEngine) queryNodeAsync(ctx context.Context, node *KGNode, queryText string, queryEmbedding []float32, topK int) *NodeResponse {
+    // Create HTTP request
+    reqBody := map[string]interface{}{"__type": "kg_query", "payload": map[string]interface{}{"query_text": queryText, "top_k": topK}}
+    jsonBody, _ := json.Marshal(reqBody)
+    req, _ := http.NewRequestWithContext(ctx, "POST", node.Endpoint+"/kg/query", bytes.NewReader(jsonBody))
+    req.Header.Set("Content-Type", "application/json")
+    client := &http.Client{Timeout: time.Duration(e.TimeoutMs) * time.Millisecond}
+    start := time.Now()
+    resp, err := client.Do(req)
+    if err != nil { return &NodeResponse{SourceNode: node.NodeID, Error: err.Error()} }
+    defer resp.Body.Close()
+    var nodeResp NodeResponse
+    if err := json.NewDecoder(resp.Body).Decode(&nodeResp); err != nil { return &NodeResponse{SourceNode: node.NodeID, Error: err.Error()} }
+    nodeResp.SourceNode = node.NodeID
+    nodeResp.ResponseTime = time.Since(start)
+    return &nodeResp
+}
+
+func (e *StreamingFederatedEngine) mergeScore(existing, new float64) float64 {
+    switch e.Config.Strategy {
+    case AggregationMax: if new > existing { return new }; return existing
+    case AggregationMin: if new < existing { return new }; return existing
+    default: return existing + new // SUM
+    }
+}
+', [YieldMs, MinConf]).
