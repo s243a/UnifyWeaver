@@ -85,6 +85,8 @@
     is_valid_query_planning_option/1,
     % Phase 5a: Hierarchical federation
     is_valid_hierarchy_option/1,
+    % Phase 5d: Streaming aggregation
+    is_valid_streaming_option/1,
     is_federation_enabled/1,
     get_federation_options/2,
     get_federation_k/2,
@@ -1266,6 +1268,27 @@ is_valid_hierarchy_option(drill_down_k(K)) :-
     integer(K), K > 0.
 is_valid_hierarchy_option(regional_aggregation(Strategy)) :-
     is_valid_aggregation_strategy(Strategy).
+
+% Phase 5d: Streaming aggregation options
+is_valid_federation_option(streaming(true)).
+is_valid_federation_option(streaming(false)).
+is_valid_federation_option(streaming(Opts)) :-
+    is_list(Opts), maplist(is_valid_streaming_option, Opts).
+
+%% is_valid_streaming_option(+Option)
+%  Validate streaming configuration options.
+is_valid_streaming_option(yield_interval_ms(N)) :-
+    integer(N), N >= 0.
+is_valid_streaming_option(min_confidence(C)) :-
+    number(C), C >= 0, C =< 1.
+is_valid_streaming_option(max_wait_ms(N)) :-
+    integer(N), N > 0.
+is_valid_streaming_option(eager_yield(true)).
+is_valid_streaming_option(eager_yield(false)).
+is_valid_streaming_option(sse_enabled(true)).
+is_valid_streaming_option(sse_enabled(false)).
+is_valid_streaming_option(websocket_enabled(true)).
+is_valid_streaming_option(websocket_enabled(false)).
 
 %% is_valid_aggregation_strategy(+Strategy)
 %  Validate aggregation strategy for result merging.

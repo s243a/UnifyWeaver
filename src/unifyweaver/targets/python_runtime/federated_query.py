@@ -2133,3 +2133,459 @@ def create_hierarchical_engine(
         timeout_ms=timeout_ms,
         drill_down_k=drill_down_k
     )
+
+
+# =============================================================================
+# PHASE 5d: STREAMING AGGREGATION
+# =============================================================================
+
+@dataclass
+class PartialResult:
+    """Partial aggregation result during streaming.
+
+    Represents the current state of aggregation as nodes respond,
+    allowing clients to display preliminary results before all nodes complete.
+    """
+    results: List[Dict[str, Any]]
+    confidence: float  # 0-1, based on nodes responded / total
+    nodes_responded: int
+    nodes_total: int
+    elapsed_ms: float
+    is_final: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            'results': self.results,
+            'confidence': self.confidence,
+            'nodes_responded': self.nodes_responded,
+            'nodes_total': self.nodes_total,
+            'elapsed_ms': self.elapsed_ms,
+            'is_final': self.is_final
+        }
+
+
+@dataclass
+class StreamingConfig:
+    """Configuration for streaming aggregation."""
+    yield_interval_ms: int = 100     # Min time between yields
+    min_confidence: float = 0.1      # Min confidence before first yield
+    max_wait_ms: int = 5000          # Max wait for slow nodes
+    eager_yield: bool = True         # Yield as soon as any node responds
+
+
+class StreamingFederatedEngine(FederatedQueryEngine):
+    """Federated query engine supporting streaming/incremental results.
+
+    Uses asyncio to enable non-blocking query execution with
+    incremental result aggregation. Partial results are yielded
+    as nodes respond, allowing early display of high-confidence answers.
+
+    Can be used with:
+    - WebSockets for real-time browser updates
+    - Server-Sent Events (SSE) for HTTP/2 streaming
+    - gRPC streams for service-to-service communication
+    """
+
+    def __init__(
+        self,
+        router: KleinbergRouter,
+        aggregation_config: Optional[AggregationConfig] = None,
+        streaming_config: Optional[StreamingConfig] = None,
+        federation_k: int = 3,
+        timeout_ms: int = 5000,
+        max_workers: int = 10
+    ):
+        """
+        Initialize streaming federated engine.
+
+        Args:
+            router: KleinbergRouter for node discovery
+            aggregation_config: Aggregation configuration
+            streaming_config: Streaming configuration
+            federation_k: Number of nodes to query
+            timeout_ms: Query timeout per node
+            max_workers: Max parallel workers
+        """
+        super().__init__(
+            router=router,
+            aggregation_config=aggregation_config,
+            federation_k=federation_k,
+            timeout_ms=timeout_ms,
+            max_workers=max_workers
+        )
+        self.streaming_config = streaming_config or StreamingConfig()
+
+    def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
+        """Compute cosine similarity between two vectors."""
+        if a is None or b is None:
+            return 0.0
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a < 1e-10 or norm_b < 1e-10:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+
+    async def federated_query_streaming(
+        self,
+        query_text: str,
+        query_embedding: np.ndarray,
+        top_k: int = 10,
+        federation_k: Optional[int] = None,
+        aggregation_strategy: Optional[AggregationStrategy] = None
+    ):
+        """
+        Execute a streaming federated query.
+
+        Yields PartialResult objects as nodes respond, allowing
+        clients to display preliminary results before completion.
+
+        Args:
+            query_text: The query text
+            query_embedding: Query embedding vector
+            top_k: Number of results to return
+            federation_k: Override number of nodes to query
+            aggregation_strategy: Override aggregation strategy
+
+        Yields:
+            PartialResult with current aggregation state
+        """
+        import asyncio
+
+        start_time = time.time()
+        query_id = str(uuid.uuid4())
+        k = federation_k or self.federation_k
+        strategy = aggregation_strategy or self.config.strategy
+        aggregator = get_aggregator(strategy)
+
+        # Get nodes to query (same logic as parent federated_query)
+        all_nodes = self.router.discover_nodes()
+        if not all_nodes:
+            yield PartialResult(
+                results=[],
+                confidence=1.0,
+                nodes_responded=0,
+                nodes_total=0,
+                elapsed_ms=0.0,
+                is_final=True
+            )
+            return
+
+        # Rank by similarity and take top k
+        ranked = [(n, self._cosine_similarity(query_embedding, n.centroid)) for n in all_nodes]
+        ranked.sort(key=lambda x: x[1], reverse=True)
+        nodes = [node for node, _ in ranked[:k]]
+
+        if not nodes:
+            yield PartialResult(
+                results=[],
+                confidence=1.0,
+                nodes_responded=0,
+                nodes_total=0,
+                elapsed_ms=0.0,
+                is_final=True
+            )
+            return
+
+        # Create async tasks for all nodes
+        tasks = {
+            asyncio.create_task(
+                self._async_query_node(node, query_text, query_embedding, query_id)
+            ): node for node in nodes
+        }
+
+        # Track aggregation state
+        aggregated: Dict[str, Dict[str, Any]] = {}
+        total_partition_sum = 0.0
+        responded = 0
+        last_yield_time = start_time
+
+        # Process responses as they complete
+        for coro in asyncio.as_completed(tasks.keys()):
+            try:
+                response = await asyncio.wait_for(
+                    coro,
+                    timeout=self.timeout_ms / 1000
+                )
+                if response:
+                    # Merge into aggregate
+                    self._merge_response_streaming(aggregated, response, aggregator)
+                    total_partition_sum += response.partition_sum
+                    responded += 1
+                    self._record_latency(
+                        response.source_node,
+                        (time.time() - start_time) * 1000
+                    )
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                continue
+
+            # Check if we should yield partial result
+            elapsed_ms = (time.time() - start_time) * 1000
+            since_last = (time.time() - last_yield_time) * 1000
+            confidence = responded / len(nodes)
+
+            should_yield = (
+                (self.streaming_config.eager_yield and responded == 1) or
+                (confidence >= self.streaming_config.min_confidence and
+                 since_last >= self.streaming_config.yield_interval_ms) or
+                responded == len(nodes)
+            )
+
+            if should_yield:
+                results = self._normalize_streaming(aggregated, total_partition_sum, top_k)
+                yield PartialResult(
+                    results=results,
+                    confidence=confidence,
+                    nodes_responded=responded,
+                    nodes_total=len(nodes),
+                    elapsed_ms=elapsed_ms,
+                    is_final=(responded == len(nodes))
+                )
+                last_yield_time = time.time()
+
+        # Final yield if we haven't already
+        if responded < len(nodes):
+            elapsed_ms = (time.time() - start_time) * 1000
+            results = self._normalize_streaming(aggregated, total_partition_sum, top_k)
+            yield PartialResult(
+                results=results,
+                confidence=responded / len(nodes),
+                nodes_responded=responded,
+                nodes_total=len(nodes),
+                elapsed_ms=elapsed_ms,
+                is_final=True
+            )
+
+    async def _async_query_node(
+        self,
+        node: KGNode,
+        query_text: str,
+        query_embedding: np.ndarray,
+        query_id: str
+    ) -> Optional[NodeResponse]:
+        """
+        Query a single node asynchronously.
+
+        Uses aiohttp for non-blocking HTTP requests.
+
+        Args:
+            node: Node to query
+            query_text: The query text
+            query_embedding: Query embedding
+            query_id: Query identifier
+
+        Returns:
+            NodeResponse or None on error
+        """
+        import asyncio
+
+        try:
+            # Try to use aiohttp if available
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    payload = {
+                        "query_id": query_id,
+                        "query_text": query_text,
+                        "query_embedding": query_embedding.tolist(),
+                        "top_k": 10
+                    }
+                    async with session.post(
+                        f"{node.endpoint}/kg/query",
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout_ms / 1000)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            return self._parse_node_response(data, node.node_id)
+            except ImportError:
+                # Fall back to sync requests in thread pool
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(
+                    None,
+                    self._query_node_sync,
+                    node, query_text, query_embedding, query_id
+                )
+        except Exception:
+            return None
+
+    def _query_node_sync(
+        self,
+        node: KGNode,
+        query_text: str,
+        query_embedding: np.ndarray,
+        query_id: str
+    ) -> Optional[NodeResponse]:
+        """Synchronous node query for fallback."""
+        try:
+            import requests
+            payload = {
+                "query_id": query_id,
+                "query_text": query_text,
+                "query_embedding": query_embedding.tolist(),
+                "top_k": 10
+            }
+            resp = requests.post(
+                f"{node.endpoint}/kg/query",
+                json=payload,
+                timeout=self.timeout_ms / 1000
+            )
+            if resp.status_code == 200:
+                return self._parse_node_response(resp.json(), node.node_id)
+        except Exception:
+            pass
+        return None
+
+    def _parse_node_response(
+        self,
+        data: Dict[str, Any],
+        node_id: str
+    ) -> NodeResponse:
+        """Parse JSON response into NodeResponse."""
+        results = []
+        for r in data.get('results', []):
+            results.append(NodeResult(
+                answer_id=r.get('answer_id', str(uuid.uuid4())),
+                answer_text=r.get('answer_text', ''),
+                answer_hash=r.get('answer_hash', ''),
+                raw_score=r.get('raw_score', 0.0),
+                exp_score=r.get('exp_score', 0.0),
+                embedding=np.array(r.get('embedding', [])) if r.get('embedding') else None,
+                local_density=r.get('local_density', 0.0)
+            ))
+
+        return NodeResponse(
+            source_node=node_id,
+            results=results,
+            partition_sum=data.get('partition_sum', 1.0),
+            node_metadata=data.get('metadata', {})
+        )
+
+    def _merge_response_streaming(
+        self,
+        aggregated: Dict[str, Dict[str, Any]],
+        response: NodeResponse,
+        aggregator: Aggregator
+    ) -> None:
+        """Merge response into streaming aggregation."""
+        for result in response.results:
+            key = result.answer_hash or result.answer_id
+            if key in aggregated:
+                existing = aggregated[key]
+                existing['exp_score'] = aggregator.merge(
+                    existing['exp_score'],
+                    result.exp_score
+                )
+                existing['node_count'] += 1
+            else:
+                aggregated[key] = {
+                    'answer_id': result.answer_id,
+                    'answer_text': result.answer_text,
+                    'answer_hash': result.answer_hash,
+                    'exp_score': result.exp_score,
+                    'raw_score': result.raw_score,
+                    'node_count': 1
+                }
+
+    def _normalize_streaming(
+        self,
+        aggregated: Dict[str, Dict[str, Any]],
+        total_partition_sum: float,
+        top_k: int
+    ) -> List[Dict[str, Any]]:
+        """Normalize and rank streaming results."""
+        results = []
+        for key, data in aggregated.items():
+            prob = data['exp_score'] / total_partition_sum if total_partition_sum > 0 else 0.0
+            results.append({
+                **data,
+                'normalized_prob': prob
+            })
+
+        results.sort(key=lambda r: r['normalized_prob'], reverse=True)
+        return results[:top_k]
+
+    async def federated_query_sse(
+        self,
+        query_text: str,
+        query_embedding: np.ndarray,
+        **kwargs
+    ):
+        """
+        Server-Sent Events stream for HTTP/2 clients.
+
+        Yields SSE-formatted strings ready for HTTP response.
+
+        Args:
+            query_text: The query text
+            query_embedding: Query embedding
+            **kwargs: Additional query options
+
+        Yields:
+            SSE-formatted strings (data: {...}\n\n)
+        """
+        import json
+        async for partial in self.federated_query_streaming(
+            query_text, query_embedding, **kwargs
+        ):
+            yield f"data: {json.dumps(partial.to_dict())}\n\n"
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get engine statistics including streaming config."""
+        base_stats = super().get_stats()
+        return {
+            **base_stats,
+            'streaming': {
+                'yield_interval_ms': self.streaming_config.yield_interval_ms,
+                'min_confidence': self.streaming_config.min_confidence,
+                'max_wait_ms': self.streaming_config.max_wait_ms,
+                'eager_yield': self.streaming_config.eager_yield
+            }
+        }
+
+
+def create_streaming_engine(
+    router: KleinbergRouter,
+    yield_interval_ms: int = 100,
+    min_confidence: float = 0.1,
+    max_wait_ms: int = 5000,
+    eager_yield: bool = True,
+    federation_k: int = 3,
+    timeout_ms: int = 5000,
+    aggregation_strategy: AggregationStrategy = AggregationStrategy.SUM
+) -> StreamingFederatedEngine:
+    """Factory for streaming federated engine.
+
+    Args:
+        router: KleinbergRouter for node discovery
+        yield_interval_ms: Minimum time between partial yields
+        min_confidence: Minimum confidence before first yield
+        max_wait_ms: Maximum wait for slow nodes
+        eager_yield: Yield as soon as first node responds
+        federation_k: Number of nodes to query
+        timeout_ms: Query timeout per node
+        aggregation_strategy: Default aggregation strategy
+
+    Returns:
+        StreamingFederatedEngine configured with given parameters
+    """
+    streaming_config = StreamingConfig(
+        yield_interval_ms=yield_interval_ms,
+        min_confidence=min_confidence,
+        max_wait_ms=max_wait_ms,
+        eager_yield=eager_yield
+    )
+
+    aggregation_config = AggregationConfig(
+        strategy=aggregation_strategy
+    )
+
+    return StreamingFederatedEngine(
+        router=router,
+        aggregation_config=aggregation_config,
+        streaming_config=streaming_config,
+        federation_k=federation_k,
+        timeout_ms=timeout_ms
+    )

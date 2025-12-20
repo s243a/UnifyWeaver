@@ -314,11 +314,20 @@ service(csv_expert_node, [
    - [x] Phase 4d-iii: Adaptive bandwidth (`cross_validation_bandwidth()`, `adaptive_local_bandwidth()`)
    - [x] Phase 4d-iv: Efficiency (`DistanceCache`, `sketch_embeddings()`, `approximate_nearest_neighbors()`)
 
-5. **Advanced Features** (Phase 5 In Progress)
+5. **Advanced Features** (Phase 5 Complete)
    - [x] Hierarchical federation (5a - complete)
    - [x] Adaptive federation-k (5b - complete)
    - [x] Query plan optimization (5c - complete)
-   - [ ] Streaming aggregation (5d - pending)
+   - [x] Streaming aggregation (5d - complete)
+
+   **Phase 5d Streaming Aggregation:**
+   - `PartialResult`: Data structure for incremental results (confidence, nodes_responded, elapsed_ms, is_final)
+   - `StreamingConfig`: Configuration (yield_interval_ms, min_confidence, eager_yield)
+   - `StreamingFederatedEngine`: AsyncGenerator-based streaming with as_completed
+   - `federated_query_streaming()`: Yields PartialResult as nodes respond
+   - `federated_query_sse()`: Server-Sent Events formatter for HTTP/2
+   - `create_streaming_engine()`: Factory function
+   - Prolog: `is_valid_streaming_option/1` (8 predicates)
 
    **Phase 5a Hierarchical Federation:**
    - `RegionalNode`: Data structure for regional aggregator nodes
@@ -363,6 +372,7 @@ service(csv_expert_node, [
 - `tests/core/test_adaptive_federation.py` - 23 unit tests (Phase 5b adaptive-k)
 - `tests/core/test_query_planner.py` - 31 unit tests (Phase 5c query planning)
 - `tests/core/test_hierarchical_federation.py` - 31 unit tests (Phase 5a hierarchical)
+- `tests/core/test_streaming_federation.py` - 24 unit tests (Phase 5d streaming)
 - `tests/e2e/test_multinode_federation_e2e.py` - 7 E2E tests (multi-node)
 
 **Federated Query Protocol:**
