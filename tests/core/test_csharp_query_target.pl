@@ -35,6 +35,7 @@
 :- dynamic user:test_sales_by_customer_product/3.
 :- dynamic user:test_sale_count_by_customer/2.
 :- dynamic user:test_sale_sum_by_customer/2.
+:- dynamic user:test_sale_avg_by_customer/2.
 :- dynamic user:test_sale_min/1.
 :- dynamic user:test_sale_max/1.
 :- dynamic user:test_sale_min_by_customer/2.
@@ -107,6 +108,7 @@ test_csharp_query_target :-
         verify_grouped_aggregate_count_plan,
         verify_correlated_aggregate_count_plan,
         verify_correlated_aggregate_sum_plan,
+        verify_correlated_aggregate_avg_plan,
         verify_correlated_aggregate_min_plan,
         verify_correlated_aggregate_max_plan,
         verify_aggregate_set_plan,
@@ -120,6 +122,7 @@ test_csharp_query_target :-
         verify_aggregate_subplan_correlated_count_with_constraint_plan,
         verify_aggregate_subplan_grouped_count_with_negation_plan,
         verify_aggregate_subplan_sum_with_constraint_plan,
+        verify_aggregate_subplan_avg_with_constraint_plan,
         verify_aggregate_subplan_set_with_negation_plan,
         verify_aggregate_subplan_grouped_sum_with_negation_plan,
         verify_negation_plan,
@@ -214,6 +217,10 @@ setup_test_data :-
         test_customer(Customer),
         aggregate_all(sum(Amount), test_sale(Customer, Amount), Sum)
     )),
+    assertz(user:(test_sale_avg_by_customer(Customer, Avg) :-
+        test_customer(Customer),
+        aggregate_all(avg(Amount), test_sale(Customer, Amount), Avg)
+    )),
     assertz(user:(test_sale_min(Min) :-
         aggregate_all(min(Amount), test_sale(_, Amount), Min)
     )),
@@ -274,6 +281,9 @@ setup_test_data :-
     )),
     assertz(user:(test_sale_filtered_sum(Sum) :-
         aggregate_all(sum(Amount), (test_sale(_, Amount), Amount > 5), Sum)
+    )),
+    assertz(user:(test_sale_filtered_avg(Avg) :-
+        aggregate_all(avg(Amount), (test_sale(_, Amount), Amount > 5), Avg)
     )),
     assertz(user:(test_non_banned_sale_customers_set(Set) :-
         aggregate_all(set(Customer), (test_sale(Customer, _), \+ test_banned(Customer)), Set)
@@ -422,6 +432,7 @@ cleanup_test_data :-
     retractall(user:test_sales_by_customer_product(_, _, _)),
     retractall(user:test_sale_count_by_customer(_, _)),
     retractall(user:test_sale_sum_by_customer(_, _)),
+    retractall(user:test_sale_avg_by_customer(_, _)),
     retractall(user:test_sale_min(_)),
     retractall(user:test_sale_max(_)),
     retractall(user:test_sale_min_by_customer(_, _)),
@@ -438,6 +449,7 @@ cleanup_test_data :-
     retractall(user:test_sale_count_filtered_by_customer(_, _)),
     retractall(user:test_non_banned_sale_count_grouped(_, _)),
     retractall(user:test_sale_filtered_sum(_)),
+    retractall(user:test_sale_filtered_avg(_)),
     retractall(user:test_non_banned_sale_customers_set(_)),
     retractall(user:test_non_banned_sale_sum_grouped(_, _)),
     retractall(user:test_factorial_input(_)),
@@ -835,6 +847,18 @@ verify_correlated_aggregate_sum_plan :-
     sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
     maybe_run_query_runtime(Plan, ['alice,15', 'bob,7']).
 
+verify_correlated_aggregate_avg_plan :-
+    csharp_query_target:build_query_plan(test_sale_avg_by_customer/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(Aggregate, Root),
+    is_dict(Aggregate, aggregate),
+    get_dict(predicate, Aggregate, predicate{name:test_sale, arity:2}),
+    get_dict(op, Aggregate, avg),
+    get_dict(group_indices, Aggregate, []),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateOperation.Avg'),
+    maybe_run_query_runtime(Plan, ['alice,7.5', 'bob,7']).
+
 verify_correlated_aggregate_min_plan :-
     csharp_query_target:build_query_plan(test_sale_min_by_customer/2, [target(csharp_query)], Plan),
     get_dict(root, Plan, Root),
@@ -1009,6 +1033,22 @@ verify_aggregate_subplan_sum_with_constraint_plan :-
     sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
     sub_string(Source, _, _, _, 'SelectionNode'),
     maybe_run_query_runtime(Plan, ['17']).
+
+verify_aggregate_subplan_avg_with_constraint_plan :-
+    csharp_query_target:build_query_plan(test_sale_filtered_avg/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Agg, columns:[0], width:1}),
+    is_dict(Agg, aggregate_subplan),
+    get_dict(input, Agg, unit{type:unit, width:0}),
+    get_dict(op, Agg, avg),
+    get_dict(params, Agg, []),
+    get_dict(group_indices, Agg, []),
+    get_dict(value_index, Agg, 0),
+    get_dict(width, Agg, 1),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'AggregateSubplanNode'),
+    sub_string(Source, _, _, _, 'AggregateOperation.Avg'),
+    sub_string(Source, _, _, _, 'SelectionNode'),
+    maybe_run_query_runtime(Plan, ['8.5']).
 
 verify_aggregate_subplan_set_with_negation_plan :-
     csharp_query_target:build_query_plan(test_non_banned_sale_customers_set/1, [target(csharp_query)], Plan),
