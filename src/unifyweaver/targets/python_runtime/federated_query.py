@@ -1541,3 +1541,595 @@ def create_adaptive_engine(
         adaptive_config=adaptive_config,
         timeout_ms=timeout_ms
     )
+
+
+# =============================================================================
+# PHASE 5a: HIERARCHICAL FEDERATION
+# =============================================================================
+
+@dataclass
+class RegionalNode:
+    """A node that aggregates results from child nodes.
+
+    Regional nodes form a hierarchy where queries are first routed
+    to regional aggregators, then drilled down to specialized nodes.
+    """
+    region_id: str
+    centroid: np.ndarray           # Average centroid of child nodes
+    topics: List[str]              # Combined topics from children
+    child_nodes: List[str]         # Node IDs of children
+    parent_region: Optional[str] = None
+    level: int = 0                 # Hierarchy level (0 = top)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'region_id': self.region_id,
+            'centroid': self.centroid.tolist() if self.centroid is not None else None,
+            'topics': self.topics,
+            'child_nodes': self.child_nodes,
+            'parent_region': self.parent_region,
+            'level': self.level
+        }
+
+
+@dataclass
+class HierarchyConfig:
+    """Configuration for node hierarchy."""
+    max_levels: int = 3                    # Maximum hierarchy depth
+    min_nodes_per_region: int = 2          # Minimum children per region
+    max_nodes_per_region: int = 10         # Maximum children per region
+    topic_similarity_threshold: float = 0.5  # Topic overlap for grouping
+    centroid_similarity_threshold: float = 0.6  # Centroid similarity for grouping
+
+
+class NodeHierarchy:
+    """Manages hierarchical node relationships.
+
+    Builds a tree structure from flat node lists based on:
+    - Topic overlap (nodes with similar topics grouped together)
+    - Centroid similarity (semantically close nodes grouped)
+
+    The hierarchy enables efficient query routing:
+    1. Query top-level regional nodes
+    2. Drill down into best-matching region
+    3. Query leaf nodes in that region
+    """
+
+    def __init__(self, config: Optional[HierarchyConfig] = None):
+        """
+        Initialize node hierarchy.
+
+        Args:
+            config: Hierarchy configuration
+        """
+        self.config = config or HierarchyConfig()
+        self.regions: Dict[str, RegionalNode] = {}
+        self.node_to_region: Dict[str, str] = {}  # node_id -> region_id
+        self._leaf_nodes: Dict[str, KGNode] = {}  # Original nodes
+
+    def build_from_nodes(self, nodes: List[KGNode]) -> None:
+        """
+        Build hierarchy from a list of KG nodes.
+
+        Uses topic clustering first, then centroid similarity
+        for nodes without clear topic matches.
+
+        Args:
+            nodes: List of KGNode to organize into hierarchy
+        """
+        if not nodes:
+            return
+
+        # Store leaf nodes
+        self._leaf_nodes = {n.node_id: n for n in nodes}
+
+        # Group by topic overlap
+        topic_groups = self._group_by_topics(nodes)
+
+        # Create regional nodes from topic groups
+        for group_id, group_nodes in topic_groups.items():
+            if len(group_nodes) >= self.config.min_nodes_per_region:
+                self._create_region(group_id, group_nodes, level=0)
+
+        # Handle ungrouped nodes by centroid similarity
+        ungrouped = [n for n in nodes if n.node_id not in self.node_to_region]
+        if ungrouped:
+            self._group_by_centroid(ungrouped)
+
+    def _group_by_topics(self, nodes: List[KGNode]) -> Dict[str, List[KGNode]]:
+        """Group nodes by topic overlap."""
+        groups: Dict[str, List[KGNode]] = {}
+
+        for node in nodes:
+            if not node.topics:
+                continue
+
+            # Find existing group with topic overlap
+            best_group = None
+            best_overlap = 0
+
+            for group_id, group_nodes in groups.items():
+                # Calculate topic overlap with group
+                group_topics = set()
+                for gn in group_nodes:
+                    group_topics.update(gn.topics)
+
+                overlap = len(set(node.topics) & group_topics)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_group = group_id
+
+            # Add to best group or create new
+            if best_group and best_overlap > 0:
+                groups[best_group].append(node)
+            else:
+                # Create new group named after primary topic
+                group_id = f"topic_{node.topics[0]}" if node.topics else f"group_{len(groups)}"
+                groups[group_id] = [node]
+
+        return groups
+
+    def _group_by_centroid(self, nodes: List[KGNode]) -> None:
+        """Group remaining nodes by centroid similarity."""
+        if not nodes:
+            return
+
+        # Simple greedy clustering
+        remaining = list(nodes)
+        group_id = 0
+
+        while remaining:
+            # Start new cluster with first node
+            seed = remaining.pop(0)
+            cluster = [seed]
+
+            # Add similar nodes
+            i = 0
+            while i < len(remaining):
+                node = remaining[i]
+                sim = self._cosine_similarity(seed.centroid, node.centroid)
+                if sim >= self.config.centroid_similarity_threshold:
+                    cluster.append(remaining.pop(i))
+                else:
+                    i += 1
+
+                if len(cluster) >= self.config.max_nodes_per_region:
+                    break
+
+            # Create region if enough nodes
+            if len(cluster) >= self.config.min_nodes_per_region:
+                region_id = f"centroid_region_{group_id}"
+                self._create_region(region_id, cluster, level=0)
+                group_id += 1
+            else:
+                # Add to nearest existing region or create singleton region
+                for node in cluster:
+                    nearest = self._find_nearest_region(node)
+                    if nearest:
+                        self.regions[nearest].child_nodes.append(node.node_id)
+                        self.node_to_region[node.node_id] = nearest
+                    else:
+                        # Create singleton region
+                        region_id = f"singleton_{node.node_id}"
+                        self._create_region(region_id, [node], level=0)
+
+    def _create_region(
+        self,
+        region_id: str,
+        nodes: List[KGNode],
+        level: int,
+        parent: Optional[str] = None
+    ) -> RegionalNode:
+        """Create a regional node from child nodes."""
+        # Compute average centroid
+        centroids = [n.centroid for n in nodes if n.centroid is not None]
+        if centroids:
+            avg_centroid = np.mean(centroids, axis=0)
+        else:
+            avg_centroid = np.zeros(384)  # Default dimension
+
+        # Combine topics
+        all_topics = []
+        for n in nodes:
+            all_topics.extend(n.topics)
+        unique_topics = list(set(all_topics))
+
+        region = RegionalNode(
+            region_id=region_id,
+            centroid=avg_centroid,
+            topics=unique_topics,
+            child_nodes=[n.node_id for n in nodes],
+            parent_region=parent,
+            level=level
+        )
+
+        self.regions[region_id] = region
+        for node in nodes:
+            self.node_to_region[node.node_id] = region_id
+
+        return region
+
+    def _find_nearest_region(self, node: KGNode) -> Optional[str]:
+        """Find region with most similar centroid."""
+        if not self.regions or node.centroid is None:
+            return None
+
+        best_region = None
+        best_sim = -1
+
+        for region_id, region in self.regions.items():
+            sim = self._cosine_similarity(node.centroid, region.centroid)
+            if sim > best_sim:
+                best_sim = sim
+                best_region = region_id
+
+        return best_region if best_sim >= self.config.centroid_similarity_threshold else None
+
+    def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
+        """Compute cosine similarity."""
+        if a is None or b is None:
+            return 0.0
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a < 1e-10 or norm_b < 1e-10:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+
+    def get_regional_nodes(self, level: int = 0) -> List[RegionalNode]:
+        """Get all regional nodes at a specific hierarchy level."""
+        return [r for r in self.regions.values() if r.level == level]
+
+    def get_children(self, region_id: str) -> List[str]:
+        """Get child node IDs for a region."""
+        if region_id in self.regions:
+            return self.regions[region_id].child_nodes
+        return []
+
+    def get_child_nodes(self, region_id: str) -> List[KGNode]:
+        """Get actual KGNode objects for a region's children."""
+        child_ids = self.get_children(region_id)
+        return [self._leaf_nodes[nid] for nid in child_ids if nid in self._leaf_nodes]
+
+    def get_region_for_node(self, node_id: str) -> Optional[str]:
+        """Get the region ID containing a node."""
+        return self.node_to_region.get(node_id)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get hierarchy statistics."""
+        if not self.regions:
+            return {
+                'num_regions': 0,
+                'num_nodes': 0,
+                'avg_nodes_per_region': 0.0,
+                'levels': 0
+            }
+
+        sizes = [len(r.child_nodes) for r in self.regions.values()]
+        levels = set(r.level for r in self.regions.values())
+
+        return {
+            'num_regions': len(self.regions),
+            'num_nodes': len(self._leaf_nodes),
+            'avg_nodes_per_region': float(np.mean(sizes)),
+            'min_region_size': min(sizes),
+            'max_region_size': max(sizes),
+            'levels': max(levels) + 1 if levels else 0
+        }
+
+
+class HierarchicalFederatedEngine(FederatedQueryEngine):
+    """Federated query engine with hierarchical query routing.
+
+    Executes queries in multiple levels:
+    1. Query regional aggregators at top level
+    2. Select best-matching region(s)
+    3. Query child nodes within selected region(s)
+    4. Aggregate results from all levels
+
+    This approach reduces network overhead for large federations
+    by pruning unrelated regions early.
+    """
+
+    def __init__(
+        self,
+        router: KleinbergRouter,
+        hierarchy: Optional[NodeHierarchy] = None,
+        hierarchy_config: Optional[HierarchyConfig] = None,
+        aggregation_config: Optional[AggregationConfig] = None,
+        federation_k: int = 3,
+        timeout_ms: int = 5000,
+        max_workers: int = 10,
+        drill_down_k: int = 2  # Number of regions to drill into
+    ):
+        """
+        Initialize hierarchical federated engine.
+
+        Args:
+            router: KleinbergRouter for node discovery
+            hierarchy: Pre-built hierarchy (built from nodes if None)
+            hierarchy_config: Configuration for hierarchy building
+            aggregation_config: Aggregation configuration
+            federation_k: Nodes to query per level
+            timeout_ms: Query timeout
+            max_workers: Max parallel workers
+            drill_down_k: Number of top regions to drill into
+        """
+        super().__init__(
+            router=router,
+            aggregation_config=aggregation_config,
+            federation_k=federation_k,
+            timeout_ms=timeout_ms,
+            max_workers=max_workers
+        )
+        self.hierarchy = hierarchy
+        self.hierarchy_config = hierarchy_config or HierarchyConfig()
+        self.drill_down_k = drill_down_k
+        self._hierarchy_built = hierarchy is not None
+
+    def _ensure_hierarchy(self) -> None:
+        """Build hierarchy from discovered nodes if not already built."""
+        if self._hierarchy_built:
+            return
+
+        nodes = self.router.discover_nodes()
+        if nodes:
+            self.hierarchy = NodeHierarchy(self.hierarchy_config)
+            self.hierarchy.build_from_nodes(nodes)
+            self._hierarchy_built = True
+
+    def federated_query(
+        self,
+        query_text: str,
+        query_embedding: np.ndarray,
+        top_k: int = 10,
+        federation_k: Optional[int] = None,
+        aggregation_strategy: Optional[AggregationStrategy] = None,
+        use_hierarchy: bool = True
+    ) -> AggregatedResponse:
+        """
+        Execute a hierarchical federated query.
+
+        Args:
+            query_text: The query text
+            query_embedding: Query embedding vector
+            top_k: Number of results to return
+            federation_k: Override nodes per level
+            aggregation_strategy: Override aggregation strategy
+            use_hierarchy: If False, bypass hierarchy and query flat
+
+        Returns:
+            AggregatedResponse with merged results
+        """
+        if not use_hierarchy:
+            return super().federated_query(
+                query_text, query_embedding, top_k,
+                federation_k, aggregation_strategy
+            )
+
+        self._ensure_hierarchy()
+
+        if not self.hierarchy or not self.hierarchy.regions:
+            # No hierarchy available, fall back to flat query
+            return super().federated_query(
+                query_text, query_embedding, top_k,
+                federation_k, aggregation_strategy
+            )
+
+        start_time = time.time()
+        query_id = str(uuid.uuid4())
+        k = federation_k or self.federation_k
+
+        # Level 1: Query regional nodes
+        regions = self.hierarchy.get_regional_nodes(level=0)
+        if not regions:
+            return super().federated_query(
+                query_text, query_embedding, top_k,
+                federation_k, aggregation_strategy
+            )
+
+        # Rank regions by similarity to query
+        ranked_regions = self._rank_regions(query_embedding, regions)
+
+        # Select top regions to drill into
+        selected_regions = ranked_regions[:self.drill_down_k]
+
+        # Level 2: Query child nodes in selected regions
+        all_responses = []
+        for region, sim in selected_regions:
+            child_nodes = self.hierarchy.get_child_nodes(region.region_id)
+            if child_nodes:
+                # Query children using parent class
+                response = self._query_region_children(
+                    query_text, query_embedding, child_nodes,
+                    k, aggregation_strategy, query_id
+                )
+                all_responses.append((response, sim))
+
+        # Aggregate across regions
+        final_response = self._aggregate_hierarchical(
+            all_responses, query_id, top_k, aggregation_strategy
+        )
+
+        elapsed_ms = (time.time() - start_time) * 1000
+        final_response.total_time_ms = elapsed_ms
+
+        return final_response
+
+    def _rank_regions(
+        self,
+        query_embedding: np.ndarray,
+        regions: List[RegionalNode]
+    ) -> List[Tuple[RegionalNode, float]]:
+        """Rank regions by similarity to query."""
+        ranked = []
+        for region in regions:
+            sim = self._cosine_similarity(query_embedding, region.centroid)
+            ranked.append((region, sim))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+        return ranked
+
+    def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
+        """Compute cosine similarity."""
+        if a is None or b is None:
+            return 0.0
+        norm_a = np.linalg.norm(a)
+        norm_b = np.linalg.norm(b)
+        if norm_a < 1e-10 or norm_b < 1e-10:
+            return 0.0
+        return float(np.dot(a, b) / (norm_a * norm_b))
+
+    def _query_region_children(
+        self,
+        query_text: str,
+        query_embedding: np.ndarray,
+        child_nodes: List[KGNode],
+        k: int,
+        aggregation_strategy: Optional[AggregationStrategy],
+        query_id: str
+    ) -> AggregatedResponse:
+        """Query child nodes within a region."""
+        # Use parent's parallel query mechanism
+        responses = self._parallel_query(
+            child_nodes[:k], query_text, query_embedding, query_id
+        )
+
+        # Aggregate responses
+        strategy = aggregation_strategy or self.config.strategy
+        aggregator = get_aggregator(strategy)
+
+        aggregated = self._aggregate(responses, aggregator)
+        total_partition = sum(r.partition_sum for r in responses)
+
+        return AggregatedResponse(
+            query_id=query_id,
+            results=self._normalize_and_rank(aggregated, total_partition, k * 2),
+            total_partition_sum=total_partition,
+            nodes_queried=len(child_nodes[:k]),
+            nodes_responded=len(responses),
+            total_time_ms=0.0,
+            aggregation_strategy=strategy.value
+        )
+
+    def _aggregate_hierarchical(
+        self,
+        region_responses: List[Tuple[AggregatedResponse, float]],
+        query_id: str,
+        top_k: int,
+        aggregation_strategy: Optional[AggregationStrategy]
+    ) -> AggregatedResponse:
+        """Aggregate results from multiple regions."""
+        if not region_responses:
+            return AggregatedResponse(
+                query_id=query_id,
+                results=[],
+                total_partition_sum=0.0,
+                nodes_queried=0,
+                nodes_responded=0,
+                total_time_ms=0.0,
+                aggregation_strategy=(aggregation_strategy or self.config.strategy).value
+            )
+
+        # Merge results from all regions
+        # Weight by region similarity
+        all_results = {}
+        total_partition = 0.0
+        total_nodes_queried = 0
+        total_nodes_responded = 0
+
+        for response, region_sim in region_responses:
+            total_partition += response.total_partition_sum
+            total_nodes_queried += response.nodes_queried
+            total_nodes_responded += response.nodes_responded
+
+            for result in response.results:
+                key = result.get('answer_hash', result.get('answer_id', str(result)))
+                if key in all_results:
+                    # Merge: boost by region similarity
+                    existing = all_results[key]
+                    existing_prob = existing.get('normalized_prob', 0.0)
+                    new_prob = result.get('normalized_prob', 0.0) * region_sim
+                    existing['normalized_prob'] = existing_prob + new_prob
+                else:
+                    # New result: scale by region similarity
+                    result_copy = dict(result)
+                    result_copy['normalized_prob'] = result.get('normalized_prob', 0.0) * region_sim
+                    result_copy['source_region'] = region_sim
+                    all_results[key] = result_copy
+
+        # Sort and take top_k
+        sorted_results = sorted(
+            all_results.values(),
+            key=lambda r: r.get('normalized_prob', 0.0),
+            reverse=True
+        )[:top_k]
+
+        return AggregatedResponse(
+            query_id=query_id,
+            results=sorted_results,
+            total_partition_sum=total_partition,
+            nodes_queried=total_nodes_queried,
+            nodes_responded=total_nodes_responded,
+            total_time_ms=0.0,
+            aggregation_strategy=(aggregation_strategy or self.config.strategy).value
+        )
+
+    def rebuild_hierarchy(self) -> None:
+        """Force rebuild of hierarchy from current nodes."""
+        self._hierarchy_built = False
+        self._ensure_hierarchy()
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get combined engine and hierarchy statistics."""
+        base_stats = super().get_stats()
+        hierarchy_stats = self.hierarchy.get_stats() if self.hierarchy else {}
+        return {
+            **base_stats,
+            'hierarchy': hierarchy_stats,
+            'drill_down_k': self.drill_down_k
+        }
+
+
+def create_hierarchical_engine(
+    router: KleinbergRouter,
+    max_levels: int = 3,
+    min_nodes_per_region: int = 2,
+    max_nodes_per_region: int = 10,
+    drill_down_k: int = 2,
+    federation_k: int = 3,
+    timeout_ms: int = 5000,
+    aggregation_strategy: AggregationStrategy = AggregationStrategy.SUM
+) -> HierarchicalFederatedEngine:
+    """Factory for hierarchical federated engine.
+
+    Args:
+        router: KleinbergRouter for node discovery
+        max_levels: Maximum hierarchy depth
+        min_nodes_per_region: Minimum children per region
+        max_nodes_per_region: Maximum children per region
+        drill_down_k: Number of top regions to query in detail
+        federation_k: Nodes to query per level
+        timeout_ms: Query timeout
+        aggregation_strategy: Default aggregation strategy
+
+    Returns:
+        HierarchicalFederatedEngine configured with given parameters
+    """
+    hierarchy_config = HierarchyConfig(
+        max_levels=max_levels,
+        min_nodes_per_region=min_nodes_per_region,
+        max_nodes_per_region=max_nodes_per_region
+    )
+
+    aggregation_config = AggregationConfig(
+        strategy=aggregation_strategy
+    )
+
+    return HierarchicalFederatedEngine(
+        router=router,
+        hierarchy_config=hierarchy_config,
+        aggregation_config=aggregation_config,
+        federation_k=federation_k,
+        timeout_ms=timeout_ms,
+        drill_down_k=drill_down_k
+    )

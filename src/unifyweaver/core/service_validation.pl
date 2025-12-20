@@ -83,6 +83,8 @@
     is_valid_adaptive_k_option/1,
     % Phase 5c: Query planning
     is_valid_query_planning_option/1,
+    % Phase 5a: Hierarchical federation
+    is_valid_hierarchy_option/1,
     is_federation_enabled/1,
     get_federation_options/2,
     get_federation_k/2,
@@ -1241,6 +1243,29 @@ is_valid_query_planning_option(default_latency_ms(L)) :-
     number(L), L > 0.
 is_valid_query_planning_option(parallel_overhead_ms(O)) :-
     number(O), O >= 0.
+
+% Phase 5a: Hierarchical federation options
+is_valid_federation_option(hierarchical(true)).
+is_valid_federation_option(hierarchical(false)).
+is_valid_federation_option(hierarchical(Opts)) :-
+    is_list(Opts), maplist(is_valid_hierarchy_option, Opts).
+
+%% is_valid_hierarchy_option(+Option)
+%  Validate hierarchy configuration options.
+is_valid_hierarchy_option(max_levels(N)) :-
+    integer(N), N > 0, N =< 10.
+is_valid_hierarchy_option(min_nodes_per_region(N)) :-
+    integer(N), N > 0.
+is_valid_hierarchy_option(max_nodes_per_region(N)) :-
+    integer(N), N > 0.
+is_valid_hierarchy_option(topic_similarity_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_hierarchy_option(centroid_similarity_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_hierarchy_option(drill_down_k(K)) :-
+    integer(K), K > 0.
+is_valid_hierarchy_option(regional_aggregation(Strategy)) :-
+    is_valid_aggregation_strategy(Strategy).
 
 %% is_valid_aggregation_strategy(+Strategy)
 %  Validate aggregation strategy for result merging.

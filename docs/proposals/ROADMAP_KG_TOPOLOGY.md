@@ -315,10 +315,18 @@ service(csv_expert_node, [
    - [x] Phase 4d-iv: Efficiency (`DistanceCache`, `sketch_embeddings()`, `approximate_nearest_neighbors()`)
 
 5. **Advanced Features** (Phase 5 In Progress)
-   - [ ] Hierarchical federation (5a - pending)
+   - [x] Hierarchical federation (5a - complete)
    - [x] Adaptive federation-k (5b - complete)
    - [x] Query plan optimization (5c - complete)
    - [ ] Streaming aggregation (5d - pending)
+
+   **Phase 5a Hierarchical Federation:**
+   - `RegionalNode`: Data structure for regional aggregator nodes
+   - `HierarchyConfig`: Configuration (max_levels, min/max_nodes_per_region, thresholds)
+   - `NodeHierarchy`: Build hierarchy from topics or centroid similarity
+   - `HierarchicalFederatedEngine`: Two-level query routing (regions → children)
+   - `create_hierarchical_engine()`: Factory function
+   - Prolog: `is_valid_hierarchy_option/1` (7 predicates)
 
    **Phase 5b Implementation (Adaptive Federation-K):**
    - `QueryMetrics` dataclass: entropy, top_similarity, similarity_variance, historical_consensus, avg_node_latency_ms
@@ -354,6 +362,7 @@ service(csv_expert_node, [
 - `tests/core/test_density_scoring.py` - 56 unit tests (density)
 - `tests/core/test_adaptive_federation.py` - 23 unit tests (Phase 5b adaptive-k)
 - `tests/core/test_query_planner.py` - 31 unit tests (Phase 5c query planning)
+- `tests/core/test_hierarchical_federation.py` - 31 unit tests (Phase 5a hierarchical)
 - `tests/e2e/test_multinode_federation_e2e.py` - 7 E2E tests (multi-node)
 
 **Federated Query Protocol:**
