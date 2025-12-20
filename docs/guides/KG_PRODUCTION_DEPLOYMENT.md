@@ -747,6 +747,7 @@ curl -X POST http://localhost:8081/kg/federated \
 - [ROADMAP_KG_TOPOLOGY.md](../proposals/ROADMAP_KG_TOPOLOGY.md) - Phase implementation details
 - [FEDERATED_QUERY_ALGEBRA.md](../proposals/FEDERATED_QUERY_ALGEBRA.md) - Aggregation strategies
 - [DENSITY_SCORING_PROPOSAL.md](../proposals/DENSITY_SCORING_PROPOSAL.md) - Confidence scoring
+- [PERFORMANCE_TUNING.md](PERFORMANCE_TUNING.md) - Federation performance optimization
 - [Cross-Target Glue Phase 6](../design/cross-target-glue/05-phase6-design.md) - Deployment patterns
 - [Book 7 Ch15: Production Deployment](../../education/book-07-cross-target-glue/15_deployment_production.md)
 - [Book 7 Ch16: Cloud & Enterprise](../../education/book-07-cross-target-glue/16_cloud_enterprise.md)
