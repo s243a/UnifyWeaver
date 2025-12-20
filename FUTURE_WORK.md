@@ -6,6 +6,11 @@ This document captures ideas for future development of UnifyWeaver targets and f
 
 (None currently open)
 
+### Resolved Issues
+
+#### Go Target: test_go_group_by.pl Failure (Fixed 2025-12-20)
+✅ **Fixed**: The `test_go_group_by.pl` failure was due to incorrect test usage (passing atoms instead of variables to `group_by`). The test has been corrected and now passes.
+
 ---
 
 ## Go Target Enhancements
