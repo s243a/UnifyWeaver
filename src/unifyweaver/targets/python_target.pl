@@ -10724,3 +10724,176 @@ if __name__ == "__main__":
     app.run(host="~w", port=~w)
 ', [Name, RouterCode, FederationCode, Name, Name, Backend, Name, Backend,
     Host, Port, TagsStr, CorpusIdCode, DataSourcesStr, Host, Port]).
+
+
+% =============================================================================
+% PHASE 6e: CROSS-MODEL FEDERATION CODE GENERATION
+% =============================================================================
+
+%% compile_cross_model_engine_python(+Options, -Code)
+%  Generate Python code for CrossModelFederatedEngine initialization.
+compile_cross_model_engine_python(Options, Code) :-
+    % Extract cross-model options
+    (member(cross_model(CrossModelOpts), Options) ->
+        extract_cross_model_config(CrossModelOpts, FusionMethod, RRFk, ConsThresh, ConsBost, PoolsCode)
+    ;
+        FusionMethod = 'WEIGHTED_SUM', RRFk = 60, ConsThresh = 0.1, ConsBost = 1.5, PoolsCode = '[]'
+    ),
+    format(atom(Code), '
+def create_cross_model_engine(router):
+    """Factory function for CrossModelFederatedEngine."""
+    from cross_model_federation import (
+        CrossModelFederatedEngine,
+        CrossModelConfig,
+        ModelPoolConfig,
+        FusionMethod
+    )
+
+    pools = ~w
+
+    config = CrossModelConfig(
+        pools=pools,
+        fusion_method=FusionMethod.~w,
+        rrf_k=~w,
+        consensus_threshold=~w,
+        consensus_boost_factor=~w
+    )
+
+    return CrossModelFederatedEngine(router, config)
+', [PoolsCode, FusionMethod, RRFk, ConsThresh, ConsBost]).
+
+%% extract_cross_model_config(+Opts, -FusionMethod, -RRFk, -ConsThresh, -ConsBost, -PoolsCode)
+%  Extract cross-model configuration from options list.
+extract_cross_model_config(Opts, FusionMethod, RRFk, ConsThresh, ConsBost, PoolsCode) :-
+    (member(fusion_method(FM), Opts) -> fusion_method_to_python(FM, FusionMethod) ; FusionMethod = 'WEIGHTED_SUM'),
+    (member(rrf_k(RRFk), Opts) -> true ; RRFk = 60),
+    (member(consensus_threshold(ConsThresh), Opts) -> true ; ConsThresh = 0.1),
+    (member(consensus_boost(ConsBost), Opts) -> true ; ConsBost = 1.5),
+    (member(pools(Pools), Opts) -> compile_pools_python(Pools, PoolsCode) ; PoolsCode = '[]').
+
+%% fusion_method_to_python(+Atom, -PythonEnum)
+%  Map Prolog fusion method atom to Python enum name.
+fusion_method_to_python(weighted_sum, 'WEIGHTED_SUM').
+fusion_method_to_python(rrf, 'RECIPROCAL_RANK').
+fusion_method_to_python(consensus, 'CONSENSUS').
+fusion_method_to_python(geometric_mean, 'GEOMETRIC_MEAN').
+fusion_method_to_python(max, 'MAX').
+fusion_method_to_python(_, 'WEIGHTED_SUM').  % Default
+
+%% compile_pools_python(+Pools, -Code)
+%  Generate Python list of ModelPoolConfig objects.
+compile_pools_python([], '[]').
+compile_pools_python(Pools, Code) :-
+    Pools \= [],
+    maplist(compile_pool_config_python, Pools, PoolCodes),
+    atomic_list_concat(PoolCodes, ',\n        ', PoolsStr),
+    format(atom(Code), '[\n        ~w\n    ]', [PoolsStr]).
+
+%% compile_pool_config_python(+PoolConfig, -Code)
+%  Generate Python ModelPoolConfig object.
+compile_pool_config_python(pool(Model, Opts), Code) :-
+    (member(weight(W), Opts) -> true ; W = 1.0),
+    (member(federation_k(K), Opts) -> true ; K = 5),
+    (member(strategy(S), Opts) -> strategy_to_python_enum(S, StratStr) ; StratStr = 'DENSITY_FLUX'),
+    format(atom(Code), 'ModelPoolConfig(model_name="~w", weight=~w, federation_k=~w, aggregation_strategy=AggregationStrategy.~w)', [Model, W, K, StratStr]).
+
+%% compile_cross_model_service_python(+Service, -Code)
+%  Generate complete Flask service with cross-model federation support.
+compile_cross_model_service_python(service(Name, Options, _Handler), Code) :-
+    % Get transport settings
+    (member(transport(http(_Path, HttpOpts)), Options) ->
+        (member(host(Host), HttpOpts) -> true ; Host = '0.0.0.0'),
+        (member(port(Port), HttpOpts) -> true ; Port = 8080)
+    ;
+        Host = '0.0.0.0', Port = 8080
+    ),
+    % Get discovery backend
+    (member(discovery_backend(Backend), Options) -> true ; Backend = local),
+    % Generate cross-model engine code
+    compile_cross_model_engine_python(Options, EngineCode),
+    format(atom(Code), '#!/usr/bin/env python3
+# Generated Cross-Model Federation Service: ~w
+# Phase 6e: Cross-Model Federation
+
+from flask import Flask, request, jsonify
+import os
+import json
+
+from kg_topology_api import DistributedKGTopologyAPI
+from discovery_clients import create_discovery_client
+from kleinberg_router import KleinbergRouter
+from cross_model_federation import AdaptiveModelWeights
+
+app = Flask(__name__)
+
+# Initialize components
+kg_api = DistributedKGTopologyAPI()
+discovery = create_discovery_client("~w")
+router = KleinbergRouter(discovery)
+
+~w
+
+cross_model_engine = create_cross_model_engine(router)
+WEIGHTS_FILE = os.environ.get("WEIGHTS_FILE", "model_weights.json")
+
+# Initialize adaptive weights
+models = [p.model_name for p in cross_model_engine.config.pools]
+adaptive_weights = AdaptiveModelWeights(models)
+if os.path.exists(WEIGHTS_FILE):
+    with open(WEIGHTS_FILE, "r") as f:
+        adaptive_weights = AdaptiveModelWeights.from_dict(json.load(f))
+
+@app.route("/kg/cross-model", methods=["POST"])
+def cross_model_query():
+    data = request.json
+    response = cross_model_engine.federated_query(
+        query_text=data.get("query_text", ""),
+        top_k=data.get("top_k", 10)
+    )
+    return jsonify(response.to_dict())
+
+@app.route("/kg/cross-model/pools", methods=["GET"])
+def get_pools():
+    pools = cross_model_engine.discover_pools()
+    return jsonify({"pools": {m: len(n) for m, n in pools.items()}})
+
+@app.route("/kg/cross-model/weights", methods=["GET"])
+def get_weights():
+    return jsonify(adaptive_weights.to_dict())
+
+@app.route("/kg/cross-model/weights", methods=["PUT"])
+def set_weights():
+    for m, w in request.json.get("weights", {}).items():
+        if m in adaptive_weights.weights:
+            adaptive_weights.weights[m] = w
+    total = sum(adaptive_weights.weights.values())
+    if total > 0:
+        adaptive_weights.weights = {m: w/total for m, w in adaptive_weights.weights.items()}
+    with open(WEIGHTS_FILE, "w") as f:
+        json.dump(adaptive_weights.to_dict(), f)
+    return jsonify(adaptive_weights.to_dict())
+
+@app.route("/kg/cross-model/feedback", methods=["POST"])
+def submit_feedback():
+    data = request.json
+    adaptive_weights.update(data["chosen_answer"], data.get("pool_rankings", {}))
+    with open(WEIGHTS_FILE, "w") as f:
+        json.dump(adaptive_weights.to_dict(), f)
+    return jsonify({"status": "updated", "weights": adaptive_weights.get_weights()})
+
+@app.route("/kg/cross-model/stats", methods=["GET"])
+def get_stats():
+    return jsonify(cross_model_engine.get_stats())
+
+@app.route("/kg/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "healthy",
+        "node_id": kg_api.node_id,
+        "pools": len(cross_model_engine.pool_engines),
+        "weights": adaptive_weights.get_weights()
+    })
+
+if __name__ == "__main__":
+    app.run(host="~w", port=~w)
+', [Name, Backend, EngineCode, Host, Port]).

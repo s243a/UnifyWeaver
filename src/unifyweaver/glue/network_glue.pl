@@ -1714,3 +1714,213 @@ pub fn federation_routes(
         .with_state(engine)
 }
 ', [K, Strategy, Timeout]).
+
+
+% =============================================================================
+% PHASE 6e: CROSS-MODEL FEDERATION ENDPOINTS
+% =============================================================================
+
+%% generate_cross_model_endpoint(+Target, +Options, -Code)
+%  Generate HTTP endpoints for cross-model federation.
+
+generate_cross_model_endpoint(python, Options, Code) :-
+    % Extract options with defaults
+    (member(fusion_method(FusionMethod), Options) -> true ; FusionMethod = weighted_sum),
+    (member(rrf_k(RRFk), Options) -> true ; RRFk = 60),
+    (member(consensus_threshold(ConsThresh), Options) -> true ; ConsThresh = 0.1),
+    (member(consensus_boost(ConsBoost), Options) -> true ; ConsBoost = 1.5),
+    format(atom(Code), '
+from flask import request, jsonify
+from cross_model_federation import (
+    CrossModelFederatedEngine,
+    CrossModelConfig,
+    ModelPoolConfig,
+    FusionMethod,
+    AdaptiveModelWeights
+)
+import json
+import os
+
+# Cross-model state (initialized at startup)
+cross_model_engine = None
+adaptive_weights = None
+WEIGHTS_FILE = os.environ.get("WEIGHTS_FILE", "model_weights.json")
+
+def init_cross_model(router, pool_configs):
+    """Initialize cross-model engine."""
+    global cross_model_engine, adaptive_weights
+
+    pools = [
+        ModelPoolConfig(
+            model_name=p["model"],
+            weight=p.get("weight", 1.0),
+            federation_k=p.get("federation_k", 5)
+        )
+        for p in pool_configs
+    ]
+
+    config = CrossModelConfig(
+        pools=pools,
+        fusion_method=FusionMethod.~w,
+        rrf_k=~w,
+        consensus_threshold=~w,
+        consensus_boost_factor=~w
+    )
+
+    cross_model_engine = CrossModelFederatedEngine(router, config)
+    models = [p.model_name for p in pools]
+    adaptive_weights = AdaptiveModelWeights(models)
+
+    if os.path.exists(WEIGHTS_FILE):
+        with open(WEIGHTS_FILE, "r") as f:
+            adaptive_weights = AdaptiveModelWeights.from_dict(json.load(f))
+
+@app.route("/kg/cross-model", methods=["POST"])
+def cross_model_query():
+    if not cross_model_engine:
+        return jsonify({"error": "Not initialized"}), 503
+    data = request.json
+    response = cross_model_engine.federated_query(
+        query_text=data.get("query_text", ""),
+        top_k=data.get("top_k", 10)
+    )
+    return jsonify(response.to_dict())
+
+@app.route("/kg/cross-model/pools", methods=["GET"])
+def cross_model_pools():
+    if not cross_model_engine:
+        return jsonify({"error": "Not initialized"}), 503
+    pools = cross_model_engine.discover_pools()
+    return jsonify({"pools": {m: len(n) for m, n in pools.items()}})
+
+@app.route("/kg/cross-model/weights", methods=["GET"])
+def get_weights():
+    if not adaptive_weights:
+        return jsonify({"error": "Not initialized"}), 503
+    return jsonify(adaptive_weights.to_dict())
+
+@app.route("/kg/cross-model/weights", methods=["PUT"])
+def set_weights():
+    if not adaptive_weights:
+        return jsonify({"error": "Not initialized"}), 503
+    for m, w in request.json.get("weights", {}).items():
+        if m in adaptive_weights.weights:
+            adaptive_weights.weights[m] = w
+    total = sum(adaptive_weights.weights.values())
+    if total > 0:
+        adaptive_weights.weights = {m: w/total for m, w in adaptive_weights.weights.items()}
+    with open(WEIGHTS_FILE, "w") as f:
+        json.dump(adaptive_weights.to_dict(), f)
+    return jsonify(adaptive_weights.to_dict())
+
+@app.route("/kg/cross-model/feedback", methods=["POST"])
+def submit_feedback():
+    if not adaptive_weights:
+        return jsonify({"error": "Not initialized"}), 503
+    data = request.json
+    adaptive_weights.update(data["chosen_answer"], data.get("pool_rankings", {}))
+    with open(WEIGHTS_FILE, "w") as f:
+        json.dump(adaptive_weights.to_dict(), f)
+    return jsonify({"status": "updated", "weights": adaptive_weights.get_weights()})
+
+@app.route("/kg/cross-model/stats", methods=["GET"])
+def cross_model_stats():
+    if not cross_model_engine:
+        return jsonify({"error": "Not initialized"}), 503
+    return jsonify(cross_model_engine.get_stats())
+', [FusionMethod, RRFk, ConsThresh, ConsBoost]).
+
+generate_cross_model_endpoint(go, Options, Code) :-
+    (member(fusion_method(FusionMethod), Options) -> true ; FusionMethod = weighted_sum),
+    format(atom(Code), '
+// Cross-model federation handlers for Go
+// See cross_model_federation.go for full implementation
+
+type CrossModelEngine struct {
+    pools   map[string]*PoolRouter
+    weights map[string]float64
+    mu      sync.RWMutex
+}
+
+func (e *CrossModelEngine) HandleQuery(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        QueryText string `json:"query_text"`
+        TopK      int    `json:"top_k"`
+    }
+    json.NewDecoder(r.Body).Decode(&req)
+    response := e.FederatedQuery(req.QueryText, req.TopK)
+    json.NewEncoder(w).Encode(response)
+}
+
+func (e *CrossModelEngine) HandlePools(w http.ResponseWriter, r *http.Request) {
+    pools := make(map[string]int)
+    for m, router := range e.pools {
+        pools[m] = len(router.DiscoverNodes())
+    }
+    json.NewEncoder(w).Encode(map[string]interface{}{"pools": pools})
+}
+
+func (e *CrossModelEngine) HandleWeights(w http.ResponseWriter, r *http.Request) {
+    e.mu.RLock()
+    defer e.mu.RUnlock()
+    json.NewEncoder(w).Encode(map[string]interface{}{"weights": e.weights})
+}
+
+func (e *CrossModelEngine) HandleFeedback(w http.ResponseWriter, r *http.Request) {
+    var req struct {
+        ChosenAnswer string              `json:"chosen_answer"`
+        PoolRankings map[string][]string `json:"pool_rankings"`
+    }
+    json.NewDecoder(r.Body).Decode(&req)
+    e.UpdateWeights(req.ChosenAnswer, req.PoolRankings)
+    json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
+}
+
+func RegisterCrossModelRoutes(mux *http.ServeMux, e *CrossModelEngine) {
+    mux.HandleFunc("/kg/cross-model", e.HandleQuery)
+    mux.HandleFunc("/kg/cross-model/pools", e.HandlePools)
+    mux.HandleFunc("/kg/cross-model/weights", e.HandleWeights)
+    mux.HandleFunc("/kg/cross-model/feedback", e.HandleFeedback)
+}
+', [FusionMethod]).
+
+generate_cross_model_endpoint(rust, Options, Code) :-
+    (member(fusion_method(FusionMethod), Options) -> true ; FusionMethod = weighted_sum),
+    format(atom(Code), '
+// Cross-model federation routes for Rust/Axum
+use axum::{extract::{State, Json}, routing::{get, post, put}, Router};
+use std::sync::Arc;
+
+pub async fn handle_cross_model_query(
+    State(engine): State<Arc<CrossModelEngine>>,
+    Json(req): Json<QueryRequest>,
+) -> Json<CrossModelResponse> {
+    Json(engine.federated_query(&req.query_text, req.top_k).await)
+}
+
+pub async fn handle_pools(State(engine): State<Arc<CrossModelEngine>>) -> Json<PoolsResponse> {
+    Json(engine.get_pools().await)
+}
+
+pub async fn handle_weights(State(engine): State<Arc<CrossModelEngine>>) -> Json<WeightsResponse> {
+    Json(engine.get_weights().await)
+}
+
+pub async fn handle_feedback(
+    State(engine): State<Arc<CrossModelEngine>>,
+    Json(req): Json<FeedbackRequest>,
+) -> Json<StatusResponse> {
+    engine.update_weights(&req.chosen_answer, &req.pool_rankings).await;
+    Json(StatusResponse { status: "updated".to_string() })
+}
+
+pub fn cross_model_routes(engine: Arc<CrossModelEngine>) -> Router {
+    Router::new()
+        .route("/kg/cross-model", post(handle_cross_model_query))
+        .route("/kg/cross-model/pools", get(handle_pools))
+        .route("/kg/cross-model/weights", get(handle_weights))
+        .route("/kg/cross-model/weights", put(handle_weights))
+        .route("/kg/cross-model/feedback", post(handle_feedback))
+        .with_state(engine)
+}
+', [FusionMethod]).
