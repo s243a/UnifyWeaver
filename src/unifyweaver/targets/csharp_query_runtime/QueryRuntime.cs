@@ -49,6 +49,7 @@ namespace UnifyWeaver.QueryRuntime
     {
         Count,
         Sum,
+        Avg,
         Min,
         Max,
         Set,
@@ -1555,6 +1556,11 @@ namespace UnifyWeaver.QueryRuntime
                         hasAny = true;
                         break;
 
+                    case AggregateOperation.Avg:
+                        sum += ConvertToDecimal(row, aggregate.ValueIndex);
+                        hasAny = true;
+                        break;
+
                     case AggregateOperation.Min:
                     {
                         var value = ConvertToDecimal(row, aggregate.ValueIndex);
@@ -1605,6 +1611,7 @@ namespace UnifyWeaver.QueryRuntime
             return aggregate.Operation switch
             {
                 AggregateOperation.Sum => new List<object[]> { new object[] { sum } },
+                AggregateOperation.Avg => new List<object[]> { new object[] { sum / count } },
                 AggregateOperation.Min => new List<object[]> { new object[] { min! } },
                 AggregateOperation.Max => new List<object[]> { new object[] { max! } },
                 AggregateOperation.Set => new List<object[]> { new object[] { set!.ToList() } },
@@ -1639,6 +1646,11 @@ namespace UnifyWeaver.QueryRuntime
                         break;
 
                     case AggregateOperation.Sum:
+                        sum += ConvertToDecimal(fact, aggregate.ValueIndex);
+                        hasAny = true;
+                        break;
+
+                    case AggregateOperation.Avg:
                         sum += ConvertToDecimal(fact, aggregate.ValueIndex);
                         hasAny = true;
                         break;
@@ -1693,6 +1705,7 @@ namespace UnifyWeaver.QueryRuntime
             return aggregate.Operation switch
             {
                 AggregateOperation.Sum => new List<object[]> { new object[] { sum } },
+                AggregateOperation.Avg => new List<object[]> { new object[] { sum / count } },
                 AggregateOperation.Min => new List<object[]> { new object[] { min! } },
                 AggregateOperation.Max => new List<object[]> { new object[] { max! } },
                 AggregateOperation.Set => new List<object[]> { new object[] { set!.ToList() } },
@@ -1752,6 +1765,11 @@ namespace UnifyWeaver.QueryRuntime
                         state.HasAny = true;
                         break;
 
+                    case AggregateOperation.Avg:
+                        state.Sum += ConvertToDecimal(fact, aggregate.ValueIndex);
+                        state.HasAny = true;
+                        break;
+
                     case AggregateOperation.Min:
                     {
                         var value = ConvertToDecimal(fact, aggregate.ValueIndex);
@@ -1806,6 +1824,14 @@ namespace UnifyWeaver.QueryRuntime
                         if (state.HasAny)
                         {
                             extension[groupCount] = state.Sum;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Avg:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Sum / state.Count;
                             extensions.Add(extension);
                         }
                         break;
@@ -1887,6 +1913,11 @@ namespace UnifyWeaver.QueryRuntime
                         state.HasAny = true;
                         break;
 
+                    case AggregateOperation.Avg:
+                        state.Sum += ConvertToDecimal(row, aggregate.ValueIndex);
+                        state.HasAny = true;
+                        break;
+
                     case AggregateOperation.Min:
                     {
                         var value = ConvertToDecimal(row, aggregate.ValueIndex);
@@ -1941,6 +1972,14 @@ namespace UnifyWeaver.QueryRuntime
                         if (state.HasAny)
                         {
                             extension[groupCount] = state.Sum;
+                            extensions.Add(extension);
+                        }
+                        break;
+
+                    case AggregateOperation.Avg:
+                        if (state.HasAny)
+                        {
+                            extension[groupCount] = state.Sum / state.Count;
                             extensions.Add(extension);
                         }
                         break;
