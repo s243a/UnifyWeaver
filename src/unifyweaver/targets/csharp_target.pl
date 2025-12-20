@@ -4193,6 +4193,8 @@ compile_csharp_pipeline(Predicates, Options, CSharpCode) :-
 
     % Extract stage names
     extract_csharp_stage_names(Predicates, StageNames),
+    length(Predicates, N),
+    length(StageNames, N),
 
     % Generate stage functions (placeholder implementations)
     generate_csharp_stage_functions(StageNames, StageFunctions),
@@ -4314,17 +4316,23 @@ csharp_pipeline_helpers(_, Helpers) :-
         }
     }", []).
 
-%% extract_csharp_stage_names(+Predicates, -Names)
-%  Extract stage names from predicate indicators
+%% extract_csharp_stage_names(+Stages, -Names)
+%  Extract stage names from predicate indicators (and stage specs).
 extract_csharp_stage_names([], []).
-extract_csharp_stage_names([Pred|Rest], [Name|RestNames]) :-
-    extract_csharp_pred_name(Pred, Name),
+extract_csharp_stage_names([Stage|Rest], Names) :-
+    (   extract_csharp_pred_name(Stage, Name)
+    ->  Names = [Name|RestNames]
+    ;   Names = RestNames
+    ),
     extract_csharp_stage_names(Rest, RestNames).
 
 extract_csharp_pred_name(_Target:Name/_Arity, NameStr) :-
     !,
     atom_string(Name, NameStr).
 extract_csharp_pred_name(Name/_Arity, NameStr) :-
+    atom_string(Name, NameStr).
+extract_csharp_pred_name(Name, NameStr) :-
+    atom(Name),
     atom_string(Name, NameStr).
 
 %% generate_csharp_stage_functions(+Names, -Code)
@@ -4982,15 +4990,6 @@ generate_csharp_stage_flow(Pred/Arity, InVar, OutVar, Code) :-
 % Fallback for unknown stages
 generate_csharp_stage_flow(Stage, InVar, InVar, Code) :-
     format(string(Code), "            // Unknown stage type: ~w (pass-through)", [Stage]).
-
-%% extract_csharp_stage_names(+Stages, -Names)
-%  Extract function names from stage specifications.
-extract_csharp_stage_names([], []).
-extract_csharp_stage_names([Pred/_Arity|Rest], [Pred|RestNames]) :-
-    !,
-    extract_csharp_stage_names(Rest, RestNames).
-extract_csharp_stage_names([_|Rest], RestNames) :-
-    extract_csharp_stage_names(Rest, RestNames).
 
 %% format_csharp_stage_list(+Names, -ListStr)
 %  Format stage names as C# delegate references.
