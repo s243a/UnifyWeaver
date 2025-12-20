@@ -58,6 +58,11 @@ class DensityConfig:
     use_adaptive_bandwidth: bool = False  # Enable per-point bandwidth
     adaptive_alpha: float = 0.5  # Sensitivity for adaptive bandwidth (0.5 is typical)
     cv_n_candidates: int = 10  # Number of candidates for cross-validation
+    # Phase 4d-iv: Efficiency options
+    use_sketching: bool = False  # Enable random projection for large datasets
+    sketch_dim: int = 32  # Target dimension for random projection
+    large_dataset_threshold: int = 100  # Use ANN above this size
+    cache_distances: bool = True  # Cache pairwise distances
 
 
 @dataclass
@@ -68,6 +73,199 @@ class DensityResult:
     cluster_id: Optional[int] = None
     cluster_size: int = 1
     is_cluster_center: bool = False
+
+
+# =============================================================================
+# PHASE 4d-iv: EFFICIENCY UTILITIES
+# =============================================================================
+
+class DistanceCache:
+    """LRU cache for pairwise distances.
+
+    Caches distance matrices keyed by embedding hash to avoid recomputation.
+    """
+
+    def __init__(self, max_size: int = 10):
+        self._cache: Dict[str, np.ndarray] = {}
+        self._order: List[str] = []
+        self.max_size = max_size
+        self.hits = 0
+        self.misses = 0
+
+    def _hash_embeddings(self, embeddings: np.ndarray) -> str:
+        """Create hash key from embeddings."""
+        return hashlib.md5(embeddings.tobytes()).hexdigest()
+
+    def get(self, embeddings: np.ndarray) -> Optional[np.ndarray]:
+        """Get cached distances if available."""
+        key = self._hash_embeddings(embeddings)
+        if key in self._cache:
+            self.hits += 1
+            # Move to end (most recently used)
+            self._order.remove(key)
+            self._order.append(key)
+            return self._cache[key]
+        self.misses += 1
+        return None
+
+    def put(self, embeddings: np.ndarray, distances: np.ndarray) -> None:
+        """Cache distance matrix."""
+        key = self._hash_embeddings(embeddings)
+        if key in self._cache:
+            return  # Already cached
+
+        # Evict oldest if at capacity
+        if len(self._cache) >= self.max_size:
+            oldest = self._order.pop(0)
+            del self._cache[oldest]
+
+        self._cache[key] = distances
+        self._order.append(key)
+
+    def clear(self) -> None:
+        """Clear the cache."""
+        self._cache.clear()
+        self._order.clear()
+        self.hits = 0
+        self.misses = 0
+
+    def stats(self) -> Dict[str, int]:
+        """Return cache statistics."""
+        total = self.hits + self.misses
+        hit_rate = self.hits / total if total > 0 else 0
+        return {
+            'hits': self.hits,
+            'misses': self.misses,
+            'size': len(self._cache),
+            'hit_rate': hit_rate
+        }
+
+
+# Global distance cache
+_distance_cache = DistanceCache()
+
+
+def random_projection_matrix(d_original: int, d_target: int, seed: int = 42) -> np.ndarray:
+    """Generate a random projection matrix for dimensionality reduction.
+
+    Uses Gaussian random projection which preserves distances with high probability
+    (Johnson-Lindenstrauss lemma).
+
+    Args:
+        d_original: Original embedding dimension
+        d_target: Target reduced dimension
+        seed: Random seed for reproducibility
+
+    Returns:
+        (d_target, d_original) projection matrix
+    """
+    rng = np.random.RandomState(seed)
+    # Gaussian random projection with scaling
+    projection = rng.randn(d_target, d_original) / np.sqrt(d_target)
+    return projection
+
+
+def sketch_embeddings(
+    embeddings: np.ndarray,
+    target_dim: int = 32,
+    seed: int = 42
+) -> np.ndarray:
+    """Reduce embedding dimensionality using random projection.
+
+    For large embeddings, this trades accuracy for speed in distance computations.
+    Johnson-Lindenstrauss guarantees distances are preserved within (1 ± ε) factor
+    with high probability.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        target_dim: Target reduced dimension
+        seed: Random seed
+
+    Returns:
+        (n, target_dim) array of sketched embeddings
+    """
+    n, d = embeddings.shape
+    if d <= target_dim:
+        return embeddings  # No reduction needed
+
+    projection = random_projection_matrix(d, target_dim, seed)
+    return embeddings @ projection.T
+
+
+def approximate_nearest_neighbors(
+    embeddings: np.ndarray,
+    k: int = 10,
+    n_projections: int = 5,
+    seed: int = 42
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Find approximate k-nearest neighbors using random projections.
+
+    Uses multiple random projections and takes union of candidates,
+    then refines with exact distances. Much faster than O(n²) for large n.
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        k: Number of nearest neighbors
+        n_projections: Number of random projections to use
+        seed: Random seed
+
+    Returns:
+        indices: (n, k) array of neighbor indices
+        distances: (n, k) array of neighbor distances
+    """
+    n, d = embeddings.shape
+    if n <= k * 2:
+        # Small enough for exact computation
+        dist_matrix = pairwise_cosine_distances(embeddings)
+        indices = np.argsort(dist_matrix, axis=1)[:, 1:k+1]  # Skip self
+        distances = np.take_along_axis(dist_matrix, indices, axis=1)
+        return indices, distances
+
+    rng = np.random.RandomState(seed)
+    all_candidates = [set() for _ in range(n)]
+
+    # Generate candidates from multiple projections
+    for proj_idx in range(n_projections):
+        # Project to 1D
+        projection = rng.randn(d)
+        projection /= np.linalg.norm(projection)
+        projected = embeddings @ projection
+
+        # Sort by projected value
+        sorted_indices = np.argsort(projected)
+
+        # For each point, add nearby points in sorted order as candidates
+        for i, idx in enumerate(sorted_indices):
+            # Add neighbors in sorted space
+            window = k * 2  # Search window
+            start = max(0, i - window)
+            end = min(n, i + window + 1)
+            for j in range(start, end):
+                if sorted_indices[j] != idx:
+                    all_candidates[idx].add(sorted_indices[j])
+
+    # Refine candidates with exact distances
+    result_indices = np.zeros((n, k), dtype=int)
+    result_distances = np.zeros((n, k))
+
+    for i in range(n):
+        candidates = list(all_candidates[i])
+        if len(candidates) < k:
+            # Not enough candidates, add random points
+            remaining = list(set(range(n)) - {i} - set(candidates))
+            candidates.extend(remaining[:k - len(candidates)])
+
+        # Compute exact distances to candidates
+        cand_embeddings = embeddings[candidates]
+        dists = np.array([cosine_distance(embeddings[i], cand_embeddings[j])
+                          for j in range(len(candidates))])
+
+        # Take top k
+        top_k_idx = np.argsort(dists)[:k]
+        result_indices[i] = [candidates[j] for j in top_k_idx]
+        result_distances[i] = dists[top_k_idx]
+
+    return result_indices, result_distances
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -84,15 +282,25 @@ def cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
     return 1.0 - cosine_similarity(a, b)
 
 
-def pairwise_cosine_distances(embeddings: np.ndarray) -> np.ndarray:
+def pairwise_cosine_distances(
+    embeddings: np.ndarray,
+    use_cache: bool = False
+) -> np.ndarray:
     """Compute pairwise cosine distances for a set of embeddings.
 
     Args:
         embeddings: (n, d) array of n embeddings with dimension d
+        use_cache: Whether to use/update the global distance cache
 
     Returns:
         (n, n) distance matrix
     """
+    # Check cache first
+    if use_cache:
+        cached = _distance_cache.get(embeddings)
+        if cached is not None:
+            return cached
+
     # Normalize embeddings
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
@@ -107,7 +315,77 @@ def pairwise_cosine_distances(embeddings: np.ndarray) -> np.ndarray:
     # Ensure diagonal is 0 (numerical precision)
     np.fill_diagonal(distances, 0.0)
 
+    # Cache result
+    if use_cache:
+        _distance_cache.put(embeddings, distances)
+
     return distances
+
+
+def compute_efficient_density_scores(
+    embeddings: np.ndarray,
+    config: 'DensityConfig' = None
+) -> np.ndarray:
+    """Compute density scores with efficiency optimizations.
+
+    For large datasets:
+    - Uses random projection (sketching) to reduce dimensionality
+    - Uses approximate nearest neighbors instead of full distance matrix
+    - Caches intermediate results
+
+    Args:
+        embeddings: (n, d) array of embeddings
+        config: Density configuration
+
+    Returns:
+        (n,) array of density scores
+    """
+    if config is None:
+        config = DensityConfig()
+
+    n, d = embeddings.shape
+    if n == 0:
+        return np.array([])
+    if n == 1:
+        return np.array([1.0])
+
+    # Apply sketching for high-dimensional embeddings
+    work_embeddings = embeddings
+    if config.use_sketching and d > config.sketch_dim:
+        work_embeddings = sketch_embeddings(embeddings, config.sketch_dim)
+
+    # For large datasets, use ANN-based density estimation
+    if n > config.large_dataset_threshold:
+        # Use k-NN density: density(x) = k / (volume of k-NN ball)
+        # Approximated as 1 / (mean distance to k neighbors)
+        k = min(10, n - 1)
+        nn_indices, nn_distances = approximate_nearest_neighbors(
+            work_embeddings, k=k
+        )
+
+        # Density estimate: inverse of mean distance to neighbors
+        mean_nn_dist = nn_distances.mean(axis=1)
+        densities = 1.0 / (mean_nn_dist + 1e-10)
+    else:
+        # Standard KDE for smaller datasets
+        distances = pairwise_cosine_distances(
+            work_embeddings,
+            use_cache=config.cache_distances
+        )
+        flat_distances = distances[np.triu_indices(n, k=1)]
+
+        bandwidth = silverman_bandwidth(flat_distances, n)
+
+        densities = np.zeros(n)
+        for i in range(n):
+            kernel_values = gaussian_kernel(distances[i], bandwidth)
+            densities[i] = kernel_values.mean()
+
+    # Normalize to [0, 1]
+    if config.normalize_scores and densities.max() > 0:
+        densities = densities / densities.max()
+
+    return densities
 
 
 def silverman_bandwidth(distances: np.ndarray, n: int) -> float:

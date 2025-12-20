@@ -211,6 +211,130 @@ class TestAdaptiveBandwidth(unittest.TestCase):
         self.assertTrue(np.all(densities >= 0))
 
 
+class TestEfficiencyOptimizations(unittest.TestCase):
+    """Tests for Phase 4d-iv efficiency optimizations."""
+
+    def test_distance_cache_basic(self):
+        """DistanceCache stores and retrieves distances."""
+        from density_scoring import DistanceCache
+
+        cache = DistanceCache(max_size=5)
+        embeddings = np.random.randn(5, 4)
+        distances = np.random.rand(5, 5)
+
+        cache.put(embeddings, distances)
+        retrieved = cache.get(embeddings)
+
+        self.assertIsNotNone(retrieved)
+        np.testing.assert_array_equal(retrieved, distances)
+
+    def test_distance_cache_lru_eviction(self):
+        """DistanceCache evicts oldest entries."""
+        from density_scoring import DistanceCache
+
+        cache = DistanceCache(max_size=2)
+
+        # Add 3 entries to cache of size 2
+        for i in range(3):
+            emb = np.random.randn(3, 4)
+            dist = np.random.rand(3, 3)
+            cache.put(emb, dist)
+
+        stats = cache.stats()
+        self.assertEqual(stats['size'], 2)
+
+    def test_sketch_embeddings_reduces_dimension(self):
+        """sketch_embeddings reduces dimensionality."""
+        from density_scoring import sketch_embeddings
+
+        embeddings = np.random.randn(10, 128)
+        sketched = sketch_embeddings(embeddings, target_dim=32)
+
+        self.assertEqual(sketched.shape, (10, 32))
+
+    def test_sketch_embeddings_preserves_small(self):
+        """sketch_embeddings doesn't reduce small embeddings."""
+        from density_scoring import sketch_embeddings
+
+        embeddings = np.random.randn(10, 16)
+        sketched = sketch_embeddings(embeddings, target_dim=32)
+
+        # Should be unchanged since d < target_dim
+        np.testing.assert_array_equal(sketched, embeddings)
+
+    def test_approximate_nearest_neighbors_shape(self):
+        """approximate_nearest_neighbors returns correct shapes."""
+        from density_scoring import approximate_nearest_neighbors
+
+        embeddings = np.random.randn(20, 8)
+        k = 5
+        indices, distances = approximate_nearest_neighbors(embeddings, k=k)
+
+        self.assertEqual(indices.shape, (20, k))
+        self.assertEqual(distances.shape, (20, k))
+
+    def test_approximate_nearest_neighbors_small_input(self):
+        """ANN handles small inputs with exact computation."""
+        from density_scoring import approximate_nearest_neighbors
+
+        embeddings = np.random.randn(5, 4)
+        indices, distances = approximate_nearest_neighbors(embeddings, k=2)
+
+        self.assertEqual(indices.shape, (5, 2))
+        self.assertTrue(np.all(distances >= 0))
+
+    def test_compute_efficient_density_scores(self):
+        """compute_efficient_density_scores produces valid output."""
+        from density_scoring import compute_efficient_density_scores, DensityConfig
+
+        embeddings = np.random.randn(15, 8)
+        config = DensityConfig(
+            large_dataset_threshold=10,  # Force ANN path
+            use_sketching=False
+        )
+
+        densities = compute_efficient_density_scores(embeddings, config)
+
+        self.assertEqual(len(densities), 15)
+        self.assertTrue(np.all(densities >= 0))
+        self.assertTrue(np.all(densities <= 1))
+
+    def test_compute_efficient_density_with_sketching(self):
+        """Efficient density with sketching enabled."""
+        from density_scoring import compute_efficient_density_scores, DensityConfig
+
+        embeddings = np.random.randn(20, 128)
+        config = DensityConfig(
+            use_sketching=True,
+            sketch_dim=32,
+            large_dataset_threshold=10
+        )
+
+        densities = compute_efficient_density_scores(embeddings, config)
+
+        self.assertEqual(len(densities), 20)
+        self.assertAlmostEqual(np.max(densities), 1.0)
+
+    def test_pairwise_distances_with_cache(self):
+        """pairwise_cosine_distances uses cache when enabled."""
+        from density_scoring import pairwise_cosine_distances, _distance_cache
+
+        _distance_cache.clear()
+        embeddings = np.random.randn(5, 4)
+
+        # First call - cache miss
+        d1 = pairwise_cosine_distances(embeddings, use_cache=True)
+        stats1 = _distance_cache.stats()
+        self.assertEqual(stats1['misses'], 1)
+
+        # Second call - cache hit
+        d2 = pairwise_cosine_distances(embeddings, use_cache=True)
+        stats2 = _distance_cache.stats()
+        self.assertEqual(stats2['hits'], 1)
+
+        np.testing.assert_array_equal(d1, d2)
+
+
 class TestGaussianKernel(unittest.TestCase):
     """Tests for Gaussian kernel function."""
 
