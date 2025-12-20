@@ -109,11 +109,127 @@ In Freenet, **Keyword-Signed Keys (KSKs)** derive both the public and private ke
 From the [Freenet wiki](https://github.com/hyphanet/wiki/wiki/Keyword-Signed-Key):
 > "There is voluntary collision detection in fred, which tries to prevent overwriting of a once-inserted page."
 
+### How Freenet Implements This
+
+The mechanism is **fetch-before-insert with optional conflict handling**:
+
+1. When inserting to a KSK, fred first fetches existing data at that key
+2. If data exists, the insert can optionally fail rather than overwrite
+3. With Freenet's redundancy, multiple nodes may hold different versions
+4. Consensus among nodes determines which version "wins"
+
+Key source files in [hyphanet/fred](https://github.com/hyphanet/fred):
+- `ClientKSK.java` - KSK key generation and insertion logic
+- `SingleBlockInserter.java` - Collision detection before overwriting
+- `SSKInsertSender.java` - Network protocol for SSK/KSK inserts
+- `ClientPutMessage.java` - FCP interface exposing insert options
+
 ### Semantic Search Analogy
 
 For federated semantic search, we can apply the same principle: **once an answer is established with high confidence in a semantic region, new conflicting results shouldn't easily displace it**.
 
 This is "semantic collision detection" - protecting established consensus from late-arriving adversarial results.
+
+### Consensus with Redundancy
+
+Like Freenet's redundancy model where multiple nodes may hold different versions and consensus determines the winner, our semantic collision detector can:
+
+1. **Track version counts**: How many nodes report each answer in a region
+2. **Require quorum for locking**: Only lock when N nodes agree
+3. **Allow version superseding**: Higher-consensus version can displace lower
+
+```python
+@dataclass
+class VersionedAnswer:
+    """Answer with version tracking for consensus."""
+    answer_hash: str
+    answer_text: str
+    node_votes: Set[str]  # Nodes that returned this answer
+    first_seen: float
+
+    @property
+    def vote_count(self) -> int:
+        return len(self.node_votes)
+
+
+class ConsensusCollisionDetector(SemanticCollisionDetector):
+    """Collision detection with consensus-based locking."""
+
+    def __init__(self, quorum: int = 3, supersede_margin: int = 2, **kwargs):
+        super().__init__(**kwargs)
+        self.quorum = quorum
+        self.supersede_margin = supersede_margin
+        # Track all versions per region
+        self.versions: Dict[str, Dict[str, VersionedAnswer]] = {}
+
+    def register_vote(
+        self,
+        result: AggregatedResult,
+        embedding: np.ndarray,
+        node_id: str
+    ):
+        """Register a node's vote for an answer."""
+        region = self._compute_region(embedding)
+
+        if region not in self.versions:
+            self.versions[region] = {}
+
+        versions = self.versions[region]
+        ahash = result.answer_hash
+
+        if ahash not in versions:
+            versions[ahash] = VersionedAnswer(
+                answer_hash=ahash,
+                answer_text=result.answer_text,
+                node_votes={node_id},
+                first_seen=time.time()
+            )
+        else:
+            versions[ahash].node_votes.add(node_id)
+
+        # Check if this version should become established
+        self._update_established(region)
+
+    def _update_established(self, region: str):
+        """Update established answer based on consensus."""
+        versions = self.versions.get(region, {})
+        if not versions:
+            return
+
+        # Find version with most votes
+        best = max(versions.values(), key=lambda v: v.vote_count)
+
+        if best.vote_count < self.quorum:
+            return  # No quorum yet
+
+        current = self.established.get(region)
+
+        if current is None:
+            # First to reach quorum
+            self.established[region] = EstablishedAnswer(
+                answer_hash=best.answer_hash,
+                answer_text=best.answer_text,
+                semantic_region=region,
+                confidence=best.vote_count / self.quorum,
+                first_seen=best.first_seen,
+                node_count=best.vote_count,
+                locked=True
+            )
+        elif best.answer_hash != current.answer_hash:
+            # Different answer - check if it supersedes
+            current_votes = versions.get(current.answer_hash, VersionedAnswer("", "", set(), 0)).vote_count
+            if best.vote_count >= current_votes + self.supersede_margin:
+                # New consensus supersedes old
+                self.established[region] = EstablishedAnswer(
+                    answer_hash=best.answer_hash,
+                    answer_text=best.answer_text,
+                    semantic_region=region,
+                    confidence=best.vote_count / self.quorum,
+                    first_seen=best.first_seen,
+                    node_count=best.vote_count,
+                    locked=True
+                )
+```
 
 ### Implementation
 
