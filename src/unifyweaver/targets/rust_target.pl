@@ -51,7 +51,14 @@
     generate_tracer_rust/2,               % +Config, -RustCode
     generate_span_context_rust/2,         % +Context, -RustCode
     % KG Topology Phase 3: Kleinberg routing
-    compile_kleinberg_router_rust/2       % +Options, -RustCode
+    compile_kleinberg_router_rust/2,      % +Options, -RustCode
+    % KG Topology Phase 4: Federated queries
+    compile_federated_query_rust/2,       % +Options, -RustCode
+    % KG Topology Phase 5: Advanced federation
+    compile_adaptive_federation_rust/2,   % +Options, -RustCode
+    compile_query_planner_rust/2,         % +Options, -RustCode
+    compile_hierarchical_federation_rust/2, % +Options, -RustCode
+    compile_streaming_federation_rust/2   % +Options, -RustCode
 ]).
 
 :- use_module(library(lists)).
@@ -6986,3 +6993,402 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     dot / (norm_a.sqrt() * norm_b.sqrt())
 }
 ', [Alpha, MaxHops, ParallelPaths, Threshold, PathFolding]).
+
+% =============================================================================
+% KG TOPOLOGY PHASE 4: FEDERATED QUERY CODE GENERATION (Rust)
+% =============================================================================
+
+%% compile_federated_query_rust(+Options, -Code)
+%  Generate Rust FederatedQueryEngine with aggregation.
+
+compile_federated_query_rust(Options, Code) :-
+    ( member(federation_k(K), Options) -> true ; K = 3 ),
+    ( member(timeout_ms(Timeout), Options) -> true ; Timeout = 5000 ),
+    ( member(aggregation(Strategy), Options) -> true ; Strategy = sum ),
+    strategy_to_rust_variant(Strategy, StrategyVariant),
+
+    format(string(Code), '
+// KG Topology Phase 4: Federated Query Engine
+// Generated from Prolog service definition
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AggregationStrategy { Sum, Max, Min, Avg, Count, First, DiversityWeighted }
+
+impl Default for AggregationStrategy { fn default() -> Self { ~w } }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregationConfig {
+    pub strategy: AggregationStrategy,
+    pub dedup_key: String,
+    pub diversity_field: String,
+}
+
+impl Default for AggregationConfig {
+    fn default() -> Self { Self { strategy: AggregationStrategy::default(), dedup_key: "answer_hash".into(), diversity_field: "corpus_id".into() } }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResultProvenance {
+    pub node_id: String,
+    pub exp_score: f64,
+    pub corpus_id: String,
+    pub data_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregatedResult {
+    pub answer_text: String,
+    pub answer_hash: String,
+    pub combined_score: f64,
+    pub source_nodes: Vec<String>,
+    pub provenance: Vec<ResultProvenance>,
+    pub diversity_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeResult {
+    pub answer_id: i64,
+    pub answer_text: String,
+    pub answer_hash: String,
+    pub raw_score: f64,
+    pub exp_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeResponse {
+    pub source_node: String,
+    pub results: Vec<NodeResult>,
+    pub partition_sum: f64,
+    pub response_time_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregatedResponse {
+    pub query_id: String,
+    pub results: Vec<AggregatedResult>,
+    pub total_partition_sum: f64,
+    pub nodes_queried: usize,
+    pub nodes_responded: usize,
+    pub total_time_ms: u64,
+}
+
+pub struct FederatedQueryEngine {
+    router: Arc<KleinbergRouter>,
+    config: AggregationConfig,
+    federation_k: usize,
+    timeout_ms: u64,
+    query_count: RwLock<u64>,
+}
+
+impl FederatedQueryEngine {
+    pub fn new(router: Arc<KleinbergRouter>) -> Self {
+        Self { router, config: AggregationConfig::default(), federation_k: ~w, timeout_ms: ~w, query_count: RwLock::new(0) }
+    }
+
+    pub async fn federated_query(&self, query_text: &str, query_embedding: &[f32], top_k: usize) -> Result<AggregatedResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let start = Instant::now();
+        let nodes = self.router.discover_nodes(None)?;
+        let mut sorted_nodes: Vec<_> = nodes.iter().map(|n| (n.clone(), cosine_similarity(query_embedding, &n.centroid))).collect();
+        sorted_nodes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let selected: Vec<_> = sorted_nodes.into_iter().take(self.federation_k).map(|(n, _)| n).collect();
+        let mut aggregated: HashMap<String, AggregatedResult> = HashMap::new();
+        let mut responded = 0;
+        let mut total_partition = 0.0;
+        for node in &selected {
+            if let Ok(resp) = self.query_node(node, query_text, query_embedding, top_k).await {
+                responded += 1; total_partition += resp.partition_sum;
+                for r in resp.results {
+                    aggregated.entry(r.answer_hash.clone()).and_modify(|e| { e.combined_score = self.merge_score(e.combined_score, r.exp_score); e.source_nodes.push(resp.source_node.clone()); }).or_insert(AggregatedResult { answer_text: r.answer_text, answer_hash: r.answer_hash, combined_score: r.exp_score, source_nodes: vec![resp.source_node.clone()], provenance: vec![], diversity_score: 0.0 });
+                }
+            }
+        }
+        let mut results: Vec<_> = aggregated.into_values().collect();
+        results.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(top_k);
+        Ok(AggregatedResponse { query_id: uuid::Uuid::new_v4().to_string(), results, total_partition_sum: total_partition, nodes_queried: selected.len(), nodes_responded: responded, total_time_ms: start.elapsed().as_millis() as u64 })
+    }
+
+    fn merge_score(&self, existing: f64, new: f64) -> f64 {
+        match self.config.strategy { AggregationStrategy::Max => existing.max(new), AggregationStrategy::Min => existing.min(new), _ => existing + new }
+    }
+
+    async fn query_node(&self, node: &KGNode, query_text: &str, _embedding: &[f32], top_k: usize) -> Result<NodeResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let client = reqwest::Client::builder().timeout(Duration::from_millis(self.timeout_ms)).build()?;
+        let start = Instant::now();
+        let resp = client.post(format!("{}/kg/query", node.endpoint)).json(&serde_json::json!({"__type": "kg_query", "payload": {"query_text": query_text, "top_k": top_k}})).send().await?;
+        let mut node_resp: NodeResponse = resp.json().await?;
+        node_resp.source_node = node.node_id.clone(); node_resp.response_time_ms = start.elapsed().as_millis() as u64;
+        Ok(node_resp)
+    }
+}
+', [StrategyVariant, K, Timeout]).
+
+strategy_to_rust_variant(sum, 'AggregationStrategy::Sum').
+strategy_to_rust_variant(max, 'AggregationStrategy::Max').
+strategy_to_rust_variant(min, 'AggregationStrategy::Min').
+strategy_to_rust_variant(avg, 'AggregationStrategy::Avg').
+strategy_to_rust_variant(count, 'AggregationStrategy::Count').
+strategy_to_rust_variant(first, 'AggregationStrategy::First').
+strategy_to_rust_variant(diversity, 'AggregationStrategy::DiversityWeighted').
+strategy_to_rust_variant(_, 'AggregationStrategy::Sum').
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5b: ADAPTIVE FEDERATION-K CODE GENERATION (Rust)
+% =============================================================================
+
+%% compile_adaptive_federation_rust(+Options, -Code)
+%  Generate Rust AdaptiveFederatedEngine with dynamic k selection.
+
+compile_adaptive_federation_rust(Options, Code) :-
+    ( member(adaptive_k(AdaptiveOpts), Options), is_list(AdaptiveOpts) -> true ; AdaptiveOpts = [] ),
+    ( member(base_k(BaseK), AdaptiveOpts) -> true ; BaseK = 3 ),
+    ( member(min_k(MinK), AdaptiveOpts) -> true ; MinK = 1 ),
+    ( member(max_k(MaxK), AdaptiveOpts) -> true ; MaxK = 10 ),
+    ( member(entropy_threshold(EntropyT), AdaptiveOpts) -> true ; EntropyT = 0.7 ),
+
+    format(string(Code), '
+// KG Topology Phase 5b: Adaptive Federation-K
+// Generated from Prolog service definition
+
+#[derive(Debug, Clone)]
+pub struct AdaptiveKConfig { pub base_k: usize, pub min_k: usize, pub max_k: usize, pub entropy_threshold: f64 }
+
+impl Default for AdaptiveKConfig {
+    fn default() -> Self { Self { base_k: ~w, min_k: ~w, max_k: ~w, entropy_threshold: ~w } }
+}
+
+pub struct AdaptiveKCalculator {
+    config: AdaptiveKConfig,
+    query_history: RwLock<Vec<(Vec<f32>, f64, usize)>>,
+}
+
+impl AdaptiveKCalculator {
+    pub fn new(config: AdaptiveKConfig) -> Self { Self { config, query_history: RwLock::new(Vec::new()) } }
+
+    pub async fn compute_k(&self, query_embedding: &[f32], nodes: &[KGNode]) -> usize {
+        if nodes.is_empty() { return self.config.min_k; }
+        let similarities: Vec<f64> = nodes.iter().map(|n| cosine_similarity(query_embedding, &n.centroid)).collect();
+        let sum: f64 = similarities.iter().map(|s| s.abs()).sum();
+        let entropy = if sum > 0.0 && similarities.len() > 1 { let probs: Vec<f64> = similarities.iter().map(|s| s.abs() / (sum + 1e-10)).collect(); -probs.iter().filter(|&&p| p > 1e-10).map(|p| p * p.ln()).sum::<f64>() / (similarities.len() as f64).ln() } else { 0.5 };
+        let max_sim = similarities.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let mut k = self.config.base_k;
+        if entropy > self.config.entropy_threshold { k += 2; }
+        if max_sim < 0.5 { k += 1; }
+        k.clamp(self.config.min_k, self.config.max_k.min(nodes.len()))
+    }
+
+    pub async fn record_outcome(&self, embedding: Vec<f32>, consensus: f64, k_used: usize) {
+        let mut history = self.query_history.write().await;
+        history.push((embedding, consensus, k_used));
+        if history.len() > 100 { history.remove(0); }
+    }
+}
+
+pub struct AdaptiveFederatedEngine { engine: FederatedQueryEngine, adaptive: AdaptiveKCalculator }
+
+impl AdaptiveFederatedEngine {
+    pub fn new(router: Arc<KleinbergRouter>) -> Self {
+        Self { engine: FederatedQueryEngine::new(router), adaptive: AdaptiveKCalculator::new(AdaptiveKConfig::default()) }
+    }
+}
+', [BaseK, MinK, MaxK, EntropyT]).
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5c: QUERY PLANNER CODE GENERATION (Rust)
+% =============================================================================
+
+%% compile_query_planner_rust(+Options, -Code)
+%  Generate Rust QueryPlanner with cost-based optimization.
+
+compile_query_planner_rust(Options, Code) :-
+    ( member(query_planning(PlanOpts), Options), is_list(PlanOpts) -> true ; PlanOpts = [] ),
+    ( member(specific_threshold(SpecT), PlanOpts) -> true ; SpecT = 0.8 ),
+    ( member(exploratory_variance(ExplVar), PlanOpts) -> true ; ExplVar = 0.1 ),
+
+    format(string(Code), '
+// KG Topology Phase 5c: Query Planner
+// Generated from Prolog service definition
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryType { Specific, Exploratory, Consensus }
+
+#[derive(Debug, Clone)]
+pub struct QueryClassification { pub query_type: QueryType, pub max_similarity: f64, pub variance: f64, pub top_nodes: Vec<String>, pub confidence: f64 }
+
+#[derive(Debug, Clone)]
+pub struct PlannerConfig { pub specific_threshold: f64, pub exploratory_variance: f64, pub specific_max_nodes: usize, pub exploratory_max_nodes: usize }
+
+impl Default for PlannerConfig {
+    fn default() -> Self { Self { specific_threshold: ~w, exploratory_variance: ~w, specific_max_nodes: 2, exploratory_max_nodes: 7 } }
+}
+
+#[derive(Debug, Clone)]
+pub struct QueryPlanStage { pub stage_id: usize, pub nodes: Vec<String>, pub strategy: AggregationStrategy, pub parallel: bool, pub depends_on: Vec<usize>, pub estimated_cost_ms: f64 }
+
+#[derive(Debug, Clone)]
+pub struct QueryPlan { pub plan_id: String, pub query_type: QueryType, pub stages: Vec<QueryPlanStage>, pub total_estimated_cost_ms: f64 }
+
+pub struct QueryPlanner { router: Arc<KleinbergRouter>, config: PlannerConfig, plan_count: RwLock<u64> }
+
+impl QueryPlanner {
+    pub fn new(router: Arc<KleinbergRouter>) -> Self { Self { router, config: PlannerConfig::default(), plan_count: RwLock::new(0) } }
+
+    pub fn classify_query(&self, query_embedding: &[f32], nodes: &[KGNode]) -> QueryClassification {
+        if nodes.is_empty() { return QueryClassification { query_type: QueryType::Specific, max_similarity: 0.0, variance: 0.0, top_nodes: vec![], confidence: 0.0 }; }
+        let mut similarities: Vec<(String, f64)> = nodes.iter().map(|n| (n.node_id.clone(), cosine_similarity(query_embedding, &n.centroid))).collect();
+        similarities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let max_sim = similarities.first().map(|s| s.1).unwrap_or(0.0);
+        let mean: f64 = similarities.iter().map(|s| s.1).sum::<f64>() / similarities.len() as f64;
+        let variance = similarities.iter().map(|s| (s.1 - mean).powi(2)).sum::<f64>() / similarities.len() as f64;
+        let top_nodes: Vec<String> = similarities.iter().take(5).map(|s| s.0.clone()).collect();
+        let (query_type, confidence) = if max_sim >= self.config.specific_threshold { (QueryType::Specific, max_sim.min(1.0)) }
+        else if variance >= self.config.exploratory_variance { (QueryType::Exploratory, (variance * 5.0).min(1.0)) }
+        else { (QueryType::Consensus, 0.7) };
+        QueryClassification { query_type, max_similarity: max_sim, variance, top_nodes, confidence }
+    }
+
+    pub async fn build_plan(&self, query_embedding: &[f32], nodes: &[KGNode]) -> QueryPlan {
+        let classification = self.classify_query(query_embedding, nodes);
+        let mut count = self.plan_count.write().await; *count += 1; let plan_id = format!("plan-{}", *count);
+        let (nodes_to_query, strategy) = match classification.query_type {
+            QueryType::Specific => (classification.top_nodes[..self.config.specific_max_nodes.min(classification.top_nodes.len())].to_vec(), AggregationStrategy::Max),
+            QueryType::Exploratory => (classification.top_nodes[..self.config.exploratory_max_nodes.min(classification.top_nodes.len())].to_vec(), AggregationStrategy::Sum),
+            QueryType::Consensus => (classification.top_nodes[..5.min(classification.top_nodes.len())].to_vec(), AggregationStrategy::Sum),
+        };
+        QueryPlan { plan_id, query_type: classification.query_type, stages: vec![QueryPlanStage { stage_id: 0, nodes: nodes_to_query, strategy, parallel: true, depends_on: vec![], estimated_cost_ms: 100.0 }], total_estimated_cost_ms: 100.0 }
+    }
+}
+', [SpecT, ExplVar]).
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5a: HIERARCHICAL FEDERATION CODE GENERATION (Rust)
+% =============================================================================
+
+%% compile_hierarchical_federation_rust(+Options, -Code)
+%  Generate Rust HierarchicalFederatedEngine with multi-level routing.
+
+compile_hierarchical_federation_rust(Options, Code) :-
+    ( member(hierarchical(HierOpts), Options), is_list(HierOpts) -> true ; HierOpts = [] ),
+    ( member(min_nodes_per_region(MinNodes), HierOpts) -> true ; MinNodes = 2 ),
+    ( member(drill_down_k(DrillK), HierOpts) -> true ; DrillK = 2 ),
+
+    format(string(Code), '
+// KG Topology Phase 5a: Hierarchical Federation
+// Generated from Prolog service definition
+
+#[derive(Debug, Clone)]
+pub struct HierarchyConfig { pub min_nodes_per_region: usize, pub centroid_similarity_threshold: f64 }
+
+impl Default for HierarchyConfig { fn default() -> Self { Self { min_nodes_per_region: ~w, centroid_similarity_threshold: 0.5 } } }
+
+#[derive(Debug, Clone)]
+pub struct RegionalNode { pub region_id: String, pub centroid: Vec<f32>, pub child_nodes: Vec<String>, pub level: usize }
+
+pub struct NodeHierarchy {
+    config: HierarchyConfig,
+    regions: RwLock<HashMap<String, RegionalNode>>,
+    node_to_region: RwLock<HashMap<String, String>>,
+    leaf_nodes: RwLock<HashMap<String, KGNode>>,
+}
+
+impl NodeHierarchy {
+    pub fn new(config: HierarchyConfig) -> Self { Self { config, regions: RwLock::new(HashMap::new()), node_to_region: RwLock::new(HashMap::new()), leaf_nodes: RwLock::new(HashMap::new()) } }
+
+    pub async fn build_from_nodes(&self, nodes: Vec<KGNode>) {
+        let mut leaves = self.leaf_nodes.write().await; let mut regions = self.regions.write().await; let mut n2r = self.node_to_region.write().await;
+        leaves.clear(); regions.clear(); n2r.clear();
+        for n in &nodes { leaves.insert(n.node_id.clone(), n.clone()); }
+        let mut assigned: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut group_id = 0;
+        for node in &nodes {
+            if assigned.contains(&node.node_id) || node.centroid.is_empty() { continue; }
+            let mut cluster = vec![node.clone()]; assigned.insert(node.node_id.clone());
+            for other in &nodes {
+                if assigned.contains(&other.node_id) || other.centroid.is_empty() { continue; }
+                if cosine_similarity(&node.centroid, &other.centroid) >= self.config.centroid_similarity_threshold { cluster.push(other.clone()); assigned.insert(other.node_id.clone()); }
+            }
+            let region_id = format!("region_{}", group_id); group_id += 1;
+            let avg: Vec<f32> = if !cluster.is_empty() { (0..cluster[0].centroid.len()).map(|i| cluster.iter().map(|n| n.centroid.get(i).unwrap_or(&0.0)).sum::<f32>() / cluster.len() as f32).collect() } else { vec![] };
+            let child_nodes: Vec<String> = cluster.iter().map(|n| n.node_id.clone()).collect();
+            for cid in &child_nodes { n2r.insert(cid.clone(), region_id.clone()); }
+            regions.insert(region_id.clone(), RegionalNode { region_id, centroid: avg, child_nodes, level: 0 });
+        }
+    }
+
+    pub async fn get_regional_nodes(&self, level: usize) -> Vec<RegionalNode> { self.regions.read().await.values().filter(|r| r.level == level).cloned().collect() }
+    pub async fn get_children(&self, region_id: &str) -> Vec<String> { self.regions.read().await.get(region_id).map(|r| r.child_nodes.clone()).unwrap_or_default() }
+}
+
+pub struct HierarchicalFederatedEngine { engine: FederatedQueryEngine, hierarchy: NodeHierarchy, drill_down_k: usize }
+
+impl HierarchicalFederatedEngine {
+    pub fn new(router: Arc<KleinbergRouter>) -> Self { Self { engine: FederatedQueryEngine::new(router), hierarchy: NodeHierarchy::new(HierarchyConfig::default()), drill_down_k: ~w } }
+}
+', [MinNodes, DrillK]).
+
+% =============================================================================
+% KG TOPOLOGY PHASE 5d: STREAMING FEDERATION CODE GENERATION (Rust)
+% =============================================================================
+
+%% compile_streaming_federation_rust(+Options, -Code)
+%  Generate Rust StreamingFederatedEngine with async partial results.
+
+compile_streaming_federation_rust(Options, Code) :-
+    ( member(streaming(StreamOpts), Options), is_list(StreamOpts) -> true ; StreamOpts = [] ),
+    ( member(min_confidence(MinConf), StreamOpts) -> true ; MinConf = 0.3 ),
+
+    format(string(Code), '
+// KG Topology Phase 5d: Streaming Federation
+// Generated from Prolog service definition
+
+use tokio::sync::mpsc;
+
+#[derive(Debug, Clone)]
+pub struct StreamingConfig { pub min_confidence: f64 }
+
+impl Default for StreamingConfig { fn default() -> Self { Self { min_confidence: ~w } } }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartialResult {
+    pub results: Vec<AggregatedResult>,
+    pub confidence: f64,
+    pub nodes_responded: usize,
+    pub nodes_total: usize,
+    pub is_final: bool,
+}
+
+pub struct StreamingFederatedEngine { engine: FederatedQueryEngine, config: StreamingConfig }
+
+impl StreamingFederatedEngine {
+    pub fn new(router: Arc<KleinbergRouter>) -> Self { Self { engine: FederatedQueryEngine::new(router), config: StreamingConfig::default() } }
+
+    pub async fn streaming_query(&self, query_text: &str, query_embedding: &[f32], top_k: usize) -> Result<mpsc::Receiver<PartialResult>, Box<dyn std::error::Error + Send + Sync>> {
+        let nodes = self.engine.router.discover_nodes(None)?;
+        let (tx, rx) = mpsc::channel(nodes.len() + 1);
+        let nodes_total = nodes.len(); let min_conf = self.config.min_confidence;
+        let query_text = query_text.to_string(); let embedding = query_embedding.to_vec();
+        tokio::spawn(async move {
+            let mut aggregated: HashMap<String, AggregatedResult> = HashMap::new();
+            let mut responded = 0;
+            for node in nodes {
+                responded += 1;
+                let confidence = responded as f64 / nodes_total as f64;
+                let results: Vec<_> = aggregated.values().cloned().collect();
+                if confidence >= min_conf {
+                    let _ = tx.send(PartialResult { results: results.clone(), confidence, nodes_responded: responded, nodes_total, is_final: false }).await;
+                }
+            }
+            let results: Vec<_> = aggregated.values().cloned().collect();
+            let _ = tx.send(PartialResult { results, confidence: responded as f64 / nodes_total as f64, nodes_responded: responded, nodes_total, is_final: true }).await;
+        });
+        Ok(rx)
+    }
+}
+', [MinConf]).
