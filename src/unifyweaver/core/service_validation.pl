@@ -81,6 +81,8 @@
     is_valid_density_option/1,
     % Phase 5b: Adaptive federation-k
     is_valid_adaptive_k_option/1,
+    % Phase 5c: Query planning
+    is_valid_query_planning_option/1,
     is_federation_enabled/1,
     get_federation_options/2,
     get_federation_k/2,
@@ -1212,6 +1214,33 @@ is_valid_adaptive_k_option(latency_budget_ms(N)) :-
     integer(N), N > 0.
 is_valid_adaptive_k_option(history_size(N)) :-
     integer(N), N > 0.
+
+% Phase 5c: Query planning options
+is_valid_federation_option(query_planning(enabled)).
+is_valid_federation_option(query_planning(disabled)).
+is_valid_federation_option(query_planning(Opts)) :-
+    is_list(Opts), maplist(is_valid_query_planning_option, Opts).
+
+%% is_valid_query_planning_option(+Option)
+%  Validate query planning configuration options.
+is_valid_query_planning_option(specific_threshold(T)) :-
+    number(T), T >= 0, T =< 1.
+is_valid_query_planning_option(exploratory_variance(V)) :-
+    number(V), V >= 0.
+is_valid_query_planning_option(consensus_min_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(specific_max_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(exploratory_max_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(consensus_stage1_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(consensus_stage2_nodes(N)) :-
+    integer(N), N > 0.
+is_valid_query_planning_option(default_latency_ms(L)) :-
+    number(L), L > 0.
+is_valid_query_planning_option(parallel_overhead_ms(O)) :-
+    number(O), O >= 0.
 
 %% is_valid_aggregation_strategy(+Strategy)
 %  Validate aggregation strategy for result merging.

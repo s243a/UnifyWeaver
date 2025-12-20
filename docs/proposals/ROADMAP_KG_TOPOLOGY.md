@@ -317,7 +317,7 @@ service(csv_expert_node, [
 5. **Advanced Features** (Phase 5 In Progress)
    - [ ] Hierarchical federation (5a - pending)
    - [x] Adaptive federation-k (5b - complete)
-   - [ ] Query plan optimization (5c - pending)
+   - [x] Query plan optimization (5c - complete)
    - [ ] Streaming aggregation (5d - pending)
 
    **Phase 5b Implementation (Adaptive Federation-K):**
@@ -329,17 +329,31 @@ service(csv_expert_node, [
    - Prolog validation: `is_valid_adaptive_k_option/1` (11 predicates)
    - Unit tests: 23 tests in `test_adaptive_federation.py`
 
+   **Phase 5c Implementation (Query Plan Optimization):**
+   - `QueryType` enum: SPECIFIC, EXPLORATORY, CONSENSUS
+   - `QueryClassification`: query analysis with max_similarity, variance, top_nodes
+   - `QueryPlanStage`: stage_id, nodes, strategy, parallel, depends_on, cost estimation
+   - `QueryPlan`: DAG of stages with `get_execution_order()` for dependency resolution
+   - `QueryPlanner`: `classify_query()`, `build_plan()` for SPECIFIC/EXPLORATORY/CONSENSUS
+   - `PlanExecutor`: multi-stage execution with parallel level handling
+   - `PlannedQueryEngine`: combines planner + executor for automatic optimization
+   - `create_planned_engine()` factory function
+   - Prolog validation: `is_valid_query_planning_option/1` (9 predicates)
+   - Unit tests: 31 tests in `test_query_planner.py`
+
 **Implementation Files:**
 - `src/unifyweaver/targets/python_runtime/federated_query.py` - Core engine (~1550 lines, +430 Phase 5b)
+- `src/unifyweaver/targets/python_runtime/query_planner.py` - Query plan optimization (~560 lines, Phase 5c)
 - `src/unifyweaver/targets/python_runtime/density_scoring.py` - Density scoring (~1200 lines)
 - `src/unifyweaver/targets/python_runtime/kg_topology_api.py` - Extended API
 - `src/unifyweaver/targets/python_target.pl` - Python code generation
 - `src/unifyweaver/targets/go_target.pl` - Go code generation
 - `src/unifyweaver/glue/network_glue.pl` - Federation endpoints
-- `src/unifyweaver/core/service_validation.pl` - Federation + density + adaptive-k validation
+- `src/unifyweaver/core/service_validation.pl` - Federation + density + adaptive-k + query planning validation
 - `tests/core/test_federated_query.py` - 45 unit tests (federation)
 - `tests/core/test_density_scoring.py` - 56 unit tests (density)
 - `tests/core/test_adaptive_federation.py` - 23 unit tests (Phase 5b adaptive-k)
+- `tests/core/test_query_planner.py` - 31 unit tests (Phase 5c query planning)
 - `tests/e2e/test_multinode_federation_e2e.py` - 7 E2E tests (multi-node)
 
 **Federated Query Protocol:**
