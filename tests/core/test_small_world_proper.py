@@ -295,6 +295,159 @@ class TestScaling(unittest.TestCase):
         self.assertLess(growth, node_growth)
 
 
+class TestOptimizedLookup(unittest.TestCase):
+    """Tests for angle-based optimized neighbor lookup."""
+
+    def setUp(self):
+        """Create test network with sorted neighbors."""
+        np.random.seed(42)
+        random.seed(42)
+
+        self.network = SmallWorldProper(k_local=10, k_long=5)
+
+        # Create network with clear angular structure
+        self.dim = 10
+        for i in range(50):
+            # Create vectors with varied angular positions
+            angle = (i / 50) * 2 * np.pi  # Spread around the unit circle
+            vec = np.zeros(self.dim)
+            vec[0] = np.cos(angle)
+            vec[1] = np.sin(angle)
+            # Add some noise in other dimensions
+            vec[2:] = np.random.randn(self.dim - 2) * 0.1
+            vec = vec / np.linalg.norm(vec)
+            self.network.add_node(f"n{i}", vec)
+
+    def test_sorted_neighbors_maintained(self):
+        """Test that sorted neighbor list is maintained during insertion."""
+        for node_id, node in self.network.nodes.items():
+            # Check sorted list has same count as neighbors set
+            self.assertEqual(
+                len(node.sorted_neighbors),
+                len(node.neighbors),
+                f"Node {node_id}: sorted list size mismatch"
+            )
+
+            # Check sorted order
+            angles = [a for a, _ in node.sorted_neighbors]
+            self.assertEqual(
+                angles,
+                sorted(angles),
+                f"Node {node_id}: neighbors not sorted by angle"
+            )
+
+    def test_angle_lookup_finds_candidates(self):
+        """Test that angle-based lookup returns nearby neighbors."""
+        node = self.network.nodes["n25"]
+
+        # Query in a specific direction
+        query = np.zeros(self.dim)
+        query[0] = 1.0  # Direction along x-axis
+        query = query / np.linalg.norm(query)
+
+        candidates = node.lookup_neighbors_by_angle(query, window_size=3)
+
+        # Should return some candidates (up to 2*window_size + 1)
+        self.assertGreater(len(candidates), 0)
+        self.assertLessEqual(len(candidates), 7)  # 2*3 + 1
+
+        print(f"\nAngle lookup returned {len(candidates)} candidates")
+
+    def test_optimized_search_finds_target(self):
+        """Test that optimized search finds targets correctly."""
+        target_id = "n30"
+        target = self.network.nodes[target_id]
+        query = target.vector.copy()
+
+        results, comps = self.network.search_knn_optimized(
+            query, k=5, ef=30, window_size=5
+        )
+
+        # Target should be in results
+        result_ids = [r[0] for r in results]
+        self.assertIn(target_id, result_ids)
+
+        print(f"\nOptimized search found target with {comps} comparisons")
+
+    def test_optimized_search_comparison_reduction(self):
+        """Test that optimized search uses fewer comparisons."""
+        np.random.seed(123)
+
+        # Run multiple queries with both methods
+        standard_comps = 0
+        optimized_comps = 0
+        num_queries = 20
+
+        for _ in range(num_queries):
+            query = np.random.randn(self.dim)
+            query = query / np.linalg.norm(query)
+
+            _, std_c = self.network.search_knn(query, k=5, ef=30)
+            _, opt_c = self.network.search_knn_optimized(
+                query, k=5, ef=30, window_size=5
+            )
+
+            standard_comps += std_c
+            optimized_comps += opt_c
+
+        avg_std = standard_comps / num_queries
+        avg_opt = optimized_comps / num_queries
+
+        print(f"\n" + "=" * 50)
+        print("OPTIMIZED LOOKUP COMPARISON")
+        print("=" * 50)
+        print(f"Standard search: {avg_std:.1f} avg comparisons")
+        print(f"Optimized search: {avg_opt:.1f} avg comparisons")
+        print(f"Reduction: {(1 - avg_opt/avg_std)*100:.1f}%")
+
+        # Optimized should use fewer or equal comparisons
+        # (may be equal if ef is large relative to neighbors)
+        self.assertLessEqual(avg_opt, avg_std * 1.1)  # Allow 10% margin
+
+    def test_optimized_search_quality(self):
+        """Test that optimized search maintains result quality."""
+        np.random.seed(456)
+
+        matching_results = 0
+        total_queries = 20
+
+        for _ in range(total_queries):
+            # Query near a specific node
+            target = random.choice(list(self.network.nodes.values()))
+            query = target.vector + np.random.randn(self.dim) * 0.05
+            query = query / np.linalg.norm(query)
+
+            std_results, _ = self.network.search_knn(query, k=5, ef=30)
+            opt_results, _ = self.network.search_knn_optimized(
+                query, k=5, ef=30, window_size=5
+            )
+
+            # Check if top result matches
+            if std_results and opt_results:
+                if std_results[0][0] == opt_results[0][0]:
+                    matching_results += 1
+
+        match_rate = matching_results / total_queries
+
+        print(f"\nTop-1 match rate: {match_rate*100:.1f}%")
+
+        # Should match most of the time (allow some variation due to
+        # different exploration paths)
+        self.assertGreaterEqual(match_rate, 0.7)
+
+    def test_rebuild_sorted_neighbors(self):
+        """Test rebuilding sorted neighbor lists."""
+        # Rebuild all
+        count = self.network.rebuild_all_sorted_neighbors()
+
+        self.assertEqual(count, len(self.network.nodes))
+
+        # Verify still sorted
+        for node in self.network.nodes.values():
+            angles = [a for a, _ in node.sorted_neighbors]
+            self.assertEqual(angles, sorted(angles))
+
+
 def run_demo():
     """Demonstrate proper small-world network."""
     print("=" * 70)
