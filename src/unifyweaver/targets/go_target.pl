@@ -10214,12 +10214,22 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
             KeyImports = []
         ),
 
-        % Check if helpers are needed (for the package wrapping)
+        % Generate validators if schema is present
+        (   option(json_schema(RootSchema), Options)
+        ->  collect_referenced_schemas(RootSchema, AllSchemas),
+            findall(ValCode, (member(S, AllSchemas), generate_schema_validator(S, ValCode)), ValCodes),
+            atomic_list_concat(ValCodes, '\n\n', ValidatorSection)
+        ;   ValidatorSection = ''
+        ),
+
+        % Check if nested helper is needed (for the package wrapping)
+        % Also include it if validators are generated (safety, though strict dependency might vary)
         (   (member(nested(_, _), FieldMappings) ; member(extract(_, _, _), FieldMappings))
-        ->  generate_nested_helper(HelperFunc),
-            HelperSection = HelperFunc
-        ;   HelperSection = ''
-        )
+        ->  generate_nested_helper(HelperFunc)
+        ;   HelperFunc = ''
+        ),
+        
+        format(string(HelperSection), "~s\n\n~s", [HelperFunc, ValidatorSection])
     ;   format('ERROR: Multiple clauses not yet supported for JSON input mode~n'),
         fail
     ),
@@ -11130,9 +11140,10 @@ generate_typed_flat_field_extraction(FieldName, VarName, Type, Options, ExtractC
     ;   Type = boolean ->
         format(atom(ExtractCode), '\t\tvar ~w bool\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a boolean\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
             [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName, VarName, VarName, ValidationCode, Optional])
-    ;   Type = object(_) ->
-        format(atom(ExtractCode), '\t\tvar ~w interface{}\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~w = ~wRaw\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, ValidationCode, Optional])
+    ;   Type = object(SubSchema) ->
+        format(atom(ValidatorCall), '\n\t\tif subMap, ok := ~w.(map[string]interface{}); !ok || !validate_~w(subMap) {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: invalid nested object ''~s''\\n")\n\t\t\tcontinue\n\t\t}', [VarName, SubSchema, FieldName]),
+        format(atom(ExtractCode), '\t\tvar ~w interface{}\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~w = ~wRaw~s\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, ValidatorCall, ValidationCode, Optional])
     ;   % Fallback to untyped for 'any' type
         generate_flat_field_extraction(FieldName, VarName, ExtractCode)
     ).
@@ -11166,9 +11177,10 @@ generate_typed_nested_field_extraction(Path, VarName, Type, Options, ExtractCode
     ;   Type = boolean ->
         format(atom(ExtractCode), '\t\tvar ~w bool\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a boolean\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
             [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, LastFieldStr, VarName, VarName, ValidationCode, Optional])
-    ;   Type = object(_) ->
-        format(atom(ExtractCode), '\t\tvar ~w interface{}\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~w = ~wRaw\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, PathStr, VarName, VarName, ValidationCode, Optional])
+    ;   Type = object(SubSchema) ->
+        format(atom(ValidatorCall), '\n\t\tif subMap, ok := ~w.(map[string]interface{}); !ok || !validate_~w(subMap) {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: invalid nested object ''~s''\\n")\n\t\t\tcontinue\n\t\t}\n', [VarName, SubSchema, PathStr]),
+        format(atom(ExtractCode), '\t\tvar ~w interface{}\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~w = ~wRaw~s\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, PathStr, VarName, VarName, ValidatorCall, ValidationCode, Optional])
     ;   % Fallback to untyped
         generate_nested_field_extraction(Path, VarName, ExtractCode)
     ).
@@ -11243,7 +11255,102 @@ generate_field_extraction_dispatch(nested(Path, _Var), VarName, ExtractCode) :- 
     % Nested field extraction
     generate_nested_field_extraction(Path, VarName, ExtractCode).
 
-%% generate_flat_field_extraction(+FieldName, +VarName, -ExtractCode)
+%% collect_referenced_schemas(+RootSchema, -AllSchemas)
+%  Recursively collect all schemas referenced by object() types
+collect_referenced_schemas(RootSchema, AllSchemas) :-
+    collect_schemas_recursive([RootSchema], [], AllSchemas).
+
+collect_schemas_recursive([], Acc, Result) :- sort(Acc, Result).
+collect_schemas_recursive([Schema|Rest], Acc, Result) :-
+    member(Schema, Acc), !,
+    collect_schemas_recursive(Rest, Acc, Result).
+collect_schemas_recursive([Schema|Rest], Acc, Result) :-
+    (   get_json_schema(Schema, Fields)
+    ->  findall(SubSchema, (
+            (   member(field(_, object(SubSchema), _), Fields) 
+            ;   member(field(_, object(SubSchema)), Fields)
+            )
+        ), SubSchemas)
+    ;   SubSchemas = []
+    ),
+    append(Rest, SubSchemas, Queue),
+    collect_schemas_recursive(Queue, [Schema|Acc], Result).
+
+%% generate_schema_validator(+SchemaName, -Code)
+%  Generate a Go function to validate a schema
+generate_schema_validator(SchemaName, Code) :-
+    get_json_schema(SchemaName, Fields),
+    format(atom(FuncName), 'validate_~w', [SchemaName]),
+    
+    findall(CheckCode, (
+        member(FieldDef, Fields),
+        generate_field_check(FieldDef, CheckCode)
+    ), CheckCodes),
+    atomic_list_concat(CheckCodes, '\n', Body),
+    
+    format(string(Code), 'func ~w(data map[string]interface{}) bool {
+~s
+\treturn true
+}', [FuncName, Body]).
+
+generate_field_check(field(Name, Type, Options), Code) :- !,
+    generate_field_check_logic(Name, Type, Options, Code).
+generate_field_check(field(Name, Type), Code) :-
+    generate_field_check_logic(Name, Type, [], Code).
+
+generate_field_check_logic(Name, Type, Options, Code) :-
+    atom_string(Name, NameStr),
+    (   member(optional, Options) -> Optional = true ; Optional = false ),
+    
+    % Type Check
+    (   Type = string -> TypeCheck = '_, ok := val.(string); !ok'
+    ;   Type = integer -> TypeCheck = '_, ok := val.(float64); !ok'
+    ;   Type = float -> TypeCheck = '_, ok := val.(float64); !ok'
+    ;   Type = boolean -> TypeCheck = '_, ok := val.(bool); !ok'
+    ;   Type = object(SubSchema) -> 
+        format(atom(TypeCheck), 'subMap, ok := val.(map[string]interface{}); !ok || !validate_~w(subMap)', [SubSchema])
+    ;   TypeCheck = 'false'
+    ),
+    
+    % Constraint Casting & Checks
+    generate_validator_constraints('valTyped', Type, Options, ConstraintCode),
+    
+    (   ConstraintCode \= ''
+    ->  (   Type = integer -> Cast = 'valTyped := int(val.(float64))'
+        ;   Type = float -> Cast = 'valTyped := val.(float64)'
+        ;   Type = string -> Cast = 'valTyped := val.(string)'
+        ;   Cast = ''
+        )
+    ;   Cast = ''
+    ),
+    
+    format(string(Code), '
+\tif val, exists := data["~s"]; exists {
+\t\tif ~s { return false }
+\t\t~s
+~s
+\t} else if !~w { return false }', 
+    [NameStr, TypeCheck, Cast, ConstraintCode, Optional]).
+
+generate_validator_constraints(VarName, Type, Options, Code) :-
+    findall(Check,
+        (   member(Option, Options),
+            generate_validator_check(VarName, Type, Option, Check)
+        ),
+        Checks),
+    atomic_list_concat(Checks, '\n', Code).
+
+generate_validator_check(VarName, integer, min(Min), Check) :-
+    format(atom(Check), '\t\tif ~w < ~w { return false }', [VarName, Min]).
+generate_validator_check(VarName, integer, max(Max), Check) :-
+    format(atom(Check), '\t\tif ~w > ~w { return false }', [VarName, Max]).
+generate_validator_check(VarName, float, min(Min), Check) :-
+    format(atom(Check), '\t\tif ~w < ~w { return false }', [VarName, Min]).
+generate_validator_check(VarName, float, max(Max), Check) :-
+    format(atom(Check), '\t\tif ~w > ~w { return false }', [VarName, Max]).
+generate_validator_check(VarName, string, format(email), Check) :-
+    format(atom(Check), '\t\tif !strings.Contains(~w, "@") { return false }', [VarName]).
+generate_validator_check(_, _, _, '').
 %  Generate extraction code for a flat field
 %  Extract as interface{} to support any JSON type (string, number, bool, etc.)
 %
