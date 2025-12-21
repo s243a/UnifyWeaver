@@ -490,6 +490,7 @@ verify_fact_plan :-
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:Facts}]),
     Facts == [[alice, bob], [bob, charlie]],
     csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'Lazy<QueryPlan>'),
     sub_string(Source, _, _, _, 'RelationScanNode').
 
 verify_join_plan :-
@@ -1100,6 +1101,7 @@ verify_multi_mode_codegen_plan :-
     csharp_target:compile_predicate_to_csharp(test_multi_mode/2, [mode(query)], Code),
     sub_string(Code, _, _, _, 'BuildIn0'),
     sub_string(Code, _, _, _, 'BuildIn1'),
+    sub_string(Code, _, _, _, 'Lazy<QueryPlan>'),
     sub_string(Code, _, _, _, 'BuildForInputs').
 
 verify_multi_mode_plan_selection_api :-

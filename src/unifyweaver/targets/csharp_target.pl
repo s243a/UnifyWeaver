@@ -2156,20 +2156,22 @@ namespace UnifyWeaver.Generated
 {
 ~w    public static class ~w
     {
-        public static (InMemoryRelationProvider Provider, QueryPlan Plan) Build()
-        {
-            var provider = new InMemoryRelationProvider();
-~w            var plan = new QueryPlan(
+        private static readonly Lazy<QueryPlan> CachedPlan = new Lazy<QueryPlan>(() =>
+            new QueryPlan(
                 new PredicateId("~w", ~w),
                 ~w,
                 ~w,
                 ~w
-            );
-            return (provider, plan);
+            ));
+
+        public static (InMemoryRelationProvider Provider, QueryPlan Plan) Build()
+        {
+            var provider = new InMemoryRelationProvider();
+~w            return (provider, CachedPlan.Value);
         }
     }
  }
-', [DynamicUsing, SchemaDeclarations, ModuleClass, ProviderSection, PredStr, Arity, PlanExpr, RecLiteral, InputPosLiteral]).
+', [DynamicUsing, SchemaDeclarations, ModuleClass, PredStr, Arity, PlanExpr, RecLiteral, InputPosLiteral, ProviderSection]).
 
 render_plans_to_csharp(Plans, Code) :-
     Plans = [FirstPlan|_],
@@ -2344,20 +2346,23 @@ plan_method_block(Plan, PredStr, Arity, MethodName, Block) :-
         format(atom(InputPosLiteral), 'new int[]{ ~w }', [InputPosStr])
     ;   InputPosLiteral = 'null'
     ),
+    format(atom(PlanField), '_plan~w', [MethodName]),
     format(atom(Block),
-'        public static (InMemoryRelationProvider Provider, QueryPlan Plan) ~w()
-        {
-            var provider = BuildProvider();
-            var plan = new QueryPlan(
+'        private static readonly Lazy<QueryPlan> ~w = new Lazy<QueryPlan>(() =>
+            new QueryPlan(
                 new PredicateId("~w", ~w),
                 ~w,
                 ~w,
                 ~w
-            );
-            return (provider, plan);
+            ));
+
+        public static (InMemoryRelationProvider Provider, QueryPlan Plan) ~w()
+        {
+            var provider = BuildProvider();
+            return (provider, ~w.Value);
         }
 
-', [MethodName, PredStr, Arity, PlanExpr, RecLiteral, InputPosLiteral]).
+', [PlanField, PredStr, Arity, PlanExpr, RecLiteral, InputPosLiteral, MethodName, PlanField]).
 
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, param_seed), !,
