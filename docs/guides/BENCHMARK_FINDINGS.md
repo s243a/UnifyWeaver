@@ -67,7 +67,18 @@ The baseline configurations with k=3 consistently outperform adaptive-k:
 | 25 nodes | 0.880 |
 | 50 nodes | 0.950 |
 
-**Why?** Larger networks have more topic specialization. With 50 nodes across 5 topic clusters, each cluster has ~10 nodes, providing better coverage.
+**Why?** This is an artifact of **cluster density**, not a fundamental property:
+
+| Network | Nodes/Cluster | Effect |
+|---------|---------------|--------|
+| 10 nodes | 2 per cluster | Sparse - nodes may not reach similarity threshold |
+| 50 nodes | 10 per cluster | Dense - many nodes cluster tightly together |
+
+With sparse clusters, ground truth may only contain 1 node (the target). With dense clusters, ground truth contains 3 nodes that all pass the similarity threshold. This makes it easier to achieve 100% precision.
+
+**Limitation:** Synthetic benchmarks conflate "topologically close" with "semantically relevant." Real-world precision depends on content relevance, not just embedding proximity.
+
+**Future idea:** Adaptive node subdivision - nodes could split when they reach a certain size, maintaining optimal cluster density across the network. This would provide consistent precision regardless of total network size.
 
 ### 3. Latency Decreases with Network Size
 
@@ -144,3 +155,8 @@ Full results available in:
 2. **Add network latency simulation** - Test with realistic network delays
 3. **Benchmark adversarial protection** - Measure overhead of Phase 6f features
 4. **Test larger scales** - 100, 500, 1000 node networks
+5. **Adaptive node subdivision** - Nodes split when reaching size threshold to maintain optimal cluster density. This would:
+   - Keep precision consistent regardless of network size
+   - Prevent any single node from becoming a bottleneck
+   - Enable organic growth of the network
+   - Similar to B-tree splitting or consistent hashing ring rebalancing
