@@ -10302,14 +10302,25 @@ compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
         extract_json_field_mappings(SingleBody, FieldMappings),
         
         SingleHead =.. [_|HeadArgs],
-        compile_parallel_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Workers, ScriptBody),
+        
+        (   option(json_schema(SchemaName), Options)
+        ->  compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, Workers, ScriptBody),
+            
+            % Generate validators
+            collect_referenced_schemas(SchemaName, AllSchemas),
+            findall(ValCode, (member(S, AllSchemas), generate_schema_validator(S, ValCode)), ValCodes),
+            atomic_list_concat(ValCodes, '\n\n', ValidatorSection)
+        ;   compile_parallel_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Workers, ScriptBody),
+            ValidatorSection = ''
+        ),
 
         % Check if helpers are needed
-        (   member(nested(_, _), FieldMappings)
-        ->  generate_nested_helper(HelperFunc),
-            HelperSection = HelperFunc
-        ;   HelperSection = ''
-        )
+        (   (member(nested(_, _), FieldMappings) ; member(extract(_, _, _), FieldMappings))
+        ->  generate_nested_helper(HelperFunc)
+        ;   HelperFunc = ''
+        ),
+        
+        format(string(HelperSection), "~s\n\n~s", [HelperFunc, ValidatorSection])
     ;   format('ERROR: Multiple clauses not yet supported for parallel JSON input mode~n'),
         fail
     ),
@@ -10349,6 +10360,78 @@ func main() {
         )
     ;   GoCode = ScriptBody
     ).
+
+%% compile_parallel_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +FieldDelim, +Unique, +Workers, -GoCode)
+%  Generate Go code for parallel JSON processing with schema validation
+compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, Workers, GoCode) :-
+    map_field_delimiter(FieldDelim, DelimChar),
+
+    % Generate typed extraction code (same as sequential typed)
+    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode),
+    
+    % Generate output expression
+    generate_json_output_expr_mapped(HeadArgs, VarMap, DelimChar, OutputExpr),
+
+    (   Unique = true 
+    ->  UniqueVars = "var seenMutex sync.Mutex\n\tseen := make(map[string]bool)" 
+    ;   UniqueVars = ""
+    ),
+    
+    % Build output block with locking
+    (   Unique = true ->
+        format(string(OutputBlock), '
+				result := ~s
+				seenMutex.Lock()
+				if !seen[result] {
+					seen[result] = true
+					outputMutex.Lock()
+					fmt.Println(result)
+					outputMutex.Unlock()
+				}
+				seenMutex.Unlock()', [OutputExpr])
+    ;   format(string(OutputBlock), '
+				result := ~s
+				outputMutex.Lock()
+				fmt.Println(result)
+				outputMutex.Unlock()', [OutputExpr])
+    ),
+
+    format(string(GoCode), '
+	// Parallel execution with ~w workers (Typed)
+	jobs := make(chan []byte, 100)
+	var wg sync.WaitGroup
+	var outputMutex sync.Mutex
+	~s
+
+	// Start workers
+	for i := 0; i < ~w; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for lineBytes := range jobs {
+				var data map[string]interface{}
+				if err := json.Unmarshal(lineBytes, &data); err != nil {
+					continue
+				}
+				
+				~s
+				
+				~s
+			}
+		}()
+	}
+
+	// Scanner loop
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		// Copy bytes because scanner.Bytes() is reused
+		b := make([]byte, len(scanner.Bytes()))
+		copy(b, scanner.Bytes())
+		jobs <- b
+	}
+	close(jobs)
+	wg.Wait()
+', [Workers, UniqueVars, Workers, ExtractCode, OutputBlock]).
 
 %% compile_parallel_json_to_go(+HeadArgs, +Operations, +FieldDelim, +Unique, +Workers, -GoCode)
 %  Generate Go code for parallel JSON processing
