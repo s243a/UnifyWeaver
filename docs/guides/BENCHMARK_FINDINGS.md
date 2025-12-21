@@ -5,6 +5,60 @@
 **Network Sizes:** 10, 25, 50 nodes
 **Queries per Size:** 50
 
+## What We're Measuring
+
+This benchmark tests **federated aggregation**: querying multiple nodes and combining their results.
+
+### Query Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. ROUTING: Select top-k nodes by centroid similarity          │
+│    route_multi_k(query_embedding, k=3)                          │
+│    → Returns [(node_a, 0.95), (node_b, 0.82), (node_c, 0.71)]   │
+├─────────────────────────────────────────────────────────────────┤
+│ 2. QUERY: Send query to each selected node in parallel         │
+│    results_a = node_a.query(embedding, top_k=10)                │
+│    results_b = node_b.query(embedding, top_k=10)                │
+│    results_c = node_c.query(embedding, top_k=10)                │
+├─────────────────────────────────────────────────────────────────┤
+│ 3. AGGREGATE: Combine results using strategy (SUM, MAX, etc)   │
+│    aggregate(results, strategy=SUM)                             │
+│    → Documents in multiple nodes get boosted scores             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Metrics Definitions
+
+| Metric | Definition | Code Location |
+|--------|------------|---------------|
+| **Routing Precision** | Fraction of queried nodes containing relevant docs | `route_multi_k()` in `adaptive_subdivision.py:771` |
+| **Result Precision** | Fraction of returned docs that are relevant | `aggregate_results()` in `federated_query.py:350` |
+| **Nodes Queried (Hops)** | Number of leaf nodes sent the query | k parameter |
+| **P50/P99 Latency** | Median/99th percentile total query time | End-to-end timing |
+| **Regions Traversed** | Region nodes in hierarchy (routing overhead) | `HierarchicalFederatedEngine` |
+
+### Key Code References
+
+**Routing** (`adaptive_subdivision.py:771-809`):
+```python
+def route_multi_k(self, query_embedding, k=3):
+    '''Route to top-k LEAF nodes by centroid similarity.'''
+    ranked = [(leaf, cosine_sim(query, leaf.centroid)) for leaf in leaves]
+    return sorted(ranked, reverse=True)[:k]
+```
+
+**Aggregation** (`federated_query.py:350-420`):
+```python
+def aggregate_results(results_by_node, strategy="sum"):
+    '''Combine results from multiple nodes.'''
+    for node_id, results in results_by_node.items():
+        for doc_id, score in results:
+            if strategy == "sum":
+                # Consensus boost: docs in multiple nodes score higher
+                doc_scores[doc_id] += score
+```
+
 ## Executive Summary
 
 | Finding | Recommendation |
@@ -149,14 +203,46 @@ Full results available in:
 - `reports/results.json` - Complete benchmark data
 - `reports/federation_benchmark.html` - HTML summary
 
+## Subdivision Integration Benchmarks
+
+**Branch:** `feat/adaptive-node-subdivision`
+**Test:** `tests/core/test_subdivision_federation_integration.py`
+
+### Results with Subdivided Nodes
+
+| Scenario | k | Nodes | P50 Latency | Routing Precision | Result Precision | Memory |
+|----------|---|-------|-------------|-------------------|------------------|--------|
+| Small network, k=1 | 1 | 6 | 10.9ms | 1.000 | 1.000 | 0.01 MB |
+| Small network, k=3 | 3 | 6 | 32.1ms | 0.667 | 1.000 | 0.01 MB |
+| Medium network, k=3 | 3 | 10 | 32.0ms | 0.667 | 1.000 | 0.01 MB |
+| Medium network, k=5 | 5 | 10 | 53.4ms | 0.400 | 1.000 | 0.01 MB |
+
+### Key Observations
+
+1. **Routing Precision decreases with higher k** - When k=1, we always pick the best node (100% precision). With k=3, only ~67% of nodes contain relevant docs.
+
+2. **Result Precision remains 100%** - All returned documents are relevant (within their node's cluster).
+
+3. **Latency scales linearly with k** - Each additional node adds ~10ms (simulated query time).
+
+4. **Memory overhead is minimal** - Subdivision hierarchy adds negligible memory.
+
+### Discrimination Improvement
+
+Subdivision dramatically improves routing discrimination:
+
+| State | Discrimination | Explanation |
+|-------|---------------|-------------|
+| Before split | 0.0108 | Mixed centroid sits between clusters |
+| After split | 1.0039 | Child centroids align with clusters |
+| **Improvement** | **9181%** | Geometric separation, not numeric precision |
+
+See: `tests/core/test_subdivision_discrimination.py`
+
 ## Future Work
 
 1. **Test with real embedding models** - Current benchmarks use random embeddings
 2. **Add network latency simulation** - Test with realistic network delays
 3. **Benchmark adversarial protection** - Measure overhead of Phase 6f features
 4. **Test larger scales** - 100, 500, 1000 node networks
-5. **Adaptive node subdivision** - Nodes split when reaching size threshold to maintain optimal cluster density. This would:
-   - Keep precision consistent regardless of network size
-   - Prevent any single node from becoming a bottleneck
-   - Enable organic growth of the network
-   - Similar to B-tree splitting or consistent hashing ring rebalancing
+5. ~~**Adaptive node subdivision**~~ ✅ Implemented on `feat/adaptive-node-subdivision` branch
