@@ -10215,7 +10215,7 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         ),
 
         % Check if helpers are needed (for the package wrapping)
-        (   member(nested(_, _), FieldMappings)
+        (   (member(nested(_, _), FieldMappings) ; member(extract(_, _, _), FieldMappings))
         ->  generate_nested_helper(HelperFunc),
             HelperSection = HelperFunc
         ;   HelperSection = ''
@@ -11014,11 +11014,11 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique
     % Map delimiter
     map_field_delimiter(FieldDelim, DelimChar),
 
-    % Generate typed field extraction code
-    generate_typed_field_extractions(FieldMappings, SchemaName, HeadArgs, ExtractCode),
+    % Generate typed field extraction code and build VarMap
+    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode),
 
-    % Generate output expression (same as untyped)
-    generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
+    % Generate output expression using VarMap
+    generate_json_output_expr_mapped(HeadArgs, VarMap, DelimChar, OutputExpr),
 
     % Build main loop
     (   Unique = true ->
@@ -11044,28 +11044,68 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique
 ~s\t}
 ', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
 
-%% generate_typed_field_extractions(+FieldMappings, +SchemaName, +HeadArgs, -ExtractCode)
-%  Generate typed field extraction code based on schema
-%
-generate_typed_field_extractions(FieldMappings, SchemaName, _HeadArgs, ExtractCode) :-
-    findall(ExtractLine,
-        (   nth1(Pos, FieldMappings, Mapping),
-            format(atom(VarName), 'field~w', [Pos]),
-            % Dispatch based on mapping type
-            (   Mapping = Field-_Var
-            ->  % Flat field - get type and options from schema
-                get_field_info(SchemaName, Field, Type, Options),
-                atom_string(Field, FieldStr),
-                generate_typed_flat_field_extraction(FieldStr, VarName, Type, Options, ExtractLine)
-            ;   Mapping = nested(Path, _Var)
-            ->  % Nested field - get type and options from last element of path
-                last(Path, LastField),
-                get_field_info(SchemaName, LastField, Type, Options),
-                generate_typed_nested_field_extraction(Path, VarName, Type, Options, ExtractLine)
-            )
+%% generate_typed_field_extractions_mapped(+FieldMappings, +SchemaName, +Pos, +VarMapIn, -VarMapOut, -ExtractCode)
+generate_typed_field_extractions_mapped([], _, _, VarMap, VarMap, '').
+generate_typed_field_extractions_mapped([Mapping|Rest], SchemaName, Pos, VarMapIn, VarMapOut, Code) :-
+    format(atom(VarName), 'field~w', [Pos]),
+    NextPos is Pos + 1,
+    
+    (   Mapping = Field-Var
+    ->  get_field_info(SchemaName, Field, Type, Options),
+        atom_string(Field, FieldStr),
+        generate_typed_flat_field_extraction(FieldStr, VarName, Type, Options, ExtractLine),
+        NewVarMap = [(Var, VarName)|VarMapIn]
+        
+    ;   Mapping = nested(Path, Var)
+    ->  last(Path, LastField),
+        get_field_info(SchemaName, LastField, Type, Options),
+        generate_typed_nested_field_extraction(Path, VarName, Type, Options, ExtractLine),
+        NewVarMap = [(Var, VarName)|VarMapIn]
+        
+    ;   Mapping = extract(SourceVar, Path, Var)
+    ->  % Handle extract: SourceVar must be in VarMapIn
+        (   lookup_var_identity(SourceVar, VarMapIn, SourceGoVar)
+        ->  true
+        ;   format('ERROR: Source variable for extract/3 not found: ~w~n', [SourceVar]),
+            SourceGoVar = "nil" % Fail gracefully in generation
         ),
-        ExtractLines),
-    atomic_list_concat(ExtractLines, '\n', ExtractCode).
+        generate_extract_op_code(SourceGoVar, Path, VarName, ExtractLine),
+        NewVarMap = [(Var, VarName)|VarMapIn]
+        
+    ;   % Skip unknown mappings
+        ExtractLine = '',
+        NewVarMap = VarMapIn
+    ),
+    
+    generate_typed_field_extractions_mapped(Rest, SchemaName, NextPos, NewVarMap, VarMapOut, RestCode),
+    (   ExtractLine = '' -> Code = RestCode
+    ;   format(string(Code), '~s\n~s', [ExtractLine, RestCode])
+    ).
+
+generate_extract_op_code(SourceGoVar, Path, VarName, Code) :-
+    (   is_list(Path) -> PathList = Path ; PathList = [Path] ),
+    maplist(atom_string, PathList, PathStrs),
+    atomic_list_concat(PathStrs, '", "', PathStr),
+    
+    format(string(Code), '
+\t\tvar ~w interface{}
+\t\tif sourceMap, ok := ~w.(map[string]interface{}); ok {
+\t\t\t~w, _ = getNestedField(sourceMap, []string{"~s"})
+\t\t}', [VarName, SourceGoVar, VarName, PathStr]).
+
+%% generate_json_output_expr_mapped(+HeadArgs, +VarMap, +DelimChar, -OutputExpr)
+generate_json_output_expr_mapped(HeadArgs, VarMap, DelimChar, OutputExpr) :-
+    maplist(arg_to_go_var(VarMap), HeadArgs, GoVars),
+    length(HeadArgs, NumArgs),
+    findall('%v', between(1, NumArgs, _), FormatParts),
+    atomic_list_concat(FormatParts, DelimChar, FormatStr),
+    atomic_list_concat(GoVars, ', ', VarList),
+    format(atom(OutputExpr), 'fmt.Sprintf("~s", ~s)', [FormatStr, VarList]).
+
+%% generate_typed_field_extractions(+FieldMappings, +SchemaName, +HeadArgs, -ExtractCode)
+%  Legacy wrapper - kept if needed, but compile_json_to_go_typed now uses mapped version
+generate_typed_field_extractions(FieldMappings, SchemaName, _, ExtractCode) :-
+    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], _, ExtractCode).
 
 %% generate_typed_flat_field_extraction(+FieldName, +VarName, +Type, +Options, -ExtractCode)
 %  Generate type-safe extraction code for a flat field with validation
@@ -11090,6 +11130,9 @@ generate_typed_flat_field_extraction(FieldName, VarName, Type, Options, ExtractC
     ;   Type = boolean ->
         format(atom(ExtractCode), '\t\tvar ~w bool\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a boolean\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
             [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName, VarName, VarName, ValidationCode, Optional])
+    ;   Type = object(_) ->
+        format(atom(ExtractCode), '\t\tvar ~w interface{}\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~w = ~wRaw\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, ValidationCode, Optional])
     ;   % Fallback to untyped for 'any' type
         generate_flat_field_extraction(FieldName, VarName, ExtractCode)
     ).
@@ -11123,6 +11166,9 @@ generate_typed_nested_field_extraction(Path, VarName, Type, Options, ExtractCode
     ;   Type = boolean ->
         format(atom(ExtractCode), '\t\tvar ~w bool\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a boolean\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
             [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, LastFieldStr, VarName, VarName, ValidationCode, Optional])
+    ;   Type = object(_) ->
+        format(atom(ExtractCode), '\t\tvar ~w interface{}\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~w = ~wRaw\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, PathStr, VarName, VarName, ValidationCode, Optional])
     ;   % Fallback to untyped
         generate_nested_field_extraction(Path, VarName, ExtractCode)
     ).
