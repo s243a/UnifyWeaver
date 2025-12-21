@@ -1996,6 +1996,52 @@ class NodeHierarchy:
             'levels': max(levels) + 1 if levels else 0
         }
 
+    def import_from_subdivision(self, subdivision_data: Dict[str, Any]) -> None:
+        """
+        Import hierarchy from SubdivisionRegistry data.
+
+        This enables dynamic hierarchy building from adaptive node subdivision
+        rather than static configuration.
+
+        Args:
+            subdivision_data: Output from SubdivisionRegistry.to_node_hierarchy_data()
+
+        Example:
+            # In adaptive_subdivision.py:
+            registry = SubdivisionRegistry()
+            # ... populate and split nodes ...
+            hierarchy_data = registry.to_node_hierarchy_data()
+
+            # In federated_query.py:
+            hierarchy = NodeHierarchy()
+            hierarchy.import_from_subdivision(hierarchy_data)
+
+            engine = HierarchicalFederatedEngine(
+                router=router,
+                hierarchy=hierarchy
+            )
+        """
+        # Import regions
+        for region_dict in subdivision_data.get("regions", []):
+            region = RegionalNode(
+                region_id=region_dict["region_id"],
+                centroid=np.array(region_dict["centroid"]) if region_dict.get("centroid") is not None else np.zeros(1),
+                topics=region_dict.get("topics", []),
+                child_nodes=region_dict.get("child_nodes", []),
+                parent_region=region_dict.get("parent_region"),
+                level=region_dict.get("level", 0),
+            )
+            self.regions[region.region_id] = region
+
+        # Import leaf nodes
+        for kg_node in subdivision_data.get("leaf_nodes", []):
+            self._leaf_nodes[kg_node.node_id] = kg_node
+
+        # Import node-to-region mappings
+        for node_id, region_id in subdivision_data.get("node_to_region", {}).items():
+            if region_id:  # Only map if parent exists
+                self.node_to_region[node_id] = region_id
+
 
 class HierarchicalFederatedEngine(FederatedQueryEngine):
     """Federated query engine with hierarchical query routing.
