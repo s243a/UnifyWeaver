@@ -1,8 +1,8 @@
 # Proposal: Small-World Routing for Q-A Topology
 
-**Status:** Core Implementation Complete (Phase 3)
-**Version:** 1.1
-**Date:** 2025-12-18
+**Status:** Integration Tests Complete (Phase 7-8)
+**Version:** 1.2
+**Date:** 2025-12-21
 **Context:** Extends [SEED_QUESTION_TOPOLOGY.md](SEED_QUESTION_TOPOLOGY.md) with distributed routing architecture.
 **Implementation:**
 - `src/unifyweaver/targets/python_runtime/kleinberg_router.py` - Core router
@@ -478,6 +478,33 @@ node = MultiInterfaceNode(node_id="hub_1", num_interfaces=num_interfaces)
 |-------|---------|--------|-----|------|
 | 7 | Proper Small-World | `compile_small_world_proper_python/2` | `compile_small_world_proper_go/2` | `compile_small_world_proper_rust/2` |
 | 8 | Multi-Interface Nodes | `compile_multi_interface_node_python/2` | `compile_multi_interface_node_go/2` | `compile_multi_interface_node_rust/2` |
+
+### Phase 7-8 Integration Tests (Complete)
+
+**Test Suite**: `tests/integration/run_all_tests.sh`
+
+All generated code has been tested and verified to compile and pass unit tests:
+
+| Target | Tests | Status | Key Files |
+|--------|-------|--------|-----------|
+| Prolog | 6 | PASS | `tests/prolog/test_small_world_codegen.pl` |
+| Python | 23 | PASS | `tests/integration/test_small_world_integration.py` |
+| Go | 5 | PASS | `tests/integration/generated/smallworld/` |
+| Rust | 5 | PASS | `tests/integration/generated/rust_smallworld/` |
+
+**Python Runtime Enhancements**:
+- Added `AngleOrdering` enum (`COSINE_BASED`, `PROJECTION_2D`)
+- Added `alpha`, `angle_ordering`, `embedding_dim` parameters to `SmallWorldProper`
+
+**Benchmark Results** (from `tests/integration/benchmark_small_world.py`):
+
+| Config | Path Length | Recall@5 | Build Time |
+|--------|-------------|----------|------------|
+| n=100, k_local=10, k_long=5 | 2.3 hops | 100% | 0.73ms/node |
+| n=500, k_local=10, k_long=5 | 2.6 hops | 78% | 2.4ms/node |
+| n=1000, k_local=10, k_long=5 | 2.8 hops | 61% | 4.7ms/node |
+
+Run all tests: `./tests/integration/run_all_tests.sh`
 
 ## Open Questions & Future Work
 
