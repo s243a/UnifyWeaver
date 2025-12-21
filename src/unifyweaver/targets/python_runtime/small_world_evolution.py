@@ -413,7 +413,171 @@ class SmallWorldNetwork:
         self.maturity_score = 0.5 * shortcut_density + 0.5 * quality
 
     # =========================================================================
-    # ROUTING
+    # CROSS-BRANCH LINK DISCOVERY (Semantic similarity across subtrees)
+    # =========================================================================
+
+    def find_cross_branch_candidates(
+        self,
+        node_id: str,
+        similarity_threshold: float = 0.7,
+        max_candidates: int = 5,
+    ) -> List[Tuple[str, float]]:
+        """
+        Find semantically similar nodes in OTHER branches.
+
+        This enables "super-category" style links that connect
+        related content across different parts of the hierarchy.
+
+        Args:
+            node_id: Node to find cross-branch links for
+            similarity_threshold: Minimum similarity to consider
+            max_candidates: Maximum candidates to return
+
+        Returns:
+            List of (candidate_node_id, similarity) tuples
+        """
+        node = self.nodes.get(node_id)
+        if not node:
+            return []
+
+        # Find node's top-level branch
+        my_branch = self._get_branch_id(node_id)
+
+        # Exclude all nodes in the same branch (siblings, ancestors, descendants)
+        same_branch = set()
+        for other_id in self.nodes.keys():
+            other_branch = self._get_branch_id(other_id)
+            if other_branch == my_branch or other_id == self.root_id:
+                same_branch.add(other_id)
+
+        # Find similar nodes in other branches
+        candidates = []
+        for other_id, other_node in self.nodes.items():
+            if other_id in same_branch:
+                continue
+            if other_id in node.get_all_neighbors():
+                continue  # Already connected
+
+            # Compute similarity
+            similarity = 1.0 - cosine_distance(node.centroid, other_node.centroid)
+            if similarity >= similarity_threshold:
+                candidates.append((other_id, similarity))
+
+        # Sort by similarity, return top candidates
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[:max_candidates]
+
+    def _get_ancestors(self, node_id: str) -> Set[str]:
+        """Get all ancestor node IDs."""
+        ancestors = set()
+        current = self.nodes.get(node_id)
+        while current and current.parent_id:
+            ancestors.add(current.parent_id)
+            current = self.nodes.get(current.parent_id)
+        return ancestors
+
+    def _get_branch_id(self, node_id: str) -> Optional[str]:
+        """Get the top-level branch (child of root) this node belongs to."""
+        current = self.nodes.get(node_id)
+        prev_id = node_id
+
+        while current and current.parent_id:
+            if current.parent_id == self.root_id:
+                return current.node_id
+            prev_id = current.node_id
+            current = self.nodes.get(current.parent_id)
+
+        return prev_id if prev_id != self.root_id else None
+
+    def discover_cross_branch_links(
+        self,
+        similarity_threshold: float = 0.6,
+        max_links_per_node: int = 3,
+    ) -> int:
+        """
+        Discover and create cross-branch shortcuts based on semantic similarity.
+
+        This implements "super-category" style links - connecting related
+        content that happens to be in different branches of the hierarchy.
+
+        Returns:
+            Number of new shortcuts created
+        """
+        new_links = 0
+
+        for node_id in list(self.nodes.keys()):
+            node = self.nodes[node_id]
+
+            # Skip if already has many shortcuts
+            if len(node.shortcut_ids) >= node.max_shortcuts:
+                continue
+
+            # Find cross-branch candidates
+            candidates = self.find_cross_branch_candidates(
+                node_id,
+                similarity_threshold=similarity_threshold,
+                max_candidates=max_links_per_node,
+            )
+
+            for candidate_id, similarity in candidates:
+                if node.add_shortcut(candidate_id):
+                    new_links += 1
+
+                    # Create bidirectional link for better routing
+                    candidate = self.nodes.get(candidate_id)
+                    if candidate:
+                        candidate.add_shortcut(node_id)
+
+        return new_links
+
+    # =========================================================================
+    # PATH FOLDING (Freenet-style query-driven shortcuts)
+    # =========================================================================
+
+    def record_successful_path(
+        self,
+        path: List[str],
+        query_embedding: np.ndarray,
+    ) -> int:
+        """
+        Create shortcuts from successful query path (Freenet path folding).
+
+        When query successfully routes: A → B → C → target
+        Create shortcuts: A → target, B → target (skip intermediates)
+
+        Args:
+            path: List of node IDs from query start to result
+            query_embedding: The query that was successful
+
+        Returns:
+            Number of shortcuts created
+        """
+        if len(path) < 3:
+            return 0  # No shortcuts needed for short paths
+
+        shortcuts_created = 0
+        target_id = path[-1]
+        target = self.nodes.get(target_id)
+
+        if not target:
+            return 0
+
+        # Create shortcuts from earlier nodes to target
+        for i, node_id in enumerate(path[:-2]):  # Exclude last two (already connected)
+            node = self.nodes.get(node_id)
+            if not node:
+                continue
+
+            # Only create shortcut if it would save multiple hops
+            hops_saved = len(path) - i - 2
+            if hops_saved >= 2:  # Worth creating shortcut
+                if node.add_shortcut(target_id):
+                    shortcuts_created += 1
+
+        return shortcuts_created
+
+    # =========================================================================
+    # ROUTING (with backtracking)
     # =========================================================================
 
     def route_greedy(
