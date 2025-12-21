@@ -239,6 +239,85 @@ Subdivision dramatically improves routing discrimination:
 
 See: `tests/core/test_subdivision_discrimination.py`
 
+## Routing Algorithm Comparison
+
+**Date:** 2024-12-20
+**Branch:** `feat/hnsw-routing`, `feat/small-world-proper`
+
+### Critical Insight: Hops vs Comparisons
+
+When optimizing federated search, **network hops dominate latency**, not intra-node comparisons:
+
+| Operation | Typical Time | Bottleneck |
+|-----------|-------------|------------|
+| Vector comparison (intra-node) | ~1μs | CPU-bound, very fast |
+| Network hop (inter-node) | 10-200ms | Network latency dominates |
+
+**Implication:** Optimize for fewer hops, not fewer comparisons.
+
+### Algorithm Comparison (100 nodes)
+
+| Algorithm | Avg Connections | Avg Comparisons | Avg Hops | Scaling |
+|-----------|----------------|-----------------|----------|---------|
+| Old Small-World | 3.4 | 86.4 | ~5-10 | O(n) |
+| **Proper Small-World** | **19.6** | **48.1** | **~2** | O(√n) |
+| HNSW | 32.0 | 120.3 | ~3-4 | O(log n) |
+
+### Key Findings
+
+#### 1. Proper Small-World (k-local + k-long) is Best for Mid-Scale
+
+```python
+# Each node has 15-20 connections:
+# - k_local=10: nearest semantic neighbors
+# - k_long=5: random long-range shortcuts
+network = SmallWorldProper(k_local=10, k_long=5)
+```
+
+- **Clustering coefficient:** 0.48-0.67 (high local clustering)
+- **Avg path length:** 1.98-2.42 hops (very short)
+- **k-NN success:** 100% from any starting node
+
+#### 2. HNSW is Best for Large Scale (1000+ nodes)
+
+| Nodes | Comparisons | log₂(n) | Ratio |
+|-------|-------------|---------|-------|
+| 50 | 137 | 5.6 | 24x |
+| 100 | 148 | 6.6 | 22x |
+| 500 | 201 | 9.0 | 22x |
+| 1000 | 207 | 10.0 | 21x |
+
+Constant ratio confirms O(log n) scaling.
+
+#### 3. Backtracking Enables P2P Routing
+
+| Network State | Greedy Success | Backtrack Success |
+|---------------|----------------|-------------------|
+| Immature | 54% | 99% |
+| Mature | 65% | 100% |
+
+Backtracking allows starting from any node with near-100% success.
+
+### When to Use Each Algorithm
+
+| Scale | Network Type | Algorithm | Why |
+|-------|-------------|-----------|-----|
+| 10-100 nodes | Centralized | Proper Small-World | Fewest hops, simple |
+| 100-1000 nodes | Centralized | HNSW | O(log n) scaling |
+| Any size | Distributed/P2P | SW + Backtracking | Start anywhere |
+| 1000+ nodes | Distributed | HNSW layers as entry points | 47 entry points at layer 1 |
+
+### Layer Distribution (HNSW)
+
+```
+Layer 0: 100 nodes (all)     ← full search here
+Layer 1:  47 nodes           ← distributed entry points
+Layer 2:  21 nodes           ← fewer, faster
+Layer 3:   7 nodes           ← coarse routing
+```
+
+For P2P: each peer can be an entry point at layer 1.
+
 ## Future Work
 
 1. **Test with real embedding models** - Current benchmarks use random embeddings
@@ -246,3 +325,70 @@ See: `tests/core/test_subdivision_discrimination.py`
 3. **Benchmark adversarial protection** - Measure overhead of Phase 6f features
 4. **Test larger scales** - 100, 500, 1000 node networks
 5. ~~**Adaptive node subdivision**~~ ✅ Implemented on `feat/adaptive-node-subdivision` branch
+6. ~~**HNSW layered routing**~~ ✅ Implemented on `feat/hnsw-routing` branch
+7. ~~**Proper small-world connectivity**~~ ✅ Implemented on `feat/small-world-proper` branch
+8. **Learned neighbor ordering** - See proposal below
+
+## Proposal: Optimized Neighbor Lookup for Mature Networks
+
+### Problem
+
+Even with good connectivity, routing compares against all k neighbors (k=15-20) at each hop. For mature networks with stable topology, we can precompute optimal lookup order.
+
+### Key Insight
+
+Sort neighbors by angular distance from node's centroid. For a query, binary search to find neighbors in that angular region.
+
+```
+         n3
+        /
+       /  query direction
+      *----→
+     /|\
+    / | \
+  n1  n2  n4   ← neighbors sorted by angle
+
+Binary search: query angle → [n2, n3] candidates
+Only compare 2-3 neighbors instead of all 15
+```
+
+### Proposed Implementation
+
+```python
+class MatureNode:
+    def precompute_neighbor_order(self):
+        '''Sort neighbors by angle from centroid (one-time cost).'''
+        # Project neighbors onto principal components
+        self.neighbor_angles = []
+        for nid in self.neighbors:
+            vec = nodes[nid].vector - self.centroid
+            angle = np.arctan2(vec[1], vec[0])  # or use full PCA
+            self.neighbor_angles.append((angle, nid))
+        self.neighbor_angles.sort()
+
+    def fast_lookup(self, query):
+        '''Binary search for relevant neighbors.'''
+        query_angle = compute_angle(query - self.centroid)
+
+        # Binary search for neighbors near query angle
+        idx = bisect.bisect_left(self.neighbor_angles, (query_angle,))
+
+        # Check neighbors in angular window
+        candidates = self.neighbor_angles[idx-2:idx+3]
+        return [nid for _, nid in candidates]
+```
+
+### Trade-offs
+
+| Aspect | Cost | Benefit |
+|--------|------|---------|
+| Precompute | O(k log k) per node | One-time |
+| Lookup | O(log k) binary search | vs O(k) linear |
+| Memory | O(k) angles per node | Minimal |
+| Staleness | Recompute on topology change | Only for mature networks |
+
+### When to Use
+
+- **Network maturity > 0.7** (stable topology)
+- **High query volume** (amortize precompute cost)
+- **Latency-sensitive** (worth the complexity)
