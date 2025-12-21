@@ -21,9 +21,23 @@ import bisect
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional, Tuple
 from collections import defaultdict
+from enum import Enum
 import heapq
 
 import numpy as np
+
+
+class AngleOrdering(Enum):
+    """
+    Strategy for computing angles to order neighbors for binary search.
+
+    COSINE_BASED: Use arccos(cosine_similarity) - accurate for high-dimensional vectors.
+                  This is the recommended default.
+    PROJECTION_2D: Use atan2 on first 2 dimensions - only accurate for 2D data.
+                   Deprecated: loses discrimination in high-dimensional space.
+    """
+    COSINE_BASED = "cosine_based"
+    PROJECTION_2D = "projection_2d"
 
 
 def compute_angle_2d(direction: np.ndarray) -> float:
@@ -283,8 +297,11 @@ class SmallWorldProper:
         self,
         k_local: int = 10,      # Local neighbors per node
         k_long: int = 5,        # Long-range connections per node
+        alpha: float = 2.0,     # Kleinberg exponent for long-range link probability
         max_neighbors: int = 20,
         rewire_prob: float = 0.1,  # Probability of rewiring
+        angle_ordering: AngleOrdering = AngleOrdering.COSINE_BASED,
+        embedding_dim: int = 384,  # For compatibility with generated code
     ):
         """
         Initialize small-world network.
@@ -292,14 +309,20 @@ class SmallWorldProper:
         Args:
             k_local: Number of local (nearest) neighbors
             k_long: Number of long-range (random) connections
+            alpha: Kleinberg exponent - P(link) ~ 1/distance^alpha
             max_neighbors: Maximum total neighbors per node
             rewire_prob: Probability of rewiring during evolution
+            angle_ordering: Strategy for computing angles (COSINE_BASED recommended)
+            embedding_dim: Embedding dimension (for compatibility)
         """
         self.nodes: Dict[str, SWNode] = {}
         self.k_local = k_local
         self.k_long = k_long
+        self.alpha = alpha
         self.max_neighbors = max_neighbors
         self.rewire_prob = rewire_prob
+        self.angle_ordering = angle_ordering
+        self.embedding_dim = embedding_dim
 
     def add_node(
         self,
