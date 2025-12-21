@@ -10897,3 +10897,247 @@ def health():
 if __name__ == "__main__":
     app.run(host="~w", port=~w)
 ', [Name, Backend, EngineCode, Host, Port]).
+
+
+% =============================================================================
+% KG TOPOLOGY PHASE 7: PROPER SMALL-WORLD NETWORK CODE GENERATION
+% =============================================================================
+%
+% This phase generates code for proper Kleinberg small-world networks with:
+% - k_local: Number of nearest-neighbor connections
+% - k_long: Number of probability-weighted long-range shortcuts
+% - alpha: Distance exponent for long-range link probability P(v) ~ 1/d^alpha
+%
+% Without k_local + k_long structure, routing is just greedy forwarding.
+% With proper structure, Kleinberg routing achieves O(log²n) path length.
+
+%% compile_small_world_proper_python(+Options, -Code)
+%  Generate Python ProperSmallWorldNetwork configuration.
+%  Options:
+%    k_local(K)      - Number of nearest-neighbor connections (default 10)
+%    k_long(K)       - Number of long-range shortcuts (default 5)
+%    alpha(A)        - Distance exponent (default 2.0)
+%    angle_ordering(cosine_based|projection_2d) - Neighbor ordering (default cosine_based)
+
+compile_small_world_proper_python(Options, Code) :-
+    ( member(k_local(KLocal), Options) -> true ; KLocal = 10 ),
+    ( member(k_long(KLong), Options) -> true ; KLong = 5 ),
+    ( member(alpha(Alpha), Options) -> true ; Alpha = 2.0 ),
+    ( member(angle_ordering(AngleOrd), Options) -> true ; AngleOrd = cosine_based ),
+    angle_ordering_to_python(AngleOrd, AngleOrdStr),
+
+    format(string(Code), '
+# KG Topology Phase 7: Proper Small-World Network Configuration
+# Generated from Prolog service definition
+#
+# This network structure enables true Kleinberg routing with O(log²n) path length.
+# Without k_local + k_long, you only have greedy routing (no path length guarantee).
+
+from small_world_proper import ProperSmallWorldNetwork, AngleOrdering
+
+def create_small_world_network(embedding_dim=384):
+    """Create a configured ProperSmallWorldNetwork instance.
+
+    Network structure:
+    - k_local = ~w nearest neighbors (local connectivity)
+    - k_long = ~w long-range shortcuts (probability ~ 1/distance^alpha)
+    - alpha = ~w (distance exponent)
+    - angle_ordering = ~w (how neighbors are sorted for binary search)
+    """
+    return ProperSmallWorldNetwork(
+        embedding_dim=embedding_dim,
+        k_local=~w,
+        k_long=~w,
+        alpha=~w,
+        angle_ordering=AngleOrdering.~w
+    )
+', [KLocal, KLong, Alpha, AngleOrdStr, KLocal, KLong, Alpha, AngleOrdStr]).
+
+%% angle_ordering_to_python(+Ordering, -PythonStr)
+%  Convert Prolog angle ordering atom to Python enum string.
+angle_ordering_to_python(cosine_based, 'COSINE_BASED').
+angle_ordering_to_python(projection_2d, 'PROJECTION_2D').
+angle_ordering_to_python(_, 'COSINE_BASED').  % Default
+
+
+% =============================================================================
+% KG TOPOLOGY PHASE 8: MULTI-INTERFACE NODE CODE GENERATION
+% =============================================================================
+%
+% This phase generates code for scale-free multi-interface nodes with:
+% - gamma: Power-law exponent for interface count distribution P(k) ~ k^(-gamma)
+% - min_interfaces, max_interfaces: Bounds on interface count per node
+% - unified_search: Use single sorted array for O(log n) binary search
+%
+% Multi-interface nodes allow:
+% - Capacity-proportional sizing (hubs have more interfaces, leaves specialize)
+% - Resource sharing (one database, embedding model per physical node)
+% - Internal shortcuts between related interfaces
+
+%% compile_multi_interface_node_python(+Options, -Code)
+%  Generate Python MultiInterfaceNode configuration.
+%  Options:
+%    gamma(G)              - Power-law exponent (default 2.5)
+%    min_interfaces(Min)   - Minimum interfaces per node (default 1)
+%    max_interfaces(Max)   - Maximum interfaces per node (default 100)
+%    unified_search(Bool)  - Use unified binary search (default true)
+%    internal_shortcuts(Bool) - Enable internal shortcuts (default true)
+
+compile_multi_interface_node_python(Options, Code) :-
+    ( member(gamma(Gamma), Options) -> true ; Gamma = 2.5 ),
+    ( member(min_interfaces(MinInt), Options) -> true ; MinInt = 1 ),
+    ( member(max_interfaces(MaxInt), Options) -> true ; MaxInt = 100 ),
+    ( member(unified_search(UniSearch), Options) -> true ; UniSearch = true ),
+    ( member(internal_shortcuts(IntShort), Options) -> true ; IntShort = true ),
+    bool_to_python(UniSearch, UniSearchStr),
+    bool_to_python(IntShort, IntShortStr),
+
+    format(string(Code), '
+# KG Topology Phase 8: Multi-Interface Node Configuration
+# Generated from Prolog service definition
+#
+# Scale-free distribution: P(k) ~ k^(-gamma) where k = interface count
+# - gamma = ~w: Higher values = more leaf nodes, fewer hubs
+# - Most nodes: 1-2 interfaces (specialized)
+# - Few hubs: 20+ interfaces (generalized, may use compression)
+
+from multi_interface_node import (
+    MultiInterfaceNode,
+    MultiInterfaceNetwork,
+    generate_scale_free_interface_count
+)
+
+# Configuration
+MULTI_INTERFACE_CONFIG = {
+    "gamma": ~w,
+    "min_interfaces": ~w,
+    "max_interfaces": ~w,
+    "unified_search": ~w,
+    "internal_shortcuts": ~w
+}
+
+def create_multi_interface_network():
+    """Create a configured MultiInterfaceNetwork instance.
+
+    Interface distribution (power-law with gamma=~w):
+    - ~60%% of nodes: 1-2 interfaces (leaf specialists)
+    - ~25%% of nodes: 3-5 interfaces (mid-tier)
+    - ~12%% of nodes: 6-20 interfaces (regional hubs)
+    - ~3%% of nodes: 20+ interfaces (major hubs)
+    """
+    return MultiInterfaceNetwork(
+        gamma=~w,
+        min_interfaces=~w,
+        max_interfaces=~w,
+        unified_search=~w,
+        internal_shortcuts=~w
+    )
+
+def sample_interface_count():
+    """Sample interface count from power-law distribution."""
+    return generate_scale_free_interface_count(
+        gamma=~w,
+        min_interfaces=~w,
+        max_interfaces=~w
+    )
+', [Gamma, Gamma, MinInt, MaxInt, UniSearchStr, IntShortStr,
+    Gamma, Gamma, MinInt, MaxInt, UniSearchStr, IntShortStr,
+    Gamma, MinInt, MaxInt]).
+
+%% bool_to_python(+Bool, -PythonStr)
+%  Convert Prolog boolean to Python boolean string.
+bool_to_python(true, 'True').
+bool_to_python(false, 'False').
+bool_to_python(_, 'True').  % Default
+
+
+%% compile_small_world_service_python(+Service, -Code)
+%  Generate complete service with proper small-world network support.
+compile_small_world_service_python(service(Name, Options, _Handler), Code) :-
+    % Get transport settings
+    ( member(transport(http(_Path, HttpOpts)), Options) ->
+        ( member(host(Host), HttpOpts) -> true ; Host = '0.0.0.0' ),
+        ( member(port(Port), HttpOpts) -> true ; Port = 8080 )
+    ; Host = '0.0.0.0', Port = 8080
+    ),
+    % Get discovery backend
+    ( member(discovery_backend(Backend), Options) -> true ; Backend = local ),
+    % Get small-world options
+    ( member(small_world(SWOpts), Options) -> true ; SWOpts = [] ),
+    % Get multi-interface options
+    ( member(multi_interface(MIOpts), Options) -> true ; MIOpts = [] ),
+
+    % Generate component code
+    compile_small_world_proper_python(SWOpts, SWCode),
+    compile_multi_interface_node_python(MIOpts, MICode),
+
+    format(atom(Code), '#!/usr/bin/env python3
+# Generated Small-World Network Service: ~w
+# Phase 7-8: Proper Small-World + Multi-Interface Nodes
+
+from flask import Flask, request, jsonify
+import numpy as np
+
+from kg_topology_api import DistributedKGTopologyAPI
+from discovery_clients import create_discovery_client
+
+app = Flask(__name__)
+
+# Phase 7: Proper Small-World Network
+~w
+
+# Phase 8: Multi-Interface Nodes
+~w
+
+# Initialize components
+kg_api = DistributedKGTopologyAPI()
+discovery = create_discovery_client("~w")
+network = create_small_world_network()
+multi_interface_net = create_multi_interface_network()
+
+@app.route("/kg/network/stats", methods=["GET"])
+def network_stats():
+    return jsonify({
+        "node_count": network.node_count,
+        "edge_count": network.edge_count,
+        "k_local": network.k_local,
+        "k_long": network.k_long,
+        "multi_interface_nodes": len(multi_interface_net.nodes)
+    })
+
+@app.route("/kg/network/add_node", methods=["POST"])
+def add_node():
+    data = request.json
+    node_id = data["node_id"]
+    centroid = np.array(data["centroid"])
+    num_interfaces = sample_interface_count()
+    network.add_node(node_id, centroid)
+    return jsonify({
+        "node_id": node_id,
+        "interfaces": num_interfaces,
+        "status": "added"
+    })
+
+@app.route("/kg/network/route", methods=["POST"])
+def route_query():
+    data = request.json
+    query = np.array(data["query_embedding"])
+    max_hops = data.get("max_hops", 10)
+    path = network.route_to_target(query, max_hops=max_hops)
+    return jsonify({
+        "path": path,
+        "hops": len(path),
+        "reached_target": len(path) < max_hops
+    })
+
+@app.route("/kg/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "healthy",
+        "node_id": kg_api.node_id,
+        "network_type": "proper_small_world"
+    })
+
+if __name__ == "__main__":
+    app.run(host="~w", port=~w)
+', [Name, SWCode, MICode, Backend, Host, Port]).

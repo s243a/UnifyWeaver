@@ -7392,3 +7392,385 @@ impl StreamingFederatedEngine {
     }
 }
 ', [MinConf]).
+
+
+% =============================================================================
+% KG TOPOLOGY PHASE 7: PROPER SMALL-WORLD NETWORK CODE GENERATION (RUST)
+% =============================================================================
+%
+% This phase generates Rust code for proper Kleinberg small-world networks.
+% - k_local: Number of nearest-neighbor connections
+% - k_long: Number of probability-weighted long-range shortcuts
+% - alpha: Distance exponent for long-range link probability P(v) ~ 1/d^alpha
+
+%% compile_small_world_proper_rust(+Options, -Code)
+%  Generate Rust ProperSmallWorldNetwork implementation.
+
+compile_small_world_proper_rust(Options, Code) :-
+    ( member(k_local(KLocal), Options) -> true ; KLocal = 10 ),
+    ( member(k_long(KLong), Options) -> true ; KLong = 5 ),
+    ( member(alpha(Alpha), Options) -> true ; Alpha = 2.0 ),
+
+    format(string(Code), '
+// KG Topology Phase 7: Proper Small-World Network
+// Generated from Prolog service definition
+//
+// Network structure enables true Kleinberg routing with O(log²n) path length.
+// k_local = ~w nearest neighbors, k_long = ~w long-range shortcuts
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
+use rand::Rng;
+
+// Configuration constants
+pub const K_LOCAL: usize = ~w;
+pub const K_LONG: usize = ~w;
+pub const ALPHA: f64 = ~w;
+
+/// Neighbor with precomputed angle for binary search
+#[derive(Clone, Debug)]
+pub struct Neighbor {
+    pub node_id: String,
+    pub angle: f64,  // Cosine-based angle
+    pub is_long: bool,
+}
+
+/// Node in the small-world network
+pub struct SmallWorldNode {
+    pub id: String,
+    pub centroid: Vec<f32>,
+    pub neighbors: Vec<Neighbor>,  // Sorted by angle
+}
+
+/// Proper small-world network with k_local + k_long structure
+pub struct SmallWorldNetwork {
+    pub nodes: RwLock<HashMap<String, Arc<RwLock<SmallWorldNode>>>>,
+    pub k_local: usize,
+    pub k_long: usize,
+    pub alpha: f64,
+}
+
+impl SmallWorldNetwork {
+    pub fn new() -> Self {
+        Self {
+            nodes: RwLock::new(HashMap::new()),
+            k_local: K_LOCAL,
+            k_long: K_LONG,
+            alpha: ALPHA,
+        }
+    }
+
+    /// Add a node and establish connections
+    pub fn add_node(&self, node_id: &str, centroid: Vec<f32>) {
+        let node = Arc::new(RwLock::new(SmallWorldNode {
+            id: node_id.to_string(),
+            centroid: centroid.clone(),
+            neighbors: Vec::new(),
+        }));
+
+        {
+            let mut nodes = self.nodes.write().unwrap();
+            nodes.insert(node_id.to_string(), node.clone());
+        }
+
+        if self.nodes.read().unwrap().len() > 1 {
+            self.connect_node(node_id, &centroid);
+        }
+    }
+
+    /// Establish k_local + k_long connections
+    fn connect_node(&self, node_id: &str, centroid: &[f32]) {
+        let nodes = self.nodes.read().unwrap();
+
+        // Collect similarities to all other nodes
+        let mut others: Vec<(String, f64)> = nodes
+            .iter()
+            .filter(|(id, _)| *id != node_id)
+            .map(|(id, n)| {
+                let other = n.read().unwrap();
+                (id.clone(), cosine_similarity(centroid, &other.centroid))
+            })
+            .collect();
+
+        // Sort by similarity (descending)
+        others.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut neighbors = Vec::new();
+
+        // Add k_local nearest neighbors
+        let local_count = self.k_local.min(others.len());
+        for (id, _) in others.iter().take(local_count) {
+            let other = nodes.get(id).unwrap().read().unwrap();
+            let angle = compute_cosine_angle(centroid, &other.centroid);
+            neighbors.push(Neighbor {
+                node_id: id.clone(),
+                angle,
+                is_long: false,
+            });
+        }
+
+        // Add k_long shortcuts using distance-weighted probability
+        if others.len() > self.k_local {
+            let remaining = &others[local_count..];
+            let long_count = self.k_long.min(remaining.len());
+
+            // Compute weights: P(v) ~ 1/distance^alpha
+            let weights: Vec<f64> = remaining
+                .iter()
+                .map(|(_, sim)| {
+                    let distance = (1.0 - sim).max(0.001);
+                    1.0 / distance.powf(self.alpha)
+                })
+                .collect();
+            let total_weight: f64 = weights.iter().sum();
+
+            // Sample k_long shortcuts
+            let mut selected = HashSet::new();
+            let mut rng = rand::thread_rng();
+            while selected.len() < long_count {
+                let r: f64 = rng.gen::<f64>() * total_weight;
+                let mut cumulative = 0.0;
+                for (i, w) in weights.iter().enumerate() {
+                    cumulative += w;
+                    if r <= cumulative && !selected.contains(&i) {
+                        selected.insert(i);
+                        let (id, _) = &remaining[i];
+                        let other = nodes.get(id).unwrap().read().unwrap();
+                        let angle = compute_cosine_angle(centroid, &other.centroid);
+                        neighbors.push(Neighbor {
+                            node_id: id.clone(),
+                            angle,
+                            is_long: true,
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Sort neighbors by angle for binary search
+        neighbors.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Update node
+        drop(nodes);
+        let nodes = self.nodes.read().unwrap();
+        if let Some(node) = nodes.get(node_id) {
+            node.write().unwrap().neighbors = neighbors;
+        }
+    }
+
+    /// Route to target using greedy routing on small-world structure
+    pub fn route_to_target(&self, query: &[f32], max_hops: usize) -> Vec<String> {
+        let nodes = self.nodes.read().unwrap();
+        if nodes.is_empty() {
+            return Vec::new();
+        }
+
+        // Start from first node
+        let mut current_id = nodes.keys().next().unwrap().clone();
+        let mut path = vec![current_id.clone()];
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(current_id.clone());
+
+        for _ in 0..max_hops {
+            let current = nodes.get(&current_id).unwrap().read().unwrap();
+            let current_sim = cosine_similarity(&current.centroid, query);
+
+            // Find best neighbor using binary search
+            let query_angle = compute_cosine_angle(&current.centroid, query);
+            let neighbors = &current.neighbors;
+
+            if neighbors.is_empty() {
+                break;
+            }
+
+            // Binary search for closest angle
+            let idx = neighbors.partition_point(|n| n.angle < query_angle);
+
+            // Check neighbors around index
+            let mut best_id: Option<String> = None;
+            let mut best_sim: f64 = -1.0;
+
+            for check_idx in [idx.saturating_sub(1), idx, (idx + 1).min(neighbors.len().saturating_sub(1))] {
+                if check_idx < neighbors.len() {
+                    let nb = &neighbors[check_idx];
+                    if !visited.contains(&nb.node_id) {
+                        if let Some(neighbor_node) = nodes.get(&nb.node_id) {
+                            let neighbor = neighbor_node.read().unwrap();
+                            let sim = cosine_similarity(&neighbor.centroid, query);
+                            if sim > best_sim {
+                                best_sim = sim;
+                                best_id = Some(nb.node_id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            match best_id {
+                Some(next_id) if best_sim > current_sim => {
+                    visited.insert(next_id.clone());
+                    path.push(next_id.clone());
+                    current_id = next_id;
+                }
+                _ => break,  // No improvement or no unvisited neighbors
+            }
+        }
+
+        path
+    }
+}
+
+/// Compute cosine-based angle (not 2D projection)
+fn compute_cosine_angle(a: &[f32], b: &[f32]) -> f64 {
+    let sim = cosine_similarity(a, b);
+    sim.clamp(-1.0, 1.0).acos()
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    let (dot, norm_a, norm_b) = a.iter().zip(b.iter()).fold((0.0, 0.0, 0.0), |(d, na, nb), (x, y)| {
+        (d + (*x as f64) * (*y as f64), na + (*x as f64).powi(2), nb + (*y as f64).powi(2))
+    });
+    if norm_a == 0.0 || norm_b == 0.0 { 0.0 } else { dot / (norm_a.sqrt() * norm_b.sqrt()) }
+}
+', [KLocal, KLong, KLocal, KLong, Alpha]).
+
+
+% =============================================================================
+% KG TOPOLOGY PHASE 8: MULTI-INTERFACE NODE CODE GENERATION (RUST)
+% =============================================================================
+
+%% compile_multi_interface_node_rust(+Options, -Code)
+%  Generate Rust MultiInterfaceNode implementation with power-law distribution.
+
+compile_multi_interface_node_rust(Options, Code) :-
+    ( member(gamma(Gamma), Options) -> true ; Gamma = 2.5 ),
+    ( member(min_interfaces(MinInt), Options) -> true ; MinInt = 1 ),
+    ( member(max_interfaces(MaxInt), Options) -> true ; MaxInt = 100 ),
+
+    format(string(Code), '
+// KG Topology Phase 8: Multi-Interface Nodes
+// Generated from Prolog service definition
+//
+// Scale-free distribution: P(k) ~ k^(-gamma) where k = interface count
+
+use std::sync::RwLock;
+use rand::Rng;
+
+// Configuration
+pub const GAMMA: f64 = ~w;
+pub const MIN_INTERFACES: usize = ~w;
+pub const MAX_INTERFACES: usize = ~w;
+
+/// Semantic interface on a node
+#[derive(Clone, Debug)]
+pub struct Interface {
+    pub id: String,
+    pub centroid: Vec<f32>,
+    pub topics: Vec<String>,
+}
+
+/// Connection entry in unified sorted array
+#[derive(Clone, Debug)]
+pub struct ConnectionEntry {
+    pub angle: f64,
+    pub interface_id: String,
+    pub target_node: Option<String>,
+}
+
+/// Node with multiple interfaces (scale-free distribution)
+pub struct MultiInterfaceNode {
+    pub node_id: String,
+    pub interfaces: Vec<Interface>,
+    pub all_connections: RwLock<Vec<ConnectionEntry>>,  // Sorted by angle
+}
+
+/// Generate interface count from power-law distribution
+pub fn generate_scale_free_interface_count() -> usize {
+    // Inverse transform sampling: x = x_min * (1 - u)^(1 / (1 - gamma))
+    let mut rng = rand::thread_rng();
+    let u: f64 = rng.gen();
+    let x = (MIN_INTERFACES as f64) * (1.0 - u).powf(1.0 / (1.0 - GAMMA));
+    (x as usize).clamp(MIN_INTERFACES, MAX_INTERFACES)
+}
+
+impl MultiInterfaceNode {
+    pub fn new(node_id: &str) -> Self {
+        Self {
+            node_id: node_id.to_string(),
+            interfaces: Vec::with_capacity(generate_scale_free_interface_count()),
+            all_connections: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Add an interface
+    pub fn add_interface(&mut self, id: &str, centroid: Vec<f32>, topics: Vec<String>) {
+        self.interfaces.push(Interface {
+            id: id.to_string(),
+            centroid,
+            topics,
+        });
+    }
+
+    /// Build unified index sorted by angle for binary search
+    pub fn build_unified_index(&self, reference: &[f32]) {
+        let mut connections: Vec<ConnectionEntry> = self
+            .interfaces
+            .iter()
+            .map(|iface| {
+                let angle = compute_cosine_angle(&iface.centroid, reference);
+                ConnectionEntry {
+                    angle,
+                    interface_id: iface.id.clone(),
+                    target_node: None,
+                }
+            })
+            .collect();
+
+        connections.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap_or(std::cmp::Ordering::Equal));
+
+        *self.all_connections.write().unwrap() = connections;
+    }
+
+    /// Find closest interface using binary search
+    pub fn find_closest_interface(&self, query: &[f32], reference: &[f32]) -> Option<String> {
+        let connections = self.all_connections.read().unwrap();
+        if connections.is_empty() {
+            return None;
+        }
+
+        let query_angle = compute_cosine_angle(query, reference);
+
+        // Binary search
+        let idx = connections.partition_point(|c| c.angle < query_angle);
+
+        // Check neighbors
+        let mut best_id: Option<String> = None;
+        let mut best_dist = f64::MAX;
+
+        for check_idx in [idx.saturating_sub(1), idx] {
+            if check_idx < connections.len() {
+                let dist = (connections[check_idx].angle - query_angle).abs();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_id = Some(connections[check_idx].interface_id.clone());
+                }
+            }
+        }
+
+        best_id
+    }
+}
+
+fn compute_cosine_angle(a: &[f32], b: &[f32]) -> f64 {
+    let (dot, norm_a, norm_b) = a.iter().zip(b.iter()).fold((0.0, 0.0, 0.0), |(d, na, nb), (x, y)| {
+        (d + (*x as f64) * (*y as f64), na + (*x as f64).powi(2), nb + (*y as f64).powi(2))
+    });
+    if norm_a == 0.0 || norm_b == 0.0 {
+        std::f64::consts::FRAC_PI_2
+    } else {
+        let sim = (dot / (norm_a.sqrt() * norm_b.sqrt())).clamp(-1.0, 1.0);
+        sim.acos()
+    }
+}
+', [Gamma, MinInt, MaxInt]).
