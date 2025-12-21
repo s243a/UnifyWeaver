@@ -239,6 +239,85 @@ Subdivision dramatically improves routing discrimination:
 
 See: `tests/core/test_subdivision_discrimination.py`
 
+## Routing Algorithm Comparison
+
+**Date:** 2024-12-20
+**Branch:** `feat/hnsw-routing`, `feat/small-world-proper`
+
+### Critical Insight: Hops vs Comparisons
+
+When optimizing federated search, **network hops dominate latency**, not intra-node comparisons:
+
+| Operation | Typical Time | Bottleneck |
+|-----------|-------------|------------|
+| Vector comparison (intra-node) | ~1μs | CPU-bound, very fast |
+| Network hop (inter-node) | 10-200ms | Network latency dominates |
+
+**Implication:** Optimize for fewer hops, not fewer comparisons.
+
+### Algorithm Comparison (100 nodes)
+
+| Algorithm | Avg Connections | Avg Comparisons | Avg Hops | Scaling |
+|-----------|----------------|-----------------|----------|---------|
+| Old Small-World | 3.4 | 86.4 | ~5-10 | O(n) |
+| **Proper Small-World** | **19.6** | **48.1** | **~2** | O(√n) |
+| HNSW | 32.0 | 120.3 | ~3-4 | O(log n) |
+
+### Key Findings
+
+#### 1. Proper Small-World (k-local + k-long) is Best for Mid-Scale
+
+```python
+# Each node has 15-20 connections:
+# - k_local=10: nearest semantic neighbors
+# - k_long=5: random long-range shortcuts
+network = SmallWorldProper(k_local=10, k_long=5)
+```
+
+- **Clustering coefficient:** 0.48-0.67 (high local clustering)
+- **Avg path length:** 1.98-2.42 hops (very short)
+- **k-NN success:** 100% from any starting node
+
+#### 2. HNSW is Best for Large Scale (1000+ nodes)
+
+| Nodes | Comparisons | log₂(n) | Ratio |
+|-------|-------------|---------|-------|
+| 50 | 137 | 5.6 | 24x |
+| 100 | 148 | 6.6 | 22x |
+| 500 | 201 | 9.0 | 22x |
+| 1000 | 207 | 10.0 | 21x |
+
+Constant ratio confirms O(log n) scaling.
+
+#### 3. Backtracking Enables P2P Routing
+
+| Network State | Greedy Success | Backtrack Success |
+|---------------|----------------|-------------------|
+| Immature | 54% | 99% |
+| Mature | 65% | 100% |
+
+Backtracking allows starting from any node with near-100% success.
+
+### When to Use Each Algorithm
+
+| Scale | Network Type | Algorithm | Why |
+|-------|-------------|-----------|-----|
+| 10-100 nodes | Centralized | Proper Small-World | Fewest hops, simple |
+| 100-1000 nodes | Centralized | HNSW | O(log n) scaling |
+| Any size | Distributed/P2P | SW + Backtracking | Start anywhere |
+| 1000+ nodes | Distributed | HNSW layers as entry points | 47 entry points at layer 1 |
+
+### Layer Distribution (HNSW)
+
+```
+Layer 0: 100 nodes (all)     ← full search here
+Layer 1:  47 nodes           ← distributed entry points
+Layer 2:  21 nodes           ← fewer, faster
+Layer 3:   7 nodes           ← coarse routing
+```
+
+For P2P: each peer can be an entry point at layer 1.
+
 ## Future Work
 
 1. **Test with real embedding models** - Current benchmarks use random embeddings
@@ -246,3 +325,90 @@ See: `tests/core/test_subdivision_discrimination.py`
 3. **Benchmark adversarial protection** - Measure overhead of Phase 6f features
 4. **Test larger scales** - 100, 500, 1000 node networks
 5. ~~**Adaptive node subdivision**~~ ✅ Implemented on `feat/adaptive-node-subdivision` branch
+6. ~~**HNSW layered routing**~~ ✅ Implemented on `feat/hnsw-routing` branch
+7. ~~**Proper small-world connectivity**~~ ✅ Implemented on `feat/small-world-proper` branch
+8. ~~**Angle-based neighbor ordering**~~ ✅ Implemented on `feat/small-world-proper` branch
+
+## Angle-Based Optimized Neighbor Lookup
+
+**Status:** ✅ Implemented in `small_world_proper.py`
+
+### Problem
+
+Even with good connectivity, routing compares against all k neighbors (k=15-20) at each hop. We can reduce comparisons by using angle-sorted neighbor lists.
+
+### Key Insight
+
+Sort neighbors by angular distance from node's centroid. For a query, binary search to find neighbors in that angular region.
+
+```
+         n3
+        /
+       /  query direction
+      *----→
+     /|\
+    / | \
+  n1  n2  n4   ← neighbors sorted by angle
+
+Binary search: query angle → [n2, n3] candidates
+Only compare 2-3 neighbors instead of all 15
+```
+
+### Implementation
+
+The centroid is determined by the node's **data**, not routing connections. Neighbors are pointers to other nodes, so routing changes don't affect the centroid.
+
+```python
+# In SWNode class (small_world_proper.py)
+
+def add_neighbor(self, neighbor_id: str, neighbor_vector: np.ndarray = None) -> bool:
+    """Add neighbor with insertion sort for angle ordering."""
+    if neighbor_vector is not None:
+        angle = self.compute_neighbor_angle(neighbor_vector)
+        # O(log k) search, O(k) insert
+        bisect.insort(self.sorted_neighbors, (angle, neighbor_id))
+    return True
+
+def lookup_neighbors_by_angle(self, query_vector: np.ndarray, window_size: int = 5) -> List[str]:
+    """Find neighbors near query angle using binary search."""
+    query_angle = self.compute_neighbor_angle(query_vector)
+    idx = bisect.bisect_left(self.sorted_neighbors, (query_angle,))
+    # Return neighbors in window, handling wraparound at -pi/+pi
+    return candidates_in_window(idx, window_size)
+```
+
+### Benchmark Results
+
+| Metric | Standard Search | Optimized Search |
+|--------|-----------------|------------------|
+| Avg comparisons | 47.5 | 43.8 |
+| Reduction | - | **7.9%** |
+| Top-1 match rate | 100% | 100% |
+
+### Trade-offs
+
+| Aspect | Cost | Benefit |
+|--------|------|---------|
+| Insert | O(k) per neighbor | Maintains sorted order |
+| Lookup | O(log k) binary search | vs O(k) linear scan |
+| Memory | O(k) angles per node | Minimal overhead |
+| Rebuild | O(k log k) | Corrects numeric drift |
+
+### When to Use
+
+- **Incremental builds**: Insertion sort maintains order as network grows
+- **High query volume**: Amortize the per-neighbor insert cost
+- **Latency-sensitive**: Worth the small memory overhead
+- **Periodic rebuild**: Call `rebuild_all_sorted_neighbors()` to correct drift
+
+### Alternatives Considered But Not Implemented
+
+| Approach | Why Not | Complexity vs Benefit |
+|----------|---------|----------------------|
+| **Angular bins (hash-style)** | With k=15-20 neighbors, binary search is already O(4-5) comparisons. Bins add complexity (granularity choice, wraparound handling) without meaningful speedup. | High complexity, low benefit |
+| **Quantile-based bins** | Pre-allocating bins based on expected angular distribution. Same issue as above - small k makes this overkill. | Medium complexity, low benefit |
+| **PCA-based angle projection** | Using principal components of neighbors instead of first 2 dimensions. Would improve angle accuracy in high-D but adds computational overhead for each angle calculation. | Medium complexity, marginal benefit |
+| **Learned neighbor ordering** | Training a model to predict optimal neighbor order. Training cost isn't justified for evolving networks; only beneficial for mature/stable topologies with very high query volume. | High complexity, situational benefit |
+| **Dual occupancy pruning** | Using bin collisions to identify redundant neighbors for pruning. Interesting idea but conflates routing optimization with topology management - better kept separate. | Medium complexity, unclear benefit |
+
+**Design principle:** The simple sorted-list + binary-search approach achieves most of the benefit (7.9% reduction) with minimal complexity. More sophisticated approaches would add implementation/maintenance burden without proportional gains given the small neighbor count (k=15-20).
