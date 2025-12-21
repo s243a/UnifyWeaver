@@ -1,0 +1,373 @@
+{
+  "timestamp": "2025-12-20T22:01:16.684696",
+  "benchmarks": {
+    "scaling": {
+      "test_name": "scaling",
+      "parameters": {
+        "node_counts": [
+          10,
+          25,
+          50,
+          100,
+          200,
+          500
+        ],
+        "num_queries": 50
+      },
+      "metrics": {
+        "results": [
+          {
+            "num_nodes": 10,
+            "avg_comps_hierarchical": 5.88,
+            "avg_comps_evolved": 5.88,
+            "avg_comps_cross_branch": 6.88,
+            "log_n": 3.321928094887362
+          },
+          {
+            "num_nodes": 25,
+            "avg_comps_hierarchical": 8.76,
+            "avg_comps_evolved": 10.12,
+            "avg_comps_cross_branch": 12.6,
+            "log_n": 4.643856189774724
+          },
+          {
+            "num_nodes": 50,
+            "avg_comps_hierarchical": 13.46,
+            "avg_comps_evolved": 15.54,
+            "avg_comps_cross_branch": 17.42,
+            "log_n": 5.643856189774724
+          },
+          {
+            "num_nodes": 100,
+            "avg_comps_hierarchical": 24.0,
+            "avg_comps_evolved": 24.96,
+            "avg_comps_cross_branch": 26.6,
+            "log_n": 6.643856189774724
+          },
+          {
+            "num_nodes": 200,
+            "avg_comps_hierarchical": 44.0,
+            "avg_comps_evolved": 44.94,
+            "avg_comps_cross_branch": 45.98,
+            "log_n": 7.643856189774724
+          },
+          {
+            "num_nodes": 500,
+            "avg_comps_hierarchical": 104.0,
+            "avg_comps_evolved": 104.98,
+            "avg_comps_cross_branch": 101.5,
+            "log_n": 8.965784284662087
+          }
+        ]
+      },
+      "duration_ms": 3717.4432277679443
+    },
+    "backtrack_vs_greedy": {
+      "test_name": "backtrack_vs_greedy",
+      "parameters": {
+        "node_counts": [
+          20,
+          50,
+          100,
+          200
+        ],
+        "num_queries": 50
+      },
+      "metrics": {
+        "results": [
+          {
+            "num_nodes": 20,
+            "greedy_success_rate": 0.74,
+            "backtrack_success_rate": 1.0,
+            "greedy_avg_comps": 7.36,
+            "backtrack_avg_comps": 43.02,
+            "greedy_avg_hops": 3.04,
+            "backtrack_avg_hops": 1.88
+          },
+          {
+            "num_nodes": 50,
+            "greedy_success_rate": 0.68,
+            "backtrack_success_rate": 1.0,
+            "greedy_avg_comps": 14.16,
+            "backtrack_avg_comps": 96.06,
+            "greedy_avg_hops": 3.3,
+            "backtrack_avg_hops": 2.34
+          },
+          {
+            "num_nodes": 100,
+            "greedy_success_rate": 0.66,
+            "backtrack_success_rate": 0.98,
+            "greedy_avg_comps": 24.42,
+            "backtrack_avg_comps": 162.5,
+            "greedy_avg_hops": 3.22,
+            "backtrack_avg_hops": 2.04
+          },
+          {
+            "num_nodes": 200,
+            "greedy_success_rate": 0.52,
+            "backtrack_success_rate": 0.96,
+            "greedy_avg_comps": 35.74,
+            "backtrack_avg_comps": 295.58,
+            "greedy_avg_hops": 2.68,
+            "backtrack_avg_hops": 1.66
+          }
+        ]
+      },
+      "duration_ms": 224.1206169128418
+    },
+    "evolution_speed": {
+      "test_name": "evolution_speed",
+      "parameters": {
+        "num_nodes": 100,
+        "max_queries": 500,
+        "target_maturity": 0.5
+      },
+      "metrics": {
+        "queries_to_mature": 130,
+        "final_maturity": 0.7579839280881321,
+        "maturity_history": [
+          [
+            0,
+            0.0
+          ],
+          [
+            10,
+            0.08283004659014477
+          ],
+          [
+            20,
+            0.1501117479703757
+          ],
+          [
+            30,
+            0.20008740847445042
+          ],
+          [
+            40,
+            0.259658548675483
+          ],
+          [
+            50,
+            0.309989999049409
+          ],
+          [
+            60,
+            0.3608750876277453
+          ],
+          [
+            70,
+            0.38280939634671085
+          ],
+          [
+            80,
+            0.42110396730245203
+          ],
+          [
+            90,
+            0.46400704840917684
+          ],
+          [
+            100,
+            0.469648877329121
+          ],
+          [
+            110,
+            0.4808960409024157
+          ],
+          [
+            120,
+            0.49985520022164864
+          ],
+          [
+            130,
+            0.5097245559716852
+          ],
+          [
+            140,
+            0.5201616544998275
+          ],
+          [
+            150,
+            0.5270596539285266
+          ],
+          [
+            160,
+            0.5401947367878481
+          ],
+          [
+            170,
+            0.5414384599198234
+          ],
+          [
+            180,
+            0.5457696651079205
+          ],
+          [
+            190,
+            0.5431138981275625
+          ],
+          [
+            200,
+            0.5538679028442655
+          ],
+          [
+            210,
+            0.5612154194867321
+          ],
+          [
+            220,
+            0.5669056117088986
+          ],
+          [
+            230,
+            0.5667736785153425
+          ],
+          [
+            240,
+            0.5813398662168862
+          ],
+          [
+            250,
+            0.5874530209439404
+          ],
+          [
+            260,
+            0.5911124443978875
+          ],
+          [
+            270,
+            0.598285208131317
+          ],
+          [
+            280,
+            0.6064313911915292
+          ],
+          [
+            290,
+            0.6157128934036579
+          ],
+          [
+            300,
+            0.6237061321741628
+          ],
+          [
+            310,
+            0.6310784764957591
+          ],
+          [
+            320,
+            0.6344867858815737
+          ],
+          [
+            330,
+            0.639926091015764
+          ],
+          [
+            340,
+            0.649177108178572
+          ],
+          [
+            350,
+            0.6547111908125276
+          ],
+          [
+            360,
+            0.6603318003507987
+          ],
+          [
+            370,
+            0.6649518379446462
+          ],
+          [
+            380,
+            0.6702012304632798
+          ],
+          [
+            390,
+            0.6804151357290577
+          ],
+          [
+            400,
+            0.6910728093833358
+          ],
+          [
+            410,
+            0.697827053903535
+          ],
+          [
+            420,
+            0.700932379247797
+          ],
+          [
+            430,
+            0.7063448195926412
+          ],
+          [
+            440,
+            0.7148410715944986
+          ],
+          [
+            450,
+            0.7220765219081121
+          ],
+          [
+            460,
+            0.7287422417121585
+          ],
+          [
+            470,
+            0.729196671262863
+          ],
+          [
+            480,
+            0.7363637330783557
+          ],
+          [
+            490,
+            0.7456756060144392
+          ],
+          [
+            500,
+            0.7579839280881321
+          ]
+        ],
+        "total_shortcuts": 740
+      },
+      "duration_ms": 841.0694599151611
+    },
+    "cross_branch": {
+      "test_name": "cross_branch_effectiveness",
+      "parameters": {
+        "num_nodes": 100,
+        "num_branches": 5,
+        "num_queries": 100
+      },
+      "metrics": {
+        "links_created": 59,
+        "avg_hops_before": 2.98,
+        "avg_hops_after": 2.71,
+        "avg_comps_before": 24.0,
+        "avg_comps_after": 24.68,
+        "hop_reduction_pct": 9.060402684563762,
+        "comp_reduction_pct": -2.833333333333332
+      },
+      "duration_ms": 77.74186134338379
+    },
+    "start_anywhere": {
+      "test_name": "start_anywhere",
+      "parameters": {
+        "num_nodes": 100,
+        "num_queries": 100
+      },
+      "metrics": {
+        "immature_greedy_success": 0.54,
+        "immature_backtrack_success": 0.99,
+        "mature_greedy_success": 0.65,
+        "mature_backtrack_success": 1.0,
+        "final_maturity": 0.5451907065432399,
+        "total_shortcuts": 284
+      },
+      "duration_ms": 817.5075054168701
+    }
+  }
+}
