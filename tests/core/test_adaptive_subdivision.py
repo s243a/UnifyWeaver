@@ -428,6 +428,97 @@ class TestSubdivisionRegistry(unittest.TestCase):
         self.assertEqual(len(registry.get_leaf_nodes()), 2)
 
 
+class TestHierarchyIntegration(unittest.TestCase):
+    """Tests for HierarchicalFederatedEngine integration."""
+
+    def test_to_regional_node(self):
+        """Test REGION node converts to regional dict."""
+        node = SubdividableNode(
+            node_id="region_1",
+            node_type=NodeType.REGION,
+            centroid=np.array([0.5, 0.5]),
+            topics=["topic_a", "topic_b"],
+            children_ids=["child_1", "child_2"],
+        )
+        regional = node.to_regional_node()
+
+        self.assertIsNotNone(regional)
+        self.assertEqual(regional["region_id"], "region_1")
+        self.assertEqual(regional["child_nodes"], ["child_1", "child_2"])
+
+    def test_to_regional_node_leaf_returns_none(self):
+        """Test LEAF node returns None for to_regional_node."""
+        node = SubdividableNode(node_id="leaf_1")
+        self.assertIsNone(node.to_regional_node())
+
+    def test_get_kg_nodes(self):
+        """Test extracting KGNodes from registry."""
+        registry = SubdivisionRegistry()
+        node1 = SubdividableNode(
+            node_id="leaf_1",
+            endpoint="http://node1:8080",
+            centroid=np.array([1.0, 0.0]),
+        )
+        node2 = SubdividableNode(
+            node_id="leaf_2",
+            endpoint="http://node2:8080",
+            centroid=np.array([0.0, 1.0]),
+        )
+        registry.register(node1)
+        registry.register(node2)
+
+        kg_nodes = registry.get_kg_nodes()
+
+        self.assertEqual(len(kg_nodes), 2)
+        self.assertTrue(all(hasattr(n, "node_id") for n in kg_nodes))
+
+    def test_to_node_hierarchy_data(self):
+        """Test export for NodeHierarchy integration."""
+        registry = SubdivisionRegistry()
+
+        # Create and populate a node
+        node = SubdividableNode(
+            node_id="parent",
+            config=SplitConfig(max_documents=50, min_child_documents=10),
+        )
+        for i in range(100):
+            node.add_document(f"doc_{i}", np.random.randn(10))
+
+        registry.register(node)
+        registry.check_and_split_all(seed=42)
+
+        # Export hierarchy data
+        data = registry.to_node_hierarchy_data()
+
+        self.assertIn("regions", data)
+        self.assertIn("leaf_nodes", data)
+        self.assertIn("node_to_region", data)
+        self.assertEqual(len(data["regions"]), 1)  # One region (parent)
+        self.assertEqual(len(data["leaf_nodes"]), 2)  # Two children
+
+    def test_route_multi_k(self):
+        """Test multi-candidate routing."""
+        registry = SubdivisionRegistry()
+
+        # Create three distinct nodes
+        for i, center in enumerate([[1, 0, 0], [0, 1, 0], [0, 0, 1]]):
+            node = SubdividableNode(
+                node_id=f"node_{i}",
+                centroid=np.array(center, dtype=float),
+            )
+            registry.register(node)
+
+        # Query near first cluster
+        query = np.array([0.9, 0.1, 0.0])
+        results = registry.route_multi_k(query, k=2)
+
+        self.assertEqual(len(results), 2)
+        # First result should be node_0 (most similar)
+        self.assertEqual(results[0][0].node_id, "node_0")
+        # Similarity should be highest
+        self.assertGreater(results[0][1], results[1][1])
+
+
 class TestMergeNodes(unittest.TestCase):
     """Tests for merge functionality."""
 

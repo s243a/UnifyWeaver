@@ -214,6 +214,27 @@ class SubdividableNode:
             embedding_model=self.embedding_model,
         )
 
+    def to_regional_node(self) -> Optional[Dict[str, Any]]:
+        """
+        Convert REGION node to RegionalNode-compatible dict.
+
+        For integration with HierarchicalFederatedEngine.
+
+        Returns:
+            Dict compatible with RegionalNode dataclass, or None if not a REGION
+        """
+        if self.node_type != NodeType.REGION:
+            return None
+
+        return {
+            "region_id": self.node_id,
+            "centroid": self.centroid,
+            "topics": self.topics,
+            "child_nodes": self.children_ids,
+            "parent_region": self.parent_id,
+            "level": self.level,
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -638,3 +659,151 @@ class SubdivisionRegistry:
             "leaf_count": len(self.get_leaf_nodes()),
             "region_count": len(self.get_region_nodes()),
         }
+
+    # =========================================================================
+    # HIERARCHICAL FEDERATION INTEGRATION
+    # =========================================================================
+
+    def get_kg_nodes(self) -> List[KGNode]:
+        """
+        Get all LEAF nodes as KGNodes for router registration.
+
+        Returns:
+            List of KGNode objects for discovery service registration
+        """
+        return [node.to_kg_node() for node in self.get_leaf_nodes()]
+
+    def get_regional_nodes_for_hierarchy(self) -> List[Dict[str, Any]]:
+        """
+        Get all REGION nodes in format compatible with NodeHierarchy.
+
+        Returns:
+            List of dicts compatible with RegionalNode dataclass
+        """
+        regions = []
+        for node in self.get_region_nodes():
+            regional = node.to_regional_node()
+            if regional:
+                regions.append(regional)
+        return regions
+
+    def to_node_hierarchy_data(self) -> Dict[str, Any]:
+        """
+        Export registry data for NodeHierarchy initialization.
+
+        This allows HierarchicalFederatedEngine to use dynamically
+        subdivided nodes without manual hierarchy configuration.
+
+        Returns:
+            Dict with 'regions' and 'nodes' for hierarchy building
+
+        Example:
+            registry = SubdivisionRegistry()
+            # ... populate and split nodes ...
+            hierarchy_data = registry.to_node_hierarchy_data()
+
+            # Use with HierarchicalFederatedEngine:
+            from federated_query import NodeHierarchy, HierarchyConfig
+            hierarchy = NodeHierarchy(HierarchyConfig())
+            hierarchy.import_from_subdivision(hierarchy_data)
+        """
+        return {
+            "regions": self.get_regional_nodes_for_hierarchy(),
+            "leaf_nodes": [n.to_kg_node() for n in self.get_leaf_nodes()],
+            "node_to_region": {
+                node.node_id: node.parent_id
+                for node in self.nodes.values()
+                if node.parent_id is not None
+            },
+        }
+
+    def sync_to_discovery(
+        self,
+        discovery_client: Any,
+        service_name: str = "kg-node"
+    ) -> int:
+        """
+        Sync all nodes to a discovery service.
+
+        Registers LEAF nodes as query targets and REGION nodes
+        as routing metadata.
+
+        Args:
+            discovery_client: DiscoveryClient implementation
+            service_name: Service name for registration
+
+        Returns:
+            Number of nodes registered
+        """
+        count = 0
+
+        for node in self.nodes.values():
+            tags = [node.node_type.value]
+            if node.topics:
+                tags.extend(node.topics)
+
+            meta = {
+                "node_type": node.node_type.value,
+                "document_count": str(node.metrics.document_count),
+                "level": str(node.level),
+            }
+
+            if node.node_type == NodeType.REGION:
+                meta["children"] = ",".join(node.children_ids)
+            if node.parent_id:
+                meta["parent"] = node.parent_id
+
+            # Register with discovery
+            # Assumes discovery_client has register() method
+            if hasattr(discovery_client, "register"):
+                discovery_client.register(
+                    service_id=node.node_id,
+                    service_name=service_name,
+                    address=node.endpoint or "localhost",
+                    port=8080,  # Default port
+                    tags=tags,
+                    meta=meta,
+                )
+                count += 1
+
+        return count
+
+    def route_multi_k(
+        self,
+        query_embedding: np.ndarray,
+        k: int = 3,
+        start_node_id: Optional[str] = None,
+    ) -> List[Tuple[SubdividableNode, float]]:
+        """
+        Route query to top-k LEAF nodes.
+
+        Unlike route_to_leaf which returns single best, this returns
+        multiple candidates ranked by similarity.
+
+        Args:
+            query_embedding: Query vector
+            k: Number of candidates to return
+            start_node_id: Optional root to start from
+
+        Returns:
+            List of (node, similarity) tuples sorted by similarity
+        """
+        # Get all leaf nodes
+        leaves = self.get_leaf_nodes()
+        if not leaves:
+            return []
+
+        # If starting from a specific region, filter to descendants
+        if start_node_id:
+            node = self.nodes.get(start_node_id)
+            if node and node.node_type == NodeType.REGION:
+                leaves = self.get_descendants(start_node_id)
+
+        # Rank by similarity
+        ranked = []
+        for leaf in leaves:
+            sim = self._similarity(query_embedding, leaf.centroid)
+            ranked.append((leaf, sim))
+
+        ranked.sort(key=lambda x: x[1], reverse=True)
+        return ranked[:k]
