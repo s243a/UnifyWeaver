@@ -860,6 +860,8 @@ namespace UnifyWeaver.QueryRuntime
                 return value ?? nullKey;
             }
 
+            var joinKeyCount = join.LeftKeys.Count;
+
             if (context is not null && (join.Left is RelationScanNode || join.Right is RelationScanNode))
             {
                 if (join.Left is RelationScanNode leftScan && join.Right is RelationScanNode rightScan)
@@ -1113,6 +1115,206 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
+            if (context is not null && (join.Left is MaterializeNode || join.Right is MaterializeNode))
+            {
+                if (join.Left is MaterializeNode leftMaterialize && join.Right is MaterializeNode rightMaterialize)
+                {
+                    var leftRows = Evaluate(leftMaterialize, context);
+                    var rightRows = Evaluate(rightMaterialize, context);
+                    var leftMaterialized = leftRows as List<object[]> ?? leftRows.ToList();
+                    var rightMaterialized = rightRows as List<object[]> ?? rightRows.ToList();
+
+                    if (leftMaterialized.Count <= rightMaterialized.Count)
+                    {
+                        if (joinKeyCount == 1)
+                        {
+                            var index = GetMaterializeFactIndex(leftMaterialize.Id, join.LeftKeys[0], leftMaterialized, context);
+                            foreach (var rightTuple in rightMaterialized)
+                            {
+                                if (rightTuple is null) continue;
+
+                                var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
+                                if (!index.TryGetValue(lookupKey, out var bucket))
+                                {
+                                    continue;
+                                }
+
+                                foreach (var leftTuple in bucket)
+                                {
+                                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                }
+                            }
+
+                            yield break;
+                        }
+
+                        var joinIndex = GetMaterializeJoinIndex(leftMaterialize.Id, join.LeftKeys, leftMaterialized, context);
+                        foreach (var rightTuple in rightMaterialized)
+                        {
+                            if (rightTuple is null) continue;
+
+                            var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                            var wrapper = new RowWrapper(key);
+
+                            if (!joinIndex.TryGetValue(wrapper, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var leftTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+
+                        yield break;
+                    }
+
+                    if (joinKeyCount == 1)
+                    {
+                        var index = GetMaterializeFactIndex(rightMaterialize.Id, join.RightKeys[0], rightMaterialized, context);
+                        foreach (var leftTuple in leftMaterialized)
+                        {
+                            if (leftTuple is null) continue;
+
+                            var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
+                            if (!index.TryGetValue(lookupKey, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var rightTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+
+                        yield break;
+                    }
+
+                    var joinIndexFallback = GetMaterializeJoinIndex(rightMaterialize.Id, join.RightKeys, rightMaterialized, context);
+                    foreach (var leftTuple in leftMaterialized)
+                    {
+                        if (leftTuple is null) continue;
+
+                        var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                        var wrapper = new RowWrapper(key);
+
+                        if (!joinIndexFallback.TryGetValue(wrapper, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var rightTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+
+                if (join.Left is MaterializeNode leftOnlyMaterialize)
+                {
+                    var buildRows = Evaluate(leftOnlyMaterialize, context);
+                    var buildMaterialized = buildRows as List<object[]> ?? buildRows.ToList();
+                    var probe = Evaluate(join.Right, context);
+
+                    if (joinKeyCount == 1)
+                    {
+                        var index = GetMaterializeFactIndex(leftOnlyMaterialize.Id, join.LeftKeys[0], buildMaterialized, context);
+                        foreach (var rightTuple in probe)
+                        {
+                            if (rightTuple is null) continue;
+
+                            var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
+                            if (!index.TryGetValue(lookupKey, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var leftTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+
+                        yield break;
+                    }
+
+                    var joinIndex = GetMaterializeJoinIndex(leftOnlyMaterialize.Id, join.LeftKeys, buildMaterialized, context);
+                    foreach (var rightTuple in probe)
+                    {
+                        if (rightTuple is null) continue;
+
+                        var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                        var wrapper = new RowWrapper(key);
+
+                        if (!joinIndex.TryGetValue(wrapper, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var leftTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+
+                if (join.Right is MaterializeNode rightOnlyMaterialize)
+                {
+                    var buildRows = Evaluate(rightOnlyMaterialize, context);
+                    var buildMaterialized = buildRows as List<object[]> ?? buildRows.ToList();
+                    var probe = Evaluate(join.Left, context);
+
+                    if (joinKeyCount == 1)
+                    {
+                        var index = GetMaterializeFactIndex(rightOnlyMaterialize.Id, join.RightKeys[0], buildMaterialized, context);
+                        foreach (var leftTuple in probe)
+                        {
+                            if (leftTuple is null) continue;
+
+                            var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
+                            if (!index.TryGetValue(lookupKey, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var rightTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+
+                        yield break;
+                    }
+
+                    var joinIndex = GetMaterializeJoinIndex(rightOnlyMaterialize.Id, join.RightKeys, buildMaterialized, context);
+                    foreach (var leftTuple in probe)
+                    {
+                        if (leftTuple is null) continue;
+
+                        var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                        var wrapper = new RowWrapper(key);
+
+                        if (!joinIndex.TryGetValue(wrapper, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var rightTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+            }
+
             static int EstimateBuildCost(PlanNode node) => node switch
             {
                 ParamSeedNode => 0,
@@ -1128,7 +1330,6 @@ namespace UnifyWeaver.QueryRuntime
             };
 
             var buildLeft = EstimateBuildCost(join.Left) < EstimateBuildCost(join.Right);
-            var joinKeyCount = join.LeftKeys.Count;
             var left = Evaluate(join.Left, context);
             var right = Evaluate(join.Right, context);
 
@@ -1371,6 +1572,42 @@ namespace UnifyWeaver.QueryRuntime
             return index;
         }
 
+        private Dictionary<RowWrapper, List<object[]>> GetMaterializeJoinIndex(
+            string id,
+            IReadOnlyList<int> keyIndices,
+            IReadOnlyList<object[]> rows,
+            EvaluationContext context)
+        {
+            var signature = string.Join(",", keyIndices);
+            var cacheKey = (id, signature);
+
+            if (context.MaterializeJoinIndices.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+
+            var index = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            foreach (var tuple in rows)
+            {
+                if (tuple is null) continue;
+
+                var key = BuildKeyFromTuple(tuple, keyIndices);
+                var wrapper = new RowWrapper(key);
+
+                if (!index.TryGetValue(wrapper, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    index[wrapper] = bucket;
+                }
+
+                bucket.Add(tuple);
+            }
+
+            context.MaterializeJoinIndices[cacheKey] = index;
+            return index;
+        }
+
         private Dictionary<object, List<object[]>> GetFactIndex(
             PredicateId predicate,
             int columnIndex,
@@ -1405,6 +1642,43 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             context.FactIndices[cacheKey] = index;
+            return index;
+        }
+
+        private Dictionary<object, List<object[]>> GetMaterializeFactIndex(
+            string id,
+            int columnIndex,
+            IReadOnlyList<object[]> rows,
+            EvaluationContext context)
+        {
+            var cacheKey = (id, columnIndex);
+            if (context.MaterializeFactIndices.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+
+            var index = new Dictionary<object, List<object[]>>();
+
+            foreach (var tuple in rows)
+            {
+                if (tuple is null) continue;
+
+                var value = columnIndex >= 0 && columnIndex < tuple.Length
+                    ? tuple[columnIndex]
+                    : null;
+
+                var key = value ?? NullFactIndexKey;
+
+                if (!index.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<object[]>();
+                    index[key] = bucket;
+                }
+
+                bucket.Add(tuple);
+            }
+
+            context.MaterializeFactIndices[cacheKey] = index;
             return index;
         }
 
@@ -2836,6 +3110,10 @@ namespace UnifyWeaver.QueryRuntime
             public QueryExecutionTrace? Trace { get; }
 
             public Dictionary<string, List<object[]>> Materialized { get; } = new();
+
+            public Dictionary<(string Id, int ColumnIndex), Dictionary<object, List<object[]>>> MaterializeFactIndices { get; } = new();
+
+            public Dictionary<(string Id, string KeySignature), Dictionary<RowWrapper, List<object[]>>> MaterializeJoinIndices { get; } = new();
 
             public Dictionary<PredicateId, List<object[]>> Facts { get; }
 
