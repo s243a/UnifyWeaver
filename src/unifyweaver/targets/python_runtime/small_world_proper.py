@@ -30,14 +30,39 @@ def compute_angle_2d(direction: np.ndarray) -> float:
     """
     Compute angle from first two components of a direction vector.
 
-    For high-dimensional vectors, we project onto first 2 dims.
-    A more sophisticated version would use PCA on neighbors.
+    DEPRECATED: Use compute_cosine_angle for high-dimensional vectors.
+    This is only accurate for 2D data.
 
     Returns angle in radians [-pi, pi].
     """
     if len(direction) < 2:
         return 0.0
     return math.atan2(direction[1], direction[0])
+
+
+def compute_cosine_angle(vec: np.ndarray, reference: np.ndarray) -> float:
+    """
+    Compute angle between vector and reference using cosine similarity.
+
+    Returns angle in radians [0, pi]. This gives meaningful ordering
+    in high-dimensional space based on actual vector similarity.
+
+    Args:
+        vec: The vector to measure
+        reference: Reference direction (e.g., centroid)
+
+    Returns:
+        Angle in radians [0, pi]
+    """
+    norm_vec = np.linalg.norm(vec)
+    norm_ref = np.linalg.norm(reference)
+    if norm_vec == 0 or norm_ref == 0:
+        return math.pi / 2  # Perpendicular if zero vector
+
+    similarity = np.dot(vec, reference) / (norm_vec * norm_ref)
+    # Clamp to [-1, 1] to handle numerical errors
+    similarity = max(-1.0, min(1.0, similarity))
+    return math.acos(similarity)
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -127,9 +152,8 @@ class SWNode:
         self._centroid_count = n - 1
 
     def compute_neighbor_angle(self, neighbor_vector: np.ndarray) -> float:
-        """Compute angle of neighbor relative to centroid."""
-        direction = neighbor_vector - self.centroid
-        return compute_angle_2d(direction)
+        """Compute angle of neighbor relative to centroid using cosine."""
+        return compute_cosine_angle(neighbor_vector, self.centroid)
 
     def add_neighbor(self, neighbor_id: str, neighbor_vector: np.ndarray = None) -> bool:
         """

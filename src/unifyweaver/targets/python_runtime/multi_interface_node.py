@@ -31,10 +31,41 @@ import numpy as np
 
 
 def compute_angle_2d(direction: np.ndarray) -> float:
-    """Compute angle from first two components of direction vector."""
+    """
+    Compute angle from first two components of direction vector.
+
+    DEPRECATED: Use compute_cosine_angle for high-dimensional vectors.
+    This is only accurate for 2D data.
+    """
     if len(direction) < 2:
         return 0.0
     return math.atan2(direction[1], direction[0])
+
+
+def compute_cosine_angle(vec: np.ndarray, reference: np.ndarray) -> float:
+    """
+    Compute angle between vector and reference using cosine similarity.
+
+    Returns angle in radians [0, pi]. This gives meaningful ordering
+    in high-dimensional space based on actual vector similarity,
+    not just first 2 dimensions.
+
+    Args:
+        vec: The vector to measure
+        reference: Reference direction (e.g., centroid)
+
+    Returns:
+        Angle in radians [0, pi]
+    """
+    norm_vec = np.linalg.norm(vec)
+    norm_ref = np.linalg.norm(reference)
+    if norm_vec == 0 or norm_ref == 0:
+        return math.pi / 2  # Perpendicular if zero vector
+
+    similarity = np.dot(vec, reference) / (norm_vec * norm_ref)
+    # Clamp to [-1, 1] to handle numerical errors
+    similarity = max(-1.0, min(1.0, similarity))
+    return math.acos(similarity)
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -126,12 +157,12 @@ class MultiInterfaceNode:
         Maintains sorted order by angle from node centroid.
         """
         # Compute angle from current centroid
+        # Use cosine angle from centroid for proper high-dimensional ordering
         if self._centroid is not None:
-            direction = interface.centroid - self._centroid
+            angle = compute_cosine_angle(interface.centroid, self._centroid)
         else:
-            direction = interface.centroid
-
-        angle = compute_angle_2d(direction)
+            # First interface - use angle from origin (arbitrary but consistent)
+            angle = compute_cosine_angle(interface.centroid, np.ones_like(interface.centroid))
 
         # Insert in sorted order
         bisect.insort(self.interfaces, (angle, interface))
@@ -181,9 +212,8 @@ class MultiInterfaceNode:
         if iface_connections >= self.max_connections_per_interface:
             return False
 
-        # Compute angle from source interface centroid
-        direction = target_centroid - source_iface.centroid
-        angle = compute_angle_2d(direction)
+        # Compute cosine angle from source interface centroid
+        angle = compute_cosine_angle(target_centroid, source_iface.centroid)
 
         conn = ExternalConnection(
             angle=angle,
@@ -213,9 +243,8 @@ class MultiInterfaceNode:
         if not self.interfaces:
             return []
 
-        # Compute query angle from node centroid
-        direction = query - self.centroid
-        query_angle = compute_angle_2d(direction)
+        # Compute query angle from node centroid using cosine
+        query_angle = compute_cosine_angle(query, self.centroid)
 
         # Binary search for starting position
         idx = bisect.bisect_left(self.interfaces, (query_angle,))
@@ -269,9 +298,8 @@ class MultiInterfaceNode:
             if iface_centroid is None:
                 return iface_connections[:window_size * 2]
 
-            # Compute query angle from interface centroid
-            direction = query - iface_centroid
-            query_angle = compute_angle_2d(direction)
+            # Compute query angle from interface centroid using cosine
+            query_angle = compute_cosine_angle(query, iface_centroid)
 
             # Binary search within interface connections
             angles = [c.angle for c in iface_connections]
