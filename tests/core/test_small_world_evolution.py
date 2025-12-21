@@ -402,6 +402,146 @@ class TestPathFolding(unittest.TestCase):
         self.assertLessEqual(len(path2), len(path1))
 
 
+class TestBacktracking(unittest.TestCase):
+    """Tests for backtracking routing."""
+
+    def create_branching_network(self) -> SmallWorldNetwork:
+        """Create a network where backtracking is needed."""
+        np.random.seed(42)
+        network = SmallWorldNetwork(max_shortcuts_per_node=5)
+        dim = 10
+
+        # Create a tree where target is in a different branch than
+        # the greedy path would take
+        #
+        #           root (0.5, 0.5, ...)
+        #          /    \
+        #     left       right
+        #    /    \         \
+        #  left_a  left_b   target  <-- target is here
+        #
+        # Query will be close to left branch initially, but target is in right
+
+        # Root - middle ground
+        root_centroid = np.ones(dim) * 0.5
+        root_centroid = root_centroid / np.linalg.norm(root_centroid)
+        network.add_node("root", root_centroid)
+
+        # Left branch - dimensions 0-4
+        left_centroid = np.zeros(dim)
+        left_centroid[0:5] = 1.0
+        left_centroid = left_centroid / np.linalg.norm(left_centroid)
+        network.add_node("left", left_centroid, parent_id="root")
+        network.nodes["root"].children_ids.append("left")
+
+        # Left children
+        for i, name in enumerate(["left_a", "left_b"]):
+            centroid = left_centroid + np.random.randn(dim) * 0.1
+            centroid = centroid / np.linalg.norm(centroid)
+            network.add_node(name, centroid, parent_id="left")
+            network.nodes["left"].children_ids.append(name)
+
+        # Right branch - dimensions 5-9
+        right_centroid = np.zeros(dim)
+        right_centroid[5:10] = 1.0
+        right_centroid = right_centroid / np.linalg.norm(right_centroid)
+        network.add_node("right", right_centroid, parent_id="root")
+        network.nodes["root"].children_ids.append("right")
+
+        # Target in right branch
+        target_centroid = right_centroid + np.random.randn(dim) * 0.1
+        target_centroid = target_centroid / np.linalg.norm(target_centroid)
+        network.add_node("target", target_centroid, parent_id="right")
+        network.nodes["right"].children_ids.append("target")
+
+        return network
+
+    def test_backtrack_finds_target_from_wrong_branch(self):
+        """Test that backtracking can find target after going wrong way."""
+        network = self.create_branching_network()
+
+        # Query for the target
+        target = network.nodes["target"]
+        query = target.centroid.copy()
+
+        # Start from left_a (wrong branch)
+        # Without backtracking, greedy would get stuck
+        path_no_bt, _ = network.route_greedy(
+            query, start_node_id="left_a", use_backtrack=False
+        )
+        print(f"\nWithout backtrack from left_a: {path_no_bt}")
+
+        # With backtracking, should find target
+        path_bt, comps = network.route_greedy(
+            query, start_node_id="left_a", use_backtrack=True
+        )
+        print(f"With backtrack from left_a: {path_bt} ({comps} comparisons)")
+
+        # Backtracking should reach target (or at least get closer)
+        self.assertIn("target", path_bt)
+
+    def test_backtrack_goes_up_then_down(self):
+        """Test that backtracking can go up hierarchy then down another branch."""
+        network = self.create_branching_network()
+
+        target = network.nodes["target"]
+        query = target.centroid.copy()
+
+        # Start from left branch
+        path, comps = network.route_greedy(
+            query, start_node_id="left", use_backtrack=True
+        )
+
+        print(f"\nPath from left to target: {path} ({comps} comparisons)")
+
+        # Backtracking should find target even from wrong branch
+        # The path returned is the final path to best node found
+        self.assertIn("target", path)
+
+        # Comparisons should show we explored multiple nodes
+        # (had to backtrack through root to reach right branch)
+        self.assertGreater(comps, 2)  # More than just direct neighbors
+
+    def test_backtrack_from_any_node(self):
+        """Test that backtracking allows starting from any node."""
+        network = self.create_branching_network()
+
+        target = network.nodes["target"]
+        query = target.centroid.copy()
+
+        # Try starting from every node
+        success_count = 0
+        for start_id in network.nodes.keys():
+            path, _ = network.route_greedy(
+                query, start_node_id=start_id, use_backtrack=True
+            )
+            if "target" in path:
+                success_count += 1
+
+        print(f"\nBacktrack success from all nodes: {success_count}/{len(network.nodes)}")
+
+        # Should be able to reach target from any node
+        self.assertEqual(success_count, len(network.nodes))
+
+    def test_backtrack_respects_max_hops(self):
+        """Test that backtracking respects max_hops limit."""
+        network = self.create_branching_network()
+
+        target = network.nodes["target"]
+        query = target.centroid.copy()
+
+        # Very low max_hops should limit exploration
+        path, _ = network.route_greedy(
+            query, start_node_id="left_a", use_backtrack=True, max_hops=2
+        )
+
+        print(f"\nPath with max_hops=2: {path}")
+
+        # With only 2 hops, might not reach target
+        # But should return best node found
+        self.assertLessEqual(len(path), 3)  # start + 2 hops max
+
+
 class TestRoutingScaling(unittest.TestCase):
     """Test routing scaling with network evolution."""
 

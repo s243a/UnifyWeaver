@@ -585,6 +585,7 @@ class SmallWorldNetwork:
         query_embedding: np.ndarray,
         start_node_id: Optional[str] = None,
         max_hops: int = 20,
+        use_backtrack: bool = False,
     ) -> Tuple[List[str], int]:
         """
         Route query using greedy forwarding.
@@ -593,10 +594,16 @@ class SmallWorldNetwork:
             query_embedding: Query vector
             start_node_id: Starting node (uses root if None and immature)
             max_hops: Maximum routing hops
+            use_backtrack: If True, backtrack when stuck instead of stopping
 
         Returns:
             (path of node IDs, number of comparisons made)
         """
+        if use_backtrack:
+            return self._route_with_backtrack(
+                query_embedding, start_node_id, max_hops
+            )
+
         # Choose starting point based on maturity
         if start_node_id is None:
             if self.maturity_score < 0.5:
@@ -657,6 +664,121 @@ class SmallWorldNetwork:
             self.nodes[path[-1]].successful_routes += 1
 
         return path, comparisons
+
+    def _route_with_backtrack(
+        self,
+        query_embedding: np.ndarray,
+        start_node_id: Optional[str] = None,
+        max_hops: int = 50,
+    ) -> Tuple[List[str], int]:
+        """
+        Route with backtracking - can start from any node.
+
+        When greedy forwarding gets stuck (no neighbor is closer),
+        backtrack to try alternative paths. This enables P2P-style
+        routing where queries can start from any node.
+
+        Similar to Freenet's routing algorithm.
+
+        Args:
+            query_embedding: Query vector
+            start_node_id: Starting node (any node works with backtracking)
+            max_hops: Maximum total node visits (forward + backtrack)
+
+        Returns:
+            (path of node IDs, number of comparisons made)
+        """
+        # With backtracking, can start from any node
+        if start_node_id is None:
+            start_node_id = random.choice(list(self.nodes.keys()))
+
+        if start_node_id is None or start_node_id not in self.nodes:
+            return [], 0
+
+        comparisons = 0
+        best_node_id = start_node_id
+        best_dist = cosine_distance(query_embedding, self.nodes[start_node_id].centroid)
+
+        # Stack: (node_id, set of tried neighbors from this node)
+        stack: List[Tuple[str, Set[str]]] = [(start_node_id, set())]
+        visited: Set[str] = {start_node_id}
+        path: List[str] = [start_node_id]
+
+        total_visits = 0
+
+        while stack and total_visits < max_hops:
+            total_visits += 1
+            current_id, tried = stack[-1]
+            current_node = self.nodes[current_id]
+            current_dist = cosine_distance(query_embedding, current_node.centroid)
+
+            # Track best node seen
+            if current_dist < best_dist:
+                best_dist = current_dist
+                best_node_id = current_id
+
+            # Get untried neighbors
+            neighbors = current_node.get_all_neighbors()
+            untried = [
+                nid for nid in neighbors
+                if nid not in tried and nid in self.nodes
+            ]
+
+            if not untried:
+                # No more options from this node - backtrack
+                stack.pop()
+                if path:
+                    path.pop()
+                continue
+
+            # Find best untried neighbor
+            best_neighbor = None
+            best_neighbor_dist = float('inf')
+
+            for neighbor_id in untried:
+                neighbor = self.nodes[neighbor_id]
+                dist = cosine_distance(query_embedding, neighbor.centroid)
+                comparisons += 1
+
+                if dist < best_neighbor_dist:
+                    best_neighbor_dist = dist
+                    best_neighbor = neighbor_id
+
+            if best_neighbor is None:
+                # No valid neighbors - backtrack
+                stack.pop()
+                if path:
+                    path.pop()
+                continue
+
+            # Mark this neighbor as tried from current node
+            tried.add(best_neighbor)
+
+            # If neighbor is closer, move forward (greedy)
+            if best_neighbor_dist < current_dist:
+                visited.add(best_neighbor)
+                stack.append((best_neighbor, set()))
+                path.append(best_neighbor)
+                self.nodes[current_id].queries_routed += 1
+            else:
+                # Neighbor not closer - but still try it (exploration)
+                # Only if we haven't visited it before
+                if best_neighbor not in visited:
+                    visited.add(best_neighbor)
+                    stack.append((best_neighbor, set()))
+                    path.append(best_neighbor)
+
+        # Return path to best node found
+        # Reconstruct path from start to best node
+        if best_node_id in path:
+            final_path = path[:path.index(best_node_id) + 1]
+        else:
+            final_path = [best_node_id]
+
+        if final_path:
+            self.nodes[final_path[-1]].successful_routes += 1
+
+        return final_path, comparisons
 
     def route_to_top_k(
         self,
