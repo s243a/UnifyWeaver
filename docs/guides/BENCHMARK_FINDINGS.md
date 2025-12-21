@@ -327,13 +327,15 @@ For P2P: each peer can be an entry point at layer 1.
 5. ~~**Adaptive node subdivision**~~ ✅ Implemented on `feat/adaptive-node-subdivision` branch
 6. ~~**HNSW layered routing**~~ ✅ Implemented on `feat/hnsw-routing` branch
 7. ~~**Proper small-world connectivity**~~ ✅ Implemented on `feat/small-world-proper` branch
-8. **Learned neighbor ordering** - See proposal below
+8. ~~**Angle-based neighbor ordering**~~ ✅ Implemented on `feat/small-world-proper` branch
 
-## Proposal: Optimized Neighbor Lookup for Mature Networks
+## Angle-Based Optimized Neighbor Lookup
+
+**Status:** ✅ Implemented in `small_world_proper.py`
 
 ### Problem
 
-Even with good connectivity, routing compares against all k neighbors (k=15-20) at each hop. For mature networks with stable topology, we can precompute optimal lookup order.
+Even with good connectivity, routing compares against all k neighbors (k=15-20) at each hop. We can reduce comparisons by using angle-sorted neighbor lists.
 
 ### Key Insight
 
@@ -352,43 +354,49 @@ Binary search: query angle → [n2, n3] candidates
 Only compare 2-3 neighbors instead of all 15
 ```
 
-### Proposed Implementation
+### Implementation
+
+The centroid is determined by the node's **data**, not routing connections. Neighbors are pointers to other nodes, so routing changes don't affect the centroid.
 
 ```python
-class MatureNode:
-    def precompute_neighbor_order(self):
-        '''Sort neighbors by angle from centroid (one-time cost).'''
-        # Project neighbors onto principal components
-        self.neighbor_angles = []
-        for nid in self.neighbors:
-            vec = nodes[nid].vector - self.centroid
-            angle = np.arctan2(vec[1], vec[0])  # or use full PCA
-            self.neighbor_angles.append((angle, nid))
-        self.neighbor_angles.sort()
+# In SWNode class (small_world_proper.py)
 
-    def fast_lookup(self, query):
-        '''Binary search for relevant neighbors.'''
-        query_angle = compute_angle(query - self.centroid)
+def add_neighbor(self, neighbor_id: str, neighbor_vector: np.ndarray = None) -> bool:
+    """Add neighbor with insertion sort for angle ordering."""
+    if neighbor_vector is not None:
+        angle = self.compute_neighbor_angle(neighbor_vector)
+        # O(log k) search, O(k) insert
+        bisect.insort(self.sorted_neighbors, (angle, neighbor_id))
+    return True
 
-        # Binary search for neighbors near query angle
-        idx = bisect.bisect_left(self.neighbor_angles, (query_angle,))
-
-        # Check neighbors in angular window
-        candidates = self.neighbor_angles[idx-2:idx+3]
-        return [nid for _, nid in candidates]
+def lookup_neighbors_by_angle(self, query_vector: np.ndarray, window_size: int = 5) -> List[str]:
+    """Find neighbors near query angle using binary search."""
+    query_angle = self.compute_neighbor_angle(query_vector)
+    idx = bisect.bisect_left(self.sorted_neighbors, (query_angle,))
+    # Return neighbors in window, handling wraparound at -pi/+pi
+    return candidates_in_window(idx, window_size)
 ```
+
+### Benchmark Results
+
+| Metric | Standard Search | Optimized Search |
+|--------|-----------------|------------------|
+| Avg comparisons | 47.5 | 43.8 |
+| Reduction | - | **7.9%** |
+| Top-1 match rate | 100% | 100% |
 
 ### Trade-offs
 
 | Aspect | Cost | Benefit |
 |--------|------|---------|
-| Precompute | O(k log k) per node | One-time |
-| Lookup | O(log k) binary search | vs O(k) linear |
-| Memory | O(k) angles per node | Minimal |
-| Staleness | Recompute on topology change | Only for mature networks |
+| Insert | O(k) per neighbor | Maintains sorted order |
+| Lookup | O(log k) binary search | vs O(k) linear scan |
+| Memory | O(k) angles per node | Minimal overhead |
+| Rebuild | O(k log k) | Corrects numeric drift |
 
 ### When to Use
 
-- **Network maturity > 0.7** (stable topology)
-- **High query volume** (amortize precompute cost)
-- **Latency-sensitive** (worth the complexity)
+- **Incremental builds**: Insertion sort maintains order as network grows
+- **High query volume**: Amortize the per-neighbor insert cost
+- **Latency-sensitive**: Worth the small memory overhead
+- **Periodic rebuild**: Call `rebuild_all_sorted_neighbors()` to correct drift
