@@ -328,6 +328,7 @@ For P2P: each peer can be an entry point at layer 1.
 6. ~~**HNSW layered routing**~~ ✅ Implemented on `feat/hnsw-routing` branch
 7. ~~**Proper small-world connectivity**~~ ✅ Implemented on `feat/small-world-proper` branch
 8. ~~**Angle-based neighbor ordering**~~ ✅ Implemented on `feat/small-world-proper` branch
+9. ~~**Multi-interface nodes**~~ ✅ Implemented on `feat/multi-interface-nodes` branch
 
 ## Angle-Based Optimized Neighbor Lookup
 
@@ -412,3 +413,84 @@ def lookup_neighbors_by_angle(self, query_vector: np.ndarray, window_size: int =
 | **Dual occupancy pruning** | Using bin collisions to identify redundant neighbors for pruning. Interesting idea but conflates routing optimization with topology management - better kept separate. | Medium complexity, unclear benefit |
 
 **Design principle:** The simple sorted-list + binary-search approach achieves most of the benefit (7.9% reduction) with minimal complexity. More sophisticated approaches would add implementation/maintenance burden without proportional gains given the small neighbor count (k=15-20).
+
+## Multi-Interface Nodes with Scale-Free Distribution
+
+**Status:** ✅ Implemented in `multi_interface_node.py`
+**Branch:** `feat/multi-interface-nodes`
+
+### Problem
+
+With binary search, nodes can efficiently handle many more connections (100-1000 vs 15-20). This enables a new architecture: nodes with multiple logical interfaces, each representing a different semantic region.
+
+### Key Insight
+
+A single physical node can expose multiple interfaces:
+
+```
+Physical Node (stores 1000 documents)
+├── Interface A: "machine learning" region (centroid A)
+├── Interface B: "databases" region (centroid B)
+└── Interface C: "networking" region (centroid C)
+
+Query arrives → binary search finds closest interface →
+returns that interface as the "entry point" to callers
+```
+
+This creates **apparent scale** without proportional physical nodes.
+
+### Scale-Free Interface Distribution
+
+Number of interfaces per node follows power law: P(k) ~ k^(-γ)
+
+| Node Type | Interfaces | Frequency | Role |
+|-----------|------------|-----------|------|
+| Leaves | 1-2 | ~75% | Store focused data |
+| Regional | 3-10 | ~20% | Connect related topics |
+| Hubs | 10-100+ | ~5% | Highway on-ramps |
+
+Benchmark results (50 nodes, γ=2.5):
+```
+Interfaces      Nodes
+    1           33 (66%)
+    2            9 (18%)
+  3-4            3  (6%)
+  5-9            4  (8%)
+   16            1  (2%)  ← hub node
+```
+
+### Internal Binary Search
+
+All interfaces share ONE sorted structure:
+
+```python
+class MultiInterfaceNode:
+    # Single sorted list for ALL connections across ALL interfaces
+    connections: List[ExternalConnection]  # sorted by angle
+
+    def route_query(self, query):
+        # 1. Binary search interfaces → find closest
+        # 2. Binary search connections → find relevant neighbors
+        # Both in O(log n) time
+```
+
+Efficiency with 200 connections:
+- Window size: 10
+- Candidates checked: 21 (10.5%)
+- Full scan avoided
+
+### Benefits
+
+| Benefit | Mechanism |
+|---------|-----------|
+| **Apparent scale** | 50 physical nodes → 75+ logical interfaces |
+| **Short paths** | Hub nodes act as highway on-ramps |
+| **Robustness** | Scale-free networks survive random failures |
+| **Internal shortcuts** | Query routes through closest interface, not node boundary |
+
+### When to Use
+
+- **Large data volumes**: Nodes with many documents benefit from multiple interfaces
+- **Topic diversity**: Nodes spanning multiple semantic regions
+- **Hub architectures**: Some nodes naturally aggregate connections
+- **P2P networks**: Each peer can be a multi-interface node
