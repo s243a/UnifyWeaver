@@ -21,48 +21,22 @@ This document captures ideas for future development of UnifyWeaver targets and f
 - Pure Go, ACID transactions.
 - Use `db_backend(bbolt)` option.
 
+### Advanced JSON Features (Completed)
 
-### Advanced JSON Features (Phase 5+)
+✅ **Implemented**: Full support for complex JSON structures and validation.
+- **Array Support**: Iterate over JSON arrays using `json_array_member/2`.
+- **Advanced Schema Validation**: Min/max, regex format, and type checking.
+- **Schema Composition**: Nested `object(Schema)` types with recursive deep validation.
+- **Variable Mapping**: robust typed compilation for arbitrary projection.
 
-#### Array Support
-```prolog
-% Iterate over JSON arrays
-user_tags(Name, Tag) :-
-    json_get([users], UserList),
-    json_array_member(UserList, User),
-    json_get(User, [name], Name),
-    json_get(User, [tags], Tags),
-    json_array_member(Tags, Tag).
-```
+### Stream Processing Enhancements (Completed)
 
-#### Advanced Schema Validation
-```prolog
-:- json_schema(user, [
-    field(age, integer, [min(0), max(150)]),
-    field(email, string, [format(email)]),
-    field(name, string, [required]),
-    field(phone, string, [optional]),
-    field(tags, array(string))
-]).
-```
+✅ **Implemented**: High-performance concurrency.
+- **Parallel Processing** - Goroutine-based concurrent record processing with schema validation (`workers(N)`).
 
-#### Schema Composition
-```prolog
-:- json_schema(address, [
-    field(city, string),
-    field(zip, string)
-]).
+### Stream Processing Enhancements (Planned)
 
-:- json_schema(person, [
-    field(name, string),
-    field(address, object(address))
-]).
-```
-
-### Stream Processing Enhancements
-
-- **Parallel Processing** - Goroutine-based concurrent record processing
-- **Buffered Channels** - Pipeline stages with channels
+- **Buffered Channels** - Pipeline stages with channels (partially implemented in pipeline mode)
 - **Error Aggregation** - Collect and report validation errors
 - **Progress Reporting** - Optional progress output for large datasets
 
@@ -184,11 +158,12 @@ Explore integration with machine learning:
 ## Priority Ranking
 
 **Immediate (Next 1-2 Milestones):**
-1. Advanced JSON features (arrays, advanced schemas)
-2. Stream processing enhancements
+1. ✅ Advanced JSON features (arrays, advanced schemas)
+2. ✅ Stream processing enhancements (Parallel Processing)
+3. Error Aggregation & Progress Reporting
 
 **Short Term (Next 3-6 Months):**
-3. Query optimization basics
+4. Query optimization basics
 
 
 **Medium Term (6-12 Months):**
