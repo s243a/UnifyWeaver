@@ -400,3 +400,15 @@ def lookup_neighbors_by_angle(self, query_vector: np.ndarray, window_size: int =
 - **High query volume**: Amortize the per-neighbor insert cost
 - **Latency-sensitive**: Worth the small memory overhead
 - **Periodic rebuild**: Call `rebuild_all_sorted_neighbors()` to correct drift
+
+### Alternatives Considered But Not Implemented
+
+| Approach | Why Not | Complexity vs Benefit |
+|----------|---------|----------------------|
+| **Angular bins (hash-style)** | With k=15-20 neighbors, binary search is already O(4-5) comparisons. Bins add complexity (granularity choice, wraparound handling) without meaningful speedup. | High complexity, low benefit |
+| **Quantile-based bins** | Pre-allocating bins based on expected angular distribution. Same issue as above - small k makes this overkill. | Medium complexity, low benefit |
+| **PCA-based angle projection** | Using principal components of neighbors instead of first 2 dimensions. Would improve angle accuracy in high-D but adds computational overhead for each angle calculation. | Medium complexity, marginal benefit |
+| **Learned neighbor ordering** | Training a model to predict optimal neighbor order. Training cost isn't justified for evolving networks; only beneficial for mature/stable topologies with very high query volume. | High complexity, situational benefit |
+| **Dual occupancy pruning** | Using bin collisions to identify redundant neighbors for pruning. Interesting idea but conflates routing optimization with topology management - better kept separate. | Medium complexity, unclear benefit |
+
+**Design principle:** The simple sorted-list + binary-search approach achieves most of the benefit (7.9% reduction) with minimal complexity. More sophisticated approaches would add implementation/maintenance burden without proportional gains given the small neighbor count (k=15-20).
