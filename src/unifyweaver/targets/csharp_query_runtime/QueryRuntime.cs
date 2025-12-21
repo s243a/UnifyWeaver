@@ -1330,6 +1330,139 @@ namespace UnifyWeaver.QueryRuntime
             };
 
             var buildLeft = EstimateBuildCost(join.Left) < EstimateBuildCost(join.Right);
+
+            static bool TryGetRecursiveRows(
+                PlanNode node,
+                EvaluationContext context,
+                out PredicateId predicate,
+                out RecursiveRefKind kind,
+                out IReadOnlyList<object[]> rows)
+            {
+                predicate = default;
+                kind = default;
+                rows = Array.Empty<object[]>();
+
+                switch (node)
+                {
+                    case RecursiveRefNode recursive:
+                        if (!recursive.Predicate.Equals(context.Current))
+                        {
+                            throw new NotSupportedException(
+                                $"Cross-predicate recursion is not supported (referenced {recursive.Predicate} while evaluating {context.Current}).");
+                        }
+
+                        predicate = recursive.Predicate;
+                        kind = recursive.Kind;
+                        break;
+
+                    case CrossRefNode cross:
+                        predicate = cross.Predicate;
+                        kind = cross.Kind;
+                        break;
+
+                    default:
+                        return false;
+                }
+
+                var map = kind == RecursiveRefKind.Total ? context.Totals : context.Deltas;
+                rows = map.TryGetValue(predicate, out var resolved) ? resolved : Array.Empty<object[]>();
+                return true;
+            }
+
+            if (context is not null && buildLeft && TryGetRecursiveRows(join.Left, context, out var buildPredicate, out var buildKind, out var recursiveRows))
+            {
+                var probe = Evaluate(join.Right, context);
+                if (joinKeyCount == 1)
+                {
+                    var index = GetRecursiveFactIndex(buildPredicate, buildKind, join.LeftKeys[0], recursiveRows, context);
+                    foreach (var rightTuple in probe)
+                    {
+                        if (rightTuple is null) continue;
+
+                        var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
+                        if (!index.TryGetValue(lookupKey, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var leftTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                     yield break;
+                 }
+
+                var joinIndex = GetRecursiveJoinIndex(buildPredicate, buildKind, join.LeftKeys, recursiveRows, context);
+                foreach (var rightTuple in probe)
+                {
+                    if (rightTuple is null) continue;
+
+                    var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                    var wrapper = new RowWrapper(key);
+
+                    if (!joinIndex.TryGetValue(wrapper, out var bucket))
+                    {
+                        continue;
+                    }
+
+                    foreach (var leftTuple in bucket)
+                    {
+                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+
+                yield break;
+            }
+
+            if (context is not null && !buildLeft && TryGetRecursiveRows(join.Right, context, out buildPredicate, out buildKind, out recursiveRows))
+            {
+                var probe = Evaluate(join.Left, context);
+                if (joinKeyCount == 1)
+                {
+                    var index = GetRecursiveFactIndex(buildPredicate, buildKind, join.RightKeys[0], recursiveRows, context);
+                    foreach (var leftTuple in probe)
+                    {
+                        if (leftTuple is null) continue;
+
+                        var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
+                        if (!index.TryGetValue(lookupKey, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var rightTuple in bucket)
+                        {
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+
+                var joinIndex = GetRecursiveJoinIndex(buildPredicate, buildKind, join.RightKeys, recursiveRows, context);
+                foreach (var leftTuple in probe)
+                {
+                    if (leftTuple is null) continue;
+
+                    var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                    var wrapper = new RowWrapper(key);
+
+                    if (!joinIndex.TryGetValue(wrapper, out var bucket))
+                    {
+                        continue;
+                    }
+
+                    foreach (var rightTuple in bucket)
+                    {
+                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                    }
+                }
+
+                yield break;
+            }
+
             var left = Evaluate(join.Left, context);
             var right = Evaluate(join.Right, context);
 
@@ -1606,6 +1739,155 @@ namespace UnifyWeaver.QueryRuntime
 
             context.MaterializeJoinIndices[cacheKey] = index;
             return index;
+        }
+
+        private sealed class IncrementalFactIndexCache
+        {
+            public IncrementalFactIndexCache(IReadOnlyList<object[]> rows)
+            {
+                Rows = rows ?? throw new ArgumentNullException(nameof(rows));
+            }
+
+            public IReadOnlyList<object[]> Rows { get; private set; }
+
+            public int IndexedCount { get; private set; }
+
+            public Dictionary<object, List<object[]>> Index { get; } = new();
+
+            public void Reset(IReadOnlyList<object[]> rows)
+            {
+                Rows = rows ?? throw new ArgumentNullException(nameof(rows));
+                IndexedCount = 0;
+                Index.Clear();
+            }
+
+            public void EnsureIndexed(int columnIndex)
+            {
+                if (IndexedCount > Rows.Count)
+                {
+                    IndexedCount = 0;
+                    Index.Clear();
+                }
+
+                for (var i = IndexedCount; i < Rows.Count; i++)
+                {
+                    var tuple = Rows[i];
+                    if (tuple is null) continue;
+
+                    var value = columnIndex >= 0 && columnIndex < tuple.Length
+                        ? tuple[columnIndex]
+                        : null;
+                    var key = value ?? NullFactIndexKey;
+
+                    if (!Index.TryGetValue(key, out var bucket))
+                    {
+                        bucket = new List<object[]>();
+                        Index[key] = bucket;
+                    }
+
+                    bucket.Add(tuple);
+                }
+
+                IndexedCount = Rows.Count;
+            }
+        }
+
+        private sealed class IncrementalJoinIndexCache
+        {
+            public IncrementalJoinIndexCache(IReadOnlyList<object[]> rows)
+            {
+                Rows = rows ?? throw new ArgumentNullException(nameof(rows));
+            }
+
+            public IReadOnlyList<object[]> Rows { get; private set; }
+
+            public int IndexedCount { get; private set; }
+
+            public Dictionary<RowWrapper, List<object[]>> Index { get; }
+                = new(new RowWrapperComparer(StructuralArrayComparer.Instance));
+
+            public void Reset(IReadOnlyList<object[]> rows)
+            {
+                Rows = rows ?? throw new ArgumentNullException(nameof(rows));
+                IndexedCount = 0;
+                Index.Clear();
+            }
+
+            public void EnsureIndexed(IReadOnlyList<int> keyIndices)
+            {
+                if (keyIndices is null) throw new ArgumentNullException(nameof(keyIndices));
+
+                if (IndexedCount > Rows.Count)
+                {
+                    IndexedCount = 0;
+                    Index.Clear();
+                }
+
+                for (var i = IndexedCount; i < Rows.Count; i++)
+                {
+                    var tuple = Rows[i];
+                    if (tuple is null) continue;
+
+                    var key = BuildKeyFromTuple(tuple, keyIndices);
+                    var wrapper = new RowWrapper(key);
+
+                    if (!Index.TryGetValue(wrapper, out var bucket))
+                    {
+                        bucket = new List<object[]>();
+                        Index[wrapper] = bucket;
+                    }
+
+                    bucket.Add(tuple);
+                }
+
+                IndexedCount = Rows.Count;
+            }
+        }
+
+        private Dictionary<object, List<object[]>> GetRecursiveFactIndex(
+            PredicateId predicate,
+            RecursiveRefKind kind,
+            int columnIndex,
+            IReadOnlyList<object[]> rows,
+            EvaluationContext context)
+        {
+            var cacheKey = (predicate, kind, columnIndex);
+            if (!context.RecursiveFactIndices.TryGetValue(cacheKey, out var cache))
+            {
+                cache = new IncrementalFactIndexCache(rows);
+                context.RecursiveFactIndices[cacheKey] = cache;
+            }
+            else if (!ReferenceEquals(cache.Rows, rows))
+            {
+                cache.Reset(rows);
+            }
+
+            cache.EnsureIndexed(columnIndex);
+            return cache.Index;
+        }
+
+        private Dictionary<RowWrapper, List<object[]>> GetRecursiveJoinIndex(
+            PredicateId predicate,
+            RecursiveRefKind kind,
+            IReadOnlyList<int> keyIndices,
+            IReadOnlyList<object[]> rows,
+            EvaluationContext context)
+        {
+            var signature = string.Join(",", keyIndices);
+            var cacheKey = (predicate, kind, signature);
+
+            if (!context.RecursiveJoinIndices.TryGetValue(cacheKey, out var cache))
+            {
+                cache = new IncrementalJoinIndexCache(rows);
+                context.RecursiveJoinIndices[cacheKey] = cache;
+            }
+            else if (!ReferenceEquals(cache.Rows, rows))
+            {
+                cache.Reset(rows);
+            }
+
+            cache.EnsureIndexed(keyIndices);
+            return cache.Index;
         }
 
         private Dictionary<object, List<object[]>> GetFactIndex(
@@ -3114,6 +3396,12 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<(string Id, int ColumnIndex), Dictionary<object, List<object[]>>> MaterializeFactIndices { get; } = new();
 
             public Dictionary<(string Id, string KeySignature), Dictionary<RowWrapper, List<object[]>>> MaterializeJoinIndices { get; } = new();
+
+            public Dictionary<(PredicateId Predicate, RecursiveRefKind Kind, int ColumnIndex), IncrementalFactIndexCache> RecursiveFactIndices { get; } =
+                new();
+
+            public Dictionary<(PredicateId Predicate, RecursiveRefKind Kind, string KeySignature), IncrementalJoinIndexCache> RecursiveJoinIndices { get; } =
+                new();
 
             public Dictionary<PredicateId, List<object[]>> Facts { get; }
 
