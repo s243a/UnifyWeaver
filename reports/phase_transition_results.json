@@ -1,0 +1,177 @@
+{
+  "analysis": "phase_transition",
+  "parameters": {
+    "k": 3,
+    "num_queries": 50
+  },
+  "results": [
+    {
+      "num_nodes": 5,
+      "nodes_per_cluster": 1.0,
+      "setup_time_ms": 5.037069320678711,
+      "routing_time_ms": 0.0278472900390625,
+      "query_time_ms": 0.00014781951904296875,
+      "total_time_ms": 6.436824798583984,
+      "avg_precision": 0.7333333333333333,
+      "avg_ground_truth_size": 0.4,
+      "intra_cluster_similarity": 0.0,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 10,
+      "nodes_per_cluster": 2.0,
+      "setup_time_ms": 5.944252014160156,
+      "routing_time_ms": 0.05209922790527344,
+      "query_time_ms": 0.00014781951904296875,
+      "total_time_ms": 8.556604385375977,
+      "avg_precision": 0.7133333333333333,
+      "avg_ground_truth_size": 0.56,
+      "intra_cluster_similarity": 0.09611202433186887,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 15,
+      "nodes_per_cluster": 3.0,
+      "setup_time_ms": 8.11314582824707,
+      "routing_time_ms": 0.07721424102783203,
+      "query_time_ms": 0.00015735626220703125,
+      "total_time_ms": 11.981725692749023,
+      "avg_precision": 0.7599999999999999,
+      "avg_ground_truth_size": 0.54,
+      "intra_cluster_similarity": 0.1238618560134905,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 20,
+      "nodes_per_cluster": 4.0,
+      "setup_time_ms": 9.226083755493164,
+      "routing_time_ms": 0.100250244140625,
+      "query_time_ms": 0.00015735626220703125,
+      "total_time_ms": 14.246463775634766,
+      "avg_precision": 0.8133333333333332,
+      "avg_ground_truth_size": 0.5,
+      "intra_cluster_similarity": 0.16197973818288763,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 25,
+      "nodes_per_cluster": 5.0,
+      "setup_time_ms": 11.349916458129883,
+      "routing_time_ms": 0.1276540756225586,
+      "query_time_ms": 0.000152587890625,
+      "total_time_ms": 17.740249633789062,
+      "avg_precision": 0.8066666666666665,
+      "avg_ground_truth_size": 0.5,
+      "intra_cluster_similarity": 0.1731326153468646,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 30,
+      "nodes_per_cluster": 6.0,
+      "setup_time_ms": 12.468099594116211,
+      "routing_time_ms": 0.14976024627685547,
+      "query_time_ms": 0.00016689300537109375,
+      "total_time_ms": 19.96445655822754,
+      "avg_precision": 0.88,
+      "avg_ground_truth_size": 0.52,
+      "intra_cluster_similarity": 0.1577605969694136,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 40,
+      "nodes_per_cluster": 8.0,
+      "setup_time_ms": 15.594005584716797,
+      "routing_time_ms": 0.20092010498046875,
+      "query_time_ms": 0.000171661376953125,
+      "total_time_ms": 25.64859390258789,
+      "avg_precision": 0.8333333333333333,
+      "avg_ground_truth_size": 0.52,
+      "intra_cluster_similarity": 0.15363874238738812,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 50,
+      "nodes_per_cluster": 10.0,
+      "setup_time_ms": 18.517732620239258,
+      "routing_time_ms": 0.2533435821533203,
+      "query_time_ms": 0.0001621246337890625,
+      "total_time_ms": 31.193017959594727,
+      "avg_precision": 0.7933333333333334,
+      "avg_ground_truth_size": 0.58,
+      "intra_cluster_similarity": 0.14927540918727084,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 75,
+      "nodes_per_cluster": 15.0,
+      "setup_time_ms": 34.53493118286133,
+      "routing_time_ms": 0.3827047348022461,
+      "query_time_ms": 0.0002193450927734375,
+      "total_time_ms": 53.681135177612305,
+      "avg_precision": 0.84,
+      "avg_ground_truth_size": 0.46,
+      "intra_cluster_similarity": 0.14955477521926203,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 100,
+      "nodes_per_cluster": 20.0,
+      "setup_time_ms": 37.1708869934082,
+      "routing_time_ms": 0.5172872543334961,
+      "query_time_ms": 0.000209808349609375,
+      "total_time_ms": 63.04574012756348,
+      "avg_precision": 0.8266666666666665,
+      "avg_ground_truth_size": 0.5,
+      "intra_cluster_similarity": 0.1484593837163285,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 150,
+      "nodes_per_cluster": 30.0,
+      "setup_time_ms": 50.79197883605957,
+      "routing_time_ms": 0.7756376266479492,
+      "query_time_ms": 0.00025272369384765625,
+      "total_time_ms": 89.58649635314941,
+      "avg_precision": 0.8466666666666666,
+      "avg_ground_truth_size": 0.5,
+      "intra_cluster_similarity": 0.14594681163042142,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 200,
+      "nodes_per_cluster": 40.0,
+      "setup_time_ms": 65.02914428710938,
+      "routing_time_ms": 1.151590347290039,
+      "query_time_ms": 0.0002765655517578125,
+      "total_time_ms": 122.62248992919922,
+      "avg_precision": 0.8933333333333333,
+      "avg_ground_truth_size": 0.5,
+      "intra_cluster_similarity": 0.14681850017625556,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 300,
+      "nodes_per_cluster": 60.0,
+      "setup_time_ms": 101.98664665222168,
+      "routing_time_ms": 1.5658998489379883,
+      "query_time_ms": 0.00028133392333984375,
+      "total_time_ms": 180.2957057952881,
+      "avg_precision": 0.9,
+      "avg_ground_truth_size": 0.52,
+      "intra_cluster_similarity": 0.14639216356210746,
+      "num_queries": 50
+    },
+    {
+      "num_nodes": 500,
+      "nodes_per_cluster": 100.0,
+      "setup_time_ms": 161.1328125,
+      "routing_time_ms": 2.5771570205688477,
+      "query_time_ms": 0.000324249267578125,
+      "total_time_ms": 290.0068759918213,
+      "avg_precision": 0.8666666666666666,
+      "avg_ground_truth_size": 0.54,
+      "intra_cluster_similarity": 0.14599487285866614,
+      "num_queries": 50
+    }
+  ]
+}
