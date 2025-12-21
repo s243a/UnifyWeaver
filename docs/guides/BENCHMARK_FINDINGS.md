@@ -494,3 +494,61 @@ Efficiency with 200 connections:
 - **Topic diversity**: Nodes spanning multiple semantic regions
 - **Hub architectures**: Some nodes naturally aggregate connections
 - **P2P networks**: Each peer can be a multi-interface node
+
+### Design Considerations: Capacity-Proportional Sizing
+
+The number of interfaces and connections a node maintains should be proportional to its resources:
+
+| Resource | Effect on Node |
+|----------|----------------|
+| **Data volume** | More documents → more interfaces to cover semantic space |
+| **Bandwidth** | More throughput → more connections to utilize capacity |
+| **Compute** | More power → can handle compression and routing load |
+
+#### Size-Appropriate Optimization Strategies
+
+| Node Size | Strategy | Rationale |
+|-----------|----------|-----------|
+| **Large hubs** | Compress with transformers/multi-head LDA | Reduce dimensionality for faster routing while preserving discriminative power. Can afford compute cost. |
+| **Medium nodes** | Standard multi-interface with binary search | Balanced approach, good throughput without heavy optimization |
+| **Small leaves** | Specialize for distinct centroid | Sharp focus beats fuzzy coverage. Better routing discrimination. |
+
+#### Specialization Pressure
+
+Small nodes face natural selection pressure toward specialization:
+
+```
+Fuzzy centroid → queries often miss → low utility → fewer connections
+Sharp centroid → queries hit precisely → high utility → more connections
+```
+
+This creates an emergent ecosystem where small nodes that specialize thrive, while those that try to cover too much ground become invisible to routing.
+
+### Analogy: Web Traffic and Content Networks
+
+This architecture mirrors patterns in web content distribution:
+
+| Network Concept | Web/Media Equivalent |
+|-----------------|---------------------|
+| Small specialized node | Niche YouTube channel - focused content, easier discovery |
+| Large hub node | Major news network - broad coverage, established audience |
+| Centroid distinctness | Content niche clarity - "what is this channel about?" |
+| Interface count | Topic coverage breadth |
+| Connection count | Subscriber/backlink count |
+| Bandwidth capacity | Server/CDN capacity |
+
+**Key insight:** New entrants (small nodes) succeed by specialization, not by competing with established hubs on breadth. Over time, successful specialists may grow into regional hubs, and regional hubs into major hubs - but the growth path starts with focused expertise.
+
+This is analogous to:
+- Academic citations: specialized papers get cited by related work
+- Search engines: PageRank favors authoritative, linked sources
+- Social networks: influencers grow from niche communities
+
+### Future: Adaptive Capacity Allocation
+
+Potential extensions (not yet implemented):
+
+1. **Dynamic interface creation**: Node automatically creates new interface when data diversity exceeds threshold
+2. **Connection budgeting**: Allocate connections based on measured bandwidth/latency
+3. **Compression tiers**: Hubs use transformer compression, leaves use raw embeddings
+4. **Reputation-based growth**: Nodes that route successfully earn more connection slots
