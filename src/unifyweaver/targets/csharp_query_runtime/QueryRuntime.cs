@@ -1061,6 +1061,56 @@ namespace UnifyWeaver.QueryRuntime
 
                     yield break;
                 }
+
+                if (join.Right is RelationScanNode rightOnlyScan)
+                {
+                    var facts = GetFactsList(rightOnlyScan.Relation, context);
+                    var probe = Evaluate(join.Left, context);
+                    var keyCount = join.RightKeys.Count;
+
+                    if (keyCount == 1)
+                    {
+                        var index = GetFactIndex(rightOnlyScan.Relation, join.RightKeys[0], facts, context);
+                        foreach (var leftTuple in probe)
+                        {
+                            if (leftTuple is null) continue;
+
+                            var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
+                            if (!index.TryGetValue(lookupKey, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var rightTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var index = GetJoinIndex(rightOnlyScan.Relation, join.RightKeys, facts, context);
+                        foreach (var leftTuple in probe)
+                        {
+                            if (leftTuple is null) continue;
+
+                            var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                            var wrapper = new RowWrapper(key);
+
+                            if (!index.TryGetValue(wrapper, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var rightTuple in bucket)
+                            {
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+                    }
+
+                    yield break;
+                }
             }
 
             static int EstimateBuildCost(PlanNode node) => node switch
