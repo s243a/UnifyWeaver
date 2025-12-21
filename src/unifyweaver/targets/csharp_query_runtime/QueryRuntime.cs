@@ -1369,12 +1369,49 @@ namespace UnifyWeaver.QueryRuntime
                 return true;
             }
 
-            if (context is not null && buildLeft && TryGetRecursiveRows(join.Left, context, out var buildPredicate, out var buildKind, out var recursiveRows))
+            PredicateId leftPredicate = default;
+            RecursiveRefKind leftKind = default;
+            IReadOnlyList<object[]> leftRecursiveRows = Array.Empty<object[]>();
+            var leftIsRecursive = context is not null && TryGetRecursiveRows(join.Left, context, out leftPredicate, out leftKind, out leftRecursiveRows);
+
+            PredicateId rightPredicate = default;
+            RecursiveRefKind rightKind = default;
+            IReadOnlyList<object[]> rightRecursiveRows = Array.Empty<object[]>();
+            var rightIsRecursive = context is not null && TryGetRecursiveRows(join.Right, context, out rightPredicate, out rightKind, out rightRecursiveRows);
+
+            if (context is not null && (leftIsRecursive || rightIsRecursive))
+            {
+                if (leftIsRecursive && rightIsRecursive)
+                {
+                    if (leftKind == RecursiveRefKind.Delta && rightKind != RecursiveRefKind.Delta)
+                    {
+                        buildLeft = true;
+                    }
+                    else if (rightKind == RecursiveRefKind.Delta && leftKind != RecursiveRefKind.Delta)
+                    {
+                        buildLeft = false;
+                    }
+                    else
+                    {
+                        buildLeft = leftRecursiveRows.Count <= rightRecursiveRows.Count;
+                    }
+                }
+                else if (leftIsRecursive && leftKind == RecursiveRefKind.Delta)
+                {
+                    buildLeft = true;
+                }
+                else if (rightIsRecursive && rightKind == RecursiveRefKind.Delta)
+                {
+                    buildLeft = false;
+                }
+            }
+
+            if (context is not null && buildLeft && leftIsRecursive)
             {
                 var probe = Evaluate(join.Right, context);
                 if (joinKeyCount == 1)
                 {
-                    var index = GetRecursiveFactIndex(buildPredicate, buildKind, join.LeftKeys[0], recursiveRows, context);
+                    var index = GetRecursiveFactIndex(leftPredicate, leftKind, join.LeftKeys[0], leftRecursiveRows, context);
                     foreach (var rightTuple in probe)
                     {
                         if (rightTuple is null) continue;
@@ -1391,10 +1428,10 @@ namespace UnifyWeaver.QueryRuntime
                         }
                     }
 
-                     yield break;
-                 }
+                    yield break;
+                }
 
-                var joinIndex = GetRecursiveJoinIndex(buildPredicate, buildKind, join.LeftKeys, recursiveRows, context);
+                var joinIndex = GetRecursiveJoinIndex(leftPredicate, leftKind, join.LeftKeys, leftRecursiveRows, context);
                 foreach (var rightTuple in probe)
                 {
                     if (rightTuple is null) continue;
@@ -1416,12 +1453,12 @@ namespace UnifyWeaver.QueryRuntime
                 yield break;
             }
 
-            if (context is not null && !buildLeft && TryGetRecursiveRows(join.Right, context, out buildPredicate, out buildKind, out recursiveRows))
+            if (context is not null && !buildLeft && rightIsRecursive)
             {
                 var probe = Evaluate(join.Left, context);
                 if (joinKeyCount == 1)
                 {
-                    var index = GetRecursiveFactIndex(buildPredicate, buildKind, join.RightKeys[0], recursiveRows, context);
+                    var index = GetRecursiveFactIndex(rightPredicate, rightKind, join.RightKeys[0], rightRecursiveRows, context);
                     foreach (var leftTuple in probe)
                     {
                         if (leftTuple is null) continue;
@@ -1441,7 +1478,7 @@ namespace UnifyWeaver.QueryRuntime
                     yield break;
                 }
 
-                var joinIndex = GetRecursiveJoinIndex(buildPredicate, buildKind, join.RightKeys, recursiveRows, context);
+                var joinIndex = GetRecursiveJoinIndex(rightPredicate, rightKind, join.RightKeys, rightRecursiveRows, context);
                 foreach (var leftTuple in probe)
                 {
                     if (leftTuple is null) continue;
