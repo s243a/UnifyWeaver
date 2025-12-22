@@ -69,6 +69,9 @@
 :- dynamic user:test_multi_mode/2.
 :- dynamic user:test_any_mode/2.
 :- dynamic user:mode/1.
+:- dynamic user:test_negation_cycle_root/1.
+:- dynamic user:test_negation_cycle_p/1.
+:- dynamic user:test_negation_cycle_q/1.
 
 :- dynamic progress_last_report/1.
 :- dynamic progress_count/1.
@@ -126,6 +129,7 @@ test_csharp_query_target :-
         verify_aggregate_subplan_set_with_negation_plan,
         verify_aggregate_subplan_grouped_sum_with_negation_plan,
         verify_negation_plan,
+        verify_non_stratified_negation_cycle_rejected,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
         verify_multi_mode_codegen_plan,
@@ -1160,6 +1164,35 @@ verify_negation_plan :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'NegationNode'),
     maybe_run_query_runtime(Plan, ['alice']).
+
+verify_non_stratified_negation_cycle_rejected :-
+    setup_call_cleanup(
+        setup_non_stratified_negation_cycle_program,
+        verify_non_stratified_negation_cycle_rejected_,
+        cleanup_non_stratified_negation_cycle_program
+    ).
+
+setup_non_stratified_negation_cycle_program :-
+    retractall(user:test_negation_cycle_root(_)),
+    retractall(user:test_negation_cycle_p(_)),
+    retractall(user:test_negation_cycle_q(_)),
+    assertz(user:(test_negation_cycle_root(X) :- test_negation_cycle_p(X))),
+    assertz(user:test_negation_cycle_p(seed)),
+    assertz(user:(test_negation_cycle_p(X) :- \+ test_negation_cycle_q(X))),
+    assertz(user:(test_negation_cycle_q(X) :- test_negation_cycle_p(X))).
+
+cleanup_non_stratified_negation_cycle_program :-
+    retractall(user:test_negation_cycle_root(_)),
+    retractall(user:test_negation_cycle_p(_)),
+    retractall(user:test_negation_cycle_q(_)).
+
+verify_non_stratified_negation_cycle_rejected_ :-
+    capture_user_error(
+        \+ csharp_query_target:build_query_plan(test_negation_cycle_root/1, [target(csharp_query)], _Plan),
+        Err
+    ),
+    sub_string(Err, _, _, _, 'non-stratified negation'),
+    sub_string(Err, _, _, _, 'test_negation_cycle_root/1').
 
 verify_parameterized_need_allows_prefix_negation :-
     csharp_query_target:build_query_plan(test_countdown/2, [target(csharp_query)], Plan),
