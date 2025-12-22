@@ -89,6 +89,13 @@ is_ready(BoundVars, Goal) :-
     classify_goal(Goal, Type),
     check_dependencies(Type, Goal, BoundVars).
 
+classify_goal(Goal, unification) :-
+    compound(Goal),
+    Goal = (_ = _),
+    (   term_variables(Goal, [_]) % At least one variable
+    ->  (Goal = (A = B), (ground(A) ; ground(B))) % One side is ground
+    ;   ground(Goal) % Both sides ground
+    ), !.
 classify_goal(Goal, comparison) :-
     compound(Goal),
     functor(Goal, Op, 2),
@@ -99,8 +106,10 @@ classify_goal(Goal, assignment) :-
 classify_goal(json_record(_), generator) :- !.
 classify_goal(json_get(_, _), generator) :- !.
 classify_goal(json_get(_, _, _), generator) :- !.
+classify_goal(member(_, _), generator) :- !.
 classify_goal(_, generic).
 
+check_dependencies(unification, _, _) :- true. % Ground unification is always ready
 check_dependencies(comparison, Goal, BoundVars) :-
     term_variables(Goal, Vars),
     var_subset(Vars, BoundVars).  % All vars must be bound for comparison
@@ -130,21 +139,37 @@ var_member(V, [_|T]) :- var_member(V, T).
 %% select_best_goal(+Candidates, +BoundVars, -Best)
 %  Pick the best goal from ready candidates.
 %  Priority:
-%  1. Filters (comparison) - Cheap, reduces set size
-%  2. Assignments (is/2) - Computes values needed later
-%  3. Generators with MOST bound arguments (more selective)
-%  4. Generators with FEWEST bound arguments
+%  1. Ground Unification (X = alice) - Strongest filter, often provides initial binding
+%  2. Filters (comparison) - Cheap, reduces set size
+%  3. Assignments (is/2) - Computes values needed later
+%  4. Generators with MOST bound arguments (more selective)
+%  5. Generators with FEWEST bound arguments
 select_best_goal([Goal], _, Goal) :- !.
 select_best_goal([G1, G2 | Rest], BoundVars, Best) :-
     compare_goals(Order, G1, G2, BoundVars),
     (   Order = > -> Winner = G2 ; Winner = G1 ),
     select_best_goal([Winner|Rest], BoundVars, Best).
 
-compare_goals(<, G1, _, _) :- classify_goal(G1, comparison), !.
-compare_goals(>, _, G2, _) :- classify_goal(G2, comparison), !.
+compare_goals(<, G1, G2, _) :- 
+    classify_goal(G1, unification), 
+    \+ classify_goal(G2, unification), !.
+compare_goals(>, G1, G2, _) :- 
+    \+ classify_goal(G1, unification), 
+    classify_goal(G2, unification), !.
 
-compare_goals(<, G1, _, _) :- classify_goal(G1, assignment), !.
-compare_goals(>, _, G2, _) :- classify_goal(G2, assignment), !.
+compare_goals(<, G1, G2, _) :- 
+    classify_goal(G1, comparison), 
+    \+ classify_goal(G2, comparison), !.
+compare_goals(>, G1, G2, _) :- 
+    \+ classify_goal(G1, comparison), 
+    classify_goal(G2, comparison), !.
+
+compare_goals(<, G1, G2, _) :- 
+    classify_goal(G1, assignment), 
+    \+ classify_goal(G2, assignment), !.
+compare_goals(>, G1, G2, _) :- 
+    \+ classify_goal(G1, assignment), 
+    classify_goal(G2, assignment), !.
 
 % Prefer goals with MORE bound variables (Selectivity Heuristic)
 compare_goals(Order, G1, G2, BoundVars) :-

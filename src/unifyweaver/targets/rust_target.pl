@@ -69,6 +69,7 @@
 :- use_module('../bindings/rust_bindings').
 :- use_module('../core/pipeline_validation').
 :- use_module('../core/service_validation').
+:- use_module('../core/optimizer').
 
 %% init_rust_target
 %  Initialize the Rust target by loading bindings.
@@ -3523,7 +3524,13 @@ compile_json_input_to_rust(Pred, Arity, Options, RustCode) :-
     findall(Head-Body, user:clause(Head, Body), Clauses),
 
     (   Clauses = [SingleHead-SingleBody] ->
-        extract_json_operations(SingleBody, JsonOps),
+        % Optimize goals (Codd Phase)
+        (   optimizer:optimize_clause(SingleHead, SingleBody, Options, OptimizedBody)
+        ->  format('  Optimized body: ~w~n', [OptimizedBody])
+        ;   OptimizedBody = SingleBody
+        ),
+
+        extract_json_operations(OptimizedBody, JsonOps),
         option(field_delimiter(FieldDelim), Options, colon),
         map_field_delimiter(FieldDelim, DelimChar),
         option(unique(Unique), Options, true),
