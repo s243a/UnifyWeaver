@@ -78,9 +78,14 @@ Scientific computing and data analysis:
 
 ## Cross-Target Features
 
-### Query Optimization (The "Codd" Phase)
+### Query Optimization (Completed - The "Codd" Phase)
 
-- **Join Optimization** - Automatically reorder rule bodies to prioritize ground or highly selective goals. Minimize intermediate result set sizes.
+✅ **Implemented**: Heuristic-based join reordering.
+- **Join Optimization** - Automatically reorder rule bodies to prioritize ground or highly selective goals. Minimize intermediate result set sizes. Respects variable dependencies.
+- **Constraint Integration** - Integrated into Stream, Recursive, Go, and Rust targets.
+
+### Query Optimization (Planned)
+
 - **Index Hints** - Allow manual index selection via `:- index(predicate/arity, field).` directive.
 - **Statistics** - Collect and use statistics (cardinality, selectivity) for query planning.
 - **Predicate Pushdown** - Push filters as deep as possible into the data source (e.g., SQL `WHERE` or Bbolt range queries).
@@ -166,7 +171,8 @@ Explore integration with machine learning:
 3. Error Aggregation & Progress Reporting
 
 **Short Term (Next 3-6 Months):**
-4. Query optimization basics
+4. ✅ Query optimization basics (Join Reordering)
+5. Index Hints & Statistics
 
 
 **Medium Term (6-12 Months):**
