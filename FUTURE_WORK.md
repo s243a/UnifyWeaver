@@ -35,10 +35,10 @@ This document captures ideas for future development of UnifyWeaver targets and f
 - **Parallel Processing** - Goroutine-based concurrent record processing with schema validation (`workers(N)`).
 - **Error Aggregation** - Collect validation/parsing errors to a separate JSONL file (`error_file(Path)`).
 - **Progress Reporting** - Log processed record counts to stderr at configurable intervals (`progress(interval(N))`).
+- **Buffered Channels** - Configurable channel buffer size for parallel workers (`buffer_size(N)`).
 
 ### Stream Processing Enhancements (Planned)
 
-- **Buffered Channels** - Pipeline stages with channels (partially implemented in pipeline mode)
 - **Error Thresholds** - Option to fail if error count exceeds a threshold
 - **Metrics Export** - Export processing metrics to Prometheus/JSON
 

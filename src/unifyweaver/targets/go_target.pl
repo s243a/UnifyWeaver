@@ -10377,6 +10377,7 @@ func main() {
 compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, Workers, GoCode) :-
     option(field_delimiter(FieldDelim), Options, colon),
     option(unique(Unique), Options, true),
+    option(buffer_size(BufferSize), Options, 100),
     
     map_field_delimiter(FieldDelim, DelimChar),
 
@@ -10429,7 +10430,7 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, 
 
     format(string(GoCode), '
 	// Parallel execution with ~w workers (Typed)
-	jobs := make(chan []byte, 100)
+	jobs := make(chan []byte, ~w)
 	var wg sync.WaitGroup
 	var outputMutex sync.Mutex
 	~s
@@ -10464,13 +10465,14 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, 
 	}
 	close(jobs)
 	wg.Wait()
-', [Workers, UniqueVars, ProgressSetup, Workers, ProgressUpdate, ExtractCode, OutputBlock]).
+', [Workers, BufferSize, UniqueVars, ProgressSetup, Workers, ProgressUpdate, ExtractCode, OutputBlock]).
 
 %% compile_parallel_json_to_go(+HeadArgs, +Operations, +Options, +Workers, -GoCode)
 %  Generate Go code for parallel JSON processing
 compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
     option(field_delimiter(FieldDelim), Options, colon),
     option(unique(Unique), Options, true),
+    option(buffer_size(BufferSize), Options, 100),
     
     map_field_delimiter(FieldDelim, DelimChar),
 
@@ -10500,7 +10502,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
 
     format(string(GoCode), '
 	// Parallel execution with ~w workers
-	jobs := make(chan []byte, 100)
+	jobs := make(chan []byte, ~w)
 	var wg sync.WaitGroup
 	var outputMutex sync.Mutex
 	~s
@@ -10533,7 +10535,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
 	}
 	close(jobs)
 	wg.Wait()
-', [Workers, UniqueVars, ProgressSetup, Workers, ProgressUpdate, ProcessingCode]).
+', [Workers, BufferSize, UniqueVars, ProgressSetup, Workers, ProgressUpdate, ProcessingCode]).
 
 %% generate_parallel_json_processing(+Operations, +HeadArgs, +Delim, +Unique, +VIdx, +VarMap, -Code)
 generate_parallel_json_processing([], HeadArgs, Delim, Unique, _, VarMap, Code) :-
