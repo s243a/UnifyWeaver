@@ -28,9 +28,11 @@ This document outlines potential next steps for the semantic search and federati
 - [x] Basic embedding generation
 - [x] Vector search
 - [x] Web crawling
-- [ ] Federation engine (not yet implemented)
-- [ ] Small-world routing (not yet implemented)
+- [x] Small-world routing with k_local + k_long (greedy only)
+- [x] Prolog-to-Go/Rust code generation for small-world
+- [ ] Small-world backtracking (not yet implemented)
 - [ ] HNSW (not yet implemented)
+- [ ] Federation engine (not yet implemented)
 
 ### Documentation
 - [x] Book 13: Semantic Search (14 chapters)
@@ -47,11 +49,11 @@ This document outlines potential next steps for the semantic search and federati
 
 Port core federation features to Go and Rust:
 
+- [x] Basic small-world routing (greedy) - implemented in `tests/integration/generated/smallworld/`
+- [x] Prolog-to-Go/Rust code generation for small-world
+- [ ] Add backtracking to Go/Rust small-world routing
 - [ ] `FederatedQueryEngine` with aggregation strategies
-- [ ] Basic small-world routing (greedy + backtracking)
 - [ ] Cross-language federation protocol (Python coordinator + Go/Rust workers)
-- [ ] Implement Prolog-to-Go transpiler for federation predicates
-- [ ] Implement Prolog-to-Rust transpiler for federation predicates
 
 **Why:** Enables polyglot deployments where different nodes run different languages for performance or ecosystem reasons.
 
