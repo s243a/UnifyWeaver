@@ -10194,7 +10194,7 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         (   option(json_schema(SchemaName), Options)
         ->  % Typed compilation with schema validation
             format('  Using schema: ~w~n', [SchemaName]),
-            compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, CoreBody)
+            compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, CoreBody)
         ;   option(db_backend(bbolt), Options)
         ->  % Typed compilation without schema (for database writes)
             format('  Database mode: using typed compilation~n'),
@@ -10251,8 +10251,14 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         
         % Add strings import if needed (from feature branch)
         (   option(json_schema(SchemaName), Options), schema_needs_strings(SchemaName)
-        ->  append(ImportsWithKeys, ["strings"], AllImportsList)
+        ->  append(ImportsWithKeys, ["strings"], ImportsWithStrings)
         ;   AllImportsList = ImportsWithKeys
+        ),
+        
+        % Add time import if error_file is used
+        (   option(error_file(_), Options)
+        ->  append(ImportsWithStrings, ["time"], AllImportsList)
+        ;   AllImportsList = ImportsWithStrings
         ),
         
         % Format all imports
@@ -10367,7 +10373,7 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDeli
     map_field_delimiter(FieldDelim, DelimChar),
 
     % Generate typed extraction code (same as sequential typed)
-    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode),
+    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode, false),
     
     % Generate output expression
     generate_json_output_expr_mapped(HeadArgs, VarMap, DelimChar, OutputExpr),
@@ -11100,15 +11106,48 @@ compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, G
 ~s\t}
 ', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
 
-%% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +FieldDelim, +Unique, -GoCode)
+%% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +Options, -GoCode)
 %  Generate Go code for JSON input mode with type safety from schema
 %
-compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, GoCode) :-
+compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, GoCode) :-
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(unique(Unique), Options, true),
+    
     % Map delimiter
     map_field_delimiter(FieldDelim, DelimChar),
 
+    % Error handling setup
+    (   member(error_file(ErrorFile), Options)
+    ->  HasErrorFile = true,
+        format(string(ErrorSetup), '
+	errorFile, err := os.OpenFile("~w", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening error file: %%v\\n", err)
+		os.Exit(1)
+	}
+	defer errorFile.Close()
+	
+	errorWriter := func(rawLine []byte, errMsg string) {
+		type ErrorRecord struct {
+			Timestamp string `json:"timestamp"`
+			Error     string `json:"error"`
+			RawLine   string `json:"raw_line"`
+		}
+		rec := ErrorRecord{
+			Timestamp: time.Now().Format(time.RFC3339),
+			Error:     errMsg,
+			RawLine:   string(rawLine),
+		}
+		b, _ := json.Marshal(rec)
+		errorFile.Write(b)
+		errorFile.Write([]byte("\\n"))
+	}', [ErrorFile])
+    ;   HasErrorFile = false,
+        ErrorSetup = ''
+    ),
+
     % Generate typed field extraction code and build VarMap
-    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode),
+    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode, HasErrorFile),
 
     % Generate output expression using VarMap
     generate_json_output_expr_mapped(HeadArgs, VarMap, DelimChar, OutputExpr),
@@ -11120,39 +11159,51 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique
     ;   SeenDecl = '\t',
         UniqueCheck = '\t\tfmt.Println(result)\n'
     ),
+    
+    (   HasErrorFile = true
+    ->  ParseError = 'errorWriter(lineBytes, err.Error())'
+    ;   ParseError = ''
+    ),
 
-    % Build the loop code
-    format(string(GoCode), '
-\tscanner := bufio.NewScanner(os.Stdin)
+    % Build the loop body
+    format(string(LoopBody), '
+		lineBytes := scanner.Bytes()
+		var data map[string]interface{}
+		if err := json.Unmarshal(lineBytes, &data); err != nil {
+			~w
+			continue
+		}
+		
 ~w
-\tfor scanner.Scan() {
-\t\tvar data map[string]interface{}
-\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
-\t\t\tcontinue
-\t\t}
-\t\t
-~s
-\t\t
-\t\tresult := ~s
-~s\t}
-', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
+		
+		result := ~w
+~w', [ParseError, ExtractCode, OutputExpr, UniqueCheck]),
 
-%% generate_typed_field_extractions_mapped(+FieldMappings, +SchemaName, +Pos, +VarMapIn, -VarMapOut, -ExtractCode)
-generate_typed_field_extractions_mapped([], _, _, VarMap, VarMap, '').
-generate_typed_field_extractions_mapped([Mapping|Rest], SchemaName, Pos, VarMapIn, VarMapOut, Code) :-
+    % Build complete code
+    atomics_to_string([
+        '\tscanner := bufio.NewScanner(os.Stdin)\n',
+        SeenDecl,
+        ErrorSetup,
+        LoopBody,
+        '\t}\n'
+    ], GoCode).
+
+%% generate_typed_field_extractions_mapped(+FieldMappings, +SchemaName, +Pos, +VarMapIn, -VarMapOut, -ExtractCode, +HasErrorFile)
+generate_typed_field_extractions_mapped([], _, _, VarMap, VarMap, '', _).
+generate_typed_field_extractions_mapped([Mapping|Rest], SchemaName, Pos, VarMapIn, VarMapOut, Code, HasErrorFile) :-
     format(atom(VarName), 'field~w', [Pos]),
     NextPos is Pos + 1,
     
     (   Mapping = Field-Var
     ->  get_field_info(SchemaName, Field, Type, Options),
         atom_string(Field, FieldStr),
-        generate_typed_flat_field_extraction(FieldStr, VarName, Type, Options, ExtractLine),
+        generate_typed_flat_field_extraction(FieldStr, VarName, Type, Options, ExtractLine, HasErrorFile),
         NewVarMap = [(Var, VarName)|VarMapIn]
         
     ;   Mapping = nested(Path, Var)
     ->  last(Path, LastField),
         get_field_info(SchemaName, LastField, Type, Options),
-        generate_typed_nested_field_extraction(Path, VarName, Type, Options, ExtractLine),
+        generate_typed_nested_field_extraction(Path, VarName, Type, Options, ExtractLine, HasErrorFile),
         NewVarMap = [(Var, VarName)|VarMapIn]
         
     ;   Mapping = extract(SourceVar, Path, Var)
@@ -11170,7 +11221,7 @@ generate_typed_field_extractions_mapped([Mapping|Rest], SchemaName, Pos, VarMapI
         NewVarMap = VarMapIn
     ),
     
-    generate_typed_field_extractions_mapped(Rest, SchemaName, NextPos, NewVarMap, VarMapOut, RestCode),
+    generate_typed_field_extractions_mapped(Rest, SchemaName, NextPos, NewVarMap, VarMapOut, RestCode, HasErrorFile),
     (   ExtractLine = '' -> Code = RestCode
     ;   format(string(Code), '~s\n~s', [ExtractLine, RestCode])
     ).
@@ -11198,12 +11249,12 @@ generate_json_output_expr_mapped(HeadArgs, VarMap, DelimChar, OutputExpr) :-
 %% generate_typed_field_extractions(+FieldMappings, +SchemaName, +HeadArgs, -ExtractCode)
 %  Legacy wrapper - kept if needed, but compile_json_to_go_typed now uses mapped version
 generate_typed_field_extractions(FieldMappings, SchemaName, _, ExtractCode) :-
-    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], _, ExtractCode).
+    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], _, ExtractCode, false).
 
-%% generate_typed_flat_field_extraction(+FieldName, +VarName, +Type, +Options, -ExtractCode)
+%% generate_typed_flat_field_extraction(+FieldName, +VarName, +Type, +Options, -ExtractCode, +HasErrorFile)
 %  Generate type-safe extraction code for a flat field with validation
 %
-generate_typed_flat_field_extraction(FieldName, VarName, Type, Options, ExtractCode) :-
+generate_typed_flat_field_extraction(FieldName, VarName, Type, Options, ExtractCode, HasErrorFile) :-
     % Generate validation code
     generate_validation_code(VarName, Type, Options, ValidationCode),
 
@@ -11212,29 +11263,43 @@ generate_typed_flat_field_extraction(FieldName, VarName, Type, Options, ExtractC
 
     % Generate extraction based on type
     (   Type = string ->
-        format(atom(ExtractCode), '\t\tvar ~w string\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wIsString := ~wRaw.(string)\n\t\tif !~wIsString {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a string\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName, VarName, VarName, ValidationCode, Optional])
+        generate_error_action(field_type_error(FieldName, string), HasErrorFile, ErrCode),
+        format(atom(ExtractCode), '\t\tvar ~w string\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wIsString := ~wRaw.(string)\n\t\tif !~wIsString {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, ErrCode, VarName, VarName, ValidationCode, Optional])
     ;   Type = integer ->
-        format(atom(ExtractCode), '\t\tvar ~w int\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wFloat, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a number\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = int(~wFloat)\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName, VarName, VarName, ValidationCode, Optional])
+        generate_error_action(field_type_error(FieldName, number), HasErrorFile, ErrCode),
+        format(atom(ExtractCode), '\t\tvar ~w int\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wFloat, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}\n\t\t~w = int(~wFloat)\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, ErrCode, VarName, VarName, ValidationCode, Optional])
     ;   Type = float ->
-        format(atom(ExtractCode), '\t\tvar ~w float64\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a number\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName, VarName, VarName, ValidationCode, Optional])
+        generate_error_action(field_type_error(FieldName, number), HasErrorFile, ErrCode),
+        format(atom(ExtractCode), '\t\tvar ~w float64\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, ErrCode, VarName, VarName, ValidationCode, Optional])
     ;   Type = boolean ->
-        format(atom(ExtractCode), '\t\tvar ~w bool\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a boolean\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, FieldName, VarName, VarName, ValidationCode, Optional])
+        generate_error_action(field_type_error(FieldName, boolean), HasErrorFile, ErrCode),
+        format(atom(ExtractCode), '\t\tvar ~w bool\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, VarName, VarName, ErrCode, VarName, VarName, ValidationCode, Optional])
     ;   Type = object(SubSchema) ->
-        format(atom(ValidatorCall), '\n\t\tif subMap, ok := ~w.(map[string]interface{}); !ok || !validate_~w(subMap) {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: invalid nested object ''~s''\\n")\n\t\t\tcontinue\n\t\t}', [VarName, SubSchema, FieldName]),
+        generate_error_action(nested_object_error(FieldName), HasErrorFile, ErrCode),
+        format(atom(ValidatorCall), '\n\t\tif subMap, ok := ~w.(map[string]interface{}); !ok || !validate_~w(subMap) {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}', [VarName, SubSchema, ErrCode]),
         format(atom(ExtractCode), '\t\tvar ~w interface{}\n\t\t~wRaw, ~wRawOk := data["~s"]\n\t\tif ~wRawOk {\n\t\t\t~w = ~wRaw~s\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
             [VarName, VarName, VarName, FieldName, VarName, VarName, VarName, ValidatorCall, ValidationCode, Optional])
     ;   % Fallback to untyped for 'any' type
         generate_flat_field_extraction(FieldName, VarName, ExtractCode)
     ).
 
-%% generate_typed_nested_field_extraction(+Path, +VarName, +Type, +Options, -ExtractCode)
+generate_error_action(field_type_error(Field, Type), true, Code) :-
+    format(string(Code), 'errorWriter(lineBytes, "field ''~s'' is not a ~w")', [Field, Type]).
+generate_error_action(field_type_error(Field, Type), false, Code) :-
+    format(string(Code), 'fmt.Fprintf(os.Stderr, "Error: field ''~s'' is not a ~w\\n")', [Field, Type]).
+generate_error_action(nested_object_error(Field), true, Code) :-
+    format(string(Code), 'errorWriter(lineBytes, "invalid nested object ''~s''")', [Field]).
+generate_error_action(nested_object_error(Field), false, Code) :-
+    format(string(Code), 'fmt.Fprintf(os.Stderr, "Error: invalid nested object ''~s''\\n")', [Field]).
+
+%% generate_typed_nested_field_extraction(+Path, +VarName, +Type, +Options, -ExtractCode, +HasErrorFile)
 %  Generate type-safe extraction code for a nested field with validation
 %
-generate_typed_nested_field_extraction(Path, VarName, Type, Options, ExtractCode) :-
+generate_typed_nested_field_extraction(Path, VarName, Type, Options, ExtractCode, HasErrorFile) :-
     % Convert path to Go string slice
     maplist(atom_string, Path, PathStrs),
     atomic_list_concat(PathStrs, '", "', PathStr),
@@ -11249,19 +11314,24 @@ generate_typed_nested_field_extraction(Path, VarName, Type, Options, ExtractCode
 
     % Generate extraction with type assertion based on type
     (   Type = string ->
-        format(atom(ExtractCode), '\t\tvar ~w string\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wIsString := ~wRaw.(string)\n\t\tif !~wIsString {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a string\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, LastFieldStr, VarName, VarName, ValidationCode, Optional])
+        generate_error_action(field_type_error(LastFieldStr, string), HasErrorFile, ErrCode),
+        format(atom(ExtractCode), '\t\tvar ~w string\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wIsString := ~wRaw.(string)\n\t\tif !~wIsString {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, ErrCode, VarName, VarName, ValidationCode, Optional])
     ;   Type = integer ->
-        format(atom(ExtractCode), '\t\tvar ~w int\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wFloat, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a number\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = int(~wFloat)\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, LastFieldStr, VarName, VarName, ValidationCode, Optional])
+        generate_error_action(field_type_error(LastFieldStr, number), HasErrorFile, ErrCode),
+        format(atom(ExtractCode), '\t\tvar ~w int\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wFloat, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}\n\t\t~w = int(~wFloat)\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, ErrCode, VarName, VarName, ValidationCode, Optional])
     ;   Type = float ->
-        format(atom(ExtractCode), '\t\tvar ~w float64\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a number\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, LastFieldStr, VarName, VarName, ValidationCode, Optional])
+        generate_error_action(field_type_error(LastFieldStr, number), HasErrorFile, ErrCode),
+        format(atom(ExtractCode), '\t\tvar ~w float64\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wFloatOk := ~wRaw.(float64)\n\t\tif !~wFloatOk {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, ErrCode, VarName, VarName, ValidationCode, Optional])
     ;   Type = boolean ->
-        format(atom(ExtractCode), '\t\tvar ~w bool\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: nested field ''~s'' is not a boolean\\n")\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
-            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, LastFieldStr, VarName, VarName, ValidationCode, Optional])
+        generate_error_action(field_type_error(LastFieldStr, boolean), HasErrorFile, ErrCode),
+        format(atom(ExtractCode), '\t\tvar ~w bool\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~wVal, ~wBoolOk := ~wRaw.(bool)\n\t\tif !~wBoolOk {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}\n\t\t~w = ~wVal\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
+            [VarName, VarName, PathStr, VarName, VarName, VarName, VarName, ErrCode, VarName, VarName, ValidationCode, Optional])
     ;   Type = object(SubSchema) ->
-        format(atom(ValidatorCall), '\n\t\tif subMap, ok := ~w.(map[string]interface{}); !ok || !validate_~w(subMap) {\n\t\t\tfmt.Fprintf(os.Stderr, "Error: invalid nested object ''~s''\\n")\n\t\t\tcontinue\n\t\t}\n', [VarName, SubSchema, PathStr]),
+        generate_error_action(nested_object_error(LastFieldStr), HasErrorFile, ErrCode),
+        format(atom(ValidatorCall), '\n\t\tif subMap, ok := ~w.(map[string]interface{}); !ok || !validate_~w(subMap) {\n\t\t\t~s\n\t\t\tcontinue\n\t\t}\n', [VarName, SubSchema, ErrCode]),
         format(atom(ExtractCode), '\t\tvar ~w interface{}\n\t\t~wRaw, ~wRawOk := getNestedField(data, []string{"~s"})\n\t\tif ~wRawOk {\n\t\t\t~w = ~wRaw~s\n~s\n\t\t} else if !~w {\n\t\t\tcontinue\n\t\t}',
             [VarName, VarName, PathStr, VarName, VarName, ValidatorCall, ValidationCode, Optional])
     ;   % Fallback to untyped
@@ -11678,7 +11748,9 @@ write_go_program(GoCode, FilePath) :-
     file_directory_name(FilePath, Dir),
     (   Dir \= '.' -> make_directory_path(Dir) ; true ),
     open(FilePath, write, Stream),
-    write(Stream, GoCode),
+    (   string(GoCode) -> format(Stream, '~s', [GoCode])
+    ;   format(Stream, '~w', [GoCode])
+    ),
     close(Stream),
     format('Go program written to: ~w~n', [FilePath]).
 

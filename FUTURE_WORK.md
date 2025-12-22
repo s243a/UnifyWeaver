@@ -33,11 +33,11 @@ This document captures ideas for future development of UnifyWeaver targets and f
 
 ✅ **Implemented**: High-performance concurrency.
 - **Parallel Processing** - Goroutine-based concurrent record processing with schema validation (`workers(N)`).
+- **Error Aggregation** - Collect validation/parsing errors to a separate JSONL file (`error_file(Path)`).
 
 ### Stream Processing Enhancements (Planned)
 
 - **Buffered Channels** - Pipeline stages with channels (partially implemented in pipeline mode)
-- **Error Aggregation** - Collect and report validation errors
 - **Progress Reporting** - Optional progress output for large datasets
 
 ## Rust Target (Completed)
