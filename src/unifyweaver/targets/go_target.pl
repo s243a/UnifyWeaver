@@ -10200,7 +10200,7 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
             format('  Database mode: using typed compilation~n'),
             compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
         ;   % Untyped compilation (current behavior)
-            compile_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
+            compile_json_to_go(HeadArgs, FieldMappings, Options, CoreBody)
         ),
 
         % Check if database backend is specified
@@ -10310,13 +10310,13 @@ compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
         SingleHead =.. [_|HeadArgs],
         
         (   option(json_schema(SchemaName), Options)
-        ->  compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, Workers, ScriptBody),
+        ->  compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, Workers, ScriptBody),
             
             % Generate validators
             collect_referenced_schemas(SchemaName, AllSchemas),
             findall(ValCode, (member(S, AllSchemas), generate_schema_validator(S, ValCode)), ValCodes),
             atomic_list_concat(ValCodes, '\n\n', ValidatorSection)
-        ;   compile_parallel_json_to_go(HeadArgs, FieldMappings, FieldDelim, Unique, Workers, ScriptBody),
+        ;   compile_parallel_json_to_go(HeadArgs, FieldMappings, Options, Workers, ScriptBody),
             ValidatorSection = ''
         ),
 
@@ -10336,8 +10336,13 @@ compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
         BaseImports = ["bufio", "encoding/json", "fmt", "os", "sync"],
         
         (   option(json_schema(SchemaName), Options), schema_needs_strings(SchemaName)
-        ->  append(BaseImports, ["strings"], AllImportsList)
-        ;   AllImportsList = BaseImports
+        ->  append(BaseImports, ["strings"], ImportsWithStrings)
+        ;   ImportsWithStrings = BaseImports
+        ),
+
+        (   option(progress(_), Options)
+        ->  append(ImportsWithStrings, ["sync/atomic"], AllImportsList)
+        ;   AllImportsList = ImportsWithStrings
         ),
         
         maplist(format_import, AllImportsList, ImportLines),
@@ -10367,12 +10372,32 @@ func main() {
     ;   GoCode = ScriptBody
     ).
 
-%% compile_parallel_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +FieldDelim, +Unique, +Workers, -GoCode)
+%% compile_parallel_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +Options, +Workers, -GoCode)
 %  Generate Go code for parallel JSON processing with schema validation
-compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDelim, Unique, Workers, GoCode) :-
+compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, Workers, GoCode) :-
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(unique(Unique), Options, true),
+    
     map_field_delimiter(FieldDelim, DelimChar),
 
+    % Progress reporting setup
+    (   option(progress(ProgressOpt), Options)
+    ->  (   ProgressOpt = interval(N) -> Interval = N
+        ;   ProgressOpt = true -> Interval = 1000
+        ;   Interval = 1000
+        ),
+        ProgressSetup = '\n\tvar recordCount int64 = 0',
+        format(string(ProgressUpdate), '
+				newCount := atomic.AddInt64(&recordCount, 1)
+				if newCount % ~w == 0 {
+					fmt.Fprintf(os.Stderr, "Processed %d records\\n", newCount)
+				}', [Interval])
+    ;   ProgressSetup = '',
+        ProgressUpdate = ''
+    ),
+
     % Generate typed extraction code (same as sequential typed)
+    % Parallel mode currently doesn't support error aggregation (false)
     generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode, false),
     
     % Generate output expression
@@ -10408,6 +10433,7 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDeli
 	var wg sync.WaitGroup
 	var outputMutex sync.Mutex
 	~s
+~s
 
 	// Start workers
 	for i := 0; i < ~w; i++ {
@@ -10419,6 +10445,7 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDeli
 				if err := json.Unmarshal(lineBytes, &data); err != nil {
 					continue
 				}
+				~w
 				
 				~s
 				
@@ -10437,12 +10464,31 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, FieldDeli
 	}
 	close(jobs)
 	wg.Wait()
-', [Workers, UniqueVars, Workers, ExtractCode, OutputBlock]).
+', [Workers, UniqueVars, ProgressSetup, Workers, ProgressUpdate, ExtractCode, OutputBlock]).
 
-%% compile_parallel_json_to_go(+HeadArgs, +Operations, +FieldDelim, +Unique, +Workers, -GoCode)
+%% compile_parallel_json_to_go(+HeadArgs, +Operations, +Options, +Workers, -GoCode)
 %  Generate Go code for parallel JSON processing
-compile_parallel_json_to_go(HeadArgs, Operations, FieldDelim, Unique, Workers, GoCode) :-
+compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(unique(Unique), Options, true),
+    
     map_field_delimiter(FieldDelim, DelimChar),
+
+    % Progress reporting setup
+    (   option(progress(ProgressOpt), Options)
+    ->  (   ProgressOpt = interval(N) -> Interval = N
+        ;   ProgressOpt = true -> Interval = 1000
+        ;   Interval = 1000
+        ),
+        ProgressSetup = '\n\tvar recordCount int64 = 0',
+        format(string(ProgressUpdate), '
+				newCount := atomic.AddInt64(&recordCount, 1)
+				if newCount % ~w == 0 {
+					fmt.Fprintf(os.Stderr, "Processed %d records\\n", newCount)
+				}', [Interval])
+    ;   ProgressSetup = '',
+        ProgressUpdate = ''
+    ),
 
     % Generate processing code (recursive)
     generate_parallel_json_processing(Operations, HeadArgs, DelimChar, Unique, 1, [], ProcessingCode),
@@ -10458,6 +10504,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, FieldDelim, Unique, Workers, G
 	var wg sync.WaitGroup
 	var outputMutex sync.Mutex
 	~s
+~s
 
 	// Start workers
 	for i := 0; i < ~w; i++ {
@@ -10469,6 +10516,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, FieldDelim, Unique, Workers, G
 				if err := json.Unmarshal(lineBytes, &data); err != nil {
 					continue
 				}
+				~w
 				
 				~s
 			}
@@ -10485,7 +10533,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, FieldDelim, Unique, Workers, G
 	}
 	close(jobs)
 	wg.Wait()
-', [Workers, UniqueVars, Workers, ProcessingCode]).
+', [Workers, UniqueVars, ProgressSetup, Workers, ProgressUpdate, ProcessingCode]).
 
 %% generate_parallel_json_processing(+Operations, +HeadArgs, +Delim, +Unique, +VIdx, +VarMap, -Code)
 generate_parallel_json_processing([], HeadArgs, Delim, Unique, _, VarMap, Code) :-
@@ -10916,12 +10964,31 @@ extract_field_list([Other|Rest], Mappings) :-
     format('WARNING: Unexpected field format: ~w~n', [Other]),
     extract_field_list(Rest, Mappings).
 
-%% compile_json_to_go(+HeadArgs, +Operations, +FieldDelim, +Unique, -GoCode)
+%% compile_json_to_go(+HeadArgs, +Operations, +Options, -GoCode)
 %  Generate Go code for JSON input mode (recursive for arrays)
 %
-compile_json_to_go(HeadArgs, Operations, FieldDelim, Unique, GoCode) :-
+compile_json_to_go(HeadArgs, Operations, Options, GoCode) :-
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(unique(Unique), Options, true),
+    
     % Map delimiter
     map_field_delimiter(FieldDelim, DelimChar),
+
+    % Progress reporting setup
+    (   option(progress(ProgressOpt), Options)
+    ->  (   ProgressOpt = interval(N) -> Interval = N
+        ;   ProgressOpt = true -> Interval = 1000
+        ;   Interval = 1000
+        ),
+        format(string(ProgressSetup), '	var recordCount int64 = 0', []),
+        format(string(ProgressUpdate), '
+		recordCount++
+		if recordCount % ~w == 0 {
+			fmt.Fprintf(os.Stderr, "Processed %d records\\n", recordCount)
+		}', [Interval])
+    ;   ProgressSetup = '',
+        ProgressUpdate = ''
+    ),
 
     % Generate processing code (recursive)
     % Initial VarMap contains 'data' -> 'data'
@@ -10929,18 +10996,19 @@ compile_json_to_go(HeadArgs, Operations, FieldDelim, Unique, GoCode) :-
 
     % Build the loop code
     format(string(GoCode), '
-\tscanner := bufio.NewScanner(os.Stdin)
-\tseen := make(map[string]bool)
-\t
-\tfor scanner.Scan() {
-\t\tvar data map[string]interface{}
-\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
-\t\t\tcontinue
-\t\t}
-\t\t
+	scanner := bufio.NewScanner(os.Stdin)
+	seen := make(map[string]bool)
+~w
+	
+	for scanner.Scan() {
+		var data map[string]interface{}
+		if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+			continue
+		}
+		~w
 ~s
-\t}
-', [ProcessingCode]).
+	}
+', [ProgressSetup, ProgressUpdate, ProcessingCode]).
 
 %% generate_json_processing(+Operations, +HeadArgs, +Delim, +Unique, +VIdx, +VarMap, -Code)
 %  Generate nested Go code for JSON operations
@@ -11146,6 +11214,22 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, GoCode) :
         ErrorSetup = ''
     ),
 
+    % Progress reporting setup
+    (   option(progress(ProgressOpt), Options)
+    ->  (   ProgressOpt = interval(N) -> Interval = N
+        ;   ProgressOpt = true -> Interval = 1000
+        ;   Interval = 1000
+        ),
+        format(string(ProgressSetup), '\n\tvar recordCount int64 = 0', []),
+        format(string(ProgressUpdate), '
+		recordCount++
+		if recordCount % ~w == 0 {
+			fmt.Fprintf(os.Stderr, "Processed %d records\\n", recordCount)
+		}', [Interval])
+    ;   ProgressSetup = '',
+        ProgressUpdate = ''
+    ),
+
     % Generate typed field extraction code and build VarMap
     generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode, HasErrorFile),
 
@@ -11173,17 +11257,19 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, GoCode) :
 			~w
 			continue
 		}
-		
+		~w
 ~w
 		
 		result := ~w
-~w', [ParseError, ExtractCode, OutputExpr, UniqueCheck]),
+~w', [ParseError, ProgressUpdate, ExtractCode, OutputExpr, UniqueCheck]),
 
     % Build complete code
     atomics_to_string([
         '\tscanner := bufio.NewScanner(os.Stdin)\n',
         SeenDecl,
         ErrorSetup,
+        ProgressSetup,
+        '\n\tfor scanner.Scan() {',
         LoopBody,
         '\t}\n'
     ], GoCode).
