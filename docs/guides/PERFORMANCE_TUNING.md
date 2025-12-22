@@ -151,6 +151,55 @@ config = AggregationConfig(
 )
 ```
 
+## Backtracking Configuration
+
+Small-world routing supports backtracking to escape local minima. By default, backtracking is **enabled** for reliability.
+
+### Benchmark Results
+
+| Network Size | Greedy Success | Backtrack Success | Greedy Comps | Backtrack Comps |
+|--------------|----------------|-------------------|--------------|-----------------|
+| 20 nodes | 74% | 100% | 7.4 | 43 (5.8x) |
+| 50 nodes | 68% | 100% | 14 | 96 (6.8x) |
+| 100 nodes | 66% | 98% | 24 | 163 (6.7x) |
+| 200 nodes | 52% | 96% | 36 | 296 (8.3x) |
+
+**Key findings:**
+- Backtracking improves success rate from ~50-70% to ~96-100%
+- Overhead is ~6-8x more comparisons
+- Path lengths are actually **shorter** with backtracking (fewer hops to target)
+
+### When to Disable Backtracking
+
+Use `use_backtrack=False` only when:
+- Latency is critical and partial results are acceptable
+- Network is mature with many shortcuts
+- Starting from known-good positions (e.g., from root in hierarchical network)
+
+```python
+from small_world_evolution import SmallWorldNetwork
+
+network = SmallWorldNetwork()
+# ... add nodes ...
+
+# High reliability (default)
+path, comps = network.route_greedy(query, use_backtrack=True)
+
+# Lower latency, may miss target
+path, comps = network.route_greedy(query, use_backtrack=False)
+```
+
+### Start-Anywhere Performance
+
+Random-start routing (e.g., federated search from any node) especially benefits from backtracking:
+
+| Condition | Greedy | Backtrack |
+|-----------|--------|-----------|
+| Immature network | 54% | 99% |
+| Mature network | 57% | 100% |
+
+For federated queries that may enter the network at arbitrary nodes, **keep backtracking enabled**.
+
 ## Hierarchical Federation
 
 For large networks (50+ nodes), hierarchical routing can reduce query scope:

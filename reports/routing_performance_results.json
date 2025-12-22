@@ -1,5 +1,5 @@
 {
-  "timestamp": "2025-12-20T22:01:16.684696",
+  "timestamp": "2025-12-21T17:56:51.580474",
   "benchmarks": {
     "scaling": {
       "test_name": "scaling",
@@ -18,49 +18,49 @@
         "results": [
           {
             "num_nodes": 10,
-            "avg_comps_hierarchical": 5.88,
-            "avg_comps_evolved": 5.88,
-            "avg_comps_cross_branch": 6.88,
+            "avg_comps_hierarchical": 42.92,
+            "avg_comps_evolved": 43.44,
+            "avg_comps_cross_branch": 47.9,
             "log_n": 3.321928094887362
           },
           {
             "num_nodes": 25,
-            "avg_comps_hierarchical": 8.76,
-            "avg_comps_evolved": 10.12,
-            "avg_comps_cross_branch": 12.6,
+            "avg_comps_hierarchical": 52.54,
+            "avg_comps_evolved": 59.16,
+            "avg_comps_cross_branch": 64.72,
             "log_n": 4.643856189774724
           },
           {
             "num_nodes": 50,
-            "avg_comps_hierarchical": 13.46,
-            "avg_comps_evolved": 15.54,
-            "avg_comps_cross_branch": 17.42,
+            "avg_comps_hierarchical": 94.28,
+            "avg_comps_evolved": 95.66,
+            "avg_comps_cross_branch": 100.18,
             "log_n": 5.643856189774724
           },
           {
             "num_nodes": 100,
-            "avg_comps_hierarchical": 24.0,
-            "avg_comps_evolved": 24.96,
-            "avg_comps_cross_branch": 26.6,
+            "avg_comps_hierarchical": 154.84,
+            "avg_comps_evolved": 120.54,
+            "avg_comps_cross_branch": 121.96,
             "log_n": 6.643856189774724
           },
           {
             "num_nodes": 200,
-            "avg_comps_hierarchical": 44.0,
-            "avg_comps_evolved": 44.94,
-            "avg_comps_cross_branch": 45.98,
+            "avg_comps_hierarchical": 280.68,
+            "avg_comps_evolved": 211.7,
+            "avg_comps_cross_branch": 207.58,
             "log_n": 7.643856189774724
           },
           {
             "num_nodes": 500,
-            "avg_comps_hierarchical": 104.0,
-            "avg_comps_evolved": 104.98,
-            "avg_comps_cross_branch": 101.5,
+            "avg_comps_hierarchical": 699.76,
+            "avg_comps_evolved": 499.12,
+            "avg_comps_cross_branch": 445.52,
             "log_n": 8.965784284662087
           }
         ]
       },
-      "duration_ms": 3717.4432277679443
+      "duration_ms": 4800.589323043823
     },
     "backtrack_vs_greedy": {
       "test_name": "backtrack_vs_greedy",
@@ -80,7 +80,7 @@
             "greedy_success_rate": 0.74,
             "backtrack_success_rate": 1.0,
             "greedy_avg_comps": 7.36,
-            "backtrack_avg_comps": 43.02,
+            "backtrack_avg_comps": 43.04,
             "greedy_avg_hops": 3.04,
             "backtrack_avg_hops": 1.88
           },
@@ -89,7 +89,7 @@
             "greedy_success_rate": 0.68,
             "backtrack_success_rate": 1.0,
             "greedy_avg_comps": 14.16,
-            "backtrack_avg_comps": 96.06,
+            "backtrack_avg_comps": 96.04,
             "greedy_avg_hops": 3.3,
             "backtrack_avg_hops": 2.34
           },
@@ -113,7 +113,7 @@
           }
         ]
       },
-      "duration_ms": 224.1206169128418
+      "duration_ms": 215.00182151794434
     },
     "evolution_speed": {
       "test_name": "evolution_speed",
@@ -123,8 +123,8 @@
         "target_maturity": 0.5
       },
       "metrics": {
-        "queries_to_mature": 130,
-        "final_maturity": 0.7579839280881321,
+        "queries_to_mature": 140,
+        "final_maturity": 0.7521602024376908,
         "maturity_history": [
           [
             0,
@@ -132,208 +132,208 @@
           ],
           [
             10,
-            0.08283004659014477
+            0.07142833030561618
           ],
           [
             20,
-            0.1501117479703757
+            0.1455041664009366
           ],
           [
             30,
-            0.20008740847445042
+            0.20045466145044152
           ],
           [
             40,
-            0.259658548675483
+            0.23841750791703462
           ],
           [
             50,
-            0.309989999049409
+            0.28549826694413016
           ],
           [
             60,
-            0.3608750876277453
+            0.31280816358671343
           ],
           [
             70,
-            0.38280939634671085
+            0.36579248791081165
           ],
           [
             80,
-            0.42110396730245203
+            0.3904124472692791
           ],
           [
             90,
-            0.46400704840917684
+            0.40942264354923874
           ],
           [
             100,
-            0.469648877329121
+            0.44300062205635216
           ],
           [
             110,
-            0.4808960409024157
+            0.4699732693388238
           ],
           [
             120,
-            0.49985520022164864
+            0.4666729528613339
           ],
           [
             130,
-            0.5097245559716852
+            0.48890345247419587
           ],
           [
             140,
-            0.5201616544998275
+            0.5006736709219864
           ],
           [
             150,
-            0.5270596539285266
+            0.5131657780723309
           ],
           [
             160,
-            0.5401947367878481
+            0.5122260927265515
           ],
           [
             170,
-            0.5414384599198234
+            0.5194692893003922
           ],
           [
             180,
-            0.5457696651079205
+            0.5214356680932011
           ],
           [
             190,
-            0.5431138981275625
+            0.523183289703827
           ],
           [
             200,
-            0.5538679028442655
+            0.5276919325383288
           ],
           [
             210,
-            0.5612154194867321
+            0.5447142347366131
           ],
           [
             220,
-            0.5669056117088986
+            0.5499491074962609
           ],
           [
             230,
-            0.5667736785153425
+            0.5548172995075691
           ],
           [
             240,
-            0.5813398662168862
+            0.558221304491366
           ],
           [
             250,
-            0.5874530209439404
+            0.5604522356012998
           ],
           [
             260,
-            0.5911124443978875
+            0.5657161923563996
           ],
           [
             270,
-            0.598285208131317
+            0.5710614913178925
           ],
           [
             280,
-            0.6064313911915292
+            0.5857188903946239
           ],
           [
             290,
-            0.6157128934036579
+            0.5886336309966341
           ],
           [
             300,
-            0.6237061321741628
+            0.5927083792441317
           ],
           [
             310,
-            0.6310784764957591
+            0.6061502823902339
           ],
           [
             320,
-            0.6344867858815737
+            0.6150378103333075
           ],
           [
             330,
-            0.639926091015764
+            0.6213977438914522
           ],
           [
             340,
-            0.649177108178572
+            0.6249713622314856
           ],
           [
             350,
-            0.6547111908125276
+            0.6298499375165263
           ],
           [
             360,
-            0.6603318003507987
+            0.6382499306811671
           ],
           [
             370,
-            0.6649518379446462
+            0.6444300229134148
           ],
           [
             380,
-            0.6702012304632798
+            0.6575719568449783
           ],
           [
             390,
-            0.6804151357290577
+            0.663225295363513
           ],
           [
             400,
-            0.6910728093833358
+            0.67185384877241
           ],
           [
             410,
-            0.697827053903535
+            0.6802605703782322
           ],
           [
             420,
-            0.700932379247797
+            0.6893645022008292
           ],
           [
             430,
-            0.7063448195926412
+            0.6981428606707079
           ],
           [
             440,
-            0.7148410715944986
+            0.7112877752199525
           ],
           [
             450,
-            0.7220765219081121
+            0.7190129747512046
           ],
           [
             460,
-            0.7287422417121585
+            0.7287204207324613
           ],
           [
             470,
-            0.729196671262863
+            0.7348445085442297
           ],
           [
             480,
-            0.7363637330783557
+            0.744120092937041
           ],
           [
             490,
-            0.7456756060144392
+            0.746925978192331
           ],
           [
             500,
-            0.7579839280881321
+            0.7521602024376908
           ]
         ],
-        "total_shortcuts": 740
+        "total_shortcuts": 728
       },
-      "duration_ms": 841.0694599151611
+      "duration_ms": 845.5898761749268
     },
     "cross_branch": {
       "test_name": "cross_branch_effectiveness",
@@ -344,14 +344,14 @@
       },
       "metrics": {
         "links_created": 59,
-        "avg_hops_before": 2.98,
-        "avg_hops_after": 2.71,
-        "avg_comps_before": 24.0,
-        "avg_comps_after": 24.68,
-        "hop_reduction_pct": 9.060402684563762,
-        "comp_reduction_pct": -2.833333333333332
+        "avg_hops_before": 3.2,
+        "avg_hops_after": 2.91,
+        "avg_comps_before": 150.92,
+        "avg_comps_after": 107.95,
+        "hop_reduction_pct": 9.062499999999996,
+        "comp_reduction_pct": 28.472038165915713
       },
-      "duration_ms": 77.74186134338379
+      "duration_ms": 241.58000946044922
     },
     "start_anywhere": {
       "test_name": "start_anywhere",
@@ -362,12 +362,12 @@
       "metrics": {
         "immature_greedy_success": 0.54,
         "immature_backtrack_success": 0.99,
-        "mature_greedy_success": 0.65,
+        "mature_greedy_success": 0.57,
         "mature_backtrack_success": 1.0,
         "final_maturity": 0.5451907065432399,
-        "total_shortcuts": 284
+        "total_shortcuts": 277
       },
-      "duration_ms": 817.5075054168701
+      "duration_ms": 854.485273361206
     }
   }
 }
