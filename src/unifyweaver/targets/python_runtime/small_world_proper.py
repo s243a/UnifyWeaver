@@ -494,6 +494,30 @@ class SmallWorldProper:
     # ROUTING
     # =========================================================================
 
+    def route(
+        self,
+        query: np.ndarray,
+        start_node_id: Optional[str] = None,
+        max_hops: int = 50,
+        use_backtrack: bool = True,
+    ) -> Tuple[List[str], int]:
+        """
+        Route query to find nearest node.
+
+        Args:
+            query: Query embedding vector
+            start_node_id: Starting node (random if None)
+            max_hops: Maximum routing hops
+            use_backtrack: If True (default), use backtracking for better success
+
+        Returns:
+            (path of node IDs visited, number of comparisons made)
+        """
+        if use_backtrack:
+            return self.route_with_backtrack(query, start_node_id, max_hops)
+        else:
+            return self.route_greedy(query, start_node_id, max_hops)
+
     def route_greedy(
         self,
         query: np.ndarray,

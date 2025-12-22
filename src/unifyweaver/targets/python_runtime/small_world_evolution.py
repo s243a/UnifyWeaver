@@ -585,7 +585,7 @@ class SmallWorldNetwork:
         query_embedding: np.ndarray,
         start_node_id: Optional[str] = None,
         max_hops: int = 20,
-        use_backtrack: bool = False,
+        use_backtrack: bool = True,
     ) -> Tuple[List[str], int]:
         """
         Route query using greedy forwarding.
