@@ -5305,6 +5305,11 @@ compile_aggregation_mode(Pred, Arity, Options, GoCode) :- !,
     (   Op = count
     ->  AggField = none,
         OpType = count
+    ;   compound(Op), functor(Op, percentile, 2)
+    ->  arg(1, Op, AggVar),
+        arg(2, Op, P),
+        AggField = AggVar,
+        OpType = percentile(P)
     ;   compound(Op), functor(Op, AggType, 1), arg(1, Op, AggVar)
     ->  AggField = AggVar,
         OpType = AggType
@@ -5319,11 +5324,38 @@ compile_aggregation_mode(Pred, Arity, Options, GoCode) :- !,
     generate_aggregation_code(OpType, AggField, ResultVar, FieldMappings, Options, ScriptBody),
     
     % Determine imports
-    (   OpType = count ->
-        Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"'
-    ;   Imports = '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"'
-    ),
+    (   agg_needs_math(OpType) -> MathImport = '\t"math"\n' ; MathImport = '' ),
+    (   agg_needs_sort(OpType) -> SortImport = '\t"sort"\n' ; SortImport = '' ),
+    format(string(Imports), '\t"bufio"\n\t"encoding/json"\n\t"fmt"\n\t"os"\n~s~s', [MathImport, SortImport]),
     
+    % Generate helpers
+    (   agg_needs_sort(OpType) 
+    ->  Helpers = '
+func calculateMedian(values []float64) float64 {
+	if len(values) == 0 { return 0 }
+	sort.Float64s(values)
+	mid := len(values) / 2
+	if len(values)%2 == 0 {
+		return (values[mid-1] + values[mid]) / 2
+	}
+	return values[mid]
+}
+
+func calculatePercentile(values []float64, p float64) float64 {
+	if len(values) == 0 { return 0 }
+	sort.Float64s(values)
+	index := (p / 100) * float64(len(values)-1)
+	i := int(index)
+	fraction := index - float64(i)
+	if i+1 < len(values) {
+		return values[i] + fraction*(values[i+1]-values[i])
+	}
+	return values[i]
+}
+'
+    ;   Helpers = ''
+    ),
+
     % Wrap in package main if requested
     option(include_package(IncludePackage), Options, true),
     (   IncludePackage ->
@@ -5335,7 +5367,8 @@ import (
 
 func main() {
 ~s}
-', [Imports, ScriptBody])
+~s
+', [Imports, ScriptBody, Helpers])
     ;   GoCode = ScriptBody
     ).
 
@@ -8160,14 +8193,54 @@ compile_group_by_mode(Pred, Arity, Options, GoCode) :-
 
     % Add strings import if needed (for nested grouping or string manipulation)
     (   (is_list(GroupField) ; member(nested(_, _), FieldMappings))
-    ->  append(BaseImports, ["strings"], ImportsList)
-    ;   ImportsList = BaseImports
+    ->  append(BaseImports, ["strings"], ImportsList1)
+    ;   ImportsList1 = BaseImports
     ),
     
+    % Add math import if needed (for stddev)
+    (   agg_needs_math(AggOp)
+    ->  append(ImportsList1, ["math"], ImportsList2)
+    ;   ImportsList2 = ImportsList1
+    ),
+    
+    % Add sort import if needed (for median/percentile)
+    (   agg_needs_sort(AggOp)
+    ->  append(ImportsList2, ["sort"], ImportsList3)
+    ;   ImportsList3 = ImportsList2
+    ),
+
     % Sort and format imports
-    sort(ImportsList, UniqueImports),
+    sort(ImportsList3, UniqueImports),
     maplist(format_import, UniqueImports, ImportLines),
     atomic_list_concat(ImportLines, '\n', Imports),
+
+    % Generate helpers
+    (   agg_needs_sort(AggOp) 
+    ->  Helpers = '
+func calculateMedian(values []float64) float64 {
+	if len(values) == 0 { return 0 }
+	sort.Float64s(values)
+	mid := len(values) / 2
+	if len(values)%2 == 0 {
+		return (values[mid-1] + values[mid]) / 2
+	}
+	return values[mid]
+}
+
+func calculatePercentile(values []float64, p float64) float64 {
+	if len(values) == 0 { return 0 }
+	sort.Float64s(values)
+	index := (p / 100) * float64(len(values)-1)
+	i := int(index)
+	fraction := index - float64(i)
+	if i+1 < len(values) {
+		return values[i] + fraction*(values[i+1]-values[i])
+	}
+	return values[i]
+}
+'
+    ;   Helpers = ''
+    ),
 
     % Wrap in package main
     format(string(GoCode), 'package main
@@ -8178,7 +8251,8 @@ import (
 
 func main() {
 ~s}
-', [Imports, AggBody]).
+~s
+', [Imports, AggBody, Helpers]).
 
 
 
@@ -8235,6 +8309,18 @@ generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstrain
         ;   AggOp = min(AggVar)
         ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
             generate_group_by_min_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
+        ;   (compound(AggOp), (functor(AggOp, stddev, _) ; functor(AggOp, median, _) ; functor(AggOp, percentile, _)))
+        ->  format('  Statistical aggregation detected: ~w~n', [AggOp]),
+            % Convert to list format to reuse multi-agg code (cleaner than new templates)
+            (   compound(AggOp), arg(2, AggOp, Result)
+            ->  OpList = [AggOp]
+            ;   % single arg form, e.g. stddev(Age)
+                AggOp =.. [Func|Args],
+                append(Args, [Result], NewArgs),
+                NewOp =.. [Func|NewArgs],
+                OpList = [NewOp]
+            ),
+            generate_multi_aggregation_code(GroupFieldName, FieldMappings, OpList, HavingConstraints, DbFile, BucketStr, GoCode)
         ;   format('ERROR: Unknown group_by aggregation operation: ~w~n', [AggOp]),
             fail
         )
@@ -8591,6 +8677,18 @@ parse_single_agg_op(min(AggVar), FieldMappings, agg(min, FieldName, null, min)) 
     find_field_for_var(AggVar, FieldMappings, FieldName).
 parse_single_agg_op(min(AggVar, _ResultVar), FieldMappings, agg(min, FieldName, null, min)) :- !,
     find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(stddev(AggVar), FieldMappings, agg(stddev, FieldName, null, stddev)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(stddev(AggVar, _ResultVar), FieldMappings, agg(stddev, FieldName, null, stddev)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(median(AggVar), FieldMappings, agg(median, FieldName, null, median)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(median(AggVar, _ResultVar), FieldMappings, agg(median, FieldName, null, median)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(percentile(AggVar, P), FieldMappings, agg(percentile(P), FieldName, null, percentile)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(percentile(AggVar, P, _ResultVar), FieldMappings, agg(percentile(P), FieldName, null, percentile)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
 
 %% generate_multi_agg_struct_fields(+AggInfo, -StructFields)
 %  Generate Go struct field declarations based on operations
@@ -8621,6 +8719,11 @@ needed_struct_field(max, maxValue).
 needed_struct_field(max, maxFirst).
 needed_struct_field(min, minValue).
 needed_struct_field(min, minFirst).
+needed_struct_field(stddev, count).
+needed_struct_field(stddev, mean).
+needed_struct_field(stddev, m2).
+needed_struct_field(median, values).
+needed_struct_field(percentile(_), values).
 
 %% format_struct_fields(+NeededFields, -StructFields)
 %  Format struct fields as Go code
@@ -8641,6 +8744,9 @@ go_struct_field_line(maxValue, '\t\tmaxValue float64').
 go_struct_field_line(maxFirst, '\t\tmaxFirst bool').
 go_struct_field_line(minValue, '\t\tminValue float64').
 go_struct_field_line(minFirst, '\t\tminFirst bool').
+go_struct_field_line(mean, '\t\tmean     float64').
+go_struct_field_line(m2, '\t\tm2       float64').
+go_struct_field_line(values, '\t\tvalues   []float64').
 
 %% get_struct_init_values(+AggInfo, -InitValues)
 %  Generate initialization values for struct
@@ -8746,16 +8852,59 @@ generate_single_accumulation(agg(min, FieldName, _, _), _, Code) :- !,
 \t\t\t\t\t}
 ', [FieldName, FieldName]).
 
+generate_single_accumulation(agg(stddev, FieldName, _, _), _, Code) :- !,
+    format(string(Code), '\t\t\t\t\t// StdDev ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].count++
+\t\t\t\t\t\t\tdelta := valueFloat - stats[groupStr].mean
+\t\t\t\t\t\t\tstats[groupStr].mean += delta / float64(stats[groupStr].count)
+\t\t\t\t\t\t\tdelta2 := valueFloat - stats[groupStr].mean
+\t\t\t\t\t\t\tstats[groupStr].m2 += delta * delta2
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName]).
+
+generate_single_accumulation(agg(median, FieldName, _, _), _, Code) :- !,
+    format(string(Code), '\t\t\t\t\t// Median ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].values = append(stats[groupStr].values, valueFloat)
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName]).
+
+generate_single_accumulation(agg(percentile(_), FieldName, _, _), _, Code) :- !,
+    format(string(Code), '\t\t\t\t\t// Percentile ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif valueFloat, ok := valueRaw.(float64); ok {
+\t\t\t\t\t\t\tstats[groupStr].values = append(stats[groupStr].values, valueFloat)
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+', [FieldName, FieldName]).
+
 %% get_output_calculations(+AggInfo, -OutputCalcs)
 %  Generate pre-output calculations (e.g., avg = sum / count)
 %
-get_output_calculations(AggInfo, '\t\tavg := 0.0
+get_output_calculations(AggInfo, OutputCalcs) :-
+    findall(Calc, (
+        member(AggSpec, AggInfo),
+        get_single_output_calc(AggSpec, Calc)
+    ), Calcs),
+    atomic_list_concat(Calcs, '\n', OutputCalcs).
+
+get_single_output_calc(agg(avg, _, _, _), '\t\tavg := 0.0
 \t\tif s.count > 0 {
 \t\t\tavg = s.sum / float64(s.count)
-\t\t}') :-
-    member(agg(avg, _, _, _), AggInfo),
-    !.
-get_output_calculations(_, '').
+\t\t}').
+get_single_output_calc(agg(stddev, _, _, _), '\t\tstddev := 0.0
+\t\tif s.count > 1 {
+\t\t\tstddev = math.Sqrt(s.m2 / float64(s.count-1))
+\t\t}').
+get_single_output_calc(agg(median, _, _, _), '\t\tmedian := calculateMedian(s.values)').
+get_single_output_calc(agg(percentile(P), _, _, _), Calc) :-
+    format(string(Calc), '\t\tpercentile~w := calculatePercentile(s.values, ~w)', [P, P]).
+get_single_output_calc(_, '').
 
 %% generate_multi_agg_output(+GroupField, +AggInfo, -OutputCode)
 %  Generate output field mappings for result JSON
@@ -8775,6 +8924,10 @@ generate_output_field(agg(sum, _, _, _), '\t\t\t"sum": s.sum') :- !.
 generate_output_field(agg(avg, _, _, _), '\t\t\t"avg": avg') :- !.
 generate_output_field(agg(max, _, _, _), '\t\t\t"max": s.maxValue') :- !.
 generate_output_field(agg(min, _, _, _), '\t\t\t"min": s.minValue') :- !.
+generate_output_field(agg(stddev, _, _, _), '\t\t\t"stddev": stddev') :- !.
+generate_output_field(agg(median, _, _, _), '\t\t\t"median": median') :- !.
+generate_output_field(agg(percentile(P), _, _, _), Line) :- !,
+    format(string(Line), '\t\t\t"percentile~w": percentile~w', [P, P]).
 
 %% ============================================
 %% HAVING CLAUSE SUPPORT (Phase 9c-2)
@@ -8857,6 +9010,12 @@ variable_from_operation(max(_, Var), RequestedVar, max) :-
     Var == RequestedVar, !.
 variable_from_operation(min(_, Var), RequestedVar, min) :-
     Var == RequestedVar, !.
+variable_from_operation(stddev(_, Var), RequestedVar, stddev) :-
+    Var == RequestedVar, !.
+variable_from_operation(median(_, Var), RequestedVar, median) :-
+    Var == RequestedVar, !.
+variable_from_operation(percentile(_, P, Var), RequestedVar, percentile(P)) :-
+    Var == RequestedVar, !.
 
 %% operation_to_go_expr(+OpType, -GoExpr)
 %  Map operation type to Go expression in output loop
@@ -8866,6 +9025,10 @@ operation_to_go_expr(sum, 's.sum').
 operation_to_go_expr(avg, 'avg').
 operation_to_go_expr(max, 's.maxValue').
 operation_to_go_expr(min, 's.minValue').
+operation_to_go_expr(stddev, 'stddev').
+operation_to_go_expr(median, 'median').
+operation_to_go_expr(percentile(P), GoExpr) :-
+    format(string(GoExpr), 'percentile~w', [P]).
 
 %% ============================================
 %% SINGLE AGGREGATION WRAPPERS WITH HAVING
@@ -12029,6 +12192,25 @@ format_import(Import, Line) :-
 format_import(Import, Line) :-
     sub_string(Import, _, _, _, '"'), % Already quoted (e.g. bolt "...")
     format(atom(Line), '\t~w', [Import]).
+%% agg_needs_math(+Op)
+agg_needs_math(Op) :-
+    (   Op = stddev -> true
+    ;   Op = avg -> true
+    ;   compound(Op), functor(Op, stddev, _) -> true
+    ;   compound(Op), functor(Op, avg, _) -> true
+    ;   is_list(Op), member(Sub, Op), agg_needs_math(Sub) -> true
+    ;   Op = agg(Type, _, _, _), agg_needs_math(Type) -> true
+    ), !.
+
+%% agg_needs_sort(+Op)
+agg_needs_sort(Op) :-
+    (   Op = median -> true
+    ;   compound(Op), functor(Op, median, _) -> true
+    ;   compound(Op), functor(Op, percentile, _) -> true
+    ;   is_list(Op), member(Sub, Op), agg_needs_sort(Sub) -> true
+    ;   Op = agg(Type, _, _, _), agg_needs_sort(Type) -> true
+    ), !.
+
 %% generate_aggregation_code(+Op, +AggField, +ResultVar, +FieldMappings, +Options, -GoCode)
 %  Generate Go code for aggregation
 generate_aggregation_code(Op, AggField, ResultVar, FieldMappings, Options, GoCode) :-
@@ -12055,6 +12237,9 @@ generate_aggregation_code(Op, AggField, ResultVar, FieldMappings, Options, GoCod
     ;   Op = avg   -> generate_avg_aggregation(ExtractCode, BodyCode)
     ;   Op = max   -> generate_max_aggregation(ExtractCode, BodyCode)
     ;   Op = min   -> generate_min_aggregation(ExtractCode, BodyCode)
+    ;   Op = stddev -> generate_stddev_aggregation(ExtractCode, BodyCode)
+    ;   Op = median -> generate_median_aggregation(ExtractCode, BodyCode)
+    ;   Op = percentile(P) -> generate_percentile_aggregation(ExtractCode, P, BodyCode)
     ;   format('ERROR: Unknown aggregation operation: ~w~n', [Op]), fail
     ),
     
@@ -12123,6 +12308,35 @@ generate_min_aggregation(ExtractCode, code(
 			minVal = val
 			first = false
 		}', [ExtractCode]).
+
+generate_stddev_aggregation(ExtractCode, code(
+    'count := 0\n\tmean := 0.0\n\tm2 := 0.0',
+    LoopCode,
+    'if count > 1 {\n\t\tfmt.Println(math.Sqrt(m2 / float64(count-1)))\n\t} else {\n\t\tfmt.Println(0)\n\t}'
+)) :-
+    format(string(LoopCode), '~s
+		count++
+		delta := val - mean
+		mean += delta / float64(count)
+		delta2 := val - mean
+		m2 += delta * delta2', [ExtractCode]).
+
+generate_median_aggregation(ExtractCode, code(
+    'var values []float64',
+    LoopCode,
+    'fmt.Println(calculateMedian(values))'
+)) :-
+    format(string(LoopCode), '~s
+		values = append(values, val)', [ExtractCode]).
+
+generate_percentile_aggregation(ExtractCode, P, code(
+    'var values []float64',
+    LoopCode,
+    OutputCode
+)) :-
+    format(string(LoopCode), '~s
+		values = append(values, val)', [ExtractCode]),
+    format(string(OutputCode), 'fmt.Println(calculatePercentile(values, ~w))', [P]).
 
 %% generate_group_by_code_jsonl(+GroupField, +FieldMappings, +AggOp, +Result, +HavingConstraints, +Options, -GoCode)
 %  Generate Go code for JSONL stream grouped aggregation
@@ -12220,6 +12434,18 @@ generate_multi_agg_jsonl_updates(AggInfo, Code) :-
 jsonl_op_update(count, _Field, 'state.count++').
 jsonl_op_update(sum, Field, Code) :-
     format(string(Code), 'if val, ok := data["~w"].(float64); ok { state.sum += val }', [Field]).
+jsonl_op_update(stddev, Field, Code) :-
+    format(string(Code), 'if val, ok := data["~w"].(float64); ok { 
+            state.count++
+            delta := val - state.mean
+            state.mean += delta / float64(state.count)
+            delta2 := val - state.mean
+            state.m2 += delta * delta2
+        }', [Field]).
+jsonl_op_update(median, Field, Code) :-
+    format(string(Code), 'if val, ok := data["~w"].(float64); ok { state.values = append(state.values, val) }', [Field]).
+jsonl_op_update(percentile(_), Field, Code) :-
+    format(string(Code), 'if val, ok := data["~w"].(float64); ok { state.values = append(state.values, val) }', [Field]).
 % Extensible for avg, max, min...
 
 %% generate_multi_agg_jsonl_output(+AggInfo, +HavingConstraints, -Code)
@@ -12254,9 +12480,16 @@ generate_multi_agg_jsonl_output(AggInfo, HavingConstraints, Code) :-
 
 jsonl_op_print_arg(count, 's.count').
 jsonl_op_print_arg(sum, 's.sum').
+jsonl_op_print_arg(stddev, 'math.Sqrt(s.m2 / float64(s.count-1))').
+jsonl_op_print_arg(median, 'calculateMedian(s.values)').
+jsonl_op_print_arg(percentile(P), Arg) :-
+    format(string(Arg), 'calculatePercentile(s.values, ~w)', [P]).
 
 jsonl_op_fmt(count, '%d').
 jsonl_op_fmt(sum, '%g').
+jsonl_op_fmt(stddev, '%g').
+jsonl_op_fmt(median, '%g').
+jsonl_op_fmt(percentile(_), '%g').
 % Add others as needed
 
 %% generate_having_check(+Constraints, +AggInfo, -GoExpr)

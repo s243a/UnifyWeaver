@@ -29,6 +29,14 @@ This document captures ideas for future development of UnifyWeaver targets and f
 - **Schema Composition**: Nested `object(Schema)` types with recursive deep validation.
 - **Variable Mapping**: robust typed compilation for arbitrary projection.
 
+### Database Aggregations (Completed)
+
+✅ **Implemented**: Comprehensive aggregation support (Phase 9).
+- **Simple Aggregations**: `count`, `sum`, `avg`, `max`, `min`.
+- **Grouped Aggregations**: `group_by` with single or multiple operations.
+- **Advanced Features**: `HAVING` clause, nested grouping (Phase 9c).
+- **Statistical Functions**: `stddev`, `median`, `percentile` (Phase 9d).
+
 ### Stream Processing Enhancements (Completed)
 
 ✅ **Implemented**: High-performance concurrency and observability.
