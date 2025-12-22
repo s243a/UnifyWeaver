@@ -312,6 +312,86 @@ sort_components(Pred/Arity, Specs, [HeadSpec|RestSpecs]) :-
 
 signature_to_spec(Name/Arity, predicate{name:Name, arity:Arity}).
 
+%% Query-mode negation stratification ---------------------------------------
+%
+% Query mode currently supports negation as a filter over base relations (facts
+% and dynamic sources). To prepare for future stratified negation over derived
+% predicates, we reject programs with negation cycles (i.e. a predicate
+% depending negatively on itself through the dependency graph).
+
+guard_query_stratified_negation(HeadPI) :-
+    build_dependency_graph([HeadPI], [], [], Vertices0, [], Edges),
+    sort(Vertices0, Vertices),
+    vertices_edges_to_ugraph(Vertices, Edges, Graph),
+    forall(
+        query_negation_edge(Vertices, FromPI, NegPI),
+        guard_query_negation_edge_stratified(HeadPI, Graph, FromPI, NegPI)
+    ).
+
+query_negation_edge(Vertices, FromPI, NegPI) :-
+    member(FromPI, Vertices),
+    vertex_to_spec(FromPI, Spec),
+    gather_predicate_clauses(Spec, Clauses),
+    member(_-Body, Clauses),
+    Body \= true,
+    query_body_negated_predicate(Body, NegPI),
+    memberchk(NegPI, Vertices).
+
+guard_query_negation_edge_stratified(HeadPI, Graph, FromPI, NegPI) :-
+    (   reachable(NegPI, Graph, Reach),
+        memberchk(FromPI, Reach)
+    ->  format(user_error,
+               'C# query target: non-stratified negation in ~w: ~w depends on \\+~w, but ~w depends on ~w.~n',
+               [HeadPI, FromPI, NegPI, NegPI, FromPI]),
+        fail
+    ;   true
+    ).
+
+query_body_negated_predicate(Body0, NegPI) :-
+    strip_module(Body0, _, Body),
+    query_body_negated_predicate_(Body, NegPI).
+
+query_body_negated_predicate_(true, _NegPI) :-
+    !,
+    fail.
+query_body_negated_predicate_((A, B), NegPI) :-
+    !,
+    (   query_body_negated_predicate(A, NegPI)
+    ;   query_body_negated_predicate(B, NegPI)
+    ).
+query_body_negated_predicate_((A ; B), NegPI) :-
+    !,
+    (   query_body_negated_predicate(A, NegPI)
+    ;   query_body_negated_predicate(B, NegPI)
+    ).
+query_body_negated_predicate_((A -> B), NegPI) :-
+    !,
+    (   query_body_negated_predicate(A, NegPI)
+    ;   query_body_negated_predicate(B, NegPI)
+    ).
+query_body_negated_predicate_((A *-> B), NegPI) :-
+    !,
+    (   query_body_negated_predicate(A, NegPI)
+    ;   query_body_negated_predicate(B, NegPI)
+    ).
+query_body_negated_predicate_(!, _NegPI) :-
+    !,
+    fail.
+query_body_negated_predicate_(Term0, NegPI) :-
+    strip_module(Term0, _, Term),
+    (   Term =.. ['\\+', Inner]
+    ->  term_signature(Inner, NegPI)
+    ;   Term =.. [not, Inner]
+    ->  term_signature(Inner, NegPI)
+    ;   Term = aggregate_all(_, Goal, _)
+    ->  query_body_negated_predicate(Goal, NegPI)
+    ;   Term = aggregate_all(_, Goal, _, _)
+    ->  query_body_negated_predicate(Goal, NegPI)
+    ;   Term = aggregate(_, Goal, _, _)
+    ->  query_body_negated_predicate(Goal, NegPI)
+    ;   fail
+    ).
+
 %% build_query_plan(+PredIndicator, +Options, +Modes, -PlanDict) is semidet.
 %  Produce a declarative plan describing how to evaluate the requested
 %  predicate. Plans are represented as dicts containing the head descriptor,
@@ -351,6 +431,7 @@ build_query_plan(Pred/Arity, Options, Modes, Plan) :-
     must_be(integer, Arity),
     Arity >= 0,
     validate_query_modes_supported(Pred/Arity, Modes),
+    guard_query_stratified_negation(Pred/Arity),
     HeadSpec = predicate{name:Pred, arity:Arity},
     compute_dependency_group(Pred/Arity, GroupSpecs),
     (   GroupSpecs = [HeadSpec]
@@ -2065,7 +2146,7 @@ build_negation_node(GroupSpecs, _HeadSpec, Term0, InputNode, VarMap, Width, Rela
     (   memberchk(NegSpec, GroupSpecs)
     ->  spec_signature(NegSpec, Name/Arity),
         format(user_error,
-               'C# query target: negation of recursive predicate ~w/~w is not supported.~n',
+               'C# query target: non-stratified negation: cannot negate recursive predicate ~w/~w (negation cycle).~n',
                [Name, Arity]),
         fail
     ;   true
