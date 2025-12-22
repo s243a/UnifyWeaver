@@ -922,12 +922,17 @@ build_pipeline_seeded(HeadSpec, GroupSpecs, HeadArgs, Modes, SeedOverride, Terms
     ->  select_positions(InputPositions, HeadArgs, SeedArgs),
         init_var_map(SeedArgs, 0, SeedVarMap),
         length(InputPositions, SeedWidth),
-        fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, SeedWidth, [],
+        bound_vars_from_var_map(SeedVarMap, BoundVars),
+        reorder_order_free_joins(BoundVars, Terms, Roles, OrderedTerms, OrderedRoles),
+        fold_terms(GroupSpecs, OrderedTerms, OrderedRoles, HeadSpec, SeedNode, SeedVarMap, SeedWidth, [],
             FinalNode, FinalVarMap, FinalWidth, FinalRelations)
     ;   build_parameter_seed_node(HeadSpec, HeadArgs, Modes, SeedNode, SeedVarMap, SeedWidth)
-    ->  fold_terms(GroupSpecs, Terms, Roles, HeadSpec, SeedNode, SeedVarMap, SeedWidth, [],
+    ->  bound_vars_from_var_map(SeedVarMap, BoundVars),
+        reorder_order_free_joins(BoundVars, Terms, Roles, OrderedTerms, OrderedRoles),
+        fold_terms(GroupSpecs, OrderedTerms, OrderedRoles, HeadSpec, SeedNode, SeedVarMap, SeedWidth, [],
             FinalNode, FinalVarMap, FinalWidth, FinalRelations)
-    ;   build_pipeline(HeadSpec, GroupSpecs, Terms, Roles,
+    ;   reorder_order_free_joins([], Terms, Roles, OrderedTerms, OrderedRoles),
+        build_pipeline(HeadSpec, GroupSpecs, OrderedTerms, OrderedRoles,
             FinalNode, FinalRelations, FinalVarMap, FinalWidth)
     ).
 
@@ -1175,7 +1180,9 @@ build_mutual_need_recursive_variants(GroupSpecs, NeedSpec, NeedArity, Infos, Inp
                 width:NeedArity
             },
             init_var_map(NeedArgs, 0, SeedVarMap),
-            fold_terms([NeedSpec], Prefix0, PrefixRoles, NeedSpec, SeedNode, SeedVarMap, NeedArity, [],
+            bound_vars_from_var_map(SeedVarMap, BoundVars),
+            reorder_order_free_joins(BoundVars, Prefix0, PrefixRoles, OrderedTerms, OrderedRoles),
+            fold_terms([NeedSpec], OrderedTerms, OrderedRoles, NeedSpec, SeedNode, SeedVarMap, NeedArity, [],
                 PrefixNode, VarMapMid, _WidthMid, RelList),
             RecTerm =.. [_|RecArgs],
             select_positions(ToInputPositions, RecArgs, RecNeedArgs),
@@ -1220,7 +1227,9 @@ build_need_recursive_variants(HeadSpec, NeedSpec, RecClauses, InputPositions, Va
             roles_for_nonrecursive_terms(NeedSpec, Prefix0, PrefixRoles),
             recursive_ref_node(NeedSpec, delta, SeedNode),
             init_var_map(NeedArgs, 0, SeedVarMap),
-            fold_terms([NeedSpec], Prefix0, PrefixRoles, NeedSpec, SeedNode, SeedVarMap, InputCount, [],
+            bound_vars_from_var_map(SeedVarMap, BoundVars),
+            reorder_order_free_joins(BoundVars, Prefix0, PrefixRoles, OrderedTerms, OrderedRoles),
+            fold_terms([NeedSpec], OrderedTerms, OrderedRoles, NeedSpec, SeedNode, SeedVarMap, InputCount, [],
                 PrefixNode, VarMapMid, _WidthMid, RelList),
             RecTerm =.. [_|RecArgs],
             select_positions(InputPositions, RecArgs, RecNeedArgs),
@@ -1282,6 +1291,198 @@ build_initial_node(_HeadSpec, _GroupSpecs, Term, mutual(PredSpec, RoleKind), Nod
     init_var_map(Args, 0, VarMap),
     Width = Arity,
     Relations = [].
+
+%% Join ordering -------------------------------------------------------------
+%
+% The body of a query clause is a conjunction. For query-mode compilation, we
+% treat joins between relations/recursive references as order-free (associative
+% and commutative) and may reorder them for performance. Constraint and
+% aggregate terms are NOT reordered across because they require variables to be
+% bound (see constraint_operand/3) and may introduce new variables.
+
+bound_vars_from_var_map(VarMap, Vars) :-
+    bound_vars_from_var_map_(VarMap, [], Vars0),
+    list_to_set(Vars0, Vars).
+
+bound_vars_from_var_map_([], Acc, Acc).
+bound_vars_from_var_map_([Var-_|Rest], Acc, Vars) :-
+    bound_vars_from_var_map_(Rest, [Var|Acc], Vars).
+
+order_free_join_role(Role) :-
+    nonvar(Role),
+    (   Role == relation
+    ;   Role = recursive(_)
+    ;   Role = mutual(_, _)
+    ).
+
+reorder_order_free_joins(BoundVars, Terms, Roles, OrderedTerms, OrderedRoles) :-
+    terms_roles_pairs(Terms, Roles, Pairs),
+    reorder_order_free_pairs(BoundVars, Pairs, OrderedPairs),
+    pairs_to_terms_roles(OrderedPairs, OrderedTerms, OrderedRoles).
+
+terms_roles_pairs([], [], []).
+terms_roles_pairs([Term|Terms], [Role|Roles], [term_role(Term, Role)|Pairs]) :-
+    terms_roles_pairs(Terms, Roles, Pairs).
+
+pairs_to_terms_roles([], [], []).
+pairs_to_terms_roles([term_role(Term, Role)|Pairs], [Term|Terms], [Role|Roles]) :-
+    pairs_to_terms_roles(Pairs, Terms, Roles).
+
+reorder_order_free_pairs(BoundVars0, Pairs, OrderedPairs) :-
+    reorder_order_free_pairs_(Pairs, BoundVars0, [], OrderedRev),
+    reverse(OrderedRev, OrderedPairs).
+
+reorder_order_free_pairs_([], _BoundVars, Acc, Acc).
+reorder_order_free_pairs_([term_role(Term, Role)|Rest], BoundVars, Acc, Ordered) :-
+    (   order_free_join_role(Role)
+    ->  take_order_free_run([term_role(Term, Role)|Rest], Run, Remaining),
+        reorder_order_free_run(Run, BoundVars, OrderedRun),
+        run_vars(Run, RunVars),
+        union_vars(BoundVars, RunVars, BoundVars1),
+        reverse(OrderedRun, OrderedRunRev),
+        append(OrderedRunRev, Acc, Acc1),
+        reorder_order_free_pairs_(Remaining, BoundVars1, Acc1, Ordered)
+    ;   goal_vars(Term, TermVars),
+        union_vars(BoundVars, TermVars, BoundVars1),
+        reorder_order_free_pairs_(Rest, BoundVars1, [term_role(Term, Role)|Acc], Ordered)
+    ).
+
+take_order_free_run([], [], []) :- !.
+take_order_free_run([term_role(Term, Role)|Rest], [term_role(Term, Role)|Run], Remaining) :-
+    order_free_join_role(Role),
+    !,
+    take_order_free_run(Rest, Run, Remaining).
+take_order_free_run(Rest, [], Rest).
+
+reorder_order_free_run(Run, BoundVars0, OrderedRun) :-
+    annotate_order_free_run(Run, 0, Candidates),
+    var_counts(Candidates, VarCounts),
+    order_free_selection(Candidates, VarCounts, BoundVars0, [], OrderedRev),
+    reverse(OrderedRev, OrderedRun).
+
+annotate_order_free_run([], _Index, []).
+annotate_order_free_run([term_role(Term, Role)|Rest], Index, [cand(Index, Term, Role, Vars, Arity)|Out]) :-
+    goal_vars(Term, Vars),
+    goal_arity(Term, Arity),
+    Index1 is Index + 1,
+    annotate_order_free_run(Rest, Index1, Out).
+
+order_free_selection([], _VarCounts, _BoundVars, Acc, Acc).
+order_free_selection(Candidates, VarCounts, BoundVars, Acc, Ordered) :-
+    select_best_candidate(Candidates, VarCounts, BoundVars, Best, Rest),
+    Best = cand(_Index, Term, Role, Vars, _Arity),
+    union_vars(BoundVars, Vars, BoundVars1),
+    order_free_selection(Rest, VarCounts, BoundVars1, [term_role(Term, Role)|Acc], Ordered).
+
+select_best_candidate([First|Rest0], VarCounts, BoundVars, Best, Rest) :-
+    candidate_key(First, VarCounts, BoundVars, FirstKey),
+    select_best_candidate_(Rest0, VarCounts, BoundVars, First, FirstKey, Best),
+    remove_candidate(Best, [First|Rest0], Rest).
+
+select_best_candidate_([], _VarCounts, _BoundVars, Best, _BestKey, Best).
+select_best_candidate_([Candidate|Rest], VarCounts, BoundVars, Best0, BestKey0, Best) :-
+    candidate_key(Candidate, VarCounts, BoundVars, Key),
+    (   Key @> BestKey0
+    ->  Best1 = Candidate,
+        BestKey1 = Key
+    ;   Best1 = Best0,
+        BestKey1 = BestKey0
+    ),
+    select_best_candidate_(Rest, VarCounts, BoundVars, Best1, BestKey1, Best).
+
+candidate_key(cand(Index, _Term, _Role, Vars, Arity), VarCounts, BoundVars, Key) :-
+    candidate_score_key(Index, Vars, Arity, VarCounts, BoundVars, Key).
+
+candidate_score_key(Index, Vars, Arity, VarCounts, BoundVars, [Shared, Connected, NegArity, NegIndex]) :-
+    shared_bound_count(Vars, BoundVars, Shared),
+    connectivity_score(Vars, VarCounts, Connected),
+    NegArity is -Arity,
+    NegIndex is -Index.
+
+shared_bound_count([], _BoundVars, 0).
+shared_bound_count([Var|Rest], BoundVars, Count) :-
+    shared_bound_count(Rest, BoundVars, Count0),
+    (   member_varchk(Var, BoundVars)
+    ->  Count is Count0 + 1
+    ;   Count = Count0
+    ).
+
+member_varchk(Var, [Var0|_]) :-
+    Var == Var0,
+    !.
+member_varchk(Var, [_|Rest]) :-
+    member_varchk(Var, Rest).
+
+connectivity_score([], _VarCounts, 0).
+connectivity_score([Var|Rest], VarCounts, Score) :-
+    connectivity_score(Rest, VarCounts, Score0),
+    var_count(Var, VarCounts, N),
+    (   N > 1
+    ->  Score is Score0 + (N - 1)
+    ;   Score = Score0
+    ).
+
+run_vars(Run, Vars) :-
+    run_vars_(Run, [], Vars0),
+    list_to_set(Vars0, Vars).
+
+run_vars_([], Acc, Acc).
+run_vars_([term_role(Term, _)|Rest], Acc, Vars) :-
+    goal_vars(Term, TermVars),
+    append(TermVars, Acc, Acc1),
+    run_vars_(Rest, Acc1, Vars).
+
+union_vars(VarsA, VarsB, Union) :-
+    append(VarsA, VarsB, Combined),
+    list_to_set(Combined, Union).
+
+goal_vars(Term0, Vars) :-
+    strip_module(Term0, _, Term),
+    term_variables(Term, Vars).
+
+goal_arity(Term0, Arity) :-
+    strip_module(Term0, _, Term),
+    Term =.. [_|Args],
+    length(Args, Arity).
+
+var_counts(Candidates, VarCounts) :-
+    var_counts_(Candidates, [], VarCounts).
+
+var_counts_([], Counts, Counts).
+var_counts_([cand(_Index, _Term, _Role, Vars, _Arity)|Rest], Acc, Counts) :-
+    increment_var_counts(Vars, Acc, Acc1),
+    var_counts_(Rest, Acc1, Counts).
+
+increment_var_counts([], Acc, Acc).
+increment_var_counts([Var|Rest], Acc, Counts) :-
+    increment_var_count(Var, Acc, Acc1),
+    increment_var_counts(Rest, Acc1, Counts).
+
+count_vars([], Counts, Counts).
+count_vars([Var|Rest], Acc, Counts) :-
+    increment_var_count(Var, Acc, Acc1),
+    count_vars(Rest, Acc1, Counts).
+
+increment_var_count(Var, [], [Var-1]).
+increment_var_count(Var, [Var0-N|Rest], [Var0-N1|Rest]) :-
+    Var == Var0,
+    !,
+    N1 is N + 1.
+increment_var_count(Var, [Pair|Rest], [Pair|Rest1]) :-
+    increment_var_count(Var, Rest, Rest1).
+
+var_count(Var, [Var0-N|_], N) :-
+    Var == Var0,
+    !.
+var_count(Var, [_|Rest], N) :-
+    var_count(Var, Rest, N).
+var_count(_Var, [], 0).
+
+remove_candidate(_Candidate, [], []).
+remove_candidate(cand(Index, _Term, _Role, _Vars, _Arity), [cand(Index, _Term0, _Role0, _Vars0, _Arity0)|Rest], Rest) :-
+    !.
+remove_candidate(Candidate, [Other|Rest], [Other|Out]) :-
+    remove_candidate(Candidate, Rest, Out).
 
 fold_terms(_GroupSpecs, [], [], _HeadSpec, Node, VarMap, Width, Relations, Node, VarMap, Width, Relations).
 fold_terms(GroupSpecs, [Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, WidthIn, RelationsIn,
@@ -1613,7 +1814,9 @@ build_aggregate_subplan_branch_terms(GroupSpecs, HeadSpec, Type, Op, GroupVars,
     normalize_query_terms(Terms, NormalizedTerms),
     aggregate_subplan_roles(NormalizedTerms, Roles),
     ensure_no_aggregate_subplan_recursion(GroupSpecs, NormalizedTerms),
-    fold_terms(GroupSpecs, NormalizedTerms, Roles, HeadSpec, SeedNode, SeedVarMap, CorrCount, RelationsIn,
+    bound_vars_from_var_map(SeedVarMap, BoundVars),
+    reorder_order_free_joins(BoundVars, NormalizedTerms, Roles, OrderedTerms, OrderedRoles),
+    fold_terms(GroupSpecs, OrderedTerms, OrderedRoles, HeadSpec, SeedNode, SeedVarMap, CorrCount, RelationsIn,
         InnerNode, InnerVarMap, _InnerWidth, RelationsOut),
     aggregate_subplan_projection(Type, Op, GroupVars, ValueVar, InnerVarMap, InnerNode, BranchPlan).
 
