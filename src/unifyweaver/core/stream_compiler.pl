@@ -17,6 +17,7 @@
 :- use_module(library(lists)).
 :- use_module('constraint_analyzer').
 :- use_module('template_system').
+:- use_module('optimizer').
 
 %% Main compilation entry point
 compile_predicate(Pred/Arity, Options) :-
@@ -292,19 +293,26 @@ compile_facts_debug(Pred, Arity, _MergedOptions, BashCode) :-
 
 %% Compile single rule into streaming pipeline
 compile_single_rule(Pred, Arity, Body, Options, BashCode) :-
-    extract_predicates(Body, Predicates),
+    % Optimize goal order
+    functor(Head, Pred, Arity),
+    (   optimizer:optimize_clause(Head, Body, Options, OptimizedBody)
+    ->  format('  Optimized body: ~w~n', [OptimizedBody])
+    ;   OptimizedBody = Body
+    ),
+
+    extract_predicates(OptimizedBody, Predicates),
     atom_string(Pred, PredStr),
 
     % HYBRID DISPATCH: Try high-level patterns first, then fall back to general translation
     % 1. High-level pattern: inequality (e.g., sibling)
-    (   has_inequality(Body) ->
-        compile_with_inequality(Pred, Body, BashCode)
+    (   has_inequality(OptimizedBody) ->
+        compile_with_inequality(Pred, OptimizedBody, BashCode)
     % 2. General fallback: arithmetic operations
-    ;   has_arithmetic(Body) ->
-        compile_with_arithmetic(Pred, Arity, Body, Options, BashCode)
+    ;   has_arithmetic(OptimizedBody) ->
+        compile_with_arithmetic(Head, OptimizedBody, Options, BashCode)
     % 3. Match predicate (regex pattern matching)
-    ;   has_match(Body) ->
-        compile_with_match(Pred, Arity, Body, Options, BashCode)
+    ;   has_match(OptimizedBody) ->
+        compile_with_match(Head, OptimizedBody, Options, BashCode)
     % 4. No predicates at all
     ;   Predicates = [] ->
         format(string(BashCode), '#!/bin/bash
@@ -342,6 +350,7 @@ compile_multiple_rules(Pred, Clauses, Options, BashCode) :-
     % Generate alternative functions - iterate through clause pairs
     findall(FnCode, (
         nth1(I, Clauses, Head-Body),
+        (   optimizer:optimize_clause(Head, Body, Options, OptimizedBody) -> true ; OptimizedBody = Body ),
         format(atom(FnName), '~s_alt~w', [PredStr, I]),
 
         % Check the specific pattern for related/2
@@ -364,20 +373,20 @@ compile_multiple_rules(Pred, Clauses, Options, BashCode) :-
             % Build variable map from the head
             Head =.. [_|Args],
             build_var_map(Args, 1, VarMap),
-            (   has_inequality(Body) ->
+            (   has_inequality(OptimizedBody) ->
                 % High-level pattern: inequality
-                translate_body_to_bash(Body, VarMap, BodyCode),
+                translate_body_to_bash(OptimizedBody, VarMap, BodyCode),
                 format(string(FnCode), '~s() {
     ~s
 }', [FnName, BodyCode])
-            ;   has_arithmetic(Body) ->
+            ;   has_arithmetic(OptimizedBody) ->
                 % Arithmetic operations
-                translate_body_to_bash(Body, VarMap, BodyCode),
+                translate_body_to_bash(OptimizedBody, VarMap, BodyCode),
                 format(string(FnCode), '~s() {
     ~s
 }', [FnName, BodyCode])
             ;   % Standard streaming pipeline
-                extract_predicates(Body, Preds),
+                extract_predicates(OptimizedBody, Preds),
                 (   Preds = [] ->
                     format(string(FnCode), '~s() {
     true
@@ -569,16 +578,14 @@ compile_arithmetic_body(Pred, Arity, Body, BashBody) :-
     build_var_map(Args, 1, VarMap),
     translate_body_to_bash(Body, VarMap, BashBody).
 
-%% compile_with_arithmetic(+Pred, +Arity, +Body, +Options, -BashCode)
+%% compile_with_arithmetic(+Head, +Body, +Options, -BashCode)
 %  General arithmetic translation fallback
 %  Handles predicates with arithmetic but no known high-level pattern
-compile_with_arithmetic(Pred, Arity, Body, _Options, BashCode) :-
+compile_with_arithmetic(Head, Body, _Options, BashCode) :-
+    functor(Head, Pred, Arity),
     atom_string(Pred, PredStr),
 
     % Extract variables from the clause head
-    % Get the actual clause to determine variables
-    functor(Head, Pred, Arity),
-    clause(Head, Body),
     Head =.. [_|Args],
 
     % Build variable mapping: Prolog vars -> bash positional params
@@ -604,19 +611,18 @@ compile_with_arithmetic(Pred, Arity, Body, _Options, BashCode) :-
     ~s "$@"
 }', [PredStr, PredStr, ParamDecls, BashBody, PredStr, PredStr]).
 
-%% compile_with_match(+Pred, +Arity, +Body, +Options, -BashCode)
+%% compile_with_match(+Head, +Body, +Options, -BashCode)
 %  Compile predicates with match constraints (regex filtering)
 %  Handles streaming pipeline with integrated match filters
-compile_with_match(Pred, Arity, Body, Options, BashCode) :-
+compile_with_match(Head, Body, Options, BashCode) :-
+    functor(Head, Pred, Arity),
     atom_string(Pred, PredStr),
 
     % Extract predicates and match constraints separately
     extract_predicates(Body, Predicates),
     extract_match_constraints(Body, MatchConstraints),
 
-    % Get the actual clause head to determine variables
-    functor(Head, Pred, Arity),
-    clause(Head, Body),
+    % Get the clause head args
     Head =.. [_|Args],
 
     % Build variable mapping

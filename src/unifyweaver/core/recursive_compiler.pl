@@ -28,6 +28,7 @@
 :- use_module(template_system).
 :- use_module(library(lists)).
 :- use_module(constraint_analyzer).
+:- use_module(optimizer).
 :- use_module(firewall).
 :- use_module(preferences).
 
@@ -1477,21 +1478,32 @@ compile_plain_recursion(Pred, Arity, Options, GeneratedCode) :-
     % Separate base and recursive cases
     partition(is_recursive_clause(Pred), Bodies, RecClauses, BaseClauses),
     
+    % Optimize bodies (Codd Phase)
+    maplist(optimize_body_wrapper(Head, Options), RecClauses, OptRecClauses),
+    maplist(optimize_body_wrapper(Head, Options), BaseClauses, OptBaseClauses),
+    
     % Generate base cases
     findall(BaseCode, (
-        member(Base, BaseClauses),
+        member(Base, OptBaseClauses),
         generate_base_case(Pred, Base, BaseCode)
     ), BaseCodes),
     atomic_list_concat(BaseCodes, '\n    ', BaseCodeStr),
     
     % Generate recursive cases  
     findall(RecCode, (
-        member(Rec, RecClauses),
+        member(Rec, OptRecClauses),
         generate_recursive_case(Pred, Rec, RecCode)
     ), RecCodes),
     atomic_list_concat(RecCodes, '\n    ', RecCodeStr),
     
     generate_plain_recursion_template(PredStr, BaseCodeStr, RecCodeStr, Options, GeneratedCode).
+
+%% Wrapper for optimizer to handle errors gracefully
+optimize_body_wrapper(Head, Options, Body, Optimized) :-
+    (   optimizer:optimize_clause(Head, Body, Options, Optimized)
+    ->  true
+    ;   Optimized = Body
+    ).
 
 %% Generate base case code
 generate_base_case(Pred, Body, Code) :-

@@ -85,6 +85,8 @@
 
 % Service validation (Client-Server Phase 2)
 :- use_module('../core/service_validation').
+:- use_module('../core/optimizer').
+:- use_module('../core/constraint_analyzer').
 
 % Track required imports from bindings
 :- dynamic required_binding_import/1.
@@ -3962,69 +3964,93 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     ),
     format('=== Compiling ~w/~w to Go ===~n', [Pred, Arity]),
 
+    % Get constraints for this predicate (from declarations or defaults)
+    % Merge with runtime options (runtime takes precedence)
+    constraint_analyzer:get_constraints(Pred/Arity, DeclaredConstraints),
+    merge_go_options(Options, DeclaredConstraints, MergedOptions),
+
     % Clear any previously collected binding imports
     clear_binding_imports,
 
     % Check for generator mode (fixpoint evaluation) - MUST come first
-    (   option(mode(generator), Options)
+    (   option(mode(generator), MergedOptions)
     ->  format('  Mode: Generator (fixpoint)~n'),
-        compile_generator_mode_go(Pred, Arity, Options, GoCode)
+        compile_generator_mode_go(Pred, Arity, MergedOptions, GoCode)
     % Check if this is an aggregation predicate (aggregate/3 in body)
     ;   functor(Head, Pred, Arity),
         clause(Head, Body),
         is_aggregation_predicate(Body)
     ->  format('  Mode: Aggregation (New)~n'),
-        compile_aggregation_mode(Pred, Arity, Options, GoCode)
+        compile_aggregation_mode(Pred, Arity, MergedOptions, GoCode)
     % Check if this is a GROUP BY predicate (group_by/4 in body)
     ;   functor(Head, Pred, Arity),
         clause(Head, Body),
         is_group_by_predicate(Body)
     ->  format('  Mode: GROUP BY Aggregation~n'),
-        compile_group_by_mode(Pred, Arity, Options, GoCode)
+        compile_group_by_mode(Pred, Arity, MergedOptions, GoCode)
     % Check if this is pipeline mode (streaming JSONL I/O with typed output)
-    ;   option(pipeline_input(true), Options)
+    ;   option(pipeline_input(true), MergedOptions)
     ->  format('  Mode: Pipeline (streaming JSONL)~n'),
-        compile_pipeline_mode(Pred, Arity, Options, GoCode)
+        compile_pipeline_mode(Pred, Arity, MergedOptions, GoCode)
     % Check if this is database read mode
-    ;   option(db_backend(bbolt), Options),
-        (option(db_mode(read), Options) ; \+ option(json_input(true), Options)),
-        \+ option(json_output(true), Options)
+    ;   option(db_backend(bbolt), MergedOptions),
+        (option(db_mode(read), MergedOptions) ; \+ option(json_input(true), MergedOptions)),
+        \+ option(json_output(true), MergedOptions)
     ->  % Compile for database read
         format('  Mode: Database read (bbolt)~n'),
-        compile_database_read_mode(Pred, Arity, Options, GoCode)
+        compile_database_read_mode(Pred, Arity, MergedOptions, GoCode)
     % Check if this is JSON input mode
-    ;   option(json_input(true), Options)
+    ;   option(json_input(true), MergedOptions)
     ->  % Compile for JSON input (may include database write)
-        (   option(db_backend(bbolt), Options)
+        (   option(db_backend(bbolt), MergedOptions)
         ->  format('  Mode: JSON input (JSONL) with database storage~n')
         ;   format('  Mode: JSON input (JSONL)~n')
         ),
         % Check for parallel execution
-        (   option(workers(Workers), Options), Workers > 1
+        (   option(workers(Workers), MergedOptions), Workers > 1
         ->  format('  Parallel execution: ~w workers~n', [Workers]),
-            compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode)
-        ;   compile_json_input_mode(Pred, Arity, Options, GoCode)
+            compile_parallel_json_input_mode(Pred, Arity, MergedOptions, Workers, GoCode)
+        ;   compile_json_input_mode(Pred, Arity, MergedOptions, GoCode)
         )
     % Check if this is XML input mode
-    ;   option(xml_input(true), Options)
+    ;   option(xml_input(true), MergedOptions)
     ->  % Compile for XML input
         format('  Mode: XML input (streaming + flattening)~n'),
-        compile_xml_input_mode(Pred, Arity, Options, GoCode)
+        compile_xml_input_mode(Pred, Arity, MergedOptions, GoCode)
     % Check if this is JSON output mode
-    ;   option(json_output(true), Options)
+    ;   option(json_output(true), MergedOptions)
     ->  % Compile for JSON output
         format('  Mode: JSON output~n'),
-        compile_json_output_mode(Pred, Arity, Options, GoCode)
+        compile_json_output_mode(Pred, Arity, MergedOptions, GoCode)
     % Check if this is an aggregation operation (legacy option-based)
-    ;   option(aggregation(AggOp), Options, none),
+    ;   option(aggregation(AggOp), MergedOptions, none),
         AggOp \= none
     ->  % Compile as aggregation
-        option(field_delimiter(FieldDelim), Options, colon),
-        option(include_package(IncludePackage), Options, true),
+        option(field_delimiter(FieldDelim), MergedOptions, colon),
+        option(include_package(IncludePackage), MergedOptions, true),
         compile_aggregation_to_go(Pred, Arity, AggOp, FieldDelim, IncludePackage, GoCode)
     ;   % Continue with normal compilation
-        compile_predicate_to_go_normal(Pred, Arity, Options, GoCode)
+        compile_predicate_to_go_normal(Pred, Arity, MergedOptions, GoCode)
     ).
+
+%% merge_go_options(+RuntimeOpts, +Constraints, -Merged)
+%  Merge runtime options with constraints (runtime takes precedence)
+merge_go_options(RuntimeOpts, Constraints, Merged) :-
+    % Extract key constraints
+    (member(unique(U), RuntimeOpts) -> MergedUnique = [unique(U)] ; 
+     member(unique(U), Constraints) -> MergedUnique = [unique(U)] ; 
+     MergedUnique = []),
+    (member(unordered(O), RuntimeOpts) -> MergedUnordered = [unordered(O)] ; 
+     member(unordered(O), Constraints) -> MergedUnordered = [unordered(O)] ; 
+     MergedUnordered = []),
+    
+    % Combine with other options
+    findall(Opt, (member(Opt, RuntimeOpts), Opt \= unique(_), Opt \= unordered(_)), OtherRuntime),
+    findall(Opt, (member(Opt, Constraints), Opt \= unique(_), Opt \= unordered(_)), OtherConstraints),
+    
+    append(MergedUnique, MergedUnordered, C1),
+    append(C1, OtherRuntime, C2),
+    append(C2, OtherConstraints, Merged).
 
 %% ============================================
 %% GENERATOR MODE IMPLEMENTATION (Fixpoint)
@@ -10184,23 +10210,33 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         format('ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
         fail
     ;   Clauses = [SingleHead-SingleBody] ->
+        % Optimize goals (Codd Phase Optimization)
+        (   optimizer:optimize_clause(SingleHead, SingleBody, Options, OptimizedBody)
+        ->  format('  Optimized body: ~w~n', [OptimizedBody])
+        ;   OptimizedBody = SingleBody
+        ),
+
         % Single clause - extract JSON field mappings
-        format('  Clause: ~w~n', [SingleHead-SingleBody]),
-        extract_json_field_mappings(SingleBody, FieldMappings),
+        format('  Clause: ~w~n', [SingleHead-OptimizedBody]),
+        extract_json_field_mappings(OptimizedBody, FieldMappings),
         format('  Field mappings: ~w~n', [FieldMappings]),
+
+        % Extract arithmetic constraints (Codd Phase)
+        extract_constraints(OptimizedBody, Constraints),
+        (   Constraints \= [] -> format('  Arithmetic constraints: ~w~n', [Constraints]) ; true ),
 
         % Check for schema option OR database backend (both require typed compilation)
         SingleHead =.. [_|HeadArgs],
         (   option(json_schema(SchemaName), Options)
         ->  % Typed compilation with schema validation
             format('  Using schema: ~w~n', [SchemaName]),
-            compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, CoreBody)
+            compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Constraints, Options, CoreBody)
         ;   option(db_backend(bbolt), Options)
         ->  % Typed compilation without schema (for database writes)
             format('  Database mode: using typed compilation~n'),
             compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
         ;   % Untyped compilation (current behavior)
-            compile_json_to_go(HeadArgs, FieldMappings, Options, CoreBody)
+            compile_json_to_go(HeadArgs, FieldMappings, Constraints, Options, CoreBody)
         ),
 
         % Check if database backend is specified
@@ -10304,8 +10340,14 @@ compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
     findall(Head-Body, user:clause(Head, Body), Clauses),
 
     (   Clauses = [SingleHead-SingleBody] ->
+        % Optimize goals (Codd Phase Optimization)
+        (   optimizer:optimize_clause(SingleHead, SingleBody, Options, OptimizedBody)
+        ->  format('  Optimized body (Parallel): ~w~n', [OptimizedBody])
+        ;   OptimizedBody = SingleBody
+        ),
+
         % Single clause - extract JSON field mappings
-        extract_json_field_mappings(SingleBody, FieldMappings),
+        extract_json_field_mappings(OptimizedBody, FieldMappings),
         
         SingleHead =.. [_|HeadArgs],
         
@@ -11176,10 +11218,10 @@ compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, G
 ~s\t}
 ', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
 
-%% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +Options, -GoCode)
+%% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +Constraints, +Options, -GoCode)
 %  Generate Go code for JSON input mode with type safety from schema
 %
-compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, GoCode) :-
+compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Constraints, Options, GoCode) :-
     option(field_delimiter(FieldDelim), Options, colon),
     option(unique(Unique), Options, true),
     
@@ -11238,6 +11280,9 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, GoCode) :
     % Generate output expression using VarMap
     generate_json_output_expr_mapped(HeadArgs, VarMap, DelimChar, OutputExpr),
 
+    % Generate arithmetic constraint checks (Phase 9c-3)
+    generate_go_constraint_code_typed(Constraints, VarMap, ConstraintChecks),
+
     % Build main loop
     (   Unique = true ->
         SeenDecl = '\tseen := make(map[string]bool)\n\t',
@@ -11261,9 +11306,10 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, GoCode) :
 		}
 		~w
 ~w
+~w
 		
 		result := ~w
-~w', [ParseError, ProgressUpdate, ExtractCode, OutputExpr, UniqueCheck]),
+~w', [ParseError, ProgressUpdate, ExtractCode, ConstraintChecks, OutputExpr, UniqueCheck]),
 
     % Build complete code
     atomics_to_string([
@@ -11374,6 +11420,74 @@ generate_typed_flat_field_extraction(FieldName, VarName, Type, Options, ExtractC
     ;   % Fallback to untyped for 'any' type
         generate_flat_field_extraction(FieldName, VarName, ExtractCode)
     ).
+
+%% constraint_to_go_typed(+Constraint, +VarMap, -GoCode)
+%  Convert Prolog constraint to Go comparison for typed mode
+constraint_to_go_typed(gt(A, B), VarMap, GoCode) :-
+    term_to_go_expr_typed(A, VarMap, GoA),
+    term_to_go_expr_typed(B, VarMap, GoB),
+    format(atom(GoCode), '~w > ~w', [GoA, GoB]).
+constraint_to_go_typed(lt(A, B), VarMap, GoCode) :-
+    term_to_go_expr_typed(A, VarMap, GoA),
+    term_to_go_expr_typed(B, VarMap, GoB),
+    format(atom(GoCode), '~w < ~w', [GoA, GoB]).
+constraint_to_go_typed(gte(A, B), VarMap, GoCode) :-
+    term_to_go_expr_typed(A, VarMap, GoA),
+    term_to_go_expr_typed(B, VarMap, GoB),
+    format(atom(GoCode), '~w >= ~w', [GoA, GoB]).
+constraint_to_go_typed(lte(A, B), VarMap, GoCode) :-
+    term_to_go_expr_typed(A, VarMap, GoA),
+    term_to_go_expr_typed(B, VarMap, GoB),
+    format(atom(GoCode), '~w <= ~w', [GoA, GoB]).
+constraint_to_go_typed(eq(A, B), VarMap, GoCode) :-
+    term_to_go_expr_typed(A, VarMap, GoA),
+    term_to_go_expr_typed(B, VarMap, GoB),
+    format(atom(GoCode), '~w == ~w', [GoA, GoB]).
+constraint_to_go_typed(neq(A, B), VarMap, GoCode) :-
+    term_to_go_expr_typed(A, VarMap, GoA),
+    term_to_go_expr_typed(B, VarMap, GoB),
+    format(atom(GoCode), '~w != ~w', [GoA, GoB]).
+constraint_to_go_typed(is(A, B), VarMap, GoCode) :-
+    term_to_go_expr_typed(A, VarMap, GoA),
+    term_to_go_expr_typed(B, VarMap, GoB),
+    format(atom(GoCode), '~w := ~w', [GoA, GoB]).
+
+term_to_go_expr_typed(Term, VarMap, GoExpr) :-
+    var(Term), !,
+    (   lookup_var_identity(Term, VarMap, GoVarName)
+    ->  GoExpr = GoVarName
+    ;   GoExpr = 'unknown'
+    ).
+term_to_go_expr_typed(Term, _, Term) :- number(Term), !.
+term_to_go_expr_typed(Term, VarMap, GoExpr) :-
+    compound(Term), !,
+    Term =.. [Op, Left, Right],
+    term_to_go_expr_typed(Left, VarMap, GoLeft),
+    term_to_go_expr_typed(Right, VarMap, GoRight),
+    go_operator(Op, GoOp),
+    format(atom(GoExpr), '(~w ~w ~w)', [GoLeft, GoOp, GoRight]).
+term_to_go_expr_typed(Term, _, GoExpr) :-
+    atom(Term), !,
+    format(atom(GoExpr), '"~w"', [Term]).
+
+%% generate_go_constraint_code_typed(+Constraints, +VarMap, -Code)
+%  Generate Go code for arithmetic and comparison constraints
+%  Uses already-typed variables from VarMap (no strconv needed)
+generate_go_constraint_code_typed([], _, "") :- !.
+generate_go_constraint_code_typed(Constraints, VarMap, ConstraintChecks) :-
+    findall(Check,
+        (   member(Constraint, Constraints),
+            constraint_to_go_typed(Constraint, VarMap, GoConstraint),
+            % Handle is/2 as assignment, others as conditions
+            (   Constraint = is(_, _) ->
+                % is/2 is an assignment
+                format(atom(Check), '\t\t\t~w', [GoConstraint])
+            ;   % Other constraints are conditions
+                format(atom(Check), '\t\t\tif !(~w) {\n\t\t\t\tcontinue\n\t\t\t}', [GoConstraint])
+            )
+        ),
+        Checks),
+    atomic_list_concat(Checks, '\n', ConstraintChecks).
 
 generate_error_action(field_type_error(Field, Type), true, Code) :-
     format(string(Code), 'errorWriter(lineBytes, "field ''~s'' is not a ~w")', [Field, Type]).
