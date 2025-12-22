@@ -87,6 +87,7 @@
 :- use_module('../core/service_validation').
 :- use_module('../core/optimizer').
 :- use_module('../core/constraint_analyzer').
+:- use_module('../core/index_analyzer').
 
 % Track required imports from bindings
 :- dynamic required_binding_import/1.
@@ -7533,7 +7534,7 @@ extract_field_names_from_expr(_, []).  % literals, uuid, etc.
 %  OptType: direct_lookup | prefix_scan | full_scan
 %  OptDetails: Details needed for code generation
 %
-analyze_key_optimization(KeyStrategy, Constraints, FieldMappings, OptType, OptDetails) :-
+analyze_key_optimization(PredIndicator, KeyStrategy, Constraints, FieldMappings, OptType, OptDetails) :-
     (   can_use_direct_lookup(KeyStrategy, Constraints, FieldMappings, KeyValue)
     ->  OptType = direct_lookup,
         OptDetails = key_value(KeyValue),
@@ -7542,10 +7543,24 @@ analyze_key_optimization(KeyStrategy, Constraints, FieldMappings, OptType, OptDe
     ->  OptType = prefix_scan,
         OptDetails = prefix_value(PrefixValue),
         format('  Optimization: Prefix scan (prefix=~w)~n', [PrefixValue])
+    ;   % Secondary index lookup (Codd Phase)
+        can_use_index_scan(PredIndicator, Constraints, FieldMappings, IndexField, IndexValue)
+    ->  OptType = index_scan,
+        OptDetails = index_field_value(IndexField, IndexValue),
+        format('  Optimization: Secondary index lookup (field=~w, value=~w)~n', [IndexField, IndexValue])
     ;   OptType = full_scan,
         OptDetails = none,
         format('  Optimization: Full scan (no key match)~n')
     ).
+
+%% can_use_index_scan(+PredIndicator, +Constraints, +FieldMappings, -Field, -Value)
+can_use_index_scan(PredIndicator, Constraints, FieldMappings, FieldName, Value) :-
+    member(FieldName-Var, FieldMappings),
+    index_analyzer:has_index(PredIndicator, FieldName),
+    % Check for exact equality
+    member(Constraint, Constraints),
+    is_exact_equality_on_field(Constraint, FieldName, FieldMappings, Value),
+    !.
 
 %% can_use_direct_lookup(+KeyStrategy, +Constraints, +FieldMappings, -KeyValue)
 %  Check if we can use bucket.Get() for direct key lookup
@@ -7834,6 +7849,37 @@ generate_prefix_scan_code(DbFile, BucketStr, PrefixValue, ProcessCode, BodyCode)
 \t}
 ', [DbFile, BucketStr, BucketStr, PrefixStr, ProcessCode]).
 
+%% generate_index_scan_code(+DbFile, +MainBucket, +IndexField, +IndexValue, +ProcessCode, -BodyCode)
+generate_index_scan_code(DbFile, MainBucket, IndexField, IndexValue, ProcessCode, BodyCode) :-
+    atomics_to_string(["index_", MainBucket, "_", IndexField], IndexBucket),
+    % Value to string for prefix
+    value_to_key_string(IndexValue, ValStr),
+    
+    atomics_to_string([
+        '\t// Open database (read-only)\n',
+        '\tdb, err := bolt.Open("', DbFile, '", 0600, &bolt.Options{ReadOnly: true})\n',
+        '\tif err != nil {\n\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)\n\t\tos.Exit(1)\n\t}\n\tdefer db.Close()\n\n',
+        '\tprefix := []byte("', ValStr, ':")\n',
+        '\terr = db.View(func(tx *bolt.Tx) error {\n',
+        '\t\tidxBucket := tx.Bucket([]byte("', IndexBucket, '"))\n',
+        '\t\tif idxBucket == nil {\n\t\t\treturn nil // No index yet\n\t\t}\n',
+        '\t\tmainBucket := tx.Bucket([]byte("', MainBucket, '"))\n',
+        '\t\tif mainBucket == nil {\n\t\t\treturn nil\n\t\t}\n\n',
+        '\t\tc := idxBucket.Cursor()\n',
+        '\t\tfor k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {\n',
+        '\t\t\t// Extract record key from index key (format "Value:RecordKey")\n',
+        '\t\t\tkeyStr := string(k[len(prefix):])\n',
+        '\t\t\tv := mainBucket.Get([]byte(keyStr))\n',
+        '\t\t\tif v == nil {\n\t\t\t\tcontinue\n\t\t\t}\n\n',
+        '\t\t\tvar data map[string]interface{}\n',
+        '\t\t\tif err := json.Unmarshal(v, &data); err != nil {\n\t\t\t\tcontinue\n\t\t\t}\n\n',
+        ProcessCode, '\n',
+        '\t\t}\n',
+        '\t\treturn nil\n',
+        '\t})\n',
+        '\tif err != nil {\n\t\tfmt.Fprintf(os.Stderr, "Error: %v\\n", err)\n\t\tos.Exit(1)\n\t}\n'
+    ], BodyCode).
+
 %% generate_full_scan_code(+DbFile, +BucketStr, +RecordsDesc, +ProcessCode, -BodyCode)
 %  Generate standard code using bucket.ForEach() for full scan
 %
@@ -7916,13 +7962,12 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
         ),
 
         % Analyze key optimization opportunities (Phase 8c)
-        (   KeyStrategy \= none,
-            Constraints \= []
+        (   Constraints \= []
         ->  format('  Analyzing key optimization...~n'),
-            analyze_key_optimization(KeyStrategy, Constraints, FieldMappings, OptType, OptDetails)
+            analyze_key_optimization(Pred/Arity, KeyStrategy, Constraints, FieldMappings, OptType, OptDetails)
         ;   OptType = full_scan,
             OptDetails = none,
-            format('  Skipping optimization (no key strategy or constraints)~n')
+            format('  Skipping optimization (no constraints)~n')
         ),
 
         % Generate field extraction code (with type conversions for constraints)
@@ -7981,6 +8026,11 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
         OptDetails = prefix_value(PrefixValue),
         format('  Generating prefix scan code~n'),
         generate_prefix_scan_code(DbFile, BucketStr, PrefixValue, ProcessCode, BodyCode)
+    ;   OptType = index_scan
+    ->  % Secondary index lookup (Codd Phase)
+        OptDetails = index_field_value(IndexField, IndexValue),
+        format('  Generating index lookup code~n'),
+        generate_index_scan_code(DbFile, BucketStr, IndexField, IndexValue, ProcessCode, BodyCode)
     ;   % Full scan (default/fallback)
         format('  Using full scan~n'),
         generate_full_scan_code(DbFile, BucketStr, RecordsDesc, ProcessCode, BodyCode)
@@ -7989,8 +8039,8 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 
     % Wrap in package if requested
     (   IncludePackage = true
-    ->  % Check if we need bytes package (for prefix scan optimization)
-        (   nonvar(OptType), OptType = prefix_scan
+    ->  % Check if we need bytes package (for prefix or index scan optimization)
+        (   nonvar(OptType), (OptType = prefix_scan ; OptType = index_scan)
         ->  BytesImport = '\t"bytes"\n'
         ;   BytesImport = ''
         ),
@@ -10243,7 +10293,13 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         (   option(db_backend(bbolt), Options)
         ->  % Wrap core body with database operations
             format('  Database: bbolt~n'),
-            wrap_with_database(CoreBody, FieldMappings, Pred, Options, ScriptBody, KeyImports),
+            
+            % Get indexes (Codd Phase)
+            index_analyzer:get_indexes(Pred/Arity, Indexes),
+            (   Indexes \= [] -> format('  Indexes: ~w~n', [Indexes]) ; true ),
+            append(Options, [index_fields(Indexes)], DBOptions),
+            
+            wrap_with_database(CoreBody, FieldMappings, Pred, DBOptions, ScriptBody, KeyImports),
             NeedsDatabase = true
         ;   ScriptBody = CoreBody,
             NeedsDatabase = false,
@@ -10651,6 +10707,13 @@ generate_parallel_json_processing([Op|Rest], HeadArgs, Delim, Unique, VIdx, VarM
 				}', [ListGoVar, ItemGoVar, LoopBody])
     ).
 
+%% find_field_position(+Field, +FieldMappings, -Pos)
+find_field_position(Field, FieldMappings, Pos) :-
+    nth1(Pos, FieldMappings, Mapping),
+    (   Mapping = Field-_Var
+    ;   Mapping = nested(Path, _), last(Path, Field)
+    ), !.
+
 %% wrap_with_database(+CoreBody, +FieldMappings, +Pred, +Options, -WrappedBody, -KeyImports)
 %  Wrap core extraction code with database operations
 %  Returns additional imports needed for key expressions
@@ -10692,31 +10755,45 @@ wrap_with_database(CoreBody, FieldMappings, Pred, Options, WrappedBody, KeyImpor
         BlankAssignments),
     atomic_list_concat(BlankAssignments, '', UnusedFieldCode),
 
-    % Create storage code block with compiled key
-    format(string(StorageCode), '~s\t\t// Store in database
-\t\terr = db.Update(func(tx *bolt.Tx) error {
-\t\t\tbucket := tx.Bucket([]byte("~s"))
-\t\t\t
-\t\t\t// Generate key using strategy
-\t\t\tkeyStr := ~s
-\t\t\tkey := []byte(keyStr)
-\t\t\t
-\t\t\t// Store full JSON record
-\t\t\tvalue, err := json.Marshal(data)
-\t\t\tif err != nil {
-\t\t\t\treturn err
-\t\t\t}
-\t\t\t
-\t\t\treturn bucket.Put(key, value)
-\t\t})
-\t\t
-\t\tif err != nil {
-\t\t\terrorCount++
-\t\t\tfmt.Fprintf(os.Stderr, "Database error: %v\\n", err)
-\t\t\tcontinue
-\t\t}
-\t\t
-\t\trecordCount++', [UnusedFieldCode, BucketStr, KeyCode]),
+    % Index Logic
+    (   member(index_fields(Indexes), Options), Indexes \= []
+    ->  % Generate bucket creation code
+        findall(BC, (
+            member(F, Indexes),
+            atomic_list_concat(['		_, _ = tx.CreateBucketIfNotExists([]byte("index_', Pred, '_', F, '"))'], BC)
+        ), BCs),
+        atomic_list_concat(BCs, '\n', IndexBucketCreates),
+        
+        % Generate index write code
+        findall(IW, (
+            member(F, Indexes),
+            find_field_position(F, FieldMappings, P),
+            atomic_list_concat(['field', P], GV),
+            atomic_list_concat(['index_', Pred, '_', F], BN),
+            atomic_list_concat([
+                '\n\t\t\tidxBucket', P, ' := tx.Bucket([]byte("', BN, '"))\n',
+                '\t\t\t// Index key: Value:RecordKey\n',
+                '\t\t\tidxKey', P, ' := fmt.Sprintf("%v:%s", ', GV, ', keyStr)\n',
+                '\t\t\tif err := idxBucket', P, '.Put([]byte(idxKey', P, '), []byte("")); err != nil {\n',
+                '\t\t\t\treturn err\n\t\t\t}'
+            ], IW)
+        ), IWs),
+        atomic_list_concat(IWs, '', IndexWriteCode)
+    ;   IndexBucketCreates = "",
+        IndexWriteCode = ""
+    ),
+
+    % Create storage code block with compiled key (using concat to avoid format issues)
+    atomics_to_string([
+        UnusedFieldCode,
+        '\t\t// Store in database\n\t\terr = db.Update(func(tx *bolt.Tx) error {\n\t\t\tbucket := tx.Bucket([]byte("',
+        BucketStr,
+        '"))\n\t\t\t\n\t\t\t// Generate key using strategy\n\t\t\tkeyStr := ',
+        KeyCode,
+        '\n\t\t\tkey := []byte(keyStr)\n\t\t\t\n\t\t\t// Store full JSON record\n\t\t\tvalue, err := json.Marshal(data)\n\t\t\tif err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t\t\n\t\t\tif err := bucket.Put(key, value); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n',
+        IndexWriteCode,
+        '\n\t\t\treturn nil\n\t\t})\n\t\t\n\t\tif err != nil {\n\t\t\terrorCount++\n\t\t\tfmt.Fprintf(os.Stderr, "Database error: %v\\n", err)\n\t\t\tcontinue\n\t\t}\n\t\t\n\t\trecordCount++'
+    ], StorageCode),
 
     % Remove output block and inject storage code
     split_string(CoreBody, "\n", "", Lines),
@@ -10724,34 +10801,21 @@ wrap_with_database(CoreBody, FieldMappings, Pred, Options, WrappedBody, KeyImpor
     filter_and_replace_lines(Lines, StorageCode, -1, FilteredLines),
     atomics_to_string(FilteredLines, "\n", CleanedCore),
 
-    % Generate wrapped code with storage inside loop
-    format(string(WrappedBody), '\t// Open database
-\tdb, err := bolt.Open("~s", 0600, nil)
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-\tdefer db.Close()
-
-\t// Create bucket
-\terr = db.Update(func(tx *bolt.Tx) error {
-\t\t_, err := tx.CreateBucketIfNotExists([]byte("~s"))
-\t\treturn err
-\t})
-\tif err != nil {
-\t\tfmt.Fprintf(os.Stderr, "Error creating bucket: %v\\n", err)
-\t\tos.Exit(1)
-\t}
-
-\t// Process records
-\trecordCount := 0
-\terrorCount := 0
-
-~s
-
-\t// Summary
-\tfmt.Fprintf(os.Stderr, "Stored %d records, %d errors\\n", recordCount, errorCount)
-', [DbFile, BucketStr, CleanedCore]).
+    % Generate wrapped code with storage inside loop (using concat to avoid format issues)
+    atomics_to_string([
+        '\t// Open database\n\tdb, err := bolt.Open("', DbFile, '", 0600, nil)\n',
+        '\tif err != nil {\n\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)\n',
+        '\t\tos.Exit(1)\n\t}\n\tdefer db.Close()\n\n',
+        '\t// Create bucket\n\terr = db.Update(func(tx *bolt.Tx) error {\n',
+        '\t\t_, err := tx.CreateBucketIfNotExists([]byte("', BucketStr, '"))\n',
+        IndexBucketCreates, '\n',
+        '\t\treturn err\n\t})\n',
+        '\tif err != nil {\n\t\tfmt.Fprintf(os.Stderr, "Error creating bucket: %v\\n", err)\n',
+        '\t\tos.Exit(1)\n\t}\n\n',
+        '\t// Process records\n\trecordCount := 0\n\terrorCount := 0\n\n',
+        CleanedCore, '\n\n',
+        '\t// Summary\n\tfmt.Fprintf(os.Stderr, "Stored %d records, %d errors\\n", recordCount, errorCount)\n'
+    ], WrappedBody).
 
 % Helper to filter output lines and inject storage code
 filter_and_replace_lines(Lines, StorageCode, KeyPos, Result) :-
@@ -11202,21 +11266,18 @@ compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, G
         UniqueCheck = '\t\tfmt.Println(result)\n'
     ),
 
-    % Build the loop code
-    format(string(GoCode), '
-\tscanner := bufio.NewScanner(os.Stdin)
-~w
-\tfor scanner.Scan() {
-\t\tvar data map[string]interface{}
-\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
-\t\t\tcontinue
-\t\t}
-\t\t
-~s
-\t\t
-\t\tresult := ~s
-~s\t}
-', [SeenDecl, ExtractCode, OutputExpr, UniqueCheck]).
+    % Build the loop code (using concat to avoid format issues)
+    atomics_to_string([
+        '\tscanner := bufio.NewScanner(os.Stdin)\n',
+        SeenDecl,
+        '\tfor scanner.Scan() {\n',
+        '\t\tvar data map[string]interface{}\n',
+        '\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {\n',
+        '\t\t\tcontinue\n\t\t}\n\t\t\n',
+        ExtractCode, '\n\t\t\n',
+        '\t\tresult := ', OutputExpr, '\n',
+        UniqueCheck, '\t}\n'
+    ], GoCode).
 
 %% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +Constraints, +Options, -GoCode)
 %  Generate Go code for JSON input mode with type safety from schema
