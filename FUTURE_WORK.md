@@ -84,11 +84,14 @@ Scientific computing and data analysis:
 - **Join Optimization** - Automatically reorder rule bodies to prioritize ground or highly selective goals. Minimize intermediate result set sizes. Respects variable dependencies.
 - **Constraint Integration** - Integrated into Stream, Recursive, Go, and Rust targets.
 
+✅ **Implemented**: Secondary Indexes and Predicate Pushdown (Phase 8b).
+- **Index Hints** - Manual index selection via `:- index(predicate/arity, field).` directive.
+- **Predicate Pushdown** - Pushes equality filters into Bbolt using secondary indexes (`cursor.Seek`) and prefix scans.
+- **Key Optimization** - Automatically detects direct lookup and prefix scan opportunities.
+
 ### Query Optimization (Planned)
 
-- **Index Hints** - Allow manual index selection via `:- index(predicate/arity, field).` directive.
 - **Statistics** - Collect and use statistics (cardinality, selectivity) for query planning.
-- **Predicate Pushdown** - Push filters as deep as possible into the data source (e.g., SQL `WHERE` or Bbolt range queries).
 
 ### Incremental Compilation
 
@@ -171,8 +174,8 @@ Explore integration with machine learning:
 3. Error Aggregation & Progress Reporting
 
 **Short Term (Next 3-6 Months):**
-4. ✅ Query optimization basics (Join Reordering)
-5. Index Hints & Statistics
+4. ✅ Query optimization basics (Join Reordering, Index Hints)
+5. Statistics & Cost-Based Optimization
 
 
 **Medium Term (6-12 Months):**
