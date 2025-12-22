@@ -78,11 +78,12 @@ Scientific computing and data analysis:
 
 ## Cross-Target Features
 
-### Query Optimization
+### Query Optimization (The "Codd" Phase)
 
-- **Join Optimization** - Detect and optimize multi-predicate joins
-- **Index Hints** - Allow manual index selection
-- **Statistics** - Collect and use statistics for query planning
+- **Join Optimization** - Automatically reorder rule bodies to prioritize ground or highly selective goals. Minimize intermediate result set sizes.
+- **Index Hints** - Allow manual index selection via `:- index(predicate/arity, field).` directive.
+- **Statistics** - Collect and use statistics (cardinality, selectivity) for query planning.
+- **Predicate Pushdown** - Push filters as deep as possible into the data source (e.g., SQL `WHERE` or Bbolt range queries).
 
 ### Incremental Compilation
 
