@@ -8309,12 +8309,12 @@ generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstrain
         ;   AggOp = min(AggVar)
         ->  find_field_for_var(AggVar, FieldMappings, AggFieldName),
             generate_group_by_min_with_having(GroupFieldName, AggFieldName, Result, HavingConstraints, DbFile, BucketStr, GoCode)
-        ;   (compound(AggOp), (functor(AggOp, stddev, _) ; functor(AggOp, median, _) ; functor(AggOp, percentile, _)))
-        ->  format('  Statistical aggregation detected: ~w~n', [AggOp]),
-            % Convert to list format to reuse multi-agg code (cleaner than new templates)
+        ;   (compound(AggOp), (functor(AggOp, stddev, _) ; functor(AggOp, median, _) ; functor(AggOp, percentile, _) ; functor(AggOp, collect_list, _) ; functor(AggOp, collect_set, _)))
+        ->  format('  Complex aggregation detected: ~w~n', [AggOp]),
+            % Convert to list format to reuse multi-agg code
             (   compound(AggOp), arg(2, AggOp, Result)
             ->  OpList = [AggOp]
-            ;   % single arg form, e.g. stddev(Age)
+            ;   % single arg form not supported for collect_*, but safe to try
                 AggOp =.. [Func|Args],
                 append(Args, [Result], NewArgs),
                 NewOp =.. [Func|NewArgs],
@@ -8689,6 +8689,10 @@ parse_single_agg_op(percentile(AggVar, P), FieldMappings, agg(percentile(P), Fie
     find_field_for_var(AggVar, FieldMappings, FieldName).
 parse_single_agg_op(percentile(AggVar, P, _ResultVar), FieldMappings, agg(percentile(P), FieldName, null, percentile)) :- !,
     find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(collect_list(AggVar, _ResultVar), FieldMappings, agg(collect_list, FieldName, null, list)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
+parse_single_agg_op(collect_set(AggVar, _ResultVar), FieldMappings, agg(collect_set, FieldName, null, set)) :- !,
+    find_field_for_var(AggVar, FieldMappings, FieldName).
 
 %% generate_multi_agg_struct_fields(+AggInfo, -StructFields)
 %  Generate Go struct field declarations based on operations
@@ -8724,6 +8728,8 @@ needed_struct_field(stddev, mean).
 needed_struct_field(stddev, m2).
 needed_struct_field(median, values).
 needed_struct_field(percentile(_), values).
+needed_struct_field(collect_list, list).
+needed_struct_field(collect_set, setMap).
 
 %% format_struct_fields(+NeededFields, -StructFields)
 %  Format struct fields as Go code
@@ -8747,6 +8753,8 @@ go_struct_field_line(minFirst, '\t\tminFirst bool').
 go_struct_field_line(mean, '\t\tmean     float64').
 go_struct_field_line(m2, '\t\tm2       float64').
 go_struct_field_line(values, '\t\tvalues   []float64').
+go_struct_field_line(list, '\t\tlist     []interface{}').
+go_struct_field_line(setMap, '\t\tsetMap   map[interface{}]bool').
 
 %% get_struct_init_values(+AggInfo, -InitValues)
 %  Generate initialization values for struct
@@ -8883,6 +8891,23 @@ generate_single_accumulation(agg(percentile(_), FieldName, _, _), _, Code) :- !,
 \t\t\t\t\t}
 ', [FieldName, FieldName]).
 
+generate_single_accumulation(agg(collect_list, FieldName, _, _), _, Code) :- !,
+    format(string(Code), '\t\t\t\t\t// Collect List ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tstats[groupStr].list = append(stats[groupStr].list, valueRaw)
+\t\t\t\t\t}
+', [FieldName, FieldName]).
+
+generate_single_accumulation(agg(collect_set, FieldName, _, _), _, Code) :- !,
+    format(string(Code), '\t\t\t\t\t// Collect Set ~s
+\t\t\t\t\tif valueRaw, ok := data["~s"]; ok {
+\t\t\t\t\t\tif stats[groupStr].setMap == nil {
+\t\t\t\t\t\t\tstats[groupStr].setMap = make(map[interface{}]bool)
+\t\t\t\t\t\t}
+\t\t\t\t\t\tstats[groupStr].setMap[valueRaw] = true
+\t\t\t\t\t}
+', [FieldName, FieldName]).
+
 %% get_output_calculations(+AggInfo, -OutputCalcs)
 %  Generate pre-output calculations (e.g., avg = sum / count)
 %
@@ -8904,6 +8929,11 @@ get_single_output_calc(agg(stddev, _, _, _), '\t\tstddev := 0.0
 get_single_output_calc(agg(median, _, _, _), '\t\tmedian := calculateMedian(s.values)').
 get_single_output_calc(agg(percentile(P), _, _, _), Calc) :-
     format(string(Calc), '\t\tpercentile~w := calculatePercentile(s.values, ~w)', [P, P]).
+get_single_output_calc(agg(collect_list, _, _, _), '').
+get_single_output_calc(agg(collect_set, _, _, _), '\t\tsetList := make([]interface{}, 0, len(s.setMap))
+\t\tfor k := range s.setMap {
+\t\t\tsetList = append(setList, k)
+\t\t}').
 get_single_output_calc(_, '').
 
 %% generate_multi_agg_output(+GroupField, +AggInfo, -OutputCode)
@@ -8926,6 +8956,8 @@ generate_output_field(agg(max, _, _, _), '\t\t\t"max": s.maxValue') :- !.
 generate_output_field(agg(min, _, _, _), '\t\t\t"min": s.minValue') :- !.
 generate_output_field(agg(stddev, _, _, _), '\t\t\t"stddev": stddev') :- !.
 generate_output_field(agg(median, _, _, _), '\t\t\t"median": median') :- !.
+generate_output_field(agg(collect_list, _, _, _), '\t\t\t"list": s.list') :- !.
+generate_output_field(agg(collect_set, _, _, _), '\t\t\t"set": setList') :- !.
 generate_output_field(agg(percentile(P), _, _, _), Line) :- !,
     format(string(Line), '\t\t\t"percentile~w": percentile~w', [P, P]).
 
