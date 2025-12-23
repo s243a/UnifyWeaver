@@ -142,3 +142,81 @@ func TestComputeCosineAngle(t *testing.T) {
 		})
 	}
 }
+
+func TestRouteWithBacktrack(t *testing.T) {
+	n := NewSmallWorldNetwork()
+
+	// Build a larger network to test backtracking
+	vectors := []struct {
+		id     string
+		vector []float32
+	}{
+		{"n1", []float32{1.0, 0.0, 0.0}},
+		{"n2", []float32{0.9, 0.1, 0.0}},
+		{"n3", []float32{0.8, 0.2, 0.0}},
+		{"n4", []float32{0.7, 0.3, 0.0}},
+		{"n5", []float32{0.0, 1.0, 0.0}},
+		{"n6", []float32{0.1, 0.9, 0.0}},
+		{"n7", []float32{0.2, 0.8, 0.0}},
+		{"n8", []float32{0.5, 0.5, 0.0}},
+	}
+
+	for _, v := range vectors {
+		n.AddNode(v.id, v.vector)
+	}
+
+	// Route towards a target using backtracking
+	target := []float32{1.0, 0.0, 0.0}
+	path, comparisons := n.RouteWithBacktrack(target, 50)
+
+	if len(path) == 0 {
+		t.Error("RouteWithBacktrack returned empty path")
+	}
+
+	if comparisons == 0 {
+		t.Error("RouteWithBacktrack reported 0 comparisons")
+	}
+
+	// Final node should be close to target
+	finalNode := n.Nodes[path[len(path)-1]]
+	finalSim := cosineSimilarity(finalNode.Centroid, target)
+	if finalSim < 0.8 {
+		t.Errorf("Final node similarity = %f, want >= 0.8", finalSim)
+	}
+}
+
+func TestRouteUnified(t *testing.T) {
+	n := NewSmallWorldNetwork()
+
+	// Build network
+	vectors := []struct {
+		id     string
+		vector []float32
+	}{
+		{"n1", []float32{1.0, 0.0, 0.0}},
+		{"n2", []float32{0.9, 0.1, 0.0}},
+		{"n3", []float32{0.8, 0.2, 0.0}},
+		{"n4", []float32{0.0, 1.0, 0.0}},
+	}
+
+	for _, v := range vectors {
+		n.AddNode(v.id, v.vector)
+	}
+
+	target := []float32{1.0, 0.0, 0.0}
+
+	// Test with backtracking enabled
+	pathBT, compsBT := n.Route(target, 50, true)
+	if len(pathBT) == 0 {
+		t.Error("Route with backtrack returned empty path")
+	}
+	if compsBT == 0 {
+		t.Error("Route with backtrack reported 0 comparisons")
+	}
+
+	// Test with backtracking disabled (greedy only)
+	pathGreedy, _ := n.Route(target, 50, false)
+	if len(pathGreedy) == 0 {
+		t.Error("Route without backtrack returned empty path")
+	}
+}
