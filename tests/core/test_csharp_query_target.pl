@@ -72,6 +72,10 @@
 :- dynamic user:test_negation_cycle_root/1.
 :- dynamic user:test_negation_cycle_p/1.
 :- dynamic user:test_negation_cycle_q/1.
+:- dynamic user:test_strat_person/1.
+:- dynamic user:test_strat_ban_fact/1.
+:- dynamic user:test_strat_banned/1.
+:- dynamic user:test_strat_allowed/1.
 
 :- dynamic progress_last_report/1.
 :- dynamic progress_count/1.
@@ -130,6 +134,7 @@ test_csharp_query_target :-
         verify_aggregate_subplan_grouped_sum_with_negation_plan,
         verify_negation_plan,
         verify_non_stratified_negation_cycle_rejected,
+        verify_stratified_negation_derived_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
         verify_multi_mode_codegen_plan,
@@ -1193,6 +1198,42 @@ verify_non_stratified_negation_cycle_rejected_ :-
     ),
     sub_string(Err, _, _, _, 'non-stratified negation'),
     sub_string(Err, _, _, _, 'test_negation_cycle_root/1').
+
+verify_stratified_negation_derived_runtime :-
+    setup_call_cleanup(
+        setup_stratified_negation_derived_program,
+        verify_stratified_negation_derived_runtime_,
+        cleanup_stratified_negation_derived_program
+    ).
+
+setup_stratified_negation_derived_program :-
+    retractall(user:test_strat_person(_)),
+    retractall(user:test_strat_ban_fact(_)),
+    retractall(user:test_strat_banned(_)),
+    retractall(user:test_strat_allowed(_)),
+    assertz(user:test_strat_person(alice)),
+    assertz(user:test_strat_person(bob)),
+    assertz(user:test_strat_ban_fact(bob)),
+    assertz(user:(test_strat_banned(X) :- test_strat_ban_fact(X))),
+    assertz(user:(test_strat_allowed(X) :- test_strat_person(X), \+ test_strat_banned(X))).
+
+cleanup_stratified_negation_derived_program :-
+    retractall(user:test_strat_person(_)),
+    retractall(user:test_strat_ban_fact(_)),
+    retractall(user:test_strat_banned(_)),
+    retractall(user:test_strat_allowed(_)).
+
+verify_stratified_negation_derived_runtime_ :-
+    csharp_query_target:build_query_plan(test_strat_allowed/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    Root = program{type:program, definitions:Definitions, body:_, width:1},
+    member(define_relation{type:define_relation, predicate:predicate{name:test_strat_banned, arity:1}, plan:_}, Definitions),
+    sub_term(negation{type:negation, predicate:predicate{name:test_strat_banned, arity:1}, args:_, input:_, width:_}, Root),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'ProgramNode'),
+    sub_string(Source, _, _, _, 'DefineRelationNode'),
+    sub_string(Source, _, _, _, 'NegationNode'),
+    maybe_run_query_runtime(Plan, ['alice']).
 
 verify_parameterized_need_allows_prefix_negation :-
     csharp_query_target:build_query_plan(test_countdown/2, [target(csharp_query)], Plan),

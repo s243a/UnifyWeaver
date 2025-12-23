@@ -30,12 +30,14 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(pairs), [pairs_values/2]).
-:- use_module(library(ugraphs), [vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3]).
+:- use_module(library(ugraphs), [vertices/2, vertices_edges_to_ugraph/3, transpose_ugraph/2, reachable/3, top_sort/2]).
 :- use_module('../core/dynamic_source_compiler', [is_dynamic_source/1, dynamic_source_metadata/2]).
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/csharp_bindings').
 :- use_module('../core/pipeline_validation').
 :- use_module(common_generator).
+
+:- dynamic query_materialized_relation/1.
 
 %% init_csharp_target
 %  Initialize the C# target by loading bindings.
@@ -392,6 +394,143 @@ query_body_negated_predicate_(Term0, NegPI) :-
     ;   fail
     ).
 
+%% Query-mode stratified execution -------------------------------------------
+%
+% For stratified negation over derived predicates, we materialise the results of
+% lower-strata predicates into in-memory relations before evaluating the final
+% query. This enables both positive and negated references to derived predicates
+% outside the head's recursion component.
+
+query_predicate_has_rule(Pred/Arity) :-
+    functor(Head, Pred, Arity),
+    clause(user:Head, Body),
+    Body \= true,
+    !.
+
+all_output_modes(Pred/Arity, Modes) :-
+    must_be(atom, Pred),
+    must_be(integer, Arity),
+    Arity >= 0,
+    length(Modes, Arity),
+    maplist(=(output), Modes).
+
+with_query_materialized_relations(PIs0, Goal) :-
+    sort(PIs0, PIs),
+    setup_call_cleanup(
+        forall(member(PI, PIs), assertz(query_materialized_relation(PI))),
+        Goal,
+        forall(member(PI, PIs), retractall(query_materialized_relation(PI)))
+    ).
+
+query_strong_components(Vertices0, Edges, Components) :-
+    sort(Vertices0, Vertices),
+    vertices_edges_to_ugraph(Vertices, Edges, Graph),
+    transpose_ugraph(Graph, Transposed),
+    query_strong_components_(Vertices, Graph, Transposed, [], Components).
+
+query_strong_components_([], _Graph, _Transposed, _Seen, []).
+query_strong_components_([Vertex|Rest], Graph, Transposed, Seen, Components) :-
+    (   memberchk(Vertex, Seen)
+    ->  query_strong_components_(Rest, Graph, Transposed, Seen, Components)
+    ;   reachable(Vertex, Graph, Forward),
+        reachable(Vertex, Transposed, Backward),
+        intersection(Forward, Backward, Component0),
+        sort(Component0, Component),
+        append(Component, Seen, Seen1),
+        query_strong_components_(Rest, Graph, Transposed, Seen1, Tail),
+        Components = [Component|Tail]
+    ).
+
+query_vertex_component_map(Components, Map) :-
+    findall(Vertex-Idx,
+        (   nth0(Idx, Components, Component),
+            member(Vertex, Component)
+        ),
+        Map).
+
+query_component_edges([], _Map, []).
+query_component_edges([From-To|Rest], Map, [FromIdx-ToIdx|Edges]) :-
+    memberchk(From-FromIdx, Map),
+    memberchk(To-ToIdx, Map),
+    FromIdx \= ToIdx,
+    !,
+    query_component_edges(Rest, Map, Edges).
+query_component_edges([_|Rest], Map, Edges) :-
+    query_component_edges(Rest, Map, Edges).
+
+component_has_rule([]) :-
+    !,
+    fail.
+component_has_rule([PI|Rest]) :-
+    (   query_predicate_has_rule(PI)
+    ->  true
+    ;   component_has_rule(Rest)
+    ).
+
+component_representative(Component, RepPI) :-
+    sort(Component, [RepPI|_]).
+
+build_query_plan_stratified_unmodified(Pred/Arity, Options, Modes, Plan) :-
+    guard_query_stratified_negation(Pred/Arity),
+    build_dependency_graph([Pred/Arity], [], [], Vertices0, [], Edges0),
+    sort(Vertices0, Vertices),
+    sort(Edges0, Edges),
+    include(query_predicate_has_rule, Vertices, DerivedPIs0),
+    sort(DerivedPIs0, DerivedPIs),
+    query_strong_components(Vertices, Edges, Components),
+    query_vertex_component_map(Components, VertexMap),
+    memberchk(Pred/Arity-HeadComponentIdx, VertexMap),
+    length(Components, ComponentCount),
+    EndIdx is ComponentCount - 1,
+    numlist(0, EndIdx, ComponentVertices),
+    query_component_edges(Edges, VertexMap, ComponentEdges0),
+    sort(ComponentEdges0, ComponentEdges),
+    vertices_edges_to_ugraph(ComponentVertices, ComponentEdges, ComponentGraph),
+    top_sort(ComponentGraph, TopSorted),
+    reverse(TopSorted, DependenciesFirst),
+    findall(ComponentIdx,
+        (   member(ComponentIdx, DependenciesFirst),
+            ComponentIdx =\= HeadComponentIdx,
+            nth0(ComponentIdx, Components, Component),
+            component_has_rule(Component)
+        ),
+        DefinitionComponentIdxs),
+    (   DefinitionComponentIdxs == []
+    ->  build_query_plan_unmodified(Pred/Arity, Options, Modes, Plan)
+    ;   with_query_materialized_relations(DerivedPIs,
+            build_stratified_program_plan(Pred/Arity, Options, Modes,
+                DefinitionComponentIdxs, Components, Plan))
+    ).
+
+build_stratified_program_plan(Pred/Arity, Options, Modes, DefinitionComponentIdxs, Components, Plan) :-
+    build_stratified_program_definitions(DefinitionComponentIdxs, Components, Options, Definitions, DefinitionRelations),
+    build_query_plan_unmodified(Pred/Arity, Options, Modes, HeadPlan0),
+    get_dict(root, HeadPlan0, BodyRoot),
+    get_dict(head, HeadPlan0, HeadSpec),
+    get_dict(arity, HeadSpec, Width),
+    ProgramRoot = program{type:program, definitions:Definitions, body:BodyRoot, width:Width},
+    get_dict(relations, HeadPlan0, HeadRelations),
+    append(DefinitionRelations, HeadRelations, Relations0),
+    dedup_relations(Relations0, Relations),
+    put_dict(root, HeadPlan0, ProgramRoot, HeadPlan1),
+    put_dict(relations, HeadPlan1, Relations, Plan).
+
+build_stratified_program_definitions([], _Components, _Options, [], []).
+build_stratified_program_definitions([ComponentIdx|Rest], Components, Options, [DefNode|Defs], RelationsOut) :-
+    nth0(ComponentIdx, Components, Component),
+    component_representative(Component, RepPI),
+    all_output_modes(RepPI, AllOutput),
+    build_query_plan_unmodified(RepPI, Options, AllOutput, SubPlan),
+    get_dict(root, SubPlan, Root),
+    get_dict(head, SubPlan, SubHead),
+    (   is_dict(Root, mutual_fixpoint)
+    ->  DefNode = define_mutual_fixpoint{type:define_mutual_fixpoint, plan:Root}
+    ;   DefNode = define_relation{type:define_relation, predicate:SubHead, plan:Root}
+    ),
+    get_dict(relations, SubPlan, SubRelations),
+    build_stratified_program_definitions(Rest, Components, Options, Defs, RestRelations),
+    append(SubRelations, RestRelations, RelationsOut).
+
 %% build_query_plan(+PredIndicator, +Options, +Modes, -PlanDict) is semidet.
 %  Produce a declarative plan describing how to evaluate the requested
 %  predicate. Plans are represented as dicts containing the head descriptor,
@@ -422,11 +561,15 @@ build_query_plan_for_inputs(Pred/Arity, Options, InputPositions0, Plan) :-
     ->  build_query_plan(Pred/Arity, Options, Modes, Plan)
     ;   format(user_error,
                'C# query target: no mode/1 variant for ~w/~w matching input positions ~w.~n',
-               [Pred, Arity, InputPositions]),
+                [Pred, Arity, InputPositions]),
         fail
     ).
 
 build_query_plan(Pred/Arity, Options, Modes, Plan) :-
+    build_query_plan_stratified_unmodified(Pred/Arity, Options, Modes, Plan0),
+    apply_query_modifiers_to_plan(Options, Plan0, Plan).
+
+build_query_plan_unmodified(Pred/Arity, Options, Modes, Plan) :-
     must_be(atom, Pred),
     must_be(integer, Arity),
     Arity >= 0,
@@ -442,10 +585,10 @@ build_query_plan(Pred/Arity, Options, Modes, Plan) :-
         ->  classify_clauses(BaseClauses, Classification),
             build_plan_by_class(Classification, Pred, Arity, BaseClauses, Options, Modes, none, Plan0)
         ;   build_recursive_plan(HeadSpec, [HeadSpec], BaseClauses, RecClauses, Options, Modes, Plan0)
-        )
-    ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan0)
-    ),
-    apply_query_modifiers_to_plan(Options, Plan0, Plan).
+         )
+     ;   build_mutual_recursive_plan(GroupSpecs, HeadSpec, Options, Modes, Plan0)
+     ),
+    Plan = Plan0.
 
 apply_query_modifiers_to_plan(Options, Plan0, Plan) :-
     get_dict(root, Plan0, Root0),
@@ -2365,8 +2508,11 @@ ensure_relation(Pred, Arity, RelationsIn, RelationsOut) :-
         RelationsOut = [Relation|RelationsIn]
     ;   gather_fact_rows(Pred, Arity, Rows),
         (   Rows == []
-        ->  format(user_error, 'C# query target: no facts available for ~w/~w.~n', [Pred, Arity]),
-            fail
+        ->  (   query_materialized_relation(Pred/Arity)
+            ->  RelationsOut = RelationsIn
+            ;   format(user_error, 'C# query target: no facts available for ~w/~w.~n', [Pred, Arity]),
+                fail
+            )
         ;   Relation = relation{predicate:predicate{name:Pred, arity:Arity}, facts:Rows},
             RelationsOut = [Relation|RelationsIn]
         )
@@ -2668,6 +2814,30 @@ emit_plan_expression(Node, Expr) :-
     emit_plan_expression(PlanNode, PlanExpr),
     atom_string(Id, IdStr),
     format(atom(Expr), 'new MaterializeNode("~w", ~w, ~w)', [IdStr, PlanExpr, Width]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, program), !,
+    get_dict(definitions, Node, Definitions),
+    get_dict(body, Node, Body),
+    (   Definitions == []
+    ->  DefLiteral = 'Array.Empty<PlanNode>()'
+    ;   maplist(emit_plan_expression, Definitions, DefExprs),
+        atomic_list_concat(DefExprs, ', ', DefList),
+        format(atom(DefLiteral), 'new PlanNode[]{ ~w }', [DefList])
+    ),
+    emit_plan_expression(Body, BodyExpr),
+    format(atom(Expr), 'new ProgramNode(~w, ~w)', [DefLiteral, BodyExpr]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, define_relation), !,
+    get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
+    get_dict(plan, Node, PlanNode),
+    emit_plan_expression(PlanNode, PlanExpr),
+    atom_string(Name, NameStr),
+    format(atom(Expr), 'new DefineRelationNode(new PredicateId("~w", ~w), ~w)', [NameStr, Arity, PlanExpr]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, define_mutual_fixpoint), !,
+    get_dict(plan, Node, PlanNode),
+    emit_plan_expression(PlanNode, PlanExpr),
+    format(atom(Expr), 'new DefineMutualFixpointNode(~w)', [PlanExpr]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, relation_scan), !,
     get_dict(predicate, Node, predicate{name:Name, arity:Arity}),

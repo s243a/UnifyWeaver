@@ -75,6 +75,23 @@ namespace UnifyWeaver.QueryRuntime
     ) : PlanNode;
 
     /// <summary>
+    /// Executes a set of definition nodes (typically materialising derived relations)
+    /// before evaluating the main query body.
+    /// </summary>
+    public sealed record ProgramNode(
+        IReadOnlyList<PlanNode> Definitions,
+        PlanNode Body
+    ) : PlanNode;
+
+    /// <summary>
+    /// Evaluates a plan and registers its output tuples as the facts for a predicate.
+    /// </summary>
+    public sealed record DefineRelationNode(
+        PredicateId Predicate,
+        PlanNode Plan
+    ) : PlanNode;
+
+    /// <summary>
     /// Scans a base relation provided by <see cref="IRelationProvider"/>.
     /// </summary>
     public sealed record RelationScanNode(PredicateId Relation) : PlanNode;
@@ -217,6 +234,11 @@ namespace UnifyWeaver.QueryRuntime
     /// Executes a set of predicates that depend on one another recursively.
     /// </summary>
     public sealed record MutualFixpointNode(IReadOnlyList<MutualMember> Members, PredicateId Head) : PlanNode;
+
+    /// <summary>
+    /// Evaluates a mutual fixpoint plan and registers the totals for all members as facts.
+    /// </summary>
+    public sealed record DefineMutualFixpointNode(MutualFixpointNode Fixpoint) : PlanNode;
 
     /// <summary>
     /// Base type for arithmetic expressions.
@@ -450,6 +472,18 @@ namespace UnifyWeaver.QueryRuntime
                     case UnitNode:
                         return;
 
+                    case ProgramNode program:
+                        for (var i = 0; i < program.Definitions.Count; i++)
+                        {
+                            WriteNode(childIndent, $"define[{i}]", program.Definitions[i]);
+                        }
+                        WriteNode(childIndent, "body", program.Body);
+                        return;
+
+                    case DefineRelationNode defineRelation:
+                        WriteNode(childIndent, "plan", defineRelation.Plan);
+                        return;
+
                     case SelectionNode selection:
                         WriteNode(childIndent, "input", selection.Input);
                         return;
@@ -524,6 +558,10 @@ namespace UnifyWeaver.QueryRuntime
                         }
                         return;
 
+                    case DefineMutualFixpointNode defineMutual:
+                        WriteNode(childIndent, "fixpoint", defineMutual.Fixpoint);
+                        return;
+
                     case AggregateSubplanNode aggregateSubplan:
                         WriteNode(childIndent, "input", aggregateSubplan.Input);
                         WriteNode(childIndent, "subplan", aggregateSubplan.Subplan);
@@ -548,6 +586,9 @@ namespace UnifyWeaver.QueryRuntime
             {
                 ParamSeedNode seed => $"ParamSeed predicate={seed.Predicate} width={seed.Width} inputs=[{string.Join(",", seed.InputPositions)}]",
                 MaterializeNode materialize => $"Materialize id=\"{materialize.Id}\" width={materialize.Width}",
+                ProgramNode program => $"Program definitions={program.Definitions.Count}",
+                DefineRelationNode defineRelation => $"DefineRelation predicate={defineRelation.Predicate}",
+                DefineMutualFixpointNode defineMutual => $"DefineMutualFixpoint members={defineMutual.Fixpoint.Members.Count} head={defineMutual.Fixpoint.Head}",
                 RelationScanNode scan => $"RelationScan relation={scan.Relation}",
                 SelectionNode => "Selection",
                 NegationNode negation => $"Negation predicate={negation.Predicate}",
@@ -719,6 +760,14 @@ namespace UnifyWeaver.QueryRuntime
                     result = EvaluateMaterialize(materialize, context);
                     break;
 
+                case ProgramNode program:
+                    result = ExecuteProgram(program, context);
+                    break;
+
+                case DefineRelationNode defineRelation:
+                    result = ExecuteDefineRelation(defineRelation, context);
+                    break;
+
                 case RelationScanNode scan:
                     result = context is null
                         ? _provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>()
@@ -785,6 +834,10 @@ namespace UnifyWeaver.QueryRuntime
                     result = ExecuteMutualFixpoint(mutualFixpoint, context);
                     break;
 
+                case DefineMutualFixpointNode defineMutual:
+                    result = ExecuteDefineMutualFixpoint(defineMutual, context);
+                    break;
+
                 case RecursiveRefNode recursiveRef:
                     result = EvaluateRecursiveReference(recursiveRef, context);
                     break;
@@ -806,6 +859,78 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return trace is null ? result : trace.WrapEnumeration(node, result);
+        }
+
+        private IEnumerable<object[]> ExecuteProgram(ProgramNode program, EvaluationContext? context)
+        {
+            if (program is null) throw new ArgumentNullException(nameof(program));
+            if (context is null) throw new InvalidOperationException("Program node evaluated without an execution context.");
+
+            foreach (var definition in program.Definitions)
+            {
+                _ = Evaluate(definition, context);
+            }
+
+            return Evaluate(program.Body, context);
+        }
+
+        private IEnumerable<object[]> ExecuteDefineRelation(DefineRelationNode define, EvaluationContext? context)
+        {
+            if (define is null) throw new ArgumentNullException(nameof(define));
+            if (context is null) throw new InvalidOperationException("DefineRelation node evaluated without an execution context.");
+
+            var evaluated = Evaluate(define.Plan, context);
+            var rows = evaluated as List<object[]> ?? evaluated.ToList();
+            RegisterFacts(define.Predicate, rows, context);
+            return rows;
+        }
+
+        private IEnumerable<object[]> ExecuteDefineMutualFixpoint(DefineMutualFixpointNode define, EvaluationContext? context)
+        {
+            if (define is null) throw new ArgumentNullException(nameof(define));
+            if (context is null) throw new InvalidOperationException("DefineMutualFixpoint node evaluated without an execution context.");
+
+            var headRows = Evaluate(define.Fixpoint, context);
+
+            foreach (var member in define.Fixpoint.Members)
+            {
+                if (context.Totals.TryGetValue(member.Predicate, out var totals))
+                {
+                    RegisterFacts(member.Predicate, totals, context);
+                }
+                else
+                {
+                    RegisterFacts(member.Predicate, new List<object[]>(), context);
+                }
+            }
+
+            return headRows;
+        }
+
+        private static void RegisterFacts(PredicateId predicate, List<object[]> rows, EvaluationContext context)
+        {
+            context.Facts[predicate] = rows;
+            context.FactSets.Remove(predicate);
+
+            foreach (var key in context.FactIndices.Keys.Where(key => key.Predicate.Equals(predicate)).ToList())
+            {
+                context.FactIndices.Remove(key);
+            }
+
+            foreach (var key in context.JoinIndices.Keys.Where(key => key.Predicate.Equals(predicate)).ToList())
+            {
+                context.JoinIndices.Remove(key);
+            }
+
+            foreach (var key in context.RecursiveFactIndices.Keys.Where(key => key.Predicate.Equals(predicate)).ToList())
+            {
+                context.RecursiveFactIndices.Remove(key);
+            }
+
+            foreach (var key in context.RecursiveJoinIndices.Keys.Where(key => key.Predicate.Equals(predicate)).ToList())
+            {
+                context.RecursiveJoinIndices.Remove(key);
+            }
         }
 
         private IEnumerable<object[]> ExecuteJoin(JoinNode join, EvaluationContext? context)
