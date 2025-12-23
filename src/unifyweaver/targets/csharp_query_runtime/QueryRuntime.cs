@@ -97,6 +97,11 @@ namespace UnifyWeaver.QueryRuntime
     public sealed record RelationScanNode(PredicateId Relation) : PlanNode;
 
     /// <summary>
+    /// Scans a relation using a fixed pattern (wildcards and constant values).
+    /// </summary>
+    public sealed record PatternScanNode(PredicateId Relation, object[] Pattern) : PlanNode;
+
+    /// <summary>
     /// Applies a tuple-level filter.
     /// </summary>
     public sealed record SelectionNode(PlanNode Input, Func<object[], bool> Predicate) : PlanNode;
@@ -466,6 +471,7 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     case ParamSeedNode:
                     case RelationScanNode:
+                    case PatternScanNode:
                     case RecursiveRefNode:
                     case CrossRefNode:
                     case EmptyNode:
@@ -590,6 +596,7 @@ namespace UnifyWeaver.QueryRuntime
                 DefineRelationNode defineRelation => $"DefineRelation predicate={defineRelation.Predicate}",
                 DefineMutualFixpointNode defineMutual => $"DefineMutualFixpoint members={defineMutual.Fixpoint.Members.Count} head={defineMutual.Fixpoint.Head}",
                 RelationScanNode scan => $"RelationScan relation={scan.Relation}",
+                PatternScanNode scan => $"PatternScan relation={scan.Relation} pattern=[{string.Join(",", scan.Pattern.Select(FormatPatternValue))}]",
                 SelectionNode => "Selection",
                 NegationNode negation => $"Negation predicate={negation.Predicate}",
                 AggregateNode aggregate => $"Aggregate predicate={aggregate.Predicate} op={aggregate.Operation} groupBy=[{string.Join(",", aggregate.GroupByIndices)}] valueIndex={aggregate.ValueIndex} width={aggregate.Width}",
@@ -629,6 +636,11 @@ namespace UnifyWeaver.QueryRuntime
                 string s => $"\"{s}\"",
                 _ => value.ToString() ?? string.Empty
             };
+
+        private static string FormatPatternValue(object value) =>
+            ReferenceEquals(value, Wildcard.Value)
+                ? "*"
+                : FormatValue(value);
 
         private static string FormatOperator(ArithmeticBinaryOperator op) =>
             op switch
@@ -774,6 +786,10 @@ namespace UnifyWeaver.QueryRuntime
                         : GetFactsList(scan.Relation, context);
                     break;
 
+                case PatternScanNode scan:
+                    result = ExecutePatternScan(scan, context);
+                    break;
+
                 case SelectionNode selection:
                     result = Evaluate(selection.Input, context).Where(tuple => selection.Predicate(tuple));
                     break;
@@ -859,6 +875,52 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             return trace is null ? result : trace.WrapEnumeration(node, result);
+        }
+
+        private IEnumerable<object[]> ExecutePatternScan(PatternScanNode scan, EvaluationContext? context)
+        {
+            if (scan is null) throw new ArgumentNullException(nameof(scan));
+
+            if (context is null)
+            {
+                return (_provider.GetFacts(scan.Relation) ?? Enumerable.Empty<object[]>()).Where(tuple =>
+                    tuple is not null && TupleMatchesPattern(tuple, scan.Pattern));
+            }
+
+            var facts = GetFactsList(scan.Relation, context);
+            var candidates = SelectFactsForPattern(scan.Relation, facts, scan.Pattern, context);
+            return candidates.Where(tuple => tuple is not null && TupleMatchesPattern(tuple, scan.Pattern));
+        }
+
+        private static bool TupleMatchesPattern(object[] tuple, object[] pattern)
+        {
+            if (pattern is null) throw new ArgumentNullException(nameof(pattern));
+            if (tuple is null) return false;
+
+            var max = Math.Min(tuple.Length, pattern.Length);
+            for (var i = 0; i < max; i++)
+            {
+                var expected = pattern[i];
+                if (ReferenceEquals(expected, Wildcard.Value))
+                {
+                    continue;
+                }
+
+                if (!Equals(tuple[i], expected))
+                {
+                    return false;
+                }
+            }
+
+            for (var i = max; i < pattern.Length; i++)
+            {
+                if (!ReferenceEquals(pattern[i], Wildcard.Value))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private IEnumerable<object[]> ExecuteProgram(ProgramNode program, EvaluationContext? context)

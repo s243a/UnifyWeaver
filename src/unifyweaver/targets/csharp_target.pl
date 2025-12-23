@@ -661,12 +661,24 @@ normalize_query_term(Term, [Term]) :-
 normalize_query_term(Term, [Term]) :-
     aggregate_goal(Term),
     !.
-normalize_query_term(Term0, [Term|Constraints]) :-
-    strip_module(Term0, _, Term1),
-    Term1 =.. [Pred|Args],
+normalize_query_term(Term0, [Term]) :-
+    strip_module(Term0, _, Term),
+    Term =.. [Pred|Args],
     atom(Pred),
-    rewrite_literal_constants(Args, ArgsOut, Constraints),
-    Term =.. [Pred|ArgsOut].
+    validate_query_literal_args(Args).
+
+validate_query_literal_args([]).
+validate_query_literal_args([Arg|Rest]) :-
+    (   var(Arg)
+    ->  true
+    ;   simple_query_literal_constant(Arg)
+    ->  true
+    ;   format(user_error,
+               'C# query target: relation argument must be a variable or simple constant (atomic/string), got ~q.~n',
+               [Arg]),
+        fail
+    ),
+    validate_query_literal_args(Rest).
 
 rewrite_literal_constants([], [], []).
 rewrite_literal_constants([Arg|Rest], [Arg|ArgsOut], ConstraintsOut) :-
@@ -1491,7 +1503,7 @@ build_initial_node(_HeadSpec, _GroupSpecs, Term, relation, Node, Relations, VarM
     Term =.. [Pred|Args],
     length(Args, Arity),
     ensure_relation(Pred, Arity, [], Relations),
-    relation_scan_node(Pred, Arity, Node),
+    relation_scan_node_for_args(Pred, Arity, Args, Node),
     init_var_map(Args, 0, VarMap),
     Width = Arity.
 build_initial_node(HeadSpec, _GroupSpecs, Term, recursive(RoleKind), Node, Relations, VarMap, Width) :-
@@ -1504,14 +1516,16 @@ build_initial_node(HeadSpec, _GroupSpecs, Term, recursive(RoleKind), Node, Relat
         format(user_error, 'C# query target: recursive call arity mismatch in ~w/~w.~n', [Pred, Arity]),
         fail
     ),
-    recursive_ref_node(HeadSpec, RoleKind, Node),
+    recursive_ref_node(HeadSpec, RoleKind, Node0),
+    apply_literal_constant_filters(Args, Node0, Arity, Node),
     init_var_map(Args, 0, VarMap),
     Width = Arity,
     Relations = [].
 build_initial_node(_HeadSpec, _GroupSpecs, Term, mutual(PredSpec, RoleKind), Node, Relations, VarMap, Width) :-
     spec_signature(PredSpec, _Name/Arity),
     Term =.. [_|Args],
-    cross_ref_node(PredSpec, RoleKind, Node),
+    cross_ref_node(PredSpec, RoleKind, Node0),
+    apply_literal_constant_filters(Args, Node0, Arity, Node),
     init_var_map(Args, 0, VarMap),
     Width = Arity,
     Relations = [].
@@ -1725,27 +1739,61 @@ fold_terms(GroupSpecs, [Term|Rest], [Role|Roles], HeadSpec, AccNode, VarMapIn, W
     ->  Term =.. [Pred|Args],
         length(Args, Arity),
         ensure_relation(Pred, Arity, RelationsIn, RelationsNext),
-        relation_scan_node(Pred, Arity, RightNode),
+        relation_scan_node_for_args(Pred, Arity, Args, RightNode),
         build_join_node(AccNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapMid, WidthMid, JoinNode),
         fold_terms(GroupSpecs, Rest, Roles, HeadSpec, JoinNode, VarMapMid, WidthMid, RelationsNext,
                    NodeOut, VarMapOut, WidthOut, RelationsOut)
     ;   Role = recursive(RoleKind)
     ->  get_dict(arity, HeadSpec, Arity),
         Term =.. [_|Args],
-        recursive_ref_node(HeadSpec, RoleKind, RightNode),
+        recursive_ref_node(HeadSpec, RoleKind, RightNode0),
+        apply_literal_constant_filters(Args, RightNode0, Arity, RightNode),
         build_join_node(AccNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapMid, WidthMid, JoinNode),
         fold_terms(GroupSpecs, Rest, Roles, HeadSpec, JoinNode, VarMapMid, WidthMid, RelationsIn,
                    NodeOut, VarMapOut, WidthOut, RelationsOut)
     ;   Role = mutual(PredSpec, RoleKind)
     ->  spec_signature(PredSpec, _Name/Arity),
         Term =.. [_|Args],
-        cross_ref_node(PredSpec, RoleKind, RightNode),
+        cross_ref_node(PredSpec, RoleKind, RightNode0),
+        apply_literal_constant_filters(Args, RightNode0, Arity, RightNode),
         build_join_node(AccNode, RightNode, Args, VarMapIn, WidthIn, Arity, VarMapMid, WidthMid, JoinNode),
         fold_terms(GroupSpecs, Rest, Roles, HeadSpec, JoinNode, VarMapMid, WidthMid, RelationsIn,
                    NodeOut, VarMapOut, WidthOut, RelationsOut)
     ).
 
 relation_scan_node(Pred, Arity, relation_scan{type:relation_scan, predicate:predicate{name:Pred, arity:Arity}, width:Arity}).
+
+relation_scan_node_for_args(Pred, Arity, Args, Node) :-
+    scan_pattern_operands(Args, Pattern),
+    (   member(operand{kind:value, value:_}, Pattern)
+    ->  Node = pattern_scan{type:pattern_scan, predicate:predicate{name:Pred, arity:Arity}, pattern:Pattern, width:Arity}
+    ;   relation_scan_node(Pred, Arity, Node)
+    ).
+
+scan_pattern_operands([], []).
+scan_pattern_operands([Arg|Rest], [Operand|Operands]) :-
+    (   var(Arg)
+    ->  Operand = operand{kind:wildcard}
+    ;   Operand = operand{kind:value, value:Arg}
+    ),
+    scan_pattern_operands(Rest, Operands).
+
+apply_literal_constant_filters(Args, NodeIn, Width, NodeOut) :-
+    apply_literal_constant_filters_(Args, 0, NodeIn, Width, NodeOut).
+
+apply_literal_constant_filters_([], _Pos, Node, _Width, Node).
+apply_literal_constant_filters_([Arg|Rest], Pos, NodeIn, Width, NodeOut) :-
+    (   var(Arg)
+    ->  NodeMid = NodeIn
+    ;   Condition = condition{
+            type:eq,
+            left:operand{kind:column, index:Pos},
+            right:operand{kind:value, value:Arg}
+        },
+        NodeMid = selection{type:selection, input:NodeIn, predicate:Condition, width:Width}
+    ),
+    Pos1 is Pos + 1,
+    apply_literal_constant_filters_(Rest, Pos1, NodeMid, Width, NodeOut).
 
 recursive_ref_node(HeadSpec, RoleKind, recursive_ref{type:recursive_ref, predicate:HeadSpec, role:RoleKind, width:Arity}) :-
     get_dict(arity, HeadSpec, Arity).
@@ -2434,10 +2482,15 @@ init_var_map(Args, Offset, VarMapOut) :-
 init_var_map_([], _, VarMap, VarMap).
 init_var_map_([Arg|Rest], Offset, Acc, VarMapOut) :-
     (   var(Arg)
-    ->  Acc1 = [Arg-Offset|Acc],
-        Offset1 is Offset + 1
-    ;   domain_error(variable, Arg)
+    ->  Acc1 = [Arg-Offset|Acc]
+    ;   simple_query_literal_constant(Arg)
+    ->  Acc1 = Acc
+    ;   format(user_error,
+               'C# query target: relation argument must be a variable or simple constant (atomic/string), got ~q.~n',
+               [Arg]),
+        fail
     ),
+    Offset1 is Offset + 1,
     init_var_map_(Rest, Offset1, Acc1, VarMapOut).
 
 shared_variable_keys(Args, VarMap, Pos, LeftKeys, RightKeys) :-
@@ -2463,7 +2516,12 @@ update_var_map([Arg|Rest], VarMapIn, Offset, VarMapOut) :-
         ->  VarMapMid = VarMapIn
         ;   VarMapMid = [Arg-Offset|VarMapIn]
         )
-    ;   domain_error(variable, Arg)
+    ;   simple_query_literal_constant(Arg)
+    ->  VarMapMid = VarMapIn
+    ;   format(user_error,
+               'C# query target: relation argument must be a variable or simple constant (atomic/string), got ~q.~n',
+               [Arg]),
+        fail
     ),
     Offset1 is Offset + 1,
     update_var_map(Rest, VarMapMid, Offset1, VarMapOut).
@@ -2838,6 +2896,18 @@ emit_plan_expression(Node, Expr) :-
     get_dict(plan, Node, PlanNode),
     emit_plan_expression(PlanNode, PlanExpr),
     format(atom(Expr), 'new DefineMutualFixpointNode(~w)', [PlanExpr]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, pattern_scan), !,
+    get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
+    get_dict(pattern, Node, Pattern),
+    atom_string(Name, NameStr),
+    (   Pattern == []
+    ->  PatternLiteral = 'Array.Empty<object>()'
+    ;   maplist(operand_expression_with_tuple(tuple), Pattern, PatternExprs),
+        atomic_list_concat(PatternExprs, ', ', PatternList),
+        format(atom(PatternLiteral), 'new object[]{ ~w }', [PatternList])
+    ),
+    format(atom(Expr), 'new PatternScanNode(new PredicateId("~w", ~w), ~w)', [NameStr, Arity, PatternLiteral]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, relation_scan), !,
     get_dict(predicate, Node, predicate{name:Name, arity:Arity}),
