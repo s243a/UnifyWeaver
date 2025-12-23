@@ -534,11 +534,11 @@ verify_selection_plan :-
 
 verify_ground_relation_arg_plan :-
     csharp_query_target:build_query_plan(test_sale_amount_for_alice/1, [target(csharp_query)], Plan),
-    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[1], width:1}),
-    Selection = selection{
-        type:selection,
-        input:relation_scan{predicate:predicate{name:test_sale, arity:2}, type:relation_scan, width:_},
-        predicate:condition{type:eq, left:operand{kind:column, index:0}, right:operand{kind:value, value:alice}},
+    get_dict(root, Plan, projection{type:projection, input:Scan, columns:[1], width:1}),
+    Scan = pattern_scan{
+        type:pattern_scan,
+        predicate:predicate{name:test_sale, arity:2},
+        pattern:[operand{kind:value, value:alice}, operand{kind:wildcard}],
         width:_
     },
     maybe_run_query_runtime(Plan, ['10', '5']).
@@ -939,7 +939,7 @@ verify_aggregate_subplan_count_with_constant_arg_plan :-
     get_dict(value_index, Agg, -1),
     get_dict(width, Agg, 1),
     get_dict(subplan, Agg, Subplan),
-    sub_term(selection{type:selection, predicate:condition{left:_, type:eq, right:operand{kind:value, value:alice}}, input:_, width:_}, Subplan),
+    sub_term(pattern_scan{type:pattern_scan, predicate:predicate{name:test_sale, arity:2}, pattern:[operand{kind:value, value:alice}|_], width:_}, Subplan),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'AggregateSubplanNode'),
     sub_string(Source, _, _, _, 'AggregateOperation.Count'),
