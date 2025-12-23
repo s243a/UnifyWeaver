@@ -37,6 +37,7 @@ This document captures ideas for future development of UnifyWeaver targets and f
 - **Advanced Features**: `HAVING` clause, nested grouping (Phase 9c).
 - **Statistical Functions**: `stddev`, `median`, `percentile` (Phase 9d).
 - **Array Aggregations**: `collect_list`, `collect_set` (Phase 9e).
+- **Window Functions**: `row_number`, `rank`, `dense_rank` (Phase 9f).
 
 ### Stream Processing Enhancements (Completed)
 
