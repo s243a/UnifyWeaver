@@ -8261,7 +8261,10 @@ func main() {
 %
 generate_group_by_code(GroupField, FieldMappings, AggOp, Result, HavingConstraints, DbFile, BucketStr, GoCode) :-
     % Check if GroupField is a list (nested grouping) - handle differently
-    (   is_list(GroupField)
+    (   has_window_function(AggOp)
+    ->  format('  Window function detected: ~w~n', [AggOp]),
+        generate_window_group_code(GroupField, FieldMappings, AggOp, HavingConstraints, DbFile, BucketStr, GoCode)
+    ;   is_list(GroupField)
     ->  % Nested grouping: GroupField is a list like [_1820, _1822]
         % Pass the list directly to multi-aggregation code (it will extract field names)
         format('  Nested grouping field list detected: ~w~n', [GroupField]),
@@ -8645,6 +8648,65 @@ operation_output_field(sum, sum, '\t\t\t"sum": s.sum').
 operation_output_field(avg, avg, '\t\t\t"avg": avg').
 operation_output_field(max, max, '\t\t\t"max": s.maxValue').
 operation_output_field(min, min, '\t\t\t"min": s.minValue').
+
+%% generate_window_group_code_jsonl(+GroupField, +FieldMappings, +AggOp, +HavingConstraints, +KeyType, -GoCode)
+generate_window_group_code_jsonl(GroupField, FieldMappings, AggOp, _HavingConstraints, KeyType, GoCode) :-
+    % Normalize AggOp
+    (is_list(AggOp) -> Ops = AggOp ; Ops = [AggOp]),
+    
+    % Parse window spec
+    parse_window_spec(Ops, FieldMappings, SortField, RankVar, _RankType),
+    
+    % Find field names
+    find_field_for_var(SortField, FieldMappings, SortFieldName),
+    find_field_for_var(GroupField, FieldMappings, GroupFieldName),
+
+    format(string(GoCode), '
+    type Record struct {
+        data map[string]interface{}
+    }
+    type GroupState struct {
+        rows []Record
+    }
+    
+    scanner := bufio.NewScanner(os.Stdin)
+    groups := make(map[~w]*GroupState)
+    
+    for scanner.Scan() {
+        var data map[string]interface{}
+        if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+            continue
+        }
+        
+        // Extract group key
+        keyRaw, ok := data["~w"]
+        if !ok { continue }
+        key := fmt.Sprintf("%%v", keyRaw)
+        
+        if _, exists := groups[key]; !exists {
+            groups[key] = &GroupState{}
+        }
+        groups[key].rows = append(groups[key].rows, Record{data: data})
+    }
+    
+    for _, state := range groups {
+        // Sort rows by ~s
+        sort.Slice(state.rows, func(i, j int) bool {
+            valI, okI := state.rows[i].data["~s"].(float64)
+            valJ, okJ := state.rows[j].data["~s"].(float64)
+            if !okI || !okJ { return false }
+            return valI < valJ
+        })
+        
+        rank := 1
+        for _, row := range state.rows {
+            row.data["rank"] = rank
+            output, _ := json.Marshal(row.data)
+            fmt.Println(string(output))
+            rank++
+        }
+    }
+', [KeyType, GroupFieldName, SortFieldName, SortFieldName, SortFieldName]).
 
 %% parse_multi_agg_operations(+OpList, +FieldMappings, -AggInfo)
 %  Parse list of operations into structured info
@@ -9105,6 +9167,101 @@ generate_group_by_min_with_having(GroupField, AggField, Result, Having, DbFile, 
 %% ============================================
 %% ORIGINAL SINGLE AGGREGATION GENERATORS (Phase 9b)
 %% ============================================
+
+%% generate_window_group_code(+GroupField, +FieldMappings, +AggOp, +HavingConstraints, +DbFile, +BucketStr, -GoCode)
+%  Generate code for window functions (row_number, rank) over grouped data.
+%  Accumulates all records per group, sorts them, and emits them with rank.
+%
+generate_window_group_code(GroupField, FieldMappings, AggOp, _HavingConstraints, DbFile, BucketStr, GoCode) :-
+    % Normalize AggOp
+    (is_list(AggOp) -> Ops = AggOp ; Ops = [AggOp]),
+    
+    % Parse window spec
+    parse_window_spec(Ops, FieldMappings, SortField, RankVar, _RankType),
+    
+    % Find field name for SortField variable
+    find_field_for_var(SortField, FieldMappings, SortFieldName),
+    
+    % Find field name for GroupField variable (assuming single field for MVP)
+    (   is_list(GroupField) -> format('ERROR: Nested grouping not yet supported for window functions~n'), fail
+    ;   find_field_for_var(GroupField, FieldMappings, GroupFieldName)
+    ),
+
+    % Generate Code
+    format(string(GoCode), '\t// Open database (read-only)
+\tdb, err := bolt.Open("~s", 0600, &bolt.Options{ReadOnly: true})
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error opening database: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+\tdefer db.Close()
+
+\t// Window Function Grouping
+\ttype Record struct {
+\t\tdata map[string]interface{}
+\t}
+\ttype GroupState struct {
+\t\trows []Record
+\t}
+\tgroups := make(map[string]*GroupState)
+
+\terr = db.View(func(tx *bolt.Tx) error {
+\t\tbucket := tx.Bucket([]byte("~s"))
+\t\tif bucket == nil { return fmt.Errorf("bucket not found") }
+
+\t\treturn bucket.ForEach(func(k, v []byte) error {
+\t\t\tvar data map[string]interface{}
+\t\t\tif err := json.Unmarshal(v, &data); err != nil { return nil }
+
+\t\t\t// Extract group field
+\t\t\tif groupRaw, ok := data["~s"]; ok {
+\t\t\t\tif groupStr, ok := groupRaw.(string); ok {
+\t\t\t\t\tif _, exists := groups[groupStr]; !exists {
+\t\t\t\t\t\tgroups[groupStr] = &GroupState{}
+\t\t\t\t\t}
+\t\t\t\t\t// Store full record
+\t\t\t\t\tgroups[groupStr].rows = append(groups[groupStr].rows, Record{data: data})
+\t\t\t\t}
+\t\t\t}
+\t\t\treturn nil
+\t\t})
+\t})
+
+\tif err != nil {
+\t\tfmt.Fprintf(os.Stderr, "Error: %v\\n", err)
+\t\tos.Exit(1)
+\t}
+
+\t// Process groups
+\tfor _, state := range groups {
+\t\t// 1. Sort rows by ~s
+\t\tsort.Slice(state.rows, func(i, j int) bool {
+\t\t\tvalI, okI := state.rows[i].data["~s"].(float64)
+\t\t\tvalJ, okJ := state.rows[j].data["~s"].(float64)
+\t\t\tif !okI || !okJ { return false } // Handle type mismatch safely
+\t\t\treturn valI < valJ
+\t\t})
+
+\t\t// 2. Assign Rank and Output
+\t\trank := 1
+\t\tfor _, row := range state.rows {
+\t\t\trow.data["rank"] = rank // Simplification: assume output var mapped to "rank" field or injection
+\t\t\t// TODO: Real logic should map RankVar to output field name, but for now we inject "rank"
+\t\t\t
+\t\t\toutput, _ := json.Marshal(row.data)
+\t\t\tfmt.Println(string(output))
+\t\t\trank++
+\t\t}
+\t}
+', [DbFile, BucketStr, GroupFieldName, SortFieldName, SortFieldName, SortFieldName]).
+
+%% parse_window_spec(+Ops, +FieldMappings, -SortField, -RankVar, -RankType)
+parse_window_spec(Ops, _, SortField, RankVar, row_number) :-
+    member(row_number(SortField, RankVar), Ops), !.
+parse_window_spec(Ops, _, SortField, RankVar, rank) :-
+    member(rank(SortField, RankVar), Ops), !.
+parse_window_spec(Ops, _, SortField, RankVar, dense_rank) :-
+    member(dense_rank(SortField, RankVar), Ops), !.
 
 %% generate_group_by_count(+GroupField, +DbFile, +BucketStr, -GoCode)
 %  Generate GROUP BY count code
@@ -12234,11 +12391,20 @@ agg_needs_math(Op) :-
     ;   Op = agg(Type, _, _, _), agg_needs_math(Type) -> true
     ), !.
 
+%% has_window_function(+Op)
+has_window_function(Op) :-
+    (   compound(Op), functor(Op, row_number, _) -> true
+    ;   compound(Op), functor(Op, rank, _) -> true
+    ;   compound(Op), functor(Op, dense_rank, _) -> true
+    ;   is_list(Op), member(Sub, Op), has_window_function(Sub) -> true
+    ), !.
+
 %% agg_needs_sort(+Op)
 agg_needs_sort(Op) :-
     (   Op = median -> true
     ;   compound(Op), functor(Op, median, _) -> true
     ;   compound(Op), functor(Op, percentile, _) -> true
+    ;   has_window_function(Op) -> true
     ;   is_list(Op), member(Sub, Op), agg_needs_sort(Sub) -> true
     ;   Op = agg(Type, _, _, _), agg_needs_sort(Type) -> true
     ), !.
@@ -12376,14 +12542,17 @@ generate_group_by_code_jsonl(GroupField, FieldMappings, AggOp, _Result, HavingCo
     % 1. Determine key type (simplification: assume string for now)
     KeyType = "string",
     
-    % 2. Normalize AggOp to list
-    (   is_list(AggOp)
-    ->  AggOpList = AggOp
-    ;   AggOpList = [AggOp]
-    ),
-
-    % 3. Generate Code using Multi-Agg logic
-    generate_group_by_code_jsonl_multi(GroupField, FieldMappings, AggOpList, HavingConstraints, KeyType, GoCode).
+    (   has_window_function(AggOp)
+    ->  generate_window_group_code_jsonl(GroupField, FieldMappings, AggOp, HavingConstraints, KeyType, GoCode)
+    ;   % 2. Normalize AggOp to list
+        (   is_list(AggOp)
+        ->  AggOpList = AggOp
+        ;   AggOpList = [AggOp]
+        ),
+        
+        % 3. Call multi-agg generator (unified logic)
+        generate_group_by_code_jsonl_multi(GroupField, FieldMappings, AggOpList, HavingConstraints, KeyType, GoCode)
+    ).
 
 %% find_field_for_var(+Var, +FieldMappings, -FieldName)
 %  Find field name for a variable in field mappings
