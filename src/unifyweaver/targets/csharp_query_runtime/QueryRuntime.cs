@@ -1070,8 +1070,132 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
-            static bool MatchesScanPattern(object[] tuple, object[]? pattern) =>
-                pattern is null || (tuple is not null && TupleMatchesPattern(tuple, pattern));
+            static IReadOnlyList<int> GetScanIndexKeys(IReadOnlyList<int> joinKeys, object[]? pattern)
+            {
+                if (pattern is null)
+                {
+                    return joinKeys;
+                }
+
+                List<int>? indexKeys = null;
+
+                for (var i = 0; i < pattern.Length; i++)
+                {
+                    var value = pattern[i];
+                    if (ReferenceEquals(value, Wildcard.Value))
+                    {
+                        continue;
+                    }
+
+                    var isJoinKey = false;
+                    for (var j = 0; j < joinKeys.Count; j++)
+                    {
+                        if (joinKeys[j] == i)
+                        {
+                            isJoinKey = true;
+                            break;
+                        }
+                    }
+
+                    if (isJoinKey)
+                    {
+                        continue;
+                    }
+
+                    if (indexKeys is null)
+                    {
+                        indexKeys = new List<int>(joinKeys.Count + 1);
+                        for (var j = 0; j < joinKeys.Count; j++)
+                        {
+                            indexKeys.Add(joinKeys[j]);
+                        }
+                    }
+
+                    indexKeys.Add(i);
+                }
+
+                return indexKeys ?? joinKeys;
+            }
+
+            static bool ProbeMatchesScanJoinKeyConstants(
+                object[] probeTuple,
+                IReadOnlyList<int> probeKeys,
+                IReadOnlyList<int> scanKeys,
+                object[]? scanPattern)
+            {
+                if (scanPattern is null)
+                {
+                    return true;
+                }
+
+                var keyCount = Math.Min(probeKeys.Count, scanKeys.Count);
+                for (var i = 0; i < keyCount; i++)
+                {
+                    var scanIndex = scanKeys[i];
+                    if (scanIndex < 0 || scanIndex >= scanPattern.Length)
+                    {
+                        continue;
+                    }
+
+                    var expected = scanPattern[scanIndex];
+                    if (ReferenceEquals(expected, Wildcard.Value))
+                    {
+                        continue;
+                    }
+
+                    var probeIndex = probeKeys[i];
+                    var actual = probeIndex >= 0 && probeIndex < probeTuple.Length ? probeTuple[probeIndex] : null;
+
+                    if (!Equals(actual, expected))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            static object[] BuildScanJoinLookupKey(
+                object[] probeTuple,
+                IReadOnlyList<int> probeKeys,
+                IReadOnlyList<int> scanKeys,
+                IReadOnlyList<int> scanIndexKeys,
+                object[]? scanPattern)
+            {
+                var key = new object[scanIndexKeys.Count];
+
+                for (var i = 0; i < scanIndexKeys.Count; i++)
+                {
+                    var scanIndex = scanIndexKeys[i];
+                    var joinPos = -1;
+
+                    for (var j = 0; j < scanKeys.Count; j++)
+                    {
+                        if (scanKeys[j] == scanIndex)
+                        {
+                            joinPos = j;
+                            break;
+                        }
+                    }
+
+                    if (joinPos >= 0)
+                    {
+                        var probeIndex = probeKeys[joinPos];
+                        key[i] = probeIndex >= 0 && probeIndex < probeTuple.Length ? probeTuple[probeIndex] : null!;
+                        continue;
+                    }
+
+                    if (scanPattern is not null && scanIndex >= 0 && scanIndex < scanPattern.Length)
+                    {
+                        key[i] = scanPattern[scanIndex];
+                        continue;
+                    }
+
+                    key[i] = null!;
+                }
+
+                return key;
+            }
 
             if (context is not null)
             {
@@ -1085,17 +1209,30 @@ namespace UnifyWeaver.QueryRuntime
                         var leftFacts = GetFactsList(leftScanPredicate, context);
                         var rightFacts = GetFactsList(rightScanPredicate, context);
                         var keyCount = join.LeftKeys.Count;
+                        var leftIndexKeys = GetScanIndexKeys(join.LeftKeys, leftScanPattern);
+                        var rightIndexKeys = GetScanIndexKeys(join.RightKeys, rightScanPattern);
 
-                        if (leftFacts.Count <= rightFacts.Count)
+                        var estimatedLeftProbe = leftScanPattern is null
+                            ? leftFacts.Count
+                            : SelectFactsForPattern(leftScanPredicate, leftFacts, leftScanPattern, context).Count;
+
+                        var estimatedRightProbe = rightScanPattern is null
+                            ? rightFacts.Count
+                            : SelectFactsForPattern(rightScanPredicate, rightFacts, rightScanPattern, context).Count;
+
+                        var buildScanOnLeft = (long)leftFacts.Count + estimatedRightProbe <= (long)rightFacts.Count + estimatedLeftProbe;
+
+                        if (buildScanOnLeft)
                         {
                             var probe = Evaluate(join.Right, context);
 
-                            if (keyCount == 1)
+                            if (leftIndexKeys.Count == 1)
                             {
                                 var index = GetFactIndex(leftScanPredicate, join.LeftKeys[0], leftFacts, context);
                                 foreach (var rightTuple in probe)
                                 {
                                     if (rightTuple is null) continue;
+                                    if (!ProbeMatchesScanJoinKeyConstants(rightTuple, join.RightKeys, join.LeftKeys, leftScanPattern)) continue;
 
                                     var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
                                     if (!index.TryGetValue(lookupKey, out var bucket))
@@ -1106,19 +1243,21 @@ namespace UnifyWeaver.QueryRuntime
                                     foreach (var leftTuple in bucket)
                                     {
                                         if (leftTuple is null) continue;
-                                        if (!MatchesScanPattern(leftTuple, leftScanPattern)) continue;
                                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                     }
                                 }
                             }
                             else
                             {
-                                var index = GetJoinIndex(leftScanPredicate, join.LeftKeys, leftFacts, context);
+                                var index = GetJoinIndex(leftScanPredicate, leftIndexKeys, leftFacts, context);
                                 foreach (var rightTuple in probe)
                                 {
                                     if (rightTuple is null) continue;
+                                    if (!ProbeMatchesScanJoinKeyConstants(rightTuple, join.RightKeys, join.LeftKeys, leftScanPattern)) continue;
 
-                                    var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                                    var key = leftIndexKeys.Count == keyCount
+                                        ? BuildKeyFromTuple(rightTuple, join.RightKeys)
+                                        : BuildScanJoinLookupKey(rightTuple, join.RightKeys, join.LeftKeys, leftIndexKeys, leftScanPattern);
                                     var wrapper = new RowWrapper(key);
 
                                     if (!index.TryGetValue(wrapper, out var bucket))
@@ -1129,7 +1268,6 @@ namespace UnifyWeaver.QueryRuntime
                                     foreach (var leftTuple in bucket)
                                     {
                                         if (leftTuple is null) continue;
-                                        if (!MatchesScanPattern(leftTuple, leftScanPattern)) continue;
                                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                     }
                                 }
@@ -1139,12 +1277,13 @@ namespace UnifyWeaver.QueryRuntime
                         {
                             var probe = Evaluate(join.Left, context);
 
-                            if (keyCount == 1)
+                            if (rightIndexKeys.Count == 1)
                             {
                                 var index = GetFactIndex(rightScanPredicate, join.RightKeys[0], rightFacts, context);
                                 foreach (var leftTuple in probe)
                                 {
                                     if (leftTuple is null) continue;
+                                    if (!ProbeMatchesScanJoinKeyConstants(leftTuple, join.LeftKeys, join.RightKeys, rightScanPattern)) continue;
 
                                     var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
                                     if (!index.TryGetValue(lookupKey, out var bucket))
@@ -1155,19 +1294,21 @@ namespace UnifyWeaver.QueryRuntime
                                     foreach (var rightTuple in bucket)
                                     {
                                         if (rightTuple is null) continue;
-                                        if (!MatchesScanPattern(rightTuple, rightScanPattern)) continue;
                                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                     }
                                 }
                             }
                             else
                             {
-                                var index = GetJoinIndex(rightScanPredicate, join.RightKeys, rightFacts, context);
+                                var index = GetJoinIndex(rightScanPredicate, rightIndexKeys, rightFacts, context);
                                 foreach (var leftTuple in probe)
                                 {
                                     if (leftTuple is null) continue;
+                                    if (!ProbeMatchesScanJoinKeyConstants(leftTuple, join.LeftKeys, join.RightKeys, rightScanPattern)) continue;
 
-                                    var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                                    var key = rightIndexKeys.Count == keyCount
+                                        ? BuildKeyFromTuple(leftTuple, join.LeftKeys)
+                                        : BuildScanJoinLookupKey(leftTuple, join.LeftKeys, join.RightKeys, rightIndexKeys, rightScanPattern);
                                     var wrapper = new RowWrapper(key);
 
                                     if (!index.TryGetValue(wrapper, out var bucket))
@@ -1178,7 +1319,6 @@ namespace UnifyWeaver.QueryRuntime
                                     foreach (var rightTuple in bucket)
                                     {
                                         if (rightTuple is null) continue;
-                                        if (!MatchesScanPattern(rightTuple, rightScanPattern)) continue;
                                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                     }
                                 }
@@ -1193,13 +1333,15 @@ namespace UnifyWeaver.QueryRuntime
                         var facts = GetFactsList(rightScanPredicate, context);
                         var probe = Evaluate(join.Left, context);
                         var keyCount = join.RightKeys.Count;
+                        var rightIndexKeys = GetScanIndexKeys(join.RightKeys, rightScanPattern);
 
-                        if (keyCount == 1)
+                        if (rightIndexKeys.Count == 1)
                         {
                             var index = GetFactIndex(rightScanPredicate, join.RightKeys[0], facts, context);
                             foreach (var leftTuple in probe)
                             {
                                 if (leftTuple is null) continue;
+                                if (!ProbeMatchesScanJoinKeyConstants(leftTuple, join.LeftKeys, join.RightKeys, rightScanPattern)) continue;
 
                                 var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
                                 if (!index.TryGetValue(lookupKey, out var bucket))
@@ -1210,19 +1352,21 @@ namespace UnifyWeaver.QueryRuntime
                                 foreach (var rightTuple in bucket)
                                 {
                                     if (rightTuple is null) continue;
-                                    if (!MatchesScanPattern(rightTuple, rightScanPattern)) continue;
                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                 }
                             }
                         }
                         else
                         {
-                            var index = GetJoinIndex(rightScanPredicate, join.RightKeys, facts, context);
+                            var index = GetJoinIndex(rightScanPredicate, rightIndexKeys, facts, context);
                             foreach (var leftTuple in probe)
                             {
                                 if (leftTuple is null) continue;
+                                if (!ProbeMatchesScanJoinKeyConstants(leftTuple, join.LeftKeys, join.RightKeys, rightScanPattern)) continue;
 
-                                var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                                var key = rightIndexKeys.Count == keyCount
+                                    ? BuildKeyFromTuple(leftTuple, join.LeftKeys)
+                                    : BuildScanJoinLookupKey(leftTuple, join.LeftKeys, join.RightKeys, rightIndexKeys, rightScanPattern);
                                 var wrapper = new RowWrapper(key);
 
                                 if (!index.TryGetValue(wrapper, out var bucket))
@@ -1233,7 +1377,6 @@ namespace UnifyWeaver.QueryRuntime
                                 foreach (var rightTuple in bucket)
                                 {
                                     if (rightTuple is null) continue;
-                                    if (!MatchesScanPattern(rightTuple, rightScanPattern)) continue;
                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                 }
                             }
@@ -1247,13 +1390,15 @@ namespace UnifyWeaver.QueryRuntime
                         var facts = GetFactsList(leftScanPredicate, context);
                         var probe = Evaluate(join.Right, context);
                         var keyCount = join.LeftKeys.Count;
+                        var leftIndexKeys = GetScanIndexKeys(join.LeftKeys, leftScanPattern);
 
-                        if (keyCount == 1)
+                        if (leftIndexKeys.Count == 1)
                         {
                             var index = GetFactIndex(leftScanPredicate, join.LeftKeys[0], facts, context);
                             foreach (var rightTuple in probe)
                             {
                                 if (rightTuple is null) continue;
+                                if (!ProbeMatchesScanJoinKeyConstants(rightTuple, join.RightKeys, join.LeftKeys, leftScanPattern)) continue;
 
                                 var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
                                 if (!index.TryGetValue(lookupKey, out var bucket))
@@ -1264,19 +1409,21 @@ namespace UnifyWeaver.QueryRuntime
                                 foreach (var leftTuple in bucket)
                                 {
                                     if (leftTuple is null) continue;
-                                    if (!MatchesScanPattern(leftTuple, leftScanPattern)) continue;
                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                 }
                             }
                         }
                         else
                         {
-                            var index = GetJoinIndex(leftScanPredicate, join.LeftKeys, facts, context);
+                            var index = GetJoinIndex(leftScanPredicate, leftIndexKeys, facts, context);
                             foreach (var rightTuple in probe)
                             {
                                 if (rightTuple is null) continue;
+                                if (!ProbeMatchesScanJoinKeyConstants(rightTuple, join.RightKeys, join.LeftKeys, leftScanPattern)) continue;
 
-                                var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                                var key = leftIndexKeys.Count == keyCount
+                                    ? BuildKeyFromTuple(rightTuple, join.RightKeys)
+                                    : BuildScanJoinLookupKey(rightTuple, join.RightKeys, join.LeftKeys, leftIndexKeys, leftScanPattern);
                                 var wrapper = new RowWrapper(key);
 
                                 if (!index.TryGetValue(wrapper, out var bucket))
@@ -1287,7 +1434,6 @@ namespace UnifyWeaver.QueryRuntime
                                 foreach (var leftTuple in bucket)
                                 {
                                     if (leftTuple is null) continue;
-                                    if (!MatchesScanPattern(leftTuple, leftScanPattern)) continue;
                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                 }
                             }
@@ -3261,11 +3407,25 @@ namespace UnifyWeaver.QueryRuntime
 
             if (tuple.Length == inputPositions.Count)
             {
+                var fast = true;
                 for (var i = 0; i < inputPositions.Count; i++)
                 {
-                    key[i] = tuple[i];
+                    if (inputPositions[i] != i)
+                    {
+                        fast = false;
+                        break;
+                    }
                 }
-                return key;
+
+                if (fast)
+                {
+                    for (var i = 0; i < inputPositions.Count; i++)
+                    {
+                        key[i] = tuple[i];
+                    }
+
+                    return key;
+                }
             }
 
             for (var i = 0; i < inputPositions.Count; i++)
