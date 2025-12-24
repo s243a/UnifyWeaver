@@ -371,11 +371,41 @@ results = pipeline.search(query_embedding, k=10)
 
 ## Future Work
 
-1. **Learnable FFT filters**: Train filter shape instead of fixed cutoff
-2. **Cross-validation**: Automatic hyperparameter selection
-3. **Integration with HNSW**: Use Go/Rust federation infrastructure
-4. **Streaming updates**: Incremental smoothing for new clusters
-5. **Real embedding evaluation**: Run experiments with E5/ModernBERT embeddings
+### Priority 1: Deeper Benchmarking
+
+Current benchmarks measure cluster-level accuracy (P@1, P@3). We need answer-level metrics:
+
+| Metric | Description | Why It Matters |
+|--------|-------------|----------------|
+| **Cosine Similarity** | cos(projected_query, target_answer) | Measures projection quality directly |
+| **MSE** | ‖projected_query - target_answer‖² | Captures magnitude errors |
+| **Rank of Target** | Position of correct answer in results | End-to-end retrieval quality |
+| **Recall@k** | Is correct answer in top-k? | Practical retrieval threshold |
+
+**Tasks:**
+- [ ] Add per-query cosine similarity to target answer (not just cluster centroid)
+- [ ] Add MSE from projected query to ground-truth answer embedding
+- [ ] Compare metrics across smoothing methods (FFT vs Basis vs Baseline)
+- [ ] Measure variance across clusters (are some clusters harder?)
+- [ ] Test with real embeddings (E5-small, ModernBERT)
+
+### Priority 2: Hyperparameter Optimization
+
+- [ ] **Cross-validation**: Automatic selection of FFT cutoff, blend factor
+- [ ] **Learnable FFT filters**: Train filter shape instead of fixed cutoff
+- [ ] Sensitivity analysis: How robust are results to parameter changes?
+
+### Priority 3: Production Integration
+
+- [ ] **Integration with HNSW**: Use Go/Rust federation infrastructure
+- [ ] **Streaming updates**: Incremental smoothing for new clusters
+- [ ] Serialization format for cross-language compatibility
+
+### Priority 4: Advanced Features
+
+- [ ] Hierarchical FFT: Apply smoothing at multiple granularities
+- [ ] Adaptive cutoff per cluster based on local density
+- [ ] Online learning: Update W matrices from user feedback
 
 ## References
 
