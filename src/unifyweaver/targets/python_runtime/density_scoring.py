@@ -1398,3 +1398,404 @@ def get_transaction_manager() -> TransactionManager:
     if _transaction_manager is None:
         _transaction_manager = TransactionManager()
     return _transaction_manager
+
+
+# =============================================================================
+# DENSITY INDEX: Pre-computed density for O(k) inference lookup
+# =============================================================================
+
+@dataclass
+class ClusterDensityInfo:
+    """Pre-computed density information for a single cluster."""
+    cluster_id: str
+    bandwidth: float
+    centroid: np.ndarray
+    answer_ids: List[str] = field(default_factory=list)
+    answer_densities: Dict[str, float] = field(default_factory=dict)
+    answer_embeddings: Dict[str, np.ndarray] = field(default_factory=dict)
+
+
+@dataclass
+class DensityIndexConfig:
+    """Configuration for DensityIndex."""
+    bandwidth_method: BandwidthMethod = BandwidthMethod.SILVERMAN
+    default_bandwidth: float = 0.1
+    normalize_densities: bool = True
+    store_embeddings: bool = True  # For incremental updates
+
+
+class DensityIndex:
+    """Pre-computed density information for efficient inference.
+
+    At training time, computes:
+    - Bandwidth (h) per cluster using Silverman's rule
+    - Intra-cluster density for each answer
+    - Cluster membership mapping
+
+    At inference time, provides O(k) density lookup instead of O(k²) KDE.
+
+    Usage:
+        # Training
+        index = DensityIndex()
+        index.build(clusters)
+        index.save('density_index.pkl')
+
+        # Inference
+        index = DensityIndex.load('density_index.pkl')
+        densities = index.lookup_densities(answer_ids)
+        probs = flux_softmax(similarities, densities)
+    """
+
+    def __init__(self, config: DensityIndexConfig = None):
+        self.config = config or DensityIndexConfig()
+        self.clusters: Dict[str, ClusterDensityInfo] = {}
+        self.answer_to_cluster: Dict[str, str] = {}
+        self.global_stats: Dict[str, float] = {}
+        self._built = False
+
+    def build(
+        self,
+        clusters: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
+        answer_ids: Dict[str, List[str]] = None
+    ) -> Dict[str, any]:
+        """Build density index from clusters.
+
+        Args:
+            clusters: Dict mapping cluster_id to (Q, A, centroid) tuples
+                - Q: (n_questions, dim) question embeddings
+                - A: (n_answers, dim) answer embeddings
+                - centroid: (dim,) cluster centroid
+            answer_ids: Optional dict mapping cluster_id to list of answer IDs.
+                If not provided, uses hash of embedding bytes.
+
+        Returns:
+            Build statistics
+        """
+        total_answers = 0
+        total_clusters = 0
+        bandwidths = []
+
+        for cluster_id, (Q, A, centroid) in clusters.items():
+            # Handle both single answer and multiple answers
+            if A.ndim == 1:
+                A = A.reshape(1, -1)
+
+            n_answers = A.shape[0]
+            total_answers += n_answers
+            total_clusters += 1
+
+            # Compute bandwidth for this cluster
+            if n_answers > 1:
+                distances = pairwise_cosine_distances(A)
+                flat_distances = distances[np.triu_indices(n_answers, k=1)]
+
+                if self.config.bandwidth_method == BandwidthMethod.SILVERMAN:
+                    h = silverman_bandwidth(flat_distances, n_answers)
+                elif self.config.bandwidth_method == BandwidthMethod.SCOTT:
+                    h = scott_bandwidth(flat_distances, n_answers)
+                else:
+                    h = self.config.default_bandwidth
+            else:
+                h = self.config.default_bandwidth
+
+            bandwidths.append(h)
+
+            # Compute density for each answer
+            if n_answers > 1:
+                densities_arr = compute_density_scores(
+                    A,
+                    DensityConfig(
+                        bandwidth_method=self.config.bandwidth_method,
+                        fixed_bandwidth=h,
+                        normalize_scores=self.config.normalize_densities
+                    )
+                )
+            else:
+                densities_arr = np.array([1.0])
+
+            # Get or generate answer IDs
+            if answer_ids and cluster_id in answer_ids:
+                a_ids = answer_ids[cluster_id]
+            else:
+                a_ids = [
+                    hashlib.md5(A[i].tobytes()).hexdigest()[:16]
+                    for i in range(n_answers)
+                ]
+
+            # Build cluster info
+            cluster_info = ClusterDensityInfo(
+                cluster_id=cluster_id,
+                bandwidth=h,
+                centroid=centroid.copy() if centroid is not None else A.mean(axis=0),
+                answer_ids=a_ids,
+                answer_densities={
+                    a_id: float(densities_arr[i])
+                    for i, a_id in enumerate(a_ids)
+                },
+                answer_embeddings={
+                    a_id: A[i].copy()
+                    for i, a_id in enumerate(a_ids)
+                } if self.config.store_embeddings else {}
+            )
+
+            self.clusters[cluster_id] = cluster_info
+
+            # Update answer -> cluster mapping
+            for a_id in a_ids:
+                self.answer_to_cluster[a_id] = cluster_id
+
+        # Compute global stats
+        self.global_stats = {
+            'total_clusters': total_clusters,
+            'total_answers': total_answers,
+            'avg_bandwidth': float(np.mean(bandwidths)) if bandwidths else 0.0,
+            'min_bandwidth': float(np.min(bandwidths)) if bandwidths else 0.0,
+            'max_bandwidth': float(np.max(bandwidths)) if bandwidths else 0.0,
+        }
+
+        self._built = True
+        return self.global_stats
+
+    def lookup_density(self, answer_id: str) -> float:
+        """Look up pre-computed density for a single answer.
+
+        Args:
+            answer_id: ID of the answer
+
+        Returns:
+            Density score in [0, 1], or 0.0 if not found
+        """
+        cluster_id = self.answer_to_cluster.get(answer_id)
+        if cluster_id is None:
+            return 0.0
+
+        cluster = self.clusters.get(cluster_id)
+        if cluster is None:
+            return 0.0
+
+        return cluster.answer_densities.get(answer_id, 0.0)
+
+    def lookup_densities(self, answer_ids: List[str]) -> np.ndarray:
+        """Look up pre-computed densities for multiple answers.
+
+        Args:
+            answer_ids: List of answer IDs
+
+        Returns:
+            (n,) array of density scores
+        """
+        return np.array([self.lookup_density(a_id) for a_id in answer_ids])
+
+    def get_cluster_for_answer(self, answer_id: str) -> Optional[str]:
+        """Get cluster ID for an answer."""
+        return self.answer_to_cluster.get(answer_id)
+
+    def get_cluster_info(self, cluster_id: str) -> Optional[ClusterDensityInfo]:
+        """Get full cluster density info."""
+        return self.clusters.get(cluster_id)
+
+    def add_answer(
+        self,
+        answer_id: str,
+        answer_embedding: np.ndarray,
+        cluster_id: str = None
+    ) -> float:
+        """Incrementally add a new answer to the index.
+
+        If cluster_id is not provided, routes to nearest cluster centroid.
+
+        Args:
+            answer_id: ID for the new answer
+            answer_embedding: Embedding vector
+            cluster_id: Optional cluster to add to
+
+        Returns:
+            Computed density for the new answer
+        """
+        if not self._built:
+            raise RuntimeError("DensityIndex not built. Call build() first.")
+
+        # Route to cluster if not specified
+        if cluster_id is None:
+            cluster_id = self._find_nearest_cluster(answer_embedding)
+            if cluster_id is None:
+                # No clusters exist - create singleton
+                cluster_id = f"cluster_{len(self.clusters)}"
+                self.clusters[cluster_id] = ClusterDensityInfo(
+                    cluster_id=cluster_id,
+                    bandwidth=self.config.default_bandwidth,
+                    centroid=answer_embedding.copy(),
+                    answer_ids=[answer_id],
+                    answer_densities={answer_id: 1.0},
+                    answer_embeddings={answer_id: answer_embedding.copy()}
+                    if self.config.store_embeddings else {}
+                )
+                self.answer_to_cluster[answer_id] = cluster_id
+                return 1.0
+
+        cluster = self.clusters.get(cluster_id)
+        if cluster is None:
+            raise ValueError(f"Cluster {cluster_id} not found")
+
+        # Compute density for new answer relative to existing cluster members
+        if self.config.store_embeddings and cluster.answer_embeddings:
+            existing_embeddings = list(cluster.answer_embeddings.values())
+            dists = [
+                cosine_distance(answer_embedding, emb)
+                for emb in existing_embeddings
+            ]
+            kernel_vals = [gaussian_kernel(d, cluster.bandwidth) for d in dists]
+            density = float(np.mean(kernel_vals)) if kernel_vals else 1.0
+        else:
+            # Can't compute without stored embeddings
+            density = 0.5  # Default middle value
+
+        # Normalize if configured
+        if self.config.normalize_densities and cluster.answer_densities:
+            max_density = max(cluster.answer_densities.values())
+            if max_density > 0:
+                density = min(density / max_density, 1.0)
+
+        # Add to cluster
+        cluster.answer_ids.append(answer_id)
+        cluster.answer_densities[answer_id] = density
+        if self.config.store_embeddings:
+            cluster.answer_embeddings[answer_id] = answer_embedding.copy()
+
+        # Update centroid (running average)
+        n = len(cluster.answer_ids)
+        cluster.centroid = (
+            (cluster.centroid * (n - 1) + answer_embedding) / n
+        )
+
+        # Update mapping
+        self.answer_to_cluster[answer_id] = cluster_id
+
+        return density
+
+    def _find_nearest_cluster(self, embedding: np.ndarray) -> Optional[str]:
+        """Find nearest cluster by centroid similarity."""
+        if not self.clusters:
+            return None
+
+        best_id = None
+        best_sim = -1.0
+
+        for cluster_id, cluster in self.clusters.items():
+            sim = cosine_similarity(embedding, cluster.centroid)
+            if sim > best_sim:
+                best_sim = sim
+                best_id = cluster_id
+
+        return best_id
+
+    def recompute_cluster_densities(self, cluster_id: str) -> None:
+        """Recompute all densities within a cluster.
+
+        Use after adding multiple answers to ensure accurate densities.
+        """
+        cluster = self.clusters.get(cluster_id)
+        if cluster is None or not self.config.store_embeddings:
+            return
+
+        if len(cluster.answer_embeddings) < 2:
+            for a_id in cluster.answer_ids:
+                cluster.answer_densities[a_id] = 1.0
+            return
+
+        # Stack embeddings
+        embeddings = np.array([
+            cluster.answer_embeddings[a_id]
+            for a_id in cluster.answer_ids
+            if a_id in cluster.answer_embeddings
+        ])
+
+        # Recompute bandwidth
+        distances = pairwise_cosine_distances(embeddings)
+        flat_distances = distances[np.triu_indices(len(embeddings), k=1)]
+        cluster.bandwidth = silverman_bandwidth(flat_distances, len(embeddings))
+
+        # Recompute densities
+        densities = compute_density_scores(
+            embeddings,
+            DensityConfig(
+                bandwidth_method=self.config.bandwidth_method,
+                fixed_bandwidth=cluster.bandwidth,
+                normalize_scores=self.config.normalize_densities
+            )
+        )
+
+        for i, a_id in enumerate(cluster.answer_ids):
+            if a_id in cluster.answer_embeddings:
+                cluster.answer_densities[a_id] = float(densities[i])
+
+    def save(self, path: str) -> None:
+        """Save index to file."""
+        import pickle
+        with open(path, 'wb') as f:
+            pickle.dump({
+                'config': self.config,
+                'clusters': self.clusters,
+                'answer_to_cluster': self.answer_to_cluster,
+                'global_stats': self.global_stats,
+            }, f)
+
+    @classmethod
+    def load(cls, path: str) -> 'DensityIndex':
+        """Load index from file."""
+        import pickle
+        with open(path, 'rb') as f:
+            data = pickle.load(f)
+
+        index = cls(data['config'])
+        index.clusters = data['clusters']
+        index.answer_to_cluster = data['answer_to_cluster']
+        index.global_stats = data['global_stats']
+        index._built = True
+        return index
+
+    def __len__(self) -> int:
+        """Number of indexed answers."""
+        return len(self.answer_to_cluster)
+
+    def __contains__(self, answer_id: str) -> bool:
+        """Check if answer is indexed."""
+        return answer_id in self.answer_to_cluster
+
+
+def inference_with_density(
+    query_embedding: np.ndarray,
+    candidates: List[Tuple[str, np.ndarray, float]],
+    density_index: DensityIndex,
+    density_weight: float = 0.3,
+    temperature: float = 1.0
+) -> List[Tuple[str, float]]:
+    """Perform inference with pre-computed density weighting.
+
+    Args:
+        query_embedding: Query vector (unused, for interface consistency)
+        candidates: List of (answer_id, answer_embedding, similarity) tuples
+        density_index: Pre-computed density index
+        density_weight: Weight for density in flux-softmax
+        temperature: Softmax temperature
+
+    Returns:
+        List of (answer_id, probability) tuples, sorted by probability
+    """
+    if not candidates:
+        return []
+
+    answer_ids = [c[0] for c in candidates]
+    similarities = np.array([c[2] for c in candidates])
+
+    # O(k) lookup instead of O(k²) KDE
+    densities = density_index.lookup_densities(answer_ids)
+
+    # Apply flux-softmax
+    probs = flux_softmax(similarities, densities, density_weight, temperature)
+
+    # Sort by probability
+    results = list(zip(answer_ids, probs))
+    results.sort(key=lambda x: x[1], reverse=True)
+
+    return results
