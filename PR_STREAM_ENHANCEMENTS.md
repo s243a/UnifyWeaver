@@ -28,7 +28,14 @@ This PR implements observability and robustness enhancements for the Go target's
 - **Function:** Produces a structured JSON summary of the run, including start/end times, record counts, error counts, and overall throughput (rec/sec).
 - **Benefits:** Enables automated performance monitoring and integration with observability dashboards.
 
-### 5. Refactoring
+### 5. Documentation Updates
+- **Main Docs:** Updated `docs/GO_TARGET.md` and `archive/design_docs/GO_JSON_FEATURES.md` with comprehensive details on Secondary Indexes, Advanced Aggregations (Stats, Arrays, Window), and Stream Observability.
+- **Education Series:** Updated Book 6 (Go Target) chapters and appendices:
+    - Added Secondary Indexes to `A3_database_persistence.md`.
+    - Expanded Aggregations section in `03_advanced_features.md`.
+    - Added a new 'Stream Observability' section to `04_json_processing.md`.
+
+### 6. Refactoring
 - **Unified Logic:** Refactored `compile_json_input_mode` to use the robust `compile_json_to_go_typed_noschema` generator even for untyped inputs. This ensures consistent error handling and observability architecture across all JSONL input scenarios.
 
 ## Verification
@@ -36,3 +43,4 @@ This PR implements observability and robustness enhancements for the Go target's
 - Checked sequential and parallel execution paths for all new options.
 - Confirmed correct concurrency handling (mutexes for files, atomic for counters).
 - Validated that optional imports (`time`, `sync/atomic`) are only added when needed.
+- Manually reviewed generated documentation for accuracy.
