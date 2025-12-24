@@ -81,6 +81,10 @@ def solve_for_alpha(Q: np.ndarray, A: np.ndarray,
     if K == 0:
         return np.array([])
 
+    # Handle sparse clusters: broadcast A to match Q's row count
+    if A.shape[0] == 1 and Q.shape[0] > 1:
+        A = np.tile(A, (Q.shape[0], 1))
+
     # Project each basis through Q: P[:, k] = vec(Q @ G_k)
     P = np.column_stack([(Q @ G_k).ravel() for G_k in basis])
 
@@ -134,13 +138,16 @@ class SmoothingBasisProjection:
         Returns:
             List of loss values per iteration
         """
-        # Normalize inputs
+        # Normalize inputs and broadcast A to match Q's row count
         processed_clusters = []
         for Q, A in clusters:
             if Q.ndim == 1:
                 Q = Q.reshape(1, -1)
             if A.ndim == 1:
                 A = A.reshape(1, -1)
+            # Broadcast A to match Q's row count for consistent training
+            if A.shape[0] == 1 and Q.shape[0] > 1:
+                A = np.tile(A, (Q.shape[0], 1))
             processed_clusters.append((Q, A))
 
         clusters = processed_clusters
@@ -153,11 +160,14 @@ class SmoothingBasisProjection:
         # Store centroids for routing
         self.centroids = [np.mean(Q, axis=0) for Q, A in clusters]
 
-        # Initialize basis from per-cluster pseudoinverse solutions
+        # Initialize basis from per-cluster regularized solutions
         W_init = []
         for Q, A in clusters:
-            # Simple pseudoinverse initialization
-            W = np.linalg.lstsq(Q, A, rcond=None)[0]
+            # Handle sparse clusters: broadcast A and use regularization
+            if A.shape[0] == 1 and Q.shape[0] > 1:
+                A = np.tile(A, (Q.shape[0], 1))
+            reg = 0.01 * np.eye(d)
+            W = np.linalg.solve(Q.T @ Q + reg, Q.T @ A)
             W_init.append(W)
 
         # Extract orthogonal basis from initial solutions
