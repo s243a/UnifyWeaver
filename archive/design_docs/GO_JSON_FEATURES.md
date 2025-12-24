@@ -1858,10 +1858,78 @@ for groupKey, s := range stats {
 - `test_phase_9c3.pl`: 2 tests for nested grouping
 - All 13 tests passing ✓
 
-**Future Enhancements** (Phase 9d+):
-- Statistical functions: `stddev`, `median`, `percentile`
-- Array aggregations: `collect_list`, `collect_set`
-- Window functions: `row_number`, `rank`
+### Phase 9d: Statistical Functions
+
+**Status:** ✅ Complete
+
+Adds support for advanced statistical analysis within aggregations.
+
+**Supported Functions:**
+- `stddev(Field, Result)`: Sample Standard Deviation (Welford's Algorithm)
+- `median(Field, Result)`: Median value (50th percentile)
+- `percentile(Field, P, Result)`: Arbitrary P-th percentile (0-100)
+
+**Prolog Syntax:**
+```prolog
+city_stats(City, Dev, Med, P90) :-
+    group_by(City, json_record([city-City, age-Age]),
+             [stddev(Age, Dev), median(Age, Med), percentile(Age, 90, P90)]).
+```
+
+**Generated Go Code:**
+- **stddev**: Uses O(1) memory per group (streaming variance).
+- **median/percentile**: Collects values into slice `[]float64`, sorts them, and interpolates.
+- **Smart Imports**: Automatically imports `math` and `sort` packages only when needed.
+
+### Phase 9e: Array Aggregations
+
+**Status:** ✅ Complete
+
+Allows collecting values into lists or sets during grouping, enabling data denormalization.
+
+**Supported Functions:**
+- `collect_list(Field, Result)`: Collects all values into a list (preserves duplicates).
+- `collect_set(Field, Result)`: Collects unique values into a list (deduplicates).
+
+**Prolog Syntax:**
+```prolog
+% Get list of tags for each user
+user_tags(User, TagList) :-
+    group_by(User, json_record([user-User, tag-Tag]), collect_list(Tag, TagList)).
+
+% Get unique cities per country
+country_cities(Country, CitySet) :-
+    group_by(Country, json_record([country-Country, city-City]), collect_set(City, CitySet)).
+```
+
+**Generated Go Code:**
+- **collect_list**: Uses `[]interface{}` slice accumulation.
+- **collect_set**: Uses `map[interface{}]bool` for O(1) deduplication, converts to slice for output.
+
+### Phase 9f: Window Functions
+
+**Status:** ✅ Complete
+
+Adds support for window functions that return multiple rows per group (enriched with rank) instead of a single summary row.
+
+**Supported Functions:**
+- `row_number(OrderField, Result)`: Sequential rank (1, 2, 3...)
+- `rank(OrderField, Result)`: Rank with gaps for ties (1, 2, 2, 4...)
+- `dense_rank(OrderField, Result)`: Rank without gaps (1, 2, 2, 3...)
+
+**Prolog Syntax:**
+```prolog
+% Rank users by age within each city
+city_age_rank(City, Name, Age, Rank) :-
+    group_by(City,
+             json_record([city-City, name-Name, age-Age]),
+             row_number(Age, Rank)).
+```
+
+**Generated Go Code:**
+- Accumulates *full records* (`map[string]interface{}`) for each group.
+- Sorts records using `sort.Slice` based on `OrderField`.
+- Iterates and assigns ranks, outputting one JSON line per original record.
 
 ---
 
