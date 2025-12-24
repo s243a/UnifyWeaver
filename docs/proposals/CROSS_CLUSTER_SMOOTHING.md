@@ -271,12 +271,65 @@ Two tailored answer datasets were generated:
 | Claude (sonnet) | `training-data/tailored/` | 639 | 99.2% |
 | Gemini (3-flash) | `training-data/tailored-gemini/` | 644 | 100% |
 
+## Approach 4: Hybrid Smoothing Planner
+
+**Files:**
+- `src/unifyweaver/core/smoothing_policy.pl`: Declarative Prolog policy
+- `src/unifyweaver/targets/python_runtime/smoothing_planner.py`: Python bridge
+
+### Concept
+
+Combine approaches hierarchically based on the FFT's natural tree structure:
+
+```
+Root (all clusters) ─── FFT smoothing
+    │
+    ├── Segment A (confusable) ─── basis_k8 refinement
+    │       │
+    │       └── Sub-segment (still confusable) ─── basis_k4
+    │
+    └── Segment B (distinguishable) ─── baseline (skip refinement)
+```
+
+### Key Optimizations
+
+1. **Depth-based transitions**: FFT at root, basis at mid-levels, baseline at leaves
+2. **Distinguishability-based refinement**: Only refine where clusters are still confusable
+3. **Soft constraints**: Regularize child projections toward parent's W
+4. **Inference blending**: Combine parent and child projections
+
+### Usage
+
+```python
+from smoothing_planner import HybridSmoothingProjection
+
+hybrid = HybridSmoothingProjection(
+    segment_threshold=0.3,        # Gap threshold for segments
+    parent_weight_decay=0.5,      # Inference blend ratio
+    parent_constraint_weight=0.3  # Training regularization
+)
+
+result = hybrid.train(clusters)
+projected = hybrid.project(query_embedding)
+```
+
+### When to Use
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Simple deployment | FFT only (99% P@1, fastest) |
+| Maximum accuracy | Hybrid with distinguishability optimization |
+| Interpretability | SmoothingBasis at segment level |
+
+See `LDA_SMOOTHING_THEORY.md` Section 7 for detailed explanation.
+
 ## Future Work
 
 1. **Learnable FFT filters**: Train filter shape instead of fixed cutoff
 2. **Cross-validation**: Automatic hyperparameter selection
 3. **Integration with HNSW**: Use Go/Rust federation infrastructure
 4. **Streaming updates**: Incremental smoothing for new clusters
+5. **Benchmark hybrid planner**: Compare single-level FFT vs hierarchical on training data
 
 ## References
 
@@ -284,3 +337,5 @@ Two tailored answer datasets were generated:
 - `hierarchical_smoothing.py`: Federation-style aggregation
 - `fft_smoothing.py`: Frequency-domain filtering
 - `projection.py`: Original single-W projection
+- `smoothing_planner.py`: Hybrid hierarchical planner
+- `smoothing_policy.pl`: Prolog declarative policy

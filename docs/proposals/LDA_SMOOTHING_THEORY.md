@@ -706,7 +706,161 @@ def add_cluster(self, Q_new, A_new):
     # Local FFT update instead of full recomputation
 ```
 
-## 7. Summary
+## 7. Hierarchical Smoothing Planner
+
+While FFT smoothing is the clear winner for single-level smoothing, we can do better by combining approaches hierarchically. The key insight: **optimize at the specificity depth where clusters become distinguishable**.
+
+### 7.1 The Hierarchical Structure
+
+FFT's MST + DFS ordering creates a natural tree structure with segments:
+
+```
+Root (all 218 clusters)
+    │
+    ├── Segment 0 (18 clusters) ─ similar, need refinement
+    ├── Segment 1 (1 cluster)  ─ trivially distinguishable
+    ├── Segment 2 (25 clusters) ─ distinct after FFT, no refinement
+    ├── Segment 3 (12 clusters) ─ still confusable, need basis
+    └── ...
+```
+
+### 7.2 Technique Selection Policy
+
+We use a declarative policy (implemented in Prolog with Python fallback) to select techniques based on:
+
+1. **Cluster count**: FFT efficient at scale, basis for medium, baseline for small
+2. **Depth in tree**: FFT at shallow depths, basis at deeper levels
+3. **Distinguishability**: Skip refinement where clusters already separable
+
+```prolog
+%% Rule: Large clusters at shallow depths -> FFT
+recommended_technique(NodeId, fft) :-
+    node(NodeId, ClusterCount, _, Depth, _),
+    ClusterCount >= 30,
+    Depth < 3.
+
+%% Rule: Medium clusters at deeper levels -> basis
+recommended_technique(NodeId, basis_k8) :-
+    node(NodeId, ClusterCount, _, Depth, AvgPairs),
+    ClusterCount >= 10, ClusterCount =< 50,
+    Depth >= 1,
+    AvgPairs >= 2.
+
+%% Rule: Clusters already distinguishable -> skip refinement
+clusters_distinguishable(NodeId) :-
+    similarity_score(NodeId, Score),
+    Score < 0.3.  % Low similarity = distinct clusters
+```
+
+### 7.3 Distinguishability-Based Optimization
+
+The key optimization: **only refine where needed**.
+
+```python
+def compute_cluster_distinguishability(centroids):
+    """
+    Average pairwise cosine similarity within segment.
+
+    High score (>0.7) = clusters confusable → needs refinement
+    Low score (<0.3) = clusters distinct → skip refinement
+    """
+    sims = [1 - cosine(c1, c2) for c1, c2 in pairs(centroids)]
+    return np.mean(sims)
+```
+
+Decision flow:
+
+```
+FFT Smoothing (root)
+      │
+      ├─ Segment A: sim=0.1 → distinguishable → SKIP (use baseline)
+      │
+      └─ Segment B: sim=0.8 → confusable → REFINE with basis
+              │
+              ├─ Sub-B1: sim=0.2 → now distinguishable → STOP
+              └─ Sub-B2: sim=0.7 → still confusable → continue...
+```
+
+This saves compute by focusing refinement only where FFT alone isn't enough.
+
+### 7.4 Soft Constraints for Non-FFT Methods
+
+When using basis methods at deeper levels, we regularize toward the parent's projection:
+
+```python
+def apply_parent_constraint(child_proj, parent_proj, weight=0.3):
+    """
+    Blend child's learned W toward parent's smoothed W.
+
+    This preserves global structure while allowing local refinement.
+    """
+    parent_W = parent_proj.smoothed_W[child_indices]
+
+    # Re-fit child coefficients toward blended target
+    target_W = (1 - weight) * child_W + weight * parent_W
+    child_proj.coefficients = refit_to_target(target_W)
+```
+
+**Important**: Soft constraints only apply to basis/baseline methods. FFT already performs global smoothing, so constraining FFT children would be redundant.
+
+### 7.5 Inference-Time Blending
+
+At inference, we blend projections from multiple levels:
+
+```python
+def project(self, query, temperature=0.1):
+    # Find nearest segment
+    segment = find_nearest_segment(query)
+
+    # Get segment projection
+    segment_proj = self.projectors[segment.id].project(query)
+
+    # Blend with parent (captures global patterns)
+    if segment.id in self.parent_projector:
+        parent_proj = self.projectors[parent_id].project(query)
+
+        # Weighted blend: parent global + child local
+        parent_weight = 0.5
+        return parent_weight * parent_proj + (1 - parent_weight) * segment_proj
+
+    return segment_proj
+```
+
+### 7.6 Complete Pipeline
+
+```python
+from smoothing_planner import HybridSmoothingProjection
+
+# Initialize with configuration
+hybrid = HybridSmoothingProjection(
+    segment_threshold=0.3,        # Gap threshold for segment boundaries
+    parent_weight_decay=0.5,      # Blend ratio at inference
+    parent_constraint_weight=0.3  # Regularization strength during training
+)
+
+# Train: builds tree, queries policy, executes plan
+result = hybrid.train(clusters)
+
+# Result contains:
+# - tree: hierarchical structure with distinguishability scores
+# - plan: [(technique, node_id), ...] from policy
+# - projectors: trained projector per node
+
+# Inference: routes to segment, blends with parent
+projected = hybrid.project(query_embedding, temperature=0.1)
+```
+
+### 7.7 Cost/Accuracy Tradeoff
+
+| Approach | Training Cost | Inference Cost | Expected Accuracy |
+|----------|---------------|----------------|-------------------|
+| FFT only | O(N log N + N d²) | O(N) routing + 1 projection | 99% P@1 |
+| Hierarchical (naive) | FFT + basis per segment | 2 projections + blend | ~99% P@1 |
+| Hierarchical (optimized) | FFT + basis only where needed | 2 projections + blend | ~99% P@1, less compute |
+
+The distinguishability optimization reduces training cost by skipping refinement for already-separable segments.
+
+## 8. Summary
 
 | Concept | Key Point |
 |---------|-----------|
@@ -714,7 +868,8 @@ def add_cluster(self, Q_new, A_new):
 | **Baseline** | Store centroids + answers, soft route (94% P@1) |
 | **SmoothingBasis** | Share basis matrices, but expensive and only matches baseline |
 | **FFT Smoothing** | Remove high-freq noise from W sequence (99% P@1, fast) |
-| **Hierarchical** | Merging hurts precision (85% P@1) |
-| **Winner** | FFT smoothing—simple, fast, effective |
+| **Hierarchical (old)** | Merging hurts precision (85% P@1) |
+| **Hierarchical Planner** | FFT at root + basis where confusable + skip where distinct |
+| **Winner** | FFT smoothing, optionally refined with hierarchical planner |
 
-The surprising finding: Simple frequency-domain smoothing beats sophisticated structural constraints. Sometimes the best regularization is the simplest.
+The surprising finding: Simple frequency-domain smoothing beats sophisticated structural constraints. The hierarchical planner adds value by focusing refinement effort only where FFT alone isn't enough to distinguish clusters.
