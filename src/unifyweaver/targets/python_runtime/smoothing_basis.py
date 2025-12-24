@@ -335,6 +335,276 @@ class MultiHeadLDABaseline:
         return projected
 
 
+class ResidualBasisProjection:
+    """
+    Hybrid projection: FFT prior + basis-learned residuals.
+
+    Formulation:
+        W_i = W_fft_i + ΔW_i
+        ΔW_i = Σ_k α_ik G_k
+
+    Where:
+        - W_fft is the FFT-smoothed projection (global structure)
+        - ΔW is the residual learned by basis decomposition (local refinement)
+        - α is regularized toward zero (defaults to FFT unless deviation helps)
+
+    This combines:
+        - FFT's strength at capturing global cross-cluster structure
+        - Basis decomposition's ability to learn cluster-specific corrections
+
+    The basis vectors span the "tangent space" of deviations from FFT.
+    """
+
+    def __init__(self, num_basis: int = 4, fft_cutoff: float = 0.5,
+                 fft_blend: float = 0.7, alpha_reg: float = 0.1,
+                 cosine_weight: float = 0.5):
+        """
+        Args:
+            num_basis: Number of basis matrices for residual
+            fft_cutoff: FFT low-pass filter cutoff
+            fft_blend: FFT blend factor (1.0 = pure FFT prior)
+            alpha_reg: L2 regularization on basis coefficients
+            cosine_weight: Weight for cosine loss (0=MSE only, 1=cosine only)
+        """
+        self.num_basis = num_basis
+        self.fft_cutoff = fft_cutoff
+        self.fft_blend = fft_blend
+        self.alpha_reg = alpha_reg
+        self.cosine_weight = cosine_weight
+
+        # FFT components
+        self.W_fft: List[np.ndarray] = []
+        self.centroids: List[np.ndarray] = []
+
+        # Residual basis components
+        self.basis: List[np.ndarray] = []
+        self.alpha: np.ndarray = None  # Shape (N, K)
+
+    def train(self, clusters: List[Tuple[np.ndarray, np.ndarray]],
+              num_iterations: int = 50, lr: float = 0.01,
+              log_interval: int = 20) -> dict:
+        """
+        Train hybrid FFT + residual basis projection.
+
+        Args:
+            clusters: List of (Q_i, A_i) tuples
+            num_iterations: Iterations for residual basis training
+            lr: Learning rate for basis updates
+            log_interval: Logging interval
+
+        Returns:
+            Dict with training stats
+        """
+        # Import FFT here to avoid circular import
+        try:
+            from .fft_smoothing import FFTSmoothingProjection
+        except ImportError:
+            from fft_smoothing import FFTSmoothingProjection
+
+        # Normalize inputs
+        processed = []
+        for Q, A in clusters:
+            if Q.ndim == 1:
+                Q = Q.reshape(1, -1)
+            if A.ndim == 1:
+                A = A.reshape(1, -1)
+            if A.shape[0] == 1 and Q.shape[0] > 1:
+                A = np.tile(A, (Q.shape[0], 1))
+            processed.append((Q, A))
+
+        N = len(processed)
+        d = processed[0][0].shape[1]
+        K = min(self.num_basis, N)
+
+        logger.info(f"Training ResidualBasis: N={N}, K={K}, d={d}")
+        logger.info(f"  FFT: cutoff={self.fft_cutoff}, blend={self.fft_blend}")
+        logger.info(f"  Basis: alpha_reg={self.alpha_reg}")
+
+        # Store centroids
+        self.centroids = [np.mean(Q, axis=0) for Q, A in processed]
+
+        # Step 1: Train FFT smoothing to get W_fft
+        fft_proj = FFTSmoothingProjection(
+            cutoff=self.fft_cutoff,
+            blend_factor=self.fft_blend
+        )
+        fft_proj.train(clusters)
+        self.W_fft = fft_proj.W_smoothed.copy()
+
+        # Step 2: Compute target W matrices (per-cluster least squares)
+        W_target = []
+        for Q, A in processed:
+            reg = 0.01 * np.eye(d)
+            W = np.linalg.solve(Q.T @ Q + reg, Q.T @ A)
+            W_target.append(W)
+
+        # Step 3: Compute residuals R_i = W_target_i - W_fft_i
+        residuals = [W_target[i] - self.W_fft[i] for i in range(N)]
+
+        # Step 4: Initialize basis from residuals
+        self.basis = orthogonalize_basis(residuals[:K])
+        K = len(self.basis)
+
+        if K == 0:
+            logger.warning("No basis extracted from residuals - using pure FFT")
+            self.alpha = np.zeros((N, 1))
+            return {'fft_only': True, 'losses': []}
+
+        logger.info(f"Extracted {K} orthogonal residual basis matrices")
+
+        # Step 5: Initialize coefficients
+        self.alpha = np.zeros((N, K))
+        for i in range(N):
+            # Solve for α_i: Σ_k α_ik G_k ≈ R_i
+            # This is least squares on the residual
+            P = np.column_stack([G.ravel() for G in self.basis])
+            alpha_i, _, _, _ = np.linalg.lstsq(P, residuals[i].ravel(), rcond=None)
+            self.alpha[i] = alpha_i
+
+        # Step 6: Alternating optimization with regularization
+        losses = []
+        for iteration in range(num_iterations):
+            total_loss = 0.0
+
+            # Fix basis, solve for regularized coefficients
+            for i, (Q, A) in enumerate(processed):
+                # Target for residual: what we want ΔW to achieve
+                # W_target = W_fft + ΔW, so ΔW = W_target - W_fft
+                # But we also want to minimize ||ΔW||, so we regularize
+
+                # Least squares with L2 regularization on α
+                P = np.column_stack([(Q @ G).ravel() for G in self.basis])
+                target = (A - Q @ self.W_fft[i]).ravel()
+
+                # Regularized least squares: (P^T P + λI) α = P^T target
+                reg_matrix = self.alpha_reg * np.eye(K)
+                self.alpha[i] = np.linalg.solve(
+                    P.T @ P + reg_matrix,
+                    P.T @ target
+                )
+
+            # Compute loss
+            for i, (Q, A) in enumerate(processed):
+                W_i = self.W_fft[i] + reconstruct_W(self.alpha[i], self.basis)
+                pred = Q @ W_i
+
+                # MSE loss
+                mse = np.mean((pred - A) ** 2)
+
+                # Cosine loss
+                pred_norm = pred / (np.linalg.norm(pred) + 1e-8)
+                A_norm = A / (np.linalg.norm(A) + 1e-8)
+                cos_sim = np.mean(np.sum(pred_norm * A_norm, axis=1))
+
+                # Regularization loss
+                reg_loss = self.alpha_reg * np.sum(self.alpha[i] ** 2)
+
+                loss_i = ((1 - self.cosine_weight) * mse +
+                          self.cosine_weight * (1 - cos_sim) +
+                          reg_loss)
+                total_loss += loss_i
+
+            # Gradient update for basis (simplified - mainly α does the work)
+            if iteration < num_iterations // 2:
+                # Early iterations: also update basis
+                total_grad = [np.zeros_like(G) for G in self.basis]
+
+                for i, (Q, A) in enumerate(processed):
+                    W_i = self.W_fft[i] + reconstruct_W(self.alpha[i], self.basis)
+                    grad_W = compute_gradient(W_i, Q, A, self.cosine_weight)
+
+                    for k in range(K):
+                        total_grad[k] += self.alpha[i, k] * grad_W
+
+                for k in range(K):
+                    self.basis[k] = self.basis[k] - lr * total_grad[k]
+
+                # Re-orthogonalize
+                if iteration % 10 == 0:
+                    self.basis = orthogonalize_basis(self.basis)
+                    K = len(self.basis)
+                    if K < self.alpha.shape[1]:
+                        self.alpha = self.alpha[:, :K]
+
+            losses.append(total_loss / N)
+
+            if iteration % log_interval == 0 or iteration == num_iterations - 1:
+                avg_alpha_norm = np.mean(np.linalg.norm(self.alpha, axis=1))
+                logger.info(f"Iter {iteration}: loss={total_loss/N:.6f}, "
+                           f"avg_|α|={avg_alpha_norm:.4f}")
+
+        return {
+            'fft_only': False,
+            'losses': losses,
+            'final_alpha_norm': float(np.mean(np.linalg.norm(self.alpha, axis=1))),
+            'num_basis': len(self.basis),
+        }
+
+    def project(self, query_emb: np.ndarray, temperature: float = 0.1) -> np.ndarray:
+        """
+        Project query using FFT prior + residual correction.
+
+        Args:
+            query_emb: Query embedding (d,)
+            temperature: Softmax temperature for routing
+
+        Returns:
+            Projected embedding (d,)
+        """
+        if len(self.W_fft) == 0:
+            return query_emb
+
+        # Compute routing weights
+        query_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+
+        similarities = []
+        for centroid in self.centroids:
+            centroid_norm = centroid / (np.linalg.norm(centroid) + 1e-8)
+            similarities.append(np.dot(query_norm, centroid_norm))
+
+        similarities = np.array(similarities)
+
+        # Softmax routing
+        scaled = similarities / temperature
+        exp_scaled = np.exp(scaled - np.max(scaled))
+        weights = exp_scaled / np.sum(exp_scaled)
+
+        # Weighted combination of projections
+        projected = np.zeros_like(query_emb)
+        for i, w in enumerate(weights):
+            # W = W_fft + ΔW
+            if len(self.basis) > 0 and self.alpha is not None:
+                delta_W = reconstruct_W(self.alpha[i], self.basis)
+                W_i = self.W_fft[i] + delta_W
+            else:
+                W_i = self.W_fft[i]
+            projected += w * (query_emb @ W_i)
+
+        return projected
+
+    def get_residual_stats(self) -> dict:
+        """Get statistics about the learned residuals."""
+        if self.alpha is None or len(self.basis) == 0:
+            return {'has_residuals': False}
+
+        # Compute ΔW norms
+        delta_norms = []
+        fft_norms = []
+        for i in range(len(self.W_fft)):
+            delta_W = reconstruct_W(self.alpha[i], self.basis)
+            delta_norms.append(np.linalg.norm(delta_W))
+            fft_norms.append(np.linalg.norm(self.W_fft[i]))
+
+        return {
+            'has_residuals': True,
+            'num_basis': len(self.basis),
+            'mean_delta_norm': float(np.mean(delta_norms)),
+            'mean_fft_norm': float(np.mean(fft_norms)),
+            'delta_to_fft_ratio': float(np.mean(delta_norms) / (np.mean(fft_norms) + 1e-8)),
+            'alpha_sparsity': float(np.mean(np.abs(self.alpha) < 0.01)),
+        }
+
+
 # Quick test
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
