@@ -1049,66 +1049,154 @@ namespace UnifyWeaver.QueryRuntime
 
             var joinKeyCount = join.LeftKeys.Count;
 
-            if (context is not null && (join.Left is RelationScanNode || join.Right is RelationScanNode))
+            static bool TryGetPredicateScan(PlanNode node, out PredicateId predicate, out object[]? pattern)
             {
-                if (join.Left is RelationScanNode leftScan && join.Right is RelationScanNode rightScan)
+                switch (node)
                 {
-                    var leftFacts = GetFactsList(leftScan.Relation, context);
-                    var rightFacts = GetFactsList(rightScan.Relation, context);
-                    var keyCount = join.LeftKeys.Count;
+                    case RelationScanNode scan:
+                        predicate = scan.Relation;
+                        pattern = null;
+                        return true;
 
-                    if (leftFacts.Count <= rightFacts.Count)
+                    case PatternScanNode scan:
+                        predicate = scan.Relation;
+                        pattern = scan.Pattern;
+                        return true;
+
+                    default:
+                        predicate = default;
+                        pattern = null;
+                        return false;
+                }
+            }
+
+            static bool MatchesScanPattern(object[] tuple, object[]? pattern) =>
+                pattern is null || (tuple is not null && TupleMatchesPattern(tuple, pattern));
+
+            if (context is not null)
+            {
+                var leftIsScan = TryGetPredicateScan(join.Left, out var leftScanPredicate, out var leftScanPattern);
+                var rightIsScan = TryGetPredicateScan(join.Right, out var rightScanPredicate, out var rightScanPattern);
+
+                if (leftIsScan || rightIsScan)
+                {
+                    if (leftIsScan && rightIsScan)
                     {
-                        var probe = Evaluate(join.Right, context);
+                        var leftFacts = GetFactsList(leftScanPredicate, context);
+                        var rightFacts = GetFactsList(rightScanPredicate, context);
+                        var keyCount = join.LeftKeys.Count;
 
-                        if (keyCount == 1)
+                        if (leftFacts.Count <= rightFacts.Count)
                         {
-                            var index = GetFactIndex(leftScan.Relation, join.LeftKeys[0], leftFacts, context);
-                            foreach (var rightTuple in probe)
+                            var probe = Evaluate(join.Right, context);
+
+                            if (keyCount == 1)
                             {
-                                if (rightTuple is null) continue;
-
-                                var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
-                                if (!index.TryGetValue(lookupKey, out var bucket))
+                                var index = GetFactIndex(leftScanPredicate, join.LeftKeys[0], leftFacts, context);
+                                foreach (var rightTuple in probe)
                                 {
-                                    continue;
+                                    if (rightTuple is null) continue;
+
+                                    var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
+                                    if (!index.TryGetValue(lookupKey, out var bucket))
+                                    {
+                                        continue;
+                                    }
+
+                                    foreach (var leftTuple in bucket)
+                                    {
+                                        if (leftTuple is null) continue;
+                                        if (!MatchesScanPattern(leftTuple, leftScanPattern)) continue;
+                                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                    }
                                 }
-
-                                foreach (var leftTuple in bucket)
+                            }
+                            else
+                            {
+                                var index = GetJoinIndex(leftScanPredicate, join.LeftKeys, leftFacts, context);
+                                foreach (var rightTuple in probe)
                                 {
-                                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                    if (rightTuple is null) continue;
+
+                                    var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                                    var wrapper = new RowWrapper(key);
+
+                                    if (!index.TryGetValue(wrapper, out var bucket))
+                                    {
+                                        continue;
+                                    }
+
+                                    foreach (var leftTuple in bucket)
+                                    {
+                                        if (leftTuple is null) continue;
+                                        if (!MatchesScanPattern(leftTuple, leftScanPattern)) continue;
+                                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                    }
                                 }
                             }
                         }
                         else
                         {
-                            var index = GetJoinIndex(leftScan.Relation, join.LeftKeys, leftFacts, context);
-                            foreach (var rightTuple in probe)
+                            var probe = Evaluate(join.Left, context);
+
+                            if (keyCount == 1)
                             {
-                                if (rightTuple is null) continue;
-
-                                var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
-                                var wrapper = new RowWrapper(key);
-
-                                if (!index.TryGetValue(wrapper, out var bucket))
+                                var index = GetFactIndex(rightScanPredicate, join.RightKeys[0], rightFacts, context);
+                                foreach (var leftTuple in probe)
                                 {
-                                    continue;
+                                    if (leftTuple is null) continue;
+
+                                    var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
+                                    if (!index.TryGetValue(lookupKey, out var bucket))
+                                    {
+                                        continue;
+                                    }
+
+                                    foreach (var rightTuple in bucket)
+                                    {
+                                        if (rightTuple is null) continue;
+                                        if (!MatchesScanPattern(rightTuple, rightScanPattern)) continue;
+                                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                    }
                                 }
-
-                                foreach (var leftTuple in bucket)
+                            }
+                            else
+                            {
+                                var index = GetJoinIndex(rightScanPredicate, join.RightKeys, rightFacts, context);
+                                foreach (var leftTuple in probe)
                                 {
-                                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                    if (leftTuple is null) continue;
+
+                                    var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                                    var wrapper = new RowWrapper(key);
+
+                                    if (!index.TryGetValue(wrapper, out var bucket))
+                                    {
+                                        continue;
+                                    }
+
+                                    foreach (var rightTuple in bucket)
+                                    {
+                                        if (rightTuple is null) continue;
+                                        if (!MatchesScanPattern(rightTuple, rightScanPattern)) continue;
+                                        yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                    }
                                 }
                             }
                         }
+
+                        yield break;
                     }
-                    else
+
+                    if (rightIsScan)
                     {
+                        var facts = GetFactsList(rightScanPredicate, context);
                         var probe = Evaluate(join.Left, context);
+                        var keyCount = join.RightKeys.Count;
 
                         if (keyCount == 1)
                         {
-                            var index = GetFactIndex(rightScan.Relation, join.RightKeys[0], rightFacts, context);
+                            var index = GetFactIndex(rightScanPredicate, join.RightKeys[0], facts, context);
                             foreach (var leftTuple in probe)
                             {
                                 if (leftTuple is null) continue;
@@ -1121,13 +1209,15 @@ namespace UnifyWeaver.QueryRuntime
 
                                 foreach (var rightTuple in bucket)
                                 {
+                                    if (rightTuple is null) continue;
+                                    if (!MatchesScanPattern(rightTuple, rightScanPattern)) continue;
                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                 }
                             }
                         }
                         else
                         {
-                            var index = GetJoinIndex(rightScan.Relation, join.RightKeys, rightFacts, context);
+                            var index = GetJoinIndex(rightScanPredicate, join.RightKeys, facts, context);
                             foreach (var leftTuple in probe)
                             {
                                 if (leftTuple is null) continue;
@@ -1142,163 +1232,69 @@ namespace UnifyWeaver.QueryRuntime
 
                                 foreach (var rightTuple in bucket)
                                 {
+                                    if (rightTuple is null) continue;
+                                    if (!MatchesScanPattern(rightTuple, rightScanPattern)) continue;
                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                 }
                             }
                         }
+
+                        yield break;
                     }
 
-                    yield break;
-                }
-
-                if (join.Right is RelationScanNode scan)
-                {
-                    var facts = GetFactsList(scan.Relation, context);
-                    var probe = Evaluate(join.Left, context);
-                    var keyCount = join.RightKeys.Count;
-
-                    if (keyCount == 1)
+                    if (leftIsScan)
                     {
-                        var index = GetFactIndex(scan.Relation, join.RightKeys[0], facts, context);
-                        foreach (var leftTuple in probe)
+                        var facts = GetFactsList(leftScanPredicate, context);
+                        var probe = Evaluate(join.Right, context);
+                        var keyCount = join.LeftKeys.Count;
+
+                        if (keyCount == 1)
                         {
-                            if (leftTuple is null) continue;
-
-                            var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
-                            if (!index.TryGetValue(lookupKey, out var bucket))
+                            var index = GetFactIndex(leftScanPredicate, join.LeftKeys[0], facts, context);
+                            foreach (var rightTuple in probe)
                             {
-                                continue;
-                            }
+                                if (rightTuple is null) continue;
 
-                            foreach (var rightTuple in bucket)
-                            {
-                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
+                                if (!index.TryGetValue(lookupKey, out var bucket))
+                                {
+                                    continue;
+                                }
+
+                                foreach (var leftTuple in bucket)
+                                {
+                                    if (leftTuple is null) continue;
+                                    if (!MatchesScanPattern(leftTuple, leftScanPattern)) continue;
+                                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                }
                             }
                         }
-                    }
-                    else
-                    {
-                        var index = GetJoinIndex(scan.Relation, join.RightKeys, facts, context);
-                        foreach (var leftTuple in probe)
+                        else
                         {
-                            if (leftTuple is null) continue;
-
-                            var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
-                            var wrapper = new RowWrapper(key);
-
-                            if (!index.TryGetValue(wrapper, out var bucket))
+                            var index = GetJoinIndex(leftScanPredicate, join.LeftKeys, facts, context);
+                            foreach (var rightTuple in probe)
                             {
-                                continue;
-                            }
+                                if (rightTuple is null) continue;
 
-                            foreach (var rightTuple in bucket)
-                            {
-                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                                var wrapper = new RowWrapper(key);
+
+                                if (!index.TryGetValue(wrapper, out var bucket))
+                                {
+                                    continue;
+                                }
+
+                                foreach (var leftTuple in bucket)
+                                {
+                                    if (leftTuple is null) continue;
+                                    if (!MatchesScanPattern(leftTuple, leftScanPattern)) continue;
+                                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                }
                             }
                         }
+
+                        yield break;
                     }
-
-                    yield break;
-                }
-
-                if (join.Left is RelationScanNode leftOnlyScan)
-                {
-                    var facts = GetFactsList(leftOnlyScan.Relation, context);
-                    var probe = Evaluate(join.Right, context);
-                    var keyCount = join.LeftKeys.Count;
-
-                    if (keyCount == 1)
-                    {
-                        var index = GetFactIndex(leftOnlyScan.Relation, join.LeftKeys[0], facts, context);
-                        foreach (var rightTuple in probe)
-                        {
-                            if (rightTuple is null) continue;
-
-                            var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
-                            if (!index.TryGetValue(lookupKey, out var bucket))
-                            {
-                                continue;
-                            }
-
-                            foreach (var leftTuple in bucket)
-                            {
-                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        var index = GetJoinIndex(leftOnlyScan.Relation, join.LeftKeys, facts, context);
-                        foreach (var rightTuple in probe)
-                        {
-                            if (rightTuple is null) continue;
-
-                            var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
-                            var wrapper = new RowWrapper(key);
-
-                            if (!index.TryGetValue(wrapper, out var bucket))
-                            {
-                                continue;
-                            }
-
-                            foreach (var leftTuple in bucket)
-                            {
-                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
-                            }
-                        }
-                    }
-
-                    yield break;
-                }
-
-                if (join.Right is RelationScanNode rightOnlyScan)
-                {
-                    var facts = GetFactsList(rightOnlyScan.Relation, context);
-                    var probe = Evaluate(join.Left, context);
-                    var keyCount = join.RightKeys.Count;
-
-                    if (keyCount == 1)
-                    {
-                        var index = GetFactIndex(rightOnlyScan.Relation, join.RightKeys[0], facts, context);
-                        foreach (var leftTuple in probe)
-                        {
-                            if (leftTuple is null) continue;
-
-                            var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
-                            if (!index.TryGetValue(lookupKey, out var bucket))
-                            {
-                                continue;
-                            }
-
-                            foreach (var rightTuple in bucket)
-                            {
-                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        var index = GetJoinIndex(rightOnlyScan.Relation, join.RightKeys, facts, context);
-                        foreach (var leftTuple in probe)
-                        {
-                            if (leftTuple is null) continue;
-
-                            var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
-                            var wrapper = new RowWrapper(key);
-
-                            if (!index.TryGetValue(wrapper, out var bucket))
-                            {
-                                continue;
-                            }
-
-                            foreach (var rightTuple in bucket)
-                            {
-                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
-                            }
-                        }
-                    }
-
-                    yield break;
                 }
             }
 
@@ -1509,6 +1505,7 @@ namespace UnifyWeaver.QueryRuntime
                 EmptyNode => 1,
                 MaterializeNode => 5,
                 RelationScanNode => 20,
+                PatternScanNode => 20,
                 RecursiveRefNode => 50,
                 CrossRefNode => 50,
                 FixpointNode => 100,
