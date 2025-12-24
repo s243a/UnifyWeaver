@@ -413,6 +413,10 @@ Current benchmarks measure cluster-level accuracy (P@1, P@3). We need answer-lev
 - [SMOOTHING_BASIS_PROJECTION.md](SMOOTHING_BASIS_PROJECTION.md): Full basis formulation theory
   - Section "Connection to Constraint Geometry" documents **tangent space theory**
   - Section "Connection to Tensor Algebra" links gradients to outer products
+- [KERNEL_SMOOTHING_THEORY.md](KERNEL_SMOOTHING_THEORY.md): Multi-dimensional smoothing theory
+  - Why 1D FFT falls short for high-dimensional embeddings
+  - Graph Laplacian, Green's functions, and kernel methods
+  - Matérn kernels as numerically stable alternative
 - [SEMANTIC_PROJECTION_LDA.md](SEMANTIC_PROJECTION_LDA.md): Outer product W = a ⊗ q formulation
 - [LDA_SMOOTHING_THEORY.md](LDA_SMOOTHING_THEORY.md): Core LDA theory and loss functions
 
