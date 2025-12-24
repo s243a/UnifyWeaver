@@ -1628,14 +1628,31 @@ select_best_candidate_([Candidate|Rest], VarCounts, BoundVars, Best0, BestKey0, 
     ),
     select_best_candidate_(Rest, VarCounts, BoundVars, Best1, BestKey1, Best).
 
-candidate_key(cand(Index, _Term, _Role, Vars, Arity), VarCounts, BoundVars, Key) :-
-    candidate_score_key(Index, Vars, Arity, VarCounts, BoundVars, Key).
+candidate_key(cand(Index, Term, _Role, Vars, Arity), VarCounts, BoundVars, Key) :-
+    candidate_score_key(Index, Term, Vars, Arity, VarCounts, BoundVars, Key).
 
-candidate_score_key(Index, Vars, Arity, VarCounts, BoundVars, [Shared, Connected, NegArity, NegIndex]) :-
+% Prefer candidates that share already-bound variables. Next, keep the join graph
+% connected when possible. When tied, prefer literals with more constant
+% arguments (PatternScan-selective), then smaller arity, then original order.
+candidate_score_key(Index, Term, Vars, Arity, VarCounts, BoundVars, [Shared, Connected, ConstArgs, NegArity, NegIndex]) :-
     shared_bound_count(Vars, BoundVars, Shared),
     connectivity_score(Vars, VarCounts, Connected),
+    constant_arg_count_in_term(Term, ConstArgs),
     NegArity is -Arity,
     NegIndex is -Index.
+
+constant_arg_count_in_term(Term0, Count) :-
+    strip_module(Term0, _, Term),
+    Term =.. [_|Args],
+    count_nonvars(Args, 0, Count).
+
+count_nonvars([], Acc, Acc).
+count_nonvars([Arg|Rest], Acc, Count) :-
+    (   var(Arg)
+    ->  Acc1 = Acc
+    ;   Acc1 is Acc + 1
+    ),
+    count_nonvars(Rest, Acc1, Count).
 
 shared_bound_count([], _BoundVars, 0).
 shared_bound_count([Var|Rest], BoundVars, Count) :-

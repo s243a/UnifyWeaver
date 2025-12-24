@@ -76,6 +76,7 @@
 :- dynamic user:test_strat_ban_fact/1.
 :- dynamic user:test_strat_banned/1.
 :- dynamic user:test_strat_allowed/1.
+:- dynamic user:test_link_to_charlie/1.
 
 :- dynamic progress_last_report/1.
 :- dynamic progress_count/1.
@@ -90,6 +91,7 @@ test_csharp_query_target :-
     Tests = [
         verify_fact_plan,
         verify_join_plan,
+        verify_join_ordering_constant_arg_plan,
         verify_selection_plan,
         verify_ground_relation_arg_plan,
         verify_order_by_limit_plan,
@@ -173,6 +175,7 @@ setup_test_data :-
     assertz(user:test_fact(alice, bob)),
     assertz(user:test_fact(bob, charlie)),
     assertz(user:(test_link(X, Z) :- test_fact(X, Y), test_fact(Y, Z))),
+    assertz(user:(test_link_to_charlie(X) :- test_fact(X, Y), test_fact(Y, charlie))),
     assertz(user:(test_filtered(X) :- test_fact(X, _), X = alice)),
     assertz(user:test_val(item1, 5)),
     assertz(user:test_val(item2, 2)),
@@ -418,6 +421,7 @@ setup_test_data :-
 cleanup_test_data :-
     retractall(user:test_fact(_, _)),
     retractall(user:test_link(_, _)),
+    retractall(user:test_link_to_charlie(_)),
     retractall(user:test_filtered(_)),
     retractall(user:test_val(_, _)),
     retractall(user:test_increment(_, _)),
@@ -519,6 +523,22 @@ verify_join_plan :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'KeyJoinNode'),
     maybe_run_query_runtime(Plan, ['alice,charlie']).
+
+verify_join_ordering_constant_arg_plan :-
+    csharp_query_target:build_query_plan(test_link_to_charlie/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:JoinNode, columns:_, width:1}),
+    JoinNode = join{
+        type:join,
+        left:pattern_scan{predicate:predicate{name:test_fact, arity:2}, type:pattern_scan, pattern:Pattern, width:_},
+        right:relation_scan{predicate:predicate{name:test_fact, arity:2}, type:relation_scan, width:_},
+        left_keys:[0],
+        right_keys:[1],
+        left_width:_,
+        right_width:_,
+        width:_
+    },
+    Pattern = [operand{kind:wildcard}, operand{kind:value, value:charlie}],
+    maybe_run_query_runtime(Plan, ['alice']).
 
 verify_selection_plan :-
     csharp_query_target:build_query_plan(test_filtered/1, [target(csharp_query)], Plan),
