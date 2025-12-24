@@ -605,24 +605,301 @@ class ResidualBasisProjection:
         }
 
 
-# Quick test
+class SmoothingKernel:
+    """Enumeration of available smoothing kernels."""
+    GAUSSIAN_RBF = "gaussian"
+    MATERN_32 = "matern_32"
+    MATERN_52 = "matern_52"
+    LAPLACIAN = "laplacian"
+    RATIONAL_QUADRATIC = "rational_quadratic"
+
+
+class KernelSmoothingProjection:
+    """
+    Kernel-based smoothing for multi-cluster projections.
+
+    Uses kernel-weighted averaging to smooth W matrices based on
+    semantic distance between cluster centroids. This respects the
+    full multi-dimensional similarity structure, unlike 1D FFT.
+
+    Theory:
+        W_smoothed_i = Σ_j K(centroid_i, centroid_j) W_j / Σ_j K(...)
+
+        The kernel K defines how influence decays with distance.
+        This is equivalent to solving the Graph Laplacian smoothing
+        problem via Green's functions.
+
+    Kernels:
+        - gaussian: exp(-r²/2σ²) - Infinitely smooth, stable
+        - matern_32: (1+√3r/ℓ)exp(-√3r/ℓ) - C² smooth
+        - matern_52: (1+√5r/ℓ+5r²/3ℓ²)exp(-√5r/ℓ) - C⁴ smooth (recommended)
+        - laplacian: exp(-r/ξ) - Rough, can be unstable
+        - rational_quadratic: (1 + r²/2αℓ²)^(-α) - Scale mixture of Gaussians
+
+    See docs/proposals/KERNEL_SMOOTHING_THEORY.md for details.
+    """
+
+    def __init__(
+        self,
+        kernel: str = SmoothingKernel.MATERN_52,
+        length_scale: float = 1.0,
+        alpha: float = 1.0,  # For rational quadratic
+        regularization: float = 1e-6,
+        normalize_kernel: bool = True,
+        cosine_weight: float = 0.5,
+    ):
+        """
+        Initialize kernel smoothing projection.
+
+        Args:
+            kernel: Kernel type (gaussian, matern_32, matern_52, laplacian, rational_quadratic)
+            length_scale: Controls how quickly influence decays with distance
+            alpha: Shape parameter for rational quadratic kernel
+            regularization: Small value added to diagonal for numerical stability
+            normalize_kernel: If True, normalize kernel rows to sum to 1
+            cosine_weight: Weight for cosine loss (vs MSE) when computing W_target
+        """
+        self.kernel = kernel
+        self.length_scale = length_scale
+        self.alpha = alpha
+        self.regularization = regularization
+        self.normalize_kernel = normalize_kernel
+        self.cosine_weight = cosine_weight
+
+        # Computed during training
+        self.centroids: List[np.ndarray] = []
+        self.W_target: List[np.ndarray] = []  # Per-cluster target W
+        self.W_smoothed: List[np.ndarray] = []  # Kernel-smoothed W
+        self.K: np.ndarray = None  # Kernel matrix
+        self.K_normalized: np.ndarray = None  # Row-normalized kernel
+
+    def _compute_kernel_value(self, r: np.ndarray) -> np.ndarray:
+        """
+        Compute kernel values for given distances.
+
+        Args:
+            r: Distance matrix (N x N) or distance values
+
+        Returns:
+            Kernel values K(r)
+        """
+        # Avoid division by zero
+        r = np.maximum(r, 1e-10)
+        scaled = r / self.length_scale
+
+        if self.kernel == SmoothingKernel.GAUSSIAN_RBF:
+            return np.exp(-scaled**2 / 2)
+
+        elif self.kernel == SmoothingKernel.MATERN_32:
+            sqrt3 = np.sqrt(3) * scaled
+            return (1 + sqrt3) * np.exp(-sqrt3)
+
+        elif self.kernel == SmoothingKernel.MATERN_52:
+            sqrt5 = np.sqrt(5) * scaled
+            return (1 + sqrt5 + sqrt5**2 / 3) * np.exp(-sqrt5)
+
+        elif self.kernel == SmoothingKernel.LAPLACIAN:
+            return np.exp(-scaled)
+
+        elif self.kernel == SmoothingKernel.RATIONAL_QUADRATIC:
+            return (1 + scaled**2 / (2 * self.alpha))**(-self.alpha)
+
+        else:
+            raise ValueError(f"Unknown kernel: {self.kernel}")
+
+    def _compute_kernel_matrix(self, centroids: List[np.ndarray]) -> np.ndarray:
+        """
+        Compute kernel matrix from cluster centroids.
+
+        Args:
+            centroids: List of centroid vectors
+
+        Returns:
+            K: Kernel matrix (N x N)
+        """
+        N = len(centroids)
+        C = np.array(centroids)
+
+        # Compute pairwise distances
+        # ||c_i - c_j||² = ||c_i||² + ||c_j||² - 2<c_i, c_j>
+        norms_sq = np.sum(C**2, axis=1)
+        distances_sq = norms_sq[:, None] + norms_sq[None, :] - 2 * (C @ C.T)
+        distances = np.sqrt(np.maximum(distances_sq, 0))
+
+        # Compute kernel values
+        K = self._compute_kernel_value(distances)
+
+        # Set diagonal to 1 (self-similarity)
+        np.fill_diagonal(K, 1.0)
+
+        # Add regularization for numerical stability
+        K += self.regularization * np.eye(N)
+
+        return K
+
+    def _compute_target_W(self, Q: np.ndarray, A: np.ndarray) -> np.ndarray:
+        """
+        Compute target W matrix for a cluster using pseudoinverse.
+
+        Args:
+            Q: Query matrix (n_queries x d)
+            A: Answer matrix (n_queries x d)
+
+        Returns:
+            W: Projection matrix (d x d)
+        """
+        # Pseudoinverse solution: W = pinv(Q) @ A
+        W, _, _, _ = np.linalg.lstsq(Q, A, rcond=None)
+        return W
+
+    def train(self, clusters: List[Tuple[np.ndarray, np.ndarray]],
+              log_interval: int = 10) -> dict:
+        """
+        Train kernel smoothing projection.
+
+        Args:
+            clusters: List of (Q_i, A_i) tuples per cluster
+            log_interval: Logging interval (unused, for API compatibility)
+
+        Returns:
+            Dict with training stats including kernel properties
+        """
+        # Normalize inputs
+        processed = []
+        for Q, A in clusters:
+            if Q.ndim == 1:
+                Q = Q.reshape(1, -1)
+            if A.ndim == 1:
+                A = A.reshape(1, -1)
+            if A.shape[0] == 1 and Q.shape[0] > 1:
+                A = np.tile(A, (Q.shape[0], 1))
+            processed.append((Q, A))
+
+        N = len(processed)
+        d = processed[0][0].shape[1]
+
+        logger.info(f"Training KernelSmoothing: N={N}, d={d}")
+        logger.info(f"  Kernel: {self.kernel}, length_scale={self.length_scale}")
+
+        # Step 1: Compute centroids
+        self.centroids = [np.mean(Q, axis=0) for Q, A in processed]
+
+        # Step 2: Compute target W for each cluster (unconstrained solution)
+        self.W_target = []
+        for Q, A in processed:
+            W = self._compute_target_W(Q, A)
+            self.W_target.append(W)
+
+        # Step 3: Compute kernel matrix
+        self.K = self._compute_kernel_matrix(self.centroids)
+
+        # Step 4: Normalize kernel rows (optional)
+        if self.normalize_kernel:
+            row_sums = self.K.sum(axis=1, keepdims=True)
+            self.K_normalized = self.K / row_sums
+        else:
+            self.K_normalized = self.K
+
+        # Step 5: Apply kernel smoothing to W matrices
+        # W_smoothed_i = Σ_j K_normalized(i,j) W_j
+        W_target_stacked = np.array(self.W_target)  # Shape: (N, d, d)
+        W_target_flat = W_target_stacked.reshape(N, -1)  # Shape: (N, d*d)
+
+        W_smoothed_flat = self.K_normalized @ W_target_flat  # Shape: (N, d*d)
+        W_smoothed_stacked = W_smoothed_flat.reshape(N, d, d)
+
+        self.W_smoothed = [W_smoothed_stacked[i] for i in range(N)]
+
+        # Compute stats
+        kernel_sparsity = np.mean(self.K < 0.01)
+        kernel_condition = np.linalg.cond(self.K)
+
+        stats = {
+            "num_clusters": N,
+            "embedding_dim": d,
+            "kernel": self.kernel,
+            "length_scale": self.length_scale,
+            "kernel_sparsity": float(kernel_sparsity),
+            "kernel_condition_number": float(kernel_condition),
+            "mean_kernel_value": float(np.mean(self.K)),
+        }
+
+        logger.info(f"  Kernel condition number: {kernel_condition:.2f}")
+        logger.info(f"  Mean kernel value: {np.mean(self.K):.4f}")
+
+        return stats
+
+    def project(self, query_emb: np.ndarray, temperature: float = 0.1) -> np.ndarray:
+        """
+        Project query using soft routing and kernel-smoothed W matrices.
+
+        Args:
+            query_emb: Query embedding (d,)
+            temperature: Softmax temperature for routing
+
+        Returns:
+            Projected embedding (d,)
+        """
+        if not self.centroids or not self.W_smoothed:
+            raise ValueError("Model not trained. Call train() first.")
+
+        query_emb = query_emb.flatten()
+
+        # Compute similarities to all centroids
+        similarities = []
+        for centroid in self.centroids:
+            centroid_norm = centroid / (np.linalg.norm(centroid) + 1e-8)
+            query_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+            sim = np.dot(query_norm, centroid_norm)
+            similarities.append(sim)
+
+        similarities = np.array(similarities)
+
+        # Softmax routing
+        exp_sim = np.exp((similarities - np.max(similarities)) / temperature)
+        weights = exp_sim / (np.sum(exp_sim) + 1e-8)
+
+        # Weighted combination of projected queries
+        projected = np.zeros(len(query_emb))
+        for i, (W, weight) in enumerate(zip(self.W_smoothed, weights)):
+            projected += weight * (query_emb @ W)
+
+        return projected
+
+    def get_kernel_stats(self) -> dict:
+        """Get statistics about the learned kernel structure."""
+        if self.K is None:
+            return {"error": "Model not trained"}
+
+        # Eigenvalue analysis
+        eigenvalues = np.linalg.eigvalsh(self.K)
+
+        return {
+            "kernel": self.kernel,
+            "length_scale": self.length_scale,
+            "num_clusters": len(self.centroids),
+            "condition_number": float(np.linalg.cond(self.K)),
+            "min_eigenvalue": float(np.min(eigenvalues)),
+            "max_eigenvalue": float(np.max(eigenvalues)),
+            "effective_rank": float(np.sum(eigenvalues > 0.01 * np.max(eigenvalues))),
+            "mean_off_diagonal": float(np.mean(self.K[~np.eye(len(self.K), dtype=bool)])),
+        }
+
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    # Test code
+    print("=== Smoothing Basis Test ===")
 
-    print("=== Smoothing Basis Test ===\n")
-
-    # Create synthetic data
+    # Create synthetic test data
     np.random.seed(42)
-    d = 64  # Embedding dimension
-    N = 6   # Number of clusters
+    N = 10  # Number of clusters
+    d = 32  # Embedding dimension
 
-    # Create clusters with related answers
     clusters = []
     for i in range(N):
-        # 1-2 questions per cluster (sparse!)
         n_questions = np.random.randint(1, 3)
         Q = np.random.randn(n_questions, d)
-        A = np.random.randn(1, d) + (i // 2) * 0.5  # Groups of 2 have similar answers
+        A = np.random.randn(1, d)
         clusters.append((Q, A))
 
     print(f"Created {N} clusters with 1-2 questions each")
@@ -647,5 +924,31 @@ if __name__ == "__main__":
     print(f"Query norm: {np.linalg.norm(test_query):.3f}")
     print(f"Smoothing basis projection norm: {np.linalg.norm(sb_proj):.3f}")
     print(f"Baseline projection norm: {np.linalg.norm(baseline_proj):.3f}")
+
+    # Test kernel smoothing methods
+    print("\n=== Testing Kernel Smoothing Methods ===")
+
+    kernels_to_test = [
+        (SmoothingKernel.GAUSSIAN_RBF, 1.0),
+        (SmoothingKernel.MATERN_32, 1.0),
+        (SmoothingKernel.MATERN_52, 1.0),
+        (SmoothingKernel.LAPLACIAN, 1.0),
+        (SmoothingKernel.RATIONAL_QUADRATIC, 1.0),
+    ]
+
+    for kernel, length_scale in kernels_to_test:
+        print(f"\nTraining KernelSmoothing ({kernel})...")
+        ks = KernelSmoothingProjection(
+            kernel=kernel,
+            length_scale=length_scale,
+        )
+        stats = ks.train(clusters)
+
+        ks_proj = ks.project(test_query)
+        kernel_stats = ks.get_kernel_stats()
+
+        print(f"  Condition number: {kernel_stats['condition_number']:.2f}")
+        print(f"  Effective rank: {kernel_stats['effective_rank']:.0f}")
+        print(f"  Projection norm: {np.linalg.norm(ks_proj):.3f}")
 
     print("\n=== Test Complete ===")
