@@ -344,18 +344,23 @@ def execute_plan(
             parent_id = parent_of[action.node_id]
             parent_projector = projectors.get(parent_id)
 
+        # Parent constraint only applies to non-FFT techniques
+        uses_parent_constraint = (parent_projector is not None and
+                                  action.technique != "fft")
         logger.info(f"Executing {action.technique} on {action.node_id} "
                    f"({node.cluster_count} clusters)"
-                   + (f" with parent constraint" if parent_projector else ""))
+                   + (f" with parent constraint" if uses_parent_constraint else ""))
 
         if action.technique == "fft":
             projector = FFTSmoothingProjection(cutoff=0.5, blend_factor=0.6)
             projector.train(node_clusters)
 
-            # For FFT, apply soft constraint by blending W matrices after training
-            if parent_projector and hasattr(parent_projector, 'smoothed_W'):
-                _apply_parent_constraint_fft(projector, parent_projector,
-                                            node.cluster_indices, parent_constraint_weight)
+            # NOTE: We don't apply parent constraint for FFT children.
+            # FFT already does global smoothing within its segment via
+            # frequency-domain filtering. Blending with parent's FFT
+            # would be redundant - both are doing similar smoothing.
+            # Parent constraint is more meaningful for basis/baseline
+            # methods that learn local patterns.
 
         elif action.technique.startswith("basis_k"):
             k = int(action.technique.split("_k")[1])
