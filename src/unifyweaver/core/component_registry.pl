@@ -39,6 +39,7 @@
 
     % Invocation
     invoke_component/4,             % +Category, +Name, +Input, -Output
+    compile_component/4,            % +Category, +Name, +Options, -Code
 
     % Validation
     validate_component/3,           % +Category, +Name, +Config
@@ -339,6 +340,15 @@ invoke_component(Category, Name, Input, Output) :-
     stored_type(Category, Type, Module, _),
     % Call module's invoke_component
     Module:invoke_component(Name, Config, Input, Output).
+
+%% compile_component(+Category, +Name, +Options, -Code)
+%
+%  Compile a component definition to target code.
+%
+compile_component(Category, Name, Options, Code) :-
+    stored_component(Category, Name, Type, Config, _),
+    stored_type(Category, Type, Module, _),
+    Module:compile_component(Name, Config, Options, Code).
 
 % ============================================================================
 % VALIDATION

@@ -15,6 +15,8 @@ This document captures ideas for future development of UnifyWeaver targets and f
 
 ## Go Target Enhancements
 
+### Go Target Enhancements
+
 ### Database Integration (Completed)
 
 ✅ **Implemented**: `bbolt` support is now available in the Go target.
@@ -28,6 +30,13 @@ This document captures ideas for future development of UnifyWeaver targets and f
 - **Advanced Schema Validation**: Min/max, regex format, and type checking.
 - **Schema Composition**: Nested `object(Schema)` types with recursive deep validation.
 - **Variable Mapping**: robust typed compilation for arbitrary projection.
+
+### Custom Functions and Bindings (Completed)
+
+✅ **Implemented**: Extensibility for Go target.
+- **Custom Components**: Inject raw Go code via `custom_go` component type.
+- **Binding Directives**: Declare bindings in user code with `:- go_binding(...)`.
+- **Component Registry**: Full integration for code generation.
 
 ### Database Aggregations (Completed)
 
