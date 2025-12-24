@@ -1,0 +1,45 @@
+[
+  {
+    "method": "FFT (single-level)",
+    "precision_at_1": 0.99,
+    "precision_at_3": 0.33000000000000007,
+    "cosine_sim": 0.4784259801833165,
+    "train_time_ms": 44.99659989960492,
+    "inference_time_us": 645.3789898660034,
+    "num_clusters": 50,
+    "num_pairs": 202,
+    "plan_summary": null
+  },
+  {
+    "method": "Hybrid (distinguishability)",
+    "precision_at_1": 0.99,
+    "precision_at_3": 0.33000000000000007,
+    "cosine_sim": 0.4784259801833165,
+    "train_time_ms": 19.25830007530749,
+    "inference_time_us": 959.2730004806072,
+    "num_clusters": 50,
+    "num_pairs": 202,
+    "plan_summary": {
+      "num_actions": 1,
+      "technique_counts": {
+        "fft": 1
+      }
+    }
+  },
+  {
+    "method": "Hybrid (full refinement)",
+    "precision_at_1": 0.99,
+    "precision_at_3": 0.33000000000000007,
+    "cosine_sim": 0.4784259801833165,
+    "train_time_ms": 20.199700025841594,
+    "inference_time_us": 816.3050003349781,
+    "num_clusters": 50,
+    "num_pairs": 202,
+    "plan_summary": {
+      "num_actions": 1,
+      "technique_counts": {
+        "fft": 1
+      }
+    }
+  }
+]

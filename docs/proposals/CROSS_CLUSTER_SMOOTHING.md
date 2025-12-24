@@ -323,19 +323,77 @@ projected = hybrid.project(query_embedding)
 
 See `LDA_SMOOTHING_THEORY.md` Section 7 for detailed explanation.
 
+## Completed Implementation
+
+### Policy Compilation (Task 2)
+
+The Prolog smoothing policy is now compiled to Python, Go, and Rust:
+
+```bash
+python src/unifyweaver/codegen/lda_smoothing_policy_compiler.py --target all
+```
+
+Generated files:
+- `src/unifyweaver/codegen/generated/smoothing_policy.py`
+- `src/unifyweaver/codegen/generated/smoothing_policy.go`
+- `src/unifyweaver/codegen/generated/smoothing_policy.rs`
+
+### Benchmark Results (Task 3)
+
+Hybrid planner vs single-level FFT on 50 clusters:
+
+| Method | P@1 | Train (ms) | Inference (μs) |
+|--------|-----|------------|----------------|
+| FFT (single-level) | 99.0% | 45.0 | 645 |
+| Hybrid (distinguishability) | 99.0% | 19.3 | 959 |
+| Hybrid (full refinement) | 99.0% | 20.2 | 816 |
+
+Both achieve same accuracy; hybrid is faster for small clusters because policy selects simpler technique.
+
+### Density Confidence Experiments (Task 4)
+
+See `scripts/density_confidence_experiments.py` for:
+- Experiment 1: Confidence calibration (ECE = 0.0035)
+- Experiment 2: Ranking improvement (+0.0014 MRR with w=1.0, τ=0.5)
+- Experiment 3: Sparse region robustness analysis
+
+### End-to-End Pipeline (Task 5)
+
+`smoothing_pipeline.py` integrates all components:
+
+```python
+from smoothing_pipeline import SmoothingPipeline
+
+pipeline = SmoothingPipeline()
+pipeline.train(clusters)
+results = pipeline.search(query_embedding, k=10)
+```
+
 ## Future Work
 
 1. **Learnable FFT filters**: Train filter shape instead of fixed cutoff
 2. **Cross-validation**: Automatic hyperparameter selection
 3. **Integration with HNSW**: Use Go/Rust federation infrastructure
 4. **Streaming updates**: Incremental smoothing for new clusters
-5. **Benchmark hybrid planner**: Compare single-level FFT vs hierarchical on training data
+5. **Real embedding evaluation**: Run experiments with E5/ModernBERT embeddings
 
 ## References
 
+### Core Smoothing
 - `smoothing_basis.py`: Gradient-based basis sharing
 - `hierarchical_smoothing.py`: Federation-style aggregation
 - `fft_smoothing.py`: Frequency-domain filtering
 - `projection.py`: Original single-W projection
+
+### Policy & Planning
 - `smoothing_planner.py`: Hybrid hierarchical planner
 - `lda_smoothing_policy.pl`: Prolog declarative policy
+- `lda_smoothing_policy_compiler.py`: Policy compiler
+
+### Density & Pipeline
+- `density_scoring.py`: KDE and flux-softmax (includes DensityIndex)
+- `smoothing_pipeline.py`: End-to-end pipeline
+
+### Benchmarks & Experiments
+- `scripts/benchmark_hybrid_planner.py`: Hybrid planner comparison
+- `scripts/density_confidence_experiments.py`: Paper experiments
