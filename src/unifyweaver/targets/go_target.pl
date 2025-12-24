@@ -10636,9 +10636,9 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         ;   option(db_backend(bbolt), Options)
         ->  % Typed compilation without schema (for database writes)
             format('  Database mode: using typed compilation~n'),
-            compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, CoreBody)
-        ;   % Untyped compilation (current behavior)
-            compile_json_to_go(HeadArgs, FieldMappings, Constraints, Options, CoreBody)
+            compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, Options, CoreBody)
+        ;   % Untyped compilation - use typed_noschema for robust error handling
+            compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, Options, CoreBody)
         ),
 
         % Check if database backend is specified
@@ -10696,7 +10696,7 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         % Add strings import if needed (from feature branch)
         (   option(json_schema(SchemaName), Options), schema_needs_strings(SchemaName)
         ->  append(ImportsWithKeys, ["strings"], ImportsWithStrings)
-        ;   AllImportsList = ImportsWithKeys
+        ;   ImportsWithStrings = ImportsWithKeys
         ),
         
         % Add time import if error_file is used
@@ -10791,8 +10791,13 @@ compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
         ),
 
         (   option(progress(_), Options)
-        ->  append(ImportsWithStrings, ["sync/atomic"], AllImportsList)
-        ;   AllImportsList = ImportsWithStrings
+        ->  append(ImportsWithStrings, ["sync/atomic"], ImportsWithAtomic)
+        ;   ImportsWithAtomic = ImportsWithStrings
+        ),
+
+        (   option(error_file(_), Options)
+        ->  append(ImportsWithAtomic, ["time"], AllImportsList)
+        ;   AllImportsList = ImportsWithAtomic
         ),
         
         maplist(format_import, AllImportsList, ImportLines),
@@ -10926,6 +10931,51 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
     
     map_field_delimiter(FieldDelim, DelimChar),
 
+    % Error handling setup
+    (   member(error_file(ErrorFile), Options)
+    ->  HasErrorFile = true,
+        format(string(ErrorSetup), '
+	// Error logging
+	errorChan := make(chan struct {
+		raw   []byte
+		errMsg string
+	}, ~w)
+	var errWg sync.WaitGroup
+	errWg.Add(1)
+	
+	go func() {
+		defer errWg.Done()
+		f, err := os.OpenFile("~w", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening error file: %%v\\n", err)
+			return
+		}
+		defer f.Close()
+		
+		type ErrorRecord struct {
+			Timestamp string `json:"timestamp"`
+			Error     string `json:"error"`
+			RawLine   string `json:"raw_line"`
+		}
+		
+		for e := range errorChan {
+			rec := ErrorRecord{
+				Timestamp: time.Now().Format(time.RFC3339),
+				Error:     e.errMsg,
+				RawLine:   string(e.raw),
+			}
+			b, _ := json.Marshal(rec)
+			f.Write(b)
+			f.Write([]byte("\\n"))
+		}
+	}()
+', [BufferSize, ErrorFile]),
+        ParseError = 'errorChan <- struct{raw []byte; errMsg string}{raw: lineBytes, errMsg: err.Error()}'
+    ;   HasErrorFile = false,
+        ErrorSetup = '',
+        ParseError = ''
+    ),
+
     % Progress reporting setup
     (   option(progress(ProgressOpt), Options)
     ->  (   ProgressOpt = interval(N) -> Interval = N
@@ -10949,6 +10999,11 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
     ->  UniqueVars = "var seenMutex sync.Mutex\n\tseen := make(map[string]bool)" 
     ;   UniqueVars = ""
     ),
+    
+    (   HasErrorFile = true
+    ->  ErrorWait = 'close(errorChan)\n\terrWg.Wait()'
+    ;   ErrorWait = ''
+    ),
 
     format(string(GoCode), '
 	// Parallel execution with ~w workers
@@ -10956,6 +11011,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
 	var wg sync.WaitGroup
 	var outputMutex sync.Mutex
 	~s
+~s
 ~s
 
 	// Start workers
@@ -10966,6 +11022,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
 			for lineBytes := range jobs {
 				var data map[string]interface{}
 				if err := json.Unmarshal(lineBytes, &data); err != nil {
+					~s
 					continue
 				}
 				~w
@@ -10985,7 +11042,8 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
 	}
 	close(jobs)
 	wg.Wait()
-', [Workers, BufferSize, UniqueVars, ProgressSetup, Workers, ProgressUpdate, ProcessingCode]).
+	~s
+', [Workers, BufferSize, UniqueVars, ProgressSetup, ErrorSetup, Workers, ParseError, ProgressUpdate, ProcessingCode, ErrorWait]).
 
 %% generate_parallel_json_processing(+Operations, +HeadArgs, +Delim, +Unique, +VIdx, +VarMap, -Code)
 generate_parallel_json_processing([], HeadArgs, Delim, Unique, _, VarMap, Code) :-
@@ -11585,9 +11643,55 @@ lookup_var_identity(Key, [_|Rest], Val) :- lookup_var_identity(Key, Rest, Val).
 %  Generate Go code for JSON input mode with fieldN variables but no type validation
 %  Used for database writes without schema
 %
-compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, GoCode) :-
+compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, Options, GoCode) :-
     % Map delimiter
     map_field_delimiter(FieldDelim, DelimChar),
+
+    % Error handling setup
+    (   member(error_file(ErrorFile), Options)
+    ->  HasErrorFile = true,
+        format(string(ErrorSetup), '
+	errorFile, err := os.OpenFile("~w", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening error file: %%v\\n", err)
+		os.Exit(1)
+	}
+	defer errorFile.Close()
+	
+	errorWriter := func(rawLine []byte, errMsg string) {
+		type ErrorRecord struct {
+			Timestamp string `json:"timestamp"`
+			Error     string `json:"error"`
+			RawLine   string `json:"raw_line"`
+		}
+		rec := ErrorRecord{
+			Timestamp: time.Now().Format(time.RFC3339),
+			Error:     errMsg,
+			RawLine:   string(rawLine),
+		}
+		b, _ := json.Marshal(rec)
+		errorFile.Write(b)
+		errorFile.Write([]byte("\\n"))
+	}', [ErrorFile])
+    ;   HasErrorFile = false,
+        ErrorSetup = ''
+    ),
+
+    % Progress reporting setup
+    (   option(progress(ProgressOpt), Options)
+    ->  (   ProgressOpt = interval(N) -> Interval = N
+        ;   ProgressOpt = true -> Interval = 1000
+        ;   Interval = 1000
+        ),
+        format(string(ProgressSetup), '\n\tvar recordCount int64 = 0', []),
+        format(string(ProgressUpdate), '
+		recordCount++
+		if recordCount % ~w == 0 {
+			fmt.Fprintf(os.Stderr, "Processed %d records\\n", recordCount)
+		}', [Interval])
+    ;   ProgressSetup = '',
+        ProgressUpdate = ''
+    ),
 
     % Generate untyped field extraction code with fieldN variable names
     findall(ExtractLine,
@@ -11618,14 +11722,24 @@ compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, G
         UniqueCheck = '\t\tfmt.Println(result)\n'
     ),
 
+    (   HasErrorFile = true
+    ->  ParseError = 'errorWriter(lineBytes, err.Error())'
+    ;   ParseError = ''
+    ),
+
     % Build the loop code (using concat to avoid format issues)
     atomics_to_string([
         '\tscanner := bufio.NewScanner(os.Stdin)\n',
         SeenDecl,
-        '\tfor scanner.Scan() {\n',
+        ErrorSetup,
+        ProgressSetup,
+        '\n\tfor scanner.Scan() {\n',
+        '\t\tlineBytes := scanner.Bytes()\n',
         '\t\tvar data map[string]interface{}\n',
-        '\t\tif err := json.Unmarshal(scanner.Bytes(), &data); err != nil {\n',
-        '\t\t\tcontinue\n\t\t}\n\t\t\n',
+        '\t\tif err := json.Unmarshal(lineBytes, &data); err != nil {\n',
+        '\t\t\t', ParseError, '\n',
+        '\t\t\tcontinue\n\t\t}\n',
+        ProgressUpdate, '\n',
         ExtractCode, '\n\t\t\n',
         '\t\tresult := ', OutputExpr, '\n',
         UniqueCheck, '\t}\n'
