@@ -1,0 +1,3936 @@
+{
+  "embedder": {
+    "embedder": "modernbert",
+    "model_name": "nomic-ai/nomic-embed-text-v1.5",
+    "model_id": "nomic-ai/nomic-embed-text-v1.5",
+    "dimension": 768,
+    "description": "ModernBERT with 8192 token context (768 dim)"
+  },
+  "metric_legend": {
+    "cosine_to_target": {
+      "description": "Cosine similarity between projected query and target answer",
+      "good_value": "Higher is better (1.0 = perfect alignment)",
+      "range": "[-1.0, 1.0]"
+    },
+    "mse_to_target": {
+      "description": "Mean Squared Error between projected query and target answer",
+      "good_value": "Lower is better (0.0 = identical vectors)",
+      "range": "[0.0, inf)"
+    },
+    "target_rank": {
+      "description": "Position of correct answer when sorted by similarity (1-indexed)",
+      "good_value": "Lower is better (1 = correct answer is top result)",
+      "range": "[1, num_answers]"
+    },
+    "mrr": {
+      "description": "Mean Reciprocal Rank = average of 1/rank across all queries",
+      "good_value": "Higher is better (1.0 = always rank 1)",
+      "range": "(0.0, 1.0]"
+    },
+    "recall_at_k": {
+      "description": "Fraction of queries where correct answer is in top k results",
+      "good_value": "Higher is better (1.0 = always in top k)",
+      "range": "[0.0, 1.0]"
+    }
+  },
+  "winners": {
+    "highest_cosine": "Residual_K8_r0.01",
+    "lowest_mse": "Basis_K16",
+    "lowest_rank": "Residual_K8_r0.01",
+    "highest_mrr": "Basis_K4",
+    "highest_recall_at_5": "Basis_K4"
+  },
+  "results": [
+    {
+      "method": "MultiHeadLDA",
+      "params": {
+        "type": "baseline"
+      },
+      "mean_cosine_to_target": 0.8858033014543343,
+      "std_cosine_to_target": 0.034451309876868896,
+      "mean_mse_to_target": 0.09724387161699945,
+      "std_mse_to_target": 0.027799405077881367,
+      "mean_target_rank": 20.42079207920792,
+      "median_target_rank": 9.0,
+      "recall_at_1": 0.04455445544554455,
+      "recall_at_5": 0.3564356435643564,
+      "recall_at_10": 0.5247524752475248,
+      "mrr": 0.19369331519482247,
+      "train_time_ms": 1.5189000000646047,
+      "inference_time_us": 404.86138613849306,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9126679445757608,
+          "mean_mse": 0.07130693377337648,
+          "mean_rank": 5.75,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9102076557003489,
+          "mean_mse": 0.07584407458271988,
+          "mean_rank": 7.5,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.894139590255815,
+          "mean_mse": 0.08849966905780379,
+          "mean_rank": 16.5,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.865587700137156,
+          "mean_mse": 0.11342057261826025,
+          "mean_rank": 40.5,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8562947538167467,
+          "mean_mse": 0.12108998536570673,
+          "mean_rank": 48.25,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9036445884302347,
+          "mean_mse": 0.08252448405492319,
+          "mean_rank": 17.25,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.896391222896386,
+          "mean_mse": 0.0831346176260003,
+          "mean_rank": 17.75,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9124192111507872,
+          "mean_mse": 0.07591522051710772,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8692695935226391,
+          "mean_mse": 0.11965624576755077,
+          "mean_rank": 19.8,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8782313583375705,
+          "mean_mse": 0.10380143263222516,
+          "mean_rank": 23.25,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8876459952787307,
+          "mean_mse": 0.09746811113725969,
+          "mean_rank": 14.0,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.899967247932211,
+          "mean_mse": 0.09086507555450689,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.9070271857565272,
+          "mean_mse": 0.07816911844341387,
+          "mean_rank": 16.0,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.82153992708534,
+          "mean_mse": 0.1616123270372401,
+          "mean_rank": 71.6,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8812855746141913,
+          "mean_mse": 0.10428099889291652,
+          "mean_rank": 19.25,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.896412491290001,
+          "mean_mse": 0.08417940028843662,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.941178622747015,
+          "mean_mse": 0.05738664990438784,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.9052657408700808,
+          "mean_mse": 0.07430599263263414,
+          "mean_rank": 12.0,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9197583489236357,
+          "mean_mse": 0.07101245600504862,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8881654844415914,
+          "mean_mse": 0.0937586534321633,
+          "mean_rank": 13.25,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8728193577713805,
+          "mean_mse": 0.1094042746838111,
+          "mean_rank": 36.5,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.9066954061451067,
+          "mean_mse": 0.08000679548754701,
+          "mean_rank": 9.25,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8717480553800115,
+          "mean_mse": 0.1087410149013047,
+          "mean_rank": 23.75,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8637470663636584,
+          "mean_mse": 0.10766322932080676,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.842053578743731,
+          "mean_mse": 0.12494968076366073,
+          "mean_rank": 30.25,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8742610752029596,
+          "mean_mse": 0.09636534341682645,
+          "mean_rank": 14.5,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8384884917497014,
+          "mean_mse": 0.12897814702162558,
+          "mean_rank": 47.25,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.8718748276779898,
+          "mean_mse": 0.10653418059299123,
+          "mean_rank": 23.0,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8433230702992178,
+          "mean_mse": 0.1318609263397141,
+          "mean_rank": 58.0,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.911502135256987,
+          "mean_mse": 0.07426002214456201,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8712897936763208,
+          "mean_mse": 0.10541316519748294,
+          "mean_rank": 28.25,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8668099096864822,
+          "mean_mse": 0.10960916087487226,
+          "mean_rank": 37.0,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.876573563509491,
+          "mean_mse": 0.10253434660860768,
+          "mean_rank": 31.0,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8592819565991694,
+          "mean_mse": 0.12021353341158392,
+          "mean_rank": 38.25,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.8979467306770017,
+          "mean_mse": 0.08578899808167928,
+          "mean_rank": 19.25,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9106113610917766,
+          "mean_mse": 0.08366064596926585,
+          "mean_rank": 6.75,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9184934891140565,
+          "mean_mse": 0.07489472866090163,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.8959865985602061,
+          "mean_mse": 0.09191638026842704,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.859816713760509,
+          "mean_mse": 0.11674278801152689,
+          "mean_rank": 30.75,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8540725692980802,
+          "mean_mse": 0.12076346490772558,
+          "mean_rank": 38.0,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.901087485842635,
+          "mean_mse": 0.08314156582632015,
+          "mean_rank": 7.0,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.8917688843871118,
+          "mean_mse": 0.09360725550732761,
+          "mean_rank": 14.0,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.8930256634378364,
+          "mean_mse": 0.09333844982229672,
+          "mean_rank": 10.25,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9181992292910072,
+          "mean_mse": 0.06959884911196577,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9121966753489799,
+          "mean_mse": 0.08496724881209057,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.8878672654137422,
+          "mean_mse": 0.09758360138897607,
+          "mean_rank": 18.25,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.861731155957016,
+          "mean_mse": 0.11611825977271878,
+          "mean_rank": 35.25,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.9094599245186991,
+          "mean_mse": 0.08540671449678591,
+          "mean_rank": 10.75,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.9025466467176809,
+          "mean_mse": 0.08677903870500647,
+          "mean_rank": 11.75,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8779854240505796,
+          "mean_mse": 0.10142454402518111,
+          "mean_rank": 27.25,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "FFT_c0.3",
+      "params": {
+        "cutoff": 0.3,
+        "blend": 0.6
+      },
+      "mean_cosine_to_target": 0.8886239592388469,
+      "std_cosine_to_target": 0.03323759646351626,
+      "mean_mse_to_target": 0.11480488716771971,
+      "std_mse_to_target": 0.029269493145945125,
+      "mean_target_rank": 18.292079207920793,
+      "median_target_rank": 9.0,
+      "recall_at_1": 0.06930693069306931,
+      "recall_at_5": 0.3811881188118812,
+      "recall_at_10": 0.5495049504950495,
+      "mrr": 0.2191401203120762,
+      "train_time_ms": 3713.5635629999797,
+      "inference_time_us": 17048.523579207973,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9145710921317297,
+          "mean_mse": 0.08667811842962743,
+          "mean_rank": 4.75,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9111328182524456,
+          "mean_mse": 0.09626521093475249,
+          "mean_rank": 7.5,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.8941837924530636,
+          "mean_mse": 0.10206099786538585,
+          "mean_rank": 17.5,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8649655979921065,
+          "mean_mse": 0.13402352199738457,
+          "mean_rank": 42.5,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8564166434616121,
+          "mean_mse": 0.1425847518535338,
+          "mean_rank": 47.5,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9070095070349288,
+          "mean_mse": 0.09314677379248795,
+          "mean_rank": 16.25,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.9012822815226189,
+          "mean_mse": 0.09814264666419369,
+          "mean_rank": 14.25,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9132464301696755,
+          "mean_mse": 0.0981208957403687,
+          "mean_rank": 6.0,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8708628147941901,
+          "mean_mse": 0.13455679439819138,
+          "mean_rank": 14.8,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8780149514540753,
+          "mean_mse": 0.12172677407904106,
+          "mean_rank": 24.0,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8877851653437746,
+          "mean_mse": 0.12212760028154787,
+          "mean_rank": 14.0,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.8981102980625054,
+          "mean_mse": 0.11076826656903145,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.9053686046681273,
+          "mean_mse": 0.10951737510201051,
+          "mean_rank": 11.75,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8248215290130144,
+          "mean_mse": 0.17963979661432583,
+          "mean_rank": 64.6,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.87907638166696,
+          "mean_mse": 0.12090656909575904,
+          "mean_rank": 18.75,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.8990386724316751,
+          "mean_mse": 0.09359102446161734,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9376476310890465,
+          "mean_mse": 0.07106379288834273,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.9026323631026142,
+          "mean_mse": 0.09098508440979157,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9186609109082309,
+          "mean_mse": 0.08962099573959395,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8865105567573295,
+          "mean_mse": 0.11164626279942577,
+          "mean_rank": 14.25,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.886931735522867,
+          "mean_mse": 0.11712521743269501,
+          "mean_rank": 28.25,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.9099006931400831,
+          "mean_mse": 0.08994084838344538,
+          "mean_rank": 9.0,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8747318028860727,
+          "mean_mse": 0.126921971573696,
+          "mean_rank": 21.75,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8703042159932955,
+          "mean_mse": 0.12357851282281201,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8609141507414595,
+          "mean_mse": 0.13567013547642406,
+          "mean_rank": 11.75,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8738042753937462,
+          "mean_mse": 0.11118799202262757,
+          "mean_rank": 14.0,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8502138679909821,
+          "mean_mse": 0.1445144967535433,
+          "mean_rank": 34.5,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.8793269953146137,
+          "mean_mse": 0.13344160701216515,
+          "mean_rank": 13.25,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8455673682927618,
+          "mean_mse": 0.15044510600977007,
+          "mean_rank": 52.5,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.9149675141363376,
+          "mean_mse": 0.09059858880134375,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8784448363786377,
+          "mean_mse": 0.12017019987134299,
+          "mean_rank": 22.25,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8677683009937939,
+          "mean_mse": 0.13155188470589546,
+          "mean_rank": 34.75,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8794883627660066,
+          "mean_mse": 0.12434139748940103,
+          "mean_rank": 29.25,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8634586069648866,
+          "mean_mse": 0.1453349532732262,
+          "mean_rank": 34.0,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.9014223184388971,
+          "mean_mse": 0.09979455952838204,
+          "mean_rank": 17.25,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9108586280533973,
+          "mean_mse": 0.10228605152415347,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9269368339583228,
+          "mean_mse": 0.08379048174012542,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.9033515879897568,
+          "mean_mse": 0.10637143769117424,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.8615586410426116,
+          "mean_mse": 0.14243305184864993,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8571333917454477,
+          "mean_mse": 0.13018048749618585,
+          "mean_rank": 38.5,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.9020387656654031,
+          "mean_mse": 0.10546649214788245,
+          "mean_rank": 6.75,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.889655066784676,
+          "mean_mse": 0.12150395595787328,
+          "mean_rank": 13.5,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9061796490966563,
+          "mean_mse": 0.10739021416763606,
+          "mean_rank": 5.75,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9207075849461318,
+          "mean_mse": 0.08481872627998512,
+          "mean_rank": 3.25,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9155203870497951,
+          "mean_mse": 0.10434102223422938,
+          "mean_rank": 4.75,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.889992702045845,
+          "mean_mse": 0.11510604961873996,
+          "mean_rank": 17.75,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8601830017645065,
+          "mean_mse": 0.13530494869073445,
+          "mean_rank": 37.25,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.9179981863328681,
+          "mean_mse": 0.1027634848917294,
+          "mean_rank": 9.5,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.9014923141182364,
+          "mean_mse": 0.10535750440026541,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8793990277521453,
+          "mean_mse": 0.12019302065416863,
+          "mean_rank": 27.25,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "FFT_c0.5",
+      "params": {
+        "cutoff": 0.5,
+        "blend": 0.6
+      },
+      "mean_cosine_to_target": 0.8961462544531952,
+      "std_cosine_to_target": 0.032180898664562016,
+      "mean_mse_to_target": 0.10750328873633706,
+      "std_mse_to_target": 0.028429226678366212,
+      "mean_target_rank": 14.341584158415841,
+      "median_target_rank": 6.5,
+      "recall_at_1": 0.09405940594059406,
+      "recall_at_5": 0.4405940594059406,
+      "recall_at_10": 0.6683168316831684,
+      "mrr": 0.2623252105197235,
+      "train_time_ms": 3587.873681000019,
+      "inference_time_us": 27752.85467821741,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9174497307403036,
+          "mean_mse": 0.08221754653829104,
+          "mean_rank": 4.25,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9146838910040616,
+          "mean_mse": 0.09189245911051935,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.8979094281211099,
+          "mean_mse": 0.09760178225401646,
+          "mean_rank": 14.75,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8735543862524963,
+          "mean_mse": 0.12622158236721162,
+          "mean_rank": 33.0,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8637754472299872,
+          "mean_mse": 0.1353540377147467,
+          "mean_rank": 39.75,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9092582959862517,
+          "mean_mse": 0.0899494746973806,
+          "mean_rank": 15.75,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.904694015857036,
+          "mean_mse": 0.09264382171435893,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9163920935281162,
+          "mean_mse": 0.09296916526927554,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8790016458757535,
+          "mean_mse": 0.12614789212856486,
+          "mean_rank": 10.8,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.885425338080127,
+          "mean_mse": 0.11504775333367595,
+          "mean_rank": 18.75,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8983021082500536,
+          "mean_mse": 0.11269688854398754,
+          "mean_rank": 7.75,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.9098621629336526,
+          "mean_mse": 0.1005363518336363,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.922464115959279,
+          "mean_mse": 0.09077324627886958,
+          "mean_rank": 13.0,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8371063164151813,
+          "mean_mse": 0.1694248353415763,
+          "mean_rank": 43.0,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8878165481709799,
+          "mean_mse": 0.11339004598526616,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.9022102431280992,
+          "mean_mse": 0.09005718745805058,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9440894433708795,
+          "mean_mse": 0.06536513274478685,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.9126744505906009,
+          "mean_mse": 0.08154422716814543,
+          "mean_rank": 9.25,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9315351680650741,
+          "mean_mse": 0.07792905415130456,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.898497338322364,
+          "mean_mse": 0.10208223535710634,
+          "mean_rank": 6.0,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8884544948234755,
+          "mean_mse": 0.11525552030403358,
+          "mean_rank": 26.5,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.9153128404322857,
+          "mean_mse": 0.08480924312715958,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8852693949295155,
+          "mean_mse": 0.11596350041494537,
+          "mean_rank": 18.0,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8888395853736845,
+          "mean_mse": 0.11051459944255541,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8669894031220504,
+          "mean_mse": 0.12925975249991903,
+          "mean_rank": 10.0,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8914772108614873,
+          "mean_mse": 0.09954559956883591,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8585060991026549,
+          "mean_mse": 0.13621954456307467,
+          "mean_rank": 26.5,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.8965891744290783,
+          "mean_mse": 0.11872885020187453,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8545834514577608,
+          "mean_mse": 0.14179624228932153,
+          "mean_rank": 43.25,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.9194395388091137,
+          "mean_mse": 0.08577645065317353,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8831867505051657,
+          "mean_mse": 0.1166200424698822,
+          "mean_rank": 18.25,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8785574073454635,
+          "mean_mse": 0.12230623273405972,
+          "mean_rank": 25.5,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8851152723082981,
+          "mean_mse": 0.11864124726115452,
+          "mean_rank": 26.25,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8740237116030294,
+          "mean_mse": 0.13525685696928882,
+          "mean_rank": 26.5,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.9046193878445852,
+          "mean_mse": 0.09638111929835588,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9163749667137814,
+          "mean_mse": 0.09529604206699806,
+          "mean_rank": 5.0,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9284660575354579,
+          "mean_mse": 0.08191860215986149,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.9097292617862056,
+          "mean_mse": 0.09997822623457231,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.8746633501220678,
+          "mean_mse": 0.13035542710286097,
+          "mean_rank": 15.5,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8671470447519896,
+          "mean_mse": 0.12283291788761483,
+          "mean_rank": 36.75,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.9084535805425566,
+          "mean_mse": 0.09915146071251049,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.9012702700708333,
+          "mean_mse": 0.10913666834380444,
+          "mean_rank": 7.0,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9075880354490924,
+          "mean_mse": 0.10488794867597409,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9245159717878245,
+          "mean_mse": 0.07968569918534864,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9180175441142221,
+          "mean_mse": 0.10040430706380267,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.8933233224149058,
+          "mean_mse": 0.1105501998650297,
+          "mean_rank": 13.5,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8687347465052817,
+          "mean_mse": 0.12764681103903155,
+          "mean_rank": 26.25,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.9189288122629483,
+          "mean_mse": 0.09967364995146454,
+          "mean_rank": 7.75,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.9052193106693358,
+          "mean_mse": 0.09984527196109419,
+          "mean_rank": 10.5,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8862606937580654,
+          "mean_mse": 0.11274014527911322,
+          "mean_rank": 24.0,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "FFT_c0.7",
+      "params": {
+        "cutoff": 0.7,
+        "blend": 0.6
+      },
+      "mean_cosine_to_target": 0.8963710614610303,
+      "std_cosine_to_target": 0.03218565119492634,
+      "mean_mse_to_target": 0.10735242348979275,
+      "std_mse_to_target": 0.028408396476578234,
+      "mean_target_rank": 14.272277227722773,
+      "median_target_rank": 6.5,
+      "recall_at_1": 0.09405940594059406,
+      "recall_at_5": 0.44554455445544555,
+      "recall_at_10": 0.6732673267326733,
+      "mrr": 0.2634928293431735,
+      "train_time_ms": 3847.1543760000486,
+      "inference_time_us": 24383.368608910965,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9168559351929034,
+          "mean_mse": 0.08298180711490259,
+          "mean_rank": 4.25,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9151088572777901,
+          "mean_mse": 0.0916984589788794,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.8980512419399195,
+          "mean_mse": 0.09761893401084351,
+          "mean_rank": 14.5,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8741389680556148,
+          "mean_mse": 0.12596528749628805,
+          "mean_rank": 31.5,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8631105891787019,
+          "mean_mse": 0.13638217369702033,
+          "mean_rank": 39.75,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9091091475166032,
+          "mean_mse": 0.09020500069328154,
+          "mean_rank": 15.75,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.9047845993692061,
+          "mean_mse": 0.09248727743026479,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9161636609393587,
+          "mean_mse": 0.09323101396396519,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8789552303070278,
+          "mean_mse": 0.12634190722305064,
+          "mean_rank": 11.0,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8857243770943737,
+          "mean_mse": 0.11470528050117317,
+          "mean_rank": 18.5,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8979533738042844,
+          "mean_mse": 0.1132826537328523,
+          "mean_rank": 8.0,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.9108934148113268,
+          "mean_mse": 0.09929332318756781,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.9232522539435714,
+          "mean_mse": 0.09042962636552732,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8370878160094284,
+          "mean_mse": 0.16909086775654608,
+          "mean_rank": 43.4,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8877367420189667,
+          "mean_mse": 0.113322907480262,
+          "mean_rank": 13.0,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.902284359854484,
+          "mean_mse": 0.09001333388089376,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9449242128288664,
+          "mean_mse": 0.06444027945110994,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.913430779885866,
+          "mean_mse": 0.08133997360867827,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9318015130006909,
+          "mean_mse": 0.07782873036778941,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8978081696621263,
+          "mean_mse": 0.1018443431966718,
+          "mean_rank": 6.0,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.88809866041454,
+          "mean_mse": 0.11559227491336566,
+          "mean_rank": 27.0,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.914682405010715,
+          "mean_mse": 0.08540663375907818,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8859075329299959,
+          "mean_mse": 0.11578766351628529,
+          "mean_rank": 17.75,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8889158112518805,
+          "mean_mse": 0.11010163026155656,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8671887968964828,
+          "mean_mse": 0.12933396860191992,
+          "mean_rank": 10.0,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8933616027071349,
+          "mean_mse": 0.09817134646874864,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.859443310016295,
+          "mean_mse": 0.13575006732330153,
+          "mean_rank": 26.25,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.895993643192243,
+          "mean_mse": 0.11869682700472242,
+          "mean_rank": 6.75,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8559051034577774,
+          "mean_mse": 0.14093494882405552,
+          "mean_rank": 42.0,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.9191619342725658,
+          "mean_mse": 0.08626831074533768,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8834296715686769,
+          "mean_mse": 0.11630597553008933,
+          "mean_rank": 18.75,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8781258206276219,
+          "mean_mse": 0.12277949352250345,
+          "mean_rank": 25.5,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8854667154881635,
+          "mean_mse": 0.11834991685170708,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8740589006749149,
+          "mean_mse": 0.1352296649577397,
+          "mean_rank": 26.75,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.9054894477537825,
+          "mean_mse": 0.09545763710551042,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9161836150589308,
+          "mean_mse": 0.09595799879853842,
+          "mean_rank": 5.0,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9285042288333026,
+          "mean_mse": 0.08163186765459961,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.9106979649895877,
+          "mean_mse": 0.09964996981478115,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.8751775581957848,
+          "mean_mse": 0.12940285334291213,
+          "mean_rank": 14.75,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8670012123381525,
+          "mean_mse": 0.12300970905938799,
+          "mean_rank": 37.0,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.9090953383320584,
+          "mean_mse": 0.09845127296389587,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.9016776407750147,
+          "mean_mse": 0.10857542307305104,
+          "mean_rank": 6.75,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9077490237395487,
+          "mean_mse": 0.10486941088972275,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9243526431276472,
+          "mean_mse": 0.07966611950829411,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9184184191224282,
+          "mean_mse": 0.10017639885463306,
+          "mean_rank": 4.25,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.893572666089997,
+          "mean_mse": 0.11034786681684153,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8695358786917557,
+          "mean_mse": 0.12728971102496034,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.918928315755118,
+          "mean_mse": 0.09977991231438901,
+          "mean_rank": 8.25,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.9057489081589856,
+          "mean_mse": 0.09954795736600791,
+          "mean_rank": 9.75,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8866798300407078,
+          "mean_mse": 0.11241318148413065,
+          "mean_rank": 24.75,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "AdaptiveFFT",
+      "params": {
+        "min_cutoff": 0.2,
+        "max_cutoff": 0.7
+      },
+      "mean_cosine_to_target": 0.8935353920616549,
+      "std_cosine_to_target": 0.03250033181775946,
+      "mean_mse_to_target": 0.11059730161761867,
+      "std_mse_to_target": 0.028686690062948172,
+      "mean_target_rank": 15.747524752475247,
+      "median_target_rank": 7.5,
+      "recall_at_1": 0.07920792079207921,
+      "recall_at_5": 0.4207920792079208,
+      "recall_at_10": 0.6188118811881188,
+      "mrr": 0.24573795458781666,
+      "train_time_ms": 8560.368649999986,
+      "inference_time_us": 21192.702297030177,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9159783532701411,
+          "mean_mse": 0.08487433564806299,
+          "mean_rank": 4.75,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9129712371223802,
+          "mean_mse": 0.09431023972635236,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.8951914417494643,
+          "mean_mse": 0.10088753273669475,
+          "mean_rank": 16.5,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8699395031525918,
+          "mean_mse": 0.12993298376456386,
+          "mean_rank": 37.0,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8612717829013535,
+          "mean_mse": 0.138807531436309,
+          "mean_rank": 41.75,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9074287246174239,
+          "mean_mse": 0.09229418497524337,
+          "mean_rank": 16.25,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.9026675206960876,
+          "mean_mse": 0.09574472799034989,
+          "mean_rank": 13.0,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.91434778775863,
+          "mean_mse": 0.09637951218358631,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8740349958079857,
+          "mean_mse": 0.13113990933817743,
+          "mean_rank": 13.0,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8829407966387152,
+          "mean_mse": 0.11804993487367464,
+          "mean_rank": 19.75,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8959366284414484,
+          "mean_mse": 0.11546023004927777,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.9041171238790079,
+          "mean_mse": 0.1058390871706828,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.9221052538464161,
+          "mean_mse": 0.09235529622086061,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8309235276223464,
+          "mean_mse": 0.17486947892268173,
+          "mean_rank": 54.4,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8828990231568132,
+          "mean_mse": 0.11800263204971081,
+          "mean_rank": 16.25,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.9000967684686453,
+          "mean_mse": 0.09256400482815486,
+          "mean_rank": 12.0,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9418109665790083,
+          "mean_mse": 0.06827582356620444,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.9086370362949232,
+          "mean_mse": 0.08573230585394902,
+          "mean_rank": 11.0,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9295184087042925,
+          "mean_mse": 0.08049456050495646,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8953972028426598,
+          "mean_mse": 0.10509403317657735,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8867597425666032,
+          "mean_mse": 0.11763163728343119,
+          "mean_rank": 28.5,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.9122865049273394,
+          "mean_mse": 0.08797323065119664,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8840489951044738,
+          "mean_mse": 0.11811799436940437,
+          "mean_rank": 18.25,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8867647555937151,
+          "mean_mse": 0.11232711813154299,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8662494723960259,
+          "mean_mse": 0.13073286314136837,
+          "mean_rank": 10.0,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8906720539861837,
+          "mean_mse": 0.100398063223077,
+          "mean_rank": 8.75,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8560311573764111,
+          "mean_mse": 0.1393166162060535,
+          "mean_rank": 28.5,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.8952625521428033,
+          "mean_mse": 0.12013748749256913,
+          "mean_rank": 6.75,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8514164308529872,
+          "mean_mse": 0.14539312841639113,
+          "mean_rank": 46.25,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.9165575692687238,
+          "mean_mse": 0.08908056578069254,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8811837925945973,
+          "mean_mse": 0.11868363095926715,
+          "mean_rank": 19.5,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8743940413839173,
+          "mean_mse": 0.12638271020365177,
+          "mean_rank": 29.25,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8826903157051526,
+          "mean_mse": 0.12150835005122393,
+          "mean_rank": 27.5,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8710941546659665,
+          "mean_mse": 0.13867156714973414,
+          "mean_rank": 28.25,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.902938578193165,
+          "mean_mse": 0.0986739281450711,
+          "mean_rank": 16.5,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9128833942880438,
+          "mean_mse": 0.09989083314444623,
+          "mean_rank": 5.75,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9273153842404341,
+          "mean_mse": 0.08351134611221189,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.9077051586056848,
+          "mean_mse": 0.10231342986945281,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.8715822964361919,
+          "mean_mse": 0.13382539590957762,
+          "mean_rank": 17.25,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8638202407365185,
+          "mean_mse": 0.12579824669241635,
+          "mean_rank": 37.75,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.9047455911900519,
+          "mean_mse": 0.10293332720409096,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.897855789991844,
+          "mean_mse": 0.11351827097179532,
+          "mean_rank": 8.25,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9056261233726798,
+          "mean_mse": 0.10768203790550303,
+          "mean_rank": 5.75,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9219959653624198,
+          "mean_mse": 0.08309292498282297,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9166467206750963,
+          "mean_mse": 0.10316031246998171,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.8918012859482909,
+          "mean_mse": 0.11303772621689703,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8645435197452516,
+          "mean_mse": 0.13198050864979632,
+          "mean_rank": 32.0,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.9181679579528232,
+          "mean_mse": 0.10179622678233077,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.9029209532130023,
+          "mean_mse": 0.10341518206667319,
+          "mean_rank": 11.25,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8831230861892594,
+          "mean_mse": 0.11656837942578668,
+          "mean_rank": 25.5,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "Basis_K4",
+      "params": {
+        "K": 4,
+        "iterations": 50
+      },
+      "mean_cosine_to_target": 0.8854651935813108,
+      "std_cosine_to_target": 0.03372256613681515,
+      "mean_mse_to_target": 0.09710809277072983,
+      "std_mse_to_target": 0.027344650282815856,
+      "mean_target_rank": 14.638613861386139,
+      "median_target_rank": 6.0,
+      "recall_at_1": 0.12871287128712872,
+      "recall_at_5": 0.4801980198019802,
+      "recall_at_10": 0.6683168316831684,
+      "mrr": 0.2827225177846988,
+      "train_time_ms": 59761.697335000004,
+      "inference_time_us": 287134.2693217825,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9097205852321721,
+          "mean_mse": 0.07365437107482123,
+          "mean_rank": 5.0,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.8984668939989793,
+          "mean_mse": 0.0840855809058284,
+          "mean_rank": 8.0,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.892082216636391,
+          "mean_mse": 0.0894697738161144,
+          "mean_rank": 13.25,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8627736688891743,
+          "mean_mse": 0.11504930252034452,
+          "mean_rank": 30.25,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8368048682042476,
+          "mean_mse": 0.1357629329217252,
+          "mean_rank": 60.75,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.8948791738890258,
+          "mean_mse": 0.08904275471717943,
+          "mean_rank": 18.25,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.8921920747447214,
+          "mean_mse": 0.08512649310601729,
+          "mean_rank": 14.25,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9157648111747537,
+          "mean_mse": 0.07161587346931148,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8720875749847998,
+          "mean_mse": 0.11655178382040539,
+          "mean_rank": 10.2,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8661728475084636,
+          "mean_mse": 0.11302818953304786,
+          "mean_rank": 24.25,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.874107141191798,
+          "mean_mse": 0.10643621620659464,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.9176290279884746,
+          "mean_mse": 0.07492836925757153,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.8956966479470438,
+          "mean_mse": 0.08768603992780773,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8232810561134046,
+          "mean_mse": 0.16034304128544066,
+          "mean_rank": 54.6,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8725244085959074,
+          "mean_mse": 0.11037247945730104,
+          "mean_rank": 16.5,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.9030017470362879,
+          "mean_mse": 0.07922165584082994,
+          "mean_rank": 8.0,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9191315646113589,
+          "mean_mse": 0.07253743482929793,
+          "mean_rank": 4.75,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.894920519319848,
+          "mean_mse": 0.08175340018705105,
+          "mean_rank": 11.0,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9153891467584655,
+          "mean_mse": 0.0743585724112141,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.9014824962354047,
+          "mean_mse": 0.0822368173436134,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8868855013575523,
+          "mean_mse": 0.10058816506661807,
+          "mean_rank": 23.5,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.9117975309013537,
+          "mean_mse": 0.07641756095237848,
+          "mean_rank": 7.5,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8965928203811806,
+          "mean_mse": 0.08877994848442425,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.836305666861376,
+          "mean_mse": 0.12782268817298853,
+          "mean_rank": 13.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8191736556272421,
+          "mean_mse": 0.14143114983376612,
+          "mean_rank": 41.0,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8856808542859484,
+          "mean_mse": 0.08836559227513521,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8155536679814489,
+          "mean_mse": 0.14585049219956733,
+          "mean_rank": 62.5,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.8741597594282668,
+          "mean_mse": 0.10480662117198768,
+          "mean_rank": 2.75,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.851273399569551,
+          "mean_mse": 0.12741670346192532,
+          "mean_rank": 35.25,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.8945745574283273,
+          "mean_mse": 0.08616209104684722,
+          "mean_rank": 8.25,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8452262026342561,
+          "mean_mse": 0.12507125639069566,
+          "mean_rank": 44.5,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8653822599726764,
+          "mean_mse": 0.11047467751297317,
+          "mean_rank": 24.25,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8784528660127645,
+          "mean_mse": 0.10137944564157482,
+          "mean_rank": 19.75,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.885784251685158,
+          "mean_mse": 0.0995547521793044,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.8917484590219893,
+          "mean_mse": 0.0898146618979628,
+          "mean_rank": 17.25,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9048632981422311,
+          "mean_mse": 0.08555744785532099,
+          "mean_rank": 5.0,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9140716671802923,
+          "mean_mse": 0.08105008929422611,
+          "mean_rank": 1.5,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.8945842533652701,
+          "mean_mse": 0.0944581977266296,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.868360322890724,
+          "mean_mse": 0.1105693506777859,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8840989507830106,
+          "mean_mse": 0.10074169757345201,
+          "mean_rank": 15.5,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.8990348190281789,
+          "mean_mse": 0.08430611743253774,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.8945633286635459,
+          "mean_mse": 0.09132275262121309,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9054891739274215,
+          "mean_mse": 0.08246532388872996,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9241965476667278,
+          "mean_mse": 0.06408703566394464,
+          "mean_rank": 2.25,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.912704838376944,
+          "mean_mse": 0.08302156035092365,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.9034768356915988,
+          "mean_mse": 0.08339551181768075,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8709070370644861,
+          "mean_mse": 0.10887147861762696,
+          "mean_rank": 20.0,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.9190908746670567,
+          "mean_mse": 0.07715896555477052,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.899055547146385,
+          "mean_mse": 0.08738164211868206,
+          "mean_rank": 6.0,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.9009526992779568,
+          "mean_mse": 0.08315091853220496,
+          "mean_rank": 6.75,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "Basis_K8",
+      "params": {
+        "K": 8,
+        "iterations": 50
+      },
+      "mean_cosine_to_target": 0.8831361797839463,
+      "std_cosine_to_target": 0.03521349433336573,
+      "mean_mse_to_target": 0.1004554244007498,
+      "std_mse_to_target": 0.029344567610042546,
+      "mean_target_rank": 18.559405940594058,
+      "median_target_rank": 9.0,
+      "recall_at_1": 0.07425742574257425,
+      "recall_at_5": 0.35148514851485146,
+      "recall_at_10": 0.5594059405940595,
+      "mrr": 0.21529035894353693,
+      "train_time_ms": 85913.62128099991,
+      "inference_time_us": 505483.0519950496,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9020294570748025,
+          "mean_mse": 0.07950362406986058,
+          "mean_rank": 9.25,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9106737902405628,
+          "mean_mse": 0.07615106833334877,
+          "mean_rank": 7.0,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.8913143927645936,
+          "mean_mse": 0.0904282905391238,
+          "mean_rank": 19.75,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8652485969814387,
+          "mean_mse": 0.115063136432066,
+          "mean_rank": 38.25,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8489865002333947,
+          "mean_mse": 0.1283258142309333,
+          "mean_rank": 51.25,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.908618908560969,
+          "mean_mse": 0.07797231941896532,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.8892196443723732,
+          "mean_mse": 0.08893732896921189,
+          "mean_rank": 19.25,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9038521274193932,
+          "mean_mse": 0.08278961192700418,
+          "mean_rank": 12.0,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8548808691903755,
+          "mean_mse": 0.13341204659665767,
+          "mean_rank": 26.4,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8741745699440331,
+          "mean_mse": 0.10760927466891086,
+          "mean_rank": 26.25,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8892734634669033,
+          "mean_mse": 0.09838549667011261,
+          "mean_rank": 12.0,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.8988364652030598,
+          "mean_mse": 0.09475777712277736,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.9066338345651193,
+          "mean_mse": 0.08406825798749189,
+          "mean_rank": 9.0,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8209175254068107,
+          "mean_mse": 0.1653800156115366,
+          "mean_rank": 67.2,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8811157483179454,
+          "mean_mse": 0.1051961463811032,
+          "mean_rank": 18.25,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.8977409782021585,
+          "mean_mse": 0.08302080621400983,
+          "mean_rank": 12.0,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9384217872991443,
+          "mean_mse": 0.05787571606846627,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.9098832869757717,
+          "mean_mse": 0.07034498996626389,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9043391479936161,
+          "mean_mse": 0.08607523085496545,
+          "mean_rank": 6.75,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8862567496041677,
+          "mean_mse": 0.09529726578990629,
+          "mean_rank": 14.75,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8709996275124212,
+          "mean_mse": 0.11168967405387242,
+          "mean_rank": 37.25,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.911803702739594,
+          "mean_mse": 0.07613148898293315,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8818415965520183,
+          "mean_mse": 0.1031567600278962,
+          "mean_rank": 16.75,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8552902057356292,
+          "mean_mse": 0.11522505822252731,
+          "mean_rank": 9.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8327299533572663,
+          "mean_mse": 0.13387270031152776,
+          "mean_rank": 41.0,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8835398724078408,
+          "mean_mse": 0.09030680187598376,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8230259708698995,
+          "mean_mse": 0.14088809301998717,
+          "mean_rank": 55.0,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.8637114497696173,
+          "mean_mse": 0.11473714938083708,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8491268193848341,
+          "mean_mse": 0.12917743476035562,
+          "mean_rank": 42.0,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.9200928097698847,
+          "mean_mse": 0.06820749322061993,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8787940273815764,
+          "mean_mse": 0.10174510915660813,
+          "mean_rank": 19.0,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8608803339659468,
+          "mean_mse": 0.11553318295475375,
+          "mean_rank": 36.0,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8866052552376756,
+          "mean_mse": 0.0973281123513719,
+          "mean_rank": 18.25,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8653070690359682,
+          "mean_mse": 0.1180122079671281,
+          "mean_rank": 25.0,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.8977106824223027,
+          "mean_mse": 0.08630802816181822,
+          "mean_rank": 15.25,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9123914947444781,
+          "mean_mse": 0.08055744808236237,
+          "mean_rank": 6.0,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9101861968942414,
+          "mean_mse": 0.08350550447788167,
+          "mean_rank": 2.0,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.8536290348773473,
+          "mean_mse": 0.12949972531993806,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.8680150146230247,
+          "mean_mse": 0.1105477405411981,
+          "mean_rank": 7.75,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8331943678174156,
+          "mean_mse": 0.1394454858711421,
+          "mean_rank": 32.5,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.8945447446050114,
+          "mean_mse": 0.09116334079579975,
+          "mean_rank": 10.25,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.8941712623613094,
+          "mean_mse": 0.09499539699047228,
+          "mean_rank": 11.0,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.8894964598305689,
+          "mean_mse": 0.09700792285789643,
+          "mean_rank": 10.25,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9208075578623005,
+          "mean_mse": 0.06794481700038893,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9155272564059251,
+          "mean_mse": 0.08309182761007015,
+          "mean_rank": 5.0,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.8885162522317185,
+          "mean_mse": 0.09626201920687417,
+          "mean_rank": 16.5,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8535941438512644,
+          "mean_mse": 0.12233774892249669,
+          "mean_rank": 42.0,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.9169546218341451,
+          "mean_mse": 0.07942084184572011,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.8849426776276778,
+          "mean_mse": 0.09955592411646917,
+          "mean_rank": 21.25,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8795791749144527,
+          "mean_mse": 0.10005166074616963,
+          "mean_rank": 16.25,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "Basis_K16",
+      "params": {
+        "K": 16,
+        "iterations": 50
+      },
+      "mean_cosine_to_target": 0.8915901827797708,
+      "std_cosine_to_target": 0.032716630064920815,
+      "mean_mse_to_target": 0.09666899054724122,
+      "std_mse_to_target": 0.027539130748039896,
+      "mean_target_rank": 15.351485148514852,
+      "median_target_rank": 7.0,
+      "recall_at_1": 0.08415841584158416,
+      "recall_at_5": 0.4603960396039604,
+      "recall_at_10": 0.6188118811881188,
+      "mrr": 0.25627486311953124,
+      "train_time_ms": 129700.44888799998,
+      "inference_time_us": 824974.9750247527,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9129380091062587,
+          "mean_mse": 0.0745362094674603,
+          "mean_rank": 5.0,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9131698556324948,
+          "mean_mse": 0.07805401917800356,
+          "mean_rank": 7.0,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.8951485353829364,
+          "mean_mse": 0.08885051394263548,
+          "mean_rank": 16.0,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8764672404461274,
+          "mean_mse": 0.10869638390555184,
+          "mean_rank": 27.5,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8657969517750068,
+          "mean_mse": 0.11934572135535637,
+          "mean_rank": 36.75,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9102735863543862,
+          "mean_mse": 0.07778170906304437,
+          "mean_rank": 14.5,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.8931182794651231,
+          "mean_mse": 0.087893647741441,
+          "mean_rank": 17.25,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9124413636335917,
+          "mean_mse": 0.08044636198486076,
+          "mean_rank": 7.5,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8738444921857939,
+          "mean_mse": 0.12073701175535112,
+          "mean_rank": 14.6,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8802755467014792,
+          "mean_mse": 0.10554345319927023,
+          "mean_rank": 21.25,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8988731375860352,
+          "mean_mse": 0.09503305560505644,
+          "mean_rank": 7.5,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.9071879566629792,
+          "mean_mse": 0.09124993272830399,
+          "mean_rank": 2.25,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.9173790413835652,
+          "mean_mse": 0.07848232999318044,
+          "mean_rank": 9.25,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8308298959345255,
+          "mean_mse": 0.16050150645345745,
+          "mean_rank": 51.6,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8821130591475786,
+          "mean_mse": 0.10656923268505061,
+          "mean_rank": 18.5,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.8992713958207255,
+          "mean_mse": 0.08339962628002895,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9396921987192672,
+          "mean_mse": 0.05825530077010002,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.9100159293918393,
+          "mean_mse": 0.07150120831924327,
+          "mean_rank": 8.25,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9244288452467417,
+          "mean_mse": 0.07180802695376573,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8966543007694077,
+          "mean_mse": 0.08936039655826339,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8838418116633772,
+          "mean_mse": 0.10599111398740632,
+          "mean_rank": 29.75,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.9098468603306668,
+          "mean_mse": 0.08037047045632191,
+          "mean_rank": 9.25,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8807554339690774,
+          "mean_mse": 0.10767658090573437,
+          "mean_rank": 20.0,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8727655242237098,
+          "mean_mse": 0.10348245313105646,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8528183074481264,
+          "mean_mse": 0.12048639219939059,
+          "mean_rank": 11.25,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8815140990258791,
+          "mean_mse": 0.09389546499489967,
+          "mean_rank": 9.0,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8487925614217176,
+          "mean_mse": 0.1258280824455437,
+          "mean_rank": 33.5,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.8887196060334409,
+          "mean_mse": 0.10409159279014642,
+          "mean_rank": 9.75,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8425701519554915,
+          "mean_mse": 0.13637882174819857,
+          "mean_rank": 51.75,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.917515313703842,
+          "mean_mse": 0.07141991488896826,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8773335852581781,
+          "mean_mse": 0.10441425049694979,
+          "mean_rank": 16.5,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8775788717885784,
+          "mean_mse": 0.10664290977149697,
+          "mean_rank": 24.75,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8840529193437247,
+          "mean_mse": 0.10310518851355661,
+          "mean_rank": 24.5,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8721455294701623,
+          "mean_mse": 0.11798594466120421,
+          "mean_rank": 27.0,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.9023494542248598,
+          "mean_mse": 0.08626942322223304,
+          "mean_rank": 15.25,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9114435225034045,
+          "mean_mse": 0.08410405671028763,
+          "mean_rank": 5.75,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9196366306960626,
+          "mean_mse": 0.07377776988674259,
+          "mean_rank": 2.75,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.8993890020842868,
+          "mean_mse": 0.09229918394451482,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.8712150279836205,
+          "mean_mse": 0.11372921798968033,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8615058740072454,
+          "mean_mse": 0.11614446484192673,
+          "mean_rank": 36.75,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.9064260022896391,
+          "mean_mse": 0.08533712486348588,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.9021125646797641,
+          "mean_mse": 0.08936989389745761,
+          "mean_rank": 5.0,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9024309390936024,
+          "mean_mse": 0.091349875742408,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9217106396859912,
+          "mean_mse": 0.0693341462046412,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9130665779782249,
+          "mean_mse": 0.08911871885669669,
+          "mean_rank": 4.25,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.891025120598459,
+          "mean_mse": 0.09772561592822143,
+          "mean_rank": 15.25,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8651630019905305,
+          "mean_mse": 0.11759969211097773,
+          "mean_rank": 29.5,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.918195682215027,
+          "mean_mse": 0.0841831296392635,
+          "mean_rank": 10.5,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.8996582951623644,
+          "mean_mse": 0.09019746585314563,
+          "mean_rank": 12.0,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8836371011734294,
+          "mean_mse": 0.10111978446149718,
+          "mean_rank": 23.75,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "Residual_K4_r0.01",
+      "params": {
+        "K": 4,
+        "alpha_reg": 0.01,
+        "fft_cutoff": 0.5
+      },
+      "mean_cosine_to_target": 0.8969345547092178,
+      "std_cosine_to_target": 0.032081271832789394,
+      "mean_mse_to_target": 0.10674061695177495,
+      "std_mse_to_target": 0.028361126800726576,
+      "mean_target_rank": 14.004950495049505,
+      "median_target_rank": 6.5,
+      "recall_at_1": 0.09405940594059406,
+      "recall_at_5": 0.4504950495049505,
+      "recall_at_10": 0.6782178217821783,
+      "mrr": 0.2651740942198535,
+      "train_time_ms": 36942.79020699992,
+      "inference_time_us": 364590.0402079219,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9173287121153619,
+          "mean_mse": 0.08221026872939073,
+          "mean_rank": 4.25,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9151943867111834,
+          "mean_mse": 0.09132657647699818,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.8984163588202205,
+          "mean_mse": 0.09711917973483306,
+          "mean_rank": 14.5,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8752992146220385,
+          "mean_mse": 0.12479964494053736,
+          "mean_rank": 30.75,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8639866688672094,
+          "mean_mse": 0.1352577687072294,
+          "mean_rank": 39.0,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9094382200031088,
+          "mean_mse": 0.08976946152132274,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.9048128257135377,
+          "mean_mse": 0.09221448170448869,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9166573952292351,
+          "mean_mse": 0.09254363882227323,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8796517983194103,
+          "mean_mse": 0.12566413568879714,
+          "mean_rank": 10.8,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8859932647715781,
+          "mean_mse": 0.11447250296329611,
+          "mean_rank": 18.75,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8990963487846443,
+          "mean_mse": 0.1118467488389511,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.9118909654731261,
+          "mean_mse": 0.09825518333150243,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.924138269490503,
+          "mean_mse": 0.08858237698828872,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8386162033416475,
+          "mean_mse": 0.16809668328314734,
+          "mean_rank": 41.2,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8882666515075349,
+          "mean_mse": 0.11305306389369056,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.9027324728029503,
+          "mean_mse": 0.08960614931428051,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9448086723844035,
+          "mean_mse": 0.06473217304639069,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.9137253471729216,
+          "mean_mse": 0.08076384695633534,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9324591923778608,
+          "mean_mse": 0.07724198411031981,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8991488535158583,
+          "mean_mse": 0.10102542343183628,
+          "mean_rank": 5.75,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8883225865773536,
+          "mean_mse": 0.11531474843589436,
+          "mean_rank": 26.75,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.9157590981257098,
+          "mean_mse": 0.0844524139196462,
+          "mean_rank": 7.0,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8862395924961258,
+          "mean_mse": 0.11511920221802949,
+          "mean_rank": 17.75,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8909203705354516,
+          "mean_mse": 0.10854027921208605,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8669855295191226,
+          "mean_mse": 0.12905599685327157,
+          "mean_rank": 10.0,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8947306920317328,
+          "mean_mse": 0.09710678102326849,
+          "mean_rank": 8.0,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8598745112800089,
+          "mean_mse": 0.13517838801224025,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.8977994733687487,
+          "mean_mse": 0.11691874848506768,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8560966676901419,
+          "mean_mse": 0.14063974355094297,
+          "mean_rank": 41.75,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.919791465489831,
+          "mean_mse": 0.08543422443497276,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8837491861690967,
+          "mean_mse": 0.11614659455073047,
+          "mean_rank": 18.0,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8795802533165558,
+          "mean_mse": 0.12141490084210214,
+          "mean_rank": 24.75,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8856729495958222,
+          "mean_mse": 0.11808954216553572,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.874902143051818,
+          "mean_mse": 0.13452336597380313,
+          "mean_rank": 26.0,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.9053845630399125,
+          "mean_mse": 0.09559565500513595,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9168684032190827,
+          "mean_mse": 0.09489273447413678,
+          "mean_rank": 4.75,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.928440767314882,
+          "mean_mse": 0.08164093236676048,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.9109328660150816,
+          "mean_mse": 0.09926178478271193,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.8760149264054904,
+          "mean_mse": 0.12876213143694323,
+          "mean_rank": 14.5,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8681825386588331,
+          "mean_mse": 0.12239901962353465,
+          "mean_rank": 36.75,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.9094345945404262,
+          "mean_mse": 0.09818815674022963,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.902199561354155,
+          "mean_mse": 0.10794385122353742,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9075721730312021,
+          "mean_mse": 0.10485234963966567,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9249067353362171,
+          "mean_mse": 0.07925559676815314,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9183580595210068,
+          "mean_mse": 0.10014140216481981,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.893649761928774,
+          "mean_mse": 0.11009535833365061,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8701312286316748,
+          "mean_mse": 0.12669039501982274,
+          "mean_rank": 25.25,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.9189110162197988,
+          "mean_mse": 0.09958512594897662,
+          "mean_rank": 8.25,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.9057699514515073,
+          "mean_mse": 0.09920590981633212,
+          "mean_rank": 10.0,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8867845244603261,
+          "mean_mse": 0.11193432581573746,
+          "mean_rank": 23.75,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "Residual_K4_r0.1",
+      "params": {
+        "K": 4,
+        "alpha_reg": 0.1,
+        "fft_cutoff": 0.5
+      },
+      "mean_cosine_to_target": 0.896934243434012,
+      "std_cosine_to_target": 0.03208132752935873,
+      "mean_mse_to_target": 0.10674092734327327,
+      "std_mse_to_target": 0.028361170254850816,
+      "mean_target_rank": 14.004950495049505,
+      "median_target_rank": 6.5,
+      "recall_at_1": 0.09405940594059406,
+      "recall_at_5": 0.4504950495049505,
+      "recall_at_10": 0.6782178217821783,
+      "mrr": 0.2651740942198535,
+      "train_time_ms": 31143.685208999843,
+      "inference_time_us": 266874.5609306924,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9173286734649858,
+          "mean_mse": 0.08221040185851389,
+          "mean_rank": 4.25,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9151942949283771,
+          "mean_mse": 0.0913267069616848,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.8984162275064951,
+          "mean_mse": 0.09711932223067164,
+          "mean_rank": 14.5,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8752989793299486,
+          "mean_mse": 0.12479984194832491,
+          "mean_rank": 30.75,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8639864814231006,
+          "mean_mse": 0.1352578658695432,
+          "mean_rank": 39.0,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9094381265508107,
+          "mean_mse": 0.08976950892696886,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.9048127394452388,
+          "mean_mse": 0.09221464947431939,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9166573756235523,
+          "mean_mse": 0.09254364676902041,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8796516253351138,
+          "mean_mse": 0.125664189388528,
+          "mean_rank": 10.8,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8859929252138075,
+          "mean_mse": 0.11447291350467718,
+          "mean_rank": 18.75,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8990961562578713,
+          "mean_mse": 0.11184701485693542,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.9118904380083814,
+          "mean_mse": 0.09825605143666019,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.9241376911991852,
+          "mean_mse": 0.08858344764655407,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8386156639076068,
+          "mean_mse": 0.16809723392655918,
+          "mean_rank": 41.2,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8882664565047804,
+          "mean_mse": 0.11305310370603817,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.9027323276262782,
+          "mean_mse": 0.08960628729651803,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9448085468488077,
+          "mean_mse": 0.0647321902286306,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.9137249502190934,
+          "mean_mse": 0.08076419192541841,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9324586648535206,
+          "mean_mse": 0.07724240316103557,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8991486286424752,
+          "mean_mse": 0.10102582451244281,
+          "mean_rank": 5.75,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8883226220889621,
+          "mean_mse": 0.11531469283758339,
+          "mean_rank": 26.75,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.915758971188729,
+          "mean_mse": 0.084452558672212,
+          "mean_rank": 7.0,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8862388044501343,
+          "mean_mse": 0.11511993015725477,
+          "mean_rank": 17.75,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8909197086916298,
+          "mean_mse": 0.10854111182987401,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.866985228929728,
+          "mean_mse": 0.12905620790848427,
+          "mean_rank": 10.0,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8947298341717276,
+          "mean_mse": 0.09710777845738254,
+          "mean_rank": 8.0,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8598740060701204,
+          "mean_mse": 0.13517887401037765,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.897798924845309,
+          "mean_mse": 0.1169193746574403,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8560960022031285,
+          "mean_mse": 0.14064050695054822,
+          "mean_rank": 41.75,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.9197913471204601,
+          "mean_mse": 0.08543431295273937,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8837489351990909,
+          "mean_mse": 0.11614676620869666,
+          "mean_rank": 18.0,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8795799447652726,
+          "mean_mse": 0.12141504744359985,
+          "mean_rank": 24.75,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8856727058210228,
+          "mean_mse": 0.11808967697131074,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8749018055873117,
+          "mean_mse": 0.13452353804648295,
+          "mean_rank": 26.0,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.9053843585477342,
+          "mean_mse": 0.09559580781126296,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9168681619784438,
+          "mean_mse": 0.09489290355730344,
+          "mean_rank": 4.75,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9284407336727925,
+          "mean_mse": 0.0816409351868434,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.9109322753409901,
+          "mean_mse": 0.09926224833108019,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.876014369036193,
+          "mean_mse": 0.1287626362172703,
+          "mean_rank": 14.5,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8681819847250605,
+          "mean_mse": 0.1223993175173437,
+          "mean_rank": 36.75,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.9094342550718285,
+          "mean_mse": 0.09818857951761682,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.90219866114574,
+          "mean_mse": 0.10794472725121704,
+          "mean_rank": 6.5,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9075720257610371,
+          "mean_mse": 0.10485239872110805,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.924906594815823,
+          "mean_mse": 0.07925578127459038,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9183578916479036,
+          "mean_mse": 0.10014152981293814,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.8936495741745054,
+          "mean_mse": 0.11009561648416707,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8701303875154388,
+          "mean_mse": 0.12669108594832937,
+          "mean_rank": 25.25,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.9189109942611571,
+          "mean_mse": 0.09958516513032467,
+          "mean_rank": 8.25,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.9057698506653286,
+          "mean_mse": 0.0992060607324207,
+          "mean_rank": 10.0,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8867845387248935,
+          "mean_mse": 0.11193450877968107,
+          "mean_rank": 23.75,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "Residual_K8_r0.01",
+      "params": {
+        "K": 8,
+        "alpha_reg": 0.01,
+        "fft_cutoff": 0.5
+      },
+      "mean_cosine_to_target": 0.8971069112009378,
+      "std_cosine_to_target": 0.032077483710968115,
+      "mean_mse_to_target": 0.1066101234843308,
+      "std_mse_to_target": 0.028358083480133998,
+      "mean_target_rank": 13.915841584158416,
+      "median_target_rank": 6.0,
+      "recall_at_1": 0.09405940594059406,
+      "recall_at_5": 0.45544554455445546,
+      "recall_at_10": 0.6782178217821783,
+      "mrr": 0.2665414449285918,
+      "train_time_ms": 35446.53137900014,
+      "inference_time_us": 369128.5335742573,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9173009054635232,
+          "mean_mse": 0.08224230136001093,
+          "mean_rank": 4.25,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.91537386751931,
+          "mean_mse": 0.09122036179131685,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.8986076694158387,
+          "mean_mse": 0.09703867934926932,
+          "mean_rank": 14.25,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.875438332809183,
+          "mean_mse": 0.1247862259103493,
+          "mean_rank": 30.5,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8642298876610683,
+          "mean_mse": 0.13493364799345883,
+          "mean_rank": 39.0,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9094856852978874,
+          "mean_mse": 0.08976399986952437,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.9049635799410591,
+          "mean_mse": 0.09212143218308137,
+          "mean_rank": 11.25,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9166811336655354,
+          "mean_mse": 0.09255466217574584,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8796738619910085,
+          "mean_mse": 0.12566357850451382,
+          "mean_rank": 10.8,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8863480558856454,
+          "mean_mse": 0.11429041136343299,
+          "mean_rank": 18.25,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.899249744289068,
+          "mean_mse": 0.11182070623047181,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.912031314331622,
+          "mean_mse": 0.09813769405926967,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.9243667845098414,
+          "mean_mse": 0.08823985011738414,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8386298946318785,
+          "mean_mse": 0.1680308192472102,
+          "mean_rank": 41.4,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8884489669507233,
+          "mean_mse": 0.11289951890670846,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.9027681953631704,
+          "mean_mse": 0.08955968595483921,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9449183959375587,
+          "mean_mse": 0.06463433564255483,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.9139298898128378,
+          "mean_mse": 0.0805884007011891,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9328994223814051,
+          "mean_mse": 0.07665490756674523,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.899316435438914,
+          "mean_mse": 0.10091996689730302,
+          "mean_rank": 5.75,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8882933118601558,
+          "mean_mse": 0.11538147188832219,
+          "mean_rank": 26.75,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.9156732134536766,
+          "mean_mse": 0.08447896220019366,
+          "mean_rank": 7.0,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8865777326715765,
+          "mean_mse": 0.11476811754170049,
+          "mean_rank": 17.75,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8914317702091216,
+          "mean_mse": 0.10824505347275534,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8670253653996894,
+          "mean_mse": 0.12903352868058732,
+          "mean_rank": 10.0,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8949629901180183,
+          "mean_mse": 0.09697121953120696,
+          "mean_rank": 8.0,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8600780214822114,
+          "mean_mse": 0.13504884971942932,
+          "mean_rank": 25.25,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.8979869429499532,
+          "mean_mse": 0.11685642575518608,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8562169052764934,
+          "mean_mse": 0.14053373821589796,
+          "mean_rank": 41.5,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.919809152178466,
+          "mean_mse": 0.08543519893543941,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.8837941378157128,
+          "mean_mse": 0.11613926120228481,
+          "mean_rank": 17.75,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8795795963837957,
+          "mean_mse": 0.12145441636012366,
+          "mean_rank": 24.75,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8858773640335436,
+          "mean_mse": 0.1180140097101723,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8750810193001395,
+          "mean_mse": 0.13439647159682813,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.905547974468244,
+          "mean_mse": 0.09546328339255647,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9169629892394485,
+          "mean_mse": 0.09482363399847486,
+          "mean_rank": 4.75,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9285383146345814,
+          "mean_mse": 0.08156451119931184,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.9111925414818782,
+          "mean_mse": 0.09901348364902783,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.8765911373999943,
+          "mean_mse": 0.12832767352451796,
+          "mean_rank": 14.25,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.8685005520140698,
+          "mean_mse": 0.12203307400535826,
+          "mean_rank": 36.75,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.9094753113644738,
+          "mean_mse": 0.09812336120231505,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.9028951770168818,
+          "mean_mse": 0.10749368991930576,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9077937219660188,
+          "mean_mse": 0.10472340428014539,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9251468740255552,
+          "mean_mse": 0.07900791235416235,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.9185673162244747,
+          "mean_mse": 0.09990180326810766,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.8937329523640143,
+          "mean_mse": 0.110027943661241,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8704071382729957,
+          "mean_mse": 0.12646902598870138,
+          "mean_rank": 25.0,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.919044414664864,
+          "mean_mse": 0.09953579683344212,
+          "mean_rank": 7.75,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.9059413797537013,
+          "mean_mse": 0.09910219072589359,
+          "mean_rank": 9.75,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8869357351708114,
+          "mean_mse": 0.11191893788370652,
+          "mean_rank": 23.75,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "Residual_K8_r0.1",
+      "params": {
+        "K": 8,
+        "alpha_reg": 0.1,
+        "fft_cutoff": 0.5
+      },
+      "mean_cosine_to_target": 0.8971066686145762,
+      "std_cosine_to_target": 0.032077533300199024,
+      "mean_mse_to_target": 0.10661036452524726,
+      "std_mse_to_target": 0.028358117183169166,
+      "mean_target_rank": 13.915841584158416,
+      "median_target_rank": 6.0,
+      "recall_at_1": 0.09405940594059406,
+      "recall_at_5": 0.45544554455445546,
+      "recall_at_10": 0.6782178217821783,
+      "mrr": 0.2665414449285918,
+      "train_time_ms": 40973.87553899989,
+      "inference_time_us": 415859.04385148507,
+      "num_queries": 202,
+      "num_answers": 202,
+      "num_clusters": 50,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.9173009201475792,
+          "mean_mse": 0.08224237287132173,
+          "mean_rank": 4.25,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.9153738689544056,
+          "mean_mse": 0.09122037414465964,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.89860751431789,
+          "mean_mse": 0.0970388062861497,
+          "mean_rank": 14.25,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.8754381121813614,
+          "mean_mse": 0.12478638595718539,
+          "mean_rank": 30.5,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.8642295575359038,
+          "mean_mse": 0.13493394537996084,
+          "mean_rank": 39.0,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.9094855966081519,
+          "mean_mse": 0.08976403601248528,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.9049636173558738,
+          "mean_mse": 0.09212146575992268,
+          "mean_rank": 11.25,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.9166811269402604,
+          "mean_mse": 0.09255463711782091,
+          "mean_rank": 4.5,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8796737362951157,
+          "mean_mse": 0.12566361507135748,
+          "mean_rank": 10.8,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.8863477190257165,
+          "mean_mse": 0.11429075202003999,
+          "mean_rank": 18.25,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.8992494841248329,
+          "mean_mse": 0.11182096508166622,
+          "mean_rank": 7.25,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.9120310292187773,
+          "mean_mse": 0.09813820848237038,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.9243664378493442,
+          "mean_mse": 0.08824064642205069,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.8386294872858523,
+          "mean_mse": 0.16803119985092346,
+          "mean_rank": 41.4,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8884487525914078,
+          "mean_mse": 0.1128995901773623,
+          "mean_rank": 12.25,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.90276814050481,
+          "mean_mse": 0.08955975150621734,
+          "mean_rank": 11.5,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.9449182644309133,
+          "mean_mse": 0.06463437316472441,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.913929527223966,
+          "mean_mse": 0.08058873828044139,
+          "mean_rank": 8.5,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.9328990413074183,
+          "mean_mse": 0.07665537521264114,
+          "mean_rank": 3.5,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8993162429967754,
+          "mean_mse": 0.10092032439291161,
+          "mean_rank": 5.75,
+          "num_queries": 4
+        },
+        "scc-tarjan": {
+          "mean_cosine": 0.8882932610920822,
+          "mean_mse": 0.11538144924842492,
+          "mean_rank": 26.75,
+          "num_queries": 4
+        },
+        "recursion-types": {
+          "mean_cosine": 0.9156731403359638,
+          "mean_mse": 0.08447904948371647,
+          "mean_rank": 7.0,
+          "num_queries": 4
+        },
+        "memoization-strategy": {
+          "mean_cosine": 0.8865771984867812,
+          "mean_mse": 0.11476857503510121,
+          "mean_rank": 17.75,
+          "num_queries": 4
+        },
+        "bash-subshells": {
+          "mean_cosine": 0.8914311349903791,
+          "mean_mse": 0.10824573991198082,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "process-substitution": {
+          "mean_cosine": 0.8670251331586735,
+          "mean_mse": 0.12903370098636885,
+          "mean_rank": 10.0,
+          "num_queries": 4
+        },
+        "bash-arrays": {
+          "mean_cosine": 0.8949622775276463,
+          "mean_mse": 0.09697201621210379,
+          "mean_rank": 8.0,
+          "num_queries": 4
+        },
+        "bash-redirections": {
+          "mean_cosine": 0.8600775404061507,
+          "mean_mse": 0.13504924215763903,
+          "mean_rank": 25.25,
+          "num_queries": 4
+        },
+        "bash-trap": {
+          "mean_cosine": 0.897986414306247,
+          "mean_mse": 0.11685703331803086,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "bash-string-ops": {
+          "mean_cosine": 0.8562164266648064,
+          "mean_mse": 0.1405342780945911,
+          "mean_rank": 41.5,
+          "num_queries": 4
+        },
+        "compiler-driver": {
+          "mean_cosine": 0.9198090521889061,
+          "mean_mse": 0.0854352682288728,
+          "mean_rank": 5.5,
+          "num_queries": 4
+        },
+        "compile-api-reference": {
+          "mean_cosine": 0.883793976801041,
+          "mean_mse": 0.11613935195549191,
+          "mean_rank": 17.75,
+          "num_queries": 4
+        },
+        "bash-constraints": {
+          "mean_cosine": 0.8795793735636019,
+          "mean_mse": 0.12145453614828754,
+          "mean_rank": 24.75,
+          "num_queries": 4
+        },
+        "data-sources-overview": {
+          "mean_cosine": 0.8858771265315996,
+          "mean_mse": 0.1180141390098093,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "data-sources-pipeline": {
+          "mean_cosine": 0.8750806446942777,
+          "mean_mse": 0.1343966840154175,
+          "mean_rank": 25.75,
+          "num_queries": 4
+        },
+        "first-bash-program": {
+          "mean_cosine": 0.90554789860085,
+          "mean_mse": 0.09546332063793891,
+          "mean_rank": 15.0,
+          "num_queries": 4
+        },
+        "compile-workflow": {
+          "mean_cosine": 0.9169627835507359,
+          "mean_mse": 0.09482378035024137,
+          "mean_rank": 4.75,
+          "num_queries": 4
+        },
+        "partitioning-overview": {
+          "mean_cosine": 0.9285382994373451,
+          "mean_mse": 0.08156453639024029,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "partitioning-strategies": {
+          "mean_cosine": 0.9111919776776493,
+          "mean_mse": 0.09901393384590952,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "gnu-parallel-backend": {
+          "mean_cosine": 0.8765908295675987,
+          "mean_mse": 0.12832808015691866,
+          "mean_rank": 14.25,
+          "num_queries": 4
+        },
+        "batch-vs-streaming": {
+          "mean_cosine": 0.868500100093283,
+          "mean_mse": 0.1220333837694231,
+          "mean_rank": 36.75,
+          "num_queries": 4
+        },
+        "prolog-introspection": {
+          "mean_cosine": 0.9094750507701667,
+          "mean_mse": 0.09812369635429098,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "call-graph-construction": {
+          "mean_cosine": 0.9028946857462997,
+          "mean_mse": 0.10749427411531096,
+          "mean_rank": 6.25,
+          "num_queries": 4
+        },
+        "scc-detection": {
+          "mean_cosine": 0.9077935931392616,
+          "mean_mse": 0.10472344882896929,
+          "mean_rank": 5.25,
+          "num_queries": 4
+        },
+        "pattern-matching-detection": {
+          "mean_cosine": 0.9251468055768819,
+          "mean_mse": 0.07900803450303204,
+          "mean_rank": 3.0,
+          "num_queries": 4
+        },
+        "tail-recursion": {
+          "mean_cosine": 0.918567223038469,
+          "mean_mse": 0.09990188724142152,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "linear-recursion": {
+          "mean_cosine": 0.8937328556885956,
+          "mean_mse": 0.11002810511249361,
+          "mean_rank": 12.75,
+          "num_queries": 4
+        },
+        "tree-recursion": {
+          "mean_cosine": 0.8704066633056273,
+          "mean_mse": 0.12646939596041737,
+          "mean_rank": 25.0,
+          "num_queries": 4
+        },
+        "mutual-recursion": {
+          "mean_cosine": 0.9190442766504906,
+          "mean_mse": 0.0995358658647567,
+          "mean_rank": 7.75,
+          "num_queries": 4
+        },
+        "stream-compilation": {
+          "mean_cosine": 0.9059413032509441,
+          "mean_mse": 0.09910229386441656,
+          "mean_rank": 9.75,
+          "num_queries": 4
+        },
+        "bash-pipeline-patterns": {
+          "mean_cosine": 0.8869357354021423,
+          "mean_mse": 0.11191904080058689,
+          "mean_rank": 23.75,
+          "num_queries": 4
+        }
+      }
+    }
+  ]
+}

@@ -15,6 +15,17 @@ Usage:
     python scripts/benchmark_answer_level.py
     python scripts/benchmark_answer_level.py --max-clusters 50
     python scripts/benchmark_answer_level.py --output reports/answer_level.json
+
+    # Real embeddings (requires sentence-transformers):
+    python scripts/benchmark_answer_level.py --embedder all-minilm
+    python scripts/benchmark_answer_level.py --embedder e5-small
+    python scripts/benchmark_answer_level.py --embedder modernbert
+
+Embedder Options:
+    hash         - Hash-based synthetic embeddings (fast, no semantic meaning)
+    all-minilm   - all-MiniLM-L6-v2 (384 dim, 512 context)
+    e5-small     - intfloat/e5-small-v2 (384 dim, 512 context)
+    modernbert   - nomic-ai/nomic-embed-text-v1.5 (768 dim, 8192 context)
 """
 
 import argparse
@@ -22,13 +33,41 @@ import json
 import time
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Tuple, Any, Optional, Callable
 from dataclasses import dataclass, field
 from collections import defaultdict
 import numpy as np
 
 # Add source path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "unifyweaver" / "targets" / "python_runtime"))
+
+# Embedding model configurations
+EMBEDDER_CONFIGS = {
+    "hash": {
+        "name": "Hash-based (synthetic)",
+        "dim": 64,
+        "model_id": None,
+        "description": "Deterministic pseudo-random vectors (no semantic meaning)"
+    },
+    "all-minilm": {
+        "name": "all-MiniLM-L6-v2",
+        "dim": 384,
+        "model_id": "all-MiniLM-L6-v2",
+        "description": "Small, fast BERT model (384 dim, 512 context)"
+    },
+    "e5-small": {
+        "name": "intfloat/e5-small-v2",
+        "dim": 384,
+        "model_id": "intfloat/e5-small-v2",
+        "description": "E5 small model with query/passage prefixes (384 dim)"
+    },
+    "modernbert": {
+        "name": "nomic-ai/nomic-embed-text-v1.5",
+        "dim": 768,
+        "model_id": "nomic-ai/nomic-embed-text-v1.5",
+        "description": "ModernBERT with 8192 token context (768 dim)"
+    }
+}
 
 from smoothing_basis import SmoothingBasisProjection, MultiHeadLDABaseline, ResidualBasisProjection
 from fft_smoothing import FFTSmoothingProjection, AdaptiveFFTSmoothing
@@ -119,6 +158,82 @@ def simple_embedding(text: str, dim: int = 64) -> np.ndarray:
     return emb / (np.linalg.norm(emb) + 1e-8)
 
 
+class EmbeddingProvider:
+    """Wrapper for different embedding providers."""
+
+    def __init__(self, embedder_type: str = "hash", device: str = "auto"):
+        self.embedder_type = embedder_type
+        self.config = EMBEDDER_CONFIGS[embedder_type]
+        self.dim = self.config["dim"]
+        self._provider = None
+        self._cache = {}  # Cache embeddings to avoid recomputing
+
+        if embedder_type != "hash":
+            self._init_model_provider(device)
+
+    def _init_model_provider(self, device: str):
+        """Initialize the actual model provider."""
+        try:
+            from modernbert_embedding import SentenceTransformerProvider
+            model_id = self.config["model_id"]
+            print(f"Loading embedding model: {model_id}...")
+            self._provider = SentenceTransformerProvider(
+                model_name=model_id,
+                device=device
+            )
+            # Update dim from actual model
+            self.dim = self._provider.dimension
+            print(f"  Loaded: {model_id}, dim={self.dim}, device={self._provider.device}")
+        except ImportError as e:
+            raise ImportError(
+                f"Failed to load embedding model. Install sentence-transformers:\n"
+                f"  pip install sentence-transformers\n"
+                f"Error: {e}"
+            )
+
+    def get_embedding(self, text: str) -> np.ndarray:
+        """Get embedding for text, with caching."""
+        if text in self._cache:
+            return self._cache[text]
+
+        if self.embedder_type == "hash":
+            emb = simple_embedding(text, self.dim)
+        else:
+            # Add prefix for e5 models
+            if "e5" in self.embedder_type:
+                # e5 uses "query: " and "passage: " prefixes
+                # For Q-A pairs, both can use query prefix for comparison
+                text = f"query: {text}"
+            emb = np.array(self._provider.get_embedding(text))
+
+        self._cache[text] = emb
+        return emb
+
+    def get_embeddings_batch(self, texts: List[str]) -> List[np.ndarray]:
+        """Get embeddings for multiple texts."""
+        if self.embedder_type == "hash":
+            return [self.get_embedding(t) for t in texts]
+
+        # Check cache first
+        uncached_texts = [t for t in texts if t not in self._cache]
+        if uncached_texts:
+            # Add prefixes for e5
+            if "e5" in self.embedder_type:
+                prefixed = [f"query: {t}" for t in uncached_texts]
+            else:
+                prefixed = uncached_texts
+
+            embeddings = self._provider.get_embeddings(prefixed)
+            for t, emb in zip(uncached_texts, embeddings):
+                self._cache[t] = np.array(emb)
+
+        return [self._cache[t] for t in texts]
+
+    def clear_cache(self):
+        """Clear the embedding cache."""
+        self._cache.clear()
+
+
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     """Compute cosine similarity."""
     a_norm = np.linalg.norm(a)
@@ -128,13 +243,20 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (a_norm * b_norm))
 
 
-def prepare_data(clusters: Dict[str, List[Dict]], dim: int = 64) -> Tuple[
+def prepare_data(
+    clusters: Dict[str, List[Dict]],
+    embedding_provider: EmbeddingProvider
+) -> Tuple[
     List[Tuple[np.ndarray, np.ndarray]],  # (Q, A) for smoothing
     List[Dict],  # Individual Q-A pairs with embeddings
     Dict[str, np.ndarray]  # answer_id -> embedding
 ]:
     """
     Prepare data for answer-level benchmarking.
+
+    Args:
+        clusters: Dict mapping cluster_id to list of Q-A pair dicts
+        embedding_provider: Provider for generating embeddings
 
     Returns:
         clusters_for_smoothing: List of (Q, A) tuples per cluster
@@ -145,40 +267,62 @@ def prepare_data(clusters: Dict[str, List[Dict]], dim: int = 64) -> Tuple[
     qa_pairs = []
     answer_index = {}
 
-    for cluster_id, pairs in clusters.items():
-        cluster_questions = []
-        cluster_answers = []
+    # Collect all texts for batch embedding
+    all_q_texts = []
+    all_a_texts = []
+    text_to_cluster = []  # Track which cluster each text belongs to
 
+    for cluster_id, pairs in clusters.items():
         for i, pair in enumerate(pairs):
             q_text = get_text(pair.get("question", ""))
             a_text = get_text(pair.get("answer", ""))
-
             if q_text and a_text:
-                q_emb = simple_embedding(q_text, dim)
-                a_emb = simple_embedding(a_text, dim)
+                all_q_texts.append(q_text)
+                all_a_texts.append(a_text)
+                text_to_cluster.append((cluster_id, i, q_text, a_text))
 
-                answer_id = f"{cluster_id}_{i}"
-                query_id = f"q_{cluster_id}_{i}"
+    # Generate embeddings (batch for efficiency with real models)
+    print(f"  Generating embeddings for {len(all_q_texts)} Q-A pairs...")
+    start_time = time.perf_counter()
 
-                cluster_questions.append(q_emb)
-                cluster_answers.append(a_emb)
+    q_embeddings = embedding_provider.get_embeddings_batch(all_q_texts)
+    a_embeddings = embedding_provider.get_embeddings_batch(all_a_texts)
 
-                qa_pairs.append({
-                    'query_id': query_id,
-                    'answer_id': answer_id,
-                    'cluster_id': cluster_id,
-                    'query_emb': q_emb,
-                    'answer_emb': a_emb,
-                    'query_text': q_text,
-                    'answer_text': a_text,
-                })
+    embed_time = time.perf_counter() - start_time
+    print(f"  Embedding time: {embed_time:.2f}s ({len(all_q_texts)/embed_time:.1f} pairs/sec)")
 
-                answer_index[answer_id] = a_emb
+    # Organize by cluster
+    cluster_data = defaultdict(lambda: {'questions': [], 'answers': [], 'pairs': []})
 
-        if cluster_questions:
-            Q = np.array(cluster_questions)
+    for idx, (cluster_id, i, q_text, a_text) in enumerate(text_to_cluster):
+        q_emb = q_embeddings[idx]
+        a_emb = a_embeddings[idx]
+
+        answer_id = f"{cluster_id}_{i}"
+        query_id = f"q_{cluster_id}_{i}"
+
+        cluster_data[cluster_id]['questions'].append(q_emb)
+        cluster_data[cluster_id]['answers'].append(a_emb)
+        cluster_data[cluster_id]['pairs'].append({
+            'query_id': query_id,
+            'answer_id': answer_id,
+            'cluster_id': cluster_id,
+            'query_emb': q_emb,
+            'answer_emb': a_emb,
+            'query_text': q_text,
+            'answer_text': a_text,
+        })
+
+        answer_index[answer_id] = a_emb
+
+    # Build clusters_for_smoothing and qa_pairs
+    for cluster_id, data in cluster_data.items():
+        qa_pairs.extend(data['pairs'])
+
+        if data['questions']:
+            Q = np.array(data['questions'])
             # Use mean answer as cluster representation for smoothing
-            A = np.mean(cluster_answers, axis=0).reshape(1, -1)
+            A = np.mean(data['answers'], axis=0).reshape(1, -1)
             clusters_for_smoothing.append((Q, A))
 
     return clusters_for_smoothing, qa_pairs, answer_index
@@ -516,6 +660,16 @@ def print_cluster_analysis(results: List[MethodResult], top_n: int = 5):
 
 def save_results(results: List[MethodResult], output_path: Path):
     """Save results to JSON with metric explanations."""
+    save_results_with_embedder(results, output_path, "hash", 64)
+
+
+def save_results_with_embedder(
+    results: List[MethodResult],
+    output_path: Path,
+    embedder: str,
+    dim: int
+):
+    """Save results to JSON with metric explanations and embedder info."""
 
     # Metric legend for documentation
     metric_legend = {
@@ -544,6 +698,15 @@ def save_results(results: List[MethodResult], output_path: Path):
             "good_value": "Higher is better (1.0 = always in top k)",
             "range": "[0.0, 1.0]"
         }
+    }
+
+    # Embedder info
+    embedder_info = {
+        "embedder": embedder,
+        "model_name": EMBEDDER_CONFIGS[embedder]["name"],
+        "model_id": EMBEDDER_CONFIGS[embedder]["model_id"],
+        "dimension": dim,
+        "description": EMBEDDER_CONFIGS[embedder]["description"],
     }
 
     # Build results list
@@ -580,6 +743,7 @@ def save_results(results: List[MethodResult], output_path: Path):
     }
 
     output = {
+        "embedder": embedder_info,
         "metric_legend": metric_legend,
         "winners": winners,
         "results": method_results,
@@ -592,11 +756,31 @@ def save_results(results: List[MethodResult], output_path: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Answer-level benchmark for LDA smoothing")
+    parser = argparse.ArgumentParser(
+        description="Answer-level benchmark for LDA smoothing",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Embedder Options:
+  hash         Hash-based synthetic embeddings (fast, no semantic meaning)
+  all-minilm   all-MiniLM-L6-v2 (384 dim, 512 context)
+  e5-small     intfloat/e5-small-v2 (384 dim, 512 context)
+  modernbert   nomic-ai/nomic-embed-text-v1.5 (768 dim, 8192 context)
+
+Examples:
+  python scripts/benchmark_answer_level.py --embedder hash
+  python scripts/benchmark_answer_level.py --embedder all-minilm
+  python scripts/benchmark_answer_level.py --embedder e5-small --max-clusters 50
+  python scripts/benchmark_answer_level.py --embedder modernbert --device cuda
+        """
+    )
     parser.add_argument("--max-clusters", type=int, default=None,
                         help="Limit number of clusters")
-    parser.add_argument("--dim", type=int, default=64,
-                        help="Embedding dimension")
+    parser.add_argument("--embedder", type=str, default="hash",
+                        choices=list(EMBEDDER_CONFIGS.keys()),
+                        help="Embedding model to use (default: hash)")
+    parser.add_argument("--device", type=str, default="auto",
+                        choices=["auto", "cuda", "mps", "cpu"],
+                        help="Device for embedding model (default: auto)")
     parser.add_argument("--output", type=Path,
                         default=Path("reports/answer_level_benchmark.json"),
                         help="Output file")
@@ -606,6 +790,16 @@ def main():
                         help="Print per-cluster breakdown")
 
     args = parser.parse_args()
+
+    # Initialize embedding provider
+    print(f"\n{'=' * 80}")
+    print(f"EMBEDDING MODEL: {EMBEDDER_CONFIGS[args.embedder]['name']}")
+    print(f"Description: {EMBEDDER_CONFIGS[args.embedder]['description']}")
+    print(f"{'=' * 80}")
+
+    embedding_provider = EmbeddingProvider(args.embedder, args.device)
+    dim = embedding_provider.dim
+    print(f"Embedding dimension: {dim}")
 
     # Find training data
     project_root = Path(__file__).parent.parent
@@ -636,8 +830,8 @@ def main():
 
     print(f"Loaded {len(clusters)} clusters")
 
-    # Prepare data
-    clusters_for_smoothing, qa_pairs, answer_index = prepare_data(clusters, args.dim)
+    # Prepare data with embeddings
+    clusters_for_smoothing, qa_pairs, answer_index = prepare_data(clusters, embedding_provider)
     print(f"Prepared {len(qa_pairs)} Q-A pairs, {len(answer_index)} unique answers")
 
     # Parse K values
@@ -653,9 +847,14 @@ def main():
     if args.cluster_analysis:
         print_cluster_analysis(results)
 
-    # Save results
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    save_results(results, args.output)
+    # Update output filename to include embedder
+    output_path = args.output
+    if args.embedder != "hash":
+        output_path = output_path.parent / f"answer_level_{args.embedder}.json"
+
+    # Save results with embedder info
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    save_results_with_embedder(results, output_path, args.embedder, dim)
 
 
 if __name__ == "__main__":
