@@ -15,6 +15,7 @@
 
 :- use_module(library(lists)).
 :- use_module(library(ordsets)).
+:- use_module(statistics).
 
 % ============================================================================
 % MAIN ENTRY POINT
@@ -137,59 +138,18 @@ var_member(V, [_|T]) :- var_member(V, T).
 % ============================================================================
 
 %% select_best_goal(+Candidates, +BoundVars, -Best)
-%  Pick the best goal from ready candidates.
-%  Priority:
-%  1. Ground Unification (X = alice) - Strongest filter, often provides initial binding
-%  2. Filters (comparison) - Cheap, reduces set size
-%  3. Assignments (is/2) - Computes values needed later
-%  4. Generators with MOST bound arguments (more selective)
-%  5. Generators with FEWEST bound arguments
+%  Pick the best goal from ready candidates using cost estimation.
+%  Lower cost is better.
 select_best_goal([Goal], _, Goal) :- !.
 select_best_goal([G1, G2 | Rest], BoundVars, Best) :-
     compare_goals(Order, G1, G2, BoundVars),
     (   Order = > -> Winner = G2 ; Winner = G1 ),
     select_best_goal([Winner|Rest], BoundVars, Best).
 
-compare_goals(<, G1, G2, _) :- 
-    classify_goal(G1, unification), 
-    \+ classify_goal(G2, unification), !.
-compare_goals(>, G1, G2, _) :- 
-    \+ classify_goal(G1, unification), 
-    classify_goal(G2, unification), !.
-
-compare_goals(<, G1, G2, _) :- 
-    classify_goal(G1, comparison), 
-    \+ classify_goal(G2, comparison), !.
-compare_goals(>, G1, G2, _) :- 
-    \+ classify_goal(G1, comparison), 
-    classify_goal(G2, comparison), !.
-
-compare_goals(<, G1, G2, _) :- 
-    classify_goal(G1, assignment), 
-    \+ classify_goal(G2, assignment), !.
-compare_goals(>, G1, G2, _) :- 
-    \+ classify_goal(G1, assignment), 
-    classify_goal(G2, assignment), !.
-
-% Prefer goals with MORE bound variables (Selectivity Heuristic)
+%% compare_goals(?Order, +G1, +G2, +BoundVars)
+%  Compare two goals based on their estimated execution cost.
+%  Order is < if G1 is cheaper, > if G2 is cheaper, = if equal.
 compare_goals(Order, G1, G2, BoundVars) :-
-    count_bound_vars(G1, BoundVars, N1),
-    count_bound_vars(G2, BoundVars, N2),
-    compare(Order, N2, N1). % Higher N is better (< means G1 is better/smaller cost?) 
-    % Wait, compare/3: compare(Order, Term1, Term2). < if T1 < T2.
-    % We want the "Best" to be the "Smallest" in sorted list?
-    % No, we are selecting one.
-    % Let's define < as "Better".
-    % If N1 > N2, G1 is Better. So G1 < G2.
-    % So compare(Order, N2, N1) works: if N2 < N1, returns >. Wait.
-    
-    % Let's be explicit:
-    % if N1 > N2 -> G1 better -> return <
-    % if N1 < N2 -> G2 better -> return >
-
-count_bound_vars(Goal, BoundVars, Count) :-
-    term_variables(Goal, Vars),
-    include(flip_var_member(BoundVars), Vars, Bound),
-    length(Bound, Count).
-
-flip_var_member(Set, V) :- var_member(V, Set).
+    statistics:estimate_cost(G1, BoundVars, C1),
+    statistics:estimate_cost(G2, BoundVars, C2),
+    compare(Order, C1, C2).
