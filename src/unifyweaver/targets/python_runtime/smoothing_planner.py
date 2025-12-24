@@ -293,41 +293,79 @@ def _python_fallback_plan(
 def execute_plan(
     plan: List[SmoothingAction],
     tree: TreeNode,
-    clusters: List[Tuple[np.ndarray, np.ndarray]]
+    clusters: List[Tuple[np.ndarray, np.ndarray]],
+    parent_constraint_weight: float = 0.3
 ) -> Dict[str, Any]:
     """
-    Execute a smoothing plan.
+    Execute a smoothing plan with optional parent soft constraints.
+
+    Args:
+        plan: List of smoothing actions from Prolog/fallback
+        tree: Tree structure from FFT ordering
+        clusters: Original cluster data
+        parent_constraint_weight: How much to regularize toward parent (0-1)
+            0 = no constraint, 1 = strong pull toward parent
 
     Returns dict mapping node_id -> trained projector.
+
+    Key insight: Higher-level smoothings (parent) serve as soft constraints
+    for lower-level smoothings (child). This regularizes child projections
+    toward the global structure while still allowing local refinement.
     """
     projectors = {}
 
-    # Build node lookup
+    # Build node lookup and parent mapping
     node_lookup = {}
+    parent_of = {}  # child_id -> parent_id
 
-    def build_lookup(node: TreeNode):
+    def build_lookup(node: TreeNode, parent_id: Optional[str] = None):
         node_lookup[node.id] = node
+        if parent_id:
+            parent_of[node.id] = parent_id
         for child in node.children:
-            build_lookup(child)
+            build_lookup(child, node.id)
 
     build_lookup(tree)
 
-    # Execute each action
-    for action in plan:
+    # Sort actions by depth (parents first)
+    def get_depth(action: SmoothingAction) -> int:
+        return node_lookup[action.node_id].depth
+
+    sorted_plan = sorted(plan, key=get_depth)
+
+    # Execute each action (parents before children)
+    for action in sorted_plan:
         node = node_lookup[action.node_id]
         node_clusters = [clusters[i] for i in node.cluster_indices]
 
+        # Get parent projector if available (for soft constraints)
+        parent_projector = None
+        if action.node_id in parent_of:
+            parent_id = parent_of[action.node_id]
+            parent_projector = projectors.get(parent_id)
+
         logger.info(f"Executing {action.technique} on {action.node_id} "
-                   f"({node.cluster_count} clusters)")
+                   f"({node.cluster_count} clusters)"
+                   + (f" with parent constraint" if parent_projector else ""))
 
         if action.technique == "fft":
             projector = FFTSmoothingProjection(cutoff=0.5, blend_factor=0.6)
             projector.train(node_clusters)
 
+            # For FFT, apply soft constraint by blending W matrices after training
+            if parent_projector and hasattr(parent_projector, 'smoothed_W'):
+                _apply_parent_constraint_fft(projector, parent_projector,
+                                            node.cluster_indices, parent_constraint_weight)
+
         elif action.technique.startswith("basis_k"):
             k = int(action.technique.split("_k")[1])
             projector = SmoothingBasisProjection(num_basis=k)
             projector.train(node_clusters, num_iterations=50, log_interval=100)
+
+            # Apply soft constraint by blending coefficients toward parent
+            if parent_projector:
+                _apply_parent_constraint_basis(projector, parent_projector,
+                                              node.cluster_indices, parent_constraint_weight)
 
         elif action.technique == "hierarchical":
             # Convert to triple format
@@ -351,6 +389,95 @@ def execute_plan(
     return projectors
 
 
+def _apply_parent_constraint_fft(child_proj, parent_proj, cluster_indices, weight):
+    """
+    Apply soft constraint by blending child's W matrices toward parent's.
+
+    For FFT projectors, this blends the smoothed_W arrays.
+    """
+    if not hasattr(child_proj, 'smoothed_W') or not hasattr(parent_proj, 'smoothed_W'):
+        return
+
+    # Get parent's W for the relevant clusters
+    parent_W = parent_proj.smoothed_W[cluster_indices]
+
+    # Blend: child = (1-weight) * child + weight * parent
+    child_proj.smoothed_W = (1 - weight) * child_proj.smoothed_W + weight * parent_W
+    logger.debug(f"Applied FFT parent constraint with weight={weight}")
+
+
+def _apply_parent_constraint_basis(child_proj, parent_proj, cluster_indices, weight):
+    """
+    Apply soft constraint for basis projection by adjusting coefficients.
+
+    For basis projectors, we reconstruct what the parent would produce for
+    each cluster and blend the child's reconstructed W toward it.
+    """
+    # Get parent's W for these clusters
+    parent_W = _get_parent_W_for_clusters(parent_proj, cluster_indices)
+    if parent_W is None:
+        return
+
+    # For basis projection: W_i = sum_k alpha_i,k * G_k
+    # We can't directly modify basis matrices (shared), but we can:
+    # 1. Compute what W each cluster currently produces
+    # 2. Blend toward parent's W
+    # 3. Re-fit coefficients to the blended W
+
+    if not hasattr(child_proj, 'basis') or not hasattr(child_proj, 'coefficients'):
+        return
+
+    # Get current reconstruction
+    current_W = np.einsum('nk,kij->nij', child_proj.coefficients, child_proj.basis)
+
+    # Blend toward parent's W
+    # parent_W shape depends on parent projector type
+    if len(parent_W.shape) == 3:
+        # Parent is also per-cluster (FFT or basis)
+        target_W = (1 - weight) * current_W + weight * parent_W
+    else:
+        # Parent is single W matrix (baseline)
+        target_W = (1 - weight) * current_W + weight * parent_W[np.newaxis, :, :]
+
+    # Re-fit coefficients to the blended target
+    # For each cluster i: target_W[i] ≈ sum_k alpha_i,k * G_k
+    # This is a least-squares problem for alpha given G and target
+    n_clusters = child_proj.coefficients.shape[0]
+    n_basis = child_proj.basis.shape[0]
+
+    # Flatten basis for lstsq: (K, d*d) -> solve for (N, K) coefficients
+    G_flat = child_proj.basis.reshape(n_basis, -1)  # (K, d*d)
+    target_flat = target_W.reshape(n_clusters, -1)  # (N, d*d)
+
+    # Solve: target_flat ≈ coefficients @ G_flat
+    # i.e., for each cluster i: target_flat[i] = sum_k coef[i,k] * G_flat[k]
+    # Transpose to: G_flat.T @ coef.T = target_flat.T
+    new_coef, _, _, _ = np.linalg.lstsq(G_flat.T, target_flat.T, rcond=None)
+    child_proj.coefficients = new_coef.T
+
+    logger.debug(f"Applied basis parent constraint with weight={weight}")
+
+
+def _get_parent_W_for_clusters(parent_proj, cluster_indices):
+    """
+    Extract parent's W matrices for specific clusters.
+
+    This provides the "target" for soft constraint regularization.
+    """
+    if hasattr(parent_proj, 'smoothed_W'):
+        # FFT projector - get smoothed W
+        return parent_proj.smoothed_W[cluster_indices]
+    elif hasattr(parent_proj, 'W'):
+        # Direct W attribute (baseline or single matrix)
+        return parent_proj.W
+    elif hasattr(parent_proj, 'basis') and hasattr(parent_proj, 'coefficients'):
+        # Basis projector - reconstruct W
+        return np.einsum('nk,kij->nij', parent_proj.coefficients[cluster_indices],
+                        parent_proj.basis)
+    else:
+        return None
+
+
 class HybridSmoothingProjection:
     """
     Hybrid projection using Prolog-planned smoothing.
@@ -367,19 +494,23 @@ class HybridSmoothingProjection:
     def __init__(self, segment_threshold: float = 0.3,
                  prolog_module: Optional[Path] = None,
                  max_cost_ms: Optional[float] = None,
-                 parent_weight_decay: float = 0.5):
+                 parent_weight_decay: float = 0.5,
+                 parent_constraint_weight: float = 0.3):
         """
         Args:
             segment_threshold: Cosine distance threshold for segment boundaries
             prolog_module: Path to Prolog policy module
             max_cost_ms: Budget constraint for plan optimization
-            parent_weight_decay: How much to weight parent vs child (0.5 = equal blend)
-                                 Higher = more parent influence
+            parent_weight_decay: How much to weight parent vs child at inference (0.5 = equal blend)
+                                 Higher = more parent influence in projection blending
+            parent_constraint_weight: How much to regularize toward parent during training (0-1)
+                                     Higher = stronger pull toward parent's W matrices
         """
         self.segment_threshold = segment_threshold
         self.prolog_module = prolog_module or Path(__file__).parent.parent.parent / "core" / "smoothing_policy.pl"
         self.max_cost_ms = max_cost_ms
         self.parent_weight_decay = parent_weight_decay
+        self.parent_constraint_weight = parent_constraint_weight
 
         self.tree: Optional[TreeNode] = None
         self.projectors: Dict[str, Any] = {}
@@ -411,8 +542,9 @@ class HybridSmoothingProjection:
         plan = query_prolog_plan(tree_json, self.prolog_module, self.max_cost_ms)
         logger.info(f"Prolog plan: {[(a.technique, a.node_id) for a in plan]}")
 
-        # Step 4: Execute plan
-        self.projectors = execute_plan(plan, self.tree, clusters)
+        # Step 4: Execute plan with soft constraints
+        self.projectors = execute_plan(plan, self.tree, clusters,
+                                       parent_constraint_weight=self.parent_constraint_weight)
 
         # Step 5: Build parent-child mapping for blending
         self._build_parent_mapping(self.tree)
