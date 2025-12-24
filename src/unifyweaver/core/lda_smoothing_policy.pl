@@ -1,14 +1,17 @@
-%% smoothing_policy.pl
-%% Declarative policy for selecting smoothing techniques based on tree structure.
+%% lda_smoothing_policy.pl
+%% Declarative policy for selecting LDA smoothing techniques based on tree structure.
 %%
 %% The FFT approach creates a natural tree (MST) over clusters. This module
 %% defines rules for when to apply which smoothing technique at each node.
+%%
+%% This is a UnifyWeaver source file - compile to target languages (Python, Go, Rust)
+%% rather than running Prolog at runtime.
 %%
 %% Usage:
 %%   ?- smoothing_plan(RootNode, Plan).
 %%   Plan = [apply(fft, root), apply(basis, segment_1), ...]
 
-:- module(smoothing_policy, [
+:- module(lda_smoothing_policy, [
     smoothing_plan/2,
     recommended_technique/2,
     refinement_needed/1,

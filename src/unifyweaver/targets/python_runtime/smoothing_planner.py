@@ -3,13 +3,17 @@
 """
 Smoothing Planner: Bridges Prolog policy with Python execution.
 
-The Prolog module (smoothing_policy.pl) decides WHAT to do.
+The Prolog module (lda_smoothing_policy.pl) decides WHAT to do.
 This Python module executes HOW to do it.
+
+Note: The Prolog policy is a UnifyWeaver source file. In production,
+it should be compiled to target languages rather than interpreted.
+The current Python fallback is equivalent to what UnifyWeaver would generate.
 
 Workflow:
 1. Build tree structure from FFT ordering
 2. Export tree to JSON for Prolog
-3. Query Prolog for smoothing plan
+3. Query Prolog for smoothing plan (or use Python fallback)
 4. Execute plan using Python smoothing implementations
 """
 
@@ -265,9 +269,10 @@ def _python_fallback_plan(
     max_cost_ms: Optional[float]
 ) -> List[SmoothingAction]:
     """
-    Python fallback when Prolog is unavailable.
+    Python implementation of lda_smoothing_policy.pl logic.
 
-    Implements the same logic as smoothing_policy.pl with:
+    This is equivalent to what UnifyWeaver would generate when compiling
+    the Prolog policy to Python. Implements:
     1. Depth-based technique transitions
     2. Distinguishability-based refinement decisions
 
@@ -556,7 +561,7 @@ class HybridSmoothingProjection:
                                      Higher = stronger pull toward parent's W matrices
         """
         self.segment_threshold = segment_threshold
-        self.prolog_module = prolog_module or Path(__file__).parent.parent.parent / "core" / "smoothing_policy.pl"
+        self.prolog_module = prolog_module or Path(__file__).parent.parent.parent / "core" / "lda_smoothing_policy.pl"
         self.max_cost_ms = max_cost_ms
         self.parent_weight_decay = parent_weight_decay
         self.parent_constraint_weight = parent_constraint_weight

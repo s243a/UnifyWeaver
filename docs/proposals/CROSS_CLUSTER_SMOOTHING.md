@@ -274,7 +274,7 @@ Two tailored answer datasets were generated:
 ## Approach 4: Hybrid Smoothing Planner
 
 **Files:**
-- `src/unifyweaver/core/smoothing_policy.pl`: Declarative Prolog policy
+- `src/unifyweaver/core/lda_smoothing_policy.pl`: Declarative Prolog policy
 - `src/unifyweaver/targets/python_runtime/smoothing_planner.py`: Python bridge
 
 ### Concept
@@ -338,4 +338,4 @@ See `LDA_SMOOTHING_THEORY.md` Section 7 for detailed explanation.
 - `fft_smoothing.py`: Frequency-domain filtering
 - `projection.py`: Original single-W projection
 - `smoothing_planner.py`: Hybrid hierarchical planner
-- `smoothing_policy.pl`: Prolog declarative policy
+- `lda_smoothing_policy.pl`: Prolog declarative policy
