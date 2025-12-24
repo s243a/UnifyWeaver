@@ -860,7 +860,187 @@ projected = hybrid.project(query_embedding, temperature=0.1)
 
 The distinguishability optimization reduces training cost by skipping refinement for already-separable segments.
 
-## 8. Summary
+## 8. Density Pre-Computation for Inference
+
+While FFT smoothing operates at **training time** to regularize W matrices, the density-based confidence scoring (flux-softmax) operates at **inference time** to weight results. However, density estimation with Gaussian KDE is not purely online—it requires pre-computation.
+
+### 8.1 The Inference Problem
+
+At query time, we need to:
+1. Route query to clusters
+2. Apply smoothed W to project query toward answers
+3. Find nearest answers by cosine similarity
+4. **Weight results by density** using flux-softmax
+
+The naive approach computes KDE over returned results at query time:
+
+```python
+# Expensive: O(k²) for k returned results
+densities = compute_density_scores(result_embeddings)
+probs = flux_softmax(similarities, densities)
+```
+
+This is expensive and ignores structure learned during training.
+
+### 8.2 What Needs Pre-Computation
+
+The Gaussian KDE requires knowing:
+
+1. **Bandwidth (h)**: Silverman's rule needs data distribution
+   - `h = 0.9 × min(σ, IQR/1.34) × n^(-1/5)`
+   - This is computed from training data
+
+2. **Intra-cluster density**: For each answer, its density relative to cluster mates
+   - How "central" is this answer within its cluster?
+   - Answers in dense cluster cores vs sparse edges
+
+3. **Cluster membership**: Which cluster(s) does each answer belong to?
+   - Needed for two-stage density (cluster first, then intra-cluster KDE)
+
+### 8.3 Pre-Computation Pipeline
+
+During training/indexing, after W smoothing:
+
+```python
+class DensityIndex:
+    """Pre-computed density information for inference."""
+
+    def __init__(self, clusters, bandwidth_method='silverman'):
+        self.cluster_bandwidths = {}  # h per cluster
+        self.answer_densities = {}     # density per answer
+        self.cluster_membership = {}   # answer → cluster_id
+
+    def build(self, clusters):
+        """Pre-compute density for all clusters."""
+        for cluster_id, (Q, A, centroid) in clusters.items():
+            answer_embeddings = np.vstack(A) if len(A) > 1 else A
+
+            # Pre-compute bandwidth for this cluster
+            if len(answer_embeddings) > 1:
+                distances = pairwise_cosine_distances(answer_embeddings)
+                h = silverman_bandwidth(distances.flatten(), len(answer_embeddings))
+            else:
+                h = 0.1  # Default for single-answer clusters
+            self.cluster_bandwidths[cluster_id] = h
+
+            # Pre-compute density for each answer
+            densities = compute_density_scores(answer_embeddings, h)
+            for i, a in enumerate(A):
+                answer_id = hash(a.tobytes())
+                self.answer_densities[answer_id] = densities[i]
+                self.cluster_membership[answer_id] = cluster_id
+```
+
+### 8.4 Inference with Pre-Computed Density
+
+At query time, just look up pre-computed values:
+
+```python
+def inference_with_density(self, query, k=10):
+    # 1. Project query using smoothed W
+    projected = self.projector.project(query)
+
+    # 2. Find nearest answers
+    candidates = self.index.search(projected, k=k)
+
+    # 3. Look up pre-computed densities (O(k), not O(k²))
+    similarities = [c.similarity for c in candidates]
+    densities = [self.density_index.answer_densities[c.id] for c in candidates]
+
+    # 4. Apply flux-softmax with stored densities
+    probs = flux_softmax(np.array(similarities), np.array(densities))
+
+    return [(c, p) for c, p in zip(candidates, probs)]
+```
+
+### 8.5 Integration with FFT Smoothing
+
+The complete training pipeline:
+
+```
+Input: Q-A pairs grouped by cluster
+
+┌────────────────────────────────────────────────────────────┐
+│ TRAINING TIME                                               │
+├────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. Cluster organization                                    │
+│     └── Group Q-A pairs by answer theme                    │
+│                                                             │
+│  2. W matrix smoothing (Section 2-7)                       │
+│     ├── Compute per-cluster W via least squares            │
+│     ├── MST + DFS ordering                                  │
+│     ├── FFT low-pass filter                                 │
+│     └── Blend smoothed W matrices                          │
+│                                                             │
+│  3. Density pre-computation (this section)                  │
+│     ├── Compute bandwidth h per cluster (Silverman's rule) │
+│     ├── Compute intra-cluster density per answer           │
+│     └── Store in DensityIndex                              │
+│                                                             │
+│  Output: SmoothedProjector + DensityIndex                   │
+└────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────┐
+│ INFERENCE TIME                                              │
+├────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. Route query to cluster(s)                              │
+│     └── Soft routing via centroid similarity               │
+│                                                             │
+│  2. Project query                                           │
+│     └── Apply smoothed W: projected = query @ W            │
+│                                                             │
+│  3. Search nearest answers                                  │
+│     └── Cosine similarity to answer embeddings             │
+│                                                             │
+│  4. Apply density weighting                                 │
+│     ├── Look up pre-computed densities (O(k))              │
+│     └── flux_softmax(similarities, densities)              │
+│                                                             │
+│  Output: Ranked answers with density-adjusted probabilities│
+└────────────────────────────────────────────────────────────┘
+```
+
+### 8.6 Dynamic Density for New Answers
+
+When new answers are added to the index:
+
+1. **Assign to cluster**: Route to nearest centroid
+2. **Update cluster bandwidth**: Incrementally adjust h
+3. **Compute new answer's density**: KDE against existing cluster mates
+4. **Re-normalize existing densities**: Optionally, as cluster composition changed
+
+```python
+def add_answer(self, answer_embedding, cluster_id):
+    """Incrementally update density index."""
+    # Get existing cluster mates
+    cluster_answers = self.get_cluster_answers(cluster_id)
+
+    # Compute density for new answer
+    if len(cluster_answers) > 0:
+        dists = [cosine_distance(answer_embedding, a) for a in cluster_answers]
+        h = self.cluster_bandwidths[cluster_id]
+        density = np.mean([gaussian_kernel(d, h) for d in dists])
+    else:
+        density = 1.0  # First answer in cluster
+
+    self.answer_densities[hash(answer_embedding.tobytes())] = density
+```
+
+### 8.7 Computational Cost
+
+| Phase | Operation | Cost |
+|-------|-----------|------|
+| **Training** | Compute bandwidth per cluster | O(C × n² × d) |
+| **Training** | Compute density per answer | O(C × n²) |
+| **Inference** | Look up density per result | O(k) |
+
+Where: C = clusters, n = avg answers per cluster, d = dimension, k = results returned
+
+The key insight: O(C × n²) at training time is acceptable (done once), while O(k) at inference time is much cheaper than O(k²) for online KDE.
+
+## 9. Summary
 
 | Concept | Key Point |
 |---------|-----------|
@@ -870,6 +1050,7 @@ The distinguishability optimization reduces training cost by skipping refinement
 | **FFT Smoothing** | Remove high-freq noise from W sequence (99% P@1, fast) |
 | **Hierarchical (old)** | Merging hurts precision (85% P@1) |
 | **Hierarchical Planner** | FFT at root + basis where confusable + skip where distinct |
-| **Winner** | FFT smoothing, optionally refined with hierarchical planner |
+| **Density Pre-Computation** | Compute KDE at training time for O(k) inference lookup |
+| **Winner** | FFT smoothing + pre-computed density, optionally refined with hierarchical planner |
 
-The surprising finding: Simple frequency-domain smoothing beats sophisticated structural constraints. The hierarchical planner adds value by focusing refinement effort only where FFT alone isn't enough to distinguish clusters.
+The surprising finding: Simple frequency-domain smoothing beats sophisticated structural constraints. The hierarchical planner adds value by focusing refinement effort only where FFT alone isn't enough to distinguish clusters. Pre-computing density at training time makes flux-softmax practical for production inference.
