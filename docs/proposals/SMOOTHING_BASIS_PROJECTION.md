@@ -341,6 +341,103 @@ The shared basis captures "common projection knowledge" while coefficients captu
 - Fine-tuning (shared base + task head)
 - Adapters (shared transformer + small per-task adapters)
 
+### Connection to Constraint Geometry (Tangent Space Theory)
+
+**Key insight:** The basis vectors span the **tangent space** to the constraint manifold.
+
+#### The Constraint Manifold
+
+Consider all projection matrices W that satisfy the reconstruction constraint:
+
+```
+M = { W : Q·W ≈ A }  (the constraint manifold)
+```
+
+This is a manifold (locally looks like Euclidean space) in the space of d×d matrices. Different smoothing methods find different points on this manifold:
+
+```
+Constraint Manifold M
+         │
+         │    ● W_pinv (pseudoinverse solution)
+         │   /
+         ●──/────────────────→ T_W(M) tangent space
+    W_fft│  \                   ↑
+         │   \                  Basis vectors G_k span this space
+         │    ● W_residual = W_fft + Σ αk Gk
+         │
+```
+
+#### Why Tangent Space?
+
+1. **FFT smoothing** finds a solution W_fft on the manifold (satisfies Q·W_fft ≈ A)
+
+2. **Deviations from W_fft** must stay on (or near) the manifold to remain valid solutions
+
+3. **The tangent space** T_W(M) at W_fft contains all directions that preserve the constraint to first order
+
+4. **Basis vectors G_k** span this tangent space - they are directions of "allowed" deviation
+
+#### Mathematical Formulation
+
+The constraint Q·W = A defines a manifold. At a solution W_fft, the tangent space consists of matrices ΔW such that:
+
+```
+Q·(W_fft + ΔW) ≈ A
+Q·ΔW ≈ 0  (to first order)
+```
+
+So the tangent space is approximately:
+
+```
+T_{W_fft}(M) = { ΔW : Q·ΔW ≈ 0 } = null(Q)^{d×d}
+```
+
+When we decompose ΔW = Σ αk Gk, the basis matrices Gk should span (a subspace of) this null space. The residual basis approach learns Gk from the residuals R_i = W_target_i - W_fft_i, which naturally lie in the tangent space.
+
+#### Connection to Tensor Algebra
+
+The gradient of the loss function with respect to W is:
+
+```
+∂L/∂W = Q^T (Q·W - A)  (for MSE loss)
+```
+
+This is a **tensor contraction**: the gradient operator on the matrix equation produces another matrix. For a single Q-A pair:
+
+```
+∂L/∂W = q^T (q·W - a) = (q·W - a) ⊗ q  (outer product)
+```
+
+The gradient is a rank-1 matrix (outer product). This connects to the theory in SEMANTIC_PROJECTION_LDA.md:
+
+```
+Single pair:   W = a ⊗ q       (rank-1 solution)
+Multiple:      W = Σ aₖ ⊗ qₖ   (sum of rank-1 terms)
+Gradient:      ∇W = Σ rₖ ⊗ qₖ  (residual outer products)
+```
+
+The basis vectors extracted from gradients inherit this outer product structure, making them natural for spanning the tangent space of allowable deviations.
+
+#### Implications for Hybrid Methods
+
+The **ResidualBasisProjection** approach exploits this geometry:
+
+```python
+W = W_fft + Σ αk Gk
+    ├────┘   └──────┘
+    │        Learned deviation in tangent space
+    │
+    Global structure from FFT (point on manifold)
+```
+
+Benefits:
+- **W_fft provides regularization**: Starts from a smooth, globally-consistent solution
+- **Gk stay in tangent space**: Deviations preserve constraint satisfaction
+- **αk regularization**: L2 penalty on α keeps deviations small, defaulting to FFT
+- **Graceful degradation**: If α → 0, recovers pure FFT solution
+
+This explains why ResidualBasis can slightly outperform pure FFT: it learns cluster-specific corrections while staying geometrically consistent.
+
 ## Validation Results
 
 Testing with a synthetic dataset of 18 clusters (6 topics × 3 languages), each with only 1 training question:

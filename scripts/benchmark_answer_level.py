@@ -30,7 +30,7 @@ import numpy as np
 # Add source path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "unifyweaver" / "targets" / "python_runtime"))
 
-from smoothing_basis import SmoothingBasisProjection, MultiHeadLDABaseline
+from smoothing_basis import SmoothingBasisProjection, MultiHeadLDABaseline, ResidualBasisProjection
 from fft_smoothing import FFTSmoothingProjection, AdaptiveFFTSmoothing
 from hierarchical_smoothing import HierarchicalSmoothing
 
@@ -390,6 +390,31 @@ def run_benchmarks(
         results.append(result)
         print(f"   Cosine: {result.mean_cosine_to_target:.4f} ± {result.std_cosine_to_target:.4f}")
         print(f"   MSE: {result.mean_mse_to_target:.4f}, Rank: {result.mean_target_rank:.1f}, MRR: {result.mrr:.4f}")
+
+    # 5. Residual Basis (FFT + learned residual)
+    for K in [4, 8]:
+        for alpha_reg in [0.01, 0.1]:
+            print(f"\n5. ResidualBasis (K={K}, reg={alpha_reg})...")
+            rb = ResidualBasisProjection(
+                num_basis=K,
+                fft_cutoff=0.5,
+                fft_blend=0.7,
+                alpha_reg=alpha_reg,
+                cosine_weight=0.5
+            )
+            result = benchmark_method(
+                f"Residual_K{K}_r{alpha_reg}", rb, clusters_for_smoothing, qa_pairs, answer_index,
+                lambda rb=rb: rb.train(clusters_for_smoothing, num_iterations=30, log_interval=100),
+                {"K": K, "alpha_reg": alpha_reg, "fft_cutoff": 0.5}
+            )
+            results.append(result)
+            print(f"   Cosine: {result.mean_cosine_to_target:.4f} ± {result.std_cosine_to_target:.4f}")
+            print(f"   MSE: {result.mean_mse_to_target:.4f}, Rank: {result.mean_target_rank:.1f}, MRR: {result.mrr:.4f}")
+
+            # Print residual stats
+            stats = rb.get_residual_stats()
+            if stats.get('has_residuals'):
+                print(f"   Residual: ΔW/FFT ratio={stats['delta_to_fft_ratio']:.4f}")
 
     return results
 

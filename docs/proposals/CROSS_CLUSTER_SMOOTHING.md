@@ -409,8 +409,15 @@ Current benchmarks measure cluster-level accuracy (P@1, P@3). We need answer-lev
 
 ## References
 
+### Theory Documents
+- [SMOOTHING_BASIS_PROJECTION.md](SMOOTHING_BASIS_PROJECTION.md): Full basis formulation theory
+  - Section "Connection to Constraint Geometry" documents **tangent space theory**
+  - Section "Connection to Tensor Algebra" links gradients to outer products
+- [SEMANTIC_PROJECTION_LDA.md](SEMANTIC_PROJECTION_LDA.md): Outer product W = a ⊗ q formulation
+- [LDA_SMOOTHING_THEORY.md](LDA_SMOOTHING_THEORY.md): Core LDA theory and loss functions
+
 ### Core Smoothing
-- `smoothing_basis.py`: Gradient-based basis sharing
+- `smoothing_basis.py`: Gradient-based basis sharing + ResidualBasisProjection
 - `hierarchical_smoothing.py`: Federation-style aggregation
 - `fft_smoothing.py`: Frequency-domain filtering
 - `projection.py`: Original single-W projection
