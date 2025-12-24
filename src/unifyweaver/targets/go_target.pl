@@ -78,7 +78,9 @@
 
 % Binding system integration
 :- use_module('../core/binding_registry').
+:- use_module('../core/component_registry').
 :- use_module('../bindings/go_bindings').
+:- use_module('go_runtime/custom_go', []).
 
 % Pipeline validation
 :- use_module('../core/pipeline_validation').
@@ -91,12 +93,22 @@
 
 % Track required imports from bindings
 :- dynamic required_binding_import/1.
+:- dynamic collected_component/2.
 
 %% init_go_target
 %  Initialize Go target with bindings
 init_go_target :-
     retractall(required_binding_import(_)),
+    retractall(collected_component(_, _)),
     init_go_bindings.
+
+%% collect_declared_component(+Category, +Name)
+%  Record that a component is used in the code
+collect_declared_component(Category, Name) :-
+    (   collected_component(Category, Name)
+    ->  true
+    ;   assertz(collected_component(Category, Name))
+    ).
 
 %% clear_binding_imports
 %  Clear collected binding imports
@@ -4809,6 +4821,12 @@ compile_go_single_builtin(Goal, VarMap, Config, Check) :-
         return results
     }", [LeftExpr, GoOp, RightExpr]).
 
+% Handle component invocation goals
+compile_go_single_builtin(Goal, VarMap, Config, Check) :-
+    Goal = invoke_component(Category, Name, Input, Output),
+    !,
+    compile_go_component_goal(Category, Name, Input, Output, VarMap, Config, Check).
+
 % Handle binding goals (e.g., string_lower(X, Y), sqrt(X, Y))
 compile_go_single_builtin(Goal, VarMap, Config, Check) :-
     is_binding_goal_go(Goal),
@@ -4816,6 +4834,44 @@ compile_go_single_builtin(Goal, VarMap, Config, Check) :-
     compile_go_binding_goal(Goal, VarMap, Config, Check).
 
 compile_go_single_builtin(_, _, _, "").
+
+%% compile_go_component_goal(+Category, +Name, +Input, +Output, +VarMap, +Config, -Code)
+%  Compile component invocation to Go code
+compile_go_component_goal(Category, Name, Input, Output, VarMap, Config, Code) :-
+    % 1. Collect declared component
+    collect_declared_component(Category, Name),
+    
+    % 2. Get component type (validate it exists)
+    (   component_registry:component(Category, Name, _Type, _CompConfig)
+    ->  true
+    ;   format('ERROR: Component ~w/~w not declared~n', [Category, Name]),
+        fail
+    ),
+    
+    % 3. Translate Input argument
+    translate_go_expr(Input, VarMap, Config, GoInput),
+    
+    atom_string(Name, NameStr),
+    format(string(InstanceName), "comp_~w", [NameStr]),
+    
+    % 4. Generate Invoke call
+    (   var(Output)
+    ->  gensym(compResult, TempVar),
+        format(string(Code), 
+"    // Invoke component ~w
+    ~w, err := ~w.Invoke(~w)
+    if err != nil { return results }
+    _ = ~w // bind output
+", [NameStr, TempVar, InstanceName, GoInput, TempVar])
+    ;   translate_go_expr(Output, VarMap, Config, ExpectedExpr),
+        gensym(compResult, TempVar),
+        format(string(Code),
+"    // Invoke component ~w
+    ~w, err := ~w.Invoke(~w)
+    if err != nil { return results }
+    if ~w != ~w { return results }
+", [NameStr, TempVar, InstanceName, GoInput, TempVar, ExpectedExpr])
+    ).
 
 %% compile_go_binding_goal(+Goal, +VarMap, +Config, -Code)
 %  Compile a goal that has a Go binding to Go code
@@ -4906,7 +4962,11 @@ translate_go_expr_binding(VarMap, Config, Expr, GoExpr) :-
 translate_go_expr(Var, VarMap, _, Expr) :-
     var(Var),
     !,
-    (   member(V-source(Source, Idx), VarMap), Var == V
+    (   % Case 1: Direct mapping (Var, GoVarName) used in JSON mode
+        member((V, GoVarName), VarMap), Var == V
+    ->  atom_string(GoVarName, Expr)
+    ;   % Case 2: source mapping (Var, source(Source, Idx)) used in Datalog mode
+        member(V-source(Source, Idx), VarMap), Var == V
     ->  format(string(Expr), "~w.Args[\"arg~w\"]", [Source, Idx])
     ;   Expr = "nil"
     ).
@@ -10636,9 +10696,9 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         ;   option(db_backend(bbolt), Options)
         ->  % Typed compilation without schema (for database writes)
             format('  Database mode: using typed compilation~n'),
-            compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, Options, CoreBody)
+            compile_json_to_go_typed_noschema(HeadArgs, OptimizedBody, FieldMappings, FieldDelim, Unique, Options, CoreBody)
         ;   % Untyped compilation - use typed_noschema for robust error handling
-            compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, Options, CoreBody)
+            compile_json_to_go_typed_noschema(HeadArgs, OptimizedBody, FieldMappings, FieldDelim, Unique, Options, CoreBody)
         ),
 
         % Check if database backend is specified
@@ -10673,13 +10733,19 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         ;   HelperFunc = ''
         ),
         
-        format(string(HelperSection), "~s\n\n~s", [HelperFunc, ValidatorSection])
+        % Generate code for collected components
+        compile_collected_components(ComponentCode),
+        
+        format(string(HelperSection), "~s\n\n~s\n\n~s", [HelperFunc, ValidatorSection, ComponentCode])
     ;   format('ERROR: Multiple clauses not yet supported for JSON input mode~n'),
         fail
     ),
 
     % Wrap in package if requested
     (   IncludePackage ->
+        % Get collected imports from bindings
+        get_collected_imports(BindingImports),
+        
         % Generate imports based on what's needed
         (   NeedsDatabase = true
         ->  BaseImports = ["bufio", "encoding/json", "fmt", "os", "bolt \"go.etcd.io/bbolt\""]
@@ -10693,10 +10759,12 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         ;   ImportsWithKeys = BaseImports
         ),
         
+        append(ImportsWithKeys, BindingImports, ImportsWithBindings),
+        
         % Add strings import if needed (from feature branch)
         (   option(json_schema(SchemaName), Options), schema_needs_strings(SchemaName)
-        ->  append(ImportsWithKeys, ["strings"], ImportsWithStrings)
-        ;   ImportsWithStrings = ImportsWithKeys
+        ->  append(ImportsWithBindings, ["strings"], ImportsWithStrings)
+        ;   ImportsWithStrings = ImportsWithBindings
         ),
         
         % Add time import if error_file or metrics_file is used
@@ -10813,7 +10881,10 @@ compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
         ;   HelperFunc = ''
         ),
         
-        format(string(HelperSection), "~s\n\n~s", [HelperFunc, ValidatorSection])
+        % Generate code for collected components
+        compile_collected_components(ComponentCode),
+        
+        format(string(HelperSection), "~s\n\n~s\n\n~s", [HelperFunc, ValidatorSection, ComponentCode])
     ;   format('ERROR: Multiple clauses not yet supported for parallel JSON input mode~n'),
         fail
     ),
@@ -11812,7 +11883,7 @@ lookup_var_identity(Key, [_|Rest], Val) :- lookup_var_identity(Key, Rest, Val).
 %  Generate Go code for JSON input mode with fieldN variables but no type validation
 %  Used for database writes without schema
 %
-compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, Options, GoCode) :-
+compile_json_to_go_typed_noschema(HeadArgs, OptimizedBody, FieldMappings, FieldDelim, Unique, Options, GoCode) :-
     % Map delimiter
     map_field_delimiter(FieldDelim, DelimChar),
 
@@ -11899,6 +11970,18 @@ compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, O
         ExtractLines),
     atomic_list_concat(ExtractLines, '\n', ExtractCode),
 
+    % Build VarMap for logic goals
+    findall((Var, VarName), 
+        (   nth1(Pos, FieldMappings, Mapping),
+            format(atom(VarName), 'field~w', [Pos]),
+            (Mapping = _-Var ; Mapping = nested(_, Var))
+        ),
+        VarMap),
+
+    % Compile remaining body logic
+    extract_logic_goals(OptimizedBody, LogicGoals),
+    compile_go_goals_list(LogicGoals, VarMap, Options, LogicCode),
+
     % Generate output expression (same as typed)
     generate_json_output_expr(HeadArgs, DelimChar, OutputExpr),
 
@@ -11931,9 +12014,31 @@ compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, O
         '\t\t\tcontinue\n\t\t}\n',
         ProgressUpdate, '\n',
         ExtractCode, '\n\t\t\n',
+        LogicCode, '\n\t\t\n',
         '\t\tresult := ', OutputExpr, '\n',
         UniqueCheck, '\t}\n'
     ], GoCode).
+
+%% extract_logic_goals(+Body, -Goals)
+extract_logic_goals(Body, Goals) :-
+    findall(G, 
+        (   comma_list(Body, AllGoals),
+            member(G, AllGoals),
+            \+ is_json_op(G)
+        ), 
+        Goals).
+
+is_json_op(json_record(_)).
+is_json_op(json_get(_, _)).
+is_json_op(json_get(_, _, _)).
+is_json_op(json_array_member(_, _)).
+
+%% compile_go_goals_list(+Goals, +VarMap, +Config, -Code)
+compile_go_goals_list([], _, _, "").
+compile_go_goals_list([G|Rest], VarMap, Config, Code) :-
+    compile_go_single_builtin(G, VarMap, Config, CodeG),
+    compile_go_goals_list(Rest, VarMap, Config, CodeRest),
+    atomic_list_concat([CodeG, CodeRest], "\n", Code).
 
 %% compile_json_to_go_typed(+HeadArgs, +FieldMappings, +SchemaName, +Constraints, +Options, -GoCode)
 %  Generate Go code for JSON input mode with type safety from schema
@@ -12323,6 +12428,20 @@ generate_nested_helper(HelperCode) :-
 \t
 \treturn current, true
 }'.
+
+%% compile_collected_components(-Code)
+%  Generate code for all components collected during compilation
+compile_collected_components(Code) :-
+    findall(CompCode,
+        (   collected_component(Category, Name),
+            component_registry:compile_component(Category, Name, [], CompCode)
+        ),
+        CompCodes),
+    (   CompCodes = []
+    ->  Code = ""
+    ;   atomic_list_concat(CompCodes, '\n\n', CodeStr),
+        format(string(Code), "\n// Components\n~s", [CodeStr])
+    ).
 
 %% generate_json_field_extractions(+FieldMappings, +HeadArgs, -ExtractCode)
 %  Generate Go code to extract and type-assert JSON fields (flat and nested)

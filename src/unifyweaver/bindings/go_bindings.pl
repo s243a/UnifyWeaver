@@ -73,6 +73,17 @@ go_binding_import(Pred, Import) :-
     member(import(Import), Options).
 
 % ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- go_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(go, Pred, TargetName, Inputs, Outputs, Options)))
+).
+
+% ============================================================================
 % CORE BUILT-IN BINDINGS
 % ============================================================================
 
