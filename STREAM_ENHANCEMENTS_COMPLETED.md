@@ -25,9 +25,19 @@ This work enhanced the Go target's stream processing capabilities with robust ob
   `Processed 1000 records`
 - **Concurrency**: Uses `sync/atomic` for accurate counting in parallel mode.
 
+### 3. Error Thresholds
+- **Option**: `error_threshold(count(N))`
+- **Behavior**: The program will fail-fast and exit with a fatal error message if the number of encountered errors (parsing or validation) exceeds N.
+- **Concurrency**: Thread-safe atomic counting in parallel mode.
+
+### 4. Metrics Export
+- **Option**: `metrics_file('path/to/metrics.json')`
+- **Behavior**: Upon completion, the program writes a structured JSON summary of the processing run.
+- **Metrics Included**: Start/End time, total duration, total processed records, total error count, and throughput (records/second).
+
 ## Implementation Details
-- **Unified Processing**: Refactored `compile_json_input_mode` to use the robust `compile_json_to_go_typed_noschema` generator even for untyped inputs, ensuring consistent error handling across all modes.
+- **Unified Processing**: Refactored `compile_json_input_mode` to use the robust `compile_json_to_go_typed_noschema` generator even for untyped inputs, ensuring consistent error handling and observability across all modes.
 - **Smart Imports**: Automatically handles `time` and `sync/atomic` imports only when features are enabled.
 
 ## Verification
-- Verified with `tests/test_go_stream_enhancements.pl` covering both sequential and parallel execution paths.
+- Verified with `tests/test_go_stream_enhancements.pl` covering sequential, parallel, and advanced observability options.

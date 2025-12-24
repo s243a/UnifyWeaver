@@ -57,12 +57,12 @@ The Go target generates standalone Go executables from Prolog predicates, provid
 - **Stream Processing Observability**:
     - **Error Aggregation**: `error_file(Path)` to capture failures
     - **Progress Reporting**: `progress(interval(N))` for throughput monitoring
+    - **Error Thresholds**: `error_threshold(count(N))` to fail fast
+    - **Metrics Export**: `metrics_file(Path)` for performance statistics
 - **Smart imports**: Only includes necessary Go packages when needed
 
 ### Planned Features
 
-- **Error Thresholds**: Fail if error count exceeds limit
-- **Metrics Export**: Export processing statistics to Prometheus/JSON
 - **Cost-Based Optimization**: Using statistics for join ordering
 - **Custom Go functions**: User-defined Go helpers
 
@@ -723,17 +723,15 @@ Completed features (moved to Current Features):
 - ✅ XML Input (Streaming/Flattening)
 - ✅ Database Support (BoltDB)
 - ✅ Secondary Indexes
-- ✅ Stream Processing Observability (Error file, Progress)
+- ✅ Stream Processing Observability (Error file, Progress, Thresholds, Metrics)
 
 
 Planned additions (in priority order):
 
-1. **Error Thresholds** - Automatic failure based on error rate
-2. **Metrics Export** - Prometheus integration
-3. **Cost-Based Optimization** - Using table statistics for join ordering
-4. **Custom functions** - User-defined Go helpers
-5. **Optimizations** - Eliminate unnecessary allocations
-6. **Semantic Runtime** - Vector embeddings and search (ONNX integration)
+1. **Cost-Based Optimization** - Using table statistics for join ordering
+2. **Custom functions** - User-defined Go helpers
+3. **Optimizations** - Eliminate unnecessary allocations
+4. **Semantic Runtime** - Vector embeddings and search (ONNX integration)
 
 ---
 

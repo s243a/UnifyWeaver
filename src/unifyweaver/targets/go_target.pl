@@ -10699,8 +10699,8 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         ;   ImportsWithStrings = ImportsWithKeys
         ),
         
-        % Add time import if error_file is used
-        (   option(error_file(_), Options)
+        % Add time import if error_file or metrics_file is used
+        (   (option(error_file(_), Options) ; option(metrics_file(_), Options))
         ->  append(ImportsWithStrings, ["time"], AllImportsList)
         ;   AllImportsList = ImportsWithStrings
         ),
@@ -10710,6 +10710,39 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
         maplist(format_import, UniqueImports, ImportLines),
         atomic_list_concat(ImportLines, '\n', Imports),
 
+        % Metrics setup
+        (   option(metrics_file(MetricsFile), Options)
+        ->  format(string(MetricsSetup), '\n\tstartTime := time.Now()', []),
+            format(string(MetricsFinal), '
+	endTime := time.Now()
+	duration := endTime.Sub(startTime).Seconds()
+	
+	type Metrics struct {
+		StartTime       string  `json:"start_time"`
+		EndTime         string  `json:"end_time"`
+		DurationSeconds float64 `json:"duration_seconds"`
+		TotalProcessed  int64   `json:"total_processed"`
+		ErrorCount      int64   `json:"error_count"`
+		Throughput      float64 `json:"throughput_rec_per_sec"`
+	}
+	
+	m := Metrics{
+		StartTime:       startTime.Format(time.RFC3339),
+		EndTime:         endTime.Format(time.RFC3339),
+		DurationSeconds: duration,
+		TotalProcessed:  recordCount,
+		ErrorCount:      errorCount,
+	}
+	if duration > 0 {
+		m.Throughput = float64(recordCount) / duration
+	}
+	
+	mBytes, _ := json.MarshalIndent(m, "", "  ")
+	os.WriteFile("~w", mBytes, 0644)', [MetricsFile])
+        ;   MetricsSetup = '',
+            MetricsFinal = ''
+        ),
+
         (   HelperSection = '' ->
             format(string(GoCode), 'package main
 
@@ -10718,8 +10751,10 @@ import (
 )
 
 func main() {
+~s
+~s
 ~s}
-', [Imports, ScriptBody])
+', [Imports, MetricsSetup, ScriptBody, MetricsFinal])
         ;   format(string(GoCode), 'package main
 
 import (
@@ -10729,8 +10764,10 @@ import (
 ~s
 
 func main() {
+~s
+~s
 ~s}
-', [Imports, HelperSection, ScriptBody])
+', [Imports, HelperSection, MetricsSetup, ScriptBody, MetricsFinal])
         )
     ;   GoCode = ScriptBody
     ).
@@ -10795,13 +10832,47 @@ compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
         ;   ImportsWithAtomic = ImportsWithStrings
         ),
 
-        (   option(error_file(_), Options)
+        (   (option(error_file(_), Options) ; option(metrics_file(_), Options))
         ->  append(ImportsWithAtomic, ["time"], AllImportsList)
         ;   AllImportsList = ImportsWithAtomic
         ),
         
         maplist(format_import, AllImportsList, ImportLines),
         atomic_list_concat(ImportLines, '\n', Imports),
+
+        % Metrics setup
+        (   option(metrics_file(MetricsFile), Options)
+        ->  format(string(MetricsSetup), '\n\tstartTime := time.Now()', []),
+            format(string(MetricsFinal), '
+	endTime := time.Now()
+	duration := endTime.Sub(startTime).Seconds()
+	
+	type Metrics struct {
+		StartTime       string  `json:"start_time"`
+		EndTime         string  `json:"end_time"`
+		DurationSeconds float64 `json:"duration_seconds"`
+		TotalProcessed  int64   `json:"total_processed"`
+		ErrorCount      int64   `json:"error_count"`
+		Throughput      float64 `json:"throughput_rec_per_sec"`
+	}
+	
+	m := Metrics{
+		StartTime:       startTime.Format(time.RFC3339),
+		EndTime:         endTime.Format(time.RFC3339),
+		DurationSeconds: duration,
+		TotalProcessed:  recordCount,
+		ErrorCount:      errorCount,
+	}
+	if duration > 0 {
+		m.Throughput = float64(recordCount) / duration
+	}
+	
+	mBytes, _ := json.MarshalIndent(m, "", "  ")
+	os.WriteFile("~w", mBytes, 0644)', [MetricsFile])
+        ;   MetricsSetup = '',
+            MetricsFinal = ''
+        ),
+
         (   HelperSection = '' ->
             format(string(GoCode), 'package main
 
@@ -10810,8 +10881,10 @@ import (
 )
 
 func main() {
+~s
+~s
 ~s}
-', [Imports, ScriptBody])
+', [Imports, MetricsSetup, ScriptBody, MetricsFinal])
         ;   format(string(GoCode), 'package main
 
 import (
@@ -10821,8 +10894,10 @@ import (
 ~s
 
 func main() {
+~s
+~s
 ~s}
-', [Imports, HelperSection, ScriptBody])
+', [Imports, HelperSection, MetricsSetup, ScriptBody, MetricsFinal])
         )
     ;   GoCode = ScriptBody
     ).
@@ -10836,25 +10911,88 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, 
     
     map_field_delimiter(FieldDelim, DelimChar),
 
-    % Progress reporting setup
-    (   option(progress(ProgressOpt), Options)
-    ->  (   ProgressOpt = interval(N) -> Interval = N
-        ;   ProgressOpt = true -> Interval = 1000
-        ;   Interval = 1000
-        ),
-        ProgressSetup = '\n\tvar recordCount int64 = 0',
-        format(string(ProgressUpdate), '
+    % Error handling setup
+    (   member(error_file(ErrorFile), Options)
+    ->  HasErrorFile = true,
+        format(string(ErrorSetup), '
+	// Error logging
+	errorChan := make(chan struct {
+		raw   []byte
+		errMsg string
+	}, ~w)
+	var errWg sync.WaitGroup
+	errWg.Add(1)
+	
+	go func() {
+		defer errWg.Done()
+		f, err := os.OpenFile("~w", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening error file: %%v\\n", err)
+			return
+		}
+		defer f.Close()
+		
+		type ErrorRecord struct {
+			Timestamp string `json:"timestamp"`
+			Error     string `json:"error"`
+			RawLine   string `json:"raw_line"`
+		}
+		
+		for e := range errorChan {
+			rec := ErrorRecord{
+				Timestamp: time.Now().Format(time.RFC3339),
+				Error:     e.errMsg,
+				RawLine:   string(e.raw),
+			}
+			b, _ := json.Marshal(rec)
+			f.Write(b)
+			f.Write([]byte("\\n"))
+		}
+	}()
+', [BufferSize, ErrorFile]),
+        ParseError = 'errorChan <- struct{raw []byte; errMsg string}{raw: lineBytes, errMsg: err.Error()}'
+    ;   HasErrorFile = false,
+        ErrorSetup = '',
+        ParseError = ''
+    ),
+
+    % Progress and record counting setup
+    (   (option(progress(_), Options) ; option(metrics_file(_), Options))
+    ->  ProgressSetup = '\n\tvar recordCount int64 = 0',
+        (   option(progress(ProgressOpt), Options)
+        ->  (   ProgressOpt = interval(N) -> Interval = N
+            ;   ProgressOpt = true -> Interval = 1000
+            ;   Interval = 1000
+            ),
+            format(string(ProgressUpdate), '
 				newCount := atomic.AddInt64(&recordCount, 1)
 				if newCount % ~w == 0 {
 					fmt.Fprintf(os.Stderr, "Processed %d records\\n", newCount)
 				}', [Interval])
+        ;   ProgressUpdate = 'atomic.AddInt64(&recordCount, 1)'
+        )
     ;   ProgressSetup = '',
         ProgressUpdate = ''
     ),
 
+    % Error threshold and counting setup
+    (   (option(error_threshold(_), Options) ; option(metrics_file(_), Options))
+    ->  ThresholdSetup = '\n\tvar errorCount int64 = 0',
+        (   option(error_threshold(count(Threshold)), Options)
+        ->  format(string(ThresholdCheck), '
+				newErrCount := atomic.AddInt64(&errorCount, 1)
+				if newErrCount > ~w {
+					fmt.Fprintf(os.Stderr, "FATAL: Error threshold exceeded (%d errors)\\n", newErrCount)
+					os.Exit(1)
+				}', [Threshold])
+        ;   ThresholdCheck = 'atomic.AddInt64(&errorCount, 1)'
+        )
+    ;   ThresholdSetup = '',
+        ThresholdCheck = ''
+    ),
+
     % Generate typed extraction code (same as sequential typed)
-    % Parallel mode currently doesn't support error aggregation (false)
-    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode, false),
+    generate_typed_field_extractions_mapped(FieldMappings, SchemaName, 1, [], VarMap, ExtractCode, HasErrorFile),
     
     % Generate output expression
     generate_json_output_expr_mapped(HeadArgs, VarMap, DelimChar, OutputExpr),
@@ -10864,6 +11002,11 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, 
     ;   UniqueVars = ""
     ),
     
+    (   HasErrorFile = true
+    ->  ErrorWait = 'close(errorChan)\n\terrWg.Wait()'
+    ;   ErrorWait = ''
+    ),
+
     % Build output block with locking
     (   Unique = true ->
         format(string(OutputBlock), '
@@ -10890,6 +11033,8 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, 
 	var outputMutex sync.Mutex
 	~s
 ~s
+~s
+~s
 
 	// Start workers
 	for i := 0; i < ~w; i++ {
@@ -10899,6 +11044,8 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, 
 			for lineBytes := range jobs {
 				var data map[string]interface{}
 				if err := json.Unmarshal(lineBytes, &data); err != nil {
+					~s
+					~s
 					continue
 				}
 				~w
@@ -10920,7 +11067,8 @@ compile_parallel_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Options, 
 	}
 	close(jobs)
 	wg.Wait()
-', [Workers, BufferSize, UniqueVars, ProgressSetup, Workers, ProgressUpdate, ExtractCode, OutputBlock]).
+	~s
+', [Workers, BufferSize, UniqueVars, ProgressSetup, ErrorSetup, ThresholdSetup, Workers, ParseError, ThresholdCheck, ProgressUpdate, ExtractCode, OutputBlock, ErrorWait]).
 
 %% compile_parallel_json_to_go(+HeadArgs, +Operations, +Options, +Workers, -GoCode)
 %  Generate Go code for parallel JSON processing
@@ -10976,20 +11124,39 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
         ParseError = ''
     ),
 
-    % Progress reporting setup
-    (   option(progress(ProgressOpt), Options)
-    ->  (   ProgressOpt = interval(N) -> Interval = N
-        ;   ProgressOpt = true -> Interval = 1000
-        ;   Interval = 1000
-        ),
-        ProgressSetup = '\n\tvar recordCount int64 = 0',
-        format(string(ProgressUpdate), '
+    % Progress and record counting setup
+    (   (option(progress(_), Options) ; option(metrics_file(_), Options))
+    ->  ProgressSetup = '\n\tvar recordCount int64 = 0',
+        (   option(progress(ProgressOpt), Options)
+        ->  (   ProgressOpt = interval(N) -> Interval = N
+            ;   ProgressOpt = true -> Interval = 1000
+            ;   Interval = 1000
+            ),
+            format(string(ProgressUpdate), '
 				newCount := atomic.AddInt64(&recordCount, 1)
 				if newCount % ~w == 0 {
 					fmt.Fprintf(os.Stderr, "Processed %d records\\n", newCount)
 				}', [Interval])
+        ;   ProgressUpdate = 'atomic.AddInt64(&recordCount, 1)'
+        )
     ;   ProgressSetup = '',
         ProgressUpdate = ''
+    ),
+
+    % Error threshold and counting setup
+    (   (option(error_threshold(_), Options) ; option(metrics_file(_), Options))
+    ->  ThresholdSetup = '\n\tvar errorCount int64 = 0',
+        (   option(error_threshold(count(Threshold)), Options)
+        ->  format(string(ThresholdCheck), '
+				newErrCount := atomic.AddInt64(&errorCount, 1)
+				if newErrCount > ~w {
+					fmt.Fprintf(os.Stderr, "FATAL: Error threshold exceeded (%d errors)\\n", newErrCount)
+					os.Exit(1)
+				}', [Threshold])
+        ;   ThresholdCheck = 'atomic.AddInt64(&errorCount, 1)'
+        )
+    ;   ThresholdSetup = '',
+        ThresholdCheck = ''
     ),
 
     % Generate processing code (recursive)
@@ -11013,6 +11180,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
 	~s
 ~s
 ~s
+~s
 
 	// Start workers
 	for i := 0; i < ~w; i++ {
@@ -11022,6 +11190,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
 			for lineBytes := range jobs {
 				var data map[string]interface{}
 				if err := json.Unmarshal(lineBytes, &data); err != nil {
+					~s
 					~s
 					continue
 				}
@@ -11043,7 +11212,7 @@ compile_parallel_json_to_go(HeadArgs, Operations, Options, Workers, GoCode) :-
 	close(jobs)
 	wg.Wait()
 	~s
-', [Workers, BufferSize, UniqueVars, ProgressSetup, ErrorSetup, Workers, ParseError, ProgressUpdate, ProcessingCode, ErrorWait]).
+', [Workers, BufferSize, UniqueVars, ProgressSetup, ErrorSetup, ThresholdSetup, Workers, ParseError, ThresholdCheck, ProgressUpdate, ProcessingCode, ErrorWait]).
 
 %% generate_parallel_json_processing(+Operations, +HeadArgs, +Delim, +Unique, +VIdx, +VarMap, -Code)
 generate_parallel_json_processing([], HeadArgs, Delim, Unique, _, VarMap, Code) :-
@@ -11677,20 +11846,39 @@ compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, O
         ErrorSetup = ''
     ),
 
-    % Progress reporting setup
-    (   option(progress(ProgressOpt), Options)
-    ->  (   ProgressOpt = interval(N) -> Interval = N
-        ;   ProgressOpt = true -> Interval = 1000
-        ;   Interval = 1000
-        ),
-        format(string(ProgressSetup), '\n\tvar recordCount int64 = 0', []),
-        format(string(ProgressUpdate), '
+    % Progress and record counting setup
+    (   (option(progress(_), Options) ; option(metrics_file(_), Options))
+    ->  format(string(ProgressSetup), '\n\tvar recordCount int64 = 0', []),
+        (   option(progress(ProgressOpt), Options)
+        ->  (   ProgressOpt = interval(N) -> Interval = N
+            ;   ProgressOpt = true -> Interval = 1000
+            ;   Interval = 1000
+            ),
+            format(string(ProgressUpdate), '
 		recordCount++
 		if recordCount % ~w == 0 {
 			fmt.Fprintf(os.Stderr, "Processed %d records\\n", recordCount)
 		}', [Interval])
+        ;   ProgressUpdate = 'recordCount++'
+        )
     ;   ProgressSetup = '',
         ProgressUpdate = ''
+    ),
+
+    % Error threshold and counting setup
+    (   (option(error_threshold(_), Options) ; option(metrics_file(_), Options))
+    ->  format(string(ThresholdSetup), '\n\tvar errorCount int64 = 0', []),
+        (   option(error_threshold(count(Threshold)), Options)
+        ->  format(string(ThresholdCheck), '
+			errorCount++
+			if errorCount > ~w {
+				fmt.Fprintf(os.Stderr, "FATAL: Error threshold exceeded (%d errors)\\n", errorCount)
+				os.Exit(1)
+			}', [Threshold])
+        ;   ThresholdCheck = 'errorCount++'
+        )
+    ;   ThresholdSetup = '',
+        ThresholdCheck = ''
     ),
 
     % Generate untyped field extraction code with fieldN variable names
@@ -11733,11 +11921,13 @@ compile_json_to_go_typed_noschema(HeadArgs, FieldMappings, FieldDelim, Unique, O
         SeenDecl,
         ErrorSetup,
         ProgressSetup,
+        ThresholdSetup,
         '\n\tfor scanner.Scan() {\n',
         '\t\tlineBytes := scanner.Bytes()\n',
         '\t\tvar data map[string]interface{}\n',
         '\t\tif err := json.Unmarshal(lineBytes, &data); err != nil {\n',
         '\t\t\t', ParseError, '\n',
+        '\t\t\t', ThresholdCheck, '\n',
         '\t\t\tcontinue\n\t\t}\n',
         ProgressUpdate, '\n',
         ExtractCode, '\n\t\t\n',
@@ -11785,20 +11975,39 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Constraints, Optio
         ErrorSetup = ''
     ),
 
-    % Progress reporting setup
-    (   option(progress(ProgressOpt), Options)
-    ->  (   ProgressOpt = interval(N) -> Interval = N
-        ;   ProgressOpt = true -> Interval = 1000
-        ;   Interval = 1000
-        ),
-        format(string(ProgressSetup), '\n\tvar recordCount int64 = 0', []),
-        format(string(ProgressUpdate), '
+    % Progress and record counting setup
+    (   (option(progress(_), Options) ; option(metrics_file(_), Options))
+    ->  format(string(ProgressSetup), '\n\tvar recordCount int64 = 0', []),
+        (   option(progress(ProgressOpt), Options)
+        ->  (   ProgressOpt = interval(N) -> Interval = N
+            ;   ProgressOpt = true -> Interval = 1000
+            ;   Interval = 1000
+            ),
+            format(string(ProgressUpdate), '
 		recordCount++
 		if recordCount % ~w == 0 {
 			fmt.Fprintf(os.Stderr, "Processed %d records\\n", recordCount)
 		}', [Interval])
+        ;   ProgressUpdate = 'recordCount++'
+        )
     ;   ProgressSetup = '',
         ProgressUpdate = ''
+    ),
+
+    % Error threshold and counting setup
+    (   (option(error_threshold(_), Options) ; option(metrics_file(_), Options))
+    ->  format(string(ThresholdSetup), '\n\tvar errorCount int64 = 0', []),
+        (   option(error_threshold(count(Threshold)), Options)
+        ->  format(string(ThresholdCheck), '
+			errorCount++
+			if errorCount > ~w {
+				fmt.Fprintf(os.Stderr, "FATAL: Error threshold exceeded (%d errors)\\n", errorCount)
+				os.Exit(1)
+			}', [Threshold])
+        ;   ThresholdCheck = 'errorCount++'
+        )
+    ;   ThresholdSetup = '',
+        ThresholdCheck = ''
     ),
 
     % Generate typed field extraction code and build VarMap
@@ -11829,6 +12038,7 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Constraints, Optio
 		var data map[string]interface{}
 		if err := json.Unmarshal(lineBytes, &data); err != nil {
 			~w
+			~w
 			continue
 		}
 		~w
@@ -11836,7 +12046,7 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Constraints, Optio
 ~w
 		
 		result := ~w
-~w', [ParseError, ProgressUpdate, ExtractCode, ConstraintChecks, OutputExpr, UniqueCheck]),
+~w', [ParseError, ThresholdCheck, ProgressUpdate, ExtractCode, ConstraintChecks, OutputExpr, UniqueCheck]),
 
     % Build complete code
     atomics_to_string([
@@ -11844,6 +12054,7 @@ compile_json_to_go_typed(HeadArgs, FieldMappings, SchemaName, Constraints, Optio
         SeenDecl,
         ErrorSetup,
         ProgressSetup,
+        ThresholdSetup,
         '\n\tfor scanner.Scan() {',
         LoopBody,
         '\t}\n'
