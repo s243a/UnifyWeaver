@@ -54,6 +54,43 @@ class SmoothingAction:
     node_id: str
 
 
+def compute_cluster_distinguishability(centroids: np.ndarray) -> float:
+    """
+    Compute how distinguishable clusters are based on centroid separation.
+
+    Returns a score where:
+    - High score (>0.7) = clusters are similar/confusable → needs refinement
+    - Low score (<0.3) = clusters are distinct → no refinement needed
+
+    This is the average pairwise cosine SIMILARITY (not distance).
+    """
+    from scipy.spatial.distance import cosine
+
+    if len(centroids) <= 1:
+        return 0.0  # Single cluster is trivially distinguishable
+
+    # Sample if too many clusters
+    n = len(centroids)
+    max_pairs = 500
+
+    if n * (n - 1) // 2 <= max_pairs:
+        # Compute all pairs
+        sims = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                sims.append(1 - cosine(centroids[i], centroids[j]))
+    else:
+        # Random sample of pairs
+        import random
+        sims = []
+        indices = list(range(n))
+        for _ in range(max_pairs):
+            i, j = random.sample(indices, 2)
+            sims.append(1 - cosine(centroids[i], centroids[j]))
+
+    return np.mean(sims) if sims else 0.5
+
+
 def build_tree_from_fft_ordering(
     clusters: List[Tuple[np.ndarray, np.ndarray]],
     order: np.ndarray,
@@ -63,6 +100,9 @@ def build_tree_from_fft_ordering(
     Build a tree from FFT's similarity ordering.
 
     Segments are created where similarity gaps exceed threshold.
+    The similarity_score at each node indicates cluster distinguishability:
+    - High score = clusters confusable → refinement may help
+    - Low score = clusters distinct → no refinement needed
     """
     from scipy.spatial.distance import cosine
 
@@ -90,21 +130,15 @@ def build_tree_from_fft_ordering(
         cluster_count=len(clusters),
         total_pairs=sum(len(Q) for Q, A in clusters),
         depth=0,
-        avg_pairs=sum(len(Q) for Q, A in clusters) / len(clusters)
+        avg_pairs=sum(len(Q) for Q, A in clusters) / len(clusters),
+        similarity_score=compute_cluster_distinguishability(centroids)
     )
-
-    # Compute root similarity (average pairwise similarity)
-    if len(clusters) > 1:
-        sims = []
-        for i in range(min(100, len(clusters))):
-            for j in range(i + 1, min(100, len(clusters))):
-                sims.append(1 - cosine(centroids[i], centroids[j]))
-        root.similarity_score = np.mean(sims) if sims else 0.5
 
     # Create segment children
     for seg_idx, (start, end) in enumerate(zip(segment_boundaries[:-1], segment_boundaries[1:])):
         segment_order = order[start:end]
         segment_clusters = [clusters[i] for i in segment_order]
+        seg_centroids = centroids[segment_order]
 
         seg_node = TreeNode(
             id=f"segment_{seg_idx}",
@@ -113,17 +147,9 @@ def build_tree_from_fft_ordering(
             total_pairs=sum(len(Q) for Q, A in segment_clusters),
             depth=1,
             avg_pairs=sum(len(Q) for Q, A in segment_clusters) / max(1, len(segment_order)),
-            parent_id="root"
+            parent_id="root",
+            similarity_score=compute_cluster_distinguishability(seg_centroids)
         )
-
-        # Segment similarity
-        if len(segment_order) > 1:
-            seg_centroids = centroids[segment_order]
-            sims = []
-            for i in range(len(seg_centroids)):
-                for j in range(i + 1, len(seg_centroids)):
-                    sims.append(1 - cosine(seg_centroids[i], seg_centroids[j]))
-            seg_node.similarity_score = np.mean(sims) if sims else 0.5
 
         root.children.append(seg_node)
 
@@ -241,15 +267,24 @@ def _python_fallback_plan(
     """
     Python fallback when Prolog is unavailable.
 
-    Implements the same logic as smoothing_policy.pl with depth-based transitions.
+    Implements the same logic as smoothing_policy.pl with:
+    1. Depth-based technique transitions
+    2. Distinguishability-based refinement decisions
 
-    Key insight: FFT's O(N log N) advantage diminishes at lower scales.
-    At deeper levels, transitioning to basis methods gives better accuracy
-    without the FFT overhead of MST construction and DFS ordering.
+    Key insights:
+    - FFT's O(N log N) advantage diminishes at lower scales
+    - Only refine where clusters are still confusable (high similarity score)
+    - Skip refinement where clusters are already distinguishable
     """
     # Thresholds matching Prolog policy
     FFT_THRESHOLD = 30
     BASIS_SWEET_SPOT = (10, 50)
+    DISTINGUISH_THRESHOLD = 0.3  # Below this = clusters distinguishable
+
+    # Build similarity lookup from tree_json
+    similarity_lookup = {}
+    for sim in tree_json.get("similarities", []):
+        similarity_lookup[sim["id"]] = sim["score"]
 
     actions = []
 
@@ -257,11 +292,20 @@ def _python_fallback_plan(
         cluster_count = node["cluster_count"]
         depth = node["depth"]
         avg_pairs = node["avg_pairs"]
+        similarity = similarity_lookup.get(node["id"], 0.5)
 
         technique = None
 
+        # Check if clusters are already distinguishable
+        clusters_distinguishable = similarity < DISTINGUISH_THRESHOLD
+
+        # Rule 0: If clusters already distinguishable, use baseline (no smoothing needed)
+        if clusters_distinguishable and depth >= 1:
+            technique = "baseline"
+            logger.debug(f"{node['id']}: clusters distinguishable (sim={similarity:.2f}), using baseline")
+
         # Rule 1: Large clusters at shallow depths -> FFT
-        if cluster_count >= FFT_THRESHOLD and depth < 3:
+        elif cluster_count >= FFT_THRESHOLD and depth < 3:
             technique = "fft"
 
         # Rule 2: Medium clusters at deeper levels -> basis_k8

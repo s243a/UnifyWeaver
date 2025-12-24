@@ -67,13 +67,32 @@ sufficient_data(NodeId, Technique) :-
     AvgPairs >= 1.  % At least 1 pair per cluster on average
 
 %% refinement_needed(NodeId)
-%% True if this node would benefit from further refinement
+%% True if this node would benefit from further refinement.
+%%
+%% Key insight: Refine based on cluster DISTINGUISHABILITY, not just size.
+%% If clusters within a segment are already well-separated after projection,
+%% no need to refine further. Only refine where clusters are still confusable.
+%%
+%% The similarity_score represents intra-segment cluster separation:
+%% - High score (>0.7) = clusters similar/confusable → may need refinement
+%% - Low score (<0.7) = clusters distinct → stop refinement
 refinement_needed(NodeId) :-
     node(NodeId, ClusterCount, _, Depth, _),
-    ClusterCount > 50,      % Large enough to subdivide
-    Depth < 3,              % Not too deep already
+    ClusterCount > 10,      % Enough clusters to potentially confuse
+    Depth < 4,              % Reasonable depth limit
     similarity_score(NodeId, Score),
-    Score < 0.7.            % Not already highly coherent
+    Score > 0.7.            % Clusters still too similar → refine
+
+%% distinguish_threshold(Threshold)
+%% Minimum separation score to consider clusters distinguishable
+distinguish_threshold(0.3).
+
+%% clusters_distinguishable(NodeId)
+%% True if clusters within this node are well-separated after projection
+clusters_distinguishable(NodeId) :-
+    similarity_score(NodeId, Score),
+    distinguish_threshold(Threshold),
+    Score < Threshold.  % Lower similarity = more distinguishable
 
 %% =============================================================================
 %% Technique Selection Rules (with depth-based transitions)
