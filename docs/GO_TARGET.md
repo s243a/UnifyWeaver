@@ -40,17 +40,31 @@ The Go target generates standalone Go executables from Prolog predicates, provid
 - **Configurable delimiters**: Support for colon, tab, comma, and custom field delimiters
 - **Automatic deduplication**: Built-in `map[string]bool` for unique results
 - **Field reordering**: Correctly maps variables between head and body arguments
-- **Selective field assignment**: Only assigns fields actually used in output (avoids "declared and not used" errors)
+- **Selective field assignment**: Only assigns fields actually used in output
 - **Constraints and arithmetic**: Support for >, <, >=, =<, ==, !=, and is/2
-- **Aggregations**: sum, count, max, min, avg operations on numeric fields
-- **Smart imports**: Only includes necessary Go packages (regexp, strings, strconv) when needed
-- **Database Support**: Embedded `bbolt` database support for persistent storage
+- **Aggregations**: count, sum, avg, max, min
+- **Advanced Aggregations**:
+    - **Statistical**: `stddev`, `median`, `percentile`
+    - **Array**: `collect_list` (duplicates), `collect_set` (unique)
+    - **Window Functions**: `row_number`, `rank`, `dense_rank`
+- **JSON Input/Output**: Full JSONL stream processing with nested field extraction
+- **Schema Validation**: Compile-time schema-based type checking and validation
+- **XML Input**: Streaming XML parsing and flattening
+- **Database Support**: Embedded `bbolt` database support with:
+    - **Key Strategies**: single field, composite, hash
+    - **Secondary Indexes**: `:- index(predicate/arity, field).` for optimized lookups
+    - **Query Optimization**: Automatic direct lookup and prefix scan selection
+- **Stream Processing Observability**:
+    - **Error Aggregation**: `error_file(Path)` to capture failures
+    - **Progress Reporting**: `progress(interval(N))` for throughput monitoring
+- **Smart imports**: Only includes necessary Go packages when needed
 
 ### Planned Features
 
-- JSON input/output
-- Nested data structures
-- Custom Go functions
+- **Error Thresholds**: Fail if error count exceeds limit
+- **Metrics Export**: Export processing statistics to Prometheus/JSON
+- **Cost-Based Optimization**: Using statistics for join ordering
+- **Custom Go functions**: User-defined Go helpers
 
 ---
 
@@ -702,18 +716,24 @@ Completed features (moved to Current Features):
 - ✅ Match predicate capture groups
 - ✅ Constraints (arithmetic and comparison)
 - ✅ Aggregations (count, sum, avg, min, max)
+- ✅ Advanced Aggregations (Stats, Arrays, Window)
 - ✅ Match predicates with body predicates
 - ✅ Multiple rules with different bodies
 - ✅ JSON Input/Output (JSONL)
 - ✅ XML Input (Streaming/Flattening)
+- ✅ Database Support (BoltDB)
+- ✅ Secondary Indexes
+- ✅ Stream Processing Observability (Error file, Progress)
 
 
 Planned additions (in priority order):
 
-1. **Custom functions** - User-defined Go helpers
-2. **Optimizations** - Eliminate unnecessary allocations
-3. **Deduplication by key rules** - Support for detecting duplicate rule patterns
-4. **Semantic Runtime** - Vector embeddings and search (ONNX integration)
+1. **Error Thresholds** - Automatic failure based on error rate
+2. **Metrics Export** - Prometheus integration
+3. **Cost-Based Optimization** - Using table statistics for join ordering
+4. **Custom functions** - User-defined Go helpers
+5. **Optimizations** - Eliminate unnecessary allocations
+6. **Semantic Runtime** - Vector embeddings and search (ONNX integration)
 
 ---
 
