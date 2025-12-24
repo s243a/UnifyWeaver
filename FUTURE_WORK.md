@@ -105,9 +105,11 @@ Scientific computing and data analysis:
 - **Predicate Pushdown** - Pushes equality filters into Bbolt using secondary indexes (`cursor.Seek`) and prefix scans.
 - **Key Optimization** - Automatically detects direct lookup and prefix scan opportunities.
 
-### Query Optimization (Planned)
+✅ **Implemented**: Cost-Based Optimization (Statistics).
+- **Cost Model** - Goal reordering based on estimated execution cost (cardinality * selectivity).
+- **Statistics Collection** - `db_mode(analyze)` generates tools to collect Bbolt bucket statistics.
 
-- **Statistics** - Collect and use statistics (cardinality, selectivity) for query planning.
+### Query Optimization (Planned)
 
 ### Incremental Compilation
 
@@ -184,14 +186,12 @@ Explore integration with machine learning:
 
 ## Priority Ranking
 
-**Immediate (Next 1-2 Milestones):**
-1. ✅ Advanced JSON features (arrays, advanced schemas)
-2. ✅ Stream processing enhancements (Parallel Processing)
-3. Error Aggregation & Progress Reporting
+**Immediate Priorities:**
+1.  **Semantic Search Validation** (Held-Out Test Set)
+2.  **Optimizations** (Eliminate allocations)
+3.  **Semantic Runtime** (Vector embeddings integration)
 
 **Short Term (Next 3-6 Months):**
-4. ✅ Query optimization basics (Join Reordering, Index Hints)
-5. Statistics & Cost-Based Optimization
 
 
 **Medium Term (6-12 Months):**
