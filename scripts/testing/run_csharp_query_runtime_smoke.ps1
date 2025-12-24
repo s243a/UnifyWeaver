@@ -216,15 +216,16 @@ foreach ($project in $projects) {
         throw "Build output dir not found: $binDir"
     }
 
-    $exe = Get-ChildItem -Path $binDir -File -Filter "*.exe" | Select-Object -First 1
     $dll = Get-ChildItem -Path $binDir -File -Filter "*.dll" | Where-Object { $_.Name -notlike "*.deps.dll" } | Select-Object -First 1
+    $exe = Get-ChildItem -Path $binDir -File -Filter "*.exe" | Select-Object -First 1
 
     $runLogName = "_query_output.log"
     $runLogPath = Join-Path $dir $runLogName
-    if ($exe) {
-        $runExitCode = Invoke-NativeLogged -FilePath $exe.FullName -WorkingDirectory $dir -LogPath $runLogPath
-    } elseif ($dll) {
+    # Prefer executing the project dll via `dotnet` so Windows MAX_PATH limitations don't break local runs.
+    if ($dll) {
         $runExitCode = Invoke-NativeLogged -FilePath "dotnet" -ArgumentList @($dll.FullName) -WorkingDirectory $dir -LogPath $runLogPath
+    } elseif ($exe) {
+        $runExitCode = Invoke-NativeLogged -FilePath $exe.FullName -WorkingDirectory $dir -LogPath $runLogPath
     } else {
         throw "No executable or dll found in $binDir"
     }
