@@ -210,17 +210,56 @@ for level_idx, smoother in enumerate(hs.projections):
 result = hs.project(query)
 ```
 
-## Test Results
+## Benchmark Results
 
-All approaches tested with synthetic data (15 clusters, 64 dimensions):
+Tested on real training data: **218 clusters, 642 Q-A pairs, dim=64**
 
-```
-=== Projection Test ===
-Query norm: 9.460
-SmoothingBasis: 1.648
-FFT: 1.291
-Adaptive FFT: 1.247
-Hierarchical: 1.505
+### Accuracy Comparison
+
+| Method | P@1 | P@3 | Cosine | MSE |
+|--------|-----|-----|--------|-----|
+| **FFT (cutoff=0.5)** | **99.0%** | 90.3% | 0.917 | 0.0078 |
+| FFT (cutoff=0.7) | 99.0% | 90.3% | 0.917 | 0.0077 |
+| AdaptiveFFT | 99.0% | 90.3% | 0.916 | 0.0082 |
+| MultiHeadLDA (baseline) | 94.0% | 85.3% | 0.869 | 0.0078 |
+| SmoothingBasis K=16 | 94.0% | 85.3% | 0.848 | 0.0081 |
+| SmoothingBasis K=8 | 89.0% | 80.3% | 0.711 | 0.0096 |
+| Hierarchical L=3 | 85.0% | 76.0% | 0.624 | 0.0115 |
+| SmoothingBasis K=2 | 49.0% | 43.0% | 0.376 | 0.0132 |
+
+### Computational Cost
+
+| Method | Train (ms) | Inference (us/query) | Complexity |
+|--------|------------|----------------------|------------|
+| MultiHeadLDA | 4.5 | 1,077 | O(N) |
+| FFT (cutoff=0.5) | 92 | 1,610 | O(N log N) |
+| AdaptiveFFT | 313 | 1,649 | O(N log N) |
+| SmoothingBasis K=8 | 2,618 | 8,386 | O(NK²) |
+| SmoothingBasis K=16 | 4,129 | 14,251 | O(NK²) |
+| Hierarchical L=3 | 3,642 | 15,440 | O(N² log N) |
+
+### Key Findings
+
+1. **FFT smoothing is the winner**: 99% P@1, fast training (92ms), reasonable inference
+2. **Baseline is strong**: Simple multi-head routing achieves 94% without smoothing
+3. **SmoothingBasis needs high K**: Only matches baseline at K=16, but 1000x slower
+4. **Hierarchical underperforms**: Cross-cluster merging actually hurts accuracy
+5. **Adaptive FFT**: No benefit over fixed cutoff in this dataset
+
+### Recommendations
+
+| Use Case | Recommended Method |
+|----------|-------------------|
+| Production (accuracy + speed) | FFT (cutoff=0.5) |
+| Low latency required | MultiHeadLDA baseline |
+| Research/interpretability | SmoothingBasis K=8 |
+
+### Running the Benchmark
+
+```bash
+python scripts/benchmark_smoothing.py
+python scripts/benchmark_smoothing.py --max-clusters 50  # Quick test
+python scripts/benchmark_smoothing.py --dim 128          # Higher dimension
 ```
 
 ## Training Data
