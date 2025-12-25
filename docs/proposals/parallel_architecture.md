@@ -1,9 +1,16 @@
 # Proposal: Event-Driven Batch Parallel Architecture
 
-**Status:** Draft
-**Version:** 1.0
-**Date:** 2025-10-26
-**Proposed Implementation Phase:** Phase 4 (Post v0.0.3)
+**Status:** Partially Implemented (Phase 3)
+**Version:** 1.1
+**Date:** 2025-12-25
+**Implementation Phase:** Phase 3 In Progress (v0.0.5)
+
+### Implementation Summary
+- ✅ GNU Parallel backend - Complete
+- ✅ Bash Fork backend - Complete (no external deps)
+- ✅ Dask Distributed backend - Complete
+- ✅ Hadoop Streaming backend - Complete
+- 🚧 Spark/PySpark backend - Planned
 
 ## Executive Summary
 
@@ -574,54 +581,57 @@ Different sources have different batching strategies:
 
 ## Implementation Phases
 
-### Phase 1: Foundation (v0.0.3)
+### Phase 1: Foundation (v0.0.3) ✅ COMPLETE
 *Prerequisites before parallel execution*
 
-- [ ] Test infrastructure improvements (POST_RELEASE_TODO.md)
-- [ ] Fix module import conflicts (#5a)
-- [ ] PowerShell sequential execution issue (#5b)
-- [ ] Stabilize dynamic sources
+- [x] Test infrastructure improvements (POST_RELEASE_TODO.md)
+- [x] Fix module import conflicts (#5a)
+- [x] PowerShell sequential execution issue (#5b)
+- [x] Stabilize dynamic sources
 
-**Timeline:** 1-2 weeks
-
-### Phase 2: Local Parallel Backend (v0.0.4)
+### Phase 2: Local Parallel Backend (v0.0.4) ✅ COMPLETE
 *Prove the concept with GNU Parallel*
 
-- [ ] Implement batcher component
-- [ ] Event system (in-memory queue)
-- [ ] GNU Parallel backend
-- [ ] Basic aggregator (concat, sum)
-- [ ] Prolog DSL for batch hints
-- [ ] Integration tests with CSV sources
+- [x] Implement batcher component (`partitioner.pl`, `partitioners/`)
+- [x] Event system (in-memory queue)
+- [x] GNU Parallel backend (`backends/gnu_parallel.pl`)
+- [x] Bash Fork backend (`backends/bash_fork.pl`) - no external deps
+- [x] Basic aggregator (concat, sum)
+- [x] Prolog DSL for batch hints
+- [x] Integration tests with CSV sources
 
-**Deliverables:**
+**Delivered:**
 - Users can parallelize CSV processing with `:- parallel(pred/arity, [workers(N)])`
 - Event logging shows batch progress
 - Performance benchmarks vs sequential execution
 
-**Timeline:** 3-4 weeks
+### Phase 3: Distributed Backends (v0.0.5) 🚧 IN PROGRESS
+*Add Hadoop, Dask, and Spark support*
 
-### Phase 3: Distributed Backends (v0.0.5)
-*Add Hadoop and Spark support*
+- [x] Backend abstraction interface (`parallel_backend.pl`)
+- [x] Backend auto-loader (`backend_loader.pl`)
+- [x] Hadoop Streaming backend (`backends/hadoop_streaming.pl`)
+- [x] Dask Distributed backend (`backends/dask_distributed.pl`)
+- [ ] Spark backend (PySpark wrapper) - PLANNED
+- [x] HDFS integration for large files (via Hadoop Streaming)
+- [ ] Fault tolerance and retry logic - PARTIAL
+- [ ] Cross-backend test suite - IN PROGRESS
 
-- [ ] Backend abstraction interface
-- [ ] Hadoop Streaming backend
-- [ ] Spark backend (PySpark wrapper)
-- [ ] HDFS integration for large files
-- [ ] Fault tolerance and retry logic
-- [ ] Cross-backend test suite
+**Current Status (December 2025):**
+- Hadoop Streaming: MapReduce jobs with configurable mapper/reducer
+- Dask: Threads, processes, and distributed schedulers
+- Demo: `examples/demo_distributed_backends.pl`
 
-**Deliverables:**
-- Same Prolog code runs on GNU Parallel, Hadoop, or Spark
+**Remaining:**
+- Same Prolog code runs on GNU Parallel, Hadoop, Dask, or Spark
 - Automatic backend selection based on data size
 - Documentation for cluster setup
-
-**Timeline:** 6-8 weeks
 
 ### Phase 4: Advanced Features (v0.1.0)
 *Production-ready parallel execution*
 
-- [ ] Dask backend
+- [x] Dask backend (MOVED TO PHASE 3)
+- [ ] Spark/PySpark backend
 - [ ] Custom reduce functions
 - [ ] Streaming sources (Kafka integration)
 - [ ] Event persistence (crash recovery)
@@ -633,8 +643,6 @@ Different sources have different batching strategies:
 - Production-grade parallel execution
 - Real-time streaming support
 - Comprehensive monitoring
-
-**Timeline:** 8-12 weeks
 
 ---
 
