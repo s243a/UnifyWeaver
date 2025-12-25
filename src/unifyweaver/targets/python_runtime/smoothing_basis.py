@@ -1562,6 +1562,328 @@ class KernelSmoothingProjection:
         }
 
 
+class AdaptiveConditioningProjection:
+    """
+    Adaptive hybrid projection using conditioning-based regularization.
+
+    For each cluster, finds the minimum λ (Tikhonov regularization) needed
+    to achieve a target condition number via bisection. This is principled:
+    - Well-conditioned clusters get λ=0 (no regularization)
+    - Ill-conditioned clusters get just enough λ to stabilize
+
+    Key insight: For k basis vectors, Q^T Q is only k×k. Computing its
+    condition number is O(k³) — essentially free for small k.
+
+    This is NOT unified/coupled optimization. Each cluster is solved
+    independently with per-cluster adaptive λ.
+
+    See docs/proposals/COUPLED_OPTIMIZATION_IMPROVEMENTS.md, Proposal 7.
+    """
+
+    def __init__(
+        self,
+        num_basis: int = 4,
+        target_cond: float = 50.0,
+        bisection_tol: float = 1e-3,
+        bisection_max_iter: int = 20,
+        cosine_weight: float = 0.5,
+    ):
+        """
+        Initialize adaptive conditioning projection.
+
+        Args:
+            num_basis: Number of shared basis matrices (K)
+            target_cond: Target condition number for regularized problem
+            bisection_tol: Tolerance for bisection search
+            bisection_max_iter: Maximum bisection iterations
+            cosine_weight: Weight for cosine loss (vs MSE) in basis training
+        """
+        self.num_basis = num_basis
+        self.target_cond = target_cond
+        self.bisection_tol = bisection_tol
+        self.bisection_max_iter = bisection_max_iter
+        self.cosine_weight = cosine_weight
+
+        # Trained components
+        self.basis: List[np.ndarray] = []
+        self.alpha: np.ndarray = None  # Shape (N, K)
+        self.centroids: List[np.ndarray] = []
+        self.lambdas: np.ndarray = None  # Per-cluster λ values
+
+        # Statistics
+        self.cluster_conditions_before: List[float] = []
+        self.cluster_conditions_after: List[float] = []
+
+    def _effective_condition(self, QTQ: np.ndarray, lam: float) -> float:
+        """
+        Compute condition number of regularized normal equations.
+
+        cond(Q^T Q + λI) for Tikhonov regularization.
+
+        Args:
+            QTQ: k×k Gram matrix (Q^T Q in projected space)
+            lam: Regularization parameter
+
+        Returns:
+            Condition number
+        """
+        regularized = QTQ + lam * np.eye(QTQ.shape[0])
+        s = np.linalg.svd(regularized, compute_uv=False)
+        return s[0] / (s[-1] + 1e-10)
+
+    def _find_min_lambda(self, QTQ: np.ndarray) -> Tuple[float, float, float]:
+        """
+        Find minimum λ that achieves target condition number via bisection.
+
+        Args:
+            QTQ: k×k Gram matrix
+
+        Returns:
+            (lambda, cond_before, cond_after)
+        """
+        cond_before = self._effective_condition(QTQ, 0.0)
+
+        # Already well-conditioned?
+        if cond_before <= self.target_cond:
+            return 0.0, cond_before, cond_before
+
+        # Find upper bound where condition is satisfied
+        lam_high = 1.0
+        while self._effective_condition(QTQ, lam_high) > self.target_cond:
+            lam_high *= 2
+            if lam_high > 1e6:
+                # Extremely ill-conditioned
+                cond_after = self._effective_condition(QTQ, lam_high)
+                return lam_high, cond_before, cond_after
+
+        # Bisect to find minimum sufficient λ
+        lam_low = 0.0
+        for _ in range(self.bisection_max_iter):
+            lam_mid = (lam_low + lam_high) / 2
+            if self._effective_condition(QTQ, lam_mid) > self.target_cond:
+                lam_low = lam_mid
+            else:
+                lam_high = lam_mid
+
+            if lam_high - lam_low < self.bisection_tol:
+                break
+
+        cond_after = self._effective_condition(QTQ, lam_high)
+        return lam_high, cond_before, cond_after
+
+    def train(
+        self,
+        clusters: List[Tuple[np.ndarray, np.ndarray]],
+        num_iterations: int = 50,
+        lr: float = 0.01,
+        log_interval: int = 10,
+    ) -> dict:
+        """
+        Train adaptive conditioning projection.
+
+        Two-phase approach:
+        1. Learn shared basis (same as SmoothingBasisProjection)
+        2. Solve per-cluster with adaptive λ via bisection
+
+        Args:
+            clusters: List of (Q_i, A_i) tuples
+            num_iterations: Alternating optimization iterations
+            lr: Learning rate for basis updates
+            log_interval: Logging interval
+
+        Returns:
+            Dict with training statistics
+        """
+        # Normalize inputs
+        processed = []
+        for Q, A in clusters:
+            if Q.ndim == 1:
+                Q = Q.reshape(1, -1)
+            if A.ndim == 1:
+                A = A.reshape(1, -1)
+            if A.shape[0] == 1 and Q.shape[0] > 1:
+                A = np.tile(A, (Q.shape[0], 1))
+            processed.append((Q, A))
+
+        N = len(processed)
+        d = processed[0][0].shape[1]
+        K = min(self.num_basis, N)
+
+        logger.info(f"Training AdaptiveConditioning: N={N}, K={K}, d={d}")
+        logger.info(f"  Target condition: {self.target_cond}")
+
+        # Store centroids
+        self.centroids = [np.mean(Q, axis=0) for Q, A in processed]
+
+        # Phase 1: Initialize basis from per-cluster solutions
+        W_init = []
+        for Q, A in processed:
+            reg = 0.01 * np.eye(d)
+            W = np.linalg.solve(Q.T @ Q + reg, Q.T @ A)
+            W_init.append(W)
+
+        self.basis = orthogonalize_basis(W_init[:K])
+        K = len(self.basis)
+
+        logger.info(f"Initialized {K} basis matrices")
+
+        # Phase 2: Alternating optimization (basis learning)
+        self.alpha = np.zeros((N, K))
+        losses = []
+
+        for iteration in range(num_iterations):
+            total_loss = 0.0
+
+            # Step 1: Fix basis, solve for coefficients
+            for i, (Q, A) in enumerate(processed):
+                self.alpha[i] = solve_for_alpha(Q, A, self.basis)
+
+            # Step 2: Compute loss
+            for i, (Q, A) in enumerate(processed):
+                W_i = reconstruct_W(self.alpha[i], self.basis)
+                pred = Q @ W_i
+
+                mse = np.mean((pred - A) ** 2)
+                pred_norm = pred / (np.linalg.norm(pred) + 1e-8)
+                A_norm = A / (np.linalg.norm(A) + 1e-8)
+                cos_sim = np.mean(np.sum(pred_norm * A_norm, axis=1))
+
+                loss_i = (1 - self.cosine_weight) * mse + self.cosine_weight * (1 - cos_sim)
+                total_loss += loss_i
+
+            losses.append(total_loss / N)
+
+            # Step 3: Update basis via gradient descent
+            total_grad = [np.zeros_like(G) for G in self.basis]
+
+            for i, (Q, A) in enumerate(processed):
+                W_i = reconstruct_W(self.alpha[i], self.basis)
+                grad_W = compute_gradient(W_i, Q, A, self.cosine_weight)
+
+                for k in range(K):
+                    total_grad[k] += self.alpha[i, k] * grad_W
+
+            for k in range(K):
+                self.basis[k] = self.basis[k] - lr * total_grad[k]
+
+            # Re-orthogonalize periodically
+            if iteration % 5 == 0:
+                self.basis = orthogonalize_basis(self.basis)
+                K_new = len(self.basis)
+                if K_new < K:
+                    self.alpha = self.alpha[:, :K_new]
+                    K = K_new
+
+            if iteration % log_interval == 0 or iteration == num_iterations - 1:
+                logger.info(f"Iter {iteration}: loss={losses[-1]:.6f}")
+
+        # Phase 3: Adaptive λ per cluster via bisection
+        logger.info("Phase 3: Computing adaptive λ per cluster...")
+
+        self.lambdas = np.zeros(N)
+        self.cluster_conditions_before = []
+        self.cluster_conditions_after = []
+
+        for i, (Q, A) in enumerate(processed):
+            # Project Q through basis: P = [Q @ G_1, ..., Q @ G_K] flattened appropriately
+            # For regularization, we work in the coefficient space
+            P = np.column_stack([(Q @ G).ravel() for G in self.basis])
+
+            # Gram matrix in projected space: P^T P (K×K for k basis vectors)
+            PTP = P.T @ P
+
+            # Find optimal λ via bisection
+            lam_i, cond_before, cond_after = self._find_min_lambda(PTP)
+
+            self.lambdas[i] = lam_i
+            self.cluster_conditions_before.append(cond_before)
+            self.cluster_conditions_after.append(cond_after)
+
+            # Re-solve with adaptive regularization
+            target = A.ravel()
+            reg_matrix = lam_i * np.eye(K)
+            self.alpha[i] = np.linalg.solve(PTP + reg_matrix, P.T @ target)
+
+        # Log statistics
+        n_regularized = np.sum(self.lambdas > 0)
+        mean_lambda = np.mean(self.lambdas[self.lambdas > 0]) if n_regularized > 0 else 0
+        mean_cond_before = np.mean(self.cluster_conditions_before)
+        mean_cond_after = np.mean(self.cluster_conditions_after)
+
+        logger.info(f"  Clusters regularized: {n_regularized}/{N}")
+        logger.info(f"  Mean λ (regularized): {mean_lambda:.4f}")
+        logger.info(f"  Mean condition: {mean_cond_before:.1f} → {mean_cond_after:.1f}")
+
+        return {
+            "num_clusters": N,
+            "num_basis": len(self.basis),
+            "embedding_dim": d,
+            "target_cond": self.target_cond,
+            "clusters_regularized": int(n_regularized),
+            "mean_lambda": float(mean_lambda),
+            "max_lambda": float(np.max(self.lambdas)),
+            "mean_cond_before": float(mean_cond_before),
+            "mean_cond_after": float(mean_cond_after),
+            "final_loss": float(losses[-1]) if losses else 0.0,
+            "losses": losses,
+        }
+
+    def project(self, query_emb: np.ndarray, temperature: float = 0.1) -> np.ndarray:
+        """
+        Project query using soft routing and adaptively-regularized W matrices.
+
+        Args:
+            query_emb: Query embedding (d,)
+            temperature: Softmax temperature for routing
+
+        Returns:
+            Projected embedding (d,)
+        """
+        if not self.centroids or not self.basis:
+            raise ValueError("Model not trained. Call train() first.")
+
+        query_emb = query_emb.flatten()
+
+        # Compute routing weights
+        similarities = []
+        for centroid in self.centroids:
+            centroid_norm = centroid / (np.linalg.norm(centroid) + 1e-8)
+            query_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+            sim = np.dot(query_norm, centroid_norm)
+            similarities.append(sim)
+
+        similarities = np.array(similarities)
+
+        # Softmax routing
+        exp_sim = np.exp((similarities - np.max(similarities)) / temperature)
+        weights = exp_sim / (np.sum(exp_sim) + 1e-8)
+
+        # Weighted combination
+        projected = np.zeros(len(query_emb))
+        for i, weight in enumerate(weights):
+            W_i = reconstruct_W(self.alpha[i], self.basis)
+            projected += weight * (query_emb @ W_i)
+
+        return projected
+
+    def get_stats(self) -> dict:
+        """Get detailed statistics about the trained model."""
+        if self.alpha is None:
+            return {"trained": False}
+
+        return {
+            "trained": True,
+            "num_basis": len(self.basis),
+            "num_clusters": len(self.centroids),
+            "target_cond": self.target_cond,
+            "lambdas": self.lambdas.tolist(),
+            "conditions_before": self.cluster_conditions_before,
+            "conditions_after": self.cluster_conditions_after,
+            "mean_lambda": float(np.mean(self.lambdas)),
+            "clusters_needing_regularization": int(np.sum(self.lambdas > 0)),
+        }
+
+
 if __name__ == "__main__":
     # Test code
     print("=== Smoothing Basis Test ===")

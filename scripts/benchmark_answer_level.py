@@ -77,6 +77,7 @@ from smoothing_basis import (
     SmoothingKernel,
     UnifiedKernelBasisProjection,
     KernelSmoothedBasisProjection,
+    AdaptiveConditioningProjection,
 )
 from fft_smoothing import FFTSmoothingProjection, AdaptiveFFTSmoothing
 from hierarchical_smoothing import HierarchicalSmoothing
@@ -666,6 +667,41 @@ def run_benchmarks(
         results.append(result)
         print(f"   Cosine: {result.mean_cosine_to_target:.4f} ± {result.std_cosine_to_target:.4f}")
         print(f"   MSE: {result.mean_mse_to_target:.4f}, Rank: {result.mean_target_rank:.1f}, MRR: {result.mrr:.4f}")
+
+    # 9. Adaptive Conditioning Projection (bisection-based λ)
+    adaptive_cond_configs = [
+        # (K, target_cond)
+        (4, 10.0),    # Strict conditioning
+        (4, 50.0),    # Moderate conditioning (default)
+        (4, 100.0),   # Relaxed conditioning
+        (8, 50.0),    # More basis vectors
+    ]
+
+    for K, target_cond in adaptive_cond_configs:
+        name = f"AdaptiveCond_K{K}_c{int(target_cond)}"
+        print(f"\n9. {name}...")
+
+        adaptive_proj = AdaptiveConditioningProjection(
+            num_basis=K,
+            target_cond=target_cond,
+            bisection_tol=1e-3,
+            bisection_max_iter=20,
+            cosine_weight=0.5,
+        )
+        result = benchmark_method(
+            name, adaptive_proj, clusters_for_smoothing, qa_pairs, answer_index,
+            lambda a=adaptive_proj: a.train(clusters_for_smoothing, num_iterations=50, log_interval=100),
+            {"K": K, "target_cond": target_cond}
+        )
+        results.append(result)
+        print(f"   Cosine: {result.mean_cosine_to_target:.4f} ± {result.std_cosine_to_target:.4f}")
+        print(f"   MSE: {result.mean_mse_to_target:.4f}, Rank: {result.mean_target_rank:.1f}, MRR: {result.mrr:.4f}")
+
+        # Print adaptive stats
+        stats = adaptive_proj.get_stats()
+        if stats.get('trained'):
+            print(f"   Regularized: {stats['clusters_needing_regularization']}/{len(clusters_for_smoothing)} clusters")
+            print(f"   Mean λ: {stats['mean_lambda']:.4f}")
 
     return results
 
