@@ -47,10 +47,22 @@ The answer pool for ranking can be configured:
 
 ## Results (tailored data, 500 pairs)
 
+### Validation Answers Only (100 candidates)
+
 | Model | MRR | R@1 | R@5 |
 |-------|-----|-----|-----|
 | all-MiniLM (384d) | 0.901 | 83% | 98% |
 | ModernBERT (768d) | 0.956 | 92% | 100% |
+
+### Full Answer Pool (500 candidates - harder test)
+
+| Model | MRR | R@1 | R@5 |
+|-------|-----|-----|-----|
+| all-MiniLM (384d) | 0.758 | 64% | 90% |
+| ModernBERT (768d) | 0.852 | 74% | 97% |
+
+The full pool test ranks against ALL answers (train + val), not just held-out.
+This is harder because similar training answers compete with the target.
 
 These results use simple softmax routing with temperature tuning.
 Density-based and logit-calibrated routing remain as future exploration.
@@ -435,6 +447,31 @@ class PerPairRouting:
         self.config.top_k = best_k if best_k < N else None
 
         return best_k, results
+
+
+def build_full_answer_pool(
+    train_pairs: List[Tuple[np.ndarray, np.ndarray]],
+    val_pairs: List[Tuple[np.ndarray, np.ndarray]],
+) -> np.ndarray:
+    """
+    Build answer pool from all pairs (train + validation).
+
+    This creates a harder ranking task where the model must find
+    the exact target answer among ALL possible answers.
+
+    Args:
+        train_pairs: Training (query, answer) pairs
+        val_pairs: Validation (query, answer) pairs
+
+    Returns:
+        Answer matrix (N_total × d)
+    """
+    all_answers = []
+    for _, a in train_pairs:
+        all_answers.append(a.flatten())
+    for _, a in val_pairs:
+        all_answers.append(a.flatten())
+    return np.stack(all_answers)
 
 
 def train_val_split(
