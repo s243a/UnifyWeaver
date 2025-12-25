@@ -95,7 +95,17 @@ ModernBERT is ~20x slower to embed but embeddings are cached after training.
 Inference cost (single query) is negligible for both.
 
 These results use simple softmax routing with temperature tuning.
-Density-based and logit-calibrated routing remain as future exploration.
+Standard softmax gives no density reward or penalty - purely similarity-based.
+
+## Density-Modulated Routing (Experimental, Inconclusive)
+
+We explored incorporating local density into routing weights via log-odds
+combination, but did not find a formulation that improves over standard
+softmax on this dataset.
+
+The theoretical motivation (see education/sandbox/theory/) suggests density
+could indicate confidence, but how to properly integrate it with routing
+remains an open question. Standard softmax routing works well as-is.
 """
 
 import numpy as np
@@ -116,6 +126,10 @@ class RoutingConfig:
     top_k: Optional[int] = None       # If set, only use top-k neighbors
     min_similarity: float = -1.0      # Minimum similarity threshold
     use_hard_routing: bool = False    # If True, use argmax instead of softmax
+    # Logit-flux routing parameters
+    use_logit_flux: bool = False      # If True, use logit-flux routing
+    density_weight: float = 1.0       # Weight for density term (w in the formula)
+    density_bandwidth: Optional[float] = None  # KDE bandwidth (None = Silverman's rule)
 
 
 @dataclass
@@ -215,12 +229,104 @@ class PerPairRouting:
             norms = np.linalg.norm(self.query_matrix, axis=1, keepdims=True)
             self.query_matrix = self.query_matrix / (norms + 1e-8)
 
+        # Precompute training query densities for logit-flux routing
+        self._precompute_densities()
+
         return {
             "num_pairs": N,
             "embedding_dim": self.d,
             "mean_scale": float(np.mean(scales)),
             "std_scale": float(np.std(scales)),
         }
+
+    def _precompute_densities(self, bandwidth: Optional[float] = None, k_neighbors: int = 5):
+        """
+        Precompute densities for training queries using adaptive k-NN.
+
+        Density measures how "tight" the local neighborhood is:
+        - Mean similarity to k nearest neighbors (how close they are)
+        - Weighted by similarity spread (how consistent the neighborhood is)
+
+        A point in a tight cluster with consistent neighbors has high density.
+        A point with scattered neighbors at varying distances has low density.
+
+        Args:
+            bandwidth: Unused, kept for API compatibility
+            k_neighbors: Number of neighbors for density (default: 5)
+        """
+        if self.query_matrix is None:
+            return
+
+        N = len(self.query_matrix)
+        k = min(k_neighbors, N - 1)  # Can't include self
+
+        # Compute pairwise similarities (already normalized)
+        sim_matrix = self.query_matrix @ self.query_matrix.T  # (N, N)
+
+        # For each query, compute adaptive density
+        densities = []
+        for i in range(N):
+            sims = sim_matrix[i].copy()
+            sims[i] = -np.inf  # Exclude self
+
+            # Get k nearest neighbors
+            top_k_idx = np.argpartition(sims, -k)[-k:]
+            top_k_sims = sims[top_k_idx]
+
+            # Density = mean similarity weighted by consistency
+            # High consistency (low std) = tight cluster = boost
+            # Low consistency (high std) = scattered = penalty
+            mean_sim = top_k_sims.mean()
+            std_sim = top_k_sims.std() + 1e-8
+
+            # Adaptive density: mean / (1 + std)
+            # Tight clusters: high mean, low std -> high density
+            # Scattered: lower mean or high std -> lower density
+            adaptive_density = mean_sim / (1 + std_sim)
+            densities.append(adaptive_density)
+
+        self._train_densities = np.array(densities)
+        self._k_neighbors = k
+
+        # Convert to confidence in (0, 1) using sigmoid-like normalization
+        # Use MEDIAN as baseline so uniform data gives 50% above/below 0.5
+        baseline = np.median(self._train_densities)
+        self._train_confidences = self._train_densities / (self._train_densities + baseline)
+
+        logger.info(f"Adaptive k-NN density (k={k}): median confidence={np.median(self._train_confidences):.4f}, "
+                   f"std={self._train_confidences.std():.4f}")
+
+    def compute_query_density(self, query: np.ndarray) -> Tuple[np.ndarray, float]:
+        """
+        Compute density of query relative to training queries.
+
+        Args:
+            query: Query embedding (d,), should be normalized
+
+        Returns:
+            (per_train_confidences, query_confidence)
+            - per_train_confidences: Confidence scores for each training query
+            - query_confidence: How confident we are about this query location
+        """
+        query = query.flatten()
+        if self.normalize_queries:
+            query = query / (np.linalg.norm(query) + 1e-8)
+
+        # Similarity to all training queries
+        sims = self.query_matrix @ query  # (N,)
+
+        # Query's adaptive density = mean / (1 + std) of k nearest
+        k = self._k_neighbors
+        top_k_sims = np.partition(sims, -k)[-k:]
+        mean_sim = top_k_sims.mean()
+        std_sim = top_k_sims.std() + 1e-8
+        query_density = mean_sim / (1 + std_sim)
+
+        # Convert to confidence (use median baseline for consistency)
+        baseline = np.median(self._train_densities)
+        query_confidence = query_density / (query_density + baseline)
+
+        return self._train_confidences, query_confidence
 
     def compute_routing_weights(
         self,
@@ -269,10 +375,61 @@ class PerPairRouting:
         if config.use_hard_routing:
             weights = np.zeros(len(similarities))
             weights[np.argmax(similarities)] = 1.0
+        elif config.use_logit_flux:
+            # Logit-flux routing: combine similarity and density in log-odds space
+            weights = self._logit_flux_weights(similarities, config)
         else:
-            # Softmax with temperature
+            # Standard softmax with temperature
             exp_sim = np.exp((similarities - np.max(similarities)) / config.temperature)
             weights = exp_sim / (np.sum(exp_sim) + 1e-8)
+
+        return weights
+
+    def _logit_flux_weights(
+        self,
+        similarities: np.ndarray,
+        config: RoutingConfig,
+        eps: float = 1e-7,
+    ) -> np.ndarray:
+        """
+        Compute routing weights using logit-flux formulation.
+
+        Combines similarity and density in log-odds space:
+            P(i) ∝ odds(s_i)^(1/τ) × odds(c_i)^(w/τ)
+
+        where odds(x) = x / (1-x) and c_i is the confidence (density-derived).
+
+        Args:
+            similarities: Raw cosine similarities to training queries
+            config: Routing configuration
+            eps: Small constant to avoid log(0)
+
+        Returns:
+            Routing weights (N,) summing to 1
+        """
+        # Clamp similarities to (0, 1) for logit transform
+        # Cosine similarities are in [-1, 1], shift to (0, 1)
+        s = (similarities + 1) / 2  # Now in [0, 1]
+        s = np.clip(s, eps, 1 - eps)
+
+        # Get precomputed confidence scores for training queries
+        c = np.clip(self._train_confidences, eps, 1 - eps)
+
+        # Compute logits
+        s_logit = np.log(s / (1 - s))
+        c_logit = np.log(c / (1 - c))
+
+        # Combined logit with temperature
+        # P(i) ∝ exp((logit(s) + w * logit(c)) / τ)
+        combined = (s_logit + config.density_weight * c_logit) / config.temperature
+
+        # Handle -inf from top-k/threshold masking
+        combined = np.where(np.isinf(similarities), -np.inf, combined)
+
+        # Softmax (with numerical stability)
+        combined = combined - np.max(combined[~np.isinf(combined)])
+        exp_combined = np.exp(combined)
+        weights = exp_combined / (np.sum(exp_combined) + eps)
 
         return weights
 
