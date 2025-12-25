@@ -371,6 +371,42 @@ For large N, O(N²) kernel matrix is expensive. Options:
 - **Random Fourier features**: Approximate kernel with random projections
 - **Inducing points**: Sparse GP methods
 
+**Small Length Scale Optimization:**
+
+When the length scale is small, the kernel decays rapidly with distance:
+
+```
+K(r) ≈ 0  for r >> length_scale
+```
+
+This means only **nearby clusters** contribute significantly to smoothing. We can exploit this:
+
+1. **Sparse kernel matrix**: Set K(i,j) = 0 for distant cluster pairs
+2. **k-NN approximation**: Only consider k nearest neighbors in the spanning tree
+3. **Threshold pruning**: Zero out entries below ε (e.g., K < 0.01)
+
+Computational benefit:
+```
+Dense kernel:  O(N²) storage, O(N²) multiply
+Sparse (k-NN): O(Nk) storage, O(Nk) multiply
+```
+
+For our benchmark results showing optimal length_scale ≈ 0.5, with typical centroid
+distances of 1-2, this means ~3-5 effective neighbors per cluster - highly sparse!
+
+**Iterative Solvers for Coupled Constraints:**
+
+When solving the full system (I + λL)W = W_target with inter-dependent constraints:
+
+1. **Sparse Laplacian**: L has O(Nk) non-zeros when using k-NN graph
+2. **Conjugate Gradient**: Converges in O(√κ) iterations where κ = condition number
+3. **Preconditioning**: Jacobi or incomplete Cholesky reduces iterations further
+
+For well-conditioned graph Laplacians with moderate λ, typically 10-20 iterations suffice.
+Each iteration is O(Nk) for sparse matrix-vector product, giving total complexity O(Nk × iters).
+
+This can outperform FFT's O(N log N) when k is small and the system is well-conditioned.
+
 ### 2. Learned Length Scales
 
 Instead of fixed length_scale:
