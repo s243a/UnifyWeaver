@@ -9,14 +9,30 @@ This document frames how UnifyWeaver maps logical predicates onto executable env
 - Progressive enhancement: Simpler targets shipping earlier inform richer runtimes; new engines should reuse existing classifiers and clause transforms instead of diverging.
 
 ## Target Roles
-- Bash (`target(bash)` and friends)
+
+### Shell Targets
+- **Bash** (`target(bash)`)
   Shell scripts remain the baseline. They rely on ubiquitous tooling, make side-effects explicit, and integrate with system pipelines. Recursion support is implemented through memoised loops and specialised templates.
-- C# Code Generation (`target(csharp_codegen)`)
+
+### Systems Language Targets
+- **Go** (`target(go)`)
+  The most feature-complete procedural target. Generates standalone Go binaries with embedded database support (BoltDB), statistical aggregations, window functions (row_number, rank, LAG/LEAD), and comprehensive observability. Ideal for containerized deployments and high-performance data processing.
+- **Rust** (`target(rust)`)
+  Generates safe, high-performance Rust programs with zero-cost abstractions. Supports statistical aggregations (stddev, median, percentile), collection aggregations, and observability features. Best for memory-constrained and safety-critical applications.
+
+### .NET Targets
+- **C# Code Generation** (`target(csharp_codegen)`)
   Emits idiomatic C# source that mirrors the Bash streaming semantics. Today it focuses on non-recursive predicates; over time it can absorb more patterns (e.g., tail recursion) where direct translation is tractable.
-- C# Query Runtime (`target(csharp_query)`)
+- **C# Query Runtime** (`target(csharp_query)`)
   Produces a declarative intermediate representation (IR) consumed by a reusable LINQ-driven engine. Clause bodies turn into relational operators; recursion is handled by a fixpoint driver that iterates until convergence.
-- SQL (`target(sql)`)
+
+### Declarative Targets
+- **SQL** (`target(sql)`)
   Generates declarative SQL queries (SELECT, CREATE VIEW) for execution on relational databases. Unlike other targets that emit executable code, SQL output is meant for external database execution. Supports full SQL feature set including JOINs, aggregations, subqueries, window functions, CTEs, recursive CTEs, and set operations.
+
+### Scripting Targets
+- **Python** (`target(python)`)
+  Generates Python scripts with strong recursion support, ML integration, and pipeline chaining. Ideal for data science workflows and rapid prototyping.
 
 ## Selecting Targets
 Preferences (`preferences.pl`) and runtime options choose a target. Planned behaviour:
