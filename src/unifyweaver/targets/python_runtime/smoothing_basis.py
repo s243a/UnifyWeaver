@@ -614,6 +614,682 @@ class SmoothingKernel:
     RATIONAL_QUADRATIC = "rational_quadratic"
 
 
+def conjugate_gradient(
+    A_func,
+    b: np.ndarray,
+    x0: Optional[np.ndarray] = None,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+    precond_func=None,
+) -> Tuple[np.ndarray, int, float]:
+    """
+    Conjugate Gradient solver for Ax = b.
+
+    Args:
+        A_func: Function that computes A @ x (matrix-free)
+        b: Right-hand side vector
+        x0: Initial guess (default: zeros)
+        max_iter: Maximum iterations
+        tol: Convergence tolerance (relative residual)
+        precond_func: Optional preconditioner M^{-1} @ r
+
+    Returns:
+        x: Solution vector
+        iterations: Number of iterations used
+        residual: Final relative residual
+    """
+    n = len(b)
+    x = x0 if x0 is not None else np.zeros(n)
+
+    r = b - A_func(x)
+    if precond_func:
+        z = precond_func(r)
+    else:
+        z = r
+
+    p = z.copy()
+    rz_old = np.dot(r, z)
+
+    b_norm = np.linalg.norm(b) + 1e-10
+
+    for i in range(max_iter):
+        Ap = A_func(p)
+        alpha = rz_old / (np.dot(p, Ap) + 1e-10)
+
+        x = x + alpha * p
+        r = r - alpha * Ap
+
+        rel_residual = np.linalg.norm(r) / b_norm
+        if rel_residual < tol:
+            return x, i + 1, rel_residual
+
+        if precond_func:
+            z = precond_func(r)
+        else:
+            z = r
+
+        rz_new = np.dot(r, z)
+        beta = rz_new / (rz_old + 1e-10)
+
+        p = z + beta * p
+        rz_old = rz_new
+
+    return x, max_iter, np.linalg.norm(r) / b_norm
+
+
+class UnifiedKernelBasisProjection:
+    """
+    Unified projection combining:
+    1. Matérn-5/2 kernel smoothing (graph Laplacian regularization)
+    2. K basis vectors (tangent space / shared structure)
+    3. Coupled optimization via Conjugate Gradient
+
+    Loss function:
+        L = Σ_i ||Q_i W_i - A_i||² + λ Σ_{i,j} K(i,j) ||W_i - W_j||²
+
+    With basis decomposition W_i = Σ_k α_ik G_k:
+        L = Σ_i ||Q_i (Σ_k α_ik G_k) - A_i||² + λ · trace(α^T L_K α)
+
+    Key insight: orthonormal basis decouples the smoothness term per component,
+    making the coupled system tractable with sparse CG.
+
+    Optimization:
+        1. Fix basis G → solve for α via CG with sparse Laplacian (coupled)
+        2. Fix α → gradient descent on G with Gram-Schmidt
+
+    See docs/proposals/KERNEL_SMOOTHING_THEORY.md for theoretical foundation.
+    """
+
+    def __init__(
+        self,
+        num_basis: int = 4,
+        length_scale: float = 0.5,
+        smoothing_strength: float = 0.1,
+        k_neighbors: Optional[int] = None,
+        cg_max_iter: int = 50,
+        cg_tol: float = 1e-5,
+        use_jacobi_precond: bool = True,
+        diagonal_init_scale: float = 1.0,
+        noise_scale: float = 0.1,
+        cosine_weight: float = 0.5,
+    ):
+        """
+        Initialize unified kernel basis projection.
+
+        Args:
+            num_basis: Number of shared basis matrices (K)
+            length_scale: Matérn-5/2 kernel length scale
+            smoothing_strength: λ - Laplacian regularization strength
+            k_neighbors: If set, sparsify kernel to k nearest neighbors
+            cg_max_iter: Maximum CG iterations
+            cg_tol: CG convergence tolerance
+            use_jacobi_precond: Use diagonal (Jacobi) preconditioning
+            diagonal_init_scale: Scale for diagonal initialization
+            noise_scale: Scale for random noise in initialization
+            cosine_weight: Weight for cosine loss (vs MSE)
+        """
+        self.num_basis = num_basis
+        self.length_scale = length_scale
+        self.smoothing_strength = smoothing_strength
+        self.k_neighbors = k_neighbors
+        self.cg_max_iter = cg_max_iter
+        self.cg_tol = cg_tol
+        self.use_jacobi_precond = use_jacobi_precond
+        self.diagonal_init_scale = diagonal_init_scale
+        self.noise_scale = noise_scale
+        self.cosine_weight = cosine_weight
+
+        # Trained components
+        self.basis: List[np.ndarray] = []
+        self.alpha: np.ndarray = None  # Shape (N, K)
+        self.centroids: List[np.ndarray] = []
+        self.L_sparse: np.ndarray = None  # Sparse graph Laplacian
+        self.K_matrix: np.ndarray = None  # Kernel matrix
+
+        # Statistics
+        self.cg_iterations: List[int] = []
+        self.losses: List[float] = []
+
+    def _compute_matern52_kernel(self, centroids: List[np.ndarray]) -> np.ndarray:
+        """Compute Matérn-5/2 kernel matrix from centroids."""
+        N = len(centroids)
+        C = np.array(centroids)
+
+        # Pairwise Euclidean distances
+        norms_sq = np.sum(C**2, axis=1)
+        distances_sq = norms_sq[:, None] + norms_sq[None, :] - 2 * (C @ C.T)
+        distances = np.sqrt(np.maximum(distances_sq, 0))
+
+        # Matérn-5/2: (1 + √5r/ℓ + 5r²/3ℓ²) exp(-√5r/ℓ)
+        scaled = np.sqrt(5) * distances / self.length_scale
+        K = (1 + scaled + scaled**2 / 3) * np.exp(-scaled)
+
+        # Diagonal is 1
+        np.fill_diagonal(K, 1.0)
+
+        return K
+
+    def _sparsify_kernel(self, K: np.ndarray, k: int) -> np.ndarray:
+        """Sparsify kernel to k nearest neighbors per row."""
+        N = len(K)
+        K_sparse = np.zeros_like(K)
+
+        for i in range(N):
+            # Find k largest values (including self)
+            top_k_idx = np.argsort(K[i])[-k:]
+            K_sparse[i, top_k_idx] = K[i, top_k_idx]
+
+        # Symmetrize
+        K_sparse = (K_sparse + K_sparse.T) / 2
+
+        return K_sparse
+
+    def _compute_graph_laplacian(self, K: np.ndarray) -> np.ndarray:
+        """Compute graph Laplacian L = D - K."""
+        D = np.diag(K.sum(axis=1))
+        L = D - K
+        return L
+
+    def _initialize_basis_diagonal(self, d: int) -> List[np.ndarray]:
+        """
+        Initialize basis as diagonally dominant + noise.
+
+        Creates K basis matrices, each centered around identity
+        with random noise to break symmetry.
+        """
+        basis = []
+        for k in range(self.num_basis):
+            # Start with scaled identity
+            G = self.diagonal_init_scale * np.eye(d)
+            # Add random noise
+            G += self.noise_scale * np.random.randn(d, d)
+            basis.append(G)
+
+        return orthogonalize_basis(basis)
+
+    def _initialize_basis_from_clusters(
+        self, clusters: List[Tuple[np.ndarray, np.ndarray]], d: int
+    ) -> List[np.ndarray]:
+        """
+        Initialize basis from per-cluster least-squares solutions.
+
+        This provides a much better starting point than random initialization.
+        """
+        # Compute per-cluster W matrices
+        W_init = []
+        for Q, A in clusters:
+            reg = 0.01 * np.eye(d)
+            W = np.linalg.solve(Q.T @ Q + reg, Q.T @ A)
+            W_init.append(W)
+
+        # Extract orthogonal basis from first K solutions
+        K = min(self.num_basis, len(W_init))
+        basis = orthogonalize_basis(W_init[:K])
+
+        # If we need more basis vectors, add diagonal + noise
+        while len(basis) < self.num_basis:
+            G = self.diagonal_init_scale * np.eye(d)
+            G += self.noise_scale * np.random.randn(d, d)
+            # Orthogonalize against existing
+            for B in basis:
+                G = G - frobenius_inner(G, B) * B
+            G_norm = normalize_matrix(G)
+            if frobenius_inner(G_norm, G_norm) > 0.1:
+                basis.append(G_norm)
+            else:
+                break
+
+        return basis
+
+    def _compute_cluster_design_matrices(
+        self, clusters: List[Tuple[np.ndarray, np.ndarray]]
+    ) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+        """
+        Compute design matrices M_i and target vectors b_i for each cluster.
+
+        For cluster i with Q_i, A_i:
+            ||Σ_k α_ik (Q_i G_k) - A_i||² = α_i^T M_i α_i - 2 α_i^T b_i + const
+
+        where:
+            M_i[k,l] = trace((Q_i G_k)^T (Q_i G_l))
+            b_i[k] = trace((Q_i G_k)^T A_i)
+        """
+        K = len(self.basis)
+        M_list = []
+        b_list = []
+
+        for Q, A in clusters:
+            # Compute P_ik = Q @ G_k for each basis
+            P = [Q @ G for G in self.basis]
+
+            # M_i: K x K matrix
+            M_i = np.zeros((K, K))
+            for k in range(K):
+                for l in range(K):
+                    M_i[k, l] = np.sum(P[k] * P[l])
+
+            # b_i: K vector
+            b_i = np.array([np.sum(P[k] * A) for k in range(K)])
+
+            M_list.append(M_i)
+            b_list.append(b_i)
+
+        return M_list, b_list
+
+    def _solve_coupled_alpha(
+        self,
+        M_list: List[np.ndarray],
+        b_list: List[np.ndarray],
+        alpha_init: np.ndarray,
+    ) -> Tuple[np.ndarray, int, float]:
+        """
+        Solve coupled system for α using Conjugate Gradient.
+
+        The system is:
+            (block_diag(M_i) + λ (L ⊗ I_K)) α = b
+
+        where:
+            - block_diag(M_i) is block-diagonal (data fidelity)
+            - L ⊗ I_K is Laplacian regularization (couples clusters)
+        """
+        N = len(M_list)
+        K = len(self.basis)
+
+        # Flatten α: shape (N, K) → (N*K,)
+        # Storage: α[i*K + k] = α_ik
+        x0 = alpha_init.ravel()
+
+        # Build right-hand side: concatenate b_i
+        b = np.concatenate(b_list)
+
+        # Define A @ x operator (matrix-free)
+        def A_func(x):
+            """Compute (block_diag(M_i) + λ L ⊗ I_K) x."""
+            x_2d = x.reshape(N, K)
+            result = np.zeros_like(x_2d)
+
+            # Data fidelity term: M_i @ α_i for each cluster
+            for i in range(N):
+                result[i] = M_list[i] @ x_2d[i]
+
+            # Laplacian regularization: λ L @ α for each basis
+            # L acts on the cluster dimension
+            for k in range(K):
+                result[:, k] += self.smoothing_strength * (self.L_sparse @ x_2d[:, k])
+
+            return result.ravel()
+
+        # Optional Jacobi (diagonal) preconditioner
+        precond_func = None
+        if self.use_jacobi_precond:
+            # Diagonal of Hessian: M_ii[k,k] + λ L_ii
+            diag = np.zeros(N * K)
+            for i in range(N):
+                for k in range(K):
+                    diag[i * K + k] = M_list[i][k, k] + self.smoothing_strength * self.L_sparse[i, i]
+            diag = np.maximum(diag, 1e-6)  # Ensure positive
+
+            def precond_func(r):
+                return r / diag
+
+        # Solve with CG
+        x_sol, iterations, residual = conjugate_gradient(
+            A_func, b, x0, self.cg_max_iter, self.cg_tol, precond_func
+        )
+
+        alpha_new = x_sol.reshape(N, K)
+        return alpha_new, iterations, residual
+
+    def train(
+        self,
+        clusters: List[Tuple[np.ndarray, np.ndarray]],
+        num_iterations: int = 50,
+        lr: float = 0.01,
+        log_interval: int = 10,
+    ) -> dict:
+        """
+        Train unified kernel basis projection.
+
+        Args:
+            clusters: List of (Q_i, A_i) tuples
+            num_iterations: Alternating optimization iterations
+            lr: Learning rate for basis updates
+            log_interval: Logging interval
+
+        Returns:
+            Dict with training statistics
+        """
+        # Normalize inputs
+        processed = []
+        for Q, A in clusters:
+            if Q.ndim == 1:
+                Q = Q.reshape(1, -1)
+            if A.ndim == 1:
+                A = A.reshape(1, -1)
+            if A.shape[0] == 1 and Q.shape[0] > 1:
+                A = np.tile(A, (Q.shape[0], 1))
+            processed.append((Q, A))
+
+        N = len(processed)
+        d = processed[0][0].shape[1]
+        K = min(self.num_basis, N)
+
+        logger.info(f"Training UnifiedKernelBasis: N={N}, K={K}, d={d}")
+        logger.info(f"  Matérn-5/2: length_scale={self.length_scale}")
+        logger.info(f"  Smoothing: λ={self.smoothing_strength}")
+        if self.k_neighbors:
+            logger.info(f"  Sparse: k={self.k_neighbors} neighbors")
+
+        # Store centroids
+        self.centroids = [np.mean(Q, axis=0) for Q, A in processed]
+
+        # Step 1: Compute kernel and Laplacian
+        self.K_matrix = self._compute_matern52_kernel(self.centroids)
+
+        if self.k_neighbors:
+            self.K_matrix = self._sparsify_kernel(self.K_matrix, self.k_neighbors)
+
+        self.L_sparse = self._compute_graph_laplacian(self.K_matrix)
+
+        # Step 2: Initialize basis from per-cluster solutions
+        self.basis = self._initialize_basis_from_clusters(processed, d)
+        K = len(self.basis)
+
+        logger.info(f"Initialized {K} basis matrices from cluster solutions")
+
+        # Step 3: Initialize α from per-cluster solutions
+        self.alpha = np.zeros((N, K))
+        for i, (Q, A) in enumerate(processed):
+            self.alpha[i] = solve_for_alpha(Q, A, self.basis)
+
+        # Step 4: Alternating optimization
+        self.losses = []
+        self.cg_iterations = []
+
+        for iteration in range(num_iterations):
+            # Step 4a: Fix basis → solve for α via CG
+            M_list, b_list = self._compute_cluster_design_matrices(processed)
+            self.alpha, cg_iters, cg_residual = self._solve_coupled_alpha(
+                M_list, b_list, self.alpha
+            )
+            self.cg_iterations.append(cg_iters)
+
+            # Step 4b: Compute loss
+            total_loss = 0.0
+            total_smooth_loss = 0.0
+
+            for i, (Q, A) in enumerate(processed):
+                W_i = reconstruct_W(self.alpha[i], self.basis)
+                pred = Q @ W_i
+
+                # MSE
+                mse = np.mean((pred - A) ** 2)
+
+                # Cosine
+                pred_norm = pred / (np.linalg.norm(pred) + 1e-8)
+                A_norm = A / (np.linalg.norm(A) + 1e-8)
+                cos_sim = np.mean(np.sum(pred_norm * A_norm, axis=1))
+
+                loss_i = (1 - self.cosine_weight) * mse + self.cosine_weight * (1 - cos_sim)
+                total_loss += loss_i
+
+            # Smoothness loss: λ trace(α^T L α)
+            for k in range(K):
+                total_smooth_loss += self.smoothing_strength * (
+                    self.alpha[:, k] @ self.L_sparse @ self.alpha[:, k]
+                )
+
+            self.losses.append(total_loss / N + total_smooth_loss / N)
+
+            # Step 4c: Fix α → update basis via gradient descent
+            total_grad = [np.zeros_like(G) for G in self.basis]
+
+            for i, (Q, A) in enumerate(processed):
+                W_i = reconstruct_W(self.alpha[i], self.basis)
+                grad_W = compute_gradient(W_i, Q, A, self.cosine_weight)
+
+                for k in range(K):
+                    total_grad[k] += self.alpha[i, k] * grad_W
+
+            for k in range(K):
+                self.basis[k] = self.basis[k] - lr * total_grad[k]
+
+            # Re-orthogonalize periodically
+            if iteration % 5 == 0:
+                self.basis = orthogonalize_basis(self.basis)
+                K_new = len(self.basis)
+                if K_new < K:
+                    self.alpha = self.alpha[:, :K_new]
+                    K = K_new
+
+            # Logging
+            if iteration % log_interval == 0 or iteration == num_iterations - 1:
+                logger.info(
+                    f"Iter {iteration}: loss={self.losses[-1]:.6f}, "
+                    f"CG_iters={cg_iters}, CG_res={cg_residual:.2e}"
+                )
+
+        # Compute final statistics
+        kernel_sparsity = np.mean(self.K_matrix < 0.01)
+        effective_neighbors = np.mean(np.sum(self.K_matrix > 0.01, axis=1))
+
+        return {
+            "num_clusters": N,
+            "num_basis": len(self.basis),
+            "embedding_dim": d,
+            "length_scale": self.length_scale,
+            "smoothing_strength": self.smoothing_strength,
+            "kernel_sparsity": float(kernel_sparsity),
+            "effective_neighbors": float(effective_neighbors),
+            "final_loss": float(self.losses[-1]) if self.losses else 0.0,
+            "avg_cg_iterations": float(np.mean(self.cg_iterations)),
+            "total_cg_iterations": int(np.sum(self.cg_iterations)),
+        }
+
+    def project(self, query_emb: np.ndarray, temperature: float = 0.1) -> np.ndarray:
+        """
+        Project query using soft routing and coupled W matrices.
+
+        Args:
+            query_emb: Query embedding (d,)
+            temperature: Softmax temperature for routing
+
+        Returns:
+            Projected embedding (d,)
+        """
+        if not self.centroids or not self.basis:
+            raise ValueError("Model not trained. Call train() first.")
+
+        query_emb = query_emb.flatten()
+
+        # Compute routing weights
+        similarities = []
+        for centroid in self.centroids:
+            centroid_norm = centroid / (np.linalg.norm(centroid) + 1e-8)
+            query_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+            sim = np.dot(query_norm, centroid_norm)
+            similarities.append(sim)
+
+        similarities = np.array(similarities)
+
+        # Softmax routing
+        exp_sim = np.exp((similarities - np.max(similarities)) / temperature)
+        weights = exp_sim / (np.sum(exp_sim) + 1e-8)
+
+        # Weighted combination
+        projected = np.zeros(len(query_emb))
+        for i, weight in enumerate(weights):
+            W_i = reconstruct_W(self.alpha[i], self.basis)
+            projected += weight * (query_emb @ W_i)
+
+        return projected
+
+    def get_stats(self) -> dict:
+        """Get detailed statistics about the trained model."""
+        if self.alpha is None:
+            return {"trained": False}
+
+        # Analyze basis structure
+        basis_norms = [np.linalg.norm(G) for G in self.basis]
+
+        # Analyze alpha distribution
+        alpha_norms = np.linalg.norm(self.alpha, axis=1)
+
+        # Analyze W matrices
+        W_norms = []
+        for i in range(len(self.centroids)):
+            W_i = reconstruct_W(self.alpha[i], self.basis)
+            W_norms.append(np.linalg.norm(W_i))
+
+        # Laplacian eigenvalues (for condition analysis)
+        L_eigenvalues = np.linalg.eigvalsh(self.L_sparse)
+
+        return {
+            "trained": True,
+            "num_basis": len(self.basis),
+            "basis_norms": basis_norms,
+            "mean_alpha_norm": float(np.mean(alpha_norms)),
+            "std_alpha_norm": float(np.std(alpha_norms)),
+            "mean_W_norm": float(np.mean(W_norms)),
+            "laplacian_condition": float(L_eigenvalues[-1] / (L_eigenvalues[1] + 1e-10)),
+            "laplacian_spectral_gap": float(L_eigenvalues[1]),
+            "total_cg_iterations": int(np.sum(self.cg_iterations)),
+            "losses": self.losses,
+        }
+
+
+class KernelSmoothedBasisProjection:
+    """
+    Hybrid approach: Train basis locally, then smooth with kernel.
+
+    This is a simpler approach than full coupled optimization:
+    1. Train SmoothingBasisProjection (uncoupled per-cluster optimization)
+    2. Apply Matérn-5/2 kernel smoothing to the resulting W matrices
+
+    This combines:
+    - Basis decomposition for parameter efficiency and regularization
+    - Kernel smoothing for cross-cluster consistency
+
+    The key insight is that these work better in sequence than jointly.
+    """
+
+    def __init__(
+        self,
+        num_basis: int = 4,
+        length_scale: float = 0.5,
+        kernel_blend: float = 0.5,
+        cosine_weight: float = 0.5,
+    ):
+        """
+        Args:
+            num_basis: Number of shared basis matrices
+            length_scale: Matérn-5/2 kernel length scale
+            kernel_blend: Blend between unsmoothed (0) and smoothed (1) W
+            cosine_weight: Weight for cosine loss in basis training
+        """
+        self.num_basis = num_basis
+        self.length_scale = length_scale
+        self.kernel_blend = kernel_blend
+        self.cosine_weight = cosine_weight
+
+        # Components
+        self.basis_proj: Optional[SmoothingBasisProjection] = None
+        self.W_smoothed: List[np.ndarray] = []
+        self.centroids: List[np.ndarray] = []
+        self.K_matrix: np.ndarray = None
+
+    def _compute_matern52_kernel(self, centroids: List[np.ndarray]) -> np.ndarray:
+        """Compute Matérn-5/2 kernel matrix."""
+        N = len(centroids)
+        C = np.array(centroids)
+
+        norms_sq = np.sum(C**2, axis=1)
+        distances_sq = norms_sq[:, None] + norms_sq[None, :] - 2 * (C @ C.T)
+        distances = np.sqrt(np.maximum(distances_sq, 0))
+
+        scaled = np.sqrt(5) * distances / self.length_scale
+        K = (1 + scaled + scaled**2 / 3) * np.exp(-scaled)
+        np.fill_diagonal(K, 1.0)
+
+        return K
+
+    def train(
+        self,
+        clusters: List[Tuple[np.ndarray, np.ndarray]],
+        num_iterations: int = 50,
+        lr: float = 0.01,
+        log_interval: int = 20,
+    ) -> dict:
+        """
+        Train in two phases: basis learning, then kernel smoothing.
+        """
+        # Phase 1: Train basis projection
+        self.basis_proj = SmoothingBasisProjection(
+            num_basis=self.num_basis,
+            cosine_weight=self.cosine_weight,
+        )
+        losses = self.basis_proj.train(
+            clusters, num_iterations=num_iterations, lr=lr, log_interval=log_interval
+        )
+
+        # Get per-cluster W matrices
+        N = len(clusters)
+        self.centroids = self.basis_proj.centroids
+        W_unsmoothed = []
+        for i in range(N):
+            W_i = reconstruct_W(self.basis_proj.alpha[i], self.basis_proj.basis)
+            W_unsmoothed.append(W_i)
+
+        # Phase 2: Kernel smoothing
+        self.K_matrix = self._compute_matern52_kernel(self.centroids)
+
+        # Normalize kernel rows
+        K_normalized = self.K_matrix / self.K_matrix.sum(axis=1, keepdims=True)
+
+        # Apply kernel smoothing
+        d = W_unsmoothed[0].shape[0]
+        W_stack = np.array(W_unsmoothed).reshape(N, -1)  # (N, d*d)
+        W_smooth_flat = K_normalized @ W_stack
+        W_smooth_stack = W_smooth_flat.reshape(N, d, d)
+
+        # Blend unsmoothed and smoothed
+        self.W_smoothed = []
+        for i in range(N):
+            W_blend = (1 - self.kernel_blend) * W_unsmoothed[i] + self.kernel_blend * W_smooth_stack[i]
+            self.W_smoothed.append(W_blend)
+
+        return {
+            "basis_losses": losses,
+            "num_basis": len(self.basis_proj.basis),
+            "kernel_condition": float(np.linalg.cond(self.K_matrix)),
+        }
+
+    def project(self, query_emb: np.ndarray, temperature: float = 0.1) -> np.ndarray:
+        """Project query using smoothed W matrices."""
+        if not self.W_smoothed:
+            raise ValueError("Model not trained")
+
+        query_emb = query_emb.flatten()
+
+        # Compute routing weights
+        similarities = []
+        for centroid in self.centroids:
+            centroid_norm = centroid / (np.linalg.norm(centroid) + 1e-8)
+            query_norm = query_emb / (np.linalg.norm(query_emb) + 1e-8)
+            similarities.append(np.dot(query_norm, centroid_norm))
+
+        similarities = np.array(similarities)
+        exp_sim = np.exp((similarities - np.max(similarities)) / temperature)
+        weights = exp_sim / (np.sum(exp_sim) + 1e-8)
+
+        # Weighted projection
+        projected = np.zeros(len(query_emb))
+        for i, (W, weight) in enumerate(zip(self.W_smoothed, weights)):
+            projected += weight * (query_emb @ W)
+
+        return projected
+
+
 class KernelSmoothingProjection:
     """
     Kernel-based smoothing for multi-cluster projections.

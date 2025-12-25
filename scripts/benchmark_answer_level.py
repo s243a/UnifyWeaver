@@ -75,6 +75,8 @@ from smoothing_basis import (
     ResidualBasisProjection,
     KernelSmoothingProjection,
     SmoothingKernel,
+    UnifiedKernelBasisProjection,
+    KernelSmoothedBasisProjection,
 )
 from fft_smoothing import FFTSmoothingProjection, AdaptiveFFTSmoothing
 from hierarchical_smoothing import HierarchicalSmoothing
@@ -593,6 +595,77 @@ def run_benchmarks(
             # Print kernel stats
             kernel_stats = ks.get_kernel_stats()
             print(f"   Kernel: cond={kernel_stats['condition_number']:.2f}, eff_rank={kernel_stats['effective_rank']:.0f}")
+
+    # 7. Unified Kernel Basis (Matérn-5/2 + K=4 basis + CG)
+    unified_configs = [
+        # (K, length_scale, smoothing_strength, k_neighbors)
+        (4, 0.5, 0.1, None),       # Dense kernel
+        (4, 0.5, 0.1, 5),          # Sparse (k=5 neighbors)
+        (4, 0.5, 0.01, None),      # Weaker smoothing
+        (4, 1.0, 0.1, None),       # Larger length scale
+        (8, 0.5, 0.1, None),       # More basis vectors
+    ]
+
+    for K, ls, lam, k_nn in unified_configs:
+        sparse_str = f"_k{k_nn}" if k_nn else ""
+        name = f"Unified_K{K}_ls{ls}_λ{lam}{sparse_str}"
+        print(f"\n7. {name}...")
+
+        unified = UnifiedKernelBasisProjection(
+            num_basis=K,
+            length_scale=ls,
+            smoothing_strength=lam,
+            k_neighbors=k_nn,
+            cg_max_iter=50,
+            cg_tol=1e-5,
+            use_jacobi_precond=True,
+            diagonal_init_scale=1.0,
+            noise_scale=0.1,
+            cosine_weight=0.5,
+        )
+        result = benchmark_method(
+            name, unified, clusters_for_smoothing, qa_pairs, answer_index,
+            lambda u=unified: u.train(clusters_for_smoothing, num_iterations=30, log_interval=100),
+            {"K": K, "length_scale": ls, "smoothing_strength": lam, "k_neighbors": k_nn}
+        )
+        results.append(result)
+        print(f"   Cosine: {result.mean_cosine_to_target:.4f} ± {result.std_cosine_to_target:.4f}")
+        print(f"   MSE: {result.mean_mse_to_target:.4f}, Rank: {result.mean_target_rank:.1f}, MRR: {result.mrr:.4f}")
+
+        # Print unified stats
+        stats = unified.get_stats()
+        if stats.get('trained'):
+            print(f"   CG: total_iters={stats['total_cg_iterations']}, "
+                  f"eff_neighbors={unified.K_matrix.sum(axis=1).mean() - 1:.1f}")
+
+    # 8. KernelSmoothedBasis (simpler hybrid: basis first, then kernel smooth)
+    hybrid_configs = [
+        # (K, length_scale, kernel_blend)
+        (4, 0.5, 0.3),   # Light smoothing
+        (4, 0.5, 0.5),   # Medium smoothing
+        (4, 0.5, 0.7),   # Strong smoothing
+        (8, 0.5, 0.5),   # More basis, medium smoothing
+        (4, 1.0, 0.5),   # Larger length scale
+    ]
+
+    for K, ls, blend in hybrid_configs:
+        name = f"Hybrid_K{K}_ls{ls}_b{blend}"
+        print(f"\n8. {name}...")
+
+        hybrid = KernelSmoothedBasisProjection(
+            num_basis=K,
+            length_scale=ls,
+            kernel_blend=blend,
+            cosine_weight=0.5,
+        )
+        result = benchmark_method(
+            name, hybrid, clusters_for_smoothing, qa_pairs, answer_index,
+            lambda h=hybrid: h.train(clusters_for_smoothing, num_iterations=50, log_interval=100),
+            {"K": K, "length_scale": ls, "kernel_blend": blend}
+        )
+        results.append(result)
+        print(f"   Cosine: {result.mean_cosine_to_target:.4f} ± {result.std_cosine_to_target:.4f}")
+        print(f"   MSE: {result.mean_mse_to_target:.4f}, Rank: {result.mean_target_rank:.1f}, MRR: {result.mrr:.4f}")
 
     return results
 
