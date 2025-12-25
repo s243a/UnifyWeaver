@@ -1,0 +1,373 @@
+{
+  "version": "5.0-expanded",
+  "description": "Expanded from qa_pairs_v5.json - 1-to-1 Q-A pairs",
+  "source_file": "qa_pairs_v5.json",
+  "model_variant": "default",
+  "expanded_at": "2025-12-23T15:18:14.450709",
+  "stats": {
+    "num_clusters": 5,
+    "num_pairs": 40
+  },
+  "pairs": [
+    {
+      "pair_id": "json_litedb_streaming_p0",
+      "cluster_id": "json_litedb_streaming",
+      "question": "json litedb stream",
+      "question_type": "short",
+      "answer": "JSON to LiteDB Streaming - Stream large JSON datasets into LiteDB using inline C# sources. Demonstrates reading JSON files, parsing with System.Text.Json, and inserting BsonDocuments into LiteDB collections efficiently. Supports querying the populated database via .NET.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/examples_library/json_litedb_examples.md"
+    },
+    {
+      "pair_id": "json_litedb_streaming_p1",
+      "cluster_id": "json_litedb_streaming",
+      "question": "litedb prolog",
+      "question_type": "short",
+      "answer": "JSON to LiteDB Streaming - Stream large JSON datasets into LiteDB using inline C# sources. Demonstrates reading JSON files, parsing with System.Text.Json, and inserting BsonDocuments into LiteDB collections efficiently. Supports querying the populated database via .NET.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/examples_library/json_litedb_examples.md"
+    },
+    {
+      "pair_id": "json_litedb_streaming_p2",
+      "cluster_id": "json_litedb_streaming",
+      "question": "load json database",
+      "question_type": "short",
+      "answer": "JSON to LiteDB Streaming - Stream large JSON datasets into LiteDB using inline C# sources. Demonstrates reading JSON files, parsing with System.Text.Json, and inserting BsonDocuments into LiteDB collections efficiently. Supports querying the populated database via .NET.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/examples_library/json_litedb_examples.md"
+    },
+    {
+      "pair_id": "json_litedb_streaming_p3",
+      "cluster_id": "json_litedb_streaming",
+      "question": "How to stream JSON into LiteDB?",
+      "question_type": "medium",
+      "answer": "JSON to LiteDB Streaming - Stream large JSON datasets into LiteDB using inline C# sources. Demonstrates reading JSON files, parsing with System.Text.Json, and inserting BsonDocuments into LiteDB collections efficiently. Supports querying the populated database via .NET.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/examples_library/json_litedb_examples.md"
+    },
+    {
+      "pair_id": "json_litedb_streaming_p4",
+      "cluster_id": "json_litedb_streaming",
+      "question": "Use C# to load LiteDB from Prolog",
+      "question_type": "medium",
+      "answer": "JSON to LiteDB Streaming - Stream large JSON datasets into LiteDB using inline C# sources. Demonstrates reading JSON files, parsing with System.Text.Json, and inserting BsonDocuments into LiteDB collections efficiently. Supports querying the populated database via .NET.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/examples_library/json_litedb_examples.md"
+    },
+    {
+      "pair_id": "json_litedb_streaming_p5",
+      "cluster_id": "json_litedb_streaming",
+      "question": "Process large JSON files with LiteDB",
+      "question_type": "medium",
+      "answer": "JSON to LiteDB Streaming - Stream large JSON datasets into LiteDB using inline C# sources. Demonstrates reading JSON files, parsing with System.Text.Json, and inserting BsonDocuments into LiteDB collections efficiently. Supports querying the populated database via .NET.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/examples_library/json_litedb_examples.md"
+    },
+    {
+      "pair_id": "json_litedb_streaming_p6",
+      "cluster_id": "json_litedb_streaming",
+      "question": "I want to load a large JSON dataset into a LiteDB database using an efficient streaming approach with C# inline code",
+      "question_type": "long",
+      "answer": "JSON to LiteDB Streaming - Stream large JSON datasets into LiteDB using inline C# sources. Demonstrates reading JSON files, parsing with System.Text.Json, and inserting BsonDocuments into LiteDB collections efficiently. Supports querying the populated database via .NET.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/examples_library/json_litedb_examples.md"
+    },
+    {
+      "pair_id": "json_litedb_streaming_p7",
+      "cluster_id": "json_litedb_streaming",
+      "question": "How can I use UnifyWeaver to parse JSON files and insert records into a local NoSQL LiteDB database?",
+      "question_type": "long",
+      "answer": "JSON to LiteDB Streaming - Stream large JSON datasets into LiteDB using inline C# sources. Demonstrates reading JSON files, parsing with System.Text.Json, and inserting BsonDocuments into LiteDB collections efficiently. Supports querying the populated database via .NET.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/examples_library/json_litedb_examples.md"
+    },
+    {
+      "pair_id": "tree_recursion_p0",
+      "cluster_id": "tree_recursion",
+      "question": "tree recursion",
+      "question_type": "short",
+      "answer": "Tree Recursion - Compile tree-recursive predicates (like tree_sum) that operate on hierarchical data structures. UnifyWeaver transforms recursive logic handling list-represented trees (e.g., [Val, Left, Right]) into executable bash scripts.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/tree_recursion_playbook.md"
+    },
+    {
+      "pair_id": "tree_recursion_p1",
+      "cluster_id": "tree_recursion",
+      "question": "tree sum prolog",
+      "question_type": "short",
+      "answer": "Tree Recursion - Compile tree-recursive predicates (like tree_sum) that operate on hierarchical data structures. UnifyWeaver transforms recursive logic handling list-represented trees (e.g., [Val, Left, Right]) into executable bash scripts.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/tree_recursion_playbook.md"
+    },
+    {
+      "pair_id": "tree_recursion_p2",
+      "cluster_id": "tree_recursion",
+      "question": "recursive tree processing",
+      "question_type": "short",
+      "answer": "Tree Recursion - Compile tree-recursive predicates (like tree_sum) that operate on hierarchical data structures. UnifyWeaver transforms recursive logic handling list-represented trees (e.g., [Val, Left, Right]) into executable bash scripts.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/tree_recursion_playbook.md"
+    },
+    {
+      "pair_id": "tree_recursion_p3",
+      "cluster_id": "tree_recursion",
+      "question": "How to compile tree recursion?",
+      "question_type": "medium",
+      "answer": "Tree Recursion - Compile tree-recursive predicates (like tree_sum) that operate on hierarchical data structures. UnifyWeaver transforms recursive logic handling list-represented trees (e.g., [Val, Left, Right]) into executable bash scripts.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/tree_recursion_playbook.md"
+    },
+    {
+      "pair_id": "tree_recursion_p4",
+      "cluster_id": "tree_recursion",
+      "question": "Process tree structures in UnifyWeaver",
+      "question_type": "medium",
+      "answer": "Tree Recursion - Compile tree-recursive predicates (like tree_sum) that operate on hierarchical data structures. UnifyWeaver transforms recursive logic handling list-represented trees (e.g., [Val, Left, Right]) into executable bash scripts.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/tree_recursion_playbook.md"
+    },
+    {
+      "pair_id": "tree_recursion_p5",
+      "cluster_id": "tree_recursion",
+      "question": "Implement tree_sum in Prolog",
+      "question_type": "medium",
+      "answer": "Tree Recursion - Compile tree-recursive predicates (like tree_sum) that operate on hierarchical data structures. UnifyWeaver transforms recursive logic handling list-represented trees (e.g., [Val, Left, Right]) into executable bash scripts.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/tree_recursion_playbook.md"
+    },
+    {
+      "pair_id": "tree_recursion_p6",
+      "cluster_id": "tree_recursion",
+      "question": "I need to compile a Prolog predicate that recursively traverses a binary tree structure represented as lists",
+      "question_type": "long",
+      "answer": "Tree Recursion - Compile tree-recursive predicates (like tree_sum) that operate on hierarchical data structures. UnifyWeaver transforms recursive logic handling list-represented trees (e.g., [Val, Left, Right]) into executable bash scripts.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/tree_recursion_playbook.md"
+    },
+    {
+      "pair_id": "tree_recursion_p7",
+      "cluster_id": "tree_recursion",
+      "question": "How does UnifyWeaver handle tree recursion where a function calls itself multiple times on branches?",
+      "question_type": "long",
+      "answer": "Tree Recursion - Compile tree-recursive predicates (like tree_sum) that operate on hierarchical data structures. UnifyWeaver transforms recursive logic handling list-represented trees (e.g., [Val, Left, Right]) into executable bash scripts.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/tree_recursion_playbook.md"
+    },
+    {
+      "pair_id": "csharp_xml_fragments_p0",
+      "cluster_id": "csharp_xml_fragments",
+      "question": "xml fragments c#",
+      "question_type": "short",
+      "answer": "C# XML Fragments - Stream and process XML fragments using C# XmlStreamReader. Supports NUL or LF delimited fragments, preserving CDATA, and handling namespaces (including Pearltrees prefixes). Projects elements and attributes into dictionaries.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/csharp_xml_fragments_playbook.md"
+    },
+    {
+      "pair_id": "csharp_xml_fragments_p1",
+      "cluster_id": "csharp_xml_fragments",
+      "question": "stream xml parsing",
+      "question_type": "short",
+      "answer": "C# XML Fragments - Stream and process XML fragments using C# XmlStreamReader. Supports NUL or LF delimited fragments, preserving CDATA, and handling namespaces (including Pearltrees prefixes). Projects elements and attributes into dictionaries.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/csharp_xml_fragments_playbook.md"
+    },
+    {
+      "pair_id": "csharp_xml_fragments_p2",
+      "cluster_id": "csharp_xml_fragments",
+      "question": "c# xml reader",
+      "question_type": "short",
+      "answer": "C# XML Fragments - Stream and process XML fragments using C# XmlStreamReader. Supports NUL or LF delimited fragments, preserving CDATA, and handling namespaces (including Pearltrees prefixes). Projects elements and attributes into dictionaries.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/csharp_xml_fragments_playbook.md"
+    },
+    {
+      "pair_id": "csharp_xml_fragments_p3",
+      "cluster_id": "csharp_xml_fragments",
+      "question": "How to process XML fragments in C#?",
+      "question_type": "medium",
+      "answer": "C# XML Fragments - Stream and process XML fragments using C# XmlStreamReader. Supports NUL or LF delimited fragments, preserving CDATA, and handling namespaces (including Pearltrees prefixes). Projects elements and attributes into dictionaries.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/csharp_xml_fragments_playbook.md"
+    },
+    {
+      "pair_id": "csharp_xml_fragments_p4",
+      "cluster_id": "csharp_xml_fragments",
+      "question": "Stream XML data with XmlStreamReader",
+      "question_type": "medium",
+      "answer": "C# XML Fragments - Stream and process XML fragments using C# XmlStreamReader. Supports NUL or LF delimited fragments, preserving CDATA, and handling namespaces (including Pearltrees prefixes). Projects elements and attributes into dictionaries.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/csharp_xml_fragments_playbook.md"
+    },
+    {
+      "pair_id": "csharp_xml_fragments_p5",
+      "cluster_id": "csharp_xml_fragments",
+      "question": "Handle CDATA in XML streams",
+      "question_type": "medium",
+      "answer": "C# XML Fragments - Stream and process XML fragments using C# XmlStreamReader. Supports NUL or LF delimited fragments, preserving CDATA, and handling namespaces (including Pearltrees prefixes). Projects elements and attributes into dictionaries.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/csharp_xml_fragments_playbook.md"
+    },
+    {
+      "pair_id": "csharp_xml_fragments_p6",
+      "cluster_id": "csharp_xml_fragments",
+      "question": "I want to stream and parse XML fragments separated by newlines using C# integration in UnifyWeaver",
+      "question_type": "long",
+      "answer": "C# XML Fragments - Stream and process XML fragments using C# XmlStreamReader. Supports NUL or LF delimited fragments, preserving CDATA, and handling namespaces (including Pearltrees prefixes). Projects elements and attributes into dictionaries.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/csharp_xml_fragments_playbook.md"
+    },
+    {
+      "pair_id": "csharp_xml_fragments_p7",
+      "cluster_id": "csharp_xml_fragments",
+      "question": "How can I process XML data preserving CDATA sections and handling specific namespace prefixes?",
+      "question_type": "long",
+      "answer": "C# XML Fragments - Stream and process XML fragments using C# XmlStreamReader. Supports NUL or LF delimited fragments, preserving CDATA, and handling namespaces (including Pearltrees prefixes). Projects elements and attributes into dictionaries.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/csharp_xml_fragments_playbook.md"
+    },
+    {
+      "pair_id": "powershell_inline_dotnet_p0",
+      "cluster_id": "powershell_inline_dotnet",
+      "question": "powershell inline c#",
+      "question_type": "short",
+      "answer": "PowerShell Inline .NET - Embed C# code within PowerShell scripts using Add-Type for high performance (138x speedup with caching). Ideal for automation requiring .NET libraries or tight loops. Supports pre-compilation to cache DLLs and avoid compilation overhead on subsequent runs.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/powershell_inline_dotnet_playbook.md"
+    },
+    {
+      "pair_id": "powershell_inline_dotnet_p1",
+      "cluster_id": "powershell_inline_dotnet",
+      "question": "add-type caching",
+      "question_type": "short",
+      "answer": "PowerShell Inline .NET - Embed C# code within PowerShell scripts using Add-Type for high performance (138x speedup with caching). Ideal for automation requiring .NET libraries or tight loops. Supports pre-compilation to cache DLLs and avoid compilation overhead on subsequent runs.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/powershell_inline_dotnet_playbook.md"
+    },
+    {
+      "pair_id": "powershell_inline_dotnet_p2",
+      "cluster_id": "powershell_inline_dotnet",
+      "question": "fast powershell dotnet",
+      "question_type": "short",
+      "answer": "PowerShell Inline .NET - Embed C# code within PowerShell scripts using Add-Type for high performance (138x speedup with caching). Ideal for automation requiring .NET libraries or tight loops. Supports pre-compilation to cache DLLs and avoid compilation overhead on subsequent runs.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/powershell_inline_dotnet_playbook.md"
+    },
+    {
+      "pair_id": "powershell_inline_dotnet_p3",
+      "cluster_id": "powershell_inline_dotnet",
+      "question": "How to embed C# in PowerShell?",
+      "question_type": "medium",
+      "answer": "PowerShell Inline .NET - Embed C# code within PowerShell scripts using Add-Type for high performance (138x speedup with caching). Ideal for automation requiring .NET libraries or tight loops. Supports pre-compilation to cache DLLs and avoid compilation overhead on subsequent runs.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/powershell_inline_dotnet_playbook.md"
+    },
+    {
+      "pair_id": "powershell_inline_dotnet_p4",
+      "cluster_id": "powershell_inline_dotnet",
+      "question": "Speed up PowerShell with inline .NET",
+      "question_type": "medium",
+      "answer": "PowerShell Inline .NET - Embed C# code within PowerShell scripts using Add-Type for high performance (138x speedup with caching). Ideal for automation requiring .NET libraries or tight loops. Supports pre-compilation to cache DLLs and avoid compilation overhead on subsequent runs.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/powershell_inline_dotnet_playbook.md"
+    },
+    {
+      "pair_id": "powershell_inline_dotnet_p5",
+      "cluster_id": "powershell_inline_dotnet",
+      "question": "Cache compiled C# DLLs in PowerShell",
+      "question_type": "medium",
+      "answer": "PowerShell Inline .NET - Embed C# code within PowerShell scripts using Add-Type for high performance (138x speedup with caching). Ideal for automation requiring .NET libraries or tight loops. Supports pre-compilation to cache DLLs and avoid compilation overhead on subsequent runs.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/powershell_inline_dotnet_playbook.md"
+    },
+    {
+      "pair_id": "powershell_inline_dotnet_p6",
+      "cluster_id": "powershell_inline_dotnet",
+      "question": "I need to optimize a PowerShell script by embedding performance-critical C# code using Add-Type",
+      "question_type": "long",
+      "answer": "PowerShell Inline .NET - Embed C# code within PowerShell scripts using Add-Type for high performance (138x speedup with caching). Ideal for automation requiring .NET libraries or tight loops. Supports pre-compilation to cache DLLs and avoid compilation overhead on subsequent runs.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/powershell_inline_dotnet_playbook.md"
+    },
+    {
+      "pair_id": "powershell_inline_dotnet_p7",
+      "cluster_id": "powershell_inline_dotnet",
+      "question": "How can I compile and cache inline .NET code in PowerShell to achieve faster execution times?",
+      "question_type": "long",
+      "answer": "PowerShell Inline .NET - Embed C# code within PowerShell scripts using Add-Type for high performance (138x speedup with caching). Ideal for automation requiring .NET libraries or tight loops. Supports pre-compilation to cache DLLs and avoid compilation overhead on subsequent runs.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/powershell_inline_dotnet_playbook.md"
+    },
+    {
+      "pair_id": "deployment_glue_p0",
+      "cluster_id": "deployment_glue",
+      "question": "deployment glue",
+      "question_type": "short",
+      "answer": "Deployment Glue - Manage service deployment via SSH, Docker, Kubernetes, and Cloud Functions. Declare services and deployment methods (ssh, docker, k8s) in Prolog. Generates deployment scripts and manifests for lifecycle management.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/deployment_glue_playbook.md"
+    },
+    {
+      "pair_id": "deployment_glue_p1",
+      "cluster_id": "deployment_glue",
+      "question": "deploy service ssh",
+      "question_type": "short",
+      "answer": "Deployment Glue - Manage service deployment via SSH, Docker, Kubernetes, and Cloud Functions. Declare services and deployment methods (ssh, docker, k8s) in Prolog. Generates deployment scripts and manifests for lifecycle management.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/deployment_glue_playbook.md"
+    },
+    {
+      "pair_id": "deployment_glue_p2",
+      "cluster_id": "deployment_glue",
+      "question": "docker kubernetes prolog",
+      "question_type": "short",
+      "answer": "Deployment Glue - Manage service deployment via SSH, Docker, Kubernetes, and Cloud Functions. Declare services and deployment methods (ssh, docker, k8s) in Prolog. Generates deployment scripts and manifests for lifecycle management.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/deployment_glue_playbook.md"
+    },
+    {
+      "pair_id": "deployment_glue_p3",
+      "cluster_id": "deployment_glue",
+      "question": "How to deploy services with UnifyWeaver?",
+      "question_type": "medium",
+      "answer": "Deployment Glue - Manage service deployment via SSH, Docker, Kubernetes, and Cloud Functions. Declare services and deployment methods (ssh, docker, k8s) in Prolog. Generates deployment scripts and manifests for lifecycle management.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/deployment_glue_playbook.md"
+    },
+    {
+      "pair_id": "deployment_glue_p4",
+      "cluster_id": "deployment_glue",
+      "question": "Generate Kubernetes manifests from Prolog",
+      "question_type": "medium",
+      "answer": "Deployment Glue - Manage service deployment via SSH, Docker, Kubernetes, and Cloud Functions. Declare services and deployment methods (ssh, docker, k8s) in Prolog. Generates deployment scripts and manifests for lifecycle management.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/deployment_glue_playbook.md"
+    },
+    {
+      "pair_id": "deployment_glue_p5",
+      "cluster_id": "deployment_glue",
+      "question": "Deploy via SSH using deployment glue",
+      "question_type": "medium",
+      "answer": "Deployment Glue - Manage service deployment via SSH, Docker, Kubernetes, and Cloud Functions. Declare services and deployment methods (ssh, docker, k8s) in Prolog. Generates deployment scripts and manifests for lifecycle management.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/deployment_glue_playbook.md"
+    },
+    {
+      "pair_id": "deployment_glue_p6",
+      "cluster_id": "deployment_glue",
+      "question": "I want to automate service deployment to remote servers via SSH or generate Docker Compose files",
+      "question_type": "long",
+      "answer": "Deployment Glue - Manage service deployment via SSH, Docker, Kubernetes, and Cloud Functions. Declare services and deployment methods (ssh, docker, k8s) in Prolog. Generates deployment scripts and manifests for lifecycle management.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/deployment_glue_playbook.md"
+    },
+    {
+      "pair_id": "deployment_glue_p7",
+      "cluster_id": "deployment_glue",
+      "question": "How can I declare service configurations and generate deployment scripts for Kubernetes or Cloud Functions?",
+      "question_type": "long",
+      "answer": "Deployment Glue - Manage service deployment via SSH, Docker, Kubernetes, and Cloud Functions. Declare services and deployment methods (ssh, docker, k8s) in Prolog. Generates deployment scripts and manifests for lifecycle management.",
+      "answer_variant": "default",
+      "answer_source": "playbooks/deployment_glue_playbook.md"
+    }
+  ]
+}
