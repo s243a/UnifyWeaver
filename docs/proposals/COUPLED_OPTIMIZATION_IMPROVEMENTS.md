@@ -238,29 +238,132 @@ def train_multiscale(self, clusters, lambdas=[0.01, 0.05, 0.1], length_scales=[0
 - Large length scale: weak global coherence
 - Captures both local and global structure
 
+## Proposal 7: Adaptive Conditioning-Based λ (Bisection)
+
+### Concept
+
+**This is an Adaptive Hybrid approach, not unified optimization.**
+
+Instead of choosing λ as a hyperparameter, derive it from the conditioning of the least squares problem. For k basis vectors, we need at least k significant singular values. Use bisection to find the minimum λ that achieves a target condition number.
+
+### Key Insight
+
+For k basis vectors, Q^T Q is only k×k. Computing its condition number is O(k³) — essentially free for small k.
+
+```python
+def effective_condition(Q, lam):
+    """Condition of regularized normal equations. O(m×k² + k³)."""
+    QTQ = Q.T @ Q  # k×k matrix
+    regularized = QTQ + lam * np.eye(QTQ.shape[0])
+    s = np.linalg.svd(regularized, compute_uv=False)
+    return s[0] / s[-1]
+```
+
+### Implementation
+
+```python
+def find_min_lambda(Q, target_cond=50, tol=1e-3, max_iter=20):
+    """Bisect to find minimum λ achieving target condition number."""
+
+    # Check if already well-conditioned
+    if effective_condition(Q, 0) <= target_cond:
+        return 0.0  # No regularization needed
+
+    # Find upper bound where condition is satisfied
+    lam_high = 1.0
+    while effective_condition(Q, lam_high) > target_cond:
+        lam_high *= 2
+        if lam_high > 1e6:
+            return lam_high  # Extremely ill-conditioned
+
+    # Bisect to find minimum sufficient λ
+    lam_low = 0.0
+    for _ in range(max_iter):
+        lam_mid = (lam_low + lam_high) / 2
+        if effective_condition(Q, lam_mid) > target_cond:
+            lam_low = lam_mid
+        else:
+            lam_high = lam_mid
+
+        if lam_high - lam_low < tol:
+            break
+
+    return lam_high
+```
+
+### Per-Cluster Adaptive Regularization
+
+```python
+def train_adaptive(self, clusters, target_cond=50):
+    for i, (Q, A) in enumerate(clusters):
+        # Find minimum λ for this cluster
+        lam_i = find_min_lambda(Q, target_cond)
+
+        # Solve regularized least squares
+        QTQ = Q.T @ Q
+        regularized = QTQ + lam_i * np.eye(QTQ.shape[0])
+        W_i = np.linalg.solve(regularized, Q.T @ A)
+```
+
+### For Laplacian Smoothing (Cross-Cluster)
+
+Same principle, but regularize with Laplacian instead of identity:
+
+```python
+regularized = QTQ + lam * L  # L = graph Laplacian
+```
+
+### Computational Cost
+
+| Step | Cost |
+|------|------|
+| Form Q^T Q | O(m × k²) |
+| SVD per bisection step | O(k³) |
+| Total per cluster | O(m × k² + k³ × log(1/tol)) |
+
+For k=4 and 20 iterations: essentially O(m × 16) per cluster.
+
+### Expected Benefit
+
+- **No hyperparameter tuning**: λ derived from data
+- **Minimum regularization**: Only as much smoothing as needed
+- **Per-cluster adaptation**: Ill-conditioned clusters get more, well-conditioned get less
+- **Principled**: Based on numerical stability, not heuristics
+
+### Comparison to Proposal 3
+
+Proposal 3 uses sample count as a proxy for conditioning. This proposal uses conditioning directly — sample count can be misleading (100 nearly-identical questions are still ill-conditioned).
+
 ## Recommended Experiments
 
-### Priority 1: Curriculum Learning
-- Simplest to implement
+### Priority 1: Adaptive Conditioning (Proposal 7)
+- Most principled approach
+- No hyperparameter to tune (just target condition number)
+- Computationally cheap for small k
+- Can be combined with other proposals
+
+### Priority 2: Curriculum Learning
+- Simple to implement
 - Low risk, likely to help
 - Test with linear schedule first
 
-### Priority 2: Warm-Start
+### Priority 3: Warm-Start
 - Uses existing working code
 - Guaranteed to start from good solution
 - May achieve best of both worlds
 
-### Priority 3: Alternating Projection
+### Priority 4: Alternating Projection
 - Interpretable, no CG needed
 - Good for understanding the optimization landscape
 - `blend` is intuitive hyperparameter
 
 ## Implementation Plan
 
-1. Add `curriculum_warmup` parameter to `UnifiedKernelBasisProjection.__init__`
-2. Add `warm_start` flag that initializes from sequential hybrid
-3. Benchmark on hash embeddings first (fast iteration)
-4. Test winner on ModernBERT
+1. **Implement Proposal 7** as `AdaptiveConditioningProjection`
+2. Add `curriculum_warmup` parameter to `UnifiedKernelBasisProjection.__init__`
+3. Add `warm_start` flag that initializes from sequential hybrid
+4. Benchmark on hash embeddings first (fast iteration)
+5. Test winner on ModernBERT
 
 ## References
 
