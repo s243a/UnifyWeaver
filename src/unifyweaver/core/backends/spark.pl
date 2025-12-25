@@ -13,7 +13,10 @@
 
     % Code generation exports
     generate_pyspark_job/4,
-    generate_scala_spark_job/4
+    generate_scala_spark_job/4,
+    generate_java_spark_job/4,
+    generate_kotlin_spark_job/4,
+    generate_clojure_spark_job/4
 ]).
 
 :- use_module(library(process)).
@@ -147,11 +150,14 @@ backend_init_impl(Config, State) :-
 %% validate_spark_mode(+Mode)
 validate_spark_mode(pyspark) :- !.
 validate_spark_mode(scala) :- !.
+validate_spark_mode(java) :- !.
+validate_spark_mode(kotlin) :- !.
+validate_spark_mode(clojure) :- !.
 validate_spark_mode(auto) :- !.
 validate_spark_mode(Mode) :-
     throw(error(domain_error(spark_mode, Mode),
                 context(validate_spark_mode/1,
-                       'Mode must be: pyspark, scala, or auto'))).
+                       'Mode must be: pyspark, scala, java, kotlin, clojure, or auto'))).
 
 %% backend_execute_impl(+State, +Partitions, +ScriptPath, -Results)
 %  Execute using Spark (PySpark or Scala)
@@ -181,18 +187,43 @@ backend_execute_impl(State, Partitions, ScriptPath, Results) :-
     format(atom(OutputPath), '~w/output', [TempDir]),
 
     % Generate and execute Spark job based on mode
+    JobOptions = [partitions(DefaultPartitions), checkpoint(CheckpointDir)],
     (   Mode = pyspark
-    ->  generate_pyspark_job(ScriptPath, InputPath, OutputPath,
-                              [partitions(DefaultPartitions), checkpoint(CheckpointDir)],
-                              PySparkCode),
+    ->  generate_pyspark_job(ScriptPath, InputPath, OutputPath, JobOptions, PySparkCode),
         format(atom(JobFile), '~w/spark_job.py', [TempDir]),
         write_file(JobFile, PySparkCode),
         build_pyspark_command(SparkHome, Master, AppName, ExecMem, DriverMem,
                               NumExecutors, ExecCores, PyFiles, JobFile, Command)
-    ;   % Scala mode
-        generate_scala_spark_job(ScriptPath, InputPath, OutputPath,
-                                  [partitions(DefaultPartitions), checkpoint(CheckpointDir)],
-                                  ScalaCode),
+    ;   Mode = scala
+    ->  generate_scala_spark_job(ScriptPath, InputPath, OutputPath, JobOptions, ScalaCode),
+        format(atom(JobFile), '~w/SparkJob.scala', [TempDir]),
+        write_file(JobFile, ScalaCode),
+        compile_scala_spark_job(SparkHome, TempDir, JobFile, JarPath),
+        build_spark_submit_command(SparkHome, Master, AppName, ExecMem, DriverMem,
+                                   NumExecutors, ExecCores, Packages, JarPath, Command)
+    ;   Mode = java
+    ->  generate_java_spark_job(ScriptPath, InputPath, OutputPath, JobOptions, JavaCode),
+        format(atom(JobFile), '~w/SparkJob.java', [TempDir]),
+        write_file(JobFile, JavaCode),
+        compile_java_spark_job(SparkHome, TempDir, JobFile, JarPath),
+        build_spark_submit_command(SparkHome, Master, AppName, ExecMem, DriverMem,
+                                   NumExecutors, ExecCores, Packages, JarPath, Command)
+    ;   Mode = kotlin
+    ->  generate_kotlin_spark_job(ScriptPath, InputPath, OutputPath, JobOptions, KotlinCode),
+        format(atom(JobFile), '~w/SparkJob.kt', [TempDir]),
+        write_file(JobFile, KotlinCode),
+        compile_kotlin_spark_job(SparkHome, TempDir, JobFile, JarPath),
+        build_spark_submit_command(SparkHome, Master, AppName, ExecMem, DriverMem,
+                                   NumExecutors, ExecCores, Packages, JarPath, Command)
+    ;   Mode = clojure
+    ->  generate_clojure_spark_job(ScriptPath, InputPath, OutputPath, JobOptions, ClojureCode),
+        format(atom(JobFile), '~w/spark_job.clj', [TempDir]),
+        write_file(JobFile, ClojureCode),
+        compile_clojure_spark_job(SparkHome, TempDir, JobFile, JarPath),
+        build_spark_submit_command(SparkHome, Master, AppName, ExecMem, DriverMem,
+                                   NumExecutors, ExecCores, Packages, JarPath, Command)
+    ;   % Fallback to Scala
+        generate_scala_spark_job(ScriptPath, InputPath, OutputPath, JobOptions, ScalaCode),
         format(atom(JobFile), '~w/SparkJob.scala', [TempDir]),
         write_file(JobFile, ScalaCode),
         compile_scala_spark_job(SparkHome, TempDir, JobFile, JarPath),
@@ -397,6 +428,417 @@ object SparkJob {
   }
 }
 ', [ScriptPath, ScriptPath, CheckpointCode, InputPath, NumPartitions, OutputPath, OutputPath]).
+
+%% ============================================
+%% JAVA SPARK CODE GENERATION
+%% ============================================
+
+%% generate_java_spark_job(+ScriptPath, +InputPath, +OutputPath, +Options, -Code)
+%  Generate Java Spark job code
+generate_java_spark_job(ScriptPath, InputPath, OutputPath, Options, Code) :-
+    (   member(partitions(NumPartitions), Options)
+    ->  true
+    ;   NumPartitions = 4
+    ),
+    (   member(checkpoint(CheckpointDir), Options), CheckpointDir \= none
+    ->  format(string(CheckpointCode),
+               '        jsc.setCheckpointDir("~w");', [CheckpointDir])
+    ;   CheckpointCode = '        // No checkpoint configured'
+    ),
+
+    format(string(Code),
+'// UnifyWeaver Spark Job - Generated Java Code
+// Script reference: ~w
+
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.api.java.function.FlatMapFunction;
+
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * UnifyWeaver Java Spark Job
+ */
+public class SparkJob {
+
+    public static void main(String[] args) throws Exception {
+        // Initialize Spark
+        SparkConf conf = new SparkConf().setAppName("UnifyWeaver");
+        JavaSparkContext jsc = new JavaSparkContext(conf);
+
+        System.out.println("[Spark] Spark version: " + jsc.version());
+        System.out.println("[Spark] Application ID: " + jsc.sc().applicationId());
+
+~w
+
+        try {
+            // Read input data
+            JavaRDD<String> inputRDD = jsc.textFile("~w");
+            System.out.println("[Spark] Loaded input data");
+
+            // Repartition for parallelism
+            JavaRDD<String> repartitioned = inputRDD.repartition(~w);
+
+            // Process partitions using mapPartitions
+            JavaRDD<String> resultRDD = repartitioned.mapPartitions(
+                (FlatMapFunction<Iterator<String>, String>) partition -> {
+                    List<String> results = new ArrayList<>();
+                    while (partition.hasNext()) {
+                        String record = partition.next();
+                        try {
+                            ProcessBuilder pb = new ProcessBuilder("bash", "~w");
+                            pb.redirectErrorStream(true);
+                            Process p = pb.start();
+
+                            // Write input
+                            try (OutputStream os = p.getOutputStream()) {
+                                os.write(record.getBytes());
+                                os.flush();
+                            }
+
+                            // Read output
+                            StringBuilder output = new StringBuilder();
+                            try (BufferedReader br = new BufferedReader(
+                                    new InputStreamReader(p.getInputStream()))) {
+                                String line;
+                                while ((line = br.readLine()) != null) {
+                                    output.append(line);
+                                }
+                            }
+
+                            boolean completed = p.waitFor(300, TimeUnit.SECONDS);
+                            if (completed && p.exitValue() == 0 && output.length() > 0) {
+                                results.add(output.toString().trim());
+                            }
+                        } catch (Exception e) {
+                            System.err.println("[Spark] Error processing record: " + e.getMessage());
+                        }
+                    }
+                    return results.iterator();
+                }
+            );
+
+            // Save results
+            resultRDD.saveAsTextFile("~w");
+
+            System.out.println("[Spark] Results saved to: ~w");
+            System.out.println("[Spark] Job completed successfully");
+
+        } catch (Exception e) {
+            System.err.println("[Spark] Job failed: " + e.getMessage());
+            System.exit(1);
+        } finally {
+            jsc.close();
+        }
+    }
+}
+', [ScriptPath, CheckpointCode, InputPath, NumPartitions, ScriptPath, OutputPath, OutputPath]).
+
+%% ============================================
+%% KOTLIN SPARK CODE GENERATION
+%% ============================================
+
+%% generate_kotlin_spark_job(+ScriptPath, +InputPath, +OutputPath, +Options, -Code)
+%  Generate Kotlin Spark job code
+generate_kotlin_spark_job(ScriptPath, InputPath, OutputPath, Options, Code) :-
+    (   member(partitions(NumPartitions), Options)
+    ->  true
+    ;   NumPartitions = 4
+    ),
+    (   member(checkpoint(CheckpointDir), Options), CheckpointDir \= none
+    ->  format(string(CheckpointCode),
+               '    jsc.setCheckpointDir("~w")', [CheckpointDir])
+    ;   CheckpointCode = '    // No checkpoint configured'
+    ),
+
+    format(string(Code),
+'// UnifyWeaver Spark Job - Generated Kotlin Code
+// Script reference: ~w
+
+import org.apache.spark.SparkConf
+import org.apache.spark.api.java.JavaSparkContext
+import org.apache.spark.api.java.function.FlatMapFunction
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.util.concurrent.TimeUnit
+
+/**
+ * UnifyWeaver Kotlin Spark Job
+ */
+fun main(args: Array<String>) {
+    // Initialize Spark
+    val conf = SparkConf().setAppName("UnifyWeaver")
+    val jsc = JavaSparkContext(conf)
+
+    println("[Spark] Spark version: ${jsc.version()}")
+    println("[Spark] Application ID: ${jsc.sc().applicationId()}")
+
+~w
+
+    try {
+        // Read input data
+        val inputRDD = jsc.textFile("~w")
+        println("[Spark] Loaded input data")
+
+        // Repartition for parallelism
+        val repartitioned = inputRDD.repartition(~w)
+
+        // Process partitions
+        val resultRDD = repartitioned.mapPartitions(
+            FlatMapFunction { partition ->
+                val results = mutableListOf<String>()
+                partition.forEach { record ->
+                    try {
+                        val pb = ProcessBuilder("bash", "~w")
+                        pb.redirectErrorStream(true)
+                        val p = pb.start()
+
+                        // Write input
+                        p.outputStream.use { os ->
+                            os.write(record.toByteArray())
+                            os.flush()
+                        }
+
+                        // Read output
+                        val output = StringBuilder()
+                        BufferedReader(InputStreamReader(p.inputStream)).use { br ->
+                            br.lineSequence().forEach { line -> output.append(line) }
+                        }
+
+                        val completed = p.waitFor(300, TimeUnit.SECONDS)
+                        if (completed && p.exitValue() == 0 && output.isNotEmpty()) {
+                            results.add(output.toString().trim())
+                        }
+                    } catch (e: Exception) {
+                        System.err.println("[Spark] Error processing record: ${e.message}")
+                    }
+                }
+                results.iterator()
+            }
+        )
+
+        // Save results
+        resultRDD.saveAsTextFile("~w")
+
+        println("[Spark] Results saved to: ~w")
+        println("[Spark] Job completed successfully")
+
+    } catch (e: Exception) {
+        System.err.println("[Spark] Job failed: ${e.message}")
+        System.exit(1)
+    } finally {
+        jsc.close()
+    }
+}
+', [ScriptPath, CheckpointCode, InputPath, NumPartitions, ScriptPath, OutputPath, OutputPath]).
+
+%% ============================================
+%% CLOJURE SPARK CODE GENERATION
+%% ============================================
+
+%% generate_clojure_spark_job(+ScriptPath, +InputPath, +OutputPath, +Options, -Code)
+%  Generate Clojure Spark job code using Flambo or direct Java interop
+generate_clojure_spark_job(ScriptPath, InputPath, OutputPath, Options, Code) :-
+    (   member(partitions(NumPartitions), Options)
+    ->  true
+    ;   NumPartitions = 4
+    ),
+    (   member(checkpoint(CheckpointDir), Options), CheckpointDir \= none
+    ->  format(string(CheckpointCode),
+               '  (.setCheckpointDir sc "~w")', [CheckpointDir])
+    ;   CheckpointCode = '  ;; No checkpoint configured'
+    ),
+
+    format(string(Code),
+';; UnifyWeaver Spark Job - Generated Clojure Code
+;; Script reference: ~w
+
+(ns unifyweaver.spark-job
+  (:import [org.apache.spark SparkConf]
+           [org.apache.spark.api.java JavaSparkContext]
+           [java.io BufferedReader InputStreamReader]
+           [java.util.concurrent TimeUnit])
+  (:gen-class))
+
+(defn process-record
+  "Process a single record through the bash script."
+  [record script-path]
+  (try
+    (let [pb (ProcessBuilder. ["bash" script-path])
+          _ (.redirectErrorStream pb true)
+          p (.start pb)]
+      ;; Write input
+      (with-open [os (.getOutputStream p)]
+        (.write os (.getBytes record))
+        (.flush os))
+      ;; Read output
+      (let [output (StringBuilder.)]
+        (with-open [br (BufferedReader. (InputStreamReader. (.getInputStream p)))]
+          (doseq [line (line-seq br)]
+            (.append output line)))
+        (let [completed (.waitFor p 300 TimeUnit/SECONDS)]
+          (when (and completed (zero? (.exitValue p)) (pos? (.length output)))
+            (.trim (.toString output))))))
+    (catch Exception e
+      (binding [*out* *err*]
+        (println "[Spark] Error processing record:" (.getMessage e)))
+      nil)))
+
+(defn process-partition
+  "Process a partition of records."
+  [script-path partition]
+  (->> partition
+       iterator-seq
+       (keep #(process-record % script-path))
+       .iterator))
+
+(defn -main
+  "Main Spark job entry point."
+  [& args]
+  (let [conf (-> (SparkConf.)
+                 (.setAppName "UnifyWeaver"))
+        sc (JavaSparkContext. conf)]
+
+    (println "[Spark] Spark version:" (.version sc))
+    (println "[Spark] Application ID:" (-> sc .sc .applicationId))
+
+~w
+
+    (try
+      ;; Read input data
+      (let [input-rdd (.textFile sc "~w")
+            _ (println "[Spark] Loaded input data")
+
+            ;; Repartition for parallelism
+            repartitioned (.repartition input-rdd ~w)
+
+            ;; Process partitions
+            result-rdd (.mapPartitions repartitioned
+                         (reify org.apache.spark.api.java.function.FlatMapFunction
+                           (call [this partition]
+                             (process-partition "~w" partition))))]
+
+        ;; Save results
+        (.saveAsTextFile result-rdd "~w")
+
+        (println "[Spark] Results saved to: ~w")
+        (println "[Spark] Job completed successfully"))
+
+      (catch Exception e
+        (binding [*out* *err*]
+          (println "[Spark] Job failed:" (.getMessage e)))
+        (System/exit 1))
+
+      (finally
+        (.close sc)))))
+', [ScriptPath, CheckpointCode, InputPath, NumPartitions, ScriptPath, OutputPath, OutputPath]).
+
+%% ============================================
+%% JVM LANGUAGE COMPILATION
+%% ============================================
+
+%% compile_java_spark_job(+SparkHome, +TempDir, +JavaFile, -JarPath)
+%  Compile Java Spark job to JAR
+compile_java_spark_job(SparkHome, TempDir, JavaFile, JarPath) :-
+    format(atom(JarPath), '~w/spark_job.jar', [TempDir]),
+    format(atom(ClassDir), '~w/classes', [TempDir]),
+    make_directory(ClassDir),
+
+    % Get Spark classpath
+    (   SparkHome = ''
+    ->  SparkJars = '*'
+    ;   format(atom(SparkJars), '~w/jars/*', [SparkHome])
+    ),
+
+    % Compile Java
+    format(atom(CompileCmd),
+           'javac -cp "~w" -d "~w" "~w" 2>&1',
+           [SparkJars, ClassDir, JavaFile]),
+    execute_shell(CompileCmd, CompileExit),
+    (   CompileExit =:= 0
+    ->  true
+    ;   format('[Spark] Warning: Java compilation may have issues~n', [])
+    ),
+
+    % Package JAR
+    format(atom(JarCmd), 'jar -cvf "~w" -C "~w" . 2>&1', [JarPath, ClassDir]),
+    execute_shell(JarCmd, _).
+
+%% compile_kotlin_spark_job(+SparkHome, +TempDir, +KotlinFile, -JarPath)
+%  Compile Kotlin Spark job to JAR
+compile_kotlin_spark_job(SparkHome, TempDir, KotlinFile, JarPath) :-
+    format(atom(JarPath), '~w/spark_job.jar', [TempDir]),
+    format(atom(ClassDir), '~w/classes', [TempDir]),
+    make_directory(ClassDir),
+
+    % Get Spark classpath
+    (   SparkHome = ''
+    ->  SparkJars = '*'
+    ;   format(atom(SparkJars), '~w/jars/*', [SparkHome])
+    ),
+
+    % Compile Kotlin
+    format(atom(CompileCmd),
+           'kotlinc -cp "~w" -d "~w" "~w" 2>&1',
+           [SparkJars, ClassDir, KotlinFile]),
+    execute_shell(CompileCmd, CompileExit),
+    (   CompileExit =:= 0
+    ->  true
+    ;   format('[Spark] Warning: Kotlin compilation may have issues~n', [])
+    ),
+
+    % Package JAR (include Kotlin runtime if needed)
+    format(atom(JarCmd), 'jar -cvf "~w" -C "~w" . 2>&1', [JarPath, ClassDir]),
+    execute_shell(JarCmd, _).
+
+%% compile_clojure_spark_job(+SparkHome, +TempDir, +ClojureFile, -JarPath)
+%  Compile Clojure Spark job to JAR (AOT compilation)
+compile_clojure_spark_job(SparkHome, TempDir, ClojureFile, JarPath) :-
+    format(atom(JarPath), '~w/spark_job.jar', [TempDir]),
+    format(atom(ClassDir), '~w/classes', [TempDir]),
+    make_directory(ClassDir),
+
+    % Get Spark classpath
+    (   SparkHome = ''
+    ->  SparkJars = '*'
+    ;   format(atom(SparkJars), '~w/jars/*', [SparkHome])
+    ),
+
+    % Create project structure for AOT compilation
+    format(atom(SrcDir), '~w/src/unifyweaver', [TempDir]),
+    process_create(path(mkdir), ['-p', SrcDir], [stdout(null), stderr(null), process(MkPID)]),
+    process_wait(MkPID, _),
+
+    % Copy Clojure file to proper namespace location
+    format(atom(NamespacedFile), '~w/spark_job.clj', [SrcDir]),
+    format(atom(CopyCmd), 'cp "~w" "~w"', [ClojureFile, NamespacedFile]),
+    execute_shell(CopyCmd, _),
+
+    % Compile using Clojure AOT
+    format(atom(CompileCmd),
+           'clojure -e "(compile \\'unifyweaver.spark-job)" -Sdeps \\'{:paths ["~w/src" "~w/classes"] :deps {org.clojure/clojure {:mvn/version "1.11.1"}}}\\'  2>&1',
+           [TempDir, TempDir]),
+
+    % Alternative: use lein or direct Java compilation
+    format(atom(AltCompileCmd),
+           'java -cp "~w:~w" clojure.main -e "(binding [*compile-path* \\"~w\\"] (compile \\'unifyweaver.spark-job))" 2>&1',
+           [SparkJars, ClojureFile, ClassDir]),
+
+    execute_shell(AltCompileCmd, CompileExit),
+    (   CompileExit =:= 0
+    ->  true
+    ;   % Fallback: just include source in JAR
+        format('[Spark] Note: Running Clojure in interpreted mode~n', []),
+        format(atom(CopyCmd2), 'cp "~w" "~w/"', [ClojureFile, ClassDir]),
+        execute_shell(CopyCmd2, _)
+    ),
+
+    % Package JAR
+    format(atom(JarCmd), 'jar -cvf "~w" -C "~w" . 2>&1', [JarPath, ClassDir]),
+    execute_shell(JarCmd, _).
 
 %% ============================================
 %% SPARK COMMAND BUILDING

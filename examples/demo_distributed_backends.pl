@@ -483,6 +483,182 @@ demo_hadoop_native_java :-
     backend_cleanup(Handle),
     format('~n=== Demo Complete ===~n', []).
 
+%% demo_hadoop_native_clojure
+%  Demonstration using native Hadoop Clojure API
+demo_hadoop_native_clojure :-
+    format('~n=== Hadoop Native Clojure Demo ===~n', []),
+
+    % Check availability
+    (   check_hadoop_available, check_clojure_available
+    ->  true
+    ;   format('Hadoop or Clojure not available~n', []),
+        fail
+    ),
+
+    % Setup
+    create_test_script(ScriptPath),
+    Data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    Partitions = [partition(0, Data)],
+
+    % Initialize Hadoop Native backend with Clojure
+    format('~nInitializing Hadoop Native (Clojure)...~n', []),
+    catch(
+        (   use_module(unifyweaver(core/backends/hadoop_native)),
+            register_backend(hadoop_native, hadoop_native_backend)
+        ),
+        _,
+        true
+    ),
+    backend_init(hadoop_native(
+        target_language(clojure),
+        reducers(1),
+        combiner(true)
+    ), Handle),
+
+    % Execute
+    format('~nExecuting MapReduce job...~n', []),
+    backend_execute(Handle, Partitions, ScriptPath, Results),
+
+    % Show results
+    format('~nResults:~n', []),
+    show_results(Results),
+
+    % Cleanup
+    backend_cleanup(Handle),
+    format('~n=== Demo Complete ===~n', []).
+
+%% demo_spark_java
+%  Demonstration using Java Spark
+demo_spark_java :-
+    format('~n=== Spark Java Demo ===~n', []),
+
+    % Check if Spark and Java are available
+    (   check_spark_available, check_java_available
+    ->  true
+    ;   format('Spark or Java not available~n', []),
+        fail
+    ),
+
+    % Setup
+    create_test_script(ScriptPath),
+    Data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    Partitions = [partition(0, Data)],
+
+    % Initialize Spark backend in Java mode
+    format('~nInitializing Java Spark...~n', []),
+    catch(
+        (   use_module(unifyweaver(core/backends/spark)),
+            register_backend(spark, spark_backend)
+        ),
+        _,
+        true
+    ),
+    backend_init(spark(
+        mode(java),
+        master('local[2]'),
+        executor_memory('512m')
+    ), Handle),
+
+    % Execute
+    format('~nExecuting Spark job...~n', []),
+    backend_execute(Handle, Partitions, ScriptPath, Results),
+
+    % Show results
+    format('~nResults:~n', []),
+    show_results(Results),
+
+    % Cleanup
+    backend_cleanup(Handle),
+    format('~n=== Demo Complete ===~n', []).
+
+%% demo_spark_kotlin
+%  Demonstration using Kotlin Spark
+demo_spark_kotlin :-
+    format('~n=== Spark Kotlin Demo ===~n', []),
+
+    % Check if Spark and Kotlin are available
+    (   check_spark_available, check_kotlin_available
+    ->  true
+    ;   format('Spark or Kotlin not available~n', []),
+        fail
+    ),
+
+    % Setup
+    create_test_script(ScriptPath),
+    Data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    Partitions = [partition(0, Data)],
+
+    % Initialize Spark backend in Kotlin mode
+    format('~nInitializing Kotlin Spark...~n', []),
+    catch(
+        (   use_module(unifyweaver(core/backends/spark)),
+            register_backend(spark, spark_backend)
+        ),
+        _,
+        true
+    ),
+    backend_init(spark(
+        mode(kotlin),
+        master('local[2]'),
+        executor_memory('512m')
+    ), Handle),
+
+    % Execute
+    format('~nExecuting Spark job...~n', []),
+    backend_execute(Handle, Partitions, ScriptPath, Results),
+
+    % Show results
+    format('~nResults:~n', []),
+    show_results(Results),
+
+    % Cleanup
+    backend_cleanup(Handle),
+    format('~n=== Demo Complete ===~n', []).
+
+%% demo_spark_clojure
+%  Demonstration using Clojure Spark
+demo_spark_clojure :-
+    format('~n=== Spark Clojure Demo ===~n', []),
+
+    % Check if Spark and Clojure are available
+    (   check_spark_available, check_clojure_available
+    ->  true
+    ;   format('Spark or Clojure not available~n', []),
+        fail
+    ),
+
+    % Setup
+    create_test_script(ScriptPath),
+    Data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    Partitions = [partition(0, Data)],
+
+    % Initialize Spark backend in Clojure mode
+    format('~nInitializing Clojure Spark...~n', []),
+    catch(
+        (   use_module(unifyweaver(core/backends/spark)),
+            register_backend(spark, spark_backend)
+        ),
+        _,
+        true
+    ),
+    backend_init(spark(
+        mode(clojure),
+        master('local[2]'),
+        executor_memory('512m')
+    ), Handle),
+
+    % Execute
+    format('~nExecuting Spark job...~n', []),
+    backend_execute(Handle, Partitions, ScriptPath, Results),
+
+    % Show results
+    format('~nResults:~n', []),
+    show_results(Results),
+
+    % Cleanup
+    backend_cleanup(Handle),
+    format('~n=== Demo Complete ===~n', []).
+
 %% ============================================
 %% COMPARISON DEMO
 %% ============================================
@@ -645,6 +821,38 @@ check_scala_available :-
         fail
     ).
 
+%% check_kotlin_available
+%  Check if Kotlin is available
+check_kotlin_available :-
+    catch(
+        (   process_create(path(which), [kotlinc],
+                          [stdout(null), stderr(null), process(PID)]),
+            process_wait(PID, exit(0))
+        ),
+        _,
+        fail
+    ).
+
+%% check_clojure_available
+%  Check if Clojure is available
+check_clojure_available :-
+    catch(
+        (   process_create(path(which), [clojure],
+                          [stdout(null), stderr(null), process(PID)]),
+            process_wait(PID, exit(0))
+        ),
+        _,
+        % Try with clj
+        catch(
+            (   process_create(path(which), [clj],
+                              [stdout(null), stderr(null), process(PID2)]),
+                process_wait(PID2, exit(0))
+            ),
+            _,
+            fail
+        )
+    ).
+
 %% show_results(+Results)
 %  Display results in a formatted way
 show_results([]) :- !.
@@ -740,17 +948,22 @@ demo_bash_fork_simple :-
 :- format('~n==============================================~n', []).
 :- format('Distributed Backends Demo loaded.~n', []).
 :- format('~nAvailable demos:~n', []).
-:- format('  ?- demo_all.               % Run all demos~n', []).
+:- format('  ?- demo_all.                  % Run all demos~n', []).
 :- format('~nDask:~n', []).
-:- format('  ?- demo_dask_basic.        % Dask (threads)~n', []).
-:- format('  ?- demo_dask_distributed.  % Dask local cluster~n', []).
-:- format('~nHadoop:~n', []).
-:- format('  ?- demo_hadoop_basic.      % Hadoop Streaming~n', []).
-:- format('  ?- demo_hadoop_wordcount.  % Word count example~n', []).
-:- format('  ?- demo_hadoop_native_java.% Hadoop Native (Java)~n', []).
-:- format('~nSpark:~n', []).
-:- format('  ?- demo_spark_pyspark.     % PySpark~n', []).
-:- format('  ?- demo_spark_scala.       % Scala Spark~n', []).
+:- format('  ?- demo_dask_basic.           % Dask (threads)~n', []).
+:- format('  ?- demo_dask_distributed.     % Dask local cluster~n', []).
+:- format('~nHadoop Streaming:~n', []).
+:- format('  ?- demo_hadoop_basic.         % Hadoop Streaming~n', []).
+:- format('  ?- demo_hadoop_wordcount.     % Word count example~n', []).
+:- format('~nHadoop Native (JVM):~n', []).
+:- format('  ?- demo_hadoop_native_java.   % Hadoop Native (Java)~n', []).
+:- format('  ?- demo_hadoop_native_clojure.% Hadoop Native (Clojure)~n', []).
+:- format('~nSpark (All JVM Languages):~n', []).
+:- format('  ?- demo_spark_pyspark.        % PySpark~n', []).
+:- format('  ?- demo_spark_scala.          % Scala Spark~n', []).
+:- format('  ?- demo_spark_java.           % Java Spark~n', []).
+:- format('  ?- demo_spark_kotlin.         % Kotlin Spark~n', []).
+:- format('  ?- demo_spark_clojure.        % Clojure Spark~n', []).
 :- format('~nUtilities:~n', []).
-:- format('  ?- demo_compare_backends.  % Compare all backends~n', []).
+:- format('  ?- demo_compare_backends.     % Compare all backends~n', []).
 :- format('==============================================~n~n', []).

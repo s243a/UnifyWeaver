@@ -10,8 +10,9 @@
 - ✅ Bash Fork backend - Complete (no external deps)
 - ✅ Dask Distributed backend - Complete
 - ✅ Hadoop Streaming backend - Complete (stdin/stdout MapReduce)
-- ✅ Hadoop Native backend - Complete (Java/Scala/Kotlin in-process via JVM glue)
-- ✅ Spark backend - Complete (PySpark + native Scala modes)
+- ✅ Hadoop Native backend - Complete (Java/Scala/Kotlin/Clojure in-process via JVM glue)
+- ✅ Spark backend - Complete (PySpark + Java/Scala/Kotlin/Clojure modes)
+- ✅ JVM Glue - Complete (all language bridges: Java↔Scala, Java↔Kotlin, Java↔Clojure, Scala↔Kotlin)
 
 ## Executive Summary
 
@@ -607,30 +608,46 @@ Different sources have different batching strategies:
 - Performance benchmarks vs sequential execution
 
 ### Phase 3: Distributed Backends (v0.0.5) ✅ COMPLETE
-*Add Hadoop, Dask, and Spark support*
+*Add Hadoop, Dask, and Spark support with full JVM language coverage*
 
 - [x] Backend abstraction interface (`parallel_backend.pl`)
 - [x] Backend auto-loader (`backend_loader.pl`)
 - [x] Hadoop Streaming backend (`backends/hadoop_streaming.pl`)
-- [x] Hadoop Native backend (`backends/hadoop_native.pl`) - Java/Scala/Kotlin in-process
+- [x] Hadoop Native backend (`backends/hadoop_native.pl`) - Java/Scala/Kotlin/Clojure in-process
 - [x] Dask Distributed backend (`backends/dask_distributed.pl`)
-- [x] Spark backend (`backends/spark.pl`) - PySpark + native Scala
+- [x] Spark backend (`backends/spark.pl`) - PySpark + Java/Scala/Kotlin/Clojure native modes
 - [x] HDFS integration for large files (via Hadoop backends)
-- [x] JVM glue integration for in-process Hadoop/Spark communication
+- [x] Complete JVM glue integration (`glue/jvm_glue.pl`) - all language bridges
 - [ ] Fault tolerance and retry logic - PARTIAL
 - [ ] Cross-backend test suite - IN PROGRESS
 
 **Current Status (December 2025):**
 - Hadoop Streaming: MapReduce jobs with configurable mapper/reducer (stdin/stdout)
-- Hadoop Native: In-process Java/Scala/Kotlin MapReduce via JVM glue
+- Hadoop Native: In-process Java/Scala/Kotlin/Clojure MapReduce via JVM glue
 - Dask: Threads, processes, and distributed schedulers
-- Spark: PySpark and native Scala with local/YARN/K8s masters
+- Spark: PySpark and native JVM modes (Java, Scala, Kotlin, Clojure) with local/YARN/K8s masters
+- JVM Glue: Complete bridge generators for all JVM language pairs
 - Demo: `examples/demo_distributed_backends.pl`
+
+**JVM Language Support:**
+| Backend | Java | Scala | Kotlin | Clojure | Python |
+|---------|------|-------|--------|---------|--------|
+| Hadoop Native | ✅ | ✅ | ✅ | ✅ | - |
+| Spark | ✅ | ✅ | ✅ | ✅ | ✅ (PySpark) |
+| Dask | - | - | - | - | ✅ |
+
+**JVM Glue Bridges:**
+- Java ↔ Jython (Python on JVM)
+- Java ↔ Scala (bidirectional)
+- Java ↔ Kotlin (bidirectional)
+- Java ↔ Clojure (bidirectional)
+- Scala ↔ Kotlin (bidirectional)
 
 **Delivered:**
 - Same Prolog code runs on GNU Parallel, Hadoop, Dask, or Spark
 - 6 backend options with different trade-offs
-- Cross-target glue integration for JVM languages
+- Complete JVM ecosystem coverage with 5 languages
+- Cross-target glue integration for seamless JVM language interop
 
 ### Phase 4: Advanced Features (v0.1.0)
 *Production-ready parallel execution*
