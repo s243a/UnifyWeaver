@@ -170,12 +170,16 @@ Explore incremental view maintenance:
 - Maintain materialized views efficiently
 - Delta processing for updates
 
-### Distributed Execution
+### Distributed Execution (Completed)
 
-Investigate distributed compilation:
-- Split predicates across nodes
-- Coordinate via message passing
-- Aggregate results
+✅ **Implemented**: Distributed parallel execution backends are now available.
+- **Hadoop Streaming**: MapReduce via stdin/stdout for any language
+- **Hadoop Native**: In-process JVM API (Java, Scala, Kotlin, Clojure)
+- **Apache Spark**: PySpark + native JVM modes (Java, Scala, Kotlin, Clojure)
+- **Dask Distributed**: Python distributed computing with threads/processes/cluster
+- **JVM Glue**: Complete cross-language bridges for JVM ecosystem
+
+See `docs/proposals/parallel_architecture.md` and `examples/demo_distributed_backends.pl` for details.
 
 ### AI/ML Integration
 
@@ -201,7 +205,7 @@ Explore integration with machine learning:
 
 **Long Term (12+ Months):**
 9. Incremental maintenance
-10. Distributed execution
+10. ~~Distributed execution~~ ✅ COMPLETE (v0.0.5)
 11. AI/ML integration
 
 ## Contributing
