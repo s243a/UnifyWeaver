@@ -64,6 +64,36 @@ The answer pool for ranking can be configured:
 The full pool test ranks against ALL answers (train + val), not just held-out.
 This is harder because similar training answers compete with the target.
 
+## Practical Use Cases
+
+### R@1 vs R@5 Tradeoffs
+
+Which metric matters depends on the application:
+
+- **Single-turn QA**: R@5 is often sufficient. Users expect to scan a few results
+  (like Google's top 10). MiniLM at 90% R@5 is practical and fast.
+
+- **RAG with multiple queries**: R@1 matters more. Each retrieval adds to context:
+  - 5 sub-questions × 5 answers = 25 chunks = 5-10K tokens
+  - Cleaner retrieval = less noise for the LLM
+  - ModernBERT's 74% R@1 reduces context bloat
+
+- **Q/A pair storage**: When both questions and answers are stored, the LLM
+  can compare retrieved questions to its query and do its own soft reranking.
+  This makes R@5 more useful - the LLM sees the mapping context.
+
+### Model Selection
+
+| Use Case | Recommended | R@5 (full pool) |
+|----------|-------------|-----------------|
+| Fast prototyping | MiniLM | 90% |
+| Production RAG | ModernBERT | 97% |
+| Latency-critical | MiniLM | 90% |
+| Accuracy-critical | ModernBERT | 97% |
+
+ModernBERT is ~20x slower to embed but embeddings are cached after training.
+Inference cost (single query) is negligible for both.
+
 These results use simple softmax routing with temperature tuning.
 Density-based and logit-calibrated routing remain as future exploration.
 """
