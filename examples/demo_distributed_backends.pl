@@ -342,6 +342,148 @@ done | sort -t$\'\\t\' -k2 -nr
     format('~n=== Demo Complete ===~n', []).
 
 %% ============================================
+%% SPARK DEMONSTRATIONS
+%% ============================================
+
+%% demo_spark_pyspark
+%  Demonstration using PySpark
+demo_spark_pyspark :-
+    format('~n=== Spark PySpark Demo ===~n', []),
+
+    % Check if Spark is available
+    (   check_spark_available
+    ->  true
+    ;   format('Spark not available. Set SPARK_HOME or add spark-submit to PATH~n', []),
+        fail
+    ),
+
+    % Setup
+    create_test_script(ScriptPath),
+    create_test_data(Data),
+    format('Test data: ~w items~n', [100]),
+
+    % Partition data
+    partitioner_init(fixed_size(25), [], PartHandle),
+    partitioner_partition(PartHandle, Data, Partitions),
+    partitioner_cleanup(PartHandle),
+
+    % Initialize Spark backend in PySpark mode
+    format('~nInitializing PySpark...~n', []),
+    catch(
+        (   use_module(unifyweaver(core/backends/spark)),
+            register_backend(spark, spark_backend)
+        ),
+        _,
+        true
+    ),
+    backend_init(spark(
+        mode(pyspark),
+        master('local[4]'),
+        executor_memory('1g')
+    ), Handle),
+
+    % Execute
+    format('~nExecuting Spark job...~n', []),
+    backend_execute(Handle, Partitions, ScriptPath, Results),
+
+    % Show results
+    format('~nResults:~n', []),
+    show_results(Results),
+
+    % Cleanup
+    backend_cleanup(Handle),
+    format('~n=== Demo Complete ===~n', []).
+
+%% demo_spark_scala
+%  Demonstration using native Scala Spark
+demo_spark_scala :-
+    format('~n=== Spark Scala Demo ===~n', []),
+
+    % Check if Spark and Scala are available
+    (   check_spark_available, check_scala_available
+    ->  true
+    ;   format('Spark or Scala not available~n', []),
+        fail
+    ),
+
+    % Setup
+    create_test_script(ScriptPath),
+    Data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+
+    % Simple partition
+    Partitions = [partition(0, Data)],
+
+    % Initialize Spark backend in Scala mode
+    format('~nInitializing Scala Spark...~n', []),
+    catch(
+        (   use_module(unifyweaver(core/backends/spark)),
+            register_backend(spark, spark_backend)
+        ),
+        _,
+        true
+    ),
+    backend_init(spark(
+        mode(scala),
+        master('local[2]'),
+        executor_memory('512m')
+    ), Handle),
+
+    % Execute
+    format('~nExecuting Spark job...~n', []),
+    backend_execute(Handle, Partitions, ScriptPath, Results),
+
+    % Show results
+    format('~nResults:~n', []),
+    show_results(Results),
+
+    % Cleanup
+    backend_cleanup(Handle),
+    format('~n=== Demo Complete ===~n', []).
+
+%% demo_hadoop_native_java
+%  Demonstration using native Hadoop Java API
+demo_hadoop_native_java :-
+    format('~n=== Hadoop Native Java Demo ===~n', []),
+
+    % Check availability
+    (   check_hadoop_available, check_java_available
+    ->  true
+    ;   format('Hadoop or Java not available~n', []),
+        fail
+    ),
+
+    % Setup
+    create_test_script(ScriptPath),
+    Data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    Partitions = [partition(0, Data)],
+
+    % Initialize Hadoop Native backend
+    format('~nInitializing Hadoop Native (Java)...~n', []),
+    catch(
+        (   use_module(unifyweaver(core/backends/hadoop_native)),
+            register_backend(hadoop_native, hadoop_native_backend)
+        ),
+        _,
+        true
+    ),
+    backend_init(hadoop_native(
+        target_language(java),
+        reducers(1)
+    ), Handle),
+
+    % Execute
+    format('~nExecuting MapReduce job...~n', []),
+    backend_execute(Handle, Partitions, ScriptPath, Results),
+
+    % Show results
+    format('~nResults:~n', []),
+    show_results(Results),
+
+    % Cleanup
+    backend_cleanup(Handle),
+    format('~n=== Demo Complete ===~n', []).
+
+%% ============================================
 %% COMPARISON DEMO
 %% ============================================
 
@@ -464,6 +606,45 @@ check_gnu_parallel_available :-
         fail
     ).
 
+%% check_spark_available
+%  Check if Apache Spark is available
+check_spark_available :-
+    (   getenv('SPARK_HOME', _)
+    ->  true
+    ;   catch(
+            (   process_create(path(which), ['spark-submit'],
+                              [stdout(null), stderr(null), process(PID)]),
+                process_wait(PID, exit(0))
+            ),
+            _,
+            fail
+        )
+    ).
+
+%% check_java_available
+%  Check if Java is available
+check_java_available :-
+    catch(
+        (   process_create(path(java), ['--version'],
+                          [stdout(null), stderr(null), process(PID)]),
+            process_wait(PID, exit(0))
+        ),
+        _,
+        fail
+    ).
+
+%% check_scala_available
+%  Check if Scala is available
+check_scala_available :-
+    catch(
+        (   process_create(path(which), [scalac],
+                          [stdout(null), stderr(null), process(PID)]),
+            process_wait(PID, exit(0))
+        ),
+        _,
+        fail
+    ).
+
 %% show_results(+Results)
 %  Display results in a formatted way
 show_results([]) :- !.
@@ -485,26 +666,40 @@ demo_all :-
     format('========================================~n', []),
 
     % Always available
-    format('~n[1/4] Testing Bash Fork...~n', []),
+    format('~n[1/6] Testing Bash Fork...~n', []),
     catch(demo_bash_fork_simple, E1, format('Error: ~w~n', [E1])),
 
     % Dask demos
-    format('~n[2/4] Testing Dask...~n', []),
+    format('~n[2/6] Testing Dask...~n', []),
     (   check_dask_available
     ->  catch(demo_dask_basic, E2, format('Error: ~w~n', [E2]))
     ;   format('Skipped (Dask not available)~n', [])
     ),
 
-    % Hadoop demos
-    format('~n[3/4] Testing Hadoop...~n', []),
+    % Hadoop Streaming demos
+    format('~n[3/6] Testing Hadoop Streaming...~n', []),
     (   check_hadoop_available
     ->  catch(demo_hadoop_basic, E3, format('Error: ~w~n', [E3]))
     ;   format('Skipped (Hadoop not available)~n', [])
     ),
 
+    % Spark demos
+    format('~n[4/6] Testing Spark...~n', []),
+    (   check_spark_available
+    ->  catch(demo_spark_pyspark, E4, format('Error: ~w~n', [E4]))
+    ;   format('Skipped (Spark not available)~n', [])
+    ),
+
+    % Hadoop Native demos
+    format('~n[5/6] Testing Hadoop Native (JVM)...~n', []),
+    (   check_hadoop_available, check_java_available
+    ->  catch(demo_hadoop_native_java, E5, format('Error: ~w~n', [E5]))
+    ;   format('Skipped (Hadoop or Java not available)~n', [])
+    ),
+
     % Comparison
-    format('~n[4/4] Backend comparison...~n', []),
-    catch(demo_compare_backends, E4, format('Error: ~w~n', [E4])),
+    format('~n[6/6] Backend comparison...~n', []),
+    catch(demo_compare_backends, E6, format('Error: ~w~n', [E6])),
 
     format('~n========================================~n', []),
     format('All demos complete!~n', []),
@@ -545,10 +740,17 @@ demo_bash_fork_simple :-
 :- format('~n==============================================~n', []).
 :- format('Distributed Backends Demo loaded.~n', []).
 :- format('~nAvailable demos:~n', []).
-:- format('  ?- demo_all.              % Run all demos~n', []).
-:- format('  ?- demo_dask_basic.       % Basic Dask (threads)~n', []).
-:- format('  ?- demo_dask_distributed. % Dask local cluster~n', []).
-:- format('  ?- demo_hadoop_basic.     % Hadoop Streaming~n', []).
-:- format('  ?- demo_hadoop_wordcount. % Word count example~n', []).
-:- format('  ?- demo_compare_backends. % Compare all backends~n', []).
+:- format('  ?- demo_all.               % Run all demos~n', []).
+:- format('~nDask:~n', []).
+:- format('  ?- demo_dask_basic.        % Dask (threads)~n', []).
+:- format('  ?- demo_dask_distributed.  % Dask local cluster~n', []).
+:- format('~nHadoop:~n', []).
+:- format('  ?- demo_hadoop_basic.      % Hadoop Streaming~n', []).
+:- format('  ?- demo_hadoop_wordcount.  % Word count example~n', []).
+:- format('  ?- demo_hadoop_native_java.% Hadoop Native (Java)~n', []).
+:- format('~nSpark:~n', []).
+:- format('  ?- demo_spark_pyspark.     % PySpark~n', []).
+:- format('  ?- demo_spark_scala.       % Scala Spark~n', []).
+:- format('~nUtilities:~n', []).
+:- format('  ?- demo_compare_backends.  % Compare all backends~n', []).
 :- format('==============================================~n~n', []).

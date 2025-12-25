@@ -46,8 +46,16 @@ backend_definition(dask_distributed, dask_distributed_backend,
     [tool(python3), module(dask)]).
 
 backend_definition(hadoop_streaming, hadoop_streaming_backend,
-    'Hadoop Streaming for MapReduce',
+    'Hadoop Streaming for MapReduce (stdin/stdout)',
     [any([tool(hadoop), env('HADOOP_HOME')])]).
+
+backend_definition(hadoop_native, hadoop_native_backend,
+    'Hadoop Native API (Java/Scala/Kotlin in-process)',
+    [tool(java), any([tool(hadoop), env('HADOOP_HOME')])]).
+
+backend_definition(spark, spark_backend,
+    'Apache Spark (PySpark or Scala)',
+    [any([tool('spark-submit'), env('SPARK_HOME')])]).
 
 %% ============================================
 %% LOADER PREDICATES
