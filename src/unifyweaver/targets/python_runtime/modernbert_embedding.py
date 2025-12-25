@@ -260,6 +260,7 @@ class SentenceTransformerProvider(IEmbeddingProvider):
         self,
         model_name: str = "all-MiniLM-L6-v2",
         device: str = "auto",
+        trust_remote_code: bool = True,
     ):
         """
         Initialize sentence-transformers provider.
@@ -267,6 +268,7 @@ class SentenceTransformerProvider(IEmbeddingProvider):
         Args:
             model_name: Model name from sentence-transformers
             device: Device to use
+            trust_remote_code: Trust remote code for models that require it (e.g., nomic)
         """
         from sentence_transformers import SentenceTransformer
 
@@ -275,7 +277,11 @@ class SentenceTransformerProvider(IEmbeddingProvider):
 
         self.model_name = model_name
         self.device = device
-        self.model = SentenceTransformer(model_name, device=device)
+        self.model = SentenceTransformer(
+            model_name,
+            device=device,
+            trust_remote_code=trust_remote_code
+        )
         self.dimension = self.model.get_sentence_embedding_dimension()
 
         logger.info(f"SentenceTransformer loaded: {model_name}, dim={self.dimension}, device={device}")

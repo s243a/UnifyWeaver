@@ -25,6 +25,7 @@
 ]).
 
 :- use_module(library(apply)).
+:- use_module(library(aggregate), [aggregate_all/3]).
 :- use_module(library(error)).
 :- use_module(library(gensym)).
 :- use_module(library(lists)).
@@ -1628,16 +1629,20 @@ select_best_candidate_([Candidate|Rest], VarCounts, BoundVars, Best0, BestKey0, 
     ),
     select_best_candidate_(Rest, VarCounts, BoundVars, Best1, BestKey1, Best).
 
-candidate_key(cand(Index, Term, _Role, Vars, Arity), VarCounts, BoundVars, Key) :-
-    candidate_score_key(Index, Term, Vars, Arity, VarCounts, BoundVars, Key).
+candidate_key(cand(Index, Term, Role, Vars, Arity), VarCounts, BoundVars, Key) :-
+    candidate_score_key(Index, Term, Role, Vars, Arity, VarCounts, BoundVars, Key).
 
 % Prefer candidates that share already-bound variables. Next, keep the join graph
 % connected when possible. When tied, prefer literals with more constant
-% arguments (PatternScan-selective), then smaller arity, then original order.
-candidate_score_key(Index, Term, Vars, Arity, VarCounts, BoundVars, [Shared, Connected, ConstArgs, NegArity, NegIndex]) :-
+% arguments (PatternScan-selective). When facts are available at compile time,
+% prefer more selective patterns (fewer matching fact rows). Finally, prefer
+% smaller arity, then original order.
+candidate_score_key(Index, Term, Role, Vars, Arity, VarCounts, BoundVars, [Shared, Connected, ConstArgs, NegEstimate, NegArity, NegIndex]) :-
     shared_bound_count(Vars, BoundVars, Shared),
     connectivity_score(Vars, VarCounts, Connected),
     constant_arg_count_in_term(Term, ConstArgs),
+    estimate_goal_row_count(Role, Term, Arity, ConstArgs, Estimate),
+    NegEstimate is -Estimate,
     NegArity is -Arity,
     NegIndex is -Index.
 
@@ -1653,6 +1658,33 @@ count_nonvars([Arg|Rest], Acc, Count) :-
     ;   Acc1 is Acc + 1
     ),
     count_nonvars(Rest, Acc1, Count).
+
+estimate_goal_row_count(relation, Term0, Arity, ConstArgs, Estimate) :-
+    strip_module(Term0, _, Term),
+    Term =.. [Pred|Args0],
+    length(Args0, Arity),
+    (   dynamic_source_metadata(Pred/Arity, _)
+    ->  estimate_unknown_relation_rows(ConstArgs, Estimate)
+    ;   query_materialized_relation(Pred/Arity)
+    ->  estimate_unknown_relation_rows(ConstArgs, Estimate)
+    ;   copy_term(Args0, Args),
+        Pattern =.. [Pred|Args],
+        aggregate_all(count, clause(user:Pattern, true), Estimate)
+    ).
+estimate_goal_row_count(recursive(_), _Term, _Arity, ConstArgs, Estimate) :-
+    estimate_unknown_recursive_rows(ConstArgs, Estimate).
+estimate_goal_row_count(mutual(_, _), _Term, _Arity, ConstArgs, Estimate) :-
+    estimate_unknown_recursive_rows(ConstArgs, Estimate).
+
+estimate_unknown_relation_rows(ConstArgs, Estimate) :-
+    Base is 1000000000,
+    Divisor is ConstArgs + 1,
+    Estimate is Base // Divisor.
+
+estimate_unknown_recursive_rows(ConstArgs, Estimate) :-
+    Base is 2000000000,
+    Divisor is ConstArgs + 1,
+    Estimate is Base // Divisor.
 
 shared_bound_count([], _BoundVars, 0).
 shared_bound_count([Var|Rest], BoundVars, Count) :-

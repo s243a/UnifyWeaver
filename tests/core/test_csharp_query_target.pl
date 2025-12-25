@@ -76,7 +76,15 @@
 :- dynamic user:test_strat_ban_fact/1.
 :- dynamic user:test_strat_banned/1.
 :- dynamic user:test_strat_allowed/1.
+:- dynamic user:test_strat2_person/1.
+:- dynamic user:test_strat2_edge/2.
+:- dynamic user:test_strat2_banned/1.
+:- dynamic user:test_strat2_reach/2.
+:- dynamic user:test_strat2_reach_banned/1.
+:- dynamic user:test_strat2_allowed/1.
 :- dynamic user:test_link_to_charlie/1.
+:- dynamic user:test_select_fact/2.
+:- dynamic user:test_selective_common_amount/1.
 
 :- dynamic progress_last_report/1.
 :- dynamic progress_count/1.
@@ -92,6 +100,7 @@ test_csharp_query_target :-
         verify_fact_plan,
         verify_join_plan,
         verify_join_ordering_constant_arg_plan,
+        verify_join_ordering_selectivity_plan,
         verify_selection_plan,
         verify_ground_relation_arg_plan,
         verify_order_by_limit_plan,
@@ -137,6 +146,7 @@ test_csharp_query_target :-
         verify_negation_plan,
         verify_non_stratified_negation_cycle_rejected,
         verify_stratified_negation_derived_runtime,
+        verify_stratified_negation_recursive_lower_stratum_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
         verify_multi_mode_codegen_plan,
@@ -176,6 +186,13 @@ setup_test_data :-
     assertz(user:test_fact(bob, charlie)),
     assertz(user:(test_link(X, Z) :- test_fact(X, Y), test_fact(Y, Z))),
     assertz(user:(test_link_to_charlie(X) :- test_fact(X, Y), test_fact(Y, charlie))),
+    assertz(user:test_select_fact(alice, 1)),
+    assertz(user:test_select_fact(alice, 2)),
+    assertz(user:test_select_fact(bob, 1)),
+    assertz(user:(test_selective_common_amount(Amount) :-
+        test_select_fact(alice, Amount),
+        test_select_fact(bob, Amount)
+    )),
     assertz(user:(test_filtered(X) :- test_fact(X, _), X = alice)),
     assertz(user:test_val(item1, 5)),
     assertz(user:test_val(item2, 2)),
@@ -422,6 +439,8 @@ cleanup_test_data :-
     retractall(user:test_fact(_, _)),
     retractall(user:test_link(_, _)),
     retractall(user:test_link_to_charlie(_)),
+    retractall(user:test_select_fact(_, _)),
+    retractall(user:test_selective_common_amount(_)),
     retractall(user:test_filtered(_)),
     retractall(user:test_val(_, _)),
     retractall(user:test_increment(_, _)),
@@ -539,6 +558,23 @@ verify_join_ordering_constant_arg_plan :-
     },
     Pattern = [operand{kind:wildcard}, operand{kind:value, value:charlie}],
     maybe_run_query_runtime(Plan, ['alice']).
+
+verify_join_ordering_selectivity_plan :-
+    csharp_query_target:build_query_plan(test_selective_common_amount/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:JoinNode, columns:_, width:1}),
+    JoinNode = join{
+        type:join,
+        left:pattern_scan{predicate:predicate{name:test_select_fact, arity:2}, type:pattern_scan, pattern:LeftPattern, width:_},
+        right:pattern_scan{predicate:predicate{name:test_select_fact, arity:2}, type:pattern_scan, pattern:RightPattern, width:_},
+        left_keys:[1],
+        right_keys:[1],
+        left_width:_,
+        right_width:_,
+        width:_
+    },
+    LeftPattern = [operand{kind:value, value:bob}, operand{kind:wildcard}],
+    RightPattern = [operand{kind:value, value:alice}, operand{kind:wildcard}],
+    maybe_run_query_runtime(Plan, ['1']).
 
 verify_selection_plan :-
     csharp_query_target:build_query_plan(test_filtered/1, [target(csharp_query)], Plan),
@@ -1254,6 +1290,56 @@ verify_stratified_negation_derived_runtime_ :-
     sub_string(Source, _, _, _, 'DefineRelationNode'),
     sub_string(Source, _, _, _, 'NegationNode'),
     maybe_run_query_runtime(Plan, ['alice']).
+
+verify_stratified_negation_recursive_lower_stratum_runtime :-
+    setup_call_cleanup(
+        setup_stratified_negation_recursive_lower_stratum_program,
+        verify_stratified_negation_recursive_lower_stratum_runtime_,
+        cleanup_stratified_negation_recursive_lower_stratum_program
+    ).
+
+setup_stratified_negation_recursive_lower_stratum_program :-
+    retractall(user:test_strat2_person(_)),
+    retractall(user:test_strat2_edge(_, _)),
+    retractall(user:test_strat2_banned(_)),
+    retractall(user:test_strat2_reach(_, _)),
+    retractall(user:test_strat2_reach_banned(_)),
+    retractall(user:test_strat2_allowed(_)),
+    assertz(user:test_strat2_person(alice)),
+    assertz(user:test_strat2_person(bob)),
+    assertz(user:test_strat2_person(charlie)),
+    assertz(user:test_strat2_edge(alice, bob)),
+    assertz(user:test_strat2_edge(bob, charlie)),
+    assertz(user:test_strat2_banned(charlie)),
+    assertz(user:(test_strat2_reach(X, Y) :- test_strat2_edge(X, Y))),
+    assertz(user:(test_strat2_reach(X, Y) :- test_strat2_edge(X, Z), test_strat2_reach(Z, Y))),
+    assertz(user:(test_strat2_reach_banned(X) :- test_strat2_reach(X, Y), test_strat2_banned(Y))),
+    assertz(user:(test_strat2_allowed(X) :- test_strat2_person(X), \+ test_strat2_reach_banned(X))).
+
+cleanup_stratified_negation_recursive_lower_stratum_program :-
+    retractall(user:test_strat2_person(_)),
+    retractall(user:test_strat2_edge(_, _)),
+    retractall(user:test_strat2_banned(_)),
+    retractall(user:test_strat2_reach(_, _)),
+    retractall(user:test_strat2_reach_banned(_)),
+    retractall(user:test_strat2_allowed(_)).
+
+verify_stratified_negation_recursive_lower_stratum_runtime_ :-
+    csharp_query_target:build_query_plan(test_strat2_allowed/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    Root = program{type:program, definitions:Definitions, body:_, width:1},
+    sub_term(negation{type:negation, predicate:predicate{name:test_strat2_reach_banned, arity:1}, args:_, input:_, width:_}, Root),
+    findall(Index-Pred,
+        (   nth0(Index, Definitions, Def),
+            Def = define_relation{type:define_relation, predicate:predicate{name:Pred, arity:_}, plan:_}
+        ),
+        Pairs),
+    member(_-test_strat2_reach, Pairs),
+    member(_-test_strat2_reach_banned, Pairs),
+    member(IndexReach-test_strat2_reach, Pairs),
+    member(IndexReachBanned-test_strat2_reach_banned, Pairs),
+    IndexReach < IndexReachBanned,
+    maybe_run_query_runtime(Plan, ['charlie']).
 
 verify_parameterized_need_allows_prefix_negation :-
     csharp_query_target:build_query_plan(test_countdown/2, [target(csharp_query)], Plan),

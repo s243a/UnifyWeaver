@@ -182,6 +182,9 @@ if (-not $SkipCodegen) {
 
     & $swipl -q -f $init -s $testFile -g "test_csharp_query_target:test_csharp_query_target" -t halt -- `
         --csharp-query-output $outputPath --csharp-query-keep
+    if ($LASTEXITCODE -ne 0) {
+        throw "SWI-Prolog C# query target test suite failed (exit code $LASTEXITCODE)."
+    }
 }
 
 Assert-DotnetAvailable
