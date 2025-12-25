@@ -107,15 +107,20 @@ Where:
 - c_i is the density-derived confidence for training query i
 - w controls density influence (0 = ignore, 1 = equal weight)
 
-**On this dataset, logit-flux does NOT improve results** because:
-- Training queries have uniform density (std=0.02)
-- 96% of queries have confidence < 0.5 (penalty region)
-- No clear dense/sparse regions to exploit
+**On this dataset, logit-flux does NOT improve results.**
 
-Logit-flux would be more useful for:
-- Noisy datasets with outliers to penalize
-- Heterogeneous topic coverage (some topics over-represented)
-- Real-world data with uneven sampling
+After fixing density computation (k-NN with median baseline, adaptive mean/std):
+- Standard softmax: MRR 0.76, R@1 64%
+- Logit-flux (best): MRR 0.65, R@1 50%
+
+The issue may be fundamental: training query density isn't the right signal
+for routing. Penalizing routes to sparse training queries hurts when the test
+query is actually similar to a sparse point.
+
+Density-based approaches might be more useful for:
+- Confidence estimation (how much to trust the result)
+- Ensemble weighting (combine multiple strategies)
+- Not for routing weights directly
 """
 
 import numpy as np
@@ -249,45 +254,62 @@ class PerPairRouting:
             "std_scale": float(np.std(scales)),
         }
 
-    def _precompute_densities(self, bandwidth: Optional[float] = None):
+    def _precompute_densities(self, bandwidth: Optional[float] = None, k_neighbors: int = 5):
         """
-        Precompute KDE densities for training queries.
+        Precompute densities for training queries using adaptive k-NN.
 
-        Uses Gaussian kernel with Silverman's rule for bandwidth selection.
-        Densities are converted to confidence scores in (0, 1).
+        Density measures how "tight" the local neighborhood is:
+        - Mean similarity to k nearest neighbors (how close they are)
+        - Weighted by similarity spread (how consistent the neighborhood is)
+
+        A point in a tight cluster with consistent neighbors has high density.
+        A point with scattered neighbors at varying distances has low density.
+
+        Args:
+            bandwidth: Unused, kept for API compatibility
+            k_neighbors: Number of neighbors for density (default: 5)
         """
         if self.query_matrix is None:
             return
 
         N = len(self.query_matrix)
+        k = min(k_neighbors, N - 1)  # Can't include self
 
         # Compute pairwise similarities (already normalized)
         sim_matrix = self.query_matrix @ self.query_matrix.T  # (N, N)
 
-        # Convert to distances (cosine distance = 1 - similarity)
-        dist_matrix = 1 - sim_matrix
+        # For each query, compute adaptive density
+        densities = []
+        for i in range(N):
+            sims = sim_matrix[i].copy()
+            sims[i] = -np.inf  # Exclude self
 
-        # Silverman's rule for bandwidth
-        if bandwidth is None:
-            # Use upper triangle distances
-            upper_dists = dist_matrix[np.triu_indices(N, k=1)]
-            sigma = np.std(upper_dists)
-            iqr = np.percentile(upper_dists, 75) - np.percentile(upper_dists, 25)
-            scale = min(sigma, iqr / 1.34) if iqr > 0 else sigma
-            bandwidth = 0.9 * scale * (N ** -0.2)
-            bandwidth = max(bandwidth, 0.01)  # Minimum bandwidth
+            # Get k nearest neighbors
+            top_k_idx = np.argpartition(sims, -k)[-k:]
+            top_k_sims = sims[top_k_idx]
 
-        self._kde_bandwidth = bandwidth
+            # Density = mean similarity weighted by consistency
+            # High consistency (low std) = tight cluster = boost
+            # Low consistency (high std) = scattered = penalty
+            mean_sim = top_k_sims.mean()
+            std_sim = top_k_sims.std() + 1e-8
 
-        # Gaussian kernel KDE
-        kernel_values = np.exp(-(dist_matrix ** 2) / (2 * bandwidth ** 2))
-        self._train_densities = kernel_values.mean(axis=1)  # (N,)
+            # Adaptive density: mean / (1 + std)
+            # Tight clusters: high mean, low std -> high density
+            # Scattered: lower mean or high std -> lower density
+            adaptive_density = mean_sim / (1 + std_sim)
+            densities.append(adaptive_density)
+
+        self._train_densities = np.array(densities)
+        self._k_neighbors = k
 
         # Convert to confidence in (0, 1) using sigmoid-like normalization
-        baseline = self._train_densities.mean()
+        # Use MEDIAN as baseline so uniform data gives 50% above/below 0.5
+        baseline = np.median(self._train_densities)
         self._train_confidences = self._train_densities / (self._train_densities + baseline)
 
-        logger.info(f"KDE bandwidth: {bandwidth:.4f}, mean confidence: {self._train_confidences.mean():.4f}")
+        logger.info(f"Adaptive k-NN density (k={k}): median confidence={np.median(self._train_confidences):.4f}, "
+                   f"std={self._train_confidences.std():.4f}")
 
     def compute_query_density(self, query: np.ndarray) -> Tuple[np.ndarray, float]:
         """
@@ -297,8 +319,8 @@ class PerPairRouting:
             query: Query embedding (d,), should be normalized
 
         Returns:
-            (per_train_densities, query_confidence)
-            - per_train_densities: How dense each training query's neighborhood is
+            (per_train_confidences, query_confidence)
+            - per_train_confidences: Confidence scores for each training query
             - query_confidence: How confident we are about this query location
         """
         query = query.flatten()
@@ -307,14 +329,16 @@ class PerPairRouting:
 
         # Similarity to all training queries
         sims = self.query_matrix @ query  # (N,)
-        dists = 1 - sims
 
-        # Query's density (how close is it to training queries)
-        kernel_values = np.exp(-(dists ** 2) / (2 * self._kde_bandwidth ** 2))
-        query_density = kernel_values.mean()
+        # Query's adaptive density = mean / (1 + std) of k nearest
+        k = self._k_neighbors
+        top_k_sims = np.partition(sims, -k)[-k:]
+        mean_sim = top_k_sims.mean()
+        std_sim = top_k_sims.std() + 1e-8
+        query_density = mean_sim / (1 + std_sim)
 
-        # Convert to confidence
-        baseline = self._train_densities.mean()
+        # Convert to confidence (use median baseline for consistency)
+        baseline = np.median(self._train_densities)
         query_confidence = query_density / (query_density + baseline)
 
         return self._train_confidences, query_confidence
