@@ -95,32 +95,17 @@ ModernBERT is ~20x slower to embed but embeddings are cached after training.
 Inference cost (single query) is negligible for both.
 
 These results use simple softmax routing with temperature tuning.
+Standard softmax gives no density reward or penalty - purely similarity-based.
 
-## Logit-Flux Routing (Experimental)
+## Density-Modulated Routing (Experimental, Inconclusive)
 
-Logit-flux routing combines similarity and density in log-odds space:
+We explored incorporating local density into routing weights via log-odds
+combination, but did not find a formulation that improves over standard
+softmax on this dataset.
 
-    P(i) ∝ odds(s_i)^(1/τ) × odds(c_i)^(w/τ)
-
-Where:
-- odds(x) = x / (1-x)
-- c_i is the density-derived confidence for training query i
-- w controls density influence (0 = ignore, 1 = equal weight)
-
-**On this dataset, logit-flux does NOT improve results.**
-
-After fixing density computation (k-NN with median baseline, adaptive mean/std):
-- Standard softmax: MRR 0.76, R@1 64%
-- Logit-flux (best): MRR 0.65, R@1 50%
-
-The issue may be fundamental: training query density isn't the right signal
-for routing. Penalizing routes to sparse training queries hurts when the test
-query is actually similar to a sparse point.
-
-Density-based approaches might be more useful for:
-- Confidence estimation (how much to trust the result)
-- Ensemble weighting (combine multiple strategies)
-- Not for routing weights directly
+The theoretical motivation (see education/sandbox/theory/) suggests density
+could indicate confidence, but how to properly integrate it with routing
+remains an open question. Standard softmax routing works well as-is.
 """
 
 import numpy as np
