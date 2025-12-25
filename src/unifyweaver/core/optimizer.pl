@@ -75,7 +75,63 @@ reorder_goals(Goals, BoundVars, Pred, [BestGoal|RestOptimized]) :-
     % 4. Recurse
     reorder_goals(Remaining, NextBoundVars, Pred, RestOptimized).
 
-% ... (is_ready/2 remains unchanged)
+% ============================================================================
+% DEPENDENCY CHECKING
+% ============================================================================
+
+%% is_ready(+BoundVars:list, +Goal) is semidet.
+%
+%  True if Goal can be executed given the variables currently bound.
+%  Generators (predicate calls) are always considered ready because they can
+%  introduce new variables. Built-ins that act as filters/constraints require
+%  their operands to be bound.
+is_ready(BoundVars, Goal0) :-
+    strip_module(Goal0, _, Goal),
+    (   Goal = (\+ Inner)
+    ->  goal_vars(Inner, Vars),
+        all_vars_bound(Vars, BoundVars)
+    ;   Goal = is(_Var, Expr)
+    ->  goal_vars(Expr, Vars),
+        all_vars_bound(Vars, BoundVars)
+    ;   functor(Goal, '=', 2)
+    ->  goal_vars(Goal, Vars),
+        all_vars_bound(Vars, BoundVars)
+    ;   Goal = dif(_Left, _Right)
+    ->  goal_vars(Goal, Vars),
+        all_vars_bound(Vars, BoundVars)
+    ;   goal_to_bash_comparison(Goal)
+    ->  goal_vars(Goal, Vars),
+        all_vars_bound(Vars, BoundVars)
+    ;   is_match_goal(Goal, Var)
+    ->  (   var(Var)
+        ->  var_memberchk(Var, BoundVars)
+        ;   true
+        )
+    ;   true
+    ).
+
+goal_vars(Goal, Vars) :-
+    term_variables(Goal, Vars).
+
+all_vars_bound([], _BoundVars).
+all_vars_bound([Var|Rest], BoundVars) :-
+    var_memberchk(Var, BoundVars),
+    all_vars_bound(Rest, BoundVars).
+
+var_memberchk(Var, [Var0|_]) :-
+    Var == Var0,
+    !.
+var_memberchk(Var, [_|Rest]) :-
+    var_memberchk(Var, Rest).
+
+goal_to_bash_comparison(Goal) :-
+    compound(Goal),
+    functor(Goal, Op, 2),
+    member(Op, ['>', '<', '>=', '=<', '=:=', '=\\=', '\\=', '\\==']).
+
+is_match_goal(match(Var, _Pattern), Var) :- !.
+is_match_goal(match(Var, _Pattern, _Type), Var) :- !.
+is_match_goal(match(Var, _Pattern, _Type, _Groups), Var).
 
 % ============================================================================
 % HEURISTICS
