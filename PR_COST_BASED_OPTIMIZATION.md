@@ -10,11 +10,13 @@ This PR introduces the foundation for cost-based query optimization in UnifyWeav
 ### 1. Statistics Module (`core/statistics.pl`)
 - **Cost Model:** Estimates execution cost based on goal type (unification < comparison < generator).
 - **Storage:** Dynamic predicates to store table cardinality and field selectivity.
-- **API:** `estimate_cost/3` calculates cost for a goal given bound variables.
+- **JSON Loading:** `load_stats(Path)` allows importing pre-calculated statistics from a JSON file.
+- **API:** `estimate_cost/4` calculates cost for a goal given bound variables and the parent predicate context.
 
 ### 2. Cost-Based Reordering (`core/optimizer.pl`)
-- **Enhanced Comparator:** Replaced the simple "count bound variables" heuristic with `statistics:estimate_cost/3`.
-- **Benefit:** Goals are now ordered by estimated cost, preferring cheap filters and highly selective lookups.
+- **Enhanced Comparator:** Replaced the simple "count bound variables" heuristic with `statistics:estimate_cost/4`.
+- **Context Awareness:** The optimizer passes the current predicate indicator down to the cost model for accurate table-specific lookups.
+- **Benefit:** Goals are now ordered by estimated cost, preferring cheap filters and highly selective lookups based on real data distribution.
 
 ### 3. Statistics Collection (`db_mode(analyze)`)
 - **New Mode:** `compile_predicate_to_go(..., [db_mode(analyze)], Code)`.

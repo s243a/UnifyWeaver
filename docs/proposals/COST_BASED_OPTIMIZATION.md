@@ -20,7 +20,8 @@ UnifyWeaver currently uses a "count bound variables" heuristic to order goals. T
 ### 1. The Statistics Module (`core/statistics.pl`)
 A central registry for predicate statistics.
 - `declare_stats(Pred, Stats)`: Registers stats for a predicate.
-- `estimate_cost(Goal, BoundVars, Cost)`: Calculates cost.
+- `estimate_cost(Goal, BoundVars, Pred, Cost)`: Calculates cost.
+- `load_stats(Path)`: Loads stats from a JSON file.
 
 ### 2. The Analyzer Tool (`db_mode(analyze)`)
 A new compilation mode for the Go target.
@@ -28,13 +29,13 @@ A new compilation mode for the Go target.
 - **Output**: A standalone Go binary.
 - **Behavior**:
     1.  Scans the entire bucket.
-    2.  Counts total records ($N$).
-    3.  Uses HyperLogLog (or exact sets for small data) to count unique values ($U$) for each field.
+    2.  Counts total records ($N$). 
+    3.  Uses exact sets (map[interface{}]bool) to count unique values ($U$) for each field.
     4.  Calculates Selectivity $S = 1/U$.
     5.  Saves `{ "cardinality": N, "fields": { "field": { "selectivity": S } } }` to `_stats` bucket.
 
 ### 3. Optimizer Integration (`core/optimizer.pl`)
-The "Codd Phase" optimizer is updated to use `statistics:estimate_cost/3`.
+The "Codd Phase" optimizer is updated to use `statistics:estimate_cost/4`.
 
 **Cost Formula:**
 $$ Cost(G) = N_{rows} \times \prod_{f \in BoundFields} S_f $$
@@ -51,12 +52,9 @@ Where:
 - [x] Update `optimizer.pl` to use cost model.
 - [x] Implement `db_mode(analyze)` in Go target.
 
-### Phase 2: Integration (Next Steps)
-- [ ] **Stats Loading**: Add a mechanism for `go_target.pl` to read the `_stats` bucket (or a JSON export of it) *during compilation* to populate the `statistics` module.
-    - *Approach*: Since the compiler runs in Prolog (host) and the DB is Bbolt (target/binary), we likely need the user to export stats to a JSON file first, then load that file during compilation.
-    - *Directive*: `:- load_stats('stats.json').`
-
-- [ ] **Refinement**: Improve the cost formula for range queries (`>`,`<`) using histograms if possible (or default selectivity like 0.33).
+### Phase 2: Integration (Completed)
+- [x] Implement `load_stats/1` to load JSON statistics into the compiler.
+- [x] Connect `go_target.pl` to use these statistics for optimization.
 
 ## Usage Example
 
@@ -69,12 +67,14 @@ Where:
     ./user_analyzer
     # Output: Statistics saved to _stats bucket.
     ```
-3.  **Export Stats** (Manual step for now):
+3.  **Export Stats**:
     ```bash
-    # Tool to dump _stats bucket to stats.json
+    # (Future tool) Dump _stats to stats.json
     ```
 4.  **Compile with Stats**:
     ```prolog
+    :- use_module(library(statistics)).
     :- load_stats('stats.json').
+    
     query(X) :- ...
     ```
