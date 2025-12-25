@@ -3597,6 +3597,195 @@ generate_aggregation_logic(avg, "let (c, s) = io::stdin().lock().lines().filter_
 generate_aggregation_logic(min, "if let Some(m) = io::stdin().lock().lines().filter_map(|l| l.ok()?.trim().parse::<f64>().ok()).min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)) { println!(\"{}\", m); }").
 generate_aggregation_logic(max, "if let Some(m) = io::stdin().lock().lines().filter_map(|l| l.ok()?.trim().parse::<f64>().ok()).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)) { println!(\"{}\", m); }").
 
+% Statistical aggregations (ported from Go target)
+generate_aggregation_logic(stddev, "
+    let values: Vec<f64> = io::stdin().lock().lines()
+        .filter_map(|l| l.ok()?.trim().parse().ok())
+        .collect();
+    if values.len() > 1 {
+        let n = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / n;
+        let variance = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
+        println!(\"{}\", variance.sqrt());
+    } else {
+        println!(\"0\");
+    }
+").
+generate_aggregation_logic(median, "
+    let mut values: Vec<f64> = io::stdin().lock().lines()
+        .filter_map(|l| l.ok()?.trim().parse().ok())
+        .collect();
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if !values.is_empty() {
+        let mid = values.len() / 2;
+        let median = if values.len() % 2 == 0 {
+            (values[mid - 1] + values[mid]) / 2.0
+        } else {
+            values[mid]
+        };
+        println!(\"{}\", median);
+    }
+").
+generate_aggregation_logic(percentile(P), Code) :-
+    format(string(Code), "
+    let mut values: Vec<f64> = io::stdin().lock().lines()
+        .filter_map(|l| l.ok()?.trim().parse().ok())
+        .collect();
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if !values.is_empty() {
+        let p = ~w as f64 / 100.0;
+        let idx = (p * (values.len() - 1) as f64).round() as usize;
+        println!(\"{}\", values[idx.min(values.len() - 1)]);
+    }
+", [P]).
+
+% Collection aggregations
+generate_aggregation_logic(collect_list, "
+    let values: Vec<String> = io::stdin().lock().lines()
+        .filter_map(|l| l.ok())
+        .map(|l| l.trim().to_string())
+        .collect();
+    println!(\"[{}]\", values.iter().map(|s| format!(\"\\\"{}\\\"\", s)).collect::<Vec<_>>().join(\",\"));
+").
+generate_aggregation_logic(collect_set, "
+    use std::collections::HashSet;
+    let values: HashSet<String> = io::stdin().lock().lines()
+        .filter_map(|l| l.ok())
+        .map(|l| l.trim().to_string())
+        .collect();
+    let mut sorted: Vec<_> = values.into_iter().collect();
+    sorted.sort();
+    println!(\"[{}]\", sorted.iter().map(|s| format!(\"\\\"{}\\\"\", s)).collect::<Vec<_>>().join(\",\"));
+").
+
+%% ============================================
+%% OBSERVABILITY FEATURES (ported from Go target)
+%% ============================================
+
+%% generate_rust_observability(+Options, -Imports, -Setup, -OnRecord, -OnError, -Finalize)
+%  Generate observability code for progress reporting, error logging, and metrics
+generate_rust_observability(Options, Imports, Setup, OnRecord, OnError, Finalize) :-
+    % Progress reporting
+    (   option(progress(ProgressOpt), Options)
+    ->  (   ProgressOpt = interval(N) -> Interval = N
+        ;   ProgressOpt = true -> Interval = 1000
+        ;   Interval = 1000
+        ),
+        ProgressImport = "use std::sync::atomic::{AtomicU64, Ordering};",
+        format(string(ProgressSetup), '
+    let record_count = AtomicU64::new(0);', []),
+        format(string(ProgressOnRecord), '
+        let count = record_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if count % ~w == 0 {
+            eprintln!("Processed {} records", count);
+        }', [Interval])
+    ;   ProgressImport = "",
+        ProgressSetup = "",
+        ProgressOnRecord = ""
+    ),
+
+    % Error file logging
+    (   option(error_file(ErrorFile), Options)
+    ->  ErrorImport = "use std::fs::OpenOptions;\nuse std::io::Write;",
+        format(string(ErrorSetup), '
+    let mut error_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("~w")
+        .expect("Failed to open error file");', [ErrorFile]),
+        ErrorOnError = '
+        if let Err(ref e) = result {
+            writeln!(error_file, "{{\\"timestamp\\": \\"{:?}\\", \\"error\\": \\"{}\\", \\"line\\": \\"{}\\"}}",
+                std::time::SystemTime::now(), e, line.escape_default()).ok();
+        }'
+    ;   ErrorImport = "",
+        ErrorSetup = "",
+        ErrorOnError = ""
+    ),
+
+    % Error threshold
+    (   option(error_threshold(count(Threshold)), Options)
+    ->  ThresholdImport = "use std::sync::atomic::{AtomicU64, Ordering};",
+        ThresholdSetup = '
+    let error_count = AtomicU64::new(0);',
+        format(string(ThresholdOnError), '
+        let err_count = error_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if err_count > ~w {
+            eprintln!("FATAL: Error threshold exceeded ({} errors)", err_count);
+            std::process::exit(1);
+        }', [Threshold])
+    ;   ThresholdImport = "",
+        ThresholdSetup = "",
+        ThresholdOnError = ""
+    ),
+
+    % Metrics file
+    (   option(metrics_file(MetricsFile), Options)
+    ->  MetricsImport = "use std::time::Instant;",
+        MetricsSetup = '
+    let start_time = Instant::now();
+    let mut total_records: u64 = 0;
+    let mut error_records: u64 = 0;',
+        MetricsOnRecord = '
+        total_records += 1;',
+        MetricsOnError = '
+        error_records += 1;',
+        format(string(MetricsFinalize), '
+    let elapsed = start_time.elapsed();
+    let metrics = format!("{{\\"total_records\\": {}, \\"error_records\\": {}, \\"duration_secs\\": {:.3}, \\"records_per_sec\\": {:.2}}}",
+        total_records, error_records, elapsed.as_secs_f64(),
+        if elapsed.as_secs_f64() > 0.0 { total_records as f64 / elapsed.as_secs_f64() } else { 0.0 });
+    std::fs::write("~w", metrics).expect("Failed to write metrics");
+    eprintln!("Metrics: {}", metrics);', [MetricsFile])
+    ;   MetricsImport = "",
+        MetricsSetup = "",
+        MetricsOnRecord = "",
+        MetricsOnError = "",
+        MetricsFinalize = ""
+    ),
+
+    % Combine all imports
+    atomic_list_concat([ProgressImport, ErrorImport, ThresholdImport, MetricsImport], '\n', ImportsRaw),
+    % Remove duplicate atomic import if present
+    (   sub_string(ImportsRaw, _, _, _, "AtomicU64")
+    ->  Imports = "use std::sync::atomic::{AtomicU64, Ordering};\nuse std::time::Instant;\nuse std::fs::OpenOptions;\nuse std::io::Write;"
+    ;   Imports = ImportsRaw
+    ),
+
+    % Combine setup code
+    atomic_list_concat([ProgressSetup, ErrorSetup, ThresholdSetup, MetricsSetup], '', Setup),
+
+    % Combine on-record code
+    atomic_list_concat([ProgressOnRecord, MetricsOnRecord], '', OnRecord),
+
+    % Combine on-error code
+    atomic_list_concat([ErrorOnError, ThresholdOnError, MetricsOnError], '', OnError),
+
+    % Finalize code
+    Finalize = MetricsFinalize.
+
+%% rust_observability_wrapper(+InnerCode, +Options, -WrappedCode)
+%  Wrap code with observability if options are present
+rust_observability_wrapper(InnerCode, Options, WrappedCode) :-
+    (   (option(progress(_), Options) ; option(error_file(_), Options) ;
+         option(error_threshold(_), Options) ; option(metrics_file(_), Options))
+    ->  generate_rust_observability(Options, Imports, Setup, OnRecord, _OnError, Finalize),
+        format(string(WrappedCode), '~s
+~s
+fn main() {
+~s
+    // Processing loop with observability
+    for line in std::io::stdin().lock().lines() {
+        if let Ok(l) = line {
+~s
+~s
+        }
+    }
+~s
+}', [Imports, "", Setup, InnerCode, OnRecord, Finalize])
+    ;   WrappedCode = InnerCode
+    ).
+
 generate_json_input_logic(JsonOps, Head, SchemaName, DelimChar, Unique, ScriptBody) :-
     Head =.. [_|HeadArgs],
     findall(ExtractLine, (

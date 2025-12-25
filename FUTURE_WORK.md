@@ -92,6 +92,105 @@ Scientific computing and data analysis:
 - Excellent performance
 - Great for numerical processing
 
+---
+
+## Cross-Target Feature Parity
+
+This section tracks features that exist in some targets but should be ported to others.
+
+### Quick Wins (Completed)
+
+#### 1. Statistical Aggregations for Rust
+**Status:** ✅ COMPLETE (2025-12-25)
+**Source:** Go target (has stddev, median, percentile)
+**Target:** Rust target
+
+Implemented:
+- `stddev` - Standard deviation (sample)
+- `median` - Median value
+- `percentile(N)` - Nth percentile
+
+#### 2. collect_list/collect_set for Rust
+**Status:** ✅ COMPLETE (2025-12-25)
+**Source:** Go, Python, C# Query targets
+**Target:** Rust target
+
+Implemented:
+- `collect_list` - Aggregate into JSON array (with duplicates)
+- `collect_set` - Aggregate into sorted JSON array (unique values)
+
+#### 3. Window Functions for Go
+**Status:** ✅ COMPLETE (2025-12-25)
+**Source:** SQL target (native), Python target
+**Target:** Go target
+
+Implemented:
+- `lag/3`, `lag/4`, `lag/5` - Access previous row value with offset and default
+- `lead/3`, `lead/4`, `lead/5` - Access next row value with offset and default
+- `first_value/3` - First value in window partition
+- `last_value/3` - Last value in window partition
+
+#### 4. Observability for Rust
+**Status:** ✅ COMPLETE (2025-12-25)
+**Source:** Go target (comprehensive), Python target
+**Target:** Rust target
+
+Implemented:
+- `progress(interval(N))` - Progress reporting every N records
+- `error_file(Path)` - Error logging to JSON file
+- `error_threshold(count(N))` - Exit after N errors
+- `metrics_file(Path)` - Performance metrics export
+
+### Medium Priority
+
+#### 5. XML Processing
+**Status:** 📋 PLANNED
+**Source:** Go, Python targets
+**Target:** Rust, C#, others
+**Effort:** Medium - requires XML parsing library integration
+
+#### 6. Full Outer Joins
+**Status:** 📋 PLANNED
+**Source:** Go, Python, Rust, SQL targets
+**Target:** Bash, C# Codegen, PowerShell
+**Effort:** Medium-High - complex for shell-based targets
+
+#### 7. Schema Validation for JSON
+**Status:** 📋 PLANNED
+**Source:** Go target (comprehensive)
+**Target:** Rust, C#, others
+**Effort:** Medium
+
+### Lower Priority (Specialized)
+
+#### 8. Database Integration
+**Status:** 📋 PLANNED
+**Source:** Go target (BoltDB with secondary indexes)
+**Target:** Rust (sled/rocksdb), Python (sqlite), others
+**Effort:** High - requires embedded DB per language
+
+#### 9. Cost-Based Optimization
+**Status:** 📋 PLANNED
+**Source:** Go target (statistics-based)
+**Target:** All targets
+**Effort:** High - requires statistics collection infrastructure
+
+### Feature Parity Matrix
+
+| Feature | Go | Python | Rust | C# | Bash | SQL |
+|---------|-----|--------|------|-----|------|-----|
+| Statistical Aggs | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| collect_list/set | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Window Functions | ✅ | ✅ | ❌ | ⚠️ | ❌ | ✅ |
+| Observability | ✅ | ✅ | ✅ | ⚠️ | ❌ | ❌ |
+| XML Processing | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Full Outer Join | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| Database Integration | ✅ | ⚠️ | ❌ | ❌ | ❌ | ✅ |
+
+Legend: ✅ Complete | ⚠️ Partial | ❌ Missing
+
+---
+
 ## Cross-Target Features
 
 ### Query Optimization (Completed - The "Codd" Phase)

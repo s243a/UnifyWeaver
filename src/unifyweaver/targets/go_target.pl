@@ -9434,6 +9434,140 @@ parse_window_spec(Ops, _, SortField, RankVar, rank) :-
     member(rank(SortField, RankVar), Ops), !.
 parse_window_spec(Ops, _, SortField, RankVar, dense_rank) :-
     member(dense_rank(SortField, RankVar), Ops), !.
+% LAG/LEAD window functions - access previous/next row values
+parse_window_spec(Ops, _, SortField, ResultVar, lag(ValueField, Offset, Default)) :-
+    member(lag(SortField, ValueField, Offset, Default, ResultVar), Ops), !.
+parse_window_spec(Ops, _, SortField, ResultVar, lag(ValueField, Offset)) :-
+    member(lag(SortField, ValueField, Offset, ResultVar), Ops), !.
+parse_window_spec(Ops, _, SortField, ResultVar, lag(ValueField)) :-
+    member(lag(SortField, ValueField, ResultVar), Ops), !.
+parse_window_spec(Ops, _, SortField, ResultVar, lead(ValueField, Offset, Default)) :-
+    member(lead(SortField, ValueField, Offset, Default, ResultVar), Ops), !.
+parse_window_spec(Ops, _, SortField, ResultVar, lead(ValueField, Offset)) :-
+    member(lead(SortField, ValueField, Offset, ResultVar), Ops), !.
+parse_window_spec(Ops, _, SortField, ResultVar, lead(ValueField)) :-
+    member(lead(SortField, ValueField, ResultVar), Ops), !.
+% FIRST_VALUE/LAST_VALUE - window boundary values
+parse_window_spec(Ops, _, SortField, ResultVar, first_value(ValueField)) :-
+    member(first_value(SortField, ValueField, ResultVar), Ops), !.
+parse_window_spec(Ops, _, SortField, ResultVar, last_value(ValueField)) :-
+    member(last_value(SortField, ValueField, ResultVar), Ops), !.
+
+%% ============================================
+%% LAG/LEAD WINDOW FUNCTION CODE GENERATION
+%% ============================================
+
+%% generate_lag_lead_code(+WindowType, +ValueField, +Offset, +Default, +FieldMappings, -GoCode)
+%  Generate Go code snippet for LAG/LEAD window functions
+generate_lag_lead_code(lag, ValueField, Offset, Default, _FieldMappings, GoCode) :-
+    (   Default = null -> DefaultVal = "nil"
+    ;   number(Default) -> format(atom(DefaultVal), '~w', [Default])
+    ;   format(atom(DefaultVal), '"~w"', [Default])
+    ),
+    format(string(GoCode), '
+		// LAG: Access previous row value
+		for i, row := range state.rows {
+			var lagValue interface{} = ~w
+			if i >= ~w {
+				if val, ok := state.rows[i-~w].data["~w"]; ok {
+					lagValue = val
+				}
+			}
+			row.data["lag_~w"] = lagValue
+		}', [DefaultVal, Offset, Offset, ValueField, ValueField]).
+
+generate_lag_lead_code(lead, ValueField, Offset, Default, _FieldMappings, GoCode) :-
+    (   Default = null -> DefaultVal = "nil"
+    ;   number(Default) -> format(atom(DefaultVal), '~w', [Default])
+    ;   format(atom(DefaultVal), '"~w"', [Default])
+    ),
+    format(string(GoCode), '
+		// LEAD: Access next row value
+		for i, row := range state.rows {
+			var leadValue interface{} = ~w
+			if i + ~w < len(state.rows) {
+				if val, ok := state.rows[i+~w].data["~w"]; ok {
+					leadValue = val
+				}
+			}
+			row.data["lead_~w"] = leadValue
+		}', [DefaultVal, Offset, Offset, ValueField, ValueField]).
+
+generate_lag_lead_code(first_value, ValueField, _Offset, _Default, _FieldMappings, GoCode) :-
+    format(string(GoCode), '
+		// FIRST_VALUE: Get first row value in window
+		var firstValue interface{} = nil
+		if len(state.rows) > 0 {
+			if val, ok := state.rows[0].data["~w"]; ok {
+				firstValue = val
+			}
+		}
+		for _, row := range state.rows {
+			row.data["first_~w"] = firstValue
+		}', [ValueField, ValueField]).
+
+generate_lag_lead_code(last_value, ValueField, _Offset, _Default, _FieldMappings, GoCode) :-
+    format(string(GoCode), '
+		// LAST_VALUE: Get last row value in window
+		var lastValue interface{} = nil
+		if len(state.rows) > 0 {
+			if val, ok := state.rows[len(state.rows)-1].data["~w"]; ok {
+				lastValue = val
+			}
+		}
+		for _, row := range state.rows {
+			row.data["last_~w"] = lastValue
+		}', [ValueField, ValueField]).
+
+%% generate_window_lag_lead_jsonl(+WindowType, +GroupField, +SortField, +ValueField, +Offset, +Default, +FieldMappings, -GoCode)
+%  Generate complete JSONL processing code for LAG/LEAD window functions
+generate_window_lag_lead_jsonl(WindowType, GroupField, SortField, ValueField, Offset, Default, FieldMappings, GoCode) :-
+    find_field_for_var(GroupField, FieldMappings, GroupFieldName),
+    find_field_for_var(SortField, FieldMappings, SortFieldName),
+    find_field_for_var(ValueField, FieldMappings, ValueFieldName),
+    generate_lag_lead_code(WindowType, ValueFieldName, Offset, Default, FieldMappings, WindowCode),
+
+    format(string(GoCode), '
+	// LAG/LEAD Window Function over JSONL
+	type Record struct {
+		data map[string]interface{}
+	}
+	groups := make(map[string][]Record)
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		var data map[string]interface{}
+		if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+			continue
+		}
+
+		// Extract group key
+		groupKey := ""
+		if g, ok := data["~w"]; ok {
+			groupKey = fmt.Sprintf("%v", g)
+		}
+		groups[groupKey] = append(groups[groupKey], Record{data: data})
+	}
+
+	// Process each group
+	for _, state := range groups {
+		// Sort by ~w
+		sort.Slice(state.rows, func(i, j int) bool {
+			valI, okI := state.rows[i].data["~w"].(float64)
+			valJ, okJ := state.rows[j].data["~w"].(float64)
+			if !okI || !okJ { return false }
+			return valI < valJ
+		})
+
+~w
+
+		// Output results
+		for _, row := range state.rows {
+			output, _ := json.Marshal(row.data)
+			fmt.Println(string(output))
+		}
+	}
+', [GroupFieldName, SortFieldName, SortFieldName, SortFieldName, WindowCode]).
 
 %% generate_group_by_count(+GroupField, +DbFile, +BucketStr, -GoCode)
 %  Generate GROUP BY count code
@@ -12952,6 +13086,10 @@ has_window_function(Op) :-
     (   compound(Op), functor(Op, row_number, _) -> true
     ;   compound(Op), functor(Op, rank, _) -> true
     ;   compound(Op), functor(Op, dense_rank, _) -> true
+    ;   compound(Op), functor(Op, lag, _) -> true
+    ;   compound(Op), functor(Op, lead, _) -> true
+    ;   compound(Op), functor(Op, first_value, _) -> true
+    ;   compound(Op), functor(Op, last_value, _) -> true
     ;   is_list(Op), member(Sub, Op), has_window_function(Sub) -> true
     ), !.
 
