@@ -56,8 +56,8 @@
       "recall_at_5": 0.7073170731707317,
       "recall_at_10": 0.8902439024390244,
       "mrr": 0.43417879943072507,
-      "train_time_ms": 0.6606999959331006,
-      "inference_time_us": 135.31585367362402,
+      "train_time_ms": 0.6506999998237006,
+      "inference_time_us": 136.97560972082655,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -200,8 +200,8 @@
       "recall_at_5": 0.6829268292682927,
       "recall_at_10": 0.8536585365853658,
       "mrr": 0.40962283526730237,
-      "train_time_ms": 214.78780199686298,
-      "inference_time_us": 1006.6268292664573,
+      "train_time_ms": 295.817395002814,
+      "inference_time_us": 1013.5853537088601,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -344,8 +344,8 @@
       "recall_at_5": 0.7682926829268293,
       "recall_at_10": 0.9146341463414634,
       "mrr": 0.441780954925422,
-      "train_time_ms": 152.7866010001162,
-      "inference_time_us": 1109.1402438313064,
+      "train_time_ms": 152.75879700493533,
+      "inference_time_us": 1135.5024268218917,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -488,8 +488,8 @@
       "recall_at_5": 0.7682926829268293,
       "recall_at_10": 0.9146341463414634,
       "mrr": 0.44155254119386117,
-      "train_time_ms": 152.6817010017112,
-      "inference_time_us": 1071.7743903003839,
+      "train_time_ms": 154.43469699675916,
+      "inference_time_us": 1346.3146219359394,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -632,8 +632,8 @@
       "recall_at_5": 0.7439024390243902,
       "recall_at_10": 0.9024390243902439,
       "mrr": 0.4254185492707731,
-      "train_time_ms": 425.99020300258417,
-      "inference_time_us": 1211.1195121578044,
+      "train_time_ms": 395.4365940007847,
+      "inference_time_us": 1130.6036341432823,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -776,8 +776,8 @@
       "recall_at_5": 0.6097560975609756,
       "recall_at_10": 0.7682926829268293,
       "mrr": 0.36429949692446456,
-      "train_time_ms": 2748.8877149953623,
-      "inference_time_us": 11441.463451153208,
+      "train_time_ms": 2780.1920550045907,
+      "inference_time_us": 11895.85123175653,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -920,8 +920,8 @@
       "recall_at_5": 0.7439024390243902,
       "recall_at_10": 0.8536585365853658,
       "mrr": 0.40008093894237706,
-      "train_time_ms": 4414.318311006355,
-      "inference_time_us": 24593.267134084115,
+      "train_time_ms": 4197.263848000148,
+      "inference_time_us": 22707.93196338473,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -1064,8 +1064,8 @@
       "recall_at_5": 0.7926829268292683,
       "recall_at_10": 0.9024390243902439,
       "mrr": 0.4375273191677118,
-      "train_time_ms": 8514.742297003977,
-      "inference_time_us": 46345.40489017282,
+      "train_time_ms": 8847.159604003537,
+      "inference_time_us": 53192.63953664099,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -1209,8 +1209,8 @@
       "recall_at_5": 0.7804878048780488,
       "recall_at_10": 0.9146341463414634,
       "mrr": 0.4397210214363617,
-      "train_time_ms": 3094.044899000437,
-      "inference_time_us": 22540.247560977063,
+      "train_time_ms": 2050.1777949975803,
+      "inference_time_us": 16324.995024372516,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -1354,8 +1354,8 @@
       "recall_at_5": 0.7682926829268293,
       "recall_at_10": 0.9146341463414634,
       "mrr": 0.439314517371321,
-      "train_time_ms": 1666.917000002286,
-      "inference_time_us": 14110.891463354985,
+      "train_time_ms": 3544.2103399982443,
+      "inference_time_us": 28097.525012193862,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -1499,8 +1499,8 @@
       "recall_at_5": 0.7926829268292683,
       "recall_at_10": 0.9146341463414634,
       "mrr": 0.4387223144387307,
-      "train_time_ms": 2584.975800004031,
-      "inference_time_us": 23429.28897553243,
+      "train_time_ms": 2791.2820159981493,
+      "inference_time_us": 22817.807207302838,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -1644,8 +1644,8 @@
       "recall_at_5": 0.7804878048780488,
       "recall_at_10": 0.9146341463414634,
       "mrr": 0.4383066548767297,
-      "train_time_ms": 2491.075895995891,
-      "inference_time_us": 23100.141390253757,
+      "train_time_ms": 2403.1422089974512,
+      "inference_time_us": 22625.639256059403,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -1788,8 +1788,8 @@
       "recall_at_5": 0.23170731707317074,
       "recall_at_10": 0.43902439024390244,
       "mrr": 0.14527393395678023,
-      "train_time_ms": 33.74500000063563,
-      "inference_time_us": 1120.2780243787324,
+      "train_time_ms": 21.04940100252861,
+      "inference_time_us": 1132.3121951846122,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -1932,8 +1932,8 @@
       "recall_at_5": 0.10975609756097561,
       "recall_at_10": 0.25609756097560976,
       "mrr": 0.0964601377637509,
-      "train_time_ms": 23.921898995467927,
-      "inference_time_us": 1002.9621829212041,
+      "train_time_ms": 23.557499996968545,
+      "inference_time_us": 1127.2853780388775,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -2076,8 +2076,8 @@
       "recall_at_5": 0.10975609756097561,
       "recall_at_10": 0.2073170731707317,
       "mrr": 0.08980189028436193,
-      "train_time_ms": 29.787599996780045,
-      "inference_time_us": 1075.7158414912183,
+      "train_time_ms": 24.6155999993789,
+      "inference_time_us": 1765.453670775126,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -2220,8 +2220,8 @@
       "recall_at_5": 0.23170731707317074,
       "recall_at_10": 0.43902439024390244,
       "mrr": 0.14820570099992456,
-      "train_time_ms": 27.469399996334687,
-      "inference_time_us": 1309.0036463392785,
+      "train_time_ms": 30.943999998271465,
+      "inference_time_us": 1070.7524511750173,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -2364,8 +2364,8 @@
       "recall_at_5": 0.10975609756097561,
       "recall_at_10": 0.2682926829268293,
       "mrr": 0.09885587759783955,
-      "train_time_ms": 21.131599001819268,
-      "inference_time_us": 1058.6426707471596,
+      "train_time_ms": 23.418999997375067,
+      "inference_time_us": 1172.2536708076382,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -2508,8 +2508,8 @@
       "recall_at_5": 0.10975609756097561,
       "recall_at_10": 0.21951219512195122,
       "mrr": 0.0902840171915475,
-      "train_time_ms": 29.55289900273783,
-      "inference_time_us": 1159.723158485665,
+      "train_time_ms": 27.414600997872185,
+      "inference_time_us": 1003.7000122282757,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -2652,8 +2652,8 @@
       "recall_at_5": 0.10975609756097561,
       "recall_at_10": 0.2926829268292683,
       "mrr": 0.0999811954459338,
-      "train_time_ms": 25.131400005193427,
-      "inference_time_us": 1035.2280366599343,
+      "train_time_ms": 24.900500000512693,
+      "inference_time_us": 1133.8207438778381,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -2798,8 +2798,8 @@
       "recall_at_5": 0.2804878048780488,
       "recall_at_10": 0.5487804878048781,
       "mrr": 0.1918273019915067,
-      "train_time_ms": 1953.7637769972207,
-      "inference_time_us": 10391.865743901979,
+      "train_time_ms": 1899.8360149998916,
+      "inference_time_us": 11133.46350003423,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -2944,8 +2944,8 @@
       "recall_at_5": 0.43902439024390244,
       "recall_at_10": 0.6463414634146342,
       "mrr": 0.25737948311017217,
-      "train_time_ms": 1898.2926970056724,
-      "inference_time_us": 10656.736560965173,
+      "train_time_ms": 2014.1894150001463,
+      "inference_time_us": 10997.196414636408,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -3090,8 +3090,8 @@
       "recall_at_5": 0.4878048780487805,
       "recall_at_10": 0.6707317073170732,
       "mrr": 0.27246522780219823,
-      "train_time_ms": 2020.4088960017543,
-      "inference_time_us": 10946.767048774678,
+      "train_time_ms": 2107.6286940005957,
+      "inference_time_us": 10499.772853619084,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -3236,8 +3236,8 @@
       "recall_at_5": 0.25609756097560976,
       "recall_at_10": 0.4878048780487805,
       "mrr": 0.16648426067876645,
-      "train_time_ms": 1933.0228969993186,
-      "inference_time_us": 11548.837792627348,
+      "train_time_ms": 1924.4328069980838,
+      "inference_time_us": 10595.2209390724,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -3382,8 +3382,8 @@
       "recall_at_5": 0.3780487804878049,
       "recall_at_10": 0.6341463414634146,
       "mrr": 0.2408432296778621,
-      "train_time_ms": 3428.638397002942,
-      "inference_time_us": 21951.064609754943,
+      "train_time_ms": 3691.3315760029946,
+      "inference_time_us": 22908.144951254988,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -3527,8 +3527,8 @@
       "recall_at_5": 0.5,
       "recall_at_10": 0.7317073170731707,
       "mrr": 0.31928185421754446,
-      "train_time_ms": 2750.470300001325,
-      "inference_time_us": 1094.7841463614789,
+      "train_time_ms": 2691.9691910006804,
+      "inference_time_us": 1579.684134102114,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -3672,8 +3672,8 @@
       "recall_at_5": 0.4268292682926829,
       "recall_at_10": 0.6707317073170732,
       "mrr": 0.2714562582244981,
-      "train_time_ms": 2518.310699997528,
-      "inference_time_us": 1048.390243895261,
+      "train_time_ms": 2616.326493996894,
+      "inference_time_us": 1100.3280366222918,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -3817,8 +3817,8 @@
       "recall_at_5": 0.35365853658536583,
       "recall_at_10": 0.5853658536585366,
       "mrr": 0.19973658258348528,
-      "train_time_ms": 2638.032998998824,
-      "inference_time_us": 960.593902407975,
+      "train_time_ms": 2777.84459299437,
+      "inference_time_us": 1169.1231707007364,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -3962,8 +3962,8 @@
       "recall_at_5": 0.573170731707317,
       "recall_at_10": 0.7926829268292683,
       "mrr": 0.3389038301660228,
-      "train_time_ms": 4882.5424979950185,
-      "inference_time_us": 1338.3755976087186,
+      "train_time_ms": 4332.220750999113,
+      "inference_time_us": 1222.4305121380007,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -4107,8 +4107,8 @@
       "recall_at_5": 0.3902439024390244,
       "recall_at_10": 0.6585365853658537,
       "mrr": 0.24769592286414568,
-      "train_time_ms": 2613.1148979984573,
-      "inference_time_us": 1030.0939024224447,
+      "train_time_ms": 2723.5924409978907,
+      "inference_time_us": 1010.3853902120779,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -4251,8 +4251,8 @@
       "recall_at_5": 0.6097560975609756,
       "recall_at_10": 0.7682926829268293,
       "mrr": 0.3617403792658604,
-      "train_time_ms": 3664.0677969990065,
-      "inference_time_us": 16865.586573148015,
+      "train_time_ms": 3048.2696130056866,
+      "inference_time_us": 10772.12068296986,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -4395,8 +4395,8 @@
       "recall_at_5": 0.6097560975609756,
       "recall_at_10": 0.7682926829268293,
       "mrr": 0.36793032752897925,
-      "train_time_ms": 4487.154797003313,
-      "inference_time_us": 11370.83535366223,
+      "train_time_ms": 4970.871473000443,
+      "inference_time_us": 17222.952170768844,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -4539,8 +4539,8 @@
       "recall_at_5": 0.6097560975609756,
       "recall_at_10": 0.7682926829268293,
       "mrr": 0.36793032752897925,
-      "train_time_ms": 3088.5848850011826,
-      "inference_time_us": 10858.33043898896,
+      "train_time_ms": 3833.0071390009834,
+      "inference_time_us": 10372.721792675027,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -4683,8 +4683,8 @@
       "recall_at_5": 0.7439024390243902,
       "recall_at_10": 0.8536585365853658,
       "mrr": 0.40785532918627965,
-      "train_time_ms": 5194.84856800409,
-      "inference_time_us": 21448.72789030182,
+      "train_time_ms": 5600.680695999472,
+      "inference_time_us": 23620.412158534902,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -4815,7 +4815,8 @@
       "method": "MinTrans_none_f10",
       "params": {
         "smooth_method": "none",
-        "fidelity_weight": 1.0
+        "fidelity_weight": 1.0,
+        "per_pair": false
       },
       "mean_cosine_to_target": 0.78483241973399,
       "std_cosine_to_target": 0.08790213377391279,
@@ -4827,8 +4828,8 @@
       "recall_at_5": 0.9878048780487805,
       "recall_at_10": 1.0,
       "mrr": 0.86880081300813,
-      "train_time_ms": 31.699099999968894,
-      "inference_time_us": 882.9487682882378,
+      "train_time_ms": 29.89520000119228,
+      "inference_time_us": 959.4000000173011,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -4959,7 +4960,8 @@
       "method": "MinTrans_fft_f0",
       "params": {
         "smooth_method": "fft",
-        "fidelity_weight": 0.0
+        "fidelity_weight": 0.0,
+        "per_pair": false
       },
       "mean_cosine_to_target": 0.7429413714924822,
       "std_cosine_to_target": 0.1031226562203918,
@@ -4971,8 +4973,8 @@
       "recall_at_5": 0.975609756097561,
       "recall_at_10": 1.0,
       "mrr": 0.8488095238095237,
-      "train_time_ms": 161.67659900384024,
-      "inference_time_us": 855.8743780091257,
+      "train_time_ms": 168.30859900073847,
+      "inference_time_us": 969.4731707873516,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -5103,7 +5105,8 @@
       "method": "MinTrans_fft_f3",
       "params": {
         "smooth_method": "fft",
-        "fidelity_weight": 0.3
+        "fidelity_weight": 0.3,
+        "per_pair": false
       },
       "mean_cosine_to_target": 0.757863006576642,
       "std_cosine_to_target": 0.09720322210728012,
@@ -5115,8 +5118,8 @@
       "recall_at_5": 0.9878048780487805,
       "recall_at_10": 1.0,
       "mrr": 0.8620934959349593,
-      "train_time_ms": 105.52789999928791,
-      "inference_time_us": 988.4085366360434,
+      "train_time_ms": 112.15850000007777,
+      "inference_time_us": 1023.785365893074,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -5247,7 +5250,8 @@
       "method": "MinTrans_fft_f5",
       "params": {
         "smooth_method": "fft",
-        "fidelity_weight": 0.5
+        "fidelity_weight": 0.5,
+        "per_pair": false
       },
       "mean_cosine_to_target": 0.7667096923107363,
       "std_cosine_to_target": 0.09408001782288956,
@@ -5259,8 +5263,8 @@
       "recall_at_5": 0.9878048780487805,
       "recall_at_10": 1.0,
       "mrr": 0.8590447154471544,
-      "train_time_ms": 125.951800000621,
-      "inference_time_us": 1689.7134145682041,
+      "train_time_ms": 128.00589999824297,
+      "inference_time_us": 1160.5316951939064,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -5391,7 +5395,8 @@
       "method": "MinTrans_fft_f7",
       "params": {
         "smooth_method": "fft",
-        "fidelity_weight": 0.7
+        "fidelity_weight": 0.7,
+        "per_pair": false
       },
       "mean_cosine_to_target": 0.7746437059486188,
       "std_cosine_to_target": 0.09140276072669026,
@@ -5403,8 +5408,8 @@
       "recall_at_5": 0.9878048780487805,
       "recall_at_10": 1.0,
       "mrr": 0.8620934959349593,
-      "train_time_ms": 153.5996000020532,
-      "inference_time_us": 1326.804878062387,
+      "train_time_ms": 171.46419899654575,
+      "inference_time_us": 873.3463415055445,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -5535,7 +5540,8 @@
       "method": "MinTrans_kernel_f5",
       "params": {
         "smooth_method": "kernel",
-        "fidelity_weight": 0.5
+        "fidelity_weight": 0.5,
+        "per_pair": false
       },
       "mean_cosine_to_target": 0.7320163378621694,
       "std_cosine_to_target": 0.10031995688086646,
@@ -5547,8 +5553,8 @@
       "recall_at_5": 0.9634146341463414,
       "recall_at_10": 1.0,
       "mrr": 0.8479965156794425,
-      "train_time_ms": 98.7676000004285,
-      "inference_time_us": 944.074390245965,
+      "train_time_ms": 85.00719900621334,
+      "inference_time_us": 1066.8719513022352,
       "num_queries": 82,
       "num_answers": 82,
       "num_clusters": 20,
@@ -5670,6 +5676,296 @@
         "fold-pattern": {
           "mean_cosine": 0.800900768121317,
           "mean_mse": 0.0011283363211408571,
+          "mean_rank": 1.25,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "MinTrans_none_f10_pp",
+      "params": {
+        "smooth_method": "none",
+        "fidelity_weight": 1.0,
+        "per_pair": true
+      },
+      "mean_cosine_to_target": 0.7241134350411035,
+      "std_cosine_to_target": 0.17314837092787877,
+      "mean_mse_to_target": 0.0012998817663277475,
+      "std_mse_to_target": 0.0007993379736843598,
+      "mean_target_rank": 1.5853658536585367,
+      "median_target_rank": 1.0,
+      "recall_at_1": 0.7926829268292683,
+      "recall_at_5": 0.975609756097561,
+      "recall_at_10": 0.9878048780487805,
+      "mrr": 0.8643437862950057,
+      "train_time_ms": 45.894099996075965,
+      "inference_time_us": 1193.1914511767056,
+      "num_queries": 82,
+      "num_answers": 82,
+      "num_clusters": 20,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.6491776433844739,
+          "mean_mse": 0.0016083390069398722,
+          "mean_rank": 2.75,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.6593890939945316,
+          "mean_mse": 0.0016170314670406897,
+          "mean_rank": 1.25,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.7686684885996367,
+          "mean_mse": 0.0010881189259825809,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.7364236001613208,
+          "mean_mse": 0.001244521553402184,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.5622896382691613,
+          "mean_mse": 0.002024634514236501,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.7853359724849002,
+          "mean_mse": 0.0010074927044090598,
+          "mean_rank": 2.25,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.6594398121077256,
+          "mean_mse": 0.0015890796174506058,
+          "mean_rank": 2.5,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.672140857340872,
+          "mean_mse": 0.0015056875211828641,
+          "mean_rank": 2.25,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8304623716147427,
+          "mean_mse": 0.0008127668784460686,
+          "mean_rank": 1.0,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.6918094737733078,
+          "mean_mse": 0.0014423089094018284,
+          "mean_rank": 3.75,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.6686800357528225,
+          "mean_mse": 0.001584191978021523,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.7844950372164315,
+          "mean_mse": 0.001024638805340032,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.6897150486145982,
+          "mean_mse": 0.0014998731514438688,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.7315335457644182,
+          "mean_mse": 0.0012682582471331592,
+          "mean_rank": 1.0,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8325643511876051,
+          "mean_mse": 0.0008015848016873418,
+          "mean_rank": 1.5,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.7147672657043311,
+          "mean_mse": 0.0013091803872683435,
+          "mean_rank": 1.75,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.87856333123251,
+          "mean_mse": 0.000601035852790814,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.5347436145491157,
+          "mean_mse": 0.002162337775198773,
+          "mean_rank": 2.0,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.7799778121329117,
+          "mean_mse": 0.001093526724570238,
+          "mean_rank": 1.75,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8236494451124137,
+          "mean_mse": 0.0008427111063776664,
+          "mean_rank": 1.25,
+          "num_queries": 4
+        }
+      }
+    },
+    {
+      "method": "MinTrans_fft_f5_pp",
+      "params": {
+        "smooth_method": "fft",
+        "fidelity_weight": 0.5,
+        "per_pair": true
+      },
+      "mean_cosine_to_target": 0.7172322916812509,
+      "std_cosine_to_target": 0.1682012419591182,
+      "mean_mse_to_target": 0.0013259654902843508,
+      "std_mse_to_target": 0.000771478153524929,
+      "mean_target_rank": 1.646341463414634,
+      "median_target_rank": 1.0,
+      "recall_at_1": 0.7682926829268293,
+      "recall_at_5": 0.975609756097561,
+      "recall_at_10": 0.9878048780487805,
+      "mrr": 0.8469891896721163,
+      "train_time_ms": 146.88749899505638,
+      "inference_time_us": 1054.2158536448303,
+      "num_queries": 82,
+      "num_answers": 82,
+      "num_clusters": 20,
+      "cluster_metrics": {
+        "bash-target-design": {
+          "mean_cosine": 0.643464589708341,
+          "mean_mse": 0.0016187388612208275,
+          "mean_rank": 2.75,
+          "num_queries": 4
+        },
+        "prolog-to-bash-bridge": {
+          "mean_cosine": 0.6615217884205555,
+          "mean_mse": 0.0016119968840710237,
+          "mean_rank": 1.25,
+          "num_queries": 4
+        },
+        "compilation-pipeline": {
+          "mean_cosine": 0.7665124192463107,
+          "mean_mse": 0.001096643032498761,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "constraint-usage": {
+          "mean_cosine": 0.7296453656455073,
+          "mean_mse": 0.0012773414438902377,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "troubleshooting-compilation": {
+          "mean_cosine": 0.5628889182954093,
+          "mean_mse": 0.0020099027848320137,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "practical-compilation": {
+          "mean_cosine": 0.7812134315177273,
+          "mean_mse": 0.0010246617474916641,
+          "mean_rank": 2.25,
+          "num_queries": 4
+        },
+        "generated-code-facts": {
+          "mean_cosine": 0.6408100992988806,
+          "mean_mse": 0.0016519700642998098,
+          "mean_rank": 3.25,
+          "num_queries": 4
+        },
+        "generated-code-transitive": {
+          "mean_cosine": 0.6649436727406178,
+          "mean_mse": 0.0015339188575840977,
+          "mean_rank": 2.0,
+          "num_queries": 4
+        },
+        "prolog-facts-rules": {
+          "mean_cosine": 0.8201492920971145,
+          "mean_mse": 0.0008587108928477633,
+          "mean_rank": 1.0,
+          "num_queries": 5
+        },
+        "prolog-modules": {
+          "mean_cosine": 0.6847436664399077,
+          "mean_mse": 0.0014725006229207747,
+          "mean_rank": 4.0,
+          "num_queries": 4
+        },
+        "prolog-directives": {
+          "mean_cosine": 0.6605622864281874,
+          "mean_mse": 0.0016157289408315853,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "prolog-file-io": {
+          "mean_cosine": 0.7840700224362818,
+          "mean_mse": 0.0010216835991275672,
+          "mean_rank": 1.0,
+          "num_queries": 4
+        },
+        "init-pl-explained": {
+          "mean_cosine": 0.6723809638931288,
+          "mean_mse": 0.0015575902652999547,
+          "mean_rank": 1.25,
+          "num_queries": 4
+        },
+        "prolog-terms": {
+          "mean_cosine": 0.7329302101097349,
+          "mean_mse": 0.001262335025119691,
+          "mean_rank": 1.0,
+          "num_queries": 5
+        },
+        "prolog-unification": {
+          "mean_cosine": 0.8233794458687566,
+          "mean_mse": 0.0008416046197202047,
+          "mean_rank": 1.25,
+          "num_queries": 4
+        },
+        "recursion-patterns": {
+          "mean_cosine": 0.7083166307102612,
+          "mean_mse": 0.001335461147541028,
+          "mean_rank": 1.75,
+          "num_queries": 4
+        },
+        "unifyweaver-overview": {
+          "mean_cosine": 0.8606964988826932,
+          "mean_mse": 0.0006834404538838987,
+          "mean_rank": 1.25,
+          "num_queries": 4
+        },
+        "unifyweaver-targets": {
+          "mean_cosine": 0.5289496044672655,
+          "mean_mse": 0.002184922897741177,
+          "mean_rank": 2.0,
+          "num_queries": 4
+        },
+        "accumulator-pattern": {
+          "mean_cosine": 0.7684463019004981,
+          "mean_mse": 0.0011301171873845065,
+          "mean_rank": 2.0,
+          "num_queries": 4
+        },
+        "fold-pattern": {
+          "mean_cosine": 0.8193668958067526,
+          "mean_mse": 0.0008627617430307385,
           "mean_rank": 1.25,
           "num_queries": 4
         }

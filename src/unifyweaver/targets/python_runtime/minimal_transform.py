@@ -168,6 +168,7 @@ class MinimalTransformProjection:
         fidelity_weight: float = 0.5,  # Balance between smooth and minimal
         allow_scaling: bool = True,
         temperature: float = 0.1,
+        per_pair: bool = False,  # If True, compute W per Q/A pair then smooth within cluster
     ):
         """
         Initialize minimal transform projection.
@@ -179,12 +180,15 @@ class MinimalTransformProjection:
                             0 = fully smoothed, 1 = pure minimal transforms
             allow_scaling: Whether to allow scaling in Procrustes
             temperature: Softmax temperature for routing
+            per_pair: If True, compute W per Q/A pair then smooth within cluster.
+                     This is "transform then average" vs "average then transform".
         """
         self.smooth_method = smooth_method
         self.fft_cutoff_ratio = fft_cutoff_ratio
         self.fidelity_weight = fidelity_weight
         self.allow_scaling = allow_scaling
         self.temperature = temperature
+        self.per_pair = per_pair
 
         # Trained state
         self.W_minimal: Dict[int, np.ndarray] = {}
@@ -193,6 +197,7 @@ class MinimalTransformProjection:
         self.centroids: List[np.ndarray] = []
         self.cluster_order: List[int] = []
         self.scales: List[float] = []
+        self.W_per_pair: Dict[int, List[np.ndarray]] = {}  # Per-pair transforms before averaging
 
     def train(self, clusters: List[Tuple[np.ndarray, np.ndarray]]) -> dict:
         """
@@ -221,22 +226,55 @@ class MinimalTransformProjection:
             if A.ndim == 1:
                 A = A.reshape(1, -1)
 
-            # Compute centroid
+            # Compute centroid (used for routing regardless of per_pair)
             centroid = Q.mean(axis=0)
             self.centroids.append(centroid)
 
-            # Get answer (use first row if multiple, typically just one)
-            answer = A[0] if A.shape[0] >= 1 else A.flatten()
+            if self.per_pair:
+                # Per-pair approach: compute W for each (q, a) pair, then average
+                n_pairs = min(Q.shape[0], A.shape[0])
+                if A.shape[0] == 1:
+                    # Single answer for all queries - use same answer for each query
+                    A_expanded = np.tile(A, (Q.shape[0], 1))
+                else:
+                    A_expanded = A
 
-            # Minimal transform from centroid to answer (single point to single point)
-            W, scale, info = compute_minimal_transform(
-                centroid.reshape(1, -1),
-                answer.reshape(1, -1),
-                allow_scaling=self.allow_scaling,
-            )
+                pair_transforms = []
+                pair_scales = []
 
-            self.W_minimal[i] = W
-            self.scales.append(scale)
+                for j in range(n_pairs):
+                    q_j = Q[j]
+                    a_j = A_expanded[j] if j < A_expanded.shape[0] else A_expanded[0]
+
+                    W_j, scale_j, _ = compute_minimal_transform(
+                        q_j.reshape(1, -1),
+                        a_j.reshape(1, -1),
+                        allow_scaling=self.allow_scaling,
+                    )
+                    pair_transforms.append(W_j)
+                    pair_scales.append(scale_j)
+
+                self.W_per_pair[i] = pair_transforms
+
+                # Average the per-pair transforms (this is the within-cluster smoothing)
+                W_avg = np.mean(pair_transforms, axis=0)
+                scale_avg = np.mean(pair_scales)
+
+                self.W_minimal[i] = W_avg
+                self.scales.append(scale_avg)
+
+            else:
+                # Original approach: centroid to answer
+                answer = A[0] if A.shape[0] >= 1 else A.flatten()
+
+                W, scale, info = compute_minimal_transform(
+                    centroid.reshape(1, -1),
+                    answer.reshape(1, -1),
+                    allow_scaling=self.allow_scaling,
+                )
+
+                self.W_minimal[i] = W
+                self.scales.append(scale)
 
         # Step 2: Order clusters by centroid similarity (for FFT)
         self._compute_cluster_order()
@@ -358,15 +396,29 @@ class MinimalTransformProjection:
             norm = np.linalg.norm(self.W_minimal[i])
             deviations.append(diff / (norm + 1e-8))
 
-        return {
+        stats = {
             "num_clusters": N,
             "smooth_method": self.smooth_method,
             "fidelity_weight": self.fidelity_weight,
+            "per_pair": self.per_pair,
             "mean_scale": float(np.mean(self.scales)),
             "std_scale": float(np.std(self.scales)),
             "mean_deviation_from_minimal": float(np.mean(deviations)),
             "max_deviation_from_minimal": float(np.max(deviations)),
         }
+
+        # Add within-cluster variance for per_pair mode
+        if self.per_pair and self.W_per_pair:
+            within_cluster_vars = []
+            for i, transforms in self.W_per_pair.items():
+                if len(transforms) > 1:
+                    W_stack = np.stack(transforms)
+                    var = np.mean(np.var(W_stack, axis=0))
+                    within_cluster_vars.append(var)
+            if within_cluster_vars:
+                stats["mean_within_cluster_variance"] = float(np.mean(within_cluster_vars))
+
+        return stats
 
     def project(self, query_emb: np.ndarray) -> np.ndarray:
         """

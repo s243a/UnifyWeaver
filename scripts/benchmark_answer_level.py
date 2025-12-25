@@ -711,18 +711,23 @@ def run_benchmarks(
     print("10. MINIMAL TRANSFORMATION PROJECTION (Procrustes)")
     print("=" * 60)
 
-    # Test configurations: (smooth_method, fidelity_weight)
+    # Test configurations: (smooth_method, fidelity_weight, per_pair)
     minimal_configs = [
-        ("none", 1.0),      # Pure minimal transform, no smoothing
-        ("fft", 0.0),       # Full FFT smoothing
-        ("fft", 0.3),       # Mostly smoothed, some minimal
-        ("fft", 0.5),       # Balanced
-        ("fft", 0.7),       # Mostly minimal, some smoothing
-        ("kernel", 0.5),    # Kernel smoothing, balanced
+        # Centroid-based (original)
+        ("none", 1.0, False),      # Pure minimal transform, no smoothing
+        ("fft", 0.0, False),       # Full FFT smoothing
+        ("fft", 0.3, False),       # Mostly smoothed, some minimal
+        ("fft", 0.5, False),       # Balanced
+        ("fft", 0.7, False),       # Mostly minimal, some smoothing
+        ("kernel", 0.5, False),    # Kernel smoothing, balanced
+        # Per-pair: "transform then average"
+        ("none", 1.0, True),       # Per-pair, then average (within-cluster smoothing)
+        ("fft", 0.5, True),        # Per-pair + cross-cluster FFT smoothing
     ]
 
-    for smooth_method, fidelity in minimal_configs:
-        name = f"MinTrans_{smooth_method}_f{int(fidelity*10)}"
+    for smooth_method, fidelity, per_pair in minimal_configs:
+        pp_suffix = "_pp" if per_pair else ""
+        name = f"MinTrans_{smooth_method}_f{int(fidelity*10)}{pp_suffix}"
         print(f"\n10. {name}...")
 
         min_proj = MinimalTransformProjection(
@@ -730,11 +735,12 @@ def run_benchmarks(
             fft_cutoff_ratio=0.3,
             fidelity_weight=fidelity,
             allow_scaling=True,
+            per_pair=per_pair,
         )
         result = benchmark_method(
             name, min_proj, clusters_for_smoothing, qa_pairs, answer_index,
             lambda m=min_proj: m.train(clusters_for_smoothing),
-            {"smooth_method": smooth_method, "fidelity_weight": fidelity}
+            {"smooth_method": smooth_method, "fidelity_weight": fidelity, "per_pair": per_pair}
         )
         results.append(result)
         print(f"   Cosine: {result.mean_cosine_to_target:.4f} ± {result.std_cosine_to_target:.4f}")
