@@ -314,6 +314,14 @@ namespace UnifyWeaver.QueryRuntime
         TimeSpan Elapsed
     );
 
+    public sealed record QueryCacheTrace(
+        string Cache,
+        string Key,
+        long Lookups,
+        long Hits,
+        long Builds
+    );
+
     public sealed class QueryExecutionTrace
     {
         private sealed class NodeStats
@@ -329,6 +337,15 @@ namespace UnifyWeaver.QueryRuntime
             public TimeSpan Elapsed;
         }
 
+        private sealed class CacheStats
+        {
+            public long Lookups;
+
+            public long Hits;
+
+            public long Builds;
+        }
+
         private sealed class ReferencePlanNodeComparer : IEqualityComparer<PlanNode>
         {
             public static readonly ReferencePlanNodeComparer Instance = new();
@@ -339,6 +356,7 @@ namespace UnifyWeaver.QueryRuntime
         }
 
         private readonly Dictionary<PlanNode, NodeStats> _stats = new(ReferencePlanNodeComparer.Instance);
+        private readonly Dictionary<(string Cache, string Key), CacheStats> _cacheStats = new();
         private int _nextId = 1;
 
         private NodeStats GetOrAdd(PlanNode node)
@@ -352,10 +370,40 @@ namespace UnifyWeaver.QueryRuntime
             return stats;
         }
 
+        private CacheStats GetOrAdd(string cache, string key)
+        {
+            var cacheKey = (cache, key);
+            if (!_cacheStats.TryGetValue(cacheKey, out var stats))
+            {
+                stats = new CacheStats();
+                _cacheStats.Add(cacheKey, stats);
+            }
+
+            return stats;
+        }
+
         internal void RecordInvocation(PlanNode node)
         {
             if (node is null) throw new ArgumentNullException(nameof(node));
             GetOrAdd(node).Invocations++;
+        }
+
+        internal void RecordCacheLookup(string cache, string key, bool hit, bool built)
+        {
+            if (cache is null) throw new ArgumentNullException(nameof(cache));
+            if (key is null) throw new ArgumentNullException(nameof(key));
+
+            var stats = GetOrAdd(cache, key);
+            stats.Lookups++;
+            if (hit)
+            {
+                stats.Hits++;
+            }
+
+            if (built)
+            {
+                stats.Builds++;
+            }
         }
 
         internal IEnumerable<object[]> WrapEnumeration(PlanNode node, IEnumerable<object[]> source)
@@ -404,6 +452,24 @@ namespace UnifyWeaver.QueryRuntime
                         stats.Elapsed);
                 })
                 .OrderBy(s => s.Id)
+                .ToList();
+        }
+
+        public IReadOnlyList<QueryCacheTrace> SnapshotCaches()
+        {
+            return _cacheStats
+                .Select(kvp =>
+                {
+                    var stats = kvp.Value;
+                    return new QueryCacheTrace(
+                        kvp.Key.Cache,
+                        kvp.Key.Key,
+                        stats.Lookups,
+                        stats.Hits,
+                        stats.Builds);
+                })
+                .OrderBy(s => s.Cache, StringComparer.Ordinal)
+                .ThenBy(s => s.Key, StringComparer.Ordinal)
                 .ToList();
         }
 
@@ -2010,7 +2076,19 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context.Facts.TryGetValue(predicate, out var cached))
             {
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: true, built: false);
+                }
+
                 return cached;
+            }
+
+            var missTrace = context.Trace;
+            if (missTrace is not null)
+            {
+                missTrace.RecordCacheLookup("Facts", $"{predicate.Name}/{predicate.Arity}", hit: false, built: true);
             }
 
             var factsSource = _provider.GetFacts(predicate) ?? Enumerable.Empty<object[]>();
@@ -2028,7 +2106,19 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context.FactSets.TryGetValue(predicate, out var cached))
             {
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("FactSet", $"{predicate.Name}/{predicate.Arity}", hit: true, built: false);
+                }
+
                 return cached;
+            }
+
+            var missTrace = context.Trace;
+            if (missTrace is not null)
+            {
+                missTrace.RecordCacheLookup("FactSet", $"{predicate.Name}/{predicate.Arity}", hit: false, built: true);
             }
 
             var set = new HashSet<object[]>(GetFactsList(predicate, context), StructuralArrayComparer.Instance);
@@ -2047,7 +2137,19 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context.JoinIndices.TryGetValue(cacheKey, out var cached))
             {
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("JoinIndex", $"{predicate.Name}/{predicate.Arity}:keys=[{signature}]", hit: true, built: false);
+                }
+
                 return cached;
+            }
+
+            var missTrace = context.Trace;
+            if (missTrace is not null)
+            {
+                missTrace.RecordCacheLookup("JoinIndex", $"{predicate.Name}/{predicate.Arity}:keys=[{signature}]", hit: false, built: true);
             }
 
             var index = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
@@ -2083,7 +2185,19 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context.MaterializeJoinIndices.TryGetValue(cacheKey, out var cached))
             {
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("MaterializeJoinIndex", $"{id}:keys=[{signature}]", hit: true, built: false);
+                }
+
                 return cached;
+            }
+
+            var missTrace = context.Trace;
+            if (missTrace is not null)
+            {
+                missTrace.RecordCacheLookup("MaterializeJoinIndex", $"{id}:keys=[{signature}]", hit: false, built: true);
             }
 
             var index = new Dictionary<RowWrapper, List<object[]>>(new RowWrapperComparer(StructuralArrayComparer.Instance));
@@ -2223,10 +2337,28 @@ namespace UnifyWeaver.QueryRuntime
             {
                 cache = new IncrementalFactIndexCache(rows);
                 context.RecursiveFactIndices[cacheKey] = cache;
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("RecursiveFactIndex", $"{predicate.Name}/{predicate.Arity}:{kind}:col={columnIndex}", hit: false, built: true);
+                }
             }
             else if (!ReferenceEquals(cache.Rows, rows))
             {
                 cache.Reset(rows);
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("RecursiveFactIndex", $"{predicate.Name}/{predicate.Arity}:{kind}:col={columnIndex}", hit: false, built: true);
+                }
+            }
+            else
+            {
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("RecursiveFactIndex", $"{predicate.Name}/{predicate.Arity}:{kind}:col={columnIndex}", hit: true, built: false);
+                }
             }
 
             cache.EnsureIndexed(columnIndex);
@@ -2247,10 +2379,28 @@ namespace UnifyWeaver.QueryRuntime
             {
                 cache = new IncrementalJoinIndexCache(rows);
                 context.RecursiveJoinIndices[cacheKey] = cache;
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("RecursiveJoinIndex", $"{predicate.Name}/{predicate.Arity}:{kind}:keys=[{signature}]", hit: false, built: true);
+                }
             }
             else if (!ReferenceEquals(cache.Rows, rows))
             {
                 cache.Reset(rows);
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("RecursiveJoinIndex", $"{predicate.Name}/{predicate.Arity}:{kind}:keys=[{signature}]", hit: false, built: true);
+                }
+            }
+            else
+            {
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("RecursiveJoinIndex", $"{predicate.Name}/{predicate.Arity}:{kind}:keys=[{signature}]", hit: true, built: false);
+                }
             }
 
             cache.EnsureIndexed(keyIndices);
@@ -2266,7 +2416,19 @@ namespace UnifyWeaver.QueryRuntime
             var cacheKey = (predicate, columnIndex);
             if (context.FactIndices.TryGetValue(cacheKey, out var cached))
             {
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("FactIndex", $"{predicate.Name}/{predicate.Arity}:col={columnIndex}", hit: true, built: false);
+                }
+
                 return cached;
+            }
+
+            var missTrace = context.Trace;
+            if (missTrace is not null)
+            {
+                missTrace.RecordCacheLookup("FactIndex", $"{predicate.Name}/{predicate.Arity}:col={columnIndex}", hit: false, built: true);
             }
 
             var index = new Dictionary<object, List<object[]>>();
@@ -2303,7 +2465,19 @@ namespace UnifyWeaver.QueryRuntime
             var cacheKey = (id, columnIndex);
             if (context.MaterializeFactIndices.TryGetValue(cacheKey, out var cached))
             {
+                var trace = context.Trace;
+                if (trace is not null)
+                {
+                    trace.RecordCacheLookup("MaterializeFactIndex", $"{id}:col={columnIndex}", hit: true, built: false);
+                }
+
                 return cached;
+            }
+
+            var missTrace = context.Trace;
+            if (missTrace is not null)
+            {
+                missTrace.RecordCacheLookup("MaterializeFactIndex", $"{id}:col={columnIndex}", hit: false, built: true);
             }
 
             var index = new Dictionary<object, List<object[]>>();
