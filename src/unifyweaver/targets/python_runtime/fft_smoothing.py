@@ -314,6 +314,109 @@ class FFTSmoothingProjection:
             'recommended_cutoff': min(0.7, freq_90 + 0.1)
         }
 
+    def get_spectral_diagnostics(self) -> dict:
+        """
+        Detailed spectral analysis to test the whitening hypothesis.
+
+        Hypothesis: FFT smoothing removes high-frequency noise between
+        semantically related clusters, acting like spectral whitening.
+
+        Returns:
+            Dict with before/after spectral metrics
+        """
+        if len(self.W_original) == 0 or len(self.W_smoothed) == 0:
+            return {}
+
+        N = len(self.W_original)
+
+        # Stack W matrices in similarity order
+        W_orig_stacked = np.stack([self.W_original[i] for i in self.cluster_order])
+        W_smooth_stacked = np.stack([self.W_smoothed[i] for i in self.cluster_order])
+
+        W_orig_flat = W_orig_stacked.reshape(N, -1)
+        W_smooth_flat = W_smooth_stacked.reshape(N, -1)
+
+        # Compute FFT for both
+        freq_orig = fft(W_orig_flat, axis=0)
+        freq_smooth = fft(W_smooth_flat, axis=0)
+
+        power_orig = np.abs(freq_orig) ** 2
+        power_smooth = np.abs(freq_smooth) ** 2
+
+        # Per-frequency total power
+        power_per_freq_orig = power_orig.sum(axis=1)
+        power_per_freq_smooth = power_smooth.sum(axis=1)
+
+        # Normalize to get distribution
+        power_dist_orig = power_per_freq_orig / (power_per_freq_orig.sum() + 1e-10)
+        power_dist_smooth = power_per_freq_smooth / (power_per_freq_smooth.sum() + 1e-10)
+
+        # Split into low/high frequency (using cutoff)
+        cutoff_idx = max(1, int(N * self.cutoff))
+
+        # Low freq = indices 0 to cutoff_idx and N-cutoff_idx+1 to N-1 (symmetric)
+        low_freq_mask = np.zeros(N, dtype=bool)
+        low_freq_mask[:cutoff_idx] = True
+        low_freq_mask[-cutoff_idx+1:] = True
+
+        low_freq_energy_orig = power_per_freq_orig[low_freq_mask].sum()
+        high_freq_energy_orig = power_per_freq_orig[~low_freq_mask].sum()
+        total_energy_orig = power_per_freq_orig.sum()
+
+        low_freq_energy_smooth = power_per_freq_smooth[low_freq_mask].sum()
+        high_freq_energy_smooth = power_per_freq_smooth[~low_freq_mask].sum()
+        total_energy_smooth = power_per_freq_smooth.sum()
+
+        # High-frequency ratio (should decrease after smoothing)
+        hf_ratio_orig = high_freq_energy_orig / (total_energy_orig + 1e-10)
+        hf_ratio_smooth = high_freq_energy_smooth / (total_energy_smooth + 1e-10)
+
+        # Spectral flatness: geometric_mean / arithmetic_mean
+        # Flatter spectrum = more uniform energy distribution
+        def spectral_flatness(power_dist):
+            # Avoid log(0)
+            power_dist = power_dist + 1e-10
+            geo_mean = np.exp(np.mean(np.log(power_dist)))
+            arith_mean = np.mean(power_dist)
+            return geo_mean / arith_mean
+
+        flatness_orig = spectral_flatness(power_dist_orig)
+        flatness_smooth = spectral_flatness(power_dist_smooth)
+
+        # Energy concentration: what fraction of total at DC (index 0)?
+        dc_ratio_orig = power_per_freq_orig[0] / (total_energy_orig + 1e-10)
+        dc_ratio_smooth = power_per_freq_smooth[0] / (total_energy_smooth + 1e-10)
+
+        return {
+            'cutoff': self.cutoff,
+            'num_clusters': N,
+            # Before smoothing
+            'before': {
+                'high_freq_ratio': float(hf_ratio_orig),
+                'low_freq_ratio': float(1 - hf_ratio_orig),
+                'spectral_flatness': float(flatness_orig),
+                'dc_ratio': float(dc_ratio_orig),
+                'total_energy': float(total_energy_orig),
+            },
+            # After smoothing
+            'after': {
+                'high_freq_ratio': float(hf_ratio_smooth),
+                'low_freq_ratio': float(1 - hf_ratio_smooth),
+                'spectral_flatness': float(flatness_smooth),
+                'dc_ratio': float(dc_ratio_smooth),
+                'total_energy': float(total_energy_smooth),
+            },
+            # Changes
+            'changes': {
+                'high_freq_reduction': float(hf_ratio_orig - hf_ratio_smooth),
+                'flatness_change': float(flatness_smooth - flatness_orig),
+                'energy_retained': float(total_energy_smooth / (total_energy_orig + 1e-10)),
+            },
+            # Raw power distributions for plotting
+            'power_per_freq_before': power_per_freq_orig.tolist(),
+            'power_per_freq_after': power_per_freq_smooth.tolist(),
+        }
+
 
 class AdaptiveFFTSmoothing(FFTSmoothingProjection):
     """
