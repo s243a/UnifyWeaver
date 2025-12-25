@@ -582,7 +582,7 @@ compile_arithmetic_body(Pred, Arity, Body, BashBody) :-
 %  General arithmetic translation fallback
 %  Handles predicates with arithmetic but no known high-level pattern
 compile_with_arithmetic(Head, Body, _Options, BashCode) :-
-    functor(Head, Pred, Arity),
+    functor(Head, Pred, _Arity),
     atom_string(Pred, PredStr),
 
     % Extract variables from the clause head
@@ -615,7 +615,7 @@ compile_with_arithmetic(Head, Body, _Options, BashCode) :-
 %  Compile predicates with match constraints (regex filtering)
 %  Handles streaming pipeline with integrated match filters
 compile_with_match(Head, Body, Options, BashCode) :-
-    functor(Head, Pred, Arity),
+    functor(Head, Pred, _Arity),
     atom_string(Pred, PredStr),
 
     % Extract predicates and match constraints separately
