@@ -4005,6 +4005,11 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
     ;   option(pipeline_input(true), MergedOptions)
     ->  format('  Mode: Pipeline (streaming JSONL)~n'),
         compile_pipeline_mode(Pred, Arity, MergedOptions, GoCode)
+    % Check if this is database analyze mode
+    ;   option(db_backend(bbolt), MergedOptions),
+        option(db_mode(analyze), MergedOptions)
+    ->  format('  Mode: Database analyze (bbolt)~n'),
+        compile_database_analyze_mode(Pred, Arity, MergedOptions, GoCode)
     % Check if this is database read mode
     ;   option(db_backend(bbolt), MergedOptions),
         (option(db_mode(read), MergedOptions) ; \+ option(json_input(true), MergedOptions)),
@@ -8164,8 +8169,115 @@ func main() {
     ;   GoCode = BodyCode
     ).
 
-%% ============================================
+%% compile_database_analyze_mode(+Pred, +Arity, +Options, -GoCode)
+%  Compile a program to analyze database statistics (cardinality, selectivity)
+%
+compile_database_analyze_mode(Pred, Arity, Options, GoCode) :-
+    option(db_file(DbFile), Options, 'data.db'),
+    option(db_bucket(BucketName), Options, Pred),
+    atom_string(BucketName, BucketStr),
+    
+    % Get fields from body
+    functor(Head, Pred, Arity),
+    (   clause(Head, Body),
+        extract_json_field_mappings(Body, FieldMappings)
+    ->  format('  Analyzing fields for statistics: ~w~n', [FieldMappings])
+    ;   FieldMappings = []
+    ),
+    
+    % Generate Go code
+    generate_analyze_code(DbFile, BucketStr, FieldMappings, BodyCode),
+    
+    % Wrap in package
+    format(string(GoCode), 'package main
 
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	bolt "go.etcd.io/bbolt"
+)
+
+func main() {
+~s}
+', [BodyCode]).
+
+%% generate_analyze_code(+DbFile, +BucketStr, +FieldMappings, -BodyCode)
+generate_analyze_code(DbFile, BucketStr, FieldMappings, BodyCode) :-
+    % Extract field names
+    findall(NameStr, (member(Mapping, FieldMappings), (Mapping = Name-_ ; Mapping = nested([Name|_], _)), atom_string(Name, NameStr)), FieldNames),
+    sort(FieldNames, UniqueFields),
+    
+    % Generate map initializations
+    findall(Init, (member(F, UniqueFields), format(string(Init), '\tunique_~s := make(map[interface{}]bool)', [F])), Inits),
+    atomic_list_concat(Inits, "\n", InitCode),
+    
+    % Generate extraction inside loop
+    findall(Extract, (member(F, UniqueFields), format(string(Extract), '\t\t\tif val, ok := data["~s"]; ok { unique_~s[val] = true }', [F, F])), Extracts),
+    atomic_list_concat(Extracts, "\n", ExtractCode),
+    
+    % Generate final assignment
+    findall(Assign, (member(F, UniqueFields), format(string(Assign), '\tstats.Fields["~s"] = FieldStats{UniqueValues: len(unique_~s), Selectivity: 1.0 / float64(len(unique_~s))}', [F, F, F])), Assigns),
+    atomic_list_concat(Assigns, "\n", AssignCode),
+
+    format(string(BodyCode), '
+	db, err := bolt.Open("~s", 0600, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	type FieldStats struct {
+		UniqueValues int     `json:"unique_values"`
+		Selectivity  float64 `json:"selectivity"`
+	}
+	type BucketStats struct {
+		Cardinality int                   `json:"cardinality"`
+		Fields      map[string]FieldStats `json:"fields"`
+	}
+
+	stats := BucketStats{
+		Fields: make(map[string]FieldStats),
+	}
+	
+~s
+
+	fmt.Printf("Analyzing bucket ''~s''...\\n")
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("~s"))
+		if b == nil { return fmt.Errorf("bucket not found") }
+
+		return b.ForEach(func(k, v []byte) error {
+			stats.Cardinality++
+			var data map[string]interface{}
+			if err := json.Unmarshal(v, &data); err != nil { return nil }
+~s
+			return nil
+		})
+	})
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error analyzing: %v\\n", err)
+		os.Exit(1)
+	}
+
+~s
+
+	// Save to _stats bucket
+	err = db.Update(func(tx *bolt.Tx) error {
+		sb, _ := tx.CreateBucketIfNotExists([]byte("_stats"))
+		val, _ := json.Marshal(stats)
+		return sb.Put([]byte("~s"), val)
+	})
+	
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving stats: %v\\n", err)
+		os.Exit(1)
+	}
+	
+	fmt.Printf("Statistics saved for ''~s'' (cardinality: %d)\\n", "~s", stats.Cardinality)
+', [DbFile, InitCode, BucketStr, BucketStr, ExtractCode, AssignCode, BucketStr, BucketStr, BucketStr]).
 
 %% ============================================
 %% GROUP BY AGGREGATION SUPPORT (Phase 9b)
