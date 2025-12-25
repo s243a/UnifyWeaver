@@ -323,6 +323,101 @@ projected = hybrid.project(query_embedding)
 
 See `LDA_SMOOTHING_THEORY.md` Section 7 for detailed explanation.
 
+## Approach 5: Kernel-Based Smoothing
+
+**File:** `src/unifyweaver/targets/python_runtime/smoothing_basis.py`
+
+### Concept
+
+Replace 1D FFT smoothing with multi-dimensional kernel smoothing that respects the full similarity structure between clusters.
+
+See [KERNEL_SMOOTHING_THEORY.md](KERNEL_SMOOTHING_THEORY.md) for theoretical foundation.
+
+### Available Methods
+
+#### 5a. KernelSmoothingProjection
+Direct kernel-weighted averaging of W matrices:
+```python
+W_smoothed_i = Σ_j K(centroid_i, centroid_j) W_j / Σ_j K(...)
+```
+
+Supported kernels:
+- **Matérn-5/2** (recommended): C⁴ smooth, numerically stable
+- **Matérn-3/2**: C² smooth
+- **Gaussian RBF**: C^∞ smooth
+- **Laplacian**: Exponential decay (use with caution)
+
+#### 5b. UnifiedKernelBasisProjection
+Full coupled optimization with graph Laplacian regularization:
+```
+L = Σ_i ||Q_i W_i - A_i||² + λ Σ_{i,j} K(i,j) ||W_i - W_j||²
+```
+
+Features:
+- Matérn-5/2 kernel → sparse graph Laplacian
+- K basis vectors with orthonormal constraint
+- Conjugate Gradient solver with Jacobi preconditioning
+- Optional k-NN sparsification for O(Nk) complexity
+
+#### 5c. KernelSmoothedBasisProjection (Best Performance)
+Sequential hybrid approach:
+1. Train SmoothingBasisProjection (per-cluster optimization)
+2. Apply Matérn-5/2 kernel smoothing to resulting W matrices
+3. Blend between unsmoothed and smoothed
+
+### Usage
+
+```python
+from smoothing_basis import (
+    KernelSmoothingProjection,
+    KernelSmoothedBasisProjection,
+    SmoothingKernel,
+)
+
+# Direct kernel smoothing
+ks = KernelSmoothingProjection(
+    kernel=SmoothingKernel.MATERN_52,
+    length_scale=0.5,
+)
+ks.train(clusters)
+projected = ks.project(query_embedding)
+
+# Hybrid: basis + kernel (recommended)
+hybrid = KernelSmoothedBasisProjection(
+    num_basis=8,
+    length_scale=0.5,
+    kernel_blend=0.5,  # 0=unsmoothed, 1=fully smoothed
+)
+hybrid.train(clusters)
+projected = hybrid.project(query_embedding)
+```
+
+### Benchmark Results (hash embeddings, 20 clusters)
+
+| Method | MRR | Rank | Cosine |
+|--------|-----|------|--------|
+| **Hybrid_K8_ls0.5_b0.5** | **0.5124** | 3.2 | 0.462 |
+| Residual_K8_r0.01 | 0.5041 | 2.7 | 0.484 |
+| FFT_c0.5 | 0.4987 | 2.7 | 0.483 |
+| Kernel_Matern52_ls0.5 | 0.4859 | 3.4 | 0.442 |
+| UnifiedCG_K8 | 0.3519 | 7.3 | 0.324 |
+
+### Key Finding: Sequential > Coupled
+
+The hybrid approach outperforms full coupled optimization because:
+- **Coupled (UnifiedCG)**: Laplacian regularization fights data fidelity during joint optimization
+- **Sequential (Hybrid)**: Each phase fully optimizes its objective without interference
+
+This suggests that kernel smoothing works best as **post-processing** rather than as a joint constraint.
+
+### Recommendations
+
+| Use Case | Method | Why |
+|----------|--------|-----|
+| Best accuracy | KernelSmoothedBasis K=8 | Highest MRR |
+| Fast + good | FFT cutoff=0.5 | O(N log N), strong baseline |
+| Research | UnifiedCG | Study coupled optimization |
+
 ## Completed Implementation
 
 ### Policy Compilation (Task 2)

@@ -423,6 +423,62 @@ W = W_local + W_regional + W_global
 
 Using kernels at different length scales.
 
+## Empirical Findings: Coupled vs Sequential Optimization
+
+### The Optimization Conflict
+
+When jointly optimizing data fidelity and Laplacian smoothness:
+
+```
+L = Σ_i ||Q_i W_i - A_i||² + λ Σ_{i,j} K(i,j) ||W_i - W_j||²
+    └────────────────────┘   └────────────────────────────────┘
+    Pulls toward per-cluster   Pulls toward graph-smoothed
+    optimal solution           average solution
+```
+
+These objectives can **conflict** during optimization:
+- Data fidelity wants W_i to perfectly fit cluster i's data
+- Laplacian regularization wants W_i ≈ W_j for similar clusters
+
+### Benchmark Results
+
+| Approach | MRR | Notes |
+|----------|-----|-------|
+| **Sequential (Hybrid)** | **0.5124** | Basis first, then kernel smooth |
+| Coupled (CG solver) | 0.3519 | Joint optimization with Laplacian |
+| FFT baseline | 0.4987 | 1D smoothing |
+
+### Why Sequential Works Better
+
+1. **No interference**: Each phase fully optimizes its objective
+2. **Better local minima**: Per-cluster solutions are high quality before smoothing
+3. **Smoothing as refinement**: Kernel averaging improves good solutions, doesn't fight them
+
+### Implementation Recommendation
+
+```python
+# RECOMMENDED: Sequential hybrid
+hybrid = KernelSmoothedBasisProjection(
+    num_basis=8,
+    length_scale=0.5,
+    kernel_blend=0.5,
+)
+
+# FOR RESEARCH: Coupled optimization (study the conflict)
+unified = UnifiedKernelBasisProjection(
+    num_basis=4,
+    smoothing_strength=0.1,  # λ - tune carefully
+)
+```
+
+### Future Directions for Coupled Optimization
+
+To make coupled optimization competitive:
+1. **Curriculum learning**: Start with λ=0, gradually increase
+2. **Warm start**: Initialize from trained basis, then fine-tune with coupling
+3. **Adaptive λ**: Per-cluster regularization strength based on data sparsity
+4. **Different loss weighting**: Balance data fidelity vs smoothness dynamically
+
 ## Summary
 
 | Concept | Role in Smoothing |
