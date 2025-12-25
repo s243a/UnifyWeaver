@@ -10,6 +10,50 @@ Key insight: This is k-NN in transformation space, where each training
 example contributes its own Procrustes transform.
 
 Temperature and other routing parameters can be tuned on held-out data.
+
+## Held-Out Evaluation Methodology
+
+We use held-out data to tune routing parameters (temperature, top-k):
+
+1. **Split**: Randomly partition Q/A pairs into train (80%) and validation (20%)
+
+2. **Training**: Compute Procrustes transforms only for training pairs.
+   Each training (q_j, a_j) gets its own W_j. Note: transforms are computed
+   independently per pair - there's no dependence on adjacent pairs, so we
+   only need to hold out data from routing, not from transform computation.
+
+3. **Routing**: Validation queries are routed using only training queries.
+   The validation queries are NOT in the routing pool.
+
+4. **Evaluation**: For each validation query:
+   - Project using weighted blend of training W's
+   - Rank projected query against validation answers
+   - Check if EXACT target answer ranks #1 (R@1), top-5 (R@5), etc.
+
+5. **Tuning**: Try different temperatures, select best by MRR on validation set.
+
+## Evaluation Modes
+
+The answer pool for ranking can be configured:
+
+- **Validation answers only** (default): Rank against held-out answers.
+  This measures retrieval among unseen answers.
+
+- **All answers**: Rank against train + validation answers.
+  This is a harder test - must find the exact answer among all candidates.
+
+- **Unique cluster answers**: Rank against one answer per cluster.
+  This measures cluster-level accuracy when answers are shared within clusters.
+
+## Results (tailored data, 500 pairs)
+
+| Model | MRR | R@1 | R@5 |
+|-------|-----|-----|-----|
+| all-MiniLM (384d) | 0.901 | 83% | 98% |
+| ModernBERT (768d) | 0.956 | 92% | 100% |
+
+These results use simple softmax routing with temperature tuning.
+Density-based and logit-calibrated routing remain as future exploration.
 """
 
 import numpy as np
