@@ -81,6 +81,7 @@ from smoothing_basis import (
 )
 from fft_smoothing import FFTSmoothingProjection, AdaptiveFFTSmoothing
 from hierarchical_smoothing import HierarchicalSmoothing
+from minimal_transform import MinimalTransformProjection
 
 
 @dataclass
@@ -702,6 +703,49 @@ def run_benchmarks(
         if stats.get('trained'):
             print(f"   Regularized: {stats['clusters_needing_regularization']}/{len(clusters_for_smoothing)} clusters")
             print(f"   Mean λ: {stats['mean_lambda']:.4f}")
+
+    # =========================================================================
+    # 10. Minimal Transformation Projection (Procrustes-based)
+    # =========================================================================
+    print("\n" + "=" * 60)
+    print("10. MINIMAL TRANSFORMATION PROJECTION (Procrustes)")
+    print("=" * 60)
+
+    # Test configurations: (smooth_method, fidelity_weight)
+    minimal_configs = [
+        ("none", 1.0),      # Pure minimal transform, no smoothing
+        ("fft", 0.0),       # Full FFT smoothing
+        ("fft", 0.3),       # Mostly smoothed, some minimal
+        ("fft", 0.5),       # Balanced
+        ("fft", 0.7),       # Mostly minimal, some smoothing
+        ("kernel", 0.5),    # Kernel smoothing, balanced
+    ]
+
+    for smooth_method, fidelity in minimal_configs:
+        name = f"MinTrans_{smooth_method}_f{int(fidelity*10)}"
+        print(f"\n10. {name}...")
+
+        min_proj = MinimalTransformProjection(
+            smooth_method=smooth_method,
+            fft_cutoff_ratio=0.3,
+            fidelity_weight=fidelity,
+            allow_scaling=True,
+        )
+        result = benchmark_method(
+            name, min_proj, clusters_for_smoothing, qa_pairs, answer_index,
+            lambda m=min_proj: m.train(clusters_for_smoothing),
+            {"smooth_method": smooth_method, "fidelity_weight": fidelity}
+        )
+        results.append(result)
+        print(f"   Cosine: {result.mean_cosine_to_target:.4f} ± {result.std_cosine_to_target:.4f}")
+        print(f"   MSE: {result.mean_mse_to_target:.4f}, Rank: {result.mean_target_rank:.1f}, MRR: {result.mrr:.4f}")
+
+        # Print diagnostics
+        diag = min_proj.get_diagnostics()
+        if diag.get('trained'):
+            print(f"   Rotation quality: {diag['mean_rotation_quality']:.4f}")
+            train_stats = min_proj._compute_stats()
+            print(f"   Dev from minimal: {train_stats.get('mean_deviation_from_minimal', 0):.4f}")
 
     return results
 
