@@ -69,7 +69,13 @@ EMBEDDER_CONFIGS = {
     }
 }
 
-from smoothing_basis import SmoothingBasisProjection, MultiHeadLDABaseline, ResidualBasisProjection
+from smoothing_basis import (
+    SmoothingBasisProjection,
+    MultiHeadLDABaseline,
+    ResidualBasisProjection,
+    KernelSmoothingProjection,
+    SmoothingKernel,
+)
 from fft_smoothing import FFTSmoothingProjection, AdaptiveFFTSmoothing
 from hierarchical_smoothing import HierarchicalSmoothing
 
@@ -559,6 +565,34 @@ def run_benchmarks(
             stats = rb.get_residual_stats()
             if stats.get('has_residuals'):
                 print(f"   Residual: ΔW/FFT ratio={stats['delta_to_fft_ratio']:.4f}")
+
+    # 6. Kernel Smoothing Methods
+    kernel_configs = [
+        (SmoothingKernel.GAUSSIAN_RBF, "Gaussian", [0.5, 1.0, 2.0]),
+        (SmoothingKernel.MATERN_52, "Matern52", [0.5, 1.0, 2.0]),
+        (SmoothingKernel.MATERN_32, "Matern32", [1.0]),
+    ]
+
+    for kernel, kernel_name, length_scales in kernel_configs:
+        for ls in length_scales:
+            print(f"\n6. KernelSmoothing ({kernel_name}, ls={ls})...")
+            ks = KernelSmoothingProjection(
+                kernel=kernel,
+                length_scale=ls,
+                regularization=1e-6,
+            )
+            result = benchmark_method(
+                f"Kernel_{kernel_name}_ls{ls}", ks, clusters_for_smoothing, qa_pairs, answer_index,
+                lambda ks=ks: ks.train(clusters_for_smoothing),
+                {"kernel": kernel_name, "length_scale": ls}
+            )
+            results.append(result)
+            print(f"   Cosine: {result.mean_cosine_to_target:.4f} ± {result.std_cosine_to_target:.4f}")
+            print(f"   MSE: {result.mean_mse_to_target:.4f}, Rank: {result.mean_target_rank:.1f}, MRR: {result.mrr:.4f}")
+
+            # Print kernel stats
+            kernel_stats = ks.get_kernel_stats()
+            print(f"   Kernel: cond={kernel_stats['condition_number']:.2f}, eff_rank={kernel_stats['effective_rank']:.0f}")
 
     return results
 
