@@ -1064,7 +1064,8 @@ namespace UnifyWeaver.QueryRuntime
         private IEnumerable<object[]> ExecuteJoin(JoinNode join, EvaluationContext? context)
         {
             var left = Evaluate(join.Left, context);
-            var rightMaterialised = Evaluate(join.Right, context).ToList();
+            var rightRows = Evaluate(join.Right, context);
+            var rightMaterialised = rightRows as List<object[]> ?? rightRows.ToList();
 
             foreach (var leftTuple in left)
             {
@@ -1083,7 +1084,8 @@ namespace UnifyWeaver.QueryRuntime
             if (join.LeftKeys is null || join.RightKeys is null || join.LeftKeys.Count == 0 || join.RightKeys.Count == 0)
             {
                 var leftRows = Evaluate(join.Left, context);
-                var rightRows = Evaluate(join.Right, context).ToList();
+                var rightSource = Evaluate(join.Right, context);
+                var rightRows = rightSource as List<object[]> ?? rightSource.ToList();
                 foreach (var leftTuple in leftRows)
                 {
                     if (leftTuple is null) continue;
@@ -3967,7 +3969,15 @@ namespace UnifyWeaver.QueryRuntime
             public Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>> JoinIndices { get; }
         }
 
-        private sealed record RowWrapper(object[] Row);
+        private readonly struct RowWrapper
+        {
+            public RowWrapper(object[] row)
+            {
+                Row = row ?? throw new ArgumentNullException(nameof(row));
+            }
+
+            public object[] Row { get; }
+        }
 
         private sealed class RowWrapperComparer : IEqualityComparer<RowWrapper>
         {
@@ -3978,12 +3988,7 @@ namespace UnifyWeaver.QueryRuntime
                 _inner = inner;
             }
 
-            public bool Equals(RowWrapper? x, RowWrapper? y)
-            {
-                if (ReferenceEquals(x, y)) return true;
-                if (x is null || y is null) return false;
-                return _inner.Equals(x.Row, y.Row);
-            }
+            public bool Equals(RowWrapper x, RowWrapper y) => _inner.Equals(x.Row, y.Row);
 
             public int GetHashCode(RowWrapper obj) => _inner.GetHashCode(obj.Row);
         }
