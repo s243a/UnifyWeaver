@@ -1,12 +1,54 @@
 """
 Load training data from JSONL files and convert to embeddings.
+
+Supports caching embeddings to disk to avoid recomputation.
+
+## Embeddings Cache
+
+Embeddings are cached to `/context/embeddings_cache/` to avoid re-running
+the embedding model on each execution.
+
+### Cache files
+```
+embeddings_{model}_{hash}.npz
+```
+Where `hash` is derived from (data_dir, subdirs, max_pairs, embedder_name).
+
+### Contents
+- `q_embeddings`: Question vectors (N × dim)
+- `a_embeddings`: Answer vectors (N × dim)
+- `cluster_ids`: Cluster labels for each pair
+- `pair_ids`: Original pair IDs
+
+### Speed improvement
+| Model | First run | Cached |
+|-------|-----------|--------|
+| all-MiniLM | ~7s | 0.03s |
+| ModernBERT | ~36s | 0.03s |
+
+### Usage
+```python
+from training_data_loader import load_and_embed_with_cache
+
+qa_embeddings, cluster_ids, pair_ids = load_and_embed_with_cache(
+    data_dir="/path/to/training-data",
+    embedder_name="all-minilm",
+    subdirs=["tailored"],
+    max_pairs=None,  # or limit
+    force_recompute=False,  # set True to regenerate
+)
+```
 """
 
 import json
+import hashlib
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 import numpy as np
+
+# Default cache directory
+DEFAULT_CACHE_DIR = "/home/s243a/Projects/UnifyWeaver/context/claude/UnifyWeaver/context/embeddings_cache"
 
 
 @dataclass
@@ -123,6 +165,112 @@ def embed_pairs(
     qa_embeddings = [(q, a) for q, a in zip(q_embeddings, a_embeddings)]
 
     return qa_embeddings, cluster_ids
+
+
+def get_cache_key(
+    data_dir: str,
+    subdirs: Optional[List[str]],
+    max_pairs: Optional[int],
+    embedder_name: str,
+) -> str:
+    """Generate a unique cache key based on data configuration."""
+    key_parts = [
+        data_dir,
+        ",".join(sorted(subdirs)) if subdirs else "all",
+        str(max_pairs) if max_pairs else "all",
+        embedder_name,
+    ]
+    key_str = "|".join(key_parts)
+    return hashlib.md5(key_str.encode()).hexdigest()[:12]
+
+
+def save_embeddings_cache(
+    cache_path: Path,
+    qa_embeddings: List[Tuple[np.ndarray, np.ndarray]],
+    cluster_ids: List[str],
+    pair_ids: List[str],
+):
+    """Save embeddings to disk cache."""
+    q_embs = np.stack([q for q, _ in qa_embeddings])
+    a_embs = np.stack([a for _, a in qa_embeddings])
+
+    np.savez_compressed(
+        cache_path,
+        q_embeddings=q_embs,
+        a_embeddings=a_embs,
+        cluster_ids=np.array(cluster_ids),
+        pair_ids=np.array(pair_ids),
+    )
+    print(f"Saved embeddings cache to {cache_path}")
+
+
+def load_embeddings_cache(
+    cache_path: Path,
+) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[str], List[str]]:
+    """Load embeddings from disk cache."""
+    data = np.load(cache_path, allow_pickle=True)
+
+    q_embs = data["q_embeddings"]
+    a_embs = data["a_embeddings"]
+    cluster_ids = data["cluster_ids"].tolist()
+    pair_ids = data["pair_ids"].tolist()
+
+    qa_embeddings = [(q, a) for q, a in zip(q_embs, a_embs)]
+
+    print(f"Loaded {len(qa_embeddings)} embeddings from cache")
+    return qa_embeddings, cluster_ids, pair_ids
+
+
+def load_and_embed_with_cache(
+    data_dir: str,
+    embedder_name: str = "all-minilm",
+    subdirs: Optional[List[str]] = None,
+    max_pairs: Optional[int] = None,
+    cache_dir: str = DEFAULT_CACHE_DIR,
+    force_recompute: bool = False,
+) -> Tuple[List[Tuple[np.ndarray, np.ndarray]], List[str], List[str]]:
+    """
+    Load Q/A pairs and embed them, using cache if available.
+
+    Args:
+        data_dir: Root directory containing JSONL files
+        embedder_name: Name of the embedding model
+        subdirs: Specific subdirectories to include
+        max_pairs: Maximum number of pairs to load
+        cache_dir: Directory to store embedding caches
+        force_recompute: If True, ignore cache and recompute
+
+    Returns:
+        (qa_embeddings, cluster_ids, pair_ids)
+    """
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
+
+    cache_key = get_cache_key(data_dir, subdirs, max_pairs, embedder_name)
+    cache_file = cache_path / f"embeddings_{embedder_name}_{cache_key}.npz"
+
+    # Try to load from cache
+    if cache_file.exists() and not force_recompute:
+        try:
+            return load_embeddings_cache(cache_file)
+        except Exception as e:
+            print(f"Cache load failed: {e}, recomputing...")
+
+    # Load and embed
+    print(f"Loading data from {data_dir}...")
+    pairs = load_jsonl_pairs(data_dir, max_pairs=max_pairs, subdirs=subdirs)
+    print(f"Loaded {len(pairs)} Q/A pairs")
+
+    if len(pairs) == 0:
+        raise ValueError("No pairs loaded")
+
+    qa_embeddings, cluster_ids = embed_pairs(pairs, embedder_name)
+    pair_ids = [p.pair_id for p in pairs]
+
+    # Save to cache
+    save_embeddings_cache(cache_file, qa_embeddings, cluster_ids, pair_ids)
+
+    return qa_embeddings, cluster_ids, pair_ids
 
 
 def get_unique_answers(
