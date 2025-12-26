@@ -376,6 +376,7 @@ Custom component types allow injecting raw target language code as reusable comp
 | Bash | `custom_bash.pl` | `code(...)`, `sources([...])` | ✅ Implemented |
 | PowerShell | `custom_powershell.pl` | `code(...)`, `usings([...])` | ✅ Implemented |
 | AWK | `custom_awk.pl` | `code(...)`, `includes([...])` | ✅ Implemented |
+| TypeScript (Chart.js) | `custom_chart.pl` | `chart_type(...)`, `title(...)`, `datasets([...])` | ✅ Implemented |
 
 ### Usage Example
 
@@ -396,6 +397,18 @@ declare_component(source, my_parser, custom_rust, [
 declare_component(source, my_formatter, custom_csharp, [
     code("return input.ToString();"),
     usings(["System.Text"])
+]).
+
+% Declare a custom Chart.js visualization component
+declare_component(source, curve_chart, custom_chart, [
+    chart_type(line),
+    title("Mathematical Functions"),
+    x_axis([label("X"), type(linear)]),
+    y_axis([label("Y")]),
+    datasets([
+        dataset([label("sin(x)"), color("#00d4ff")]),
+        dataset([label("cos(x)"), color("#7c3aed")])
+    ])
 ]).
 ```
 
