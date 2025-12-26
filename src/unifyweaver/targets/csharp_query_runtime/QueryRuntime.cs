@@ -1272,7 +1272,22 @@ namespace UnifyWeaver.QueryRuntime
 
                 if (leftIsScan || rightIsScan)
                 {
-                    if (leftIsScan && rightIsScan)
+                    var useScanIndexStrategy = true;
+                    if (joinKeyCount == 1 && leftIsScan != rightIsScan)
+                    {
+                        var scanPredicate = leftIsScan ? leftScanPredicate : rightScanPredicate;
+                        var scanKeyIndex = leftIsScan ? join.LeftKeys[0] : join.RightKeys[0];
+                        var scanNode = leftIsScan ? join.Left : join.Right;
+                        var otherNode = leftIsScan ? join.Right : join.Left;
+
+                        if (!context.FactIndices.ContainsKey((scanPredicate, scanKeyIndex)) &&
+                            EstimateBuildCost(otherNode) < EstimateBuildCost(scanNode))
+                        {
+                            useScanIndexStrategy = false;
+                        }
+                    }
+
+                    if (useScanIndexStrategy && leftIsScan && rightIsScan)
                     {
                         var leftFacts = GetFactsList(leftScanPredicate, context);
                         var rightFacts = GetFactsList(rightScanPredicate, context);
@@ -1396,7 +1411,7 @@ namespace UnifyWeaver.QueryRuntime
                         yield break;
                     }
 
-                    if (rightIsScan)
+                    if (useScanIndexStrategy && rightIsScan)
                     {
                         var facts = GetFactsList(rightScanPredicate, context);
                         var probe = Evaluate(join.Left, context);
@@ -1453,7 +1468,7 @@ namespace UnifyWeaver.QueryRuntime
                         yield break;
                     }
 
-                    if (leftIsScan)
+                    if (useScanIndexStrategy && leftIsScan)
                     {
                         var facts = GetFactsList(leftScanPredicate, context);
                         var probe = Evaluate(join.Right, context);
