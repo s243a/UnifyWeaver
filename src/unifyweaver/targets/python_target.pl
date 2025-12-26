@@ -89,6 +89,10 @@
 :- use_module('../core/binding_registry').
 :- use_module('../bindings/python_bindings').
 
+% Component system integration (ported from Go target)
+:- use_module('../core/component_registry').
+:- use_module('python_runtime/custom_python', []).
+
 % Pipeline validation (Phase 9)
 :- use_module('../core/pipeline_validation').
 
@@ -103,6 +107,9 @@
 % Track required imports from bindings
 :- dynamic required_import/1.
 
+% Track collected components for code generation
+:- dynamic collected_component/2.
+
 % translate_goal/2 is spread across the file for organization
 :- discontiguous translate_goal/2.
 
@@ -110,10 +117,36 @@
 :- discontiguous pipeline_header/2.
 
 %% init_python_target
-%  Initialize Python target with bindings
+%  Initialize Python target with bindings and components
 init_python_target :-
     retractall(required_import(_)),
+    retractall(collected_component(_, _)),
     init_python_bindings.
+
+%% collect_declared_component(+Category, +Name)
+%  Record that a component is used in the code
+collect_declared_component(Category, Name) :-
+    (   collected_component(Category, Name)
+    ->  true
+    ;   assertz(collected_component(Category, Name))
+    ).
+
+%% compile_collected_components(-Code)
+%  Generate Python code for all collected components
+compile_collected_components(Code) :-
+    findall(CompCode, (
+        collected_component(Category, Name),
+        component_registry:compile_component(Category, Name, [], CompCode)
+    ), CompCodes),
+    (   CompCodes = []
+    ->  Code = ''
+    ;   atomic_list_concat(CompCodes, '\n\n', Code)
+    ).
+
+%% get_collected_imports(-Imports)
+%  Get list of imports from collected components and bindings
+get_collected_imports(Imports) :-
+    findall(Import, required_import(Import), Imports).
 
 %% ============================================
 %% JSON SCHEMA SUPPORT
