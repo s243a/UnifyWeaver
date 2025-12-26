@@ -526,10 +526,72 @@ namespace UnifyWeaver.QueryRuntime
 
         public override string ToString()
         {
-            var lines = Snapshot()
-                .Select(s =>
-                    $"[{s.Id}] {s.NodeType} invocations={s.Invocations} enumerations={s.Enumerations} rows={s.Rows} elapsed={s.Elapsed}");
-            return string.Join(Environment.NewLine, lines);
+            var builder = new StringBuilder();
+            var nodes = Snapshot();
+            for (var i = 0; i < nodes.Count; i++)
+            {
+                var s = nodes[i];
+                builder.Append('[')
+                    .Append(s.Id)
+                    .Append("] ")
+                    .Append(s.NodeType)
+                    .Append(" invocations=")
+                    .Append(s.Invocations)
+                    .Append(" enumerations=")
+                    .Append(s.Enumerations)
+                    .Append(" rows=")
+                    .Append(s.Rows)
+                    .Append(" elapsed=")
+                    .Append(s.Elapsed);
+                if (i + 1 < nodes.Count)
+                {
+                    builder.AppendLine();
+                }
+            }
+
+            var caches = SnapshotCaches();
+            if (caches.Count > 0)
+            {
+                builder.AppendLine()
+                    .AppendLine()
+                    .AppendLine("Caches:");
+
+                foreach (var cache in caches)
+                {
+                    builder.Append(cache.Cache)
+                        .Append(' ')
+                        .Append(cache.Key)
+                        .Append(" lookups=")
+                        .Append(cache.Lookups)
+                        .Append(" hits=")
+                        .Append(cache.Hits)
+                        .Append(" builds=")
+                        .Append(cache.Builds)
+                        .AppendLine();
+                }
+            }
+
+            var strategies = SnapshotStrategies();
+            if (strategies.Count > 0)
+            {
+                builder.AppendLine()
+                    .AppendLine("Strategies:");
+
+                foreach (var strategy in strategies)
+                {
+                    builder.Append('[')
+                        .Append(strategy.NodeId)
+                        .Append("] ")
+                        .Append(strategy.NodeType)
+                        .Append(' ')
+                        .Append(strategy.Strategy)
+                        .Append(" count=")
+                        .Append(strategy.Count)
+                        .AppendLine();
+                }
+            }
+
+            return builder.ToString().TrimEnd();
         }
     }
 
