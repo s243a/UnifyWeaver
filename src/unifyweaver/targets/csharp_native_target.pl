@@ -120,7 +120,8 @@ compile_multi_rule_procedural(Pred, Arity, Clauses, _Options, Code) :-
     findall(ClauseCode, (
         nth1(Index, Clauses, Head-Body),
         translate_clause_procedural(Pred, Arity, Head, Body, Index, ClauseCode, Signatures),
-        forall(member(Sig, Signatures), assert_needed_data(Sig))
+        % Only add non-target predicates to needed_data (target has its own Stream method)
+        forall((member(Sig, Signatures), Sig \= Pred/Arity), assert_needed_data(Sig))
     ), ClauseCodes),
     atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
     
@@ -162,17 +163,17 @@ get_needed_data(Sections) :-
 get_needed_helpers(Helpers) :- 
     findall(Helper, (needed_data(Sig), stream_helper_for_signature(Sig, Helper)), Helpers).
 
-translate_clause_procedural(Pred, Arity, _Head, Body, Index, Code, Signatures) :-
+translate_clause_procedural(Pred, Arity, Head, Body, Index, Code, Signatures) :-
     body_goals(Body, Goals),
     maplist(goal_signature, Goals, Signatures),
     fact_result_type(Arity, ResultType),
     maplist(build_literal_info_native(Pred/Arity), Goals, LiteralInfos),
-    functor(DummyHead, Pred, Arity),
-    numbervars(DummyHead, 0, _),
+    % Apply numbervars to both Head and LiteralInfos together so variable identity is preserved
+    numbervars((Head, LiteralInfos), 0, _),
     (   LiteralInfos == []
     ->  TargetName = Pred, predicate_name_pascal(TargetName, Pascal),
         format(atom(PipelineCode), "~wFactStream()", [Pascal])
-    ;   generate_linq_pipeline(DummyHead, LiteralInfos, PipelineCode)
+    ;   generate_linq_pipeline(Head, LiteralInfos, PipelineCode)
     ),
     format(atom(Code), 
 '        private static IEnumerable<~w> _clause_~w()
@@ -234,12 +235,23 @@ emit_lits(Pred, Entries, Indent) :-
     ; maplist(Pred, Entries, Lits), emit_literal_block(Lits, Indent)
     ).
 
-stream_helper_for_signature(Name/1, Helper) :- 
-    predicate_name_pascal(Name, P), format(atom(Helper), '        public static IEnumerable<string> ~wFactStream() => ~wData;', [P, P]).
-stream_helper_for_signature(Name/2, Helper) :- 
-    predicate_name_pascal(Name, P), format(atom(Helper), '        public static IEnumerable<(string, string)> ~wFactStream() => ~wData;', [P, P]).
-stream_helper_for_signature(Name/Arity, Helper) :- 
-    predicate_name_pascal(Name, P), fact_result_type(Arity, RT), format(atom(Helper), '        public static IEnumerable<~w> ~wStream() => ~wFactStream();', [RT, P, P]).
+stream_helper_for_signature(Name/1, Helper) :- !,
+    predicate_name_pascal(Name, P),
+    format(atom(Helper), '        public static IEnumerable<string> ~wFactStream() => ~wData;
+
+        public static IEnumerable<string> ~wStream() => ~wFactStream();', [P, P, P, P]).
+stream_helper_for_signature(Name/2, Helper) :- !,
+    predicate_name_pascal(Name, P),
+    format(atom(Helper), '        public static IEnumerable<(string, string)> ~wFactStream() => ~wData;
+
+        public static IEnumerable<(string, string)> ~wStream() => ~wFactStream();', [P, P, P, P]).
+stream_helper_for_signature(Name/Arity, Helper) :-
+    Arity > 2,
+    predicate_name_pascal(Name, P),
+    fact_result_type(Arity, RT),
+    format(atom(Helper), '        public static IEnumerable<~w> ~wFactStream() => ~wData;
+
+        public static IEnumerable<~w> ~wStream() => ~wFactStream();', [RT, P, P, RT, P, P]).
 
 unary_literal([A], L) :- escape_cs(A, E), format(atom(L), '"~w"', [E]).
 tuple_literal([A,B], L) :- escape_cs(A, EA), escape_cs(B, EB), format(atom(L), '("~w", "~w")', [EA, EB]).
@@ -255,9 +267,13 @@ emit_literal_block([F|R], I) :- format('~s~w', [I, F]), forall(member(L, R), for
 gather_fact_entries(Name/Arity, fact_info(Name, Arity, Entries)) :-
     findall(Args, (functor(H, Name, Arity), clause(user:H, true), H =.. [_|Args]), Entries).
 
-fact_result_type(1, "string").
-fact_result_type(2, "(string, string)").
-fact_result_type(Arity, T) :- format(atom(T), "(~w)", [Inner]), findall("string", between(1, Arity, _), L), atomic_list_concat(L, ", ", Inner).
+fact_result_type(1, "string") :- !.
+fact_result_type(2, "(string, string)") :- !.
+fact_result_type(Arity, T) :-
+    Arity > 2,
+    findall("string", between(1, Arity, _), L),
+    atomic_list_concat(L, ", ", Inner),
+    format(atom(T), "(~w)", [Inner]).
 
 fact_print_expression(1, 'Console.WriteLine(item);').
 fact_print_expression(2, 'Console.WriteLine($"{item.Item1}:{item.Item2}");').
@@ -303,7 +319,12 @@ head_variables(Head, Vars) :- Head =.. [_|Vars].
 vars_unique(L, U) :- list_to_set(L, U).
 future_vars([], []).
 future_vars([literal_info(_,_,Args,_)|R], V) :- vars_collect(Args, VA), future_vars(R, VR), append(VA, VR, VC), list_to_set(VC, V).
-vars_collect(Args, Vars) :- findall(A, (member(A, Args), var(A)), Vars).
+vars_collect(Args, Vars) :- findall(A, (member(A, Args), is_logic_var(A)), Vars).
+
+%% is_logic_var(+Term)
+%% True if Term is an unbound variable or a numbered variable ($VAR(N))
+is_logic_var(V) :- var(V), !.
+is_logic_var('$VAR'(_)).
 
 generate_linq_pipeline(Head, [First|Rest], Pipeline) :-
     head_variables(Head, HeadArgs),
@@ -315,7 +336,7 @@ generate_linq_pipeline(Head, [First|Rest], Pipeline) :-
 
 build_seed_pipeline(HeadVarSet, FutureVarSet, literal_info(_, _Arity, Args, StreamCall), SeedExpr, VarOrder, SeenVars) :-
     append(HeadVarSet, FutureVarSet, Needed),
-    findall(V, (member(V, Args), var(V), member(V2, Needed), V == V2), VarsToKeep0),
+    findall(V, (member(V, Args), is_logic_var(V), member(V2, Needed), V == V2), VarsToKeep0),
     list_to_set(VarsToKeep0, VarsToKeep),
     maplist(arg_access(Args, "row0"), VarsToKeep, Proj),
     tuple_expr(Proj, ProjExpr),
@@ -324,12 +345,12 @@ build_seed_pipeline(HeadVarSet, FutureVarSet, literal_info(_, _Arity, Args, Stre
 
 build_pipeline_rest([], _, _, VarOrder, _, Expr, Expr, VarOrder).
 build_pipeline_rest([literal_info(_, _, Args, StreamCall)|Rest], HeadVarSet, SeenVars, VarOrder, Step, ExprIn, ExprOut, FinalOrder) :-
-    findall(V, (member(V, Args), var(V), member(V2, SeenVars), V == V2), Shared),
+    findall(V, (member(V, Args), is_logic_var(V), member(V2, SeenVars), V == V2), Shared),
     future_vars(Rest, FutureVarSet),
     append(HeadVarSet, FutureVarSet, AllNeeded),
     maplist(arg_access_v(VarOrder, "s"), Shared, LProj), tuple_expr(LProj, LKey),
     maplist(arg_access(Args, "r"), Shared, RProj), tuple_expr(RProj, RKey),
-    findall(V, (member(V, Args), var(V), member(V2, AllNeeded), V == V2, \+ member(V3, VarOrder), V == V3), NewVars0),
+    findall(V, (member(V, Args), is_logic_var(V), member(V2, AllNeeded), V == V2, \+ (member(V3, VarOrder), V3 == V)), NewVars0),
     list_to_set(NewVars0, NewVars),
     append(VarOrder, NewVars, NextOrder),
     maplist(arg_access_v(VarOrder, "s"), VarOrder, SProj),
