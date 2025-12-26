@@ -342,6 +342,75 @@ This pattern allows target modules to:
 2. Provide a cleaner API for target-specific code
 3. Map reduced-arity forms to the general `binding/6`
 
+## User-Defined Binding Directives
+
+Users can declare their own bindings directly in Prolog code using target-specific directives. These directives use Prolog's `term_expansion/2` mechanism to register bindings at load time.
+
+### Supported Targets
+
+| Target | Directive | Status |
+|--------|-----------|--------|
+| Go | `:- go_binding(...)` | ✅ Implemented |
+| Python | `:- py_binding(...)` | ✅ Implemented |
+| Rust | `:- rs_binding(...)` | ✅ Implemented |
+| C# | `:- cs_binding(...)` | ✅ Implemented |
+
+### Syntax
+
+```prolog
+%% :- <target>_binding(Pred, TargetName, Inputs, Outputs, Options)
+%
+% Pred:       Name/Arity - the Prolog predicate being bound
+% TargetName: string/atom - the target language function/method
+% Inputs:     list of input types
+% Outputs:    list of output types
+% Options:    list of options (pure, effect(io), import(...), etc.)
+```
+
+### Examples
+
+```prolog
+% Go binding for a custom hash function
+:- go_binding(my_hash/2, 'mylib.Hash', [string], [string], [
+    pure,
+    import("mylib")
+]).
+
+% Python binding for a machine learning prediction
+:- py_binding(predict/2, 'model.predict', [list], [list], [
+    effect(io),
+    import("model")
+]).
+
+% Rust binding for a crypto operation
+:- rs_binding(encrypt/3, 'crypto::encrypt', [string, string], [string], [
+    pure,
+    import("crypto")
+]).
+
+% C# binding for a .NET library call
+:- cs_binding(format_date/2, 'DateTime.Parse', [string], [datetime], [
+    pure,
+    effect(throws),
+    using("System")
+]).
+```
+
+### Implementation
+
+Each target's bindings module provides a `term_expansion/2` clause that transforms the directive into a binding registration:
+
+```prolog
+% In python_bindings.pl
+user:term_expansion(
+    (:- py_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(
+        python, Pred, TargetName, Inputs, Outputs, Options)))
+).
+```
+
+This approach allows bindings to be declared alongside the predicates that use them, making code more self-contained and portable.
+
 ## Fallback Chains
 
 When multiple target preferences are specified, bindings can fall back to alternative targets:

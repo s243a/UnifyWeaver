@@ -343,6 +343,60 @@ Changes required:
 - [ ] Add wrapper predicates for backward compatibility
 - [ ] Preserve effect annotations
 
+## Implementation Status
+
+### Core Registry
+
+- [x] `src/unifyweaver/core/component_registry.pl` - Core registry infrastructure
+- [x] Category definition (`define_category/3`)
+- [x] Type registration (`register_component_type/4`)
+- [x] Instance declaration (`declare_component/4`)
+- [x] Compile component interface (`compile_component/4`)
+
+### Custom Component Types by Target
+
+Custom component types allow injecting raw target language code as reusable components. Each generates a class/struct with an `invoke()` method.
+
+| Target | Module | Config Options | Status |
+|--------|--------|----------------|--------|
+| Go | `custom_go.pl` | `code(...)`, `imports([...])` | ✅ Implemented |
+| Python | `custom_python.pl` | `code(...)`, `imports([...])` | ✅ Implemented |
+| Rust | `custom_rust.pl` | `code(...)`, `uses([...])` | ✅ Implemented |
+| C# | `custom_csharp.pl` | `code(...)`, `usings([...])` | ✅ Implemented |
+
+### Usage Example
+
+```prolog
+% Declare a custom Python component
+declare_component(source, my_transform, custom_python, [
+    code("return input.upper()"),
+    imports(["typing", "re"])
+]).
+
+% Declare a custom Rust component
+declare_component(source, my_parser, custom_rust, [
+    code("input.parse().unwrap()"),
+    uses(["std::str::FromStr"])
+]).
+
+% Declare a custom C# component
+declare_component(source, my_formatter, custom_csharp, [
+    code("return input.ToString();"),
+    usings(["System.Text"])
+]).
+```
+
+### Target Integration
+
+Each target has been integrated with the component registry:
+
+| Target | Init Predicate | Helper Predicates | Status |
+|--------|----------------|-------------------|--------|
+| Go | `init_go_target/0` | `collect_declared_component/2`, `compile_collected_components/1` | ✅ |
+| Python | `init_python_target/0` | `collect_declared_component/2`, `compile_collected_components/1` | ✅ |
+| Rust | `init_rust_target/0` | `collect_declared_component/2`, `compile_collected_components/1` | ✅ |
+| C# | `init_csharp_target/0` | `collect_declared_component/2`, `compile_collected_components/1` | ✅ |
+
 ## Runtime Component Example: LDA Projection
 
 ### Prolog Type Module
