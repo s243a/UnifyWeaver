@@ -141,21 +141,33 @@ Implemented:
 - `error_threshold(count(N))` - Exit after N errors
 - `metrics_file(Path)` - Performance metrics export
 
+#### 5. Window Functions for Rust
+**Status:** ✅ COMPLETE (2025-12-25)
+**Source:** Go target (full window function support)
+**Target:** Rust target
+
+Implemented:
+- `lag/3`, `lag/4`, `lag/5` - Access previous row value with offset and default
+- `lead/3`, `lead/4`, `lead/5` - Access next row value with offset and default
+- `first_value/3` - First value in window partition
+- `last_value/3` - Last value in window partition
+- `row_number/2`, `rank/2`, `dense_rank/2` - Ranking functions
+
 ### Medium Priority
 
-#### 5. XML Processing
+#### 6. XML Processing
 **Status:** 📋 PLANNED
 **Source:** Go, Python targets
 **Target:** Rust, C#, others
 **Effort:** Medium - requires XML parsing library integration
 
-#### 6. Full Outer Joins
+#### 7. Full Outer Joins
 **Status:** 📋 PLANNED
 **Source:** Go, Python, Rust, SQL targets
 **Target:** Bash, C# Codegen, PowerShell
 **Effort:** Medium-High - complex for shell-based targets
 
-#### 7. Schema Validation for JSON
+#### 8. Schema Validation for JSON
 **Status:** 📋 PLANNED
 **Source:** Go target (comprehensive)
 **Target:** Rust, C#, others
@@ -163,13 +175,13 @@ Implemented:
 
 ### Lower Priority (Specialized)
 
-#### 8. Database Integration
+#### 9. Database Integration
 **Status:** 📋 PLANNED
 **Source:** Go target (BoltDB with secondary indexes)
 **Target:** Rust (sled/rocksdb), Python (sqlite), others
 **Effort:** High - requires embedded DB per language
 
-#### 9. Cost-Based Optimization
+#### 10. Cost-Based Optimization
 **Status:** 📋 PLANNED
 **Source:** Go target (statistics-based)
 **Target:** All targets
@@ -181,7 +193,7 @@ Implemented:
 |---------|-----|--------|------|-----|------|-----|
 | Statistical Aggs | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | collect_list/set | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| Window Functions | ✅ | ✅ | ❌ | ⚠️ | ❌ | ✅ |
+| Window Functions | ✅ | ✅ | ✅ | ⚠️ | ❌ | ✅ |
 | Observability | ✅ | ✅ | ✅ | ⚠️ | ❌ | ❌ |
 | XML Processing | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Full Outer Join | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |

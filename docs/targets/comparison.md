@@ -43,12 +43,12 @@ This document compares all UnifyWeaver compilation targets to help choose the ap
 
 | Feature | Bash | Go | Rust | Python | C# Codegen | C# Query | SQL |
 |---------|------|-----|------|--------|------------|----------|-----|
-| row_number | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ |
-| rank/dense_rank | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ |
-| **LAG** | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **LEAD** | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **first_value** | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **last_value** | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| row_number | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| rank/dense_rank | ❌ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| **LAG** | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **LEAD** | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **first_value** | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **last_value** | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
 
 ### Observability
 

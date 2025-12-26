@@ -3786,6 +3786,181 @@ fn main() {
     ;   WrappedCode = InnerCode
     ).
 
+%% ============================================
+%% WINDOW FUNCTIONS (ported from Go target)
+%% ============================================
+
+%% has_rust_window_function(+Op)
+%  Check if an aggregation operation is a window function
+has_rust_window_function(Op) :-
+    (   compound(Op), functor(Op, row_number, _) -> true
+    ;   compound(Op), functor(Op, rank, _) -> true
+    ;   compound(Op), functor(Op, dense_rank, _) -> true
+    ;   compound(Op), functor(Op, lag, _) -> true
+    ;   compound(Op), functor(Op, lead, _) -> true
+    ;   compound(Op), functor(Op, first_value, _) -> true
+    ;   compound(Op), functor(Op, last_value, _) -> true
+    ;   is_list(Op), member(Sub, Op), has_rust_window_function(Sub) -> true
+    ), !.
+
+%% parse_rust_window_spec(+Ops, +FieldMappings, -SortField, -ResultVar, -WindowType)
+%  Parse window function specification from aggregation operations
+parse_rust_window_spec(Ops, _, SortField, RankVar, row_number) :-
+    member(row_number(SortField, RankVar), Ops), !.
+parse_rust_window_spec(Ops, _, SortField, RankVar, rank) :-
+    member(rank(SortField, RankVar), Ops), !.
+parse_rust_window_spec(Ops, _, SortField, RankVar, dense_rank) :-
+    member(dense_rank(SortField, RankVar), Ops), !.
+
+% LAG window function variants
+parse_rust_window_spec(Ops, _, SortField, ResultVar, lag(ValueField, Offset, Default)) :-
+    member(lag(SortField, ValueField, Offset, Default, ResultVar), Ops), !.
+parse_rust_window_spec(Ops, _, SortField, ResultVar, lag(ValueField, Offset)) :-
+    member(lag(SortField, ValueField, Offset, ResultVar), Ops), !.
+parse_rust_window_spec(Ops, _, SortField, ResultVar, lag(ValueField)) :-
+    member(lag(SortField, ValueField, ResultVar), Ops), !.
+
+% LEAD window function variants
+parse_rust_window_spec(Ops, _, SortField, ResultVar, lead(ValueField, Offset, Default)) :-
+    member(lead(SortField, ValueField, Offset, Default, ResultVar), Ops), !.
+parse_rust_window_spec(Ops, _, SortField, ResultVar, lead(ValueField, Offset)) :-
+    member(lead(SortField, ValueField, Offset, ResultVar), Ops), !.
+parse_rust_window_spec(Ops, _, SortField, ResultVar, lead(ValueField)) :-
+    member(lead(SortField, ValueField, ResultVar), Ops), !.
+
+% FIRST_VALUE and LAST_VALUE
+parse_rust_window_spec(Ops, _, SortField, ResultVar, first_value(ValueField)) :-
+    member(first_value(SortField, ValueField, ResultVar), Ops), !.
+parse_rust_window_spec(Ops, _, SortField, ResultVar, last_value(ValueField)) :-
+    member(last_value(SortField, ValueField, ResultVar), Ops), !.
+
+%% generate_rust_lag_lead_code(+WindowType, +ValueField, +Offset, +Default, +FieldMappings, -RustCode)
+%  Generate Rust code snippet for LAG/LEAD window functions
+generate_rust_lag_lead_code(lag, ValueField, Offset, Default, _FieldMappings, RustCode) :-
+    (   Default = null -> DefaultVal = "None"
+    ;   number(Default) -> format(atom(DefaultVal), 'Some(serde_json::json!(~w))', [Default])
+    ;   format(atom(DefaultVal), 'Some(serde_json::json!("~w"))', [Default])
+    ),
+    format(string(RustCode), '
+        // LAG: Access previous row value
+        for i in 0..rows.len() {
+            let lag_value = if i >= ~w {
+                rows[i - ~w].get("~w").cloned()
+            } else {
+                ~w
+            };
+            if let Some(ref mut row) = rows.get_mut(i) {
+                if let Some(obj) = row.as_object_mut() {
+                    obj.insert("lag_~w".to_string(), lag_value.unwrap_or(serde_json::Value::Null));
+                }
+            }
+        }', [Offset, Offset, ValueField, DefaultVal, ValueField]).
+
+generate_rust_lag_lead_code(lead, ValueField, Offset, Default, _FieldMappings, RustCode) :-
+    (   Default = null -> DefaultVal = "None"
+    ;   number(Default) -> format(atom(DefaultVal), 'Some(serde_json::json!(~w))', [Default])
+    ;   format(atom(DefaultVal), 'Some(serde_json::json!("~w"))', [Default])
+    ),
+    format(string(RustCode), '
+        // LEAD: Access next row value
+        let len = rows.len();
+        for i in 0..len {
+            let lead_value = if i + ~w < len {
+                rows[i + ~w].get("~w").cloned()
+            } else {
+                ~w
+            };
+            if let Some(ref mut row) = rows.get_mut(i) {
+                if let Some(obj) = row.as_object_mut() {
+                    obj.insert("lead_~w".to_string(), lead_value.unwrap_or(serde_json::Value::Null));
+                }
+            }
+        }', [Offset, Offset, ValueField, DefaultVal, ValueField]).
+
+generate_rust_lag_lead_code(first_value, ValueField, _Offset, _Default, _FieldMappings, RustCode) :-
+    format(string(RustCode), '
+        // FIRST_VALUE: Get first row value in window
+        let first_value = rows.first()
+            .and_then(|r| r.get("~w"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        for row in rows.iter_mut() {
+            if let Some(obj) = row.as_object_mut() {
+                obj.insert("first_~w".to_string(), first_value.clone());
+            }
+        }', [ValueField, ValueField]).
+
+generate_rust_lag_lead_code(last_value, ValueField, _Offset, _Default, _FieldMappings, RustCode) :-
+    format(string(RustCode), '
+        // LAST_VALUE: Get last row value in window
+        let last_value = rows.last()
+            .and_then(|r| r.get("~w"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        for row in rows.iter_mut() {
+            if let Some(obj) = row.as_object_mut() {
+                obj.insert("last_~w".to_string(), last_value.clone());
+            }
+        }', [ValueField, ValueField]).
+
+%% generate_rust_window_jsonl(+WindowType, +GroupField, +SortField, +ValueField, +Offset, +Default, +FieldMappings, -RustCode)
+%  Generate complete JSONL processing code for window functions
+generate_rust_window_jsonl(WindowType, GroupField, SortField, ValueField, Offset, Default, FieldMappings, RustCode) :-
+    find_rust_field_for_var(GroupField, FieldMappings, GroupFieldName),
+    find_rust_field_for_var(SortField, FieldMappings, SortFieldName),
+    find_rust_field_for_var(ValueField, FieldMappings, ValueFieldName),
+    generate_rust_lag_lead_code(WindowType, ValueFieldName, Offset, Default, FieldMappings, WindowCode),
+
+    format(string(RustCode), '
+use std::io::{self, BufRead};
+use std::collections::HashMap;
+use serde_json::Value;
+
+fn main() {
+    let mut groups: HashMap<String, Vec<Value>> = HashMap::new();
+
+    // Read and group records
+    for line in io::stdin().lock().lines() {
+        if let Ok(l) = line {
+            if let Ok(data) = serde_json::from_str::<Value>(&l) {
+                let group_key = data.get("~w")
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                groups.entry(group_key).or_default().push(data);
+            }
+        }
+    }
+
+    // Process each group
+    for (_, mut rows) in groups {
+        // Sort by ~w
+        rows.sort_by(|a, b| {
+            let va = a.get("~w").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let vb = b.get("~w").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+~w
+
+        // Output results
+        for row in rows {
+            println!("{}", serde_json::to_string(&row).unwrap_or_default());
+        }
+    }
+}', [GroupFieldName, SortFieldName, SortFieldName, WindowCode]).
+
+%% find_rust_field_for_var(+Var, +FieldMappings, -FieldName)
+%  Find the JSON field name for a Prolog variable
+find_rust_field_for_var(Var, FieldMappings, FieldName) :-
+    (   member(json_field(FieldName, Var), FieldMappings)
+    ->  true
+    ;   member(field(FieldName, Var), FieldMappings)
+    ->  true
+    ;   atom(Var)
+    ->  FieldName = Var
+    ;   format(atom(FieldName), '~w', [Var])
+    ).
+
 generate_json_input_logic(JsonOps, Head, SchemaName, DelimChar, Unique, ScriptBody) :-
     Head =.. [_|HeadArgs],
     findall(ExtractLine, (

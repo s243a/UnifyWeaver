@@ -103,6 +103,32 @@ Output format:
 ], Code).
 ```
 
+### Window Functions (NEW - 2025-12-25)
+
+**Ranking Functions:**
+- `row_number/2` - Sequential row numbering within partition
+- `rank/2` - Rank with gaps for ties
+- `dense_rank/2` - Rank without gaps
+
+**Value Access Functions:**
+- `lag/3` - Access previous row: `lag(SortField, ValueField, Result)`
+- `lag/4` - With offset: `lag(SortField, ValueField, Offset, Result)`
+- `lag/5` - With default: `lag(SortField, ValueField, Offset, Default, Result)`
+- `lead/3` - Access next row: `lead(SortField, ValueField, Result)`
+- `lead/4` - With offset: `lead(SortField, ValueField, Offset, Result)`
+- `lead/5` - With default: `lead(SortField, ValueField, Offset, Default, Result)`
+- `first_value/3` - First value in window partition
+- `last_value/3` - Last value in window partition
+
+**Example:**
+```prolog
+% Calculate day-over-day price change
+daily_change(Date, Price, PrevPrice, Change) :-
+    stock_price(Date, Price),
+    lag(Date, Price, 1, 0, PrevPrice),
+    Change is Price - PrevPrice.
+```
+
 ### Pipeline Support
 
 - **Sequential Pipelines:** Chain processing stages
@@ -206,12 +232,11 @@ serde_json = "1.0"
 | Compile Time | Slow | Fast | N/A | N/A |
 | Statistical Aggs | ✅ | ✅ | ✅ | ❌ |
 | Observability | ✅ | ✅ | ✅ | ❌ |
-| Window Functions | ❌ | ✅ | ✅ | ❌ |
+| Window Functions | ✅ | ✅ | ✅ | ❌ |
 | Database | ❌ | BoltDB | SQLite | ❌ |
 
 ## Limitations
 
-- **Window Functions:** Not yet implemented (use Go or Python)
 - **Database Integration:** Not yet implemented (planned: sled/rocksdb)
 - **XML Processing:** Not yet implemented
 
