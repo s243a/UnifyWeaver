@@ -10,6 +10,7 @@
 :- module(fsharp_bindings, [
     init_fsharp_bindings/0,
     fs_binding/5,               % fs_binding(Pred, TargetName, Inputs, Outputs, Options)
+    fs_binding_open/2,          % fs_binding_open(Pred, Module)
     test_fsharp_bindings/0
 ]).
 
@@ -25,6 +26,25 @@ init_fsharp_bindings :-
 %% fs_binding(?Pred, ?TargetName, ?Inputs, ?Outputs, ?Options)
 fs_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(fsharp, Pred, TargetName, Inputs, Outputs, Options).
+
+%% fs_binding_open(?Pred, ?Module)
+%  Get the open module required for an F# binding.
+fs_binding_open(Pred, Module) :-
+    fs_binding(Pred, _, _, _, Options),
+    member(open(Module), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- fs_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined F# bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- fs_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(fsharp, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 %% Core Built-in Bindings
 register_fsharp_builtin_bindings :-

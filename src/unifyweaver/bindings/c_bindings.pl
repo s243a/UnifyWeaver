@@ -10,6 +10,7 @@
 :- module(c_bindings, [
     init_c_bindings/0,
     c_binding/5,
+    c_binding_include/2,        % c_binding_include(Pred, Header)
     test_c_bindings/0
 ]).
 
@@ -25,6 +26,25 @@ init_c_bindings :-
 %% c_binding(?Pred, ?TargetName, ?Inputs, ?Outputs, ?Options)
 c_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(c, Pred, TargetName, Inputs, Outputs, Options).
+
+%% c_binding_include(?Pred, ?Header)
+%  Get the #include header required for a C binding.
+c_binding_include(Pred, Header) :-
+    c_binding(Pred, _, _, _, Options),
+    member(include(Header), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- c_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined C bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- c_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(c, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % STDLIB BINDINGS

@@ -20,6 +20,7 @@
 :- module(bash_bindings, [
     init_bash_bindings/0,
     bash_binding/5,             % Convenience: bash_binding(Pred, TargetName, Inputs, Outputs, Options)
+    bash_binding_source/2,      % bash_binding_source(Pred, Script)
     test_bash_bindings/0
 ]).
 
@@ -49,6 +50,25 @@ init_bash_bindings :-
 %
 bash_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(bash, Pred, TargetName, Inputs, Outputs, Options).
+
+%% bash_binding_source(?Pred, ?Script)
+%  Get the source script required for a Bash binding.
+bash_binding_source(Pred, Script) :-
+    bash_binding(Pred, _, _, _, Options),
+    member(source(Script), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- bash_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined Bash bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- bash_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(bash, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % CORE BUILT-IN BINDINGS

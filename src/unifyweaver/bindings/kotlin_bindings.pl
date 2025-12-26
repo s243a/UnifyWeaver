@@ -10,6 +10,7 @@
 :- module(kotlin_bindings, [
     init_kotlin_bindings/0,
     kt_binding/5,
+    kt_binding_import/2,         % kt_binding_import(Pred, Import)
     test_kotlin_bindings/0
 ]).
 
@@ -26,6 +27,25 @@ init_kotlin_bindings :-
 %% kt_binding(?Pred, ?TargetName, ?Inputs, ?Outputs, ?Options)
 kt_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(kotlin, Pred, TargetName, Inputs, Outputs, Options).
+
+%% kt_binding_import(?Pred, ?Import)
+%  Get the import required for a Kotlin binding.
+kt_binding_import(Pred, Import) :-
+    kt_binding(Pred, _, _, _, Options),
+    member(import(Import), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- kt_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined Kotlin bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- kt_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(kotlin, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % STDLIB BINDINGS

@@ -10,6 +10,7 @@
 :- module(clojure_bindings, [
     init_clojure_bindings/0,
     clj_binding/5,
+    clj_binding_require/2,       % clj_binding_require(Pred, Namespace)
     test_clojure_bindings/0
 ]).
 
@@ -26,6 +27,25 @@ init_clojure_bindings :-
 %% clj_binding(?Pred, ?TargetName, ?Inputs, ?Outputs, ?Options)
 clj_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(clojure, Pred, TargetName, Inputs, Outputs, Options).
+
+%% clj_binding_require(?Pred, ?Namespace)
+%  Get the require namespace for a Clojure binding.
+clj_binding_require(Pred, Namespace) :-
+    clj_binding(Pred, _, _, _, Options),
+    member(require(Namespace), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- clj_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined Clojure bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- clj_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(clojure, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % CORE BINDINGS

@@ -10,13 +10,43 @@
 
 :- module(java_bindings, [
     init_java_bindings/0,
-    binding_import/1
+    binding_import/1,
+    java_binding/5,              % java_binding(Pred, TargetName, Inputs, Outputs, Options)
+    java_binding_import/2        % java_binding_import(Pred, Import)
 ]).
 
 :- use_module('../core/binding_registry').
 
 % Track required imports
 :- dynamic binding_import/1.
+
+%% java_binding(?Pred, ?TargetName, ?Inputs, ?Outputs, ?Options)
+%  Query Java bindings with reduced arity (Target=java implied).
+java_binding(Pred, TargetName, Inputs, Outputs, Options) :-
+    binding(java, Pred, TargetName, Inputs, Outputs, Options).
+
+%% java_binding_import(?Pred, ?Import)
+%  Get the import required for a Java binding.
+java_binding_import(Pred, Import) :-
+    java_binding(Pred, _, _, _, Options),
+    member(import(Import), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- java_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined Java bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- java_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(java, Pred, TargetName, Inputs, Outputs, Options)))
+).
+
+% ============================================================================
+% INITIALIZATION
+% ============================================================================
 
 %% init_java_bindings
 %  Initialize all Java bindings. Call this before using the compiler.
