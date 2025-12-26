@@ -1393,6 +1393,54 @@ This demonstrates:
 - Extracting data from the XML.
 - Executing the data source.
 
+### Example 6: WASM Visualization (Graph and Curves)
+
+UnifyWeaver compiles Prolog to WebAssembly via LLVM for browser-based visualization.
+
+**Graph Visualization** (`examples/wasm-graph/`):
+```prolog
+% Compile graph operations to WASM
+compile_wasm_string_module(
+    [func(ancestor, 2, transitive_closure)],
+    [module_name(family_graph)],
+    LLVMCode).
+```
+- Cytoscape.js for network graph visualization
+- TypeScript bindings with string support
+- Interactive edge addition and graph layout
+
+**Curve Plotting** (`examples/curve-plot/`):
+```prolog
+% Define mathematical curves
+generate_curve_wasm([
+    curve_def(wave, sine),
+    curve_def(parabola, quadratic)
+], LLVMCode).
+
+% Evaluate in Prolog
+?- evaluate_curve(sine(1, 2, 0), 3.14, Y).
+Y = 0.0.
+```
+- Chart.js for mathematical curve visualization
+- Configurable parameters (amplitude, frequency, coefficients)
+- Multiple curve overlays with different colors
+
+**Pipeline:**
+```
+Prolog → LLVM IR → WebAssembly → TypeScript → Browser
+```
+
+**Build:**
+```bash
+cd examples/curve-plot
+swipl curve_module.pl                           # Generate LLVM IR
+llc -march=wasm32 -filetype=obj curve_plot.ll   # Compile to WASM object
+wasm-ld --no-entry --export-all curve_plot.o -o curve_plot.wasm
+python3 -m http.server 8080                     # Serve demo
+```
+
+See [LLVM_TARGET.md](LLVM_TARGET.md) for full API documentation.
+
 ---
 
 ## Architecture Deep Dive

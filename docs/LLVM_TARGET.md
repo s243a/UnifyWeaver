@@ -166,6 +166,82 @@ graph.getEdges(); // [['tom', 'bob']]
 ### Example
 See [examples/wasm-graph/](../examples/wasm-graph/) for complete Cytoscape.js demo.
 
+---
+
+## Phase 6: Curve Plotting (Mathematical Visualization)
+
+Generate WASM modules for mathematical curve evaluation and Chart.js visualization.
+
+### `generate_curve_wasm/2`
+Compile mathematical curves to WASM with float operations:
+```prolog
+generate_curve_wasm([
+    curve_def(wave, sine),
+    curve_def(parabola, quadratic),
+    curve_def(growth, exponential)
+], LLVMCode).
+```
+
+### Supported Curve Types
+
+| Type | Equation | Parameters |
+|------|----------|------------|
+| `linear` | y = mx + b | m, b |
+| `quadratic` | y = ax² + bx + c | a, b, c |
+| `sine` | y = amp × sin(freq × x + phase) | amp, freq, phase |
+| `cosine` | y = amp × cos(freq × x + phase) | amp, freq, phase |
+| `exponential` | y = scale × e^(base × x) | base, scale |
+
+### `generate_ts_chart_bindings/2`
+Generate TypeScript bindings with Chart.js integration:
+```prolog
+generate_ts_chart_bindings(CurveSpecs, TSCode).
+```
+
+Generated API:
+```typescript
+const curves = await CurveWasm.load('curve_plot.wasm');
+curves.set_wave_params(1.0, 2.0, 0.0);  // amp, freq, phase
+curves.generate_wave(-10, 10, 200);      // xMin, xMax, numPoints
+const chartData = curves.toChartData('sin(2x)', '#00d4ff');
+```
+
+### Pipeline Architecture
+
+```
+Prolog (curve_module.pl)
+    ↓ generate_curve_wasm/2
+LLVM IR (curve_plot.ll)
+    ↓ llc -march=wasm32 + wasm-ld
+WebAssembly (curve_plot.wasm)
+    ↓ TypeScript bindings
+Chart.js (browser visualization)
+```
+
+### Example
+See [examples/curve-plot/](../examples/curve-plot/) for complete Chart.js demo with:
+- Interactive parameter controls
+- Multiple curve overlays
+- Preset mathematical functions (sin, cos, parabola)
+
+### Custom Chart Component
+
+The `custom_chart` component type allows declarative Chart.js configuration:
+
+```prolog
+declare_component(source, my_chart, custom_chart, [
+    chart_type(line),
+    title("Mathematical Functions"),
+    x_axis([label("X"), type(linear)]),
+    y_axis([label("Y")]),
+    datasets([
+        dataset([label("sin(x)"), color("#00d4ff")])
+    ])
+]).
+```
+
+See [custom_chart.pl](../src/unifyweaver/targets/typescript_runtime/custom_chart.pl) for implementation.
+
 ## See Also
 
 - [llvm_target_design.md](./proposals/llvm_target_design.md) - Design doc
