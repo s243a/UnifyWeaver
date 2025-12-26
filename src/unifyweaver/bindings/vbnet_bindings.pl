@@ -9,6 +9,7 @@
 :- module(vbnet_bindings, [
     init_vbnet_bindings/0,
     vb_binding/5,               % vb_binding(Pred, TargetName, Inputs, Outputs, Options)
+    vb_binding_imports/2,       % vb_binding_imports(Pred, Namespace)
     test_vbnet_bindings/0
 ]).
 
@@ -24,6 +25,25 @@ init_vbnet_bindings :-
 %% vb_binding(?Pred, ?TargetName, ?Inputs, ?Outputs, ?Options)
 vb_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(vbnet, Pred, TargetName, Inputs, Outputs, Options).
+
+%% vb_binding_imports(?Pred, ?Namespace)
+%  Get the Imports namespace required for a VB.NET binding.
+vb_binding_imports(Pred, Namespace) :-
+    vb_binding(Pred, _, _, _, Options),
+    member(imports(Namespace), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- vb_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined VB.NET bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- vb_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(vbnet, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 %% Core Built-in Bindings
 register_vbnet_builtin_bindings :-

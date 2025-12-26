@@ -363,6 +363,19 @@ Custom component types allow injecting raw target language code as reusable comp
 | Python | `custom_python.pl` | `code(...)`, `imports([...])` | ✅ Implemented |
 | Rust | `custom_rust.pl` | `code(...)`, `uses([...])` | ✅ Implemented |
 | C# | `custom_csharp.pl` | `code(...)`, `usings([...])` | ✅ Implemented |
+| Java | `custom_java.pl` | `code(...)`, `imports([...])` | ✅ Implemented |
+| Kotlin | `custom_kotlin.pl` | `code(...)`, `imports([...])` | ✅ Implemented |
+| Scala | `custom_scala.pl` | `code(...)`, `imports([...])` | ✅ Implemented |
+| Clojure | `custom_clojure.pl` | `code(...)`, `requires([...])` | ✅ Implemented |
+| Jython | `custom_jython.pl` | `code(...)`, `imports([...])` | ✅ Implemented |
+| F# | `custom_fsharp.pl` | `code(...)`, `opens([...])` | ✅ Implemented |
+| VB.NET | `custom_vbnet.pl` | `code(...)`, `imports([...])` | ✅ Implemented |
+| C | `custom_c.pl` | `code(...)`, `includes([...])` | ✅ Implemented |
+| C++ | `custom_cpp.pl` | `code(...)`, `includes([...])` | ✅ Implemented |
+| LLVM | `custom_llvm.pl` | `code(...)`, `declares([...])` | ✅ Implemented |
+| Bash | `custom_bash.pl` | `code(...)`, `sources([...])` | ✅ Implemented |
+| PowerShell | `custom_powershell.pl` | `code(...)`, `usings([...])` | ✅ Implemented |
+| AWK | `custom_awk.pl` | `code(...)`, `includes([...])` | ✅ Implemented |
 
 ### Usage Example
 

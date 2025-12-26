@@ -17,6 +17,7 @@
 :- module(powershell_bindings, [
     init_powershell_bindings/0,
     ps_binding/5,               % Convenience: ps_binding(Pred, TargetName, Inputs, Outputs, Options)
+    ps_binding_using/2,         % ps_binding_using(Pred, Namespace)
     test_powershell_bindings/0
 ]).
 
@@ -46,6 +47,25 @@ init_powershell_bindings :-
 %
 ps_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(powershell, Pred, TargetName, Inputs, Outputs, Options).
+
+%% ps_binding_using(?Pred, ?Namespace)
+%  Get the using namespace required for a PowerShell binding.
+ps_binding_using(Pred, Namespace) :-
+    ps_binding(Pred, _, _, _, Options),
+    member(using(Namespace), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- ps_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined PowerShell bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- ps_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(powershell, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % CHAPTER 3: CMDLET GENERATION BINDINGS

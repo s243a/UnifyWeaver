@@ -10,6 +10,7 @@
     init_llvm_bindings/0,
     llvm_binding/5,            % llvm_binding(Pred, Instruction, Inputs, Outputs, Options)
     llvm_type/2,               % llvm_type(PrologType, LLVMType)
+    llvm_binding_intrinsic/2,  % llvm_binding_intrinsic(Pred, Intrinsic)
     test_llvm_bindings/0
 ]).
 
@@ -24,6 +25,25 @@ init_llvm_bindings :-
 %% llvm_binding(?Pred, ?Instruction, ?Inputs, ?Outputs, ?Options)
 llvm_binding(Pred, Instruction, Inputs, Outputs, Options) :-
     binding(llvm, Pred, Instruction, Inputs, Outputs, Options).
+
+%% llvm_binding_intrinsic(?Pred, ?Intrinsic)
+%  Get the LLVM intrinsic required for a binding.
+llvm_binding_intrinsic(Pred, Intrinsic) :-
+    llvm_binding(Pred, _, _, _, Options),
+    member(intrinsic(Intrinsic), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- llvm_binding(Pred, Instruction, Inputs, Outputs, Options)
+%  Directive for user-defined LLVM bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- llvm_binding(Pred, Instruction, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(llvm, Pred, Instruction, Inputs, Outputs, Options)))
+).
 
 %% Type mappings
 llvm_type(integer, 'i64').

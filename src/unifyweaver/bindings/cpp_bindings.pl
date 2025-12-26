@@ -10,6 +10,7 @@
 :- module(cpp_bindings, [
     init_cpp_bindings/0,
     cpp_binding/5,
+    cpp_binding_include/2,      % cpp_binding_include(Pred, Header)
     test_cpp_bindings/0
 ]).
 
@@ -25,6 +26,25 @@ init_cpp_bindings :-
 %% cpp_binding(?Pred, ?TargetName, ?Inputs, ?Outputs, ?Options)
 cpp_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(cpp, Pred, TargetName, Inputs, Outputs, Options).
+
+%% cpp_binding_include(?Pred, ?Header)
+%  Get the #include header required for a C++ binding.
+cpp_binding_include(Pred, Header) :-
+    cpp_binding(Pred, _, _, _, Options),
+    member(include(Header), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- cpp_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined C++ bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- cpp_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(cpp, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % STL CONTAINER BINDINGS

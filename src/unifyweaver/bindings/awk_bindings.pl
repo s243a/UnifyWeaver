@@ -19,6 +19,7 @@
 :- module(awk_bindings, [
     init_awk_bindings/0,
     awk_binding/5,              % Convenience: awk_binding(Pred, TargetName, Inputs, Outputs, Options)
+    awk_binding_include/2,      % awk_binding_include(Pred, LibFile)
     test_awk_bindings/0
 ]).
 
@@ -47,6 +48,25 @@ init_awk_bindings :-
 %
 awk_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(awk, Pred, TargetName, Inputs, Outputs, Options).
+
+%% awk_binding_include(?Pred, ?LibFile)
+%  Get the include library file required for an AWK binding.
+awk_binding_include(Pred, LibFile) :-
+    awk_binding(Pred, _, _, _, Options),
+    member(include(LibFile), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- awk_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined AWK bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- awk_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(awk, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % CORE BUILT-IN BINDINGS

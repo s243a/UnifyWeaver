@@ -14,6 +14,7 @@
 :- module(jython_bindings, [
     init_jython_bindings/0,
     jy_binding/5,               % Convenience: jy_binding(Pred, TargetName, Inputs, Outputs, Options)
+    jy_binding_import/2,        % jy_binding_import(Pred, Import)
     test_jython_bindings/0
 ]).
 
@@ -44,6 +45,25 @@ init_jython_bindings :-
 %  Query Jython bindings (Target=jython implied).
 jy_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(jython, Pred, TargetName, Inputs, Outputs, Options).
+
+%% jy_binding_import(?Pred, ?Import)
+%  Get the import required for a Jython binding.
+jy_binding_import(Pred, Import) :-
+    jy_binding(Pred, _, _, _, Options),
+    member(import(Import), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- jy_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined Jython bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- jy_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(jython, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % PYTHON-COMPATIBLE BINDINGS

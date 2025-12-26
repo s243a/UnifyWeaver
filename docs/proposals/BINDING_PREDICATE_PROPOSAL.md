@@ -354,6 +354,19 @@ Users can declare their own bindings directly in Prolog code using target-specif
 | Python | `:- py_binding(...)` | ✅ Implemented |
 | Rust | `:- rs_binding(...)` | ✅ Implemented |
 | C# | `:- cs_binding(...)` | ✅ Implemented |
+| Java | `:- java_binding(...)` | ✅ Implemented |
+| Kotlin | `:- kt_binding(...)` | ✅ Implemented |
+| Scala | `:- scala_binding(...)` | ✅ Implemented |
+| Clojure | `:- clj_binding(...)` | ✅ Implemented |
+| Jython | `:- jy_binding(...)` | ✅ Implemented |
+| F# | `:- fs_binding(...)` | ✅ Implemented |
+| VB.NET | `:- vb_binding(...)` | ✅ Implemented |
+| C | `:- c_binding(...)` | ✅ Implemented |
+| C++ | `:- cpp_binding(...)` | ✅ Implemented |
+| LLVM | `:- llvm_binding(...)` | ✅ Implemented |
+| Bash | `:- bash_binding(...)` | ✅ Implemented |
+| PowerShell | `:- ps_binding(...)` | ✅ Implemented |
+| AWK | `:- awk_binding(...)` | ✅ Implemented |
 
 ### Syntax
 

@@ -10,6 +10,7 @@
 :- module(scala_bindings, [
     init_scala_bindings/0,
     scala_binding/5,
+    scala_binding_import/2,      % scala_binding_import(Pred, Import)
     test_scala_bindings/0
 ]).
 
@@ -26,6 +27,25 @@ init_scala_bindings :-
 %% scala_binding(?Pred, ?TargetName, ?Inputs, ?Outputs, ?Options)
 scala_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(scala, Pred, TargetName, Inputs, Outputs, Options).
+
+%% scala_binding_import(?Pred, ?Import)
+%  Get the import required for a Scala binding.
+scala_binding_import(Pred, Import) :-
+    scala_binding(Pred, _, _, _, Options),
+    member(import(Import), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- scala_binding(Pred, TargetName, Inputs, Outputs, Options)
+%  Directive for user-defined Scala bindings.
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- scala_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(scala, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % OPTION/EITHER BINDINGS
