@@ -267,10 +267,15 @@ compile_prolog_to_pure_powershell(Predicate, Options, PowerShellCode) :-
             member(H-Body, Clauses),
             Body \= true
         ->  format('[PowerShell Pure] Type: rule with body~n', []),
-            % Try binding-aware compilation first, fall back to standard
-            (   compile_rule_with_bindings(Pred, Arity, H, Body, Options, PowerShellCode)
-            ->  true
-            ;   compile_rule_to_powershell(Pred, Arity, H, Body, Options, PowerShellCode)
+            % Check for outer join patterns first
+            (   has_ps_outer_join(Body)
+            ->  format('[PowerShell Pure] Detected outer join pattern~n', []),
+                compile_outer_join_to_powershell(Pred, Arity, H, Body, Options, PowerShellCode)
+            ;   % Try binding-aware compilation, fall back to standard
+                (   compile_rule_with_bindings(Pred, Arity, H, Body, Options, PowerShellCode)
+                ->  true
+                ;   compile_rule_to_powershell(Pred, Arity, H, Body, Options, PowerShellCode)
+                )
             )
         ;   format('[PowerShell Pure] Error: No clauses found~n', []),
             fail
@@ -731,6 +736,423 @@ body_to_list_ps((A, B), [A|Rest]) :- !,
     body_to_list_ps(B, Rest).
 body_to_list_ps(true, []) :- !.
 body_to_list_ps(Goal, [Goal]).
+
+%% ============================================================================
+%% OUTER JOIN SUPPORT (LEFT, RIGHT, FULL OUTER)
+%% ============================================================================
+%%
+%% Detects and compiles outer join patterns:
+%%   LEFT JOIN:  (LeftGoals, (RightGoal ; X = null))
+%%   RIGHT JOIN: ((LeftGoal ; X = null), RightGoals)
+%%   FULL OUTER: ((L ; L = null), (R ; R = null))
+%%
+
+%% has_ps_outer_join(+Body)
+%  Check if body contains an outer join pattern
+has_ps_outer_join(Body) :-
+    (   is_ps_left_join_pattern(Body)
+    ;   is_ps_right_join_pattern(Body)
+    ;   is_ps_full_outer_join_pattern(Body)
+    ), !.
+
+%% is_ps_left_join_pattern(+Body)
+%  LEFT JOIN: Right side has optional match with null fallback
+is_ps_left_join_pattern(Body) :-
+    \+ is_ps_right_join_pattern(Body),
+    \+ is_ps_full_outer_join_pattern(Body),
+    find_ps_disjunction_with_null(Body, _).
+
+%% is_ps_right_join_pattern(+Body)
+%  RIGHT JOIN: Disjunction at the start of body
+is_ps_right_join_pattern(Body) :-
+    \+ is_ps_full_outer_join_pattern(Body),
+    Body = ((LeftGoal ; LeftFallback), _RestGoals),
+    is_ps_table_goal(LeftGoal),
+    contains_ps_null_binding(LeftFallback).
+
+%% is_ps_full_outer_join_pattern(+Body)
+%  FULL OUTER: Both sides have optional matches
+is_ps_full_outer_join_pattern(Body) :-
+    Body = ((LeftGoal ; LeftFallback), (RightGoal ; RightFallback)),
+    is_ps_table_goal(LeftGoal),
+    is_ps_table_goal(RightGoal),
+    contains_ps_null_binding(LeftFallback),
+    contains_ps_null_binding(RightFallback).
+
+%% find_ps_disjunction_with_null(+Body, -Disjunction)
+%  Find a disjunction where one branch contains null binding
+find_ps_disjunction_with_null((Goal ; Fallback), (Goal ; Fallback)) :-
+    contains_ps_null_binding(Fallback), !.
+find_ps_disjunction_with_null((A, B), Disj) :-
+    (   find_ps_disjunction_with_null(A, Disj)
+    ;   find_ps_disjunction_with_null(B, Disj)
+    ), !.
+
+%% contains_ps_null_binding(+Term)
+%  Check if term contains a null binding (X = null or X = '')
+contains_ps_null_binding(_ = null) :- !.
+contains_ps_null_binding(_ = '') :- !.
+contains_ps_null_binding(_ = $null) :- !.
+contains_ps_null_binding((A, _)) :- contains_ps_null_binding(A), !.
+contains_ps_null_binding((_, B)) :- contains_ps_null_binding(B), !.
+
+%% is_ps_table_goal(+Goal)
+%  Check if goal is a table/fact lookup (not a builtin)
+is_ps_table_goal(Goal) :-
+    Goal \= (_ = _),
+    Goal \= (_ \= _),
+    Goal \= (_ < _),
+    Goal \= (_ > _),
+    Goal \= (_ =< _),
+    Goal \= (_ >= _),
+    Goal \= (_ is _),
+    Goal \= true,
+    Goal \= fail,
+    Goal \= !,
+    Goal \= (_ ; _),
+    Goal \= (\+ _),
+    Goal \= not(_),
+    callable(Goal).
+
+%% compile_outer_join_to_powershell(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%  Compile outer join patterns to PowerShell
+compile_outer_join_to_powershell(Pred, Arity, Head, Body, Options, Code) :-
+    (   is_ps_full_outer_join_pattern(Body)
+    ->  compile_ps_full_outer_join(Pred, Arity, Head, Body, Options, Code)
+    ;   is_ps_right_join_pattern(Body)
+    ->  compile_ps_right_join(Pred, Arity, Head, Body, Options, Code)
+    ;   is_ps_left_join_pattern(Body)
+    ->  compile_ps_left_join(Pred, Arity, Head, Body, Options, Code)
+    ).
+
+%% compile_ps_left_join(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%  Compile LEFT JOIN to PowerShell using Group-Object and Where-Object
+compile_ps_left_join(Pred, Arity, _Head, Body, Options, Code) :-
+    atom_string(Pred, PredStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+
+    % Extract left and right predicates from the pattern
+    extract_ps_left_join_parts(Body, LeftPred, RightPred, JoinVar),
+    atom_string(LeftPred, LeftPredStr),
+    atom_string(RightPred, RightPredStr),
+    atom_string(JoinVar, JoinVarStr),
+
+    % Get argument names
+    get_arg_names_from_options(Arity, Options, ArgNames),
+    (   ArgNames = [N1, N2|_]
+    ->  atom_string(N1, N1Str), atom_string(N2, N2Str)
+    ;   N1Str = "X", N2Str = "Y"
+    ),
+
+    format(string(Code),
+'# Generated PowerShell Script - LEFT OUTER JOIN
+# Predicate: ~w/~w
+# Generated: ~w
+# Pattern: LEFT JOIN ~w with ~w on ~w
+
+function ~w {
+    param([string]$X, [string]$Y)
+
+    # Load facts from both relations
+    $left = ~w
+    $right = ~w
+
+    # Build right-side lookup hashtable for join
+    $rightLookup = @{}
+    foreach ($r in $right) {
+        $key = $r.~w
+        if (-not $rightLookup.ContainsKey($key)) {
+            $rightLookup[$key] = @()
+        }
+        $rightLookup[$key] += $r
+    }
+
+    # LEFT OUTER JOIN - all left records, matched or unmatched
+    $results = foreach ($l in $left) {
+        $key = $l.~w
+        if ($rightLookup.ContainsKey($key)) {
+            # Matched - emit joined records
+            foreach ($r in $rightLookup[$key]) {
+                [PSCustomObject]@{
+                    ~w = $l.X
+                    ~w = if ($r) { $r.Y } else { $null }
+                }
+            }
+        } else {
+            # Unmatched - emit left with null right
+            [PSCustomObject]@{
+                ~w = $l.X
+                ~w = $null
+            }
+        }
+    }
+
+    # Apply filters
+    if ($X -and $Y) {
+        $results | Where-Object { $_.~w -eq $X -and $_.~w -eq $Y }
+    } elseif ($X) {
+        $results | Where-Object { $_.~w -eq $X }
+    } elseif ($Y) {
+        $results | Where-Object { $_.~w -eq $Y }
+    } else {
+        $results
+    }
+}
+
+# Stream all results
+~w
+', [Pred, Arity, DateStr, LeftPredStr, RightPredStr, JoinVarStr,
+    PredStr, LeftPredStr, RightPredStr,
+    JoinVarStr, JoinVarStr,
+    N1Str, N2Str, N1Str, N2Str,
+    N1Str, N2Str, N1Str, N2Str,
+    PredStr]).
+
+%% compile_ps_right_join(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%  Compile RIGHT JOIN to PowerShell - swap left/right and use left join logic
+compile_ps_right_join(Pred, Arity, _Head, Body, Options, Code) :-
+    atom_string(Pred, PredStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+
+    % Extract left and right predicates from the pattern
+    extract_ps_right_join_parts(Body, LeftPred, RightPred, JoinVar),
+    atom_string(LeftPred, LeftPredStr),
+    atom_string(RightPred, RightPredStr),
+    atom_string(JoinVar, JoinVarStr),
+
+    % Get argument names
+    get_arg_names_from_options(Arity, Options, ArgNames),
+    (   ArgNames = [N1, N2|_]
+    ->  atom_string(N1, N1Str), atom_string(N2, N2Str)
+    ;   N1Str = "X", N2Str = "Y"
+    ),
+
+    format(string(Code),
+'# Generated PowerShell Script - RIGHT OUTER JOIN
+# Predicate: ~w/~w
+# Generated: ~w
+# Pattern: RIGHT JOIN ~w with ~w on ~w
+
+function ~w {
+    param([string]$X, [string]$Y)
+
+    # Load facts from both relations
+    $left = ~w
+    $right = ~w
+
+    # Build left-side lookup hashtable for join
+    $leftLookup = @{}
+    foreach ($l in $left) {
+        $key = $l.~w
+        if (-not $leftLookup.ContainsKey($key)) {
+            $leftLookup[$key] = @()
+        }
+        $leftLookup[$key] += $l
+    }
+
+    # RIGHT OUTER JOIN - all right records, matched or unmatched
+    $results = foreach ($r in $right) {
+        $key = $r.~w
+        if ($leftLookup.ContainsKey($key)) {
+            # Matched - emit joined records
+            foreach ($l in $leftLookup[$key]) {
+                [PSCustomObject]@{
+                    ~w = if ($l) { $l.X } else { $null }
+                    ~w = $r.Y
+                }
+            }
+        } else {
+            # Unmatched - emit null left with right
+            [PSCustomObject]@{
+                ~w = $null
+                ~w = $r.Y
+            }
+        }
+    }
+
+    # Apply filters
+    if ($X -and $Y) {
+        $results | Where-Object { $_.~w -eq $X -and $_.~w -eq $Y }
+    } elseif ($X) {
+        $results | Where-Object { $_.~w -eq $X }
+    } elseif ($Y) {
+        $results | Where-Object { $_.~w -eq $Y }
+    } else {
+        $results
+    }
+}
+
+# Stream all results
+~w
+', [Pred, Arity, DateStr, LeftPredStr, RightPredStr, JoinVarStr,
+    PredStr, LeftPredStr, RightPredStr,
+    JoinVarStr, JoinVarStr,
+    N1Str, N2Str, N1Str, N2Str,
+    N1Str, N2Str, N1Str, N2Str,
+    PredStr]).
+
+%% compile_ps_full_outer_join(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%  Compile FULL OUTER JOIN to PowerShell
+compile_ps_full_outer_join(Pred, Arity, _Head, Body, Options, Code) :-
+    atom_string(Pred, PredStr),
+    get_time(Timestamp),
+    format_time(string(DateStr), '%Y-%m-%d %H:%M:%S', Timestamp),
+
+    % Extract predicates from FULL OUTER pattern
+    extract_ps_full_outer_parts(Body, LeftPred, RightPred, JoinVar),
+    atom_string(LeftPred, LeftPredStr),
+    atom_string(RightPred, RightPredStr),
+    atom_string(JoinVar, JoinVarStr),
+
+    % Get argument names
+    get_arg_names_from_options(Arity, Options, ArgNames),
+    (   ArgNames = [N1, N2|_]
+    ->  atom_string(N1, N1Str), atom_string(N2, N2Str)
+    ;   N1Str = "X", N2Str = "Y"
+    ),
+
+    format(string(Code),
+'# Generated PowerShell Script - FULL OUTER JOIN
+# Predicate: ~w/~w
+# Generated: ~w
+# Pattern: FULL OUTER JOIN ~w with ~w on ~w
+
+function ~w {
+    param([string]$X, [string]$Y)
+
+    # Load facts from both relations
+    $left = ~w
+    $right = ~w
+
+    # Build lookup hashtables for both sides
+    $rightLookup = @{}
+    $rightMatched = @{}
+    foreach ($r in $right) {
+        $key = $r.~w
+        if (-not $rightLookup.ContainsKey($key)) {
+            $rightLookup[$key] = @()
+        }
+        $rightLookup[$key] += $r
+        $rightMatched[$key] = $false
+    }
+
+    $results = @()
+
+    # Process left side - get matches and unmatched left
+    foreach ($l in $left) {
+        $key = $l.~w
+        if ($rightLookup.ContainsKey($key)) {
+            # Matched - emit joined records
+            $rightMatched[$key] = $true
+            foreach ($r in $rightLookup[$key]) {
+                $results += [PSCustomObject]@{
+                    ~w = $l.X
+                    ~w = $r.Y
+                }
+            }
+        } else {
+            # Unmatched left - emit with null right
+            $results += [PSCustomObject]@{
+                ~w = $l.X
+                ~w = $null
+            }
+        }
+    }
+
+    # Add unmatched right records
+    foreach ($r in $right) {
+        $key = $r.~w
+        if (-not $rightMatched[$key]) {
+            $results += [PSCustomObject]@{
+                ~w = $null
+                ~w = $r.Y
+            }
+            $rightMatched[$key] = $true  # Prevent duplicates
+        }
+    }
+
+    # Apply filters
+    if ($X -and $Y) {
+        $results | Where-Object { $_.~w -eq $X -and $_.~w -eq $Y }
+    } elseif ($X) {
+        $results | Where-Object { $_.~w -eq $X }
+    } elseif ($Y) {
+        $results | Where-Object { $_.~w -eq $Y }
+    } else {
+        $results
+    }
+}
+
+# Stream all results
+~w
+', [Pred, Arity, DateStr, LeftPredStr, RightPredStr, JoinVarStr,
+    PredStr, LeftPredStr, RightPredStr,
+    JoinVarStr, JoinVarStr,
+    N1Str, N2Str, N1Str, N2Str,
+    JoinVarStr, N1Str, N2Str,
+    N1Str, N2Str, N1Str, N2Str,
+    PredStr]).
+
+%% extract_ps_left_join_parts(+Body, -LeftPred, -RightPred, -JoinVar)
+%  Extract predicates and join variable from LEFT JOIN pattern
+extract_ps_left_join_parts(Body, LeftPred, RightPred, JoinVar) :-
+    % Pattern: (left(X, Y), (right(Y, Z) ; Z = null))
+    find_ps_disjunction_with_null(Body, (RightGoal ; _Fallback)),
+    RightGoal =.. [RightPred|RightArgs],
+    % Find left goal - first goal before the disjunction
+    extract_ps_left_goal(Body, LeftGoal),
+    LeftGoal =.. [LeftPred|LeftArgs],
+    % Find shared variable (join key)
+    find_ps_shared_var(LeftArgs, RightArgs, JoinVar).
+
+%% extract_ps_right_join_parts(+Body, -LeftPred, -RightPred, -JoinVar)
+%  Extract predicates from RIGHT JOIN pattern
+extract_ps_right_join_parts(((LeftGoal ; _), RestBody), LeftPred, RightPred, JoinVar) :-
+    LeftGoal =.. [LeftPred|LeftArgs],
+    extract_ps_first_table_goal(RestBody, RightGoal),
+    RightGoal =.. [RightPred|RightArgs],
+    find_ps_shared_var(LeftArgs, RightArgs, JoinVar).
+
+%% extract_ps_full_outer_parts(+Body, -LeftPred, -RightPred, -JoinVar)
+%  Extract predicates from FULL OUTER pattern
+extract_ps_full_outer_parts(((LeftGoal ; _), (RightGoal ; _)), LeftPred, RightPred, JoinVar) :-
+    LeftGoal =.. [LeftPred|LeftArgs],
+    RightGoal =.. [RightPred|RightArgs],
+    find_ps_shared_var(LeftArgs, RightArgs, JoinVar).
+
+%% extract_ps_left_goal(+Body, -LeftGoal)
+%  Extract the first table goal from body (before any disjunction)
+extract_ps_left_goal((A, _B), LeftGoal) :-
+    (   is_ps_table_goal(A)
+    ->  LeftGoal = A
+    ;   A = (_, _)
+    ->  extract_ps_left_goal(A, LeftGoal)
+    ), !.
+extract_ps_left_goal(Goal, Goal) :-
+    is_ps_table_goal(Goal).
+
+%% extract_ps_first_table_goal(+Body, -Goal)
+%  Extract the first table goal from body
+extract_ps_first_table_goal((A, _), Goal) :-
+    (   is_ps_table_goal(A)
+    ->  Goal = A
+    ;   extract_ps_first_table_goal(A, Goal)
+    ), !.
+extract_ps_first_table_goal(Goal, Goal) :-
+    is_ps_table_goal(Goal).
+
+%% find_ps_shared_var(+Args1, +Args2, -SharedVar)
+%  Find a variable that appears in both argument lists
+find_ps_shared_var(Args1, Args2, SharedVar) :-
+    member(Var, Args1),
+    var(Var),
+    member(Var2, Args2),
+    Var == Var2,
+    !,
+    term_to_atom(Var, SharedVar).
+find_ps_shared_var(_, _, 'Y').  % Default fallback
 
 %% ============================================================================
 %% PROCEDURAL RECURSION
