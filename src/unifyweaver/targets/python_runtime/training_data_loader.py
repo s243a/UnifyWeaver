@@ -3,7 +3,25 @@ Load training data from JSONL files and convert to embeddings.
 
 Supports caching embeddings to disk to avoid recomputation.
 
-## Embeddings Cache
+## Pre-computed Embeddings (Hugging Face)
+
+Pre-computed embeddings are available on Hugging Face Hub:
+https://huggingface.co/datasets/s243a/unifyweaver-embeddings
+
+```python
+import numpy as np
+from huggingface_hub import hf_hub_download
+
+path = hf_hub_download(
+    repo_id="s243a/unifyweaver-embeddings",
+    filename="tailored_all-minilm_384d_v1_2025-12-25.npz"
+)
+data = np.load(path)
+q_embeddings = data["q_embeddings"]  # (644, 384)
+a_embeddings = data["a_embeddings"]  # (644, 384)
+```
+
+## Local Embeddings Cache
 
 Embeddings are cached to `/context/embeddings_cache/` to avoid re-running
 the embedding model on each execution.
