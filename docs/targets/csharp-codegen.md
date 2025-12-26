@@ -1,8 +1,9 @@
 # C# Code Generation Target (`target(csharp_codegen)`)
 
-`csharp_codegen` emits idiomatic C# source files that mirror the Bash streaming templates. It builds on the existing `csharp_stream_target.pl` module and is intended for scenarios where developers want tangible .NET source artefacts that can be compiled, debugged, and extended manually.
+`csharp_codegen` (and its native implementation `csharp_native`) emits idiomatic C# source files that mirror the Bash streaming templates. It builds on the existing `csharp_native_target.pl` module and is intended for scenarios where developers want tangible .NET source artefacts that can be compiled, debugged, and extended manually.
 
 ## Current Scope
+- Recursive predicates: Supported via "Procedural" mode using method-to-method calls and `yield return`. Memoization is used to ensure termination on cyclic data.
 - Non-recursive predicates: Facts, single-rule bodies, and multi-clause unions translate to LINQ pipelines that operate on in-memory arrays.
 - Dedup semantics: Follows the Bash model—`Distinct()` for `unique(true)`, ordered variants are pending.
 - Generated structure: Each predicate becomes a static class in the `UnifyWeaver.Generated` namespace with:
@@ -33,7 +34,6 @@
 - Embedding: Easy to ship as part of a larger .NET application, enabling direct function calls without spawning processes.
 
 ## Limitations (as of current design)
-- Recursion: Not yet supported beyond the streaming case. Recursive predicates fall back to Bash or the query runtime.
 - Code size: Each predicate generates a substantial block of C#; larger rule sets may benefit more from the Query Runtime’s shared engine.
 - Flexibility: Regenerating code is required for any change (e.g., new dedup strategies), whereas the query runtime can evolve independently.
 

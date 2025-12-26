@@ -12,7 +12,7 @@
 :- use_module(library(process)).
 :- use_module(library(uuid)).
 :- use_module(library(csharp_query_target)).
-:- use_module(library(csharp_stream_target)).
+:- use_module(library(csharp_native_target)).
 :- use_module('src/unifyweaver/core/dynamic_source_compiler').
 :- use_module('src/unifyweaver/sources').
 :- use_module('src/unifyweaver/sources/csv_source').

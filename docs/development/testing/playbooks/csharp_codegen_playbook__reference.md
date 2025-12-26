@@ -106,7 +106,7 @@ Success: C# program compiled and executed successfully.
 |---------|--------------|-----|
 | "No compatible .NET SDK found" | .NET SDK not installed | Install .NET SDK 6.0+ |
 | "Could not find swipl.exe" (PowerShell) | SWI-Prolog not in PATH | Add swipl to PATH or modify script |
-| "arguments not sufficiently instantiated" | Module loading issue | Verify `csharp_stream_target` module loads |
+| "arguments not sufficiently instantiated" | Module loading issue | Verify `csharp_native_target` module loads |
 | Compilation errors | Missing module or facts | Check Prolog script syntax |
 | Output missing relationships | Fact definitions incorrect | Verify parent/2 facts in generated script |
 
@@ -114,5 +114,5 @@ Success: C# program compiled and executed successfully.
 
 - Agent-facing playbook: [playbooks/csharp_codegen_playbook.md](../../../../playbooks/csharp_codegen_playbook.md)
 - Example records: `playbooks/examples_library/csharp_nonrecursive_examples.md`
-- C# stream target module: `src/unifyweaver/targets/csharp_stream_target.pl`
+- C# native target module: `src/unifyweaver/targets/csharp_native_target.pl`
 - Extraction skill: `skills/skill_extract_records.md`

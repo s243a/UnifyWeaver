@@ -178,6 +178,7 @@ register_builtin_targets :-
 
     % .NET family - can share process
     register_target(csharp, dotnet, [compiled, streaming, linq, async]),
+    register_target(csharp_native, dotnet, [compiled, streaming, linq, procedural, recursion]),
     register_target(fsharp, dotnet, [compiled, streaming, functional, linq]),
     register_target(powershell, dotnet, [scripting, streaming, system_admin, dotnet_interop]),
 
@@ -227,6 +228,7 @@ register_target_modules :-
     
     % .NET
     target_module(csharp, csharp_target),
+    target_module(csharp_native, csharp_native_target),
     target_module(fsharp, fsharp_target),
     target_module(powershell, powershell_target),
     
