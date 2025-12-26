@@ -22,6 +22,7 @@
 :- module(rust_bindings, [
     init_rust_bindings/0,
     rs_binding/5,               % Convenience: rs_binding(Pred, TargetName, Inputs, Outputs, Options)
+    rs_binding_import/2,        % rs_binding_import(Pred, Import) - get required import/use
     test_rust_bindings/0
 ]).
 
@@ -53,6 +54,33 @@ init_rust_bindings :-
 %
 rs_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(rust, Pred, TargetName, Inputs, Outputs, Options).
+
+%% rs_binding_import(?Pred, ?Import)
+%
+%  Get the use/crate required for a Rust binding.
+%
+rs_binding_import(Pred, Import) :-
+    rs_binding(Pred, _, _, _, Options),
+    member(import(Import), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- rs_binding(Pred, TargetName, Inputs, Outputs, Options)
+%
+%  Directive for user-defined Rust bindings.
+%  Allows users to declare bindings in their Prolog code.
+%
+%  Example:
+%    :- rs_binding(my_hash/2, 'my_crate::hash', [string], [string], [import('my_crate')]).
+%
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- rs_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(rust, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % CORE BUILT-IN BINDINGS

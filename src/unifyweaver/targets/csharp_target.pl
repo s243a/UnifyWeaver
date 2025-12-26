@@ -21,7 +21,10 @@
     compile_csharp_enhanced_pipeline/3, % +Stages, +Options, -CSharpCode
     csharp_enhanced_helpers/1,          % -Code
     generate_csharp_enhanced_connector/3, % +Stages, +PipelineName, -Code
-    test_csharp_enhanced_chaining/0     % Test enhanced pipeline chaining
+    test_csharp_enhanced_chaining/0,    % Test enhanced pipeline chaining
+    % Component system helpers (ported from Go target)
+    collect_declared_component/2,        % +Category, +Name - track component for compilation
+    compile_collected_components/1       % -Code - compile all collected components
 ]).
 
 :- use_module(library(apply)).
@@ -38,12 +41,45 @@
 :- use_module('../core/pipeline_validation').
 :- use_module(common_generator).
 
+% Component system integration (ported from Go target)
+:- use_module('../core/component_registry').
+:- use_module('csharp_runtime/custom_csharp', []).
+
 :- dynamic query_materialized_relation/1.
 
+% Track collected components for code generation
+:- dynamic collected_component/2.
+
 %% init_csharp_target
-%  Initialize the C# target by loading bindings.
+%  Initialize the C# target by loading bindings and clearing component state.
 init_csharp_target :-
+    retractall(collected_component(_, _)),
     init_csharp_bindings.
+
+% ============================================================================
+% COMPONENT SYSTEM HELPERS (ported from Go target)
+% ============================================================================
+
+%% collect_declared_component(+Category, +Name)
+%  Track a component that needs to be compiled into output code.
+%  Ensures each component is only collected once.
+collect_declared_component(Category, Name) :-
+    (   collected_component(Category, Name)
+    ->  true
+    ;   assertz(collected_component(Category, Name))
+    ).
+
+%% compile_collected_components(-Code)
+%  Compile all collected components and concatenate their code.
+compile_collected_components(Code) :-
+    findall(CompCode, (
+        collected_component(Category, Name),
+        component_registry:compile_component(Category, Name, [], CompCode)
+    ), CompCodes),
+    (   CompCodes = []
+    ->  Code = ''
+    ;   atomic_list_concat(CompCodes, '\n\n', Code)
+    ).
 
 %% Query-mode mode declarations (input/output)
 %  Reads user:mode/1 declarations, e.g. `mode(fib(+, -)).`.

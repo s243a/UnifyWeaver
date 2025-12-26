@@ -71,10 +71,38 @@
 :- use_module('../core/service_validation').
 :- use_module('../core/optimizer').
 
+% Component system integration (ported from Go target)
+:- use_module('../core/component_registry').
+:- use_module('rust_runtime/custom_rust', []).
+
+% Track collected components for code generation
+:- dynamic collected_component/2.
+
 %% init_rust_target
-%  Initialize the Rust target by loading bindings.
+%  Initialize the Rust target by loading bindings and components.
 init_rust_target :-
+    retractall(collected_component(_, _)),
     init_rust_bindings.
+
+%% collect_declared_component(+Category, +Name)
+%  Record that a component is used in the code
+collect_declared_component(Category, Name) :-
+    (   collected_component(Category, Name)
+    ->  true
+    ;   assertz(collected_component(Category, Name))
+    ).
+
+%% compile_collected_components(-Code)
+%  Generate Rust code for all collected components
+compile_collected_components(Code) :-
+    findall(CompCode, (
+        collected_component(Category, Name),
+        component_registry:compile_component(Category, Name, [], CompCode)
+    ), CompCodes),
+    (   CompCodes = []
+    ->  Code = ''
+    ;   atomic_list_concat(CompCodes, '\n\n', Code)
+    ).
 
 %% ============================================ 
 %% JSON SCHEMA SUPPORT

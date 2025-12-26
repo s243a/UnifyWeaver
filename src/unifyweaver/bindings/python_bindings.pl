@@ -26,6 +26,7 @@
 :- module(python_bindings, [
     init_python_bindings/0,
     py_binding/5,               % Convenience: py_binding(Pred, TargetName, Inputs, Outputs, Options)
+    py_binding_import/2,        % py_binding_import(Pred, Import) - get required import
     test_python_bindings/0
 ]).
 
@@ -60,6 +61,33 @@ init_python_bindings :-
 %
 py_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(python, Pred, TargetName, Inputs, Outputs, Options).
+
+%% py_binding_import(?Pred, ?Import)
+%
+%  Get the import required for a Python binding.
+%
+py_binding_import(Pred, Import) :-
+    py_binding(Pred, _, _, _, Options),
+    member(import(Import), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- py_binding(Pred, TargetName, Inputs, Outputs, Options)
+%
+%  Directive for user-defined Python bindings.
+%  Allows users to declare bindings in their Prolog code.
+%
+%  Example:
+%    :- py_binding(my_func/2, 'my_module.my_func', [string], [int], [import('my_module')]).
+%
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- py_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(python, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % CORE BUILT-IN BINDINGS

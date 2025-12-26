@@ -21,6 +21,7 @@
 :- module(csharp_bindings, [
     init_csharp_bindings/0,
     cs_binding/5,               % Convenience: cs_binding(Pred, TargetName, Inputs, Outputs, Options)
+    cs_binding_using/2,         % cs_binding_using(Pred, Using) - get required using directive
     test_csharp_bindings/0
 ]).
 
@@ -51,6 +52,33 @@ init_csharp_bindings :-
 %
 cs_binding(Pred, TargetName, Inputs, Outputs, Options) :-
     binding(csharp, Pred, TargetName, Inputs, Outputs, Options).
+
+%% cs_binding_using(?Pred, ?Using)
+%
+%  Get the using directive required for a C# binding.
+%
+cs_binding_using(Pred, Using) :-
+    cs_binding(Pred, _, _, _, Options),
+    member(using(Using), Options).
+
+% ============================================================================
+% DIRECTIVE SUPPORT
+% ============================================================================
+
+%% :- cs_binding(Pred, TargetName, Inputs, Outputs, Options)
+%
+%  Directive for user-defined C# bindings.
+%  Allows users to declare bindings in their Prolog code.
+%
+%  Example:
+%    :- cs_binding(my_hash/2, 'MyLib.Hash', [string], [string], [using('MyLib')]).
+%
+:- multifile user:term_expansion/2.
+
+user:term_expansion(
+    (:- cs_binding(Pred, TargetName, Inputs, Outputs, Options)),
+    (:- initialization(binding_registry:declare_binding(csharp, Pred, TargetName, Inputs, Outputs, Options)))
+).
 
 % ============================================================================
 % CORE BUILT-IN BINDINGS
