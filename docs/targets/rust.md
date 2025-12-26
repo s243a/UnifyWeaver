@@ -57,7 +57,47 @@ Rust programs compile to optimized native binaries with zero-cost abstractions, 
 - **Input:** Parse JSONL streams with serde_json
 - **Output:** Generate JSON/JSONL output
 - **Field Extraction:** Type-safe field access
-- **Schema Validation:** Optional schema enforcement
+- **Schema Validation:** Comprehensive schema enforcement
+
+### Schema Validation (NEW - 2025-12-25)
+
+Define schemas with field constraints and generate validation code:
+
+```prolog
+% Define schema with constraints
+:- json_schema(user, [
+    field(name, string, [required, min(1), max(100)]),
+    field(age, integer, [required, min(0), max(150)]),
+    field(email, string, [required, format(email)]),
+    field(bio, string, [optional, max(500)]),
+    field(address, object(address_schema), [optional])
+]).
+
+:- json_schema(address_schema, [
+    field(street, string, [required]),
+    field(city, string, [required]),
+    field(zip, string, [format(date)])  % or other format
+]).
+```
+
+**Supported Types:**
+- `string`, `integer`, `float`, `boolean`, `any`
+- `array`, `array(Type)` - Arrays with optional element type
+- `object`, `object(SchemaName)` - Nested schema validation
+
+**Field Options:**
+- `required` - Field must be present
+- `optional` - Field may be absent
+- `min(N)` - Minimum value (numbers) or length (strings)
+- `max(N)` - Maximum value (numbers) or length (strings)
+- `format(email)` - Email format validation
+- `format(date)` - Date format validation (YYYY-MM-DD)
+
+**Generate Validator:**
+```prolog
+?- generate_rust_schema_validator(user, Code).
+% Generates: fn validate_user(data: &serde_json::Value) -> bool { ... }
+```
 
 ### Observability (NEW - 2025-12-25)
 

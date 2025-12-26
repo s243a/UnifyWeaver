@@ -85,26 +85,55 @@ init_rust_target :-
 json_schema(SchemaName, Fields) :-
     (   validate_schema_fields(Fields)
     ->  retractall(json_schema_def(SchemaName, _)),
-        assertz(json_schema_def(SchemaName, Fields))
+        assertz(json_schema_def(SchemaName, Fields)),
+        format('Schema defined: ~w with ~w fields~n', [SchemaName, Fields])
     ;   format('ERROR: Invalid schema definition for ~w: ~w~n', [SchemaName, Fields]),
         fail
     ).
 
+%% validate_schema_fields(+Fields)
+%  Validate that all fields have correct format: field(Name, Type) or field(Name, Type, Options)
 validate_schema_fields([]).
 validate_schema_fields([field(Name, Type)|Rest]) :-
     atom(Name),
     valid_json_type(Type),
     validate_schema_fields(Rest).
+validate_schema_fields([field(Name, Type, Options)|Rest]) :-
+    atom(Name),
+    valid_json_type(Type),
+    is_list(Options),
+    validate_field_options(Options),
+    validate_schema_fields(Rest).
 validate_schema_fields([Invalid|_]) :-
     format('ERROR: Invalid field specification: ~w~n', [Invalid]),
     fail.
 
+%% validate_field_options(+Options)
+%  Validate field options: min(N), max(N), format(F), required, optional
+validate_field_options([]).
+validate_field_options([Option|Rest]) :-
+    validate_field_option(Option),
+    validate_field_options(Rest).
+
+validate_field_option(min(N)) :- number(N).
+validate_field_option(max(N)) :- number(N).
+validate_field_option(format(F)) :- atom(F).
+validate_field_option(required).
+validate_field_option(optional).
+validate_field_option(Invalid) :-
+    format('ERROR: Invalid field option: ~w~n', [Invalid]),
+    fail.
+
+%% valid_json_type(+Type)
+%  Check if a type is valid for JSON schemas
 valid_json_type(string).
 valid_json_type(integer).
 valid_json_type(float).
 valid_json_type(boolean).
 valid_json_type(array).
+valid_json_type(array(Type)) :- valid_json_type(Type).
 valid_json_type(object).
+valid_json_type(object(SchemaName)) :- atom(SchemaName).
 valid_json_type(any).
 
 get_json_schema(SchemaName, Fields) :-
@@ -113,10 +142,119 @@ get_json_schema(SchemaName, _) :-
     format('ERROR: Schema not found: ~w~n', [SchemaName]),
     fail.
 
+%% get_field_info(+SchemaName, +FieldName, -Type, -Options)
+%  Get the type and options of a specific field from a schema
+get_field_info(SchemaName, FieldName, Type, Options) :-
+    get_json_schema(SchemaName, Fields),
+    (   member(field(FieldName, Type, Options), Fields) -> true
+    ;   member(field(FieldName, Type), Fields) -> Options = []
+    ), !.
+get_field_info(SchemaName, FieldName, any, []) :-
+    format('WARNING: Field ~w not in schema ~w, defaulting to type ''any''~n', [FieldName, SchemaName]).
+
 get_field_type(SchemaName, FieldName, Type) :-
     get_json_schema(SchemaName, Fields),
-    member(field(FieldName, Type), Fields), !.
+    (   member(field(FieldName, Type, _), Fields) -> true
+    ;   member(field(FieldName, Type), Fields) -> true
+    ), !.
 get_field_type(_SchemaName, _FieldName, serde_json_value).
+
+%% ============================================
+%% SCHEMA VALIDATION CODE GENERATION
+%% ============================================
+
+%% generate_rust_schema_validator(+SchemaName, -Code)
+%  Generate a Rust function to validate a schema
+generate_rust_schema_validator(SchemaName, Code) :-
+    get_json_schema(SchemaName, Fields),
+    format(atom(FuncName), 'validate_~w', [SchemaName]),
+
+    findall(CheckCode, (
+        member(FieldDef, Fields),
+        generate_rust_field_check(FieldDef, CheckCode)
+    ), CheckCodes),
+    atomic_list_concat(CheckCodes, '\n', Body),
+
+    format(string(Code), '
+fn ~w(data: &serde_json::Value) -> bool {
+    let obj = match data.as_object() {
+        Some(o) => o,
+        None => return false,
+    };
+~s
+    true
+}', [FuncName, Body]).
+
+generate_rust_field_check(field(Name, Type, Options), Code) :- !,
+    generate_rust_field_check_logic(Name, Type, Options, Code).
+generate_rust_field_check(field(Name, Type), Code) :-
+    generate_rust_field_check_logic(Name, Type, [], Code).
+
+generate_rust_field_check_logic(Name, Type, Options, Code) :-
+    atom_string(Name, NameStr),
+    (   member(optional, Options) -> Optional = true ; Optional = false ),
+
+    % Type Check
+    (   Type = string -> TypeCheck = 'val.is_string()'
+    ;   Type = integer -> TypeCheck = 'val.is_i64() || val.is_u64()'
+    ;   Type = float -> TypeCheck = 'val.is_f64()'
+    ;   Type = boolean -> TypeCheck = 'val.is_boolean()'
+    ;   Type = array -> TypeCheck = 'val.is_array()'
+    ;   Type = array(_) -> TypeCheck = 'val.is_array()'
+    ;   Type = object -> TypeCheck = 'val.is_object()'
+    ;   Type = object(SubSchema) ->
+        format(atom(TypeCheck), 'val.is_object() && validate_~w(val)', [SubSchema])
+    ;   TypeCheck = 'true'  % any type
+    ),
+
+    % Generate constraint checks
+    generate_rust_validator_constraints(Type, Options, ConstraintCode),
+
+    % Build the validation code
+    (   Optional = true
+    ->  format(string(Code), '
+    if let Some(val) = obj.get("~s") {
+        if !(~s) { return false; }
+~s
+    }', [NameStr, TypeCheck, ConstraintCode])
+    ;   format(string(Code), '
+    match obj.get("~s") {
+        Some(val) => {
+            if !(~s) { return false; }
+~s
+        }
+        None => return false,
+    }', [NameStr, TypeCheck, ConstraintCode])
+    ).
+
+%% generate_rust_validator_constraints(+Type, +Options, -Code)
+%  Generate Rust constraint validation code
+generate_rust_validator_constraints(Type, Options, Code) :-
+    findall(Check,
+        (   member(Option, Options),
+            generate_rust_validator_check(Type, Option, Check)
+        ),
+        Checks),
+    atomic_list_concat(Checks, '\n', Code).
+
+generate_rust_validator_check(integer, min(Min), Check) :-
+    format(atom(Check), '        if val.as_i64().map(|v| v < ~w).unwrap_or(false) { return false; }', [Min]).
+generate_rust_validator_check(integer, max(Max), Check) :-
+    format(atom(Check), '        if val.as_i64().map(|v| v > ~w).unwrap_or(false) { return false; }', [Max]).
+generate_rust_validator_check(float, min(Min), Check) :-
+    format(atom(Check), '        if val.as_f64().map(|v| v < ~w).unwrap_or(false) { return false; }', [Min]).
+generate_rust_validator_check(float, max(Max), Check) :-
+    format(atom(Check), '        if val.as_f64().map(|v| v > ~w).unwrap_or(false) { return false; }', [Max]).
+generate_rust_validator_check(string, min(Min), Check) :-
+    format(atom(Check), '        if val.as_str().map(|s| s.len() < ~w).unwrap_or(false) { return false; }', [Min]).
+generate_rust_validator_check(string, max(Max), Check) :-
+    format(atom(Check), '        if val.as_str().map(|s| s.len() > ~w).unwrap_or(false) { return false; }', [Max]).
+generate_rust_validator_check(string, format(email), Check) :-
+    Check = '        if val.as_str().map(|s| !s.contains(\"@\")).unwrap_or(false) { return false; }'.
+generate_rust_validator_check(string, format(date), Check) :-
+    Check = '        // Date format validation (basic check for YYYY-MM-DD pattern)
+        if val.as_str().map(|s| s.len() != 10 || s.chars().nth(4) != Some(\'-\') || s.chars().nth(7) != Some(\'-\')).unwrap_or(false) { return false; }'.
+generate_rust_validator_check(_, _, '').
 
 %% ============================================
 %% SERVICE COMPILATION (Client-Server Phase 1)

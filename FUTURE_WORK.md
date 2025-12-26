@@ -167,11 +167,18 @@ Implemented:
 **Target:** Bash, C# Codegen, PowerShell
 **Effort:** Medium-High - complex for shell-based targets
 
-#### 8. Schema Validation for JSON
-**Status:** 📋 PLANNED
+#### 8. Schema Validation for JSON (Rust)
+**Status:** ✅ COMPLETE (2025-12-25)
 **Source:** Go target (comprehensive)
-**Target:** Rust, C#, others
-**Effort:** Medium
+**Target:** Rust target
+
+Implemented:
+- `field(Name, Type, Options)` - Field definitions with options
+- `min(N)`, `max(N)` - Numeric and string length constraints
+- `format(email)`, `format(date)` - Format validation
+- `required`, `optional` - Field presence requirements
+- `object(SchemaName)` - Nested schema validation
+- `generate_rust_schema_validator/2` - Code generation for validators
 
 ### Lower Priority (Specialized)
 
