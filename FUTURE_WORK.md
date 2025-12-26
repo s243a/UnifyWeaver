@@ -366,14 +366,14 @@ Ideas from the community are welcome! If you want to work on any of these:
 **Goal**: Enhance model capacity and accuracy for more complex or larger knowledge bases.
 **Related**: `docs/proposals/MULTI_HEAD_PROJECTION_THEORY.md`.
 
-### User-Friendly CLI Tool
-**Description**: Create a more streamlined command-line interface or sub-command (e.g., `unifyweaver search`) for accessing the semantic search functionality provided by `scripts/skills/lookup_example.py`.
-**Goal**: Improve developer experience and direct usability of the search feature.
+### User-Friendly CLI Tool (Completed)
+✅ **Implemented**: `./unifyweaver search` command available.
+- Wraps `scripts/skills/lookup_example.py` for easy access to semantic search.
 
-### Database Cleanup
-**Description**: Implement a utility to identify and purge "broken" clusters (those with imported structure but no associated embeddings) from the `lda.db` database. This occurred due to initial failures in the embedding process.
-**Goal**: Maintain a clean and consistent database state.
-**Related**: `scripts/migrate_to_lda_db.py`.
+### Database Cleanup (Completed)
+✅ **Implemented**: `scripts/cleanup_lda_db.py` utility.
+- Identifies and purges broken clusters (no embeddings) from `lda.db`.
+- Supports dry-run and forced deletion.
 
 ### Playbook Clarity Review
 **Description**: Review all updated playbooks (`playbooks/*_playbook.md`) for clarity and consistency in their instructions, especially regarding the new "Finding Examples" section. Ensure example IDs and semantic search queries are accurate and helpful.
