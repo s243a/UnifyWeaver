@@ -1,0 +1,131 @@
+{
+  "version": "1.0",
+  "description": "Held-out test set for Semantic Search Validation (Novel Queries)",
+  "notes": {
+    "query_lengths": "varied",
+    "purpose": "Validation only - DO NOT TRAIN ON THESE"
+  },
+  "embedding_models": ["all-MiniLM-L6-v2"],
+  "clusters": [
+    {
+      "id": "csv_data_source",
+      "queries": {
+        "novel": [
+          "load tabular data from file",
+          "process comma-separated values",
+          "import data from spreadsheet",
+          "ingest rows from flat file",
+          "read dataset with headers"
+        ]
+      }
+    },
+    {
+      "id": "mutual_recursion",
+      "queries": {
+        "novel": [
+          "two functions calling each other",
+          "alternating recursive calls",
+          "interdependent predicates",
+          "ping pong recursion pattern",
+          "cyclic dependency compilation"
+        ]
+      }
+    },
+    {
+      "id": "xml_python_source",
+      "queries": {
+        "novel": [
+          "process structured markup data",
+          "extract data from xml tags",
+          "use python for xml transformation",
+          "parse hierarchical document tree",
+          "ingest xml records with python"
+        ]
+      }
+    },
+    {
+      "id": "component_registry",
+      "queries": {
+        "novel": [
+          "manage system modules",
+          "plugin registration system",
+          "lazy loading components",
+          "centralized component definitions",
+          "instantiate registered extensions"
+        ]
+      }
+    },
+    {
+      "id": "lda_projection",
+      "queries": {
+        "novel": [
+          "transform search queries",
+          "improve vector search accuracy",
+          "embedding space transformation",
+          "align query and document vectors",
+          "learn semantic mapping matrix"
+        ]
+      }
+    },
+    {
+      "id": "sqlite_source",
+      "queries": {
+        "novel": [
+          "run SQL against local database",
+          "fetch records from db file",
+          "database query integration",
+          "select rows from sqlite table",
+          "relational data ingestion"
+        ]
+      }
+    },
+    {
+      "id": "http_source",
+      "queries": {
+        "novel": [
+          "get data from web api",
+          "fetch remote endpoint",
+          "REST service integration",
+          "download json from url",
+          "consume external webservice"
+        ]
+      }
+    },
+    {
+      "id": "json_source",
+      "queries": {
+        "novel": [
+          "filter nested objects",
+          "extract array elements",
+          "parse config files",
+          "query json document structure",
+          "flatten json hierarchy"
+        ]
+      }
+    },
+    {
+      "id": "template_system",
+      "queries": {
+        "novel": [
+          "generate code with placeholders",
+          "variable substitution in templates",
+          "parameterized code generation",
+          "render text from blueprint",
+          "fill template slots"
+        ]
+      }
+    },
+    {
+      "id": "cross_target_glue",
+      "queries": {
+        "novel": [
+          "connect different languages",
+          "pass data between scripts",
+          "polyglot pipeline",
+          "inter-process communication glue",
+          "bridge python and bash"
+        ]
+      }
+    }
+  ]
+}

@@ -351,10 +351,10 @@ Ideas from the community are welcome! If you want to work on any of these:
 
 ## Semantic Search Enhancements and Validation
 
-### Held-Out Test Set Evaluation
-**Description**: Conduct a rigorous evaluation of the multi-head semantic search model's performance on a held-out test set of queries. This involves creating a dedicated test set with novel queries and their expected answers to assess generalization beyond training data.
-**Goal**: Obtain realistic Recall@1 and MRR metrics for the unified multi-head model.
-**Related**: `scripts/validate_multi_head_search.py` (to be created), `playbooks/lda-training-data/raw/qa_pairs_test.json` (to be created).
+### Held-Out Test Set Evaluation (Completed)
+✅ **Implemented**: Created dedicated test set and validation script.
+- **Test Set**: `playbooks/lda-training-data/raw/qa_pairs_test.json` contains novel queries.
+- **Script**: `scripts/validate_multi_head_search.py` evaluates Recall@1 and MRR on the test set.
 
 ### Hyperparameter Tuning
 **Description**: Experiment with different `temperature` values (τ) for the multi-head model to optimize retrieval performance (Recall@1, MRR) on a held-out validation set.
