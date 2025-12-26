@@ -150,6 +150,6 @@ brew install dotnet
 
 **Solution**:
 - Verify UnifyWeaver modules are properly loaded
-- Check that `csharp_stream_target` module exports `compile_predicate_to_csharp/3`
+- Check that `csharp_native_target` module exports `compile_predicate_to_csharp/3`
 - Ensure Prolog facts file loads correctly
 

@@ -85,7 +85,7 @@ test(stream_target_simple_facts, [
     assertz(test_link(c, d)),
 
     % Compile to C#
-    use_module('../../src/unifyweaver/targets/csharp_stream_target'),
+    use_module('../../src/unifyweaver/targets/csharp_native_target'),
     compile_predicate_to_csharp(test_link/2, [], Code),
 
     % Test using Python helper
@@ -109,7 +109,7 @@ test(stream_target_join_query, [
     assertz((test_grandparent(X, Z) :- test_parent(X, Y), test_parent(Y, Z))),
 
     % Compile to C#
-    use_module('../../src/unifyweaver/targets/csharp_stream_target'),
+    use_module('../../src/unifyweaver/targets/csharp_native_target'),
     compile_predicate_to_csharp(test_grandparent/2, [], Code),
 
     % Test using Python helper
@@ -119,7 +119,7 @@ test(stream_target_join_query, [
     assertion(Result.success == @(true)),
     assertion(Result.assertion_passed == @(true)).
 
-test(stream_target_error_on_recursion, [
+test(native_target_recursion, [
     condition(check_dotnet_available)
 ]) :-
     % Create recursive predicate
@@ -130,9 +130,16 @@ test(stream_target_error_on_recursion, [
     assertz((test_path(X, Y) :- test_edge(X, Y))),
     assertz((test_path(X, Z) :- test_edge(X, Y), test_path(Y, Z))),
 
-    % Attempt to compile with Stream Target (should fail)
-    use_module('../../src/unifyweaver/targets/csharp_stream_target'),
-    \+ compile_predicate_to_csharp(test_path/2, [target(csharp_stream)], _Code).
+    % Attempt to compile with Native Target (should succeed)
+    use_module('../../src/unifyweaver/targets/csharp_native_target'),
+    compile_predicate_to_csharp(test_path/2, [], Code),
+    
+    % Test using Python helper
+    compile_and_test_csharp(Code, "a:c", Result),
+
+    % Verify result
+    assertion(Result.success == @(true)),
+    assertion(Result.assertion_passed == @(true)).
 
 test(query_runtime_basic_recursion, [
     condition(check_dotnet_available),

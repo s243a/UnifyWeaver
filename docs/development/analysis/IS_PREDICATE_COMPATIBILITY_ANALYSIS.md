@@ -280,7 +280,7 @@ This would require changes to:
 
 ### Option D: Use Different Target for Recursive Arithmetic
 
-Document that `csharp_stream_target` and `csharp_target` are for datalog-style queries, and recursive arithmetic predicates should use a different compilation strategy (e.g., direct Prolog interpretation or a dedicated functional target).
+Document that `csharp_native` (formerly `csharp_stream_target`) supports datalog-style queries including recursion via procedural mode.
 
 ### Option E: Broaden `is/2` Support (Quality-of-Life)
 

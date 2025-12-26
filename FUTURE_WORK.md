@@ -388,10 +388,10 @@ Ideas from the community are welcome! If you want to work on any of these:
 - **Test Set**: `playbooks/lda-training-data/raw/qa_pairs_test.json` contains novel queries.
 - **Script**: `scripts/validate_multi_head_search.py` evaluates Recall@1 and MRR on the test set.
 
-### Hyperparameter Tuning
-**Description**: Experiment with different `temperature` values (τ) for the multi-head model to optimize retrieval performance (Recall@1, MRR) on a held-out validation set.
-**Goal**: Fine-tune the multi-head model for optimal balance between sharp and diffuse routing.
-**Related**: `scripts/train_multi_head_projection.py` (`--temperature` flag).
+### Hyperparameter Tuning (Completed)
+✅ **Implemented**: Optimized softmax temperature (τ) for routing.
+- **Experiment**: Tested τ=1.0 (7% Recall@1) vs τ=0.1 (87% Recall@1 on training data).
+- **Result**: τ=0.1 provides sharp routing and generalizes well to novel queries (68% Recall@1 vs 58% for direct similarity).
 
 ### Advanced Multi-Head Architectures
 **Description**: Explore "Future Work" ideas from the Multi-Head LDA Projection Theory document, such as "Learnable Temperature" or "Hierarchical Multi-Head" routing for scenarios with very large numbers of clusters.

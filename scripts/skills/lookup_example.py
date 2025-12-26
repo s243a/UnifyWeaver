@@ -17,12 +17,14 @@ except ImportError:
     print("Error: sentence-transformers not installed.")
     sys.exit(1)
 
-def lookup_example(query, top_k=3, mh_projection_id=1):
+def lookup_example(query, top_k=3, mh_projection_id=2, db_path=None):
     """
     Look up examples using LDA multi-head semantic search.
     Uses softmax routing over cluster centroids.
     """
-    db_path = str(project_root / "playbooks" / "lda-training-data" / "lda.db")
+    if db_path is None:
+        db_path = str(project_root / "playbooks" / "lda-training-data" / "lda.db")
+    
     model_name = "all-MiniLM-L6-v2"
 
     if not os.path.exists(db_path):
@@ -70,10 +72,11 @@ def main():
     parser.add_argument("query", help="The search query (e.g., 'how to use csv source')")
     parser.add_argument("--top-k", type=int, default=3, help="Number of results to return")
     parser.add_argument("--mh-proj", type=int, default=2, help="Multi-Head Projection ID to use (default: 2)")
+    parser.add_argument("--db", help="Path to the LDA database")
     
     args = parser.parse_args()
     
-    lookup_example(args.query, args.top_k, args.mh_proj)
+    lookup_example(args.query, args.top_k, args.mh_proj, args.db)
 
 if __name__ == "__main__":
     main()

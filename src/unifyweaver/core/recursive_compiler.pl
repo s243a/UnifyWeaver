@@ -17,7 +17,7 @@
 :- use_module(stream_compiler).
 :- use_module('../targets/awk_target').
 :- use_module('../targets/csharp_query_target').
-:- use_module('../targets/csharp_stream_target').
+:- use_module('../targets/csharp_native_target').
 :- use_module('../targets/go_target', [compile_predicate_to_go/3]).
 :- use_module('../targets/rust_target', [compile_predicate_to_rust/3]).
 :- use_module('../targets/java_target', [compile_predicate_to_java/3, write_java_program/2]).
@@ -88,7 +88,10 @@ compile_dispatch(Pred/Arity, FinalOptions, Target, GeneratedCode) :-
     (   Classification = non_recursive ->
         compile_non_recursive(Target, Pred/Arity, FinalOptions, GeneratedCode)
     ;   Target == csharp ->
-        compile_recursive_csharp_query(Pred/Arity, FinalOptions, GeneratedCode)
+        (   option(mode(procedural), FinalOptions) ->
+            csharp_native_target:compile_predicate_to_csharp(Pred/Arity, FinalOptions, GeneratedCode)
+        ;   compile_recursive_csharp_query(Pred/Arity, FinalOptions, GeneratedCode)
+        )
     ;   Classification = transitive_closure(BasePred) ->
         format('Detected transitive closure over ~w~n', [BasePred]),
         compile_transitive_closure(Target, Pred, Arity, BasePred, FinalOptions, GeneratedCode)
@@ -111,7 +114,7 @@ compile_non_recursive(bash, Pred/Arity, FinalOptions, GeneratedCode) :-
 compile_non_recursive(awk, Pred/Arity, FinalOptions, GeneratedCode) :-
     awk_target:compile_predicate_to_awk(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(csharp, Pred/Arity, FinalOptions, GeneratedCode) :-
-    csharp_stream_target:compile_predicate_to_csharp(Pred/Arity, FinalOptions, GeneratedCode).
+    csharp_native_target:compile_predicate_to_csharp(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(go, Pred/Arity, FinalOptions, GeneratedCode) :-
     compile_predicate_to_go(Pred/Arity, FinalOptions, GeneratedCode).
 compile_non_recursive(rust, Pred/Arity, FinalOptions, GeneratedCode) :-

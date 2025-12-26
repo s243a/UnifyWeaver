@@ -40,6 +40,7 @@
 :- use_module('../bindings/csharp_bindings').
 :- use_module('../core/pipeline_validation').
 :- use_module(common_generator).
+:- use_module(csharp_native_target).
 
 % Component system integration (ported from Go target)
 :- use_module('../core/component_registry').
@@ -176,6 +177,8 @@ compile_predicate_to_csharp(PredIndicator, Options, Code) :-
     option(mode(Mode), Options, query),
     (   Mode == generator
     ->  compile_generator_mode(PredIndicator, Options, Code)
+    ;   Mode == procedural
+    ->  csharp_native_target:compile_predicate_to_csharp(PredIndicator, Options, Code)
     ;   Mode == query
     ->  PredIndicator = Pred/Arity,
         modes_for_pred_variants(Pred/Arity, ModesVariants),

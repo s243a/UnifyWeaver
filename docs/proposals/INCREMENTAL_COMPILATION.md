@@ -248,7 +248,7 @@ compile_fresh(Pred/Arity, Target, Options, Code) :-
     (   Target = bash -> stream_compiler:compile_predicate(Pred/Arity, Options, Code)
     ;   Target = go -> go_target:compile_predicate_to_go(Pred/Arity, Options, Code)
     ;   Target = rust -> rust_target:compile_predicate_to_rust(Pred/Arity, Options, Code)
-    ;   Target = csharp -> csharp_stream_target:compile_predicate_to_csharp(Pred/Arity, Options, Code)
+    ;   Target = csharp -> csharp_native_target:compile_predicate_to_csharp(Pred/Arity, Options, Code)
     ;   Target = powershell -> powershell_compiler:compile_to_powershell(Pred/Arity, Options, Code)
     ;   Target = sql -> sql_target:compile_predicate_to_sql(Pred/Arity, Options, Code)
     ;   throw(error(unknown_target(Target), _))
