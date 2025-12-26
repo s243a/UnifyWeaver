@@ -143,6 +143,52 @@ Output format:
 ], Code).
 ```
 
+### XML Processing (NEW - 2025-12-25)
+
+Stream and process XML files with `quick-xml`:
+
+```prolog
+% Define XML field extraction
+book_info(Title, Author) :-
+    xml_field(title, Title),
+    xml_field(author, Author).
+
+% Compile with XML input
+?- compile_rust_xml_mode(book_info, 2, [
+    xml_file("books.xml"),
+    tags([book]),
+    unique(true)
+], Code).
+```
+
+**Input XML:**
+```xml
+<library>
+  <book id="1">
+    <title>The Rust Book</title>
+    <author>Steve Klabnik</author>
+  </book>
+  <book id="2">
+    <title>Programming Rust</title>
+    <author>Jim Blandy</author>
+  </book>
+</library>
+```
+
+**Features:**
+- Streaming parsing (memory-efficient for large files)
+- Attribute extraction with `@` prefix (`@id`, `@class`, etc.)
+- Text content extraction
+- Tag filtering with `tags([tag1, tag2])`
+- Stdin or file input
+- Deduplication with `unique(true)`
+
+**Cargo.toml dependency:**
+```toml
+[dependencies]
+quick-xml = "0.31"
+```
+
 ### Window Functions (NEW - 2025-12-25)
 
 **Ranking Functions:**
@@ -278,7 +324,6 @@ serde_json = "1.0"
 ## Limitations
 
 - **Database Integration:** Not yet implemented (planned: sled/rocksdb)
-- **XML Processing:** Not yet implemented
 
 ## See Also
 

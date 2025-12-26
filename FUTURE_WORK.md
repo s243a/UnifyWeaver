@@ -155,11 +155,19 @@ Implemented:
 
 ### Medium Priority
 
-#### 6. XML Processing
-**Status:** 📋 PLANNED
-**Source:** Go, Python targets
-**Target:** Rust, C#, others
-**Effort:** Medium - requires XML parsing library integration
+#### 6. XML Processing (Rust)
+**Status:** ✅ COMPLETE (2025-12-25)
+**Source:** Go target (streaming + flattening)
+**Target:** Rust target
+
+Implemented:
+- `compile_rust_xml_mode/4` - XML input mode compilation
+- Streaming XML parsing with `quick-xml` crate
+- Attribute extraction (prefixed with `@`)
+- Text content extraction
+- Tag filtering with `tags([...])` option
+- Deduplication with `unique(true)`
+- File and stdin input sources
 
 #### 7. Full Outer Joins
 **Status:** 📋 PLANNED
@@ -202,7 +210,7 @@ Implemented:
 | collect_list/set | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Window Functions | ✅ | ✅ | ✅ | ⚠️ | ❌ | ✅ |
 | Observability | ✅ | ✅ | ✅ | ⚠️ | ❌ | ❌ |
-| XML Processing | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| XML Processing | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Full Outer Join | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Database Integration | ✅ | ⚠️ | ❌ | ❌ | ❌ | ✅ |
 

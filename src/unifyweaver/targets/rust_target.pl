@@ -257,6 +257,223 @@ generate_rust_validator_check(string, format(date), Check) :-
 generate_rust_validator_check(_, _, '').
 
 %% ============================================
+%% XML PROCESSING SUPPORT (ported from Go target)
+%% ============================================
+
+%% compile_rust_xml_mode(+Pred, +Arity, +Options, -RustCode)
+%  Compile predicate for XML input (streaming + flattening)
+compile_rust_xml_mode(Pred, Arity, Options, RustCode) :-
+    % Get options
+    option(field_delimiter(FieldDelim), Options, colon),
+    option(unique(Unique), Options, true),
+
+    % Get predicate clauses
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+
+    (   Clauses = [SingleHead-SingleBody] ->
+        % Extract mappings
+        extract_rust_xml_field_mappings(SingleBody, FieldMappings),
+        format('DEBUG: XML FieldMappings = ~w~n', [FieldMappings]),
+
+        % Generate XML processing
+        SingleHead =.. [_|HeadArgs],
+        compile_rust_xml_body(HeadArgs, FieldMappings, FieldDelim, Unique, Options, CoreBody)
+    ;   format('ERROR: XML mode supports single clause only~n'),
+        fail
+    ),
+
+    % Generate XML helpers
+    generate_rust_xml_helpers(XmlHelpers),
+
+    % Build complete code
+    format(string(RustCode), '
+use std::io::{self, BufRead, Read};
+use std::collections::HashMap;
+use quick_xml::Reader;
+use quick_xml::events::Event;
+
+~s
+
+fn main() {
+~s
+}', [XmlHelpers, CoreBody]).
+
+%% extract_rust_xml_field_mappings(+Body, -Mappings)
+%  Extract field mappings from rule body for XML processing
+extract_rust_xml_field_mappings(Body, Mappings) :-
+    (   Body = (Goal, _)
+    ->  extract_xml_mapping_from_goal(Goal, Mappings)
+    ;   extract_xml_mapping_from_goal(Body, Mappings)
+    ).
+
+extract_xml_mapping_from_goal(xml_record(Fields), Fields) :- !.
+extract_xml_mapping_from_goal(xml_field(Field, Var), [xml_field(Field, Var)]) :- !.
+extract_xml_mapping_from_goal(_, []).
+
+%% compile_rust_xml_body(+HeadArgs, +FieldMappings, +FieldDelim, +Unique, +Options, -RustCode)
+compile_rust_xml_body(HeadArgs, FieldMappings, FieldDelim, Unique, Options, RustCode) :-
+    % Map delimiter
+    (   FieldDelim = colon -> DelimChar = ":"
+    ;   FieldDelim = tab -> DelimChar = "\\t"
+    ;   FieldDelim = comma -> DelimChar = ","
+    ;   FieldDelim = pipe -> DelimChar = "|"
+    ;   DelimChar = ":"
+    ),
+
+    % Generate field extraction code
+    generate_rust_xml_field_extractions(FieldMappings, HeadArgs, ExtractCode),
+    generate_rust_xml_output_expr(HeadArgs, DelimChar, OutputExpr),
+
+    % Get XML file and tags
+    option(xml_file(XmlFile), Options, stdin),
+
+    (   XmlFile == stdin
+    ->  FileOpenCode = '    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).expect("Failed to read stdin");
+    let mut reader = Reader::from_str(&input);'
+    ;   format(string(FileOpenCode), '    let mut reader = Reader::from_file("~w").expect("Failed to open XML file");', [XmlFile])
+    ),
+
+    (   option(tags(Tags), Options)
+    ->  true
+    ;   option(tag(Tag), Options)
+    ->  Tags = [Tag]
+    ;   Tags = []
+    ),
+
+    % Build tag check
+    (   Tags = []
+    ->  TagCheck = 'true'
+    ;   maplist(rust_tag_to_cond, Tags, Conds),
+        atomic_list_concat(Conds, ' || ', TagCheck)
+    ),
+
+    % Build main loop
+    (   Unique = true ->
+        SeenDecl = '    let mut seen = std::collections::HashSet::new();',
+        UniqueCheck = '
+            if seen.insert(result.clone()) {
+                println!("{}", result);
+            }'
+    ;   SeenDecl = '',
+        UniqueCheck = '
+            println!("{}", result);'
+    ),
+
+    format(string(RustCode), '
+~s
+    reader.trim_text(true);
+~s
+    let mut buf = Vec::new();
+    let mut current_element = String::new();
+    let mut element_data: HashMap<String, String> = HashMap::new();
+    let mut depth = 0;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if depth == 0 && (~s) {
+                    current_element = name.clone();
+                    element_data.clear();
+                    // Extract attributes
+                    for attr in e.attributes().filter_map(|a| a.ok()) {
+                        let key = format!("@{}", String::from_utf8_lossy(attr.key.as_ref()));
+                        let val = String::from_utf8_lossy(&attr.value).to_string();
+                        element_data.insert(key, val);
+                    }
+                }
+                depth += 1;
+            }
+            Ok(Event::Text(ref e)) => {
+                if depth > 0 {
+                    let text = e.unescape().unwrap_or_default().trim().to_string();
+                    if !text.is_empty() {
+                        element_data.insert("text".to_string(), text);
+                    }
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                depth -= 1;
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if depth == 0 && name == current_element {
+                    // Process element
+                    let data = &element_data;
+~s
+                    let result = ~s;
+~s
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                eprintln!("XML parse error: {:?}", e);
+                break;
+            }
+            _ => {}
+        }
+        buf.clear();
+    }', [FileOpenCode, SeenDecl, TagCheck, ExtractCode, OutputExpr, UniqueCheck]).
+
+rust_tag_to_cond(Tag, Cond) :-
+    format(atom(Cond), 'name == "~w"', [Tag]).
+
+%% generate_rust_xml_field_extractions(+FieldMappings, +HeadArgs, -Code)
+generate_rust_xml_field_extractions(FieldMappings, HeadArgs, Code) :-
+    findall(ExtractLine, (
+        nth1(Pos, HeadArgs, Arg),
+        format(atom(ValVar), 'val_~w', [Pos]),
+        (   member(xml_field(XmlField, Arg), FieldMappings) ->
+            format(string(ExtractLine), '                    let ~w = data.get("~w").cloned().unwrap_or_default();', [ValVar, XmlField])
+        ;   format(string(ExtractLine), '                    let ~w = String::new();', [ValVar])
+        )
+    ), ExtractLines),
+    atomic_list_concat(ExtractLines, '\n', Code).
+
+%% generate_rust_xml_output_expr(+HeadArgs, +DelimChar, -Expr)
+generate_rust_xml_output_expr(HeadArgs, DelimChar, Expr) :-
+    length(HeadArgs, Arity),
+    findall(Fmt, (between(1, Arity, _), Fmt = '{}'), Fmts),
+    atomic_list_concat(Fmts, DelimChar, FmtStr),
+    findall(ValVar, (nth1(Pos, HeadArgs, _), format(atom(ValVar), 'val_~w', [Pos])), ValVars),
+    atomic_list_concat(ValVars, ', ', VarList),
+    format(atom(Expr), 'format!("~s", ~w)', [FmtStr, VarList]).
+
+%% generate_rust_xml_helpers(+Code)
+generate_rust_xml_helpers(Code) :-
+    Code = '
+// XML flattening helper
+fn flatten_xml_element(reader: &mut Reader<&[u8]>, start_name: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    let mut buf = Vec::new();
+    let mut depth = 1;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                depth += 1;
+            }
+            Ok(Event::Text(ref e)) => {
+                if let Ok(text) = e.unescape() {
+                    let trimmed = text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        result.insert("text".to_string(), trimmed);
+                    }
+                }
+            }
+            Ok(Event::End(_)) => {
+                depth -= 1;
+                if depth == 0 { break; }
+            }
+            Ok(Event::Eof) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    result
+}'.
+
+%% ============================================
 %% SERVICE COMPILATION (Client-Server Phase 1)
 %% ============================================
 
