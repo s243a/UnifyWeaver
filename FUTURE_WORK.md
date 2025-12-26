@@ -375,6 +375,7 @@ Ideas from the community are welcome! If you want to work on any of these:
 - Identifies and purges broken clusters (no embeddings) from `lda.db`.
 - Supports dry-run and forced deletion.
 
-### Playbook Clarity Review
-**Description**: Review all updated playbooks (`playbooks/*_playbook.md`) for clarity and consistency in their instructions, especially regarding the new "Finding Examples" section. Ensure example IDs and semantic search queries are accurate and helpful.
-**Goal**: Optimize agent understanding and execution reliability.
+### Playbook Clarity Review (Completed)
+✅ **Implemented**: Updated all playbooks to use `./unifyweaver search` CLI.
+- Standardized "Finding Examples" section across all 35+ playbooks.
+- Verified example IDs in sampled playbooks.

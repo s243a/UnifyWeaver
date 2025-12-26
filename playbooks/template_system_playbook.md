@@ -41,7 +41,7 @@ grep -r "template_system" playbooks/examples_library/
 ### Method 2: Semantic Search (Recommended)
 Use the LDA-based semantic search skill to find relevant examples by intent:
 ```bash
-python3 scripts/skills/lookup_example.py "how to use template system"
+./unifyweaver search "how to use template system"
 
 
 ## Agent Inputs

@@ -17,7 +17,7 @@ grep -r "pipe_glue" playbooks/examples_library/
 ### Method 2: Semantic Search (Recommended)
 Use the LDA-based semantic search skill to find relevant examples by intent:
 ```bash
-python3 scripts/skills/lookup_example.py "how to use pipe glue"
+./unifyweaver search "how to use pipe glue"
 
 
 ## Workflow Overview

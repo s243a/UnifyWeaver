@@ -33,7 +33,7 @@ def update_playbook(filepath):
         "### Method 2: Semantic Search (Recommended)",
         "Use the LDA-based semantic search skill to find relevant examples by intent:",
         "```bash",
-        f"python3 scripts/skills/lookup_example.py \"how to use {query}\"",
+        f"./unifyweaver search \"how to use {query}\"",
         "",
         ""
     ]
