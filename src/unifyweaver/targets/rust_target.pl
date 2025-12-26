@@ -3187,6 +3187,10 @@ compile_predicate_to_rust(PredIndicator, Options, RustCode) :-
     ;   option(json_output(true), Options)
     ->  format('  Mode: JSON output~n'),
         compile_json_output_to_rust(Pred, Arity, Options, RustCode)
+    ;   option(db_backend(Backend), Options),
+        Backend \= none
+    ->  format('  Mode: Database Backend (~w)~n', [Backend]),
+        compile_db_backend_to_rust(Pred, Arity, Backend, Options, RustCode)
     ;   functor(Head, Pred, Arity),
         GoalModule:clause(Head, Body),
         is_semantic_predicate(Body)
@@ -3426,6 +3430,508 @@ fn main() {
     }
 }
 ', [EntriesCode]).
+
+%% ============================================
+%% DATABASE INTEGRATION (sled)
+%% ============================================
+
+%% compile_db_backend_to_rust(+Pred, +Arity, +Backend, +Options, -RustCode)
+%  Compile predicate to Rust with embedded database support.
+%  Backend: sled (pure Rust embedded database)
+%
+%  Options:
+%    db_file(Path)           - Database file path (default: 'data.db')
+%    db_tree(Name)           - Tree name (default: predicate name)
+%    db_key_field(Field)     - Single field as primary key
+%    db_key_strategy(S)      - Complex key generation
+%    db_key_delimiter(Char)  - Composite key separator (default: ':')
+%    db_mode(Mode)           - read | write | analyze
+%    json_input(true)        - Enable JSONL input for write mode
+%
+compile_db_backend_to_rust(Pred, Arity, sled, Options, RustCode) :-
+    % Extract options
+    option(db_file(DbFile), Options, 'data.db'),
+    option(db_tree(DbTree), Options, Pred),
+    option(db_mode(Mode), Options, read),
+    option(db_key_delimiter(KeyDelim), Options, ':'),
+    option(unique(Unique), Options, true),
+
+    % Get key strategy
+    (   option(db_key_field(KeyField), Options)
+    ->  KeyStrategy = field(KeyField)
+    ;   option(db_key_strategy(KeyStrategy), Options)
+    ->  true
+    ;   KeyStrategy = auto
+    ),
+
+    format('  Database: sled, File: ~w, Tree: ~w, Mode: ~w~n', [DbFile, DbTree, Mode]),
+
+    % Generate based on mode
+    (   Mode = write
+    ->  compile_db_write_mode_rust(Pred, Arity, DbFile, DbTree, KeyStrategy, KeyDelim, Options, RustCode)
+    ;   Mode = analyze
+    ->  compile_db_analyze_mode_rust(Pred, Arity, DbFile, DbTree, Options, RustCode)
+    ;   % Default: read mode
+        compile_db_read_mode_rust(Pred, Arity, DbFile, DbTree, KeyStrategy, KeyDelim, Unique, Options, RustCode)
+    ).
+
+compile_db_backend_to_rust(Pred, Arity, rocksdb, Options, RustCode) :-
+    % RocksDB support (similar pattern, different crate)
+    compile_db_backend_to_rust(Pred, Arity, sled, Options, RustCode).
+
+%% compile_db_read_mode_rust(+Pred, +Arity, +DbFile, +DbTree, +KeyStrategy, +KeyDelim, +Unique, +Options, -RustCode)
+%  Generate Rust code for reading from database.
+compile_db_read_mode_rust(Pred, Arity, DbFile, DbTree, KeyStrategy, KeyDelim, Unique, Options, RustCode) :-
+    atom_string(DbTree, TreeStr),
+
+    % Get predicate clauses to check for constraints
+    functor(Head, Pred, Arity),
+    findall(Head-Body, user:clause(Head, Body), Clauses),
+
+    % Check for indexed fields
+    (   get_rust_index_fields(Pred, Arity, IndexedFields)
+    ->  true
+    ;   IndexedFields = []
+    ),
+
+    % Determine optimization type
+    (   Clauses = [SingleHead-SingleBody], SingleBody \= true,
+        extract_db_constraints_rust(SingleBody, Constraints),
+        Constraints \= [],
+        can_use_rust_optimization(KeyStrategy, Constraints, IndexedFields, OptType, OptDetails)
+    ->  format('  Optimization: ~w~n', [OptType]),
+        generate_optimized_db_read_rust(OptType, OptDetails, DbFile, TreeStr, KeyDelim, Options, RustCode)
+    ;   % Full scan
+        generate_full_scan_read_rust(DbFile, TreeStr, KeyDelim, Unique, Options, RustCode)
+    ).
+
+%% generate_full_scan_read_rust(+DbFile, +TreeStr, +KeyDelim, +Unique, +Options, -RustCode)
+%  Generate code for full database scan.
+generate_full_scan_read_rust(DbFile, TreeStr, _KeyDelim, Unique, Options, RustCode) :-
+    % Check for observability options
+    (   option(progress(interval(ProgressInterval)), Options)
+    ->  ProgressCode = format("
+        if count % ~w == 0 {
+            eprintln!(\"Read {} records...\", count);
+        }", [ProgressInterval])
+    ;   ProgressCode = ""
+    ),
+
+    (   option(metrics_file(MetricsFile), Options)
+    ->  MetricsSetup = "    let start_time = std::time::Instant::now();",
+        format(string(MetricsEnd), '
+    let elapsed = start_time.elapsed();
+    let metrics = serde_json::json!({
+        "total_records": count,
+        "duration_secs": elapsed.as_secs_f64(),
+        "records_per_sec": count as f64 / elapsed.as_secs_f64()
+    });
+    std::fs::write("~w", metrics.to_string()).ok();', [MetricsFile])
+    ;   MetricsSetup = "", MetricsEnd = ""
+    ),
+
+    (   Unique = true
+    ->  UniqueSetup = "    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();",
+        UniqueCheck = "
+            let key_str = String::from_utf8_lossy(&key).to_string();
+            if seen.contains(&key_str) { continue; }
+            seen.insert(key_str);"
+    ;   UniqueSetup = "", UniqueCheck = ""
+    ),
+
+    format(string(RustCode), '
+use sled;
+use serde_json;
+use std::io::Write;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = sled::open("~w")?;
+    let tree = db.open_tree("~w")?;
+~s
+~s
+    let mut count: u64 = 0;
+
+    for result in tree.iter() {
+        let (key, value) = result?;~s
+        count += 1;~s
+
+        // Parse and output record
+        if let Ok(record) = serde_json::from_slice::<serde_json::Value>(&value) {
+            println!("{}", record);
+        }
+    }
+~s
+    Ok(())
+}
+', [DbFile, TreeStr, MetricsSetup, UniqueSetup, UniqueCheck, ProgressCode, MetricsEnd]).
+
+%% generate_optimized_db_read_rust(+OptType, +OptDetails, +DbFile, +TreeStr, +KeyDelim, +Options, -RustCode)
+%  Generate optimized database read code.
+generate_optimized_db_read_rust(direct_lookup, key(Key), DbFile, TreeStr, _KeyDelim, _Options, RustCode) :-
+    format(string(RustCode), '
+use sled;
+use serde_json;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = sled::open("~w")?;
+    let tree = db.open_tree("~w")?;
+
+    // Direct lookup - O(log n)
+    let key = "~w";
+    if let Some(value) = tree.get(key)? {
+        if let Ok(record) = serde_json::from_slice::<serde_json::Value>(&value) {
+            println!("{}", record);
+        }
+    }
+
+    Ok(())
+}
+', [DbFile, TreeStr, Key]).
+
+generate_optimized_db_read_rust(prefix_scan, prefix(Prefix), DbFile, TreeStr, _KeyDelim, _Options, RustCode) :-
+    format(string(RustCode), '
+use sled;
+use serde_json;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = sled::open("~w")?;
+    let tree = db.open_tree("~w")?;
+
+    // Prefix scan - O(k log n) where k is matching records
+    let prefix = "~w";
+    for result in tree.scan_prefix(prefix) {
+        let (_key, value) = result?;
+        if let Ok(record) = serde_json::from_slice::<serde_json::Value>(&value) {
+            println!("{}", record);
+        }
+    }
+
+    Ok(())
+}
+', [DbFile, TreeStr, Prefix]).
+
+generate_optimized_db_read_rust(index_scan, index(Field, Value), DbFile, TreeStr, _KeyDelim, _Options, RustCode) :-
+    format(string(IndexTree), "index_~w_~w", [TreeStr, Field]),
+    format(string(RustCode), '
+use sled;
+use serde_json;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = sled::open("~w")?;
+    let main_tree = db.open_tree("~w")?;
+    let index_tree = db.open_tree("~w")?;
+
+    // Secondary index scan - O(k log n)
+    let search_prefix = format!("{}:", "~w");
+    for result in index_tree.scan_prefix(search_prefix.as_bytes()) {
+        let (index_key, _) = result?;
+
+        // Extract primary key from index key (format: value:primary_key)
+        let key_str = String::from_utf8_lossy(&index_key);
+        if let Some(primary_key) = key_str.strip_prefix(&search_prefix) {
+            // Fetch from main tree
+            if let Some(value) = main_tree.get(primary_key)? {
+                if let Ok(record) = serde_json::from_slice::<serde_json::Value>(&value) {
+                    println!("{}", record);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+', [DbFile, TreeStr, IndexTree, Value]).
+
+%% compile_db_write_mode_rust(+Pred, +Arity, +DbFile, +DbTree, +KeyStrategy, +KeyDelim, +Options, -RustCode)
+%  Generate Rust code for writing to database.
+compile_db_write_mode_rust(_Pred, _Arity, DbFile, DbTree, KeyStrategy, KeyDelim, Options, RustCode) :-
+    atom_string(DbTree, TreeStr),
+
+    % Check for indexed fields from index_analyzer module
+    (   catch(get_rust_index_fields(DbTree, _, IndexedFields), _, fail)
+    ->  true
+    ;   IndexedFields = []
+    ),
+
+    % Generate key extraction code
+    generate_rust_key_extraction(KeyStrategy, KeyDelim, KeyExtractionCode),
+
+    % Generate index update code
+    (   IndexedFields = []
+    ->  IndexUpdateCode = ""
+    ;   generate_rust_index_updates(TreeStr, IndexedFields, IndexUpdateCode)
+    ),
+
+    % Check for observability options
+    (   option(progress(interval(ProgressInterval)), Options)
+    ->  format(string(ProgressCode), '
+            if count % ~w == 0 {
+                eprintln!("Written {} records...", count);
+            }', [ProgressInterval])
+    ;   ProgressCode = ""
+    ),
+
+    (   option(error_file(ErrorFile), Options)
+    ->  format(string(ErrorSetup), '    let error_file = std::fs::File::create("~w")?;
+    let mut error_writer = std::io::BufWriter::new(error_file);', [ErrorFile]),
+        ErrorHandling = '
+                let error_entry = serde_json::json!({
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "error": e.to_string(),
+                    "line": line.clone()
+                });
+                writeln!(error_writer, "{}", error_entry).ok();
+                error_count += 1;'
+    ;   ErrorSetup = "", ErrorHandling = ""
+    ),
+
+    (   option(error_threshold(count(MaxErrors)), Options)
+    ->  format(string(ErrorThreshold), '
+            if error_count >= ~w {
+                eprintln!("Error threshold reached: {} errors", error_count);
+                break;
+            }', [MaxErrors])
+    ;   ErrorThreshold = ""
+    ),
+
+    (   option(metrics_file(MetricsFile), Options)
+    ->  MetricsSetup = "    let start_time = std::time::Instant::now();",
+        format(string(MetricsEnd), '
+    let elapsed = start_time.elapsed();
+    let metrics = serde_json::json!({
+        "total_records": count,
+        "error_records": error_count,
+        "duration_secs": elapsed.as_secs_f64(),
+        "records_per_sec": count as f64 / elapsed.as_secs_f64()
+    });
+    std::fs::write("~w", metrics.to_string()).ok();', [MetricsFile])
+    ;   MetricsSetup = "", MetricsEnd = ""
+    ),
+
+    format(string(RustCode), '
+use sled;
+use serde_json::{self, Value};
+use std::io::{self, BufRead, Write};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = sled::open("~w")?;
+    let tree = db.open_tree("~w")?;
+~s
+~s
+    let mut count: u64 = 0;
+    let mut error_count: u64 = 0;
+
+    let stdin = io::stdin();
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        match serde_json::from_str::<Value>(&line) {
+            Ok(record) => {
+                // Generate key
+~s
+
+                // Store record
+                let value = serde_json::to_vec(&record)?;
+                tree.insert(key.as_bytes(), value)?;
+~s
+                count += 1;~s~s
+            }
+            Err(e) => {~s~s
+            }
+        }
+    }
+
+    // Flush to disk
+    db.flush()?;
+    eprintln!("Completed: {} records written", count);
+~s
+    Ok(())
+}
+', [DbFile, TreeStr, ErrorSetup, MetricsSetup, KeyExtractionCode, IndexUpdateCode, ProgressCode, ErrorThreshold, ErrorHandling, ErrorThreshold, MetricsEnd]).
+
+%% generate_rust_key_extraction(+KeyStrategy, +KeyDelim, -Code)
+%  Generate Rust code for key extraction based on strategy.
+generate_rust_key_extraction(auto, _KeyDelim, Code) :-
+    Code = '                let key = format!("{}", count);'.
+
+generate_rust_key_extraction(field(FieldName), _KeyDelim, Code) :-
+    format(string(Code), '                let key = record.get("~w")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("{}", count));', [FieldName]).
+
+generate_rust_key_extraction(composite(Fields), KeyDelim, Code) :-
+    length(Fields, _N),
+    findall(Part, (
+        member(field(F), Fields),
+        format(string(Part), 'record.get("~w").and_then(|v| v.as_str()).unwrap_or("")', [F])
+    ), Parts),
+    atomic_list_concat(Parts, ', ', PartsStr),
+    format(string(Code), '                let parts: Vec<&str> = vec![~w];
+                let key = parts.join("~w");', [PartsStr, KeyDelim]).
+
+generate_rust_key_extraction(hash(field(FieldName)), _KeyDelim, Code) :-
+    format(string(Code), '                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let field_val = record.get("~w")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let mut hasher = DefaultHasher::new();
+                field_val.hash(&mut hasher);
+                let key = format!("{:x}", hasher.finish());', [FieldName]).
+
+generate_rust_key_extraction(hash(field(FieldName), sha256), _KeyDelim, Code) :-
+    format(string(Code), '                use sha2::{Sha256, Digest};
+                let field_val = record.get("~w")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let hash = Sha256::digest(field_val.as_bytes());
+                let key = format!("{:x}", hash);', [FieldName]).
+
+generate_rust_key_extraction(uuid, _KeyDelim, Code) :-
+    Code = '                let key = uuid::Uuid::new_v4().to_string();'.
+
+generate_rust_key_extraction(literal(Lit), _KeyDelim, Code) :-
+    format(string(Code), '                let key = "~w".to_string();', [Lit]).
+
+%% generate_rust_index_updates(+TreeStr, +IndexedFields, -Code)
+%  Generate Rust code for updating secondary indexes.
+generate_rust_index_updates(TreeStr, IndexedFields, Code) :-
+    findall(IndexCode, (
+        member(Field, IndexedFields),
+        format(string(IndexTree), "index_~w_~w", [TreeStr, Field]),
+        format(string(IndexCode), '
+                // Update secondary index: ~w
+                if let Some(field_val) = record.get("~w").and_then(|v| v.as_str()) {
+                    let index_key = format!("{}:{}", field_val, key);
+                    let index_tree = db.open_tree("~w")?;
+                    index_tree.insert(index_key.as_bytes(), b"")?;
+                }', [Field, Field, IndexTree])
+    ), IndexCodes),
+    atomic_list_concat(IndexCodes, '\n', Code).
+
+%% compile_db_analyze_mode_rust(+Pred, +Arity, +DbFile, +DbTree, +Options, -RustCode)
+%  Generate Rust code for collecting database statistics.
+compile_db_analyze_mode_rust(_Pred, _Arity, DbFile, DbTree, _Options, RustCode) :-
+    atom_string(DbTree, TreeStr),
+    format(string(RustCode), '
+use sled;
+use serde_json;
+use std::collections::HashMap;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = sled::open("~w")?;
+    let tree = db.open_tree("~w")?;
+
+    let mut count: u64 = 0;
+    let mut key_lengths: Vec<usize> = Vec::new();
+    let mut value_lengths: Vec<usize> = Vec::new();
+    let mut field_counts: HashMap<String, u64> = HashMap::new();
+    let mut field_cardinality: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+
+    for result in tree.iter() {
+        let (key, value) = result?;
+        count += 1;
+        key_lengths.push(key.len());
+        value_lengths.push(value.len());
+
+        // Analyze record structure
+        if let Ok(record) = serde_json::from_slice::<serde_json::Value>(&value) {
+            if let Some(obj) = record.as_object() {
+                for (field, val) in obj {
+                    *field_counts.entry(field.clone()).or_insert(0) += 1;
+
+                    let val_str = match val {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        _ => format!("{}", val)
+                    };
+                    field_cardinality.entry(field.clone())
+                        .or_insert_with(std::collections::HashSet::new)
+                        .insert(val_str);
+                }
+            }
+        }
+    }
+
+    // Calculate statistics
+    let avg_key_len = key_lengths.iter().sum::<usize>() as f64 / count.max(1) as f64;
+    let avg_value_len = value_lengths.iter().sum::<usize>() as f64 / count.max(1) as f64;
+
+    // Build cardinality map
+    let cardinality: HashMap<String, u64> = field_cardinality.iter()
+        .map(|(k, v)| (k.clone(), v.len() as u64))
+        .collect();
+
+    // Calculate selectivity (cardinality / count)
+    let selectivity: HashMap<String, f64> = cardinality.iter()
+        .map(|(k, v)| (k.clone(), *v as f64 / count.max(1) as f64))
+        .collect();
+
+    let stats = serde_json::json!({
+        "tree": "~w",
+        "record_count": count,
+        "avg_key_length": avg_key_len,
+        "avg_value_length": avg_value_len,
+        "field_counts": field_counts,
+        "field_cardinality": cardinality,
+        "field_selectivity": selectivity
+    });
+
+    println!("{}", serde_json::to_string_pretty(&stats)?);
+
+    Ok(())
+}
+', [DbFile, TreeStr, TreeStr]).
+
+%% extract_db_constraints_rust(+Body, -Constraints)
+%  Extract database-pushable constraints from predicate body.
+extract_db_constraints_rust(true, []) :- !.
+extract_db_constraints_rust((A, B), Constraints) :- !,
+    extract_db_constraints_rust(A, C1),
+    extract_db_constraints_rust(B, C2),
+    append(C1, C2, Constraints).
+extract_db_constraints_rust(A = B, [eq(A, B)]) :-
+    (atom(A) ; atom(B)), !.
+extract_db_constraints_rust(A \= B, [neq(A, B)]) :-
+    (atom(A) ; atom(B)), !.
+extract_db_constraints_rust(A > B, [gt(A, B)]) :- !.
+extract_db_constraints_rust(A < B, [lt(A, B)]) :- !.
+extract_db_constraints_rust(A >= B, [gte(A, B)]) :- !.
+extract_db_constraints_rust(A =< B, [lte(A, B)]) :- !.
+extract_db_constraints_rust(_, []).
+
+%% can_use_rust_optimization(+KeyStrategy, +Constraints, +IndexedFields, -OptType, -OptDetails)
+%  Determine if an optimization can be applied.
+can_use_rust_optimization(field(KeyField), Constraints, _, direct_lookup, key(Value)) :-
+    member(eq(KeyField, Value), Constraints),
+    atom(Value), !.
+
+can_use_rust_optimization(composite([field(FirstField)|_]), Constraints, _, prefix_scan, prefix(Value)) :-
+    member(eq(FirstField, Value), Constraints),
+    atom(Value), !.
+
+can_use_rust_optimization(_, Constraints, IndexedFields, index_scan, index(Field, Value)) :-
+    IndexedFields \= [],
+    member(Field, IndexedFields),
+    member(eq(Field, Value), Constraints),
+    atom(Value), !.
+
+%% get_rust_index_fields(+Pred, +Arity, -IndexedFields)
+%  Get indexed fields for a predicate (from index_analyzer or declarations).
+get_rust_index_fields(Pred, Arity, IndexedFields) :-
+    (   catch(
+            findall(Field, index_analyzer:has_index(Pred/Arity, Field), IndexedFields),
+            _,
+            IndexedFields = []
+        )
+    ->  true
+    ;   IndexedFields = []
+    ).
 
 %% ============================================
 %% TAIL RECURSION OPTIMIZATION

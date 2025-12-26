@@ -215,6 +215,70 @@ daily_change(Date, Price, PrevPrice, Change) :-
     Change is Price - PrevPrice.
 ```
 
+### Database Integration (NEW - 2025-12-25)
+
+Embedded database support using the `sled` pure-Rust database.
+
+**Basic Usage:**
+```prolog
+% Read mode - query from database
+?- compile_to_rust(user/3, [
+    db_backend(sled),
+    db_file('users.db'),
+    db_key_field(name),
+    db_mode(read)
+], Code).
+
+% Write mode - store JSONL to database
+?- compile_to_rust(user/3, [
+    db_backend(sled),
+    db_file('users.db'),
+    db_key_field(name),
+    db_mode(write),
+    json_input(true)
+], Code).
+
+% Analyze mode - collect statistics
+?- compile_to_rust(user/3, [
+    db_backend(sled),
+    db_file('users.db'),
+    db_mode(analyze)
+], Code).
+```
+
+**Key Strategies:**
+- `db_key_field(Field)` - Use single field as key
+- `db_key_strategy(field(F))` - Same as above
+- `db_key_strategy(composite([field(a), field(b)]))` - Composite key
+- `db_key_strategy(hash(field(F)))` - Hash-based key
+- `db_key_strategy(hash(field(F), sha256))` - SHA-256 hash
+- `db_key_strategy(uuid)` - UUID v4 key
+
+**Secondary Indexes:**
+```prolog
+% Declare index
+:- index(user/3, email).
+
+% Compile with index support
+?- compile_to_rust(user/3, [
+    db_backend(sled),
+    db_key_field(name)
+], Code).
+```
+
+**Predicate Pushdown:**
+The compiler automatically optimizes queries:
+- **Direct lookup** - O(log n) when filtering on key field
+- **Prefix scan** - O(k log n) for composite key prefix match
+- **Index scan** - O(k log n) using secondary indexes
+
+**Cargo.toml dependency:**
+```toml
+[dependencies]
+sled = "0.34"
+serde_json = "1.0"
+```
+
 ### Pipeline Support
 
 - **Sequential Pipelines:** Chain processing stages
@@ -257,6 +321,12 @@ compile_to_rust(Pred/Arity, Options, RustCode)
 | `include_main(Bool)` | Include main function | `true` |
 | `pipeline_name(Name)` | Pipeline identifier | `pipeline` |
 | `pipeline_mode(Mode)` | `sequential` or `parallel` | `sequential` |
+| `db_backend(Backend)` | Database backend (sled) | - |
+| `db_file(Path)` | Database file path | `data.db` |
+| `db_tree(Name)` | Database tree name | predicate name |
+| `db_key_field(Field)` | Primary key field | - |
+| `db_key_strategy(S)` | Key generation strategy | `auto` |
+| `db_mode(Mode)` | `read`, `write`, or `analyze` | `read` |
 
 ## Generated Code Structure
 
@@ -319,11 +389,11 @@ serde_json = "1.0"
 | Statistical Aggs | ✅ | ✅ | ✅ | ❌ |
 | Observability | ✅ | ✅ | ✅ | ❌ |
 | Window Functions | ✅ | ✅ | ✅ | ❌ |
-| Database | ❌ | BoltDB | SQLite | ❌ |
+| Database | sled | BoltDB | SQLite | ❌ |
 
 ## Limitations
 
-- **Database Integration:** Not yet implemented (planned: sled/rocksdb)
+- No current known limitations for core features
 
 ## See Also
 

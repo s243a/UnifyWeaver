@@ -66,7 +66,7 @@ This document compares all UnifyWeaver compilation targets to help choose the ap
 | JSONL Stream | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ❌ |
 | CSV/Delimited | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ❌ |
 | XML | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Database | ❌ | ✅ (BoltDB) | ❌ | ⚠️ (SQLite) | ❌ | ❌ | ✅ |
+| Database | ❌ | ✅ (BoltDB) | ✅ (sled) | ⚠️ (SQLite) | ❌ | ❌ | ✅ |
 
 Legend: ✅ Complete | ⚠️ Partial | ❌ Not Implemented
 
