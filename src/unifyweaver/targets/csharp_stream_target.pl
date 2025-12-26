@@ -80,10 +80,315 @@ compile_by_type(single_rule, Pred, Arity, [Head-Body], Options, Code) :-
     compile_single_rule_to_csharp(Pred, Arity, Head, Body, Options, Code).
 
 %% ============================================
+%% OUTER JOIN PATTERN DETECTION (C#)
+%% ============================================
+
+%% has_csharp_outer_join(+Body)
+%  Check if body contains an outer join pattern
+has_csharp_outer_join(Body) :-
+    (   is_csharp_left_join_pattern(Body)
+    ;   is_csharp_right_join_pattern(Body)
+    ;   is_csharp_full_outer_join_pattern(Body)
+    ), !.
+
+%% is_csharp_left_join_pattern(+Body)
+is_csharp_left_join_pattern(Body) :-
+    \+ is_csharp_right_join_pattern(Body),
+    \+ is_csharp_full_outer_join_pattern(Body),
+    find_csharp_disjunction_with_null(Body, _).
+
+%% is_csharp_right_join_pattern(+Body)
+is_csharp_right_join_pattern(Body) :-
+    \+ is_csharp_full_outer_join_pattern(Body),
+    Body = ((LeftGoal ; Fallback), _Rest),
+    is_csharp_table_goal(LeftGoal),
+    contains_csharp_null_binding(Fallback).
+
+%% is_csharp_full_outer_join_pattern(+Body)
+is_csharp_full_outer_join_pattern(Body) :-
+    Body = ((LeftGoal ; LeftFallback), (RightGoal ; RightFallback)),
+    is_csharp_table_goal(LeftGoal),
+    is_csharp_table_goal(RightGoal),
+    contains_csharp_null_binding(LeftFallback),
+    contains_csharp_null_binding(RightFallback).
+
+%% is_csharp_table_goal(+Goal)
+is_csharp_table_goal(Goal) :-
+    nonvar(Goal),
+    Goal =.. [Functor|_],
+    \+ Functor = ',',
+    \+ Functor = ';',
+    \+ Functor = '->',
+    \+ Functor = '='.
+
+%% contains_csharp_null_binding(+Goal)
+contains_csharp_null_binding((A, B)) :- !,
+    (contains_csharp_null_binding(A) ; contains_csharp_null_binding(B)).
+contains_csharp_null_binding(_ = null) :- !.
+contains_csharp_null_binding(_ = '') :- !.
+
+%% find_csharp_disjunction_with_null(+Body, -Disjunction)
+find_csharp_disjunction_with_null((A, B), Disj) :- !,
+    (   A = (_ ; Fallback), contains_csharp_null_binding(Fallback)
+    ->  Disj = A
+    ;   find_csharp_disjunction_with_null(B, Disj)
+    ).
+find_csharp_disjunction_with_null((Goal ; Fallback), (Goal ; Fallback)) :-
+    contains_csharp_null_binding(Fallback).
+
+%% ============================================
+%% OUTER JOIN COMPILATION (C#)
+%% ============================================
+
+%% compile_outer_join_to_csharp(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%  Compile outer join patterns to C# LINQ
+compile_outer_join_to_csharp(Pred, Arity, Head, Body, Options, Code) :-
+    (   is_csharp_full_outer_join_pattern(Body)
+    ->  compile_full_outer_join_csharp(Pred, Arity, Head, Body, Options, Code)
+    ;   is_csharp_right_join_pattern(Body)
+    ->  compile_right_join_csharp(Pred, Arity, Head, Body, Options, Code)
+    ;   is_csharp_left_join_pattern(Body)
+    ->  compile_left_join_csharp(Pred, Arity, Head, Body, Options, Code)
+    ).
+
+%% compile_left_join_csharp(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%  Generate C# LINQ code for LEFT OUTER JOIN using GroupJoin + SelectMany + DefaultIfEmpty
+compile_left_join_csharp(Pred, Arity, Head, Body, Options, Code) :-
+    % Extract the pattern: (LeftGoal, (RightGoal ; Fallback))
+    extract_csharp_left_join_parts(Body, LeftGoal, RightGoal, _Fallback),
+
+    % Get signatures and collect facts
+    LeftGoal =.. [LeftName|LeftArgs],
+    RightGoal =.. [RightName|RightArgs],
+    LeftSig = LeftName/LeftArity, length(LeftArgs, LeftArity),
+    RightSig = RightName/RightArity, length(RightArgs, RightArity),
+
+    ensure_supported_relations([LeftSig, RightSig], Pred/Arity),
+    maplist(gather_fact_entries, [LeftSig, RightSig], FactEntries),
+    maplist(data_section_for_signature, FactEntries, DataSections),
+    maplist(stream_helper_for_signature, [LeftSig, RightSig], StreamHelpers),
+
+    predicate_name_pascal(Pred, ModuleName),
+    predicate_name_pascal(Pred, TargetName),
+    predicate_name_pascal(LeftName, LeftPascal),
+    predicate_name_pascal(RightName, RightPascal),
+
+    % Find shared variables for join key
+    find_shared_vars(LeftArgs, RightArgs, SharedVars),
+    (   SharedVars = []
+    ->  LeftKeyExpr = "left",
+        RightKeyExpr = "right"
+    ;   build_key_expr(SharedVars, LeftArgs, "left", LeftKeyExpr),
+        build_key_expr(SharedVars, RightArgs, "right", RightKeyExpr)
+    ),
+
+    % Build result projection
+    head_variables(Head, HeadArgs),
+    build_outer_join_projection(HeadArgs, LeftArgs, RightArgs, "left", "right", ProjectionExpr),
+
+    % Generate the LINQ pipeline with LEFT OUTER JOIN pattern
+    format(atom(Pipeline),
+'~wStream()
+            .GroupJoin(~wStream(),
+                       left => ~w,
+                       right => ~w,
+                       (left, rightGroup) => new { left, rightGroup })
+            .SelectMany(
+                x => x.rightGroup.DefaultIfEmpty(),
+                (x, right) => ~w)',
+        [LeftPascal, RightPascal, LeftKeyExpr, RightKeyExpr, ProjectionExpr]),
+
+    maybe_distinct(Pipeline, Options, PipelineWithDedup),
+    fact_result_type(Arity, ResultType),
+    fact_print_expression(Arity, PrintExpr),
+    compose_csharp_program(ModuleName, DataSections, StreamHelpers,
+        TargetName, ResultType, PipelineWithDedup, PrintExpr, Code).
+
+%% compile_right_join_csharp(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%  Generate C# LINQ code for RIGHT OUTER JOIN (swap left/right and use LEFT JOIN pattern)
+compile_right_join_csharp(Pred, Arity, Head, Body, Options, Code) :-
+    % Extract pattern: ((LeftGoal ; Fallback), RightGoal)
+    Body = ((LeftGoal ; _Fallback), RightGoal),
+
+    % Get signatures
+    LeftGoal =.. [LeftName|LeftArgs],
+    RightGoal =.. [RightName|RightArgs],
+    LeftSig = LeftName/LeftArity, length(LeftArgs, LeftArity),
+    RightSig = RightName/RightArity, length(RightArgs, RightArity),
+
+    ensure_supported_relations([LeftSig, RightSig], Pred/Arity),
+    maplist(gather_fact_entries, [LeftSig, RightSig], FactEntries),
+    maplist(data_section_for_signature, FactEntries, DataSections),
+    maplist(stream_helper_for_signature, [LeftSig, RightSig], StreamHelpers),
+
+    predicate_name_pascal(Pred, ModuleName),
+    predicate_name_pascal(Pred, TargetName),
+    predicate_name_pascal(LeftName, LeftPascal),
+    predicate_name_pascal(RightName, RightPascal),
+
+    % Find shared variables
+    find_shared_vars(LeftArgs, RightArgs, SharedVars),
+    (   SharedVars = []
+    ->  LeftKeyExpr = "left",
+        RightKeyExpr = "right"
+    ;   build_key_expr(SharedVars, RightArgs, "right", RightKeyExpr),
+        build_key_expr(SharedVars, LeftArgs, "left", LeftKeyExpr)
+    ),
+
+    % Build projection (note: right is preserved, left may be null)
+    head_variables(Head, HeadArgs),
+    build_outer_join_projection(HeadArgs, LeftArgs, RightArgs, "left", "right", ProjectionExpr),
+
+    % RIGHT JOIN = swap and do LEFT JOIN from right's perspective
+    format(atom(Pipeline),
+'~wStream()
+            .GroupJoin(~wStream(),
+                       right => ~w,
+                       left => ~w,
+                       (right, leftGroup) => new { right, leftGroup })
+            .SelectMany(
+                x => x.leftGroup.DefaultIfEmpty(),
+                (x, left) => ~w)',
+        [RightPascal, LeftPascal, RightKeyExpr, LeftKeyExpr, ProjectionExpr]),
+
+    maybe_distinct(Pipeline, Options, PipelineWithDedup),
+    fact_result_type(Arity, ResultType),
+    fact_print_expression(Arity, PrintExpr),
+    compose_csharp_program(ModuleName, DataSections, StreamHelpers,
+        TargetName, ResultType, PipelineWithDedup, PrintExpr, Code).
+
+%% compile_full_outer_join_csharp(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%  Generate C# LINQ code for FULL OUTER JOIN (LEFT JOIN UNION unmatched right)
+compile_full_outer_join_csharp(Pred, Arity, Head, Body, Options, Code) :-
+    % Extract pattern: ((LeftGoal ; _), (RightGoal ; _))
+    Body = ((LeftGoal ; _LeftFallback), (RightGoal ; _RightFallback)),
+
+    % Get signatures
+    LeftGoal =.. [LeftName|LeftArgs],
+    RightGoal =.. [RightName|RightArgs],
+    LeftSig = LeftName/LeftArity, length(LeftArgs, LeftArity),
+    RightSig = RightName/RightArity, length(RightArgs, RightArity),
+
+    ensure_supported_relations([LeftSig, RightSig], Pred/Arity),
+    maplist(gather_fact_entries, [LeftSig, RightSig], FactEntries),
+    maplist(data_section_for_signature, FactEntries, DataSections),
+    maplist(stream_helper_for_signature, [LeftSig, RightSig], StreamHelpers),
+
+    predicate_name_pascal(Pred, ModuleName),
+    predicate_name_pascal(Pred, TargetName),
+    predicate_name_pascal(LeftName, LeftPascal),
+    predicate_name_pascal(RightName, RightPascal),
+
+    % Find shared variables
+    find_shared_vars(LeftArgs, RightArgs, SharedVars),
+    (   SharedVars = []
+    ->  LeftKeyExpr = "left",
+        RightKeyExpr = "right"
+    ;   build_key_expr(SharedVars, LeftArgs, "left", LeftKeyExpr),
+        build_key_expr(SharedVars, RightArgs, "right", RightKeyExpr)
+    ),
+
+    % Build projections
+    head_variables(Head, HeadArgs),
+    build_outer_join_projection(HeadArgs, LeftArgs, RightArgs, "left", "right", LeftJoinProjection),
+    build_outer_join_projection(HeadArgs, LeftArgs, RightArgs, "left", "x.right", RightOnlyProjection),
+
+    % FULL OUTER = LEFT JOIN UNION (RIGHT records not in LEFT)
+    format(atom(Pipeline),
+'// Left outer join part
+            ~wStream()
+            .GroupJoin(~wStream(),
+                       left => ~w,
+                       right => ~w,
+                       (left, rightGroup) => new { left, rightGroup })
+            .SelectMany(
+                x => x.rightGroup.DefaultIfEmpty(),
+                (x, right) => ~w)
+            // Union with unmatched right records
+            .Concat(
+                ~wStream()
+                .Where(right => !~wStream().Any(left => ~w == ~w))
+                .Select(right => ~w)
+            )',
+        [LeftPascal, RightPascal, LeftKeyExpr, RightKeyExpr, LeftJoinProjection,
+         RightPascal, LeftPascal, LeftKeyExpr, RightKeyExpr, RightOnlyProjection]),
+
+    maybe_distinct(Pipeline, Options, PipelineWithDedup),
+    fact_result_type(Arity, ResultType),
+    fact_print_expression(Arity, PrintExpr),
+    compose_csharp_program(ModuleName, DataSections, StreamHelpers,
+        TargetName, ResultType, PipelineWithDedup, PrintExpr, Code).
+
+%% Helper predicates for outer join compilation
+
+%% extract_csharp_left_join_parts(+Body, -LeftGoal, -RightGoal, -Fallback)
+extract_csharp_left_join_parts((Left, (RightGoal ; Fallback)), Left, RightGoal, Fallback) :-
+    is_csharp_table_goal(RightGoal), !.
+extract_csharp_left_join_parts((A, B), LeftGoal, RightGoal, Fallback) :-
+    extract_csharp_left_join_parts(B, _, RightGoal, Fallback),
+    LeftGoal = A.
+
+%% find_shared_vars(+LeftArgs, +RightArgs, -SharedVars)
+find_shared_vars(LeftArgs, RightArgs, SharedVars) :-
+    findall(Var, (
+        member(Var, LeftArgs),
+        var(Var),
+        member(Var2, RightArgs),
+        Var == Var2
+    ), SharedVars0),
+    list_to_set(SharedVars0, SharedVars).
+
+%% build_key_expr(+SharedVars, +Args, +Param, -KeyExpr)
+build_key_expr([Var], Args, Param, KeyExpr) :- !,
+    nth1(Index, Args, Arg),
+    Arg == Var,
+    tuple_item(Index, Item),
+    format(atom(KeyExpr), '~w.~w', [Param, Item]).
+build_key_expr(SharedVars, Args, Param, KeyExpr) :-
+    findall(Expr, (
+        member(Var, SharedVars),
+        nth1(Index, Args, Arg),
+        Arg == Var,
+        tuple_item(Index, Item),
+        format(atom(Expr), '~w.~w', [Param, Item])
+    ), Exprs),
+    atomic_list_concat(Exprs, ', ', Inner),
+    format(atom(KeyExpr), '(~w)', [Inner]).
+
+%% build_outer_join_projection(+HeadArgs, +LeftArgs, +RightArgs, +LeftParam, +RightParam, -Expr)
+build_outer_join_projection(HeadArgs, LeftArgs, RightArgs, LeftParam, RightParam, Expr) :-
+    findall(FieldExpr, (
+        member(HeadVar, HeadArgs),
+        var(HeadVar),
+        (   nth1(LIdx, LeftArgs, LArg), LArg == HeadVar
+        ->  tuple_item(LIdx, LItem),
+            format(atom(FieldExpr), '~w?.~w ?? ""', [LeftParam, LItem])
+        ;   nth1(RIdx, RightArgs, RArg), RArg == HeadVar
+        ->  tuple_item(RIdx, RItem),
+            format(atom(FieldExpr), '~w?.~w ?? ""', [RightParam, RItem])
+        ;   FieldExpr = '""'
+        )
+    ), FieldExprs),
+    (   FieldExprs = [Single]
+    ->  Expr = Single
+    ;   atomic_list_concat(FieldExprs, ', ', Inner),
+        format(atom(Expr), '(~w)', [Inner])
+    ).
+
+%% ============================================
 %% SINGLE RULE COMPILATION
 %% ============================================
 
 compile_single_rule_to_csharp(Pred, Arity, Head, Body, Options, Code) :-
+    % Check for outer join patterns first
+    (   has_csharp_outer_join(Body)
+    ->  compile_outer_join_to_csharp(Pred, Arity, Head, Body, Options, Code)
+    ;   compile_inner_join_to_csharp(Pred, Arity, Head, Body, Options, Code)
+    ).
+
+%% compile_inner_join_to_csharp(+Pred, +Arity, +Head, +Body, +Options, -Code)
+%  Original inner join compilation
+compile_inner_join_to_csharp(Pred, Arity, Head, Body, Options, Code) :-
     collect_predicate_terms(Body, Terms),
     Terms \= [],
     maplist(term_signature, Terms, Signatures),

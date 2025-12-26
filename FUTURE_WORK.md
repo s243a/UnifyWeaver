@@ -170,10 +170,17 @@ Implemented:
 - File and stdin input sources
 
 #### 7. Full Outer Joins
-**Status:** 📋 PLANNED
+**Status:** ✅ PARTIAL (2025-12-25)
 **Source:** Go, Python, Rust, SQL targets
-**Target:** Bash, C# Codegen, PowerShell
-**Effort:** Medium-High - complex for shell-based targets
+**Target:** Bash ✅, C# Codegen ✅, PowerShell 📋
+
+Implemented for Bash and C# Codegen:
+- LEFT JOIN: `(LeftGoals, (RightGoal ; X = null))`
+- RIGHT JOIN: `((LeftGoal ; X = null), RightGoals)`
+- FULL OUTER JOIN: `((L ; L = null), (R ; R = null))`
+- Automatic pattern detection and optimized code generation
+- Bash: Nested loops with associative arrays for deduplication
+- C# LINQ: GroupJoin + SelectMany + DefaultIfEmpty patterns
 
 #### 8. Schema Validation for JSON (Rust)
 **Status:** ✅ COMPLETE (2025-12-25)
@@ -221,7 +228,7 @@ Implemented:
 | Window Functions | ✅ | ✅ | ✅ | ⚠️ | ❌ | ✅ |
 | Observability | ✅ | ✅ | ✅ | ⚠️ | ❌ | ❌ |
 | XML Processing | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Full Outer Join | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| Full Outer Join | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Database Integration | ✅ | ⚠️ | ✅ | ❌ | ❌ | ✅ |
 
 Legend: ✅ Complete | ⚠️ Partial | ❌ Missing
