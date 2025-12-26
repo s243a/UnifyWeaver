@@ -322,6 +322,13 @@ namespace UnifyWeaver.QueryRuntime
         long Builds
     );
 
+    public sealed record QueryStrategyTrace(
+        int NodeId,
+        string NodeType,
+        string Strategy,
+        long Count
+    );
+
     public sealed class QueryExecutionTrace
     {
         private sealed class NodeStats
@@ -346,6 +353,15 @@ namespace UnifyWeaver.QueryRuntime
             public long Builds;
         }
 
+        private sealed class PlanNodeStrategyComparer : IEqualityComparer<(PlanNode Node, string Strategy)>
+        {
+            public bool Equals((PlanNode Node, string Strategy) x, (PlanNode Node, string Strategy) y) =>
+                ReferenceEquals(x.Node, y.Node) && string.Equals(x.Strategy, y.Strategy, StringComparison.Ordinal);
+
+            public int GetHashCode((PlanNode Node, string Strategy) obj) =>
+                HashCode.Combine(RuntimeHelpers.GetHashCode(obj.Node), obj.Strategy);
+        }
+
         private sealed class ReferencePlanNodeComparer : IEqualityComparer<PlanNode>
         {
             public static readonly ReferencePlanNodeComparer Instance = new();
@@ -357,6 +373,7 @@ namespace UnifyWeaver.QueryRuntime
 
         private readonly Dictionary<PlanNode, NodeStats> _stats = new(ReferencePlanNodeComparer.Instance);
         private readonly Dictionary<(string Cache, string Key), CacheStats> _cacheStats = new();
+        private readonly Dictionary<(PlanNode Node, string Strategy), long> _strategies = new(new PlanNodeStrategyComparer());
         private int _nextId = 1;
 
         private NodeStats GetOrAdd(PlanNode node)
@@ -403,6 +420,23 @@ namespace UnifyWeaver.QueryRuntime
             if (built)
             {
                 stats.Builds++;
+            }
+        }
+
+        internal void RecordStrategy(PlanNode node, string strategy)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+            if (strategy is null) throw new ArgumentNullException(nameof(strategy));
+
+            _ = GetOrAdd(node);
+            var key = (node, strategy);
+            if (_strategies.TryGetValue(key, out var count))
+            {
+                _strategies[key] = count + 1;
+            }
+            else
+            {
+                _strategies[key] = 1;
             }
         }
 
@@ -470,6 +504,23 @@ namespace UnifyWeaver.QueryRuntime
                 })
                 .OrderBy(s => s.Cache, StringComparer.Ordinal)
                 .ThenBy(s => s.Key, StringComparer.Ordinal)
+                .ToList();
+        }
+
+        public IReadOnlyList<QueryStrategyTrace> SnapshotStrategies()
+        {
+            return _strategies
+                .Select(kvp =>
+                {
+                    var node = kvp.Key.Node;
+                    return new QueryStrategyTrace(
+                        GetOrAdd(node).Id,
+                        node.GetType().Name,
+                        kvp.Key.Strategy,
+                        kvp.Value);
+                })
+                .OrderBy(s => s.NodeId)
+                .ThenBy(s => s.Strategy, StringComparer.Ordinal)
                 .ToList();
         }
 
@@ -1081,8 +1132,11 @@ namespace UnifyWeaver.QueryRuntime
 
         private IEnumerable<object[]> ExecuteKeyJoin(KeyJoinNode join, EvaluationContext? context)
         {
+            var trace = context?.Trace;
+
             if (join.LeftKeys is null || join.RightKeys is null || join.LeftKeys.Count == 0 || join.RightKeys.Count == 0)
             {
+                trace?.RecordStrategy(join, "KeyJoinNestedLoop");
                 var leftRows = Evaluate(join.Left, context);
                 var rightSource = Evaluate(join.Right, context);
                 var rightRows = rightSource as List<object[]> ?? rightSource.ToList();
@@ -1265,6 +1319,69 @@ namespace UnifyWeaver.QueryRuntime
                 return key;
             }
 
+            static bool TryEstimateRowUpperBound(PlanNode node, EvaluationContext context, out int upperBound)
+            {
+                upperBound = 0;
+                switch (node)
+                {
+                    case ParamSeedNode:
+                        upperBound = context.Parameters.Count;
+                        return true;
+
+                    case UnitNode:
+                        upperBound = 1;
+                        return true;
+
+                    case EmptyNode:
+                        upperBound = 0;
+                        return true;
+
+                    case LimitNode limit:
+                        upperBound = Math.Max(0, limit.Count);
+                        return true;
+
+                    case ProjectionNode projection:
+                        return TryEstimateRowUpperBound(projection.Input, context, out upperBound);
+
+                    case SelectionNode selection:
+                        return TryEstimateRowUpperBound(selection.Input, context, out upperBound);
+
+                    case ArithmeticNode arithmetic:
+                        return TryEstimateRowUpperBound(arithmetic.Input, context, out upperBound);
+
+                    case NegationNode negation:
+                        return TryEstimateRowUpperBound(negation.Input, context, out upperBound);
+
+                    case OrderByNode orderBy:
+                        return TryEstimateRowUpperBound(orderBy.Input, context, out upperBound);
+
+                    case RecursiveRefNode recursive:
+                    {
+                        var map = recursive.Kind == RecursiveRefKind.Total ? context.Totals : context.Deltas;
+                        upperBound = map.TryGetValue(recursive.Predicate, out var rows) ? rows.Count : 0;
+                        return true;
+                    }
+
+                    case CrossRefNode cross:
+                    {
+                        var map = cross.Kind == RecursiveRefKind.Total ? context.Totals : context.Deltas;
+                        upperBound = map.TryGetValue(cross.Predicate, out var rows) ? rows.Count : 0;
+                        return true;
+                    }
+
+                    case MaterializeNode materialize:
+                        if (context.Materialized.TryGetValue(materialize.Id, out var cached))
+                        {
+                            upperBound = cached.Count;
+                            return true;
+                        }
+                        return false;
+
+                    default:
+                        return false;
+                }
+            }
+
             if (context is not null)
             {
                 var leftIsScan = TryGetPredicateScan(join.Left, out var leftScanPredicate, out var leftScanPattern);
@@ -1273,22 +1390,38 @@ namespace UnifyWeaver.QueryRuntime
                 if (leftIsScan || rightIsScan)
                 {
                     var useScanIndexStrategy = true;
-                    if (joinKeyCount == 1 && leftIsScan != rightIsScan)
+                    if (leftIsScan != rightIsScan)
                     {
                         var scanPredicate = leftIsScan ? leftScanPredicate : rightScanPredicate;
-                        var scanKeyIndex = leftIsScan ? join.LeftKeys[0] : join.RightKeys[0];
-                        var scanNode = leftIsScan ? join.Left : join.Right;
+                        var scanPattern = leftIsScan ? leftScanPattern : rightScanPattern;
+                        var scanKeys = leftIsScan ? join.LeftKeys : join.RightKeys;
+                        var scanIndexKeys = GetScanIndexKeys(scanKeys, scanPattern);
+                        var signature = scanIndexKeys.Count == 1 ? string.Empty : string.Join(",", scanIndexKeys);
+                        var scanIndexCached = scanIndexKeys.Count == 1
+                            ? context.FactIndices.ContainsKey((scanPredicate, scanIndexKeys[0]))
+                            : context.JoinIndices.ContainsKey((scanPredicate, signature));
+
                         var otherNode = leftIsScan ? join.Right : join.Left;
 
-                        if (!context.FactIndices.ContainsKey((scanPredicate, scanKeyIndex)) &&
-                            EstimateBuildCost(otherNode) < EstimateBuildCost(scanNode))
+                        if (!scanIndexCached)
                         {
-                            useScanIndexStrategy = false;
+                            const int TinyProbeUpperBound = 64;
+                            if (otherNode is MaterializeNode)
+                            {
+                                useScanIndexStrategy = false;
+                            }
+                            else if (joinKeyCount == 1 &&
+                                     TryEstimateRowUpperBound(otherNode, context, out var probeUpperBound) &&
+                                     probeUpperBound <= TinyProbeUpperBound)
+                            {
+                                useScanIndexStrategy = false;
+                            }
                         }
                     }
 
                     if (useScanIndexStrategy && leftIsScan && rightIsScan)
                     {
+                        trace?.RecordStrategy(join, "KeyJoinScanIndex");
                         var leftFacts = GetFactsList(leftScanPredicate, context);
                         var rightFacts = GetFactsList(rightScanPredicate, context);
                         var keyCount = join.LeftKeys.Count;
@@ -1413,6 +1546,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (useScanIndexStrategy && rightIsScan)
                     {
+                        trace?.RecordStrategy(join, "KeyJoinScanIndex");
                         var facts = GetFactsList(rightScanPredicate, context);
                         var probe = Evaluate(join.Left, context);
                         var keyCount = join.RightKeys.Count;
@@ -1470,6 +1604,7 @@ namespace UnifyWeaver.QueryRuntime
 
                     if (useScanIndexStrategy && leftIsScan)
                     {
+                        trace?.RecordStrategy(join, "KeyJoinScanIndex");
                         var facts = GetFactsList(leftScanPredicate, context);
                         var probe = Evaluate(join.Right, context);
                         var keyCount = join.LeftKeys.Count;
@@ -1529,6 +1664,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context is not null && (join.Left is MaterializeNode || join.Right is MaterializeNode))
             {
+                trace?.RecordStrategy(join, "KeyJoinMaterializeIndex");
                 if (join.Left is MaterializeNode leftMaterialize && join.Right is MaterializeNode rightMaterialize)
                 {
                     var leftRows = Evaluate(leftMaterialize, context);
@@ -1731,7 +1867,14 @@ namespace UnifyWeaver.QueryRuntime
             {
                 ParamSeedNode => 0,
                 UnitNode => 1,
-                EmptyNode => 1,
+                EmptyNode => 0,
+                LimitNode limit => Math.Min(Math.Max(0, limit.Count), EstimateBuildCost(limit.Input)),
+                ProjectionNode projection => EstimateBuildCost(projection.Input),
+                SelectionNode selection => EstimateBuildCost(selection.Input),
+                ArithmeticNode arithmetic => EstimateBuildCost(arithmetic.Input),
+                NegationNode negation => EstimateBuildCost(negation.Input),
+                OrderByNode orderBy => EstimateBuildCost(orderBy.Input),
+                OffsetNode offset => EstimateBuildCost(offset.Input),
                 MaterializeNode => 5,
                 RelationScanNode => 20,
                 PatternScanNode => 20,
@@ -1821,6 +1964,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context is not null && buildLeft && leftIsRecursive)
             {
+                trace?.RecordStrategy(join, "KeyJoinRecursiveIndexLeft");
                 var probe = Evaluate(join.Right, context);
                 if (joinKeyCount == 1)
                 {
@@ -1868,6 +2012,7 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context is not null && !buildLeft && rightIsRecursive)
             {
+                trace?.RecordStrategy(join, "KeyJoinRecursiveIndexRight");
                 var probe = Evaluate(join.Left, context);
                 if (joinKeyCount == 1)
                 {
@@ -1913,6 +2058,7 @@ namespace UnifyWeaver.QueryRuntime
                 yield break;
             }
 
+            trace?.RecordStrategy(join, buildLeft ? "KeyJoinHashBuildLeft" : "KeyJoinHashBuildRight");
             var left = Evaluate(join.Left, context);
             var right = Evaluate(join.Right, context);
 
