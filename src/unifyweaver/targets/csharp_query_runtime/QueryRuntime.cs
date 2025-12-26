@@ -329,6 +329,15 @@ namespace UnifyWeaver.QueryRuntime
         long Count
     );
 
+    public sealed record QueryFixpointIterationTrace(
+        int NodeId,
+        string NodeType,
+        string Predicate,
+        int Iteration,
+        int DeltaRows,
+        int TotalRows
+    );
+
     public sealed class QueryExecutionTrace
     {
         private sealed class NodeStats
@@ -374,6 +383,7 @@ namespace UnifyWeaver.QueryRuntime
         private readonly Dictionary<PlanNode, NodeStats> _stats = new(ReferencePlanNodeComparer.Instance);
         private readonly Dictionary<(string Cache, string Key), CacheStats> _cacheStats = new();
         private readonly Dictionary<(PlanNode Node, string Strategy), long> _strategies = new(new PlanNodeStrategyComparer());
+        private readonly List<QueryFixpointIterationTrace> _fixpointIterations = new();
         private int _nextId = 1;
 
         private NodeStats GetOrAdd(PlanNode node)
@@ -438,6 +448,25 @@ namespace UnifyWeaver.QueryRuntime
             {
                 _strategies[key] = 1;
             }
+        }
+
+        internal void RecordFixpointIteration(
+            PlanNode node,
+            PredicateId predicate,
+            int iteration,
+            int deltaRows,
+            int totalRows)
+        {
+            if (node is null) throw new ArgumentNullException(nameof(node));
+
+            var stats = GetOrAdd(node);
+            _fixpointIterations.Add(new QueryFixpointIterationTrace(
+                stats.Id,
+                node.GetType().Name,
+                predicate.ToString(),
+                iteration,
+                deltaRows,
+                totalRows));
         }
 
         internal IEnumerable<object[]> WrapEnumeration(PlanNode node, IEnumerable<object[]> source)
@@ -524,6 +553,15 @@ namespace UnifyWeaver.QueryRuntime
                 .ToList();
         }
 
+        public IReadOnlyList<QueryFixpointIterationTrace> SnapshotFixpointIterations()
+        {
+            return _fixpointIterations
+                .OrderBy(s => s.NodeId)
+                .ThenBy(s => s.Predicate, StringComparer.Ordinal)
+                .ThenBy(s => s.Iteration)
+                .ToList();
+        }
+
         public override string ToString()
         {
             var builder = new StringBuilder();
@@ -546,6 +584,31 @@ namespace UnifyWeaver.QueryRuntime
                 if (i + 1 < nodes.Count)
                 {
                     builder.AppendLine();
+                }
+            }
+
+            var fixpoints = SnapshotFixpointIterations();
+            if (fixpoints.Count > 0)
+            {
+                builder.AppendLine()
+                    .AppendLine()
+                    .AppendLine("Fixpoints:");
+
+                foreach (var fp in fixpoints)
+                {
+                    builder.Append('[')
+                        .Append(fp.NodeId)
+                        .Append("] ")
+                        .Append(fp.NodeType)
+                        .Append(" predicate=")
+                        .Append(fp.Predicate)
+                        .Append(" iter=")
+                        .Append(fp.Iteration)
+                        .Append(" delta=")
+                        .Append(fp.DeltaRows)
+                        .Append(" total=")
+                        .Append(fp.TotalRows)
+                        .AppendLine();
                 }
             }
 
@@ -3845,6 +3908,7 @@ namespace UnifyWeaver.QueryRuntime
             var totalSet = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
             var totalRows = new List<object[]>();
             var context = parentContext ?? new EvaluationContext();
+            var trace = context.Trace;
             var baseRows = Evaluate(fixpoint.BasePlan, context).ToList();
             var deltaRows = new List<object[]>();
 
@@ -3861,8 +3925,12 @@ namespace UnifyWeaver.QueryRuntime
             context.Totals[predicate] = totalRows;
             context.Deltas[predicate] = deltaRows;
 
+            var iteration = 0;
+            trace?.RecordFixpointIteration(fixpoint, predicate, iteration, deltaRows.Count, totalRows.Count);
+
             while (context.Deltas.TryGetValue(predicate, out var delta) && delta.Count > 0)
             {
+                iteration++;
                 var nextDelta = new List<object[]>();
                 foreach (var recursivePlan in fixpoint.RecursivePlans)
                 {
@@ -3876,6 +3944,7 @@ namespace UnifyWeaver.QueryRuntime
                 }
                 totalRows.AddRange(nextDelta);
                 context.Deltas[predicate] = nextDelta;
+                trace?.RecordFixpointIteration(fixpoint, predicate, iteration, nextDelta.Count, totalRows.Count);
             }
 
             return totalRows;
@@ -3888,6 +3957,7 @@ namespace UnifyWeaver.QueryRuntime
             var comparer = StructuralArrayComparer.Instance;
             var totalSets = new Dictionary<PredicateId, HashSet<RowWrapper>>();
             var context = parentContext ?? new EvaluationContext();
+            var trace = context.Trace;
 
             foreach (var member in node.Members)
             {
@@ -3911,8 +3981,19 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
+            var iteration = 0;
+            if (trace is not null)
+            {
+                foreach (var member in node.Members)
+                {
+                    var predicate = member.Predicate;
+                    trace.RecordFixpointIteration(node, predicate, iteration, context.Deltas[predicate].Count, context.Totals[predicate].Count);
+                }
+            }
+
             while (context.Deltas.Values.Any(delta => delta.Count > 0))
             {
+                iteration++;
                 var nextDeltas = node.Members.ToDictionary(member => member.Predicate, _ => new List<object[]>());
 
                 foreach (var member in node.Members)
@@ -3940,6 +4021,15 @@ namespace UnifyWeaver.QueryRuntime
                 foreach (var pair in nextDeltas)
                 {
                     context.Deltas[pair.Key] = pair.Value;
+                }
+
+                if (trace is not null)
+                {
+                    foreach (var member in node.Members)
+                    {
+                        var predicate = member.Predicate;
+                        trace.RecordFixpointIteration(node, predicate, iteration, context.Deltas[predicate].Count, context.Totals[predicate].Count);
+                    }
                 }
             }
 
