@@ -257,9 +257,23 @@ Legend: ✅ Complete | ⚠️ Partial | ❌ Missing
 
 ### Incremental Compilation
 
-- **Partial Recompilation** - Only recompile changed predicates
-- **Dependency Tracking** - Smart rebuild based on dependencies
-- **Cache Generated Code** - Avoid regenerating identical code
+**Status:** 📋 PROPOSED (2025-12-25)
+**Proposal:** [`docs/proposals/INCREMENTAL_COMPILATION.md`](proposals/INCREMENTAL_COMPILATION.md)
+
+**Core Features:**
+- **Predicate Hashing** - Detect source changes via content hashing
+- **Dependency Tracking** - Leverage existing `call_graph.pl` for rebuild decisions
+- **Compilation Cache** - Store generated code indexed by predicate + hash
+- **Invalidation Cascade** - Automatically invalidate dependents when source changes
+
+**Implementation Phases:**
+1. Core infrastructure (hasher, cache manager)
+2. Dependency integration (reverse graph traversal)
+3. Compiler wrapper (one target proof of concept)
+4. Multi-target support (all 6 targets)
+5. File persistence (survive restarts)
+6. CLI management commands
+7. Documentation & benchmarks
 
 ### Testing Infrastructure
 
