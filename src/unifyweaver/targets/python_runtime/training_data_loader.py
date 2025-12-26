@@ -21,10 +21,13 @@ Where `hash` is derived from (data_dir, subdirs, max_pairs, embedder_name).
 - `pair_ids`: Original pair IDs
 
 ### Speed improvement
-| Model | First run | Cached |
-|-------|-----------|--------|
-| all-MiniLM | ~7s | 0.03s |
-| ModernBERT | ~36s | 0.03s |
+
+Caching provides **200-1000x speedup** for iterative development:
+
+| Model | First run | Cached | Speedup |
+|-------|-----------|--------|---------|
+| all-MiniLM | ~7s | 0.03s | ~230x |
+| ModernBERT | ~36s | 0.03s | ~1200x |
 
 ### Usage
 ```python
