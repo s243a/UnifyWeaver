@@ -115,26 +115,38 @@ compile_multi_rule_procedural(Pred, Arity, Clauses, _Options, Code) :-
     predicate_name_pascal(Pred, TargetName),
     fact_result_type(Arity, ResultType),
     fact_print_expression(Arity, PrintExpr),
-    
-    % Generate clause methods
+
+    % Check if this predicate is recursive
+    (   member(_-Body, Clauses),
+        contains_recursive_call(Pred, Arity, Body)
+    ->  IsRecursive = true
+    ;   IsRecursive = false
+    ),
+
+    % Generate clause methods (only non-recursive clauses for recursive predicates)
     findall(ClauseCode, (
-        nth1(Index, Clauses, Head-Body),
-        translate_clause_procedural(Pred, Arity, Head, Body, Index, ClauseCode, Signatures),
-        % Only add non-target predicates to needed_data (target has its own Stream method)
-        forall((member(Sig, Signatures), Sig \= Pred/Arity), assert_needed_data(Sig))
+        nth1(Idx, Clauses, ClauseItem),
+        ClauseItem = ClHead-ClBody,
+        (   IsRecursive == true,
+            contains_recursive_call(Pred, Arity, ClBody)
+        ->  fail  % Skip recursive clauses - handled specially
+        ;   translate_clause_procedural(Pred, Arity, ClHead, ClBody, Idx, ClauseCode, Sigs),
+            forall((member(Sg, Sigs), Sg \= Pred/Arity), assert_needed_data(Sg))
+        )
     ), ClauseCodes),
     atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
-    
-    % Calls Code
-    findall(Call, (
-        nth1(Index, Clauses, _),
-        format(atom(Call), "            foreach (var item in _clause_~w()) yield return item;", [Index])
-    ), Calls),
-    atomic_list_concat(Calls, "\n", CallsCode),
-    
-    format(atom(MemoField), "        private static readonly Dictionary<string, List<~w>> _memo = new();", [ResultType]),
-    
-    format(atom(MainStream), '        public static IEnumerable<~w> ~wStream()
+
+    % Generate main stream method
+    (   IsRecursive == true
+    ->  generate_recursive_stream(Pred, Arity, Clauses, TargetName, ResultType, MemoField, MainStream)
+    ;   % Non-recursive: simple iteration over clauses
+        findall(Call, (
+            nth1(Index, Clauses, _),
+            format(atom(Call), "            foreach (var item in _clause_~w()) yield return item;", [Index])
+        ), Calls),
+        atomic_list_concat(Calls, "\n", CallsCode),
+        format(atom(MemoField), "        private static readonly Dictionary<string, List<~w>> _memo = new();", [ResultType]),
+        format(atom(MainStream), '        public static IEnumerable<~w> ~wStream()
         {
             if (_memo.TryGetValue("all", out var cached)) return cached;
             var results = new List<~w>();
@@ -148,14 +160,115 @@ compile_multi_rule_procedural(Pred, Arity, Clauses, _Options, Code) :-
         private static IEnumerable<~w> ~wInternal()
         {
 ~s
-        }', [ResultType, TargetName, ResultType, TargetName, ResultType, TargetName, CallsCode]),
+        }', [ResultType, TargetName, ResultType, TargetName, ResultType, TargetName, CallsCode])
+    ),
 
     get_needed_data(DataSections),
     get_needed_helpers(StreamHelpers),
-    
+
     compose_csharp_program(ModuleName, DataSections, StreamHelpers,
         [MemoField, AllClausesCode, MainStream],
         TargetName, ResultType, PrintExpr, Code).
+
+%% generate_recursive_stream/6 - Generate semi-naive iteration for recursive predicates
+generate_recursive_stream(Pred, Arity, Clauses, TargetName, ResultType, MemoField, MainStream) :-
+    % Find base case clauses (non-recursive)
+    findall(Index, (
+        nth1(Index, Clauses, _-Body),
+        \+ contains_recursive_call(Pred, Arity, Body)
+    ), BaseIndices),
+
+    % Find recursive clauses and extract join info
+    findall(rec_info(BasePred, JoinPos), (
+        member(_-Body, Clauses),
+        contains_recursive_call(Pred, Arity, Body),
+        extract_recursive_join_info(Pred, Arity, Body, BasePred, JoinPos)
+    ), RecInfos),
+
+    % Generate base case calls
+    findall(BaseCall, (
+        member(Idx, BaseIndices),
+        format(atom(BaseCall), "            foreach (var item in _clause_~w())
+            {
+                if (seen.Add(item)) { delta.Add(item); yield return item; }
+            }", [Idx])
+    ), BaseCalls),
+    atomic_list_concat(BaseCalls, "\n", BaseCode),
+
+    % Generate recursive iteration (assuming transitive closure pattern for now)
+    (   RecInfos = [rec_info(BasePred, JoinPos)|_]
+    ->  predicate_name_pascal(BasePred, BasePascal),
+        (   JoinPos == first  % base(X,Y), rec(Y,Z) pattern
+        ->  format(atom(RecursiveCode), '            while (delta.Count > 0)
+            {
+                var newDelta = new List<~w>();
+                foreach (var d in delta)
+                {
+                    foreach (var b in ~wStream())
+                    {
+                        if (b.Item2 == d.Item1)
+                        {
+                            var newItem = (b.Item1, d.Item2);
+                            if (seen.Add(newItem)) { newDelta.Add(newItem); yield return newItem; }
+                        }
+                    }
+                }
+                delta = newDelta;
+            }', [ResultType, BasePascal])
+        ;   % base(Y,X), rec(Y,Z) or other patterns - use Item1 match
+            format(atom(RecursiveCode), '            while (delta.Count > 0)
+            {
+                var newDelta = new List<~w>();
+                foreach (var d in delta)
+                {
+                    foreach (var b in ~wStream())
+                    {
+                        if (b.Item1 == d.Item1)
+                        {
+                            var newItem = (b.Item2, d.Item2);
+                            if (seen.Add(newItem)) { newDelta.Add(newItem); yield return newItem; }
+                        }
+                    }
+                }
+                delta = newDelta;
+            }', [ResultType, BasePascal])
+        )
+    ;   RecursiveCode = "            // Unknown recursive pattern"
+    ),
+
+    format(atom(MemoField), "        private static readonly HashSet<~w> _seen = new();", [ResultType]),
+
+    format(atom(MainStream), '        public static IEnumerable<~w> ~wStream()
+        {
+            if (_seen.Count > 0)
+            {
+                foreach (var item in _seen) yield return item;
+                yield break;
+            }
+
+            var seen = _seen;
+            var delta = new List<~w>();
+
+            // Base case
+~s
+
+            // Semi-naive iteration
+~s
+        }', [ResultType, TargetName, ResultType, BaseCode, RecursiveCode]).
+
+%% extract_recursive_join_info/5 - Extract info about recursive clause structure
+extract_recursive_join_info(Pred, Arity, Body, BasePred, JoinPos) :-
+    body_goals(Body, Goals),
+    Goals = [First, Second|_],
+    functor(First, BasePred, 2),
+    BasePred \= Pred,
+    functor(Second, Pred, Arity),
+    First =.. [_|[Arg1, Arg2]],
+    Second =.. [_|[RecArg1|_]],
+    (   Arg2 == RecArg1 -> JoinPos = first   % base(X,Y), rec(Y,Z)
+    ;   Arg1 == RecArg1 -> JoinPos = second  % base(Y,X), rec(Y,Z)
+    ;   JoinPos = unknown
+    ).
 
 assert_needed_data(Sig) :- (needed_data(Sig) -> true ; assertz(needed_data(Sig))).
 get_needed_data(Sections) :- 
