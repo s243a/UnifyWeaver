@@ -1507,6 +1507,21 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
+            static bool IsRecursiveDeltaProbe(PlanNode node) => node switch
+            {
+                RecursiveRefNode recursive => recursive.Kind == RecursiveRefKind.Delta,
+                CrossRefNode cross => cross.Kind == RecursiveRefKind.Delta,
+                ProjectionNode projection => IsRecursiveDeltaProbe(projection.Input),
+                SelectionNode selection => IsRecursiveDeltaProbe(selection.Input),
+                ArithmeticNode arithmetic => IsRecursiveDeltaProbe(arithmetic.Input),
+                NegationNode negation => IsRecursiveDeltaProbe(negation.Input),
+                DistinctNode distinct => IsRecursiveDeltaProbe(distinct.Input),
+                OrderByNode orderBy => IsRecursiveDeltaProbe(orderBy.Input),
+                LimitNode limit => IsRecursiveDeltaProbe(limit.Input),
+                OffsetNode offset => IsRecursiveDeltaProbe(offset.Input),
+                _ => false
+            };
+
             if (context is not null)
             {
                 var leftIsScan = TryGetPredicateScan(join.Left, out var leftScanPredicate, out var leftScanPattern);
@@ -1528,7 +1543,7 @@ namespace UnifyWeaver.QueryRuntime
 
                         var otherNode = leftIsScan ? join.Right : join.Left;
 
-                        if (!scanIndexCached)
+                        if (!scanIndexCached && !IsRecursiveDeltaProbe(otherNode))
                         {
                             const int TinyProbeUpperBound = 64;
                             if (otherNode is MaterializeNode)
