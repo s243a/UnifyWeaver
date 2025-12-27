@@ -50,6 +50,15 @@ This document compares all UnifyWeaver compilation targets to help choose the ap
 | **first_value** | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
 | **last_value** | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
 
+### Joins
+
+| Feature | Bash | Go | Rust | Python | C# Codegen | C# Query | SQL |
+|---------|------|-----|------|--------|------------|----------|-----|
+| Inner Join | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **LEFT OUTER** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **RIGHT OUTER** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **FULL OUTER** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
 ### Observability
 
 | Feature | Bash | Go | Rust | Python | C# Codegen | C# Query | SQL |

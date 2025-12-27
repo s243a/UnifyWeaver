@@ -21,6 +21,7 @@ UnifyWeaver compiles Prolog predicates to PowerShell scripts with two compilatio
 | **Binding System** | 68+ bindings for cmdlets, .NET methods, Windows automation |
 | **Object Pipeline** | `ValueFromPipeline` parameters, `PSCustomObject` output |
 | **Advanced Joins** | Hash-based and pipelined N-way joins with O(n+m) complexity |
+| **Outer Joins** | LEFT, RIGHT, and FULL OUTER joins with automatic pattern detection |
 | **Recursion** | Simple, transitive, mutual, tail recursion with memoization |
 | **Firewall Security** | Per-predicate mode control (pure/baas/auto) |
 | **C# Hosting** | In-process integration with .NET assemblies |
@@ -59,6 +60,46 @@ For detailed implementation status, see [POWERSHELL_PURE_IMPLEMENTATION.md](POWE
 
 # Then run the generated script
 .\grandparent.ps1
+```
+
+---
+
+## Outer Join Support
+
+The PowerShell target supports LEFT, RIGHT, and FULL OUTER joins through automatic pattern detection.
+
+### Syntax
+
+```prolog
+% LEFT JOIN - all left records, matched right or null
+left_join(X, Z) :-
+    left_table(X, Y),
+    (right_table(Y, Z) ; Z = null).
+
+% RIGHT JOIN - all right records, matched left or null
+right_join(X, Z) :-
+    (left_table(X, Y) ; X = null),
+    right_table(Y, Z).
+
+% FULL OUTER JOIN - all records from both sides
+full_outer(X, Z) :-
+    (left_table(X, Y) ; X = null),
+    (right_table(Y, Z) ; Z = null).
+```
+
+### Implementation
+
+The compiler generates PowerShell code using:
+- Hashtable-based lookups for efficient joins
+- `PSCustomObject` output with nullable properties
+- Match tracking for unmatched records in FULL OUTER joins
+
+Example generated output structure:
+```powershell
+[PSCustomObject]@{
+    X = $left.X
+    Z = if ($right) { $right.Z } else { $null }
+}
 ```
 
 ---

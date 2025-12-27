@@ -13,6 +13,7 @@ The Bash family of targets is the original execution backend for UnifyWeaver. It
 - Transparency: Compiled scripts are human-readable; operators can audit behaviour and make one-off tweaks.
 - Side-effect control: Shell-level commands are explicit, enabling firewall policies to forbid risky operations.
 - Mature recursion support: The Bash target already handles memoization, advanced recursive patterns, and partitioning/fork variants.
+- Full outer join support: LEFT, RIGHT, and FULL OUTER joins with automatic pattern detection.
 
 ## Limitations
 - Text-centric: Lacks static typing; needs careful escaping and quoting.
@@ -26,6 +27,36 @@ The Bash family of targets is the original execution backend for UnifyWeaver. It
 - `target(bash_fork)` — fork-based parallel execution, using `src/unifyweaver/core/backends/bash_fork.pl`.
 
 Each variant builds on the same template system, so improvements to clause analysis or dedup logic propagate automatically.
+
+## Outer Join Support
+
+The Bash target supports LEFT, RIGHT, and FULL OUTER joins through automatic pattern detection.
+
+### Syntax
+
+```prolog
+% LEFT JOIN - all left records, matched right or null
+left_join(X, Z) :-
+    left_table(X, Y),
+    (right_table(Y, Z) ; Z = null).
+
+% RIGHT JOIN - all right records, matched left or null
+right_join(X, Z) :-
+    (left_table(X, Y) ; X = null),
+    right_table(Y, Z).
+
+% FULL OUTER JOIN - all records from both sides
+full_outer(X, Z) :-
+    (left_table(X, Y) ; X = null),
+    (right_table(Y, Z) ; Z = null).
+```
+
+### Implementation
+
+The compiler detects these disjunction patterns and generates optimized Bash code using:
+- Nested loops with associative arrays for deduplication
+- Match tracking for unmatched records in FULL OUTER joins
+- Efficient key-based lookups
 
 ## When to Choose Bash
 - Rapid prototyping on machines with standard Unix toolchains.

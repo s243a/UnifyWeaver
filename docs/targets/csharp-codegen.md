@@ -28,10 +28,53 @@
 - **Time:** Each join is currently a nested-loop join (`Join` over the in-memory arrays). This is adequate for modest data sets and mirrors the Bash target; larger workloads should migrate to the query runtime for hash/semi-naive evaluation.
 - **Optimisations:** Because joins drop unused variables immediately, the tuple width stays bounded by the clause head and upcoming join keys. No sparse representation is required in this layer; more advanced layouts can be introduced in the query runtime if needed.
 
+## Outer Join Support
+
+The C# codegen target supports LEFT, RIGHT, and FULL OUTER joins through automatic pattern detection.
+
+### Syntax
+
+```prolog
+% LEFT JOIN - all left records, matched right or null
+left_join(X, Z) :-
+    left_table(X, Y),
+    (right_table(Y, Z) ; Z = null).
+
+% RIGHT JOIN - all right records, matched left or null
+right_join(X, Z) :-
+    (left_table(X, Y) ; X = null),
+    right_table(Y, Z).
+
+% FULL OUTER JOIN - all records from both sides
+full_outer(X, Z) :-
+    (left_table(X, Y) ; X = null),
+    (right_table(Y, Z) ; Z = null).
+```
+
+### Implementation
+
+The compiler generates LINQ code using:
+- `GroupJoin` + `SelectMany` + `DefaultIfEmpty` for LEFT JOIN
+- Swapped tables with LEFT JOIN pattern for RIGHT JOIN
+- LEFT JOIN concatenated with unmatched right records for FULL OUTER
+
+Example generated code for LEFT JOIN:
+```csharp
+LeftTableStream()
+    .GroupJoin(RightTableStream(),
+               left => left.Y,
+               right => right.Y,
+               (left, rightGroup) => new { left, rightGroup })
+    .SelectMany(
+        x => x.rightGroup.DefaultIfEmpty(),
+        (x, right) => (x.left.X, right?.Z))
+```
+
 ## Strengths
 - Developer tooling: Outputs standard C# source compatible with IDEs, analyzers, and debuggers.
 - Performance: Compiled IL can outperform shell scripts for heavy workloads, especially with in-memory joins.
 - Embedding: Easy to ship as part of a larger .NET application, enabling direct function calls without spawning processes.
+- Full outer join support: LEFT, RIGHT, and FULL OUTER joins with LINQ patterns.
 
 ## Limitations (as of current design)
 - Code size: Each predicate generates a substantial block of C#; larger rule sets may benefit more from the Query Runtime’s shared engine.
