@@ -4,8 +4,8 @@
 
 ## Current Scope
 - Recursive predicates: Supported via semi-naive iteration with HashSet deduplication. Two code styles available:
-  - **Inline (default)**: Explicit `while (delta.Count > 0)` loops in generated code
-  - **LINQ style**: `TransitiveClosure()` extension method via `linq_recursive(true)` option
+  - **LINQ style (default)**: `TransitiveClosure()` extension method from `UnifyWeaver.Native`
+  - **Inline style**: Explicit `while (delta.Count > 0)` loops via `inline_recursion(true)` option
 - Non-recursive predicates: Facts, single-rule bodies, and multi-clause unions translate to LINQ pipelines that operate on in-memory arrays.
 - Dedup semantics: Follows the Bash model—`Distinct()` for `unique(true)`, ordered variants are pending.
 - Generated structure: Each predicate becomes a static class in the `UnifyWeaver.Generated` namespace with:
@@ -82,19 +82,19 @@ LeftTableStream()
 - Code size: Each predicate generates a substantial block of C#; larger rule sets may benefit more from the Query Runtime’s shared engine.
 - Flexibility: Regenerating code is required for any change (e.g., new dedup strategies), whereas the query runtime can evolve independently.
 
-## LINQ Recursive Style
+## Recursive Code Styles
 
-The `linq_recursive(true)` option generates cleaner code using the `UnifyWeaver.Native` runtime library:
+LINQ style is the default for recursive predicates. Use `inline_recursion(true)` for standalone code with no runtime dependencies:
 
 ```prolog
-% Inline style (default)
+% LINQ style (default) - uses TransitiveClosure extension
 compile_predicate_to_csharp(ancestor/2, [], Code).
 
-% LINQ style - uses TransitiveClosure extension
-compile_predicate_to_csharp(ancestor/2, [linq_recursive(true)], Code).
+% Inline style - standalone, no runtime dependency
+compile_predicate_to_csharp(ancestor/2, [inline_recursion(true)], Code).
 ```
 
-**LINQ style generates:**
+**Default (LINQ style) generates:**
 ```csharp
 using UnifyWeaver.Native;
 
@@ -107,6 +107,17 @@ public static IEnumerable<(string, string)> AncestorStream()
             .Select(b => (b.Item1, d.Item2))
     ).ToList();
     return _cache;
+}
+```
+
+**Inline style generates:**
+```csharp
+public static IEnumerable<(string, string)> AncestorStream()
+{
+    var seen = new HashSet<(string, string)>();
+    var delta = new List<(string, string)>();
+    // Base case + semi-naive iteration loop
+    while (delta.Count > 0) { ... }
 }
 ```
 
