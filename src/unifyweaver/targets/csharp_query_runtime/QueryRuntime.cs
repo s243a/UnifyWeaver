@@ -1507,18 +1507,18 @@ namespace UnifyWeaver.QueryRuntime
                 }
             }
 
-            static bool IsRecursiveDeltaProbe(PlanNode node) => node switch
+            static bool IsRecursiveProbe(PlanNode node) => node switch
             {
-                RecursiveRefNode recursive => recursive.Kind == RecursiveRefKind.Delta,
-                CrossRefNode cross => cross.Kind == RecursiveRefKind.Delta,
-                ProjectionNode projection => IsRecursiveDeltaProbe(projection.Input),
-                SelectionNode selection => IsRecursiveDeltaProbe(selection.Input),
-                ArithmeticNode arithmetic => IsRecursiveDeltaProbe(arithmetic.Input),
-                NegationNode negation => IsRecursiveDeltaProbe(negation.Input),
-                DistinctNode distinct => IsRecursiveDeltaProbe(distinct.Input),
-                OrderByNode orderBy => IsRecursiveDeltaProbe(orderBy.Input),
-                LimitNode limit => IsRecursiveDeltaProbe(limit.Input),
-                OffsetNode offset => IsRecursiveDeltaProbe(offset.Input),
+                RecursiveRefNode => true,
+                CrossRefNode => true,
+                ProjectionNode projection => IsRecursiveProbe(projection.Input),
+                SelectionNode selection => IsRecursiveProbe(selection.Input),
+                ArithmeticNode arithmetic => IsRecursiveProbe(arithmetic.Input),
+                NegationNode negation => IsRecursiveProbe(negation.Input),
+                DistinctNode distinct => IsRecursiveProbe(distinct.Input),
+                OrderByNode orderBy => IsRecursiveProbe(orderBy.Input),
+                LimitNode limit => IsRecursiveProbe(limit.Input),
+                OffsetNode offset => IsRecursiveProbe(offset.Input),
                 _ => false
             };
 
@@ -1543,7 +1543,7 @@ namespace UnifyWeaver.QueryRuntime
 
                         var otherNode = leftIsScan ? join.Right : join.Left;
 
-                        if (!scanIndexCached && !IsRecursiveDeltaProbe(otherNode))
+                        if (!scanIndexCached && !IsRecursiveProbe(otherNode))
                         {
                             const int TinyProbeUpperBound = 64;
                             if (otherNode is MaterializeNode)
@@ -2081,11 +2081,11 @@ namespace UnifyWeaver.QueryRuntime
                 {
                     if (leftKind == RecursiveRefKind.Delta && rightKind != RecursiveRefKind.Delta)
                     {
-                        buildLeft = true;
+                        buildLeft = false;
                     }
                     else if (rightKind == RecursiveRefKind.Delta && leftKind != RecursiveRefKind.Delta)
                     {
-                        buildLeft = false;
+                        buildLeft = true;
                     }
                     else
                     {
