@@ -333,6 +333,42 @@ Based on ecosystem maturity and use cases:
 - [Cgo and Python - Datadog](https://www.datadoghq.com/blog/engineering/cgo-and-python/)
 - [lupa PyPI](https://pypi.org/project/lupa/)
 
+## Python Variant Compatibility
+
+In addition to language bridges, RPyC works with various Python accelerators and compilers. Tests run on 2025-12-26 confirm:
+
+| Variant | Version Tested | Status | Notes |
+|---------|---------------|--------|-------|
+| **CPython** | 3.8.10 | ✅ Works | Baseline - all RPyC features work |
+| **Numba** | 0.58.1 | ✅ Works | JIT-compiled functions callable via RPyC |
+| **Cython** | 3.2.3 | ✅ Works | Services run correctly (full .pyx compile is build step) |
+| **mypyc** | (mypy 1.14.1) | ✅ Works | Type-annotated services work |
+| **Nuitka** | 2.8.9 | ✅ Works | Service patterns verified |
+| **Codon** | 0.19.4 | ⚠️ Partial | Native NumPy support; RPyC requires CPython bridge |
+| **Pyodide** | N/A | ❌ Incompatible | Browser sandbox, no TCP sockets |
+
+### Why These Work
+
+All the working variants run on or with CPython:
+- **Numba**: JIT compilation at runtime, runs on CPython
+- **Cython**: Compiles to C extensions, loaded by CPython
+- **mypyc**: Compiles typed code to C extensions for CPython
+- **Nuitka**: Compiles Python to native code, includes CPython runtime
+- **Codon**: Native compiler with Python interop; can call CPython via `from python import`
+
+### Known Incompatible
+
+- **Pyodide**: WebAssembly-based, runs in browser sandbox without real network access
+- **Jython**: Python 2.7 on JVM, RPyC requires Python 3
+
+### Test Suite
+
+Run the variant compatibility tests:
+
+```bash
+python tests/rpyc_variants/test_rpyc_variants.py
+```
+
 ## Next Steps
 
 To test a new language bridge:
