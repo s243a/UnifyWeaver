@@ -145,17 +145,17 @@ compile_multi_rule_procedural(Pred, Arity, Clauses, Options, Code) :-
     ), ClauseCodes),
     atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
 
-    % Check if LINQ recursive style is requested
-    (   option(linq_recursive(true), Options)
-    ->  UseLinqRecursive = true
-    ;   UseLinqRecursive = false
+    % LINQ recursive style is the default; use inline_recursion(true) for standalone code
+    (   option(inline_recursion(true), Options)
+    ->  UseLinqRecursive = false
+    ;   UseLinqRecursive = true
     ),
 
     % Generate main stream method
-    (   IsRecursive == true, UseLinqRecursive == true
-    ->  generate_recursive_stream_linq(Pred, Arity, Clauses, TargetName, ResultType, MemoField, MainStream)
-    ;   IsRecursive == true
+    (   IsRecursive == true, UseLinqRecursive == false
     ->  generate_recursive_stream(Pred, Arity, Clauses, TargetName, ResultType, MemoField, MainStream)
+    ;   IsRecursive == true
+    ->  generate_recursive_stream_linq(Pred, Arity, Clauses, TargetName, ResultType, MemoField, MainStream)
     ;   % Non-recursive: simple iteration over clauses
         findall(Call, (
             nth1(Index, Clauses, _),
@@ -566,14 +566,15 @@ test_csharp_native_target :-
     format('  ✓ Non-recursive facts passed~n'),
     assertz((user:ancestor(X, Y) :- user:parent(X, Y))),
     assertz((user:ancestor(X, Y) :- user:parent(X, Z), user:ancestor(Z, Y))),
+    % Default is now LINQ style
     compile_predicate_to_csharp(ancestor/2, [], Code2),
-    once(sub_string(Code2, _, _, _, "while (delta.Count > 0)")),
-    format('  ✓ Recursive semi-naive (inline) passed~n'),
-    % Test LINQ recursive style
-    compile_predicate_to_csharp(ancestor/2, [linq_recursive(true)], Code3),
-    once(sub_string(Code3, _, _, _, "TransitiveClosure")),
-    once(sub_string(Code3, _, _, _, "using UnifyWeaver.Native;")),
-    format('  ✓ Recursive LINQ style (TransitiveClosure) passed~n').
+    once(sub_string(Code2, _, _, _, "TransitiveClosure")),
+    once(sub_string(Code2, _, _, _, "using UnifyWeaver.Native;")),
+    format('  ✓ Recursive LINQ style (default) passed~n'),
+    % Test inline fallback with inline_recursion(true)
+    compile_predicate_to_csharp(ancestor/2, [inline_recursion(true)], Code3),
+    once(sub_string(Code3, _, _, _, "while (delta.Count > 0)")),
+    format('  ✓ Recursive inline style (fallback) passed~n').
 
 %% test_linq_recursive_output/0 - Print both styles for comparison
 test_linq_recursive_output :-
@@ -585,9 +586,9 @@ test_linq_recursive_output :-
     assertz(user:parent(charlie, diana)),
     assertz((user:ancestor(X, Y) :- user:parent(X, Y))),
     assertz((user:ancestor(X, Y) :- user:parent(X, Z), user:ancestor(Z, Y))),
-    format('--- Inline Semi-Naive Style ---~n'),
+    format('--- LINQ TransitiveClosure Style (Default) ---~n'),
     compile_predicate_to_csharp(ancestor/2, [], Code1),
     format('~w~n~n', [Code1]),
-    format('--- LINQ TransitiveClosure Style ---~n'),
-    compile_predicate_to_csharp(ancestor/2, [linq_recursive(true)], Code2),
+    format('--- Inline Semi-Naive Style (inline_recursion(true)) ---~n'),
+    compile_predicate_to_csharp(ancestor/2, [inline_recursion(true)], Code2),
     format('~w~n', [Code2]).
