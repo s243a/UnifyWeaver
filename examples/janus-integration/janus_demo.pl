@@ -169,6 +169,72 @@ demo_performance :-
     format('    Janus avoids process spawn overhead entirely.~n').
 
 %% ============================================
+%% Demo 7: Dynamic Code Execution (Exec Pattern)
+%% ============================================
+
+demo_exec_pattern :-
+    format('~n=== Demo 7: Dynamic Code Execution ===~n'),
+
+    % First, we need to add the path to dict_wrapper
+    format('7.1 Setting up dict_wrapper path:~n'),
+    % This path should point to JanusBridge's dict_wrapper.py
+    DictWrapperPath = '../../context/projects/JanusBridge/src/core',
+    catch(
+        (   janus_add_lib_path(DictWrapperPath),
+            format('    Added path: ~w~n', [DictWrapperPath])
+        ),
+        _,
+        format('    Warning: Could not add dict_wrapper path~n')
+    ),
+
+    % Test non-recursive function with wrapped_exec
+    format('~n7.2 Non-recursive function (janus_wrapped_exec):~n'),
+    catch(
+        (   janus_wrapped_exec("
+def double(x):
+    return x * 2
+
+def add(a, b):
+    return a + b
+", NS1),
+            janus_call_defined(NS1, double, [21], R1),
+            janus_call_defined(NS1, add, [10, 32], R2),
+            format('    double(21) = ~w~n', [R1]),
+            format('    add(10, 32) = ~w~n', [R2])
+        ),
+        E1,
+        format('    Skipped (dict_wrapper not available): ~w~n', [E1])
+    ),
+
+    % Test recursive function with janus_exec_recursive
+    format('~n7.3 Recursive function (janus_exec_recursive):~n'),
+    catch(
+        (   janus_exec_recursive("
+def factorial(n):
+    if n <= 1:
+        return 1
+    return n * factorial(n - 1)
+
+def fibonacci(n):
+    if n <= 1:
+        return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
+", NS2),
+            janus_call_defined(NS2, factorial, [5], Fact),
+            janus_call_defined(NS2, fibonacci, [10], Fib),
+            format('    factorial(5) = ~w~n', [Fact]),
+            format('    fibonacci(10) = ~w~n', [Fib])
+        ),
+        E2,
+        format('    Skipped: ~w~n', [E2])
+    ),
+
+    format('~nNote: The exec pattern is useful for:~n'),
+    format('  - Dynamically generated Python code~n'),
+    format('  - Custom algorithms defined at runtime~n'),
+    format('  - Code compiled by UnifyWeaver~n').
+
+%% ============================================
 %% Main Demo Runner
 %% ============================================
 
@@ -185,7 +251,8 @@ run_demo :-
         demo_custom_module,
         demo_bidirectional,
         demo_wrapper_generation,
-        demo_performance
+        demo_performance,
+        demo_exec_pattern
     ;   format('ERROR: Janus not available.~n'),
         format('Ensure you are using SWI-Prolog 9.0+ with Janus support.~n'),
         format('Install Python package: pip install janus_swi~n')

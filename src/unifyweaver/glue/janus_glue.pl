@@ -45,6 +45,12 @@
     janus_numpy_array/2,
     janus_numpy_call/3,
 
+    % Dynamic code execution (exec pattern)
+    janus_wrapped_exec/2,
+    janus_wrapped_exec/3,
+    janus_call_defined/4,
+    janus_exec_recursive/2,
+
     % Code generation for compiled predicates
     generate_janus_wrapper/3,
     generate_janus_pipeline/3,
@@ -226,6 +232,99 @@ janus_numpy_call(Function, Args, Result) :-
     ).
 
 %% ============================================
+%% Dynamic Code Execution (Exec Pattern)
+%% ============================================
+%%
+%% The exec pattern allows dynamically defining Python functions from Prolog.
+%% There are two main approaches:
+%%
+%% 1. Non-recursive functions: Use janus_wrapped_exec/2
+%%    Functions are defined in a namespace and called via janus_call_defined/4.
+%%
+%% 2. Recursive functions: Use janus_exec_recursive/2
+%%    Uses a self-referencing namespace so functions can call themselves.
+%%
+%% IMPORTANT: This requires dict_wrapper.py from JanusBridge or similar.
+%% Add the path with: janus_add_lib_path('/path/to/JanusBridge/src/core').
+
+%% janus_wrapped_exec(+Code, -Namespace)
+%  Execute Python code and return a namespace (DictWrapper) with definitions.
+%  Non-recursive functions work fine.
+%
+%  Example:
+%    ?- janus_wrapped_exec("
+%         def double(x):
+%             return x * 2
+%       ", NS),
+%       janus_call_defined(NS, double, [21], Result).
+%    Result = 42.
+%
+janus_wrapped_exec(Code, Namespace) :-
+    janus_import_module(dict_wrapper, DW),
+    py_call(DW:wrapped_exec(Code), Namespace).
+
+%% janus_wrapped_exec(+Code, +InitialVars, -Namespace)
+%  Execute Python code with initial variables.
+janus_wrapped_exec(Code, InitialVars, Namespace) :-
+    janus_import_module(dict_wrapper, DW),
+    py_call(DW:wrapped_exec(Code, InitialVars), Namespace).
+
+%% janus_call_defined(+Namespace, +FuncName, +Args, -Result)
+%  Call a function that was defined in a wrapped_exec namespace.
+%
+%  This handles the indirection needed because Janus can't directly
+%  call Python callables that are stored in variables.
+%
+janus_call_defined(Namespace, FuncName, Args, Result) :-
+    atom_string(FuncName, FuncNameStr),
+    janus_import_module(dict_wrapper, DW),
+    py_call(Namespace:get(FuncNameStr), Func),
+    % Use call_with_args to properly expand the Args list
+    py_call(DW:call_with_args(Func, Args), Result).
+
+%% janus_exec_recursive(+Code, -Namespace)
+%  Execute Python code where defined functions can call themselves recursively.
+%
+%  The key difference from janus_wrapped_exec is that this uses
+%  the same namespace for both globals and locals, allowing a function
+%  to find itself when making recursive calls.
+%
+%  Example:
+%    ?- janus_exec_recursive("
+%         def factorial(n):
+%             if n <= 1:
+%                 return 1
+%             return n * factorial(n - 1)
+%       ", NS),
+%       janus_call_defined(NS, factorial, [5], Result).
+%    Result = 120.
+%
+janus_exec_recursive(Code, Namespace) :-
+    % Execute with namespace as both globals and locals
+    % This allows defined functions to find themselves
+    %
+    % Strategy: Define a helper function in Python that:
+    % 1. Executes the code with same dict as globals and locals
+    % 2. Returns a DictWrapper with all definitions
+    janus_import_module(dict_wrapper, DW),
+    % Define the recursive exec helper - it uses exec(code, ns, ns)
+    % which makes defined functions visible to themselves
+    HelperCode = "
+def _exec_recursive_helper(code):
+    import builtins as _bi
+    ns = {'__builtins__': _bi}
+    exec(code, ns, ns)
+    # Remove builtins from result to keep it clean
+    ns.pop('__builtins__', None)
+    ns.pop('_bi', None)
+    return ns
+",
+    py_call(DW:wrapped_exec(HelperCode), HelperNS),
+    py_call(HelperNS:get('_exec_recursive_helper'), ExecHelper),
+    py_call(DW:call_function(ExecHelper, Code), ResultDict),
+    py_call(DW:'DictWrapper'(ResultDict), Namespace).
+
+%% ============================================
 %% Code Generation for Compiled Predicates
 %% ============================================
 
@@ -354,4 +453,42 @@ test_janus_glue :-
     ;   format('   Skipped (Janus not available)~n')
     ),
 
+    % Test exec pattern (if Janus and dict_wrapper available)
+    format('4. Testing exec pattern...~n'),
+    (   janus_available
+    ->  test_exec_pattern
+    ;   format('   Skipped (Janus not available)~n')
+    ),
+
     format('Janus glue tests complete.~n').
+
+%% test_exec_pattern
+%  Test the dynamic code execution pattern.
+test_exec_pattern :-
+    format('   Testing non-recursive function...~n'),
+    catch(
+        (   janus_wrapped_exec("
+def double(x):
+    return x * 2
+", NS1),
+            janus_call_defined(NS1, double, [21], R1),
+            format('      double(21) = ~w~n', [R1])
+        ),
+        E1,
+        format('      Error (dict_wrapper not loaded?): ~w~n', [E1])
+    ),
+
+    format('   Testing recursive function...~n'),
+    catch(
+        (   janus_exec_recursive("
+def factorial(n):
+    if n <= 1:
+        return 1
+    return n * factorial(n - 1)
+", NS2),
+            janus_call_defined(NS2, factorial, [5], R2),
+            format('      factorial(5) = ~w~n', [R2])
+        ),
+        E2,
+        format('      Error: ~w~n', [E2])
+    ).
