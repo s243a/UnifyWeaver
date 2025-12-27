@@ -9,6 +9,7 @@ Roadmap: `docs/targets/csharp-query-runtime-roadmap.md`
 - **Arithmetic & comparisons** – `is/2`, inequality operators, and `dif/2` become arithmetic or selection nodes with runtime evaluation.
 - **Recursive predicates** – semi-naive fixpoint driver supports single-predicate recursion (e.g., reachability, factorial).
 - **Mutual recursion** – strongly connected predicate groups emit `mutual_fixpoint` plans composed of `cross_ref` nodes, enabling even/odd style dependencies.
+- **Negation (safe/stratified)** – `\+/1` compiles to `NegationNode` and supports stratified negation over derived predicates via program definition materialisation.
 - **Deduplication** – per-predicate `HashSet<object[]>` mirrors Bash distinct semantics.
 - **Diagnostics** – `QueryPlanExplainer.Explain(plan)` and `QueryExecutionTrace` provide plan inspection and basic per-node execution stats.
 
@@ -58,11 +59,17 @@ The current implementation emits static C# builders that assemble the plan via n
   - Iterate until every predicate’s delta is empty, updating totals and dedup sets for each member.
 - Diagnostics: log iterations, show clause contributions, and surface firewall policy violations.
 
+## Negation and Stratification
+- Safe negation only: every variable referenced inside a negated predicate must be bound earlier in the clause body (Datalog-style safety).
+- Non-stratified programs are rejected: a predicate cannot (directly or indirectly) depend on itself through a negated edge.
+- Stratified derived predicates are materialised before use: the query planner emits a `ProgramNode` that evaluates lower-strata `define_relation` / `define_mutual_fixpoint` definitions first, then evaluates the final query body (so `\+` can consult derived results).
+
 ## Current Limitations
 - Tail-recursive optimisation and memoised aggregates still fall back to iterative evaluation without specialised nodes.
 - Ordering/paging are opt-in via query plan modifiers (`order_by/1`, `order_by/2`, `limit/1`, `offset/1`); default results follow hash-set semantics.
 - Stable ordered deduplication is not yet implemented.
 - Plans currently materialise relation facts inside the generated module; external fact providers will arrive in later releases.
+- Negation does not support existential variables (unbound variables inside a negated literal); use explicit joins/aggregation instead.
 - Runtime assumes in-process execution (`dotnet run`); distributed execution and persistence hooks remain future work.
 
 ## Optional Integrations (No Hard Dependencies)
