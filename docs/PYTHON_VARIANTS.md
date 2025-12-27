@@ -498,8 +498,68 @@ declare_component(source, c_ops, custom_cython, [
 
 ---
 
+## Janus In-Process Integration
+
+Janus is SWI-Prolog's embedded Python interface for **in-process** Prolog↔Python communication.
+
+> **Note:** Janus is **SWI-Prolog specific**. It is not available in other Prolog implementations. For cross-Prolog compatibility, use the pipe transport.
+
+### Module: `janus_glue`
+
+```prolog
+% Import the glue module
+:- use_module('src/unifyweaver/glue/janus_glue').
+
+% Check availability
+?- janus_available(Version).
+Version = janus('3.11.0').
+
+% Call Python function
+?- janus_call_python(math, sqrt, [16], Result).
+Result = 4.0.
+
+% NumPy integration
+?- janus_numpy_array([1,2,3,4,5], Arr),
+   janus_numpy_call(mean, [Arr], Mean).
+Mean = 3.0.
+```
+
+### Transport Comparison
+
+| Transport | Overhead | Use Case |
+|-----------|----------|----------|
+| **Janus** | Minimal (in-process) | Tight integration, NumPy, ML |
+| **Pipe** | Medium (serialization) | Process isolation, streaming |
+| **HTTP** | High (network) | Distributed, microservices |
+
+Janus is **50-100x faster** than pipe transport for repeated calls.
+
+### When to Use Janus
+
+| Scenario | Recommended |
+|----------|-------------|
+| NumPy/SciPy computation | ✅ Janus |
+| ML model inference | ✅ Janus |
+| Large array processing | ✅ Janus |
+| Streaming data | Pipe |
+| Process isolation | Pipe |
+| Distributed system | HTTP |
+
+### Requirements
+
+- SWI-Prolog 9.0+ with Janus support
+- Python 3.8+
+- `pip install janus-swi` (for bidirectional calling)
+
+### Example
+
+See `examples/janus-integration/` for a complete demo.
+
+---
+
 ## See Also
 
 - [PYTHON_TARGET.md](./PYTHON_TARGET.md) - Base Python target
 - [LLVM_TARGET.md](./LLVM_TARGET.md) - LLVM compilation
 - [Cross-Target Glue Book](../education/book-07-cross-target-glue/) - FFI examples
+- [Janus Integration Example](../examples/janus-integration/README.md) - In-process Python↔Prolog
