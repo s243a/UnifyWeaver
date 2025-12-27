@@ -90,7 +90,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
 
 ## Diagnostics
 - Plan inspection: `Console.WriteLine(QueryPlanExplainer.Explain(plan));`
-- Execution stats (rows/time per node, plus cache/index and join-strategy summaries):
+- Execution stats (rows/time per node, fixpoint iteration counts, plus cache/index and join-strategy summaries):
   - `var trace = new QueryExecutionTrace();`
   - `foreach (var row in executor.Execute(plan, parameters, trace)) { ... }`
   - `Console.WriteLine(trace.ToString());`
