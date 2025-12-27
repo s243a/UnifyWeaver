@@ -40,10 +40,11 @@ def load_data(jsonl_path: Path, limit: int = None) -> List[Dict]:
 
 class SimpleEmbedder:
     """Wrapper for SentenceTransformers."""
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "nomic-ai/nomic-embed-text-v1.5"):
         try:
             from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(model_name)
+            # ModernBERT (nomic-embed-text-v1.5) requires trust_remote_code=True
+            self.model = SentenceTransformer(model_name, trust_remote_code=True)
         except ImportError:
             logger.error("sentence-transformers not installed. Please install it to run this script.")
             sys.exit(1)
@@ -69,7 +70,7 @@ def main():
     answers = [d['target_text'] for d in data]
 
     # Embed
-    embedder = SimpleEmbedder("all-MiniLM-L6-v2")
+    embedder = SimpleEmbedder("nomic-ai/nomic-embed-text-v1.5")
     
     logger.info("Embedding queries...")
     Q_emb = embedder.encode(queries)
