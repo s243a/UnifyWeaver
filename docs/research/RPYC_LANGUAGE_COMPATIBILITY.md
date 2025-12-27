@@ -359,7 +359,21 @@ All the working variants run on or with CPython:
 ### Known Incompatible
 
 - **Pyodide**: WebAssembly-based, runs in browser sandbox without real network access
-- **Jython**: Python 2.7 on JVM, RPyC requires Python 3
+- **Jython**: Python 2.7 on JVM, reimplementation (not CPython)
+- **IronPython**: .NET CLR reimplementation (not CPython)
+
+### To Test: Language Bridge Integration
+
+These embed CPython and should work with RPyC, but need verification:
+
+| Language | Bridge | Notes |
+|----------|--------|-------|
+| **.NET** | Python.NET | Mature, well-documented |
+| **.NET** | CSnakes | Newer, simpler API |
+| **Java** | JPype | Shared memory approach, mature |
+| **Java** | jpy | Bi-directional bridge |
+| **Java** | GraalPy | GraalVM-based, may have C extension issues |
+| **Java** | JNI + CPython | Manual integration via Java Native Interface |
 
 ### Test Suite
 
