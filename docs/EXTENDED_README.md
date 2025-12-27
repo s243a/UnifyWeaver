@@ -1441,6 +1441,54 @@ python3 -m http.server 8080                     # Serve demo
 
 See [LLVM_TARGET.md](LLVM_TARGET.md) for full API documentation.
 
+### Example 7: Pyodide Matrix Visualization (Browser-based NumPy)
+
+UnifyWeaver generates Python code that runs in the browser via Pyodide (Python compiled to WebAssembly).
+
+**Key Advantage:** No server required - all computation happens client-side in the browser sandbox, eliminating code injection risks.
+
+```prolog
+% Generate Pyodide module with NumPy matrix operations
+compile_pyodide_module(matrix_ops, [
+    packages([numpy]),
+    exports([inverse, eigenvalues, svd])
+], Code).
+
+% Generate complete HTML demo
+generate_pyodide_html('Matrix Calculator', [
+    packages([numpy]),
+    chart(true)
+], HTML).
+```
+
+**Features** (`examples/pyodide-matrix/`):
+- Matrix inverse, eigenvalues, SVD, determinant
+- Visual transformation of unit circle by 2x2 matrices
+- Eigenvector visualization
+- Linear regression with least squares
+
+**Architecture:**
+```
+TypeScript → Pyodide (WASM) → NumPy → Chart.js
+```
+
+**Usage:**
+```bash
+cd examples/pyodide-matrix
+firefox index.html  # No server needed!
+# Or with server:
+python3 -m http.server 8080
+```
+
+**Security Benefits:**
+| Aspect | Pyodide | Server-side Python |
+|--------|---------|-------------------|
+| Code injection | None possible | Risk with eval() |
+| Data privacy | Never leaves browser | Sent to server |
+| Filesystem | No access | Full access |
+
+See [PYTHON_VARIANTS.md](PYTHON_VARIANTS.md) for all Python compilation targets (Numba, Cython, Nuitka, Codon, mypyc, Pyodide).
+
 ---
 
 ## Architecture Deep Dive
