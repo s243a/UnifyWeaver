@@ -1,19 +1,20 @@
 # Pearltrees Zero-Shot Mapping via Minimal Transformation
 
-**Status:** Implementation Ready
-**Date:** 2025-12-26
+**Status:** Implemented
+**Date:** 2025-12-27
+**Updated:** Multi-account support added
 
 ## Overview
 
 This proposal outlines the implementation of a "Zero-Shot" mapping for Pearltrees data. The goal is to map a user query (e.g., "Physics Notes") to a structured "Materialized Path" representation of the target item.
 
-By using the **Minimal Transformation (Procrustes)** approach, we learn a global rotation and scaling that aligns the "Query Embedding Space" (Titles) with the "Path Embedding Space" (Hierarchy + Titles).
+By using the **Minimal Transformation (Procrustes)** approach, we learn rotation and scaling transformations that align the "Query Embedding Space" (Titles) with the "Path Embedding Space" (Hierarchy + Titles).
 
 ## The Target Representation
 
-The target "Answer" string is constructed to encode both the hierarchical identity (IDs) and the semantic content (Titles) of the path.
+The target "Answer" string encodes both the hierarchical identity (IDs) and the semantic content (Titles) of the path.
 
-**Format:**
+**Single Account Format:**
 ```text
 /root_id/child_id/leaf_id
 - Root Title
@@ -21,41 +22,100 @@ The target "Answer" string is constructed to encode both the hierarchical identi
     - Leaf Title
 ```
 
-This structure ensures that the embedding model perceives the hierarchical context.
+**Multi-Account Format (with cross-account boundary):**
+```text
+/root_id/child_id/other_account_id@other_account/sub_id
+- Root Title
+  - Child Title
+    - Other Account Title @other_account
+      - Sub Title
+```
 
-## Implementation Steps
+## Scripts
 
-### 1. Data Preparation
-We parse the Pearltrees RDF export to generate the Q/A pairs. We use a function-call style query format (e.g., `locate_node('Title')`) to distinguish these structural queries from standard semantic search.
+### 1. Single-Account Generator
+Parses a single Pearltrees RDF export.
 
 **Script:** `scripts/pearltrees_target_generator.py`
-**Input:** Pearltrees RDF file (`.rdf` or `.xml`)
-**Output:** JSONL file with `query` and `target_text`.
 
-**Usage:**
 ```bash
-python scripts/pearltrees_target_generator.py "path/to/export.rdf" "reports/pearltrees_targets.jsonl" --query-template "locate_node('{title}')"
+python scripts/pearltrees_target_generator.py \
+  path/to/export.rdf \
+  reports/targets.jsonl \
+  --query-template "locate_tree('{title}')" \
+  --item-type tree \
+  --filter-path "Physics"
 ```
 
-### 2. Training the Projection
-We learn the linear transformation $W$ using **ModernBERT** embeddings. ModernBERT is chosen because it was trained on code and handles the structured, "code-like" nature of our queries (e.g., `locate_node('Hacktivism')`) and hierarchical paths better than standard models.
+### 2. Multi-Account Generator
+Parses multiple Pearltrees RDF exports with cross-account linking.
+
+**Script:** `scripts/pearltrees_multi_account_generator.py`
+
+```bash
+python scripts/pearltrees_multi_account_generator.py \
+  --account s243a path/to/s243a.rdf \
+  --account s243a_groups path/to/s243a_groups.rdf \
+  reports/targets.jsonl \
+  --query-template "locate_tree('{title}')"
+```
+
+**Features:**
+- First `--account` is automatically the primary account
+- Cross-account links via RefPearls (preferred) and AliasPearls
+- "Drop zone" trees are skipped as entry points
+- Account boundary notation (`@account_name`) in paths
+
+### 3. Training
+Learn per-tree Procrustes transformations using ModernBERT.
 
 **Script:** `scripts/train_pearltrees_projection.py`
-**Usage:**
+
 ```bash
-# Uses ModernBERT (nomic-ai/nomic-embed-text-v1.5) by default
-python scripts/train_pearltrees_projection.py "reports/pearltrees_targets.jsonl" "models/pearltrees_proj.pkl"
+python scripts/train_pearltrees_projection.py \
+  reports/targets.jsonl \
+  models/projection.pkl
 ```
 
-### 3. Inference (Zero-Shot Retrieval)
-To retrieve items:
-1. Formulate query as code: `locate_node('Physics Notes')`.
-2. Embed with ModernBERT.
-3. Project: $q' = q \times W$.
-4. Search target index.
+### 4. Evaluation
+Compute ranking metrics (Recall@1, R@5, R@10, MRR).
+
+**Script:** `scripts/evaluate_pearltrees_projection.py`
+
+```bash
+python scripts/evaluate_pearltrees_projection.py \
+  models/projection.pkl \
+  reports/targets.jsonl
+```
+
+### 5. Inference
+Fast query inference with cached target embeddings (~30ms latency).
+
+**Script:** `scripts/infer_pearltrees.py`
+
+```bash
+# Single query
+python scripts/infer_pearltrees.py models/projection.pkl "locate_tree('Physics')"
+
+# Interactive mode
+python scripts/infer_pearltrees.py models/projection.pkl --interactive
+```
+
+## Results (Physics Subset - Trees)
+
+| Metric | Value |
+|--------|-------|
+| Recall@1 | **72.24%** |
+| Recall@5 | **94.30%** |
+| Recall@10 | **96.20%** |
+| MRR | **0.8261** |
+| Query Latency | ~30ms |
 
 ## Why This Works
-- **Code-Aware Embedding:** ModernBERT understands the syntax of function calls (`locate_node(...)`) and file paths (`/root/child/...`), providing a sharper distinction for these structural intents.
-- **Structure Preservation:** The Procrustes method preserves the semantic geometry of the query space.
-- **Hierarchical Context:** The target strings explicitly encode the path.
-- **Zero-Shot:** Once $W$ is learned, it can project *any* query into the "Path Space" without retraining.
+
+- **Code-Aware Embedding:** ModernBERT understands the syntax of function calls (`locate_tree(...)`) and file paths (`/root/child/...`).
+- **Per-Tree Procrustes:** Separate transformations for each subtree, with softmax routing at inference.
+- **Cached Embeddings:** Target embeddings stored with the model for fast search.
+- **Cross-Account Support:** Paths can span multiple Pearltrees accounts with clear boundary markers.
+- **Zero-Shot:** Once trained, the model can project *any* query into "Path Space" without retraining.
+
