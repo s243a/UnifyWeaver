@@ -82,6 +82,10 @@
 :- dynamic user:test_strat2_reach/2.
 :- dynamic user:test_strat2_reach_banned/1.
 :- dynamic user:test_strat2_allowed/1.
+:- dynamic user:test_strat3_p/1.
+:- dynamic user:test_strat3_q/1.
+:- dynamic user:test_strat3_bad/1.
+:- dynamic user:test_strat3_allowed/1.
 :- dynamic user:test_link_to_charlie/1.
 :- dynamic user:test_select_fact/2.
 :- dynamic user:test_selective_common_amount/1.
@@ -147,6 +151,7 @@ test_csharp_query_target :-
         verify_non_stratified_negation_cycle_rejected,
         verify_stratified_negation_derived_runtime,
         verify_stratified_negation_recursive_lower_stratum_runtime,
+        verify_stratified_negation_mutual_lower_stratum_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_runtime,
         verify_multi_mode_codegen_plan,
@@ -1340,6 +1345,43 @@ verify_stratified_negation_recursive_lower_stratum_runtime_ :-
     member(IndexReachBanned-test_strat2_reach_banned, Pairs),
     IndexReach < IndexReachBanned,
     maybe_run_query_runtime(Plan, ['charlie']).
+
+verify_stratified_negation_mutual_lower_stratum_runtime :-
+    setup_call_cleanup(
+        setup_stratified_negation_mutual_lower_stratum_program,
+        verify_stratified_negation_mutual_lower_stratum_runtime_,
+        cleanup_stratified_negation_mutual_lower_stratum_program
+    ).
+
+setup_stratified_negation_mutual_lower_stratum_program :-
+    retractall(user:test_strat3_p(_)),
+    retractall(user:test_strat3_q(_)),
+    retractall(user:test_strat3_bad(_)),
+    retractall(user:test_strat3_allowed(_)),
+    assertz(user:test_strat3_p(0)),
+    assertz(user:test_strat3_q(0)),
+    assertz(user:(test_strat3_p(Y) :- test_strat3_q(X), Y is X + 1, Y < 3)),
+    assertz(user:(test_strat3_q(Y) :- test_strat3_p(X), Y is X + 1, Y < 3)),
+    assertz(user:(test_strat3_bad(X) :- test_strat3_q(X), X = 2)),
+    assertz(user:(test_strat3_allowed(X) :- test_strat3_p(X), \+ test_strat3_bad(X))).
+
+cleanup_stratified_negation_mutual_lower_stratum_program :-
+    retractall(user:test_strat3_p(_)),
+    retractall(user:test_strat3_q(_)),
+    retractall(user:test_strat3_bad(_)),
+    retractall(user:test_strat3_allowed(_)).
+
+verify_stratified_negation_mutual_lower_stratum_runtime_ :-
+    csharp_query_target:build_query_plan(test_strat3_allowed/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    Root = program{type:program, definitions:Definitions, body:_, width:1},
+    sub_term(negation{type:negation, predicate:predicate{name:test_strat3_bad, arity:1}, args:_, input:_, width:_}, Root),
+    nth0(IndexMutual, Definitions, define_mutual_fixpoint{type:define_mutual_fixpoint, plan:mutual_fixpoint{type:mutual_fixpoint, head:_, members:Members}}),
+    member(member{type:member, predicate:predicate{name:test_strat3_p, arity:1}, base:_, recursive:_, width:1}, Members),
+    member(member{type:member, predicate:predicate{name:test_strat3_q, arity:1}, base:_, recursive:_, width:1}, Members),
+    nth0(IndexBad, Definitions, define_relation{type:define_relation, predicate:predicate{name:test_strat3_bad, arity:1}, plan:_}),
+    IndexMutual < IndexBad,
+    maybe_run_query_runtime(Plan, ['0', '1']).
 
 verify_parameterized_need_allows_prefix_negation :-
     csharp_query_target:build_query_plan(test_countdown/2, [target(csharp_query)], Plan),
