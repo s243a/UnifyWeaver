@@ -153,6 +153,7 @@ test_csharp_query_target :-
         verify_stratified_negation_recursive_lower_stratum_runtime,
         verify_stratified_negation_mutual_lower_stratum_runtime,
         verify_parameterized_fib_plan,
+        verify_parameterized_fib_delta_first_join_order,
         verify_parameterized_fib_runtime,
         verify_multi_mode_codegen_plan,
         verify_multi_mode_plan_selection_api,
@@ -1162,6 +1163,17 @@ verify_parameterized_fib_plan :-
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'MaterializeNode'),
     sub_string(Source, _, _, _, 'ParamSeedNode').
+
+verify_parameterized_fib_delta_first_join_order :-
+    csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    Root = fixpoint{type:fixpoint, head:predicate{name:test_fib_param, arity:2}, base:_, recursive:Variants, width:2},
+    forall(member(Variant, Variants),
+        (   findall(Role,
+                sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_fib_param, arity:2}, role:Role, width:_}, Variant),
+                Roles),
+            Roles == [delta, total]
+        )).
 
 verify_parameterized_fib_runtime :-
     csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
