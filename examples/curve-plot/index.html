@@ -226,8 +226,29 @@
       }
 
       static async load(wasmPath) {
-        // For demo, use in-memory JS implementation
-        // Real version loads WASM compiled from Prolog via LLVM
+        // Try to load WASM module with math imports
+        try {
+          const response = await fetch(wasmPath);
+          if (response.ok) {
+            const bytes = await response.arrayBuffer();
+            const imports = {
+              env: {
+                sinf: Math.sin,
+                cosf: Math.cos,
+                expf: Math.exp
+              }
+            };
+            const { instance } = await WebAssembly.instantiate(bytes, imports);
+            console.log('WASM loaded successfully:', Object.keys(instance.exports));
+            const wasm = new CurveWasm();
+            wasm.wasmInstance = instance;
+            wasm.useWasm = true;
+            return wasm;
+          }
+        } catch (e) {
+          console.log('WASM not available, using JS fallback:', e.message);
+        }
+        // Fallback to JS implementation
         return new CurveWasm();
       }
 
