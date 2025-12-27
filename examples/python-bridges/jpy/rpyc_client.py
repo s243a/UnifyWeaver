@@ -84,13 +84,15 @@ def main():
             sys_mod = conn.modules.sys
             print(f"Server Python: {sys_mod.version.split()[0]}")
 
-        # Demonstrate bi-directional: Create Java object and pass to Python
+        # Demonstrate bi-directional: Create Java object and use from Python
         ArrayList = jpy.get_type("java.util.ArrayList")
         java_list = ArrayList()
         java_list.add("hello")
         java_list.add("from")
         java_list.add("java")
-        print(f"Java ArrayList: {list(java_list)}")
+        # Convert to Python list using size/get pattern
+        py_list = [java_list.get(i) for i in range(java_list.size())]
+        print(f"Java ArrayList: {py_list}")
 
         print("\nAll tests passed!")
 
