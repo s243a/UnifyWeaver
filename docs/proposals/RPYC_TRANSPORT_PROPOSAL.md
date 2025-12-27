@@ -128,18 +128,73 @@ valid_transport(prolog, python, rpyc).
     % Connection management
     rpyc_connect/3,           % +Host, +Options, -Proxy
     rpyc_disconnect/1,        % +Proxy
+    rpyc_async_connect/3,     % +Host, +Options, -AsyncProxy
 
-    % Remote execution
+    % Remote execution (sync)
     rpyc_call/4,              % +Proxy, +Module, +Function, -Result
     rpyc_exec/3,              % +Proxy, +Code, -Namespace
+
+    % Remote execution (async)
+    rpyc_async_call/4,        % +Proxy, +Module, +Function, -AsyncResult
+    rpyc_await/2,             % +AsyncResult, -Result
+    rpyc_ready/1,             % +AsyncResult (succeeds if ready)
 
     % Module access
     rpyc_import/3,            % +Proxy, +ModuleName, -ModuleRef
 
+    % Proxy layers
+    rpyc_root/2,              % +Proxy, -RootProxy
+    rpyc_wrapped_root/2,      % +Proxy, -WrappedRoot
+    rpyc_auto_root/2,         % +Proxy, -AutoRoot
+    rpyc_smart_root/2,        % +Proxy, -SmartRoot
+
     % Code generation
     generate_rpyc_client/3,   % +Predicates, +Options, -Code
-    generate_rpyc_service/3   % +Predicates, +Options, -Code
+    generate_rpyc_service/3,  % +Predicates, +Options, -ServiceCode
+    generate_rpyc_server/3    % +ServiceName, +Options, -ServerScript
 ]).
+```
+
+### Service Generation Example
+
+```prolog
+% Generate RPyC service from predicate declarations
+?- generate_rpyc_service([
+       exposed(transform_data/2, [input(list), output(list)]),
+       exposed(predict/2, [input(dict), output(float)]),
+       exposed(train_model/3, [input(list), input(dict), output(model)])
+   ], [
+       service_name('MLService'),
+       imports([numpy, sklearn]),
+       whitelist(true)
+   ], ServiceCode).
+```
+
+Generated Python:
+```python
+import rpyc
+from rpyc.utils.server import ThreadedServer
+import numpy
+import sklearn
+
+class MLService(rpyc.Service):
+    ALIASES = ['MLService']
+
+    def exposed_transform_data(self, input_list):
+        # Generated from transform_data/2
+        ...
+
+    def exposed_predict(self, input_dict):
+        # Generated from predict/2
+        ...
+
+    def exposed_train_model(self, data, config):
+        # Generated from train_model/3
+        ...
+
+if __name__ == '__main__':
+    server = ThreadedServer(MLService, port=18812)
+    server.start()
 ```
 
 ### Security Modes
@@ -308,24 +363,65 @@ rpyc_connect('localhost', [
 3. **Enable server whitelisting** for exposed methods
 4. **Log all connections** for audit
 
-## Open Questions
+## Design Decisions (Resolved)
 
-1. **Dependency management**: Should JanusBridge be vendored or external?
-   - Option A: Copy `remote_execution.py` and `dict_wrapper.py` into UnifyWeaver
-   - Option B: Require JanusBridge as external dependency
-   - Option C: Create minimal subset for UnifyWeaver's needs
+1. **Dependency management**: Adapt JanusBridge code directly
+   - JanusBridge is maintained by the same author (@s243a)
+   - Copy and adapt `remote_execution.py` and `dict_wrapper.py` into UnifyWeaver
+   - Modify as needed for UnifyWeaver's specific requirements
 
-2. **Proxy layer complexity**: Do we need all four layers?
-   - JanusBridge uses: RootProxy → ClientModuleWrapper → AutoWrapProxy → SmartAutoWrapProxy
-   - UnifyWeaver might only need: basic → auto-wrap
+2. **Proxy layer complexity**: Implement all four layers
+   - RootProxy → ClientModuleWrapper → AutoWrapProxy → SmartAutoWrapProxy
+   - Full flexibility for different use cases
+   - Matches JanusBridge's proven architecture
 
-3. **Server generation**: Should we generate RPyC server code?
-   - JanusBridge has `setup_rpyc_server.py` with `JanusBridgeService`
-   - Could generate customized services from predicate declarations
+3. **Server generation**: Yes, generate from predicates
+   - `generate_rpyc_service/3` will create Python RPyC services
+   - Input: list of predicates to expose
+   - Output: complete Python service code with `exposed_` methods
 
-4. **Async support**: Should connections be async?
-   - RPyC supports async mode
-   - Useful for high-concurrency scenarios
+4. **Async support**: Yes, implement async mode
+   - RPyC supports async via `rpyc.async_()` wrapper
+   - Add `async(true)` option to connection
+   - Enables **event-based programming** patterns
+   - Useful for high-concurrency and non-blocking pipelines
+
+### Async and Event-Based Programming
+
+Async support enables reactive/event-driven architectures:
+
+```prolog
+% Register callback for remote events
+rpyc_on_event(Proxy, 'data_ready', handle_data/1),
+rpyc_on_event(Proxy, 'model_trained', handle_model/1),
+
+% Start async operations
+rpyc_async_call(Proxy, ml, train_model, [Data], TrainFuture),
+rpyc_async_call(Proxy, etl, process_batch, [Batch], ProcessFuture),
+
+% Non-blocking check
+(   rpyc_ready(TrainFuture)
+->  rpyc_await(TrainFuture, Model),
+    save_model(Model)
+;   continue_other_work
+).
+
+% Or use callbacks (event-based)
+handle_data(Data) :-
+    process_incoming(Data),
+    update_dashboard(Data).
+
+handle_model(Model) :-
+    deploy_model(Model),
+    notify_stakeholders(Model).
+```
+
+This enables:
+- **Reactive pipelines**: Respond to events as they occur
+- **Non-blocking I/O**: Don't wait for slow operations
+- **Parallel execution**: Multiple async operations simultaneously
+- **Event streaming**: Subscribe to continuous data streams
+- **Callbacks from Python**: Python can notify Prolog of events
 
 ## Alternatives Considered
 
