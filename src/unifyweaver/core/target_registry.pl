@@ -171,6 +171,7 @@ register_builtin_targets :-
     % Shell family - always separate processes, pipe communication
     register_target(bash, shell, [streaming, pipes, process_control, scripting]),
     register_target(awk, shell, [streaming, pipes, regex, aggregation, text_processing]),
+    register_target(perl, shell, [streaming, pipes, regex, scripting, text_processing]),
 
     % Python family
     register_target(python, python, [streaming, pipes, libraries, ml, data_science]),
@@ -242,6 +243,7 @@ register_target_modules :-
     % Shell
     target_module(bash, bash_target),
     target_module(awk, awk_target),
+    target_module(perl, perl_target),
     
     % Python
     target_module(python, python_target),
