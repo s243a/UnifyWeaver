@@ -164,13 +164,20 @@ class PearltreesParser:
             
         return ids, titles
 
-    def generate_targets(self, query_template: str = "{title}"):
+    def generate_targets(self, query_template: str = "{title}", filter_path: Optional[str] = None):
         """Generate the formatted target strings."""
         results = []
         
         for p in self.pearls:
             # Get ancestor path
             path_ids, path_titles = self.get_path(p["parent_uri"])
+            
+            # Filter logic: Check if filter_path string is in any of the ancestor titles or the item title itself
+            if filter_path:
+                full_path_titles = path_titles + [p["title"]]
+                # Case-insensitive check
+                if not any(filter_path.lower() in t.lower() for t in full_path_titles):
+                    continue
             
             # Construct formatted string
             # 1. ID Path
@@ -215,14 +222,16 @@ def main():
     parser.add_argument("output_jsonl", type=Path, help="Output JSONL file")
     parser.add_argument("--query-template", type=str, default="{title}", 
                        help="Template for the query. Use {title} as placeholder. E.g. 'locate({title})'")
+    parser.add_argument("--filter-path", type=str, default=None,
+                       help="Only include items that have this string in their ancestor path titles (e.g. 'Physics')")
     
     args = parser.parse_args()
     
     parser_obj = PearltreesParser(args.input_rdf)
     parser_obj.parse()
     
-    # Update generate_targets to use template
-    targets = parser_obj.generate_targets(args.query_template)
+    # Update generate_targets to use template and filter
+    targets = parser_obj.generate_targets(args.query_template, args.filter_path)
     
     logger.info(f"Writing {len(targets)} records to {args.output_jsonl}...")
     with open(args.output_jsonl, 'w') as f:
