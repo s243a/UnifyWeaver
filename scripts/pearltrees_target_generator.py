@@ -206,11 +206,17 @@ class PearltreesParser:
                 # Fallback if template is invalid
                 query_text = p["title"]
             
+            # Extract tree ID from parent URI for clustering
+            # URI format: https://www.pearltrees.com/t/.../id12345
+            # We can use the parent_uri as the cluster key
+            cluster_id = p["parent_uri"]
+            
             results.append({
                 "type": p["type"],
                 "target_text": formatted_text,
                 "raw_title": p["title"],
-                "query": query_text
+                "query": query_text,
+                "cluster_id": cluster_id  # Added for per-tree grouping
             })
             
         return results
