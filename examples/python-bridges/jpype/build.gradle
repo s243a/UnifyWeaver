@@ -1,0 +1,20 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // JPype1 is primarily used from Python side
+    // Java uses standard JNI patterns
+}
+
+application {
+    mainClass = 'com.unifyweaver.bridges.jpype.RPyCClient'
+}
+
+// Note: JPype is typically used by embedding Python in Java
+// The actual RPyC calls happen in Python code called from Java
+// See rpyc_client.py for the working example
