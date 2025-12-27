@@ -8,7 +8,8 @@
 :- module(csharp_native_target, [
     compile_predicate_to_csharp/3,   % +PredIndicator, +Options, -CSharpCode
     write_csharp_streamer/2,         % +CSharpCode, +FilePath
-    test_csharp_native_target/0
+    test_csharp_native_target/0,
+    test_linq_recursive_output/0     % Compare inline vs LINQ recursive styles
 ]).
 
 :- use_module(library(lists)).
@@ -73,19 +74,27 @@ classify_clauses(_Pred, _Arity, Clauses, multiple_rules) :-
 classify_clauses(_Pred, _Arity, _Clauses, unsupported).
 
 contains_recursive_call(Pred, Arity, Goal) :-
-    Goal =.. [',', A, B], !, 
+    Goal =.. [',', A, B], !,
     (contains_recursive_call(Pred, Arity, A) ; contains_recursive_call(Pred, Arity, B)).
 contains_recursive_call(Pred, Arity, Goal) :-
     Goal =.. [';', A, B], !,
     (contains_recursive_call(Pred, Arity, A) ; contains_recursive_call(Pred, Arity, B)).
 contains_recursive_call(Pred, Arity, Goal) :-
+    Goal = _Mod:Inner, !,
+    contains_recursive_call(Pred, Arity, Inner).
+contains_recursive_call(Pred, Arity, Goal) :-
     functor(Goal, Pred, Arity).
+
+%% strip_module/2 - Remove module qualifications from a goal
+strip_module(_Mod:Goal, Stripped) :- !, strip_module(Goal, Stripped).
+strip_module(Goal, Goal).
 
 body_goals(true, []) :- !.
 body_goals(Goal, Goals) :-
-    Goal =.. [',', A, B], !,
+    strip_module(Goal, G),
+    G =.. [',', A, B], !,
     body_goals(A, GA), body_goals(B, GB), append(GA, GB, Goals).
-body_goals(Goal, [Goal]).
+body_goals(Goal, [Stripped]) :- strip_module(Goal, Stripped).
 
 %% ============================================ 
 %% COMPILATION DISPATCH
@@ -110,7 +119,7 @@ compile_by_type(unsupported, Pred, Arity, _Clauses, _Options, _) :-
 %% PROCEDURAL COMPILATION
 %% ============================================ 
 
-compile_multi_rule_procedural(Pred, Arity, Clauses, _Options, Code) :-
+compile_multi_rule_procedural(Pred, Arity, Clauses, Options, Code) :-
     predicate_name_pascal(Pred, ModuleName),
     predicate_name_pascal(Pred, TargetName),
     fact_result_type(Arity, ResultType),
@@ -136,8 +145,16 @@ compile_multi_rule_procedural(Pred, Arity, Clauses, _Options, Code) :-
     ), ClauseCodes),
     atomic_list_concat(ClauseCodes, "\n", AllClausesCode),
 
+    % Check if LINQ recursive style is requested
+    (   option(linq_recursive(true), Options)
+    ->  UseLinqRecursive = true
+    ;   UseLinqRecursive = false
+    ),
+
     % Generate main stream method
-    (   IsRecursive == true
+    (   IsRecursive == true, UseLinqRecursive == true
+    ->  generate_recursive_stream_linq(Pred, Arity, Clauses, TargetName, ResultType, MemoField, MainStream)
+    ;   IsRecursive == true
     ->  generate_recursive_stream(Pred, Arity, Clauses, TargetName, ResultType, MemoField, MainStream)
     ;   % Non-recursive: simple iteration over clauses
         findall(Call, (
@@ -168,7 +185,8 @@ compile_multi_rule_procedural(Pred, Arity, Clauses, _Options, Code) :-
 
     compose_csharp_program(ModuleName, DataSections, StreamHelpers,
         [MemoField, AllClausesCode, MainStream],
-        TargetName, ResultType, PrintExpr, Code).
+        TargetName, ResultType, PrintExpr, UseLinqRecursive, Code),
+    !.  % Ensure determinism
 
 %% generate_recursive_stream/6 - Generate semi-naive iteration for recursive predicates
 generate_recursive_stream(Pred, Arity, Clauses, TargetName, ResultType, MemoField, MainStream) :-
@@ -268,6 +286,51 @@ extract_recursive_join_info(Pred, Arity, Body, BasePred, JoinPos) :-
     (   Arg2 == RecArg1 -> JoinPos = first   % base(X,Y), rec(Y,Z)
     ;   Arg1 == RecArg1 -> JoinPos = second  % base(Y,X), rec(Y,Z)
     ;   JoinPos = unknown
+    ).
+
+%% generate_recursive_stream_linq/7 - Generate LINQ-style TransitiveClosure code
+%% Uses the LinqRecursive.TransitiveClosure extension method for cleaner code
+generate_recursive_stream_linq(Pred, Arity, Clauses, TargetName, ResultType, MemoField, MainStream) :-
+    % Find recursive clauses and extract join info
+    findall(rec_info(BasePred, JoinPos), (
+        member(_-Body, Clauses),
+        contains_recursive_call(Pred, Arity, Body),
+        extract_recursive_join_info(Pred, Arity, Body, BasePred, JoinPos)
+    ), RecInfos),
+
+    % Generate the TransitiveClosure call
+    (   RecInfos = [rec_info(BasePred, JoinPos)|_]
+    ->  (   JoinPos == first  % base(X,Y), rec(Y,Z) pattern -> join on Item2 == Item1
+        ->  format(atom(ExpandExpr),
+                '(d, baseRel) => baseRel
+                    .Where(b => b.Item2 == d.Item1)
+                    .Select(b => (b.Item1, d.Item2))', [])
+        ;   % base(Y,X), rec(Y,Z) pattern -> join on Item1 == Item1
+            format(atom(ExpandExpr),
+                '(d, baseRel) => baseRel
+                    .Where(b => b.Item1 == d.Item1)
+                    .Select(b => (b.Item2, d.Item2))', [])
+        )
+    ;   ExpandExpr = '(d, baseRel) => Enumerable.Empty<(string, string)>()  // Unknown pattern'
+    ),
+
+    format(atom(MemoField), "        private static List<~w>? _cache;", [ResultType]),
+
+    (   RecInfos = [rec_info(BasePred2, _)|_]
+    ->  predicate_name_pascal(BasePred2, BasePascal2),
+        format(atom(MainStream), '        public static IEnumerable<~w> ~wStream()
+        {
+            if (_cache != null) return _cache;
+            _cache = ~wStream().TransitiveClosure(
+                ~w
+            ).ToList();
+            return _cache;
+        }', [ResultType, TargetName, BasePascal2, ExpandExpr])
+    ;   format(atom(MainStream), '        public static IEnumerable<~w> ~wStream()
+        {
+            // Could not determine recursive pattern
+            yield break;
+        }', [ResultType, TargetName])
     ).
 
 assert_needed_data(Sig) :- (needed_data(Sig) -> true ; assertz(needed_data(Sig))).
@@ -392,18 +455,23 @@ fact_print_expression(1, 'Console.WriteLine(item);').
 fact_print_expression(2, 'Console.WriteLine($"{item.Item1}:{item.Item2}");').
 fact_print_expression(_, 'Console.WriteLine(item);').
 
-compose_csharp_program(ModuleName, DataSections, StreamHelpers, LogicMembers, TargetName, _ResultType, PrintExpr, Code) :-
+compose_csharp_program(ModuleName, DataSections, StreamHelpers, LogicMembers, TargetName, _ResultType, PrintExpr, UseLinqRecursive, Code) :-
     get_time(T), format_time(atom(Date), '%Y-%m-%d %H:%M:%S', T),
     atomic_list_concat(DataSections, "\n\n", DataBlock),
     atomic_list_concat(StreamHelpers, "\n\n", HelperBlock),
     atomic_list_concat(LogicMembers, "\n\n", LogicBlock),
-    format(atom(Code), 
+    % Add extra using when LinqRecursive is enabled
+    (   UseLinqRecursive == true
+    ->  ExtraUsing = "using UnifyWeaver.Native;\n"
+    ;   ExtraUsing = ""
+    ),
+    format(atom(Code),
 '// Generated by UnifyWeaver v0.0.3 - Native Procedural
 // Date: ~w
 using System;
 using System.Collections.Generic;
 using System.Linq;
-
+~w
 namespace UnifyWeaver.Generated
 {
     public static class ~wModule
@@ -422,7 +490,7 @@ namespace UnifyWeaver.Generated
             }
         }
     }
-}', [Date, ModuleName, DataBlock, HelperBlock, LogicBlock, TargetName, PrintExpr]).
+}', [Date, ExtraUsing, ModuleName, DataBlock, HelperBlock, LogicBlock, TargetName, PrintExpr]).
 
 %% ============================================ 
 %% LINQ GENERATOR
@@ -487,17 +555,39 @@ tuple_expr(L, E) :- atomic_list_concat(L, ", ", Inner), format(atom(E), "(~w)", 
 %% TEST SUPPORT
 %% ============================================ 
 
-test_csharp_native_target :- 
+test_csharp_native_target :-
     format('~n=== C# Native Target Tests ===~n'),
     retractall(user:parent(_,_)),
+    retractall(user:ancestor(_,_)),
     assertz(user:parent(a, b)),
     assertz(user:parent(b, c)),
     compile_predicate_to_csharp(parent/2, [], Code1),
-    sub_string(Code1, _, _, _, "ParentStream"),
+    once(sub_string(Code1, _, _, _, "ParentStream")),
     format('  ✓ Non-recursive facts passed~n'),
     assertz((user:ancestor(X, Y) :- user:parent(X, Y))),
     assertz((user:ancestor(X, Y) :- user:parent(X, Z), user:ancestor(Z, Y))),
     compile_predicate_to_csharp(ancestor/2, [], Code2),
-    sub_string(Code2, _, _, _, "AncestorInternal"),
-    sub_string(Code2, _, _, _, "_memo"),
-    format('  ✓ Recursive procedural passed~n').
+    once(sub_string(Code2, _, _, _, "while (delta.Count > 0)")),
+    format('  ✓ Recursive semi-naive (inline) passed~n'),
+    % Test LINQ recursive style
+    compile_predicate_to_csharp(ancestor/2, [linq_recursive(true)], Code3),
+    once(sub_string(Code3, _, _, _, "TransitiveClosure")),
+    once(sub_string(Code3, _, _, _, "using UnifyWeaver.Native;")),
+    format('  ✓ Recursive LINQ style (TransitiveClosure) passed~n').
+
+%% test_linq_recursive_output/0 - Print both styles for comparison
+test_linq_recursive_output :-
+    format('~n=== Comparing Recursive Styles ===~n~n'),
+    retractall(user:parent(_,_)),
+    retractall(user:ancestor(_,_)),
+    assertz(user:parent(alice, bob)),
+    assertz(user:parent(bob, charlie)),
+    assertz(user:parent(charlie, diana)),
+    assertz((user:ancestor(X, Y) :- user:parent(X, Y))),
+    assertz((user:ancestor(X, Y) :- user:parent(X, Z), user:ancestor(Z, Y))),
+    format('--- Inline Semi-Naive Style ---~n'),
+    compile_predicate_to_csharp(ancestor/2, [], Code1),
+    format('~w~n~n', [Code1]),
+    format('--- LINQ TransitiveClosure Style ---~n'),
+    compile_predicate_to_csharp(ancestor/2, [linq_recursive(true)], Code2),
+    format('~w~n', [Code2]).
