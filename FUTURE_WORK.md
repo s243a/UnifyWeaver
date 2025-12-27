@@ -411,3 +411,30 @@ Ideas from the community are welcome! If you want to work on any of these:
 ✅ **Implemented**: Updated all playbooks to use `./unifyweaver search` CLI.
 - Standardized "Finding Examples" section across all 35+ playbooks.
 - Verified example IDs in sampled playbooks.
+
+## C# Target Enhancements
+
+### Procedural Recursion and Native Pipeline (Planned)
+
+We have implemented procedural recursion in the `csharp_native` target. The next steps involve enhancing this target to reach parity with the Bash and Python pipeline models.
+
+#### 1. Implement C# Native Pipeline
+**Goal:** Implement `compile_csharp_native_pipeline/3` in `csharp_native_target.pl`.
+- Currently a stub.
+- Should generate a main entry point that orchestrates multiple stages (predicates) using fixpoint iteration logic similar to the Bash target's `generate_bash_pipeline_connector`.
+- Enables full end-to-end pipeline execution within a single compiled C# binary.
+
+#### 2. Refine C# Target Selection
+**Goal:** Update `target(csharp)` preference logic to smartly choose between `csharp_native` (procedural) and `csharp_query` (runtime engine).
+- **Evaluation Required:** We need to evaluate what the best default is. The `csharp_native` target offers standalone code and potentially better performance for simple recursion, while `csharp_query` handles complex mutual recursion and optimizations.
+- **Action:** Benchmarking and analysis to determine the default strategy for `target(csharp)`.
+
+#### 3. Extend Native Built-in Support
+**Goal:** Add comprehensive support for arithmetic and string built-ins in `csharp_native_target`.
+- Currently limited.
+- Needs parity with other targets for standard Prolog built-ins (is/2, string manipulation, etc.) within the procedural generation mode.
+
+#### 4. Integration Testing
+**Goal:** Verify generated C# code in a full .NET environment.
+- Requires an environment with the .NET SDK.
+- End-to-end verification of recursive predicates and pipelines to ensure runtime correctness.
