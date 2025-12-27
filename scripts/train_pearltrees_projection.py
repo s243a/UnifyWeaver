@@ -78,49 +78,120 @@ def main():
     logger.info("Embedding answers (paths)...")
     A_emb = embedder.encode(answers)
 
-    # Train Projection
-    # MinimalTransformProjection expects list of (Q, A) tuples (clusters).
-    # Since we are doing "Zero-Shot" mapping where each item is unique,
-    # we can treat the whole dataset as a single "cluster" or pairs.
-    # However, Procrustes works best when mapping a distribution to another.
-    # If we want a global linear map (or affine), we treat it as one giant cluster.
+    # Group by cluster_id
+    from collections import defaultdict
+    cluster_groups = defaultdict(list)
     
-    logger.info("Training Minimal Transform Projection...")
+    logger.info("Grouping data by cluster (parent tree)...")
+    for i, d in enumerate(data):
+        c_id = d.get('cluster_id', 'default')
+        cluster_groups[c_id].append(i)
+        
+    clusters = []
+    # Statistics
+    logger.info(f"Found {len(cluster_groups)} unique clusters (trees).")
+    
+    # Prepare (Q, A) tuples for each cluster
+    for c_id, indices in cluster_groups.items():
+        if not indices:
+            continue
+            
+        # Get subset of embeddings
+        Q_subset = Q_emb[indices]
+        A_subset = A_emb[indices]
+        
+        clusters.append((Q_subset, A_subset))
+    
+    logger.info(f"Training Minimal Transform Projection on {len(clusters)} clusters...")
     projector = MinimalTransformProjection(
-        smooth_method="none",  # No smoothing needed for global fit
-        allow_scaling=True,
-        fidelity_weight=1.0 # Pure minimal transform
+        smooth_method="none",  # Pure Procrustes per-tree, no smoothing needed with ModernBERT
+        fidelity_weight=1.0,   # Use exact minimal transforms
+        allow_scaling=True
     )
-    
-    # We pass the entire dataset as one "cluster" to find the global best 
-    # rotation + scaling that maps Query Space -> Answer Space.
-    clusters = [(Q_emb, A_emb)]
     
     stats = projector.train(clusters)
     logger.info(f"Training stats: {stats}")
     
     # Evaluate on training set
     logger.info("Evaluating...")
-    projected_Q = Q_emb @ projector.W_final[0] # Use the single learned matrix
     
-    # Compute average cosine similarity
-    norms_p = np.linalg.norm(projected_Q, axis=1)
-    norms_a = np.linalg.norm(A_emb, axis=1)
-    dots = np.sum(projected_Q * A_emb, axis=1)
-    sims = dots / (norms_p * norms_a + 1e-8)
+    # Project using the full routing logic (automatically handles cluster selection via softmax)
+    # We can't just use W_final[0] anymore.
     
-    logger.info(f"Mean Cosine Similarity (Train): {np.mean(sims):.4f}")
+    sims = []
+    for i in range(len(queries)):
+        q_vec = Q_emb[i]
+        target_vec = A_emb[i]
+        
+        # Project using the trained multi-cluster model
+        proj_vec = projector.project(q_vec)
+        
+        sim = np.dot(proj_vec, target_vec) / (np.linalg.norm(proj_vec) * np.linalg.norm(target_vec) + 1e-8)
+        sims.append(sim)
     
-    # Save model
-    model_data = {
-        "projector": projector,
-        "W": projector.W_final[0],
-        "stats": stats
+    logger.info(f"Mean Cosine Similarity (Train - Softmax Routed): {np.mean(sims):.4f}")
+    
+    # Save using numpy's npz format (much more memory efficient)
+    logger.info("Preparing model for saving...")
+    
+    # Extract what we need FIRST
+    W_keys = sorted(projector.W_final.keys())
+    centroids_list = list(projector.centroids)
+    temperature = projector.temperature
+    num_clusters = len(projector.centroids)
+    
+    # FREE MEMORY: Delete large objects we no longer need
+    del Q_emb
+    del A_emb
+    del sims
+    del cluster_groups
+    del clusters
+    
+    import gc
+    gc.collect()
+    
+    logger.info(f"Building stack of {len(W_keys)} matrices...")
+    
+    # Build the stack one matrix at a time to minimize peak memory
+    first_W = projector.W_final[W_keys[0]]
+    embedding_dim = first_W.shape[0]
+    W_stack = np.zeros((len(W_keys), embedding_dim, embedding_dim), dtype=np.float32)
+    
+    for i, k in enumerate(W_keys):
+        W_stack[i] = projector.W_final[k].astype(np.float32)
+        del projector.W_final[k]  # Free as we go
+        if i % 50 == 0:
+            gc.collect()
+    
+    centroids_np = np.stack(centroids_list).astype(np.float32)
+    del projector
+    gc.collect()
+    
+    # Save as npz (compressed numpy archive)
+    npz_path = str(output_path).replace('.pkl', '.npz')
+    logger.info(f"Saving to {npz_path}...")
+    np.savez_compressed(
+        npz_path,
+        W_stack=W_stack,
+        centroids=centroids_np,
+        temperature=np.array([temperature]),
+    )
+    
+    del W_stack
+    del centroids_np
+    gc.collect()
+    
+    # Save lightweight metadata as pickle
+    metadata = {
+        "num_clusters": num_clusters,
+        "embedding_dim": embedding_dim,
+        "stats": stats,
+        "npz_file": npz_path
     }
-    
     with open(output_path, 'wb') as f:
-        pickle.dump(model_data, f)
-    logger.info(f"Model saved to {output_path}")
+        pickle.dump(metadata, f)
+        
+    logger.info(f"Model saved: {output_path} (metadata) + {npz_path} (weights)")
 
 if __name__ == "__main__":
     main()

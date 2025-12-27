@@ -164,13 +164,20 @@ class PearltreesParser:
             
         return ids, titles
 
-    def generate_targets(self, query_template: str = "{title}"):
-        """Generate the formatted target strings."""
+    def generate_targets(self, query_template: str = "{title}", filter_path: Optional[str] = None):
+        """Generate the formatted target strings for PEARLS."""
         results = []
         
         for p in self.pearls:
             # Get ancestor path
             path_ids, path_titles = self.get_path(p["parent_uri"])
+            
+            # Filter logic: Check if filter_path string is in any of the ancestor titles or the item title itself
+            if filter_path:
+                full_path_titles = path_titles + [p["title"]]
+                # Case-insensitive check
+                if not any(filter_path.lower() in t.lower() for t in full_path_titles):
+                    continue
             
             # Construct formatted string
             # 1. ID Path
@@ -199,11 +206,71 @@ class PearltreesParser:
                 # Fallback if template is invalid
                 query_text = p["title"]
             
+            # Extract tree ID from parent URI for clustering
+            # URI format: https://www.pearltrees.com/t/.../id12345
+            # We can use the parent_uri as the cluster key
+            cluster_id = p["parent_uri"]
+            
             results.append({
                 "type": p["type"],
                 "target_text": formatted_text,
                 "raw_title": p["title"],
-                "query": query_text
+                "query": query_text,
+                "cluster_id": cluster_id  # Added for per-tree grouping
+            })
+            
+        return results
+
+    def generate_tree_targets(self, query_template: str = "{title}", filter_path: Optional[str] = None):
+        """Generate the formatted target strings for TREES only."""
+        results = []
+        
+        for uri, tree_data in self.trees.items():
+            # Get ancestor path (for this tree, go up from its parent)
+            path_ids, path_titles = self.get_path(tree_data["parent_uri"])
+            
+            # Add this tree's own data to the path
+            full_path_ids = path_ids + [tree_data["id"]]
+            full_path_titles = path_titles + [tree_data["title"]]
+            
+            # Filter logic
+            if filter_path:
+                if not any(filter_path.lower() in t.lower() for t in full_path_titles):
+                    continue
+            
+            # Construct formatted string
+            # 1. ID Path
+            id_path_str = "/" + "/".join(full_path_ids)
+            
+            # 2. Hierarchical Titles
+            title_lines = []
+            indent_level = 0
+            
+            for t in full_path_titles:
+                indent = "  " * indent_level
+                title_lines.append(f"{indent}- {t}")
+                indent_level += 1
+            
+            formatted_text = f"{id_path_str}\n" + "\n".join(title_lines)
+            
+            # Apply template
+            try:
+                query_text = query_template.format(title=tree_data["title"])
+            except KeyError:
+                query_text = tree_data["title"]
+            
+            # For trees, use parent_uri as cluster_id (groups siblings)
+            # Or use the tree's own URI if it's a root
+            cluster_id = tree_data["parent_uri"] if tree_data["parent_uri"] else uri
+            
+            results.append({
+                "type": "Tree",
+                "target_text": formatted_text,
+                "raw_title": tree_data["title"],
+                "query": query_text,
+                "cluster_id": cluster_id,
+                "tree_id": tree_data["id"],
+                "uri": uri
             })
             
         return results
@@ -215,14 +282,23 @@ def main():
     parser.add_argument("output_jsonl", type=Path, help="Output JSONL file")
     parser.add_argument("--query-template", type=str, default="{title}", 
                        help="Template for the query. Use {title} as placeholder. E.g. 'locate({title})'")
+    parser.add_argument("--filter-path", type=str, default=None,
+                       help="Only include items that have this string in their ancestor path titles (e.g. 'Physics')")
+    parser.add_argument("--item-type", type=str, default="pearl", choices=["tree", "pearl"],
+                       help="Type of items to generate: 'tree' (folders only) or 'pearl' (content items)")
     
     args = parser.parse_args()
     
     parser_obj = PearltreesParser(args.input_rdf)
     parser_obj.parse()
     
-    # Update generate_targets to use template
-    targets = parser_obj.generate_targets(args.query_template)
+    # Generate targets based on item type
+    if args.item_type == "tree":
+        targets = parser_obj.generate_tree_targets(args.query_template, args.filter_path)
+        logger.info(f"Generated {len(targets)} tree targets.")
+    else:
+        targets = parser_obj.generate_targets(args.query_template, args.filter_path)
+        logger.info(f"Generated {len(targets)} pearl targets.")
     
     logger.info(f"Writing {len(targets)} records to {args.output_jsonl}...")
     with open(args.output_jsonl, 'w') as f:
@@ -239,3 +315,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
