@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>10.0</LangVersion>
+    <RootNamespace>UnifyWeaver.Native</RootNamespace>
+    <PackageId>UnifyWeaver.Native</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>UnifyWeaver Contributors</Authors>
+    <Description>LINQ-style recursive query helpers for UnifyWeaver C# Native Target</Description>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+  </PropertyGroup>
+
+</Project>

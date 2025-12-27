@@ -3,7 +3,9 @@
 `csharp_codegen` (and its native implementation `csharp_native`) emits idiomatic C# source files that mirror the Bash streaming templates. It builds on the existing `csharp_native_target.pl` module and is intended for scenarios where developers want tangible .NET source artefacts that can be compiled, debugged, and extended manually.
 
 ## Current Scope
-- Recursive predicates: Supported via "Procedural" mode using method-to-method calls and `yield return`. Memoization is used to ensure termination on cyclic data.
+- Recursive predicates: Supported via semi-naive iteration with HashSet deduplication. Two code styles available:
+  - **Inline (default)**: Explicit `while (delta.Count > 0)` loops in generated code
+  - **LINQ style**: `TransitiveClosure()` extension method via `linq_recursive(true)` option
 - Non-recursive predicates: Facts, single-rule bodies, and multi-clause unions translate to LINQ pipelines that operate on in-memory arrays.
 - Dedup semantics: Follows the Bash model—`Distinct()` for `unique(true)`, ordered variants are pending.
 - Generated structure: Each predicate becomes a static class in the `UnifyWeaver.Generated` namespace with:
@@ -80,10 +82,43 @@ LeftTableStream()
 - Code size: Each predicate generates a substantial block of C#; larger rule sets may benefit more from the Query Runtime’s shared engine.
 - Flexibility: Regenerating code is required for any change (e.g., new dedup strategies), whereas the query runtime can evolve independently.
 
+## LINQ Recursive Style
+
+The `linq_recursive(true)` option generates cleaner code using the `UnifyWeaver.Native` runtime library:
+
+```prolog
+% Inline style (default)
+compile_predicate_to_csharp(ancestor/2, [], Code).
+
+% LINQ style - uses TransitiveClosure extension
+compile_predicate_to_csharp(ancestor/2, [linq_recursive(true)], Code).
+```
+
+**LINQ style generates:**
+```csharp
+using UnifyWeaver.Native;
+
+public static IEnumerable<(string, string)> AncestorStream()
+{
+    if (_cache != null) return _cache;
+    _cache = ParentStream().TransitiveClosure(
+        (d, baseRel) => baseRel
+            .Where(b => b.Item2 == d.Item1)
+            .Select(b => (b.Item1, d.Item2))
+    ).ToList();
+    return _cache;
+}
+```
+
+The `UnifyWeaver.Native` library (`src/unifyweaver/targets/csharp_native_runtime/`) provides:
+- `TransitiveClosure<T>()` - Transitive closure with semi-naive iteration
+- `SafeRecursiveJoin<T>()` - Safe join for self-referential queries
+- `Fixpoint<T>()` - General fixpoint computation
+
 ## Roadmap
 1. Formalise target selection: Wire `target(csharp_codegen)` through the recursive compiler so non-recursive predicates delegate here when requested.
 2. Improve dedup/control flow: Add support for ordered dedup, constant folding, and guard blocks matching Bash templates.
-3. Recursive extensions: Investigate emitting loops or iterator blocks for specific recursion classes (tail recursion, transitive closure).
+3. ~~Recursive extensions: Investigate emitting loops or iterator blocks for specific recursion classes (tail recursion, transitive closure).~~ ✅ Implemented via semi-naive iteration and LINQ TransitiveClosure
 4. Packaging: Provide project scaffolding or shared libraries so generated code can be consumed with minimal boilerplate.
 
 ## Relationship to Query Runtime
