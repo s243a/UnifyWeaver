@@ -26,6 +26,7 @@ Transports describe how two locations communicate:
 % transport(Name, ValidLocationPairs)
 
 transport(direct).              % in_process ↔ in_process (no serialization)
+transport(janus).               % in_process ↔ in_process (Prolog ↔ Python via Janus)
 transport(pipe).                % local_process ↔ local_process
 transport(shared_memory).       % local_process ↔ local_process
 transport(unix_socket).         % local_process ↔ local_process
@@ -35,6 +36,7 @@ transport(grpc).                % any ↔ remote (gRPC)
 
 % Valid transport for location pairs
 valid_transport(in_process, in_process, direct).
+valid_transport(in_process, in_process, janus).      % Prolog ↔ Python only
 valid_transport(local_process, local_process, pipe).
 valid_transport(local_process, local_process, shared_memory).
 valid_transport(local_process, local_process, unix_socket).
@@ -171,6 +173,44 @@ Bob	25	65000.00
 - .NET: `IEnumerable<T>` or `IAsyncEnumerable<T>`
 - JVM: `Stream<T>` or `Iterator<T>`
 - Native: Channels or callbacks
+
+### 2.4 Janus Protocol (Prolog ↔ Python)
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 JANUS PROTOCOL                       │
+├─────────────────────────────────────────────────────┤
+│ Format: Native objects (zero-copy for NumPy)        │
+│ Transfer: Embedded Python in SWI-Prolog process     │
+│ Bidirectional: Prolog→Python and Python→Prolog     │
+│ Requirements: SWI-Prolog 9.0+ with Janus            │
+└─────────────────────────────────────────────────────┘
+```
+
+**Janus provides 50-100x speedup over pipe transport for repeated calls.**
+
+**Example - Prolog calling Python:**
+```prolog
+:- use_module(library(janus)).
+:- use_module('src/unifyweaver/glue/janus_glue').
+
+% Direct Python call
+?- py_call(math:sqrt(16), Result).
+Result = 4.0.
+
+% Using the glue module
+?- janus_call_python(numpy, mean, [[1,2,3,4,5]], Mean).
+Mean = 3.0.
+```
+
+**Example - Python calling Prolog:**
+```python
+from janus_swi import Query
+
+# Query Prolog from Python
+for sol in Query('ancestor(X, bob)'):
+    print(sol['X'])  # Prints ancestors of bob
+```
 
 ## 3. Target Declarations
 
