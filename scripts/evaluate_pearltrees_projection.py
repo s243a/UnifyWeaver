@@ -29,13 +29,24 @@ def load_model(pkl_path: Path):
     npz_path = Path(metadata['npz_file'])
     data = np.load(npz_path)
     
-    return {
+    result = {
         'W_stack': data['W_stack'],
         'centroids': data['centroids'],
         'temperature': float(data['temperature'][0]),
         'num_clusters': metadata['num_clusters'],
         'embedding_dim': metadata['embedding_dim'],
     }
+    
+    # Load pre-computed target embeddings if available
+    if 'target_embeddings' in data:
+        result['target_embeddings'] = data['target_embeddings']
+        result['target_ids'] = metadata.get('target_ids', [])
+        result['target_titles'] = metadata.get('target_titles', [])
+        result['has_cached_targets'] = True
+    else:
+        result['has_cached_targets'] = False
+    
+    return result
 
 
 def project_query(query_emb, model):

@@ -140,6 +140,12 @@ def main():
     temperature = projector.temperature
     num_clusters = len(projector.centroids)
     
+    # Save target embeddings and identifiers for fast inference
+    # This avoids re-embedding targets at inference time
+    A_emb_save = A_emb.astype(np.float32)
+    target_ids = [d.get('tree_id', d.get('uri', str(i))) for i, d in enumerate(data)]
+    target_titles = [d.get('raw_title', '') for d in data]
+    
     # FREE MEMORY: Delete large objects we no longer need
     del Q_emb
     del A_emb
@@ -175,23 +181,28 @@ def main():
         W_stack=W_stack,
         centroids=centroids_np,
         temperature=np.array([temperature]),
+        target_embeddings=A_emb_save,  # Pre-computed target embeddings
     )
     
     del W_stack
     del centroids_np
+    del A_emb_save
     gc.collect()
     
     # Save lightweight metadata as pickle
     metadata = {
         "num_clusters": num_clusters,
         "embedding_dim": embedding_dim,
+        "num_targets": len(target_ids),
+        "target_ids": target_ids,
+        "target_titles": target_titles,
         "stats": stats,
         "npz_file": npz_path
     }
     with open(output_path, 'wb') as f:
         pickle.dump(metadata, f)
         
-    logger.info(f"Model saved: {output_path} (metadata) + {npz_path} (weights)")
+    logger.info(f"Model saved: {output_path} (metadata) + {npz_path} (weights + target embeddings)")
 
 if __name__ == "__main__":
     main()
