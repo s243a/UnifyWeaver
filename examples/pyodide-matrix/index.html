@@ -296,13 +296,19 @@ def matrix_inverse(matrix_data):
 def matrix_eigenvalues(matrix_data):
     A = np.array(matrix_data, dtype=np.float64)
     eigenvalues, eigenvectors = eig(A)
-    if np.isrealobj(eigenvalues):
-        eig_vals = eigenvalues.tolist()
+    # Handle complex eigenvalues
+    if np.iscomplexobj(eigenvalues):
+        eig_vals = [{'real': float(v.real), 'imag': float(v.imag)} for v in eigenvalues]
     else:
-        eig_vals = [{'real': v.real, 'imag': v.imag} for v in eigenvalues]
+        eig_vals = [float(v) for v in eigenvalues]
+    # Handle complex eigenvectors
+    if np.iscomplexobj(eigenvectors):
+        eig_vecs = [[{'real': float(v.real), 'imag': float(v.imag)} for v in row] for row in eigenvectors.tolist()]
+    else:
+        eig_vecs = [[float(v) for v in row] for row in eigenvectors.tolist()]
     return {
         'eigenvalues': eig_vals,
-        'eigenvectors': eigenvectors.tolist()
+        'eigenvectors': eig_vecs
     }
 
 def matrix_svd(matrix_data):
@@ -334,8 +340,8 @@ def generate_eigenvector_lines(matrix_data, scale=2.0):
         ev = eigenvectors[:, i].real
         lines.append({
             'eigenvalue': float(eigenvalues[i].real),
-            'start': {'x': -scale * ev[0], 'y': -scale * ev[1]},
-            'end': {'x': scale * ev[0], 'y': scale * ev[1]}
+            'start': {'x': float(-scale * ev[0]), 'y': float(-scale * ev[1])},
+            'end': {'x': float(scale * ev[0]), 'y': float(scale * ev[1])}
         })
     return lines
 
