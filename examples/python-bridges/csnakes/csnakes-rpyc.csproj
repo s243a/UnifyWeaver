@@ -10,9 +10,9 @@
 
   <ItemGroup>
     <!-- CSnakes Runtime and Source Generator -->
-    <PackageReference Include="CSnakes.Runtime" Version="1.0.35" />
+    <PackageReference Include="CSnakes.Runtime" Version="1.2.1" />
     <!-- Required for dependency injection -->
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.7" />
   </ItemGroup>
 
   <ItemGroup>

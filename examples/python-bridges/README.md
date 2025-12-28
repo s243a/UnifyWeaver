@@ -17,7 +17,7 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 | Bridge | Runtime | Status | Best For |
 |--------|---------|--------|----------|
 | [Python.NET](pythonnet/) | .NET 6+ | ✅ Tested | Dynamic Python execution, F# interop |
-| [CSnakes](csnakes/) | .NET 9+ | ⚠️ Build OK | Source generators, compile-time wrappers |
+| [CSnakes](csnakes/) | .NET 9+ | ✅ Tested | Source generators, compile-time wrappers |
 | [JPype](jpype/) | JVM | ✅ Tested | Java projects needing NumPy/SciPy |
 | [jpy](jpy/) | JVM | ✅ Tested | Bi-directional Java↔Python |
 | [PyO3](pyo3/) | Rust | 🔬 Documented | Systems programming with Python ML |
@@ -26,7 +26,7 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 **Legend:** ✅ Tested and working | ⚠️ Partial (see notes) | 🔬 Documented (high confidence)
 
 **Notes:**
-- CSnakes: Source generation works, runtime on Linux requires native library setup
+- CSnakes: Uses `FromRedistributable` for cross-platform Python (auto-downloads ~60MB)
 - PyO3/PyCall.rb: Well-documented patterns, not runtime-tested in this repo
 
 ## Quick Start
@@ -40,7 +40,7 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 
 2. **Bridge-specific requirements:**
    - Python.NET: `pip install pythonnet` + .NET SDK 6+ (tested with 9.0)
-   - CSnakes: .NET SDK 9.0+ + `PYTHON_HOME` environment variable
+   - CSnakes: .NET SDK 9.0+ (auto-downloads Python via redistributable)
    - JPype: `pip install jpype1` + Java JDK 11+ (tested with 11.0.27)
    - jpy: `pip install jpy` + Java JDK 11+ + Maven
    - PyO3: Rust toolchain (`rustup`) + Python dev headers
