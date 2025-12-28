@@ -29,6 +29,7 @@
 :- dynamic user:test_sale_amount_for_alice/1.
 :- dynamic user:test_sale_item/3.
 :- dynamic user:test_sale_item_alice_laptop/1.
+:- dynamic user:test_sale_item_alice_laptop_via_constraints/1.
 :- dynamic user:test_sale_count/1.
 :- dynamic user:test_sale_avg_for_alice/1.
 :- dynamic user:test_sales_by_customer/2.
@@ -109,6 +110,7 @@ test_csharp_query_target :-
         verify_selection_plan,
         verify_ground_relation_arg_plan,
         verify_multi_constant_pattern_scan_plan,
+        verify_multi_constant_pattern_scan_pushdown_plan,
         verify_order_by_limit_plan,
         verify_order_by_desc_limit_runtime,
         verify_order_by_offset_limit_runtime,
@@ -235,6 +237,11 @@ setup_test_data :-
     assertz(user:test_sale_item(bob, mouse, 1)),
     assertz(user:(test_sale_item_alice_laptop(Amount) :-
         test_sale_item(alice, laptop, Amount)
+    )),
+    assertz(user:(test_sale_item_alice_laptop_via_constraints(Amount) :-
+        test_sale_item(Customer, Product, Amount),
+        Customer = alice,
+        Product = laptop
     )),
     assertz(user:(test_sale_count(C) :- aggregate_all(count, test_sale(_, _), C))),
     assertz(user:(test_sale_avg_for_alice(Avg) :-
@@ -469,6 +476,7 @@ cleanup_test_data :-
     retractall(user:test_sale_amount_for_alice(_)),
     retractall(user:test_sale_item(_, _, _)),
     retractall(user:test_sale_item_alice_laptop(_)),
+    retractall(user:test_sale_item_alice_laptop_via_constraints(_)),
     retractall(user:test_sale_count(_)),
     retractall(user:test_sale_avg_for_alice(_)),
     retractall(user:test_sales_by_customer(_, _)),
@@ -590,11 +598,11 @@ verify_join_ordering_selectivity_plan :-
 
 verify_selection_plan :-
     csharp_query_target:build_query_plan(test_filtered/1, [target(csharp_query)], Plan),
-    get_dict(root, Plan, projection{type:projection, input:Selection, columns:[0], width:1}),
-    Selection = selection{
-        type:selection,
-        input:relation_scan{predicate:predicate{name:test_fact, arity:2}, type:relation_scan, width:_},
-        predicate:condition{type:eq, left:operand{kind:column, index:0}, right:operand{kind:value, value:alice}},
+    get_dict(root, Plan, projection{type:projection, input:Scan, columns:[0], width:1}),
+    Scan = pattern_scan{
+        type:pattern_scan,
+        predicate:predicate{name:test_fact, arity:2},
+        pattern:[operand{kind:value, value:alice}, operand{kind:wildcard}],
         width:_
     },
     get_dict(relations, Plan, [relation{predicate:predicate{name:test_fact, arity:2}, facts:_}]),
@@ -613,6 +621,17 @@ verify_ground_relation_arg_plan :-
 
 verify_multi_constant_pattern_scan_plan :-
     csharp_query_target:build_query_plan(test_sale_item_alice_laptop/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, projection{type:projection, input:Scan, columns:[2], width:1}),
+    Scan = pattern_scan{
+        type:pattern_scan,
+        predicate:predicate{name:test_sale_item, arity:3},
+        pattern:[operand{kind:value, value:alice}, operand{kind:value, value:laptop}, operand{kind:wildcard}],
+        width:_
+    },
+    maybe_run_query_runtime(Plan, ['10', '2']).
+
+verify_multi_constant_pattern_scan_pushdown_plan :-
+    csharp_query_target:build_query_plan(test_sale_item_alice_laptop_via_constraints/1, [target(csharp_query)], Plan),
     get_dict(root, Plan, projection{type:projection, input:Scan, columns:[2], width:1}),
     Scan = pattern_scan{
         type:pattern_scan,
