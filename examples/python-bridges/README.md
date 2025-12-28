@@ -1,12 +1,14 @@
 # Python Bridge Examples
 
-Examples for embedding CPython in .NET and JVM runtimes to use RPyC.
+Examples for embedding CPython in various runtimes to use RPyC.
 
 ## Overview
 
 These examples demonstrate how to use RPyC (Remote Python Call) from:
 - **.NET** via Python.NET or CSnakes
 - **JVM** via JPype or jpy
+- **Rust** via PyO3
+- **Ruby** via PyCall.rb
 
 Each bridge embeds CPython and provides access to RPyC's live object proxies.
 
@@ -15,11 +17,17 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 | Bridge | Runtime | Status | Best For |
 |--------|---------|--------|----------|
 | [Python.NET](pythonnet/) | .NET 6+ | ✅ Tested | Dynamic Python execution, F# interop |
-| [CSnakes](csnakes/) | .NET 8+ | ⚠️ Different | Source generators, compile-time wrappers |
+| [CSnakes](csnakes/) | .NET 9+ | ⚠️ Build OK | Source generators, compile-time wrappers |
 | [JPype](jpype/) | JVM | ✅ Tested | Java projects needing NumPy/SciPy |
 | [jpy](jpy/) | JVM | ✅ Tested | Bi-directional Java↔Python |
+| [PyO3](pyo3/) | Rust | 🔬 Documented | Systems programming with Python ML |
+| [PyCall.rb](pycall/) | Ruby | 🔬 Documented | Ruby/Rails with Python data science |
 
-**Note:** CSnakes uses compile-time source generators rather than dynamic execution. See [csnakes/README.md](csnakes/) for details.
+**Legend:** ✅ Tested and working | ⚠️ Partial (see notes) | 🔬 Documented (high confidence)
+
+**Notes:**
+- CSnakes: Source generation works, runtime on Linux requires native library setup
+- PyO3/PyCall.rb: Well-documented patterns, not runtime-tested in this repo
 
 ## Quick Start
 
@@ -32,9 +40,11 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 
 2. **Bridge-specific requirements:**
    - Python.NET: `pip install pythonnet` + .NET SDK 6+ (tested with 9.0)
-   - CSnakes: .NET SDK 8.0+ + `dotnet new install CSnakes.Templates`
+   - CSnakes: .NET SDK 9.0+ + `PYTHON_HOME` environment variable
    - JPype: `pip install jpype1` + Java JDK 11+ (tested with 11.0.27)
    - jpy: `pip install jpy` + Java JDK 11+ + Maven
+   - PyO3: Rust toolchain (`rustup`) + Python dev headers
+   - PyCall.rb: Ruby 2.7+ + `gem install pycall`
 
    **Note:** Python.NET defaults to .NET Core (not Mono) on modern systems.
 

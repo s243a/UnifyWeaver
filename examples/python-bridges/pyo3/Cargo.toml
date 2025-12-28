@@ -1,0 +1,8 @@
+[package]
+name = "rpyc-client"
+version = "0.1.0"
+edition = "2021"
+description = "RPyC client using PyO3 to embed Python in Rust"
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["auto-initialize"] }
