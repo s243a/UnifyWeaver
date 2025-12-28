@@ -270,6 +270,7 @@ def train_federated(
     cluster_centroids_list = []
     cluster_ids = []
     cluster_target_embeddings = {}  # Only keep target embeddings for evaluation
+    idx_to_cluster = {}  # Maps global index to cluster_id for routing
     
     output_dir = output_path.with_suffix('')
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -277,6 +278,10 @@ def train_federated(
     for cluster_id, indices in clusters.items():
         Q_subset = Q_emb[indices]
         A_subset = A_emb[indices]
+        
+        # Track index-to-cluster mapping for query-level routing
+        for idx in indices:
+            idx_to_cluster[int(idx)] = cluster_id
         
         # Train this cluster using selected mode
         if transform_mode == "per-query":
@@ -307,6 +312,17 @@ def train_federated(
         gc.collect()
     
     cluster_centroids = np.stack(cluster_centroids_list, axis=0)
+    
+    # Save query embeddings for query-level routing
+    routing_path = output_dir / "routing_data.npz"
+    np.savez_compressed(
+        routing_path,
+        query_embeddings=Q_emb,
+        target_embeddings=A_emb,
+        idx_to_cluster_keys=np.array(list(idx_to_cluster.keys())),
+        idx_to_cluster_values=np.array([idx_to_cluster[k] for k in idx_to_cluster.keys()])
+    )
+    logger.info(f"Saved routing data to {routing_path}")
     
     # Return a lightweight model (no W_stacks in memory)
     return FederatedModel(
