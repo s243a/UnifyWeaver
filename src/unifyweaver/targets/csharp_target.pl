@@ -1710,8 +1710,14 @@ estimate_goal_row_count(relation, Term0, Arity, ConstArgs, Estimate) :-
         Pattern =.. [Pred|Args],
         aggregate_all(count, clause(user:Pattern, true), Estimate)
     ).
+estimate_goal_row_count(recursive(delta), _Term, _Arity, ConstArgs, Estimate) :-
+    !,
+    estimate_unknown_recursive_delta_rows(ConstArgs, Estimate).
 estimate_goal_row_count(recursive(_), _Term, _Arity, ConstArgs, Estimate) :-
     estimate_unknown_recursive_rows(ConstArgs, Estimate).
+estimate_goal_row_count(mutual(_, delta), _Term, _Arity, ConstArgs, Estimate) :-
+    !,
+    estimate_unknown_recursive_delta_rows(ConstArgs, Estimate).
 estimate_goal_row_count(mutual(_, _), _Term, _Arity, ConstArgs, Estimate) :-
     estimate_unknown_recursive_rows(ConstArgs, Estimate).
 
@@ -1719,6 +1725,10 @@ estimate_unknown_relation_rows(ConstArgs, Estimate) :-
     Base is 1000000000,
     Divisor is ConstArgs + 1,
     Estimate is Base // Divisor.
+
+estimate_unknown_recursive_delta_rows(ConstArgs, Estimate) :-
+    estimate_unknown_recursive_rows(ConstArgs, TotalEstimate),
+    Estimate is TotalEstimate // 2.
 
 estimate_unknown_recursive_rows(ConstArgs, Estimate) :-
     Base is 2000000000,
