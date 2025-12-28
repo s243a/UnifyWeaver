@@ -385,6 +385,85 @@ Run the variant compatibility tests:
 python tests/rpyc_variants/test_rpyc_variants.py
 ```
 
+Run the bridge integration tests:
+
+```bash
+# Start RPyC server first
+python examples/rpyc-integration/rpyc_server.py &
+
+# Run all bridge tests
+python -m pytest tests/integration/python_bridges/ -v
+```
+
+## Prolog Glue Module
+
+The `python_bridges_glue.pl` module provides automatic bridge detection and selection.
+
+### Auto-Detection
+
+```prolog
+?- use_module('src/unifyweaver/glue/python_bridges_glue').
+
+% Detect all available bridges
+?- detect_all_bridges(Bridges).
+% Bridges = [pythonnet, jpype, jpy]
+
+% Check if a specific bridge is ready
+?- check_bridge_ready(jpype, Status).
+% Status = ready
+% Status = missing_runtime('Java')
+% Status = missing_package(jpype1)
+
+% Get bridge requirements
+?- bridge_requirements(jpype, Reqs).
+% Reqs = [requirement(runtime, 'Java 11+'), ...]
+```
+
+### Auto-Selection with Fallback
+
+```prolog
+% Auto-select best bridge for target platform
+?- auto_select_bridge(jvm, Bridge).
+% Bridge = jpype  (first available in priority order)
+
+?- auto_select_bridge(dotnet, Bridge).
+% Bridge = pythonnet  (or csnakes, or none)
+
+% With explicit preferences
+?- auto_select_bridge(jvm, [prefer(jpy)], Bridge).
+% Bridge = jpy
+
+% With fallback chain
+?- auto_select_bridge(jvm, [fallback([jpy, jpype])], Bridge).
+% Bridge = jpy  (tries jpy first, then jpype)
+```
+
+### Preference and Firewall Integration
+
+The auto-selection respects UnifyWeaver's preference and firewall systems:
+
+```prolog
+% Global bridge preferences
+?- assertz(preferences:preferences_default([prefer_bridges([jpy, jpype])])).
+
+% Firewall can deny specific bridges
+?- assertz(firewall:rule_firewall(python_bridge/1, [denied([csnakes])])).
+
+% Auto-select now filters by firewall before applying preferences
+?- auto_select_bridge(any, Bridge).
+```
+
+### Auto-Generation
+
+```prolog
+% Generate code for best available bridge
+?- generate_auto_client(jvm, [port(18812)], Code).
+% Generates JPype code (or jpy if JPype unavailable)
+
+?- generate_auto_client(dotnet, [host("server.local")], Code).
+% Generates Python.NET code (or CSnakes if preferred)
+```
+
 ## Next Steps
 
 To test a new language bridge:

@@ -81,6 +81,74 @@ Generate bridge code from Prolog:
 ?- generate_python_bridge_client(pythonnet, [port(18900)], Code).
 ```
 
+## Auto-Detection and Selection
+
+The glue module can automatically detect and select the best available bridge:
+
+```prolog
+?- use_module('src/unifyweaver/glue/python_bridges_glue').
+
+% Detect all available bridges
+?- detect_all_bridges(Bridges).
+% Bridges = [jpype, jpy]  % (depends on what's installed)
+
+% Auto-select best bridge for a target platform
+?- auto_select_bridge(jvm, Bridge).
+% Bridge = jpype
+
+?- auto_select_bridge(dotnet, Bridge).
+% Bridge = pythonnet  % (or csnakes, or none if unavailable)
+
+% Auto-select with explicit preferences
+?- auto_select_bridge(jvm, [prefer(jpy)], Bridge).
+% Bridge = jpy
+
+% Auto-generate code for best available bridge
+?- generate_auto_client(jvm, [port(18812)], Code).
+% Generates code for jpype (or jpy if jpype unavailable)
+```
+
+### Bridge Requirements and Status
+
+```prolog
+% List requirements for a bridge
+?- bridge_requirements(jpype, Reqs).
+% Reqs = [requirement(runtime, 'Java 11+'),
+%         requirement(python_package, jpype1), ...]
+
+% Check if a bridge is ready to use
+?- check_bridge_ready(jpype, Status).
+% Status = ready
+% Status = missing_runtime('Java')
+% Status = missing_package(jpype1)
+
+% Validate configuration options
+?- validate_bridge_config(jpype, [host(localhost), port(18812)]).
+% true (valid options)
+
+?- validate_bridge_config(jpype, [port(99999)]).
+% false (invalid port)
+```
+
+### Integration with Preferences and Firewall
+
+The auto-selection integrates with UnifyWeaver's preference and firewall systems:
+
+```prolog
+% Set bridge preferences globally
+?- assertz(preferences:preferences_default([prefer_bridges([jpy, jpype])])).
+
+% Set bridge preferences for specific predicates
+?- assertz(preferences:rule_preferences(my_bridge/1, [prefer([jpype])])).
+
+% Firewall can deny specific bridges
+?- assertz(firewall:rule_firewall(python_bridge/1, [denied([csnakes])])).
+
+% Auto-select now respects these constraints
+?- auto_select_bridge(jvm, Bridge).
+% Returns bridge allowed by firewall, ordered by preferences
+```
+
 ## Architecture
 
 ```
