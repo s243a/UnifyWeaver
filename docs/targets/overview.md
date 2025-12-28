@@ -33,6 +33,10 @@ This document frames how UnifyWeaver maps logical predicates onto executable env
 ### Scripting Targets
 - **Python** (`target(python)`)
   Generates Python scripts with strong recursion support, ML integration, and pipeline chaining. Ideal for data science workflows and rapid prototyping.
+- **Perl** (`target(perl)`)
+  Generates Perl subroutines using continuation-passing style (CPS) with callbacks. Supports tail recursion optimization, linear recursion with memoization, aggregations (count, sum, min, max, avg), and JSON output modes. Ideal for Unix pipeline integration and text processing.
+- **Ruby** (`target(ruby)`)
+  Generates Ruby methods using block-based CPS with `yield`. Supports tail recursion optimization, linear recursion with memoization, aggregations, and JSON output modes. Idiomatic Ruby code integrates naturally with Rails and Ruby applications.
 
 ## Selecting Targets
 Preferences (`preferences.pl`) and runtime options choose a target. Planned behaviour:
