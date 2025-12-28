@@ -369,7 +369,7 @@ These bridges have been tested with RPyC (2025-12-27):
 | Language | Bridge | Status | Test Results |
 |----------|--------|--------|--------------|
 | **.NET** | Python.NET | ✅ Verified | .NET Core 9.0, math.sqrt + numpy.mean |
-| **.NET** | CSnakes | ⚠️ Different approach | Source generator, not dynamic exec |
+| **.NET** | CSnakes | ✅ Source gen verified | Compile-time wrappers work; runtime setup complex |
 | **Java** | JPype | ✅ Verified | Java 11, math.sqrt + numpy.mean |
 | **Java** | jpy | ✅ Verified | Java 11, bi-directional ArrayList demo |
 | **Java** | GraalPy | ⏳ Untested | GraalVM-based, may have C extension issues |
