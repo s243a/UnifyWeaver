@@ -77,8 +77,402 @@ compile_facts(Pred, _Arity, Clauses, Code) :-
 
 compile_rules(Pred, Arity, Clauses, IsRecursive, Code) :-
     (   IsRecursive == true
-    ->  compile_recursive_rules(Pred, Arity, Clauses, Code)
+    ->  % Check for tail recursion pattern first
+        (   can_compile_tail_recursion(Pred, Arity, Clauses)
+        ->  compile_tail_recursive_rules(Pred, Arity, Clauses, Code)
+        ;   can_compile_linear_recursion(Pred, Arity, Clauses)
+        ->  compile_linear_recursive_rules(Pred, Arity, Clauses, Code)
+        ;   compile_recursive_rules(Pred, Arity, Clauses, Code)
+        )
     ;   compile_nonrecursive_rules(Pred, Arity, Clauses, Code)
+    ).
+
+%% ============================================
+%% LINEAR RECURSION WITH MEMOIZATION
+%% ============================================
+
+can_compile_linear_recursion(Pred, Arity, Clauses) :-
+    partition(is_recursive_clause(Pred, Arity), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    forall(member(BC, BaseClauses), is_value_base_case(BC)),
+    forall(member(RC, RecClauses), is_linear_recursive_clause(Pred, Arity, RC)).
+
+is_value_base_case(Head-true) :-
+    Head =.. [_|Args], Args \= [],
+    last(Args, Result),
+    (number(Result) ; atom(Result) ; var(Result)), !.
+is_value_base_case(Head-Body) :-
+    Head =.. [_|Args], Args \= [],
+    body_to_goals(Body, Goals),
+    forall(member(G, Goals), is_simple_condition(G)).
+
+is_linear_recursive_clause(Pred, Arity, _Head-Body) :-
+    body_to_goals(Body, Goals),
+    Goals \= [],
+    last(Goals, LastGoal),
+    \+ (strip_module(LastGoal, _, G), functor(G, Pred, Arity)),
+    member(_ is _, Goals).
+
+compile_linear_recursive_rules(Pred, Arity, Clauses, Code) :-
+    partition(is_recursive_clause(Pred, Arity), Clauses, RecClauses, BaseClauses),
+
+    InputArity is Arity - 1,
+    numlist(1, InputArity, Indices),
+    maplist([I, Name]>>format(atom(Name), "arg~w", [I]), Indices, ParamNames),
+    atomic_list_concat(ParamNames, ", ", ParamList),
+
+    compile_ruby_linear_base_cases(BaseClauses, ParamNames, BaseCaseCode),
+
+    RecClauses = [RecClause|_],
+    compile_ruby_linear_recursive_case(RecClause, Pred, Arity, ParamNames, RecCaseCode),
+
+    format(string(Code),
+"def ~w(~s, &block)
+  @memo ||= {}
+  key = [~s]
+  if @memo.key?(key)
+    return block.call(@memo[key])
+  end
+
+~s
+~s
+end
+", [Pred, ParamList, ParamList, BaseCaseCode, RecCaseCode]).
+
+compile_ruby_linear_base_cases([], _, "").
+compile_ruby_linear_base_cases([Clause|Rest], ParamNames, Code) :-
+    compile_ruby_linear_base_case(Clause, ParamNames, ClauseCode),
+    compile_ruby_linear_base_cases(Rest, ParamNames, RestCode),
+    format(string(Code), "~s~s", [ClauseCode, RestCode]).
+
+compile_ruby_linear_base_case(Head-_Body, ParamNames, Code) :-
+    Head =.. [_|Args],
+    append(InputArgs, [Result], Args),
+    build_ruby_base_condition(InputArgs, ParamNames, Condition),
+    (   var(Result)
+    ->  (   nth1(Idx, InputArgs, RA), RA == Result
+        ->  nth1(Idx, ParamNames, ResultExpr)
+        ;   ResultExpr = "nil"
+        )
+    ;   format(string(ResultExpr), "~w", [Result])
+    ),
+    format(string(Code),
+"  if ~s
+    @memo[key] = ~s
+    return block.call(~s)
+  end
+", [Condition, ResultExpr, ResultExpr]).
+
+build_ruby_base_condition([], [], "true").
+build_ruby_base_condition([Arg|Args], [Param|Params], Condition) :-
+    build_ruby_base_condition(Args, Params, RestCond),
+    (   number(Arg) -> format(string(ArgCond), "~w == ~w", [Param, Arg])
+    ;   atom(Arg) -> format(string(ArgCond), "~w == '~w'", [Param, Arg])
+    ;   ArgCond = "true"
+    ),
+    (   RestCond == "true" -> Condition = ArgCond
+    ;   ArgCond == "true" -> Condition = RestCond
+    ;   format(string(Condition), "~s && ~s", [ArgCond, RestCond])
+    ).
+
+compile_ruby_linear_recursive_case(Head-Body, Pred, Arity, ParamNames, Code) :-
+    Head =.. [_|HeadArgs],
+    append(_, [ResultVar], HeadArgs),
+    body_to_goals(Body, Goals),
+
+    partition(goal_matches(Pred, Arity), Goals, RecGoals, NonRecGoals),
+    partition(is_ruby_computation, NonRecGoals, Computations, _Conditions),
+
+    find_ruby_final_expr(Computations, ResultVar, FinalExpr),
+    collect_ruby_computed_vars(Computations, ResultVar, 0, ComputedVars),
+    compile_ruby_linear_pre_computations(Computations, ResultVar, HeadArgs, ParamNames, ComputedVars, PreCompCode),
+    compile_ruby_nested_recursive_calls(RecGoals, Pred, HeadArgs, ParamNames, ComputedVars, FinalExpr, RecCallCode),
+
+    format(string(Code), "~s~s", [PreCompCode, RecCallCode]).
+
+is_ruby_computation(_ is _).
+
+find_ruby_final_expr([], _, 0).
+find_ruby_final_expr([RV is Expr|_], ResultVar, Expr) :- RV == ResultVar, !.
+find_ruby_final_expr([_|Rest], ResultVar, Expr) :- find_ruby_final_expr(Rest, ResultVar, Expr).
+
+collect_ruby_computed_vars([], _, _, []).
+collect_ruby_computed_vars([Var is _|Rest], ResultVar, Counter, Vars) :-
+    var(Var), Var \== ResultVar, !,
+    format(atom(Name), "tmp~w", [Counter]),
+    Counter1 is Counter + 1,
+    collect_ruby_computed_vars(Rest, ResultVar, Counter1, RestVars),
+    Vars = [Var-Name|RestVars].
+collect_ruby_computed_vars([_|Rest], ResultVar, Counter, Vars) :-
+    collect_ruby_computed_vars(Rest, ResultVar, Counter, Vars).
+
+compile_ruby_linear_pre_computations([], _, _, _, _, "").
+compile_ruby_linear_pre_computations([Var is Expr|Rest], ResultVar, HeadArgs, ParamNames, ComputedVars, Code) :-
+    var(Var), Var \== ResultVar, !,
+    get_ruby_var_name(Var, HeadArgs, ParamNames, ComputedVars, VarName),
+    compile_ruby_expr(Expr, HeadArgs, ParamNames, ComputedVars, ExprCode),
+    compile_ruby_linear_pre_computations(Rest, ResultVar, HeadArgs, ParamNames, ComputedVars, RestCode),
+    format(string(Code), "  ~s = ~s~n~s", [VarName, ExprCode, RestCode]).
+compile_ruby_linear_pre_computations([_|Rest], ResultVar, HeadArgs, ParamNames, ComputedVars, Code) :-
+    compile_ruby_linear_pre_computations(Rest, ResultVar, HeadArgs, ParamNames, ComputedVars, Code).
+
+compile_ruby_nested_recursive_calls(RecGoals, Pred, HeadArgs, ParamNames, ComputedVars, FinalExpr, Code) :-
+    compile_ruby_nested_recursive_calls_(RecGoals, Pred, HeadArgs, ParamNames, ComputedVars, FinalExpr, 0, Code).
+
+compile_ruby_nested_recursive_calls_([], _Pred, HeadArgs, ParamNames, ComputedVars, FinalExpr, _Counter, Code) :-
+    compile_ruby_expr(FinalExpr, HeadArgs, ParamNames, ComputedVars, ExprCode),
+    format(string(Code),
+"      result = ~s
+      @memo[key] = result
+      block.call(result)
+", [ExprCode]).
+
+compile_ruby_nested_recursive_calls_([RecGoal|Rest], Pred, HeadArgs, ParamNames, ComputedVars, FinalExpr, Counter, Code) :-
+    RecGoal =.. [_|RecArgs],
+    append(RecInputs, [RecResult], RecArgs),
+
+    maplist(compile_ruby_rec_arg(HeadArgs, ParamNames, ComputedVars), RecInputs, ArgCodes),
+    atomic_list_concat(ArgCodes, ", ", ArgStr),
+
+    format(atom(ResName), "r~w", [Counter]),
+    NewComputedVars = [RecResult-ResName|ComputedVars],
+    NextCounter is Counter + 1,
+
+    compile_ruby_nested_recursive_calls_(Rest, Pred, HeadArgs, ParamNames, NewComputedVars, FinalExpr, NextCounter, InnerCode),
+
+    format(string(Code),
+"  ~w(~s) do |~s|
+~s
+  end
+", [Pred, ArgStr, ResName, InnerCode]).
+
+compile_ruby_rec_arg(HeadArgs, ParamNames, ComputedVars, Arg, Code) :-
+    (   var(Arg) -> get_ruby_var_name(Arg, HeadArgs, ParamNames, ComputedVars, Code)
+    ;   number(Arg) -> format(string(Code), "~w", [Arg])
+    ;   format(string(Code), "'~w'", [Arg])
+    ).
+
+%% ============================================
+%% TAIL RECURSION DETECTION AND COMPILATION
+%% ============================================
+
+%% can_compile_tail_recursion(+Pred, +Arity, +Clauses)
+%% Check if this is a tail-recursive predicate that can be optimized to a loop.
+can_compile_tail_recursion(Pred, Arity, Clauses) :-
+    partition(is_recursive_clause(Pred, Arity), Clauses, RecClauses, BaseClauses),
+    RecClauses \= [],
+    BaseClauses \= [],
+    forall(member(Clause, RecClauses), is_tail_recursive_clause(Pred, Arity, Clause)),
+    forall(member(BaseClause, BaseClauses), is_accumulator_base_case(BaseClause)).
+
+%% is_tail_recursive_clause(+Pred, +Arity, +Clause)
+is_tail_recursive_clause(Pred, Arity, _Head-Body) :-
+    body_to_goals(Body, Goals),
+    Goals \= [],
+    last(Goals, LastGoal),
+    strip_module(LastGoal, _, G),
+    functor(G, Pred, Arity).
+
+%% is_accumulator_base_case(+Clause)
+is_accumulator_base_case(Head-true) :-
+    Head =.. [_|Args],
+    length(Args, Len), Len >= 2,
+    append(_, [Acc, Result], Args),
+    Acc == Result, !.
+is_accumulator_base_case(Head-Body) :-
+    Head =.. [_|Args],
+    length(Args, Len), Len >= 2,
+    append(_, [Acc, Result], Args),
+    Acc == Result,
+    body_to_goals(Body, Goals),
+    forall(member(G, Goals), is_simple_condition(G)).
+
+is_simple_condition(G) :-
+    functor(G, Op, 2),
+    member(Op, [=, ==, \=, \==, <, >, =<, >=, =:=, =\=, is]).
+
+%% compile_tail_recursive_rules(+Pred, +Arity, +Clauses, -Code)
+compile_tail_recursive_rules(Pred, Arity, Clauses, Code) :-
+    partition(is_recursive_clause(Pred, Arity), Clauses, RecClauses, BaseClauses),
+
+    % Generate parameter names
+    numlist(1, Arity, Indices),
+    maplist([I, Name]>>format(atom(Name), "arg~w", [I]), Indices, ParamNames),
+    atomic_list_concat(ParamNames, ", ", ParamList),
+
+    % Find accumulator position
+    Arity >= 2,
+    AccIdx is Arity - 1,
+
+    % Generate base case condition
+    compile_tail_base_conditions(BaseClauses, AccIdx, ParamNames, BaseCondCode),
+
+    % Generate loop body from recursive clause
+    RecClauses = [RecClause|_],
+    compile_tail_loop_body(RecClause, Pred, Arity, ParamNames, LoopBodyCode),
+
+    format(string(Code),
+"def ~w(~s, &block)
+  # Tail recursion optimized to loop
+  loop do
+~s
+~s
+  end
+end
+", [Pred, ParamList, BaseCondCode, LoopBodyCode]).
+
+%% compile_tail_base_conditions(+BaseClauses, +AccIdx, +ParamNames, -Code)
+compile_tail_base_conditions(BaseClauses, AccIdx, ParamNames, Code) :-
+    BaseClauses = [Head-Body|_],
+    Head =.. [_|Args],
+    nth1(AccIdx, ParamNames, AccParam),
+    (   Body == true
+    ->  Args = [FirstArg|_],
+        (   FirstArg == 0
+        ->  format(string(Code),
+"    if arg1 == 0
+      block.call(~w)
+      break
+    end", [AccParam])
+        ;   FirstArg == []
+        ->  format(string(Code),
+"    if arg1.empty?
+      block.call(~w)
+      break
+    end", [AccParam])
+        ;   format(string(Code),
+"    if arg1 == ~w
+      block.call(~w)
+      break
+    end", [FirstArg, AccParam])
+        )
+    ;   body_to_goals(Body, Goals),
+        compile_ruby_conditions(Goals, ParamNames, CondCode),
+        format(string(Code),
+"    if ~s
+      block.call(~w)
+      break
+    end", [CondCode, AccParam])
+    ).
+
+compile_ruby_conditions([], _, "true").
+compile_ruby_conditions([Goal|Rest], ParamNames, Code) :-
+    compile_ruby_condition(Goal, ParamNames, GoalCode),
+    compile_ruby_conditions(Rest, ParamNames, RestCode),
+    (   RestCode == "true"
+    ->  Code = GoalCode
+    ;   format(string(Code), "~s && ~s", [GoalCode, RestCode])
+    ).
+
+compile_ruby_condition(_ == Y, _, Code) :- format(string(Code), "arg1 == ~w", [Y]).
+compile_ruby_condition(_ =:= Y, _, Code) :- format(string(Code), "arg1 == ~w", [Y]).
+compile_ruby_condition(_ < Y, _, Code) :- format(string(Code), "arg1 < ~w", [Y]).
+compile_ruby_condition(_ > Y, _, Code) :- format(string(Code), "arg1 > ~w", [Y]).
+compile_ruby_condition(_ =< Y, _, Code) :- format(string(Code), "arg1 <= ~w", [Y]).
+compile_ruby_condition(_ >= Y, _, Code) :- format(string(Code), "arg1 >= ~w", [Y]).
+compile_ruby_condition(_, _, "true").
+
+%% compile_tail_loop_body(+RecClause, +Pred, +Arity, +ParamNames, -Code)
+compile_tail_loop_body(Head-Body, Pred, Arity, ParamNames, Code) :-
+    Head =.. [_|HeadArgs],
+    body_to_goals(Body, Goals),
+    partition(goal_matches(Pred, Arity), Goals, [RecGoal|_], OtherGoals),
+    RecGoal =.. [_|RecArgs],
+
+    % Build computed variables mapping
+    collect_computed_vars(OtherGoals, 0, ComputedVars),
+
+    % Compile intermediate computations
+    compile_tail_computations(OtherGoals, HeadArgs, ParamNames, ComputedVars, CompCode),
+
+    % Generate variable updates
+    compile_tail_updates(RecArgs, HeadArgs, ParamNames, ComputedVars, UpdateCode),
+
+    format(string(Code), "~s~s", [CompCode, UpdateCode]).
+
+collect_computed_vars([], _, []).
+collect_computed_vars([Var is _|Rest], Counter, [Var-Name|RestVars]) :-
+    var(Var), !,
+    format(atom(Name), "tmp~w", [Counter]),
+    Counter1 is Counter + 1,
+    collect_computed_vars(Rest, Counter1, RestVars).
+collect_computed_vars([_|Rest], Counter, Vars) :-
+    collect_computed_vars(Rest, Counter, Vars).
+
+compile_tail_computations([], _, _, _, "").
+compile_tail_computations([Goal|Rest], HeadArgs, ParamNames, ComputedVars, Code) :-
+    compile_tail_computation(Goal, HeadArgs, ParamNames, ComputedVars, GoalCode),
+    compile_tail_computations(Rest, HeadArgs, ParamNames, ComputedVars, RestCode),
+    format(string(Code), "~s~s", [GoalCode, RestCode]).
+
+compile_tail_computation(Var is Expr, HeadArgs, ParamNames, ComputedVars, Code) :-
+    var(Var), !,
+    get_ruby_var_name(Var, HeadArgs, ParamNames, ComputedVars, VarName),
+    compile_ruby_expr(Expr, HeadArgs, ParamNames, ComputedVars, ExprCode),
+    format(string(Code), "    ~s = ~s~n", [VarName, ExprCode]).
+compile_tail_computation(_, _, _, _, "").
+
+get_ruby_var_name(Var, _, _, ComputedVars, Name) :-
+    member(V-Name, ComputedVars), V == Var, !.
+get_ruby_var_name(Var, HeadArgs, ParamNames, _, Name) :-
+    nth1(Idx, HeadArgs, Arg), Arg == Var, !,
+    nth1(Idx, ParamNames, Name).
+get_ruby_var_name(_, _, _, _, "unknown").
+
+compile_ruby_expr(Expr, HeadArgs, ParamNames, ComputedVars, Code) :-
+    var(Expr), !,
+    get_ruby_var_name(Expr, HeadArgs, ParamNames, ComputedVars, Code).
+compile_ruby_expr(N, _, _, _, Code) :- number(N), !, format(string(Code), "~w", [N]).
+compile_ruby_expr(Atom, _, _, _, Code) :- atom(Atom), !, format(string(Code), "'~w'", [Atom]).
+compile_ruby_expr(X + Y, HeadArgs, ParamNames, ComputedVars, Code) :-
+    number(Y), Y < 0, !,
+    NegY is -Y,
+    compile_ruby_expr(X, HeadArgs, ParamNames, ComputedVars, XCode),
+    format(string(Code), "(~s - ~w)", [XCode, NegY]).
+compile_ruby_expr(X + Y, HeadArgs, ParamNames, ComputedVars, Code) :- !,
+    compile_ruby_expr(X, HeadArgs, ParamNames, ComputedVars, XCode),
+    compile_ruby_expr(Y, HeadArgs, ParamNames, ComputedVars, YCode),
+    format(string(Code), "(~s + ~s)", [XCode, YCode]).
+compile_ruby_expr(X - Y, HeadArgs, ParamNames, ComputedVars, Code) :- !,
+    compile_ruby_expr(X, HeadArgs, ParamNames, ComputedVars, XCode),
+    compile_ruby_expr(Y, HeadArgs, ParamNames, ComputedVars, YCode),
+    format(string(Code), "(~s - ~s)", [XCode, YCode]).
+compile_ruby_expr(X * Y, HeadArgs, ParamNames, ComputedVars, Code) :- !,
+    compile_ruby_expr(X, HeadArgs, ParamNames, ComputedVars, XCode),
+    compile_ruby_expr(Y, HeadArgs, ParamNames, ComputedVars, YCode),
+    format(string(Code), "(~s * ~s)", [XCode, YCode]).
+compile_ruby_expr(X / Y, HeadArgs, ParamNames, ComputedVars, Code) :- !,
+    compile_ruby_expr(X, HeadArgs, ParamNames, ComputedVars, XCode),
+    compile_ruby_expr(Y, HeadArgs, ParamNames, ComputedVars, YCode),
+    format(string(Code), "(~s / ~s)", [XCode, YCode]).
+compile_ruby_expr(X, _, _, _, Code) :- format(string(Code), "~w", [X]).
+
+compile_tail_updates(RecArgs, HeadArgs, ParamNames, ComputedVars, Code) :-
+    length(RecArgs, Len),
+    numlist(1, Len, Indices),
+    maplist(compile_ruby_single_update(HeadArgs, ParamNames, ComputedVars), Indices, RecArgs, UpdateCodes),
+    atomic_list_concat(UpdateCodes, "", Code).
+
+compile_ruby_single_update(HeadArgs, ParamNames, ComputedVars, Idx, RecArg, Code) :-
+    nth1(Idx, ParamNames, ParamName),
+    length(ParamNames, TotalArgs),
+    (   Idx == TotalArgs
+    ->  Code = ""  % Don't update result argument
+    ;   var(RecArg)
+    ->  (   member(V-ComputedName, ComputedVars), V == RecArg
+        ->  format(string(Code), "    ~s = ~s~n", [ParamName, ComputedName])
+        ;   nth1(OldIdx, HeadArgs, OldArg), OldArg == RecArg
+        ->  nth1(OldIdx, ParamNames, OldName),
+            (   OldName == ParamName
+            ->  Code = ""
+            ;   format(string(Code), "    ~s = ~s~n", [ParamName, OldName])
+            )
+        ;   Code = ""
+        )
+    ;   number(RecArg)
+    ->  format(string(Code), "    ~s = ~w~n", [ParamName, RecArg])
+    ;   format(string(Code), "    ~s = '~w'~n", [ParamName, RecArg])
     ).
 
 %% Non-recursive rules use nested blocks with yield
