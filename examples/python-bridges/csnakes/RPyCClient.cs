@@ -1,83 +1,51 @@
 /**
  * CSnakes + RPyC Example - C# Client
  *
- * Demonstrates calling RPyC from C# via CSnakes Python embedding.
- * CSnakes is a modern .NET 8+ library with a simpler API than Python.NET.
+ * NOTE: This is a conceptual example showing the intended usage pattern.
+ * CSnakes uses source generators to create wrapper classes at compile time.
  *
- * Build and run:
- *   cd examples/python-bridges/csnakes
- *   dotnet run
+ * For a working example, use the CSnakes templates:
+ *   dotnet new install CSnakes.Templates
+ *   dotnet new pyapp
  *
- * Prerequisites:
- *   - .NET SDK 8.0+
- *   - Python 3.8+ with rpyc installed
+ * Then add rpyc_wrapper.py to your project.
  */
-using CSnakes.Runtime;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 
-namespace UnifyWeaver.Bridges.CSnakes
+// When CSnakes processes rpyc_wrapper.py, it generates:
+// - IRpycWrapper interface
+// - RpycWrapper implementation
+// - Extension methods for IPythonEnvironment
+
+namespace UnifyWeaver.Bridges.CSnakes;
+
+/// <summary>
+/// Example showing how CSnakes-generated code would be used.
+/// The actual generated code comes from rpyc_wrapper.py.
+/// </summary>
+public class RPyCClientExample
 {
-    class RPyCClient
+    public static void Main(string[] args)
     {
-        static async Task Main(string[] args)
-        {
-            Console.WriteLine("CSnakes + RPyC C# Client");
-            Console.WriteLine("========================");
-
-            // Build host with CSnakes services
-            var builder = Host.CreateApplicationBuilder(args);
-
-            // Configure Python
-            builder.Services
-                .WithPython()
-                .WithVirtualEnvironment(
-                    Environment.GetEnvironmentVariable("VIRTUAL_ENV")
-                    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local")
-                )
-                .FromEnvironmentVariable("PYTHON_HOME", "python3");
-
-            var host = builder.Build();
-            var env = host.Services.GetRequiredService<IPythonEnvironment>();
-
-            Console.WriteLine($"Python Home: {env.Home}");
-
-            // Execute Python code that uses RPyC
-            var result = env.Execute(@"
-import rpyc
-
-def connect_and_test():
-    conn = rpyc.classic.connect('localhost', 18812)
-    try:
-        # Test math
-        math = conn.modules.math
-        sqrt_result = math.sqrt(16)
-        print(f'math.sqrt(16) = {sqrt_result}')
-
-        # Try numpy
-        try:
-            np = conn.modules.numpy
-            arr = np.array([1, 2, 3, 4, 5])
-            mean = float(np.mean(arr))
-            print(f'numpy.mean([1,2,3,4,5]) = {mean}')
-        except Exception as e:
-            print(f'NumPy not available: {e}')
-
-        # Get info
-        info = conn.root.get_info()
-        py_version = info['python_version']
-        print(f'Server Python: {py_version}')
-
-        return 'success'
-    finally:
-        conn.close()
-        print('Connection closed')
-
-result = connect_and_test()
-");
-
-            Console.WriteLine("\nPython execution completed");
-            Console.WriteLine("All tests passed!");
-        }
+        Console.WriteLine("CSnakes + RPyC Example");
+        Console.WriteLine("======================");
+        Console.WriteLine();
+        Console.WriteLine("CSnakes uses source generators to create typed wrappers");
+        Console.WriteLine("from Python files at compile time.");
+        Console.WriteLine();
+        Console.WriteLine("To use this example:");
+        Console.WriteLine("1. Install CSnakes templates: dotnet new install CSnakes.Templates");
+        Console.WriteLine("2. Create new project: dotnet new pyapp");
+        Console.WriteLine("3. Add rpyc_wrapper.py to the project");
+        Console.WriteLine("4. CSnakes generates IRpycWrapper at compile time");
+        Console.WriteLine();
+        Console.WriteLine("Generated usage would look like:");
+        Console.WriteLine();
+        Console.WriteLine("  var wrapper = env.RpycWrapper();");
+        Console.WriteLine("  bool ok = wrapper.ConnectRpyc(\"localhost\", 18812);");
+        Console.WriteLine("  double mean = wrapper.GetNumpyMean(\"localhost\", 18812, [1,2,3,4,5]);");
+        Console.WriteLine("  string version = wrapper.GetServerPythonVersion(\"localhost\", 18812);");
+        Console.WriteLine();
+        Console.WriteLine("For dynamic Python execution without source generators,");
+        Console.WriteLine("see the Python.NET example instead.");
     }
 }
