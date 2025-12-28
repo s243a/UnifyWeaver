@@ -177,6 +177,9 @@ register_builtin_targets :-
     register_target(python, python, [streaming, pipes, libraries, ml, data_science]),
     register_target(ironpython, dotnet, [streaming, dotnet_interop, scripting]),
 
+    % Ruby family
+    register_target(ruby, ruby, [streaming, blocks, metaprogramming, gems, scripting]),
+
     % .NET family - can share process
     register_target(csharp, dotnet, [compiled, streaming, linq, async]),
     register_target(csharp_native, dotnet, [compiled, streaming, linq, procedural, recursion]),
@@ -247,7 +250,10 @@ register_target_modules :-
     
     % Python
     target_module(python, python_target),
-    
+
+    % Ruby
+    target_module(ruby, ruby_target),
+
     % JavaScript (to be implemented)
     target_module(typescript, typescript_target),
     
