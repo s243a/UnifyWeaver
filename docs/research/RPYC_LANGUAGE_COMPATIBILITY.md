@@ -67,10 +67,10 @@ RPyC depends on **plumbum** (shell command toolkit). For RPyC classic mode (whic
 | Language | Bridge Technology | CPython? | pip? | RPyC Feasibility | Notes |
 |----------|------------------|----------|------|------------------|-------|
 | **Prolog (SWI)** | [Janus](https://www.swi-prolog.org/pldoc/man?section=janus) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | This project |
-| **C#/F#** | [Python.NET](https://pythonnet.github.io/) | ✅ Yes | ✅ Yes | ✅ High | Mature, well-documented |
+| **C#/F#** | [Python.NET](https://pythonnet.github.io/) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | .NET Core 9.0, math + NumPy |
 | **C#** | [CSnakes](https://tonybaloney.github.io/posts/embedding-python-in-dot-net-with-csnakes.html) | ✅ Yes | ✅ Yes | ✅ High | Newer, simpler API |
-| **Java** | [JPype](https://github.com/jpype-project/jpype) | ✅ Yes | ✅ Yes | ✅ High | Shared memory approach |
-| **Java** | [jpy](https://jpy.readthedocs.io/) | ✅ Yes | ✅ Yes | ✅ High | Bi-directional bridge |
+| **Java** | [JPype](https://github.com/jpype-project/jpype) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | Java 11, math + NumPy |
+| **Java** | [jpy](https://jpy.readthedocs.io/) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | Java 11, bi-directional |
 | **Java** | [GraalPy](https://github.com/oracle/graalpython) | ⚠️ GraalVM | ⚠️ Limited | ⚠️ Medium | May have C extension issues |
 | **Rust** | [PyO3](https://pyo3.rs/) | ✅ Yes | ✅ Yes | ✅ High | Very active, mature |
 | **Ruby** | [PyCall.rb](https://github.com/red-data-tools/pycall.rb) | ✅ Yes | ✅ Yes | ✅ High | v1.5.2 (May 2024) |
@@ -362,18 +362,20 @@ All the working variants run on or with CPython:
 - **Jython**: Python 2.7 on JVM, reimplementation (not CPython)
 - **IronPython**: .NET CLR reimplementation (not CPython)
 
-### To Test: Language Bridge Integration
+### Tested: Language Bridge Integration
 
-These embed CPython and should work with RPyC, but need verification:
+These bridges have been tested with RPyC (2025-12-27):
 
-| Language | Bridge | Notes |
-|----------|--------|-------|
-| **.NET** | Python.NET | Mature, well-documented |
-| **.NET** | CSnakes | Newer, simpler API |
-| **Java** | JPype | Shared memory approach, mature |
-| **Java** | jpy | Bi-directional bridge |
-| **Java** | GraalPy | GraalVM-based, may have C extension issues |
-| **Java** | JNI + CPython | Manual integration via Java Native Interface |
+| Language | Bridge | Status | Test Results |
+|----------|--------|--------|--------------|
+| **.NET** | Python.NET | ✅ Verified | .NET Core 9.0, math.sqrt + numpy.mean |
+| **.NET** | CSnakes | ⚠️ Different approach | Source generator, not dynamic exec |
+| **Java** | JPype | ✅ Verified | Java 11, math.sqrt + numpy.mean |
+| **Java** | jpy | ✅ Verified | Java 11, bi-directional ArrayList demo |
+| **Java** | GraalPy | ⏳ Untested | GraalVM-based, may have C extension issues |
+| **Java** | JNI + CPython | ⏳ Untested | Manual integration via Java Native Interface |
+
+See `examples/python-bridges/` for working examples.
 
 ### Test Suite
 

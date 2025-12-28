@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>UnifyWeaver.Bridges.CSnakes</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    NOTE: This is a conceptual example.
+
+    For a real CSnakes project, use the templates:
+      dotnet new install CSnakes.Templates
+      dotnet new pyapp
+
+    Then add:
+      <PackageReference Include="CSnakes.Runtime" Version="1.0.0" />
+
+    And include rpyc_wrapper.py in the project.
+  -->
+
+</Project>
