@@ -8,12 +8,12 @@ Use CSnakes to embed CPython in .NET 9+ and access RPyC.
 |---------|--------|
 | Source generation | ✅ Works - generates typed wrappers |
 | Build | ✅ Works |
-| Runtime (Windows) | ✅ Should work |
-| Runtime (Linux) | ⚠️ Requires native library setup |
+| Runtime (Windows) | ✅ Works |
+| Runtime (Linux) | ✅ Works (via redistributable Python) |
 
-**Note:** CSnakes source generation is verified working. Runtime on Linux may require
-additional native library configuration. For simpler cross-platform RPyC access,
-consider using Python.NET instead.
+**Tested:** CSnakes 1.2.1 with `FromRedistributable("3.12")` works on Linux.
+The redistributable auto-downloads Python 3.12 (~60MB first run) and includes
+all necessary native libraries.
 
 ## Important: Source Generator Approach
 
@@ -28,39 +28,33 @@ CSnakes uses a **source generator** approach - it generates C# wrapper classes f
 dotnet --version  # Should be 9.0.x
 ```
 
-### 2. Python 3.8+ with rpyc
-
-```bash
-# Install rpyc
-pip install rpyc plumbum
-
-# Set PYTHON_HOME (Linux)
-export PYTHON_HOME=/usr
-
-# Set PYTHON_HOME (Windows)
-set PYTHON_HOME=C:\Python312
-```
-
-### 3. RPyC Server Running
+### 2. RPyC Server Running
 
 ```bash
 # From project root
 python examples/rpyc-integration/rpyc_server.py
 ```
 
+**Note:** Python for CSnakes itself is auto-downloaded via redistributable.
+Only the RPyC server requires a local Python installation.
+
 ## Running the Example
 
 ```bash
 cd examples/python-bridges/csnakes
 
-# Restore packages
-dotnet restore
+# Build and run (first run downloads Python ~60MB)
+dotnet run
+```
 
-# Build (triggers source generation)
-dotnet build
+### Using System Python Instead
 
-# Run
+To use your system Python instead of the redistributable:
+
+```bash
+export CSNAKES_USE_REDIST=0
 export PYTHON_HOME=/usr
+pip install rpyc plumbum  # Install in system Python
 dotnet run
 ```
 
@@ -188,25 +182,14 @@ python examples/rpyc-integration/rpyc_server.py
 
 ### "Unable to load shared library 'csnakes_python'" (Linux)
 
-CSnakes requires a native library for Python interop. On Linux, this may require:
+This error occurs with old CSnakes versions (< 1.2.x) or when using
+`FromEnvironmentVariable` with system Python. The solution is to use
+`FromRedistributable("3.12")` which includes all native libraries.
 
-1. Installing Python development headers:
-   ```bash
-   sudo apt install python3-dev
-   ```
-
-2. Using a specific runtime identifier (RID):
-   ```bash
-   dotnet run -r linux-x64
-   ```
-
-3. Or use the redistributable Python option which bundles required libraries:
-   ```csharp
-   .FromRedistributable("3.12")  // Instead of FromEnvironmentVariable
-   ```
-
-For simpler cross-platform RPyC access, consider using **Python.NET** which
-handles native library loading automatically.
+If you must use system Python:
+1. Upgrade to CSnakes 1.2.1+
+2. Use `FromRedistributable` instead of `FromEnvironmentVariable`
+3. The redistributable downloads Python with all required libraries
 
 ## Architecture
 

@@ -2,8 +2,8 @@
  * CSnakes + RPyC Example - Working Implementation
  *
  * This example demonstrates CSnakes with RPyC using:
- * 1. System Python via PYTHON_HOME environment variable
- * 2. Virtual environment with rpyc installed
+ * 1. Redistributable Python (auto-downloaded) - RECOMMENDED
+ * 2. Or system Python via PYTHON_HOME environment variable
  * 3. CSnakes source-generated wrappers from rpyc_wrapper.py
  */
 
@@ -21,31 +21,9 @@ public class Program
         Console.WriteLine("==========================");
         Console.WriteLine();
 
-        // Check for Python
+        // Check for mode selection
+        var useRedistributable = Environment.GetEnvironmentVariable("CSNAKES_USE_REDIST") != "0";
         var pythonHome = Environment.GetEnvironmentVariable("PYTHON_HOME");
-        if (string.IsNullOrEmpty(pythonHome))
-        {
-            // Try common locations
-            var possiblePaths = new[]
-            {
-                "/usr/bin/python3",
-                "/usr/local/bin/python3",
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "/Programs/Python"
-            };
-
-            Console.WriteLine("PYTHON_HOME not set. Trying common locations...");
-            Console.WriteLine();
-            Console.WriteLine("To run this example:");
-            Console.WriteLine("  1. Set PYTHON_HOME to your Python installation");
-            Console.WriteLine("  2. Ensure rpyc is installed: pip install rpyc");
-            Console.WriteLine("  3. Start RPyC server: python examples/rpyc-integration/rpyc_server.py");
-            Console.WriteLine("  4. Run: dotnet run");
-            Console.WriteLine();
-            Console.WriteLine("Example:");
-            Console.WriteLine("  export PYTHON_HOME=/usr");
-            Console.WriteLine("  dotnet run");
-            return;
-        }
 
         try
         {
@@ -53,21 +31,50 @@ public class Program
             var builder = Host.CreateApplicationBuilder(args);
 
             // Configure CSnakes Python
-            builder.Services
+            var pythonBuilder = builder.Services
                 .WithPython()
-                .WithHome(AppContext.BaseDirectory)
+                .WithHome(AppContext.BaseDirectory);
+
+            // Set up virtual environment path
+            var venvPath = Path.Combine(AppContext.BaseDirectory, ".venv");
+
+            if (useRedistributable)
+            {
+                // Use redistributable Python - downloads automatically (50-80MB first time)
+                Console.WriteLine("Using redistributable Python 3.12 (auto-download)...");
+                Console.WriteLine("(Set CSNAKES_USE_REDIST=0 and PYTHON_HOME to use system Python)");
+                Console.WriteLine();
+                pythonBuilder
+                    .FromRedistributable("3.12")
+                    .WithVirtualEnvironment(venvPath)
+                    .WithPipInstaller();
+            }
+            else if (!string.IsNullOrEmpty(pythonHome))
+            {
                 // Use system Python from PYTHON_HOME
-                .FromEnvironmentVariable("PYTHON_HOME", "3.8")
-                // Or explicitly: .FromFolder("/usr", "3.8")
-                // Install dependencies from requirements.txt
-                .WithPipInstaller();
+                Console.WriteLine($"Using system Python from PYTHON_HOME={pythonHome}");
+                Console.WriteLine();
+                pythonBuilder
+                    .FromEnvironmentVariable("PYTHON_HOME", "3.8")
+                    .WithVirtualEnvironment(venvPath)
+                    .WithPipInstaller();
+            }
+            else
+            {
+                Console.WriteLine("Error: CSNAKES_USE_REDIST=0 but PYTHON_HOME not set");
+                Console.WriteLine();
+                Console.WriteLine("Options:");
+                Console.WriteLine("  1. Use redistributable (default): just run 'dotnet run'");
+                Console.WriteLine("  2. Use system Python: export PYTHON_HOME=/usr && dotnet run");
+                return;
+            }
 
             var app = builder.Build();
 
             // Get Python environment
             var env = app.Services.GetRequiredService<IPythonEnvironment>();
 
-            Console.WriteLine($"Python initialized");
+            Console.WriteLine($"Python initialized successfully!");
             Console.WriteLine();
 
             // Get the generated wrapper (from rpyc_wrapper.py)
@@ -76,6 +83,8 @@ public class Program
 
             // Test RPyC connection
             Console.WriteLine("Testing RPyC connection...");
+            Console.WriteLine("(Make sure RPyC server is running first)");
+            Console.WriteLine();
             try
             {
                 bool connected = wrapper.ConnectRpyc("localhost", 18812);
@@ -88,11 +97,12 @@ public class Program
                 Console.WriteLine($"  Server Python: {version}");
 
                 Console.WriteLine();
+                Console.WriteLine("==========================");
                 Console.WriteLine("All tests passed!");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"  Error: {ex.Message}");
+                Console.WriteLine($"  RPyC Error: {ex.Message}");
                 Console.WriteLine();
                 Console.WriteLine("Make sure RPyC server is running:");
                 Console.WriteLine("  python examples/rpyc-integration/rpyc_server.py");
@@ -103,12 +113,14 @@ public class Program
             Console.WriteLine($"Initialization error: {ex.Message}");
             Console.WriteLine();
             Console.WriteLine("This may indicate:");
-            Console.WriteLine("  - Python not found at PYTHON_HOME");
-            Console.WriteLine("  - Missing Python packages (rpyc, plumbum)");
-            Console.WriteLine("  - CSnakes version mismatch");
+            Console.WriteLine("  - Network issue downloading redistributable Python");
+            Console.WriteLine("  - Python not found at PYTHON_HOME (if using system Python)");
+            Console.WriteLine("  - Missing write permissions for cache directory");
             Console.WriteLine();
-            Console.WriteLine("Try installing rpyc in your Python environment:");
-            Console.WriteLine("  pip install rpyc plumbum");
+            Console.WriteLine("Set CSNAKES_REDIST_CACHE to a writable directory, or try:");
+            Console.WriteLine("  export PYTHON_HOME=/usr");
+            Console.WriteLine("  export CSNAKES_USE_REDIST=0");
+            Console.WriteLine("  dotnet run");
         }
     }
 }

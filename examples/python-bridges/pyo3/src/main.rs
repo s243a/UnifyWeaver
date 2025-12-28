@@ -16,7 +16,7 @@ fn main() -> PyResult<()> {
 
     Python::with_gil(|py| {
         // Import rpyc module
-        let rpyc = py.import("rpyc")?;
+        let rpyc = py.import_bound("rpyc")?;
         let classic = rpyc.getattr("classic")?;
 
         println!("Connecting to RPyC server...");
@@ -82,7 +82,7 @@ impl RPyCClient {
     /// Connect to an RPyC server
     fn connect(host: &str, port: u16) -> PyResult<Self> {
         Python::with_gil(|py| {
-            let rpyc = py.import("rpyc")?;
+            let rpyc = py.import_bound("rpyc")?;
             let conn = rpyc
                 .getattr("classic")?
                 .call_method1("connect", (host, port))?;

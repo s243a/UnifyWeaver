@@ -7,7 +7,7 @@ Use PyO3 to embed CPython in Rust and access RPyC.
 | Feature | Status |
 |---------|--------|
 | PyO3 binding | ✅ Mature, well-supported |
-| RPyC access | 🔬 High confidence (untested) |
+| RPyC access | ✅ Tested and working |
 
 ## Overview
 
@@ -55,8 +55,8 @@ use pyo3::prelude::*;
 
 fn main() -> PyResult<()> {
     Python::with_gil(|py| {
-        // Import rpyc
-        let rpyc = py.import("rpyc")?;
+        // Import rpyc (use import_bound for PyO3 0.21+)
+        let rpyc = py.import_bound("rpyc")?;
         let classic = rpyc.getattr("classic")?;
 
         // Connect to server
@@ -137,7 +137,7 @@ struct RPyCClient {
 impl RPyCClient {
     fn connect(host: &str, port: u16) -> PyResult<Self> {
         Python::with_gil(|py| {
-            let rpyc = py.import("rpyc")?;
+            let rpyc = py.import_bound("rpyc")?;
             let conn = rpyc.getattr("classic")?.call_method1("connect", (host, port))?;
             Ok(Self { conn: conn.into() })
         })
