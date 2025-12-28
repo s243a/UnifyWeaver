@@ -26,8 +26,18 @@
     detect_csnakes/1,               % detect_csnakes(-Available)
     detect_jpype/1,                 % detect_jpype(-Available)
     detect_jpy/1,                   % detect_jpy(-Available)
+    detect_all_bridges/1,           % detect_all_bridges(-AvailableBridges)
 
-    % Bridge selection
+    % Bridge requirements and validation
+    bridge_requirements/2,          % bridge_requirements(+Bridge, -Requirements)
+    check_bridge_ready/2,           % check_bridge_ready(+Bridge, -Status)
+    validate_bridge_config/2,       % validate_bridge_config(+Bridge, +Options)
+
+    % Auto-selection with fallback
+    auto_select_bridge/2,           % auto_select_bridge(+Target, -Bridge)
+    auto_select_bridge/3,           % auto_select_bridge(+Target, +Preferences, -Bridge)
+
+    % Bridge selection (legacy)
     select_dotnet_python_bridge/2,  % select_dotnet_python_bridge(+Preferences, -Bridge)
     select_jvm_python_bridge/2,     % select_jvm_python_bridge(+Preferences, -Bridge)
 
@@ -55,11 +65,27 @@
     generate_python_bridge_client/3,     % generate_python_bridge_client(+Bridge, +Options, -Code)
     generate_python_bridge_service/3,    % generate_python_bridge_service(+Bridge, +Options, -Code)
 
+    % Auto-generation (uses preferences + firewall)
+    generate_auto_client/2,              % generate_auto_client(+Target, -Code)
+    generate_auto_client/3,              % generate_auto_client(+Target, +Options, -Code)
+
     % Testing
     test_python_bridges_glue/0
 ]).
 
+% Optional integration with preferences and firewall systems
 :- use_module(library(lists)).
+:- if(exists_source('../core/preferences')).
+:- use_module('../core/preferences', [get_final_options/3, rule_preferences/2]).
+:- endif.
+:- if(exists_source('../core/firewall')).
+:- use_module('../core/firewall', [
+    get_firewall_policy/2,
+    validate_against_firewall/3,
+    derive_policy/2,
+    firewall_implies_default/2
+]).
+:- endif.
 
 % ============================================================================
 % BRIDGE DETECTION
@@ -118,8 +144,330 @@ detect_jpy(Available) :-
     ;   Available = false
     ).
 
+%% detect_all_bridges(-AvailableBridges)
+%  Detect all available Python bridges and return as a list.
+%  Returns bridges in priority order (most preferred first).
+detect_all_bridges(AvailableBridges) :-
+    findall(Bridge, (
+        member(Bridge-Detector, [
+            pythonnet-detect_pythonnet,
+            csnakes-detect_csnakes,
+            jpype-detect_jpype,
+            jpy-detect_jpy
+        ]),
+        call(Detector, true)
+    ), AvailableBridges).
+
 % ============================================================================
-% BRIDGE SELECTION
+% BRIDGE REQUIREMENTS AND VALIDATION
+% ============================================================================
+
+%% bridge_requirements(+Bridge, -Requirements)
+%  Lists requirements for a specific bridge.
+%  Requirements is a list of requirement(Type, Description) terms.
+bridge_requirements(pythonnet, [
+    requirement(runtime, '.NET 6.0+ or Mono'),
+    requirement(python_package, 'pythonnet'),
+    requirement(python_package, 'rpyc'),
+    requirement(environment, 'PYTHONNET_RUNTIME=coreclr (for .NET Core)')
+]).
+bridge_requirements(csnakes, [
+    requirement(runtime, '.NET 8.0+'),
+    requirement(nuget_package, 'CSnakes.Runtime'),
+    requirement(python_package, 'rpyc'),
+    requirement(note, 'Uses source generators - Python files must be in project')
+]).
+bridge_requirements(jpype, [
+    requirement(runtime, 'Java 11+'),
+    requirement(python_package, 'jpype1'),
+    requirement(python_package, 'rpyc'),
+    requirement(environment, 'JAVA_HOME must be set')
+]).
+bridge_requirements(jpy, [
+    requirement(runtime, 'Java 11+'),
+    requirement(python_package, 'jpy'),
+    requirement(python_package, 'rpyc'),
+    requirement(build_tool, 'Maven (for jpy build)'),
+    requirement(environment, 'JAVA_HOME must be set'),
+    requirement(note, 'Bi-directional - use size()/get() for Java collections')
+]).
+
+%% check_bridge_ready(+Bridge, -Status)
+%  Check if a bridge is ready to use with detailed status.
+%  Status is one of: ready, missing_runtime, missing_package, not_detected.
+check_bridge_ready(Bridge, Status) :-
+    (   Bridge = pythonnet
+    ->  check_pythonnet_ready(Status)
+    ;   Bridge = csnakes
+    ->  check_csnakes_ready(Status)
+    ;   Bridge = jpype
+    ->  check_jpype_ready(Status)
+    ;   Bridge = jpy
+    ->  check_jpy_ready(Status)
+    ;   Status = unknown_bridge
+    ).
+
+check_pythonnet_ready(Status) :-
+    (   detect_pythonnet(true)
+    ->  Status = ready
+    ;   check_dotnet_available(DotNetOK),
+        (   DotNetOK = false
+        ->  Status = missing_runtime('.NET')
+        ;   Status = missing_package(pythonnet)
+        )
+    ).
+
+check_csnakes_ready(Status) :-
+    (   detect_csnakes(true)
+    ->  Status = ready  % .NET 8+ detected
+    ;   Status = missing_runtime('.NET 8+')
+    ).
+
+check_jpype_ready(Status) :-
+    (   detect_jpype(true)
+    ->  Status = ready
+    ;   check_java_available(JavaOK),
+        (   JavaOK = false
+        ->  Status = missing_runtime('Java')
+        ;   Status = missing_package(jpype1)
+        )
+    ).
+
+check_jpy_ready(Status) :-
+    (   detect_jpy(true)
+    ->  Status = ready
+    ;   check_java_available(JavaOK),
+        (   JavaOK = false
+        ->  Status = missing_runtime('Java')
+        ;   Status = missing_package(jpy)
+        )
+    ).
+
+check_dotnet_available(Available) :-
+    (   catch(
+            (process_create(path(dotnet), ['--version'],
+                           [stdout(null), stderr(null)]),
+             true),
+            _, fail)
+    ->  Available = true
+    ;   Available = false
+    ).
+
+check_java_available(Available) :-
+    (   catch(
+            (process_create(path(java), ['-version'],
+                           [stdout(null), stderr(null)]),
+             true),
+            _, fail)
+    ->  Available = true
+    ;   Available = false
+    ).
+
+%% validate_bridge_config(+Bridge, +Options)
+%  Validate that options are valid for a bridge.
+%  Fails with error message if invalid.
+validate_bridge_config(Bridge, Options) :-
+    % Check required options have valid values
+    (   member(port(Port), Options)
+    ->  (   integer(Port), Port > 0, Port < 65536
+        ->  true
+        ;   format(user_error, 'Invalid port: ~w (must be 1-65535)~n', [Port]),
+            fail
+        )
+    ;   true
+    ),
+    (   member(host(Host), Options)
+    ->  (   atom(Host) ; string(Host)
+        ->  true
+        ;   format(user_error, 'Invalid host: ~w (must be atom or string)~n', [Host]),
+            fail
+        )
+    ;   true
+    ),
+    % Bridge-specific validation
+    validate_bridge_specific(Bridge, Options).
+
+validate_bridge_specific(pythonnet, Options) :-
+    (   member(target_framework(Framework), Options)
+    ->  (   sub_atom(Framework, 0, 3, _, net)
+        ->  true
+        ;   format(user_error, 'Warning: non-standard framework ~w for pythonnet~n', [Framework])
+        )
+    ;   true
+    ).
+validate_bridge_specific(csnakes, Options) :-
+    (   member(target_framework(Framework), Options)
+    ->  (   sub_atom(Framework, 0, 4, _, 'net8') ; sub_atom(Framework, 0, 4, _, 'net9')
+        ->  true
+        ;   format(user_error, 'Warning: CSnakes requires .NET 8+, got ~w~n', [Framework])
+        )
+    ;   true
+    ).
+validate_bridge_specific(jpype, _).
+validate_bridge_specific(jpy, _).
+
+% ============================================================================
+% AUTO-SELECTION WITH PREFERENCES AND FIREWALL
+% ============================================================================
+
+%% auto_select_bridge(+Target, -Bridge)
+%  Auto-select the best bridge for a target platform.
+%  Target is one of: dotnet, jvm, any.
+%  Uses preferences and firewall if available.
+auto_select_bridge(Target, Bridge) :-
+    auto_select_bridge(Target, [], Bridge).
+
+%% auto_select_bridge(+Target, +Preferences, -Bridge)
+%  Auto-select with explicit preferences.
+%  Preferences can include: prefer(BridgeName), fallback([B1,B2,...])
+auto_select_bridge(Target, Preferences, Bridge) :-
+    % Get available bridges
+    detect_all_bridges(Available),
+
+    % Filter by target platform
+    filter_bridges_by_target(Target, Available, TargetBridges),
+
+    % Apply firewall constraints if available
+    filter_bridges_by_firewall(TargetBridges, AllowedBridges),
+
+    % Apply preferences
+    select_preferred_bridge(Preferences, AllowedBridges, Bridge).
+
+%% filter_bridges_by_target(+Target, +Bridges, -Filtered)
+%  Filter bridges by target platform.
+filter_bridges_by_target(dotnet, Bridges, Filtered) :-
+    include(is_dotnet_bridge, Bridges, Filtered).
+filter_bridges_by_target(jvm, Bridges, Filtered) :-
+    include(is_jvm_bridge, Bridges, Filtered).
+filter_bridges_by_target(any, Bridges, Bridges).
+filter_bridges_by_target(_, Bridges, Bridges).  % Default: allow all
+
+is_dotnet_bridge(pythonnet).
+is_dotnet_bridge(csnakes).
+is_jvm_bridge(jpype).
+is_jvm_bridge(jpy).
+
+%% filter_bridges_by_firewall(+Bridges, -Allowed)
+%  Filter bridges by firewall policy.
+%  Uses firewall system if loaded, otherwise allows all.
+filter_bridges_by_firewall(Bridges, Allowed) :-
+    (   current_predicate(firewall:get_firewall_policy/2)
+    ->  % Firewall system available - check each bridge
+        include(bridge_allowed_by_firewall, Bridges, Allowed)
+    ;   % No firewall - allow all
+        Allowed = Bridges
+    ).
+
+%% bridge_allowed_by_firewall(+Bridge)
+%  Check if a bridge is allowed by firewall policy.
+bridge_allowed_by_firewall(Bridge) :-
+    (   current_predicate(firewall:get_firewall_policy/2)
+    ->  firewall:get_firewall_policy(python_bridge/1, Policy),
+        \+ member(denied(Bridge), Policy),
+        (   member(services(Allowed), Policy)
+        ->  member(Bridge, Allowed)
+        ;   true  % No whitelist = allow all
+        )
+    ;   true  % No firewall = allow
+    ).
+
+%% select_preferred_bridge(+Preferences, +Available, -Selected)
+%  Select the best bridge based on preferences.
+select_preferred_bridge(Preferences, Available, Selected) :-
+    (   Available = []
+    ->  Selected = none
+    ;   % Check explicit preference
+        member(prefer(Preferred), Preferences),
+        member(Preferred, Available)
+    ->  Selected = Preferred
+    ;   % Check preferences from system if available
+        get_bridge_preferences(SystemPrefs),
+        member(Preferred, SystemPrefs),
+        member(Preferred, Available)
+    ->  Selected = Preferred
+    ;   % Check fallback order
+        member(fallback(Fallbacks), Preferences),
+        member(Bridge, Fallbacks),
+        member(Bridge, Available)
+    ->  Selected = Bridge
+    ;   % Default: first available (priority order from detect_all_bridges)
+        Available = [Selected|_]
+    ).
+
+%% get_bridge_preferences(-Preferences)
+%  Get bridge preferences from the preference system if available.
+get_bridge_preferences(Preferences) :-
+    (   current_predicate(preferences:rule_preferences/2),
+        preferences:rule_preferences(python_bridge/1, RulePrefs),
+        member(prefer(BridgeList), RulePrefs)
+    ->  (   is_list(BridgeList) -> Preferences = BridgeList ; Preferences = [BridgeList] )
+    ;   current_predicate(preferences:preferences_default/1),
+        preferences:preferences_default(DefaultPrefs),
+        member(prefer_bridges(BridgeList), DefaultPrefs)
+    ->  (   is_list(BridgeList) -> Preferences = BridgeList ; Preferences = [BridgeList] )
+    ;   Preferences = []  % No preferences set
+    ).
+
+% ============================================================================
+% AUTO-GENERATION
+% ============================================================================
+
+%% generate_auto_client(+Target, -Code)
+%  Auto-generate client code for the best available bridge.
+generate_auto_client(Target, Code) :-
+    generate_auto_client(Target, [], Code).
+
+%% generate_auto_client(+Target, +Options, -Code)
+%  Auto-generate with options.
+generate_auto_client(Target, Options, Code) :-
+    auto_select_bridge(Target, Options, Bridge),
+    (   Bridge = none
+    ->  format(atom(Code), '// ERROR: No ~w Python bridge available~n', [Target])
+    ;   validate_bridge_config(Bridge, Options),
+        generate_python_bridge_client(Bridge, Options, Code)
+    ).
+
+% ============================================================================
+% FIREWALL IMPLICATIONS FOR PYTHON BRIDGES
+% ============================================================================
+
+% Add firewall implications if the firewall module is available
+:- if(current_predicate(firewall:firewall_implies_default/2)).
+
+% If .NET not available, deny .NET bridges
+:- assertz(firewall:firewall_implies_default(
+    no_dotnet_available,
+    denied(services([pythonnet, csnakes]))
+)).
+
+% If Java not available, deny JVM bridges
+:- assertz(firewall:firewall_implies_default(
+    no_java_available,
+    denied(services([jpype, jpy]))
+)).
+
+% If rpyc not available, deny all Python bridges
+:- assertz(firewall:firewall_implies_default(
+    no_rpyc_available,
+    denied(services([pythonnet, csnakes, jpype, jpy]))
+)).
+
+% Prefer source-generated bridges in strict security mode
+:- assertz(firewall:firewall_implies_default(
+    security_policy(strict),
+    prefer(service(dotnet, csnakes), service(dotnet, pythonnet))
+)).
+
+% In offline mode, RPyC still works for local services
+:- assertz(firewall:firewall_implies_default(
+    mode(offline),
+    network_hosts_for_rpyc(['localhost', '127.0.0.1'])
+)).
+
+:- endif.
+
+% ============================================================================
+% BRIDGE SELECTION (LEGACY - use auto_select_bridge instead)
 % ============================================================================
 
 %% select_dotnet_python_bridge(+Preferences, -Bridge)
