@@ -12,12 +12,14 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 
 ## Bridges
 
-| Bridge | Runtime | Best For |
-|--------|---------|----------|
-| [Python.NET](pythonnet/) | .NET | Existing .NET projects, F# interop |
-| [CSnakes](csnakes/) | .NET 8+ | Modern .NET, simpler API |
-| [JPype](jpype/) | JVM | Java projects needing NumPy/SciPy |
-| [jpy](jpy/) | JVM | Bi-directional Java↔Python |
+| Bridge | Runtime | Status | Best For |
+|--------|---------|--------|----------|
+| [Python.NET](pythonnet/) | .NET 6+ | ✅ Tested | Dynamic Python execution, F# interop |
+| [CSnakes](csnakes/) | .NET 8+ | ⚠️ Different | Source generators, compile-time wrappers |
+| [JPype](jpype/) | JVM | ✅ Tested | Java projects needing NumPy/SciPy |
+| [jpy](jpy/) | JVM | ✅ Tested | Bi-directional Java↔Python |
+
+**Note:** CSnakes uses compile-time source generators rather than dynamic execution. See [csnakes/README.md](csnakes/) for details.
 
 ## Quick Start
 
@@ -29,9 +31,9 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
    ```
 
 2. **Bridge-specific requirements:**
-   - Python.NET: `pip install pythonnet` + .NET SDK 6+ (8.0 recommended)
-   - CSnakes: .NET SDK 8.0+
-   - JPype: `pip install jpype1` + Java JDK 11+
+   - Python.NET: `pip install pythonnet` + .NET SDK 6+ (tested with 9.0)
+   - CSnakes: .NET SDK 8.0+ + `dotnet new install CSnakes.Templates`
+   - JPype: `pip install jpype1` + Java JDK 11+ (tested with 11.0.27)
    - jpy: `pip install jpy` + Java JDK 11+ + Maven
 
    **Note:** Python.NET defaults to .NET Core (not Mono) on modern systems.
@@ -118,9 +120,10 @@ Generate bridge code from Prolog:
 
 ### CSnakes
 - Modern .NET 8+ only
-- Simpler, cleaner API
+- **Source generator approach** - generates C# wrappers from Python files at compile time
 - Better async support
-- Source generators for type safety
+- Type-safe but requires wrapper functions (not dynamic execution)
+- Best when you have well-defined Python functions to wrap
 
 ### JPype
 - Mature, well-maintained
