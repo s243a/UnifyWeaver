@@ -2819,43 +2819,54 @@ namespace UnifyWeaver.QueryRuntime
                 return facts;
             }
 
-            List<object[]>? bestBucket = null;
-            var bestCount = int.MaxValue;
-
+            var boundIndexCount = 0;
             for (var i = 0; i < pattern.Length; i++)
             {
-                var value = pattern[i];
-                if (ReferenceEquals(value, Wildcard.Value))
+                if (!ReferenceEquals(pattern[i], Wildcard.Value))
                 {
-                    continue;
-                }
-
-                var index = GetFactIndex(predicate, i, facts, context);
-                var key = value ?? NullFactIndexKey;
-
-                if (!index.TryGetValue(key, out var bucket))
-                {
-                    return Array.Empty<object[]>();
-                }
-
-                if (bucket.Count < bestCount)
-                {
-                    bestCount = bucket.Count;
-                    bestBucket = bucket;
-
-                    if (bestCount <= 1)
-                    {
-                        break;
-                    }
+                    boundIndexCount++;
                 }
             }
 
-            if (bestBucket is not null)
+            if (boundIndexCount == 0)
             {
-                return bestBucket;
+                return facts;
             }
 
-            return facts;
+            if (boundIndexCount == 1)
+            {
+                for (var i = 0; i < pattern.Length; i++)
+                {
+                    var value = pattern[i];
+                    if (ReferenceEquals(value, Wildcard.Value))
+                    {
+                        continue;
+                    }
+
+                    var index = GetFactIndex(predicate, i, facts, context);
+                    var key = value ?? NullFactIndexKey;
+                    return index.TryGetValue(key, out var bucket) ? bucket : Array.Empty<object[]>();
+                }
+            }
+
+            var keyIndices = new List<int>(boundIndexCount);
+            for (var i = 0; i < pattern.Length; i++)
+            {
+                if (!ReferenceEquals(pattern[i], Wildcard.Value))
+                {
+                    keyIndices.Add(i);
+                }
+            }
+
+            var joinIndex = GetJoinIndex(predicate, keyIndices, facts, context);
+            var joinKey = new object[keyIndices.Count];
+            for (var i = 0; i < keyIndices.Count; i++)
+            {
+                joinKey[i] = pattern[keyIndices[i]];
+            }
+
+            var wrapper = new RowWrapper(joinKey);
+            return joinIndex.TryGetValue(wrapper, out var joinBucket) ? joinBucket : Array.Empty<object[]>();
         }
 
         private IEnumerable<object[]> ExecuteNegation(NegationNode negation, EvaluationContext? context)
