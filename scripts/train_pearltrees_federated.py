@@ -163,16 +163,16 @@ def estimate_memory_mb(n_items: int, dim: int = 768) -> float:
     return (w_bytes + cent_bytes + target_bytes) / (1024 * 1024)
 
 
-def train_cluster(
+def train_cluster_perquery(
     Q_emb: np.ndarray,
     A_emb: np.ndarray,
     indices: List[int],
     cluster_id: str
 ) -> ClusterModel:
-    """Train per-query transforms for a single cluster."""
+    """Train per-query transforms for a single cluster (1 W matrix per query)."""
     
     n = len(indices)
-    logger.info(f"Training cluster '{cluster_id}' with {n} items (~{estimate_memory_mb(n):.1f} MB)...")
+    logger.info(f"Training cluster '{cluster_id}' with {n} items (per-query, ~{estimate_memory_mb(n):.1f} MB)...")
     
     W_list = []
     for i in range(n):
@@ -192,12 +192,39 @@ def train_cluster(
     )
 
 
+def train_cluster_single(
+    Q_emb: np.ndarray,
+    A_emb: np.ndarray,
+    indices: List[int],
+    cluster_id: str
+) -> ClusterModel:
+    """Train a single global W matrix for the cluster (much smaller, ~2.4 MB per cluster)."""
+    
+    n = len(indices)
+    logger.info(f"Training cluster '{cluster_id}' with {n} items (single W, ~2.4 MB)...")
+    
+    # Compute single Procrustes for entire cluster
+    W, scale, info = compute_minimal_transform(Q_emb, A_emb, allow_scaling=True)
+    
+    # Store as 1-element stack for API consistency
+    W_stack = W[np.newaxis, :, :]  # (1, 768, 768)
+    
+    return ClusterModel(
+        cluster_id=cluster_id,
+        W_stack=W_stack,
+        centroids=Q_emb.mean(axis=0, keepdims=True),  # Single centroid
+        target_embeddings=A_emb.copy(),
+        indices=indices
+    )
+
+
 def train_federated(
     data: List[Dict],
     Q_emb: np.ndarray,
     A_emb: np.ndarray,
     output_path: Path,
     cluster_method: str = "path_depth",
+    transform_mode: str = "single",  # "single" (1 W per cluster) or "per-query" (N W per cluster)
     max_memory_mb: float = 3000.0,
     max_clusters: int = 10
 ) -> Tuple['FederatedModel', Dict[str, np.ndarray], Path]:
@@ -212,7 +239,8 @@ def train_federated(
         A_emb: Target embeddings (N, 768)
         output_path: Path to save model (.pkl file, clusters saved to adjacent directory)
         cluster_method: "path_depth" or "embedding"
-        max_memory_mb: Max memory per cluster in MB
+        transform_mode: "single" (1 W per cluster, ~2.4 MB each) or "per-query" (N W per cluster)
+        max_memory_mb: Max memory per cluster in MB (only used for per-query mode)
         max_clusters: Maximum number of clusters
         
     Returns:
@@ -250,8 +278,11 @@ def train_federated(
         Q_subset = Q_emb[indices]
         A_subset = A_emb[indices]
         
-        # Train this cluster
-        model = train_cluster(Q_subset, A_subset, indices, cluster_id)
+        # Train this cluster using selected mode
+        if transform_mode == "per-query":
+            model = train_cluster_perquery(Q_subset, A_subset, indices, cluster_id)
+        else:  # "single"
+            model = train_cluster_single(Q_subset, A_subset, indices, cluster_id)
         
         # Immediately save to disk
         cluster_path = output_dir / f"{cluster_id}.npz"
@@ -408,10 +439,12 @@ def main():
     parser.add_argument("output_model", type=Path, help="Output model file (.pkl)")
     parser.add_argument("--cluster-method", choices=["path_depth", "embedding"], default="embedding",
                        help="Clustering method")
-    parser.add_argument("--max-memory-mb", type=float, default=3000.0,
-                       help="Max memory per cluster in MB")
-    parser.add_argument("--max-clusters", type=int, default=10,
-                       help="Maximum number of clusters")
+    parser.add_argument("--transform-mode", choices=["single", "per-query"], default="single",
+                       help="Transform mode: 'single' (1 W per cluster, ~70MB total) or 'per-query' (N W per cluster, ~15GB)")
+    parser.add_argument("--max-memory-mb", type=float, default=800.0,
+                       help="Max memory per cluster in MB (for per-query mode)")
+    parser.add_argument("--max-clusters", type=int, default=50,
+                       help="Maximum number of clusters (recommended: 50 for 6GB GPU)")
     
     args = parser.parse_args()
     
@@ -453,6 +486,7 @@ def main():
         data, Q_emb, A_emb,
         output_path=args.output_model,
         cluster_method=args.cluster_method,
+        transform_mode=args.transform_mode,
         max_memory_mb=args.max_memory_mb,
         max_clusters=args.max_clusters
     )
