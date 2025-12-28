@@ -1295,6 +1295,7 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             var joinKeyCount = join.LeftKeys.Count;
+            bool? forceBuildLeft = null;
 
             static bool TryGetPredicateScan(PlanNode node, out PredicateId predicate, out object[]? pattern)
             {
@@ -1555,6 +1556,7 @@ namespace UnifyWeaver.QueryRuntime
                                      probeUpperBound <= TinyProbeUpperBound)
                             {
                                 useScanIndexStrategy = false;
+                                forceBuildLeft = !leftIsScan;
                             }
                         }
                     }
@@ -2026,6 +2028,10 @@ namespace UnifyWeaver.QueryRuntime
             };
 
             var buildLeft = EstimateBuildCost(join.Left) < EstimateBuildCost(join.Right);
+            if (forceBuildLeft is not null)
+            {
+                buildLeft = forceBuildLeft.Value;
+            }
 
             static bool TryGetRecursiveRows(
                 PlanNode node,
