@@ -9,6 +9,11 @@
 %%
 %% Compiles a Prolog predicate to Ruby code using blocks and yield.
 %% Handles facts, rules with joins, and recursive predicates with memoization.
+%%
+%% Options:
+%%   json_output - Wrap predicate to output JSON array
+%%   json_input  - Read facts from JSON input
+%%   pipeline    - Generate pipeline-compatible code (read stdin, write stdout)
 compile_predicate_to_ruby(Pred/Arity, Options, Code) :-
     functor(Head, Pred, Arity),
     findall(HeadCopy-BodyCopy,
@@ -23,13 +28,61 @@ compile_predicate_to_ruby(Pred/Arity, Options, Code) :-
     ;   IsRecursive = false
     ),
 
-    % Generate Ruby header
-    format(string(Header), "#!/usr/bin/env ruby~nrequire 'set'~n~n", []),
+    % Generate Ruby header based on options
+    (   (member(json_output, Options) ; member(json_input, Options) ; member(pipeline, Options))
+    ->  format(string(Header), "#!/usr/bin/env ruby~nrequire 'set'~nrequire 'json'~n~n", [])
+    ;   format(string(Header), "#!/usr/bin/env ruby~nrequire 'set'~n~n", [])
+    ),
 
     % Compile clauses
     compile_clauses(Pred, Arity, Clauses, IsRecursive, Options, ClauseCode),
 
-    format(string(Code), "~s~s", [Header, ClauseCode]).
+    % Add JSON wrapper if requested
+    (   member(json_output, Options)
+    ->  generate_ruby_json_wrapper(Pred, Arity, WrapperCode)
+    ;   member(pipeline, Options)
+    ->  generate_ruby_pipeline_wrapper(Pred, Arity, WrapperCode)
+    ;   WrapperCode = ""
+    ),
+
+    format(string(Code), "~s~s~s", [Header, ClauseCode, WrapperCode]).
+
+%% generate_ruby_json_wrapper(+Pred, +Arity, -Code)
+generate_ruby_json_wrapper(Pred, Arity, Code) :-
+    numlist(0, Arity, Indices0),
+    Indices0 = [_|Indices],
+    maplist([I, Name]>>format(atom(Name), "args[~w]", [I]), Indices, VarRefs),
+    atomic_list_concat(VarRefs, ", ", VarList),
+    format(string(Code),
+"
+# JSON output wrapper
+def ~w_json
+  results = []
+  ~w { |*args| results << [~s] }
+  puts results.to_json
+end
+
+# Run if executed directly
+~w_json if __FILE__ == $0
+", [Pred, Pred, VarList, Pred]).
+
+%% generate_ruby_pipeline_wrapper(+Pred, +Arity, -Code)
+generate_ruby_pipeline_wrapper(Pred, Arity, Code) :-
+    numlist(0, Arity, Indices0),
+    Indices0 = [_|Indices],
+    maplist([I, Name]>>format(atom(Name), "args[~w]", [I]), Indices, VarRefs),
+    atomic_list_concat(VarRefs, ", ", VarList),
+    format(string(Code),
+"
+# Pipeline mode - outputs JSON to stdout
+def run_pipeline
+  results = []
+  ~w { |*args| results << [~s] }
+  puts results.to_json
+end
+
+run_pipeline if __FILE__ == $0
+", [Pred, VarList]).
 
 %% is_recursive(+Pred, +Arity, +Clauses)
 %% Check if any clause body contains a call to Pred/Arity

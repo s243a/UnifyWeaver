@@ -9,6 +9,11 @@
 %%
 %% Compiles a Prolog predicate to Perl code using continuation-passing style.
 %% Handles facts, rules with joins, and recursive predicates with memoization.
+%%
+%% Options:
+%%   json_output - Wrap predicate to output JSON array
+%%   json_input  - Read facts from JSON input
+%%   pipeline    - Generate pipeline-compatible code (read stdin, write stdout)
 compile_predicate_to_perl(Pred/Arity, Options, Code) :-
     functor(Head, Pred, Arity),
     findall(HeadCopy-BodyCopy,
@@ -23,13 +28,63 @@ compile_predicate_to_perl(Pred/Arity, Options, Code) :-
     ;   IsRecursive = false
     ),
 
-    % Generate Perl header
-    format(string(Header), "#!/usr/bin/env perl~nuse strict;~nuse warnings;~n~n", []),
+    % Generate Perl header based on options
+    (   (member(json_output, Options) ; member(json_input, Options) ; member(pipeline, Options))
+    ->  format(string(Header), "#!/usr/bin/env perl~nuse strict;~nuse warnings;~nuse JSON;~n~n", [])
+    ;   format(string(Header), "#!/usr/bin/env perl~nuse strict;~nuse warnings;~n~n", [])
+    ),
 
     % Compile clauses
     compile_clauses(Pred, Arity, Clauses, IsRecursive, Options, ClauseCode),
 
-    format(string(Code), "~s~s", [Header, ClauseCode]).
+    % Add JSON wrapper if requested
+    (   member(json_output, Options)
+    ->  generate_json_output_wrapper(Pred, Arity, WrapperCode)
+    ;   member(pipeline, Options)
+    ->  generate_pipeline_wrapper(Pred, Arity, WrapperCode)
+    ;   WrapperCode = ""
+    ),
+
+    format(string(Code), "~s~s~s", [Header, ClauseCode, WrapperCode]).
+
+%% generate_json_output_wrapper(+Pred, +Arity, -Code)
+generate_json_output_wrapper(Pred, Arity, Code) :-
+    numlist(1, Arity, Indices),
+    maplist([I, Name]>>format(atom(Name), "$_[~w]", [I]), Indices, VarRefs),
+    atomic_list_concat(VarRefs, ", ", VarList),
+    format(string(Code),
+"
+# JSON output wrapper
+sub ~w_json {
+    my @results;
+    ~w(sub {
+        push @results, [~s];
+    });
+    print encode_json(\\@results);
+}
+
+# Run if executed directly
+~w_json() unless caller;
+", [Pred, Pred, VarList, Pred]).
+
+%% generate_pipeline_wrapper(+Pred, +Arity, -Code)
+generate_pipeline_wrapper(Pred, Arity, Code) :-
+    numlist(1, Arity, Indices),
+    maplist([I, Name]>>format(atom(Name), "$_[~w]", [I]), Indices, VarRefs),
+    atomic_list_concat(VarRefs, ", ", VarList),
+    format(string(Code),
+"
+# Pipeline mode - reads JSON from stdin, outputs JSON to stdout
+sub run_pipeline {
+    my @results;
+    ~w(sub {
+        push @results, [~s];
+    });
+    print encode_json(\\@results) . \"\\n\";
+}
+
+run_pipeline() unless caller;
+", [Pred, VarList]).
 
 %% is_recursive(+Pred, +Arity, +Clauses)
 %% Check if any clause body contains a call to Pred/Arity
