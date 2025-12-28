@@ -1930,16 +1930,59 @@ build_constraint_node(GroupSpecs, HeadSpec, Term, InputNode, VarMapIn, WidthIn, 
             NodeOut, VarMapOut, WidthOut),
         RelationsOut = RelationsIn
     ;   constraint_condition(Term, VarMapIn, Condition),
-        NodeOut = selection{
-            type:selection,
-            input:InputNode,
-            predicate:Condition,
-            width:WidthIn
-        },
+        selection_node_for_condition(InputNode, Condition, WidthIn, NodeOut),
         VarMapOut = VarMapIn,
         WidthOut = WidthIn,
         RelationsOut = RelationsIn
     ).
+
+selection_node_for_condition(InputNode, Condition, Width, NodeOut) :-
+    (   pushdown_selection_condition(InputNode, Condition, Width, NodeOut)
+    ->  true
+    ;   NodeOut = selection{
+            type:selection,
+            input:InputNode,
+            predicate:Condition,
+            width:Width
+        }
+    ).
+
+pushdown_selection_condition(InputNode, Condition, Width, NodeOut) :-
+    is_dict(Condition, condition),
+    get_dict(type, Condition, eq),
+    get_dict(left, Condition, Left),
+    get_dict(right, Condition, Right),
+    (   Left = operand{kind:column, index:Col},
+        Right = operand{kind:value, value:Value}
+    ;   Right = operand{kind:column, index:Col},
+        Left = operand{kind:value, value:Value}
+    ),
+    simple_query_literal_constant(Value),
+    pushdown_constant_filter(InputNode, Col, Value, Width, NodeOut).
+
+pushdown_constant_filter(relation_scan{type:relation_scan, predicate:PredSpec, width:Width}, Col, Value, Width,
+        pattern_scan{type:pattern_scan, predicate:PredSpec, pattern:Pattern, width:Width}) :-
+    !,
+    length(PatternWild, Width),
+    maplist(wildcard_operand, PatternWild),
+    nth0(Col, PatternWild, _Old, Rest),
+    nth0(Col, Pattern, operand{kind:value, value:Value}, Rest).
+pushdown_constant_filter(pattern_scan{type:pattern_scan, predicate:PredSpec, pattern:Pattern0, width:Width}, Col, Value, Width,
+        NodeOut) :-
+    !,
+    nth0(Col, Pattern0, Existing, Rest),
+    (   Existing = operand{kind:wildcard}
+    ->  nth0(Col, Pattern, operand{kind:value, value:Value}, Rest),
+        NodeOut = pattern_scan{type:pattern_scan, predicate:PredSpec, pattern:Pattern, width:Width}
+    ;   Existing = operand{kind:value, value:Value0}
+    ->  (   Value0 == Value
+        ->  NodeOut = pattern_scan{type:pattern_scan, predicate:PredSpec, pattern:Pattern0, width:Width}
+        ;   NodeOut = empty{type:empty, width:Width}
+        )
+    ;   fail
+    ).
+
+wildcard_operand(operand{kind:wildcard}).
 
 build_is_goal_node(Goal0, InputNode, VarMapIn, WidthIn, NodeOut, VarMapOut, WidthOut) :-
     strip_module(Goal0, _, Goal),
