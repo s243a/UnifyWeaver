@@ -49,11 +49,152 @@ body_contains_call(Goal, Pred, Arity) :-
     functor(G, Pred, Arity).
 
 compile_clauses(Pred, Arity, Clauses, IsRecursive, _Options, Code) :-
-    % Check for facts vs rules
+    % Check for facts vs rules vs aggregations
     (   forall(member(_-Body, Clauses), Body == true)
     ->  compile_facts(Pred, Arity, Clauses, Code)
+    ;   is_aggregation_predicate(Clauses)
+    ->  compile_aggregation(Pred, Arity, Clauses, Code)
     ;   compile_rules(Pred, Arity, Clauses, IsRecursive, Code)
     ).
+
+%% ============================================
+%% AGGREGATION COMPILATION
+%% ============================================
+
+%% is_aggregation_predicate(+Clauses)
+%% Check if clauses use aggregate_all/3
+is_aggregation_predicate(Clauses) :-
+    member(_-Body, Clauses),
+    body_contains_aggregate(Body), !.
+
+body_contains_aggregate(aggregate_all(_, _, _)) :- !.
+body_contains_aggregate((A, _)) :- body_contains_aggregate(A), !.
+body_contains_aggregate((_, B)) :- body_contains_aggregate(B), !.
+
+%% compile_aggregation(+Pred, +Arity, +Clauses, -Code)
+compile_aggregation(Pred, _Arity, Clauses, Code) :-
+    Clauses = [Head-Body|_],
+    Head =.. [_|HeadArgs],
+
+    % Extract the aggregate_all call
+    extract_aggregate(Body, AggType, Template, Goal, ResultVar),
+
+    % Generate parameter names for non-result args
+    findall(Idx-Arg, (nth1(Idx, HeadArgs, Arg), Arg \== ResultVar), InputPairs),
+    length(InputPairs, NumInputs),
+    (   NumInputs > 0
+    ->  numlist(1, NumInputs, InputIndices),
+        maplist([I, Name]>>format(atom(Name), "$arg~w", [I]), InputIndices, ParamNames),
+        atomic_list_concat(ParamNames, ", ", ParamList),
+        format(string(ParamDecl), "    my (~s) = @_;~n", [ParamList])
+    ;   ParamDecl = ""
+    ),
+
+    % Determine aggregation operation
+    agg_init_and_update(AggType, Template, InitCode, UpdateCode, FinalCode),
+
+    % Compile the goal - strip module prefix if present
+    (   Goal = _:InnerGoal
+    ->  InnerGoal =.. [GoalPred|GoalArgs]
+    ;   Goal =.. [GoalPred|GoalArgs]
+    ),
+    length(GoalArgs, GoalArity),
+    numlist(1, GoalArity, GoalIndices),
+    maplist([I, Name]>>format(atom(Name), "$g~w", [I]), GoalIndices, GoalParamNames),
+    atomic_list_concat(GoalParamNames, ", ", GoalParamList),
+
+    % Build template variable extraction
+    extract_template_vars(Template, GoalArgs, GoalParamNames, TemplateExtract),
+
+    format(string(Code),
+"sub ~w {
+    my $callback = shift;
+~s~s
+    ~w(sub {
+        my (~s) = @_;
+~s~s
+    });
+~s
+    $callback->($agg_result);
+}
+", [Pred, ParamDecl, InitCode, GoalPred, GoalParamList, TemplateExtract, UpdateCode, FinalCode]).
+
+%% extract_aggregate(+Body, -AggType, -Template, -Goal, -ResultVar)
+extract_aggregate(aggregate_all(AggType, Goal, ResultVar), AggType, Template, Goal, ResultVar) :-
+    (   AggType = count -> Template = 1
+    ;   AggType = sum(Template) -> true
+    ;   AggType = min(Template) -> true
+    ;   AggType = max(Template) -> true
+    ;   AggType = avg(Template) -> true
+    ;   Template = AggType
+    ), !.
+extract_aggregate((A, _), AggType, Template, Goal, ResultVar) :-
+    extract_aggregate(A, AggType, Template, Goal, ResultVar), !.
+extract_aggregate((_, B), AggType, Template, Goal, ResultVar) :-
+    extract_aggregate(B, AggType, Template, Goal, ResultVar).
+
+%% agg_init_and_update(+AggType, +Template, -InitCode, -UpdateCode, -FinalCode)
+agg_init_and_update(count, _, Init, Update, Final) :-
+    Init = "    my $agg_result = 0;\n",
+    Update = "        $agg_result++;\n",
+    Final = "".
+agg_init_and_update(sum(_), _, Init, Update, Final) :-
+    Init = "    my $agg_result = 0;\n",
+    Update = "        $agg_result += $tmpl_val;\n",
+    Final = "".
+agg_init_and_update(min(_), _, Init, Update, Final) :-
+    Init = "    my $agg_result;\n",
+    Update = "        $agg_result = $tmpl_val if !defined($agg_result) || $tmpl_val < $agg_result;\n",
+    Final = "".
+agg_init_and_update(max(_), _, Init, Update, Final) :-
+    Init = "    my $agg_result;\n",
+    Update = "        $agg_result = $tmpl_val if !defined($agg_result) || $tmpl_val > $agg_result;\n",
+    Final = "".
+agg_init_and_update(avg(_), _, Init, Update, Final) :-
+    Init = "    my $agg_sum = 0;\n    my $agg_count = 0;\n",
+    Update = "        $agg_sum += $tmpl_val;\n        $agg_count++;\n",
+    Final = "    my $agg_result = $agg_count > 0 ? $agg_sum / $agg_count : 0;\n".
+
+%% extract_template_vars(+Template, +GoalArgs, +GoalParamNames, -Code)
+extract_template_vars(Template, GoalArgs, GoalParamNames, Code) :-
+    (   var(Template)
+    ->  % Template is a variable - find which goal arg it matches
+        (   nth1(Idx, GoalArgs, Arg), Arg == Template
+        ->  nth1(Idx, GoalParamNames, ParamName),
+            format(string(Code), "        my $tmpl_val = ~w;~n", [ParamName])
+        ;   Code = "        my $tmpl_val = 1;\n"
+        )
+    ;   number(Template)
+    ->  format(string(Code), "        my $tmpl_val = ~w;~n", [Template])
+    ;   % Template is an expression - compile it
+        compile_template_expr(Template, GoalArgs, GoalParamNames, ExprCode),
+        format(string(Code), "        my $tmpl_val = ~s;~n", [ExprCode])
+    ).
+
+compile_template_expr(Expr, GoalArgs, GoalParamNames, Code) :-
+    var(Expr), !,
+    (   nth1(Idx, GoalArgs, Arg), Arg == Expr
+    ->  nth1(Idx, GoalParamNames, Code)
+    ;   Code = "0"
+    ).
+compile_template_expr(N, _, _, Code) :- number(N), !, format(string(Code), "~w", [N]).
+compile_template_expr(X + Y, GoalArgs, GoalParamNames, Code) :- !,
+    compile_template_expr(X, GoalArgs, GoalParamNames, XCode),
+    compile_template_expr(Y, GoalArgs, GoalParamNames, YCode),
+    format(string(Code), "(~s + ~s)", [XCode, YCode]).
+compile_template_expr(X - Y, GoalArgs, GoalParamNames, Code) :- !,
+    compile_template_expr(X, GoalArgs, GoalParamNames, XCode),
+    compile_template_expr(Y, GoalArgs, GoalParamNames, YCode),
+    format(string(Code), "(~s - ~s)", [XCode, YCode]).
+compile_template_expr(X * Y, GoalArgs, GoalParamNames, Code) :- !,
+    compile_template_expr(X, GoalArgs, GoalParamNames, XCode),
+    compile_template_expr(Y, GoalArgs, GoalParamNames, YCode),
+    format(string(Code), "(~s * ~s)", [XCode, YCode]).
+compile_template_expr(X / Y, GoalArgs, GoalParamNames, Code) :- !,
+    compile_template_expr(X, GoalArgs, GoalParamNames, XCode),
+    compile_template_expr(Y, GoalArgs, GoalParamNames, YCode),
+    format(string(Code), "(~s / ~s)", [XCode, YCode]).
+compile_template_expr(E, _, _, Code) :- format(string(Code), "~w", [E]).
 
 %% ============================================
 %% FACTS COMPILATION

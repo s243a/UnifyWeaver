@@ -49,11 +49,128 @@ body_contains_call(Goal, Pred, Arity) :-
     functor(G, Pred, Arity).
 
 compile_clauses(Pred, Arity, Clauses, IsRecursive, _Options, Code) :-
-    % Check for facts vs rules
+    % Check for facts vs rules vs aggregations
     (   forall(member(_-Body, Clauses), Body == true)
     ->  compile_facts(Pred, Arity, Clauses, Code)
+    ;   is_aggregation_predicate(Clauses)
+    ->  compile_ruby_aggregation(Pred, Arity, Clauses, Code)
     ;   compile_rules(Pred, Arity, Clauses, IsRecursive, Code)
     ).
+
+%% ============================================
+%% AGGREGATION COMPILATION
+%% ============================================
+
+is_aggregation_predicate(Clauses) :-
+    member(_-Body, Clauses),
+    body_contains_aggregate(Body), !.
+
+body_contains_aggregate(aggregate_all(_, _, _)) :- !.
+body_contains_aggregate((A, _)) :- body_contains_aggregate(A), !.
+body_contains_aggregate((_, B)) :- body_contains_aggregate(B), !.
+
+compile_ruby_aggregation(Pred, _Arity, Clauses, Code) :-
+    Clauses = [Head-Body|_],
+    Head =.. [_|HeadArgs],
+
+    extract_ruby_aggregate(Body, AggType, Template, Goal, ResultVar),
+
+    findall(Idx-Arg, (nth1(Idx, HeadArgs, Arg), Arg \== ResultVar), InputPairs),
+    length(InputPairs, NumInputs),
+    (   NumInputs > 0
+    ->  numlist(1, NumInputs, InputIndices),
+        maplist([I, Name]>>format(atom(Name), "arg~w", [I]), InputIndices, ParamNames),
+        atomic_list_concat(ParamNames, ", ", ParamList),
+        format(string(ParamDecl), "def ~w(~s, &block)~n", [Pred, ParamList])
+    ;   format(string(ParamDecl), "def ~w(&block)~n", [Pred])
+    ),
+
+    ruby_agg_init_and_update(AggType, Template, InitCode, UpdateCode, FinalCode),
+
+    (   Goal = _:InnerGoal
+    ->  InnerGoal =.. [GoalPred|GoalArgs]
+    ;   Goal =.. [GoalPred|GoalArgs]
+    ),
+    length(GoalArgs, GoalArity),
+    numlist(1, GoalArity, GoalIndices),
+    maplist([I, Name]>>format(atom(Name), "g~w", [I]), GoalIndices, GoalParamNames),
+    atomic_list_concat(GoalParamNames, ", ", GoalParamList),
+
+    extract_ruby_template_vars(Template, GoalArgs, GoalParamNames, TemplateExtract),
+
+    format(string(Code),
+"~s~s
+  ~w do |~s|
+~s~s
+  end
+~s
+  block.call(agg_result)
+end
+", [ParamDecl, InitCode, GoalPred, GoalParamList, TemplateExtract, UpdateCode, FinalCode]).
+
+extract_ruby_aggregate(aggregate_all(AggType, Goal, ResultVar), AggType, Template, Goal, ResultVar) :-
+    (   AggType = count -> Template = 1
+    ;   AggType = sum(Template) -> true
+    ;   AggType = min(Template) -> true
+    ;   AggType = max(Template) -> true
+    ;   AggType = avg(Template) -> true
+    ;   Template = AggType
+    ), !.
+extract_ruby_aggregate((A, _), AggType, Template, Goal, ResultVar) :-
+    extract_ruby_aggregate(A, AggType, Template, Goal, ResultVar), !.
+extract_ruby_aggregate((_, B), AggType, Template, Goal, ResultVar) :-
+    extract_ruby_aggregate(B, AggType, Template, Goal, ResultVar).
+
+ruby_agg_init_and_update(count, _, Init, Update, Final) :-
+    Init = "  agg_result = 0\n",
+    Update = "    agg_result += 1\n",
+    Final = "".
+ruby_agg_init_and_update(sum(_), _, Init, Update, Final) :-
+    Init = "  agg_result = 0\n",
+    Update = "    agg_result += tmpl_val\n",
+    Final = "".
+ruby_agg_init_and_update(min(_), _, Init, Update, Final) :-
+    Init = "  agg_result = nil\n",
+    Update = "    agg_result = tmpl_val if agg_result.nil? || tmpl_val < agg_result\n",
+    Final = "".
+ruby_agg_init_and_update(max(_), _, Init, Update, Final) :-
+    Init = "  agg_result = nil\n",
+    Update = "    agg_result = tmpl_val if agg_result.nil? || tmpl_val > agg_result\n",
+    Final = "".
+ruby_agg_init_and_update(avg(_), _, Init, Update, Final) :-
+    Init = "  agg_sum = 0\n  agg_count = 0\n",
+    Update = "    agg_sum += tmpl_val\n    agg_count += 1\n",
+    Final = "  agg_result = agg_count > 0 ? agg_sum.to_f / agg_count : 0\n".
+
+extract_ruby_template_vars(Template, GoalArgs, GoalParamNames, Code) :-
+    (   var(Template)
+    ->  (   nth1(Idx, GoalArgs, Arg), Arg == Template
+        ->  nth1(Idx, GoalParamNames, ParamName),
+            format(string(Code), "    tmpl_val = ~w~n", [ParamName])
+        ;   Code = "    tmpl_val = 1\n"
+        )
+    ;   number(Template)
+    ->  format(string(Code), "    tmpl_val = ~w~n", [Template])
+    ;   compile_ruby_template_expr(Template, GoalArgs, GoalParamNames, ExprCode),
+        format(string(Code), "    tmpl_val = ~s~n", [ExprCode])
+    ).
+
+compile_ruby_template_expr(Expr, GoalArgs, GoalParamNames, Code) :-
+    var(Expr), !,
+    (   nth1(Idx, GoalArgs, Arg), Arg == Expr
+    ->  nth1(Idx, GoalParamNames, Code)
+    ;   Code = "0"
+    ).
+compile_ruby_template_expr(N, _, _, Code) :- number(N), !, format(string(Code), "~w", [N]).
+compile_ruby_template_expr(X + Y, GoalArgs, GoalParamNames, Code) :- !,
+    compile_ruby_template_expr(X, GoalArgs, GoalParamNames, XCode),
+    compile_ruby_template_expr(Y, GoalArgs, GoalParamNames, YCode),
+    format(string(Code), "(~s + ~s)", [XCode, YCode]).
+compile_ruby_template_expr(X * Y, GoalArgs, GoalParamNames, Code) :- !,
+    compile_ruby_template_expr(X, GoalArgs, GoalParamNames, XCode),
+    compile_ruby_template_expr(Y, GoalArgs, GoalParamNames, YCode),
+    format(string(Code), "(~s * ~s)", [XCode, YCode]).
+compile_ruby_template_expr(E, _, _, Code) :- format(string(Code), "~w", [E]).
 
 %% ============================================
 %% FACTS COMPILATION
