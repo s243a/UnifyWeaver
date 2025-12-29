@@ -41,6 +41,41 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+# Query style presets for different use cases
+QUERY_STYLES = {
+    "raw": {
+        "tree": "{title}",
+        "pearl": "{title}",
+        "description": "Just the title, no wrapper"
+    },
+    "locate": {
+        "tree": "locate_node({title})",
+        "pearl": "locate_pearl({title})",
+        "description": "Locate a specific item"
+    },
+    "locate_object": {
+        "tree": "locate_object({title})",
+        "pearl": "locate_object({title})",
+        "description": "Generic locate (same for all types)"
+    },
+    "file": {
+        "tree": "file_bookmark({title})",
+        "pearl": "file_bookmark({title})",
+        "description": "Filing a bookmark into a folder"
+    },
+    "similar": {
+        "tree": "find_similar({title})",
+        "pearl": "find_similar({title})",
+        "description": "Find semantically similar items"
+    },
+    "browse": {
+        "tree": "browse_folder({title})",
+        "pearl": "view_bookmark({title})",
+        "description": "Browsing/viewing items"
+    }
+}
+
+
 def extract_item_id(uri: str) -> str:
     """Extract item ID from URI like http://www.pearltrees.com/s243a/item704016118"""
     if not uri:
@@ -49,25 +84,30 @@ def extract_item_id(uri: str) -> str:
     return f"#{match.group(1)}" if match else f"#{uri.split('/')[-1]}"
 
 
+def get_query_text(title: str, obj_type: str, style: str) -> str:
+    """
+    Format query text based on object type and style.
+    obj_type: 'tree' or 'pearl'
+    style: key in QUERY_STYLES
+    """
+    if style not in QUERY_STYLES:
+        # Fallback to raw
+        return title
+        
+    templates = QUERY_STYLES[style]
+    template = templates.get(obj_type, "{title}")
+    return template.format(title=title)
+
+
 def generate_pearl_targets(
     parser: MultiAccountParser,
-    query_template: str = "{title}",
+    query_style: str = "raw",
     filter_path: Optional[str] = None,
     include_trees: bool = True,
     include_pearls: bool = True
 ) -> List[dict]:
     """
     Generate targets for both trees and pearls.
-    
-    Pearl target format:
-        target_text: 
-            s243a
-            - STEM
-            - Physics
-            - #item123456: "Article Title"
-        
-        query: "Article Title"
-        type: "Pearl"
     """
     results = []
     
@@ -131,14 +171,82 @@ def generate_pearl_targets(
         
         return "\n".join(lines)
     
-    # Generate tree targets (existing logic)
+    # Generate tree targets
     if include_trees:
         logger.info("Generating tree targets...")
-        tree_results = parser.generate_targets(query_template, filter_path)
-        for r in tree_results:
-            r['data_type'] = 'tree'
-        results.extend(tree_results)
-        logger.info(f"  Generated {len(tree_results)} tree targets")
+        
+        # We need to manually generate targets to apply styles, instead of using parser.generate_targets
+        # because the parser only uses a simple template
+        count = 0
+        skipped = 0
+        
+        for uri, tree in parser.trees.items():
+            if not tree.title:
+                skipped += 1
+                continue
+                
+            # Get path
+            path = get_tree_path(uri)
+            
+            # Filter
+            if filter_path:
+                path_str = " ".join([t for t, a in path])
+                if filter_path.lower() not in path_str.lower():
+                    skipped += 1
+                    continue
+            
+            # Format target text (same logic as parser.generate_targets but using our helpers)
+            # Reconstruct format_path logic from parser for consistency or use what we refer to
+            # Actually, let's just use the path we built
+            lines = []
+            prev_account = None
+            for title, account in path:
+                if prev_account and account != prev_account:
+                    lines.append(f"- {title} @{account}")
+                else:
+                    lines.append(f"- {title}")
+                prev_account = account
+            
+            # Add root if needed, but the path already has it from get_tree_path logic?
+            # get_tree_path adds root.
+            # parser.generate_targets Logic:
+            #   lines = [root_account]
+            #   ...
+            # The get_tree_path returns full chain.
+            # The root account is the first account in the chain.
+            
+            # Let's simple format:
+            root_account = path[0][1]
+            formatted_lines = [root_account]
+            
+            prev_account = None
+            for title, account in path:
+                if prev_account and account != prev_account:
+                    formatted_lines.append(f"- {title} @{account}")
+                else:
+                    formatted_lines.append(f"- {title}")
+                prev_account = account
+            
+            target_text = "\n".join(formatted_lines)
+            
+            query_text = get_query_text(tree.title, "tree", query_style)
+            
+            cluster_id = tree.parent_uri or tree.section_based_parent_uri or "root"
+            
+            results.append({
+                "data_type": "tree",
+                "type": "Tree",
+                "target_text": target_text,
+                "raw_title": tree.title,
+                "query": query_text,
+                "cluster_id": cluster_id,
+                "tree_id": tree.tree_id,
+                "account": tree.account,
+                "uri": uri
+            })
+            count += 1
+            
+        logger.info(f"  Generated {count} tree targets ({skipped} skipped)")
     
     # Generate pearl targets
     if include_pearls:
@@ -173,10 +281,7 @@ def generate_pearl_targets(
             target_text = format_path_with_pearl(tree_path, pearl.title, pearl_id)
             
             # Format query
-            try:
-                query_text = query_template.format(title=pearl.title)
-            except KeyError:
-                query_text = pearl.title
+            query_text = get_query_text(pearl.title, "pearl", query_style)
             
             # Cluster by parent tree
             cluster_id = pearl.parent_tree_uri or "root"
@@ -215,8 +320,14 @@ def main():
                            help="Output JSONL file")
     arg_parser.add_argument("--primary", type=str, default=None,
                            help="Primary account name (default: first account)")
-    arg_parser.add_argument("--query-template", type=str, default="{title}",
-                           help="Template for query (use {title})")
+    
+    # Replace query-template with query-style
+    style_choices = list(QUERY_STYLES.keys())
+    style_help = "Query style: " + ", ".join([f"{k} ({v['description']})" for k, v in QUERY_STYLES.items()])
+    
+    arg_parser.add_argument("--query-style", type=str, default="raw", choices=style_choices,
+                           help=style_help)
+                           
     arg_parser.add_argument("--filter-path", type=str, default=None,
                            help="Only include items with this string in path")
     arg_parser.add_argument("--trees-only", action="store_true",
@@ -249,7 +360,7 @@ def main():
     # Generate targets
     results = generate_pearl_targets(
         parser,
-        query_template=args.query_template,
+        query_style=args.query_style,
         filter_path=args.filter_path,
         include_trees=not args.pearls_only,
         include_pearls=not args.trees_only
