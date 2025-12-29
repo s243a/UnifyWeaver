@@ -74,8 +74,9 @@ RPyC depends on **plumbum** (shell command toolkit). For RPyC classic mode (whic
 | **Java** | [GraalPy](https://github.com/oracle/graalpython) | ⚠️ GraalVM | ⚠️ Limited | ⚠️ Medium | May have C extension issues |
 | **Rust** | [PyO3](https://pyo3.rs/) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | PyO3 0.22, math + NumPy |
 | **Ruby** | [PyCall.rb](https://github.com/red-data-tools/pycall.rb) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | v1.5.2, math + NumPy |
-| **Go** | [go-python3](https://github.com/DataDog/go-python3) | ✅ Yes | ✅ Yes | ⚠️ Medium | GIL management complex |
+| **Go** | [go-python3](https://github.com/DataDog/go-python3) | ✅ Yes | ✅ Yes | ⚠️ Medium | GIL management complex, archived 2021 |
 | **Go** | [go-embed-python](https://github.com/kluctl/go-embed-python) | ✅ Yes | ✅ Yes | ⚠️ Medium | No CGO, uses subprocess |
+| **Go** | Rust FFI Bridge | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | Go → Rust cdylib → PyO3 → RPyC |
 | **Lua** | [lupa](https://github.com/scoder/lupa) | ❌ No* | ❌ No | ❌ Low | Lua embeds in Python, not reverse |
 | **Lua** | [lunatic-python](https://github.com/bastibe/lunatic-python) | ⚠️ Partial | ⚠️ Partial | ⚠️ Low | Bi-directional but limited |
 | **Node.js** | python-shell | ❌ Subprocess | ✅ Yes | ⚠️ Low | IPC overhead defeats purpose |
@@ -369,10 +370,11 @@ Use gRPC when you only need request/response patterns, not interactive object ma
 Based on ecosystem maturity and use cases:
 
 1. **Prolog (Janus)** - ✅ Done
-2. **C# (Python.NET)** - High value, .NET ecosystem is large
-3. **Java (JPype)** - Enterprise adoption potential
-4. **Rust (PyO3)** - Growing systems programming use
-5. **Ruby (PyCall.rb)** - Rails/web development niche
+2. **C# (Python.NET/CSnakes)** - ✅ Done - .NET ecosystem
+3. **Java (JPype/jpy)** - ✅ Done - Enterprise adoption
+4. **Rust (PyO3)** - ✅ Done - Systems programming
+5. **Ruby (PyCall.rb)** - ✅ Done - Rails/web development
+6. **Go (Rust FFI)** - ✅ Done - Via Rust bridge for stable CPython access
 
 ## References
 
@@ -425,10 +427,11 @@ These bridges have been tested with RPyC (2025-12-28):
 | **Java** | jpy | ✅ Verified | Java 11, bi-directional ArrayList demo |
 | **Rust** | PyO3 | ✅ Verified | PyO3 0.22, math.sqrt + numpy.mean |
 | **Ruby** | PyCall.rb | ✅ Verified | v1.5.2, math.sqrt + numpy.mean |
+| **Go** | Rust FFI | ✅ Verified | Go 1.18+ via Rust cdylib, math.sqrt + numpy.mean + math.pi |
 | **Java** | GraalPy | ⏳ Untested | GraalVM-based, may have C extension issues |
 | **Java** | JNI + CPython | ⏳ Untested | Manual integration via Java Native Interface |
 
-**All 6 primary bridges now verified working.** See `examples/python-bridges/` for working examples.
+**All 7 primary bridges now verified working.** See `examples/python-bridges/` for working examples.
 
 ### Test Suite
 

@@ -1637,7 +1637,6 @@ generate_rust_ffi_bridge(Options, RustCode) :-
 //! Output: target/release/librpyc_bridge.so (or .dylib/.dll)
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
@@ -1764,23 +1763,23 @@ pub extern "C" fn rpyc_call(
             Err(_) => return ptr::null_mut(),
         };
 
-        // Call remote function
-        let result = match remote_module.call_method1(func_str, (args_list,)) {
+        // Get the function and call it with parsed args
+        let func = match remote_module.getattr(func_str) {
+            Ok(f) => f,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        // Call the function - args_list is already a Python list from json.loads
+        let result = match func.call1((&args_list,)) {
             Ok(r) => r,
             Err(_) => {
-                // Try calling without unpacking (single arg or no args)
-                match remote_module.getattr(func_str) {
-                    Ok(f) => {
-                        let args_tuple: &PyAny = args_list.downcast().unwrap_or(&args_list);
-                        match f.call1((args_tuple,)) {
-                            Ok(r) => r,
-                            Err(_) => match f.call0() {
-                                Ok(r) => r,
-                                Err(_) => return ptr::null_mut(),
-                            }
-                        }
+                // Try calling with unpacked args if it is a list
+                match func.call1((args_list.get_item(0).unwrap_or(args_list.clone()),)) {
+                    Ok(r) => r,
+                    Err(_) => match func.call0() {
+                        Ok(r) => r,
+                        Err(_) => return ptr::null_mut(),
                     }
-                    Err(_) => return ptr::null_mut(),
                 }
             }
         };

@@ -1,0 +1,7 @@
+# Build artifacts
+rpyc_example
+librpyc_bridge.so
+librpyc_bridge.dylib
+librpyc_bridge.dll
+target/
+Cargo.lock
