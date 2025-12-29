@@ -1,0 +1,140 @@
+# Chapter 16: Bookmark Filing Assistant
+
+This chapter covers the bookmark filing assistant that combines semantic search with LLM reasoning to recommend folders for new bookmarks.
+
+## Overview
+
+The bookmark filing pipeline:
+
+```
+New Bookmark → Semantic Search → Top-K Candidates → LLM Selection → Filing
+             (93% Recall@1)     (Merged Tree)      (Final Choice)
+```
+
+## Architecture
+
+### Federated Model
+
+The semantic search uses a federated projection model:
+- **51 clusters** of semantically similar folders
+- **1 shared W matrix per cluster** (not per-query)
+- **Query-level routing** to find similar training queries
+- **160MB total** model size
+
+### LLM Integration
+
+Multiple LLM backends supported:
+
+| Provider | Command | Notes |
+|----------|---------|-------|
+| Claude CLI | `--provider claude` | Cheapest with subscription |
+| Gemini CLI | `--provider gemini` | Gemini headless |
+| OpenAI API | `--provider openai` | Requires OPENAI_API_KEY |
+| Anthropic API | `--provider anthropic` | Requires ANTHROPIC_API_KEY |
+| Ollama | `--provider ollama` | Local models |
+
+## Usage
+
+### Quick Semantic Search
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --model models/pearltrees_federated_single.pkl \
+  --query "Your bookmark title" \
+  --top-k 10 --tree
+```
+
+Output:
+```
+└── s243a
+    └── s243a_groups @s243a_groups
+        └── s243a
+            └── STEM
+                └── AI & Machine Learning ★ #10 [0.280]
+                    ├── Deep Learning ★ #2 [0.328]
+                    └── Neural network architectures ★ #1 [0.328]
+```
+
+### Full LLM-Assisted Filing
+```bash
+python3 scripts/bookmark_filing_assistant.py \
+  --bookmark "Neural network tutorial" \
+  --provider claude \
+  --top-k 10
+```
+
+### Slash Command
+```
+/file-bookmark "Your bookmark title"
+```
+
+### Agent Launcher
+```bash
+./scripts/launch_bookmark_filing_agent.sh "Optional bookmark title"
+```
+
+## MCP Integration
+
+An MCP server exposes these tools:
+
+```python
+# Start MCP server
+python3 scripts/mcp_bookmark_filing_server.py
+```
+
+Tools exposed:
+- `get_filing_candidates` - Semantic search candidates
+- `file_bookmark` - Full LLM recommendation
+
+## Decision Process
+
+The LLM sees the merged tree and considers:
+
+1. **Specificity match** - File in most specific matching folder
+2. **Hierarchical context** - Parent vs child folder appropriateness
+3. **Account boundaries** - Personal (s243a) vs shared (s243a_groups)
+4. **Score proximity** - Close scores may warrant parent folder
+
+## Performance
+
+| Metric | Value |
+|--------|-------|
+| Semantic Recall@1 | 93% |
+| Semantic Recall@5 | 99% |
+| Model Size | 160MB |
+| Inference Time | ~100ms |
+| LLM Call | ~2-5s |
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `scripts/infer_pearltrees_federated.py` | Semantic search |
+| `scripts/bookmark_filing_assistant.py` | LLM-assisted filing |
+| `scripts/mcp_bookmark_filing_server.py` | MCP server |
+| `scripts/launch_bookmark_filing_agent.sh` | Claude launcher |
+| `skills/skill_bookmark_filing.md` | Skill documentation |
+| `docs/ai-skills/bookmark-filing-agent.md` | Agent role |
+
+## Example Session
+
+User wants to file: "Introduction to Transformer models in NLP"
+
+Semantic search returns:
+```
+└── AI & Machine Learning
+    ├── Machine Learning ★ #3 [0.318]
+    │   └── Deep Learning ★ #1 [0.328]
+    │       └── Transformers ★ #2 [0.325]
+    └── NLP ★ #4 [0.310]
+```
+
+LLM reasoning:
+> "Deep Learning (#1) is recommended because Transformers are a deep learning architecture.
+> The 'Transformers' subfolder (#2) would also be excellent for more specific organization.
+> NLP (#4) is too broad for this specific architecture tutorial."
+
+## Next Steps
+
+- Integration with browser extension for auto-filing
+- Batch filing for bookmark imports
+- Learning from user corrections

@@ -15,6 +15,7 @@ These documents teach LLMs how to:
 | Skill | Description | Complexity |
 |-------|-------------|------------|
 | [Test Orchestrator](./test-orchestrator.md) | Coordinate playbook testing across multiple LLMs | Medium |
+| [Bookmark Filing Agent](./bookmark-filing-agent.md) | File bookmarks into Pearltrees using semantic search + LLM | Low |
 
 ## Skill Document Structure
 
