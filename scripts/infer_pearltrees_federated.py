@@ -169,7 +169,7 @@ class FederatedInferenceEngine:
         
         return proj
     
-    def search(self, query: str, top_k: int = 5, top_k_routing: int = 10) -> List[Candidate]:
+    def search(self, query: str, top_k: int = 5, top_k_routing: int = 10, alpha: float = 1.0) -> List[Candidate]:
         """
         Search for best folders to file a bookmark.
         
@@ -177,6 +177,7 @@ class FederatedInferenceEngine:
             query: Bookmark title, URL, or description
             top_k: Number of candidates to return
             top_k_routing: Number of training queries to use for routing
+            alpha: Weight for projected score (1.0 = projection only, 0.0 = raw only)
             
         Returns:
             List of Candidate objects with scores
@@ -184,7 +185,7 @@ class FederatedInferenceEngine:
         # Embed query
         q_emb = self.embed_query(query)
         
-        # Project using federated model
+        # Project using federated model (Projection Score)
         q_proj = self.project_query(q_emb, top_k_routing)
         
         # Normalize
@@ -193,9 +194,37 @@ class FederatedInferenceEngine:
         # Compare to all targets
         if self.target_embeddings is not None:
             A_norm = self.target_embeddings / (np.linalg.norm(self.target_embeddings, axis=1, keepdims=True) + 1e-8)
-            scores = q_proj_norm @ A_norm.T
+            
+            # Projected Score
+            scores_proj = q_proj_norm @ A_norm.T
+            
+            # Blend logic
+            if 0.0 < alpha < 1.0:
+                # Calculate Raw Score
+                q_emb_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
+                scores_raw = q_emb_norm @ A_norm.T
+                
+                # ReLU + L1 Normalization (Treat as Probability Mass)
+                # Projected
+                p_proj = np.maximum(scores_proj, 0)
+                p_proj /= (p_proj.sum() + 1e-10)
+                
+                # Raw
+                p_raw = np.maximum(scores_raw, 0)
+                p_raw /= (p_raw.sum() + 1e-10)
+                
+                # Blend
+                scores = alpha * p_proj + (1.0 - alpha) * p_raw
+                
+            elif alpha <= 0.0:
+                 # Pure raw (Cosine)
+                q_emb_norm = q_emb / (np.linalg.norm(q_emb) + 1e-8)
+                scores = q_emb_norm @ A_norm.T
+            else:
+                # Pure projected (Cosine) - Default behavior
+                scores = scores_proj
         else:
-            # Fall back to cluster centroids
+            # Fall back to cluster centroids (no raw fallback easily available/meaningful here)
             scores = q_proj_norm @ self.cluster_centroids.T
         
         # Get top-k indices
@@ -381,6 +410,8 @@ def main():
                        help="Number of candidates to return")
     parser.add_argument("--top-k-routing", type=int, default=10,
                        help="Number of training queries for routing")
+    parser.add_argument("--alpha", type=float, default=1.0,
+                       help="Weight for projected score (1.0=proj, 0.0=raw)")
     parser.add_argument("--interactive", action="store_true",
                        help="Run in interactive mode")
     parser.add_argument("--json", action="store_true",
@@ -412,7 +443,7 @@ def main():
     if args.interactive:
         interactive_mode(engine, args.top_k)
     elif args.query:
-        candidates = engine.search(args.query, args.top_k, args.top_k_routing)
+        candidates = engine.search(args.query, args.top_k, args.top_k_routing, args.alpha)
         
         if args.tree and data:
             tree = build_merged_tree(candidates, data)
