@@ -79,6 +79,13 @@
     generate_pycall_rb_rpyc_client/2,    % generate_pycall_rb_rpyc_client(+Options, -Code)
     generate_pycall_rb_gemfile/2,        % generate_pycall_rb_gemfile(+Options, -GemfileContent)
 
+    % Rust FFI Bridge (for Go, Node, Lua, etc.)
+    generate_rust_ffi_bridge/2,          % generate_rust_ffi_bridge(+Options, -RustCode)
+    generate_rust_ffi_cargo_toml/2,      % generate_rust_ffi_cargo_toml(+Options, -TomlContent)
+    generate_rust_ffi_header/2,          % generate_rust_ffi_header(+Options, -HeaderCode)
+    generate_go_ffi_client/2,            % generate_go_ffi_client(+Options, -GoCode)
+    generate_node_ffi_client/2,          % generate_node_ffi_client(+Options, -JsCode)
+
     % Generic interface
     generate_python_bridge_client/3,     % generate_python_bridge_client(+Bridge, +Options, -Code)
     generate_python_bridge_service/3,    % generate_python_bridge_service(+Bridge, +Options, -Code)
@@ -1593,6 +1600,633 @@ source ''https://rubygems.org''
 
 gem ''pycall'', ''~> 1.5''
 ', []).
+
+% ============================================================================
+% RUST FFI BRIDGE (Universal bridge for FFI-capable languages)
+% ============================================================================
+%
+% This section generates a Rust cdylib that provides C FFI functions for
+% accessing Python via RPyC. Languages like Go, Node.js, Lua, PHP, etc.
+% can call this library via their FFI mechanisms.
+%
+% Architecture:
+%   Go/Node/Lua/etc. -> C FFI -> Rust cdylib -> PyO3 -> CPython -> RPyC -> Python Server
+%
+% Usage:
+%   ?- generate_rust_ffi_bridge([host("localhost"), port(18812)], RustCode).
+%   ?- generate_rust_ffi_cargo_toml([lib_name(rpyc_bridge)], CargoToml).
+%   ?- generate_go_ffi_client([lib_name(rpyc_bridge)], GoCode).
+
+%% generate_rust_ffi_bridge(+Options, -RustCode)
+%  Generate Rust cdylib that provides C FFI to RPyC.
+%
+%  Options:
+%    - host(Host)       RPyC server host (default: "localhost")
+%    - port(Port)       RPyC server port (default: 18812)
+%    - lib_name(Name)   Library name (default: rpyc_bridge)
+%
+generate_rust_ffi_bridge(Options, RustCode) :-
+    option(host(Host), Options, "localhost"),
+    option(port(Port), Options, 18812),
+    format(atom(RustCode), '//! Rust FFI Bridge for RPyC
+//!
+//! This library provides C-compatible FFI functions that any language
+//! can use to access Python via RPyC. Uses PyO3 for CPython embedding.
+//!
+//! Compile: cargo build --release
+//! Output: target/release/librpyc_bridge.so (or .dylib/.dll)
+
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
+use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
+use std::ptr;
+use std::sync::Mutex;
+
+// Global connection state (thread-safe)
+static CONNECTION: Mutex<Option<Py<PyAny>>> = Mutex::new(None);
+
+/// Initialize Python runtime. Call once at startup.
+#[no_mangle]
+pub extern "C" fn rpyc_init() -> i32 {
+    match pyo3::prepare_freethreaded_python() {
+        () => 0,
+    }
+}
+
+/// Connect to RPyC server. Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn rpyc_connect(host: *const c_char, port: i32) -> i32 {
+    let host_str = if host.is_null() {
+        "~w"
+    } else {
+        match unsafe { CStr::from_ptr(host) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+
+    let port_num = if port <= 0 { ~w } else { port };
+
+    Python::with_gil(|py| {
+        match py.import_bound("rpyc") {
+            Ok(rpyc) => {
+                match rpyc.getattr("classic") {
+                    Ok(classic) => {
+                        match classic.call_method1("connect", (host_str, port_num)) {
+                            Ok(conn) => {
+                                let mut guard = CONNECTION.lock().unwrap();
+                                *guard = Some(conn.unbind());
+                                0
+                            }
+                            Err(_) => -1,
+                        }
+                    }
+                    Err(_) => -1,
+                }
+            }
+            Err(_) => -1,
+        }
+    })
+}
+
+/// Disconnect from RPyC server.
+#[no_mangle]
+pub extern "C" fn rpyc_disconnect() {
+    Python::with_gil(|py| {
+        let mut guard = CONNECTION.lock().unwrap();
+        if let Some(ref conn) = *guard {
+            let _ = conn.bind(py).call_method0("close");
+        }
+        *guard = None;
+    });
+}
+
+/// Call a function on a remote module.
+/// Returns JSON string (caller must free with rpyc_free_string).
+///
+/// Example: rpyc_call("math", "sqrt", "[16]") -> "4.0"
+#[no_mangle]
+pub extern "C" fn rpyc_call(
+    module: *const c_char,
+    func: *const c_char,
+    args_json: *const c_char,
+) -> *mut c_char {
+    if module.is_null() || func.is_null() {
+        return ptr::null_mut();
+    }
+
+    let module_str = match unsafe { CStr::from_ptr(module) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let func_str = match unsafe { CStr::from_ptr(func) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let args_str = if args_json.is_null() {
+        "[]"
+    } else {
+        match unsafe { CStr::from_ptr(args_json) }.to_str() {
+            Ok(s) => s,
+            Err(_) => "[]",
+        }
+    };
+
+    Python::with_gil(|py| {
+        let guard = CONNECTION.lock().unwrap();
+        let conn = match guard.as_ref() {
+            Some(c) => c.bind(py),
+            None => return ptr::null_mut(),
+        };
+
+        // Get remote module
+        let modules = match conn.getattr("modules") {
+            Ok(m) => m,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        let remote_module = match modules.getattr(module_str) {
+            Ok(m) => m,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        // Parse args from JSON
+        let json_mod = match py.import_bound("json") {
+            Ok(j) => j,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        let args_list = match json_mod.call_method1("loads", (args_str,)) {
+            Ok(a) => a,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        // Call remote function
+        let result = match remote_module.call_method1(func_str, (args_list,)) {
+            Ok(r) => r,
+            Err(_) => {
+                // Try calling without unpacking (single arg or no args)
+                match remote_module.getattr(func_str) {
+                    Ok(f) => {
+                        let args_tuple: &PyAny = args_list.downcast().unwrap_or(&args_list);
+                        match f.call1((args_tuple,)) {
+                            Ok(r) => r,
+                            Err(_) => match f.call0() {
+                                Ok(r) => r,
+                                Err(_) => return ptr::null_mut(),
+                            }
+                        }
+                    }
+                    Err(_) => return ptr::null_mut(),
+                }
+            }
+        };
+
+        // Serialize result to JSON
+        let result_json = match json_mod.call_method1("dumps", (&result,)) {
+            Ok(j) => j,
+            Err(_) => {
+                // Fallback: convert to string
+                match result.str() {
+                    Ok(s) => s.into_any(),
+                    Err(_) => return ptr::null_mut(),
+                }
+            }
+        };
+
+        match result_json.extract::<String>() {
+            Ok(s) => {
+                match CString::new(s) {
+                    Ok(cs) => cs.into_raw(),
+                    Err(_) => ptr::null_mut(),
+                }
+            }
+            Err(_) => ptr::null_mut(),
+        }
+    })
+}
+
+/// Get attribute from remote module (e.g., numpy.pi).
+/// Returns JSON string (caller must free with rpyc_free_string).
+#[no_mangle]
+pub extern "C" fn rpyc_getattr(
+    module: *const c_char,
+    attr: *const c_char,
+) -> *mut c_char {
+    if module.is_null() || attr.is_null() {
+        return ptr::null_mut();
+    }
+
+    let module_str = match unsafe { CStr::from_ptr(module) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    let attr_str = match unsafe { CStr::from_ptr(attr) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    Python::with_gil(|py| {
+        let guard = CONNECTION.lock().unwrap();
+        let conn = match guard.as_ref() {
+            Some(c) => c.bind(py),
+            None => return ptr::null_mut(),
+        };
+
+        let modules = match conn.getattr("modules") {
+            Ok(m) => m,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        let remote_module = match modules.getattr(module_str) {
+            Ok(m) => m,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        let value = match remote_module.getattr(attr_str) {
+            Ok(v) => v,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        // Serialize to JSON
+        let json_mod = match py.import_bound("json") {
+            Ok(j) => j,
+            Err(_) => return ptr::null_mut(),
+        };
+
+        let result_json = match json_mod.call_method1("dumps", (&value,)) {
+            Ok(j) => j,
+            Err(_) => {
+                match value.str() {
+                    Ok(s) => s.into_any(),
+                    Err(_) => return ptr::null_mut(),
+                }
+            }
+        };
+
+        match result_json.extract::<String>() {
+            Ok(s) => {
+                match CString::new(s) {
+                    Ok(cs) => cs.into_raw(),
+                    Err(_) => ptr::null_mut(),
+                }
+            }
+            Err(_) => ptr::null_mut(),
+        }
+    })
+}
+
+/// Free a string returned by rpyc_call or rpyc_getattr.
+#[no_mangle]
+pub extern "C" fn rpyc_free_string(s: *mut c_char) {
+    if !s.is_null() {
+        unsafe {
+            drop(CString::from_raw(s));
+        }
+    }
+}
+
+/// Check if connected to RPyC server.
+#[no_mangle]
+pub extern "C" fn rpyc_is_connected() -> i32 {
+    let guard = CONNECTION.lock().unwrap();
+    if guard.is_some() { 1 } else { 0 }
+}
+
+/// Get last error message (placeholder - always returns null for now).
+#[no_mangle]
+pub extern "C" fn rpyc_last_error() -> *const c_char {
+    ptr::null()
+}
+', [Host, Port]).
+
+%% generate_rust_ffi_cargo_toml(+Options, -TomlContent)
+%  Generate Cargo.toml for the Rust FFI bridge.
+generate_rust_ffi_cargo_toml(Options, TomlContent) :-
+    option(lib_name(LibName), Options, rpyc_bridge),
+    format(atom(TomlContent), '[package]
+name = "~w"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["auto-initialize"] }
+', [LibName]).
+
+%% generate_rust_ffi_header(+Options, -HeaderCode)
+%  Generate C header file for the Rust FFI bridge.
+generate_rust_ffi_header(Options, HeaderCode) :-
+    option(lib_name(LibName), Options, rpyc_bridge),
+    atom_string(LibName, LibNameStr),
+    string_upper(LibNameStr, LibNameUpper),
+    format(atom(HeaderCode), '/* ~w.h - C header for Rust FFI Bridge */
+#ifndef ~w_H
+#define ~w_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Initialize Python runtime. Call once at startup. */
+int rpyc_init(void);
+
+/* Connect to RPyC server. Returns 0 on success, -1 on error. */
+int rpyc_connect(const char* host, int port);
+
+/* Disconnect from RPyC server. */
+void rpyc_disconnect(void);
+
+/* Call a function on a remote module.
+ * Returns JSON string (caller must free with rpyc_free_string).
+ * Example: rpyc_call("math", "sqrt", "[16]") -> "4.0"
+ */
+char* rpyc_call(const char* module, const char* func, const char* args_json);
+
+/* Get attribute from remote module.
+ * Returns JSON string (caller must free with rpyc_free_string).
+ */
+char* rpyc_getattr(const char* module, const char* attr);
+
+/* Free a string returned by rpyc_call or rpyc_getattr. */
+void rpyc_free_string(char* s);
+
+/* Check if connected to RPyC server. Returns 1 if connected, 0 otherwise. */
+int rpyc_is_connected(void);
+
+/* Get last error message (may return NULL). */
+const char* rpyc_last_error(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ~w_H */
+', [LibName, LibNameUpper, LibNameUpper, LibNameUpper]).
+
+%% generate_go_ffi_client(+Options, -GoCode)
+%  Generate Go code that uses the Rust FFI bridge.
+generate_go_ffi_client(Options, GoCode) :-
+    option(lib_name(LibName), Options, rpyc_bridge),
+    option(host(Host), Options, "localhost"),
+    option(port(Port), Options, 18812),
+    option(package_name(Package), Options, main),
+    format(atom(GoCode), 'package ~w
+
+/*
+#cgo LDFLAGS: -L${SRCDIR} -l~w -lpython3.11
+#include "~w.h"
+#include <stdlib.h>
+*/
+import "C"
+import (
+    "encoding/json"
+    "fmt"
+    "unsafe"
+)
+
+// RPyCClient wraps the Rust FFI bridge for RPyC access
+type RPyCClient struct {
+    connected bool
+}
+
+// NewRPyCClient creates a new client and connects to the RPyC server
+func NewRPyCClient(host string, port int) (*RPyCClient, error) {
+    C.rpyc_init()
+
+    hostC := C.CString(host)
+    defer C.free(unsafe.Pointer(hostC))
+
+    result := C.rpyc_connect(hostC, C.int(port))
+    if result != 0 {
+        return nil, fmt.Errorf("failed to connect to RPyC server at %%s:%%d", host, port)
+    }
+
+    return &RPyCClient{connected: true}, nil
+}
+
+// NewRPyCClientDefault connects to the default RPyC server
+func NewRPyCClientDefault() (*RPyCClient, error) {
+    return NewRPyCClient("~w", ~w)
+}
+
+// Close disconnects from the RPyC server
+func (c *RPyCClient) Close() {
+    if c.connected {
+        C.rpyc_disconnect()
+        c.connected = false
+    }
+}
+
+// Call invokes a function on a remote Python module
+// Returns the result as a Go interface{}
+func (c *RPyCClient) Call(module, function string, args ...interface{}) (interface{}, error) {
+    if !c.connected {
+        return nil, fmt.Errorf("not connected to RPyC server")
+    }
+
+    // Serialize args to JSON
+    argsJSON, err := json.Marshal(args)
+    if err != nil {
+        return nil, fmt.Errorf("failed to serialize args: %%v", err)
+    }
+
+    moduleC := C.CString(module)
+    funcC := C.CString(function)
+    argsC := C.CString(string(argsJSON))
+    defer C.free(unsafe.Pointer(moduleC))
+    defer C.free(unsafe.Pointer(funcC))
+    defer C.free(unsafe.Pointer(argsC))
+
+    resultC := C.rpyc_call(moduleC, funcC, argsC)
+    if resultC == nil {
+        return nil, fmt.Errorf("rpyc_call failed for %%s.%%s", module, function)
+    }
+    defer C.rpyc_free_string(resultC)
+
+    resultJSON := C.GoString(resultC)
+
+    var result interface{}
+    if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+        // Return as raw string if not valid JSON
+        return resultJSON, nil
+    }
+
+    return result, nil
+}
+
+// GetAttr gets an attribute from a remote Python module
+func (c *RPyCClient) GetAttr(module, attr string) (interface{}, error) {
+    if !c.connected {
+        return nil, fmt.Errorf("not connected to RPyC server")
+    }
+
+    moduleC := C.CString(module)
+    attrC := C.CString(attr)
+    defer C.free(unsafe.Pointer(moduleC))
+    defer C.free(unsafe.Pointer(attrC))
+
+    resultC := C.rpyc_getattr(moduleC, attrC)
+    if resultC == nil {
+        return nil, fmt.Errorf("rpyc_getattr failed for %%s.%%s", module, attr)
+    }
+    defer C.rpyc_free_string(resultC)
+
+    resultJSON := C.GoString(resultC)
+
+    var result interface{}
+    if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+        return resultJSON, nil
+    }
+
+    return result, nil
+}
+
+// IsConnected checks if the client is connected
+func (c *RPyCClient) IsConnected() bool {
+    return c.connected && C.rpyc_is_connected() == 1
+}
+
+// Example usage (uncomment for standalone test):
+// func main() {
+//     client, err := NewRPyCClientDefault()
+//     if err != nil {
+//         fmt.Println("Error:", err)
+//         return
+//     }
+//     defer client.Close()
+//
+//     // Call math.sqrt(16)
+//     result, err := client.Call("math", "sqrt", 16)
+//     if err != nil {
+//         fmt.Println("Error:", err)
+//         return
+//     }
+//     fmt.Printf("math.sqrt(16) = %%v\\n", result)
+//
+//     // Get math.pi
+//     pi, err := client.GetAttr("math", "pi")
+//     if err != nil {
+//         fmt.Println("Error:", err)
+//         return
+//     }
+//     fmt.Printf("math.pi = %%v\\n", pi)
+// }
+', [Package, LibName, LibName, Host, Port]).
+
+%% generate_node_ffi_client(+Options, -JsCode)
+%  Generate Node.js code that uses the Rust FFI bridge via node-ffi-napi.
+generate_node_ffi_client(Options, JsCode) :-
+    option(lib_name(LibName), Options, rpyc_bridge),
+    option(host(Host), Options, "localhost"),
+    option(port(Port), Options, 18812),
+    format(atom(JsCode), '/**
+ * Node.js FFI client for RPyC via Rust bridge
+ *
+ * Prerequisites:
+ *   npm install ffi-napi ref-napi
+ *
+ * Usage:
+ *   const RPyCClient = require(''./rpyc_client'');
+ *   const client = new RPyCClient();
+ *   const result = await client.call(''math'', ''sqrt'', [16]);
+ */
+
+const ffi = require(''ffi-napi'');
+const ref = require(''ref-napi'');
+
+const charPtr = ref.refType(ref.types.char);
+
+// Load the Rust FFI bridge library
+const lib = ffi.Library(''./lib~w'', {
+    ''rpyc_init'': [''int'', []],
+    ''rpyc_connect'': [''int'', [''string'', ''int'']],
+    ''rpyc_disconnect'': [''void'', []],
+    ''rpyc_call'': [charPtr, [''string'', ''string'', ''string'']],
+    ''rpyc_getattr'': [charPtr, [''string'', ''string'']],
+    ''rpyc_free_string'': [''void'', [charPtr]],
+    ''rpyc_is_connected'': [''int'', []],
+});
+
+class RPyCClient {
+    constructor(host = ''~w'', port = ~w) {
+        lib.rpyc_init();
+        const result = lib.rpyc_connect(host, port);
+        if (result !== 0) {
+            throw new Error(`Failed to connect to RPyC server at ${host}:${port}`);
+        }
+        this.connected = true;
+    }
+
+    close() {
+        if (this.connected) {
+            lib.rpyc_disconnect();
+            this.connected = false;
+        }
+    }
+
+    call(module, func, args = []) {
+        if (!this.connected) {
+            throw new Error(''Not connected to RPyC server'');
+        }
+
+        const argsJson = JSON.stringify(args);
+        const resultPtr = lib.rpyc_call(module, func, argsJson);
+
+        if (resultPtr.isNull()) {
+            throw new Error(`rpyc_call failed for ${module}.${func}`);
+        }
+
+        const resultStr = resultPtr.readCString();
+        lib.rpyc_free_string(resultPtr);
+
+        try {
+            return JSON.parse(resultStr);
+        } catch {
+            return resultStr;
+        }
+    }
+
+    getAttr(module, attr) {
+        if (!this.connected) {
+            throw new Error(''Not connected to RPyC server'');
+        }
+
+        const resultPtr = lib.rpyc_getattr(module, attr);
+
+        if (resultPtr.isNull()) {
+            throw new Error(`rpyc_getattr failed for ${module}.${attr}`);
+        }
+
+        const resultStr = resultPtr.readCString();
+        lib.rpyc_free_string(resultPtr);
+
+        try {
+            return JSON.parse(resultStr);
+        } catch {
+            return resultStr;
+        }
+    }
+
+    isConnected() {
+        return this.connected && lib.rpyc_is_connected() === 1;
+    }
+}
+
+module.exports = RPyCClient;
+
+// Example usage (uncomment for standalone test):
+// const client = new RPyCClient();
+// console.log(''math.sqrt(16) ='', client.call(''math'', ''sqrt'', [16]));
+// console.log(''math.pi ='', client.getAttr(''math'', ''pi''));
+// client.close();
+', [LibName, Host, Port]).
 
 % ============================================================================
 % GENERIC INTERFACE
