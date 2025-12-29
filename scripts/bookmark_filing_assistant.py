@@ -64,6 +64,9 @@ The following tree shows candidate folders marked with ★. The hierarchy shows 
 ```
 {tree_output}
 ```
+
+{related_pearls}
+
 {existing_contents}
 ## Instructions
 1. Examine the bookmark title and URL (if provided)
@@ -387,6 +390,7 @@ def file_bookmark(
     bookmark_title: str,
     bookmark_url: Optional[str] = None,
     model_path: Path = Path("models/pearltrees_federated_single.pkl"),
+    pearl_model_path: Optional[Path] = None,
     data_path: Optional[Path] = None,
     db_path: Optional[Path] = None,
     provider: str = "claude",
@@ -426,6 +430,31 @@ def file_bookmark(
     existing_contents = ""
     if db_path:
         existing_contents = get_existing_pearls(candidates, db_path)
+
+    # Get related pearls if model available
+    related_pearls = ""
+    if pearl_model_path and pearl_model_path.exists():
+        print(f"Finding similar pearls using {pearl_model_path}...")
+        # Use specific query style for pearl model
+        pearl_query = f"locate_url({bookmark_title})"
+        
+        # Use existing get_semantic_candidates but we need raw json, so tree_mode=False.
+        # But get_semantic_candidates returns (str, list). tree_mode=False returns empty str for tree output.
+        _, pearl_candidates = get_semantic_candidates(
+            pearl_query, pearl_model_path, top_k=5, tree_mode=False
+        )
+        
+        if pearl_candidates:
+            related_pearls = "## Similar Existing Bookmarks\n"
+            for pc in pearl_candidates:
+                score = pc.get('score', 0)
+                title = pc.get('title', 'Unknown')
+                path = pc.get('path')
+                # If path different from title, show it
+                if path and path != title:
+                    related_pearls += f"- {title} (in {path}) [Score: {score:.2f}]\n"
+                else:
+                    related_pearls += f"- {title} [Score: {score:.2f}]\n"
     
     # Build prompt
     url_line = f"URL: {bookmark_url}" if bookmark_url else ""
@@ -434,6 +463,7 @@ def file_bookmark(
         bookmark_url=url_line,
         top_k=top_k,
         tree_output=tree_output,
+        related_pearls=related_pearls,
         existing_contents=existing_contents
     )
     
@@ -456,6 +486,7 @@ def file_bookmark(
 
 def interactive_mode(
     model_path: Path,
+    pearl_model_path: Optional[Path],
     data_path: Optional[Path],
     db_path: Optional[Path],
     provider: str,
@@ -484,6 +515,7 @@ def interactive_mode(
             result = file_bookmark(
                 title, url,
                 model_path=model_path,
+                pearl_model_path=pearl_model_path,
                 data_path=data_path,
                 db_path=db_path,
                 provider=provider,
@@ -519,7 +551,10 @@ def main():
     parser.add_argument("--url", type=str, help="Bookmark URL (optional)")
     parser.add_argument("--model", type=Path, 
                        default=Path("models/pearltrees_federated_single.pkl"),
-                       help="Path to federated model")
+                       help="Path to federated model (Tree)")
+    parser.add_argument("--pearl-model", type=Path, 
+                       default=None,
+                       help="Path to federated model with pearls (optional)")
     parser.add_argument("--data", type=Path, 
                        default=Path("reports/pearltrees_targets_full_multi_account.jsonl"),
                        help="Path to JSONL data for tree display")
@@ -543,12 +578,13 @@ def main():
     args = parser.parse_args()
     
     if args.interactive:
-        interactive_mode(args.model, args.data, args.db, args.provider, args.llm_model, args.top_k)
+        interactive_mode(args.model, args.pearl_model, args.data, args.db, args.provider, args.llm_model, args.top_k)
     elif args.bookmark:
         result = file_bookmark(
             args.bookmark,
             args.url,
             model_path=args.model,
+            pearl_model_path=args.pearl_model,
             data_path=args.data,
             db_path=args.db,
             provider=args.provider,
