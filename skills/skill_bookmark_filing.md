@@ -1,0 +1,88 @@
+# Skill: Bookmark Filing
+
+This skill enables filing bookmarks into the Pearltrees folder hierarchy using semantic search and optional LLM selection.
+
+## Overview
+
+Uses a federated projection model (93% Recall@1) to find semantically similar folders, then optionally calls an LLM for final selection based on hierarchical context.
+
+## Commands
+
+### Get Semantic Candidates (Tree View)
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --model models/pearltrees_federated_single.pkl \
+  --query "BOOKMARK_TITLE" \
+  --top-k 10 --tree
+```
+
+### Get Semantic Candidates (JSON)
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --model models/pearltrees_federated_single.pkl \
+  --query "BOOKMARK_TITLE" \
+  --top-k 10 --json
+```
+
+### Full Filing Assistant (with LLM)
+```bash
+python3 scripts/bookmark_filing_assistant.py \
+  --bookmark "BOOKMARK_TITLE" \
+  --url "OPTIONAL_URL" \
+  --provider claude \
+  --top-k 10
+```
+
+## LLM Providers
+
+| Provider | Flag | Notes |
+|----------|------|-------|
+| Claude CLI | `--provider claude` | Cheapest with subscription |
+| Gemini CLI | `--provider gemini` | Gemini headless |
+| OpenAI API | `--provider openai` | Requires OPENAI_API_KEY |
+| Anthropic API | `--provider anthropic` | Requires ANTHROPIC_API_KEY |
+| Local Ollama | `--provider ollama` | Requires ollama installed |
+
+## Model Information
+
+- **Model Path**: `models/pearltrees_federated_single.pkl`
+- **Data Path**: `reports/pearltrees_targets_full_multi_account.jsonl`
+- **Clusters**: 51 semantic clusters
+- **Total Folders**: 6,527 Pearltrees folders
+- **Accuracy**: 93% Recall@1 on training data, 99% Recall@5
+
+## Tree Output Example
+
+```
+└── s243a
+    └── s243a_groups @s243a_groups  ← Account jump
+        └── s243a
+            └── STEM
+                └── AI & Machine Learning ★ #10 [0.280]
+                    ├── Machine Learning ★ #9 [0.284]
+                    │   └── Deep Learning ★ #2 [0.328]
+                    └── Neural network architectures ★ #1 [0.328]
+```
+
+Stars (★) mark candidate folders with rank and score.
+
+## Filing Decision Guidelines
+
+When recommending a folder:
+1. **Match specificity** - File in the most specific matching folder
+2. **Consider hierarchy** - A parent folder may be better for general topics
+3. **Check duplicates** - Similar-named folders may exist at different depths
+4. **Account matters** - Group folders (s243a_groups) are shared
+
+## MCP Integration
+
+An MCP server is available at `scripts/mcp_bookmark_filing_server.py` exposing:
+- `get_filing_candidates` - Get semantic search candidates
+- `file_bookmark` - Get LLM recommendation for filing
+
+## Related Scripts
+
+- `scripts/infer_pearltrees_federated.py` - Semantic search inference
+- `scripts/bookmark_filing_assistant.py` - Full filing assistant with LLM
+- `scripts/mcp_bookmark_filing_server.py` - MCP server
+- `scripts/train_pearltrees_federated.py` - Model training
