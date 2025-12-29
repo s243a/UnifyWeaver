@@ -46,8 +46,9 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 
-# Add inference script to path
+# Add paths
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "unifyweaver" / "targets" / "python_runtime"))
 
 
 FILING_PROMPT_TEMPLATE = '''You are a bookmark filing assistant. Your task is to select the BEST folder to file a new bookmark.
@@ -63,14 +64,16 @@ The following tree shows candidate folders marked with ★. The hierarchy shows 
 ```
 {tree_output}
 ```
-
+{existing_contents}
 ## Instructions
 1. Examine the bookmark title and URL (if provided)
 2. Look at ALL starred (★) candidates and their hierarchical context
-3. Select the SINGLE BEST folder for this bookmark
-4. Consider:
+3. Consider existing bookmarks in each folder - file similar items together
+4. Select the SINGLE BEST folder for this bookmark
+5. Consider:
    - How specific is the folder vs how specific is the bookmark?
    - Does the bookmark fit better in a parent or child folder?
+   - What existing content is already in the folder?
    - Semantic match between bookmark topic and folder name
 
 ## Response Format
@@ -81,6 +84,59 @@ Respond with ONLY the following JSON (no explanation):
     "reasoning": "<brief one-sentence explanation>"
 }}
 '''
+
+EXISTING_CONTENTS_TEMPLATE = '''
+## Existing Bookmarks in Candidate Folders
+
+{folder_contents}
+'''
+
+
+def get_existing_pearls(
+    candidates: List[dict],
+    db_path: Optional[Path] = None,
+    max_pearls_per_folder: int = 5
+) -> str:
+    """
+    Get existing bookmarks in candidate folders from the database.
+    
+    Returns formatted string showing existing contents.
+    """
+    if not db_path or not db_path.exists():
+        return ""
+    
+    try:
+        from importer import PtMultiAccountImporter
+    except ImportError:
+        return ""
+    
+    try:
+        importer = PtMultiAccountImporter(str(db_path))
+        
+        folder_contents = []
+        for c in candidates[:5]:  # Top 5 candidates only
+            tree_id = c.get('tree_id', '')
+            title = c.get('title', '')
+            
+            if not tree_id:
+                continue
+            
+            pearls = importer.get_pearls_in_tree(tree_id, limit=max_pearls_per_folder)
+            
+            if pearls:
+                pearl_titles = [p['data'].get('title', 'Untitled')[:60] for p in pearls]
+                folder_contents.append(f"**{title}** (#{c.get('rank', '?')}): {', '.join(pearl_titles)}")
+        
+        importer.close()
+        
+        if folder_contents:
+            return EXISTING_CONTENTS_TEMPLATE.format(
+                folder_contents='\n'.join(folder_contents)
+            )
+    except Exception as e:
+        print(f"Warning: Could not load existing pearls: {e}", file=sys.stderr)
+    
+    return ""
 
 
 @dataclass
@@ -332,6 +388,7 @@ def file_bookmark(
     bookmark_url: Optional[str] = None,
     model_path: Path = Path("models/pearltrees_federated_single.pkl"),
     data_path: Optional[Path] = None,
+    db_path: Optional[Path] = None,
     provider: str = "claude",
     llm_model: str = "sonnet",
     top_k: int = 10,
@@ -345,6 +402,7 @@ def file_bookmark(
         bookmark_url: Optional URL
         model_path: Path to the federated model
         data_path: Path to JSONL data for tree display
+        db_path: Path to SQLite DB with existing pearls
         provider: LLM provider (claude, gemini, openai, anthropic, ollama)
         llm_model: Model name for the provider
         top_k: Number of candidates to consider
@@ -364,13 +422,19 @@ def file_bookmark(
         print("Failed to get candidates", file=sys.stderr)
         return None
     
+    # Get existing pearls if DB available
+    existing_contents = ""
+    if db_path:
+        existing_contents = get_existing_pearls(candidates, db_path)
+    
     # Build prompt
     url_line = f"URL: {bookmark_url}" if bookmark_url else ""
     prompt = FILING_PROMPT_TEMPLATE.format(
         bookmark_title=bookmark_title,
         bookmark_url=url_line,
         top_k=top_k,
-        tree_output=tree_output
+        tree_output=tree_output,
+        existing_contents=existing_contents
     )
     
     # Call LLM
@@ -393,6 +457,7 @@ def file_bookmark(
 def interactive_mode(
     model_path: Path,
     data_path: Optional[Path],
+    db_path: Optional[Path],
     provider: str,
     llm_model: str,
     top_k: int
@@ -401,6 +466,8 @@ def interactive_mode(
     print("\n=== Bookmark Filing Assistant ===")
     print(f"Model: {model_path}")
     print(f"LLM: {provider}/{llm_model}")
+    if db_path and db_path.exists():
+        print(f"DB: {db_path} (existing pearls enabled)")
     print("\nEnter bookmark titles to get filing recommendations.")
     print("Type 'quit' to exit.\n")
     
@@ -418,6 +485,7 @@ def interactive_mode(
                 title, url,
                 model_path=model_path,
                 data_path=data_path,
+                db_path=db_path,
                 provider=provider,
                 llm_model=llm_model,
                 top_k=top_k
@@ -455,6 +523,9 @@ def main():
     parser.add_argument("--data", type=Path, 
                        default=Path("reports/pearltrees_targets_full_multi_account.jsonl"),
                        help="Path to JSONL data for tree display")
+    parser.add_argument("--db", type=Path, 
+                       default=None,
+                       help="Path to SQLite DB with existing pearls (enables showing folder contents)")
     parser.add_argument("--provider", type=str, default="claude",
                        choices=["claude", "gemini", "openai", "anthropic", "ollama"],
                        help="LLM provider")
@@ -472,13 +543,14 @@ def main():
     args = parser.parse_args()
     
     if args.interactive:
-        interactive_mode(args.model, args.data, args.provider, args.llm_model, args.top_k)
+        interactive_mode(args.model, args.data, args.db, args.provider, args.llm_model, args.top_k)
     elif args.bookmark:
         result = file_bookmark(
             args.bookmark,
             args.url,
             model_path=args.model,
             data_path=args.data,
+            db_path=args.db,
             provider=args.provider,
             llm_model=args.llm_model,
             top_k=args.top_k,
