@@ -38,6 +38,17 @@ Result: `The Feynman Lectures on Physics` (Rank 1)
 Query: `locate_url(Category:Energy properties)`
 Result: `Category:Energy properties` (Rank 1)
 
+### Observations on Query Steering
+The query styles effectively steer the search intent:
+
+| Query Template | Top Result | Composition of Top 5 | Behavior |
+| :--- | :--- | :--- | :--- |
+| `locate_url(...)` | **Bookmark** | 5 Bookmarks | Targets content pages/bookmarks. |
+| `locate_node(...)` | **Bookmark** | 4 Bookmarks, **1 Folder** | **Promotes Folders**. Successfully retrieved parent folder "Energy (Physics)" in top 5. |
+| `locate_object(...)` | **Bookmark** | 5 Bookmarks | Zero-shot fallback (works but lower confidence). |
+
+This demonstrates that `locate_node(...)` successfully biases the model towards retrieving structural elements (Trees), which is essential for filing tasks.
+
 ## Usage
 
 generate dataset:
