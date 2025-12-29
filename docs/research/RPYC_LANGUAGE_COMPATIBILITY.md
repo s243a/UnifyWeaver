@@ -296,22 +296,73 @@ For true integration, consider [edge-py](https://github.com/nicola/edge-py) but 
 | Scenario | Recommended Approach |
 |----------|---------------------|
 | Prolog + Python | Janus + RPyC (this project) |
-| .NET + Python | Python.NET + RPyC |
-| Java + Python | JPype + RPyC |
+| .NET + Python | Python.NET or CSnakes + RPyC |
+| Java + Python | JPype or jpy + RPyC |
 | Rust + Python | PyO3 + RPyC |
 | Ruby + Python | PyCall.rb + RPyC |
-| Go + Python | Consider gRPC instead |
-| Node.js + Python | Consider gRPC or HTTP instead |
-| Lua + Python | Consider embedding Lua in Python |
+| Go + Python | **Rust FFI bridge** (see below) |
+| Node.js + Python | Rust FFI bridge or gRPC |
+| Lua + Python | Rust FFI bridge or embed Lua in Python |
+| Other FFI languages | Rust FFI bridge |
 
-### Alternative: gRPC for Non-Python Languages
+### Recommended: Rust FFI Bridge for Languages Without Mature CPython Embedding
 
-For languages without good CPython embedding, consider:
+For Go, Node.js, Lua, and other languages with C FFI but without stable CPython bindings,
+use **Rust as a universal bridge layer**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              FFI-Capable Languages                       │
+├──────┬──────┬──────┬──────┬──────┬──────────────────────┤
+│  Go  │ Node │ Lua  │ PHP  │ Zig  │  Any C FFI lang...   │
+│ (cgo)│(napi)│(ffi) │(ffi) │      │                      │
+└──┬───┴──┬───┴──┬───┴──┬───┴──┬───┴──────────────────────┘
+   └──────┴──────┴──┬───┴──────┘
+                    ▼
+         ┌──────────────────────┐
+         │  Rust cdylib (.so)   │  ← Single bridge to maintain
+         │  ┌────────────────┐  │
+         │  │     PyO3       │  │  ← Tested & working
+         │  │  ┌──────────┐  │  │
+         │  │  │ CPython  │  │  │
+         │  │  │  + RPyC  │  │  │
+         │  │  └──────────┘  │  │
+         │  └────────────────┘  │
+         └──────────────────────┘
+                    │
+                    ▼ (TCP, live proxies)
+         ┌──────────────────────┐
+         │    RPyC Server       │
+         │  NumPy, PyTorch,     │
+         │  pandas, sklearn...  │
+         └──────────────────────┘
+```
+
+**Why Rust FFI over direct bridges:**
+
+| Aspect | Direct Go Bridges | Rust FFI Bridge |
+|--------|-------------------|-----------------|
+| GIL handling | Manual, error-prone | PyO3 handles it |
+| Stability | go-python3 archived (2021) | PyO3 actively maintained |
+| Maintenance | N bridges for N languages | One bridge for all |
+| Live proxies | go-embed-python uses subprocess | Full RPyC proxy support |
+
+**Why Rust FFI over gRPC:**
+
+- **Live proxies**: RPyC proxies work across the bridge (gRPC serializes everything)
+- **No schema files**: No `.proto` definitions needed
+- **Direct access**: Call any Python module dynamically
+
+### Alternative: gRPC for Stateless Services
+
+For languages without good CPython embedding AND when live proxies aren't needed:
 
 1. **Generate gRPC stubs** from Python services
 2. **Polyglot support** out of the box
 3. **Better tooling** for non-Python clients
 4. **Trade-off**: No live proxies, requires proto definitions
+
+Use gRPC when you only need request/response patterns, not interactive object manipulation.
 
 ## Implementation Priority
 
