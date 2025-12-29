@@ -6,8 +6,8 @@ Use PyCall.rb to embed CPython in Ruby and access RPyC.
 
 | Feature | Status |
 |---------|--------|
-| PyCall.rb binding | ✅ Active, v1.5.2 (May 2024) |
-| RPyC access | 🔬 High confidence (untested) |
+| PyCall.rb binding | ✅ Active, v1.5.2 |
+| RPyC access | ✅ Tested and working |
 
 ## Overview
 
@@ -130,6 +130,13 @@ PyCall.rb automatically converts between Ruby and Python types:
 | Hash | dict |
 | true/false | True/False |
 | nil | None |
+
+**Note:** Remote Python objects (via RPyC) may need explicit conversion:
+```ruby
+# Python float from RPyC needs .to_f for Ruby numeric operations
+result = math.sqrt(16).to_f
+(result - 4.0).abs < 0.001  # Now works with Ruby's abs method
+```
 
 ## Advanced: Ruby Class Wrapper
 

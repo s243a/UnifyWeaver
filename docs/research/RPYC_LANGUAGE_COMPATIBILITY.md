@@ -68,12 +68,12 @@ RPyC depends on **plumbum** (shell command toolkit). For RPyC classic mode (whic
 |----------|------------------|----------|------|------------------|-------|
 | **Prolog (SWI)** | [Janus](https://www.swi-prolog.org/pldoc/man?section=janus) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | This project |
 | **C#/F#** | [Python.NET](https://pythonnet.github.io/) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | .NET Core 9.0, math + NumPy |
-| **C#** | [CSnakes](https://tonybaloney.github.io/posts/embedding-python-in-dot-net-with-csnakes.html) | ✅ Yes | ✅ Yes | ✅ High | Newer, simpler API |
+| **C#** | [CSnakes](https://tonybaloney.github.io/posts/embedding-python-in-dot-net-with-csnakes.html) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | .NET 9, FromRedistributable |
 | **Java** | [JPype](https://github.com/jpype-project/jpype) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | Java 11, math + NumPy |
 | **Java** | [jpy](https://jpy.readthedocs.io/) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | Java 11, bi-directional |
 | **Java** | [GraalPy](https://github.com/oracle/graalpython) | ⚠️ GraalVM | ⚠️ Limited | ⚠️ Medium | May have C extension issues |
-| **Rust** | [PyO3](https://pyo3.rs/) | ✅ Yes | ✅ Yes | ✅ High | Very active, mature |
-| **Ruby** | [PyCall.rb](https://github.com/red-data-tools/pycall.rb) | ✅ Yes | ✅ Yes | ✅ High | v1.5.2 (May 2024) |
+| **Rust** | [PyO3](https://pyo3.rs/) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | PyO3 0.22, math + NumPy |
+| **Ruby** | [PyCall.rb](https://github.com/red-data-tools/pycall.rb) | ✅ Yes | ✅ Yes | ✅ **Tested & Working** | v1.5.2, math + NumPy |
 | **Go** | [go-python3](https://github.com/DataDog/go-python3) | ✅ Yes | ✅ Yes | ⚠️ Medium | GIL management complex |
 | **Go** | [go-embed-python](https://github.com/kluctl/go-embed-python) | ✅ Yes | ✅ Yes | ⚠️ Medium | No CGO, uses subprocess |
 | **Lua** | [lupa](https://github.com/scoder/lupa) | ❌ No* | ❌ No | ❌ Low | Lua embeds in Python, not reverse |
@@ -364,18 +364,20 @@ All the working variants run on or with CPython:
 
 ### Tested: Language Bridge Integration
 
-These bridges have been tested with RPyC (2025-12-27):
+These bridges have been tested with RPyC (2025-12-28):
 
 | Language | Bridge | Status | Test Results |
 |----------|--------|--------|--------------|
 | **.NET** | Python.NET | ✅ Verified | .NET Core 9.0, math.sqrt + numpy.mean |
-| **.NET** | CSnakes | ✅ Source gen verified | Compile-time wrappers work; runtime setup complex |
+| **.NET** | CSnakes | ✅ Verified | .NET 9, FromRedistributable + venv |
 | **Java** | JPype | ✅ Verified | Java 11, math.sqrt + numpy.mean |
 | **Java** | jpy | ✅ Verified | Java 11, bi-directional ArrayList demo |
+| **Rust** | PyO3 | ✅ Verified | PyO3 0.22, math.sqrt + numpy.mean |
+| **Ruby** | PyCall.rb | ✅ Verified | v1.5.2, math.sqrt + numpy.mean |
 | **Java** | GraalPy | ⏳ Untested | GraalVM-based, may have C extension issues |
 | **Java** | JNI + CPython | ⏳ Untested | Manual integration via Java Native Interface |
 
-See `examples/python-bridges/` for working examples.
+**All 6 primary bridges now verified working.** See `examples/python-bridges/` for working examples.
 
 ### Test Suite
 
