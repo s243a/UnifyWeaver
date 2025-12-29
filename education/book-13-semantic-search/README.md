@@ -148,7 +148,6 @@ This book covers building intelligent semantic agents using UnifyWeaver's Python
 - MCP server for tool integration
 - Slash command `/file-bookmark` for quick filing
 
-
 ## The Semantic Runtime
 
 The Python semantic runtime provides:

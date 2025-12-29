@@ -65,6 +65,20 @@ Recommend: "Deep Learning (#1)" because:
 - The specific "Transformers" folder (#2) would also be excellent
 - "NLP" (#4) is too broad for a specific architecture tutorial
 
+## Folder Hierarchy Context
+
+The user's Pearltrees folder hierarchy is **based on Wikipedia's page and category structure**, but:
+
+- **Not a strict mirror** - The user has adapted and reorganized topics to fit personal workflows
+- **Personal customizations** - Some folders are renamed, merged, or split differently than Wikipedia
+- **Cross-category items** - Many topics fit multiple categories; choose based on the user's primary interest
+- **Pragmatic filing** - Prefer practical utility over taxonomic purity
+
+When torn between options:
+1. Consider where the user would **look for** this bookmark later
+2. Prefer folders that already have similar content (check siblings if visible)
+3. A slightly "wrong" but memorable location beats a "correct" but obscure one
+
 ## Account Structure
 
 The user has two Pearltrees accounts:
