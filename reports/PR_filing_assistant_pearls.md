@@ -4,21 +4,25 @@
 feat(filing): Add support for Pearl model to find similar bookmarks
 
 ## Summary
-Updates the `bookmark_filing_assistant.py` to accept a secondary semantic search model (`--pearl-model`), which is used to find existing bookmarks similar to the one being filed. These similar references are provided to the LLM to improve filing consistency.
+This PR enhances the `bookmark_filing_assistant.py` to support a secondary semantic search model (`--pearl-model`) trained on individual bookmarks (Pearls). This allows the assistant to find existing bookmarks that are semantically similar to the one being filed and provide them as context to the LLM.
 
-## Changes
-- **Updated `file_bookmark`**:
-  - Accepts `pearl_model_path`.
-  - Queries this model using `locate_url(...)` template.
-  - Formats results into a "Similar Existing Bookmarks" section in the LLM prompt.
-- **Updated CLI**:
-  - Added `--pearl-model` argument.
-  - Updated `interactive_mode` to pass this model.
+This "dual-model" approach combines:
+1.  **Structure Awareness**: The primary model finds relevant folders (Trees).
+2.  **Content Awareness**: The secondary pearl model finds similar content items (Pearls), enabling "file-like-this" behavior.
 
-## Usage
+## Key Changes
+
+### `scripts/bookmark_filing_assistant.py`
+- Added `--pearl-model` argument to CLI.
+- Implemented logic to query the pearl model using the `locate_url(...)` template.
+- Formats retrieved pearls into a `## Similar Existing Bookmarks` section in the LLM prompt.
+- Updated `interactive_mode` to support the new argument.
+
+## Usage example
+
 ```bash
 python3 scripts/bookmark_filing_assistant.py \
-    --bookmark "The Feynman Lectures" \
+    --bookmark "The Feynman Lectures on Physics" \
     --model models/pearltrees_federated_single.pkl \
     --pearl-model models/pearltrees_full_pearls.pkl \
     --data reports/pearltrees_targets_full_multi_account.jsonl
