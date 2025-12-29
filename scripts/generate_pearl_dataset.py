@@ -46,31 +46,37 @@ QUERY_STYLES = {
     "raw": {
         "tree": "{title}",
         "pearl": "{title}",
+        "PagePearl": "{title}",
         "description": "Just the title, no wrapper"
     },
     "locate": {
         "tree": "locate_node({title})",
         "pearl": "locate_pearl({title})",
-        "description": "Locate a specific item"
+        "PagePearl": "locate_url({title})",
+        "description": "Locate a specific item (locate_node, locate_pearl, locate_url)"
     },
     "locate_object": {
         "tree": "locate_object({title})",
         "pearl": "locate_object({title})",
+        "PagePearl": "locate_object({title})",
         "description": "Generic locate (same for all types)"
     },
     "file": {
         "tree": "file_bookmark({title})",
         "pearl": "file_bookmark({title})",
+        "PagePearl": "file_bookmark({title})",
         "description": "Filing a bookmark into a folder"
     },
     "similar": {
         "tree": "find_similar({title})",
         "pearl": "find_similar({title})",
+        "PagePearl": "find_similar({title})",
         "description": "Find semantically similar items"
     },
     "browse": {
         "tree": "browse_folder({title})",
         "pearl": "view_bookmark({title})",
+        "PagePearl": "view_page({title})",
         "description": "Browsing/viewing items"
     }
 }
@@ -87,7 +93,7 @@ def extract_item_id(uri: str) -> str:
 def get_query_text(title: str, obj_type: str, style: str) -> str:
     """
     Format query text based on object type and style.
-    obj_type: 'tree' or 'pearl'
+    obj_type: 'tree' or 'pearl' or specific type like 'PagePearl'
     style: key in QUERY_STYLES
     """
     if style not in QUERY_STYLES:
@@ -95,7 +101,18 @@ def get_query_text(title: str, obj_type: str, style: str) -> str:
         return title
         
     templates = QUERY_STYLES[style]
-    template = templates.get(obj_type, "{title}")
+    
+    # Try specific type first, then fallback to general type
+    if obj_type in templates:
+        template = templates[obj_type]
+    elif "Pearl" in obj_type and "pearl" in templates:
+        template = templates["pearl"]
+    elif "Tree" in obj_type and "tree" in templates:
+        template = templates["tree"]
+    else:
+        # Default to raw title if no pattern matches
+        template = "{title}"
+        
     return template.format(title=title)
 
 
@@ -281,7 +298,7 @@ def generate_pearl_targets(
             target_text = format_path_with_pearl(tree_path, pearl.title, pearl_id)
             
             # Format query
-            query_text = get_query_text(pearl.title, "pearl", query_style)
+            query_text = get_query_text(pearl.title, pearl.type, query_style)
             
             # Cluster by parent tree
             cluster_id = pearl.parent_tree_uri or "root"
