@@ -84,5 +84,34 @@ An MCP server is available at `scripts/mcp_bookmark_filing_server.py` exposing:
 
 - `scripts/infer_pearltrees_federated.py` - Semantic search inference
 - `scripts/bookmark_filing_assistant.py` - Full filing assistant with LLM
+- `scripts/import_pearltrees_to_db.py` - Import RDF to SQLite
 - `scripts/mcp_bookmark_filing_server.py` - MCP server
 - `scripts/train_pearltrees_federated.py` - Model training
+
+## Database Import
+
+To enable showing existing bookmarks in candidate folders:
+
+```bash
+# Import your Pearltrees RDF exports
+python3 scripts/import_pearltrees_to_db.py \
+  --account s243a data/s243a.rdf \
+  --account s243a_groups data/s243a_groups.rdf \
+  --output pearltrees.db
+```
+
+Then use with filing assistant:
+
+```bash
+python3 scripts/bookmark_filing_assistant.py \
+  --bookmark "Machine learning tutorial" \
+  --db pearltrees.db
+```
+
+The LLM will see existing folder contents:
+```
+## Existing Bookmarks in Candidate Folders
+
+**Deep Learning** (#2): "PyTorch tutorial", "Keras getting started"
+**Machine Learning** (#3): "Scikit-learn guide", "ML overview"
+```
