@@ -14,11 +14,19 @@
 %   - JPype: Shared memory approach, good NumPy support
 %   - jpy: Bi-directional Java↔Python, used by JetBrains
 %
+% Rust Bridge:
+%   - PyO3: De-facto standard for Rust-Python interop
+%
+% Ruby Bridge:
+%   - PyCall.rb: Embeds CPython in Ruby
+%
 % Usage:
 %   ?- generate_pythonnet_rpyc_client(Options, CSharpCode).
 %   ?- generate_csnakes_rpyc_client(Options, CSharpCode).
 %   ?- generate_jpype_rpyc_client(Options, JavaCode).
 %   ?- generate_jpy_rpyc_client(Options, JavaCode).
+%   ?- generate_pyo3_rpyc_client(Options, RustCode).
+%   ?- generate_pycall_rb_rpyc_client(Options, RubyCode).
 
 :- module(python_bridges_glue, [
     % Bridge detection
@@ -26,6 +34,8 @@
     detect_csnakes/1,               % detect_csnakes(-Available)
     detect_jpype/1,                 % detect_jpype(-Available)
     detect_jpy/1,                   % detect_jpy(-Available)
+    detect_pyo3/1,                  % detect_pyo3(-Available)
+    detect_pycall_rb/1,             % detect_pycall_rb(-Available)
     detect_all_bridges/1,           % detect_all_bridges(-AvailableBridges)
 
     % Bridge requirements and validation
@@ -60,6 +70,14 @@
     generate_jpy_rpyc_client/2,          % generate_jpy_rpyc_client(+Options, -Code)
     generate_jpy_rpyc_service/2,         % generate_jpy_rpyc_service(+Options, -Code)
     generate_jpy_gradle/2,               % generate_jpy_gradle(+Options, -GradleContent)
+
+    % PyO3 (Rust) code generation
+    generate_pyo3_rpyc_client/2,         % generate_pyo3_rpyc_client(+Options, -Code)
+    generate_pyo3_cargo_toml/2,          % generate_pyo3_cargo_toml(+Options, -TomlContent)
+
+    % PyCall.rb (Ruby) code generation
+    generate_pycall_rb_rpyc_client/2,    % generate_pycall_rb_rpyc_client(+Options, -Code)
+    generate_pycall_rb_gemfile/2,        % generate_pycall_rb_gemfile(+Options, -GemfileContent)
 
     % Generic interface
     generate_python_bridge_client/3,     % generate_python_bridge_client(+Bridge, +Options, -Code)
@@ -144,6 +162,38 @@ detect_jpy(Available) :-
     ;   Available = false
     ).
 
+%% detect_pyo3(-Available)
+%  Check if PyO3/Rust toolchain is available.
+detect_pyo3(Available) :-
+    (   catch(
+            (process_create(path(cargo), ['--version'],
+                           [stdout(null), stderr(null)]),
+             true),
+            _, fail)
+    ->  Available = true
+    ;   Available = false
+    ).
+
+%% detect_pycall_rb(-Available)
+%  Check if PyCall.rb/Ruby is available.
+detect_pycall_rb(Available) :-
+    (   catch(
+            (process_create(path(ruby), ['-e', 'require "pycall"; puts "ok"'],
+                           [stdout(pipe(S)), stderr(null)]),
+             read_line_to_string(S, "ok"),
+             close(S)),
+            _, fail)
+    ->  Available = true
+    ;   % Check if Ruby is available even without pycall gem
+        catch(
+            (process_create(path(ruby), ['--version'],
+                           [stdout(null), stderr(null)]),
+             true),
+            _, fail)
+    ->  Available = true  % Ruby available, pycall can be installed
+    ;   Available = false
+    ).
+
 %% detect_all_bridges(-AvailableBridges)
 %  Detect all available Python bridges and return as a list.
 %  Returns bridges in priority order (most preferred first).
@@ -153,7 +203,9 @@ detect_all_bridges(AvailableBridges) :-
             pythonnet-detect_pythonnet,
             csnakes-detect_csnakes,
             jpype-detect_jpype,
-            jpy-detect_jpy
+            jpy-detect_jpy,
+            pyo3-detect_pyo3,
+            pycall_rb-detect_pycall_rb
         ]),
         call(Detector, true)
     ), AvailableBridges).
@@ -191,6 +243,20 @@ bridge_requirements(jpy, [
     requirement(environment, 'JAVA_HOME must be set'),
     requirement(note, 'Bi-directional - use size()/get() for Java collections')
 ]).
+bridge_requirements(pyo3, [
+    requirement(runtime, 'Rust toolchain (rustup)'),
+    requirement(crate, 'pyo3'),
+    requirement(python_package, 'rpyc'),
+    requirement(note, 'Use import_bound() for PyO3 0.21+'),
+    requirement(note, 'Requires Python dev headers for compilation')
+]).
+bridge_requirements(pycall_rb, [
+    requirement(runtime, 'Ruby 2.7+'),
+    requirement(gem, 'pycall'),
+    requirement(python_package, 'rpyc'),
+    requirement(system_package, 'ruby-dev (for native extensions)'),
+    requirement(note, 'Use .to_f for Ruby numeric operations on RPyC floats')
+]).
 
 %% check_bridge_ready(+Bridge, -Status)
 %  Check if a bridge is ready to use with detailed status.
@@ -204,6 +270,10 @@ check_bridge_ready(Bridge, Status) :-
     ->  check_jpype_ready(Status)
     ;   Bridge = jpy
     ->  check_jpy_ready(Status)
+    ;   Bridge = pyo3
+    ->  check_pyo3_ready(Status)
+    ;   Bridge = pycall_rb
+    ->  check_pycall_rb_ready(Status)
     ;   Status = unknown_bridge
     ).
 
@@ -241,6 +311,37 @@ check_jpy_ready(Status) :-
         ->  Status = missing_runtime('Java')
         ;   Status = missing_package(jpy)
         )
+    ).
+
+check_pyo3_ready(Status) :-
+    (   detect_pyo3(true)
+    ->  Status = ready
+    ;   Status = missing_runtime('Rust toolchain')
+    ).
+
+check_pycall_rb_ready(Status) :-
+    (   catch(
+            (process_create(path(ruby), ['-e', 'require "pycall"; puts "ok"'],
+                           [stdout(pipe(S)), stderr(null)]),
+             read_line_to_string(S, "ok"),
+             close(S)),
+            _, fail)
+    ->  Status = ready
+    ;   check_ruby_available(RubyOK),
+        (   RubyOK = false
+        ->  Status = missing_runtime('Ruby')
+        ;   Status = missing_package(pycall)
+        )
+    ).
+
+check_ruby_available(Available) :-
+    (   catch(
+            (process_create(path(ruby), ['--version'],
+                           [stdout(null), stderr(null)]),
+             true),
+            _, fail)
+    ->  Available = true
+    ;   Available = false
     ).
 
 check_dotnet_available(Available) :-
@@ -339,6 +440,10 @@ filter_bridges_by_target(dotnet, Bridges, Filtered) :-
     include(is_dotnet_bridge, Bridges, Filtered).
 filter_bridges_by_target(jvm, Bridges, Filtered) :-
     include(is_jvm_bridge, Bridges, Filtered).
+filter_bridges_by_target(rust, Bridges, Filtered) :-
+    include(is_rust_bridge, Bridges, Filtered).
+filter_bridges_by_target(ruby, Bridges, Filtered) :-
+    include(is_ruby_bridge, Bridges, Filtered).
 filter_bridges_by_target(any, Bridges, Bridges).
 filter_bridges_by_target(_, Bridges, Bridges).  % Default: allow all
 
@@ -346,6 +451,8 @@ is_dotnet_bridge(pythonnet).
 is_dotnet_bridge(csnakes).
 is_jvm_bridge(jpype).
 is_jvm_bridge(jpy).
+is_rust_bridge(pyo3).
+is_ruby_bridge(pycall_rb).
 
 %% filter_bridges_by_firewall(+Bridges, -Allowed)
 %  Filter bridges by firewall policy.
@@ -1297,6 +1404,197 @@ java {
 ', [Group, Version]).
 
 % ============================================================================
+% PYO3 (RUST) CODE GENERATION
+% ============================================================================
+
+%% generate_pyo3_rpyc_client(+Options, -Code)
+%  Generate Rust code for an RPyC client using PyO3.
+generate_pyo3_rpyc_client(Options, Code) :-
+    option(host(Host), Options, "localhost"),
+    option(port(Port), Options, 18812),
+    option(crate_name(CrateName), Options, "rpyc_client"),
+    format(atom(Code), '//! Generated by UnifyWeaver - PyO3 RPyC Client
+//! SPDX-License-Identifier: MIT
+
+use pyo3::prelude::*;
+
+/// RPyC client using PyO3 to embed CPython in Rust.
+/// Provides live object proxies over the network.
+pub struct RPyCClient {
+    conn: Py<PyAny>,
+}
+
+impl RPyCClient {
+    /// Connect to an RPyC server.
+    pub fn connect(host: &str, port: u16) -> PyResult<Self> {
+        Python::with_gil(|py| {
+            let rpyc = py.import_bound("rpyc")?;
+            let conn = rpyc
+                .getattr("classic")?
+                .call_method1("connect", (host, port))?;
+            Ok(Self { conn: conn.into() })
+        })
+    }
+
+    /// Connect with default host and port.
+    pub fn connect_default() -> PyResult<Self> {
+        Self::connect("~w", ~d)
+    }
+
+    /// Get a remote module.
+    pub fn get_module(&self, module_name: &str) -> PyResult<Py<PyAny>> {
+        Python::with_gil(|py| {
+            let conn = self.conn.bind(py);
+            let modules = conn.getattr("modules")?;
+            Ok(modules.getattr(module_name)?.into())
+        })
+    }
+
+    /// Call a function on a remote module.
+    pub fn call<T: for<''a> FromPyObject<''a>>(
+        &self,
+        module_name: &str,
+        function_name: &str,
+        args: impl IntoPy<Py<PyTuple>>,
+    ) -> PyResult<T> {
+        Python::with_gil(|py| {
+            let conn = self.conn.bind(py);
+            let module = conn.getattr("modules")?.getattr(module_name)?;
+            module.call_method1(function_name, args)?.extract()
+        })
+    }
+
+    /// Access the root namespace for exposed methods.
+    pub fn root(&self) -> PyResult<Py<PyAny>> {
+        Python::with_gil(|py| {
+            let conn = self.conn.bind(py);
+            Ok(conn.getattr("root")?.into())
+        })
+    }
+
+    /// Close the connection.
+    pub fn close(&self) -> PyResult<()> {
+        Python::with_gil(|py| {
+            self.conn.bind(py).call_method0("close")?;
+            Ok(())
+        })
+    }
+}
+
+impl Drop for RPyCClient {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
+}
+
+fn main() -> PyResult<()> {
+    println!("PyO3 + RPyC Integration (~w)");
+
+    let client = RPyCClient::connect_default()?;
+
+    // Example: call math.sqrt
+    let result: f64 = client.call("math", "sqrt", (16.0_f64,))?;
+    println!("math.sqrt(16) = {}", result);
+
+    Ok(())
+}
+', [Host, Port, CrateName]).
+
+%% generate_pyo3_cargo_toml(+Options, -TomlContent)
+%  Generate Cargo.toml for PyO3 project.
+generate_pyo3_cargo_toml(Options, TomlContent) :-
+    option(crate_name(CrateName), Options, "rpyc_client"),
+    option(version(Version), Options, "0.1.0"),
+    format(atom(TomlContent), '[package]
+name = "~w"
+version = "~w"
+edition = "2021"
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["auto-initialize"] }
+', [CrateName, Version]).
+
+% ============================================================================
+% PYCALL.RB (RUBY) CODE GENERATION
+% ============================================================================
+
+%% generate_pycall_rb_rpyc_client(+Options, -Code)
+%  Generate Ruby code for an RPyC client using PyCall.rb.
+generate_pycall_rb_rpyc_client(Options, Code) :-
+    option(host(Host), Options, "localhost"),
+    option(port(Port), Options, 18812),
+    option(class_name(ClassName), Options, "RPyCClient"),
+    format(atom(Code), '#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Generated by UnifyWeaver - PyCall.rb RPyC Client
+# SPDX-License-Identifier: MIT
+
+require ''pycall''
+
+# RPyC client using PyCall.rb to embed CPython in Ruby.
+# Provides live object proxies over the network.
+class ~w
+  attr_reader :conn
+
+  def initialize(host = ''~w'', port = ~d)
+    @rpyc = PyCall.import_module(''rpyc'')
+    @conn = @rpyc.classic.connect(host, port)
+  end
+
+  # Get a remote module
+  def get_module(module_name)
+    conn.modules.send(module_name)
+  end
+
+  # Call a function on a remote module
+  # Note: Use .to_f on numeric results for Ruby operations
+  def call(module_name, function_name, *args)
+    mod = get_module(module_name)
+    mod.send(function_name, *args)
+  end
+
+  # Access the root namespace for exposed methods
+  def root
+    conn.root
+  end
+
+  # Call an exposed method on the server
+  def call_exposed(method_name, *args)
+    root.send(method_name, *args)
+  end
+
+  # Close the connection
+  def close
+    conn.close
+  end
+end
+
+# Example usage
+if __FILE__ == $PROGRAM_NAME
+  puts ''PyCall.rb + RPyC Integration (~w)''
+
+  client = ~w.new
+
+  # Call math.sqrt (use .to_f for Ruby numeric operations)
+  result = client.call(''math'', ''sqrt'', 16).to_f
+  puts "math.sqrt(16) = #{result}"
+
+  client.close
+end
+', [ClassName, Host, Port, ClassName, ClassName]).
+
+%% generate_pycall_rb_gemfile(+Options, -GemfileContent)
+%  Generate Gemfile for PyCall.rb project.
+generate_pycall_rb_gemfile(_Options, GemfileContent) :-
+    format(atom(GemfileContent), '# frozen_string_literal: true
+
+source ''https://rubygems.org''
+
+gem ''pycall'', ''~> 1.5''
+', []).
+
+% ============================================================================
 % GENERIC INTERFACE
 % ============================================================================
 
@@ -1310,6 +1608,10 @@ generate_python_bridge_client(jpype, Options, Code) :-
     generate_jpype_rpyc_client(Options, Code).
 generate_python_bridge_client(jpy, Options, Code) :-
     generate_jpy_rpyc_client(Options, Code).
+generate_python_bridge_client(pyo3, Options, Code) :-
+    generate_pyo3_rpyc_client(Options, Code).
+generate_python_bridge_client(pycall_rb, Options, Code) :-
+    generate_pycall_rb_rpyc_client(Options, Code).
 
 %% generate_python_bridge_service(+Bridge, +Options, -Code)
 %  Generate service code for the specified bridge.
@@ -1335,6 +1637,8 @@ test_python_bridges_glue :-
     (detect_csnakes(CSAvail) -> format('  CSnakes: ~w~n', [CSAvail]) ; format('  CSnakes: error~n')),
     (detect_jpype(JPAvail) -> format('  JPype: ~w~n', [JPAvail]) ; format('  JPype: error~n')),
     (detect_jpy(JpyAvail) -> format('  jpy: ~w~n', [JpyAvail]) ; format('  jpy: error~n')),
+    (detect_pyo3(PyO3Avail) -> format('  PyO3: ~w~n', [PyO3Avail]) ; format('  PyO3: error~n')),
+    (detect_pycall_rb(PyCallAvail) -> format('  PyCall.rb: ~w~n', [PyCallAvail]) ; format('  PyCall.rb: error~n')),
 
     % Test code generation
     format('~nCode Generation:~n'),
@@ -1365,6 +1669,20 @@ test_python_bridges_glue :-
         atom_length(JpyCode, JpyLen),
         format('  jpy client: ~d chars~n', [JpyLen])
     ;   format('  jpy client: FAILED~n')
+    ),
+
+    % PyO3
+    (   generate_pyo3_rpyc_client([host("localhost"), port(18812)], PyO3Code),
+        atom_length(PyO3Code, PyO3Len),
+        format('  PyO3 client: ~d chars~n', [PyO3Len])
+    ;   format('  PyO3 client: FAILED~n')
+    ),
+
+    % PyCall.rb
+    (   generate_pycall_rb_rpyc_client([host("localhost"), port(18812)], PyCallCode),
+        atom_length(PyCallCode, PyCallLen),
+        format('  PyCall.rb client: ~d chars~n', [PyCallLen])
+    ;   format('  PyCall.rb client: FAILED~n')
     ),
 
     format('~n=== Tests Complete ===~n').
