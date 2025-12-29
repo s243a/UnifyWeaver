@@ -1445,7 +1445,7 @@ namespace UnifyWeaver.QueryRuntime
                 return key;
             }
 
-            static bool TryEstimateRowUpperBound(PlanNode node, EvaluationContext context, out int upperBound)
+            bool TryEstimateRowUpperBound(PlanNode node, EvaluationContext context, out int upperBound)
             {
                 upperBound = 0;
                 switch (node)
@@ -1480,6 +1480,43 @@ namespace UnifyWeaver.QueryRuntime
 
                     case OrderByNode orderBy:
                         return TryEstimateRowUpperBound(orderBy.Input, context, out upperBound);
+
+                    case RelationScanNode scan:
+                        upperBound = GetFactsList(scan.Relation, context).Count;
+                        return true;
+
+                    case PatternScanNode scan:
+                    {
+                        var facts = GetFactsList(scan.Relation, context);
+                        upperBound = facts.Count;
+
+                        int? boundColumn = null;
+                        for (var i = 0; i < scan.Pattern.Length; i++)
+                        {
+                            var value = scan.Pattern[i];
+                            if (ReferenceEquals(value, Wildcard.Value))
+                            {
+                                continue;
+                            }
+
+                            if (boundColumn is not null)
+                            {
+                                return true;
+                            }
+
+                            boundColumn = i;
+                        }
+
+                        if (boundColumn is not null &&
+                            context.FactIndices.TryGetValue((scan.Relation, boundColumn.Value), out var index))
+                        {
+                            var keyValue = scan.Pattern[boundColumn.Value];
+                            var lookupKey = keyValue ?? NullFactIndexKey;
+                            upperBound = index.TryGetValue(lookupKey, out var bucket) ? bucket.Count : 0;
+                        }
+
+                        return true;
+                    }
 
                     case RecursiveRefNode recursive:
                     {
@@ -2031,6 +2068,12 @@ namespace UnifyWeaver.QueryRuntime
             if (forceBuildLeft is not null)
             {
                 buildLeft = forceBuildLeft.Value;
+            }
+            else if (context is not null &&
+                     TryEstimateRowUpperBound(join.Left, context, out var leftUpperBound) &&
+                     TryEstimateRowUpperBound(join.Right, context, out var rightUpperBound))
+            {
+                buildLeft = leftUpperBound <= rightUpperBound;
             }
 
             static bool TryGetRecursiveRows(
