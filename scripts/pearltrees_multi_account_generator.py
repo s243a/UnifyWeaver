@@ -271,6 +271,34 @@ class MultiAccountParser:
                 account=account_name
             ))
 
+        # 5. Parse PagePearls (actual bookmarks)
+        for elem in root.findall(f".//{{{NAMESPACES['pt']}}}PagePearl"):
+            uri = elem.get(f"{{{NAMESPACES['rdf']}}}about")
+            if not uri:
+                continue
+            
+            parent_res = elem.find(f"{{{NAMESPACES['pt']}}}parentTree")
+            # Items might not have a parent tree if they are in the root or detached
+            parent_uri = parent_res.get(f"{{{NAMESPACES['rdf']}}}resource") if parent_res is not None else None
+            
+            pos_elem = elem.find(f"{{{NAMESPACES['pt']}}}posOrder")
+            pos_order = int(pos_elem.text) if pos_elem is not None else 0
+            
+            title_elem = elem.find(f"{{{NAMESPACES['dcterms']}}}title")
+            title = title_elem.text if title_elem is not None else ""
+            
+            # Extract URL if available? RDF usually puts it in text or resource
+            # But Pearl class only has uri (ID) and title. For now this is enough for the dataset.
+            
+            self.pearls.append(Pearl(
+                uri=uri,
+                type="PagePearl",
+                title=title,
+                parent_tree_uri=parent_uri,
+                pos_order=pos_order,
+                account=account_name
+            ))
+
     def _get_section_type_for_pos(self, tree_uri: str, pos_order: int) -> str:
         """Determine which section a posOrder falls into for a given tree."""
         if tree_uri not in self.sections:
