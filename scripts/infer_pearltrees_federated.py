@@ -46,6 +46,7 @@ class Candidate:
     title: str
     path: str
     cluster_id: str
+    dataset_index: int = -1
 
 
 class FederatedInferenceEngine:
@@ -229,7 +230,8 @@ class FederatedInferenceEngine:
                 tree_id=tree_id,
                 title=title,
                 path=path,
-                cluster_id=cluster_id
+                cluster_id=cluster_id,
+                dataset_index=idx
             ))
         
         return candidates
@@ -272,12 +274,16 @@ def build_merged_tree(candidates: List[Candidate], data: List[dict]) -> 'TreeNod
     root = TreeNode('ROOT')
     
     for c in candidates:
-        # Find the data entry by tree_id
+        # Find the data entry by dataset_index if available
         idx = None
-        for i, d in enumerate(data):
-            if d.get('tree_id') == c.tree_id or d.get('uri', '').endswith(c.tree_id):
-                idx = i
-                break
+        if c.dataset_index >= 0 and c.dataset_index < len(data):
+            idx = c.dataset_index
+        else:
+            # Fallback matching
+            for i, d in enumerate(data):
+                if d.get('tree_id') == c.tree_id or d.get('uri', '').endswith(c.tree_id):
+                    idx = i
+                    break
         
         if idx is None:
             # Fallback: use title as single node
