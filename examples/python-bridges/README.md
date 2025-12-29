@@ -21,13 +21,13 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 | [JPype](jpype/) | JVM | ✅ Tested | Java projects needing NumPy/SciPy |
 | [jpy](jpy/) | JVM | ✅ Tested | Bi-directional Java↔Python |
 | [PyO3](pyo3/) | Rust | ✅ Tested | Systems programming with Python ML |
-| [PyCall.rb](pycall/) | Ruby | 🔬 Documented | Ruby/Rails with Python data science |
+| [PyCall.rb](pycall/) | Ruby | ✅ Tested | Ruby/Rails with Python data science |
 
 **Legend:** ✅ Tested and working | ⚠️ Partial (see notes) | 🔬 Documented (high confidence)
 
 **Notes:**
 - CSnakes: Uses `FromRedistributable` for cross-platform Python (auto-downloads ~60MB)
-- PyCall.rb: Well-documented pattern, not runtime-tested in this repo (Ruby environment required)
+- PyCall.rb: Requires `ruby-dev` package for native extension compilation
 
 ## Quick Start
 

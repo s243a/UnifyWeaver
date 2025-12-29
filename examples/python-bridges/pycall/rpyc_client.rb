@@ -30,7 +30,7 @@ begin
   puts
   puts "Test 1: Remote math.sqrt"
   math = conn.modules.math
-  result = math.sqrt(16)
+  result = math.sqrt(16).to_f  # Convert Python float to Ruby float
   puts "  math.sqrt(16) = #{result}"
   raise "Expected 4.0" unless (result - 4.0).abs < 0.001
   puts "  ✓ Passed"
@@ -40,7 +40,7 @@ begin
   puts "Test 2: Remote numpy.mean"
   np = conn.modules.numpy
   arr = np.array([1, 2, 3, 4, 5])
-  mean = np.mean(arr)
+  mean = np.mean(arr).to_f  # Convert Python float to Ruby float
   puts "  numpy.mean([1,2,3,4,5]) = #{mean}"
   raise "Expected 3.0" unless (mean - 3.0).abs < 0.001
   puts "  ✓ Passed"
