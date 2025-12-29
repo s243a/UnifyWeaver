@@ -28,6 +28,9 @@ The user wants to file this bookmark: \"$1\"
 Please run the semantic search and provide your recommendation."
 fi
 
-# Launch Claude Code with the prompt
+# Launch Claude Code with the prompt (interactive mode)
 cd "$PROJECT_DIR"
-claude --print "$INITIAL_PROMPT"
+
+# Use --continue with a new conversation, providing initial context
+# The -p flag makes it print-only, we want interactive
+exec claude "$INITIAL_PROMPT"
