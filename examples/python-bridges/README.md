@@ -9,6 +9,7 @@ These examples demonstrate how to use RPyC (Remote Python Call) from:
 - **JVM** via JPype or jpy
 - **Rust** via PyO3
 - **Ruby** via PyCall.rb
+- **Go** via Rust FFI bridge (for languages without mature CPython embedding)
 
 Each bridge embeds CPython and provides access to RPyC's live object proxies.
 
@@ -22,12 +23,14 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 | [jpy](jpy/) | JVM | ✅ Tested | Bi-directional Java↔Python |
 | [PyO3](pyo3/) | Rust | ✅ Tested | Systems programming with Python ML |
 | [PyCall.rb](pycall/) | Ruby | ✅ Tested | Ruby/Rails with Python data science |
+| [Rust FFI](rust-ffi-go/) | Go (via Rust) | 🔬 Documented | Go projects needing Python ML |
 
 **Legend:** ✅ Tested and working | ⚠️ Partial (see notes) | 🔬 Documented (high confidence)
 
 **Notes:**
 - CSnakes: Uses `FromRedistributable` for cross-platform Python (auto-downloads ~60MB)
 - PyCall.rb: Requires `ruby-dev` package for native extension compilation
+- Rust FFI: Universal bridge for FFI-capable languages (Go, Node.js, Lua, etc.)
 
 ## Quick Start
 
