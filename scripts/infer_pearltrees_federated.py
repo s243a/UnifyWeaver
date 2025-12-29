@@ -258,7 +258,80 @@ def format_candidates(candidates: List[Candidate], json_output: bool = False) ->
     return "\n".join(lines)
 
 
-def interactive_mode(engine: FederatedInferenceEngine, top_k: int = 5):
+def build_merged_tree(candidates: List[Candidate], data: List[dict]) -> 'TreeNode':
+    """Build a merged tree from candidates with full paths."""
+    
+    class TreeNode:
+        def __init__(self, name):
+            self.name = name
+            self.children = {}
+            self.is_result = False
+            self.score = 0.0
+            self.rank = 0
+    
+    root = TreeNode('ROOT')
+    
+    for c in candidates:
+        # Find the data entry by tree_id
+        idx = None
+        for i, d in enumerate(data):
+            if d.get('tree_id') == c.tree_id or d.get('uri', '').endswith(c.tree_id):
+                idx = i
+                break
+        
+        if idx is None:
+            # Fallback: use title as single node
+            if c.title not in root.children:
+                root.children[c.title] = TreeNode(c.title)
+            node = root.children[c.title]
+            node.is_result = True
+            node.score = c.score
+            node.rank = c.rank
+            continue
+        
+        d = data[idx]
+        path_text = d.get('target_text', '')
+        lines = path_text.split('\n')[1:]  # Skip ID line
+        
+        current = root
+        for line in lines:
+            stripped = line.lstrip('- ')
+            if not stripped:
+                continue
+            if stripped not in current.children:
+                current.children[stripped] = TreeNode(stripped)
+            current = current.children[stripped]
+        
+        current.is_result = True
+        current.score = c.score
+        current.rank = c.rank
+    
+    return root
+
+
+def format_tree(node, depth=0, prefix='') -> str:
+    """Format tree as string with box-drawing characters."""
+    lines = []
+    items = sorted(node.children.items())
+    
+    for i, (name, child) in enumerate(items):
+        is_last = i == len(items) - 1
+        connector = '└── ' if is_last else '├── '
+        
+        if child.is_result:
+            result_str = f' ★ #{child.rank} [{child.score:.3f}]'
+        else:
+            result_str = ''
+        
+        lines.append(f'{prefix}{connector}{name}{result_str}')
+        
+        new_prefix = prefix + ('    ' if is_last else '│   ')
+        lines.append(format_tree(child, depth + 1, new_prefix))
+    
+    return '\n'.join(filter(None, lines))
+
+
+def interactive_mode(engine: 'FederatedInferenceEngine', top_k: int = 5):
     """Run in interactive mode."""
     print("\n=== Pearltrees Bookmark Filing Assistant ===")
     print(f"Model: {engine.model_path}")
@@ -306,6 +379,10 @@ def main():
                        help="Run in interactive mode")
     parser.add_argument("--json", action="store_true",
                        help="Output results as JSON")
+    parser.add_argument("--tree", action="store_true",
+                       help="Output results as merged hierarchical tree")
+    parser.add_argument("--data", type=Path, default=None,
+                       help="Path to original JSONL data (for --tree mode)")
     parser.add_argument("--embedder", type=str, default="nomic-ai/nomic-embed-text-v1.5",
                        help="Embedding model to use")
     
@@ -314,11 +391,31 @@ def main():
     # Load engine
     engine = FederatedInferenceEngine(args.model, args.embedder)
     
+    # Load data if tree mode requested
+    data = None
+    if args.tree:
+        data_path = args.data or Path("reports/pearltrees_targets_full_multi_account.jsonl")
+        if data_path.exists():
+            with open(data_path) as f:
+                data = [json.loads(line) for line in f]
+            logger.info(f"Loaded {len(data)} entries for tree display")
+        else:
+            logger.warning(f"Data file not found: {data_path}, tree mode disabled")
+            args.tree = False
+    
     if args.interactive:
         interactive_mode(engine, args.top_k)
     elif args.query:
         candidates = engine.search(args.query, args.top_k, args.top_k_routing)
-        print(format_candidates(candidates, args.json))
+        
+        if args.tree and data:
+            tree = build_merged_tree(candidates, data)
+            print(f"Query: {args.query}")
+            print(f"\nMerged tree of top {args.top_k} results:")
+            print("=" * 60)
+            print(format_tree(tree))
+        else:
+            print(format_candidates(candidates, args.json))
     else:
         parser.print_help()
         sys.exit(1)
