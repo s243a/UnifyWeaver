@@ -162,8 +162,17 @@ f_dist_or([a:w1, b:w2]) with base_score S:
   = 1 - (1 - S*w1*a) * (1 - S*w2*b)
 ```
 
-This is NOT equivalent to `S * f_or([a:w1, b:w2])` because fuzzy OR
-is not associative with multiplication.
+This is NOT equivalent to `S * f_or([a:w1, b:w2])` because multiplication
+does not distribute over fuzzy OR:
+
+```
+S * (a OR b) = S * (a + b - ab) = Sa + Sb - Sab
+(S*a) OR (S*b) = Sa + Sb - S²ab
+```
+
+These differ by a factor of S in the last term (Sab vs S²ab).
+
+Note: Fuzzy AND and OR are both associative; it's distributivity that fails.
 
 ### Non-Distributed OR (Union) - Future
 
