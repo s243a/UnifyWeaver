@@ -136,3 +136,48 @@ python3 scripts/generate_dual_embeddings.py \
 - `scripts/mcp_bookmark_filing_server.py` - MCP interface
 - `models/dual_embeddings_full.npz` - Pre-computed embeddings
 - `docs/theory/hybrid_scoring_theory.md` - Mathematical theory
+
+## Model Formats (HF vs ONNX)
+
+Two model formats are available:
+
+| Format | Size | Training | Inference | Use Case |
+|--------|------|----------|-----------|----------|
+| **HF (PyTorch)** | ~175 MB | ✅ Yes | ✅ Yes | Desktop, training |
+| **ONNX** | ~88 MB | ❌ No | ✅ Yes | Mobile, Rust |
+
+- `all-MiniLM-L6-v2-hf/` - HuggingFace format (our scripts use this)
+- `all-MiniLM-L6-v2-onnx/` - ONNX format (for Rust or lighter deployment)
+
+To use ONNX in Python:
+```python
+model = SentenceTransformer("model_name", backend="onnx")
+```
+
+## Phone Deployment
+
+### Files to Copy (not in git - too large/private)
+
+Copy to `context/phone/models/` or similar:
+- `nomic-embed-text-v1.5/` (~1.1 GB) - Output Objective model
+- `all-MiniLM-L6-v2-hf/` (~175 MB) - Input Objective model
+- `dual_embeddings_full.npz` (262 MB) - Pre-computed embeddings
+- `pearltrees_targets_full_pearls.jsonl` (26 MB) - Paths for display
+
+**For Federated Mode also:**
+- `pearltrees_federated_single/` (~160 MB) - W matrices
+- `pearltrees_federated_single.pkl` (400 KB) - Cluster metadata
+- `pearltrees_targets_full_multi_account.jsonl` (3.8 MB)
+
+### Scripts (from git)
+
+Clone the repo, then run:
+```bash
+# Dual-objective mode
+python3 scripts/test_dual_objective.py --query "Feynman Lectures" --top-k 5
+
+# Federated mode  
+python3 scripts/infer_pearltrees_federated.py \
+  --model models/pearltrees_federated_single.pkl \
+  --query "Feynman Lectures" --top-k 5 --tree --alpha 0.7
+```
