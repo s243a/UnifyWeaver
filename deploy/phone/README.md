@@ -22,11 +22,24 @@
 ## Usage
 
 ```bash
-python infer_phone.py --query "Feynman Lectures" --top-k 5
+# Basic search (merged tree view is default)
+python infer_phone.py --query "Feynman Lectures" --top-k 10
+
+# Flat list output (last 3 path levels only)
+python infer_phone.py --query "Feynman Lectures" --list
+
+# JSON output
+python infer_phone.py --query "Feynman Lectures" --json
+
+# Adjust alpha (0=semantic, 1=structural, default=0.7)
+python infer_phone.py --query "Feynman Lectures" --alpha 0.5
+
+# Explicit temp directory (auto-detected if not specified)
+python infer_phone.py --query "Feynman Lectures" --tmpdir $PREFIX/tmp
 ```
 
 ## Dependencies
 
 ```
-pip install numpy onnxruntime sentence-transformers
+pip install numpy onnxruntime sentence-transformers einops
 ```

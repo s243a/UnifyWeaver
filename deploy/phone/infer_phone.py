@@ -5,8 +5,33 @@ Uses ONNX runtime for embedding and numpy for scoring.
 """
 import argparse
 import json
+import os
+import sys
+import tempfile
 import numpy as np
 from pathlib import Path
+
+
+def get_temp_dir():
+    """Get temp directory that works across environments (Termux, Linux, etc.)."""
+    # tempfile.gettempdir() respects TMPDIR, TEMP, TMP env vars
+    # Falls back to /tmp on Unix, which may not exist on Termux
+    tmpdir = tempfile.gettempdir()
+
+    # If default /tmp doesn't exist or isn't writable, try alternatives
+    if not os.path.isdir(tmpdir) or not os.access(tmpdir, os.W_OK):
+        # Termux: $PREFIX/tmp
+        prefix_tmp = os.path.join(os.environ.get('PREFIX', ''), 'tmp')
+        if os.path.isdir(prefix_tmp) and os.access(prefix_tmp, os.W_OK):
+            return prefix_tmp
+        # Android fallback: app cache dir
+        android_tmp = '/data/local/tmp'
+        if os.path.isdir(android_tmp) and os.access(android_tmp, os.W_OK):
+            return android_tmp
+        # Last resort: current directory
+        return '.'
+
+    return tmpdir
 
 # Try ONNX runtime first (lighter), fall back to sentence-transformers
 try:
@@ -42,6 +67,45 @@ def load_paths(jsonl_path):
                     item = json.loads(line)
                     paths[i] = item.get("target_text", "")
     return paths
+
+
+def build_tree(results, paths):
+    """Build a nested tree structure from results."""
+    tree = {}
+    for r in results:
+        idx = r["index"]
+        path_text = paths.get(idx, "")
+        lines = [l.strip() for l in path_text.split("\n") if l.strip() and not l.startswith("/")]
+
+        current = tree
+        for i, part in enumerate(lines):
+            clean = part.lstrip("- ")
+            if clean not in current:
+                current[clean] = {"_children": {}, "_rank": None}
+            if i == len(lines) - 1:
+                current[clean]["_rank"] = r["rank"]
+                current[clean]["_score"] = r["score"]
+                current[clean]["_type"] = r["item_type"]
+            current = current[clean]["_children"]
+    return tree
+
+
+def print_tree(node, prefix="", file=sys.stdout):
+    """Print tree structure with box-drawing characters."""
+    children = list(node.items())
+    for i, (name, data) in enumerate(children):
+        is_last = (i == len(children) - 1)
+        connector = "└── " if is_last else "├── "
+
+        rank_str = ""
+        if data.get("_rank"):
+            rank_str = f' ★ #{data["_rank"]} [{data["_score"]:.6f}] ({data["_type"]})'
+
+        print(f"{prefix}{connector}{name}{rank_str}", file=file)
+
+        next_prefix = prefix + ("    " if is_last else "│   ")
+        if data.get("_children"):
+            print_tree(data["_children"], next_prefix, file=file)
 
 
 def embed_query(query, model_name="sentence-transformers/all-MiniLM-L6-v2"):
@@ -98,8 +162,19 @@ def main():
     parser.add_argument("--top-k", type=int, default=10,
                        help="Number of results")
     parser.add_argument("--json", action="store_true",
-                       help="Output JSON instead of tree")
+                       help="Output JSON instead of formatted results")
+    parser.add_argument("--list", action="store_true",
+                       help="Output flat list (last 3 path levels only)")
+    parser.add_argument("--tmpdir", type=str, default=None,
+                       help="Temp directory (auto-detected if not specified)")
     args = parser.parse_args()
+
+    # Set up temp directory
+    if args.tmpdir:
+        tmpdir = args.tmpdir
+    else:
+        tmpdir = get_temp_dir()
+    os.environ['TMPDIR'] = tmpdir  # Make available to subprocesses
     
     print(f"Loading embeddings from {args.embeddings}...")
     embeddings = load_embeddings(args.embeddings)
@@ -114,10 +189,12 @@ def main():
     print("Searching...")
     results = search(query_emb_minilm, query_emb_nomic, embeddings, alpha=args.alpha, top_k=args.top_k)
     
+    paths = load_paths(args.data)
+
     if args.json:
         print(json.dumps(results, indent=2))
-    else:
-        paths = load_paths(args.data)
+    elif args.list:
+        # Flat list view (last 3 path levels only)
         print(f"\nResults for: {args.query}")
         print("=" * 60)
         for r in results:
@@ -127,6 +204,12 @@ def main():
             for line in path_lines:
                 if line.strip():
                     print(f"    {line}")
+    else:
+        # Default: merged tree view
+        print(f"\nResults for: {args.query}", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+        tree = build_tree(results, paths)
+        print_tree(tree)
 
 
 if __name__ == "__main__":
