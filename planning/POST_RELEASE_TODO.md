@@ -1614,3 +1614,67 @@ $ bash test_output/test_runner.sh
 - `src/unifyweaver/core/advanced/test_runner_generator.pl` - Existing generator for recursion tests
 - `examples/test_generated_scripts.sh` - Current ad-hoc implementation
 - `examples/integration_test.pl` - Uses `generated_file/2` tracking
+
+---
+
+## Bookmark Filing: Dual-Objective Model Experiments
+
+**Status:** 📋 FUTURE ENHANCEMENT
+**Created:** 2025-12-29
+**Priority:** Low (current setup works well)
+
+### Background
+
+The dual-objective scoring system uses two embedding models:
+- **Input Objective**: Semantic title matching (currently MiniLM 384-dim)
+- **Output Objective**: Structural/functional matching (currently Nomic 768-dim)
+
+MiniLM is a fallback for ModernBERT (requires Transformers 4.48+). Once ModernBERT is available, we should test different model arrangements.
+
+### Model Arrangements to Test
+
+| Arrangement | Input Objective | Output Objective | Notes |
+|-------------|-----------------|------------------|-------|
+| **Current** | MiniLM (384d) | Nomic (768d) | Fast, working |
+| **ModernBERT** | ModernBERT (768d) | Nomic (768d) | Requires TF 4.48+ |
+| **Short-context Input** | BGE-small (384d) | Nomic (768d) | Optimized for titles |
+| **GTE** | GTE-small (384d) | Nomic (768d) | Strong MTEB scores |
+| **Unified** | Nomic (768d) | Nomic (768d) | Simpler, one model |
+| **Lightweight** | MiniLM (384d) | MiniLM (384d) | Fastest, ~180MB total |
+
+### Evaluation Criteria
+
+1. **Accuracy**: Hit rate on test queries (Hyphanet → Freenet & Hyphanet)
+2. **Speed**: Query embedding time (important for phone)
+3. **Size**: Total model size (important for phone)
+4. **Disambiguation**: Handling ambiguous queries (wave, uncertainty)
+
+### Test Queries
+
+- "Feynman Lectures" → The Feynman Lectures on Physics (Physics)
+- "Hyphanet" → Freenet & Hyphanet (Privacy/Darknet)
+- "wave" → Waves (physics) vs Matter Wave (QM)
+- "uncertainty" → Uncertainty Principle (QM)
+- "neural network" → test disambiguation
+
+### How to Test
+
+```bash
+# Regenerate embeddings with alternative model
+python3 scripts/generate_dual_embeddings.py \
+    --alt-model <MODEL_NAME> \
+    --data reports/pearltrees_targets_full_pearls.jsonl \
+    --output models/dual_embeddings_test.npz
+
+# Test
+python3 scripts/test_dual_objective.py \
+    --embeddings models/dual_embeddings_test.npz \
+    --query "Hyphanet" --top-k 5
+```
+
+### Recommended Priority
+
+1. **ModernBERT** - When Transformers 4.48+ available
+2. **BGE-small** - If phone performance is slow
+3. **Unified Nomic** - If simplicity is preferred
+
