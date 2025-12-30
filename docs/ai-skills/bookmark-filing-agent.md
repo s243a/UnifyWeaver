@@ -91,6 +91,20 @@ Folders may cross account boundaries. The tree shows this as:
     └── s243a_groups @s243a_groups  ← Account jump here
 ```
 
+## Dual-Objective Scoring (Alternative)
+
+For ambiguous queries or suspected misfiles, use dual-objective scoring which blends:
+- **Semantic matching** (title-to-title similarity)
+- **Structural matching** (learned organizational patterns)
+
+```bash
+python3 scripts/test_dual_objective.py \
+  --query "BOOKMARK TITLE" \
+  --top-k 10 --alpha 0.7
+```
+
+See `docs/ai-skills/dual-objective-scoring.md` for full details.
+
 ## Key Files
 
 - `scripts/bookmark_filing_assistant.py` - Full filing assistant with LLM integration
