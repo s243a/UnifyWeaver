@@ -347,6 +347,145 @@ def get_semantic_candidates(
     return output, candidates
 
 
+def get_dual_objective_candidates(
+    bookmark_title: str,
+    embeddings_path: Path = Path("models/dual_embeddings_full.npz"),
+    data_path: Path = Path("reports/pearltrees_targets_full_pearls.jsonl"),
+    top_k: int = 10,
+    alpha: float = 0.7
+) -> Tuple[str, List[dict]]:
+    """Get candidates using dual-objective scoring (Input + Output objectives).
+    
+    Args:
+        bookmark_title: Title of the bookmark to file
+        embeddings_path: Path to dual embeddings NPZ file
+        data_path: Path to JSONL data for tree display
+        top_k: Number of candidates
+        alpha: Blend weight (0=Input/Semantic only, 1=Output/Structural only)
+        
+    Returns:
+        Tuple of (tree_output_string, list_of_candidate_dicts)
+    """
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+    
+    # Load embeddings
+    if not embeddings_path.exists():
+        print(f"Dual embeddings not found at {embeddings_path}", file=sys.stderr)
+        return "", []
+    
+    emb_data = np.load(embeddings_path, allow_pickle=True)
+    input_alt = emb_data["input_alt"]
+    output_nomic = emb_data["output_nomic"]
+    titles = emb_data["titles"]
+    item_types = emb_data["item_types"]
+    
+    # Load JSONL data for paths
+    jsonl_data = {}
+    if data_path.exists():
+        with open(data_path) as f:
+            for i, line in enumerate(f):
+                line = line.strip()
+                if line:
+                    jsonl_data[i] = json.loads(line)
+    
+    # Load models
+    nomic = SentenceTransformer("nomic-ai/nomic-embed-text-v1.5", trust_remote_code=True)
+    minilm = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", trust_remote_code=True)
+    
+    # Embed query
+    q_nomic = nomic.encode(bookmark_title)
+    q_alt = minilm.encode(bookmark_title)
+    
+    # Calculate scores
+    def cosine(a, b):
+        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
+    
+    input_scores = np.array([cosine(q_alt, e) for e in input_alt])
+    output_scores = np.array([cosine(q_nomic, e) for e in output_nomic])
+    
+    # Normalize to probabilities (ReLU + L1)
+    p_input = np.maximum(input_scores, 0)
+    p_input /= p_input.sum() + 1e-10
+    p_output = np.maximum(output_scores, 0)
+    p_output /= p_output.sum() + 1e-10
+    
+    # Blend
+    blended = alpha * p_output + (1 - alpha) * p_input
+    top_indices = np.argsort(blended)[::-1][:top_k]
+    
+    # Build candidates list
+    candidates = []
+    for rank, idx in enumerate(top_indices, 1):
+        item = jsonl_data.get(idx, {})
+        candidates.append({
+            "rank": rank,
+            "score": float(blended[idx]),
+            "title": str(titles[idx]),
+            "tree_id": item.get("tree_id", ""),
+            "item_type": str(item_types[idx]),
+            "path": item.get("target_text", ""),
+            "input_score": float(input_scores[idx]),
+            "output_score": float(output_scores[idx])
+        })
+    
+    # Build merged tree output
+    class TreeNode:
+        def __init__(self, name):
+            self.name = name
+            self.children = {}
+            self.is_result = False
+            self.score = 0.0
+            self.rank = 0
+    
+    root = TreeNode('ROOT')
+    
+    for c in candidates:
+        path_text = c.get('path', c['title'])
+        lines = path_text.split('\n')
+        
+        # Skip ID line if present
+        if lines and lines[0].startswith('/'):
+            lines = lines[1:]
+        
+        current = root
+        for line in lines:
+            stripped = line.lstrip('- ').strip()
+            if not stripped:
+                continue
+            if stripped not in current.children:
+                current.children[stripped] = TreeNode(stripped)
+            current = current.children[stripped]
+        
+        current.is_result = True
+        current.score = c['score']
+        current.rank = c['rank']
+    
+    def format_tree(node, prefix=''):
+        lines = []
+        items = sorted(node.children.items())
+        
+        for i, (name, child) in enumerate(items):
+            is_last = i == len(items) - 1
+            connector = '└── ' if is_last else '├── '
+            
+            if child.is_result:
+                result_str = f' ★ #{child.rank} [{child.score:.6f}]'
+            else:
+                result_str = ''
+            
+            lines.append(f'{prefix}{connector}{name}{result_str}')
+            
+            new_prefix = prefix + ('    ' if is_last else '│   ')
+            lines.append(format_tree(child, new_prefix))
+        
+        return '\n'.join(filter(None, lines))
+    
+    tree_output = format_tree(root)
+    
+    return tree_output, candidates
+
+
 def parse_llm_response(response: str, candidates: List[dict]) -> Optional[FilingResult]:
     """Parse LLM response to extract selected folder."""
     try:

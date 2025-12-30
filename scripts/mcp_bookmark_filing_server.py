@@ -129,6 +129,30 @@ def create_mcp_server():
                 }
             ),
             Tool(
+                name="get_dual_objective_candidates",
+                description="Get candidates using dual-objective scoring (Input/Semantic + Output/Structural). Better for disambiguating similar items and catching misfiles.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "bookmark_title": {
+                            "type": "string",
+                            "description": "The title or description of the bookmark to file"
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of candidates to return (default: 10)",
+                            "default": 10
+                        },
+                        "alpha": {
+                            "type": "number",
+                            "description": "Blend weight: 0=Input/Semantic only, 1=Output/Structural only (default: 0.7)",
+                            "default": 0.7
+                        }
+                    },
+                    "required": ["bookmark_title"]
+                }
+            ),
+            Tool(
                 name="file_bookmark",
                 description="Get LLM recommendation for where to file a bookmark. Uses semantic search to find candidates, then asks an LLM to make the final selection.",
                 inputSchema={
@@ -152,6 +176,11 @@ def create_mcp_server():
                             "type": "integer",
                             "description": "Number of candidates to consider",
                             "default": 10
+                        },
+                        "use_dual_objective": {
+                            "type": "boolean",
+                            "description": "Use dual-objective scoring instead of federated projection",
+                            "default": False
                         }
                     },
                     "required": ["bookmark_title"]
@@ -171,6 +200,33 @@ def create_mcp_server():
                 None,
                 lambda: get_filing_candidates_sync(bookmark_title, top_k, tree_mode=True)
             )
+            
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2)
+            )]
+        
+        elif name == "get_dual_objective_candidates":
+            bookmark_title = arguments.get("bookmark_title", "")
+            top_k = arguments.get("top_k", 10)
+            alpha = arguments.get("alpha", 0.7)
+            
+            # Import and call the dual objective function
+            from bookmark_filing_assistant import get_dual_objective_candidates as gdo
+            
+            loop = asyncio.get_event_loop()
+            tree_output, candidates = await loop.run_in_executor(
+                None,
+                lambda: gdo(bookmark_title, top_k=top_k, alpha=alpha)
+            )
+            
+            result = {
+                "tree": tree_output,
+                "candidates": candidates,
+                "bookmark": bookmark_title,
+                "alpha": alpha,
+                "top_k": top_k
+            }
             
             return [TextContent(
                 type="text",
