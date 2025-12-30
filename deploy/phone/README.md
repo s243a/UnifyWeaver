@@ -38,6 +38,44 @@ python infer_phone.py --query "Feynman Lectures" --alpha 0.5
 python infer_phone.py --query "Feynman Lectures" --tmpdir $PREFIX/tmp
 ```
 
+## Fuzzy Logic Boosting
+
+When the embedding model doesn't recognize a term (e.g., "bash-reduce"), use fuzzy
+boosting to emphasize specific concepts:
+
+```bash
+# Boost results matching "bash" (AND: multiply scores)
+python infer_phone.py --query "bash-reduce" --boost-and "bash"
+
+# Weighted AND boost (term:weight format)
+python infer_phone.py --query "bash-reduce" --boost-and "bash:0.8,unix:0.5"
+
+# Distributed OR boost: score AND (term1 OR term2 OR ...)
+# Formula: 1 - (1 - score*w1*t1)(1 - score*w2*t2)...
+python infer_phone.py --query "bash-reduce" --boost-or "bash:0.9,shell:0.5,scripting:0.3"
+```
+
+### Fuzzy Logic Operations
+
+| Operation | Formula | Use Case |
+|-----------|---------|----------|
+| `--boost-and "a,b"` | `score * a * b` | Require all terms |
+| `--boost-and "a:0.8,b:0.5"` | `score * 0.8*a * 0.5*b` | Weighted requirement |
+| `--boost-or "a,b"` | `1 - (1-score*a)(1-score*b)` | Match any term (distributed) |
+| `--boost-or "a:0.9,b:0.3"` | `1 - (1-score*0.9*a)(1-score*0.3*b)` | Prioritized alternatives |
+
+Note: `--boost-or` distributes the base score into each term before the OR operation.
+This means the result is effectively `score AND (t1 OR t2 OR ...)`.
+
+## Subtree Filtering
+
+Restrict search to a specific folder subtree:
+
+```bash
+# Only search within BASH folders
+python infer_phone.py --query "reduce" --subtree "BASH (Unix/Linux)"
+```
+
 ## Dependencies
 
 ```

@@ -116,25 +116,94 @@ def embed_query(query, model_name="sentence-transformers/all-MiniLM-L6-v2"):
     return model.encode(query)
 
 
-def search(query_emb_minilm, query_emb_nomic, embeddings, alpha=0.7, top_k=10):
-    """Search using dual-objective scoring."""
+def parse_weighted_terms(term_string):
+    """Parse 'term1:weight1,term2:weight2' or 'term1,term2' format."""
+    terms = []
+    weights = []
+    for part in term_string.split(","):
+        part = part.strip()
+        if ":" in part:
+            term, weight = part.rsplit(":", 1)
+            terms.append(term.strip())
+            weights.append(float(weight))
+        else:
+            terms.append(part)
+            weights.append(1.0)
+    return terms, weights
+
+
+def compute_boost_scores(terms, weights, embeddings, model_name="sentence-transformers/all-MiniLM-L6-v2"):
+    """Compute normalized scores for boost terms with weights."""
+    input_alt = embeddings["input_alt"]
+    boost_scores = []
+    for term, weight in zip(terms, weights):
+        term_emb = embed_query(term, model_name)
+        scores = np.array([cosine_similarity(term_emb, e) for e in input_alt])
+        # Normalize to [0, 1] range
+        scores = np.maximum(scores, 0)
+        scores /= scores.max() + 1e-10
+        # Apply weight
+        scores *= weight
+        boost_scores.append(scores)
+    return boost_scores
+
+
+def fuzzy_and(score_arrays):
+    """Fuzzy AND: multiply all scores."""
+    result = np.ones(len(score_arrays[0]))
+    for scores in score_arrays:
+        result *= scores
+    return result
+
+
+def fuzzy_or(score_arrays):
+    """Fuzzy OR: 1 - product of complements.
+
+    Used for distributed OR in --boost-or: score AND (t1 OR t2 ...)
+    For non-distributed OR (score * (t1 OR t2)), use --union (not yet implemented).
+    """
+    result = np.ones(len(score_arrays[0]))
+    for scores in score_arrays:
+        result *= (1 - scores)
+    return 1 - result
+
+
+def search(query_emb_minilm, query_emb_nomic, embeddings, alpha=0.7, top_k=10,
+           boost_and=None, boost_or=None, subtree_mask=None):
+    """Search using dual-objective scoring with optional fuzzy boosting."""
     input_alt = embeddings["input_alt"]  # 384-dim (MiniLM)
     output_nomic = embeddings["output_nomic"]  # 768-dim (Nomic)
-    
+
     # Calculate scores using matching dimensions
     input_scores = np.array([cosine_similarity(query_emb_minilm, e) for e in input_alt])
     output_scores = np.array([cosine_similarity(query_emb_nomic, e) for e in output_nomic])
-    
+
     # Normalize (ReLU + L1)
     p_input = np.maximum(input_scores, 0)
     p_input /= p_input.sum() + 1e-10
     p_output = np.maximum(output_scores, 0)
     p_output /= p_output.sum() + 1e-10
-    
+
     # Blend
     blended = alpha * p_output + (1 - alpha) * p_input
+
+    # Apply fuzzy boosting
+    if boost_and is not None and len(boost_and) > 0:
+        and_boost = fuzzy_and(boost_and)
+        blended *= and_boost
+
+    if boost_or is not None and len(boost_or) > 0:
+        # Distribute blended score into each term, then OR
+        # fuzzy_or(blended*t1, blended*t2, ...) = 1 - prod(1 - blended*ti)
+        distributed = [blended * b for b in boost_or]
+        blended = fuzzy_or(distributed)
+
+    # Apply subtree filter
+    if subtree_mask is not None:
+        blended *= subtree_mask
+
     top_indices = np.argsort(blended)[::-1][:top_k]
-    
+
     results = []
     for rank, idx in enumerate(top_indices, 1):
         results.append({
@@ -144,7 +213,7 @@ def search(query_emb_minilm, query_emb_nomic, embeddings, alpha=0.7, top_k=10):
             "item_type": str(embeddings["item_types"][idx]),
             "index": int(idx)
         })
-    
+
     return results
 
 
@@ -165,6 +234,12 @@ def main():
                        help="Output JSON instead of formatted results")
     parser.add_argument("--list", action="store_true",
                        help="Output flat list (last 3 path levels only)")
+    parser.add_argument("--boost-and", type=str, default=None,
+                       help="Fuzzy AND: multiply by boost terms (e.g., 'bash' or 'bash:0.8,unix:0.5')")
+    parser.add_argument("--boost-or", type=str, default=None,
+                       help="Distributed OR: score AND (t1 OR t2 ...) (e.g., 'bash:0.9,shell:0.5')")
+    parser.add_argument("--subtree", type=str, default=None,
+                       help="Filter to subtree by path component (e.g., 'BASH (Unix/Linux)')")
     parser.add_argument("--tmpdir", type=str, default=None,
                        help="Temp directory (auto-detected if not specified)")
     args = parser.parse_args()
@@ -176,20 +251,60 @@ def main():
         tmpdir = get_temp_dir()
     os.environ['TMPDIR'] = tmpdir  # Make available to subprocesses
     
-    print(f"Loading embeddings from {args.embeddings}...")
+    print(f"Loading embeddings from {args.embeddings}...", file=sys.stderr)
     embeddings = load_embeddings(args.embeddings)
-    print(f"Loaded {len(embeddings['titles'])} items")
-    
-    print(f"Embedding query with MiniLM: {args.query}")
-    query_emb_minilm = embed_query(args.query, "sentence-transformers/all-MiniLM-L6-v2")
-    
-    print(f"Embedding query with Nomic: {args.query}")
-    query_emb_nomic = embed_query(args.query, "nomic-ai/nomic-embed-text-v1.5")
-    
-    print("Searching...")
-    results = search(query_emb_minilm, query_emb_nomic, embeddings, alpha=args.alpha, top_k=args.top_k)
-    
+    print(f"Loaded {len(embeddings['titles'])} items", file=sys.stderr)
+
+    # Load paths early (needed for subtree filtering)
     paths = load_paths(args.data)
+
+    # Compute subtree mask if specified
+    subtree_mask = None
+    if args.subtree:
+        print(f"Filtering to subtree: {args.subtree}", file=sys.stderr)
+        subtree_lower = args.subtree.lower()
+
+        def path_matches(path_text):
+            """Check if subtree appears as a path component (not substring)."""
+            for line in path_text.split("\n"):
+                # Strip leading "- " and whitespace
+                component = line.strip().lstrip("- ").strip().lower()
+                if component == subtree_lower or component.startswith(subtree_lower + " "):
+                    return True
+            return False
+
+        subtree_mask = np.array([
+            1.0 if path_matches(paths.get(i, "")) else 0.0
+            for i in range(len(embeddings['titles']))
+        ])
+        matches = int(subtree_mask.sum())
+        print(f"  {matches} items match subtree filter", file=sys.stderr)
+
+    print(f"Embedding query with MiniLM: {args.query}", file=sys.stderr)
+    query_emb_minilm = embed_query(args.query, "sentence-transformers/all-MiniLM-L6-v2")
+
+    print(f"Embedding query with Nomic: {args.query}", file=sys.stderr)
+    query_emb_nomic = embed_query(args.query, "nomic-ai/nomic-embed-text-v1.5")
+
+    # Compute fuzzy boost scores
+    boost_and = None
+    boost_or = None
+
+    if args.boost_and:
+        terms, weights = parse_weighted_terms(args.boost_and)
+        print(f"Computing AND boost for: {list(zip(terms, weights))}", file=sys.stderr)
+        boost_and = compute_boost_scores(terms, weights, embeddings)
+
+    if args.boost_or:
+        terms, weights = parse_weighted_terms(args.boost_or)
+        print(f"Computing OR boost for: {list(zip(terms, weights))}", file=sys.stderr)
+        boost_or = compute_boost_scores(terms, weights, embeddings)
+
+    print("Searching...", file=sys.stderr)
+    results = search(query_emb_minilm, query_emb_nomic, embeddings,
+                     alpha=args.alpha, top_k=args.top_k,
+                     boost_and=boost_and, boost_or=boost_or,
+                     subtree_mask=subtree_mask)
 
     if args.json:
         print(json.dumps(results, indent=2))
