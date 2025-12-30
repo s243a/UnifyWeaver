@@ -95,6 +95,39 @@ python3 scripts/generate_dual_embeddings.py \
 
 This takes ~2 minutes for 38k items (vs ~30+ minutes for federated model training).
 
+## Model Notes
+
+**Input Objective**: Uses MiniLM (384-dim)
+- Fallback for ModernBERT (requires Transformers 4.48+)
+- Fast and sufficient since input dimension is smaller
+- ~90MB model, ~5x faster than Nomic
+
+**Output Objective**: Uses Nomic v1.5 (768-dim)
+- Full capacity for structured functional queries like `locate_node(...)`
+- ~400MB model
+
+To upgrade to ModernBERT when available:
+```bash
+pip install transformers>=4.48
+python3 scripts/generate_dual_embeddings.py \
+    --alt-model nomic-ai/modernbert-embed-base \
+    --data reports/pearltrees_targets_full_pearls.jsonl \
+    --output models/dual_embeddings_full.npz
+```
+
+## Files Needed for Inference
+
+**Scripts:**
+- `scripts/test_dual_objective.py` - Main inference script
+
+**Generated Data (from generate_dual_embeddings.py):**
+- `models/dual_embeddings_full.npz` (262 MB) - Pre-computed embeddings
+- `reports/pearltrees_targets_full_pearls.jsonl` (26 MB) - Paths for display
+
+**Embedding Models (downloaded on first run):**
+- `sentence-transformers/all-MiniLM-L6-v2` (~90 MB) - For Input Objective
+- `nomic-ai/nomic-embed-text-v1.5` (~400 MB) - For Output Objective
+
 ## Files
 
 - `scripts/generate_dual_embeddings.py` - Generate embeddings
