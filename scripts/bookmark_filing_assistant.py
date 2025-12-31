@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Bookmark Filing Assistant - LLM Integration.
+Bookmark Filing Assistant - LLM Integration with Fuzzy Boost.
 
-Uses semantic search to get top-k candidate folders, then calls an LLM
-to make the final selection based on hierarchical context.
+Uses semantic search to get top-k candidate folders, optionally applies
+fuzzy logic boosting, then calls an LLM to make the final selection.
 
 Supports multiple LLM backends:
 - Claude CLI (coding agent - cheapest with subscription)
@@ -12,29 +12,32 @@ Supports multiple LLM backends:
 - Anthropic API
 - Local models (Ollama)
 
+Fuzzy Boost Options:
+- --boost-and: Boost candidates matching ALL terms (product t-norm)
+- --boost-or: Boost candidates matching ANY term (distributed OR)
+- --filter: Filter candidates by predicate (e.g., in_subtree:Unix)
+
 Usage:
-    # Using Claude CLI (default)
+    # Basic usage with Claude CLI
     python3 scripts/bookmark_filing_assistant.py \
         --bookmark "Neural network tutorial for beginners" \
         --provider claude
 
-    # Using Gemini CLI
+    # With fuzzy boost for bash-related bookmarks
     python3 scripts/bookmark_filing_assistant.py \
-        --bookmark "Quantum computing paper" \
-        --provider gemini
+        --bookmark "bash-reduce function tutorial" \
+        --boost-or "bash:0.9,shell:0.5,scripting:0.3" \
+        --filter "in_subtree:Unix"
 
-    # Using OpenAI API
+    # Combined AND + OR boosting
     python3 scripts/bookmark_filing_assistant.py \
-        --bookmark "Machine learning paper" \
-        --provider openai --model gpt-4o
+        --bookmark "Python machine learning" \
+        --boost-and "python:0.9" \
+        --boost-or "ml:0.7,ai:0.5,neural:0.4"
 
-    # Using local Ollama
-    python3 scripts/bookmark_filing_assistant.py \
-        --bookmark "Deep learning course" \
-        --provider ollama --model llama3.1
-
-    # Interactive mode
-    python3 scripts/bookmark_filing_assistant.py --interactive
+    # Interactive mode with fuzzy boost
+    python3 scripts/bookmark_filing_assistant.py --interactive \
+        --boost-or "bash:0.9,linux:0.5"
 """
 
 import argparse
@@ -49,6 +52,13 @@ from dataclasses import dataclass
 # Add paths
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "unifyweaver" / "targets" / "python_runtime"))
+
+# Import fuzzy boost module
+try:
+    from fuzzy_boost import boost_filing_candidates, FuzzyBoostEngine
+    HAS_FUZZY = True
+except ImportError:
+    HAS_FUZZY = False
 
 
 FILING_PROMPT_TEMPLATE = '''You are a bookmark filing assistant. Your task is to select the BEST folder to file a new bookmark.
@@ -486,6 +496,72 @@ def get_dual_objective_candidates(
     return tree_output, candidates
 
 
+def rebuild_tree_output(candidates: List[dict]) -> str:
+    """
+    Rebuild tree output from boosted candidates.
+
+    Args:
+        candidates: List of candidate dicts with path and score
+
+    Returns:
+        Merged tree string with rankings
+    """
+    class TreeNode:
+        def __init__(self, name):
+            self.name = name
+            self.children = {}
+            self.is_result = False
+            self.score = 0.0
+            self.rank = 0
+
+    root = TreeNode('ROOT')
+
+    for c in candidates:
+        path_text = c.get('path', c.get('title', ''))
+        lines = path_text.split('\n') if '\n' in path_text else [path_text]
+
+        # Skip ID line if present
+        if lines and lines[0].startswith('/'):
+            lines = lines[1:]
+
+        current = root
+        for line in lines:
+            stripped = line.lstrip('- ').strip()
+            if not stripped:
+                continue
+            if stripped not in current.children:
+                current.children[stripped] = TreeNode(stripped)
+            current = current.children[stripped]
+
+        current.is_result = True
+        current.score = c.get('score', 0.0)
+        current.rank = c.get('rank', 0)
+
+    def format_tree(node, prefix=''):
+        lines = []
+        items = sorted(node.children.items())
+
+        for i, (name, child) in enumerate(items):
+            is_last = i == len(items) - 1
+            connector = '└── ' if is_last else '├── '
+
+            if child.is_result:
+                result_str = f' ★ #{child.rank} [{child.score:.6f}]'
+            else:
+                result_str = ''
+
+            lines.append(f'{prefix}{connector}{name}{result_str}')
+
+            new_prefix = prefix + ('    ' if is_last else '│   ')
+            child_lines = format_tree(child, new_prefix)
+            if child_lines:
+                lines.append(child_lines)
+
+        return '\n'.join(filter(None, lines))
+
+    return format_tree(root)
+
+
 def parse_llm_response(response: str, candidates: List[dict]) -> Optional[FilingResult]:
     """Parse LLM response to extract selected folder."""
     try:
@@ -535,11 +611,15 @@ def file_bookmark(
     provider: str = "claude",
     llm_model: str = "sonnet",
     top_k: int = 10,
-    timeout: int = 60
+    timeout: int = 60,
+    boost_and: Optional[str] = None,
+    boost_or: Optional[str] = None,
+    filters: Optional[List[str]] = None,
+    blend_alpha: float = 0.7
 ) -> Optional[FilingResult]:
     """
     Get LLM recommendation for where to file a bookmark.
-    
+
     Args:
         bookmark_title: Title or description of the bookmark
         bookmark_url: Optional URL
@@ -550,20 +630,47 @@ def file_bookmark(
         llm_model: Model name for the provider
         top_k: Number of candidates to consider
         timeout: Timeout for LLM calls
-        
+        boost_and: AND boost spec (e.g., "bash:0.9,shell:0.5")
+        boost_or: OR boost spec (e.g., "python:0.8,ml:0.6")
+        filters: List of filter specs (e.g., ["in_subtree:Unix"])
+        blend_alpha: Blend weight with original scores (1.0=full boost)
+
     Returns:
         FilingResult with selected folder and reasoning
     """
-    
+
     # Get semantic candidates
     print(f"Getting semantic candidates for: {bookmark_title[:50]}...")
     tree_output, candidates = get_semantic_candidates(
-        bookmark_title, model_path, top_k, tree_mode=True, data_path=data_path
+        bookmark_title, model_path, top_k * 2 if (boost_and or boost_or) else top_k,
+        tree_mode=True, data_path=data_path
     )
-    
+
     if not tree_output or not candidates:
         print("Failed to get candidates", file=sys.stderr)
         return None
+
+    # Apply fuzzy boost if specified
+    if HAS_FUZZY and (boost_and or boost_or or filters):
+        print(f"Applying fuzzy boost...")
+        if boost_and:
+            print(f"  AND: {boost_and}")
+        if boost_or:
+            print(f"  OR: {boost_or}")
+        if filters:
+            print(f"  Filters: {filters}")
+
+        candidates = boost_filing_candidates(
+            candidates,
+            boost_and=boost_and,
+            boost_or=boost_or,
+            filters=filters,
+            blend_alpha=blend_alpha,
+            top_k=top_k
+        )
+
+        # Rebuild tree output with boosted candidates
+        tree_output = rebuild_tree_output(candidates)
     
     # Get existing pearls if DB available
     existing_contents = ""
@@ -630,17 +737,35 @@ def interactive_mode(
     db_path: Optional[Path],
     provider: str,
     llm_model: str,
-    top_k: int
+    top_k: int,
+    boost_and: Optional[str] = None,
+    boost_or: Optional[str] = None,
+    filters: Optional[List[str]] = None,
+    blend_alpha: float = 0.7
 ):
-    """Run in interactive mode."""
+    """Run in interactive mode with optional fuzzy boost."""
     print("\n=== Bookmark Filing Assistant ===")
     print(f"Model: {model_path}")
     print(f"LLM: {provider}/{llm_model}")
     if db_path and db_path.exists():
         print(f"DB: {db_path} (existing pearls enabled)")
+    if boost_and or boost_or:
+        print(f"Fuzzy boost enabled:")
+        if boost_and:
+            print(f"  AND: {boost_and}")
+        if boost_or:
+            print(f"  OR: {boost_or}")
+        if filters:
+            print(f"  Filters: {filters}")
     print("\nEnter bookmark titles to get filing recommendations.")
-    print("Type 'quit' to exit.\n")
-    
+    print("Commands: 'quit' to exit, 'boost <spec>' to set OR boost, 'filter <spec>' to add filter")
+    print()
+
+    # Mutable state for interactive boost/filter changes
+    current_boost_and = boost_and
+    current_boost_or = boost_or
+    current_filters = list(filters) if filters else []
+
     while True:
         try:
             title = input("Bookmark> ").strip()
@@ -648,9 +773,34 @@ def interactive_mode(
                 continue
             if title.lower() in ("quit", "exit", "q"):
                 break
-            
+
+            # Handle interactive commands
+            if title.startswith("boost "):
+                current_boost_or = title[6:].strip()
+                print(f"  Set OR boost: {current_boost_or}")
+                continue
+            if title.startswith("boost-and "):
+                current_boost_and = title[10:].strip()
+                print(f"  Set AND boost: {current_boost_and}")
+                continue
+            if title.startswith("filter "):
+                current_filters.append(title[7:].strip())
+                print(f"  Added filter: {current_filters[-1]}")
+                continue
+            if title == "clear":
+                current_boost_and = None
+                current_boost_or = None
+                current_filters = []
+                print("  Cleared all boosts and filters")
+                continue
+            if title == "status":
+                print(f"  AND boost: {current_boost_and}")
+                print(f"  OR boost: {current_boost_or}")
+                print(f"  Filters: {current_filters}")
+                continue
+
             url = input("URL (optional)> ").strip() or None
-            
+
             result = file_bookmark(
                 title, url,
                 model_path=model_path,
@@ -659,7 +809,11 @@ def interactive_mode(
                 db_path=db_path,
                 provider=provider,
                 llm_model=llm_model,
-                top_k=top_k
+                top_k=top_k,
+                boost_and=current_boost_and,
+                boost_or=current_boost_or,
+                filters=current_filters if current_filters else None,
+                blend_alpha=blend_alpha
             )
             
             if result:
@@ -713,11 +867,26 @@ def main():
                        help="Run in interactive mode")
     parser.add_argument("--json", action="store_true",
                        help="Output result as JSON")
+
+    # Fuzzy boost options
+    parser.add_argument("--boost-and", type=str, default=None,
+                       help="AND boost spec: 'term1:weight1,term2:weight2' (all must match)")
+    parser.add_argument("--boost-or", type=str, default=None,
+                       help="OR boost spec: 'term1:weight1,term2:weight2' (any can match)")
+    parser.add_argument("--filter", type=str, action="append", dest="filters",
+                       help="Filter spec: 'predicate:value' (e.g., in_subtree:Unix)")
+    parser.add_argument("--blend-alpha", type=float, default=0.7,
+                       help="Blend weight with original scores (0-1, default 0.7)")
     
     args = parser.parse_args()
     
     if args.interactive:
-        interactive_mode(args.model, args.pearl_model, args.data, args.db, args.provider, args.llm_model, args.top_k)
+        interactive_mode(
+            args.model, args.pearl_model, args.data, args.db,
+            args.provider, args.llm_model, args.top_k,
+            boost_and=args.boost_and, boost_or=args.boost_or,
+            filters=args.filters, blend_alpha=args.blend_alpha
+        )
     elif args.bookmark:
         result = file_bookmark(
             args.bookmark,
@@ -729,7 +898,11 @@ def main():
             provider=args.provider,
             llm_model=args.llm_model,
             top_k=args.top_k,
-            timeout=args.timeout
+            timeout=args.timeout,
+            boost_and=args.boost_and,
+            boost_or=args.boost_or,
+            filters=args.filters,
+            blend_alpha=args.blend_alpha
         )
         
         if result:

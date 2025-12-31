@@ -72,6 +72,45 @@ python3 scripts/bookmark_filing_assistant.py \
 ./scripts/launch_bookmark_filing_agent.sh "Optional bookmark title"
 ```
 
+## Fuzzy Boost
+
+Fuzzy logic boosting allows fine-tuning candidate rankings with term matching:
+
+### CLI Options
+```bash
+python3 scripts/bookmark_filing_assistant.py \
+  --bookmark "bash reduce function" \
+  --boost-or "bash:0.9,shell:0.5,scripting:0.3" \
+  --filter "in_subtree:Unix" \
+  --blend-alpha 0.8
+```
+
+| Option | Description |
+|--------|-------------|
+| `--boost-and` | AND boost - all terms must match (product t-norm) |
+| `--boost-or` | OR boost - any term can match (distributed OR) |
+| `--filter` | Filter by predicate (e.g., `in_subtree:Unix`, `is_type:tree`) |
+| `--blend-alpha` | Blend weight 0-1 (default 0.7, higher = more boost influence) |
+
+### Interactive Commands
+In interactive mode (`--interactive`):
+- `boost bash:0.9,shell:0.5` - Set OR boost
+- `boost-and python:0.9` - Set AND boost
+- `filter in_subtree:Unix` - Add filter
+- `clear` - Clear all boosts/filters
+- `status` - Show current settings
+
+### API Mode
+```bash
+# Start REST API server
+python3 scripts/api_bookmark_filing_server.py --port 5000
+
+# Query with fuzzy boost
+curl -X POST http://localhost:5000/api/candidates \
+  -H "Content-Type: application/json" \
+  -d '{"bookmark_title": "bash tutorial", "boost_or": "bash:0.9"}'
+```
+
 ## MCP Integration
 
 An MCP server exposes these tools:
@@ -82,8 +121,11 @@ python3 scripts/mcp_bookmark_filing_server.py
 ```
 
 Tools exposed:
-- `get_filing_candidates` - Semantic search candidates
-- `file_bookmark` - Full LLM recommendation
+- `get_filing_candidates` - Semantic search candidates (with fuzzy boost support)
+- `get_dual_objective_candidates` - Dual-objective scoring
+- `file_bookmark` - Full LLM recommendation (with fuzzy boost support)
+
+All tools support fuzzy boost parameters: `boost_and`, `boost_or`, `filters`, `blend_alpha`.
 
 ## Decision Process
 
@@ -109,8 +151,10 @@ The LLM sees the merged tree and considers:
 | File | Purpose |
 |------|---------|
 | `scripts/infer_pearltrees_federated.py` | Semantic search |
-| `scripts/bookmark_filing_assistant.py` | LLM-assisted filing |
+| `scripts/bookmark_filing_assistant.py` | LLM-assisted filing (CLI + interactive) |
 | `scripts/mcp_bookmark_filing_server.py` | MCP server |
+| `scripts/api_bookmark_filing_server.py` | REST API server |
+| `scripts/fuzzy_boost.py` | Fuzzy logic boost module |
 | `scripts/launch_bookmark_filing_agent.sh` | Claude launcher |
 | `skills/skill_bookmark_filing.md` | Skill documentation |
 | `docs/ai-skills/bookmark-filing-agent.md` | Agent role |
