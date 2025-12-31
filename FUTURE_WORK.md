@@ -366,6 +366,129 @@ Explore integration with machine learning:
 10. ~~Distributed execution~~ ✅ COMPLETE (v0.0.5)
 11. AI/ML integration
 
+---
+
+## Python Bridges Enhancement
+
+Cross-runtime Python bridges allow non-Python languages to access Python's ML/AI ecosystem. The bridge infrastructure supports multiple approaches with different trade-offs.
+
+### Tested Bridges (7 Languages)
+
+| Language | Bridge | Technology | Status |
+|----------|--------|------------|--------|
+| C# | Python.NET | CPython embedding | ✅ Tested |
+| C# | CSnakes | Source generators | ✅ Documented |
+| Java | JPype | CPython embedding | ✅ Tested |
+| Java | jpy | Bi-directional | ✅ Tested |
+| Ruby | PyCall.rb | CPython embedding | ✅ Tested |
+| Rust | PyO3 | In-process | ✅ Tested |
+| Go | Rust FFI | Go → Rust (PyO3) → CPython | ✅ Tested |
+
+### Rust FFI Bridge Architecture
+
+For languages without mature CPython embedding (Go, Node.js, Lua), we use Rust as a universal bridge:
+
+```
+┌────────────────────────────────────────────────────────┐
+│ Go/Node/Lua Application                                │
+│ ┌────────────────────────────────────────────────────┐ │
+│ │ C FFI (CGO / node-ffi / LuaJIT FFI)                │ │
+│ │ ┌────────────────────────────────────────────────┐ │ │
+│ │ │ Rust cdylib (librpyc_bridge.so)                │ │ │
+│ │ │ ┌────────────────────────────────────────────┐ │ │ │
+│ │ │ │ PyO3 (CPython embedding)                   │ │ │ │
+│ │ │ │ ┌────────────────────────────────────────┐ │ │ │ │
+│ │ │ │ │ RPyC Client                            │ │ │ │ │
+│ │ │ │ └────────────────────────────────────────┘ │ │ │ │
+│ │ │ └────────────────────────────────────────────┘ │ │ │
+│ │ └────────────────────────────────────────────────┘ │ │
+│ └────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────┘
+```
+
+### Future Bridge Improvements
+
+#### 1. Node.js FFI Example
+**Status:** 📋 TODO
+**Priority:** High
+**Code Generator:** Already implemented in `python_bridges_glue.pl`
+**Work Needed:** Create working example in `examples/python-bridges/rust-ffi-node/`
+
+```prolog
+% Generator already exists
+?- generate_node_ffi_client([lib_name(rpyc_bridge)], Code).
+```
+
+#### 2. Additional FFI Languages
+**Status:** 📋 TODO
+**Priority:** Medium
+**Languages:** Lua (LuaJIT FFI), PHP (FFI extension), Crystal
+
+Each language with C FFI capability can use the same Rust bridge library.
+
+#### 3. Bridge Integration Tests
+**Status:** 📋 TODO
+**Priority:** High
+**Scope:** Automated CI testing for all 7+ bridges
+
+```bash
+# Desired CI workflow
+./test_bridges.sh --all        # Test all bridges
+./test_bridges.sh --jvm        # Test Java bridges only
+./test_bridges.sh --dotnet     # Test .NET bridges only
+./test_bridges.sh --ffi        # Test FFI bridges only
+```
+
+#### 4. Cross-Runtime Pipeline Examples
+**Status:** 📋 TODO
+**Priority:** Medium
+**Scope:** Pipeline examples combining Rust FFI bridges with other targets
+
+Example: Go extract → Python (via Rust FFI) transform → Rust persist
+
+```prolog
+% cross_runtime_pipeline.pl already supports:
+predicate_runtime(rust_ffi:go:transform/2, rust_ffi_go).
+
+% Desired pipeline
+?- compile_pipeline([
+       stage(extract, go:read_csv/2),
+       stage(transform, rust_ffi:go:numpy_stats/2),
+       stage(persist, rust:write_db/2)
+   ], Options, Code).
+```
+
+#### 5. Performance Benchmarks
+**Status:** 📋 TODO
+**Priority:** Low
+**Scope:** Compare bridge overhead across technologies
+
+| Metric | Python.NET | JPype | PyO3 | Rust FFI (Go) |
+|--------|------------|-------|------|---------------|
+| Call overhead | TBD | TBD | TBD | TBD |
+| NumPy array transfer | TBD | TBD | TBD | TBD |
+| Connection setup | TBD | TBD | TBD | TBD |
+
+#### 6. Go Native Bridge Monitoring
+**Status:** 📋 WATCH
+**Priority:** Low (wait for maturity)
+**Libraries to Watch:**
+- **go-python3** (DataDog): Currently archived (2021)
+- **go-embed-python** (kluctl): Uses subprocess (loses live proxy benefit)
+
+When a mature Go CPython embedding library emerges, add direct support.
+
+### Implementation Files
+
+| File | Purpose |
+|------|---------|
+| `src/unifyweaver/glue/python_bridges_glue.pl` | Bridge detection, code generation |
+| `src/unifyweaver/glue/cross_runtime_pipeline.pl` | Pipeline orchestration |
+| `examples/python-bridges/rust-ffi-go/` | Working Go + Rust FFI example |
+| `docs/research/RPYC_LANGUAGE_COMPATIBILITY.md` | Compatibility matrix |
+
+---
+
 ## Contributing
 
 Ideas from the community are welcome! If you want to work on any of these:
