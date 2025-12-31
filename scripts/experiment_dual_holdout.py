@@ -210,7 +210,7 @@ def run_dual_objective_experiment(
             print(f"    Train #{i}: {train_titles[idx][:40]} [{blended_train[idx]:.6f}]")
         
         total += 1
-        query_result["hit"] = hit
+        query_result["hit"] = bool(hit)
         results["queries"].append(query_result)
     
     results["hit_rate"] = hits / total if total > 0 else 0
