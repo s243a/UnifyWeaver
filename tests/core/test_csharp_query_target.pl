@@ -71,6 +71,8 @@
 :- dynamic user:test_json_null_default/2.
 :- dynamic user:test_multi_mode/2.
 :- dynamic user:test_any_mode/2.
+:- dynamic user:test_group_step/4.
+:- dynamic user:test_group_reach_param/3.
 :- dynamic user:mode/1.
 :- dynamic user:test_negation_cycle_root/1.
 :- dynamic user:test_negation_cycle_p/1.
@@ -159,6 +161,7 @@ test_csharp_query_target :-
         verify_stratified_negation_mutual_lower_stratum_runtime,
         verify_parameterized_multi_key_join_runtime,
         verify_parameterized_multi_key_join_strategy_partial_index,
+        verify_parameterized_recursive_multi_key_join_strategy_partial_index,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
         verify_parameterized_fib_runtime,
@@ -364,6 +367,17 @@ setup_test_data :-
     assertz(user:mode(test_any_mode(?, -))),
     assertz(user:test_any_mode(alice, bob)),
     assertz(user:mode(test_sale_item_param(+, +, -))),
+    assertz(user:mode(test_group_reach_param(+, +, -))),
+    assertz(user:test_group_reach_param(alice, laptop, 0)),
+    assertz(user:test_group_reach_param(bob, phone, 0)),
+    assertz(user:test_group_step(alice, laptop, 0, 1)),
+    assertz(user:test_group_step(alice, laptop, 1, 2)),
+    assertz(user:test_group_step(alice, laptop, 2, 3)),
+    assertz(user:test_group_step(bob, phone, 0, 10)),
+    assertz(user:(test_group_reach_param(Customer, Product, Next) :-
+        test_group_reach_param(Customer, Product, Current),
+        test_group_step(Customer, Product, Current, Next)
+    )),
     assertz(user:mode(test_fib_param(+, -))),
     assertz(user:test_fib_param(0, 1)),
     assertz(user:test_fib_param(1, 1)),
@@ -519,6 +533,9 @@ cleanup_test_data :-
     retractall(user:test_any_mode(_, _)),
     retractall(user:mode(test_any_mode(_, _))),
     retractall(user:mode(test_sale_item_param(_, _, _))),
+    retractall(user:test_group_step(_, _, _, _)),
+    retractall(user:test_group_reach_param(_, _, _)),
+    retractall(user:mode(test_group_reach_param(_, _, _))),
     retractall(user:test_fib_param(_, _)),
     retractall(user:mode(test_fib_param(_,_))),
     retractall(user:test_post_agg_param(_, _)),
@@ -1217,6 +1234,31 @@ verify_parameterized_multi_key_join_strategy_partial_index :-
     harness_source_with_strategy_flag(ModuleClass, [[alice, laptop]], 'KeyJoinScanIndexPartial', HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
         ['alice,laptop,10', 'alice,laptop,2', 'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+        [[alice, laptop]],
+        HarnessSource).
+
+verify_parameterized_recursive_multi_key_join_strategy_partial_index :-
+    csharp_query_target:build_query_plan(test_group_reach_param/3, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(fixpoint{type:fixpoint, head:predicate{name:test_group_reach_param, arity:3}, base:_, recursive:_, width:_}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, KeyCount),
+    KeyCount == 3,
+    length(RightKeys, KeyCount),
+    (   sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_group_reach_param, arity:3}, role:_, width:_}, Left),
+        sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_group_step, arity:4}, width:_}, Right)
+    ;   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_group_step, arity:4}, width:_}, Left),
+        sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_group_reach_param, arity:3}, role:_, width:_}, Right)
+    ),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [[alice, laptop]], 'KeyJoinScanIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,laptop,0',
+         'alice,laptop,1',
+         'alice,laptop,2',
+         'alice,laptop,3',
+         'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
         [[alice, laptop]],
         HarnessSource).
 
