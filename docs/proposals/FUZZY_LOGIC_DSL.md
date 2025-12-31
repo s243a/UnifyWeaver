@@ -39,23 +39,57 @@ w(bash, 1.0)   % or just: bash (expanded by preprocessor)
 
 ### Fuzzy Logic Operations
 
+Each functor has two forms:
+- **Symbolic** (no Result): for building expressions, used by operator sugar
+- **Evaluation** (with Result): for computing scores
+
+This mirrors Prolog arithmetic: `2 + 3` is symbolic, `X is 2 + 3` evaluates.
+
 ```prolog
 % f_and: Fuzzy AND - multiply weighted scores
 % Formula: w1*t1 * w2*t2 * ...
-f_and([w(Term1, Weight1), w(Term2, Weight2), ...], Result)
+f_and([w(Term1, Weight1), w(Term2, Weight2), ...])          % Symbolic
+f_and([w(Term1, Weight1), w(Term2, Weight2), ...], Result)  % Evaluation
 
 % f_or: Fuzzy OR - probabilistic sum
 % Formula: 1 - (1 - w1*t1) * (1 - w2*t2) * ...
-f_or([w(Term1, Weight1), w(Term2, Weight2), ...], Result)
+f_or([w(Term1, Weight1), w(Term2, Weight2), ...])           % Symbolic
+f_or([w(Term1, Weight1), w(Term2, Weight2), ...], Result)   % Evaluation
 
 % f_dist_or: Distributed OR - base score distributed into each term, then OR
 % Formula: 1 - (1 - Base*w1*t1) * (1 - Base*w2*t2) * ...
 % Note: f_dist_or(1.0, Terms, R) is equivalent to f_or(Terms, R)
-f_dist_or(BaseScore, [w(Term1, Weight1), w(Term2, Weight2), ...], Result)
+f_dist_or(BaseScore, [w(Term1, Weight1), w(Term2, Weight2), ...])          % Symbolic
+f_dist_or(BaseScore, [w(Term1, Weight1), w(Term2, Weight2), ...], Result)  % Evaluation
+
+% f_union: Non-distributed OR - base multiplies the OR result
+% Formula: Base * (1 - (1-w1*t1)(1-w2*t2)...)
+f_union(BaseScore, [w(Term1, Weight1), w(Term2, Weight2), ...])            % Symbolic
+f_union(BaseScore, [w(Term1, Weight1), w(Term2, Weight2), ...], Result)    % Evaluation
 
 % f_not: Fuzzy NOT - complement
 % Formula: 1 - Score
-f_not(Score, Result)
+f_not(Expr)                % Symbolic
+f_not(Score, Result)       % Evaluation
+```
+
+### Evaluating Symbolic Expressions
+
+```prolog
+% eval_fuzzy/3 - evaluate a symbolic fuzzy expression
+eval_fuzzy(Expr, Context, Result) :-
+    ...
+
+% Example usage
+query(Query, Result) :-
+    Expr = f_and([w(bash, 0.9), w(shell, 0.5)]),  % Build symbolic
+    semantic_search(Query, Context),
+    eval_fuzzy(Expr, Context, Result).            % Evaluate
+
+% Operators build symbolic, then evaluate
+query2(Query, Result) :-
+    semantic_search(Query, Ctx),
+    eval_fuzzy(bash:0.9 & shell:0.5, Ctx, Result).  % Operator -> symbolic -> eval
 ```
 
 ### Boolean Metadata Operations
