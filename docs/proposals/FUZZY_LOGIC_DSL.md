@@ -24,20 +24,33 @@ A Prolog-based DSL allows:
 
 ## Core Functors
 
+### Weighted Terms (Core Form)
+
+The canonical representation uses explicit `w/2` functors:
+
+```prolog
+% w(Term, Weight) - a term with its weight
+w(bash, 0.9)
+w(shell, 0.5)
+
+% Unweighted terms use weight 1.0
+w(bash, 1.0)   % or just: bash (expanded by preprocessor)
+```
+
 ### Fuzzy Logic Operations
 
 ```prolog
 % f_and: Fuzzy AND - multiply weighted scores
 % Formula: score * w1*t1 * w2*t2 * ...
-f_and([Term1:Weight1, Term2:Weight2, ...])
+f_and([w(Term1, Weight1), w(Term2, Weight2), ...])
 
 % f_or: Fuzzy OR - probabilistic sum
 % Formula: 1 - (1 - w1*t1) * (1 - w2*t2) * ...
-f_or([Term1:Weight1, Term2:Weight2, ...])
+f_or([w(Term1, Weight1), w(Term2, Weight2), ...])
 
 % f_dist_or: Distributed OR - score AND (t1 OR t2 ...)
 % Formula: 1 - (1 - score*w1*t1) * (1 - score*w2*t2) * ...
-f_dist_or([Term1:Weight1, Term2:Weight2, ...])
+f_dist_or([w(Term1, Weight1), w(Term2, Weight2), ...])
 
 % f_not: Fuzzy NOT - complement
 % Formula: 1 - score
@@ -70,14 +83,19 @@ has_tag(linux)             % Match tag (future)
 
 ## Syntax
 
-### Weight Notation
+### Core Form (Verbose)
 
-Weights are optional, defaulting to 1.0:
+The core form uses explicit `w/2` functors:
 
 ```prolog
-f_and([bash, shell])           % Both weight 1.0
-f_and([bash:0.9, shell:0.5])   % Explicit weights
-f_or([bash:0.9, shell:0.5, scripting:0.3])
+f_and([w(bash, 0.9), w(shell, 0.5)])
+f_or([w(bash, 0.9), w(shell, 0.5), w(scripting, 0.3)])
+```
+
+Unweighted terms (weight 1.0) can omit the wrapper:
+
+```prolog
+f_and([bash, shell])           % Expanded to: f_and([w(bash, 1.0), w(shell, 1.0)])
 ```
 
 ### Composition
@@ -87,19 +105,19 @@ Fuzzy and boolean operations can be nested:
 ```prolog
 % Fuzzy boost with boolean filter
 f_and([
-    bash:0.9,
+    w(bash, 0.9),
     and([is_type(tree), has_account(s243a)])
 ])
 
 % Fuzzy OR with subtree constraint
 query(Q) :-
-    f_dist_or([bash:0.9, shell:0.5]),
+    f_dist_or([w(bash, 0.9), w(shell, 0.5)]),
     in_subtree("Unix & Linux").
 
 % Complex query
 boost_query(
     f_and([
-        f_dist_or([bash:0.9, shell:0.5]),
+        f_dist_or([w(bash, 0.9), w(shell, 0.5)]),
         not(in_subtree("Puppylinux"))
     ])
 ).
@@ -107,34 +125,78 @@ boost_query(
 
 ## Convenience Operators Module
 
-For concise syntax, an optional operator module:
+For concise syntax, an **optional** operator module provides syntactic sugar:
 
 ```prolog
 :- module(fuzzy_ops, [
+    op(600, xfy, :),    % Weight notation (Term:Weight -> w(Term, Weight))
     op(400, xfy, &),    % Fuzzy AND
     op(400, xfy, \/),   % Fuzzy OR
     op(400, xfy, |/),   % Distributed OR
     op(200, fy, ~)      % Fuzzy NOT
 ]).
 
-% Operator expansion
+% Colon expansion: Term:Weight -> w(Term, Weight)
+expand_weighted(Term:Weight, w(Term, Weight)) :- !.
+expand_weighted(Term, w(Term, 1.0)).   % Bare term -> weight 1.0
+
+% Expand list of weighted terms
+expand_weighted_list([], []).
+expand_weighted_list([H|T], [HExp|TExp]) :-
+    expand_weighted(H, HExp),
+    expand_weighted_list(T, TExp).
+
+% Term expansion for fuzzy functors
+user:term_expansion(f_and(List), f_and(Expanded)) :-
+    is_list(List),
+    expand_weighted_list(List, Expanded).
+user:term_expansion(f_or(List), f_or(Expanded)) :-
+    is_list(List),
+    expand_weighted_list(List, Expanded).
+user:term_expansion(f_dist_or(List), f_dist_or(Expanded)) :-
+    is_list(List),
+    expand_weighted_list(List, Expanded).
+
+% Operator expansion for &, \/, |/
 user:term_expansion(A & B, Expanded) :-
     expand_fuzzy_and(A & B, Expanded).
 user:term_expansion(A \/ B, Expanded) :-
     expand_fuzzy_or(A \/ B, Expanded).
-
-% Usage with operators
-boost(bash:0.9 & shell:0.5).           % f_and([bash:0.9, shell:0.5])
-boost(bash:0.9 \/ shell:0.5).          % f_or([bash:0.9, shell:0.5])
-boost(bash:0.9 |/ shell:0.5).          % f_dist_or([bash:0.9, shell:0.5])
 ```
+
+### Usage with Operators
+
+With `fuzzy_ops` imported:
+
+```prolog
+:- use_module(fuzzy_ops).
+
+% Colon notation (expands to w/2)
+f_and([bash:0.9, shell:0.5])           % -> f_and([w(bash,0.9), w(shell,0.5)])
+f_or([bash:0.9, shell:0.5])            % -> f_or([w(bash,0.9), w(shell,0.5)])
+
+% Infix operators (alternative to functor form)
+boost(bash:0.9 & shell:0.5).           % -> f_and([w(bash,0.9), w(shell,0.5)])
+boost(bash:0.9 \/ shell:0.5).          % -> f_or([w(bash,0.9), w(shell,0.5)])
+boost(bash:0.9 |/ shell:0.5).          % -> f_dist_or([w(bash,0.9), w(shell,0.5)])
+```
+
+### Without Operators (Pure Core)
+
+Without importing `fuzzy_ops`, use the verbose form:
+
+```prolog
+f_and([w(bash, 0.9), w(shell, 0.5)])   % No sugar, explicit w/2
+```
+
+This avoids any potential conflicts with `:` (module qualification) or other operators.
 
 ## Mathematical Foundations
 
 ### Fuzzy AND (Product T-norm)
 
 ```
-f_and([a:w1, b:w2]) = (w1 * a) * (w2 * b)
+f_and([w(a,w1), w(b,w2)]) = (w1 * a) * (w2 * b)
 ```
 
 For score blending:
@@ -145,7 +207,7 @@ result = base_score * (w1 * sim(query, a)) * (w2 * sim(query, b))
 ### Fuzzy OR (Probabilistic Sum)
 
 ```
-f_or([a:w1, b:w2]) = 1 - (1 - w1*a) * (1 - w2*b)
+f_or([w(a,w1), w(b,w2)]) = 1 - (1 - w1*a) * (1 - w2*b)
 ```
 
 Equivalent to:
@@ -158,11 +220,11 @@ f_or([a, b]) = a + b - a*b  (when weights = 1)
 The base score is distributed into each term before OR:
 
 ```
-f_dist_or([a:w1, b:w2]) with base_score S:
+f_dist_or([w(a,w1), w(b,w2)]) with base_score S:
   = 1 - (1 - S*w1*a) * (1 - S*w2*b)
 ```
 
-This is NOT equivalent to `S * f_or([a:w1, b:w2])` because multiplication
+This is NOT equivalent to `S * f_or([w(a,w1), w(b,w2)])` because multiplication
 does not distribute over fuzzy OR:
 
 ```
@@ -178,8 +240,8 @@ Note: Fuzzy AND and OR are both associative; it's distributivity that fails.
 
 For set-union semantics:
 ```
-f_union([a:w1, b:w2]) = base_score * f_or([a:w1, b:w2])
-                      = base_score * (1 - (1-w1*a)(1-w2*b))
+f_union([w(a,w1), w(b,w2)]) = base_score * f_or([w(a,w1), w(b,w2)])
+                            = base_score * (1 - (1-w1*a)(1-w2*b))
 ```
 
 ## Compilation Targets
@@ -187,14 +249,14 @@ f_union([a:w1, b:w2]) = base_score * f_or([a:w1, b:w2])
 ### Python (NumPy)
 
 ```python
-# f_and([bash:0.9, shell:0.5])
+# f_and([w(bash, 0.9), w(shell, 0.5)])
 def fuzzy_and(scores, weights):
     result = np.ones(len(scores[0]))
     for s, w in zip(scores, weights):
         result *= w * s
     return result
 
-# f_dist_or([bash:0.9, shell:0.5])
+# f_dist_or([w(bash, 0.9), w(shell, 0.5)])
 def fuzzy_dist_or(base_score, scores, weights):
     result = np.ones(len(base_score))
     for s, w in zip(scores, weights):
@@ -205,7 +267,7 @@ def fuzzy_dist_or(base_score, scores, weights):
 ### SQL (Future)
 
 ```sql
--- f_and([col1:0.9, col2:0.5])
+-- f_and([w(col1, 0.9), w(col2, 0.5)])
 SELECT *, (0.9 * col1_score) * (0.5 * col2_score) AS fuzzy_score
 FROM results;
 
@@ -236,12 +298,26 @@ python infer_phone.py --query "bash-reduce" \
     --boost-or "shell:0.5,scripting:0.3"
 ```
 
+(The CLI uses `term:weight` string syntax, parsed into the internal representation.)
+
 ### Future Prolog Query
 
 ```prolog
 file_bookmark("bash-reduce", Result) :-
     semantic_search("bash-reduce", Candidates),
-    apply_boost(Candidates, f_and([bash:0.9]), Boosted),
+    apply_boost(Candidates, f_and([w(bash, 0.9)]), Boosted),
+    apply_filter(Boosted, in_subtree("Unix"), Filtered),
+    top_k(Filtered, 10, Result).
+```
+
+Or with the optional `fuzzy_ops` module:
+
+```prolog
+:- use_module(fuzzy_ops).
+
+file_bookmark("bash-reduce", Result) :-
+    semantic_search("bash-reduce", Candidates),
+    apply_boost(Candidates, f_and([bash:0.9]), Boosted),  % sugar
     apply_filter(Boosted, in_subtree("Unix"), Filtered),
     top_k(Filtered, 10, Result).
 ```
