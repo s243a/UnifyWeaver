@@ -41,20 +41,21 @@ w(bash, 1.0)   % or just: bash (expanded by preprocessor)
 
 ```prolog
 % f_and: Fuzzy AND - multiply weighted scores
-% Formula: score * w1*t1 * w2*t2 * ...
-f_and([w(Term1, Weight1), w(Term2, Weight2), ...])
+% Formula: w1*t1 * w2*t2 * ...
+f_and([w(Term1, Weight1), w(Term2, Weight2), ...], Result)
 
 % f_or: Fuzzy OR - probabilistic sum
 % Formula: 1 - (1 - w1*t1) * (1 - w2*t2) * ...
-f_or([w(Term1, Weight1), w(Term2, Weight2), ...])
+f_or([w(Term1, Weight1), w(Term2, Weight2), ...], Result)
 
-% f_dist_or: Distributed OR - score AND (t1 OR t2 ...)
-% Formula: 1 - (1 - score*w1*t1) * (1 - score*w2*t2) * ...
-f_dist_or([w(Term1, Weight1), w(Term2, Weight2), ...])
+% f_dist_or: Distributed OR - base score distributed into each term, then OR
+% Formula: 1 - (1 - Base*w1*t1) * (1 - Base*w2*t2) * ...
+% Note: f_dist_or(1.0, Terms, R) is equivalent to f_or(Terms, R)
+f_dist_or(BaseScore, [w(Term1, Weight1), w(Term2, Weight2), ...], Result)
 
 % f_not: Fuzzy NOT - complement
-% Formula: 1 - score
-f_not(Term)
+% Formula: 1 - Score
+f_not(Score, Result)
 ```
 
 ### Boolean Metadata Operations
@@ -81,46 +82,175 @@ in_subtree("BASH (Unix/Linux)")  % Match path contains
 has_tag(linux)             % Match tag (future)
 ```
 
+### Hierarchical Filters
+
+Filters for navigating tree structure:
+
+```prolog
+% Relationship filters (return 1.0 or 0.0)
+child_of(Node)             % Direct children only
+descendant_of(Node)        % Any depth below Node (alias: in_subtree)
+parent_of(Node)            % The immediate parent
+ancestor_of(Node)          % Any depth above Node
+sibling_of(Node)           % Same parent as Node
+root_of(Tree)              % Root nodes of a tree/account
+
+% Depth filters
+has_depth(N)               % Exactly at depth N
+depth_between(Min, Max)    % Depth in range [Min, Max]
+depth_at_least(N)          % Depth >= N
+depth_at_most(N)           % Depth <= N
+
+% Path pattern matching
+path_matches(Pattern)      % Glob-style: "*/STEM/*/Python"
+path_regex(Regex)          % Regex on full path
+
+% Distance-based (fuzzy, returns score in [0,1])
+near(Node, Decay)          % Score decays with tree distance
+                           % near(X, 0.5) = 0.5^distance
+```
+
+### Custom Filters
+
+Users can define custom filters using standard Prolog:
+
+```prolog
+% Define a custom filter predicate
+% Must return Score in [0.0, 1.0] for fuzzy, or boolean for crisp
+:- module(my_filters, [
+    is_programming_related/2,
+    recent_item/2
+]).
+
+% Custom fuzzy filter: programming-related items
+is_programming_related(Item, Score) :-
+    item_path(Item, Path),
+    (  path_contains(Path, "Programming") -> Score = 1.0
+    ;  path_contains(Path, "STEM") -> Score = 0.7
+    ;  path_contains(Path, "Tech") -> Score = 0.5
+    ;  Score = 0.0
+    ).
+
+% Custom boolean filter: items modified recently
+recent_item(Item, Score) :-
+    item_modified(Item, Timestamp),
+    days_ago(Timestamp, Days),
+    (  Days < 7 -> Score = 1.0
+    ;  Days < 30 -> Score = 0.5
+    ;  Score = 0.0
+    ).
+```
+
+### Registering Custom Filters
+
+```prolog
+% Register for use in fuzzy expressions
+:- register_filter(is_programming_related/2).
+:- register_filter(recent_item/2).
+
+% Now usable in queries
+f_and([
+    w(python, 0.9),
+    w(is_programming_related, 1.0),
+    w(recent_item, 0.5)
+], Result).
+```
+
+### Filter Combinators
+
+Build complex filters from simpler ones:
+
+```prolog
+% Define compound filter
+my_scope(Item, Score) :-
+    child_of("Programming", Item, S1),
+    is_type(tree, Item, S2),
+    Score is S1 * S2.  % Fuzzy AND
+
+% Or using DSL combinators
+:- define_filter(my_scope,
+    f_and([
+        child_of("Programming"),
+        is_type(tree)
+    ])
+).
+
+% Parameterized filters
+in_account_subtree(Account, Subtree, Item, Score) :-
+    has_account(Account, Item, S1),
+    in_subtree(Subtree, Item, S2),
+    Score is S1 * S2.
+
+% Partial application for reuse
+:- define_filter(my_bash_folders,
+    in_account_subtree(s243a, "BASH (Unix/Linux)")
+).
+```
+
+### Filter Interface
+
+All filters implement a common interface:
+
+```prolog
+% filter(+Item, -Score)
+% Item: the item being evaluated
+% Score: 0.0-1.0 for fuzzy, 0.0 or 1.0 for boolean
+
+% Built-in filters follow this pattern
+child_of(Parent, Item, Score) :-
+    item_parent(Item, ItemParent),
+    (  ItemParent == Parent -> Score = 1.0
+    ;  Score = 0.0
+    ).
+
+% Curried form for use in f_and/f_or
+child_of(Parent) :-
+    current_item(Item),
+    child_of(Parent, Item, Score),
+    assert_score(Score).
+```
+
 ## Syntax
 
 ### Core Form (Verbose)
 
-The core form uses explicit `w/2` functors:
+The core form uses explicit `w/2` functors with Result argument:
 
 ```prolog
-f_and([w(bash, 0.9), w(shell, 0.5)])
-f_or([w(bash, 0.9), w(shell, 0.5), w(scripting, 0.3)])
+f_and([w(bash, 0.9), w(shell, 0.5)], Result)
+f_or([w(bash, 0.9), w(shell, 0.5), w(scripting, 0.3)], Result)
+f_dist_or(BaseScore, [w(bash, 0.9), w(shell, 0.5)], Result)
 ```
 
 Unweighted terms (weight 1.0) can omit the wrapper:
 
 ```prolog
-f_and([bash, shell])           % Expanded to: f_and([w(bash, 1.0), w(shell, 1.0)])
+f_and([bash, shell], Result)   % Expanded to: f_and([w(bash, 1.0), w(shell, 1.0)], Result)
 ```
 
 ### Composition
 
-Fuzzy and boolean operations can be nested:
+Fuzzy and boolean operations can be chained:
 
 ```prolog
 % Fuzzy boost with boolean filter
-f_and([
-    w(bash, 0.9),
-    and([is_type(tree), has_account(s243a)])
-])
+query(Query, Result) :-
+    semantic_search(Query, BaseScores),
+    f_and([w(bash, 0.9), w(is_type(tree), 1.0)], TermScores),
+    multiply_scores(BaseScores, TermScores, Result).
 
 % Fuzzy OR with subtree constraint
-query(Q) :-
-    f_dist_or([w(bash, 0.9), w(shell, 0.5)]),
-    in_subtree("Unix & Linux").
+query(Query, Result) :-
+    semantic_search(Query, BaseScores),
+    f_dist_or(BaseScores, [w(bash, 0.9), w(shell, 0.5)], Boosted),
+    apply_filter(Boosted, in_subtree("Unix & Linux"), Result).
 
-% Complex query
-boost_query(
-    f_and([
-        f_dist_or([w(bash, 0.9), w(shell, 0.5)]),
-        not(in_subtree("Puppylinux"))
-    ])
-).
+% Complex query with pipeline
+boost_query(Query, Result) :-
+    semantic_search(Query, S0),
+    f_dist_or(S0, [w(bash, 0.9), w(shell, 0.5)], S1),
+    apply_filter(S1, not(in_subtree("Puppylinux")), S2),
+    top_k(S2, 10, Result).
 ```
 
 ## Convenience Operators Module
@@ -238,11 +368,27 @@ Note: Fuzzy AND and OR are both associative; it's distributivity that fails.
 
 ### Non-Distributed OR (Union) - Future
 
-For set-union semantics:
+For set-union semantics, base score multiplies the whole OR result:
+
+```prolog
+f_union(BaseScore, [w(a,w1), w(b,w2)], Result)
+% Result = BaseScore * f_or([w(a,w1), w(b,w2)])
+%        = BaseScore * (1 - (1-w1*a)(1-w2*b))
 ```
-f_union([w(a,w1), w(b,w2)]) = base_score * f_or([w(a,w1), w(b,w2)])
-                            = base_score * (1 - (1-w1*a)(1-w2*b))
+
+**Comparison of f_or, f_union, and f_dist_or:**
+
 ```
+f_or([a, b], R)        →  R = a + b - ab
+f_union(S, [a,b], R)   →  R = S*(a + b - ab) = Sa + Sb - Sab
+f_dist_or(S, [a,b], R) →  R = 1-(1-Sa)(1-Sb) = Sa + Sb - S²ab
+```
+
+The difference is the interaction term: `Sab` (union) vs `S²ab` (dist_or).
+
+- Use `f_or` when combining term scores without a base
+- Use `f_union` when scaling combined OR by base (multiplicative)
+- Use `f_dist_or` when blending base into each term before OR
 
 ## Compilation Targets
 
@@ -304,20 +450,28 @@ python infer_phone.py --query "bash-reduce" \
 
 ```prolog
 file_bookmark("bash-reduce", Result) :-
-    semantic_search("bash-reduce", Candidates),
-    apply_boost(Candidates, f_and([w(bash, 0.9)]), Boosted),
+    semantic_search("bash-reduce", BaseScores),
+    f_and([w(bash, 0.9)], BoostScores),
+    multiply_scores(BaseScores, BoostScores, Boosted),
+    apply_filter(Boosted, in_subtree("Unix"), Filtered),
+    top_k(Filtered, 10, Result).
+
+% Or using f_dist_or for distributed boost
+file_bookmark_v2("bash-reduce", Result) :-
+    semantic_search("bash-reduce", BaseScores),
+    f_dist_or(BaseScores, [w(bash, 0.9), w(shell, 0.5)], Boosted),
     apply_filter(Boosted, in_subtree("Unix"), Filtered),
     top_k(Filtered, 10, Result).
 ```
 
-Or with the optional `fuzzy_ops` module:
+Or with the optional `fuzzy_ops` module (colon syntax):
 
 ```prolog
 :- use_module(fuzzy_ops).
 
 file_bookmark("bash-reduce", Result) :-
-    semantic_search("bash-reduce", Candidates),
-    apply_boost(Candidates, f_and([bash:0.9]), Boosted),  % sugar
+    semantic_search("bash-reduce", BaseScores),
+    f_dist_or(BaseScores, [bash:0.9, shell:0.5], Boosted),  % : sugar
     apply_filter(Boosted, in_subtree("Unix"), Filtered),
     top_k(Filtered, 10, Result).
 ```
