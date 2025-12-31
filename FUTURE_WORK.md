@@ -427,17 +427,19 @@ For languages without mature CPython embedding (Go, Node.js, Lua), we use Rust a
 Each language with C FFI capability can use the same Rust bridge library.
 
 #### 3. Bridge Integration Tests
-**Status:** 📋 TODO
+**Status:** ✅ COMPLETE
 **Priority:** High
 **Scope:** Automated CI testing for all 7+ bridges
 
 ```bash
-# Desired CI workflow
+# CI workflow (implemented)
 ./test_bridges.sh --all        # Test all bridges
 ./test_bridges.sh --jvm        # Test Java bridges only
 ./test_bridges.sh --dotnet     # Test .NET bridges only
 ./test_bridges.sh --ffi        # Test FFI bridges only
 ```
+
+Test script: `examples/python-bridges/test_bridges.sh`
 
 #### 4. Cross-Runtime Pipeline Examples
 **Status:** 📋 TODO

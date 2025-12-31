@@ -218,6 +218,86 @@ The auto-selection integrates with UnifyWeaver's preference and firewall systems
 - Used by JetBrains tools
 - Good for mixed Java/Python codebases
 
+## Integration Testing
+
+A comprehensive test script is provided for CI/CD pipelines:
+
+```bash
+# Test all bridges
+./test_bridges.sh --all
+
+# Test specific bridge categories
+./test_bridges.sh --jvm       # JPype, jpy
+./test_bridges.sh --dotnet    # Python.NET, CSnakes
+./test_bridges.sh --ffi       # Rust FFI (Go)
+./test_bridges.sh --rust      # PyO3
+./test_bridges.sh --ruby      # PyCall.rb
+
+# Test specific bridges
+./test_bridges.sh pythonnet jpype pyo3
+```
+
+### CI Configuration
+
+The test script:
+- Automatically starts RPyC server if not running
+- Skips bridges with missing dependencies (graceful degradation)
+- Returns non-zero exit code if any tests fail
+- Provides colored output with clear pass/fail/skip indicators
+
+Example GitHub Actions workflow:
+
+```yaml
+name: Bridge Tests
+
+on: [push, pull_request]
+
+jobs:
+  test-bridges:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install RPyC
+        run: pip install rpyc numpy
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Install bridge dependencies
+        run: pip install jpype1 jpy pythonnet
+
+      - name: Run bridge tests
+        run: ./examples/python-bridges/test_bridges.sh --all
+```
+
+### Test Results
+
+Current test status (verified 2025-12-30):
+
+| Bridge | Status | Notes |
+|--------|--------|-------|
+| CSnakes | ✅ Pass | .NET 9+ |
+| JPype | ✅ Pass | Java 11+ |
+| jpy | ✅ Pass | Java 11+ |
+| PyO3 | ✅ Pass | Rust |
+| PyCall.rb | ✅ Pass | Ruby 2.7+ |
+| Rust FFI (Go) | ✅ Pass | Go 1.21+ |
+| Python.NET | ⚠️ Known issue | See pythonnet/README.md |
+
 ## Related Documentation
 
 - [RPyC Integration](../rpyc-integration/)
