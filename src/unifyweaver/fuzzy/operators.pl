@@ -17,12 +17,6 @@
  */
 
 :- module(fuzzy_operators, [
-    op(600, xfy, :),     % Weight notation: Term:Weight
-    op(400, xfy, &),     % Fuzzy AND
-    op(400, xfy, \/),    % Fuzzy OR
-    op(400, xfy, |/),    % Distributed OR marker
-    op(200, fy, ~),      % Fuzzy NOT
-
     % Expansion predicates
     expand_fuzzy/2,
     expand_weighted/2,
@@ -30,7 +24,11 @@
 
     % Collect operators into list
     collect_and/2,
-    collect_or/2
+    collect_or/2,
+
+    % Convenience macros
+    fuzzy_and/2,
+    fuzzy_or/2
 ]).
 
 :- use_module(core).
@@ -39,10 +37,18 @@
 % Operator Definitions
 % =============================================================================
 
-% Operators are defined via op/3 directives in the module declaration.
+% Operators are defined via op/3 directives.
 % The precedences are chosen to allow natural expression building:
 %   bash:0.9 & shell:0.5 \/ scripting:0.3
 % parses as expected.
+
+:- op(400, xfy, &).      % Fuzzy AND
+:- op(400, xfy, v).      % Fuzzy OR (v for disjunction, avoids | conflict)
+:- op(200, fy, ~).       % Fuzzy NOT
+
+% Note: We don't redefine : operator as it conflicts with module qualification.
+% Use w(Term, Weight) or the colon in list context: [bash:0.9] works fine.
+% We use 'v' for OR instead of \/ or | which conflict with Prolog builtins.
 
 % =============================================================================
 % Term Expansion
@@ -73,8 +79,8 @@ collect_and(Term, [Expanded]) :-
     expand_weighted(Term, Expanded).
 
 %% collect_or(+Expr, -List)
-%  Collect terms from A \/ B \/ C into a flat list.
-collect_or(A \/ B, List) :- !,
+%  Collect terms from A v B v C into a flat list.
+collect_or(A v B, List) :- !,
     collect_or(A, ListA),
     collect_or(B, ListB),
     append(ListA, ListB, List).
@@ -89,9 +95,9 @@ expand_fuzzy(Expr, f_and(Terms)) :-
     Expr = (_ & _), !,
     collect_and(Expr, Terms).
 
-% Fuzzy OR: A \/ B -> f_or([A, B, ...])
+% Fuzzy OR: A v B -> f_or([A, B, ...])
 expand_fuzzy(Expr, f_or(Terms)) :-
-    Expr = (_ \/ _), !,
+    Expr = (_ v _), !,
     collect_or(Expr, Terms).
 
 % Fuzzy NOT: ~A -> f_not(A)

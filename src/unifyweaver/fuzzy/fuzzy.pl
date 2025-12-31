@@ -31,7 +31,6 @@
 
 :- module(fuzzy, [
     % Re-export core
-    w/2,
     f_and/1, f_and/2,
     f_or/1, f_or/2,
     f_dist_or/2, f_dist_or/3,

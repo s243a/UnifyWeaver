@@ -14,9 +14,6 @@
  */
 
 :- module(fuzzy_core, [
-    % Weighted term constructor
-    w/2,
-
     % Symbolic forms (for expression building)
     f_and/1,
     f_or/1,
@@ -33,6 +30,10 @@
 
     % Evaluation predicate
     eval_fuzzy/3,
+
+    % Term scoring
+    get_term_score/2,
+    term_score/2,
 
     % Helpers
     expand_term/2,
@@ -105,7 +106,7 @@ f_and(Terms, Result) :-
 
 f_and_eval([], Acc, Acc).
 f_and_eval([w(Term, Weight)|Rest], Acc, Result) :-
-    term_score(Term, Score),
+    get_term_score(Term, Score),
     NewAcc is Acc * Weight * Score,
     f_and_eval(Rest, NewAcc, Result).
 
@@ -119,7 +120,7 @@ f_or(Terms, Result) :-
 
 f_or_eval([], Acc, Acc).
 f_or_eval([w(Term, Weight)|Rest], Acc, Result) :-
-    term_score(Term, Score),
+    get_term_score(Term, Score),
     NewAcc is Acc * (1 - Weight * Score),
     f_or_eval(Rest, NewAcc, Result).
 
@@ -134,7 +135,7 @@ f_dist_or(BaseScore, Terms, Result) :-
 
 f_dist_or_eval(_, [], Acc, Acc).
 f_dist_or_eval(Base, [w(Term, Weight)|Rest], Acc, Result) :-
-    term_score(Term, Score),
+    get_term_score(Term, Score),
     NewAcc is Acc * (1 - Base * Weight * Score),
     f_dist_or_eval(Base, Rest, NewAcc, Result).
 
@@ -178,7 +179,7 @@ eval_fuzzy(f_not(Expr), Ctx, Result) :-
 
 % Evaluate nested expressions
 eval_fuzzy(w(Term, Weight), Ctx, Result) :-
-    with_context(Ctx, term_score(Term, Score)),
+    with_context(Ctx, get_term_score(Term, Score)),
     Result is Weight * Score.
 
 % Pass through numbers
@@ -191,10 +192,17 @@ eval_fuzzy(N, _, N) :- number(N).
 %% term_score(+Term, -Score)
 %  Get the score for a term. This is a hook to be defined by the user
 %  or overridden with context-specific scoring.
-%  Default: returns 0.5 (neutral score)
+%  Scores are asserted dynamically via with_context/2.
 :- dynamic term_score/2.
 
-term_score(_, 0.5).  % Default fallback
+%% get_term_score(+Term, -Score)
+%  Get score for a term with fallback to 0.5 (neutral score).
+%  Uses if-then-else to ensure asserted clauses take precedence.
+get_term_score(Term, Score) :-
+    (   term_score(Term, S)
+    ->  Score = S
+    ;   Score = 0.5
+    ).
 
 %% with_context(+Context, +Goal)
 %  Execute Goal with Context providing term_score bindings.

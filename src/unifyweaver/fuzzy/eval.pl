@@ -26,7 +26,12 @@
 
     % Score combination
     multiply_scores/3,
-    blend_scores/4
+    blend_scores/4,
+
+    % Pipeline helpers
+    top_k/3,
+    apply_filter/3,
+    apply_boost/3
 ]).
 
 :- use_module(core).
@@ -64,7 +69,7 @@ eval_expr(f_not(Inner), Result) :-
     eval_expr(Inner, InnerResult),
     Result is 1 - InnerResult.
 eval_expr(w(Term, Weight), Result) :-
-    term_score(Term, Score),
+    fuzzy_core:get_term_score(Term, Score),
     Result is Weight * Score.
 eval_expr(N, N) :-
     number(N).

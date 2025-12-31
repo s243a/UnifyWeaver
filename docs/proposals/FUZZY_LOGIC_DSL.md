@@ -6,6 +6,33 @@ This proposal defines a fuzzy logic domain-specific language (DSL) for UnifyWeav
 enabling probabilistic scoring and matching in semantic search, bookmark filing,
 and other applications where boolean logic is too rigid.
 
+## Quick Start
+
+```prolog
+% Load the fuzzy logic DSL
+:- use_module('src/unifyweaver/fuzzy/fuzzy').
+
+% Example: Evaluate fuzzy AND with term scores
+?- eval_fuzzy_expr(
+       f_and([w(bash, 0.9), w(shell, 0.5)]),
+       [bash-0.8, shell-0.6],
+       Result
+   ).
+% Result = 0.216  (0.9*0.8 * 0.5*0.6)
+
+% Example: Fuzzy OR
+?- eval_fuzzy_expr(
+       f_or([w(bash, 0.9), w(shell, 0.5)]),
+       [bash-0.8, shell-0.6],
+       Result
+   ).
+% Result = 0.804  (1 - (1-0.72)(1-0.3))
+
+% Example: With operator syntax (after loading operators)
+:- use_module('src/unifyweaver/fuzzy/operators').
+?- fuzzy_and(bash:0.9 & shell:0.5, Result).
+```
+
 ## Motivation
 
 Embedding models don't always recognize domain-specific terms (e.g., "bash-reduce").
@@ -292,13 +319,15 @@ boost_query(Query, Result) :-
 For concise syntax, an **optional** operator module provides syntactic sugar:
 
 ```prolog
-:- module(fuzzy_ops, [
-    op(600, xfy, :),    % Weight notation (Term:Weight -> w(Term, Weight))
-    op(400, xfy, &),    % Fuzzy AND
-    op(400, xfy, \/),   % Fuzzy OR
-    op(400, xfy, |/),   % Distributed OR
-    op(200, fy, ~)      % Fuzzy NOT
-]).
+:- module(fuzzy_operators, [...]).
+
+% Operator definitions (separate directives, not in export list)
+:- op(400, xfy, &).      % Fuzzy AND
+:- op(400, xfy, v).      % Fuzzy OR (using 'v' to avoid conflict with Prolog's \/)
+:- op(200, fy, ~).       % Fuzzy NOT
+
+% Note: : (colon) is not redefined as an operator to avoid conflict
+% with Prolog's module qualification. Use : inside lists only.
 
 % Colon expansion: Term:Weight -> w(Term, Weight)
 expand_weighted(Term:Weight, w(Term, Weight)) :- !.
@@ -330,19 +359,22 @@ user:term_expansion(A \/ B, Expanded) :-
 
 ### Usage with Operators
 
-With `fuzzy_ops` imported:
+With `fuzzy_operators` imported:
 
 ```prolog
-:- use_module(fuzzy_ops).
+:- use_module(fuzzy/operators).
 
-% Colon notation (expands to w/2)
+% Colon notation (expands to w/2) - works in lists
 f_and([bash:0.9, shell:0.5])           % -> f_and([w(bash,0.9), w(shell,0.5)])
 f_or([bash:0.9, shell:0.5])            % -> f_or([w(bash,0.9), w(shell,0.5)])
 
 % Infix operators (alternative to functor form)
-boost(bash:0.9 & shell:0.5).           % -> f_and([w(bash,0.9), w(shell,0.5)])
-boost(bash:0.9 \/ shell:0.5).          % -> f_or([w(bash,0.9), w(shell,0.5)])
-boost(bash:0.9 |/ shell:0.5).          % -> f_dist_or([w(bash,0.9), w(shell,0.5)])
+fuzzy_and(bash:0.9 & shell:0.5, R).    % -> f_and([w(bash,0.9), w(shell,0.5)], R)
+fuzzy_or(bash:0.9 v shell:0.5, R).     % -> f_or([w(bash,0.9), w(shell,0.5)], R)
+
+% Direct expansion
+expand_fuzzy(bash:0.9 & shell:0.5, Expanded).
+% Expanded = f_and([w(bash, 0.9), w(shell, 0.5)])
 ```
 
 ### Without Operators (Pure Core)
@@ -512,52 +544,70 @@ file_bookmark("bash-reduce", Result) :-
 
 Compiled to Python via UnifyWeaver.
 
-## Implementation Plan
+## Implementation Status
 
-### Phase 1: Core Functors
-1. Define `f_and/1`, `f_or/1`, `f_dist_or/1`, `f_not/1` in Prolog
-2. Define `and/1`, `or/1`, `not/1` for boolean operations
-3. Implement evaluation predicates
+### Completed: Core Prolog DSL
+All core fuzzy logic operations are implemented and tested:
 
-### Phase 2: Python Target
+```
+src/unifyweaver/fuzzy/
+  fuzzy.pl         # Main module (re-exports all)
+  core.pl          # f_and, f_or, f_dist_or, f_union, f_not
+  boolean.pl       # b_and, b_or, b_not
+  predicates.pl    # is_type, has_account, in_subtree, hierarchical filters
+  operators.pl     # Optional operator sugar (& for AND, v for OR)
+  eval.pl          # Evaluation engine with context management
+  test_fuzzy.pl    # Test suite
+```
+
+### Test Results
+
+All tests pass:
+
+```
+=== Fuzzy Logic DSL Tests ===
+
+--- Core Operations ---
+f_and: PASS (0.216)        # 0.9*0.8 * 0.5*0.6
+f_or: PASS (0.804)         # 1 - (1-0.72)(1-0.3)
+f_dist_or(0.7): PASS (0.60816)
+f_union(0.7): PASS (0.5628)
+f_not: PASS (0.7)
+
+--- Eval Module ---
+eval_fuzzy_expr: PASS (0.216)
+fallback score: PASS (0.5)  # Default when no term score set
+
+--- Operators Module ---
+expand_fuzzy AND: PASS
+fuzzy_and: PASS (0.216)
+fuzzy_or: PASS (0.804)
+
+--- Boolean Operations ---
+b_and: PASS
+b_or: PASS
+```
+
+### Remaining Implementation
+
+#### Phase 2: Python Target
 1. Add fuzzy logic to UnifyWeaver's Python code generator
 2. Generate NumPy-based implementations
 3. Test with bookmark filing use case
 
-### Phase 3: Operator Module
-1. Create `fuzzy_ops` convenience module
-2. Implement term expansion for operators
-3. Document operator precedence
-
-### Phase 4: Advanced Features
-1. Add `f_union/1` for non-distributed OR
-2. SQL compilation target
-3. Streaming evaluation for large datasets
-
-## File Structure
-
-```
-src/prolog/
-  fuzzy/
-    core.pl          # f_and, f_or, f_dist_or, f_not
-    boolean.pl       # and, or, not
-    predicates.pl    # is_type, has_account, in_subtree
-    operators.pl     # Optional operator sugar
-    eval.pl          # Evaluation/scoring
-
-targets/
-  python/
-    fuzzy_codegen.py # Generate NumPy code
-  sql/
-    fuzzy_codegen.sql # Generate SQL (future)
-```
+#### Phase 3: SQL Target (Future)
+1. SQL compilation target for database queries
+2. Streaming evaluation for large datasets
 
 ## Open Questions
 
-1. Should weights be normalized (sum to 1) or raw?
+1. ~~Should weights be normalized (sum to 1) or raw?~~
+   **Decision**: Use raw weights. Normalization is an optional post-processing step.
 2. How to handle missing/null scores in fuzzy operations?
+   Current: fallback to 0.5 (neutral score) when term not found.
 3. Should `f_dist_or` be renamed to clarify semantics (e.g., `f_blend_or`)?
-4. Precedence of `&` vs `\/` operators?
+4. ~~Precedence of `&` vs `\/` operators?~~
+   **Resolved**: Both have precedence 400. Using `v` instead of `\/` to avoid Prolog builtin conflict.
 
 ## References
 

@@ -266,7 +266,7 @@ near(Node, Decay, Score) :-
     tree_distance(Item, Node, Distance),
     Score is Decay ** Distance.
 
-near(Node, Decay, 0.0) :-
+near(Node, _Decay, 0.0) :-
     \+ (current_item(Item), tree_distance(Item, Node, _)).
 
 % Tree distance between two nodes (simplified - override for actual impl)
