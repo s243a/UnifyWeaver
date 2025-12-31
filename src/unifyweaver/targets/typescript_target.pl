@@ -19,13 +19,36 @@
     compile_module/3,               % +Predicates, +Options, -Code
     write_typescript_module/2,      % +Code, +Filename
     init_typescript_target/0,
-    
+
+    % Binding system exports
+    clear_binding_imports/0,        % Clear collected binding imports
+    collect_binding_import/1,       % Collect an import from bindings
+    get_collected_imports/1,        % Get imports collected from bindings
+
+    % Component system exports
+    collect_declared_component/2,   % Record that a component is used
+
+    % Service generation exports (Express/HTTP)
+    compile_express_service/2,      % +Service, -Code
+    compile_express_router/2,       % +RouterSpec, -Code
+    compile_http_client/2,          % +ClientSpec, -Code
+
     % Legacy compatibility
     compile_predicate_to_typescript/3
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
+
+% Binding system integration
+:- use_module('../core/binding_registry').
+:- use_module('../core/component_registry').
+:- use_module('../bindings/typescript_bindings').
+:- use_module('typescript_runtime/custom_typescript', []).
+
+% Track required imports from bindings
+:- dynamic required_binding_import/1.
+:- dynamic collected_component/2.
 
 %% ============================================
 %% TARGET INFO
@@ -45,8 +68,99 @@ target_info(info{
 %% INITIALIZATION
 %% ============================================
 
+%% init_typescript_target
+%
+%  Initialize TypeScript target with bindings and clear state.
+%
 init_typescript_target :-
-    format('[TypeScript Target] Initialized~n', []).
+    retractall(required_binding_import(_)),
+    retractall(collected_component(_, _)),
+    init_typescript_bindings,
+    format('[TypeScript Target] Initialized with bindings~n', []).
+
+%% ============================================
+%% IMPORT COLLECTION SYSTEM
+%% ============================================
+
+%% collect_binding_import(+Import)
+%
+%  Record that an import is required (e.g., 'fs', 'path', 'express').
+%
+collect_binding_import(Import) :-
+    (   required_binding_import(Import)
+    ->  true
+    ;   assertz(required_binding_import(Import))
+    ).
+
+%% clear_binding_imports
+%
+%  Clear all collected binding imports.
+%
+clear_binding_imports :-
+    retractall(required_binding_import(_)).
+
+%% get_collected_imports(-Imports)
+%
+%  Get all collected imports from bindings.
+%
+get_collected_imports(Imports) :-
+    findall(I, required_binding_import(I), Imports).
+
+%% format_binding_imports(+Imports, -FormattedStr)
+%
+%  Format a list of import names for TypeScript import statements.
+%
+format_binding_imports([], "").
+format_binding_imports(Imports, FormattedStr) :-
+    Imports \= [],
+    sort(Imports, UniqueImports),
+    findall(Formatted,
+        (   member(Import, UniqueImports),
+            format_single_import(Import, Formatted)
+        ),
+        FormattedList),
+    atomic_list_concat(FormattedList, '\n', FormattedStr).
+
+%% format_single_import(+Import, -Formatted)
+%
+%  Format a single import. Handles different import types.
+%
+format_single_import(Import, Formatted) :-
+    atom_string(Import, ImportStr),
+    (   sub_string(ImportStr, 0, 1, _, ".")
+    ->  % Relative import (e.g., './rpyc_bridge')
+        format(string(Formatted), "import { * } from '~w';", [ImportStr])
+    ;   sub_string(ImportStr, 0, 1, _, "@")
+    ->  % Scoped package (e.g., '@types/node')
+        format(string(Formatted), "import * as ~w from '~w';", [make_import_alias(ImportStr), ImportStr])
+    ;   % Node.js built-in or npm package
+        format(string(Formatted), "import * as ~w from '~w';", [ImportStr, ImportStr])
+    ).
+
+%% make_import_alias(+ScopedName, -Alias)
+%
+%  Create an alias for scoped package names.
+%
+make_import_alias(Name, Alias) :-
+    atom_string(Name, NameStr),
+    (   sub_string(NameStr, _Before, 1, After, "/")
+    ->  sub_string(NameStr, _, After, 0, Alias)
+    ;   Alias = NameStr
+    ).
+
+%% ============================================
+%% COMPONENT COLLECTION SYSTEM
+%% ============================================
+
+%% collect_declared_component(+Category, +Name)
+%
+%  Record that a component is used in the code.
+%
+collect_declared_component(Category, Name) :-
+    (   collected_component(Category, Name)
+    ->  true
+    ;   assertz(collected_component(Category, Name))
+    ).
 
 %% ============================================
 %% MAIN DISPATCH
@@ -127,8 +241,8 @@ export const is~w = (...args: string[]): boolean => {
 compile_recursion(Pred/_Arity, Options, Code) :-
     atom_string(Pred, PredStr),
     option(pattern(Pattern), Options, tail_recursion),
-    option(module_name(ModName), Options, PredStr),
-    
+    option(module_name(_ModName), Options, PredStr),
+
     (   Pattern == tail_recursion
     ->  generate_tail_recursion(PredStr, Code)
     ;   Pattern == list_fold
@@ -206,13 +320,13 @@ export const ~w = (n: number): number => {
 
 compile_module(Predicates, Options, Code) :-
     option(module_name(ModName), Options, 'Generated'),
-    
-    % Generate exports
+
+    % Generate exports (future use for explicit export statements)
     findall(Export, (
         member(pred(Name, _Arity, _Type), Predicates),
         atom_string(Name, Export)
     ), Exports),
-    atomic_list_concat(Exports, ', ', ExportList),
+    atomic_list_concat(Exports, ', ', _ExportList),
     
     % Generate code for each predicate
     findall(PredCode, (
@@ -298,6 +412,227 @@ generate_match_expr(FieldNames) :-
 generate_match_expr(FieldNames, Match) :-
     maplist([F, Expr]>>format(string(Expr), 'f.~w === ~w', [F, F]), FieldNames, Exprs),
     atomic_list_concat(Exprs, ' && ', Match).
+
+%% ============================================
+%% EXPRESS SERVICE GENERATION
+%% ============================================
+
+%% compile_express_service(+Service, -Code)
+%
+%  Generate an Express.js service from a service specification.
+%
+%  Service format:
+%    service(Name, [
+%        port(Port),
+%        endpoints([...]),
+%        middleware([...])
+%    ])
+%
+compile_express_service(service(Name, Config), Code) :-
+    atom_string(Name, NameStr),
+    option(port(Port), Config, 3000),
+    option(endpoints(Endpoints), Config, []),
+    option(middleware(Middleware), Config, [cors, json]),
+
+    % Collect imports
+    collect_binding_import(express),
+    (member(cors, Middleware) -> collect_binding_import(cors) ; true),
+
+    % Generate middleware setup
+    generate_middleware_setup(Middleware, MiddlewareCode),
+
+    % Generate endpoints
+    generate_express_endpoints(Endpoints, EndpointsCode),
+
+    format(string(Code),
+'// Generated by UnifyWeaver TypeScript Target
+// Service: ~w
+
+import express, { Request, Response } from "express";
+import cors from "cors";
+
+const app = express();
+
+// Middleware
+~w
+
+// Endpoints
+~w
+
+// Start server
+const PORT = process.env.PORT || ~w;
+app.listen(PORT, () => {
+  console.log(`~w service running on port ${PORT}`);
+});
+
+export default app;
+', [NameStr, MiddlewareCode, EndpointsCode, Port, NameStr]).
+
+%% generate_middleware_setup(+Middleware, -Code)
+%
+%  Generate Express middleware setup code.
+%
+generate_middleware_setup(Middleware, Code) :-
+    findall(Line, (
+        member(MW, Middleware),
+        middleware_to_code(MW, Line)
+    ), Lines),
+    atomic_list_concat(Lines, '\n', Code).
+
+middleware_to_code(cors, 'app.use(cors());').
+middleware_to_code(json, 'app.use(express.json());').
+middleware_to_code(urlencoded, 'app.use(express.urlencoded({ extended: true }));').
+middleware_to_code(static(Path), Line) :-
+    format(string(Line), 'app.use(express.static("~w"));', [Path]).
+middleware_to_code(limit(Size), Line) :-
+    format(string(Line), 'app.use(express.json({ limit: "~w" }));', [Size]).
+
+%% generate_express_endpoints(+Endpoints, -Code)
+%
+%  Generate Express endpoint handlers.
+%
+generate_express_endpoints(Endpoints, Code) :-
+    findall(EndpointCode, (
+        member(Endpoint, Endpoints),
+        generate_single_endpoint(Endpoint, EndpointCode)
+    ), Codes),
+    atomic_list_concat(Codes, '\n\n', Code).
+
+%% generate_single_endpoint(+Endpoint, -Code)
+%
+%  Generate a single Express endpoint.
+%
+%  Endpoint format:
+%    endpoint(Path, Method, Handler)
+%    endpoint(Path, Method, [body(Schema), handler(Code)])
+%
+generate_single_endpoint(endpoint(Path, Method, Handler), Code) :-
+    atom_string(Method, MethodStr),
+    string_lower(MethodStr, MethodLower),
+    (   atom(Handler)
+    ->  atom_string(Handler, HandlerStr),
+        format(string(Code),
+'app.~w("~w", async (req: Request, res: Response) => {
+  try {
+    const result = await ~w(req);
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});', [MethodLower, Path, HandlerStr])
+    ;   is_list(Handler)
+    ->  option(handler(HandlerCode), Handler, 'res.json({ ok: true })'),
+        option(body(BodySchema), Handler, none),
+        generate_endpoint_with_validation(Path, MethodLower, BodySchema, HandlerCode, Code)
+    ;   format(string(Code),
+'app.~w("~w", (req: Request, res: Response) => {
+  res.json({ message: "Not implemented" });
+});', [MethodLower, Path])
+    ).
+
+generate_endpoint_with_validation(Path, Method, none, HandlerCode, Code) :-
+    format(string(Code),
+'app.~w("~w", async (req: Request, res: Response) => {
+  try {
+    ~w
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});', [Method, Path, HandlerCode]).
+
+generate_endpoint_with_validation(Path, Method, Schema, HandlerCode, Code) :-
+    Schema \= none,
+    format(string(Code),
+'app.~w("~w", async (req: Request, res: Response) => {
+  try {
+    const body = req.body;
+    // TODO: Validate against schema: ~w
+    ~w
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
+});', [Method, Path, Schema, HandlerCode]).
+
+%% compile_express_router(+RouterSpec, -Code)
+%
+%  Generate an Express Router for modular route handling.
+%
+compile_express_router(router(Name, Endpoints), Code) :-
+    atom_string(Name, NameStr),
+    generate_express_endpoints(Endpoints, EndpointsCode),
+
+    format(string(Code),
+'// Generated by UnifyWeaver TypeScript Target
+// Router: ~w
+
+import { Router, Request, Response } from "express";
+
+export const ~wRouter = Router();
+
+~w
+', [NameStr, NameStr, EndpointsCode]).
+
+%% ============================================
+%% HTTP CLIENT GENERATION
+%% ============================================
+
+%% compile_http_client(+ClientSpec, -Code)
+%
+%  Generate a typed HTTP client for API consumption.
+%
+compile_http_client(client(Name, Config), Code) :-
+    atom_string(Name, NameStr),
+    option(base_url(BaseUrl), Config, ''),
+    option(endpoints(Endpoints), Config, []),
+
+    % Generate client methods
+    generate_client_methods(Endpoints, MethodsCode),
+
+    format(string(Code),
+'// Generated by UnifyWeaver TypeScript Target
+// HTTP Client: ~w
+
+const BASE_URL = "~w";
+
+export interface ApiResponse<T> {
+  success: boolean;
+  result?: T;
+  error?: string;
+}
+
+~w
+
+export const ~wClient = {
+  baseUrl: BASE_URL,
+  // Add methods here
+};
+', [NameStr, BaseUrl, MethodsCode, NameStr]).
+
+generate_client_methods([], '').
+generate_client_methods([Endpoint|Rest], Code) :-
+    generate_client_method(Endpoint, MethodCode),
+    generate_client_methods(Rest, RestCode),
+    format(string(Code), '~w\n\n~w', [MethodCode, RestCode]).
+
+generate_client_method(endpoint(Path, get, Name), Code) :-
+    atom_string(Name, NameStr),
+    format(string(Code),
+'export const ~w = async (): Promise<ApiResponse<unknown>> => {
+  const response = await fetch(`${BASE_URL}~w`);
+  return response.json();
+};', [NameStr, Path]).
+
+generate_client_method(endpoint(Path, post, Name), Code) :-
+    atom_string(Name, NameStr),
+    format(string(Code),
+'export const ~w = async (data: unknown): Promise<ApiResponse<unknown>> => {
+  const response = await fetch(`${BASE_URL}~w`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return response.json();
+};', [NameStr, Path]).
 
 %% ============================================
 %% FILE OUTPUT
