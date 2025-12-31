@@ -1490,7 +1490,7 @@ namespace UnifyWeaver.QueryRuntime
                         var facts = GetFactsList(scan.Relation, context);
                         upperBound = facts.Count;
 
-                        int? boundColumn = null;
+                        List<int>? boundColumns = null;
                         for (var i = 0; i < scan.Pattern.Length; i++)
                         {
                             var value = scan.Pattern[i];
@@ -1499,20 +1499,59 @@ namespace UnifyWeaver.QueryRuntime
                                 continue;
                             }
 
-                            if (boundColumn is not null)
-                            {
-                                return true;
-                            }
-
-                            boundColumn = i;
+                            boundColumns ??= new List<int>();
+                            boundColumns.Add(i);
                         }
 
-                        if (boundColumn is not null &&
-                            context.FactIndices.TryGetValue((scan.Relation, boundColumn.Value), out var index))
+                        if (boundColumns is null || boundColumns.Count == 0)
                         {
-                            var keyValue = scan.Pattern[boundColumn.Value];
+                            return true;
+                        }
+
+                        if (boundColumns.Count == 1)
+                        {
+                            var boundColumn = boundColumns[0];
+                            if (context.FactIndices.TryGetValue((scan.Relation, boundColumn), out var index))
+                            {
+                                var keyValue = scan.Pattern[boundColumn];
+                                var lookupKey = keyValue ?? NullFactIndexKey;
+                                upperBound = index.TryGetValue(lookupKey, out var bucket) ? bucket.Count : 0;
+                            }
+
+                            return true;
+                        }
+
+                        var signature = string.Join(",", boundColumns);
+                        if (context.JoinIndices.TryGetValue((scan.Relation, signature), out var joinIndex))
+                        {
+                            var key = new object[boundColumns.Count];
+                            for (var i = 0; i < boundColumns.Count; i++)
+                            {
+                                key[i] = scan.Pattern[boundColumns[i]];
+                            }
+
+                            var wrapper = new RowWrapper(key);
+                            upperBound = joinIndex.TryGetValue(wrapper, out var bucket) ? bucket.Count : 0;
+                            return true;
+                        }
+
+                        int? bestUpperBound = null;
+                        foreach (var boundColumn in boundColumns)
+                        {
+                            if (!context.FactIndices.TryGetValue((scan.Relation, boundColumn), out var index))
+                            {
+                                continue;
+                            }
+
+                            var keyValue = scan.Pattern[boundColumn];
                             var lookupKey = keyValue ?? NullFactIndexKey;
-                            upperBound = index.TryGetValue(lookupKey, out var bucket) ? bucket.Count : 0;
+                            var candidate = index.TryGetValue(lookupKey, out var bucket) ? bucket.Count : 0;
+                            bestUpperBound = bestUpperBound is null ? candidate : Math.Min(bestUpperBound.Value, candidate);
+                        }
+
+                        if (bestUpperBound is not null)
+                        {
+                            upperBound = bestUpperBound.Value;
                         }
 
                         return true;
