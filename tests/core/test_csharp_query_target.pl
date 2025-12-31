@@ -158,6 +158,7 @@ test_csharp_query_target :-
         verify_stratified_negation_recursive_lower_stratum_runtime,
         verify_stratified_negation_mutual_lower_stratum_runtime,
         verify_parameterized_multi_key_join_runtime,
+        verify_parameterized_multi_key_join_strategy_partial_index,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
         verify_parameterized_fib_runtime,
@@ -1208,6 +1209,17 @@ verify_parameterized_multi_key_join_runtime :-
     ),
     maybe_run_query_runtime(Plan, ['alice,laptop,10', 'alice,laptop,2'], [[alice, laptop]]).
 
+verify_parameterized_multi_key_join_strategy_partial_index :-
+    csharp_query_target:build_query_plan(test_sale_item_param/3, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(join{type:join, left:_, right:_, left_keys:[0, 1], right_keys:[0, 1], left_width:_, right_width:_, width:_}, Root),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [[alice, laptop]], 'KeyJoinScanIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,laptop,10', 'alice,laptop,2', 'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+        [[alice, laptop]],
+        HarnessSource).
+
 verify_parameterized_fib_plan :-
     csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
@@ -2064,6 +2076,27 @@ maybe_run_query_runtime(Plan, ExpectedRows, Params) :-
     ;   writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)')
     ).
 
+maybe_run_query_runtime_with_harness(Plan, ExpectedRows, Params, HarnessSource) :-
+    (   getenv('SKIP_CSHARP_EXECUTION', '1')
+    ->  prepare_temp_dir(Plan, Dir),
+        (   generate_csharp_code_only_with_harness(Plan, Params, HarnessSource, Dir)
+        ->  write_expected_rows_file(Dir, ExpectedRows, Params)
+        ;   writeln('  (C# code generation: FAIL)'),
+            finalize_temp_dir(Dir),
+            fail
+        ),
+        finalize_temp_dir(Dir)
+    ;   dotnet_cli(Dotnet)
+    ->  prepare_temp_dir(Plan, Dir),
+        (   run_dotnet_plan_build_first_with_harness(Dotnet, Plan, ExpectedRows, Params, Dir, HarnessSource)
+        ->  writeln('  (query runtime execution: PASS)'),
+            finalize_temp_dir(Dir)
+        ;   writeln('  (query runtime execution: FAIL - but plan structure verified)'),
+            finalize_temp_dir(Dir)
+        )
+    ;   writeln('  (dotnet run skipped; see docs/CSHARP_DOTNET_RUN_HANG_SOLUTION.md)')
+    ).
+
 maybe_run_multi_mode_dispatch_runtime(ModuleClass, ModuleSource, HarnessSource, ExpectedRows) :-
     (   getenv('SKIP_CSHARP_EXECUTION', '1')
     ->  prepare_temp_dir(Dir),
@@ -2231,6 +2264,58 @@ run_dotnet_plan_build_first(Dotnet, Plan, ExpectedRows, Params, Dir) :-
     ;   format('  (execution failed: ~s)~n', [Output]), fail
     ).
 
+run_dotnet_plan_build_first_with_harness(Dotnet, Plan, ExpectedRows, _Params, Dir, HarnessSource) :-
+    % Step 1: Create project and write source files
+    dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
+    (   StatusNew =:= 0
+    ->  true
+    ;   writeln('  (dotnet new console failed; skipping runtime execution test)'), fail
+    ),
+
+    % Copy QueryRuntime.cs
+    absolute_file_name('src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs', RuntimePath, []),
+    directory_file_path(Dir, 'QueryRuntime.cs', RuntimeCopy),
+    copy_file(RuntimePath, RuntimeCopy),
+
+    % Generate and write query module
+    csharp_query_target:render_plan_to_csharp(Plan, ModuleSource),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    atom_concat(ModuleClass, '.cs', ModuleFile),
+    directory_file_path(Dir, ModuleFile, ModulePath),
+    write_string(ModulePath, ModuleSource),
+
+    % Write harness
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, HarnessSource),
+
+    % Step 2: Build the project
+    dotnet_command(Dotnet, ['build','--no-restore'], Dir, StatusBuild, BuildOutput),
+    (   StatusBuild =:= 0
+    ->  true
+    ;   format('  (dotnet build failed: ~s)~n', [BuildOutput]), fail
+    ),
+
+    % Step 3: Find and execute compiled binary
+    find_compiled_executable(Dir, ExePath),
+    (   ExePath \= ''
+    ->  true
+    ;   writeln('  (compiled executable not found)'), fail
+    ),
+
+    % Execute the binary directly
+    execute_compiled_binary(ExePath, Dir, StatusRun, Output),
+    (   StatusRun =:= 0
+    ->  extract_result_rows(Output, Rows),
+        sort(Rows, SortedRows),
+        maplist(to_atom, ExpectedRows, ExpectedAtoms),
+        sort(ExpectedAtoms, SortedExpected),
+        (   SortedRows == SortedExpected
+        ->  true
+        ;   format('  dotnet run output mismatch: ~w~n', [SortedRows]), fail
+        )
+    ;   format('  (execution failed: ~s)~n', [Output]), fail
+    ).
+
 run_dotnet_multi_mode_dispatch_build_first(Dotnet, ModuleClass, ModuleSource, HarnessSource, ExpectedRows, Dir) :-
     dotnet_command(Dotnet, ['new','console','--force','--framework','net9.0'], Dir, StatusNew, _),
     (   StatusNew =:= 0
@@ -2295,6 +2380,27 @@ generate_csharp_code_only(_Dotnet, Plan, Params, Dir) :-
     directory_file_path(Dir, 'Program.cs', ProgramPath),
     write_string(ProgramPath, HarnessSource).
     % Note: dotnet execution commands (build, run) still skipped in this mode
+
+generate_csharp_code_only_with_harness(Plan, _Params, HarnessSource, Dir) :-
+    % Create .csproj file manually (without calling dotnet new console)
+    file_base_name(Dir, ProjectName),
+    create_minimal_csproj(Dir, ProjectName),
+
+    % Copy QueryRuntime.cs
+    absolute_file_name('src/unifyweaver/targets/csharp_query_runtime/QueryRuntime.cs', RuntimePath, []),
+    directory_file_path(Dir, 'QueryRuntime.cs', RuntimeCopy),
+    copy_file(RuntimePath, RuntimeCopy),
+
+    % Generate and write query module
+    csharp_query_target:render_plan_to_csharp(Plan, ModuleSource),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    atom_concat(ModuleClass, '.cs', ModuleFile),
+    directory_file_path(Dir, ModuleFile, ModulePath),
+    write_string(ModulePath, ModuleSource),
+
+    % Write harness
+    directory_file_path(Dir, 'Program.cs', ProgramPath),
+    write_string(ProgramPath, HarnessSource).
 
 generate_csharp_multi_mode_dispatch_code_only(ModuleClass, ModuleSource, HarnessSource, Dir) :-
     file_base_name(Dir, ProjectName),
@@ -2450,6 +2556,52 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
      Console.WriteLine(string.Join(\",\", projected));
   }
   ', [ModuleClass, ParamDecl, ExecCall]).
+
+harness_source_with_strategy_flag(ModuleClass, Params, Strategy, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\nvar trace = new QueryExecutionTrace();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~nvar trace = new QueryExecutionTrace();~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => "[" + string.Join("|", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + "]",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+ foreach (var row in ~w)
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(\",\", projected));
+   }
+ 
+   var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
+   Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
+   ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
 
 harness_source_multi_mode_dispatch(ModuleClass, Source) :-
     format(atom(Source),
