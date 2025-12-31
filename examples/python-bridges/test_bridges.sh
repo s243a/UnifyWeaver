@@ -392,6 +392,63 @@ test_rust_ffi_go() {
     fi
 }
 
+test_rust_ffi_node() {
+    log_section "Testing Rust FFI (Node.js) Bridge"
+    cd "$SCRIPT_DIR/rust-ffi-node"
+
+    if ! check_rust; then
+        log_skip "rust-ffi-node: Rust/Cargo not found"
+        return 0
+    fi
+
+    if ! command -v node &> /dev/null; then
+        log_skip "rust-ffi-node: Node.js not found"
+        return 0
+    fi
+
+    local node_version=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)
+    if [ "$node_version" -lt 18 ] 2>/dev/null; then
+        log_skip "rust-ffi-node: Requires Node.js 18+ (found: $node_version)"
+        return 0
+    fi
+
+    log_info "Node.js found: $(node --version)"
+
+    # Build Rust library if not exists
+    if [ ! -f "librpyc_bridge.so" ]; then
+        log_info "Building Rust FFI library..."
+        if ! (cd ../rust-ffi-go && cargo build --release && cp target/release/librpyc_bridge.so ../rust-ffi-node/) 2>&1 | tee /tmp/rust_ffi_node_build.log; then
+            log_fail "rust-ffi-node (Rust build failed)"
+            cat /tmp/rust_ffi_node_build.log
+            return 0
+        fi
+    fi
+
+    # Install npm dependencies if needed
+    if [ ! -d "node_modules" ]; then
+        log_info "Installing npm dependencies..."
+        if ! npm install 2>&1 | tee /tmp/npm_install.log; then
+            log_fail "rust-ffi-node (npm install failed)"
+            cat /tmp/npm_install.log
+            return 0
+        fi
+    fi
+
+    log_info "Running Node.js FFI test..."
+    if timeout 60 npm run test > /tmp/rust_ffi_node_test.log 2>&1; then
+        if grep -q "All tests passed" /tmp/rust_ffi_node_test.log; then
+            cat /tmp/rust_ffi_node_test.log
+            log_pass "rust-ffi-node"
+        else
+            log_fail "rust-ffi-node"
+            cat /tmp/rust_ffi_node_test.log
+        fi
+    else
+        log_fail "rust-ffi-node (execution failed or timed out)"
+        cat /tmp/rust_ffi_node_test.log
+    fi
+}
+
 #######################################
 # Bridge Group Functions
 #######################################
@@ -404,6 +461,7 @@ test_all() {
     test_pyo3
     test_pycall
     test_rust_ffi_go
+    test_rust_ffi_node
 }
 
 test_jvm() {
@@ -418,6 +476,7 @@ test_dotnet() {
 
 test_ffi() {
     test_rust_ffi_go
+    test_rust_ffi_node
 }
 
 test_rust() {
@@ -439,13 +498,14 @@ print_usage() {
     echo "  --all       Test all bridges"
     echo "  --jvm       Test JVM bridges (jpype, jpy)"
     echo "  --dotnet    Test .NET bridges (pythonnet, csnakes)"
-    echo "  --ffi       Test FFI bridges (rust-ffi-go)"
+    echo "  --ffi       Test FFI bridges (rust-ffi-go, rust-ffi-node)"
     echo "  --rust      Test Rust bridges (pyo3)"
     echo "  --ruby      Test Ruby bridges (pycall)"
+    echo "  --node      Test Node.js bridges (rust-ffi-node)"
     echo "  --help      Show this help message"
     echo
     echo "Bridges:"
-    echo "  pythonnet, csnakes, jpype, jpy, pyo3, pycall, rust-ffi-go"
+    echo "  pythonnet, csnakes, jpype, jpy, pyo3, pycall, rust-ffi-go, rust-ffi-node"
     echo
     echo "Examples:"
     echo "  $0 --all                    # Test all bridges"
@@ -518,6 +578,9 @@ main() {
             --ruby)
                 test_ruby
                 ;;
+            --node)
+                test_rust_ffi_node
+                ;;
             pythonnet)
                 test_pythonnet
                 ;;
@@ -538,6 +601,9 @@ main() {
                 ;;
             rust-ffi-go)
                 test_rust_ffi_go
+                ;;
+            rust-ffi-node)
+                test_rust_ffi_node
                 ;;
             *)
                 log_fail "Unknown bridge or option: $arg"

@@ -134,6 +134,10 @@ models/
 # Rust build artifacts
 **/target/
 
+# Node.js
+**/node_modules/
+package-lock.json
+
 # Go binaries (in examples)
 examples/**/pearltrees_go_*
 

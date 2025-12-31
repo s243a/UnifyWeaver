@@ -24,6 +24,7 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 | [PyO3](pyo3/) | Rust | ✅ Tested | Systems programming with Python ML |
 | [PyCall.rb](pycall/) | Ruby | ✅ Tested | Ruby/Rails with Python data science |
 | [Rust FFI](rust-ffi-go/) | Go (via Rust) | ✅ Tested | Go projects needing Python ML |
+| [Rust FFI + Node.js](rust-ffi-node/) | Node.js (via Rust) | ✅ Tested | Full-stack JS with Python ML |
 
 **Legend:** ✅ Tested and working | ⚠️ Partial (see notes) | 🔬 Documented (high confidence)
 
@@ -31,6 +32,7 @@ Each bridge embeds CPython and provides access to RPyC's live object proxies.
 - CSnakes: Uses `FromRedistributable` for cross-platform Python (auto-downloads ~60MB)
 - PyCall.rb: Requires `ruby-dev` package for native extension compilation
 - Rust FFI: Universal bridge for FFI-capable languages (Go, Node.js, Lua, etc.)
+- Node.js: Includes React frontend demo with security hardening (whitelisting, rate limiting)
 
 ## Quick Start
 
@@ -229,9 +231,10 @@ A comprehensive test script is provided for CI/CD pipelines:
 # Test specific bridge categories
 ./test_bridges.sh --jvm       # JPype, jpy
 ./test_bridges.sh --dotnet    # Python.NET, CSnakes
-./test_bridges.sh --ffi       # Rust FFI (Go)
+./test_bridges.sh --ffi       # Rust FFI (Go, Node.js)
 ./test_bridges.sh --rust      # PyO3
 ./test_bridges.sh --ruby      # PyCall.rb
+./test_bridges.sh --node      # Node.js + React
 
 # Test specific bridges
 ./test_bridges.sh pythonnet jpype pyo3
@@ -296,6 +299,7 @@ Current test status (verified 2025-12-30):
 | PyO3 | ✅ Pass | Rust |
 | PyCall.rb | ✅ Pass | Ruby 2.7+ |
 | Rust FFI (Go) | ✅ Pass | Go 1.21+ |
+| Rust FFI (Node.js) | ✅ Pass | Node.js 18+ |
 | Python.NET | ⚠️ Known issue | See pythonnet/README.md |
 
 ## Related Documentation
