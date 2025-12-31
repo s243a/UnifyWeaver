@@ -62,6 +62,9 @@
 :- use_module('./express_generator').
 :- use_module('./react_generator').
 
+% Import preferences/firewall config (optional - graceful if not found)
+:- catch(use_module('./typescript_glue_config'), _, true).
+
 % ============================================================================
 % DYNAMIC PREDICATES
 % ============================================================================
@@ -158,10 +161,47 @@ generate_application(Name, Files) :-
 
 %% generate_application(+Name, +Options, -Files)
 %  Generate all files for an application with options.
-generate_application(Name, _Options, Files) :-
+%  Options can include context(production|development|testing) to use preferences.
+generate_application(Name, Options, Files) :-
     application(Name, Config),
+    % Set generation context from options if available
+    (   member(context(Context), Options),
+        current_module(typescript_glue_config)
+    ->  typescript_glue_config:set_generation_context(Context)
+    ;   true
+    ),
+    % Merge config with preferences-based defaults
+    get_merged_config(Config, Options, MergedConfig),
     % Collect all generated files
-    findall(File, generate_app_file(Name, Config, File), Files).
+    findall(File, generate_app_file(Name, MergedConfig, File), Files),
+    % Clean up context
+    (   current_module(typescript_glue_config)
+    ->  catch(retractall(typescript_glue_config:current_generation_context(_)), _, true)
+    ;   true
+    ).
+
+%% get_merged_config(+BaseConfig, +Options, -MergedConfig) is det.
+%
+% Merge application config with preferences from typescript_glue_config.
+get_merged_config(BaseConfig, Options, MergedConfig) :-
+    (   current_module(typescript_glue_config)
+    ->  % Get pipeline config from preferences
+        catch(typescript_glue_config:get_pipeline_config(Options, PipelineConfig), _, PipelineConfig = []),
+        % Merge pipeline config into base config
+        merge_app_config(BaseConfig, PipelineConfig, MergedConfig)
+    ;   MergedConfig = BaseConfig
+    ).
+
+%% merge_app_config(+Base, +Override, -Merged) is det.
+%
+% Merge application configurations.
+merge_app_config(Base, Override, Merged) :-
+    findall(Term, (
+        member(Term, Override)
+    ;   member(Term, Base),
+        functor(Term, Key, _),
+        \+ (member(OTerm, Override), functor(OTerm, Key, _))
+    ), Merged).
 
 %% generate_app_file(+Name, +Config, -File)
 %  Generate a single file for the application.
