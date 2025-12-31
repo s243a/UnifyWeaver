@@ -1,3 +1,6 @@
+---
+file_type: UnifyWeaver Example Library
+---
 # JSON to LiteDB Streaming Examples
 
 ## `unifyweaver.execution.json_to_litedb_bash`

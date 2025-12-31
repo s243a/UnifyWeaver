@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WASM Curve Plotting - UnifyWeaver</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+    header {
+      padding: 1.5rem 2rem;
+      background: rgba(255,255,255,0.05);
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      background: linear-gradient(135deg, #00d4ff, #7c3aed);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      color: #888;
+      font-size: 0.9rem;
+      margin-top: 0.25rem;
+    }
+    main {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      height: calc(100vh - 80px);
+    }
+    .sidebar {
+      padding: 1.5rem;
+      background: rgba(0,0,0,0.2);
+      border-right: 1px solid rgba(255,255,255,0.1);
+      overflow-y: auto;
+    }
+    .sidebar h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 1rem;
+    }
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .input-group label {
+      font-size: 0.8rem;
+      color: #aaa;
+    }
+    .input-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+    input, select {
+      flex: 1;
+      padding: 0.5rem 0.75rem;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 6px;
+      color: #fff;
+      font-size: 0.9rem;
+    }
+    input::placeholder { color: #666; }
+    button {
+      padding: 0.5rem 1rem;
+      background: linear-gradient(135deg, #00d4ff, #7c3aed);
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.2s;
+    }
+    button:hover { opacity: 0.9; transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    button.secondary {
+      background: rgba(255,255,255,0.1);
+    }
+    .curve-list {
+      margin-top: 1rem;
+    }
+    .curve-item {
+      padding: 0.75rem;
+      background: rgba(255,255,255,0.05);
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .curve-item .name {
+      font-weight: 600;
+      color: #00d4ff;
+    }
+    .curve-item .equation {
+      font-family: 'SF Mono', Monaco, monospace;
+      font-size: 0.85rem;
+      color: #aaa;
+    }
+    .curve-item button {
+      padding: 0.25rem 0.5rem;
+      font-size: 0.75rem;
+      background: rgba(255,100,100,0.3);
+    }
+    #chart-container {
+      padding: 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #chart-container canvas {
+      background: rgba(255,255,255,0.02);
+      border-radius: 8px;
+      max-width: 100%;
+      max-height: 100%;
+    }
+    .status {
+      position: fixed;
+      bottom: 1rem;
+      left: 1rem;
+      padding: 0.5rem 1rem;
+      background: rgba(0,0,0,0.7);
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+    .status.loading { color: #ffd700; }
+    .status.ready { color: #00ff00; }
+    .status.error { color: #ff4444; }
+    .params-section {
+      border-top: 1px solid rgba(255,255,255,0.1);
+      padding-top: 1rem;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WASM Curve Plotting</h1>
+    <div class="subtitle">UnifyWeaver - Prolog -> LLVM -> WASM -> Chart.js</div>
+  </header>
+
+  <main>
+    <div class="sidebar">
+      <h2>Curve Type</h2>
+      <div class="controls">
+        <div class="input-group">
+          <select id="curveType" onchange="updateParams()">
+            <option value="linear">Linear (y = mx + b)</option>
+            <option value="quadratic">Quadratic (y = ax^2 + bx + c)</option>
+            <option value="sine" selected>Sine (y = A*sin(fx + p))</option>
+            <option value="cosine">Cosine (y = A*cos(fx + p))</option>
+            <option value="exponential">Exponential (y = s*e^(bx))</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="params-section" id="paramsSection">
+        <!-- Dynamic parameter inputs appear here -->
+      </div>
+
+      <h2>Range</h2>
+      <div class="controls">
+        <div class="input-row">
+          <div class="input-group">
+            <label>X Min</label>
+            <input type="number" id="xMin" value="-10" step="1">
+          </div>
+          <div class="input-group">
+            <label>X Max</label>
+            <input type="number" id="xMax" value="10" step="1">
+          </div>
+        </div>
+        <div class="input-group">
+          <label>Points</label>
+          <input type="number" id="numPoints" value="200" min="10" max="1000" step="10">
+        </div>
+      </div>
+
+      <div class="controls">
+        <button onclick="plotCurve()">Plot Curve</button>
+        <button class="secondary" onclick="clearChart()">Clear</button>
+        <button class="secondary" onclick="loadPreset()">Load Preset</button>
+      </div>
+
+      <div class="curve-list">
+        <h2>Active Curves</h2>
+        <div id="curves"></div>
+      </div>
+    </div>
+
+    <div id="chart-container">
+      <canvas id="chart"></canvas>
+    </div>
+  </main>
+
+  <div id="status" class="status loading">Loading WASM...</div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script type="module">
+    // CurveWasm class (inline for demo - normally generated by Prolog)
+    class CurveWasm {
+      constructor() {
+        this.points = [];
+        this.params = {
+          linear: { m: 1, b: 0 },
+          quadratic: { a: 0.1, b: 0, c: 0 },
+          sine: { amp: 1, freq: 1, phase: 0 },
+          cosine: { amp: 1, freq: 1, phase: 0 },
+          exponential: { base: 0.1, scale: 1 }
+        };
+      }
+
+      static async load(wasmPath) {
+        // Try to load WASM module with math imports
+        try {
+          const response = await fetch(wasmPath);
+          if (response.ok) {
+            const bytes = await response.arrayBuffer();
+            const imports = {
+              env: {
+                sinf: Math.sin,
+                cosf: Math.cos,
+                expf: Math.exp
+              }
+            };
+            const { instance } = await WebAssembly.instantiate(bytes, imports);
+            console.log('WASM loaded successfully:', Object.keys(instance.exports));
+            const wasm = new CurveWasm();
+            wasm.wasmInstance = instance;
+            wasm.useWasm = true;
+            return wasm;
+          }
+        } catch (e) {
+          console.log('WASM not available, using JS fallback:', e.message);
+        }
+        // Fallback to JS implementation
+        return new CurveWasm();
+      }
+
+      setParams(type, params) {
+        this.params[type] = { ...this.params[type], ...params };
+      }
+
+      eval(type, x) {
+        const p = this.params[type];
+        switch (type) {
+          case 'linear':
+            return p.m * x + p.b;
+          case 'quadratic':
+            return p.a * x * x + p.b * x + p.c;
+          case 'sine':
+            return p.amp * Math.sin(p.freq * x + p.phase);
+          case 'cosine':
+            return p.amp * Math.cos(p.freq * x + p.phase);
+          case 'exponential':
+            return p.scale * Math.exp(p.base * x);
+          default:
+            return 0;
+        }
+      }
+
+      generate(type, xMin, xMax, numPoints) {
+        this.points = [];
+        const step = (xMax - xMin) / numPoints;
+        for (let i = 0; i <= numPoints; i++) {
+          const x = xMin + i * step;
+          const y = this.eval(type, x);
+          this.points.push([x, y]);
+        }
+        return this.points;
+      }
+
+      getPoints() {
+        return this.points;
+      }
+
+      clearPoints() {
+        this.points = [];
+      }
+    }
+
+    // Chart.js instance
+    let chart;
+    let curveWasm;
+    let curveCounter = 0;
+    const curveColors = ['#00d4ff', '#7c3aed', '#ff6b6b', '#4ecdc4', '#ffd93d'];
+
+    // Parameter configurations for each curve type
+    const paramConfigs = {
+      linear: [
+        { id: 'm', label: 'Slope (m)', default: 1, step: 0.1 },
+        { id: 'b', label: 'Intercept (b)', default: 0, step: 0.5 }
+      ],
+      quadratic: [
+        { id: 'a', label: 'a (x^2 coefficient)', default: 0.1, step: 0.05 },
+        { id: 'b', label: 'b (x coefficient)', default: 0, step: 0.1 },
+        { id: 'c', label: 'c (constant)', default: 0, step: 0.5 }
+      ],
+      sine: [
+        { id: 'amp', label: 'Amplitude', default: 1, step: 0.1 },
+        { id: 'freq', label: 'Frequency', default: 1, step: 0.1 },
+        { id: 'phase', label: 'Phase', default: 0, step: 0.1 }
+      ],
+      cosine: [
+        { id: 'amp', label: 'Amplitude', default: 1, step: 0.1 },
+        { id: 'freq', label: 'Frequency', default: 1, step: 0.1 },
+        { id: 'phase', label: 'Phase', default: 0, step: 0.1 }
+      ],
+      exponential: [
+        { id: 'base', label: 'Base rate', default: 0.1, step: 0.05 },
+        { id: 'scale', label: 'Scale', default: 1, step: 0.1 }
+      ]
+    };
+
+    // Initialize
+    async function init() {
+      try {
+        curveWasm = await CurveWasm.load('curve_plot.wasm');
+
+        chart = new Chart(document.getElementById('chart'), {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: []
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              x: {
+                type: 'linear',
+                position: 'center',
+                grid: {
+                  color: 'rgba(255,255,255,0.1)'
+                },
+                ticks: { color: '#888' }
+              },
+              y: {
+                type: 'linear',
+                position: 'center',
+                grid: {
+                  color: 'rgba(255,255,255,0.1)'
+                },
+                ticks: { color: '#888' }
+              }
+            },
+            plugins: {
+              legend: {
+                labels: { color: '#e0e0e0' }
+              }
+            }
+          }
+        });
+
+        updateParams();
+
+        document.getElementById('status').textContent = 'Ready';
+        document.getElementById('status').className = 'status ready';
+      } catch (err) {
+        document.getElementById('status').textContent = 'Error: ' + err.message;
+        document.getElementById('status').className = 'status error';
+      }
+    }
+
+    // Update parameter inputs based on curve type
+    window.updateParams = function() {
+      const type = document.getElementById('curveType').value;
+      const config = paramConfigs[type];
+      const section = document.getElementById('paramsSection');
+
+      section.innerHTML = '<h2>Parameters</h2><div class="controls">' +
+        config.map(p => `
+          <div class="input-group">
+            <label>${p.label}</label>
+            <input type="number" id="param_${p.id}" value="${p.default}" step="${p.step}">
+          </div>
+        `).join('') +
+        '</div>';
+    };
+
+    // Get current parameters from inputs
+    function getCurrentParams() {
+      const type = document.getElementById('curveType').value;
+      const config = paramConfigs[type];
+      const params = {};
+      config.forEach(p => {
+        params[p.id] = parseFloat(document.getElementById(`param_${p.id}`).value);
+      });
+      return params;
+    }
+
+    // Format equation string
+    function formatEquation(type, params) {
+      switch (type) {
+        case 'linear':
+          return `y = ${params.m}x + ${params.b}`;
+        case 'quadratic':
+          return `y = ${params.a}x^2 + ${params.b}x + ${params.c}`;
+        case 'sine':
+          return `y = ${params.amp}*sin(${params.freq}x + ${params.phase})`;
+        case 'cosine':
+          return `y = ${params.amp}*cos(${params.freq}x + ${params.phase})`;
+        case 'exponential':
+          return `y = ${params.scale}*e^(${params.base}x)`;
+        default:
+          return '';
+      }
+    }
+
+    // Plot curve
+    window.plotCurve = function() {
+      const type = document.getElementById('curveType').value;
+      const xMin = parseFloat(document.getElementById('xMin').value);
+      const xMax = parseFloat(document.getElementById('xMax').value);
+      const numPoints = parseInt(document.getElementById('numPoints').value);
+      const params = getCurrentParams();
+
+      // Set parameters in WASM
+      curveWasm.setParams(type, params);
+
+      // Generate points
+      const points = curveWasm.generate(type, xMin, xMax, numPoints);
+
+      // Add to chart
+      const color = curveColors[curveCounter % curveColors.length];
+      const label = `${type} #${curveCounter + 1}`;
+
+      chart.data.datasets.push({
+        label: label,
+        data: points.map(p => ({ x: p[0], y: p[1] })),
+        borderColor: color,
+        backgroundColor: color,
+        fill: false,
+        pointRadius: 0,
+        borderWidth: 2
+      });
+      chart.update();
+
+      // Update curve list
+      const curveList = document.getElementById('curves');
+      const curveId = curveCounter;
+      curveList.innerHTML += `
+        <div class="curve-item" id="curve-${curveId}">
+          <div>
+            <div class="name" style="color: ${color}">${label}</div>
+            <div class="equation">${formatEquation(type, params)}</div>
+          </div>
+          <button onclick="removeCurve(${curveId})">X</button>
+        </div>
+      `;
+
+      curveCounter++;
+    };
+
+    // Remove curve
+    window.removeCurve = function(id) {
+      const datasetIndex = chart.data.datasets.findIndex(d => d.label.endsWith(`#${id + 1}`));
+      if (datasetIndex >= 0) {
+        chart.data.datasets.splice(datasetIndex, 1);
+        chart.update();
+      }
+      document.getElementById(`curve-${id}`)?.remove();
+    };
+
+    // Clear chart
+    window.clearChart = function() {
+      chart.data.datasets = [];
+      chart.update();
+      document.getElementById('curves').innerHTML = '';
+      curveCounter = 0;
+    };
+
+    // Load preset
+    window.loadPreset = function() {
+      clearChart();
+
+      // Add sine wave
+      curveWasm.setParams('sine', { amp: 1, freq: 1, phase: 0 });
+      let points = curveWasm.generate('sine', -10, 10, 200);
+      chart.data.datasets.push({
+        label: 'sin(x)',
+        data: points.map(p => ({ x: p[0], y: p[1] })),
+        borderColor: '#00d4ff',
+        fill: false,
+        pointRadius: 0,
+        borderWidth: 2
+      });
+
+      // Add cosine wave
+      curveWasm.setParams('cosine', { amp: 1, freq: 1, phase: 0 });
+      points = curveWasm.generate('cosine', -10, 10, 200);
+      chart.data.datasets.push({
+        label: 'cos(x)',
+        data: points.map(p => ({ x: p[0], y: p[1] })),
+        borderColor: '#7c3aed',
+        fill: false,
+        pointRadius: 0,
+        borderWidth: 2
+      });
+
+      // Add parabola
+      curveWasm.setParams('quadratic', { a: 0.05, b: 0, c: -2 });
+      points = curveWasm.generate('quadratic', -10, 10, 200);
+      chart.data.datasets.push({
+        label: '0.05x^2 - 2',
+        data: points.map(p => ({ x: p[0], y: p[1] })),
+        borderColor: '#ff6b6b',
+        fill: false,
+        pointRadius: 0,
+        borderWidth: 2
+      });
+
+      chart.update();
+
+      document.getElementById('curves').innerHTML = `
+        <div class="curve-item">
+          <div>
+            <div class="name" style="color: #00d4ff">sin(x)</div>
+            <div class="equation">y = sin(x)</div>
+          </div>
+        </div>
+        <div class="curve-item">
+          <div>
+            <div class="name" style="color: #7c3aed">cos(x)</div>
+            <div class="equation">y = cos(x)</div>
+          </div>
+        </div>
+        <div class="curve-item">
+          <div>
+            <div class="name" style="color: #ff6b6b">parabola</div>
+            <div class="equation">y = 0.05x^2 - 2</div>
+          </div>
+        </div>
+      `;
+    };
+
+    init();
+  </script>
+</body>
+</html>

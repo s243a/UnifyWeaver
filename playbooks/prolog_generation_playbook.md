@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents (Gemini CLI, Claude Code, etc.). Agents do not handwrite scripts here—they orchestrate UnifyWeaver to generate Prolog code, compile it to bash, and verify execution.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "prolog_generation" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+./unifyweaver search "how to use prolog generation"
+
+
 ## Workflow Overview
 Use UnifyWeaver to demonstrate the complete Prolog-to-bash compilation workflow:
 1. Generate Prolog code for a specific task (factorial calculation).

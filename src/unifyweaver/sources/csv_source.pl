@@ -162,13 +162,11 @@ default_column_name(N, ColName) :-
 %%                   +QuoteChar, +QuoteHandling, +HeaderMode, +Columns, +Options, -Code)
 %  Generate bash code for CSV source (or pure PowerShell if template_suffix specified)
 generate_csv_bash(PredStr, Arity, File, Delimiter, SkipLines,
-                  QuoteChar, QuoteHandling, HeaderMode, Columns, Options, Code) :-
+                  QuoteChar, QuoteHandling, _HeaderMode, Columns, Options, Code) :-
 
-    % Calculate total lines to skip (header + skip_lines)
-    (   HeaderMode = auto
-    ->  TotalSkip is SkipLines + 1
-    ;   TotalSkip = SkipLines
-    ),
+    % TotalSkip is just SkipLines - sources.pl already adds 1 for headers
+    % when has_header(true) is set (see augment_csv_options/2)
+    TotalSkip = SkipLines,
 
     % Generate column output format
     generate_output_format(Arity, OutputFormat),

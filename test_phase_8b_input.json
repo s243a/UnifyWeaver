@@ -1,0 +1,12 @@
+{"name": "Alice", "age": 35, "city": "NYC", "status": "active"}
+{"name": "Bob", "age": 28, "city": "SF", "status": "inactive"}
+{"name": "Charlie", "age": 42, "city": "nyc", "status": "premium"}
+{"name": "Diana", "age": 23, "city": "Boston", "status": "active"}
+{"name": "Eve", "age": 31, "city": "Nyc", "status": "active"}
+{"name": "Frank", "age": 52, "city": "Seattle", "status": "inactive"}
+{"name": "Grace", "age": 25, "city": "LA", "status": "premium"}
+{"name": "Henry", "age": 38, "city": "Chicago", "status": "active"}
+{"name": "Natalie", "age": 30, "city": "SF", "status": "premium"}
+{"name": "Jack", "age": 45, "city": "Miami", "status": "inactive"}
+{"name": "Julia", "age": 35, "city": "NYC", "status": "active"}
+{"name": "Kalina", "age": 40, "city": "LA", "status": "premium"}

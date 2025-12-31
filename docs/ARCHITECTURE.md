@@ -16,6 +16,7 @@ src/unifyweaver/core/
 ├── stream_compiler.pl
 ├── recursive_compiler.pl
 ├── constraint_analyzer.pl
+├── optimizer.pl
 ├── firewall.pl
 ├── preferences.pl
 └── advanced/
@@ -83,6 +84,11 @@ Orchestrates the compilation of complex recursion patterns. It uses a priority-b
 │ Classify Pattern │ (recursive_compiler.pl)
 └────────┬─────────┘
          │
+         ▼
+┌──────────────────────────────────┐
+│ Optimize Goals (Codd Phase)      │ (optimizer.pl)
+└────────────────┬─────────────────┘
+                 │
          ├────────────────────────┐
          │                        │
          ▼                        ▼
@@ -125,17 +131,19 @@ Orchestrates the compilation of complex recursion patterns. It uses a priority-b
 
 5.  **Pattern Analysis:** The main `recursive_compiler` inspects the predicate to classify its pattern (non-recursive, simple recursion, or a candidate for advanced compilation).
 
-6.  **Strategy Selection & Dispatch:**
+6.  **Goal Optimization (The "Codd" Phase):** The `optimizer` module reorders rule bodies to prioritize ground unifications and filters (comparisons). This ensures that generators are constrained as early as possible, minimizing intermediate result sets. This phase is only active if the `unordered(true)` constraint is satisfied (which is the default).
+
+7.  **Strategy Selection & Dispatch:**
     *   If the predicate is **non-recursive**, it is handed off to the `stream_compiler`.
     *   If the predicate is **recursive**, it is passed to the `advanced_recursive_compiler`.
 
-7.  **Advanced Pattern Matching:** The advanced compiler attempts to match the predicate against its known patterns in order of specificity: tail recursion, then linear recursion, then mutual recursion (by detecting Strongly Connected Components).
+8.  **Advanced Pattern Matching:** The advanced compiler attempts to match the predicate against its known patterns in order of specificity: tail recursion, then linear recursion, then mutual recursion (by detecting Strongly Connected Components).
 
-8.  **Constraint Analysis:** The compiler queries the `constraint_analyzer` to fetch any constraints for the predicate (e.g. `unique(true)`).
+9.  **Constraint Analysis:** The compiler queries the `constraint_analyzer` to fetch any constraints for the predicate (e.g. `unique(true)`).
 
-9.  **Template Rendering:** Based on the analysis, the compiler selects an appropriate Bash code template and uses the `template_system` to generate the final script.
+10. **Template Rendering:** Based on the analysis, the compiler selects an appropriate Bash code template and uses the `template_system` to generate the final script.
 
-10. **Bash Script:** The final output is a complete, executable Bash script or function.
+11. **Bash Script:** The final output is a complete, executable Bash script or function.
 
 ## Control Plane
 

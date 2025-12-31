@@ -3,6 +3,23 @@
 ## Audience
 This playbook is a high-level guide for coding agents. Agents orchestrate UnifyWeaver to demonstrate tree recursion compilation.
 
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "tree_recursion" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+./unifyweaver search "how to use tree recursion"
+
+
 ## Workflow Overview
 Use UnifyWeaver to compile tree recursive predicates:
 1. Generate Prolog code for tree_sum/2 (tree recursion).

@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install SWI-Prolog
         run: |
@@ -54,6 +54,10 @@ jobs:
         run: |
           swipl -g "asserta(user:file_search_path(library, 'src/unifyweaver/core')), asserta(user:file_search_path(library, 'tests/core')), use_module(library(test_policy)), test_policy, halt."
 
+      - name: Run C# query target tests (codegen only)
+        run: |
+          SKIP_CSHARP_EXECUTION=1 swipl -q -f init.pl -s tests/core/test_csharp_query_target.pl -g "test_csharp_query_target:test_csharp_query_target" -t halt
+
       - name: Generate and run inference test runner
         run: |
           swipl -g "use_module('src/unifyweaver/core/advanced/test_runner_inference'), generate_test_runner_inferred('output/advanced/inferred_test_runner.sh'), halt."
@@ -84,3 +88,34 @@ jobs:
           echo "✓ Inference test runner generation"
           echo "✓ Generated bash script validation"
           echo "=========================================="
+
+  csharp_query_runtime_smoke:
+    name: C# Query Runtime Smoke
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install SWI-Prolog
+        run: |
+          sudo apt-add-repository ppa:swi-prolog/stable -y
+          sudo apt-get update -qq
+          sudo apt-get install -y swi-prolog
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Verify toolchain
+        run: |
+          swipl --version
+          dotnet --version
+          pwsh -v
+
+      - name: Run C# query runtime smoke runner
+        run: |
+          pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1 -OutputDir tmp/csharp_query_smoke_ci

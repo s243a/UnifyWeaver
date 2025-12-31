@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pyodide Matrix Visualization - UnifyWeaver</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #eee;
+            min-height: 100vh;
+        }
+        h1 {
+            color: #00d4ff;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .status {
+            text-align: center;
+            color: #00d4ff;
+            font-style: italic;
+            padding: 10px;
+            background: rgba(0, 212, 255, 0.1);
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .status.error {
+            color: #ff6b6b;
+            background: rgba(255, 107, 107, 0.1);
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 20px;
+        }
+        .panel {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .panel h2 {
+            color: #00d4ff;
+            margin-top: 0;
+            font-size: 1.2em;
+            border-bottom: 1px solid rgba(0, 212, 255, 0.3);
+            padding-bottom: 10px;
+        }
+        .matrix-input {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .matrix-input input {
+            background: #0f0f23;
+            border: 1px solid #00d4ff;
+            color: #fff;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 16px;
+            text-align: center;
+            width: 100%;
+        }
+        .matrix-input input:focus {
+            outline: none;
+            border-color: #00ff88;
+            box-shadow: 0 0 10px rgba(0, 255, 136, 0.3);
+        }
+        .matrix-label {
+            grid-column: 1 / -1;
+            color: #888;
+            font-size: 0.9em;
+            margin-bottom: 5px;
+        }
+        button {
+            background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+            color: #000;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+            width: 100%;
+            margin-bottom: 10px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 212, 255, 0.4);
+        }
+        button:disabled {
+            background: #444;
+            cursor: wait;
+            transform: none;
+            box-shadow: none;
+        }
+        button.secondary {
+            background: linear-gradient(135deg, #00ff88 0%, #00cc6a 100%);
+        }
+        .preset-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        .preset-buttons button {
+            font-size: 12px;
+            padding: 8px 12px;
+        }
+        .charts-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .chart-wrapper {
+            background: #0f0f23;
+            border-radius: 8px;
+            padding: 15px;
+            position: relative;
+        }
+        .chart-wrapper h3 {
+            color: #00d4ff;
+            margin: 0 0 10px 0;
+            font-size: 0.95em;
+        }
+        canvas {
+            width: 100% !important;
+            height: 300px !important;
+        }
+        .results {
+            background: #0f0f23;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .results pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        .result-label {
+            color: #00ff88;
+            font-weight: bold;
+        }
+        .result-value {
+            color: #fff;
+        }
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 15px;
+        }
+        .tab {
+            background: rgba(255, 255, 255, 0.1);
+            color: #888;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px 6px 0 0;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .tab.active {
+            background: #00d4ff;
+            color: #000;
+        }
+        .info-box {
+            background: rgba(0, 212, 255, 0.1);
+            border-left: 3px solid #00d4ff;
+            padding: 10px 15px;
+            margin: 15px 0;
+            font-size: 0.9em;
+            border-radius: 0 6px 6px 0;
+        }
+        @media (max-width: 900px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+            .charts-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Pyodide Matrix Visualization</h1>
+    <p class="subtitle">NumPy running in your browser via WebAssembly - No server required</p>
+
+    <div class="status" id="status">Loading Pyodide and NumPy...</div>
+
+    <div class="container">
+        <div class="panel">
+            <h2>2x2 Matrix Input</h2>
+
+            <div class="matrix-label">Matrix A = [a, b; c, d]</div>
+            <div class="matrix-input">
+                <input type="number" id="m00" value="2" step="0.1">
+                <input type="number" id="m01" value="1" step="0.1">
+                <input type="number" id="m10" value="1" step="0.1">
+                <input type="number" id="m11" value="3" step="0.1">
+            </div>
+
+            <div class="preset-buttons">
+                <button onclick="setPreset('rotation')">Rotation 45°</button>
+                <button onclick="setPreset('scale')">Scale 2x</button>
+                <button onclick="setPreset('shear')">Shear</button>
+                <button onclick="setPreset('reflection')">Reflection</button>
+                <button onclick="setPreset('singular')">Singular</button>
+                <button onclick="setPreset('identity')">Identity</button>
+            </div>
+
+            <button onclick="computeAll()" id="computeBtn" disabled>
+                Compute & Visualize
+            </button>
+
+            <div class="info-box">
+                <strong>How it works:</strong><br>
+                TypeScript calls Python/NumPy running in Pyodide (WebAssembly).
+                All computation happens in your browser - secure & private.
+            </div>
+
+            <h2>Results</h2>
+            <div class="results" id="results">
+                <pre>Click "Compute & Visualize" to see results...</pre>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>Visualizations</h2>
+
+            <div class="charts-container">
+                <div class="chart-wrapper">
+                    <h3>Matrix Transformation</h3>
+                    <canvas id="transformChart"></canvas>
+                </div>
+
+                <div class="chart-wrapper">
+                    <h3>Eigenvectors</h3>
+                    <canvas id="eigenChart"></canvas>
+                </div>
+
+                <div class="chart-wrapper">
+                    <h3>Singular Values (SVD)</h3>
+                    <canvas id="svdChart"></canvas>
+                </div>
+
+                <div class="chart-wrapper">
+                    <h3>Linear Regression Demo</h3>
+                    <canvas id="regressionChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ====================================================================
+        // PYODIDE MATRIX LIBRARY
+        // ====================================================================
+
+        let pyodide = null;
+        let matrixLibReady = false;
+
+        // Python code for matrix operations (embedded)
+        const PYTHON_CODE = `
+import numpy as np
+from numpy.linalg import inv, eig, svd, det, norm, solve
+import json
+
+def matrix_inverse(matrix_data):
+    A = np.array(matrix_data, dtype=np.float64)
+    try:
+        A_inv = inv(A)
+        return A_inv.tolist()
+    except np.linalg.LinAlgError:
+        return {'error': 'Matrix is singular'}
+
+def matrix_eigenvalues(matrix_data):
+    A = np.array(matrix_data, dtype=np.float64)
+    eigenvalues, eigenvectors = eig(A)
+    # Handle complex eigenvalues
+    if np.iscomplexobj(eigenvalues):
+        eig_vals = [{'real': float(v.real), 'imag': float(v.imag)} for v in eigenvalues]
+    else:
+        eig_vals = [float(v) for v in eigenvalues]
+    # Handle complex eigenvectors
+    if np.iscomplexobj(eigenvectors):
+        eig_vecs = [[{'real': float(v.real), 'imag': float(v.imag)} for v in row] for row in eigenvectors.tolist()]
+    else:
+        eig_vecs = [[float(v) for v in row] for row in eigenvectors.tolist()]
+    return {
+        'eigenvalues': eig_vals,
+        'eigenvectors': eig_vecs
+    }
+
+def matrix_svd(matrix_data):
+    A = np.array(matrix_data, dtype=np.float64)
+    U, S, Vh = svd(A)
+    return {'U': U.tolist(), 'S': S.tolist(), 'Vh': Vh.tolist()}
+
+def matrix_determinant(matrix_data):
+    A = np.array(matrix_data, dtype=np.float64)
+    return float(det(A))
+
+def generate_transform_points(matrix_data, num_points=100):
+    A = np.array(matrix_data, dtype=np.float64)
+    theta = np.linspace(0, 2 * np.pi, num_points)
+    circle_x = np.cos(theta)
+    circle_y = np.sin(theta)
+    circle = np.vstack([circle_x, circle_y])
+    transformed = A @ circle
+    return {
+        'original': {'x': circle_x.tolist(), 'y': circle_y.tolist()},
+        'transformed': {'x': transformed[0].tolist(), 'y': transformed[1].tolist()}
+    }
+
+def generate_eigenvector_lines(matrix_data, scale=2.0):
+    A = np.array(matrix_data, dtype=np.float64)
+    eigenvalues, eigenvectors = eig(A)
+    lines = []
+    for i in range(len(eigenvalues)):
+        ev = eigenvectors[:, i].real
+        lines.append({
+            'eigenvalue': float(eigenvalues[i].real),
+            'start': {'x': float(-scale * ev[0]), 'y': float(-scale * ev[1])},
+            'end': {'x': float(scale * ev[0]), 'y': float(scale * ev[1])}
+        })
+    return lines
+
+def linear_regression(x_data, y_data):
+    x = np.array(x_data, dtype=np.float64)
+    y = np.array(y_data, dtype=np.float64)
+    A = np.vstack([x, np.ones(len(x))]).T
+    result = np.linalg.lstsq(A, y, rcond=None)
+    m, b = result[0]
+    x_fit = np.linspace(x.min(), x.max(), 100)
+    y_fit = m * x_fit + b
+    r_sq = 1 - np.sum((y - (m*x + b))**2) / np.sum((y - y.mean())**2)
+    return {
+        'slope': float(m),
+        'intercept': float(b),
+        'r_squared': float(r_sq),
+        'fit_line': {'x': x_fit.tolist(), 'y': y_fit.tolist()}
+    }
+`;
+
+        async function initPyodide() {
+            const status = document.getElementById('status');
+            const btn = document.getElementById('computeBtn');
+
+            try {
+                status.textContent = 'Loading Pyodide runtime...';
+                pyodide = await loadPyodide();
+
+                status.textContent = 'Loading NumPy (this may take a moment)...';
+                await pyodide.loadPackage('numpy');
+
+                status.textContent = 'Initializing matrix library...';
+                await pyodide.runPythonAsync(PYTHON_CODE);
+
+                matrixLibReady = true;
+                status.textContent = '✓ Ready! NumPy is running in your browser via WebAssembly.';
+                status.classList.remove('error');
+                btn.disabled = false;
+
+                // Run initial computation
+                computeAll();
+
+            } catch (error) {
+                status.textContent = 'Error: ' + error.message;
+                status.classList.add('error');
+                console.error(error);
+            }
+        }
+
+        async function callPython(code) {
+            const result = await pyodide.runPythonAsync(code);
+            return JSON.parse(result);
+        }
+
+        // ====================================================================
+        // MATRIX OPERATIONS
+        // ====================================================================
+
+        function getMatrix() {
+            return [
+                [parseFloat(document.getElementById('m00').value), parseFloat(document.getElementById('m01').value)],
+                [parseFloat(document.getElementById('m10').value), parseFloat(document.getElementById('m11').value)]
+            ];
+        }
+
+        function setPreset(name) {
+            const presets = {
+                rotation: [[0.707, -0.707], [0.707, 0.707]],  // 45° rotation
+                scale: [[2, 0], [0, 2]],
+                shear: [[1, 1], [0, 1]],
+                reflection: [[-1, 0], [0, 1]],  // Reflect across y-axis
+                singular: [[1, 2], [2, 4]],     // Singular matrix
+                identity: [[1, 0], [0, 1]]
+            };
+
+            const m = presets[name];
+            document.getElementById('m00').value = m[0][0];
+            document.getElementById('m01').value = m[0][1];
+            document.getElementById('m10').value = m[1][0];
+            document.getElementById('m11').value = m[1][1];
+
+            if (matrixLibReady) computeAll();
+        }
+
+        async function computeAll() {
+            if (!matrixLibReady) return;
+
+            const matrix = getMatrix();
+            const matrixJson = JSON.stringify(matrix);
+            const results = document.getElementById('results');
+
+            try {
+                // Compute all results in parallel
+                const [inverse, eigen, svdResult, det, transform, eigenLines] = await Promise.all([
+                    callPython(`import json; json.dumps(matrix_inverse(${matrixJson}))`),
+                    callPython(`import json; json.dumps(matrix_eigenvalues(${matrixJson}))`),
+                    callPython(`import json; json.dumps(matrix_svd(${matrixJson}))`),
+                    callPython(`import json; json.dumps(matrix_determinant(${matrixJson}))`),
+                    callPython(`import json; json.dumps(generate_transform_points(${matrixJson}))`),
+                    callPython(`import json; json.dumps(generate_eigenvector_lines(${matrixJson}))`)
+                ]);
+
+                // Display results
+                let html = '';
+                html += `<span class="result-label">Determinant:</span> <span class="result-value">${det.toFixed(4)}</span>\n\n`;
+
+                if (inverse.error) {
+                    html += `<span class="result-label">Inverse:</span> <span class="result-value">${inverse.error}</span>\n\n`;
+                } else {
+                    html += `<span class="result-label">Inverse:</span>\n`;
+                    html += `  [${inverse[0].map(v => v.toFixed(4)).join(', ')}]\n`;
+                    html += `  [${inverse[1].map(v => v.toFixed(4)).join(', ')}]\n\n`;
+                }
+
+                html += `<span class="result-label">Eigenvalues:</span> `;
+                const evs = eigen.eigenvalues.map(v =>
+                    typeof v === 'object' ? `${v.real.toFixed(3)}+${v.imag.toFixed(3)}i` : v.toFixed(4)
+                );
+                html += `${evs.join(', ')}\n\n`;
+
+                html += `<span class="result-label">Singular Values:</span> ${svdResult.S.map(v => v.toFixed(4)).join(', ')}`;
+
+                results.innerHTML = `<pre>${html}</pre>`;
+
+                // Update charts
+                updateTransformChart(transform);
+                updateEigenChart(matrix, eigenLines);
+                updateSVDChart(svdResult);
+                await updateRegressionChart();
+
+            } catch (error) {
+                results.innerHTML = `<pre style="color: #ff6b6b;">Error: ${error.message}</pre>`;
+                console.error(error);
+            }
+        }
+
+        // ====================================================================
+        // CHARTS
+        // ====================================================================
+
+        let transformChart, eigenChart, svdChart, regressionChart;
+
+        function initCharts() {
+            const defaultOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#888' } }
+                },
+                scales: {
+                    x: { grid: { color: '#333' }, ticks: { color: '#888' } },
+                    y: { grid: { color: '#333' }, ticks: { color: '#888' } }
+                }
+            };
+
+            // Transform chart (scatter)
+            transformChart = new Chart(document.getElementById('transformChart'), {
+                type: 'scatter',
+                data: { datasets: [] },
+                options: {
+                    ...defaultOptions,
+                    scales: {
+                        x: { ...defaultOptions.scales.x, min: -3, max: 3 },
+                        y: { ...defaultOptions.scales.y, min: -3, max: 3 }
+                    }
+                }
+            });
+
+            // Eigen chart
+            eigenChart = new Chart(document.getElementById('eigenChart'), {
+                type: 'scatter',
+                data: { datasets: [] },
+                options: {
+                    ...defaultOptions,
+                    scales: {
+                        x: { ...defaultOptions.scales.x, min: -3, max: 3 },
+                        y: { ...defaultOptions.scales.y, min: -3, max: 3 }
+                    }
+                }
+            });
+
+            // SVD bar chart
+            svdChart = new Chart(document.getElementById('svdChart'), {
+                type: 'bar',
+                data: { labels: ['σ₁', 'σ₂'], datasets: [] },
+                options: {
+                    ...defaultOptions,
+                    scales: {
+                        x: { ...defaultOptions.scales.x },
+                        y: { ...defaultOptions.scales.y, beginAtZero: true }
+                    }
+                }
+            });
+
+            // Regression chart
+            regressionChart = new Chart(document.getElementById('regressionChart'), {
+                type: 'scatter',
+                data: { datasets: [] },
+                options: defaultOptions
+            });
+        }
+
+        function updateTransformChart(data) {
+            const originalPoints = data.original.x.map((x, i) => ({ x, y: data.original.y[i] }));
+            const transformedPoints = data.transformed.x.map((x, i) => ({ x, y: data.transformed.y[i] }));
+
+            transformChart.data.datasets = [
+                {
+                    label: 'Unit Circle',
+                    data: originalPoints,
+                    borderColor: '#00d4ff',
+                    backgroundColor: 'rgba(0, 212, 255, 0.1)',
+                    showLine: true,
+                    pointRadius: 0
+                },
+                {
+                    label: 'Transformed',
+                    data: transformedPoints,
+                    borderColor: '#00ff88',
+                    backgroundColor: 'rgba(0, 255, 136, 0.1)',
+                    showLine: true,
+                    pointRadius: 0
+                }
+            ];
+            transformChart.update();
+        }
+
+        function updateEigenChart(matrix, lines) {
+            const datasets = [];
+
+            // Add transformed ellipse
+            const theta = Array.from({ length: 100 }, (_, i) => (i / 100) * 2 * Math.PI);
+            const ellipsePoints = theta.map(t => {
+                const x = Math.cos(t);
+                const y = Math.sin(t);
+                return {
+                    x: matrix[0][0] * x + matrix[0][1] * y,
+                    y: matrix[1][0] * x + matrix[1][1] * y
+                };
+            });
+
+            datasets.push({
+                label: 'Transformed Circle',
+                data: ellipsePoints,
+                borderColor: 'rgba(0, 212, 255, 0.5)',
+                showLine: true,
+                pointRadius: 0
+            });
+
+            // Add eigenvector lines
+            lines.forEach((line, i) => {
+                datasets.push({
+                    label: `λ = ${line.eigenvalue.toFixed(2)}`,
+                    data: [
+                        { x: line.start.x, y: line.start.y },
+                        { x: line.end.x, y: line.end.y }
+                    ],
+                    borderColor: i === 0 ? '#ff6b6b' : '#ffd93d',
+                    borderWidth: 3,
+                    showLine: true,
+                    pointRadius: 5
+                });
+            });
+
+            eigenChart.data.datasets = datasets;
+            eigenChart.update();
+        }
+
+        function updateSVDChart(svd) {
+            svdChart.data.datasets = [{
+                label: 'Singular Values',
+                data: svd.S,
+                backgroundColor: ['#00d4ff', '#00ff88']
+            }];
+            svdChart.update();
+        }
+
+        async function updateRegressionChart() {
+            // Generate some noisy data
+            const x = Array.from({ length: 20 }, (_, i) => i * 0.5);
+            const y = x.map(xi => 2 * xi + 1 + (Math.random() - 0.5) * 2);
+
+            const xJson = JSON.stringify(x);
+            const yJson = JSON.stringify(y);
+            const result = await callPython(`import json; json.dumps(linear_regression(${xJson}, ${yJson}))`);
+
+            const dataPoints = x.map((xi, i) => ({ x: xi, y: y[i] }));
+            const fitPoints = result.fit_line.x.map((xi, i) => ({ x: xi, y: result.fit_line.y[i] }));
+
+            regressionChart.data.datasets = [
+                {
+                    label: 'Data Points',
+                    data: dataPoints,
+                    backgroundColor: '#00d4ff',
+                    pointRadius: 5
+                },
+                {
+                    label: `Fit: y = ${result.slope.toFixed(2)}x + ${result.intercept.toFixed(2)} (R² = ${result.r_squared.toFixed(3)})`,
+                    data: fitPoints,
+                    borderColor: '#00ff88',
+                    showLine: true,
+                    pointRadius: 0
+                }
+            ];
+            regressionChart.update();
+        }
+
+        // ====================================================================
+        // INITIALIZATION
+        // ====================================================================
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            initPyodide();
+
+            // Update on input change
+            ['m00', 'm01', 'm10', 'm11'].forEach(id => {
+                document.getElementById(id).addEventListener('change', () => {
+                    if (matrixLibReady) computeAll();
+                });
+            });
+        });
+    </script>
+</body>
+</html>

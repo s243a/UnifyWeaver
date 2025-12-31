@@ -15,6 +15,7 @@
 :- use_module('../core/perl_service').
 :- use_module('../core/firewall_v2').
 :- use_module('../core/tool_detection').
+:- use_module('xml_field_compiler').
 
 %% Register this plugin on load
 :- initialization(
@@ -38,31 +39,34 @@ source_info(info(
 %% validate_config(+Config)
 %  Validate configuration for XML source
 validate_config(Config) :-
-    % Must have xml_file
-    (   member(xml_file(File), Config),
+    % Must have xml_file or file (support both interfaces)
+    (   (member(xml_file(File), Config) ; member(file(File), Config)),
         (
             exists_file(File)
         ->  true
         ;   format('Warning: XML file ~w does not exist~n', [File])
         )
     ->  true
-    ;   format('Error: XML source requires xml_file(File)~n', []),
+    ;   format('Error: XML source requires xml_file(File) or file(File)~n', []),
         fail
     ),
-    % Must have tags
+    % Must have tags or tag (support both interfaces)
     (   member(tags(Tags), Config),
         is_list(Tags),
         Tags \= []
     ->  true
-    ;   format('Error: XML source requires non-empty tags(List)~n', []),
+    ;   member(tag(Tag), Config),
+        atom(Tag)
+    ->  true
+    ;   format('Error: XML source requires tags(List) or tag(Atom)~n', []),
         fail
     ),
     % Validate engine if specified
     (   member(engine(Engine), Config)
     ->  (
-            memberchk(Engine, [iterparse, xmllint, xmlstarlet])
+            memberchk(Engine, [iterparse, xmllint, xmlstarlet, awk_pipeline, prolog_sgml])
         ->  true
-        ;   format('Error: invalid engine ~w. Must be one of [iterparse, xmllint, xmlstarlet]~n', [Engine]),
+        ;   format('Error: invalid engine ~w. Must be one of [iterparse, xmllint, xmlstarlet, awk_pipeline, prolog_sgml]~n', [Engine]),
             fail
         )
     ;   true
@@ -81,6 +85,47 @@ validate_config(Config) :-
     ->  (   memberchk(Value, [python, perl])
         ->  true
         ;   format('Error: xmllint_splitter(~w) must be python or perl~n', [Value]),
+            fail
+        )
+    ;   true
+    ),
+    % Optional case-insensitive tag matching (bool)
+    (   member(case_insensitive(Value), Config)
+    ->  (   memberchk(Value, [true, false])
+        ->  true
+        ;   format('Error: case_insensitive(~w) must be true or false~n', [Value]),
+            fail
+        )
+    ;   true
+    ),
+    % Optional field implementation selector (awk variants)
+    (   member(field_impl(Impl), Config)
+    ->  (   memberchk(Impl, [modular, inline])
+        ->  true
+        ;   format('Error: field_impl(~w) must be modular or inline~n', [Impl]),
+            fail
+        )
+    ;   true
+    ),
+    % Optional flatten flag (bool)
+    (   member(flatten(FlattenVal), Config)
+    ->  (   memberchk(FlattenVal, [true, false])
+        ->  true
+        ;   format('Error: flatten(~w) must be true or false~n', [FlattenVal]),
+            fail
+        )
+    ;   true
+    ),
+    % Optional SQLite integration
+    (   member(sqlite_table(Table), Config)
+    ->  (   atom(Table)
+        ->  true
+        ;   format('Error: sqlite_table(~w) must be an atom~n', [Table]),
+            fail
+        ),
+        (   member(database(Db), Config)
+        ->  true
+        ;   format('Error: sqlite_table requires database(File)~n', []),
             fail
         )
     ;   true
@@ -279,48 +324,451 @@ compile_source(Pred/Arity, Config, Options, BashCode) :-
     % Merge config and options
     append(Config, Options, AllOptions),
 
-    % Extract required parameters
-    member(xml_file(File), AllOptions),
-    member(tags(Tags), AllOptions),
+    % Extract file (support both interfaces)
+    (   member(xml_file(File), AllOptions)
+    ->  true
+    ;   member(file(File), AllOptions)
+    ),
+    % Ensure record format/separator defaults for downstream metadata
+    (   member(record_format(_), AllOptions)
+    ->  Options1 = AllOptions
+    ;   Options1 = [record_format(xml)|AllOptions]
+    ),
+    (   member(record_separator(_), Options1)
+    ->  Options2 = Options1
+    ;   Options2 = [record_separator(nul)|Options1]
+    ),
+
+    % Extract tags (support both interfaces)
+    (   member(tags(TagList), Options2)
+    ->  Tags = TagList
+    ;   member(tag(SingleTag), Options2)
+    ->  Tags = [SingleTag]
+    ),
+
+    % Determine engine (default: awk_pipeline)
+    (   member(engine(EngineOpt), Options2)
+    ->  Engine = EngineOpt
+    ;   Engine = awk_pipeline
+    ),
+
+    % Backward compatibility: field_compiler(prolog) implies engine prolog_sgml
+    (   member(field_compiler(prolog), Options2)
+    ->  EngineAdj = prolog_sgml
+    ;   EngineAdj = Engine
+    ),
+
+    % Check for field extraction
+    (   member(fields(FieldSpec), Options2)
+    ->  % Field extraction requested
+        (   Tags = [SingleTag]
+        ->  true
+        ;   format('Error: Field extraction requires exactly one tag, got: ~w~n', [Tags]),
+            fail
+        ),
+        % Choose implementation/engine based on configuration
+        (   EngineAdj == prolog_sgml
+        ->  true,  % silent
+            compile_field_extraction_prolog(
+                Pred/Arity,
+                File,
+                SingleTag,
+                FieldSpec,
+                Options2,
+                BashCode
+            )
+        ;   EngineAdj == awk_pipeline
+        ->  field_impl_choice(Options2, Impl),
+            (   Impl = modular
+            ->  true,  % silent
+                xml_field_compiler:compile_field_extraction(
+                    Pred/Arity,
+                    File,
+                    SingleTag,
+                    FieldSpec,
+                    Options2,
+                    BashCode
+                )
+            ;   Impl = inline
+            ->  true,  % silent
+                compile_field_extraction_inline(
+                    Pred/Arity,
+                    File,
+                    SingleTag,
+                    FieldSpec,
+                    Options2,
+                    BashCode
+                )
+            )
+        ;   format('Error: Field extraction engine ~w not supported~n', [EngineAdj]),
+            fail
+        )
+    ;   % No fields() - use standard element extraction
+        compile_element_extraction(Pred/Arity, File, Tags, Options2, BashCode)
+    ).
+
+%% field_extraction_strategy(+Options, -Strategy)
+%  Determine which field extraction strategy to use.
+%  Strategies:
+%    - modular: Delegate to xml_field_compiler (Option B)
+%    - inline: Self-contained AWK in xml_source.pl (Option A)
+%    - prolog: Pure Prolog using library(sgml) (Option C)
+field_impl_choice(Options, Impl) :-
+    (   member(field_impl(ImplSpec), Options)
+    ->  (   memberchk(ImplSpec, [modular, inline])
+        ->  Impl = ImplSpec
+        ;   format('Warning: Invalid field_impl option ~w, using default (modular)~n', [ImplSpec]),
+            Impl = modular
+        )
+    ;   member(field_compiler(Old), Options),
+        memberchk(Old, [modular, inline])
+    ->  Impl = Old
+    ;   Impl = modular
+    ).
+
+%% ============================================
+%% INLINE FIELD EXTRACTION (Option A)
+%% ============================================
+
+%% compile_field_extraction_inline(+Pred/Arity, +File, +Tag, +FieldSpec, +Options, -BashCode)
+%  Inline implementation of field extraction (self-contained in xml_source.pl)
+compile_field_extraction_inline(Pred/Arity, File, Tag, FieldSpec, Options, BashCode) :-
+    format('  Compiling field extraction (inline): ~w/~w~n', [Pred, Arity]),
+
+    % Validate field specification
+    validate_field_spec_inline(FieldSpec),
+
+    % Select output format
+    (   member(output(OutputFormat), Options)
+    ->  true
+    ;   OutputFormat = dict
+    ),
+
+    % Generate AWK field extraction script
+    generate_awk_field_script_inline(Tag, FieldSpec, OutputFormat, AwkScript),
+
+    % Save AWK script to temp file
+    tmp_file_inline('xml_field', TmpAwkFile),
+    % Resolve to absolute path so the bash wrapper can find it
+    absolute_file_name(TmpAwkFile, AbsAwkFile),
+    setup_call_cleanup(
+        open(AbsAwkFile, write, AwkStream),
+        format(AwkStream, '~w', [AwkScript]),
+        close(AwkStream)
+    ),
+
+    % Generate bash wrapper using template
+    atom_string(Pred, PredStr),
+    atom_string(Tag, TagStr),
+    render_named_template(xml_awk_field_extraction,
+        [
+            pred=PredStr,
+            file=File,
+            tag=TagStr,
+            awk_script=AbsAwkFile
+        ],
+        [source_order([file, generated])],
+        BashCode).
+
+%% validate_field_spec_inline(+FieldSpec)
+validate_field_spec_inline(FieldSpec) :-
+    is_list(FieldSpec),
+    !,
+    maplist(validate_field_entry_inline, FieldSpec).
+validate_field_spec_inline(Other) :-
+    format('Error: fields() must be a list, got: ~w~n', [Other]),
+    fail.
+
+validate_field_entry_inline(FieldName:Selector) :-
+    !,
+    atom(FieldName),
+    atom(Selector).
+validate_field_entry_inline(Other) :-
+    format('Error: field entry must be FieldName:Selector, got: ~w~n', [Other]),
+    fail.
+
+%% generate_awk_field_script_inline(+Tag, +FieldSpec, +OutputFormat, -AwkScript)
+generate_awk_field_script_inline(Tag, FieldSpec, OutputFormat, AwkScript) :-
+    % Extract field names and selectors
+    findall(Name-Selector, member(Name:Selector, FieldSpec), Pairs),
+    findall(Name, member(Name:_, FieldSpec), FieldNames),
+
+    % Generate AWK extraction code for each field
+    maplist(generate_awk_extractor_inline, Pairs, Extractors),
+    atomic_list_concat(Extractors, '\n', ExtractorCode),
+
+    % Generate output formatting code
+    generate_awk_output_inline(FieldNames, OutputFormat, OutputCode),
+
+    % Combine into complete AWK script
+    format(atom(AwkScript),
+'BEGIN {
+    RS = "\\0"  # Null-delimited input
+    ORS = "\\0" # Null-delimited output
+}
+
+/<~w[> ]/ {
+    # Extract fields
+~w
+
+    # Output formatted result
+~w
+}
+', [Tag, ExtractorCode, OutputCode]).
+
+%% generate_awk_extractor_inline(+FieldName-TagName, -ExtractorCode)
+generate_awk_extractor_inline(FieldName-TagName, Code) :-
+    % Handles both CDATA and regular content
+    format(atom(Code), '    if (match($0, /<~w><!\\[CDATA\\[([^\\]]+)\\]\\]><\\/~w>/, arr)) { ~w = arr[1] } else { match($0, /<~w>([^<]+)<\\/~w>/, arr); ~w = arr[1] }',
+           [TagName, TagName, FieldName, TagName, TagName, FieldName]).
+
+%% generate_awk_output_inline(+FieldNames, +OutputFormat, -OutputCode)
+generate_awk_output_inline(FieldNames, dict, Code) :-
+    !,
+    maplist(dict_field_format_inline, FieldNames, FieldFormats),
+    atomic_list_concat(FieldFormats, ', ', FormatStr),
+    atomic_list_concat(FieldNames, ', ', VarsStr),
+    format(atom(Code), '    printf "_{~w}%s", ~w, ORS', [FormatStr, VarsStr]).
+generate_awk_output_inline(FieldNames, list, Code) :-
+    !,
+    length(FieldNames, N),
+    length(Formats, N),
+    maplist(=('%s'), Formats),
+    atomic_list_concat(Formats, ', ', FormatStr),
+    atomic_list_concat(FieldNames, ', ', VarsStr),
+    format(atom(Code), '    printf "[~w]%s", ~w, ORS', [FormatStr, VarsStr]).
+generate_awk_output_inline(FieldNames, compound(Functor), Code) :-
+    !,
+    length(FieldNames, N),
+    length(Formats, N),
+    maplist(=('%s'), Formats),
+    atomic_list_concat(Formats, ', ', FormatStr),
+    atomic_list_concat(FieldNames, ', ', VarsStr),
+    format(atom(Code), '    printf "~w(~w)%s", ~w, ORS', [Functor, FormatStr, VarsStr]).
+
+dict_field_format_inline(FieldName, Format) :-
+    format(atom(Format), '~w:%s', [FieldName]).
+
+%% tmp_file_inline(+Prefix, -Path)
+tmp_file_inline(Prefix, Path) :-
+    (   getenv('TMPDIR', TmpDir)
+    ->  true
+    ;   getenv('CSHARP_QUERY_OUTPUT_DIR', TmpDir)  % reuse output_dir if set
+    ->  true
+    ;   TmpDir = 'tmp'
+    ),
+    get_time(Time),
+    format(atom(Path), '~w/~w_~w.awk', [TmpDir, Prefix, Time]).
+
+%% ============================================
+%% PURE PROLOG FIELD EXTRACTION (Option C)
+%% ============================================
+
+%% compile_field_extraction_prolog(+Pred/Arity, +File, +Tag, +FieldSpec, +Options, -BashCode)
+%  Pure Prolog implementation using library(sgml)
+compile_field_extraction_prolog(Pred/Arity, File, Tag, FieldSpec, Options, BashCode) :-
+    format('  Compiling field extraction (prolog/sgml): ~w/~w~n', [Pred, Arity]),
+
+    % Validate
+    validate_field_spec_prolog(FieldSpec),
+
+    % Extract configuration
+    (   member(output(OutputFormat), Options)
+    ->  true
+    ;   OutputFormat = dict
+    ),
+
+    % Generate Prolog extraction code
+    generate_prolog_field_extractor(File, Tag, FieldSpec, OutputFormat, PrologCode),
+
+    % Create temporary Prolog script
+    tmp_file_prolog(Pred, PrologScriptPath),
+
+    % Write script
+    setup_call_cleanup(
+        open(PrologScriptPath, write, Stream),
+        write(Stream, PrologCode),
+        close(Stream)
+    ),
+
+    % Generate bash wrapper
+    atom_string(Pred, PredStr),
+    atom_string(PrologScriptPath, ScriptPathStr),
+    format(atom(BashCode), '#!/bin/bash\n# ~w - Prolog (sgml) field extraction\n\n~w() {\n    swipl -q -g main -t halt ~w\n}\n\n~w \"$@\"\n',
+           [PredStr, PredStr, ScriptPathStr, PredStr]).
+
+%% validate_field_spec_prolog(+FieldSpec)
+validate_field_spec_prolog(FieldSpec) :-
+    (   FieldSpec = []
+    ->  throw(error(invalid_field_spec, 'Field specification cannot be empty'))
+    ;   validate_field_spec_prolog_items(FieldSpec)
+    ).
+
+validate_field_spec_prolog_items([]).
+validate_field_spec_prolog_items([_:_|Rest]) :-
+    !,
+    validate_field_spec_prolog_items(Rest).
+validate_field_spec_prolog_items([H|_]) :-
+    throw(error(invalid_field_spec,
+                context(_, format('Invalid field spec: ~w (expected FieldName:TagName)', [H])))).
+
+%% generate_prolog_field_extractor(+File, +Tag, +FieldSpec, +OutputFormat, -Code)
+generate_prolog_field_extractor(File, Tag, FieldSpec, OutputFormat, Code) :-
+    % Generate field extraction predicates
+    generate_field_extractors(FieldSpec, ExtractorClauses),
+
+    % Generate output formatter
+    generate_prolog_output_formatter(FieldSpec, OutputFormat, FormatterClause),
+
+    % Generate main predicate
+    findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
+    generate_prolog_main(File, Tag, FieldNames, MainClause),
+
+    % Combine all parts
+    format(atom(Code), ':- encoding(utf8).\n:- use_module(library(sgml)).\n\n~w\n\n~w\n\n~w\n',
+           [ExtractorClauses, FormatterClause, MainClause]).
+
+%% generate_field_extractors(+FieldSpec, -Code)
+generate_field_extractors(FieldSpec, Code) :-
+    findall(Clause,
+        (   member(FieldName:TagName, FieldSpec),
+            format(atom(Clause),
+                'extract_field(Element, ~q, Value) :-\n    member(element(ChildTag, _, Content), Element),\n    tag_matches(ChildTag, ~q),\n    extract_text_content(Content, Value).',
+                [FieldName, TagName])
+        ),
+        Clauses),
+    atomic_list_concat(Clauses, '\n\n', ClausesStr),
+    format(atom(Code),
+        '%% Field extractors\n~w\n\ntag_matches(Tag, Target) :-\n    tag_local(Tag, Local),\n    tag_local(Target, Local).\n\ntag_local(Tag, Local) :-\n    compound(Tag),\n    Tag =.. [(:), _, Inner],\n    !,\n    tag_local(Inner, Local).\ntag_local(Tag, Local) :-\n    atom(Tag),\n    (   sub_atom(Tag, _, _, After, \' : \')\n    ->  sub_atom(Tag, _, After, 0, Raw)\n    ;   sub_atom(Tag, _, _, After2, \':\')\n    ->  sub_atom(Tag, _, After2, 0, Raw)\n    ;   Raw = Tag\n    ),\n    trim_atom(Raw, Local).\n\ntrim_atom(Raw, Local) :-\n    atom_codes(Raw, Codes0),\n    ltrim(Codes0, Codes1),\n    rtrim(Codes1, Codes2),\n    atom_codes(Local, Codes2).\n\nltrim([C|Rest], Trimmed) :-\n    code_type(C, space),\n    !,\n    ltrim(Rest, Trimmed).\nltrim(Codes, Codes).\n\nrtrim(Codes, Trimmed) :-\n    reverse(Codes, Rev),\n    ltrim(Rev, RevTrim),\n    reverse(RevTrim, Trimmed).\n\nextract_text_content([CDATA], Text) :-\n    atom(CDATA), !, Text = CDATA.\nextract_text_content([element(_, _, Content)], Text) :-\n    !, extract_text_content(Content, Text).\nextract_text_content([H|_], Text) :-\n    atom(H), !, Text = H.\nextract_text_content([], \'\').',
+        [ClausesStr]).
+
+%% generate_prolog_output_formatter(+FieldSpec, +OutputFormat, -Code)
+generate_prolog_output_formatter(FieldSpec, dict, Code) :-
+    !,
+    findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
+    findall(VarName,
+        (   member(Field, FieldNames),
+            upcase_atom(Field, Upper),
+            atom_concat(Upper, '_val', VarName)
+        ),
+        VarNames),
+    maplist(dict_field_placeholder, FieldNames, Placeholders),
+    atomic_list_concat(Placeholders, ', ', FormatPairs),
+    atomic_list_concat(VarNames, ', ', VarsStr),
+    format(string(Code),
+        'format_output([~w], Output) :-~n    format(atom(Output), \'_{~w}\', [~w]).',
+        [VarsStr, FormatPairs, VarsStr]).
+generate_prolog_output_formatter(FieldSpec, list, Code) :-
+    !,
+    findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
+    % Generate variable names
+    findall(VarName,
+        (   member(Field, FieldNames),
+            upcase_atom(Field, Upper),
+            atom_concat(Upper, '_val', VarName)
+        ),
+        VarNames),
+    length(VarNames, N),
+    length(Formats, N),
+    maplist(=('~w'), Formats),
+    atomic_list_concat(Formats, ', ', FormatStr),
+    atomic_list_concat(VarNames, ', ', VarsStr),
+    format(string(Code),
+        'format_output([~w], Output) :-~n    format(atom(Output), \'[~w]\', [~w]).',
+        [VarsStr, FormatStr, VarsStr]).
+generate_prolog_output_formatter(FieldSpec, compound(Functor), Code) :-
+    !,
+    findall(FieldName, member(FieldName:_, FieldSpec), FieldNames),
+    % Generate variable names
+    findall(VarName,
+        (   member(Field, FieldNames),
+            upcase_atom(Field, Upper),
+            atom_concat(Upper, '_val', VarName)
+        ),
+        VarNames),
+    length(VarNames, N),
+    length(Formats, N),
+    maplist(=('~w'), Formats),
+    atomic_list_concat(Formats, ', ', FormatStr),
+    atomic_list_concat(VarNames, ', ', VarsStr),
+    format(string(Code),
+        'format_output([~w], Output) :-~n    format(atom(Output), \'~w(~w)\', [~w]).',
+        [VarsStr, Functor, FormatStr, VarsStr]).
+dict_field_placeholder(Field, Placeholder) :-
+    format(atom(Placeholder), '~w:~w', [Field, '~w']).
+
+%% generate_prolog_main(+File, +Tag, +FieldNames, -Code)
+generate_prolog_main(File, Tag, FieldNames, Code) :-
+    % Generate extraction calls with proper variable names (capitalize first letter)
+    findall(Call-VarName,
+        (   member(Field, FieldNames),
+            upcase_atom(Field, Upper),
+            atom_concat(Upper, '_val', VarName),
+            format(atom(Call), '        extract_field(Children, ~q, ~w)', [Field, VarName])
+        ),
+        CallsWithVars),
+    pairs_keys_values(CallsWithVars, Calls, VarNames),
+    atomic_list_concat(Calls, ',\n', CallsStr),
+    atomic_list_concat(VarNames, ', ', VarsStr),
+
+    format(atom(Code),
+'main :-\n    load_xml(\'~w\', DOM),\n    process_elements(DOM).\n\nload_xml(File, DOM) :-\n    load_structure(File, DOM, [dialect(xmlns)]).\n\nprocess_elements(DOM) :-\n    find_elements(DOM, \'~w\', Elements),\n    maplist(process_element, Elements).\n\nfind_elements([], _, []).\nfind_elements([element(Tag, Attrs, Children)|Rest], TargetTag, [element(Tag, Attrs, Children)|Found]) :-\n    tag_matches(Tag, TargetTag),\n    !,\n    find_elements(Rest, TargetTag, Found).\nfind_elements([element(_, _, Children)|Rest], TargetTag, Found) :-\n    !,\n    find_elements(Children, TargetTag, ChildFound),\n    find_elements(Rest, TargetTag, RestFound),\n    append(ChildFound, RestFound, Found).\nfind_elements([_|Rest], TargetTag, Found) :-\n    find_elements(Rest, TargetTag, Found).\n\nprocess_element(element(_, _, Children)) :-\n~w,\n        format_output([~w], Output),\n        writeln(Output).',
+        [File, Tag, CallsStr, VarsStr]).
+
+%% tmp_file_prolog(+Prefix, -Path)
+tmp_file_prolog(Prefix, Path) :-
+    (   getenv('TMPDIR', TmpDir)
+    ->  true
+    ;   TmpDir = '/tmp'
+    ),
+    get_time(Time),
+    format(atom(Path), '~w/~w_~w.pl', [TmpDir, Prefix, Time]).
+
+%% ============================================
+%% STANDARD ELEMENT EXTRACTION
+%% ============================================
+
+%% compile_element_extraction(+Pred/Arity, +File, +Tags, +Options, -BashCode)
+%  Compile standard element extraction (without field extraction)
+compile_element_extraction(Pred/Arity, File, Tags, AllOptions, BashCode) :-
+
     namespace_fix_option(AllOptions, NamespaceFix),
     xmllint_splitter_option(AllOptions, Splitter),
 
-    % Detect or use specified engine
-    (
-        member(engine(Engine), AllOptions)
+    % Determine engine
+    (   (member(flatten(true), AllOptions) ; member(sqlite_table(_), AllOptions))
+    ->  Engine = iterparse,
+        (   check_lxml_available
+        ->  true
+        ;   format('Error: XML flattening/SQLite requires lxml (pip install lxml)~n', []),
+            fail
+        )
+    ;   member(engine(Engine), AllOptions)
     ->  true
     ;   detect_available_engine(Engine)
     ),
+    
     (   Engine == xmllint
     ->  check_xmllint_available,
         (Splitter == perl -> check_perl_available ; true)
     ;   true
     ),
 
-    % Check if we should use pure PowerShell template
-    (   member(template_suffix('_powershell_pure'), AllOptions)
-    ->  % Use pure PowerShell template
-        tags_to_xpath(Tags, XPathExpr),
-        tags_to_list_str(Tags, TagsList),
+    % Generate code based on engine
+    (
+        Engine == iterparse
+    ->  generate_lxml_python_code(File, Tags, AllOptions, PythonCode),
         atom_string(Pred, PredStr),
-        render_named_template(xml_source_powershell_pure,
-            [pred=PredStr, file=File, xpath_ps=XPathExpr, tags=TagsList],
+        render_named_template(xml_iterparse_source,
+            [pred=PredStr, python_code=PythonCode],
             [source_order([file, generated])],
             BashCode)
-    ;   % Generate code based on engine (original bash templates)
-        (
-            Engine == iterparse
-        ->  generate_lxml_python_code(File, Tags, PythonCode),
-            atom_string(Pred, PredStr),
-            render_named_template(xml_iterparse_source,
-                [pred=PredStr, python_code=PythonCode],
-                [source_order([file, generated])],
-                BashCode)
-        ;   Engine == xmllint
-        ->  generate_xmllint_bash(Pred, File, Tags, NamespaceFix, Splitter, BashCode)
-        ;   Engine == xmlstarlet
-        ->  generate_xmlstarlet_bash(Pred, File, Tags, BashCode)
-        )
+    ;   Engine == xmllint
+    ->  generate_xmllint_bash(Pred, File, Tags, NamespaceFix, Splitter, BashCode)
+    ;   Engine == xmlstarlet
+    ->  generate_xmlstarlet_bash(Pred, File, Tags, BashCode)
+    ;   Engine == awk_pipeline
+    ->  generate_awk_pipeline_bash(Pred, File, Tags, AllOptions, BashCode)
     ).
 
 %% namespace_fix_option(+Options, -FixBool)
@@ -434,41 +882,146 @@ report_splitter_error(Splitter, Status) :-
 %% PYTHON CODE GENERATION
 %% ============================================ 
 
-%% generate_lxml_python_code(+File, +Tags, -PythonCode)
-%  Generate Python code for lxml iterparse
-generate_lxml_python_code(File, Tags, PythonCode) :-
+%% generate_lxml_python_code(+File, +Tags, +Options, -PythonCode)
+%  Generate Python code for lxml iterparse with optional flattening and SQLite support
+generate_lxml_python_code(File, Tags, Options, PythonCode) :-
     tags_to_python_set(Tags, TagsSet),
+    
+    (   member(flatten(true), Options)
+    ->  Flatten = true, FlattenPy = 'True'
+    ;   Flatten = false, FlattenPy = 'False'
+    ),
+    
+    (   member(sqlite_table(Table), Options),
+        member(database(Db), Options)
+    ->  Sqlite = true,
+        format(atom(SqliteSetup), '
+con = sqlite3.connect("~w")
+cur = con.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS ~w (id INTEGER PRIMARY KEY, data JSON)")
+table_name = "~w"
+batch = []
+BATCH_SIZE = 1000
+', [Db, Table, Table]),
+        SqliteCommit = '
+        if len(batch) >= BATCH_SIZE:
+            cur.executemany(f"INSERT INTO {table_name} (data) VALUES (?)", batch)
+            con.commit()
+            batch = []
+',
+        SqliteFinish = '
+if batch:
+    cur.executemany(f"INSERT INTO {table_name} (data) VALUES (?)", batch)
+    con.commit()
+con.close()
+'
+    ;   Sqlite = false,
+        SqliteSetup = '',
+        SqliteCommit = '',
+        SqliteFinish = ''
+    ),
+
+    % Construct Python script parts
+    (   Flatten == true
+    ->  ProcessElem = '
+        record = flatten_element(elem)
+        json_str = json.dumps(record)
+        '
+    ;   ProcessElem = '
+        # Raw output
+        sys.stdout.buffer.write(etree.tostring(elem))
+        sys.stdout.buffer.write(null)
+        '
+    ),
+    
+    (   Flatten == true, Sqlite == true
+    ->  Action = '
+        batch.append((json_str,))
+        ' 
+    ;   Flatten == true, Sqlite == false
+    ->  Action = '
+        print(json_str)
+        '
+    ;   Action = '' % Already handled in ProcessElem for raw mode
+    ),
+    
     atomic_list_concat([
-        "import sys\n",
-        "from lxml import etree\n\n",
-        "file = \"", File, "\"\n",
-        "tags = {", TagsSet, "}\n",
-        "null = b'\\0'\n\n",
-        "# Parse with namespace handling\n",
-        "context = etree.iterparse(file, events=('start', 'end'), recover=True)\n",
-        "event, root = next(context)\n",
-        "nsmap = root.nsmap or {}\n\n",
-        "def expand(tag):\n",
-        "    if ':' in tag:\n",
-        "        pfx, local = tag.split(':', 1)\n",
-        "        uri = nsmap.get(pfx)\n",
-        "        if uri:\n",
-        "            return '{' + uri + '}' + local\n",
-        "        else:\n",
-        "            return tag\n",
-        "    return tag\n\n",
-        "want = {expand(t) for t in tags}\n\n",
-        "# Stream with memory release\n",
-        "for event, elem in context:\n",
-        "    if event == 'end' and elem.tag in want:\n",
-        "        sys.stdout.buffer.write(etree.tostring(elem))\n",
-        "        sys.stdout.buffer.write(null)\n",
-        "        # Release memory immediately\n",
-        "        elem.clear()\n",
-        "        while elem.getprevious() is not None:\n",
-        "            del elem.getparent()[0]\n",
-        "        root.clear()\n"
-    ], PythonCode).
+        SqliteCommit,
+        Action
+    ], LoopBody),
+
+    format(atom(PythonCode), 'import sys
+import json
+import sqlite3
+from lxml import etree
+
+file = "~w"
+tags = {~w}
+null = b"\\0"
+flatten = ~w
+
+# SQLite Setup
+~w
+
+# Flattening logic
+def flatten_element(elem):
+    data = {}
+    # Root element attributes (global keys for backward compatibility)
+    for k, v in elem.attrib.items():
+        data["@" + k] = v
+    # Text content
+    if elem.text and elem.text.strip():
+        data["text"] = elem.text.strip()
+    # Children
+    for child in elem:
+        # Simple flattening: key = tag, value = text (if leaf) or recursive dict?
+        # We stick to simple text extraction for leaves, or nested dict for structure
+        # For this version: simplified
+        tag = child.tag.split("}")[-1] # strip namespace for simplicity in keys
+        if not len(child) and child.text:
+            data[tag] = child.text.strip()
+        # Child element attributes (element-scoped to prevent conflicts)
+        # e.g., "seeAlso@rdf:resource" vs "parentTree@rdf:resource"
+        for attr_name, attr_val in child.attrib.items():
+            # Element-scoped: prevents conflicts when multiple children have same attribute
+            scoped_key = tag + "@" + attr_name
+            data[scoped_key] = attr_val
+            # Also store with global key for backward compatibility (may conflict)
+            data["@" + attr_name] = attr_val
+    return data
+
+# Parse with namespace handling
+context = etree.iterparse(file, events=("start", "end"), recover=True)
+event, root = next(context)
+nsmap = root.nsmap or {}
+
+def expand(tag):
+    if ":" in tag:
+        pfx, local = tag.split(":", 1)
+        uri = nsmap.get(pfx)
+        if uri:
+            return "{" + uri + "}" + local
+        else:
+            return tag
+    return tag
+
+want = {expand(t) for t in tags}
+
+# Stream with memory release
+for event, elem in context:
+    if event == "end" and elem.tag in want:
+        ~w
+        ~w
+        
+        # Release memory immediately
+        elem.clear()
+        while elem.getprevious() is not None:
+            del elem.getparent()[0]
+        root.clear()
+
+~w
+', [File, TagsSet, FlattenPy, SqliteSetup, ProcessElem, LoopBody, SqliteFinish]).
+
 
 %% tags_to_python_set(+Tags, -Set)
 %  Convert a list of Prolog atoms to a Python set string.
@@ -487,11 +1040,6 @@ tags_to_python_list(Tags, List) :-
 %  Quote a Prolog atom for Python.
 quote_atom(Atom, Quoted) :-
     format(atom(Quoted), '\'~w\'', [Atom]).
-
-%% tags_to_list_str(+Tags, -ListStr)
-%  Convert a list of tags to a comma-separated string for display.
-tags_to_list_str(Tags, ListStr) :-
-    atomic_list_concat(Tags, ', ', ListStr).
 
 %% generate_xmlstarlet_bash(+Pred, +File, +Tags, -BashCode)
 %  Generate bash code for xmlstarlet engine
@@ -630,6 +1178,39 @@ indent_line(_, "", "") :- !.
 indent_line(Indent, Line, IndentedLine) :-
     atomic_list_concat([Indent, Line], IndentedLine).
 
+
+%% generate_awk_pipeline_bash(+Pred, +File, +Tags, +AllOptions, -BashCode)
+%  Generate bash code for awk_pipeline engine (uses awk + Python streaming)
+generate_awk_pipeline_bash(Pred, File, Tags, AllOptions, BashCode) :-
+    % Convert tags list to single tag pattern for awk
+    % For now, use first tag (TODO: support multiple tags)
+    (   Tags = [FirstTag|_]
+    ->  TagPattern = FirstTag
+    ;   Tags = []
+    ->  TagPattern = ''
+    ),
+
+    % Check for parallel mode
+    (   member(parallel(true), AllOptions)
+    ->  (   member(workers(Workers), AllOptions)
+        ->  true
+        ;   Workers = 4  % Default workers
+        ),
+        atom_string(Pred, PredStr),
+        render_named_template(xml_awk_pipeline_parallel_source,
+            [pred=PredStr, file=File, tag=TagPattern, workers=Workers],
+            [source_order([file, generated])],
+            BashCode)
+    ;   atom_string(Pred, PredStr),
+        (   member(case_insensitive(true), AllOptions)
+        ->  Icase = 1
+        ;   Icase = 0
+        ),
+        render_named_template(xml_awk_pipeline_source,
+            [pred=PredStr, file=File, tag=TagPattern, icase=Icase],
+            [source_order([file, generated])],
+            BashCode)
+    ).
 
 %% known_namespace(+Prefix, -URI)
 known_namespace(pt, 'http://www.pearltrees.com/xmlns/pearl-trees#').
@@ -849,52 +1430,6 @@ template_system:template(xml_xmllint_perl_source, Template) :-
         'fi\n'
     ], Template).
 
-%% ============================================
-%% PURE POWERSHELL TEMPLATES
-%% ============================================
-
-% Pure PowerShell template using Select-Xml
-template_system:template(xml_source_powershell_pure, '# {{pred}} - XML source - Pure PowerShell
-# Tags: {{tags}}
-# Generated by UnifyWeaver - Pure PowerShell mode (no bash dependency)
-
-function {{pred}} {
-    param([string]$Key)
-
-    try {
-        # Load XML file
-        [xml]$xmlDoc = Get-Content ''{{file}}'' -Raw
-
-        # Build XPath expression for multiple tags
-        $xpath = "{{xpath_ps}}"
-
-        # Select matching elements
-        $elements = Select-Xml -Xml $xmlDoc -XPath $xpath | ForEach-Object { $_.Node }
-
-        # Output each element as XML string with null byte delimiter
-        foreach ($elem in $elements) {
-            # Convert element to outer XML
-            $xmlString = $elem.OuterXml
-            # Output with null byte delimiter (for compatibility with bash version)
-            [System.Console]::Out.Write($xmlString)
-            [System.Console]::Out.Write([char]0)
-        }
-    } catch {
-        Write-Error "XML processing failed: $_"
-        exit 1
-    }
-}
-
-function {{pred}}_stream {
-    {{pred}}
-}
-
-# Auto-execute when run directly (not when dot-sourced)
-if ($MyInvocation.InvocationName -ne ''.'') {
-    {{pred}} @args
-}
-').
-
 % Template for xmlstarlet engine
 template_system:template(xml_xmlstarlet_source, Template) :-
     atomic_list_concat([
@@ -934,3 +1469,37 @@ template_system:template(xml_xmlstarlet_source, Template) :-
         '    {{pred}} "$@"\n',
         'fi\n'
     ], Template).
+
+% Template for awk_pipeline engine (sequential)
+template_system:template(xml_awk_pipeline_source, '#!/bin/bash
+# {{pred}} - XML source (awk pipeline)
+
+{{pred}}() {
+    awk -f scripts/utils/select_xml_elements.awk -v tag="{{tag}}" -v icase={{icase}} "{{file}}"
+}
+
+{{pred}}_stream() {
+    {{pred}}
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
+').
+
+% Template for awk_pipeline engine (parallel)
+template_system:template(xml_awk_pipeline_parallel_source, '#!/bin/bash
+# {{pred}} - XML source (awk pipeline parallel)
+
+{{pred}}() {
+    bash scripts/extract_pearltrees_parallel.sh "{{file}}" "$@" --workers={{workers}}
+}
+
+{{pred}}_stream() {
+    {{pred}}
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    {{pred}} "$@"
+fi
+').

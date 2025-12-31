@@ -17,6 +17,7 @@
 :- use_module(library(lists)).
 :- use_module('constraint_analyzer').
 :- use_module('template_system').
+:- use_module('optimizer').
 
 %% Main compilation entry point
 compile_predicate(Pred/Arity, Options) :-
@@ -97,6 +98,10 @@ extract_predicates(_ =< _, []) :- !.
 extract_predicates(_ =:= _, []) :- !.
 extract_predicates(_ =\= _, []) :- !.
 extract_predicates(is(_, _), []) :- !.
+% Skip match predicates - they're constraints for regex pattern matching
+extract_predicates(match(_, _), []) :- !.
+extract_predicates(match(_, _, _), []) :- !.
+extract_predicates(match(_, _, _, _), []) :- !.
 % Skip negation wrapper - extract predicates inside
 extract_predicates(\+ A, Predicates) :- !,
     extract_predicates(A, Predicates).
@@ -288,17 +293,30 @@ compile_facts_debug(Pred, Arity, _MergedOptions, BashCode) :-
 
 %% Compile single rule into streaming pipeline
 compile_single_rule(Pred, Arity, Body, Options, BashCode) :-
-    extract_predicates(Body, Predicates),
+    % Optimize goal order
+    functor(Head, Pred, Arity),
+    (   optimizer:optimize_clause(Head, Body, Options, OptimizedBody)
+    ->  format('  Optimized body: ~w~n', [OptimizedBody])
+    ;   OptimizedBody = Body
+    ),
+
+    extract_predicates(OptimizedBody, Predicates),
     atom_string(Pred, PredStr),
 
     % HYBRID DISPATCH: Try high-level patterns first, then fall back to general translation
+    % 0. Outer join patterns (LEFT/RIGHT/FULL OUTER JOIN)
+    (   has_outer_join(OptimizedBody) ->
+        compile_with_outer_join(Pred, Arity, OptimizedBody, BashCode)
     % 1. High-level pattern: inequality (e.g., sibling)
-    (   has_inequality(Body) ->
-        compile_with_inequality(Pred, Body, BashCode)
+    ;   has_inequality(OptimizedBody) ->
+        compile_with_inequality(Pred, OptimizedBody, BashCode)
     % 2. General fallback: arithmetic operations
-    ;   has_arithmetic(Body) ->
-        compile_with_arithmetic(Pred, Arity, Body, Options, BashCode)
-    % 3. No predicates at all
+    ;   has_arithmetic(OptimizedBody) ->
+        compile_with_arithmetic(Head, OptimizedBody, Options, BashCode)
+    % 3. Match predicate (regex pattern matching)
+    ;   has_match(OptimizedBody) ->
+        compile_with_match(Head, OptimizedBody, Options, BashCode)
+    % 4. No predicates at all
     ;   Predicates = [] ->
         format(string(BashCode), '#!/bin/bash
 # ~s - no predicates
@@ -308,7 +326,7 @@ compile_single_rule(Pred, Arity, Body, Options, BashCode) :-
 ~s_stream() {
     ~s
 }', [PredStr, PredStr, PredStr, PredStr])
-    % 4. Standard streaming pipeline (existing high-level pattern)
+    % 5. Standard streaming pipeline (existing high-level pattern)
     ;   % Standard streaming pipeline
         generate_pipeline(Predicates, Options, Pipeline),
         % Generate all necessary join functions
@@ -335,6 +353,7 @@ compile_multiple_rules(Pred, Clauses, Options, BashCode) :-
     % Generate alternative functions - iterate through clause pairs
     findall(FnCode, (
         nth1(I, Clauses, Head-Body),
+        (   optimizer:optimize_clause(Head, Body, Options, OptimizedBody) -> true ; OptimizedBody = Body ),
         format(atom(FnName), '~s_alt~w', [PredStr, I]),
 
         % Check the specific pattern for related/2
@@ -357,20 +376,20 @@ compile_multiple_rules(Pred, Clauses, Options, BashCode) :-
             % Build variable map from the head
             Head =.. [_|Args],
             build_var_map(Args, 1, VarMap),
-            (   has_inequality(Body) ->
+            (   has_inequality(OptimizedBody) ->
                 % High-level pattern: inequality
-                translate_body_to_bash(Body, VarMap, BodyCode),
+                translate_body_to_bash(OptimizedBody, VarMap, BodyCode),
                 format(string(FnCode), '~s() {
     ~s
 }', [FnName, BodyCode])
-            ;   has_arithmetic(Body) ->
+            ;   has_arithmetic(OptimizedBody) ->
                 % Arithmetic operations
-                translate_body_to_bash(Body, VarMap, BodyCode),
+                translate_body_to_bash(OptimizedBody, VarMap, BodyCode),
                 format(string(FnCode), '~s() {
     ~s
 }', [FnName, BodyCode])
             ;   % Standard streaming pipeline
-                extract_predicates(Body, Preds),
+                extract_predicates(OptimizedBody, Preds),
                 (   Preds = [] ->
                     format(string(FnCode), '~s() {
     true
@@ -464,6 +483,337 @@ has_inequality(Body) :-
     nonvar(Body), !,
     fail.
 
+%% Check for match constraints (regex pattern matching)
+has_match((A, B)) :- !,
+    (has_match(A) ; has_match(B)).
+has_match(match(_, _)) :- !.
+has_match(match(_, _, _)) :- !.
+has_match(match(_, _, _, _)) :- !.
+has_match(Body) :-
+    nonvar(Body), !,
+    fail.
+
+%% ============================================
+%% OUTER JOIN PATTERN DETECTION
+%% ============================================
+
+%% has_outer_join(+Body)
+%  Check if body contains an outer join pattern (disjunction with null binding)
+has_outer_join(Body) :-
+    (   is_left_join_pattern(Body)
+    ;   is_right_join_pattern(Body)
+    ;   is_full_outer_join_pattern(Body)
+    ), !.
+
+%% is_left_join_pattern(+Body)
+%  Pattern: (LeftGoals, (RightGoal ; Fallback)) where Fallback contains null bindings
+%  Example: customer(Id, Name), (order(Id, Product) ; Product = null)
+is_left_join_pattern(Body) :-
+    \+ is_right_join_pattern(Body),
+    \+ is_full_outer_join_pattern(Body),
+    find_disjunction_with_null(Body, _).
+
+%% is_right_join_pattern(+Body)
+%  Pattern: ((LeftGoal ; Fallback), RightGoals) where disjunction is at the start
+%  Example: (customer(Id, Name) ; Name = null), order(Id, Product)
+is_right_join_pattern(Body) :-
+    \+ is_full_outer_join_pattern(Body),
+    Body = ((LeftGoal ; Fallback), _Rest),
+    is_table_goal(LeftGoal),
+    contains_null_binding(Fallback).
+
+%% is_full_outer_join_pattern(+Body)
+%  Pattern: ((LeftGoal ; LeftFallback), (RightGoal ; RightFallback))
+%  Example: (customer(Id, Name) ; Name = null), (order(Id, Product) ; Product = null)
+is_full_outer_join_pattern(Body) :-
+    Body = ((LeftGoal ; LeftFallback), (RightGoal ; RightFallback)),
+    is_table_goal(LeftGoal),
+    is_table_goal(RightGoal),
+    contains_null_binding(LeftFallback),
+    contains_null_binding(RightFallback).
+
+%% is_table_goal(+Goal)
+%  Check if goal is a simple predicate call (not a control structure)
+is_table_goal(Goal) :-
+    nonvar(Goal),
+    Goal =.. [Functor|_],
+    \+ Functor = ',',
+    \+ Functor = ';',
+    \+ Functor = '->',
+    \+ Functor = '='.
+
+%% contains_null_binding(+Goal)
+%  Check if goal contains X = null pattern
+contains_null_binding((A, B)) :- !,
+    (contains_null_binding(A) ; contains_null_binding(B)).
+contains_null_binding(_ = null) :- !.
+contains_null_binding(_ = '') :- !.  % Also accept empty string as null
+
+%% find_disjunction_with_null(+Body, -Disjunction)
+%  Find a disjunction with null binding anywhere in conjunction
+find_disjunction_with_null((A, B), Disj) :- !,
+    (   A = (_ ; Fallback), contains_null_binding(Fallback)
+    ->  Disj = A
+    ;   find_disjunction_with_null(B, Disj)
+    ).
+find_disjunction_with_null((Goal ; Fallback), (Goal ; Fallback)) :-
+    contains_null_binding(Fallback).
+
+%% extract_null_bindings(+Fallback, -NullVars)
+%  Extract variables that are bound to null in fallback
+extract_null_bindings((A, B), NullVars) :- !,
+    extract_null_bindings(A, Vars1),
+    extract_null_bindings(B, Vars2),
+    append(Vars1, Vars2, NullVars).
+extract_null_bindings(Var = null, [Var]) :- var(Var), !.
+extract_null_bindings(Var = '', [Var]) :- var(Var), !.
+extract_null_bindings(_, []).
+
+%% ============================================
+%% OUTER JOIN COMPILATION
+%% ============================================
+
+%% compile_with_outer_join(+Pred, +Arity, +Body, -BashCode)
+%  Compile outer join patterns to Bash
+compile_with_outer_join(Pred, Arity, Body, BashCode) :-
+    (   is_full_outer_join_pattern(Body)
+    ->  compile_full_outer_join_bash(Pred, Arity, Body, BashCode)
+    ;   is_right_join_pattern(Body)
+    ->  compile_right_join_bash(Pred, Arity, Body, BashCode)
+    ;   is_left_join_pattern(Body)
+    ->  compile_left_join_bash(Pred, Arity, Body, BashCode)
+    ).
+
+%% compile_left_join_bash(+Pred, +Arity, +Body, -BashCode)
+%  Generate Bash code for LEFT OUTER JOIN
+compile_left_join_bash(Pred, _Arity, Body, BashCode) :-
+    atom_string(Pred, PredStr),
+
+    % Extract the pattern: (LeftGoals, (RightGoal ; Fallback))
+    extract_left_join_parts(Body, LeftGoals, RightGoal, Fallback),
+
+    % Get table names
+    get_table_name(LeftGoals, LeftTable),
+    RightGoal =.. [RightTable|_],
+    atom_string(LeftTable, LeftStr),
+    atom_string(RightTable, RightStr),
+
+    % Get null variables for output
+    extract_null_bindings(Fallback, NullVars),
+    length(NullVars, NumNulls),
+    generate_null_output(NumNulls, NullOutput),
+
+    format(string(BashCode), '#!/bin/bash
+# ~s - LEFT OUTER JOIN pattern
+# Left: ~s, Right: ~s
+
+~s() {
+    declare -A seen
+    declare -A right_matched
+
+    # Iterate over left table
+    for left_key in "${!~s_data[@]}"; do
+        IFS=":" read -ra left_parts <<< "$left_key"
+        local matched=0
+
+        # Try to find matching right records
+        for right_key in "${!~s_data[@]}"; do
+            IFS=":" read -ra right_parts <<< "$right_key"
+
+            # Check join condition (first field match)
+            if [[ "${left_parts[0]}" == "${right_parts[0]}" ]]; then
+                # Output joined record
+                result="${left_key}:${right_key}"
+                if [[ -z "${seen[$result]}" ]]; then
+                    seen[$result]=1
+                    echo "$result"
+                fi
+                matched=1
+            fi
+        done
+
+        # If no match found, output left with nulls
+        if [[ $matched -eq 0 ]]; then
+            result="${left_key}:~s"
+            if [[ -z "${seen[$result]}" ]]; then
+                seen[$result]=1
+                echo "$result"
+            fi
+        fi
+    done
+}
+
+# Stream function for use in pipelines
+~s_stream() {
+    ~s
+}', [PredStr, LeftStr, RightStr, PredStr, LeftStr, RightStr, NullOutput, PredStr, PredStr]).
+
+%% compile_right_join_bash(+Pred, +Arity, +Body, -BashCode)
+%  Generate Bash code for RIGHT OUTER JOIN
+compile_right_join_bash(Pred, _Arity, Body, BashCode) :-
+    atom_string(Pred, PredStr),
+
+    % Extract pattern: ((LeftGoal ; Fallback), RightGoals)
+    Body = ((LeftGoal ; Fallback), RightGoals),
+    LeftGoal =.. [LeftTable|_],
+    get_table_name(RightGoals, RightTable),
+    atom_string(LeftTable, LeftStr),
+    atom_string(RightTable, RightStr),
+
+    % Get null variables
+    extract_null_bindings(Fallback, NullVars),
+    length(NullVars, NumNulls),
+    generate_null_output(NumNulls, NullOutput),
+
+    format(string(BashCode), '#!/bin/bash
+# ~s - RIGHT OUTER JOIN pattern
+# Left: ~s, Right: ~s
+
+~s() {
+    declare -A seen
+
+    # Iterate over right table (preserved side)
+    for right_key in "${!~s_data[@]}"; do
+        IFS=":" read -ra right_parts <<< "$right_key"
+        local matched=0
+
+        # Try to find matching left records
+        for left_key in "${!~s_data[@]}"; do
+            IFS=":" read -ra left_parts <<< "$left_key"
+
+            # Check join condition (first field match)
+            if [[ "${left_parts[0]}" == "${right_parts[0]}" ]]; then
+                # Output joined record
+                result="${left_key}:${right_key}"
+                if [[ -z "${seen[$result]}" ]]; then
+                    seen[$result]=1
+                    echo "$result"
+                fi
+                matched=1
+            fi
+        done
+
+        # If no match found, output nulls with right
+        if [[ $matched -eq 0 ]]; then
+            result="~s:${right_key}"
+            if [[ -z "${seen[$result]}" ]]; then
+                seen[$result]=1
+                echo "$result"
+            fi
+        fi
+    done
+}
+
+# Stream function for use in pipelines
+~s_stream() {
+    ~s
+}', [PredStr, LeftStr, RightStr, PredStr, RightStr, LeftStr, NullOutput, PredStr, PredStr]).
+
+%% compile_full_outer_join_bash(+Pred, +Arity, +Body, -BashCode)
+%  Generate Bash code for FULL OUTER JOIN
+compile_full_outer_join_bash(Pred, _Arity, Body, BashCode) :-
+    atom_string(Pred, PredStr),
+
+    % Extract pattern: ((LeftGoal ; LeftFallback), (RightGoal ; RightFallback))
+    Body = ((LeftGoal ; LeftFallback), (RightGoal ; RightFallback)),
+    LeftGoal =.. [LeftTable|_],
+    RightGoal =.. [RightTable|_],
+    atom_string(LeftTable, LeftStr),
+    atom_string(RightTable, RightStr),
+
+    % Get null outputs for each side
+    extract_null_bindings(LeftFallback, LeftNullVars),
+    extract_null_bindings(RightFallback, RightNullVars),
+    length(LeftNullVars, NumLeftNulls),
+    length(RightNullVars, NumRightNulls),
+    generate_null_output(NumLeftNulls, LeftNullOutput),
+    generate_null_output(NumRightNulls, RightNullOutput),
+
+    format(string(BashCode), '#!/bin/bash
+# ~s - FULL OUTER JOIN pattern
+# Left: ~s, Right: ~s
+
+~s() {
+    declare -A seen
+    declare -A right_matched
+
+    # Phase 1: Iterate left, try to match right (LEFT JOIN part)
+    for left_key in "${!~s_data[@]}"; do
+        IFS=":" read -ra left_parts <<< "$left_key"
+        local matched=0
+
+        for right_key in "${!~s_data[@]}"; do
+            IFS=":" read -ra right_parts <<< "$right_key"
+
+            # Check join condition
+            if [[ "${left_parts[0]}" == "${right_parts[0]}" ]]; then
+                result="${left_key}:${right_key}"
+                if [[ -z "${seen[$result]}" ]]; then
+                    seen[$result]=1
+                    echo "$result"
+                fi
+                right_matched[$right_key]=1
+                matched=1
+            fi
+        done
+
+        # Left record with no match
+        if [[ $matched -eq 0 ]]; then
+            result="${left_key}:~s"
+            if [[ -z "${seen[$result]}" ]]; then
+                seen[$result]=1
+                echo "$result"
+            fi
+        fi
+    done
+
+    # Phase 2: Output unmatched right records
+    for right_key in "${!~s_data[@]}"; do
+        if [[ -z "${right_matched[$right_key]}" ]]; then
+            result="~s:${right_key}"
+            if [[ -z "${seen[$result]}" ]]; then
+                seen[$result]=1
+                echo "$result"
+            fi
+        fi
+    done
+}
+
+# Stream function for use in pipelines
+~s_stream() {
+    ~s
+}', [PredStr, LeftStr, RightStr, PredStr, LeftStr, RightStr, RightNullOutput, RightStr, LeftNullOutput, PredStr, PredStr]).
+
+%% Helper predicates for outer join compilation
+
+%% extract_left_join_parts(+Body, -LeftGoals, -RightGoal, -Fallback)
+extract_left_join_parts((Left, (RightGoal ; Fallback)), Left, RightGoal, Fallback) :-
+    is_table_goal(RightGoal), !.
+extract_left_join_parts((A, B), LeftGoals, RightGoal, Fallback) :-
+    extract_left_join_parts(B, RestLeft, RightGoal, Fallback),
+    (   RestLeft = true
+    ->  LeftGoals = A
+    ;   LeftGoals = (A, RestLeft)
+    ).
+
+%% get_table_name(+Goals, -TableName)
+get_table_name((Goal, _), TableName) :- !,
+    Goal =.. [TableName|_].
+get_table_name(Goal, TableName) :-
+    Goal =.. [TableName|_].
+
+%% generate_null_output(+NumFields, -NullStr)
+generate_null_output(0, "") :- !.
+generate_null_output(1, "") :- !.
+generate_null_output(N, NullStr) :-
+    N > 1,
+    N1 is N - 1,
+    generate_null_output(N1, Rest),
+    (   Rest = ""
+    ->  NullStr = ":"
+    ;   format(string(NullStr), ":~s", [Rest])
+    ).
+
 % Keep helper for compatibility; add cuts to avoid fallback loops
 has_inequality_in_conjunction((A, B)) :- !,
     (has_inequality(A) ; has_inequality(B)).
@@ -552,16 +902,14 @@ compile_arithmetic_body(Pred, Arity, Body, BashBody) :-
     build_var_map(Args, 1, VarMap),
     translate_body_to_bash(Body, VarMap, BashBody).
 
-%% compile_with_arithmetic(+Pred, +Arity, +Body, +Options, -BashCode)
+%% compile_with_arithmetic(+Head, +Body, +Options, -BashCode)
 %  General arithmetic translation fallback
 %  Handles predicates with arithmetic but no known high-level pattern
-compile_with_arithmetic(Pred, Arity, Body, _Options, BashCode) :-
+compile_with_arithmetic(Head, Body, _Options, BashCode) :-
+    functor(Head, Pred, _Arity),
     atom_string(Pred, PredStr),
 
     % Extract variables from the clause head
-    % Get the actual clause to determine variables
-    functor(Head, Pred, Arity),
-    clause(Head, Body),
     Head =.. [_|Args],
 
     % Build variable mapping: Prolog vars -> bash positional params
@@ -586,6 +934,133 @@ compile_with_arithmetic(Pred, Arity, Body, _Options, BashCode) :-
 ~s_stream() {
     ~s "$@"
 }', [PredStr, PredStr, ParamDecls, BashBody, PredStr, PredStr]).
+
+%% compile_with_match(+Head, +Body, +Options, -BashCode)
+%  Compile predicates with match constraints (regex filtering)
+%  Handles streaming pipeline with integrated match filters
+compile_with_match(Head, Body, Options, BashCode) :-
+    functor(Head, Pred, _Arity),
+    atom_string(Pred, PredStr),
+
+    % Extract predicates and match constraints separately
+    extract_predicates(Body, Predicates),
+    extract_match_constraints(Body, MatchConstraints),
+
+    % Get the clause head args
+    Head =.. [_|Args],
+
+    % Build variable mapping
+    build_var_map(Args, 1, VarMap),
+
+    % Generate base pipeline from predicates
+    (   Predicates = [] ->
+        % No predicates, just match constraints - use stdin
+        BasePipeline = "cat"
+    ;   Predicates = [SinglePred] ->
+        % Single predicate source
+        atom_string(SinglePred, SPredStr),
+        format(string(BasePipeline), '~s_stream', [SPredStr])
+    ;   % Multiple predicates - generate join chain
+        generate_pipeline(Predicates, Options, BasePipeline)
+    ),
+
+    % Add match filters to the pipeline
+    generate_match_filters(MatchConstraints, VarMap, Args, MatchFilters),
+
+    % Get deduplication strategy
+    get_dedup_strategy(Options, Strategy),
+
+    % Build final pipeline with filters and deduplication
+    (   MatchFilters = "" ->
+        FinalPipeline = BasePipeline
+    ;   format(string(FinalPipeline), '~s | ~s', [BasePipeline, MatchFilters])
+    ),
+
+    % Add deduplication if needed
+    (   Strategy = sort_u ->
+        format(string(CompletePipeline), '~s | sort -u', [FinalPipeline])
+    ;   Strategy = hash ->
+        format(string(CompletePipeline), '~s | awk \'!seen[$0]++\'', [FinalPipeline])
+    ;   % no_dedup
+        CompletePipeline = FinalPipeline
+    ),
+
+    % Generate complete bash script
+    format(string(BashCode), '#!/bin/bash
+# ~s - streaming pipeline with match filtering
+
+~s() {
+    ~s
+}
+
+# Stream function for use in pipelines
+~s_stream() {
+    ~s
+}', [PredStr, PredStr, CompletePipeline, PredStr, PredStr]).
+
+%% extract_match_constraints(+Body, -Constraints)
+%  Extract all match/2, match/3, match/4 constraints from body
+extract_match_constraints(true, []) :- !.
+extract_match_constraints((A, B), Constraints) :- !,
+    extract_match_constraints(A, C1),
+    extract_match_constraints(B, C2),
+    append(C1, C2, Constraints).
+extract_match_constraints(match(Var, Pattern), [match(Var, Pattern, auto, [])]) :- !.
+extract_match_constraints(match(Var, Pattern, Type), [match(Var, Pattern, Type, [])]) :- !.
+extract_match_constraints(match(Var, Pattern, Type, Groups), [match(Var, Pattern, Type, Groups)]) :- !.
+extract_match_constraints(_, []).
+
+%% generate_bash_capture_filter(+Pattern, +Groups, -FilterCode)
+%  Generate bash while loop with [[ =~ ]] for capture group extraction
+%  Uses BASH_REMATCH array to extract matched groups
+generate_bash_capture_filter(Pattern, Groups, FilterCode) :-
+    length(Groups, NumGroups),
+
+    % Build the BASH_REMATCH extraction: "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}..."
+    findall(Index, between(1, NumGroups, Index), Indices),
+    findall(RematchRef,
+        (   member(I, Indices),
+            atom_concat('${BASH_REMATCH[', I, Tmp),
+            atom_concat(Tmp, ']}', RematchRef)
+        ),
+        RematchRefs),
+    atomic_list_concat(RematchRefs, ':', RematchOutput),
+
+    % Generate the while loop with regex matching
+    atomic_list_concat([
+        'while IFS= read -r line; do if [[ "$line" =~ ',
+        Pattern,
+        ' ]]; then echo "',
+        RematchOutput,
+        '"; fi; done'
+    ], '', FilterCode).
+
+%% generate_match_filters(+Constraints, +VarMap, +Args, -FilterCode)
+%  Generate bash filter code for match constraints
+generate_match_filters([], _, _, "") :- !.
+generate_match_filters([Match|Rest], VarMap, Args, FilterCode) :-
+    Match = match(_Var, Pattern, _Type, Groups),
+
+    % Convert pattern to string
+    (   atom(Pattern) ->
+        atom_string(Pattern, PatternStr)
+    ;   PatternStr = Pattern
+    ),
+
+    % Generate filter code based on whether there are capture groups
+    (   Groups = [] ->
+        % Boolean match - efficient grep filter
+        format(string(ThisFilter), 'grep ~q', [PatternStr])
+    ;   % With capture groups - use bash while loop with BASH_REMATCH
+        generate_bash_capture_filter(PatternStr, Groups, ThisFilter)
+    ),
+
+    % Recursively process remaining constraints
+    (   Rest = [] ->
+        FilterCode = ThisFilter
+    ;   generate_match_filters(Rest, VarMap, Args, RestFilters),
+        format(string(FilterCode), '~s | ~s', [ThisFilter, RestFilters])
+    ).
 
 %% build_var_map(+Args, +Index, -VarMap)
 %  Build mapping from Prolog variables to bash positional parameters
@@ -637,6 +1112,20 @@ translate_body_to_bash(Goal, VarMap, Bash) :-
     translate_expr(A, VarMap, BashA),
     translate_expr(B, VarMap, BashB),
     format(string(Bash), '[[ ~s -~w ~s ]]', [BashA, Op, BashB]).
+% Match predicate (regex pattern matching)
+translate_body_to_bash(match(Var, Pattern), VarMap, Bash) :- !,
+    translate_body_to_bash(match(Var, Pattern, auto, []), VarMap, Bash).
+translate_body_to_bash(match(Var, Pattern, _Type), VarMap, Bash) :- !,
+    translate_body_to_bash(match(Var, Pattern, auto, []), VarMap, Bash).
+translate_body_to_bash(match(Var, Pattern, _Type, _Groups), VarMap, Bash) :- !,
+    % For bash, use =~ operator for regex matching
+    translate_expr(Var, VarMap, BashVar),
+    % Escape pattern if needed (for now, use as-is)
+    (   atom(Pattern)
+    ->  atom_string(Pattern, PatternStr)
+    ;   PatternStr = Pattern
+    ),
+    format(string(Bash), '[[ ~s =~ ~s ]]', [BashVar, PatternStr]).
 translate_body_to_bash(Goal, VarMap, Bash) :-
     % Default: call to another predicate
     functor(Goal, Functor, _),

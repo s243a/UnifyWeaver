@@ -217,6 +217,71 @@ test(xmllint_extraction_without_namespace_fix) :-
 
     delete_file('test_xml_xmllint_no_fix.sh').
 
+test(sqlite_flattening) :-
+    DbFile = 'test_flatten.db',
+    ScriptFile = 'test_xml_sqlite.sh',
+    
+    % Skip if sqlite3 is not available
+    (   path_to_sqlite(SqlitePath)
+    ->  true
+    ;   format('Skipping sqlite_flattening test: sqlite3 not found~n', []),
+        true
+    ),
+    
+    (   nonvar(SqlitePath)
+    ->
+        % Compile source
+        once(xml_source:compile_source(test_xml_db/1, [
+            xml_file('tests/test_data/sample.rdf'),
+            tags(['pt:Tree']),
+            flatten(true),
+            sqlite_table('trees'),
+            database(DbFile)
+        ], [], BashCode)),
+
+        % Write script
+        setup_call_cleanup(
+            open(ScriptFile, write, Stream, [newline(posix)]),
+            write(Stream, BashCode),
+            close(Stream)
+        ),
+
+        % Execute script
+        setup_call_cleanup(
+            process_create(path(bash), [ScriptFile], [stdout(pipe(Out)), process(PID)]),
+            (
+                read_stream_to_codes(Out, _),
+                process_wait(PID, ExitStatus),
+                assertion(ExitStatus == exit(0))
+            ),
+            close(Out)
+        ),
+
+        % Check SQLite DB
+        setup_call_cleanup(
+            process_create(SqlitePath, [DbFile, "SELECT count(*) FROM trees;"], [stdout(pipe(DbOut)), process(DbPID)]),
+            (
+                read_string(DbOut, _, CountStr),
+                process_wait(DbPID, DbExit),
+                assertion(DbExit == exit(0)),
+                % Trim whitespace
+                split_string(CountStr, "", "\n\r\t ", [Trimmed]),
+                number_string(Count, Trimmed),
+                assertion(Count == 2)
+            ),
+            close(DbOut)
+        ),
+
+        % Clean up
+        (exists_file(ScriptFile) -> delete_file(ScriptFile) ; true),
+        (exists_file(DbFile) -> delete_file(DbFile) ; true)
+    ;   true
+    ).
+
+path_to_sqlite(Path) :-
+    catch(process_create(path(sqlite3), ['--version'], [stdout(null)]), _, fail),
+    Path = path(sqlite3).
+
 :- end_tests(xml_source).
 
 codes_to_records(Codes, Records) :-

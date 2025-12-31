@@ -513,6 +513,28 @@ template(dedup_wrapper, [
 ]).
 
 %% ============================================
+%% XML FIELD EXTRACTION TEMPLATES
+%% ============================================
+
+%% AWK field extraction template
+template(xml_awk_field_extraction, [
+"#!/bin/bash",
+"# {{pred}} - Field extraction from {{file}}",
+"",
+"{{pred}}() {",
+"    # Extract XML elements, then extract fields",
+"    awk -f scripts/utils/select_xml_elements.awk -v tag=\"{{tag}}\" {{file}} 2>/dev/null | \\",
+"    awk -f {{awk_script}}",
+"}",
+"",
+"# Invoke if executed directly",
+"if [[ \"${BASH_SOURCE[0]}\" == \"${0}\" ]]; then",
+"    {{pred}} \"$@\"",
+"fi",
+""
+]).
+
+%% ============================================
 %% FACTS TEMPLATES (non-recursive predicates)
 %% ============================================
 
@@ -542,7 +564,7 @@ template('facts/array_binary', [
 template('facts/lookup_unary', [
 "{{pred}}() {",
 "  local query=\"$1\"",
-"  for item in \"${{pred}}_data[@]}\"; do",
+"  for item in \"${{{pred}}_data[@]}\"; do",
 "    [[ \"$item\" == \"$query\" ]] && echo \"$item\"",
 "  done",
 "}",
@@ -552,7 +574,7 @@ template('facts/lookup_unary', [
 template('facts/lookup_binary', [
 "{{pred}}() {",
 "  local key=\"$1:$2\"",
-"  [[ -n \"${{pred}}_data[$key]}\" ]] && echo \"$key\"",
+"  [[ -n \"${{{pred}}_data[$key]}\" ]] && echo \"$key\"",
 "}",
 ""
 ]).
@@ -560,7 +582,7 @@ template('facts/lookup_binary', [
 % Stream functions
 template('facts/stream_unary', [
 "{{pred}}_stream() {",
-"  for item in \"${{pred}}_data[@]}\"; do",
+"  for item in \"${{{pred}}_data[@]}\"; do",
 "    echo \"$item\"",
 "  done",
 "}",
@@ -603,7 +625,7 @@ test_template_system :-
 
     % Test 3: Generate transitive closure
     writeln('Test 3 - Generate transitive closure:'),
-    generate_transitive_closure(ancestor, parent, Code3),
+    generate_transitive_closure(ancestor, parent, [], Code3),
     (   sub_string(Code3, _, _, _, 'ancestor_all')
     ->  writeln('PASS - contains ancestor_all function')
     ;   writeln('FAIL - missing expected function')

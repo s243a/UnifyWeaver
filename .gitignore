@@ -4,7 +4,7 @@
 context/
 
 # Docker environment (optional - keep local)
-docker/
+# docker/
 
 # Test environment (auto-generated)
 scripts/testing/test_env/
@@ -23,9 +23,31 @@ output/
 tests/output/
 test_output/
 test_input/
+output_*/
 
 # Deveopment directories
 patches/
+
+# Generated Go target artifacts (tests/demo outputs)
+/*.go
+/adult
+/alert
+/child
+/count
+/error_log
+/extract_*
+/max
+/min
+/avg
+/sum
+/working_age
+/test_child
+/test_parent
+/test_alert
+/parse_log
+/parsed
+/parsed_tab
+/test_alert
 
 # Python
 *.pyc
@@ -93,3 +115,35 @@ tmp/
 
 # Downloaded libraries (use setup scripts to install)
 lib/
+
+# ONNX models (download locally, too large for git)
+models/
+
+# LiteDB databases (test artifacts)
+*.db
+*.db-shm
+*.db-wal
+
+# .NET build artifacts
+**/bin/
+**/obj/
+
+# Numpy arrays
+*.npy
+
+# Rust build artifacts
+**/target/
+
+# Node.js
+**/node_modules/
+package-lock.json
+
+# Go binaries (in examples)
+examples/**/pearltrees_go_*
+
+# Shared libraries
+*.so
+training-data/
+
+# Sandbox folders
+sandbox/

@@ -1,61 +1,218 @@
 # UnifyWeaver
 
-A Prolog-to-Bash compiler that transforms declarative logic programs into efficient streaming bash scripts. UnifyWeaver specializes in compiling data relationships and queries into executable bash code with optimized handling of transitive closures and advanced recursion patterns.
+**A Prolog transpiler that turns logic programs into LINQ-style data pipelines.**
 
-**📚 [Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive tutorials, examples, and advanced usage
-**🎓 [Educational Materials](https://github.com/s243a/UnifyWeaver_Education)** - Learn UnifyWeaver with hands-on tutorials and examples
+One codebase → Bash streams, C# queries, Go binaries, SQL views, and more.
 
-## Features
+**📚 [Extended Documentation](docs/EXTENDED_README.md)** | **🎓 [Educational Materials](education/README.md)**
 
-### Core Compilation
-- **Stream-based processing** - Memory-efficient compilation using bash pipes and streams
-- **BFS optimization** - Transitive closures automatically optimized to breadth-first search
-- **Cycle detection** - Proper handling of cyclic graphs without infinite loops
-- **Template-based generation** - Clean separation between logic and bash code generation
-- **Duplicate prevention** - Efficient tracking ensures each result appears only once
-- **Process substitution** - Correct variable scoping in bash loops
+---
 
-### Advanced Recursion
-- **Tail recursion optimization** - Converts tail-recursive predicates to iterative bash loops
-- **Linear recursion** - Memoized compilation for 1+ independent recursive calls (fibonacci, factorial)
-- **Tree recursion** - Structural decomposition with recursive calls on parts (binary tree operations)
-- **Mutual recursion** - Handles predicates that call each other cyclically via SCC detection
-- **Constraint awareness** - Unique and ordering constraints optimize generated code
-- **Pattern detection** - Automatic classification of recursion patterns
+## Why UnifyWeaver?
 
-### C# Target Family (v0.1)
-- **Query Runtime (`target(csharp_query)`)** - Generates relational plans executed by a shared .NET engine with semi-naive fixpoint evaluation.
-- **External Compilation** - Robust `dotnet build` integration with dependency support and file locking prevention.
-- **LiteDB Integration** - Built-in support for NoSQL document storage.
-- **Mutual recursion support** - Even/odd style dependencies now run entirely inside the C# runtime.
-- **Arithmetic & constraints** - LINQ-based pipelines honour `is/2`, comparisons, and deduplication.
-- **Streaming codegen (`target(csharp_codegen)`)** - Emit standalone C# projects that mirror Bash streaming templates.
+Write your data relationships and queries once in Prolog, then compile to the target that fits your environment:
 
-**See [C# Compilation Guide](docs/DOTNET_COMPILATION.md) for details.**
+- **Shell scripts** for Unix pipelines and automation
+- **Native binaries** for portable, dependency-free deployment
+- **SQL views** for database integration
+- **.NET assemblies** for enterprise applications
+- **Multi-language pipelines** via cross-target glue
 
-### Data Source Plugin System (v0.1)
-- **5 Production-Ready Plugins** - CSV/TSV, AWK, Python, HTTP, JSON data sources
-- **Self-Registering Architecture** - Plugin-based system with automatic discovery
-- **Template Integration** - Seamless bash code generation with comprehensive error handling
-- **Enterprise Security** - Enhanced firewall with multi-service validation
-- **Real-World ETL** - Complete pipelines for data transformation and storage
-- **SQLite Integration** - Python source with automatic database operations
+UnifyWeaver handles the hard parts—recursion, transitive closures, cycle detection, deduplication—so your generated code is correct and efficient.
 
-### PowerShell Target Support (v0.1)
-- **Dual-Mode Compilation** - BaaS (Bash-as-a-Service) or pure PowerShell code generation
-- **Automatic Mode Detection** - Firewall-aware mode selection based on environment
-- **Cross-Platform Support** - Windows, Linux (WSL), macOS PowerShell Core
-- **Pure PowerShell** - Native implementations for CSV/JSON without external tools
-- **BaaS Mode** - Reuse bash templates via WSL/Git Bash for complex sources (AWK, etc.)
-- **Platform Compatibility** - Automatic detection and adaptation to available tools
+---
 
-### Control Plane
-- **Enhanced Firewall** - Multi-service security for external tools (python3, curl, wget, jq)
-- **Network Access Control** - Host pattern matching and access restrictions
-- **Import Restrictions** - Python module whitelisting and validation
-- **File Access Patterns** - Read/write permission management
-- **Preferences** - Guides implementation choices within policy boundaries
-- **Layered Configuration** - Supports global, rule-specific, and runtime overrides
+## Compilation Approaches
+
+UnifyWeaver supports multiple compilation strategies depending on the target and predicate complexity:
+
+| Approach | Description | Targets |
+|----------|-------------|---------|
+| **Stream/Procedural** | Direct template-based code generation with Unix pipes or LINQ iterators | Bash, Go, Rust, C# Stream, PowerShell |
+| **Fixed-Point (Query Engine)** | IR + runtime with semi-naive evaluation for complex recursion | C# Query Runtime |
+| **Generator-Based** | Lazy evaluation via Python generators with memoization | Python |
+| **Declarative Output** | SQL queries for external database execution | SQL |
+
+## Recursion Pattern Support
+
+Different targets support different recursion patterns. Choose based on your needs:
+
+| Pattern | Bash | C# Query | Go | Rust | Python | SQL | AWK | Prolog |
+|---------|:----:|:--------:|:--:|:----:|:------:|:---:|:---:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| **Tree Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Transitive Closure** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Mutual Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Aggregations** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+### Extended Targets
+
+Additional language targets for native compilation, FFI, and functional programming:
+
+| Pattern | LLVM | WASM | Haskell | TypeScript | VB.NET | F# | Java | Jython | Kotlin |
+|---------|:----:|:----:|:-------:|:----------:|:------:|:--:|:----:|:------:|:------:|
+| **Linear Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tail Recursion** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tree Recursion** | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Transitive Closure** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Mutual Recursion** | ✅ | — | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Aggregations** | — | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+**Key:**
+- ✅ Full support with optimizations (BFS, loops, memoization, semi-naive)
+- — Not supported or limited
+
+## Target Selection Guide
+
+| If you need... | Use |
+|----------------|-----|
+| Shell scripts for Unix pipelines | **Bash** |
+| Standalone binary, no runtime deps | **Go** or **Rust** |
+| Complex recursion in .NET apps | **C# Query Runtime** |
+| Database views and analytics | **SQL** |
+| Python ecosystem integration | **Python** |
+| Windows/.NET orchestration | **PowerShell** |
+| Lightweight text processing | **AWK** |
+| Prolog dialect transpilation | **Prolog** |
+
+---
+
+## Target Features
+
+### Bash Target (v0.2)
+Stream-based compilation to Unix shell scripts with pipes and process substitution.
+- BFS optimization for transitive closures
+- Cycle detection and duplicate prevention
+- Template-based code generation
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+
+**Docs:** [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
+
+### Go Target (v0.6)
+Standalone native binaries with no runtime dependencies.
+- JSON I/O with schemas and nested path extraction
+- Regex matching with capture groups
+- Embedded bbolt database storage
+- Parallel workers for high-throughput processing
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Binding System** — Map predicates to Go stdlib functions
+
+**Docs:** [Go Target Guide](docs/GO_TARGET.md) | [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
+
+### Rust Target (v0.2)
+Memory-safe native binaries via Cargo.
+- Serde JSON integration
+- Semantic crawling support
+- Full Cargo project scaffolding
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Binding System** — Map predicates to Rust stdlib and crates
+
+### C# Target Family (v0.2)
+Two compilation modes for different needs:
+- **Stream Target** (`csharp_codegen`) — LINQ pipelines for simple predicates
+- **Query Runtime** (`csharp_query`) — IR + semi-naive fixpoint for complex recursion
+
+Features: LiteDB integration, mutual recursion via SCC, arithmetic constraints.
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Binding System** — Map predicates to .NET APIs and LINQ
+
+**Docs:** [C# Compilation Guide](docs/DOTNET_COMPILATION.md) | [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
+
+### Python Target (v0.4)
+Generator-based streaming with Python ecosystem integration and multi-runtime support.
+- **Pipeline Mode** — Streaming JSONL I/O with typed object output
+- **Runtime Selection** — Auto-select CPython, IronPython, PyPy, or Jython based on context
+- **Pipeline Chaining** — Connect multiple predicates with `yield from` composition
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Cross-Runtime Pipelines** — Stage-based orchestration for mixed Python/C# workflows
+- **C# Hosting** — IronPython in-process or CPython subprocess with JSONL glue
+- **Binding System** — Map predicates to Python built-ins and libraries
+- Native XML via lxml, semantic runtime with SQLite and vector search
+
+**Docs:** [Python Target Guide](docs/PYTHON_TARGET.md) | [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
+
+### SQL Target (v0.3)
+Compiles predicates to SQL queries for database execution.
+- Recursive CTEs for hierarchical data
+- Window functions (RANK, ROW_NUMBER, LAG, LEAD)
+- All JOIN types, aggregations, subqueries
+- Works with SQLite, PostgreSQL, MySQL, SQL Server
+
+**Docs:** [SQL Target Design](SQL_TARGET_DESIGN.md)
+
+### PowerShell Target (v2.6)
+Windows automation and .NET orchestration with full object pipeline support.
+- Dual-mode: pure PowerShell or Bash-as-a-Service via WSL
+- Cross-platform (PowerShell 7+)
+- **Binding system**: 68+ bindings for cmdlets, .NET methods, Windows automation
+- **Auto-transpilation**: Rules like `sqrt(X, Y)` compile directly to `[Math]::Sqrt($X)`
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- **Object pipeline**: `ValueFromPipeline` parameters, `PSCustomObject` output
+- **Advanced joins**: Hash-based and pipelined N-way joins with O(n+m) complexity
+- **Firewall security**: Per-predicate mode control (pure/baas/auto)
+- Ideal for orchestrating .NET targets (C#, IronPython)
+
+**Docs:** [PowerShell Target Guide](docs/POWERSHELL_TARGET.md) | [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
+
+### AWK Target (v0.2)
+Lightweight, portable text processing.
+- Tail recursion to while loops
+- Aggregations (sum, count, max, min, avg)
+- Regex matching with capture groups
+- **Enhanced Chaining** — Fan-out, merge, conditional routing, and filtering stages
+- Runs on any POSIX system
+
+**Docs:** [Enhanced Chaining](docs/ENHANCED_PIPELINE_CHAINING.md)
+
+### Prolog Target
+Prolog-to-Prolog transpilation for dialect compatibility.
+- SWI-Prolog and GNU Prolog support
+- Native binary compilation via gplc
+- Executable script generation
+
+---
+
+## Cross-Target Glue System
+
+Compose predicates across multiple languages in unified pipelines:
+
+- **Shell Integration** — TSV/CSV/JSON I/O between AWK, Python, Bash
+- **.NET Bridges** — In-process C# ↔ PowerShell ↔ IronPython
+- **Python/C# Glue** — IronPython in-process hosting or CPython subprocess with JSONL
+- **Pipeline Chaining** — Multi-stage orchestration with automatic runtime grouping
+- **Native Orchestration** — Go/Rust compilation with parallel workers
+- **Network Communication** — HTTP servers/clients, TCP streaming
+- **Service Registry** — Distributed service routing
+
+**Docs:** [Cross-Target Glue Guide](docs/guides/cross-target-glue.md)
+
+---
+
+## Data Sources & ETL
+
+Built-in data source plugins for real-world pipelines:
+
+| Source | Description |
+|--------|-------------|
+| **CSV/TSV** | Auto-header detection, custom delimiters |
+| **JSON** | jq integration for filtering and transformation |
+| **HTTP** | REST APIs with caching and custom headers |
+| **Python** | Inline scripts, SQLite queries |
+| **AWK** | Pattern matching, field extraction |
+| **XML/YAML** | Via Python (lxml, PyYAML) |
+
+---
+
+## Control Plane
+
+Security and configuration for production deployments:
+
+- **Firewall** — Multi-service security for external tools
+- **Network ACLs** — Host pattern matching and restrictions
+- **Import Restrictions** — Python module whitelisting
+- **File Access Patterns** — Read/write permission management
+- **Preferences** — Layered configuration (global, rule-specific, runtime)
 
 ## Installation
 
@@ -160,7 +317,7 @@ descendant(X, Y)  % Reverse of ancestor
 sibling(X, Y)     % Same parent, different children
 ```
 
-### Data Source Integration (v0.1)
+### Data Source Integration
 
 ```prolog
 % CSV/TSV data processing
@@ -189,51 +346,41 @@ sibling(X, Y)     % Same parent, different children
     jq_filter('.users[] | {name, email} | @tsv'),
     json_file('data.json')
 ]).
-
-% XML processing with Python
-:- data_source_driver(python).
-:- data_source_work_fn(sum_prices).
 ```
 
-### Complete ETL Pipeline Demo
+**See [Extended Documentation](docs/EXTENDED_README.md) for complete examples.**
 
-```bash
-cd scripts/testing/test_env5
-swipl -g main -t halt examples/pipeline_demo.pl
+### Python Pipeline Example
+
+```prolog
+% Compile predicates to a chained Python pipeline
+compile_pipeline(
+    [parse_user/2, filter_adult/2, format_output/3],
+    [runtime(cpython), pipeline_name(user_pipeline)],
+    PythonCode
+).
 ```
 
-**See [Extended Documentation](docs/EXTENDED_README.md) for complete examples including:**
-- Advanced recursion patterns (tail, linear, tree, mutual)
-- Graph reachability with cycles
-- Recursive computations (factorial, fibonacci)
-- Complete ETL pipelines with multiple sources
+Generated Python uses efficient generator chaining:
+```python
+def user_pipeline(input_stream):
+    """Chained pipeline: [parse_user, filter_adult, format_output]"""
+    yield from format_output(filter_adult(parse_user(input_stream)))
+```
 
-## What's Supported
+For cross-runtime workflows (Python + C#):
+```prolog
+compile_pipeline(
+    [python:extract/1, csharp:validate/1, python:transform/1],
+    [pipeline_name(data_processor)],
+    Code
+).
+```
 
-### ✅ Recursion Patterns
-
-- **Basic Recursion** - Transitive closures with BFS optimization
-- **Tail Recursion** - Converted to iterative loops
-- **Linear Recursion** - Memoization for fibonacci, factorial, etc.
-- **Tree Recursion** - Structural processing of binary trees
-- **Mutual Recursion** - Predicates calling each other with shared memoization
-
-### ✅ Data Sources (v0.1)
-
-- **CSV/TSV** - Auto-header detection, custom delimiters
-- **AWK** - Pattern matching, field extraction, text processing pipelines
-- **JSON** - jq integration for filtering and transformation
-- **HTTP** - REST APIs with caching and custom headers
-- **Python** - Inline scripts and SQLite queries
-- **XML** - XML processing via Python
-
-### ⚠️ Current Limitations
+### Current Limitations
 
 - Divide-and-conquer patterns (quicksort, mergesort) not yet supported
-- Requires Bash 4.0+ for associative arrays
 - Tree recursion uses list representation only
-
-**See [Extended Documentation](docs/EXTENDED_README.md) for complete details and troubleshooting.**
 
 ## Testing
 
@@ -254,13 +401,15 @@ In SWI-Prolog:
 
 ## Documentation
 
-- **[🎓 Educational Materials](https://github.com/s243a/UnifyWeaver_Education)** - Learn UnifyWeaver with comprehensive tutorials
-- **[Extended Documentation](docs/EXTENDED_README.md)** - Comprehensive guide with tutorials and examples
-- [TESTING_GUIDE.md](docs/TESTING_GUIDE.md) - Testing infrastructure
-- [ADVANCED_RECURSION.md](docs/ADVANCED_RECURSION.md) - Recursion patterns deep dive
-- [POWERSHELL_TARGET.md](docs/POWERSHELL_TARGET.md) - PowerShell compilation guide
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
-- [docs/](docs/) - Full documentation index
+| Resource | Description |
+|----------|-------------|
+| **[Educational Materials](education/README.md)** | 13-book series covering all targets and patterns |
+| [Extended Documentation](docs/EXTENDED_README.md) | Tutorials and advanced examples |
+| [Architecture](docs/ARCHITECTURE.md) | System design and compilation pipeline |
+| [Enhanced Pipeline Chaining](docs/ENHANCED_PIPELINE_CHAINING.md) | Fan-out, merge, routing, and filter stages |
+| [Cross-Target Glue](docs/guides/cross-target-glue.md) | Multi-language pipeline composition |
+| [Advanced Recursion](docs/ADVANCED_RECURSION.md) | Recursion patterns deep dive |
+| [Testing Guide](docs/TESTING_GUIDE.md) | Testing infrastructure |
 
 ## Contributing
 
@@ -289,9 +438,10 @@ dual licensed as above, without any additional terms or conditions.
 
 ## Acknowledgments
 
-Developed as an exploration of compiling declarative logic to imperative scripts while preserving correctness and efficiency. Special focus on making Prolog's power accessible in bash environments.
+Developed as an exploration of compiling declarative logic to efficient executable code across multiple target languages—making Prolog's power accessible everywhere from shell scripts to native binaries to database queries.
 
 **Contributors:**
 - John William Creighton (@s243a) - Core development
+- GPT-5/5.1-Codex (via OpenAI) - Fixed-point architecture, query engine, generator approaches
 - Gemini (via gemini-cli) - Constraint awareness features
-- Claude (via Claude Code) - Advanced recursion system, test infrastructure
+- Claude (via Claude Code) - Advanced recursion system, test infrastructure, educational materials

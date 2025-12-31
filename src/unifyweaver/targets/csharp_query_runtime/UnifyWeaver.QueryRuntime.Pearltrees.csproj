@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="UnifyWeaver.QueryRuntime.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="PtHarness.cs" />
+    <Compile Include="PtCrawler.cs" />
+    <Compile Include="PtEntities.cs" />
+    <Compile Include="PtEntityExtensions.cs" />
+    <Compile Include="PtImporter.cs" />
+    <Compile Include="PtMapper.cs" />
+    <Compile Include="PtSearcher.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('..\\..\\..\\..\\lib\\LiteDB.dll')">
+    <Reference Include="LiteDB">
+      <HintPath>..\\..\\..\\..\\lib\\LiteDB.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('..\\..\\..\\..\\lib\\LiteDB.dll')">
+    <PackageReference Include="LiteDB" Version="5.0.21" />
+  </ItemGroup>
+
+</Project>

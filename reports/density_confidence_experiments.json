@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Calibration",
+    "metrics": {
+      "ece": 0.0035347787508197993,
+      "correlation": 0.0005620458561745711,
+      "num_samples": 414736
+    }
+  },
+  {
+    "name": "Ranking",
+    "metrics": {
+      "baseline_mrr": 0.02506815492362171,
+      "best_mrr": 0.02645779625838198,
+      "improvement": 0.001389641334760272,
+      "best_config": "w=1.0_t=0.5"
+    }
+  },
+  {
+    "name": "Sparsity",
+    "metrics": {
+      "sparse_baseline_acc": 0,
+      "sparse_proposed_acc": 0,
+      "sparse_improvement": 0,
+      "dense_baseline_acc": 0.0015527950310559005,
+      "dense_proposed_acc": 0.003105590062111801,
+      "dense_improvement": 0.0015527950310559005,
+      "num_sparse": 0,
+      "num_dense": 644
+    }
+  }
+]

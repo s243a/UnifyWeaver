@@ -231,6 +231,106 @@ See `legacy/conemu_logiforge.bat` for the original LogiForge ConEmu integration 
 
 ---
 
+## LDA Training Scripts
+
+Scripts for training and managing the LDA semantic projection system used by agents to find relevant playbook examples.
+
+### `train_lda_projection.py`
+**Train a W matrix from Q-A pairs**
+
+Computes the projection matrix that maps query embeddings to answer space for improved semantic search.
+
+```bash
+python3 scripts/train_lda_projection.py \
+    --input playbooks/lda-training-data/raw/qa_pairs_v1.json \
+    --model all-MiniLM-L6-v2 \
+    --output playbooks/lda-training-data/trained/all-MiniLM-L6-v2/W_matrix.npy
+```
+
+### `validate_lda_projection.py`
+**Validate projection with novel queries**
+
+Tests the trained W matrix with queries not in the training data, comparing projected vs direct cosine similarity.
+
+```bash
+python3 scripts/validate_lda_projection.py
+```
+
+### `migrate_to_lda_db.py`
+**Database migration and batch training**
+
+Manages Q-A training data in a SQLite database with batch tracking.
+
+**Single file import:**
+```bash
+python3 scripts/migrate_to_lda_db.py \
+    --input playbooks/lda-training-data/raw/qa_pairs_v1.json \
+    --db playbooks/lda-training-data/lda.db
+```
+
+**Batch operations:**
+```bash
+# Scan for new/modified JSON files
+python3 scripts/migrate_to_lda_db.py --scan --input playbooks/lda-training-data/raw/
+
+# Process all pending batches
+python3 scripts/migrate_to_lda_db.py --process-pending
+
+# Retry failed batches
+python3 scripts/migrate_to_lda_db.py --retry-failed
+
+# List batch status
+python3 scripts/migrate_to_lda_db.py --list-batches
+```
+
+**Features:**
+- SHA256 file hash detection (skips unchanged files)
+- Status tracking: pending → importing → embedding → training → completed
+- Failed batch retry with error logging
+- Full status history with timestamps
+
+**Requirements:**
+- `sentence-transformers` package: `pip install sentence-transformers`
+- NumPy
+
+See `docs/proposals/LDA_DATABASE_SCHEMA.md` for database schema details.
+
+### `train_multi_head_projection.py`
+**Train multi-head projection with per-cluster routing**
+
+Creates a multi-head projection where each cluster acts as an "attention head". Queries are routed to heads based on similarity to cluster centroids using softmax.
+
+```bash
+python3 scripts/train_multi_head_projection.py \
+    --db playbooks/lda-training-data/lda.db \
+    --model all-MiniLM-L6-v2 \
+    --temperature 0.1 \
+    --validate
+```
+
+**Key parameters:**
+- `--temperature`: Softmax temperature for routing (default: 1.0, recommended: 0.1)
+  - Lower = sharper routing (best match dominates)
+  - Higher = softer routing (more blending between heads)
+
+### `validate_multi_head.py`
+**Validate multi-head projection with novel queries**
+
+Compares multi-head projection against direct cosine similarity on queries not in training data.
+
+```bash
+python3 scripts/validate_multi_head.py \
+    --db playbooks/lda-training-data/lda.db \
+    --mh-id 1
+```
+
+**Results (temp=0.1):**
+- Multi-head: 76.7% Recall@1
+- Direct: 70.0% Recall@1
+- Improvement: +6.7%
+
+---
+
 ## Legacy Scripts (LogiForge)
 
 The following scripts are from the LogiForge project and kept in `legacy/` for reference:

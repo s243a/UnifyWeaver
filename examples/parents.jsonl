@@ -1,0 +1,4 @@
+{"relation": "parent", "arg0": "john", "arg1": "mary"}
+{"relation": "parent", "arg0": "mary", "arg1": "sue"}
+{"relation": "parent", "arg0": "sue", "arg1": "alice"}
+{"relation": "parent", "arg0": "john", "arg1": "bob"}

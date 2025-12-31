@@ -24,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Test output directory
-TEST_OUTPUT_DIR="/tmp/unifyweaver_csharp_tests_$$"
+TEST_OUTPUT_DIR="$PROJECT_ROOT/tmp/unifyweaver_csharp_tests_$$"
 mkdir -p "$TEST_OUTPUT_DIR"
 
 # Cleanup on exit
@@ -131,12 +131,12 @@ EOF
 test_predicate_compilation() {
     local pred="$1"
     local arity="$2"
-    local target="${3:-csharp_stream}"
+    local target="${3:-csharp_native}"
     local test_name="$4"
     local expected_output="$5"
 
     local prolog_query="
-        use_module('$PROJECT_ROOT/src/unifyweaver/targets/csharp_stream_target'),
+        use_module('$PROJECT_ROOT/src/unifyweaver/targets/csharp_native_target'),
         compile_predicate_to_csharp($pred/$arity, [target($target)], Code),
         write(Code)
     "
@@ -170,7 +170,7 @@ EOF
 # Compile using Prolog
 PROLOG_TEST_1="
     ['$TEST_OUTPUT_DIR/test_facts.pl'],
-    use_module('$PROJECT_ROOT/src/unifyweaver/targets/csharp_stream_target'),
+    use_module('$PROJECT_ROOT/src/unifyweaver/targets/csharp_native_target'),
     compile_predicate_to_csharp(link/2, [], Code),
     write(Code)
 "
@@ -198,7 +198,7 @@ EOF
 
 PROLOG_TEST_2="
     ['$TEST_OUTPUT_DIR/test_join.pl'],
-    use_module('$PROJECT_ROOT/src/unifyweaver/targets/csharp_stream_target'),
+    use_module('$PROJECT_ROOT/src/unifyweaver/targets/csharp_native_target'),
     compile_predicate_to_csharp(grandparent/2, [], Code),
     write(Code)
 "
@@ -256,9 +256,9 @@ print_header "Test 4: Stream Target - Error Handling for Recursion"
 # This should fail gracefully with a helpful error message
 PROLOG_TEST_4="
     ['$TEST_OUTPUT_DIR/test_recursive.pl'],
-    use_module('$PROJECT_ROOT/src/unifyweaver/targets/csharp_stream_target'),
-    compile_predicate_to_csharp(path/2, [target(csharp_stream)], Code),
-    write(Code)
+    use_module('$PROJECT_ROOT/src/unifyweaver/targets/csharp_native_target'),
+    compile_predicate_to_csharp(path/2, [mode(procedural)], Code),
+        write(Code)
 "
 
 if swipl -q -g "$PROLOG_TEST_4" -t halt > /dev/null 2>&1; then

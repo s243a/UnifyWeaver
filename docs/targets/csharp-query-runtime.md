@@ -2,13 +2,16 @@
 
 This document describes the Query IR approach for the managed C# backend. The goal is to reuse UnifyWeaver’s clause analysis while executing via a reusable runtime that interprets relational plans using LINQ.
 
+Roadmap: `docs/targets/csharp-query-runtime-roadmap.md`
+
 ## Status (v0.1)
 - **Non-recursive clauses** – fact scans, joins, selections, projections, and unions translate to query nodes executed via LINQ.
 - **Arithmetic & comparisons** – `is/2`, inequality operators, and `dif/2` become arithmetic or selection nodes with runtime evaluation.
 - **Recursive predicates** – semi-naive fixpoint driver supports single-predicate recursion (e.g., reachability, factorial).
 - **Mutual recursion** – strongly connected predicate groups emit `mutual_fixpoint` plans composed of `cross_ref` nodes, enabling even/odd style dependencies.
+- **Negation (safe/stratified)** – `\+/1` compiles to `NegationNode` and supports stratified negation over derived predicates via program definition materialisation.
 - **Deduplication** – per-predicate `HashSet<object[]>` mirrors Bash distinct semantics.
-- **Diagnostics** – generated modules build a `QueryPlan` tree that is easy to inspect and trace during execution.
+- **Diagnostics** – `QueryPlanExplainer.Explain(plan)` and `QueryExecutionTrace` provide plan inspection and basic per-node execution stats.
 
 ## Objectives
 - Declarative IR: Represent clause bodies as structured query plans instead of hard-coded C# statements.
@@ -56,11 +59,51 @@ The current implementation emits static C# builders that assemble the plan via n
   - Iterate until every predicate’s delta is empty, updating totals and dedup sets for each member.
 - Diagnostics: log iterations, show clause contributions, and surface firewall policy violations.
 
+## Negation and Stratification
+- Safe negation only: every variable referenced inside a negated predicate must be bound earlier in the clause body (Datalog-style safety).
+- Non-stratified programs are rejected: a predicate cannot (directly or indirectly) depend on itself through a negated edge.
+- Stratified derived predicates are materialised before use: the query planner emits a `ProgramNode` that evaluates lower-strata `define_relation` / `define_mutual_fixpoint` definitions first, then evaluates the final query body (so `\+` can consult derived results).
+
 ## Current Limitations
 - Tail-recursive optimisation and memoised aggregates still fall back to iterative evaluation without specialised nodes.
-- Ordered outputs (`sort`, stable dedup) are not yet implemented; results follow hash-set semantics.
+- Ordering/paging are opt-in via query plan modifiers (`order_by/1`, `order_by/2`, `limit/1`, `offset/1`); default results follow hash-set semantics.
+- Stable ordered deduplication is not yet implemented.
 - Plans currently materialise relation facts inside the generated module; external fact providers will arrive in later releases.
+- Negation does not support existential variables (unbound variables inside a negated literal); use explicit joins/aggregation instead.
 - Runtime assumes in-process execution (`dotnet run`); distributed execution and persistence hooks remain future work.
+
+## Optional Integrations (No Hard Dependencies)
+The core query runtime is intended to stay dependency-free (no LiteDB, ONNX, etc.). Optional integrations live in separate C# files/projects so consumers only take on extra dependencies when they opt in.
+
+- Core library project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Core.csproj`
+  - Includes: `QueryRuntime.cs`, `IEmbeddingProvider.cs`
+  - External deps: none
+- Pearltrees + LiteDB project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Pearltrees.csproj`
+  - Includes: `Pt*.cs` + `PtHarness.cs`
+  - External deps: LiteDB (uses `lib/LiteDB.dll` when present; otherwise falls back to NuGet `LiteDB` package)
+- ONNX embeddings: `src/unifyweaver/targets/csharp_query_runtime/OnnxEmbeddingProvider.cs`
+  - Project: `src/unifyweaver/targets/csharp_query_runtime/UnifyWeaver.QueryRuntime.Onnx.csproj`
+  - External deps: `Microsoft.ML.OnnxRuntime`
+
+## Smoke Testing (Runtime Execution)
+The Prolog test suite can generate per-plan C# console projects in codegen-only mode, and the PowerShell runner can then build/run them with dotnet and verify outputs.
+
+- Runner (recommended): `pwsh -NoProfile -File scripts/testing/run_csharp_query_runtime_smoke.ps1`
+  - Options: `-KeepArtifacts`, `-OutputDir tmp/csharp_query_smoke`, `-SkipCodegen`
+- Environment variables (used by the test harness):
+  - `SKIP_CSHARP_EXECUTION=1` (generate C# projects but do not execute via Prolog)
+  - `CSHARP_QUERY_OUTPUT_DIR=...` (where generated projects are written)
+  - `CSHARP_QUERY_KEEP_ARTIFACTS=1` (keep generated projects instead of auto-deleting)
+
+## Diagnostics
+- Plan inspection: `Console.WriteLine(QueryPlanExplainer.Explain(plan));`
+- Execution stats (rows/time per node, fixpoint iteration counts, plus cache/index and join-strategy summaries):
+  - `var trace = new QueryExecutionTrace();`
+  - `foreach (var row in executor.Execute(plan, parameters, trace)) { ... }`
+  - `Console.WriteLine(trace.ToString());`
+- Prepared-style cache reuse (useful for repeated parameterized calls):
+  - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));`
+  - `executor.ClearCaches();` (if underlying facts change)
 
 ## Configuration
 - New preference atom: `target(csharp_query)`.
@@ -68,6 +111,11 @@ The current implementation emits static C# builders that assemble the plan via n
   - `fixpoint(strategy(semi_naive|naive))`
   - `distinct(strategy(hash|ordered|none))`
   - `materialize(full|lazy)` to control when results are generated.
+- Query modifiers:
+  - `order_by(Index)`, `order_by(Index, asc|desc)`, `order_by([(Index, asc|desc), ...])` (0-based output column indices)
+  - `limit(N)`, `offset(N)`
+- Aggregates:
+  - `count`, `sum(Var)`, `avg(Var)`, `min(Var)`, `max(Var)`, `set(Var)`, `bag(Var)` via `aggregate_all/3,4` and `aggregate/4`
 - The generic `target(csharp)` option will initially alias `csharp_query` for recursion-heavy workloads while allowing smart fallback (see comparison doc).
 
 ## Security & Isolation

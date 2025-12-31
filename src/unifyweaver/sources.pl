@@ -24,7 +24,10 @@ source(Type, Name, Options0) :-
     validate_source_options(Type, Options, Arity),
     % Register this as a dynamic source
     register_dynamic_source(Name/Arity, Type, Options),
-    format('Defined source: ~w/~w using ~w~n', [Name, Arity, Type]).
+    (   getenv('UNIFYWEAVER_LOG_SOURCES', Val), Val \= '', Val \= '0'
+    ->  format('Defined source: ~w/~w using ~w~n', [Name, Arity, Type])
+    ;   true
+    ).
 
 %% determine_arity(+Options, -Arity)
 %  Determine predicate arity from options
@@ -73,7 +76,27 @@ augment_source_options(Type, Options, Augmented) :-
     ->  augment_csv_options(Options, Augmented)
     ;   Type = json
     ->  augment_json_options(Options, Augmented)
+    ;   Type = yaml
+    ->  augment_yaml_options(Options, Augmented)
+    ;   Type = sqlite
+    ->  augment_sqlite_options(Options, Augmented)
+    ;   Type = xml
+    ->  augment_xml_options(Options, Augmented)
     ;   Augmented = Options
+    ).
+
+augment_sqlite_options(Options0, Options) :-
+    (   option(sqlite_file(File), Options0)
+    ->  absolute_file_name(File, Abs),
+        ensure_option(input(file(Abs)), Options0, Options)
+    ;   Options = Options0
+    ).
+
+augment_yaml_options(Options0, Options) :-
+    (   option(yaml_file(File), Options0)
+    ->  absolute_file_name(File, Abs),
+        ensure_option(input(file(Abs)), Options0, Options)
+    ;   Options = Options0
     ).
 
 augment_csv_options(Options0, Options) :-
@@ -127,6 +150,14 @@ augment_json_options(Options0, Options) :-
         )
     ),
     Options = Options9.
+
+augment_xml_options(Options0, Options) :-
+    % XML sources with fields() should have arity 1 (return single list)
+    (   member(fields(_), Options0),
+        \+ member(arity(_), Options0)
+    ->  ensure_option(arity(1), Options0, Options)
+    ;   Options = Options0
+    ).
 
 ensure_option(Term, Options0, Options) :-
     functor(Term, Name, Arity),

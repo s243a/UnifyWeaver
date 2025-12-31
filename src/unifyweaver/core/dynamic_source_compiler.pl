@@ -94,8 +94,10 @@ register_dynamic_source(Pred/Arity, SourceSpec, Options) :-
     extract_io_metadata(Pred/Arity, MergedConfig, Metadata),
     retractall(dynamic_source_metadata(Pred/Arity, _)),
     assertz(dynamic_source_metadata(Pred/Arity, Metadata)),
-
-    format('Registered dynamic source: ~w/~w using ~w~n', [Pred, Arity, Type]).
+    (   getenv('UNIFYWEAVER_LOG_SOURCES', Val), Val \= '', Val \= '0'
+    ->  format('Registered dynamic source: ~w/~w using ~w~n', [Pred, Arity, Type])
+    ;   true
+    ).
 
 %% is_dynamic_source(+Pred/Arity)
 %  Check if predicate is registered as dynamic source
@@ -206,12 +208,13 @@ test_dynamic_source_compiler :-
 %  Normalizes commonly-used IO descriptors so downstream targets
 %  understand how records are streamed into the predicate.
 extract_io_metadata(Pred/Arity, Options, Meta) :-
-    option(record_separator(RawRecordSep), Options, nul),
+    option(record_format(RawFormat), Options, text),
+    normalize_record_format(RawFormat, RecordFormat),
+    default_record_separator(RecordFormat, RecordSepDefault),
+    option(record_separator(RawRecordSep), Options, RecordSepDefault),
     normalize_record_separator(RawRecordSep, RecordSep),
     option(field_separator(RawFieldSep), Options, ':'),
     normalize_field_separator(RawFieldSep, FieldSep),
-    option(record_format(RawFormat), Options, text),
-    normalize_record_format(RawFormat, RecordFormat),
     option(input(RawInput), Options, stdin),
     normalize_input(RawInput, Input),
     option(skip_lines(SkipRows), Options, 0),
@@ -230,6 +233,24 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
     normalize_treat_array(RecordFormat, TreatArrayRaw, TreatArray),
     option(null_policy(NullPolicyRaw), Options, allow),
     normalize_null_policy(NullPolicyRaw, NullPolicy, NullDefault),
+    (   option(pearltrees(true), Options)
+    ->  NamespaceMap = [
+            'http://www.pearltrees.com/rdf/0.1/#'-'pt',
+            'http://purl.org/dc/elements/1.1/'-'dcterms'
+        ],
+        option(treat_cdata(TreatCdata0), Options, true),
+        normalize_boolean(TreatCdata0, TreatCdata),
+        Pearltrees = true
+    ;   option(namespace_prefixes(NamespaceRaw), Options)
+    ->  normalize_namespace_map(NamespaceRaw, NamespaceMap),
+        option(treat_cdata(TreatCdata0), Options, false),
+        normalize_boolean(TreatCdata0, TreatCdata),
+        Pearltrees = false
+    ;   NamespaceMap = [],
+        option(treat_cdata(TreatCdata0), Options, false),
+        normalize_boolean(TreatCdata0, TreatCdata),
+        Pearltrees = false
+    ),
     (   option(schema(SchemaRaw), Options)
     ->  schema_record_name(Pred/Arity, Options, RecordType),
         normalize_schema_structure(SchemaRaw, RecordType, SchemaFields, SchemaRecords),
@@ -260,13 +281,21 @@ extract_io_metadata(Pred/Arity, Options, Meta) :-
         return_object:ReturnObject,
         schema_fields:SchemaFields,
         schema_records:SchemaRecords,
-        schema_type:RecordType
+        schema_type:RecordType,
+        namespace_prefixes:NamespaceMap,
+        treat_cdata:TreatCdata,
+        pearltrees:Pearltrees
     }.
 
 normalize_record_separator(line_feed, line_feed) :- !.
 normalize_record_separator(nul, nul) :- !.
 normalize_record_separator(json, json) :- !.
 normalize_record_separator(Atom, Atom).
+
+default_record_separator(json, json).
+default_record_separator(jsonl, line_feed).
+default_record_separator(xml, nul).
+default_record_separator(_, nul).
 
 normalize_field_separator(none, none) :- !.
 normalize_field_separator(comma, ',') :- !.
@@ -276,6 +305,8 @@ normalize_field_separator(Value, Value).
 normalize_record_format(text, text_line) :- !.
 normalize_record_format(json, json) :- !.
 normalize_record_format(jsonl, jsonl) :- !.
+normalize_record_format(xml, xml) :- !.
+normalize_record_format(xml_fragment, xml) :- !.
 normalize_record_format(Format, Format).
 
 normalize_input(stdin, stdin) :- !.
@@ -329,6 +360,13 @@ normalize_null_policy(default(Value), default, DefaultAtom) :-
     ;   term_to_atom(Value, DefaultAtom)
     ).
 normalize_null_policy(Value, Value, none).
+
+normalize_namespace_map([], []) :- !.
+normalize_namespace_map([Uri-Prefix|Rest], [Uri-Prefix|RestNorm]) :-
+    atom(Uri), atom(Prefix),
+    normalize_namespace_map(Rest, RestNorm).
+normalize_namespace_map(Other, []) :-
+    format('Warning: invalid namespace_prefixes option: ~w~n', [Other]).
 
 normalize_columns([], [], []) :- !.
 normalize_columns(Columns0, Columns, Selectors) :-

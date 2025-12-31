@@ -19,10 +19,13 @@ This document provides comprehensive documentation for UnifyWeaver, including de
 6. [Firewall and Security](#firewall-and-security)
 7. [PowerShell Target](#powershell-target)
 8. [C# Target Family](#c-target-family)
-9. [Complete Examples](#complete-examples)
-10. [Architecture Deep Dive](#architecture-deep-dive)
-11. [Testing Guide](#testing-guide)
-12. [Troubleshooting](#troubleshooting)
+9. [JVM Targets](#jvm-targets)
+10. [Native Targets (C/C++)](#native-targets-cc)
+11. [Client-Server Architecture](#client-server-architecture)
+12. [Complete Examples](#complete-examples)
+13. [Architecture Deep Dive](#architecture-deep-dive)
+14. [Testing Guide](#testing-guide)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -584,6 +587,35 @@ extract_names() {
 }
 ```
 
+### YAML Plugin
+
+Process YAML data using Python (PyYAML):
+
+**Read YAML files with filters:**
+```prolog
+:- source(yaml, config_users, [
+    yaml_filter('data["users"]'),
+    yaml_file('config.yaml')
+]).
+```
+
+**Process YAML from stdin:**
+```prolog
+:- source(yaml, stream_data, [
+    yaml_stdin(true)
+]).
+```
+
+**Generated bash:**
+```bash
+config_users() {
+    python3 << 'PYTHON'
+    import yaml
+    # ... (embedded python script)
+PYTHON
+}
+```
+
 ### XML Plugin
 
 Process XML data using Python:
@@ -684,6 +716,37 @@ conn = sqlite3.connect("app.db")
 # ... (full script)
 PYTHON_EOF
 }
+```
+
+### SQLite Plugin (Native)
+
+Query SQLite databases directly using the `sqlite3` command-line tool (faster than Python wrapper for simple queries):
+
+```prolog
+:- source(sqlite, high_value_orders, [
+    sqlite_file('data/orders.db'),
+    query('SELECT id, total FROM orders WHERE total > 1000'),
+    output_format(tsv)
+]).
+```
+
+**Generated bash:**
+```bash
+high_value_orders() {
+    sqlite3 -separator '	' -noheader "data/orders.db" "SELECT id, total FROM orders WHERE total > 1000"
+}
+```
+
+**Safe Parameter Binding (v1.1):**
+
+To prevent SQL injection when using dynamic inputs, use `parameters/1`. This automatically switches to a safer Python-based execution mode:
+
+```prolog
+:- source(sqlite, user_by_id, [
+    sqlite_file('data/users.db'),
+    query('SELECT name, email FROM users WHERE id = ?'),
+    parameters(['$1'])  % Binds first script argument to ?
+]).
 ```
 
 ### C# Plugin (LiteDB Integration)
@@ -961,12 +1024,234 @@ UnifyWeaver provides a robust C# compilation system that integrates seamlessly w
 - **Pre-Compilation**: Fallback to `Add-Type` for simple scripts.
 - **File Locking Solution**: Unique build directories prevent DLL locking issues.
 - **LiteDB Support**: Built-in integration for NoSQL document storage.
+- **Dynamic Sources (CSV/JSON/XML)**:
+  - `DelimitedTextReader` for CSV/TSV (NUL- or LF-delimited)
+  - `JsonStreamReader` for JSON/JSONL with schema/type hints and null policy
+  - `XmlStreamReader` for NUL- or LF-delimited XML fragments; matches both prefixes and fully-qualified names and projects elements/attributes into a dictionary per record.
 
 **See [DOTNET_COMPILATION.md](DOTNET_COMPILATION.md) for the complete guide.**
 
 ---
 
+## JVM Targets
 
+UnifyWeaver supports multiple JVM-based languages with full transitive closure and fact export:
+
+### Supported Languages
+
+| Target | Transitive Closure | Fact Export | Key Features |
+|--------|-------------------|-------------|--------------|
+| Java | ✅ | ✅ | `HashSet`, `ArrayList`, Streams |
+| Kotlin | ✅ | ✅ | `sequence { yield() }`, null safety |
+| Scala | ✅ | ✅ | `LazyList`, pattern matching |
+| Clojure | ✅ | ✅ | `loop/recur`, lazy sequences |
+| Jython | ✅ | ✅ | Python 2.7 on JVM |
+
+### Quick Start
+
+```prolog
+% Transitive closure (ancestor query)
+?- compile_recursive(ancestor/2, [target(java)], Code).
+?- compile_recursive(ancestor/2, [target(kotlin)], Code).
+?- compile_recursive(ancestor/2, [target(scala)], Code).
+
+% Export facts as static data
+?- compile_facts_to_java(parent, 2, Code).
+?- compile_facts_to_kotlin(parent, 2, Code).
+```
+
+### Implementation Details
+
+All JVM targets use BFS (Breadth-First Search) for transitive closure:
+- **Java**: `HashSet<String>` for visited, `ArrayDeque<String>` for queue
+- **Kotlin**: `mutableSetOf()`, `ArrayDeque()`
+- **Scala**: `mutable.Set`, `mutable.Queue`
+- **Clojure**: `loop/recur` with persistent data structures
+
+**See the [education submodule](education/) for detailed tutorials per language.**
+
+---
+
+## Native Targets (C/C++)
+
+UnifyWeaver compiles Prolog to native C and C++ with full transitive closure support:
+
+### Features
+
+| Target | Transitive Closure | Fact Export | Key Features |
+|--------|-------------------|-------------|--------------|
+| C | ✅ | ✅ | Manual memory, adjacency list |
+| C++ | ✅ | ✅ | STL containers, `std::optional` |
+
+### Quick Start
+
+```prolog
+% Transitive closure
+?- compile_recursive(ancestor/2, [target(c)], Code).
+?- compile_recursive(ancestor/2, [target(cpp)], Code).
+
+% Export facts
+?- compile_facts_to_c(parent, 2, Code).
+?- compile_facts_to_cpp(parent, 2, Code).
+```
+
+### C Implementation
+
+```c
+/* BFS with manual adjacency list */
+typedef struct Edge { char* to; struct Edge* next; } Edge;
+typedef struct { char* from; Edge* edges; } Node;
+
+static void find_all(const char* start) {
+    char* queue[MAX_NODES];
+    int visited[MAX_NODES] = {0};
+    // BFS implementation...
+}
+```
+
+### C++ Implementation
+
+```cpp
+class AncestorQuery {
+    std::unordered_map<std::string, std::vector<std::string>> baseRelation;
+public:
+    std::vector<std::string> findAll(const std::string& start) {
+        std::unordered_set<std::string> visited;
+        std::queue<std::string> queue;
+        // BFS implementation...
+    }
+};
+```
+
+---
+
+## Client-Server Architecture
+
+UnifyWeaver v0.9 introduces a comprehensive client-server architecture for building production-grade distributed services. The architecture spans 8 phases, from simple in-process services to fully distributed systems with observability.
+
+### Overview
+
+The client-server system uses a unified `service/3` predicate that separates business logic from transport and infrastructure concerns:
+
+```prolog
+service(ServiceName, Options, Operations).
+```
+
+### Architecture Layers
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Application Layer                               │
+│              service(name, options, operations)                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                      Service Mesh Layer                              │
+│         Load Balancing │ Circuit Breaker │ Retry │ Rate Limit       │
+├─────────────────────────────────────────────────────────────────────┤
+│                      Discovery Layer                                 │
+│              Consul │ etcd │ DNS │ Kubernetes                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                      Transport Layer                                 │
+│           In-Process │ Unix Socket │ TCP │ HTTP                      │
+├─────────────────────────────────────────────────────────────────────┤
+│                      Observability Layer                             │
+│              OpenTelemetry │ Jaeger │ Zipkin │ Prometheus            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Phase Summary
+
+| Phase | Feature | Description |
+|-------|---------|-------------|
+| 1 | In-Process Services | Direct function calls within same process |
+| 2 | Unix Socket Services | IPC for local inter-process communication |
+| 3 | Network Services | TCP/HTTP for distributed deployment |
+| 4 | Service Mesh | Load balancing, circuit breaker, retry |
+| 5 | Polyglot Services | Cross-language service communication |
+| 6 | Distributed Services | Sharding, replication, consistency |
+| 7 | Service Discovery | Runtime service registration and lookup |
+| 8 | Distributed Tracing | Request tracking across service boundaries |
+
+### Quick Start Example
+
+```prolog
+% Define a user service with full production features
+service(user_service, [
+    % Transport
+    transport(http(8080)),
+
+    % Resilience
+    load_balancing(round_robin),
+    circuit_breaker(true),
+    retry_strategy(exponential),
+
+    % Distributed
+    sharding(consistent_hash),
+    replication(3),
+    consistency(quorum),
+
+    % Discovery & Tracing
+    discovery_backend(consul),
+    health_check(http('/health', 30000)),
+    tracing(true),
+    trace_exporter(otlp)
+], [
+    receive(Request),
+    state_get(users, Users),
+    respond(Response)
+]).
+```
+
+### Service Options Reference
+
+#### Transport Options
+| Option | Values | Description |
+|--------|--------|-------------|
+| `transport(T)` | `in_process`, `unix_socket(Path)`, `tcp(Port)`, `http(Port)` | Service transport |
+
+#### Resilience Options
+| Option | Values | Description |
+|--------|--------|-------------|
+| `load_balancing(S)` | `round_robin`, `random`, `least_connections`, `weighted`, `ip_hash` | Load balancing strategy |
+| `circuit_breaker(B)` | `true`, `false` | Enable circuit breaker |
+| `retry_strategy(S)` | `fixed`, `linear`, `exponential` | Retry backoff strategy |
+
+#### Distributed Options
+| Option | Values | Description |
+|--------|--------|-------------|
+| `sharding(S)` | `hash`, `range`, `consistent_hash`, `geographic` | Data partitioning |
+| `replication(N)` | Integer | Number of replicas |
+| `consistency(L)` | `eventual`, `strong`, `quorum`, `causal` | Consistency level |
+
+#### Discovery & Tracing Options
+| Option | Values | Description |
+|--------|--------|-------------|
+| `discovery_backend(B)` | `consul`, `etcd`, `dns`, `kubernetes` | Service discovery backend |
+| `health_check(C)` | `http(Path, Interval)`, `tcp(Port, Interval)` | Health check configuration |
+| `tracing(B)` | `true`, `false` | Enable distributed tracing |
+| `trace_exporter(E)` | `otlp`, `jaeger`, `zipkin`, `console` | Trace export destination |
+
+### Target Language Support
+
+The client-server architecture generates idiomatic code for:
+
+| Target | Transport | Mesh | Polyglot | Distributed | Discovery | Tracing |
+|--------|-----------|------|----------|-------------|-----------|---------|
+| Python | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Go | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Rust | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+### Documentation
+
+For comprehensive documentation, see the **Education Project** Book 7: Cross-Target Glue:
+
+- **Chapter 11a**: Service Architecture (Phases 1-3)
+- **Chapter 12a**: Service Mesh (Phase 4)
+- **Chapter 12b**: Polyglot and Distributed Services (Phases 5-6)
+- **Chapter 12c**: Service Discovery and Tracing (Phases 7-8)
+
+Design documentation is also available at [CLIENT_SERVER_DESIGN.md](CLIENT_SERVER_DESIGN.md).
+
+---
 
 ## Complete Examples
 
@@ -1107,6 +1392,102 @@ This demonstrates:
 - Defining a data source using Python to parse XML.
 - Extracting data from the XML.
 - Executing the data source.
+
+### Example 6: WASM Visualization (Graph and Curves)
+
+UnifyWeaver compiles Prolog to WebAssembly via LLVM for browser-based visualization.
+
+**Graph Visualization** (`examples/wasm-graph/`):
+```prolog
+% Compile graph operations to WASM
+compile_wasm_string_module(
+    [func(ancestor, 2, transitive_closure)],
+    [module_name(family_graph)],
+    LLVMCode).
+```
+- Cytoscape.js for network graph visualization
+- TypeScript bindings with string support
+- Interactive edge addition and graph layout
+
+**Curve Plotting** (`examples/curve-plot/`):
+```prolog
+% Define mathematical curves
+generate_curve_wasm([
+    curve_def(wave, sine),
+    curve_def(parabola, quadratic)
+], LLVMCode).
+
+% Evaluate in Prolog
+?- evaluate_curve(sine(1, 2, 0), 3.14, Y).
+Y = 0.0.
+```
+- Chart.js for mathematical curve visualization
+- Configurable parameters (amplitude, frequency, coefficients)
+- Multiple curve overlays with different colors
+
+**Pipeline:**
+```
+Prolog → LLVM IR → WebAssembly → TypeScript → Browser
+```
+
+**Build:**
+```bash
+cd examples/curve-plot
+swipl curve_module.pl                           # Generate LLVM IR
+llc -march=wasm32 -filetype=obj curve_plot.ll   # Compile to WASM object
+wasm-ld --no-entry --export-all curve_plot.o -o curve_plot.wasm
+python3 -m http.server 8080                     # Serve demo
+```
+
+See [LLVM_TARGET.md](LLVM_TARGET.md) for full API documentation.
+
+### Example 7: Pyodide Matrix Visualization (Browser-based NumPy)
+
+UnifyWeaver generates Python code that runs in the browser via Pyodide (Python compiled to WebAssembly).
+
+**Key Advantage:** No server required - all computation happens client-side in the browser sandbox, eliminating code injection risks.
+
+```prolog
+% Generate Pyodide module with NumPy matrix operations
+compile_pyodide_module(matrix_ops, [
+    packages([numpy]),
+    exports([inverse, eigenvalues, svd])
+], Code).
+
+% Generate complete HTML demo
+generate_pyodide_html('Matrix Calculator', [
+    packages([numpy]),
+    chart(true)
+], HTML).
+```
+
+**Features** (`examples/pyodide-matrix/`):
+- Matrix inverse, eigenvalues, SVD, determinant
+- Visual transformation of unit circle by 2x2 matrices
+- Eigenvector visualization
+- Linear regression with least squares
+
+**Architecture:**
+```
+TypeScript → Pyodide (WASM) → NumPy → Chart.js
+```
+
+**Usage:**
+```bash
+cd examples/pyodide-matrix
+firefox index.html  # No server needed!
+# Or with server:
+python3 -m http.server 8080
+```
+
+**Security Benefits:**
+| Aspect | Pyodide | Server-side Python |
+|--------|---------|-------------------|
+| Code injection | None possible | Risk with eval() |
+| Data privacy | Never leaves browser | Sent to server |
+| Filesystem | No access | Full access |
+
+See [PYTHON_VARIANTS.md](PYTHON_VARIANTS.md) for all Python compilation targets (Numba, Cython, Nuitka, Codon, mypyc, Pyodide).
 
 ---
 
@@ -1393,5 +1774,5 @@ at your option.
 
 ---
 
-**Last Updated:** 2025-10-26
-**Version:** 0.0.2
+**Last Updated:** 2025-12-17
+**Version:** 0.9.0

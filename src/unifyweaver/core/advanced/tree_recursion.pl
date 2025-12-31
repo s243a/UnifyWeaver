@@ -252,9 +252,11 @@ generate_binary_tree_code(Pred, _Arity, UseMemo, BashCode) :-
 
     ParseTreeHelper = '# Helper: Parse list-based tree\n# Handles nested brackets properly by tracking bracket depth\nparse_tree() {\n    local tree_str="$1"\n    local -n val="$2"\n    local -n lft="$3"\n    local -n rgt="$4"\n    \n    # Remove outer brackets\n    tree_str="${tree_str#[}"\n    tree_str="${tree_str%]}"\n    \n    # Parse by tracking bracket depth\n    local depth=0 part=0 current=""\n    local i char\n    \n    for (( i=0; i<${#tree_str}; i++ )); do\n        char="${tree_str:$i:1}"\n        \n        if [[ "$char" == "[" ]]; then\n            ((depth++))\n            current+="$char"\n        elif [[ "$char" == "]" ]]; then\n            ((depth--))\n            current+="$char"\n        elif [[ "$char" == "," && $depth -eq 0 ]]; then\n            # Top-level comma - marks boundary between parts\n            case $part in\n                0) val="$current" ;;\n                1) lft="$current" ;;\n            esac\n            current=""\n            ((part++))\n        else\n            current+="$char"\n        fi\n    done\n    \n    # Last part is right subtree\n    rgt="$current"\n    \n    # Clean up whitespace\n    val="${val// /}"\n    lft="${lft// /}"\n    rgt="${rgt// /}"\n}\n\n',
 
-    format(atom(StreamHelper), '# Streaming helper\n~w_stream() {\n    ~w "$@"\n}\n', [PredStr, PredStr]),
+    format(atom(StreamHelper), '# Streaming helper\n~w_stream() {\n    ~w "$@"\n}\n\n', [PredStr, PredStr]),
 
-    atomic_list_concat([Header, MemoDecl, FuncStart, MemoCheckCode, BaseCase, ParseAndRecurse, MemoStoreCode, FuncEnd, ParseTreeHelper, StreamHelper], BashCode).
+    format(atom(AutoExecute), '# Run when script executed directly\nif [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then\n    ~w_stream "$@"\nfi\n', [PredStr]),
+
+    atomic_list_concat([Header, MemoDecl, FuncStart, MemoCheckCode, BaseCase, ParseAndRecurse, MemoStoreCode, FuncEnd, ParseTreeHelper, StreamHelper, AutoExecute], BashCode).
 %% generate_generic_tree_code(+Pred, +Arity, +UseMemo, -BashCode)
 %  Generic tree recursion code generation (placeholder)
 generate_generic_tree_code(Pred, Arity, _UseMemo, BashCode) :-

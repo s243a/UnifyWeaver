@@ -1,25 +1,32 @@
 # PowerShell as a Target Language
 
-**Status:** Implemented (Phase 1 - Bash Wrapper Approach)
-**Version:** 1.0.0
-**Date:** 2025-10-19
+**Status:** Implemented (Phases 1-11 Complete)
+**Version:** 2.5.0
+**Date:** 2025-12-10
 
 ---
 
 ## Overview
 
-UnifyWeaver can now compile Prolog predicates to PowerShell scripts! This document explains how PowerShell compilation works, how to use it, and what to expect.
+UnifyWeaver compiles Prolog predicates to PowerShell scripts with two compilation modes:
 
-### How It Works (Phase 1)
+1. **Pure PowerShell** - Native PowerShell code with no bash dependency
+2. **Bash-as-a-Service (BaaS)** - Bash scripts wrapped in PowerShell compatibility layer
 
-Instead of generating native PowerShell code, we generate bash scripts and wrap them in PowerShell compatibility layer invocations. This approach:
+### Key Features (v2.5.0)
 
-✅ **Reuses all existing bash templates** - No need to rewrite compilation logic
-✅ **Leverages the PowerShell compatibility layer** - Uses `uw-*` commands
-✅ **Provides quick PowerShell support** - Minimal new code required
-✅ **Maintains consistency** - PowerShell and bash outputs are identical
+| Feature | Description |
+|---------|-------------|
+| **Pure PowerShell** | Native PowerShell for CSV, JSON, HTTP, XML, .NET sources |
+| **Binding System** | 68+ bindings for cmdlets, .NET methods, Windows automation |
+| **Object Pipeline** | `ValueFromPipeline` parameters, `PSCustomObject` output |
+| **Advanced Joins** | Hash-based and pipelined N-way joins with O(n+m) complexity |
+| **Outer Joins** | LEFT, RIGHT, and FULL OUTER joins with automatic pattern detection |
+| **Recursion** | Simple, transitive, mutual, tail recursion with memoization |
+| **Firewall Security** | Per-predicate mode control (pure/baas/auto) |
+| **C# Hosting** | In-process integration with .NET assemblies |
 
-**Future (Phase 2):** Native PowerShell code generation with object pipeline support
+For detailed implementation status, see [POWERSHELL_PURE_IMPLEMENTATION.md](POWERSHELL_PURE_IMPLEMENTATION.md).
 
 ---
 
@@ -53,6 +60,46 @@ Instead of generating native PowerShell code, we generate bash scripts and wrap 
 
 # Then run the generated script
 .\grandparent.ps1
+```
+
+---
+
+## Outer Join Support
+
+The PowerShell target supports LEFT, RIGHT, and FULL OUTER joins through automatic pattern detection.
+
+### Syntax
+
+```prolog
+% LEFT JOIN - all left records, matched right or null
+left_join(X, Z) :-
+    left_table(X, Y),
+    (right_table(Y, Z) ; Z = null).
+
+% RIGHT JOIN - all right records, matched left or null
+right_join(X, Z) :-
+    (left_table(X, Y) ; X = null),
+    right_table(Y, Z).
+
+% FULL OUTER JOIN - all records from both sides
+full_outer(X, Z) :-
+    (left_table(X, Y) ; X = null),
+    (right_table(Y, Z) ; Z = null).
+```
+
+### Implementation
+
+The compiler generates PowerShell code using:
+- Hashtable-based lookups for efficient joins
+- `PSCustomObject` output with nullable properties
+- Match tracking for unmatched records in FULL OUTER joins
+
+Example generated output structure:
+```powershell
+[PSCustomObject]@{
+    X = $left.X
+    Z = if ($right) { $right.Z } else { $null }
+}
 ```
 
 ---
@@ -93,33 +140,43 @@ compile_to_powershell(+Predicate, +Options, -PowerShellCode)
 - `PowerShellCode`: Generated PowerShell script as string
 
 **Options:**
-- `compiler(stream|recursive)` - Which bash compiler to use (default: `stream`)
-- `wrapper_style(inline|tempfile)` - How to invoke bash (default: `inline`)
-- `compat_check(true|false)` - Add compatibility layer check (default: `true`)
-- `output_file(Path)` - Write to file instead of returning code
-- `script_name(Name)` - Name for generated script (default: derived from predicate)
-- Other options are passed through to the bash compiler
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `powershell_mode(pure\|baas\|auto)` | Compilation mode | `auto` |
+| `output_format(object\|text)` | Output type | `text` |
+| `pipeline_input(true\|false)` | Enable ValueFromPipeline | `false` |
+| `arg_names([...])` | Custom property names | `['X', 'Y', 'Z']` |
+| `cmdlet_binding(true\|false)` | Generate [CmdletBinding()] | `false` |
+| `output_file(Path)` | Write to file | — |
+| `verbose_output(true\|false)` | Add Write-Verbose | `false` |
+| `wrapper_style(inline\|tempfile)` | BaaS wrapper style | `inline` |
+| `compat_check(true\|false)` | Add compat layer check | `true` |
 
 **Examples:**
 ```prolog
-% Basic compilation
-?- compile_to_powershell(color/1, [], Code).
+% Pure PowerShell with object output
+?- compile_to_powershell(user/2, [
+    powershell_mode(pure),
+    output_format(object)
+], Code).
 
-% Use recursive compiler
-?- compile_to_powershell(factorial/2, [compiler(recursive)], Code).
+% Pipeline-enabled function with custom property names
+?- compile_to_powershell(employee/2, [
+    pipeline_input(true),
+    output_format(object),
+    arg_names(['EmployeeId', 'Name'])
+], Code).
 
-% Tempfile wrapper style
-?- compile_to_powershell(process_data/1, [wrapper_style(tempfile)], Code).
-
-% Write to file
+% Write to file with verbose output
 ?- compile_to_powershell(
     grandparent/2,
-    [output_file('output/grandparent.ps1'), script_name(grandparents)],
+    [output_file('grandparent.ps1'), verbose_output(true)],
     _
 ).
 
-% Disable compatibility check (not recommended)
-?- compile_to_powershell(color/1, [compat_check(false)], Code).
+% Force BaaS mode (uses bash subprocess)
+?- compile_to_powershell(log_parser/3, [powershell_mode(baas)], Code).
 ```
 
 ---

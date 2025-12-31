@@ -7,7 +7,11 @@
 :- module(compiler_driver, [
     compile/1,
     compile/2,
-    compile/3
+    compile/3,
+    
+    % Pipeline compilation from high-level goals (re-exported from goal_inference)
+    compile_goal_to_pipeline/3,     % compile_goal_to_pipeline(+Goal, +Options, -Script)
+    compile_goal_to_pipeline/4      % compile_goal_to_pipeline(+Goal, +Options, -Script, -Steps)
 ]).
 
 :- use_module(library(lists)).
@@ -18,6 +22,13 @@
 :- use_module(dynamic_source_compiler). % Support for dynamic data sources
 :- use_module('advanced/advanced_recursive_compiler'). % Added for mutual recursion classification
 :- use_module('advanced/call_graph'). % Added for mutual recursion classification
+:- use_module('../glue/goal_inference', [
+    infer_steps_from_goal/2,
+    infer_steps_from_goal/3,
+    compile_goal_to_pipeline/3,  % Re-exported
+    group_steps_by_transport/2,
+    generate_pipeline_for_groups/3
+]).
 
 :- dynamic compiled/1.
 
@@ -213,3 +224,35 @@ is_linear_recursive(Pred, RecClauses) :-
     findall(G, contains_goal(Body, G), Goals),
     findall(G, (member(G, Goals), functor(G, Pred, _)), RecGoals),
     length(RecGoals, 1).  % Exactly one recursive call
+
+%% ============================================
+%% Pipeline Compilation Extension
+%% ============================================
+%%
+%% compile_goal_to_pipeline/3 is re-exported from goal_inference.
+%% This extension adds compile_goal_to_pipeline/4 which also returns steps.
+%%
+%% Now uses resolve_transport/3 to choose optimal transport
+%% based on target families (in-process for .NET, pipes for shell, etc.)
+%%
+%% See: docs/proposals/meta_interpreter_inference.md
+%% See: education/book-07-cross-target-glue/01_introduction.md
+
+%% compile_goal_to_pipeline(+Goal, +Options, -Script, -Steps)
+%  Compile goal to pipeline with transport-aware grouping.
+%  Returns both the script and the inferred steps.
+%
+%  Transport selection:
+%    - direct: Same runtime family (.NET targets in-process)
+%    - pipe: Different families (shell ↔ python ↔ native)
+%    - http: Remote hosts
+%
+compile_goal_to_pipeline(Goal, Options, Script, Steps) :-
+    % Infer steps from goal body and target declarations
+    infer_steps_from_goal(Goal, Steps),
+    
+    % Group steps by transport type
+    group_steps_by_transport(Steps, Groups),
+    
+    % Generate pipeline using appropriate glue for each transport
+    generate_pipeline_for_groups(Groups, Options, Script).

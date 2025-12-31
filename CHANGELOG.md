@@ -8,11 +8,428 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Client-Server Phase 8: Service Tracing** - OpenTelemetry-compatible distributed tracing
+  - `tracing(Bool)` option to enable distributed tracing
+  - Trace exporters: `otlp`, `jaeger`, `zipkin`, `datadog`, `console`, `none`
+  - Trace propagation formats: `w3c`, `b3`, `b3_multi`, `jaeger`, `xray`, `datadog`
+  - `trace_sampling(Rate)` for sampling rate (0.0-1.0)
+  - `trace_service_name(Name)` for custom service name in traces
+  - `trace_propagation(Format)` for context propagation format
+  - `trace_attributes(List)` for default span attributes
+  - `trace_batch_size(N)` and `trace_export_interval(Ms)` for batch export
+  - SpanContext with W3C traceparent header generation/parsing
+  - Span management with SpanKind (Server/Client/Producer/Consumer/Internal)
+  - SpanEvent support for span events with timestamps
+  - Tracer with sampling decision, context extraction/injection, batch export
+  - SpanExporter interface with OTLP, Jaeger, Zipkin, Console implementations
+  - Helper predicates: `is_tracing_enabled/1`, `get_trace_sampling/2`, `get_trace_exporter/2`, `get_trace_service_name/2`, `get_trace_propagation/2`, `get_trace_attributes/2`
+  - Tracing service compilation for Python, Go, and Rust targets
+  - 20 integration tests in `tests/integration/test_service_tracing.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Client-Server Phase 7: Service Discovery** - Automatic service registration and health checks
+  - `discovery_enabled(Bool)` option to enable service discovery
+  - Discovery backends: `consul`, `etcd`, `dns`, `kubernetes`, `zookeeper`, `eureka`
+  - `health_check(Config)` for health check configuration: `http(Path, IntervalMs)`, `tcp(Port, IntervalMs)`
+  - `discovery_ttl(Seconds)` for service TTL in heartbeat
+  - `discovery_tags(List)` for service filtering tags
+  - ServiceRegistry interface with ConsulRegistry and LocalRegistry implementations
+  - HealthChecker with HTTP/TCP health check support
+  - ServiceInstance with metadata, health status, and last heartbeat
+  - Automatic heartbeat mechanism with TTL-based renewal
+  - Graceful deregistration on shutdown
+  - Helper predicates: `is_discovery_enabled/1`, `get_health_check_config/2`, `get_discovery_ttl/2`, `get_discovery_backend/2`, `get_discovery_tags/2`
+  - Discovery service compilation for Python, Go, and Rust targets
+  - 20 integration tests in `tests/integration/test_service_discovery.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Client-Server Phase 6: Distributed Services** - Cluster-aware services with sharding and replication
+  - Sharding strategies: `hash`, `range`, `consistent_hash`, `geographic`
+  - Consistency levels: `eventual`, `strong`, `quorum`, `read_your_writes`, `causal`
+  - Partition key routing with `partition_key(Field)` option
+  - Replication factor with `replication(N)` option
+  - Cluster configuration with `cluster([node(Id, Host, Port)])` option
+  - ConsistentHashRing implementation with virtual nodes for all targets
+  - ShardRouter with configurable sharding strategies
+  - ReplicationManager with write/read quorum support
+  - Distributed service validation in `service_validation.pl`
+  - Helper predicates: `get_replication_factor/2`, `get_consistency_level/2`, `get_sharding_strategy/2`, `get_partition_key/2`, `get_cluster_config/2`, `is_distributed_service/1`
+  - Distributed service compilation for Python, Go, and Rust targets
+  - Thread-safe implementations: Python threading.Lock, Go sync.RWMutex/atomic, Rust RwLock/AtomicU64
+  - 24 integration tests in `tests/integration/test_distributed_services.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Client-Server Phase 5: Polyglot Services** - Cross-language service calls
+  - `polyglot(true)` option for cross-language services
+  - `target_language(Lang)` option (python, go, rust, javascript, csharp)
+  - `depends_on([dep(Name, Lang, Transport)])` for service dependencies
+  - ServiceClient class/struct for HTTP-based cross-language calls
+  - ServiceRegistry for local and remote service management
+  - Automatic endpoint extraction from transport configurations
+  - Polyglot service validation in `service_validation.pl`
+  - Helper predicates: `get_target_language/2`, `get_service_dependencies/2`, `get_service_endpoint/2`, `is_polyglot_service/1`, `is_valid_target_language/1`, `is_valid_service_dependency/1`
+  - Polyglot service compilation for Python, Go, and Rust targets
+  - Thread-safe implementations with HTTP clients: Python urllib.request, Go net/http, Rust reqwest
+  - 22 integration tests in `tests/integration/test_polyglot_services.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Client-Server Phase 4: Service Mesh** - Load balancing, circuit breakers, and retry with backoff
+  - Load balancing strategies: `round_robin`, `random`, `least_connections`, `weighted`, `ip_hash`
+  - Circuit breaker pattern with `threshold`, `timeout`, `half_open_requests`, `success_threshold`
+  - Retry with backoff: `fixed`, `linear`, `exponential` strategies
+  - Retry options: `delay(Ms)`, `max_delay(Ms)`, `jitter(Bool)`
+  - Service discovery configuration: `static`, `dns`, `consul`, `etcd`
+  - Backend pool configuration for load balancing targets
+  - Service mesh validation in `service_validation.pl`
+  - Helper predicates: `get_load_balance_strategy/2`, `get_circuit_breaker_config/2`, `get_retry_config/2`, `has_load_balancing/1`, `has_circuit_breaker/1`, `has_retry/1`, `is_service_mesh_service/1`
+  - Service mesh compilation for Python, Go, and Rust targets
+  - Thread-safe implementations: Python threading.Lock, Go atomic operations, Rust RwLock/AtomicI32
+  - 61 integration tests in `tests/integration/test_service_mesh.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Client-Server Phase 3: Network Services** - TCP and HTTP transport support
+  - TCP transport for network socket communication (`transport(tcp(Host, Port))`)
+  - HTTP/REST transport for web API endpoints (`transport(http(Endpoint))`)
+  - JSONL protocol for TCP services (streaming JSON lines)
+  - JSON protocol for HTTP services (REST API style)
+  - Transport categorization: `is_network_service/1` predicate
+  - Full REST method support: GET, POST, PUT, DELETE, PATCH
+  - Stateful and stateless service variants for both TCP and HTTP
+  - Service compilation for Python, Go, and Rust targets
+  - Client generation for all three targets
+  - 26 integration tests in `tests/integration/test_network_services.sh`
+  - Documentation updated in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Enhanced Pipeline Chaining** - Complex data flow patterns across all targets (#296-#300)
+  - `fan_out(Stages)` — Broadcast records to stages (sequential execution)
+  - `parallel(Stages)` — Execute stages concurrently using target-native parallelism
+  - `merge` — Combine results from fan_out or parallel stages
+  - `route_by(Pred, Routes)` — Conditional routing based on predicate
+  - `filter_by(Pred)` — Filter records by predicate condition
+  - `batch(N)` — Collect N records into batches for bulk processing
+  - `unbatch` — Flatten batches back to individual records
+  - Supported targets: Python, Go, C#, Rust, PowerShell, AWK, Bash, IronPython
+  - `docs/ENHANCED_PIPELINE_CHAINING.md` — Unified documentation
+  - Integration tests for all targets
+
+- **Parallel Stage Execution** - True concurrent processing for performance-critical workloads
+  - `parallel(Stages)` stage type for concurrent stage execution
+  - `parallel(Stages, Options)` with options support:
+    - `ordered(true)` — Preserve stage definition order in results (default: completion order)
+  - Target-native parallelism mechanisms:
+    - Python: `ThreadPoolExecutor`
+    - Go: Goroutines with `sync.WaitGroup`
+    - C#: `Task.WhenAll`
+    - Rust: `std::thread` by default, rayon with `parallel_mode(rayon)` option
+    - PowerShell: Runspace pools
+    - Bash: Background processes with `wait`
+    - IronPython: .NET `Task.Factory.StartNew` with `ConcurrentBag<T>`
+    - AWK: Sequential by default, GNU Parallel with `parallel_mode(gnu_parallel)` option
+  - Validation support: empty parallel detection, single-stage parallel warning, invalid option detection
+  - Clear distinction from `fan_out` (sequential) vs `parallel` (concurrent)
+
+- **Pipeline Validation** - Compile-time validation for enhanced pipeline stages
+  - `src/unifyweaver/core/pipeline_validation.pl` — Validation module
+  - Error detection: empty pipeline, invalid stages, empty fan_out, empty parallel, empty routes, invalid route format, invalid batch size
+  - Warning detection: fan_out/parallel without merge, merge without fan_out/parallel
+  - Options: `validate(Bool)` to enable/disable, `strict(Bool)` to treat warnings as errors
+  - Integrated into all enhanced pipeline compilation predicates
+  - `tests/integration/test_pipeline_validation.sh` — Integration tests
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Aggregation Stages** - Deduplication and grouping at pipeline level
+  - Deduplication stages:
+    - `unique(Field)` — Keep first occurrence of each unique field value
+    - `first(Field)` — Alias for unique, keep first occurrence
+    - `last(Field)` — Keep last occurrence of each unique field value
+  - Grouping stage:
+    - `group_by(Field, Aggregations)` — Group records by field with aggregations
+    - Built-in aggregations: `count`, `sum(F)`, `avg(F)`, `min(F)`, `max(F)`, `first(F)`, `last(F)`, `collect(F)`
+  - Sequential processing:
+    - `reduce(Pred, Init)` — Fold all records into single result with custom reducer
+    - `scan(Pred, Init)` — Like reduce but emits intermediate results
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_aggregation_stages.sh` — Integration tests (12 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Sorting Stages** - Ordering records at pipeline level
+  - Field-based ordering:
+    - `order_by(Field)` — Sort by field ascending
+    - `order_by(Field, Dir)` — Sort by field with direction (asc/desc)
+    - `order_by(FieldSpecs)` — Sort by multiple fields with individual directions
+  - Custom comparator:
+    - `sort_by(ComparePred)` — Sort using user-defined comparison function
+  - Key distinction: `order_by` is declarative (fields), `sort_by` is programmatic (comparator)
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_sorting_stages.sh` — Integration tests (12 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Error Handling Stages** - Resilient data processing with error recovery
+  - Try-catch pattern:
+    - `try_catch(Stage, Handler)` — Execute stage, route failures to handler
+  - Retry logic:
+    - `retry(Stage, N)` — Retry stage up to N times on failure
+    - `retry(Stage, N, Options)` — Retry with delay and backoff options
+    - Options: `delay(Ms)`, `backoff(linear)`, `backoff(exponential)`
+  - Global error handling:
+    - `on_error(Handler)` — Global error handler for the pipeline
+  - Nested error handling: `try_catch(retry(...), fallback)` for complex recovery
+  - Error records: Failed retries emit `{_error, _record, _retries}` for downstream handling
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_error_handling_stages.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Timeout Stage** - Time-limited stage execution
+  - `timeout(Stage, Ms)` — Execute stage with time limit, emit error record on timeout
+  - `timeout(Stage, Ms, Fallback)` — Execute stage with time limit, use fallback on timeout
+  - Timeout record: `{_timeout, _record, _limit_ms}` for downstream handling
+  - Combines with other error handling: `try_catch(timeout(...), handler)`
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_timeout_stage.sh` — Integration tests (12 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Rate Limiting Stages** - Throughput control for pipeline processing
+  - `rate_limit(N, Per)` — Limit throughput to N records per time unit
+    - Time units: `second`, `minute`, `hour`, `ms(X)`
+    - Uses interval-based timing for precise rate control
+  - `throttle(Ms)` — Add fixed delay of Ms milliseconds between records
+  - Combines with other stages: `try_catch(rate_limit(...), handler)`, `timeout(rate_limit(...), ms)`
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_rate_limiting_stages.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Buffer and Zip Stages** - Record batching and stream combination
+  - `buffer(N)` — Collect N records into batches for bulk processing
+    - Flushes remaining records at stream end
+  - `debounce(Ms)` — Emit record only after Ms quiet period (no new records)
+    - Useful for smoothing bursty traffic
+  - `zip(Stages)` — Run multiple stages on same input, combine outputs record-by-record
+    - Enables parallel enrichment from multiple sources
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_buffer_zip_stages.sh` — Integration tests (18 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Window/Sampling/Partition Stages** - Stream windowing and data reduction
+  - Window stages:
+    - `window(N)` — Collect records into non-overlapping windows of size N
+    - `sliding_window(N, Step)` — Create overlapping windows with step size
+  - Sampling stages:
+    - `sample(N)` — Randomly sample N records using reservoir sampling
+    - `take_every(N)` — Take every Nth record (deterministic sampling)
+  - Partition stage:
+    - `partition(Pred)` — Split stream into matches and non-matches based on predicate
+  - Take/Skip stages:
+    - `take(N)` — Take first N records
+    - `skip(N)` — Skip first N records
+    - `take_while(Pred)` — Take records while predicate is true
+    - `skip_while(Pred)` — Skip records while predicate is true
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_window_sampling_stages.sh` — Integration tests (32 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Distinct/Dedup Stages** - Duplicate removal at pipeline level
+  - Global deduplication:
+    - `distinct` — Remove all duplicate records, keeping first occurrence
+    - `distinct_by(Field)` — Remove duplicates based on specific field value
+  - Consecutive deduplication:
+    - `dedup` — Remove consecutive duplicate records only
+    - `dedup_by(Field)` — Remove consecutive duplicates based on specific field
+  - Key differences:
+    - `distinct` uses hash set (memory: O(n) for seen records)
+    - `dedup` only compares adjacent records (memory: O(1))
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_distinct_dedup_stages.sh` — Integration tests (22 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Interleave/Concat Stages** - Stream combination at pipeline level
+  - Round-robin interleaving:
+    - `interleave(Stages)` — Alternate records from multiple stage outputs in round-robin fashion
+    - Takes one record from each stream in turn until all exhausted
+  - Sequential concatenation:
+    - `concat(Stages)` — Concatenate multiple stage outputs sequentially
+    - Yields all records from first stage, then second, etc.
+  - Use cases:
+    - `interleave` — Merge multiple data sources with fair ordering
+    - `concat` — Combine results from different transformations
+  - Composable with other stages: `distinct`, `filter_by`, `window`, `parallel`, etc.
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_interleave_concat_stages.sh` — Integration tests (18 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Merge Sorted Stage** - Efficient k-way merge for pre-sorted streams
+  - Merge pre-sorted streams:
+    - `merge_sorted(Stages, Field)` — Merge streams sorted by field (ascending)
+    - `merge_sorted(Stages, Field, Dir)` — Merge with direction (asc/desc)
+  - Efficient k-way merge algorithm:
+    - Python: Heap-based merge using `heapq`
+    - Go: Index-tracking merge with type comparison
+    - Rust: Iterator-based merge with `serde_json::Value` comparison
+  - Use cases:
+    - Merging time-series data from multiple sources
+    - Combining sorted partitions for final output
+    - Efficient merge phase in external sort
+  - Assumes input streams are already sorted by the specified field
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_merge_sorted_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Tap Stage** - Observe stream without modification for side effects
+  - Side-effect observation:
+    - `tap(Pred)` — Execute side effect predicate for each record without modifying stream
+    - `tap(Pred/Arity)` — Explicit arity specification supported
+  - Use cases:
+    - Logging pipeline progress
+    - Collecting metrics and telemetry
+    - Debugging intermediate values
+    - Audit trail generation
+  - Error isolation: Side effect errors don't interrupt the pipeline
+    - Python: Exception handling with pass
+    - Go: defer/recover pattern
+    - Rust: std::panic::catch_unwind
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_tap_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Flatten Stage** - Flatten nested collections into individual records
+  - Collection flattening:
+    - `flatten` — Flatten nested lists/arrays into individual records
+    - `flatten(Field)` — Flatten a specific field within each record, expanding arrays
+  - Behavior:
+    - Simple flatten: Records containing `__items__` arrays are expanded
+    - Field flatten: Records where field contains an array become multiple records
+  - Use cases:
+    - Expanding nested JSON arrays
+    - Normalizing denormalized data
+    - Processing hierarchical structures
+    - Exploding array fields for analysis
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_flatten_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Debounce Stage** - Rate-limit noisy streams by emitting only after silence
+  - Debounce variants:
+    - `debounce(Ms)` — Emit record only after Ms milliseconds of silence
+    - `debounce(Ms, Field)` — Use specified timestamp field for timing
+  - Behavior:
+    - Groups records by time windows
+    - Emits only the last record when silence period is reached
+    - Useful for suppressing rapid successive updates
+  - Use cases:
+    - Rate-limiting sensor data
+    - Suppressing duplicate events
+    - Coalescing rapid updates
+    - Smoothing noisy time-series data
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_debounce_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Branch Stage** - Conditional routing within pipeline
+  - Branch syntax:
+    - `branch(Cond, TrueStage, FalseStage)` — Route records based on condition
+    - `branch(Cond/Arity, TrueStage, FalseStage)` — With explicit arity
+  - Behavior:
+    - Records matching condition go through TrueStage
+    - Records not matching go through FalseStage
+    - Results from both branches are combined in output
+    - Supports nested branches and complex sub-stages
+  - Use cases:
+    - A/B processing paths
+    - Conditional transformations
+    - Error vs success routing
+    - Type-based record handling
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_branch_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
+- **Pipeline Tee Stage** - Fork stream to side destination while passing through
+  - Tee syntax:
+    - `tee(Stage)` — Run Stage as side effect, discard results, pass original through
+  - Behavior:
+    - Like Unix `tee` - fork stream to side destination
+    - Side stage receives full stream (not per-record like tap)
+    - Side stage results are discarded
+    - Original records pass through unchanged
+    - Side effect errors don't interrupt main pipeline
+  - Comparison with tap:
+    - `tap(Pred)` — Per-record side effect function
+    - `tee(Stage)` — Full pipeline stage as side effect
+  - Use cases:
+    - Writing to log files while continuing processing
+    - Sending copies to monitoring systems
+    - Archiving data streams
+    - Audit trails and metrics collection
+  - Supported targets: Python, Go, Rust
+  - `tests/integration/test_tee_stage.sh` — Integration tests (16 tests)
+  - Documentation in `docs/ENHANCED_PIPELINE_CHAINING.md`
+
 - **XML Data Source Playbook** - A new playbook for processing XML data.
   - `playbooks/xml_data_source_playbook.md` - The playbook itself.
   - `playbooks/examples_library/xml_examples.md` - The implementation of the playbook.
   - `docs/development/testing/playbooks/xml_data_source_playbook__reference.md` - The reference document for reviewers.
   - Updated `docs/EXTENDED_README.md` to include the new playbook.
+
+- **Client-Server Architecture Phase 1: In-Process Services** - Foundation for service-oriented pipeline composition
+  - Service Definition DSL:
+    - `service(Name, HandlerSpec)` — Define a stateless service with operations
+    - `service(Name, Options, HandlerSpec)` — Define service with options (stateful, transport, timeout)
+  - Service Operations:
+    - `receive(Var)` — Bind incoming request to variable
+    - `respond(Value)` — Send response to caller
+    - `respond_error(Error)` — Send error response
+    - `state_get(Key, Value)` — Get state value (stateful services)
+    - `state_put(Key, Value)` — Set state value (stateful services)
+    - `call_service(Name, Request, Response)` — Call another service
+    - `transform(In, Out, Goal)` — Transform data with predicate
+    - `branch(Cond, TrueOps, FalseOps)` — Conditional execution
+    - `route_by(Field, Routes)` — Route by field value
+  - Service Options:
+    - `stateful(Bool)` — Enable/disable state management
+    - `transport(Type)` — Transport type (in_process, unix_socket, tcp, http)
+    - `protocol(Format)` — Wire format (jsonl, json, messagepack, protobuf)
+    - `timeout(Ms)` — Request timeout in milliseconds
+    - `max_concurrent(N)` — Maximum concurrent requests
+    - `on_error(Handler)` — Error handler predicate
+  - Pipeline Integration:
+    - `call_service(Name, RequestExpr, ResponseVar)` — Pipeline stage for service calls
+    - `call_service(Name, Request, Response, Options)` — With options (timeout, retry, fallback)
+    - Call service options: `timeout(Ms)`, `retry(N)`, `retry_delay(Ms)`, `fallback(Value)`
+  - Multi-Target Compilation:
+    - Python: Service classes with `_services` registry
+    - Go: Service interfaces with struct implementations
+    - Rust: Service trait with lazy_static registration
+  - Validation:
+    - `src/unifyweaver/core/service_validation.pl` — Service definition validation
+    - Extended `src/unifyweaver/core/pipeline_validation.pl` — call_service stage validation
+  - `tests/integration/test_in_process_services.sh` — Integration tests (13 tests)
+  - Documentation in `docs/CLIENT_SERVER_DESIGN.md`
+
+- **Client-Server Architecture Phase 2: Cross-Process Services** - Unix socket transport for inter-process communication
+  - Unix Socket Server:
+    - `transport(unix_socket(Path))` — Service option for Unix socket transport
+    - Multi-threaded connection handling
+    - JSONL request/response protocol with `_id`, `_payload`, `_status` fields
+    - Graceful shutdown with signal handling (SIGINT, SIGTERM)
+    - Configurable timeout per connection
+  - Unix Socket Client:
+    - Connection pooling with automatic reconnect
+    - Request/response correlation via `_id`
+    - Error propagation with structured error responses
+    - Convenience functions for one-shot calls
+  - Service Helpers:
+    - `get_service_transport/2` — Extract transport from service definition
+    - `get_service_protocol/2` — Extract protocol from service definition
+    - `get_service_timeout/2` — Extract timeout from service definition
+    - `is_cross_process_service/1` — Check if service uses Unix sockets
+    - `is_network_service/1` — Check if service uses network transport
+  - Multi-Target Support:
+    - Python: `socket.AF_UNIX`, threading, JSONL via `json` module
+    - Go: `net.Listen("unix", ...)`, goroutines, `encoding/json`
+    - Rust: `std::os::unix::net::UnixListener`, threads, `serde_json`
+  - Stateful Services:
+    - Thread-safe state with locks (Python: `threading.Lock`, Go: `sync.Mutex`, Rust: `RwLock`)
+    - State persists across connections for stateful services
+  - `tests/integration/test_unix_socket_services.sh` — Integration tests (18 tests)
+  - Documentation in `docs/CLIENT_SERVER_DESIGN.md`
 
 ## [0.1] - 2025-11-15
 

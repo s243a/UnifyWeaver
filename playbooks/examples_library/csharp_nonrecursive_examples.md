@@ -34,7 +34,7 @@ echo "Compiling Prolog to C#..."
 echo ":- asserta(user:file_search_path(library, 'src/unifyweaver/targets'))." > tmp/swipl_goal.pl
 echo ":- asserta(user:file_search_path(library, 'src/unifyweaver/core'))." >> tmp/swipl_goal.pl
 echo ":- consult('tmp/grandparent_csharp.pl')." >> tmp/swipl_goal.pl
-echo ":- use_module(library(csharp_stream_target))." >> tmp/swipl_goal.pl
+echo ":- use_module(library(csharp_native_target))." >> tmp/swipl_goal.pl
 echo ":- compile_predicate_to_csharp(grandparent/2, [unique(true)], CSharpCode), open('tmp/csharp_grandparent_project/grandparent.cs', write, Stream), write(Stream, CSharpCode), close(Stream)." >> tmp/swipl_goal.pl
 echo ":- halt." >> tmp/swipl_goal.pl
 
@@ -149,7 +149,7 @@ if (-not $swiplPath) {
 
 Write-Host "Using SWI-Prolog at: $swiplPath"
 
-$goal = "asserta(user:file_search_path(library, 'src/unifyweaver/targets')), asserta(user:file_search_path(library, 'src/unifyweaver/core')), consult('$prologFile'), use_module(library(csharp_stream_target)), compile_predicate_to_csharp(grandparent/2, [unique(true)], CSharpCode), open('$csFile', write, Stream), write(Stream, CSharpCode), close(Stream)."
+$goal = "asserta(user:file_search_path(library, 'src/unifyweaver/targets')), asserta(user:file_search_path(library, 'src/unifyweaver/core')), consult('$prologFile'), use_module(library(csharp_native_target)), compile_predicate_to_csharp(grandparent/2, [unique(true)], CSharpCode), open('$csFile', write, Stream), write(Stream, CSharpCode), close(Stream)."
 & $swiplPath -g $goal -t halt
 
 # Check if the C# file was created

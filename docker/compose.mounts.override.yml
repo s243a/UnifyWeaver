@@ -1,0 +1,26 @@
+# Mount override for UnifyWeaver development
+# Adds additional project directories while preserving persistent mode
+# IMPORTANT: Must re-declare ALL volumes because Docker Compose REPLACES lists, doesn't merge
+
+version: '3.3'
+
+services:
+  unifyweaver-dev:
+    volumes:
+      # Original UnifyWeaver project
+      - /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver:/mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver
+      
+      # Additional projects
+      - /mnt/c/Users/johnc/Dropbox/projects/agentRAG:/mnt/c/Users/johnc/Dropbox/projects/agentRAG
+      - /mnt/c/Users/johnc/Dropbox/projects/JanusBridge:/mnt/c/Users/johnc/Dropbox/projects/JanusBridge
+      - /mnt/c/Users/johnc/Dropbox/projects/InfoEcon:/mnt/c/Users/johnc/Dropbox/projects/InfoEcon
+      
+      # Persistent home directory (MUST re-declare - lists are replaced, not merged)
+      - unifyweaver-home:/root
+      
+      # Persistent system volumes (MUST re-declare from docker-compose.persistent.yml)
+      - unifyweaver-dev-usr-local:/usr/local
+      - unifyweaver-dev-opt:/opt
+      
+    # Keep original working directory
+    working_dir: /mnt/c/Users/johnc/Dropbox/projects/UnifyWeaver

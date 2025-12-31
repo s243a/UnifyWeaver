@@ -3,51 +3,94 @@
 ## Audience
 This playbook guides coding agents in using UnifyWeaver to stream JSON data into a LiteDB NoSQL database using inline .NET code within PowerShell scripts.
 
-## Overview
-This playbook demonstrates:
-1. Reading JSON files using UnifyWeaver's JSON dynamic source
-2. Defining typed schemas for strong typing
-3. Generating PowerShell scripts with inline .NET code
-4. Streaming data into LiteDB NoSQL database
-5. Querying the data back from LiteDB
+
+## Finding Examples
+
+There are two ways to find the correct example record for this task:
+
+### Method 1: Manual Extraction
+Search the documentation using grep:
+```bash
+grep -r "json_litedb" playbooks/examples_library/
+```
+
+### Method 2: Semantic Search (Recommended)
+Use the LDA-based semantic search skill to find relevant examples by intent:
+```bash
+./unifyweaver search "how to use json litedb"
+
+
+## Agent Inputs
+Reference the following artifacts:
+1. **Executable Record** – `unifyweaver.execution.json_to_litedb_bash` in `playbooks/examples_library/json_litedb_examples.md`.
+2. **Environment Setup** – `skills/skill_unifyweaver_environment.md`.
+3. **Extraction Skill** – `skills/skill_extract_records.md`.
+
+## Execution Guidance
+
+**IMPORTANT**: The record contains a **BASH SCRIPT**. Extract and run with `bash`.
+
+### Step-by-Step Instructions
+
+**Step 1: Install LiteDB (if not present)**
+```bash
+bash scripts/setup/setup_litedb.sh -y
+```
+
+**Step 2: Extract the bash script**
+```bash
+perl scripts/utils/extract_records.pl \
+  -f content \
+  -q "unifyweaver.execution.json_to_litedb_bash" \
+  playbooks/examples_library/json_litedb_examples.md \
+  > tmp/run_json_litedb.sh
+```
+
+**Step 3: Make it executable**
+```bash
+chmod +x tmp/run_json_litedb.sh
+```
+
+**Step 4: Run the bash script**
+```bash
+bash tmp/run_json_litedb.sh
+```
+
+**Expected Output**:
+```
+==========================================
+JSON to LiteDB Streaming Demo
+==========================================
+Compiling Prolog to PowerShell...
+...
+✅ PowerShell scripts generated
+
+Loading JSON data into LiteDB...
+Loaded 4 products into LiteDB
+
+Querying products by category 'Electronics'...
+  "Widget Pro"         $29.99
+  "Gadget X"           $49.99
+  "Device Alpha"       $99.99
+
+==========================================
+✅ Success: JSON streamed into LiteDB
+==========================================
+```
+
+### Common Mistakes to Avoid
+
+❌ **DO NOT** skip the LiteDB installation step - the script requires `lib/LiteDB.dll`
+
+✅ **DO** run `setup_litedb.sh -y` first if LiteDB is not installed
 
 ## Prerequisites
 
 - .NET SDK 6.0+ installed
-- LiteDB library available
+- LiteDB library available (installed via setup script)
 - PowerShell 7+ (for cross-platform support)
 
-### Installing LiteDB
-
-**For LLMs/Automated Execution:**
-```bash
-# Bash - automatically installs locally, skips if already installed
-bash scripts/setup/setup_litedb.sh -y
-
-# PowerShell - automatically installs locally, skips if already installed
-.\scripts\setup\setup_litedb.ps1 -Yes
-```
-
-**For Interactive Use:**
-```bash
-# Prompts for installation location (local or global)
-bash scripts/setup/setup_litedb.sh
-
-# PowerShell version
-.\scripts\setup\setup_litedb.ps1
-```
-
-**Options:**
-- `-y` / `-Yes`: Non-interactive mode, defaults to local installation
-- `-l` / `-Local`: Install to project `lib/` directory
-- `-g` / `-Global`: Install to `~/.local/lib/unifyweaver/` (creates symlink in `lib/`)
-- `-h` / `-Help`: Show usage information
-
-### Temporary Directories
-- Generated scripts default to building inside your OS temp folder (e.g., `%TEMP%` or `/tmp`) so the repository stays clean and Dropbox syncs faster.
-- If an agent is restricted from writing outside the checkout, using the repo’s `tmp/` directory is acceptable because it is gitignored—just remove artifacts when possible.
-
-## Workflow
+## Reference: Workflow Details
 
 ### Step 1: Define JSON Source with Schema
 
@@ -158,33 +201,6 @@ namespace UnifyWeaver.Generated.QueryProductsByCategory {
     references(['lib/LiteDB.dll'])  // Loads LiteDB assembly
     ]
 ).
-```
-
-## Executable Example
-
-### Bash Script
-
-See `playbooks/examples_library/json_litedb_examples.md` record `unifyweaver.execution.json_to_litedb_bash`
-
-### PowerShell Script
-
-See `playbooks/examples_library/json_litedb_examples.md` record `unifyweaver.execution.json_to_litedb_ps`
-
-## Expected Output
-
-```
-Loading JSON data into LiteDB...
-Inserted: Widget Pro
-Inserted: Gadget X
-Inserted: Tool Master
-Inserted: Device Alpha
-✅ 4 products loaded
-
-Querying products by category 'Electronics'...
-Widget Pro:$29.99
-Gadget X:$49.99
-
-Success: JSON data streamed into LiteDB
 ```
 
 ## Architecture
