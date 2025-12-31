@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-MCP Server for Bookmark Filing.
+MCP Server for Bookmark Filing with Fuzzy Boost.
 
 Exposes bookmark filing as an MCP tool that can be used by any MCP-compatible client.
+Supports fuzzy logic boosting for fine-tuning candidate rankings.
 
 Usage:
     # Start the MCP server
@@ -12,8 +13,14 @@ Usage:
     uvx mcp-bookmark-filing
 
 The server exposes these tools:
-- get_filing_candidates: Get semantic search candidates for a bookmark
-- file_bookmark: Get LLM recommendation for where to file a bookmark
+- get_filing_candidates: Get semantic search candidates (with optional fuzzy boost)
+- get_dual_objective_candidates: Get dual-objective scored candidates
+- file_bookmark: Get LLM recommendation (with optional fuzzy boost)
+
+Fuzzy Boost Options:
+    boost_and: AND boost spec - all terms must match (e.g., "bash:0.9,shell:0.5")
+    boost_or: OR boost spec - any term can match (e.g., "python:0.8,ml:0.6")
+    filters: Filter specs (e.g., ["in_subtree:Unix", "is_type:tree"])
 """
 
 import json
@@ -36,6 +43,13 @@ except ImportError:
 # Import our inference functions
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Import fuzzy boost module
+try:
+    from fuzzy_boost import boost_filing_candidates
+    HAS_FUZZY = True
+except ImportError:
+    HAS_FUZZY = False
+
 MODEL_PATH = Path("models/pearltrees_federated_single.pkl")
 DATA_PATH = Path("reports/pearltrees_targets_full_multi_account.jsonl")
 
@@ -43,32 +57,39 @@ DATA_PATH = Path("reports/pearltrees_targets_full_multi_account.jsonl")
 def get_filing_candidates_sync(
     bookmark_title: str,
     top_k: int = 10,
-    tree_mode: bool = True
+    tree_mode: bool = True,
+    boost_and: str = None,
+    boost_or: str = None,
+    filters: list = None,
+    blend_alpha: float = 0.7
 ) -> dict:
-    """Get semantic candidates for filing a bookmark."""
+    """Get semantic candidates for filing a bookmark with optional fuzzy boost."""
     import subprocess
-    
+
+    # If fuzzy boost is requested, get more candidates to filter/boost
+    fetch_k = top_k * 2 if (boost_and or boost_or or filters) else top_k
+
     cmd = [
         sys.executable,
         str(Path(__file__).parent / "infer_pearltrees_federated.py"),
         "--model", str(MODEL_PATH),
         "--query", bookmark_title,
-        "--top-k", str(top_k),
+        "--top-k", str(fetch_k),
     ]
-    
+
     if tree_mode:
         cmd.append("--tree")
         cmd.extend(["--data", str(DATA_PATH)])
     else:
         cmd.append("--json")
-    
+
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    
+
     if result.returncode != 0:
         return {"error": result.stderr, "candidates": [], "tree": ""}
-    
+
     output = result.stdout.strip()
-    
+
     # Also get JSON for structured data
     cmd_json = cmd.copy()
     if "--tree" in cmd_json:
@@ -78,7 +99,7 @@ def get_filing_candidates_sync(
             cmd_json.pop(idx)  # remove --data
             cmd_json.pop(idx)  # remove path
     cmd_json.append("--json")
-    
+
     result_json = subprocess.run(cmd_json, capture_output=True, text=True, timeout=60)
     candidates = []
     if result_json.returncode == 0:
@@ -90,12 +111,35 @@ def get_filing_candidates_sync(
                     break
         except json.JSONDecodeError:
             pass
-    
+
+    # Apply fuzzy boost if requested and available
+    if HAS_FUZZY and candidates and (boost_and or boost_or or filters):
+        candidates = boost_filing_candidates(
+            candidates,
+            boost_and=boost_and,
+            boost_or=boost_or,
+            filters=filters,
+            blend_alpha=blend_alpha,
+            top_k=top_k
+        )
+        # Rebuild tree output from boosted candidates
+        from bookmark_filing_assistant import rebuild_tree_output
+        output = rebuild_tree_output(candidates)
+    elif len(candidates) > top_k:
+        candidates = candidates[:top_k]
+
     return {
         "tree": output if tree_mode else "",
         "candidates": candidates,
         "bookmark": bookmark_title,
-        "top_k": top_k
+        "top_k": top_k,
+        "fuzzy_boost": {
+            "enabled": HAS_FUZZY and (boost_and or boost_or or filters),
+            "boost_and": boost_and,
+            "boost_or": boost_or,
+            "filters": filters,
+            "blend_alpha": blend_alpha
+        } if (boost_and or boost_or or filters) else None
     }
 
 
@@ -111,7 +155,7 @@ def create_mcp_server():
         return [
             Tool(
                 name="get_filing_candidates",
-                description="Get semantic search candidates for where to file a bookmark in Pearltrees. Returns a hierarchical tree of candidate folders with scores.",
+                description="Get semantic search candidates for where to file a bookmark in Pearltrees. Returns a hierarchical tree of candidate folders with scores. Supports fuzzy logic boosting for fine-tuning results.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -123,6 +167,24 @@ def create_mcp_server():
                             "type": "integer",
                             "description": "Number of candidates to return (default: 10)",
                             "default": 10
+                        },
+                        "boost_and": {
+                            "type": "string",
+                            "description": "AND boost spec: 'term1:weight1,term2:weight2' - all terms must match. Example: 'bash:0.9,shell:0.5'"
+                        },
+                        "boost_or": {
+                            "type": "string",
+                            "description": "OR boost spec: 'term1:weight1,term2:weight2' - any term can match. Example: 'python:0.8,ml:0.6'"
+                        },
+                        "filters": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Filter specs: ['predicate:value', ...]. Examples: 'in_subtree:Unix', 'is_type:tree'"
+                        },
+                        "blend_alpha": {
+                            "type": "number",
+                            "description": "Blend weight with original scores (0-1, default: 0.7). Higher = more boost influence.",
+                            "default": 0.7
                         }
                     },
                     "required": ["bookmark_title"]
@@ -154,7 +216,7 @@ def create_mcp_server():
             ),
             Tool(
                 name="file_bookmark",
-                description="Get LLM recommendation for where to file a bookmark. Uses semantic search to find candidates, then asks an LLM to make the final selection.",
+                description="Get LLM recommendation for where to file a bookmark. Uses semantic search to find candidates, optionally applies fuzzy boost, then asks an LLM to make the final selection.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -181,6 +243,24 @@ def create_mcp_server():
                             "type": "boolean",
                             "description": "Use dual-objective scoring instead of federated projection",
                             "default": False
+                        },
+                        "boost_and": {
+                            "type": "string",
+                            "description": "AND boost spec: 'term1:weight1,term2:weight2' - all terms must match"
+                        },
+                        "boost_or": {
+                            "type": "string",
+                            "description": "OR boost spec: 'term1:weight1,term2:weight2' - any term can match"
+                        },
+                        "filters": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Filter specs: ['predicate:value', ...]. Examples: 'in_subtree:Unix', 'is_type:tree'"
+                        },
+                        "blend_alpha": {
+                            "type": "number",
+                            "description": "Blend weight with original scores (0-1, default: 0.7)",
+                            "default": 0.7
                         }
                     },
                     "required": ["bookmark_title"]
@@ -193,14 +273,22 @@ def create_mcp_server():
         if name == "get_filing_candidates":
             bookmark_title = arguments.get("bookmark_title", "")
             top_k = arguments.get("top_k", 10)
-            
+            boost_and = arguments.get("boost_and")
+            boost_or = arguments.get("boost_or")
+            filters = arguments.get("filters")
+            blend_alpha = arguments.get("blend_alpha", 0.7)
+
             # Run in executor to avoid blocking
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
-                lambda: get_filing_candidates_sync(bookmark_title, top_k, tree_mode=True)
+                lambda: get_filing_candidates_sync(
+                    bookmark_title, top_k, tree_mode=True,
+                    boost_and=boost_and, boost_or=boost_or,
+                    filters=filters, blend_alpha=blend_alpha
+                )
             )
-            
+
             return [TextContent(
                 type="text",
                 text=json.dumps(result, indent=2)
@@ -238,10 +326,14 @@ def create_mcp_server():
             bookmark_url = arguments.get("bookmark_url")
             provider = arguments.get("provider", "claude")
             top_k = arguments.get("top_k", 10)
-            
+            boost_and = arguments.get("boost_and")
+            boost_or = arguments.get("boost_or")
+            filters = arguments.get("filters")
+            blend_alpha = arguments.get("blend_alpha", 0.7)
+
             # Import and call the filing assistant
             from bookmark_filing_assistant import file_bookmark as fb
-            
+
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
@@ -252,7 +344,11 @@ def create_mcp_server():
                     data_path=DATA_PATH,
                     provider=provider,
                     llm_model="sonnet" if provider == "claude" else "gemini-2.0-flash",
-                    top_k=top_k
+                    top_k=top_k,
+                    boost_and=boost_and,
+                    boost_or=boost_or,
+                    filters=filters,
+                    blend_alpha=blend_alpha
                 )
             )
             
