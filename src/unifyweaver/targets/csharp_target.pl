@@ -1177,16 +1177,18 @@ build_parameter_seed_node(HeadSpec, HeadArgs, Modes, param_seed{
     seed_var_map(HeadArgs, Positions, VarMap).
 
 seed_var_map(HeadArgs, Positions, VarMap) :-
-    findall(Var-Pos,
-        (   member(Pos, Positions),
-            nth0(Pos, HeadArgs, Var),
-            (   var(Var)
-            ->  true
-            ;   format(user_error, 'C# query target: input mode position must be a variable (~w).~n', [Var]),
-                fail
-            )
-        ),
-        VarMap).
+    seed_var_map_(Positions, HeadArgs, [], VarMapRev),
+    reverse(VarMapRev, VarMap).
+
+seed_var_map_([], _HeadArgs, Acc, Acc).
+seed_var_map_([Pos|Rest], HeadArgs, Acc, VarMap) :-
+    nth0(Pos, HeadArgs, Var),
+    (   var(Var)
+    ->  true
+    ;   format(user_error, 'C# query target: input mode position must be a variable (~w).~n', [Var]),
+        fail
+    ),
+    seed_var_map_(Rest, HeadArgs, [Var-Pos|Acc], VarMap).
 
 %% build_pipeline_seeded(+HeadSpec,+GroupSpecs,+HeadArgs,+Modes,+SeedOverride,+Terms,+Roles,...)
 %  If input modes are declared, start the pipeline from a param_seed node that

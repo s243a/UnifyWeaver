@@ -30,6 +30,7 @@
 :- dynamic user:test_sale_item/3.
 :- dynamic user:test_sale_item_alice_laptop/1.
 :- dynamic user:test_sale_item_alice_laptop_via_constraints/1.
+:- dynamic user:test_sale_item_param/3.
 :- dynamic user:test_sale_count/1.
 :- dynamic user:test_sale_avg_for_alice/1.
 :- dynamic user:test_sales_by_customer/2.
@@ -156,6 +157,7 @@ test_csharp_query_target :-
         verify_stratified_negation_derived_runtime,
         verify_stratified_negation_recursive_lower_stratum_runtime,
         verify_stratified_negation_mutual_lower_stratum_runtime,
+        verify_parameterized_multi_key_join_runtime,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
         verify_parameterized_fib_runtime,
@@ -242,6 +244,9 @@ setup_test_data :-
         test_sale_item(Customer, Product, Amount),
         Customer = alice,
         Product = laptop
+    )),
+    assertz(user:(test_sale_item_param(Customer, Product, Amount) :-
+        test_sale_item(Customer, Product, Amount)
     )),
     assertz(user:(test_sale_count(C) :- aggregate_all(count, test_sale(_, _), C))),
     assertz(user:(test_sale_avg_for_alice(Avg) :-
@@ -357,6 +362,7 @@ setup_test_data :-
     assertz(user:test_multi_mode(bob, charlie)),
     assertz(user:mode(test_any_mode(?, -))),
     assertz(user:test_any_mode(alice, bob)),
+    assertz(user:mode(test_sale_item_param(+, +, -))),
     assertz(user:mode(test_fib_param(+, -))),
     assertz(user:test_fib_param(0, 1)),
     assertz(user:test_fib_param(1, 1)),
@@ -477,6 +483,7 @@ cleanup_test_data :-
     retractall(user:test_sale_item(_, _, _)),
     retractall(user:test_sale_item_alice_laptop(_)),
     retractall(user:test_sale_item_alice_laptop_via_constraints(_)),
+    retractall(user:test_sale_item_param(_, _, _)),
     retractall(user:test_sale_count(_)),
     retractall(user:test_sale_avg_for_alice(_)),
     retractall(user:test_sales_by_customer(_, _)),
@@ -510,6 +517,7 @@ cleanup_test_data :-
     retractall(user:mode(test_multi_mode(_, _))),
     retractall(user:test_any_mode(_, _)),
     retractall(user:mode(test_any_mode(_, _))),
+    retractall(user:mode(test_sale_item_param(_, _, _))),
     retractall(user:test_fib_param(_, _)),
     retractall(user:mode(test_fib_param(_,_))),
     retractall(user:test_post_agg_param(_, _)),
@@ -1186,6 +1194,19 @@ verify_aggregate_subplan_grouped_sum_with_negation_plan :-
     sub_string(Source, _, _, _, 'AggregateOperation.Sum'),
     sub_string(Source, _, _, _, 'NegationNode'),
     maybe_run_query_runtime(Plan, ['alice,15']).
+
+verify_parameterized_multi_key_join_runtime :-
+    csharp_query_target:build_query_plan(test_sale_item_param/3, [target(csharp_query)], Plan),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input, input, output],
+    get_dict(root, Plan, Root),
+    sub_term(param_seed{type:param_seed, predicate:predicate{name:test_sale_item_param, arity:3}, input_positions:[0, 1], width:3}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:[0, 1], right_keys:[0, 1], left_width:_, right_width:_, width:_}, Root),
+    (   Left = param_seed{type:param_seed, predicate:predicate{name:test_sale_item_param, arity:3}, input_positions:[0, 1], width:3}
+    ;   Right = param_seed{type:param_seed, predicate:predicate{name:test_sale_item_param, arity:3}, input_positions:[0, 1], width:3}
+    ),
+    maybe_run_query_runtime(Plan, ['alice,laptop,10', 'alice,laptop,2'], [[alice, laptop]]).
 
 verify_parameterized_fib_plan :-
     csharp_query_target:build_query_plan(test_fib_param/2, [target(csharp_query)], Plan),
