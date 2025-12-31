@@ -1627,9 +1627,8 @@ namespace UnifyWeaver.QueryRuntime
                             {
                                 useScanIndexStrategy = false;
                             }
-                            else if (joinKeyCount == 1 &&
-                                     TryEstimateRowUpperBound(otherNode, context, out var probeUpperBound) &&
-                                     probeUpperBound <= TinyProbeUpperBound)
+                            else if (TryEstimateRowUpperBound(otherNode, context, out var probeUpperBound) &&
+                                      probeUpperBound <= TinyProbeUpperBound)
                             {
                                 useScanIndexStrategy = false;
                                 forceBuildLeft = !leftIsScan;
