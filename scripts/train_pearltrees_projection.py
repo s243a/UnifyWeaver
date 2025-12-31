@@ -53,13 +53,18 @@ class SimpleEmbedder:
         return self.model.encode(texts, show_progress_bar=True, convert_to_numpy=True)
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python train_pearltrees_projection.py <targets.jsonl> <output_model.pkl> [limit]")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description="Train federated W projection matrices")
+    parser.add_argument("data", type=Path, help="Path to targets JSONL file")
+    parser.add_argument("output", type=Path, help="Output model path (.pkl)")
+    parser.add_argument("--model", type=str, default="nomic-ai/nomic-embed-text-v1.5",
+                       help="Embedding model to use (default: nomic-ai/nomic-embed-text-v1.5)")
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of items to load")
+    args = parser.parse_args()
 
-    data_path = Path(sys.argv[1])
-    output_path = Path(sys.argv[2])
-    limit = int(sys.argv[3]) if len(sys.argv) > 3 else None
+    data_path = args.data
+    output_path = args.output
+    limit = args.limit
 
     logger.info(f"Loading data from {data_path}...")
     data = load_data(data_path, limit)
@@ -69,8 +74,9 @@ def main():
     queries = [d['query'] for d in data]
     answers = [d['target_text'] for d in data]
 
-    # Embed
-    embedder = SimpleEmbedder("nomic-ai/nomic-embed-text-v1.5")
+    # Embed with specified model
+    logger.info(f"Using embedding model: {args.model}")
+    embedder = SimpleEmbedder(args.model)
     
     logger.info("Embedding queries...")
     Q_emb = embedder.encode(queries)

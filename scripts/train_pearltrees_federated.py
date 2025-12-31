@@ -461,6 +461,8 @@ def main():
                        help="Max memory per cluster in MB (for per-query mode)")
     parser.add_argument("--max-clusters", type=int, default=50,
                        help="Maximum number of clusters (recommended: 50 for 6GB GPU)")
+    parser.add_argument("--model", type=str, default="nomic-ai/nomic-embed-text-v1.5",
+                       help="Embedding model to use (default: nomic-ai/nomic-embed-text-v1.5)")
     
     args = parser.parse_args()
     
@@ -473,8 +475,9 @@ def main():
     queries = [d["query"] for d in data]
     answers = [d["target_text"] for d in data]
     
-    # Embed
-    embedder = SimpleEmbedder()
+    # Embed with specified model
+    logger.info(f"Using embedding model: {args.model}")
+    embedder = SimpleEmbedder(args.model)
     
     logger.info("Embedding queries...")
     Q_emb = embedder.encode(queries).astype(np.float32)
