@@ -8,6 +8,7 @@
 :- use_module('../../../src/unifyweaver/glue/graph_generator').
 :- use_module('../../../src/unifyweaver/glue/curve_plot_generator').
 :- use_module('../../../src/unifyweaver/glue/matplotlib_generator').
+:- use_module('../../../src/unifyweaver/glue/layout_generator').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -35,6 +36,15 @@ run_tests :-
 
     % Matplotlib Generator Tests
     run_matplotlib_generator_tests,
+
+    % Layout Generator Tests
+    run_layout_generator_tests,
+
+    % Layout Integration Tests
+    run_layout_integration_tests,
+
+    % Subplot Layout Tests
+    run_subplot_layout_tests,
 
     % Summary
     print_summary.
@@ -345,6 +355,203 @@ run_matplotlib_generator_tests :-
         generate_matplotlib_script(trig_functions, Script1),
         sub_atom(Script1, _, _, _, '__main__')
     )).
+
+% ============================================================================
+% LAYOUT GENERATOR TESTS
+% ============================================================================
+
+run_layout_generator_tests :-
+    format('~n--- Layout Generator Tests ---~n'),
+
+    % Default layouts
+    test("Has default layouts defined", (
+        default_layout(sidebar_content, _, _),
+        default_layout(dashboard, _, _)
+    )),
+
+    test("sidebar_content has correct structure", (
+        default_layout(sidebar_content, grid, Options),
+        member(areas(_), Options),
+        member(columns(_), Options)
+    )),
+
+    % Themes
+    test("Dark theme exists", (
+        layout_generator:theme(dark, Props),
+        member(background(_), Props),
+        member(accent(_), Props)
+    )),
+
+    test("Light theme exists", (
+        layout_generator:theme(light, LightProps),
+        member(background(_), LightProps)
+    )),
+
+    test("Midnight theme exists", (
+        layout_generator:theme(midnight, _)
+    )),
+
+    % CSS Generation
+    test("Generate grid CSS", (
+        layout_generator:declare_layout(test_layout, grid, [
+            areas([["a", "b"]]),
+            columns(["200px", "1fr"])
+        ]),
+        generate_layout_css(test_layout, CSS),
+        sub_atom(CSS, _, _, _, 'grid'),
+        sub_atom(CSS, _, _, _, 'grid-template-areas')
+    )),
+
+    test("Generate theme CSS", (
+        generate_theme_css(dark, ThemeCSS),
+        sub_atom(ThemeCSS, _, _, _, '--background'),
+        sub_atom(ThemeCSS, _, _, _, '--accent')
+    )),
+
+    % JSX Generation
+    test("Generate layout JSX", (
+        layout_generator:declare_layout(test_jsx, grid, [
+            areas([["main"]])
+        ]),
+        assertz(place(test_jsx, main, [content])),
+        generate_layout_jsx(test_jsx, JSX),
+        sub_atom(JSX, _, _, _, 'className')
+    )),
+
+    % Cleanup test layouts
+    retractall(layout(test_layout, _, _)),
+    retractall(layout(test_jsx, _, _)),
+    retractall(place(test_jsx, _, _)).
+
+% ============================================================================
+% LAYOUT INTEGRATION TESTS
+% ============================================================================
+
+run_layout_integration_tests :-
+    format('~n--- Layout Integration Tests ---~n'),
+
+    % Graph with layout
+    test("Generate graph with sidebar_content layout", (
+        generate_graph_with_layout(family_tree, sidebar_content, GraphCode),
+        sub_atom(GraphCode, _, _, _, 'sidebar_content'),
+        sub_atom(GraphCode, _, _, _, 'React')
+    )),
+
+    test("Generate graph with dashboard layout", (
+        generate_graph_with_layout(family_tree, dashboard, GraphCode2),
+        sub_atom(GraphCode2, _, _, _, 'dashboard')
+    )),
+
+    test("Generate graph full styles", (
+        generate_graph_full_styles(family_tree, GraphCSS),
+        atom_length(GraphCSS, CSSLen),
+        CSSLen > 100
+    )),
+
+    % Curve with layout
+    test("Generate curve with sidebar_content layout", (
+        generate_curve_with_layout(trig_demo, sidebar_content, CurveCode),
+        sub_atom(CurveCode, _, _, _, 'sidebar_content'),
+        sub_atom(CurveCode, _, _, _, 'Chart')
+    )),
+
+    test("Generate curve with dashboard layout", (
+        generate_curve_with_layout(trig_demo, dashboard, CurveCode2),
+        sub_atom(CurveCode2, _, _, _, 'dashboard')
+    )),
+
+    test("Generate curve full styles", (
+        generate_curve_full_styles(trig_demo, CurveCSS),
+        atom_length(CurveCSS, CSSLen2),
+        CSSLen2 > 100
+    )),
+
+    % Single layout pattern
+    test("Generate graph with single layout", (
+        generate_graph_with_layout(simple_graph, single, SingleCode),
+        sub_atom(SingleCode, _, _, _, 'React')
+    )),
+
+    test("Generate curve with single layout", (
+        generate_curve_with_layout(polynomial_demo, single, SingleCurve),
+        sub_atom(SingleCurve, _, _, _, 'Chart')
+    )).
+
+% ============================================================================
+% SUBPLOT LAYOUT TESTS
+% ============================================================================
+
+run_subplot_layout_tests :-
+    format('~n--- Subplot Layout Tests ---~n'),
+
+    % Setup test subplot layout
+    test("Declare subplot layout", (
+        layout_generator:assertz(subplot_layout(test_subplot, grid, [rows(2), cols(2)])),
+        layout_generator:assertz(subplot_content(test_subplot, pos(1,1), [curve(sine), title("Sine")])),
+        layout_generator:assertz(subplot_content(test_subplot, pos(1,2), [curve(cosine), title("Cosine")])),
+        layout_generator:assertz(subplot_content(test_subplot, pos(2,1), [curve(quadratic), title("Quadratic")])),
+        layout_generator:assertz(subplot_content(test_subplot, pos(2,2), [curve(exponential), title("Exponential")])),
+        has_subplot_layout(test_subplot)
+    )),
+
+    % Subplot dimensions
+    test("Get subplot dimensions", (
+        layout_generator:get_subplot_dimensions(test_subplot, Rows, Cols),
+        Rows =:= 2,
+        Cols =:= 2
+    )),
+
+    % Subplot positions
+    test("Get subplot positions", (
+        layout_generator:get_subplot_positions(test_subplot, Positions),
+        length(Positions, 4)
+    )),
+
+    % CSS generation (web - synthesized)
+    test("Generate subplot CSS", (
+        generate_subplot_css(test_subplot, CSS),
+        sub_atom(CSS, _, _, _, 'display: grid'),
+        sub_atom(CSS, _, _, _, 'grid-template-columns')
+    )),
+
+    test("Subplot CSS has cell classes", (
+        generate_subplot_css(test_subplot, CSS2),
+        sub_atom(CSS2, _, _, _, 'cell-1-1'),
+        sub_atom(CSS2, _, _, _, 'cell-2-2')
+    )),
+
+    % JSX generation (web - synthesized)
+    test("Generate subplot JSX", (
+        generate_subplot_jsx(test_subplot, JSX),
+        sub_atom(JSX, _, _, _, 'React'),
+        sub_atom(JSX, _, _, _, 'className')
+    )),
+
+    test("Subplot JSX has chart components", (
+        generate_subplot_jsx(test_subplot, JSX2),
+        sub_atom(JSX2, _, _, _, 'Chart')
+    )),
+
+    % Matplotlib generation (native)
+    test("Generate subplot matplotlib", (
+        generate_subplot_matplotlib(test_subplot, MplCode),
+        sub_atom(MplCode, _, _, _, 'plt.subplots'),
+        sub_atom(MplCode, _, _, _, 'axes')
+    )),
+
+    test("Matplotlib has 2x2 grid", (
+        generate_subplot_matplotlib(test_subplot, MplCode2),
+        sub_atom(MplCode2, _, _, _, 'subplots(2, 2')
+    )),
+
+    test("Matplotlib has tight_layout", (
+        generate_subplot_matplotlib(test_subplot, MplCode3),
+        sub_atom(MplCode3, _, _, _, 'tight_layout')
+    )),
+
+    % Cleanup
+    retractall(subplot_layout(test_subplot, _, _)),
+    retractall(subplot_content(test_subplot, _, _)).
 
 % ============================================================================
 % TEST HELPERS
