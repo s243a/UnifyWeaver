@@ -42,6 +42,12 @@
     generate_typescript_security/1,     % generate_typescript_security(-Code) - combined
     generate_express_security_middleware/1,  % generate_express_security_middleware(-Code)
 
+    % Preferences/Firewall integration
+    validate_with_firewall/3,           % validate_with_firewall(+Module, +Function, -Result)
+    get_config_rate_limit/1,            % get_config_rate_limit(-RateLimit)
+    get_config_timeout/1,               % get_config_timeout(-Timeout)
+    generate_typescript_whitelist_with_config/1,  % generate_typescript_whitelist_with_config(-Code)
+
     % Testing
     test_rpyc_security/0
 ]).
@@ -524,6 +530,77 @@ export const securityMiddleware = [
 // Burst limit for rate limiter
 export const BURST_LIMIT = ~w;
 ', [RPS, Timeout, Burst]).
+
+% ============================================================================
+% TESTING
+% ============================================================================
+% PREFERENCES/FIREWALL INTEGRATION
+% ============================================================================
+
+%% validate_with_firewall(+Module, +Function, -Result) is det.
+%
+% Validate a call using both local rules and firewall system.
+% This integrates with typescript_glue_config for context-aware validation.
+validate_with_firewall(Module, Function, Result) :-
+    % First check local security rules
+    validate_call(Module, Function, LocalResult),
+    (   LocalResult \= ok
+    ->  Result = LocalResult
+    ;   % Then check firewall if available
+        (   current_module(typescript_glue_config)
+        ->  catch(typescript_glue_config:validate_rpyc_call(Module, Function, FirewallResult), _, FirewallResult = ok),
+            Result = FirewallResult
+        ;   Result = ok
+        )
+    ).
+
+%% get_config_rate_limit(-RateLimit) is det.
+%
+% Get rate limit from config or use default.
+get_config_rate_limit(RateLimit) :-
+    (   current_module(typescript_glue_config)
+    ->  catch(typescript_glue_config:get_rpyc_config(Config), _, Config = []),
+        (   member(rate_limit(RateLimit), Config)
+        ->  true
+        ;   RateLimit = 100
+        )
+    ;   (   rpyc_rate_limit(RateLimit)
+        ->  true
+        ;   RateLimit = 100
+        )
+    ).
+
+%% get_config_timeout(-Timeout) is det.
+%
+% Get timeout from config or use default.
+get_config_timeout(Timeout) :-
+    (   current_module(typescript_glue_config)
+    ->  catch(typescript_glue_config:get_rpyc_config(Config), _, Config = []),
+        (   member(timeout(Timeout), Config)
+        ->  true
+        ;   Timeout = 30000
+        )
+    ;   Timeout = 30000
+    ).
+
+%% generate_typescript_whitelist_with_config(-Code) is det.
+%
+% Generate whitelist code using configuration from preferences.
+generate_typescript_whitelist_with_config(Code) :-
+    get_config_rate_limit(RateLimit),
+    get_config_timeout(Timeout),
+    generate_typescript_whitelist(BaseCode),
+    format(atom(Code),
+'// Configuration from UnifyWeaver preferences
+export const SECURITY_CONFIG = {
+  rateLimit: ~w,
+  rateLimitWindow: 60000,
+  timeout: ~w,
+  maxDepth: 10,
+  maxArrayLength: 10000
+};
+
+~w', [RateLimit, Timeout, BaseCode]).
 
 % ============================================================================
 % TESTING
