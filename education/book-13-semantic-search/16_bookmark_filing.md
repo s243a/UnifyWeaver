@@ -21,6 +21,8 @@ The semantic search uses a federated projection model:
 - **Query-level routing** to find similar training queries
 - **160MB total** model size
 
+See [Model Format Documentation](../../docs/design/FEDERATED_MODEL_FORMAT.md) for detailed file structure.
+
 ### LLM Integration
 
 Multiple LLM backends supported:

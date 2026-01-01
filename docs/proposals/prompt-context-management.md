@@ -326,3 +326,53 @@ This keeps Prolog as source of truth - modify rules in one place, regenerate tar
 - UnifyWeaver Prolog transpiler: `src/unifyweaver/`
 - Current filing assistant: `scripts/bookmark_filing_assistant.py`
 - Fuzzy boost system: `scripts/fuzzy_boost.py`
+
+## Future Feature: Cross-Account Folder Migration
+
+### Use Case
+User has content in account A (e.g., s243a) that they want to move to account B (e.g., s243a_groups) because:
+- Account A is no longer updateable
+- Consolidating public content into a shared account
+- Reorganizing across account boundaries
+
+### Proposed Workflow
+
+```
+1. User specifies: source folder, source account, target account
+2. System analyzes:
+   - Source folder structure and contents
+   - Target account structure
+   - Privacy check (flag potentially private content)
+3. System suggests:
+   - Best target location(s) using semantic search
+   - Any parent folders that need to be created
+   - Conflicts or duplicates in target
+4. User confirms
+5. System generates:
+   - Pearltrees API calls or manual instructions for the move
+```
+
+### Example
+
+```bash
+python3 scripts/launch_filing_agent.py --move \
+    --source "geometry" --source-account s243a \
+    --target-account s243a_groups
+
+# Output:
+# Source: s243a/science/Math.../Math.../geometry (id10659804)
+# Suggested target: s243a_groups/STEM/Math.../Fields of mathematics
+# 
+# Contents to move:
+#   ✓ Fields of geometry (public)
+#   ✓ Analytic Geometry (public)
+#   ✓ Differential Geometry (public)
+#   ...
+# 
+# No private content detected. Proceed? [y/N]
+```
+
+### Implementation Notes
+- Reuses existing semantic search for target location
+- Privacy detection could use heuristics (folder names, content patterns)
+- May require Pearltrees API integration or generate manual steps

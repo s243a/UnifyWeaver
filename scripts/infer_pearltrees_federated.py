@@ -6,6 +6,8 @@ Given a query (bookmark title/URL), returns top-k candidate folders
 for filing the bookmark. Uses query-level routing with cluster-shared
 Procrustes transforms.
 
+See docs/design/FEDERATED_MODEL_FORMAT.md for the model file format specification.
+
 Usage:
     python3 scripts/infer_pearltrees_federated.py \
         --model models/pearltrees_federated_single.pkl \
@@ -16,7 +18,7 @@ Usage:
     python3 scripts/infer_pearltrees_federated.py \
         --model models/pearltrees_federated_single.pkl \
         --interactive
-        
+
     # JSON output for piping to other tools:
     python3 scripts/infer_pearltrees_federated.py \
         --model models/pearltrees_federated_single.pkl \
@@ -47,47 +49,83 @@ class Candidate:
     path: str
     cluster_id: str
     dataset_index: int = -1
+    account: str = ""
 
 
 class FederatedInferenceEngine:
     """
     Inference engine for federated Pearltrees model.
-    
+
     Uses query-level routing: finds most similar training queries,
     then uses their cluster's W matrix to project the new query.
     """
-    
-    def __init__(self, model_path: Path, embedder_name: str = "nomic-ai/nomic-embed-text-v1.5"):
+
+    def __init__(self, model_path: Path, embedder_name: str = "nomic-ai/nomic-embed-text-v1.5",
+                 data_path: Optional[Path] = None):
         self.model_path = Path(model_path)
         self.embedder_name = embedder_name
-        
+
         # Load model metadata
         logger.info(f"Loading model from {model_path}...")
         with open(model_path, "rb") as f:
             self.meta = pickle.load(f)
-        
+
         self.cluster_ids = self.meta["cluster_ids"]
         self.cluster_centroids = self.meta["cluster_centroids"]
         self.global_target_ids = self.meta.get("global_target_ids", [])
         self.global_target_titles = self.meta.get("global_target_titles", [])
+        self.global_target_accounts = self.meta.get("global_target_accounts", [])
         self.temperature = self.meta.get("temperature", 0.1)
-        
+
         # Determine cluster directory
         if "cluster_dir" in self.meta:
             self.cluster_dir = Path(self.meta["cluster_dir"])
         else:
             self.cluster_dir = self.model_path.with_suffix('')
-        
+
         logger.info(f"Model has {len(self.cluster_ids)} clusters")
-        
+
         # Load routing data
         self._load_routing_data()
-        
+
         # Load cluster W matrices
         self._load_clusters()
-        
+
+        # Load account lookup from JSONL if not in model and data_path provided
+        if not self.global_target_accounts and data_path:
+            self._load_account_lookup(data_path)
+
         # Load embedder (lazy)
         self._embedder = None
+
+    def _load_account_lookup(self, data_path: Path):
+        """Load account information from JSONL file, keyed by tree_id."""
+        data_path = Path(data_path)
+        if not data_path.exists():
+            logger.warning(f"Data path {data_path} not found, account filtering disabled")
+            return
+
+        logger.info(f"Loading account lookup from {data_path}...")
+
+        # Build tree_id -> account mapping from JSONL
+        tree_id_to_account = {}
+        with open(data_path) as f:
+            for line in f:
+                record = json.loads(line)
+                tree_id = record.get("tree_id", "")
+                account = record.get("account", "")
+                if tree_id and account:
+                    tree_id_to_account[tree_id] = account
+
+        # Map to global_target_ids order
+        self.global_target_accounts = [
+            tree_id_to_account.get(tid, "") for tid in self.global_target_ids
+        ]
+
+        # Count accounts
+        from collections import Counter
+        account_counts = Counter(self.global_target_accounts)
+        logger.info(f"Loaded accounts: {dict(account_counts)}")
     
     def _load_routing_data(self):
         """Load query embeddings and index-to-cluster mapping for routing."""
@@ -169,27 +207,29 @@ class FederatedInferenceEngine:
         
         return proj
     
-    def search(self, query: str, top_k: int = 5, top_k_routing: int = 10) -> List[Candidate]:
+    def search(self, query: str, top_k: int = 5, top_k_routing: int = 10,
+               account_filter: Optional[str] = None) -> List[Candidate]:
         """
         Search for best folders to file a bookmark.
-        
+
         Args:
             query: Bookmark title, URL, or description
             top_k: Number of candidates to return
             top_k_routing: Number of training queries to use for routing
-            
+            account_filter: If set, only return candidates from this account
+
         Returns:
             List of Candidate objects with scores
         """
         # Embed query
         q_emb = self.embed_query(query)
-        
+
         # Project using federated model
         q_proj = self.project_query(q_emb, top_k_routing)
-        
+
         # Normalize
         q_proj_norm = q_proj / (np.linalg.norm(q_proj) + 1e-8)
-        
+
         # Compare to all targets
         if self.target_embeddings is not None:
             A_norm = self.target_embeddings / (np.linalg.norm(self.target_embeddings, axis=1, keepdims=True) + 1e-8)
@@ -197,43 +237,58 @@ class FederatedInferenceEngine:
         else:
             # Fall back to cluster centroids
             scores = q_proj_norm @ self.cluster_centroids.T
-        
-        # Get top-k indices
-        top_indices = np.argsort(scores)[::-1][:top_k]
-        
+
+        # Get sorted indices (fetch more if filtering by account)
+        fetch_k = top_k * 5 if account_filter else top_k
+        all_indices = np.argsort(scores)[::-1][:fetch_k]
+
         # Build candidates
         candidates = []
-        for rank, idx in enumerate(top_indices, 1):
+        for idx in all_indices:
             idx = int(idx)
-            
+
+            # Get account for this target
+            account = ""
+            if idx < len(self.global_target_accounts):
+                account = self.global_target_accounts[idx]
+
+            # Skip if account filter is set and doesn't match
+            if account_filter and account != account_filter:
+                continue
+
             # Get cluster ID for this target
             cluster_id = self.idx_to_cluster.get(idx, "unknown")
-            
+
             # Get title from stored titles
             if idx < len(self.global_target_titles):
                 title = self.global_target_titles[idx]
             else:
                 title = f"Target {idx}"
-            
+
             # Get tree ID
             if idx < len(self.global_target_ids):
                 tree_id = self.global_target_ids[idx]
             else:
                 tree_id = str(idx)
-            
+
             # For now, path is same as title (could be enhanced)
             path = title
-            
+
             candidates.append(Candidate(
-                rank=rank,
+                rank=len(candidates) + 1,  # Re-rank after filtering
                 score=float(scores[idx]),
                 tree_id=tree_id,
                 title=title,
                 path=path,
                 cluster_id=cluster_id,
-                dataset_index=idx
+                dataset_index=idx,
+                account=account
             ))
-        
+
+            # Stop when we have enough
+            if len(candidates) >= top_k:
+                break
+
         return candidates
     
     def search_batch(self, queries: List[str], top_k: int = 5) -> List[List[Candidate]]:
@@ -250,12 +305,14 @@ def format_candidates(candidates: List[Candidate], json_output: bool = False) ->
             "tree_id": c.tree_id,
             "title": c.title,
             "path": c.path,
-            "cluster_id": c.cluster_id
+            "cluster_id": c.cluster_id,
+            "account": c.account
         } for c in candidates], indent=2)
-    
+
     lines = []
     for c in candidates:
-        lines.append(f"{c.rank}. [{c.score:.4f}] {c.title}")
+        account_str = f" @{c.account}" if c.account else ""
+        lines.append(f"{c.rank}. [{c.score:.4f}] {c.title}{account_str}")
         lines.append(f"   ID: {c.tree_id} | Cluster: {c.cluster_id}")
     return "\n".join(lines)
 
@@ -337,15 +394,18 @@ def format_tree(node, depth=0, prefix='') -> str:
     return '\n'.join(filter(None, lines))
 
 
-def interactive_mode(engine: 'FederatedInferenceEngine', top_k: int = 5):
+def interactive_mode(engine: 'FederatedInferenceEngine', top_k: int = 5,
+                     account_filter: Optional[str] = None):
     """Run in interactive mode."""
     print("\n=== Pearltrees Bookmark Filing Assistant ===")
     print(f"Model: {engine.model_path}")
     print(f"Clusters: {len(engine.cluster_ids)}")
     print(f"Targets: {len(engine.query_embeddings)}")
+    if account_filter:
+        print(f"Account filter: {account_filter}")
     print("\nEnter bookmark titles/URLs to find best folders.")
     print("Type 'quit' to exit.\n")
-    
+
     while True:
         try:
             query = input("Query> ").strip()
@@ -353,12 +413,12 @@ def interactive_mode(engine: 'FederatedInferenceEngine', top_k: int = 5):
                 continue
             if query.lower() in ("quit", "exit", "q"):
                 break
-            
-            candidates = engine.search(query, top_k)
+
+            candidates = engine.search(query, top_k, account_filter=account_filter)
             print(f"\nTop {top_k} candidates:")
             print(format_candidates(candidates))
             print()
-            
+
         except KeyboardInterrupt:
             print("\nExiting...")
             break
@@ -391,16 +451,31 @@ def main():
                        help="Path to original JSONL data (for --tree mode)")
     parser.add_argument("--embedder", type=str, default="nomic-ai/nomic-embed-text-v1.5",
                        help="Embedding model to use")
-    
+    parser.add_argument("--account", type=str, default=None,
+                       help="Filter results to this account only (e.g., s243a, s243a_groups)")
+
     args = parser.parse_args()
-    
-    # Load engine
-    engine = FederatedInferenceEngine(args.model, args.embedder)
-    
+
+    # Determine data path - prefer: CLI arg > model metadata > default
+    if args.data:
+        data_path = args.data
+    else:
+        # Check if model has stored data_path
+        with open(args.model, "rb") as f:
+            meta = pickle.load(f)
+        stored_path = meta.get("data_path")
+        if stored_path and Path(stored_path).exists():
+            data_path = Path(stored_path)
+            logger.info(f"Using data path from model: {data_path}")
+        else:
+            data_path = Path("reports/pearltrees_targets_full_multi_account.jsonl")
+
+    # Load engine (pass data_path for account lookup)
+    engine = FederatedInferenceEngine(args.model, args.embedder, data_path=data_path)
+
     # Load data if tree mode requested
     data = None
     if args.tree:
-        data_path = args.data or Path("reports/pearltrees_targets_full_multi_account.jsonl")
         if data_path.exists():
             with open(data_path) as f:
                 data = [json.loads(line) for line in f]
@@ -408,11 +483,12 @@ def main():
         else:
             logger.warning(f"Data file not found: {data_path}, tree mode disabled")
             args.tree = False
-    
+
     if args.interactive:
-        interactive_mode(engine, args.top_k)
+        interactive_mode(engine, args.top_k, account_filter=args.account)
     elif args.query:
-        candidates = engine.search(args.query, args.top_k, args.top_k_routing)
+        candidates = engine.search(args.query, args.top_k, args.top_k_routing,
+                                   account_filter=args.account)
         
         if args.tree and data:
             tree = build_merged_tree(candidates, data)

@@ -9,6 +9,8 @@ At inference:
 1. Route query to cluster(s) via softmax
 2. Within cluster, route to specific transform via softmax
 3. Project and search
+
+See docs/design/FEDERATED_MODEL_FORMAT.md for the output file format specification.
 """
 
 import sys
@@ -523,7 +525,8 @@ def main():
         "global_target_titles": model.global_target_titles,
         "metrics": {},
         "num_clusters": len(model.cluster_ids),
-        "cluster_dir": str(output_dir)
+        "cluster_dir": str(output_dir),
+        "data_path": str(args.input_jsonl.resolve())  # For account lookup at inference
     }
     
     with open(args.output_model, "wb") as f:
