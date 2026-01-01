@@ -56,7 +56,7 @@ comma_list((A,B), [A|Rest]) :- comma_list(B, Rest).
 reorder_goals([], _, _, []).
 reorder_goals(Goals, BoundVars, Pred, [BestGoal|RestOptimized]) :-
     % 1. Identify candidate goals (dependencies satisfied)
-    include(is_ready(BoundVars), Goals, ReadyGoals),
+    ready_goals(BoundVars, Goals, ReadyGoals),
     
     (   ReadyGoals = []
     ->  % Fallback
@@ -78,6 +78,18 @@ reorder_goals(Goals, BoundVars, Pred, [BestGoal|RestOptimized]) :-
 % ============================================================================
 % DEPENDENCY CHECKING
 % ============================================================================
+
+%% ready_goals(+BoundVars:list, +Goals:list, -ReadyGoals:list) is det.
+%
+%  Filter the goals whose dependencies are satisfied given the currently bound
+%  variables.
+ready_goals(_BoundVars, [], []).
+ready_goals(BoundVars, [Goal|Rest], [Goal|ReadyRest]) :-
+    is_ready(BoundVars, Goal),
+    !,
+    ready_goals(BoundVars, Rest, ReadyRest).
+ready_goals(BoundVars, [_Goal|Rest], ReadyRest) :-
+    ready_goals(BoundVars, Rest, ReadyRest).
 
 %% is_ready(+BoundVars:list, +Goal) is semidet.
 %
