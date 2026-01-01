@@ -493,12 +493,52 @@ export const MyDemo: React.FC = () => {
 3. **Snapshot tests**: Generated CSS/HTML matches expected output
 4. **Visual regression**: Rendered output looks correct (manual/Playwright)
 
-## Open Questions
+## Future Work
 
-1. **Responsive design**: How to specify breakpoints declaratively?
-2. **Animation**: Should transitions/animations be declarative?
-3. **Accessibility**: How to ensure generated HTML is accessible?
-4. **CSS-in-JS vs CSS Modules**: Which output format for React?
+The following enhancements are planned for future development:
+
+### Responsive Design
+Declarative breakpoint specifications for adaptive layouts:
+```prolog
+responsive(my_layout, [
+    breakpoint(mobile, max_width(640), [columns(["1fr"])]),
+    breakpoint(tablet, max_width(1024), [columns(["280px", "1fr"])]),
+    breakpoint(desktop, min_width(1025), [columns(["320px", "1fr", "280px"])])
+]).
+```
+
+### Animation System
+Declarative transitions and animations:
+```prolog
+animation(fade_in, [
+    duration(300),
+    easing(ease_out),
+    keyframes([
+        frame(0, [opacity(0)]),
+        frame(100, [opacity(1)])
+    ])
+]).
+
+transition(my_component, hover, [
+    property(transform),
+    duration(200),
+    easing(ease_in_out)
+]).
+```
+
+### Accessibility
+ARIA attributes and keyboard navigation:
+```prolog
+accessibility(chart_container, [
+    role(img),
+    aria_label("Interactive chart showing data trends"),
+    keyboard_nav(true),
+    focus_indicator(outline)
+]).
+```
+
+### Live Preview
+Development server with hot-reload for visualization prototyping.
 
 ## References
 

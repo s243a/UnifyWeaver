@@ -9,11 +9,14 @@ This documentation is dual-licensed under MIT and CC-BY-4.0.
 
 **Generating React Components and Python Plots from Prolog Specifications**
 
-This chapter covers three declarative glue modules that generate visualization code:
+This chapter covers six declarative glue modules that generate visualization code:
 
 - **graph_generator.pl** - Cytoscape.js graph visualization with React/TypeScript
 - **curve_plot_generator.pl** - Chart.js curve plotting with React/TypeScript
 - **matplotlib_generator.pl** - Python matplotlib code generation
+- **heatmap_generator.pl** - Heatmap visualization with React and seaborn
+- **treemap_generator.pl** - Hierarchical treemap visualization with React and Plotly
+- **plot3d_generator.pl** - 3D surface, scatter, and line plots with Plotly.js
 
 ## Overview
 
@@ -514,6 +517,167 @@ This produces:
 % }
 ```
 
+## Heatmap Generator
+
+The heatmap generator creates grid-based visualizations for correlation matrices, activity data, and more.
+
+### Defining Heatmap Data
+
+```prolog
+:- use_module('src/unifyweaver/glue/heatmap_generator').
+
+% Define heatmap configuration
+heatmap_spec(correlation_demo, [
+    title("Correlation Matrix"),
+    x_labels(["Variable A", "Variable B", "Variable C"]),
+    y_labels(["Variable A", "Variable B", "Variable C"]),
+    color_scale(diverging),
+    show_values(true)
+]).
+
+% Define cell values (x, y, value)
+heatmap_cell(correlation_demo, 0, 0, 1.0).
+heatmap_cell(correlation_demo, 0, 1, 0.8).
+heatmap_cell(correlation_demo, 1, 0, 0.8).
+heatmap_cell(correlation_demo, 1, 1, 1.0).
+
+% Or use rows for efficiency
+heatmap_row(activity_demo, 0, [0.1, 0.2, 0.15, 0.18]).
+heatmap_row(activity_demo, 1, [0.5, 0.6, 0.55, 0.58]).
+```
+
+### Color Scales
+
+| Scale | Description |
+|-------|-------------|
+| `sequential` | White to blue gradient |
+| `diverging` | Blue (-1) to white (0) to red (+1) |
+| `viridis` | Perceptually uniform color map |
+| `heat` | Black to red to yellow to white |
+
+### Code Generation
+
+```prolog
+% Generate React component
+?- generate_heatmap_component(correlation_demo, Code).
+
+% Generate Python/seaborn code
+?- generate_heatmap_matplotlib(correlation_demo, PyCode).
+```
+
+## Treemap Generator
+
+The treemap generator creates hierarchical visualizations using nested rectangles.
+
+### Defining Treemap Data
+
+```prolog
+:- use_module('src/unifyweaver/glue/treemap_generator').
+
+% Define treemap configuration
+treemap_spec(filesystem_demo, [
+    title("Project File Sizes"),
+    root(project_root),
+    color_by(category),
+    show_labels(true)
+]).
+
+% Define nodes: id, parent, label, value
+treemap_node(project_root, null, "Project", 0).
+treemap_node(src, project_root, "src", 0).
+treemap_node(main_ts, src, "main.ts", 150).
+treemap_node(utils_ts, src, "utils.ts", 80).
+```
+
+### Color Modes
+
+| Mode | Description |
+|------|-------------|
+| `depth` | Color by tree depth level |
+| `value` | Color by node value |
+| `category` | Color by hash of node ID |
+
+### Code Generation
+
+```prolog
+% Generate React component
+?- generate_treemap_component(filesystem_demo, Code).
+
+% Generate Python/Plotly code
+?- generate_treemap_plotly(filesystem_demo, PyCode).
+```
+
+## 3D Plot Generator
+
+The 3D plot generator creates interactive 3D visualizations including surfaces, scatter plots, and lines.
+
+### Defining 3D Surfaces
+
+```prolog
+:- use_module('src/unifyweaver/glue/plot3d_generator').
+
+% Define a 3D surface
+surface3d(wave_surface, [
+    title("3D Wave Surface"),
+    function(sin_cos),          % z = sin(x) * cos(y)
+    x_range(-3.14159, 3.14159),
+    y_range(-3.14159, 3.14159),
+    resolution(50),
+    colorscale(viridis)
+]).
+```
+
+### Surface Functions
+
+| Function | Formula |
+|----------|---------|
+| `sin_cos` | z = sin(x) * cos(y) |
+| `paraboloid` | z = x² + y² |
+| `saddle` | z = x² - y² |
+| `ripple` | z = sin(r*3) / (r+0.1) where r = √(x²+y²) |
+| `gaussian` | z = e^(-(x²+y²)/2) |
+
+### Defining 3D Scatter Plots
+
+```prolog
+scatter3d_spec(cluster_demo, [
+    title("3D Cluster Visualization"),
+    marker_size(8),
+    colorscale(portland)
+]).
+
+scatter3d_point(cluster_demo, 1.0, 1.0, 1.0, [label("A1"), cluster(1)]).
+scatter3d_point(cluster_demo, -1.0, -1.0, 1.0, [label("B1"), cluster(2)]).
+```
+
+### Defining 3D Lines
+
+```prolog
+line3d_spec(helix, [
+    title("3D Helix"),
+    line_width(3),
+    color('#00d4ff')
+]).
+
+% Points are ordered by index
+line3d_point(helix, 0, 1.0, 0.0, 0.0).
+line3d_point(helix, 1, 0.809, 0.588, 0.2).
+line3d_point(helix, 2, 0.309, 0.951, 0.4).
+```
+
+### Code Generation
+
+```prolog
+% Generate React/Plotly.js component
+?- generate_plot3d_component(wave_surface, Code).
+
+% Generate Python/matplotlib code
+?- generate_plot3d_matplotlib(wave_surface, PyCode).
+
+% Generate Python/Plotly code
+?- generate_plot3d_plotly(wave_surface, PyCode).
+```
+
 ## Testing
 
 The integration tests verify all visualization glue modules:
@@ -523,7 +687,7 @@ The integration tests verify all visualization glue modules:
 swipl -g "run_tests" -t halt tests/integration/glue/test_visualization_glue.pl
 
 # Expected output:
-# Results: 99/99 tests passed
+# Results: 128/128 tests passed
 # All tests passed!
 ```
 
@@ -539,6 +703,9 @@ swipl -g "run_tests" -t halt tests/integration/glue/test_visualization_glue.pl
 | subplot_layout | 10 | Subplot CSS, JSX, matplotlib generation |
 | control_system | 14 | Control definitions, JSX generation, state, CSS |
 | wiring_system | 10 | Wiring specs, props, types, wired components |
+| heatmap_generator | 9 | Specs, cells, dimensions, React/matplotlib |
+| treemap_generator | 9 | Specs, nodes, hierarchy, React/Plotly |
+| plot3d_generator | 11 | Surfaces, scatter, lines, React/matplotlib |
 
 ## Best Practices
 
@@ -594,7 +761,7 @@ The visualization glue modules provide:
 - **Wired components** - Controls automatically connected to visualization state
 - **Runtime evaluation** - Evaluate curves programmatically
 - **Consistent patterns** - Same workflow as other UnifyWeaver glue modules
-- **Full test coverage** - 99 integration tests
+- **Full test coverage** - 128 integration tests
 
 ## What's Next?
 
