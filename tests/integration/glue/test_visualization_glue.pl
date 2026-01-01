@@ -43,6 +43,9 @@ run_tests :-
     % Layout Integration Tests
     run_layout_integration_tests,
 
+    % Subplot Layout Tests
+    run_subplot_layout_tests,
+
     % Summary
     print_summary.
 
@@ -473,6 +476,82 @@ run_layout_integration_tests :-
         generate_curve_with_layout(polynomial_demo, single, SingleCurve),
         sub_atom(SingleCurve, _, _, _, 'Chart')
     )).
+
+% ============================================================================
+% SUBPLOT LAYOUT TESTS
+% ============================================================================
+
+run_subplot_layout_tests :-
+    format('~n--- Subplot Layout Tests ---~n'),
+
+    % Setup test subplot layout
+    test("Declare subplot layout", (
+        layout_generator:assertz(subplot_layout(test_subplot, grid, [rows(2), cols(2)])),
+        layout_generator:assertz(subplot_content(test_subplot, pos(1,1), [curve(sine), title("Sine")])),
+        layout_generator:assertz(subplot_content(test_subplot, pos(1,2), [curve(cosine), title("Cosine")])),
+        layout_generator:assertz(subplot_content(test_subplot, pos(2,1), [curve(quadratic), title("Quadratic")])),
+        layout_generator:assertz(subplot_content(test_subplot, pos(2,2), [curve(exponential), title("Exponential")])),
+        has_subplot_layout(test_subplot)
+    )),
+
+    % Subplot dimensions
+    test("Get subplot dimensions", (
+        layout_generator:get_subplot_dimensions(test_subplot, Rows, Cols),
+        Rows =:= 2,
+        Cols =:= 2
+    )),
+
+    % Subplot positions
+    test("Get subplot positions", (
+        layout_generator:get_subplot_positions(test_subplot, Positions),
+        length(Positions, 4)
+    )),
+
+    % CSS generation (web - synthesized)
+    test("Generate subplot CSS", (
+        generate_subplot_css(test_subplot, CSS),
+        sub_atom(CSS, _, _, _, 'display: grid'),
+        sub_atom(CSS, _, _, _, 'grid-template-columns')
+    )),
+
+    test("Subplot CSS has cell classes", (
+        generate_subplot_css(test_subplot, CSS2),
+        sub_atom(CSS2, _, _, _, 'cell-1-1'),
+        sub_atom(CSS2, _, _, _, 'cell-2-2')
+    )),
+
+    % JSX generation (web - synthesized)
+    test("Generate subplot JSX", (
+        generate_subplot_jsx(test_subplot, JSX),
+        sub_atom(JSX, _, _, _, 'React'),
+        sub_atom(JSX, _, _, _, 'className')
+    )),
+
+    test("Subplot JSX has chart components", (
+        generate_subplot_jsx(test_subplot, JSX2),
+        sub_atom(JSX2, _, _, _, 'Chart')
+    )),
+
+    % Matplotlib generation (native)
+    test("Generate subplot matplotlib", (
+        generate_subplot_matplotlib(test_subplot, MplCode),
+        sub_atom(MplCode, _, _, _, 'plt.subplots'),
+        sub_atom(MplCode, _, _, _, 'axes')
+    )),
+
+    test("Matplotlib has 2x2 grid", (
+        generate_subplot_matplotlib(test_subplot, MplCode2),
+        sub_atom(MplCode2, _, _, _, 'subplots(2, 2')
+    )),
+
+    test("Matplotlib has tight_layout", (
+        generate_subplot_matplotlib(test_subplot, MplCode3),
+        sub_atom(MplCode3, _, _, _, 'tight_layout')
+    )),
+
+    % Cleanup
+    retractall(subplot_layout(test_subplot, _, _)),
+    retractall(subplot_content(test_subplot, _, _)).
 
 % ============================================================================
 % TEST HELPERS

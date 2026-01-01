@@ -22,6 +22,10 @@
     layout/3,                       % layout(+Name, +Strategy, +Options)
     default_layout/3,               % default_layout(+Pattern, +Strategy, +Options)
 
+    % Subplot layout (internal to component)
+    subplot_layout/3,               % subplot_layout(+Name, +Strategy, +Options)
+    subplot_content/3,              % subplot_content(+Name, +Position, +Content)
+
     % Style predicates
     style/2,                        % style(+Component, +Properties)
     style/3,                        % style(+Component, +Selector, +Properties)
@@ -42,9 +46,15 @@
     generate_layout_html/2,         % generate_layout_html(+Name, -HTML)
     generate_layout_jsx/2,          % generate_layout_jsx(+Name, -JSX)
 
+    % Subplot generation (target-aware)
+    generate_subplot_css/2,         % generate_subplot_css(+Name, -CSS) - for web (synthesized)
+    generate_subplot_jsx/2,         % generate_subplot_jsx(+Name, -JSX) - for web
+    generate_subplot_matplotlib/2,  % generate_subplot_matplotlib(+Name, -Code) - for matplotlib
+
     % Utility predicates
     get_layout_regions/2,           % get_layout_regions(+Name, -Regions)
     has_layout/1,                   % has_layout(+Name)
+    has_subplot_layout/1,           % has_subplot_layout(+Name)
 
     % Management
     declare_layout/3,               % declare_layout(+Name, +Strategy, +Options)
@@ -63,6 +73,8 @@
 % ============================================================================
 
 :- dynamic layout/3.
+:- dynamic subplot_layout/3.
+:- dynamic subplot_content/3.
 :- dynamic style/2.
 :- dynamic style/3.
 :- dynamic theme/2.
@@ -72,6 +84,8 @@
 :- dynamic raw_css/2.
 
 :- discontiguous layout/3.
+:- discontiguous subplot_layout/3.
+:- discontiguous subplot_content/3.
 :- discontiguous style/2.
 :- discontiguous style/3.
 :- discontiguous theme/2.
@@ -668,12 +682,254 @@ declare_theme(Name, Properties) :-
 %% clear_layouts/0
 clear_layouts :-
     retractall(layout(_, _, _)),
+    retractall(subplot_layout(_, _, _)),
+    retractall(subplot_content(_, _, _)),
     retractall(style(_, _)),
     retractall(style(_, _, _)),
     retractall(component_theme(_, _)),
     retractall(place(_, _, _)),
     retractall(wrapper(_, _, _)),
     retractall(raw_css(_, _)).
+
+% ============================================================================
+% SUBPLOT LAYOUT SYSTEM
+% ============================================================================
+%
+% Subplot layouts define internal component arrangements (multiple charts/graphs
+% in a grid). These can be:
+%   - Native: matplotlib handles subplots internally
+%   - Synthesized: web targets create nested CSS grid with multiple components
+%
+% Usage:
+%   subplot_layout(comparison_demo, grid, [rows(2), cols(2)]).
+%   subplot_content(comparison_demo, pos(1,1), [curve(sine_wave)]).
+%   subplot_content(comparison_demo, pos(1,2), [curve(cosine_wave)]).
+
+%% has_subplot_layout(+Name)
+has_subplot_layout(Name) :-
+    subplot_layout(Name, _, _), !.
+
+%% get_subplot_dimensions(+Name, -Rows, -Cols)
+get_subplot_dimensions(Name, Rows, Cols) :-
+    subplot_layout(Name, grid, Options),
+    (member(rows(Rows), Options) -> true ; Rows = 1),
+    (member(cols(Cols), Options) -> true ; Cols = 1).
+
+%% get_subplot_positions(+Name, -Positions)
+%  Get all defined subplot positions as list of pos(Row, Col)-Content pairs.
+get_subplot_positions(Name, Positions) :-
+    findall(pos(R, C)-Content, subplot_content(Name, pos(R, C), Content), Positions).
+
+% ============================================================================
+% SUBPLOT CSS GENERATION (for web - synthesized nested grid)
+% ============================================================================
+
+%% generate_subplot_css(+Name, -CSS)
+%  Generate CSS for a subplot grid layout (web targets).
+generate_subplot_css(Name, CSS) :-
+    subplot_layout(Name, grid, Options),
+    atom_string(Name, NameStr),
+    to_css_class(NameStr, ClassName),
+
+    (member(rows(Rows), Options) -> true ; Rows = 1),
+    (member(cols(Cols), Options) -> true ; Cols = 1),
+    (member(gap(Gap), Options) -> true ; Gap = "1rem"),
+
+    % Generate grid-template-columns
+    findall("1fr", between(1, Cols, _), ColFrs),
+    atomic_list_concat(ColFrs, ' ', ColsTemplate),
+
+    % Generate grid-template-rows
+    findall("1fr", between(1, Rows, _), RowFrs),
+    atomic_list_concat(RowFrs, ' ', RowsTemplate),
+
+    format(atom(ContainerCSS), '.~w-subplot-grid {
+    display: grid;
+    grid-template-columns: ~w;
+    grid-template-rows: ~w;
+    gap: ~w;
+    width: 100%;
+    height: 100%;
+}', [ClassName, ColsTemplate, RowsTemplate, Gap]),
+
+    % Generate cell styles
+    findall(CellCSS, (
+        between(1, Rows, R),
+        between(1, Cols, C),
+        format(atom(CellCSS), '
+.~w-subplot-grid__cell-~w-~w {
+    grid-row: ~w;
+    grid-column: ~w;
+    min-height: 200px;
+}', [ClassName, R, C, R, C])
+    ), CellCSSList),
+
+    atomic_list_concat(CellCSSList, '\n', CellsCSS),
+    format(atom(CSS), '~w~w', [ContainerCSS, CellsCSS]).
+
+%% generate_subplot_jsx(+Name, -JSX)
+%  Generate JSX for a subplot grid (web targets).
+generate_subplot_jsx(Name, JSX) :-
+    subplot_layout(Name, grid, Options),
+    atom_string(Name, NameStr),
+    to_css_class(NameStr, ClassName),
+    to_pascal_case(NameStr, ComponentName),
+
+    (member(rows(Rows), Options) -> true ; Rows = 1),
+    (member(cols(Cols), Options) -> true ; Cols = 1),
+
+    % Generate cells
+    findall(CellJSX, (
+        between(1, Rows, R),
+        between(1, Cols, C),
+        (   subplot_content(Name, pos(R, C), Content)
+        ->  generate_subplot_content_jsx(Content, ContentJSX)
+        ;   ContentJSX = '{/* Empty cell */}'
+        ),
+        format(atom(CellJSX), '                <div className={styles["~w-subplot-grid__cell-~w-~w"]}>
+                    ~w
+                </div>', [ClassName, R, C, ContentJSX])
+    ), CellJSXList),
+
+    atomic_list_concat(CellJSXList, '\n', CellsJSX),
+
+    format(atom(JSX), 'import React from "react";
+import styles from "./~w.module.css";
+
+interface ~wProps {
+    className?: string;
+}
+
+export const ~w: React.FC<~wProps> = ({ className = "" }) => {
+    return (
+        <div className={`${styles["~w-subplot-grid"]} ${className}`}>
+~w
+        </div>
+    );
+};
+
+export default ~w;
+', [ComponentName, ComponentName, ComponentName, ComponentName, ClassName, CellsJSX, ComponentName]).
+
+%% generate_subplot_content_jsx(+Content, -JSX)
+generate_subplot_content_jsx([], '{/* Empty */}').
+generate_subplot_content_jsx([curve(CurveName)|_], JSX) :-
+    atom_string(CurveName, CurveStr),
+    to_pascal_case(CurveStr, CurveComp),
+    format(atom(JSX), '<~wChart />', [CurveComp]).
+generate_subplot_content_jsx([graph(GraphName)|_], JSX) :-
+    atom_string(GraphName, GraphStr),
+    to_pascal_case(GraphStr, GraphComp),
+    format(atom(JSX), '<~wGraph />', [GraphComp]).
+generate_subplot_content_jsx([title(Title)|Rest], JSX) :-
+    generate_subplot_content_jsx(Rest, RestJSX),
+    format(atom(JSX), '<h3>~w</h3>~n                    ~w', [Title, RestJSX]).
+generate_subplot_content_jsx([Component|_], JSX) :-
+    atom(Component),
+    atom_string(Component, CompStr),
+    to_pascal_case(CompStr, CompName),
+    format(atom(JSX), '<~w />', [CompName]).
+
+% ============================================================================
+% SUBPLOT MATPLOTLIB GENERATION (native subplots)
+% ============================================================================
+
+%% generate_subplot_matplotlib(+Name, -Code)
+%  Generate matplotlib Python code for subplot layout.
+generate_subplot_matplotlib(Name, Code) :-
+    subplot_layout(Name, grid, Options),
+    (member(rows(Rows), Options) -> true ; Rows = 1),
+    (member(cols(Cols), Options) -> true ; Cols = 1),
+    (member(figsize(W, H), Options) -> true ; (W = 10, H = 8)),
+    (member(title(Title), Options) -> true ; Title = ""),
+
+    % Generate subplot creation
+    format(atom(CreateCode), '# Create subplot grid
+fig, axes = plt.subplots(~w, ~w, figsize=(~w, ~w))
+~w
+', [Rows, Cols, W, H,
+    (Title \= "" -> format(atom(TitleCode), 'fig.suptitle("~w")', [Title]) ; TitleCode = "")
+   ]),
+
+    % Generate axes access helper
+    (   Rows =:= 1, Cols =:= 1
+    ->  AxesHelper = '# Single subplot - axes is the axis directly
+ax = axes
+'
+    ;   Rows =:= 1
+    ->  AxesHelper = '# Single row - axes is 1D array
+# Access with axes[col]
+'
+    ;   Cols =:= 1
+    ->  AxesHelper = '# Single column - axes is 1D array
+# Access with axes[row]
+'
+    ;   AxesHelper = '# Multiple rows and cols - axes is 2D array
+# Access with axes[row, col] (0-indexed)
+'
+    ),
+
+    % Generate content plotting
+    findall(PlotCode, (
+        subplot_content(Name, pos(R, C), Content),
+        generate_subplot_matplotlib_content(Rows, Cols, R, C, Content, PlotCode)
+    ), PlotCodes),
+    atomic_list_concat(PlotCodes, '\n', PlotCodesStr),
+
+    format(atom(Code), '~w~w~w
+plt.tight_layout()
+', [CreateCode, AxesHelper, PlotCodesStr]).
+
+%% generate_subplot_matplotlib_content(+Rows, +Cols, +Row, +Col, +Content, -Code)
+generate_subplot_matplotlib_content(1, 1, _, _, Content, Code) :-
+    generate_subplot_content_plot('ax', Content, Code).
+generate_subplot_matplotlib_content(1, Cols, _, C, Content, Code) :-
+    Cols > 1,
+    Idx is C - 1,
+    format(atom(AxRef), 'axes[~w]', [Idx]),
+    generate_subplot_content_plot(AxRef, Content, Code).
+generate_subplot_matplotlib_content(Rows, 1, R, _, Content, Code) :-
+    Rows > 1,
+    Idx is R - 1,
+    format(atom(AxRef), 'axes[~w]', [Idx]),
+    generate_subplot_content_plot(AxRef, Content, Code).
+generate_subplot_matplotlib_content(Rows, Cols, R, C, Content, Code) :-
+    Rows > 1, Cols > 1,
+    RIdx is R - 1,
+    CIdx is C - 1,
+    format(atom(AxRef), 'axes[~w, ~w]', [RIdx, CIdx]),
+    generate_subplot_content_plot(AxRef, Content, Code).
+
+%% generate_subplot_content_plot(+AxRef, +Content, -Code)
+generate_subplot_content_plot(AxRef, Content, Code) :-
+    (member(title(Title), Content) -> true ; Title = ""),
+    (member(xlabel(XLabel), Content) -> true ; XLabel = ""),
+    (member(ylabel(YLabel), Content) -> true ; YLabel = ""),
+
+    % Find curves to plot
+    findall(CurveName, member(curve(CurveName), Content), Curves),
+
+    % Generate curve plotting code
+    findall(CurveCode, (
+        member(CurveName, Curves),
+        atom_string(CurveName, CurveStr),
+        format(atom(CurveCode), '~w.plot(x, ~w_y, label="~w")', [AxRef, CurveStr, CurveStr])
+    ), CurveCodes),
+    atomic_list_concat(CurveCodes, '\n', CurvePlots),
+
+    % Generate configuration
+    format(atom(Code), '# Subplot at ~w
+~w
+~w
+~w
+~w
+~w.legend()
+~w.grid(True)
+', [AxRef, CurvePlots,
+    (Title \= "" -> format(atom(TitleCode), '~w.set_title("~w")', [AxRef, Title]) ; TitleCode = ""),
+    (XLabel \= "" -> format(atom(XLabelCode), '~w.set_xlabel("~w")', [AxRef, XLabel]) ; XLabelCode = ""),
+    (YLabel \= "" -> format(atom(YLabelCode), '~w.set_ylabel("~w")', [AxRef, YLabel]) ; YLabelCode = ""),
+    AxRef, AxRef]).
 
 % ============================================================================
 % TESTS
