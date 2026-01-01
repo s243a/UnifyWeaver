@@ -12,6 +12,7 @@ Roadmap: `docs/targets/csharp-query-runtime-roadmap.md`
 - **Negation (safe/stratified)** – `\+/1` compiles to `NegationNode` and supports stratified negation over derived predicates via program definition materialisation.
 - **Deduplication** – per-predicate `HashSet<object[]>` mirrors Bash distinct semantics.
 - **Diagnostics** – `QueryPlanExplainer.Explain(plan)` and `QueryExecutionTrace` provide plan inspection and basic per-node execution stats.
+- **Cancellation + async adapter** – `CancellationToken` support in `Execute(...)` and `ExecuteAsync(...)` returning `IAsyncEnumerable<object[]>`.
 
 ## Objectives
 - Declarative IR: Represent clause bodies as structured query plans instead of hard-coded C# statements.
@@ -101,6 +102,11 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
   - `var trace = new QueryExecutionTrace();`
   - `foreach (var row in executor.Execute(plan, parameters, trace)) { ... }`
   - `Console.WriteLine(trace.ToString());`
+- Cancellation (long-running queries/fixpoints):
+  - `using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));`
+  - `foreach (var row in executor.Execute(plan, parameters, trace, cts.Token)) { ... }`
+- Async consumption adapter (wraps the synchronous engine):
+  - `await foreach (var row in executor.ExecuteAsync(plan, parameters, trace, cts.Token)) { ... }`
 - Prepared-style cache reuse (useful for repeated parameterized calls):
   - `var executor = new QueryExecutor(provider, new QueryExecutorOptions(ReuseCaches: true));`
   - `executor.ClearCaches();` (if underlying facts change)
@@ -125,7 +131,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
 ## Roadmap
 1. Memoisation & advanced patterns – extend the runtime with tail-recursive optimisations, cached aggregates, and transitive-closure helpers.
 2. Ordered evaluation – add ordered deduplication, limit/offset nodes, and deterministic output strategies.
-3. Streaming adapters – expose channels for incremental result emission (IAsyncEnumerable, pipes) and cancellation.
+3. Streaming adapters – `IAsyncEnumerable` adapter + cancellation tokens (done); future work includes true async sources and non-blocking execution.
 4. Distribution hooks – allow plans to reference remote relations, enabling pipeline execution across nodes.
 
 By funnelling all complex evaluation through this runtime, we keep the Prolog-side compiler small and declarative while unlocking richer execution strategies in managed environments.
