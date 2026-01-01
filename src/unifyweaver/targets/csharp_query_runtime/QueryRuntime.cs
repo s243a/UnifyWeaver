@@ -12,6 +12,7 @@ using System.Text;
 using System.Text.Json;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Xml.Linq;
 
 namespace UnifyWeaver.QueryRuntime
@@ -955,13 +956,17 @@ namespace UnifyWeaver.QueryRuntime
             _cacheContext = options.ReuseCaches ? new EvaluationContext() : null;
         }
 
-        public IEnumerable<object[]> Execute(QueryPlan plan, IEnumerable<object[]>? parameters = null, QueryExecutionTrace? trace = null)
+        public IEnumerable<object[]> Execute(
+            QueryPlan plan,
+            IEnumerable<object[]>? parameters = null,
+            QueryExecutionTrace? trace = null,
+            CancellationToken cancellationToken = default)
         {
             if (plan is null) throw new ArgumentNullException(nameof(plan));
             var paramList = parameters?.ToList() ?? new List<object[]>();
             var context = _cacheContext is null
-                ? new EvaluationContext(paramList, trace: trace)
-                : new EvaluationContext(paramList, parent: _cacheContext, trace: trace);
+                ? new EvaluationContext(paramList, trace: trace, cancellationToken: cancellationToken)
+                : new EvaluationContext(paramList, parent: _cacheContext, trace: trace, cancellationToken: cancellationToken);
             var inputPositions = plan.InputPositions;
             if (inputPositions is { Count: > 0 })
             {
@@ -1116,7 +1121,42 @@ namespace UnifyWeaver.QueryRuntime
                     throw new NotSupportedException($"Unsupported plan node: {node.GetType().Name}");
             }
 
+            var cancellationToken = context?.CancellationToken ?? default;
+            if (cancellationToken.CanBeCanceled)
+            {
+                result = WithCancellation(result, cancellationToken);
+            }
+
             return trace is null ? result : trace.WrapEnumeration(node, result);
+        }
+
+        private static IEnumerable<object[]> WithCancellation(IEnumerable<object[]> source, CancellationToken cancellationToken)
+        {
+            if (source is null) throw new ArgumentNullException(nameof(source));
+            if (!cancellationToken.CanBeCanceled)
+            {
+                return source;
+            }
+
+            return WithCancellationIterator(source, cancellationToken);
+        }
+
+        private static IEnumerable<object[]> WithCancellationIterator(IEnumerable<object[]> source, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var counter = 0;
+            foreach (var row in source)
+            {
+                if ((++counter & 0x3FF) == 0)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                yield return row;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         private IEnumerable<object[]> ExecutePatternScan(PatternScanNode scan, EvaluationContext? context)
@@ -4632,10 +4672,15 @@ namespace UnifyWeaver.QueryRuntime
 
         private sealed class EvaluationContext
         {
-            public EvaluationContext(IEnumerable<object[]>? parameters = null, EvaluationContext? parent = null, QueryExecutionTrace? trace = null)
+            public EvaluationContext(
+                IEnumerable<object[]>? parameters = null,
+                EvaluationContext? parent = null,
+                QueryExecutionTrace? trace = null,
+                CancellationToken cancellationToken = default)
             {
                 Parameters = parameters?.ToList() ?? new List<object[]>();
                 Trace = trace ?? parent?.Trace;
+                CancellationToken = cancellationToken.CanBeCanceled ? cancellationToken : parent?.CancellationToken ?? cancellationToken;
                 Facts = parent?.Facts ?? new Dictionary<PredicateId, List<object[]>>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
@@ -4652,6 +4697,8 @@ namespace UnifyWeaver.QueryRuntime
             public IReadOnlyList<object[]> Parameters { get; }
 
             public QueryExecutionTrace? Trace { get; }
+
+            public CancellationToken CancellationToken { get; }
 
             public Dictionary<string, List<object[]>> Materialized { get; } = new();
 
