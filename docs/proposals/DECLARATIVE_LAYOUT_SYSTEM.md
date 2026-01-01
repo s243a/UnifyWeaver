@@ -1,8 +1,9 @@
 # Declarative Layout and Styling System
 
-**Status:** Proposal
+**Status:** Implemented (Phases 1-5 complete, Phase 6 pending)
 **Author:** Claude Code
 **Date:** 2025-12-31
+**Tests:** 75 passing
 
 ## Overview
 
@@ -326,42 +327,94 @@ default_layout(dashboard, grid, [
 ]).
 ```
 
+### Subplot Layouts (Internal Component Layout)
+
+Subplot layouts define internal component arrangements - multiple charts/graphs in a grid within a single component. This is distinct from outer layouts which position containers.
+
+```prolog
+%% subplot_layout(+Name, +Strategy, +Options)
+subplot_layout(comparison_demo, grid, [
+    rows(2),
+    cols(2),
+    gap("1rem"),
+    figsize(10, 8)  % matplotlib-specific
+]).
+
+%% subplot_content(+Name, +Position, +Content)
+subplot_content(comparison_demo, pos(1,1), [curve(sine), title("Sine")]).
+subplot_content(comparison_demo, pos(1,2), [curve(cosine), title("Cosine")]).
+subplot_content(comparison_demo, pos(2,1), [curve(quadratic), title("Quadratic")]).
+subplot_content(comparison_demo, pos(2,2), [curve(exponential), title("Exponential")]).
+```
+
+#### Target-Aware Generation
+
+The subplot system generates different output based on target capabilities:
+
+**Web targets (Chart.js/Cytoscape)** - Synthesized nested CSS grid:
+```css
+.comparison-demo-subplot-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 1rem;
+}
+```
+
+**Matplotlib** - Native subplot support:
+```python
+fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+axes[0, 0].plot(x, sine_y, label="sine")
+axes[0, 0].set_title("Sine")
+# ...
+plt.tight_layout()
+```
+
+This allows the same declarative specification to work across targets, using native features when available and synthesizing when not.
+
 ## Implementation Plan
 
-### Phase 1: Core Layout Generator
+### Phase 1: Core Layout Generator - COMPLETE
 
-1. Create `layout_generator.pl` module
-2. Implement `layout/3` predicate parsing
-3. Generate CSS Grid from specs
-4. Generate CSS Flexbox from specs
-5. Handle absolute positioning
+1. [x] Create `layout_generator.pl` module
+2. [x] Implement `layout/3` predicate parsing
+3. [x] Generate CSS Grid from specs
+4. [x] Generate CSS Flexbox from specs
+5. [x] Handle absolute positioning
 
-### Phase 2: Style System
+### Phase 2: Style System - COMPLETE
 
-1. Implement `style/2` and `style/3` predicates
-2. Implement `theme/2` system
-3. Generate CSS variables from themes
-4. Implement style merging (defaults + overrides)
+1. [x] Implement `style/2` and `style/3` predicates
+2. [x] Implement `theme/2` system (dark, light, midnight themes)
+3. [x] Generate CSS variables from themes
+4. [x] Implement style merging (defaults + overrides)
 
-### Phase 3: HTML Structure
+### Phase 3: HTML Structure - COMPLETE
 
-1. Implement `wrapper/3` template system
-2. Implement `slots/2` and `slot_content/3`
-3. Implement `place/3` for component placement
+1. [x] Implement `wrapper/3` template system
+2. [x] Implement `place/3` for component placement
+3. [x] Generate HTML and JSX output
 
-### Phase 4: Control Generation
+### Phase 4: Subplot Layout System - COMPLETE
 
-1. Implement `control/3` predicates
-2. Implement `control_panel/2`
-3. Generate React control components
-4. Wire controls to component state
+1. [x] Implement `subplot_layout/3` and `subplot_content/3`
+2. [x] Generate synthesized CSS grid for web targets
+3. [x] Generate native matplotlib subplots
+4. [x] Target-aware generation dispatch
 
-### Phase 5: Integration
+### Phase 5: Integration - COMPLETE
 
-1. Update `graph_generator.pl` to use layout system
-2. Update `curve_plot_generator.pl` to use layout system
-3. Update `matplotlib_generator.pl` (Python has different patterns)
-4. Add integration tests
+1. [x] Update `graph_generator.pl` to use layout system
+2. [x] Update `curve_plot_generator.pl` to use layout system
+3. [x] Matplotlib uses native subplot system (not CSS layouts)
+4. [x] Add integration tests (75 tests passing)
+
+### Phase 6: Control Generation - PENDING
+
+1. [ ] Implement `control/3` predicates
+2. [ ] Implement `control_panel/2`
+3. [ ] Generate React control components
+4. [ ] Wire controls to component state
 
 ## Generated Output Examples
 
