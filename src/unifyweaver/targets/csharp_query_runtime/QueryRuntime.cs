@@ -2697,6 +2697,111 @@ namespace UnifyWeaver.QueryRuntime
                 yield break;
             }
 
+            if (context is not null)
+            {
+                if (buildLeft && join.Left is RelationScanNode leftScan)
+                {
+                    trace?.RecordStrategy(join, "KeyJoinScanIndexReuse");
+                    var facts = GetFactsList(leftScan.Relation, context);
+                    if (joinKeyCount == 1)
+                    {
+                        var index = GetFactIndex(leftScan.Relation, join.LeftKeys[0], facts, context);
+                        var probe = Evaluate(join.Right, context);
+                        foreach (var rightTuple in probe)
+                        {
+                            if (rightTuple is null) continue;
+
+                            var lookupKey = GetLookupKey(rightTuple, join.RightKeys[0], NullFactIndexKey);
+                            if (!index.TryGetValue(lookupKey, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var leftTuple in bucket)
+                            {
+                                if (leftTuple is null) continue;
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+
+                        yield break;
+                    }
+
+                    var joinIndex = GetJoinIndex(leftScan.Relation, join.LeftKeys, facts, context);
+                    var joinProbe = Evaluate(join.Right, context);
+                    foreach (var rightTuple in joinProbe)
+                    {
+                        if (rightTuple is null) continue;
+
+                        var key = BuildKeyFromTuple(rightTuple, join.RightKeys);
+                        var wrapper = new RowWrapper(key);
+                        if (!joinIndex.TryGetValue(wrapper, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var leftTuple in bucket)
+                        {
+                            if (leftTuple is null) continue;
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+
+                if (!buildLeft && join.Right is RelationScanNode rightScan)
+                {
+                    trace?.RecordStrategy(join, "KeyJoinScanIndexReuse");
+                    var facts = GetFactsList(rightScan.Relation, context);
+                    if (joinKeyCount == 1)
+                    {
+                        var index = GetFactIndex(rightScan.Relation, join.RightKeys[0], facts, context);
+                        var probe = Evaluate(join.Left, context);
+                        foreach (var leftTuple in probe)
+                        {
+                            if (leftTuple is null) continue;
+
+                            var lookupKey = GetLookupKey(leftTuple, join.LeftKeys[0], NullFactIndexKey);
+                            if (!index.TryGetValue(lookupKey, out var bucket))
+                            {
+                                continue;
+                            }
+
+                            foreach (var rightTuple in bucket)
+                            {
+                                if (rightTuple is null) continue;
+                                yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                            }
+                        }
+
+                        yield break;
+                    }
+
+                    var joinIndex = GetJoinIndex(rightScan.Relation, join.RightKeys, facts, context);
+                    var joinProbe = Evaluate(join.Left, context);
+                    foreach (var leftTuple in joinProbe)
+                    {
+                        if (leftTuple is null) continue;
+
+                        var key = BuildKeyFromTuple(leftTuple, join.LeftKeys);
+                        var wrapper = new RowWrapper(key);
+                        if (!joinIndex.TryGetValue(wrapper, out var bucket))
+                        {
+                            continue;
+                        }
+
+                        foreach (var rightTuple in bucket)
+                        {
+                            if (rightTuple is null) continue;
+                            yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                        }
+                    }
+
+                    yield break;
+                }
+            }
+
             trace?.RecordStrategy(join, buildLeft ? "KeyJoinHashBuildLeft" : "KeyJoinHashBuildRight");
             var left = Evaluate(join.Left, context);
             var right = Evaluate(join.Right, context);
