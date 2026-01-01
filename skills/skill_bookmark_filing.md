@@ -24,6 +24,23 @@ python3 scripts/infer_pearltrees_federated.py \
   --top-k 10 --json
 ```
 
+### Filter by Account
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --model models/pearltrees_federated_single.pkl \
+  --query "BOOKMARK_TITLE" \
+  --account s243a_groups \
+  --top-k 10 --tree
+```
+
+### Use Account-Specific Model
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --model models/pearltrees_federated_s243a_groups.pkl \
+  --query "BOOKMARK_TITLE" \
+  --top-k 10 --tree
+```
+
 ### Full Filing Assistant (with LLM)
 ```bash
 python3 scripts/bookmark_filing_assistant.py \
@@ -45,11 +62,15 @@ python3 scripts/bookmark_filing_assistant.py \
 
 ## Model Information
 
-- **Model Path**: `models/pearltrees_federated_single.pkl`
+| Model | Account | Clusters | Use Case |
+|-------|---------|----------|----------|
+| `pearltrees_federated_single.pkl` | All | 51 | General search |
+| `pearltrees_federated_s243a.pkl` | s243a | 275 | s243a-focused |
+| `pearltrees_federated_s243a_groups.pkl` | s243a_groups | 48 | Cross-account migration |
+
 - **Data Path**: `reports/pearltrees_targets_full_multi_account.jsonl`
-- **Clusters**: 51 semantic clusters
-- **Total Folders**: 6,527 Pearltrees folders
 - **Accuracy**: 93% Recall@1 on training data, 99% Recall@5
+- **Format**: See `docs/design/FEDERATED_MODEL_FORMAT.md`
 
 ## Tree Output Example
 
@@ -84,6 +105,7 @@ An MCP server is available at `scripts/mcp_bookmark_filing_server.py` exposing:
 
 - `scripts/infer_pearltrees_federated.py` - Semantic search inference
 - `scripts/bookmark_filing_assistant.py` - Full filing assistant with LLM
+- `scripts/generate_account_training_data.py` - Filter JSONL by account
 - `scripts/import_pearltrees_to_db.py` - Import RDF to SQLite
 - `scripts/mcp_bookmark_filing_server.py` - MCP server
 - `scripts/train_pearltrees_federated.py` - Model training

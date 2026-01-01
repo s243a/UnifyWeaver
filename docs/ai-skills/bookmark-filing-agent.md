@@ -93,6 +93,50 @@ Folders may cross account boundaries. The tree shows this as:
     └── s243a_groups @s243a_groups  ← Account jump here
 ```
 
+### Account Filtering
+
+Filter results to a specific account:
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --model models/pearltrees_federated_single.pkl \
+  --query "BOOKMARK TITLE" \
+  --account s243a_groups \
+  --top-k 10 --tree
+```
+
+### Account-Specific Models
+
+For higher resolution within an account, use account-specific models:
+
+| Model | Account | Clusters | Use Case |
+|-------|---------|----------|----------|
+| `pearltrees_federated_single.pkl` | All | 51 | General search |
+| `pearltrees_federated_s243a.pkl` | s243a | 275 | s243a-focused search |
+| `pearltrees_federated_s243a_groups.pkl` | s243a_groups | 48 | Cross-account migration |
+
+### Cross-Account Migration
+
+To analyze folders for moving between accounts:
+
+1. **Find the folder hierarchy** in source account:
+```bash
+grep -i "folder name" reports/pearltrees_targets_full_multi_account.jsonl | \
+  python3 -c "import sys,json; [print(json.loads(l).get('target_text','')) for l in sys.stdin]"
+```
+
+2. **Check for private content** in children:
+```bash
+grep "TREE_ID" reports/pearltrees_targets_full_multi_account.jsonl
+```
+
+3. **Find destination** in target account using semantic search:
+```bash
+python3 scripts/infer_pearltrees_federated.py \
+  --model models/pearltrees_federated_s243a_groups.pkl \
+  --query "Folder topic" \
+  --top-k 5 --tree
+```
+
 ## Dual-Objective Scoring (Alternative)
 
 For ambiguous queries or suspected misfiles, use dual-objective scoring which blends:
@@ -111,8 +155,12 @@ See `docs/ai-skills/dual-objective-scoring.md` for full details.
 
 - `scripts/bookmark_filing_assistant.py` - Full filing assistant with LLM integration
 - `scripts/infer_pearltrees_federated.py` - Semantic search inference
-- `models/pearltrees_federated_single.pkl` - Trained model (51 clusters, 160MB)
-- `reports/pearltrees_targets_full_multi_account.jsonl` - Full folder data (6,527 folders)
+- `scripts/generate_account_training_data.py` - Filter JSONL by account
+- `models/pearltrees_federated_single.pkl` - All-account model (51 clusters, 160MB)
+- `models/pearltrees_federated_s243a.pkl` - s243a-only model (275 clusters)
+- `models/pearltrees_federated_s243a_groups.pkl` - s243a_groups-only model (48 clusters)
+- `reports/pearltrees_targets_full_multi_account.jsonl` - Full folder data
+- `docs/design/FEDERATED_MODEL_FORMAT.md` - Model file format specification
 
 ## Remember
 
