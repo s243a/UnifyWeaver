@@ -13,6 +13,7 @@ using System.Text.Json;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Xml.Linq;
 
 namespace UnifyWeaver.QueryRuntime
@@ -990,6 +991,16 @@ namespace UnifyWeaver.QueryRuntime
             return Evaluate(plan.Root, context);
         }
 
+        public IAsyncEnumerable<object[]> ExecuteAsync(
+            QueryPlan plan,
+            IEnumerable<object[]>? parameters = null,
+            QueryExecutionTrace? trace = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (plan is null) throw new ArgumentNullException(nameof(plan));
+            return new ExecuteAsyncEnumerable(this, plan, parameters, trace, cancellationToken);
+        }
+
         public void ClearCaches()
         {
             if (_cacheContext is null)
@@ -1157,6 +1168,88 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        private sealed class ExecuteAsyncEnumerable : IAsyncEnumerable<object[]>
+        {
+            private readonly QueryExecutor _executor;
+            private readonly QueryPlan _plan;
+            private readonly IEnumerable<object[]>? _parameters;
+            private readonly QueryExecutionTrace? _trace;
+            private readonly CancellationToken _cancellationToken;
+
+            public ExecuteAsyncEnumerable(
+                QueryExecutor executor,
+                QueryPlan plan,
+                IEnumerable<object[]>? parameters,
+                QueryExecutionTrace? trace,
+                CancellationToken cancellationToken)
+            {
+                _executor = executor ?? throw new ArgumentNullException(nameof(executor));
+                _plan = plan ?? throw new ArgumentNullException(nameof(plan));
+                _parameters = parameters;
+                _trace = trace;
+                _cancellationToken = cancellationToken;
+            }
+
+            public IAsyncEnumerator<object[]> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+            {
+                var combinedToken = CombineCancellationTokens(_cancellationToken, cancellationToken, out var linkedCts);
+                var enumerator = _executor.Execute(_plan, _parameters, _trace, combinedToken).GetEnumerator();
+                return new ExecuteAsyncEnumerator(enumerator, combinedToken, linkedCts);
+            }
+
+            private static CancellationToken CombineCancellationTokens(
+                CancellationToken first,
+                CancellationToken second,
+                out CancellationTokenSource? linkedCts)
+            {
+                linkedCts = null;
+
+                if (!first.CanBeCanceled) return second;
+                if (!second.CanBeCanceled) return first;
+                if (first == second) return first;
+
+                linkedCts = CancellationTokenSource.CreateLinkedTokenSource(first, second);
+                return linkedCts.Token;
+            }
+        }
+
+        private sealed class ExecuteAsyncEnumerator : IAsyncEnumerator<object[]>
+        {
+            private readonly IEnumerator<object[]> _inner;
+            private readonly CancellationToken _cancellationToken;
+            private readonly CancellationTokenSource? _linkedCts;
+            private int _counter;
+
+            public ExecuteAsyncEnumerator(
+                IEnumerator<object[]> inner,
+                CancellationToken cancellationToken,
+                CancellationTokenSource? linkedCts)
+            {
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+                _cancellationToken = cancellationToken;
+                _linkedCts = linkedCts;
+            }
+
+            public object[] Current => _inner.Current;
+
+            public ValueTask<bool> MoveNextAsync()
+            {
+                if (_cancellationToken.CanBeCanceled && ((_counter++ & 0x3FF) == 0))
+                {
+                    _cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                return new ValueTask<bool>(_inner.MoveNext());
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                _inner.Dispose();
+                _linkedCts?.Dispose();
+                return ValueTask.CompletedTask;
+            }
         }
 
         private IEnumerable<object[]> ExecutePatternScan(PatternScanNode scan, EvaluationContext? context)
