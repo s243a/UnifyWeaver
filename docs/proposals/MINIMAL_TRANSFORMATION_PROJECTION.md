@@ -334,8 +334,82 @@ The minimal transformation framing suggests:
 
 This is more principled than regularized least squares with an arbitrary λ. The structure we want (map centroids, ignore deviations) is built into the formulation, not imposed via a penalty.
 
+## Handling Overdetermined Systems
+
+When clusters have many Q-A pairs (n >> d), the system is **overdetermined** rather than underdetermined.
+
+### The Problem
+
+For large clusters:
+```
+Q ∈ ℝⁿˣᵈ  (n queries, d dimensions)
+A ∈ ℝⁿˣᵈ  (n answers)
+```
+
+If n > d, naive least squares finds the unique W minimizing ||Q @ W - A||².
+But this can overfit to per-query variations.
+
+### Our Solution: Centroid Reduction
+
+Instead of fitting n Q-A pairs, we reduce to **centroids**:
+
+```python
+def centroid_procrustes(Q, A):
+    """
+    Reduce overdetermined system via centroid.
+    
+    One W per cluster, computed from centroid → centroid.
+    """
+    Q_centroid = Q.mean(axis=0, keepdims=True)  # (1, d)
+    A_centroid = A.mean(axis=0, keepdims=True)  # (1, d)
+    
+    # Procrustes on centroids (1×d → 1×d)
+    W, scale, info = compute_minimal_transform(Q_centroid, A_centroid)
+    return W
+```
+
+### Why This Works
+
+1. **Denoising**: Centroid averages out per-query noise
+2. **Minimal transform**: Single Q→A pair gives unique rotation
+3. **Cluster-level semantics**: We care about cluster direction, not individual variations
+4. **O(d²) per cluster**: Constant complexity regardless of cluster size
+
+### Mathematical Justification
+
+For n queries in a cluster, the centroid is the **maximum likelihood estimate** of the underlying query direction under Gaussian noise:
+
+```
+Q_centroid = (1/n) Σᵢ qᵢ ≈ μ_Q (true query direction)
+```
+
+The Procrustes transform W finds the minimal rotation from μ_Q to μ_A.
+Individual queries qᵢ that deviate from μ_Q will be projected correctly if they're **close enough** to the centroid (soft routing handles edge cases).
+
+### Alternative: SVD Truncation
+
+For very large clusters where centroid is too aggressive:
+
+```python
+def svd_reduced_procrustes(Q, A, k=None):
+    """
+    Reduce via top-k principal components of query space.
+    """
+    k = k or min(Q.shape[0], Q.shape[1]) // 2
+    
+    U, S, Vt = svd(Q, full_matrices=False)
+    Q_reduced = U[:, :k] @ np.diag(S[:k])  # Top-k components
+    
+    # Procrustes on reduced space
+    W = scaled_procrustes(Q_reduced, A[:, :k])
+    return W
+```
+
+This preserves within-cluster variation while regularizing.
+
 ## References
 
 - Procrustes analysis: Schönemann, P.H. (1966). "A generalized solution of the orthogonal Procrustes problem"
 - Geometric algebra: Hestenes, D. (1984). "Clifford Algebra to Geometric Calculus"
 - Rotation interpolation: Shoemake, K. (1985). "Animating rotation with quaternion curves" (SLERP)
+
