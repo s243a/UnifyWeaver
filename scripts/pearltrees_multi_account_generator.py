@@ -317,18 +317,28 @@ class MultiAccountParser:
         
         return current_section_type
 
-    def parse_all(self):
-        """Parse all registered RDF files in two passes."""
+    def parse_all(self, repair_missing: bool = True):
+        """Parse all registered RDF files in two passes, optionally repairing missing trees.
+
+        Args:
+            repair_missing: If True, synthesize missing trees from RefPearl/AliasPearl references.
+                           This works around a Pearltrees export bug where referenced trees
+                           are sometimes not included in the export.
+        """
         # Pass 1: Parse all Trees, Sections, RefPearls from all files
         for account_name, rdf_file in self.account_files.items():
             self._parse_single_file(rdf_file, account_name)
-        
+
         logger.info(f"Pass 1 complete: {len(self.trees)} trees, {len(self.pearls)} pearls")
-        
+
         # Pass 2: Re-scan AliasPearls to set cross-account links now that all trees are known
         for account_name, rdf_file in self.account_files.items():
             self._parse_alias_pearls_for_cross_account(rdf_file, account_name)
-        
+
+        # Pass 3: Repair missing trees (optional, enabled by default)
+        if repair_missing:
+            self.repair_missing_trees()
+
         logger.info(f"Total trees: {len(self.trees)}")
         logger.info(f"Total pearls: {len(self.pearls)}")
         logger.info(f"Total sections: {sum(len(s) for s in self.sections.values())}")
@@ -390,6 +400,60 @@ class MultiAccountParser:
         """Check if a tree is a 'drop zone' (temporary holding area)."""
         title_lower = tree_node.title.lower()
         return "drop zone" in title_lower or "dropzone" in title_lower
+
+    def repair_missing_trees(self) -> int:
+        """
+        Synthesize missing trees from RefPearl/AliasPearl references.
+
+        Pearltrees export sometimes omits tree definitions but includes
+        RefPearl/AliasPearl references to them. This method creates
+        synthetic TreeNode entries for those missing trees.
+
+        Returns:
+            Number of trees synthesized.
+        """
+        # Collect all see_also_uri targets that don't have tree entries
+        missing_refs: Dict[str, Pearl] = {}  # uri -> first pearl referencing it
+
+        for pearl in self.pearls:
+            if pearl.see_also_uri and pearl.see_also_uri not in self.trees:
+                if pearl.see_also_uri not in missing_refs:
+                    missing_refs[pearl.see_also_uri] = pearl
+
+        if not missing_refs:
+            logger.info("No missing trees to repair")
+            return 0
+
+        logger.info(f"Found {len(missing_refs)} missing tree references, synthesizing...")
+
+        synthesized = 0
+        for target_uri, pearl in missing_refs.items():
+            # Extract tree_id from URI (e.g., ".../fields-of-geometry/id53492143" -> "53492143")
+            tree_id_match = re.search(r'/id(\d+)(?:\?|#|$)', target_uri)
+            tree_id = tree_id_match.group(1) if tree_id_match else target_uri.split('/')[-1]
+
+            # Extract account from URI (e.g., "pearltrees.com/s243a/..." -> "s243a")
+            account_match = re.search(r'pearltrees\.com/([^/]+)/', target_uri)
+            account = account_match.group(1) if account_match else self.primary_account
+
+            # Use pearl's parent as the synthetic tree's parent
+            parent_uri = pearl.parent_tree_uri if pearl.parent_tree_uri in self.trees else None
+
+            # Create synthetic tree node
+            synthetic_tree = TreeNode(
+                uri=target_uri,
+                tree_id=tree_id,
+                title=pearl.title,
+                account=account,
+                parent_uri=parent_uri,
+            )
+
+            self.trees[target_uri] = synthetic_tree
+            synthesized += 1
+            logger.debug(f"Synthesized tree: {pearl.title} ({target_uri})")
+
+        logger.info(f"Synthesized {synthesized} missing trees from RefPearl/AliasPearl references")
+        return synthesized
 
     def get_path(self, tree_uri: str, visited: Optional[Set[str]] = None) -> Tuple[List[str], List[str], List[str]]:
         """
