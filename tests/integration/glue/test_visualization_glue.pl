@@ -46,6 +46,12 @@ run_tests :-
     % Subplot Layout Tests
     run_subplot_layout_tests,
 
+    % Control System Tests
+    run_control_system_tests,
+
+    % Wiring System Tests
+    run_wiring_system_tests,
+
     % Summary
     print_summary.
 
@@ -552,6 +558,173 @@ run_subplot_layout_tests :-
     % Cleanup
     retractall(subplot_layout(test_subplot, _, _)),
     retractall(subplot_content(test_subplot, _, _)).
+
+% ============================================================================
+% CONTROL SYSTEM TESTS
+% ============================================================================
+
+run_control_system_tests :-
+    format('~n--- Control System Tests ---~n'),
+
+    % Control definitions
+    test("Has default controls defined", (
+        control(amplitude, slider, _),
+        control(curve_type, select, _),
+        control(show_grid, checkbox, _)
+    )),
+
+    test("Control has expected properties", (
+        control(amplitude, slider, Props),
+        member(min(_), Props),
+        member(max(_), Props),
+        member(label(_), Props)
+    )),
+
+    % Control panels
+    test("Has default control panels", (
+        control_panel(curve_controls, _),
+        control_panel(display_controls, _)
+    )),
+
+    test("Control panel contains controls", (
+        control_panel(curve_controls, Controls),
+        member(amplitude, Controls),
+        member(frequency, Controls)
+    )),
+
+    % JSX generation - single control
+    % NOTE: Each test must use unique variable names since they share scope
+    test("Generate slider JSX", (
+        generate_control_jsx(amplitude, SliderJSX),
+        sub_atom(SliderJSX, _, _, _, 'type="range"'),
+        sub_atom(SliderJSX, _, _, _, 'className')
+    )),
+
+    test("Generate select JSX", (
+        generate_control_jsx(curve_type, SelectJSX),
+        sub_atom(SelectJSX, _, _, _, '<select'),
+        sub_atom(SelectJSX, _, _, _, '<option')
+    )),
+
+    test("Generate checkbox JSX", (
+        generate_control_jsx(show_grid, CheckboxJSX),
+        sub_atom(CheckboxJSX, _, _, _, 'type="checkbox"'),
+        sub_atom(CheckboxJSX, _, _, _, 'checked')
+    )),
+
+    test("Generate color picker JSX", (
+        generate_control_jsx(line_color, ColorJSX),
+        sub_atom(ColorJSX, _, _, _, 'type="color"')
+    )),
+
+    % Control panel JSX
+    test("Generate control panel JSX", (
+        generate_control_panel_jsx(curve_controls, PanelJSX),
+        sub_atom(PanelJSX, _, _, _, 'controlPanel'),
+        sub_atom(PanelJSX, _, _, _, 'panelTitle')
+    )),
+
+    test("Control panel has multiple controls", (
+        generate_control_panel_jsx(curve_controls, PanelJSX2),
+        sub_atom(PanelJSX2, _, _, _, 'amplitude'),
+        sub_atom(PanelJSX2, _, _, _, 'frequency')
+    )),
+
+    % State generation
+    test("Generate control state", (
+        generate_control_state(curve_controls, StateCode),
+        sub_atom(StateCode, _, _, _, 'useState'),
+        sub_atom(StateCode, _, _, _, 'amplitude')
+    )),
+
+    test("State has correct default values", (
+        generate_control_state(display_controls, StateCode2),
+        sub_atom(StateCode2, _, _, _, 'true'),  % showGrid default
+        sub_atom(StateCode2, _, _, _, '#00d4ff')  % lineColor default
+    )),
+
+    % CSS generation
+    test("Generate control CSS", (
+        generate_control_css(curve_controls, CSS),
+        sub_atom(CSS, _, _, _, '.controlPanel'),
+        sub_atom(CSS, _, _, _, '.slider'),
+        sub_atom(CSS, _, _, _, '.select')
+    )),
+
+    % Handler generation
+    test("Generate control handlers", (
+        generate_control_handlers(curve_controls, Handlers),
+        sub_atom(Handlers, _, _, _, 'handle'),
+        sub_atom(Handlers, _, _, _, 'Change')
+    )).
+
+% ============================================================================
+% WIRING SYSTEM TESTS
+% ============================================================================
+
+run_wiring_system_tests :-
+    format('~n--- Wiring System Tests ---~n'),
+
+    % Wiring spec definitions
+    test("Has default wiring specs", (
+        wiring_spec(curve_visualization, _),
+        wiring_spec(display_settings, _)
+    )),
+
+    test("Wiring spec has panel reference", (
+        wiring_spec(curve_visualization, Options),
+        member(panel(curve_controls), Options)
+    )),
+
+    test("Wiring spec has mappings", (
+        wiring_spec(curve_visualization, Options),
+        member(mappings(Mappings), Options),
+        member(amplitude -> amplitude, Mappings)
+    )),
+
+    % Prop generation
+    test("Generate control props", (
+        generate_control_props(curve_controls, Props),
+        sub_atom(Props, _, _, _, 'amplitude={amplitude}'),
+        sub_atom(Props, _, _, _, 'frequency={frequency}')
+    )),
+
+    % Type generation
+    test("Generate prop types interface", (
+        generate_prop_types(curve_controls, Types),
+        sub_atom(Types, _, _, _, 'interface ChartProps'),
+        sub_atom(Types, _, _, _, 'amplitude: number')
+    )),
+
+    test("Type interface includes all control types", (
+        generate_prop_types(display_controls, DisplayTypes),
+        sub_atom(DisplayTypes, _, _, _, 'showGrid: boolean'),
+        sub_atom(DisplayTypes, _, _, _, 'lineColor: string')
+    )),
+
+    % Wired component generation
+    test("Generate wired component", (
+        generate_wired_component(curve_demo, [panel(curve_controls)], WiredCode),
+        sub_atom(WiredCode, _, _, _, 'import React'),
+        sub_atom(WiredCode, _, _, _, 'useState')
+    )),
+
+    test("Wired component has state declarations", (
+        generate_wired_component(test_wired, [panel(curve_controls)], Code),
+        sub_atom(Code, _, _, _, '[amplitude, setamplitude]')
+    )),
+
+    test("Wired component has control panel", (
+        generate_wired_component(test_wired2, [panel(curve_controls)], Code2),
+        sub_atom(Code2, _, _, _, 'controlPanel'),
+        sub_atom(Code2, _, _, _, 'panelTitle')
+    )),
+
+    test("Wired component uses sidebar layout by default", (
+        generate_wired_component(test_wired3, [panel(curve_controls)], Code3),
+        sub_atom(Code3, _, _, _, 'styles.sidebar'),
+        sub_atom(Code3, _, _, _, 'styles.main')
+    )).
 
 % ============================================================================
 % TEST HELPERS

@@ -358,6 +358,162 @@ react_page(dashboard, [
 ]).
 ```
 
+## Layout System
+
+The visualization modules integrate with a declarative layout system for composing UIs.
+
+### Outer Layouts (Container Positioning)
+
+```prolog
+:- use_module('src/unifyweaver/glue/layout_generator').
+
+% Define a sidebar + content layout
+layout(my_dashboard, grid, [
+    areas([["sidebar", "main"]]),
+    columns(["320px", "1fr"]),
+    gap("1rem")
+]).
+
+% Place components in regions
+place(my_dashboard, sidebar, [controls]).
+place(my_dashboard, main, [chart]).
+
+% Generate with layout
+?- generate_graph_with_layout(family_tree, sidebar_content, Code).
+?- generate_curve_with_layout(trig_demo, dashboard, Code).
+```
+
+### Subplot Layouts (Internal Component Grids)
+
+For composite components with multiple charts/graphs:
+
+```prolog
+% Define a 2x2 subplot grid
+subplot_layout(comparison_demo, grid, [rows(2), cols(2)]).
+
+% Place content in cells
+subplot_content(comparison_demo, pos(1,1), [curve(sine), title("Sine")]).
+subplot_content(comparison_demo, pos(1,2), [curve(cosine), title("Cosine")]).
+subplot_content(comparison_demo, pos(2,1), [curve(quadratic), title("Quadratic")]).
+subplot_content(comparison_demo, pos(2,2), [curve(exponential), title("Exp")]).
+
+% Generate - target-aware!
+?- generate_subplot_css(comparison_demo, CSS).      % Web: nested CSS grid
+?- generate_subplot_matplotlib(comparison_demo, Code). % Python: native subplots
+```
+
+The layout system is target-aware:
+- **Web targets**: Synthesizes nested CSS grids with multiple chart instances
+- **Matplotlib**: Uses native `plt.subplots()` for efficient multi-plot figures
+
+## Control System
+
+The control system provides declarative UI controls that integrate with visualizations.
+
+### Defining Controls
+
+```prolog
+:- use_module('src/unifyweaver/glue/layout_generator').
+
+% Slider control for numeric values
+control(amplitude, slider, [
+    min(0), max(5), step(0.1),
+    default(1),
+    label("Amplitude")
+]).
+
+% Dropdown select
+control(curve_type, select, [
+    options([sine, cosine, quadratic, cubic, exponential]),
+    default(sine),
+    label("Curve Type")
+]).
+
+% Checkbox for boolean values
+control(show_grid, checkbox, [
+    default(true),
+    label("Show Grid")
+]).
+
+% Color picker
+control(line_color, color_picker, [
+    default('#00d4ff'),
+    label("Line Color")
+]).
+```
+
+### Control Panels
+
+Group related controls into panels:
+
+```prolog
+% Control panel for curve parameters
+control_panel(curve_controls, [amplitude, frequency, phase, curve_type]).
+
+% Control panel for display settings
+control_panel(display_controls, [show_grid, show_legend, line_color, line_width]).
+```
+
+### Generating Control JSX
+
+```prolog
+% Generate individual control
+?- generate_control_jsx(amplitude, JSX).
+% Produces slider input with label and onChange handler
+
+% Generate entire control panel
+?- generate_control_panel_jsx(curve_controls, PanelJSX).
+% Produces panel with all controls grouped
+
+% Generate React useState declarations
+?- generate_control_state(curve_controls, StateCode).
+% const [amplitude, setAmplitude] = useState(1);
+% const [frequency, setFrequency] = useState(1);
+% ...
+```
+
+### Control Types
+
+| Type | Description | Generated HTML |
+|------|-------------|----------------|
+| `slider` | Numeric range input | `<input type="range">` |
+| `select` | Dropdown selection | `<select><option>...</option></select>` |
+| `checkbox` | Boolean toggle | `<input type="checkbox">` |
+| `color_picker` | Color selection | `<input type="color">` |
+| `number_input` | Numeric text input | `<input type="number">` |
+| `text_input` | Text input | `<input type="text">` |
+
+### Wired Components
+
+Generate complete components with controls wired to visualization:
+
+```prolog
+% Generate a wired component with sidebar layout
+?- generate_wired_component(my_demo, [
+       panel(curve_controls),
+       component(curve),
+       layout(sidebar_content)
+   ], Code).
+```
+
+This produces:
+- React component with useState hooks for each control
+- Control panel in sidebar region
+- Visualization receiving props from control state
+- TypeScript interface for props
+
+### TypeScript Interface Generation
+
+```prolog
+?- generate_prop_types(curve_controls, TypesCode).
+% interface ChartProps {
+%   amplitude: number;
+%   frequency: number;
+%   phase: number;
+%   curveType: string;
+% }
+```
+
 ## Testing
 
 The integration tests verify all visualization glue modules:
@@ -367,7 +523,7 @@ The integration tests verify all visualization glue modules:
 swipl -g "run_tests" -t halt tests/integration/glue/test_visualization_glue.pl
 
 # Expected output:
-# Results: 49/49 tests passed
+# Results: 99/99 tests passed
 # All tests passed!
 ```
 
@@ -378,6 +534,11 @@ swipl -g "run_tests" -t halt tests/integration/glue/test_visualization_glue.pl
 | graph_generator | 16 | Node/edge queries, component generation, CSS, config |
 | curve_plot_generator | 17 | Curve queries, evaluation, component generation |
 | matplotlib_generator | 16 | Curve queries, code generation, NumPy expressions |
+| layout_generator | 8 | Default layouts, themes, CSS/JSX generation |
+| layout_integration | 8 | Graph/curve with layout patterns |
+| subplot_layout | 10 | Subplot CSS, JSX, matplotlib generation |
+| control_system | 14 | Control definitions, JSX generation, state, CSS |
+| wiring_system | 10 | Wiring specs, props, types, wired components |
 
 ## Best Practices
 
@@ -427,9 +588,13 @@ The visualization glue modules provide:
 
 - **Declarative definitions** - Define graphs and plots in Prolog
 - **Multi-target generation** - React/TypeScript for web, Python for data science
+- **Layout system** - Declarative CSS Grid/Flexbox layouts with subplot support
+- **Target-aware subplots** - Native matplotlib subplots or synthesized CSS grids
+- **Control system** - Declarative UI controls (sliders, selects, checkboxes, etc.)
+- **Wired components** - Controls automatically connected to visualization state
 - **Runtime evaluation** - Evaluate curves programmatically
 - **Consistent patterns** - Same workflow as other UnifyWeaver glue modules
-- **Full test coverage** - 49 integration tests
+- **Full test coverage** - 99 integration tests
 
 ## What's Next?
 
