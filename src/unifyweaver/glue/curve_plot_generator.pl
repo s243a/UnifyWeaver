@@ -54,6 +54,7 @@
 
 :- use_module(library(lists)).
 :- use_module(layout_generator).
+:- use_module(math_expr).
 
 % ============================================================================
 % DYNAMIC PREDICATES
@@ -64,6 +65,7 @@
 
 :- discontiguous curve/2.
 :- discontiguous plot_spec/2.
+:- discontiguous evaluate_curve/3.
 
 % ============================================================================
 % DEFAULT CURVE DEFINITIONS
@@ -96,6 +98,26 @@ curve(exp_decay, [type(exponential), base(-1), scale(1), color('#3b82f6'), label
 % Absolute value: y = a|x - h| + k
 curve(abs_basic, [type(absolute), a(1), h(0), k(0), color('#a855f7'), label("|x|")]).
 curve(abs_shifted, [type(absolute), a(2), h(1), k(-1), color('#06b6d4'), label("2|x - 1| - 1")]).
+
+%% Expression-based curves (declarative mathematical expressions)
+curve(gaussian, [expr(exp(-(x^2) / 2)), color('#10b981'), label("Gaussian")]).
+curve(sinc, [expr(sin(x) / x), color('#f59e0b'), label("sinc(x)")]).  % Note: undefined at x=0
+curve(damped_sine, [expr(exp(-abs(x) / 3) * sin(x * 2)), color('#6366f1'), label("Damped sine")]).
+curve(polynomial, [expr(x^4 - 2*x^2 + 0.5), color('#ec4899'), label("x⁴ - 2x² + 0.5")]).
+curve(rational, [expr(1 / (1 + x^2)), color('#14b8a6'), label("1/(1+x²)")]).  % Cauchy distribution
+
+%% MATLAB-style data point curves
+curve(sampled_data, [
+    data([-2, -1, 0, 1, 2, 3, 4], [4, 1, 0, 1, 4, 9, 16]),
+    color('#f97316'),
+    label("Measured Data")
+]).
+curve(experimental_points, [
+    data([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
+         [0.0, 0.48, 0.84, 1.0, 0.91, 0.6, 0.14]),
+    color('#8b5cf6'),
+    label("Experimental")
+]).
 
 % ============================================================================
 % DEFAULT PLOT SPECIFICATIONS
@@ -231,6 +253,87 @@ evaluate_curve_type(absolute, Props, X, Y) :-
     (member(h(H), Props) -> true ; H = 0),
     (member(k(K), Props) -> true ; K = 0),
     Y is A * abs(X - H) + K.
+
+%% Custom expression type - evaluate arbitrary Prolog math expressions
+%% Example: curve(my_curve, [type(expr), formula(sin(x)^2 + cos(x)^2)])
+evaluate_curve_type(expr, Props, X, Y) :-
+    member(formula(Formula), Props),
+    evaluate_expr(Formula, X, Y).
+
+%% Also support expr() directly in properties for convenience
+%% Example: curve(my_curve, [expr(x^3 - x)])
+evaluate_curve(CurveName, X, Y) :-
+    curve(CurveName, Props),
+    member(expr(Formula), Props),
+    !,  % Cut - use expr if present
+    evaluate_expr(Formula, X, Y).
+
+%% Data-based curves - MATLAB style: interpolate or return nearest point
+%% Example: curve(my_curve, [data([x1, x2, ...], [y1, y2, ...])])
+evaluate_curve(CurveName, X, Y) :-
+    curve(CurveName, Props),
+    member(data(Xs, Ys), Props),
+    !,  % Cut - use data if present
+    interpolate_data(Xs, Ys, X, Y).
+
+%% Linear interpolation for data curves
+interpolate_data(Xs, Ys, X, Y) :-
+    find_interval(Xs, Ys, X, X1, Y1, X2, Y2),
+    (X2 =:= X1
+    ->  Y = Y1  % Avoid division by zero
+    ;   T is (X - X1) / (X2 - X1),
+        Y is Y1 + T * (Y2 - Y1)
+    ).
+
+%% Find the interval containing X
+find_interval([X1, X2|_], [Y1, Y2|_], X, X1, Y1, X2, Y2) :-
+    X >= X1, X =< X2, !.
+find_interval([_|Xs], [_|Ys], X, X1, Y1, X2, Y2) :-
+    find_interval(Xs, Ys, X, X1, Y1, X2, Y2).
+find_interval([X1], [Y1], _, X1, Y1, X1, Y1) :- !.  % Single point or beyond range
+find_interval([X1, X2], [Y1, Y2], _, X1, Y1, X2, Y2) :- !.  % Last interval
+
+%% evaluate_expr(+Formula, +X, -Y)
+%% Evaluate a Prolog expression with x bound to value X
+evaluate_expr(Formula, X, Y) :-
+    substitute_x(Formula, X, SubstFormula),
+    Y is SubstFormula.
+
+%% substitute_x(+Expr, +Val, -Result)
+%% Replace x with a concrete value in an expression
+substitute_x(x, Val, Val) :- !.
+substitute_x(y, _, 0) :- !.  % For 2D curves, y defaults to 0
+substitute_x(t, _, 0) :- !.  % t defaults to 0
+substitute_x(r, Val, Val) :- !.  % r treated as x for curves
+substitute_x(pi, _, Result) :- !, Result is pi.
+substitute_x(e, _, Result) :- !, Result is e.
+substitute_x(N, _, N) :- number(N), !.
+substitute_x(A + B, Val, RA + RB) :- !, substitute_x(A, Val, RA), substitute_x(B, Val, RB).
+substitute_x(A - B, Val, RA - RB) :- !, substitute_x(A, Val, RA), substitute_x(B, Val, RB).
+substitute_x(A * B, Val, RA * RB) :- !, substitute_x(A, Val, RA), substitute_x(B, Val, RB).
+substitute_x(A / B, Val, RA / RB) :- !, substitute_x(A, Val, RA), substitute_x(B, Val, RB).
+substitute_x(A ^ B, Val, RA ^ RB) :- !, substitute_x(A, Val, RA), substitute_x(B, Val, RB).
+substitute_x(A ** B, Val, RA ** RB) :- !, substitute_x(A, Val, RA), substitute_x(B, Val, RB).
+substitute_x(-A, Val, -RA) :- !, substitute_x(A, Val, RA).
+substitute_x(sin(A), Val, sin(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(cos(A), Val, cos(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(tan(A), Val, tan(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(exp(A), Val, exp(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(log(A), Val, log(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(sqrt(A), Val, sqrt(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(abs(A), Val, abs(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(floor(A), Val, floor(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(ceiling(A), Val, ceiling(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(sinh(A), Val, sinh(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(cosh(A), Val, cosh(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(tanh(A), Val, tanh(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(asin(A), Val, asin(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(acos(A), Val, acos(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(atan(A), Val, atan(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(atan(A, B), Val, atan(RA, RB)) :- !, substitute_x(A, Val, RA), substitute_x(B, Val, RB).
+substitute_x(sign(A), Val, sign(RA)) :- !, substitute_x(A, Val, RA).
+substitute_x(min(A, B), Val, min(RA, RB)) :- !, substitute_x(A, Val, RA), substitute_x(B, Val, RB).
+substitute_x(max(A, B), Val, max(RA, RB)) :- !, substitute_x(A, Val, RA), substitute_x(B, Val, RB).
 
 % ============================================================================
 % CODE GENERATION - REACT COMPONENT
@@ -368,6 +471,64 @@ generate_all_datasets(CurveNames, _XMin, _XMax, DatasetsCode) :-
     atomic_list_concat(DatasetCodes, ',\n', DatasetsCode).
 
 %% generate_dataset(+CurveName, +Props, -DatasetCode)
+
+%% Expression-based curves - priority 1
+generate_dataset(CurveName, Props, DatasetCode) :-
+    member(expr(Formula), Props),
+    !,  % Cut for expr mode
+    (member(color(Color), Props) -> true ; Color = '#00d4ff'),
+    (member(label(Label), Props) -> true ; atom_string(CurveName, Label)),
+    % Use math_expr module to translate expression to JavaScript
+    expr_to_js(Formula, JSFormula),
+    format(atom(DatasetCode),
+'    {
+      label: "~w",
+      borderColor: "~w",
+      backgroundColor: "~w",
+      fill: false,
+      tension: 0.1,
+      pointRadius: 0,
+      evalFn: (x: number) => ~w
+    }', [Label, Color, Color, JSFormula]).
+
+%% Data-based curves (MATLAB-style) - priority 2
+generate_dataset(CurveName, Props, DatasetCode) :-
+    member(data(Xs, Ys), Props),
+    !,  % Cut for data mode
+    (member(color(Color), Props) -> true ; Color = '#00d4ff'),
+    (member(label(Label), Props) -> true ; atom_string(CurveName, Label)),
+    % Generate JS arrays for the data points
+    format_js_array(Xs, XsJS),
+    format_js_array(Ys, YsJS),
+    format(atom(DatasetCode),
+'    {
+      label: "~w",
+      borderColor: "~w",
+      backgroundColor: "~w",
+      fill: false,
+      tension: 0.1,
+      pointRadius: 2,
+      // Explicit data points
+      rawData: { xs: ~w, ys: ~w },
+      evalFn: (() => {
+        const xs = ~w;
+        const ys = ~w;
+        return (x: number) => {
+          // Linear interpolation
+          for (let i = 0; i < xs.length - 1; i++) {
+            if (x >= xs[i] && x <= xs[i+1]) {
+              const t = (x - xs[i]) / (xs[i+1] - xs[i]);
+              return ys[i] + t * (ys[i+1] - ys[i]);
+            }
+          }
+          // Extrapolate at boundaries
+          if (x < xs[0]) return ys[0];
+          return ys[ys.length - 1];
+        };
+      })()
+    }', [Label, Color, Color, XsJS, YsJS, XsJS, YsJS]).
+
+%% Type-based curves (legacy) - priority 3
 generate_dataset(CurveName, Props, DatasetCode) :-
     member(type(Type), Props),
     (member(color(Color), Props) -> true ; Color = '#00d4ff'),
@@ -383,6 +544,12 @@ generate_dataset(CurveName, Props, DatasetCode) :-
       pointRadius: 0,
       evalFn: ~w
     }', [Label, Color, Color, EvalFn]).
+
+%% format_js_array for curve_plot_generator
+format_js_array(List, JS) :-
+    findall(Str, (member(N, List), number_string(N, Str)), Strs),
+    atomic_list_concat(Strs, ', ', Inner),
+    format(atom(JS), '[~w]', [Inner]).
 
 %% generate_eval_function(+Type, +Props, -EvalFn)
 generate_eval_function(linear, Props, EvalFn) :-

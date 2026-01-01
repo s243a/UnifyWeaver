@@ -13,6 +13,7 @@
 :- use_module('../../../src/unifyweaver/glue/heatmap_generator').
 :- use_module('../../../src/unifyweaver/glue/treemap_generator').
 :- use_module('../../../src/unifyweaver/glue/plot3d_generator').
+:- use_module('../../../src/unifyweaver/glue/math_expr').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -64,6 +65,9 @@ run_tests :-
 
     % 3D Plot Generator Tests
     run_plot3d_generator_tests,
+
+    % Math Expression Tests
+    run_math_expr_tests,
 
     % Summary
     print_summary.
@@ -879,7 +883,8 @@ run_plot3d_generator_tests :-
     test("Surface spec has config", (
         surface3d(wave_surface, Config),
         member(title(_), Config),
-        member(function(_), Config)
+        % Updated to use expr() instead of deprecated function()
+        member(expr(_), Config)
     )),
 
     % Scatter specs
@@ -938,6 +943,71 @@ run_plot3d_generator_tests :-
     test("Generate plot3d CSS", (
         generate_plot3d_styles(wave_surface, PlotCSS),
         sub_atom(PlotCSS, _, _, _, '.plotContainer')
+    )).
+
+run_math_expr_tests :-
+    format('~n--- Math Expression Tests ---~n'),
+
+    % Basic expression translation
+    test("Translate sin expression to JS", (
+        math_expr:expr_to_js(sin(x), JS1),
+        sub_atom(JS1, _, _, _, 'Math.sin')
+    )),
+
+    test("Translate complex expression to JS", (
+        math_expr:expr_to_js(sin(x) * cos(y), JS2),
+        sub_atom(JS2, _, _, _, 'Math.sin'),
+        sub_atom(JS2, _, _, _, 'Math.cos')
+    )),
+
+    test("Translate power expression to JS", (
+        math_expr:expr_to_js(x ^ 2, JS3),
+        sub_atom(JS3, _, _, _, 'Math.pow')
+    )),
+
+    test("Translate expression to NumPy", (
+        math_expr:expr_to_numpy(sin(x) * cos(y), Py1),
+        sub_atom(Py1, _, _, _, 'np.sin'),
+        sub_atom(Py1, _, _, _, 'np.cos')
+    )),
+
+    test("Constants translated correctly", (
+        math_expr:expr_to_js(sin(pi), JS4),
+        sub_atom(JS4, _, _, _, 'Math.PI')
+    )),
+
+    % Surface expression generation
+    test("Surface with expression generates JS", (
+        generate_plot3d_component(wave_surface, Code1),
+        sub_atom(Code1, _, _, _, 'Math.sin')
+    )),
+
+    test("Surface expr translates to Python", (
+        generate_plot3d_matplotlib(wave_surface, Py2),
+        sub_atom(Py2, _, _, _, 'np.sin')
+    )),
+
+    % Curve expression evaluation
+    test("Curve expr evaluates correctly", (
+        curve_plot_generator:evaluate_curve(gaussian, 0, Y1),
+        abs(Y1 - 1.0) < 0.001  % exp(0) = 1
+    )),
+
+    test("Curve expr evaluates at x=0 (rational)", (
+        curve_plot_generator:evaluate_curve(rational, 0, Y2),
+        abs(Y2 - 1.0) < 0.001  % 1/(1+0) = 1
+    )),
+
+    % Data curve interpolation
+    test("Data curve interpolates correctly", (
+        curve_plot_generator:evaluate_curve(sampled_data, 1.5, Y3),
+        abs(Y3 - 2.5) < 0.1  % Between 1 and 4
+    )),
+
+    % Data surface generation
+    test("Data surface generates correctly", (
+        generate_plot3d_component(data_surface_example, Code2),
+        sub_atom(Code2, _, _, _, 'Measured Data Surface')
     )).
 
 % ============================================================================

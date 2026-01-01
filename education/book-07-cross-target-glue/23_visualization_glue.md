@@ -125,9 +125,69 @@ The curve plot generator creates interactive mathematical curve visualizations u
 
 ### Defining Curves
 
+Curves can be defined in three ways: mathematical expressions, explicit data points (MATLAB-style), or predefined types.
+
+#### Method 1: Mathematical Expressions (Recommended)
+
+Use `expr()` to define curves with arbitrary mathematical expressions:
+
 ```prolog
 :- use_module('src/unifyweaver/glue/curve_plot_generator').
 
+% Gaussian curve
+curve(gaussian, [
+    expr(exp(-(x^2) / 2)),
+    color('#10b981'),
+    label("Gaussian")
+]).
+
+% Damped oscillation
+curve(damped_sine, [
+    expr(exp(-abs(x) / 3) * sin(x * 2)),
+    color('#6366f1'),
+    label("Damped sine")
+]).
+
+% Rational function (Cauchy distribution)
+curve(rational, [
+    expr(1 / (1 + x^2)),
+    color('#14b8a6'),
+    label("1/(1+x²)")
+]).
+
+% Higher-order polynomial
+curve(polynomial, [
+    expr(x^4 - 2*x^2 + 0.5),
+    color('#ec4899'),
+    label("x⁴ - 2x² + 0.5")
+]).
+```
+
+#### Method 2: Explicit Data Points (MATLAB-Style)
+
+For measured or sampled data:
+
+```prolog
+curve(sampled_data, [
+    data([-2, -1, 0, 1, 2, 3, 4],    % X values
+         [4, 1, 0, 1, 4, 9, 16]),     % Y values
+    color('#f97316'),
+    label("Measured Data")
+]).
+
+curve(experimental, [
+    data([0, 0.5, 1.0, 1.5, 2.0],
+         [0.0, 0.48, 0.84, 1.0, 0.91]),
+    color('#8b5cf6'),
+    label("Experimental")
+]).
+```
+
+#### Method 3: Predefined Types
+
+For common curve types with parameters:
+
+```prolog
 % Trigonometric curves
 curve(sine_wave, [
     type(sine),
@@ -613,28 +673,84 @@ The 3D plot generator creates interactive 3D visualizations including surfaces, 
 
 ### Defining 3D Surfaces
 
+Surfaces can be defined in three ways: mathematical expressions, explicit data points (MATLAB-style), or predefined functions.
+
+#### Method 1: Mathematical Expressions (Recommended)
+
+Use `expr()` to define surfaces with arbitrary Prolog mathematical expressions that are translated to JavaScript (React/Plotly) or Python (NumPy/matplotlib):
+
 ```prolog
 :- use_module('src/unifyweaver/glue/plot3d_generator').
 
-% Define a 3D surface
+% Define a surface using a mathematical expression
 surface3d(wave_surface, [
     title("3D Wave Surface"),
-    function(sin_cos),          % z = sin(x) * cos(y)
-    x_range(-3.14159, 3.14159),
-    y_range(-3.14159, 3.14159),
+    expr(sin(x) * cos(y)),      % z = sin(x) * cos(y)
+    x_range(-pi, pi),
+    y_range(-pi, pi),
     resolution(50),
+    colorscale(viridis)
+]).
+
+% More complex expressions
+surface3d(gaussian_surface, [
+    title("Gaussian"),
+    expr(exp(-(x^2 + y^2) / 2)),
+    x_range(-3, 3),
+    y_range(-3, 3)
+]).
+
+% Complex ripple pattern
+surface3d(ripple_surface, [
+    title("Ripple"),
+    expr(sin(sqrt(x^2 + y^2) * 3) / (sqrt(x^2 + y^2) + 0.1)),
+    x_range(-5, 5),
+    y_range(-5, 5)
+]).
+```
+
+#### Supported Math Functions
+
+The expression translator supports:
+
+| Category | Functions |
+|----------|-----------|
+| Trigonometric | `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` |
+| Hyperbolic | `sinh`, `cosh`, `tanh` |
+| Exponential | `exp`, `log`, `log10`, `log2` |
+| Power/Roots | `^`, `**`, `sqrt`, `cbrt` |
+| Rounding | `floor`, `ceil`, `round`, `abs` |
+| Comparison | `min`, `max`, `sign` |
+| Constants | `pi`, `e` |
+| Variables | `x`, `y`, `z`, `t`, `r` |
+
+#### Method 2: Explicit Data Points (MATLAB-Style)
+
+For measured data or pre-computed surfaces, use `data()` with explicit x, y vectors and z matrix:
+
+```prolog
+surface3d(measured_data, [
+    title("Measured Data Surface"),
+    data([0, 1, 2, 3],                    % X vector
+         [0, 1, 2, 3],                    % Y vector
+         [[0, 1, 4, 9],                   % Z matrix (row-major)
+          [1, 2, 5, 10],
+          [4, 5, 8, 13],
+          [9, 10, 13, 18]]),
     colorscale(viridis)
 ]).
 ```
 
-### Surface Functions
+#### Method 3: Predefined Functions (Legacy)
+
+For backward compatibility, predefined functions are still supported:
 
 | Function | Formula |
 |----------|---------|
 | `sin_cos` | z = sin(x) * cos(y) |
 | `paraboloid` | z = x² + y² |
 | `saddle` | z = x² - y² |
-| `ripple` | z = sin(r*3) / (r+0.1) where r = √(x²+y²) |
+| `ripple` | z = sin(r*3) / (r+0.1) |
 | `gaussian` | z = e^(-(x²+y²)/2) |
 
 ### Defining 3D Scatter Plots
