@@ -35,6 +35,23 @@
     % Placement predicates
     place/3,                        % place(+Layout, +Region, +Components)
 
+    % Control predicates
+    control/3,                      % control(+Name, +Type, +Options)
+    control_panel/2,                % control_panel(+Name, +Controls)
+
+    % Control generation
+    generate_control_jsx/2,         % generate_control_jsx(+ControlName, -JSX)
+    generate_control_panel_jsx/2,   % generate_control_panel_jsx(+PanelName, -JSX)
+    generate_control_css/2,         % generate_control_css(+PanelName, -CSS)
+    generate_control_state/2,       % generate_control_state(+PanelName, -StateCode)
+    generate_control_handlers/2,    % generate_control_handlers(+PanelName, -HandlersCode)
+
+    % Control wiring (connects controls to visualization components)
+    wiring_spec/2,                  % wiring_spec(+Name, +Mappings)
+    generate_wired_component/3,     % generate_wired_component(+Name, +Options, -Code)
+    generate_control_props/2,       % generate_control_props(+PanelName, -PropsCode)
+    generate_prop_types/2,          % generate_prop_types(+PanelName, -TypesCode)
+
     % Generation predicates
     generate_layout_css/2,          % generate_layout_css(+Name, -CSS)
     generate_layout_css/3,          % generate_layout_css(+Name, +Options, -CSS)
@@ -82,6 +99,9 @@
 :- dynamic place/3.
 :- dynamic wrapper/3.
 :- dynamic raw_css/2.
+:- dynamic control/3.
+:- dynamic control_panel/2.
+:- dynamic wiring_spec/2.
 
 :- discontiguous layout/3.
 :- discontiguous subplot_layout/3.
@@ -89,6 +109,8 @@
 :- discontiguous style/2.
 :- discontiguous style/3.
 :- discontiguous theme/2.
+:- discontiguous control/3.
+:- discontiguous control_panel/2.
 
 % ============================================================================
 % DEFAULT LAYOUTS
@@ -930,6 +952,639 @@ generate_subplot_content_plot(AxRef, Content, Code) :-
     (XLabel \= "" -> format(atom(XLabelCode), '~w.set_xlabel("~w")', [AxRef, XLabel]) ; XLabelCode = ""),
     (YLabel \= "" -> format(atom(YLabelCode), '~w.set_ylabel("~w")', [AxRef, YLabel]) ; YLabelCode = ""),
     AxRef, AxRef]).
+
+% ============================================================================
+% CONTROL SYSTEM
+% ============================================================================
+%
+% Controls are UI input elements (sliders, dropdowns, checkboxes, etc.)
+% that can be grouped into control panels for visualization configuration.
+%
+% Usage:
+%   control(amplitude, slider, [min(0), max(5), step(0.1), default(1), label("Amplitude")]).
+%   control(curve_type, select, [options([sine, cosine]), default(sine), label("Curve")]).
+%   control_panel(curve_controls, [amplitude, frequency, curve_type]).
+
+% ============================================================================
+% DEFAULT CONTROLS (examples)
+% ============================================================================
+
+control(amplitude, slider, [
+    min(0), max(5), step(0.1), default(1),
+    label("Amplitude")
+]).
+
+control(frequency, slider, [
+    min(0.1), max(10), step(0.1), default(1),
+    label("Frequency")
+]).
+
+control(phase, slider, [
+    min(0), max(6.28), step(0.01), default(0),
+    label("Phase")
+]).
+
+control(curve_type, select, [
+    options([sine, cosine, quadratic, cubic, exponential]),
+    default(sine),
+    label("Curve Type")
+]).
+
+control(show_grid, checkbox, [
+    default(true),
+    label("Show Grid")
+]).
+
+control(show_legend, checkbox, [
+    default(true),
+    label("Show Legend")
+]).
+
+control(line_color, color_picker, [
+    default('#00d4ff'),
+    label("Line Color")
+]).
+
+control(line_width, slider, [
+    min(1), max(10), step(0.5), default(2),
+    label("Line Width")
+]).
+
+control(point_count, slider, [
+    min(50), max(500), step(10), default(200),
+    label("Point Count")
+]).
+
+control(x_min, number_input, [
+    default(-10),
+    label("X Min")
+]).
+
+control(x_max, number_input, [
+    default(10),
+    label("X Max")
+]).
+
+% ============================================================================
+% DEFAULT CONTROL PANELS
+% ============================================================================
+
+control_panel(curve_controls, [amplitude, frequency, phase, curve_type]).
+control_panel(display_controls, [show_grid, show_legend, line_color, line_width]).
+control_panel(range_controls, [x_min, x_max, point_count]).
+control_panel(full_controls, [amplitude, frequency, curve_type, show_grid, line_color]).
+
+% ============================================================================
+% CONTROL JSX GENERATION
+% ============================================================================
+
+%% generate_control_jsx(+ControlName, -JSX)
+%  Generate React JSX for a single control.
+generate_control_jsx(ControlName, JSX) :-
+    control(ControlName, Type, Options),
+    atom_string(ControlName, NameStr),
+    to_camel_case(NameStr, StateVar),
+    to_pascal_case(NameStr, SetterSuffix),
+    (member(label(Label), Options) -> true ; Label = NameStr),
+    generate_control_by_type(Type, ControlName, StateVar, SetterSuffix, Label, Options, JSX).
+
+%% generate_control_by_type(+Type, +Name, +StateVar, +SetterSuffix, +Label, +Options, -JSX)
+
+% Slider control
+generate_control_by_type(slider, _Name, StateVar, SetterSuffix, Label, Options, JSX) :-
+    (member(min(Min), Options) -> true ; Min = 0),
+    (member(max(Max), Options) -> true ; Max = 100),
+    (member(step(Step), Options) -> true ; Step = 1),
+    format(atom(JSX),
+'<div className={styles.controlGroup}>
+  <label className={styles.controlLabel}>~w: {~w}</label>
+  <input
+    type="range"
+    min={~w}
+    max={~w}
+    step={~w}
+    value={~w}
+    onChange={(e) => set~w(Number(e.target.value))}
+    className={styles.slider}
+  />
+</div>', [Label, StateVar, Min, Max, Step, StateVar, SetterSuffix]).
+
+% Select/dropdown control
+generate_control_by_type(select, _Name, StateVar, SetterSuffix, Label, Options, JSX) :-
+    (member(options(Opts), Options) -> true ; Opts = []),
+    generate_select_options(Opts, OptionsJSX),
+    format(atom(JSX),
+'<div className={styles.controlGroup}>
+  <label className={styles.controlLabel}>~w</label>
+  <select
+    value={~w}
+    onChange={(e) => set~w(e.target.value)}
+    className={styles.select}
+  >
+~w
+  </select>
+</div>', [Label, StateVar, SetterSuffix, OptionsJSX]).
+
+% Checkbox control
+generate_control_by_type(checkbox, _Name, StateVar, SetterSuffix, Label, _Options, JSX) :-
+    format(atom(JSX),
+'<div className={styles.controlGroup}>
+  <label className={styles.checkboxLabel}>
+    <input
+      type="checkbox"
+      checked={~w}
+      onChange={(e) => set~w(e.target.checked)}
+      className={styles.checkbox}
+    />
+    ~w
+  </label>
+</div>', [StateVar, SetterSuffix, Label]).
+
+% Color picker control
+generate_control_by_type(color_picker, _Name, StateVar, SetterSuffix, Label, _Options, JSX) :-
+    format(atom(JSX),
+'<div className={styles.controlGroup}>
+  <label className={styles.controlLabel}>~w</label>
+  <input
+    type="color"
+    value={~w}
+    onChange={(e) => set~w(e.target.value)}
+    className={styles.colorPicker}
+  />
+</div>', [Label, StateVar, SetterSuffix]).
+
+% Number input control
+generate_control_by_type(number_input, _Name, StateVar, SetterSuffix, Label, _Options, JSX) :-
+    format(atom(JSX),
+'<div className={styles.controlGroup}>
+  <label className={styles.controlLabel}>~w</label>
+  <input
+    type="number"
+    value={~w}
+    onChange={(e) => set~w(Number(e.target.value))}
+    className={styles.numberInput}
+  />
+</div>', [Label, StateVar, SetterSuffix]).
+
+% Text input control
+generate_control_by_type(text_input, _Name, StateVar, SetterSuffix, Label, _Options, JSX) :-
+    format(atom(JSX),
+'<div className={styles.controlGroup}>
+  <label className={styles.controlLabel}>~w</label>
+  <input
+    type="text"
+    value={~w}
+    onChange={(e) => set~w(e.target.value)}
+    className={styles.textInput}
+  />
+</div>', [Label, StateVar, SetterSuffix]).
+
+% Fallback for unknown types
+generate_control_by_type(_, Name, _, _, _, _, JSX) :-
+    atom_string(Name, NameStr),
+    format(atom(JSX), '{/* Unknown control type: ~w */}', [NameStr]).
+
+%% generate_select_options(+Options, -JSX)
+generate_select_options([], '').
+generate_select_options([Opt|Rest], JSX) :-
+    atom_string(Opt, OptStr),
+    format(atom(OptJSX), '    <option value="~w">~w</option>', [OptStr, OptStr]),
+    generate_select_options(Rest, RestJSX),
+    (RestJSX = ''
+    ->  JSX = OptJSX
+    ;   format(atom(JSX), '~w~n~w', [OptJSX, RestJSX])
+    ).
+
+% ============================================================================
+% CONTROL PANEL JSX GENERATION
+% ============================================================================
+
+%% generate_control_panel_jsx(+PanelName, -JSX)
+%  Generate React JSX for a control panel containing multiple controls.
+generate_control_panel_jsx(PanelName, JSX) :-
+    control_panel(PanelName, ControlNames),
+    atom_string(PanelName, PanelStr),
+    to_pascal_case(PanelStr, PanelComponent),
+
+    % Generate individual controls
+    findall(ControlJSX, (
+        member(CtrlName, ControlNames),
+        generate_control_jsx(CtrlName, ControlJSX)
+    ), ControlJSXList),
+    atomic_list_concat(ControlJSXList, '\n      ', ControlsJSX),
+
+    format(atom(JSX),
+'<div className={styles.controlPanel}>
+  <h3 className={styles.panelTitle}>~w</h3>
+  <div className={styles.controls}>
+      ~w
+  </div>
+</div>', [PanelComponent, ControlsJSX]).
+
+% ============================================================================
+% CONTROL STATE GENERATION (React useState hooks)
+% ============================================================================
+
+%% generate_control_state(+PanelName, -StateCode)
+%  Generate React useState declarations for all controls in a panel.
+generate_control_state(PanelName, StateCode) :-
+    control_panel(PanelName, ControlNames),
+    findall(StateDecl, (
+        member(CtrlName, ControlNames),
+        generate_single_state(CtrlName, StateDecl)
+    ), StateDecls),
+    atomic_list_concat(StateDecls, '\n  ', StateCode).
+
+%% generate_single_state(+ControlName, -StateDecl)
+generate_single_state(ControlName, StateDecl) :-
+    control(ControlName, Type, Options),
+    atom_string(ControlName, NameStr),
+    to_camel_case(NameStr, StateVar),
+    get_default_value(Type, Options, DefaultValue),
+    format(atom(StateDecl), 'const [~w, set~w] = useState(~w);', [StateVar, StateVar, DefaultValue]).
+
+%% get_default_value(+Type, +Options, -DefaultValue)
+get_default_value(slider, Options, DefaultValue) :-
+    (member(default(D), Options) -> DefaultValue = D ; DefaultValue = 0).
+get_default_value(select, Options, DefaultValue) :-
+    (member(default(D), Options) -> format(atom(DefaultValue), '"~w"', [D]) ; DefaultValue = '""').
+get_default_value(checkbox, Options, DefaultValue) :-
+    (member(default(D), Options) -> (D == true -> DefaultValue = 'true' ; DefaultValue = 'false') ; DefaultValue = 'false').
+get_default_value(color_picker, Options, DefaultValue) :-
+    (member(default(D), Options) -> format(atom(DefaultValue), '"~w"', [D]) ; DefaultValue = '"#000000"').
+get_default_value(number_input, Options, DefaultValue) :-
+    (member(default(D), Options) -> DefaultValue = D ; DefaultValue = 0).
+get_default_value(text_input, Options, DefaultValue) :-
+    (member(default(D), Options) -> format(atom(DefaultValue), '"~w"', [D]) ; DefaultValue = '""').
+get_default_value(_, Options, DefaultValue) :-
+    (member(default(D), Options) -> DefaultValue = D ; DefaultValue = 'null').
+
+% ============================================================================
+% CONTROL HANDLERS GENERATION
+% ============================================================================
+
+%% generate_control_handlers(+PanelName, -HandlersCode)
+%  Generate onChange handler functions (if more complex logic is needed).
+generate_control_handlers(PanelName, HandlersCode) :-
+    control_panel(PanelName, ControlNames),
+    findall(Handler, (
+        member(CtrlName, ControlNames),
+        generate_single_handler(CtrlName, Handler)
+    ), Handlers),
+    atomic_list_concat(Handlers, '\n  ', HandlersCode).
+
+%% generate_single_handler(+ControlName, -Handler)
+generate_single_handler(ControlName, Handler) :-
+    control(ControlName, Type, _Options),
+    atom_string(ControlName, NameStr),
+    to_camel_case(NameStr, StateVar),
+    to_pascal_case(NameStr, HandlerName),
+    get_handler_type(Type, ValueExpr),
+    format(atom(Handler),
+'const handle~wChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    set~w(~w);
+  };', [HandlerName, StateVar, ValueExpr]).
+
+get_handler_type(slider, 'Number(e.target.value)').
+get_handler_type(number_input, 'Number(e.target.value)').
+get_handler_type(checkbox, 'e.target.checked').
+get_handler_type(color_picker, 'e.target.value').
+get_handler_type(text_input, 'e.target.value').
+get_handler_type(select, 'e.target.value').
+get_handler_type(_, 'e.target.value').
+
+% ============================================================================
+% CONTROL CSS GENERATION
+% ============================================================================
+
+%% generate_control_css(+PanelName, -CSS)
+%  Generate CSS for control panel styling.
+generate_control_css(_PanelName, CSS) :-
+    CSS = '.controlPanel {
+  padding: 1rem;
+  background: var(--surface, #16213e);
+  border-radius: 8px;
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+}
+
+.panelTitle {
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #888);
+  margin: 0 0 1rem 0;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.controlGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.controlLabel {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text, #e0e0e0);
+}
+
+.slider {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border, rgba(255,255,255,0.1));
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent, #00d4ff);
+  cursor: pointer;
+}
+
+.slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent, #00d4ff);
+  cursor: pointer;
+  border: none;
+}
+
+.select {
+  padding: 0.5rem;
+  background: var(--background, #1a1a2e);
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: 4px;
+  color: var(--text, #e0e0e0);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.select:focus {
+  outline: none;
+  border-color: var(--accent, #00d4ff);
+}
+
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--text, #e0e0e0);
+  cursor: pointer;
+}
+
+.checkbox {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent, #00d4ff);
+  cursor: pointer;
+}
+
+.colorPicker {
+  width: 100%;
+  height: 36px;
+  padding: 2px;
+  background: var(--background, #1a1a2e);
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.colorPicker::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.colorPicker::-webkit-color-swatch {
+  border-radius: 2px;
+  border: none;
+}
+
+.numberInput,
+.textInput {
+  padding: 0.5rem;
+  background: var(--background, #1a1a2e);
+  border: 1px solid var(--border, rgba(255,255,255,0.1));
+  border-radius: 4px;
+  color: var(--text, #e0e0e0);
+  font-size: 0.875rem;
+}
+
+.numberInput:focus,
+.textInput:focus {
+  outline: none;
+  border-color: var(--accent, #00d4ff);
+}
+'.
+
+% ============================================================================
+% UTILITY - CAMEL CASE CONVERSION
+% ============================================================================
+
+%% to_camel_case(+String, -CamelCase)
+%  Convert snake_case to camelCase.
+to_camel_case(String, CamelCase) :-
+    atom_string(Atom, String),
+    atom_codes(Atom, Codes),
+    to_camel_codes(Codes, false, CamelCodes),
+    atom_codes(CamelCase, CamelCodes).
+
+to_camel_codes([], _, []).
+to_camel_codes([C|Cs], true, [Upper|Rest]) :-
+    C >= 0'a, C =< 0'z, !,
+    Upper is C - 32,
+    to_camel_codes(Cs, false, Rest).
+to_camel_codes([C|Cs], _, Rest) :-
+    (C = 0'_ ; C = 0'-), !,
+    to_camel_codes(Cs, true, Rest).
+to_camel_codes([C|Cs], _, [C|Rest]) :-
+    to_camel_codes(Cs, false, Rest).
+
+% ============================================================================
+% CONTROL WIRING SYSTEM
+% ============================================================================
+
+%% Default wiring specifications
+%  Maps control panels to visualization component props.
+%  wiring_spec(+WiringName, +Options)
+%  Options:
+%    panel(PanelName)         - Control panel to wire
+%    component(ComponentName) - Visualization component to receive props
+%    mappings(List)           - List of control_name -> prop_name mappings
+
+wiring_spec(curve_visualization, [
+    panel(curve_controls),
+    component(curve_chart),
+    mappings([
+        amplitude -> amplitude,
+        frequency -> frequency,
+        phase -> phase,
+        curve_type -> curveType
+    ])
+]).
+
+wiring_spec(display_settings, [
+    panel(display_controls),
+    component(chart_display),
+    mappings([
+        show_grid -> showGrid,
+        show_legend -> showLegend,
+        line_color -> lineColor,
+        line_width -> lineWidth
+    ])
+]).
+
+%% generate_control_props(+PanelName, -PropsCode)
+%  Generate props object to pass to visualization component.
+generate_control_props(PanelName, PropsCode) :-
+    control_panel(PanelName, ControlNames),
+    findall(PropPair, (
+        member(CtrlName, ControlNames),
+        atom_string(CtrlName, NameStr),
+        to_camel_case(NameStr, PropName),
+        format(atom(PropPair), '~w={~w}', [PropName, PropName])
+    ), PropPairs),
+    atomic_list_concat(PropPairs, ' ', PropsCode).
+
+%% generate_prop_types(+PanelName, -TypesCode)
+%  Generate TypeScript interface for component props.
+generate_prop_types(PanelName, TypesCode) :-
+    control_panel(PanelName, ControlNames),
+    findall(TypeDef, (
+        member(CtrlName, ControlNames),
+        control(CtrlName, Type, _Options),
+        atom_string(CtrlName, NameStr),
+        to_camel_case(NameStr, PropName),
+        control_type_to_ts(Type, TSType),
+        format(atom(TypeDef), '  ~w: ~w;', [PropName, TSType])
+    ), TypeDefs),
+    atomic_list_concat(TypeDefs, '\n', TypeDefsStr),
+    format(atom(TypesCode),
+'interface ChartProps {
+~w
+}', [TypeDefsStr]).
+
+%% control_type_to_ts(+ControlType, -TSType)
+control_type_to_ts(slider, 'number').
+control_type_to_ts(number_input, 'number').
+control_type_to_ts(checkbox, 'boolean').
+control_type_to_ts(select, 'string').
+control_type_to_ts(color_picker, 'string').
+control_type_to_ts(text_input, 'string').
+control_type_to_ts(_, 'any').
+
+%% generate_wired_component(+Name, +Options, -Code)
+%  Generate a complete React component with controls wired to state.
+%  Options:
+%    panel(PanelName)      - Control panel to include
+%    component(Type)       - 'curve' or 'graph'
+%    layout(Pattern)       - Layout pattern (sidebar_content, dashboard, etc.)
+generate_wired_component(Name, Options, Code) :-
+    (member(panel(PanelName), Options) -> true ; PanelName = curve_controls),
+    (member(layout(LayoutPattern), Options) -> true ; LayoutPattern = sidebar_content),
+    (member(component(ComponentType), Options) -> true ; ComponentType = curve),
+
+    atom_string(Name, NameStr),
+    to_pascal_case(NameStr, ComponentName),
+
+    % Generate state declarations
+    generate_control_state(PanelName, StateCode),
+
+    % Generate control panel JSX
+    generate_control_panel_jsx(PanelName, ControlPanelJSX),
+
+    % Generate props for visualization
+    generate_control_props(PanelName, PropsCode),
+
+    % Generate prop types
+    generate_prop_types(PanelName, PropTypes),
+
+    % Generate CSS imports
+    generate_control_css(PanelName, ControlCSS),
+
+    % Generate visualization component based on type
+    get_visualization_component(ComponentType, PropsCode, VizComponent),
+
+    % Apply layout pattern
+    get_layout_structure(LayoutPattern, ControlPanelJSX, VizComponent, LayoutJSX),
+
+    format(atom(Code),
+'// Generated by UnifyWeaver - Wired Component
+// Component: ~w
+
+import React, { useState } from "react";
+import styles from "./~w.module.css";
+
+~w
+
+export const ~w: React.FC = () => {
+  // Control state
+  ~w
+
+  return (
+    ~w
+  );
+};
+
+export default ~w;
+
+/* CSS Styles:
+~w
+*/
+', [Name, ComponentName, PropTypes, ComponentName, StateCode, LayoutJSX, ComponentName, ControlCSS]).
+
+%% get_visualization_component(+Type, +Props, -Component)
+get_visualization_component(curve, Props, Component) :-
+    format(atom(Component), '<CurveChart ~w />', [Props]).
+get_visualization_component(graph, Props, Component) :-
+    format(atom(Component), '<GraphVisualization ~w />', [Props]).
+get_visualization_component(_, Props, Component) :-
+    format(atom(Component), '<Visualization ~w />', [Props]).
+
+%% get_layout_structure(+Pattern, +Controls, +Viz, -JSX)
+get_layout_structure(sidebar_content, Controls, Viz, JSX) :-
+    format(atom(JSX),
+'<div className={styles.container}>
+      <aside className={styles.sidebar}>
+        ~w
+      </aside>
+      <main className={styles.main}>
+        ~w
+      </main>
+    </div>', [Controls, Viz]).
+get_layout_structure(header_content, Controls, Viz, JSX) :-
+    format(atom(JSX),
+'<div className={styles.container}>
+      <header className={styles.header}>
+        ~w
+      </header>
+      <main className={styles.main}>
+        ~w
+      </main>
+    </div>', [Controls, Viz]).
+get_layout_structure(_, Controls, Viz, JSX) :-
+    format(atom(JSX),
+'<div className={styles.container}>
+      <div className={styles.controls}>
+        ~w
+      </div>
+      <div className={styles.visualization}>
+        ~w
+      </div>
+    </div>', [Controls, Viz]).
 
 % ============================================================================
 % TESTS
