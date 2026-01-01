@@ -3,12 +3,17 @@
 %
 % Integration Tests for Visualization Glue Modules
 %
-% Tests: graph_generator, curve_plot_generator, matplotlib_generator
+% Tests: graph_generator, curve_plot_generator, matplotlib_generator,
+%        heatmap_generator, treemap_generator, plot3d_generator
 
 :- use_module('../../../src/unifyweaver/glue/graph_generator').
 :- use_module('../../../src/unifyweaver/glue/curve_plot_generator').
 :- use_module('../../../src/unifyweaver/glue/matplotlib_generator').
 :- use_module('../../../src/unifyweaver/glue/layout_generator').
+:- use_module('../../../src/unifyweaver/glue/heatmap_generator').
+:- use_module('../../../src/unifyweaver/glue/treemap_generator').
+:- use_module('../../../src/unifyweaver/glue/plot3d_generator').
+:- use_module('../../../src/unifyweaver/glue/math_expr').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -51,6 +56,18 @@ run_tests :-
 
     % Wiring System Tests
     run_wiring_system_tests,
+
+    % Heatmap Generator Tests
+    run_heatmap_generator_tests,
+
+    % Treemap Generator Tests
+    run_treemap_generator_tests,
+
+    % 3D Plot Generator Tests
+    run_plot3d_generator_tests,
+
+    % Math Expression Tests
+    run_math_expr_tests,
 
     % Summary
     print_summary.
@@ -724,6 +741,273 @@ run_wiring_system_tests :-
         generate_wired_component(test_wired3, [panel(curve_controls)], Code3),
         sub_atom(Code3, _, _, _, 'styles.sidebar'),
         sub_atom(Code3, _, _, _, 'styles.main')
+    )).
+
+% ============================================================================
+% HEATMAP GENERATOR TESTS
+% ============================================================================
+
+run_heatmap_generator_tests :-
+    format('~n--- Heatmap Generator Tests ---~n'),
+
+    % Heatmap spec
+    test("Has default heatmap specs", (
+        heatmap_spec(correlation_demo, _),
+        heatmap_spec(activity_demo, _)
+    )),
+
+    test("Heatmap spec has config", (
+        heatmap_spec(correlation_demo, Config),
+        member(title(_), Config),
+        member(x_labels(_), Config)
+    )),
+
+    % Cell queries
+    test("Get heatmap cell value", (
+        get_heatmap_cell(correlation_demo, 0, 0, Value),
+        Value =:= 1.0
+    )),
+
+    test("Heatmap dimensions", (
+        heatmap_dimensions(correlation_demo, Rows, Cols),
+        Rows =:= 3, Cols =:= 3
+    )),
+
+    test("Heatmap value range", (
+        heatmap_value_range(correlation_demo, Min, Max),
+        Min < Max
+    )),
+
+    % Component generation
+    test("Generate heatmap component", (
+        generate_heatmap_component(correlation_demo, HeatmapCode),
+        sub_atom(HeatmapCode, _, _, _, 'React'),
+        sub_atom(HeatmapCode, _, _, _, 'heatmapContainer')
+    )),
+
+    test("Heatmap has color scale", (
+        generate_heatmap_component(correlation_demo, HeatmapCode2),
+        sub_atom(HeatmapCode2, _, _, _, 'getColor')
+    )),
+
+    % Matplotlib generation
+    test("Generate heatmap matplotlib", (
+        generate_heatmap_matplotlib(correlation_demo, PyCode),
+        sub_atom(PyCode, _, _, _, 'seaborn'),
+        sub_atom(PyCode, _, _, _, 'heatmap')
+    )),
+
+    % CSS generation
+    test("Generate heatmap CSS", (
+        generate_heatmap_styles(correlation_demo, HeatmapCSS),
+        sub_atom(HeatmapCSS, _, _, _, '.heatmapContainer'),
+        sub_atom(HeatmapCSS, _, _, _, '.cell')
+    )).
+
+% ============================================================================
+% TREEMAP GENERATOR TESTS
+% ============================================================================
+
+run_treemap_generator_tests :-
+    format('~n--- Treemap Generator Tests ---~n'),
+
+    % Treemap spec
+    test("Has default treemap specs", (
+        treemap_spec(filesystem_demo, _),
+        treemap_spec(budget_demo, _)
+    )),
+
+    test("Treemap spec has config", (
+        treemap_spec(filesystem_demo, Config),
+        member(title(_), Config),
+        member(root(_), Config)
+    )),
+
+    % Node queries
+    test("Treemap has nodes", (
+        treemap_node(project_root, null, _, _),
+        treemap_node(src, project_root, _, _)
+    )),
+
+    test("Get treemap children", (
+        treemap_children(filesystem_demo, project_root, Children),
+        length(Children, Len),
+        Len >= 3
+    )),
+
+    test("Calculate total value", (
+        treemap_total_value(filesystem_demo, Total),
+        Total > 0
+    )),
+
+    % Component generation
+    test("Generate treemap component", (
+        generate_treemap_component(filesystem_demo, TreemapCode),
+        sub_atom(TreemapCode, _, _, _, 'React'),
+        sub_atom(TreemapCode, _, _, _, 'TreemapNode')
+    )),
+
+    test("Treemap has layout algorithm", (
+        generate_treemap_component(filesystem_demo, TreemapCode2),
+        sub_atom(TreemapCode2, _, _, _, 'calculateLayout')
+    )),
+
+    % Plotly generation
+    test("Generate treemap plotly", (
+        generate_treemap_plotly(budget_demo, PyCode),
+        sub_atom(PyCode, _, _, _, 'plotly'),
+        sub_atom(PyCode, _, _, _, 'treemap')
+    )),
+
+    % CSS generation
+    test("Generate treemap CSS", (
+        generate_treemap_styles(filesystem_demo, TreemapCSS),
+        sub_atom(TreemapCSS, _, _, _, '.treemapContainer'),
+        sub_atom(TreemapCSS, _, _, _, '.node')
+    )).
+
+% ============================================================================
+% 3D PLOT GENERATOR TESTS
+% ============================================================================
+
+run_plot3d_generator_tests :-
+    format('~n--- 3D Plot Generator Tests ---~n'),
+
+    % Surface specs
+    test("Has default surface specs", (
+        surface3d(wave_surface, _),
+        surface3d(paraboloid, _),
+        surface3d(saddle, _)
+    )),
+
+    test("Surface spec has config", (
+        surface3d(wave_surface, Config),
+        member(title(_), Config),
+        % Updated to use expr() instead of deprecated function()
+        member(expr(_), Config)
+    )),
+
+    % Scatter specs
+    test("Has scatter demo", (
+        scatter3d_spec(cluster_demo, _),
+        scatter3d_point(cluster_demo, _, _, _, _)
+    )),
+
+    % Line specs
+    test("Has line demo", (
+        line3d_spec(helix, _),
+        line3d_point(helix, _, _, _, _)
+    )),
+
+    % Type detection
+    test("Detect plot types", (
+        plot3d_type(wave_surface, surface),
+        plot3d_type(cluster_demo, scatter),
+        plot3d_type(helix, line)
+    )),
+
+    % Surface component generation
+    test("Generate surface component", (
+        generate_plot3d_component(wave_surface, SurfaceCode),
+        sub_atom(SurfaceCode, _, _, _, 'Plot'),
+        sub_atom(SurfaceCode, _, _, _, 'surface')
+    )),
+
+    % Scatter component generation
+    test("Generate scatter component", (
+        generate_plot3d_component(cluster_demo, ScatterCode),
+        sub_atom(ScatterCode, _, _, _, 'scatter3d'),
+        sub_atom(ScatterCode, _, _, _, 'markers')
+    )),
+
+    % Line component generation
+    test("Generate line component", (
+        generate_plot3d_component(helix, LineCode),
+        sub_atom(LineCode, _, _, _, 'scatter3d'),
+        sub_atom(LineCode, _, _, _, 'lines')
+    )),
+
+    % Matplotlib generation
+    test("Generate surface matplotlib", (
+        generate_plot3d_matplotlib(wave_surface, PyCode),
+        sub_atom(PyCode, _, _, _, 'plot_surface'),
+        sub_atom(PyCode, _, _, _, 'Axes3D')
+    )),
+
+    test("Generate scatter matplotlib", (
+        generate_plot3d_matplotlib(cluster_demo, ScatterPyCode),
+        sub_atom(ScatterPyCode, _, _, _, 'scatter')
+    )),
+
+    % CSS generation
+    test("Generate plot3d CSS", (
+        generate_plot3d_styles(wave_surface, PlotCSS),
+        sub_atom(PlotCSS, _, _, _, '.plotContainer')
+    )).
+
+run_math_expr_tests :-
+    format('~n--- Math Expression Tests ---~n'),
+
+    % Basic expression translation
+    test("Translate sin expression to JS", (
+        math_expr:expr_to_js(sin(x), JS1),
+        sub_atom(JS1, _, _, _, 'Math.sin')
+    )),
+
+    test("Translate complex expression to JS", (
+        math_expr:expr_to_js(sin(x) * cos(y), JS2),
+        sub_atom(JS2, _, _, _, 'Math.sin'),
+        sub_atom(JS2, _, _, _, 'Math.cos')
+    )),
+
+    test("Translate power expression to JS", (
+        math_expr:expr_to_js(x ^ 2, JS3),
+        sub_atom(JS3, _, _, _, 'Math.pow')
+    )),
+
+    test("Translate expression to NumPy", (
+        math_expr:expr_to_numpy(sin(x) * cos(y), Py1),
+        sub_atom(Py1, _, _, _, 'np.sin'),
+        sub_atom(Py1, _, _, _, 'np.cos')
+    )),
+
+    test("Constants translated correctly", (
+        math_expr:expr_to_js(sin(pi), JS4),
+        sub_atom(JS4, _, _, _, 'Math.PI')
+    )),
+
+    % Surface expression generation
+    test("Surface with expression generates JS", (
+        generate_plot3d_component(wave_surface, Code1),
+        sub_atom(Code1, _, _, _, 'Math.sin')
+    )),
+
+    test("Surface expr translates to Python", (
+        generate_plot3d_matplotlib(wave_surface, Py2),
+        sub_atom(Py2, _, _, _, 'np.sin')
+    )),
+
+    % Curve expression evaluation
+    test("Curve expr evaluates correctly", (
+        curve_plot_generator:evaluate_curve(gaussian, 0, Y1),
+        abs(Y1 - 1.0) < 0.001  % exp(0) = 1
+    )),
+
+    test("Curve expr evaluates at x=0 (rational)", (
+        curve_plot_generator:evaluate_curve(rational, 0, Y2),
+        abs(Y2 - 1.0) < 0.001  % 1/(1+0) = 1
+    )),
+
+    % Data curve interpolation
+    test("Data curve interpolates correctly", (
+        curve_plot_generator:evaluate_curve(sampled_data, 1.5, Y3),
+        abs(Y3 - 2.5) < 0.1  % Between 1 and 4
+    )),
+
+    % Data surface generation
+    test("Data surface generates correctly", (
+        generate_plot3d_component(data_surface_example, Code2),
+        sub_atom(Code2, _, _, _, 'Measured Data Surface')
     )).
 
 % ============================================================================
