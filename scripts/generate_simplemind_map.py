@@ -338,25 +338,28 @@ def count_descendants(node: MindMapNode) -> int:
     return count
 
 def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: float = 500,
-                            iterations: int = 100, repulsion: float = 5000,
-                            attraction: float = 0.01, radial_weight: float = 0.1,
-                            min_distance: float = 60, damping: float = 0.9):
+                            iterations: int = 300, repulsion: float = 100000,
+                            attraction: float = 0.001, radial_weight: float = 0.0,
+                            min_distance: float = 120, damping: float = 0.8):
     """
     Apply force-directed optimization to reduce overlaps while preserving structure.
 
     Forces:
-    - Repulsion: nodes push apart (inverse square law)
-    - Attraction: children pulled toward parents
-    - Radial: soft constraint to stay near original radius
+    - Repulsion: nodes push apart (inverse square law, stronger when overlapping)
+    - Attraction: weak pull to parent only when very far away (>500px)
+
+    The radial constraint is disabled by default since the initial radial layout
+    provides good starting positions. Pure force-directed then spreads nodes to
+    eliminate overlaps.
 
     Args:
         root: Root node of the tree
-        iterations: Number of simulation steps
-        repulsion: Repulsion force strength
-        attraction: Attraction force strength (parent-child)
-        radial_weight: How strongly to preserve original radius
-        min_distance: Minimum distance between node centers
-        damping: Velocity damping factor
+        iterations: Number of simulation steps (default 300)
+        repulsion: Repulsion force strength (default 100000)
+        attraction: Attraction force strength when far from parent (default 0.001)
+        radial_weight: Radial constraint weight (default 0.0 = disabled)
+        min_distance: Target minimum distance between nodes (default 120px)
+        damping: Velocity damping factor (default 0.8)
     """
     all_nodes = collect_all_nodes(root)
     n = len(all_nodes)
@@ -392,9 +395,12 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
                 dist_sq = dx*dx + dy*dy
                 dist = math.sqrt(dist_sq) if dist_sq > 0 else 0.1
 
-                if dist < min_distance * 3:  # Only apply when close
-                    # Inverse square repulsion
-                    force_mag = repulsion / (dist_sq + 1)
+                if dist < min_distance * 5:  # Apply over larger range
+                    # Inverse square repulsion, stronger when very close
+                    force_mag = repulsion / (dist_sq + 100)
+                    # Extra boost when overlapping
+                    if dist < min_distance:
+                        force_mag *= 3
                     if dist > 0:
                         fx = (dx / dist) * force_mag
                         fy = (dy / dist) * force_mag
@@ -403,7 +409,7 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
                         forces[node_b.id][0] += fx
                         forces[node_b.id][1] += fy
 
-        # Attraction to parent
+        # Attraction to parent - only when very far away
         for node in all_nodes:
             if node.id in parent_map:
                 parent = parent_map[node.id]
@@ -411,30 +417,32 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
                 dy = parent.y - node.y
                 dist = math.sqrt(dx*dx + dy*dy)
 
-                # Attract if too far from parent
-                ideal_dist = 150  # Ideal parent-child distance
-                if dist > ideal_dist:
-                    force_mag = (dist - ideal_dist) * attraction
+                # Only attract if very far from parent (preserves tree structure)
+                max_dist = 500  # Only kick in when really far
+                if dist > max_dist:
+                    force_mag = (dist - max_dist) * attraction
                     if dist > 0:
                         forces[node.id][0] += (dx / dist) * force_mag
                         forces[node.id][1] += (dy / dist) * force_mag
 
-        # Radial constraint - pull toward original radius
-        for node in all_nodes:
-            if node.id == root.id:
-                continue  # Don't move root
+        # Radial constraint - very weak pull toward original radius
+        # (mostly disabled to allow free movement)
+        if radial_weight > 0.01:
+            for node in all_nodes:
+                if node.id == root.id:
+                    continue  # Don't move root
 
-            dx = node.x - center_x
-            dy = node.y - center_y
-            current_radius = math.sqrt(dx*dx + dy*dy)
-            original_radius = original_radii[node.id]
+                dx = node.x - center_x
+                dy = node.y - center_y
+                current_radius = math.sqrt(dx*dx + dy*dy)
+                original_radius = original_radii[node.id]
 
-            if current_radius > 0:
-                # Pull toward original radius
-                radius_diff = original_radius - current_radius
-                force_mag = radius_diff * radial_weight
-                forces[node.id][0] += (dx / current_radius) * force_mag
-                forces[node.id][1] += (dy / current_radius) * force_mag
+                if current_radius > 0:
+                    # Pull toward original radius
+                    radius_diff = original_radius - current_radius
+                    force_mag = radius_diff * radial_weight
+                    forces[node.id][0] += (dx / current_radius) * force_mag
+                    forces[node.id][1] += (dy / current_radius) * force_mag
 
         # Update velocities and positions
         max_movement = 0
@@ -448,7 +456,7 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
 
             # Limit velocity
             vel_mag = math.sqrt(velocities[node.id][0]**2 + velocities[node.id][1]**2)
-            max_vel = 50
+            max_vel = 150  # Allow larger movements
             if vel_mag > max_vel:
                 velocities[node.id][0] *= max_vel / vel_mag
                 velocities[node.id][1] *= max_vel / vel_mag
