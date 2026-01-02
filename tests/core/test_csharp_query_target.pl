@@ -31,6 +31,9 @@
 :- dynamic user:test_sale_item_alice_laptop/1.
 :- dynamic user:test_sale_item_alice_laptop_via_constraints/1.
 :- dynamic user:test_sale_item_param/3.
+:- dynamic user:test_bothscan_left/3.
+:- dynamic user:test_bothscan_right/3.
+:- dynamic user:test_bothscan_join/4.
 :- dynamic user:test_sale_count/1.
 :- dynamic user:test_sale_avg_for_alice/1.
 :- dynamic user:test_sales_by_customer/2.
@@ -167,6 +170,7 @@ test_csharp_query_target :-
         verify_stratified_negation_mutual_lower_stratum_runtime,
         verify_parameterized_multi_key_join_runtime,
         verify_parameterized_multi_key_join_strategy_partial_index,
+        verify_multi_key_both_scan_join_strategy_partial_index,
         verify_parameterized_recursive_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_single_key_join_keeps_scan_index,
         verify_recursive_selection_scan_uses_scan_index,
@@ -259,6 +263,14 @@ setup_test_data :-
     )),
     assertz(user:(test_sale_item_param(Customer, Product, Amount) :-
         test_sale_item(Customer, Product, Amount)
+    )),
+    assertz(user:test_bothscan_left(alice, laptop, 1)),
+    assertz(user:test_bothscan_left(alice, laptop, 2)),
+    assertz(user:test_bothscan_right(alice, laptop, 10)),
+    assertz(user:test_bothscan_right(alice, laptop, 20)),
+    assertz(user:(test_bothscan_join(Customer, Product, LeftValue, RightValue) :-
+        test_bothscan_left(Customer, Product, LeftValue),
+        test_bothscan_right(Customer, Product, RightValue)
     )),
     assertz(user:(test_sale_count(C) :- aggregate_all(count, test_sale(_, _), C))),
     assertz(user:(test_sale_avg_for_alice(Avg) :-
@@ -524,6 +536,9 @@ cleanup_test_data :-
     retractall(user:test_sale_item_alice_laptop(_)),
     retractall(user:test_sale_item_alice_laptop_via_constraints(_)),
     retractall(user:test_sale_item_param(_, _, _)),
+    retractall(user:test_bothscan_left(_, _, _)),
+    retractall(user:test_bothscan_right(_, _, _)),
+    retractall(user:test_bothscan_join(_, _, _, _)),
     retractall(user:test_sale_count(_)),
     retractall(user:test_sale_avg_for_alice(_)),
     retractall(user:test_sales_by_customer(_, _)),
@@ -1285,6 +1300,28 @@ verify_parameterized_multi_key_join_strategy_partial_index :-
     maybe_run_query_runtime_with_harness(Plan,
         ['alice,laptop,10', 'alice,laptop,2', 'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
         [[alice, laptop]],
+        HarnessSource).
+
+verify_multi_key_both_scan_join_strategy_partial_index :-
+    csharp_query_target:build_query_plan(test_bothscan_join/4, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    LeftKeys == [0, 1],
+    RightKeys == [0, 1],
+    (   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_bothscan_left, arity:3}, width:_}, Left),
+        sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_bothscan_right, arity:3}, width:_}, Right)
+    ;   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_bothscan_left, arity:3}, width:_}, Right),
+        sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_bothscan_right, arity:3}, width:_}, Left)
+    ),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [], 'KeyJoinScanIndexPartial', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,laptop,1,10',
+         'alice,laptop,1,20',
+         'alice,laptop,2,10',
+         'alice,laptop,2,20',
+         'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+        [],
         HarnessSource).
 
 verify_parameterized_recursive_multi_key_join_strategy_partial_index :-
