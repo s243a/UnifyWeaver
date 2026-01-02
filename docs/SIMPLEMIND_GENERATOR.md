@@ -280,6 +280,42 @@ pip install svglib reportlab
 
 ---
 
+## Multi-Format Export
+
+Convert `.smmx` files to other mind map and graph formats:
+
+```bash
+# OPML - outline format for outline editors, RSS readers
+python3 scripts/export_mindmap.py input.smmx output.opml
+
+# GraphML - graph format for yEd, Gephi, Cytoscape
+python3 scripts/export_mindmap.py input.smmx output.graphml
+
+# VUE - Tufts Visual Understanding Environment
+python3 scripts/export_mindmap.py input.smmx output.vue
+
+# FreeMind - free desktop mind mapping software
+python3 scripts/export_mindmap.py input.smmx output.mm
+```
+
+### Supported Formats
+
+| Format | Extension | Applications |
+|--------|-----------|--------------|
+| OPML | `.opml` | OmniOutliner, Dynalist, Workflowy, SimpleMind, RSS readers |
+| GraphML | `.graphml` | yEd, Gephi, Cytoscape, NetworkX |
+| VUE | `.vue` | Tufts Visual Understanding Environment |
+| FreeMind | `.mm` | FreeMind, Freeplane, Mind42 |
+
+### Format Notes
+
+- **OPML**: Hierarchical outline only (no layout coordinates). Best for text-based outline tools.
+- **GraphML**: Preserves node positions and colors. yEd-compatible with full layout.
+- **VUE**: Preserves positions and colors. Free academic tool with good concept mapping features.
+- **FreeMind**: Hierarchical with left/right positioning. Works with free desktop mind mappers.
+
+---
+
 ## Integration with SimpleMind
 
 The generated `.smmx` files can be:
@@ -298,6 +334,7 @@ The generated `.smmx` files can be:
 - [x] Image rendering (SVG/PNG) with straight and curved edges
 - [x] Per-node borderstyle support (half-round, ellipse, rectangle, diamond)
 - [x] Visual distinction: `--tree-style` and `--pearl-style` options
+- [x] Multi-format export (OPML, GraphML, VUE)
 - [ ] Time budget control (`--time-limit`)
 - [ ] Spatial indexing for O(n log n) crossing detection
 - [ ] Angular rebalancing based on subtree size
