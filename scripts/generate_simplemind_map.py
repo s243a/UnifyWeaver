@@ -835,7 +835,8 @@ def calculate_node_scales(root: MindMapNode, min_scale: float = 1.2) -> Dict[int
 def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, float] = None,
                 tree_style: str = None, pearl_style: str = None,
                 enable_cloudmapref: bool = False, cluster_id: str = None,
-                add_url_nodes: bool = False, next_id: List[int] = None):
+                url_nodes_mode: str = None, next_id: List[int] = None,
+                child_node_text: str = ''):
     """Convert a MindMapNode to SimpleMind XML topic element.
 
     Args:
@@ -846,8 +847,9 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         pearl_style: Borderstyle for Pearl items (pages/links)
         enable_cloudmapref: If True, add cloudmapref links for Tree nodes
         cluster_id: The cluster ID for deterministic GUID generation
-        add_url_nodes: If True, attach small URL nodes to Tree nodes with cloudmapref
-        next_id: Mutable counter [next_available_id] for generating URL node IDs
+        url_nodes_mode: 'url' = URL on main/cloudmapref on child, 'map' = cloudmapref on main/URL on child, None = no child nodes
+        next_id: Mutable counter [next_available_id] for generating child node IDs
+        child_node_text: Text label for child link nodes (default: empty)
     """
     topic = SubElement(parent_element, 'topic')
     topic.set('id', str(node.id))
@@ -898,42 +900,77 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
             style = SubElement(topic, 'style')
         style.set('borderstyle', borderstyle)
 
-    # Add link - cloudmapref for Tree nodes, urllink for others
-    url_node_created = False
+    # Add link - handle Tree nodes with cloudmapref and optional child nodes
     if node.url:
-        # Tree nodes with cloudmapref: use cloudmapref ONLY (SimpleMind supports one link type)
-        if enable_cloudmapref and node.item_type == 'Tree' and node.id != 0:
-            target_tree_id = extract_tree_id(node.url)
-            if target_tree_id:
+        is_tree_with_children = enable_cloudmapref and node.item_type == 'Tree' and node.id != 0
+        target_tree_id = extract_tree_id(node.url) if is_tree_with_children else None
+
+        if is_tree_with_children and target_tree_id:
+            # Determine link layout based on url_nodes_mode
+            # 'url': URL on main, cloudmapref on child (user's preferred hand-built style)
+            # 'map': cloudmapref on main, URL on child
+            # None: cloudmapref on main, no child node
+
+            if url_nodes_mode == 'url':
+                # URL on main node
+                link = SubElement(topic, 'link')
+                link.set('urllink', node.url)
+
+                # cloudmapref on child node (square, unlabeled)
+                if next_id is not None:
+                    child_node_id = next_id[0]
+                    next_id[0] += 1
+                    child_topic = SubElement(parent_element, 'topic')
+                    child_topic.set('id', str(child_node_id))
+                    child_topic.set('parent', str(node.id))
+                    child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
+                    child_topic.set('x', f'{node.x + 30:.2f}')
+                    child_topic.set('y', f'{node.y + 20:.2f}')
+                    child_topic.set('palette', str(node.palette))
+                    child_topic.set('colorinfo', str(node.palette))
+                    child_topic.set('text', child_node_text)
+                    # Square style
+                    child_style = SubElement(child_topic, 'style')
+                    child_style.set('borderstyle', 'sbsRectangle')
+                    # cloudmapref link
+                    child_link = SubElement(child_topic, 'link')
+                    child_link.set('cloudmapref', f'./{target_tree_id}.smmx')
+                    target_guid = generate_deterministic_guid(node.url, 0)
+                    child_link.set('element', target_guid)
+
+            elif url_nodes_mode == 'map':
+                # cloudmapref on main node
                 link = SubElement(topic, 'link')
                 link.set('cloudmapref', f'./{target_tree_id}.smmx')
-                # Link to root node (id=0) in target map
                 target_guid = generate_deterministic_guid(node.url, 0)
                 link.set('element', target_guid)
 
-                # Optionally add a small child node with the URL link
-                if add_url_nodes and next_id is not None:
-                    url_node_id = next_id[0]
+                # URL on child node (square)
+                if next_id is not None:
+                    child_node_id = next_id[0]
                     next_id[0] += 1
-                    url_topic = SubElement(parent_element, 'topic')
-                    url_topic.set('id', str(url_node_id))
-                    url_topic.set('parent', str(node.id))
-                    url_topic.set('guid', generate_deterministic_guid(cluster_id, url_node_id) if cluster_id else generate_guid())
-                    # Position slightly offset from parent
-                    url_topic.set('x', f'{node.x + 30:.2f}')
-                    url_topic.set('y', f'{node.y + 20:.2f}')
-                    url_topic.set('palette', str(node.palette))
-                    url_topic.set('colorinfo', str(node.palette))
-                    url_topic.set('text', 'url')
-                    # Small rectangle style
-                    url_style = SubElement(url_topic, 'style')
-                    url_style.set('borderstyle', 'sbsRectangle')
-                    font = SubElement(url_style, 'font')
-                    font.set('scale', '0.8')
+                    child_topic = SubElement(parent_element, 'topic')
+                    child_topic.set('id', str(child_node_id))
+                    child_topic.set('parent', str(node.id))
+                    child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
+                    child_topic.set('x', f'{node.x + 30:.2f}')
+                    child_topic.set('y', f'{node.y + 20:.2f}')
+                    child_topic.set('palette', str(node.palette))
+                    child_topic.set('colorinfo', str(node.palette))
+                    child_topic.set('text', child_node_text)
+                    # Square style
+                    child_style = SubElement(child_topic, 'style')
+                    child_style.set('borderstyle', 'sbsRectangle')
                     # URL link
-                    url_link = SubElement(url_topic, 'link')
-                    url_link.set('urllink', node.url)
-                    url_node_created = True
+                    child_link = SubElement(child_topic, 'link')
+                    child_link.set('urllink', node.url)
+
+            else:
+                # No child node - cloudmapref on main only
+                link = SubElement(topic, 'link')
+                link.set('cloudmapref', f'./{target_tree_id}.smmx')
+                target_guid = generate_deterministic_guid(node.url, 0)
+                link.set('element', target_guid)
         else:
             # Non-Tree nodes or root: use urllink
             link = SubElement(topic, 'link')
@@ -942,12 +979,12 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
     # Recurse for children
     for child in node.children:
         node_to_xml(child, parent_element, scales, tree_style, pearl_style,
-                    enable_cloudmapref, cluster_id, add_url_nodes, next_id)
+                    enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text)
 
 def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float] = None,
                          tree_style: str = None, pearl_style: str = None,
                          enable_cloudmapref: bool = False, cluster_id: str = None,
-                         add_url_nodes: bool = False) -> str:
+                         url_nodes_mode: str = None, child_node_text: str = '') -> str:
     """Generate complete SimpleMind XML document.
 
     Args:
@@ -958,7 +995,8 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
         pearl_style: Borderstyle for Pearl items (pages/links)
         enable_cloudmapref: If True, add cloudmapref links for Tree nodes
         cluster_id: The cluster ID for deterministic GUID generation
-        add_url_nodes: If True, attach small URL nodes to Tree nodes with cloudmapref
+        url_nodes_mode: 'url', 'map', or None for child node behavior
+        child_node_text: Text label for child nodes (default: empty/unlabeled)
     """
     # Root element
     root_elem = Element('simplemind-mindmaps')
@@ -987,11 +1025,11 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
 
     # Topics section
     topics = SubElement(mindmap, 'topics')
-    # Initialize next_id counter for URL nodes (start after all regular nodes)
+    # Initialize next_id counter for child link nodes (start after all regular nodes)
     all_nodes = collect_all_nodes(root)
     next_id = [max(n.id for n in all_nodes) + 1000]  # Leave gap for safety
     node_to_xml(root, topics, scales, tree_style, pearl_style,
-                enable_cloudmapref, cluster_id, add_url_nodes, next_id)
+                enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text)
 
     # Relations section (empty for now)
     SubElement(mindmap, 'relations')
@@ -1157,7 +1195,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                         do_minimize_crossings: bool = False, crossing_passes: int = 10,
                         no_scaling: bool = False, tree_style: str = None,
                         pearl_style: str = None, enable_cloudmapref: bool = False,
-                        add_url_nodes: bool = False, xml_only: bool = False) -> List[str]:
+                        url_nodes_mode: str = None, child_node_text: str = '',
+                        xml_only: bool = False) -> List[str]:
     """Generate a single mind map and return URLs of child Trees for recursion.
 
     Args:
@@ -1171,7 +1210,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
         no_scaling: Disable font scaling
         tree_style, pearl_style: Node styles
         enable_cloudmapref: Add cloudmapref links
-        add_url_nodes: Attach small URL nodes to Tree nodes
+        url_nodes_mode: 'url', 'map', or None for child node behavior
+        child_node_text: Text label for child link nodes
         xml_only: Output raw XML instead of .smmx
 
     Returns:
@@ -1217,7 +1257,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                                        tree_style=tree_style, pearl_style=pearl_style,
                                        enable_cloudmapref=enable_cloudmapref,
                                        cluster_id=cluster_url,
-                                       add_url_nodes=add_url_nodes)
+                                       url_nodes_mode=url_nodes_mode,
+                                       child_node_text=child_node_text)
 
     # Write output
     if xml_only:
@@ -1354,8 +1395,10 @@ def main():
                         help='Maximum depth for recursive generation (default: unlimited)')
     parser.add_argument('--parent-links', action='store_true',
                         help='Add "back to parent" nodes in child maps')
-    parser.add_argument('--url-nodes', action='store_true',
-                        help='Attach small "url" child nodes to Tree nodes (for URL access alongside cloudmapref)')
+    parser.add_argument('--url-nodes', choices=['url', 'map'], nargs='?', const='url', default=None,
+                        help='Attach small child nodes to Tree nodes. "url" (default): URL on main, cloudmapref on child. "map": cloudmapref on main, URL on child.')
+    parser.add_argument('--child-text', type=str, default='',
+                        help='Text label for child link nodes (default: empty/unlabeled)')
 
     args = parser.parse_args()
 
@@ -1423,7 +1466,8 @@ def main():
             no_scaling=args.no_scaling,
             tree_style=args.tree_style,
             pearl_style=args.pearl_style,
-            add_url_nodes=args.url_nodes,
+            url_nodes_mode=args.url_nodes,
+            child_node_text=args.child_text,
             xml_only=args.xml_only
         )
 
