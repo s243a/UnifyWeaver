@@ -111,6 +111,42 @@ def cluster_by_path_depth(data: List[Dict], max_clusters: int = 10) -> Dict[str,
     return clusters
 
 
+def cluster_by_tree(data: List[Dict]) -> Dict[str, List[int]]:
+    """
+    Cluster targets by their parent tree (cluster_id field).
+
+    Each unique cluster_id (parent tree URI) becomes its own cluster.
+    Items without cluster_id are grouped into "no_parent".
+
+    This creates one cluster per Pearltrees folder, grouping items
+    with their siblings (items sharing the same parent tree).
+    """
+    tree_groups = defaultdict(list)
+
+    for i, d in enumerate(data):
+        cluster_id = d.get("cluster_id", "")
+        if cluster_id:
+            # Use the tree ID from the URI as the cluster name
+            # e.g., "https://www.pearltrees.com/.../id12345" -> "tree_12345"
+            if "/id" in cluster_id:
+                tree_id = cluster_id.split("/id")[-1].split("/")[0]
+                cluster_name = f"tree_{tree_id}"
+            else:
+                cluster_name = f"tree_{hash(cluster_id) % 1000000}"
+        else:
+            cluster_name = "no_parent"
+
+        tree_groups[cluster_name].append(i)
+
+    logger.info(f"Created {len(tree_groups)} tree-based clusters")
+
+    # Log distribution stats
+    sizes = [len(indices) for indices in tree_groups.values()]
+    logger.info(f"  Min size: {min(sizes)}, Max size: {max(sizes)}, Avg: {np.mean(sizes):.1f}")
+
+    return dict(tree_groups)
+
+
 def cluster_by_embedding(A_emb: np.ndarray, max_clusters: int = 10, max_items_per_cluster: int = 1000) -> Dict[str, List[int]]:
     """
     Cluster targets by output embedding similarity.
@@ -198,12 +234,14 @@ def train_cluster_single(
     Q_emb: np.ndarray,
     A_emb: np.ndarray,
     indices: List[int],
-    cluster_id: str
+    cluster_id: str,
+    verbose: bool = True
 ) -> ClusterModel:
     """Train a single global W matrix for the cluster (much smaller, ~2.4 MB per cluster)."""
-    
+
     n = len(indices)
-    logger.info(f"Training cluster '{cluster_id}' with {n} items (single W, ~2.4 MB)...")
+    if verbose:
+        logger.info(f"Training cluster '{cluster_id}' with {n} items (single W, ~2.4 MB)...")
     
     # Compute single Procrustes for entire cluster
     W, scale, info = compute_minimal_transform(Q_emb, A_emb, allow_scaling=True)
@@ -260,12 +298,19 @@ def train_federated(
     # Cluster the data
     if cluster_method == "path_depth":
         clusters = cluster_by_path_depth(data, max_clusters)
-    else:
+    elif cluster_method == "per-tree":
+        clusters = cluster_by_tree(data)
+    else:  # "embedding"
         clusters = cluster_by_embedding(A_emb, max_clusters, max_items)
     
-    logger.info(f"Created {len(clusters)} clusters:")
-    for cid, indices in clusters.items():
-        logger.info(f"  {cid}: {len(indices)} items (~{estimate_memory_mb(len(indices)):.1f} MB)")
+    logger.info(f"Created {len(clusters)} clusters")
+    if len(clusters) <= 50:
+        for cid, indices in clusters.items():
+            logger.info(f"  {cid}: {len(indices)} items (~{estimate_memory_mb(len(indices)):.1f} MB)")
+    else:
+        sizes = [len(indices) for indices in clusters.values()]
+        logger.info(f"  (too many to list individually)")
+        logger.info(f"  Size range: {min(sizes)}-{max(sizes)}, Avg: {np.mean(sizes):.1f}")
     
     # Train each cluster and save immediately to disk
     # This avoids keeping all W_stacks in memory
@@ -277,19 +322,25 @@ def train_federated(
     output_dir = output_path.with_suffix('')
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    for cluster_id, indices in clusters.items():
+    total_clusters = len(clusters)
+    for cluster_num, (cluster_id, indices) in enumerate(clusters.items(), 1):
         Q_subset = Q_emb[indices]
         A_subset = A_emb[indices]
-        
+
         # Track index-to-cluster mapping for query-level routing
         for idx in indices:
             idx_to_cluster[int(idx)] = cluster_id
-        
+
+        # Progress logging for large cluster counts
+        if total_clusters > 50 and cluster_num % 100 == 0:
+            logger.info(f"Training progress: {cluster_num}/{total_clusters} clusters ({100*cluster_num/total_clusters:.0f}%)")
+
         # Train this cluster using selected mode
+        verbose = total_clusters <= 50  # Suppress per-cluster logs for many clusters
         if transform_mode == "per-query":
             model = train_cluster_perquery(Q_subset, A_subset, indices, cluster_id)
         else:  # "single"
-            model = train_cluster_single(Q_subset, A_subset, indices, cluster_id)
+            model = train_cluster_single(Q_subset, A_subset, indices, cluster_id, verbose=verbose)
         
         # Immediately save to disk
         cluster_path = output_dir / f"{cluster_id}.npz"
@@ -300,7 +351,8 @@ def train_federated(
             target_embeddings=model.target_embeddings,
             indices=np.array(model.indices)
         )
-        logger.info(f"Saved {cluster_id} to {cluster_path}")
+        if verbose:
+            logger.info(f"Saved {cluster_id} to {cluster_path}")
         
         # Keep only what we need for routing
         cluster_centroids_list.append(Q_subset.mean(axis=0))
@@ -455,8 +507,8 @@ def main():
     parser = argparse.ArgumentParser(description="Train federated Procrustes projection for Pearltrees.")
     parser.add_argument("input_jsonl", type=Path, help="Input JSONL with Q/A pairs")
     parser.add_argument("output_model", type=Path, help="Output model file (.pkl)")
-    parser.add_argument("--cluster-method", choices=["path_depth", "embedding"], default="embedding",
-                       help="Clustering method")
+    parser.add_argument("--cluster-method", choices=["path_depth", "embedding", "per-tree"], default="embedding",
+                       help="Clustering method: 'embedding' (semantic), 'path_depth', or 'per-tree' (one cluster per parent tree)")
     parser.add_argument("--transform-mode", choices=["single", "per-query"], default="single",
                        help="Transform mode: 'single' (1 W per cluster, ~70MB total) or 'per-query' (N W per cluster, ~15GB)")
     parser.add_argument("--max-memory-mb", type=float, default=800.0,
