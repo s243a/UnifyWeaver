@@ -14,6 +14,8 @@
 :- use_module('../../../src/unifyweaver/glue/treemap_generator').
 :- use_module('../../../src/unifyweaver/glue/plot3d_generator').
 :- use_module('../../../src/unifyweaver/glue/math_expr').
+:- use_module('../../../src/unifyweaver/glue/responsive_generator').
+:- use_module('../../../src/unifyweaver/glue/accessibility_generator').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -68,6 +70,12 @@ run_tests :-
 
     % Math Expression Tests
     run_math_expr_tests,
+
+    % Responsive Generator Tests
+    run_responsive_generator_tests,
+
+    % Accessibility Generator Tests
+    run_accessibility_generator_tests,
 
     % Summary
     print_summary.
@@ -1008,6 +1016,165 @@ run_math_expr_tests :-
     test("Data surface generates correctly", (
         generate_plot3d_component(data_surface_example, Code2),
         sub_atom(Code2, _, _, _, 'Measured Data Surface')
+    )).
+
+% ============================================================================
+% RESPONSIVE GENERATOR TESTS
+% ============================================================================
+
+run_responsive_generator_tests :-
+    format('~n--- Responsive Generator Tests ---~n'),
+
+    % Breakpoint definitions
+    test("Breakpoint definitions exist", (
+        breakpoint(xs, _),
+        breakpoint(md, _),
+        breakpoint(xl, _)
+    )),
+
+    test("Mobile breakpoint is max-width 767", (
+        breakpoint(mobile, max_width(767))
+    )),
+
+    test("Desktop breakpoint is min-width 1024", (
+        breakpoint(desktop, min_width(1024))
+    )),
+
+    % Media query generation
+    test("Generate mobile media query", (
+        generate_media_query(mobile, Query),
+        sub_atom(Query, _, _, _, 'max-width'),
+        sub_atom(Query, _, _, _, '767px')
+    )),
+
+    test("Generate desktop media query", (
+        generate_media_query(desktop, Query2),
+        sub_atom(Query2, _, _, _, 'min-width'),
+        sub_atom(Query2, _, _, _, '1024px')
+    )),
+
+    test("Generate tablet range query", (
+        generate_media_query(tablet, Query3),
+        sub_atom(Query3, _, _, _, 'min-width'),
+        sub_atom(Query3, _, _, _, 'max-width')
+    )),
+
+    % Responsive CSS generation
+    test("Generate responsive CSS for collapsible_sidebar", (
+        generate_responsive_css(collapsible_sidebar, CSS),
+        sub_atom(CSS, _, _, _, '@media'),
+        sub_atom(CSS, _, _, _, 'display: grid')
+    )),
+
+    test("Responsive CSS includes multiple breakpoints", (
+        generate_responsive_css(card_grid, CSS2),
+        sub_atom(CSS2, _, _, _, 'min-width: 576px'),
+        sub_atom(CSS2, _, _, _, 'min-width: 992px')
+    )),
+
+    % Container query generation
+    test("Generate container CSS", (
+        generate_container_css(chart_container, ContainerCSS),
+        sub_atom(ContainerCSS, _, _, _, 'container-type')
+    )),
+
+    % Breakpoint ordering
+    test("Breakpoints are ordered correctly", (
+        breakpoint_order(xs, Order1),
+        breakpoint_order(xl, Order2),
+        Order1 < Order2
+    )).
+
+% ============================================================================
+% ACCESSIBILITY GENERATOR TESTS
+% ============================================================================
+
+run_accessibility_generator_tests :-
+    format('~n--- Accessibility Generator Tests ---~n'),
+
+    % ARIA specification tests
+    test("ARIA spec for line_chart has role img", (
+        aria_spec(line_chart, Attrs),
+        member(role(img), Attrs)
+    )),
+
+    test("ARIA spec for data_table has role grid", (
+        aria_spec(data_table, Attrs2),
+        member(role(grid), Attrs2)
+    )),
+
+    % ARIA props generation
+    test("Generate ARIA props includes role", (
+        generate_aria_props(line_chart, Props),
+        sub_atom(Props, _, _, _, 'role')
+    )),
+
+    test("Generate ARIA props includes aria-label", (
+        generate_aria_props(bar_chart, Props2),
+        sub_atom(Props2, _, _, _, 'aria-label')
+    )),
+
+    % Keyboard handler generation
+    test("Keyboard handler has arrow key support", (
+        generate_keyboard_handler(data_table, Handler),
+        sub_atom(Handler, _, _, _, 'ArrowUp'),
+        sub_atom(Handler, _, _, _, 'ArrowDown')
+    )),
+
+    test("Keyboard handler prevents default", (
+        generate_keyboard_handler(data_table, Handler2),
+        sub_atom(Handler2, _, _, _, 'preventDefault')
+    )),
+
+    % Focus trap generation
+    test("Focus trap has container selector", (
+        generate_focus_trap_jsx(modal_dialog, FocusTrap),
+        sub_atom(FocusTrap, _, _, _, 'containerSelector')
+    )),
+
+    test("Focus trap returns focus on deactivate", (
+        generate_focus_trap_jsx(modal_dialog, FocusTrap2),
+        sub_atom(FocusTrap2, _, _, _, 'returnFocusOnDeactivate')
+    )),
+
+    % Skip links generation
+    test("Skip links has correct structure", (
+        generate_skip_links_jsx([main, nav], SkipLinks),
+        sub_atom(SkipLinks, _, _, _, 'skipLinks'),
+        sub_atom(SkipLinks, _, _, _, 'Skip to')
+    )),
+
+    % Live region generation
+    test("Live region has aria-live", (
+        generate_live_region_jsx(chart_updates, LiveRegion),
+        sub_atom(LiveRegion, _, _, _, 'aria-live')
+    )),
+
+    test("Live region has role status", (
+        generate_live_region_jsx(chart_updates, LiveRegion2),
+        sub_atom(LiveRegion2, _, _, _, 'role="status"')
+    )),
+
+    % Accessibility CSS generation
+    test("Accessibility CSS has screen reader only class", (
+        generate_accessibility_css(line_chart, CSS),
+        sub_atom(CSS, _, _, _, '.srOnly')
+    )),
+
+    test("Accessibility CSS has reduced motion support", (
+        generate_accessibility_css(bar_chart, CSS2),
+        sub_atom(CSS2, _, _, _, 'prefers-reduced-motion')
+    )),
+
+    test("Accessibility CSS has focus styles", (
+        generate_accessibility_css(pie_chart, CSS3),
+        sub_atom(CSS3, _, _, _, 'focus-visible')
+    )),
+
+    % ARIA label query
+    test("Get ARIA label returns correct value", (
+        get_aria_label(line_chart, Label),
+        Label = "Line chart visualization"
     )).
 
 % ============================================================================
