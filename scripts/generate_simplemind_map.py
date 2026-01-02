@@ -493,6 +493,191 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
 
     print(f"Force-directed optimization completed ({iterations} iterations)")
 
+def segments_intersect(p1: Tuple[float, float], p2: Tuple[float, float],
+                       p3: Tuple[float, float], p4: Tuple[float, float]) -> bool:
+    """
+    Check if line segment p1-p2 intersects with segment p3-p4.
+    Uses counter-clockwise orientation test.
+    """
+    def ccw(A, B, C):
+        return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+
+    # Check if segments share an endpoint (not a real crossing)
+    endpoints = {p1, p2}
+    if p3 in endpoints or p4 in endpoints:
+        return False
+
+    return (ccw(p1, p3, p4) != ccw(p2, p3, p4)) and (ccw(p1, p2, p3) != ccw(p1, p2, p4))
+
+
+def collect_edges(node: MindMapNode, edges: List[Tuple[MindMapNode, MindMapNode]] = None) -> List[Tuple[MindMapNode, MindMapNode]]:
+    """Collect all parent-child edges in the tree."""
+    if edges is None:
+        edges = []
+    for child in node.children:
+        edges.append((node, child))
+        collect_edges(child, edges)
+    return edges
+
+
+def count_edge_crossings(root: MindMapNode) -> int:
+    """Count total number of edge crossings in the layout."""
+    edges = collect_edges(root)
+    crossings = 0
+
+    for i, (a1, a2) in enumerate(edges):
+        p1 = (a1.x, a1.y)
+        p2 = (a2.x, a2.y)
+        for b1, b2 in edges[i+1:]:
+            p3 = (b1.x, b1.y)
+            p4 = (b2.x, b2.y)
+            if segments_intersect(p1, p2, p3, p4):
+                crossings += 1
+
+    return crossings
+
+
+def get_node_depth(node: MindMapNode, root: MindMapNode, depth_cache: Dict[int, int] = None) -> int:
+    """Get depth of a node from root (via parent chain)."""
+    if depth_cache is None:
+        depth_cache = {}
+
+    if node.id in depth_cache:
+        return depth_cache[node.id]
+
+    # Build depth by traversing tree
+    def compute_depths(n: MindMapNode, d: int):
+        depth_cache[n.id] = d
+        for child in n.children:
+            compute_depths(child, d + 1)
+
+    if not depth_cache:
+        compute_depths(root, 0)
+
+    return depth_cache.get(node.id, 0)
+
+
+def minimize_crossings(root: MindMapNode, center_x: float = 500, center_y: float = 500,
+                       force_iterations: int = 50, max_passes: int = 10,
+                       verbose: bool = True):
+    """
+    Minimize edge crossings by adjusting node positions one at a time.
+
+    Algorithm:
+    1. For each node (sorted by depth, shallowest first):
+       a. Try angular adjustments within parent's sector
+       b. Count crossings for each candidate position
+       c. Accept position that minimizes crossings
+       d. Run brief force-directed pass to restore overlap-free state
+    2. Repeat until no improvement
+    """
+    all_nodes = collect_all_nodes(root)
+
+    # Build depth cache
+    depth_cache = {}
+    get_node_depth(root, root, depth_cache)
+
+    # Build parent map
+    parent_map = {}
+    for node in all_nodes:
+        for child in node.children:
+            parent_map[child.id] = node
+
+    # Sort nodes by depth (shallowest first, skip root)
+    nodes_by_depth = sorted([n for n in all_nodes if n.id != root.id],
+                            key=lambda n: depth_cache[n.id])
+
+    initial_crossings = count_edge_crossings(root)
+    if verbose:
+        print(f"Initial edge crossings: {initial_crossings}")
+
+    if initial_crossings == 0:
+        print("No crossings to minimize")
+        return
+
+    for pass_num in range(max_passes):
+        improved = False
+        pass_start_crossings = count_edge_crossings(root)
+
+        for node in nodes_by_depth:
+            # Save original position
+            orig_x, orig_y = node.x, node.y
+            parent = parent_map.get(node.id)
+
+            if not parent:
+                continue
+
+            # Calculate current angle from parent
+            dx = node.x - parent.x
+            dy = node.y - parent.y
+            current_dist = math.sqrt(dx*dx + dy*dy)
+            current_angle = math.atan2(dy, dx)
+
+            if current_dist < 1:
+                continue
+
+            # Try angular adjustments: -30, -15, 0, +15, +30 degrees
+            best_crossings = count_edge_crossings(root)
+            best_x, best_y = orig_x, orig_y
+
+            for angle_offset in [-0.5, -0.25, -0.1, 0.1, 0.25, 0.5]:  # radians
+                test_angle = current_angle + angle_offset
+                node.x = parent.x + current_dist * math.cos(test_angle)
+                node.y = parent.y + current_dist * math.sin(test_angle)
+
+                crossings = count_edge_crossings(root)
+                if crossings < best_crossings:
+                    best_crossings = crossings
+                    best_x, best_y = node.x, node.y
+                    improved = True
+
+            # Also try distance adjustments: 0.8x, 1.2x distance
+            for dist_factor in [0.8, 1.2]:
+                test_dist = current_dist * dist_factor
+                node.x = parent.x + test_dist * math.cos(current_angle)
+                node.y = parent.y + test_dist * math.sin(current_angle)
+
+                crossings = count_edge_crossings(root)
+                if crossings < best_crossings:
+                    best_crossings = crossings
+                    best_x, best_y = node.x, node.y
+                    improved = True
+
+            # Apply best position
+            node.x, node.y = best_x, best_y
+
+        # Only run force-directed if we have overlaps (check a few pairs)
+        all_nodes = collect_all_nodes(root)
+        has_overlap = False
+        for i, node_a in enumerate(all_nodes[:20]):  # Check first 20 nodes
+            for node_b in all_nodes[i+1:i+20]:
+                dx = node_b.x - node_a.x
+                dy = node_b.y - node_a.y
+                dist = math.sqrt(dx*dx + dy*dy)
+                if dist < 80:  # Overlap threshold
+                    has_overlap = True
+                    break
+            if has_overlap:
+                break
+
+        if has_overlap:
+            # Lighter force-directed to fix overlaps without destroying crossing gains
+            force_directed_optimize(root, center_x, center_y,
+                                   iterations=force_iterations // 2, repulsion=50000,
+                                   attraction=0.0005, min_distance=100)
+
+        current_crossings = count_edge_crossings(root)
+        if verbose:
+            print(f"Pass {pass_num + 1}: {current_crossings} crossings (was {pass_start_crossings})")
+
+        if not improved or current_crossings >= pass_start_crossings:
+            break
+
+    final_crossings = count_edge_crossings(root)
+    if verbose:
+        print(f"Final edge crossings: {final_crossings} (reduced from {initial_crossings})")
+
+
 def calculate_node_scales(root: MindMapNode) -> Dict[int, float]:
     """
     Calculate font scale for each node based on descendant count.
@@ -761,6 +946,10 @@ def main():
                         help='Number of optimization iterations')
     parser.add_argument('--no-scaling', action='store_true',
                         help='Disable node size scaling by descendant count')
+    parser.add_argument('--minimize-crossings', action='store_true',
+                        help='Apply edge crossing minimization after force-directed')
+    parser.add_argument('--crossing-passes', type=int, default=10,
+                        help='Max passes for crossing minimization')
 
     args = parser.parse_args()
 
@@ -804,6 +993,15 @@ def main():
         print("Applying force-directed optimization...")
         force_directed_optimize(root, center_x=500, center_y=500,
                                iterations=args.optimize_iterations)
+
+    # Optional: edge crossing minimization (requires force-directed first)
+    if args.minimize_crossings:
+        if not args.optimize:
+            print("Running force-directed optimization first (required for crossing minimization)...")
+            force_directed_optimize(root, center_x=500, center_y=500, iterations=300)
+        print("Minimizing edge crossings...")
+        minimize_crossings(root, center_x=500, center_y=500,
+                          max_passes=args.crossing_passes)
 
     # Calculate node scales based on descendant count
     scales = None
