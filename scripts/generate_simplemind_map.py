@@ -895,20 +895,21 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
             style = SubElement(topic, 'style')
         style.set('borderstyle', borderstyle)
 
-    # Add link - URL and/or cloudmapref
+    # Add link - cloudmapref for Tree nodes, urllink for others
     if node.url:
-        link = SubElement(topic, 'link')
-        link.set('urllink', node.url)
-
-        # For Tree nodes, also add cloudmapref to child .smmx
+        # Tree nodes with cloudmapref: use cloudmapref ONLY (SimpleMind supports one link type)
         if enable_cloudmapref and node.item_type == 'Tree' and node.id != 0:
-            # Extract tree_id from URL for filename
             target_tree_id = extract_tree_id(node.url)
             if target_tree_id:
+                link = SubElement(topic, 'link')
                 link.set('cloudmapref', f'./{target_tree_id}.smmx')
                 # Link to root node (id=0) in target map
                 target_guid = generate_deterministic_guid(node.url, 0)
                 link.set('element', target_guid)
+        else:
+            # Non-Tree nodes or root: use urllink
+            link = SubElement(topic, 'link')
+            link.set('urllink', node.url)
 
     # Recurse for children
     for child in node.children:
