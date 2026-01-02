@@ -31,6 +31,8 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
 import numpy as np
 from sklearn.cluster import KMeans
+from scipy.sparse.csgraph import minimum_spanning_tree
+from scipy.spatial.distance import pdist, squareform
 
 @dataclass
 class MindMapNode:
@@ -832,11 +834,41 @@ def calculate_node_scales(root: MindMapNode, min_scale: float = 1.2) -> Dict[int
     compute_scale(root)
     return scales
 
+
+def compute_relative_cloudmapref_path(
+    source_folder: Path,
+    target_tree_id: str,
+    target_folder: Path
+) -> str:
+    """Compute relative path from source to target .smmx file.
+
+    Args:
+        source_folder: Folder containing source .smmx (relative to output root)
+        target_tree_id: Tree ID of target (e.g., 'id123456')
+        target_folder: Folder containing target .smmx (relative to output root)
+
+    Returns:
+        Relative path string for cloudmapref (e.g., '../sibling/id789.smmx')
+    """
+    import os
+    # Both paths are relative to output root
+    # source_folder: where the current .smmx is
+    # target_folder: where the target .smmx is
+    target_file = target_folder / f'{target_tree_id}.smmx'
+
+    # Compute relative path from source folder to target file
+    rel_path = os.path.relpath(target_file, source_folder)
+    # Normalize to forward slashes for SimpleMind compatibility
+    return rel_path.replace('\\', '/')
+
+
 def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, float] = None,
                 tree_style: str = None, pearl_style: str = None,
                 enable_cloudmapref: bool = False, cluster_id: str = None,
                 url_nodes_mode: str = None, next_id: List[int] = None,
-                child_node_text: str = ''):
+                child_node_text: str = '',
+                source_folder: Path = None,
+                cluster_to_folder: Dict[str, Path] = None):
     """Convert a MindMapNode to SimpleMind XML topic element.
 
     Args:
@@ -850,6 +882,8 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         url_nodes_mode: 'url' = URL on main/cloudmapref on child, 'map' = cloudmapref on main/URL on child, None = no child nodes
         next_id: Mutable counter [next_available_id] for generating child node IDs
         child_node_text: Text label for child link nodes (default: empty)
+        source_folder: Current .smmx folder (relative to output root) for path computation
+        cluster_to_folder: Dict mapping cluster URLs to folder paths for MST-based layout
     """
     topic = SubElement(parent_element, 'topic')
     topic.set('id', str(node.id))
@@ -905,6 +939,14 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         is_tree_with_children = enable_cloudmapref and node.item_type == 'Tree' and node.id != 0
         target_tree_id = extract_tree_id(node.url) if is_tree_with_children else None
 
+        # Compute cloudmapref path (uses folder structure if available)
+        def get_cloudmapref_path():
+            if cluster_to_folder and source_folder is not None and node.url in cluster_to_folder:
+                target_folder = cluster_to_folder[node.url]
+                return compute_relative_cloudmapref_path(source_folder, target_tree_id, target_folder)
+            else:
+                return f'./{target_tree_id}.smmx'
+
         if is_tree_with_children and target_tree_id:
             # Determine link layout based on url_nodes_mode
             # 'url': URL on main, cloudmapref on child (user's preferred hand-built style)
@@ -934,14 +976,14 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                     child_style.set('borderstyle', 'sbsRectangle')
                     # cloudmapref link
                     child_link = SubElement(child_topic, 'link')
-                    child_link.set('cloudmapref', f'./{target_tree_id}.smmx')
+                    child_link.set('cloudmapref', get_cloudmapref_path())
                     target_guid = generate_deterministic_guid(node.url, 0)
                     child_link.set('element', target_guid)
 
             elif url_nodes_mode == 'map':
                 # cloudmapref on main node
                 link = SubElement(topic, 'link')
-                link.set('cloudmapref', f'./{target_tree_id}.smmx')
+                link.set('cloudmapref', get_cloudmapref_path())
                 target_guid = generate_deterministic_guid(node.url, 0)
                 link.set('element', target_guid)
 
@@ -968,7 +1010,7 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
             else:
                 # No child node - cloudmapref on main only
                 link = SubElement(topic, 'link')
-                link.set('cloudmapref', f'./{target_tree_id}.smmx')
+                link.set('cloudmapref', get_cloudmapref_path())
                 target_guid = generate_deterministic_guid(node.url, 0)
                 link.set('element', target_guid)
         else:
@@ -979,12 +1021,15 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
     # Recurse for children
     for child in node.children:
         node_to_xml(child, parent_element, scales, tree_style, pearl_style,
-                    enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text)
+                    enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text,
+                    source_folder, cluster_to_folder)
 
 def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float] = None,
                          tree_style: str = None, pearl_style: str = None,
                          enable_cloudmapref: bool = False, cluster_id: str = None,
-                         url_nodes_mode: str = None, child_node_text: str = '') -> str:
+                         url_nodes_mode: str = None, child_node_text: str = '',
+                         source_folder: Path = None,
+                         cluster_to_folder: Dict[str, Path] = None) -> str:
     """Generate complete SimpleMind XML document.
 
     Args:
@@ -997,6 +1042,8 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
         cluster_id: The cluster ID for deterministic GUID generation
         url_nodes_mode: 'url', 'map', or None for child node behavior
         child_node_text: Text label for child nodes (default: empty/unlabeled)
+        source_folder: Current .smmx folder (relative to output root) for path computation
+        cluster_to_folder: Dict mapping cluster URLs to folder paths for MST-based layout
     """
     # Root element
     root_elem = Element('simplemind-mindmaps')
@@ -1029,7 +1076,8 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
     all_nodes = collect_all_nodes(root)
     next_id = [max(n.id for n in all_nodes) + 1000]  # Leave gap for safety
     node_to_xml(root, topics, scales, tree_style, pearl_style,
-                enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text)
+                enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text,
+                source_folder, cluster_to_folder)
 
     # Relations section (empty for now)
     SubElement(mindmap, 'relations')
@@ -1196,7 +1244,9 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                         no_scaling: bool = False, tree_style: str = None,
                         pearl_style: str = None, enable_cloudmapref: bool = False,
                         url_nodes_mode: str = None, child_node_text: str = '',
-                        xml_only: bool = False) -> List[str]:
+                        xml_only: bool = False,
+                        source_folder: Path = None,
+                        cluster_to_folder: Dict[str, Path] = None) -> List[str]:
     """Generate a single mind map and return URLs of child Trees for recursion.
 
     Args:
@@ -1213,6 +1263,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
         url_nodes_mode: 'url', 'map', or None for child node behavior
         child_node_text: Text label for child link nodes
         xml_only: Output raw XML instead of .smmx
+        source_folder: Current .smmx folder (relative to output root) for path computation
+        cluster_to_folder: Dict mapping cluster URLs to folder paths for MST-based layout
 
     Returns:
         List of child Tree URLs for recursive generation
@@ -1258,7 +1310,9 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                                        enable_cloudmapref=enable_cloudmapref,
                                        cluster_id=cluster_url,
                                        url_nodes_mode=url_nodes_mode,
-                                       child_node_text=child_node_text)
+                                       child_node_text=child_node_text,
+                                       source_folder=source_folder,
+                                       cluster_to_folder=cluster_to_folder)
 
     # Write output
     if xml_only:
@@ -1278,12 +1332,230 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
     return child_tree_urls
 
 
+def discover_all_clusters(
+    root_url: str,
+    data_path: Path,
+    max_depth: int = None
+) -> List[str]:
+    """Pre-discover all cluster URLs in hierarchy for MST computation.
+
+    Uses BFS to find all Tree nodes that will be generated.
+
+    Args:
+        root_url: Starting cluster URL
+        data_path: Path to JSONL data file
+        max_depth: Maximum depth (None = unlimited)
+
+    Returns:
+        List of all cluster URLs in the hierarchy
+    """
+    discovered = []
+    queue = [(root_url, 0)]
+    visited = set()
+
+    while queue:
+        url, depth = queue.pop(0)
+        if url in visited:
+            continue
+        if max_depth is not None and depth > max_depth:
+            continue
+
+        visited.add(url)
+        discovered.append(url)
+
+        # Find child Trees
+        items = load_cluster_items(data_path, cluster_url=url)
+        for item in items:
+            if item.get('type') == 'Tree':
+                child_url = item.get('uri', '')
+                if child_url and child_url != url and child_url not in visited:
+                    queue.append((child_url, depth + 1))
+
+    return discovered
+
+
+def compute_cluster_centroids(
+    cluster_urls: List[str],
+    data_path: Path,
+    tree_id_emb: Dict[str, np.ndarray],
+    title_emb: Dict[str, np.ndarray],
+    uri_emb: Dict[str, np.ndarray]
+) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+    """Compute centroid embedding for each cluster.
+
+    Args:
+        cluster_urls: List of cluster URLs to compute centroids for
+        data_path: Path to JSONL data file
+        tree_id_emb, title_emb, uri_emb: Embedding dictionaries
+
+    Returns:
+        Tuple of (cluster_centroids dict, global_centroid)
+    """
+    def get_embedding(item):
+        """Get embedding for an item."""
+        pearl_uri = item.get('pearl_uri', '')
+        if pearl_uri and pearl_uri in uri_emb:
+            return uri_emb[pearl_uri]
+        uri = item.get('uri', '')
+        if uri and uri in uri_emb:
+            return uri_emb[uri]
+        tree_id = item.get('tree_id', '')
+        if tree_id and str(tree_id) in tree_id_emb:
+            return tree_id_emb[str(tree_id)]
+        title = item.get('raw_title', '')
+        if title in title_emb:
+            return title_emb[title]
+        return None
+
+    cluster_centroids = {}
+    all_embeddings = []
+
+    for cluster_url in cluster_urls:
+        items = load_cluster_items(data_path, cluster_url=cluster_url)
+        embeddings = []
+        for item in items:
+            emb = get_embedding(item)
+            if emb is not None:
+                embeddings.append(emb)
+
+        if embeddings:
+            centroid = np.mean(embeddings, axis=0)
+            cluster_centroids[cluster_url] = centroid
+            all_embeddings.append(centroid)
+
+    # Global centroid is mean of all cluster centroids
+    if all_embeddings:
+        global_centroid = np.mean(all_embeddings, axis=0)
+    else:
+        global_centroid = np.zeros(768)  # Default embedding dimension
+
+    return cluster_centroids, global_centroid
+
+
+def build_mst_hierarchy(
+    cluster_urls: List[str],
+    cluster_centroids: Dict[str, np.ndarray],
+    global_centroid: np.ndarray
+) -> Tuple[Dict[str, List[str]], str]:
+    """Build MST from cluster centroids and return parent->children mapping.
+
+    Args:
+        cluster_urls: List of cluster URLs
+        cluster_centroids: Dict mapping cluster_url -> centroid embedding
+        global_centroid: Mean of all cluster centroids
+
+    Returns:
+        Tuple of (parent_to_children dict, root_url)
+    """
+    # Filter to clusters that have centroids
+    valid_urls = [url for url in cluster_urls if url in cluster_centroids]
+
+    if len(valid_urls) == 0:
+        return {}, cluster_urls[0] if cluster_urls else ""
+
+    if len(valid_urls) == 1:
+        return {valid_urls[0]: []}, valid_urls[0]
+
+    # Stack centroids into matrix
+    centroids_matrix = np.stack([cluster_centroids[url] for url in valid_urls])
+
+    # Compute pairwise cosine distances
+    distances = squareform(pdist(centroids_matrix, metric='cosine'))
+
+    # Build MST
+    mst = minimum_spanning_tree(distances)
+    mst_array = mst.toarray()
+
+    # Find root: cluster closest to global centroid (using cosine distance)
+    dists_to_global = []
+    for url in valid_urls:
+        centroid = cluster_centroids[url]
+        # Cosine distance = 1 - cosine similarity
+        cos_sim = np.dot(centroid, global_centroid) / (
+            np.linalg.norm(centroid) * np.linalg.norm(global_centroid) + 1e-10)
+        dists_to_global.append(1 - cos_sim)
+    root_idx = int(np.argmin(dists_to_global))
+    root_url = valid_urls[root_idx]
+
+    # BFS from root to build parent->children hierarchy
+    # MST edges are directed from lower to higher index in scipy
+    # Make symmetric for BFS
+    mst_symmetric = mst_array + mst_array.T
+
+    parent_to_children = {url: [] for url in valid_urls}
+    visited = set()
+    queue = [root_idx]
+    visited.add(root_idx)
+
+    while queue:
+        current_idx = queue.pop(0)
+        current_url = valid_urls[current_idx]
+
+        # Find neighbors in MST
+        for neighbor_idx in range(len(valid_urls)):
+            if mst_symmetric[current_idx, neighbor_idx] > 0 and neighbor_idx not in visited:
+                visited.add(neighbor_idx)
+                neighbor_url = valid_urls[neighbor_idx]
+                parent_to_children[current_url].append(neighbor_url)
+                queue.append(neighbor_idx)
+
+    return parent_to_children, root_url
+
+
+def mst_to_folder_structure(
+    parent_to_children: Dict[str, List[str]],
+    root_url: str,
+    max_folder_depth: int = None
+) -> Dict[str, Path]:
+    """Convert MST hierarchy to folder paths.
+
+    Args:
+        parent_to_children: MST structure mapping parent -> children URLs
+        root_url: Root cluster URL
+        max_folder_depth: Maximum folder nesting depth (None = unlimited)
+
+    Returns:
+        Dict mapping cluster_url -> relative folder Path
+    """
+    cluster_to_folder = {}
+
+    def assign_folders(url: str, current_path: Path, depth: int):
+        # Assign this cluster to current path
+        cluster_to_folder[url] = current_path
+
+        # Process children
+        children = parent_to_children.get(url, [])
+        for child_url in children:
+            child_tree_id = extract_tree_id(child_url)
+            if not child_tree_id:
+                child_tree_id = f"cluster_{len(cluster_to_folder)}"
+
+            # Check depth limit
+            if max_folder_depth is not None and depth >= max_folder_depth:
+                # Flatten: keep in current folder
+                child_path = current_path
+            else:
+                # Create subfolder
+                child_path = current_path / child_tree_id
+
+            assign_folders(child_url, child_path, depth + 1)
+
+    # Start from root at output root (Path('.'))
+    assign_folders(root_url, Path('.'), 0)
+
+    return cluster_to_folder
+
+
 def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                        tree_id_emb: Dict[str, np.ndarray],
                        title_emb: Dict[str, np.ndarray],
                        uri_emb: Dict[str, np.ndarray],
                        max_depth: int = None, current_depth: int = 0,
-                       visited: set = None, **kwargs) -> int:
+                       visited: set = None,
+                       mst_folders: bool = False,
+                       cluster_to_folder: Dict[str, Path] = None,
+                       max_folder_depth: int = None,
+                       **kwargs) -> int:
     """Recursively generate mind maps for a cluster hierarchy.
 
     Args:
@@ -1294,6 +1566,9 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         max_depth: Maximum recursion depth (None = unlimited)
         current_depth: Current depth in recursion
         visited: Set of already-visited cluster URLs (prevents infinite loops)
+        mst_folders: If True, organize output into MST-based subfolder hierarchy
+        cluster_to_folder: Pre-computed mapping of cluster URLs to folder paths
+        max_folder_depth: Maximum subfolder nesting depth
         **kwargs: Additional arguments passed to generate_single_map
 
     Returns:
@@ -1301,6 +1576,28 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
     """
     if visited is None:
         visited = set()
+
+        # On first call with mst_folders, build MST structure
+        if mst_folders and cluster_to_folder is None:
+            print("Building MST folder structure...")
+            # Discover all clusters
+            all_clusters = discover_all_clusters(cluster_url, data_path, max_depth)
+            print(f"  Found {len(all_clusters)} clusters")
+
+            # Compute centroids
+            cluster_centroids, global_centroid = compute_cluster_centroids(
+                all_clusters, data_path, tree_id_emb, title_emb, uri_emb)
+            print(f"  Computed centroids for {len(cluster_centroids)} clusters")
+
+            # Build MST hierarchy
+            parent_to_children, mst_root = build_mst_hierarchy(
+                all_clusters, cluster_centroids, global_centroid)
+            print(f"  MST root: {extract_tree_id(mst_root)}")
+
+            # Convert to folder structure
+            cluster_to_folder = mst_to_folder_structure(
+                parent_to_children, mst_root, max_folder_depth)
+            print(f"  Folder structure computed")
 
     # Prevent infinite loops (e.g., circular references)
     if cluster_url in visited:
@@ -1312,11 +1609,21 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
 
     visited.add(cluster_url)
 
-    # Determine output filename from tree_id
+    # Determine output path
     tree_id = extract_tree_id(cluster_url)
     if not tree_id:
         tree_id = f"cluster_{len(visited)}"
-    output_path = output_dir / f"{tree_id}.smmx"
+
+    if mst_folders and cluster_to_folder and cluster_url in cluster_to_folder:
+        folder = cluster_to_folder[cluster_url]
+        output_path = output_dir / folder / f"{tree_id}.smmx"
+        source_folder = folder
+    else:
+        output_path = output_dir / f"{tree_id}.smmx"
+        source_folder = Path('.')
+
+    # Create parent directory if needed
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Generate this cluster's map
     child_urls = generate_single_map(
@@ -1327,6 +1634,8 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         title_emb=title_emb,
         uri_emb=uri_emb,
         enable_cloudmapref=True,  # Always enable for recursive mode
+        source_folder=source_folder,
+        cluster_to_folder=cluster_to_folder,
         **kwargs
     )
 
@@ -1344,6 +1653,9 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
             max_depth=max_depth,
             current_depth=current_depth + 1,
             visited=visited,
+            mst_folders=mst_folders,
+            cluster_to_folder=cluster_to_folder,
+            max_folder_depth=max_folder_depth,
             **kwargs
         )
 
@@ -1395,6 +1707,10 @@ def main():
                         help='Maximum depth for recursive generation (default: unlimited)')
     parser.add_argument('--parent-links', action='store_true',
                         help='Add "back to parent" nodes in child maps')
+    parser.add_argument('--mst-folders', action='store_true',
+                        help='Organize output into subfolders based on MST of cluster centroids')
+    parser.add_argument('--max-folder-depth', type=int, default=None,
+                        help='Maximum subfolder nesting depth (default: unlimited)')
     parser.add_argument('--url-nodes', choices=['url', 'map'], nargs='?', const='url', default=None,
                         help='Attach small child nodes to Tree nodes. "url" (default): URL on main, cloudmapref on child. "map": cloudmapref on main, URL on child.')
     parser.add_argument('--child-text', type=str, default='',
@@ -1448,6 +1764,10 @@ def main():
         print(f"Output directory: {args.output_dir}")
         if args.max_depth is not None:
             print(f"Max depth: {args.max_depth}")
+        if args.mst_folders:
+            print(f"MST folder organization: enabled")
+            if args.max_folder_depth is not None:
+                print(f"Max folder depth: {args.max_folder_depth}")
 
         total = generate_recursive(
             cluster_url=cluster_url,
@@ -1457,6 +1777,8 @@ def main():
             title_emb=title_emb,
             uri_emb=uri_emb,
             max_depth=args.max_depth,
+            mst_folders=args.mst_folders,
+            max_folder_depth=args.max_folder_depth,
             min_children=args.min_children,
             max_children=args.max_children,
             optimize=args.optimize,
