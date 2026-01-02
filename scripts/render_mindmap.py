@@ -33,7 +33,19 @@ class Node:
     font_scale: float = 1.0
     font_bold: bool = False
     url: str = ""
+    borderstyle: str = ""  # SimpleMind borderstyle (sbsHalfRound, sbsEllipse, etc.)
     children: List['Node'] = field(default_factory=list)
+
+
+# Map SimpleMind borderstyle values to our style names
+SIMPLEMIND_BORDERSTYLES = {
+    'sbsHalfRound': 'half-round',
+    'sbsNone': 'half-round',      # None = default = half-round
+    'sbsEllipse': 'ellipse',
+    'sbsRectangle': 'rectangle',
+    'sbsDiamond': 'diamond',
+    '': 'half-round',             # No style = default
+}
 
 
 # SimpleMind palette colors (approximate)
@@ -94,15 +106,17 @@ def parse_smmx(smmx_path: Path) -> Tuple[List[Node], Dict[int, Node]]:
         text = topic.get('text', '').replace('\\N', '\n')
         palette = int(topic.get('palette', 1))
 
-        # Parse font style
+        # Parse style (font and borderstyle)
         font_scale = 1.0
         font_bold = False
+        borderstyle = ""
         style = topic.find('style')
         if style is not None:
             font = style.find('font')
             if font is not None:
                 font_scale = float(font.get('scale', 1.0))
                 font_bold = font.get('bold', 'False').lower() == 'true'
+            borderstyle = style.get('borderstyle', '')
 
         # Parse URL
         url = ""
@@ -119,7 +133,8 @@ def parse_smmx(smmx_path: Path) -> Tuple[List[Node], Dict[int, Node]]:
             palette=palette,
             font_scale=font_scale,
             font_bold=font_bold,
-            url=url
+            url=url,
+            borderstyle=borderstyle
         )
         nodes.append(node)
         node_map[node_id] = node
@@ -333,17 +348,21 @@ def render_svg(nodes: List[Node], node_map: Dict[int, Node],
     ])
 
     # Render nodes (sorted by ID to ensure consistent layering)
-    resolved_style = NODE_STYLES.get(node_style, node_style)
-
     for node in sorted(nodes, key=lambda n: n.id):
         width_n, height_n = get_node_dimensions(node)
 
         fill = PALETTE_COLORS.get(node.palette, "#E8E8E8")
         stroke = PALETTE_BORDERS.get(node.palette, "#AAAAAA")
 
+        # Determine node style: use node's borderstyle if set, else fallback to argument
+        if node.borderstyle and node.borderstyle in SIMPLEMIND_BORDERSTYLES:
+            effective_style = SIMPLEMIND_BORDERSTYLES[node.borderstyle]
+        else:
+            effective_style = NODE_STYLES.get(node_style, node_style)
+
         svg_parts.append(f'    <g id="node-{node.id}">')
 
-        if resolved_style == 'diamond':
+        if effective_style == 'diamond':
             # Diamond: polygon with 4 points
             points = (f"{node.x},{node.y - height_n/2} "  # top
                       f"{node.x + width_n/2},{node.y} "   # right
@@ -355,7 +374,7 @@ def render_svg(nodes: List[Node], node_map: Dict[int, Node],
             )
         else:
             # Rectangle with configurable corner radii
-            rx, ry = get_corner_radii(width_n, height_n, node_style)
+            rx, ry = get_corner_radii(width_n, height_n, effective_style)
             svg_parts.append(
                 f'      <rect x="{node.x - width_n/2}" y="{node.y - height_n/2}" '
                 f'width="{width_n}" height="{height_n}" rx="{rx}" ry="{ry}" '
