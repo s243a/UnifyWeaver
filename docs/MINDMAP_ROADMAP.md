@@ -225,6 +225,30 @@ repeat until converged:
 
 **Note on W matrices:** The descendant-based centroid approach resembles hierarchical smoothing, but experimental results show minimal transforms (Procrustes alignment) outperform smoothing for W matrices in federated training. This suggests descendant-based centroids may not be the right direction for embedding alignment - the simpler item-based approach may remain preferable.
 
+### 6.4 Per-Tree vs MST Clustering
+
+Two clustering approaches are available for federated models used in mind map generation:
+
+| Approach | Root Selection | Best For |
+|----------|----------------|----------|
+| **Per-tree** (`--cluster-method per-tree`) | User's actual Pearltrees folder | Preserving navigation structure |
+| **MST/Embedding** (`--cluster-method embedding`) | Semantic center (closest to global centroid) | Optimal distillation quality |
+
+**Per-tree clustering:**
+- One cluster per Pearltrees folder (uses `cluster_id` field)
+- Mind maps start from user's **real root node**
+- Navigation matches user's mental model
+- Lower distillation quality (depends on user's organization style)
+- Useful for misfiling detection (items with low recall@k may be poorly filed)
+
+**MST/Embedding clustering:**
+- Groups semantically similar items regardless of folders
+- Mind maps start from computed semantic center
+- Better transformer distillation (semantically coherent clusters)
+- May reorganize items differently than user expects
+
+Choose per-tree when preserving the user's actual folder structure is more important than optimal semantic organization.
+
 ---
 
 ## Future Ideas
