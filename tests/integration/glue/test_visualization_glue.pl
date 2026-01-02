@@ -21,6 +21,9 @@
 :- use_module('../../../src/unifyweaver/glue/export_generator').
 :- use_module('../../../src/unifyweaver/glue/live_preview_generator').
 :- use_module('../../../src/unifyweaver/glue/data_binding_generator').
+:- use_module('../../../src/unifyweaver/glue/theme_generator').
+:- use_module('../../../src/unifyweaver/glue/animation_presets').
+:- use_module('../../../src/unifyweaver/glue/template_library').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -96,6 +99,15 @@ run_tests :-
 
     % Data Binding Generator Tests
     run_data_binding_generator_tests,
+
+    % Theme Generator Tests
+    run_theme_generator_tests,
+
+    % Animation Presets Tests
+    run_animation_presets_tests,
+
+    % Template Library Tests
+    run_template_library_tests,
 
     % Summary
     print_summary.
@@ -1881,11 +1893,635 @@ run_data_binding_generator_tests :-
     )).
 
 % ============================================================================
+% THEME GENERATOR TESTS
+% ============================================================================
+
+run_theme_generator_tests :-
+    format('~n--- Theme Generator Tests ---~n'),
+
+    % Theme existence
+    test("Light theme exists", (
+        theme_generator:theme(light, Opts),
+        member(colors(_), Opts)
+    )),
+
+    test("Dark theme exists", (
+        theme_generator:theme(dark, Opts),
+        member(colors(_), Opts)
+    )),
+
+    test("High contrast theme exists", (
+        theme_generator:theme(high_contrast, _)
+    )),
+
+    test("Corporate theme extends light", (
+        theme_generator:theme(corporate, Opts),
+        member(extends(light), Opts)
+    )),
+
+    % Color palette tests
+    test("Blue color palette exists", (
+        theme_generator:color_palette(blue, Colors),
+        member(c500(_), Colors)
+    )),
+
+    test("Slate color palette exists", (
+        theme_generator:color_palette(slate, _)
+    )),
+
+    test("Emerald color palette exists", (
+        theme_generator:color_palette(emerald, _)
+    )),
+
+    % Theme resolution
+    test("Resolve light theme has colors", (
+        theme_generator:resolve_theme(light, Resolved),
+        member(colors(_), Resolved)
+    )),
+
+    test("Resolve corporate inherits from light", (
+        theme_generator:resolve_theme(corporate, Resolved),
+        member(typography(_), Resolved)
+    )),
+
+    % Get theme utilities
+    test("Get theme colors returns list", (
+        theme_generator:get_theme_colors(light, Colors),
+        member(primary(_), Colors)
+    )),
+
+    test("Get theme typography returns settings", (
+        theme_generator:get_theme_typography(light, Typo),
+        member(font_family(_), Typo)
+    )),
+
+    test("Get theme spacing returns values", (
+        theme_generator:get_theme_spacing(light, Spacing),
+        member(md(_), Spacing)
+    )),
+
+    % CSS generation
+    test("Generate theme CSS produces output", (
+        theme_generator:generate_theme_css(light, CSS),
+        atom_length(CSS, L),
+        L > 500
+    )),
+
+    test("Theme CSS has data-theme attribute", (
+        theme_generator:generate_theme_css(light, CSS),
+        sub_atom(CSS, _, _, _, 'data-theme="light"')
+    )),
+
+    test("Theme CSS has color variables", (
+        theme_generator:generate_theme_css(light, CSS),
+        sub_atom(CSS, _, _, _, '--color-primary')
+    )),
+
+    test("Theme CSS has typography variables", (
+        theme_generator:generate_theme_css(dark, CSS),
+        sub_atom(CSS, _, _, _, '--typography')
+    )),
+
+    test("Theme CSS has spacing variables", (
+        theme_generator:generate_theme_css(light, CSS),
+        sub_atom(CSS, _, _, _, '--spacing')
+    )),
+
+    % Provider generation
+    test("Generate theme provider produces React code", (
+        theme_generator:generate_theme_provider([light, dark], Provider),
+        atom_length(Provider, L),
+        L > 1000
+    )),
+
+    test("Theme provider has ThemeContext", (
+        theme_generator:generate_theme_provider([light, dark], Provider),
+        sub_atom(Provider, _, _, _, 'ThemeContext')
+    )),
+
+    test("Theme provider has useTheme hook", (
+        theme_generator:generate_theme_provider([light, dark], Provider),
+        sub_atom(Provider, _, _, _, 'useTheme')
+    )),
+
+    % Hook generation
+    test("Generate theme hook produces code", (
+        theme_generator:generate_theme_hook(Hook),
+        atom_length(Hook, L),
+        L > 500
+    )),
+
+    test("Theme hook has useState", (
+        theme_generator:generate_theme_hook(Hook),
+        sub_atom(Hook, _, _, _, 'useState')
+    )),
+
+    test("Theme hook has toggleTheme", (
+        theme_generator:generate_theme_hook(Hook),
+        sub_atom(Hook, _, _, _, 'toggleTheme')
+    )),
+
+    % Context generation
+    test("Generate theme context produces types", (
+        theme_generator:generate_theme_context(Context),
+        sub_atom(Context, _, _, _, 'interface')
+    )),
+
+    test("Theme context has ThemeColors", (
+        theme_generator:generate_theme_context(Context),
+        sub_atom(Context, _, _, _, 'ThemeColors')
+    )),
+
+    % Toggle generation
+    test("Generate theme toggle produces component", (
+        theme_generator:generate_theme_toggle([light, dark], Toggle),
+        sub_atom(Toggle, _, _, _, 'ThemeToggle')
+    )),
+
+    test("Theme toggle has select element", (
+        theme_generator:generate_theme_toggle([light, dark], Toggle),
+        sub_atom(Toggle, _, _, _, '<select')
+    )),
+
+    % Type generation
+    test("Generate theme types produces TypeScript", (
+        theme_generator:generate_theme_types([light, dark], Types),
+        sub_atom(Types, _, _, _, 'ThemeName')
+    )),
+
+    test("Theme types has ThemeColors interface", (
+        theme_generator:generate_theme_types([light, dark], Types),
+        sub_atom(Types, _, _, _, 'interface ThemeColors')
+    )),
+
+    % Font scale tests
+    test("Default font scale exists", (
+        theme_generator:font_scale(default, Scale),
+        member(base(_), Scale)
+    )),
+
+    test("Compact font scale exists", (
+        theme_generator:font_scale(compact, _)
+    )),
+
+    % Spacing scale tests
+    test("Default spacing scale exists", (
+        theme_generator:spacing_scale(default, _)
+    )).
+
+% ============================================================================
+% ANIMATION PRESETS TESTS
+% ============================================================================
+
+run_animation_presets_tests :-
+    format('~n--- Animation Presets Tests ---~n'),
+
+    % Preset existence
+    test("Fade in preset exists", (
+        animation_presets:preset(fade_in, Def),
+        member(keyframes(_), Def)
+    )),
+
+    test("Fade in up preset exists", (
+        animation_presets:preset(fade_in_up, _)
+    )),
+
+    test("Slide in presets exist", (
+        animation_presets:preset(slide_in_up, _),
+        animation_presets:preset(slide_in_down, _),
+        animation_presets:preset(slide_in_left, _),
+        animation_presets:preset(slide_in_right, _)
+    )),
+
+    test("Scale in preset exists", (
+        animation_presets:preset(scale_in, _)
+    )),
+
+    test("Bounce in preset exists", (
+        animation_presets:preset(bounce_in, _)
+    )),
+
+    % Exit presets
+    test("Fade out preset exists", (
+        animation_presets:preset(fade_out, Def),
+        member(keyframes(_), Def)
+    )),
+
+    test("Scale out preset exists", (
+        animation_presets:preset(scale_out, _)
+    )),
+
+    % Attention presets
+    test("Pulse preset exists", (
+        animation_presets:preset(pulse, Def),
+        member(iteration_count(infinite), Def)
+    )),
+
+    test("Bounce preset exists", (
+        animation_presets:preset(bounce, _)
+    )),
+
+    test("Shake preset exists", (
+        animation_presets:preset(shake, _)
+    )),
+
+    test("Heartbeat preset exists", (
+        animation_presets:preset(heartbeat, _)
+    )),
+
+    test("Jello preset exists", (
+        animation_presets:preset(jello, _)
+    )),
+
+    % Chart presets
+    test("Chart draw preset exists", (
+        animation_presets:preset(chart_draw, _)
+    )),
+
+    test("Bar grow preset exists", (
+        animation_presets:preset(bar_grow, _)
+    )),
+
+    test("Pie reveal preset exists", (
+        animation_presets:preset(pie_reveal, _)
+    )),
+
+    test("Data point pop preset exists", (
+        animation_presets:preset(data_point_pop, _)
+    )),
+
+    % Category tests
+    test("Fade in is entry category", (
+        animation_presets:preset_category(fade_in, entry)
+    )),
+
+    test("Fade out is exit category", (
+        animation_presets:preset_category(fade_out, exit)
+    )),
+
+    test("Pulse is attention category", (
+        animation_presets:preset_category(pulse, attention)
+    )),
+
+    test("Chart draw is chart category", (
+        animation_presets:preset_category(chart_draw, chart)
+    )),
+
+    % List presets
+    test("List presets returns multiple", (
+        animation_presets:list_presets(Presets),
+        length(Presets, L),
+        L > 20
+    )),
+
+    test("List presets by category works", (
+        animation_presets:list_presets_by_category(entry, EntryPresets),
+        length(EntryPresets, L),
+        L > 5
+    )),
+
+    % CSS generation
+    test("Generate preset CSS produces output", (
+        animation_presets:generate_preset_css(fade_in, CSS),
+        atom_length(CSS, L),
+        L > 100
+    )),
+
+    test("Preset CSS has @keyframes", (
+        animation_presets:generate_preset_css(fade_in, CSS),
+        sub_atom(CSS, _, _, _, '@keyframes')
+    )),
+
+    test("Preset CSS has animation class", (
+        animation_presets:generate_preset_css(fade_in, CSS),
+        sub_atom(CSS, _, _, _, '.animate-fade_in')
+    )),
+
+    test("Preset CSS has animation-duration", (
+        animation_presets:generate_preset_css(scale_in, CSS),
+        sub_atom(CSS, _, _, _, 'animation-duration')
+    )),
+
+    % Keyframes generation
+    test("Generate preset keyframes", (
+        animation_presets:generate_preset_keyframes(fade_in, Keyframes),
+        sub_atom(Keyframes, _, _, _, '@keyframes fade_in')
+    )),
+
+    % All presets CSS
+    test("Generate all presets CSS", (
+        animation_presets:generate_all_presets_css(AllCSS),
+        atom_length(AllCSS, L),
+        L > 3000
+    )),
+
+    % Hook generation
+    test("Generate preset hook produces code", (
+        animation_presets:generate_preset_hook(Hook),
+        atom_length(Hook, L),
+        L > 1000
+    )),
+
+    test("Preset hook has useAnimation", (
+        animation_presets:generate_preset_hook(Hook),
+        sub_atom(Hook, _, _, _, 'useAnimation')
+    )),
+
+    test("Preset hook has useStaggeredAnimation", (
+        animation_presets:generate_preset_hook(Hook),
+        sub_atom(Hook, _, _, _, 'useStaggeredAnimation')
+    )),
+
+    test("Preset hook has AnimationPreset type", (
+        animation_presets:generate_preset_hook(Hook),
+        sub_atom(Hook, _, _, _, 'AnimationPreset')
+    )),
+
+    % Component generation
+    test("Generate preset component produces code", (
+        animation_presets:generate_preset_component(fade_in, Component),
+        atom_length(Component, L),
+        L > 500
+    )),
+
+    test("Preset component has forwardRef", (
+        animation_presets:generate_preset_component(fade_in, Component),
+        sub_atom(Component, _, _, _, 'forwardRef')
+    )),
+
+    % Utility predicates
+    test("Get preset duration", (
+        animation_presets:preset_duration(fade_in, Duration),
+        Duration =:= 300
+    )),
+
+    test("Get preset easing", (
+        animation_presets:preset_easing(fade_in, Easing),
+        sub_atom(Easing, _, _, _, 'ease')
+    )),
+
+    % Composition
+    test("Compose presets combines definitions", (
+        animation_presets:compose_presets([fade_in, scale_in], [], Combined),
+        member(keyframes(_), Combined)
+    )),
+
+    test("Sequence presets creates sequence", (
+        animation_presets:sequence_presets([fade_in, scale_in], [stagger(100)], Sequence),
+        length(Sequence, 2)
+    )),
+
+    % Custom class generation
+    test("Generate preset class with options", (
+        animation_presets:generate_preset_class(fade_in, [duration(500)], Class),
+        sub_atom(Class, _, _, _, '500ms')
+    )).
+
+% ============================================================================
+% TEMPLATE LIBRARY TESTS
+% ============================================================================
+
+run_template_library_tests :-
+    format('~n--- Template Library Tests ---~n'),
+
+    % Template types
+    test("Dashboard template type exists", (
+        template_library:template_type(dashboard, _)
+    )),
+
+    test("Report template type exists", (
+        template_library:template_type(report, _)
+    )),
+
+    test("Explorer template type exists", (
+        template_library:template_type(explorer, _)
+    )),
+
+    test("Presentation template type exists", (
+        template_library:template_type(presentation, _)
+    )),
+
+    % Dashboard templates
+    test("Analytics dashboard exists", (
+        template_library:template(analytics_dashboard, dashboard, Opts),
+        member(widgets(_), Opts)
+    )),
+
+    test("Sales dashboard exists", (
+        template_library:template(sales_dashboard, dashboard, _)
+    )),
+
+    test("Realtime monitor exists", (
+        template_library:template(realtime_monitor, dashboard, _)
+    )),
+
+    % Report templates
+    test("Monthly report exists", (
+        template_library:template(monthly_report, report, Opts),
+        member(sections(_), Opts)
+    )),
+
+    test("Comparison report exists", (
+        template_library:template(comparison_report, report, _)
+    )),
+
+    % Explorer templates
+    test("Data explorer exists", (
+        template_library:template(data_explorer, explorer, _)
+    )),
+
+    test("Chart explorer exists", (
+        template_library:template(chart_explorer, explorer, _)
+    )),
+
+    % Presentation templates
+    test("Slide deck exists", (
+        template_library:template(slide_deck, presentation, _)
+    )),
+
+    % Template queries
+    test("List templates returns multiple", (
+        template_library:list_templates(Templates),
+        length(Templates, L),
+        L >= 7
+    )),
+
+    test("List templates by type works", (
+        template_library:list_templates_by_type(dashboard, Dashboards),
+        length(Dashboards, L),
+        L >= 3
+    )),
+
+    test("Get template returns spec", (
+        template_library:get_template(analytics_dashboard, spec(analytics_dashboard, dashboard, _))
+    )),
+
+    % Feature checks
+    test("Analytics dashboard has date_range_picker", (
+        template_library:template_has_feature(analytics_dashboard, date_range_picker)
+    )),
+
+    test("Analytics dashboard has export_pdf", (
+        template_library:template_has_feature(analytics_dashboard, export_pdf)
+    )),
+
+    % Chart extraction
+    test("Get template charts returns chart types", (
+        template_library:get_template_charts(analytics_dashboard, Charts),
+        member(line_chart, Charts)
+    )),
+
+    % JSX generation
+    test("Generate template JSX produces code", (
+        template_library:generate_template_jsx(analytics_dashboard, JSX),
+        atom_length(JSX, L),
+        L > 500
+    )),
+
+    test("Template JSX has React import", (
+        template_library:generate_template_jsx(analytics_dashboard, JSX),
+        sub_atom(JSX, _, _, _, 'import React')
+    )),
+
+    test("Template JSX has component interface", (
+        template_library:generate_template_jsx(analytics_dashboard, JSX),
+        sub_atom(JSX, _, _, _, 'interface')
+    )),
+
+    test("Template JSX has template-header", (
+        template_library:generate_template_jsx(analytics_dashboard, JSX),
+        sub_atom(JSX, _, _, _, 'template-header')
+    )),
+
+    % CSS generation
+    test("Generate template CSS produces output", (
+        template_library:generate_template_css(analytics_dashboard, CSS),
+        atom_length(CSS, L),
+        L > 500
+    )),
+
+    test("Template CSS has template class", (
+        template_library:generate_template_css(analytics_dashboard, CSS),
+        sub_atom(CSS, _, _, _, '.template-analytics_dashboard')
+    )),
+
+    test("Template CSS has dashboard-grid", (
+        template_library:generate_template_css(analytics_dashboard, CSS),
+        sub_atom(CSS, _, _, _, '.dashboard-grid')
+    )),
+
+    test("Template CSS has widget styles", (
+        template_library:generate_template_css(analytics_dashboard, CSS),
+        sub_atom(CSS, _, _, _, '.widget')
+    )),
+
+    test("Template CSS has responsive styles", (
+        template_library:generate_template_css(analytics_dashboard, CSS),
+        sub_atom(CSS, _, _, _, '@media')
+    )),
+
+    % Report CSS generation
+    test("Report template has print styles support", (
+        template_library:generate_template_css(monthly_report, CSS),
+        sub_atom(CSS, _, _, _, '.report')
+    )),
+
+    % Print styles
+    test("Generate print styles produces output", (
+        template_library:generate_print_styles(PrintCSS),
+        sub_atom(PrintCSS, _, _, _, '@media print')
+    )),
+
+    test("Print styles has page break", (
+        template_library:generate_print_styles(PrintCSS),
+        sub_atom(PrintCSS, _, _, _, 'page-break')
+    )),
+
+    % Types generation
+    test("Generate template types produces interface", (
+        template_library:generate_template_types(analytics_dashboard, Types),
+        sub_atom(Types, _, _, _, 'interface')
+    )),
+
+    test("Template types has Props interface", (
+        template_library:generate_template_types(analytics_dashboard, Types),
+        sub_atom(Types, _, _, _, 'Props')
+    )),
+
+    % Hook generation
+    test("Generate template hook produces code", (
+        template_library:generate_template_hook(analytics_dashboard, Hook),
+        atom_length(Hook, L),
+        L > 500
+    )),
+
+    test("Template hook has useState", (
+        template_library:generate_template_hook(analytics_dashboard, Hook),
+        sub_atom(Hook, _, _, _, 'useState')
+    )),
+
+    test("Template hook has refresh function", (
+        template_library:generate_template_hook(analytics_dashboard, Hook),
+        sub_atom(Hook, _, _, _, 'refresh')
+    )),
+
+    % Dashboard layout
+    test("Generate dashboard layout produces CSS", (
+        template_library:template(analytics_dashboard, _, Opts),
+        template_library:generate_dashboard_layout(Opts, Layout),
+        sub_atom(Layout, _, _, _, 'grid-template-areas')
+    )),
+
+    % Dashboard widgets
+    test("Generate dashboard widgets returns list", (
+        template_library:template(analytics_dashboard, _, Opts),
+        template_library:generate_dashboard_widgets(Opts, Widgets),
+        length(Widgets, L),
+        L >= 5
+    )),
+
+    % Report layout
+    test("Generate report layout produces page config", (
+        template_library:template(monthly_report, _, Opts),
+        template_library:generate_report_layout(Opts, Layout),
+        sub_atom(Layout, _, _, _, '@page')
+    )),
+
+    % Complete template generation
+    test("Generate template produces complete bundle", (
+        template_library:generate_template(analytics_dashboard, Code),
+        atom_length(Code, L),
+        L > 2000
+    )),
+
+    test("Complete template has Types section", (
+        template_library:generate_template(analytics_dashboard, Code),
+        sub_atom(Code, _, _, _, '--- Types ---')
+    )),
+
+    test("Complete template has Hook section", (
+        template_library:generate_template(analytics_dashboard, Code),
+        sub_atom(Code, _, _, _, '--- Hook ---')
+    )),
+
+    test("Complete template has Component section", (
+        template_library:generate_template(analytics_dashboard, Code),
+        sub_atom(Code, _, _, _, '--- Component ---')
+    )),
+
+    test("Complete template has Styles section", (
+        template_library:generate_template(analytics_dashboard, Code),
+        sub_atom(Code, _, _, _, '--- Styles ---')
+    )).
+
+% ============================================================================
 % TEST HELPERS
 % ============================================================================
 
 test(Name, Goal) :-
-    (   catch(Goal, _, fail)
+    % Use copy_term to ensure fresh variables for each test
+    copy_term(Goal, FreshGoal),
+    (   catch(FreshGoal, _, fail)
     ->  format('  [PASS] ~w~n', [Name]),
         assertz(test_passed)
     ;   format('  [FAIL] ~w~n', [Name]),

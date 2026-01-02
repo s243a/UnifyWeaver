@@ -809,26 +809,90 @@ computed_source(sales_summary, [
 ?- generate_computed_hook(sales_summary, ComputedHook).
 ```
 
-### Phase 14: Theme System (Planned)
+### Phase 14: Theme System (Complete)
 Centralized theme definitions reusable across visualizations:
-- Theme definitions with color palettes, typography, spacing
-- Theme inheritance and composition
-- Runtime theme switching
+- Theme definitions with color palettes (Tailwind-style c50-c950), typography, spacing
+- Theme inheritance and composition via `extends(parent)`
+- Runtime theme switching with localStorage persistence
 - CSS custom properties generation
 
-### Phase 15: Animation Presets (Planned)
-Library of reusable animation patterns:
-- Entry/exit animations (fade-in, slide, bounce, scale)
-- Transition presets for state changes
-- Orchestrated animation sequences
-- Performance-optimized keyframes
+**Implementation:** `src/unifyweaver/glue/theme_generator.pl`
 
-### Phase 16: Template Library (Planned)
+**Example Usage:**
+```prolog
+% Define a custom theme extending light
+theme(corporate, [
+    extends(light),
+    colors([primary('#1e40af'), secondary('#475569')])
+]).
+
+% Generate theme CSS
+?- generate_theme_css(corporate, CSS).
+
+% Generate React theme provider
+?- generate_theme_provider([light, dark, corporate], Provider).
+
+% Generate useTheme hook
+?- generate_theme_hook(Hook).
+```
+
+### Phase 15: Animation Presets (Complete)
+Library of reusable animation patterns:
+- Entry/exit animations (fade_in, slide_in_*, bounce_in, scale_in, flip_in_*)
+- Attention animations (pulse, bounce, shake, wiggle, heartbeat, jello)
+- Chart-specific animations (chart_draw, bar_grow, pie_reveal, data_point_pop)
+- Transition presets (smooth, snappy, elastic, spring)
+- Animation composition and sequencing
+
+**Implementation:** `src/unifyweaver/glue/animation_presets.pl`
+
+**Example Usage:**
+```prolog
+% Generate CSS for a preset
+?- generate_preset_css(fade_in, CSS).
+
+% Generate all presets CSS
+?- generate_all_presets_css(AllCSS).
+
+% Generate useAnimation React hook
+?- generate_preset_hook(Hook).
+
+% Compose multiple presets
+?- compose_presets([fade_in, scale_in], [duration(500)], Combined).
+
+% Create animation sequence with staggered timing
+?- sequence_presets([fade_in, slide_in_up, scale_in], [stagger(100)], Sequence).
+```
+
+### Phase 16: Template Library (Complete)
 Pre-built visualization templates:
-- Dashboard templates with multiple charts
-- Report layouts with print optimization
+- Dashboard templates (analytics, sales, realtime monitor)
+- Report templates with print optimization (monthly, comparison)
+- Data explorer interfaces (data explorer, chart explorer)
 - Presentation slides with animations
-- Data explorer interfaces
+
+**Implementation:** `src/unifyweaver/glue/template_library.pl`
+
+**Example Usage:**
+```prolog
+% Generate complete template bundle (JSX, CSS, Types, Hook)
+?- generate_template(analytics_dashboard, Code).
+
+% Generate template JSX component
+?- generate_template_jsx(sales_dashboard, JSX).
+
+% Generate template CSS with responsive breakpoints
+?- generate_template_css(analytics_dashboard, CSS).
+
+% Generate data management hook
+?- generate_template_hook(realtime_monitor, Hook).
+
+% Check template features
+?- template_has_feature(analytics_dashboard, export_pdf).
+
+% Generate print-optimized styles
+?- generate_print_styles(PrintCSS).
+```
 
 ### Performance Enhancements (Planned)
 - **Lazy loading** - On-demand loading for large datasets
