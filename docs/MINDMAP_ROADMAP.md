@@ -178,6 +178,55 @@ Example: `--tree-style rectangle --pearl-style ellipse`
 
 ---
 
+## Phase 6: MST-Based Folder Organization ✓
+
+**Goal:** Organize generated mind maps into semantically meaningful folder hierarchies.
+
+### 6.1 MST from Cluster Centroids ✓
+- [x] `--mst-folders` flag to enable MST-based subfolder organization
+- [x] Compute item-based centroids (mean of item embeddings per cluster)
+- [x] Build MST using cosine distance between centroids
+- [x] MST root = cluster closest to global centroid
+- [x] Relative `cloudmapref` paths across folders (`../sibling/id.smmx`)
+
+### 6.2 Folder Structure Controls ✓
+- [x] `--max-folder-depth N` - Limit subfolder nesting
+- [x] `--min-folder-children N` - Only create subfolders if ≥N children
+- [x] `--max-folder-children N` - Only first N children get subfolders
+
+### 6.3 Dual Centroid Types (Future Proposal)
+
+**Problem:** Current item-based centroid represents "what's directly in the cluster" but not "what the cluster leads to" (its descendants).
+
+**Proposal:** Compute two centroid types per cluster:
+
+1. **Item-based centroid** (current):
+   ```
+   centroid = mean(embeddings of items IN cluster)
+   ```
+   Good for: Matching cluster's direct content
+
+2. **Descendant-based centroid** (proposed):
+   ```
+   centroid = weighted_mean(child_centroids, weights=item_counts)
+   ```
+   Good for: Representing what's deep within the hierarchy
+
+**Challenge:** To use descendant-based centroids for MST construction, we'd need adaptive clustering - clusters would need to exchange members to optimize the MST. This is a joint optimization problem:
+
+```
+repeat until converged:
+    1. Compute descendant-based centroids
+    2. Build MST from centroids
+    3. Re-assign cluster members to minimize MST edge costs
+```
+
+**Status:** Item-based centroid works well with fixed Pearltrees cluster membership. Descendant-based approach requires fundamentally different algorithm (future research).
+
+**Note on W matrices:** The descendant-based centroid approach resembles hierarchical smoothing, but experimental results show minimal transforms (Procrustes alignment) outperform smoothing for W matrices in federated training. This suggests descendant-based centroids may not be the right direction for embedding alignment - the simpler item-based approach may remain preferable.
+
+---
+
 ## Future Ideas
 
 - **LLM-Guided Hierarchy**: Use LLM to suggest alternative groupings
@@ -185,6 +234,7 @@ Example: `--tree-style rectangle --pearl-style ellipse`
 - **Collaborative Editing**: Export to formats supporting real-time collaboration
 - **Animation**: Generate animated layout optimization visualization
 - **3D Layout**: Explore 3D mind map representations
+- **Adaptive Clustering for MST**: Joint optimization of cluster membership and tree structure
 
 ---
 
@@ -197,3 +247,4 @@ Example: `--tree-style rectangle --pearl-style ellipse`
 | 3. Visual Distinction | ✓ Complete | Low-Medium | Phase 1 (for LLM feedback) |
 | 4. Cross-Cluster Linking | **In Progress** | Medium | Phase 3 (visual clarity) |
 | 5. Advanced Optimization | Pending | High | None |
+| 6. MST-Based Folder Organization | ✓ Complete | Medium | Phase 4 (recursive generation) |
