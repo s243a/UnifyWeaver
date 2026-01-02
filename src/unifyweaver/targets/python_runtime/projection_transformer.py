@@ -289,8 +289,8 @@ def train_distillation(
     """
     _import_torch()
 
-    # Generate target projections from LDA (teacher)
-    logger.info("Generating LDA target projections...")
+    # Generate target projections from teacher model
+    logger.info("Generating teacher model projections...")
     lda_outputs = []
     for i in range(len(query_embeddings)):
         proj = lda_projection.project(query_embeddings[i])
