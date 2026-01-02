@@ -125,21 +125,27 @@ Example: `--tree-style rectangle --pearl-style ellipse`
 
 ---
 
-## Phase 4: Cross-Cluster Linking
+## Phase 4: Cross-Cluster Linking (In Progress)
 
 **Goal:** Link related mind maps using relative paths, creating a navigable hierarchy.
 
-### 4.1 Relative Links (`cloudmapref`)
-- [ ] Generate `<link cloudmapref="./subfolder/child.smmx"/>` for Tree children
-- [ ] Create directory structure mirroring Pearltrees hierarchy
-- [ ] Batch generation of linked mindmaps
+### 4.1 Relative Links (`cloudmapref`) ✓
+- [x] Generate `<link cloudmapref="./id12345.smmx"/>` for Tree children
+- [x] Deterministic GUIDs for predictable cross-file linking
+- [x] `--recursive` flag for batch generation
+- [x] `--output-dir` for multi-file output
+- [x] `--max-depth` to limit recursion depth
+- [x] Flat directory structure (all files in one folder)
+- [ ] Optional: Hierarchical directory structure mirroring Pearltrees
 
 ### 4.2 Parent Links
+- [ ] `--parent-links` flag (CLI added, implementation pending)
 - [ ] Attach parent folder link to root node
 - [ ] Square-shaped "parent" indicator node
 - [ ] Configurable link style
 
-### 4.3 "See Also" Relations
+### 4.3 "See Also" Relations (AliasPearl/RefPearl)
+- [ ] Include AliasPearl nodes with cloudmapref links
 - [ ] SimpleMind `<relations>` section for non-hierarchical connections
 - [ ] Cross-reference related clusters
 - [ ] Optional relation label nodes
@@ -184,10 +190,10 @@ Example: `--tree-style rectangle --pearl-style ellipse`
 
 ## Priority Summary
 
-| Phase | Priority | Effort | Dependencies |
-|-------|----------|--------|--------------|
-| 1. Image Generation | High | Medium | None |
-| 2. Multi-Format Export | Medium | Medium | None |
-| 3. Visual Distinction | Medium | Low-Medium | Phase 1 (for LLM feedback) |
-| 4. Cross-Cluster Linking | Medium | Medium | Phase 3 (visual clarity) |
-| 5. Advanced Optimization | Low | High | None |
+| Phase | Status | Effort | Dependencies |
+|-------|--------|--------|--------------|
+| 1. Image Generation | ✓ Complete | Medium | None |
+| 2. Multi-Format Export | ✓ Complete | Medium | None |
+| 3. Visual Distinction | ✓ Complete | Low-Medium | Phase 1 (for LLM feedback) |
+| 4. Cross-Cluster Linking | **In Progress** | Medium | Phase 3 (visual clarity) |
+| 5. Advanced Optimization | Pending | High | None |

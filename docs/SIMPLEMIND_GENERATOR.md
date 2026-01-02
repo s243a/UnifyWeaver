@@ -58,6 +58,19 @@ python3 scripts/generate_simplemind_map.py \
     --output output/styled.smmx \
     --tree-style rectangle \
     --pearl-style ellipse
+
+# Recursive generation with cross-cluster links
+python3 scripts/generate_simplemind_map.py \
+    --cluster-url "https://www.pearltrees.com/s243a/hactivism/id10818216" \
+    --output-dir output/linked_maps/ \
+    --recursive \
+    --max-depth 3
+
+# Unlimited depth recursive generation
+python3 scripts/generate_simplemind_map.py \
+    --cluster "Hactivism" \
+    --output-dir output/full_hierarchy/ \
+    --recursive
 ```
 
 ## Options
@@ -68,7 +81,7 @@ python3 scripts/generate_simplemind_map.py \
 | `--cluster-url` | - | Exact Pearltrees folder URL |
 | `--data` | `reports/pearltrees_targets_full_multi_account.jsonl` | Training data JSONL |
 | `--embeddings` | `models/dual_embeddings_full.npz` | Pre-computed embeddings |
-| `--output` | (required) | Output `.smmx` file path |
+| `--output` | - | Output `.smmx` file path (required unless `--recursive`) |
 | `--xml-only` | false | Output raw XML instead of zip |
 | `--max-children` | 8 | Max children before micro-clustering |
 | `--min-children` | 4 | Min clusters when splitting |
@@ -79,6 +92,10 @@ python3 scripts/generate_simplemind_map.py \
 | `--no-scaling` | false | Disable node size scaling by descendant count |
 | `--tree-style` | None | Node shape for Tree items: half-round, ellipse, rectangle, diamond |
 | `--pearl-style` | None | Node shape for Pearl items: half-round, ellipse, rectangle, diamond |
+| `--recursive` | false | Recursively generate linked maps for child Trees |
+| `--output-dir` | - | Output directory for recursive generation (required with `--recursive`) |
+| `--max-depth` | unlimited | Maximum depth for recursive generation |
+| `--parent-links` | false | Add "back to parent" nodes in child maps (not yet implemented) |
 
 ## How It Works
 
@@ -316,6 +333,51 @@ python3 scripts/export_mindmap.py input.smmx output.mm
 
 ---
 
+## Cross-Cluster Linking
+
+Generate linked mind maps for an entire Pearltrees hierarchy using `--recursive`.
+
+### How It Works
+
+1. **Recursive Generation**: Starting from a root cluster, the generator creates `.smmx` files for every child Tree recursively.
+
+2. **Deterministic GUIDs**: Each node gets a deterministic GUID based on `hash(cluster_url + "_" + node_id)`. This allows creating links to nodes before their map is generated.
+
+3. **cloudmapref Links**: Tree nodes (folders) include `cloudmapref` attributes pointing to their child `.smmx` files:
+   ```xml
+   <link urllink="https://..." cloudmapref="./id12345.smmx" element="BASE64_GUID"/>
+   ```
+
+4. **File Naming**: Output files are named by tree_id (e.g., `id10818216.smmx`) for consistent, unique filenames.
+
+### Example Output Structure
+
+```
+output/linked_maps/
+  id2492416.smmx      # Root: "Hacktivism's Literacy"
+  id2595428.smmx      # Child: "FR"
+  id2595429.smmx      # Child: "EN"
+  id2596001.smmx      # Grandchild: "Some topic"
+  ...
+```
+
+### Navigation in SimpleMind
+
+After opening a generated `.smmx` file in SimpleMind:
+- Click on a Tree node (folder) to see both URL link and mind map link options
+- The mind map link opens the child cluster's `.smmx` file
+- The `element` attribute jumps directly to the linked node
+
+### Depth Control
+
+Use `--max-depth` to limit recursion:
+- `--max-depth 0`: Only root cluster
+- `--max-depth 1`: Root + immediate children
+- `--max-depth 3`: Three levels deep
+- No flag: Unlimited depth (generates entire hierarchy)
+
+---
+
 ## Integration with SimpleMind
 
 The generated `.smmx` files can be:
@@ -335,10 +397,11 @@ The generated `.smmx` files can be:
 - [x] Per-node borderstyle support (half-round, ellipse, rectangle, diamond)
 - [x] Visual distinction: `--tree-style` and `--pearl-style` options
 - [x] Multi-format export (OPML, GraphML, VUE)
+- [x] Cross-cluster linking via `cloudmapref` (recursive generation)
 - [ ] Time budget control (`--time-limit`)
 - [ ] Spatial indexing for O(n log n) crossing detection
 - [ ] Angular rebalancing based on subtree size
 - [ ] LLM-guided layout refinement
-- [ ] Cross-cluster linking via `cloudmapref`
+- [ ] Parent back-links (--parent-links)
 
 See [mindmap_layout_optimization.md](mindmap_layout_optimization.md) for algorithm details.
