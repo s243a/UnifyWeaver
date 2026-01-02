@@ -384,11 +384,15 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
         dy = node.y - center_y
         original_radii[node.id] = math.sqrt(dx*dx + dy*dy)
 
-    # Build parent lookup
+    # Build parent lookup and connected set
     parent_map = {}
+    connected_pairs = set()
     for node in all_nodes:
         for child in node.children:
             parent_map[child.id] = node
+            # Store both directions for easy lookup
+            connected_pairs.add((node.id, child.id))
+            connected_pairs.add((child.id, node.id))
 
     # Initialize velocities
     velocities = {node.id: [0.0, 0.0] for node in all_nodes}
@@ -404,13 +408,19 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
                 dist_sq = dx*dx + dy*dy
                 dist = math.sqrt(dist_sq) if dist_sq > 0 else 0.1
 
+                # Check if nodes are connected (parent-child)
+                is_connected = (node_a.id, node_b.id) in connected_pairs
+
                 if dist < min_distance * 5:  # Apply over larger range
                     # Repulsion scaled by product of masses
                     # Hub nodes push each other apart more strongly
                     mass_factor = node_mass[node_a.id] * node_mass[node_b.id]
 
+                    # Non-connected nodes repel more strongly
+                    connection_factor = 0.3 if is_connected else 1.5
+
                     # Inverse square repulsion, stronger when very close
-                    force_mag = (repulsion * mass_factor) / (dist_sq + 100)
+                    force_mag = (repulsion * mass_factor * connection_factor) / (dist_sq + 100)
                     # Extra boost when overlapping
                     if dist < min_distance:
                         force_mag *= 3
@@ -433,13 +443,17 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
                 # Ideal distance scales with node's mass
                 # Leaf nodes (mass ~1) should stay close, hubs can be further
                 mass = node_mass[node.id]
-                ideal_dist = 150 * mass  # Leaves: ~150px, large hubs: ~1500px
+                ideal_dist = 100 * mass  # Leaves: ~100px, large hubs: ~1000px
 
                 if dist > ideal_dist:
                     # Attraction strength inversely proportional to mass
                     # Leaves get pulled back hard, hubs resist
-                    attract_strength = attraction * (3.0 / mass)
-                    force_mag = (dist - ideal_dist) * attract_strength
+                    attract_strength = attraction * (5.0 / mass)
+                    # Quadratic pull when very far (>2x ideal)
+                    if dist > ideal_dist * 2:
+                        force_mag = (dist - ideal_dist) * attract_strength * 2
+                    else:
+                        force_mag = (dist - ideal_dist) * attract_strength
                     if dist > 0:
                         forces[node.id][0] += (dx / dist) * force_mag
                         forces[node.id][1] += (dy / dist) * force_mag
@@ -646,25 +660,25 @@ def minimize_crossings(root: MindMapNode, center_x: float = 500, center_y: float
             # Apply best position
             node.x, node.y = best_x, best_y
 
-        # Only run force-directed if we have overlaps (check a few pairs)
+        # Only run force-directed if we have overlaps (check nearby pairs)
         all_nodes = collect_all_nodes(root)
-        has_overlap = False
-        for i, node_a in enumerate(all_nodes[:20]):  # Check first 20 nodes
-            for node_b in all_nodes[i+1:i+20]:
+        overlap_count = 0
+        for i, node_a in enumerate(all_nodes):
+            for node_b in all_nodes[i+1:]:
                 dx = node_b.x - node_a.x
                 dy = node_b.y - node_a.y
                 dist = math.sqrt(dx*dx + dy*dy)
                 if dist < 80:  # Overlap threshold
-                    has_overlap = True
-                    break
-            if has_overlap:
-                break
+                    overlap_count += 1
 
-        if has_overlap:
+        # Only run force-directed if significant overlaps exist
+        if overlap_count > 2:
             # Lighter force-directed to fix overlaps without destroying crossing gains
             force_directed_optimize(root, center_x, center_y,
                                    iterations=force_iterations // 2, repulsion=50000,
                                    attraction=0.0005, min_distance=100)
+        elif overlap_count > 0 and verbose:
+            print(f"  (skipping force-directed, only {overlap_count} minor overlaps)")
 
         current_crossings = count_edge_crossings(root)
         if verbose:
@@ -678,21 +692,21 @@ def minimize_crossings(root: MindMapNode, center_x: float = 500, center_y: float
         print(f"Final edge crossings: {final_crossings} (reduced from {initial_crossings})")
 
 
-def calculate_node_scales(root: MindMapNode) -> Dict[int, float]:
+def calculate_node_scales(root: MindMapNode, min_scale: float = 1.2) -> Dict[int, float]:
     """
     Calculate font scale for each node based on descendant count.
 
-    Scale formula: 1.0 + log2(1 + descendants) * 0.3
-    - Leaf nodes: 1.0
-    - Node with 7 descendants: ~1.9
-    - Node with 63 descendants: ~2.8
+    Scale formula: min_scale + log2(1 + descendants) * 0.4
+    - Leaf nodes: min_scale (default 1.2)
+    - Node with 7 descendants: ~2.1
+    - Node with 63 descendants: ~3.0
     """
     scales = {}
 
     def compute_scale(node: MindMapNode):
         descendants = count_descendants(node)
-        # Scale from 1.0 (leaf) to ~3.0 (large hub)
-        scale = 1.0 + math.log2(1 + descendants) * 0.4
+        # Scale from min_scale (leaf) to ~3.5 (large hub)
+        scale = min_scale + math.log2(1 + descendants) * 0.4
         scales[node.id] = min(scale, 3.5)  # Cap at 3.5
 
         for child in node.children:
