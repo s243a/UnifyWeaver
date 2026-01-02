@@ -51,6 +51,13 @@ python3 scripts/generate_simplemind_map.py \
     --cluster-url "..." \
     --output output/debug.smmx \
     --xml-only
+
+# Visual distinction: Trees as rectangles, Pearls as ellipses
+python3 scripts/generate_simplemind_map.py \
+    --cluster-url "..." \
+    --output output/styled.smmx \
+    --tree-style rectangle \
+    --pearl-style ellipse
 ```
 
 ## Options
@@ -70,6 +77,8 @@ python3 scripts/generate_simplemind_map.py \
 | `--minimize-crossings` | false | Apply edge crossing minimization after force-directed |
 | `--crossing-passes` | 10 | Max passes for crossing minimization |
 | `--no-scaling` | false | Disable node size scaling by descendant count |
+| `--tree-style` | None | Node shape for Tree items: half-round, ellipse, rectangle, diamond |
+| `--pearl-style` | None | Node shape for Pearl items: half-round, ellipse, rectangle, diamond |
 
 ## How It Works
 
@@ -288,6 +297,7 @@ The generated `.smmx` files can be:
 - [x] Sibling edge crossing detection (curved line heuristic)
 - [x] Image rendering (SVG/PNG) with straight and curved edges
 - [x] Per-node borderstyle support (half-round, ellipse, rectangle, diamond)
+- [x] Visual distinction: `--tree-style` and `--pearl-style` options
 - [ ] Time budget control (`--time-limit`)
 - [ ] Spatial indexing for O(n log n) crossing detection
 - [ ] Angular rebalancing based on subtree size
