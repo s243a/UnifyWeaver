@@ -422,7 +422,7 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
                         forces[node_b.id][0] += fx
                         forces[node_b.id][1] += fy
 
-        # Attraction to parent - only when very far away
+        # Attraction to parent - stronger for leaf nodes (low mass)
         for node in all_nodes:
             if node.id in parent_map:
                 parent = parent_map[node.id]
@@ -430,10 +430,16 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
                 dy = parent.y - node.y
                 dist = math.sqrt(dx*dx + dy*dy)
 
-                # Only attract if very far from parent (preserves tree structure)
-                max_dist = 500  # Only kick in when really far
-                if dist > max_dist:
-                    force_mag = (dist - max_dist) * attraction
+                # Ideal distance scales with node's mass
+                # Leaf nodes (mass ~1) should stay close, hubs can be further
+                mass = node_mass[node.id]
+                ideal_dist = 150 * mass  # Leaves: ~150px, large hubs: ~1500px
+
+                if dist > ideal_dist:
+                    # Attraction strength inversely proportional to mass
+                    # Leaves get pulled back hard, hubs resist
+                    attract_strength = attraction * (3.0 / mass)
+                    force_mag = (dist - ideal_dist) * attract_strength
                     if dist > 0:
                         forces[node.id][0] += (dx / dist) * force_mag
                         forces[node.id][1] += (dy / dist) * force_mag
