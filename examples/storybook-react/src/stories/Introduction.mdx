@@ -11,16 +11,28 @@ UnifyWeaver generates production-ready visualization components from declarative
 - **Animation Presets** - Entry, exit, and attention animations
 - **Template Library** - Pre-built dashboard and report templates
 
+### Responsive Layouts
+- **Breakpoint System** - Mobile, tablet, desktop responsive grids
+- **Container Queries** - Component-level responsiveness
+- **Adaptive Cards** - Content that adapts to container size
+
+### Interactions
+- **Tooltips** - Hover-triggered contextual information
+- **Pan & Zoom** - Navigate large visualizations
+- **Drill-Down** - Explore hierarchical data
+- **Selection** - Single and multi-select with keyboard support
+
 ### Performance
-- **Lazy Loading** - Pagination, infinite scroll, chunked loading
-- **Virtual Scrolling** - Efficient rendering for large lists/tables/grids
-- **WebWorkers** - Background data processing
+- **Virtual Scrolling** - O(1) render time for 10,000+ items
+- **Lazy Loading** - Intersection Observer-based pagination
+- **Chunked Loading** - Progressive data processing
+- **Memoization** - React.memo optimization patterns
 
 ### Charts & Visualizations
 - Line, Bar, Pie, Area charts
+- Radar, Funnel, Gauge, Sankey, Chord diagrams
 - Heatmaps and Treemaps
 - 3D plots and surfaces
-- Interactive features (zoom, pan, tooltips)
 
 ## Getting Started
 
@@ -41,7 +53,29 @@ UnifyWeaver generates production-ready visualization components from declarative
 ## Examples
 
 Browse the sidebar to see examples of:
+
+### Theme
 - **Theme Toggle** - Light/dark theme switching
-- **Animation Gallery** - Available animation presets
-- **Dashboard Template** - Complete analytics dashboard
-- **Virtual Table** - Efficiently render large datasets
+
+### Animations
+- **Animation Gallery** - Entry, exit, and attention animations
+
+### Layout
+- **Responsive Grids** - Breakpoint-based column layouts
+- **Container Queries** - Component-level responsiveness
+
+### Interactions
+- **Tooltips** - Position and rich content demos
+- **Pan & Zoom** - Navigate large content
+- **Drill-Down** - Hierarchical data exploration
+- **Selection** - Single and multi-select patterns
+
+### Performance
+- **Virtual Scrolling** - 10,000+ row lists
+- **Lazy Loading** - Infinite scroll grids
+- **Chunked Loading** - Progressive data processing
+- **Memoization** - Render optimization
+
+## Composability
+
+See [Chapter 24: Composability Patterns](../../education/book-07-cross-target-glue/24_composability_patterns.md) for documentation on how these components compose together to build complete applications.
