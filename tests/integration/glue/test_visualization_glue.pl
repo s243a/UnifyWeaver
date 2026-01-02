@@ -16,6 +16,7 @@
 :- use_module('../../../src/unifyweaver/glue/math_expr').
 :- use_module('../../../src/unifyweaver/glue/responsive_generator').
 :- use_module('../../../src/unifyweaver/glue/accessibility_generator').
+:- use_module('../../../src/unifyweaver/glue/animation_generator').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -76,6 +77,9 @@ run_tests :-
 
     % Accessibility Generator Tests
     run_accessibility_generator_tests,
+
+    % Animation Generator Tests
+    run_animation_generator_tests,
 
     % Summary
     print_summary.
@@ -1175,6 +1179,110 @@ run_accessibility_generator_tests :-
     test("Get ARIA label returns correct value", (
         get_aria_label(line_chart, Label),
         Label = "Line chart visualization"
+    )).
+
+% ============================================================================
+% ANIMATION GENERATOR TESTS
+% ============================================================================
+
+run_animation_generator_tests :-
+    format('~n--- Animation Generator Tests ---~n'),
+
+    % Animation definitions
+    test("Animation fade_in exists", (
+        animation(fade_in, Opts),
+        member(keyframes(_), Opts)
+    )),
+
+    test("Animation has duration", (
+        animation(fade_in, Opts2),
+        member(duration(_), Opts2)
+    )),
+
+    test("Animation has easing", (
+        animation(fade_in, Opts3),
+        member(easing(_), Opts3)
+    )),
+
+    % Easing functions
+    test("Easing ease_out exists", (
+        easing(ease_out, _)
+    )),
+
+    test("Easing ease_out_back has cubic-bezier", (
+        easing(ease_out_back, Easing),
+        sub_atom(Easing, _, _, _, 'cubic-bezier')
+    )),
+
+    % Keyframes generation
+    test("Generate keyframes CSS has @keyframes", (
+        generate_keyframes_css(fade_in, KeyframesCSS),
+        sub_atom(KeyframesCSS, _, _, _, '@keyframes')
+    )),
+
+    test("Generate keyframes CSS has opacity", (
+        generate_keyframes_css(fade_in, KeyframesCSS2),
+        sub_atom(KeyframesCSS2, _, _, _, 'opacity')
+    )),
+
+    % Animation class generation
+    test("Generate animation class has animation-name", (
+        generate_animation_class(fade_in, fade_in, ClassCSS),
+        sub_atom(ClassCSS, _, _, _, 'animation-name')
+    )),
+
+    test("Generate animation class has duration", (
+        generate_animation_class(scale_in, scale_in, ClassCSS2),
+        sub_atom(ClassCSS2, _, _, _, 'animation-duration')
+    )),
+
+    % Transition generation
+    test("Transition hover_lift exists", (
+        transition(hover_lift, TransOpts),
+        member(on_hover(_), TransOpts)
+    )),
+
+    test("Generate transition CSS has hover", (
+        generate_transition_css(hover_lift, TransCSS),
+        sub_atom(TransCSS, _, _, _, ':hover')
+    )),
+
+    test("Generate transition CSS has transition-property", (
+        generate_transition_css(color_fade, TransCSS2),
+        sub_atom(TransCSS2, _, _, _, 'transition-property')
+    )),
+
+    % Animation utilities
+    test("Get animation duration", (
+        get_animation_duration(fade_in, Duration),
+        Duration =:= 300
+    )),
+
+    test("Get animation easing", (
+        get_animation_easing(fade_in, Easing2),
+        sub_atom(Easing2, _, _, _, 'ease')
+    )),
+
+    % React hook generation
+    test("Generate animation hook has useState", (
+        generate_animation_hook(fade_in, Hook),
+        sub_atom(Hook, _, _, _, 'useState')
+    )),
+
+    test("Generate animation hook has useCallback", (
+        generate_animation_hook(scale_in, Hook2),
+        sub_atom(Hook2, _, _, _, 'useCallback')
+    )),
+
+    % Chart-specific animations
+    test("Chart animation draw_line exists", (
+        animation(draw_line, DrawOpts),
+        member(keyframes(_), DrawOpts)
+    )),
+
+    test("Chart animation bar_grow exists", (
+        animation(bar_grow, BarOpts),
+        member(keyframes(_), BarOpts)
     )).
 
 % ============================================================================
