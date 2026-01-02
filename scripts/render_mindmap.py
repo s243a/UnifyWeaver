@@ -59,6 +59,17 @@ PALETTE_BORDERS = {
     8: "#DD99DD",
 }
 
+# Node shape styles (matching SimpleMind borderstyle values)
+NODE_STYLES = {
+    'half-round': 'half-round',   # sbsHalfRound: rx = ry = min(w,h)/6 (default)
+    'ellipse': 'ellipse',         # sbsEllipse: full oval rx = w/2, ry = h/2
+    'rectangle': 'rectangle',     # sbsRectangle: sharp corners rx = ry = 0
+    'diamond': 'diamond',         # sbsDiamond: 45° rotated square
+    # Aliases
+    'oval': 'ellipse',
+    'square': 'rectangle',
+}
+
 
 def parse_smmx(smmx_path: Path) -> Tuple[List[Node], Dict[int, Node]]:
     """Parse a .smmx file and return list of nodes and lookup dict."""
@@ -220,11 +231,46 @@ def cubic_bezier_control_points(x1: float, y1: float, x2: float, y2: float
     return cp1_x, cp1_y, cp2_x, cp2_y
 
 
+def get_corner_radii(width: float, height: float, style: str) -> Tuple[float, float]:
+    """Calculate corner radii based on node style.
+
+    Returns (rx, ry) for rect elements, or (0, 0) for special shapes like diamond.
+    """
+    # Resolve aliases
+    style = NODE_STYLES.get(style, style)
+
+    if style == 'ellipse':
+        return width / 2, height / 2
+    elif style == 'half-round':
+        # SimpleMind default: ~1/6 of shortest dimension
+        r = min(width, height) / 6
+        return r, r
+    elif style == 'rectangle':
+        return 0, 0
+    elif style == 'diamond':
+        # Diamond uses polygon, not rect - return 0,0 as placeholder
+        return 0, 0
+    else:
+        # Default to half-round
+        r = min(width, height) / 6
+        return r, r
+
+
 def render_svg(nodes: List[Node], node_map: Dict[int, Node],
                use_curves: bool = False,
                width: Optional[int] = None,
-               height: Optional[int] = None) -> str:
-    """Render nodes to SVG string."""
+               height: Optional[int] = None,
+               node_style: str = 'half-round') -> str:
+    """Render nodes to SVG string.
+
+    Args:
+        nodes: List of nodes to render
+        node_map: Dict mapping node ID to node
+        use_curves: Use cubic Bezier curves instead of straight lines
+        width: Output width in pixels
+        height: Output height in pixels
+        node_style: Node shape style (half-round, oval, rounded, square)
+    """
 
     # Calculate bounds
     min_x, min_y, max_x, max_y = calculate_bounds(nodes)
@@ -287,22 +333,34 @@ def render_svg(nodes: List[Node], node_map: Dict[int, Node],
     ])
 
     # Render nodes (sorted by ID to ensure consistent layering)
+    resolved_style = NODE_STYLES.get(node_style, node_style)
+
     for node in sorted(nodes, key=lambda n: n.id):
         width_n, height_n = get_node_dimensions(node)
-        # More oval: rx = half width, ry = half height (full ellipse corners)
-        rx = width_n / 2
-        ry = height_n / 2
 
         fill = PALETTE_COLORS.get(node.palette, "#E8E8E8")
         stroke = PALETTE_BORDERS.get(node.palette, "#AAAAAA")
 
-        # Node as rounded rectangle with large corner radii (oval-ish)
         svg_parts.append(f'    <g id="node-{node.id}">')
-        svg_parts.append(
-            f'      <rect x="{node.x - width_n/2}" y="{node.y - height_n/2}" '
-            f'width="{width_n}" height="{height_n}" rx="{rx}" ry="{ry}" '
-            f'fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
-        )
+
+        if resolved_style == 'diamond':
+            # Diamond: polygon with 4 points
+            points = (f"{node.x},{node.y - height_n/2} "  # top
+                      f"{node.x + width_n/2},{node.y} "   # right
+                      f"{node.x},{node.y + height_n/2} "  # bottom
+                      f"{node.x - width_n/2},{node.y}")   # left
+            svg_parts.append(
+                f'      <polygon points="{points}" '
+                f'fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
+            )
+        else:
+            # Rectangle with configurable corner radii
+            rx, ry = get_corner_radii(width_n, height_n, node_style)
+            svg_parts.append(
+                f'      <rect x="{node.x - width_n/2}" y="{node.y - height_n/2}" '
+                f'width="{width_n}" height="{height_n}" rx="{rx}" ry="{ry}" '
+                f'fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
+            )
 
         # Node text
         font_size = 12 * node.font_scale
@@ -376,6 +434,10 @@ def main():
     parser.add_argument('--height', type=int, help='Output height in pixels')
     parser.add_argument('--scale', type=float, default=1.0,
                         help='Scale factor for PNG output')
+    parser.add_argument('--node-style',
+                        choices=['half-round', 'ellipse', 'rectangle', 'diamond', 'oval', 'square'],
+                        default='half-round',
+                        help='Node shape style: half-round (default), ellipse/oval, rectangle/square, diamond')
 
     args = parser.parse_args()
 
@@ -390,9 +452,11 @@ def main():
 
     # Render to SVG
     use_curves = args.curves and not args.straight
-    print(f"Rendering with {'cubic curves' if use_curves else 'straight lines'}...")
+    print(f"Rendering with {'cubic curves' if use_curves else 'straight lines'}, "
+          f"node style: {args.node_style}...")
     svg_content = render_svg(nodes, node_map, use_curves=use_curves,
-                             width=args.width, height=args.height)
+                             width=args.width, height=args.height,
+                             node_style=args.node_style)
 
     # Write output
     output_ext = args.output.suffix.lower()
