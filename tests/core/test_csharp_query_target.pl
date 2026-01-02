@@ -73,6 +73,9 @@
 :- dynamic user:test_any_mode/2.
 :- dynamic user:test_group_step/4.
 :- dynamic user:test_group_reach_param/3.
+:- dynamic user:test_scanindex_allowed/1.
+:- dynamic user:test_scanindex_step/2.
+:- dynamic user:test_scanindex_reach_param/2.
 :- dynamic user:mode/1.
 :- dynamic user:test_negation_cycle_root/1.
 :- dynamic user:test_negation_cycle_p/1.
@@ -164,6 +167,7 @@ test_csharp_query_target :-
         verify_parameterized_multi_key_join_runtime,
         verify_parameterized_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_multi_key_join_strategy_partial_index,
+        verify_parameterized_recursive_single_key_join_keeps_scan_index,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
         verify_parameterized_fib_runtime,
@@ -380,6 +384,17 @@ setup_test_data :-
         test_group_reach_param(Customer, Product, Current),
         test_group_step(Customer, Product, Current, Next)
     )),
+    assertz(user:mode(test_scanindex_reach_param(+, -))),
+    assertz(user:test_scanindex_reach_param(alice, 0)),
+    assertz(user:test_scanindex_allowed(0)),
+    assertz(user:test_scanindex_step(0, 1)),
+    assertz(user:test_scanindex_step(0, 2)),
+    assertz(user:test_scanindex_step(0, 3)),
+    assertz(user:(test_scanindex_reach_param(Start, Next) :-
+        test_scanindex_reach_param(Start, Current),
+        test_scanindex_allowed(Current),
+        test_scanindex_step(Current, Next)
+    )),
     assertz(user:mode(test_fib_param(+, -))),
     assertz(user:test_fib_param(0, 1)),
     assertz(user:test_fib_param(1, 1)),
@@ -538,6 +553,10 @@ cleanup_test_data :-
     retractall(user:test_group_step(_, _, _, _)),
     retractall(user:test_group_reach_param(_, _, _)),
     retractall(user:mode(test_group_reach_param(_, _, _))),
+    retractall(user:test_scanindex_allowed(_)),
+    retractall(user:test_scanindex_step(_, _)),
+    retractall(user:test_scanindex_reach_param(_, _)),
+    retractall(user:mode(test_scanindex_reach_param(_, _))),
     retractall(user:test_fib_param(_, _)),
     retractall(user:mode(test_fib_param(_,_))),
     retractall(user:test_post_agg_param(_, _)),
@@ -1282,6 +1301,28 @@ verify_parameterized_recursive_multi_key_join_strategy_partial_index :-
          'alice,laptop,3',
          'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
         [[alice, laptop]],
+        HarnessSource).
+
+verify_parameterized_recursive_single_key_join_keeps_scan_index :-
+    csharp_query_target:build_query_plan(test_scanindex_reach_param/2, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, 1),
+    length(RightKeys, 1),
+    (   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_scanindex_step, arity:2}, width:_}, Left)
+    ->  Strategy = 'KeyJoinHashBuildRight'
+    ;   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_scanindex_step, arity:2}, width:_}, Right)
+    ->  Strategy = 'KeyJoinHashBuildLeft'
+    ;   format(user_error, 'Expected join with test_scanindex_step/2.~n', []),
+        fail
+    ),
+    format(atom(StrategyLine), 'STRATEGY_USED:~w=false', [Strategy]),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [[alice]], Strategy, HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,0', 'alice,1', 'alice,2', 'alice,3', StrategyLine],
+        [[alice]],
         HarnessSource).
 
 verify_parameterized_fib_plan :-
