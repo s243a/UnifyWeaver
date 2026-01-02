@@ -143,6 +143,8 @@ Subject to:
 ### Completed
 - **Force-Directed Refinement** - `--optimize` flag
 - **Node Sizing by Descendants** - Enabled by default, disable with `--no-scaling`
+- **Mass-Based Repulsion** - Hubs push apart more strongly (mass = 1 + sqrt(descendants))
+- **Tethered Leaves** - Leaf nodes stay close to parents (attraction ∝ 1/mass)
 
 ### Recommended Next Steps
 
@@ -157,6 +159,69 @@ Subject to:
 3. **Radial Jitter** (Medium effort, alternative to force-directed)
    - Simpler than force-directed for basic overlap fixing
    - Post-processing pass after initial layout
+
+## Future: Edge Crossing Minimization
+
+Reducing edge crossings would improve readability. This is an NP-hard problem with many local minima, making gradient-based optimization difficult.
+
+### Hierarchical Priority Approach
+
+Process edges in order of ancestor depth (shallowest first):
+
+```
+Algorithm:
+1. Sort edges by min(depth(parent), depth(child)) ascending
+2. For each edge in order:
+   a. Check for crossings with already-placed edges
+   b. If crossing detected, try angular adjustments:
+      - Rotate subtree within parent's sector
+      - Swap sibling subtree positions
+   c. Accept configuration that minimizes crossings
+3. Deeper edges adapt around already-fixed backbone edges
+```
+
+**Rationale:** Edges closer to the root form the "backbone" of the layout. By fixing these first, deeper edges (which have more flexibility) can route around them.
+
+### Detection
+
+Edge crossing detection requires line segment intersection tests:
+
+```python
+def segments_intersect(p1, p2, p3, p4):
+    """Check if segment p1-p2 crosses segment p3-p4."""
+    def ccw(A, B, C):
+        return (C[1]-A[1]) * (B[0]-A[0]) > (B[1]-A[1]) * (C[0]-A[0])
+    return (ccw(p1,p3,p4) != ccw(p2,p3,p4)) and (ccw(p1,p2,p3) != ccw(p1,p2,p4))
+```
+
+For n edges, naive detection is O(n²). Spatial indexing (R-trees) can reduce average case.
+
+### Two-Phase Optimization
+
+Combine force-directed layout with crossing minimization:
+
+```
+Algorithm:
+1. Phase 1: Force-directed until convergence (zero overlaps)
+2. Phase 2: For each node (sorted by depth, shallowest first):
+   a. Try angular/radial adjustments within bounds
+   b. Count edge crossings for each candidate position
+   c. Accept position that minimizes crossings
+   d. Run brief force-directed pass to restore overlap-free state
+   e. Repeat until no improvement for this node
+3. Continue until full pass yields no improvements
+```
+
+**Key insight:** By moving one node at a time and re-running force-directed, we maintain the overlap-free invariant while optimizing for crossings. Shallow nodes are adjusted first so deeper nodes can adapt.
+
+### Stochastic Methods
+
+Simulated annealing or genetic algorithms could escape local minima:
+- Randomly swap subtree positions
+- Accept worse configurations probabilistically
+- Gradually reduce temperature/mutation rate
+
+**Challenge:** Defining moves that preserve hierarchy while exploring layout space.
 
 ## Integration with SimpleMind
 
