@@ -17,6 +17,7 @@
 :- use_module('../../../src/unifyweaver/glue/responsive_generator').
 :- use_module('../../../src/unifyweaver/glue/accessibility_generator').
 :- use_module('../../../src/unifyweaver/glue/animation_generator').
+:- use_module('../../../src/unifyweaver/glue/interaction_generator').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -80,6 +81,9 @@ run_tests :-
 
     % Animation Generator Tests
     run_animation_generator_tests,
+
+    % Interaction Generator Tests
+    run_interaction_generator_tests,
 
     % Summary
     print_summary.
@@ -1283,6 +1287,116 @@ run_animation_generator_tests :-
     test("Chart animation bar_grow exists", (
         animation(bar_grow, BarOpts),
         member(keyframes(_), BarOpts)
+    )).
+
+% ============================================================================
+% INTERACTION GENERATOR TESTS
+% ============================================================================
+
+run_interaction_generator_tests :-
+    format('~n--- Interaction Generator Tests ---~n'),
+
+    % Interaction specifications
+    test("Interaction line_chart exists", (
+        interaction(line_chart, Events),
+        member(on_hover(_), Events)
+    )),
+
+    test("Interaction scatter_plot has zoom", (
+        interaction(scatter_plot, Events2),
+        member(on_scroll(zoom), Events2)
+    )),
+
+    test("Interaction network_graph has pan", (
+        interaction(network_graph, Events3),
+        member(on_background_drag(pan), Events3)
+    )),
+
+    % Event handlers generation
+    test("Generate event handlers has mouse enter", (
+        generate_event_handlers(line_chart, Handlers),
+        sub_atom(Handlers, _, _, _, 'handleMouseEnter')
+    )),
+
+    test("Generate event handlers has click", (
+        generate_event_handlers(bar_chart, Handlers2),
+        sub_atom(Handlers2, _, _, _, 'handleClick')
+    )),
+
+    % Tooltip generation
+    test("Generate tooltip JSX has component", (
+        generate_tooltip_jsx(line_chart, TooltipJSX),
+        sub_atom(TooltipJSX, _, _, _, 'Tooltip')
+    )),
+
+    test("Generate tooltip CSS has class", (
+        generate_tooltip_css(default, TooltipCSS),
+        sub_atom(TooltipCSS, _, _, _, '.tooltip')
+    )),
+
+    % Zoom controls
+    test("Generate zoom controls has component", (
+        generate_zoom_controls(scatter_plot, ZoomControls),
+        sub_atom(ZoomControls, _, _, _, 'ZoomControls')
+    )),
+
+    test("Generate zoom controls has buttons", (
+        generate_zoom_controls(default, ZoomControls2),
+        sub_atom(ZoomControls2, _, _, _, 'onZoomIn')
+    )),
+
+    % Pan handler
+    test("Generate pan handler has hook", (
+        generate_pan_handler(scatter_plot, PanHandler),
+        sub_atom(PanHandler, _, _, _, 'usePan')
+    )),
+
+    test("Generate pan handler has start handler", (
+        generate_pan_handler(default, PanHandler2),
+        sub_atom(PanHandler2, _, _, _, 'handlePanStart')
+    )),
+
+    % Drag handler
+    test("Generate drag handler for 3D rotation", (
+        generate_drag_handler(plot3d, DragHandler),
+        sub_atom(DragHandler, _, _, _, 'useRotate')
+    )),
+
+    test("Generate drag handler for node move", (
+        generate_drag_handler(network_graph, DragHandler2),
+        sub_atom(DragHandler2, _, _, _, 'useNodeDrag')
+    )),
+
+    % Selection handler
+    test("Generate selection handler for multi-select", (
+        generate_selection_handler(data_table, SelectHandler),
+        sub_atom(SelectHandler, _, _, _, 'useMultiSelect')
+    )),
+
+    test("Generate selection handler for brush", (
+        generate_selection_handler(scatter_plot, BrushHandler),
+        sub_atom(BrushHandler, _, _, _, 'useBrushSelection')
+    )),
+
+    % Interaction state
+    test("Generate interaction state has tooltip", (
+        generate_interaction_state(scatter_plot, State),
+        sub_atom(State, _, _, _, 'tooltipVisible')
+    )),
+
+    test("Generate interaction state has scale", (
+        generate_interaction_state(scatter_plot, State2),
+        sub_atom(State2, _, _, _, 'scale')
+    )),
+
+    % Utility predicates
+    test("Has interaction utility works", (
+        has_interaction(line_chart, on_hover)
+    )),
+
+    test("Get interaction options works", (
+        get_interaction_options(scatter_plot, zoom, ZoomOpts),
+        member(enabled(true), ZoomOpts)
     )).
 
 % ============================================================================
