@@ -68,7 +68,6 @@ The current implementation emits static C# builders that assemble the plan via n
 ## Current Limitations
 - Tail-recursive optimisation and memoised aggregates still fall back to iterative evaluation without specialised nodes.
 - Ordering/paging are opt-in via query plan modifiers (`order_by/1`, `order_by/2`, `limit/1`, `offset/1`); default results follow hash-set semantics.
-- Stable ordered deduplication is not yet implemented.
 - Plans currently materialise relation facts inside the generated module; external fact providers will arrive in later releases.
 - Negation does not support existential variables (unbound variables inside a negated literal); use explicit joins/aggregation instead.
 - Runtime assumes in-process execution (`dotnet run`); distributed execution and persistence hooks remain future work.
@@ -115,9 +114,9 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
 - New preference atom: `target(csharp_query)`.
 - Optional runtime hints:
   - `fixpoint(strategy(semi_naive|naive))`
-  - `distinct(strategy(hash|ordered|none))`
   - `materialize(full|lazy)` to control when results are generated.
 - Query modifiers:
+  - `distinct(strategy(hash|ordered|none))`
   - `order_by(Index)`, `order_by(Index, asc|desc)`, `order_by([(Index, asc|desc), ...])` (0-based output column indices)
   - `limit(N)`, `offset(N)`
 - Aggregates:
@@ -130,7 +129,7 @@ The Prolog test suite can generate per-plan C# console projects in codegen-only 
 
 ## Roadmap
 1. Memoisation & advanced patterns – extend the runtime with tail-recursive optimisations, cached aggregates, and transitive-closure helpers.
-2. Ordered evaluation – add ordered deduplication, limit/offset nodes, and deterministic output strategies.
+2. Ordered evaluation – ordered deduplication + limit/offset nodes (done); future work includes more deterministic output strategies.
 3. Streaming adapters – `IAsyncEnumerable` adapter + cancellation tokens (done); future work includes true async sources and non-blocking execution.
 4. Distribution hooks – allow plans to reference remote relations, enabling pipeline execution across nodes.
 

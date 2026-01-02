@@ -118,6 +118,8 @@ test_csharp_query_target :-
         verify_order_by_desc_limit_runtime,
         verify_order_by_offset_limit_runtime,
         verify_disjunction_body_union_plan,
+        verify_distinct_hash_plan,
+        verify_distinct_ordered_inserts_order_by_plan,
         verify_arithmetic_plan,
         verify_recursive_arithmetic_plan,
         verify_comparison_plan,
@@ -694,6 +696,26 @@ verify_disjunction_body_union_plan :-
     length(Sources, 2),
     csharp_query_target:render_plan_to_csharp(Plan, Source),
     sub_string(Source, _, _, _, 'UnionNode'),
+    maybe_run_query_runtime(Plan, ['alice', 'bob']).
+
+verify_distinct_hash_plan :-
+    csharp_query_target:build_query_plan(test_customer_alice_or_bob/1, [target(csharp_query), distinct(strategy(hash))], Plan),
+    get_dict(root, Plan, Root),
+    Root = distinct{type:distinct, input:UnionNode, width:1},
+    is_dict(UnionNode, union),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'DistinctNode'),
+    maybe_run_query_runtime(Plan, ['alice', 'bob']).
+
+verify_distinct_ordered_inserts_order_by_plan :-
+    csharp_query_target:build_query_plan(test_customer_alice_or_bob/1, [target(csharp_query), distinct(strategy(ordered))], Plan),
+    get_dict(root, Plan, Root),
+    Root = distinct{type:distinct, input:OrderNode, width:1},
+    OrderNode = order_by{type:order_by, input:UnionNode, keys:[order_key{index:0, dir:asc}], width:1},
+    is_dict(UnionNode, union),
+    csharp_query_target:render_plan_to_csharp(Plan, Source),
+    sub_string(Source, _, _, _, 'OrderByNode'),
+    sub_string(Source, _, _, _, 'DistinctNode'),
     maybe_run_query_runtime(Plan, ['alice', 'bob']).
 
 verify_arithmetic_plan :-
