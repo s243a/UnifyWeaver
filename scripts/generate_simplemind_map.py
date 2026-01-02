@@ -1505,7 +1505,9 @@ def build_mst_hierarchy(
 def mst_to_folder_structure(
     parent_to_children: Dict[str, List[str]],
     root_url: str,
-    max_folder_depth: int = None
+    max_folder_depth: int = None,
+    min_folder_children: int = None,
+    max_folder_children: int = None
 ) -> Dict[str, Path]:
     """Convert MST hierarchy to folder paths.
 
@@ -1513,6 +1515,8 @@ def mst_to_folder_structure(
         parent_to_children: MST structure mapping parent -> children URLs
         root_url: Root cluster URL
         max_folder_depth: Maximum folder nesting depth (None = unlimited)
+        min_folder_children: Minimum children to create subfolders (None = no min)
+        max_folder_children: Maximum children to put in subfolders (None = unlimited)
 
     Returns:
         Dict mapping cluster_url -> relative folder Path
@@ -1525,14 +1529,26 @@ def mst_to_folder_structure(
 
         # Process children
         children = parent_to_children.get(url, [])
-        for child_url in children:
+        num_children = len(children)
+
+        # Determine if we should create subfolders for children
+        create_subfolders = True
+        if max_folder_depth is not None and depth >= max_folder_depth:
+            create_subfolders = False
+        if min_folder_children is not None and num_children < min_folder_children:
+            create_subfolders = False
+
+        for i, child_url in enumerate(children):
             child_tree_id = extract_tree_id(child_url)
             if not child_tree_id:
                 child_tree_id = f"cluster_{len(cluster_to_folder)}"
 
-            # Check depth limit
-            if max_folder_depth is not None and depth >= max_folder_depth:
+            # Determine child path
+            if not create_subfolders:
                 # Flatten: keep in current folder
+                child_path = current_path
+            elif max_folder_children is not None and i >= max_folder_children:
+                # Exceeded max children: flatten remaining to current folder
                 child_path = current_path
             else:
                 # Create subfolder
@@ -1555,6 +1571,8 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                        mst_folders: bool = False,
                        cluster_to_folder: Dict[str, Path] = None,
                        max_folder_depth: int = None,
+                       min_folder_children: int = None,
+                       max_folder_children: int = None,
                        **kwargs) -> int:
     """Recursively generate mind maps for a cluster hierarchy.
 
@@ -1569,6 +1587,8 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         mst_folders: If True, organize output into MST-based subfolder hierarchy
         cluster_to_folder: Pre-computed mapping of cluster URLs to folder paths
         max_folder_depth: Maximum subfolder nesting depth
+        min_folder_children: Minimum children to create subfolders
+        max_folder_children: Maximum children to put in subfolders
         **kwargs: Additional arguments passed to generate_single_map
 
     Returns:
@@ -1596,7 +1616,8 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
 
             # Convert to folder structure
             cluster_to_folder = mst_to_folder_structure(
-                parent_to_children, mst_root, max_folder_depth)
+                parent_to_children, mst_root, max_folder_depth,
+                min_folder_children, max_folder_children)
             print(f"  Folder structure computed")
 
     # Prevent infinite loops (e.g., circular references)
@@ -1656,6 +1677,8 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
             mst_folders=mst_folders,
             cluster_to_folder=cluster_to_folder,
             max_folder_depth=max_folder_depth,
+            min_folder_children=min_folder_children,
+            max_folder_children=max_folder_children,
             **kwargs
         )
 
@@ -1711,6 +1734,10 @@ def main():
                         help='Organize output into subfolders based on MST of cluster centroids')
     parser.add_argument('--max-folder-depth', type=int, default=None,
                         help='Maximum subfolder nesting depth (default: unlimited)')
+    parser.add_argument('--min-folder-children', type=int, default=None,
+                        help='Minimum children to create subfolders (default: no minimum)')
+    parser.add_argument('--max-folder-children', type=int, default=None,
+                        help='Maximum children to put in subfolders (default: unlimited)')
     parser.add_argument('--url-nodes', choices=['url', 'map'], nargs='?', const='url', default=None,
                         help='Attach small child nodes to Tree nodes. "url" (default): URL on main, cloudmapref on child. "map": cloudmapref on main, URL on child.')
     parser.add_argument('--child-text', type=str, default='',
@@ -1779,6 +1806,8 @@ def main():
             max_depth=args.max_depth,
             mst_folders=args.mst_folders,
             max_folder_depth=args.max_folder_depth,
+            min_folder_children=args.min_folder_children,
+            max_folder_children=args.max_folder_children,
             min_children=args.min_children,
             max_children=args.max_children,
             optimize=args.optimize,
