@@ -19,6 +19,7 @@
 :- use_module('../../../src/unifyweaver/glue/animation_generator').
 :- use_module('../../../src/unifyweaver/glue/interaction_generator').
 :- use_module('../../../src/unifyweaver/glue/export_generator').
+:- use_module('../../../src/unifyweaver/glue/live_preview_generator').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -88,6 +89,9 @@ run_tests :-
 
     % Export Generator Tests
     run_export_generator_tests,
+
+    % Live Preview Generator Tests
+    run_live_preview_generator_tests,
 
     % Summary
     print_summary.
@@ -1525,6 +1529,139 @@ run_export_generator_tests :-
     test("Get export formats default fallback", (
         get_export_formats(nonexistent_chart, Formats2),
         member(svg, Formats2)
+    )).
+
+% ============================================================================
+% LIVE PREVIEW GENERATOR TESTS
+% ============================================================================
+
+run_live_preview_generator_tests :-
+    format('~n--- Live Preview Generator Tests ---~n'),
+
+    % Dev server config existence
+    test("Dev server config default exists", (
+        dev_server_config(default, Opts),
+        member(port(_), Opts)
+    )),
+
+    test("Dev server config has hot_reload", (
+        dev_server_config(default, Opts2),
+        member(hot_reload(true), Opts2)
+    )),
+
+    % Preview config existence
+    test("Preview config default exists", (
+        preview_config(default, PrevOpts),
+        member(layout(_), PrevOpts)
+    )),
+
+    test("Preview config chart_preview has controls", (
+        preview_config(chart_preview, PrevOpts2),
+        member(controls(_), PrevOpts2)
+    )),
+
+    % Dev server generation
+    test("Generate dev server uses express", (
+        generate_dev_server(default, ServerCode),
+        sub_atom(ServerCode, _, _, _, 'express')
+    )),
+
+    test("Generate dev server has WebSocket", (
+        generate_dev_server(default, ServerCode2),
+        sub_atom(ServerCode2, _, _, _, 'WebSocketServer')
+    )),
+
+    test("Generate dev server has chokidar", (
+        generate_dev_server(default, ServerCode3),
+        sub_atom(ServerCode3, _, _, _, 'chokidar')
+    )),
+
+    % Vite config generation
+    test("Generate Vite config has defineConfig", (
+        generate_vite_config(default, ViteConfig),
+        sub_atom(ViteConfig, _, _, _, 'defineConfig')
+    )),
+
+    test("Generate Vite config has HMR", (
+        generate_vite_config(default, ViteConfig2),
+        sub_atom(ViteConfig2, _, _, _, 'hmr')
+    )),
+
+    % Preview app generation
+    test("Generate preview app has useHotReload", (
+        generate_preview_app(chart_preview, PreviewApp),
+        sub_atom(PreviewApp, _, _, _, 'useHotReload')
+    )),
+
+    test("Generate preview app has PreviewPanel", (
+        generate_preview_app(default, PreviewApp2),
+        sub_atom(PreviewApp2, _, _, _, 'PreviewPanel')
+    )),
+
+    % Hot reload hook
+    test("Generate hot reload hook has WebSocket", (
+        generate_hot_reload_hook(HRHook),
+        sub_atom(HRHook, _, _, _, 'WebSocket')
+    )),
+
+    test("Generate hot reload hook has reconnect", (
+        generate_hot_reload_hook(HRHook2),
+        sub_atom(HRHook2, _, _, _, 'reconnect')
+    )),
+
+    % State sync hook
+    test("Generate state sync hook uses sessionStorage", (
+        generate_state_sync_hook(SSHook),
+        sub_atom(SSHook, _, _, _, 'sessionStorage')
+    )),
+
+    % Preview components
+    test("Generate preview wrapper has error boundary", (
+        generate_preview_wrapper(default, Wrapper),
+        sub_atom(Wrapper, _, _, _, 'getDerivedStateFromError')
+    )),
+
+    test("Generate preview panel has error handling", (
+        generate_preview_panel(default, Panel),
+        sub_atom(Panel, _, _, _, 'errorPanel')
+    )),
+
+    test("Generate code editor has tab handling", (
+        generate_code_editor(default, Editor),
+        sub_atom(Editor, _, _, _, 'Tab')
+    )),
+
+    % CSS generation
+    test("Generate preview CSS has theme support", (
+        generate_preview_css(CSS),
+        sub_atom(CSS, _, _, _, 'data-theme')
+    )),
+
+    test("Generate preview CSS has previewApp class", (
+        generate_preview_css(CSS2),
+        sub_atom(CSS2, _, _, _, '.previewApp')
+    )),
+
+    % Package.json generation
+    test("Generate package.json has vite", (
+        generate_package_json(test_project, PackageJSON),
+        sub_atom(PackageJSON, _, _, _, '"vite"')
+    )),
+
+    test("Generate package.json has react", (
+        generate_package_json(test_project, PackageJSON2),
+        sub_atom(PackageJSON2, _, _, _, '"react"')
+    )),
+
+    % Utility predicates
+    test("Get preview port default is 3000", (
+        get_preview_port(default, Port),
+        Port =:= 3000
+    )),
+
+    test("Get watch paths includes Prolog files", (
+        get_watch_paths(visualization_preview, Paths),
+        member('src/unifyweaver/glue/**/*.pl', Paths)
     )).
 
 % ============================================================================
