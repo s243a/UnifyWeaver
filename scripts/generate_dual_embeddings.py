@@ -47,11 +47,13 @@ def main():
     data = load_data(args.data)
     print(f"Loaded {len(data)} items")
     
-    # Extract texts
+    # Extract texts and metadata
     titles = [item.get("raw_title", "") for item in data]
     output_queries = [get_output_query(item) for item in data]
     item_types = [item.get("type", "Tree") for item in data]
     tree_ids = [item.get("tree_id", "") for item in data]
+    # URIs for unique identification (uri for Trees, pearl_uri for PagePearls)
+    uris = [item.get("uri") or item.get("pearl_uri", "") for item in data]
     
     # Load models
     print(f"Loading Nomic model: {args.nomic_model}...")
@@ -81,6 +83,7 @@ def main():
         titles=np.array(titles, dtype=object),
         item_types=np.array(item_types, dtype=object),
         tree_ids=np.array(tree_ids, dtype=object),
+        uris=np.array(uris, dtype=object),  # Unique identifiers
         output_queries=np.array(output_queries, dtype=object)
     )
     

@@ -24,10 +24,11 @@ import uuid
 import zipfile
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
 import numpy as np
+from sklearn.cluster import KMeans
 
 @dataclass
 class MindMapNode:
@@ -57,16 +58,55 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
         return 0.0
     return float(np.dot(a, b) / (norm_a * norm_b))
 
-def build_hierarchy(nodes: List[MindMapNode], root_idx: int = 0) -> MindMapNode:
+def load_embeddings(embeddings_path: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    """Load embeddings indexed by tree_id, title, and uri.
+
+    Returns:
+        (tree_id_to_emb, title_to_emb, uri_to_emb) - three dicts for lookups
     """
-    Build hierarchical tree from flat list using similarity.
+    if not embeddings_path.exists():
+        return {}, {}, {}
+
+    data = np.load(embeddings_path, allow_pickle=True)
+    tree_ids = data['tree_ids']
+    titles = data['titles']
+    embeddings = data['input_nomic']  # 768-dim Nomic embeddings
+
+    # Index by tree_id (for Trees)
+    tree_id_to_emb = {}
+    for tid, emb in zip(tree_ids, embeddings):
+        if tid and str(tid).strip():
+            tree_id_to_emb[str(tid)] = emb
+
+    # Index by title (fallback)
+    title_to_emb = {str(t): emb for t, emb in zip(titles, embeddings)}
+
+    # Index by uri if available (most precise for PagePearls)
+    uri_to_emb = {}
+    if 'uris' in data.files:
+        uris = data['uris']
+        for uri, emb in zip(uris, embeddings):
+            if uri and str(uri).strip():
+                uri_to_emb[str(uri)] = emb
+
+    return tree_id_to_emb, title_to_emb, uri_to_emb
+
+def build_hierarchy(nodes: List[MindMapNode], root_idx: int = 0,
+                    min_children: int = 4, max_children: int = 8,
+                    next_id: List[int] = None) -> MindMapNode:
+    """
+    Build hierarchical tree using recursive micro-clustering.
 
     Algorithm:
     1. Root is the first node (usually the folder itself)
-    2. Find N closest nodes to root -> direct children
-    3. For remaining nodes, assign to most similar child
-    4. Recurse for each child
+    2. If <= max_children items, make all direct children
+    3. Otherwise, use K-means to cluster into groups
+    4. For each cluster, pick most central item as representative
+    5. Recursively build hierarchy for each cluster
     """
+    if next_id is None:
+        next_id = [max(n.id for n in nodes) + 1]  # Mutable counter for new IDs
+
     if len(nodes) <= 1:
         return nodes[0] if nodes else None
 
@@ -77,38 +117,86 @@ def build_hierarchy(nodes: List[MindMapNode], root_idx: int = 0) -> MindMapNode:
         return root
 
     # For small clusters, all nodes are direct children of root
-    if len(others) <= 6:
+    if len(others) <= max_children:
         root.children = others
         for child in others:
             child.parent_id = root.id
         return root
 
-    # For larger clusters, use similarity to build hierarchy
-    if root.embedding is not None:
-        # Sort by similarity to root
-        similarities = [(n, cosine_similarity(root.embedding, n.embedding)) for n in others]
-        similarities.sort(key=lambda x: x[1], reverse=True)
+    # Need micro-clustering - check embedding coverage
+    nodes_with_emb = [n for n in others if n.embedding is not None]
+    embedding_ratio = len(nodes_with_emb) / len(others) if others else 0
 
-        # Top N become direct children
-        n_direct = min(5, len(others))
-        direct_children = [s[0] for s in similarities[:n_direct]]
-        remaining = [s[0] for s in similarities[n_direct:]]
+    # Use K-means if we have enough embeddings (>50% coverage)
+    if embedding_ratio > 0.5 and len(nodes_with_emb) >= min_children:
+        # Use K-means clustering on nodes with embeddings
+        embeddings = np.array([n.embedding for n in nodes_with_emb])
 
-        # Assign remaining to most similar direct child
-        for node in remaining:
-            best_child = max(direct_children,
-                           key=lambda c: cosine_similarity(c.embedding, node.embedding))
-            best_child.children.append(node)
-            node.parent_id = best_child.id
+        # Target number of clusters: aim for min_children to max_children
+        n_clusters = max(min_children, min(max_children, len(nodes_with_emb) // max_children + 1))
+        n_clusters = min(n_clusters, len(nodes_with_emb))
 
-        root.children = direct_children
-        for child in direct_children:
-            child.parent_id = root.id
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            labels = kmeans.fit_predict(embeddings)
+
+        # Group nodes by cluster
+        clusters: Dict[int, List[MindMapNode]] = {}
+        for node, label in zip(others, labels):
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(node)
+
+        # For each cluster, find most central node (closest to centroid)
+        for label, cluster_nodes in clusters.items():
+            if len(cluster_nodes) == 1:
+                # Single node - add directly as child
+                node = cluster_nodes[0]
+                node.parent_id = root.id
+                root.children.append(node)
+            else:
+                # Find node closest to centroid
+                centroid = kmeans.cluster_centers_[label]
+                cluster_embeddings = np.array([n.embedding for n in cluster_nodes])
+                distances = np.linalg.norm(cluster_embeddings - centroid, axis=1)
+                central_idx = np.argmin(distances)
+                central_node = cluster_nodes[central_idx]
+
+                # Central node becomes child of root
+                central_node.parent_id = root.id
+                root.children.append(central_node)
+
+                # Recursively build hierarchy for remaining nodes in cluster
+                remaining = [n for i, n in enumerate(cluster_nodes) if i != central_idx]
+                if remaining:
+                    # Recursively cluster if still too many
+                    sub_nodes = [central_node] + remaining
+                    build_hierarchy(sub_nodes, root_idx=0,
+                                   min_children=min_children, max_children=max_children,
+                                   next_id=next_id)
     else:
-        # No embeddings - just make all direct children
-        root.children = others
-        for child in others:
-            child.parent_id = root.id
+        # No embeddings - create arbitrary groups
+        n_groups = max(min_children, len(others) // max_children + 1)
+        group_size = len(others) // n_groups
+
+        for i in range(n_groups):
+            start = i * group_size
+            end = start + group_size if i < n_groups - 1 else len(others)
+            group = others[start:end]
+
+            if len(group) == 1:
+                group[0].parent_id = root.id
+                root.children.append(group[0])
+            else:
+                # First node in group becomes representative
+                rep = group[0]
+                rep.parent_id = root.id
+                root.children.append(rep)
+                for node in group[1:]:
+                    node.parent_id = rep.id
+                    rep.children.append(node)
 
     return root
 
@@ -160,36 +248,78 @@ def wrap_title(title: str, target_ratio: float = 2.0) -> str:
 
     return '\\N'.join(lines)
 
-def apply_radial_layout(node: MindMapNode, center_x: float = 500, center_y: float = 500,
-                        radius: float = 300, start_angle: float = 0, depth: int = 0):
-    """
-    Apply radial layout to node and its children.
+def count_nodes_per_level(node: MindMapNode, level: int = 0,
+                          counts: Dict[int, int] = None) -> Dict[int, int]:
+    """Count total nodes at each depth level."""
+    if counts is None:
+        counts = {}
 
-    Each level of children is arranged in a circle around the parent.
-    Distance from parent is constant for all children at same level.
+    counts[level] = counts.get(level, 0) + 1
+
+    for child in node.children:
+        count_nodes_per_level(child, level + 1, counts)
+
+    return counts
+
+def apply_radial_layout(node: MindMapNode, center_x: float = 500, center_y: float = 500,
+                        min_spacing: float = 80, base_radius: float = 150):
     """
-    node.x = center_x
-    node.y = center_y
+    Apply radial layout with consistent circumferential spacing.
+
+    Radius at each level grows to maintain min_spacing between nodes.
+    Formula: radius = max(base_radius, n_nodes * min_spacing / (2 * pi))
+    """
+    # First pass: count nodes at each level
+    level_counts = count_nodes_per_level(node)
+
+    # Calculate radius for each level to maintain spacing
+    level_radii = {}
+    cumulative_radius = 0
+    for level in sorted(level_counts.keys()):
+        if level == 0:
+            level_radii[0] = 0  # Root is at center
+        else:
+            n_nodes = level_counts[level]
+            # Radius needed for this level's circumference
+            # circumference = 2 * pi * r, spacing = circumference / n_nodes
+            # So r = n_nodes * spacing / (2 * pi)
+            needed_radius = max(base_radius, n_nodes * min_spacing / (2 * math.pi))
+            cumulative_radius += needed_radius
+            level_radii[level] = cumulative_radius
+
+    # Second pass: position nodes
+    _position_nodes_by_level(node, center_x, center_y, level_radii)
+
+def _position_nodes_by_level(node: MindMapNode, center_x: float, center_y: float,
+                              level_radii: Dict[int, float], level: int = 0,
+                              angle_start: float = 0, angle_span: float = 2 * math.pi):
+    """Position nodes at their level's radius within their angular sector."""
+    if level == 0:
+        node.x = center_x
+        node.y = center_y
 
     if not node.children:
         return
 
     n_children = len(node.children)
-    angle_step = 2 * math.pi / n_children
+    child_level = level + 1
+    child_radius = level_radii.get(child_level, 200)
 
-    # Reduce radius for deeper levels
-    child_radius = radius * (0.7 ** depth)
+    # Divide the angular span among children
+    angle_per_child = angle_span / n_children
 
     for i, child in enumerate(node.children):
-        angle = start_angle + i * angle_step
-        child_x = center_x + child_radius * math.cos(angle)
-        child_y = center_y + child_radius * math.sin(angle)
+        # Child's angle is within parent's sector
+        child_angle = angle_start + (i + 0.5) * angle_per_child
 
-        # Recurse with offset angle to avoid overlap
-        apply_radial_layout(child, child_x, child_y,
-                           radius=child_radius * 0.8,
-                           start_angle=angle - math.pi/4,
-                           depth=depth + 1)
+        child.x = center_x + child_radius * math.cos(child_angle)
+        child.y = center_y + child_radius * math.sin(child_angle)
+
+        # Recurse: each child gets a proportional angular sector
+        _position_nodes_by_level(child, center_x, center_y, level_radii,
+                                  level=child_level,
+                                  angle_start=angle_start + i * angle_per_child,
+                                  angle_span=angle_per_child)
 
 def node_to_xml(node: MindMapNode, parent_element: Element):
     """Convert a MindMapNode to SimpleMind XML topic element."""
@@ -303,9 +433,38 @@ def load_cluster_items(data_path: Path, cluster_query: str = None,
 
     return items
 
-def create_nodes_from_items(items: List[Dict]) -> List[MindMapNode]:
-    """Convert cluster items to MindMapNodes."""
+def create_nodes_from_items(items: List[Dict],
+                            tree_id_emb: Dict[str, np.ndarray] = None,
+                            title_emb: Dict[str, np.ndarray] = None,
+                            uri_emb: Dict[str, np.ndarray] = None) -> List[MindMapNode]:
+    """Convert cluster items to MindMapNodes with optional embeddings.
+
+    Looks up embeddings by: uri (most precise) > tree_id > title (fallback).
+    """
     nodes = []
+    tree_id_emb = tree_id_emb or {}
+    title_emb = title_emb or {}
+    uri_emb = uri_emb or {}
+
+    def get_embedding(item):
+        """Get embedding for an item, trying uri, then tree_id, then title."""
+        # Try pearl_uri (for PagePearls) - most precise
+        pearl_uri = item.get('pearl_uri', '')
+        if pearl_uri and pearl_uri in uri_emb:
+            return uri_emb[pearl_uri]
+        # Try uri (for Trees)
+        uri = item.get('uri', '')
+        if uri and uri in uri_emb:
+            return uri_emb[uri]
+        # Try tree_id
+        tree_id = item.get('tree_id', '')
+        if tree_id and str(tree_id) in tree_id_emb:
+            return tree_id_emb[str(tree_id)]
+        # Fallback to title
+        title = item.get('raw_title', '')
+        if title in title_emb:
+            return title_emb[title]
+        return None
 
     # Find the root (the folder itself - usually has cluster_id == uri)
     root_item = None
@@ -320,13 +479,15 @@ def create_nodes_from_items(items: List[Dict]) -> List[MindMapNode]:
 
     # Create root node
     if root_item:
+        tree_id = root_item.get('tree_id', '')
         root_node = MindMapNode(
             id=0,
             title=root_item.get('raw_title', 'Root'),
-            tree_id=root_item.get('tree_id', ''),
+            tree_id=tree_id,
             url=root_item.get('uri', ''),
             parent_id=-1,
-            palette=1
+            palette=1,
+            embedding=get_embedding(root_item)
         )
         nodes.append(root_node)
 
@@ -336,16 +497,22 @@ def create_nodes_from_items(items: List[Dict]) -> List[MindMapNode]:
         if item == root_item:
             continue
 
+        tree_id = item.get('tree_id', '')
         node = MindMapNode(
             id=len(nodes),
             title=item.get('raw_title', f'Item {i}'),
-            tree_id=item.get('tree_id', ''),
+            tree_id=tree_id,
             url=item.get('uri', ''),
             parent_id=0,  # Will be updated by build_hierarchy
-            palette=(palette_idx % 8) + 1
+            palette=(palette_idx % 8) + 1,
+            embedding=get_embedding(item)
         )
         nodes.append(node)
         palette_idx += 1
+
+    # Report embedding coverage
+    with_emb = sum(1 for n in nodes if n.embedding is not None)
+    print(f"Embeddings loaded: {with_emb}/{len(nodes)} nodes")
 
     return nodes
 
@@ -368,10 +535,17 @@ def main():
     parser.add_argument('--data', type=Path,
                         default=Path('reports/pearltrees_targets_full_multi_account.jsonl'),
                         help='Path to training data JSONL')
+    parser.add_argument('--embeddings', type=Path,
+                        default=Path('models/dual_embeddings_full.npz'),
+                        help='Path to embeddings file (.npz)')
     parser.add_argument('--output', type=Path, required=True,
                         help='Output .smmx file path')
     parser.add_argument('--xml-only', action='store_true',
                         help='Output raw XML instead of .smmx')
+    parser.add_argument('--max-children', type=int, default=8,
+                        help='Max children per node before micro-clustering')
+    parser.add_argument('--min-children', type=int, default=4,
+                        help='Min clusters when micro-clustering')
 
     args = parser.parse_args()
 
@@ -382,6 +556,15 @@ def main():
         print(f"Error: Data file not found: {args.data}")
         return 1
 
+    # Load embeddings
+    tree_id_emb, title_emb, uri_emb = {}, {}, {}
+    if args.embeddings.exists():
+        print(f"Loading embeddings from {args.embeddings}...")
+        tree_id_emb, title_emb, uri_emb = load_embeddings(args.embeddings)
+        print(f"Loaded {len(tree_id_emb)} tree_id, {len(title_emb)} title, {len(uri_emb)} uri embeddings")
+    else:
+        print(f"Warning: Embeddings file not found: {args.embeddings}")
+
     # Load cluster items
     items = load_cluster_items(args.data, args.cluster, args.cluster_url)
 
@@ -391,14 +574,15 @@ def main():
 
     print(f"Found {len(items)} items in cluster")
 
-    # Create nodes
-    nodes = create_nodes_from_items(items)
+    # Create nodes with embeddings
+    nodes = create_nodes_from_items(items, tree_id_emb, title_emb, uri_emb)
 
-    # Build hierarchy
-    root = build_hierarchy(nodes)
+    # Build hierarchy with micro-clustering
+    root = build_hierarchy(nodes, min_children=args.min_children,
+                          max_children=args.max_children)
 
-    # Apply radial layout
-    apply_radial_layout(root, center_x=500, center_y=500, radius=300)
+    # Apply radial layout with consistent circumferential spacing
+    apply_radial_layout(root, center_x=500, center_y=500, min_spacing=80, base_radius=150)
 
     # Generate XML
     title = root.title if root else "Mind Map"
