@@ -18,6 +18,7 @@
 :- use_module('../../../src/unifyweaver/glue/accessibility_generator').
 :- use_module('../../../src/unifyweaver/glue/animation_generator').
 :- use_module('../../../src/unifyweaver/glue/interaction_generator').
+:- use_module('../../../src/unifyweaver/glue/export_generator').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -84,6 +85,9 @@ run_tests :-
 
     % Interaction Generator Tests
     run_interaction_generator_tests,
+
+    % Export Generator Tests
+    run_export_generator_tests,
 
     % Summary
     print_summary.
@@ -1397,6 +1401,130 @@ run_interaction_generator_tests :-
     test("Get interaction options works", (
         get_interaction_options(scatter_plot, zoom, ZoomOpts),
         member(enabled(true), ZoomOpts)
+    )).
+
+% ============================================================================
+% EXPORT GENERATOR TESTS
+% ============================================================================
+
+run_export_generator_tests :-
+    format('~n--- Export Generator Tests ---~n'),
+
+    % Export config existence
+    test("Export config default exists", (
+        export_config(default, Opts),
+        member(formats(_), Opts)
+    )),
+
+    test("Export config line_chart exists", (
+        export_config(line_chart, Opts2),
+        member(formats(Formats), Opts2),
+        member(csv, Formats)
+    )),
+
+    % Supported formats
+    test("SVG is supported format", (
+        supported_format(svg)
+    )),
+
+    test("PNG is supported format", (
+        supported_format(png)
+    )),
+
+    test("PDF is supported format", (
+        supported_format(pdf)
+    )),
+
+    % Format specifications
+    test("SVG format has correct MIME", (
+        export_format(svg, SVGOpts),
+        member(mime_type('image/svg+xml'), SVGOpts)
+    )),
+
+    test("PNG format requires canvas", (
+        export_format(png, PNGOpts),
+        member(requires_canvas(true), PNGOpts)
+    )),
+
+    test("PDF format specifies jsPDF", (
+        export_format(pdf, PDFOpts),
+        member(library(jspdf), PDFOpts)
+    )),
+
+    % Export component generation
+    test("Generate export component has ExportControls", (
+        generate_export_component(line_chart, Component),
+        sub_atom(Component, _, _, _, 'ExportControls')
+    )),
+
+    test("Generate export component has useExport", (
+        generate_export_component(bar_chart, Component2),
+        sub_atom(Component2, _, _, _, 'useExport')
+    )),
+
+    % Export hook generation
+    test("Generate export hook has SVG export", (
+        generate_export_hook(scatter_plot, Hook),
+        sub_atom(Hook, _, _, _, 'exportToSVG')
+    )),
+
+    test("Generate export hook has PNG export", (
+        generate_export_hook(scatter_plot, Hook2),
+        sub_atom(Hook2, _, _, _, 'exportToPNG')
+    )),
+
+    test("Generate export hook has PDF export", (
+        generate_export_hook(scatter_plot, Hook3),
+        sub_atom(Hook3, _, _, _, 'exportToPDF')
+    )),
+
+    % Export menu generation
+    test("Generate export menu has dropdown", (
+        generate_export_menu(line_chart, Menu),
+        sub_atom(Menu, _, _, _, 'exportDropdown')
+    )),
+
+    test("Generate export menu has SVG option", (
+        generate_export_menu(bar_chart, Menu2),
+        sub_atom(Menu2, _, _, _, 'Export as SVG')
+    )),
+
+    % Individual export functions
+    test("Generate SVG export uses XMLSerializer", (
+        generate_svg_export(default, SVGCode),
+        sub_atom(SVGCode, _, _, _, 'XMLSerializer')
+    )),
+
+    test("Generate PNG export uses canvas", (
+        generate_png_export(default, PNGCode),
+        sub_atom(PNGCode, _, _, _, 'canvas')
+    )),
+
+    test("Generate PDF export uses jsPDF", (
+        generate_pdf_export(default, PDFCode),
+        sub_atom(PDFCode, _, _, _, 'jsPDF')
+    )),
+
+    % CSS generation
+    test("Generate export CSS has controls class", (
+        generate_export_css(CSS),
+        sub_atom(CSS, _, _, _, '.exportControls')
+    )),
+
+    test("Generate export CSS has dropdown styles", (
+        generate_export_css(CSS2),
+        sub_atom(CSS2, _, _, _, '.exportDropdown')
+    )),
+
+    % Utility predicates
+    test("Get export formats for line_chart", (
+        get_export_formats(line_chart, Formats),
+        member(csv, Formats)
+    )),
+
+    test("Get export formats default fallback", (
+        get_export_formats(nonexistent_chart, Formats2),
+        member(svg, Formats2)
     )).
 
 % ============================================================================
