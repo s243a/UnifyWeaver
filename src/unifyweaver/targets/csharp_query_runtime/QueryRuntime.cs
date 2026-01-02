@@ -1827,7 +1827,7 @@ namespace UnifyWeaver.QueryRuntime
 
                         var otherNode = leftIsScan ? join.Right : join.Left;
 
-                        if (!scanIndexCached && !IsRecursiveProbe(otherNode))
+                        if (!scanIndexCached && _cacheContext is null && !IsRecursiveProbe(otherNode))
                         {
                             const int TinyProbeUpperBound = 64;
                             if (joinKeyCount == 1 &&

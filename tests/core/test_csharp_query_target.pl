@@ -34,6 +34,8 @@
 :- dynamic user:test_bothscan_left/3.
 :- dynamic user:test_bothscan_right/3.
 :- dynamic user:test_bothscan_join/4.
+:- dynamic user:test_tiny_probe_fact/2.
+:- dynamic user:test_tiny_probe_param/2.
 :- dynamic user:test_sale_count/1.
 :- dynamic user:test_sale_avg_for_alice/1.
 :- dynamic user:test_sales_by_customer/2.
@@ -171,6 +173,7 @@ test_csharp_query_target :-
         verify_parameterized_multi_key_join_runtime,
         verify_parameterized_multi_key_join_strategy_partial_index,
         verify_multi_key_both_scan_join_strategy_partial_index,
+        verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse,
         verify_parameterized_recursive_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_single_key_join_keeps_scan_index,
         verify_recursive_selection_scan_uses_scan_index,
@@ -398,6 +401,12 @@ setup_test_data :-
         test_group_reach_param(Customer, Product, Current),
         test_group_step(Customer, Product, Current, Next)
     )),
+    assertz(user:mode(test_tiny_probe_param(+, -))),
+    assertz(user:test_tiny_probe_fact(alice, 1)),
+    assertz(user:test_tiny_probe_fact(bob, 2)),
+    assertz(user:(test_tiny_probe_param(Name, Value) :-
+        test_tiny_probe_fact(Name, Value)
+    )),
     assertz(user:mode(test_scanindex_reach_param(+, -))),
     assertz(user:test_scanindex_reach_param(alice, 0)),
     assertz(user:test_scanindex_allowed(0)),
@@ -539,6 +548,8 @@ cleanup_test_data :-
     retractall(user:test_bothscan_left(_, _, _)),
     retractall(user:test_bothscan_right(_, _, _)),
     retractall(user:test_bothscan_join(_, _, _, _)),
+    retractall(user:test_tiny_probe_fact(_, _)),
+    retractall(user:test_tiny_probe_param(_, _)),
     retractall(user:test_sale_count(_)),
     retractall(user:test_sale_avg_for_alice(_)),
     retractall(user:test_sales_by_customer(_, _)),
@@ -573,6 +584,7 @@ cleanup_test_data :-
     retractall(user:test_any_mode(_, _)),
     retractall(user:mode(test_any_mode(_, _))),
     retractall(user:mode(test_sale_item_param(_, _, _))),
+    retractall(user:mode(test_tiny_probe_param(_, _))),
     retractall(user:test_group_step(_, _, _, _)),
     retractall(user:test_group_reach_param(_, _, _)),
     retractall(user:mode(test_group_reach_param(_, _, _))),
@@ -1322,6 +1334,28 @@ verify_multi_key_both_scan_join_strategy_partial_index :-
          'alice,laptop,2,20',
          'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
         [],
+        HarnessSource).
+
+verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse :-
+    csharp_query_target:build_query_plan(test_tiny_probe_param/2, [target(csharp_query)], Plan),
+    get_dict(metadata, Plan, Meta),
+    get_dict(modes, Meta, Modes),
+    Modes == [input, output],
+    get_dict(root, Plan, Root),
+    sub_term(param_seed{type:param_seed, predicate:predicate{name:test_tiny_probe_param, arity:2}, input_positions:[0], width:2}, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, 1),
+    length(RightKeys, 1),
+    (   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_tiny_probe_fact, arity:2}, width:_}, Left),
+        sub_term(param_seed{type:param_seed, predicate:predicate{name:test_tiny_probe_param, arity:2}, input_positions:[0], width:2}, Right)
+    ;   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_tiny_probe_fact, arity:2}, width:_}, Right),
+        sub_term(param_seed{type:param_seed, predicate:predicate{name:test_tiny_probe_param, arity:2}, input_positions:[0], width:2}, Left)
+    ),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [[alice]], 'KeyJoinScanIndex', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,1', 'STRATEGY_USED:KeyJoinScanIndex=true'],
+        [[alice]],
         HarnessSource).
 
 verify_parameterized_recursive_multi_key_join_strategy_partial_index :-
