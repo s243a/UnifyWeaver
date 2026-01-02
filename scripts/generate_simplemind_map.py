@@ -43,6 +43,16 @@ class MindMapNode:
     palette: int = 1
     children: List['MindMapNode'] = field(default_factory=list)
     embedding: Optional[np.ndarray] = None
+    item_type: str = ""  # PagePearl, Tree, etc.
+
+
+# SimpleMind borderstyle values
+BORDERSTYLES = {
+    'half-round': 'sbsHalfRound',
+    'ellipse': 'sbsEllipse',
+    'rectangle': 'sbsRectangle',
+    'diamond': 'sbsDiamond',
+}
 
 def generate_guid() -> str:
     """Generate a SimpleMind-style GUID."""
@@ -780,8 +790,17 @@ def calculate_node_scales(root: MindMapNode, min_scale: float = 1.2) -> Dict[int
     compute_scale(root)
     return scales
 
-def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, float] = None):
-    """Convert a MindMapNode to SimpleMind XML topic element."""
+def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, float] = None,
+                tree_style: str = None, pearl_style: str = None):
+    """Convert a MindMapNode to SimpleMind XML topic element.
+
+    Args:
+        node: The node to convert
+        parent_element: Parent XML element to add topic to
+        scales: Font scale mapping by node ID
+        tree_style: Borderstyle for Tree items (folders)
+        pearl_style: Borderstyle for Pearl items (pages/links)
+    """
     topic = SubElement(parent_element, 'topic')
     topic.set('id', str(node.id))
     topic.set('parent', str(node.parent_id))
@@ -797,7 +816,16 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
     text = wrapped.replace('\n', '\\N')
     topic.set('text', text)
 
-    # Add font scaling based on descendant count
+    # Determine borderstyle based on item type
+    borderstyle = None
+    if node.item_type == 'Tree' and tree_style:
+        borderstyle = BORDERSTYLES.get(tree_style)
+    elif 'Pearl' in node.item_type and pearl_style:
+        # Matches PagePearl, and any other Pearl types
+        borderstyle = BORDERSTYLES.get(pearl_style)
+
+    # Add style element (for font scaling and/or borderstyle)
+    style = None
     if scales and node.id in scales:
         scale = scales[node.id]
         if scale > 1.2:  # Only add styling for non-leaf nodes
@@ -807,6 +835,12 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                 font.set('bold', 'True')
             font.set('scale', f'{scale:.2f}')
 
+    # Add borderstyle to existing style element or create new one
+    if borderstyle:
+        if style is None:
+            style = SubElement(topic, 'style')
+        style.set('borderstyle', borderstyle)
+
     # Add link if URL present
     if node.url:
         link = SubElement(topic, 'link')
@@ -814,10 +848,19 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
 
     # Recurse for children
     for child in node.children:
-        node_to_xml(child, parent_element, scales)
+        node_to_xml(child, parent_element, scales, tree_style, pearl_style)
 
-def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float] = None) -> str:
-    """Generate complete SimpleMind XML document."""
+def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float] = None,
+                         tree_style: str = None, pearl_style: str = None) -> str:
+    """Generate complete SimpleMind XML document.
+
+    Args:
+        root: Root node of the mind map
+        title: Mind map title
+        scales: Font scale mapping by node ID
+        tree_style: Borderstyle for Tree items (folders)
+        pearl_style: Borderstyle for Pearl items (pages/links)
+    """
     # Root element
     root_elem = Element('simplemind-mindmaps')
     root_elem.set('generator', 'UnifyWeaver')
@@ -845,7 +888,7 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
 
     # Topics section
     topics = SubElement(mindmap, 'topics')
-    node_to_xml(root, topics, scales)
+    node_to_xml(root, topics, scales, tree_style, pearl_style)
 
     # Relations section (empty for now)
     SubElement(mindmap, 'relations')
@@ -960,7 +1003,8 @@ def create_nodes_from_items(items: List[Dict],
             url=get_url(root_item),
             parent_id=-1,
             palette=1,
-            embedding=get_embedding(root_item)
+            embedding=get_embedding(root_item),
+            item_type=root_item.get('type', '')
         )
         nodes.append(root_node)
 
@@ -978,7 +1022,8 @@ def create_nodes_from_items(items: List[Dict],
             url=get_url(item),
             parent_id=0,  # Will be updated by build_hierarchy
             palette=(palette_idx % 8) + 1,
-            embedding=get_embedding(item)
+            embedding=get_embedding(item),
+            item_type=item.get('type', '')
         )
         nodes.append(node)
         palette_idx += 1
@@ -1029,6 +1074,14 @@ def main():
                         help='Apply edge crossing minimization after force-directed')
     parser.add_argument('--crossing-passes', type=int, default=10,
                         help='Max passes for crossing minimization')
+    parser.add_argument('--tree-style',
+                        choices=['half-round', 'ellipse', 'rectangle', 'diamond'],
+                        default=None,
+                        help='Node style for Tree items (folders)')
+    parser.add_argument('--pearl-style',
+                        choices=['half-round', 'ellipse', 'rectangle', 'diamond'],
+                        default=None,
+                        help='Node style for Pearl items (pages/links)')
 
     args = parser.parse_args()
 
@@ -1089,7 +1142,9 @@ def main():
 
     # Generate XML
     title = root.title if root else "Mind Map"
-    xml_content = generate_mindmap_xml(root, title, scales)
+    xml_content = generate_mindmap_xml(root, title, scales,
+                                       tree_style=args.tree_style,
+                                       pearl_style=args.pearl_style)
 
     # Write output
     if args.xml_only:
