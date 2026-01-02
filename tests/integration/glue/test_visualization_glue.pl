@@ -24,6 +24,9 @@
 :- use_module('../../../src/unifyweaver/glue/theme_generator').
 :- use_module('../../../src/unifyweaver/glue/animation_presets').
 :- use_module('../../../src/unifyweaver/glue/template_library').
+:- use_module('../../../src/unifyweaver/glue/lazy_loading_generator').
+:- use_module('../../../src/unifyweaver/glue/virtual_scroll_generator').
+:- use_module('../../../src/unifyweaver/glue/webworker_generator').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -108,6 +111,15 @@ run_tests :-
 
     % Template Library Tests
     run_template_library_tests,
+
+    % Lazy Loading Generator Tests
+    run_lazy_loading_generator_tests,
+
+    % Virtual Scroll Generator Tests
+    run_virtual_scroll_generator_tests,
+
+    % WebWorker Generator Tests
+    run_webworker_generator_tests,
 
     % Summary
     print_summary.
@@ -2512,6 +2524,450 @@ run_template_library_tests :-
     test("Complete template has Styles section", (
         template_library:generate_template(analytics_dashboard, Code),
         sub_atom(Code, _, _, _, '--- Styles ---')
+    )).
+
+% ============================================================================
+% LAZY LOADING GENERATOR TESTS
+% ============================================================================
+
+run_lazy_loading_generator_tests :-
+    format('~n--- Lazy Loading Generator Tests ---~n'),
+
+    % Config existence
+    test("Default lazy config exists", (
+        lazy_loading_generator:lazy_config(default, Config),
+        member(strategy(_), Config)
+    )),
+
+    test("Infinite scroll config exists", (
+        lazy_loading_generator:lazy_config(infinite_scroll, _)
+    )),
+
+    test("Windowed config exists", (
+        lazy_loading_generator:lazy_config(windowed, _)
+    )),
+
+    test("Chunked config exists", (
+        lazy_loading_generator:lazy_config(chunked, _)
+    )),
+
+    % Strategy tests
+    test("Default strategy is pagination", (
+        lazy_loading_generator:lazy_strategy(default, pagination)
+    )),
+
+    test("Infinite scroll strategy", (
+        lazy_loading_generator:lazy_strategy(infinite_scroll, infinite)
+    )),
+
+    % Hook generation
+    test("Generate lazy hook produces code", (
+        lazy_loading_generator:generate_lazy_hook(default, Hook),
+        atom_length(Hook, L),
+        L > 1000
+    )),
+
+    test("Lazy hook has useLazyData", (
+        lazy_loading_generator:generate_lazy_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'useLazyData')
+    )),
+
+    test("Lazy hook has cache management", (
+        lazy_loading_generator:generate_lazy_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'cache')
+    )),
+
+    test("Lazy hook has pagination", (
+        lazy_loading_generator:generate_lazy_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'loadPage')
+    )),
+
+    % Pagination hook generation
+    test("Generate pagination hook produces code", (
+        lazy_loading_generator:generate_pagination_hook(default, PagHook),
+        atom_length(PagHook, L),
+        L > 1000
+    )),
+
+    test("Pagination hook has usePagination", (
+        lazy_loading_generator:generate_pagination_hook(default, PagHook),
+        sub_atom(PagHook, _, _, _, 'usePagination')
+    )),
+
+    test("Pagination hook has controls component", (
+        lazy_loading_generator:generate_pagination_hook(default, PagHook),
+        sub_atom(PagHook, _, _, _, 'PaginationControls')
+    )),
+
+    test("Pagination hook has page navigation", (
+        lazy_loading_generator:generate_pagination_hook(default, PagHook),
+        sub_atom(PagHook, _, _, _, 'nextPage')
+    )),
+
+    % Infinite scroll generation
+    test("Generate infinite scroll produces code", (
+        lazy_loading_generator:generate_infinite_scroll(infinite_scroll, InfHook),
+        atom_length(InfHook, L),
+        L > 1000
+    )),
+
+    test("Infinite scroll has intersection observer", (
+        lazy_loading_generator:generate_infinite_scroll(infinite_scroll, InfHook),
+        sub_atom(InfHook, _, _, _, 'IntersectionObserver')
+    )),
+
+    test("Infinite scroll has sentinel ref", (
+        lazy_loading_generator:generate_infinite_scroll(infinite_scroll, InfHook),
+        sub_atom(InfHook, _, _, _, 'sentinelRef')
+    )),
+
+    test("Infinite scroll has container component", (
+        lazy_loading_generator:generate_infinite_scroll(infinite_scroll, InfHook),
+        sub_atom(InfHook, _, _, _, 'InfiniteScrollContainer')
+    )),
+
+    % Lazy loader generation
+    test("Generate lazy loader produces code", (
+        lazy_loading_generator:generate_lazy_loader(chunked, Loader),
+        atom_length(Loader, L),
+        L > 500
+    )),
+
+    test("Lazy loader has LazyLoader class", (
+        lazy_loading_generator:generate_lazy_loader(chunked, Loader),
+        sub_atom(Loader, _, _, _, 'LazyLoader')
+    )),
+
+    test("Lazy loader has loadRange method", (
+        lazy_loading_generator:generate_lazy_loader(chunked, Loader),
+        sub_atom(Loader, _, _, _, 'loadRange')
+    )),
+
+    % Lazy component generation
+    test("Generate lazy component produces code", (
+        lazy_loading_generator:generate_lazy_component(default, Component),
+        atom_length(Component, L),
+        L > 500
+    )),
+
+    test("Lazy component has createLazyComponent", (
+        lazy_loading_generator:generate_lazy_component(default, Component),
+        sub_atom(Component, _, _, _, 'createLazyComponent')
+    )),
+
+    test("Lazy component has error boundary", (
+        lazy_loading_generator:generate_lazy_component(default, Component),
+        sub_atom(Component, _, _, _, 'LazyErrorBoundary')
+    )),
+
+    test("Lazy component has Suspense", (
+        lazy_loading_generator:generate_lazy_component(default, Component),
+        sub_atom(Component, _, _, _, 'Suspense')
+    )).
+
+% ============================================================================
+% VIRTUAL SCROLL GENERATOR TESTS
+% ============================================================================
+
+run_virtual_scroll_generator_tests :-
+    format('~n--- Virtual Scroll Generator Tests ---~n'),
+
+    % Config existence
+    test("Default virtual config exists", (
+        virtual_scroll_generator:virtual_config(default, Config),
+        member(item_height(_), Config)
+    )),
+
+    test("Compact list config exists", (
+        virtual_scroll_generator:virtual_config(compact_list, _)
+    )),
+
+    test("Large table config exists", (
+        virtual_scroll_generator:virtual_config(large_table, _)
+    )),
+
+    test("Card grid config exists", (
+        virtual_scroll_generator:virtual_config(card_grid, _)
+    )),
+
+    % Item height utility
+    test("Get item height returns default", (
+        virtual_scroll_generator:get_item_height(default, Height),
+        Height =:= 40
+    )),
+
+    test("Get item height for large table", (
+        virtual_scroll_generator:get_item_height(large_table, Height),
+        Height =:= 48
+    )),
+
+    % Hook generation
+    test("Generate virtual scroll hook produces code", (
+        virtual_scroll_generator:generate_virtual_scroll_hook(default, Hook),
+        atom_length(Hook, L),
+        L > 1000
+    )),
+
+    test("Virtual scroll hook has useVirtualScroll", (
+        virtual_scroll_generator:generate_virtual_scroll_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'useVirtualScroll')
+    )),
+
+    test("Virtual scroll hook has binary search", (
+        virtual_scroll_generator:generate_virtual_scroll_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'findStartIndex')
+    )),
+
+    test("Virtual scroll hook has scrollToIndex", (
+        virtual_scroll_generator:generate_virtual_scroll_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'scrollToIndex')
+    )),
+
+    % Virtual list generation
+    test("Generate virtual list produces code", (
+        virtual_scroll_generator:generate_virtual_list(default, List),
+        atom_length(List, L),
+        L > 500
+    )),
+
+    test("Virtual list has VirtualList component", (
+        virtual_scroll_generator:generate_virtual_list(default, List),
+        sub_atom(List, _, _, _, 'VirtualList')
+    )),
+
+    test("Virtual list has renderItem prop", (
+        virtual_scroll_generator:generate_virtual_list(default, List),
+        sub_atom(List, _, _, _, 'renderItem')
+    )),
+
+    test("Virtual list has virtualItems mapping", (
+        virtual_scroll_generator:generate_virtual_list(default, List),
+        sub_atom(List, _, _, _, 'virtualItems.map')
+    )),
+
+    % Virtual table generation
+    test("Generate virtual table produces code", (
+        virtual_scroll_generator:generate_virtual_table(large_table, Table),
+        atom_length(Table, L),
+        L > 1000
+    )),
+
+    test("Virtual table has VirtualTable component", (
+        virtual_scroll_generator:generate_virtual_table(large_table, Table),
+        sub_atom(Table, _, _, _, 'VirtualTable')
+    )),
+
+    test("Virtual table has columns prop", (
+        virtual_scroll_generator:generate_virtual_table(large_table, Table),
+        sub_atom(Table, _, _, _, 'columns: Column')
+    )),
+
+    test("Virtual table has sticky header support", (
+        virtual_scroll_generator:generate_virtual_table(large_table, Table),
+        sub_atom(Table, _, _, _, 'stickyHeader')
+    )),
+
+    test("Virtual table has sorting support", (
+        virtual_scroll_generator:generate_virtual_table(large_table, Table),
+        sub_atom(Table, _, _, _, 'sortColumn')
+    )),
+
+    % Virtual grid generation
+    test("Generate virtual grid produces code", (
+        virtual_scroll_generator:generate_virtual_grid(card_grid, Grid),
+        atom_length(Grid, L),
+        L > 500
+    )),
+
+    test("Virtual grid has VirtualGrid component", (
+        virtual_scroll_generator:generate_virtual_grid(card_grid, Grid),
+        sub_atom(Grid, _, _, _, 'VirtualGrid')
+    )),
+
+    test("Virtual grid has columnsCount calculation", (
+        virtual_scroll_generator:generate_virtual_grid(card_grid, Grid),
+        sub_atom(Grid, _, _, _, 'columnsCount')
+    )),
+
+    % CSS generation
+    test("Generate virtual scroll CSS produces output", (
+        virtual_scroll_generator:generate_virtual_scroll_css(CSS),
+        atom_length(CSS, L),
+        L > 500
+    )),
+
+    test("Virtual scroll CSS has list styles", (
+        virtual_scroll_generator:generate_virtual_scroll_css(CSS),
+        sub_atom(CSS, _, _, _, '.virtual-list')
+    )),
+
+    test("Virtual scroll CSS has table styles", (
+        virtual_scroll_generator:generate_virtual_scroll_css(CSS),
+        sub_atom(CSS, _, _, _, '.virtual-table')
+    )),
+
+    test("Virtual scroll CSS has grid styles", (
+        virtual_scroll_generator:generate_virtual_scroll_css(CSS),
+        sub_atom(CSS, _, _, _, '.virtual-grid')
+    )),
+
+    test("Virtual scroll CSS has performance optimizations", (
+        virtual_scroll_generator:generate_virtual_scroll_css(CSS),
+        sub_atom(CSS, _, _, _, 'contain: strict')
+    )).
+
+% ============================================================================
+% WEBWORKER GENERATOR TESTS
+% ============================================================================
+
+run_webworker_generator_tests :-
+    format('~n--- WebWorker Generator Tests ---~n'),
+
+    % Config existence
+    test("Default worker config exists", (
+        webworker_generator:worker_config(default, Config),
+        member(operations(_), Config)
+    )),
+
+    test("Data processor config exists", (
+        webworker_generator:worker_config(data_processor, _)
+    )),
+
+    test("Chart calculator config exists", (
+        webworker_generator:worker_config(chart_calculator, _)
+    )),
+
+    test("Statistics config exists", (
+        webworker_generator:worker_config(statistics, _)
+    )),
+
+    % Operations utility
+    test("Get worker operations for data processor", (
+        webworker_generator:worker_operations(data_processor, Ops),
+        member(sort, Ops),
+        member(filter, Ops),
+        member(aggregate, Ops)
+    )),
+
+    test("Get worker operations for statistics", (
+        webworker_generator:worker_operations(statistics, Ops),
+        member(mean, Ops),
+        member(stddev, Ops)
+    )),
+
+    % Worker generation
+    test("Generate worker produces code", (
+        webworker_generator:generate_worker(data_processor, Worker),
+        atom_length(Worker, L),
+        L > 1000
+    )),
+
+    test("Worker has sort operation", (
+        webworker_generator:generate_worker(data_processor, Worker),
+        sub_atom(Worker, _, _, _, 'sort:')
+    )),
+
+    test("Worker has filter operation", (
+        webworker_generator:generate_worker(data_processor, Worker),
+        sub_atom(Worker, _, _, _, 'filter:')
+    )),
+
+    test("Worker has aggregate operation", (
+        webworker_generator:generate_worker(data_processor, Worker),
+        sub_atom(Worker, _, _, _, 'aggregate:')
+    )),
+
+    test("Worker has message handler", (
+        webworker_generator:generate_worker(data_processor, Worker),
+        sub_atom(Worker, _, _, _, 'self.onmessage')
+    )),
+
+    test("Worker has performance timing", (
+        webworker_generator:generate_worker(data_processor, Worker),
+        sub_atom(Worker, _, _, _, 'performance.now()')
+    )),
+
+    % Chart worker generation
+    test("Generate chart worker produces code", (
+        webworker_generator:generate_chart_worker(ChartWorker),
+        atom_length(ChartWorker, L),
+        L > 500
+    )),
+
+    test("Chart worker has interpolate", (
+        webworker_generator:generate_chart_worker(ChartWorker),
+        sub_atom(ChartWorker, _, _, _, 'interpolate')
+    )),
+
+    test("Chart worker has downsample", (
+        webworker_generator:generate_chart_worker(ChartWorker),
+        sub_atom(ChartWorker, _, _, _, 'downsample')
+    )),
+
+    % Hook generation
+    test("Generate worker hook produces code", (
+        webworker_generator:generate_worker_hook(default, Hook),
+        atom_length(Hook, L),
+        L > 1000
+    )),
+
+    test("Worker hook has useWorker", (
+        webworker_generator:generate_worker_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'useWorker')
+    )),
+
+    test("Worker hook has execute method", (
+        webworker_generator:generate_worker_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'execute')
+    )),
+
+    test("Worker hook has timeout handling", (
+        webworker_generator:generate_worker_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'timeout')
+    )),
+
+    test("Worker hook has terminate method", (
+        webworker_generator:generate_worker_hook(default, Hook),
+        sub_atom(Hook, _, _, _, 'terminate')
+    )),
+
+    % Pool generation
+    test("Generate worker pool produces code", (
+        webworker_generator:generate_worker_pool(default, Pool),
+        atom_length(Pool, L),
+        L > 500
+    )),
+
+    test("Worker pool has WorkerPool class", (
+        webworker_generator:generate_worker_pool(default, Pool),
+        sub_atom(Pool, _, _, _, 'WorkerPool')
+    )),
+
+    test("Worker pool has execute method", (
+        webworker_generator:generate_worker_pool(default, Pool),
+        sub_atom(Pool, _, _, _, 'execute(')
+    )),
+
+    test("Worker pool has task queue", (
+        webworker_generator:generate_worker_pool(default, Pool),
+        sub_atom(Pool, _, _, _, 'taskQueue')
+    )),
+
+    test("Worker pool has idle timeout", (
+        webworker_generator:generate_worker_pool(default, Pool),
+        sub_atom(Pool, _, _, _, 'idleTimeout')
+    )),
+
+    % Data processor worker generation
+    test("Generate data processor worker produces code", (
+        webworker_generator:generate_data_processor_worker(DPWorker),
+        atom_length(DPWorker, L),
+        L > 1000
+    )),
+
+    test("Data processor worker has paginate", (
+        webworker_generator:generate_data_processor_worker(DPWorker),
+        sub_atom(DPWorker, _, _, _, 'paginate')
     )).
 
 % ============================================================================
