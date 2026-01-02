@@ -76,6 +76,7 @@
 :- dynamic user:test_scanindex_allowed/1.
 :- dynamic user:test_scanindex_step/2.
 :- dynamic user:test_scanindex_reach_param/2.
+:- dynamic user:test_scanindex_reach_filtered/2.
 :- dynamic user:mode/1.
 :- dynamic user:test_negation_cycle_root/1.
 :- dynamic user:test_negation_cycle_p/1.
@@ -168,6 +169,7 @@ test_csharp_query_target :-
         verify_parameterized_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_single_key_join_keeps_scan_index,
+        verify_recursive_selection_scan_uses_scan_index,
         verify_parameterized_fib_plan,
         verify_parameterized_fib_delta_first_join_order,
         verify_parameterized_fib_runtime,
@@ -395,6 +397,12 @@ setup_test_data :-
         test_scanindex_allowed(Current),
         test_scanindex_step(Current, Next)
     )),
+    assertz(user:test_scanindex_reach_filtered(alice, 0)),
+    assertz(user:(test_scanindex_reach_filtered(Start, Next) :-
+        test_scanindex_step(Current, Next),
+        Next > 1,
+        test_scanindex_reach_filtered(Start, Current)
+    )),
     assertz(user:mode(test_fib_param(+, -))),
     assertz(user:test_fib_param(0, 1)),
     assertz(user:test_fib_param(1, 1)),
@@ -557,6 +565,7 @@ cleanup_test_data :-
     retractall(user:test_scanindex_step(_, _)),
     retractall(user:test_scanindex_reach_param(_, _)),
     retractall(user:mode(test_scanindex_reach_param(_, _))),
+    retractall(user:test_scanindex_reach_filtered(_, _)),
     retractall(user:test_fib_param(_, _)),
     retractall(user:mode(test_fib_param(_,_))),
     retractall(user:test_post_agg_param(_, _)),
@@ -1323,6 +1332,25 @@ verify_parameterized_recursive_single_key_join_keeps_scan_index :-
     maybe_run_query_runtime_with_harness(Plan,
         ['alice,0', 'alice,1', 'alice,2', 'alice,3', StrategyLine],
         [[alice]],
+        HarnessSource).
+
+verify_recursive_selection_scan_uses_scan_index :-
+    csharp_query_target:build_query_plan(test_scanindex_reach_filtered/2, [target(csharp_query)], Plan),
+    get_dict(is_recursive, Plan, true),
+    get_dict(root, Plan, Root),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+    length(LeftKeys, 1),
+    length(RightKeys, 1),
+    (   Left = selection{type:selection, input:relation_scan{type:relation_scan, predicate:predicate{name:test_scanindex_step, arity:2}, width:_}, predicate:_, width:_},
+        sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_scanindex_reach_filtered, arity:2}, role:_, width:_}, Right)
+    ;   Right = selection{type:selection, input:relation_scan{type:relation_scan, predicate:predicate{name:test_scanindex_step, arity:2}, width:_}, predicate:_, width:_},
+        sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_scanindex_reach_filtered, arity:2}, role:_, width:_}, Left)
+    ),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_strategy_flag(ModuleClass, [], 'KeyJoinScanIndex', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice,0', 'alice,2', 'alice,3', 'STRATEGY_USED:KeyJoinScanIndex=true'],
+        [],
         HarnessSource).
 
 verify_parameterized_fib_plan :-

@@ -1430,13 +1430,16 @@ namespace UnifyWeaver.QueryRuntime
             var joinKeyCount = join.LeftKeys.Count;
             bool? forceBuildLeft = null;
 
-            static bool TryGetPredicateScan(PlanNode node, out PredicateId predicate, out object[]? pattern)
+            static bool TryGetPredicateScan(PlanNode node, out PredicateId predicate, out object[]? pattern, out Func<object[], bool>? filter)
             {
+                predicate = default;
+                pattern = null;
+                filter = null;
+
                 switch (node)
                 {
                     case RelationScanNode scan:
                         predicate = scan.Relation;
-                        pattern = null;
                         return true;
 
                     case PatternScanNode scan:
@@ -1444,9 +1447,18 @@ namespace UnifyWeaver.QueryRuntime
                         pattern = scan.Pattern;
                         return true;
 
+                    case SelectionNode selection:
+                        if (TryGetPredicateScan(selection.Input, out predicate, out pattern, out var innerFilter))
+                        {
+                            filter = innerFilter is null
+                                ? selection.Predicate
+                                : tuple => innerFilter(tuple) && selection.Predicate(tuple);
+                            return true;
+                        }
+
+                        return false;
+
                     default:
-                        predicate = default;
-                        pattern = null;
                         return false;
                 }
             }
@@ -1796,8 +1808,8 @@ namespace UnifyWeaver.QueryRuntime
 
             if (context is not null)
             {
-                var leftIsScan = TryGetPredicateScan(join.Left, out var leftScanPredicate, out var leftScanPattern);
-                var rightIsScan = TryGetPredicateScan(join.Right, out var rightScanPredicate, out var rightScanPattern);
+                var leftIsScan = TryGetPredicateScan(join.Left, out var leftScanPredicate, out var leftScanPattern, out var leftScanFilter);
+                var rightIsScan = TryGetPredicateScan(join.Right, out var rightScanPredicate, out var rightScanPattern, out var rightScanFilter);
 
                 if (leftIsScan || rightIsScan)
                 {
@@ -1868,6 +1880,7 @@ namespace UnifyWeaver.QueryRuntime
                                     foreach (var leftTuple in bucket)
                                     {
                                         if (leftTuple is null) continue;
+                                        if (leftScanFilter is not null && !leftScanFilter(leftTuple)) continue;
                                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                     }
                                 }
@@ -1893,6 +1906,7 @@ namespace UnifyWeaver.QueryRuntime
                                     foreach (var leftTuple in bucket)
                                     {
                                         if (leftTuple is null) continue;
+                                        if (leftScanFilter is not null && !leftScanFilter(leftTuple)) continue;
                                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                     }
                                 }
@@ -1919,6 +1933,7 @@ namespace UnifyWeaver.QueryRuntime
                                     foreach (var rightTuple in bucket)
                                     {
                                         if (rightTuple is null) continue;
+                                        if (rightScanFilter is not null && !rightScanFilter(rightTuple)) continue;
                                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                     }
                                 }
@@ -1944,6 +1959,7 @@ namespace UnifyWeaver.QueryRuntime
                                     foreach (var rightTuple in bucket)
                                     {
                                         if (rightTuple is null) continue;
+                                        if (rightScanFilter is not null && !rightScanFilter(rightTuple)) continue;
                                         yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                     }
                                 }
@@ -1978,6 +1994,7 @@ namespace UnifyWeaver.QueryRuntime
                                 foreach (var rightTuple in bucket)
                                 {
                                     if (rightTuple is null) continue;
+                                    if (rightScanFilter is not null && !rightScanFilter(rightTuple)) continue;
                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                 }
                             }
@@ -2064,13 +2081,14 @@ namespace UnifyWeaver.QueryRuntime
                                         continue;
                                     }
 
-                                    foreach (var rightTuple in rightBucket)
-                                    {
-                                        if (rightTuple is null) continue;
-                                        if (rightScanPattern is not null && !TupleMatchesPattern(rightTuple, rightScanPattern)) continue;
+                                     foreach (var rightTuple in rightBucket)
+                                     {
+                                         if (rightTuple is null) continue;
+                                         if (rightScanFilter is not null && !rightScanFilter(rightTuple)) continue;
+                                         if (rightScanPattern is not null && !TupleMatchesPattern(rightTuple, rightScanPattern)) continue;
 
-                                        foreach (var probeRow in entry.Value)
-                                        {
+                                         foreach (var probeRow in entry.Value)
+                                         {
                                             var match = true;
                                             for (var i = 0; i < joinKeyCount; i++)
                                             {
@@ -2114,12 +2132,13 @@ namespace UnifyWeaver.QueryRuntime
                                     continue;
                                 }
 
-                                foreach (var rightTuple in bucket)
-                                {
-                                    if (rightTuple is null) continue;
-                                    yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
-                                }
-                            }
+                                 foreach (var rightTuple in bucket)
+                                 {
+                                     if (rightTuple is null) continue;
+                                     if (rightScanFilter is not null && !rightScanFilter(rightTuple)) continue;
+                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
+                                 }
+                             }
                         }
 
                         yield break;
@@ -2150,6 +2169,7 @@ namespace UnifyWeaver.QueryRuntime
                                 foreach (var leftTuple in bucket)
                                 {
                                     if (leftTuple is null) continue;
+                                    if (leftScanFilter is not null && !leftScanFilter(leftTuple)) continue;
                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                 }
                             }
@@ -2239,6 +2259,7 @@ namespace UnifyWeaver.QueryRuntime
                                     foreach (var leftTuple in leftBucket)
                                     {
                                         if (leftTuple is null) continue;
+                                        if (leftScanFilter is not null && !leftScanFilter(leftTuple)) continue;
                                         if (leftScanPattern is not null && !TupleMatchesPattern(leftTuple, leftScanPattern)) continue;
 
                                         foreach (var probeRow in entry.Value)
@@ -2289,6 +2310,7 @@ namespace UnifyWeaver.QueryRuntime
                                 foreach (var leftTuple in bucket)
                                 {
                                     if (leftTuple is null) continue;
+                                    if (leftScanFilter is not null && !leftScanFilter(leftTuple)) continue;
                                     yield return BuildJoinOutput(leftTuple, rightTuple, join.LeftWidth, join.RightWidth, join.Width);
                                 }
                             }
