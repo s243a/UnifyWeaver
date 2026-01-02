@@ -1,9 +1,9 @@
 # Declarative Layout and Styling System
 
-**Status:** Implemented (13 phases complete)
+**Status:** Implemented (All phases complete + 5 additional chart types)
 **Author:** Claude Code
 **Date:** 2026-01-02
-**Tests:** 285 (280 passing)
+**Tests:** 543 (all passing)
 
 ## Overview
 
@@ -951,12 +951,47 @@ swipl -g "consult('tests/integration/glue/test_visualization_glue.pl'), run_test
 cd examples/storybook-react && npm install && npm run storybook
 ```
 
-### Additional Chart Types (Planned)
-- Radar/spider charts
-- Funnel charts
-- Gauge/meter charts
-- Sankey diagrams
-- Chord diagrams
+### Additional Chart Types (Complete)
+
+Five new chart type generators with React/TypeScript and Python/Plotly support:
+
+- **radar_chart_generator.pl** - Radar/spider charts for multi-axis comparison
+- **funnel_chart_generator.pl** - Funnel/pipeline visualization with conversion rates
+- **gauge_chart_generator.pl** - Gauge/meter charts with thresholds and animations
+- **sankey_generator.pl** - Sankey diagrams for flow visualization
+- **chord_generator.pl** - Chord diagrams for relationship visualization
+
+```prolog
+% Radar chart example
+radar_spec(player_stats, [title("Player Statistics"), size(400)]).
+radar_axis(player_stats, speed, [label("Speed"), max(100)]).
+radar_series(player_stats, player_a, [values([speed(85), power(70)])]).
+?- generate_radar_component(player_stats, Code).
+
+% Funnel chart example
+funnel_spec(sales_funnel, [title("Sales Pipeline")]).
+funnel_stage(sales_funnel, leads, [label("Leads"), value(5000), order(1)]).
+?- generate_funnel_component(sales_funnel, Code).
+
+% Gauge chart example
+gauge_spec(cpu_usage, [
+    title("CPU Usage"), min(0), max(100), value(72), unit("%"),
+    thresholds([threshold(ok, 0, 60, '#22c55e'), threshold(warning, 60, 80, '#f59e0b')])
+]).
+?- generate_gauge_component(cpu_usage, Code).
+
+% Sankey diagram example
+sankey_spec(energy_flow, [title("Energy Flow")]).
+sankey_node(energy_flow, coal, [label("Coal"), column(0)]).
+sankey_flow(energy_flow, coal, electricity, 200).
+?- generate_sankey_component(energy_flow, Code).
+
+% Chord diagram example
+chord_spec(trade_flow, [title("International Trade")]).
+chord_entity(trade_flow, usa, [label("USA"), color('#3b82f6')]).
+chord_connection(trade_flow, usa, china, 500).
+?- generate_chord_component(trade_flow, Code).
+```
 
 ## References
 
