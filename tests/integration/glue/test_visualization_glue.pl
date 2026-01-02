@@ -27,6 +27,11 @@
 :- use_module('../../../src/unifyweaver/glue/lazy_loading_generator').
 :- use_module('../../../src/unifyweaver/glue/virtual_scroll_generator').
 :- use_module('../../../src/unifyweaver/glue/webworker_generator').
+:- use_module('../../../src/unifyweaver/glue/radar_chart_generator').
+:- use_module('../../../src/unifyweaver/glue/funnel_chart_generator').
+:- use_module('../../../src/unifyweaver/glue/gauge_chart_generator').
+:- use_module('../../../src/unifyweaver/glue/sankey_generator').
+:- use_module('../../../src/unifyweaver/glue/chord_generator').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -120,6 +125,21 @@ run_tests :-
 
     % WebWorker Generator Tests
     run_webworker_generator_tests,
+
+    % Radar Chart Generator Tests
+    run_radar_chart_generator_tests,
+
+    % Funnel Chart Generator Tests
+    run_funnel_chart_generator_tests,
+
+    % Gauge Chart Generator Tests
+    run_gauge_chart_generator_tests,
+
+    % Sankey Generator Tests
+    run_sankey_generator_tests,
+
+    % Chord Generator Tests
+    run_chord_generator_tests,
 
     % Summary
     print_summary.
@@ -2968,6 +2988,414 @@ run_webworker_generator_tests :-
     test("Data processor worker has paginate", (
         webworker_generator:generate_data_processor_worker(DPWorker),
         sub_atom(DPWorker, _, _, _, 'paginate')
+    )).
+
+% ============================================================================
+% RADAR CHART GENERATOR TESTS
+% ============================================================================
+
+run_radar_chart_generator_tests :-
+    format('~n--- Radar Chart Generator Tests ---~n'),
+
+    % Spec queries
+    test("Radar spec exists", (
+        radar_chart_generator:radar_spec(player_stats, _)
+    )),
+
+    test("Radar spec has title", (
+        radar_chart_generator:radar_spec(player_stats, Config),
+        member(title(_), Config)
+    )),
+
+    % Axes queries
+    test("Radar has axes", (
+        radar_chart_generator:radar_axes(player_stats, Axes),
+        length(Axes, AxesCount),
+        AxesCount =:= 5
+    )),
+
+    test("Radar axis has config", (
+        radar_chart_generator:get_axis_config(player_stats, speed, Config),
+        member(label(_), Config)
+    )),
+
+    % Series queries
+    test("Radar has series", (
+        radar_chart_generator:radar_series_list(player_stats, Series),
+        length(Series, SeriesCount),
+        SeriesCount =:= 2
+    )),
+
+    test("Radar series has values", (
+        radar_chart_generator:radar_series(player_stats, player_a, Config),
+        member(values(_), Config)
+    )),
+
+    % Component generation
+    test("Generate radar component produces code", (
+        radar_chart_generator:generate_radar_component(player_stats, Code),
+        atom_length(Code, L),
+        L > 2000
+    )),
+
+    test("Radar component has SVG", (
+        radar_chart_generator:generate_radar_component(player_stats, Code),
+        sub_atom(Code, _, _, _, '<svg')
+    )),
+
+    test("Radar component has polygon", (
+        radar_chart_generator:generate_radar_component(player_stats, Code),
+        sub_atom(Code, _, _, _, 'polygon')
+    )),
+
+    % Matplotlib generation
+    test("Generate radar matplotlib produces code", (
+        radar_chart_generator:generate_radar_matplotlib(player_stats, PyCode),
+        atom_length(PyCode, L),
+        L > 500
+    )),
+
+    test("Radar matplotlib has polar", (
+        radar_chart_generator:generate_radar_matplotlib(player_stats, PyCode),
+        sub_atom(PyCode, _, _, _, 'polar=True')
+    )),
+
+    % Styles generation
+    test("Generate radar styles produces CSS", (
+        radar_chart_generator:generate_radar_styles(player_stats, CSS),
+        sub_atom(CSS, _, _, _, '.radarContainer')
+    )).
+
+% ============================================================================
+% FUNNEL CHART GENERATOR TESTS
+% ============================================================================
+
+run_funnel_chart_generator_tests :-
+    format('~n--- Funnel Chart Generator Tests ---~n'),
+
+    % Spec queries
+    test("Funnel spec exists", (
+        funnel_chart_generator:funnel_spec(sales_funnel, _)
+    )),
+
+    test("Funnel spec has title", (
+        funnel_chart_generator:funnel_spec(sales_funnel, Config),
+        member(title(_), Config)
+    )),
+
+    % Stages queries
+    test("Funnel has stages", (
+        funnel_chart_generator:funnel_stages(sales_funnel, Stages),
+        length(Stages, StageCount),
+        StageCount =:= 5
+    )),
+
+    test("Funnel stages are ordered", (
+        funnel_chart_generator:funnel_stages(sales_funnel, [First|_]),
+        First == leads
+    )),
+
+    test("Funnel stage has config", (
+        funnel_chart_generator:get_stage_config(sales_funnel, leads, Config),
+        member(value(_), Config)
+    )),
+
+    % Conversion rate
+    test("Funnel conversion rate calculated", (
+        funnel_chart_generator:funnel_conversion_rate(sales_funnel, closed, Rate),
+        Rate =:= 6.0
+    )),
+
+    % Component generation
+    test("Generate funnel component produces code", (
+        funnel_chart_generator:generate_funnel_component(sales_funnel, Code),
+        atom_length(Code, L),
+        L > 2000
+    )),
+
+    test("Funnel component has SVG", (
+        funnel_chart_generator:generate_funnel_component(sales_funnel, Code),
+        sub_atom(Code, _, _, _, '<svg')
+    )),
+
+    test("Funnel component has polygon", (
+        funnel_chart_generator:generate_funnel_component(sales_funnel, Code),
+        sub_atom(Code, _, _, _, 'polygon')
+    )),
+
+    % Plotly generation
+    test("Generate funnel plotly produces code", (
+        funnel_chart_generator:generate_funnel_plotly(sales_funnel, PyCode),
+        atom_length(PyCode, L),
+        L > 300
+    )),
+
+    test("Funnel plotly has px.funnel", (
+        funnel_chart_generator:generate_funnel_plotly(sales_funnel, PyCode),
+        sub_atom(PyCode, _, _, _, 'px.funnel')
+    )),
+
+    % Matplotlib generation
+    test("Generate funnel matplotlib produces code", (
+        funnel_chart_generator:generate_funnel_matplotlib(sales_funnel, PyCode),
+        atom_length(PyCode, L),
+        L > 500
+    )).
+
+% ============================================================================
+% GAUGE CHART GENERATOR TESTS
+% ============================================================================
+
+run_gauge_chart_generator_tests :-
+    format('~n--- Gauge Chart Generator Tests ---~n'),
+
+    % Spec queries
+    test("Gauge spec exists", (
+        gauge_chart_generator:gauge_spec(cpu_usage, _)
+    )),
+
+    test("Gauge spec has title", (
+        gauge_chart_generator:gauge_spec(cpu_usage, Config),
+        member(title(_), Config)
+    )),
+
+    % Value queries
+    test("Get gauge value", (
+        gauge_chart_generator:get_gauge_value(cpu_usage, Value),
+        Value =:= 72
+    )),
+
+    test("Get gauge range", (
+        gauge_chart_generator:get_gauge_range(cpu_usage, Min, Max),
+        Min =:= 0,
+        Max =:= 100
+    )),
+
+    test("Get gauge status", (
+        gauge_chart_generator:get_gauge_status(cpu_usage, Status),
+        Status == warning
+    )),
+
+    % Component generation
+    test("Generate gauge component produces code", (
+        gauge_chart_generator:generate_gauge_component(cpu_usage, Code),
+        atom_length(Code, L),
+        L > 2000
+    )),
+
+    test("Gauge component has SVG", (
+        gauge_chart_generator:generate_gauge_component(cpu_usage, Code),
+        sub_atom(Code, _, _, _, '<svg')
+    )),
+
+    test("Gauge component has arc path", (
+        gauge_chart_generator:generate_gauge_component(cpu_usage, Code),
+        sub_atom(Code, _, _, _, 'describeArc')
+    )),
+
+    test("Gauge component has needle", (
+        gauge_chart_generator:generate_gauge_component(cpu_usage, Code),
+        sub_atom(Code, _, _, _, 'needlePoint')
+    )),
+
+    % Hook generation
+    test("Generate gauge hook produces code", (
+        gauge_chart_generator:generate_gauge_hook(cpu_usage, HookCode),
+        atom_length(HookCode, L),
+        L > 500
+    )),
+
+    test("Gauge hook has useCpuUsage", (
+        gauge_chart_generator:generate_gauge_hook(cpu_usage, HookCode),
+        sub_atom(HookCode, _, _, _, 'useCpuUsage')
+    )),
+
+    % Plotly generation
+    test("Generate gauge plotly produces code", (
+        gauge_chart_generator:generate_gauge_plotly(cpu_usage, PyCode),
+        atom_length(PyCode, L),
+        L > 300
+    )),
+
+    test("Gauge plotly has go.Indicator", (
+        gauge_chart_generator:generate_gauge_plotly(cpu_usage, PyCode),
+        sub_atom(PyCode, _, _, _, 'go.Indicator')
+    )),
+
+    % Multiple gauges
+    test("Multiple gauge specs exist", (
+        gauge_chart_generator:all_gauges(Gauges),
+        length(Gauges, GaugeCount),
+        GaugeCount >= 4
+    )).
+
+% ============================================================================
+% SANKEY GENERATOR TESTS
+% ============================================================================
+
+run_sankey_generator_tests :-
+    format('~n--- Sankey Generator Tests ---~n'),
+
+    % Spec queries
+    test("Sankey spec exists", (
+        sankey_generator:sankey_spec(energy_flow, _)
+    )),
+
+    test("Sankey spec has title", (
+        sankey_generator:sankey_spec(energy_flow, Config),
+        member(title(_), Config)
+    )),
+
+    % Node queries
+    test("Sankey has nodes", (
+        sankey_generator:sankey_nodes(energy_flow, Nodes),
+        length(Nodes, NodeCount),
+        NodeCount =:= 10
+    )),
+
+    % Flow queries
+    test("Sankey has flows", (
+        sankey_generator:sankey_flows(energy_flow, Flows),
+        length(Flows, FlowCount),
+        FlowCount =:= 12
+    )),
+
+    % Inflow/outflow
+    test("Sankey node inflow calculated", (
+        sankey_generator:node_inflow(energy_flow, electricity, Inflow),
+        Inflow =:= 650
+    )),
+
+    test("Sankey node outflow calculated", (
+        sankey_generator:node_outflow(energy_flow, electricity, Outflow),
+        Outflow =:= 650
+    )),
+
+    % Component generation
+    test("Generate sankey component produces code", (
+        sankey_generator:generate_sankey_component(energy_flow, Code),
+        atom_length(Code, L),
+        L > 3000
+    )),
+
+    test("Sankey component has SVG", (
+        sankey_generator:generate_sankey_component(energy_flow, Code),
+        sub_atom(Code, _, _, _, '<svg')
+    )),
+
+    test("Sankey component has path", (
+        sankey_generator:generate_sankey_component(energy_flow, Code),
+        sub_atom(Code, _, _, _, '<path')
+    )),
+
+    test("Sankey component has nodePositions", (
+        sankey_generator:generate_sankey_component(energy_flow, Code),
+        sub_atom(Code, _, _, _, 'nodePositions')
+    )),
+
+    % Plotly generation
+    test("Generate sankey plotly produces code", (
+        sankey_generator:generate_sankey_plotly(energy_flow, PyCode),
+        atom_length(PyCode, L),
+        L > 500
+    )),
+
+    test("Sankey plotly has go.Sankey", (
+        sankey_generator:generate_sankey_plotly(energy_flow, PyCode),
+        sub_atom(PyCode, _, _, _, 'go.Sankey')
+    )),
+
+    % Traffic flow example
+    test("Traffic flow sankey exists", (
+        sankey_generator:sankey_spec(traffic_flow, _)
+    )).
+
+% ============================================================================
+% CHORD GENERATOR TESTS
+% ============================================================================
+
+run_chord_generator_tests :-
+    format('~n--- Chord Generator Tests ---~n'),
+
+    % Spec queries
+    test("Chord spec exists", (
+        chord_generator:chord_spec(trade_flow, _)
+    )),
+
+    test("Chord spec has title", (
+        chord_generator:chord_spec(trade_flow, Config),
+        member(title(_), Config)
+    )),
+
+    % Entity queries
+    test("Chord has entities", (
+        chord_generator:chord_entities(trade_flow, Entities),
+        length(Entities, EntityCount),
+        EntityCount =:= 5
+    )),
+
+    % Connection queries
+    test("Chord has connections", (
+        chord_generator:chord_connections(trade_flow, Connections),
+        length(Connections, ConnCount),
+        ConnCount =:= 10
+    )),
+
+    % Entity total
+    test("Chord entity total calculated", (
+        chord_generator:entity_total(trade_flow, usa, Total),
+        Total =:= 1250
+    )),
+
+    % Connection matrix
+    test("Chord connection matrix has correct dimensions", (
+        chord_generator:connection_matrix(trade_flow, Matrix),
+        length(Matrix, Rows),
+        Rows =:= 5
+    )),
+
+    % Component generation
+    test("Generate chord component produces code", (
+        chord_generator:generate_chord_component(trade_flow, Code),
+        atom_length(Code, L),
+        L > 4000
+    )),
+
+    test("Chord component has SVG", (
+        chord_generator:generate_chord_component(trade_flow, Code),
+        sub_atom(Code, _, _, _, '<svg')
+    )),
+
+    test("Chord component has path", (
+        chord_generator:generate_chord_component(trade_flow, Code),
+        sub_atom(Code, _, _, _, '<path')
+    )),
+
+    test("Chord component has chordPath", (
+        chord_generator:generate_chord_component(trade_flow, Code),
+        sub_atom(Code, _, _, _, 'chordPath')
+    )),
+
+    test("Chord component has layout", (
+        chord_generator:generate_chord_component(trade_flow, Code),
+        sub_atom(Code, _, _, _, 'layout')
+    )),
+
+    % Plotly generation
+    test("Generate chord plotly produces code", (
+        chord_generator:generate_chord_plotly(trade_flow, PyCode),
+        atom_length(PyCode, L),
+        L > 500
+    )),
+
+    test("Chord plotly has go.Scatter", (
+        chord_generator:generate_chord_plotly(trade_flow, PyCode),
+        sub_atom(PyCode, _, _, _, 'go.Scatter')
+    )),
+
+    % Department communication example
+    test("Department communication chord exists", (
+        chord_generator:chord_spec(dept_comms, _)
     )).
 
 % ============================================================================
