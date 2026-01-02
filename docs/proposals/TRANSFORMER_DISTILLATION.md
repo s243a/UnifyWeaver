@@ -542,14 +542,19 @@ Per-tree recall@k tests these assumptions. Low recall indicates the structured l
 - Preserves user's folder structure as clusters
 - Useful for misfiling detection
 - Distillation quality depends on user's organization style
+- **Mind maps start from user's real root node**
+- Navigation matches user's mental model
 
 **MST/Embedding clustering:**
 - Groups semantically similar items regardless of user's folders
 - Creates internally coherent clusters
 - Better for distillation since boundaries are meaningful
 - Allows tuning cluster granularity
+- Root is "semantic center" (closest to global centroid)
 
 Both approaches depend on underlying data quality (structured lists), but MST ensures each cluster is internally coherent even if the user's overall organization is messy.
+
+For mind map generation, per-tree is preferred when you want to preserve the user's actual navigation structure. MST is preferred when semantic organization matters more than user familiarity.
 
 ### Key Insight: N = num_clusters
 
