@@ -20,6 +20,7 @@
 :- use_module('../../../src/unifyweaver/glue/interaction_generator').
 :- use_module('../../../src/unifyweaver/glue/export_generator').
 :- use_module('../../../src/unifyweaver/glue/live_preview_generator').
+:- use_module('../../../src/unifyweaver/glue/data_binding_generator').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -92,6 +93,9 @@ run_tests :-
 
     % Live Preview Generator Tests
     run_live_preview_generator_tests,
+
+    % Data Binding Generator Tests
+    run_data_binding_generator_tests,
 
     % Summary
     print_summary.
@@ -1662,6 +1666,218 @@ run_live_preview_generator_tests :-
     test("Get watch paths includes Prolog files", (
         get_watch_paths(visualization_preview, Paths),
         member('src/unifyweaver/glue/**/*.pl', Paths)
+    )).
+
+% ============================================================================
+% DATA BINDING GENERATOR TESTS
+% ============================================================================
+
+run_data_binding_generator_tests :-
+    format('~nData Binding Generator Tests:~n'),
+
+    % Data source queries
+    test("Default data source exists", (
+        data_binding_generator:data_source(default, _)
+    )),
+
+    test("Time series source exists", (
+        data_binding_generator:data_source(time_series, _)
+    )),
+
+    test("Graph data source exists", (
+        data_binding_generator:data_source(graph_data, _)
+    )),
+
+    test("Get source fields returns fields", (
+        data_binding_generator:get_source_fields(time_series, Fields),
+        length(Fields, 3),
+        member(timestamp, Fields),
+        member(series, Fields),
+        member(value, Fields)
+    )),
+
+    % Binding queries
+    test("Line chart binding exists", (
+        data_binding_generator:binding(line_chart, time_series, _)
+    )),
+
+    test("Bar chart binding exists", (
+        data_binding_generator:binding(bar_chart, aggregated, _)
+    )),
+
+    test("Network graph binding exists", (
+        data_binding_generator:binding(network_graph, graph_data, _)
+    )),
+
+    test("Get binding mapping returns mapping", (
+        data_binding_generator:get_binding_mapping(line_chart, Mapping),
+        member(x_axis(timestamp), Mapping),
+        member(y_axis(value), Mapping)
+    )),
+
+    % Two-way binding
+    test("Data table has two-way binding", (
+        data_binding_generator:is_two_way(data_table)
+    )),
+
+    test("Two-way binding has editable fields", (
+        data_binding_generator:two_way_binding(data_table, _, Mapping),
+        member(editable([value]), Mapping)
+    )),
+
+    % Computed sources
+    test("Aggregated computed source exists", (
+        data_binding_generator:computed_source(aggregated, _)
+    )),
+
+    test("Filtered computed source exists", (
+        data_binding_generator:computed_source(filtered, _)
+    )),
+
+    % Binding hook generation
+    test("Generate binding hook produces code", (
+        generate_binding_hook(line_chart, Hook),
+        atom_length(Hook, L),
+        L > 500
+    )),
+
+    test("Generate binding hook has useState", (
+        generate_binding_hook(line_chart, Hook),
+        sub_atom(Hook, _, _, _, 'useState')
+    )),
+
+    test("Generate binding hook has useEffect", (
+        generate_binding_hook(line_chart, Hook),
+        sub_atom(Hook, _, _, _, 'useEffect')
+    )),
+
+    test("Generate binding hook has fetch", (
+        generate_binding_hook(line_chart, Hook),
+        sub_atom(Hook, _, _, _, 'fetch')
+    )),
+
+    % Data provider generation
+    test("Generate data provider produces code", (
+        generate_data_provider(time_series, Provider),
+        atom_length(Provider, L),
+        L > 500
+    )),
+
+    test("Generate data provider has createContext", (
+        generate_data_provider(time_series, Provider),
+        sub_atom(Provider, _, _, _, 'createContext')
+    )),
+
+    test("Generate data provider has updateRecord", (
+        generate_data_provider(time_series, Provider),
+        sub_atom(Provider, _, _, _, 'updateRecord')
+    )),
+
+    % WebSocket sync generation
+    test("Generate websocket sync produces code", (
+        generate_websocket_sync(time_series, Sync),
+        atom_length(Sync, L),
+        L > 500
+    )),
+
+    test("Generate websocket sync has WebSocket", (
+        generate_websocket_sync(time_series, Sync),
+        sub_atom(Sync, _, _, _, 'WebSocket')
+    )),
+
+    test("Generate websocket sync has reconnect", (
+        generate_websocket_sync(time_series, Sync),
+        sub_atom(Sync, _, _, _, 'reconnect')
+    )),
+
+    test("Generate websocket sync has subscribe", (
+        generate_websocket_sync(time_series, Sync),
+        sub_atom(Sync, _, _, _, 'subscribe')
+    )),
+
+    % Mutation handler generation
+    test("Generate mutation handler produces code", (
+        generate_mutation_handler(time_series, Handler),
+        atom_length(Handler, L),
+        L > 500
+    )),
+
+    test("Generate mutation handler has create", (
+        generate_mutation_handler(time_series, Handler),
+        sub_atom(Handler, _, _, _, 'create')
+    )),
+
+    test("Generate mutation handler has update", (
+        generate_mutation_handler(time_series, Handler),
+        sub_atom(Handler, _, _, _, 'update')
+    )),
+
+    test("Generate mutation handler has remove", (
+        generate_mutation_handler(time_series, Handler),
+        sub_atom(Handler, _, _, _, 'remove')
+    )),
+
+    % Type generation
+    test("Generate binding types produces interface", (
+        generate_binding_types(time_series, Types),
+        sub_atom(Types, _, _, _, 'interface')
+    )),
+
+    test("Generate binding types has timestamp field", (
+        generate_binding_types(time_series, Types),
+        sub_atom(Types, _, _, _, 'timestamp')
+    )),
+
+    % Type inference
+    test("Infer user_id as string", (
+        data_binding_generator:infer_field_type(user_id, 'string')
+    )),
+
+    test("Infer amount as number", (
+        data_binding_generator:infer_field_type(amount, 'number')
+    )),
+
+    test("Infer timestamp as Date", (
+        data_binding_generator:infer_field_type(timestamp, 'Date | string')
+    )),
+
+    test("Infer is_active as boolean", (
+        data_binding_generator:infer_field_type(is_active, 'boolean')
+    )),
+
+    % Context generation
+    test("Generate binding context has createContext", (
+        generate_binding_context(time_series, Context),
+        sub_atom(Context, _, _, _, 'createContext')
+    )),
+
+    % Query generation
+    test("Generate fetch query has endpoint", (
+        generate_fetch_query(time_series, Query),
+        sub_atom(Query, _, _, _, '/api/data/time_series')
+    )),
+
+    test("Generate subscribe query has subscribe", (
+        generate_subscribe_query(time_series, SubQuery),
+        sub_atom(SubQuery, _, _, _, 'subscribe')
+    )),
+
+    test("Generate update mutation has PATCH", (
+        generate_update_mutation(time_series, Mutation),
+        sub_atom(Mutation, _, _, _, 'PATCH')
+    )),
+
+    % Management predicates
+    test("Declare data source works", (
+        data_binding_generator:declare_data_source(test_source, [fields([a, b, c])]),
+        data_binding_generator:data_source(test_source, Opts),
+        member(fields([a, b, c]), Opts)
+    )),
+
+    test("Declare binding works", (
+        data_binding_generator:declare_binding(test_component, test_source, [x_axis(a)]),
+        data_binding_generator:binding(test_component, test_source, Mapping),
+        member(x_axis(a), Mapping)
     )).
 
 % ============================================================================
