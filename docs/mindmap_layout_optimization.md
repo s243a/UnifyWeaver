@@ -26,14 +26,16 @@ Algorithm:
 3. Converge when movement falls below threshold
 ```
 
+**Implemented:** Via `--optimize` flag with configurable iterations.
+
 **Parameters:**
-- `repulsion_strength`: How hard nodes push apart
-- `attraction_strength`: How strongly children stay near parents
-- `radial_weight`: How much to preserve level assignment
-- `iterations`: Max simulation steps
+- `repulsion_strength`: How hard nodes push apart (default: 5000)
+- `attraction_strength`: How strongly children stay near parents (default: 0.01)
+- `radial_weight`: How much to preserve level assignment (default: 0.1)
+- `iterations`: Max simulation steps (default: 100, configurable via `--optimize-iterations`)
 
 **Pros:** Handles arbitrary overlap patterns
-**Cons:** Can distort semantic clustering if over-applied
+**Cons:** Can distort semantic clustering if over-applied; O(n²) per iteration
 
 ### 2. Radial Jitter with Collision Detection
 
@@ -60,8 +62,22 @@ node_radius = base_radius * (1 + log(1 + n_children) * scale_factor)
 
 Then adjust spacing calculations to account for variable node sizes.
 
-**Pros:** Visual indication of importance
-**Cons:** Large nodes may increase overlap
+**Implemented:** Basic version using `log2(1 + descendants) * 0.4` for font scaling.
+
+**Enhancement: Density-Aware Sizing**
+
+In crowded areas, reduce node size to prevent overlap:
+
+```
+local_density = count_nodes_within_radius(node, radius=200) / area
+density_factor = 1 / (1 + local_density * k)
+final_scale = base_scale * density_factor
+```
+
+This means hub nodes in sparse areas stay large, but hubs in crowded areas shrink to fit.
+
+**Pros:** Visual indication of importance, adapts to local density
+**Cons:** Requires second pass after positioning
 
 ### 4. Angular Rebalancing
 
@@ -116,19 +132,25 @@ Subject to:
 **Pros:** Guarantees no overlaps if feasible
 **Cons:** May be infeasible for dense graphs, computationally expensive
 
-## Recommended Implementation Order
+## Implementation Status
 
-1. **Angular Rebalancing** (Low effort, high impact)
+### Completed
+- **Force-Directed Refinement** - `--optimize` flag
+- **Node Sizing by Descendants** - Enabled by default, disable with `--no-scaling`
+
+### Recommended Next Steps
+
+1. **Density-Aware Sizing** (Medium effort, high impact)
+   - Reduce node size in crowded areas
+   - Can be computed after force-directed pass
+
+2. **Angular Rebalancing** (Low effort, high impact)
    - Proportional angular allocation based on subtree size
    - Can be added to current layout pass
 
-2. **Radial Jitter** (Medium effort, fixes remaining overlaps)
+3. **Radial Jitter** (Medium effort, alternative to force-directed)
+   - Simpler than force-directed for basic overlap fixing
    - Post-processing pass after initial layout
-   - Simple collision detection and resolution
-
-3. **Force-Directed Refinement** (Higher effort, polish)
-   - For cases where jitter isn't sufficient
-   - Configurable via CLI flags
 
 ## Integration with SimpleMind
 

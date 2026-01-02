@@ -321,7 +321,175 @@ def _position_nodes_by_level(node: MindMapNode, center_x: float, center_y: float
                                   angle_start=angle_start + i * angle_per_child,
                                   angle_span=angle_per_child)
 
-def node_to_xml(node: MindMapNode, parent_element: Element):
+def collect_all_nodes(node: MindMapNode, nodes: List[MindMapNode] = None) -> List[MindMapNode]:
+    """Flatten tree into list of all nodes."""
+    if nodes is None:
+        nodes = []
+    nodes.append(node)
+    for child in node.children:
+        collect_all_nodes(child, nodes)
+    return nodes
+
+def count_descendants(node: MindMapNode) -> int:
+    """Count total descendants of a node."""
+    count = len(node.children)
+    for child in node.children:
+        count += count_descendants(child)
+    return count
+
+def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: float = 500,
+                            iterations: int = 100, repulsion: float = 5000,
+                            attraction: float = 0.01, radial_weight: float = 0.1,
+                            min_distance: float = 60, damping: float = 0.9):
+    """
+    Apply force-directed optimization to reduce overlaps while preserving structure.
+
+    Forces:
+    - Repulsion: nodes push apart (inverse square law)
+    - Attraction: children pulled toward parents
+    - Radial: soft constraint to stay near original radius
+
+    Args:
+        root: Root node of the tree
+        iterations: Number of simulation steps
+        repulsion: Repulsion force strength
+        attraction: Attraction force strength (parent-child)
+        radial_weight: How strongly to preserve original radius
+        min_distance: Minimum distance between node centers
+        damping: Velocity damping factor
+    """
+    all_nodes = collect_all_nodes(root)
+    n = len(all_nodes)
+
+    if n <= 1:
+        return
+
+    # Store original positions and radii for radial constraint
+    original_positions = {node.id: (node.x, node.y) for node in all_nodes}
+    original_radii = {}
+    for node in all_nodes:
+        dx = node.x - center_x
+        dy = node.y - center_y
+        original_radii[node.id] = math.sqrt(dx*dx + dy*dy)
+
+    # Build parent lookup
+    parent_map = {}
+    for node in all_nodes:
+        for child in node.children:
+            parent_map[child.id] = node
+
+    # Initialize velocities
+    velocities = {node.id: [0.0, 0.0] for node in all_nodes}
+
+    for iteration in range(iterations):
+        forces = {node.id: [0.0, 0.0] for node in all_nodes}
+
+        # Repulsion between all pairs
+        for i, node_a in enumerate(all_nodes):
+            for node_b in all_nodes[i+1:]:
+                dx = node_b.x - node_a.x
+                dy = node_b.y - node_a.y
+                dist_sq = dx*dx + dy*dy
+                dist = math.sqrt(dist_sq) if dist_sq > 0 else 0.1
+
+                if dist < min_distance * 3:  # Only apply when close
+                    # Inverse square repulsion
+                    force_mag = repulsion / (dist_sq + 1)
+                    if dist > 0:
+                        fx = (dx / dist) * force_mag
+                        fy = (dy / dist) * force_mag
+                        forces[node_a.id][0] -= fx
+                        forces[node_a.id][1] -= fy
+                        forces[node_b.id][0] += fx
+                        forces[node_b.id][1] += fy
+
+        # Attraction to parent
+        for node in all_nodes:
+            if node.id in parent_map:
+                parent = parent_map[node.id]
+                dx = parent.x - node.x
+                dy = parent.y - node.y
+                dist = math.sqrt(dx*dx + dy*dy)
+
+                # Attract if too far from parent
+                ideal_dist = 150  # Ideal parent-child distance
+                if dist > ideal_dist:
+                    force_mag = (dist - ideal_dist) * attraction
+                    if dist > 0:
+                        forces[node.id][0] += (dx / dist) * force_mag
+                        forces[node.id][1] += (dy / dist) * force_mag
+
+        # Radial constraint - pull toward original radius
+        for node in all_nodes:
+            if node.id == root.id:
+                continue  # Don't move root
+
+            dx = node.x - center_x
+            dy = node.y - center_y
+            current_radius = math.sqrt(dx*dx + dy*dy)
+            original_radius = original_radii[node.id]
+
+            if current_radius > 0:
+                # Pull toward original radius
+                radius_diff = original_radius - current_radius
+                force_mag = radius_diff * radial_weight
+                forces[node.id][0] += (dx / current_radius) * force_mag
+                forces[node.id][1] += (dy / current_radius) * force_mag
+
+        # Update velocities and positions
+        max_movement = 0
+        for node in all_nodes:
+            if node.id == root.id:
+                continue  # Keep root fixed
+
+            # Update velocity with damping
+            velocities[node.id][0] = (velocities[node.id][0] + forces[node.id][0]) * damping
+            velocities[node.id][1] = (velocities[node.id][1] + forces[node.id][1]) * damping
+
+            # Limit velocity
+            vel_mag = math.sqrt(velocities[node.id][0]**2 + velocities[node.id][1]**2)
+            max_vel = 50
+            if vel_mag > max_vel:
+                velocities[node.id][0] *= max_vel / vel_mag
+                velocities[node.id][1] *= max_vel / vel_mag
+
+            # Update position
+            node.x += velocities[node.id][0]
+            node.y += velocities[node.id][1]
+
+            max_movement = max(max_movement, abs(velocities[node.id][0]), abs(velocities[node.id][1]))
+
+        # Early termination if converged
+        if max_movement < 0.5:
+            print(f"Force-directed optimization converged at iteration {iteration}")
+            break
+
+    print(f"Force-directed optimization completed ({iterations} iterations)")
+
+def calculate_node_scales(root: MindMapNode) -> Dict[int, float]:
+    """
+    Calculate font scale for each node based on descendant count.
+
+    Scale formula: 1.0 + log2(1 + descendants) * 0.3
+    - Leaf nodes: 1.0
+    - Node with 7 descendants: ~1.9
+    - Node with 63 descendants: ~2.8
+    """
+    scales = {}
+
+    def compute_scale(node: MindMapNode):
+        descendants = count_descendants(node)
+        # Scale from 1.0 (leaf) to ~3.0 (large hub)
+        scale = 1.0 + math.log2(1 + descendants) * 0.4
+        scales[node.id] = min(scale, 3.5)  # Cap at 3.5
+
+        for child in node.children:
+            compute_scale(child)
+
+    compute_scale(root)
+    return scales
+
+def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, float] = None):
     """Convert a MindMapNode to SimpleMind XML topic element."""
     topic = SubElement(parent_element, 'topic')
     topic.set('id', str(node.id))
@@ -338,6 +506,16 @@ def node_to_xml(node: MindMapNode, parent_element: Element):
     text = wrapped.replace('\n', '\\N')
     topic.set('text', text)
 
+    # Add font scaling based on descendant count
+    if scales and node.id in scales:
+        scale = scales[node.id]
+        if scale > 1.2:  # Only add styling for non-leaf nodes
+            style = SubElement(topic, 'style')
+            font = SubElement(style, 'font')
+            if scale > 2.0:
+                font.set('bold', 'True')
+            font.set('scale', f'{scale:.2f}')
+
     # Add link if URL present
     if node.url:
         link = SubElement(topic, 'link')
@@ -345,9 +523,9 @@ def node_to_xml(node: MindMapNode, parent_element: Element):
 
     # Recurse for children
     for child in node.children:
-        node_to_xml(child, parent_element)
+        node_to_xml(child, parent_element, scales)
 
-def generate_mindmap_xml(root: MindMapNode, title: str) -> str:
+def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float] = None) -> str:
     """Generate complete SimpleMind XML document."""
     # Root element
     root_elem = Element('simplemind-mindmaps')
@@ -368,7 +546,7 @@ def generate_mindmap_xml(root: MindMapNode, title: str) -> str:
     auto_num = SubElement(meta, 'auto-numbering')
     auto_num.set('style', 'disabled')
     scroll = SubElement(meta, 'scrollstate')
-    scroll.set('zoom', '70')
+    scroll.set('zoom', '40')  # Zoom out more for larger maps
     scroll.set('x', str(int(-root.x)))
     scroll.set('y', str(int(-root.y)))
     main_theme = SubElement(meta, 'main-centraltheme')
@@ -376,7 +554,7 @@ def generate_mindmap_xml(root: MindMapNode, title: str) -> str:
 
     # Topics section
     topics = SubElement(mindmap, 'topics')
-    node_to_xml(root, topics)
+    node_to_xml(root, topics, scales)
 
     # Relations section (empty for now)
     SubElement(mindmap, 'relations')
@@ -477,6 +655,10 @@ def create_nodes_from_items(items: List[Dict],
     if not root_item and items:
         root_item = items[0]
 
+    def get_url(item):
+        """Get URL for an item - uri for Trees, pearl_uri for PagePearls."""
+        return item.get('uri') or item.get('pearl_uri', '')
+
     # Create root node
     if root_item:
         tree_id = root_item.get('tree_id', '')
@@ -484,7 +666,7 @@ def create_nodes_from_items(items: List[Dict],
             id=0,
             title=root_item.get('raw_title', 'Root'),
             tree_id=tree_id,
-            url=root_item.get('uri', ''),
+            url=get_url(root_item),
             parent_id=-1,
             palette=1,
             embedding=get_embedding(root_item)
@@ -502,7 +684,7 @@ def create_nodes_from_items(items: List[Dict],
             id=len(nodes),
             title=item.get('raw_title', f'Item {i}'),
             tree_id=tree_id,
-            url=item.get('uri', ''),
+            url=get_url(item),
             parent_id=0,  # Will be updated by build_hierarchy
             palette=(palette_idx % 8) + 1,
             embedding=get_embedding(item)
@@ -546,6 +728,12 @@ def main():
                         help='Max children per node before micro-clustering')
     parser.add_argument('--min-children', type=int, default=4,
                         help='Min clusters when micro-clustering')
+    parser.add_argument('--optimize', action='store_true',
+                        help='Apply force-directed optimization to reduce overlaps')
+    parser.add_argument('--optimize-iterations', type=int, default=100,
+                        help='Number of optimization iterations')
+    parser.add_argument('--no-scaling', action='store_true',
+                        help='Disable node size scaling by descendant count')
 
     args = parser.parse_args()
 
@@ -584,9 +772,20 @@ def main():
     # Apply radial layout with consistent circumferential spacing
     apply_radial_layout(root, center_x=500, center_y=500, min_spacing=80, base_radius=150)
 
+    # Optional: force-directed optimization
+    if args.optimize:
+        print("Applying force-directed optimization...")
+        force_directed_optimize(root, center_x=500, center_y=500,
+                               iterations=args.optimize_iterations)
+
+    # Calculate node scales based on descendant count
+    scales = None
+    if not args.no_scaling:
+        scales = calculate_node_scales(root)
+
     # Generate XML
     title = root.title if root else "Mind Map"
-    xml_content = generate_mindmap_xml(root, title)
+    xml_content = generate_mindmap_xml(root, title, scales)
 
     # Write output
     if args.xml_only:

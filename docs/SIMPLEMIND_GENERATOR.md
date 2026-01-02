@@ -45,6 +45,9 @@ python3 scripts/generate_simplemind_map.py \
 | `--xml-only` | false | Output raw XML instead of zip |
 | `--max-children` | 8 | Max children before micro-clustering |
 | `--min-children` | 4 | Min clusters when splitting |
+| `--optimize` | false | Apply force-directed optimization |
+| `--optimize-iterations` | 100 | Number of optimization iterations |
+| `--no-scaling` | false | Disable node size scaling by descendant count |
 
 ## How It Works
 
