@@ -293,21 +293,26 @@ python3 scripts/export_mindmap.py input.smmx output.graphml
 
 # VUE - Tufts Visual Understanding Environment
 python3 scripts/export_mindmap.py input.smmx output.vue
+
+# FreeMind - free desktop mind mapping software
+python3 scripts/export_mindmap.py input.smmx output.mm
 ```
 
 ### Supported Formats
 
 | Format | Extension | Applications |
 |--------|-----------|--------------|
-| OPML | `.opml` | OmniOutliner, Dynalist, Workflowy, RSS readers |
+| OPML | `.opml` | OmniOutliner, Dynalist, Workflowy, SimpleMind, RSS readers |
 | GraphML | `.graphml` | yEd, Gephi, Cytoscape, NetworkX |
 | VUE | `.vue` | Tufts Visual Understanding Environment |
+| FreeMind | `.mm` | FreeMind, Freeplane, Mind42 |
 
 ### Format Notes
 
 - **OPML**: Hierarchical outline only (no layout coordinates). Best for text-based outline tools.
-- **GraphML**: Preserves node positions. Can be imported into yEd for further editing.
+- **GraphML**: Preserves node positions and colors. yEd-compatible with full layout.
 - **VUE**: Preserves positions and colors. Free academic tool with good concept mapping features.
+- **FreeMind**: Hierarchical with left/right positioning. Works with free desktop mind mappers.
 
 ---
 

@@ -66,9 +66,12 @@ Export script: `scripts/export_mindmap.py`
 - [x] `<resource>` elements for URL links
 - [x] Preserves positions and colors
 
-### 2.4 Other Formats (Future)
-- [ ] Mind42 (cloud-based)
-- [ ] FreeMind/Freeplane (`.mm`)
+### 2.4 FreeMind/Freeplane ✓
+- [x] FreeMind `.mm` format
+- [x] Left/right positioning based on node x-coordinates
+- [x] Compatible with FreeMind, Freeplane, Mind42
+
+### 2.5 Other Formats (Future)
 - [ ] Mermaid (text-based diagrams)
 - [ ] Markmap (markdown to mindmap)
 
