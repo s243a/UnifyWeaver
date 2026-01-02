@@ -144,6 +144,46 @@ The `data_path` field enables automatic account lookup at inference time.
 - [Book 13: Semantic Search](https://github.com/s243a/UnifyWeaver/blob/main/education/book-13-semantic-search/README.md)
 - [Bookmark Filing Guide](https://github.com/s243a/UnifyWeaver/blob/main/education/book-13-semantic-search/16_bookmark_filing.md)
 
+## Clustering Methods
+
+The training script supports three clustering methods via `--cluster-method`:
+
+| Method | Description | Use Case |
+|--------|-------------|----------|
+| `embedding` (default) | K-means on target embeddings | Semantic grouping, best for general search |
+| `path_depth` | Group by materialized path depth | Simple hierarchy-based grouping |
+| `per-tree` | One cluster per parent tree | Preserves Pearltrees folder structure |
+
+### Per-Tree Clustering
+
+The `per-tree` method creates one cluster per Pearltrees folder, grouping items with their siblings based on the `cluster_id` field (which contains the parent tree URI).
+
+**When to use:**
+- You want to preserve the existing tree structure
+- Each folder should have its own W matrix for projection
+- You're using smaller models (MiniLM) since there will be many clusters
+
+**Example:**
+```bash
+python3 scripts/train_pearltrees_federated.py data.jsonl model.pkl \
+  --cluster-method per-tree \
+  --model sentence-transformers/all-MiniLM-L6-v2
+```
+
+**Memory considerations for per-tree:**
+- Many small clusters (~4 items avg per tree)
+- With MiniLM (384-dim): ~590 KB per cluster
+- With Nomic (768-dim): ~2.4 MB per cluster
+- Recommended: Use MiniLM for per-tree to manage memory
+
+### Cluster File Naming
+
+| Method | File Pattern | Example |
+|--------|--------------|---------|
+| `embedding` | `cluster_N.npz` | `cluster_0.npz`, `cluster_1.npz` |
+| `path_depth` | `depth_N.npz` or `cluster_N.npz` | `depth_0.npz`, `cluster_0.npz` |
+| `per-tree` | `tree_ID.npz` | `tree_12345.npz`, `tree_67890.npz` |
+
 ## Scripts
 
 | Script | Purpose |
@@ -152,3 +192,22 @@ The `data_path` field enables automatic account lookup at inference time.
 | `scripts/infer_pearltrees_federated.py` | Run inference |
 | `scripts/generate_account_training_data.py` | Filter JSONL by account |
 | `scripts/pearltrees_multi_account_generator.py` | Generate training data from RDF |
+
+### Training Script Options
+
+```bash
+python3 scripts/train_pearltrees_federated.py INPUT_JSONL OUTPUT_MODEL \
+  --cluster-method {embedding,path_depth,per-tree} \
+  --transform-mode {single,per-query} \
+  --max-clusters N \
+  --max-memory-mb N \
+  --model MODEL_NAME
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--cluster-method` | `embedding` | Clustering algorithm |
+| `--transform-mode` | `single` | `single` (1 W/cluster) or `per-query` (N W/cluster) |
+| `--max-clusters` | `50` | Max clusters for embedding/path_depth methods |
+| `--max-memory-mb` | `800` | Max memory per cluster (per-query mode) |
+| `--model` | `nomic-ai/nomic-embed-text-v1.5` | Embedding model |
