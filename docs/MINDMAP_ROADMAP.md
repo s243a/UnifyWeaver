@@ -76,11 +76,21 @@
 
 **Goal:** Visually differentiate folder nodes (Trees) from page nodes (Pearls).
 
+### 3.1 Shape-Based Distinction ✓
+
+Implemented via `--tree-style` and `--pearl-style` options:
+- [x] `--tree-style`: Set borderstyle for Tree (folder) nodes
+- [x] `--pearl-style`: Set borderstyle for Pearl (page/link) nodes
+- [x] Supported styles: half-round, ellipse, rectangle, diamond
+- [x] Default: no distinction (uses SimpleMind default)
+
+Example: `--tree-style rectangle --pearl-style ellipse`
+
 ### Design Options to Explore (with LLM assistance)
 
-#### Option A: Shape-Based
-- Trees: Rounded rectangle (current)
-- Pearls: Square, circle, or diamond
+#### Option A: Shape-Based ✓
+- Trees: Configurable (rectangle recommended)
+- Pearls: Configurable (ellipse recommended)
 
 #### Option B: Icon-Based
 - Folder icon embedded in Tree nodes
