@@ -832,8 +832,9 @@ build_plan_by_class(single_rule, Pred, Arity, [_-true], _Options, _Modes, _SeedO
 
 apply_query_modifiers(Options, Width, Root0, Root) :-
     apply_query_order_by(Options, Width, Root0, Root1),
-    apply_query_offset(Options, Width, Root1, Root2),
-    apply_query_limit(Options, Width, Root2, Root).
+    apply_query_distinct(Options, Width, Root1, Root2),
+    apply_query_offset(Options, Width, Root2, Root3),
+    apply_query_limit(Options, Width, Root3, Root).
 
 apply_query_order_by(Options, Width, Root0, Root) :-
     (   member(order_by(Spec, Dir), Options)
@@ -859,6 +860,33 @@ apply_query_offset(Options, Width, Root0, Root) :-
         Count >= 0,
         Root = offset{type:offset, input:Root0, count:Count, width:Width}
     ;   Root = Root0
+    ).
+
+apply_query_distinct(Options, Width, Root0, Root) :-
+    (   member(distinct(strategy(none)), Options)
+    ->  Root = Root0
+    ;   member(distinct(strategy(hash)), Options)
+    ->  Root = distinct{type:distinct, input:Root0, width:Width}
+    ;   member(distinct(strategy(ordered)), Options)
+    ->  (   has_query_order_by(Options)
+        ->  Root1 = Root0
+        ;   order_keys_all_columns(Width, Keys),
+            Root1 = order_by{type:order_by, input:Root0, keys:Keys, width:Width}
+        ),
+        Root = distinct{type:distinct, input:Root1, width:Width}
+    ;   Root = Root0
+    ).
+
+has_query_order_by(Options) :-
+    (   member(order_by(_), Options)
+    ;   member(order_by(_, _), Options)
+    ).
+
+order_keys_all_columns(Width, Keys) :-
+    (   Width =< 0
+    ->  Keys = []
+    ;   End is Width - 1,
+        findall(order_key{index:I, dir:asc}, between(0, End, I), Keys)
     ).
 
 parse_query_order_keys(Spec, DefaultDir, Width, Keys) :-
@@ -3095,6 +3123,11 @@ emit_plan_expression(Node, Expr) :-
     get_dict(count, Node, Count),
     emit_plan_expression(Input, InputExpr),
     format(atom(Expr), 'new OffsetNode(~w, ~w)', [InputExpr, Count]).
+emit_plan_expression(Node, Expr) :-
+    is_dict(Node, distinct), !,
+    get_dict(input, Node, Input),
+    emit_plan_expression(Input, InputExpr),
+    format(atom(Expr), 'new DistinctNode(~w)', [InputExpr]).
 emit_plan_expression(Node, Expr) :-
     is_dict(Node, negation), !,
     get_dict(input, Node, Input),
