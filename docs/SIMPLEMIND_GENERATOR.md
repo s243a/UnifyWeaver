@@ -280,6 +280,37 @@ pip install svglib reportlab
 
 ---
 
+## Multi-Format Export
+
+Convert `.smmx` files to other mind map and graph formats:
+
+```bash
+# OPML - outline format for outline editors, RSS readers
+python3 scripts/export_mindmap.py input.smmx output.opml
+
+# GraphML - graph format for yEd, Gephi, Cytoscape
+python3 scripts/export_mindmap.py input.smmx output.graphml
+
+# VUE - Tufts Visual Understanding Environment
+python3 scripts/export_mindmap.py input.smmx output.vue
+```
+
+### Supported Formats
+
+| Format | Extension | Applications |
+|--------|-----------|--------------|
+| OPML | `.opml` | OmniOutliner, Dynalist, Workflowy, RSS readers |
+| GraphML | `.graphml` | yEd, Gephi, Cytoscape, NetworkX |
+| VUE | `.vue` | Tufts Visual Understanding Environment |
+
+### Format Notes
+
+- **OPML**: Hierarchical outline only (no layout coordinates). Best for text-based outline tools.
+- **GraphML**: Preserves node positions. Can be imported into yEd for further editing.
+- **VUE**: Preserves positions and colors. Free academic tool with good concept mapping features.
+
+---
+
 ## Integration with SimpleMind
 
 The generated `.smmx` files can be:
@@ -298,6 +329,7 @@ The generated `.smmx` files can be:
 - [x] Image rendering (SVG/PNG) with straight and curved edges
 - [x] Per-node borderstyle support (half-round, ellipse, rectangle, diamond)
 - [x] Visual distinction: `--tree-style` and `--pearl-style` options
+- [x] Multi-format export (OPML, GraphML, VUE)
 - [ ] Time budget control (`--time-limit`)
 - [ ] Spatial indexing for O(n log n) crossing detection
 - [ ] Angular rebalancing based on subtree size

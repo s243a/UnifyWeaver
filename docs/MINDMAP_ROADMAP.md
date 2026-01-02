@@ -44,25 +44,27 @@
 
 ---
 
-## Phase 2: Multi-Format Export
+## Phase 2: Multi-Format Export ✓
 
 **Goal:** Support various mind map applications beyond SimpleMind.
 
-### 2.1 VUE (Tufts Visual Understanding Environment)
-- [ ] XML format with `<child>` nodes
-- [ ] `<shape xsi:type="roundRect"/>` for node shapes
-- [ ] `<resource>` elements for URL links
-- [ ] Layer support
+Export script: `scripts/export_mindmap.py`
 
-### 2.2 GraphML
-- [ ] Standard graph format for yEd, Gephi, etc.
-- [ ] Node/edge attributes
-- [ ] Preserves layout coordinates
+### 2.1 OPML (Outline Format) ✓
+- [x] Simple hierarchical outline
+- [x] Compatible with many outline/note apps (OmniOutliner, Dynalist, Workflowy)
+- [x] Preserves text and URLs (loses layout)
 
-### 2.3 OPML (Outline Format)
-- [ ] Simple hierarchical outline
-- [ ] Compatible with many outline/note apps
-- [ ] Loses layout but preserves structure
+### 2.2 GraphML ✓
+- [x] Standard graph format for yEd, Gephi, Cytoscape
+- [x] Node/edge attributes (label, url)
+- [x] Preserves layout coordinates (x, y)
+
+### 2.3 VUE (Tufts Visual Understanding Environment) ✓
+- [x] XML format with node/link elements
+- [x] `<shape xsi:type="roundRect"/>` for node shapes
+- [x] `<resource>` elements for URL links
+- [x] Preserves positions and colors
 
 ### 2.4 Other Formats (Future)
 - [ ] Mind42 (cloud-based)
