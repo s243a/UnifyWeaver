@@ -934,10 +934,22 @@ Pre-built visualization templates:
 ?- generate_chart_worker(ChartWorker).
 ```
 
-### Infrastructure (Planned)
-- **CI/CD integration** - Automated testing for visualization generators
-- **Storybook integration** - Component documentation and visual testing
-- **E2E testing** - Playwright/Cypress tests for generated components
+### Infrastructure (Complete)
+- **CI/CD integration** - GitHub Actions workflow with visualization tests (478 tests)
+- **Storybook integration** - Component documentation and visual testing setup
+
+**Implementations:**
+- `.github/workflows/test.yml` - Automated test runner including visualization glue tests
+- `examples/storybook-react/` - Storybook example project for generated components
+
+**Example Usage:**
+```bash
+# Run all tests (CI will do this automatically)
+swipl -g "consult('tests/integration/glue/test_visualization_glue.pl'), run_tests, halt(0)"
+
+# Start Storybook for component documentation
+cd examples/storybook-react && npm install && npm run storybook
+```
 
 ### Additional Chart Types (Planned)
 - Radar/spider charts

@@ -1,0 +1,106 @@
+/* UnifyWeaver Generated Styles - Global Variables */
+
+:root {
+  /* Theme: Light */
+  --color-primary: #3b82f6;
+  --color-secondary: #64748b;
+  --color-background: #f8fafc;
+  --color-surface: #ffffff;
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-border: #e2e8f0;
+  --color-error: #dc2626;
+  --color-success: #16a34a;
+  --color-warning: #f59e0b;
+
+  /* Typography */
+  --typography-font-family: "Inter", system-ui, sans-serif;
+  --typography-base-size: 16px;
+  --typography-line-height: 1.5;
+
+  /* Spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+
+  /* Borders */
+  --border-radius-sm: 4px;
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 300ms ease;
+}
+
+/* Dark Theme */
+[data-theme="dark"] {
+  --color-primary: #60a5fa;
+  --color-secondary: #94a3b8;
+  --color-background: #0f172a;
+  --color-surface: #1e293b;
+  --color-text-primary: #f8fafc;
+  --color-text-secondary: #94a3b8;
+  --color-border: #334155;
+}
+
+/* Base Styles */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--typography-font-family);
+  font-size: var(--typography-base-size);
+  line-height: var(--typography-line-height);
+  color: var(--color-text-primary);
+  background-color: var(--color-background);
+}
+
+/* Animation Presets */
+@keyframes fade_in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@keyframes fade_in_up {
+  0% { opacity: 0; transform: translateY(20px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scale_in {
+  0% { opacity: 0; transform: scale(0.9); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+.animate-fade_in {
+  animation: fade_in 300ms ease-out forwards;
+}
+
+.animate-fade_in_up {
+  animation: fade_in_up 400ms ease-out forwards;
+}
+
+.animate-scale_in {
+  animation: scale_in 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-pulse {
+  animation: pulse 600ms ease-in-out infinite;
+}

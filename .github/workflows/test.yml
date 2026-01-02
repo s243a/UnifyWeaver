@@ -73,6 +73,10 @@ jobs:
             fi
           done
 
+      - name: Run visualization glue tests (478 tests)
+        run: |
+          swipl -g "consult('tests/integration/glue/test_visualization_glue.pl'), run_tests, halt(0)" -t "halt(1)"
+
       - name: Test summary
         if: always()
         run: |
@@ -87,6 +91,7 @@ jobs:
           echo "✓ Control plane tests (5/5)"
           echo "✓ Inference test runner generation"
           echo "✓ Generated bash script validation"
+          echo "✓ Visualization glue tests (478 tests)"
           echo "=========================================="
 
   csharp_query_runtime_smoke:
