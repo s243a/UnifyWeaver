@@ -178,8 +178,9 @@ def cubic_bezier_control_points(x1: float, y1: float, x2: float, y2: float
 
     The curve:
     - Starts radially from the parent node center
-    - Ends tangent to vertical or horizontal axis at child
-    - Control point orientation switches at 45° boundary
+    - Arrives at child node TANGENT to nearest reference line
+      (0°, 45°, 90°, 135°, 180°, 225°, 270°, 315°)
+    - Second derivative bends away from these reference lines
     """
     dx = x2 - x1
     dy = y2 - y1
@@ -198,18 +199,23 @@ def cubic_bezier_control_points(x1: float, y1: float, x2: float, y2: float
     cp1_x = x1 + cp_dist * math.cos(angle)
     cp1_y = y1 + cp_dist * math.sin(angle)
 
-    # Second control point: axis-aligned approach to child
-    # Determine primary axis based on angle (switch at 45°)
-    abs_angle = abs(angle)
+    # Second control point: tangent to nearest reference line at child
+    # Reference lines every 45°: 0°, 45°, 90°, 135°, 180°, 225°, 270°, 315°
+    # Find nearest reference angle
+    ref_angles = [i * math.pi / 4 for i in range(8)]  # 0, 45, 90, ... degrees in radians
 
-    if abs_angle < math.pi/4 or abs_angle > 3*math.pi/4:
-        # More horizontal - approach from left/right
-        cp2_x = x2 - cp_dist * (1 if dx > 0 else -1)
-        cp2_y = y2
-    else:
-        # More vertical - approach from top/bottom
-        cp2_x = x2
-        cp2_y = y2 - cp_dist * (1 if dy > 0 else -1)
+    # Normalize angle to [0, 2π)
+    norm_angle = angle % (2 * math.pi)
+
+    # Find nearest reference angle
+    nearest_ref = min(ref_angles, key=lambda r: min(abs(norm_angle - r),
+                                                      abs(norm_angle - r - 2*math.pi),
+                                                      abs(norm_angle - r + 2*math.pi)))
+
+    # Control point comes from the direction of the reference angle
+    # (curve arrives tangent to this reference line)
+    cp2_x = x2 - cp_dist * math.cos(nearest_ref)
+    cp2_y = y2 - cp_dist * math.sin(nearest_ref)
 
     return cp1_x, cp1_y, cp2_x, cp2_y
 
@@ -283,16 +289,18 @@ def render_svg(nodes: List[Node], node_map: Dict[int, Node],
     # Render nodes (sorted by ID to ensure consistent layering)
     for node in sorted(nodes, key=lambda n: n.id):
         width_n, height_n = get_node_dimensions(node)
-        rx = min(10, width_n/4, height_n/4)  # Corner radius
+        # More oval: rx = half width, ry = half height (full ellipse corners)
+        rx = width_n / 2
+        ry = height_n / 2
 
         fill = PALETTE_COLORS.get(node.palette, "#E8E8E8")
         stroke = PALETTE_BORDERS.get(node.palette, "#AAAAAA")
 
-        # Node rectangle
+        # Node as rounded rectangle with large corner radii (oval-ish)
         svg_parts.append(f'    <g id="node-{node.id}">')
         svg_parts.append(
             f'      <rect x="{node.x - width_n/2}" y="{node.y - height_n/2}" '
-            f'width="{width_n}" height="{height_n}" rx="{rx}" '
+            f'width="{width_n}" height="{height_n}" rx="{rx}" ry="{ry}" '
             f'fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
         )
 
