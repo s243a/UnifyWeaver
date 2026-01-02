@@ -145,24 +145,42 @@ Subject to:
 - **Node Sizing by Descendants** - Enabled by default, disable with `--no-scaling`
 - **Mass-Based Repulsion** - Hubs push apart more strongly (mass = 1 + sqrt(descendants))
 - **Tethered Leaves** - Leaf nodes stay close to parents (attraction ∝ 1/mass)
+- **Connection-Aware Repulsion** - Parent-child pairs repel 0.3x, non-connected pairs repel 1.5x
+- **Edge Crossing Minimization** - `--minimize-crossings` flag with `--crossing-passes` control
+- **Sibling Edge Detection** - Heuristic for curved line crossings from same parent
+- **Larger Leaf Fonts** - Minimum scale 1.2x for leaf node readability
 
-### Recommended Next Steps
+### Results
 
-1. **Density-Aware Sizing** (Medium effort, high impact)
-   - Reduce node size in crowded areas
-   - Can be computed after force-directed pass
+| Cluster | Nodes | Initial Crossings | Final Crossings |
+|---------|-------|-------------------|-----------------|
+| people | 47 | 5 | 0 |
+| graphlpane | 43 | 6 | 1 |
+| differential_geometry | 225 | 147 | 29 |
 
-2. **Angular Rebalancing** (Low effort, high impact)
+### Future Enhancements
+
+1. **Time Budget Control** (`--time-limit`)
+   - Allow users to cap optimization time
+   - Progressive refinement for large clusters
+
+2. **Spatial Indexing** (R-trees)
+   - Reduce O(n²) crossing detection to O(n log n)
+   - Critical for clusters with 500+ nodes
+
+3. **Angular Rebalancing**
    - Proportional angular allocation based on subtree size
-   - Can be added to current layout pass
+   - Can be added to initial layout pass
 
-3. **Radial Jitter** (Medium effort, alternative to force-directed)
-   - Simpler than force-directed for basic overlap fixing
-   - Post-processing pass after initial layout
+4. **LLM-Guided Refinement**
+   - Generate image, send to multimodal LLM for suggestions
+   - Optional for users wanting further polish
 
-## Future: Edge Crossing Minimization
+## Edge Crossing Minimization
 
-Reducing edge crossings would improve readability. This is an NP-hard problem with many local minima, making gradient-based optimization difficult.
+Reducing edge crossings improves readability. This is an NP-hard problem with many local minima, making gradient-based optimization difficult.
+
+**Status: Implemented** via `--minimize-crossings` flag.
 
 ### Hierarchical Priority Approach
 
