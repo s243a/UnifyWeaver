@@ -516,12 +516,52 @@ def segments_intersect(p1: Tuple[float, float], p2: Tuple[float, float],
     def ccw(A, B, C):
         return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
 
-    # Check if segments share an endpoint (not a real crossing)
+    # Check if segments share an endpoint (not a real crossing for straight lines)
     endpoints = {p1, p2}
     if p3 in endpoints or p4 in endpoints:
         return False
 
     return (ccw(p1, p3, p4) != ccw(p2, p3, p4)) and (ccw(p1, p2, p3) != ccw(p1, p2, p4))
+
+
+def sibling_edges_cross(parent: MindMapNode, child1: MindMapNode, child2: MindMapNode) -> bool:
+    """
+    Check if two sibling edges (from same parent) would cross with curved lines.
+
+    SimpleMind curves: radial from node center, tangent to quadrant axes.
+    Two siblings cross if their angular positions would cause curve overlap.
+
+    Heuristic: if one child is "between" the parent and another child angularly,
+    and they're at similar distances, the curves likely cross.
+    """
+    # Get angles from parent to each child
+    dx1 = child1.x - parent.x
+    dy1 = child1.y - parent.y
+    dx2 = child2.x - parent.x
+    dy2 = child2.y - parent.y
+
+    angle1 = math.atan2(dy1, dx1)
+    angle2 = math.atan2(dy2, dx2)
+
+    dist1 = math.sqrt(dx1*dx1 + dy1*dy1)
+    dist2 = math.sqrt(dx2*dx2 + dy2*dy2)
+
+    # Normalize angle difference to [-pi, pi]
+    angle_diff = abs(angle1 - angle2)
+    if angle_diff > math.pi:
+        angle_diff = 2 * math.pi - angle_diff
+
+    # If angles are very close but distances differ significantly,
+    # the curves might cross (one goes "over" the other)
+    if angle_diff < 0.3 and abs(dist1 - dist2) > 100:  # ~17 degrees
+        return True
+
+    # If angles are moderately close and one child is much closer,
+    # check if the further one's curve might cross
+    if angle_diff < 0.6 and min(dist1, dist2) < max(dist1, dist2) * 0.5:
+        return True
+
+    return False
 
 
 def collect_edges(node: MindMapNode, edges: List[Tuple[MindMapNode, MindMapNode]] = None) -> List[Tuple[MindMapNode, MindMapNode]]:
@@ -534,11 +574,20 @@ def collect_edges(node: MindMapNode, edges: List[Tuple[MindMapNode, MindMapNode]
     return edges
 
 
-def count_edge_crossings(root: MindMapNode) -> int:
-    """Count total number of edge crossings in the layout."""
+def count_edge_crossings(root: MindMapNode, include_siblings: bool = True,
+                         verbose: bool = False) -> int:
+    """Count total number of edge crossings in the layout.
+
+    Args:
+        root: Root node of the tree
+        include_siblings: Also check sibling edges for curve crossings
+        verbose: Print details of each crossing found
+    """
     edges = collect_edges(root)
+    all_nodes = collect_all_nodes(root)
     crossings = 0
 
+    # Check non-sibling edge crossings (straight line intersection)
     for i, (a1, a2) in enumerate(edges):
         p1 = (a1.x, a1.y)
         p2 = (a2.x, a2.y)
@@ -547,6 +596,19 @@ def count_edge_crossings(root: MindMapNode) -> int:
             p4 = (b2.x, b2.y)
             if segments_intersect(p1, p2, p3, p4):
                 crossings += 1
+                if verbose:
+                    print(f"  Crossing: [{a1.title[:20]}→{a2.title[:20]}] X [{b1.title[:20]}→{b2.title[:20]}]")
+
+    # Check sibling edge crossings (curved line heuristic)
+    if include_siblings:
+        for node in all_nodes:
+            if len(node.children) >= 2:
+                for i, child1 in enumerate(node.children):
+                    for child2 in node.children[i+1:]:
+                        if sibling_edges_cross(node, child1, child2):
+                            crossings += 1
+                            if verbose:
+                                print(f"  Sibling crossing: {node.title[:20]} → [{child1.title[:20]}, {child2.title[:20]}]")
 
     return crossings
 
@@ -630,11 +692,11 @@ def minimize_crossings(root: MindMapNode, center_x: float = 500, center_y: float
             if current_dist < 1:
                 continue
 
-            # Try angular adjustments: -30, -15, 0, +15, +30 degrees
+            # Try angular adjustments (radians): ±6°, ±15°, ±30°, ±45°, ±60°
             best_crossings = count_edge_crossings(root)
             best_x, best_y = orig_x, orig_y
 
-            for angle_offset in [-0.5, -0.25, -0.1, 0.1, 0.25, 0.5]:  # radians
+            for angle_offset in [-1.0, -0.75, -0.5, -0.25, -0.1, 0.1, 0.25, 0.5, 0.75, 1.0]:
                 test_angle = current_angle + angle_offset
                 node.x = parent.x + current_dist * math.cos(test_angle)
                 node.y = parent.y + current_dist * math.sin(test_angle)
@@ -671,14 +733,14 @@ def minimize_crossings(root: MindMapNode, center_x: float = 500, center_y: float
                 if dist < 80:  # Overlap threshold
                     overlap_count += 1
 
-        # Only run force-directed if significant overlaps exist
-        if overlap_count > 2:
+        # Only run force-directed if overlaps exist
+        if overlap_count > 0:
             # Lighter force-directed to fix overlaps without destroying crossing gains
+            # Use fewer iterations for minor overlaps
+            iters = force_iterations // 2 if overlap_count > 2 else force_iterations // 4
             force_directed_optimize(root, center_x, center_y,
-                                   iterations=force_iterations // 2, repulsion=50000,
+                                   iterations=iters, repulsion=50000,
                                    attraction=0.0005, min_distance=100)
-        elif overlap_count > 0 and verbose:
-            print(f"  (skipping force-directed, only {overlap_count} minor overlaps)")
 
         current_crossings = count_edge_crossings(root)
         if verbose:
@@ -690,6 +752,9 @@ def minimize_crossings(root: MindMapNode, center_x: float = 500, center_y: float
     final_crossings = count_edge_crossings(root)
     if verbose:
         print(f"Final edge crossings: {final_crossings} (reduced from {initial_crossings})")
+        if final_crossings > 0:
+            print("Remaining crossings:")
+            count_edge_crossings(root, verbose=True)
 
 
 def calculate_node_scales(root: MindMapNode, min_scale: float = 1.2) -> Dict[int, float]:
