@@ -834,7 +834,8 @@ def calculate_node_scales(root: MindMapNode, min_scale: float = 1.2) -> Dict[int
 
 def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, float] = None,
                 tree_style: str = None, pearl_style: str = None,
-                enable_cloudmapref: bool = False, cluster_id: str = None):
+                enable_cloudmapref: bool = False, cluster_id: str = None,
+                add_url_nodes: bool = False, next_id: List[int] = None):
     """Convert a MindMapNode to SimpleMind XML topic element.
 
     Args:
@@ -845,6 +846,8 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         pearl_style: Borderstyle for Pearl items (pages/links)
         enable_cloudmapref: If True, add cloudmapref links for Tree nodes
         cluster_id: The cluster ID for deterministic GUID generation
+        add_url_nodes: If True, attach small URL nodes to Tree nodes with cloudmapref
+        next_id: Mutable counter [next_available_id] for generating URL node IDs
     """
     topic = SubElement(parent_element, 'topic')
     topic.set('id', str(node.id))
@@ -896,6 +899,7 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         style.set('borderstyle', borderstyle)
 
     # Add link - cloudmapref for Tree nodes, urllink for others
+    url_node_created = False
     if node.url:
         # Tree nodes with cloudmapref: use cloudmapref ONLY (SimpleMind supports one link type)
         if enable_cloudmapref and node.item_type == 'Tree' and node.id != 0:
@@ -906,6 +910,30 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                 # Link to root node (id=0) in target map
                 target_guid = generate_deterministic_guid(node.url, 0)
                 link.set('element', target_guid)
+
+                # Optionally add a small child node with the URL link
+                if add_url_nodes and next_id is not None:
+                    url_node_id = next_id[0]
+                    next_id[0] += 1
+                    url_topic = SubElement(parent_element, 'topic')
+                    url_topic.set('id', str(url_node_id))
+                    url_topic.set('parent', str(node.id))
+                    url_topic.set('guid', generate_deterministic_guid(cluster_id, url_node_id) if cluster_id else generate_guid())
+                    # Position slightly offset from parent
+                    url_topic.set('x', f'{node.x + 30:.2f}')
+                    url_topic.set('y', f'{node.y + 20:.2f}')
+                    url_topic.set('palette', str(node.palette))
+                    url_topic.set('colorinfo', str(node.palette))
+                    url_topic.set('text', 'url')
+                    # Small rectangle style
+                    url_style = SubElement(url_topic, 'style')
+                    url_style.set('borderstyle', 'sbsRectangle')
+                    font = SubElement(url_style, 'font')
+                    font.set('scale', '0.8')
+                    # URL link
+                    url_link = SubElement(url_topic, 'link')
+                    url_link.set('urllink', node.url)
+                    url_node_created = True
         else:
             # Non-Tree nodes or root: use urllink
             link = SubElement(topic, 'link')
@@ -914,11 +942,12 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
     # Recurse for children
     for child in node.children:
         node_to_xml(child, parent_element, scales, tree_style, pearl_style,
-                    enable_cloudmapref, cluster_id)
+                    enable_cloudmapref, cluster_id, add_url_nodes, next_id)
 
 def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float] = None,
                          tree_style: str = None, pearl_style: str = None,
-                         enable_cloudmapref: bool = False, cluster_id: str = None) -> str:
+                         enable_cloudmapref: bool = False, cluster_id: str = None,
+                         add_url_nodes: bool = False) -> str:
     """Generate complete SimpleMind XML document.
 
     Args:
@@ -929,6 +958,7 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
         pearl_style: Borderstyle for Pearl items (pages/links)
         enable_cloudmapref: If True, add cloudmapref links for Tree nodes
         cluster_id: The cluster ID for deterministic GUID generation
+        add_url_nodes: If True, attach small URL nodes to Tree nodes with cloudmapref
     """
     # Root element
     root_elem = Element('simplemind-mindmaps')
@@ -957,8 +987,11 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
 
     # Topics section
     topics = SubElement(mindmap, 'topics')
+    # Initialize next_id counter for URL nodes (start after all regular nodes)
+    all_nodes = collect_all_nodes(root)
+    next_id = [max(n.id for n in all_nodes) + 1000]  # Leave gap for safety
     node_to_xml(root, topics, scales, tree_style, pearl_style,
-                enable_cloudmapref, cluster_id)
+                enable_cloudmapref, cluster_id, add_url_nodes, next_id)
 
     # Relations section (empty for now)
     SubElement(mindmap, 'relations')
@@ -1124,7 +1157,7 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                         do_minimize_crossings: bool = False, crossing_passes: int = 10,
                         no_scaling: bool = False, tree_style: str = None,
                         pearl_style: str = None, enable_cloudmapref: bool = False,
-                        xml_only: bool = False) -> List[str]:
+                        add_url_nodes: bool = False, xml_only: bool = False) -> List[str]:
     """Generate a single mind map and return URLs of child Trees for recursion.
 
     Args:
@@ -1138,6 +1171,7 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
         no_scaling: Disable font scaling
         tree_style, pearl_style: Node styles
         enable_cloudmapref: Add cloudmapref links
+        add_url_nodes: Attach small URL nodes to Tree nodes
         xml_only: Output raw XML instead of .smmx
 
     Returns:
@@ -1182,7 +1216,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
     xml_content = generate_mindmap_xml(root, title, scales,
                                        tree_style=tree_style, pearl_style=pearl_style,
                                        enable_cloudmapref=enable_cloudmapref,
-                                       cluster_id=cluster_url)
+                                       cluster_id=cluster_url,
+                                       add_url_nodes=add_url_nodes)
 
     # Write output
     if xml_only:
@@ -1319,6 +1354,8 @@ def main():
                         help='Maximum depth for recursive generation (default: unlimited)')
     parser.add_argument('--parent-links', action='store_true',
                         help='Add "back to parent" nodes in child maps')
+    parser.add_argument('--url-nodes', action='store_true',
+                        help='Attach small "url" child nodes to Tree nodes (for URL access alongside cloudmapref)')
 
     args = parser.parse_args()
 
@@ -1386,6 +1423,7 @@ def main():
             no_scaling=args.no_scaling,
             tree_style=args.tree_style,
             pearl_style=args.pearl_style,
+            add_url_nodes=args.url_nodes,
             xml_only=args.xml_only
         )
 
