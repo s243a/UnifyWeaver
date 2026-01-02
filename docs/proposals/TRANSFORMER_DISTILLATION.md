@@ -453,3 +453,110 @@ The transformer's advantage is logarithmic scaling (L = log(N)/log(H)) vs LDA's 
 
 5. **SMOOTHNESS_REGULARIZATION.md** (this project)
    - Related work on regularization for sparse clusters
+
+## Per-Tree Clustering Benchmarks
+
+When using `--cluster-method per-tree` for federated training, the clustering is based on user organization (Pearltrees folder structure) rather than semantic similarity.
+
+### Hit Rate Analysis
+
+Benchmark on 500 items across 255 trees:
+
+| k | Federated W | Transformer | Gap |
+|---|-------------|-------------|-----|
+| 1 | 63.4% | 53.2% | -10.2% |
+| 3 | 73.8% | 67.6% | -6.2% |
+| 5 | 78.4% | 73.2% | -5.2% |
+| 10 | 85.4% | 79.2% | -6.2% |
+| 20 | 90.8% | 87.0% | -3.8% |
+| 50 | 96.2% | 93.8% | -2.4% |
+
+- Mean rank: Federated 9.0, Transformer 15.1
+- Median rank: Both 1.0
+- Potentially misfiled (rank > 50): 3.8%
+
+### Misfiling Detection
+
+Per-tree clustering has a secondary use: **detecting misfiled bookmarks**.
+
+If an item's actual folder doesn't appear in the top-k semantic search results, it may indicate the item was filed in a semantically mismatched folder.
+
+```
+Query: "quantum physics paper"
+Actual folder: "Recipes"
+Top 10 results: Physics, Science, Papers...
+
+Actual folder NOT in top 10 → Potential misfiling
+```
+
+Interpretation:
+- 63.4% at rank 1: Perfect semantic match with folder
+- 85.4% at rank 10: Good filing (semantically nearby)
+- 3.8% at rank > 50: Potentially misfiled items
+
+**Note:** These results are user-specific. Hit rates depend on organization style:
+
+| Organization Style | Expected Recall@10 |
+|-------------------|-------------------|
+| Semantic (Physics → Quantum → Papers) | High (>90%) |
+| Project-based (Work, Personal, Archive) | Mixed (50-80%) |
+| Chaotic (Misc, Stuff, TODO) | Low (<50%) |
+
+The recall@k metric can serve as a "semantic organization score" measuring how well a user's folder structure aligns with content semantics.
+
+### Data Quality Dependency
+
+The entire pipeline depends on training data quality:
+
+```
+User's Organization → Structured Lists → W Matrices → Search Quality
+```
+
+The W matrices learn to transform query embeddings to match **structured path embeddings**:
+
+```
+/2492215/2496226
+- account
+  - Physics
+    - Quantum Mechanics
+```
+
+This assumes:
+- Folder paths are meaningful labels
+- Hierarchical structure reflects semantic relationships
+- Siblings in a folder are related
+
+Per-tree recall@k tests these assumptions. Low recall indicates the structured lists don't encode semantic meaning well - and more sophisticated approaches (MST, transformer distillation) won't fix fundamental data quality issues.
+
+### Per-Tree vs MST/Embedding Clustering
+
+| Aspect | Per-Tree | MST/Embedding |
+|--------|----------|---------------|
+| Cluster count | Fixed (= folder count) | Configurable (`--max-clusters`) |
+| Boundaries | User-defined (arbitrary) | Semantic (coherent) |
+| Distillation quality | ~40% cosine sim | Expected >95% |
+| W matrix generalization | Limited | Better |
+| Use case | Preserve user's mental model | Better transforms |
+
+**Per-tree clustering:**
+- Preserves user's folder structure as clusters
+- Useful for misfiling detection
+- Distillation quality depends on user's organization style
+
+**MST/Embedding clustering:**
+- Groups semantically similar items regardless of user's folders
+- Creates internally coherent clusters
+- Better for distillation since boundaries are meaningful
+- Allows tuning cluster granularity
+
+Both approaches depend on underlying data quality (structured lists), but MST ensures each cluster is internally coherent even if the user's overall organization is messy.
+
+### Key Insight: N = num_clusters
+
+For per-tree with `--transform-mode single`, architecture sizing uses N = number of clusters (trees), not number of training queries:
+
+```
+Per-tree (255 clusters): H=4, L=4 → H^L = 256 ≈ 255 ✓
+```
+
+The transformer learns 255 distinct W transformations, achieving 7.5x compression (37.6M → 5M parameters).
