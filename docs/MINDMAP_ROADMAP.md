@@ -12,28 +12,30 @@
 
 ---
 
-## Phase 1: Image Generation
+## Phase 1: Image Generation ✓
 
 **Goal:** Render mind maps to images for visualization and LLM-assisted refinement.
 
-### 1.1 Basic Rendering (Straight Lines)
-- [ ] Render nodes as rounded rectangles with text
-- [ ] Draw edges as straight lines between node centers
-- [ ] Match our crossing detection model
-- [ ] Output formats: PNG, SVG
+### 1.1 Basic Rendering (Straight Lines) ✓
+- [x] Render nodes as rounded rectangles with text
+- [x] Draw edges as straight lines between node centers
+- [x] Match our crossing detection model
+- [x] Output formats: PNG, SVG
 
-### 1.2 Cubic Bezier Rendering (SimpleMind-style)
-- [ ] Implement curve rendering matching SimpleMind's behavior:
+### 1.2 Cubic Bezier Rendering (SimpleMind-style) ✓
+- [x] Implement curve rendering matching SimpleMind's behavior:
   - Start tangent: radial from parent node center
-  - End tangent: axis-aligned (vertical or horizontal)
-  - Control point orientation switches at 45° boundary between nodes
-- [ ] Configurable curve tension
+  - End tangent: tangent to nearest reference line (0°, 45°, 90°, etc.)
+  - Curves arrive smoothly at nodes matching SimpleMind's visual style
+- [x] Control point distance: 40% of edge length
 
-### 1.3 Rendering Options
-- [ ] Node colors by palette/cluster
-- [ ] Font scaling based on node importance
-- [ ] Configurable canvas size and zoom
-- [ ] Optional: edge labels, icons
+### 1.3 Rendering Options ✓
+- [x] Node colors by palette (8-color SimpleMind palette)
+- [x] Font scaling based on node importance
+- [x] Configurable canvas size (`--width`, `--height`)
+- [x] Node shape styles: half-round (default), ellipse, rectangle, diamond
+- [x] Per-node borderstyle parsing from .smmx files
+- [ ] Optional: edge labels, icons (future)
 
 ### 1.4 LLM Integration (Optional)
 - [ ] Generate image → send to multimodal LLM
