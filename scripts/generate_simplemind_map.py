@@ -367,6 +367,15 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
     if n <= 1:
         return
 
+    # Calculate "mass" for each node based on descendants
+    # Nodes with more descendants push harder
+    node_mass = {}
+    for node in all_nodes:
+        descendants = count_descendants(node)
+        # Mass scales with sqrt of descendants (1 + sqrt(d))
+        # This gives hubs more push without being overwhelming
+        node_mass[node.id] = 1 + math.sqrt(descendants)
+
     # Store original positions and radii for radial constraint
     original_positions = {node.id: (node.x, node.y) for node in all_nodes}
     original_radii = {}
@@ -396,8 +405,12 @@ def force_directed_optimize(root: MindMapNode, center_x: float = 500, center_y: 
                 dist = math.sqrt(dist_sq) if dist_sq > 0 else 0.1
 
                 if dist < min_distance * 5:  # Apply over larger range
+                    # Repulsion scaled by product of masses
+                    # Hub nodes push each other apart more strongly
+                    mass_factor = node_mass[node_a.id] * node_mass[node_b.id]
+
                     # Inverse square repulsion, stronger when very close
-                    force_mag = repulsion / (dist_sq + 100)
+                    force_mag = (repulsion * mass_factor) / (dist_sq + 100)
                     # Extra boost when overlapping
                     if dist < min_distance:
                         force_mag *= 3
