@@ -138,11 +138,13 @@ Example: `--tree-style rectangle --pearl-style ellipse`
 - [x] Flat directory structure (all files in one folder)
 - [ ] Optional: Hierarchical directory structure mirroring Pearltrees
 
-### 4.2 Parent Links
-- [ ] `--parent-links` flag (CLI added, implementation pending)
-- [ ] Attach parent folder link to root node
-- [ ] Square-shaped "parent" indicator node
-- [ ] Configurable link style
+### 4.2 Parent Links ✓
+- [x] `--parent-links` flag for "back to parent" navigation
+- [x] Attach parent link node to root (left side, square shape)
+- [x] "↑" indicator with `cloudmapref` to parent map
+- [x] Relative paths work across MST folder structure
+- [x] Parent chain follows actual Pearltrees hierarchy (not MST)
+- [ ] Configurable link style (future)
 
 ### 4.3 "See Also" Relations (AliasPearl/RefPearl)
 - [ ] Include AliasPearl nodes with cloudmapref links

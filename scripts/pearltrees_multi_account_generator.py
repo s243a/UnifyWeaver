@@ -409,15 +409,25 @@ class MultiAccountParser:
         RefPearl/AliasPearl references to them. This method creates
         synthetic TreeNode entries for those missing trees.
 
+        Key distinction:
+        - RefPearl: References a tree INSIDE the parent tree (subfolder).
+          The parent_tree_uri IS the actual parent of the missing tree.
+        - AliasPearl: References a tree OUTSIDE the parent tree (cross-reference).
+          The parent_tree_uri is NOT the actual parent, just where the alias appears.
+
         Returns:
             Number of trees synthesized.
         """
         # Collect all see_also_uri targets that don't have tree entries
+        # Track separately by pearl type for correct parent assignment
         missing_refs: Dict[str, Pearl] = {}  # uri -> first pearl referencing it
 
         for pearl in self.pearls:
             if pearl.see_also_uri and pearl.see_also_uri not in self.trees:
                 if pearl.see_also_uri not in missing_refs:
+                    missing_refs[pearl.see_also_uri] = pearl
+                elif pearl.type == "RefPearl" and missing_refs[pearl.see_also_uri].type != "RefPearl":
+                    # Prefer RefPearl over AliasPearl for parent determination
                     missing_refs[pearl.see_also_uri] = pearl
 
         if not missing_refs:
@@ -427,6 +437,9 @@ class MultiAccountParser:
         logger.info(f"Found {len(missing_refs)} missing tree references, synthesizing...")
 
         synthesized = 0
+        synthesized_from_ref = 0
+        synthesized_from_alias = 0
+
         for target_uri, pearl in missing_refs.items():
             # Extract tree_id from URI (e.g., ".../fields-of-geometry/id53492143" -> "53492143")
             tree_id_match = re.search(r'/id(\d+)(?:\?|#|$)', target_uri)
@@ -436,8 +449,19 @@ class MultiAccountParser:
             account_match = re.search(r'pearltrees\.com/([^/]+)/', target_uri)
             account = account_match.group(1) if account_match else self.primary_account
 
-            # Use pearl's parent as the synthetic tree's parent
-            parent_uri = pearl.parent_tree_uri if pearl.parent_tree_uri in self.trees else None
+            # Determine parent_uri based on pearl type
+            # RefPearl: parent_tree_uri is the actual parent (subfolder relationship)
+            # AliasPearl: parent_tree_uri is just where alias appears, not actual parent
+            if pearl.type == "RefPearl":
+                parent_uri = pearl.parent_tree_uri if pearl.parent_tree_uri in self.trees else None
+                synthesized_from_ref += 1
+                logger.debug(f"Synthesized RefPearl->tree: {pearl.title} (parent: {self.trees[pearl.parent_tree_uri].title if parent_uri else 'unknown'})")
+            else:
+                # For AliasPearl, we don't know the actual parent
+                # The tree exists somewhere else in the hierarchy
+                parent_uri = None
+                synthesized_from_alias += 1
+                logger.debug(f"Synthesized AliasPearl->tree: {pearl.title} (parent: unknown - alias from {self.trees.get(pearl.parent_tree_uri, TreeNode('','','unknown','')).title})")
 
             # Create synthetic tree node
             synthetic_tree = TreeNode(
@@ -450,9 +474,8 @@ class MultiAccountParser:
 
             self.trees[target_uri] = synthetic_tree
             synthesized += 1
-            logger.debug(f"Synthesized tree: {pearl.title} ({target_uri})")
 
-        logger.info(f"Synthesized {synthesized} missing trees from RefPearl/AliasPearl references")
+        logger.info(f"Synthesized {synthesized} missing trees: {synthesized_from_ref} from RefPearl (with parent), {synthesized_from_alias} from AliasPearl (orphaned)")
         return synthesized
 
     def get_path(self, tree_uri: str, visited: Optional[Set[str]] = None) -> Tuple[List[str], List[str], List[str]]:

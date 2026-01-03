@@ -859,7 +859,51 @@ def compute_relative_cloudmapref_path(
     # Compute relative path from source folder to target file
     rel_path = os.path.relpath(target_file, source_folder)
     # Normalize to forward slashes for SimpleMind compatibility
-    return rel_path.replace('\\', '/')
+    rel_path = rel_path.replace('\\', '/')
+
+    # Add ./ prefix for paths that don't start with ../ (SimpleMind convention)
+    if not rel_path.startswith('../') and not rel_path.startswith('./'):
+        rel_path = './' + rel_path
+
+    return rel_path
+
+
+def create_parent_link_node(
+    parent_element: Element,
+    root_node: 'MindMapNode',
+    parent_tree_id: str,
+    parent_cloudmapref: str,
+    node_id: int
+) -> None:
+    """Create a parent link node connected to the root.
+
+    Adds a small square node labeled "↑" that links back to the parent map.
+
+    Args:
+        parent_element: XML element to add the node to
+        root_node: The root MindMapNode (for positioning)
+        parent_tree_id: Tree ID of the parent
+        parent_cloudmapref: Relative path to parent .smmx file
+        node_id: Unique ID for this node
+    """
+    topic = SubElement(parent_element, 'topic')
+    topic.set('id', str(node_id))
+    topic.set('parent', str(root_node.id))  # Connect to root node
+    topic.set('guid', generate_guid())
+    # Position to the left of root
+    topic.set('x', str(int(root_node.x - 120)))
+    topic.set('y', str(int(root_node.y)))
+    topic.set('palette', '0')  # Use palette 0 (typically gray/neutral)
+    topic.set('colorinfo', '0')
+    topic.set('text', '↑')  # Up arrow to indicate parent
+
+    # Square borderstyle for distinction
+    style = SubElement(topic, 'style')
+    style.set('borderstyle', 'sbsRectangle')
+
+    # Link with cloudmapref to parent
+    link = SubElement(topic, 'link')
+    link.set('cloudmapref', parent_cloudmapref)
 
 
 def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, float] = None,
@@ -1029,7 +1073,9 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
                          enable_cloudmapref: bool = False, cluster_id: str = None,
                          url_nodes_mode: str = None, child_node_text: str = '',
                          source_folder: Path = None,
-                         cluster_to_folder: Dict[str, Path] = None) -> str:
+                         cluster_to_folder: Dict[str, Path] = None,
+                         parent_tree_id: str = None,
+                         parent_cloudmapref: str = None) -> str:
     """Generate complete SimpleMind XML document.
 
     Args:
@@ -1044,6 +1090,8 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
         child_node_text: Text label for child nodes (default: empty/unlabeled)
         source_folder: Current .smmx folder (relative to output root) for path computation
         cluster_to_folder: Dict mapping cluster URLs to folder paths for MST-based layout
+        parent_tree_id: Tree ID of the parent cluster (for parent links)
+        parent_cloudmapref: Relative path to parent .smmx file (for parent links)
     """
     # Root element
     root_elem = Element('simplemind-mindmaps')
@@ -1078,6 +1126,12 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
     node_to_xml(root, topics, scales, tree_style, pearl_style,
                 enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text,
                 source_folder, cluster_to_folder)
+
+    # Add parent link node if parent info provided
+    if parent_tree_id and parent_cloudmapref:
+        parent_node_id = next_id[0]
+        next_id[0] += 1
+        create_parent_link_node(topics, root, parent_tree_id, parent_cloudmapref, parent_node_id)
 
     # Relations section (empty for now)
     SubElement(mindmap, 'relations')
@@ -1246,7 +1300,9 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                         url_nodes_mode: str = None, child_node_text: str = '',
                         xml_only: bool = False,
                         source_folder: Path = None,
-                        cluster_to_folder: Dict[str, Path] = None) -> List[str]:
+                        cluster_to_folder: Dict[str, Path] = None,
+                        parent_tree_id: str = None,
+                        parent_cloudmapref: str = None) -> List[str]:
     """Generate a single mind map and return URLs of child Trees for recursion.
 
     Args:
@@ -1265,6 +1321,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
         xml_only: Output raw XML instead of .smmx
         source_folder: Current .smmx folder (relative to output root) for path computation
         cluster_to_folder: Dict mapping cluster URLs to folder paths for MST-based layout
+        parent_tree_id: Tree ID of the parent cluster (for parent links)
+        parent_cloudmapref: Relative path to parent .smmx file (for parent links)
 
     Returns:
         List of child Tree URLs for recursive generation
@@ -1312,7 +1370,9 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                                        url_nodes_mode=url_nodes_mode,
                                        child_node_text=child_node_text,
                                        source_folder=source_folder,
-                                       cluster_to_folder=cluster_to_folder)
+                                       cluster_to_folder=cluster_to_folder,
+                                       parent_tree_id=parent_tree_id,
+                                       parent_cloudmapref=parent_cloudmapref)
 
     # Write output
     if xml_only:
@@ -1573,6 +1633,9 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                        max_folder_depth: int = None,
                        min_folder_children: int = None,
                        max_folder_children: int = None,
+                       parent_links: bool = False,
+                       parent_url: str = None,
+                       url_to_folder: Dict[str, Path] = None,
                        **kwargs) -> int:
     """Recursively generate mind maps for a cluster hierarchy.
 
@@ -1589,6 +1652,9 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         max_folder_depth: Maximum subfolder nesting depth
         min_folder_children: Minimum children to create subfolders
         max_folder_children: Maximum children to put in subfolders
+        parent_links: If True, add "back to parent" nodes in child maps
+        parent_url: URL of the parent cluster (for parent links)
+        url_to_folder: Mapping of cluster URLs to folder paths (for parent links)
         **kwargs: Additional arguments passed to generate_single_map
 
     Returns:
@@ -1596,6 +1662,10 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
     """
     if visited is None:
         visited = set()
+
+        # Initialize url_to_folder for parent_links mode (tracks where each map ends up)
+        if parent_links and url_to_folder is None:
+            url_to_folder = {}
 
         # On first call with mst_folders, build MST structure
         if mst_folders and cluster_to_folder is None:
@@ -1643,8 +1713,24 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         output_path = output_dir / f"{tree_id}.smmx"
         source_folder = Path('.')
 
+    # Track this cluster's folder for parent_links
+    if parent_links and url_to_folder is not None:
+        url_to_folder[cluster_url] = source_folder
+
     # Create parent directory if needed
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Compute parent link info if parent_links enabled and we have a parent
+    parent_tree_id = None
+    parent_cloudmapref = None
+    if parent_links and parent_url:
+        parent_tree_id = extract_tree_id(parent_url)
+        if parent_tree_id:
+            # Get parent's folder (should have been recorded)
+            parent_folder = url_to_folder.get(parent_url, Path('.')) if url_to_folder else Path('.')
+            parent_cloudmapref = compute_relative_cloudmapref_path(
+                source_folder, parent_tree_id, parent_folder
+            )
 
     # Generate this cluster's map
     child_urls = generate_single_map(
@@ -1657,6 +1743,8 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         enable_cloudmapref=True,  # Always enable for recursive mode
         source_folder=source_folder,
         cluster_to_folder=cluster_to_folder,
+        parent_tree_id=parent_tree_id,
+        parent_cloudmapref=parent_cloudmapref,
         **kwargs
     )
 
@@ -1679,6 +1767,9 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
             max_folder_depth=max_folder_depth,
             min_folder_children=min_folder_children,
             max_folder_children=max_folder_children,
+            parent_links=parent_links,
+            parent_url=cluster_url,  # Current cluster becomes parent for children
+            url_to_folder=url_to_folder,
             **kwargs
         )
 
@@ -1795,6 +1886,8 @@ def main():
             print(f"MST folder organization: enabled")
             if args.max_folder_depth is not None:
                 print(f"Max folder depth: {args.max_folder_depth}")
+        if args.parent_links:
+            print(f"Parent links: enabled")
 
         total = generate_recursive(
             cluster_url=cluster_url,
@@ -1808,6 +1901,7 @@ def main():
             max_folder_depth=args.max_folder_depth,
             min_folder_children=args.min_folder_children,
             max_folder_children=args.max_folder_children,
+            parent_links=args.parent_links,
             min_children=args.min_children,
             max_children=args.max_children,
             optimize=args.optimize,
