@@ -168,6 +168,7 @@ test_csharp_query_target :-
         verify_negation_plan,
         verify_non_stratified_negation_cycle_rejected,
         verify_stratified_negation_derived_runtime,
+        verify_program_definition_cache_reuse_runtime,
         verify_stratified_negation_recursive_lower_stratum_runtime,
         verify_stratified_negation_mutual_lower_stratum_runtime,
         verify_parameterized_multi_key_join_runtime,
@@ -1581,6 +1582,23 @@ verify_stratified_negation_derived_runtime_ :-
     sub_string(Source, _, _, _, 'NegationNode'),
     maybe_run_query_runtime(Plan, ['alice']).
 
+verify_program_definition_cache_reuse_runtime :-
+    setup_call_cleanup(
+        setup_stratified_negation_derived_program,
+        verify_program_definition_cache_reuse_runtime_,
+        cleanup_stratified_negation_derived_program
+    ).
+
+verify_program_definition_cache_reuse_runtime_ :-
+    csharp_query_target:build_query_plan(test_strat_allowed/1, [target(csharp_query)], Plan),
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_cache_flag(ModuleClass, [], 'ProgramDefinition', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['alice',
+         'CACHE_HIT:ProgramDefinition=true'],
+        [],
+        HarnessSource).
+
 verify_stratified_negation_recursive_lower_stratum_runtime :-
     setup_call_cleanup(
         setup_stratified_negation_recursive_lower_stratum_program,
@@ -2806,6 +2824,56 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
    var used = trace.SnapshotStrategies().Any(s => s.Strategy == \"~w\");
    Console.WriteLine(\"STRATEGY_USED:~w=\" + (used ? \"true\" : \"false\"));
    ', [ModuleClass, ParamDecl, ExecCall, Strategy, Strategy]).
+
+harness_source_with_cache_flag(ModuleClass, Params, Cache, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\n',
+        WarmCall = 'var warmTrace = new QueryExecutionTrace();\n_ = executor.Execute(result.Plan, null, warmTrace).ToList();\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~n', [ParamsLiteral]),
+        WarmCall = 'var warmTrace = new QueryExecutionTrace();\n_ = executor.Execute(result.Plan, parameters, warmTrace).ToList();\n',
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+ using System.Linq;
+ using System.Globalization;
+ using UnifyWeaver.QueryRuntime;
+ using System.Text.Json;
+ using System.Text.Json.Nodes;
+
+var result = UnifyWeaver.Generated.~w.Build();
+var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+ string FormatValue(object? value) => value switch
+ {
+     JsonNode node => node.ToJsonString(jsonOptions),
+     JsonElement element => element.GetRawText(),
+      System.Collections.IEnumerable enumerable when value is not string => \"[\" + string.Join(\"|\", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + \"]\",
+      IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+      _ => value?.ToString() ?? string.Empty
+  };
+
+ ~wvar trace = new QueryExecutionTrace();
+ foreach (var row in ~w)
+ {
+    var projected = row.Take(result.Plan.Head.Arity)
+                       .Select(FormatValue)
+                       .ToArray();
+
+    if (projected.Length == 0)
+    {
+        continue;
+    }
+
+     Console.WriteLine(string.Join(\",\", projected));
+   }
+ 
+   var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
+   Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
+   ', [ModuleClass, ParamDecl, WarmCall, ExecCall, Cache, Cache]).
 
 harness_source_multi_mode_dispatch(ModuleClass, Source) :-
     format(atom(Source),

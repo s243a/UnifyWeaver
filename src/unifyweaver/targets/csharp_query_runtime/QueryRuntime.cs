@@ -1009,6 +1009,7 @@ namespace UnifyWeaver.QueryRuntime
             }
 
             _cacheContext.Facts.Clear();
+            _cacheContext.FactSources.Clear();
             _cacheContext.FactSets.Clear();
             _cacheContext.FactIndices.Clear();
             _cacheContext.JoinIndices.Clear();
@@ -1303,12 +1304,293 @@ namespace UnifyWeaver.QueryRuntime
             if (program is null) throw new ArgumentNullException(nameof(program));
             if (context is null) throw new InvalidOperationException("Program node evaluated without an execution context.");
 
+            var allowReuse = _cacheContext is not null && context.FixpointDepth == 0;
+            var volatilePredicates = allowReuse
+                ? ComputeVolatilePredicates(program.Definitions)
+                : null;
+
             foreach (var definition in program.Definitions)
             {
+                if (allowReuse &&
+                    volatilePredicates is not null &&
+                    TryReuseDefinition(definition, context, volatilePredicates, out var cacheKey, out var reuseHit))
+                {
+                    context.Trace?.RecordCacheLookup("ProgramDefinition", cacheKey, hit: reuseHit, built: !reuseHit);
+                    if (reuseHit)
+                    {
+                        continue;
+                    }
+                }
+
                 _ = Evaluate(definition, context);
             }
 
             return Evaluate(program.Body, context);
+        }
+
+        private static bool TryReuseDefinition(
+            PlanNode definition,
+            EvaluationContext context,
+            ISet<PredicateId> volatilePredicates,
+            out string cacheKey,
+            out bool reuseHit)
+        {
+            cacheKey = string.Empty;
+            reuseHit = false;
+
+            static bool HasCachedFacts(PredicateId predicate, PlanNode source, EvaluationContext context) =>
+                context.FactSources.TryGetValue(predicate, out var cachedSource) &&
+                ReferenceEquals(cachedSource, source) &&
+                context.Facts.ContainsKey(predicate);
+
+            switch (definition)
+            {
+                case DefineRelationNode defineRelation:
+                    if (volatilePredicates.Contains(defineRelation.Predicate))
+                    {
+                        return false;
+                    }
+
+                    cacheKey = defineRelation.Predicate.ToString();
+                    reuseHit = HasCachedFacts(defineRelation.Predicate, defineRelation, context);
+                    return true;
+
+                case DefineMutualFixpointNode defineMutual:
+                    if (defineMutual.Fixpoint.Members.Any(member => volatilePredicates.Contains(member.Predicate)))
+                    {
+                        return false;
+                    }
+
+                    cacheKey = $"mutual:{defineMutual.Fixpoint.Head}";
+                    reuseHit = defineMutual.Fixpoint.Members.All(member =>
+                        HasCachedFacts(member.Predicate, defineMutual, context));
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        private static bool ContainsParamSeed(PlanNode node) => node switch
+        {
+            ParamSeedNode => true,
+            MaterializeNode materialize => ContainsParamSeed(materialize.Plan),
+            ProgramNode program => program.Definitions.Any(ContainsParamSeed) || ContainsParamSeed(program.Body),
+            DefineRelationNode define => ContainsParamSeed(define.Plan),
+            SelectionNode selection => ContainsParamSeed(selection.Input),
+            NegationNode negation => ContainsParamSeed(negation.Input),
+            AggregateNode aggregate => ContainsParamSeed(aggregate.Input),
+            AggregateSubplanNode aggregateSubplan => ContainsParamSeed(aggregateSubplan.Input) || ContainsParamSeed(aggregateSubplan.Subplan),
+            ArithmeticNode arithmetic => ContainsParamSeed(arithmetic.Input),
+            ProjectionNode projection => ContainsParamSeed(projection.Input),
+            KeyJoinNode keyJoin => ContainsParamSeed(keyJoin.Left) || ContainsParamSeed(keyJoin.Right),
+            JoinNode join => ContainsParamSeed(join.Left) || ContainsParamSeed(join.Right),
+            UnionNode union => union.Sources.Any(ContainsParamSeed),
+            DistinctNode distinct => ContainsParamSeed(distinct.Input),
+            OrderByNode orderBy => ContainsParamSeed(orderBy.Input),
+            LimitNode limit => ContainsParamSeed(limit.Input),
+            OffsetNode offset => ContainsParamSeed(offset.Input),
+            FixpointNode fixpoint => ContainsParamSeed(fixpoint.BasePlan) || fixpoint.RecursivePlans.Any(ContainsParamSeed),
+            MutualFixpointNode mutual => mutual.Members.Any(member =>
+                ContainsParamSeed(member.BasePlan) || member.RecursivePlans.Any(ContainsParamSeed)),
+            DefineMutualFixpointNode defineMutual => ContainsParamSeed(defineMutual.Fixpoint),
+            _ => false
+        };
+
+        private static HashSet<PredicateId> ComputeVolatilePredicates(IReadOnlyList<PlanNode> definitions)
+        {
+            var infos = new List<(IReadOnlyList<PredicateId> Defined, PlanNode Plan)>();
+
+            foreach (var definition in definitions)
+            {
+                switch (definition)
+                {
+                    case DefineRelationNode defineRelation:
+                        infos.Add((new[] { defineRelation.Predicate }, defineRelation.Plan));
+                        break;
+
+                    case DefineMutualFixpointNode defineMutual:
+                        infos.Add((defineMutual.Fixpoint.Members.Select(member => member.Predicate).ToList(), defineMutual.Fixpoint));
+                        break;
+                }
+            }
+
+            var volatilePredicates = new HashSet<PredicateId>();
+            foreach (var info in infos)
+            {
+                if (!ContainsParamSeed(info.Plan))
+                {
+                    continue;
+                }
+
+                foreach (var predicate in info.Defined)
+                {
+                    volatilePredicates.Add(predicate);
+                }
+            }
+
+            if (volatilePredicates.Count == 0)
+            {
+                return volatilePredicates;
+            }
+
+            var referenced = new HashSet<PredicateId>();
+            var changed = true;
+
+            while (changed)
+            {
+                changed = false;
+                foreach (var info in infos)
+                {
+                    if (info.Defined.Any(volatilePredicates.Contains))
+                    {
+                        continue;
+                    }
+
+                    referenced.Clear();
+                    CollectReferencedPredicates(info.Plan, referenced);
+
+                    if (!referenced.Any(volatilePredicates.Contains))
+                    {
+                        continue;
+                    }
+
+                    foreach (var predicate in info.Defined)
+                    {
+                        if (volatilePredicates.Add(predicate))
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            return volatilePredicates;
+        }
+
+        private static void CollectReferencedPredicates(PlanNode node, ISet<PredicateId> predicates)
+        {
+            switch (node)
+            {
+                case RelationScanNode scan:
+                    predicates.Add(scan.Relation);
+                    return;
+
+                case PatternScanNode scan:
+                    predicates.Add(scan.Relation);
+                    return;
+
+                case ParamSeedNode seed:
+                    predicates.Add(seed.Predicate);
+                    return;
+
+                case RecursiveRefNode recursive:
+                    predicates.Add(recursive.Predicate);
+                    return;
+
+                case CrossRefNode cross:
+                    predicates.Add(cross.Predicate);
+                    return;
+
+                case MaterializeNode materialize:
+                    CollectReferencedPredicates(materialize.Plan, predicates);
+                    return;
+
+                case ProgramNode program:
+                    foreach (var definition in program.Definitions)
+                    {
+                        CollectReferencedPredicates(definition, predicates);
+                    }
+                    CollectReferencedPredicates(program.Body, predicates);
+                    return;
+
+                case DefineRelationNode define:
+                    CollectReferencedPredicates(define.Plan, predicates);
+                    return;
+
+                case DefineMutualFixpointNode defineMutual:
+                    CollectReferencedPredicates(defineMutual.Fixpoint, predicates);
+                    return;
+
+                case FixpointNode fixpoint:
+                    CollectReferencedPredicates(fixpoint.BasePlan, predicates);
+                    foreach (var recursivePlan in fixpoint.RecursivePlans)
+                    {
+                        CollectReferencedPredicates(recursivePlan, predicates);
+                    }
+                    return;
+
+                case MutualFixpointNode mutual:
+                    foreach (var member in mutual.Members)
+                    {
+                        CollectReferencedPredicates(member.BasePlan, predicates);
+                        foreach (var recursivePlan in member.RecursivePlans)
+                        {
+                            CollectReferencedPredicates(recursivePlan, predicates);
+                        }
+                    }
+                    return;
+
+                case SelectionNode selection:
+                    CollectReferencedPredicates(selection.Input, predicates);
+                    return;
+
+                case NegationNode negation:
+                    predicates.Add(negation.Predicate);
+                    CollectReferencedPredicates(negation.Input, predicates);
+                    return;
+
+                case AggregateNode aggregate:
+                    predicates.Add(aggregate.Predicate);
+                    CollectReferencedPredicates(aggregate.Input, predicates);
+                    return;
+
+                case AggregateSubplanNode aggregateSubplan:
+                    CollectReferencedPredicates(aggregateSubplan.Input, predicates);
+                    CollectReferencedPredicates(aggregateSubplan.Subplan, predicates);
+                    return;
+
+                case ArithmeticNode arithmetic:
+                    CollectReferencedPredicates(arithmetic.Input, predicates);
+                    return;
+
+                case ProjectionNode projection:
+                    CollectReferencedPredicates(projection.Input, predicates);
+                    return;
+
+                case KeyJoinNode keyJoin:
+                    CollectReferencedPredicates(keyJoin.Left, predicates);
+                    CollectReferencedPredicates(keyJoin.Right, predicates);
+                    return;
+
+                case JoinNode join:
+                    CollectReferencedPredicates(join.Left, predicates);
+                    CollectReferencedPredicates(join.Right, predicates);
+                    return;
+
+                case UnionNode union:
+                    foreach (var source in union.Sources)
+                    {
+                        CollectReferencedPredicates(source, predicates);
+                    }
+                    return;
+
+                case DistinctNode distinct:
+                    CollectReferencedPredicates(distinct.Input, predicates);
+                    return;
+
+                case OrderByNode orderBy:
+                    CollectReferencedPredicates(orderBy.Input, predicates);
+                    return;
+
+                case LimitNode limit:
+                    CollectReferencedPredicates(limit.Input, predicates);
+                    return;
+
+                case OffsetNode offset:
+                    CollectReferencedPredicates(offset.Input, predicates);
+                    return;
+            }
         }
 
         private IEnumerable<object[]> ExecuteDefineRelation(DefineRelationNode define, EvaluationContext? context)
@@ -1318,7 +1600,7 @@ namespace UnifyWeaver.QueryRuntime
 
             var evaluated = Evaluate(define.Plan, context);
             var rows = evaluated as List<object[]> ?? evaluated.ToList();
-            RegisterFacts(define.Predicate, rows, context);
+            RegisterFacts(define.Predicate, rows, context, define);
             return rows;
         }
 
@@ -1333,20 +1615,28 @@ namespace UnifyWeaver.QueryRuntime
             {
                 if (context.Totals.TryGetValue(member.Predicate, out var totals))
                 {
-                    RegisterFacts(member.Predicate, totals, context);
+                    RegisterFacts(member.Predicate, totals, context, define);
                 }
                 else
                 {
-                    RegisterFacts(member.Predicate, new List<object[]>(), context);
+                    RegisterFacts(member.Predicate, new List<object[]>(), context, define);
                 }
             }
 
             return headRows;
         }
 
-        private static void RegisterFacts(PredicateId predicate, List<object[]> rows, EvaluationContext context)
+        private static void RegisterFacts(PredicateId predicate, List<object[]> rows, EvaluationContext context, PlanNode? source)
         {
             context.Facts[predicate] = rows;
+            if (source is null)
+            {
+                context.FactSources.Remove(predicate);
+            }
+            else
+            {
+                context.FactSources[predicate] = source;
+            }
             context.FactSets.Remove(predicate);
 
             foreach (var key in context.FactIndices.Keys.Where(key => key.Predicate.Equals(predicate)).ToList())
@@ -4797,46 +5087,54 @@ namespace UnifyWeaver.QueryRuntime
             var totalSet = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
             var totalRows = new List<object[]>();
             var context = parentContext ?? new EvaluationContext();
-            var trace = context.Trace;
-            var baseRows = Evaluate(fixpoint.BasePlan, context).ToList();
-            var deltaRows = new List<object[]>();
-
-            foreach (var tuple in baseRows)
+            context.FixpointDepth++;
+            try
             {
-                if (TryAddRow(totalSet, tuple))
+                var trace = context.Trace;
+                var baseRows = Evaluate(fixpoint.BasePlan, context).ToList();
+                var deltaRows = new List<object[]>();
+
+                foreach (var tuple in baseRows)
                 {
-                    totalRows.Add(tuple);
-                    deltaRows.Add(tuple);
-                }
-            }
-
-            context.Current = predicate;
-            context.Totals[predicate] = totalRows;
-            context.Deltas[predicate] = deltaRows;
-
-            var iteration = 0;
-            trace?.RecordFixpointIteration(fixpoint, predicate, iteration, deltaRows.Count, totalRows.Count);
-
-            while (context.Deltas.TryGetValue(predicate, out var delta) && delta.Count > 0)
-            {
-                iteration++;
-                var nextDelta = new List<object[]>();
-                foreach (var recursivePlan in fixpoint.RecursivePlans)
-                {
-                    foreach (var tuple in Evaluate(recursivePlan, context))
+                    if (TryAddRow(totalSet, tuple))
                     {
-                        if (TryAddRow(totalSet, tuple))
-                        {
-                            nextDelta.Add(tuple);
-                        }
+                        totalRows.Add(tuple);
+                        deltaRows.Add(tuple);
                     }
                 }
-                totalRows.AddRange(nextDelta);
-                context.Deltas[predicate] = nextDelta;
-                trace?.RecordFixpointIteration(fixpoint, predicate, iteration, nextDelta.Count, totalRows.Count);
-            }
 
-            return totalRows;
+                context.Current = predicate;
+                context.Totals[predicate] = totalRows;
+                context.Deltas[predicate] = deltaRows;
+
+                var iteration = 0;
+                trace?.RecordFixpointIteration(fixpoint, predicate, iteration, deltaRows.Count, totalRows.Count);
+
+                while (context.Deltas.TryGetValue(predicate, out var delta) && delta.Count > 0)
+                {
+                    iteration++;
+                    var nextDelta = new List<object[]>();
+                    foreach (var recursivePlan in fixpoint.RecursivePlans)
+                    {
+                        foreach (var tuple in Evaluate(recursivePlan, context))
+                        {
+                            if (TryAddRow(totalSet, tuple))
+                            {
+                                nextDelta.Add(tuple);
+                            }
+                        }
+                    }
+                    totalRows.AddRange(nextDelta);
+                    context.Deltas[predicate] = nextDelta;
+                    trace?.RecordFixpointIteration(fixpoint, predicate, iteration, nextDelta.Count, totalRows.Count);
+                }
+
+                return totalRows;
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
         }
 
         private IEnumerable<object[]> ExecuteMutualFixpoint(MutualFixpointNode node, EvaluationContext? parentContext)
@@ -4846,72 +5144,34 @@ namespace UnifyWeaver.QueryRuntime
             var comparer = StructuralArrayComparer.Instance;
             var totalSets = new Dictionary<PredicateId, HashSet<RowWrapper>>();
             var context = parentContext ?? new EvaluationContext();
-            var trace = context.Trace;
-
-            foreach (var member in node.Members)
+            context.FixpointDepth++;
+            try
             {
-                var predicate = member.Predicate;
-                var totalList = new List<object[]>();
-                var deltaList = new List<object[]>();
-                context.Totals[predicate] = totalList;
-                context.Deltas[predicate] = deltaList;
+                var trace = context.Trace;
 
-                var set = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
-                totalSets[predicate] = set;
-
-                var baseRows = Evaluate(member.BasePlan, context).ToList();
-                foreach (var tuple in baseRows)
-                {
-                    if (TryAddRow(set, tuple))
-                    {
-                        totalList.Add(tuple);
-                        deltaList.Add(tuple);
-                    }
-                }
-            }
-
-            var iteration = 0;
-            if (trace is not null)
-            {
                 foreach (var member in node.Members)
                 {
                     var predicate = member.Predicate;
-                    trace.RecordFixpointIteration(node, predicate, iteration, context.Deltas[predicate].Count, context.Totals[predicate].Count);
-                }
-            }
+                    var totalList = new List<object[]>();
+                    var deltaList = new List<object[]>();
+                    context.Totals[predicate] = totalList;
+                    context.Deltas[predicate] = deltaList;
 
-            while (context.Deltas.Values.Any(delta => delta.Count > 0))
-            {
-                iteration++;
-                var nextDeltas = node.Members.ToDictionary(member => member.Predicate, _ => new List<object[]>());
+                    var set = new HashSet<RowWrapper>(new RowWrapperComparer(comparer));
+                    totalSets[predicate] = set;
 
-                foreach (var member in node.Members)
-                {
-                    context.Current = member.Predicate;
-                    var predicate = member.Predicate;
-                    var totalList = context.Totals[predicate];
-                    var totalSet = totalSets[predicate];
-                    var memberNext = nextDeltas[predicate];
-
-                    foreach (var recursivePlan in member.RecursivePlans)
+                    var baseRows = Evaluate(member.BasePlan, context).ToList();
+                    foreach (var tuple in baseRows)
                     {
-                        foreach (var tuple in Evaluate(recursivePlan, context))
+                        if (TryAddRow(set, tuple))
                         {
-                            if (TryAddRow(totalSet, tuple))
-                            {
-                                memberNext.Add(tuple);
-                            }
+                            totalList.Add(tuple);
+                            deltaList.Add(tuple);
                         }
                     }
-
-                    totalList.AddRange(memberNext);
                 }
 
-                foreach (var pair in nextDeltas)
-                {
-                    context.Deltas[pair.Key] = pair.Value;
-                }
-
+                var iteration = 0;
                 if (trace is not null)
                 {
                     foreach (var member in node.Members)
@@ -4920,11 +5180,57 @@ namespace UnifyWeaver.QueryRuntime
                         trace.RecordFixpointIteration(node, predicate, iteration, context.Deltas[predicate].Count, context.Totals[predicate].Count);
                     }
                 }
-            }
 
-            return context.Totals.TryGetValue(node.Head, out var headRows)
-                ? headRows
-                : Array.Empty<object[]>();
+                while (context.Deltas.Values.Any(delta => delta.Count > 0))
+                {
+                    iteration++;
+                    var nextDeltas = node.Members.ToDictionary(member => member.Predicate, _ => new List<object[]>());
+
+                    foreach (var member in node.Members)
+                    {
+                        context.Current = member.Predicate;
+                        var predicate = member.Predicate;
+                        var totalList = context.Totals[predicate];
+                        var totalSet = totalSets[predicate];
+                        var memberNext = nextDeltas[predicate];
+
+                        foreach (var recursivePlan in member.RecursivePlans)
+                        {
+                            foreach (var tuple in Evaluate(recursivePlan, context))
+                            {
+                                if (TryAddRow(totalSet, tuple))
+                                {
+                                    memberNext.Add(tuple);
+                                }
+                            }
+                        }
+
+                        totalList.AddRange(memberNext);
+                    }
+
+                    foreach (var pair in nextDeltas)
+                    {
+                        context.Deltas[pair.Key] = pair.Value;
+                    }
+
+                    if (trace is not null)
+                    {
+                        foreach (var member in node.Members)
+                        {
+                            var predicate = member.Predicate;
+                            trace.RecordFixpointIteration(node, predicate, iteration, context.Deltas[predicate].Count, context.Totals[predicate].Count);
+                        }
+                    }
+                }
+
+                return context.Totals.TryGetValue(node.Head, out var headRows)
+                    ? headRows
+                    : Array.Empty<object[]>();
+            }
+            finally
+            {
+                context.FixpointDepth--;
+            }
         }
 
         private IEnumerable<object[]> EvaluateRecursiveReference(RecursiveRefNode node, EvaluationContext? context)
@@ -5138,7 +5444,9 @@ namespace UnifyWeaver.QueryRuntime
                 Parameters = parameters?.ToList() ?? new List<object[]>();
                 Trace = trace ?? parent?.Trace;
                 CancellationToken = cancellationToken.CanBeCanceled ? cancellationToken : parent?.CancellationToken ?? cancellationToken;
+                FixpointDepth = parent?.FixpointDepth ?? 0;
                 Facts = parent?.Facts ?? new Dictionary<PredicateId, List<object[]>>();
+                FactSources = parent?.FactSources ?? new Dictionary<PredicateId, PlanNode>();
                 FactSets = parent?.FactSets ?? new Dictionary<PredicateId, HashSet<object[]>>();
                 FactIndices = parent?.FactIndices ?? new Dictionary<(PredicateId Predicate, int ColumnIndex), Dictionary<object, List<object[]>>>();
                 JoinIndices = parent?.JoinIndices ?? new Dictionary<(PredicateId Predicate, string KeySignature), Dictionary<RowWrapper, List<object[]>>>();
@@ -5157,6 +5465,8 @@ namespace UnifyWeaver.QueryRuntime
 
             public CancellationToken CancellationToken { get; }
 
+            public int FixpointDepth { get; set; }
+
             public Dictionary<string, List<object[]>> Materialized { get; } = new();
 
             public Dictionary<(string Id, int ColumnIndex), Dictionary<object, List<object[]>>> MaterializeFactIndices { get; } = new();
@@ -5170,6 +5480,8 @@ namespace UnifyWeaver.QueryRuntime
                 new();
 
             public Dictionary<PredicateId, List<object[]>> Facts { get; }
+
+            public Dictionary<PredicateId, PlanNode> FactSources { get; }
 
             public Dictionary<PredicateId, HashSet<object[]>> FactSets { get; }
 
