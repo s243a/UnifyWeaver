@@ -188,18 +188,53 @@ This preserves navigation semantics while organizing files for manageability.
 - [ ] `--cluster-method per-folder` option
 - [ ] Folder-aligned W matrices in federated training
 
+## Design Decisions
+
+### Orphan Handling
+
+Trees not connected to the main hierarchy go to a separate `_orphans/` folder:
+
+```
+output/
+  root/
+    ...
+  _orphans/                      # Disconnected trees
+    id99999.smmx
+    id99998.smmx
+```
+
+This keeps the main hierarchy clean while preserving all data.
+
+### Cross-Account Mode
+
+Configurable via `--account-mode`:
+
+| Mode | Flag | Behavior |
+|------|------|----------|
+| **Primary account** | `--account-mode primary` | Start from designated primary account (default: first in dataset). Other accounts' trees accessed via cross-account links are included but hierarchy follows primary. |
+| **Unified root** | `--account-mode unified` | Single synthetic root with each account as top-level folder. |
+| **Per-account** | `--account-mode separate` | Separate output directories per account. |
+
+**Current embeddings context**: The hierarchical lists use `s243a` as the principal account, with the tree following links across accounts. This maps naturally to `--account-mode primary`.
+
+```bash
+# Default: primary account mode
+python3 scripts/generate_simplemind_map.py \
+    --curated-folders \
+    --primary-account s243a \
+    --output-dir output/
+
+# Unified: all accounts under one root
+python3 scripts/generate_simplemind_map.py \
+    --curated-folders \
+    --account-mode unified \
+    --output-dir output/
+```
+
 ## Open Questions
 
-1. **Orphan handling**: Trees not connected to main hierarchy
-   - Option: Separate "orphans" folder
-   - Option: Attach to nearest centroid
-
-2. **Folder naming**: Currently tree_id based
+1. **Folder naming**: Currently tree_id based
    - Future: LLM mnemonics, path abbreviations
-
-3. **Cross-account**: Multiple account roots
-   - Option: Separate curated hierarchies per account
-   - Option: Unified with account as top-level folders
 
 ## Related Documentation
 

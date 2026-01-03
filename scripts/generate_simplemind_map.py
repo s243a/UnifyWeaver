@@ -1622,6 +1622,343 @@ def mst_to_folder_structure(
     return cluster_to_folder
 
 
+# =============================================================================
+# Curated Folders: Hierarchy-Preserving Folder Organization
+# =============================================================================
+
+def build_user_hierarchy(
+    data_path: Path,
+    primary_account: str = None
+) -> Tuple[Dict[str, List[str]], Dict[str, str], str, List[str]]:
+    """Build user's actual hierarchy from JSONL cluster_id relationships.
+
+    Args:
+        data_path: Path to JSONL data file
+        primary_account: Primary account to use as root (None = auto-detect)
+
+    Returns:
+        Tuple of:
+        - parent_to_children: Dict mapping parent URI to list of child URIs
+        - child_to_parent: Dict mapping child URI to parent URI
+        - root_url: The root cluster URL
+        - orphans: List of cluster URLs not connected to main hierarchy
+    """
+    # Load all Trees from JSONL
+    trees = {}  # uri -> tree data
+    parent_to_children: Dict[str, List[str]] = {}
+    child_to_parent: Dict[str, str] = {}
+
+    with open(data_path, 'r') as f:
+        for line in f:
+            item = json.loads(line)
+            if item.get('type') == 'Tree':
+                uri = item.get('uri', '')
+                if uri:
+                    trees[uri] = item
+                    parent_to_children[uri] = []
+
+    # Build parent-child relationships
+    for uri, item in trees.items():
+        cluster_id = item.get('cluster_id', '')
+        if cluster_id and cluster_id in trees:
+            parent_to_children[cluster_id].append(uri)
+            child_to_parent[uri] = cluster_id
+
+    # Find roots (trees with no parent in our dataset)
+    roots = [uri for uri in trees if uri not in child_to_parent]
+
+    # Filter roots by primary account if specified
+    if primary_account:
+        account_roots = [uri for uri in roots
+                        if trees[uri].get('account') == primary_account]
+        if account_roots:
+            roots = account_roots
+
+    # Pick root - prefer the one with most descendants
+    def count_descendants(uri: str) -> int:
+        count = len(parent_to_children.get(uri, []))
+        for child in parent_to_children.get(uri, []):
+            count += count_descendants(child)
+        return count
+
+    if roots:
+        root_url = max(roots, key=count_descendants)
+    else:
+        # Fallback: first tree
+        root_url = next(iter(trees.keys())) if trees else ""
+
+    # Find orphans: trees not reachable from root
+    reachable = set()
+    queue = [root_url]
+    while queue:
+        current = queue.pop(0)
+        if current in reachable:
+            continue
+        reachable.add(current)
+        queue.extend(parent_to_children.get(current, []))
+
+    orphans = [uri for uri in trees if uri not in reachable]
+
+    return parent_to_children, child_to_parent, root_url, orphans
+
+
+def cluster_trees_into_folder_groups(
+    tree_urls: List[str],
+    tree_centroids: Dict[str, np.ndarray],
+    folder_count: int,
+    method: str = 'kmeans'
+) -> Dict[str, int]:
+    """K-cluster trees into folder groups by centroid similarity.
+
+    Args:
+        tree_urls: List of tree URLs to cluster
+        tree_centroids: Dict mapping tree URL to centroid embedding
+        folder_count: Target number of folder groups (K)
+        method: Clustering method ('kmeans' | 'mst-cut')
+
+    Returns:
+        Dict mapping tree_url -> folder_group_id (0 to K-1)
+    """
+    # Filter to trees with centroids
+    valid_urls = [url for url in tree_urls if url in tree_centroids]
+
+    if len(valid_urls) == 0:
+        return {}
+
+    if len(valid_urls) <= folder_count:
+        # Each tree gets its own folder group
+        return {url: i for i, url in enumerate(valid_urls)}
+
+    centroids_matrix = np.stack([tree_centroids[url] for url in valid_urls])
+
+    if method == 'kmeans':
+        kmeans = KMeans(n_clusters=folder_count, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(centroids_matrix)
+        return {url: int(label) for url, label in zip(valid_urls, labels)}
+
+    elif method == 'mst-cut':
+        # Build MST and cut K-1 longest edges
+        distances = squareform(pdist(centroids_matrix, metric='cosine'))
+        mst = minimum_spanning_tree(distances)
+        mst_array = mst.toarray()
+
+        # Find edge weights and sort
+        edges = []
+        for i in range(len(valid_urls)):
+            for j in range(i + 1, len(valid_urls)):
+                weight = mst_array[i, j] + mst_array[j, i]
+                if weight > 0:
+                    edges.append((weight, i, j))
+        edges.sort(reverse=True)
+
+        # Cut K-1 longest edges
+        cut_edges = set()
+        for weight, i, j in edges[:folder_count - 1]:
+            cut_edges.add((min(i, j), max(i, j)))
+
+        # Find connected components after cuts
+        from collections import deque
+        visited = set()
+        components = []
+        for start in range(len(valid_urls)):
+            if start in visited:
+                continue
+            component = []
+            queue = deque([start])
+            while queue:
+                node = queue.popleft()
+                if node in visited:
+                    continue
+                visited.add(node)
+                component.append(node)
+                for neighbor in range(len(valid_urls)):
+                    edge = (min(node, neighbor), max(node, neighbor))
+                    if edge in cut_edges:
+                        continue
+                    weight = mst_array[node, neighbor] + mst_array[neighbor, node]
+                    if weight > 0 and neighbor not in visited:
+                        queue.append(neighbor)
+            components.append(component)
+
+        # Assign folder group IDs
+        tree_to_group = {}
+        for group_id, component in enumerate(components):
+            for idx in component:
+                tree_to_group[valid_urls[idx]] = group_id
+        return tree_to_group
+
+    else:
+        raise ValueError(f"Unknown clustering method: {method}")
+
+
+def build_mst_with_fixed_root(
+    folder_group_centroids: Dict[int, np.ndarray],
+    root_folder_group: int
+) -> Dict[int, List[int]]:
+    """Build MST from folder group centroids with fixed root.
+
+    Args:
+        folder_group_centroids: Dict mapping folder_group_id -> centroid
+        root_folder_group: The folder group ID that must be root
+
+    Returns:
+        Dict mapping parent_group_id -> list of child_group_ids
+    """
+    group_ids = list(folder_group_centroids.keys())
+
+    if len(group_ids) <= 1:
+        return {gid: [] for gid in group_ids}
+
+    # Stack centroids
+    centroids_matrix = np.stack([folder_group_centroids[gid] for gid in group_ids])
+
+    # Compute pairwise distances
+    distances = squareform(pdist(centroids_matrix, metric='cosine'))
+
+    # Build MST
+    mst = minimum_spanning_tree(distances)
+    mst_array = mst.toarray()
+    mst_symmetric = mst_array + mst_array.T
+
+    # BFS from fixed root to build parent->children
+    root_idx = group_ids.index(root_folder_group)
+    parent_to_children = {gid: [] for gid in group_ids}
+    visited = set()
+    queue = [root_idx]
+    visited.add(root_idx)
+
+    while queue:
+        current_idx = queue.pop(0)
+        current_gid = group_ids[current_idx]
+
+        for neighbor_idx in range(len(group_ids)):
+            if mst_symmetric[current_idx, neighbor_idx] > 0 and neighbor_idx not in visited:
+                visited.add(neighbor_idx)
+                neighbor_gid = group_ids[neighbor_idx]
+                parent_to_children[current_gid].append(neighbor_gid)
+                queue.append(neighbor_idx)
+
+    return parent_to_children
+
+
+def curated_to_folder_structure(
+    tree_to_folder_group: Dict[str, int],
+    folder_group_hierarchy: Dict[int, List[int]],
+    root_folder_group: int,
+    max_folder_depth: int = None
+) -> Dict[str, Path]:
+    """Convert curated folder groups to folder paths.
+
+    Args:
+        tree_to_folder_group: Dict mapping tree_url -> folder_group_id
+        folder_group_hierarchy: Dict mapping parent_group -> child_groups
+        root_folder_group: Root folder group ID
+        max_folder_depth: Maximum folder nesting (None = unlimited)
+
+    Returns:
+        Dict mapping tree_url -> relative folder Path
+    """
+    # First build group_id -> folder path
+    group_to_path: Dict[int, Path] = {}
+
+    def assign_group_paths(group_id: int, current_path: Path, depth: int):
+        group_to_path[group_id] = current_path
+        children = folder_group_hierarchy.get(group_id, [])
+
+        for child_gid in children:
+            if max_folder_depth is not None and depth >= max_folder_depth:
+                # Flatten: keep in current folder
+                child_path = current_path
+            else:
+                child_path = current_path / f"group_{child_gid}"
+            assign_group_paths(child_gid, child_path, depth + 1)
+
+    assign_group_paths(root_folder_group, Path('.'), 0)
+
+    # Now map trees to paths
+    tree_to_folder = {}
+    for tree_url, group_id in tree_to_folder_group.items():
+        tree_to_folder[tree_url] = group_to_path.get(group_id, Path('.'))
+
+    return tree_to_folder
+
+
+def build_curated_folder_structure(
+    data_path: Path,
+    tree_id_emb: Dict[str, np.ndarray],
+    title_emb: Dict[str, np.ndarray],
+    uri_emb: Dict[str, np.ndarray],
+    folder_count: int = 100,
+    folder_method: str = 'kmeans',
+    max_folder_depth: int = None,
+    primary_account: str = None
+) -> Tuple[Dict[str, Path], str, List[str]]:
+    """Build complete curated folder structure.
+
+    Args:
+        data_path: Path to JSONL data file
+        tree_id_emb, title_emb, uri_emb: Embedding dictionaries
+        folder_count: Target number of folder groups
+        folder_method: Clustering method ('kmeans' | 'mst-cut')
+        max_folder_depth: Maximum folder nesting depth
+        primary_account: Primary account to use as root
+
+    Returns:
+        Tuple of:
+        - cluster_to_folder: Dict mapping cluster_url -> folder Path
+        - root_url: The root cluster URL
+        - orphans: List of orphan cluster URLs
+    """
+    print("Building curated folder structure...")
+
+    # Phase 1: Build user hierarchy
+    parent_to_children, child_to_parent, root_url, orphans = build_user_hierarchy(
+        data_path, primary_account)
+    print(f"  User hierarchy: root={extract_tree_id(root_url)}, "
+          f"{len(parent_to_children)} trees, {len(orphans)} orphans")
+
+    # Get all tree URLs in main hierarchy
+    all_trees = list(parent_to_children.keys())
+
+    # Phase 2: Compute tree centroids
+    tree_centroids, _ = compute_cluster_centroids(
+        all_trees, data_path, tree_id_emb, title_emb, uri_emb)
+    print(f"  Computed centroids for {len(tree_centroids)} trees")
+
+    # Phase 3: K-cluster trees into folder groups
+    tree_to_group = cluster_trees_into_folder_groups(
+        all_trees, tree_centroids, folder_count, folder_method)
+    print(f"  Clustered into {len(set(tree_to_group.values()))} folder groups")
+
+    # Find which folder group contains the root
+    root_group = tree_to_group.get(root_url, 0)
+
+    # Phase 4: Compute folder group centroids
+    group_centroids: Dict[int, np.ndarray] = {}
+    for group_id in set(tree_to_group.values()):
+        group_trees = [url for url, gid in tree_to_group.items() if gid == group_id]
+        embeddings = [tree_centroids[url] for url in group_trees if url in tree_centroids]
+        if embeddings:
+            group_centroids[group_id] = np.mean(embeddings, axis=0)
+
+    # Phase 5: Build MST with fixed root
+    folder_group_hierarchy = build_mst_with_fixed_root(group_centroids, root_group)
+    print(f"  MST built with root at group {root_group}")
+
+    # Phase 6: Convert to folder paths
+    cluster_to_folder = curated_to_folder_structure(
+        tree_to_group, folder_group_hierarchy, root_group, max_folder_depth)
+
+    # Handle orphans - put in _orphans folder
+    orphan_folder = Path('_orphans')
+    for orphan_url in orphans:
+        cluster_to_folder[orphan_url] = orphan_folder
+
+    print(f"  Folder structure computed")
+
+    return cluster_to_folder, root_url, orphans
+
+
 def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                        tree_id_emb: Dict[str, np.ndarray],
                        title_emb: Dict[str, np.ndarray],
@@ -1629,13 +1966,18 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                        max_depth: int = None, current_depth: int = 0,
                        visited: set = None,
                        mst_folders: bool = False,
+                       curated_folders: bool = False,
                        cluster_to_folder: Dict[str, Path] = None,
                        max_folder_depth: int = None,
                        min_folder_children: int = None,
                        max_folder_children: int = None,
+                       folder_count: int = 100,
+                       folder_method: str = 'kmeans',
+                       primary_account: str = None,
                        parent_links: bool = False,
                        parent_url: str = None,
                        url_to_folder: Dict[str, Path] = None,
+                       curated_root_url: str = None,
                        **kwargs) -> int:
     """Recursively generate mind maps for a cluster hierarchy.
 
@@ -1648,13 +1990,18 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         current_depth: Current depth in recursion
         visited: Set of already-visited cluster URLs (prevents infinite loops)
         mst_folders: If True, organize output into MST-based subfolder hierarchy
+        curated_folders: If True, use curated folder structure (preserves user hierarchy)
         cluster_to_folder: Pre-computed mapping of cluster URLs to folder paths
         max_folder_depth: Maximum subfolder nesting depth
         min_folder_children: Minimum children to create subfolders
         max_folder_children: Maximum children to put in subfolders
+        folder_count: Target number of folder groups for curated folders
+        folder_method: Clustering method for curated folders ('kmeans' | 'mst-cut')
+        primary_account: Primary account for curated folders root selection
         parent_links: If True, add "back to parent" nodes in child maps
         parent_url: URL of the parent cluster (for parent links)
         url_to_folder: Mapping of cluster URLs to folder paths (for parent links)
+        curated_root_url: Root URL determined by curated folders (for starting generation)
         **kwargs: Additional arguments passed to generate_single_map
 
     Returns:
@@ -1667,8 +2014,22 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         if parent_links and url_to_folder is None:
             url_to_folder = {}
 
+        # On first call with curated_folders, build curated structure
+        if curated_folders and cluster_to_folder is None:
+            cluster_to_folder, curated_root_url, orphans = build_curated_folder_structure(
+                data_path, tree_id_emb, title_emb, uri_emb,
+                folder_count=folder_count,
+                folder_method=folder_method,
+                max_folder_depth=max_folder_depth,
+                primary_account=primary_account
+            )
+            # Start from curated root, not the passed cluster_url
+            cluster_url = curated_root_url
+            if orphans:
+                print(f"  Note: {len(orphans)} orphan trees will be placed in _orphans/")
+
         # On first call with mst_folders, build MST structure
-        if mst_folders and cluster_to_folder is None:
+        elif mst_folders and cluster_to_folder is None:
             print("Building MST folder structure...")
             # Discover all clusters
             all_clusters = discover_all_clusters(cluster_url, data_path, max_depth)
@@ -1705,7 +2066,7 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
     if not tree_id:
         tree_id = f"cluster_{len(visited)}"
 
-    if mst_folders and cluster_to_folder and cluster_url in cluster_to_folder:
+    if (mst_folders or curated_folders) and cluster_to_folder and cluster_url in cluster_to_folder:
         folder = cluster_to_folder[cluster_url]
         output_path = output_dir / folder / f"{tree_id}.smmx"
         source_folder = folder
@@ -1763,10 +2124,14 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
             current_depth=current_depth + 1,
             visited=visited,
             mst_folders=mst_folders,
+            curated_folders=curated_folders,
             cluster_to_folder=cluster_to_folder,
             max_folder_depth=max_folder_depth,
             min_folder_children=min_folder_children,
             max_folder_children=max_folder_children,
+            folder_count=folder_count,
+            folder_method=folder_method,
+            primary_account=primary_account,
             parent_links=parent_links,
             parent_url=cluster_url,  # Current cluster becomes parent for children
             url_to_folder=url_to_folder,
@@ -1823,6 +2188,14 @@ def main():
                         help='Add "back to parent" nodes in child maps')
     parser.add_argument('--mst-folders', action='store_true',
                         help='Organize output into subfolders based on MST of cluster centroids')
+    parser.add_argument('--curated-folders', action='store_true',
+                        help='Organize into folders preserving user hierarchy with K-clustered groups')
+    parser.add_argument('--folder-count', type=int, default=100,
+                        help='Target number of folder groups for --curated-folders (default: 100)')
+    parser.add_argument('--folder-method', choices=['kmeans', 'mst-cut'], default='kmeans',
+                        help='Clustering method for --curated-folders (default: kmeans)')
+    parser.add_argument('--primary-account', type=str, default=None,
+                        help='Primary account for --curated-folders root selection')
     parser.add_argument('--max-folder-depth', type=int, default=None,
                         help='Maximum subfolder nesting depth (default: unlimited)')
     parser.add_argument('--min-folder-children', type=int, default=None,
@@ -1886,6 +2259,14 @@ def main():
             print(f"MST folder organization: enabled")
             if args.max_folder_depth is not None:
                 print(f"Max folder depth: {args.max_folder_depth}")
+        if args.curated_folders:
+            print(f"Curated folder organization: enabled")
+            print(f"  Folder count: {args.folder_count}")
+            print(f"  Folder method: {args.folder_method}")
+            if args.primary_account:
+                print(f"  Primary account: {args.primary_account}")
+            if args.max_folder_depth is not None:
+                print(f"  Max folder depth: {args.max_folder_depth}")
         if args.parent_links:
             print(f"Parent links: enabled")
 
@@ -1898,9 +2279,13 @@ def main():
             uri_emb=uri_emb,
             max_depth=args.max_depth,
             mst_folders=args.mst_folders,
+            curated_folders=args.curated_folders,
             max_folder_depth=args.max_folder_depth,
             min_folder_children=args.min_folder_children,
             max_folder_children=args.max_folder_children,
+            folder_count=args.folder_count,
+            folder_method=args.folder_method,
+            primary_account=args.primary_account,
             parent_links=args.parent_links,
             min_children=args.min_children,
             max_children=args.max_children,
