@@ -33,6 +33,13 @@
     compute_node_dimensions/3,      % compute_node_dimensions(+Label, +Style, -Dimensions)
     compute_edge_path/5,            % compute_edge_path(+Style, +X1, +Y1, +X2, +Y2, -Path)
 
+    % CSS custom properties (variables)
+    define_css_variable/2,          % define_css_variable(+Name, +Value)
+    get_css_variable/2,             % get_css_variable(+Name, -Value)
+    clear_css_variables/0,          % clear_css_variables
+    resolve_css_value/2,            % resolve_css_value(+Value, -ResolvedValue)
+    resolve_style_variables/2,      % resolve_style_variables(+Style, -ResolvedStyle)
+
     % Testing
     test_style_resolver/0
 ]).
@@ -476,6 +483,159 @@ test_style_resolver :-
     ),
 
     format('~n=== Tests Complete ===~n').
+
+% ============================================================================
+% CSS CUSTOM PROPERTIES (VARIABLES)
+% ============================================================================
+
+:- dynamic css_variable/2.  % css_variable(Name, Value)
+
+%% define_css_variable(+Name, +Value)
+%
+%  Define a CSS custom property (variable).
+%  Name should start with '--' by convention.
+%
+define_css_variable(Name, Value) :-
+    retractall(css_variable(Name, _)),
+    assertz(css_variable(Name, Value)).
+
+%% get_css_variable(+Name, -Value)
+%
+%  Get the value of a CSS variable.
+%
+get_css_variable(Name, Value) :-
+    css_variable(Name, Value).
+
+%% clear_css_variables
+%
+%  Remove all CSS variable definitions.
+%
+clear_css_variables :-
+    retractall(css_variable(_, _)).
+
+%% resolve_css_value(+Value, -ResolvedValue)
+%
+%  Resolve a value that may contain CSS var() references.
+%  Supports: var(--name), var(--name, fallback)
+%
+resolve_css_value(Value, ResolvedValue) :-
+    atom(Value),
+    atom_string(Value, ValueStr),
+    (   sub_string(ValueStr, _, _, _, "var(")
+    ->  resolve_var_references(ValueStr, ResolvedStr),
+        atom_string(ResolvedValue, ResolvedStr)
+    ;   ResolvedValue = Value
+    ).
+resolve_css_value(Value, Value) :-
+    \+ atom(Value).
+
+%% resolve_var_references(+String, -ResolvedString)
+%
+%  Resolve all var() references in a string.
+%
+resolve_var_references(String, ResolvedString) :-
+    (   sub_string(String, Before, _, After, "var("),
+        sub_string(String, _, After, 0, Rest),
+        sub_string(Rest, VarLen, _, _, ")")
+    ->  sub_string(Rest, 0, VarLen, _, VarContent),
+        % Parse var content: either "--name" or "--name, fallback"
+        (   sub_string(VarContent, CommaPos, _, _, ",")
+        ->  sub_string(VarContent, 0, CommaPos, _, VarName),
+            FallbackStart is CommaPos + 1,
+            sub_string(VarContent, FallbackStart, _, 0, FallbackRaw),
+            string_trim(FallbackRaw, Fallback)
+        ;   VarName = VarContent,
+            Fallback = ""
+        ),
+        % Trim whitespace from variable name
+        string_trim(VarName, TrimmedName),
+        atom_string(VarAtom, TrimmedName),
+        % Look up variable
+        (   css_variable(VarAtom, VarValue)
+        ->  atom_string(VarValue, ValueStr)
+        ;   Fallback \= ""
+        ->  ValueStr = Fallback
+        ;   ValueStr = ""
+        ),
+        % Replace var() with value
+        sub_string(String, 0, Before, _, BeforeStr),
+        ClosePos is VarLen + 1,
+        sub_string(Rest, ClosePos, _, 0, AfterStr),
+        string_concat(BeforeStr, ValueStr, Temp),
+        string_concat(Temp, AfterStr, PartialResolved),
+        % Recursively resolve any remaining var() references
+        resolve_var_references(PartialResolved, ResolvedString)
+    ;   ResolvedString = String
+    ).
+
+%% string_trim(+String, -Trimmed)
+%
+%  Remove leading and trailing whitespace.
+%
+string_trim(String, Trimmed) :-
+    string_codes(String, Codes),
+    trim_codes(Codes, TrimmedCodes),
+    string_codes(Trimmed, TrimmedCodes).
+
+trim_codes([], []).
+trim_codes([H|T], Result) :-
+    (   char_type(H, space)
+    ->  trim_codes(T, Result)
+    ;   reverse([H|T], Rev),
+        trim_trailing(Rev, TrimmedRev),
+        reverse(TrimmedRev, Result)
+    ).
+
+trim_trailing([], []).
+trim_trailing([H|T], Result) :-
+    (   char_type(H, space)
+    ->  trim_trailing(T, Result)
+    ;   Result = [H|T]
+    ).
+
+%% resolve_style_variables(+Style, -ResolvedStyle)
+%
+%  Resolve all CSS variable references in a style list.
+%
+resolve_style_variables(Style, ResolvedStyle) :-
+    maplist(resolve_style_prop, Style, ResolvedStyle).
+
+resolve_style_prop(Prop, ResolvedProp) :-
+    Prop =.. [Key, Value],
+    resolve_css_value(Value, ResolvedValue),
+    ResolvedProp =.. [Key, ResolvedValue].
+
+%% Define default CSS variables for themes
+:- initialization((
+    % Primary colors
+    define_css_variable('--primary-color', '#4a90d9'),
+    define_css_variable('--primary-dark', '#2c5a8c'),
+    define_css_variable('--primary-light', '#e8f4fc'),
+
+    % Accent colors
+    define_css_variable('--accent-success', '#6ab04c'),
+    define_css_variable('--accent-warning', '#f0932b'),
+    define_css_variable('--accent-danger', '#eb4d4b'),
+
+    % Text colors
+    define_css_variable('--text-primary', '#333333'),
+    define_css_variable('--text-secondary', '#666666'),
+    define_css_variable('--text-light', '#ffffff'),
+
+    % Background colors
+    define_css_variable('--bg-light', '#ffffff'),
+    define_css_variable('--bg-dark', '#1a1a2e'),
+
+    % Spacing
+    define_css_variable('--spacing-sm', '8'),
+    define_css_variable('--spacing-md', '16'),
+    define_css_variable('--spacing-lg', '24'),
+
+    % Border radius
+    define_css_variable('--radius-sm', '4'),
+    define_css_variable('--radius-md', '8'),
+    define_css_variable('--radius-lg', '12')
+), now).
 
 :- initialization((
     format('Style resolver module loaded~n', [])
