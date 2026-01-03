@@ -169,22 +169,23 @@ This preserves navigation semantics while organizing files for manageability.
 
 ## Implementation Phases
 
-### Phase A: Design & Documentation (this PR)
-- [ ] Design document
-- [ ] Algorithm specification
-- [ ] Configuration options
+### Phase A: Design & Documentation ✓
+- [x] Design document
+- [x] Algorithm specification
+- [x] Configuration options
 
-### Phase B: Core Implementation
-- [ ] Build user hierarchy from JSONL
-- [ ] K-clustering of trees into folder groups
-- [ ] MST with fixed root
+### Phase B: Core Implementation ✓
+- [x] Build user hierarchy from JSONL
+- [x] K-clustering of trees into folder groups (kmeans, mst-cut)
+- [x] MST with fixed root
 
-### Phase C: Integration
-- [ ] `--curated-folders` flag in generate_simplemind_map.py
-- [ ] Folder naming options
-- [ ] Tests with real Pearltrees data
+### Phase C: Integration (In Progress)
+- [x] `--curated-folders` flag in generate_simplemind_map.py
+- [ ] LLM-generated folder names (currently `group_N`)
+- [ ] Performance optimization for large datasets
+- [ ] Tests with full Pearltrees data
 
-### Phase D: W Matrix Integration (Optional)
+### Phase D: W Matrix Integration (Future)
 - [ ] `--cluster-method per-folder` option
 - [ ] Folder-aligned W matrices in federated training
 
