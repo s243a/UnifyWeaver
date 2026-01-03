@@ -26,30 +26,30 @@ This document outlines the phased implementation of the declarative mind map lay
 ```
 
 **Tasks:**
-- [ ] Define core predicates for node and edge declaration
-- [ ] Implement specification predicates with validation
-- [ ] Add constraint and preference storage
-- [ ] Create management predicates (declare_*, clear_*)
+- [x] Define core predicates for node and edge declaration
+- [x] Implement specification predicates with validation
+- [x] Add constraint and preference storage
+- [x] Create management predicates (declare_*, clear_*)
 
 ### 1.2 Integrate with Component Registry
 
 **File:** `src/unifyweaver/mindmap/mindmap_components.pl`
 
 **Tasks:**
-- [ ] Define `mindmap_layout` category
-- [ ] Define `mindmap_optimizer` category
-- [ ] Define `mindmap_renderer` category
-- [ ] Register default implementations
+- [x] Define `mindmap_layout` category
+- [x] Define `mindmap_optimizer` category
+- [x] Define `mindmap_renderer` category
+- [x] Register default implementations
 
 ### 1.3 Create Intermediate Representation
 
 **File:** `src/unifyweaver/mindmap/mindmap_ir.pl`
 
 **Tasks:**
-- [ ] Define normalized graph structure
-- [ ] Implement spec-to-IR transformation
-- [ ] Add attribute extraction and normalization
-- [ ] Handle implicit edges from `parent()` properties
+- [x] Define normalized graph structure
+- [x] Implement spec-to-IR transformation
+- [x] Add attribute extraction and normalization
+- [x] Handle implicit edges from `parent()` properties
 
 ## Phase 2: Layout Optimization Target (Priority)
 
@@ -65,10 +65,10 @@ This document outlines the phased implementation of the declarative mind map lay
 ```
 
 **Tasks:**
-- [ ] Extract algorithm parameters from existing Python
-- [ ] Create Prolog interface predicates
+- [x] Extract algorithm parameters from existing Python
+- [x] Create Prolog interface predicates
 - [ ] Add Python bindings for heavy computation
-- [ ] Implement fallback pure-Prolog version for small graphs
+- [x] Implement fallback pure-Prolog version for small graphs
 
 ### 2.2 Port Optimization Algorithms
 
@@ -79,8 +79,8 @@ This document outlines the phased implementation of the declarative mind map lay
 - `src/unifyweaver/mindmap/optimize/crossing_minimization.pl`
 
 **Tasks:**
-- [ ] Create overlap detection predicates
-- [ ] Implement push-apart algorithm
+- [x] Create overlap detection predicates
+- [x] Implement push-apart algorithm
 - [ ] Create edge crossing detection
 - [ ] Implement angular adjustment optimizer
 - [ ] Add Python bindings for O(n²) operations
@@ -95,10 +95,10 @@ This document outlines the phased implementation of the declarative mind map lay
 ```
 
 **Tasks:**
-- [ ] Implement stage sequencing
-- [ ] Add intermediate result passing
-- [ ] Create convergence detection
-- [ ] Add progress reporting hooks
+- [x] Implement stage sequencing
+- [x] Add intermediate result passing
+- [x] Create convergence detection
+- [x] Add progress reporting hooks
 
 ## Phase 3: First Output Targets
 
@@ -107,12 +107,12 @@ This document outlines the phased implementation of the declarative mind map lay
 **File:** `src/unifyweaver/mindmap/render/svg_renderer.pl`
 
 **Tasks:**
-- [ ] Port rendering logic from `render_mindmap.py`
-- [ ] Create SVG element generation predicates
-- [ ] Implement node shape rendering (ellipse, rectangle, diamond)
-- [ ] Implement edge rendering (straight, bezier)
-- [ ] Add style application
-- [ ] Generate complete SVG document
+- [x] Port rendering logic from `render_mindmap.py`
+- [x] Create SVG element generation predicates
+- [x] Implement node shape rendering (ellipse, rectangle, diamond)
+- [x] Implement edge rendering (straight, bezier)
+- [x] Add style application
+- [x] Generate complete SVG document
 
 ### 3.2 Native Format Export (.smmx, .mm)
 
