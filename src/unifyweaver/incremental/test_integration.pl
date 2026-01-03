@@ -8,9 +8,12 @@
 
 :- module(test_integration, [
     run_integration_tests/0,
+    run_multi_target_tests/0,
     test_bash_incremental/0,
     test_cache_invalidation/0,
-    test_dependency_tracking/0
+    test_dependency_tracking/0,
+    test_multi_target_caching/0,
+    test_cross_target_independence/0
 ]).
 
 :- use_module(library(lists)).
@@ -33,8 +36,11 @@
     hash_predicate_with_options/3
 ]).
 
-% Import stream_compiler (Bash target)
+% Import target compilers for testing
 :- use_module('../core/stream_compiler').
+:- use_module('../targets/go_target').
+:- use_module('../targets/python_target').
+:- use_module('../targets/typescript_target').
 
 % ============================================================================
 % MAIN TEST RUNNER
@@ -255,6 +261,155 @@ test_options_affect_cache :-
     write('  Compile with original options (cache miss)... '),
     compile_incremental(int_test_helper/1, bash, [], _Code3),
     writeln('OK'),
+
+    writeln('  PASS'),
+    writeln('').
+
+% ============================================================================
+% MULTI-TARGET TESTS (Phase 4)
+% ============================================================================
+
+run_multi_target_tests :-
+    writeln('=== MULTI-TARGET INCREMENTAL COMPILATION TESTS ==='),
+    writeln(''),
+
+    % Clear cache before tests
+    clear_incremental_cache,
+
+    % Setup test predicates
+    setup_integration_tests,
+
+    % Run multi-target tests
+    test_multi_target_caching,
+    test_cross_target_independence,
+    test_target_specific_invalidation,
+
+    % Cleanup
+    cleanup_integration_tests,
+    clear_incremental_cache,
+
+    writeln(''),
+    writeln('=== ALL MULTI-TARGET TESTS PASSED ===').
+
+% ============================================================================
+% TEST: MULTI-TARGET CACHING
+% ============================================================================
+
+test_multi_target_caching :-
+    writeln('Test 5: Multi-target caching (Bash, Go, Python, TypeScript)'),
+
+    % Test each target compiles and caches
+    test_target_compile(bash, 'Bash'),
+    test_target_compile(go, 'Go'),
+    test_target_compile(python, 'Python'),
+    test_target_compile(typescript, 'TypeScript'),
+
+    writeln('  PASS'),
+    writeln('').
+
+test_target_compile(Target, TargetName) :-
+    format('  Compiling to ~w... ', [TargetName]),
+    (   catch(
+            compile_incremental(int_test_parent/2, Target, [], Code),
+            Error,
+            (format('ERROR: ~w~n', [Error]), fail)
+        ),
+        Code \= []
+    ->  writeln('OK')
+    ;   format('FAIL: ~w compilation failed~n', [TargetName]),
+        fail
+    ),
+
+    % Verify it was cached
+    format('  Verifying ~w cache... ', [TargetName]),
+    hash_predicate_with_options(int_test_parent/2, [], Hash),
+    (   is_cached(int_test_parent/2, Target, Hash)
+    ->  writeln('OK')
+    ;   format('FAIL: ~w not cached~n', [TargetName]),
+        fail
+    ).
+
+% ============================================================================
+% TEST: CROSS-TARGET INDEPENDENCE
+% ============================================================================
+
+test_cross_target_independence :-
+    writeln('Test 6: Cross-target cache independence'),
+
+    % Clear and compile to multiple targets
+    clear_incremental_cache,
+
+    % Compile same predicate to different targets
+    write('  Compile to Bash... '),
+    compile_incremental(int_test_helper/1, bash, [], BashCode),
+    writeln('OK'),
+
+    write('  Compile to Go... '),
+    compile_incremental(int_test_helper/1, go, [], GoCode),
+    writeln('OK'),
+
+    % Codes should be different (different languages)
+    write('  Verifying different output... '),
+    (   BashCode \== GoCode
+    ->  writeln('OK')
+    ;   writeln('FAIL: Same code for different targets'),
+        fail
+    ),
+
+    % Both should be cached independently
+    write('  Verifying independent caches... '),
+    hash_predicate_with_options(int_test_helper/1, [], Hash),
+    (   is_cached(int_test_helper/1, bash, Hash),
+        is_cached(int_test_helper/1, go, Hash)
+    ->  writeln('OK')
+    ;   writeln('FAIL: Both targets should be cached'),
+        fail
+    ),
+
+    % Cache hit for each target
+    write('  Verifying cache hits... '),
+    compile_incremental(int_test_helper/1, bash, [], BashCode2),
+    compile_incremental(int_test_helper/1, go, [], GoCode2),
+    (   BashCode == BashCode2, GoCode == GoCode2
+    ->  writeln('OK')
+    ;   writeln('FAIL: Cache should return same code'),
+        fail
+    ),
+
+    writeln('  PASS'),
+    writeln('').
+
+% ============================================================================
+% TEST: TARGET-SPECIFIC INVALIDATION
+% ============================================================================
+
+test_target_specific_invalidation :-
+    writeln('Test 7: Target-specific cache invalidation'),
+
+    clear_incremental_cache,
+
+    % Compile to both targets
+    write('  Initial compile to Bash and Go... '),
+    compile_incremental(int_test_helper/1, bash, [], _),
+    compile_incremental(int_test_helper/1, go, [], _),
+    writeln('OK'),
+
+    % Get hashes
+    hash_predicate_with_options(int_test_helper/1, [], Hash1),
+
+    % Invalidate only Bash cache
+    write('  Invalidating Bash cache only... '),
+    cache_manager:invalidate_cache(int_test_helper/1, bash),
+    writeln('OK'),
+
+    % Bash should be gone, Go should remain
+    write('  Verifying selective invalidation... '),
+    (   \+ is_cached(int_test_helper/1, bash, Hash1),
+        is_cached(int_test_helper/1, go, Hash1)
+    ->  writeln('OK')
+    ;   writeln('FAIL: Only Bash should be invalidated'),
+        fail
+    ),
 
     writeln('  PASS'),
     writeln('').
