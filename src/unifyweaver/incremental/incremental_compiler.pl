@@ -25,7 +25,11 @@
     compile_incremental/4,      % +Pred/Arity, +Target, +Options, -Code
     compile_incremental/3,      % +Pred/Arity, +Target, -Code (default options)
     compile_fresh/4,            % +Pred/Arity, +Target, +Options, -Code (bypass cache)
-    clear_incremental_cache/0,  % Clear all cached compilations
+    clear_incremental_cache/0,  % Clear all cached compilations (memory only)
+    clear_all_cache/0,          % Clear both memory and disk cache
+    save_cache/0,               % Save memory cache to disk
+    load_cache/0,               % Load disk cache to memory
+    set_cache_dir/1,            % +Path - Set cache directory
     incremental_stats/0,        % Print cache statistics
     test_incremental_compiler/0
 ]).
@@ -44,6 +48,15 @@
     clear_cache/0,
     cache_stats/1,
     cache_entries/1
+]).
+:- use_module(cache_persistence, [
+    save_cache_to_disk/0,
+    load_cache_from_disk/0,
+    set_cache_directory/1,
+    get_cache_directory/1,
+    clear_disk_cache/0,
+    disk_cache_exists/0,
+    get_disk_cache_stats/1
 ]).
 
 % Import target compilers (loaded lazily to avoid circular dependencies)
@@ -182,11 +195,44 @@ target_compiler(vbnet, vbnet_target, compile_predicate_to_vbnet).
 
 %% clear_incremental_cache is det.
 %
-% Clear all cached compilations.
+% Clear all cached compilations (memory only).
 %
 clear_incremental_cache :-
     clear_cache,
-    log_verbose('[Incremental] Cache cleared', []).
+    log_verbose('[Incremental] Memory cache cleared', []).
+
+%% clear_all_cache is det.
+%
+% Clear both memory and disk cache.
+%
+clear_all_cache :-
+    clear_cache,
+    clear_disk_cache,
+    log_verbose('[Incremental] Memory and disk cache cleared', []).
+
+%% save_cache is det.
+%
+% Save the current memory cache to disk for persistence.
+%
+save_cache :-
+    save_cache_to_disk,
+    log_verbose('[Incremental] Cache saved to disk', []).
+
+%% load_cache is det.
+%
+% Load cache from disk into memory.
+%
+load_cache :-
+    load_cache_from_disk,
+    log_verbose('[Incremental] Cache loaded from disk', []).
+
+%% set_cache_dir(+Path) is det.
+%
+% Set the cache directory path.
+%
+set_cache_dir(Path) :-
+    set_cache_directory(Path),
+    log_verbose('[Incremental] Cache directory set to: ~w', [Path]).
 
 %% incremental_stats is det.
 %
@@ -230,6 +276,22 @@ incremental_stats :-
         forall(member(entry(Pred, Target, Hash, _), Entries),
             format('  ~w -> ~w (hash: ~w)~n', [Pred, Target, Hash]))
     ;   format('(~w entries - too many to list)~n', [EntryCount])
+    ),
+
+    % Disk cache info
+    writeln(''),
+    writeln('--- Disk Cache ---'),
+    get_disk_cache_stats(DiskStats),
+    (   member(exists(true), DiskStats)
+    ->  member(total_entries(DiskTotal), DiskStats),
+        member(total_size_bytes(DiskSize), DiskStats),
+        member(cache_directory(CacheDir), DiskStats),
+        format('Directory: ~w~n', [CacheDir]),
+        format('Entries on disk: ~w~n', [DiskTotal]),
+        format('Total size: ~w bytes~n', [DiskSize])
+    ;   member(cache_directory(CacheDir), DiskStats),
+        format('Directory: ~w~n', [CacheDir]),
+        writeln('(no disk cache)')
     ).
 
 % ============================================================================

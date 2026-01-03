@@ -31,6 +31,7 @@
     cache_stats/1,              % -Stats - Get cache statistics
     cache_entries/1,            % -Entries - List all cache entries
     is_cached/3,                % +Pred/Arity, +Target, +Hash
+    compilation_cache/5,        % Dynamic: Pred/Arity, Target, Hash, Code, Timestamp
     test_cache_manager/0
 ]).
 
