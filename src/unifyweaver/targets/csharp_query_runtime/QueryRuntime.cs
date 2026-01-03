@@ -2137,6 +2137,8 @@ namespace UnifyWeaver.QueryRuntime
                         var keyCount = join.LeftKeys.Count;
                         var leftIndexKeys = GetScanIndexKeys(join.LeftKeys, leftScanPattern);
                         var rightIndexKeys = GetScanIndexKeys(join.RightKeys, rightScanPattern);
+                        var leftSignature = leftIndexKeys.Count == 1 ? string.Empty : string.Join(",", leftIndexKeys);
+                        var rightSignature = rightIndexKeys.Count == 1 ? string.Empty : string.Join(",", rightIndexKeys);
 
                         var estimatedLeftProbe = leftScanPattern is null
                             ? leftFacts.Count
@@ -2147,6 +2149,19 @@ namespace UnifyWeaver.QueryRuntime
                             : SelectFactsForPattern(rightScanPredicate, rightFacts, rightScanPattern, context).Count;
 
                         var buildScanOnLeft = (long)leftFacts.Count + estimatedRightProbe <= (long)rightFacts.Count + estimatedLeftProbe;
+
+                        var leftIndexCached = leftIndexKeys.Count == 1
+                            ? context.FactIndices.ContainsKey((leftScanPredicate, leftIndexKeys[0]))
+                            : context.JoinIndices.ContainsKey((leftScanPredicate, leftSignature));
+
+                        var rightIndexCached = rightIndexKeys.Count == 1
+                            ? context.FactIndices.ContainsKey((rightScanPredicate, rightIndexKeys[0]))
+                            : context.JoinIndices.ContainsKey((rightScanPredicate, rightSignature));
+
+                        if (leftIndexCached != rightIndexCached)
+                        {
+                            buildScanOnLeft = leftIndexCached;
+                        }
 
                         if (buildScanOnLeft)
                         {
@@ -2176,8 +2191,7 @@ namespace UnifyWeaver.QueryRuntime
                             }
                             else
                             {
-                                var signature = string.Join(",", leftIndexKeys);
-                                var joinIndexCached = context.JoinIndices.ContainsKey((leftScanPredicate, signature));
+                                var joinIndexCached = context.JoinIndices.ContainsKey((leftScanPredicate, leftSignature));
 
                                 const int TinyProbeUpperBound = 64;
                                 var probeIsTiny = keyCount > 1 &&
@@ -2344,8 +2358,7 @@ namespace UnifyWeaver.QueryRuntime
                             }
                             else
                             {
-                                var signature = string.Join(",", rightIndexKeys);
-                                var joinIndexCached = context.JoinIndices.ContainsKey((rightScanPredicate, signature));
+                                var joinIndexCached = context.JoinIndices.ContainsKey((rightScanPredicate, rightSignature));
 
                                 const int TinyProbeUpperBound = 64;
                                 var probeIsTiny = keyCount > 1 &&
