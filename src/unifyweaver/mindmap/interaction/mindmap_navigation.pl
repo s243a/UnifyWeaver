@@ -1,0 +1,852 @@
+% SPDX-License-Identifier: MIT OR Apache-2.0
+% Copyright (c) 2025 John William Creighton (s243a)
+%
+% mindmap_navigation.pl - Mind Map Hyperlink Navigation
+%
+% Handles link navigation, internal node links, smooth scrolling,
+% and navigation history for mind maps.
+%
+% Usage:
+%   ?- mindmap_nav_spec(my_map, NavSpec).
+%   ?- generate_navigation_handlers(my_map, Code).
+
+:- module(mindmap_navigation, [
+    % Navigation specifications
+    mindmap_nav_spec/2,
+    mindmap_link_preview_spec/2,
+    mindmap_history_spec/2,
+
+    % Generation predicates
+    generate_navigation_handlers/2,
+    generate_link_preview/2,
+    generate_navigation_history/2,
+    generate_keyboard_navigation/2,
+
+    % Management
+    declare_nav_spec/2,
+    clear_nav_specs/0,
+
+    % Testing
+    test_mindmap_navigation/0
+]).
+
+:- use_module(library(lists)).
+
+% ============================================================================
+% DYNAMIC PREDICATES
+% ============================================================================
+
+:- dynamic mindmap_nav_spec/2.
+:- dynamic mindmap_link_preview_spec/2.
+:- dynamic mindmap_history_spec/2.
+
+% ============================================================================
+% DEFAULT NAVIGATION SPECIFICATIONS
+% ============================================================================
+
+mindmap_nav_spec(default, [
+    external_links(new_tab),
+    internal_links(smooth_scroll),
+    click_action(follow_link),
+    double_click_action(none),
+    modifier_key_action(open_in_background),
+    confirm_external(false),
+    highlight_on_navigate(true),
+    animation_duration(500)
+]).
+
+mindmap_nav_spec(safe_mode, [
+    external_links(confirm_dialog),
+    internal_links(smooth_scroll),
+    click_action(preview_link),
+    double_click_action(follow_link),
+    confirm_external(true),
+    warn_leaving_page(true),
+    animation_duration(300)
+]).
+
+mindmap_nav_spec(presentation, [
+    external_links(disabled),
+    internal_links(focus_animation),
+    click_action(focus_branch),
+    animation_duration(800),
+    auto_zoom_on_navigate(true),
+    highlight_on_navigate(true)
+]).
+
+% ============================================================================
+% DEFAULT LINK PREVIEW SPECIFICATIONS
+% ============================================================================
+
+mindmap_link_preview_spec(default, [
+    enabled(true),
+    show_on(hover),
+    delay(500),
+    position(tooltip),
+    show_favicon(true),
+    show_title(true),
+    show_url(true),
+    show_description(false),
+    max_width(300),
+    style([
+        background('#ffffff'),
+        border('1px solid #e0e0e0'),
+        border_radius('8px'),
+        box_shadow('0 4px 12px rgba(0,0,0,0.15)'),
+        padding('12px')
+    ])
+]).
+
+mindmap_link_preview_spec(minimal, [
+    enabled(true),
+    show_on(hover),
+    delay(200),
+    position(cursor),
+    show_favicon(false),
+    show_title(false),
+    show_url(true),
+    max_width(200),
+    style([
+        background('rgba(0,0,0,0.8)'),
+        color('#ffffff'),
+        border_radius('4px'),
+        padding('4px 8px'),
+        font_size('11px')
+    ])
+]).
+
+mindmap_link_preview_spec(rich, [
+    enabled(true),
+    show_on(hover),
+    delay(800),
+    position(popover),
+    show_favicon(true),
+    show_title(true),
+    show_url(true),
+    show_description(true),
+    show_thumbnail(true),
+    fetch_metadata(true),
+    max_width(400),
+    style([
+        background('#ffffff'),
+        border('1px solid #e0e0e0'),
+        border_radius('12px'),
+        box_shadow('0 8px 24px rgba(0,0,0,0.2)'),
+        padding('16px')
+    ])
+]).
+
+% ============================================================================
+% DEFAULT HISTORY SPECIFICATIONS
+% ============================================================================
+
+mindmap_history_spec(default, [
+    enabled(true),
+    max_entries(50),
+    track_internal(true),
+    track_zoom(true),
+    track_selection(false),
+    back_button(true),
+    forward_button(true),
+    keyboard_shortcuts(true)
+]).
+
+mindmap_history_spec(minimal, [
+    enabled(true),
+    max_entries(10),
+    track_internal(true),
+    track_zoom(false),
+    track_selection(false),
+    keyboard_shortcuts(true)
+]).
+
+% ============================================================================
+% GENERATION PREDICATES
+% ============================================================================
+
+%% generate_navigation_handlers(+MapId, -Code)
+%
+%  Generate complete navigation handler code.
+%
+generate_navigation_handlers(MapId, Code) :-
+    (   mindmap_nav_spec(MapId, NavOpts)
+    ->  true
+    ;   mindmap_nav_spec(default, NavOpts)
+    ),
+
+    % Generate handler sections
+    generate_link_handlers(NavOpts, LinkHandlers),
+    generate_internal_navigation(NavOpts, InternalNav),
+    generate_navigation_animations(NavOpts, Animations),
+
+    format(string(Code),
+"// Navigation Handlers for: ~w
+// Generated by UnifyWeaver
+
+~w
+
+~w
+
+~w
+", [MapId, LinkHandlers, InternalNav, Animations]).
+
+%% generate_link_preview(+MapId, -Code)
+generate_link_preview(MapId, Code) :-
+    (   mindmap_link_preview_spec(MapId, PreviewOpts)
+    ->  true
+    ;   mindmap_link_preview_spec(default, PreviewOpts)
+    ),
+
+    (   member(enabled(false), PreviewOpts)
+    ->  Code = "// Link preview disabled"
+    ;   member(delay(Delay), PreviewOpts),
+        member(max_width(MaxWidth), PreviewOpts),
+        member(show_favicon(ShowFavicon), PreviewOpts),
+        member(show_title(ShowTitle), PreviewOpts),
+        member(show_url(ShowUrl), PreviewOpts),
+
+        format(string(Code),
+"// Link Preview
+const linkPreviewConfig = {
+    delay: ~w,
+    maxWidth: ~w,
+    showFavicon: ~w,
+    showTitle: ~w,
+    showUrl: ~w
+};
+
+let previewTimer = null;
+let previewElement = null;
+
+const createLinkPreview = () => {
+    if (previewElement) return previewElement;
+
+    previewElement = document.createElement('div');
+    previewElement.className = 'mindmap-link-preview';
+    previewElement.style.cssText = `
+        position: fixed;
+        z-index: 1000;
+        max-width: ${linkPreviewConfig.maxWidth}px;
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        padding: 12px;
+        display: none;
+        pointer-events: none;
+    `;
+    document.body.appendChild(previewElement);
+    return previewElement;
+};
+
+const showLinkPreview = (event, node) => {
+    if (!node.url) return;
+
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+        const preview = createLinkPreview();
+        let content = '';
+
+        if (linkPreviewConfig.showFavicon) {
+            const domain = new URL(node.url).hostname;
+            content += `<img src=\"https://www.google.com/s2/favicons?domain=${domain}\" style=\"width: 16px; height: 16px; margin-right: 8px; vertical-align: middle;\">`;
+        }
+
+        if (linkPreviewConfig.showTitle) {
+            content += `<strong>${node.label}</strong><br>`;
+        }
+
+        if (linkPreviewConfig.showUrl) {
+            content += `<small style=\"color: #666; word-break: break-all;\">${node.url}</small>`;
+        }
+
+        preview.innerHTML = content;
+        preview.style.display = 'block';
+
+        // Position near cursor
+        const x = event.clientX + 15;
+        const y = event.clientY + 15;
+        preview.style.left = x + 'px';
+        preview.style.top = y + 'px';
+
+        // Adjust if off-screen
+        const rect = preview.getBoundingClientRect();
+        if (rect.right > window.innerWidth) {
+            preview.style.left = (event.clientX - rect.width - 15) + 'px';
+        }
+        if (rect.bottom > window.innerHeight) {
+            preview.style.top = (event.clientY - rect.height - 15) + 'px';
+        }
+    }, linkPreviewConfig.delay);
+};
+
+const hideLinkPreview = () => {
+    clearTimeout(previewTimer);
+    if (previewElement) {
+        previewElement.style.display = 'none';
+    }
+};
+", [Delay, MaxWidth, ShowFavicon, ShowTitle, ShowUrl])
+    ).
+
+%% generate_navigation_history(+MapId, -Code)
+generate_navigation_history(MapId, Code) :-
+    (   mindmap_history_spec(MapId, HistoryOpts)
+    ->  true
+    ;   mindmap_history_spec(default, HistoryOpts)
+    ),
+
+    (   member(enabled(false), HistoryOpts)
+    ->  Code = "// Navigation history disabled"
+    ;   member(max_entries(MaxEntries), HistoryOpts),
+        member(track_internal(TrackInternal), HistoryOpts),
+        member(track_zoom(TrackZoom), HistoryOpts),
+
+        format(string(Code),
+"// Navigation History
+const historyConfig = {
+    maxEntries: ~w,
+    trackInternal: ~w,
+    trackZoom: ~w
+};
+
+const navigationHistory = {
+    entries: [],
+    currentIndex: -1,
+
+    push(entry) {
+        // Remove any forward history
+        this.entries = this.entries.slice(0, this.currentIndex + 1);
+
+        // Add new entry
+        this.entries.push({
+            type: entry.type,
+            nodeId: entry.nodeId,
+            transform: entry.transform,
+            timestamp: Date.now()
+        });
+
+        // Limit history size
+        if (this.entries.length > historyConfig.maxEntries) {
+            this.entries.shift();
+        } else {
+            this.currentIndex++;
+        }
+
+        this.updateButtons();
+    },
+
+    back() {
+        if (this.currentIndex > 0) {
+            this.currentIndex--;
+            this.restore(this.entries[this.currentIndex]);
+        }
+    },
+
+    forward() {
+        if (this.currentIndex < this.entries.length - 1) {
+            this.currentIndex++;
+            this.restore(this.entries[this.currentIndex]);
+        }
+    },
+
+    restore(entry) {
+        if (entry.nodeId && historyConfig.trackInternal) {
+            centerOnNode(entry.nodeId);
+        }
+        if (entry.transform && historyConfig.trackZoom) {
+            svg.call(zoom.transform, entry.transform);
+        }
+    },
+
+    canGoBack() {
+        return this.currentIndex > 0;
+    },
+
+    canGoForward() {
+        return this.currentIndex < this.entries.length - 1;
+    },
+
+    updateButtons() {
+        const backBtn = document.getElementById('nav-back');
+        const fwdBtn = document.getElementById('nav-forward');
+        if (backBtn) backBtn.disabled = !this.canGoBack();
+        if (fwdBtn) fwdBtn.disabled = !this.canGoForward();
+    }
+};
+
+const recordNavigation = (type, nodeId = null) => {
+    navigationHistory.push({
+        type,
+        nodeId,
+        transform: currentTransform
+    });
+};
+", [MaxEntries, TrackInternal, TrackZoom])
+    ).
+
+%% generate_keyboard_navigation(+MapId, -Code)
+generate_keyboard_navigation(_MapId, Code) :-
+    Code = "
+// Keyboard Navigation
+const keyboardNavigation = {
+    enabled: true,
+
+    init() {
+        document.addEventListener('keydown', (event) => {
+            if (!this.enabled) return;
+            if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+
+            this.handleKey(event);
+        });
+    },
+
+    handleKey(event) {
+        switch (event.key) {
+            case 'ArrowUp':
+                event.preventDefault();
+                this.navigateToParent();
+                break;
+
+            case 'ArrowDown':
+                event.preventDefault();
+                this.navigateToFirstChild();
+                break;
+
+            case 'ArrowLeft':
+                event.preventDefault();
+                this.navigateToPrevSibling();
+                break;
+
+            case 'ArrowRight':
+                event.preventDefault();
+                this.navigateToNextSibling();
+                break;
+
+            case 'Enter':
+                if (selectedNode) {
+                    const node = nodes.find(n => n.id === selectedNode);
+                    if (node && node.url) {
+                        followLink(node);
+                    }
+                }
+                break;
+
+            case 'Home':
+                event.preventDefault();
+                this.navigateToRoot();
+                break;
+
+            case 'Backspace':
+                if (!event.ctrlKey && !event.metaKey) {
+                    event.preventDefault();
+                    navigationHistory.back();
+                }
+                break;
+
+            case 'Tab':
+                event.preventDefault();
+                if (event.shiftKey) {
+                    this.navigatePrevious();
+                } else {
+                    this.navigateNext();
+                }
+                break;
+        }
+
+        // Ctrl/Cmd + Arrow for navigation history
+        if (event.ctrlKey || event.metaKey) {
+            if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                navigationHistory.back();
+            } else if (event.key === 'ArrowRight') {
+                event.preventDefault();
+                navigationHistory.forward();
+            }
+        }
+    },
+
+    navigateToParent() {
+        if (!selectedNode) return;
+        const parent = findParent(selectedNode);
+        if (parent) {
+            selectAndFocus(parent.id);
+        }
+    },
+
+    navigateToFirstChild() {
+        if (!selectedNode) return;
+        const children = findChildren(selectedNode);
+        if (children.length > 0) {
+            selectAndFocus(children[0].id);
+        }
+    },
+
+    navigateToPrevSibling() {
+        if (!selectedNode) return;
+        const sibling = findPrevSibling(selectedNode);
+        if (sibling) {
+            selectAndFocus(sibling.id);
+        }
+    },
+
+    navigateToNextSibling() {
+        if (!selectedNode) return;
+        const sibling = findNextSibling(selectedNode);
+        if (sibling) {
+            selectAndFocus(sibling.id);
+        }
+    },
+
+    navigateToRoot() {
+        const root = nodes.find(n => n.type === 'root');
+        if (root) {
+            selectAndFocus(root.id);
+        }
+    },
+
+    navigateNext() {
+        const currentIdx = selectedNode ? nodes.findIndex(n => n.id === selectedNode) : -1;
+        const nextIdx = (currentIdx + 1) % nodes.length;
+        selectAndFocus(nodes[nextIdx].id);
+    },
+
+    navigatePrevious() {
+        const currentIdx = selectedNode ? nodes.findIndex(n => n.id === selectedNode) : 0;
+        const prevIdx = (currentIdx - 1 + nodes.length) % nodes.length;
+        selectAndFocus(nodes[prevIdx].id);
+    }
+};
+
+const selectAndFocus = (nodeId) => {
+    setSelectedNode(nodeId);
+    centerOnNode(nodeId);
+    recordNavigation('keyboard', nodeId);
+};
+
+const findParent = (nodeId) => {
+    const edge = links.find(l => (l.target.id || l.target) === nodeId);
+    if (edge) {
+        return nodes.find(n => n.id === (edge.source.id || edge.source));
+    }
+    return null;
+};
+
+const findChildren = (nodeId) => {
+    return links
+        .filter(l => (l.source.id || l.source) === nodeId)
+        .map(l => nodes.find(n => n.id === (l.target.id || l.target)))
+        .filter(Boolean);
+};
+
+const findPrevSibling = (nodeId) => {
+    const parent = findParent(nodeId);
+    if (!parent) return null;
+    const siblings = findChildren(parent.id);
+    const idx = siblings.findIndex(s => s.id === nodeId);
+    return idx > 0 ? siblings[idx - 1] : null;
+};
+
+const findNextSibling = (nodeId) => {
+    const parent = findParent(nodeId);
+    if (!parent) return null;
+    const siblings = findChildren(parent.id);
+    const idx = siblings.findIndex(s => s.id === nodeId);
+    return idx < siblings.length - 1 ? siblings[idx + 1] : null;
+};
+".
+
+% ============================================================================
+% CODE GENERATION HELPERS
+% ============================================================================
+
+generate_link_handlers(NavOpts, Code) :-
+    member(external_links(ExternalAction), NavOpts),
+    member(click_action(ClickAction), NavOpts),
+
+    format(string(Code),
+"// Link Handlers
+const linkConfig = {
+    externalAction: '~w',
+    clickAction: '~w'
+};
+
+const handleLinkClick = (event, node) => {
+    if (!node.url) return;
+
+    const isExternal = isExternalUrl(node.url);
+
+    if (isExternal) {
+        handleExternalLink(node.url, event);
+    } else {
+        handleInternalLink(node.url);
+    }
+};
+
+const isExternalUrl = (url) => {
+    if (!url) return false;
+    if (url.startsWith('#')) return false;
+    if (url.startsWith('node:')) return false;
+    try {
+        const urlObj = new URL(url, window.location.href);
+        return urlObj.origin !== window.location.origin;
+    } catch {
+        return false;
+    }
+};
+
+const handleExternalLink = (url, event) => {
+    switch (linkConfig.externalAction) {
+        case 'new_tab':
+            window.open(url, '_blank', 'noopener,noreferrer');
+            break;
+        case 'same_window':
+            window.location.href = url;
+            break;
+        case 'confirm_dialog':
+            if (confirm(`Open external link?\\n${url}`)) {
+                window.open(url, '_blank', 'noopener,noreferrer');
+            }
+            break;
+        case 'disabled':
+            console.log('External links disabled:', url);
+            break;
+    }
+};
+
+const handleInternalLink = (url) => {
+    if (url.startsWith('node:')) {
+        const nodeId = url.substring(5);
+        const targetNode = nodes.find(n => n.id === nodeId);
+        if (targetNode) {
+            selectAndFocus(nodeId);
+        }
+    } else if (url.startsWith('#')) {
+        const nodeId = url.substring(1);
+        const targetNode = nodes.find(n => n.id === nodeId);
+        if (targetNode) {
+            selectAndFocus(nodeId);
+        }
+    }
+};
+
+const followLink = (node) => {
+    if (node.url) {
+        recordNavigation('link', node.id);
+        handleLinkClick(null, node);
+    }
+};
+", [ExternalAction, ClickAction]).
+
+generate_internal_navigation(NavOpts, Code) :-
+    member(internal_links(InternalAction), NavOpts),
+    member(animation_duration(Duration), NavOpts),
+    (   member(highlight_on_navigate(true), NavOpts)
+    ->  HighlightCode = "highlightNode(nodeId);"
+    ;   HighlightCode = ""
+    ),
+    format(string(Code),
+"// Internal Navigation
+const internalNavConfig = {
+    action: '~w',
+    duration: ~w
+};
+
+const navigateToNode = (nodeId) => {
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) {
+        console.warn('Node not found:', nodeId);
+        return;
+    }
+
+    switch (internalNavConfig.action) {
+        case 'smooth_scroll':
+            smoothScrollToNode(nodeId);
+            break;
+        case 'focus_animation':
+            focusAnimateToNode(nodeId);
+            break;
+        case 'instant':
+            centerOnNode(nodeId);
+            break;
+    }
+
+    ~w
+    recordNavigation('internal', nodeId);
+};
+
+const smoothScrollToNode = (nodeId) => {
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) return;
+
+    const width = parseFloat(svg.attr('width'));
+    const height = parseFloat(svg.attr('height'));
+
+    const tx = width / 2 - node.x * currentScale;
+    const ty = height / 2 - node.y * currentScale;
+
+    svg.transition()
+        .duration(internalNavConfig.duration)
+        .ease(d3.easeCubicInOut)
+        .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(currentScale));
+};
+
+const focusAnimateToNode = (nodeId) => {
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) return;
+
+    const width = parseFloat(svg.attr('width'));
+    const height = parseFloat(svg.attr('height'));
+
+    // Zoom out slightly, then zoom in
+    const zoomScale = Math.min(2, maxScale);
+
+    svg.transition()
+        .duration(internalNavConfig.duration / 2)
+        .call(zoom.scaleTo, 0.5)
+        .transition()
+        .duration(internalNavConfig.duration / 2)
+        .call(zoom.transform, d3.zoomIdentity
+            .translate(width / 2 - node.x * zoomScale, height / 2 - node.y * zoomScale)
+            .scale(zoomScale));
+};
+", [InternalAction, Duration, HighlightCode]).
+
+generate_navigation_animations(_NavOpts, Code) :-
+    Code = "
+// Navigation Animations
+const highlightNode = (nodeId, duration = 1000) => {
+    const nodeEl = d3.selectAll('.node')
+        .filter(d => d.id === nodeId);
+
+    nodeEl.select('ellipse, rect')
+        .transition()
+        .duration(200)
+        .attr('stroke-width', 4)
+        .attr('stroke', '#ff6b6b')
+        .transition()
+        .duration(duration)
+        .attr('stroke-width', 2)
+        .attr('stroke', null);  // Reset to theme color
+};
+
+const flashNode = (nodeId, times = 3) => {
+    const nodeEl = d3.selectAll('.node')
+        .filter(d => d.id === nodeId);
+
+    let iteration = 0;
+    const flash = () => {
+        if (iteration >= times * 2) return;
+
+        nodeEl.select('ellipse, rect')
+            .transition()
+            .duration(150)
+            .attr('opacity', iteration % 2 === 0 ? 0.3 : 1)
+            .on('end', flash);
+
+        iteration++;
+    };
+
+    flash();
+};
+
+const pulseNode = (nodeId) => {
+    const nodeEl = d3.selectAll('.node')
+        .filter(d => d.id === nodeId);
+
+    nodeEl.select('ellipse, rect')
+        .transition()
+        .duration(300)
+        .attr('transform', 'scale(1.2)')
+        .transition()
+        .duration(300)
+        .attr('transform', 'scale(1)');
+};
+".
+
+% ============================================================================
+% MANAGEMENT PREDICATES
+% ============================================================================
+
+%% declare_nav_spec(+MapId, +Spec)
+declare_nav_spec(MapId, nav(NavOpts)) :-
+    retractall(mindmap_nav_spec(MapId, _)),
+    assertz(mindmap_nav_spec(MapId, NavOpts)).
+declare_nav_spec(MapId, preview(PreviewOpts)) :-
+    retractall(mindmap_link_preview_spec(MapId, _)),
+    assertz(mindmap_link_preview_spec(MapId, PreviewOpts)).
+declare_nav_spec(MapId, history(HistoryOpts)) :-
+    retractall(mindmap_history_spec(MapId, _)),
+    assertz(mindmap_history_spec(MapId, HistoryOpts)).
+
+%% clear_nav_specs
+clear_nav_specs :-
+    retractall(mindmap_nav_spec(_, _)),
+    retractall(mindmap_link_preview_spec(_, _)),
+    retractall(mindmap_history_spec(_, _)).
+
+% ============================================================================
+% TESTING
+% ============================================================================
+
+test_mindmap_navigation :-
+    format('~n=== Mind Map Navigation Tests ===~n~n'),
+
+    % Test 1: Default nav spec
+    format('Test 1: Default navigation spec...~n'),
+    (   mindmap_nav_spec(default, NavOpts),
+        member(external_links(new_tab), NavOpts)
+    ->  format('  PASS: Default nav spec exists~n')
+    ;   format('  FAIL: Default nav spec missing~n')
+    ),
+
+    % Test 2: Generate navigation handlers
+    format('~nTest 2: Generate navigation handlers...~n'),
+    generate_navigation_handlers(default, Code),
+    (   sub_string(Code, _, _, _, "handleLinkClick")
+    ->  format('  PASS: Navigation handlers generated~n')
+    ;   format('  FAIL: Handler generation failed~n')
+    ),
+
+    % Test 3: Link preview
+    format('~nTest 3: Link preview generation...~n'),
+    generate_link_preview(default, PreviewCode),
+    (   sub_string(PreviewCode, _, _, _, "showLinkPreview")
+    ->  format('  PASS: Link preview generated~n')
+    ;   format('  FAIL: Preview generation failed~n')
+    ),
+
+    % Test 4: Navigation history
+    format('~nTest 4: Navigation history...~n'),
+    generate_navigation_history(default, HistoryCode),
+    (   sub_string(HistoryCode, _, _, _, "navigationHistory")
+    ->  format('  PASS: History code generated~n')
+    ;   format('  FAIL: History generation failed~n')
+    ),
+
+    % Test 5: Keyboard navigation
+    format('~nTest 5: Keyboard navigation...~n'),
+    generate_keyboard_navigation(default, KeyboardCode),
+    (   sub_string(KeyboardCode, _, _, _, "ArrowUp"),
+        sub_string(KeyboardCode, _, _, _, "navigateToParent")
+    ->  format('  PASS: Keyboard navigation generated~n')
+    ;   format('  FAIL: Keyboard generation failed~n')
+    ),
+
+    % Test 6: Safe mode spec
+    format('~nTest 6: Safe mode spec...~n'),
+    (   mindmap_nav_spec(safe_mode, SafeOpts),
+        member(confirm_external(true), SafeOpts)
+    ->  format('  PASS: Safe mode configured~n')
+    ;   format('  FAIL: Safe mode incorrect~n')
+    ),
+
+    format('~n=== Tests Complete ===~n').
+
+% ============================================================================
+% INITIALIZATION
+% ============================================================================
+
+:- initialization((
+    format('Mind map navigation module loaded~n', [])
+), now).

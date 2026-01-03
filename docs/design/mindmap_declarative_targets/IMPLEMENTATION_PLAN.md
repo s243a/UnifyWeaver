@@ -116,13 +116,15 @@ This document outlines the phased implementation of the declarative mind map lay
 
 ### 3.2 Native Format Export (.smmx, .mm)
 
-**File:** `src/unifyweaver/mindmap/render/native_format_renderer.pl`
+**Files:**
+- `src/unifyweaver/mindmap/render/smmx_renderer.pl`
+- `src/unifyweaver/mindmap/render/mm_renderer.pl`
 
 **Tasks:**
-- [ ] Port XML generation from `export_mindmap.py`
-- [ ] Create format-specific structure generation
-- [ ] Map positions to native format coordinates
-- [ ] Preserve styling information
+- [x] Port XML generation from `export_mindmap.py`
+- [x] Create format-specific structure generation
+- [x] Map positions to native format coordinates
+- [x] Preserve styling information
 
 ### 3.3 Interactive Graph Component
 
@@ -148,9 +150,9 @@ system should leverage these existing components.
 - ... and 20+ more
 
 **Tasks:**
-- [ ] Document how to use existing custom components for layouts
-- [ ] Create example custom layout using `custom_python`
-- [ ] Create example custom optimizer using `custom_go`
+- [x] Document how to use existing custom components for layouts
+- [x] Create example custom layout using `custom_python`
+- [x] Create example custom optimizer using `custom_go`
 - [ ] Add `component(Name)` reference syntax to mind map specs
 
 ### 4.2 Mind Map-Specific Custom Components
@@ -171,10 +173,10 @@ system should leverage these existing components.
 ```
 
 **Tasks:**
-- [ ] Create mind map layout component type (delegates to target custom components)
-- [ ] Create mind map optimizer component type
-- [ ] Register with component registry on initialization
-- [ ] Add validation for mind map-specific options
+- [x] Create mind map layout component type (delegates to target custom components)
+- [x] Create mind map optimizer component type
+- [x] Register with component registry on initialization
+- [x] Add validation for mind map-specific options
 
 ### 4.3 Binding Integration
 
@@ -187,10 +189,10 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 ```
 
 **Tasks:**
-- [ ] Define bindings for built-in layout algorithms
-- [ ] Define bindings for optimization passes
+- [x] Define bindings for built-in layout algorithms
+- [x] Define bindings for optimization passes
 - [ ] Create Python implementation module
-- [ ] Add NumPy/SciPy acceleration
+- [x] Add NumPy/SciPy acceleration
 
 ## Phase 5: Styling System
 
@@ -199,9 +201,9 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **File:** `src/unifyweaver/mindmap/styling/style_resolver.pl`
 
 **Tasks:**
-- [ ] Implement selector matching
-- [ ] Create property cascading (theme → type → node)
-- [ ] Add computed style calculation
+- [x] Implement selector matching
+- [x] Create property cascading (theme → type → node)
+- [x] Add computed style calculation
 - [ ] Support CSS custom properties
 
 ### 5.2 Theme System
@@ -209,10 +211,10 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **File:** `src/unifyweaver/mindmap/styling/theme_system.pl`
 
 **Tasks:**
-- [ ] Define built-in themes
-- [ ] Create theme application predicates
-- [ ] Add theme inheritance/extension
-- [ ] Support user-defined themes
+- [x] Define built-in themes
+- [x] Create theme application predicates
+- [x] Add theme inheritance/extension
+- [x] Support user-defined themes
 
 ## Phase 6: Additional Targets
 
@@ -221,9 +223,9 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **File:** `src/unifyweaver/mindmap/render/graphviz_renderer.pl`
 
 **Tasks:**
-- [ ] Generate DOT format output
-- [ ] Map styles to GraphViz attributes
-- [ ] Support multiple GraphViz layouts
+- [x] Generate DOT format output
+- [x] Map styles to GraphViz attributes
+- [x] Support multiple GraphViz layouts
 - [ ] Add subgraph/cluster support
 
 ### 6.2 D3.js Component
@@ -231,19 +233,19 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **File:** `src/unifyweaver/mindmap/render/d3_renderer.pl`
 
 **Tasks:**
-- [ ] Generate D3.js force simulation code
-- [ ] Add interactive features (drag, zoom, pan)
-- [ ] Create animation support
-- [ ] Generate React wrapper component
+- [x] Generate D3.js force simulation code
+- [x] Add interactive features (drag, zoom, pan)
+- [x] Create animation support
+- [x] Generate React wrapper component
 
 ### 6.3 Additional Native Formats (.mm, .vue)
 
 **File:** `src/unifyweaver/mindmap/render/mm_renderer.pl`
 
 **Tasks:**
-- [ ] Generate .mm XML format
-- [ ] Map styling to native properties
-- [ ] Support icons and links
+- [x] Generate .mm XML format
+- [x] Map styling to native properties
+- [x] Support icons and links
 
 ## Phase 7: Interactive Features (Future GUI)
 
@@ -287,9 +289,9 @@ drag_spec(mindmap_nodes, [
 ```
 
 **Tasks:**
-- [ ] Extend `interaction_generator.pl` with mind map-specific modes
-- [ ] Add `generate_mindmap_interaction/2` predicate
-- [ ] Integrate with existing event handler patterns
+- [x] Extend `interaction_generator.pl` with mind map-specific modes
+- [x] Add `generate_mindmap_interaction/2` predicate
+- [x] Integrate with existing event handler patterns
 - [ ] Add gesture support using existing patterns
 
 ### 7.2 Viewport Management (extend zoom/pan patterns)
@@ -315,20 +317,20 @@ drag_spec(mindmap_view, [
 ```
 
 **Tasks:**
-- [ ] Use existing `generate_zoom_controls/2`
-- [ ] Use existing `generate_pan_handler/2`
-- [ ] Add fit-to-content calculation for mind maps
-- [ ] Integrate with layout system for bounds
+- [x] Use existing `generate_zoom_controls/2`
+- [x] Use existing `generate_pan_handler/2`
+- [x] Add fit-to-content calculation for mind maps
+- [x] Integrate with layout system for bounds
 
 ### 7.3 Hyperlink Navigation (extend selection patterns)
 
 **File:** `src/unifyweaver/mindmap/interaction/mindmap_navigation.pl`
 
 **Tasks:**
-- [ ] Extend `selection_spec/2` with `on_select(follow_link)`
-- [ ] Use existing tooltip system for link previews
-- [ ] Add smooth scroll animation using `animation_generator.pl`
-- [ ] Support both external URLs and internal node links
+- [x] Extend `selection_spec/2` with `on_select(follow_link)`
+- [x] Use existing tooltip system for link previews
+- [x] Add smooth scroll animation using `animation_generator.pl`
+- [x] Support both external URLs and internal node links
 
 ## File Structure
 
