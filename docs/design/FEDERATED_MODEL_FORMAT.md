@@ -146,13 +146,37 @@ The `data_path` field enables automatic account lookup at inference time.
 
 ## Clustering Methods
 
-The training script supports three clustering methods via `--cluster-method`:
+The training script supports four clustering methods via `--cluster-method`:
 
 | Method | Description | Use Case |
 |--------|-------------|----------|
-| `embedding` (default) | K-means on target embeddings | Semantic grouping, best for general search |
+| `mst` | MST edge-cutting on embeddings | Best semantic coherence, recommended |
+| `embedding` | K-means on target embeddings | Fast, good baseline |
 | `path_depth` | Group by materialized path depth | Simple hierarchy-based grouping |
 | `per-tree` | One cluster per parent tree | Preserves Pearltrees folder structure |
+
+### MST Clustering
+
+The `mst` method builds a Minimum Spanning Tree on cosine distances between embeddings, then cuts the longest edges to form clusters. This preserves local neighborhood structure better than K-means.
+
+**Advantages:**
+- Items in a cluster are similar to their neighbors (not just to a centroid)
+- Better projection quality due to more coherent training signal
+- Fewer duplicate results in search output
+
+**Parameters:**
+- `--max-clusters`: Maximum clusters to create (cuts N-1 longest edges)
+- `--min-cluster-size`: Merge clusters smaller than this (default: 10)
+
+**Example:**
+```bash
+python3 scripts/train_pearltrees_federated.py data.jsonl model.pkl \
+  --cluster-method mst \
+  --max-clusters 50 \
+  --min-cluster-size 10
+```
+
+See `docs/design/MST_CLUSTERING_*.md` for detailed design documentation.
 
 ### Per-Tree Clustering
 
@@ -197,17 +221,19 @@ python3 scripts/train_pearltrees_federated.py data.jsonl model.pkl \
 
 ```bash
 python3 scripts/train_pearltrees_federated.py INPUT_JSONL OUTPUT_MODEL \
-  --cluster-method {embedding,path_depth,per-tree} \
+  --cluster-method {mst,embedding,path_depth,per-tree} \
   --transform-mode {single,per-query} \
   --max-clusters N \
+  --min-cluster-size N \
   --max-memory-mb N \
   --model MODEL_NAME
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--cluster-method` | `embedding` | Clustering algorithm |
+| `--cluster-method` | `embedding` | Clustering algorithm (`mst` recommended) |
 | `--transform-mode` | `single` | `single` (1 W/cluster) or `per-query` (N W/cluster) |
-| `--max-clusters` | `50` | Max clusters for embedding/path_depth methods |
+| `--max-clusters` | `50` | Max clusters for embedding/mst/path_depth methods |
+| `--min-cluster-size` | `10` | Min cluster size (MST method only) |
 | `--max-memory-mb` | `800` | Max memory per cluster (per-query mode) |
 | `--model` | `nomic-ai/nomic-embed-text-v1.5` | Embedding model |
