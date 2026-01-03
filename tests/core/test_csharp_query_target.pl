@@ -1374,13 +1374,13 @@ verify_parameterized_recursive_multi_key_join_strategy_partial_index :-
         sub_term(recursive_ref{type:recursive_ref, predicate:predicate{name:test_group_reach_param, arity:3}, role:_, width:_}, Right)
     ),
     csharp_query_target:plan_module_name(Plan, ModuleClass),
-    harness_source_with_strategy_flag(ModuleClass, [[alice, laptop]], 'KeyJoinScanIndexPartial', HarnessSource),
+    harness_source_with_strategy_flag(ModuleClass, [[alice, laptop]], 'KeyJoinScanIndex', HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
         ['alice,laptop,0',
          'alice,laptop,1',
          'alice,laptop,2',
          'alice,laptop,3',
-         'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+         'STRATEGY_USED:KeyJoinScanIndex=true'],
         [[alice, laptop]],
         HarnessSource).
 
