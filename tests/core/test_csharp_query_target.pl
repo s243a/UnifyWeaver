@@ -36,7 +36,7 @@
 :- dynamic user:test_bothscan_join/4.
 :- dynamic user:test_cache_join_left/2.
 :- dynamic user:test_cache_join_right/2.
-:- dynamic user:test_cache_join_root/3.
+:- dynamic user:test_cache_join_root/1.
 :- dynamic user:test_tiny_probe_fact/2.
 :- dynamic user:test_tiny_probe_param/2.
 :- dynamic user:test_sale_count/1.
@@ -286,12 +286,9 @@ setup_test_data :-
     assertz(user:test_cache_join_right(k2, b2)),
     assertz(user:test_cache_join_right(k3, b3)),
     assertz(user:test_cache_join_right(k4, b4)),
-    assertz(user:(test_cache_join_root(Key, LeftValue, RightValue) :-
-        (   test_cache_join_right(miss, _),
-            Key = dummy,
-            LeftValue = dummy,
-            RightValue = dummy
-        ;   test_cache_join_left(Key, LeftValue),
+    assertz(user:(test_cache_join_root(RightValue) :-
+        (   test_cache_join_right(k1, RightValue)
+        ;   test_cache_join_left(Key, _),
             test_cache_join_right(Key, RightValue)
         )
     )),
@@ -570,7 +567,7 @@ cleanup_test_data :-
     retractall(user:test_bothscan_join(_, _, _, _)),
     retractall(user:test_cache_join_left(_, _)),
     retractall(user:test_cache_join_right(_, _)),
-    retractall(user:test_cache_join_root(_, _, _)),
+    retractall(user:test_cache_join_root(_)),
     retractall(user:test_tiny_probe_fact(_, _)),
     retractall(user:test_tiny_probe_param(_, _)),
     retractall(user:test_sale_count(_)),
@@ -1360,7 +1357,7 @@ verify_multi_key_both_scan_join_strategy_partial_index :-
         HarnessSource).
 
 verify_both_scan_join_prefers_cached_fact_index :-
-    csharp_query_target:build_query_plan(test_cache_join_root/3, [target(csharp_query)], Plan),
+    csharp_query_target:build_query_plan(test_cache_join_root/1, [target(csharp_query)], Plan),
     get_dict(root, Plan, Root),
     is_dict(Root, union),
     sub_term(join{type:join, left:Left, right:Right, left_keys:[0], right_keys:[0], left_width:_, right_width:_, width:_}, Root),
@@ -1369,8 +1366,8 @@ verify_both_scan_join_prefers_cached_fact_index :-
     csharp_query_target:plan_module_name(Plan, ModuleClass),
     harness_source_with_cache_hit_flag(ModuleClass, [], 'FactIndex', HarnessSource),
     maybe_run_query_runtime_with_harness(Plan,
-        ['k1,a1,b1',
-         'k2,a2,b2',
+        ['b1',
+         'b2',
          'CACHE_HIT:FactIndex=true'],
         [],
         HarnessSource).
