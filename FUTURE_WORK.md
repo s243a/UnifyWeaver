@@ -426,14 +426,19 @@ For languages without mature CPython embedding (Go, Node.js, Lua), we use Rust a
 ### Future Bridge Improvements
 
 #### 1. Node.js FFI Example
-**Status:** 📋 TODO
-**Priority:** High
-**Code Generator:** Already implemented in `python_bridges_glue.pl`
-**Work Needed:** Create working example in `examples/python-bridges/rust-ffi-node/`
+**Status:** ✅ COMPLETE
+**Location:** `examples/python-bridges/rust-ffi-node/`
+**Features:**
+- Express API server with REST endpoints (`src/server.ts`)
+- TypeScript FFI wrapper using koffi (`src/rpyc_bridge.ts`)
+- Test script (`src/test.ts`)
+- React frontend with NumPy/Math UI
+- Full documentation
 
-```prolog
-% Generator already exists
-?- generate_node_ffi_client([lib_name(rpyc_bridge)], Code).
+```bash
+# Run the example
+cd examples/python-bridges/rust-ffi-node
+npm install && npm run dev
 ```
 
 #### 2. Additional FFI Languages
