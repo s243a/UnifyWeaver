@@ -2184,7 +2184,7 @@ namespace UnifyWeaver.QueryRuntime
                                                   TryEstimateRowUpperBound(join.Right, context, out var probeUpperBound) &&
                                                   probeUpperBound <= TinyProbeUpperBound;
 
-                                if (probeIsTiny && !joinIndexCached)
+                                if (probeIsTiny && !joinIndexCached && context.FixpointDepth == 0)
                                 {
                                     trace?.RecordStrategy(join, "KeyJoinScanIndexPartial");
                                     var probeSource = Evaluate(join.Right, context);
@@ -2352,7 +2352,7 @@ namespace UnifyWeaver.QueryRuntime
                                                   TryEstimateRowUpperBound(join.Left, context, out var probeUpperBound) &&
                                                   probeUpperBound <= TinyProbeUpperBound;
 
-                                if (probeIsTiny && !joinIndexCached)
+                                if (probeIsTiny && !joinIndexCached && context.FixpointDepth == 0)
                                 {
                                     trace?.RecordStrategy(join, "KeyJoinScanIndexPartial");
                                     var probeSource = Evaluate(join.Left, context);
@@ -2528,7 +2528,7 @@ namespace UnifyWeaver.QueryRuntime
                                               TryEstimateRowUpperBound(join.Left, context, out var probeUpperBound) &&
                                               probeUpperBound <= TinyProbeUpperBound;
 
-                             if (probeIsTiny && !joinIndexCached)
+                             if (probeIsTiny && !joinIndexCached && context.FixpointDepth == 0)
                              {
                                  trace?.RecordStrategy(join, "KeyJoinScanIndexPartial");
                                  var probeSource = Evaluate(join.Left, context);
@@ -2703,7 +2703,7 @@ namespace UnifyWeaver.QueryRuntime
                                               TryEstimateRowUpperBound(join.Right, context, out var probeUpperBound) &&
                                               probeUpperBound <= TinyProbeUpperBound;
 
-                             if (probeIsTiny && !joinIndexCached)
+                             if (probeIsTiny && !joinIndexCached && context.FixpointDepth == 0)
                              {
                                  trace?.RecordStrategy(join, "KeyJoinScanIndexPartial");
                                  var probeSource = Evaluate(join.Right, context);
