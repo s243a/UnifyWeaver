@@ -255,25 +255,36 @@ Legend: ✅ Complete | ⚠️ Partial | ❌ Missing
 
 ### Query Optimization (Planned)
 
-### Incremental Compilation
+### Incremental Compilation (In Progress)
 
-**Status:** 📋 PROPOSED (2025-12-25)
-**Proposal:** [`docs/proposals/INCREMENTAL_COMPILATION.md`](proposals/INCREMENTAL_COMPILATION.md)
+**Status:** 🚧 IN PROGRESS - Phases 1-3 Complete (2025-01-02)
+**Proposal:** [`docs/proposals/INCREMENTAL_COMPILATION.md`](docs/proposals/INCREMENTAL_COMPILATION.md)
 
-**Core Features:**
-- **Predicate Hashing** - Detect source changes via content hashing
-- **Dependency Tracking** - Leverage existing `call_graph.pl` for rebuild decisions
-- **Compilation Cache** - Store generated code indexed by predicate + hash
-- **Invalidation Cascade** - Automatically invalidate dependents when source changes
+**Core Features (Implemented):**
+- **Predicate Hashing** - Detect source changes via `term_hash/2` with variable normalization
+- **Dependency Tracking** - Reverse graph traversal via `get_transitive_dependents/2`
+- **Compilation Cache** - In-memory cache indexed by predicate + target + hash
+- **Invalidation Cascade** - Automatic invalidation of dependent predicates
+
+**Optional by Design:** Incremental compilation can be disabled at multiple levels:
+- Per-call: `compile_incremental(foo/2, bash, [incremental(false)], Code)`
+- Per-session: `set_prolog_flag(unifyweaver_incremental, false)`
+- Environment: `UNIFYWEAVER_CACHE=0`
 
 **Implementation Phases:**
-1. Core infrastructure (hasher, cache manager)
-2. Dependency integration (reverse graph traversal)
-3. Compiler wrapper (one target proof of concept)
-4. Multi-target support (all 6 targets)
+1. ✅ Core infrastructure (hasher, cache manager) - Complete
+2. ✅ Dependency integration (reverse graph traversal) - Complete
+3. ✅ Compiler wrapper (Bash target proof of concept) - Complete
+4. Multi-target support (all targets)
 5. File persistence (survive restarts)
 6. CLI management commands
 7. Documentation & benchmarks
+
+**New Files:**
+- `src/unifyweaver/incremental/hasher.pl`
+- `src/unifyweaver/incremental/cache_manager.pl`
+- `src/unifyweaver/incremental/incremental_compiler.pl`
+- `src/unifyweaver/incremental/test_integration.pl`
 
 ### Testing Infrastructure
 
