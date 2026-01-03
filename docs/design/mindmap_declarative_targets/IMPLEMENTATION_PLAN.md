@@ -199,9 +199,9 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **File:** `src/unifyweaver/mindmap/styling/style_resolver.pl`
 
 **Tasks:**
-- [ ] Implement selector matching
-- [ ] Create property cascading (theme → type → node)
-- [ ] Add computed style calculation
+- [x] Implement selector matching
+- [x] Create property cascading (theme → type → node)
+- [x] Add computed style calculation
 - [ ] Support CSS custom properties
 
 ### 5.2 Theme System
@@ -209,10 +209,10 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **File:** `src/unifyweaver/mindmap/styling/theme_system.pl`
 
 **Tasks:**
-- [ ] Define built-in themes
-- [ ] Create theme application predicates
-- [ ] Add theme inheritance/extension
-- [ ] Support user-defined themes
+- [x] Define built-in themes
+- [x] Create theme application predicates
+- [x] Add theme inheritance/extension
+- [x] Support user-defined themes
 
 ## Phase 6: Additional Targets
 
