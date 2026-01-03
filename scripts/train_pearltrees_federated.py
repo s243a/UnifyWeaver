@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "unifyweaver" / "targets" / "python_runtime"))
 
 from minimal_transform import compute_minimal_transform
+from scipy.spatial.distance import pdist, squareform
+from scipy.sparse.csgraph import minimum_spanning_tree, connected_components
+from scipy.sparse import csr_matrix
 
 
 class SimpleEmbedder:
@@ -186,8 +189,170 @@ def cluster_by_embedding(A_emb: np.ndarray, max_clusters: int = 10, max_items_pe
                 cluster_idx += 1
     
     logger.info(f"Created {len(final_clusters)} clusters (max size enforced: {max_items_per_cluster})")
-    
+
     return final_clusters
+
+
+def cluster_by_mst(
+    A_emb: np.ndarray,
+    max_clusters: int = 50,
+    min_cluster_size: int = 10,
+    max_cluster_size: int = 1000
+) -> Dict[str, List[int]]:
+    """
+    Cluster targets by MST edge cutting.
+
+    Builds minimum spanning tree on cosine distances between embeddings,
+    then cuts the longest edges to form clusters. This preserves local
+    neighborhood relationships better than K-means.
+
+    Args:
+        A_emb: Target embeddings (N x D)
+        max_clusters: Maximum number of clusters to create
+        min_cluster_size: Merge clusters smaller than this
+        max_cluster_size: Split clusters larger than this
+
+    Returns:
+        Dict mapping cluster_id to list of item indices
+    """
+    n = len(A_emb)
+
+    if n <= max_clusters:
+        # Each item is its own cluster
+        return {f"mst_{i}": [i] for i in range(n)}
+
+    logger.info(f"Building MST for {n} items...")
+
+    # Compute pairwise cosine distances
+    if n > 10000:
+        logger.warning(f"Large dataset ({n} items), distance matrix will use ~{n*n*8/1e9:.1f} GB")
+
+    distances = squareform(pdist(A_emb, metric='cosine'))
+
+    # Build MST
+    mst = minimum_spanning_tree(csr_matrix(distances))
+
+    # Extract edges with weights
+    mst_coo = mst.tocoo()
+    edges = list(zip(mst_coo.row, mst_coo.col, mst_coo.data))
+    edges.sort(key=lambda x: x[2], reverse=True)  # Sort by weight descending
+
+    logger.info(f"MST has {len(edges)} edges, cutting {min(max_clusters-1, len(edges))} longest...")
+
+    # Cut top (k-1) edges to form k clusters
+    num_cuts = min(max_clusters - 1, len(edges))
+
+    # Build adjacency without cut edges
+    adj = mst.toarray()
+    adj = adj + adj.T  # Make symmetric
+
+    for i in range(num_cuts):
+        r, c, _ = edges[i]
+        adj[r, c] = 0
+        adj[c, r] = 0
+
+    # Find connected components
+    n_components, labels = connected_components(csr_matrix(adj), directed=False)
+
+    logger.info(f"Created {n_components} initial clusters from MST")
+
+    # Group indices by component
+    clusters = defaultdict(list)
+    for idx, label in enumerate(labels):
+        clusters[f"mst_{label}"].append(idx)
+
+    # Log size distribution
+    sizes = [len(v) for v in clusters.values()]
+    logger.info(f"  Size range: {min(sizes)}-{max(sizes)}, Avg: {np.mean(sizes):.1f}")
+
+    # Enforce size constraints
+    clusters = _mst_merge_small(dict(clusters), A_emb, min_cluster_size)
+    clusters = _mst_split_large(clusters, A_emb, max_cluster_size)
+
+    logger.info(f"Final cluster count after size constraints: {len(clusters)}")
+
+    return clusters
+
+
+def _mst_merge_small(
+    clusters: Dict[str, List[int]],
+    A_emb: np.ndarray,
+    min_size: int
+) -> Dict[str, List[int]]:
+    """Merge clusters smaller than min_size with nearest neighbor."""
+    if min_size <= 1:
+        return clusters
+
+    clusters = dict(clusters)  # Copy
+
+    # Compute centroids
+    centroids = {cid: A_emb[indices].mean(axis=0) for cid, indices in clusters.items()}
+
+    merged_count = 0
+    while True:
+        # Find smallest cluster below threshold
+        small = [(cid, len(idx)) for cid, idx in clusters.items() if len(idx) < min_size]
+        if not small:
+            break
+
+        smallest_cid = min(small, key=lambda x: x[1])[0]
+        smallest_centroid = centroids[smallest_cid]
+
+        # Find nearest neighbor cluster (by cosine similarity)
+        best_sim = -1
+        best_neighbor = None
+        for cid, centroid in centroids.items():
+            if cid != smallest_cid:
+                norm_product = np.linalg.norm(smallest_centroid) * np.linalg.norm(centroid)
+                if norm_product > 1e-10:
+                    sim = np.dot(smallest_centroid, centroid) / norm_product
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_neighbor = cid
+
+        if best_neighbor is None:
+            break
+
+        # Merge
+        clusters[best_neighbor].extend(clusters[smallest_cid])
+        del clusters[smallest_cid]
+        centroids[best_neighbor] = A_emb[clusters[best_neighbor]].mean(axis=0)
+        del centroids[smallest_cid]
+        merged_count += 1
+
+    if merged_count > 0:
+        logger.info(f"  Merged {merged_count} small clusters (min_size={min_size})")
+
+    return clusters
+
+
+def _mst_split_large(
+    clusters: Dict[str, List[int]],
+    A_emb: np.ndarray,
+    max_size: int
+) -> Dict[str, List[int]]:
+    """Split clusters larger than max_size."""
+    result = {}
+    split_count = 0
+
+    for cid, indices in clusters.items():
+        if len(indices) <= max_size:
+            result[cid] = indices
+        else:
+            # Split into chunks
+            n_splits = (len(indices) + max_size - 1) // max_size
+            chunk_size = len(indices) // n_splits
+
+            for i in range(n_splits):
+                start = i * chunk_size
+                end = start + chunk_size if i < n_splits - 1 else len(indices)
+                result[f"{cid}_s{i}"] = indices[start:end]
+            split_count += 1
+
+    if split_count > 0:
+        logger.info(f"  Split {split_count} large clusters (max_size={max_size})")
+
+    return result
 
 
 def estimate_memory_mb(n_items: int, dim: int = 768) -> float:
@@ -266,23 +431,25 @@ def train_federated(
     cluster_method: str = "path_depth",
     transform_mode: str = "single",  # "single" (1 W per cluster) or "per-query" (N W per cluster)
     max_memory_mb: float = 3000.0,
-    max_clusters: int = 10
+    max_clusters: int = 10,
+    min_cluster_size: int = 10
 ) -> Tuple['FederatedModel', Dict[str, np.ndarray], Path]:
     """
     Train federated model with clustering.
-    
+
     Trains each cluster and saves to disk immediately to avoid OOM.
-    
+
     Args:
         data: List of Q/A pairs
         Q_emb: Query embeddings (N, 768)
         A_emb: Target embeddings (N, 768)
         output_path: Path to save model (.pkl file, clusters saved to adjacent directory)
-        cluster_method: "path_depth" or "embedding"
+        cluster_method: "path_depth", "embedding" (K-means), "mst", or "per-tree"
         transform_mode: "single" (1 W per cluster, ~2.4 MB each) or "per-query" (N W per cluster)
         max_memory_mb: Max memory per cluster in MB (only used for per-query mode)
         max_clusters: Maximum number of clusters
-        
+        min_cluster_size: Minimum cluster size - smaller clusters merged (for MST method)
+
     Returns:
         Tuple of (model, cluster_target_embeddings, output_dir)
     """
@@ -300,7 +467,9 @@ def train_federated(
         clusters = cluster_by_path_depth(data, max_clusters)
     elif cluster_method == "per-tree":
         clusters = cluster_by_tree(data)
-    else:  # "embedding"
+    elif cluster_method == "mst":
+        clusters = cluster_by_mst(A_emb, max_clusters, min_cluster_size=min_cluster_size, max_cluster_size=max_items)
+    else:  # "embedding" (K-means, default)
         clusters = cluster_by_embedding(A_emb, max_clusters, max_items)
     
     logger.info(f"Created {len(clusters)} clusters")
@@ -507,14 +676,16 @@ def main():
     parser = argparse.ArgumentParser(description="Train federated Procrustes projection for Pearltrees.")
     parser.add_argument("input_jsonl", type=Path, help="Input JSONL with Q/A pairs")
     parser.add_argument("output_model", type=Path, help="Output model file (.pkl)")
-    parser.add_argument("--cluster-method", choices=["path_depth", "embedding", "per-tree"], default="embedding",
-                       help="Clustering method: 'embedding' (semantic), 'path_depth', or 'per-tree' (one cluster per parent tree)")
+    parser.add_argument("--cluster-method", choices=["path_depth", "embedding", "per-tree", "mst"], default="embedding",
+                       help="Clustering method: 'embedding' (K-means), 'mst' (MST-based), 'path_depth', or 'per-tree'")
     parser.add_argument("--transform-mode", choices=["single", "per-query"], default="single",
                        help="Transform mode: 'single' (1 W per cluster, ~70MB total) or 'per-query' (N W per cluster, ~15GB)")
     parser.add_argument("--max-memory-mb", type=float, default=800.0,
                        help="Max memory per cluster in MB (for per-query mode)")
     parser.add_argument("--max-clusters", type=int, default=50,
                        help="Maximum number of clusters (recommended: 50 for 6GB GPU)")
+    parser.add_argument("--min-cluster-size", type=int, default=10,
+                       help="Minimum cluster size - smaller clusters are merged (for MST method)")
     parser.add_argument("--model", type=str, default="nomic-ai/nomic-embed-text-v1.5",
                        help="Embedding model to use (default: nomic-ai/nomic-embed-text-v1.5)")
     
@@ -561,7 +732,8 @@ def main():
         cluster_method=args.cluster_method,
         transform_mode=args.transform_mode,
         max_memory_mb=args.max_memory_mb,
-        max_clusters=args.max_clusters
+        max_clusters=args.max_clusters,
+        min_cluster_size=args.min_cluster_size
     )
     
     # Skip evaluation for now (would need to load clusters from disk)
