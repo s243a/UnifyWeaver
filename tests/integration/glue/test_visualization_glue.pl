@@ -32,6 +32,7 @@
 :- use_module('../../../src/unifyweaver/glue/gauge_chart_generator').
 :- use_module('../../../src/unifyweaver/glue/sankey_generator').
 :- use_module('../../../src/unifyweaver/glue/chord_generator').
+:- use_module('../../../src/unifyweaver/glue/spec_validation').
 
 :- dynamic test_passed/0.
 :- dynamic test_failed/0.
@@ -140,6 +141,9 @@ run_tests :-
 
     % Chord Generator Tests
     run_chord_generator_tests,
+
+    % Spec Validation Tests
+    run_spec_validation_tests,
 
     % Summary
     print_summary.
@@ -3396,6 +3400,163 @@ run_chord_generator_tests :-
     % Department communication example
     test("Department communication chord exists", (
         chord_generator:chord_spec(dept_comms, _)
+    )).
+
+% ============================================================================
+% SPEC VALIDATION TESTS
+% ============================================================================
+
+run_spec_validation_tests :-
+    format('~n--- Spec Validation Tests ---~n'),
+
+    % Color validation
+    test("Valid hex color #ff0000", (
+        spec_validation:valid_color('#ff0000')
+    )),
+
+    test("Valid short hex color #fff", (
+        spec_validation:valid_color('#fff')
+    )),
+
+    test("Valid hex color with alpha #ff000080", (
+        spec_validation:valid_color('#ff000080')
+    )),
+
+    test("Invalid color rejected", (
+        \+ spec_validation:valid_color('not_a_color')
+    )),
+
+    test("RGB color valid", (
+        spec_validation:valid_color('rgb(255,0,0)')
+    )),
+
+    % CSS unit validation
+    test("Valid CSS unit px", (
+        spec_validation:valid_css_unit('10px')
+    )),
+
+    test("Valid CSS unit rem", (
+        spec_validation:valid_css_unit('1.5rem')
+    )),
+
+    test("Valid CSS unit percent", (
+        spec_validation:valid_css_unit('100%')
+    )),
+
+    test("Valid CSS unit em", (
+        spec_validation:valid_css_unit('2em')
+    )),
+
+    test("Valid CSS unit vh", (
+        spec_validation:valid_css_unit('50vh')
+    )),
+
+    % Identifier validation
+    test("Valid identifier my_curve", (
+        spec_validation:valid_identifier(my_curve)
+    )),
+
+    test("Valid identifier with hyphen", (
+        spec_validation:valid_identifier('my-curve')
+    )),
+
+    test("Invalid identifier starting with number", (
+        \+ spec_validation:valid_identifier('123abc')
+    )),
+
+    % Number range validation
+    test("Valid number in range", (
+        spec_validation:valid_number_range(5, 0, 10)
+    )),
+
+    test("Invalid number out of range", (
+        \+ spec_validation:valid_number_range(15, 0, 10)
+    )),
+
+    % Error formatting
+    test("Format single error", (
+        spec_validation:format_error(
+            error(error, test_code, "Test message", [key(value)]),
+            Formatted
+        ),
+        atom_length(Formatted, L),
+        L > 10
+    )),
+
+    test("Format error with context", (
+        spec_validation:format_error(
+            error(warning, missing_prop, "Missing property", [name(test), type(curve)]),
+            Formatted
+        ),
+        sub_atom(Formatted, _, _, _, missing_prop)
+    )),
+
+    test("Format multiple errors", (
+        spec_validation:format_errors([
+            error(error, e1, "Error 1", []),
+            error(warning, w1, "Warning 1", [])
+        ], Formatted),
+        atom_length(Formatted, L),
+        L > 20
+    )),
+
+    % Curve validation
+    test("Validate missing curve returns error", (
+        spec_validation:validate_curve(nonexistent_curve, Errors),
+        Errors \= [],
+        member(error(error, not_found, _, _), Errors)
+    )),
+
+    test("Validate existing curve (parabola)", (
+        spec_validation:validate_curve(parabola, Errors),
+        % parabola is valid, so either no errors or only warnings
+        (Errors = [] ; \+ member(error(error, _, _, _), Errors))
+    )),
+
+    test("Validate existing curve (sine_wave)", (
+        spec_validation:validate_curve(sine_wave, Errors),
+        (Errors = [] ; \+ member(error(error, _, _, _), Errors))
+    )),
+
+    % Plot validation
+    test("Validate missing plot returns error", (
+        spec_validation:validate_plot_spec(nonexistent_plot, Errors),
+        Errors \= [],
+        member(error(error, not_found, _, _), Errors)
+    )),
+
+    % Layout validation
+    test("Validate missing layout returns error", (
+        spec_validation:validate_layout(nonexistent_layout, Errors),
+        Errors \= [],
+        member(error(error, not_found, _, _), Errors)
+    )),
+
+    % Gauge validation
+    test("Validate missing gauge returns error", (
+        spec_validation:validate_gauge(nonexistent_gauge, Errors),
+        Errors \= [],
+        member(error(error, not_found, _, _), Errors)
+    )),
+
+    % Funnel validation
+    test("Validate missing funnel returns error", (
+        spec_validation:validate_funnel(nonexistent_funnel, Errors),
+        Errors \= [],
+        member(error(error, not_found, _, _), Errors)
+    )),
+
+    % Validation report
+    test("Generate validation report for missing spec", (
+        spec_validation:validation_report(nonexistent, curve, Report),
+        atom_length(Report, L),
+        L > 10
+    )),
+
+    % Safe generate
+    test("Safe generate with invalid spec returns failure", (
+        spec_validation:safe_generate(curve, nonexistent_curve, generate_curve_component, Result),
+        Result = failure(_)
     )).
 
 % ============================================================================
