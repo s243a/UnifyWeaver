@@ -237,24 +237,45 @@ def cluster_by_mst(
     edges = list(zip(mst_coo.row, mst_coo.col, mst_coo.data))
     edges.sort(key=lambda x: x[2], reverse=True)  # Sort by weight descending
 
-    logger.info(f"MST has {len(edges)} edges, cutting {min(max_clusters-1, len(edges))} longest...")
-
-    # Cut top (k-1) edges to form k clusters
-    num_cuts = min(max_clusters - 1, len(edges))
-
-    # Build adjacency without cut edges
+    # Build adjacency matrix from MST
     adj = mst.toarray()
     adj = adj + adj.T  # Make symmetric
 
-    for i in range(num_cuts):
-        r, c, _ = edges[i]
-        adj[r, c] = 0
-        adj[c, r] = 0
+    # Cut edges adaptively: keep cutting until all components <= max_cluster_size
+    # or we've made max_clusters (respecting size constraint takes priority)
+    cuts_made = 0
+    edge_idx = 0
 
-    # Find connected components
+    while edge_idx < len(edges):
+        # Find connected components with current cuts
+        n_components, labels = connected_components(csr_matrix(adj), directed=False)
+
+        # Count component sizes
+        component_sizes = np.bincount(labels)
+        max_component_size = component_sizes.max()
+
+        # Stop if we have enough clusters AND all are under max_size
+        if n_components >= max_clusters and max_component_size <= max_cluster_size:
+            break
+
+        # Stop if all components are under max_size (even if fewer clusters than requested)
+        if max_component_size <= max_cluster_size and n_components >= 2:
+            # But keep cutting if we haven't reached max_clusters yet
+            if n_components >= max_clusters:
+                break
+
+        # Cut the next longest edge
+        r, c, weight = edges[edge_idx]
+        if adj[r, c] > 0:  # Edge still exists
+            adj[r, c] = 0
+            adj[c, r] = 0
+            cuts_made += 1
+        edge_idx += 1
+
+    # Final component detection
     n_components, labels = connected_components(csr_matrix(adj), directed=False)
 
-    logger.info(f"Created {n_components} initial clusters from MST")
+    logger.info(f"MST has {len(edges)} edges, cut {cuts_made} to create {n_components} clusters")
 
     # Group indices by component
     clusters = defaultdict(list)
@@ -265,11 +286,10 @@ def cluster_by_mst(
     sizes = [len(v) for v in clusters.values()]
     logger.info(f"  Size range: {min(sizes)}-{max(sizes)}, Avg: {np.mean(sizes):.1f}")
 
-    # Enforce size constraints
-    clusters = _mst_merge_small(dict(clusters), A_emb, min_cluster_size)
-    clusters = _mst_split_large(clusters, A_emb, max_cluster_size)
+    # Merge small clusters, respecting max_cluster_size
+    clusters = _mst_merge_small(dict(clusters), A_emb, min_cluster_size, max_cluster_size)
 
-    logger.info(f"Final cluster count after size constraints: {len(clusters)}")
+    logger.info(f"Final cluster count: {len(clusters)}")
 
     return clusters
 
@@ -277,9 +297,10 @@ def cluster_by_mst(
 def _mst_merge_small(
     clusters: Dict[str, List[int]],
     A_emb: np.ndarray,
-    min_size: int
+    min_size: int,
+    max_size: int = None
 ) -> Dict[str, List[int]]:
-    """Merge clusters smaller than min_size with nearest neighbor."""
+    """Merge clusters smaller than min_size with nearest neighbor, respecting max_size."""
     if min_size <= 1:
         return clusters
 
@@ -297,12 +318,16 @@ def _mst_merge_small(
 
         smallest_cid = min(small, key=lambda x: x[1])[0]
         smallest_centroid = centroids[smallest_cid]
+        smallest_size = len(clusters[smallest_cid])
 
-        # Find nearest neighbor cluster (by cosine similarity)
+        # Find nearest neighbor cluster (by cosine similarity) that won't exceed max_size
         best_sim = -1
         best_neighbor = None
         for cid, centroid in centroids.items():
             if cid != smallest_cid:
+                # Check if merging would exceed max_size
+                if max_size is not None and len(clusters[cid]) + smallest_size > max_size:
+                    continue
                 norm_product = np.linalg.norm(smallest_centroid) * np.linalg.norm(centroid)
                 if norm_product > 1e-10:
                     sim = np.dot(smallest_centroid, centroid) / norm_product
@@ -311,6 +336,7 @@ def _mst_merge_small(
                         best_neighbor = cid
 
         if best_neighbor is None:
+            # No valid merge target - keep as small cluster
             break
 
         # Merge
