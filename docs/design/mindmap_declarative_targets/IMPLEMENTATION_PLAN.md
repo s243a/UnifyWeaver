@@ -116,13 +116,15 @@ This document outlines the phased implementation of the declarative mind map lay
 
 ### 3.2 Native Format Export (.smmx, .mm)
 
-**File:** `src/unifyweaver/mindmap/render/native_format_renderer.pl`
+**Files:**
+- `src/unifyweaver/mindmap/render/smmx_renderer.pl`
+- `src/unifyweaver/mindmap/render/mm_renderer.pl`
 
 **Tasks:**
-- [ ] Port XML generation from `export_mindmap.py`
-- [ ] Create format-specific structure generation
-- [ ] Map positions to native format coordinates
-- [ ] Preserve styling information
+- [x] Port XML generation from `export_mindmap.py`
+- [x] Create format-specific structure generation
+- [x] Map positions to native format coordinates
+- [x] Preserve styling information
 
 ### 3.3 Interactive Graph Component
 
@@ -221,9 +223,9 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **File:** `src/unifyweaver/mindmap/render/graphviz_renderer.pl`
 
 **Tasks:**
-- [ ] Generate DOT format output
-- [ ] Map styles to GraphViz attributes
-- [ ] Support multiple GraphViz layouts
+- [x] Generate DOT format output
+- [x] Map styles to GraphViz attributes
+- [x] Support multiple GraphViz layouts
 - [ ] Add subgraph/cluster support
 
 ### 6.2 D3.js Component
@@ -241,9 +243,9 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **File:** `src/unifyweaver/mindmap/render/mm_renderer.pl`
 
 **Tasks:**
-- [ ] Generate .mm XML format
-- [ ] Map styling to native properties
-- [ ] Support icons and links
+- [x] Generate .mm XML format
+- [x] Map styling to native properties
+- [x] Support icons and links
 
 ## Phase 7: Interactive Features (Future GUI)
 
