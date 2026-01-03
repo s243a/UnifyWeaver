@@ -6,11 +6,14 @@
 % Used for detecting mutual recursion and dependency ordering
 
 :- module(call_graph, [
-    build_call_graph/2,      % +Predicates, -Graph
-    get_dependencies/2,      % +Pred/Arity, -Dependencies
-    is_self_recursive/1,     % +Pred/Arity
-    predicates_in_group/2,   % +RootPred, -AllPredicates
-    test_call_graph/0        % Test predicate
+    build_call_graph/2,           % +Predicates, -Graph
+    build_reverse_call_graph/2,   % +Predicates, -ReverseGraph
+    get_dependencies/2,           % +Pred/Arity, -Dependencies
+    get_dependents/2,             % +Pred/Arity, -Dependents (who calls me)
+    get_transitive_dependents/2,  % +Pred/Arity, -TransitiveDependents
+    is_self_recursive/1,          % +Pred/Arity
+    predicates_in_group/2,        % +RootPred, -AllPredicates
+    test_call_graph/0             % Test predicate
 ]).
 
 :- use_module(library(lists)).
@@ -88,6 +91,59 @@ get_dependencies(Pred/Arity, Dependencies) :-
         find_predicate_calls(Pred/Arity, Dep),
         DepsWithDups),
     sort(DepsWithDups, Dependencies).
+
+% ============================================================================
+% REVERSE GRAPH TRAVERSAL (for invalidation)
+% ============================================================================
+
+%% build_reverse_call_graph(+Predicates, -ReverseGraph)
+%  Build a reverse directed graph where edges point from callee to caller.
+%  If A calls B, the forward graph has A -> B, reverse graph has B -> A.
+%  Used to find all predicates that depend on a given predicate.
+build_reverse_call_graph(Predicates, ReverseGraph) :-
+    findall(ReverseEdge,
+        (   member(Caller/Arity, Predicates),
+            find_predicate_calls(Caller/Arity, Callee),
+            ReverseEdge = (Callee -> Caller/Arity)
+        ),
+        ReverseGraph).
+
+%% get_dependents(+Pred/Arity, -Dependents)
+%  Get all predicates that directly call this predicate.
+%  This is the reverse of get_dependencies/2.
+get_dependents(Pred/Arity, Dependents) :-
+    % Get all known predicates from the database
+    findall(KnownPred/KnownArity,
+        (   current_predicate(user:KnownPred/KnownArity),
+            \+ is_builtin(KnownPred/KnownArity)
+        ),
+        AllPredicates),
+    % Find which ones call Pred/Arity
+    findall(Caller,
+        (   member(Caller, AllPredicates),
+            get_dependencies(Caller, Deps),
+            member(Pred/Arity, Deps)
+        ),
+        DependentsWithDups),
+    sort(DependentsWithDups, Dependents).
+
+%% get_transitive_dependents(+Pred/Arity, -TransitiveDependents)
+%  Get all predicates that depend on this predicate, transitively.
+%  If A calls B and B calls C, then get_transitive_dependents(C, Deps)
+%  returns [A, B] (predicates that would need recompilation if C changes).
+get_transitive_dependents(Pred/Arity, TransitiveDependents) :-
+    get_transitive_dependents_acc([Pred/Arity], [], TransitiveDependents).
+
+get_transitive_dependents_acc([], Acc, Result) :-
+    sort(Acc, Result).
+get_transitive_dependents_acc([Pred|Queue], Visited, Result) :-
+    (   member(Pred, Visited)
+    ->  get_transitive_dependents_acc(Queue, Visited, Result)
+    ;   get_dependents(Pred, DirectDependents),
+        subtract(DirectDependents, Visited, NewDependents),
+        append(Queue, NewDependents, NewQueue),
+        get_transitive_dependents_acc(NewQueue, [Pred|Visited], Result)
+    ).
 
 %% is_self_recursive(+Pred/Arity)
 %  Check if a predicate is self-recursive (calls itself)
@@ -192,5 +248,30 @@ test_call_graph :-
         writeln('  ✓ PASS - found mutually recursive partner')
     ;   writeln('  ✗ FAIL - should find test_odd/1 in group')
     ),
+
+    % Test 6: Get dependents (reverse of dependencies)
+    writeln('Test 6: Get dependents (who calls me)'),
+    get_dependents(test_odd/1, OddDependents),
+    format('  test_odd/1 is called by: ~w~n', [OddDependents]),
+    (   member(test_even/1, OddDependents) ->
+        writeln('  ✓ PASS - found test_even/1 as dependent')
+    ;   writeln('  ✗ FAIL - should find test_even/1 calling test_odd/1')
+    ),
+
+    % Test 7: Build reverse call graph
+    writeln('Test 7: Build reverse call graph'),
+    build_reverse_call_graph([test_even/1, test_odd/1], ReverseGraph),
+    format('  Reverse graph edges: ~w~n', [ReverseGraph]),
+    % In reverse graph: test_odd/1 -> test_even/1 (odd is called by even)
+    (   member((test_odd/1 -> test_even/1), ReverseGraph) ->
+        writeln('  ✓ PASS - reverse edge found')
+    ;   writeln('  ✗ FAIL - should have reverse edges')
+    ),
+
+    % Cleanup test predicates
+    catch(abolish(test_fact/1), _, true),
+    catch(abolish(test_linear/2), _, true),
+    catch(abolish(test_even/1), _, true),
+    catch(abolish(test_odd/1), _, true),
 
     writeln('=== CALL GRAPH TESTS COMPLETE ===').
