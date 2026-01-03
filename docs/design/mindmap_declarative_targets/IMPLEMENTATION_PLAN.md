@@ -231,10 +231,10 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **File:** `src/unifyweaver/mindmap/render/d3_renderer.pl`
 
 **Tasks:**
-- [ ] Generate D3.js force simulation code
-- [ ] Add interactive features (drag, zoom, pan)
-- [ ] Create animation support
-- [ ] Generate React wrapper component
+- [x] Generate D3.js force simulation code
+- [x] Add interactive features (drag, zoom, pan)
+- [x] Create animation support
+- [x] Generate React wrapper component
 
 ### 6.3 Additional Native Formats (.mm, .vue)
 
@@ -287,9 +287,9 @@ drag_spec(mindmap_nodes, [
 ```
 
 **Tasks:**
-- [ ] Extend `interaction_generator.pl` with mind map-specific modes
-- [ ] Add `generate_mindmap_interaction/2` predicate
-- [ ] Integrate with existing event handler patterns
+- [x] Extend `interaction_generator.pl` with mind map-specific modes
+- [x] Add `generate_mindmap_interaction/2` predicate
+- [x] Integrate with existing event handler patterns
 - [ ] Add gesture support using existing patterns
 
 ### 7.2 Viewport Management (extend zoom/pan patterns)
@@ -315,20 +315,20 @@ drag_spec(mindmap_view, [
 ```
 
 **Tasks:**
-- [ ] Use existing `generate_zoom_controls/2`
-- [ ] Use existing `generate_pan_handler/2`
-- [ ] Add fit-to-content calculation for mind maps
-- [ ] Integrate with layout system for bounds
+- [x] Use existing `generate_zoom_controls/2`
+- [x] Use existing `generate_pan_handler/2`
+- [x] Add fit-to-content calculation for mind maps
+- [x] Integrate with layout system for bounds
 
 ### 7.3 Hyperlink Navigation (extend selection patterns)
 
 **File:** `src/unifyweaver/mindmap/interaction/mindmap_navigation.pl`
 
 **Tasks:**
-- [ ] Extend `selection_spec/2` with `on_select(follow_link)`
-- [ ] Use existing tooltip system for link previews
-- [ ] Add smooth scroll animation using `animation_generator.pl`
-- [ ] Support both external URLs and internal node links
+- [x] Extend `selection_spec/2` with `on_select(follow_link)`
+- [x] Use existing tooltip system for link previews
+- [x] Add smooth scroll animation using `animation_generator.pl`
+- [x] Support both external URLs and internal node links
 
 ## File Structure
 
