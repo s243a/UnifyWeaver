@@ -102,6 +102,67 @@ def extract_tree_id(url: str) -> str:
     # Fallback: use last segment
     return parts[-1] if parts else ""
 
+
+def sanitize_filename(title: str, max_length: int = 50) -> str:
+    """Sanitize a title for use as a filename.
+
+    Args:
+        title: The raw title to sanitize
+        max_length: Maximum length for the filename (default: 50)
+
+    Returns:
+        A filesystem-safe filename string
+    """
+    import re
+    if not title:
+        return ""
+
+    # Replace problematic characters with underscores
+    # Forbidden in Windows: / \ : * ? " < > |
+    # Also replace spaces and other problematic chars
+    sanitized = re.sub(r'[/\\:*?"<>|\s]+', '_', title)
+
+    # Remove leading/trailing underscores and dots
+    sanitized = sanitized.strip('_.')
+
+    # Collapse multiple underscores
+    sanitized = re.sub(r'_+', '_', sanitized)
+
+    # Truncate to max length, but try to break at underscore
+    if len(sanitized) > max_length:
+        # Try to find a good break point
+        truncated = sanitized[:max_length]
+        last_underscore = truncated.rfind('_')
+        if last_underscore > max_length // 2:
+            sanitized = truncated[:last_underscore]
+        else:
+            sanitized = truncated.rstrip('_')
+
+    return sanitized
+
+
+def generate_filename_from_title(title: str, tree_id: str, include_id: bool = True) -> str:
+    """Generate a filename from tree title and ID.
+
+    Args:
+        title: The tree's raw title
+        tree_id: The tree's ID (e.g., "id2492215")
+        include_id: Whether to append ID for uniqueness (default: True)
+
+    Returns:
+        Filename without extension (e.g., "Hacktivism_id2492215")
+    """
+    sanitized = sanitize_filename(title)
+
+    if not sanitized:
+        return tree_id
+
+    if include_id and tree_id:
+        return f"{sanitized}_{tree_id}"
+    else:
+        return sanitized
+
+
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     """Compute cosine similarity between two vectors."""
     if a is None or b is None:
@@ -1629,7 +1690,7 @@ def mst_to_folder_structure(
 def build_user_hierarchy(
     data_path: Path,
     primary_account: str = None
-) -> Tuple[Dict[str, List[str]], Dict[str, str], str, List[str]]:
+) -> Tuple[Dict[str, List[str]], Dict[str, str], str, List[str], Dict[str, str]]:
     """Build user's actual hierarchy from JSONL cluster_id relationships.
 
     Args:
@@ -1642,11 +1703,13 @@ def build_user_hierarchy(
         - child_to_parent: Dict mapping child URI to parent URI
         - root_url: The root cluster URL
         - orphans: List of cluster URLs not connected to main hierarchy
+        - url_to_title: Dict mapping URI to tree title
     """
     # Load all Trees from JSONL
     trees = {}  # uri -> tree data
     parent_to_children: Dict[str, List[str]] = {}
     child_to_parent: Dict[str, str] = {}
+    url_to_title: Dict[str, str] = {}
 
     with open(data_path, 'r') as f:
         for line in f:
@@ -1656,6 +1719,7 @@ def build_user_hierarchy(
                 if uri:
                     trees[uri] = item
                     parent_to_children[uri] = []
+                    url_to_title[uri] = item.get('raw_title', '')
 
     # Build parent-child relationships
     for uri, item in trees.items():
@@ -1699,7 +1763,7 @@ def build_user_hierarchy(
 
     orphans = [uri for uri in trees if uri not in reachable]
 
-    return parent_to_children, child_to_parent, root_url, orphans
+    return parent_to_children, child_to_parent, root_url, orphans, url_to_title
 
 
 def cluster_trees_into_folder_groups(
@@ -1883,6 +1947,141 @@ def curated_to_folder_structure(
     return tree_to_folder
 
 
+def curated_to_folder_structure_named(
+    tree_to_folder_group: Dict[str, int],
+    folder_group_hierarchy: Dict[int, List[int]],
+    root_folder_group: int,
+    group_names: Dict[int, str],
+    max_folder_depth: int = None
+) -> Dict[str, Path]:
+    """Convert curated folder groups to folder paths with meaningful names.
+
+    Args:
+        tree_to_folder_group: Dict mapping tree_url -> folder_group_id
+        folder_group_hierarchy: Dict mapping parent_group -> child_groups
+        root_folder_group: Root folder group ID
+        group_names: Dict mapping group_id -> folder name
+        max_folder_depth: Maximum folder nesting (None = unlimited)
+
+    Returns:
+        Dict mapping tree_url -> relative folder Path
+    """
+    # First build group_id -> folder path
+    group_to_path: Dict[int, Path] = {}
+
+    def assign_group_paths(group_id: int, current_path: Path, depth: int):
+        group_to_path[group_id] = current_path
+        children = folder_group_hierarchy.get(group_id, [])
+
+        for child_gid in children:
+            if max_folder_depth is not None and depth >= max_folder_depth:
+                # Flatten: keep in current folder
+                child_path = current_path
+            else:
+                # Use the named folder
+                folder_name = group_names.get(child_gid, f"group_{child_gid}")
+                child_path = current_path / folder_name
+            assign_group_paths(child_gid, child_path, depth + 1)
+
+    assign_group_paths(root_folder_group, Path('.'), 0)
+
+    # Now map trees to paths
+    tree_to_folder = {}
+    for tree_url, group_id in tree_to_folder_group.items():
+        tree_to_folder[tree_url] = group_to_path.get(group_id, Path('.'))
+
+    return tree_to_folder
+
+
+def generate_folder_name_llm(
+    tree_titles: List[str],
+    model: str = "gemini-2.0-flash",
+    timeout: int = 30
+) -> Optional[str]:
+    """Generate a folder name from tree titles using LLM.
+
+    Args:
+        tree_titles: List of tree titles in this folder group
+        model: LLM model to use (default: gemini-2.0-flash)
+        timeout: Timeout in seconds
+
+    Returns:
+        A short folder name, or None if LLM fails
+    """
+    import subprocess
+
+    if not tree_titles:
+        return None
+
+    # Limit to first 10 titles to keep prompt reasonable
+    sample_titles = tree_titles[:10]
+    titles_text = "\n".join(f"- {t}" for t in sample_titles)
+    if len(tree_titles) > 10:
+        titles_text += f"\n- ... and {len(tree_titles) - 10} more"
+
+    prompt = f"""Given these folder/category titles, generate a short (1-3 words) folder name that captures their common theme.
+Output ONLY the folder name, nothing else. Use lowercase with underscores for spaces.
+
+Titles:
+{titles_text}
+
+Folder name:"""
+
+    try:
+        result = subprocess.run(
+            ["gemini", "-p", prompt, "-m", model, "--output-format", "text"],
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+        if result.returncode == 0:
+            name = result.stdout.strip()
+            # Sanitize the LLM output
+            name = sanitize_filename(name, max_length=30)
+            return name if name else None
+        return None
+    except Exception:
+        return None
+
+
+def generate_folder_names_batch(
+    group_to_trees: Dict[int, List[str]],
+    url_to_title: Dict[str, str],
+    use_llm: bool = True,
+    llm_model: str = "gemini-2.0-flash"
+) -> Dict[int, str]:
+    """Generate folder names for all groups.
+
+    Args:
+        group_to_trees: Dict mapping group_id -> list of tree URLs
+        url_to_title: Dict mapping URL -> title
+        use_llm: Whether to use LLM for naming
+        llm_model: LLM model to use
+
+    Returns:
+        Dict mapping group_id -> folder name
+    """
+    group_names = {}
+
+    for group_id, tree_urls in group_to_trees.items():
+        titles = [url_to_title.get(url, '') for url in tree_urls if url_to_title.get(url)]
+
+        folder_name = None
+        if use_llm and titles:
+            folder_name = generate_folder_name_llm(titles, model=llm_model)
+
+        if not folder_name:
+            # Fallback: use first title or group_N
+            if titles:
+                folder_name = sanitize_filename(titles[0], max_length=30)
+            if not folder_name:
+                folder_name = f"group_{group_id}"
+
+        group_names[group_id] = folder_name
+
+    return group_names
+
+
 def build_curated_folder_structure(
     data_path: Path,
     tree_id_emb: Dict[str, np.ndarray],
@@ -1891,8 +2090,10 @@ def build_curated_folder_structure(
     folder_count: int = 100,
     folder_method: str = 'kmeans',
     max_folder_depth: int = None,
-    primary_account: str = None
-) -> Tuple[Dict[str, Path], str, List[str]]:
+    primary_account: str = None,
+    use_llm_naming: bool = False,
+    llm_model: str = "gemini-2.0-flash"
+) -> Tuple[Dict[str, Path], str, List[str], Dict[str, str]]:
     """Build complete curated folder structure.
 
     Args:
@@ -1902,17 +2103,20 @@ def build_curated_folder_structure(
         folder_method: Clustering method ('kmeans' | 'mst-cut')
         max_folder_depth: Maximum folder nesting depth
         primary_account: Primary account to use as root
+        use_llm_naming: Whether to use LLM for folder naming
+        llm_model: LLM model to use for folder naming
 
     Returns:
         Tuple of:
         - cluster_to_folder: Dict mapping cluster_url -> folder Path
         - root_url: The root cluster URL
         - orphans: List of orphan cluster URLs
+        - url_to_title: Dict mapping URL -> tree title
     """
     print("Building curated folder structure...")
 
     # Phase 1: Build user hierarchy
-    parent_to_children, child_to_parent, root_url, orphans = build_user_hierarchy(
+    parent_to_children, child_to_parent, root_url, orphans, url_to_title = build_user_hierarchy(
         data_path, primary_account)
     print(f"  User hierarchy: root={extract_tree_id(root_url)}, "
           f"{len(parent_to_children)} trees, {len(orphans)} orphans")
@@ -1935,8 +2139,10 @@ def build_curated_folder_structure(
 
     # Phase 4: Compute folder group centroids
     group_centroids: Dict[int, np.ndarray] = {}
+    group_to_trees: Dict[int, List[str]] = {}
     for group_id in set(tree_to_group.values()):
         group_trees = [url for url, gid in tree_to_group.items() if gid == group_id]
+        group_to_trees[group_id] = group_trees
         embeddings = [tree_centroids[url] for url in group_trees if url in tree_centroids]
         if embeddings:
             group_centroids[group_id] = np.mean(embeddings, axis=0)
@@ -1945,9 +2151,15 @@ def build_curated_folder_structure(
     folder_group_hierarchy = build_mst_with_fixed_root(group_centroids, root_group)
     print(f"  MST built with root at group {root_group}")
 
-    # Phase 6: Convert to folder paths
-    cluster_to_folder = curated_to_folder_structure(
-        tree_to_group, folder_group_hierarchy, root_group, max_folder_depth)
+    # Phase 6: Generate folder names
+    if use_llm_naming:
+        print(f"  Generating folder names with LLM ({llm_model})...")
+    group_names = generate_folder_names_batch(
+        group_to_trees, url_to_title, use_llm=use_llm_naming, llm_model=llm_model)
+
+    # Phase 7: Convert to folder paths with names
+    cluster_to_folder = curated_to_folder_structure_named(
+        tree_to_group, folder_group_hierarchy, root_group, group_names, max_folder_depth)
 
     # Handle orphans - put in _orphans folder
     orphan_folder = Path('_orphans')
@@ -1956,7 +2168,7 @@ def build_curated_folder_structure(
 
     print(f"  Folder structure computed")
 
-    return cluster_to_folder, root_url, orphans
+    return cluster_to_folder, root_url, orphans, url_to_title
 
 
 def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
@@ -1974,6 +2186,10 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                        folder_count: int = 100,
                        folder_method: str = 'kmeans',
                        primary_account: str = None,
+                       use_llm_naming: bool = False,
+                       llm_model: str = "gemini-2.0-flash",
+                       use_titled_files: bool = False,
+                       url_to_title: Dict[str, str] = None,
                        parent_links: bool = False,
                        parent_url: str = None,
                        url_to_folder: Dict[str, Path] = None,
@@ -2016,12 +2232,14 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
 
         # On first call with curated_folders, build curated structure
         if curated_folders and cluster_to_folder is None:
-            cluster_to_folder, curated_root_url, orphans = build_curated_folder_structure(
+            cluster_to_folder, curated_root_url, orphans, url_to_title = build_curated_folder_structure(
                 data_path, tree_id_emb, title_emb, uri_emb,
                 folder_count=folder_count,
                 folder_method=folder_method,
                 max_folder_depth=max_folder_depth,
-                primary_account=primary_account
+                primary_account=primary_account,
+                use_llm_naming=use_llm_naming,
+                llm_model=llm_model
             )
             # Start from curated root, not the passed cluster_url
             cluster_url = curated_root_url
@@ -2066,12 +2284,19 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
     if not tree_id:
         tree_id = f"cluster_{len(visited)}"
 
+    # Generate filename (with title if enabled)
+    if use_titled_files and url_to_title and cluster_url in url_to_title:
+        title = url_to_title[cluster_url]
+        filename = generate_filename_from_title(title, tree_id, include_id=True)
+    else:
+        filename = tree_id
+
     if (mst_folders or curated_folders) and cluster_to_folder and cluster_url in cluster_to_folder:
         folder = cluster_to_folder[cluster_url]
-        output_path = output_dir / folder / f"{tree_id}.smmx"
+        output_path = output_dir / folder / f"{filename}.smmx"
         source_folder = folder
     else:
-        output_path = output_dir / f"{tree_id}.smmx"
+        output_path = output_dir / f"{filename}.smmx"
         source_folder = Path('.')
 
     # Track this cluster's folder for parent_links
@@ -2132,6 +2357,10 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
             folder_count=folder_count,
             folder_method=folder_method,
             primary_account=primary_account,
+            use_llm_naming=use_llm_naming,
+            llm_model=llm_model,
+            use_titled_files=use_titled_files,
+            url_to_title=url_to_title,
             parent_links=parent_links,
             parent_url=cluster_url,  # Current cluster becomes parent for children
             url_to_folder=url_to_folder,
@@ -2196,6 +2425,12 @@ def main():
                         help='Clustering method for --curated-folders (default: kmeans)')
     parser.add_argument('--primary-account', type=str, default=None,
                         help='Primary account for --curated-folders root selection')
+    parser.add_argument('--llm-folder-names', action='store_true',
+                        help='Use LLM to generate folder names (requires gemini CLI)')
+    parser.add_argument('--llm-model', type=str, default='gemini-2.0-flash',
+                        help='LLM model for folder naming (default: gemini-2.0-flash)')
+    parser.add_argument('--titled-files', action='store_true',
+                        help='Use tree titles in filenames (e.g., Hacktivism_id2492215.smmx)')
     parser.add_argument('--max-folder-depth', type=int, default=None,
                         help='Maximum subfolder nesting depth (default: unlimited)')
     parser.add_argument('--min-folder-children', type=int, default=None,
@@ -2267,6 +2502,10 @@ def main():
                 print(f"  Primary account: {args.primary_account}")
             if args.max_folder_depth is not None:
                 print(f"  Max folder depth: {args.max_folder_depth}")
+            if args.llm_folder_names:
+                print(f"  LLM folder names: enabled ({args.llm_model})")
+            if args.titled_files:
+                print(f"  Titled files: enabled")
         if args.parent_links:
             print(f"Parent links: enabled")
 
@@ -2286,6 +2525,9 @@ def main():
             folder_count=args.folder_count,
             folder_method=args.folder_method,
             primary_account=args.primary_account,
+            use_llm_naming=args.llm_folder_names,
+            llm_model=args.llm_model,
+            use_titled_files=args.titled_files,
             parent_links=args.parent_links,
             min_children=args.min_children,
             max_children=args.max_children,
