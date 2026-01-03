@@ -148,9 +148,9 @@ system should leverage these existing components.
 - ... and 20+ more
 
 **Tasks:**
-- [ ] Document how to use existing custom components for layouts
-- [ ] Create example custom layout using `custom_python`
-- [ ] Create example custom optimizer using `custom_go`
+- [x] Document how to use existing custom components for layouts
+- [x] Create example custom layout using `custom_python`
+- [x] Create example custom optimizer using `custom_go`
 - [ ] Add `component(Name)` reference syntax to mind map specs
 
 ### 4.2 Mind Map-Specific Custom Components
@@ -171,10 +171,10 @@ system should leverage these existing components.
 ```
 
 **Tasks:**
-- [ ] Create mind map layout component type (delegates to target custom components)
-- [ ] Create mind map optimizer component type
-- [ ] Register with component registry on initialization
-- [ ] Add validation for mind map-specific options
+- [x] Create mind map layout component type (delegates to target custom components)
+- [x] Create mind map optimizer component type
+- [x] Register with component registry on initialization
+- [x] Add validation for mind map-specific options
 
 ### 4.3 Binding Integration
 
@@ -187,10 +187,10 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 ```
 
 **Tasks:**
-- [ ] Define bindings for built-in layout algorithms
-- [ ] Define bindings for optimization passes
+- [x] Define bindings for built-in layout algorithms
+- [x] Define bindings for optimization passes
 - [ ] Create Python implementation module
-- [ ] Add NumPy/SciPy acceleration
+- [x] Add NumPy/SciPy acceleration
 
 ## Phase 5: Styling System
 
