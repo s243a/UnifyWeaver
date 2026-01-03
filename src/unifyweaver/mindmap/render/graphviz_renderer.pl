@@ -24,12 +24,72 @@
     % Direct API
     render_graphviz/5,              % render_graphviz(+Nodes, +Edges, +Positions, +Options, -DOT)
     render_graphviz/4,              % render_graphviz(+Nodes, +Edges, +Options, -DOT) - no positions
+    render_graphviz_clustered/6,    % render_graphviz_clustered(+Nodes, +Edges, +Clusters, +Positions, +Options, -DOT)
+
+    % Cluster API
+    define_cluster/3,               % define_cluster(+ClusterId, +NodeIds, +Options)
+    get_cluster_nodes/2,            % get_cluster_nodes(+ClusterId, -NodeIds)
+    clear_clusters/0,               % clear_clusters
+    cluster_from_node_props/2,      % cluster_from_node_props(+Nodes, -Clusters)
 
     % Testing
-    test_graphviz_renderer/0
+    test_graphviz_renderer/0,
+    test_cluster_support/0
 ]).
 
 :- use_module(library(lists)).
+
+% ============================================================================
+% CLUSTER STORAGE
+% ============================================================================
+
+:- dynamic graphviz_cluster/3.  % graphviz_cluster(ClusterId, NodeIds, Options)
+
+%% define_cluster(+ClusterId, +NodeIds, +Options)
+%
+%  Define a cluster (subgraph) containing specified nodes.
+%
+%  Options:
+%    - label(Label) - Cluster label
+%    - style(Style) - Border style: solid, dashed, dotted, bold
+%    - color(Color) - Border color
+%    - bgcolor(Color) - Background color
+%    - fontcolor(Color) - Label font color
+%    - rank(same) - Force same rank for all nodes
+%
+define_cluster(ClusterId, NodeIds, Options) :-
+    retractall(graphviz_cluster(ClusterId, _, _)),
+    assertz(graphviz_cluster(ClusterId, NodeIds, Options)).
+
+%% get_cluster_nodes(+ClusterId, -NodeIds)
+get_cluster_nodes(ClusterId, NodeIds) :-
+    graphviz_cluster(ClusterId, NodeIds, _).
+
+%% clear_clusters
+clear_clusters :-
+    retractall(graphviz_cluster(_, _, _)).
+
+%% cluster_from_node_props(+Nodes, -Clusters)
+%
+%  Extract cluster definitions from node properties.
+%  Nodes with cluster(ClusterName) property are grouped.
+%
+cluster_from_node_props(Nodes, Clusters) :-
+    findall(ClusterName-NodeId,
+        (   member(node(NodeId, Props), Nodes),
+            member(cluster(ClusterName), Props)
+        ),
+        ClusterPairs),
+    group_by_cluster(ClusterPairs, Clusters).
+
+group_by_cluster(Pairs, Clusters) :-
+    findall(ClusterName, member(ClusterName-_, Pairs), AllNames),
+    sort(AllNames, UniqueNames),
+    findall(cluster(Name, NodeIds, []),
+        (   member(Name, UniqueNames),
+            findall(Id, member(Name-Id, Pairs), NodeIds)
+        ),
+        Clusters).
 
 % ============================================================================
 % COMPONENT INTERFACE
@@ -143,6 +203,144 @@ render_graphviz(Nodes, Edges, Positions, Options, DOT) :-
 %
 render_graphviz(Nodes, Edges, Options, DOT) :-
     render_graphviz(Nodes, Edges, [], Options, DOT).
+
+% ============================================================================
+% CLUSTERED RENDERING
+% ============================================================================
+
+%% render_graphviz_clustered(+Nodes, +Edges, +Clusters, +Positions, +Options, -DOT)
+%
+%  Render mind map with cluster (subgraph) support.
+%
+%  Clusters format: [cluster(Id, NodeIds, Options), ...]
+%  If Clusters is [], will auto-detect from node cluster() properties.
+%
+render_graphviz_clustered(Nodes, Edges, [], Positions, Options, DOT) :-
+    !,
+    % Auto-detect clusters from node properties
+    cluster_from_node_props(Nodes, DetectedClusters),
+    render_graphviz_clustered(Nodes, Edges, DetectedClusters, Positions, Options, DOT).
+
+render_graphviz_clustered(Nodes, Edges, Clusters, Positions, Options, DOT) :-
+    option_or_default(layout_engine, Options, dot, _Engine),
+    option_or_default(rankdir, Options, 'TB', RankDir),
+    option_or_default(node_shape, Options, ellipse, NodeShape),
+    option_or_default(use_positions, Options, false, UsePositions),
+    option_or_default(font_name, Options, 'Helvetica', FontName),
+    option_or_default(font_size, Options, 12, FontSize),
+    option_or_default(title, Options, 'Mind Map', Title),
+
+    % Build position lookup
+    build_position_lookup(Positions, PosLookup),
+
+    % Collect all clustered node IDs
+    findall(NodeId, (member(cluster(_, NIds, _), Clusters), member(NodeId, NIds)), ClusteredIds),
+
+    % Separate clustered and unclustered nodes
+    partition_nodes(Nodes, ClusteredIds, ClusteredNodes, UnclusteredNodes),
+
+    % Generate subgraph/cluster content
+    render_clusters_dot(Clusters, ClusteredNodes, PosLookup, NodeShape, FontName, FontSize, UsePositions, Options, ClustersContent),
+
+    % Generate unclustered node definitions
+    render_nodes_dot(UnclusteredNodes, PosLookup, NodeShape, FontName, FontSize, UsePositions, Options, UnclusteredContent),
+
+    % Generate edge definitions
+    render_edges_dot(Edges, Options, EdgesContent),
+
+    % Engine hint
+    (   UsePositions == true
+    ->  EngineHint = '  // Use with: neato -n\n'
+    ;   EngineHint = ''
+    ),
+
+    % Assemble DOT document
+    format(atom(DOT),
+'// ~w (with clusters)
+// Generated by UnifyWeaver mindmap_render_graphviz
+~wdigraph mindmap {
+  // Graph attributes
+  graph [
+    rankdir=~w
+    fontname="~w"
+    fontsize=~w
+    label="~w"
+    labelloc=t
+    compound=true
+  ];
+
+  // Default node attributes
+  node [
+    shape=~w
+    fontname="~w"
+    fontsize=~w
+    style=filled
+    fillcolor="#e8f4fc"
+  ];
+
+  // Default edge attributes
+  edge [
+    fontname="~w"
+    fontsize=~w
+  ];
+
+  // Clusters (subgraphs)
+~w
+  // Unclustered nodes
+~w
+  // Edges
+~w}
+',
+        [Title, EngineHint, RankDir, FontName, FontSize, Title,
+         NodeShape, FontName, FontSize, FontName, FontSize,
+         ClustersContent, UnclusteredContent, EdgesContent]).
+
+%% partition_nodes(+Nodes, +ClusteredIds, -ClusteredNodes, -UnclusteredNodes)
+partition_nodes([], _, [], []).
+partition_nodes([node(Id, Props) | Rest], ClusteredIds, Clustered, Unclustered) :-
+    partition_nodes(Rest, ClusteredIds, RestClustered, RestUnclustered),
+    (   member(Id, ClusteredIds)
+    ->  Clustered = [node(Id, Props) | RestClustered],
+        Unclustered = RestUnclustered
+    ;   Clustered = RestClustered,
+        Unclustered = [node(Id, Props) | RestUnclustered]
+    ).
+
+%% render_clusters_dot(+Clusters, +AllNodes, +PosLookup, ..., -Content)
+render_clusters_dot([], _, _, _, _, _, _, _, '').
+render_clusters_dot([cluster(ClusterId, NodeIds, ClusterOpts) | Rest], AllNodes, PosLookup, Shape, FontName, FontSize, UsePos, Options, Content) :-
+    % Get cluster nodes
+    findall(node(Id, Props), (member(node(Id, Props), AllNodes), member(Id, NodeIds)), ClusterNodes),
+
+    % Cluster styling
+    (member(label(ClusterLabel), ClusterOpts) -> true ; atom_string(ClusterId, ClusterLabel)),
+    (member(style(ClusterStyle), ClusterOpts) -> true ; ClusterStyle = solid),
+    (member(color(ClusterColor), ClusterOpts) -> true ; ClusterColor = '#666666'),
+    (member(bgcolor(ClusterBG), ClusterOpts) -> true ; ClusterBG = '#f5f5f5'),
+    (member(fontcolor(ClusterFontColor), ClusterOpts) -> true ; ClusterFontColor = '#333333'),
+    (member(rank(ClusterRank), ClusterOpts) -> RankAttr = format(atom(R), '    rank=~w;~n', [ClusterRank]), R ; RankAttr = ''),
+
+    escape_dot_string(ClusterLabel, EscClusterLabel),
+
+    % Render nodes within cluster
+    render_nodes_dot(ClusterNodes, PosLookup, Shape, FontName, FontSize, UsePos, Options, ClusterNodesContent),
+
+    % Format cluster subgraph
+    format(atom(ClusterDOT),
+'  subgraph cluster_~w {
+    label="~w";
+    style=~w;
+    color="~w";
+    bgcolor="~w";
+    fontcolor="~w";
+~w
+~w  }
+
+',
+        [ClusterId, EscClusterLabel, ClusterStyle, ClusterColor, ClusterBG, ClusterFontColor, RankAttr, ClusterNodesContent]),
+
+    render_clusters_dot(Rest, AllNodes, PosLookup, Shape, FontName, FontSize, UsePos, Options, RestContent),
+    atom_concat(ClusterDOT, RestContent, Content).
 
 %% build_position_lookup(+Positions, -Lookup)
 build_position_lookup(Positions, Lookup) :-
@@ -329,6 +527,101 @@ test_graphviz_renderer :-
     ),
 
     format('~n=== Tests Complete ===~n').
+
+%% test_cluster_support
+%
+%  Test subgraph/cluster functionality.
+%
+test_cluster_support :-
+    format('~n=== GraphViz Cluster Support Tests ===~n~n'),
+
+    % Test data with clusters
+    NodesWithClusters = [
+        node(root, [label("Central"), type(root)]),
+        node(a1, [label("A1"), type(branch), cluster(group_a)]),
+        node(a2, [label("A2"), type(leaf), cluster(group_a)]),
+        node(b1, [label("B1"), type(branch), cluster(group_b)]),
+        node(b2, [label("B2"), type(leaf), cluster(group_b)]),
+        node(standalone, [label("Standalone"), type(leaf)])
+    ],
+    Edges = [
+        edge(root, a1, []),
+        edge(root, b1, []),
+        edge(a1, a2, []),
+        edge(b1, b2, []),
+        edge(root, standalone, [])
+    ],
+
+    % Test 1: Auto-detect clusters from node properties
+    format('Test 1: Auto-detect clusters from node properties...~n'),
+    cluster_from_node_props(NodesWithClusters, DetectedClusters),
+    (   length(DetectedClusters, 2),
+        member(cluster(group_a, _, _), DetectedClusters),
+        member(cluster(group_b, _, _), DetectedClusters)
+    ->  format('  PASS: Detected 2 clusters (group_a, group_b)~n')
+    ;   format('  FAIL: Cluster detection failed~n')
+    ),
+
+    % Test 2: Render with auto-detected clusters
+    format('~nTest 2: Render with auto-detected clusters...~n'),
+    render_graphviz_clustered(NodesWithClusters, Edges, [], [], [], ClusteredDOT1),
+    (   sub_atom(ClusteredDOT1, _, _, _, 'subgraph cluster_group_a'),
+        sub_atom(ClusteredDOT1, _, _, _, 'subgraph cluster_group_b')
+    ->  format('  PASS: Cluster subgraphs generated~n')
+    ;   format('  FAIL: Cluster subgraphs missing~n')
+    ),
+
+    % Test 3: Manually defined clusters with options
+    format('~nTest 3: Manually defined clusters with styling...~n'),
+    ManualClusters = [
+        cluster(features, [a1, a2], [
+            label("Features"),
+            color('#4a90d9'),
+            bgcolor('#e8f4fc'),
+            style(rounded)
+        ]),
+        cluster(tasks, [b1, b2], [
+            label("Tasks"),
+            color('#6ab04c'),
+            bgcolor('#f0fff0'),
+            style(dashed)
+        ])
+    ],
+    render_graphviz_clustered(NodesWithClusters, Edges, ManualClusters, [], [], ClusteredDOT2),
+    (   sub_atom(ClusteredDOT2, _, _, _, 'label="Features"'),
+        sub_atom(ClusteredDOT2, _, _, _, 'bgcolor="#e8f4fc"')
+    ->  format('  PASS: Cluster styling applied~n')
+    ;   format('  FAIL: Cluster styling missing~n')
+    ),
+
+    % Test 4: Unclustered nodes remain outside subgraphs
+    format('~nTest 4: Unclustered nodes handled correctly...~n'),
+    (   sub_atom(ClusteredDOT1, _, _, _, '"standalone"'),
+        sub_atom(ClusteredDOT1, _, _, _, '"root"')
+    ->  format('  PASS: Unclustered nodes rendered~n')
+    ;   format('  FAIL: Unclustered nodes missing~n')
+    ),
+
+    % Test 5: Define and retrieve cluster via API
+    format('~nTest 5: Cluster API define/get...~n'),
+    define_cluster(test_cluster, [x, y, z], [label("Test"), color(red)]),
+    (   get_cluster_nodes(test_cluster, TestNodes),
+        TestNodes = [x, y, z]
+    ->  format('  PASS: Cluster API works~n')
+    ;   format('  FAIL: Cluster API failed~n')
+    ),
+
+    % Test 6: compound=true attribute for edge routing
+    format('~nTest 6: Compound graph attribute...~n'),
+    (   sub_atom(ClusteredDOT1, _, _, _, 'compound=true')
+    ->  format('  PASS: Compound attribute set~n')
+    ;   format('  FAIL: Compound attribute missing~n')
+    ),
+
+    % Cleanup
+    clear_clusters,
+
+    format('~n=== Cluster Tests Complete ===~n').
 
 :- initialization((
     format('GraphViz renderer module loaded~n', [])

@@ -77,13 +77,14 @@ This document outlines the phased implementation of the declarative mind map lay
 **Files:**
 - `src/unifyweaver/mindmap/optimize/overlap_removal.pl`
 - `src/unifyweaver/mindmap/optimize/crossing_minimization.pl`
+- `scripts/unifyweaver/mindmap/optimize/` (Python implementations)
 
 **Tasks:**
 - [x] Create overlap detection predicates
 - [x] Implement push-apart algorithm
-- [ ] Create edge crossing detection
-- [ ] Implement angular adjustment optimizer
-- [ ] Add Python bindings for O(n²) operations
+- [x] Create edge crossing detection (Python: crossing_minimization.py)
+- [x] Implement angular adjustment optimizer (simulated annealing in crossing_minimization.py)
+- [x] Add Python bindings for O(n²) operations (NumPy-accelerated)
 
 ### 2.3 Create Layout Pipeline
 
@@ -131,10 +132,10 @@ This document outlines the phased implementation of the declarative mind map lay
 **File:** `src/unifyweaver/mindmap/render/graph_interactive_renderer.pl`
 
 **Tasks:**
-- [ ] Extend existing `graph_generator.pl` patterns
-- [ ] Add mind map-specific node types
-- [ ] Create layout preset export
-- [ ] Generate React/TypeScript component
+- [x] Extend existing `graph_generator.pl` patterns
+- [x] Add mind map-specific node types (root, hub, branch, leaf, link)
+- [x] Create layout preset export (radial, hierarchical, force, circle, grid)
+- [x] Generate React/TypeScript component (Cytoscape.js-based)
 
 ## Phase 4: Custom Component Integration
 
@@ -191,7 +192,7 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 **Tasks:**
 - [x] Define bindings for built-in layout algorithms
 - [x] Define bindings for optimization passes
-- [ ] Create Python implementation module
+- [x] Create Python implementation module (`scripts/unifyweaver/mindmap/`)
 - [x] Add NumPy/SciPy acceleration
 
 ## Phase 5: Styling System
@@ -204,7 +205,7 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 - [x] Implement selector matching
 - [x] Create property cascading (theme → type → node)
 - [x] Add computed style calculation
-- [ ] Support CSS custom properties
+- [x] Support CSS custom properties (var() references with fallbacks)
 
 ### 5.2 Theme System
 
@@ -226,7 +227,7 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 - [x] Generate DOT format output
 - [x] Map styles to GraphViz attributes
 - [x] Support multiple GraphViz layouts
-- [ ] Add subgraph/cluster support
+- [x] Add subgraph/cluster support (auto-detect from node props or manual)
 
 ### 6.2 D3.js Component
 
@@ -292,7 +293,7 @@ drag_spec(mindmap_nodes, [
 - [x] Extend `interaction_generator.pl` with mind map-specific modes
 - [x] Add `generate_mindmap_interaction/2` predicate
 - [x] Integrate with existing event handler patterns
-- [ ] Add gesture support using existing patterns
+- [x] Add gesture support (Hammer.js: tap, pinch, pan, swipe, long-press)
 
 ### 7.2 Viewport Management (extend zoom/pan patterns)
 
