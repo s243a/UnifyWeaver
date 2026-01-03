@@ -859,7 +859,13 @@ def compute_relative_cloudmapref_path(
     # Compute relative path from source folder to target file
     rel_path = os.path.relpath(target_file, source_folder)
     # Normalize to forward slashes for SimpleMind compatibility
-    return rel_path.replace('\\', '/')
+    rel_path = rel_path.replace('\\', '/')
+
+    # Add ./ prefix for paths that don't start with ../ (SimpleMind convention)
+    if not rel_path.startswith('../') and not rel_path.startswith('./'):
+        rel_path = './' + rel_path
+
+    return rel_path
 
 
 def create_parent_link_node(
@@ -882,22 +888,18 @@ def create_parent_link_node(
     """
     topic = SubElement(parent_element, 'topic')
     topic.set('id', str(node_id))
-    # Position above and to the left of root
-    topic.set('x', str(int(root_node.x - 80)))
-    topic.set('y', str(int(root_node.y - 80)))
+    topic.set('parent', str(root_node.id))  # Connect to root node
+    topic.set('guid', generate_guid())
+    # Position to the left of root
+    topic.set('x', str(int(root_node.x - 120)))
+    topic.set('y', str(int(root_node.y)))
     topic.set('palette', '0')  # Use palette 0 (typically gray/neutral)
-
-    # Text label
-    text_elem = SubElement(topic, 'text')
-    text_elem.set('text', '↑')  # Up arrow to indicate parent
-
-    # Relation to root (parent-child in SimpleMind terms)
-    rel = SubElement(topic, 'parent-child')
-    rel.set('child', str(root_node.id))
+    topic.set('colorinfo', '0')
+    topic.set('text', '↑')  # Up arrow to indicate parent
 
     # Square borderstyle for distinction
-    borderstyle = SubElement(topic, 'borderstyle')
-    borderstyle.set('style', 'rectangle')
+    style = SubElement(topic, 'style')
+    style.set('borderstyle', 'sbsRectangle')
 
     # Link with cloudmapref to parent
     link = SubElement(topic, 'link')
