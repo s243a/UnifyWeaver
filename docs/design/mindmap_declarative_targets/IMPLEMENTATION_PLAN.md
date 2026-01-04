@@ -67,7 +67,7 @@ This document outlines the phased implementation of the declarative mind map lay
 **Tasks:**
 - [x] Extract algorithm parameters from existing Python
 - [x] Create Prolog interface predicates
-- [ ] Add Python bindings for heavy computation
+- [x] Add Python bindings for heavy computation (via cross-target glue)
 - [x] Implement fallback pure-Prolog version for small graphs
 
 ### 2.2 Port Optimization Algorithms
@@ -194,6 +194,7 @@ declare_binding(python, force_layout/3, 'mindmap.layout.force_directed',
 - [x] Define bindings for optimization passes
 - [x] Create Python implementation module (`scripts/unifyweaver/mindmap/`)
 - [x] Add NumPy/SciPy acceleration
+- [x] Add JSON Lines I/O for cross-target glue (`scripts/unifyweaver/mindmap/io.py`)
 
 ## Phase 5: Styling System
 
