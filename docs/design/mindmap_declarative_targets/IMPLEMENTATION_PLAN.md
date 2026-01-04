@@ -154,7 +154,7 @@ system should leverage these existing components.
 - [x] Document how to use existing custom components for layouts
 - [x] Create example custom layout using `custom_python`
 - [x] Create example custom optimizer using `custom_go`
-- [ ] Add `component(Name)` reference syntax to mind map specs
+- [x] Add `component(Name)` reference syntax to mind map specs
 
 ### 4.2 Mind Map-Specific Custom Components
 
