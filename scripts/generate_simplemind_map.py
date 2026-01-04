@@ -436,6 +436,71 @@ def _position_nodes_by_level(node: MindMapNode, center_x: float, center_y: float
                                   angle_start=angle_start + i * angle_per_child,
                                   angle_span=angle_per_child)
 
+def apply_radial_tree_layout(node: MindMapNode, center_x: float = 500, center_y: float = 500,
+                              min_node_spacing: float = 60, base_radius: float = 120):
+    """
+    Apply radial tree layout with subtree-weighted angular allocation.
+
+    Each subtree gets angular space proportional to its size, ensuring no edge crossings.
+    Radius grows per level to fit all children with minimum spacing.
+
+    Args:
+        node: Root node of the tree
+        center_x, center_y: Center coordinates
+        min_node_spacing: Minimum spacing between adjacent nodes
+        base_radius: Base radius increment per level
+    """
+    # Step 1: Compute subtree sizes (leaf count for weighting)
+    def compute_subtree_size(n: MindMapNode) -> int:
+        """Return number of leaves (or 1 if leaf)."""
+        if not n.children:
+            return 1
+        return sum(compute_subtree_size(c) for c in n.children)
+
+    # Cache subtree sizes
+    subtree_sizes = {}
+    def cache_sizes(n: MindMapNode):
+        subtree_sizes[id(n)] = compute_subtree_size(n)
+        for c in n.children:
+            cache_sizes(c)
+    cache_sizes(node)
+
+    # Step 2: Position nodes recursively
+    def position_subtree(n: MindMapNode, angle_start: float, angle_span: float,
+                         depth: int, parent_radius: float):
+        """Position a node and its subtree within the given angular wedge."""
+        # Calculate radius for this depth
+        radius = parent_radius + base_radius if depth > 0 else 0
+
+        # Position this node at center of its wedge
+        angle_center = angle_start + angle_span / 2
+        n.x = center_x + radius * math.cos(angle_center)
+        n.y = center_y + radius * math.sin(angle_center)
+
+        if not n.children:
+            return
+
+        # Calculate radius needed so children have min_node_spacing
+        n_children = len(n.children)
+        child_radius = radius + base_radius
+
+        # Ensure children don't overlap: arc_length >= n_children * spacing
+        # arc_length = angle_span * child_radius
+        min_child_radius = (n_children * min_node_spacing) / angle_span if angle_span > 0 else base_radius
+        child_radius = max(child_radius, min_child_radius)
+
+        # Equal angles per parent - each child gets equal share of parent's wedge
+        child_span = angle_span / n_children
+
+        current_angle = angle_start
+        for child in n.children:
+            position_subtree(child, current_angle, child_span, depth + 1, child_radius - base_radius)
+            current_angle += child_span
+
+    # Start positioning from root
+    position_subtree(node, 0, 2 * math.pi, 0, 0)
+
+
 def collect_all_nodes(node: MindMapNode, nodes: List[MindMapNode] = None) -> List[MindMapNode]:
     """Flatten tree into list of all nodes."""
     if nodes is None:
@@ -898,31 +963,34 @@ def calculate_node_scales(root: MindMapNode, min_scale: float = 1.2) -> Dict[int
 
 def compute_relative_cloudmapref_path(
     source_folder: Path,
-    target_tree_id: str,
+    target_filename: str,
     target_folder: Path
 ) -> str:
     """Compute relative path from source to target .smmx file.
 
     Args:
         source_folder: Folder containing source .smmx (relative to output root)
-        target_tree_id: Tree ID of target (e.g., 'id123456')
+        target_filename: Filename of target (e.g., 'Title_id123456.smmx' or 'id123456.smmx')
         target_folder: Folder containing target .smmx (relative to output root)
 
     Returns:
-        Relative path string for cloudmapref (e.g., '../sibling/id789.smmx')
+        Relative path string for cloudmapref (e.g., '../sibling/Title_id789.smmx')
     """
     import os
     # Both paths are relative to output root
     # source_folder: where the current .smmx is
     # target_folder: where the target .smmx is
-    target_file = target_folder / f'{target_tree_id}.smmx'
+    # Ensure filename has .smmx extension
+    if not target_filename.endswith('.smmx'):
+        target_filename = f'{target_filename}.smmx'
+    target_file = target_folder / target_filename
 
     # Compute relative path from source folder to target file
     rel_path = os.path.relpath(target_file, source_folder)
     # Normalize to forward slashes for SimpleMind compatibility
     rel_path = rel_path.replace('\\', '/')
 
-    # Add ./ prefix for paths that don't start with ../ (SimpleMind convention)
+    # Add ./ prefix for same-directory or subdirectory paths (SimpleMind convention)
     if not rel_path.startswith('../') and not rel_path.startswith('./'):
         rel_path = './' + rel_path
 
@@ -934,11 +1002,12 @@ def create_parent_link_node(
     root_node: 'MindMapNode',
     parent_tree_id: str,
     parent_cloudmapref: str,
-    node_id: int
+    node_id: int,
+    parent_title: str = None
 ) -> None:
     """Create a parent link node connected to the root.
 
-    Adds a small square node labeled "↑" that links back to the parent map.
+    Adds a small square node labeled "↑ ParentName" that links back to the parent map.
 
     Args:
         parent_element: XML element to add the node to
@@ -946,6 +1015,7 @@ def create_parent_link_node(
         parent_tree_id: Tree ID of the parent
         parent_cloudmapref: Relative path to parent .smmx file
         node_id: Unique ID for this node
+        parent_title: Title of the parent folder (optional)
     """
     topic = SubElement(parent_element, 'topic')
     topic.set('id', str(node_id))
@@ -956,7 +1026,11 @@ def create_parent_link_node(
     topic.set('y', str(int(root_node.y)))
     topic.set('palette', '0')  # Use palette 0 (typically gray/neutral)
     topic.set('colorinfo', '0')
-    topic.set('text', '↑')  # Up arrow to indicate parent
+    # Up arrow with optional parent title
+    if parent_title:
+        topic.set('text', f'↑ {parent_title}')
+    else:
+        topic.set('text', '↑')
 
     # Square borderstyle for distinction
     style = SubElement(topic, 'style')
@@ -973,7 +1047,9 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                 url_nodes_mode: str = None, next_id: List[int] = None,
                 child_node_text: str = '',
                 source_folder: Path = None,
-                cluster_to_folder: Dict[str, Path] = None):
+                cluster_to_folder: Dict[str, Path] = None,
+                url_to_filename: Dict[str, str] = None,
+                layout: str = None):
     """Convert a MindMapNode to SimpleMind XML topic element.
 
     Args:
@@ -989,6 +1065,8 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         child_node_text: Text label for child link nodes (default: empty)
         source_folder: Current .smmx folder (relative to output root) for path computation
         cluster_to_folder: Dict mapping cluster URLs to folder paths for MST-based layout
+        url_to_filename: Dict mapping cluster URLs to their actual filenames (for titled files)
+        layout: Layout mode - 'auto' adds SimpleMind radial layout element to root topic
     """
     topic = SubElement(parent_element, 'topic')
     topic.set('id', str(node.id))
@@ -1013,6 +1091,13 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
     wrapped = wrap_title(node.title)
     text = wrapped.replace('\n', '\\N')
     topic.set('text', text)
+
+    # Add layout element to root topic for SimpleMind's native radial layout
+    if node.id == 0 and layout == 'auto':
+        layout_elem = SubElement(topic, 'layout')
+        layout_elem.set('mode', 'radial')
+        layout_elem.set('direction', 'auto')
+        layout_elem.set('flow', 'default')
 
     # Determine borderstyle based on item type
     borderstyle = None
@@ -1044,13 +1129,19 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         is_tree_with_children = enable_cloudmapref and node.item_type == 'Tree' and node.id != 0
         target_tree_id = extract_tree_id(node.url) if is_tree_with_children else None
 
-        # Compute cloudmapref path (uses folder structure if available)
+        # Compute cloudmapref path (uses folder structure and filename mapping if available)
         def get_cloudmapref_path():
+            # Get the actual filename (titled or just ID)
+            if url_to_filename and node.url in url_to_filename:
+                target_filename = url_to_filename[node.url]
+            else:
+                target_filename = target_tree_id
+
             if cluster_to_folder and source_folder is not None and node.url in cluster_to_folder:
                 target_folder = cluster_to_folder[node.url]
-                return compute_relative_cloudmapref_path(source_folder, target_tree_id, target_folder)
+                return compute_relative_cloudmapref_path(source_folder, target_filename, target_folder)
             else:
-                return f'./{target_tree_id}.smmx'
+                return f'./{target_filename}.smmx'
 
         if is_tree_with_children and target_tree_id:
             # Determine link layout based on url_nodes_mode
@@ -1112,6 +1203,45 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                     child_link = SubElement(child_topic, 'link')
                     child_link.set('urllink', node.url)
 
+            elif url_nodes_mode == 'url-label':
+                # cloudmapref on main node (for map navigation)
+                link = SubElement(topic, 'link')
+                link.set('cloudmapref', get_cloudmapref_path())
+                target_guid = generate_deterministic_guid(node.url, 0)
+                link.set('element', target_guid)
+
+                # URL on child node with "url" label and no border
+                if next_id is not None:
+                    child_node_id = next_id[0]
+                    next_id[0] += 1
+                    child_topic = SubElement(parent_element, 'topic')
+                    child_topic.set('id', str(child_node_id))
+                    child_topic.set('parent', str(node.id))
+                    child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
+                    # Position along radial direction from center (500, 500)
+                    center_x, center_y = 500, 500
+                    dx = node.x - center_x
+                    dy = node.y - center_y
+                    dist = (dx*dx + dy*dy) ** 0.5
+                    if dist > 0:
+                        # Offset 60 pixels further along radial direction
+                        url_x = node.x + (dx / dist) * 60
+                        url_y = node.y + (dy / dist) * 60
+                    else:
+                        url_x = node.x + 60
+                        url_y = node.y
+                    child_topic.set('x', f'{url_x:.2f}')
+                    child_topic.set('y', f'{url_y:.2f}')
+                    child_topic.set('palette', str(node.palette))
+                    child_topic.set('colorinfo', str(node.palette))
+                    child_topic.set('text', 'url')
+                    # No border style
+                    child_style = SubElement(child_topic, 'style')
+                    child_style.set('borderstyle', 'sbsNone')
+                    # URL link
+                    child_link = SubElement(child_topic, 'link')
+                    child_link.set('urllink', node.url)
+
             else:
                 # No child node - cloudmapref on main only
                 link = SubElement(topic, 'link')
@@ -1127,7 +1257,7 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
     for child in node.children:
         node_to_xml(child, parent_element, scales, tree_style, pearl_style,
                     enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text,
-                    source_folder, cluster_to_folder)
+                    source_folder, cluster_to_folder, url_to_filename, layout)
 
 def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float] = None,
                          tree_style: str = None, pearl_style: str = None,
@@ -1136,7 +1266,10 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
                          source_folder: Path = None,
                          cluster_to_folder: Dict[str, Path] = None,
                          parent_tree_id: str = None,
-                         parent_cloudmapref: str = None) -> str:
+                         parent_cloudmapref: str = None,
+                         url_to_filename: Dict[str, str] = None,
+                         parent_title: str = None,
+                         layout: str = None) -> str:
     """Generate complete SimpleMind XML document.
 
     Args:
@@ -1153,6 +1286,9 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
         cluster_to_folder: Dict mapping cluster URLs to folder paths for MST-based layout
         parent_tree_id: Tree ID of the parent cluster (for parent links)
         parent_cloudmapref: Relative path to parent .smmx file (for parent links)
+        url_to_filename: Dict mapping cluster URLs to their actual filenames
+        parent_title: Title of the parent folder (for parent link label)
+        layout: Layout mode - 'auto' adds SimpleMind radial layout element to root topic
     """
     # Root element
     root_elem = Element('simplemind-mindmaps')
@@ -1186,13 +1322,13 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
     next_id = [max(n.id for n in all_nodes) + 1000]  # Leave gap for safety
     node_to_xml(root, topics, scales, tree_style, pearl_style,
                 enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text,
-                source_folder, cluster_to_folder)
+                source_folder, cluster_to_folder, url_to_filename, layout)
 
     # Add parent link node if parent info provided
     if parent_tree_id and parent_cloudmapref:
         parent_node_id = next_id[0]
         next_id[0] += 1
-        create_parent_link_node(topics, root, parent_tree_id, parent_cloudmapref, parent_node_id)
+        create_parent_link_node(topics, root, parent_tree_id, parent_cloudmapref, parent_node_id, parent_title)
 
     # Relations section (empty for now)
     SubElement(mindmap, 'relations')
@@ -1363,7 +1499,10 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                         source_folder: Path = None,
                         cluster_to_folder: Dict[str, Path] = None,
                         parent_tree_id: str = None,
-                        parent_cloudmapref: str = None) -> List[str]:
+                        parent_cloudmapref: str = None,
+                        url_to_filename: Dict[str, str] = None,
+                        parent_title: str = None,
+                        layout: str = 'radial') -> List[str]:
     """Generate a single mind map and return URLs of child Trees for recursion.
 
     Args:
@@ -1384,6 +1523,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
         cluster_to_folder: Dict mapping cluster URLs to folder paths for MST-based layout
         parent_tree_id: Tree ID of the parent cluster (for parent links)
         parent_cloudmapref: Relative path to parent .smmx file (for parent links)
+        url_to_filename: Dict mapping cluster URLs to their actual filenames
+        parent_title: Title of the parent folder (for parent link label)
 
     Returns:
         List of child Tree URLs for recursive generation
@@ -1403,16 +1544,20 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
     # Build hierarchy with micro-clustering
     root = build_hierarchy(nodes, min_children=min_children, max_children=max_children)
 
-    # Apply radial layout
-    apply_radial_layout(root, center_x=500, center_y=500, min_spacing=80, base_radius=150)
+    # Apply layout (skip for 'auto' - SimpleMind will handle it)
+    if layout == 'tree':
+        apply_radial_tree_layout(root, center_x=500, center_y=500, min_node_spacing=60, base_radius=120)
+    elif layout == 'radial':
+        apply_radial_layout(root, center_x=500, center_y=500, min_spacing=100, base_radius=180)
+    # else: 'auto' - use default positions, SimpleMind handles layout
 
-    # Optional: force-directed optimization
-    if optimize:
+    # Optional: force-directed optimization (only for algorithmic layouts)
+    if optimize and layout != 'auto':
         force_directed_optimize(root, center_x=500, center_y=500,
                                iterations=optimize_iterations)
 
-    # Optional: edge crossing minimization
-    if do_minimize_crossings:
+    # Optional: edge crossing minimization (only for algorithmic layouts)
+    if do_minimize_crossings and layout != 'auto':
         if not optimize:
             force_directed_optimize(root, center_x=500, center_y=500, iterations=300)
         minimize_crossings(root, center_x=500, center_y=500, max_passes=crossing_passes)
@@ -1433,7 +1578,10 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                                        source_folder=source_folder,
                                        cluster_to_folder=cluster_to_folder,
                                        parent_tree_id=parent_tree_id,
-                                       parent_cloudmapref=parent_cloudmapref)
+                                       parent_cloudmapref=parent_cloudmapref,
+                                       url_to_filename=url_to_filename,
+                                       parent_title=parent_title,
+                                       layout=layout)
 
     # Write output
     if xml_only:
@@ -1531,8 +1679,25 @@ def compute_cluster_centroids(
     cluster_centroids = {}
     all_embeddings = []
 
-    for cluster_url in cluster_urls:
-        items = load_cluster_items(data_path, cluster_url=cluster_url)
+    # Pre-load and index data file for efficiency
+    print("    Loading data file into memory...")
+    cluster_to_items = {}
+    with open(data_path) as f:
+        for line in f:
+            rec = json.loads(line)
+            cluster_id = rec.get('cluster_id', '')
+            if cluster_id:
+                if cluster_id not in cluster_to_items:
+                    cluster_to_items[cluster_id] = []
+                cluster_to_items[cluster_id].append(rec)
+    print(f"    Indexed {len(cluster_to_items)} clusters")
+
+    total = len(cluster_urls)
+    for i, cluster_url in enumerate(cluster_urls):
+        if (i + 1) % 500 == 0 or i == 0:
+            print(f"    Computing centroids: {i+1}/{total} ({100*(i+1)//total}%)", flush=True)
+
+        items = cluster_to_items.get(cluster_url, [])
         embeddings = []
         for item in items:
             emb = get_embedding(item)
@@ -2190,10 +2355,13 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                        llm_model: str = "gemini-2.0-flash",
                        use_titled_files: bool = False,
                        url_to_title: Dict[str, str] = None,
+                       url_to_filename: Dict[str, str] = None,
                        parent_links: bool = False,
                        parent_url: str = None,
                        url_to_folder: Dict[str, Path] = None,
                        curated_root_url: str = None,
+                       save_folder_map: Path = None,
+                       load_folder_map: Path = None,
                        **kwargs) -> int:
     """Recursively generate mind maps for a cluster hierarchy.
 
@@ -2218,6 +2386,8 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         parent_url: URL of the parent cluster (for parent links)
         url_to_folder: Mapping of cluster URLs to folder paths (for parent links)
         curated_root_url: Root URL determined by curated folders (for starting generation)
+        save_folder_map: If provided, save computed folder structure to this JSON file
+        load_folder_map: If provided, load folder structure from this JSON file (skips computation)
         **kwargs: Additional arguments passed to generate_single_map
 
     Returns:
@@ -2230,21 +2400,59 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         if parent_links and url_to_folder is None:
             url_to_folder = {}
 
-        # On first call with curated_folders, build curated structure
+        # Initialize url_to_filename mapping (tracks actual filenames for cloudmapref links)
+        if url_to_filename is None:
+            url_to_filename = {}
+
+        # On first call with curated_folders, build or load curated structure
         if curated_folders and cluster_to_folder is None:
-            cluster_to_folder, curated_root_url, orphans, url_to_title = build_curated_folder_structure(
-                data_path, tree_id_emb, title_emb, uri_emb,
-                folder_count=folder_count,
-                folder_method=folder_method,
-                max_folder_depth=max_folder_depth,
-                primary_account=primary_account,
-                use_llm_naming=use_llm_naming,
-                llm_model=llm_model
-            )
+            # Try to load from file if specified
+            if load_folder_map and load_folder_map.exists():
+                print(f"Loading folder map from {load_folder_map}...")
+                with open(load_folder_map) as f:
+                    folder_data = json.load(f)
+                cluster_to_folder = {url: Path(path) for url, path in folder_data['cluster_to_folder'].items()}
+                curated_root_url = folder_data['root_url']
+                orphans = folder_data.get('orphans', [])
+                url_to_title = folder_data.get('url_to_title', {})
+                print(f"  Loaded {len(cluster_to_folder)} folder mappings, root={extract_tree_id(curated_root_url)}")
+            else:
+                # Build from scratch
+                cluster_to_folder, curated_root_url, orphans, url_to_title = build_curated_folder_structure(
+                    data_path, tree_id_emb, title_emb, uri_emb,
+                    folder_count=folder_count,
+                    folder_method=folder_method,
+                    max_folder_depth=max_folder_depth,
+                    primary_account=primary_account,
+                    use_llm_naming=use_llm_naming,
+                    llm_model=llm_model
+                )
+
+                # Save folder map if requested
+                if save_folder_map:
+                    print(f"Saving folder map to {save_folder_map}...")
+                    folder_data = {
+                        'cluster_to_folder': {url: str(path) for url, path in cluster_to_folder.items()},
+                        'root_url': curated_root_url,
+                        'orphans': orphans,
+                        'url_to_title': url_to_title
+                    }
+                    save_folder_map.parent.mkdir(parents=True, exist_ok=True)
+                    with open(save_folder_map, 'w') as f:
+                        json.dump(folder_data, f, indent=2)
+                    print(f"  Saved {len(cluster_to_folder)} folder mappings")
+
             # Start from curated root, not the passed cluster_url
             cluster_url = curated_root_url
             if orphans:
                 print(f"  Note: {len(orphans)} orphan trees will be placed in _orphans/")
+
+            # Build url_to_filename upfront if titled_files is enabled
+            if use_titled_files and url_to_title:
+                for url, title in url_to_title.items():
+                    tree_id = extract_tree_id(url)
+                    if tree_id:
+                        url_to_filename[url] = generate_filename_from_title(title, tree_id, include_id=True)
 
         # On first call with mst_folders, build MST structure
         elif mst_folders and cluster_to_folder is None:
@@ -2269,6 +2477,26 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                 min_folder_children, max_folder_children)
             print(f"  Folder structure computed")
 
+        # For non-curated/mst modes, build url_to_title from data file
+        # This is needed for parent link titles and titled files
+        if url_to_title is None and (parent_links or use_titled_files):
+            url_to_title = {}
+            with open(data_path) as f:
+                for line in f:
+                    rec = json.loads(line)
+                    if rec.get('type') == 'Tree':
+                        uri = rec.get('uri', '')
+                        title = rec.get('raw_title', '')
+                        if uri and title:
+                            url_to_title[uri] = title
+
+            # Build url_to_filename upfront if titled_files is enabled
+            if use_titled_files:
+                for url, title in url_to_title.items():
+                    tree_id = extract_tree_id(url)
+                    if tree_id:
+                        url_to_filename[url] = generate_filename_from_title(title, tree_id, include_id=True)
+
     # Prevent infinite loops (e.g., circular references)
     if cluster_url in visited:
         return 0
@@ -2291,6 +2519,10 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
     else:
         filename = tree_id
 
+    # Record this cluster's filename for cloudmapref links
+    if url_to_filename is not None:
+        url_to_filename[cluster_url] = filename
+
     if (mst_folders or curated_folders) and cluster_to_folder and cluster_url in cluster_to_folder:
         folder = cluster_to_folder[cluster_url]
         output_path = output_dir / folder / f"{filename}.smmx"
@@ -2309,14 +2541,19 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
     # Compute parent link info if parent_links enabled and we have a parent
     parent_tree_id = None
     parent_cloudmapref = None
+    parent_title = None
     if parent_links and parent_url:
         parent_tree_id = extract_tree_id(parent_url)
         if parent_tree_id:
-            # Get parent's folder (should have been recorded)
+            # Get parent's folder and filename (should have been recorded)
             parent_folder = url_to_folder.get(parent_url, Path('.')) if url_to_folder else Path('.')
+            parent_filename = url_to_filename.get(parent_url, parent_tree_id) if url_to_filename else parent_tree_id
             parent_cloudmapref = compute_relative_cloudmapref_path(
-                source_folder, parent_tree_id, parent_folder
+                source_folder, parent_filename, parent_folder
             )
+            # Get parent title from url_to_title if available
+            if url_to_title:
+                parent_title = url_to_title.get(parent_url)
 
     # Generate this cluster's map
     child_urls = generate_single_map(
@@ -2331,6 +2568,8 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         cluster_to_folder=cluster_to_folder,
         parent_tree_id=parent_tree_id,
         parent_cloudmapref=parent_cloudmapref,
+        url_to_filename=url_to_filename,
+        parent_title=parent_title,
         **kwargs
     )
 
@@ -2361,6 +2600,7 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
             llm_model=llm_model,
             use_titled_files=use_titled_files,
             url_to_title=url_to_title,
+            url_to_filename=url_to_filename,
             parent_links=parent_links,
             parent_url=cluster_url,  # Current cluster becomes parent for children
             url_to_folder=url_to_folder,
@@ -2399,6 +2639,8 @@ def main():
                         help='Apply edge crossing minimization after force-directed')
     parser.add_argument('--crossing-passes', type=int, default=10,
                         help='Max passes for crossing minimization')
+    parser.add_argument('--layout', choices=['auto', 'radial', 'tree'], default='auto',
+                        help='Layout: "auto" (SimpleMind radial, default), "radial" (algorithmic), "tree" (no-crossing)')
     parser.add_argument('--tree-style',
                         choices=['half-round', 'ellipse', 'rectangle', 'diamond'],
                         default=None,
@@ -2437,10 +2679,14 @@ def main():
                         help='Minimum children to create subfolders (default: no minimum)')
     parser.add_argument('--max-folder-children', type=int, default=None,
                         help='Maximum children to put in subfolders (default: unlimited)')
-    parser.add_argument('--url-nodes', choices=['url', 'map'], nargs='?', const='url', default=None,
-                        help='Attach small child nodes to Tree nodes. "url" (default): URL on main, cloudmapref on child. "map": cloudmapref on main, URL on child.')
+    parser.add_argument('--url-nodes', choices=['url', 'map', 'url-label'], nargs='?', const='url', default=None,
+                        help='Attach small child nodes to Tree nodes. "url" (default): URL on main, cloudmapref on child. "map": cloudmapref on main, URL on child. "url-label": cloudmapref on main, URL on borderless "url" labeled child.')
     parser.add_argument('--child-text', type=str, default='',
                         help='Text label for child link nodes (default: empty/unlabeled)')
+    parser.add_argument('--save-folder-map', type=Path, default=None,
+                        help='Save computed folder structure to JSON file for reuse')
+    parser.add_argument('--load-folder-map', type=Path, default=None,
+                        help='Load pre-computed folder structure from JSON file (skips computation)')
 
     args = parser.parse_args()
 
@@ -2529,6 +2775,8 @@ def main():
             llm_model=args.llm_model,
             use_titled_files=args.titled_files,
             parent_links=args.parent_links,
+            save_folder_map=args.save_folder_map,
+            load_folder_map=args.load_folder_map,
             min_children=args.min_children,
             max_children=args.max_children,
             optimize=args.optimize,
@@ -2540,7 +2788,8 @@ def main():
             pearl_style=args.pearl_style,
             url_nodes_mode=args.url_nodes,
             child_node_text=args.child_text,
-            xml_only=args.xml_only
+            xml_only=args.xml_only,
+            layout=args.layout
         )
 
         print(f"\nGenerated {total} linked mind maps")
@@ -2563,8 +2812,12 @@ def main():
     root = build_hierarchy(nodes, min_children=args.min_children,
                           max_children=args.max_children)
 
-    # Apply radial layout with consistent circumferential spacing
-    apply_radial_layout(root, center_x=500, center_y=500, min_spacing=80, base_radius=150)
+    # Apply layout (skip for 'auto' - SimpleMind will handle it)
+    if args.layout == 'tree':
+        apply_radial_tree_layout(root, center_x=500, center_y=500, min_node_spacing=60, base_radius=120)
+    elif args.layout == 'radial':
+        apply_radial_layout(root, center_x=500, center_y=500, min_spacing=100, base_radius=180)
+    # else: 'auto' - use default positions, SimpleMind handles layout
 
     # Optional: force-directed optimization
     if args.optimize:
@@ -2592,7 +2845,8 @@ def main():
                                        tree_style=args.tree_style,
                                        pearl_style=args.pearl_style,
                                        enable_cloudmapref=False,
-                                       cluster_id=cluster_url)
+                                       cluster_id=cluster_url,
+                                       layout=args.layout)
 
     # Write output
     if args.xml_only:
