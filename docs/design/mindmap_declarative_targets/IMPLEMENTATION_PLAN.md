@@ -373,12 +373,79 @@ src/unifyweaver/mindmap/
 │   ├── viewport.pl             # Pan/zoom
 │   └── navigation.pl           # Link navigation
 │
+├── glue/
+│   └── mindmap_glue.pl         # Cross-target glue integration
+│
+├── serialization/
+│   └── mindmap_serializer.pl   # JSON Lines serialization
+│
 └── bindings/
     ├── python_layout.py        # Python layout implementations
     └── typescript/             # TypeScript implementations
         ├── package.json
         └── src/
             └── layout.ts
+
+scripts/unifyweaver/mindmap/
+├── __init__.py                 # Package init
+├── io.py                       # JSON Lines I/O for cross-target glue
+├── layout/                     # Layout algorithm implementations
+│   ├── __init__.py
+│   ├── force_directed.py
+│   ├── radial.py
+│   ├── hierarchical.py
+│   └── ...
+├── optimize/                   # Optimization pass implementations
+│   ├── __init__.py
+│   ├── overlap_removal.py
+│   ├── crossing_minimization.py
+│   └── ...
+└── render/                     # Renderer implementations
+    ├── __init__.py
+    └── ...
+```
+
+## Cross-Target Glue Architecture
+
+The mindmap system integrates with UnifyWeaver's existing cross-target glue infrastructure
+for seamless Prolog↔Python communication.
+
+### Transport Selection
+
+The glue automatically selects the best transport based on runtime:
+
+1. **Janus Transport** (in-process, fastest)
+   - Used when running on SWI-Prolog with Janus support
+   - Required Python packages must be importable
+   - Zero serialization overhead for compatible types
+
+2. **Pipe Transport** (subprocess with JSON Lines)
+   - Fallback for GNU Prolog or when Janus unavailable
+   - Uses `mindmap_serializer.pl` for JSON Lines encoding
+   - Python reads/writes via `scripts/unifyweaver/mindmap/io.py`
+
+### Key Modules
+
+| Module | Purpose |
+|--------|---------|
+| `mindmap_glue.pl` | Cross-target dispatch, delegates to `janus_glue` or `pipe_glue` |
+| `mindmap_serializer.pl` | JSON Lines serialization for nodes, edges, positions |
+| `io.py` | Python dataclasses and streaming I/O for mindmap objects |
+| `janus_glue.pl` | Existing UnifyWeaver module for in-process Python calls |
+| `pipe_glue.pl` | Existing UnifyWeaver module for subprocess communication |
+
+### Usage Example
+
+```prolog
+% Check Janus availability for mindmaps
+?- mindmap_janus_available(Info).
+Info = janus('3.11.0').
+
+% Execute a layout pipeline (auto-selects transport)
+?- execute_mindmap_pipeline(my_map, [pipeline([force_layout, overlap_removal])], Result).
+
+% Generate standalone Python code (when target is Python)
+?- generate_mindmap_python(my_map, [], PythonCode).
 ```
 
 ## Milestones
