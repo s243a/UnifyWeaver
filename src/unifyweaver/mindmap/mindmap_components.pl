@@ -25,6 +25,11 @@
     list_mindmap_optimizers/1,      % list_mindmap_optimizers(-Optimizers)
     list_mindmap_renderers/1,       % list_mindmap_renderers(-Renderers)
 
+    % Component existence checks (supports component(Name) syntax)
+    layout_exists/1,                % layout_exists(+NameOrComponent)
+    optimizer_exists/1,             % optimizer_exists(+NameOrComponent)
+    renderer_exists/1,              % renderer_exists(+NameOrComponent)
+
     % Component invocation
     invoke_layout/4,                % invoke_layout(+Name, +Graph, +Options, -Positions)
     invoke_optimizer/4,             % invoke_optimizer(+Name, +Positions, +Options, -OptimizedPositions)
@@ -148,6 +153,40 @@ register_mindmap_renderer(Name, Module, Options) :-
 % ============================================================================
 % QUERY PREDICATES
 % ============================================================================
+
+%% layout_exists(+Name)
+%
+%  Check if a layout component exists by name.
+%  Supports component(Name) syntax for explicit component references.
+%
+layout_exists(component(Name)) :-
+    !,
+    layout_exists(Name).
+layout_exists(Name) :-
+    atom(Name),
+    get_layout_module(Name, _).
+
+%% optimizer_exists(+Name)
+%
+%  Check if an optimizer component exists by name.
+%
+optimizer_exists(component(Name)) :-
+    !,
+    optimizer_exists(Name).
+optimizer_exists(Name) :-
+    atom(Name),
+    get_optimizer_module(Name, _).
+
+%% renderer_exists(+Name)
+%
+%  Check if a renderer component exists by name.
+%
+renderer_exists(component(Name)) :-
+    !,
+    renderer_exists(Name).
+renderer_exists(Name) :-
+    atom(Name),
+    get_renderer_module(Name, _).
 
 %% list_mindmap_layouts(-Layouts)
 %

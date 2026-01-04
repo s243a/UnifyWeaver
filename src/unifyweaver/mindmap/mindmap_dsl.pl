@@ -11,10 +11,15 @@
 %   mindmap_node(root, [label("Central Topic"), type(root)]).
 %   mindmap_node(child1, [label("Branch A"), parent(root)]).
 %
-%   % Define layout
+%   % Define layout with built-in algorithm
 %   declare_mindmap_layout(my_map, force_directed, [
 %       iterations(300),
 %       min_distance(50)
+%   ]).
+%
+%   % Or use a registered component
+%   declare_mindmap_layout(my_map, component(my_custom_layout), [
+%       custom_option(value)
 %   ]).
 %
 %   % Generate output
@@ -68,6 +73,9 @@
 ]).
 
 :- use_module(library(lists)).
+
+% Load mindmap_components for component(Name) syntax support
+:- catch(use_module('./mindmap_components'), _, true).
 
 % ============================================================================
 % DYNAMIC PREDICATES
@@ -353,8 +361,21 @@ generate_mindmap_positions(Name, Positions) :-
 %% compute_layout(+Algorithm, +Nodes, +Edges, +Options, -Positions)
 %
 %  Dispatch to appropriate layout algorithm.
-%  Default implementation provides basic radial layout.
+%  Supports both built-in algorithms and registered components.
 %
+%  Algorithm can be:
+%    - atom: Built-in algorithm name (radial, force_directed, hierarchical)
+%    - component(Name): Reference to a registered component
+%
+compute_layout(component(Name), Nodes, Edges, Options, Positions) :-
+    !,
+    % Invoke registered component via mindmap_components
+    Graph = graph(Nodes, Edges),
+    (   catch(mindmap_components:invoke_layout(Name, Graph, Options, Positions), _, fail)
+    ->  true
+    ;   format('Error: Layout component ~w not found or failed~n', [Name]),
+        Positions = []
+    ).
 compute_layout(radial, Nodes, _Edges, Options, Positions) :-
     !,
     compute_radial_layout(Nodes, Options, Positions).
@@ -364,6 +385,11 @@ compute_layout(force_directed, Nodes, Edges, Options, Positions) :-
 compute_layout(hierarchical, Nodes, Edges, Options, Positions) :-
     !,
     compute_hierarchical_layout(Nodes, Edges, Options, Positions).
+compute_layout(Algorithm, Nodes, Edges, Options, Positions) :-
+    % Try to find as a registered component before failing
+    atom(Algorithm),
+    catch(mindmap_components:invoke_layout(Algorithm, graph(Nodes, Edges), Options, Positions), _, fail),
+    !.
 compute_layout(Algorithm, _Nodes, _Edges, _Options, []) :-
     format('Warning: Unknown layout algorithm: ~w~n', [Algorithm]).
 
