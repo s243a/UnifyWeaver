@@ -298,10 +298,10 @@ This works because switching from radial to `free` mode preserves node positions
 ### Layout Mode Summary
 | Mode | Behavior | Use Case |
 |------|----------|----------|
-| `auto` | Native radial, software positions nodes | Sharing, presentation |
-| `free` | Algorithmic positions preserved exactly | When computed layout is final |
-| `radial` | Our radial algorithm | Dense, Pearltrees 1 aesthetic |
-| `tree` | Equal angular spacing per parent | Balanced hierarchies |
+| `radial-auto` | Native radial, software positions nodes | Sharing, presentation (default) |
+| `radial` | Equal angular spacing per parent | Standard radial tree layout |
+| `radial-freeform` | Force-directed optimization | Organic, freeform positioning |
+| `radial-PT1` | Dense, tightly-packed radial *(future)* | Pearltrees 1 aesthetic |
 
 ## Benefits
 

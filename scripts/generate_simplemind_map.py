@@ -1066,7 +1066,7 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         source_folder: Current .smmx folder (relative to output root) for path computation
         cluster_to_folder: Dict mapping cluster URLs to folder paths for MST-based layout
         url_to_filename: Dict mapping cluster URLs to their actual filenames (for titled files)
-        layout: Layout mode - 'auto' adds SimpleMind radial layout element to root topic
+        layout: Layout mode - 'radial-auto' adds native radial layout element to root topic
     """
     topic = SubElement(parent_element, 'topic')
     topic.set('id', str(node.id))
@@ -1092,8 +1092,8 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
     text = wrapped.replace('\n', '\\N')
     topic.set('text', text)
 
-    # Add layout element to root topic for SimpleMind's native radial layout
-    if node.id == 0 and layout == 'auto':
+    # Add layout element to root topic for native radial layout
+    if node.id == 0 and layout == 'radial-auto':
         layout_elem = SubElement(topic, 'layout')
         layout_elem.set('mode', 'radial')
         layout_elem.set('direction', 'auto')
@@ -1288,7 +1288,7 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
         parent_cloudmapref: Relative path to parent .smmx file (for parent links)
         url_to_filename: Dict mapping cluster URLs to their actual filenames
         parent_title: Title of the parent folder (for parent link label)
-        layout: Layout mode - 'auto' adds SimpleMind radial layout element to root topic
+        layout: Layout mode - 'radial-auto' adds native radial layout element to root topic
     """
     # Root element
     root_elem = Element('simplemind-mindmaps')
@@ -1544,20 +1544,20 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
     # Build hierarchy with micro-clustering
     root = build_hierarchy(nodes, min_children=min_children, max_children=max_children)
 
-    # Apply layout (skip for 'auto' - SimpleMind will handle it)
-    if layout == 'tree':
+    # Apply layout (skip for 'radial-auto' - native software handles it)
+    if layout == 'radial':
         apply_radial_tree_layout(root, center_x=500, center_y=500, min_node_spacing=60, base_radius=120)
-    elif layout == 'radial':
+    elif layout == 'radial-freeform':
         apply_radial_layout(root, center_x=500, center_y=500, min_spacing=100, base_radius=180)
-    # else: 'auto' - use default positions, SimpleMind handles layout
+    # else: 'radial-auto' - use default positions, native software handles layout
 
     # Optional: force-directed optimization (only for algorithmic layouts)
-    if optimize and layout != 'auto':
+    if optimize and layout != 'radial-auto':
         force_directed_optimize(root, center_x=500, center_y=500,
                                iterations=optimize_iterations)
 
     # Optional: edge crossing minimization (only for algorithmic layouts)
-    if do_minimize_crossings and layout != 'auto':
+    if do_minimize_crossings and layout != 'radial-auto':
         if not optimize:
             force_directed_optimize(root, center_x=500, center_y=500, iterations=300)
         minimize_crossings(root, center_x=500, center_y=500, max_passes=crossing_passes)
@@ -2639,8 +2639,8 @@ def main():
                         help='Apply edge crossing minimization after force-directed')
     parser.add_argument('--crossing-passes', type=int, default=10,
                         help='Max passes for crossing minimization')
-    parser.add_argument('--layout', choices=['auto', 'radial', 'tree'], default='auto',
-                        help='Layout: "auto" (SimpleMind radial, default), "radial" (algorithmic), "tree" (no-crossing)')
+    parser.add_argument('--layout', choices=['radial-auto', 'radial', 'radial-freeform'], default='radial-auto',
+                        help='Layout: "radial-auto" (native, default), "radial" (equal angles per parent), "radial-freeform" (force-directed)')
     parser.add_argument('--tree-style',
                         choices=['half-round', 'ellipse', 'rectangle', 'diamond'],
                         default=None,
@@ -2812,12 +2812,12 @@ def main():
     root = build_hierarchy(nodes, min_children=args.min_children,
                           max_children=args.max_children)
 
-    # Apply layout (skip for 'auto' - SimpleMind will handle it)
-    if args.layout == 'tree':
+    # Apply layout (skip for 'radial-auto' - native software handles it)
+    if args.layout == 'radial':
         apply_radial_tree_layout(root, center_x=500, center_y=500, min_node_spacing=60, base_radius=120)
-    elif args.layout == 'radial':
+    elif args.layout == 'radial-freeform':
         apply_radial_layout(root, center_x=500, center_y=500, min_spacing=100, base_radius=180)
-    # else: 'auto' - use default positions, SimpleMind handles layout
+    # else: 'radial-auto' - use default positions, native software handles layout
 
     # Optional: force-directed optimization
     if args.optimize:
