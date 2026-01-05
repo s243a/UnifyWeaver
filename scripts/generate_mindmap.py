@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Generate SimpleMind mind maps from Pearltrees clusters.
+Generate mind maps from Pearltrees clusters.
 
 Uses radial layout with hierarchical structure based on semantic similarity.
 Output is a .smmx file (zip containing mindmap.xml).
 
 Usage:
-    python3 scripts/generate_simplemind_map.py \
+    python3 scripts/generate_mindmap.py \
         --cluster "Poles and Zeros" \
         --data reports/pearltrees_targets_full_multi_account.jsonl \
         --output output/poles_zeros.smmx
 
     # Or by cluster URL:
-    python3 scripts/generate_simplemind_map.py \
+    python3 scripts/generate_mindmap.py \
         --cluster-url "https://www.pearltrees.com/s243a/poles-zeros-complex-numbers/id11563630" \
         --output output/poles_zeros.smmx
 """
@@ -176,6 +176,12 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 def load_embeddings(embeddings_path: Path) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
     """Load embeddings indexed by tree_id, title, and uri.
 
+    Uses output_nomic embeddings which encode the full hierarchical path context:
+    - Materialized path with IDs (e.g., /10311468/11820376/...)
+    - Structured list with full titles (indented hierarchy)
+
+    This provides better semantic clustering than raw title embeddings (input_nomic).
+
     Returns:
         (tree_id_to_emb, title_to_emb, uri_to_emb) - three dicts for lookups
     """
@@ -185,7 +191,9 @@ def load_embeddings(embeddings_path: Path) -> Tuple[Dict[str, np.ndarray], Dict[
     data = np.load(embeddings_path, allow_pickle=True)
     tree_ids = data['tree_ids']
     titles = data['titles']
-    embeddings = data['input_nomic']  # 768-dim Nomic embeddings
+    # Use output_nomic: embeds materialized path + structured title list
+    # This captures hierarchical context for better folder clustering
+    embeddings = data['output_nomic']  # 768-dim Nomic embeddings of hierarchical context
 
     # Index by tree_id (for Trees)
     tree_id_to_emb = {}
@@ -1886,15 +1894,20 @@ def build_user_hierarchy(
                     parent_to_children[uri] = []
                     url_to_title[uri] = item.get('raw_title', '')
 
-    # Build parent-child relationships
+    # Build parent-child relationships (skip self-references)
+    self_refs = set()  # Trees that reference themselves (subtree roots)
     for uri, item in trees.items():
         cluster_id = item.get('cluster_id', '')
-        if cluster_id and cluster_id in trees:
+        if cluster_id == uri:
+            # Self-referencing tree - this is a subtree root
+            self_refs.add(uri)
+        elif cluster_id and cluster_id in trees:
             parent_to_children[cluster_id].append(uri)
             child_to_parent[uri] = cluster_id
 
-    # Find roots (trees with no parent in our dataset)
+    # Find roots: trees with no parent OR self-referencing trees
     roots = [uri for uri in trees if uri not in child_to_parent]
+    # Note: self_refs are included since they won't be in child_to_parent
 
     # Filter roots by primary account if specified
     if primary_account:
@@ -1903,14 +1916,37 @@ def build_user_hierarchy(
         if account_roots:
             roots = account_roots
 
-    # Pick root - prefer the one with most descendants
+    # Use path hierarchy from target_text to find the true root
+    # The root should be the tree that appears first in most paths
+    from collections import Counter
+    first_ancestor_counts = Counter()
+    for uri, item in trees.items():
+        target_text = item.get('target_text', '')
+        if target_text.startswith('/'):
+            parts = target_text.split('\n')[0].strip('/').split('/')
+            if parts:
+                first_ancestor_counts[parts[0]] += 1
+
+    # Map tree_id to uri for root candidates
+    tree_id_to_uri = {item.get('tree_id'): uri for uri, item in trees.items()}
+
+    # Pick root - prefer the one that appears first in most paths
     def count_descendants(uri: str) -> int:
         count = len(parent_to_children.get(uri, []))
         for child in parent_to_children.get(uri, []):
             count += count_descendants(child)
         return count
 
-    if roots:
+    if first_ancestor_counts:
+        # Find best root from path analysis
+        best_root_id, best_count = first_ancestor_counts.most_common(1)[0]
+        if best_root_id in tree_id_to_uri:
+            root_url = tree_id_to_uri[best_root_id]
+        elif roots:
+            root_url = max(roots, key=count_descendants)
+        else:
+            root_url = next(iter(trees.keys())) if trees else ""
+    elif roots:
         root_url = max(roots, key=count_descendants)
     else:
         # Fallback: first tree
@@ -2611,7 +2647,7 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate SimpleMind mind maps from Pearltrees clusters"
+        description="Generate mind maps from Pearltrees clusters"
     )
     parser.add_argument('--cluster', type=str, help='Cluster name/title to search for')
     parser.add_argument('--cluster-url', type=str, help='Cluster URL (Pearltrees URI)')
@@ -2622,9 +2658,11 @@ def main():
                         default=Path('models/dual_embeddings_full.npz'),
                         help='Path to embeddings file (.npz)')
     parser.add_argument('--output', type=Path, default=None,
-                        help='Output .smmx file path (required unless --recursive)')
+                        help='Output file path (required unless --recursive)')
+    parser.add_argument('--format', choices=['smmx', 'mm', 'opml', 'graphml', 'vue'], default='smmx',
+                        help='Output format: smmx (default), mm (FreeMind), opml, graphml, vue')
     parser.add_argument('--xml-only', action='store_true',
-                        help='Output raw XML instead of .smmx')
+                        help='Output raw XML instead of packaged format')
     parser.add_argument('--max-children', type=int, default=8,
                         help='Max children per node before micro-clustering')
     parser.add_argument('--min-children', type=int, default=4,
@@ -2698,6 +2736,22 @@ def main():
 
     if not args.recursive and not args.output:
         parser.error("--output required (or use --recursive with --output-dir)")
+
+    # Format conversion support
+    # For non-smmx formats, we generate smmx first then convert using export_mindmap.py
+    convert_format = None
+    export_script = Path(__file__).parent / 'export_mindmap.py'
+    if args.format != 'smmx':
+        # Supported formats in export_mindmap.py: mm, opml, graphml, vue
+        supported_formats = {'mm', 'opml', 'graphml', 'vue'}
+        if args.format not in supported_formats:
+            print(f"Error: Format '{args.format}' is not supported.")
+            print(f"Supported formats: smmx (native), {', '.join(sorted(supported_formats))}")
+            return 1
+        convert_format = args.format
+        if not export_script.exists():
+            print(f"Error: Export script not found: {export_script}")
+            return 1
 
     if not args.data.exists():
         print(f"Error: Data file not found: {args.data}")
@@ -2793,6 +2847,17 @@ def main():
         )
 
         print(f"\nGenerated {total} linked mind maps")
+
+        # Convert to target format if needed
+        if convert_format:
+            print(f"\nConverting to {convert_format} format...")
+            import subprocess
+            smmx_files = list(args.output_dir.rglob('*.smmx'))
+            for smmx_file in smmx_files:
+                target_file = smmx_file.with_suffix(f'.{convert_format}')
+                subprocess.run(['python3', str(export_script), str(smmx_file), str(target_file)], check=True)
+            print(f"Converted {len(smmx_files)} files to {convert_format}")
+
         return 0
 
     # Single map mode (original behavior)
@@ -2854,7 +2919,16 @@ def main():
         output_path.write_text(xml_content)
         print(f"Written: {output_path}")
     else:
-        write_smmx(xml_content, args.output)
+        smmx_path = args.output if args.output.suffix == '.smmx' else args.output.with_suffix('.smmx')
+        write_smmx(xml_content, smmx_path)
+
+        # Convert to target format if needed
+        if convert_format:
+            print(f"Converting to {convert_format} format...")
+            import subprocess
+            target_file = smmx_path.with_suffix(f'.{convert_format}')
+            subprocess.run(['python3', str(export_script), str(smmx_path), str(target_file)], check=True)
+            print(f"Written: {target_file}")
 
     return 0
 
