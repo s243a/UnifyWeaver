@@ -588,6 +588,82 @@ class MultiAccountParser:
         
         return results
 
+    def generate_pearl_targets(self, query_template: str = "{title}", filter_path: Optional[str] = None):
+        """Generate target strings for pearls (bookmarks, links, notes) with cross-account notation."""
+        results = []
+
+        for pearl in self.pearls:
+            # Get path from the pearl's parent tree
+            if pearl.parent_tree_uri not in self.trees:
+                logger.debug(f"Skipping pearl with unknown parent: {pearl.title}")
+                continue
+
+            path_ids, path_titles, path_accounts = self.get_path(pearl.parent_tree_uri)
+
+            # Add the pearl's title to the path
+            full_path_titles = path_titles + [pearl.title]
+
+            # Filter logic
+            if filter_path:
+                if not any(filter_path.lower() in t.lower() for t in full_path_titles):
+                    continue
+
+            # Build ID path with account boundary markers
+            id_parts = []
+            prev_account = self.primary_account
+
+            for i, (tree_id, account) in enumerate(zip(path_ids, path_accounts)):
+                if account != prev_account:
+                    id_parts.append(f"{tree_id}@{account}")
+                else:
+                    id_parts.append(tree_id)
+                prev_account = account
+
+            id_path_str = "/" + "/".join(id_parts)
+
+            # Build hierarchical title list with account markers
+            title_lines = []
+            prev_account = self.primary_account
+            indent_level = 0
+
+            for title, account in zip(path_titles, path_accounts):
+                indent = "  " * indent_level
+                if account != prev_account:
+                    title_lines.append(f"{indent}- {title} @{account}")
+                else:
+                    title_lines.append(f"{indent}- {title}")
+                indent_level += 1
+                prev_account = account
+
+            # Add the pearl itself (final level)
+            indent = "  " * indent_level
+            title_lines.append(f"{indent}- {pearl.title}")
+
+            formatted_text = f"{id_path_str}\n" + "\n".join(title_lines)
+
+            # Apply query template
+            try:
+                query_text = query_template.format(title=pearl.title)
+            except KeyError:
+                query_text = pearl.title
+
+            # Extract pearl ID from URI (e.g., "#item12345" -> "12345")
+            pearl_id = pearl.uri.split('#')[-1] if '#' in pearl.uri else pearl.uri
+
+            results.append({
+                "type": pearl.type,
+                "target_text": formatted_text,
+                "raw_title": pearl.title,
+                "query": query_text,
+                "cluster_id": pearl.parent_tree_uri,  # Group by parent tree
+                "pearl_id": pearl_id,
+                "pearl_uri": pearl.uri,
+                "parent_tree_uri": pearl.parent_tree_uri,
+                "account": pearl.account
+            })
+
+        return results
+
 
 def main():
     import argparse
@@ -601,8 +677,8 @@ def main():
                        help="Template for the query. Use {title} as placeholder.")
     parser.add_argument("--filter-path", type=str, default=None,
                        help="Only include items with this string in their path")
-    parser.add_argument("--item-type", type=str, default="tree", choices=["tree"],
-                       help="Type of items to generate (currently only 'tree' supported)")
+    parser.add_argument("--item-type", type=str, default="tree", choices=["tree", "pearl"],
+                       help="Type of items to generate: 'tree' (folders) or 'pearl' (bookmarks/links)")
     
     args = parser.parse_args()
     
@@ -620,9 +696,14 @@ def main():
         mp.add_rdf_file(Path(filepath), name)
     
     mp.parse_all()
-    
-    targets = mp.generate_tree_targets(args.query_template, args.filter_path)
-    logger.info(f"Generated {len(targets)} targets.")
+
+    # Generate targets based on item type
+    if args.item_type == "pearl":
+        targets = mp.generate_pearl_targets(args.query_template, args.filter_path)
+        logger.info(f"Generated {len(targets)} pearl targets.")
+    else:
+        targets = mp.generate_tree_targets(args.query_template, args.filter_path)
+        logger.info(f"Generated {len(targets)} tree targets.")
     
     logger.info(f"Writing to {args.output_jsonl}...")
     with open(args.output_jsonl, 'w') as f:

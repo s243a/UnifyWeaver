@@ -17,57 +17,57 @@ The generator creates visual mind maps from Pearltrees bookmark collections by:
 
 ```bash
 # Basic usage - by cluster URL
-python3 scripts/generate_simplemind_map.py \
+python3 scripts/generate_mindmap.py \
     --cluster-url "https://www.pearltrees.com/s243a/differential-geometry/id11563719" \
     --data reports/pearltrees_targets_full_pearls.jsonl \
     --output output/differential_geometry.smmx
 
 # By cluster name search
-python3 scripts/generate_simplemind_map.py \
+python3 scripts/generate_mindmap.py \
     --cluster "Poles and Zeros" \
     --data reports/pearltrees_targets_full_multi_account.jsonl \
     --output output/poles_zeros.smmx
 
 # With optimization (recommended)
-python3 scripts/generate_simplemind_map.py \
+python3 scripts/generate_mindmap.py \
     --cluster-url "..." \
     --output output/optimized.smmx \
     --optimize
 
 # Full optimization with crossing minimization
-python3 scripts/generate_simplemind_map.py \
+python3 scripts/generate_mindmap.py \
     --cluster-url "..." \
     --output output/full_optimized.smmx \
     --optimize --minimize-crossings
 
 # Quick pass for large clusters (fewer crossing passes)
-python3 scripts/generate_simplemind_map.py \
+python3 scripts/generate_mindmap.py \
     --cluster-url "..." \
     --output output/quick.smmx \
     --optimize --minimize-crossings --crossing-passes 3
 
 # Output raw XML for debugging
-python3 scripts/generate_simplemind_map.py \
+python3 scripts/generate_mindmap.py \
     --cluster-url "..." \
     --output output/debug.smmx \
     --xml-only
 
 # Visual distinction: Trees as rectangles, Pearls as ellipses
-python3 scripts/generate_simplemind_map.py \
+python3 scripts/generate_mindmap.py \
     --cluster-url "..." \
     --output output/styled.smmx \
     --tree-style rectangle \
     --pearl-style ellipse
 
 # Recursive generation with cross-cluster links
-python3 scripts/generate_simplemind_map.py \
+python3 scripts/generate_mindmap.py \
     --cluster-url "https://www.pearltrees.com/s243a/hactivism/id10818216" \
     --output-dir output/linked_maps/ \
     --recursive \
     --max-depth 3
 
 # Unlimited depth recursive generation
-python3 scripts/generate_simplemind_map.py \
+python3 scripts/generate_mindmap.py \
     --cluster "Hactivism" \
     --output-dir output/full_hierarchy/ \
     --recursive
