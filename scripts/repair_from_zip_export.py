@@ -112,8 +112,8 @@ def parse_export_folder(
     parent_tree_uri: str,
     account: str,
     depth: int = 0
-) -> Tuple[List[Dict], List[Dict]]:
-    """Recursively parse export folder to extract trees and pearls.
+) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+    """Recursively parse export folder to extract trees, pearls, and ref_pearls.
 
     Args:
         export_dir: Path to export folder
@@ -122,10 +122,11 @@ def parse_export_folder(
         depth: Current recursion depth (for logging)
 
     Returns:
-        (trees, pearls): Lists of tree and pearl dicts
+        (trees, pearls, ref_pearls): Lists of tree, pearl, and ref_pearl dicts
     """
     trees = []
     pearls = []
+    ref_pearls = []
 
     indent = "  " * depth
     logger.info(f"{indent}Parsing: {export_dir.name}")
@@ -207,8 +208,29 @@ def parse_export_folder(
 
         trees.append(tree_entry)
 
+        # Create RefPearl linking parent tree to this child tree
+        if subdir_tree_uri and (discovered_tree_uri or parent_tree_uri):
+            parent_uri = discovered_tree_uri or parent_tree_uri
+            # Generate a synthetic pearl_id for the RefPearl
+            ref_pearl_id = f"ref_{tree_id}" if tree_id else f"ref_{subdir.name.lower().replace(' ', '_')}"
+
+            ref_pearl_entry = {
+                'type': 'RefPearl',
+                'raw_title': subdir.name,
+                'query': subdir.name,
+                'cluster_id': parent_uri,
+                'pearl_id': ref_pearl_id,
+                'pearl_uri': f"{parent_uri}#{ref_pearl_id}",
+                'parent_tree_uri': parent_uri,
+                'alias_target_uri': subdir_tree_uri,
+                'account': account,
+                '_source': 'zip_export',
+                '_source_folder': str(subdir.relative_to(export_dir.parent.parent)),
+            }
+            ref_pearls.append(ref_pearl_entry)
+
         # Recursively process child folder with discovered URI
-        child_trees, child_pearls = parse_export_folder(
+        child_trees, child_pearls, child_refs = parse_export_folder(
             subdir,
             subdir_tree_uri or f"{parent_tree_uri}/{subdir.name.lower().replace(' ', '-')}",
             account,
@@ -217,8 +239,9 @@ def parse_export_folder(
 
         trees.extend(child_trees)
         pearls.extend(child_pearls)
+        ref_pearls.extend(child_refs)
 
-    return trees, pearls
+    return trees, pearls, ref_pearls
 
 
 def generate_target_text(pearl: Dict, parent_title: str = "") -> str:
@@ -369,12 +392,13 @@ def main():
     logger.info(f"Root URI: {args.root_uri}")
 
     # Parse the export folder
-    trees, pearls = parse_export_folder(
+    trees, pearls, ref_pearls = parse_export_folder(
         args.export_dir, args.root_uri, args.account)
 
     logger.info(f"\nExtracted from zip export:")
     logger.info(f"  Trees: {len(trees)}")
     logger.info(f"  Pearls: {len(pearls)}")
+    logger.info(f"  RefPearls: {len(ref_pearls)}")
 
     # Add target_text to pearls
     for pearl in pearls:
@@ -388,13 +412,26 @@ def main():
         missing_trees, missing_pearls, existing_trees, existing_pearls = \
             compare_with_existing(trees, pearls, pearl_by_uri, tree_by_uri)
 
+        # Also compare ref_pearls (treat like pearls)
+        missing_refs = []
+        existing_refs = []
+        for ref in ref_pearls:
+            uri = ref.get('pearl_uri', '')
+            if uri and uri in all_uris:
+                existing_refs.append(ref)
+            else:
+                missing_refs.append(ref)
+
         print(f"\n=== Comparison with {compare_jsonl.name} ===")
-        print(f"Trees in zip export:  {len(trees)}")
-        print(f"  - Already in JSONL: {len(existing_trees)}")
-        print(f"  - Missing (NEW):    {len(missing_trees)}")
-        print(f"Pearls in zip export: {len(pearls)}")
-        print(f"  - Already in JSONL: {len(existing_pearls)}")
-        print(f"  - Missing (NEW):    {len(missing_pearls)}")
+        print(f"Trees in zip export:    {len(trees)}")
+        print(f"  - Already in JSONL:   {len(existing_trees)}")
+        print(f"  - Missing (NEW):      {len(missing_trees)}")
+        print(f"Pearls in zip export:   {len(pearls)}")
+        print(f"  - Already in JSONL:   {len(existing_pearls)}")
+        print(f"  - Missing (NEW):      {len(missing_pearls)}")
+        print(f"RefPearls in zip export: {len(ref_pearls)}")
+        print(f"  - Already in JSONL:   {len(existing_refs)}")
+        print(f"  - Missing (NEW):      {len(missing_refs)}")
 
         # Show sample of missing items
         if missing_trees:
@@ -412,10 +449,17 @@ def main():
             if len(missing_pearls) > 10:
                 print(f"  ... and {len(missing_pearls) - 10} more")
 
+        if missing_refs:
+            print(f"\nMissing RefPearls (sample):")
+            for ref in missing_refs[:10]:
+                print(f"  - {ref['raw_title']} -> {ref.get('alias_target_uri', '')[:50]}")
+            if len(missing_refs) > 10:
+                print(f"  ... and {len(missing_refs) - 10} more")
+
         # Only output missing entries
-        all_entries = missing_trees + missing_pearls
+        all_entries = missing_trees + missing_pearls + missing_refs
     else:
-        all_entries = trees + pearls
+        all_entries = trees + pearls + ref_pearls
 
     # Handle merge mode
     if args.merge_into:
@@ -444,6 +488,7 @@ def main():
     print(f"Root tree: {args.root_uri}")
     print(f"Trees found: {len(trees)}")
     print(f"Pearls found: {len(pearls)}")
+    print(f"RefPearls found: {len(ref_pearls)}")
     if args.output:
         print(f"Output: {args.output}")
 
