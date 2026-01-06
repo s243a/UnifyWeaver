@@ -22,6 +22,7 @@ import base64
 import hashlib
 import json
 import math
+import re
 import uuid
 import zipfile
 from pathlib import Path
@@ -33,6 +34,49 @@ import numpy as np
 from sklearn.cluster import KMeans
 from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.spatial.distance import pdist, squareform
+
+
+def extract_account_from_uri(uri: str) -> Optional[str]:
+    """Extract account name from Pearltrees URI.
+
+    Handles both regular /account/ and team /t/account/ formats.
+    """
+    if not uri:
+        return None
+    match = re.search(r'pearltrees\.com/(?:t/)?([^/]+)/', uri)
+    return match.group(1) if match else None
+
+
+def get_disambiguated_title(item: Dict) -> str:
+    """Get display title with cross-account disambiguation for AliasPearl/RefPearl.
+
+    When an AliasPearl points to a tree from a different account, prefix with
+    the target account to help identify external references:
+      "science" -> "vijayau:science"
+    """
+    title = item.get('raw_title', 'Unknown')
+
+    # Only disambiguate AliasPearl and RefPearl types
+    item_type = item.get('type', '')
+    if item_type not in ('AliasPearl', 'RefPearl'):
+        return title
+
+    # Get the pearl's owning account and the target URI
+    pearl_account = item.get('account', '')
+    target_uri = item.get('alias_target_uri', '')
+
+    if not target_uri:
+        return title
+
+    # Extract target account from URI
+    target_account = extract_account_from_uri(target_uri)
+
+    # If cross-account, prefix with target account
+    if target_account and target_account != pearl_account:
+        return f"{target_account}:{title}"
+
+    return title
+
 
 @dataclass
 class MindMapNode:
@@ -50,6 +94,7 @@ class MindMapNode:
     item_type: str = ""  # PagePearl, Tree, etc.
     guid: str = ""  # Deterministic GUID for cross-map linking
     cluster_id: str = ""  # The cluster this node belongs to (for GUID generation)
+    alias_target_uri: str = ""  # For AliasPearl/RefPearl - the target tree URI
 
 
 # SimpleMind borderstyle values
@@ -322,6 +367,137 @@ def build_hierarchy(nodes: List[MindMapNode], root_idx: int = 0,
                     rep.children.append(node)
 
     return root
+
+
+def build_mst_tree_hierarchy(nodes: List[MindMapNode], root_idx: int = 0,
+                              max_depth: int = 6, max_children: int = 12) -> MindMapNode:
+    """
+    Build a hierarchical structure using hierarchical clustering with depth limit.
+
+    Uses Ward's method to create balanced clusters, then builds a tree with
+    cluster representatives. This creates semantic grouping while keeping
+    the tree balanced.
+
+    This preserves the true Pearltrees hierarchy (only direct children) while
+    organizing them visually based on semantic similarity.
+
+    Args:
+        nodes: List of MindMapNode items (root + direct children)
+        root_idx: Index of the root node
+        max_depth: Maximum tree depth (default 6)
+        max_children: Maximum children per node before clustering (default 12)
+
+    Returns:
+        Root node with items organized hierarchically
+    """
+    from scipy.spatial.distance import pdist
+    from scipy.cluster.hierarchy import linkage, fcluster
+
+    if len(nodes) <= 1:
+        return nodes[0] if nodes else None
+
+    root = nodes[root_idx]
+    others = [n for i, n in enumerate(nodes) if i != root_idx]
+
+    if not others:
+        return root
+
+    # Separate nodes with and without embeddings
+    nodes_with_emb = [n for n in others if n.embedding is not None]
+    nodes_without_emb = [n for n in others if n.embedding is None]
+
+    if len(nodes_with_emb) < 2:
+        # Not enough embeddings - all nodes as direct children
+        root.children = others
+        for child in others:
+            child.parent_id = root.id
+        return root
+
+    # Build embeddings array
+    embeddings = np.array([n.embedding for n in nodes_with_emb])
+
+    def build_recursive(node_indices: List[int], parent_node: MindMapNode,
+                        current_depth: int):
+        """Recursively cluster and build hierarchy."""
+        if len(node_indices) == 0:
+            return
+
+        if len(node_indices) == 1:
+            # Single node - add directly
+            node = nodes_with_emb[node_indices[0]]
+            node.parent_id = parent_node.id
+            parent_node.children.append(node)
+            return
+
+        # If few enough nodes or at max depth, add all as direct children
+        if len(node_indices) <= max_children or current_depth >= max_depth:
+            for idx in node_indices:
+                node = nodes_with_emb[idx]
+                node.parent_id = parent_node.id
+                parent_node.children.append(node)
+            return
+
+        # Need to cluster - compute hierarchical clustering on subset
+        subset_embeddings = embeddings[node_indices]
+        subset_distances = pdist(subset_embeddings, metric='cosine')
+
+        if len(subset_distances) == 0:
+            # All same embedding - add directly
+            for idx in node_indices:
+                node = nodes_with_emb[idx]
+                node.parent_id = parent_node.id
+                parent_node.children.append(node)
+            return
+
+        subset_Z = linkage(subset_distances, method='ward')
+
+        # Determine number of clusters (aim for balanced tree)
+        n_clusters = min(max_children, max(2, len(node_indices) // max_children + 1))
+        labels = fcluster(subset_Z, n_clusters, criterion='maxclust')
+
+        # Group by cluster
+        clusters = {}
+        for i, label in enumerate(labels):
+            if label not in clusters:
+                clusters[label] = []
+            clusters[label].append(node_indices[i])
+
+        # For each cluster, pick representative and recurse
+        for label, cluster_indices in sorted(clusters.items()):
+            if len(cluster_indices) == 1:
+                # Single node cluster - add directly
+                node = nodes_with_emb[cluster_indices[0]]
+                node.parent_id = parent_node.id
+                parent_node.children.append(node)
+            else:
+                # Find representative (closest to cluster centroid)
+                cluster_embs = embeddings[cluster_indices]
+                centroid = np.mean(cluster_embs, axis=0)
+                distances_to_centroid = np.linalg.norm(cluster_embs - centroid, axis=1)
+                rep_local_idx = int(np.argmin(distances_to_centroid))
+                rep_global_idx = cluster_indices[rep_local_idx]
+
+                # Add representative as child
+                rep_node = nodes_with_emb[rep_global_idx]
+                rep_node.parent_id = parent_node.id
+                parent_node.children.append(rep_node)
+
+                # Recurse with remaining nodes under representative
+                remaining = [idx for idx in cluster_indices if idx != rep_global_idx]
+                if remaining:
+                    build_recursive(remaining, rep_node, current_depth + 1)
+
+    # Build hierarchy starting from root
+    all_indices = list(range(len(nodes_with_emb)))
+    build_recursive(all_indices, root, 0)
+
+    # Add nodes without embeddings as direct children of root
+    for node in nodes_without_emb:
+        node.parent_id = root.id
+        root.children.append(node)
+
+    return root
+
 
 def wrap_title(title: str, target_ratio: float = 2.0) -> str:
     """
@@ -1145,8 +1321,9 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
             else:
                 target_filename = target_tree_id
 
-            if cluster_to_folder and source_folder is not None and node.url in cluster_to_folder:
-                target_folder = cluster_to_folder[node.url]
+            if cluster_to_folder and source_folder is not None:
+                # Use target's folder from mapping, or root folder as fallback
+                target_folder = cluster_to_folder.get(node.url, Path('.'))
                 return compute_relative_cloudmapref_path(source_folder, target_filename, target_folder)
             else:
                 return f'./{target_filename}.smmx'
@@ -1256,8 +1433,60 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                 link.set('cloudmapref', get_cloudmapref_path())
                 target_guid = generate_deterministic_guid(node.url, 0)
                 link.set('element', target_guid)
+
+        # Handle RefPearl/AliasPearl with alias_target_uri (links to other mindmaps)
+        elif enable_cloudmapref and node.alias_target_uri and node.item_type in ('RefPearl', 'AliasPearl'):
+            # These pearls link to other trees - need cloudmapref to target mindmap
+            target_url = node.alias_target_uri
+            target_tree_id = extract_tree_id(target_url)
+
+            def get_alias_cloudmapref_path():
+                # Get the actual filename (titled or just ID)
+                if url_to_filename and target_url in url_to_filename:
+                    target_filename = url_to_filename[target_url]
+                else:
+                    target_filename = target_tree_id
+
+                if cluster_to_folder and source_folder is not None:
+                    # Use target's folder from mapping, or root folder as fallback
+                    target_folder = cluster_to_folder.get(target_url, Path('.'))
+                    return compute_relative_cloudmapref_path(source_folder, target_filename, target_folder)
+                else:
+                    return f'./{target_filename}.smmx'
+
+            if target_tree_id:
+                # cloudmapref on main node (to navigate to target mindmap)
+                link = SubElement(topic, 'link')
+                link.set('cloudmapref', get_alias_cloudmapref_path())
+                target_guid = generate_deterministic_guid(target_url, 0)
+                link.set('element', target_guid)
+
+                # URL on child node (to open in browser)
+                if next_id is not None and node.url:
+                    child_node_id = next_id[0]
+                    next_id[0] += 1
+                    child_topic = SubElement(parent_element, 'topic')
+                    child_topic.set('id', str(child_node_id))
+                    child_topic.set('parent', str(node.id))
+                    child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
+                    child_topic.set('x', f'{node.x + 30:.2f}')
+                    child_topic.set('y', f'{node.y + 20:.2f}')
+                    child_topic.set('palette', str(node.palette))
+                    child_topic.set('colorinfo', str(node.palette))
+                    child_topic.set('text', 'url')  # Label for URL node
+                    # Square style
+                    child_style = SubElement(child_topic, 'style')
+                    child_style.set('borderstyle', 'sbsRectangle')
+                    # URL link
+                    child_link = SubElement(child_topic, 'link')
+                    child_link.set('urllink', node.url)
+            else:
+                # No target tree ID - just use URL
+                link = SubElement(topic, 'link')
+                link.set('urllink', node.url)
+
         else:
-            # Non-Tree nodes or root: use urllink
+            # Non-Tree nodes without alias_target_uri, or root: use urllink
             link = SubElement(topic, 'link')
             link.set('urllink', node.url)
 
@@ -1354,8 +1583,21 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
     return '\n'.join(lines)
 
 def load_cluster_items(data_path: Path, cluster_query: str = None,
-                       cluster_url: str = None) -> List[Dict]:
-    """Load items from a cluster."""
+                       cluster_url: str = None,
+                       pearls_only: bool = False) -> List[Dict]:
+    """Load items from a cluster.
+
+    Args:
+        data_path: Path to JSONL data file
+        cluster_query: Search by title (optional)
+        cluster_url: Load items with this cluster_id (optional)
+        pearls_only: If True, only load Pearls (PagePearl, AliasPearl, RefPearl),
+            not child Trees. Use for curated mode where each Tree gets its own
+            mindmap and child Trees are linked via cloudmapref.
+
+    Returns:
+        List of item dicts (folder + children)
+    """
     items = []
     folder_item = None
 
@@ -1363,12 +1605,20 @@ def load_cluster_items(data_path: Path, cluster_query: str = None,
         for line in f:
             rec = json.loads(line)
 
-            # Match by cluster URL - find children
-            if cluster_url and rec.get('cluster_id') == cluster_url:
-                items.append(rec)
-            # Also find the folder itself (where URI = cluster_url)
+            # Find the folder itself (where URI = cluster_url) - always include
             if cluster_url and rec.get('uri') == cluster_url:
                 folder_item = rec
+
+            # Match by cluster URL - find children
+            if cluster_url and rec.get('cluster_id') == cluster_url:
+                # Skip the folder itself (it's added separately)
+                if rec.get('uri') == cluster_url:
+                    continue
+                # In pearls_only mode, skip child Trees (they have their own mindmaps)
+                if pearls_only and rec.get('type') == 'Tree':
+                    continue
+                items.append(rec)
+
             # Match by title search
             if cluster_query and cluster_query.lower() in rec.get('raw_title', '').lower():
                 items.append(rec)
@@ -1389,6 +1639,8 @@ def load_cluster_items(data_path: Path, cluster_query: str = None,
                 for line in f:
                     rec = json.loads(line)
                     if rec.get('cluster_id') == folder_url:
+                        if pearls_only and rec.get('type') == 'Tree':
+                            continue
                         items.append(rec)
 
     return items
@@ -1446,13 +1698,14 @@ def create_nodes_from_items(items: List[Dict],
         tree_id = root_item.get('tree_id', '')
         root_node = MindMapNode(
             id=0,
-            title=root_item.get('raw_title', 'Root'),
+            title=get_disambiguated_title(root_item) or 'Root',
             tree_id=tree_id,
             url=get_url(root_item),
             parent_id=-1,
             palette=1,
             embedding=get_embedding(root_item),
-            item_type=root_item.get('type', '')
+            item_type=root_item.get('type', ''),
+            alias_target_uri=root_item.get('alias_target_uri', '')
         )
         nodes.append(root_node)
 
@@ -1465,13 +1718,14 @@ def create_nodes_from_items(items: List[Dict],
         tree_id = item.get('tree_id', '')
         node = MindMapNode(
             id=len(nodes),
-            title=item.get('raw_title', f'Item {i}'),
+            title=get_disambiguated_title(item) or f'Item {i}',
             tree_id=tree_id,
             url=get_url(item),
             parent_id=0,  # Will be updated by build_hierarchy
             palette=(palette_idx % 8) + 1,
             embedding=get_embedding(item),
-            item_type=item.get('type', '')
+            item_type=item.get('type', ''),
+            alias_target_uri=item.get('alias_target_uri', '')
         )
         nodes.append(node)
         palette_idx += 1
@@ -1510,7 +1764,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                         parent_cloudmapref: str = None,
                         url_to_filename: Dict[str, str] = None,
                         parent_title: str = None,
-                        layout: str = 'radial') -> List[str]:
+                        layout: str = 'radial',
+                        flat_hierarchy: bool = False) -> List[str]:
     """Generate a single mind map and return URLs of child Trees for recursion.
 
     Args:
@@ -1533,12 +1788,18 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
         parent_cloudmapref: Relative path to parent .smmx file (for parent links)
         url_to_filename: Dict mapping cluster URLs to their actual filenames
         parent_title: Title of the parent folder (for parent link label)
+        flat_hierarchy: If True, use hierarchical clustering to organize items.
+            Items are still only direct children of the tree (per RDF), but
+            organized into a balanced hierarchy using Ward's method.
+            Use for curated folders mode to preserve true Pearltrees hierarchy.
 
     Returns:
         List of child Tree URLs for recursive generation
     """
     # Load cluster items
-    items = load_cluster_items(data_path, cluster_url=cluster_url)
+    # In curated mode (flat_hierarchy), only load pearls - child Trees have their own mindmaps
+    items = load_cluster_items(data_path, cluster_url=cluster_url,
+                               pearls_only=flat_hierarchy)
 
     if not items:
         print(f"No items found for cluster: {cluster_url}")
@@ -1549,8 +1810,14 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
     # Create nodes with embeddings
     nodes = create_nodes_from_items(items, tree_id_emb, title_emb, uri_emb)
 
-    # Build hierarchy with micro-clustering
-    root = build_hierarchy(nodes, min_children=min_children, max_children=max_children)
+    # Build hierarchy - balanced clustering or K-means micro-clustering
+    if flat_hierarchy:
+        # Hierarchical clustering: balanced tree using Ward's method
+        # Items are only direct children per RDF, organized semantically
+        root = build_mst_tree_hierarchy(nodes)
+    else:
+        # K-means micro-clustering: creates nested groups with cluster representatives
+        root = build_hierarchy(nodes, min_children=min_children, max_children=max_children)
 
     # Apply layout (skip for 'radial-auto' - native software handles it)
     if layout == 'radial':
@@ -1600,11 +1867,18 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
         write_smmx(xml_content, output_path)
 
     # Collect child Tree URLs for recursive generation
+    # Include both direct Tree children and AliasPearl/RefPearl targets
     child_tree_urls = []
     all_nodes = collect_all_nodes(root)
     for node in all_nodes:
-        if node.item_type == 'Tree' and node.url and node.id != 0:
+        if node.id == 0:
+            continue
+        # Direct Tree children
+        if node.item_type == 'Tree' and node.url:
             child_tree_urls.append(node.url)
+        # AliasPearl/RefPearl links to other trees
+        elif node.alias_target_uri:
+            child_tree_urls.append(node.alias_target_uri)
 
     return child_tree_urls
 
@@ -1640,13 +1914,18 @@ def discover_all_clusters(
         visited.add(url)
         discovered.append(url)
 
-        # Find child Trees
+        # Find child Trees and AliasPearl/RefPearl targets
         items = load_cluster_items(data_path, cluster_url=url)
         for item in items:
+            child_url = None
             if item.get('type') == 'Tree':
                 child_url = item.get('uri', '')
-                if child_url and child_url != url and child_url not in visited:
-                    queue.append((child_url, depth + 1))
+            elif item.get('alias_target_uri'):
+                # AliasPearl/RefPearl link to another tree
+                child_url = item.get('alias_target_uri')
+
+            if child_url and child_url != url and child_url not in visited:
+                queue.append((child_url, depth + 1))
 
     return discovered
 
@@ -1863,7 +2142,7 @@ def mst_to_folder_structure(
 def build_user_hierarchy(
     data_path: Path,
     primary_account: str = None
-) -> Tuple[Dict[str, List[str]], Dict[str, str], str, List[str], Dict[str, str]]:
+) -> Tuple[Dict[str, List[str]], Dict[str, str], str, List[str], Dict[str, str], Dict[str, str]]:
     """Build user's actual hierarchy from JSONL cluster_id relationships.
 
     Args:
@@ -1877,12 +2156,14 @@ def build_user_hierarchy(
         - root_url: The root cluster URL
         - orphans: List of cluster URLs not connected to main hierarchy
         - url_to_title: Dict mapping URI to tree title
+        - url_to_account: Dict mapping URI to account name
     """
     # Load all Trees from JSONL
     trees = {}  # uri -> tree data
     parent_to_children: Dict[str, List[str]] = {}
     child_to_parent: Dict[str, str] = {}
     url_to_title: Dict[str, str] = {}
+    url_to_account: Dict[str, str] = {}
 
     with open(data_path, 'r') as f:
         for line in f:
@@ -1893,6 +2174,7 @@ def build_user_hierarchy(
                     trees[uri] = item
                     parent_to_children[uri] = []
                     url_to_title[uri] = item.get('raw_title', '')
+                    url_to_account[uri] = item.get('account', 'unknown')
 
     # Build parent-child relationships (skip self-references)
     self_refs = set()  # Trees that reference themselves (subtree roots)
@@ -1964,7 +2246,7 @@ def build_user_hierarchy(
 
     orphans = [uri for uri in trees if uri not in reachable]
 
-    return parent_to_children, child_to_parent, root_url, orphans, url_to_title
+    return parent_to_children, child_to_parent, root_url, orphans, url_to_title, url_to_account
 
 
 def cluster_trees_into_folder_groups(
@@ -2317,7 +2599,7 @@ def build_curated_folder_structure(
     print("Building curated folder structure...")
 
     # Phase 1: Build user hierarchy
-    parent_to_children, child_to_parent, root_url, orphans, url_to_title = build_user_hierarchy(
+    parent_to_children, child_to_parent, root_url, orphans, url_to_title, url_to_account = build_user_hierarchy(
         data_path, primary_account)
     print(f"  User hierarchy: root={extract_tree_id(root_url)}, "
           f"{len(parent_to_children)} trees, {len(orphans)} orphans")
@@ -2334,6 +2616,23 @@ def build_curated_folder_structure(
     tree_to_group = cluster_trees_into_folder_groups(
         all_trees, tree_centroids, folder_count, folder_method)
     print(f"  Clustered into {len(set(tree_to_group.values()))} folder groups")
+
+    # Assign trees without centroids to their parent's folder group
+    # (trees without children have no items hence no centroid)
+    trees_without_group = [url for url in all_trees if url not in tree_to_group]
+    if trees_without_group:
+        print(f"  Assigning {len(trees_without_group)} trees without centroids to parent folders")
+        for url in trees_without_group:
+            # Find parent and use its group
+            parent = child_to_parent.get(url)
+            if parent and parent in tree_to_group:
+                tree_to_group[url] = tree_to_group[parent]
+            elif tree_to_group:
+                # No parent or parent has no group - use root's group
+                tree_to_group[url] = tree_to_group.get(root_url, 0)
+            else:
+                # Fallback to group 0
+                tree_to_group[url] = 0
 
     # Find which folder group contains the root
     root_group = tree_to_group.get(root_url, 0)
@@ -2362,9 +2661,10 @@ def build_curated_folder_structure(
     cluster_to_folder = curated_to_folder_structure_named(
         tree_to_group, folder_group_hierarchy, root_group, group_names, max_folder_depth)
 
-    # Handle orphans - put in _orphans folder
-    orphan_folder = Path('_orphans')
+    # Handle orphans - put in _orphans/{account}/ folder
     for orphan_url in orphans:
+        account = url_to_account.get(orphan_url, 'unknown')
+        orphan_folder = Path('_orphans') / account
         cluster_to_folder[orphan_url] = orphan_folder
 
     print(f"  Folder structure computed")
@@ -2606,6 +2906,7 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         parent_cloudmapref=parent_cloudmapref,
         url_to_filename=url_to_filename,
         parent_title=parent_title,
+        flat_hierarchy=curated_folders,  # Preserve true hierarchy in curated mode
         **kwargs
     )
 
