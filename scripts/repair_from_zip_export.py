@@ -34,6 +34,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import re
@@ -43,6 +44,43 @@ from datetime import date
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def generate_synthetic_id(path: str, prefix: str = "sha") -> str:
+    """Generate a synthetic ID from a path using SHA256 hash.
+
+    When we don't know the real Pearltrees ID, we use a hash of the
+    materialized path (folder path) as a deterministic synthetic ID.
+    The prefix makes it clear this isn't a real Pearltrees ID.
+
+    Args:
+        path: The materialized path (folder path) to hash
+        prefix: Prefix to indicate synthetic ID (default: "sha")
+
+    Returns:
+        Synthetic ID like "sha_a1b2c" (5 hex chars from hash)
+    """
+    # Use first 5 chars of SHA256 - enough uniqueness for folder disambiguation
+    hash_val = hashlib.sha256(path.encode('utf-8')).hexdigest()[:5]
+    return f"{prefix}_{hash_val}"
+
+
+def generate_synthetic_uri(account: str, folder_path: str, base_uri: str = None) -> str:
+    """Generate a synthetic URI for a tree when real ID is unknown.
+
+    Args:
+        account: Account name
+        folder_path: The folder path used to generate synthetic ID
+        base_uri: Optional base URI to derive from
+
+    Returns:
+        URI like "https://www.pearltrees.com/s243a/folder-name/id_sha_a1b2c3d4"
+    """
+    synthetic_id = generate_synthetic_id(folder_path)
+    # Normalize folder name for URL
+    folder_name = Path(folder_path).name.lower().replace(' ', '-')
+    folder_name = re.sub(r'[^a-z0-9-]', '', folder_name)
+    return f"https://www.pearltrees.com/{account}/{folder_name}/id{synthetic_id}"
 
 
 def extract_pearl_data_from_html(html_file: Path) -> Optional[Dict]:
@@ -190,29 +228,41 @@ def parse_export_folder(
             id_match = re.search(r'/id(\d+)$', subdir_tree_uri)
             tree_id = id_match.group(1) if id_match else None
 
-        # Create Tree entry with discovered URI
+        # Build folder path for synthetic ID if needed
+        folder_path = str(subdir.relative_to(export_dir.parent.parent))
+
+        # Create Tree entry with discovered or synthetic URI
         tree_entry = {
             'type': 'Tree',
             'raw_title': subdir.name,
             'cluster_id': discovered_tree_uri or parent_tree_uri,
             'account': account,
             '_source': 'zip_export',
-            '_source_folder': str(subdir.relative_to(export_dir.parent.parent)),
+            '_source_folder': folder_path,
         }
 
         if subdir_tree_uri:
             tree_entry['uri'] = subdir_tree_uri
             tree_entry['tree_id'] = tree_id
         else:
-            tree_entry['_needs_uri'] = True
+            # Generate synthetic URI from folder path hash
+            synthetic_uri = generate_synthetic_uri(account, folder_path)
+            synthetic_id = generate_synthetic_id(folder_path)
+            tree_entry['uri'] = synthetic_uri
+            tree_entry['tree_id'] = synthetic_id
+            tree_entry['_synthetic_id'] = True  # Flag to indicate this is not a real PT ID
+            subdir_tree_uri = synthetic_uri  # Use synthetic for RefPearl linking
+            tree_id = synthetic_id
+            logger.debug(f"{indent}  Generated synthetic ID: {synthetic_id} for {subdir.name}")
 
         trees.append(tree_entry)
 
         # Create RefPearl linking parent tree to this child tree
-        if subdir_tree_uri and (discovered_tree_uri or parent_tree_uri):
-            parent_uri = discovered_tree_uri or parent_tree_uri
-            # Generate a synthetic pearl_id for the RefPearl
-            ref_pearl_id = f"ref_{tree_id}" if tree_id else f"ref_{subdir.name.lower().replace(' ', '_')}"
+        # Always create RefPearl (using real or synthetic URIs)
+        parent_uri = discovered_tree_uri or parent_tree_uri
+        if parent_uri and subdir_tree_uri:
+            # Generate pearl_id for the RefPearl
+            ref_pearl_id = f"ref_{tree_id}" if tree_id else generate_synthetic_id(folder_path, prefix="ref")
 
             ref_pearl_entry = {
                 'type': 'RefPearl',
@@ -225,8 +275,10 @@ def parse_export_folder(
                 'alias_target_uri': subdir_tree_uri,
                 'account': account,
                 '_source': 'zip_export',
-                '_source_folder': str(subdir.relative_to(export_dir.parent.parent)),
+                '_source_folder': folder_path,
             }
+            if tree_entry.get('_synthetic_id'):
+                ref_pearl_entry['_synthetic_target'] = True
             ref_pearls.append(ref_pearl_entry)
 
         # Recursively process child folder with discovered URI
