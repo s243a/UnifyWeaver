@@ -148,3 +148,6 @@ training-data/
 # Sandbox folders
 sandbox/
 CLAUDE.md
+
+# Local tools and subprojects (optional, not in repo)
+.local/
