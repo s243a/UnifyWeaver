@@ -81,8 +81,8 @@ def compute_relative_path(source_path: str, target_path: str, base_dir: str) -> 
 
 
 def extract_tree_id_from_filename(filename: str) -> Optional[str]:
-    """Extract tree ID from mindmap filename like 'id75009241.smmx'."""
-    match = re.match(r'^id(\d+)\.smmx$', os.path.basename(filename))
+    """Extract tree ID from mindmap filename like 'id75009241.smmx' or 'id75009241_repaired.smmx'."""
+    match = re.search(r'id(\d+)', os.path.basename(filename))
     if match:
         return match.group(1)
     return None
@@ -92,7 +92,8 @@ def process_mindmap(
     smmx_path: str,
     store: IndexStore,
     dry_run: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    root_dir: str = None
 ) -> Tuple[int, int]:
     """Process a mindmap file and add cloudmapref links.
 
@@ -101,12 +102,14 @@ def process_mindmap(
         store: Index store for looking up mindmap paths
         dry_run: If True, don't save changes
         verbose: If True, print each link added
+        root_dir: Override base directory for relative path computation
+                  (use when source file is outside the index base_dir)
 
     Returns:
         Tuple of (links_found, links_added)
     """
     smmx_path = os.path.abspath(smmx_path)
-    base_dir = store.base_dir
+    base_dir = root_dir or store.base_dir
 
     # Get this mindmap's tree ID to avoid self-links
     self_tree_id = extract_tree_id_from_filename(smmx_path)
@@ -202,6 +205,9 @@ def main():
                        help='Print each link added')
     parser.add_argument('--cache', action='store_true',
                        help='Cache index in memory (faster for many files)')
+    parser.add_argument('--root', '-r', default=None,
+                       help='Root directory for relative path computation '
+                            '(overrides index base_dir)')
 
     args = parser.parse_args()
 
@@ -227,7 +233,8 @@ def main():
         found, added = process_mindmap(
             filepath, store,
             dry_run=args.dry_run,
-            verbose=args.verbose
+            verbose=args.verbose,
+            root_dir=args.root
         )
 
         total_found += found

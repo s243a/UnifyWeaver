@@ -22,6 +22,7 @@ import base64
 import hashlib
 import json
 import math
+import os
 import re
 import uuid
 import zipfile
@@ -34,6 +35,14 @@ import numpy as np
 from sklearn.cluster import KMeans
 from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.spatial.distance import pdist, squareform
+
+# Optional: import index store for relative links
+try:
+    from mindmap.index_store import create_index_store, IndexStore
+    HAS_INDEX_STORE = True
+except ImportError:
+    HAS_INDEX_STORE = False
+    IndexStore = None
 
 
 def extract_account_from_uri(uri: str) -> Optional[str]:
@@ -1233,7 +1242,9 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                 source_folder: Path = None,
                 cluster_to_folder: Dict[str, Path] = None,
                 url_to_filename: Dict[str, str] = None,
-                layout: str = None):
+                layout: str = None,
+                index_store = None,
+                output_path: Path = None):
     """Convert a MindMapNode to SimpleMind XML topic element.
 
     Args:
@@ -1313,7 +1324,7 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         is_tree_with_children = enable_cloudmapref and node.item_type == 'Tree' and node.id != 0
         target_tree_id = extract_tree_id(node.url) if is_tree_with_children else None
 
-        # Compute cloudmapref path (uses folder structure and filename mapping if available)
+        # Compute cloudmapref path (uses folder structure, filename mapping, or index)
         def get_cloudmapref_path():
             # Get the actual filename (titled or just ID)
             if url_to_filename and node.url in url_to_filename:
@@ -1325,6 +1336,22 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                 # Use target's folder from mapping, or root folder as fallback
                 target_folder = cluster_to_folder.get(node.url, Path('.'))
                 return compute_relative_cloudmapref_path(source_folder, target_filename, target_folder)
+            elif index_store and target_tree_id and output_path:
+                # Use index to look up target path
+                # Index keys are just digits (e.g., "11460410"), not "id11460410"
+                lookup_id = target_tree_id[2:] if target_tree_id.startswith('id') else target_tree_id
+                target_path = index_store.get(lookup_id)
+                if target_path:
+                    # Compute relative path from output_path to target
+                    base_dir = index_store.base_dir or str(output_path.parent)
+                    output_dir = str(output_path.parent.resolve())
+                    target_abs = Path(base_dir) / target_path
+                    try:
+                        rel_path = os.path.relpath(target_abs, output_dir)
+                        return rel_path
+                    except ValueError:
+                        return target_path
+                return None  # Target not in index
             else:
                 return f'./{target_filename}.smmx'
 
@@ -1339,8 +1366,9 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                 link = SubElement(topic, 'link')
                 link.set('urllink', node.url)
 
-                # cloudmapref on child node (square, unlabeled)
-                if next_id is not None:
+                # cloudmapref on child node (square, unlabeled) - only if target is in index
+                cloudmap_path = get_cloudmapref_path()
+                if cloudmap_path and next_id is not None:
                     child_node_id = next_id[0]
                     next_id[0] += 1
                     child_topic = SubElement(parent_element, 'topic')
@@ -1357,82 +1385,98 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                     child_style.set('borderstyle', 'sbsRectangle')
                     # cloudmapref link
                     child_link = SubElement(child_topic, 'link')
-                    child_link.set('cloudmapref', get_cloudmapref_path())
+                    child_link.set('cloudmapref', cloudmap_path)
                     target_guid = generate_deterministic_guid(node.url, 0)
                     child_link.set('element', target_guid)
 
             elif url_nodes_mode == 'map':
-                # cloudmapref on main node
-                link = SubElement(topic, 'link')
-                link.set('cloudmapref', get_cloudmapref_path())
-                target_guid = generate_deterministic_guid(node.url, 0)
-                link.set('element', target_guid)
+                cloudmap_path = get_cloudmapref_path()
+                if cloudmap_path:
+                    # cloudmapref on main node
+                    link = SubElement(topic, 'link')
+                    link.set('cloudmapref', cloudmap_path)
+                    target_guid = generate_deterministic_guid(node.url, 0)
+                    link.set('element', target_guid)
 
-                # URL on child node (square)
-                if next_id is not None:
-                    child_node_id = next_id[0]
-                    next_id[0] += 1
-                    child_topic = SubElement(parent_element, 'topic')
-                    child_topic.set('id', str(child_node_id))
-                    child_topic.set('parent', str(node.id))
-                    child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
-                    child_topic.set('x', f'{node.x + 30:.2f}')
-                    child_topic.set('y', f'{node.y + 20:.2f}')
-                    child_topic.set('palette', str(node.palette))
-                    child_topic.set('colorinfo', str(node.palette))
-                    child_topic.set('text', child_node_text)
-                    # Square style
-                    child_style = SubElement(child_topic, 'style')
-                    child_style.set('borderstyle', 'sbsRectangle')
-                    # URL link
-                    child_link = SubElement(child_topic, 'link')
-                    child_link.set('urllink', node.url)
+                    # URL on child node (square)
+                    if next_id is not None:
+                        child_node_id = next_id[0]
+                        next_id[0] += 1
+                        child_topic = SubElement(parent_element, 'topic')
+                        child_topic.set('id', str(child_node_id))
+                        child_topic.set('parent', str(node.id))
+                        child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
+                        child_topic.set('x', f'{node.x + 30:.2f}')
+                        child_topic.set('y', f'{node.y + 20:.2f}')
+                        child_topic.set('palette', str(node.palette))
+                        child_topic.set('colorinfo', str(node.palette))
+                        child_topic.set('text', child_node_text)
+                        # Square style
+                        child_style = SubElement(child_topic, 'style')
+                        child_style.set('borderstyle', 'sbsRectangle')
+                        # URL link
+                        child_link = SubElement(child_topic, 'link')
+                        child_link.set('urllink', node.url)
+                else:
+                    # Fallback: target not in index, just use URL on main node
+                    link = SubElement(topic, 'link')
+                    link.set('urllink', node.url)
 
             elif url_nodes_mode == 'url-label':
-                # cloudmapref on main node (for map navigation)
-                link = SubElement(topic, 'link')
-                link.set('cloudmapref', get_cloudmapref_path())
-                target_guid = generate_deterministic_guid(node.url, 0)
-                link.set('element', target_guid)
+                cloudmap_path = get_cloudmapref_path()
+                if cloudmap_path:
+                    # cloudmapref on main node (for map navigation)
+                    link = SubElement(topic, 'link')
+                    link.set('cloudmapref', cloudmap_path)
+                    target_guid = generate_deterministic_guid(node.url, 0)
+                    link.set('element', target_guid)
 
-                # URL on child node with "url" label and no border
-                if next_id is not None:
-                    child_node_id = next_id[0]
-                    next_id[0] += 1
-                    child_topic = SubElement(parent_element, 'topic')
-                    child_topic.set('id', str(child_node_id))
-                    child_topic.set('parent', str(node.id))
-                    child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
-                    # Position along radial direction from center (500, 500)
-                    center_x, center_y = 500, 500
-                    dx = node.x - center_x
-                    dy = node.y - center_y
-                    dist = (dx*dx + dy*dy) ** 0.5
-                    if dist > 0:
-                        # Offset 60 pixels further along radial direction
-                        url_x = node.x + (dx / dist) * 60
-                        url_y = node.y + (dy / dist) * 60
-                    else:
-                        url_x = node.x + 60
-                        url_y = node.y
-                    child_topic.set('x', f'{url_x:.2f}')
-                    child_topic.set('y', f'{url_y:.2f}')
-                    child_topic.set('palette', str(node.palette))
-                    child_topic.set('colorinfo', str(node.palette))
-                    child_topic.set('text', 'url')
-                    # No border style
-                    child_style = SubElement(child_topic, 'style')
-                    child_style.set('borderstyle', 'sbsNone')
-                    # URL link
-                    child_link = SubElement(child_topic, 'link')
-                    child_link.set('urllink', node.url)
+                    # URL on child node with "url" label and no border
+                    if next_id is not None:
+                        child_node_id = next_id[0]
+                        next_id[0] += 1
+                        child_topic = SubElement(parent_element, 'topic')
+                        child_topic.set('id', str(child_node_id))
+                        child_topic.set('parent', str(node.id))
+                        child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
+                        # Position along radial direction from center (500, 500)
+                        center_x, center_y = 500, 500
+                        dx = node.x - center_x
+                        dy = node.y - center_y
+                        dist = (dx*dx + dy*dy) ** 0.5
+                        if dist > 0:
+                            # Offset 60 pixels further along radial direction
+                            url_x = node.x + (dx / dist) * 60
+                            url_y = node.y + (dy / dist) * 60
+                        else:
+                            url_x = node.x + 60
+                            url_y = node.y
+                        child_topic.set('x', f'{url_x:.2f}')
+                        child_topic.set('y', f'{url_y:.2f}')
+                        child_topic.set('palette', str(node.palette))
+                        child_topic.set('colorinfo', str(node.palette))
+                        child_topic.set('text', 'url')
+                        # No border style
+                        child_style = SubElement(child_topic, 'style')
+                        child_style.set('borderstyle', 'sbsNone')
+                        # URL link
+                        child_link = SubElement(child_topic, 'link')
+                        child_link.set('urllink', node.url)
+                else:
+                    # Fallback: target not in index, just use URL on main node
+                    link = SubElement(topic, 'link')
+                    link.set('urllink', node.url)
 
             else:
-                # No child node - cloudmapref on main only
+                # No child node mode - cloudmapref on main only if available, else URL
+                cloudmap_path = get_cloudmapref_path()
                 link = SubElement(topic, 'link')
-                link.set('cloudmapref', get_cloudmapref_path())
-                target_guid = generate_deterministic_guid(node.url, 0)
-                link.set('element', target_guid)
+                if cloudmap_path:
+                    link.set('cloudmapref', cloudmap_path)
+                    target_guid = generate_deterministic_guid(node.url, 0)
+                    link.set('element', target_guid)
+                else:
+                    link.set('urllink', node.url)
 
         # Handle RefPearl/AliasPearl with alias_target_uri (links to other mindmaps)
         elif enable_cloudmapref and node.alias_target_uri and node.item_type in ('RefPearl', 'AliasPearl'):
@@ -1451,35 +1495,55 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                     # Use target's folder from mapping, or root folder as fallback
                     target_folder = cluster_to_folder.get(target_url, Path('.'))
                     return compute_relative_cloudmapref_path(source_folder, target_filename, target_folder)
+                elif index_store and target_tree_id and output_path:
+                    # Use index to look up target path
+                    # Index keys are just digits (e.g., "11460410"), not "id11460410"
+                    lookup_id = target_tree_id[2:] if target_tree_id.startswith('id') else target_tree_id
+                    target_path = index_store.get(lookup_id)
+                    if target_path:
+                        base_dir = index_store.base_dir or str(output_path.parent)
+                        output_dir = str(output_path.parent.resolve())
+                        target_abs = Path(base_dir) / target_path
+                        try:
+                            return os.path.relpath(target_abs, output_dir)
+                        except ValueError:
+                            return target_path
+                    return None  # Target not in index
                 else:
                     return f'./{target_filename}.smmx'
 
             if target_tree_id:
-                # cloudmapref on main node (to navigate to target mindmap)
-                link = SubElement(topic, 'link')
-                link.set('cloudmapref', get_alias_cloudmapref_path())
-                target_guid = generate_deterministic_guid(target_url, 0)
-                link.set('element', target_guid)
+                alias_path = get_alias_cloudmapref_path()
+                if alias_path:
+                    # cloudmapref on main node (to navigate to target mindmap)
+                    link = SubElement(topic, 'link')
+                    link.set('cloudmapref', alias_path)
+                    target_guid = generate_deterministic_guid(target_url, 0)
+                    link.set('element', target_guid)
 
-                # URL on child node (to open in browser)
-                if next_id is not None and node.url:
-                    child_node_id = next_id[0]
-                    next_id[0] += 1
-                    child_topic = SubElement(parent_element, 'topic')
-                    child_topic.set('id', str(child_node_id))
-                    child_topic.set('parent', str(node.id))
-                    child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
-                    child_topic.set('x', f'{node.x + 30:.2f}')
-                    child_topic.set('y', f'{node.y + 20:.2f}')
-                    child_topic.set('palette', str(node.palette))
-                    child_topic.set('colorinfo', str(node.palette))
-                    child_topic.set('text', 'url')  # Label for URL node
-                    # Square style
-                    child_style = SubElement(child_topic, 'style')
-                    child_style.set('borderstyle', 'sbsRectangle')
-                    # URL link
-                    child_link = SubElement(child_topic, 'link')
-                    child_link.set('urllink', node.url)
+                    # URL on child node (to open in browser)
+                    if next_id is not None and node.url:
+                        child_node_id = next_id[0]
+                        next_id[0] += 1
+                        child_topic = SubElement(parent_element, 'topic')
+                        child_topic.set('id', str(child_node_id))
+                        child_topic.set('parent', str(node.id))
+                        child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
+                        child_topic.set('x', f'{node.x + 30:.2f}')
+                        child_topic.set('y', f'{node.y + 20:.2f}')
+                        child_topic.set('palette', str(node.palette))
+                        child_topic.set('colorinfo', str(node.palette))
+                        child_topic.set('text', 'url')  # Label for URL node
+                        # Square style
+                        child_style = SubElement(child_topic, 'style')
+                        child_style.set('borderstyle', 'sbsRectangle')
+                        # URL link
+                        child_link = SubElement(child_topic, 'link')
+                        child_link.set('urllink', node.url)
+                else:
+                    # Alias target not in index - just use URL
+                    link = SubElement(topic, 'link')
+                    link.set('urllink', node.url)
             else:
                 # No target tree ID - just use URL
                 link = SubElement(topic, 'link')
@@ -1494,7 +1558,8 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
     for child in node.children:
         node_to_xml(child, parent_element, scales, tree_style, pearl_style,
                     enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text,
-                    source_folder, cluster_to_folder, url_to_filename, layout)
+                    source_folder, cluster_to_folder, url_to_filename, layout,
+                    index_store, output_path)
 
 def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float] = None,
                          tree_style: str = None, pearl_style: str = None,
@@ -1506,7 +1571,9 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
                          parent_cloudmapref: str = None,
                          url_to_filename: Dict[str, str] = None,
                          parent_title: str = None,
-                         layout: str = None) -> str:
+                         layout: str = None,
+                         index_store = None,
+                         output_path: Path = None) -> str:
     """Generate complete SimpleMind XML document.
 
     Args:
@@ -1559,7 +1626,8 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
     next_id = [max(n.id for n in all_nodes) + 1000]  # Leave gap for safety
     node_to_xml(root, topics, scales, tree_style, pearl_style,
                 enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text,
-                source_folder, cluster_to_folder, url_to_filename, layout)
+                source_folder, cluster_to_folder, url_to_filename, layout,
+                index_store, output_path)
 
     # Add parent link node if parent info provided
     if parent_tree_id and parent_cloudmapref:
@@ -2958,6 +3026,8 @@ def main():
     parser.add_argument('--embeddings', type=Path,
                         default=Path('models/dual_embeddings_full.npz'),
                         help='Path to embeddings file (.npz)')
+    parser.add_argument('--index', type=Path, default=None,
+                        help='Path to mindmap index file (JSON/TSV/SQLite) for relative links')
     parser.add_argument('--output', type=Path, default=None,
                         help='Output file path (required unless --recursive)')
     parser.add_argument('--format', choices=['smmx', 'mm', 'opml', 'graphml', 'vue'], default='smmx',
@@ -3066,6 +3136,18 @@ def main():
         print(f"Loaded {len(tree_id_emb)} tree_id, {len(title_emb)} title, {len(uri_emb)} uri embeddings")
     else:
         print(f"Warning: Embeddings file not found: {args.embeddings}")
+
+    # Load mindmap index for relative links
+    index_store = None
+    if args.index:
+        if not HAS_INDEX_STORE:
+            print("Error: index_store module not available. Install from scripts/mindmap/")
+            return 1
+        if args.index.exists():
+            index_store = create_index_store(str(args.index))
+            print(f"Loaded index with {index_store.count()} entries")
+        else:
+            print(f"Warning: Index file not found: {args.index}")
 
     # Resolve cluster URL if searching by name
     cluster_url = args.cluster_url
@@ -3207,12 +3289,22 @@ def main():
 
     # Generate XML
     title = root.title if root else "Mind Map"
+    # Enable cloudmapref if index is provided
+    use_cloudmapref = index_store is not None
+    # When index is provided, default to 'url' mode to create both URL and cloudmapref links
+    # 'url' mode: URL on main node, cloudmapref on child node
+    url_nodes = args.url_nodes
+    if index_store is not None and url_nodes is None:
+        url_nodes = 'url'
     xml_content = generate_mindmap_xml(root, title, scales,
                                        tree_style=args.tree_style,
                                        pearl_style=args.pearl_style,
-                                       enable_cloudmapref=False,
+                                       enable_cloudmapref=use_cloudmapref,
                                        cluster_id=cluster_url,
-                                       layout=args.layout)
+                                       url_nodes_mode=url_nodes,
+                                       layout=args.layout,
+                                       index_store=index_store,
+                                       output_path=args.output)
 
     # Write output
     if args.xml_only:
