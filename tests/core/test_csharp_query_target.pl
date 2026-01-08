@@ -288,7 +288,7 @@ setup_test_data :-
     assertz(user:test_cache_join_right(k4, b4)),
     assertz(user:(test_cache_join_root(RightValue) :-
         (   test_cache_join_right(k1, RightValue),
-            RightValue = unifyweaver_cache_warmup_no_results
+            dif(RightValue, b1)
         ;   test_cache_join_left(Key, _),
             test_cache_join_right(Key, RightValue)
         )
