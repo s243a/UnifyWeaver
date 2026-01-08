@@ -223,6 +223,25 @@ Requirements:
 ```bash
 git clone https://github.com/s243a/UnifyWeaver.git
 cd UnifyWeaver
+
+# Set up local data directories
+./scripts/setup_local.sh
+```
+
+### Local Data Directory
+
+The `.local/` directory holds project-specific data and tools that are not checked into git:
+
+| Directory | Purpose |
+|-----------|---------|
+| `.local/bin/` | Executable scripts |
+| `.local/data/` | Cached API responses, scan results, embeddings |
+| `.local/lib/` | Shared libraries/modules |
+| `.local/tools/` | External tool repositories |
+
+For Pearltrees integration, clone the harvester tools:
+```bash
+git clone git@github.com:s243a/pt-harvester.git .local/tools/browser-automation
 ```
 
 ## Quick Start
