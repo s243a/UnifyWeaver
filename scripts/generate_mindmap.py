@@ -27,6 +27,7 @@ import re
 import uuid
 import zipfile
 from pathlib import Path
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -43,6 +44,55 @@ try:
 except ImportError:
     HAS_INDEX_STORE = False
     IndexStore = None
+
+# Optional: sqlite3 for children index
+import sqlite3
+
+
+def load_children_from_index(db_path: Path, tree_id: str) -> List[Dict]:
+    """Load children for a tree from the SQLite children index.
+
+    Args:
+        db_path: Path to children_index.db
+        tree_id: Tree ID to look up
+
+    Returns:
+        List of child dicts with type, title, external_url, see_also_uri, pos_order
+    """
+    if not db_path or not db_path.exists():
+        return []
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT pearl_type, title, pos_order, external_url, see_also_uri, uri, parent_tree_uri
+            FROM children
+            WHERE parent_tree_id = ?
+            ORDER BY pos_order
+        ''', (str(tree_id),))
+
+        children = []
+        for row in cursor.fetchall():
+            pearl_type, title, pos_order, external_url, see_also_uri, uri, parent_tree_uri = row
+            # Convert to item dict format matching JSONL structure
+            item = {
+                'type': pearl_type,
+                'raw_title': title or '',
+                'pos_order': pos_order or 0,
+                'uri': uri or '',
+                'pearl_uri': uri or '',
+                'cluster_id': parent_tree_uri or '',
+                'url': external_url or '',  # For PagePearl
+                'alias_target_uri': see_also_uri or '',  # For RefPearl/AliasPearl
+            }
+            children.append(item)
+
+        conn.close()
+        return children
+    except Exception as e:
+        print(f"Warning: Error loading children from index: {e}")
+        return []
 
 
 def extract_account_from_uri(uri: str) -> Optional[str]:
@@ -104,6 +154,7 @@ class MindMapNode:
     guid: str = ""  # Deterministic GUID for cross-map linking
     cluster_id: str = ""  # The cluster this node belongs to (for GUID generation)
     alias_target_uri: str = ""  # For AliasPearl/RefPearl - the target tree URI
+    external_url: str = ""  # For PagePearl - the actual external URL (e.g., wikipedia.org)
 
 
 # SimpleMind borderstyle values
@@ -155,6 +206,31 @@ def extract_tree_id(url: str) -> str:
             return part
     # Fallback: use last segment
     return parts[-1] if parts else ""
+
+
+def extract_domain(url: str) -> str:
+    """Extract domain name from URL for display.
+
+    Examples:
+        "https://en.wikipedia.org/wiki/History" -> "wikipedia.org"
+        "https://www.example.com/page" -> "example.com"
+        "https://docs.python.org/3/" -> "python.org"
+    """
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc
+        # Remove www. prefix and common subdomains
+        if domain.startswith('www.'):
+            domain = domain[4:]
+        elif domain.startswith('en.'):
+            domain = domain[3:]
+        elif domain.startswith('docs.'):
+            domain = domain[5:]
+        return domain
+    except Exception:
+        return ""
 
 
 def sanitize_filename(title: str, max_length: int = 50) -> str:
@@ -1295,11 +1371,14 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         layout_elem.set('flow', 'default')
 
     # Determine borderstyle based on item type
+    # PagePearl/Section/Note use sbsNone (no border) to indicate no relative link
+    # Tree/AliasPearl/RefPearl can have cloudmapref links, so use configured style
     borderstyle = None
-    if node.item_type == 'Tree' and tree_style:
+    if node.item_type in ('PagePearl', 'Section', 'Note'):
+        borderstyle = 'sbsNone'
+    elif node.item_type == 'Tree' and tree_style:
         borderstyle = BORDERSTYLES.get(tree_style)
-    elif 'Pearl' in node.item_type and pearl_style:
-        # Matches PagePearl, and any other Pearl types
+    elif node.item_type in ('AliasPearl', 'RefPearl') and pearl_style:
         borderstyle = BORDERSTYLES.get(pearl_style)
 
     # Add style element (for font scaling and/or borderstyle)
@@ -1537,9 +1616,9 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                         # Square style
                         child_style = SubElement(child_topic, 'style')
                         child_style.set('borderstyle', 'sbsRectangle')
-                        # URL link
+                        # URL link - use alias_target_uri (target tree URL) not node.url (pearl item URL)
                         child_link = SubElement(child_topic, 'link')
-                        child_link.set('urllink', node.url)
+                        child_link.set('urllink', target_url)
                 else:
                     # Alias target not in index - just use URL
                     link = SubElement(topic, 'link')
@@ -1551,8 +1630,38 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
 
         else:
             # Non-Tree nodes without alias_target_uri, or root: use urllink
-            link = SubElement(topic, 'link')
-            link.set('urllink', node.url)
+            # Check for 'expanded' mode with PagePearl external URLs
+            if url_nodes_mode == 'expanded' and node.item_type == 'PagePearl' and node.external_url:
+                # Main node links to Pearltrees
+                link = SubElement(topic, 'link')
+                link.set('urllink', node.url)
+
+                # Create child node with domain name linking to external URL
+                if next_id is not None:
+                    child_node_id = next_id[0]
+                    next_id[0] += 1
+                    child_topic = SubElement(parent_element, 'topic')
+                    child_topic.set('id', str(child_node_id))
+                    child_topic.set('parent', str(node.id))
+                    child_topic.set('guid', generate_deterministic_guid(cluster_id, child_node_id) if cluster_id else generate_guid())
+                    child_topic.set('x', f'{node.x + 30:.2f}')
+                    child_topic.set('y', f'{node.y + 20:.2f}')
+                    # Use domain name as the label
+                    domain = extract_domain(node.external_url)
+                    child_topic.set('text', domain or 'link')
+                    # No border style (sbsNone)
+                    child_style = SubElement(child_topic, 'style')
+                    child_style.set('borderstyle', 'sbsNone')
+                    # URL link to external site
+                    child_link = SubElement(child_topic, 'link')
+                    child_link.set('urllink', node.external_url)
+            elif node.item_type == 'PagePearl' and node.external_url:
+                # Default behavior: PagePearl links directly to external URL
+                link = SubElement(topic, 'link')
+                link.set('urllink', node.external_url)
+            elif node.url:
+                link = SubElement(topic, 'link')
+                link.set('urllink', node.url)
 
     # Recurse for children
     for child in node.children:
@@ -1652,7 +1761,8 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
 
 def load_cluster_items(data_path: Path, cluster_query: str = None,
                        cluster_url: str = None,
-                       pearls_only: bool = False) -> List[Dict]:
+                       pearls_only: bool = False,
+                       children_index: Path = None) -> List[Dict]:
     """Load items from a cluster.
 
     Args:
@@ -1662,6 +1772,7 @@ def load_cluster_items(data_path: Path, cluster_query: str = None,
         pearls_only: If True, only load Pearls (PagePearl, AliasPearl, RefPearl),
             not child Trees. Use for curated mode where each Tree gets its own
             mindmap and child Trees are linked via cloudmapref.
+        children_index: Path to SQLite children index for loading missing children
 
     Returns:
         List of item dicts (folder + children)
@@ -1711,6 +1822,33 @@ def load_cluster_items(data_path: Path, cluster_query: str = None,
                             continue
                         items.append(rec)
 
+    # If we have a children index and few/no children, try loading from index
+    if children_index and folder_item:
+        tree_id = folder_item.get('tree_id', '')
+        # Count non-folder items (children)
+        child_count = len([i for i in items if i != folder_item])
+
+        # If only 0-1 children (root only), try loading from index
+        if child_count <= 1 and tree_id:
+            index_children = load_children_from_index(children_index, tree_id)
+            if index_children:
+                # Get existing URIs to avoid duplicates
+                existing_uris = {i.get('uri') for i in items}
+                # Add children from index that aren't already present
+                added = 0
+                for child in index_children:
+                    # Skip RootPearl (it's implicit in the folder)
+                    if child.get('type') == 'RootPearl':
+                        continue
+                    if child.get('uri') not in existing_uris:
+                        # In pearls_only mode, skip Trees
+                        if pearls_only and child.get('type') == 'Tree':
+                            continue
+                        items.append(child)
+                        added += 1
+                if added > 0:
+                    print(f"  Loaded {added} children from index for tree {tree_id}")
+
     return items
 
 def create_nodes_from_items(items: List[Dict],
@@ -1758,7 +1896,29 @@ def create_nodes_from_items(items: List[Dict],
         root_item = items[0]
 
     def get_url(item):
-        """Get URL for an item - uri for Trees, pearl_uri for PagePearls."""
+        """Get URL for an item (main link).
+
+        Returns Pearltrees URI for all items. For PagePearls, external URL
+        is stored separately in external_url field and used based on url_nodes_mode.
+        - Section: no URL (just organizational headers)
+        - All others: Pearltrees URI
+        """
+        item_type = item.get('type', '')
+        if item_type == 'Section':
+            # Sections are organizational headers - no link needed
+            return ''
+        else:
+            # Use Pearltrees URI for all items
+            return item.get('uri') or item.get('pearl_uri', '')
+
+    def get_external_url(item):
+        """Get external URL for PagePearls (for 'expanded' url_nodes_mode)."""
+        if item.get('type') == 'PagePearl':
+            return item.get('url', '')
+        return ''
+
+    def get_pearltrees_uri(item):
+        """Get Pearltrees URI for an item."""
         return item.get('uri') or item.get('pearl_uri', '')
 
     # Create root node
@@ -1773,7 +1933,8 @@ def create_nodes_from_items(items: List[Dict],
             palette=1,
             embedding=get_embedding(root_item),
             item_type=root_item.get('type', ''),
-            alias_target_uri=root_item.get('alias_target_uri', '')
+            alias_target_uri=root_item.get('alias_target_uri', ''),
+            external_url=get_external_url(root_item)
         )
         nodes.append(root_node)
 
@@ -1793,7 +1954,8 @@ def create_nodes_from_items(items: List[Dict],
             palette=(palette_idx % 8) + 1,
             embedding=get_embedding(item),
             item_type=item.get('type', ''),
-            alias_target_uri=item.get('alias_target_uri', '')
+            alias_target_uri=item.get('alias_target_uri', ''),
+            external_url=get_external_url(item)
         )
         nodes.append(node)
         palette_idx += 1
@@ -1833,7 +1995,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                         url_to_filename: Dict[str, str] = None,
                         parent_title: str = None,
                         layout: str = 'radial',
-                        flat_hierarchy: bool = False) -> List[str]:
+                        flat_hierarchy: bool = False,
+                        children_index: Path = None) -> List[str]:
     """Generate a single mind map and return URLs of child Trees for recursion.
 
     Args:
@@ -1867,7 +2030,8 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
     # Load cluster items
     # In curated mode (flat_hierarchy), only load pearls - child Trees have their own mindmaps
     items = load_cluster_items(data_path, cluster_url=cluster_url,
-                               pearls_only=flat_hierarchy)
+                               pearls_only=flat_hierarchy,
+                               children_index=children_index)
 
     if not items:
         print(f"No items found for cluster: {cluster_url}")
@@ -2766,6 +2930,7 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                        curated_root_url: str = None,
                        save_folder_map: Path = None,
                        load_folder_map: Path = None,
+                       children_index: Path = None,
                        **kwargs) -> int:
     """Recursively generate mind maps for a cluster hierarchy.
 
@@ -2975,6 +3140,7 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         url_to_filename=url_to_filename,
         parent_title=parent_title,
         flat_hierarchy=curated_folders,  # Preserve true hierarchy in curated mode
+        children_index=children_index,
         **kwargs
     )
 
@@ -3009,6 +3175,7 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
             parent_links=parent_links,
             parent_url=cluster_url,  # Current cluster becomes parent for children
             url_to_folder=url_to_folder,
+            children_index=children_index,
             **kwargs
         )
 
@@ -3028,6 +3195,8 @@ def main():
                         help='Path to embeddings file (.npz)')
     parser.add_argument('--index', type=Path, default=None,
                         help='Path to mindmap index file (JSON/TSV/SQLite) for relative links')
+    parser.add_argument('--children-index', type=Path, default=None,
+                        help='Path to SQLite children index for loading missing children from RDF')
     parser.add_argument('--output', type=Path, default=None,
                         help='Output file path (required unless --recursive)')
     parser.add_argument('--format', choices=['smmx', 'mm', 'opml', 'graphml', 'vue'], default='smmx',
@@ -3088,8 +3257,10 @@ def main():
                         help='Minimum children to create subfolders (default: no minimum)')
     parser.add_argument('--max-folder-children', type=int, default=None,
                         help='Maximum children to put in subfolders (default: unlimited)')
-    parser.add_argument('--url-nodes', choices=['url', 'map', 'url-label'], nargs='?', const='url', default=None,
-                        help='Attach small child nodes to Tree nodes. "url" (default): URL on main, cloudmapref on child. "map": cloudmapref on main, URL on child. "url-label": cloudmapref on main, URL on borderless "url" labeled child.')
+    parser.add_argument('--url-nodes', choices=['auto', 'expanded', 'direct', 'url', 'map', 'url-label'], nargs='?', const='auto', default='auto',
+                        help='Link mode for nodes. "auto" (default): use expanded if <threshold PagePearls, else direct. "expanded": PagePearls link to Pearltrees with child node showing domain linking to external URL. "direct": PagePearls link directly to external URL. "url": URL on main, cloudmapref on child. "map": cloudmapref on main, URL on child.')
+    parser.add_argument('--expanded-threshold', type=int, default=50,
+                        help='PagePearl count threshold for auto mode (default: 50). Below this, use expanded mode.')
     parser.add_argument('--child-text', type=str, default='',
                         help='Text label for child link nodes (default: empty/unlabeled)')
     parser.add_argument('--save-folder-map', type=Path, default=None,
@@ -3214,6 +3385,7 @@ def main():
             parent_links=args.parent_links,
             save_folder_map=args.save_folder_map,
             load_folder_map=args.load_folder_map,
+            children_index=args.children_index,
             min_children=args.min_children,
             max_children=args.max_children,
             optimize=args.optimize,
@@ -3245,7 +3417,8 @@ def main():
 
     # Single map mode (original behavior)
     # Load cluster items
-    items = load_cluster_items(args.data, args.cluster, cluster_url)
+    items = load_cluster_items(args.data, args.cluster, cluster_url,
+                               children_index=args.children_index)
 
     if not items:
         print(f"No items found for cluster")
@@ -3291,11 +3464,24 @@ def main():
     title = root.title if root else "Mind Map"
     # Enable cloudmapref if index is provided
     use_cloudmapref = index_store is not None
-    # When index is provided, default to 'url' mode to create both URL and cloudmapref links
-    # 'url' mode: URL on main node, cloudmapref on child node
+
+    # Resolve url_nodes mode
     url_nodes = args.url_nodes
-    if index_store is not None and url_nodes is None:
-        url_nodes = 'url'
+
+    # Auto mode: choose expanded or direct based on PagePearl count
+    if url_nodes == 'auto':
+        pagepearl_count = sum(1 for n in nodes if n.item_type == 'PagePearl')
+        if pagepearl_count < args.expanded_threshold:
+            url_nodes = 'expanded'
+            print(f"Auto mode: using 'expanded' ({pagepearl_count} PagePearls < {args.expanded_threshold} threshold)")
+        else:
+            url_nodes = 'direct'
+            print(f"Auto mode: using 'direct' ({pagepearl_count} PagePearls >= {args.expanded_threshold} threshold)")
+
+    # When index is provided with url/map modes, enable cloudmapref child nodes
+    if index_store is not None and url_nodes in (None, 'url', 'map'):
+        if url_nodes is None:
+            url_nodes = 'url'
     xml_content = generate_mindmap_xml(root, title, scales,
                                        tree_style=args.tree_style,
                                        pearl_style=args.pearl_style,
