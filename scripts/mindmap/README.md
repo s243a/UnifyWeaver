@@ -56,6 +56,39 @@ Useful for:
 - Finding all mindmaps that reference a given mindmap
 - Updating links when a mindmap is renamed or moved
 
+### rename_mindmap.py
+
+Rename mindmap files and automatically update all `cloudmapref` references.
+
+```bash
+# Single file: auto-generate titled filename from root topic
+python3 scripts/mindmap/rename_mindmap.py \
+  --mindmap output/mindmaps_curated/id10380971.smmx \
+  --titled
+
+# Single file: explicit new name
+python3 scripts/mindmap/rename_mindmap.py \
+  --mindmap output/mindmaps_curated/id10380971.smmx \
+  --new-name "Technology_10380971.smmx"
+
+# Batch: rename all to titled format
+python3 scripts/mindmap/rename_mindmap.py \
+  --batch output/mindmaps_curated/ \
+  --titled
+
+# Preview changes without making them
+python3 scripts/mindmap/rename_mindmap.py \
+  --mindmap output/mindmaps_curated/id10380971.smmx \
+  --titled --dry-run --verbose
+```
+
+Features:
+- Generates `Title_ID.smmx` filenames from root topic text
+- Scans for all mindmaps with `cloudmapref` pointing to the renamed file
+- Updates relative paths (including `../../../` paths)
+- Batch mode updates all references before renaming files
+- Optional index update via `--index`
+
 ### index_store.py
 
 Abstraction layer for index storage with pluggable backends:
@@ -139,11 +172,27 @@ python3 scripts/generate_mindmap.py \
 
 ### Handling Renames/Moves
 
-1. Build reverse index to find affected mindmaps:
-   ```bash
-   python3 scripts/mindmap/build_reverse_index.py output/mindmaps_curated/ \
-     -o reverse_index.json
-   ```
+Use `rename_mindmap.py` to rename a mindmap and automatically update all references:
 
-2. Look up which mindmaps link to the moved file
-3. Update paths in those mindmaps using add_relative_links.py
+```bash
+# Rename with auto-generated title from root topic
+python3 scripts/mindmap/rename_mindmap.py \
+  --mindmap output/mindmaps_curated/id10380971.smmx \
+  --titled --dry-run
+
+# Rename with explicit new name
+python3 scripts/mindmap/rename_mindmap.py \
+  --mindmap output/mindmaps_curated/id10380971.smmx \
+  --new-name "Technology_10380971.smmx"
+
+# Batch rename all mindmaps to titled format (Title_ID.smmx)
+python3 scripts/mindmap/rename_mindmap.py \
+  --batch output/mindmaps_curated/ \
+  --titled --dry-run
+```
+
+The tool:
+1. Finds all mindmaps with `cloudmapref` pointing to the renamed file
+2. Updates their relative paths to the new filename
+3. Renames the file
+4. Optionally updates the index
