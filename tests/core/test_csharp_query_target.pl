@@ -34,6 +34,9 @@
 :- dynamic user:test_bothscan_left/3.
 :- dynamic user:test_bothscan_right/3.
 :- dynamic user:test_bothscan_join/4.
+:- dynamic user:test_cache_join_left/2.
+:- dynamic user:test_cache_join_right/2.
+:- dynamic user:test_cache_join_root/1.
 :- dynamic user:test_tiny_probe_fact/2.
 :- dynamic user:test_tiny_probe_param/2.
 :- dynamic user:test_sale_count/1.
@@ -174,6 +177,7 @@ test_csharp_query_target :-
         verify_parameterized_multi_key_join_runtime,
         verify_parameterized_multi_key_join_strategy_partial_index,
         verify_multi_key_both_scan_join_strategy_partial_index,
+        verify_both_scan_join_prefers_cached_fact_index,
         verify_tiny_probe_single_key_join_keeps_scan_index_with_cache_reuse,
         verify_parameterized_recursive_multi_key_join_strategy_partial_index,
         verify_parameterized_recursive_single_key_join_keeps_scan_index,
@@ -275,6 +279,19 @@ setup_test_data :-
     assertz(user:(test_bothscan_join(Customer, Product, LeftValue, RightValue) :-
         test_bothscan_left(Customer, Product, LeftValue),
         test_bothscan_right(Customer, Product, RightValue)
+    )),
+    assertz(user:test_cache_join_left(k1, a1)),
+    assertz(user:test_cache_join_left(k2, a2)),
+    assertz(user:test_cache_join_right(k1, b1)),
+    assertz(user:test_cache_join_right(k2, b2)),
+    assertz(user:test_cache_join_right(k3, b3)),
+    assertz(user:test_cache_join_right(k4, b4)),
+    assertz(user:(test_cache_join_root(RightValue) :-
+        (   test_cache_join_right(k1, RightValue),
+            dif(RightValue, b1)
+        ;   test_cache_join_left(Key, _),
+            test_cache_join_right(Key, RightValue)
+        )
     )),
     assertz(user:(test_sale_count(C) :- aggregate_all(count, test_sale(_, _), C))),
     assertz(user:(test_sale_avg_for_alice(Avg) :-
@@ -549,6 +566,9 @@ cleanup_test_data :-
     retractall(user:test_bothscan_left(_, _, _)),
     retractall(user:test_bothscan_right(_, _, _)),
     retractall(user:test_bothscan_join(_, _, _, _)),
+    retractall(user:test_cache_join_left(_, _)),
+    retractall(user:test_cache_join_right(_, _)),
+    retractall(user:test_cache_join_root(_)),
     retractall(user:test_tiny_probe_fact(_, _)),
     retractall(user:test_tiny_probe_param(_, _)),
     retractall(user:test_sale_count(_)),
@@ -1334,6 +1354,22 @@ verify_multi_key_both_scan_join_strategy_partial_index :-
          'alice,laptop,2,10',
          'alice,laptop,2,20',
          'STRATEGY_USED:KeyJoinScanIndexPartial=true'],
+        [],
+        HarnessSource).
+
+verify_both_scan_join_prefers_cached_fact_index :-
+    csharp_query_target:build_query_plan(test_cache_join_root/1, [target(csharp_query)], Plan),
+    get_dict(root, Plan, Root),
+    is_dict(Root, union),
+    sub_term(join{type:join, left:Left, right:Right, left_keys:[0], right_keys:[0], left_width:_, right_width:_, width:_}, Root),
+    Left = relation_scan{type:relation_scan, predicate:predicate{name:test_cache_join_left, arity:2}, width:_},
+    Right = relation_scan{type:relation_scan, predicate:predicate{name:test_cache_join_right, arity:2}, width:_},
+    csharp_query_target:plan_module_name(Plan, ModuleClass),
+    harness_source_with_cache_hit_flag(ModuleClass, [], 'FactIndex', HarnessSource),
+    maybe_run_query_runtime_with_harness(Plan,
+        ['b1',
+         'b2',
+         'CACHE_HIT:FactIndex=true'],
         [],
         HarnessSource).
 
@@ -2873,12 +2909,60 @@ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(Reuse
  
    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
-   ', [ModuleClass, ParamDecl, WarmCall, ExecCall, Cache, Cache]).
+    ', [ModuleClass, ParamDecl, WarmCall, ExecCall, Cache, Cache]).
+
+harness_source_with_cache_hit_flag(ModuleClass, Params, Cache, Source) :-
+    (   Params == []
+    ->  ParamDecl = 'var _planText = QueryPlanExplainer.Explain(result.Plan);\n',
+        ExecCall = 'executor.Execute(result.Plan, null, trace)'
+    ;   csharp_params_literal(Params, ParamsLiteral),
+        format(atom(ParamDecl), 'var parameters = ~w;~nvar _planText = QueryPlanExplainer.Explain(result.Plan);~n', [ParamsLiteral]),
+        ExecCall = 'executor.Execute(result.Plan, parameters, trace)'
+    ),
+    format(atom(Source),
+'using System;
+  using System.Linq;
+  using System.Globalization;
+  using UnifyWeaver.QueryRuntime;
+  using System.Text.Json;
+  using System.Text.Json.Nodes;
+
+ var result = UnifyWeaver.Generated.~w.Build();
+ var executor = new QueryExecutor(result.Provider, new QueryExecutorOptions(ReuseCaches: true));
+ ~wvar jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+
+  string FormatValue(object? value) => value switch
+  {
+      JsonNode node => node.ToJsonString(jsonOptions),
+      JsonElement element => element.GetRawText(),
+       System.Collections.IEnumerable enumerable when value is not string => \"[\" + string.Join(\"|\", enumerable.Cast<object?>().Select(FormatValue).OrderBy(s => s, StringComparer.Ordinal)) + \"]\",
+       IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+       _ => value?.ToString() ?? string.Empty
+   };
+
+  var trace = new QueryExecutionTrace();
+  foreach (var row in ~w)
+  {
+     var projected = row.Take(result.Plan.Head.Arity)
+                        .Select(FormatValue)
+                        .ToArray();
+
+     if (projected.Length == 0)
+     {
+         continue;
+     }
+
+      Console.WriteLine(string.Join(\",\", projected));
+    }
+  
+    var used = trace.SnapshotCaches().Any(s => s.Cache == \"~w\" && s.Hits > 0);
+    Console.WriteLine(\"CACHE_HIT:~w=\" + (used ? \"true\" : \"false\"));
+    ', [ModuleClass, ParamDecl, ExecCall, Cache, Cache]).
 
 harness_source_multi_mode_dispatch(ModuleClass, Source) :-
     format(atom(Source),
 'using System;
-using System.Linq;
+ using System.Linq;
 using System.Globalization;
 using UnifyWeaver.QueryRuntime;
 using System.Text.Json;
