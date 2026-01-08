@@ -1424,13 +1424,17 @@ verify_parameterized_recursive_single_key_join_keeps_scan_index :-
     csharp_query_target:build_query_plan(test_scanindex_reach_param/2, [target(csharp_query)], Plan),
     get_dict(is_recursive, Plan, true),
     get_dict(root, Plan, Root),
-    sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
-    length(LeftKeys, 1),
-    length(RightKeys, 1),
-    (   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_scanindex_step, arity:2}, width:_}, Left)
-    ->  Strategy = 'KeyJoinHashBuildRight'
-    ;   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_scanindex_step, arity:2}, width:_}, Right)
-    ->  Strategy = 'KeyJoinHashBuildLeft'
+    (   once((
+            sub_term(join{type:join, left:Left, right:Right, left_keys:LeftKeys, right_keys:RightKeys, left_width:_, right_width:_, width:_}, Root),
+            length(LeftKeys, 1),
+            length(RightKeys, 1),
+            (   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_scanindex_step, arity:2}, width:_}, Left)
+            ->  Strategy = 'KeyJoinHashBuildRight'
+            ;   sub_term(relation_scan{type:relation_scan, predicate:predicate{name:test_scanindex_step, arity:2}, width:_}, Right)
+            ->  Strategy = 'KeyJoinHashBuildLeft'
+            )
+        ))
+    ->  true
     ;   format(user_error, 'Expected join with test_scanindex_step/2.~n', []),
         fail
     ),
