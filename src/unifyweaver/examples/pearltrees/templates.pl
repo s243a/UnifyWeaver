@@ -1,7 +1,7 @@
-%% pearltrees/templates.pl - SimpleMind XML template generation
+%% pearltrees/templates.pl - SMMX mindmap XML template generation
 %%
 %% Phase 3: Template-based mindmap generation.
-%% Generates SimpleMind .smmx XML from tree data.
+%% Generates .smmx XML from tree data.
 
 :- module(pearltrees_templates, [
     generate_mindmap/4,
@@ -13,12 +13,12 @@
 %% --------------------------------------------------------------------
 %% XML Generation
 %%
-%% SimpleMind .smmx format is XML inside a ZIP archive.
+%% SMMX format is XML inside a ZIP archive.
 %% This module generates the XML content.
 %% --------------------------------------------------------------------
 
 %% generate_mindmap(+TreeId, +Title, +Children, -XML) is det.
-%%   Generate complete SimpleMind XML for a tree.
+%%   Generate complete SMMX XML for a tree.
 generate_mindmap(TreeId, Title, Children, XML) :-
     escape_xml(Title, EscTitle),
     maplist(child_to_xml, Children, ChildXMLs),
@@ -33,7 +33,7 @@ generate_mindmap(TreeId, Title, Children, XML) :-
 </smmx>', [EscTitle, TreeId, ChildrenStr]).
 
 %% generate_mindmap_xml(+TreeId, +Title, +Uri, +Children, -XML) is det.
-%%   Generate SimpleMind XML with URI link on root.
+%%   Generate SMMX XML with URI link on root.
 generate_mindmap_xml(TreeId, Title, Uri, Children, XML) :-
     escape_xml(Title, EscTitle),
     escape_xml(Uri, EscUri),
