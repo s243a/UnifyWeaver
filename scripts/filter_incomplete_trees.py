@@ -2,22 +2,39 @@
 """
 Filter incomplete mindmaps using semantic embeddings.
 
-Supports two filtering methods:
+Supports multiple embedding sources:
+1. Fresh embeddings: Embed path_text with Nomic (default, cached)
+2. Dual embeddings: Use pre-computed input/output embeddings with optional blending
+
+Filtering methods:
 1. Lexical: Embed a query string directly (finds similar titles/paths)
 2. Structural: Use an existing tree's output embedding (finds similar hierarchy positions)
 
 Usage:
-    # Lexical filtering - find trees with "science" in path/title
+    # Lexical filtering with fresh embeddings (default)
     python3 scripts/filter_incomplete_trees.py \
         --query "science" \
         --top-k 10 --format tree
+
+    # Use dual embeddings (input only, faster)
+    python3 scripts/filter_incomplete_trees.py \
+        --query "science" \
+        --use-dual-embeddings \
+        --top-k 10
+
+    # Use dual embeddings with 70% output/projection weight
+    python3 scripts/filter_incomplete_trees.py \
+        --query "science" \
+        --use-dual-embeddings \
+        --embed-alpha 0.7 \
+        --top-k 10
 
     # Structural filtering - find trees near the "science" tree in hierarchy
     python3 scripts/filter_incomplete_trees.py \
         --tree-query "science" \
         --top-k 10 --format tree
 
-    # Both methods combined (blend)
+    # Both lexical and structural combined
     python3 scripts/filter_incomplete_trees.py \
         --query "science" \
         --tree-query "science" \
@@ -120,6 +137,67 @@ def embed_trees(trees: List[Dict], cache_path: Optional[Path] = None) -> np.ndar
         )
 
     return embeddings
+
+
+def load_dual_embeddings(
+    trees: List[Dict],
+    dual_emb_path: Path,
+    embed_alpha: float = 0.0
+) -> Tuple[np.ndarray, List[Dict]]:
+    """Load embeddings from dual embeddings file with optional input/output blending.
+
+    Args:
+        trees: List of incomplete tree dicts
+        dual_emb_path: Path to dual embeddings file (must have input_nomic, output_nomic, tree_ids)
+        embed_alpha: Blend weight for output embeddings (0=input only, 0.7=70% output)
+
+    Returns:
+        Tuple of (embeddings array, filtered trees list) - only trees found in dual embeddings
+    """
+    print(f"Loading dual embeddings from {dual_emb_path}...")
+    data = np.load(dual_emb_path, allow_pickle=True)
+
+    # Get embeddings and tree IDs from dual file
+    input_emb = data['input_nomic']
+    output_emb = data['output_nomic']
+    dual_tree_ids = [str(x) for x in data['tree_ids']]
+
+    # Build lookup
+    dual_lookup = {tid: i for i, tid in enumerate(dual_tree_ids)}
+
+    # Match incomplete trees to dual embeddings
+    matched_embeddings = []
+    matched_trees = []
+    missing_count = 0
+
+    for tree in trees:
+        tid = tree['tree_id']
+        if tid in dual_lookup:
+            idx = dual_lookup[tid]
+            # Blend: (1-alpha)*input + alpha*output
+            if embed_alpha == 0.0:
+                emb = input_emb[idx]
+            elif embed_alpha == 1.0:
+                emb = output_emb[idx]
+            else:
+                emb = (1 - embed_alpha) * input_emb[idx] + embed_alpha * output_emb[idx]
+            matched_embeddings.append(emb)
+            matched_trees.append(tree)
+        else:
+            missing_count += 1
+
+    if missing_count > 0:
+        print(f"  Warning: {missing_count} trees not found in dual embeddings")
+
+    print(f"  Matched {len(matched_trees)} of {len(trees)} trees")
+    if embed_alpha == 0.0:
+        print(f"  Using input embeddings only")
+    elif embed_alpha == 1.0:
+        print(f"  Using output embeddings only")
+    else:
+        print(f"  Blending: {(1-embed_alpha)*100:.0f}% input + {embed_alpha*100:.0f}% output")
+
+    return np.array(matched_embeddings), matched_trees
 
 
 def find_tree_embedding(tree_query: str, emb_path: Path) -> Optional[np.ndarray]:
@@ -288,10 +366,19 @@ def main():
                        help='Path to JSONL with paths')
     parser.add_argument('--embeddings-cache', type=Path,
                        default=Path('.local/data/scans/incomplete_embeddings.npz'),
-                       help='Cache path for embeddings')
+                       help='Cache path for fresh embeddings')
     parser.add_argument('--output-embeddings', type=Path,
                        default=Path('models/dual_embeddings_full.npz'),
                        help='Path to pre-built output embeddings (for structural query)')
+
+    # Dual embeddings options
+    parser.add_argument('--use-dual-embeddings', action='store_true',
+                       help='Use pre-computed dual embeddings instead of fresh embeddings')
+    parser.add_argument('--dual-embeddings', type=Path,
+                       default=Path('models/dual_embeddings_combined_2026-01-02_trees_only.npz'),
+                       help='Path to dual embeddings file (requires input_nomic, output_nomic, tree_ids)')
+    parser.add_argument('--embed-alpha', type=float, default=0.0,
+                       help='Blend weight for dual embeddings: 0=input only (default), 0.7=70%% output/projection')
 
     parser.add_argument('--query', type=str, default=None,
                        help='Lexical query string')
@@ -318,7 +405,12 @@ def main():
     print(f"Loaded {len(trees)} incomplete trees")
 
     # Get/create embeddings
-    embeddings = embed_trees(trees, args.embeddings_cache)
+    if args.use_dual_embeddings:
+        embeddings, trees = load_dual_embeddings(
+            trees, args.dual_embeddings, args.embed_alpha
+        )
+    else:
+        embeddings = embed_trees(trees, args.embeddings_cache)
 
     # Get structural query embedding if requested
     tree_query_emb = None
