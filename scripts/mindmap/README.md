@@ -196,3 +196,153 @@ The tool:
 2. Updates their relative paths to the new filename
 3. Renames the file
 4. Optionally updates the index
+
+## Folder Organization Tools
+
+Tools for semantic-based folder organization suggestions.
+
+### build_folder_projections.py
+
+Build folder projection matrices for semantic similarity scoring.
+
+For each folder, computes:
+- **Centroid**: Average embedding (for fast top-k filtering)
+- **W matrix**: Procrustes projection (for precise fit scoring)
+
+```bash
+# Full rebuild (~10 seconds for 66 folders)
+python3 scripts/mindmap/build_folder_projections.py \
+  --embeddings models/dual_embeddings_combined_2026-01-02_trees_only.npz \
+  --index output/mindmaps_curated/index.json \
+  --output output/mindmaps_curated/folder_projections.db
+
+# Incremental (only changed folders)
+python3 scripts/mindmap/build_folder_projections.py \
+  --embeddings models/dual_embeddings_combined_2026-01-02_trees_only.npz \
+  --index output/mindmaps_curated/index.json \
+  --output output/mindmaps_curated/folder_projections.db \
+  --incremental
+
+# Specific folders only
+python3 scripts/mindmap/build_folder_projections.py \
+  --folders "Media_Reviews" "Economics"
+```
+
+The W matrix captures each folder's "semantic projection style" - how titles in that folder relate to their hierarchical context.
+
+### suggest_folder.py
+
+Suggest the best folder for a mindmap using two-stage scoring:
+
+1. **Stage 1**: Top-k centroid filtering (cheap, ~50K ops)
+2. **Stage 2**: Procrustes fit scoring (precise, evaluates k candidates)
+
+```bash
+# Suggest folder for a mindmap by tree ID
+python3 scripts/mindmap/suggest_folder.py --tree-id 12345678
+
+# With verbose scoring details
+python3 scripts/mindmap/suggest_folder.py --tree-id 12345678 --verbose
+
+# Suggest folder for a new title (embeds on the fly)
+python3 scripts/mindmap/suggest_folder.py --title "Machine Learning Tutorial"
+
+# Check all mindmaps in a folder for misplacements
+python3 scripts/mindmap/suggest_folder.py \
+  --check-folder output/mindmaps_curated/Economics/ \
+  --threshold 0.5
+
+# JSON output for scripting
+python3 scripts/mindmap/suggest_folder.py --tree-id 12345678 --json
+```
+
+**Signal interpretation:**
+| Probability | Interpretation |
+|-------------|----------------|
+| >50% | Strong match, clear winner |
+| 25-50% | Good match, minor ambiguity |
+| <25% | Ambiguous, multiple valid options |
+
+**Example output:**
+```
+Tree ID: 2492215
+Current folder: Hacktivism
+
+Suggested folders:
+  1. Hacktivism: 51.2% (fit=0.9667) <-- current
+  2. eyes-symbols-history-s243a: 20.3% (fit=0.8743)
+  3. Online_Hacktivists_groups: 18.6% (fit=0.8655)
+```
+
+### Algorithm Details
+
+The Procrustes fit score measures how well an item's input/output embedding pair matches a folder's learned projection:
+
+```
+fit_score = cosine(input_embedding @ W_folder, output_embedding)
+```
+
+Where W_folder is the orthogonal matrix minimizing ||X @ W - Y|| for all trees in the folder (computed via SVD).
+
+**Storage:**
+- Centroids: ~200 KB (all folders in RAM)
+- W matrices: ~150 MB (lazy-loaded from SQLite)
+- Peak memory: ~11 MB (k=5 candidates)
+
+### batch_rename_folders.py
+
+Batch rename folders using LLM-generated names based on folder contents.
+
+```bash
+# Dry run - preview what would be renamed
+python3 scripts/mindmap/batch_rename_folders.py \
+  --base-dir output/mindmaps_curated/ \
+  --dry-run --verbose
+
+# Rename all folders with descriptions
+python3 scripts/mindmap/batch_rename_folders.py \
+  --base-dir output/mindmaps_curated/ \
+  --descriptions output/mindmaps_curated/folder_descriptions.json
+
+# Only rename root-level folders
+python3 scripts/mindmap/batch_rename_folders.py \
+  --base-dir output/mindmaps_curated/ \
+  --depth 1
+
+# Limit to first 5 folders (for testing)
+python3 scripts/mindmap/batch_rename_folders.py \
+  --base-dir output/mindmaps_curated/ \
+  --limit 5 --dry-run
+```
+
+Features:
+- Processes folders from root to leaves (parent context informs child naming)
+- Uses LLM with JSONL context for semantic folder naming
+- Generates abbreviated names (Corp_Intel, Econ, Tech, etc.)
+- Updates all `cloudmapref` links after renaming
+- Updates the mindmap index with new paths
+- Saves multi-length descriptions (short/medium/long) to JSON
+
+**Context levels** (via `--context-level`):
+- `titles`: Just item titles (~100 tokens)
+- `paths`: Hierarchy paths (~500 tokens)
+- `jsonl`: Full JSONL records (~2K tokens, best quality)
+
+## LLM Folder Naming
+
+The `generate_mindmap.py` script supports LLM-based folder naming:
+
+```bash
+# Generate folder structure with LLM names
+python3 scripts/generate_mindmap.py \
+  --cluster-url "https://www.pearltrees.com/s243a" \
+  --recursive --output-dir output/mindmaps_curated/ \
+  --llm-folder-context jsonl \
+  --llm-folder-descriptions output/folder_descriptions.json
+```
+
+Options:
+- `--llm-folder-context`: Context level (titles/paths/full/jsonl)
+- `--llm-folder-descriptions`: Save descriptions to JSON file
+
+The LLM uses abbreviations (Corp_Intel, Econ, Tech, Govt) and considers parent folder context to avoid redundant naming

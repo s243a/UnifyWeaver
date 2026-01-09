@@ -29,7 +29,7 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
 import numpy as np
@@ -2709,51 +2709,123 @@ def curated_to_folder_structure_named(
 
 
 def generate_folder_name_llm(
-    tree_titles: List[str],
-    model: str = "gemini-2.0-flash",
-    timeout: int = 30
-) -> Optional[str]:
-    """Generate a folder name from tree titles using LLM.
+    tree_items: List[Dict[str, str]],
+    context_level: str = "titles",
+    model: str = "gemini-3-flash-preview",
+    timeout: int = 30,
+    with_descriptions: bool = False,
+    parent_folder_path: str = None
+) -> Optional[Union[str, Dict[str, str]]]:
+    """Generate a folder name from tree data using LLM.
 
     Args:
-        tree_titles: List of tree titles in this folder group
+        tree_items: List of dicts with keys: title, path (hierarchy), uri, account
+        context_level: "titles" (just names), "paths" (hierarchy), "full" (all metadata)
         model: LLM model to use (default: gemini-2.0-flash)
         timeout: Timeout in seconds
+        with_descriptions: If True, return dict with short/medium/long descriptions
+        parent_folder_path: Parent folder path for context (to avoid redundant naming)
 
     Returns:
-        A short folder name, or None if LLM fails
+        A short folder name (str), or dict with name + descriptions if with_descriptions=True
     """
     import subprocess
 
-    if not tree_titles:
+    if not tree_items:
         return None
 
-    # Limit to first 10 titles to keep prompt reasonable
-    sample_titles = tree_titles[:10]
-    titles_text = "\n".join(f"- {t}" for t in sample_titles)
-    if len(tree_titles) > 10:
-        titles_text += f"\n- ... and {len(tree_titles) - 10} more"
+    # Limit items based on context level (more context = fewer items to fit)
+    max_items = {"titles": 20, "paths": 15, "full": 10, "jsonl": 50}.get(context_level, 10)
+    sample_items = tree_items[:max_items]
+    remaining = len(tree_items) - len(sample_items)
 
-    prompt = f"""Given these folder/category titles, generate a short (1-3 words) folder name that captures their common theme.
+    # Build context based on level
+    if context_level == "titles":
+        items_text = "\n".join(f"- {item.get('title', 'Unknown')}" for item in sample_items)
+        context_desc = "titles"
+    elif context_level == "paths":
+        items_text = "\n".join(
+            f"- {item.get('path', item.get('title', 'Unknown'))}"
+            for item in sample_items
+        )
+        context_desc = "hierarchy paths"
+    elif context_level == "jsonl":
+        # Raw JSONL - Gemini can handle it!
+        import json
+        items_text = "\n".join(json.dumps(item) for item in sample_items)
+        context_desc = "JSONL records (one JSON object per line)"
+    else:  # full
+        lines = []
+        for item in sample_items:
+            line = f"- Title: {item.get('title', 'Unknown')}"
+            if item.get('path'):
+                line += f"\n  Path: {item.get('path')}"
+            if item.get('account'):
+                line += f"\n  Account: {item.get('account')}"
+            if item.get('uri'):
+                line += f"\n  URI: {item.get('uri')}"
+            lines.append(line)
+        items_text = "\n".join(lines)
+        context_desc = "items with full metadata"
+
+    if remaining > 0:
+        items_text += f"\n... and {remaining} more items"
+
+    # Add parent folder context if available
+    parent_context = ""
+    if parent_folder_path:
+        parent_context = f"\nThis will be a SUBFOLDER of: {parent_folder_path}\nAvoid repeating information already in the parent path.\n"
+
+    if with_descriptions:
+        # Request structured output with multiple description lengths
+        prompt = f"""Given these {context_desc} that have been grouped together, analyze their common theme and provide:
+{parent_context}
+Items:
+{items_text}
+
+Respond with ONLY this JSON (no markdown, no explanation):
+{{
+  "name": "short_folder_name (use abbreviations: Corp_Intel, Econ, Tech, Govt, etc.)",
+  "short": "2-5 word description",
+  "medium": "One sentence describing the folder contents",
+  "long": "A paragraph explaining what this folder contains and how the items relate"
+}}"""
+        output_format = "json"
+    else:
+        prompt = f"""Given these {context_desc} that have been grouped together, generate a short (1-3 words) folder name that captures their common theme.
 Output ONLY the folder name, nothing else. Use lowercase with underscores for spaces.
-
-Titles:
-{titles_text}
+Use common abbreviations to keep names short (e.g., Corp_Intel not Corporate_Intelligence, Econ not Economics, Tech not Technology, Govt not Government).
+{parent_context}
+Items:
+{items_text}
 
 Folder name:"""
+        output_format = "text"
 
     try:
         result = subprocess.run(
-            ["gemini", "-p", prompt, "-m", model, "--output-format", "text"],
+            ["gemini", "-p", prompt, "-m", model, "--output-format", output_format],
             capture_output=True,
             text=True,
             timeout=timeout
         )
         if result.returncode == 0:
-            name = result.stdout.strip()
-            # Sanitize the LLM output
-            name = sanitize_filename(name, max_length=30)
-            return name if name else None
+            if with_descriptions:
+                import json
+                try:
+                    # Gemini CLI with --output-format json wraps response in session object
+                    outer = json.loads(result.stdout.strip())
+                    response_str = outer.get("response", result.stdout.strip())
+                    data = json.loads(response_str) if isinstance(response_str, str) else response_str
+                    # Sanitize the folder name
+                    data["name"] = sanitize_filename(data.get("name", ""), max_length=30)
+                    return data if data["name"] else None
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    return None
+            else:
+                name = result.stdout.strip()
+                name = sanitize_filename(name, max_length=30)
+                return name if name else None
         return None
     except Exception:
         return None
@@ -2762,39 +2834,72 @@ Folder name:"""
 def generate_folder_names_batch(
     group_to_trees: Dict[int, List[str]],
     url_to_title: Dict[str, str],
+    url_to_data: Dict[str, Dict] = None,
     use_llm: bool = True,
-    llm_model: str = "gemini-2.0-flash"
-) -> Dict[int, str]:
+    llm_model: str = "gemini-2.0-flash",
+    context_level: str = "titles",
+    with_descriptions: bool = False
+) -> Tuple[Dict[int, str], Optional[Dict[int, Dict]]]:
     """Generate folder names for all groups.
 
     Args:
         group_to_trees: Dict mapping group_id -> list of tree URLs
         url_to_title: Dict mapping URL -> title
+        url_to_data: Dict mapping URL -> full item data (for paths/full/jsonl context)
         use_llm: Whether to use LLM for naming
         llm_model: LLM model to use
+        context_level: "titles", "paths", "full", or "jsonl"
+        with_descriptions: If True, also generate short/medium/long descriptions
 
     Returns:
-        Dict mapping group_id -> folder name
+        Tuple of (group_names dict, descriptions dict or None)
     """
     group_names = {}
+    group_descriptions = {} if with_descriptions else None
+    url_to_data = url_to_data or {}
 
     for group_id, tree_urls in group_to_trees.items():
-        titles = [url_to_title.get(url, '') for url in tree_urls if url_to_title.get(url)]
+        # Build item data based on context level
+        tree_items = []
+        for url in tree_urls:
+            item = {"title": url_to_title.get(url, "")}
+            if url in url_to_data:
+                data = url_to_data[url]
+                item["path"] = data.get("target_text", "")
+                item["account"] = data.get("account", "")
+                item["uri"] = data.get("uri", url)
+                item["tree_id"] = data.get("tree_id", "")
+                item["type"] = data.get("type", "Tree")
+            if item["title"]:
+                tree_items.append(item)
 
         folder_name = None
-        if use_llm and titles:
-            folder_name = generate_folder_name_llm(titles, model=llm_model)
+        if use_llm and tree_items:
+            result = generate_folder_name_llm(
+                tree_items, context_level=context_level, model=llm_model,
+                with_descriptions=with_descriptions
+            )
+            if with_descriptions and isinstance(result, dict):
+                folder_name = result.get("name")
+                group_descriptions[group_id] = {
+                    "short": result.get("short", ""),
+                    "medium": result.get("medium", ""),
+                    "long": result.get("long", ""),
+                    "item_count": len(tree_items)
+                }
+            elif isinstance(result, str):
+                folder_name = result
 
         if not folder_name:
             # Fallback: use first title or group_N
-            if titles:
-                folder_name = sanitize_filename(titles[0], max_length=30)
+            if tree_items:
+                folder_name = sanitize_filename(tree_items[0].get("title", ""), max_length=30)
             if not folder_name:
                 folder_name = f"group_{group_id}"
 
         group_names[group_id] = folder_name
 
-    return group_names
+    return group_names, group_descriptions
 
 
 def build_curated_folder_structure(
@@ -2807,8 +2912,10 @@ def build_curated_folder_structure(
     max_folder_depth: int = None,
     primary_account: str = None,
     use_llm_naming: bool = False,
-    llm_model: str = "gemini-2.0-flash"
-) -> Tuple[Dict[str, Path], str, List[str], Dict[str, str]]:
+    llm_model: str = "gemini-2.0-flash",
+    llm_context_level: str = "titles",
+    llm_with_descriptions: bool = False
+) -> Tuple[Dict[str, Path], str, List[str], Dict[str, str], Optional[Dict]]:
     """Build complete curated folder structure.
 
     Args:
@@ -2820,6 +2927,8 @@ def build_curated_folder_structure(
         primary_account: Primary account to use as root
         use_llm_naming: Whether to use LLM for folder naming
         llm_model: LLM model to use for folder naming
+        llm_context_level: Context level for LLM ("titles", "paths", "full", "jsonl")
+        llm_with_descriptions: Whether to generate multi-length descriptions
 
     Returns:
         Tuple of:
@@ -2827,6 +2936,7 @@ def build_curated_folder_structure(
         - root_url: The root cluster URL
         - orphans: List of orphan cluster URLs
         - url_to_title: Dict mapping URL -> tree title
+        - folder_descriptions: Dict mapping folder name -> descriptions (or None)
     """
     print("Building curated folder structure...")
 
@@ -2884,14 +2994,40 @@ def build_curated_folder_structure(
     print(f"  MST built with root at group {root_group}")
 
     # Phase 6: Generate folder names
+    # Build url_to_data for richer LLM context (paths/full/jsonl modes)
+    url_to_data = {}
+    if use_llm_naming and llm_context_level in ("paths", "full", "jsonl"):
+        print(f"  Loading full item data for LLM context ({llm_context_level})...")
+        with open(data_path, 'r') as f:
+            for line in f:
+                try:
+                    item = json.loads(line.strip())
+                    uri = item.get('uri', '')
+                    if uri:
+                        url_to_data[uri] = item
+                except json.JSONDecodeError:
+                    continue
+
     if use_llm_naming:
-        print(f"  Generating folder names with LLM ({llm_model})...")
-    group_names = generate_folder_names_batch(
-        group_to_trees, url_to_title, use_llm=use_llm_naming, llm_model=llm_model)
+        desc_note = " with descriptions" if llm_with_descriptions else ""
+        print(f"  Generating folder names with LLM ({llm_model}, context={llm_context_level}{desc_note})...")
+
+    group_names, group_descriptions = generate_folder_names_batch(
+        group_to_trees, url_to_title, url_to_data=url_to_data,
+        use_llm=use_llm_naming, llm_model=llm_model,
+        context_level=llm_context_level, with_descriptions=llm_with_descriptions)
 
     # Phase 7: Convert to folder paths with names
     cluster_to_folder = curated_to_folder_structure_named(
         tree_to_group, folder_group_hierarchy, root_group, group_names, max_folder_depth)
+
+    # Build folder_descriptions keyed by folder path (not group_id)
+    folder_descriptions = None
+    if group_descriptions:
+        folder_descriptions = {}
+        for group_id, desc in group_descriptions.items():
+            folder_name = group_names.get(group_id, f"group_{group_id}")
+            folder_descriptions[folder_name] = desc
 
     # Handle orphans - put in _orphans/{account}/ folder
     for orphan_url in orphans:
@@ -2901,7 +3037,7 @@ def build_curated_folder_structure(
 
     print(f"  Folder structure computed")
 
-    return cluster_to_folder, root_url, orphans, url_to_title
+    return cluster_to_folder, root_url, orphans, url_to_title, folder_descriptions
 
 
 def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
@@ -2987,15 +3123,26 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                 print(f"  Loaded {len(cluster_to_folder)} folder mappings, root={extract_tree_id(curated_root_url)}")
             else:
                 # Build from scratch
-                cluster_to_folder, curated_root_url, orphans, url_to_title = build_curated_folder_structure(
+                cluster_to_folder, curated_root_url, orphans, url_to_title, folder_descriptions = build_curated_folder_structure(
                     data_path, tree_id_emb, title_emb, uri_emb,
                     folder_count=folder_count,
                     folder_method=folder_method,
                     max_folder_depth=max_folder_depth,
                     primary_account=primary_account,
                     use_llm_naming=use_llm_naming,
-                    llm_model=llm_model
+                    llm_model=llm_model,
+                    llm_context_level=kwargs.get('llm_context_level', 'titles'),
+                    llm_with_descriptions=kwargs.get('llm_descriptions_path') is not None
                 )
+
+                # Save folder descriptions if requested
+                if folder_descriptions and kwargs.get('llm_descriptions_path'):
+                    desc_path = kwargs['llm_descriptions_path']
+                    print(f"Saving folder descriptions to {desc_path}...")
+                    desc_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(desc_path, 'w') as f:
+                        json.dump(folder_descriptions, f, indent=2)
+                    print(f"  Saved descriptions for {len(folder_descriptions)} folders")
 
                 # Save folder map if requested
                 if save_folder_map:
@@ -3249,6 +3396,11 @@ def main():
                         help='Use LLM to generate folder names (requires gemini CLI)')
     parser.add_argument('--llm-model', type=str, default='gemini-2.0-flash',
                         help='LLM model for folder naming (default: gemini-2.0-flash)')
+    parser.add_argument('--llm-folder-context', type=str, default='titles',
+                        choices=['titles', 'paths', 'full', 'jsonl'],
+                        help='Context level for LLM folder naming: titles (just names), paths (hierarchy), full (formatted metadata), jsonl (raw JSON objects)')
+    parser.add_argument('--llm-folder-descriptions', type=Path, default=None,
+                        help='Generate multi-length descriptions and save to JSON file')
     parser.add_argument('--titled-files', action='store_true',
                         help='Use tree titles in filenames (e.g., Hacktivism_id2492215.smmx)')
     parser.add_argument('--max-folder-depth', type=int, default=None,
@@ -3381,6 +3533,8 @@ def main():
             primary_account=args.primary_account,
             use_llm_naming=args.llm_folder_names,
             llm_model=args.llm_model,
+            llm_context_level=args.llm_folder_context,
+            llm_descriptions_path=args.llm_folder_descriptions,
             use_titled_files=args.titled_files,
             parent_links=args.parent_links,
             save_folder_map=args.save_folder_map,
