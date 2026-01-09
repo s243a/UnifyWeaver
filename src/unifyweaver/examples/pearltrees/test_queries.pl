@@ -176,6 +176,174 @@ test(empty_tree_no_urls) :-
 
 :- end_tests(pagepearl_urls).
 
+%% ====================================================================
+%% Query Filter Tests
+%% ====================================================================
+
+%% Mock filter predicates
+
+mock_has_domain_links(TreeId, Domain) :-
+    mock_pearl_trees(tree, TreeId, _, _, _),
+    mock_pearl_children(TreeId, pagepearl, _, _, Url, _),
+    Url \= null,
+    sub_atom(Url, _, _, _, Domain),
+    !.
+
+mock_has_child_type(TreeId, Type) :-
+    mock_pearl_trees(tree, TreeId, _, _, _),
+    mock_pearl_children(TreeId, Type, _, _, _, _),
+    !.
+
+mock_title_matches(Title, Pattern) :-
+    downcase_atom(Title, LowerTitle),
+    downcase_atom(Pattern, LowerPattern),
+    sub_atom(LowerTitle, _, _, _, LowerPattern).
+
+mock_trees_matching(Pattern, TreeId) :-
+    mock_pearl_trees(tree, TreeId, Title, _, _),
+    mock_title_matches(Title, Pattern).
+
+mock_children_of_type(TreeId, Type, Children) :-
+    findall(
+        child(Type, Title, Url, Order),
+        mock_pearl_children(TreeId, Type, Title, Order, Url, _),
+        Children
+    ).
+
+mock_trees_with_min_children(MinCount, TreeId) :-
+    mock_tree_child_count(TreeId, Count),
+    Count >= MinCount.
+
+mock_children_matching(TreeId, Pattern, Children) :-
+    findall(
+        child(Type, Title, Url, Order),
+        (   mock_pearl_children(TreeId, Type, Title, Order, Url, _),
+            mock_title_matches(Title, Pattern)
+        ),
+        Children
+    ).
+
+mock_filter_matches(domain(Domain), TreeId) :-
+    mock_has_domain_links(TreeId, Domain).
+mock_filter_matches(type(Type), TreeId) :-
+    mock_has_child_type(TreeId, Type).
+mock_filter_matches(min_children(N), TreeId) :-
+    mock_tree_child_count(TreeId, Count),
+    Count >= N.
+mock_filter_matches(complete, TreeId) :-
+    mock_tree_child_count(TreeId, Count),
+    Count > 1.
+mock_filter_matches(not(Filter), TreeId) :-
+    \+ mock_filter_matches(Filter, TreeId).
+
+mock_all_filters_match([], _).
+mock_all_filters_match([Filter|Rest], TreeId) :-
+    mock_filter_matches(Filter, TreeId),
+    mock_all_filters_match(Rest, TreeId).
+
+mock_apply_filters(Filters, TreeId, tree_info(TreeId, Title, ChildCount)) :-
+    mock_pearl_trees(tree, TreeId, Title, _, _),
+    mock_tree_child_count(TreeId, ChildCount),
+    mock_all_filters_match(Filters, TreeId).
+
+:- begin_tests(domain_filters, [setup(setup_mock_data), cleanup(cleanup_mock_data)]).
+
+test(has_wikipedia_links) :-
+    mock_has_domain_links('12345', 'wikipedia.org').
+
+test(no_wikipedia_in_tech, [fail]) :-
+    mock_has_domain_links('12347', 'wikipedia.org').
+
+test(has_github_links) :-
+    mock_has_domain_links('12347', 'github.com').
+
+test(trees_with_github) :-
+    findall(TreeId, mock_has_domain_links(TreeId, 'github.com'), Trees),
+    Trees == ['12347'].
+
+:- end_tests(domain_filters).
+
+:- begin_tests(type_filters, [setup(setup_mock_data), cleanup(cleanup_mock_data)]).
+
+test(has_pagepearl_type) :-
+    mock_has_child_type('12345', pagepearl).
+
+test(has_tree_type) :-
+    mock_has_child_type('12345', tree).
+
+test(no_alias_type, [fail]) :-
+    mock_has_child_type('12345', alias).
+
+test(children_of_type_pagepearl) :-
+    mock_children_of_type('12345', pagepearl, Children),
+    length(Children, 2).
+
+test(children_of_type_tree) :-
+    mock_children_of_type('12345', tree, Children),
+    length(Children, 1).
+
+:- end_tests(type_filters).
+
+:- begin_tests(title_filters, [setup(setup_mock_data), cleanup(cleanup_mock_data)]).
+
+test(title_matches_case_insensitive) :-
+    mock_title_matches('Science Topics', 'science').
+
+test(title_matches_partial) :-
+    mock_title_matches('Wikipedia Physics', 'wiki').
+
+test(trees_matching_science) :-
+    findall(TreeId, mock_trees_matching('science', TreeId), Trees),
+    Trees == ['12345'].
+
+test(trees_matching_tech) :-
+    findall(TreeId, mock_trees_matching('tech', TreeId), Trees),
+    Trees == ['12347'].
+
+test(children_matching_wiki) :-
+    mock_children_matching('12345', 'wiki', Children),
+    length(Children, 1),
+    Children = [child(pagepearl, 'Wikipedia Physics', _, _)].
+
+:- end_tests(title_filters).
+
+:- begin_tests(count_filters, [setup(setup_mock_data), cleanup(cleanup_mock_data)]).
+
+test(trees_with_min_2_children) :-
+    findall(TreeId, mock_trees_with_min_children(2, TreeId), Trees),
+    length(Trees, 2),
+    member('12345', Trees),
+    member('12347', Trees).
+
+test(trees_with_min_3_children) :-
+    findall(TreeId, mock_trees_with_min_children(3, TreeId), Trees),
+    Trees == ['12345'].
+
+test(no_trees_with_min_4, [fail]) :-
+    mock_trees_with_min_children(4, _).
+
+:- end_tests(count_filters).
+
+:- begin_tests(combined_filters, [setup(setup_mock_data), cleanup(cleanup_mock_data)]).
+
+test(filter_complete_with_pagepearls) :-
+    findall(TreeId, mock_apply_filters([complete, type(pagepearl)], TreeId, _), Trees),
+    length(Trees, 2).
+
+test(filter_with_github_and_min_2) :-
+    findall(TreeId, mock_apply_filters([domain('github.com'), min_children(2)], TreeId, _), Trees),
+    Trees == ['12347'].
+
+test(filter_not_incomplete) :-
+    findall(TreeId, mock_apply_filters([not(min_children(2))], TreeId, _), Trees),
+    Trees == ['12346'].
+
+test(apply_filters_returns_info) :-
+    mock_apply_filters([complete], '12345', Info),
+    Info = tree_info('12345', 'Science Topics', 3).
+
+:- end_tests(combined_filters).
+
 %% --------------------------------------------------------------------
 %% Run tests when loaded directly
 %% --------------------------------------------------------------------

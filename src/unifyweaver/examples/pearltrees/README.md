@@ -18,11 +18,11 @@ This example shows how UnifyWeaver can:
 | File | Description |
 |------|-------------|
 | `sources.pl` | Data source definitions with target-specific config |
-| `queries.pl` | Aggregate queries for tree/pearl data |
+| `queries.pl` | Aggregate queries and composable filters for tree/pearl data |
 | `templates.pl` | Multi-format output (SMMX, FreeMind, OPML, GraphML, VUE, Mermaid) |
 | `compile_examples.pl` | Cross-target code generation examples |
 | `browser_automation.pl` | Abstract browser automation workflow |
-| `test_queries.pl` | 15 plunit tests for queries |
+| `test_queries.pl` | 36 plunit tests for queries and filters |
 | `test_templates.pl` | 44 plunit tests for templates (all formats) |
 | `test_browser_automation.pl` | 22 plunit tests for browser automation |
 
@@ -65,6 +65,55 @@ Generated code per target:
 - **C#**: LINQ `GroupBy().Select()`
 - **Go**: `map[string][]Child` with append
 - **SQL**: `GROUP BY` with `JSON_AGG`
+
+## Query-Based Filtering
+
+Composable filter predicates for selecting trees and children:
+
+### Filter Types
+
+| Filter | Predicate | Description |
+|--------|-----------|-------------|
+| Domain | `has_domain_links/2` | Trees with links to a domain |
+| Type | `has_child_type/2` | Trees containing specific child types |
+| Title | `title_contains/2` | Title/content keyword search |
+| Count | `trees_with_min_children/2` | Trees with minimum child count |
+| Combined | `apply_filters/3` | Multiple filters at once |
+
+### Example: Find Trees with GitHub Links
+
+```prolog
+?- has_domain_links(TreeId, 'github.com').
+TreeId = '12347'.
+```
+
+### Example: Combined Filters
+
+```prolog
+%% Find complete trees with pagepearl children
+?- apply_filters([complete, type(pagepearl)], TreeId, Info).
+Info = tree_info('12345', 'Science Topics', 3).
+
+%% Find trees with GitHub links and at least 2 children
+?- apply_filters([domain('github.com'), min_children(2)], TreeId, Info).
+Info = tree_info('12347', 'Tech Links', 2).
+
+%% Find incomplete trees (negation)
+?- apply_filters([not(min_children(2))], TreeId, Info).
+Info = tree_info('12346', 'Empty Tree', 1).
+```
+
+### Available Filters
+
+- `domain(Domain)` - Trees with links to domain
+- `type(Type)` - Trees with children of type (pagepearl, tree, section, alias)
+- `title_match(Pattern)` - Case-insensitive title search
+- `min_children(N)` - At least N children
+- `max_children(N)` - At most N children
+- `incomplete` - Trees with ≤1 children
+- `complete` - Trees with >1 children
+- `cluster(ClusterId)` - Trees in specific cluster
+- `not(Filter)` - Negation of any filter
 
 ## Output Formats
 
@@ -138,7 +187,7 @@ Available predicates:
 ## Running Tests
 
 ```bash
-# Run query tests (15 tests)
+# Run query tests (36 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_queries.pl
 
 # Run template tests (44 tests)
@@ -208,5 +257,6 @@ This example demonstrates:
 2. **Composable Queries**: Predicates build on each other
 3. **Multi-Target Generation**: Same logic, different languages
 4. **Aggregate Patterns**: Grouping, counting, filtering
+5. **Composable Filters**: Combine filters with `apply_filters/3`
 
 See `docs/proposals/pearltrees_unifyweaver_native.md` for the full proposal.
