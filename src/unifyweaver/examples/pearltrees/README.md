@@ -18,6 +18,10 @@ This example shows how UnifyWeaver can:
 |------|-------------|
 | `sources.pl` | Data source definitions with target-specific config |
 | `queries.pl` | Aggregate queries for tree/pearl data |
+| `templates.pl` | SMMX XML generation from tree data |
+| `compile_examples.pl` | Cross-target code generation examples |
+| `test_queries.pl` | 15 plunit tests for queries |
+| `test_templates.pl` | 16 plunit tests for templates |
 
 ## Source Definitions
 
@@ -79,6 +83,28 @@ Generated code per target:
 
 ```prolog
 ?- compile_predicate_to_go(tree_child_count/2, [], Code).
+```
+
+## Running Tests
+
+```bash
+# Run query tests (15 tests)
+swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_queries.pl
+
+# Run template tests (16 tests)
+swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_templates.pl
+```
+
+## Cross-Target Examples
+
+See generated code examples for Python, C#, and Go:
+
+```prolog
+?- use_module('src/unifyweaver/examples/pearltrees/compile_examples').
+?- show_target_comparison.
+?- demo_python_generation.
+?- demo_csharp_generation.
+?- demo_go_generation.
 ```
 
 ## Relationship to Existing Tools
