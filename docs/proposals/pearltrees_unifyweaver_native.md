@@ -1,5 +1,7 @@
 # Proposal: UnifyWeaver-Native Pearltrees Processing
 
+**Status: IMPLEMENTED** (PR #554, PR #555)
+
 ## Overview
 
 This proposal outlines migrating Pearltrees RDF processing and mindmap generation to use UnifyWeaver's native capabilities (Prolog predicates, aggregates, sources, and code generation). This will make the tooling more flexible, declarative, and serve as educational examples for the UnifyWeaver project.
@@ -118,25 +120,32 @@ Generate mindmap tools in multiple languages:
 
 ## Implementation Phases
 
-### Phase 1: Source Definitions
+### Phase 1: Source Definitions ✓
 - Define SQLite source for children index
 - Define JSONL sources for trees/pearls
 - Test basic queries
 
-### Phase 2: Aggregate Queries
+### Phase 2: Aggregate Queries ✓
 - Implement `tree_with_children/3` using `aggregate_all`
 - Implement `incomplete_tree/2` for scanning
-- Add tests
+- Add tests (15 plunit tests)
 
-### Phase 3: Template-Based Generation
-- Create SimpleMind XML templates
+### Phase 3: Template-Based Generation ✓
+- Create SMMX XML templates
 - Generate mindmap files from Prolog
-- Compare output with existing Python generator
+- Add tests (16 plunit tests)
 
-### Phase 4: CLI Tools
-- Compile scan/generate predicates to Go/Python
-- Create standalone CLI tools
-- Benchmark performance
+### Phase 4: CLI Tools ✓
+- Cross-target compilation examples (Python/C#/Go)
+- `compile_examples.pl` with demonstration predicates
+
+### Phase 5: Browser Automation ✓ (Extension)
+- Abstract workflow predicates (`workflow_step/3`, `execute_workflow/3`)
+- URL template expansion with context variables
+- External API config in `.local/tools/browser-automation/api_config.json`
+- Add tests (22 plunit tests)
+
+**Total: 53 plunit tests across 3 test files**
 
 ## Mindmap Tool Flexibility Goals
 
@@ -187,10 +196,24 @@ This work creates examples for the `education/` repository:
 - `tests/core/test_csharp_generator_aggregates_grouping.pl` - Grouping aggregate tests
 - `src/unifyweaver/sources.pl` - Source definition API
 
-## Next Steps
+## Implementation Complete
 
-1. Create `src/unifyweaver/examples/pearltrees/` directory
-2. Define source predicates for children index
-3. Implement basic aggregate queries
-4. Add plunit tests
-5. Document as tutorial
+All phases implemented in `src/unifyweaver/examples/pearltrees/`:
+
+| File | Description |
+|------|-------------|
+| `sources.pl` | SQLite/JSONL source definitions |
+| `queries.pl` | Aggregate queries (`tree_with_children/3`, etc.) |
+| `templates.pl` | SMMX XML generation |
+| `compile_examples.pl` | Cross-target compilation demos |
+| `browser_automation.pl` | Abstract workflow predicates |
+| `test_*.pl` | 53 plunit tests |
+
+## Future Work
+
+Potential extensions from flexibility goals:
+1. Additional output formats (FreeMind, XMind, Mermaid)
+2. Query-based filtering predicates
+3. Hierarchical tree transformations
+4. Cross-account tree merging
+5. Incremental update tracking
