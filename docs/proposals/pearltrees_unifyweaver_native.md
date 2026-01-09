@@ -131,9 +131,9 @@ Generate mindmap tools in multiple languages:
 - Add tests (15 plunit tests)
 
 ### Phase 3: Template-Based Generation ✓
-- Create SMMX XML templates
+- Create multi-format templates (SMMX, FreeMind, OPML, GraphML, VUE, Mermaid)
 - Generate mindmap files from Prolog
-- Add tests (16 plunit tests)
+- Add tests (44 plunit tests)
 
 ### Phase 4: CLI Tools ✓
 - Cross-target compilation examples (Python/C#/Go)
@@ -145,7 +145,7 @@ Generate mindmap tools in multiple languages:
 - External API config in `.local/tools/browser-automation/api_config.json`
 - Add tests (22 plunit tests)
 
-**Total: 53 plunit tests across 3 test files**
+**Total: 81 plunit tests across 3 test files**
 
 ## Mindmap Tool Flexibility Goals
 
@@ -204,16 +204,15 @@ All phases implemented in `src/unifyweaver/examples/pearltrees/`:
 |------|-------------|
 | `sources.pl` | SQLite/JSONL source definitions |
 | `queries.pl` | Aggregate queries (`tree_with_children/3`, etc.) |
-| `templates.pl` | SMMX XML generation |
+| `templates.pl` | Multi-format output (SMMX, FreeMind, OPML, GraphML, VUE, Mermaid) |
 | `compile_examples.pl` | Cross-target compilation demos |
 | `browser_automation.pl` | Abstract workflow predicates |
-| `test_*.pl` | 53 plunit tests |
+| `test_*.pl` | 81 plunit tests (15 queries + 44 templates + 22 automation) |
 
 ## Future Work
 
 Potential extensions from flexibility goals:
-1. Additional output formats (FreeMind, XMind, Mermaid)
-2. Query-based filtering predicates
-3. Hierarchical tree transformations
-4. Cross-account tree merging
-5. Incremental update tracking
+1. Query-based filtering predicates
+2. Hierarchical tree transformations
+3. Cross-account tree merging
+4. Incremental update tracking
