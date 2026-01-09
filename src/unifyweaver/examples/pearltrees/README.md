@@ -1,6 +1,6 @@
 # Pearltrees Processing Example
 
-Educational example demonstrating UnifyWeaver's capabilities for data processing and code generation.
+Educational example demonstrating UnifyWeaver's capabilities for data processing, multi-format output, and code generation.
 
 ## Purpose
 
@@ -8,7 +8,8 @@ This example shows how UnifyWeaver can:
 
 1. **Define data sources** - SQLite, JSONL, runtime JSON
 2. **Write aggregate queries** - Grouping, counting, filtering
-3. **Generate target code** - Same logic → Python, C#, Go, etc.
+3. **Generate multiple output formats** - Direct output to various mindmap formats
+4. **Generate target code** - Same logic → Python, C#, Go, etc.
 
 **Note**: This does NOT replace the existing Python tools in `.local/tools/browser-automation/`. Each target generates its own database access and runtime code.
 
@@ -18,11 +19,11 @@ This example shows how UnifyWeaver can:
 |------|-------------|
 | `sources.pl` | Data source definitions with target-specific config |
 | `queries.pl` | Aggregate queries for tree/pearl data |
-| `templates.pl` | SMMX XML generation from tree data |
+| `templates.pl` | Multi-format output (SMMX, FreeMind, OPML, GraphML, VUE, Mermaid) |
 | `compile_examples.pl` | Cross-target code generation examples |
 | `browser_automation.pl` | Abstract browser automation workflow |
 | `test_queries.pl` | 15 plunit tests for queries |
-| `test_templates.pl` | 16 plunit tests for templates |
+| `test_templates.pl` | 44 plunit tests for templates (all formats) |
 | `test_browser_automation.pl` | 22 plunit tests for browser automation |
 
 ## Source Definitions
@@ -65,6 +66,53 @@ Generated code per target:
 - **Go**: `map[string][]Child` with append
 - **SQL**: `GROUP BY` with `JSON_AGG`
 
+## Output Formats
+
+Direct output to multiple mindmap formats from the same tree data:
+
+| Format | Predicate | Extension | Compatible With |
+|--------|-----------|-----------|-----------------|
+| SMMX | `generate_mindmap/4` | `.smmx` | SimpleMind |
+| FreeMind | `generate_freemind/4` | `.mm` | FreeMind, Freeplane, XMind |
+| OPML | `generate_opml/4` | `.opml` | Workflowy, Dynalist, OmniOutliner |
+| GraphML | `generate_graphml/4` | `.graphml` | yEd, Gephi, Cytoscape |
+| VUE | `generate_vue/4` | `.vue` | Tufts VUE |
+| Mermaid | `generate_mermaid/4` | `.md` | GitHub, GitLab, Obsidian |
+
+### Example: Generate Multiple Formats
+
+```prolog
+?- Children = [child(pagepearl, 'Link', 'http://example.com', 1)],
+   generate_freemind('123', 'My Tree', Children, MM),
+   generate_opml('123', 'My Tree', Children, OPML),
+   generate_mermaid('123', 'My Tree', Children, Mermaid).
+```
+
+### Mermaid Output Example
+
+```mermaid
+mindmap
+  root((Science))
+    pearl_1[Wikipedia]
+    tree_2{{Physics}}
+    section_3(Resources)
+```
+
+### Unified Multi-Format Generation
+
+Generate multiple formats at once:
+
+```prolog
+?- Children = [child(pagepearl, 'Link', 'http://example.com', 1)],
+   generate_all_formats('123', 'My Tree', Children, [freemind, opml, mermaid], Results).
+% Results = [format(freemind, '.mm', '...'), format(opml, '.opml', '...'), ...]
+```
+
+Available predicates:
+- `available_formats/1` - List all supported formats
+- `generate_all_formats/5` - Generate multiple formats at once
+- `generate_for_format/5` - Generate a single format (in compile_examples.pl)
+
 ## Usage
 
 ### Generate Python Code
@@ -93,7 +141,7 @@ Generated code per target:
 # Run query tests (15 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_queries.pl
 
-# Run template tests (16 tests)
+# Run template tests (44 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_templates.pl
 
 # Run browser automation tests (22 tests)

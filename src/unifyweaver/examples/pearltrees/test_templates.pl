@@ -105,3 +105,243 @@ test(includes_root_link) :-
     sub_atom(XML, _, _, _, '<link url="https://pearltrees.com/test"/>').
 
 :- end_tests(generate_mindmap_xml).
+
+%% ====================================================================
+%% FreeMind Format Tests
+%% ====================================================================
+
+:- begin_tests(freemind).
+
+test(basic_freemind) :-
+    Children = [
+        child(pagepearl, 'Link 1', 'http://example.com', 1),
+        child(tree, 'Subtree', null, 2)
+    ],
+    generate_freemind('12345', 'Test Tree', Children, MM),
+    sub_atom(MM, _, _, _, '<?xml version="1.0"'),
+    sub_atom(MM, _, _, _, '<map version="1.0.1">'),
+    sub_atom(MM, _, _, _, 'TEXT="Test Tree"'),
+    sub_atom(MM, _, _, _, 'TEXT="Link 1"'),
+    sub_atom(MM, _, _, _, 'TEXT="Subtree"').
+
+test(freemind_with_url) :-
+    Children = [child(pagepearl, 'GitHub', 'https://github.com', 1)],
+    generate_freemind('111', 'Links', Children, MM),
+    sub_atom(MM, _, _, _, 'NAME="url"'),
+    sub_atom(MM, _, _, _, 'VALUE="https://github.com"').
+
+test(freemind_positions) :-
+    Children = [
+        child(pagepearl, 'Even', null, 2),
+        child(pagepearl, 'Odd', null, 3)
+    ],
+    generate_freemind('222', 'Test', Children, MM),
+    sub_atom(MM, _, _, _, 'POSITION="right"'),
+    sub_atom(MM, _, _, _, 'POSITION="left"').
+
+test(freemind_tree_folded) :-
+    Children = [child(tree, 'Folder', null, 1)],
+    generate_freemind('333', 'Test', Children, MM),
+    sub_atom(MM, _, _, _, 'FOLDED="true"').
+
+test(freemind_alias_bookmark) :-
+    Children = [child(alias, 'Alias Link', null, 1)],
+    generate_freemind('444', 'Test', Children, MM),
+    sub_atom(MM, _, _, _, 'BUILTIN="bookmark"').
+
+:- end_tests(freemind).
+
+%% ====================================================================
+%% OPML Format Tests
+%% ====================================================================
+
+:- begin_tests(opml).
+
+test(basic_opml) :-
+    Children = [
+        child(pagepearl, 'Link 1', 'http://example.com', 1),
+        child(tree, 'Subtree', null, 2)
+    ],
+    generate_opml('12345', 'Test Tree', Children, OPML),
+    sub_atom(OPML, _, _, _, '<?xml version="1.0"'),
+    sub_atom(OPML, _, _, _, '<opml version="2.0">'),
+    sub_atom(OPML, _, _, _, '<title>Test Tree</title>'),
+    sub_atom(OPML, _, _, _, 'text="Link 1"'),
+    sub_atom(OPML, _, _, _, 'text="[Folder] Subtree"').
+
+test(opml_with_url) :-
+    Children = [child(pagepearl, 'GitHub', 'https://github.com', 1)],
+    generate_opml('111', 'Links', Children, OPML),
+    sub_atom(OPML, _, _, _, 'url="https://github.com"'),
+    sub_atom(OPML, _, _, _, 'type="link"').
+
+test(opml_section_formatting) :-
+    Children = [child(section, 'Resources', null, 1)],
+    generate_opml('222', 'Test', Children, OPML),
+    sub_atom(OPML, _, _, _, '--- Resources ---').
+
+test(opml_alias_prefix) :-
+    Children = [child(alias, 'Linked Tree', null, 1)],
+    generate_opml('333', 'Test', Children, OPML),
+    sub_atom(OPML, _, _, _, '[Alias] Linked Tree').
+
+:- end_tests(opml).
+
+%% ====================================================================
+%% GraphML Format Tests
+%% ====================================================================
+
+:- begin_tests(graphml).
+
+test(basic_graphml) :-
+    Children = [
+        child(pagepearl, 'Link 1', 'http://example.com', 1),
+        child(tree, 'Subtree', null, 2)
+    ],
+    generate_graphml('12345', 'Test Tree', Children, GraphML),
+    sub_atom(GraphML, _, _, _, '<?xml version="1.0"'),
+    sub_atom(GraphML, _, _, _, '<graphml'),
+    sub_atom(GraphML, _, _, _, 'xmlns:y="http://www.yworks.com/xml/graphml"'),
+    sub_atom(GraphML, _, _, _, '<y:NodeLabel>Test Tree</y:NodeLabel>').
+
+test(graphml_nodes_and_edges) :-
+    Children = [child(pagepearl, 'Link', null, 1)],
+    generate_graphml('111', 'Test', Children, GraphML),
+    sub_atom(GraphML, _, _, _, '<node id="n_root_111">'),
+    sub_atom(GraphML, _, _, _, '<node id="n_111_pagepearl_1">'),
+    sub_atom(GraphML, _, _, _, '<edge id=').
+
+test(graphml_url_attribute) :-
+    Children = [child(pagepearl, 'GitHub', 'https://github.com', 1)],
+    generate_graphml('222', 'Test', Children, GraphML),
+    sub_atom(GraphML, _, _, _, '<data key="url">https://github.com</data>').
+
+test(graphml_colors) :-
+    Children = [
+        child(pagepearl, 'Pearl', null, 1),
+        child(tree, 'Tree', null, 2)
+    ],
+    generate_graphml('333', 'Test', Children, GraphML),
+    sub_atom(GraphML, _, _, _, 'color="#6DB33F"'),  % pagepearl
+    sub_atom(GraphML, _, _, _, 'color="#F5A623"').  % tree
+
+:- end_tests(graphml).
+
+%% ====================================================================
+%% VUE Format Tests
+%% ====================================================================
+
+:- begin_tests(vue).
+
+test(basic_vue) :-
+    Children = [
+        child(pagepearl, 'Link 1', 'http://example.com', 1),
+        child(tree, 'Subtree', null, 2)
+    ],
+    generate_vue('12345', 'Test Tree', Children, VUE),
+    sub_atom(VUE, _, _, _, '<?xml version="1.0"'),
+    sub_atom(VUE, _, _, _, '<LW-MAP'),
+    sub_atom(VUE, _, _, _, 'label="Test Tree"'),
+    sub_atom(VUE, _, _, _, 'xsi:type="node"').
+
+test(vue_root_centered) :-
+    Children = [],
+    generate_vue('111', 'Center', Children, VUE),
+    sub_atom(VUE, _, _, _, 'x="400.0" y="300.0"').
+
+test(vue_url_resource) :-
+    Children = [child(pagepearl, 'GitHub', 'https://github.com', 1)],
+    generate_vue('222', 'Test', Children, VUE),
+    sub_atom(VUE, _, _, _, 'xsi:type="URLResource"'),
+    sub_atom(VUE, _, _, _, 'spec="https://github.com"').
+
+test(vue_links) :-
+    Children = [child(pagepearl, 'Link', null, 1)],
+    generate_vue('333', 'Test', Children, VUE),
+    sub_atom(VUE, _, _, _, 'xsi:type="link"'),
+    sub_atom(VUE, _, _, _, '<ID1 xsi:type="node">100</ID1>').
+
+test(vue_layer) :-
+    Children = [],
+    generate_vue('444', 'Test', Children, VUE),
+    sub_atom(VUE, _, _, _, '<layer ID="1" label="Layer 1"').
+
+:- end_tests(vue).
+
+%% ====================================================================
+%% Mermaid Format Tests
+%% ====================================================================
+
+:- begin_tests(mermaid).
+
+test(basic_mermaid) :-
+    Children = [
+        child(pagepearl, 'Link 1', 'http://example.com', 1),
+        child(tree, 'Subtree', null, 2)
+    ],
+    generate_mermaid('12345', 'Test Tree', Children, Mermaid),
+    sub_atom(Mermaid, _, _, _, '```mermaid'),
+    sub_atom(Mermaid, _, _, _, 'mindmap'),
+    sub_atom(Mermaid, _, _, _, 'root((Test Tree))'),
+    sub_atom(Mermaid, _, _, _, '```').
+
+test(mermaid_pagepearl_square) :-
+    Children = [child(pagepearl, 'Link', null, 1)],
+    generate_mermaid('111', 'Test', Children, Mermaid),
+    sub_atom(Mermaid, _, _, _, 'pearl_1[Link]').
+
+test(mermaid_tree_hexagon) :-
+    Children = [child(tree, 'Folder', null, 1)],
+    generate_mermaid('222', 'Test', Children, Mermaid),
+    sub_atom(Mermaid, _, _, _, 'tree_1{{Folder}}').
+
+test(mermaid_alias_flag) :-
+    Children = [child(alias, 'Alias', null, 1)],
+    generate_mermaid('333', 'Test', Children, Mermaid),
+    sub_atom(Mermaid, _, _, _, 'alias_1>Alias]').
+
+test(mermaid_section_rounded) :-
+    Children = [child(section, 'Section', null, 1)],
+    generate_mermaid('444', 'Test', Children, Mermaid),
+    sub_atom(Mermaid, _, _, _, 'section_1(Section)').
+
+test(mermaid_escapes_brackets) :-
+    Children = [child(pagepearl, 'Array[0]', null, 1)],
+    generate_mermaid('555', 'Test', Children, Mermaid),
+    sub_atom(Mermaid, _, _, _, 'Array(0)').
+
+:- end_tests(mermaid).
+
+%% ====================================================================
+%% Unified Multi-Format Tests
+%% ====================================================================
+
+:- begin_tests(multi_format).
+
+test(available_formats_list) :-
+    available_formats(Formats),
+    length(Formats, 6),
+    member(smmx, Formats),
+    member(freemind, Formats),
+    member(mermaid, Formats).
+
+test(generate_all_formats_subset) :-
+    Children = [child(pagepearl, 'Link', 'http://example.com', 1)],
+    generate_all_formats('123', 'Test', Children, [freemind, mermaid], Results),
+    length(Results, 2),
+    member(format(freemind, '.mm', _), Results),
+    member(format(mermaid, '.md', _), Results).
+
+test(generate_all_formats_full) :-
+    Children = [child(pagepearl, 'Link', null, 1)],
+    available_formats(AllFormats),
+    generate_all_formats('456', 'Full Test', Children, AllFormats, Results),
+    length(Results, 6).
+
+test(format_result_contains_content) :-
+    Children = [child(tree, 'Folder', null, 1)],
+    generate_all_formats('789', 'Content Test', Children, [opml], [format(opml, Ext, Content)]),
+    Ext == '.opml',
+    sub_atom(Content, _, _, _, 'Content Test').
+
+:- end_tests(multi_format).

@@ -7,7 +7,11 @@
     demo_python_generation/0,
     demo_csharp_generation/0,
     demo_go_generation/0,
-    show_target_comparison/0
+    show_target_comparison/0,
+    % Format selection demos
+    demo_format_selection/0,
+    demo_all_formats/0,
+    generate_for_format/5
 ]).
 
 %% --------------------------------------------------------------------
@@ -303,3 +307,91 @@ show_target_comparison :-
     format('  - Go: explicit error handling, goroutines~n'),
     format('~nRun demo_python_generation/0, demo_csharp_generation/0,~n'),
     format('or demo_go_generation/0 to see full examples.~n').
+
+%% ====================================================================
+%% Format Selection Demos
+%% ====================================================================
+%%
+%% Demonstrates generating the same tree data to multiple output formats.
+%% Uses templates.pl predicates for actual generation.
+
+:- use_module(templates).
+
+%% Sample data for demos
+sample_tree_data(TreeId, Title, Children) :-
+    TreeId = '12345',
+    Title = 'Science Topics',
+    Children = [
+        child(pagepearl, 'Wikipedia - Physics', 'https://en.wikipedia.org/wiki/Physics', 1),
+        child(pagepearl, 'Khan Academy', 'https://khanacademy.org', 2),
+        child(tree, 'Chemistry Notes', null, 3),
+        child(section, 'Resources', null, 4),
+        child(alias, 'Link to Math', null, 5)
+    ].
+
+%% Available output formats
+output_format(smmx, 'SimpleMind (.smmx)', generate_mindmap/4).
+output_format(freemind, 'FreeMind (.mm)', generate_freemind/4).
+output_format(opml, 'OPML (.opml)', generate_opml/4).
+output_format(graphml, 'GraphML (.graphml)', generate_graphml/4).
+output_format(vue, 'VUE (.vue)', generate_vue/4).
+output_format(mermaid, 'Mermaid (.md)', generate_mermaid/4).
+
+%% generate_for_format(+Format, +TreeId, +Title, +Children, -Output) is semidet.
+%%   Generate output for a specific format.
+generate_for_format(smmx, TreeId, Title, Children, Output) :-
+    pearltrees_templates:generate_mindmap(TreeId, Title, Children, Output).
+generate_for_format(freemind, TreeId, Title, Children, Output) :-
+    pearltrees_templates:generate_freemind(TreeId, Title, Children, Output).
+generate_for_format(opml, TreeId, Title, Children, Output) :-
+    pearltrees_templates:generate_opml(TreeId, Title, Children, Output).
+generate_for_format(graphml, TreeId, Title, Children, Output) :-
+    pearltrees_templates:generate_graphml(TreeId, Title, Children, Output).
+generate_for_format(vue, TreeId, Title, Children, Output) :-
+    pearltrees_templates:generate_vue(TreeId, Title, Children, Output).
+generate_for_format(mermaid, TreeId, Title, Children, Output) :-
+    pearltrees_templates:generate_mermaid(TreeId, Title, Children, Output).
+
+%% demo_format_selection/0 is det.
+%%   Show how to select and generate different output formats.
+demo_format_selection :-
+    format('~n========================================~n'),
+    format('Multi-Format Output Selection Demo~n'),
+    format('========================================~n'),
+    format('~nSame tree data can be output to 6 different formats:~n~n'),
+    forall(
+        output_format(Format, Description, _Pred),
+        format('  ~w: ~w~n', [Format, Description])
+    ),
+    format('~nExample - Generate FreeMind format:~n'),
+    format('~n?- sample_tree_data(Id, Title, Children),~n'),
+    format('   generate_for_format(freemind, Id, Title, Children, Output).~n'),
+    format('~nExample - Generate Mermaid for documentation:~n'),
+    sample_tree_data(TreeId, Title, Children),
+    generate_for_format(mermaid, TreeId, Title, Children, MermaidOutput),
+    format('~n~w~n', [MermaidOutput]).
+
+%% demo_all_formats/0 is det.
+%%   Generate sample data in all available formats.
+demo_all_formats :-
+    format('~n========================================~n'),
+    format('All Formats Demo~n'),
+    format('========================================~n'),
+    sample_tree_data(TreeId, Title, Children),
+    format('~nTree: ~w (ID: ~w)~n', [Title, TreeId]),
+    format('Children: ~w items~n', [5]),
+    format('~nGenerating all formats...~n'),
+    forall(
+        output_format(Format, Description, _),
+        (
+            format('~n--- ~w ---~n', [Description]),
+            generate_for_format(Format, TreeId, Title, Children, Output),
+            % Show first 500 chars of each format
+            atom_length(Output, Len),
+            (   Len > 500
+            ->  sub_atom(Output, 0, 500, _, Preview),
+                format('~w...~n[truncated, ~w total chars]~n', [Preview, Len])
+            ;   format('~w~n', [Output])
+            )
+        )
+    ).
