@@ -3272,6 +3272,9 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
                 parent_title = url_to_title.get(parent_url)
 
     # Generate this cluster's map
+    # Filter out LLM-specific kwargs that generate_single_map doesn't accept
+    single_map_kwargs = {k: v for k, v in kwargs.items()
+                         if k not in ('llm_context_level', 'llm_descriptions_path')}
     child_urls = generate_single_map(
         cluster_url=cluster_url,
         data_path=data_path,
@@ -3288,7 +3291,7 @@ def generate_recursive(cluster_url: str, data_path: Path, output_dir: Path,
         parent_title=parent_title,
         flat_hierarchy=curated_folders,  # Preserve true hierarchy in curated mode
         children_index=children_index,
-        **kwargs
+        **single_map_kwargs
     )
 
     total_generated = 1
