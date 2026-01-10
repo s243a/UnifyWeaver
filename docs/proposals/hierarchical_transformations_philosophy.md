@@ -141,10 +141,10 @@ The UnifyWeaver-native approach **complements** the Python implementation:
 | LLM folder naming | Template-based naming |
 | Performance optimized | Clarity optimized |
 
-### What We're NOT Doing
+### What We're NOT Doing (Initially)
 
-- **Not replacing** `generate_mindmap.py`
-- **Not reimplementing** embedding computation
+- **Not replacing** `generate_mindmap.py` (yet - it's the working implementation)
+- **Not reimplementing** embedding computation from scratch
 - **Not duplicating** LLM integration
 
 ### What We ARE Doing
@@ -153,6 +153,99 @@ The UnifyWeaver-native approach **complements** the Python implementation:
 - **Demonstrating** UnifyWeaver's tree manipulation capabilities
 - **Creating** reusable transformation primitives
 - **Enabling** multi-target code generation for tree operations
+- **Testing** how general, composable, and extensible UnifyWeaver is
+- **Building toward** eventually generating these tools from UnifyWeaver
+
+### Long-Term Vision
+
+The existing Python tools are the working implementation today. In the long run, these tools could potentially be **generated** from UnifyWeaver specifications:
+
+```prolog
+% Declarative specification
+curated_folder_structure(TreeId, FolderPath) :-
+    tree_centroid(TreeId, Centroid),           % Semantic embedding
+    cluster_trees(Centroid, K, GroupId),       % Clustering
+    group_hierarchy(GroupId, HierarchyPath),   % MST with fixed root
+    flatten_to_depth(HierarchyPath, MaxDepth, FolderPath).
+```
+
+This single specification could generate:
+- **Python**: Integration with existing tools, NumPy for embeddings
+- **Go**: Native CLI with built-in semantic embeddings
+- **Rust**: High-performance processing (like existing `/examples/pearltrees/`)
+
+Anything needing a specific implementation becomes a **custom function** via the bindings system, and UnifyWeaver's **cross-target glue** handles multi-language orchestration.
+
+## UnifyWeaver Capabilities Supporting This Vision
+
+UnifyWeaver already has the infrastructure for semantic tree organization:
+
+### Existing Semantic Embedding Tools
+
+| Target | Implementation | Notes |
+|--------|----------------|-------|
+| **Go** | Native multi-head LDA projection | No Python overhead, built-in |
+| **Rust** | candle-transformers (ModernBERT) | High-performance, GPU support |
+| **Python** | ONNX-based embeddings | GPU acceleration, flash attention |
+
+### Bindings System
+
+Map Prolog predicates to target-specific implementations:
+
+```prolog
+% Declare that compute_centroid/2 uses target-specific implementations
+:- binding(python, compute_centroid/2, 'numpy.mean', [list(float)], [list(float)], [import(numpy)]).
+:- binding(go, compute_centroid/2, 'vectors.Mean', [list(float)], [list(float)], []).
+:- binding(rust, compute_centroid/2, 'ndarray::mean', [list(float)], [list(float)], []).
+```
+
+### Component Registry
+
+Register embedding providers and clustering algorithms:
+
+```prolog
+:- declare_component(runtime, embedding_provider, bert_embeddings, [
+    model('all-MiniLM-L6-v2'),
+    dimensions(384),
+    initialization(lazy)
+]).
+
+:- declare_component(runtime, clustering, kmeans, [
+    implementation(go),  % Use Go for performance
+    depends([embedding_provider])
+]).
+```
+
+### Cross-Target Glue
+
+Orchestrate multi-language pipelines:
+
+```prolog
+% Prolog specifies the pipeline
+:- declare_target(compute_embeddings/2, python, [file('embed.py')]).
+:- declare_target(cluster_trees/3, go, [file('cluster.go')]).
+:- declare_target(generate_paths/2, prolog, []).
+
+% Glue automatically handles data flow between targets
+```
+
+### Graph RAG Pattern
+
+The education materials document a pattern directly applicable to curated folders:
+
+1. **Anchor**: Vector search to find semantically similar trees
+2. **Traverse**: Use graph relationships (tree_ancestors, tree_descendants)
+3. **Synthesize**: Cluster and organize based on combined signals
+
+### Existing Pearltrees Example (Rust)
+
+`/examples/pearltrees/` already implements semantic bookmark filing:
+- BERT embeddings (all-MiniLM-L6-v2, 384 dimensions)
+- 11,867 XML fragments indexed
+- Tree context (ancestor/sibling relationships)
+- Sub-second semantic queries
+
+This provides a reference implementation for the semantic aspects.
 
 ## Transformation Categories
 

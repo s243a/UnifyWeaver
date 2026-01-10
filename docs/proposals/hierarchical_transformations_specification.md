@@ -554,3 +554,272 @@ Each predicate requires tests with mock data covering:
 4. **Composition**: Combining with filter predicates
 
 Target: 30+ tests for hierarchy predicates.
+
+---
+
+## Future: Semantic Predicates (Later Phases)
+
+The following predicates will be added in later phases to support semantic clustering and organization. These integrate with UnifyWeaver's bindings, components, and cross-target glue systems.
+
+### Module Extension
+
+```prolog
+:- module(pearltrees_semantic, [
+    % Embedding predicates
+    tree_embedding/2,
+    tree_centroid/2,
+    child_embedding/2,
+
+    % Similarity predicates
+    tree_similarity/3,
+    most_similar_trees/3,
+
+    % Clustering predicates
+    cluster_trees/3,
+    cluster_by_centroid/4,
+
+    % Semantic grouping
+    semantic_group/3,
+    build_semantic_hierarchy/3
+]).
+```
+
+### Embedding Predicates
+
+#### tree_embedding/2
+
+```prolog
+%% tree_embedding(+TreeId, -Embedding) is det.
+%%   Get the embedding vector for a tree's content.
+%%   Uses target-specific embedding provider via bindings.
+%%
+%% Bindings:
+%%   - Go: Native multi-head LDA projection
+%%   - Rust: candle-transformers (ModernBERT)
+%%   - Python: ONNX-based embeddings
+%%
+%% Example:
+%%   ?- tree_embedding('physics_123', Embedding).
+%%   Embedding = [0.123, -0.456, ...].  % 384 or 768 dimensions
+
+tree_embedding(TreeId, Embedding) :-
+    pearl_trees(tree, TreeId, Title, _, _),
+    compute_embedding(Title, Embedding).  % Bound to target implementation
+
+%% Binding declarations (in separate bindings file)
+:- binding(go, compute_embedding/2, 'semantic.Embed', [string], [list(float)], []).
+:- binding(rust, compute_embedding/2, 'embed::compute', [string], [list(float)], []).
+:- binding(python, compute_embedding/2, 'embeddings.embed', [string], [list(float)], [import(embeddings)]).
+```
+
+#### tree_centroid/2
+
+```prolog
+%% tree_centroid(+TreeId, -Centroid) is det.
+%%   Compute the centroid of a tree's children embeddings.
+%%   This represents where the tree sits in semantic space.
+%%
+%% Example:
+%%   ?- tree_centroid('science_456', Centroid).
+%%   Centroid = [0.234, -0.567, ...].
+
+tree_centroid(TreeId, Centroid) :-
+    tree_with_children(TreeId, _, Children),
+    maplist(child_embedding, Children, Embeddings),
+    compute_centroid(Embeddings, Centroid).  % Bound to target
+
+child_embedding(child(_, Title, _, _), Embedding) :-
+    compute_embedding(Title, Embedding).
+```
+
+### Similarity Predicates
+
+#### tree_similarity/3
+
+```prolog
+%% tree_similarity(+TreeId1, +TreeId2, -Similarity) is det.
+%%   Compute cosine similarity between two trees.
+%%
+%% Example:
+%%   ?- tree_similarity('physics_123', 'chemistry_124', Sim).
+%%   Sim = 0.85.
+
+tree_similarity(TreeId1, TreeId2, Similarity) :-
+    tree_centroid(TreeId1, C1),
+    tree_centroid(TreeId2, C2),
+    cosine_similarity(C1, C2, Similarity).  % Bound to target
+```
+
+#### most_similar_trees/3
+
+```prolog
+%% most_similar_trees(+TreeId, +K, -SimilarTrees) is det.
+%%   Find K most similar trees to TreeId.
+%%   Uses vector search via semantic source.
+%%
+%% Example:
+%%   ?- most_similar_trees('physics_123', 5, Similar).
+%%   Similar = [sim('quantum_456', 0.92), sim('math_789', 0.87), ...].
+
+most_similar_trees(TreeId, K, SimilarTrees) :-
+    tree_centroid(TreeId, Centroid),
+    semantic_search(Centroid, K, Results),  % Via semantic source
+    maplist(result_to_sim, Results, SimilarTrees).
+```
+
+### Clustering Predicates
+
+#### cluster_trees/3
+
+```prolog
+%% cluster_trees(+TreeIds, +K, -Clusters) is det.
+%%   Cluster trees into K groups by semantic similarity.
+%%   Clusters is a list of cluster(GroupId, MemberTreeIds) terms.
+%%
+%% Implementation options (via component registry):
+%%   - kmeans: Standard K-means on centroids
+%%   - mst_cut: MST with K-1 edge cuts
+%%
+%% Example:
+%%   ?- findall(T, pearl_trees(tree, T, _, _, _), Trees),
+%%      cluster_trees(Trees, 10, Clusters).
+%%   Clusters = [cluster(1, ['physics_123', 'quantum_456']), ...].
+
+cluster_trees(TreeIds, K, Clusters) :-
+    maplist(tree_centroid, TreeIds, Centroids),
+    pairs_keys_values(Pairs, TreeIds, Centroids),
+    kmeans_cluster(Pairs, K, Clusters).  % Bound to target
+
+%% Component registration for clustering
+:- declare_component(runtime, clustering, kmeans, [
+    implementation(go),
+    depends([embedding_provider])
+]).
+```
+
+#### cluster_by_centroid/4
+
+```prolog
+%% cluster_by_centroid(+TreeIds, +Method, +K, -Clusters) is det.
+%%   Cluster with explicit method selection.
+%%
+%% Methods:
+%%   - kmeans: Fast, may not preserve connectivity
+%%   - mst_cut: Preserves connected components
+%%   - hierarchical: Agglomerative clustering
+%%
+%% Example:
+%%   ?- cluster_by_centroid(Trees, mst_cut, 10, Clusters).
+
+cluster_by_centroid(TreeIds, kmeans, K, Clusters) :-
+    cluster_trees(TreeIds, K, Clusters).
+cluster_by_centroid(TreeIds, mst_cut, K, Clusters) :-
+    maplist(tree_centroid, TreeIds, Centroids),
+    build_mst(Centroids, MST),
+    cut_mst_edges(MST, K, Components),
+    components_to_clusters(TreeIds, Components, Clusters).
+```
+
+### Semantic Grouping
+
+#### semantic_group/3
+
+```prolog
+%% semantic_group(+TreeId, +Options, -GroupId) is det.
+%%   Assign tree to a semantic group based on clustering.
+%%
+%% Options:
+%%   - cluster_count(K): Target number of groups
+%%   - method(Method): Clustering method
+%%   - cache(true/false): Use cached clustering
+%%
+%% Example:
+%%   ?- semantic_group('physics_123', [cluster_count(100)], GroupId).
+%%   GroupId = 'science_cluster_7'.
+
+semantic_group(TreeId, Options, GroupId) :-
+    option(cluster_count(K), Options, 100),
+    option(method(Method), Options, kmeans),
+    get_or_compute_clusters(Method, K, Clusters),
+    member(cluster(GroupId, Members), Clusters),
+    member(TreeId, Members),
+    !.
+```
+
+#### build_semantic_hierarchy/3
+
+```prolog
+%% build_semantic_hierarchy(+TreeIds, +Options, -Hierarchy) is det.
+%%   Build a semantic folder hierarchy from clustered trees.
+%%   This is the UnifyWeaver-native equivalent of curated_folders.
+%%
+%% Options:
+%%   - cluster_count(K): Number of folder groups
+%%   - max_depth(D): Maximum folder depth
+%%   - preserve_root(TreeId): Keep specified tree as root
+%%   - method(Method): Clustering method
+%%
+%% Hierarchy is a list of:
+%%   folder_assignment(TreeId, FolderPath, GroupId)
+%%
+%% Example:
+%%   ?- build_semantic_hierarchy(Trees,
+%%        [cluster_count(100), max_depth(3), preserve_root(RootId)],
+%%        Hierarchy).
+
+build_semantic_hierarchy(TreeIds, Options, Hierarchy) :-
+    option(cluster_count(K), Options, 100),
+    option(max_depth(MaxDepth), Options, infinite),
+    option(preserve_root(RootId), Options, _),
+
+    % Phase 1: Cluster trees semantically
+    cluster_trees(TreeIds, K, Clusters),
+
+    % Phase 2: Compute cluster centroids
+    maplist(cluster_centroid, Clusters, ClusterCentroids),
+
+    % Phase 3: Build MST with fixed root
+    find_root_cluster(RootId, Clusters, RootClusterId),
+    build_cluster_mst(ClusterCentroids, RootClusterId, ClusterHierarchy),
+
+    % Phase 4: Assign folder paths
+    maplist(assign_folder_path(ClusterHierarchy, MaxDepth), Clusters, Hierarchy).
+```
+
+### Cross-Target Glue Example
+
+```prolog
+%% Pipeline declaration for semantic hierarchy
+%% Prolog orchestrates, targets execute
+
+:- declare_target(compute_embeddings/2, go, [
+    file('cmd/embed/main.go'),
+    name('embedding_stage')
+]).
+
+:- declare_target(cluster_centroids/3, go, [
+    file('cmd/cluster/main.go'),
+    name('clustering_stage')
+]).
+
+:- declare_target(build_hierarchy/2, prolog, [
+    name('hierarchy_stage')
+]).
+
+%% The glue system automatically:
+%% 1. Compiles Go stages to binaries
+%% 2. Sets up pipe communication (JSON)
+%% 3. Orchestrates execution flow
+```
+
+### Integration with Existing Rust Example
+
+The `/examples/pearltrees/` Rust implementation provides:
+- BERT embeddings (all-MiniLM-L6-v2)
+- Vector search over 11,867 fragments
+- Tree context (ancestor/sibling)
+
+These semantic predicates can:
+1. **Call** the Rust implementation via bindings
+2. **Generate** equivalent code for other targets
+3. **Compose** with structural predicates from `hierarchy.pl`
