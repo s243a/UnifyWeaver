@@ -222,15 +222,17 @@ Phase 1: Navigation
 
 ## Relationship to Python Implementation
 
-| Python Function | Prolog Predicate | Notes |
-|-----------------|------------------|-------|
-| `build_user_hierarchy()` | `tree_parent/2`, `tree_ancestors/2` | Prolog uses backtracking vs explicit dict |
-| `curated_to_folder_structure()` | `flatten_tree/3`, `truncate_path/3` | Depth flattening |
-| Orphan handling | `orphan_trees/1` | Same concept |
-| `cluster_trees_into_folder_groups()` | Not in scope | Requires embeddings |
-| `build_mst_with_fixed_root()` | `reroot_tree/3` (partial) | MST needs graph library |
+| Python Function | Prolog Predicate | Phase | Notes |
+|-----------------|------------------|-------|-------|
+| `build_user_hierarchy()` | `tree_parent/2`, `tree_ancestors/2` | 1-2 | Prolog uses backtracking vs explicit dict |
+| `curated_to_folder_structure()` | `flatten_tree/3`, `truncate_path/3` | 4 | Depth flattening |
+| Orphan handling | `orphan_trees/1` | 2 | Same concept |
+| `compute_cluster_centroids()` | `tree_centroid/2` | 7 | Via bindings to Go/Rust/Python |
+| `cluster_trees_into_folder_groups()` | `cluster_trees/3` | 8 | Via component registry |
+| `build_mst_with_fixed_root()` | `build_semantic_hierarchy/3` | 9 | Full curated folders equivalent |
 
-The Prolog predicates provide **rule-based** transformations that complement the **embedding-based** Python implementation.
+**Phases 1-6**: Rule-based structural transformations (pure Prolog)
+**Phases 7-9**: Semantic transformations (via bindings/components/glue)
 
 ## Success Criteria
 
@@ -262,3 +264,168 @@ The Prolog predicates provide **rule-based** transformations that complement the
 2. **How to handle multiple roots?** Multi-account scenarios may have multiple disconnected hierarchies. Current plan: treat as separate hierarchies, enumerate with `root_tree/1`.
 
 3. **Should transformations be lazy or eager?** Current plan: eager (compute full result). Could add generator-style for large hierarchies.
+
+---
+
+## Later Phases: Semantic Integration
+
+The following phases extend the structural primitives with semantic capabilities using UnifyWeaver's existing infrastructure.
+
+### Phase 7: Embedding Predicates
+
+**Goal**: Integrate semantic embeddings via bindings.
+
+**Predicates**:
+- `tree_embedding/2` - Get embedding for tree content
+- `tree_centroid/2` - Compute centroid from children embeddings
+- `child_embedding/2` - Get embedding for child item
+
+**Dependencies**:
+- Phases 1-6 (structural predicates)
+- UnifyWeaver bindings system
+- Existing embedding tools (Go, Rust, Python)
+
+**Implementation**:
+```prolog
+% Bindings to target-specific implementations
+:- binding(go, compute_embedding/2, 'semantic.Embed', [string], [list(float)], []).
+:- binding(rust, compute_embedding/2, 'embed::compute', [string], [list(float)], []).
+:- binding(python, compute_embedding/2, 'embeddings.embed', [string], [list(float)], []).
+```
+
+**Tests**: ~6 tests (mock embeddings for unit tests, integration tests with real backends)
+
+---
+
+### Phase 8: Clustering Predicates
+
+**Goal**: Semantic clustering via component registry.
+
+**Predicates**:
+- `tree_similarity/3` - Cosine similarity between trees
+- `most_similar_trees/3` - K nearest neighbors
+- `cluster_trees/3` - K-means clustering
+- `cluster_by_centroid/4` - Clustering with method selection
+
+**Dependencies**:
+- Phase 7 (embeddings)
+- UnifyWeaver component registry
+- Existing Go semantic tools
+
+**Implementation**:
+```prolog
+% Component registration
+:- declare_component(runtime, clustering, kmeans, [
+    implementation(go),
+    depends([embedding_provider])
+]).
+```
+
+**Tests**: ~8 tests (mock centroids, verify clustering properties)
+
+---
+
+### Phase 9: Semantic Hierarchy
+
+**Goal**: Full curated folders equivalent in UnifyWeaver.
+
+**Predicates**:
+- `semantic_group/3` - Assign tree to semantic group
+- `build_semantic_hierarchy/3` - Complete curated folders pipeline
+
+**Dependencies**:
+- Phases 7-8 (embeddings, clustering)
+- UnifyWeaver cross-target glue
+- Structural predicates (flatten, reroot)
+
+**Implementation**:
+```prolog
+% Pipeline declaration
+:- declare_target(compute_embeddings/2, go, [file('cmd/embed/main.go')]).
+:- declare_target(cluster_centroids/3, go, [file('cmd/cluster/main.go')]).
+:- declare_target(build_hierarchy/2, prolog, []).
+```
+
+**Tests**: ~6 tests (end-to-end with mock data)
+
+---
+
+## Updated Test Summary
+
+| Phase | Predicates | Tests | Type |
+|-------|-----------|-------|------|
+| 1. Navigation | 4 | ~8 | Pure Prolog |
+| 2. Structural | 6 | ~10 | Pure Prolog |
+| 3. Path Ops | 4 | ~6 | Pure Prolog |
+| 4. Basic Transform | 4 | ~10 | Pure Prolog |
+| 5. Advanced Transform | 3 | ~8 | Pure Prolog |
+| 6. Integration | - | ~4 | Pure Prolog |
+| 7. Embeddings | 3 | ~6 | Bindings |
+| 8. Clustering | 4 | ~8 | Components |
+| 9. Semantic Hierarchy | 2 | ~6 | Glue |
+| **Total** | **30** | **~66** | |
+
+## Updated Dependencies Graph
+
+```
+Phase 1: Navigation
+    │
+    ├──► Phase 2: Structural Queries
+    │        │
+    │        └──► Phase 4: Basic Transforms
+    │                  │
+    │                  └──► Phase 5: Advanced Transforms
+    │                             │
+    └──► Phase 3: Path Operations ◄┘
+              │
+              └──► Phase 6: Integration
+                        │
+                        ▼
+              ┌─────────────────────┐
+              │  SEMANTIC PHASES    │
+              │  (Later)            │
+              └─────────────────────┘
+                        │
+              ┌─────────┴─────────┐
+              ▼                   │
+        Phase 7: Embeddings       │
+        (Bindings)                │
+              │                   │
+              ▼                   │
+        Phase 8: Clustering       │
+        (Components)              │
+              │                   │
+              ▼                   │
+        Phase 9: Semantic    ◄────┘
+        Hierarchy (Glue)
+```
+
+## Existing Tools to Leverage
+
+| Tool | Location | Use in Semantic Phases |
+|------|----------|------------------------|
+| Go embeddings | Built into UnifyWeaver targets | Phase 7 bindings |
+| Rust embeddings | `/examples/pearltrees/` | Phase 7 alternative |
+| Python ONNX | Semantic source plugin | Phase 7 fallback |
+| Go clustering | To be implemented | Phase 8 component |
+| Cross-target glue | `/src/unifyweaver/glue/` | Phase 9 orchestration |
+
+## Long-Term Vision
+
+After Phase 9, the full curated folders algorithm can be expressed as:
+
+```prolog
+%% Declarative specification - generates code for any target
+curated_folder_structure(TreeIds, Options, FolderAssignments) :-
+    % Structural phase (Phases 1-6)
+    identify_root(TreeIds, Options, RootId),
+    identify_orphans(TreeIds, OrphanIds),
+
+    % Semantic phase (Phases 7-9)
+    build_semantic_hierarchy(TreeIds, Options, Hierarchy),
+
+    % Output
+    hierarchy_to_folders(Hierarchy, FolderAssignments).
+```
+
+This single specification could then generate production code for Python, Go, or Rust.
