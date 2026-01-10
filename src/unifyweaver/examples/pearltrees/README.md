@@ -22,9 +22,11 @@ This example shows how UnifyWeaver can:
 | `templates.pl` | Multi-format output (SMMX, FreeMind, OPML, GraphML, VUE, Mermaid) |
 | `compile_examples.pl` | Cross-target code generation examples |
 | `browser_automation.pl` | Abstract browser automation workflow |
+| `hierarchy.pl` | Hierarchical tree transformations |
 | `test_queries.pl` | 36 plunit tests for queries and filters |
 | `test_templates.pl` | 44 plunit tests for templates (all formats) |
 | `test_browser_automation.pl` | 22 plunit tests for browser automation |
+| `test_hierarchy.pl` | 81 plunit tests for hierarchy predicates |
 
 ## Source Definitions
 
@@ -184,6 +186,76 @@ Available predicates:
 ?- compile_predicate_to_go(tree_child_count/2, [], Code).
 ```
 
+## Hierarchical Transformations
+
+Navigate, query, and transform Pearltrees hierarchies:
+
+### Navigation Predicates
+
+| Predicate | Description |
+|-----------|-------------|
+| `tree_parent/2` | Get immediate parent of a tree |
+| `tree_ancestors/2` | Get path from root to tree |
+| `tree_descendants/2` | Get all descendants recursively |
+| `tree_siblings/2` | Get sibling trees |
+| `tree_depth/2` | Compute depth from root |
+| `tree_path/2` | Get full path as list |
+| `tree_title/2` | Get tree title |
+
+### Structural Queries
+
+| Predicate | Description |
+|-----------|-------------|
+| `root_tree/1` | Identify root nodes |
+| `leaf_tree/1` | Identify leaf nodes |
+| `orphan_tree/1` | Find disconnected trees |
+| `subtree_tree/2` | Check subtree membership |
+
+### Path Operations
+
+| Predicate | Description |
+|-----------|-------------|
+| `path_depth/2` | Count path elements |
+| `truncate_path/3` | Limit path depth |
+| `common_ancestor/3` | Find shared ancestor of two trees |
+| `hierarchical_title_path/2` | Get title path from root |
+
+### Basic Transformations
+
+| Predicate | Description |
+|-----------|-------------|
+| `flatten_tree/3` | Collapse depth levels |
+| `prune_tree/3` | Remove branches by criteria |
+| `trees_at_depth/2` | Select trees at depth |
+| `trees_by_parent/2` | Group trees by parent |
+
+### Advanced Transformations
+
+| Predicate | Description |
+|-----------|-------------|
+| `reroot_tree/3` | Change hierarchy root |
+| `merge_trees/3` | Combine multiple tree lists |
+| `group_by_ancestor/3` | Cluster by ancestor at depth |
+
+### Embedding Support
+
+| Predicate | Description |
+|-----------|-------------|
+| `structural_embedding_input/3` | Generate embedding text format |
+| `format_id_path/2` | Format slash-separated ID path |
+| `format_title_hierarchy/2` | Format indented title hierarchy |
+
+Example embedding format:
+```
+/root_1/science_2/physics_3
+- Root
+  - Science
+    - Physics
+      - Quantum Mechanics
+```
+
+See `docs/proposals/hierarchical_transformations_specification.md` for the full specification.
+
 ## Running Tests
 
 ```bash
@@ -195,6 +267,9 @@ swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_templates.
 
 # Run browser automation tests (22 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_browser_automation.pl
+
+# Run hierarchy tests (81 tests)
+swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_hierarchy.pl
 ```
 
 ## Browser Automation Workflow

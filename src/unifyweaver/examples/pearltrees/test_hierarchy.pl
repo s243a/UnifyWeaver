@@ -190,6 +190,110 @@ mock_structural_embedding_input(TreeId, ChildTitle, EmbeddingText) :-
     mock_format_title_hierarchy(FullTitles, TitleLines),
     atomic_list_concat([IdPathLine|TitleLines], '\n', EmbeddingText).
 
+%% Mock Phase 4: Basic Transformations
+
+%% Mock flatten_tree
+mock_flatten_tree(TreeId, MaxDepth, FlattenedTrees) :-
+    findall(DescId-TruncPath,
+            (mock_subtree_tree(TreeId, DescId),
+             mock_tree_path(DescId, FullPath),
+             mock_truncate_path(FullPath, MaxDepth, TruncPath)),
+            FlattenedTrees).
+
+%% Mock prune_tree
+mock_prune_tree(TreeId, Criteria, PrunedTrees) :-
+    findall(DescId,
+            (mock_subtree_tree(TreeId, DescId),
+             mock_satisfies_criteria(DescId, Criteria)),
+            PrunedTrees).
+
+%% Mock satisfies_criteria
+mock_satisfies_criteria(TreeId, max_depth(MaxDepth)) :-
+    mock_tree_depth(TreeId, Depth),
+    Depth =< MaxDepth.
+mock_satisfies_criteria(TreeId, has_children) :-
+    mock_tree_parent(_, TreeId),
+    !.
+mock_satisfies_criteria(TreeId, is_leaf) :-
+    mock_leaf_tree(TreeId).
+mock_satisfies_criteria(TreeId, exclude_orphans) :-
+    \+ mock_orphan_tree(TreeId).
+
+%% Mock trees_at_depth
+mock_trees_at_depth(Depth, Trees) :-
+    findall(TreeId,
+            (mock_pearl_trees(tree, TreeId, _, _, _),
+             mock_tree_depth(TreeId, Depth)),
+            Trees).
+
+%% Mock trees_by_parent
+mock_trees_by_parent(GroupedTrees) :-
+    findall(ParentId-TreeId,
+            (mock_pearl_trees(tree, TreeId, _, _, _),
+             (   mock_tree_parent(TreeId, ParentId)
+             ->  true
+             ;   ParentId = root
+             )),
+            Pairs),
+    mock_group_pairs_by_key(Pairs, GroupedTrees).
+
+mock_group_pairs_by_key(Pairs, Grouped) :-
+    keysort(Pairs, Sorted),
+    mock_group_pairs_by_key_(Sorted, Grouped).
+
+mock_group_pairs_by_key_([], []).
+mock_group_pairs_by_key_([K-V|Rest], [K-[V|Vs]|Groups]) :-
+    mock_same_key(K, Rest, Vs, Remaining),
+    mock_group_pairs_by_key_(Remaining, Groups).
+
+mock_same_key(K, [K-V|Rest], [V|Vs], Remaining) :-
+    !,
+    mock_same_key(K, Rest, Vs, Remaining).
+mock_same_key(_, Rest, [], Rest).
+
+%% Mock Phase 5: Advanced Transformations
+
+%% Mock reroot_tree
+mock_reroot_tree(NewRootId, TreeIds, RerootedPaths) :-
+    mock_tree_path(NewRootId, NewRootPath),
+    findall(TreeId-RerootedPath,
+            (member(TreeId, TreeIds),
+             mock_tree_path(TreeId, OrigPath),
+             mock_reroot_path(OrigPath, NewRootPath, RerootedPath)),
+            RerootedPaths).
+
+mock_reroot_path(OrigPath, NewRootPath, RerootedPath) :-
+    (   append(NewRootPath, Suffix, OrigPath)
+    ->  last(NewRootPath, NewRootId),
+        append([NewRootId], Suffix, RerootedPath)
+    ;   RerootedPath = OrigPath
+    ).
+
+%% Mock merge_trees
+mock_merge_trees(TreeIdLists, Options, MergedTrees) :-
+    append(TreeIdLists, AllTrees),
+    (   member(dedup(false), Options)
+    ->  MergedTrees = AllTrees
+    ;   list_to_set(AllTrees, MergedTrees)
+    ).
+
+%% Mock group_by_ancestor
+mock_group_by_ancestor(TreeIds, Depth, GroupedTrees) :-
+    findall(AncestorId-TreeId,
+            (member(TreeId, TreeIds),
+             mock_ancestor_at_depth(TreeId, Depth, AncestorId)),
+            Pairs),
+    mock_group_pairs_by_key(Pairs, GroupedTrees).
+
+mock_ancestor_at_depth(TreeId, Depth, AncestorId) :-
+    mock_tree_path(TreeId, Path),
+    length(Path, PathLen),
+    TargetIdx is Depth + 1,
+    (   PathLen >= TargetIdx
+    ->  nth1(TargetIdx, Path, AncestorId)
+    ;   AncestorId = shallow
+    ).
+
 %% ============================================================================
 %% Tests: Phase 1 - Navigation Predicates
 %% ============================================================================
@@ -497,6 +601,224 @@ test(root_embedding_format) :-
     Text == '/root_1\n- Root\n  - Top Level Item'.
 
 :- end_tests(structural_embedding_input).
+
+%% ============================================================================
+%% Tests: Phase 4 - Basic Transformations
+%% ============================================================================
+
+:- begin_tests(flatten_tree, [setup(setup_hierarchy_mock_data), cleanup(cleanup_hierarchy_mock_data)]).
+
+test(flatten_root_to_depth_1, [nondet]) :-
+    mock_flatten_tree('root_1', 1, Flattened),
+    % At depth 1: root_1, science_2, arts_5 are in the result
+    member('root_1'-['root_1'], Flattened),
+    member('science_2'-['root_1', 'science_2'], Flattened),
+    member('arts_5'-['root_1', 'arts_5'], Flattened),
+    % Deeper trees get truncated paths
+    member('physics_3'-['root_1', 'science_2'], Flattened),
+    member('quantum_6'-['root_1', 'science_2'], Flattened).
+
+test(flatten_science_to_depth_2, [nondet]) :-
+    mock_flatten_tree('science_2', 2, Flattened),
+    length(Flattened, 4),  % science, physics, chemistry, quantum
+    member('science_2'-['root_1', 'science_2'], Flattened),
+    member('physics_3'-['root_1', 'science_2', 'physics_3'], Flattened),
+    member('chemistry_4'-['root_1', 'science_2', 'chemistry_4'], Flattened),
+    member('quantum_6'-['root_1', 'science_2', 'physics_3'], Flattened).
+
+test(flatten_leaf_tree) :-
+    mock_flatten_tree('quantum_6', 0, Flattened),
+    Flattened = ['quantum_6'-['root_1']].
+
+:- end_tests(flatten_tree).
+
+:- begin_tests(prune_tree, [setup(setup_hierarchy_mock_data), cleanup(cleanup_hierarchy_mock_data)]).
+
+test(prune_by_max_depth, [nondet]) :-
+    mock_prune_tree('root_1', max_depth(1), Pruned),
+    % Only root and depth-1 trees
+    member('root_1', Pruned),
+    member('science_2', Pruned),
+    member('arts_5', Pruned),
+    \+ member('physics_3', Pruned),
+    \+ member('quantum_6', Pruned).
+
+test(prune_by_has_children, [nondet]) :-
+    mock_prune_tree('root_1', has_children, Pruned),
+    % Only trees with children: root_1, science_2, arts_5, physics_3
+    member('root_1', Pruned),
+    member('science_2', Pruned),
+    member('arts_5', Pruned),
+    member('physics_3', Pruned),
+    \+ member('chemistry_4', Pruned),  % leaf
+    \+ member('quantum_6', Pruned).    % leaf
+
+test(prune_by_is_leaf, [nondet]) :-
+    mock_prune_tree('science_2', is_leaf, Pruned),
+    % Only leaves in science subtree: chemistry, quantum
+    \+ member('science_2', Pruned),
+    \+ member('physics_3', Pruned),
+    member('chemistry_4', Pruned),
+    member('quantum_6', Pruned).
+
+test(prune_excludes_orphans) :-
+    % First check that orphan exists
+    mock_orphan_tree('orphan_99'),
+    % But prune should exclude it
+    mock_prune_tree('root_1', exclude_orphans, Pruned),
+    \+ member('orphan_99', Pruned).
+
+:- end_tests(prune_tree).
+
+:- begin_tests(trees_at_depth, [setup(setup_hierarchy_mock_data), cleanup(cleanup_hierarchy_mock_data)]).
+
+test(trees_at_depth_0, [nondet]) :-
+    mock_trees_at_depth(0, Trees),
+    % root_1 and orphan_99 (orphan has no parent so depth 0)
+    length(Trees, 2),
+    member('root_1', Trees),
+    member('orphan_99', Trees).
+
+test(trees_at_depth_1, [nondet]) :-
+    mock_trees_at_depth(1, Trees),
+    length(Trees, 2),
+    member('science_2', Trees),
+    member('arts_5', Trees).
+
+test(trees_at_depth_2, [nondet]) :-
+    mock_trees_at_depth(2, Trees),
+    length(Trees, 3),
+    member('physics_3', Trees),
+    member('chemistry_4', Trees),
+    member('music_7', Trees).
+
+test(trees_at_depth_3) :-
+    mock_trees_at_depth(3, Trees),
+    Trees = ['quantum_6'].
+
+test(trees_at_depth_4_empty) :-
+    mock_trees_at_depth(4, Trees),
+    Trees = [].
+
+:- end_tests(trees_at_depth).
+
+:- begin_tests(trees_by_parent, [setup(setup_hierarchy_mock_data), cleanup(cleanup_hierarchy_mock_data)]).
+
+test(trees_grouped_by_parent, [nondet]) :-
+    mock_trees_by_parent(Grouped),
+    % Check root group (includes orphan_99 too since its parent doesn't exist)
+    member(root-RootChildren, Grouped),
+    member('root_1', RootChildren),
+    member('orphan_99', RootChildren),
+    % Check science group
+    member('root_1'-ScienceChildren, Grouped),
+    member('science_2', ScienceChildren),
+    member('arts_5', ScienceChildren),
+    % Check physics group
+    member('science_2'-PhysicsChildren, Grouped),
+    member('physics_3', PhysicsChildren),
+    member('chemistry_4', PhysicsChildren).
+
+test(group_count) :-
+    mock_trees_by_parent(Grouped),
+    length(Grouped, Count),
+    % Groups: root (root_1, orphan_99), root_1, science_2, arts_5, physics_3
+    Count == 5.
+
+:- end_tests(trees_by_parent).
+
+%% ============================================================================
+%% Tests: Phase 5 - Advanced Transformations
+%% ============================================================================
+
+:- begin_tests(reroot_tree, [setup(setup_hierarchy_mock_data), cleanup(cleanup_hierarchy_mock_data)]).
+
+test(reroot_to_science, [nondet]) :-
+    % Reroot to science_2, so science subtree paths should start from science
+    mock_reroot_tree('science_2',
+                     ['science_2', 'physics_3', 'quantum_6', 'arts_5'],
+                     Rerooted),
+    % science_2 path becomes just [science_2]
+    member('science_2'-['science_2'], Rerooted),
+    % physics_3 path becomes [science_2, physics_3]
+    member('physics_3'-['science_2', 'physics_3'], Rerooted),
+    % quantum_6 path becomes [science_2, physics_3, quantum_6]
+    member('quantum_6'-['science_2', 'physics_3', 'quantum_6'], Rerooted),
+    % arts_5 is not under science_2, keeps original path
+    member('arts_5'-['root_1', 'arts_5'], Rerooted).
+
+test(reroot_preserves_non_descendants, [nondet]) :-
+    mock_reroot_tree('physics_3', ['root_1', 'arts_5'], Rerooted),
+    % Neither is under physics_3, both keep original paths
+    member('root_1'-['root_1'], Rerooted),
+    member('arts_5'-['root_1', 'arts_5'], Rerooted).
+
+:- end_tests(reroot_tree).
+
+:- begin_tests(merge_trees, [setup(setup_hierarchy_mock_data), cleanup(cleanup_hierarchy_mock_data)]).
+
+test(merge_with_dedup, [nondet]) :-
+    mock_merge_trees([['a', 'b'], ['b', 'c'], ['a', 'd']], [], Merged),
+    length(Merged, 4),
+    member('a', Merged),
+    member('b', Merged),
+    member('c', Merged),
+    member('d', Merged).
+
+test(merge_without_dedup) :-
+    mock_merge_trees([['a', 'b'], ['b', 'c']], [dedup(false)], Merged),
+    length(Merged, 4),
+    Merged = ['a', 'b', 'b', 'c'].
+
+test(merge_empty_lists) :-
+    mock_merge_trees([[], []], [], Merged),
+    Merged = [].
+
+:- end_tests(merge_trees).
+
+:- begin_tests(group_by_ancestor, [setup(setup_hierarchy_mock_data), cleanup(cleanup_hierarchy_mock_data)]).
+
+test(group_by_depth_1, [nondet]) :-
+    % Group all trees by their ancestor at depth 1
+    mock_group_by_ancestor(['science_2', 'physics_3', 'chemistry_4', 'quantum_6',
+                            'arts_5', 'music_7', 'root_1'],
+                           1, Grouped),
+    % Trees under science_2 (at depth 1)
+    member('science_2'-ScienceGroup, Grouped),
+    member('science_2', ScienceGroup),
+    member('physics_3', ScienceGroup),
+    member('chemistry_4', ScienceGroup),
+    member('quantum_6', ScienceGroup),
+    % Trees under arts_5 (at depth 1)
+    member('arts_5'-ArtsGroup, Grouped),
+    member('arts_5', ArtsGroup),
+    member('music_7', ArtsGroup),
+    % root_1 is at depth 0, so grouped as 'shallow'
+    member(shallow-ShallowGroup, Grouped),
+    member('root_1', ShallowGroup).
+
+test(group_by_depth_0, [nondet]) :-
+    % All trees should be grouped by root
+    mock_group_by_ancestor(['root_1', 'science_2', 'physics_3'], 0, Grouped),
+    member('root_1'-RootGroup, Grouped),
+    member('root_1', RootGroup),
+    member('science_2', RootGroup),
+    member('physics_3', RootGroup).
+
+test(group_by_depth_2, [nondet]) :-
+    mock_group_by_ancestor(['quantum_6', 'chemistry_4', 'music_7', 'science_2'], 2, Grouped),
+    % quantum_6 and chemistry_4 are grouped by physics_3 and chemistry_4 respectively
+    member('physics_3'-PhysicsGroup, Grouped),
+    member('quantum_6', PhysicsGroup),
+    member('chemistry_4'-ChemGroup, Grouped),
+    member('chemistry_4', ChemGroup),
+    member('music_7'-MusicGroup, Grouped),
+    member('music_7', MusicGroup),
+    % science_2 is at depth 1, so shallow
+    member(shallow-ShallowGroup, Grouped),
+    member('science_2', ShallowGroup).
+
+:- end_tests(group_by_ancestor).
 
 %% ============================================================================
 %% Run tests when loaded directly

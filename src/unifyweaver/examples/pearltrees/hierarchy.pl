@@ -36,7 +36,18 @@
     % Embedding support
     structural_embedding_input/3,
     format_id_path/2,
-    format_title_hierarchy/2
+    format_title_hierarchy/2,
+
+    % Basic transformations (Phase 4)
+    flatten_tree/3,
+    prune_tree/3,
+    trees_at_depth/2,
+    trees_by_parent/2,
+
+    % Advanced transformations (Phase 5)
+    reroot_tree/3,
+    merge_trees/3,
+    group_by_ancestor/3
 ]).
 
 :- use_module(sources).
@@ -261,3 +272,155 @@ format_title_hierarchy_([Title|Rest], Depth, [Line|Lines]) :-
 %%   Convert a cluster URI to its tree ID.
 cluster_to_tree_id(ClusterId, TreeId) :-
     pearl_trees(tree, TreeId, _, ClusterId, _).
+
+%% ============================================================================
+%% Phase 4: Basic Transformations
+%% ============================================================================
+
+%% flatten_tree(+TreeId, +MaxDepth, -FlattenedTrees) is det.
+%%   Collapse a tree hierarchy to MaxDepth levels.
+%%   Returns all trees in the subtree with their paths truncated.
+%%   Result is a list of TreeId-TruncatedPath pairs.
+flatten_tree(TreeId, MaxDepth, FlattenedTrees) :-
+    findall(DescId-TruncPath,
+            (subtree_tree(TreeId, DescId),
+             tree_path(DescId, FullPath),
+             truncate_path(FullPath, MaxDepth, TruncPath)),
+            FlattenedTrees).
+
+%% prune_tree(+TreeId, +Criteria, -PrunedTrees) is det.
+%%   Remove branches from a tree based on Criteria.
+%%   Criteria can be:
+%%     - max_depth(N): Remove trees deeper than N
+%%     - has_type(Type): Keep only trees with children of Type
+%%     - exclude_orphans: Remove orphan trees
+%%   Returns list of TreeIds that pass the criteria.
+prune_tree(TreeId, Criteria, PrunedTrees) :-
+    findall(DescId,
+            (subtree_tree(TreeId, DescId),
+             satisfies_criteria(DescId, Criteria)),
+            PrunedTrees).
+
+%% satisfies_criteria(+TreeId, +Criteria) is semidet.
+%%   Check if a tree satisfies the pruning criteria.
+satisfies_criteria(TreeId, max_depth(MaxDepth)) :-
+    tree_depth(TreeId, Depth),
+    Depth =< MaxDepth.
+satisfies_criteria(TreeId, has_children) :-
+    tree_parent(_, TreeId),
+    !.
+satisfies_criteria(TreeId, is_leaf) :-
+    leaf_tree(TreeId).
+satisfies_criteria(TreeId, exclude_orphans) :-
+    \+ orphan_tree(TreeId).
+
+%% trees_at_depth(+Depth, -Trees) is det.
+%%   Find all trees at exactly the specified depth.
+trees_at_depth(Depth, Trees) :-
+    findall(TreeId,
+            (pearl_trees(tree, TreeId, _, _, _),
+             tree_depth(TreeId, Depth)),
+            Trees).
+
+%% trees_by_parent(-GroupedTrees) is det.
+%%   Group all trees by their parent.
+%%   Returns a list of ParentId-ChildrenList pairs.
+%%   Root trees are grouped under the atom 'root'.
+trees_by_parent(GroupedTrees) :-
+    findall(ParentId-TreeId,
+            (pearl_trees(tree, TreeId, _, _, _),
+             (   tree_parent(TreeId, ParentId)
+             ->  true
+             ;   ParentId = root
+             )),
+            Pairs),
+    group_pairs_by_key(Pairs, GroupedTrees).
+
+%% group_pairs_by_key(+Pairs, -Grouped) is det.
+%%   Group a list of Key-Value pairs by key.
+%%   Uses library(pairs) style grouping.
+group_pairs_by_key(Pairs, Grouped) :-
+    keysort(Pairs, Sorted),
+    group_pairs_by_key_(Sorted, Grouped).
+
+group_pairs_by_key_([], []).
+group_pairs_by_key_([K-V|Rest], [K-[V|Vs]|Groups]) :-
+    same_key(K, Rest, Vs, Remaining),
+    group_pairs_by_key_(Remaining, Groups).
+
+same_key(K, [K-V|Rest], [V|Vs], Remaining) :-
+    !,
+    same_key(K, Rest, Vs, Remaining).
+same_key(_, Rest, [], Rest).
+
+%% ============================================================================
+%% Phase 5: Advanced Transformations
+%% ============================================================================
+
+%% reroot_tree(+NewRootId, +TreeIds, -RerootedPaths) is det.
+%%   Change the root of a set of trees to NewRootId.
+%%   Returns TreeId-NewPath pairs where NewPath starts from NewRootId.
+%%   Trees not under NewRootId get their full original path.
+reroot_tree(NewRootId, TreeIds, RerootedPaths) :-
+    tree_path(NewRootId, NewRootPath),
+    length(NewRootPath, NewRootDepth),
+    findall(TreeId-RerootedPath,
+            (member(TreeId, TreeIds),
+             tree_path(TreeId, OrigPath),
+             reroot_path(OrigPath, NewRootPath, NewRootDepth, RerootedPath)),
+            RerootedPaths).
+
+%% reroot_path(+OrigPath, +NewRootPath, +NewRootDepth, -RerootedPath) is det.
+%%   Helper to reroot a single path.
+reroot_path(OrigPath, NewRootPath, NewRootDepth, RerootedPath) :-
+    (   append(NewRootPath, Suffix, OrigPath)
+    ->  % Tree is under new root - strip new root's ancestors
+        append([NewRootId], Suffix, RerootedPath),
+        last(NewRootPath, NewRootId)
+    ;   % Tree is not under new root - keep original path
+        RerootedPath = OrigPath
+    ).
+
+%% merge_trees(+TreeIdLists, +Options, -MergedTrees) is det.
+%%   Merge multiple tree lists into one, optionally deduplicating.
+%%   Options:
+%%     - dedup(true/false): Remove duplicate TreeIds (default: true)
+%%     - preserve_order(true/false): Maintain original order (default: true)
+merge_trees(TreeIdLists, Options, MergedTrees) :-
+    append(TreeIdLists, AllTrees),
+    (   option(dedup(false), Options)
+    ->  MergedTrees = AllTrees
+    ;   list_to_set(AllTrees, MergedTrees)
+    ).
+
+%% option(+Opt, +Options) is semidet.
+%%   Check if option is present in list.
+option(Opt, Options) :-
+    member(Opt, Options), !.
+option(Opt, Options) :-
+    Opt =.. [Name, _],
+    Default =.. [Name, _],
+    \+ member(Default, Options).
+
+%% group_by_ancestor(+TreeIds, +Depth, -GroupedTrees) is det.
+%%   Group trees by their ancestor at the specified depth.
+%%   Returns AncestorId-TreeIds pairs.
+%%   Trees with depth < Depth are grouped under 'shallow'.
+group_by_ancestor(TreeIds, Depth, GroupedTrees) :-
+    findall(AncestorId-TreeId,
+            (member(TreeId, TreeIds),
+             ancestor_at_depth(TreeId, Depth, AncestorId)),
+            Pairs),
+    group_pairs_by_key(Pairs, GroupedTrees).
+
+%% ancestor_at_depth(+TreeId, +Depth, -AncestorId) is det.
+%%   Get the ancestor of TreeId at the specified depth.
+%%   Returns 'shallow' if tree's depth is less than requested depth.
+ancestor_at_depth(TreeId, Depth, AncestorId) :-
+    tree_path(TreeId, Path),
+    length(Path, PathLen),
+    TargetIdx is Depth + 1,  % 1-based index in path
+    (   PathLen >= TargetIdx
+    ->  nth1(TargetIdx, Path, AncestorId)
+    ;   AncestorId = shallow
+    ).
