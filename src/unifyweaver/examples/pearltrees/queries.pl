@@ -40,10 +40,16 @@
     apply_filters/3,
 
     % Statistics
-    tree_size_distribution/2
+    tree_size_distribution/2,
+
+    % Hierarchy statistics (Phase 6)
+    depth_distribution/1,
+    orphan_count/1,
+    leaf_count/1
 ]).
 
 :- use_module(sources).
+:- use_module(hierarchy).
 
 %% --------------------------------------------------------------------
 %% Aggregate: Group children by parent tree
@@ -353,3 +359,67 @@ filter_matches(cluster(ClusterId), TreeId) :-
     pearl_trees(tree, TreeId, _, _, ClusterId).
 filter_matches(not(Filter), TreeId) :-
     \+ filter_matches(Filter, TreeId).
+
+%% Hierarchy-based filters (Phase 6 integration)
+filter_matches(is_root, TreeId) :-
+    root_tree(TreeId).
+filter_matches(is_leaf, TreeId) :-
+    leaf_tree(TreeId).
+filter_matches(is_orphan, TreeId) :-
+    orphan_tree(TreeId).
+filter_matches(at_depth(Depth), TreeId) :-
+    tree_depth(TreeId, Depth).
+filter_matches(max_depth(MaxDepth), TreeId) :-
+    tree_depth(TreeId, Depth),
+    Depth =< MaxDepth.
+filter_matches(min_depth(MinDepth), TreeId) :-
+    tree_depth(TreeId, Depth),
+    Depth >= MinDepth.
+filter_matches(under(AncestorId), TreeId) :-
+    subtree_tree(AncestorId, TreeId),
+    TreeId \= AncestorId.
+filter_matches(has_descendant(DescendantId), TreeId) :-
+    subtree_tree(TreeId, DescendantId),
+    DescendantId \= TreeId.
+filter_matches(sibling_of(SiblingId), TreeId) :-
+    tree_siblings(SiblingId, Siblings),
+    member(TreeId, Siblings).
+
+%% --------------------------------------------------------------------
+%% Hierarchy Statistics (Phase 6 integration)
+%% --------------------------------------------------------------------
+
+%% depth_distribution(-Distribution) is det.
+%%   Get count of trees at each depth level.
+%%   Distribution is a list of depth-count pairs.
+depth_distribution(Distribution) :-
+    findall(Depth-TreeId,
+            (pearl_trees(tree, TreeId, _, _, _),
+             tree_depth(TreeId, Depth)),
+            Pairs),
+    keysort(Pairs, Sorted),
+    group_count(Sorted, Distribution).
+
+%% group_count(+SortedPairs, -CountPairs) is det.
+group_count([], []).
+group_count([K-_|Rest], [K-Count|Counts]) :-
+    count_same_key(K, Rest, 1, Count, Remaining),
+    group_count(Remaining, Counts).
+
+count_same_key(K, [K-_|Rest], Acc, Count, Remaining) :-
+    !,
+    Acc1 is Acc + 1,
+    count_same_key(K, Rest, Acc1, Count, Remaining).
+count_same_key(_, Rest, Count, Count, Rest).
+
+%% orphan_count(-Count) is det.
+%%   Count trees with missing parents.
+orphan_count(Count) :-
+    findall(T, orphan_tree(T), Orphans),
+    length(Orphans, Count).
+
+%% leaf_count(-Count) is det.
+%%   Count leaf trees (no children).
+leaf_count(Count) :-
+    findall(T, leaf_tree(T), Leaves),
+    length(Leaves, Count).
