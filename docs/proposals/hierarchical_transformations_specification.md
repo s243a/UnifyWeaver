@@ -69,6 +69,62 @@ Paths are lists from root to node:
 %% path([RootId, ScienceId, PhysicsId])  % TreeId version
 ```
 
+### AliasPearl Handling
+
+**Important**: When traversing hierarchies, `alias` type children (AliasPearls) should be followed to bridge across accounts. This enables:
+- Cross-account tree navigation
+- Unified hierarchy spanning multiple Pearltrees accounts
+- Consistent embeddings that capture the full semantic context
+
+```prolog
+%% AliasPearl example:
+%%   Account A: Science tree contains alias pointing to Account B's Physics tree
+%%   Following the alias: Science → [alias] → Physics (different account)
+%%
+%% pearl_children(TreeId, alias, Title, Order, null, SeeAlsoUri)
+%%   SeeAlsoUri points to the target tree in another account
+```
+
+Predicates that traverse the hierarchy (e.g., `tree_descendants/2`, `subtree_trees/2`) should have options to:
+- `follow_aliases(true)` - Cross account boundaries (default for embeddings)
+- `follow_aliases(false)` - Stay within single account
+
+### Structural Embeddings Format
+
+Structural embeddings (output embeddings) encode hierarchical context in a specific two-part format:
+
+1. **Line 1: Materialized path of IDs** - Slash-separated tree IDs from root
+2. **Lines 2+: Hierarchical title list** - Indented markdown list (2 spaces per level)
+
+```
+%% Exact format (from pearltrees_target_generator.py):
+%%
+%% /2492215/2496226/2501234
+%% - Hacktivism
+%%   - Political Engagements
+%%     - Whistleblowing
+%%       - Edward Snowden Documentary
+
+%% The format is:
+%%   Line 1: "/" + join(path_ids, "/")
+%%   Lines 2+: "  " * indent_level + "- " + title
+```
+
+**Example for "Quantum Mechanics" under Physics → Science → Root:**
+
+```
+/root_1/science_2/physics_3
+- Root
+  - Science
+    - Physics
+      - Quantum Mechanics
+```
+
+This format ensures embeddings capture:
+- **Position in hierarchy** - ID path encodes exact location
+- **Semantic context** - Title hierarchy provides meaning
+- **Cross-account paths** - Aliases are followed to build complete context
+
 ## Predicate Specifications
 
 ### Navigation Predicates

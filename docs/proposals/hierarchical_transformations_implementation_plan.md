@@ -265,6 +265,29 @@ Phase 1: Navigation
 
 3. **Should transformations be lazy or eager?** Current plan: eager (compute full result). Could add generator-style for large hierarchies.
 
+## Important: AliasPearl Handling
+
+When building structural hierarchies and embeddings, **AliasPearls must be followed** to bridge across accounts:
+
+```prolog
+%% AliasPearls link trees across accounts
+%% pearl_children(TreeId, alias, Title, Order, null, SeeAlsoUri)
+%%   SeeAlsoUri → target tree in another account
+
+%% Traversal predicates should support:
+tree_descendants(TreeId, Descendants) :-
+    tree_descendants(TreeId, [follow_aliases(true)], Descendants).
+
+tree_descendants(TreeId, Options, Descendants) :-
+    option(follow_aliases(FollowAliases), Options, true),
+    ...
+```
+
+This is essential for:
+- **Semantic embeddings**: Hierarchical context must span accounts
+- **Curated folders**: Complete hierarchy includes cross-account links
+- **User's mental model**: Users organize across accounts via aliases
+
 ---
 
 ## Later Phases: Semantic Integration
