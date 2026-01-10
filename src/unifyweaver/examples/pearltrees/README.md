@@ -116,6 +116,15 @@ Info = tree_info('12346', 'Empty Tree', 1).
 - `complete` - Trees with >1 children
 - `cluster(ClusterId)` - Trees in specific cluster
 - `not(Filter)` - Negation of any filter
+- `is_root` - Root trees (no parent)
+- `is_leaf` - Leaf trees (no children)
+- `is_orphan` - Orphan trees (parent doesn't exist)
+- `at_depth(N)` - Trees at exact depth N
+- `max_depth(N)` - Trees at depth ≤ N
+- `min_depth(N)` - Trees at depth ≥ N
+- `under(AncestorId)` - Descendants of a tree
+- `has_descendant(DescendantId)` - Ancestors of a tree
+- `sibling_of(SiblingId)` - Sibling trees
 
 ## Output Formats
 
