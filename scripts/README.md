@@ -331,6 +331,64 @@ python3 scripts/validate_multi_head.py \
 
 ---
 
+## Sparse Routing for Memory-Efficient Projections
+
+### `sparse_routing.py`
+
+Memory-efficient embedding projections using hierarchical sparse routing. Achieves **95%+ memory reduction** compared to loading all embeddings.
+
+**Key Components:**
+
+| Component | Description |
+|-----------|-------------|
+| `RepresentativeConfig` | Configuration: max_reps, condition_threshold, subspace_multiple |
+| `select_representatives()` | Priority selection: centroid → trees → SVD-generated |
+| `LazyWMatrixLoader` | LRU-cached, memory-mapped W matrix loading |
+| `compute_routing_weights()` | Softmax routing over representatives |
+| `SparseRouter` | Full pipeline class |
+
+**Memory Savings (290 clusters, 768-dim):**
+
+| Component | Before | After | Reduction |
+|-----------|--------|-------|-----------|
+| W matrices | 652 MB | 11 MB | 98% |
+| Representatives | 300 MB | 34 MB | 89% |
+| Total | ~1 GB | ~45 MB | **95%** |
+
+**Usage:**
+
+```python
+from scripts.sparse_routing import SparseRouter, RepresentativeConfig
+
+# Configure representative selection
+config = RepresentativeConfig(
+    max_reps_per_cluster=30,      # Hard memory limit
+    condition_threshold=10.0,      # Dominant subspace (κ ≤ 10)
+    subspace_multiple=1.0,         # 1× dominant dimensions
+)
+
+# Initialize router
+router = SparseRouter(
+    centroids_path='models/centroids.npz',
+    w_matrices_path='models/w_stack.npz',
+    top_k_clusters=5,              # Route over top 5 clusters
+    w_cache_size=10,               # Cache 10 W matrices
+)
+
+# Project query
+query = np.random.randn(768)
+projected = router.project(query)
+
+# Check memory usage
+print(router.memory_usage_mb())
+```
+
+**CLI Integration:**
+
+The sparse routing is used by the harvester (`batch_repair.py`) for memory-efficient queue sorting. See `.local/tools/browser-automation/proposals/MEMORY_SAVINGS_HARVESTING.md` for design details.
+
+---
+
 ## Legacy Scripts (LogiForge)
 
 The following scripts are from the LogiForge project and kept in `legacy/` for reference:
