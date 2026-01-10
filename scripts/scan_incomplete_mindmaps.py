@@ -120,7 +120,8 @@ def scan_mindmaps(
     base_dir: Path,
     threshold: int = 1,
     account_filter: Optional[str] = None,
-    exclude_private: bool = False
+    exclude_private: bool = False,
+    absolute_paths: bool = False
 ) -> List[Dict]:
     """Scan mindmaps and find incomplete ones.
 
@@ -129,6 +130,7 @@ def scan_mindmaps(
         threshold: Maximum topic count to consider incomplete (default: 1)
         account_filter: Only include maps from this account
         exclude_private: Exclude maps with "*private*" title
+        absolute_paths: Store absolute paths instead of relative paths
 
     Returns:
         List of dicts with path, title, tree_id, account, topic_count
@@ -153,17 +155,21 @@ def scan_mindmaps(
         if account_filter and account != account_filter:
             continue
 
-        try:
-            rel_path = str(smmx_path.relative_to(base_dir))
-        except ValueError:
-            rel_path = str(smmx_path)
+        # Store path - absolute or relative to base_dir
+        if absolute_paths:
+            stored_path = str(smmx_path.resolve())
+        else:
+            try:
+                stored_path = str(smmx_path.relative_to(base_dir))
+            except ValueError:
+                stored_path = str(smmx_path)
 
         # Use extracted URI from mindmap, fall back to constructed URI
         if not uri:
             uri = get_pearltrees_uri(tree_id, account)
 
         incomplete.append({
-            'path': rel_path,
+            'path': stored_path,
             'title': title,
             'tree_id': tree_id,
             'account': account,
@@ -185,6 +191,8 @@ def main():
                         help='Exclude maps with "*private*" title')
     parser.add_argument('--output', '-o', type=Path, default=None,
                         help='Output JSON file for results')
+    parser.add_argument('--absolute-paths', action='store_true',
+                        help='Store absolute paths instead of relative to scan directory')
     parser.add_argument('--format', choices=['summary', 'list', 'json', 'urls'],
                         default='summary', help='Output format')
     args = parser.parse_args()
@@ -198,7 +206,8 @@ def main():
         args.directory,
         threshold=args.threshold,
         account_filter=args.account,
-        exclude_private=args.exclude_private
+        exclude_private=args.exclude_private,
+        absolute_paths=args.absolute_paths
     )
 
     # Sort by account, then title
@@ -209,6 +218,8 @@ def main():
             'count': len(incomplete),
             'threshold': args.threshold,
             'account_filter': args.account,
+            'base_dir': str(args.directory.resolve()),
+            'absolute_paths': args.absolute_paths,
             'maps': incomplete
         }
 
