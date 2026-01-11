@@ -29,7 +29,7 @@ This example shows how UnifyWeaver can:
 | `test_browser_automation.pl` | 22 plunit tests for browser automation |
 | `test_hierarchy.pl` | 105 plunit tests for hierarchy predicates |
 | `test_semantic_hierarchy.pl` | 19 plunit tests for semantic predicates |
-| `test_codegen.pl` | 21 plunit tests for code generation |
+| `test_codegen.pl` | 25 plunit tests for code generation |
 
 ## Source Definitions
 
@@ -391,14 +391,16 @@ Predicates can be compiled to Python with full JSONL pipeline support:
 
 ### Go and C# Targets
 
-Go and C# compilation infrastructure is available, though module-qualified predicates require additional setup:
+Go and C# targets fully support module-qualified predicates:
 
 ```prolog
 ?- use_module('src/unifyweaver/targets/go_target'),
-   compile_predicate_to_go(my_pred/2, [], Code).
+   compile_predicate_to_go(pearltrees_queries:tree_child_count/2, [json_input(true)], Code).
+% Generates Go code with JSON input processing
 
 ?- use_module('src/unifyweaver/targets/csharp_target'),
-   compile_predicate_to_csharp(my_pred/2, [], Code).
+   compile_predicate_to_csharp(pearltrees_queries:tree_child_count/2, [mode(generator)], Code).
+% Generates C# code with fixpoint solver
 ```
 
 ### Template Generation
