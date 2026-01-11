@@ -29,6 +29,7 @@ This example shows how UnifyWeaver can:
 | `test_browser_automation.pl` | 22 plunit tests for browser automation |
 | `test_hierarchy.pl` | 105 plunit tests for hierarchy predicates |
 | `test_semantic_hierarchy.pl` | 19 plunit tests for semantic predicates |
+| `test_codegen.pl` | 21 plunit tests for code generation |
 
 ## Source Definitions
 
@@ -371,6 +372,46 @@ Prolog (specification) → Go (embeddings) → Rust (clustering) → Python (vis
 
 Each phase uses the appropriate backend via component registry invocation.
 
+## Code Generation Testing
+
+The Pearltrees example includes tests for cross-target code generation:
+
+### Python Target
+
+Predicates can be compiled to Python with full JSONL pipeline support:
+
+```prolog
+?- use_module('src/unifyweaver/targets/python_target'),
+   compile_predicate_to_python(pearltrees_queries:tree_child_count/2, [], Code).
+% Generates Python code with:
+%   - typing imports (Iterator, Dict, Any)
+%   - JSONL streaming support
+%   - Error handling
+```
+
+### Go and C# Targets
+
+Go and C# compilation infrastructure is available, though module-qualified predicates require additional setup:
+
+```prolog
+?- use_module('src/unifyweaver/targets/go_target'),
+   compile_predicate_to_go(my_pred/2, [], Code).
+
+?- use_module('src/unifyweaver/targets/csharp_target'),
+   compile_predicate_to_csharp(my_pred/2, [], Code).
+```
+
+### Template Generation
+
+Templates generate valid output formats that can be used directly:
+
+```prolog
+?- Children = [child(pagepearl, 'Link', 'http://example.com', 1)],
+   generate_freemind('123', 'My Tree', Children, XML),
+   generate_mermaid('123', 'My Tree', Children, Mermaid).
+% Generates valid FreeMind XML and Mermaid markdown
+```
+
 ## Running Tests
 
 ```bash
@@ -388,6 +429,9 @@ swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_hierarchy.
 
 # Run semantic hierarchy tests (19 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_semantic_hierarchy.pl
+
+# Run code generation tests (21 tests)
+swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_codegen.pl
 ```
 
 ## Browser Automation Workflow
