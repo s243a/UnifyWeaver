@@ -187,22 +187,22 @@ setup_hierarchy_mock_data :-
 
 ## Test Summary
 
-| Phase | Predicates | Tests |
-|-------|-----------|-------|
-| 1. Navigation | 4 | ~8 |
-| 2. Structural | 6 | ~10 |
-| 3. Path Ops | 4 | ~6 |
-| 4. Basic Transform | 4 | ~10 |
-| 5. Advanced Transform | 3 | ~8 |
-| 6. Integration | - | ~4 |
-| **Total** | **21** | **~46** |
+| Phase | Predicates | Tests | Status |
+|-------|-----------|-------|--------|
+| 1. Navigation | 7 | 25 | ✅ Complete |
+| 2. Structural | 4 | 16 | ✅ Complete |
+| 3. Path Ops | 5 | 15 | ✅ Complete |
+| 4. Basic Transform | 4 | 14 | ✅ Complete |
+| 5. Advanced Transform | 3 | 8 | ✅ Complete |
+| 6. Integration | 12 | 3 | ✅ Complete |
+| **Total Phases 1-6** | **35** | **81** | ✅ Complete |
 
 Combined with existing tests:
 - queries.pl: 36 tests
-- hierarchy.pl: 46 tests
+- hierarchy.pl: 81 tests
 - templates.pl: 44 tests
 - browser_automation.pl: 22 tests
-- **Total: ~148 tests**
+- **Total: 183 tests**
 
 ## Dependencies Graph
 
@@ -236,10 +236,10 @@ Phase 1: Navigation
 
 ## Success Criteria
 
-1. **All tests pass**: 46+ tests for hierarchy.pl
-2. **Documentation complete**: README updated, examples added
-3. **Integration working**: Can combine with filters and templates
-4. **Clear examples**: Show common transformation patterns
+1. ✅ **All tests pass**: 81 tests for hierarchy.pl (exceeded target of 46+)
+2. ✅ **Documentation complete**: README updated with all predicates
+3. ✅ **Integration working**: Hierarchy filters integrated into queries.pl
+4. ✅ **Clear examples**: Mock data hierarchy demonstrates patterns
 
 ## Risk Assessment
 
@@ -249,13 +249,25 @@ Phase 1: Navigation
 | Performance on large hierarchies | Document that Prolog is for specification, not production |
 | Complex reroot logic | Start with simple cases, add edge cases incrementally |
 
-## Next Steps After Design Approval
+## Completed Steps (Phases 1-6)
 
-1. Create `hierarchy.pl` with Phase 1 predicates
-2. Create `test_hierarchy.pl` with mock data
-3. Implement and test each phase incrementally
-4. Update documentation
-5. Create PR
+1. ✅ Created `hierarchy.pl` with Phase 1-5 predicates
+2. ✅ Created `test_hierarchy.pl` with 81 tests and mock data
+3. ✅ Implemented and tested each phase incrementally
+4. ✅ Updated README documentation
+5. ✅ Integrated hierarchy filters into queries.pl (Phase 6)
+6. ✅ Created PR and merged
+
+## Completed Steps (Phases 7-9)
+
+1. ✅ Explored UnifyWeaver bindings, components, and glue infrastructure
+2. ✅ Created `semantic_hierarchy.pl` with Phases 7-9 predicates
+3. ✅ Created `test_semantic_hierarchy.pl` with 19 tests
+4. ✅ Implemented Phase 7: Embedding predicates (tree_embedding, child_embedding, tree_centroid)
+5. ✅ Implemented Phase 8: Clustering predicates (tree_similarity, cluster_trees, k-means)
+6. ✅ Implemented Phase 9: Semantic hierarchy (semantic_group, build_semantic_hierarchy, curated_folder_structure)
+7. ✅ Updated README with Phases 7-9 documentation
+8. ✅ All 100 tests passing (81 hierarchy + 19 semantic)
 
 ## Open Questions
 
@@ -375,18 +387,22 @@ The following phases extend the structural primitives with semantic capabilities
 
 ## Updated Test Summary
 
-| Phase | Predicates | Tests | Type |
-|-------|-----------|-------|------|
-| 1. Navigation | 4 | ~8 | Pure Prolog |
-| 2. Structural | 6 | ~10 | Pure Prolog |
-| 3. Path Ops | 4 | ~6 | Pure Prolog |
-| 4. Basic Transform | 4 | ~10 | Pure Prolog |
-| 5. Advanced Transform | 3 | ~8 | Pure Prolog |
-| 6. Integration | - | ~4 | Pure Prolog |
-| 7. Embeddings | 3 | ~6 | Bindings |
-| 8. Clustering | 4 | ~8 | Components |
-| 9. Semantic Hierarchy | 2 | ~6 | Glue |
-| **Total** | **30** | **~66** | |
+| Phase | Predicates | Tests | Type | Status |
+|-------|-----------|-------|------|--------|
+| 1. Navigation | 7 | 25 | Pure Prolog | ✅ Complete |
+| 2. Structural | 4 | 16 | Pure Prolog | ✅ Complete |
+| 3. Path Ops | 5 | 15 | Pure Prolog | ✅ Complete |
+| 4. Basic Transform | 4 | 14 | Pure Prolog | ✅ Complete |
+| 5. Advanced Transform | 3 | 8 | Pure Prolog | ✅ Complete |
+| 6. Integration | 12 | 3 | Pure Prolog | ✅ Complete |
+| 7. Embeddings | 6 | 6 | Bindings | ✅ Complete |
+| 8. Clustering | 4 | 8 | Components | ✅ Complete |
+| 9. Semantic Hierarchy | 2 | 5 | Glue | ✅ Complete |
+| **Total** | **47** | **100** | | ✅ Complete |
+
+**Breakdown by file:**
+- `test_hierarchy.pl`: 81 tests (Phases 1-6)
+- `test_semantic_hierarchy.pl`: 19 tests (Phases 7-9)
 
 ## Updated Dependencies Graph
 

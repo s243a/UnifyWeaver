@@ -23,10 +23,12 @@ This example shows how UnifyWeaver can:
 | `compile_examples.pl` | Cross-target code generation examples |
 | `browser_automation.pl` | Abstract browser automation workflow |
 | `hierarchy.pl` | Hierarchical tree transformations |
+| `semantic_hierarchy.pl` | Semantic embeddings, clustering, hierarchy |
 | `test_queries.pl` | 36 plunit tests for queries and filters |
 | `test_templates.pl` | 44 plunit tests for templates (all formats) |
 | `test_browser_automation.pl` | 22 plunit tests for browser automation |
 | `test_hierarchy.pl` | 81 plunit tests for hierarchy predicates |
+| `test_semantic_hierarchy.pl` | 19 plunit tests for semantic predicates |
 
 ## Source Definitions
 
@@ -265,6 +267,65 @@ Example embedding format:
 
 See `docs/proposals/hierarchical_transformations_specification.md` for the full specification.
 
+## Semantic Hierarchy (Phases 7-9)
+
+Semantic integration for intelligent tree organization using embeddings and clustering.
+
+### Phase 7: Embedding Predicates
+
+Generate semantic embeddings for trees via UnifyWeaver's component registry:
+
+| Predicate | Description |
+|-----------|-------------|
+| `tree_embedding/2,3` | Get semantic embedding for a tree |
+| `child_embedding/2` | Get embedding for a child item |
+| `tree_centroid/2,3` | Compute centroid from children embeddings |
+| `embedding_input_text/2` | Generate text representation for embedding |
+
+Embedding backends (via component registry):
+- `python_onnx` - Python with ONNX Runtime
+- `go_service` - Go embedding service
+- `rust_candle` - Rust with Candle ML
+- `csharp_native` - C# with ML.NET
+
+### Phase 8: Clustering Predicates
+
+Semantic clustering for grouping related trees:
+
+| Predicate | Description |
+|-----------|-------------|
+| `tree_similarity/3` | Cosine similarity between trees |
+| `most_similar_trees/3` | K nearest neighbors |
+| `cluster_trees/3,4` | K-means clustering |
+
+### Phase 9: Semantic Hierarchy
+
+Full curated folders algorithm combining structural and semantic analysis:
+
+| Predicate | Description |
+|-----------|-------------|
+| `semantic_group/3` | Assign tree to semantic group |
+| `build_semantic_hierarchy/3` | Build hierarchy from semantic clusters |
+| `curated_folder_structure/3` | Complete curated folders pipeline |
+
+### Example: Curated Folder Structure
+
+```prolog
+?- findall(T, pearl_trees(tree, T, _, _, _), TreeIds),
+   curated_folder_structure(TreeIds, [max_depth(3), k(5)], Folders).
+% Returns folder assignments based on semantic similarity
+```
+
+### Cross-Runtime Pipeline
+
+The semantic predicates orchestrate across multiple runtimes:
+
+```
+Prolog (specification) → Go (embeddings) → Rust (clustering) → Python (visualization)
+```
+
+Each phase uses the appropriate backend via component registry invocation.
+
 ## Running Tests
 
 ```bash
@@ -279,6 +340,9 @@ swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_browser_au
 
 # Run hierarchy tests (81 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_hierarchy.pl
+
+# Run semantic hierarchy tests (19 tests)
+swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_semantic_hierarchy.pl
 ```
 
 ## Browser Automation Workflow
