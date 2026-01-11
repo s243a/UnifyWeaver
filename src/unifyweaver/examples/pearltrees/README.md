@@ -30,6 +30,7 @@ This example shows how UnifyWeaver can:
 | `test_hierarchy.pl` | 105 plunit tests for hierarchy predicates |
 | `test_semantic_hierarchy.pl` | 19 plunit tests for semantic predicates |
 | `test_codegen.pl` | 25 plunit tests for code generation |
+| `test_glue_integration.pl` | 36 plunit tests for cross-target glue integration |
 
 ## Source Definitions
 
@@ -372,6 +373,29 @@ Prolog (specification) → Go (embeddings) → Rust (clustering) → Python (vis
 
 Each phase uses the appropriate backend via component registry invocation.
 
+### Cross-Target Glue Integration
+
+The cross-runtime pipeline uses UnifyWeaver's glue infrastructure:
+
+```prolog
+%% Define a cross-runtime pipeline
+?- compile_cross_runtime_pipeline([
+       python:compute_embedding/4,
+       go:cluster_trees/4,
+       python:visualize_results/2
+   ], [pipeline_name(semantic_pipeline)], OutputFiles).
+
+%% Group predicates by runtime
+?- group_by_runtime([go:a/1, python:b/2, go:c/3], Groups).
+Groups = [group(go, [go:a/1]), group(python, [python:b/2]), group(go, [go:c/3])].
+```
+
+The glue infrastructure supports:
+- **Runtime detection**: `go:`, `python:`, `rust_ffi:go:`, `rust_ffi:node:` prefixes
+- **Stage grouping**: Consecutive same-runtime predicates are merged
+- **Component registry**: Invoke components with fallback to placeholders
+- **Orchestrator generation**: Shell scripts to pipe stages together
+
 ## Code Generation Testing
 
 The Pearltrees example includes tests for cross-target code generation:
@@ -432,8 +456,11 @@ swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_hierarchy.
 # Run semantic hierarchy tests (19 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_semantic_hierarchy.pl
 
-# Run code generation tests (21 tests)
+# Run code generation tests (25 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_codegen.pl
+
+# Run glue integration tests (36 tests)
+swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_glue_integration.pl
 ```
 
 ## Browser Automation Workflow
