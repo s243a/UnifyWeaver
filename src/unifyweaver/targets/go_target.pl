@@ -95,6 +95,35 @@
 :- dynamic required_binding_import/1.
 :- dynamic collected_component/2.
 
+% Track current compilation module context for module-qualified predicates
+:- dynamic current_compilation_module/1.
+
+%% set_compilation_module(+Module)
+%  Set the current module context for clause lookup
+set_compilation_module(Module) :-
+    retractall(current_compilation_module(_)),
+    assertz(current_compilation_module(Module)).
+
+%% get_compilation_module(-Module)
+%  Get the current module context (defaults to user)
+get_compilation_module(Module) :-
+    (   current_compilation_module(M)
+    ->  Module = M
+    ;   Module = user
+    ).
+
+%% module_clause(+Head, -Body)
+%  Look up a clause in the current compilation module context
+module_clause(Head, Body) :-
+    get_compilation_module(Module),
+    clause(Module:Head, Body).
+
+%% module_findall_clauses(+Head, -Clauses)
+%  Find all clauses for Head in the current compilation module
+module_findall_clauses(Head, Clauses) :-
+    get_compilation_module(Module),
+    findall(Head-Body, clause(Module:Head, Body), Clauses).
+
 %% init_go_target
 %  Initialize Go target with bindings
 init_go_target :-
@@ -3971,11 +4000,15 @@ generate_span_context_go(_, "NewSpanContext()").
 %  - db_mode(read|write) - Database operation mode (default: write with json_input, read otherwise)
 %
 compile_predicate_to_go(PredIndicator, Options, GoCode) :-
-    (   PredIndicator = _Module:Pred/Arity
+    (   PredIndicator = Module:Pred/Arity
     ->  true
-    ;   PredIndicator = Pred/Arity
+    ;   PredIndicator = Pred/Arity,
+        Module = user
     ),
-    format('=== Compiling ~w/~w to Go ===~n', [Pred, Arity]),
+    format('=== Compiling ~w:~w/~w to Go ===~n', [Module, Pred, Arity]),
+
+    % Set the module context for clause lookups
+    set_compilation_module(Module),
 
     % Get constraints for this predicate (from declarations or defaults)
     % Merge with runtime options (runtime takes precedence)
@@ -3991,13 +4024,13 @@ compile_predicate_to_go(PredIndicator, Options, GoCode) :-
         compile_generator_mode_go(Pred, Arity, MergedOptions, GoCode)
     % Check if this is an aggregation predicate (aggregate/3 in body)
     ;   functor(Head, Pred, Arity),
-        clause(Head, Body),
+        module_clause(Head, Body),
         is_aggregation_predicate(Body)
     ->  format('  Mode: Aggregation (New)~n'),
         compile_aggregation_mode(Pred, Arity, MergedOptions, GoCode)
     % Check if this is a GROUP BY predicate (group_by/4 in body)
     ;   functor(Head, Pred, Arity),
-        clause(Head, Body),
+        module_clause(Head, Body),
         is_group_by_predicate(Body)
     ->  format('  Mode: GROUP BY Aggregation~n'),
         compile_group_by_mode(Pred, Arity, MergedOptions, GoCode)
@@ -5250,7 +5283,7 @@ compile_predicate_to_go_normal(Pred, Arity, Options, GoCode) :-
     functor(Head, Pred, Arity),
 
     % Get all clauses for this predicate
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    module_findall_clauses(Head, Clauses),
 
     % Determine compilation strategy
     (   Clauses = [] ->
@@ -5361,7 +5394,7 @@ extract_aggregation_spec((aggregate(Op, Goal, Result), _), Op, Goal, Result).
 compile_aggregation_mode(Pred, Arity, Options, GoCode) :- !,
     % Get predicate clauses
     functor(Head, Pred, Arity),
-    clause(Head, Body),
+    module_clause(Head, Body),
     
     % Extract aggregation spec
     extract_aggregation_spec(Body, Op, Goal, ResultVar),
@@ -5714,7 +5747,7 @@ compile_tail_recursion_go(Pred/Arity, _Options, GoCode) :-
     
     % Detect step operation from predicate clauses
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    module_findall_clauses(Head, Clauses),
     detect_go_step_op(Clauses, Pred, StepOp),
     step_op_to_go(StepOp, GoStepCode),
     
@@ -5835,7 +5868,7 @@ step_op_to_go(_, "acc += item").
 %% can_compile_tail_recursion_go(+Pred/Arity)
 can_compile_tail_recursion_go(Pred/Arity) :-
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    module_findall_clauses(Head, Clauses),
     % Need at least one base case and one recursive case
     partition(is_recursive_clause_go(Pred), Clauses, RecClauses, BaseClauses),
     RecClauses \= [],
@@ -5912,7 +5945,7 @@ func main() {
 %% can_compile_linear_recursion_go(+Pred/Arity)
 can_compile_linear_recursion_go(Pred/Arity) :-
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    module_findall_clauses(Head, Clauses),
     partition(is_recursive_clause_go(Pred), Clauses, RecClauses, BaseClauses),
     RecClauses \= [],
     BaseClauses \= [],
@@ -5986,7 +6019,7 @@ generate_mutual_function_go(Pred, Arity, AllPredicates, GroupName, Code) :-
     
     % Get clauses for this predicate
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    module_findall_clauses(Head, Clauses),
     
     % Separate base and recursive cases
     partition(is_mutual_recursive_clause_go(AllPredicates), Clauses, RecClauses, BaseClauses),
@@ -8044,7 +8077,7 @@ compile_database_read_mode(Pred, Arity, Options, GoCode) :-
 
     % Check if predicate has a body with constraints
     functor(Head, Pred, Arity),
-    (   clause(Head, Body),
+    (   module_clause(Head, Body),
         Body \= true
     ->  % Has body - extract constraints and field mappings
         format('  Predicate body: ~w~n', [Body]),
@@ -8179,7 +8212,7 @@ compile_database_analyze_mode(Pred, Arity, Options, GoCode) :-
     
     % Get fields from body
     functor(Head, Pred, Arity),
-    (   clause(Head, Body),
+    (   module_clause(Head, Body),
         extract_json_field_mappings(Body, FieldMappings)
     ->  format('  Analyzing fields for statistics: ~w~n', [FieldMappings])
     ;   FieldMappings = []
@@ -8323,7 +8356,7 @@ extract_having_constraints((_First, Rest), Constraints) :-
 compile_group_by_mode(Pred, Arity, Options, GoCode) :-
     % Get predicate definition
     functor(Head, Pred, Arity),
-    clause(Head, Body),
+    module_clause(Head, Body),
 
     % Extract group_by specification
     extract_group_by_spec(Body, GroupField, Goal, AggOp, Result),
@@ -9907,7 +9940,7 @@ compile_pipeline_mode(Pred, Arity, Options, GoCode) :-
 
     % Get predicate clauses
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    module_findall_clauses(Head, Clauses),
 
     (   Clauses = []
     ->  format('ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
@@ -10374,7 +10407,7 @@ compile_pipeline_stages([pred_info(Name, Arity, _Target)|Rest], Options, Code, [
 
     % Check if predicate exists and compile it
     (   functor(Head, Name, Arity),
-        clause(Head, Body)
+        module_clause(Head, Body)
     ->  % Compile actual predicate logic
         compile_pipeline_stage_from_clause(Name, Arity, Head, Body, Options, StageCode)
     ;   % Generate placeholder stage
@@ -10912,7 +10945,7 @@ compile_json_input_mode(Pred, Arity, Options, GoCode) :-
 
     % Get predicate clauses
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    module_findall_clauses(Head, Clauses),
 
     (   Clauses = [] ->
         format('ERROR: No clauses found for ~w/~w~n', [Pred, Arity]),
@@ -11096,7 +11129,7 @@ compile_parallel_json_input_mode(Pred, Arity, Options, Workers, GoCode) :-
 
     % Get predicate clauses
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    module_findall_clauses(Head, Clauses),
 
     (   Clauses = [SingleHead-SingleBody] ->
         % Optimize goals (Codd Phase Optimization)
@@ -12867,7 +12900,7 @@ compile_xml_input_mode(Pred, Arity, Options, GoCode) :-
     
     % Get predicate clauses
     functor(Head, Pred, Arity),
-    findall(Head-Body, user:clause(Head, Body), Clauses),
+    module_findall_clauses(Head, Clauses),
     
     (   Clauses = [SingleHead-SingleBody] ->
         % Extract mappings (same as JSON)
