@@ -113,22 +113,25 @@ def get_root_topic_title(smmx_path: Path) -> Optional[str]:
     return None
 
 
-def generate_titled_filename(smmx_path: Path, max_title_length: int = 50) -> str:
+def generate_titled_filename(smmx_path: Path, max_title_length: int = 50, keep_id: bool = False) -> str:
     """Generate a titled filename from the mindmap's root topic.
 
     Args:
         smmx_path: Path to .smmx file
         max_title_length: Maximum length for the title part
+        keep_id: If True, use 'Title_id12345678.smmx' format; otherwise 'Title_12345678.smmx'
 
     Returns:
-        Filename like 'Title_12345678.smmx'
+        Filename like 'Title_12345678.smmx' or 'Title_id12345678.smmx'
     """
     tree_id = extract_tree_id_from_filename(str(smmx_path))
     title = get_root_topic_title(smmx_path)
 
+    id_prefix = "id" if keep_id else ""
+
     if title:
         sanitized = sanitize_filename(title, max_title_length)
-        return f"{sanitized}_{tree_id}.smmx"
+        return f"{sanitized}_{id_prefix}{tree_id}.smmx"
     else:
         # Fallback to id-based name
         return f"id{tree_id}.smmx"
@@ -332,7 +335,8 @@ def batch_rename_to_titled(
     directory: Path,
     dry_run: bool = False,
     verbose: bool = False,
-    max_title_length: int = 50
+    max_title_length: int = 50,
+    keep_id: bool = False
 ) -> Tuple[int, int, int]:
     """Batch rename all mindmaps to titled format.
 
@@ -341,6 +345,7 @@ def batch_rename_to_titled(
         dry_run: If True, don't make changes
         verbose: Print detailed progress
         max_title_length: Maximum length for title part
+        keep_id: If True, use 'Title_id12345678.smmx' format
 
     Returns:
         Tuple of (files_renamed, files_updated, links_updated)
@@ -348,15 +353,21 @@ def batch_rename_to_titled(
     # First pass: collect all renames needed
     renames = []  # List of (old_path, new_name)
 
+    # Pattern depends on whether we're keeping 'id' prefix
+    if keep_id:
+        skip_pattern = r'^[^_]+_id\d+\.smmx$'  # Skip Title_id12345678.smmx
+    else:
+        skip_pattern = r'^[^_]+_\d+\.smmx$'    # Skip Title_12345678.smmx
+
     for smmx_path in directory.rglob('*.smmx'):
-        # Skip already titled files (those with underscore before digits)
+        # Skip already titled files
         basename = smmx_path.name
-        if re.match(r'^[^_]+_\d+\.smmx$', basename) and not basename.startswith('id'):
+        if re.match(skip_pattern, basename) and not basename.startswith('id'):
             if verbose:
                 print(f"Skipping already titled: {basename}")
             continue
 
-        new_name = generate_titled_filename(smmx_path, max_title_length)
+        new_name = generate_titled_filename(smmx_path, max_title_length, keep_id=keep_id)
         if new_name != basename:
             renames.append((smmx_path, new_name))
 
@@ -458,6 +469,10 @@ def main():
     # Common options
     parser.add_argument('--titled', '-t', action='store_true',
                         help='Generate titled filename from root topic (Title_ID.smmx)')
+    parser.add_argument('--id-prefix', dest='id_prefix', action='store_true', default=True,
+                        help='Include "id" prefix in filename (Title_id12345678.smmx) [default]')
+    parser.add_argument('--no-id-prefix', dest='id_prefix', action='store_false',
+                        help='Omit "id" prefix in filename (Title_12345678.smmx)')
     parser.add_argument('--max-title', type=int, default=50,
                         help='Maximum title length (default: 50)')
     parser.add_argument('--index', '-i', type=str,
@@ -497,7 +512,8 @@ def main():
             args.batch,
             dry_run=args.dry_run,
             verbose=args.verbose,
-            max_title_length=args.max_title
+            max_title_length=args.max_title,
+            keep_id=args.id_prefix
         )
 
         action = "Would rename" if args.dry_run else "Renamed"
@@ -507,7 +523,7 @@ def main():
     # Single file mode
     else:
         if args.titled:
-            new_name = generate_titled_filename(args.mindmap, args.max_title)
+            new_name = generate_titled_filename(args.mindmap, args.max_title, keep_id=args.id_prefix)
         else:
             new_name = args.new_name
 
