@@ -47,7 +47,16 @@
     % Advanced transformations (Phase 5)
     reroot_tree/3,
     merge_trees/3,
-    group_by_ancestor/3
+    group_by_ancestor/3,
+
+    % Alias handling
+    alias_target/2,
+    alias_children/2,
+    tree_aliases/2,
+
+    % Cycle detection
+    has_cycle/1,
+    cycle_free_path/2
 ]).
 
 :- use_module(sources).
@@ -77,32 +86,23 @@ tree_ancestors(TreeId, Ancestors) :-
     tree_ancestors(TreeId, Ancestors, []).
 
 tree_ancestors(TreeId, Ancestors, Options) :-
-    tree_ancestors_(TreeId, Options, [], Ancestors).
-
-tree_ancestors_(TreeId, Options, Acc, Ancestors) :-
-    (   tree_parent(TreeId, ParentId, Options)
-    ->  tree_ancestors_(ParentId, Options, [ParentId|Acc], Ancestors)
-    ;   Ancestors = Acc
-    ).
+    tree_ancestors_safe(TreeId, Options, [TreeId], [], Ancestors).
 
 %% tree_descendants(?TreeId, ?Descendants) is det.
 %% tree_descendants(?TreeId, ?Descendants, +Options) is det.
 %%   Descendants is the list of all tree IDs under TreeId (recursive).
-%%   Options: follow_aliases(true/false)
+%%   Options: follow_aliases(true/false) - whether to follow alias links
+%%   Uses cycle detection to prevent infinite loops.
 tree_descendants(TreeId, Descendants) :-
     tree_descendants(TreeId, Descendants, []).
 
 tree_descendants(TreeId, Descendants, Options) :-
-    findall(ChildId, tree_parent(ChildId, TreeId, Options), DirectChildren),
-    findall(Desc,
-            (member(ChildId, DirectChildren),
-             (Desc = ChildId ; tree_descendant_of(ChildId, Desc, Options))),
-            Descendants).
+    findall(Desc, tree_descendant_safe(TreeId, Desc, Options, [TreeId]), Descendants).
 
 %% Helper: tree_descendant_of(+TreeId, -Descendant, +Options)
+%%   Legacy interface - uses cycle-safe implementation internally.
 tree_descendant_of(TreeId, Descendant, Options) :-
-    tree_parent(ChildId, TreeId, Options),
-    (Descendant = ChildId ; tree_descendant_of(ChildId, Descendant, Options)).
+    tree_descendant_safe(TreeId, Descendant, Options, [TreeId]).
 
 %% tree_siblings(?TreeId, ?Siblings) is det.
 %%   Siblings is the list of trees sharing the same parent (excluding TreeId).
@@ -423,4 +423,131 @@ ancestor_at_depth(TreeId, Depth, AncestorId) :-
     (   PathLen >= TargetIdx
     ->  nth1(TargetIdx, Path, AncestorId)
     ;   AncestorId = shallow
+    ).
+
+%% ============================================================================
+%% Alias Handling
+%% ============================================================================
+%%
+%% AliasPearls link trees across accounts. When follow_aliases(true) is set,
+%% traversal predicates will follow these links to include cross-account trees.
+%%
+%% pearl_children(TreeId, alias, Title, Order, null, SeeAlsoUri)
+%%   - SeeAlsoUri contains the target tree's URI
+
+%% alias_target(+AliasUri, -TargetTreeId) is semidet.
+%%   Resolve an alias URI to its target tree ID.
+%%   The alias URI typically looks like: uri:tree_id or similar format.
+alias_target(AliasUri, TargetTreeId) :-
+    nonvar(AliasUri),
+    AliasUri \= null,
+    AliasUri \= '',
+    pearl_trees(tree, TargetTreeId, _, AliasUri, _).
+
+%% alias_children(+TreeId, -AliasTargets) is det.
+%%   Get all alias children of a tree and resolve them to target tree IDs.
+%%   Returns list of target tree IDs that this tree aliases to.
+alias_children(TreeId, AliasTargets) :-
+    findall(TargetId,
+            (pearl_children(TreeId, alias, _, _, _, SeeAlsoUri),
+             alias_target(SeeAlsoUri, TargetId)),
+            AliasTargets).
+
+%% tree_aliases(+TreeId, -AliasInfo) is det.
+%%   Get detailed alias information for a tree.
+%%   Returns list of alias(Title, Order, TargetId) terms.
+tree_aliases(TreeId, AliasInfo) :-
+    findall(alias(Title, Order, TargetId),
+            (pearl_children(TreeId, alias, Title, Order, _, SeeAlsoUri),
+             alias_target(SeeAlsoUri, TargetId)),
+            AliasInfo).
+
+%% ============================================================================
+%% Cycle Detection
+%% ============================================================================
+%%
+%% Cycles can occur when:
+%% 1. A tree's cluster_id points to a descendant (structural cycle)
+%% 2. Aliases create logical cycles (A -> B -> A)
+%%
+%% All traversal predicates use cycle detection internally.
+
+%% has_cycle(+TreeId) is semidet.
+%%   True if following ancestors from TreeId leads back to TreeId.
+%%   Detects structural cycles in the hierarchy.
+has_cycle(TreeId) :-
+    has_cycle_(TreeId, [TreeId]).
+
+has_cycle_(TreeId, Visited) :-
+    tree_parent(TreeId, ParentId, []),  % Don't follow aliases for cycle check
+    (   member(ParentId, Visited)
+    ->  true  % Cycle detected
+    ;   has_cycle_(ParentId, [ParentId|Visited])
+    ).
+
+%% cycle_free_path(+TreeId, -Path) is det.
+%%   Get the path from root to TreeId, stopping if a cycle is detected.
+%%   Returns the path up to (but not including) the repeated node.
+cycle_free_path(TreeId, Path) :-
+    cycle_free_path_(TreeId, [], [], Path).
+
+cycle_free_path_(TreeId, Visited, Acc, Path) :-
+    (   member(TreeId, Visited)
+    ->  % Cycle detected - return accumulated path
+        reverse(Acc, Path)
+    ;   (   tree_parent(TreeId, ParentId, [])
+        ->  cycle_free_path_(ParentId, [TreeId|Visited], [TreeId|Acc], Path)
+        ;   % Reached root
+            reverse([TreeId|Acc], Path)
+        )
+    ).
+
+%% ============================================================================
+%% Internal: Cycle-Safe Traversal Helpers
+%% ============================================================================
+
+%% tree_ancestors_safe(+TreeId, +Options, +Visited, +Acc, -Ancestors) is det.
+%%   Cycle-safe version of tree_ancestors_.
+%%   Stops traversal if a cycle is detected.
+tree_ancestors_safe(TreeId, Options, Visited, Acc, Ancestors) :-
+    (   member(TreeId, Visited)
+    ->  % Cycle detected - stop here
+        Ancestors = Acc
+    ;   (   tree_parent_extended(TreeId, ParentId, Options)
+        ->  tree_ancestors_safe(ParentId, Options, [TreeId|Visited], [ParentId|Acc], Ancestors)
+        ;   Ancestors = Acc
+        )
+    ).
+
+%% tree_parent_extended(+TreeId, -ParentId, +Options) is nondet.
+%%   Extended parent lookup that respects follow_aliases option.
+%%   When follow_aliases(true), also returns parent via alias resolution.
+tree_parent_extended(TreeId, ParentId, Options) :-
+    % Direct parent relationship
+    tree_parent(TreeId, ParentId, []).
+tree_parent_extended(TreeId, ParentId, Options) :-
+    % Parent via alias (if follow_aliases is true)
+    option(follow_aliases(true), Options, false),
+    pearl_children(ParentTreeId, alias, _, _, _, SeeAlsoUri),
+    alias_target(SeeAlsoUri, TreeId),
+    ParentId = ParentTreeId.
+
+%% tree_descendant_safe(+TreeId, -Descendant, +Options, +Visited) is nondet.
+%%   Cycle-safe descendant enumeration.
+tree_descendant_safe(TreeId, Descendant, Options, Visited) :-
+    \+ member(TreeId, Visited),
+    (   % Direct child
+        tree_parent(ChildId, TreeId, Options),
+        \+ member(ChildId, Visited),
+        (   Descendant = ChildId
+        ;   tree_descendant_safe(ChildId, Descendant, Options, [TreeId|Visited])
+        )
+    ;   % Child via alias (if follow_aliases is true)
+        option(follow_aliases(true), Options, false),
+        alias_children(TreeId, AliasTargets),
+        member(AliasTarget, AliasTargets),
+        \+ member(AliasTarget, Visited),
+        (   Descendant = AliasTarget
+        ;   tree_descendant_safe(AliasTarget, Descendant, Options, [TreeId|Visited])
+        )
     ).

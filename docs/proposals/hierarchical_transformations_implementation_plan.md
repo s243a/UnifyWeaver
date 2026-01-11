@@ -269,22 +269,35 @@ Phase 1: Navigation
 7. ✅ Updated README with Phases 7-9 documentation
 8. ✅ All 100 tests passing (81 hierarchy + 19 semantic)
 
-## Open Questions
+## Completed: Alias Handling and Cycle Detection
 
-1. **Should we support cycles?** Trees can have aliases that create logical cycles. Current plan: detect and fail gracefully.
+9. ✅ Implemented cycle detection (`has_cycle/1`, `cycle_free_path/2`)
+10. ✅ Added `follow_aliases` option to traversal predicates
+11. ✅ Implemented alias resolution (`alias_target/2`, `alias_children/2`, `tree_aliases/2`)
+12. ✅ All traversal predicates now use cycle-safe implementations
+13. ✅ Added 24 new tests (105 hierarchy + 19 semantic = 124 total)
+
+## Resolved Questions
+
+1. **~~Should we support cycles?~~** ✅ RESOLVED: Yes, cycles are detected and handled gracefully. `has_cycle/1` detects cycles, and all traversal predicates use cycle-safe implementations that stop at repeated nodes.
 
 2. **How to handle multiple roots?** Multi-account scenarios may have multiple disconnected hierarchies. Current plan: treat as separate hierarchies, enumerate with `root_tree/1`.
 
 3. **Should transformations be lazy or eager?** Current plan: eager (compute full result). Could add generator-style for large hierarchies.
 
-## Important: AliasPearl Handling
+## Implemented: AliasPearl Handling
 
-When building structural hierarchies and embeddings, **AliasPearls must be followed** to bridge across accounts:
+AliasPearls are now fully supported for cross-account traversal:
 
 ```prolog
 %% AliasPearls link trees across accounts
 %% pearl_children(TreeId, alias, Title, Order, null, SeeAlsoUri)
 %%   SeeAlsoUri → target tree in another account
+
+%% New predicates:
+alias_target(SeeAlsoUri, TargetTreeId).     % Resolve alias to tree
+alias_children(TreeId, AliasTargets).       % Get all alias targets
+tree_aliases(TreeId, AliasInfo).            % Get detailed alias info
 
 %% Traversal predicates should support:
 tree_descendants(TreeId, Descendants) :-
