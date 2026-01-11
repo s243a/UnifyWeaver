@@ -51,6 +51,35 @@
 % Track collected components for code generation
 :- dynamic collected_component/2.
 
+% Track current compilation module context for module-qualified predicates
+:- dynamic current_compilation_module/1.
+
+%% set_compilation_module(+Module)
+%  Set the current module context for clause lookup
+set_compilation_module(Module) :-
+    retractall(current_compilation_module(_)),
+    assertz(current_compilation_module(Module)).
+
+%% get_compilation_module(-Module)
+%  Get the current module context (defaults to user)
+get_compilation_module(Module) :-
+    (   current_compilation_module(M)
+    ->  Module = M
+    ;   Module = user
+    ).
+
+%% module_clause(+Head, -Body)
+%  Look up a clause in the current compilation module context
+module_clause(Head, Body) :-
+    get_compilation_module(Module),
+    clause(Module:Head, Body).
+
+%% module_findall_clauses(+Head, -Clauses)
+%  Find all clauses for Head in the current compilation module
+module_findall_clauses(Head, Clauses) :-
+    get_compilation_module(Module),
+    findall(Head-Body, clause(Module:Head, Body), Clauses).
+
 %% init_csharp_target
 %  Initialize the C# target by loading bindings and clearing component state.
 init_csharp_target :-
@@ -174,14 +203,23 @@ validate_query_modes_supported(Pred/Arity, Modes) :-
 %  Options:
 %    mode(Mode) - 'query' (default) or 'generator'
 compile_predicate_to_csharp(PredIndicator, Options, Code) :-
+    % Extract module from predicate indicator
+    (   PredIndicator = Module:Pred/Arity
+    ->  true
+    ;   PredIndicator = Pred/Arity,
+        Module = user
+    ),
+
+    % Set the module context for clause lookups
+    set_compilation_module(Module),
+
     option(mode(Mode), Options, query),
     (   Mode == generator
-    ->  compile_generator_mode(PredIndicator, Options, Code)
+    ->  compile_generator_mode(Pred/Arity, Options, Code)
     ;   Mode == procedural
-    ->  csharp_native_target:compile_predicate_to_csharp(PredIndicator, Options, Code)
+    ->  csharp_native_target:compile_predicate_to_csharp(Module:Pred/Arity, Options, Code)
     ;   Mode == query
-    ->  PredIndicator = Pred/Arity,
-        modes_for_pred_variants(Pred/Arity, ModesVariants),
+    ->  modes_for_pred_variants(Pred/Arity, ModesVariants),
         (   ModesVariants = [Modes]
         ->  build_query_plan(Pred/Arity, Options, Modes, Plan),
             render_plan_to_csharp(Plan, Code)
@@ -269,7 +307,7 @@ aggregate_goal_dependency_(Goal, Dep) :-
 gather_predicate_clauses(predicate{name:Pred, arity:Arity}, Clauses) :-
     findall(Head-Body,
         (   functor(Head, Pred, Arity),
-            clause(user:Head, Body)
+            module_clause(Head, Body)
         ),
         ClausePairs),
     (   ClausePairs == []
@@ -443,7 +481,7 @@ query_body_negated_predicate_(Term0, NegPI) :-
 
 query_predicate_has_rule(Pred/Arity) :-
     functor(Head, Pred, Arity),
-    clause(user:Head, Body),
+    module_clause(Head, Body),
     Body \= true,
     !.
 
@@ -1738,7 +1776,7 @@ estimate_goal_row_count(relation, Term0, Arity, ConstArgs, Estimate) :-
     ->  estimate_unknown_relation_rows(ConstArgs, Estimate)
     ;   copy_term(Args0, Args),
         Pattern =.. [Pred|Args],
-        aggregate_all(count, clause(user:Pattern, true), Estimate)
+        aggregate_all(count, module_clause(Pattern, true), Estimate)
     ).
 estimate_goal_row_count(recursive(delta), _Term, _Arity, ConstArgs, Estimate) :-
     !,
@@ -2754,7 +2792,7 @@ relation_present([_|Rest], Pred, Arity) :-
 gather_fact_rows(Pred, Arity, Rows) :-
     findall(Row,
         (   functor(Head, Pred, Arity),
-            clause(user:Head, true),
+            module_clause(Head, true),
             Head =.. [_|Args],
             maplist(copy_term_value, Args, Row)
         ),

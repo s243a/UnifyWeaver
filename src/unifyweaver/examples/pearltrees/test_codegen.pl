@@ -77,8 +77,7 @@ test(python_has_jsonl_support) :-
 %% Tests: Go Target
 %% ============================================================================
 %%
-%% Note: Go target currently doesn't handle module-qualified predicates well.
-%% These tests verify the infrastructure is present rather than full compilation.
+%% Go target now supports module-qualified predicates.
 
 :- begin_tests(go_target).
 
@@ -90,14 +89,23 @@ test(go_target_has_exports) :-
     current_predicate(go_target:compile_predicate_to_go/3),
     current_predicate(go_target:init_go_target/0).
 
+test(go_compile_module_qualified_predicate, [nondet]) :-
+    % Test that module-qualified predicates can be compiled
+    compile_predicate_to_go(pearltrees_queries:tree_child_count/2, [json_input(true)], Code),
+    code_min_length(Code, 100),
+    code_has_structure(Code, ['package main', 'func']).
+
+test(go_compile_hierarchy_predicate, [nondet]) :-
+    compile_predicate_to_go(pearltrees_hierarchy:tree_depth/2, [json_input(true)], Code),
+    code_min_length(Code, 100).
+
 :- end_tests(go_target).
 
 %% ============================================================================
 %% Tests: C# Target
 %% ============================================================================
 %%
-%% Note: C# target currently doesn't handle module-qualified predicates well.
-%% These tests verify the infrastructure is present.
+%% C# target now supports module-qualified predicates.
 
 :- begin_tests(csharp_target).
 
@@ -106,6 +114,17 @@ test(csharp_target_module_loads) :-
 
 test(csharp_target_has_exports) :-
     current_predicate(csharp_target:compile_predicate_to_csharp/3).
+
+test(csharp_compile_module_qualified_predicate) :-
+    % Test that module-qualified predicates can be compiled in generator mode
+    compile_predicate_to_csharp(pearltrees_queries:tree_child_count/2, [mode(generator)], Code),
+    code_min_length(Code, 100),
+    code_has_structure(Code, ['class', 'void']).
+
+test(csharp_compile_hierarchy_predicate) :-
+    % Test compiling another module-qualified predicate
+    compile_predicate_to_csharp(pearltrees_queries:incomplete_tree/2, [mode(generator)], Code),
+    code_min_length(Code, 100).
 
 :- end_tests(csharp_target).
 
