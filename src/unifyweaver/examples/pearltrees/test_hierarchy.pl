@@ -821,6 +821,277 @@ test(group_by_depth_2, [nondet]) :-
 :- end_tests(group_by_ancestor).
 
 %% ============================================================================
+%% Tests: Alias Handling
+%% ============================================================================
+
+:- dynamic mock_pearl_children/6.
+
+%% Extended mock data with aliases
+setup_alias_mock_data :-
+    setup_hierarchy_mock_data,
+    retractall(mock_pearl_children(_, _, _, _, _, _)),
+
+    % Add some regular children
+    assertz(mock_pearl_children('science_2', pagepearl, 'Wikipedia', 1, 'http://wikipedia.org', null)),
+
+    % Add alias from arts_5 pointing to physics_3 (cross-branch link)
+    assertz(mock_pearl_children('arts_5', alias, 'Physics Link', 2, null, 'uri:physics_3')),
+
+    % Add alias from root_1 pointing to external tree (in another account)
+    assertz(mock_pearl_children('root_1', alias, 'External Science', 3, null, 'uri:external_science')),
+
+    % External tree that the alias points to
+    assertz(mock_pearl_trees(tree, 'external_science', 'External Science Tree', 'uri:external_science', root)).
+
+cleanup_alias_mock_data :-
+    cleanup_hierarchy_mock_data,
+    retractall(mock_pearl_children(_, _, _, _, _, _)).
+
+%% Mock alias_target using mock data
+mock_alias_target(AliasUri, TargetTreeId) :-
+    nonvar(AliasUri),
+    AliasUri \= null,
+    AliasUri \= '',
+    mock_pearl_trees(tree, TargetTreeId, _, AliasUri, _).
+
+%% Mock alias_children
+mock_alias_children(TreeId, AliasTargets) :-
+    findall(TargetId,
+            (mock_pearl_children(TreeId, alias, _, _, _, SeeAlsoUri),
+             mock_alias_target(SeeAlsoUri, TargetId)),
+            AliasTargets).
+
+%% Mock tree_aliases
+mock_tree_aliases(TreeId, AliasInfo) :-
+    findall(alias(Title, Order, TargetId),
+            (mock_pearl_children(TreeId, alias, Title, Order, _, SeeAlsoUri),
+             mock_alias_target(SeeAlsoUri, TargetId)),
+            AliasInfo).
+
+:- begin_tests(alias_target, [setup(setup_alias_mock_data), cleanup(cleanup_alias_mock_data)]).
+
+test(resolve_alias_to_physics) :-
+    mock_alias_target('uri:physics_3', TargetId),
+    TargetId == 'physics_3'.
+
+test(resolve_alias_to_external) :-
+    mock_alias_target('uri:external_science', TargetId),
+    TargetId == 'external_science'.
+
+test(null_alias_fails, [fail]) :-
+    mock_alias_target(null, _).
+
+test(empty_alias_fails, [fail]) :-
+    mock_alias_target('', _).
+
+test(nonexistent_alias_fails, [fail]) :-
+    mock_alias_target('uri:nonexistent', _).
+
+:- end_tests(alias_target).
+
+:- begin_tests(alias_children, [setup(setup_alias_mock_data), cleanup(cleanup_alias_mock_data)]).
+
+test(arts_has_physics_alias) :-
+    mock_alias_children('arts_5', Targets),
+    member('physics_3', Targets).
+
+test(root_has_external_alias) :-
+    mock_alias_children('root_1', Targets),
+    member('external_science', Targets).
+
+test(science_has_no_aliases) :-
+    mock_alias_children('science_2', Targets),
+    Targets == [].
+
+:- end_tests(alias_children).
+
+:- begin_tests(tree_aliases, [setup(setup_alias_mock_data), cleanup(cleanup_alias_mock_data)]).
+
+test(arts_alias_info) :-
+    mock_tree_aliases('arts_5', AliasInfo),
+    member(alias('Physics Link', 2, 'physics_3'), AliasInfo).
+
+test(root_alias_info) :-
+    mock_tree_aliases('root_1', AliasInfo),
+    member(alias('External Science', 3, 'external_science'), AliasInfo).
+
+:- end_tests(tree_aliases).
+
+%% ============================================================================
+%% Tests: Cycle Detection
+%% ============================================================================
+
+:- dynamic mock_cyclic_trees/5.
+
+%% Mock data with cycles
+setup_cycle_mock_data :-
+    retractall(mock_cyclic_trees(_, _, _, _, _)),
+
+    % Normal tree
+    assertz(mock_cyclic_trees(tree, 'normal_root', 'Normal Root', 'uri:normal_root', root)),
+    assertz(mock_cyclic_trees(tree, 'normal_child', 'Normal Child', 'uri:normal_child', 'uri:normal_root')),
+
+    % Simple cycle: A -> B -> A
+    assertz(mock_cyclic_trees(tree, 'cycle_a', 'Cycle A', 'uri:cycle_a', 'uri:cycle_b')),
+    assertz(mock_cyclic_trees(tree, 'cycle_b', 'Cycle B', 'uri:cycle_b', 'uri:cycle_a')),
+
+    % Longer cycle: X -> Y -> Z -> X
+    assertz(mock_cyclic_trees(tree, 'cycle_x', 'Cycle X', 'uri:cycle_x', 'uri:cycle_z')),
+    assertz(mock_cyclic_trees(tree, 'cycle_y', 'Cycle Y', 'uri:cycle_y', 'uri:cycle_x')),
+    assertz(mock_cyclic_trees(tree, 'cycle_z', 'Cycle Z', 'uri:cycle_z', 'uri:cycle_y')).
+
+cleanup_cycle_mock_data :-
+    retractall(mock_cyclic_trees(_, _, _, _, _)).
+
+%% Mock predicates for cycle testing
+mock_cyclic_cluster_to_tree_id(ClusterId, TreeId) :-
+    mock_cyclic_trees(tree, TreeId, _, ClusterId, _).
+
+mock_cyclic_tree_parent(TreeId, ParentId) :-
+    mock_cyclic_trees(tree, TreeId, _, _, ClusterId),
+    ClusterId \= root,
+    ClusterId \= '',
+    mock_cyclic_cluster_to_tree_id(ClusterId, ParentId).
+
+%% Mock has_cycle - detects if following parents leads back to start
+mock_has_cycle(TreeId) :-
+    mock_has_cycle_(TreeId, [TreeId]).
+
+mock_has_cycle_(TreeId, Visited) :-
+    mock_cyclic_tree_parent(TreeId, ParentId),
+    (   member(ParentId, Visited)
+    ->  true  % Cycle detected
+    ;   mock_has_cycle_(ParentId, [ParentId|Visited])
+    ).
+
+%% Mock cycle_free_path - returns path up to cycle point
+mock_cycle_free_path(TreeId, Path) :-
+    mock_cycle_free_path_(TreeId, [], [], Path).
+
+mock_cycle_free_path_(TreeId, Visited, Acc, Path) :-
+    (   member(TreeId, Visited)
+    ->  reverse(Acc, Path)
+    ;   (   mock_cyclic_tree_parent(TreeId, ParentId)
+        ->  mock_cycle_free_path_(ParentId, [TreeId|Visited], [TreeId|Acc], Path)
+        ;   reverse([TreeId|Acc], Path)
+        )
+    ).
+
+%% Mock cycle-safe ancestors
+mock_cycle_safe_ancestors(TreeId, Ancestors) :-
+    mock_cycle_safe_ancestors_(TreeId, [TreeId], [], Ancestors).
+
+mock_cycle_safe_ancestors_(TreeId, Visited, Acc, Ancestors) :-
+    (   mock_cyclic_tree_parent(TreeId, ParentId)
+    ->  (   member(ParentId, Visited)
+        ->  Ancestors = Acc  % Cycle - stop
+        ;   mock_cycle_safe_ancestors_(ParentId, [ParentId|Visited], [ParentId|Acc], Ancestors)
+        )
+    ;   Ancestors = Acc
+    ).
+
+:- begin_tests(has_cycle, [setup(setup_cycle_mock_data), cleanup(cleanup_cycle_mock_data)]).
+
+test(normal_tree_no_cycle, [fail]) :-
+    mock_has_cycle('normal_child').
+
+test(simple_cycle_detected) :-
+    mock_has_cycle('cycle_a').
+
+test(simple_cycle_detected_from_b) :-
+    mock_has_cycle('cycle_b').
+
+test(long_cycle_detected) :-
+    mock_has_cycle('cycle_x').
+
+test(root_no_cycle, [fail]) :-
+    mock_has_cycle('normal_root').
+
+:- end_tests(has_cycle).
+
+:- begin_tests(cycle_free_path, [setup(setup_cycle_mock_data), cleanup(cleanup_cycle_mock_data)]).
+
+test(normal_path, [nondet]) :-
+    mock_cycle_free_path('normal_child', Path),
+    % Path from root to child
+    member('normal_root', Path),
+    member('normal_child', Path),
+    length(Path, 2).
+
+test(cycle_path_stops_at_repeat) :-
+    mock_cycle_free_path('cycle_a', Path),
+    % Should stop when it would revisit a node
+    length(Path, Len),
+    Len =< 2.  % Should not loop infinitely
+
+test(root_path) :-
+    mock_cycle_free_path('normal_root', Path),
+    Path == ['normal_root'].
+
+:- end_tests(cycle_free_path).
+
+:- begin_tests(cycle_safe_ancestors, [setup(setup_cycle_mock_data), cleanup(cleanup_cycle_mock_data)]).
+
+test(normal_ancestors) :-
+    mock_cycle_safe_ancestors('normal_child', Ancestors),
+    Ancestors == ['normal_root'].
+
+test(cycle_ancestors_finite) :-
+    mock_cycle_safe_ancestors('cycle_a', Ancestors),
+    % Should terminate and not loop infinitely
+    length(Ancestors, Len),
+    Len =< 2.
+
+test(root_ancestors_empty) :-
+    mock_cycle_safe_ancestors('normal_root', Ancestors),
+    Ancestors == [].
+
+:- end_tests(cycle_safe_ancestors).
+
+%% ============================================================================
+%% Tests: Follow Aliases in Descendants
+%% ============================================================================
+
+%% Mock descendants with alias following
+mock_descendants_with_aliases(TreeId, Descendants) :-
+    findall(Desc, mock_descendant_with_alias(TreeId, Desc, []), Descendants).
+
+mock_descendant_with_alias(TreeId, Descendant, Visited) :-
+    (   % Direct child
+        mock_tree_parent(ChildId, TreeId),
+        \+ member(ChildId, Visited),
+        (   Descendant = ChildId
+        ;   mock_descendant_with_alias(ChildId, Descendant, [ChildId|Visited])
+        )
+    ;   % Child via alias
+        mock_alias_children(TreeId, AliasTargets),
+        member(AliasTarget, AliasTargets),
+        \+ member(AliasTarget, Visited),
+        (   Descendant = AliasTarget
+        ;   mock_descendant_with_alias(AliasTarget, Descendant, [AliasTarget|Visited])
+        )
+    ).
+
+:- begin_tests(follow_aliases, [setup(setup_alias_mock_data), cleanup(cleanup_alias_mock_data)]).
+
+test(arts_descendants_include_physics_via_alias, [nondet]) :-
+    mock_descendants_with_aliases('arts_5', Descendants),
+    % arts_5 has music_7 as direct child and physics_3 via alias
+    member('music_7', Descendants),
+    member('physics_3', Descendants).
+
+test(arts_descendants_include_quantum_via_alias, [nondet]) :-
+    mock_descendants_with_aliases('arts_5', Descendants),
+    % physics_3 (via alias) has quantum_6 as descendant
+    member('quantum_6', Descendants).
+
+test(root_descendants_include_external_via_alias, [nondet]) :-
+    mock_descendants_with_aliases('root_1', Descendants),
+    member('external_science', Descendants).
+
+:- end_tests(follow_aliases).
+
+%% ============================================================================
 %% Run tests when loaded directly
 %% ============================================================================
 

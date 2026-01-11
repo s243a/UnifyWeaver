@@ -27,7 +27,7 @@ This example shows how UnifyWeaver can:
 | `test_queries.pl` | 36 plunit tests for queries and filters |
 | `test_templates.pl` | 44 plunit tests for templates (all formats) |
 | `test_browser_automation.pl` | 22 plunit tests for browser automation |
-| `test_hierarchy.pl` | 81 plunit tests for hierarchy predicates |
+| `test_hierarchy.pl` | 105 plunit tests for hierarchy predicates |
 | `test_semantic_hierarchy.pl` | 19 plunit tests for semantic predicates |
 
 ## Source Definitions
@@ -265,6 +265,51 @@ Example embedding format:
       - Quantum Mechanics
 ```
 
+### Alias Handling (Cross-Account Traversal)
+
+AliasPearls link trees across accounts. When `follow_aliases(true)` is set, traversal predicates follow these links:
+
+| Predicate | Description |
+|-----------|-------------|
+| `alias_target/2` | Resolve alias URI to target tree ID |
+| `alias_children/2` | Get all alias targets from a tree |
+| `tree_aliases/2` | Get detailed alias info (title, order, target) |
+
+Example: Follow aliases when getting descendants:
+```prolog
+?- tree_descendants('arts_5', Descendants, [follow_aliases(true)]).
+% Includes both direct children AND trees linked via aliases
+```
+
+Alias handling is essential for:
+- **Semantic embeddings**: Hierarchical context spans accounts
+- **Curated folders**: Complete hierarchy includes cross-account links
+- **User's mental model**: Users organize across accounts via aliases
+
+### Cycle Detection
+
+Cycles can occur when tree relationships form loops (A -> B -> A). All traversal predicates detect cycles to prevent infinite loops:
+
+| Predicate | Description |
+|-----------|-------------|
+| `has_cycle/1` | True if tree has a cycle in its ancestry |
+| `cycle_free_path/2` | Get path stopping at cycle point |
+
+Example:
+```prolog
+?- has_cycle('suspicious_tree').
+true.  % Cycle detected - traversal would loop
+
+?- cycle_free_path('suspicious_tree', Path).
+Path = ['tree_a', 'tree_b'].  % Stops before repeating
+```
+
+Cycle detection is automatic in:
+- `tree_ancestors/2,3`
+- `tree_descendants/2,3`
+- `tree_path/2,3`
+- `subtree_tree/2,3`
+
 See `docs/proposals/hierarchical_transformations_specification.md` for the full specification.
 
 ## Semantic Hierarchy (Phases 7-9)
@@ -338,7 +383,7 @@ swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_templates.
 # Run browser automation tests (22 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_browser_automation.pl
 
-# Run hierarchy tests (81 tests)
+# Run hierarchy tests (105 tests)
 swipl -g "run_tests" -t halt src/unifyweaver/examples/pearltrees/test_hierarchy.pl
 
 # Run semantic hierarchy tests (19 tests)
