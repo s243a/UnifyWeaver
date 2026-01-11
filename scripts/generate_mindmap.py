@@ -155,6 +155,13 @@ class MindMapNode:
     cluster_id: str = ""  # The cluster this node belongs to (for GUID generation)
     alias_target_uri: str = ""  # For AliasPearl/RefPearl - the target tree URI
     external_url: str = ""  # For PagePearl - the actual external URL (e.g., wikipedia.org)
+    # Additional metadata fields
+    pos_order: int = 0  # Position order in parent
+    left_pos: int = 0  # Left position boundary
+    right_pos: int = 0  # Right position boundary
+    modified_date: str = ""  # Last modified date
+    account: str = ""  # Owner account name
+    pearl_id: str = ""  # Pearl ID for the item
 
 
 # SimpleMind borderstyle values
@@ -188,6 +195,88 @@ def generate_deterministic_guid(cluster_id: str, node_id: int) -> str:
     # URL-safe base64, no padding, ~24 chars like SimpleMind GUIDs
     guid = base64.urlsafe_b64encode(hash_bytes).decode().rstrip('=')
     return guid
+
+
+# Available metadata fields for --metadata-fields option
+METADATA_FIELDS = {
+    'type': 'Pearl type (PagePearl, Tree, AliasPearl, etc.)',
+    'uri': 'Pearltrees URI for this node',
+    'url': 'External URL (for PagePearls)',
+    'see_also': 'Target URI (for AliasPearl/RefPearl)',
+    'tree_id': 'Tree ID',
+    'pearl_id': 'Pearl ID',
+    'pos': 'Position order in parent',
+    'left_pos': 'Left position boundary',
+    'right_pos': 'Right position boundary',
+    'modified': 'Last modified date',
+    'account': 'Owner account name',
+}
+
+# Default metadata fields (original set)
+DEFAULT_METADATA_FIELDS = {'type', 'uri', 'url', 'see_also', 'tree_id'}
+
+# All metadata fields
+ALL_METADATA_FIELDS = set(METADATA_FIELDS.keys())
+
+
+def create_metadata_note(node: 'MindMapNode', fields: set = None) -> str:
+    """Create metadata note text for a mindmap node.
+
+    Args:
+        node: The MindMapNode with metadata
+        fields: Set of field names to include (None = all fields)
+
+    Returns:
+        Note text with metadata lines
+    """
+    if fields is None:
+        fields = ALL_METADATA_FIELDS
+
+    lines = []
+
+    # Type
+    if 'type' in fields and node.item_type:
+        lines.append(f"Type: {node.item_type}")
+
+    # URI (Pearltrees URL for this node)
+    if 'uri' in fields and node.url:
+        lines.append(f"URI: {node.url}")
+
+    # External URL (for PagePearls)
+    if 'url' in fields and node.external_url:
+        lines.append(f"URL: {node.external_url}")
+
+    # See Also / Alias Target (for AliasPearl/RefPearl)
+    if 'see_also' in fields and node.alias_target_uri:
+        lines.append(f"See Also: {node.alias_target_uri}")
+
+    # Tree ID
+    if 'tree_id' in fields and node.tree_id:
+        lines.append(f"Tree ID: {node.tree_id}")
+
+    # Pearl ID
+    if 'pearl_id' in fields and node.pearl_id:
+        lines.append(f"Pearl ID: {node.pearl_id}")
+
+    # Position info
+    if 'pos' in fields and node.pos_order:
+        lines.append(f"Position: {node.pos_order}")
+
+    if 'left_pos' in fields and node.left_pos:
+        lines.append(f"Left Pos: {node.left_pos}")
+
+    if 'right_pos' in fields and node.right_pos:
+        lines.append(f"Right Pos: {node.right_pos}")
+
+    # Modified date
+    if 'modified' in fields and node.modified_date:
+        lines.append(f"Modified: {node.modified_date}")
+
+    # Account/owner
+    if 'account' in fields and node.account:
+        lines.append(f"Account: {node.account}")
+
+    return '\n'.join(lines)
 
 
 def extract_tree_id(url: str) -> str:
@@ -1320,7 +1409,10 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
                 url_to_filename: Dict[str, str] = None,
                 layout: str = None,
                 index_store = None,
-                output_path: Path = None):
+                output_path: Path = None,
+                add_metadata: bool = False,
+                metadata_types: set = None,
+                metadata_fields: set = None):
     """Convert a MindMapNode to SimpleMind XML topic element.
 
     Args:
@@ -1397,6 +1489,18 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         if style is None:
             style = SubElement(topic, 'style')
         style.set('borderstyle', borderstyle)
+
+    # Add metadata note if requested and node type matches filter
+    if add_metadata:
+        # Check if this node type should get metadata
+        should_add = (metadata_types is None or
+                      'all' in metadata_types or
+                      node.item_type in metadata_types)
+        if should_add:
+            note_text = create_metadata_note(node, metadata_fields)
+            if note_text:
+                note = SubElement(topic, 'note')
+                note.text = note_text
 
     # Add link - handle Tree nodes with cloudmapref and optional child nodes
     if node.url:
@@ -1668,7 +1772,7 @@ def node_to_xml(node: MindMapNode, parent_element: Element, scales: Dict[int, fl
         node_to_xml(child, parent_element, scales, tree_style, pearl_style,
                     enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text,
                     source_folder, cluster_to_folder, url_to_filename, layout,
-                    index_store, output_path)
+                    index_store, output_path, add_metadata, metadata_types, metadata_fields)
 
 def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float] = None,
                          tree_style: str = None, pearl_style: str = None,
@@ -1682,7 +1786,10 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
                          parent_title: str = None,
                          layout: str = None,
                          index_store = None,
-                         output_path: Path = None) -> str:
+                         output_path: Path = None,
+                         add_metadata: bool = False,
+                         metadata_types: set = None,
+                         metadata_fields: set = None) -> str:
     """Generate complete SimpleMind XML document.
 
     Args:
@@ -1736,7 +1843,7 @@ def generate_mindmap_xml(root: MindMapNode, title: str, scales: Dict[int, float]
     node_to_xml(root, topics, scales, tree_style, pearl_style,
                 enable_cloudmapref, cluster_id, url_nodes_mode, next_id, child_node_text,
                 source_folder, cluster_to_folder, url_to_filename, layout,
-                index_store, output_path)
+                index_store, output_path, add_metadata, metadata_types, metadata_fields)
 
     # Add parent link node if parent info provided
     if parent_tree_id and parent_cloudmapref:
@@ -1934,7 +2041,14 @@ def create_nodes_from_items(items: List[Dict],
             embedding=get_embedding(root_item),
             item_type=root_item.get('type', ''),
             alias_target_uri=root_item.get('alias_target_uri', ''),
-            external_url=get_external_url(root_item)
+            external_url=get_external_url(root_item),
+            # Additional metadata fields
+            pos_order=root_item.get('pos_order', 0) or 0,
+            left_pos=root_item.get('leftPos', 0) or root_item.get('left_pos', 0) or 0,
+            right_pos=root_item.get('rightPos', 0) or root_item.get('right_pos', 0) or 0,
+            modified_date=root_item.get('modified', '') or root_item.get('modifiedDate', '') or '',
+            account=extract_account_from_uri(get_url(root_item)) or '',
+            pearl_id=str(root_item.get('pearl_id', '') or root_item.get('pearlId', '') or '')
         )
         nodes.append(root_node)
 
@@ -1945,17 +2059,25 @@ def create_nodes_from_items(items: List[Dict],
             continue
 
         tree_id = item.get('tree_id', '')
+        item_url = get_url(item)
         node = MindMapNode(
             id=len(nodes),
             title=get_disambiguated_title(item) or f'Item {i}',
             tree_id=tree_id,
-            url=get_url(item),
+            url=item_url,
             parent_id=0,  # Will be updated by build_hierarchy
             palette=(palette_idx % 8) + 1,
             embedding=get_embedding(item),
             item_type=item.get('type', ''),
             alias_target_uri=item.get('alias_target_uri', ''),
-            external_url=get_external_url(item)
+            external_url=get_external_url(item),
+            # Additional metadata fields
+            pos_order=item.get('pos_order', 0) or 0,
+            left_pos=item.get('leftPos', 0) or item.get('left_pos', 0) or 0,
+            right_pos=item.get('rightPos', 0) or item.get('right_pos', 0) or 0,
+            modified_date=item.get('modified', '') or item.get('modifiedDate', '') or '',
+            account=extract_account_from_uri(item_url) or '',
+            pearl_id=str(item.get('pearl_id', '') or item.get('pearlId', '') or '')
         )
         nodes.append(node)
         palette_idx += 1
@@ -1996,7 +2118,10 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                         parent_title: str = None,
                         layout: str = 'radial',
                         flat_hierarchy: bool = False,
-                        children_index: Path = None) -> List[str]:
+                        children_index: Path = None,
+                        add_metadata: bool = False,
+                        metadata_types: set = None,
+                        metadata_fields: set = None) -> List[str]:
     """Generate a single mind map and return URLs of child Trees for recursion.
 
     Args:
@@ -2088,7 +2213,10 @@ def generate_single_map(cluster_url: str, data_path: Path, output_path: Path,
                                        parent_cloudmapref=parent_cloudmapref,
                                        url_to_filename=url_to_filename,
                                        parent_title=parent_title,
-                                       layout=layout)
+                                       layout=layout,
+                                       add_metadata=add_metadata,
+                                       metadata_types=metadata_types,
+                                       metadata_fields=metadata_fields)
 
     # Write output
     if xml_only:
@@ -3422,6 +3550,16 @@ def main():
                         help='Save computed folder structure to JSON file for reuse')
     parser.add_argument('--load-folder-map', type=Path, default=None,
                         help='Load pre-computed folder structure from JSON file (skips computation)')
+    parser.add_argument('--add-metadata', action='store_true',
+                        help='Add metadata notes to each node (type, URI, external URL, etc.)')
+    parser.add_argument('--metadata-types', nargs='+',
+                        choices=['PagePearl', 'Tree', 'AliasPearl', 'RefPearl', 'Section', 'Note', 'all'],
+                        default=['all'],
+                        help='Node types to add metadata to (default: all)')
+    parser.add_argument('--metadata-fields', nargs='+',
+                        choices=list(METADATA_FIELDS.keys()) + ['all', 'default'],
+                        default=['all'],
+                        help=f'Metadata fields to include: {", ".join(METADATA_FIELDS.keys())} (default: all)')
 
     args = parser.parse_args()
 
@@ -3492,6 +3630,23 @@ def main():
             print(f"No cluster found matching: {args.cluster}")
             return 1
 
+    # Process metadata options
+    metadata_types = None
+    if args.add_metadata:
+        if 'all' in args.metadata_types:
+            metadata_types = {'PagePearl', 'Tree', 'AliasPearl', 'RefPearl', 'Section', 'Note'}
+        else:
+            metadata_types = set(args.metadata_types)
+
+    metadata_fields = None
+    if args.add_metadata:
+        if 'all' in args.metadata_fields:
+            metadata_fields = ALL_METADATA_FIELDS
+        elif 'default' in args.metadata_fields:
+            metadata_fields = DEFAULT_METADATA_FIELDS
+        else:
+            metadata_fields = set(args.metadata_fields)
+
     # Recursive mode: generate entire hierarchy
     if args.recursive:
         args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -3555,7 +3710,10 @@ def main():
             url_nodes_mode=args.url_nodes,
             child_node_text=args.child_text,
             xml_only=args.xml_only,
-            layout=args.layout
+            layout=args.layout,
+            add_metadata=args.add_metadata,
+            metadata_types=metadata_types,
+            metadata_fields=metadata_fields
         )
 
         print(f"\nGenerated {total} linked mind maps")
@@ -3647,7 +3805,10 @@ def main():
                                        url_nodes_mode=url_nodes,
                                        layout=args.layout,
                                        index_store=index_store,
-                                       output_path=args.output)
+                                       output_path=args.output,
+                                       add_metadata=args.add_metadata,
+                                       metadata_types=metadata_types,
+                                       metadata_fields=metadata_fields)
 
     # Write output
     if args.xml_only:

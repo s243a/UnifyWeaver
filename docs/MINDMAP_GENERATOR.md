@@ -96,6 +96,55 @@ python3 scripts/generate_mindmap.py \
 | `--output-dir` | - | Output directory for recursive generation (required with `--recursive`) |
 | `--max-depth` | unlimited | Maximum depth for recursive generation |
 | `--parent-links` | false | Add "back to parent" nodes in child maps (not yet implemented) |
+| `--add-metadata` | false | Add metadata notes to each node (type, URI, URL, etc.) |
+| `--metadata-types` | all | Node types to add metadata to: PagePearl, Tree, AliasPearl, RefPearl, Section, Note, all |
+| `--metadata-fields` | all | Fields to include: type, uri, url, see_also, tree_id, pearl_id, pos, left_pos, right_pos, modified, account, all, default |
+
+### Metadata Options
+
+The `--add-metadata` flag enables adding note elements to nodes with pearl information:
+
+```bash
+# Add all metadata to all node types
+python3 scripts/generate_mindmap.py \
+    --cluster-url "..." \
+    --output output/with_metadata.smmx \
+    --add-metadata
+
+# Only add metadata to PagePearl nodes
+python3 scripts/generate_mindmap.py \
+    --cluster-url "..." \
+    --output output/pages_only.smmx \
+    --add-metadata \
+    --metadata-types PagePearl
+
+# Use default fields (type, uri, url, see_also, tree_id)
+python3 scripts/generate_mindmap.py \
+    --cluster-url "..." \
+    --output output/default_fields.smmx \
+    --add-metadata \
+    --metadata-fields default
+
+# Only include specific fields
+python3 scripts/generate_mindmap.py \
+    --cluster-url "..." \
+    --output output/custom_fields.smmx \
+    --add-metadata \
+    --metadata-fields type uri pos account
+```
+
+**Available metadata fields:**
+- `type` - Pearl type (PagePearl, Tree, AliasPearl, etc.)
+- `uri` - Pearltrees URI for this node
+- `url` - External URL (for PagePearls)
+- `see_also` - Target URI (for AliasPearl/RefPearl)
+- `tree_id` - Tree ID
+- `pearl_id` - Pearl ID
+- `pos` - Position order in parent
+- `left_pos` - Left position boundary
+- `right_pos` - Right position boundary
+- `modified` - Last modified date
+- `account` - Owner account name
 
 ## How It Works
 

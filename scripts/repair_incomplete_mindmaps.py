@@ -29,6 +29,31 @@ import uuid
 import hashlib
 
 
+# Available metadata fields for --metadata-fields option
+METADATA_FIELDS = {
+    'type': 'Pearl type (PagePearl, Tree, AliasPearl, etc.)',
+    'uri': 'Pearltrees URI for this node',
+    'url': 'External URL (for PagePearls)',
+    'see_also': 'Target URI (for AliasPearl/RefPearl)',
+    'tree_id': 'Tree ID',
+    'pearl_id': 'Pearl ID',
+    'pos': 'Position order in parent',
+    'left_pos': 'Left position boundary',
+    'right_pos': 'Right position boundary',
+    'modified': 'Last modified date',
+    'account': 'Owner account name',
+}
+
+# Default metadata fields (original set)
+DEFAULT_METADATA_FIELDS = {'type', 'uri', 'url', 'see_also', 'tree_id'}
+
+# All metadata fields
+ALL_METADATA_FIELDS = set(METADATA_FIELDS.keys())
+
+# All node types that can have metadata
+ALL_NODE_TYPES = {'PagePearl', 'Tree', 'AliasPearl', 'RefPearl', 'Section', 'Note'}
+
+
 @dataclass
 class ChildPearl:
     """A pearl child of a tree."""
@@ -38,6 +63,72 @@ class ChildPearl:
     pos_order: int
     external_url: str = ""
     see_also_uri: str = ""
+    pearl_id: str = ""
+    left_pos: int = 0
+    right_pos: int = 0
+    modified_date: str = ""
+    account: str = ""
+    tree_id: str = ""
+
+
+def build_note_text(child: ChildPearl, fields: Optional[set] = None) -> str:
+    """Build note text from child pearl based on selected fields.
+
+    Args:
+        child: ChildPearl with metadata
+        fields: Set of field names to include (None = all fields)
+
+    Returns:
+        Note text with selected metadata lines
+    """
+    if fields is None:
+        fields = ALL_METADATA_FIELDS
+
+    note_lines = []
+
+    # Type
+    if 'type' in fields and child.pearl_type:
+        note_lines.append(f"Type: {child.pearl_type}")
+
+    # URI (Pearltrees URL for this node)
+    if 'uri' in fields and child.uri:
+        note_lines.append(f"URI: {child.uri}")
+
+    # External URL (for PagePearls)
+    if 'url' in fields and child.external_url:
+        note_lines.append(f"URL: {child.external_url}")
+
+    # See Also / Alias Target (for AliasPearl/RefPearl)
+    if 'see_also' in fields and child.see_also_uri:
+        note_lines.append(f"See Also: {child.see_also_uri}")
+
+    # Tree ID
+    if 'tree_id' in fields and child.tree_id:
+        note_lines.append(f"Tree ID: {child.tree_id}")
+
+    # Pearl ID
+    if 'pearl_id' in fields and child.pearl_id:
+        note_lines.append(f"Pearl ID: {child.pearl_id}")
+
+    # Position info
+    if 'pos' in fields and child.pos_order:
+        note_lines.append(f"Position: {child.pos_order}")
+
+    if 'left_pos' in fields and child.left_pos:
+        note_lines.append(f"Left Pos: {child.left_pos}")
+
+    if 'right_pos' in fields and child.right_pos:
+        note_lines.append(f"Right Pos: {child.right_pos}")
+
+    # Modified date
+    if 'modified' in fields and child.modified_date:
+        note_lines.append(f"Modified: {child.modified_date}")
+
+    # Account/owner
+    if 'account' in fields and child.account:
+        note_lines.append(f"Account: {child.account}")
+
+    return '\n'.join(note_lines)
 
 
 def load_children_from_index(db_path: Path, tree_id: str) -> List[ChildPearl]:
@@ -97,8 +188,22 @@ def extract_domain(url: str) -> str:
 
 
 def generate_mindmap_xml(tree_id: str, title: str, uri: str,
-                         children: List[ChildPearl], expanded_mode: bool = True) -> str:
-    """Generate SimpleMind XML for a tree with children."""
+                         children: List[ChildPearl], expanded_mode: bool = True,
+                         add_metadata: bool = False,
+                         metadata_types: Optional[set] = None,
+                         metadata_fields: Optional[set] = None) -> str:
+    """Generate SimpleMind XML for a tree with children.
+
+    Args:
+        tree_id: Tree ID
+        title: Tree title
+        uri: Pearltrees URI for the tree
+        children: List of ChildPearl objects
+        expanded_mode: Add domain child nodes for PagePearls
+        add_metadata: Add note elements with metadata
+        metadata_types: Node types to add metadata to (None = all)
+        metadata_fields: Fields to include in note (None = all)
+    """
 
     # Root element
     root = Element('simplemind-mindmaps')
@@ -181,6 +286,15 @@ def generate_mindmap_xml(tree_id: str, title: str, uri: str,
         link = SubElement(topic, 'link')
         link.set('urllink', child.uri)
 
+        # Add note element with metadata (if enabled and type is allowed)
+        if add_metadata:
+            should_add_note = (metadata_types is None or child.pearl_type in metadata_types)
+            if should_add_note:
+                note_text = build_note_text(child, metadata_fields)
+                if note_text:
+                    note = SubElement(topic, 'note')
+                    note.text = note_text
+
         # For PagePearl in expanded mode, add domain child node
         if expanded_mode and child.pearl_type == 'PagePearl' and child.external_url:
             domain = extract_domain(child.external_url)
@@ -244,8 +358,35 @@ def main():
                         help='Use expanded mode for PagePearls (default: True)')
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Verbose output')
+    parser.add_argument('--add-metadata', action='store_true',
+                        help='Add metadata notes to each node')
+    parser.add_argument('--metadata-types', nargs='+',
+                        choices=['PagePearl', 'Tree', 'AliasPearl', 'RefPearl', 'Section', 'Note', 'all'],
+                        default=['all'],
+                        help='Node types to add metadata to (default: all)')
+    parser.add_argument('--metadata-fields', nargs='+',
+                        choices=list(METADATA_FIELDS.keys()) + ['all', 'default'],
+                        default=['all'],
+                        help=f'Metadata fields to include: {", ".join(METADATA_FIELDS.keys())} (default: all)')
 
     args = parser.parse_args()
+
+    # Process metadata options
+    metadata_types = None
+    if args.add_metadata:
+        if 'all' in args.metadata_types:
+            metadata_types = ALL_NODE_TYPES
+        else:
+            metadata_types = set(args.metadata_types)
+
+    metadata_fields = None
+    if args.add_metadata:
+        if 'all' in args.metadata_fields:
+            metadata_fields = ALL_METADATA_FIELDS
+        elif 'default' in args.metadata_fields:
+            metadata_fields = DEFAULT_METADATA_FIELDS
+        else:
+            metadata_fields = set(args.metadata_fields)
 
     # Load scan results
     with open(args.scan) as f:
@@ -293,8 +434,13 @@ def main():
 
         try:
             # Generate and write mindmap
-            xml = generate_mindmap_xml(tree_id, title, uri, children,
-                                       expanded_mode=args.expanded)
+            xml = generate_mindmap_xml(
+                tree_id, title, uri, children,
+                expanded_mode=args.expanded,
+                add_metadata=args.add_metadata,
+                metadata_types=metadata_types,
+                metadata_fields=metadata_fields
+            )
             write_smmx(xml, output_path)
             repaired += 1
 
