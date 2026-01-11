@@ -31,6 +31,9 @@ This example shows how UnifyWeaver can:
 | `test_semantic_hierarchy.pl` | 19 plunit tests for semantic predicates |
 | `test_codegen.pl` | 25 plunit tests for code generation |
 | `test_glue_integration.pl` | 36 plunit tests for cross-target glue integration |
+| `compile_vue_examples.pl` | Vue SFC code generation from Prolog |
+| `vue/PearltreesHierarchy.vue` | Example Vue hierarchy visualization |
+| `vue/MindMapViewport.vue` | Reusable Vue viewport component |
 
 ## Source Definitions
 
@@ -514,6 +517,78 @@ See generated code examples for Python, C#, and Go:
 | `batch_repair.py` | `browser_automation.pl` workflow + `api_config.json` |
 
 The existing Python tools remain the production implementation. These UnifyWeaver examples show how similar functionality could be generated for multiple targets from a single declarative specification.
+
+## Vue Component Generation
+
+UnifyWeaver can generate Vue 3 SFC (Single File Component) format for visualization components. This enables Prolog specifications to generate interactive frontends.
+
+### Vue Target Files
+
+| File | Description |
+|------|-------------|
+| `vue/PearltreesHierarchy.vue` | Full hierarchy visualization with D3.js |
+| `vue/MindMapViewport.vue` | Reusable viewport with zoom/pan controls |
+| `compile_vue_examples.pl` | Prolog-to-Vue code generation examples |
+
+### Vue Code Generation
+
+Generate Vue components from Prolog:
+
+```prolog
+?- use_module('src/unifyweaver/examples/pearltrees/compile_vue_examples'),
+   compile_hierarchy_component(VueCode).
+% Generates Vue 3 SFC with D3.js mindmap visualization
+
+?- use_module('src/unifyweaver/mindmap/render/d3_renderer'),
+   render_d3_vue(Nodes, Edges, [], [component_name('MyMap')], VueCode).
+% Generates Vue component with embedded node/edge data
+```
+
+### GUI Target Capabilities
+
+The Vue target distinguishes between direct support and operations requiring glue:
+
+**Direct Support** (runs in browser):
+- `ui_components` - Vue component structure
+- `mindmap_visualization` - D3.js-based graphs
+- `interactive_graphs` - Zoom, pan, click handlers
+- `viewport_controls` - Zoom buttons, fit-to-content
+- `form_generation` - Input forms
+- `data_display` - Tables, cards, lists
+
+**Requires Glue** (backend service needed):
+- `database_queries` - SQLite, PostgreSQL access
+- `file_io` - Reading/writing files
+- `heavy_computation` - Embeddings, clustering
+- `embedding_generation` - Vector embeddings
+- `clustering_algorithms` - K-means, hierarchical
+
+### Glue Pattern for Non-Web Targets
+
+For targets like Go, Rust, or C# that don't run in browsers, use glue to provide API endpoints:
+
+```prolog
+%% Vue component calls backend API
+?- vue_target:compile_predicate_to_vue(pearltrees:pearl_trees/5, [], VueCode).
+% Generates component that fetches from /api/prolog/pearltrees/pearl_trees
+
+%% Go target provides the API endpoint
+?- go_target:compile_predicate_to_go(pearl_trees/5, [http_handler(true)], GoCode).
+% Generates HTTP handler for the same predicate
+```
+
+### Running Vue Examples
+
+```bash
+# Generate all Vue example components
+swipl -g "compile_all_vue_examples" compile_vue_examples.pl
+
+# Show target capabilities
+swipl -g "show_target_capabilities" compile_vue_examples.pl
+
+# Run Vue codegen tests
+swipl -g "test_vue_codegen" compile_vue_examples.pl
+```
 
 ## Educational Value
 

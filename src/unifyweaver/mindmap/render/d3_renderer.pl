@@ -18,6 +18,7 @@
     render_d3/5,
     render_d3/4,
     render_d3_react/5,
+    render_d3_vue/5,
     test_d3_renderer/0
 ]).
 
@@ -48,6 +49,8 @@ compile_component(Name, Config, Options, Code) :-
     render(Name, Config, Graph),
     (   member(output_format(react), Options)
     ->  render_d3_react(Graph, [], [], Options, Code)
+    ;   member(output_format(vue), Options)
+    ->  render_d3_vue(Graph, [], [], Options, Code)
     ;   render_d3(Graph, [], [], Options, Code)
     ).
 
@@ -597,6 +600,310 @@ export default ~w;
     Width, Height, ComponentName]).
 
 % ============================================================================
+% VUE COMPONENT GENERATION
+% ============================================================================
+
+%% render_d3_vue(+Nodes, +Edges, +Positions, +Options, -VueCode)
+%
+%  Generate a Vue 3 SFC (Single File Component) with D3.js mind map.
+%
+render_d3_vue(Nodes, Edges, Positions, Options, VueCode) :-
+    option_value(Options, component_name, 'MindMapD3', ComponentName),
+    option_value(Options, width, 800, Width),
+    option_value(Options, height, 600, Height),
+
+    generate_nodes_json(Nodes, Positions, NodesJson),
+    generate_edges_json(Edges, EdgesJson),
+
+    format(string(VueCode),
+"<template>
+  <div class=\"mindmap-container\">
+    <svg
+      ref=\"svgRef\"
+      :width=\"width\"
+      :height=\"height\"
+      :style=\"{ background: themeColors[theme].background }\"
+    />
+    <div class=\"zoom-controls\">
+      <button @click=\"zoomIn\" title=\"Zoom In\">+</button>
+      <button @click=\"zoomOut\" title=\"Zoom Out\">-</button>
+      <button @click=\"zoomReset\" title=\"Reset\">1:1</button>
+      <button @click=\"fitToContent\" title=\"Fit\">[ ]</button>
+      <span class=\"zoom-indicator\">{{ Math.round(currentScale * 100) }}%</span>
+    </div>
+  </div>
+</template>
+
+<script setup lang=\"ts\">
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue';
+import * as d3 from 'd3';
+
+// Props
+interface Props {
+  width?: number;
+  height?: number;
+  theme?: 'light' | 'dark';
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  width: ~w,
+  height: ~w,
+  theme: 'light'
+});
+
+// Emits
+const emit = defineEmits<{
+  nodeClick: [node: Node];
+}>();
+
+// Types
+interface Node {
+  id: string;
+  label: string;
+  type: string;
+  url?: string;
+  x?: number;
+  y?: number;
+  fx?: number | null;
+  fy?: number | null;
+}
+
+interface Link {
+  source: string | Node;
+  target: string | Node;
+  type: string;
+}
+
+// Data
+const svgRef = ref<SVGSVGElement | null>(null);
+const currentScale = ref(1.0);
+
+const nodes: Node[] = ~w;
+const links: Link[] = ~w;
+
+// Theme colors
+const themeColors = {
+  light: {
+    background: '#ffffff',
+    nodeColors: {
+      default: { fill: '#e8f4fc', stroke: '#4a90d9', text: '#333333' },
+      root: { fill: '#4a90d9', stroke: '#2c5a8c', text: '#ffffff' },
+      hub: { fill: '#6ab04c', stroke: '#4a904c', text: '#ffffff' },
+      branch: { fill: '#f0932b', stroke: '#c07020', text: '#ffffff' },
+      leaf: { fill: '#eb4d4b', stroke: '#cb2d2b', text: '#ffffff' }
+    },
+    edgeColor: '#666666'
+  },
+  dark: {
+    background: '#1a1a2e',
+    nodeColors: {
+      default: { fill: '#2d3748', stroke: '#4a9ce9', text: '#e2e8f0' },
+      root: { fill: '#5a9ce9', stroke: '#3c6a9c', text: '#ffffff' },
+      hub: { fill: '#7ac05c', stroke: '#5aa05c', text: '#ffffff' },
+      branch: { fill: '#ffaa4b', stroke: '#d08030', text: '#000000' },
+      leaf: { fill: '#fb5d5b', stroke: '#db3d3b', text: '#ffffff' }
+    },
+    edgeColor: '#718096'
+  }
+};
+
+// D3 references
+let simulation: d3.Simulation<Node, Link> | null = null;
+let zoom: d3.ZoomBehavior<SVGSVGElement, unknown> | null = null;
+let contentGroup: d3.Selection<SVGGElement, unknown, null, undefined> | null = null;
+
+// Computed
+const colors = computed(() => themeColors[props.theme]);
+
+// Methods
+const zoomIn = () => {
+  if (!svgRef.value || !zoom) return;
+  d3.select(svgRef.value)
+    .transition()
+    .duration(300)
+    .call(zoom.scaleBy, 1.3);
+};
+
+const zoomOut = () => {
+  if (!svgRef.value || !zoom) return;
+  d3.select(svgRef.value)
+    .transition()
+    .duration(300)
+    .call(zoom.scaleBy, 0.7);
+};
+
+const zoomReset = () => {
+  if (!svgRef.value || !zoom) return;
+  d3.select(svgRef.value)
+    .transition()
+    .duration(300)
+    .call(zoom.transform, d3.zoomIdentity);
+};
+
+const fitToContent = () => {
+  if (!svgRef.value || !zoom || !contentGroup) return;
+
+  const bounds = contentGroup.node()?.getBBox();
+  if (!bounds || bounds.width === 0 || bounds.height === 0) return;
+
+  const scale = Math.min(
+    (props.width - 100) / bounds.width,
+    (props.height - 100) / bounds.height,
+    5
+  );
+
+  const tx = (props.width - bounds.width * scale) / 2 - bounds.x * scale;
+  const ty = (props.height - bounds.height * scale) / 2 - bounds.y * scale;
+
+  d3.select(svgRef.value)
+    .transition()
+    .duration(300)
+    .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+};
+
+const initVisualization = () => {
+  if (!svgRef.value) return;
+
+  const svg = d3.select(svgRef.value);
+  svg.selectAll('*').remove();
+
+  contentGroup = svg.append('g');
+
+  // Zoom behavior
+  zoom = d3.zoom<SVGSVGElement, unknown>()
+    .scaleExtent([0.1, 5])
+    .on('zoom', (event) => {
+      contentGroup?.attr('transform', event.transform);
+      currentScale.value = event.transform.k;
+    });
+
+  svg.call(zoom);
+
+  // Force simulation
+  simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id((d: any) => d.id).distance(100))
+    .force('charge', d3.forceManyBody().strength(-300))
+    .force('center', d3.forceCenter(props.width / 2, props.height / 2))
+    .force('collision', d3.forceCollide().radius(50));
+
+  // Links
+  const link = contentGroup.append('g')
+    .selectAll('line')
+    .data(links)
+    .join('line')
+    .attr('stroke', colors.value.edgeColor)
+    .attr('stroke-width', 2);
+
+  // Nodes
+  const node = contentGroup.append('g')
+    .selectAll<SVGGElement, Node>('g')
+    .data(nodes)
+    .join('g')
+    .style('cursor', d => d.url ? 'pointer' : 'default')
+    .call(d3.drag<SVGGElement, Node>()
+      .on('start', (event, d) => {
+        if (!event.active && simulation) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x;
+        d.fy = d.y;
+      })
+      .on('drag', (event, d) => {
+        d.fx = event.x;
+        d.fy = event.y;
+      })
+      .on('end', (event, d) => {
+        if (!event.active && simulation) simulation.alphaTarget(0);
+      })
+    );
+
+  node.append('ellipse')
+    .attr('rx', 40)
+    .attr('ry', 25)
+    .attr('fill', d => colors.value.nodeColors[d.type as keyof typeof colors.value.nodeColors]?.fill || colors.value.nodeColors.default.fill)
+    .attr('stroke', d => colors.value.nodeColors[d.type as keyof typeof colors.value.nodeColors]?.stroke || colors.value.nodeColors.default.stroke)
+    .attr('stroke-width', d => d.type === 'root' ? 3 : 2);
+
+  node.append('text')
+    .attr('text-anchor', 'middle')
+    .attr('dominant-baseline', 'central')
+    .attr('fill', d => colors.value.nodeColors[d.type as keyof typeof colors.value.nodeColors]?.text || colors.value.nodeColors.default.text)
+    .text(d => d.label);
+
+  node.on('click', (event, d) => {
+    emit('nodeClick', d);
+    if (d.url) window.open(d.url, '_blank');
+  });
+
+  simulation.on('tick', () => {
+    link
+      .attr('x1', (d: any) => d.source.x)
+      .attr('y1', (d: any) => d.source.y)
+      .attr('x2', (d: any) => d.target.x)
+      .attr('y2', (d: any) => d.target.y);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+};
+
+// Lifecycle
+onMounted(() => {
+  initVisualization();
+});
+
+onUnmounted(() => {
+  simulation?.stop();
+});
+
+watch(() => props.theme, () => {
+  initVisualization();
+});
+</script>
+
+<style scoped>
+.mindmap-container {
+  position: relative;
+  display: inline-block;
+}
+
+.zoom-controls {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100;
+}
+
+.zoom-controls button {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 6px;
+  background: white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.zoom-controls button:hover {
+  background: #f0f0f0;
+}
+
+.zoom-indicator {
+  background: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  text-align: center;
+}
+</style>
+", [Width, Height, NodesJson, EdgesJson]).
+
+% ============================================================================
 % UTILITIES
 % ============================================================================
 
@@ -645,6 +952,16 @@ test_d3_renderer :-
     (   sub_string(ReactCode, _, _, _, "export const TestMindMap")
     ->  format('  PASS: React component generated~n')
     ;   format('  FAIL: React component incorrect~n')
+    ),
+
+    % Test 4: Vue component
+    format('~nTest 4: Vue SFC generation...~n'),
+    render_d3_vue(TestNodes, TestEdges, [], [component_name('TestMindMap')], VueCode),
+    (   sub_string(VueCode, _, _, _, "<template>"),
+        sub_string(VueCode, _, _, _, "<script setup lang=\"ts\">"),
+        sub_string(VueCode, _, _, _, "<style scoped>")
+    ->  format('  PASS: Vue SFC component generated~n')
+    ;   format('  FAIL: Vue SFC component incorrect~n')
     ),
 
     format('~n=== Tests Complete ===~n').
