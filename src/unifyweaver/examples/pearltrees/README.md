@@ -693,6 +693,52 @@ swipl -g "run_tests" -t halt test_react_native_codegen.pl
 swipl -g "test_react_native_target" -t halt src/unifyweaver/targets/react_native_target.pl
 ```
 
+## PT_Explorer Example App
+
+A complete React Native app demonstrating all composable patterns together.
+Can be used to explore data exported from Pearltrees, or similar hierarchical
+tree-structured data from other sources.
+
+### App Features
+
+- **Tab Navigation**: Home, Search, Favorites, Profile screens
+- **React Query**: Data fetching with caching and stale time
+- **Zustand Store**: Global state (theme, filters)
+- **AsyncStorage**: Offline persistence for preferences and favorites
+- **Backend API**: Express routes for all data endpoints
+
+### Generate the App
+
+```prolog
+?- use_module('react_native_app/generate_app').
+?- show_app_structure.           % View app structure
+?- generate_all_app_code.        % Generate all components
+?- generate_backend_api(Code).   % Generate Express backend
+```
+
+### Generated Components
+
+| Pattern | Generated File | Description |
+|---------|----------------|-------------|
+| `app_navigation` | `AppNavigator.tsx` | Tab navigator |
+| `fetch_trees` | `useTrees.ts` | Query hook |
+| `toggle_favorite` | `useFavorites.ts` | Mutation hook |
+| `appStore` | `useAppStore.ts` | Zustand store |
+| `user_prefs` | `useUserPrefs.ts` | AsyncStorage hook |
+
+### Full Stack Generation
+
+Generate both frontend and backend with glue integration:
+
+```prolog
+?- use_module('../../../glue/pattern_glue').
+?- generate_full_stack([fetch_trees, toggle_favorite],
+                       [frontend_target(react_native), backend_target(express)],
+                       FrontendCode, BackendCode).
+```
+
+See `react_native_app/README.md` for full documentation.
+
 ## Educational Value
 
 This example demonstrates:
